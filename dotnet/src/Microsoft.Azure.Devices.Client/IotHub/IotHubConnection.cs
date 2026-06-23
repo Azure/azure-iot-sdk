@@ -1,0 +1,314 @@
+﻿using Google.Protobuf;
+using Microsoft.Azure.Devices.Client.DirectMethods;
+using Microsoft.Azure.Devices.Client.Mqtt;
+using Microsoft.Azure.Devices.Client.Telemetry;
+using Microsoft.Azure.Devices.Client.Twin;
+using System.Reflection;
+using System.Runtime.InteropServices;
+using System.Text;
+using System.Text.Json.Nodes;
+
+namespace Microsoft.Azure.Devices.Client.IotHub
+{
+    internal class IotHubConnection //TODO maybe just move this code into connection client?
+    {
+        private const bool UseSubscribeElide = false; // Maybe user-configurable? It is a very small optimization that is probably more risk than it is worth for .NET users compared to C users
+        private static TimeSpan birthAckReceivedDefensiveTimeout = TimeSpan.FromSeconds(5); //TODO value is magic number
+        private static TimeSpan twinPushReceivedDefensiveTimeout = TimeSpan.FromSeconds(5); //TODO value is magic number
+
+        internal async Task<Twin.Twin> ConnectToAzureEventGridIotHubAsync(IMqttClient mqttClient, string hostname, string deviceId, X509AuthenticationProvider x509AuthenticationProvider, TwinPushOptions twinPushOptions, CancellationToken cancellationToken = default)
+        {
+            bool subscribed = false;
+
+            while (true) // Loop until presence is established successfully (return called) or user signals cancellation
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                //TODO verify this is 16 bytes
+                Guid connectNonce = Guid.NewGuid(); //Note that this nonce must be unique per connection attempt, not per successfuly connection
+
+                string clientId = deviceId;
+
+                string hexEncodedConnectNonce = BitConverter.ToString(Encoding.UTF8.GetBytes(connectNonce.ToString())).Replace("-", "");
+
+                MqttConnect connectPacket = new MqttConnect()
+                {
+                    HostName = hostname,
+                    TcpPort = 8883,
+                    WebsocketPort = 443,
+                    WebsocketUri = $"wss://{hostname}/$iothub/websocket",
+                    ClientCertificate = x509AuthenticationProvider.ClientCertificate,
+                    CleanSession = true, // TODO user configurable
+                    Username = hexEncodedConnectNonce,
+                    Password = Array.Empty<byte>(),
+                    ClientId = clientId,
+                    ProtocolVersion = MqttProtocolVersion.V311
+                };
+
+                var connack = await mqttClient.ConnectAsync(connectPacket, cancellationToken);
+
+                if (connack.ResultCode != MqttClientConnectResultCode.Success)
+                {
+                    subscribed = false;
+                    continue; // Start the connect process over again
+                }
+
+                // Only send the subscribe if it hasn't been sent in this MQTT session yet and 
+                if (!(connack.IsSessionPresent && subscribed) && UseSubscribeElide)
+                {
+                    subscribed = false;
+
+                    try
+                    {
+                        // TODO this feels a bit optimistic since there is a chance that the session was established -> connection lost happened on the previous connection prior to this subscribe happening
+                        var suback = await mqttClient.SubscribeAsync(new(string.Format("ih/{deviceId}/dev/#", deviceId), MqttQualityOfServiceLevel.AtLeastOnce), cancellationToken);
+                        if (suback.Items.FirstOrDefault().ResultCode != MqttClientSubscribeResultCode.GrantedQoS1)
+                        {
+                            continue; // Start the connect process over again
+                        }
+
+                    }
+                    catch (Exception)
+                    {
+                        continue; // Start the connect process over again
+                    }
+                }
+
+                subscribed = true;
+
+                // The device's last known version of the twin's reported and desired properties. Currently, there is no support for persisting this state on disk, so assume the device has never seen the twin.
+                uint deviceDesiredPropertyVersion = 0;
+                uint deviceReportedPropertyVersion = 0;
+
+                // TODO user configurable
+                bool pushDesired = true;
+                bool pushReported = true;
+
+                Birth birth = new()
+                {
+                    SessionPresent = connack.IsSessionPresent,
+                    ReportedVersion = deviceReportedPropertyVersion, // Service allows for device to "resume" its previously known state if device boots up and has twin in durable storage somewhere. Not something we supported in v1, though AFAIK
+                    DesiredVersion = deviceDesiredPropertyVersion,
+
+                    PushDesired = pushDesired, // If false, users will only get desired properties via a GetTwin call. Akin to subscribing to desired properties in v1 land
+                    PushReported = pushReported, // If true, all current reported properties will be pushed to this device to "re-hydrate" its reported properties state. Not analogous to anything in v1 AFAIK
+                };
+
+                MqttPublish birthMessage = new MqttPublish()
+                {
+                    Topic = string.Format("ih/{deviceId}/srv/presence", deviceId),
+                    CorrelationData = connectNonce.ToByteArray(),
+                    PayloadAsByteArray = birth.ToByteArray(),
+                    QualityOfServiceLevel = MqttQualityOfServiceLevel.AtMostOnce, // QoS 0 because we don't care about the MQTT-level ack for this message.  The service will send a fully-fledged MQTT publish as the ack and we will listen for that below
+                };
+
+                birthMessage.UserProperties.Add(new() { Name = "type", Value = Encoding.UTF8.GetBytes("birth:1") });
+
+                TaskCompletionSource<BirthAck> birthAckReceivedTaskCompletionSource = new();
+                Func<MqttPublishReceivedEventArgs, Task> HandleReceivedBirthAck = (args) =>
+                {
+                    MqttPublish publish = args.Publish;
+                    if (publish.Topic.Equals(string.Format("ih/{deviceId}/dev/presence", deviceId)))
+                    {
+                        if (publish.UserProperties.TryGetType(out string? messageType, out int? version))
+                        {
+                            if (messageType.Equals("birth-ack")
+                                && GuidExtensions.TryParseBytes(publish.CorrelationData, out Guid? receivedGuid)
+                                && receivedGuid.Equals(connectNonce))
+                            {
+                                // The birth message flow is only complete once Hub sends a birth message ack with connection epoch equal to the latest connection epoch we have attempted
+                                birthAckReceivedTaskCompletionSource.TrySetResult(BirthAck.Parser.ParseFrom(args.Publish.PayloadAsByteArray));
+                            }
+                        }
+                    }
+
+                    return Task.CompletedTask;
+                };
+
+                TaskCompletionSource<TwinPush> twinPushReceivedTaskCompletionSource = new();
+                Func<MqttPublishReceivedEventArgs, Task> HandleReceivedTwinPush = (args) =>
+                {
+                    MqttPublish publish = args.Publish;
+                    if (publish.Topic.Equals(string.Format("ih/{deviceId}/dev/presence", deviceId)))
+                    {
+                        if (publish.UserProperties.TryGetType(out string? messageType, out int? version))
+                        {
+                            if (messageType.Equals("twin-push")
+                                && GuidExtensions.TryParseBytes(publish.CorrelationData, out Guid? receivedGuid)
+                                && receivedGuid.Equals(connectNonce))
+                            {
+                                twinPushReceivedTaskCompletionSource.TrySetResult(TwinPush.Parser.ParseFrom(args.Publish.PayloadAsByteArray));
+                            }
+                        }
+                    }
+
+                    return Task.CompletedTask;
+                };
+
+                mqttClient.PublishReceivedAsync += HandleReceivedBirthAck;
+                mqttClient.PublishReceivedAsync += HandleReceivedTwinPush;
+
+                var birthMessagePuback = await mqttClient.PublishAsync(birthMessage, cancellationToken);
+
+                if (birthMessagePuback.ReasonCode != MqttClientPublishReasonCode.Success)
+                {
+                    mqttClient.PublishReceivedAsync -= HandleReceivedBirthAck;
+                    mqttClient.PublishReceivedAsync -= HandleReceivedTwinPush;
+                    continue; // // Start the whole connect process over again
+                }
+
+                BirthAck birthAck;
+                try
+                {
+                    birthAck = await birthAckReceivedTaskCompletionSource.Task.WaitAsync(birthAckReceivedDefensiveTimeout, cancellationToken);
+                }
+                catch (TimeoutException)
+                {
+                    // Did not receive mqtt birth ack message in timely manner (and user has not canceled this function yet)
+                    await mqttClient.DisconnectAsync(new MqttDisconnect() { Reason = MqttClientDisconnectOptionsReason.NormalDisconnection, ReasonString = "Timed out waiting for birth-ack publish" }, cancellationToken);
+                    subscribed = false;
+
+                    // MQTT keep-alive is what guarantees the device-broker connection is alive. As long as keep-alive is healthy, the device is connected to the broker, and the nominal expectation is that birth-ack arrives, full stop. A birth-ack timeout firing on a connection that keep-alive still considers healthy is therefore an unambiguous signal of system degeneration somewhere the device cannot influence: a slow backend, EG/EH egress lag, an in-broker dispatch stall. The SDK's only sensible response is to wait long enough for the degenerate component to recover before adding more load to it.
+                    /*
+                     Attempt 1: base 5 min + uniform jitter [0, 5 min] → range 5–10 min.
+                     Attempt 2: base 6 min + uniform jitter [0, 5 min] → range 6–11 min.
+                     Attempt 3: base 8 min + uniform jitter [0, 5 min] → range 8–13 min.
+                     Attempt 4 and beyond: base 10 min + uniform jitter [0, 5 min] → range 10–15 min. 
+                     */
+                    //TODO add delays here before next connect attempt
+
+                    mqttClient.PublishReceivedAsync -= HandleReceivedBirthAck;
+                    mqttClient.PublishReceivedAsync -= HandleReceivedTwinPush;
+                    continue; // Start the whole connect process over again
+                }
+
+                // The authoritative versions as understood by IoT hub
+                var authoritativeReportedVersion = birthAck.ReportedVersion;
+                var authoritativeDesiredVersion = birthAck.DesiredVersion;
+
+                // By default, the device will not fetch the current twin as part of this connect flow. Setting either of the pushReported or pushDesired flags allows the service to re-hydrate the device's understanding of twin state.
+                Twin.Twin currentTwin = new();
+
+                // If the device's twin is out of date in any way, and the user wants to re-hydrate reported or desired properties, then wait for the service to send the "twin push" message with that state
+                if ((authoritativeReportedVersion > deviceReportedPropertyVersion || authoritativeDesiredVersion > deviceDesiredPropertyVersion)
+                    && (pushReported || pushDesired))
+                {
+                    TwinPush receivedTwinPush = await twinPushReceivedTaskCompletionSource.Task.WaitAsync(twinPushReceivedDefensiveTimeout, cancellationToken);
+
+
+
+                    if (receivedTwinPush.Desired != null)
+                    {
+                        currentTwin.Desired = JsonNode.Parse(receivedTwinPush.Desired.Payload.Span).AsObject();
+                        currentTwin.ReportedVersion = receivedTwinPush.Desired.Version;
+                    }
+
+                    if (receivedTwinPush.Reported != null)
+                    {
+                        currentTwin.Reported = JsonNode.Parse(receivedTwinPush.Reported.Payload.Span).AsObject();
+                        currentTwin.ReportedVersion = receivedTwinPush.Reported.Version;
+                    }
+                }
+
+                mqttClient.PublishReceivedAsync -= HandleReceivedBirthAck;
+                mqttClient.PublishReceivedAsync -= HandleReceivedTwinPush;
+
+                // Device presence was established and the initial twin push was received (if one was requested), so device connection has completed
+                return currentTwin;
+            }
+        }
+
+        internal async Task<Twin.Twin> ConnectToClassicIotHubAsync(IMqttClient mqttClient, string hostname, string deviceId, X509AuthenticationProvider x509AuthenticationProvider, ConnectionClient connectionClient, TwinPushOptions? twinPushOptions = null, CancellationToken cancellationToken = default)
+        {
+            string clientId = deviceId;
+            //TODO what is the latest Hub API version?
+            string username = $"{hostname}/{clientId}/?api-version=2025-08-01-preview&DeviceClientType={Uri.EscapeDataString(GetUserAgentString())}";
+
+            twinPushOptions ??= new();
+
+            MqttConnect connectPacket = new MqttConnect()
+            {
+                HostName = hostname,
+                TcpPort = 8883,
+                WebsocketPort = 443,
+                WebsocketUri = $"wss://{hostname}/$iothub/websocket",
+                ClientCertificate = x509AuthenticationProvider.ClientCertificate,
+                CleanSession = true, //TODO user configurable value
+                Username = username,
+                Password = Array.Empty<byte>(),
+                ClientId = clientId,
+                ProtocolVersion = MqttProtocolVersion.V311
+            };
+
+            var connack = await mqttClient.ConnectAsync(connectPacket, cancellationToken);
+
+            if (connack.ResultCode != MqttClientConnectResultCode.Success)
+            {
+                throw new Exception("TODO");
+            }
+
+            //TODO feels a bit weird to do these subs outside of the method client/twin client, and it forces the user to construct their direct method/twin clients
+            //and set their callbacks before connecting, but not sure what other approach works when AEG style hub mandates subscriptions as part of the connect birth message
+
+            //TODO check for previous connack isSessionPresent flag before firing off all these subscriptions?
+            //TODO add overload for SubscribeAsync that batches all this
+            MqttSubscribe mqttSubscribe = new();
+            //TODO I don't think all classic topics use QoS 1 here
+            var expectedQos = MqttQualityOfServiceLevel.AtLeastOnce;
+            mqttSubscribe.TopicFilters.Add(new(string.Format(TelemetryClient.DeviceBoundMessagesTopicFormat + "#", deviceId), expectedQos));
+            mqttSubscribe.TopicFilters.Add(new(TwinClient.ClassicTwinResponseTopic + "#", expectedQos));
+            mqttSubscribe.TopicFilters.Add(new(TwinClient.ClassicTwinDesiredPropertiesPatchTopic + "#", expectedQos));
+            mqttSubscribe.TopicFilters.Add(new(DirectMethodClient.ClassicDirectMethodsRequestTopic + "#", expectedQos));
+            var suback = await mqttClient.SubscribeAsync(mqttSubscribe, cancellationToken);
+
+            foreach (var topicSuback in suback.Items)
+            {
+                if (topicSuback.ResultCode != MqttClientSubscribeResultCode.GrantedQoS1)
+                {
+                    //TODO I don't think all classic topics use QoS 1 here
+                    throw new Exception("TODO");
+                }
+            }
+
+            Twin.Twin twinPush = new();
+
+            // This feature was introduced in AEG, and this block attempts to mimic that same behavior to the user. It does not have the same
+            // ability to actually specify to the service that the client wants just the reported properties or just the desired properties. It
+            // also lacks the ability to prevent the push depending on if-match flags. But this is as close as it gets to matching AEG-specific behavior?
+            if (twinPushOptions.ReceiveReportedPropertiesUponConnect || twinPushOptions.ReceiveDesiredPropertyUpdates)
+            {
+                //TODO ewwwwwww
+                TwinClient twinClient = new(connectionClient);
+                var currentTwin = await twinClient.GetTwinAsync(twinPushOptions.ReceiveReportedPropertiesUponConnect, twinPushOptions.ReceiveDesiredPropertyUpdates, 0, 0, cancellationToken);
+
+                if (twinPushOptions.ReceiveDesiredPropertyUpdates)
+                {
+                    twinPush.Desired = currentTwin.DesiredProperties;
+                    twinPush.DesiredVersion = currentTwin.DesiredPropertiesVersion;
+                }
+
+                if (twinPushOptions.ReceiveReportedPropertiesUponConnect)
+                {
+                    twinPush.Reported = currentTwin.ReportedProperties;
+                    twinPush.ReportedVersion = currentTwin.ReportedPropertiesVersion;
+                }
+            }
+
+            return twinPush;
+        }
+
+        private string GetUserAgentString()
+        {
+            const string name = "Microsoft.Azure.Devices.Provisioning.Client";
+
+            string version = typeof(IotHubConnection).GetTypeInfo().Assembly.GetName().Version.ToString(3);
+            string runtime = RuntimeInformation.FrameworkDescription.Trim();
+            string operatingSystem = RuntimeInformation.OSDescription.Trim();
+            string processorArchitecture = RuntimeInformation.ProcessArchitecture.ToString().Trim();
+
+            string userAgent = $"{name}/{version} ({runtime}; {operatingSystem}; {processorArchitecture})";
+
+            return userAgent;
+        }
+    }
+}

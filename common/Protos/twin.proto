@@ -1,0 +1,112 @@
+syntax = "proto3";
+
+option csharp_namespace = "Microsoft.Azure.Devices.Client.Twin";
+
+// Backend-initiated full-state push: Service → Device
+// type = "twin-push:1"
+// Published on ih/{deviceId}/dev/twin at QoS 0.
+// Correlation Data = connectionNonce of the originating birth (§2.1).
+// One twin-push message is published per admitted birth that requires a push;
+// if both sections need pushing, they ride this single message. A section is
+// absent if the corresponding push_* bit was false on birth or its version
+// already matched the authoritative version.
+message TwinPush {
+  optional Section desired = 1;
+  optional Section reported = 2;
+}
+
+message Section {
+  uint64 version = 1;     // Authoritative version of this section at publish time.
+  bytes payload = 2;      // Full opaque section payload.
+}
+
+// Incremental desired-properties patch: Service → Device
+// type = "desired-patch:1"
+// Published on ih/{deviceId}/dev/twin at QoS 0.
+// Correlation Data = connectionNonce of the most recent admitted birth (§2.1).
+// Patches are dispatched in version order, beginning at (authoritative desired
+// version at birth-ack admission) + 1.
+message DesiredPatch {
+  uint64 version = 1;     // The new authoritative desired version after applying
+                          // this patch. Strictly monotonic: version N+1 follows N.
+  bytes payload = 2;      // Opaque patch payload.
+}
+
+
+// GET request: Device → Service
+// type = "get:1"
+// Published on ih/{deviceId}/srv/twin at QoS 0.
+// Correlation Data = device-generated 16-byte UUID, unique per GET attempt.
+message TwinGet {
+  // Which section(s) to retrieve. Required.
+  Sections sections = 1;
+
+  // Optional per-section "if-not-match" version filter. If a section is
+  // requested and the device's supplied version equals the authoritative
+  // version at response time, the response omits that section's payload but
+  // still carries the version.
+  // A value of 0 (the default in proto3) means "no filter" — the section's
+  // payload is always returned if requested.
+  uint64 if_not_match_desired = 2;
+  uint64 if_not_match_reported = 3;
+}
+
+enum Sections {
+  SECTIONS_UNSPECIFIED = 0;   // rejected; clients must specify
+  DESIRED = 1;
+  REPORTED = 2;
+  BOTH = 3;
+}
+
+// GET response: Service → Device
+// type = "get-response:1"
+// Published on ih/{deviceId}/dev/twin at QoS 0.
+// Correlation Data = echoes the originating get:1 Correlation Data.
+message TwinGetResponse {
+  // Authoritative versions of both sections at response computation time.
+  // Always present regardless of what was requested — the device may use the
+  // unsolicited version to advance its local view of the other section.
+  uint64 desired_version = 1;
+  uint64 reported_version = 2;
+
+  // Section payloads. Present only if (a) the section was requested and (b) the
+  // device's if_not_match for that section did not equal the authoritative
+  // version at response time.
+  optional bytes desired_payload = 3;
+  optional bytes reported_payload = 4;
+}
+
+// Reported-properties patch: Device → Service
+// type = "reported-patch:1"
+// Published on ih/{deviceId}/srv/twin at QoS 0.
+// Correlation Data = device-generated 16-byte UUID, unique per patch attempt.
+message ReportedPatch {
+  // The device's current view of the authoritative reported version. The
+  // backend applies the patch only if this matches the authoritative version
+  // at apply time; otherwise it returns VERSION_MISMATCH (§3.4).
+  uint64 if_match = 1;
+
+  // Opaque patch payload.
+  bytes payload = 2;
+}
+
+// Reported-patch response: Service → Device
+// type = "reported-patch-response:1"
+// Published on ih/{deviceId}/dev/twin at QoS 0.
+// Correlation Data = echoes the originating reported-patch:1 Correlation Data.
+message ReportedPatchResponse {
+  Result result = 1;
+
+  // On OK: the new authoritative version after applying the patch.
+  // On all other results: the unchanged current authoritative version.
+  uint64 version = 2;
+}
+
+enum Result {
+  RESULT_UNSPECIFIED = 0;
+  OK = 1;
+  VERSION_MISMATCH = 2;   // if_match did not equal current authoritative version
+  PAYLOAD_INVALID = 3;    // payload did not parse / failed merge validation
+  PAYLOAD_TOO_LARGE = 4;  // payload exceeded the configured size limit
+  INTERNAL_ERROR = 5;     // backend-side failure not attributable to the device
+}

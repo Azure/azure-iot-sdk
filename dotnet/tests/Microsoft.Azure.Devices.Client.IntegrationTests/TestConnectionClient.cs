@@ -1,0 +1,23 @@
+﻿using System;
+using System.Collections.Generic;
+using System.Text;
+
+namespace Microsoft.Azure.Devices.Client.IntegrationTests
+{
+    public class TestConnectionClient : IAsyncDisposable
+    {
+        public ConnectionClient ConnectionClient { get; set; }
+
+        public ConnectionContext ConnectionContext { get; set; }
+        
+        public string PrivateKeyPem { get; set; }
+
+        public async ValueTask DisposeAsync()
+        {
+            if (ConnectionContext.DeviceId != null)
+            {
+                await Setup.GetIotHubRegistryManager().RemoveDeviceAsync(ConnectionContext.DeviceId);
+            }
+        }
+    }
+}

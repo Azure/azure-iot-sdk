@@ -1,0 +1,51 @@
+syntax = "proto3";
+
+option csharp_namespace = "Microsoft.Azure.Devices.Client.IotHub";
+
+// Birth: Device → Service
+// type = "birth:1"
+// Published on ih/{deviceId}/srv/presence at QoS 0. See §9.6 for why birth
+// is QoS 0 (avoids stale redelivery from a prior session interfering with the
+// always-birth rule).
+// The broker stamps the connection epoch on the CloudEvent envelope (§4.2);
+// this drives backend reconciliation.
+// The connectionNonce (§5.3) rides as MQTT 5 Correlation Data on the PUBLISH,
+// not as a payload field. See §5.1.
+message Birth {
+  // Diagnostic: the Session Present flag the device observed in CONNACK.
+  // Reported for forensic visibility; the backend MUST NOT consult it for
+  // any state machine decision (§9.9).
+  bool session_present = 1;
+
+  // --- Per-feature recovery hints ride the same Birth publish ---
+  // Features that need to influence first-time post-birth dispatch contribute
+  // fields here rather than introducing additional signals.
+
+  // Twin feature contribution. Field semantics in twin.md §3.1; how the
+  // backend uses these to make the push decision in twin.md §4.1 and §7.4.
+  uint64 reported_version = 10;
+  uint64 desired_version = 11;
+  bool push_desired = 12;
+  bool push_reported = 13;
+
+  // C2D may or may not contribute fields here pending the C2D rewrite.
+}
+
+// BirthAck: Service → Device
+// type = "birth-ack:1"
+// Published on ih/{deviceId}/dev/presence at QoS 0 in response to every admitted
+// birth (§5.5, §5.6). See §5.6 for transport rationale.
+// The originating Birth's connectionNonce (§5.3) is echoed unchanged as the
+// MQTT 5 Correlation Data of the BirthAck PUBLISH, not as a payload field. The
+// SDK MUST drop any BirthAck whose Correlation Data does not match the current
+// attempt's connectionNonce — see §5.6.
+message BirthAck {
+  // --- Per-feature recovery state ---
+  // Features that need to hand state back to the device on connection
+  // establishment contribute fields here.
+
+  // Twin feature contribution. Field semantics in twin.md §3.1; how the
+  // device consumes these on admission in twin.md §5.2 and §8.5.
+  uint64 desired_version = 10;
+  uint64 reported_version = 11;
+}

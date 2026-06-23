@@ -1,0 +1,19 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Azure.Devices" Version="1.41.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!---Use the direct method payload model types defined in the client's side sample-->
+    <ProjectReference Include="..\DirectMethodsSample\DirectMethodsClientSample.csproj" />
+  </ItemGroup>
+
+</Project>

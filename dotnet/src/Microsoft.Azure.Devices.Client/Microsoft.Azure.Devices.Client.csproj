@@ -1,0 +1,25 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Google.Protobuf" Version="3.34.1" />
+    <PackageReference Include="Google.Protobuf.Tools" Version="3.34.1" />
+    <PackageReference Include="Grpc.Tools" Version="2.80.0">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+    <PackageReference Include="MQTTnet" Version="5.1.0.1559" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--This default config puts the generated files only in the obj/debug/net10.0/Protos/Directmethods.cs file-->
+    <Protobuf Include="..\..\..\common\Protos\presence.proto" />
+    <Protobuf Include="..\..\..\common\Protos\directmethods.proto" />
+    <Protobuf Include="..\..\..\common\Protos\twin.proto" />
+  </ItemGroup>
+</Project>

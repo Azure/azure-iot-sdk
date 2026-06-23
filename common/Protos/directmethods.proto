@@ -1,0 +1,76 @@
+syntax = "proto3";
+
+package iothub.methods.v1;
+
+option csharp_namespace = "Microsoft.Azure.Devices.Client.DirectMethods";
+
+import "google/protobuf/timestamp.proto";
+
+// Delivery probe: Service → Device
+// type = "probe:1"
+// Allows device to check method support and timeout feasibility
+// before committing. Method params are deferred to exec to avoid
+// sending payload to a device that may never come online.
+message Probe {
+  string method_name = 1;
+  uint32 response_timeout_seconds = 2;
+}
+
+// Probe acknowledgement: Device → Service
+// type = "probe-ack:1"
+// Device responds to the probe with acceptance or rejection.
+message ProbeAck {
+  oneof result {
+    Ready ready = 1;
+    Rejected rejected = 2;
+  }
+}
+
+message Ready {
+  bytes ready_id = 1; // 16-byte UUID, generated once per probe
+}
+
+message Rejected {
+  RejectedReason reason = 1;
+}
+
+enum RejectedReason {
+  REJECTED_REASON_UNSPECIFIED = 0;
+  METHOD_NOT_FOUND = 1;       // device does not have this method registered
+  INSUFFICIENT_TIME = 2;      // response_timeout_seconds too short for handler's declared minimum
+  DEVICE_BUSY = 3;            // device is at max concurrent method capacity
+}
+
+// Ready-state abandonment: Device → Service
+// type = "abandon:1"
+// Advisory control signal that the device terminated the
+// current ready token before execution began. Applies only
+// to the current ready state.
+message Abandon {
+  bytes ready_id = 1;          // must match the current ready state token
+  AbandonReason reason = 2;
+}
+
+enum AbandonReason {
+  ABANDON_REASON_UNSPECIFIED = 0;
+  READY_WAIT_TIMEOUT = 1;
+  INSUFFICIENT_TIME_DUP = 2; //TODO "INSUFFICIENT_TIME" is already defined elsewhere. Check with service folks about this       // matching exec arrived, but remaining budget after safety margin was not enough to begin execution
+}
+
+// Execute authorization: Service → Device
+// type = "exec:1"
+// Carries the execution token, method parameters, and timing.
+// Device only executes if (requestId, readyId) matches its
+// current ready state.
+message Exec {
+  bytes ready_id = 1;                          // must match the readyId from ProbeAck.Ready
+  bytes params = 2;                            // opaque method parameters (caller-defined)
+  google.protobuf.Timestamp exec_start = 3;    // service wall-clock time when response timeout started (informational/observability only — not used for deadline computation; see §5.1)
+}
+
+// Method result: Device → Service
+// type = "result:1"
+message Result {
+  int32 status = 1;     // application-defined status code
+  bytes body = 2;       // opaque result payload (caller-defined)
+}
