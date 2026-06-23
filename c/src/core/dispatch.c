@@ -1,0 +1,85 @@
+// Copyright (c) Microsoft. All rights reserved.
+// Licensed under the MIT license. See LICENSE file in the project root for full license information.
+
+/* SPDX-License-Identifier: MIT */
+#include "internal/dispatch.h"
+
+#include <string.h>
+
+void az_iot_dispatch_init(az_iot_dispatch_table_t* tbl)
+{
+    if (tbl) memset(tbl, 0, sizeof(*tbl));
+}
+
+az_iot_result_t az_iot_dispatch_register_prefix(
+    az_iot_dispatch_table_t* tbl,
+    const char* topic_prefix,
+    az_iot_inbound_handler_cb cb,
+    void* user_ctx)
+{
+    if (!tbl || !topic_prefix || !cb) return AZ_IOT_ERR_INVALID_ARG;
+
+    size_t n = strlen(topic_prefix);
+    if (n + 1 > AZ_IOT_DISPATCH_PREFIX_MAX) return AZ_IOT_ERR_NOT_SUPPORTED;
+
+    /* Find an empty slot. */
+    az_iot_dispatch_entry_t* slot = NULL;
+    for (size_t i = 0; i < AZ_IOT_MAX_INBOUND_HANDLERS; ++i)
+    {
+        if (!tbl->entries[i].in_use) { slot = &tbl->entries[i]; break; }
+    }
+    if (!slot) return AZ_IOT_ERR_NOT_SUPPORTED;
+
+    memcpy(slot->prefix, topic_prefix, n + 1);
+    slot->prefix_len = n;
+    slot->cb         = cb;
+    slot->user_ctx   = user_ctx;
+    slot->in_use     = true;
+    tbl->count++;
+    return AZ_IOT_OK;
+}
+
+size_t az_iot_dispatch_unregister_by_ctx(
+    az_iot_dispatch_table_t* tbl, void* user_ctx)
+{
+    if (!tbl) return 0;
+    size_t removed = 0;
+    for (size_t i = 0; i < AZ_IOT_MAX_INBOUND_HANDLERS; ++i)
+    {
+        az_iot_dispatch_entry_t* e = &tbl->entries[i];
+        if (e->in_use && e->user_ctx == user_ctx)
+        {
+            memset(e, 0, sizeof(*e));
+            tbl->count--;
+            removed++;
+        }
+    }
+    return removed;
+}
+
+bool az_iot_dispatch_route(
+    const az_iot_dispatch_table_t* tbl,
+    const az_iot_mqtt_message_t* msg)
+{
+    if (!tbl || !msg || !msg->topic) return false;
+    size_t topic_len = strlen(msg->topic);
+
+    /* Longest-prefix match: walk all entries, track the best one. */
+    const az_iot_dispatch_entry_t* best = NULL;
+    for (size_t i = 0; i < AZ_IOT_MAX_INBOUND_HANDLERS; ++i)
+    {
+        const az_iot_dispatch_entry_t* e = &tbl->entries[i];
+        if (!e->in_use) continue;
+        if (e->prefix_len > topic_len) continue;
+        if (memcmp(msg->topic, e->prefix, e->prefix_len) != 0) continue;
+        if (!best || e->prefix_len > best->prefix_len) best = e;
+    }
+    if (!best) return false;
+    best->cb(best->user_ctx, msg);
+    return true;
+}
+
+size_t az_iot_dispatch_count(const az_iot_dispatch_table_t* tbl)
+{
+    return tbl ? tbl->count : 0;
+}

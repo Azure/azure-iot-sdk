@@ -1,0 +1,124 @@
+// Copyright (c) Microsoft. All rights reserved.
+// Licensed under the MIT license. See LICENSE file in the project root for full license information.
+
+/* SPDX-License-Identifier: MIT */
+/* Internal-only API for the connection client. NOT part of the public ABI.
+ * Consumers: feature clients (telemetry, twin, direct method), unit tests. */
+#ifndef AZ_IOT_CONNECTION_CLIENT_INTERNAL_H
+#define AZ_IOT_CONNECTION_CLIENT_INTERNAL_H
+
+#include "azure/iot/az_iot_connection_client.h"
+#include "azure/iot/az_iot_mqtt_iface.h"
+
+#include "internal/dispatch.h"
+#include "internal/protocol_profile.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* Override the session role used by the next open(). Direct-host opens default
+ * to HUB_CLASSIC (v3.1.1); DPS calls this with the assigned role before driving
+ * the post-provisioning open. */
+az_iot_result_t az_iot_connection_client__set_session_role(
+    az_iot_connection_client_t* client,
+    az_iot_mqtt_role_t role);
+
+/* Override opts.host with a heap-owned copy of `host`. Used by the DPS handoff
+ * helper to redirect a freshly-created (and still-IDLE) connection client at
+ * the assigned hub. The client owns the duplicate; it is freed in destroy().
+ * Rejects the call when state != IDLE so live sessions can never have their
+ * target rewritten under them. */
+az_iot_result_t az_iot_connection_client__set_host(
+    az_iot_connection_client_t* client, const char* host);
+
+/* Override opts.client_id with a heap-owned copy of `client_id`. Same
+ * IDLE-only constraint as __set_host. */
+az_iot_result_t az_iot_connection_client__set_client_id(
+    az_iot_connection_client_t* client, const char* client_id);
+
+/* Seed the jitter PRNG used by the reconnect logic. Tests use this to make
+ * backoff timing deterministic. Production builds seed automatically from a
+ * monotonic clock during create(). */
+void az_iot_connection_client__seed_rng(
+    az_iot_connection_client_t* client, uint64_t seed);
+
+/* Return the protocol profile selected by the current session_role. May be
+ * NULL when the role has no profile yet (e.g. HUB_NEXT in Phase 2.3). */
+const az_iot_protocol_profile_t* az_iot_connection_client__profile(
+    const az_iot_connection_client_t* client);
+
+/* Register an inbound MESSAGE handler. ConnectionClient lazily allocates a
+ * dispatch table on the first call. Each registered handler is invoked
+ * synchronously from inside do_work() when an inbound MESSAGE topic begins
+ * with topic_prefix; longest-prefix wins. */
+az_iot_result_t az_iot_connection_client__register_inbound_handler(
+    az_iot_connection_client_t* client,
+    const char* topic_prefix,
+    az_iot_inbound_handler_cb cb,
+    void* user_ctx);
+
+/* Remove every handler whose user_ctx matches. Returns the number removed. */
+size_t az_iot_connection_client__unregister_inbound_handlers(
+    az_iot_connection_client_t* client, void* user_ctx);
+
+/* True when the connection is in CONNECTED state. */
+bool az_iot_connection_client__is_connected(
+    const az_iot_connection_client_t* client);
+
+/* Returns the configured device id (== options.client_id). NULL only when the
+ * client was created with a NULL client_id (rejected at create time, so this
+ * is effectively never NULL for a live client). */
+const char* az_iot_connection_client__device_id(
+    const az_iot_connection_client_t* client);
+
+/* Publish through the active adapter. Returns ERR_NOT_CONNECTED when not in
+ * CONNECTED state. For QoS 1, callers may pass a non-NULL ack_cb; it is
+ * invoked synchronously from inside do_work() when the matching PUBLISH_ACK
+ * arrives. For QoS 0, ack_cb (if any) is invoked synchronously here with
+ * AZ_IOT_OK because QoS 0 has no on-the-wire ack. */
+
+az_iot_result_t az_iot_connection_client__publish(
+    az_iot_connection_client_t* client,
+    const az_iot_mqtt_message_t* msg,
+    az_iot_publish_ack_cb ack_cb,
+    void* ack_user_ctx);
+
+/* Subscribe through the active adapter. Returns ERR_NOT_CONNECTED when not in
+ * CONNECTED state. Out-arg packet_id is populated on success. */
+az_iot_result_t az_iot_connection_client__subscribe(
+    az_iot_connection_client_t* client,
+    const char* topic_filter,
+    az_iot_mqtt_qos_t qos,
+    uint16_t* out_packet_id);
+
+/* Register a persistent subscription that is (re)issued on every CONNECTED
+ * transition. Feature clients call this at create time so the SUBSCRIBE is
+ * automatically refreshed across reconnects. The topic_filter string is
+ * copied. Returns ERR_NOT_SUPPORTED if the persistent-subscription registry
+ * is full (current bound: 8). If the client is already CONNECTED, the
+ * SUBSCRIBE is also issued immediately. */
+az_iot_result_t az_iot_connection_client__add_subscription_on_connect(
+    az_iot_connection_client_t* client,
+    const char* topic_filter,
+    az_iot_mqtt_qos_t qos);
+
+/* Map session role to required MQTT version (SDK-internal knowledge). */
+static inline az_iot_mqtt_version_t az_iot_mqtt_required_version_for_role(az_iot_mqtt_role_t role)
+{
+    switch (role)
+    {
+        case AZ_IOT_MQTT_ROLE_HUB_NEXT: return AZ_IOT_MQTT_VERSION_5;
+        case AZ_IOT_MQTT_ROLE_DPS:
+        case AZ_IOT_MQTT_ROLE_HUB_CLASSIC:
+        default:                     return AZ_IOT_MQTT_VERSION_3_1_1;
+    }
+}
+
+const char* az_iot_mqtt_role_to_string(az_iot_mqtt_role_t r);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif

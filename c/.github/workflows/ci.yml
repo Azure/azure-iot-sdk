@@ -1,0 +1,186 @@
+# Copyright (c) Microsoft. All rights reserved.
+# Licensed under the MIT license. See LICENSE file in the project root for full license information.
+
+name: ci
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: ${{ matrix.preset }} / ${{ matrix.build_type }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            preset: linux-gcc-debug
+            build_type: Debug
+            with_paho: ON
+          - os: ubuntu-latest
+            preset: linux-clang-debug
+            build_type: Debug
+            with_paho: ON
+          - os: windows-latest
+            preset: windows-msvc-debug
+            build_type: Debug
+            with_paho: ON
+    runs-on: ${{ matrix.os }}
+
+    # Mosquitto service container for the MQTT iface conformance suite.
+    # GitHub Actions service containers only run on Linux runners; the Windows
+    # job skips the conformance tests (CTest exit 77) automatically because
+    # AZ_IOT_AEG_MQTT_BROKER_HOST is not set there.
+    services:
+      mosquitto:
+        image: ${{ matrix.os == 'ubuntu-latest' && 'eclipse-mosquitto:2' || '' }}
+        ports:
+          - 1883:1883
+        # mosquitto:2 needs a config file that opts into anonymous + listener.
+        # We bake one in by overriding the entrypoint.
+        options: >-
+          --health-cmd="mosquitto_sub -t '$$SYS/#' -C 1 -W 3 -h localhost || exit 0"
+          --health-interval=5s
+          --health-retries=5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up MSVC (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Install ninja (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+
+      - name: Configure
+        run: cmake --preset ${{ matrix.preset }} -DAZ_IOT_AEG_WITH_PAHO=${{ matrix.with_paho }}
+      - name: Build
+        run: cmake --build --preset ${{ matrix.preset }} --config ${{ matrix.build_type }}
+
+      - name: Test
+        env:
+          # On Linux, the mosquitto service container is reachable as
+          # `mosquitto:1883`. On Windows we leave these unset so the
+          # conformance harnesses skip themselves (CTest exit 77).
+          AZ_IOT_AEG_MQTT_BROKER_HOST: ${{ runner.os == 'Linux' && 'mosquitto' || '' }}
+          AZ_IOT_AEG_MQTT_BROKER_PORT: ${{ runner.os == 'Linux' && '1883' || '' }}
+        run: ctest --preset ${{ matrix.preset }} ${{ runner.os == 'Windows' && format('-C {0}', matrix.build_type) || '' }} --output-on-failure
+
+  c99-strict:
+    name: c99-strict (gcc -pedantic)
+    runs-on: ubuntu-latest
+    services:
+      mosquitto:
+        image: eclipse-mosquitto:2
+        ports:
+          - 1883:1883
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install ninja
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+      - name: Configure (C99 strict)
+        run: >
+          cmake -S . -B build/c99-strict -G Ninja
+          -DCMAKE_C_COMPILER=gcc
+          -DAZ_IOT_AEG_WITH_PAHO=ON
+          -DAZ_IOT_AEG_BUILD_TESTS=ON
+          -DCMAKE_C_FLAGS="-std=c99 -pedantic -Wall -Wextra -Werror"
+      - name: Build
+        run: cmake --build build/c99-strict
+      - name: Test
+        env:
+          AZ_IOT_AEG_MQTT_BROKER_HOST: mosquitto
+          AZ_IOT_AEG_MQTT_BROKER_PORT: '1883'
+        run: ctest --test-dir build/c99-strict --output-on-failure
+
+  # ---------------------------------------------------------------------------
+  # Memory-checker jobs. Run the full test set (excluding the broker-gated
+  # conformance harnesses) under a runtime sanitizer:
+  #   * Linux  : Valgrind  (ctest -T memcheck driven by MEMORYCHECK_COMMAND).
+  #   * Windows: MSVC AddressSanitizer (`/fsanitize=address`).
+  # AppVerifier is the "classic" Windows equivalent but is registry-driven via
+  # Image File Execution Options, brittle in a CI matrix, and can't be
+  # configured per-build-tree. ASan via MSVC has been the recommended Windows
+  # heap/UAF/OOB checker since VS 16.9 and works directly with the cmocka test
+  # exes the rest of this workflow already builds.
+  # ---------------------------------------------------------------------------
+
+  valgrind:
+    name: linux-gcc / valgrind
+    runs-on: ubuntu-latest
+    services:
+      mosquitto:
+        image: eclipse-mosquitto:2
+        ports:
+          - 1883:1883
+        options: >-
+          --health-cmd="mosquitto_sub -t '$$SYS/#' -C 1 -W 3 -h localhost || exit 0"
+          --health-interval=5s
+          --health-retries=5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install deps
+        run: sudo apt-get update && sudo apt-get install -y ninja-build valgrind
+      - name: Configure
+        run: >
+          cmake --preset linux-gcc-debug
+          -DAZ_IOT_AEG_WITH_PAHO=ON
+          -DAZ_IOT_AEG_WITH_RUST_MQTT=ON
+      - name: Build
+        run: cmake --build --preset linux-gcc-debug
+      - name: Test under valgrind
+        env:
+          AZ_IOT_AEG_MQTT_BROKER_HOST: mosquitto
+          AZ_IOT_AEG_MQTT_BROKER_PORT: '1883'
+        working-directory: build/linux-gcc-debug
+        run: |
+          ctest --output-on-failure -E conformance \
+            --overwrite MemoryCheckCommand=/usr/bin/valgrind \
+            --overwrite "MemoryCheckCommandOptions=--error-exitcode=1 --leak-check=full --show-leak-kinds=definite,possible --track-origins=yes --errors-for-leak-kinds=definite,possible" \
+            -T memcheck
+          if grep -lE "Defects: [1-9]" Testing/Temporary/MemoryChecker.*.log 2>/dev/null; then
+            echo "::error::valgrind found memory defects"
+            grep -E "Defects: [1-9]" Testing/Temporary/MemoryChecker.*.log
+            exit 1
+          fi
+      - name: Upload valgrind logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: valgrind-logs
+          path: build/linux-gcc-debug/Testing/Temporary/MemoryChecker.*.log
+          if-no-files-found: ignore
+
+  asan-windows:
+    name: windows-msvc / ASan
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+      - name: Configure (MSVC AddressSanitizer)
+        # Disable Paho here: pulling it in through FetchContent forces the
+        # /MD[d] runtime which conflicts with /fsanitize=address's internal
+        # runtime selection on some toolchain builds. The first-party suites
+        # (smoke / mqtt_iface_contract / connection_client / reconnect_policy
+        # / protocol_profile_dispatch / telemetry / direct_method / twin /
+        # dps_client / dps_handoff / certificate_provider_pem / easy_client /
+        # rust_mqtt_adapter) cover everything we want ASan to vet.
+        shell: pwsh
+        run: >
+          cmake --preset windows-msvc-debug
+          -DAZ_IOT_AEG_WITH_PAHO=OFF
+          -DAZ_IOT_AEG_WITH_RUST_MQTT=ON
+          -DCMAKE_C_FLAGS="/fsanitize=address /Zi"
+      - name: Build
+        run: cmake --build --preset windows-msvc-debug --config Debug
+      - name: Test under ASan
+        # ASan reports a non-zero exit code on any detected defect; ctest
+        # surfaces that as a test failure in the standard way. There is no
+        # broker on Windows, so conformance tests skip themselves anyway.
+        run: ctest --preset windows-msvc-debug -C Debug --output-on-failure -E conformance

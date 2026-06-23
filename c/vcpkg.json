@@ -1,0 +1,21 @@
+{
+    "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+    "name": "azure-iot-sdk",
+    "version-string": "0.0.1",
+    "description": "C99 client SDK for Azure IoT Hub (Classic + Next)",
+    "dependencies": [
+    ],
+    "features": {
+        "paho": {
+            "description": "Build with the Paho-C MQTT adapter (OpenSSL for TLS)",
+            "dependencies": [
+                "openssl"
+            ]
+        },
+        "tests": {
+            "description": "Build unit tests",
+            "dependencies": []
+        }
+    },
+    "default-features": []
+}

@@ -1,0 +1,17 @@
+// Copyright (c) Microsoft. All rights reserved.
+// Licensed under the MIT license. See LICENSE file in the project root for full license information.
+
+/* SPDX-License-Identifier: MIT */
+/* Conformance harness: validates the bundled Paho adapter as an MQTTv3.1.1 client.
+ * The same harness pattern is what customers will use to validate their own
+ * adapter against the suite. */
+#include "../conformance/az_iot_conformance.h"
+#include "azure/iot/adapters/az_iot_adapter_paho.h"
+
+int main(void)
+{
+    az_iot_mqtt_factory_t* f = az_iot_paho_factory_create_v3_1_1();
+    int rc = az_iot_conformance_run(AZ_IOT_CONFORMANCE_SUITE_V3_1_1, f);
+    az_iot_paho_factory_destroy(f);
+    return rc;
+}
