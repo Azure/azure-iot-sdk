@@ -7,7 +7,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
 {
     public class CertificateManagementIntegrationTests
     {
-        [Theory(Timeout = Setup.TestTimeoutMilliseconds)]
+        [Theory(Timeout = Setup.TestTimeoutMilliseconds, Skip = "Test infrastructure not setup yet")]
         [InlineData(true)]
         [InlineData(false)]
         public async Task TestCertificateManagementWithDpsAndHub(bool testAgainstClassicHub)
