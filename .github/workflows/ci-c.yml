@@ -5,7 +5,7 @@ name: ci-c
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, 'dev/c' ]
   pull_request:
     paths:
       - 'c/**'
