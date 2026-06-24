@@ -1,14 +1,23 @@
 # Copyright (c) Microsoft. All rights reserved.
 # Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
-name: ci
+name: ci-c
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [ main ]
   pull_request:
-    branches: [ main, master ]
+    paths:
+      - 'c/**'
+      - 'common/**'
   workflow_dispatch:
+
+# All run steps execute from the c/ project directory (where CMakePresets.json
+# lives). Path-based fields (paths filters, working-directory overrides, artifact
+# paths) stay relative to the repo root and are qualified with c/ explicitly.
+defaults:
+  run:
+    working-directory: c
 
 jobs:
   build:
@@ -138,7 +147,7 @@ jobs:
         env:
           AZ_IOT_AEG_MQTT_BROKER_HOST: mosquitto
           AZ_IOT_AEG_MQTT_BROKER_PORT: '1883'
-        working-directory: build/linux-gcc-debug
+        working-directory: c/build/linux-gcc-debug
         run: |
           ctest --output-on-failure -E conformance \
             --overwrite MemoryCheckCommand=/usr/bin/valgrind \
@@ -154,7 +163,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: valgrind-logs
-          path: build/linux-gcc-debug/Testing/Temporary/MemoryChecker.*.log
+          path: c/build/linux-gcc-debug/Testing/Temporary/MemoryChecker.*.log
           if-no-files-found: ignore
 
   asan-windows:
