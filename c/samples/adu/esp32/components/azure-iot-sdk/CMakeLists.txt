@@ -5,7 +5,7 @@
 # out of this repository, so the ESP32 sample links the very same sources the
 # desktop build uses. The azure-sdk-for-c dependency it needs (az_core, az_iot
 # hub/provisioning/adu parsing) is built by the sibling `azure-sdk-for-c`
-# component from the in-repo git submodule (external/azure-sdk-for-c).
+# component from the in-repo git submodule (deps/azure-sdk-for-c).
 
 # Repo root, five levels up from samples/adu/esp32/components/azure-iot-sdk/.
 get_filename_component(AZ_IOT_ROOT "${CMAKE_CURRENT_LIST_DIR}/../../../../.." ABSOLUTE)

@@ -2,16 +2,16 @@
 # Licensed under the MIT license. See LICENSE file in the project root for full license information.
 #
 # ESP-IDF component that builds the Azure SDK for Embedded C (azure-sdk-for-c)
-# straight from the in-repo git submodule at external/azure-sdk-for-c. The
+# straight from the in-repo git submodule at deps/azure-sdk-for-c. The
 # upstream project ships its own (host-oriented) CMake, so rather than invoke
 # it we register the platform-independent az_core + az_iot translation units
 # directly as an IDF component. Only the MQTT-stack-agnostic pieces our SDK
 # uses are compiled (no az_http transport, no curl).
 
-# external/azure-sdk-for-c relative to this file: components/azure-sdk-for-c ->
-# esp32 -> adu -> samples -> repo root (5 levels up).
+# deps/azure-sdk-for-c relative to this file: components/azure-sdk-for-c ->
+# esp32 -> adu -> samples -> c (5 levels up).
 get_filename_component(AZ_SDK_C_ROOT
-    "${CMAKE_CURRENT_LIST_DIR}/../../../../../external/azure-sdk-for-c" ABSOLUTE)
+    "${CMAKE_CURRENT_LIST_DIR}/../../../../../deps/azure-sdk-for-c" ABSOLUTE)
 
 set(_az_src "${AZ_SDK_C_ROOT}/sdk/src/azure")
 

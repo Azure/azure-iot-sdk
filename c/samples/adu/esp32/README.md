@@ -45,7 +45,7 @@ samples/adu/esp32/
   used by the SDK):
 
   ```powershell
-  git submodule update --init external/azure-sdk-for-c
+  git submodule update --init c/deps/azure-sdk-for-c
   ```
 
 - Azure CLI with the `azure-iot` extension, logged in (`az login`).
