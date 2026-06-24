@@ -7,6 +7,7 @@
 #include <stdarg.h>
 #include <stddef.h>
 #include <setjmp.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -79,15 +80,24 @@ static int teardown(void** state)
     fixture_t* fx = (fixture_t*)*state;
     if (fx)
     {
+        /* A factory that was registered with the client is adopted by it and
+         * freed from deinit() (via factory.destroy). A factory that was never
+         * registered is still owned by the test, so we must destroy it here to
+         * avoid leaking it. Check before deinit() clears factory_count. */
+        bool factory_adopted = (fx->client->factory_count > 0);
         az_iot_connection_client_deinit(&fx->client_storage);
+        if (!factory_adopted)
+            az_iot_mock_mqtt_factory_destroy(fx->factory);
         free(fx);
     }
     return 0;
 }
 
-/* Setup variant with reconnect enabled. initial_delay 1ms, max_delay 1ms, no
- * jitter so timing is deterministic; max_attempts 2 so we can drive the
- * give-up branch. */
+/* Setup variant with reconnect enabled. initial_delay/max_delay are large
+ * enough (20ms) that a single (valgrind-slowed) do_work cannot cross the
+ * reconnect deadline in the same call that schedules it -- otherwise the
+ * RECONNECTING state would be skipped straight to CONNECTING. No jitter so
+ * timing is deterministic; max_attempts 2 so we can drive the give-up branch. */
 static int setup_with_reconnect(void** state)
 {
     fixture_t* fx = (fixture_t*)calloc(1, sizeof(*fx));
@@ -97,8 +107,8 @@ static int setup_with_reconnect(void** state)
     opts.host = "broker.example";
     opts.port = 8883;
     opts.client_id = "ut-device";
-    opts.reconnect.initial_delay_ms = 1;
-    opts.reconnect.max_delay_ms     = 1;
+    opts.reconnect.initial_delay_ms = 20;
+    opts.reconnect.max_delay_ms     = 20;
     opts.reconnect.max_attempts     = 2;
     opts.reconnect.jitter_pct       = 0;
     assert_int_equal(az_iot_connection_client_init(&fx->client_storage, &opts), AZ_IOT_OK);
@@ -275,8 +285,8 @@ static void connack_fail_with_reconnect_schedules_retry(void** state)
     assert_int_equal(fx->rec.states[fx->rec.count - 1], AZ_IOT_CONN_STATE_RECONNECTING);
     assert_null(az_iot_mock_mqtt_factory_last_client(fx->factory));
 
-    /* After the 1ms delay elapses, the next do_work fires another connect. */
-    wait_ms(20);
+    /* After the reconnect delay elapses, the next do_work fires another connect. */
+    wait_ms(100);
     (void)az_iot_connection_client_do_work(fx->client, 0);
     assert_int_equal(fx->rec.states[fx->rec.count - 1], AZ_IOT_CONN_STATE_CONNECTING);
     az_iot_mock_mqtt_client_t* m2 = az_iot_mock_mqtt_factory_last_client(fx->factory);
@@ -310,7 +320,7 @@ static void max_attempts_exhausted_transitions_to_faulted(void** state)
         if (i < 2)
         {
             assert_int_equal(fx->rec.states[fx->rec.count - 1], AZ_IOT_CONN_STATE_RECONNECTING);
-            wait_ms(20);
+            wait_ms(100);
             (void)az_iot_connection_client_do_work(fx->client, 0);
             assert_int_equal(fx->rec.states[fx->rec.count - 1], AZ_IOT_CONN_STATE_CONNECTING);
         }
@@ -341,7 +351,7 @@ static void peer_disconnect_with_reconnect_drives_retry(void** state)
     (void)az_iot_connection_client_do_work(fx->client, 0);
     assert_int_equal(fx->rec.states[fx->rec.count - 1], AZ_IOT_CONN_STATE_RECONNECTING);
 
-    wait_ms(20);
+    wait_ms(100);
     (void)az_iot_connection_client_do_work(fx->client, 0);
     assert_int_equal(fx->rec.states[fx->rec.count - 1], AZ_IOT_CONN_STATE_CONNECTING);
 }
@@ -363,7 +373,7 @@ static void close_during_reconnecting_goes_idle(void** state)
     assert_int_equal(fx->rec.states[fx->rec.count - 1], AZ_IOT_CONN_STATE_IDLE);
 
     /* Subsequent do_work must not start any retries. */
-    wait_ms(20);
+    wait_ms(100);
     size_t before = fx->rec.count;
     (void)az_iot_connection_client_do_work(fx->client, 0);
     assert_int_equal(fx->rec.count, before);
