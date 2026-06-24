@@ -753,7 +753,7 @@ static void update_device_properties_sets_report_pending(void** state)
     for (size_t i = 0; i < n; ++i)
     {
         const az_iot_mock_call_t* c = az_iot_mock_mqtt_client_call_at(fx->mock, i);
-        if (c->kind == AZ_IOT_MOCK_CALL_PUBLISH && c->topic != NULL &&
+        if (c->kind == AZ_IOT_MOCK_CALL_PUBLISH && c->topic[0] != '\0' &&
             strstr(c->topic, "twin/PATCH/properties/reported") != NULL)
         {
             saw_reported_publish = true;
