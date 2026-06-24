@@ -175,3 +175,21 @@ if(AZ_IOT_WITH_PAHO)
     add_test(NAME az_iot_conformance_paho_v5 COMMAND az_iot_conformance_paho_v5)
     set_tests_properties(az_iot_conformance_paho_v5 PROPERTIES SKIP_RETURN_CODE 77)
 endif()
+
+# ---------------------------------------------------------------------------
+# End-to-end test device agent.
+#
+# Built only when AZ_IOT_BUILD_E2E is ON (the e2e CI workflow sets it). The
+# agent drives real-cloud scenarios against an Azure IoT Hub/DPS instance and
+# is launched by the dotnet e2e harness (e2e/driver). It needs a real MQTT
+# adapter, so it also requires AZ_IOT_WITH_PAHO.
+# ---------------------------------------------------------------------------
+if(AZ_IOT_BUILD_E2E)
+    if(AZ_IOT_WITH_PAHO)
+        add_subdirectory(e2e)
+    else()
+        message(WARNING
+            "AZ_IOT_BUILD_E2E=ON but AZ_IOT_WITH_PAHO=OFF; skipping e2e agent "
+            "(it requires the Paho MQTT adapter).")
+    endif()
+endif()

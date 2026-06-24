@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    End-to-end test harness for the C SDK.
+
+    These tests drive the device side by launching the native `az_iot_e2e_agent`
+    executable (built by CMake with -DAZ_IOT_BUILD_E2E=ON) and verify the
+    service side by reusing the Microsoft.Azure.Devices service client and the
+    EventHub-compatible endpoint. The project lives under c/ (not in
+    dotnet/Project.slnx) because it validates the C SDK, and is run directly by
+    the ci-c-e2e workflow, never by the dotnet CI.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsTestProject>true</IsTestProject>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Reuse the IoT Hub service client for C2D / direct method / twin / registry. -->
+    <PackageReference Include="Microsoft.Azure.Devices" Version="1.41.0" />
+    <!-- Telemetry verification reads the hub's EventHub-compatible endpoint. -->
+    <PackageReference Include="Azure.Messaging.EventHubs" Version="5.11.5" />
+
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.9.0" />
+    <PackageReference Include="xunit.v3" Version="3.2.2" />
+    <PackageReference Include="xunit.v3.assert" Version="3.2.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.5">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+  </ItemGroup>
+
+</Project>

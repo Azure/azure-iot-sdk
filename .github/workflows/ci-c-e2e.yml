@@ -1,0 +1,248 @@
+# Copyright (c) Microsoft. All rights reserved.
+# Licensed under the MIT license. See LICENSE file in the project root for full license information.
+
+# End-to-end tests for the C SDK.
+#
+# Architecture
+# ------------
+# * Device side  : the native `az_iot_e2e_agent` (built by CMake) provisions via
+#                  DPS (x509 individual enrollment) and runs one scenario.
+# * Service side : a dotnet harness (c/tests/e2e/driver) reuses the
+#                  Microsoft.Azure.Devices service client + the EventHub endpoint
+#                  to drive/verify each scenario. It launches the agent.
+# * Resources    : provisioned per job via the shared iot-sdks-e2e-fx script
+#                  (same one ci-dotnet uses) and ALWAYS torn down.
+#
+# Job split (per the requirements)
+# --------------------------------
+# * e2e-fast : telemetry/c2d/method/twin (Category=Fast). Runs on PRs touching
+#              c/**, on nightly schedule, on manual dispatch, and on push to main.
+# * e2e-adu  : Device Update (Category=Adu). The ADU service takes ~25 min to
+#              provision, so it is EXCLUDED from normal PRs and runs only on the
+#              nightly schedule, on manual dispatch, OR when a PR touches ADU
+#              paths (see the `detect` job).
+#
+# Both jobs run on Windows AND Linux. Each job provisions its own isolated
+# resource group, so the matrix legs run fully in parallel.
+
+name: ci-c-e2e
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'c/**'
+      - 'common/**'
+  push:
+    branches: [ main ]
+  schedule:
+    - cron: '0 11 * * *'  # Nightly at 4am PST (runs fast + ADU)
+
+# Cancel superseded runs on the same ref to avoid leaking parallel resource groups.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  id-token: write   # required for azure/login OIDC
+
+jobs:
+  # Detect whether a PR touches ADU code paths. Used to opt the (slow) ADU e2e
+  # job into PRs only when it is actually relevant.
+  detect:
+    name: detect changed paths
+    runs-on: ubuntu-latest
+    outputs:
+      adu: ${{ steps.filter.outputs.adu }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        # Only meaningful for PRs; other events opt ADU in via the job `if`.
+        if: github.event_name == 'pull_request'
+        with:
+          filters: |
+            adu:
+              - 'c/src/features/adu/**'
+              - 'c/adapters/adu/**'
+              - 'c/inc/azure/iot/az_iot_adu.h'
+              - 'c/samples/adu/**'
+
+  e2e-fast:
+    name: e2e-fast / ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            preset: linux-gcc-debug
+            agent_glob: c/build/linux-gcc-debug/tests/e2e/az_iot_e2e_agent
+          - os: windows-latest
+            preset: windows-msvc-debug
+            agent_glob: c/build/windows-msvc-debug/tests/e2e/Debug/az_iot_e2e_agent.exe
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up MSVC (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Install ninja (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+
+      - name: Build e2e device agent
+        working-directory: c
+        run: |
+          cmake --preset ${{ matrix.preset }} -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_WITH_PAHO=ON
+          cmake --build --preset ${{ matrix.preset }} ${{ runner.os == 'Windows' && '--config Debug' || '' }} --target az_iot_e2e_agent
+
+      - name: Locate agent binary
+        shell: pwsh
+        run: |
+          $path = "${{ matrix.agent_glob }}"
+          if (-not (Test-Path $path)) { throw "agent binary not found at $path" }
+          $full = (Resolve-Path $path).Path
+          "AZ_IOT_E2E_AGENT_PATH=$full" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Azure Login via OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Provision resources and run fast e2e
+        uses: azure/powershell@v3
+        with:
+          azPSVersion: "latest"
+          inlineScript: |
+            Invoke-WebRequest -Uri "https://raw.githubusercontent.com/Azure/iot-sdks-e2e-fx/refs/heads/master/scripts/Azure.Iot.Sdk.Test.psm1" -OutFile "./Azure.Iot.Sdk.Test.psm1"
+            Import-Module "./Azure.Iot.Sdk.Test.psm1"
+            New-Item -ItemType Directory -Force -Path test_config | Out-Null
+            $ResourceGroupName = New-AzureResourceGroupName -Prefix "CSDKE2EFast-" -OutFile "test_config/azure-resource-group-name.txt"
+            $TestEnvInfo = New-AzIotTestEnvironment -AzureLocation "EastUS" -ResourceGroup $ResourceGroupName
+            New-AzIotCSDKE2ETestConfig -TestEnvInfo $TestEnvInfo -Target powershell -OutFile test_config/set_test_env_vars.ps1
+            . ./test_config/set_test_env_vars.ps1
+            dotnet test ./c/tests/e2e/driver/Azure.Iot.Sdk.C.E2E.csproj `
+              --filter "Category=Fast" `
+              --logger "trx;LogFileName=e2e-fast-${{ matrix.os }}.trx" `
+              --results-directory ./test_config/results
+
+      - name: Delete Azure resources
+        if: always()
+        uses: azure/powershell@v3
+        with:
+          azPSVersion: "latest"
+          inlineScript: |
+            if (Test-Path ./test_config/azure-resource-group-name.txt) {
+              $rg = Get-Content ./test_config/azure-resource-group-name.txt
+              Write-Host "Deleting resource group $rg"
+              az group delete --name $rg --yes --no-wait
+            }
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-fast-results-${{ matrix.os }}
+          path: ./test_config/results/**/*.trx
+          if-no-files-found: ignore
+
+  e2e-adu:
+    name: e2e-adu / ${{ matrix.os }}
+    needs: detect
+    # Out of normal PRs: only nightly, manual, or when ADU paths changed.
+    if: >-
+      github.event_name == 'schedule' ||
+      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'push' ||
+      needs.detect.outputs.adu == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            preset: linux-gcc-debug
+            agent_glob: c/build/linux-gcc-debug/tests/e2e/az_iot_e2e_agent
+          - os: windows-latest
+            preset: windows-msvc-debug
+            agent_glob: c/build/windows-msvc-debug/tests/e2e/Debug/az_iot_e2e_agent.exe
+    runs-on: ${{ matrix.os }}
+    # ADU service provisioning is slow; give the job ample headroom.
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up MSVC (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Install ninja (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+
+      - name: Build e2e device agent
+        working-directory: c
+        run: |
+          cmake --preset ${{ matrix.preset }} -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_WITH_PAHO=ON
+          cmake --build --preset ${{ matrix.preset }} ${{ runner.os == 'Windows' && '--config Debug' || '' }} --target az_iot_e2e_agent
+
+      - name: Locate agent binary
+        shell: pwsh
+        run: |
+          $path = "${{ matrix.agent_glob }}"
+          if (-not (Test-Path $path)) { throw "agent binary not found at $path" }
+          $full = (Resolve-Path $path).Path
+          "AZ_IOT_E2E_AGENT_PATH=$full" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Azure Login via OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Provision resources and run ADU e2e
+        uses: azure/powershell@v3
+        with:
+          azPSVersion: "latest"
+          inlineScript: |
+            Invoke-WebRequest -Uri "https://raw.githubusercontent.com/Azure/iot-sdks-e2e-fx/refs/heads/master/scripts/Azure.Iot.Sdk.Test.psm1" -OutFile "./Azure.Iot.Sdk.Test.psm1"
+            Import-Module "./Azure.Iot.Sdk.Test.psm1"
+            New-Item -ItemType Directory -Force -Path test_config | Out-Null
+            $ResourceGroupName = New-AzureResourceGroupName -Prefix "CSDKE2EAdu-" -OutFile "test_config/azure-resource-group-name.txt"
+            # TODO: when real ADU scenarios land, add ADU-specific provisioning
+            # args here (Device Update account/instance, ~25 min). The current
+            # ADU test is a skipped placeholder, so a standard environment is
+            # sufficient to exercise the pipeline + gating.
+            $TestEnvInfo = New-AzIotTestEnvironment -AzureLocation "EastUS" -ResourceGroup $ResourceGroupName
+            New-AzIotCSDKE2ETestConfig -TestEnvInfo $TestEnvInfo -Target powershell -OutFile test_config/set_test_env_vars.ps1
+            . ./test_config/set_test_env_vars.ps1
+            dotnet test ./c/tests/e2e/driver/Azure.Iot.Sdk.C.E2E.csproj `
+              --filter "Category=Adu" `
+              --logger "trx;LogFileName=e2e-adu-${{ matrix.os }}.trx" `
+              --results-directory ./test_config/results
+
+      - name: Delete Azure resources
+        if: always()
+        uses: azure/powershell@v3
+        with:
+          azPSVersion: "latest"
+          inlineScript: |
+            if (Test-Path ./test_config/azure-resource-group-name.txt) {
+              $rg = Get-Content ./test_config/azure-resource-group-name.txt
+              Write-Host "Deleting resource group $rg"
+              az group delete --name $rg --yes --no-wait
+            }
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-adu-results-${{ matrix.os }}
+          path: ./test_config/results/**/*.trx
+          if-no-files-found: ignore
