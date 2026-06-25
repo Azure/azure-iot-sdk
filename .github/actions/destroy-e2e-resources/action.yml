@@ -1,0 +1,28 @@
+# Reusable step (analog of an e2e-fx `steps-destroy-azure-resources.yaml`
+# template): deletes the resource group provisioned by the
+# provision-e2e-resources action. Fully language-agnostic, so any pipeline
+# (C, dotnet, ...) can reuse it. The caller must run `azure/login` BEFORE this
+# step and is responsible for `if: always()` so cleanup runs even on failure.
+name: Destroy e2e Azure resources
+description: Delete the resource group provisioned for an e2e run.
+
+inputs:
+  resource-group:
+    description: Name of the resource group to delete.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Delete Azure resources
+      uses: azure/powershell@v3
+      with:
+        azPSVersion: "latest"
+        inlineScript: |
+          $rg = "${{ inputs.resource-group }}"
+          if ([string]::IsNullOrWhiteSpace($rg)) {
+            Write-Host "No resource group name available; nothing to delete."
+          } else {
+            Write-Host "Deleting resource group $rg"
+            az group delete --name $rg --yes --no-wait
+          }
