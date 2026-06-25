@@ -102,7 +102,7 @@ The current `az_iot_twin_client_set_desired_callback()` accepts a **single**
 callback, so ADU and the user application cannot both observe desired-property
 changes. The twin client MUST be extended to a **subscriber registry**,
 structurally identical to the connection-client observer registry
-([connection-state-and-error-propagation.md §2](eng/connection-state-and-error-propagation.md)).
+([connection-state-and-error-propagation.md §2](connection-state-and-error-propagation.md)).
 
 #### Registry shape
 
@@ -177,7 +177,7 @@ The twin client's underlying SUBSCRIBE to the desired-property topic is a
 persistent subscription (re-issued on every reconnect by the connection client).
 The subscriber registry is independent of connection state and survives
 `close`→`open`. On twin `deinit`, the poison-magic guard
-([connection doc §3.2](eng/connection-state-and-error-propagation.md)) blocks
+([connection doc §3.2](connection-state-and-error-propagation.md)) blocks
 re-init, and any still-registered feature client receives `AZ_IOT_ERR_DETACHED`
 on subsequent calls.
 
@@ -1456,7 +1456,7 @@ target_link_libraries(az_iot_adu
 ### Phase 0: Connection State & Error-Propagation Foundation (Prerequisite)
 
 **Deliverables** (specified in
-[docs/eng/connection-state-and-error-propagation.md](eng/connection-state-and-error-propagation.md)):
+[docs/eng/connection-state-and-error-propagation.md](connection-state-and-error-propagation.md)):
 - Replace the single `set_state_callback` with the shared observer registry
   (public + internal registration, two-pass dispatch, compile-time capacity).
 - `az_iot_conn_status_t` + `az_iot_conn_reason_t` + `az_iot_error_source_t`; wire
@@ -1641,14 +1641,14 @@ The same pattern MUST be applied to the `handlerProperties` object parser (curre
 #### Delivery Mechanism — Decision
 
 azure-sdk-for-c is consumed read-only, pinned to release tag **1.5.0** via
-`FetchContent` for reproducible builds ([CMakeLists.txt](../CMakeLists.txt)). We
+`FetchContent` for reproducible builds ([CMakeLists.txt](../../CMakeLists.txt)). We
 do **not** edit the fetched source tree in place (it is regenerated on a clean
 build and is not under our version control). The options considered:
 
 | Option | Mechanism | Verdict |
 |--------|-----------|---------|
 | **A. Upstream the fix + tag bump** | Open a PR against `Azure/azure-sdk-for-c`, then bump `AZ_SDK_C_TAG` to the release that carries it. | **Chosen — the real fix.** |
-| B. Local patch via `PATCH_COMMAND` | Apply a tracked `.patch` during `FetchContent_Declare`, mirroring [cmake/patch_cmocka_symlink.cmake](../cmake/patch_cmocka_symlink.cmake). | **Short-lived bridge only**, used solely to unblock development until A lands. |
+| B. Local patch via `PATCH_COMMAND` | Apply a tracked `.patch` during `FetchContent_Declare`, mirroring [cmake/patch_cmocka_symlink.cmake](../../cmake/patch_cmocka_symlink.cmake). | **Short-lived bridge only**, used solely to unblock development until A lands. |
 | C. Vendor/fork the file | Copy `az_iot_adu_client.c` into our tree and compile our copy. | Rejected — duplicates upstream, silently drifts from future fixes, large surface. |
 
 **Decision: upstream the fix (A). We will not carry a patch indefinitely.**
@@ -1836,7 +1836,7 @@ ADU depends on a shared connection **state observer registry**, **lifecycle/reus
 contract**, and **status notification** model that must land **before** the ADU
 feature client. Those decisions are now specified in their own engineering doc:
 
-> **[docs/eng/connection-state-and-error-propagation.md](eng/connection-state-and-error-propagation.md)**
+> **[docs/eng/connection-state-and-error-propagation.md](connection-state-and-error-propagation.md)**
 
 ADU touch points that rely on it:
 
@@ -1854,10 +1854,12 @@ ADU touch points that rely on it:
 
 ## 17. References
 
+- [adu-feature-support.md](adu-feature-support.md) — ADU protocol feature-coverage matrix (what this SDK supports and why); **Part B** covers the ADUv2 data-plane protocol
+- **ADU Device Data Plane Protocol** (DRAFT, api-version `2026-11-02-preview`) — the source of truth for the ADUv2 `syncConfiguration` / `requestUpdates` / `reportStatus` wire contract and the new D2C report structure. Owner: ADU protocol/API team (Darko Aleksic); integration contact: Leo
 - [Azure Device Update documentation](https://learn.microsoft.com/azure/iot-hub-device-update/)
 - [ADU reference agent (iot-hub-device-update)](https://github.com/Azure/iot-hub-device-update) — architecture in `docs/architecture-deep-dive.md`
 - [Update Manifest v5 schema](https://learn.microsoft.com/azure/iot-hub-device-update/update-manifest)
 - [JWS (RFC 7515)](https://datatracker.ietf.org/doc/html/rfc7515)
 - [The Update Framework (TUF)](https://theupdateframework.io/) — key rotation and trust model reference
 - [azure-sdk-for-c `az_iot_adu_client`](https://github.com/Azure/azure-sdk-for-c) — parsing/formatting dependency
-- [azure-iot-sdk SDK design](design.md) — this project's overall architecture
+- [azure-iot-sdk SDK design](../design.md) — this project's overall architecture

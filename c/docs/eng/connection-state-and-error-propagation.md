@@ -3,7 +3,7 @@
 > Engineering design for the azure-iot-sdk connection client's **state observer
 > registry**, **lifecycle/reuse contract**, and **state & status notification**
 > model. This is the authoritative home for these decisions; consumers such as
-> the ADU feature client ([azure-device-update.md](../azure-device-update.md))
+> the ADU feature client ([adu-client-design.md](adu-client-design.md))
 > depend on it.
 
 The key words **MUST**, **MUST NOT**, **REQUIRED**, **SHALL**, **SHALL NOT**,
@@ -381,4 +381,4 @@ static void on_conn(az_iot_connection_state_t state,
 
 - [azure-iot-sdk SDK design](../design.md) — overall architecture
 - [how_to_byo_mqtt_client.md](../how_to_byo_mqtt_client.md) — bring-your-own MQTT client model
-- [azure-device-update.md](../azure-device-update.md) — first consumer of this foundation
+- [adu-client-design.md](adu-client-design.md) — first consumer of this foundation
