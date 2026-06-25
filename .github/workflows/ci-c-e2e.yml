@@ -44,6 +44,9 @@ on:
       - 'common/**'
   push:
     branches: [ main ]
+    paths:
+      - 'c/**'
+      - 'common/**'
   schedule:
     - cron: '0 11 * * *'  # Nightly at 4am PST
 
