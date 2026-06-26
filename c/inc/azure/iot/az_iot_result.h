@@ -27,7 +27,8 @@ typedef enum az_iot_result_tag
     AZ_IOT_ERR_BUSY,
     AZ_IOT_ERR_NOT_ENOUGH_SPACE,
     AZ_IOT_ERR_DETACHED,
-    AZ_IOT_ERR_INTERNAL
+    AZ_IOT_ERR_INTERNAL,
+    AZ_IOT_ERR_NOT_FOUND
 } az_iot_result_t;
 
 const char* az_iot_result_to_string(az_iot_result_t r);

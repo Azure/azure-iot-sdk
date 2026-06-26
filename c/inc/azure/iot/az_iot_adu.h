@@ -69,6 +69,19 @@ extern "C" {
 #define AZ_IOT_ADU_REQUEST_BUFFER_SIZE 4096
 #endif
 
+/* Capacities for the copied-out deployment identity (workflow `id` and
+ * `retryTimestamp`) used to distinguish a retry/replacement from a harmless
+ * redelivery. Deployment ids are GUID-shaped (~36 chars) and retry timestamps
+ * are ISO-8601 (~28 chars); these include generous headroom. An identity that
+ * does not fit simply disables de-duplication for that deployment (it is then
+ * reprocessed on redelivery), so correctness never depends on the size. */
+#ifndef AZ_IOT_ADU_WORKFLOW_ID_SIZE
+#define AZ_IOT_ADU_WORKFLOW_ID_SIZE 64
+#endif
+#ifndef AZ_IOT_ADU_RETRY_TIMESTAMP_SIZE
+#define AZ_IOT_ADU_RETRY_TIMESTAMP_SIZE 64
+#endif
+
 /* Persistence/resume blob (see design doc; consumed by Phase 5 resume logic). */
 #ifndef AZ_IOT_ADU_STATE_BLOB_VERSION
 #define AZ_IOT_ADU_STATE_BLOB_VERSION 1
@@ -320,6 +333,23 @@ typedef struct az_iot_adu_client_tag
         uint32_t                          current_file;
         bool                              cancel_requested;
 
+        /* Identity of the deployment currently being processed (or the last one
+         * started). Copied out of the request so it survives request_buffer
+         * being overwritten by a later patch, and used to tell a retry (same id,
+         * newer retryTimestamp) and a replacement (different id) apart from a
+         * harmless redelivery (same id + same/empty retryTimestamp). See the
+         * design doc "Retry vs. Replacement Detection". */
+        bool                              active_workflow_valid;
+        uint8_t                           active_workflow_id[AZ_IOT_ADU_WORKFLOW_ID_SIZE];
+        size_t                            active_workflow_id_len;
+        uint8_t                           active_retry_timestamp[AZ_IOT_ADU_RETRY_TIMESTAMP_SIZE];
+        size_t                            active_retry_timestamp_len;
+        /* CRC-32 fingerprint of the active deployment's raw updateManifest, used
+         * to catch the (anomalous) case of an unchanged workflow id + retry
+         * timestamp carrying a different manifest: that is a replacement, not a
+         * duplicate, so it must (re)start rather than be ignored. */
+        uint32_t                          active_manifest_crc;
+
         /* COPY of the service payload backing current_request/current_manifest
          * spans (the live twin patch buffer is gone after the callback). */
         uint8_t                           request_buffer[AZ_IOT_ADU_REQUEST_BUFFER_SIZE];
@@ -435,6 +465,108 @@ az_iot_adu_state_t az_iot_adu_client_get_state(const az_iot_adu_client_t* client
 az_iot_result_t az_iot_adu_client_update_device_properties(
     az_iot_adu_client_t* client,
     const az_iot_adu_device_properties_t* device_props);
+
+/* --- Agent core-library API (library mode / bring-your-own state machine) - */
+/*
+ * The functions below let a caller build their OWN ADU agent on top of the
+ * SDK's vetted parse + trust + report code, WITHOUT adopting the managed state
+ * machine, a twin, or any transport. They take spans/structs only, perform no
+ * hidden allocation, and (where they verify) are fail-closed. The managed
+ * az_iot_adu_client is implemented in terms of the same internal cores, so both
+ * modes share one copy of the security-critical path. See
+ * docs/eng/adu-feature-support.md Part C and adu-client-design.md §5.3.
+ */
+
+/**
+ * Streaming read callback used by az_iot_adu_verify_file_hash(). Read up to
+ * @p buffer_size bytes starting at @p offset into @p buffer and set
+ * @p out_read to the number of bytes produced (0 signals end-of-file). MUST
+ * return AZ_IOT_ADU_RESULT_SUCCESS on a successful read (including the final
+ * 0-byte read at end-of-file); any other value is treated as a read error.
+ */
+typedef int32_t (*az_iot_adu_read_chunk_fn)(
+    size_t offset,
+    uint8_t* buffer,
+    size_t buffer_size,
+    size_t* out_read,
+    void* read_ctx);
+
+/**
+ * Validate and parse a deployment payload with NO twin, state machine, or
+ * transport. Performs the full manifest trust chain (compact JWS split,
+ * base64url decode, root-key `kid` resolution, `alg=RS256` enforcement, both
+ * RSA signature checks via the crypto hooks, and the SHA-256 manifest binding),
+ * and only then parses the update manifest. FAIL-CLOSED: on any error
+ * @p out_request and @p out_manifest are left zeroed and a non-OK result is
+ * returned.
+ *
+ *   request_json: the desired-property patch carrying the "deviceUpdate"
+ *     component (the same shape the managed client consumes). MUTATED IN PLACE
+ *     (the manifest is unescaped within the buffer) and MUST outlive
+ *     @p out_request / @p out_manifest, whose az_spans point into it. No heap.
+ *   crypto: RSA-verify + SHA-256 primitives (as for the managed client).
+ *   root_keys / root_key_count: trusted RSA root public keys anchoring manifest
+ *     trust; pass az_iot_adu_microsoft_root_keys() for Microsoft-signed updates.
+ *   out_request: filled service request (workflow id/action, file urls, ...).
+ *   out_manifest: filled, VERIFIED update manifest. Left empty when the request
+ *     is a Cancel action (inspect out_request->workflow.action).
+ *
+ * Returns AZ_IOT_OK on a verified parse (or a parsed Cancel request),
+ * AZ_IOT_ERR_NOT_FOUND when the patch carries no deviceUpdate/service object,
+ * AZ_IOT_ERR_INVALID_ARG on bad arguments or malformed input, or
+ * AZ_IOT_ERR_AUTH when manifest verification fails.
+ */
+az_iot_result_t az_iot_adu_parse_update_request(
+    az_span request_json,
+    const az_iot_adu_crypto_hooks_t* crypto,
+    const az_iot_adu_root_key_t* root_keys,
+    size_t root_key_count,
+    az_iot_adu_client_update_request* out_request,
+    az_iot_adu_client_update_manifest* out_manifest);
+
+/**
+ * Verify one downloaded file's SHA-256 against the signed manifest, streaming
+ * the file back through @p read_chunk. Standalone (no client/state machine) so a
+ * bring-your-own-state-machine agent performs the same integrity check the
+ * managed client does after each download. Requires the incremental SHA-256
+ * crypto hooks (sha256_init/update/final).
+ *
+ * Returns AZ_IOT_OK when the hash matches, AZ_IOT_ERR_INVALID_ARG on bad
+ * arguments, or AZ_IOT_ERR_AUTH on a missing sha256 entry, a hook/read error,
+ * or a hash mismatch.
+ */
+az_iot_result_t az_iot_adu_verify_file_hash(
+    const az_iot_adu_client_update_manifest_file* file,
+    const az_iot_adu_crypto_hooks_t* crypto,
+    az_iot_adu_read_chunk_fn read_chunk,
+    void* read_ctx);
+
+/**
+ * Build the agent-state report payload from a caller's own outcome data,
+ * WITHOUT the state machine or a twin. Emits the same reported-property JSON the
+ * managed client publishes, into the caller-provided @p out_json buffer.
+ *
+ *   device_props: the device's identity/version (manufacturer, model, installed
+ *     update id, custom properties). Caller-owned; only read during the call.
+ *   result: the accumulated install result (overall + per-step), or NULL when
+ *     no result is available yet.
+ *   request: the in-progress deployment request (for the reported workflow id),
+ *     or NULL when idle.
+ *   state: the agent state to report (mapped to Idle / InProgress / Failed).
+ *   out_json / out_size: caller-owned destination buffer; out_len receives the
+ *     number of bytes written (MAY be NULL).
+ *
+ * Returns AZ_IOT_OK on success, AZ_IOT_ERR_INVALID_ARG on bad arguments, or
+ * AZ_IOT_ERR_NOT_ENOUGH_SPACE if the payload does not fit @p out_json.
+ */
+az_iot_result_t az_iot_adu_build_report(
+    const az_iot_adu_device_properties_t* device_props,
+    const az_iot_adu_client_install_result* result,
+    const az_iot_adu_client_update_request* request,
+    az_iot_adu_state_t state,
+    uint8_t* out_json,
+    size_t out_size,
+    size_t* out_len);
 
 #ifdef __cplusplus
 }

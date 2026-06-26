@@ -107,8 +107,8 @@ Work items:
       `AZ_IOT_ADU_MAX_ROOT_KEYS`), honoring disabled/revoked entries.
 - [ ] Unit tests: valid package applies; package with too-few valid signatures rejected;
       package signed by an untrusted/disabled key rejected; downgrade/replay rejected.
-- [ ] Update `docs/adu-protocol-coverage.md` (§ "Root Key Package runtime rotation",
-      currently 🔜 Deferred) and `docs/adu-support.md` once implemented.
+- [ ] Update `docs/eng/adu-feature-support.md` (§ "Root Key Package runtime rotation",
+      currently 🔜 Deferred) once implemented.
 
 **Dependencies:** Option A anchor keys (done). Distinct from ADUv2 Day-0 recovery.
 

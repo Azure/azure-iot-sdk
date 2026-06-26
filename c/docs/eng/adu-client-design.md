@@ -15,6 +15,7 @@ The `adu_client` is a new **feature client** in the azure-iot-sdk SDK that imple
 - The implementation MUST remain C99, single-threaded (callback-driven via `do_work()`), with no hidden allocations on the hot path — consistent with the existing SDK philosophy.
 - The ADU client MUST report update state and results to the cloud via device twin reported properties.
 - The ADU client MUST support multi-step (composite) updates — the manifest MAY contain multiple instruction steps, each with its own handler type and file set.
+- The SDK SHOULD be usable as an **agent core library**: in addition to the managed client, it SHOULD expose transport-free primitives to *validate + parse* a manifest into a filled struct and to *build* the result report, so consumers can implement their own ADU agent and state machine on top of the SDK's vetted trust code. (See §5.3 and [adu-feature-support.md](adu-feature-support.md) Part C.)
 
 ### Non-Goals (for this phase)
 
@@ -102,7 +103,7 @@ The current `az_iot_twin_client_set_desired_callback()` accepts a **single**
 callback, so ADU and the user application cannot both observe desired-property
 changes. The twin client MUST be extended to a **subscriber registry**,
 structurally identical to the connection-client observer registry
-([connection-state-and-error-propagation.md §2](eng/connection-state-and-error-propagation.md)).
+([connection-state-and-error-propagation.md §2](connection-state-and-error-propagation.md)).
 
 #### Registry shape
 
@@ -177,7 +178,7 @@ The twin client's underlying SUBSCRIBE to the desired-property topic is a
 persistent subscription (re-issued on every reconnect by the connection client).
 The subscriber registry is independent of connection state and survives
 `close`→`open`. On twin `deinit`, the poison-magic guard
-([connection doc §3.2](eng/connection-state-and-error-propagation.md)) blocks
+([connection doc §3.2](connection-state-and-error-propagation.md)) blocks
 re-init, and any still-registered feature client receives `AZ_IOT_ERR_DETACHED`
 on subsequent calls.
 
@@ -988,6 +989,83 @@ sequenceDiagram
     ADU->>Twin: patch_reported(updated deviceProperties)
 ```
 
+### 5.3 Agent Core-Library API (parse-only / BYO state machine)
+
+> Rationale and gap analysis: see
+> [adu-feature-support.md](adu-feature-support.md) Part C (§11–§15). This API
+> lets a consumer build their **own** ADU agent (in the spirit of
+> [Azure/iot-hub-device-update](https://github.com/Azure/iot-hub-device-update))
+> on top of our vetted parse + trust + report code, without adopting our state
+> machine or any transport.
+
+These functions are **transport-free and twin-free**. They take spans/structs
+only, perform no hidden allocation, and (where they return a struct) populate the
+output **only after** trust verification passes (fail-closed). After the §10
+engine extraction, the managed `az_iot_adu_client` is implemented in terms of
+these same primitives so there is a single verified copy of the security-critical
+path.
+
+```c
+/* --- Library mode: validate + parse → filled struct ---------------------- */
+
+/**
+ * Verify (JWS/RS256 signature + root-key trust + alg/kid) AND parse a deployment
+ * payload into filled structs. Fail-closed: out_request/out_manifest are valid
+ * only on AZ_IOT_OK. The manifest is unescaped in place, so spans inside the
+ * outputs reference `request_json`, which the caller owns and MUST keep alive
+ * (and stable) for as long as the structs are used. No heap, no twin, no network.
+ *
+ *   request_json: the raw deployment payload (update manifest + signature +
+ *     fileUrls), exactly as delivered by whatever transport the consumer uses.
+ *     Mutated in place (manifest string unescaped); pass a writable buffer.
+ *   crypto / root_keys: same trust inputs as az_iot_adu_client_initialize().
+ *
+ * Returns AZ_IOT_OK (verified parse, or a Cancel request), AZ_IOT_ERR_NOT_FOUND
+ * (no deviceUpdate/service component), AZ_IOT_ERR_INVALID_ARG (bad args or
+ * malformed JSON), or AZ_IOT_ERR_AUTH (signature/trust verification failed).
+ */
+az_iot_result_t az_iot_adu_parse_update_request(
+    az_span request_json,
+    const az_iot_adu_crypto_hooks_t* crypto,
+    const az_iot_adu_root_key_t* root_keys,
+    size_t root_key_count,
+    az_iot_adu_client_update_request* out_request,
+    az_iot_adu_client_update_manifest* out_manifest);
+
+/**
+ * Streaming SHA-256 integrity check for one file, callable from the consumer's
+ * own download loop (payload bytes are not present at parse time). read_chunk is
+ * invoked repeatedly until it reports the end of the file.
+ */
+az_iot_result_t az_iot_adu_verify_file_hash(
+    const az_iot_adu_client_update_manifest_file* file,
+    const az_iot_adu_crypto_hooks_t* crypto,
+    int32_t (*read_chunk)(size_t offset, uint8_t* buf, size_t cap, size_t* out_read, void* ctx),
+    void* read_ctx);
+
+/**
+ * Build the report payload from the consumer's own outcome data, without the
+ * state machine. Emits the structured result; the generation-specific serializer
+ * turns it into the twin reported-properties (ADUv1) or the reportStatus body
+ * (ADUv2, see adu-feature-support.md Part B §5a).
+ */
+az_iot_result_t az_iot_adu_build_report(
+    const az_iot_adu_device_properties_t* device_props,
+    const az_iot_adu_client_install_result* result,
+    const az_iot_adu_client_update_request* request,
+    az_iot_adu_state_t state,
+    uint8_t* out_json,
+    size_t out_size,
+    size_t* out_len);
+```
+
+**Boundaries (consumer-owned in library mode).** Core provides parse, trust,
+integrity, and report formatting only. Step/content-handler dispatch (switch on
+the manifest `handler` string), component enumeration, delta/`relatedFiles`
+download handlers, diagnostics/log upload, and privilege separation
+(`adu-shell`) remain the agent author's responsibility — see
+[adu-feature-support.md](adu-feature-support.md) §15 for the full mapping.
+
 ---
 
 ## 6. Cryptographic Verification — Hooks-Only Model
@@ -1456,7 +1534,7 @@ target_link_libraries(az_iot_adu
 ### Phase 0: Connection State & Error-Propagation Foundation (Prerequisite)
 
 **Deliverables** (specified in
-[docs/eng/connection-state-and-error-propagation.md](eng/connection-state-and-error-propagation.md)):
+[docs/eng/connection-state-and-error-propagation.md](connection-state-and-error-propagation.md)):
 - Replace the single `set_state_callback` with the shared observer registry
   (public + internal registration, two-pass dispatch, compile-time capacity).
 - `az_iot_conn_status_t` + `az_iot_conn_reason_t` + `az_iot_error_source_t`; wire
@@ -1641,14 +1719,14 @@ The same pattern MUST be applied to the `handlerProperties` object parser (curre
 #### Delivery Mechanism — Decision
 
 azure-sdk-for-c is consumed read-only, pinned to release tag **1.5.0** via
-`FetchContent` for reproducible builds ([CMakeLists.txt](../CMakeLists.txt)). We
+`FetchContent` for reproducible builds ([CMakeLists.txt](../../CMakeLists.txt)). We
 do **not** edit the fetched source tree in place (it is regenerated on a clean
 build and is not under our version control). The options considered:
 
 | Option | Mechanism | Verdict |
 |--------|-----------|---------|
 | **A. Upstream the fix + tag bump** | Open a PR against `Azure/azure-sdk-for-c`, then bump `AZ_SDK_C_TAG` to the release that carries it. | **Chosen — the real fix.** |
-| B. Local patch via `PATCH_COMMAND` | Apply a tracked `.patch` during `FetchContent_Declare`, mirroring [cmake/patch_cmocka_symlink.cmake](../cmake/patch_cmocka_symlink.cmake). | **Short-lived bridge only**, used solely to unblock development until A lands. |
+| B. Local patch via `PATCH_COMMAND` | Apply a tracked `.patch` during `FetchContent_Declare`, mirroring [cmake/patch_cmocka_symlink.cmake](../../cmake/patch_cmocka_symlink.cmake). | **Short-lived bridge only**, used solely to unblock development until A lands. |
 | C. Vendor/fork the file | Copy `az_iot_adu_client.c` into our tree and compile our copy. | Rejected — duplicates upstream, silently drifts from future fixes, large surface. |
 
 **Decision: upstream the fix (A). We will not carry a patch indefinitely.**
@@ -1836,7 +1914,7 @@ ADU depends on a shared connection **state observer registry**, **lifecycle/reus
 contract**, and **status notification** model that must land **before** the ADU
 feature client. Those decisions are now specified in their own engineering doc:
 
-> **[docs/eng/connection-state-and-error-propagation.md](eng/connection-state-and-error-propagation.md)**
+> **[docs/eng/connection-state-and-error-propagation.md](connection-state-and-error-propagation.md)**
 
 ADU touch points that rely on it:
 
@@ -1854,10 +1932,12 @@ ADU touch points that rely on it:
 
 ## 17. References
 
+- [adu-feature-support.md](adu-feature-support.md) — ADU protocol feature-coverage matrix (what this SDK supports and why); **Part B** covers the ADUv2 data-plane protocol
+- **ADU Device Data Plane Protocol** (DRAFT, api-version `2026-11-02-preview`) — the source of truth for the ADUv2 `syncConfiguration` / `requestUpdates` / `reportStatus` wire contract and the new D2C report structure. Owner: ADU protocol/API team (Darko Aleksic); integration contact: Leo
 - [Azure Device Update documentation](https://learn.microsoft.com/azure/iot-hub-device-update/)
 - [ADU reference agent (iot-hub-device-update)](https://github.com/Azure/iot-hub-device-update) — architecture in `docs/architecture-deep-dive.md`
 - [Update Manifest v5 schema](https://learn.microsoft.com/azure/iot-hub-device-update/update-manifest)
 - [JWS (RFC 7515)](https://datatracker.ietf.org/doc/html/rfc7515)
 - [The Update Framework (TUF)](https://theupdateframework.io/) — key rotation and trust model reference
 - [azure-sdk-for-c `az_iot_adu_client`](https://github.com/Azure/azure-sdk-for-c) — parsing/formatting dependency
-- [azure-iot-sdk SDK design](design.md) — this project's overall architecture
+- [azure-iot-sdk SDK design](../design.md) — this project's overall architecture

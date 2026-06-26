@@ -41,9 +41,9 @@
  * check the signature bytes themselves. */
 static const char k_patch_fmt[]
     = "{\"deviceUpdate\":{\"__t\":\"c\",\"service\":{"
-      "\"workflow\":{\"action\":3,\"id\":\"51552a54-765e-419f-892a-c822549b6f38\"},"
+      "%s,"
       "\"updateManifest\":\"{\\\"manifestVersion\\\":\\\"5\\\",\\\"updateId\\\":{\\\"provider\\\":"
-      "\\\"Contoso\\\",\\\"name\\\":\\\"Foobar\\\",\\\"version\\\":\\\"1.1\\\"},"
+      "\\\"Contoso\\\",\\\"name\\\":\\\"Foobar\\\",\\\"version\\\":\\\"%s\\\"},"
       "\\\"compatibility\\\":[{\\\"deviceManufacturer\\\":\\\"Contoso\\\",\\\"deviceModel\\\":"
       "\\\"Foobar\\\"}],\\\"instructions\\\":{\\\"steps\\\":[{\\\"handler\\\":\\\"microsoft/"
       "swupdate:1\\\",\\\"files\\\":[\\\"f2f4a804ca17afbae\\\"],\\\"handlerProperties\\\":{"
@@ -141,15 +141,44 @@ static void build_jws(char* out, int32_t out_cap)
     assert_true(n > 0 && n < out_cap);
 }
 
-/* Return the single-step patch with a freshly built, structurally-valid JWS. */
-static const char* signed_patch(void)
+/* Build a single-step patch carrying a freshly built, structurally-valid JWS,
+ * with a caller-chosen workflow `id`, optional `retryTimestamp` (pass NULL or
+ * "" to omit it), and a manifest `version` (lets a test vary the manifest while
+ * keeping the same id). Returns a pointer to a static buffer (valid until the
+ * next call), which is fine because each is injected before the next is built. */
+static const char* build_patch_ex(const char* id, const char* retry_ts, const char* version)
 {
     static char patch[4096];
     char jws[2048];
     build_jws(jws, (int32_t)sizeof(jws));
-    int n = snprintf(patch, sizeof(patch), k_patch_fmt, jws);
+
+    char workflow[256];
+    if (retry_ts != NULL && retry_ts[0] != '\0')
+    {
+        snprintf(workflow, sizeof(workflow),
+                 "\"workflow\":{\"action\":3,\"id\":\"%s\",\"retryTimestamp\":\"%s\"}",
+                 id, retry_ts);
+    }
+    else
+    {
+        snprintf(workflow, sizeof(workflow), "\"workflow\":{\"action\":3,\"id\":\"%s\"}", id);
+    }
+
+    int n = snprintf(patch, sizeof(patch), k_patch_fmt, workflow, version, jws);
     assert_true(n > 0 && (size_t)n < sizeof(patch));
     return patch;
+}
+
+/* Build a single-step patch with the default manifest version ("1.1"). */
+static const char* build_patch(const char* id, const char* retry_ts)
+{
+    return build_patch_ex(id, retry_ts, "1.1");
+}
+
+/* The default single-step deployment (fixed id, no retryTimestamp). */
+static const char* signed_patch(void)
+{
+    return build_patch("51552a54-765e-419f-892a-c822549b6f38", NULL);
 }
 
 /* A Cancel action (action=255), no manifest. */
@@ -861,6 +890,145 @@ static void device_props_too_small_is_rejected(void** state)
     az_iot_connection_client_deinit(&conn);
 }
 
+static void duplicate_redelivery_is_ignored(void** state)
+{
+    fixture_t* fx = (fixture_t*)*state;
+    open_to_connected(fx);
+
+    /* Run the deployment to completion. */
+    inject_patch(fx, signed_patch());
+    pump(fx, 40);
+    assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
+
+    /* Redeliver the identical deployment (same id, no retryTimestamp), as a
+     * reconnect twin GET would. It MUST be ignored: state stays Idle and no
+     * platform hooks are invoked a second time. */
+    fx->log.op_count = 0;
+    inject_patch(fx, signed_patch());
+    assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
+    assert_int_equal((int)fx->log.op_count, 0);
+
+    for (int i = 0; i < 5; ++i)
+    {
+        assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+    }
+    assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
+    assert_int_equal((int)fx->log.op_count, 0);
+}
+
+static void retry_with_newer_timestamp_restarts(void** state)
+{
+    fixture_t* fx = (fixture_t*)*state;
+    open_to_connected(fx);
+
+    /* Initial deployment (no retryTimestamp) runs to completion. */
+    inject_patch(fx, signed_patch());
+    pump(fx, 40);
+    assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
+
+    /* Same id, now WITH a retryTimestamp: the service is forcing a retry, so the
+     * workflow must restart from scratch (not be ignored as a duplicate). */
+    fx->log.op_count = 0;
+    inject_patch(
+        fx, build_patch("51552a54-765e-419f-892a-c822549b6f38", "2022-08-01T00:00:00Z"));
+    assert_int_equal(az_iot_adu_client_get_state(&fx->adu),
+                     AZ_IOT_ADU_STATE_MANIFEST_RECEIVED);
+
+    pump(fx, 40);
+    assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
+    /* The full op sequence ran a second time. */
+    static const op_kind_t expect[]
+        = { OP_VERIFY, OP_IS_INSTALLED, OP_DOWNLOAD, OP_BACKUP, OP_INSTALL, OP_APPLY };
+    assert_true(ops_contain_sequence(&fx->log, expect, sizeof(expect) / sizeof(expect[0])));
+}
+
+static void replacement_with_new_id_restarts(void** state)
+{
+    fixture_t* fx = (fixture_t*)*state;
+    open_to_connected(fx);
+    /* Drain the startup device-properties report so the next do_work advances
+     * the state machine rather than the report. */
+    assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+
+    /* Start deployment A and let it advance past ManifestReceived. */
+    inject_patch(fx, build_patch("aaaaaaaa-0000-0000-0000-000000000001", NULL));
+    assert_int_equal(az_iot_adu_client_get_state(&fx->adu),
+                     AZ_IOT_ADU_STATE_MANIFEST_RECEIVED);
+    assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+    assert_int_equal(az_iot_adu_client_get_state(&fx->adu),
+                     AZ_IOT_ADU_STATE_VERIFYING_MANIFEST);
+
+    /* A different deployment id arrives mid-flight: a replacement restarts from
+     * ManifestReceived (state moves backwards, proving it was not ignored). */
+    inject_patch(fx, build_patch("bbbbbbbb-0000-0000-0000-000000000002", NULL));
+    assert_int_equal(az_iot_adu_client_get_state(&fx->adu),
+                     AZ_IOT_ADU_STATE_MANIFEST_RECEIVED);
+
+    pump(fx, 40);
+    assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
+}
+
+static void retry_timestamp_survives_resume(void** state)
+{
+    fixture_t* fx = (fixture_t*)*state;
+    open_to_connected(fx);
+
+    /* A deployment carrying a retryTimestamp installs and requires a reboot, so
+     * the workflow snapshots itself (including the retryTimestamp) via persist. */
+    fx->log.install_result = AZ_IOT_ADU_RESULT_REBOOT_REQUIRED;
+    inject_patch(
+        fx, build_patch("51552a54-765e-419f-892a-c822549b6f38", "2022-08-01T00:00:00Z"));
+    pump(fx, 40);
+    assert_true(fx->log.have_persist);
+
+    /* Simulate the reboot: forget the in-RAM workflow, resume from the blob. */
+    fx->log.op_count = 0;
+    fx->log.install_result = AZ_IOT_ADU_RESULT_SUCCESS;
+    assert_int_equal(az_iot_adu_client_resume(&fx->adu), AZ_IOT_OK);
+    assert_int_equal(az_iot_adu_client_get_state(&fx->adu),
+                     AZ_IOT_ADU_STATE_INSTALL_COMPLETE);
+
+    /* The service redelivers the identical deployment (same id AND same
+     * retryTimestamp) while the post-reboot workflow is still finishing. Because
+     * the retryTimestamp round-tripped through the snapshot, this is recognized
+     * as a duplicate and ignored: the workflow does NOT restart from
+     * ManifestReceived. (If retryTimestamp had not survived the reboot, the
+     * active timestamp would be empty and this would be mistaken for a retry.) */
+    inject_patch(
+        fx, build_patch("51552a54-765e-419f-892a-c822549b6f38", "2022-08-01T00:00:00Z"));
+    assert_int_equal(az_iot_adu_client_get_state(&fx->adu),
+                     AZ_IOT_ADU_STATE_INSTALL_COMPLETE);
+
+    /* And the resumed workflow still completes normally. */
+    pump(fx, 40);
+    assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
+}
+
+static void same_id_changed_manifest_restarts(void** state)
+{
+    fixture_t* fx = (fixture_t*)*state;
+    open_to_connected(fx);
+
+    /* A deployment (id X, manifest version 1.1) runs to completion. */
+    inject_patch(fx, build_patch_ex("51552a54-765e-419f-892a-c822549b6f38", NULL, "1.1"));
+    pump(fx, 40);
+    assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
+
+    /* The SAME id with NO retryTimestamp but a DIFFERENT manifest (version 1.2)
+     * is an anomalous re-publish: it must be treated as a replacement and
+     * restart, not silently ignored as a duplicate. */
+    fx->log.op_count = 0;
+    inject_patch(fx, build_patch_ex("51552a54-765e-419f-892a-c822549b6f38", NULL, "1.2"));
+    assert_int_equal(az_iot_adu_client_get_state(&fx->adu),
+                     AZ_IOT_ADU_STATE_MANIFEST_RECEIVED);
+
+    pump(fx, 40);
+    assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
+    static const op_kind_t expect[]
+        = { OP_VERIFY, OP_IS_INSTALLED, OP_DOWNLOAD, OP_BACKUP, OP_INSTALL, OP_APPLY };
+    assert_true(ops_contain_sequence(&fx->log, expect, sizeof(expect) / sizeof(expect[0])));
+}
+
 static void microsoft_root_keys_are_embedded(void** state)
 {
     (void)state;
@@ -895,6 +1063,11 @@ int main(void)
         cmocka_unit_test_setup_teardown(update_device_properties_sets_report_pending, setup, teardown),
         cmocka_unit_test_setup_teardown(custom_device_properties_are_reported, setup, teardown),
         cmocka_unit_test_setup_teardown(device_props_too_small_is_rejected, setup, teardown),
+        cmocka_unit_test_setup_teardown(duplicate_redelivery_is_ignored, setup, teardown),
+        cmocka_unit_test_setup_teardown(retry_with_newer_timestamp_restarts, setup, teardown),
+        cmocka_unit_test_setup_teardown(replacement_with_new_id_restarts, setup, teardown),
+        cmocka_unit_test_setup_teardown(retry_timestamp_survives_resume, setup, teardown),
+        cmocka_unit_test_setup_teardown(same_id_changed_manifest_restarts, setup, teardown),
         cmocka_unit_test(microsoft_root_keys_are_embedded),
     };
     return cmocka_run_group_tests(tests, NULL, NULL);
