@@ -20,7 +20,7 @@ internal class Program
 
         TwinClient twinClient = new TwinClient(connectionClient);
 
-        Action<DesiredPropertyUpdateReceivedEventArgs> HandleDesiredPropertiesUpdateAsync = async (args) =>
+        Action<DesiredPatchReceivedEventArgs> HandleDesiredPropertiesUpdateAsync = async (args) =>
         {
             Console.WriteLine($"Received desired property update");
             currentTwin.DesiredVersion = args.DesiredPropertiesVersion;
@@ -43,7 +43,7 @@ internal class Program
             }
         };
 
-        twinClient.DesiredPropertyUpdateReceived += HandleDesiredPropertiesUpdateAsync;
+        twinClient.DesiredPatchReceived += HandleDesiredPropertiesUpdateAsync;
 
         ProvisioningSettings provisioningSettings = new(idScope);
         TwinPushOptions twinPushOptions = new()
@@ -57,7 +57,7 @@ internal class Program
 
         await Task.Delay(-1, cts.Token);
 
-        twinClient.DesiredPropertyUpdateReceived -= HandleDesiredPropertiesUpdateAsync;
+        twinClient.DesiredPatchReceived -= HandleDesiredPropertiesUpdateAsync;
         await connectionClient.DisconnectAsync();
     }
 }

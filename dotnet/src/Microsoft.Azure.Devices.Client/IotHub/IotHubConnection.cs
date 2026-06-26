@@ -270,7 +270,7 @@ namespace Microsoft.Azure.Devices.Client.IotHub
                 // Device presence was established and the initial twin push was received (if one was requested), so device connection has completed
                 return currentTwin;
             }
-        }}
+        }
 
         internal async Task<Twin.Twin> ConnectToClassicIotHubAsync(IMqttClient mqttClient, string hostname, string deviceId, X509AuthenticationProvider x509AuthenticationProvider, ConnectionClient connectionClient, TwinPushOptions? twinPushOptions = null, CancellationToken cancellationToken = default)
         {

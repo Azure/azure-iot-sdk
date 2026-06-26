@@ -6,7 +6,7 @@ using System.Text.Json.Nodes;
 
 namespace Microsoft.Azure.Devices.Client.Twin
 {
-    public class DesiredPropertyUpdateReceivedEventArgs : EventArgs
+    public class DesiredPatchReceivedEventArgs : EventArgs
     {
         public ulong DesiredPropertiesVersion { get; set; }
 

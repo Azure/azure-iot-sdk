@@ -20,8 +20,8 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
             RegistryManager registryManager = Setup.GetIotHubRegistryManager();
             TwinClient twinClient = new TwinClient(connectionClient);
 
-            TaskCompletionSource<DesiredPropertyUpdateReceivedEventArgs> onDesiredPropertiesUpdateReceived = new();
-            twinClient.DesiredPropertyUpdateReceived += (args) =>
+            TaskCompletionSource<DesiredPatchReceivedEventArgs> onDesiredPropertiesUpdateReceived = new();
+            twinClient.DesiredPatchReceived += (args) =>
             {
                 onDesiredPropertiesUpdateReceived.TrySetResult(args);
             };
@@ -40,7 +40,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
             twin.Properties.Desired[expectedDesiredPropertyKey] = expectedDesiredPropertyValue;
             await registryManager.UpdateTwinAsync(deviceId, twin, twin.ETag, cts.Token);
 
-            DesiredPropertyUpdateReceivedEventArgs receivedDesiredPropertyUpdate = await onDesiredPropertiesUpdateReceived.Task.WaitAsync(cts.Token);
+            DesiredPatchReceivedEventArgs receivedDesiredPropertyUpdate = await onDesiredPropertiesUpdateReceived.Task.WaitAsync(cts.Token);
             Assert.True(receivedDesiredPropertyUpdate.DesiredProperties.ContainsKey(expectedDesiredPropertyKey));
             Assert.Equal(expectedDesiredPropertyValue, (string) receivedDesiredPropertyUpdate.DesiredProperties[expectedDesiredPropertyKey]);
 

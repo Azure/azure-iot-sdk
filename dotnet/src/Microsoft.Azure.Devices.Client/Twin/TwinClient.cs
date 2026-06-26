@@ -42,7 +42,7 @@ namespace Microsoft.Azure.Devices.Client.Twin
         /// <summary>
         /// An event that executes whenever this client receives a desired properties update from IoT hub.
         /// </summary>
-        public event Action<DesiredPropertyUpdateReceivedEventArgs>? DesiredPropertyUpdateReceived;
+        public event Action<DesiredPatchReceivedEventArgs>? DesiredPatchReceived;
 
         /// <summary>
         /// An event that executes whenever this client receives a Twin push message from IoT hub.
@@ -95,7 +95,20 @@ namespace Microsoft.Azure.Devices.Client.Twin
             MqttPublish publish;
             if (_connection.CurrentConnectionContext!.IsAzureEventGrid)
             {
-                throw new NotImplementedException();
+                publish = new MqttPublish()
+                {
+                    Topic = string.Format(AzureEventGridOutgoingTwinPublishTopicFormat, _connection.CurrentConnectionContext.DeviceId),
+                    QualityOfServiceLevel = MqttQualityOfServiceLevel.AtMostOnce,
+                    CorrelationData = requestId.ToByteArray(),
+                    PayloadAsByteArray = new TwinGet()
+                    {
+                        Sections = Sections.Both,
+                        IfNotMatchDesired = ifNotMatchDesired,
+                        IfNotMatchReported = ifNotMatchReported,
+                    }.ToByteArray(),
+                };
+
+                publish.UserProperties.Add(new() { Name = "type", Value = Encoding.UTF8.GetBytes("get:1") });
             }
             else
             {
@@ -139,7 +152,19 @@ namespace Microsoft.Azure.Devices.Client.Twin
             MqttPublish publish;
             if (_connection.CurrentConnectionContext!.IsAzureEventGrid)
             {
-                throw new NotImplementedException();
+                publish = new MqttPublish()
+                {
+                    Topic = string.Format(AzureEventGridOutgoingTwinPublishTopicFormat, _connection.CurrentConnectionContext.DeviceId),
+                    QualityOfServiceLevel = MqttQualityOfServiceLevel.AtMostOnce,
+                    CorrelationData = requestId.ToByteArray(),
+                    PayloadAsByteArray = new ReportedPatch()
+                    {
+                        IfMatch = patch.IfMatch,
+                        Payload = ByteString.CopyFromUtf8(JsonSerializer.Serialize(patch.ReportedProperties))
+                    }.ToByteArray(),
+                };
+
+                publish.UserProperties.Add(new() { Name = "type", Value = Encoding.UTF8.GetBytes("reported-patch:1") });
             }
             else
             {
@@ -174,32 +199,66 @@ namespace Microsoft.Azure.Devices.Client.Twin
         {
             if (_connection.CurrentConnectionContext!.IsAzureEventGrid)
             {
-                if (args.Publish.Topic.Equals(string.Format(AzureEventGridOutgoingTwinPublishTopicFormat, _connection.CurrentConnectionContext.DeviceId)))
+                if (args.Publish.Topic.Equals(string.Format(AzureEventGridIncomingTwinPublishTopicFormat, _connection.CurrentConnectionContext.DeviceId))
+                    && args.Publish.UserProperties.TryGetType(out string? type, out int? typeVersion))
                 {
-                    if (GuidExtensions.TryParseBytes(args.Publish.CorrelationData, out Guid? correlationData))
+                    if (type.Equals("get-response")
+                        && typeVersion == 1
+                        && GuidExtensions.TryParseBytes(args.Publish.CorrelationData, out Guid? getResponseCorrelationData)
+                        && _pendingGetTwinOperations.TryRemove(getResponseCorrelationData.Value, out PendingGetTwinRequest? pendingGetTwinRequest))
                     {
-                        if (_pendingGetTwinOperations.TryRemove(correlationData.Value, out PendingGetTwinRequest? pendingGetTwinRequest))
-                        {
-                            TwinGetResponse twinGetResponse = TwinGetResponse.Parser.ParseFrom(args.Publish.PayloadAsReadOnlySequence);
+                        TwinGetResponse twinGetResponse = TwinGetResponse.Parser.ParseFrom(args.Publish.PayloadAsReadOnlySequence);
 
-                            pendingGetTwinRequest.TwinResponseTask.TrySetResult(new()
+                        pendingGetTwinRequest.TwinResponseTask.TrySetResult(new()
+                        {
+                            DesiredProperties = JsonObject.Parse(twinGetResponse.DesiredPayload.Span).AsObject(),
+                            ReportedProperties = JsonObject.Parse(twinGetResponse.ReportedPayload.Span).AsObject(),
+                            DesiredPropertiesVersion = twinGetResponse.DesiredVersion,
+                            ReportedPropertiesVersion = twinGetResponse.ReportedVersion,
+                        });
+                    }
+                    else if (type.Equals("reported-patch-response")
+                        && typeVersion == 1
+                        && GuidExtensions.TryParseBytes(args.Publish.CorrelationData, out Guid? patchResponseCorrelationData)
+                        && _pendingReportedPropertyUpdateOperations.TryRemove(patchResponseCorrelationData.Value, out PendingReportedPropertiesUpdateRequest? pendingReportedPropertiesUpdateRequest))
+                    {
+                        ReportedPatchResponse reportedPatchResponse = ReportedPatchResponse.Parser.ParseFrom(args.Publish.PayloadAsReadOnlySequence);
+                        pendingReportedPropertiesUpdateRequest.ReportedPropertyUpdateResponse.TrySetResult(reportedPatchResponse);
+                    }
+                    else if (type.Equals("desired-patch") && typeVersion == 1)
+                    {
+                        DesiredPatch receivedDesiredPatch = DesiredPatch.Parser.ParseFrom(args.Publish.PayloadAsReadOnlySequence);
+
+                        var desiredPatchArgs = new DesiredPatchReceivedEventArgs()
+                        {
+                            DesiredProperties = JsonObject.Parse(receivedDesiredPatch.Payload.Span).AsObject(),
+                            DesiredPropertiesVersion = receivedDesiredPatch.Version,
+                        };
+
+                        DesiredPatchReceived?.Invoke(desiredPatchArgs);
+                    }
+                    else if (type.Equals("twin-push") && typeVersion == 1)
+                    {
+                        TwinPush receivedTwinPush = TwinPush.Parser.ParseFrom(args.Publish.PayloadAsReadOnlySequence);
+                        var twinPushArgs = new TwinPushReceivedEventArgs();
+                        if (receivedTwinPush.Desired != null)
+                        {
+                            twinPushArgs.Desired = new()
                             {
-                                DesiredProperties = JsonObject.Parse(twinGetResponse.DesiredPayload.Span).AsObject(),
-                                ReportedProperties = JsonObject.Parse(twinGetResponse.ReportedPayload.Span).AsObject(),
-                                DesiredPropertiesVersion = twinGetResponse.DesiredVersion,
-                                ReportedPropertiesVersion = twinGetResponse.ReportedVersion,
-                            });
+                                Properties = JsonObject.Parse(receivedTwinPush.Desired.Payload.Span).AsObject(),
+                                PropertiesVersion = receivedTwinPush.Desired.Version
+                            };
                         }
-                        else if (_pendingReportedPropertyUpdateOperations.TryRemove(correlationData.Value, out PendingReportedPropertiesUpdateRequest? pendingReportedPropertiesUpdateRequest))
-                        {
-                            ReportedPatchResponse reportedPatchResponse = ReportedPatchResponse.Parser.ParseFrom(args.Publish.PayloadAsReadOnlySequence);
 
-                            pendingReportedPropertiesUpdateRequest.ReportedPropertyUpdateResponse.TrySetResult(reportedPatchResponse);
-                        }
-                        else
+                        if (receivedTwinPush.Reported != null)
                         {
-                            // TODO handling desired properties and twin push messages are unimplemented as of now
+                            twinPushArgs.Desired = new()
+                            {
+                                Properties = JsonObject.Parse(receivedTwinPush.Reported.Payload.Span).AsObject(),
+                                PropertiesVersion = receivedTwinPush.Reported.Version
+                            };
                         }
+                        TwinPushReceived?.Invoke(twinPushArgs);
                     }
                 }
             }
@@ -264,18 +323,18 @@ namespace Microsoft.Azure.Devices.Client.Twin
                 else if (args.Publish.Topic.StartsWith(TwinDesiredPropertiesPatchTopic, StringComparison.InvariantCulture))
                 {
                     // Note that all desired property update messages are QoS 0, so no need to ack the MQTT message here
-                    if (DesiredPropertyUpdateReceived != null)
+                    if (DesiredPatchReceived != null)
                     {
                         var desiredPropertiesWithVersion = JsonNode.Parse(args.Publish.PayloadAsByteArray)!.AsObject();
                         ulong desiredPropertiesVersion = (ulong)desiredPropertiesWithVersion[VersionKey];
                         desiredPropertiesWithVersion.Remove(VersionKey);
 
-                        var desiredPropertyPatch = new DesiredPropertyUpdateReceivedEventArgs()
+                        var desiredPropertyPatch = new DesiredPatchReceivedEventArgs()
                         {
                             DesiredProperties = desiredPropertiesWithVersion,
                             DesiredPropertiesVersion = desiredPropertiesVersion
                         };
-                        DesiredPropertyUpdateReceived.Invoke(desiredPropertyPatch);
+                        DesiredPatchReceived.Invoke(desiredPropertyPatch);
                     }
                 }
             }
