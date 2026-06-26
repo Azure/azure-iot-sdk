@@ -12,10 +12,7 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
-  contents: read
-  actions: read
-  checks: write
-  id-token: write
+  packages: write
     
 jobs:
   build:
@@ -34,5 +31,5 @@ jobs:
         versionWithSuffix="1.0.0-"$date
 
         dotnet pack ./dotnet/src/Microsoft.Azure.Devices.Client/Microsoft.Azure.Devices.Client.csproj /p:Version=$versionWithSuffix
-        dotnet nuget push "./dotnet/src/Microsoft.Azure.Devices.Client/bin/Release/net10.0/*.nupkg" --api-key ${{ secrets.GITHUB_TOKEN }} --source https://nuget.pkg.github.com/Azure
+        dotnet nuget push "./dotnet/src/Microsoft.Azure.Devices.Client/bin/Release/*.nupkg" --api-key ${{ secrets.GITHUB_TOKEN }} --source https://nuget.pkg.github.com/Azure
 
