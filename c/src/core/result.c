@@ -25,6 +25,7 @@ const char* az_iot_result_to_string(az_iot_result_t r)
         case AZ_IOT_ERR_NOT_ENOUGH_SPACE:     return "AZ_IOT_ERR_NOT_ENOUGH_SPACE";
         case AZ_IOT_ERR_DETACHED:             return "AZ_IOT_ERR_DETACHED";
         case AZ_IOT_ERR_INTERNAL:             return "AZ_IOT_ERR_INTERNAL";
+        case AZ_IOT_ERR_NOT_FOUND:            return "AZ_IOT_ERR_NOT_FOUND";
         default:                           return "AZ_IOT_ERR_UNKNOWN";
     }
 }

@@ -81,8 +81,8 @@ This is a list of features of the ADU protocol and the support status in the azu
 | Deployment **accept / reject** acknowledgement | ✅ | Decision made in core (accept→download, reject→idle); driven by `is_installed_fn` (already-installed ⇒ 406). Response payload formatted by upstream. No app-level `accept_deployment_fn` hook yet (battery/critical-op veto). |
 | **Multi-step** (composite) updates | ✅ | Sequential per-step Download→Backup→Install→Apply loop with per-step result accumulation. |
 | Per-step result reporting (`resultCode` / `extendedResultCode` / `stepResults`) | ✅ | `step_results[]` indexed per manifest step; structured `extendedResultCode` (4-bit facility + raw code) for field debugging. |
-| **Retry** detection (same workflow id, newer retry timestamp) | 🟡 | **Not truly implemented.** Core does **not** compare `retry_timestamp`; any new non-cancel request is reprocessed from scratch. Same-id duplicate/no-op is not detected (a redelivered patch reruns the deployment). |
-| **Replacement** detection (new workflow supersedes in-flight one) | 🟡 | A new request resets the state machine to `MANIFEST_RECEIVED`, so a replacement *does* supersede an in-flight one — but there is **no** `workflow.id` / `manifest_sha256` comparison, and resume after reboot performs **no** replacement check (a superseding deployment that arrived while the device was down is not detected). |
+| **Retry** detection (same workflow id, newer retry timestamp) | ✅ | Core copies the active deployment's `workflow.id` + `retryTimestamp` out of the request and compares incoming patches: same id + same/empty `retryTimestamp` is a redelivery (ignored, no reprocessing); same id + a newer `retryTimestamp` restarts the deployment from scratch. (`set_active_workflow`/`same_workflow_id`/`same_retry_timestamp` in `adu_client.c`.) |
+| **Replacement** detection (new workflow supersedes in-flight one) | ✅ | A patch with a **different** `workflow.id` supersedes the in-flight deployment and restarts the state machine at `MANIFEST_RECEIVED`. The active identity (`workflow.id`, `retryTimestamp`, **and** a CRC-32 fingerprint of the raw `updateManifest`) is re-established on `resume()` from the persisted snapshot, so a redelivery after reboot is recognized as a duplicate (not restarted), a forced retry still restarts, and the (anomalous) same-id/same-retry-but-changed-manifest case is treated as a replacement rather than silently ignored. (`set_active_workflow`/`same_workflow_id`/`same_retry_timestamp`/`same_manifest` in `adu_client.c`.) |
 | Deployment **cancellation** | ✅ | `action: Cancel` (or a replacement) sets a cooperative flag; honored at phase boundaries in `do_work`. Hooks poll `az_iot_adu_is_cancelled()` for mid-phase cooperation; core does not forcibly interrupt a hook. |
 
 ### 1.2 Download & integrity
@@ -113,8 +113,8 @@ This is a list of features of the ADU protocol and the support status in the azu
 |---|---|---|
 | Install / Apply execution | ✅ (core) | State machine drives `install_fn` / `apply_fn` (chunkable, may request reboot). Real platform adapters are **not** yet factored into `adapters/adu/` — only the PC simulation sample and the ESP32 OTA sample provide hook implementations. |
 | Backup / Restore (rollback) | ✅ | Optional `backup_fn` before install; on failure, reverse-order best-effort `restore_fn` (continues even if one restore fails). |
-| Partial-failure rollback across multi-step updates | ✅ | Mid-sequence failure rolls back applied steps in reverse. Note: rollback eligibility is **not** persisted, so a failure *after* a reboot cannot roll back pre-reboot steps (see resume note). |
-| **Reboot coordination** + **resume after reboot** | 🟡 | Persist-before-reboot + `az_iot_adu_client_resume()` are implemented (magic `ADU1`, versioned, CRC-32, little-endian). **Divergences from design:** (a) resume re-enters at the *exact persisted state*, not the design's phase-boundary remap (e.g. INSTALL_* → start of Apply); (b) the blob does **not** persist `step_results[]` / `backup_done`, so per-step accumulation and rollback eligibility are lost across a reboot; (c) no `manifest_sha256` and no replacement check on resume. |
+| Partial-failure rollback across multi-step updates | ✅ | Mid-sequence failure rolls back applied steps in reverse. Rollback eligibility is derived from `current_step` + the persisted `state` (both in the snapshot), so a failure *after* a reboot still rolls back pre-reboot steps — provided the platform retains its per-step backups across the reboot (a platform responsibility; the SDK calls `restore_fn` for every eligible step). |
+| **Reboot coordination** + **resume after reboot** | ✅ | Persist-before-reboot + `az_iot_adu_client_resume()` are implemented (magic `ADU1`, blob **v2**, CRC-32, little-endian). The v2 trailer persists the deployment `retryTimestamp`, a CRC-32 fingerprint of the `updateManifest`, and the accumulated `install_result` (overall `result_code`/`extended_result_code` plus per-step `step_results[]`), so duplicate / retry / replacement detection and per-step result accumulation all stay correct across a reboot. Resume re-enters at the persisted phase boundary (`INSTALL_COMPLETE` → start of Apply). **Limitations:** the only persist point today is the install-requested reboot (`INSTALL_COMPLETE`); there is no mid-download resume (a partially fetched file is re-downloaded), which is intentional. |
 | Health check / auto-rollback after reboot | 🟡 (sample) | Not in core. Provided by the ESP32 sample (A/B partition confirm/mark-valid); core does not re-run `is_installed_fn` on resume to confirm the new image. |
 
 ### 1.5 Manifest features & extensibility explicitly not covered
@@ -243,12 +243,13 @@ reboot, and reports agent state and per-step results back to the service.
   integrity, `fileUrls` resolution, and the download/install/apply/backup/restore
   pipeline wiring.
 - **Partial / simplified (\ud83d\udfe1):**
-  - *Retry detection* \u2014 no `retry_timestamp` comparison; same-id redelivery reruns.
+  - *Retry detection* \u2014 no `retry_timestamp` comparison; same-id redelivery reruns. (Now implemented; see Part A table.)
   - *Replacement detection* \u2014 supersedes in-flight via state reset, but no
-    `workflow.id` / `manifest_sha256` compare and no across-reboot check.
+    `workflow.id` / `manifest_sha256` compare. (Now implemented; see Part A table.)
   - *Reboot/resume* \u2014 works, but the persisted blob (magic `ADU1`) diverges from
-    the design: no `step_results[]` / `backup_done` persistence, no phase-boundary
-    re-entry remap, no replacement check on resume.
+    the design: the **v2** blob now persists `step_results[]`, `retryTimestamp`,
+    and a manifest CRC fingerprint (see the Part A reboot/resume row). Eligibility
+    for post-reboot rollback derives from the persisted `current_step` + `state`.
   - *Health-check / auto-rollback after reboot* \u2014 sample-only (ESP32 A/B), not core.
   - *Platform/crypto adapters* \u2014 only `adapters/adu/crypto_openssl/` is factored
     out; install/apply/download adapters live in the PC and ESP32 *samples*, not
@@ -610,12 +611,13 @@ drive the decision:
    transport-free but is **not** separated behind an interface today. Any of the
    three approaches requires that extraction first — it is unavoidable refactor
    work, not a differentiator between options.
-2. **The reusable core is partial (🟡).** Resume re-entry, `step_results[]` /
-   `backup_done` persistence, and replacement detection are exactly the logic
-   that becomes the shared engine. Extracting the engine *before* finishing these
-   would bake the same gaps into both the Gen1 and Gen2 clients and double the
-   cost of fixing them later. **Prerequisite:** close the Part A 🟡 items as part
-   of (or before) the extraction.
+2. **The reusable core is now largely complete.** Resume re-entry, `step_results[]`
+   persistence, retry/replacement/duplicate detection (including a manifest
+   fingerprint), and across-reboot identity are implemented and unit-tested —
+   exactly the logic that becomes the shared engine. Extracting the engine now
+   carries those behaviors into both the Gen1 and Gen2 clients rather than baking
+   in gaps. **Remaining Part A items** are sample-only (health-check/auto-rollback)
+   and adapter factoring.
 
 ### Mapping the user's candidates onto §6
 
@@ -665,3 +667,147 @@ data-plane wrapper (`syncConfiguration` / `requestUpdates` / `reportStatus`,
 mTLS, ETags, api-version) once the §9 residual items are settled. Approaches 1
 and 3 converge at step 2; the choice between them is whether step 3 adds a
 *provider impl* (1) or a *thin client* (3).
+
+---
+
+# Part C — Using azure-iot-sdk as an ADU Agent Core Library
+
+## 11. Goal
+
+Beyond shipping a turnkey ADU client, this SDK should be usable as the **vetted
+core** on top of which others build full ADU **agents** — the role the reference
+agent [Azure/iot-hub-device-update](https://github.com/Azure/iot-hub-device-update)
+fills today. That agent is a large system (communication managers, a workflow
+orchestrator, content-handler extensions, component enumerators, download
+handlers, diagnostics, `adu-shell`). An agent author does **not** want to
+re-implement the hard, security-critical parts — manifest validation, the
+JWS/RS256 trust chain, SHA-256 integrity, and result formatting — but **does**
+want freedom over their own state machine, transport, threading, and extension
+model.
+
+The requirement: provide **a way to validate + parse a manifest**, then let the
+consumer choose one of two modes:
+
+- **Library mode (bring your own state machine).** The SDK hands back a
+  **filled, already-verified** manifest struct; the consumer drives
+  download/install/apply/report on their own.
+- **Managed mode (use our state machine).** The existing `az_iot_adu_client` +
+  hooks + `do_work()` orchestration owns the workflow; the consumer supplies
+  platform/crypto hooks only.
+
+Both modes MUST share **one** verified implementation of parse + trust + report
+so there is no second, divergent copy of the security-critical code.
+
+## 12. What Already Exists vs. What's Needed
+
+| Capability | Status today | Needed for agent-core use |
+|---|---|---|
+| Parse a manifest into a filled struct (`az_iot_adu_client_update_manifest`: `updateId`, `compatibility[]`, `instructions.steps[]`, `files{}`) | ✅ via the upstream parser — but only **inside** our state machine | Expose a **public** parse entrypoint that returns the struct |
+| JWS/RS256 + root-key + `alg`/`kid` trust verification | ✅ implemented in core (`verify_manifest`) | Make it a **public, fail-closed** step of the parse entrypoint (struct returned only after trust passes) |
+| SHA-256 payload integrity | ✅ (opt-in, streaming) | Expose as a **standalone helper** callable outside the state machine |
+| Result/agent-state report formatting | ✅ but internal (twin reported properties) | Expose a **report builder** that emits the structured result (and, per generation, the twin payload or the `reportStatus` body) |
+| Twin coupling | `az_iot_adu_client_initialize` requires `az_iot_twin_client*` | Library mode MUST work with **no transport** dependency (same decoupling as §6/§10) |
+
+The good news: the **"filled struct" the consumer needs already exists** — it is
+the upstream `az_iot_adu_client_update_manifest`. The work is to expose a public
+function that produces it *after* our trust verification, plus a report builder,
+both free of the twin/state-machine.
+
+## 13. Proposed Public Surface (two modes over one core)
+
+Concrete prototypes live in [adu-client-design.md](adu-client-design.md) §5; the
+shape is:
+
+**Library mode — validate + parse, hand back the struct:**
+
+```c
+/* Verify (JWS/RS256 + root key + alg/kid) THEN parse. Fail-closed: out_*
+ * are populated only on AZ_IOT_OK. The manifest is unescaped in place, so spans
+ * in out_manifest point into `request_json`, which the caller owns and MUST keep
+ * alive (and stable) while using out_manifest. No heap, no transport, no twin. */
+az_iot_result_t az_iot_adu_parse_update_request(
+    az_span request_json,
+    const az_iot_adu_crypto_hooks_t* crypto,
+    const az_iot_adu_root_key_t* root_keys, size_t root_key_count,
+    az_iot_adu_client_update_request*  out_request,
+    az_iot_adu_client_update_manifest* out_manifest);
+
+/* Per-file SHA-256 check the consumer calls during their own download loop
+ * (payload bytes are not present at parse time). */
+az_iot_result_t az_iot_adu_verify_file_hash(
+    const az_iot_adu_client_update_manifest_file* file,
+    const az_iot_adu_crypto_hooks_t* crypto,
+    int32_t (*read_chunk)(size_t offset, uint8_t* buf, size_t cap, size_t* out_read, void* ctx),
+    void* read_ctx);
+
+/* Build the report from the consumer's own outcome data. Emits structured
+ * result; the gen-specific serializer turns it into the twin payload (v1) or
+ * the reportStatus body (v2, Part B §5a). */
+az_iot_result_t az_iot_adu_build_report(
+    const az_iot_adu_device_properties_t* device_props,
+    const az_iot_adu_client_install_result* result,
+    const az_iot_adu_client_update_request* request,
+    az_iot_adu_state_t state,
+    uint8_t* out_json, size_t out_size, size_t* out_len);
+```
+
+**Managed mode — unchanged:** `az_iot_adu_client_initialize(...)` + hooks +
+`az_iot_adu_client_do_work()`. After the §10 refactor this wrapper is implemented
+**in terms of** the library-mode primitives above, so both paths share the same
+verified parse/trust/report code.
+
+## 14. Gap Analysis — What Must Be Done
+
+> **Status (items 1–6): implemented.** The library-mode primitives ship in
+> `az_iot_adu.h` and `src/features/adu/` (`az_iot_adu_parse_update_request`,
+> `az_iot_adu_verify_file_hash`, `az_iot_adu_build_report`), and managed mode is
+> refactored onto the shared cores (`verify_manifest_core`,
+> `verify_file_hash_core`, `parse_service_request`). Items 7+ remain open.
+
+1. **Expose parse + trust publicly (fail-closed).** Lift `verify_manifest` and
+   the upstream parse call out of `do_work` into `az_iot_adu_parse_update_request`.
+   The struct MUST NOT be returned if any trust stage fails.
+2. **Decouple from the twin** (same as §6/§10). Library-mode functions take spans
+   and structs only; no `az_iot_twin_client`, no network.
+3. **Expose the SHA-256 helper** (`az_iot_adu_verify_file_hash`) so a BYO state
+   machine gets the same integrity check without the managed download loop.
+4. **Expose the report builder** decoupled from twin reported-properties, emitting
+   the structured result so either generation's serializer can consume it.
+5. **Refactor managed mode onto the primitives** (Approach 3 engine) so there is a
+   single implementation, not two.
+6. **Ownership/lifetime contract for library mode:** the manifest is unescaped in
+   place, so spans point into the caller's `request_json` buffer; no hidden
+   allocation; that buffer must outlive `out_manifest` and stay stable. (Same
+   model the managed client already uses internally.)
+7. **Stable handed-back struct.** Because the returned type is the upstream
+   `az_iot_adu_client_update_manifest`, pin the upstream version and document the
+   guaranteed fields. Unknown/forward step types MUST NOT fail the parse (the
+   forward-compat item already tracked in [adu-client-design.md](adu-client-design.md) §14).
+8. **Reference steps / mini-manifest (nested updates).** For agents that support
+   proxy/nested updates, the parse API should surface `reference` steps (detached
+   child-manifest file ids) so the agent can fetch and **recursively** parse+verify
+   the child. Currently ❌ (Part A §1.5); needed only for that scenario.
+
+## 15. Extension Model — Core-Lib vs. the Reference Agent
+
+The reference agent's extensibility is **dynamic** (registerable, dynamically
+loaded extensions under `src/extensions/`). This SDK's core is **static C99 with
+no dynamic loading**, so the equivalent capabilities are the **consumer's**
+responsibility, composed at build time. What core provides vs. what the agent
+author owns:
+
+| Reference-agent extension point | In azure-iot-sdk core | Agent author's responsibility |
+|---|---|---|
+| Step / content handlers (`microsoft/swupdate`, `apt`, `script`, …) | ❌ not dispatched | Switch on the manifest `handler` string inside their install/apply logic (Part A §1.5) |
+| `update_manifest_handlers` (manifest-type dispatch) | ❌ | Consumer, in their state machine |
+| Component enumerators (multi-component targeting) | ❌ | Consumer |
+| Download handlers (delta / `relatedFiles`) | ❌ | Consumer |
+| Content downloaders (transport) | ⚙️ via `download_fn` hook | Consumer provides the transport |
+| Extension manager / dynamic loading | ❌ by design | N/A — compose handlers at build time |
+| Diagnostics / log upload, `adu-shell` (privilege sep.) | ❌ out of core | Consumer / platform |
+| Manifest parse + JWS/RS256 trust + SHA-256 + result format | ✅ | **Provided by core** (the whole point) |
+
+**Net:** to make azure-iot-sdk a true ADU agent core library, the required work
+is items §14.1–§14.4 (expose the four primitives, fail-closed and twin-free) on
+top of the §10 engine extraction. Items §14.7–§14.8 and the extension points in
+§15 are scenario-dependent and remain the agent author's domain by design.

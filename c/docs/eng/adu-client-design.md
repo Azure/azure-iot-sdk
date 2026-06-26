@@ -15,6 +15,7 @@ The `adu_client` is a new **feature client** in the azure-iot-sdk SDK that imple
 - The implementation MUST remain C99, single-threaded (callback-driven via `do_work()`), with no hidden allocations on the hot path — consistent with the existing SDK philosophy.
 - The ADU client MUST report update state and results to the cloud via device twin reported properties.
 - The ADU client MUST support multi-step (composite) updates — the manifest MAY contain multiple instruction steps, each with its own handler type and file set.
+- The SDK SHOULD be usable as an **agent core library**: in addition to the managed client, it SHOULD expose transport-free primitives to *validate + parse* a manifest into a filled struct and to *build* the result report, so consumers can implement their own ADU agent and state machine on top of the SDK's vetted trust code. (See §5.3 and [adu-feature-support.md](adu-feature-support.md) Part C.)
 
 ### Non-Goals (for this phase)
 
@@ -987,6 +988,83 @@ sequenceDiagram
     App->>ADU: do_work()
     ADU->>Twin: patch_reported(updated deviceProperties)
 ```
+
+### 5.3 Agent Core-Library API (parse-only / BYO state machine)
+
+> Rationale and gap analysis: see
+> [adu-feature-support.md](adu-feature-support.md) Part C (§11–§15). This API
+> lets a consumer build their **own** ADU agent (in the spirit of
+> [Azure/iot-hub-device-update](https://github.com/Azure/iot-hub-device-update))
+> on top of our vetted parse + trust + report code, without adopting our state
+> machine or any transport.
+
+These functions are **transport-free and twin-free**. They take spans/structs
+only, perform no hidden allocation, and (where they return a struct) populate the
+output **only after** trust verification passes (fail-closed). After the §10
+engine extraction, the managed `az_iot_adu_client` is implemented in terms of
+these same primitives so there is a single verified copy of the security-critical
+path.
+
+```c
+/* --- Library mode: validate + parse → filled struct ---------------------- */
+
+/**
+ * Verify (JWS/RS256 signature + root-key trust + alg/kid) AND parse a deployment
+ * payload into filled structs. Fail-closed: out_request/out_manifest are valid
+ * only on AZ_IOT_OK. The manifest is unescaped in place, so spans inside the
+ * outputs reference `request_json`, which the caller owns and MUST keep alive
+ * (and stable) for as long as the structs are used. No heap, no twin, no network.
+ *
+ *   request_json: the raw deployment payload (update manifest + signature +
+ *     fileUrls), exactly as delivered by whatever transport the consumer uses.
+ *     Mutated in place (manifest string unescaped); pass a writable buffer.
+ *   crypto / root_keys: same trust inputs as az_iot_adu_client_initialize().
+ *
+ * Returns AZ_IOT_OK (verified parse, or a Cancel request), AZ_IOT_ERR_NOT_FOUND
+ * (no deviceUpdate/service component), AZ_IOT_ERR_INVALID_ARG (bad args or
+ * malformed JSON), or AZ_IOT_ERR_AUTH (signature/trust verification failed).
+ */
+az_iot_result_t az_iot_adu_parse_update_request(
+    az_span request_json,
+    const az_iot_adu_crypto_hooks_t* crypto,
+    const az_iot_adu_root_key_t* root_keys,
+    size_t root_key_count,
+    az_iot_adu_client_update_request* out_request,
+    az_iot_adu_client_update_manifest* out_manifest);
+
+/**
+ * Streaming SHA-256 integrity check for one file, callable from the consumer's
+ * own download loop (payload bytes are not present at parse time). read_chunk is
+ * invoked repeatedly until it reports the end of the file.
+ */
+az_iot_result_t az_iot_adu_verify_file_hash(
+    const az_iot_adu_client_update_manifest_file* file,
+    const az_iot_adu_crypto_hooks_t* crypto,
+    int32_t (*read_chunk)(size_t offset, uint8_t* buf, size_t cap, size_t* out_read, void* ctx),
+    void* read_ctx);
+
+/**
+ * Build the report payload from the consumer's own outcome data, without the
+ * state machine. Emits the structured result; the generation-specific serializer
+ * turns it into the twin reported-properties (ADUv1) or the reportStatus body
+ * (ADUv2, see adu-feature-support.md Part B §5a).
+ */
+az_iot_result_t az_iot_adu_build_report(
+    const az_iot_adu_device_properties_t* device_props,
+    const az_iot_adu_client_install_result* result,
+    const az_iot_adu_client_update_request* request,
+    az_iot_adu_state_t state,
+    uint8_t* out_json,
+    size_t out_size,
+    size_t* out_len);
+```
+
+**Boundaries (consumer-owned in library mode).** Core provides parse, trust,
+integrity, and report formatting only. Step/content-handler dispatch (switch on
+the manifest `handler` string), component enumeration, delta/`relatedFiles`
+download handlers, diagnostics/log upload, and privilege separation
+(`adu-shell`) remain the agent author's responsibility — see
+[adu-feature-support.md](adu-feature-support.md) §15 for the full mapping.
 
 ---
 
