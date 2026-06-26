@@ -1,4 +1,4 @@
-name: Dotnet Continuous Integration
+name: ci-dotnet
 
 on:
   workflow_dispatch:

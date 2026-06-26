@@ -1,4 +1,4 @@
-name: Publish nightly nugets
+name: cd-dotnet # This only publishes to a private nuget feed attached to this github repo
 
 on:
   workflow_dispatch:

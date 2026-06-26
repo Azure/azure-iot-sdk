@@ -1,4 +1,4 @@
-name: Nightly Cleanup Dotnet
+name: cleanup-dotnet
 
 # The job that runs nightly to delete any lingering Azure test resources from the dotnet CI pipeline
 
