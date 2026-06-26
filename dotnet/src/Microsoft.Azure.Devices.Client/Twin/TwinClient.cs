@@ -30,6 +30,9 @@ namespace Microsoft.Azure.Devices.Client.Twin
 
         private const string TwinDesiredPropertiesPatchTopic = "$iothub/twin/PATCH/properties/desired/";
 
+        private const string AzureEventGridOutgoingTwinPublishTopicFormat = "ih/{deviceId}/srv/twin";
+        private const string AzureEventGridIncomingTwinPublishTopicFormat = "ih/{deviceId}/dev/twin";
+
         private const string RequestIdTopicKey = "$rid";
         internal const string VersionKey = "$version";
 
@@ -171,7 +174,34 @@ namespace Microsoft.Azure.Devices.Client.Twin
         {
             if (_connection.CurrentConnectionContext!.IsAzureEventGrid)
             {
-                // Not implemented
+                if (args.Publish.Topic.Equals(string.Format(AzureEventGridOutgoingTwinPublishTopicFormat, _connection.CurrentConnectionContext.DeviceId)))
+                {
+                    if (GuidExtensions.TryParseBytes(args.Publish.CorrelationData, out Guid? correlationData))
+                    {
+                        if (_pendingGetTwinOperations.TryRemove(correlationData.Value, out PendingGetTwinRequest? pendingGetTwinRequest))
+                        {
+                            TwinGetResponse twinGetResponse = TwinGetResponse.Parser.ParseFrom(args.Publish.PayloadAsReadOnlySequence);
+
+                            pendingGetTwinRequest.TwinResponseTask.TrySetResult(new()
+                            {
+                                DesiredProperties = JsonObject.Parse(twinGetResponse.DesiredPayload.Span).AsObject(),
+                                ReportedProperties = JsonObject.Parse(twinGetResponse.ReportedPayload.Span).AsObject(),
+                                DesiredPropertiesVersion = twinGetResponse.DesiredVersion,
+                                ReportedPropertiesVersion = twinGetResponse.ReportedVersion,
+                            });
+                        }
+                        else if (_pendingReportedPropertyUpdateOperations.TryRemove(correlationData.Value, out PendingReportedPropertiesUpdateRequest? pendingReportedPropertiesUpdateRequest))
+                        {
+                            ReportedPatchResponse reportedPatchResponse = ReportedPatchResponse.Parser.ParseFrom(args.Publish.PayloadAsReadOnlySequence);
+
+                            pendingReportedPropertiesUpdateRequest.ReportedPropertyUpdateResponse.TrySetResult(reportedPatchResponse);
+                        }
+                        else
+                        {
+                            // TODO handling desired properties and twin push messages are unimplemented as of now
+                        }
+                    }
+                }
             }
             else
             {

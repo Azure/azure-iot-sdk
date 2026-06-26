@@ -1,6 +1,8 @@
-﻿using Microsoft.Azure.Devices.Client.CertificateManagement;
+﻿using Google.Protobuf;
+using Microsoft.Azure.Devices.Client.CertificateManagement;
 using Microsoft.Azure.Devices.Client.Mqtt;
 using System.Collections.Specialized;
+using System.Text;
 using System.Text.RegularExpressions;
 using System.Web;
 
@@ -48,7 +50,48 @@ namespace Microsoft.Azure.Devices.Client.DirectMethods
         {
             if (_connection.CurrentConnectionContext!.IsAzureEventGrid)
             {
-                // Not supported in this branch
+                if (DirectMethodInvokedAsync != null && DirectMethodProbeReceivedAsync != null && args.Publish.Topic.Equals(string.Format("ih/{deviceId}/dev/methods", _connection.CurrentConnectionContext.DeviceId)))
+                {
+                    MqttPublish publish = args.Publish;
+                    if (publish.UserProperties.TryGetType(out string? directMethodMessageType, out int? directMethodMessageTypeValue))
+                    {
+                        if (directMethodMessageType.Equals("probe"))
+                        {
+                            if (!GuidExtensions.TryParseBytes(publish.CorrelationData, out Guid? requestId))
+                            {
+                                return; // Malformed request. Discard it silently
+                            }
+
+                            Probe probe = Probe.Parser.ParseFrom(publish.PayloadAsByteArray);
+
+                            ProbeAck probeAck = await DirectMethodProbeReceivedAsync.Invoke(new() { Probe = probe });
+
+                            uint remainingConnectTimeout = 100; // TODO how is this derived?
+
+                            MqttPublish probeAckPublish = new()
+                            {
+                                Topic = string.Format("ih/{deviceId}/srv/methods", _connection.CurrentConnectionContext.DeviceId),
+                                QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce,
+                                PayloadAsByteArray = probeAck.ToByteArray(),
+                                CorrelationData = publish.CorrelationData,
+                                MessageExpiryInterval = remainingConnectTimeout,
+                            };
+
+                            probeAckPublish.UserProperties.Add(new() { Name = "type", Value = Encoding.UTF8.GetBytes(string.Format("probe-ack:{}", directMethodMessageTypeValue)) });
+                        }
+                        else if (directMethodMessageType.Equals("exec"))
+                        {
+                            if (!GuidExtensions.TryParseBytes(publish.CorrelationData, out Guid? requestId))
+                            {
+                                return; // Malformed request. Discard it silently
+                            }
+                        }
+                        else
+                        {
+                            //TODO unrecognized type
+                        }
+                    }
+                }
             }
             else
             {

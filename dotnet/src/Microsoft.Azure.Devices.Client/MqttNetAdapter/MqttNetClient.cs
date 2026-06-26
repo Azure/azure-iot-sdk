@@ -97,7 +97,7 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
         public event Func<Mqtt.MqttClientConnectedEventArgs, Task>? ConnectedAsync;
         public event Func<Mqtt.MqttClientDisconnectedEventArgs, Task>? DisconnectedAsync;
 
-        public async Task<MqttClientConnectAck> ConnectAsync(MqttConnect connect, CancellationToken cancellationToken = default)
+        public async Task<MqttConnectAck> ConnectAsync(MqttConnect connect, CancellationToken cancellationToken = default)
         {
             MqttClientOptionsBuilder optionsBuilder;
             if (connect.ProtocolVersion == MqttProtocolVersion.V500)
@@ -192,7 +192,7 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
             {
                 var connectResult = await _underlyingClient.ConnectAsync(o, cancellationToken);
 
-                var genericConnectResult = new MqttClientConnectAck()
+                var genericConnectResult = new MqttConnectAck()
                 {
                     ResultCode = ModelConverter.ToGeneric(connectResult.ResultCode),
                 };

@@ -1,6 +1,6 @@
 ﻿namespace Microsoft.Azure.Devices.Client.Mqtt
 {
-    public class MqttClientConnectAck
+    public class MqttConnectAck
     {
         /// <summary>
         ///     Gets a value indicating whether a session was already available or not.

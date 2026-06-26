@@ -12,6 +12,11 @@ namespace Microsoft.Azure.Devices.Client.FileUpload
         
         }
 
+        public FileUploadClient(HttpClient httpClient, ConnectionContext connectionContext)
+        {
+
+        }
+
         /// <summary>
         /// Request a SAS URI that can be used to upload a file to a configured Azure Storage account.
         /// </summary>

@@ -58,7 +58,7 @@ namespace Microsoft.Azure.Devices.Client.Provisioning
 
             // Additional context to be included in the error message thrown if the connection is lost to explain
             // when the connection was lost. Mostly for e2e test debugging, but users may find this helpful as well.
-            MqttClientConnectAck connectResult = await mqttClient
+            MqttConnectAck connectResult = await mqttClient
                 .ConnectAsync(connect, cancellationToken)
                 .ConfigureAwait(false);
 

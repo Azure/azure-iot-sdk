@@ -9,7 +9,7 @@ namespace Microsoft.Azure.Devices.Client.Mqtt
 
         event Func<MqttClientDisconnectedEventArgs, Task> DisconnectedAsync;
 
-        Task<MqttClientConnectAck> ConnectAsync(MqttConnect connect, CancellationToken cancellationToken = default);
+        Task<MqttConnectAck> ConnectAsync(MqttConnect connect, CancellationToken cancellationToken = default);
 
         Task DisconnectAsync(MqttDisconnect disconnect, CancellationToken cancellationToken = default);
 

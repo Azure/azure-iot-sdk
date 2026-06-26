@@ -3,6 +3,7 @@ using Microsoft.Azure.Devices.Client.DirectMethods;
 using Microsoft.Azure.Devices.Client.Mqtt;
 using Microsoft.Azure.Devices.Client.Telemetry;
 using Microsoft.Azure.Devices.Client.Twin;
+using System.Diagnostics;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -24,6 +25,8 @@ namespace Microsoft.Azure.Devices.Client.IotHub
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
+                Trace.TraceInformation("Attempting to establish connection and presence for device {device} with IoT Hub {hostname}", deviceId, hostname);
+
                 //TODO verify this is 16 bytes
                 Guid connectNonce = Guid.NewGuid(); //Note that this nonce must be unique per connection attempt, not per successfuly connection
 
@@ -38,18 +41,29 @@ namespace Microsoft.Azure.Devices.Client.IotHub
                     WebsocketPort = 443,
                     WebsocketUri = $"wss://{hostname}/$iothub/websocket",
                     ClientCertificate = x509AuthenticationProvider.ClientCertificate,
-                    CleanSession = true, // TODO user configurable
+                    CleanSession = true, // TODO user configurable?
                     Username = hexEncodedConnectNonce,
                     Password = Array.Empty<byte>(),
                     ClientId = clientId,
                     ProtocolVersion = MqttProtocolVersion.V311
                 };
 
-                var connack = await mqttClient.ConnectAsync(connectPacket, cancellationToken);
+                MqttConnectAck connack;
+                try
+                {
+                    connack = await mqttClient.ConnectAsync(connectPacket, cancellationToken);
+
+                }
+                catch (Exception ex)
+                {
+                    Trace.TraceWarning("Exception thrown while connecting to MQTT broker: {exceptionMessage}. Attempting connection again...", ex.Message);
+                    continue; // Start the connect process over again
+                }
 
                 if (connack.ResultCode != MqttClientConnectResultCode.Success)
                 {
                     subscribed = false;
+                    Trace.TraceWarning("Received CONNACK with unsuccessful result code:{resultCode}. Attempting connection again...", connack.ResultCode);
                     continue; // Start the connect process over again
                 }
 
@@ -64,12 +78,14 @@ namespace Microsoft.Azure.Devices.Client.IotHub
                         var suback = await mqttClient.SubscribeAsync(new(string.Format("ih/{deviceId}/dev/#", deviceId), MqttQualityOfServiceLevel.AtLeastOnce), cancellationToken);
                         if (suback.Items.FirstOrDefault().ResultCode != MqttClientSubscribeResultCode.GrantedQoS1)
                         {
+                            Trace.TraceWarning("Received SUBACK on devicebound SUBSCRIBE with unsuccessful result code:{resultCode}. Attempting connection again...", suback.Items.FirstOrDefault().ResultCode);
                             continue; // Start the connect process over again
                         }
 
                     }
-                    catch (Exception)
+                    catch (Exception e)
                     {
+                        Trace.TraceWarning("Exception thrown while subscribing to devicebound topic: {exceptionMessage}. Attempting connection again...", e.Message);
                         continue; // Start the connect process over again
                     }
                 }
@@ -148,10 +164,30 @@ namespace Microsoft.Azure.Devices.Client.IotHub
                 mqttClient.PublishReceivedAsync += HandleReceivedBirthAck;
                 mqttClient.PublishReceivedAsync += HandleReceivedTwinPush;
 
-                var birthMessagePuback = await mqttClient.PublishAsync(birthMessage, cancellationToken);
+                MqttPublishAck birthMessagePuback;
+                try
+                {
+                    birthMessagePuback = await mqttClient.PublishAsync(birthMessage, cancellationToken);
+                }
+                catch (Exception e)
+                {
+                    Trace.TraceWarning("Exception thrown while publishing birth message: {exceptionMessage}. Disconnecting from the MQTT broker and attempting connection again...", e.Message);
+                    
+                    await mqttClient.DisconnectAsync(new MqttDisconnect() { Reason = MqttClientDisconnectOptionsReason.NormalDisconnection, ReasonString = "MQTT client threw an exception while sending birth message" }, cancellationToken);
+                    subscribed = false;
+
+                    mqttClient.PublishReceivedAsync -= HandleReceivedBirthAck;
+                    mqttClient.PublishReceivedAsync -= HandleReceivedTwinPush;
+                    continue; // Start the connect process over again
+                }
 
                 if (birthMessagePuback.ReasonCode != MqttClientPublishReasonCode.Success)
                 {
+                    Trace.TraceWarning("Received unsuccessful PUBACK when publishing birth message: {reasonCode}. Disconnecting from the MQTT broker and attempting connection again...", birthMessagePuback);
+                    
+                    await mqttClient.DisconnectAsync(new MqttDisconnect() { Reason = MqttClientDisconnectOptionsReason.NormalDisconnection, ReasonString = "Birth message wasn't sent successfully" }, cancellationToken);
+                    subscribed = false;
+
                     mqttClient.PublishReceivedAsync -= HandleReceivedBirthAck;
                     mqttClient.PublishReceivedAsync -= HandleReceivedTwinPush;
                     continue; // // Start the whole connect process over again
@@ -165,6 +201,8 @@ namespace Microsoft.Azure.Devices.Client.IotHub
                 catch (TimeoutException)
                 {
                     // Did not receive mqtt birth ack message in timely manner (and user has not canceled this function yet)
+                    Trace.TraceWarning("Timed out waiting for birth ack message. Disconnecting from the MQTT broker and attempting connection again...");
+                    
                     await mqttClient.DisconnectAsync(new MqttDisconnect() { Reason = MqttClientDisconnectOptionsReason.NormalDisconnection, ReasonString = "Timed out waiting for birth-ack publish" }, cancellationToken);
                     subscribed = false;
 
@@ -175,12 +213,16 @@ namespace Microsoft.Azure.Devices.Client.IotHub
                      Attempt 3: base 8 min + uniform jitter [0, 5 min] → range 8–13 min.
                      Attempt 4 and beyond: base 10 min + uniform jitter [0, 5 min] → range 10–15 min. 
                      */
-                    //TODO add delays here before next connect attempt
+                    //TODO add delays here before next connect attempt according to service spec above
 
                     mqttClient.PublishReceivedAsync -= HandleReceivedBirthAck;
                     mqttClient.PublishReceivedAsync -= HandleReceivedTwinPush;
                     continue; // Start the whole connect process over again
                 }
+
+                // Birth ack was received, so stop listening for birth acks.
+                mqttClient.PublishReceivedAsync -= HandleReceivedBirthAck;
+
 
                 // The authoritative versions as understood by IoT hub
                 var authoritativeReportedVersion = birthAck.ReportedVersion;
@@ -193,9 +235,22 @@ namespace Microsoft.Azure.Devices.Client.IotHub
                 if ((authoritativeReportedVersion > deviceReportedPropertyVersion || authoritativeDesiredVersion > deviceDesiredPropertyVersion)
                     && (pushReported || pushDesired))
                 {
-                    TwinPush receivedTwinPush = await twinPushReceivedTaskCompletionSource.Task.WaitAsync(twinPushReceivedDefensiveTimeout, cancellationToken);
+                    TwinPush receivedTwinPush;
+                    try
+                    {
+                        receivedTwinPush = await twinPushReceivedTaskCompletionSource.Task.WaitAsync(twinPushReceivedDefensiveTimeout, cancellationToken);
+                    }
+                    catch (TimeoutException e)
+                    {
+                        Trace.TraceWarning("Timed out waiting for an expected twin push message. Disconnecting from the MQTT broker and attempting connection again...");
 
+                        await mqttClient.DisconnectAsync(new MqttDisconnect() { Reason = MqttClientDisconnectOptionsReason.NormalDisconnection, ReasonString = "Timed out waiting for twin push publish" }, cancellationToken);
+                        subscribed = false;
 
+                        mqttClient.PublishReceivedAsync -= HandleReceivedBirthAck;
+                        mqttClient.PublishReceivedAsync -= HandleReceivedTwinPush;
+                        continue; // Start the whole connect process over again
+                    }
 
                     if (receivedTwinPush.Desired != null)
                     {
@@ -210,13 +265,12 @@ namespace Microsoft.Azure.Devices.Client.IotHub
                     }
                 }
 
-                mqttClient.PublishReceivedAsync -= HandleReceivedBirthAck;
                 mqttClient.PublishReceivedAsync -= HandleReceivedTwinPush;
 
                 // Device presence was established and the initial twin push was received (if one was requested), so device connection has completed
                 return currentTwin;
             }
-        }
+        }}
 
         internal async Task<Twin.Twin> ConnectToClassicIotHubAsync(IMqttClient mqttClient, string hostname, string deviceId, X509AuthenticationProvider x509AuthenticationProvider, ConnectionClient connectionClient, TwinPushOptions? twinPushOptions = null, CancellationToken cancellationToken = default)
         {

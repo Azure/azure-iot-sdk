@@ -5,9 +5,9 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
 {
     internal class ModelConverter
     {
-        internal static Mqtt.MqttClientConnectAck ToGeneric(MQTTnet.MqttClientConnectResult connectResult)
+        internal static Mqtt.MqttConnectAck ToGeneric(MQTTnet.MqttClientConnectResult connectResult)
         {
-            return new Mqtt.MqttClientConnectAck()
+            return new Mqtt.MqttConnectAck()
             {
                 ServerKeepAlive = connectResult.ServerKeepAlive,
                 IsSessionPresent = connectResult.IsSessionPresent,
