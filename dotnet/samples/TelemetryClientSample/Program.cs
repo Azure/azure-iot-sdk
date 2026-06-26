@@ -20,14 +20,6 @@ internal class Program
 
         TelemetryClient telemetryClient = new TelemetryClient(connectionClient);
 
-        Func<CloudToDeviceMessage, Task<CompletionType>> HandleReceivedCloudToDeviceTelemetryAsync = async (args) =>
-        {
-            Console.WriteLine($"Received cloud to device telemetry with message Id {args.MessageId}");
-            return CompletionType.Complete;
-        };
-
-        telemetryClient.CloudToDeviceMessageReceivedAsync += HandleReceivedCloudToDeviceTelemetryAsync;
-
         ProvisioningSettings provisioningSettings = new(idScope);
         var connectionContext = await connectionClient.ProvisionAndConnectAsync(provisioningSettings, authentication);
 
@@ -43,7 +35,6 @@ internal class Program
             await Task.Delay(TimeSpan.FromSeconds(1));
         }
 
-        telemetryClient.CloudToDeviceMessageReceivedAsync -= HandleReceivedCloudToDeviceTelemetryAsync;
         await connectionClient.DisconnectAsync();
     }
 }
