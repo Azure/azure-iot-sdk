@@ -21,11 +21,10 @@ internal class Program
         DirectMethodClient directMethodClient = new DirectMethodClient(connectionClient);
         Func<DirectMethodRequestReceivedEventArgs, Task<DirectMethodResponse>> HandleDirectMethodAsync = (args) =>
         {
-            DirectMethodRequest request = args.Request;
-            Console.WriteLine($"Received direct method with name {request.MethodName}");
-            if (request.MethodName.Equals("testMethod"))
+            Console.WriteLine($"Received direct method with name {args.MethodName}");
+            if (args.MethodName.Equals("testMethod"))
             {
-                DirectMethodRequestPayloadObject directMethodRequestPayload = JsonSerializer.Deserialize<DirectMethodRequestPayloadObject>(request.Payload) ?? throw new Exception("TODO");
+                DirectMethodRequestPayloadObject directMethodRequestPayload = JsonSerializer.Deserialize<DirectMethodRequestPayloadObject>(args.Payload) ?? throw new Exception("TODO");
 
                 DirectMethodResponsePayloadObject directMethodResponsePayloadObject = new()
                 {

@@ -1,7 +1,7 @@
 ﻿
 namespace Microsoft.Azure.Devices.Client
 {
-    public class ConnectionContext
+    public class ConnectionContext //TODO split it up so that user who passes in connection context doesn't try to assign twin push and issued certs?
     {
         public Twin.Twin InitialTwinPush { get; internal set; }
 

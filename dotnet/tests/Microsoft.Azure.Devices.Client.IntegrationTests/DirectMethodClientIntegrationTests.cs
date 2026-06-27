@@ -66,9 +66,9 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
 
             directMethodClient.DirectMethodInvokedAsync += (args) =>
             {
-                if (args.Request.MethodName.Equals(expectedDirectMethodName))
+                if (args.MethodName.Equals(expectedDirectMethodName))
                 {
-                    var requestPayload = SimpleDirectMethodPayload.FromJsonBytes(args.Request.Payload);
+                    var requestPayload = SimpleDirectMethodPayload.FromJsonBytes(args.Payload);
 
                     if (requestPayload.SomeString.Equals(expectedRequestPayload.SomeString) && requestPayload.SomeInt == expectedRequestPayload.SomeInt)
                     {

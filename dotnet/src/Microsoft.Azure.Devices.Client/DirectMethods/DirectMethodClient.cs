@@ -64,7 +64,7 @@ namespace Microsoft.Azure.Devices.Client.DirectMethods
 
                             Probe probe = Probe.Parser.ParseFrom(publish.PayloadAsByteArray);
 
-                            ProbeAck probeAck = await DirectMethodProbeReceivedAsync.Invoke(new() { Probe = probe });
+                            ProbeAck probeAck = await DirectMethodProbeReceivedAsync.Invoke(new() { MethodName = probe.MethodName, ResponseTimeoutSeconds = probe.ResponseTimeoutSeconds });
 
                             uint remainingConnectTimeout = 100; // TODO how is this derived?
 
@@ -113,14 +113,14 @@ namespace Microsoft.Azure.Devices.Client.DirectMethods
 
                     string methodName = tokens[3];
 
-                    var methodRequest = new DirectMethodRequest()
+                    var methodRequest = new DirectMethodRequestReceivedEventArgs()
                     {
                         Payload = payload,
                         MethodName = methodName,
                         RequestId = requestId,
                     };
 
-                    DirectMethodResponse methodResponse = await DirectMethodInvokedAsync.Invoke(new() { Request = methodRequest });
+                    DirectMethodResponse methodResponse = await DirectMethodInvokedAsync.Invoke(methodRequest);
 
                     string responsePublishTopic = string.Format(ClassicDirectMethodsResponseTopicFormat,methodResponse.Status, requestId);
                     MqttPublish publish = new MqttPublish()

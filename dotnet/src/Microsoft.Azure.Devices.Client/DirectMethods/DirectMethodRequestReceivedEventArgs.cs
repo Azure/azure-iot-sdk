@@ -6,6 +6,10 @@ namespace Microsoft.Azure.Devices.Client.DirectMethods
 {
     public class DirectMethodRequestReceivedEventArgs : EventArgs
     {
-        public DirectMethodRequest Request { get; set; }
+        public byte[] Payload { get; init; }
+
+        public string MethodName { get; init; }
+
+        internal string RequestId { get; init; }
     }
 }
