@@ -25,7 +25,7 @@ public sealed class TelemetryE2ETests
     public async Task Telemetry_DpsX509_RoundTrip()
     {
         E2ETestEnvironment.RequireDpsDeviceEnvironment();
-        Assert.SkipUnless(
+        E2ETestEnvironment.RequireOrSkip(
             E2ETestEnvironment.EventHubConnectionString is not null,
             "IOTHUB_EVENTHUB_CONNECTION_STRING not set");
 

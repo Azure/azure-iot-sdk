@@ -207,9 +207,12 @@ only; other events fall through to the `if`). ADU paths:
 
 ## Conventions & gotchas
 
-- **Skip, don't fail, when uncloud.** Use `Assert.SkipUnless(...)` for missing
-  env / missing agent binary so the suite never produces false failures when run
-  outside the provisioned pipeline (it returns *Skipped*, not *Failed*).
+- **Skip locally, fail in CI.** Use `E2ETestEnvironment.RequireOrSkip(...)` for
+  every "is the cloud/agent available?" guard. Outside the provisioned pipeline
+  (local dev) a missing prerequisite *skips* the test, so the suite never
+  produces false failures. Inside the pipeline the `Run e2e` step sets
+  `AZ_IOT_E2E_REQUIRE_CLOUD=1`, which turns a missing prerequisite into a hard
+  *failure* — a real e2e gate can never pass by silently skipping.
 - **CA bundle without downloads.** Linux uses the OpenSSL system bundle; Windows
   exports the machine `Root` store. Avoid fetching roots over the network.
 - **EventHub API:** `EventHubConsumerClient.ReadEventsAsync` takes

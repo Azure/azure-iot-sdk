@@ -2,6 +2,7 @@
 // Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using Xunit;
@@ -34,6 +35,18 @@ internal static class E2ETestEnvironment
     // ---- Path to the native agent (set by the e2e workflow) ----------------
     public static string? AgentPath => Get("AZ_IOT_E2E_AGENT_PATH");
 
+    /// <summary>
+    /// When set (by the e2e workflow, after the resources are provisioned), a
+    /// missing required environment variable or agent binary becomes a HARD
+    /// FAILURE rather than a skip. This is what makes the suite a *real* e2e
+    /// gate: inside the provisioned pipeline the device/cloud material must
+    /// exist, so a silent skip would be a false "green". Outside the pipeline
+    /// (local dev) the flag is unset and the tests skip cleanly instead.
+    /// </summary>
+    public static bool RequireCloud =>
+        Get("AZ_IOT_E2E_REQUIRE_CLOUD") is { } v
+        && (v == "1" || string.Equals(v, "true", StringComparison.OrdinalIgnoreCase));
+
     private static string? Get(string name)
     {
         string? v = Environment.GetEnvironmentVariable(name);
@@ -41,18 +54,43 @@ internal static class E2ETestEnvironment
     }
 
     /// <summary>
-    /// Skips the calling test (instead of failing) when the cloud resources or
-    /// the native agent are not available. This keeps the suite SOLID: it never
-    /// produces false failures when run outside the provisioned e2e pipeline.
+    /// Asserts a prerequisite for an e2e scenario. When <see cref="RequireCloud"/>
+    /// is set (provisioned pipeline) a false <paramref name="condition"/> FAILS
+    /// the test; otherwise it SKIPS it. Use this for every "is the cloud/agent
+    /// available?" guard so the suite can never pass by silently skipping in CI.
+    /// </summary>
+    public static void RequireOrSkip([DoesNotReturnIf(false)] bool condition, string because)
+    {
+        if (condition)
+        {
+            return;
+        }
+
+        if (RequireCloud)
+        {
+            Assert.Fail(
+                $"Required e2e prerequisite is missing: {because}. AZ_IOT_E2E_REQUIRE_CLOUD is set, "
+                + "so the provisioning step was expected to supply this; failing instead of skipping "
+                + "to avoid a false green.");
+        }
+
+        Assert.Skip($"e2e prerequisite not available (not provisioned): {because}");
+    }
+
+    /// <summary>
+    /// Guards the device/cloud prerequisites shared by every scenario. Skips
+    /// when run outside the provisioned pipeline; fails when run inside it (see
+    /// <see cref="RequireOrSkip"/>), so the suite is a real gate, never a silent
+    /// skip.
     /// </summary>
     public static void RequireDpsDeviceEnvironment()
     {
-        Assert.SkipUnless(DpsIdScope is not null, "IOT_DPS_ID_SCOPE not set");
-        Assert.SkipUnless(DpsRegistrationId is not null, "IOT_DPS_INDIVIDUAL_REGISTRATION_ID not set");
-        Assert.SkipUnless(DpsX509CertBase64 is not null, "IOT_DPS_INDIVIDUAL_X509_CERTIFICATE not set");
-        Assert.SkipUnless(DpsX509KeyBase64 is not null, "IOT_DPS_INDIVIDUAL_X509_KEY not set");
-        Assert.SkipUnless(AgentPath is not null, "AZ_IOT_E2E_AGENT_PATH not set");
-        Assert.SkipUnless(File.Exists(AgentPath), $"agent binary not found at {AgentPath}");
+        RequireOrSkip(DpsIdScope is not null, "IOT_DPS_ID_SCOPE not set");
+        RequireOrSkip(DpsRegistrationId is not null, "IOT_DPS_INDIVIDUAL_REGISTRATION_ID not set");
+        RequireOrSkip(DpsX509CertBase64 is not null, "IOT_DPS_INDIVIDUAL_X509_CERTIFICATE not set");
+        RequireOrSkip(DpsX509KeyBase64 is not null, "IOT_DPS_INDIVIDUAL_X509_KEY not set");
+        RequireOrSkip(AgentPath is not null, "AZ_IOT_E2E_AGENT_PATH not set");
+        RequireOrSkip(AgentPath is not null && File.Exists(AgentPath), $"agent binary not found at {AgentPath}");
     }
 
     /// <summary>
