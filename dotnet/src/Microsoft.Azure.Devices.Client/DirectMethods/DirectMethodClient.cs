@@ -84,10 +84,17 @@ namespace Microsoft.Azure.Devices.Client.DirectMethods
                 return;
             }
 
+            if (directMethodMessageTypeValue != 1)
+            {
+                // The service may increment the protocol version of these messages over time. For now, there is only the one version, though
+                Trace.TraceWarning("Received a direct method message whose type version ({receivedTypeVersion}) is not supported by this client (supported version: {supportedVersion}). You may need to upgrade this library's version to handle this kind of message. Ignoring it.", directMethodMessageTypeValue, 1);
+                return;
+            }
+
             // All AEG Hub direct method messages are QoS 1, so ack immediately upon recognizing the message as one
             await args.AcknowledgeAsync(CancellationToken.None);
 
-            if (directMethodMessageType!.Equals("probe") && directMethodMessageTypeValue == 1)
+            if (directMethodMessageType!.Equals("probe"))
             {
                 if (!GuidExtensions.TryParseBytes(publish.CorrelationData, out Guid? requestId))
                 {
@@ -143,7 +150,7 @@ namespace Microsoft.Azure.Devices.Client.DirectMethods
 
                 await _connection.PublishAsync(probeAckPublish);
             }
-            else if (directMethodMessageType.Equals("exec") && directMethodMessageTypeValue == 1)
+            else if (directMethodMessageType.Equals("exec"))
             {
                 if (!GuidExtensions.TryParseBytes(publish.CorrelationData, out Guid? requestId))
                 {

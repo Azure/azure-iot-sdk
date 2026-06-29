@@ -218,8 +218,15 @@ namespace Microsoft.Azure.Devices.Client.Twin
                 return;
             }
 
+            if (typeVersion != 1)
+            {
+                // The service may increment the protocol version of these messages over time. For now, there is only the one version, though
+                Trace.TraceWarning("Received a twin message whose type version ({receivedTypeVersion}) is not supported by this client (supported version: {supportedVersion}). You may need to upgrade this library's version to handle this kind of message. Ignoring it.", typeVersion, 1);
+                return;
+            }
+
+
             if (type.Equals("get-response")
-                && typeVersion == 1
                 && GuidExtensions.TryParseBytes(args.Publish.CorrelationData, out Guid? getResponseCorrelationData)
                 && _pendingGetTwinOperations.TryRemove(getResponseCorrelationData.Value, out PendingGetTwinRequest? pendingGetTwinRequest))
             {
@@ -234,7 +241,6 @@ namespace Microsoft.Azure.Devices.Client.Twin
                 });
             }
             else if (type.Equals("reported-patch-response")
-                && typeVersion == 1
                 && GuidExtensions.TryParseBytes(args.Publish.CorrelationData, out Guid? patchResponseCorrelationData)
                 && _pendingReportedPropertyUpdateOperations.TryRemove(patchResponseCorrelationData.Value, out PendingReportedPropertiesUpdateRequest? pendingReportedPropertiesUpdateRequest))
             {
@@ -253,7 +259,7 @@ namespace Microsoft.Azure.Devices.Client.Twin
 
                 DesiredPatchReceived?.Invoke(desiredPatchArgs);
             }
-            else if (type.Equals("twin-push") && typeVersion == 1)
+            else if (type.Equals("twin-push"))
             {
                 TwinPush receivedTwinPush = TwinPush.Parser.ParseFrom(args.Publish.PayloadAsReadOnlySequence);
                 var twinPushArgs = new TwinPushReceivedEventArgs();
