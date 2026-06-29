@@ -164,6 +164,9 @@ namespace Microsoft.Azure.Devices.Client.DirectMethods
                     return;
                 }
 
+                uint responseTimeoutInSeconds = publish.MessageExpiryInterval;
+                Stopwatch stopwatch = Stopwatch.StartNew();
+
                 Exec exec = Exec.Parser.ParseFrom(publish.PayloadAsByteArray);
 
                 if (!expectedReadyId.Equals(exec.ReadyId))
@@ -181,6 +184,28 @@ namespace Microsoft.Azure.Devices.Client.DirectMethods
 
                 DirectMethodResponse methodResponse = await DirectMethodInvokedAsync.Invoke(directMethodInvokedArgs);
 
+                stopwatch.Stop();
+
+                uint secondsSinceReceivingExec;
+                try
+                {
+                    secondsSinceReceivingExec = (uint)stopwatch.Elapsed.TotalSeconds;
+                }
+                catch (InvalidCastException)
+                {
+                    // Should only happen if the double grows so large that a uint can't contain it.
+                    Trace.TraceError("Could not calculate time since exedc message was received. This likely means the 'DirectMethodInvokedAsync' callback took too long. Cannot send result, so discarding this probe message");
+                    return;
+                }
+
+                uint remainingResponseTimeoutInSeconds = responseTimeoutInSeconds - secondsSinceReceivingExec;
+
+                if (remainingResponseTimeoutInSeconds < 1)
+                {
+                    Trace.TraceWarning("Application did not respond to direct method exec message before the response timeout elapsed, so no result message will be sent.");
+                    return;
+                }
+
                 Result result = Result.Parser.ParseFrom(methodResponse.Payload);
                 result.Status = methodResponse.Status;
 
@@ -190,7 +215,7 @@ namespace Microsoft.Azure.Devices.Client.DirectMethods
                     QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce,
                     PayloadAsByteArray = result.ToByteArray(),
                     CorrelationData = publish.CorrelationData,
-                    //MessageExpiryInterval = remainingConnectTimeout, //TODO
+                    MessageExpiryInterval = remainingResponseTimeoutInSeconds,
                 };
 
                 resultPublish.UserProperties.Add(new() { Name = "type", Value = Encoding.UTF8.GetBytes(string.Format("result:1")) });
