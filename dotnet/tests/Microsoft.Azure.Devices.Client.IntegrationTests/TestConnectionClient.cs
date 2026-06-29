@@ -18,6 +18,10 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
             {
                 await Setup.GetIotHubRegistryManager().RemoveDeviceAsync(ConnectionContext.DeviceId);
             }
+
+            await ConnectionClient.DisconnectAsync();
+
+            ConnectionClient.Dispose();
         }
     }
 }

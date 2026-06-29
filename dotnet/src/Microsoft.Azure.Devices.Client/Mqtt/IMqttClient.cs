@@ -1,7 +1,7 @@
 ﻿
 namespace Microsoft.Azure.Devices.Client.Mqtt
 {
-    public interface IMqttClient //TODO disposal of payload carrying object types?
+    public interface IMqttClient : IDisposable
     {
         event Func<MqttPublishReceivedEventArgs, Task> PublishReceivedAsync;
 

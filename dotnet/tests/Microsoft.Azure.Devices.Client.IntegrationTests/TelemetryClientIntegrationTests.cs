@@ -14,9 +14,8 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
             cts.CancelAfter(Setup.TestTimeoutMilliseconds - 1000);
 
             await using TestConnectionClient testDeviceContext = await Setup.CreateConnectedConnectionClientAsync(testAgainstClassicHub, cts.Token);
-            ConnectionClient connectionClient = testDeviceContext.ConnectionClient;
 
-            TelemetryClient telemetryClient = new TelemetryClient(connectionClient);
+            TelemetryClient telemetryClient = new TelemetryClient(testDeviceContext.ConnectionClient);
 
             OutgoingTelemetryMessage outgoingTelemetryMessage = new()
             {

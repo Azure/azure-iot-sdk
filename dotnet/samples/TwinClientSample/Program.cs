@@ -16,9 +16,9 @@ internal class Program
         string pcks12CertificatePassword = Environment.GetEnvironmentVariable("X509_CERTIFICATE_PASSWORD") ?? throw new Exception("");
         X509AuthenticationProvider authentication = new(X509CertificateLoader.LoadPkcs12FromFile(pcks12CertificatePath, pcks12CertificatePassword));
 
-        ConnectionClient connectionClient = new ConnectionClient();
+        using ConnectionClient connectionClient = new ConnectionClient();
 
-        TwinClient twinClient = new TwinClient(connectionClient);
+        using TwinClient twinClient = new TwinClient(connectionClient);
 
         Action<DesiredPatchReceivedEventArgs> HandleDesiredPropertiesUpdateAsync = async (args) =>
         {

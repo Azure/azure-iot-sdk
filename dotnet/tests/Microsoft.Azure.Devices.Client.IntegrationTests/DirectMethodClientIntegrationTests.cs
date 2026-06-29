@@ -1,5 +1,4 @@
 ﻿using Microsoft.Azure.Devices.Client.DirectMethods;
-using MQTTnet.Internal;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Xunit;
@@ -50,8 +49,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
             string expectedDirectMethodName = "someDirectMethod-" + Guid.NewGuid().ToString();
 
             await using TestConnectionClient testDeviceContext = await Setup.CreateConnectedConnectionClientAsync(testAgainstClassicHub, cts.Token);
-            ConnectionClient connectionClient = testDeviceContext.ConnectionClient;
-            DirectMethodClient directMethodClient = new DirectMethodClient(connectionClient);
+            using DirectMethodClient directMethodClient = new DirectMethodClient(testDeviceContext.ConnectionClient);
 
             ServiceClient serviceClient = Setup.GetIotHubServiceClient();
             var directMethodInvocation = new CloudToDeviceMethod(expectedDirectMethodName);
@@ -62,7 +60,6 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
             };
 
             directMethodInvocation.SetPayloadJson(expectedRequestPayload.ToJson());
-
 
             directMethodClient.DirectMethodInvokedAsync += (args) =>
             {
@@ -91,7 +88,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
                 }
             };
 
-            var directMethodResponse = await serviceClient.InvokeDeviceMethodAsync(testDeviceContext.ConnectionContext.DeviceId, directMethodInvocation);
+            var directMethodResponse = await serviceClient.InvokeDeviceMethodAsync(testDeviceContext.ConnectionContext.DeviceId, directMethodInvocation, cts.Token);
 
 
             Assert.Equal(200, directMethodResponse.Status);

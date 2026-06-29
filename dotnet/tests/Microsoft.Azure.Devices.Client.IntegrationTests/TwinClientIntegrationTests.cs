@@ -14,11 +14,10 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
             using CancellationTokenSource cts = new();
             cts.CancelAfter(Setup.TestTimeoutMilliseconds - 1000);
             await using TestConnectionClient testDeviceContext = await Setup.CreateConnectedConnectionClientAsync(testAgainstClassicHub, cts.Token);
-            ConnectionClient connectionClient = testDeviceContext.ConnectionClient;
             string deviceId = testDeviceContext.ConnectionContext.DeviceId;
 
             RegistryManager registryManager = Setup.GetIotHubRegistryManager();
-            TwinClient twinClient = new TwinClient(connectionClient);
+            using TwinClient twinClient = new TwinClient(testDeviceContext.ConnectionClient);
 
             TaskCompletionSource<DesiredPatchReceivedEventArgs> onDesiredPropertiesUpdateReceived = new();
             twinClient.DesiredPatchReceived += (args) =>
@@ -27,10 +26,10 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
             };
 
             var getTwinResponse = await twinClient.GetTwinAsync(cancellationToken: cts.Token);
+            Assert.NotNull(getTwinResponse.DesiredProperties);
+            Assert.NotNull(getTwinResponse.ReportedProperties);
             Assert.Empty(getTwinResponse.DesiredProperties);
             Assert.Empty(getTwinResponse.ReportedProperties);
-            Assert.NotNull(getTwinResponse.DesiredPropertiesVersion);
-            Assert.NotNull(getTwinResponse.ReportedPropertiesVersion);
 
             string expectedDesiredPropertyKey = Guid.NewGuid().ToString();
             string expectedDesiredPropertyValue = Guid.NewGuid().ToString();
