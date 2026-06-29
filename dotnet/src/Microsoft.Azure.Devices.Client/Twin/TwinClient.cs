@@ -5,6 +5,7 @@ using Microsoft.Azure.Devices.Client.Serialization;
 using Microsoft.Azure.Devices.Client.Twin.LegacyTwinObjects;
 using System.Collections.Concurrent;
 using System.Collections.Specialized;
+using System.Diagnostics;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
@@ -14,7 +15,7 @@ using System.Web;
 
 namespace Microsoft.Azure.Devices.Client.Twin
 {
-    public class TwinClient
+    public class TwinClient : IDisposable
     {
         private ConnectionClient _connection;
 
@@ -55,7 +56,8 @@ namespace Microsoft.Azure.Devices.Client.Twin
         public TwinClient(ConnectionClient connection)
         {
             _connection = connection;
-            _connection.ApplicationMessageReceivedAsync += HandleReceivedMqttPublish;
+            _connection.ApplicationMessageReceivedAsync += HandleReceivedAzureEventGridMqttPublish;
+            _connection.ApplicationMessageReceivedAsync += HandleReceivedClassicMqttPublish;
         }
 
         /// <summary>
@@ -195,147 +197,166 @@ namespace Microsoft.Azure.Devices.Client.Twin
             return updateReportedPropertiesResponse;
         }
 
-        private async Task HandleReceivedMqttPublish(MqttPublishReceivedEventArgs args)
+
+        private async Task HandleReceivedAzureEventGridMqttPublish(MqttPublishReceivedEventArgs args)
+        { 
+            if (!_connection.CurrentConnectionContext!.IsAzureEventGrid)
+            {
+                // The other handler covers this scenario
+                return;
+            }
+
+            if (!args.Publish.Topic.Equals(string.Format(AzureEventGridIncomingTwinPublishTopicFormat, _connection.CurrentConnectionContext.DeviceId)))
+            {
+                // This message wasn't a twin message, so ignore it
+                return;
+            }
+
+            if (!args.Publish.UserProperties.TryGetType(out string? type, out int? typeVersion))
+            {
+                Trace.TraceWarning("Received a twin message, but it is either missing the message type or the message type is malformed. Ignoring it.");
+                return;
+            }
+
+            if (type.Equals("get-response")
+                && typeVersion == 1
+                && GuidExtensions.TryParseBytes(args.Publish.CorrelationData, out Guid? getResponseCorrelationData)
+                && _pendingGetTwinOperations.TryRemove(getResponseCorrelationData.Value, out PendingGetTwinRequest? pendingGetTwinRequest))
+            {
+                TwinGetResponse twinGetResponse = TwinGetResponse.Parser.ParseFrom(args.Publish.PayloadAsReadOnlySequence);
+
+                pendingGetTwinRequest.TwinResponseTask.TrySetResult(new()
+                {
+                    DesiredProperties = JsonObject.Parse(twinGetResponse.DesiredPayload.Span).AsObject(),
+                    ReportedProperties = JsonObject.Parse(twinGetResponse.ReportedPayload.Span).AsObject(),
+                    DesiredPropertiesVersion = twinGetResponse.DesiredVersion,
+                    ReportedPropertiesVersion = twinGetResponse.ReportedVersion,
+                });
+            }
+            else if (type.Equals("reported-patch-response")
+                && typeVersion == 1
+                && GuidExtensions.TryParseBytes(args.Publish.CorrelationData, out Guid? patchResponseCorrelationData)
+                && _pendingReportedPropertyUpdateOperations.TryRemove(patchResponseCorrelationData.Value, out PendingReportedPropertiesUpdateRequest? pendingReportedPropertiesUpdateRequest))
+            {
+                ReportedPatchResponse reportedPatchResponse = ReportedPatchResponse.Parser.ParseFrom(args.Publish.PayloadAsReadOnlySequence);
+                pendingReportedPropertiesUpdateRequest.ReportedPropertyUpdateResponse.TrySetResult(reportedPatchResponse);
+            }
+            else if (type.Equals("desired-patch") && typeVersion == 1)
+            {
+                DesiredPatch receivedDesiredPatch = DesiredPatch.Parser.ParseFrom(args.Publish.PayloadAsReadOnlySequence);
+
+                var desiredPatchArgs = new DesiredPatchReceivedEventArgs()
+                {
+                    DesiredProperties = JsonObject.Parse(receivedDesiredPatch.Payload.Span).AsObject(),
+                    DesiredPropertiesVersion = receivedDesiredPatch.Version,
+                };
+
+                DesiredPatchReceived?.Invoke(desiredPatchArgs);
+            }
+            else if (type.Equals("twin-push") && typeVersion == 1)
+            {
+                TwinPush receivedTwinPush = TwinPush.Parser.ParseFrom(args.Publish.PayloadAsReadOnlySequence);
+                var twinPushArgs = new TwinPushReceivedEventArgs();
+                if (receivedTwinPush.Desired != null)
+                {
+                    twinPushArgs.Desired = new()
+                    {
+                        Properties = JsonObject.Parse(receivedTwinPush.Desired.Payload.Span).AsObject(),
+                        PropertiesVersion = receivedTwinPush.Desired.Version
+                    };
+                }
+
+                if (receivedTwinPush.Reported != null)
+                {
+                    twinPushArgs.Desired = new()
+                    {
+                        Properties = JsonObject.Parse(receivedTwinPush.Reported.Payload.Span).AsObject(),
+                        PropertiesVersion = receivedTwinPush.Reported.Version
+                    };
+                }
+                TwinPushReceived?.Invoke(twinPushArgs);
+            }
+        }
+
+        private async Task HandleReceivedClassicMqttPublish(MqttPublishReceivedEventArgs args)
         {
             if (_connection.CurrentConnectionContext!.IsAzureEventGrid)
             {
-                if (args.Publish.Topic.Equals(string.Format(AzureEventGridIncomingTwinPublishTopicFormat, _connection.CurrentConnectionContext.DeviceId))
-                    && args.Publish.UserProperties.TryGetType(out string? type, out int? typeVersion))
+                // The other handler covers this scenario
+                return;
+            }
+
+            // Note that all twin response messages are QoS 0, so no need to ack the MQTT message here
+            if (args.Publish.Topic.StartsWith(ClassicTwinResponseTopic, StringComparison.InvariantCulture))
+            {
+                if (ParseResponseTopic(args.Publish.Topic, out string receivedRequestId, out int status, out long version))
                 {
-                    if (type.Equals("get-response")
-                        && typeVersion == 1
-                        && GuidExtensions.TryParseBytes(args.Publish.CorrelationData, out Guid? getResponseCorrelationData)
-                        && _pendingGetTwinOperations.TryRemove(getResponseCorrelationData.Value, out PendingGetTwinRequest? pendingGetTwinRequest))
-                    {
-                        TwinGetResponse twinGetResponse = TwinGetResponse.Parser.ParseFrom(args.Publish.PayloadAsReadOnlySequence);
+                    byte[] payloadBytes = args.Publish.PayloadAsByteArray ?? Array.Empty<byte>();
 
-                        pendingGetTwinRequest.TwinResponseTask.TrySetResult(new()
-                        {
-                            DesiredProperties = JsonObject.Parse(twinGetResponse.DesiredPayload.Span).AsObject(),
-                            ReportedProperties = JsonObject.Parse(twinGetResponse.ReportedPayload.Span).AsObject(),
-                            DesiredPropertiesVersion = twinGetResponse.DesiredVersion,
-                            ReportedPropertiesVersion = twinGetResponse.ReportedVersion,
-                        });
-                    }
-                    else if (type.Equals("reported-patch-response")
-                        && typeVersion == 1
-                        && GuidExtensions.TryParseBytes(args.Publish.CorrelationData, out Guid? patchResponseCorrelationData)
-                        && _pendingReportedPropertyUpdateOperations.TryRemove(patchResponseCorrelationData.Value, out PendingReportedPropertiesUpdateRequest? pendingReportedPropertiesUpdateRequest))
+                    Guid requestIdGuid = new Guid(receivedRequestId);
+                    if (_pendingGetTwinOperations.TryRemove(requestIdGuid, out PendingGetTwinRequest? getTwinOperation))
                     {
-                        ReportedPatchResponse reportedPatchResponse = ReportedPatchResponse.Parser.ParseFrom(args.Publish.PayloadAsReadOnlySequence);
-                        pendingReportedPropertiesUpdateRequest.ReportedPropertyUpdateResponse.TrySetResult(reportedPatchResponse);
-                    }
-                    else if (type.Equals("desired-patch") && typeVersion == 1)
-                    {
-                        DesiredPatch receivedDesiredPatch = DesiredPatch.Parser.ParseFrom(args.Publish.PayloadAsReadOnlySequence);
+                        var clientTwinProperties = JsonNode.Parse(payloadBytes).AsObject();
 
-                        var desiredPatchArgs = new DesiredPatchReceivedEventArgs()
+                        var desiredVersion = clientTwinProperties["desired"][VersionKey];
+                        ulong desiredPropertiesVersion = (ulong) desiredVersion.AsValue();
+
+                        // Remove the "$version" entry so that the twin object more closely mimics how it would in AEG scenario
+                        clientTwinProperties["desired"].AsObject().Remove(VersionKey);
+
+                        var reportedVersion = clientTwinProperties["reported"][VersionKey];
+                        ulong reportedPropertiesVersion = (ulong)reportedVersion.AsValue();
+
+                        // Remove the "$version" entry so that the twin object more closely mimics how it would in AEG scenario
+                        clientTwinProperties["reported"].AsObject().Remove(VersionKey);
+
+                        var twinGetResponse = new TwinGetResponseWrapper()
                         {
-                            DesiredProperties = JsonObject.Parse(receivedDesiredPatch.Payload.Span).AsObject(),
-                            DesiredPropertiesVersion = receivedDesiredPatch.Version,
+                            DesiredPropertiesVersion = desiredPropertiesVersion,
+                            ReportedPropertiesVersion = reportedPropertiesVersion,
                         };
 
-                        DesiredPatchReceived?.Invoke(desiredPatchArgs);
-                    }
-                    else if (type.Equals("twin-push") && typeVersion == 1)
-                    {
-                        TwinPush receivedTwinPush = TwinPush.Parser.ParseFrom(args.Publish.PayloadAsReadOnlySequence);
-                        var twinPushArgs = new TwinPushReceivedEventArgs();
-                        if (receivedTwinPush.Desired != null)
+                        // These user-supplied configurations are handled by the service if it is an AEG broker, but classic hub does not actually support them. The below
+                        // will intentionally remove the desired/reported properties in such a way to mimic that service behavior when connected to a classic hub.
+                        if (getTwinOperation.GetDesired && (getTwinOperation.IfNotMatchDesired < desiredPropertiesVersion))
                         {
-                            twinPushArgs.Desired = new()
-                            {
-                                Properties = JsonObject.Parse(receivedTwinPush.Desired.Payload.Span).AsObject(),
-                                PropertiesVersion = receivedTwinPush.Desired.Version
-                            };
+                            twinGetResponse.DesiredProperties = clientTwinProperties["desired"].AsObject();
                         }
 
-                        if (receivedTwinPush.Reported != null)
+                        if (getTwinOperation.GetReported && (getTwinOperation.IfNotMatchReported < reportedPropertiesVersion))
                         {
-                            twinPushArgs.Desired = new()
-                            {
-                                Properties = JsonObject.Parse(receivedTwinPush.Reported.Payload.Span).AsObject(),
-                                PropertiesVersion = receivedTwinPush.Reported.Version
-                            };
+                            twinGetResponse.ReportedProperties = clientTwinProperties["reported"].AsObject();
                         }
-                        TwinPushReceived?.Invoke(twinPushArgs);
+
+                        getTwinOperation.TwinResponseTask.TrySetResult(twinGetResponse);
+                    }
+                    else if (_pendingReportedPropertyUpdateOperations.TryRemove(requestIdGuid, out PendingReportedPropertiesUpdateRequest? pendingReportedPropertiesUpdateRequest))
+                    {
+                        ReportedPropertyUpdateResponse? response = JsonSerializer.Deserialize<ReportedPropertyUpdateResponse>(payloadBytes, JsonSerializationSettings.Options);
+
+                        pendingReportedPropertiesUpdateRequest.ReportedPropertyUpdateResponse.TrySetResult(new ReportedPatchResponse()
+                        {
+                            Result = Result.Ok, // TODO mapping possible classic integer error codes to this new error enum
+                            Version = response.Version
+                        });
                     }
                 }
             }
-            else
+            else if (args.Publish.Topic.StartsWith(TwinDesiredPropertiesPatchTopic, StringComparison.InvariantCulture))
             {
-                // Note that all twin response messages are QoS 0, so no need to ack the MQTT message here
-                if (args.Publish.Topic.StartsWith(ClassicTwinResponseTopic, StringComparison.InvariantCulture))
+                // Note that all desired property update messages are QoS 0, so no need to ack the MQTT message here
+                if (DesiredPatchReceived != null)
                 {
-                    if (ParseResponseTopic(args.Publish.Topic, out string receivedRequestId, out int status, out long version))
+                    var desiredPropertiesWithVersion = JsonNode.Parse(args.Publish.PayloadAsByteArray)!.AsObject();
+                    ulong desiredPropertiesVersion = (ulong)desiredPropertiesWithVersion[VersionKey];
+                    desiredPropertiesWithVersion.Remove(VersionKey);
+
+                    var desiredPropertyPatch = new DesiredPatchReceivedEventArgs()
                     {
-                        byte[] payloadBytes = args.Publish.PayloadAsByteArray ?? Array.Empty<byte>();
-
-                        Guid requestIdGuid = new Guid(receivedRequestId);
-                        if (_pendingGetTwinOperations.TryRemove(requestIdGuid, out PendingGetTwinRequest? getTwinOperation))
-                        {
-                            var clientTwinProperties = JsonNode.Parse(payloadBytes).AsObject();
-
-                            var desiredVersion = clientTwinProperties["desired"][VersionKey];
-                            ulong desiredPropertiesVersion = (ulong) desiredVersion.AsValue();
-
-                            // Remove the "$version" entry so that the twin object more closely mimics how it would in AEG scenario
-                            clientTwinProperties["desired"].AsObject().Remove(VersionKey);
-
-                            var reportedVersion = clientTwinProperties["reported"][VersionKey];
-                            ulong reportedPropertiesVersion = (ulong)reportedVersion.AsValue();
-
-                            // Remove the "$version" entry so that the twin object more closely mimics how it would in AEG scenario
-                            clientTwinProperties["reported"].AsObject().Remove(VersionKey);
-
-                            var twinGetResponse = new TwinGetResponseWrapper()
-                            {
-                                DesiredPropertiesVersion = desiredPropertiesVersion,
-                                ReportedPropertiesVersion = reportedPropertiesVersion,
-                            };
-
-                            // These user-supplied configurations are handled by the service if it is an AEG broker, but classic hub does not actually support them. The below
-                            // will intentionally remove the desired/reported properties in such a way to mimic that service behavior when connected to a classic hub.
-                            if (getTwinOperation.GetDesired && (getTwinOperation.IfNotMatchDesired < desiredPropertiesVersion))
-                            {
-                                twinGetResponse.DesiredProperties = clientTwinProperties["desired"].AsObject();
-                            }
-
-                            if (getTwinOperation.GetReported && (getTwinOperation.IfNotMatchReported < reportedPropertiesVersion))
-                            {
-                                twinGetResponse.ReportedProperties = clientTwinProperties["reported"].AsObject();
-                            }
-
-                            getTwinOperation.TwinResponseTask.TrySetResult(twinGetResponse);
-                        }
-                        else if (_pendingReportedPropertyUpdateOperations.TryRemove(requestIdGuid, out PendingReportedPropertiesUpdateRequest? pendingReportedPropertiesUpdateRequest))
-                        {
-                            ReportedPropertyUpdateResponse? response = JsonSerializer.Deserialize<ReportedPropertyUpdateResponse>(payloadBytes, JsonSerializationSettings.Options);
-
-                            pendingReportedPropertiesUpdateRequest.ReportedPropertyUpdateResponse.TrySetResult(new ReportedPatchResponse()
-                            {
-                                Result = Result.Ok, // TODO mapping possible classic integer error codes to this new error enum
-                                Version = response.Version
-                            });
-                        }
-                    }
-                }
-                else if (args.Publish.Topic.StartsWith(TwinDesiredPropertiesPatchTopic, StringComparison.InvariantCulture))
-                {
-                    // Note that all desired property update messages are QoS 0, so no need to ack the MQTT message here
-                    if (DesiredPatchReceived != null)
-                    {
-                        var desiredPropertiesWithVersion = JsonNode.Parse(args.Publish.PayloadAsByteArray)!.AsObject();
-                        ulong desiredPropertiesVersion = (ulong)desiredPropertiesWithVersion[VersionKey];
-                        desiredPropertiesWithVersion.Remove(VersionKey);
-
-                        var desiredPropertyPatch = new DesiredPatchReceivedEventArgs()
-                        {
-                            DesiredProperties = desiredPropertiesWithVersion,
-                            DesiredPropertiesVersion = desiredPropertiesVersion
-                        };
-                        DesiredPatchReceived.Invoke(desiredPropertyPatch);
-                    }
+                        DesiredProperties = desiredPropertiesWithVersion,
+                        DesiredPropertiesVersion = desiredPropertiesVersion
+                    };
+                    DesiredPatchReceived.Invoke(desiredPropertyPatch);
                 }
             }
         }
@@ -372,6 +393,12 @@ namespace Microsoft.Azure.Devices.Client.Twin
             }
 
             return true;
+        }
+
+        public void Dispose()
+        {
+            _connection.ApplicationMessageReceivedAsync -= HandleReceivedAzureEventGridMqttPublish;
+            _connection.ApplicationMessageReceivedAsync -= HandleReceivedClassicMqttPublish;
         }
     }
 }

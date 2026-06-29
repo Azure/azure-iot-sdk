@@ -16,7 +16,7 @@ internal class Program
         string pcks12CertificatePassword = Environment.GetEnvironmentVariable("X509_CERTIFICATE_PASSWORD") ?? throw new Exception("");
         X509AuthenticationProvider authentication = new(X509CertificateLoader.LoadPkcs12FromFile(pcks12CertificatePath, pcks12CertificatePassword));
 
-        ConnectionClient connectionClient = new ConnectionClient();
+        using ConnectionClient connectionClient = new ConnectionClient();
 
         TelemetryClient telemetryClient = new TelemetryClient(connectionClient);
 

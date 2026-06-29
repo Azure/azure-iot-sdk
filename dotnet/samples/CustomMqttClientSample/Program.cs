@@ -28,12 +28,15 @@ internal class Program
             mqttClient = new MqttNetClient(new MQTTnet.MqttClientFactory().CreateMqttClient());
         }
 
-        ConnectionClient connectionClient = new ConnectionClient(mqttClient);
+        // This connection client will dispose the underlying mqtt client when it is disposed
+        using ConnectionClient connectionClient = new ConnectionClient(mqttClient);
 
         ProvisioningSettings provisioningSettings = new(idScope);
         Console.WriteLine("Provisioning and connecting to IoT hub using the provided MQTT client");
         await connectionClient.ProvisionAndConnectAsync(provisioningSettings, authentication);
 
-        await Task.Delay(-1);
+        await Task.Delay(TimeSpan.FromSeconds(1));
+
+        await connectionClient.DisconnectAsync();
     }
 }

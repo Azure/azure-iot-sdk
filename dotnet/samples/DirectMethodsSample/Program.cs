@@ -16,9 +16,9 @@ internal class Program
         string pcks12CertificatePassword = Environment.GetEnvironmentVariable("X509_CERTIFICATE_PASSWORD") ?? throw new Exception("");
         X509AuthenticationProvider authentication = new(X509CertificateLoader.LoadPkcs12FromFile(pcks12CertificatePath, pcks12CertificatePassword));
 
-        ConnectionClient connectionClient = new ConnectionClient();
+        using ConnectionClient connectionClient = new ConnectionClient();
 
-        DirectMethodClient directMethodClient = new DirectMethodClient(connectionClient);
+        using DirectMethodClient directMethodClient = new DirectMethodClient(connectionClient);
         Func<DirectMethodRequestReceivedEventArgs, Task<DirectMethodResponse>> HandleDirectMethodAsync = (args) =>
         {
             Console.WriteLine($"Received direct method with name {args.MethodName}");

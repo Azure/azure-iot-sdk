@@ -21,76 +21,9 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
             _useWebsocket = useWebsocket;
             _proxy = proxy;
 
-            _underlyingClient.ApplicationMessageReceivedAsync += (args) =>
-            {
-                if (PublishReceivedAsync == null)
-                {
-                    return Task.CompletedTask; //TODO what to do with received MQTT message when user doesn't have callback set. Does this even happen?
-                }
-
-                MqttPublishReceivedEventArgs genericArgs = new MqttPublishReceivedEventArgsImpl(args)
-                {
-                    Publish = new()
-                    {
-                        PayloadAsReadOnlySequence = args.ApplicationMessage.Payload,
-                        ContentType = args.ApplicationMessage.ContentType,
-                        CorrelationData = args.ApplicationMessage.CorrelationData,
-                        MessageExpiryInterval = args.ApplicationMessage.MessageExpiryInterval,
-                        PayloadFormatIndicator = ModelConverter.ToGeneric(args.ApplicationMessage.PayloadFormatIndicator),
-                        QualityOfServiceLevel = ModelConverter.ToGeneric(args.ApplicationMessage.QualityOfServiceLevel),
-                        Topic = args.ApplicationMessage.Topic,
-                    }
-                };
-
-                if (args.ApplicationMessage.UserProperties != null)
-                {
-                    foreach (var userProperty in args.ApplicationMessage.UserProperties)
-                    {
-                        genericArgs.Publish.UserProperties.Add(new() { Name = userProperty.Name, Value = userProperty.ValueBuffer });
-                    }
-                }
-
-                args.AutoAcknowledge = false; // TODO do we want to do AutoAck things in generic interface as well? For now, assume always manual ack
-
-                return PublishReceivedAsync?.Invoke(genericArgs);
-            };
-
-            _underlyingClient.ConnectedAsync += (args) =>
-            {
-                if (ConnectedAsync == null)
-                {
-                    return Task.CompletedTask;
-                }
-
-                return ConnectedAsync.Invoke(new()
-                {
-                    ConnectAck = ModelConverter.ToGeneric(args.ConnectResult),
-                });
-            };
-
-            _underlyingClient.DisconnectedAsync += (args) =>
-            {
-                if (DisconnectedAsync == null)
-                {
-                    return Task.CompletedTask;
-                }
-
-                var genericArgs = new Mqtt.MqttClientDisconnectedEventArgs()
-                {
-                    Exception = args.Exception,
-                    Reason = ModelConverter.ToGeneric(args.Reason),
-                };
-
-                if (args.UserProperties != null)
-                {
-                    foreach (var userProperty in args.UserProperties)
-                    {
-                        genericArgs.UserProperties.Add(new() { Name = userProperty.Name, Value = userProperty.ValueBuffer });
-                    }
-                }
-
-                return DisconnectedAsync?.Invoke(genericArgs);
-            };
+            _underlyingClient.ApplicationMessageReceivedAsync += DelegateReceivedPublishAsync;
+            _underlyingClient.ConnectedAsync += DelegateConnectedAsync;
+            _underlyingClient.DisconnectedAsync += DelegateDisconnectedAsync;
         }
 
         public event Func<Mqtt.MqttPublishReceivedEventArgs, Task>? PublishReceivedAsync;
@@ -286,6 +219,96 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
             }
 
             return ModelConverter.ToGeneric(await _underlyingClient.UnsubscribeAsync(unsubscribeBuilder.Build(), cancellationToken));
+        }
+
+        public void Dispose()
+        {
+            _underlyingClient.ApplicationMessageReceivedAsync -= DelegateReceivedPublishAsync;
+            _underlyingClient.ConnectedAsync -= DelegateConnectedAsync;
+            _underlyingClient.DisconnectedAsync -= DelegateDisconnectedAsync;
+
+            _underlyingClient.Dispose();
+        }
+
+        private Task DelegateReceivedPublishAsync(MqttApplicationMessageReceivedEventArgs args)
+        {
+            if (PublishReceivedAsync == null)
+            {
+                return Task.CompletedTask; //TODO what to do with received MQTT message when user doesn't have callback set. Does this even happen?
+            }
+
+            MqttPublishReceivedEventArgs genericArgs = new MqttPublishReceivedEventArgsImpl(args)
+            {
+                Publish = new()
+                {
+                    PayloadAsReadOnlySequence = args.ApplicationMessage.Payload,
+                    ContentType = args.ApplicationMessage.ContentType,
+                    CorrelationData = args.ApplicationMessage.CorrelationData,
+                    MessageExpiryInterval = args.ApplicationMessage.MessageExpiryInterval,
+                    PayloadFormatIndicator = ModelConverter.ToGeneric(args.ApplicationMessage.PayloadFormatIndicator),
+                    QualityOfServiceLevel = ModelConverter.ToGeneric(args.ApplicationMessage.QualityOfServiceLevel),
+                    Topic = args.ApplicationMessage.Topic,
+                }
+            };
+
+            if (args.ApplicationMessage.UserProperties != null)
+            {
+                foreach (var userProperty in args.ApplicationMessage.UserProperties)
+                {
+                    genericArgs.Publish.UserProperties.Add(new() { Name = userProperty.Name, Value = userProperty.ValueBuffer });
+                }
+            }
+
+            args.AutoAcknowledge = false; // TODO do we want to do AutoAck things in generic interface as well? For now, assume always manual ack
+
+            if (PublishReceivedAsync != null)
+            {
+                return PublishReceivedAsync.Invoke(genericArgs);
+            }
+
+            return Task.CompletedTask;
+        }
+
+        private Task DelegateConnectedAsync(MQTTnet.MqttClientConnectedEventArgs args)
+        {
+            if (ConnectedAsync == null)
+            {
+                return Task.CompletedTask;
+            }
+
+            return ConnectedAsync.Invoke(new()
+            {
+                ConnectAck = ModelConverter.ToGeneric(args.ConnectResult),
+            });
+        }
+
+        private Task DelegateDisconnectedAsync(MQTTnet.MqttClientDisconnectedEventArgs args)
+        {
+            if (DisconnectedAsync == null)
+            {
+                return Task.CompletedTask;
+            }
+
+            var genericArgs = new Mqtt.MqttClientDisconnectedEventArgs()
+            {
+                Exception = args.Exception,
+                Reason = ModelConverter.ToGeneric(args.Reason),
+            };
+
+            if (args.UserProperties != null)
+            {
+                foreach (var userProperty in args.UserProperties)
+                {
+                    genericArgs.UserProperties.Add(new() { Name = userProperty.Name, Value = userProperty.ValueBuffer });
+                }
+            }
+
+            if (DisconnectedAsync != null)
+            {
+                return DisconnectedAsync.Invoke(genericArgs);
+            }
+
+            return Task.CompletedTask;
         }
     }
 }

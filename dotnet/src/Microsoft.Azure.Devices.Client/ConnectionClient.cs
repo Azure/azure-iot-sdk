@@ -11,7 +11,7 @@ using System.Text.Json;
 
 namespace Microsoft.Azure.Devices.Client
 {
-    public class ConnectionClient
+    public class ConnectionClient : IDisposable
     {
         private IMqttClient MqttClient;
 
@@ -61,7 +61,6 @@ namespace Microsoft.Azure.Devices.Client
             //TODO several mqtt client options should not be provided by the user (ie, host name). Add checks here that validate all of them
 
             MqttClient.PublishReceivedAsync += DelegateReceivedPublishAsync;
-
 
             CurrentConnectionContext = new ConnectionContext()
             {
@@ -230,6 +229,14 @@ namespace Microsoft.Azure.Devices.Client
                     return;
                 }
             }
+        }
+
+        public void Dispose()
+        {
+            MqttClient.PublishReceivedAsync -= DelegateReceivedPublishAsync;
+            MqttClient.PublishReceivedAsync -= HandleReceivedCertificateSigningPublish;
+
+            MqttClient.Dispose();
         }
     }
 }
