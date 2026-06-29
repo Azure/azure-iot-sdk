@@ -94,11 +94,34 @@ namespace Microsoft.Azure.Devices.Client.DirectMethods
                     return; // Malformed request. Discard it silently
                 }
 
+                uint connectTimeoutRemainingUponReceivingProbe = publish.MessageExpiryInterval;
+                Stopwatch stopwatch = Stopwatch.StartNew();
+
                 Probe probe = Probe.Parser.ParseFrom(publish.PayloadAsByteArray);
 
                 ProbeAck probeAck = await DirectMethodProbeReceivedAsync.Invoke(new() { MethodName = probe.MethodName, ResponseTimeoutSeconds = probe.ResponseTimeoutSeconds });
 
-                uint remainingConnectTimeout = 100; // TODO how is this derived?
+                stopwatch.Stop();
+
+                uint secondsSinceReceivingProbe;
+                try
+                {
+                    secondsSinceReceivingProbe = (uint)stopwatch.Elapsed.TotalSeconds;
+                }
+                catch (InvalidCastException)
+                {
+                    // Should only happen if the double grows so large that a uint can't contain it.
+                    Trace.TraceError("Could not calculate time since probe message was received. This likely means the 'DirectMethodProbeReceivedAsync' callback took too long. Cannot send probe ack, so discarding this probe message");
+                    return;
+                }
+
+                uint remainingConnectTimeoutInSeconds = connectTimeoutRemainingUponReceivingProbe - secondsSinceReceivingProbe;
+
+                if (remainingConnectTimeoutInSeconds < 1)
+                {
+                    Trace.TraceWarning("Application did not respond to direct method probe message before the connect timeout elapsed, so no probe ack message will be sent.");
+                    return;
+                }
 
                 MqttPublish probeAckPublish = new()
                 {
@@ -106,7 +129,7 @@ namespace Microsoft.Azure.Devices.Client.DirectMethods
                     QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce,
                     PayloadAsByteArray = probeAck.ToByteArray(),
                     CorrelationData = publish.CorrelationData,
-                    MessageExpiryInterval = remainingConnectTimeout,
+                    MessageExpiryInterval = remainingConnectTimeoutInSeconds,
                 };
 
                 probeAckPublish.UserProperties.Add(new() { Name = "type", Value = Encoding.UTF8.GetBytes(string.Format("probe-ack:1")) });
