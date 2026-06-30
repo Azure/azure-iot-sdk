@@ -25,7 +25,7 @@ namespace Microsoft.Azure.Devices.Client.IotHub
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
-                Trace.TraceInformation("Attempting to establish connection and presence for device {device} with IoT Hub {hostname}", deviceId, hostname);
+                Trace.TraceInformation("Attempting to establish connection and presence for device {0} with IoT Hub {1}", deviceId, hostname);
 
                 //TODO verify this is 16 bytes
                 Guid connectNonce = Guid.NewGuid(); //Note that this nonce must be unique per connection attempt, not per successfuly connection
@@ -56,14 +56,14 @@ namespace Microsoft.Azure.Devices.Client.IotHub
                 }
                 catch (Exception ex)
                 {
-                    Trace.TraceWarning("Exception thrown while connecting to MQTT broker: {exceptionMessage}. Attempting connection again...", ex.Message);
+                    Trace.TraceWarning("Exception thrown while connecting to MQTT broker: {0}. Attempting connection again...", ex.Message);
                     continue; // Start the connect process over again
                 }
 
                 if (connack.ResultCode != MqttClientConnectResultCode.Success)
                 {
                     subscribed = false;
-                    Trace.TraceWarning("Received CONNACK with unsuccessful result code:{resultCode}. Attempting connection again...", connack.ResultCode);
+                    Trace.TraceWarning("Received CONNACK with unsuccessful result code: {0}. Attempting connection again...", connack.ResultCode);
                     continue; // Start the connect process over again
                 }
 
@@ -78,14 +78,14 @@ namespace Microsoft.Azure.Devices.Client.IotHub
                         var suback = await mqttClient.SubscribeAsync(new(string.Format("ih/{deviceId}/dev/#", deviceId), MqttQualityOfServiceLevel.AtLeastOnce), cancellationToken);
                         if (suback.Items.FirstOrDefault().ResultCode != MqttClientSubscribeResultCode.GrantedQoS1)
                         {
-                            Trace.TraceWarning("Received SUBACK on devicebound SUBSCRIBE with unsuccessful result code:{resultCode}. Attempting connection again...", suback.Items.FirstOrDefault().ResultCode);
+                            Trace.TraceWarning("Received SUBACK on devicebound SUBSCRIBE with unsuccessful result code: {0}. Attempting connection again...", suback.Items.FirstOrDefault().ResultCode);
                             continue; // Start the connect process over again
                         }
 
                     }
                     catch (Exception e)
                     {
-                        Trace.TraceWarning("Exception thrown while subscribing to devicebound topic: {exceptionMessage}. Attempting connection again...", e.Message);
+                        Trace.TraceWarning("Exception thrown while subscribing to devicebound topic: {0}. Attempting connection again...", e.Message);
                         continue; // Start the connect process over again
                     }
                 }
@@ -171,7 +171,7 @@ namespace Microsoft.Azure.Devices.Client.IotHub
                 }
                 catch (Exception e)
                 {
-                    Trace.TraceWarning("Exception thrown while publishing birth message: {exceptionMessage}. Disconnecting from the MQTT broker and attempting connection again...", e.Message);
+                    Trace.TraceWarning("Exception thrown while publishing birth message: {0}. Disconnecting from the MQTT broker and attempting connection again...", e.Message);
                     
                     await mqttClient.DisconnectAsync(new MqttDisconnect() { Reason = MqttClientDisconnectOptionsReason.NormalDisconnection, ReasonString = "MQTT client threw an exception while sending birth message" }, cancellationToken);
                     subscribed = false;
@@ -183,7 +183,7 @@ namespace Microsoft.Azure.Devices.Client.IotHub
 
                 if (birthMessagePuback.ReasonCode != MqttClientPublishReasonCode.Success)
                 {
-                    Trace.TraceWarning("Received unsuccessful PUBACK when publishing birth message: {reasonCode}. Disconnecting from the MQTT broker and attempting connection again...", birthMessagePuback);
+                    Trace.TraceWarning("Received unsuccessful PUBACK when publishing birth message: {0}. Disconnecting from the MQTT broker and attempting connection again...", birthMessagePuback);
                     
                     await mqttClient.DisconnectAsync(new MqttDisconnect() { Reason = MqttClientDisconnectOptionsReason.NormalDisconnection, ReasonString = "Birth message wasn't sent successfully" }, cancellationToken);
                     subscribed = false;

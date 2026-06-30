@@ -221,7 +221,7 @@ namespace Microsoft.Azure.Devices.Client.Twin
             if (typeVersion != 1)
             {
                 // The service may increment the protocol version of these messages over time. For now, there is only the one version, though
-                Trace.TraceWarning("Received a twin message whose type version ({receivedTypeVersion}) is not supported by this client (supported version: {supportedVersion}). You may need to upgrade this library's version to handle this kind of message. Ignoring it.", typeVersion, 1);
+                Trace.TraceWarning("Received a twin message whose type version ({0}) is not supported by this client (supported version: {1}). You may need to upgrade this library's version to handle this kind of message. Ignoring it.", typeVersion, 1);
                 return;
             }
 
