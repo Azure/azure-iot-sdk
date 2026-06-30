@@ -138,12 +138,6 @@ jobs:
 
       - name: Run e2e
         shell: pwsh
-        env:
-          # Resources were provisioned in the setup job, so the device/cloud env
-          # MUST be present here. Turn a missing var into a hard failure instead
-          # of a silent skip, so this job is a real telemetry gate (no false
-          # green when provisioning regresses).
-          AZ_IOT_E2E_REQUIRE_CLOUD: '1'
         run: |
           . ./test_config/set_test_env_vars.ps1
           dotnet test ./c/tests/e2e/driver/Azure.Iot.Sdk.C.E2E.csproj `

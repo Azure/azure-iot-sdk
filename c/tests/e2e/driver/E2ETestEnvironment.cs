@@ -35,18 +35,6 @@ internal static class E2ETestEnvironment
     // ---- Path to the native agent (set by the e2e workflow) ----------------
     public static string? AgentPath => Get("AZ_IOT_E2E_AGENT_PATH");
 
-    /// <summary>
-    /// When set (by the e2e workflow, after the resources are provisioned), a
-    /// missing required environment variable or agent binary becomes a HARD
-    /// FAILURE rather than a skip. This is what makes the suite a *real* e2e
-    /// gate: inside the provisioned pipeline the device/cloud material must
-    /// exist, so a silent skip would be a false "green". Outside the pipeline
-    /// (local dev) the flag is unset and the tests skip cleanly instead.
-    /// </summary>
-    public static bool RequireCloud =>
-        Get("AZ_IOT_E2E_REQUIRE_CLOUD") is { } v
-        && (v == "1" || string.Equals(v, "true", StringComparison.OrdinalIgnoreCase));
-
     private static string? Get(string name)
     {
         string? v = Environment.GetEnvironmentVariable(name);
@@ -54,43 +42,36 @@ internal static class E2ETestEnvironment
     }
 
     /// <summary>
-    /// Asserts a prerequisite for an e2e scenario. When <see cref="RequireCloud"/>
-    /// is set (provisioned pipeline) a false <paramref name="condition"/> FAILS
-    /// the test; otherwise it SKIPS it. Use this for every "is the cloud/agent
-    /// available?" guard so the suite can never pass by silently skipping in CI.
+    /// Asserts a prerequisite for an e2e scenario. A false <paramref name="condition"/>
+    /// FAILS the test with an actionable message. These tests only run against real
+    /// Azure resources (the ci-c-e2e pipeline, or a deliberate local run with the
+    /// e2e-fx config dot-sourced), so a missing prerequisite is always a real
+    /// failure — there is no "skipped but green" path to hide a broken setup.
     /// </summary>
-    public static void RequireOrSkip([DoesNotReturnIf(false)] bool condition, string because)
+    public static void Require([DoesNotReturnIf(false)] bool condition, string because)
     {
-        if (condition)
-        {
-            return;
-        }
-
-        if (RequireCloud)
+        if (!condition)
         {
             Assert.Fail(
-                $"Required e2e prerequisite is missing: {because}. AZ_IOT_E2E_REQUIRE_CLOUD is set, "
-                + "so the provisioning step was expected to supply this; failing instead of skipping "
-                + "to avoid a false green.");
+                $"e2e prerequisite missing: {because}. This suite runs against real Azure resources; "
+                + "provision via iot-sdks-e2e-fx and dot-source the generated config, or run it through "
+                + "the ci-c-e2e pipeline.");
         }
-
-        Assert.Skip($"e2e prerequisite not available (not provisioned): {because}");
     }
 
     /// <summary>
-    /// Guards the device/cloud prerequisites shared by every scenario. Skips
-    /// when run outside the provisioned pipeline; fails when run inside it (see
-    /// <see cref="RequireOrSkip"/>), so the suite is a real gate, never a silent
-    /// skip.
+    /// Guards the device/cloud prerequisites shared by every scenario. Fails with
+    /// an actionable message (see <see cref="Require"/>) when the device material
+    /// or agent binary is absent, so the suite is always a real gate.
     /// </summary>
     public static void RequireDpsDeviceEnvironment()
     {
-        RequireOrSkip(DpsIdScope is not null, "IOT_DPS_ID_SCOPE not set");
-        RequireOrSkip(DpsRegistrationId is not null, "IOT_DPS_INDIVIDUAL_REGISTRATION_ID not set");
-        RequireOrSkip(DpsX509CertBase64 is not null, "IOT_DPS_INDIVIDUAL_X509_CERTIFICATE not set");
-        RequireOrSkip(DpsX509KeyBase64 is not null, "IOT_DPS_INDIVIDUAL_X509_KEY not set");
-        RequireOrSkip(AgentPath is not null, "AZ_IOT_E2E_AGENT_PATH not set");
-        RequireOrSkip(AgentPath is not null && File.Exists(AgentPath), $"agent binary not found at {AgentPath}");
+        Require(DpsIdScope is not null, "IOT_DPS_ID_SCOPE not set");
+        Require(DpsRegistrationId is not null, "IOT_DPS_INDIVIDUAL_REGISTRATION_ID not set");
+        Require(DpsX509CertBase64 is not null, "IOT_DPS_INDIVIDUAL_X509_CERTIFICATE not set");
+        Require(DpsX509KeyBase64 is not null, "IOT_DPS_INDIVIDUAL_X509_KEY not set");
+        Require(AgentPath is not null, "AZ_IOT_E2E_AGENT_PATH not set");
+        Require(AgentPath is not null && File.Exists(AgentPath), $"agent binary not found at {AgentPath}");
     }
 
     /// <summary>

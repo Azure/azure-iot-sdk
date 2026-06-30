@@ -207,12 +207,13 @@ only; other events fall through to the `if`). ADU paths:
 
 ## Conventions & gotchas
 
-- **Skip locally, fail in CI.** Use `E2ETestEnvironment.RequireOrSkip(...)` for
-  every "is the cloud/agent available?" guard. Outside the provisioned pipeline
-  (local dev) a missing prerequisite *skips* the test, so the suite never
-  produces false failures. Inside the pipeline the `Run e2e` step sets
-  `AZ_IOT_E2E_REQUIRE_CLOUD=1`, which turns a missing prerequisite into a hard
-  *failure* — a real e2e gate can never pass by silently skipping.
+- **Always a real gate, never a skip.** Use `E2ETestEnvironment.Require(...)`
+  for every "is the cloud/agent available?" guard. These tests run only against
+  real Azure resources (the ci-c-e2e pipeline, or a deliberate local run with
+  the e2e-fx config dot-sourced), so a missing prerequisite is a hard *failure*
+  with an actionable message — there is no "skipped but green" path to hide a
+  broken setup. (The ADU placeholder is the one intentional `Assert.Skip`: that
+  feature isn't implemented yet.)
 - **CA bundle without downloads.** Linux uses the OpenSSL system bundle; Windows
   exports the machine `Root` store. Avoid fetching roots over the network.
 - **EventHub API:** `EventHubConsumerClient.ReadEventsAsync` takes
