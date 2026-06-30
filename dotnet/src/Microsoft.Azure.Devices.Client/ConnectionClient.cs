@@ -146,6 +146,10 @@ namespace Microsoft.Azure.Devices.Client
         {
             IotHubConnection iotHubConnection = new();
 
+            CurrentConnectionContext = connectionContext;
+
+            MqttClient.PublishReceivedAsync += DelegateReceivedPublishAsync; //TODO add integration test for this scenario!
+
             if (connectionContext.IsAzureEventGrid)
             {
                 // Connect to the new Azure Event Grid endpoint using MQTT v5 using the provisioning result credentials
