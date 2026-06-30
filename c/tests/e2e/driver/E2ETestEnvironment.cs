@@ -2,6 +2,7 @@
 // Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using Xunit;
@@ -41,18 +42,36 @@ internal static class E2ETestEnvironment
     }
 
     /// <summary>
-    /// Skips the calling test (instead of failing) when the cloud resources or
-    /// the native agent are not available. This keeps the suite SOLID: it never
-    /// produces false failures when run outside the provisioned e2e pipeline.
+    /// Asserts a prerequisite for an e2e scenario. A false <paramref name="condition"/>
+    /// FAILS the test with an actionable message. These tests only run against real
+    /// Azure resources (the ci-c-e2e pipeline, or a deliberate local run with the
+    /// e2e-fx config dot-sourced), so a missing prerequisite is always a real
+    /// failure — there is no "skipped but green" path to hide a broken setup.
+    /// </summary>
+    public static void Require([DoesNotReturnIf(false)] bool condition, string because)
+    {
+        if (!condition)
+        {
+            Assert.Fail(
+                $"e2e prerequisite missing: {because}. This suite runs against real Azure resources; "
+                + "provision via iot-sdks-e2e-fx and dot-source the generated config, or run it through "
+                + "the ci-c-e2e pipeline.");
+        }
+    }
+
+    /// <summary>
+    /// Guards the device/cloud prerequisites shared by every scenario. Fails with
+    /// an actionable message (see <see cref="Require"/>) when the device material
+    /// or agent binary is absent, so the suite is always a real gate.
     /// </summary>
     public static void RequireDpsDeviceEnvironment()
     {
-        Assert.SkipUnless(DpsIdScope is not null, "IOT_DPS_ID_SCOPE not set");
-        Assert.SkipUnless(DpsRegistrationId is not null, "IOT_DPS_INDIVIDUAL_REGISTRATION_ID not set");
-        Assert.SkipUnless(DpsX509CertBase64 is not null, "IOT_DPS_INDIVIDUAL_X509_CERTIFICATE not set");
-        Assert.SkipUnless(DpsX509KeyBase64 is not null, "IOT_DPS_INDIVIDUAL_X509_KEY not set");
-        Assert.SkipUnless(AgentPath is not null, "AZ_IOT_E2E_AGENT_PATH not set");
-        Assert.SkipUnless(File.Exists(AgentPath), $"agent binary not found at {AgentPath}");
+        Require(DpsIdScope is not null, "IOT_DPS_ID_SCOPE not set");
+        Require(DpsRegistrationId is not null, "IOT_DPS_INDIVIDUAL_REGISTRATION_ID not set");
+        Require(DpsX509CertBase64 is not null, "IOT_DPS_INDIVIDUAL_X509_CERTIFICATE not set");
+        Require(DpsX509KeyBase64 is not null, "IOT_DPS_INDIVIDUAL_X509_KEY not set");
+        Require(AgentPath is not null, "AZ_IOT_E2E_AGENT_PATH not set");
+        Require(AgentPath is not null && File.Exists(AgentPath), $"agent binary not found at {AgentPath}");
     }
 
     /// <summary>
