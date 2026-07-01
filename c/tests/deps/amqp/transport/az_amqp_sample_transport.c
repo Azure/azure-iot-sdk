@@ -365,6 +365,7 @@ static az_amqp_transport_status _sch_handshake(az_amqp_sample_transport* s)
   }
   g_sch.in_len += n;
 
+  int incomplete_creds_seen = 0;
   for (;;)
   {
     SecBuffer inbufs[2]
@@ -386,6 +387,21 @@ static az_amqp_transport_status _sch_handshake(az_amqp_sample_transport* s)
     {
       return _sch_flush(s) == AZ_AMQP_TRANSPORT_STATUS_ERROR ? AZ_AMQP_TRANSPORT_STATUS_ERROR
                                                              : AZ_AMQP_TRANSPORT_STATUS_WANT_READ;
+    }
+
+    if (st == SEC_I_INCOMPLETE_CREDENTIALS)
+    {
+      // The server requested (optional) TLS client authentication. This transport
+      // authenticates via SAS/CBS and never presents a client certificate, so continue
+      // the handshake anonymously by re-invoking InitializeSecurityContext with the same
+      // server flight. Azure IoT Hub's AMQP endpoint issues this request; Event Hubs does
+      // not, which is why only the c2d (IoT Hub) connection was affected.
+      if (++incomplete_creds_seen > 2)
+      {
+        _sch_fail(s, "InitializeSecurityContext: incomplete credentials", (long)st);
+        return AZ_AMQP_TRANSPORT_STATUS_ERROR;
+      }
+      continue;
     }
 
     // Move any leftover ("extra") ciphertext to the front of the input buffer.

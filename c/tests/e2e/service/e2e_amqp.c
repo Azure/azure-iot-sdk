@@ -10,6 +10,16 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* GCC flags these AZ_NODISCARD (warn_unused_result) az_amqp calls under -Werror even
+   with a plain (void) cast, which GCC deliberately ignores. Route the intentional
+   best-effort/teardown discards through an assignment so the result is observed. */
+#define E2E_AMQP_DISCARD(expr)             \
+    do                                     \
+    {                                      \
+        az_result _e2e_discard_r = (expr); \
+        (void)_e2e_discard_r;              \
+    } while (0)
+
 /* --- shared callbacks / pump ---------------------------------------------- */
 
 typedef struct put_token_result_tag
@@ -108,7 +118,7 @@ static void on_message_received(
         t->captured_count++;
     }
 
-    (void)az_amqp_link_accept(link, delivery->number);
+    E2E_AMQP_DISCARD(az_amqp_link_accept(link, delivery->number));
 }
 
 bool e2e_amqp_telemetry_begin(
@@ -324,11 +334,11 @@ void e2e_amqp_telemetry_end(e2e_amqp_telemetry_t* t)
 
     for (int p = 0; p < t->partition_count; p++)
     {
-        (void)az_amqp_link_detach(&t->receivers[p], NULL);
+        E2E_AMQP_DISCARD(az_amqp_link_detach(&t->receivers[p], NULL));
     }
-    (void)az_amqp_cbs_close(&t->cbs);
-    (void)az_amqp_session_end(&t->session, NULL);
-    (void)az_amqp_connection_close(&t->connection, NULL);
+    E2E_AMQP_DISCARD(az_amqp_cbs_close(&t->cbs));
+    E2E_AMQP_DISCARD(az_amqp_session_end(&t->session, NULL));
+    E2E_AMQP_DISCARD(az_amqp_connection_close(&t->connection, NULL));
 
     for (int i = 0; i < 40; i++)
     {
@@ -566,13 +576,13 @@ bool e2e_amqp_send_c2d(
         c->to_buffer, sizeof(c->to_buffer), "/devices/%s/messages/devicebound", device_id);
 
     az_amqp_message message;
-    (void)az_amqp_message_init(&message);
+    E2E_AMQP_DISCARD(az_amqp_message_init(&message));
     az_amqp_message_properties properties = { 0 };
     properties.to = az_span_create((uint8_t*)c->to_buffer, to_length);
     properties.content_type = AZ_SPAN_FROM_STR("application/octet-stream");
-    (void)az_amqp_message_set_properties(&message, &properties);
-    (void)az_amqp_message_set_body_data(
-        &message, az_span_create((uint8_t*)(uintptr_t)payload, (int32_t)payload_len));
+    E2E_AMQP_DISCARD(az_amqp_message_set_properties(&message, &properties));
+    E2E_AMQP_DISCARD(az_amqp_message_set_body_data(
+        &message, az_span_create((uint8_t*)(uintptr_t)payload, (int32_t)payload_len)));
 
     send_result_t send = { 0 };
     uint8_t delivery_tag_bytes[] = { 0x00, 0x00, 0x00, 0x01 };
@@ -600,19 +610,19 @@ bool e2e_amqp_send_c2d(
 cleanup:
     if (sender_ok)
     {
-        (void)az_amqp_link_detach(&c->sender, NULL);
+        E2E_AMQP_DISCARD(az_amqp_link_detach(&c->sender, NULL));
     }
     if (cbs_ok)
     {
-        (void)az_amqp_cbs_close(&c->cbs);
+        E2E_AMQP_DISCARD(az_amqp_cbs_close(&c->cbs));
     }
     if (session_ok)
     {
-        (void)az_amqp_session_end(&c->session, NULL);
+        E2E_AMQP_DISCARD(az_amqp_session_end(&c->session, NULL));
     }
     if (connection_ok)
     {
-        (void)az_amqp_connection_close(&c->connection, NULL);
+        E2E_AMQP_DISCARD(az_amqp_connection_close(&c->connection, NULL));
         for (int i = 0; i < 40; i++)
         {
             az_amqp_connection_state state = az_amqp_connection_get_state(&c->connection);
