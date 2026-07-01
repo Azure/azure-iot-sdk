@@ -31,6 +31,7 @@ cons:
    - See [this section](#features-only-available-in-classic-hub) and [this section](#features-only-available-in-aeg-hub) for the enumeration of what all is lost here
    - New service side features will largely only be added to AEG Hub which compounds this issue
  - This approach cannot abstract [certain service behavior differences](#subtle-behavior-differences-between-hub-flavors)
+ - This approach doesn't allow users to capitilize on any design improvements made in AEG hub (for instance, if-match filtering of properties when getting twin)
 
 ### Ship a unified API that also includes all AEG Hub-only features
 
@@ -41,7 +42,7 @@ pros:
 
 cons:
  - If a user tries to use an AEG Hub-specific feature against a non-AEG Hub, the SDK will have to throw a ```NotSupportedException``` which breaks the illusion that these different Hub flavors are interchangeable
-   - If DPS story enforces that any device using an AEG feature is provisioned to an AEG hub, this becomes a non-issue, but even that requires that users declare before provisioning what features they plan to use
+   - If DPS enforces that any device using an AEG feature is provisioned to an AEG hub, this becomes a non-issue, but even that requires that users declare before provisioning what features they plan to use which feels clunky
  - This approach cannot abstract [certain service behavior differences](#subtle-behavior-differences-between-hub-flavors)
 
 ### Ship unified API and API that targets AEG Hub only
@@ -52,6 +53,7 @@ If a user wants to access [AEG Hub-specific features](#features-only-available-i
 
 pros:
  - The same pros as the [the first proposal](#ship-a-lowest-common-denominator-unified-api)
+ - This approach caters well to future users that may only ever have AEG Hubs
  - This approach simplifies the DPS story around provisioning
    - Any user of the AEG-specific API set can be assumed to need an AEG Hub at provisioning time
    - Any user of the unified API set can be assumed to be fine with either Hub flavor
@@ -66,9 +68,14 @@ cons:
 Instead of shipping an API set that works for both flavors of IoT Hub, we create one set of APIs that target classic Hub and one set of APIs that target AEG Hub
 
 pros:
- - This approach caters well to users who never intend to use the Hub flavors interchangeably
+ - This approach caters well to users who never intend to use the Hub flavors interchangeably. Most notably, future adopters that may only ever have AEG Hubs
+ - This approach simplifies the DPS story around provisioning
+   - Any user of the AEG Hub-specific API set can be assumed to need an AEG Hub at provisioning time
+   - Any user of the classic Hub-specific API set can be assumed to need a classic Hub at provisioning time
 
 cons:
+ - The story around users migrating to the new hub type now requires non-trivial device-side code changes as well. 
+   - Is there even an order of upgrading device to AEG API set and upgrading to AEG hub service that makes sense?
  - This approach makes no effort to hide that IoT Hub has different flavors. Are we okay with users understanding this?
 
 
@@ -84,6 +91,8 @@ The current IoT Hub and future AEG Hub will behave differently from each other i
 
 ### Features only available in AEG Hub
 
+ - If-match filtering of twin properties when using ```GetTwin``` API
+   - AEG hub allows you to not retrieve desired/reported properties if their version matches the version provided in the ```GetTwin``` request
  - Future features
    - Custom topic support
    - Device-to-device telemetry
@@ -93,9 +102,18 @@ The current IoT Hub and future AEG Hub will behave differently from each other i
 
 ### Subtle behavior differences between Hub flavors
 
+ - TLS versions supported
+   - Is it possible that TLS 1.4 could be added to AEG hub in the future, but not classic Hub? Hypothetically, a user could require their device use TLS 1.4 for security purposes, but that could break if provisioned to a classic hub
  - Message size limits are inconsistent
- - Throttling limits?
+ - Throttling limits? Classic hub throttles by slowing down, AEG hub may actually send a throttling error?
+ - QoS differences in messages? Could a twin message be delivered multiple times in classic hub at QoS 1 whereas only delivered once in AEG hub at QoS 0? 
  - IoT Hub File upload APIs are done over HTTP for classic Hubs, but done over MQTT for AEG Hubs
    - Mostly an issue because, if a device's environment prevents access to port 443, that device may work fine with AEG hubs but then break for classic Hubs
  - The service communicating over different MQTT protocols itself could cause inconsistencies
    - Depending on SDK language, MQTTv3.1.1 and MQTTv5 client libraries could behave differently (ie. there is a bug in the MQTTv5 stack but not in the MQTTv3 stack)
+ 
+
+# Open questions that may impact this topic
+
+ - The story around how DPS picks which type of Hub to provision a device to is still under construction
+   - Broadly, it seems like the device will declare to DPS at provisioning time what features it requires, but the details aren't set
