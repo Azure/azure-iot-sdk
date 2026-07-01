@@ -66,5 +66,16 @@ if(WIN32)
 else()
     find_package(OpenSSL REQUIRED)
     target_link_libraries(az_amqp_transport PUBLIC OpenSSL::SSL OpenSSL::Crypto)
-    target_compile_definitions(az_amqp_transport PRIVATE AZ_AMQP_SAMPLE_USE_OPENSSL)
+    # AZ_AMQP_SAMPLE_USE_OPENSSL selects the OpenSSL TLS path. The _DEFAULT_SOURCE /
+    # _POSIX_C_SOURCE macros expose the POSIX networking API the reference transport
+    # relies on (getaddrinfo/struct addrinfo in az_amqp_sample_transport.c; select/
+    # fd_set/struct timeval in az_amqp_sample_wait.c). The SDK compiles under a strict
+    # -std=c99, which defines __STRICT_ANSI__ and otherwise hides those behind glibc/
+    # musl feature-test guards. Defined on the command line so they precede every
+    # header included by either transport translation unit.
+    target_compile_definitions(az_amqp_transport PRIVATE
+        AZ_AMQP_SAMPLE_USE_OPENSSL
+        _DEFAULT_SOURCE
+        _POSIX_C_SOURCE=200112L
+    )
 endif()

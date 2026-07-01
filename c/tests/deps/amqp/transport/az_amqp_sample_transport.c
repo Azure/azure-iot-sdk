@@ -581,7 +581,11 @@ static void _sch_close(void)
     FreeCredentialsHandle(&g_sch.cred);
     g_sch.cred_ok = false;
   }
-  g_sch.started = false;
+  // Fully reset the single global slot so the next connection performs a fresh
+  // handshake. Clearing `started` alone is not enough: `_sch_handshake` tests
+  // `g_sch.done` first, so a leftover `done` from the previous connection would
+  // make the next one skip its handshake and then fail at the first encrypt.
+  memset(&g_sch, 0, sizeof(g_sch));
 }
 #endif // _WIN32 && !AZ_AMQP_SAMPLE_USE_OPENSSL
 

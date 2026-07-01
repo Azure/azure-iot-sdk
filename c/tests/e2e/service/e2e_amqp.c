@@ -328,6 +328,15 @@ void e2e_amqp_telemetry_end(e2e_amqp_telemetry_t* t)
             break;
         }
     }
+
+    /* Close the transport so its TLS slot is released. az_amqp_connection_close
+     * tears down the AMQP session but leaves the caller-owned transport open; on
+     * Windows the Schannel adapter uses a single global slot, so the next
+     * connection (c2d/method/twin) can only handshake once this one is closed. */
+    if (t->transport.vtable != NULL && t->transport.vtable->close != NULL)
+    {
+        (void)t->transport.vtable->close(&t->transport);
+    }
 }
 
 /* --- cloud-to-device sender ----------------------------------------------- */
@@ -603,6 +612,12 @@ cleanup:
                 break;
             }
         }
+    }
+
+    /* Release the transport's TLS slot (see e2e_amqp_telemetry_end). */
+    if (c->transport.vtable != NULL && c->transport.vtable->close != NULL)
+    {
+        (void)c->transport.vtable->close(&c->transport);
     }
     free(c);
     if (!ok && err_out != NULL)
