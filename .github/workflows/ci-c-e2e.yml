@@ -5,20 +5,20 @@
 #
 # Architecture
 # ------------
-# * Device side  : the native `az_iot_e2e_agent` (built by CMake) provisions via
-#                  DPS (x509 individual enrollment) and runs one scenario.
-# * Service side : a dotnet harness (c/tests/e2e/driver) reuses the
-#                  Microsoft.Azure.Devices service client + the EventHub endpoint
-#                  to drive/verify each scenario. It launches the agent.
-# * Resources    : provisioned per job via the shared iot-sdks-e2e-fx script
-#                  (same one ci-dotnet uses) and ALWAYS torn down.
+# * In-process  : ONE native cmocka executable (`az_iot_tests_e2e`) plays BOTH
+#                 halves of every scenario. The device side is the shipping SDK
+#                 over the Paho MQTT adapter (DPS x509 individual enrollment);
+#                 the cloud side is the `az_iot_e2e_service` facade (vendored
+#                 AMQP for telemetry/c2d, HTTPS+SAS for method/twin).
+# * Resources   : provisioned per job via the shared iot-sdks-e2e-fx script
+#                 (same one ci-dotnet uses) and ALWAYS torn down.
 #
 # Scope
 # -----
-# This workflow runs the FAST scenarios (telemetry/c2d/method/twin,
-# Category=Fast). Device Update (ADU) lives in a separate workflow
-# (ci-c-e2e-adu.yml) because its service provisioning is slow (~25 min) and it
-# runs on a different trigger cadence.
+# This workflow runs the fast scenarios (telemetry/c2d/method/twin). Device
+# Update (ADU) e2e lives in a separate slow-lane workflow (ci-c-e2e-adu.yml)
+# because its Device Update provisioning is slow (~25 min); it uses the same
+# in-process model on a nightly / dispatch / ADU-paths cadence.
 #
 # Stages
 # ------
@@ -26,8 +26,9 @@
 #   1. setup    : provision the resource group + emit the test-config script
 #                 ONCE (via the reusable provision-e2e-resources step), publish
 #                 it as an artifact, and expose the resource-group name.
-#   2. test     : the Windows AND Linux test legs (matrix). Each builds its own
-#                 agent, downloads the shared test-config, and runs Category=Fast.
+#   2. test     : the Windows AND Linux test legs (matrix). Each builds the
+#                 native e2e test, downloads the shared test-config, materializes
+#                 the device X.509 material to files, and runs `ctest -R e2e`.
 #   3. teardown : always() deletes the shared resource group (via the reusable
 #                 destroy-e2e-resources step).
 #
@@ -95,14 +96,16 @@ jobs:
     needs: setup
     strategy:
       fail-fast: false
+      # Both OSes run in parallel. Linux is the faster leg, but Windows is kept
+      # deliberately: it is the only leg that exercises the Schannel TLS path in
+      # the test harness's AMQP transport (the shipping device SDK is MQTT/Paho
+      # on both), and it preserves Windows local-dev parity.
       matrix:
         include:
           - os: ubuntu-latest
             preset: linux-gcc-debug
-            agent_glob: c/build/linux-gcc-debug/tests/e2e/az_iot_e2e_agent
           - os: windows-latest
             preset: windows-msvc-debug
-            agent_glob: c/build/windows-msvc-debug/tests/e2e/Debug/az_iot_e2e_agent.exe
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
@@ -116,19 +119,11 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y ninja-build
 
-      - name: Build e2e device agent
+      - name: Build e2e test
         working-directory: c
         run: |
           cmake --preset ${{ matrix.preset }} -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_WITH_PAHO=ON
-          cmake --build --preset ${{ matrix.preset }} ${{ runner.os == 'Windows' && '--config Debug' || '' }} --target az_iot_e2e_agent
-
-      - name: Locate agent binary
-        shell: pwsh
-        run: |
-          $path = "${{ matrix.agent_glob }}"
-          if (-not (Test-Path $path)) { throw "agent binary not found at $path" }
-          $full = (Resolve-Path $path).Path
-          "AZ_IOT_E2E_AGENT_PATH=$full" | Out-File -FilePath $env:GITHUB_ENV -Append
+          cmake --build --preset ${{ matrix.preset }} ${{ runner.os == 'Windows' && '--config Debug' || '' }} --target az_iot_tests_e2e
 
       - name: Download shared test config
         uses: actions/download-artifact@v4
@@ -139,18 +134,61 @@ jobs:
       - name: Run e2e
         shell: pwsh
         run: |
+          # Service-side config (IOTHUB_*, IOT_DPS_*) is set by the generated script.
           . ./test_config/set_test_env_vars.ps1
-          dotnet test ./c/tests/e2e/driver/Azure.Iot.Sdk.C.E2E.csproj `
-            --filter "Category=Fast" `
-            --logger "trx;LogFileName=e2e-${{ matrix.os }}.trx" `
-            --results-directory ./test_config/results
+
+          # Materialize the device X.509 material to files. The in-process test
+          # reads cert/key/CA by PATH, so CI decodes the base64 PEMs and builds a
+          # CA trust bundle here (no network download).
+          $dir = Join-Path ([System.IO.Path]::GetTempPath()) ("az-iot-c-e2e-" + [Guid]::NewGuid().ToString("N"))
+          New-Item -ItemType Directory -Path $dir -Force | Out-Null
+          $certPath = Join-Path $dir "device-cert.pem"
+          $keyPath  = Join-Path $dir "device-key.pem"
+          $caPath   = Join-Path $dir "trusted-ca.pem"
+
+          [System.IO.File]::WriteAllText($certPath,
+            [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:IOT_DPS_INDIVIDUAL_X509_CERTIFICATE)))
+          [System.IO.File]::WriteAllText($keyPath,
+            [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:IOT_DPS_INDIVIDUAL_X509_KEY)))
+
+          if ($IsLinux -and (Test-Path "/etc/ssl/certs/ca-certificates.crt")) {
+            Copy-Item "/etc/ssl/certs/ca-certificates.crt" $caPath
+          }
+          else {
+            # Export the machine + user Root stores as a PEM bundle.
+            $sb = New-Object System.Text.StringBuilder
+            foreach ($loc in @('LocalMachine', 'CurrentUser')) {
+              $store = New-Object System.Security.Cryptography.X509Certificates.X509Store('Root', $loc)
+              $store.Open('ReadOnly')
+              foreach ($c in $store.Certificates) { [void]$sb.AppendLine($c.ExportCertificatePem()) }
+              $store.Close()
+            }
+            [System.IO.File]::WriteAllText($caPath, $sb.ToString())
+          }
+
+          # Map the config's DPS vars onto the names the test consumes.
+          $env:AZ_IOT_DPS_ID_SCOPE        = $env:IOT_DPS_ID_SCOPE
+          $env:AZ_IOT_DPS_REGISTRATION_ID = $env:IOT_DPS_INDIVIDUAL_REGISTRATION_ID
+          $env:AZ_IOT_CLIENT_CERT         = $certPath
+          $env:AZ_IOT_CLIENT_KEY          = $keyPath
+          $env:AZ_IOT_TRUSTED_CA          = $caPath
+          if ($env:IOT_DPS_GLOBAL_ENDPOINT) { $env:AZ_IOT_DPS_GLOBAL_ENDPOINT = $env:IOT_DPS_GLOBAL_ENDPOINT }
+
+          New-Item -ItemType Directory -Path ./test_config/results -Force | Out-Null
+          $cfg = if ($IsWindows) { @('-C', 'Debug') } else { @() }
+          # `-R e2e -E adu` runs the fast suite (az_iot_tests_e2e) but NOT the
+          # slow-lane ADU placeholder (az_iot_tests_e2e_adu); ADU has its own
+          # workflow (ci-c-e2e-adu.yml).
+          ctest --test-dir c/build/${{ matrix.preset }} @cfg -R e2e -E adu `
+            --verbose --no-tests=error --timeout 900 `
+            --output-junit ./test_config/results/e2e-${{ matrix.os }}.xml
 
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: e2e-results-${{ matrix.os }}
-          path: ./test_config/results/**/*.trx
+          path: ./test_config/results/**/*.xml
           if-no-files-found: ignore
 
   teardown:

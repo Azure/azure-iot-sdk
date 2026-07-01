@@ -3,39 +3,33 @@
 
 # End-to-end Device Update (ADU) tests for the C SDK.
 #
-# This is the slow counterpart to ci-c-e2e.yml. It is kept separate because the
-# Azure Device Update service takes ~25 min to provision, so it must NOT gate
-# the fast feedback loop. It runs:
-#   * on PRs that touch ADU code paths (native `paths` filter below),
+# This is the slow-lane counterpart to ci-c-e2e.yml. It is kept separate because
+# provisioning the Azure Device Update account/instance takes ~25 min, so it
+# must NOT gate the fast feedback loop. It runs:
+#   * on PRs that touch ADU code paths (the `paths` filter below),
 #   * nightly (regression), and
 #   * on manual dispatch.
 #
 # Architecture
 # ------------
-# * Device side  : the native `az_iot_e2e_agent` (built by CMake) provisions via
-#                  DPS (x509 individual enrollment) and runs the ADU scenario.
-# * Service side : a dotnet harness (c/tests/e2e/driver) reuses the
-#                  Microsoft.Azure.Devices service client + 'az iot du' to drive
-#                  and verify the update. It launches the agent.
-# * Resources    : provisioned per run via the shared iot-sdks-e2e-fx script
-#                  (with -EnableADU Gen1) and ALWAYS torn down.
+# Like ci-c-e2e.yml, this is fully in-process: the ADU scenario runs as the
+# native `az_iot_tests_e2e_adu` CTest.
+#
+# TODO (tracked follow-up): implement the device-side ADU update scenario.
+# Until then `az_iot_tests_e2e_adu` is a placeholder that gates on the
+# provisioned environment and reports a CTest skip; the value of this pipeline
+# right now is exercising the (slow) ADU-enabled provisioning + gating +
+# teardown so those never regress. When the real scenario lands it will connect
+# a device (reuse the device-material materialization from ci-c-e2e.yml) and
+# drive the update via 'az iot du' (which needs an Azure OIDC login in the test
+# job).
 #
 # Stages
 # ------
 # Resources (incl. the Device Update account/instance) are provisioned EXACTLY
-# ONCE and shared by every test leg:
-#   1. setup    : provision the resource group (with ADU Gen1) + emit the
-#                 test-config script ONCE (via the reusable provision-e2e-
-#                 resources step), publish it as an artifact, and expose the
-#                 resource-group name.
-#   2. test     : the Windows AND Linux test legs (matrix). Each builds its own
-#                 agent, downloads the shared test-config, logs in to Azure (ADU
-#                 scenarios call `az iot du`), and runs Category=Adu.
-#   3. teardown : always() deletes the shared resource group (via the reusable
-#                 destroy-e2e-resources step).
-#
-# The provision/destroy steps live in .github/actions/{provision,destroy}-e2e-
-# resources so other pipelines (e.g. ci-dotnet) can reuse them.
+# ONCE by the setup job and shared by both test legs; teardown always() deletes
+# them. The provision/destroy steps live in .github/actions/{provision,destroy}-
+# e2e-resources so other pipelines (e.g. ci-dotnet) can reuse them.
 
 name: ci-c-e2e-adu
 
@@ -101,10 +95,8 @@ jobs:
         include:
           - os: ubuntu-latest
             preset: linux-gcc-debug
-            agent_glob: c/build/linux-gcc-debug/tests/e2e/az_iot_e2e_agent
           - os: windows-latest
             preset: windows-msvc-debug
-            agent_glob: c/build/windows-msvc-debug/tests/e2e/Debug/az_iot_e2e_agent.exe
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
@@ -118,19 +110,11 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y ninja-build
 
-      - name: Build e2e device agent
+      - name: Build ADU e2e test
         working-directory: c
         run: |
           cmake --preset ${{ matrix.preset }} -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_WITH_PAHO=ON
-          cmake --build --preset ${{ matrix.preset }} ${{ runner.os == 'Windows' && '--config Debug' || '' }} --target az_iot_e2e_agent
-
-      - name: Locate agent binary
-        shell: pwsh
-        run: |
-          $path = "${{ matrix.agent_glob }}"
-          if (-not (Test-Path $path)) { throw "agent binary not found at $path" }
-          $full = (Resolve-Path $path).Path
-          "AZ_IOT_E2E_AGENT_PATH=$full" | Out-File -FilePath $env:GITHUB_ENV -Append
+          cmake --build --preset ${{ matrix.preset }} ${{ runner.os == 'Windows' && '--config Debug' || '' }} --target az_iot_tests_e2e_adu
 
       - name: Download shared test config
         uses: actions/download-artifact@v4
@@ -138,29 +122,26 @@ jobs:
           name: e2e-adu-test-config
           path: test_config
 
-      # ADU scenarios trigger updates via 'az iot du', which needs Azure auth.
-      - name: Azure Login via OIDC
-        uses: azure/login@v2
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
       - name: Run ADU e2e
         shell: pwsh
         run: |
+          # Service-side config (IOTHUB_*, IOT_DPS_*) is set by the generated script.
           . ./test_config/set_test_env_vars.ps1
-          dotnet test ./c/tests/e2e/driver/Azure.Iot.Sdk.C.E2E.csproj `
-            --filter "Category=Adu" `
-            --logger "trx;LogFileName=e2e-adu-${{ matrix.os }}.trx" `
-            --results-directory ./test_config/results
+
+          New-Item -ItemType Directory -Path ./test_config/results -Force | Out-Null
+          $cfg = if ($IsWindows) { @('-C', 'Debug') } else { @() }
+          # `-R e2e_adu` selects ONLY az_iot_tests_e2e_adu (not the fast e2e
+          # suite az_iot_tests_e2e, nor the adu_crypto_openssl unit test).
+          ctest --test-dir c/build/${{ matrix.preset }} @cfg -R e2e_adu `
+            --verbose --no-tests=error --timeout 900 `
+            --output-junit ./test_config/results/e2e-adu-${{ matrix.os }}.xml
 
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: e2e-adu-results-${{ matrix.os }}
-          path: ./test_config/results/**/*.trx
+          path: ./test_config/results/**/*.xml
           if-no-files-found: ignore
 
   teardown:

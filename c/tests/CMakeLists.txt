@@ -177,19 +177,20 @@ if(AZ_IOT_WITH_PAHO)
 endif()
 
 # ---------------------------------------------------------------------------
-# End-to-end test device agent.
+# End-to-end (e2e) test suite.
 #
 # Built only when AZ_IOT_BUILD_E2E is ON (the e2e CI workflow sets it). The
-# agent drives real-cloud scenarios against an Azure IoT Hub/DPS instance and
-# is launched by the dotnet e2e harness (e2e/driver). It needs a real MQTT
-# adapter, so it also requires AZ_IOT_WITH_PAHO.
+# in-process cmocka suite (az_iot_tests_e2e) drives real-cloud scenarios against
+# an Azure IoT Hub/DPS instance, playing both the device (shipping SDK) and the
+# cloud (az_iot_e2e_service facade) halves. It needs a real MQTT adapter, so it
+# also requires AZ_IOT_WITH_PAHO.
 # ---------------------------------------------------------------------------
 if(AZ_IOT_BUILD_E2E)
     if(AZ_IOT_WITH_PAHO)
         add_subdirectory(e2e)
     else()
         message(WARNING
-            "AZ_IOT_BUILD_E2E=ON but AZ_IOT_WITH_PAHO=OFF; skipping e2e agent "
-            "(it requires the Paho MQTT adapter).")
+            "AZ_IOT_BUILD_E2E=ON but AZ_IOT_WITH_PAHO=OFF; skipping e2e tests "
+            "(they require the Paho MQTT adapter).")
     endif()
 endif()
