@@ -180,7 +180,9 @@ bool az_iot_e2e_service_telemetry_watch_begin(az_iot_e2e_service* svc)
 
     /* Event Hubs authorizes the entity audience with a SAS whose HMAC key is the
      * raw key string (NOT base64-decoded) — the Event Hubs/Service Bus convention. */
-    char audience[320];
+    /* Sized for the widest possible "amqps://<host>/<entity>": host[256] + entity[128]
+     * plus scheme and separator. A tighter bound trips GCC -Werror=format-truncation. */
+    char audience[512];
     snprintf(audience, sizeof(audience), "amqps://%s/%s", svc->eh_info.host, svc->entity);
 
     char sas[512];

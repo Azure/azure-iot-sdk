@@ -360,6 +360,14 @@ static void test_telemetry(void** state)
         }
     }
 
+    /* The Event Hub can observe the message before the device's own send
+     * acknowledgement (PUBACK) has been pumped in, so breaking on `seen` alone
+     * races the send. Drain the device briefly until the send completes. */
+    for (time_t ack = time(NULL); !sc.done && (time(NULL) - ack) < 5;)
+    {
+        device_pump(fx, E2E_PUMP_MS);
+    }
+
     az_iot_telemetry_client_deinit(&telemetry_client);
     /* Release the AMQP/TLS connection before the next scenario (the Windows
      * reference transport allows only one TLS connection at a time). */

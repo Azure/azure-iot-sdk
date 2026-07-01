@@ -27,9 +27,23 @@ static void on_connection_state_changed(
 {
     (void)connection;
     (void)previous_state;
-    (void)error;
     if (current_state == AZ_AMQP_CONNECTION_STATE_ERROR)
     {
+        if (error != NULL)
+        {
+            fprintf(
+                stderr,
+                "[e2e amqp] connection error: code=0x%08x transport_status=%d condition='%.*s' "
+                "description='%.*s' message='%.*s'\n",
+                (unsigned)error->code,
+                (int)error->transport_status,
+                (int)az_span_size(error->amqp.condition),
+                (const char*)az_span_ptr(error->amqp.condition),
+                (int)az_span_size(error->amqp.description),
+                (const char*)az_span_ptr(error->amqp.description),
+                (int)az_span_size(error->message),
+                (const char*)az_span_ptr(error->message));
+        }
         *(bool*)user_data = true; /* user_data points at a connection_failed flag */
     }
 }
