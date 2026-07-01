@@ -9,7 +9,7 @@
 #                 halves of every scenario. The device side is the shipping SDK
 #                 over the Paho MQTT adapter (DPS x509 individual enrollment);
 #                 the cloud side is the `az_iot_e2e_service` facade (vendored
-#                 AMQP for telemetry/c2d, HTTPS+SAS for method/twin). No dotnet.
+#                 AMQP for telemetry/c2d, HTTPS+SAS for method/twin).
 # * Resources   : provisioned per job via the shared iot-sdks-e2e-fx script
 #                 (same one ci-dotnet uses) and ALWAYS torn down.
 #
@@ -96,6 +96,10 @@ jobs:
     needs: setup
     strategy:
       fail-fast: false
+      # Both OSes run in parallel. Linux is the faster leg, but Windows is kept
+      # deliberately: it is the only leg that exercises the Schannel TLS path in
+      # the test harness's AMQP transport (the shipping device SDK is MQTT/Paho
+      # on both), and it preserves Windows local-dev parity.
       matrix:
         include:
           - os: ubuntu-latest
@@ -133,9 +137,9 @@ jobs:
           # Service-side config (IOTHUB_*, IOT_DPS_*) is set by the generated script.
           . ./test_config/set_test_env_vars.ps1
 
-          # Materialize the device X.509 material to files. Unlike the old dotnet
-          # harness, the in-process test reads cert/key/CA by PATH, so CI decodes
-          # the base64 PEMs and builds a CA trust bundle here (no network download).
+          # Materialize the device X.509 material to files. The in-process test
+          # reads cert/key/CA by PATH, so CI decodes the base64 PEMs and builds a
+          # CA trust bundle here (no network download).
           $dir = Join-Path ([System.IO.Path]::GetTempPath()) ("az-iot-c-e2e-" + [Guid]::NewGuid().ToString("N"))
           New-Item -ItemType Directory -Path $dir -Force | Out-Null
           $certPath = Join-Path $dir "device-cert.pem"
@@ -176,7 +180,7 @@ jobs:
           # slow-lane ADU placeholder (az_iot_tests_e2e_adu); ADU has its own
           # workflow (ci-c-e2e-adu.yml).
           ctest --test-dir c/build/${{ matrix.preset }} @cfg -R e2e -E adu `
-            --output-on-failure --no-tests=error --timeout 900 `
+            --verbose --no-tests=error --timeout 900 `
             --output-junit ./test_config/results/e2e-${{ matrix.os }}.xml
 
       - name: Upload test results

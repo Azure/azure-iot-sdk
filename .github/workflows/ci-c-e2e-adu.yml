@@ -12,16 +12,17 @@
 #
 # Architecture
 # ------------
-# Like ci-c-e2e.yml, this is fully in-process: there is NO dotnet harness. The
-# ADU scenario runs as the native `az_iot_tests_e2e_adu` CTest.
+# Like ci-c-e2e.yml, this is fully in-process: the ADU scenario runs as the
+# native `az_iot_tests_e2e_adu` CTest.
 #
-# NOTE: the device-side ADU update scenario is not implemented yet. Today
-# `az_iot_tests_e2e_adu` is a placeholder that gates on the provisioned
-# environment and reports a CTest skip; the value of this pipeline right now is
-# exercising the (slow) ADU-enabled provisioning + gating + teardown so those
-# never regress. When the real scenario lands it will connect a device (reuse
-# the device-material materialization from ci-c-e2e.yml) and drive the update
-# via 'az iot du' (which needs an Azure OIDC login in the test job).
+# TODO (tracked follow-up): implement the device-side ADU update scenario.
+# Until then `az_iot_tests_e2e_adu` is a placeholder that gates on the
+# provisioned environment and reports a CTest skip; the value of this pipeline
+# right now is exercising the (slow) ADU-enabled provisioning + gating +
+# teardown so those never regress. When the real scenario lands it will connect
+# a device (reuse the device-material materialization from ci-c-e2e.yml) and
+# drive the update via 'az iot du' (which needs an Azure OIDC login in the test
+# job).
 #
 # Stages
 # ------
@@ -132,7 +133,7 @@ jobs:
           # `-R e2e_adu` selects ONLY az_iot_tests_e2e_adu (not the fast e2e
           # suite az_iot_tests_e2e, nor the adu_crypto_openssl unit test).
           ctest --test-dir c/build/${{ matrix.preset }} @cfg -R e2e_adu `
-            --output-on-failure --no-tests=error --timeout 900 `
+            --verbose --no-tests=error --timeout 900 `
             --output-junit ./test_config/results/e2e-adu-${{ matrix.os }}.xml
 
       - name: Upload test results
