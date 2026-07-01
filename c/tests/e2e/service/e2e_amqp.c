@@ -378,7 +378,7 @@ typedef struct e2e_amqp_c2d_ctx_tag
     uint8_t incoming_buffer[AZ_AMQP_DEFAULT_MAX_FRAME_SIZE];
     uint8_t outgoing_buffer[AZ_AMQP_DEFAULT_MAX_FRAME_SIZE];
     az_amqp_session* session_slots[1];
-    az_amqp_link* link_slots[2];
+    az_amqp_link* link_slots[3]; /* CBS pair (2) + c2d sender (1) */
     uint8_t cbs_reply_buffer[1024];
     az_amqp_link_unsettled unsettled[4];
     char audience_buffer[256];
@@ -485,7 +485,7 @@ bool e2e_amqp_send_c2d(
 
     /* 3. Session (CBS pair + sender). */
     az_amqp_session_storage session_storage
-        = { .links = c->link_slots, .links_capacity = 2 };
+        = { .links = c->link_slots, .links_capacity = 3 };
     if (az_result_failed(az_amqp_session_init(&c->session, &c->connection, &session_storage, NULL))
         || az_result_failed(az_amqp_session_begin(&c->session)))
     {
