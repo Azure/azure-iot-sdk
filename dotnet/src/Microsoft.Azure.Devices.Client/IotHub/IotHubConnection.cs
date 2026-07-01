@@ -305,11 +305,9 @@ namespace Microsoft.Azure.Devices.Client.IotHub
             //and set their callbacks before connecting, but not sure what other approach works when AEG style hub mandates subscriptions as part of the connect birth message
 
             //TODO check for previous connack isSessionPresent flag before firing off all these subscriptions?
-            //TODO add overload for SubscribeAsync that batches all this
             MqttSubscribe mqttSubscribe = new();
-            //TODO I don't think all classic topics use QoS 1 here
-            var expectedQos = MqttQualityOfServiceLevel.AtLeastOnce;
-            mqttSubscribe.TopicFilters.Add(new(string.Format(TelemetryClient.DeviceBoundMessagesTopicFormat + "#", deviceId), expectedQos));
+            var expectedQos = MqttQualityOfServiceLevel.AtMostOnce;
+            //mqttSubscribe.TopicFilters.Add(new(string.Format(TelemetryClient.DeviceBoundMessagesTopicFormat + "#", deviceId), expectedQos)); // C2D not currently supported
             mqttSubscribe.TopicFilters.Add(new(TwinClient.ClassicTwinResponseTopic + "#", expectedQos));
             mqttSubscribe.TopicFilters.Add(new(TwinClient.ClassicTwinDesiredPropertiesPatchTopic + "#", expectedQos));
             mqttSubscribe.TopicFilters.Add(new(DirectMethodClient.ClassicDirectMethodsRequestTopic + "#", expectedQos));
@@ -317,9 +315,8 @@ namespace Microsoft.Azure.Devices.Client.IotHub
 
             foreach (var topicSuback in suback.Items)
             {
-                if (topicSuback.ResultCode != MqttClientSubscribeResultCode.GrantedQoS1)
+                if (topicSuback.ResultCode != MqttClientSubscribeResultCode.GrantedQoS0)
                 {
-                    //TODO I don't think all classic topics use QoS 1 here
                     throw new Exception("TODO");
                 }
             }
