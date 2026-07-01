@@ -6,8 +6,9 @@ instance, complementing the in-memory unit tests and the broker-gated
 conformance suite.
 
 > Scope: this infrastructure covers the C SDK only. It deliberately reuses the
-> same Azure provisioning script that the dotnet CI uses, and the dotnet IoT Hub
-> **service** client for the service side of each scenario.
+> same Azure provisioning script that the dotnet CI uses. The service (cloud)
+> side of each scenario is a small **in-process C facade** — there is no dotnet
+> harness and no subprocess.
 
 ---
 
@@ -15,9 +16,9 @@ conformance suite.
 
 The infrastructure was designed to satisfy these requirements:
 
-- **SOLID — no flaky tests.** Tests skip (never false-fail) when cloud
-  resources are absent, use unique per-run correlation ids, attach event
-  consumers *before* the slow device connect, and always tear down their
+- **SOLID — no flaky tests.** The suite is a real gate (missing cloud resources
+  fail loudly, never a silent skip), uses unique per-run correlation markers,
+  starts the telemetry watcher *before* the send, and always tears down its
   resource group.
 - **As parallel as possible.** The OS matrix legs run concurrently, each in its
   own isolated resource group.
@@ -31,112 +32,114 @@ The infrastructure was designed to satisfy these requirements:
 
 ## Architecture
 
-An e2e scenario has two halves that run as separate processes and coordinate
-through the device's environment and the cloud:
+Every scenario runs **in a single process**: one native cmocka test executable
+(`az_iot_tests_e2e`) plays *both* halves and drives them cooperatively. There is
+no dotnet, no subprocess, and no cross-process handshake.
 
 ```mermaid
 flowchart LR
-    subgraph Runner["GitHub Actions runner (Windows or Linux)"]
-        Harness["dotnet harness<br/>(c/tests/e2e/driver)<br/>reuses Microsoft.Azure.Devices<br/>+ EventHubs consumer"]
-        Agent["native device agent<br/>(az_iot_e2e_agent)<br/>built by CMake"]
+    subgraph Proc["az_iot_tests_e2e — one process (Windows or Linux)"]
+        Device["device half<br/>shipping SDK + Paho MQTT<br/>(DPS x509 provision)"]
+        Service["cloud half<br/>az_iot_e2e_service facade<br/>(AMQP + HTTPS/SAS, hidden)"]
     end
-    Harness -- "launch (env + scenario)" --> Agent
-    Agent -- "DPS x509 provision + MQTT" --> Azure[("Azure IoT Hub / DPS")]
-    Azure -- "telemetry via EventHub endpoint<br/>(verified by harness)" --> Harness
+    Device -- "MQTT: telemetry / c2d / method / twin" --> Azure[("Azure IoT Hub / DPS")]
+    Service -- "AMQP: telemetry receive + c2d send" --> Azure
+    Service -- "HTTPS + SAS: method invoke, twin get/patch" --> Azure
 ```
 
-### Device side — native agent
+The test loop interleaves `az_iot_connection_client_do_work` (device) with the
+service facade's pump/poll so neither side blocks the other. Everything is
+single-threaded and non-blocking.
 
-[`c/tests/e2e/agent/e2e_agent.c`](../../tests/e2e/agent/e2e_agent.c) is a small
-CLI built on the public SDK + the Paho adapter. It performs **one** scriptable
-scenario and exits `0` on success, non-zero on failure.
+### Device half — the shipping SDK
 
-- **Auth / connect flow:** DPS provisioning with an **X.509 individual
-  enrollment** — exactly the SDK's real connect path (`host == NULL` +
-  `dps.id_scope` set → the connection client provisions internally, then
-  connects to the assigned hub). Both Paho MQTT v3.1.1 and v5 factories are
-  registered.
-- **Configuration** is entirely environment-driven (set by the harness):
+The device is the public SDK over the Paho adapter, connected exactly like a
+real device: **DPS provisioning with an X.509 individual enrollment**
+(`host == NULL` + `dps.id_scope` set → the connection client provisions
+internally, then connects to the assigned hub). Both Paho MQTT v3.1.1 and v5
+factories are registered. The connect flow + all four scenarios live in
+[`e2e_scenarios_test.c`](../../tests/e2e/tests/e2e_scenarios_test.c); the connect
+is done once for the whole suite via cmocka's group setup.
 
-  | Env var | Meaning |
-  | --- | --- |
-  | `AZ_IOT_DPS_ID_SCOPE` | DPS id scope (required) |
-  | `AZ_IOT_DPS_REGISTRATION_ID` | individual enrollment registration id (required) |
-  | `AZ_IOT_CLIENT_CERT` | path to the device X.509 cert PEM (required) |
-  | `AZ_IOT_CLIENT_KEY` | path to the device X.509 private key PEM (required) |
-  | `AZ_IOT_TRUSTED_CA` | path to a CA bundle PEM for TLS server auth (required) |
-  | `AZ_IOT_DPS_GLOBAL_ENDPOINT` | DPS global endpoint override (optional) |
-  | `AZ_IOT_E2E_PAYLOAD` | telemetry payload for the `telemetry` scenario (optional) |
+Device configuration is environment-driven (materialized to files by CI):
 
-- **Usage:** `az_iot_e2e_agent <scenario>` (currently `telemetry`).
+| Env var | Meaning |
+| --- | --- |
+| `AZ_IOT_DPS_ID_SCOPE` | DPS id scope (required) |
+| `AZ_IOT_DPS_REGISTRATION_ID` | registration id; also the **device id** the cloud half targets (required) |
+| `AZ_IOT_CLIENT_CERT` | path to the device X.509 cert PEM (required) |
+| `AZ_IOT_CLIENT_KEY` | path to the device X.509 private key PEM (required) |
+| `AZ_IOT_TRUSTED_CA` | path to a CA bundle PEM for TLS server auth (required) |
+| `AZ_IOT_DPS_GLOBAL_ENDPOINT` | DPS global endpoint override (optional) |
 
-The agent is *not* a CTest case — the dotnet harness owns orchestration so it
-can reuse the IoT Hub service client for verification.
+### Cloud half — the `az_iot_e2e_service` facade
 
-### Service side — dotnet harness
+[`az_iot_e2e_service.h`](../../tests/e2e/service/az_iot_e2e_service.h) is a
+plain-C facade that lets the test act as the cloud side **without exposing the
+transport it uses**. All of the vendored AMQP (`az_amqp`) and HTTPS/SAS machinery
+is confined to its implementation and linked **PRIVATE**, so a test translation
+unit can never include an AMQP header. This keeps the SDK's MQTT-only device
+charter intact: AMQP lives strictly behind this test boundary.
 
-[`c/tests/e2e/driver/Azure.Iot.Sdk.C.E2E.csproj`](../../tests/e2e/driver/Azure.Iot.Sdk.C.E2E.csproj)
-is an xUnit v3 project that drives and verifies each scenario.
+- **Telemetry** (AMQP receive): watches the Event Hub-compatible endpoint.
+- **C2D** (AMQP send): sends a cloud-to-device message and awaits acceptance.
+- **Direct method / twin** (HTTPS + SAS): a small pumpable HTTP/1.1 client drives
+  the IoT Hub REST API so it interleaves with the device's pump.
 
-- **Reuses** `Microsoft.Azure.Devices` (IoT Hub service client — for future
-  C2D / direct method / twin / registry operations) and
-  `Azure.Messaging.EventHubs` (telemetry verification via the hub's
-  EventHub-compatible endpoint).
-- [`E2ETestEnvironment.cs`](../../tests/e2e/driver/E2ETestEnvironment.cs)
-  prepares the device:
-  - Base64-decodes `IOT_DPS_INDIVIDUAL_X509_CERTIFICATE` / `..._KEY` into temp
-    PEM files.
-  - Builds a CA trust bundle with **no network download** — the Linux system
-    bundle (`/etc/ssl/certs/ca-certificates.crt`) or, on Windows, an export of
-    the machine `Root` store. (Network downloads are a classic flakiness
-    source.)
-  - Locates and launches the agent with a bounded timeout, capturing
-    stdout/stderr.
-- It is **not** part of `dotnet/Project.slnx`; it lives under `c/` (it validates
-  the C SDK) and is run directly by the e2e workflow, never by the dotnet CI.
+Service configuration (set by the provisioning config script):
 
-### Reference scenario — telemetry round-trip
+| Env var | Meaning |
+| --- | --- |
+| `IOTHUB_CONNECTION_STRING` | IoT Hub service policy connection string (c2d / method / twin) |
+| `IOTHUB_EVENTHUB_CONNECTION_STRING` | Event Hub-compatible endpoint connection string (telemetry) |
+| `IOTHUB_EVENTHUB_LISTEN_NAME` | Event Hub entity name (optional; else from the connection string) |
+| `IOTHUB_EVENTHUB_PARTITION_COUNT` | partitions to watch (optional; default 4) |
 
-[`TelemetryE2ETests.cs`](../../tests/e2e/driver/TelemetryE2ETests.cs)
-(`Category=Fast`):
+SAS tokens are built with OpenSSL (HMAC-SHA256 + base64) on both platforms. Note
+the two key conventions the facade handles: Event Hubs signs with the **raw** key
+string, while IoT Hub **base64-decodes** the key first.
 
-1. Skip cleanly if the DPS device env or EventHub config is missing.
-2. Generate a unique GUID correlation id and embed it in the telemetry payload.
-3. Start an EventHub consumer reading from the tail, then wait briefly so it
-   attaches to every partition **before** the (slow) device connect.
-4. Launch the agent (`telemetry` scenario) and require exit code `0`.
-5. Assert the message carrying the correlation id is observed on the EventHub
-   endpoint within the timeout.
+### Scenarios
 
-The unique id makes the test isolation-safe and parallel-safe.
+The suite runs four scenarios in one process, each with a unique per-run
+correlation marker so a fresh hub never confuses stale data:
+
+1. **telemetry** — the device publishes a marked message; the cloud half observes
+   it on the Event Hub endpoint. The watcher starts *before* the send (so nothing
+   is missed) and is released afterwards.
+2. **c2d** — the cloud sends a marked message; the device's C2D handler receives
+   and matches it.
+3. **direct method** — the cloud invokes `echo`; the device echoes the payload
+   back with `200`; the cloud asserts the status and body.
+4. **twin** — the cloud patches a desired property (the device observes it), then
+   the device reports a property (the cloud reads it back via a twin GET).
+
+> The Windows reference transport keeps a single TLS connection at a time, so the
+> telemetry watcher is closed before the c2d/method/twin scenarios open theirs.
+> The device uses Paho's own independent TLS stack, so the two never collide.
 
 ---
 
 ## Build & CMake wiring
 
-- New CMake option `AZ_IOT_BUILD_E2E` (default **OFF**) in
+- CMake option `AZ_IOT_BUILD_E2E` (default **OFF**) in
   [`c/cmake/az_iot_options.cmake`](../../cmake/az_iot_options.cmake).
 - [`c/tests/CMakeLists.txt`](../../tests/CMakeLists.txt) adds the `e2e`
   subdirectory only when `AZ_IOT_BUILD_E2E` **and** `AZ_IOT_WITH_PAHO` are ON
-  (the agent needs a real MQTT adapter).
-- The canonical option prefix is `AZ_IOT_*` (e.g. `AZ_IOT_BUILD_TESTS`,
-  `AZ_IOT_WITH_PAHO`). The presets set `AZ_IOT_BUILD_TESTS=ON`; the build tree is
-  `c/build/<preset>`.
+  (the device half needs a real MQTT adapter).
+- [`c/tests/e2e/CMakeLists.txt`](../../tests/e2e/CMakeLists.txt) builds the
+  vendored `az_amqp` (under `c/tests/deps/amqp`, test-only), the
+  `az_iot_e2e_service` facade, and the `az_iot_tests_e2e` cmocka executable
+  (registered with CTest as `az_iot_tests_e2e`, so `ctest -R e2e` selects it).
 
-Build the agent locally:
+Build & run locally (needs provisioned Azure + the env vars above):
 
 ```pwsh
 # from c/  (Windows needs a VS dev shell; Linux needs ninja)
 cmake --preset windows-msvc-debug -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_WITH_PAHO=ON
-cmake --build --preset windows-msvc-debug --config Debug --target az_iot_e2e_agent
+cmake --build --preset windows-msvc-debug --config Debug --target az_iot_tests_e2e
+ctest --test-dir build/windows-msvc-debug -C Debug -R e2e --output-on-failure
 ```
-
-Resulting agent binary:
-
-| Host | Path |
-| --- | --- |
-| Linux | `c/build/linux-gcc-debug/tests/e2e/az_iot_e2e_agent` |
-| Windows | `c/build/windows-msvc-debug/tests/e2e/Debug/az_iot_e2e_agent.exe` |
 
 ---
 
@@ -148,7 +151,7 @@ Resulting agent binary:
 
 - `pull_request` touching `c/**` or `common/**` (fast scenarios)
 - `push` to `main`
-- nightly `schedule` (cron `0 11 * * *`, 4am PST — runs fast **and** ADU)
+- nightly `schedule` (cron `0 11 * * *`, 4am PST)
 - `workflow_dispatch`
 
 ### Authentication
@@ -166,59 +169,47 @@ Each job downloads the shared
 2. `New-AzIotTestEnvironment` → provisions IoT Hub + DPS + enrollments.
 3. `New-AzIotCSDKE2ETestConfig -Target powershell` → emits an env-var script
    that is dot-sourced.
-4. Runs `dotnet test` with the appropriate `--filter`.
+4. Materializes the device X.509 material to files (decodes the base64 PEMs and
+   builds a CA bundle), maps the DPS config onto the `AZ_IOT_*` vars, then runs
+   `ctest -R e2e`.
 5. **Always** (`if: always()`) deletes the resource group (`az group delete
    --no-wait`).
 
 ### Jobs
 
-| Job | OS matrix | Category | When it runs |
-| --- | --- | --- | --- |
-| `detect` | ubuntu | — | computes ADU path changes on PRs only |
-| `e2e-fast` | ubuntu + windows | `Fast` | every trigger |
-| `e2e-adu` | ubuntu + windows | `Adu` | schedule / dispatch / push / ADU paths changed |
+| Job | Runs on | Purpose |
+| --- | --- | --- |
+| `setup` | ubuntu | provisions one resource group (IoT Hub + DPS) via the shared `provision-e2e-resources` action and publishes the test-config artifact |
+| `test` | ubuntu + windows (matrix) | builds `az_iot_tests_e2e`, materializes the device X.509 material, and runs `ctest -R e2e` |
+| `teardown` | ubuntu | `always()` deletes the resource group via `destroy-e2e-resources` |
 
-- Each matrix leg provisions its **own** resource group, so legs run fully in
-  parallel and are isolated.
-- `e2e-fast` deliberately does **not** `need` the `detect` job — that keeps
-  nightly runs from ever being blocked by path detection.
+The two `test` legs share the one resource group provisioned by `setup`, and
+`teardown` runs even if a leg fails so resources are never leaked.
 
-### ADU gating
-
-`e2e-adu` runs only when:
-
-```yaml
-if: >-
-  github.event_name == 'schedule' ||
-  github.event_name == 'workflow_dispatch' ||
-  github.event_name == 'push' ||
-  needs.detect.outputs.adu == 'true'
-```
-
-The `detect` job uses `dorny/paths-filter` (filter step runs on `pull_request`
-only; other events fall through to the `if`). ADU paths:
-
-- `c/src/features/adu/**`
-- `c/adapters/adu/**`
-- `c/inc/azure/iot/az_iot_adu.h`
-- `c/samples/adu/**`
+> **ADU e2e runs in a separate slow-lane workflow**
+> ([`ci-c-e2e-adu.yml`](../../../.github/workflows/ci-c-e2e-adu.yml)) because the
+> Device Update account/instance takes ~25 min to provision. It uses the same
+> in-process model (no dotnet) and the same provision/teardown actions, on a
+> nightly / dispatch / ADU-paths cadence. The device-side ADU *scenario* is not
+> implemented yet: `az_iot_tests_e2e_adu` is a placeholder that gates on the
+> provisioned environment and reports a CTest skip (see *Future work*).
 
 ---
 
 ## Conventions & gotchas
 
-- **Always a real gate, never a skip.** Use `E2ETestEnvironment.Require(...)`
-  for every "is the cloud/agent available?" guard. These tests run only against
-  real Azure resources (the ci-c-e2e pipeline, or a deliberate local run with
-  the e2e-fx config dot-sourced), so a missing prerequisite is a hard *failure*
-  with an actionable message — there is no "skipped but green" path to hide a
-  broken setup. (The ADU placeholder is the one intentional `Assert.Skip`: that
-  feature isn't implemented yet.)
+- **Always a real gate, never a skip.** The suite connects the device and
+  creates the service facade in cmocka's group setup; if any prerequisite (env
+  var, cloud resource, device connect) is missing, group setup returns non-zero
+  and the whole suite **fails** with an actionable message. These tests run only
+  against real Azure resources (the ci-c-e2e pipeline, or a deliberate local run
+  with the e2e-fx config dot-sourced), so there is no "skipped but green" path to
+  hide a broken setup.
 - **CA bundle without downloads.** Linux uses the OpenSSL system bundle; Windows
   exports the machine `Root` store. Avoid fetching roots over the network.
-- **EventHub API:** `EventHubConsumerClient.ReadEventsAsync` takes
-  `startReadingAtEarliestEvent` (not `startReadingAtEarliest`); the options type
-  is `ReadEventOptions`.
+- **One TLS connection at a time (Windows).** The vendored reference transport
+  keeps a single Schannel TLS slot, so the service facade closes the telemetry
+  watcher before opening the c2d/method/twin connections.
 - **Resource quotas are hard limits.** Provisioning per matrix leg keeps tests
   isolated but multiplies resource usage; keep the matrix lean and always delete
   the RG. ADU is intentionally kept off PRs for this reason.
@@ -227,23 +218,24 @@ only; other events fall through to the `if`). ADU paths:
 
 ## Adding a new scenario
 
-1. **Device side:** add a `scenario` branch to
-   [`e2e_agent.c`](../../tests/e2e/agent/e2e_agent.c) (e.g. wait for a C2D
-   message, respond to a direct method, report a twin patch). Keep it a single,
-   deterministic action that exits `0` on success.
-2. **Service side:** clone
-   [`TelemetryE2ETests.cs`](../../tests/e2e/driver/TelemetryE2ETests.cs),
-   reusing `Microsoft.Azure.Devices` for the service operation, and tag it
-   `[Trait("Category", "Fast")]` (or `"Adu"` for long-running suites).
+1. **Device side:** in [`e2e_scenarios_test.c`](../../tests/e2e/tests/e2e_scenarios_test.c)
+   add a `test_*` function (and register it in the cmocka table). Reuse the
+   already-connected device from the shared fixture; interleave
+   `az_iot_connection_client_do_work` with the service pump until the assertion
+   holds or a bounded deadline expires.
+2. **Service side:** if the scenario needs a new cloud operation, add it to the
+   [`az_iot_e2e_service`](../../tests/e2e/service/az_iot_e2e_service.h) facade
+   (keep all `az_amqp` / HTTP usage inside the `service/*.c` files so tests stay
+   transport-agnostic).
 3. **Distinct devices for parallelism:** the config generator currently emits a
    single DPS x509 individual enrollment. To run scenarios against different
-   devices in parallel, provision more via
+   devices, provision more via
    `New-AzIotTestEnvironment -DpsX509IndividualEnrollments <N>` and thread the
-   extra registration ids/material through the harness.
+   extra registration ids/material through.
 
 ### Future work
 
-- Implement C2D, direct method, and twin scenarios (`Category=Fast`).
-- Add real ADU provisioning (Device Update account/instance, ~25 min) in the
-  `e2e-adu` job's provision step; today the ADU test is a skipped placeholder
-  that exercises the gating and pipeline only.
+- Implement the device-side ADU update scenario (currently `az_iot_tests_e2e_adu`
+  is a placeholder that only gates on provisioning). It should connect a device
+  (reuse the ci-c-e2e.yml device-material step) and drive/verify the update via
+  `az iot du` in the ADU workflow's test job.
