@@ -13,13 +13,13 @@ This document will cover what these inconsistencies are, will put for some poten
 
 The current IoT Hub and future AEG Hub will behave differently from each other in the following ways:
 
-### Features only available in classic Hub
+### High-level Features only available in classic Hub
 
  - Devices can subscribe and unsubscribe from twin/c2d/direct method topics at arbitrary times
  - Only a point-in-time issue, but C2D telemetry support
    - C2D telemetry will be added to AEG hub post AEG Hub GA
 
-### Features only available in AEG Hub
+### High-level Features only available in AEG Hub
 
  - Future standalone features
    - Custom topic support
