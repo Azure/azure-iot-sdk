@@ -135,6 +135,16 @@ if(TARGET az_iot_adu_crypto_openssl)
         az_iot_adu_crypto_openssl OpenSSL::Crypto)
 endif()
 
+# Managed OpenSSL certificate provider (only when the adapter target was built,
+# i.e. OpenSSL 3.0+ was found). Links OpenSSL to decode/verify the CSR.
+if(TARGET az_iot_certificate_provider_managed)
+    find_package(OpenSSL 3.0 QUIET)
+    az_iot_add_cmocka_test(az_iot_tests_certificate_provider_managed
+        unit/certificate_provider_managed_test.c)
+    target_link_libraries(az_iot_tests_certificate_provider_managed PRIVATE
+        az_iot_certificate_provider_managed OpenSSL::Crypto)
+endif()
+
 # ---------------------------------------------------------------------------
 # MQTT iface conformance suite.
 #
