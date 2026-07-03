@@ -49,3 +49,18 @@ add_executable(az_iot_tests_e2e_adu tests/e2e_adu_test.c)
 az_iot_apply_warnings(az_iot_tests_e2e_adu)
 add_test(NAME az_iot_tests_e2e_adu COMMAND az_iot_tests_e2e_adu)
 set_tests_properties(az_iot_tests_e2e_adu PROPERTIES SKIP_RETURN_CODE 77)
+
+# ---------------------------------------------------------------------------
+# az_iot_tests_e2e_csr
+#
+# CSR-based DPS enrollment (issued operational cert). Requires a DPS enrollment
+# linked to a signing CA - which the fast job does not provision - so it
+# self-skips (CTest exit 77) unless AZ_IOT_DPS_CSR_ENABLED is set. Built only
+# when the OpenSSL "managed" certificate provider is available.
+# ---------------------------------------------------------------------------
+if(TARGET az_iot_certificate_provider_managed)
+    az_iot_add_cmocka_test(az_iot_tests_e2e_csr tests/e2e_csr_test.c)
+    target_link_libraries(az_iot_tests_e2e_csr PRIVATE
+        az_iot_adapter_paho az_iot_certificate_provider_managed)
+    set_tests_properties(az_iot_tests_e2e_csr PROPERTIES SKIP_RETURN_CODE 77)
+endif()
