@@ -328,9 +328,21 @@ static az_iot_result_t dps_store_issued_cert(az_iot_connection_client_t* c, az_s
     az_iot_issued_certificate_t issued;
     issued.client_cert_chain_pem = (const char* const*)pem;
     issued.count = count;
-    rc = (p && p->vtable->store_issued_certificate)
-        ? p->vtable->store_issued_certificate(p, &issued)
-        : AZ_IOT_ERR_NOT_SUPPORTED;
+
+    /* Persist via the provider (if capable) and/or notify the app (D4). The
+     * issued chain must be handled by at least one of the two. */
+    bool handled = false;
+    if (p && p->vtable->store_issued_certificate)
+    {
+        rc = p->vtable->store_issued_certificate(p, &issued);
+        handled = (rc == AZ_IOT_OK);
+    }
+    if (rc == AZ_IOT_OK && c->op_cert_cb)
+    {
+        c->op_cert_cb(&issued, c->op_cert_cb_ctx);
+        handled = true;
+    }
+    if (rc == AZ_IOT_OK && !handled) rc = AZ_IOT_ERR_NOT_SUPPORTED;
     for (size_t i = 0; i < count; ++i) free(pem[i]);
     return rc;
 }
@@ -1011,6 +1023,17 @@ az_iot_result_t az_iot_connection_client_set_state_callback(
     if (!client) return AZ_IOT_ERR_INVALID_ARG;
     client->state_cb = cb;
     client->state_cb_ctx = user_ctx;
+    return AZ_IOT_OK;
+}
+
+az_iot_result_t az_iot_connection_client_set_operational_cert_callback(
+    az_iot_connection_client_t* client,
+    az_iot_operational_cert_cb cb,
+    void* user_ctx)
+{
+    if (!client) return AZ_IOT_ERR_INVALID_ARG;
+    client->op_cert_cb = cb;
+    client->op_cert_cb_ctx = user_ctx;
     return AZ_IOT_OK;
 }
 

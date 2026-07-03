@@ -561,6 +561,15 @@ static const az_iot_certificate_provider_vtable_t k_fake_csr_vtable = {
     .store_issued_certificate = fake_store,
 };
 
+static int g_dps_op_cert_count = 0;
+static size_t g_dps_op_cert_chain = 0;
+static void on_dps_op_cert(const az_iot_issued_certificate_t* issued, void* uc)
+{
+    (void)uc;
+    g_dps_op_cert_count++;
+    g_dps_op_cert_chain = issued->count;
+}
+
 static void dps_csr_flow_sends_csr_and_stores_issued_chain(void** state)
 {
     (void)state;
@@ -577,6 +586,10 @@ static void dps_csr_flow_sends_csr_and_stores_issued_chain(void** state)
     opts.dps.request_operational_certificate = true;
     opts.certificate_provider = &prov.base;
     assert_int_equal(az_iot_connection_client_init(&client, &opts), AZ_IOT_OK);
+
+    g_dps_op_cert_count = 0;
+    g_dps_op_cert_chain = 0;
+    az_iot_connection_client_set_operational_cert_callback(&client, on_dps_op_cert, NULL);
 
     az_iot_mqtt_factory_t* factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
     assert_non_null(factory);
@@ -635,6 +648,10 @@ static void dps_csr_flow_sends_csr_and_stores_issued_chain(void** state)
 
     /* Hub connect selected the OPERATIONAL identity. */
     assert_int_equal(prov.last_load_role, AZ_IOT_CRED_OPERATIONAL);
+
+    /* The app operational-cert callback (D4) also fired with the chain. */
+    assert_int_equal(g_dps_op_cert_count, 1);
+    assert_int_equal((int)g_dps_op_cert_chain, 2);
 
     az_iot_connection_client_deinit(&client);
 }

@@ -99,6 +99,12 @@ typedef struct az_iot_csr_event_tag
 
 typedef void (*az_iot_csr_cb)(const az_iot_csr_event_t* evt, void* user_ctx);
 
+/* Fired when the connection client obtains a DPS/provider-issued operational
+ * certificate during provisioning (D4). Optional; use for app-side persistence
+ * or to react (e.g. inventory). The chain is valid only during the callback. */
+typedef void (*az_iot_operational_cert_cb)(
+    const az_iot_issued_certificate_t* issued, void* user_ctx);
+
 /* ------------------------------------------------------------------------- */
 /* Internal struct constants                                                 */
 /* ------------------------------------------------------------------------- */
@@ -145,6 +151,8 @@ struct az_iot_connection_client_tag
     az_iot_connection_state_t state;
     az_iot_connection_state_cb state_cb;
     void* state_cb_ctx;
+    az_iot_operational_cert_cb op_cert_cb;
+    void* op_cert_cb_ctx;
 
     bool user_close;
 
@@ -233,6 +241,13 @@ az_iot_result_t az_iot_connection_client_register_mqtt_factory(
 az_iot_result_t az_iot_connection_client_set_state_callback(
     az_iot_connection_client_t* client,
     az_iot_connection_state_cb cb,
+    void* user_ctx);
+
+/* Register a callback fired when a DPS/provider-issued operational certificate
+ * is obtained during provisioning (D4). Optional. */
+az_iot_result_t az_iot_connection_client_set_operational_cert_callback(
+    az_iot_connection_client_t* client,
+    az_iot_operational_cert_cb cb,
     void* user_ctx);
 
 /* Open a session to the configured host. Non-blocking; observe state via callback
