@@ -7,9 +7,10 @@
 #include <stddef.h>
 
 static az_iot_result_t embedded_load(
-    az_iot_certificate_provider_t* self, az_iot_certificate_material_t* out)
+    az_iot_certificate_provider_t* self, az_iot_cert_role_t role, az_iot_certificate_material_t* out)
 {
     az_iot_cert_embedded_t* p = (az_iot_cert_embedded_t*)self;
+    (void)role; /* static-cert provider: same material for bootstrap and operational */
     out->trusted_ca_pem = p->ca_pem;
     out->client_cert_pem = p->cert_pem;
     out->client_key_pem = p->key_pem;
@@ -18,6 +19,9 @@ static az_iot_result_t embedded_load(
     out->trusted_ca_path = NULL;
     out->client_cert_path = NULL;
     out->client_key_path = NULL;
+    /* No HSM key reference: memory-only provider. */
+    out->client_key_uri = NULL;
+    out->crypto_engine_id = NULL;
     return (p->cert_pem && p->key_pem) ? AZ_IOT_OK : AZ_IOT_ERR_INVALID_ARG;
 }
 
@@ -33,6 +37,7 @@ static void embedded_deinit(az_iot_certificate_provider_t* self)
 }
 
 static const az_iot_certificate_provider_vtable_t k_embedded_vtable = {
+    .version = AZ_IOT_CERTIFICATE_PROVIDER_VTABLE_VERSION,
     .load = embedded_load,
     .release = embedded_release,
     .deinit = embedded_deinit,

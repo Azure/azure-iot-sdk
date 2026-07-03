@@ -140,7 +140,7 @@ static void test_load_returns_file_contents(void** state)
 
     az_iot_certificate_material_t mat;
     memset(&mat, 0, sizeof(mat));
-    assert_int_equal(AZ_IOT_OK, mgr.base.vtable->load(&mgr.base, &mat));
+    assert_int_equal(AZ_IOT_OK, mgr.base.vtable->load(&mgr.base, AZ_IOT_CRED_BOOTSTRAP, &mat));
 
     assert_non_null(mat.client_cert_pem);
     assert_string_equal(k_cert_pem, mat.client_cert_pem);
@@ -158,7 +158,7 @@ static void test_load_returns_file_contents(void** state)
 
     az_iot_certificate_material_t mat2;
     memset(&mat2, 0, sizeof(mat2));
-    assert_int_equal(AZ_IOT_OK, mgr.base.vtable->load(&mgr.base, &mat2));
+    assert_int_equal(AZ_IOT_OK, mgr.base.vtable->load(&mgr.base, AZ_IOT_CRED_BOOTSTRAP, &mat2));
     assert_string_equal(k_cert_pem, mat2.client_cert_pem);
     mgr.base.vtable->release(&mgr.base, &mat2);
 
@@ -179,7 +179,7 @@ static void test_load_without_optional_fields(void** state)
 
     az_iot_certificate_material_t mat;
     memset(&mat, 0, sizeof(mat));
-    assert_int_equal(AZ_IOT_OK, mgr.base.vtable->load(&mgr.base, &mat));
+    assert_int_equal(AZ_IOT_OK, mgr.base.vtable->load(&mgr.base, AZ_IOT_CRED_BOOTSTRAP, &mat));
     assert_null(mat.trusted_ca_pem);
     assert_null(mat.client_key_password);
     assert_non_null(mat.client_cert_pem);

@@ -364,11 +364,12 @@ static az_iot_result_t dps_start(az_iot_connection_client_t* c)
     copts.username = dps_username;
     fprintf(stderr, "[conn] DPS username: %s\n", dps_username);
 
-    /* Populate TLS from certificate_provider if available. */
+    /* Populate TLS from certificate_provider if available. DPS uses the bootstrap
+     * identity; the operational cert (if any) is issued during this exchange. */
     if (c->opts.certificate_provider)
     {
         az_iot_certificate_material_t mat = {0};
-        if (c->opts.certificate_provider->vtable->load(c->opts.certificate_provider, &mat) == AZ_IOT_OK)
+        if (c->opts.certificate_provider->vtable->load(c->opts.certificate_provider, AZ_IOT_CRED_BOOTSTRAP, &mat) == AZ_IOT_OK)
         {
             copts.tls.trusted_ca_path   = mat.trusted_ca_path;
             copts.tls.client_cert_path  = mat.client_cert_path;
@@ -598,11 +599,12 @@ static az_iot_result_t start_connect_attempt(az_iot_connection_client_t* c)
         }
     }
 
-    /* Populate TLS from certificate_provider if available. */
+    /* Populate TLS from certificate_provider if available. (Operational-cert
+     * selection is added with the DPS CSR flow; a static provider ignores role.) */
     if (c->opts.certificate_provider)
     {
         az_iot_certificate_material_t mat = {0};
-        if (c->opts.certificate_provider->vtable->load(c->opts.certificate_provider, &mat) == AZ_IOT_OK)
+        if (c->opts.certificate_provider->vtable->load(c->opts.certificate_provider, AZ_IOT_CRED_BOOTSTRAP, &mat) == AZ_IOT_OK)
         {
             copts.tls.trusted_ca_path   = mat.trusted_ca_path;
             copts.tls.client_cert_path  = mat.client_cert_path;
