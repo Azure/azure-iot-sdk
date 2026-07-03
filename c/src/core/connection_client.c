@@ -185,8 +185,33 @@ static az_iot_result_t dps_do_register_publish(az_iot_connection_client_t* c)
     msg.qos = AZ_IOT_MQTT_QOS_1;
     msg.retain = false;
 
+    /* CSR-based enrollment (D2): request an operational cert by sending the
+     * provider's CSR as the registration body {"csr":"<base64 DER>"}. The
+     * registration id travels in the DPS username/topic, not the body. */
+    char* csr_body = NULL;
+    if (c->dps_enrolling)
+    {
+        az_iot_certificate_provider_t* p = c->opts.certificate_provider;
+        az_iot_certificate_signing_request_t csr = {0};
+        if (!p || !p->vtable->get_csr
+            || p->vtable->get_csr(p, c->opts.dps.registration_id, &csr) != AZ_IOT_OK
+            || !csr.csr_base64)
+        {
+            return AZ_IOT_ERR_INTERNAL;
+        }
+        size_t cap = strlen(csr.csr_base64) + sizeof("{\"csr\":\"\"}");
+        csr_body = (char*)malloc(cap);
+        int n = csr_body ? snprintf(csr_body, cap, "{\"csr\":\"%s\"}", csr.csr_base64) : -1;
+        if (p->vtable->release_csr) p->vtable->release_csr(p, &csr);
+        if (!csr_body) return AZ_IOT_ERR_OUT_OF_MEMORY;
+        if (n < 0 || (size_t)n >= cap) { free(csr_body); return AZ_IOT_ERR_INTERNAL; }
+        msg.payload = (const uint8_t*)csr_body;
+        msg.payload_len = (size_t)n;
+    }
+
     uint16_t pid = 0;
     az_iot_result_t r = c->dps_mqtt->iface->publish(c->dps_mqtt, &msg, &pid);
+    free(csr_body); /* publish copies the payload synchronously */
     if (r == AZ_IOT_OK) c->dps_phase = DPS_PHASE_REGISTERING;
     return r;
 }
@@ -208,6 +233,93 @@ static az_iot_result_t dps_do_query_publish(az_iot_connection_client_t* c)
     az_iot_result_t r = c->dps_mqtt->iface->publish(c->dps_mqtt, &msg, &pid);
     if (r == AZ_IOT_OK) c->dps_phase = DPS_PHASE_REGISTERING;
     return r;
+}
+
+/* Parse registrationState.issuedCertificateChain (an array of base64 DER certs)
+ * from the DPS ASSIGNED payload, PEM-wrap each entry, and hand the chain to the
+ * certificate_provider to persist as the operational identity. azure-sdk-for-c
+ * does not surface this field, so we walk the raw payload with az_json. */
+static az_iot_result_t dps_store_issued_cert(az_iot_connection_client_t* c, az_span payload)
+{
+    az_json_reader jr;
+    if (az_result_failed(az_json_reader_init(&jr, payload, NULL))
+        || az_result_failed(az_json_reader_next_token(&jr))
+        || jr.token.kind != AZ_JSON_TOKEN_BEGIN_OBJECT)
+    {
+        return AZ_IOT_ERR_PROTOCOL;
+    }
+
+    /* Descend into registrationState. */
+    bool in_reg = false;
+    while (az_result_succeeded(az_json_reader_next_token(&jr))
+           && jr.token.kind != AZ_JSON_TOKEN_END_OBJECT)
+    {
+        if (jr.token.kind != AZ_JSON_TOKEN_PROPERTY_NAME) continue;
+        bool m = az_json_token_is_text_equal(&jr.token, AZ_SPAN_FROM_STR("registrationState"));
+        if (az_result_failed(az_json_reader_next_token(&jr))) return AZ_IOT_ERR_PROTOCOL;
+        if (m && jr.token.kind == AZ_JSON_TOKEN_BEGIN_OBJECT) { in_reg = true; break; }
+        if (jr.token.kind == AZ_JSON_TOKEN_BEGIN_OBJECT || jr.token.kind == AZ_JSON_TOKEN_BEGIN_ARRAY)
+            if (az_result_failed(az_json_reader_skip_children(&jr))) return AZ_IOT_ERR_PROTOCOL;
+    }
+    if (!in_reg) return AZ_IOT_ERR_NOT_FOUND;
+
+    /* Find issuedCertificateChain array. */
+    bool in_chain = false;
+    while (az_result_succeeded(az_json_reader_next_token(&jr))
+           && jr.token.kind != AZ_JSON_TOKEN_END_OBJECT)
+    {
+        if (jr.token.kind != AZ_JSON_TOKEN_PROPERTY_NAME) continue;
+        bool m = az_json_token_is_text_equal(&jr.token, AZ_SPAN_FROM_STR("issuedCertificateChain"));
+        if (az_result_failed(az_json_reader_next_token(&jr))) return AZ_IOT_ERR_PROTOCOL;
+        if (m && jr.token.kind == AZ_JSON_TOKEN_BEGIN_ARRAY) { in_chain = true; break; }
+        if (jr.token.kind == AZ_JSON_TOKEN_BEGIN_OBJECT || jr.token.kind == AZ_JSON_TOKEN_BEGIN_ARRAY)
+            if (az_result_failed(az_json_reader_skip_children(&jr))) return AZ_IOT_ERR_PROTOCOL;
+    }
+    if (!in_chain) return AZ_IOT_ERR_NOT_FOUND;
+
+    /* Collect and PEM-wrap each base64 cert (leaf first). */
+    enum { DPS_MAX_CHAIN = 6 };
+    char* pem[DPS_MAX_CHAIN] = {0};
+    size_t count = 0;
+    az_iot_result_t rc = AZ_IOT_OK;
+    while (az_result_succeeded(az_json_reader_next_token(&jr))
+           && jr.token.kind != AZ_JSON_TOKEN_END_ARRAY)
+    {
+        if (jr.token.kind != AZ_JSON_TOKEN_STRING) { rc = AZ_IOT_ERR_PROTOCOL; goto cleanup; }
+        if (count >= DPS_MAX_CHAIN) { rc = AZ_IOT_ERR_NOT_ENOUGH_SPACE; goto cleanup; }
+
+        char b64[4096];
+        int32_t vlen = 0;
+        if (az_result_failed(az_json_token_get_string(&jr.token, b64, (int32_t)sizeof(b64), &vlen)))
+        {
+            rc = AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+            goto cleanup;
+        }
+        size_t cap = (size_t)vlen + 64;
+        char* pw = (char*)malloc(cap);
+        if (!pw) { rc = AZ_IOT_ERR_OUT_OF_MEMORY; goto cleanup; }
+        int n = snprintf(pw, cap,
+            "-----BEGIN CERTIFICATE-----\n%.*s\n-----END CERTIFICATE-----\n",
+            (int)vlen, b64);
+        if (n < 0 || (size_t)n >= cap) { free(pw); rc = AZ_IOT_ERR_INTERNAL; goto cleanup; }
+        pem[count++] = pw;
+    }
+
+    if (count == 0) { rc = AZ_IOT_ERR_NOT_FOUND; goto cleanup; }
+
+    {
+        az_iot_certificate_provider_t* p = c->opts.certificate_provider;
+        az_iot_issued_certificate_t issued;
+        issued.client_cert_chain_pem = (const char* const*)pem;
+        issued.count = count;
+        rc = (p && p->vtable->store_issued_certificate)
+            ? p->vtable->store_issued_certificate(p, &issued)
+            : AZ_IOT_ERR_NOT_SUPPORTED;
+    }
+
+cleanup:
+    for (size_t i = 0; i < count; ++i) free(pem[i]);
+    return rc;
 }
 
 static void on_dps_mqtt_event(const az_iot_mqtt_event_t* evt, void* user_ctx)
@@ -283,6 +395,12 @@ static void on_dps_mqtt_event(const az_iot_mqtt_event_t* evt, void* user_ctx)
                            az_span_ptr(resp.registration_state.device_id),
                            (size_t)dev_n);
                     c->dps_assigned_device_id[dev_n] = '\0';
+                    if (c->dps_enrolling)
+                    {
+                        az_iot_result_t sc = dps_store_issued_cert(c, payload_span);
+                        if (sc != AZ_IOT_OK) { dps_finalize(c, sc, false); return; }
+                        c->dps_have_issued_cert = true;
+                    }
                     dps_finalize(c, AZ_IOT_OK, true);
                     return;
                 }
@@ -400,6 +518,7 @@ static az_iot_result_t dps_start(az_iot_connection_client_t* c)
     c->dps_pending_finalize = false;
     c->dps_pending_have_assignment = false;
     c->dps_pending_status = AZ_IOT_OK;
+    c->dps_enrolling = c->opts.dps.request_operational_certificate;
 
     transition(c, AZ_IOT_CONN_STATE_CONNECTING, AZ_IOT_OK);
 
@@ -599,12 +718,13 @@ static az_iot_result_t start_connect_attempt(az_iot_connection_client_t* c)
         }
     }
 
-    /* Populate TLS from certificate_provider if available. (Operational-cert
-     * selection is added with the DPS CSR flow; a static provider ignores role.) */
+    /* Populate TLS from certificate_provider if available. Use the DPS/Hub-issued
+     * operational cert once one has been stored; otherwise the bootstrap identity. */
     if (c->opts.certificate_provider)
     {
+        az_iot_cert_role_t role = c->dps_have_issued_cert ? AZ_IOT_CRED_OPERATIONAL : AZ_IOT_CRED_BOOTSTRAP;
         az_iot_certificate_material_t mat = {0};
-        if (c->opts.certificate_provider->vtable->load(c->opts.certificate_provider, AZ_IOT_CRED_BOOTSTRAP, &mat) == AZ_IOT_OK)
+        if (c->opts.certificate_provider->vtable->load(c->opts.certificate_provider, role, &mat) == AZ_IOT_OK)
         {
             copts.tls.trusted_ca_path   = mat.trusted_ca_path;
             copts.tls.client_cert_path  = mat.client_cert_path;

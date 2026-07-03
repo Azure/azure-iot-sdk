@@ -500,6 +500,145 @@ static void open_rejects_operational_cert_without_csr_provider(void** state)
     az_iot_connection_client_deinit(&c2);
 }
 
+/* ---- DPS CSR issuance flow (increment 3) ---- */
+
+typedef struct fake_csr_provider_tag
+{
+    az_iot_certificate_provider_t base;
+    int    get_csr_calls;
+    int    store_calls;
+    size_t stored_count;
+    char   stored_leaf[256];
+    az_iot_cert_role_t last_load_role;
+} fake_csr_provider_t;
+
+static az_iot_result_t fake_csr_load(
+    az_iot_certificate_provider_t* s, az_iot_cert_role_t role, az_iot_certificate_material_t* out)
+{
+    fake_csr_provider_t* f = (fake_csr_provider_t*)s;
+    f->last_load_role = role;
+    memset(out, 0, sizeof(*out));
+    out->client_cert_pem = "cert";
+    out->client_key_pem = "key";
+    return AZ_IOT_OK;
+}
+static void fake_csr_release(az_iot_certificate_provider_t* s, az_iot_certificate_material_t* m)
+{ (void)s; (void)m; }
+static void fake_csr_deinit(az_iot_certificate_provider_t* s) { (void)s; }
+static az_iot_result_t fake_get_csr(
+    az_iot_certificate_provider_t* s, const char* cn, az_iot_certificate_signing_request_t* out)
+{
+    fake_csr_provider_t* f = (fake_csr_provider_t*)s;
+    (void)cn;
+    f->get_csr_calls++;
+    out->csr_base64 = "TESTCSRBASE64==";
+    return AZ_IOT_OK;
+}
+static void fake_release_csr(az_iot_certificate_provider_t* s, az_iot_certificate_signing_request_t* csr)
+{ (void)s; (void)csr; }
+static az_iot_result_t fake_store(
+    az_iot_certificate_provider_t* s, const az_iot_issued_certificate_t* issued)
+{
+    fake_csr_provider_t* f = (fake_csr_provider_t*)s;
+    f->store_calls++;
+    f->stored_count = issued->count;
+    if (issued->count > 0 && issued->client_cert_chain_pem[0])
+    {
+        size_t n = strlen(issued->client_cert_chain_pem[0]);
+        if (n >= sizeof(f->stored_leaf)) n = sizeof(f->stored_leaf) - 1;
+        memcpy(f->stored_leaf, issued->client_cert_chain_pem[0], n);
+        f->stored_leaf[n] = '\0';
+    }
+    return AZ_IOT_OK;
+}
+static const az_iot_certificate_provider_vtable_t k_fake_csr_vtable = {
+    .version = AZ_IOT_CERTIFICATE_PROVIDER_VTABLE_VERSION,
+    .load = fake_csr_load,
+    .release = fake_csr_release,
+    .deinit = fake_csr_deinit,
+    .get_csr = fake_get_csr,
+    .release_csr = fake_release_csr,
+    .store_issued_certificate = fake_store,
+};
+
+static void dps_csr_flow_sends_csr_and_stores_issued_chain(void** state)
+{
+    (void)state;
+
+    fake_csr_provider_t prov = {0};
+    prov.base.vtable = &k_fake_csr_vtable;
+
+    az_iot_connection_client_t client;
+    az_iot_connection_client_options_t opts = {0};
+    opts.host = NULL; /* DPS mode */
+    opts.client_id = "ut-device";
+    opts.dps.id_scope = "0ne00000000";
+    opts.dps.registration_id = "ut-device";
+    opts.dps.request_operational_certificate = true;
+    opts.certificate_provider = &prov.base;
+    assert_int_equal(az_iot_connection_client_init(&client, &opts), AZ_IOT_OK);
+
+    az_iot_mqtt_factory_t* factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
+    assert_non_null(factory);
+    assert_int_equal(az_iot_connection_client_register_mqtt_factory(&client, factory), AZ_IOT_OK);
+
+    /* open() -> dps_start creates the DPS mock client and connects. */
+    assert_int_equal(az_iot_connection_client_open(&client), AZ_IOT_OK);
+    az_iot_mock_mqtt_client_t* dps = az_iot_mock_mqtt_factory_last_client(factory);
+    assert_non_null(dps);
+
+    /* CONNECTED -> subscribe. */
+    assert_true(az_iot_mock_mqtt_client_inject_connected(dps, AZ_IOT_OK));
+    (void)az_iot_connection_client_do_work(&client, 0);
+
+    /* SUBSCRIBE_ACK -> register publish carrying the CSR. */
+    az_iot_mqtt_event_t suback;
+    memset(&suback, 0, sizeof(suback));
+    suback.kind = AZ_IOT_MQTT_EVT_SUBSCRIBE_ACK;
+    suback.status = AZ_IOT_OK;
+    assert_true(az_iot_mock_mqtt_client_inject_event(dps, &suback));
+    (void)az_iot_connection_client_do_work(&client, 0);
+
+    assert_true(prov.get_csr_calls >= 1);
+    bool found_csr_publish = false;
+    for (size_t i = 0; i < az_iot_mock_mqtt_client_call_count(dps); ++i)
+    {
+        const az_iot_mock_call_t* call = az_iot_mock_mqtt_client_call_at(dps, i);
+        if (call->kind == AZ_IOT_MOCK_CALL_PUBLISH && call->payload_len >= 8)
+        {
+            assert_memory_equal(call->payload, "{\"csr\":\"", 8);
+            found_csr_publish = true;
+        }
+    }
+    assert_true(found_csr_publish);
+
+    /* ASSIGNED response carrying a two-cert issued chain. */
+    const char* resp =
+        "{\"operationId\":\"op1\",\"status\":\"assigned\","
+        "\"registrationState\":{\"registrationId\":\"ut-device\","
+        "\"assignedHub\":\"myhub.azure-devices.net\",\"deviceId\":\"ut-device\","
+        "\"issuedCertificateChain\":[\"TEEF\",\"SU5U\"]}}";
+    assert_true(az_iot_mock_mqtt_client_inject_message(
+        dps, "$dps/registrations/res/200/?$rid=1",
+        (const uint8_t*)resp, strlen(resp), AZ_IOT_MQTT_QOS_1));
+
+    /* Drive the flow to completion (message -> store -> deferred finalize ->
+     * hub connect). Several do_work iterations cover the deferred steps. */
+    for (int i = 0; i < 5; ++i)
+        (void)az_iot_connection_client_do_work(&client, 0);
+
+    /* Provider received the PEM-wrapped issued chain. */
+    assert_int_equal(prov.store_calls, 1);
+    assert_int_equal((int)prov.stored_count, 2);
+    assert_non_null(strstr(prov.stored_leaf, "-----BEGIN CERTIFICATE-----"));
+    assert_non_null(strstr(prov.stored_leaf, "TEEF"));
+
+    /* Hub connect selected the OPERATIONAL identity. */
+    assert_int_equal(prov.last_load_role, AZ_IOT_CRED_OPERATIONAL);
+
+    az_iot_connection_client_deinit(&client);
+}
+
 int main(void)
 {
     const struct CMUnitTest tests[] = {
@@ -518,6 +657,7 @@ int main(void)
         cmocka_unit_test_setup_teardown(user_close_after_connected_does_not_reconnect, setup_with_reconnect, teardown),
         cmocka_unit_test_setup_teardown(inbound_message_routes_through_dispatch, setup, teardown),
         cmocka_unit_test(open_rejects_operational_cert_without_csr_provider),
+        cmocka_unit_test(dps_csr_flow_sends_csr_and_stores_issued_chain),
     };
     return cmocka_run_group_tests(tests, NULL, NULL);
 }

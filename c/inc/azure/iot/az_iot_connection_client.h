@@ -163,6 +163,8 @@ struct az_iot_connection_client_tag
     bool  dps_pending_finalize;
     bool  dps_pending_have_assignment;
     az_iot_result_t dps_pending_status;
+    bool  dps_enrolling;           /* CSR-based enrollment active for this DPS session */
+    bool  dps_have_issued_cert;    /* an operational cert was issued by DPS/Hub and stored */
 
     az_iot_hub_client hub_client;
     bool hub_client_initialized;
