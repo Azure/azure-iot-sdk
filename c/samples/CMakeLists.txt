@@ -57,3 +57,8 @@ if(AZ_IOT_WITH_PAHO)
         az_iot_apply_warnings(az_iot_sample_adu)
     endif()
 endif()
+
+# Authentication / certificate-management samples. The subdirectory decides
+# per-sample which dependencies (Paho, managed provider) are required; the
+# BYO-provider template builds unconditionally.
+add_subdirectory(authentication)

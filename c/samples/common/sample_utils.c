@@ -4,6 +4,15 @@
 #include <stdlib.h>
 #include <string.h>
 
+static char* dup_cstr(const char* s)
+{
+    if (!s) return NULL;
+    size_t n = strlen(s) + 1;
+    char* out = (char*)malloc(n);
+    if (out) memcpy(out, s, n);
+    return out;
+}
+
 static char* read_env_var(const char* name)
 {
     char* value;
@@ -86,4 +95,22 @@ void sample_config_release(sample_config_t* config)
     free(config->mock_endpoint);
 #endif
     memset(config, 0, sizeof(*config));
+}
+
+char* sample_env_dup(const char* name, const char* fallback)
+{
+#ifdef _WIN32
+    char* value = NULL;
+    size_t value_size = 0;
+    if (_dupenv_s(&value, &value_size, name) == 0 && value && value[0])
+    {
+        return value; /* heap-owned by the CRT; caller frees */
+    }
+    free(value);
+    return dup_cstr(fallback);
+#else
+    const char* v = getenv(name);
+    if (v && v[0]) return dup_cstr(v);
+    return dup_cstr(fallback);
+#endif
 }
