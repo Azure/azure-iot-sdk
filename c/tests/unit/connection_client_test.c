@@ -468,6 +468,38 @@ static void inbound_message_routes_through_dispatch(void** state)
     assert_int_equal(fx->rec.states[fx->rec.count - 1], AZ_IOT_CONN_STATE_CONNECTED);
 }
 
+/* D2: request_operational_certificate requires a certificate_provider whose
+ * vtable exposes get_csr (ABI version >= 2). open() must reject otherwise. */
+static void open_rejects_operational_cert_without_csr_provider(void** state)
+{
+    (void)state;
+
+    az_iot_connection_client_options_t opts = {0};
+    opts.client_id = "ut-device";
+    opts.dps.id_scope = "0ne00000000";
+    opts.dps.registration_id = "ut-device";
+    opts.dps.request_operational_certificate = true;
+
+    /* Case 1: no certificate_provider at all. */
+    az_iot_connection_client_t c1;
+    assert_int_equal(az_iot_connection_client_init(&c1, &opts), AZ_IOT_OK);
+    assert_int_equal(az_iot_connection_client_open(&c1), AZ_IOT_ERR_NOT_SUPPORTED);
+    az_iot_connection_client_deinit(&c1);
+
+    /* Case 2: a v2 provider that does not implement get_csr (all hooks NULL;
+     * open() rejects before any hook is invoked). */
+    static const az_iot_certificate_provider_vtable_t no_csr_vtable = {
+        .version = AZ_IOT_CERTIFICATE_PROVIDER_VTABLE_VERSION,
+    };
+    az_iot_certificate_provider_t prov = { .vtable = &no_csr_vtable };
+    opts.certificate_provider = &prov;
+
+    az_iot_connection_client_t c2;
+    assert_int_equal(az_iot_connection_client_init(&c2, &opts), AZ_IOT_OK);
+    assert_int_equal(az_iot_connection_client_open(&c2), AZ_IOT_ERR_NOT_SUPPORTED);
+    az_iot_connection_client_deinit(&c2);
+}
+
 int main(void)
 {
     const struct CMUnitTest tests[] = {
@@ -485,6 +517,7 @@ int main(void)
         cmocka_unit_test_setup_teardown(close_during_reconnecting_goes_idle, setup_with_reconnect, teardown),
         cmocka_unit_test_setup_teardown(user_close_after_connected_does_not_reconnect, setup_with_reconnect, teardown),
         cmocka_unit_test_setup_teardown(inbound_message_routes_through_dispatch, setup, teardown),
+        cmocka_unit_test(open_rejects_operational_cert_without_csr_provider),
     };
     return cmocka_run_group_tests(tests, NULL, NULL);
 }

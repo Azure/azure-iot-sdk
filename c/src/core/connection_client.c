@@ -894,6 +894,18 @@ az_iot_result_t az_iot_connection_client_open(az_iot_connection_client_t* client
         return AZ_IOT_ERR_ALREADY_INITIALIZED;
     }
 
+    /* CSR-based operational-cert enrollment (D2) requires a certificate_provider
+     * whose vtable exposes get_csr (ABI version >= 2). Fail fast otherwise. */
+    if (client->opts.dps.request_operational_certificate)
+    {
+        az_iot_certificate_provider_t* p = client->opts.certificate_provider;
+        if (!p || p->vtable->version < 2u || p->vtable->get_csr == NULL)
+        {
+            AZ_IOT_LOG_ERROR("connection_client_open: request_operational_certificate set but provider does not support CSR enrollment");
+            return AZ_IOT_ERR_NOT_SUPPORTED;
+        }
+    }
+
     client->user_close = false;
     client->reconnect_attempt = 0;
     client->reconnect_due_ms = 0;

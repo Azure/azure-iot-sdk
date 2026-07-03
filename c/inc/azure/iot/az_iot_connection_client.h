@@ -55,6 +55,12 @@ typedef struct az_iot_connection_client_options_tag
         const char* global_endpoint;   /* NULL => "global.azure-devices-provisioning.net" */
         const char* id_scope;
         const char* registration_id;
+        bool        request_operational_certificate;  /* CSR-based enrollment (D2): send a CSR
+                                                        * from the certificate_provider during DPS
+                                                        * registration and connect to the assigned
+                                                        * hub with the issued operational cert.
+                                                        * Requires a provider whose vtable exposes
+                                                        * get_csr (version >= 2). */
     } dps;
 } az_iot_connection_client_options_t;
 
