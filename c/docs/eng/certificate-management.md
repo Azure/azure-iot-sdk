@@ -1,0 +1,642 @@
+<!-- Copyright (c) Microsoft. All rights reserved.
+     Licensed under the MIT license. See LICENSE file in the project root for full license information. -->
+
+# Certificate Management — CSR-based Operational-Cert Enrollment via DPS
+
+The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "SHOULD NOT", "RECOMMENDED", "MAY", and "OPTIONAL" in this document are to be interpreted as described in [RFC 2119](https://datatracker.ietf.org/doc/html/rfc2119).
+
+> **Naming:** this doc and the accompanying code use the current `main` convention —
+> project types keep the `_t` suffix (struct/enum **tags** use `_tag`, callbacks `_cb`). A
+> separate, comprehensive rename to drop `_t` project-wide is planned; when it lands these
+> names lose the suffix along with the rest of the SDK.
+
+## Status
+
+Proposed / for evaluation. Not yet implemented. Tracks the "cert management" open
+question in `docs/design.md` (§4.3) and the intended flow in `docs/dps-integration.md`
+("REGISTER + CMS" → "RESULT (… Issued Cert)").
+
+## Abstract
+
+Today the C connection client uses a single, static X.509 certificate for both the
+DPS connection and the IoT Hub connection. The pluggable `az_iot_certificate_provider_t`
+hook only *loads* pre-existing PEM material; nothing generates a certificate signing
+request (CSR), sends one to DPS, or consumes an issued certificate.
+
+This document designs the API to add **CSR-based certificate management** (a.k.a.
+operational-certificate enrollment): the device keeps a **bootstrap identity cert** to
+authenticate to DPS, sends a **CSR** in the registration request, receives an **issued
+operational cert** from the DPS-linked CA, and connects to the assigned Hub with that
+operational cert. The private key for the operational cert never leaves the device.
+
+## Flow
+
+```mermaid
+sequenceDiagram
+    participant App
+    participant Conn as connection_client
+    participant Prov as certificate_provider
+    participant DPS
+    participant Hub
+
+    App->>Conn: open()
+    Conn->>Prov: load()  %% bootstrap identity
+    Conn->>DPS: CONNECT (TLS w/ bootstrap cert)
+    Conn->>Prov: get_csr(registration_id)
+    Prov-->>Conn: CSR (base64 DER)
+    Conn->>DPS: REGISTER { csr }  (reg id travels in the DPS username/topic)
+    DPS-->>Conn: ASSIGNED { hub, deviceId, issuedCertificateChain }
+    Conn->>Prov: store_issued_certificate(issued chain)
+    Conn->>Prov: release_csr(csr)
+    Conn->>Prov: load()  %% now returns operational cert + operational key
+    Conn->>Hub: CONNECT (TLS w/ operational cert)
+```
+
+The extensibility seam is the **certificate provider**, because the operational
+private-key custody (TPM / HSM / file) and the issued-cert persistence both belong to
+whatever owns key material.
+
+## Scope
+
+- **In scope:** X.509 bootstrap identity authenticating to DPS; CSR generation; issued
+  operational cert used for the Hub connection; persistence/reuse of the issued cert;
+  runtime Hub-side certificate **renewal** (see *Runtime Hub-side certificate renewal*).
+- **Out of scope:** TPM / symmetric-key *attestation* for the DPS leg (this design assumes
+  an X.509 bootstrap identity). Renewal *scheduling/policy* (when to re-enroll before
+  expiry) is enabled by the hooks below but left to the provider/app.
+
+---
+
+## Change 1 — New value types
+
+New in `inc/azure/iot/az_iot_certificate_provider_t.h`. Small value structs, wrapped for
+future-proofing (expiry, key handles) and for consistency with
+`az_iot_certificate_material_t`. **Encoding matches the service / C# contract**: the CSR
+is base64-encoded PKCS#10 DER (no PEM headers/newlines), and the issued material is a
+**chain** (leaf first).
+
+```c
+/* PKCS#10 certificate signing request produced by the provider.
+ * Base64-encoded DER, no PEM headers/newlines — matches the DPS register "csr"
+ * field and the Hub "$iothub/credentials" CSR "csr" field. */
+typedef struct az_iot_certificate_signing_request_tag
+{
+    const char* csr_base64;
+} az_iot_certificate_signing_request_t;
+
+/* Operational certificate chain issued by the DPS- or Hub-linked CA (leaf first). */
+typedef struct az_iot_issued_certificate_tag
+{
+    const char* const* client_cert_chain_pem;   /* array of PEM certs, leaf first */
+    size_t             count;
+} az_iot_issued_certificate_t;
+```
+
+## Change 2 — Extend the certificate-provider vtable (+ `load()` semantics)
+
+Append three **OPTIONAL** hooks to `az_iot_certificate_provider_vtable_t`. Appending is
+source-compatible: the in-tree PEM provider uses a positional initializer
+`{ pem_load, pem_release, pem_deinit_vtable }`, and C zero-fills the trailing slots to
+`NULL` — so it keeps compiling untouched and simply reports "no CSR support".
+
+```c
+typedef struct az_iot_certificate_provider_vtable_tag
+{
+    /* --- v1: unchanged --- */
+    az_iot_result_t (*load)   (az_iot_certificate_provider_t* self, az_iot_certificate_material_t* out_material);
+    void            (*release)(az_iot_certificate_provider_t* self, az_iot_certificate_material_t* material);
+    void            (*deinit) (az_iot_certificate_provider_t* self);
+
+    /* --- v2: CSR-based enrollment (certificate management). Optional. --- */
+    /* NULL get_csr => provider does not support enrollment. */
+    az_iot_result_t (*get_csr)(
+        az_iot_certificate_provider_t* self,
+        const char* subject_common_name,          /* SDK passes registration_id; CSR CN MUST be this */
+        az_iot_certificate_signing_request_t* out_csr);
+
+    void            (*release_csr)(
+        az_iot_certificate_provider_t* self,
+        az_iot_certificate_signing_request_t* csr);
+
+    az_iot_result_t (*store_issued_certificate)(
+        az_iot_certificate_provider_t* self,
+        const az_iot_issued_certificate_t* issued);
+} az_iot_certificate_provider_vtable_t;
+```
+
+**Revised `load()` contract** (documented, no signature change): returns the *best
+currently-available* client identity —
+
+- if an issued operational cert has been stored (this run, or persisted from a prior
+  run) → `{ trusted_ca, issued_cert, operational_key }`;
+- otherwise → `{ trusted_ca, bootstrap_cert, bootstrap_key }`.
+
+This is why the existing hub-connect path in `src/core/connection_client.c`
+(`start_connect_attempt`) needs **no change** — it re-calls `load()` and transparently
+gets the operational material.
+
+## Change 3 — Connection client DPS option (opt-in)
+
+One new field in the `dps` sub-struct of `az_iot_connection_client_options_t` in
+`inc/azure/iot/az_iot_connection_client_t.h`:
+
+```c
+struct
+{
+    const char* global_endpoint;
+    const char* id_scope;
+    const char* registration_id;
+    bool        request_operational_certificate;   /* NEW: CSR-based enrollment */
+} dps;
+```
+
+Validation (at `open()`): if `request_operational_certificate == true` but
+`provider->vtable->get_csr == NULL` → return `AZ_IOT_ERR_NOT_SUPPORTED`. Reuses existing
+result codes (`AZ_IOT_ERR_DPS`, `AZ_IOT_ERR_NOT_SUPPORTED`); no additions to
+`inc/azure/iot/az_iot_result_t.h`.
+
+## Change 4 — Reference provider that actually does CSR
+
+The PEM loader (`certificate_provider_pem`) stays a static loader (documented "no
+generation"). Add a new provider `az_iot_certificate_provider_managed_t`, backed by the
+existing OpenSSL crypto adapter under `adapters/adu/crypto_openssl/`, built only when
+OpenSSL is available. New header `inc/azure/iot/az_iot_certificate_provider_managed_t.h`:
+
+```c
+typedef struct az_iot_certificate_provider_managed_options_tag
+{
+    /* Bootstrap identity — authenticates the DPS TLS connection. Required. */
+    const char* bootstrap_cert_pem_path;
+    const char* bootstrap_key_pem_path;
+    const char* bootstrap_key_password;    /* may be NULL */
+    const char* trusted_ca_pem_path;       /* may be NULL */
+
+    /* Operational private key the issued cert binds to. Loaded if present,
+     * else generated and written here (if the path is writable). Required. */
+    const char* operational_key_pem_path;
+
+    /* Persist the DPS-issued operational cert so it survives restarts and the
+     * device can skip re-enrolling every boot. NULL = memory-only. */
+    const char* issued_cert_pem_path;      /* may be NULL */
+} az_iot_certificate_provider_managed_options_t;
+
+typedef struct az_iot_certificate_provider_managed_tag
+{
+    az_iot_certificate_provider_t base;    /* MUST be first (vtable pointer) */
+    void* impl;                            /* internal (OpenSSL state) */
+} az_iot_certificate_provider_managed_t;
+
+az_iot_result_t az_iot_certificate_provider_managed_init(
+    az_iot_certificate_provider_managed_t* provider,
+    const az_iot_certificate_provider_managed_options_t* opts);
+
+void az_iot_certificate_provider_managed_deinit(
+    az_iot_certificate_provider_managed_t* provider);
+```
+
+Behavior: `get_csr()` builds a PKCS#10 over the operational key with
+`CN=registration_id`; `store_issued_certificate()` writes to `issued_cert_pem_path` and
+flips `load()` to operational material; on init, if a valid non-expired issued cert
+already exists on disk it MAY present it immediately and skip enrollment (the rotation
+story).
+
+---
+
+## Internal (non-public) changes
+
+Not part of the public API; listed for implementation context.
+
+- `dps_do_register_publish` (`src/core/connection_client.c`): when enrollment is on,
+  call `get_csr(registration_id)` and send JSON body `{"csr":"<base64 DER>"}` (plus an
+  optional `"payload"` for the model id) instead of the current `payload = NULL`. The
+  registration id is **not** in the body — it travels in the DPS username/topic as today.
+  Because the CSR is base64, no JSON string-escaping of PEM newlines is needed.
+- ASSIGNED branch of `on_dps_mqtt_event`: extract the top-level `issuedCertificateChain`
+  (matches C# `DeviceRegistrationResult.IssuedClientCertificateChain`), call
+  `store_issued_certificate()`, then `release_csr()`. If the vendored
+  `az_iot_provisioning_client` does not surface that field, parse it from the raw
+  response payload the handler already holds.
+- `dps_start()` / `start_connect_attempt()` TLS wiring: **unchanged** (the `load()`
+  contract does the identity switching).
+
+---
+
+## Sample — before / after
+
+Only the cert-provider setup and one option line change; the entire
+connect / `do_work` / send flow stays identical (enrollment is transparent). Delta
+against `samples/telemetry/main.c`:
+
+```c
+    /* --- BEFORE: static cert used for both DPS and Hub --- */
+    az_iot_certificate_provider_pem_t certs;                       // in sample_state_t
+
+    az_iot_certificate_provider_pem_options_t pem = {
+        .trusted_ca_pem_path  = cfg.ca,
+        .client_cert_pem_path = cfg.cert,
+        .client_key_pem_path  = cfg.key };
+    az_iot_certificate_provider_pem_init(&s.certs, &pem);
+
+    az_iot_connection_client_options_t copts =
+        az_iot_connection_client_options_get_default(cfg.id_scope, cfg.reg_id, &s.certs.base);
+```
+
+```c
+    /* --- AFTER: CSR-based enrollment (operational cert from DPS) --- */
+    az_iot_certificate_provider_managed_t certs;                   // in sample_state_t
+
+    az_iot_certificate_provider_managed_options_t mopts = {
+        .bootstrap_cert_pem_path  = cfg.cert,       /* identity cert to auth to DPS   */
+        .bootstrap_key_pem_path   = cfg.key,
+        .trusted_ca_pem_path      = cfg.ca,
+        .operational_key_pem_path = cfg.op_key,     /* load-or-generate operational key */
+        .issued_cert_pem_path     = cfg.op_cert };  /* persisted issued cert (reuse)    */
+    az_iot_certificate_provider_managed_init(&s.certs, &mopts);
+
+    az_iot_connection_client_options_t copts =
+        az_iot_connection_client_options_get_default(cfg.id_scope, cfg.reg_id, &s.certs.base);
+    copts.dps.request_operational_certificate = true;   /* <-- the only behavioral opt-in */
+```
+
+`sample_state_destroy()` swaps `..._pem_deinit` → `..._managed_deinit`; `sample_config_t`
+gains `op_key` / `op_cert` paths. Everything else (factory registration, `open()`,
+`do_work()` loop, telemetry send) is unchanged.
+
+---
+
+## Runtime Hub-side certificate renewal (parity with C#)
+
+DPS-time enrollment (above) issues the *first* operational cert. To **renew** before
+expiry without re-provisioning through DPS, the C# SDK exposes a device-initiated,
+Hub-side CSR over MQTT — this design should mirror it.
+
+- **Topics** (Classic Hub): publish `$iothub/credentials/POST/issueCertificate/?$rid=<id>`,
+  subscribe `$iothub/credentials/res/#`.
+- **Two-phase**: `202 Accepted` (Hub started signing) → `200` (issued chain delivered).
+- **Body**: `{ "id": "<deviceId>", "csr": "<base64 DER>", "replace": "*"|null }`.
+- **Idempotency / recovery**: caller-chosen `request_id` (reuse to resubmit after a
+  dropped connection); `replace = "*"` supersedes an active request.
+- **Structured errors** (pin to API version `2025-08-01-preview`): the SDK routes purely
+  on the response topic's status (`202`/`200`/other) and surfaces the JSON body's
+  `errorCode`, `trackingId`, `correlationId`, `retryAfter`, and (on conflict)
+  `info.requestId` / `info.operationExpires`. Only the **transient** codes below drive SDK
+  retry classification; all others are surfaced verbatim for the caller to act on.
+
+  | Code | Meaning | Transient |
+  |---|---|---|
+  | `400040` | CSR decode / verification failed | no |
+  | `409005` | Conflict — another operation active (use `replace`) | no |
+  | `412001` | No pending request matches `replace` | no |
+  | `429002` / `429003` | Throttled | **yes** (1s initial backoff) |
+  | `503001` | Service unavailable | **yes** (5s initial) |
+  | `500001` | Server error | **yes** (5min initial) |
+
+  > **Note:** the reference implementation's spec doc (`csr-scenarions.md`, generated from
+  > a 2026-01-30 test run) lists an *older* set (`400004/400006/400037/409004/412001`)
+  > that disagrees with the shipping code (`400040`/`409005`). Treat the code + API
+  > version above as authoritative and confirm against the service before freezing.
+- **Hub-Next (AEG)**: not defined yet (C# throws `NotImplementedException` for the AEG
+  path); MQTT v5 topic shape TBD.
+
+Proposed C surface (callback-driven to fit the single-threaded `do_work()` model):
+
+```c
+typedef enum
+{
+    AZ_IOT_CSR_ACCEPTED = 0,   /* 202: Hub accepted, signing in progress */
+    AZ_IOT_CSR_ISSUED,         /* 200: issued chain delivered            */
+    AZ_IOT_CSR_FAILED          /* rejected/failed (see status + code)    */
+} az_iot_csr_event_kind_t;
+
+typedef struct
+{
+    az_iot_csr_event_kind_t kind;
+    az_iot_result_t         status;         /* AZ_IOT_OK unless FAILED       */
+    int32_t                 service_code;   /* e.g. 409005; 0 if none         */
+    uint32_t                retry_after_s;  /* 0 if none                      */
+    const az_iot_issued_certificate_t* issued;  /* non-NULL on ISSUED         */
+} az_iot_csr_event_t;
+
+typedef void (*az_iot_csr_cb)(const az_iot_csr_event_t* evt, void* user_ctx);
+
+/* Device-initiated renewal against the connected Hub. request_id NULL => the
+ * SDK generates one; pass a prior id to resubmit. replace NULL, or "*" to
+ * supersede any active request. */
+az_iot_result_t az_iot_connection_client_send_csr(
+    az_iot_connection_client_t* client,
+    const az_iot_certificate_signing_request_t* csr,
+    const char* request_id,
+    const char* replace,
+    az_iot_csr_cb cb,
+    void* user_ctx);
+```
+
+After `AZ_IOT_CSR_ISSUED`, the new chain is persisted and the client reconnects with it.
+Two integration options, mirroring the two ownership models:
+
+- **App-owned (C# style):** app supplies `csr` bytes, receives the chain in the callback,
+  swaps certs, and calls `close()` / `open()` — explicit, no provider needed.
+- **Provider-owned (this design):** the client calls `get_csr()` /
+  `store_issued_certificate()` around the exchange and re-`load()`s, so renewal is
+  transparent (same seam as the DPS path).
+
+---
+
+## Cross-SDK alignment (C# / `dotnet/`)
+
+The C# SDK already ships a `CertificateManagement/` module
+(`dotnet/src/Microsoft.Azure.Devices.Client/ConnectionClient.cs`,
+`.../CertificateManagement/CertificateSigningOperation.cs`). It is broader than the v1
+proposed here — it has **both** CSR paths:
+
+1. **DPS provisioning-time CSR** — `ProvisioningSettings.ProvisioningCertificateSigningRequest`
+   → register body `{ "csr": … }` → result `issuedCertificateChain` → surfaced as
+   `ConnectionContext.IssuedClientCertificates`. Same flow as this doc. *(Currently only
+   half-wired in C#: `ConnectionClient.ProvisionAsync` hardcodes `csr = null` — a TODO on
+   their side — but the API and models exist.)*
+2. **Runtime Hub-side renewal** — `SendCertificateSigningRequestAsync` (see previous
+   section). This doc adds `az_iot_connection_client_send_csr()` to match.
+
+**Ownership model differs** — the biggest divergence to decide on:
+
+| Aspect | C# SDK (`dotnet/`) | This design (C) |
+|---|---|---|
+| Generates the CSR | **App** (`CertificateRequest`) | **Provider** (`get_csr`) |
+| Holds the private key | App, inside `X509Certificate2` (may be HSM via CNG) | Provider (TPM/HSM/file behind vtable) |
+| Persists the issued cert | App (writes files) | Provider (`store_issued_certificate`) |
+| Cert swap after issuance | Explicit disconnect + rebuild auth + reconnect | Transparent (`load()` returns operational) |
+| Request idempotency | `RequestId` + `Replace="*"` | `request_id` + `replace` (renewal path) |
+| CSR encoding | base64 DER | base64 DER (corrected) |
+| Issued shape | chain | chain (corrected) |
+
+C# is *data-in/data-out* (app owns crypto; SDK is a transport); this design is
+*provider-owns-crypto* (the vtable hides key custody), which suits C/embedded HSM/TPM.
+Recommendation: **keep the provider seam** but (a) match the wire contract (done above),
+(b) add the runtime-renewal API, and (c) optionally also expose the app-owned entry point
+for parity (see decision 9).
+
+### Reference implementation & lessons applied
+
+The **most complete** implementation is the classic `azure-iot-sdk-csharp` repo on branch
+`feature/iot-csr-preview` (not the newer `dotnet/` in this repo, which is still partial):
+it ships **both** DPS issuance and Hub re-issuance with full error handling, a 26-scenario
+spec (`iothub/device/src/csr-scenarions.md`), and MQTT-handler unit tests. Treat it as the
+behavioral reference. Concrete fixes this C design adopts where that implementation left
+gaps:
+
+1. **Cancellation + local timeout.** C# checks the token only at submit time and never
+   registers it against the pending operation, so `Completed` can hang until the
+   service-side `operationExpires` (~12h). Our `send_csr` MUST support cancel/timeout via
+   `do_work()` and fail the callback with `AZ_IOT_ERR_TIMEOUT`.
+2. **SUBACK before PUBLISH.** C# writes the `$iothub/credentials/res/#` subscribe packet
+   without awaiting the SUBACK before publishing the CSR — the first response can be lost
+   (its own spec flags "send before subscribe → no response"). Our flow subscribes, waits
+   for SUBACK, then publishes.
+3. **Client-side CSR validation.** C# only null/empty-checks; validate base64 and the
+   **≤8KB** limit locally to fail fast instead of round-tripping a `400040`.
+4. **Auto-populate the device id.** C# requires the app to pass `id` and rejects a
+   mismatch with the authenticated identity. The C client already knows the connected
+   `client_id`, so it fills the `"id"` field itself.
+5. **Deterministic handler cleanup.** C# removes its inbound delegate only when
+   `Completed` finishes, leaking it (and its captured state) on a stuck 202. Our single
+   pending-CSR slot is cleared on ACCEPTED-timeout, ISSUED, and FAILED alike.
+6. **Pinned error codes.** Use the `2025-08-01-preview` table above (not the older spec
+   codes); only the transient set drives retry.
+
+---
+
+## Device certificate storage methods
+
+How device key/cert storage backends map onto the provider seam. File and in-image are
+already covered; HSM/TPM needs one addition.
+
+| Storage method | Example | Fit | Gap |
+|---|---|---|---|
+| **File on disk (pinned)** — PEM/PKCS#12 at a fixed path | Linux gateway | `certificate_provider_pem` + `az_iot_certificate_material_t.*_path`; "pinned" = fixed `trusted_ca_path` | none |
+| **Compiled into firmware image** (`const` in flash) | MCU, no filesystem | `az_iot_certificate_material_t.*_pem` string blobs from a custom provider | none |
+| **OS keystore** — Windows Cert Store, macOS Keychain | Desktop/server | Custom provider; OK if key is exportable to PEM | else → HSM row |
+| **HSM / TPM / secure element** — key non-extractable | ATECC608, TPM 2.0, PKCS#11 | Custom provider; `get_csr` signs *inside* the device so the key never leaves | **key reference (below)** |
+| **Remote/cloud key** — Key Vault, KMS | rare on-device | Only via a `sign()` callback model | callback (below) |
+
+**The gap:** `az_iot_certificate_material_t` today expresses the private key only as PEM
+or a file path. An HSM key is a *handle*, not a PEM — and the **TLS handshake** (not just
+the CSR) must sign with it. .NET hides this inside `X509Certificate2` (a CNG handle); C
+has no universal object, so the design needs an explicit key-reference escape hatch:
+
+```c
+typedef struct az_iot_certificate_material_tag
+{
+    /* ... existing PEM/path fields ... */
+
+    /* Non-extractable key backends. When set, client_key_pem/path are NULL and the
+     * TLS adapter uses this reference instead. */
+    const char* client_key_uri;    /* e.g. PKCS#11: "pkcs11:token=...;object=..." */
+    const char* crypto_engine_id;  /* OpenSSL ENGINE/provider id: "pkcs11", "tpm2", ... */
+} az_iot_certificate_material_t;
+```
+
+Two implications:
+
+- The **MQTT/TLS adapter must honor it** — e.g. Paho + OpenSSL built with ENGINE/provider
+  support (`libp11`, `tpm2-openssl`). This is a joint `certificate_material_t` + adapter
+  change.
+- Where no engine abstraction exists, the fallback is a **`sign()` callback** on the
+  provider vtable that the TLS layer invokes — heavier, but the only path to full custody
+  on such stacks.
+
+---
+
+## Decisions
+
+All nine open questions are resolved below (recommendations accepted 07/03/2026). The
+platform matrix we must support — **file/pinned · compiled-in image · OS keystore ·
+HSM/TPM/secure-element (PKCS#11) · remote/cloud key** — pushes four items from
+"maybe/later" to **v1**: the vtable version field (D1), the key-reference + `sign()` hook
+(D8), Hub-side renewal (D7), and the layered ownership model (D9).
+
+1. **Vtable ABI — use a `version` field (not append + NULL-check).** A `uint32_t version`
+   is the first vtable member; the client gates new slots on it. Once HSM *vendors* ship
+   providers compiled against a different SDK version than the app, reading past a shorter
+   vtable is UB. One-time cost, every future hook safe. *Supersedes the "append +
+   NULL-check" note in Change 2.*
+2. **Opt-in — explicit `bool request_operational_certificate` + capability check.** A
+   provider may support CSR yet a given connection may already hold a valid operational
+   cert. Explicit flag; return `AZ_IOT_ERR_NOT_SUPPORTED` when the provider lacks
+   `get_csr`.
+3. **`load()` — single method with an explicit role argument (not dual-return).**
+   `load(self, role, &out)` where `role` is `AZ_IOT_CRED_BOOTSTRAP` or
+   `AZ_IOT_CRED_OPERATIONAL`. Hidden phase-state forces every provider (incl. simple
+   file/in-image ones) to track "which identity"; an explicit role keeps one slot and is
+   stateless-friendly (a file provider maps both to the same material, or returns
+   `AZ_IOT_ERR_NOT_FOUND` for OPERATIONAL until one is stored). *Supersedes the dual-return
+   contract in Change 2.*
+4. **App callback — include `on_operational_certificate_issued` (optional).** Needed where
+   the *app* owns persistence (OS keystore, remote key, data-in/out per D9) or must react
+   (inventory, trigger reconnect). Decoupled from provider storage.
+5. **Reference provider — ship both: hooks in core, OpenSSL `managed` provider as an
+   optional adapter.** The classic SDK's lesson is that the fork-me reference is what gets
+   used; ship a real one for a correctness baseline, but gate it on OpenSSL so
+   BearSSL/mbedTLS/secure-element-only builds are not forced to pull it.
+6. **Attestation — X.509 bootstrap for v1, architecture open for TPM/symmetric key.**
+   Scope the *feature* to X.509 (matches C# + the material struct), but route bootstrap
+   auth through the provider so a future TPM/SAS provider can supply a token instead of a
+   cert. Do not bake "bootstrap == X.509 cert" into the connection client.
+7. **Runtime Hub-side renewal — in v1.** DPS-only issuance forces a full re-provision for
+   every rotation (often disallowed by the enrollment). Certs expire; long-lived devices
+   must renew. Reuses the CSR/issued-cert types and provider hooks, so incremental cost is
+   low. Ship `az_iot_connection_client_send_csr()`.
+8. **HSM key reference — add now: key-reference fields *and* a `sign()` vtable slot.**
+   This is exactly where the classic SDK fails (its X.509 key is an extractable `char*`).
+   Non-extractable keys need (a) `client_key_uri` + `crypto_engine_id` for stacks with an
+   engine/provider abstraction (OpenSSL + PKCS#11 / tpm2), and (b) an optional provider
+   `sign()` hook the TLS layer calls for stacks without one (BearSSL/custom). Reserve both
+   in the versioned vtable now; implement per-adapter incrementally.
+9. **Ownership — support both, layered.** Core primitive = **app-owned data-in/data-out**
+   (`send_csr(csr_bytes)` → issued-cert callback; DPS accepts a caller CSR). The
+   **provider-owns-crypto** hooks (`get_csr` / `store_issued_certificate`) are a thin
+   custody layer *implemented on top of* that primitive — best for bare-metal/HSM and for
+   making renewal transparent. One model cannot span secure-elements to cloud keys
+   ergonomically; layering avoids duplicated logic.
+
+### Consolidated provider interface (supersedes Change 1 & 2)
+
+```c
+/* Which identity load() should return (D3). */
+typedef enum
+{
+    AZ_IOT_CRED_BOOTSTRAP = 0,   /* identity that authenticates to DPS         */
+    AZ_IOT_CRED_OPERATIONAL      /* DPS/Hub-issued operational cert, once held  */
+} az_iot_cert_role_t;
+
+#define AZ_IOT_CERTIFICATE_PROVIDER_VTABLE_VERSION 2u
+
+typedef struct az_iot_certificate_provider_vtable_tag
+{
+    uint32_t version;   /* = AZ_IOT_CERTIFICATE_PROVIDER_VTABLE_VERSION (D1) */
+
+    /* v1 core */
+    az_iot_result_t (*load)(az_iot_certificate_provider_t* self,
+                          az_iot_cert_role_t role,                 /* D3 */
+                          az_iot_certificate_material_t* out_material);
+    void          (*release)(az_iot_certificate_provider_t* self, az_iot_certificate_material_t* material);
+    void          (*deinit)(az_iot_certificate_provider_t* self);
+
+    /* v2 CSR enrollment (optional; NULL get_csr => not supported) */
+    az_iot_result_t (*get_csr)(az_iot_certificate_provider_t* self,
+                             const char* subject_common_name,
+                             az_iot_certificate_signing_request_t* out_csr);
+    void          (*release_csr)(az_iot_certificate_provider_t* self, az_iot_certificate_signing_request_t* csr);
+    az_iot_result_t (*store_issued_certificate)(az_iot_certificate_provider_t* self, const az_iot_issued_certificate_t* issued);
+
+    /* v2 non-extractable key custody (optional; D8). When present the TLS
+     * adapter calls sign() instead of reading a private key. */
+    az_iot_result_t (*sign)(az_iot_certificate_provider_t* self,
+                          const uint8_t* digest, size_t digest_len,
+                          uint8_t* out_sig, size_t out_sig_cap, size_t* out_sig_len);
+} az_iot_certificate_provider_vtable_t;
+```
+
+---
+
+## Alignment with `azure-iot-sdk-c` (classic C HSM model)
+
+The classic C SDK (`azure-iot-sdk-c`) solved device-credential storage with a similar
+seam — worth comparing since it shipped to a large fleet.
+
+- **Model:** a vtable per attestation type (`HSM_CLIENT_X509_INTERFACE` with
+  `create`/`destroy`/`get_cert`/`get_key`/`get_common_name`; separate TPM and
+  symmetric-key interfaces). Selected as a **process-global singleton at *compile time***
+  via `prov_dev_security_init(SECURE_DEVICE_TYPE_X509|_TPM|_SYMMETRIC_KEY)` + CMake
+  `hsm_type_*`. The "default" is a copy-paste `custom_hsm_example.c` that returns hardcoded
+  in-memory cert/key strings.
+
+**Adopt:**
+
+- The `create()`/`destroy()` **handle** for per-instance state — we already have it via the
+  provider struct + `deinit`.
+- A **`get_common_name` accessor** — let the provider (which owns the key) declare the CN
+  used as the DPS registration id, rather than trusting the caller to match it.
+- A shipped **in-tree reference implementation** — their `custom_hsm_example` is what people
+  fork; mirrors D5.
+
+**Reject (why ours is better for this feature):**
+
+- **Global singleton + compile-time selection** → we use a **per-instance, runtime**
+  provider (multi-identity gateways, test harnesses, runtime choice).
+- **Extractable X.509 key** (`get_key` returns a `char*` PEM; no sign hook) → cannot support
+  non-extractable secure-element/PKCS#11/TPM-TLS keys. Our D8 `sign()` hook + key-reference
+  fixes exactly this.
+- **No CSR / certificate management** → the classic SDK has none; it is the whole point here.
+
+Verdict: same seam, simpler contract, but strictly weaker on runtime pluggability,
+non-extractable-key custody, and CSR — the three axes this feature needs.
+
+---
+
+## Samples
+
+All scenarios above get a dedicated, single-purpose sample under a new cross-cutting
+**`samples/authentication/`** group (auth is orthogonal to the feature clients like
+`telemetry`, `c2d_receiver`, ...). Each sample reuses `samples/common/sample_utils` and
+differs only in the credential-setup block, so they stay small and diff-able.
+
+```
+samples/authentication/
+  README.md                    scenario matrix: provider x flow x platform
+  x509_file/                   baseline: static cert from file (pinned CA)
+  x509_in_image/               static cert compiled-in as const PEM (no filesystem)
+  dps_csr_provider/            D9 provider-owned: `managed` provider, DPS issuance
+  dps_csr_app_owned/           D9 app-owned: app builds CSR, data-in/out
+  hub_renew_provider/          D7 provider-owned transparent renewal
+  hub_renew_app_owned/         D7 app-owned explicit disconnect/reconnect
+  hub_renew_recovery/          resubmit same request_id; 409005 -> replace="*"
+  hsm_pkcs11/                  D8 key-reference URI (non-extractable), CSR signed in-HW
+  hsm_sign_callback/           D8 provider sign() hook (stack without an engine)
+  os_keystore/                 optional, platform-gated (Windows cert store)
+  custom_provider_template/    fork-me stub (mirrors classic custom_hsm_example)
+```
+
+`README.md` carries a matrix mapping each folder to: credential source (file / image /
+HSM / app), flow (static / DPS-issue / hub-renew), ownership model (provider / app), and
+supported platforms. Every listed scenario MUST have a sample; CI builds all of them.
+
+## E2E tests
+
+Every CSR scenario needs an e2e test. The fixture is
+[`iot-sdks-e2e-fx`](https://github.com/Azure/iot-sdks-e2e-fx) — `scripts/Azure.Iot.Sdk.Test.psm1`
+already provides most of the scaffolding:
+
+- **Reuse (exists):** `New-X509CertificateSigningRequest`, `New-Certificate` (CA-signing
+  with a signature generator), RSA/ECDSA key gen + PEM export, `DpsX509EnrollmentGroupInfo`,
+  root-CA handling (`RootCaCertificates` / `AddRootCaCertificate`), `LinkedIotHubs`.
+- **Add (new):** enrollment-group config with a **linked CA enabled for operational-cert
+  issuance**; provision a **Gen2/P-SKU hub** with cert issuance on API `2025-08-01-preview`;
+  add **SoftHSM2** to the e2e Docker image for PKCS#11 custody tests.
+
+Scenario coverage (mirrors `csr-scenarions.md` where applicable):
+
+| Group | Cases |
+|---|---|
+| **DPS issuance** | happy path (CSR → `issuedCertificateChain` → connect w/ operational cert); CN ≠ registration id → reject; enrollment without CSR (chain null) |
+| **Hub renewal** | happy path `202`→`200` then reconnect; CSR validation (empty / >8KB / bad base64 / malformed PKCS#10); device-id mismatch; `replace=<rid>` / `replace="*"` / replace-not-found (`412001`); conflict `409005` then resolve; subscription persistence (unsub after 202, resubscribe, `clean_session`); reconnect mid-op → resubmit same `request_id`; throttling `429002/429003` transient retry |
+| **Storage / custody** | run DPS-issue + hub-renew with (a) file `managed` provider, (b) app-owned data-in/out, (c) *CI-gated* PKCS#11 via SoftHSM |
+
+The device side exercises each via the matching `samples/authentication/*` binary (or a
+dedicated e2e test app), driven by the in-process all-C e2e suite (`tests/e2e`).
+
+## Version
+
+- 07/01/2026: Created by ewertons.
+- 07/02/2026: Added cross-SDK alignment (C# / `dotnet/`), runtime Hub-side renewal, and
+  device certificate storage methods (incl. HSM/TPM key reference); corrected the DPS
+  wire format (`csr` base64 DER, `issuedCertificateChain`). By ewertons.
+- 07/02/2026: Reviewed the complete reference implementation (`azure-iot-sdk-csharp`
+  `feature/iot-csr-preview`); pinned the Hub-renewal error-code table to API
+  `2025-08-01-preview` + transient set, and added "Reference implementation & lessons
+  applied". By ewertons.
+- 07/03/2026: Resolved all open questions into **Decisions** (D1–D9); added the classic
+  `azure-iot-sdk-c` HSM comparison, a consolidated provider interface, and **Samples** and
+  **E2E tests** plans. By ewertons.
+- 07/03/2026: Rebased the cert work onto `main` (independent of the drop-`_t` rename); doc
+  and code use `main`'s `_t` naming. Foundation (versioned provider vtable) verified on
+  MSVC. By ewertons.
