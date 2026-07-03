@@ -639,6 +639,134 @@ static void dps_csr_flow_sends_csr_and_stores_issued_chain(void** state)
     az_iot_connection_client_deinit(&client);
 }
 
+/* ---- Runtime Hub-side CSR renewal (increment 4) ---- */
+
+typedef struct csr_test_ctx_tag
+{
+    int accepted, issued, failed;
+    size_t issued_count;
+    char issued_leaf[128];
+    int32_t service_code;
+    uint32_t retry_after_s;
+} csr_test_ctx_t;
+
+static void on_csr_evt(const az_iot_csr_event_t* evt, void* uc)
+{
+    csr_test_ctx_t* t = (csr_test_ctx_t*)uc;
+    switch (evt->kind)
+    {
+        case AZ_IOT_CSR_ACCEPTED:
+            t->accepted++;
+            break;
+        case AZ_IOT_CSR_ISSUED:
+            t->issued++;
+            if (evt->issued)
+            {
+                t->issued_count = evt->issued->count;
+                if (evt->issued->count > 0 && evt->issued->client_cert_chain_pem[0])
+                {
+                    size_t n = strlen(evt->issued->client_cert_chain_pem[0]);
+                    if (n >= sizeof(t->issued_leaf)) n = sizeof(t->issued_leaf) - 1;
+                    memcpy(t->issued_leaf, evt->issued->client_cert_chain_pem[0], n);
+                    t->issued_leaf[n] = '\0';
+                }
+            }
+            break;
+        case AZ_IOT_CSR_FAILED:
+            t->failed++;
+            t->service_code = evt->service_code;
+            t->retry_after_s = evt->retry_after_s;
+            break;
+    }
+}
+
+/* Drive the fixture client to CONNECTED and return its mock client. */
+static az_iot_mock_mqtt_client_t* connect_fixture(fixture_t* fx)
+{
+    assert_int_equal(
+        az_iot_connection_client_register_mqtt_factory(fx->client, fx->factory), AZ_IOT_OK);
+    assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
+    az_iot_mock_mqtt_client_t* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+    assert_non_null(m);
+    assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+    return m;
+}
+
+static void send_csr_two_phase_delivers_issued_chain(void** state)
+{
+    fixture_t* fx = *state;
+    az_iot_mock_mqtt_client_t* m = connect_fixture(fx);
+
+    csr_test_ctx_t tc = {0};
+    az_iot_certificate_signing_request_t csr = { .csr_base64 = "TESTCSR==" };
+    assert_int_equal(
+        az_iot_connection_client_send_csr(fx->client, &csr, "req-1234", NULL, on_csr_evt, &tc),
+        AZ_IOT_OK);
+
+    /* The request must be published to the issueCertificate topic with an
+     * {"id":...,"csr":...} body carrying the connected device id. */
+    bool found = false;
+    for (size_t i = 0; i < az_iot_mock_mqtt_client_call_count(m); ++i)
+    {
+        const az_iot_mock_call_t* call = az_iot_mock_mqtt_client_call_at(m, i);
+        if (call->kind == AZ_IOT_MOCK_CALL_PUBLISH
+            && strstr(call->topic, "issueCertificate/?$rid=req-1234"))
+        {
+            char pbuf[512];
+            size_t plen = call->payload_len < sizeof(pbuf) - 1 ? call->payload_len : sizeof(pbuf) - 1;
+            memcpy(pbuf, call->payload, plen);
+            pbuf[plen] = '\0';
+            assert_non_null(strstr(pbuf, "\"id\":\"ut-device\""));
+            assert_non_null(strstr(pbuf, "\"csr\":\"TESTCSR==\""));
+            found = true;
+        }
+    }
+    assert_true(found);
+
+    /* 202 Accepted. */
+    const char* r202 = "{\"correlationId\":\"x\"}";
+    assert_true(az_iot_mock_mqtt_client_inject_message(
+        m, "$iothub/credentials/res/202/?$rid=req-1234",
+        (const uint8_t*)r202, strlen(r202), AZ_IOT_MQTT_QOS_1));
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+    assert_int_equal(tc.accepted, 1);
+    assert_int_equal(tc.issued, 0);
+
+    /* 200 Issued with a two-cert chain. */
+    const char* r200 = "{\"correlationId\":\"x\",\"certificates\":[\"TEEF\",\"SU5U\"]}";
+    assert_true(az_iot_mock_mqtt_client_inject_message(
+        m, "$iothub/credentials/res/200/?$rid=req-1234",
+        (const uint8_t*)r200, strlen(r200), AZ_IOT_MQTT_QOS_1));
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+    assert_int_equal(tc.issued, 1);
+    assert_int_equal((int)tc.issued_count, 2);
+    assert_non_null(strstr(tc.issued_leaf, "-----BEGIN CERTIFICATE-----"));
+    assert_non_null(strstr(tc.issued_leaf, "TEEF"));
+}
+
+static void send_csr_error_reports_service_code(void** state)
+{
+    fixture_t* fx = *state;
+    az_iot_mock_mqtt_client_t* m = connect_fixture(fx);
+
+    csr_test_ctx_t tc = {0};
+    az_iot_certificate_signing_request_t csr = { .csr_base64 = "TESTCSR==" };
+    assert_int_equal(
+        az_iot_connection_client_send_csr(fx->client, &csr, "req-err", "*", on_csr_evt, &tc),
+        AZ_IOT_OK);
+
+    const char* err = "{\"errorCode\":409005,\"message\":\"conflict\",\"retryAfter\":5}";
+    assert_true(az_iot_mock_mqtt_client_inject_message(
+        m, "$iothub/credentials/res/409/?$rid=req-err",
+        (const uint8_t*)err, strlen(err), AZ_IOT_MQTT_QOS_1));
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+
+    assert_int_equal(tc.failed, 1);
+    assert_int_equal(tc.service_code, 409005);
+    assert_int_equal((int)tc.retry_after_s, 5);
+}
+
 int main(void)
 {
     const struct CMUnitTest tests[] = {
@@ -658,6 +786,8 @@ int main(void)
         cmocka_unit_test_setup_teardown(inbound_message_routes_through_dispatch, setup, teardown),
         cmocka_unit_test(open_rejects_operational_cert_without_csr_provider),
         cmocka_unit_test(dps_csr_flow_sends_csr_and_stores_issued_chain),
+        cmocka_unit_test_setup_teardown(send_csr_two_phase_delivers_issued_chain, setup, teardown),
+        cmocka_unit_test_setup_teardown(send_csr_error_reports_service_code, setup, teardown),
     };
     return cmocka_run_group_tests(tests, NULL, NULL);
 }

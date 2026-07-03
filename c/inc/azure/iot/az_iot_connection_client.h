@@ -78,6 +78,27 @@ typedef void (*az_iot_connection_state_cb)(az_iot_connection_state_t state, az_i
 
 typedef void (*az_iot_publish_ack_cb)(az_iot_result_t status, void* user_ctx);
 
+/* ---- Runtime Hub-side certificate renewal (Classic hub) ------------------ */
+/* Device-initiated CSR to the connected hub. Two-phase: ACCEPTED (202) then
+ * ISSUED (200) with the new chain, or FAILED. See docs/eng/certificate-management.md. */
+typedef enum az_iot_csr_event_kind_tag
+{
+    AZ_IOT_CSR_ACCEPTED = 0,   /* 202: hub accepted; signing in progress      */
+    AZ_IOT_CSR_ISSUED,         /* 200: issued chain delivered (evt->issued)   */
+    AZ_IOT_CSR_FAILED          /* rejected/failed (evt->status, service_code)  */
+} az_iot_csr_event_kind_t;
+
+typedef struct az_iot_csr_event_tag
+{
+    az_iot_csr_event_kind_t kind;
+    az_iot_result_t status;        /* AZ_IOT_OK unless FAILED                  */
+    int32_t  service_code;         /* hub errorCode on FAILED; 0 otherwise     */
+    uint32_t retry_after_s;        /* suggested retry delay; 0 if none         */
+    const az_iot_issued_certificate_t* issued;  /* non-NULL on ISSUED          */
+} az_iot_csr_event_t;
+
+typedef void (*az_iot_csr_cb)(const az_iot_csr_event_t* evt, void* user_ctx);
+
 /* ------------------------------------------------------------------------- */
 /* Internal struct constants                                                 */
 /* ------------------------------------------------------------------------- */
@@ -169,6 +190,15 @@ struct az_iot_connection_client_tag
     az_iot_hub_client hub_client;
     bool hub_client_initialized;
     char hub_username[AZ_IOT_MQTT_USERNAME_BUF];
+
+    /* Runtime Hub-side CSR renewal: one in-flight operation, matched by rid. */
+    struct {
+        bool  in_use;
+        bool  subscribed;
+        char  request_id[64];
+        az_iot_csr_cb cb;
+        void* user_ctx;
+    } csr_op;
 };
 
 typedef struct az_iot_connection_client_tag az_iot_connection_client_t;
@@ -214,6 +244,22 @@ az_iot_result_t az_iot_connection_client_close(az_iot_connection_client_t* clien
 /* Pump network I/O and dispatch callbacks. Single-threaded contract: all user
  * callbacks fire synchronously from inside this call. */
 az_iot_result_t az_iot_connection_client_do_work(az_iot_connection_client_t* client, uint32_t timeout_ms);
+
+/* Request a renewed operational certificate from the connected (Classic) hub by
+ * sending a CSR. Two-phase: the callback fires with AZ_IOT_CSR_ACCEPTED (202),
+ * then AZ_IOT_CSR_ISSUED (200) carrying the new chain, or AZ_IOT_CSR_FAILED.
+ *   request_id: NULL => the SDK generates one; pass a prior id to resubmit.
+ *   replace:    NULL, or "*" / a request id to supersede an active hub-side op.
+ * The request's device id is taken from the connected client_id. Only one CSR
+ * operation may be in flight; returns AZ_IOT_ERR_BUSY otherwise. The issued
+ * chain in AZ_IOT_CSR_ISSUED is valid only for the duration of the callback. */
+az_iot_result_t az_iot_connection_client_send_csr(
+    az_iot_connection_client_t* client,
+    const az_iot_certificate_signing_request_t* csr,
+    const char* request_id,
+    const char* replace,
+    az_iot_csr_cb cb,
+    void* user_ctx);
 
 #ifdef __cplusplus
 }
