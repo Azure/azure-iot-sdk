@@ -92,6 +92,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
             { 
                 ConnectionClient = connectionClient,
                 ConnectionContext = connectionContext!,
+                AuthenticationProvider = x509AuthenticationProvider,
             };
         }
 
@@ -171,6 +172,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
                 ConnectionClient = connectionClient,
                 ConnectionContext = connectionContext!,
                 PrivateKeyPem = pfxPem,
+                AuthenticationProvider = x509AuthenticationProvider,
             };
         }
 

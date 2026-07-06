@@ -9,7 +9,9 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
         public ConnectionClient ConnectionClient { get; set; }
 
         public ConnectionContext ConnectionContext { get; set; }
-        
+
+        public X509AuthenticationProvider AuthenticationProvider { get; set; }
+
         public string PrivateKeyPem { get; set; }
 
         public async ValueTask DisposeAsync()

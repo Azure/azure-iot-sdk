@@ -1,4 +1,7 @@
 ﻿using Microsoft.Azure.Devices.Client.IotHub;
+using System.Net.Http.Headers;
+using System.Runtime.ConstrainedExecution;
+using System.Text;
 using System.Text.Json;
 
 namespace Microsoft.Azure.Devices.Client.FileUpload
@@ -6,14 +9,30 @@ namespace Microsoft.Azure.Devices.Client.FileUpload
     public class FileUploadClient : IDisposable
     {
         private readonly HttpClient _httpClient;
-        private readonly string _deviceId;
+        private readonly ConnectionContext _connectionContext;
 
         public FileUploadClient(ConnectionClient connection)
         {
             throw new NotImplementedException("Using File upload APIs over MQTT requires AEG Hub support which does not exist yet.");   
         }
 
-        public FileUploadClient(ConnectionContext connectionContext, HttpClient? httpClient = null)
+        public FileUploadClient(ConnectionContext connectionContext, X509AuthenticationProvider authenticationProvider)
+        {
+            if (connectionContext.IsAzureEventGrid)
+            {
+                throw new NotSupportedException("File upload APIs are done over MQTT when connected to AEG Hub");
+            }
+
+            var handler = new HttpClientHandler();
+            handler.ClientCertificates.Add(authenticationProvider.ClientCertificate); // TODO what about when this gets rotated by cert management APIs?
+            handler.ServerCertificateCustomValidationCallback = (message, cert2, chain, errors) => true;
+            _httpClient = new(handler);
+
+            _connectionContext = connectionContext;
+            _httpClient.BaseAddress = new Uri("https://" + connectionContext.IotHubHostName);
+        }
+
+        public FileUploadClient(ConnectionContext connectionContext, HttpClient httpClient)
         {
             if (connectionContext.IsAzureEventGrid)
             {
@@ -21,8 +40,9 @@ namespace Microsoft.Azure.Devices.Client.FileUpload
             }
 
             _httpClient = httpClient;
-            _deviceId = connectionContext.DeviceId;
-            _httpClient.BaseAddress = new Uri(connectionContext.IotHubHostName);
+
+            _connectionContext = connectionContext;
+            _httpClient.BaseAddress = new Uri("https://" + connectionContext.IotHubHostName);
         }
 
         /// <summary>
@@ -33,16 +53,22 @@ namespace Microsoft.Azure.Devices.Client.FileUpload
         /// <returns>The SAS URI.</returns>
         public async Task<FileUploadSasUriResponse> GetFileUploadSasUriAsync(FileUploadSasUriRequest request, CancellationToken cancellationToken = default)
         {
-            string requestUri = $"devices/{_deviceId}/files?api-version={IotHubConnection.ClassicHubApiVersion}";
-            StringContent httpContent = new(JsonSerializer.Serialize(request));
-            var httpResponse = await _httpClient.PostAsync(requestUri, httpContent, cancellationToken);
+            string requestUri = $"devices/{_connectionContext.DeviceId}/files?api-version={IotHubConnection.ClassicHubApiVersion}";
+
+            HttpRequestMessage requestMessage = new(HttpMethod.Post, requestUri);
+            requestMessage.Content = new StringContent(JsonSerializer.Serialize(request), Encoding.UTF8, "application/json");
+            requestMessage.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+
+            var httpResponse = await _httpClient.SendAsync(requestMessage, cancellationToken);
+
             if (httpResponse.StatusCode == System.Net.HttpStatusCode.OK)
             {
                 return JsonSerializer.Deserialize<FileUploadSasUriResponse>(await httpResponse.Content.ReadAsStringAsync());
             }
             else
             {
-                throw new Exception("TODO error mapping: " + httpResponse.StatusCode);
+                var st = await httpResponse.Content.ReadAsStringAsync();
+                throw new Exception("TODO error mapping: " + httpResponse.StatusCode); // unauthorized, bad format
             }
         }
 
@@ -54,11 +80,16 @@ namespace Microsoft.Azure.Devices.Client.FileUpload
         /// <param name="cancellationToken">the cancellation token</param>
         public async Task CompleteFileUploadSasUriAsync(FileUploadCompletionNotification completion, CancellationToken cancellationToken = default)
         {
-            string requestUri = $"devices/{_deviceId}/files/notifications?api-version={IotHubConnection.ClassicHubApiVersion}";
-            StringContent httpContent = new(JsonSerializer.Serialize(completion));
-            var httpResponse = await _httpClient.PostAsync(requestUri, httpContent, cancellationToken);
+            string requestUri = $"devices/{_connectionContext.DeviceId}/files/notifications?api-version={IotHubConnection.ClassicHubApiVersion}";
+
+            HttpRequestMessage requestMessage = new(HttpMethod.Post, requestUri);
+            requestMessage.Content = new StringContent(JsonSerializer.Serialize(completion), Encoding.UTF8, "application/json");
+            requestMessage.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+
+            var httpResponse = await _httpClient.SendAsync(requestMessage, cancellationToken);
             if (httpResponse.StatusCode != System.Net.HttpStatusCode.NoContent)
             {
+                var st = await httpResponse.Content.ReadAsStringAsync();
                 throw new Exception("TODO error mapping" + httpResponse.StatusCode);
             }
         }

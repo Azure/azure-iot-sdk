@@ -9,10 +9,10 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
     public class FileUploadIntegrationTests
     {
         [Theory(Timeout = Setup.TestTimeoutMilliseconds)]
-        [InlineData(true, false, false)]
-        [InlineData(true, true, false)]
-        [InlineData(false, false, false)]
-        public async Task TestFileUpload(bool testAgainstClassicHub, bool withProvidedHttpClient, bool actuallyUploadAFile)
+        [InlineData(true, false)]
+        [InlineData(true, true)]
+        [InlineData(false, false)]
+        public async Task TestFileUpload(bool testAgainstClassicHub, bool withProvidedHttpClient)
         {
             using CancellationTokenSource cts = new();
             cts.CancelAfter(Setup.TestTimeoutMilliseconds - 1000);
@@ -24,12 +24,15 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
             {
                 if (withProvidedHttpClient)
                 {
-                    using HttpClient httpClient = new();
-                    fileUploadClient = new FileUploadClient(testDeviceContext.ConnectionContext, httpClient);
+                    var handler = new HttpClientHandler();
+                    handler.ClientCertificates.Add(testDeviceContext.AuthenticationProvider.ClientCertificate);
+                    handler.ServerCertificateCustomValidationCallback = (message, cert2, chain, errors) => true;
+                    HttpClient userProvidedHttpClient = new(handler);
+                    fileUploadClient = new FileUploadClient(testDeviceContext.ConnectionContext, userProvidedHttpClient);
                 }
                 else
                 {
-                    fileUploadClient = new FileUploadClient(testDeviceContext.ConnectionContext);
+                    fileUploadClient = new FileUploadClient(testDeviceContext.ConnectionContext, testDeviceContext.AuthenticationProvider);
                 }
             }
             else 
@@ -39,18 +42,15 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
 
             FileUploadSasUriRequest sasUriRequest = new()
             {
-                BlobName = Guid.NewGuid().ToString(),
+                BlobName = "TestFile.txt",
             };
 
             var sasUri = await fileUploadClient.GetFileUploadSasUriAsync(sasUriRequest, cts.Token);
 
-            if (actuallyUploadAFile)
-            {
-                // Create a BlobServiceClient that will authenticate through Active Directory
-                var blobClient = new BlockBlobClient(sasUri.GetBlobUri());
-                MemoryStream dummyFileStream = new MemoryStream(Encoding.UTF8.GetBytes("Hello world"));
-                await blobClient.UploadAsync(dummyFileStream, new BlobUploadOptions(), cts.Token);
-            }
+            // Use the Azure Storage SDK to upload a dummy file using the credentials provided by IoT Hub
+            var blobClient = new BlockBlobClient(sasUri.GetBlobUri());
+            MemoryStream dummyFileStream = new MemoryStream(Encoding.UTF8.GetBytes("Hello world"));
+            await blobClient.UploadAsync(dummyFileStream, new BlobUploadOptions(), cts.Token);
 
             FileUploadCompletionNotification completionNotification = new()
             {
