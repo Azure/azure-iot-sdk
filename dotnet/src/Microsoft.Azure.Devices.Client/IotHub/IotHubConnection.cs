@@ -1,4 +1,5 @@
 ﻿using Google.Protobuf;
+using Google.Protobuf.WellKnownTypes;
 using Microsoft.Azure.Devices.Client.DirectMethods;
 using Microsoft.Azure.Devices.Client.Mqtt;
 using Microsoft.Azure.Devices.Client.Telemetry;
@@ -13,6 +14,8 @@ namespace Microsoft.Azure.Devices.Client.IotHub
 {
     internal class IotHubConnection //TODO maybe just move this code into connection client?
     {
+        internal const string ClassicHubApiVersion = "2025-08-01-preview";
+
         private const bool UseSubscribeElide = false; // Maybe user-configurable? It is a very small optimization that is probably more risk than it is worth for .NET users compared to C users
         private static TimeSpan birthAckReceivedDefensiveTimeout = TimeSpan.FromSeconds(5); //TODO value is magic number
         private static TimeSpan twinPushReceivedDefensiveTimeout = TimeSpan.FromSeconds(5); //TODO value is magic number
@@ -276,7 +279,7 @@ namespace Microsoft.Azure.Devices.Client.IotHub
         {
             string clientId = deviceId;
             //TODO what is the latest Hub API version?
-            string username = $"{hostname}/{clientId}/?api-version=2025-08-01-preview&DeviceClientType={Uri.EscapeDataString(GetUserAgentString())}";
+            string username = $"{hostname}/{clientId}/?api-version={ClassicHubApiVersion}&DeviceClientType={Uri.EscapeDataString(GetUserAgentString())}";
 
             twinPushOptions ??= new();
 
