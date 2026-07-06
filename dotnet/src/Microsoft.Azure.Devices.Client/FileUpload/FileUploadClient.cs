@@ -55,8 +55,10 @@ namespace Microsoft.Azure.Devices.Client.FileUpload
         {
             string requestUri = $"devices/{_connectionContext.DeviceId}/files?api-version={IotHubConnection.ClassicHubApiVersion}";
 
-            HttpRequestMessage requestMessage = new(HttpMethod.Post, requestUri);
-            requestMessage.Content = new StringContent(JsonSerializer.Serialize(request), Encoding.UTF8, "application/json");
+            HttpRequestMessage requestMessage = new(HttpMethod.Post, requestUri)
+            {
+                Content = new StringContent(JsonSerializer.Serialize(request), Encoding.UTF8, "application/json")
+            };
             requestMessage.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
 
             var httpResponse = await _httpClient.SendAsync(requestMessage, cancellationToken);
@@ -67,8 +69,15 @@ namespace Microsoft.Azure.Devices.Client.FileUpload
             }
             else
             {
-                var st = await httpResponse.Content.ReadAsStringAsync();
-                throw new Exception("TODO error mapping: " + httpResponse.StatusCode); // unauthorized, bad format
+                var errorPayload = JsonSerializer.Deserialize<IotHubServiceError>(await httpResponse.Content.ReadAsStringAsync());
+                var nestedErrorPayload = JsonSerializer.Deserialize<IotHubNestedServiceException>(errorPayload.ErrorDetails);
+                var exception = new IotHubServiceException($"Failed to get the file upload Sas Uri: {nestedErrorPayload.Message}.")
+                {
+                    ErrorMessage = errorPayload.ExceptionMessage,
+                    ErrorDetails = nestedErrorPayload,
+                };
+
+                throw exception;
             }
         }
 
@@ -82,15 +91,22 @@ namespace Microsoft.Azure.Devices.Client.FileUpload
         {
             string requestUri = $"devices/{_connectionContext.DeviceId}/files/notifications?api-version={IotHubConnection.ClassicHubApiVersion}";
 
-            HttpRequestMessage requestMessage = new(HttpMethod.Post, requestUri);
-            requestMessage.Content = new StringContent(JsonSerializer.Serialize(completion), Encoding.UTF8, "application/json");
+            HttpRequestMessage requestMessage = new(HttpMethod.Post, requestUri)
+            {
+                Content = new StringContent(JsonSerializer.Serialize(completion), Encoding.UTF8, "application/json")
+            };
             requestMessage.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
 
             var httpResponse = await _httpClient.SendAsync(requestMessage, cancellationToken);
             if (httpResponse.StatusCode != System.Net.HttpStatusCode.NoContent)
             {
-                var st = await httpResponse.Content.ReadAsStringAsync();
-                throw new Exception("TODO error mapping" + httpResponse.StatusCode);
+                var errorPayload = JsonSerializer.Deserialize<IotHubServiceError>(await httpResponse.Content.ReadAsStringAsync());
+                var nestedErrorPayload = JsonSerializer.Deserialize<IotHubNestedServiceException>(errorPayload.ErrorDetails);
+                var exception = new IotHubServiceException($"Failed to complete the file upload Sas Uri: {nestedErrorPayload.Message}")
+                {
+                    ErrorMessage = errorPayload.ExceptionMessage,
+                    ErrorDetails = nestedErrorPayload,
+                };
             }
         }
 
