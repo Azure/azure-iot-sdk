@@ -55,7 +55,7 @@ jobs:
           Write-Host "Creating new resource group"
           $ResourceGroupName = New-AzureResourceGroupName -Prefix "DotnetE2ETestPipeline-" -OutFile "test_config/azure-resource-group-name.txt"
           Write-Host "Adding Azure resources to the new resource group with name " $ResourceGroupName
-          $TestEnvInfo = New-AzIotTestEnvironment -AzureLocation "EastUS" -ResourceGroup $ResourceGroupName
+          $TestEnvInfo = New-AzIotTestEnvironment -AzureLocation "EastUS" -ResourceGroup $ResourceGroupName -EnableFileUpload
           New-AzIotCSDKE2ETestConfig -TestEnvInfo $TestEnvInfo -Target powershell -OutFile test_config/set_test_env_vars.ps1
           chmod +x ./test_config/set_test_env_vars.ps1
           ./test_config/set_test_env_vars.ps1
