@@ -9,10 +9,13 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
     public class FileUploadIntegrationTests
     {
         [Theory(Timeout = Setup.TestTimeoutMilliseconds)]
-        [InlineData(true, false)]
-        [InlineData(true, true)]
-        [InlineData(false, false)]
-        public async Task TestFileUpload(bool testAgainstClassicHub, bool withProvidedHttpClient)
+        [InlineData(true, false, false)]
+        [InlineData(true, true, false)]
+        [InlineData(false, false, false)]
+        [InlineData(true, false, true)]
+        [InlineData(true, true, true)]
+        [InlineData(false, false, true)]
+        public async Task TestFileUpload(bool testAgainstClassicHub, bool withProvidedHttpClient, bool actuallyUploadFile)
         {
             using CancellationTokenSource cts = new();
             cts.CancelAfter(Setup.TestTimeoutMilliseconds - 1000);
@@ -47,10 +50,13 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
 
             var sasUri = await fileUploadClient.GetFileUploadSasUriAsync(sasUriRequest, cts.Token);
 
-            // Use the Azure Storage SDK to upload a dummy file using the credentials provided by IoT Hub
-            var blobClient = new BlockBlobClient(sasUri.GetBlobUri());
-            MemoryStream dummyFileStream = new MemoryStream(Encoding.UTF8.GetBytes("Hello world"));
-            await blobClient.UploadAsync(dummyFileStream, new BlobUploadOptions(), cts.Token);
+            if (actuallyUploadFile)
+            {
+                // Use the Azure Storage SDK to upload a dummy file using the credentials provided by IoT Hub
+                var blobClient = new BlockBlobClient(sasUri.GetBlobUri());
+                MemoryStream dummyFileStream = new MemoryStream(Encoding.UTF8.GetBytes("Hello world"));
+                await blobClient.UploadAsync(dummyFileStream, new BlobUploadOptions(), cts.Token);
+            }
 
             FileUploadCompletionNotification completionNotification = new()
             {
