@@ -107,6 +107,8 @@ namespace Microsoft.Azure.Devices.Client.FileUpload
                     ErrorMessage = errorPayload.ExceptionMessage,
                     ErrorDetails = nestedErrorPayload,
                 };
+
+                throw exception;
             }
         }
 

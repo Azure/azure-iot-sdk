@@ -70,5 +70,46 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
 
             fileUploadClient.Dispose();
         }
+
+        [Theory(Timeout = Setup.TestTimeoutMilliseconds)]
+        [InlineData(true)]
+        [InlineData(false)]
+        public async Task TestFileUpload_BadFormat(bool testAgainstClassicHub)
+        {
+            using CancellationTokenSource cts = new();
+            cts.CancelAfter(Setup.TestTimeoutMilliseconds - 1000);
+
+            await using TestConnectionClient testDeviceContext = await Setup.CreateConnectedConnectionClientAsync(testAgainstClassicHub, cts.Token);
+
+            FileUploadClient fileUploadClient;
+            if (testAgainstClassicHub)
+            {
+                fileUploadClient = new FileUploadClient(testDeviceContext.ConnectionContext, testDeviceContext.AuthenticationProvider);
+            }
+            else
+            {
+                fileUploadClient = new FileUploadClient(testDeviceContext.ConnectionClient);
+            }
+
+            FileUploadSasUriRequest sasUriRequest = new()
+            {
+                BlobName = "",
+            };
+
+            // Check that that the file upload client understands how to parse a service error
+            var exception = await Assert.ThrowsAsync<IotHubServiceException>(async () => await fileUploadClient.GetFileUploadSasUriAsync(sasUriRequest, cts.Token));
+            Assert.Equal(400004, exception.ErrorDetails.ErrorCode);
+
+            // Check that that the file upload client understands how to parse a service error
+            FileUploadCompletionNotification badFormatCompletionNotification = new()
+            {
+                CorrelationId = "ThisCorrelationIdDoesNotExist",
+                IsSuccess = true,
+            };
+            exception = await Assert.ThrowsAsync<IotHubServiceException>(async () => await fileUploadClient.CompleteFileUploadSasUriAsync(badFormatCompletionNotification, cts.Token));
+            Assert.Equal(400000, exception.ErrorDetails.ErrorCode);
+
+            fileUploadClient.Dispose();
+        }
     }
 }
