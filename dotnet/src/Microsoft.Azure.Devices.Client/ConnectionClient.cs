@@ -175,14 +175,14 @@ namespace Microsoft.Azure.Devices.Client
             return await MqttClient.PublishAsync(mqttApplicationMessage, cancellationToken);
         }
 
-        internal async Task<MqttSubscribeAck> SubscribeAsync(string topic, MqttQualityOfServiceLevel qos = MqttQualityOfServiceLevel.AtLeastOnce, CancellationToken cancellationToken = default)
+        internal async Task<MqttSubscribeAck> SubscribeAsync(MqttSubscribe subscribe, CancellationToken cancellationToken = default)
         {
-            return await MqttClient.SubscribeAsync(new(topic, qos), cancellationToken);
+            return await MqttClient.SubscribeAsync(subscribe, cancellationToken);
         }
 
-        internal async Task<MqttUnsubscribeAck> UnsubscribeAsync(string topic, CancellationToken cancellationToken = default)
+        internal async Task<MqttUnsubscribeAck> UnsubscribeAsync(MqttUnsubscribe unsubscribe, CancellationToken cancellationToken = default)
         {
-            return await MqttClient.UnsubscribeAsync(topic, new(), cancellationToken);
+            return await MqttClient.UnsubscribeAsync(unsubscribe, cancellationToken);
         }
 
         internal async Task DelegateReceivedPublishAsync(MqttPublishReceivedEventArgs args)

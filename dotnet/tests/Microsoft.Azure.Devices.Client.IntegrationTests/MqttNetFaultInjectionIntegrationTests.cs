@@ -1,5 +1,6 @@
 ﻿using Microsoft.Azure.Devices.Client.Mqtt;
 using Microsoft.Azure.Devices.Client.MQTTnetAdapter;
+using Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session;
 using System;
 using System.Collections.Generic;
 using System.Text;
@@ -19,7 +20,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
         [Fact(Timeout = Setup.TestTimeoutMilliseconds)]
         public async Task Foo()
         {
-            MqttNetClient mqttClient = new();
+            MqttSessionClient mqttClient = new();
             MqttConnect connectPacket = new()
             {
                 HostName = "localhost",

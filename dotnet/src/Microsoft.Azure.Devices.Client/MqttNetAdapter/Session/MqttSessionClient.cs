@@ -29,6 +29,10 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session
 
         private readonly SemaphoreSlim _disconnectedEventLock = new(1);
 
+        public event Func<MqttPublishReceivedEventArgs, Task> PublishReceivedAsync;
+        public event Func<MqttClientConnectedEventArgs, Task> ConnectedAsync;
+        public event Func<MqttClientDisconnectedEventArgs, Task> DisconnectedAsync;
+
         /// <summary>
         /// Create a MQTT session client where the underlying MQTT client is created for you and the connection is maintained
         /// for you.
@@ -55,7 +59,11 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session
 
             _mqttClient.DisconnectedAsync += InternalDisconnectedAsync;
 
-            _outgoingRequestList = new(_sessionClientOptions.MaxPendingMessages, sessionClientOptions.PendingMessagesOverflowStrategy);
+            _mqttClient.PublishReceivedAsync += PublishReceivedAsync;
+            _mqttClient.DisconnectedAsync += DisconnectedAsync;
+            _mqttClient.ConnectedAsync += ConnectedAsync;
+
+            _outgoingRequestList = new(_sessionClientOptions.MaxPendingMessages, _sessionClientOptions.PendingMessagesOverflowStrategy);
         }
 
         /// <summary>
@@ -796,6 +804,11 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session
             }
 
             return false;
+        }
+
+        public void Dispose()
+        {
+            throw new NotImplementedException();
         }
     }
 }

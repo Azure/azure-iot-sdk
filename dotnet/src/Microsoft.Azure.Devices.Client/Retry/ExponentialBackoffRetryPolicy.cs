@@ -103,3 +103,4 @@ namespace Microsoft.Azure.Devices.Client.Retry
             return TimeSpan.FromMilliseconds(jitterMs);
         }
     }
+}
