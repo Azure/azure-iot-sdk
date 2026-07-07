@@ -63,7 +63,7 @@ namespace Microsoft.Azure.Devices.Client.IotHub
                     continue; // Start the connect process over again
                 }
 
-                if (connack.ResultCode != MqttClientConnectResultCode.Success)
+                if (connack.ResultCode != MqttConnectResultCode.Success)
                 {
                     subscribed = false;
                     Trace.TraceWarning("Received CONNACK with unsuccessful result code: {0}. Attempting connection again...", connack.ResultCode);
@@ -299,7 +299,7 @@ namespace Microsoft.Azure.Devices.Client.IotHub
 
             var connack = await mqttClient.ConnectAsync(connectPacket, cancellationToken);
 
-            if (connack.ResultCode != MqttClientConnectResultCode.Success)
+            if (connack.ResultCode != MqttConnectResultCode.Success)
             {
                 throw new Exception("TODO");
             }

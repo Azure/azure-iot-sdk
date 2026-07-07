@@ -62,7 +62,7 @@ namespace Microsoft.Azure.Devices.Client.Provisioning
                 .ConnectAsync(connect, cancellationToken)
                 .ConfigureAwait(false);
 
-            if (connectResult.ResultCode != MqttClientConnectResultCode.Success)
+            if (connectResult.ResultCode != MqttConnectResultCode.Success)
             {
                 throw new Exception("TODO: " + connectResult.ResultCode);
             }

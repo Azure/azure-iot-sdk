@@ -144,55 +144,55 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
             }
         }
 
-        internal static Mqtt.MqttClientConnectResultCode ToGeneric(MQTTnet.MqttClientConnectResultCode resultCode)
+        internal static Mqtt.MqttConnectResultCode ToGeneric(MQTTnet.MqttClientConnectResultCode resultCode)
         {
             switch (resultCode)
             {
                 case MQTTnet.MqttClientConnectResultCode.Success:
-                    return Mqtt.MqttClientConnectResultCode.Success;
+                    return Mqtt.MqttConnectResultCode.Success;
                 case MQTTnet.MqttClientConnectResultCode.UnspecifiedError:
-                    return Mqtt.MqttClientConnectResultCode.UnspecifiedError;
+                    return Mqtt.MqttConnectResultCode.UnspecifiedError;
                 case MQTTnet.MqttClientConnectResultCode.MalformedPacket:
-                    return Mqtt.MqttClientConnectResultCode.MalformedPacket;
+                    return Mqtt.MqttConnectResultCode.MalformedPacket;
                 case MQTTnet.MqttClientConnectResultCode.ProtocolError:
-                    return Mqtt.MqttClientConnectResultCode.ProtocolError;
+                    return Mqtt.MqttConnectResultCode.ProtocolError;
                 case MQTTnet.MqttClientConnectResultCode.ImplementationSpecificError:
-                    return Mqtt.MqttClientConnectResultCode.ImplementationSpecificError;
+                    return Mqtt.MqttConnectResultCode.ImplementationSpecificError;
                 case MQTTnet.MqttClientConnectResultCode.UnsupportedProtocolVersion:
-                    return Mqtt.MqttClientConnectResultCode.UnsupportedProtocolVersion;
+                    return Mqtt.MqttConnectResultCode.UnsupportedProtocolVersion;
                 case MQTTnet.MqttClientConnectResultCode.ClientIdentifierNotValid:
-                    return Mqtt.MqttClientConnectResultCode.ClientIdentifierNotValid;
+                    return Mqtt.MqttConnectResultCode.ClientIdentifierNotValid;
                 case MQTTnet.MqttClientConnectResultCode.BadUserNameOrPassword:
-                    return Mqtt.MqttClientConnectResultCode.BadUserNameOrPassword;
+                    return Mqtt.MqttConnectResultCode.BadUserNameOrPassword;
                 case MQTTnet.MqttClientConnectResultCode.NotAuthorized:
-                    return Mqtt.MqttClientConnectResultCode.NotAuthorized;
+                    return Mqtt.MqttConnectResultCode.NotAuthorized;
                 case MQTTnet.MqttClientConnectResultCode.ServerUnavailable:
-                    return Mqtt.MqttClientConnectResultCode.ServerUnavailable;
+                    return Mqtt.MqttConnectResultCode.ServerUnavailable;
                 case MQTTnet.MqttClientConnectResultCode.ServerBusy:
-                    return Mqtt.MqttClientConnectResultCode.ServerBusy;
+                    return Mqtt.MqttConnectResultCode.ServerBusy;
                 case MQTTnet.MqttClientConnectResultCode.Banned:
-                    return Mqtt.MqttClientConnectResultCode.Banned;
+                    return Mqtt.MqttConnectResultCode.Banned;
                 case MQTTnet.MqttClientConnectResultCode.BadAuthenticationMethod:
-                    return Mqtt.MqttClientConnectResultCode.BadAuthenticationMethod;
+                    return Mqtt.MqttConnectResultCode.BadAuthenticationMethod;
                 case MQTTnet.MqttClientConnectResultCode.TopicNameInvalid:
-                    return Mqtt.MqttClientConnectResultCode.TopicNameInvalid;
+                    return Mqtt.MqttConnectResultCode.TopicNameInvalid;
                 case MQTTnet.MqttClientConnectResultCode.PacketTooLarge:
-                    return Mqtt.MqttClientConnectResultCode.PacketTooLarge;
+                    return Mqtt.MqttConnectResultCode.PacketTooLarge;
                 case MQTTnet.MqttClientConnectResultCode.QuotaExceeded:
-                    return Mqtt.MqttClientConnectResultCode.QuotaExceeded;
+                    return Mqtt.MqttConnectResultCode.QuotaExceeded;
                 case MQTTnet.MqttClientConnectResultCode.PayloadFormatInvalid:
-                    return Mqtt.MqttClientConnectResultCode.PayloadFormatInvalid;
+                    return Mqtt.MqttConnectResultCode.PayloadFormatInvalid;
                 case MQTTnet.MqttClientConnectResultCode.RetainNotSupported:
-                    return Mqtt.MqttClientConnectResultCode.RetainNotSupported;
+                    return Mqtt.MqttConnectResultCode.RetainNotSupported;
                 case MQTTnet.MqttClientConnectResultCode.QoSNotSupported:
-                    return Mqtt.MqttClientConnectResultCode.QoSNotSupported;
+                    return Mqtt.MqttConnectResultCode.QoSNotSupported;
                 case MQTTnet.MqttClientConnectResultCode.UseAnotherServer:
-                    return Mqtt.MqttClientConnectResultCode.UseAnotherServer;
+                    return Mqtt.MqttConnectResultCode.UseAnotherServer;
                 case MQTTnet.MqttClientConnectResultCode.ServerMoved:
-                    return Mqtt.MqttClientConnectResultCode.ServerMoved;
+                    return Mqtt.MqttConnectResultCode.ServerMoved;
                 case MQTTnet.MqttClientConnectResultCode.ConnectionRateExceeded:
                 default:
-                    return Mqtt.MqttClientConnectResultCode.ConnectionRateExceeded;
+                    return Mqtt.MqttConnectResultCode.ConnectionRateExceeded;
 
             }
         }

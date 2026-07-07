@@ -28,7 +28,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
                 CleanStart = true,
             };
             var connAck = await mqttClient.ConnectAsync(connectPacket);
-            Assert.Equal(MqttClientConnectResultCode.Success, connAck.ResultCode);
+            Assert.Equal(MqttConnectResultCode.Success, connAck.ResultCode);
         }
     }
 }
