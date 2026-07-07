@@ -1430,11 +1430,19 @@ static void csr_parse_error(az_span payload, int32_t* out_code, int32_t* out_ret
         bool is_retry = az_json_token_is_text_equal(&jr.token, AZ_SPAN_FROM_STR("retryAfter"));
         if (az_result_failed(az_json_reader_next_token(&jr))) return;
         if (is_code && jr.token.kind == AZ_JSON_TOKEN_NUMBER)
-            (void)az_json_token_get_int32(&jr.token, out_code);
+        {
+            if (az_result_failed(az_json_token_get_int32(&jr.token, out_code)))
+                *out_code = 0;
+        }
         else if (is_retry && jr.token.kind == AZ_JSON_TOKEN_NUMBER)
-            (void)az_json_token_get_int32(&jr.token, out_retry);
+        {
+            if (az_result_failed(az_json_token_get_int32(&jr.token, out_retry)))
+                *out_retry = 0;
+        }
         else if (jr.token.kind == AZ_JSON_TOKEN_BEGIN_OBJECT || jr.token.kind == AZ_JSON_TOKEN_BEGIN_ARRAY)
-            (void)az_json_reader_skip_children(&jr);
+        {
+            if (az_result_failed(az_json_reader_skip_children(&jr))) return;
+        }
     }
 }
 

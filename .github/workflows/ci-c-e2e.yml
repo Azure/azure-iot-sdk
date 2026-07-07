@@ -123,7 +123,7 @@ jobs:
         working-directory: c
         run: |
           cmake --preset ${{ matrix.preset }} -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_WITH_PAHO=ON
-          cmake --build --preset ${{ matrix.preset }} ${{ runner.os == 'Windows' && '--config Debug' || '' }} --target az_iot_tests_e2e
+          cmake --build --preset ${{ matrix.preset }} ${{ runner.os == 'Windows' && '--config Debug' || '' }} --target az_iot_tests_e2e az_iot_tests_e2e_csr
 
       - name: Download shared test config
         uses: actions/download-artifact@v4
@@ -176,9 +176,12 @@ jobs:
 
           New-Item -ItemType Directory -Path ./test_config/results -Force | Out-Null
           $cfg = if ($IsWindows) { @('-C', 'Debug') } else { @() }
-          # `-R e2e -E adu` runs the fast suite (az_iot_tests_e2e) but NOT the
-          # slow-lane ADU placeholder (az_iot_tests_e2e_adu); ADU has its own
-          # workflow (ci-c-e2e-adu.yml).
+          # `-R e2e -E adu` runs the fast suite (az_iot_tests_e2e) plus the CSR
+          # enrollment test (az_iot_tests_e2e_csr). The CSR test self-skips
+          # (CTest exit 77) unless AZ_IOT_DPS_CSR_ENABLED is provisioned, so it
+          # only exercises compilation here. The slow-lane ADU placeholder
+          # (az_iot_tests_e2e_adu) is excluded; ADU has its own workflow
+          # (ci-c-e2e-adu.yml).
           ctest --test-dir c/build/${{ matrix.preset }} @cfg -R e2e -E adu `
             --verbose --no-tests=error --timeout 900 `
             --output-junit ./test_config/results/e2e-${{ matrix.os }}.xml
