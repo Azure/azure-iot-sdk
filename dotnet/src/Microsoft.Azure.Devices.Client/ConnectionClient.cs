@@ -2,6 +2,7 @@
 using Microsoft.Azure.Devices.Client.IotHub;
 using Microsoft.Azure.Devices.Client.Mqtt;
 using Microsoft.Azure.Devices.Client.MQTTnetAdapter;
+using Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session;
 using Microsoft.Azure.Devices.Client.Provisioning;
 using Microsoft.Azure.Devices.Client.Provisioning.Models;
 using Microsoft.Azure.Devices.Client.Retry;
@@ -43,7 +44,7 @@ namespace Microsoft.Azure.Devices.Client
         /// <param name="mqttClient">The MQTT client to use. If null, a default MQTT client will be created for you.</param>
         public ConnectionClient(IMqttClient? mqttClient = null)
         {
-            MqttClient = mqttClient ?? new MqttNetClient(new MQTTnet.MqttClientFactory().CreateMqttClient());
+            MqttClient = mqttClient ?? new MqttSessionClient();
         }
 
         /// <summary>
