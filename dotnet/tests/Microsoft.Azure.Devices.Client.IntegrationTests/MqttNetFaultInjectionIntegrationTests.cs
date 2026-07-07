@@ -27,6 +27,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
                 TcpPort = 1884,
                 CleanSession = true,
                 CleanStart = true,
+                ClientId = Guid.NewGuid().ToString(),
             };
             var connAck = await mqttClient.ConnectAsync(connectPacket);
             Assert.Equal(MqttConnectResultCode.Success, connAck.ResultCode);
