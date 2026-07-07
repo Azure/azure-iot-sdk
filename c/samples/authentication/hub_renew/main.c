@@ -5,10 +5,14 @@
 /* authentication/hub_renew
  *
  * Runtime operational-certificate renewal against a connected (Classic) hub
- * (increment 4, D7). While connected, the device produces a fresh CSR from its
- * managed provider and calls az_iot_connection_client_send_csr(). The hub
- * responds in two phases - ACCEPTED (202) then ISSUED (200) with the new chain -
- * and the sample persists the renewed chain back through the provider.
+ * (D7), end to end:
+ *   1. Connect, then produce a fresh CSR from the managed provider and call
+ *      az_iot_connection_client_send_csr().
+ *   2. The hub responds in two phases - ACCEPTED (202) then ISSUED (200) with
+ *      the new chain - and the sample persists it through the provider.
+ *   3. Apply the renewed cert by reconnecting: close + reopen re-establishes the
+ *      session with the new operational identity (a new client certificate
+ *      requires a fresh TLS handshake, so the cert is applied on reconnect).
  *
  * Requires the managed provider (OpenSSL 3.0+).
  *
@@ -141,9 +145,36 @@ int main(void)
             {
                 for (int i = 0; i < 1200 && !user_ctx.csr_done; ++i)
                     (void)az_iot_connection_client_do_work(&connection_client, 50);
+            }
+        }
+    }
 
-                if (user_ctx.csr_done && user_ctx.csr_status == AZ_IOT_OK)
-                    rc = 0;
+    /* Apply the renewed certificate. on_csr_event persisted it through the
+     * provider, which flips load() to the OPERATIONAL identity; a new client
+     * certificate needs a fresh TLS handshake, so we close and reopen. The
+     * reopen's hub connection loads the OPERATIONAL identity first and thus
+     * reconnects with the renewed cert. (A production device that already knows
+     * its hub could reconnect to it directly instead of re-provisioning.) */
+    if (user_ctx.csr_done && user_ctx.csr_status == AZ_IOT_OK)
+    {
+        fprintf(stderr, "[hub_renew] renewal complete; reconnecting to apply the new certificate\n");
+
+        az_iot_connection_client_close(&connection_client);
+        for (int i = 0; i < 100 && user_ctx.conn_state != AZ_IOT_CONN_STATE_IDLE; ++i)
+            (void)az_iot_connection_client_do_work(&connection_client, 50);
+
+        if (az_iot_connection_client_open(&connection_client) == AZ_IOT_OK)
+        {
+            for (int i = 0; i < 1200 && user_ctx.conn_state != AZ_IOT_CONN_STATE_CONNECTED; ++i)
+            {
+                (void)az_iot_connection_client_do_work(&connection_client, 50);
+                if (user_ctx.conn_state == AZ_IOT_CONN_STATE_FAULTED)
+                    break;
+            }
+            if (user_ctx.conn_state == AZ_IOT_CONN_STATE_CONNECTED)
+            {
+                fprintf(stderr, "[hub_renew] reconnected with the renewed operational certificate\n");
+                rc = 0;
             }
         }
     }
