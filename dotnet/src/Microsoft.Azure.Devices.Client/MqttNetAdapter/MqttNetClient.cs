@@ -15,9 +15,9 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
         // TODO Is this an appropriate way to give the user a chance to change tls settings/proxy settings/etc? Or maybe just ask users to provide their own impl at that point
         public Func<MqttClientOptionsBuilder, MqttClientOptionsBuilder>? ClientOptionsOverrider { get; set; }
 
-        public MqttNetClient(MQTTnet.IMqttClient underlyingClient, bool useWebsocket = false, IWebProxy? proxy = null)
+        public MqttNetClient(MQTTnet.IMqttClient? underlyingClient = null, bool useWebsocket = false, IWebProxy? proxy = null)
         {
-            _underlyingClient = underlyingClient;
+            _underlyingClient = underlyingClient ?? new MQTTnet.MqttClientFactory().CreateMqttClient();
             _useWebsocket = useWebsocket;
             _proxy = proxy;
 
@@ -121,31 +121,22 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
                 o.UserProperties = new();
             }
 
-            try
+            var connectResult = await _underlyingClient.ConnectAsync(o, cancellationToken);
+
+            var genericConnectResult = new MqttConnectAck()
             {
-                var connectResult = await _underlyingClient.ConnectAsync(o, cancellationToken);
+                ResultCode = ModelConverter.ToGeneric(connectResult.ResultCode),
+            };
 
-                var genericConnectResult = new MqttConnectAck()
+            if (connectResult.UserProperties != null)
+            {
+                foreach (var userProperty in connectResult.UserProperties)
                 {
-                    ResultCode = ModelConverter.ToGeneric(connectResult.ResultCode),
-                };
-
-                if (connectResult.UserProperties != null)
-                {
-                    foreach (var userProperty in connectResult.UserProperties)
-                    {
-                        genericConnectResult.UserProperties.Add(new() { Name = userProperty.Name, Value = userProperty.ValueBuffer });
-                    }
+                    genericConnectResult.UserProperties.Add(new() { Name = userProperty.Name, Value = userProperty.ValueBuffer });
                 }
-
-                return genericConnectResult;
-            }
-            catch (NullReferenceException e)
-            {
-                Console.WriteLine(e.StackTrace);
-                throw;
             }
 
+            return genericConnectResult;
         }
 
         public async Task DisconnectAsync(MqttDisconnect disconnect, CancellationToken cancellationToken = default)
