@@ -42,189 +42,33 @@
 #include <time.h>
 
 #include "azure/iot/az_iot.h"
-#include "azure/iot/adapters/az_iot_adapter_paho.h"
 
 #include "az_iot_e2e_service.h"
+#include "e2e_device.h"
 
 /* ---- timing budgets ------------------------------------------------------- */
-#define E2E_CONNECT_TIMEOUT_S   90 /* DPS provision + MQTT connect            */
 #define E2E_TELEMETRY_TIMEOUT_S 90 /* publish + EH-side receive               */
 #define E2E_C2D_TIMEOUT_S       60
 #define E2E_METHOD_TIMEOUT_S    60
-#define E2E_TWIN_TIMEOUT_S      60
+#define E2E_TWIN_TIMEOUT_S      60 /* per REST-request drive                  */
+#define E2E_TWIN_PROP_TIMEOUT_S 90 /* reported-property propagation poll      */
+#define E2E_CONNECT_TIMEOUT_S   45 /* cold service-AMQP connect retry budget  */
 #define E2E_PUMP_MS             20 /* per do_work / poll slice                */
-
-/* ---- environment ---------------------------------------------------------- */
-
-/* Duplicate an environment variable into a heap buffer (portable). Returns NULL
- * when unset/empty. Caller frees. */
-static char* env_dup(const char* name)
-{
-#ifdef _WIN32
-    char* value = NULL;
-    size_t len = 0;
-    if (_dupenv_s(&value, &len, name) != 0 || value == NULL || value[0] == '\0')
-    {
-        free(value);
-        return NULL;
-    }
-    return value;
-#else
-    const char* value = getenv(name);
-    if (value == NULL || value[0] == '\0')
-    {
-        return NULL;
-    }
-    {
-        size_t n = strlen(value) + 1;
-        char* copy = (char*)malloc(n);
-        if (copy != NULL)
-        {
-            memcpy(copy, value, n);
-        }
-        return copy;
-    }
-#endif
-}
 
 /* ---- shared fixture ------------------------------------------------------- */
 
 typedef struct
 {
-    char* id_scope;
-    char* reg_id;
-    char* cert;
-    char* key;
-    char* ca;
-    char* global_endpoint; /* optional */
-} device_config_t;
-
-typedef struct
-{
-    az_iot_connection_state_t conn_state;
-} device_ctx_t;
-
-typedef struct
-{
-    device_config_t                   cfg;
-    device_ctx_t                      ctx;
-    az_iot_certificate_provider_pem_t certs;
-    az_iot_connection_client_t        conn;
-    bool                              certs_ok;
-    bool                              conn_ok;
-
+    e2e_device_t        dev;
     az_iot_e2e_service* service;
-
-    const char* device_id; /* == cfg.reg_id */
 } e2e_fixture_t;
 
 static e2e_fixture_t g_fixture;
 
-static void device_config_release(device_config_t* cfg)
+/* Advance the device MQTT stack for a single slice. */
+static void device_do_work(e2e_fixture_t* fx, int ms)
 {
-    free(cfg->id_scope);
-    free(cfg->reg_id);
-    free(cfg->cert);
-    free(cfg->key);
-    free(cfg->ca);
-    free(cfg->global_endpoint);
-    memset(cfg, 0, sizeof(*cfg));
-}
-
-static int device_config_load(device_config_t* cfg)
-{
-    memset(cfg, 0, sizeof(*cfg));
-    cfg->id_scope        = env_dup("AZ_IOT_DPS_ID_SCOPE");
-    cfg->reg_id          = env_dup("AZ_IOT_DPS_REGISTRATION_ID");
-    cfg->cert            = env_dup("AZ_IOT_CLIENT_CERT");
-    cfg->key             = env_dup("AZ_IOT_CLIENT_KEY");
-    cfg->ca              = env_dup("AZ_IOT_TRUSTED_CA");
-    cfg->global_endpoint = env_dup("AZ_IOT_DPS_GLOBAL_ENDPOINT");
-
-    if (cfg->id_scope == NULL || cfg->reg_id == NULL || cfg->cert == NULL
-        || cfg->key == NULL || cfg->ca == NULL)
-    {
-        fprintf(stderr,
-            "[e2e] missing required device env vars: AZ_IOT_DPS_ID_SCOPE/"
-            "AZ_IOT_DPS_REGISTRATION_ID/AZ_IOT_CLIENT_CERT/AZ_IOT_CLIENT_KEY/"
-            "AZ_IOT_TRUSTED_CA\n");
-        return 1;
-    }
-    return 0;
-}
-
-static void on_conn_state(az_iot_connection_state_t s, az_iot_result_t reason, void* user_ctx)
-{
-    (void)reason;
-    ((device_ctx_t*)user_ctx)->conn_state = s;
-}
-
-/* Pump the device MQTT stack for a single slice. */
-static void device_pump(e2e_fixture_t* fx, int ms)
-{
-    (void)az_iot_connection_client_do_work(&fx->conn, ms);
-}
-
-/* Provision the device via DPS and connect it to the assigned hub. */
-static int device_connect(e2e_fixture_t* fx)
-{
-    az_iot_certificate_provider_pem_options_t pem = {
-        .trusted_ca_pem_path  = fx->cfg.ca,
-        .client_cert_pem_path = fx->cfg.cert,
-        .client_key_pem_path  = fx->cfg.key,
-    };
-    if (az_iot_certificate_provider_pem_init(&fx->certs, &pem) != AZ_IOT_OK)
-    {
-        fprintf(stderr, "[e2e] certificate provider init failed\n");
-        return 1;
-    }
-    fx->certs_ok = true;
-
-    az_iot_connection_client_options_t copts =
-        az_iot_connection_client_options_get_default(fx->cfg.id_scope, fx->cfg.reg_id, &fx->certs.base);
-    if (fx->cfg.global_endpoint != NULL)
-    {
-        copts.dps.global_endpoint = fx->cfg.global_endpoint;
-    }
-
-    if (az_iot_connection_client_init(&fx->conn, &copts) != AZ_IOT_OK)
-    {
-        fprintf(stderr, "[e2e] connection client init failed\n");
-        return 1;
-    }
-    fx->conn_ok = true;
-    az_iot_connection_client_set_state_callback(&fx->conn, on_conn_state, &fx->ctx);
-
-    if (az_iot_connection_client_register_mqtt_factory(&fx->conn, az_iot_paho_factory_create_v3_1_1()) != AZ_IOT_OK
-        || az_iot_connection_client_register_mqtt_factory(&fx->conn, az_iot_paho_factory_create_v5()) != AZ_IOT_OK)
-    {
-        fprintf(stderr, "[e2e] MQTT factory registration failed\n");
-        return 1;
-    }
-
-    if (az_iot_connection_client_open(&fx->conn) != AZ_IOT_OK)
-    {
-        fprintf(stderr, "[e2e] connection open failed\n");
-        return 1;
-    }
-
-    time_t start = time(NULL);
-    while (fx->ctx.conn_state != AZ_IOT_CONN_STATE_CONNECTED
-           && (time(NULL) - start) < E2E_CONNECT_TIMEOUT_S)
-    {
-        device_pump(fx, 50);
-        if (fx->ctx.conn_state == AZ_IOT_CONN_STATE_FAULTED)
-        {
-            break;
-        }
-    }
-
-    if (fx->ctx.conn_state != AZ_IOT_CONN_STATE_CONNECTED)
-    {
-        fprintf(stderr, "[e2e] device did not reach CONNECTED (state=%d)\n", (int)fx->ctx.conn_state);
-        return 1;
-    }
-    return 0;
+    e2e_device_do_work(&fx->dev, ms);
 }
 
 /* ---- unique correlation markers ------------------------------------------- */
@@ -250,12 +94,6 @@ static int group_setup(void** state)
     az_iot_log_sink_t log = az_iot_log_stderr_sink(AZ_IOT_LOG_ERROR);
     az_iot_log_set_global_sink(&log);
 
-    if (device_config_load(&g_fixture.cfg) != 0)
-    {
-        return -1;
-    }
-    g_fixture.device_id = g_fixture.cfg.reg_id;
-
     const char* svc_err = NULL;
     g_fixture.service = az_iot_e2e_service_create(&svc_err);
     if (g_fixture.service == NULL)
@@ -264,7 +102,7 @@ static int group_setup(void** state)
         return -1;
     }
 
-    if (device_connect(&g_fixture) != 0)
+    if (e2e_device_connect(&g_fixture.dev) != 0)
     {
         az_iot_e2e_service_destroy(g_fixture.service);
         g_fixture.service = NULL;
@@ -282,24 +120,12 @@ static int group_teardown(void** state)
     {
         return 0;
     }
-    if (fx->conn_ok)
-    {
-        az_iot_connection_client_close(&fx->conn);
-        for (int i = 0; i < 100 && fx->ctx.conn_state != AZ_IOT_CONN_STATE_IDLE; ++i)
-        {
-            device_pump(fx, 50);
-        }
-        az_iot_connection_client_deinit(&fx->conn);
-    }
-    if (fx->certs_ok)
-    {
-        az_iot_certificate_provider_pem_deinit(&fx->certs);
-    }
+    e2e_device_disconnect(&fx->dev);
     if (fx->service != NULL)
     {
         az_iot_e2e_service_destroy(fx->service);
+        fx->service = NULL;
     }
-    device_config_release(&fx->cfg);
     return 0;
 }
 
@@ -329,11 +155,32 @@ static void test_telemetry(void** state)
     snprintf(payload, sizeof(payload), "{\"e2e\":\"telemetry\",\"marker\":\"%s\"}", marker);
 
     /* Start listening on the Event Hub-compatible endpoint before sending so we
-     * never miss the message. */
-    assert_true(az_iot_e2e_service_telemetry_watch_begin(fx->service));
+     * never miss the message. The cold AMQP handshake (TLS -> connection -> CBS
+     * SAS -> per-partition receivers) against a freshly provisioned hub can fail
+     * transiently (observed on the Windows leg: the peer closes the connection
+     * during open), so retry with a short backoff up to E2E_CONNECT_TIMEOUT_S,
+     * pumping the device in between to keep its MQTT connection warm. Each
+     * attempt opens a brand-new connection (a failed one frees itself and
+     * releases the transport's single TLS slot). */
+    bool watching = az_iot_e2e_service_telemetry_watch_begin(fx->service);
+    for (time_t connect_start = time(NULL);
+         !watching && (time(NULL) - connect_start) < E2E_CONNECT_TIMEOUT_S;)
+    {
+        for (int i = 0; i < 50; i++) /* ~1s backoff, device kept alive */
+        {
+            device_do_work(fx, E2E_PUMP_MS);
+        }
+        watching = az_iot_e2e_service_telemetry_watch_begin(fx->service);
+    }
+    if (!watching)
+    {
+        const char* err = az_iot_e2e_service_last_error(fx->service);
+        fprintf(stderr, "[e2e] telemetry watch begin failed: %s\n", (err != NULL) ? err : "unknown");
+    }
+    assert_true(watching);
 
     az_iot_telemetry_client_t telemetry_client;
-    assert_int_equal(az_iot_telemetry_client_init(&telemetry_client, &fx->conn), AZ_IOT_OK);
+    assert_int_equal(az_iot_telemetry_client_init(&telemetry_client, &fx->dev.conn), AZ_IOT_OK);
 
     az_iot_telemetry_property_t props[] = {
         { AZ_IOT_MSG_PROP_CONTENT_TYPE, "application/json" },
@@ -351,7 +198,7 @@ static void test_telemetry(void** state)
     time_t start = time(NULL);
     while ((time(NULL) - start) < E2E_TELEMETRY_TIMEOUT_S)
     {
-        device_pump(fx, E2E_PUMP_MS);
+        device_do_work(fx, E2E_PUMP_MS);
         assert_true(az_iot_e2e_service_do_work(fx->service, E2E_PUMP_MS));
         if (az_iot_e2e_service_telemetry_seen(fx->service, marker))
         {
@@ -365,7 +212,7 @@ static void test_telemetry(void** state)
      * races the send. Drain the device briefly until the send completes. */
     for (time_t ack = time(NULL); !sc.done && (time(NULL) - ack) < 5;)
     {
-        device_pump(fx, E2E_PUMP_MS);
+        device_do_work(fx, E2E_PUMP_MS);
     }
 
     az_iot_telemetry_client_deinit(&telemetry_client);
@@ -409,17 +256,32 @@ static void test_c2d(void** state)
     make_marker(cctx.expected, sizeof(cctx.expected), "c2d");
 
     az_iot_c2d_client_t c2d;
-    assert_int_equal(az_iot_c2d_client_init(&c2d, &fx->conn), AZ_IOT_OK);
+    assert_int_equal(az_iot_c2d_client_init(&c2d, &fx->dev.conn), AZ_IOT_OK);
     assert_int_equal(az_iot_c2d_client_set_handler(&c2d, on_c2d, &cctx), AZ_IOT_OK);
 
-    /* Give the subscription a few pumps to settle before the cloud sends. */
+    /* Give the subscription a few work slices to settle before the cloud sends. */
     for (int i = 0; i < 20; ++i)
     {
-        device_pump(fx, E2E_PUMP_MS);
+        device_do_work(fx, E2E_PUMP_MS);
     }
 
+    /* The service C2D send opens its own short-lived AMQP connection, whose cold
+     * handshake can be refused transiently (same Windows "peer closed the
+     * connection" as telemetry). Retry with a short backoff up to
+     * E2E_CONNECT_TIMEOUT_S, pumping the device in between; each attempt opens a
+     * fresh connection (a failed one tears itself down and releases the TLS slot). */
     bool sent = az_iot_e2e_service_send_c2d(
-        fx->service, fx->device_id, (const uint8_t*)cctx.expected, strlen(cctx.expected));
+        fx->service, fx->dev.device_id, (const uint8_t*)cctx.expected, strlen(cctx.expected));
+    for (time_t connect_start = time(NULL);
+         !sent && (time(NULL) - connect_start) < E2E_CONNECT_TIMEOUT_S;)
+    {
+        for (int i = 0; i < 50; i++) /* ~1s backoff, device kept alive */
+        {
+            device_do_work(fx, E2E_PUMP_MS);
+        }
+        sent = az_iot_e2e_service_send_c2d(
+            fx->service, fx->dev.device_id, (const uint8_t*)cctx.expected, strlen(cctx.expected));
+    }
     if (!sent)
     {
         fprintf(stderr, "[e2e] c2d send failed: %s\n", az_iot_e2e_service_last_error(fx->service));
@@ -429,7 +291,7 @@ static void test_c2d(void** state)
     time_t start = time(NULL);
     while (!cctx.received && (time(NULL) - start) < E2E_C2D_TIMEOUT_S)
     {
-        device_pump(fx, E2E_PUMP_MS);
+        device_do_work(fx, E2E_PUMP_MS);
     }
 
     az_iot_c2d_client_deinit(&c2d);
@@ -458,15 +320,15 @@ static void test_direct_method(void** state)
     e2e_fixture_t* fx = (e2e_fixture_t*)*state;
 
     az_iot_direct_method_client_t dm;
-    assert_int_equal(az_iot_direct_method_client_init(&dm, &fx->conn), AZ_IOT_OK);
+    assert_int_equal(az_iot_direct_method_client_init(&dm, &fx->dev.conn), AZ_IOT_OK);
     assert_int_equal(az_iot_direct_method_client_set_handler(&dm, on_method, NULL), AZ_IOT_OK);
 
     for (int i = 0; i < 20; ++i)
     {
-        device_pump(fx, E2E_PUMP_MS);
+        device_do_work(fx, E2E_PUMP_MS);
     }
 
-    assert_true(az_iot_e2e_service_method_invoke_begin(fx->service, fx->device_id, "echo", "\"ping\""));
+    assert_true(az_iot_e2e_service_method_invoke_begin(fx->service, fx->dev.device_id, "echo", "\"ping\""));
 
     int  status = 0;
     int  rc = 0;
@@ -474,7 +336,7 @@ static void test_direct_method(void** state)
     time_t start = time(NULL);
     while ((time(NULL) - start) < E2E_METHOD_TIMEOUT_S)
     {
-        device_pump(fx, E2E_PUMP_MS);
+        device_do_work(fx, E2E_PUMP_MS);
         rc = az_iot_e2e_service_request_poll(fx->service, &status, resp, sizeof(resp));
         if (rc != 0)
         {
@@ -535,14 +397,14 @@ static void on_patch_ack(az_iot_result_t status, void* user_ctx)
     p->done = 1;
 }
 
-/* Drive an in-flight REST request to completion while keeping the device pumped. */
-static int pump_request(e2e_fixture_t* fx, int* status, char* resp, size_t resp_size, int timeout_s)
+/* Drive an in-flight REST request to completion while keeping the device serviced. */
+static int drive_request(e2e_fixture_t* fx, int* status, char* resp, size_t resp_size, int timeout_s)
 {
     int rc = 0;
     time_t start = time(NULL);
     while ((time(NULL) - start) < timeout_s)
     {
-        device_pump(fx, E2E_PUMP_MS);
+        device_do_work(fx, E2E_PUMP_MS);
         rc = az_iot_e2e_service_request_poll(fx->service, status, resp, resp_size);
         if (rc != 0)
         {
@@ -557,7 +419,7 @@ static void test_twin(void** state)
     e2e_fixture_t* fx = (e2e_fixture_t*)*state;
 
     az_iot_twin_client_t twin;
-    assert_int_equal(az_iot_twin_client_init(&twin, &fx->conn), AZ_IOT_OK);
+    assert_int_equal(az_iot_twin_client_init(&twin, &fx->dev.conn), AZ_IOT_OK);
 
     /* --- desired: cloud patches, device observes ------------------------- */
     desired_ctx_t dctx = { 0 };
@@ -566,16 +428,20 @@ static void test_twin(void** state)
 
     for (int i = 0; i < 20; ++i)
     {
-        device_pump(fx, E2E_PUMP_MS);
+        device_do_work(fx, E2E_PUMP_MS);
     }
 
     char desired_json[128];
     snprintf(desired_json, sizeof(desired_json), "{\"cfg\":\"%s\"}", dctx.expected);
-    assert_true(az_iot_e2e_service_twin_patch_desired_begin(fx->service, fx->device_id, desired_json));
+    assert_true(az_iot_e2e_service_twin_patch_desired_begin(fx->service, fx->dev.device_id, desired_json));
 
     int  status = 0;
-    char resp[2048] = { 0 };
-    int  rc = pump_request(fx, &status, resp, sizeof(resp), E2E_TWIN_TIMEOUT_S);
+    /* The twin GET returns the WHOLE twin (device-level fields + desired +
+     * reported, each with $metadata). Size the buffer generously so a populated
+     * desired section can never push the reported marker past the end and cause
+     * a false negative -- the facade truncates the copied body to this size. */
+    char resp[16384] = { 0 };
+    int  rc = drive_request(fx, &status, resp, sizeof(resp), E2E_TWIN_TIMEOUT_S);
     if (rc != 1)
     {
         fprintf(stderr, "[e2e] twin desired patch rc=%d: %s\n", rc, az_iot_e2e_service_last_error(fx->service));
@@ -586,7 +452,7 @@ static void test_twin(void** state)
     time_t start = time(NULL);
     while (!dctx.received && (time(NULL) - start) < E2E_TWIN_TIMEOUT_S)
     {
-        device_pump(fx, E2E_PUMP_MS);
+        device_do_work(fx, E2E_PUMP_MS);
     }
     assert_true(dctx.received);
     assert_true(dctx.matched);
@@ -606,22 +472,39 @@ static void test_twin(void** state)
     start = time(NULL);
     while (!pack.done && (time(NULL) - start) < E2E_TWIN_TIMEOUT_S)
     {
-        device_pump(fx, E2E_PUMP_MS);
+        device_do_work(fx, E2E_PUMP_MS);
     }
     assert_true(pack.done);
     assert_int_equal(pack.status, AZ_IOT_OK);
 
-    assert_true(az_iot_e2e_service_twin_get_begin(fx->service, fx->device_id));
-    status = 0;
-    memset(resp, 0, sizeof(resp));
-    rc = pump_request(fx, &status, resp, sizeof(resp), E2E_TWIN_TIMEOUT_S);
-    if (rc != 1)
+    /* Reported-property propagation to the REST twin store is eventually
+     * consistent: even after the device's PATCH-reported is ACKed, the value can
+     * take a moment to appear in a service-side twin GET (observed flaky on the
+     * Windows leg). Re-read until the reported marker shows up, bounded by the
+     * same wall-clock timeout the rest of this suite uses, pumping the device
+     * (~1s) between attempts. */
+    bool reported_seen = false;
+    start = time(NULL);
+    while (!reported_seen && (time(NULL) - start) < E2E_TWIN_PROP_TIMEOUT_S)
     {
-        fprintf(stderr, "[e2e] twin get rc=%d: %s\n", rc, az_iot_e2e_service_last_error(fx->service));
+        assert_true(az_iot_e2e_service_twin_get_begin(fx->service, fx->dev.device_id));
+        status = 0;
+        memset(resp, 0, sizeof(resp));
+        rc = drive_request(fx, &status, resp, sizeof(resp), E2E_TWIN_TIMEOUT_S);
+        if (rc != 1)
+        {
+            fprintf(stderr, "[e2e] twin get rc=%d: %s\n", rc, az_iot_e2e_service_last_error(fx->service));
+        }
+        assert_int_equal(rc, 1);
+        assert_int_equal(status, 200);
+
+        reported_seen = (strstr(resp, reported_marker) != NULL);
+        if (!reported_seen)
+        {
+            for (int i = 0; i < 50; ++i) device_do_work(fx, E2E_PUMP_MS);
+        }
     }
-    assert_int_equal(rc, 1);
-    assert_int_equal(status, 200);
-    assert_non_null(strstr(resp, reported_marker));
+    assert_true(reported_seen);
 
     az_iot_twin_client_deinit(&twin);
 }

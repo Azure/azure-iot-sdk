@@ -1,10 +1,57 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Text;
+﻿using System.Globalization;
+using System.Text.Json.Serialization;
 
 namespace Microsoft.Azure.Devices.Client.FileUpload
 {
+    /// <summary>
+    /// The information provided from IoT hub that can be used with the Azure Storage SDK to upload a file from your device.
+    /// </summary>
     public class FileUploadSasUriResponse
     {
+        /// <summary>
+        /// The correlation id to use when notifying IoT hub later once this file upload has completed.
+        /// </summary>
+        [JsonPropertyName("correlationId")]
+        public string CorrelationId { get; set; }
+
+        /// <summary>
+        /// The host name of the storage account that the file can be uploaded to.
+        /// </summary>
+        [JsonPropertyName("hostName")]
+        public string HostName { get; set; }
+
+        /// <summary>
+        /// The container in the storage account that the file can be uploaded to.
+        /// </summary>
+        [JsonPropertyName("containerName")]
+        public string ContainerName { get; set; }
+
+        /// <summary>
+        /// The name of the blob in the container that the file can be uploaded to.
+        /// </summary>
+        [JsonPropertyName("blobName")]
+        public string BlobName { get; set; }
+
+        /// <summary>
+        /// The sas token to use for authentication while using the Azure Storage SDK to upload the file.
+        /// </summary>
+        [JsonPropertyName("sasToken")]
+        public string SasToken { get; set; }
+
+        /// <summary>
+        /// Get the complete Uri for the blob that can be uploaded to from this device. This Uri includes credentials, too.
+        /// </summary>
+        /// <returns>The complete Uri for the blob that can be uploaded to from this device</returns>
+        public Uri GetBlobUri()
+        {
+            return new Uri(
+                string.Format(
+                    CultureInfo.InvariantCulture,
+                    "https://{0}/{1}/{2}{3}",
+                    HostName,
+                    ContainerName,
+                    Uri.EscapeDataString(BlobName), // Pass URL encoded device name and blob name to support special characters
+                    SasToken));
+        }
     }
 }

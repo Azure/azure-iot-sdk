@@ -17,7 +17,9 @@
 
 #include <azure/core/az_span.h>
 
+#include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #ifdef _WIN32
@@ -210,6 +212,12 @@ static az_amqp_transport_status _tls_handshake(az_amqp_sample_transport* s)
 #if defined(_WIN32) && !defined(AZ_AMQP_SAMPLE_USE_OPENSSL)
 // ---- Native Windows TLS via Schannel (SSPI). Single connection per process (sample scope). ----
 #define SECURITY_WIN32
+// Expose the modern SCH_CREDENTIALS / TLS_PARAMETERS structures. Without this
+// macro, schannel.h only defines the legacy SCHANNEL_CRED, which caps Schannel
+// negotiation at TLS 1.2; SCH_CREDENTIALS is required to negotiate TLS 1.3.
+// TLS_PARAMETERS references UNICODE_STRING, so winternl.h must precede schannel.h.
+#define SCHANNEL_USE_BLACKLISTS
+#include <winternl.h>
 #include <schannel.h>
 #include <security.h>
 #include <sspi.h>
@@ -225,6 +233,8 @@ static struct
   bool ctxt_ok;
   bool started;
   bool done;
+  bool reneg_active; // driving a TLS post-handshake / renegotiation flight
+  bool reneg_isc_done; // reneg ISC returned SEC_E_OK; only the final flush remains
   SecPkgContext_StreamSizes sizes;
   uint8_t in[_SCH_BUF]; // accumulated inbound ciphertext
   int in_len;
@@ -235,6 +245,35 @@ static struct
   int out_off;
   int out_len;
 } g_sch;
+
+// Optional Schannel diagnostics, enabled by setting AZ_AMQP_TLS_DEBUG in the
+// environment (a no-op otherwise). Lines are phase-labeled and written to stderr
+// so a CI run can show WHERE a connection was closed -- during the TLS handshake
+// (server rejected our ClientHello) vs. after it (at the AMQP/app layer) -- and
+// which protocol/cipher was negotiated.
+static bool _sch_debug_enabled(void)
+{
+  static int enabled = -1;
+  if (enabled < 0)
+  {
+    enabled = (getenv("AZ_AMQP_TLS_DEBUG") != NULL) ? 1 : 0;
+  }
+  return enabled != 0;
+}
+
+static void _sch_dbg(char const* format, ...)
+{
+  if (!_sch_debug_enabled())
+  {
+    return;
+  }
+  va_list args;
+  va_start(args, format);
+  (void)fputs("[az-amqp-tls] ", stderr);
+  (void)vfprintf(stderr, format, args);
+  (void)fputc('\n', stderr);
+  va_end(args);
+}
 
 static void _sch_fail(az_amqp_sample_transport* s, char const* where, long status)
 {
@@ -306,10 +345,23 @@ static az_amqp_transport_status _sch_handshake(az_amqp_sample_transport* s)
   if (!g_sch.started)
   {
     memset(&g_sch, 0, sizeof(g_sch));
-    SCHANNEL_CRED cred;
+    _sch_dbg("starting TLS handshake to %s:%u", host, (unsigned)s->options.port);
+    // Use the modern SCH_CREDENTIALS structure. The legacy SCHANNEL_CRED caps
+    // negotiation at TLS 1.2; SCH_CREDENTIALS lets Schannel negotiate TLS 1.3
+    // where available (falling back to 1.2). We disable only TLS 1.0/1.1 so the
+    // highest modern protocol the server and OS share is chosen. TLS 1.3's
+    // post-handshake messages (NewSessionTicket / KeyUpdate) surface from
+    // DecryptMessage as SEC_I_RENEGOTIATE and are handled in _sch_read /
+    // _sch_drive_reneg.
+    TLS_PARAMETERS tls_params;
+    memset(&tls_params, 0, sizeof(tls_params));
+    tls_params.grbitDisabledProtocols = (DWORD)(SP_PROT_TLS1_0_CLIENT | SP_PROT_TLS1_1_CLIENT);
+    SCH_CREDENTIALS cred;
     memset(&cred, 0, sizeof(cred));
-    cred.dwVersion = SCHANNEL_CRED_VERSION;
+    cred.dwVersion = SCH_CREDENTIALS_VERSION;
     cred.dwFlags = SCH_USE_STRONG_CRYPTO | SCH_CRED_AUTO_CRED_VALIDATION | SCH_CRED_NO_DEFAULT_CREDS;
+    cred.cTlsParameters = 1;
+    cred.pTlsParameters = &tls_params;
     SECURITY_STATUS st = AcquireCredentialsHandleA(
         NULL, (SEC_CHAR*)UNISP_NAME_A, SECPKG_CRED_OUTBOUND, NULL, &cred, NULL, NULL, &g_sch.cred, NULL);
     if (st != SEC_E_OK)
@@ -356,6 +408,7 @@ static az_amqp_transport_status _sch_handshake(az_amqp_sample_transport* s)
   int n = recv(sock, (char*)(g_sch.in + g_sch.in_len), _SCH_BUF - g_sch.in_len, 0);
   if (n == 0)
   {
+    _sch_dbg("peer closed DURING the TLS handshake (server rejected our ClientHello)");
     return AZ_AMQP_TRANSPORT_STATUS_CLOSED;
   }
   if (n < 0)
@@ -436,6 +489,18 @@ static az_amqp_transport_status _sch_handshake(az_amqp_sample_transport* s)
         _set_error(s, 0, "QueryContextAttributes(STREAM_SIZES) failed");
         return AZ_AMQP_TRANSPORT_STATUS_ERROR;
       }
+      if (_sch_debug_enabled())
+      {
+        SecPkgContext_ConnectionInfo ci;
+        if (QueryContextAttributes(&g_sch.ctxt, SECPKG_ATTR_CONNECTION_INFO, &ci) == SEC_E_OK)
+        {
+          _sch_dbg(
+              "TLS handshake OK: protocol=0x%04x cipher=0x%04x strength=%d",
+              (unsigned)ci.dwProtocol,
+              (unsigned)ci.aiCipher,
+              (int)ci.dwCipherStrength);
+        }
+      }
       g_sch.done = true;
       return _sch_flush(s);
     }
@@ -444,9 +509,139 @@ static az_amqp_transport_status _sch_handshake(az_amqp_sample_transport* s)
   }
 }
 
+// Advances a TLS post-handshake flight (TLS 1.3 NewSessionTicket / KeyUpdate, or
+// a TLS 1.2 server-initiated renegotiation) that DecryptMessage surfaced via
+// SEC_I_RENEGOTIATE. The handshake token to process must already be at the front
+// of g_sch.in. Non-blocking and resumable across calls (state lives in
+// g_sch.reneg_active / g_sch.reneg_isc_done): returns OK once the flight is fully
+// processed (and reneg_active is cleared), WANT_READ when more socket data is
+// needed, WANT_WRITE while an output token (e.g. a KeyUpdate response) is
+// mid-flush, CLOSED/ERROR otherwise.
+static az_amqp_transport_status _sch_drive_reneg(az_amqp_sample_transport* s)
+{
+  char host[256];
+  az_span sni = az_span_size(s->options.tls.server_name_indication) > 0
+      ? s->options.tls.server_name_indication
+      : s->options.host_name;
+  int32_t hn = az_span_size(sni);
+  if (hn <= 0 || (size_t)hn >= sizeof(host))
+  {
+    _set_error(s, 0, "invalid TLS server name");
+    return AZ_AMQP_TRANSPORT_STATUS_ERROR;
+  }
+  memcpy(host, az_span_ptr(sni), (size_t)hn);
+  host[hn] = 0;
+
+  DWORD const isc_flags = ISC_REQ_SEQUENCE_DETECT | ISC_REQ_REPLAY_DETECT | ISC_REQ_CONFIDENTIALITY
+      | ISC_REQ_ALLOCATE_MEMORY | ISC_REQ_STREAM;
+  _sock_t sock = (_sock_t)s->file_descriptor;
+
+  for (;;)
+  {
+    // Flush any queued output token (e.g. a KeyUpdate response) before proceeding.
+    az_amqp_transport_status fs = _sch_flush(s);
+    if (fs != AZ_AMQP_TRANSPORT_STATUS_OK)
+    {
+      return fs; // WANT_WRITE (resume later) or ERROR
+    }
+    if (g_sch.reneg_isc_done)
+    {
+      // ISC already reported SEC_E_OK; its final token has now been flushed.
+      g_sch.reneg_active = false;
+      g_sch.reneg_isc_done = false;
+      return AZ_AMQP_TRANSPORT_STATUS_OK;
+    }
+
+    if (g_sch.in_len > 0)
+    {
+      SecBuffer inbufs[2]
+          = { { (unsigned long)g_sch.in_len, SECBUFFER_TOKEN, g_sch.in }, { 0, SECBUFFER_EMPTY, NULL } };
+      SecBufferDesc in = { SECBUFFER_VERSION, 2, inbufs };
+      SecBuffer outbuf = { 0, SECBUFFER_TOKEN, NULL };
+      SecBufferDesc out = { SECBUFFER_VERSION, 1, &outbuf };
+      DWORD attrs = 0;
+      SECURITY_STATUS st = InitializeSecurityContextA(
+          &g_sch.cred, &g_sch.ctxt, (SEC_CHAR*)host, isc_flags, 0, 0, &in, 0, NULL, &out, &attrs, NULL);
+
+      if (outbuf.cbBuffer > 0 && outbuf.pvBuffer != NULL)
+      {
+        (void)_sch_queue((uint8_t const*)outbuf.pvBuffer, (int)outbuf.cbBuffer);
+        FreeContextBuffer(outbuf.pvBuffer);
+      }
+
+      if (st != SEC_E_INCOMPLETE_MESSAGE)
+      {
+        // Consume what ISC processed; keep any trailing extra (following records).
+        int consumed = g_sch.in_len;
+        if (inbufs[1].BufferType == SECBUFFER_EXTRA)
+        {
+          consumed = g_sch.in_len - (int)inbufs[1].cbBuffer;
+        }
+        if (consumed > 0 && consumed <= g_sch.in_len)
+        {
+          memmove(g_sch.in, g_sch.in + consumed, (size_t)(g_sch.in_len - consumed));
+          g_sch.in_len -= consumed;
+        }
+
+        if (st == SEC_E_OK)
+        {
+          g_sch.reneg_isc_done = true;
+          continue; // loop to flush the final token, then finish
+        }
+        if (st == SEC_I_CONTINUE_NEEDED)
+        {
+          if (g_sch.in_len > 0)
+          {
+            continue; // more handshake data already buffered
+          }
+          // otherwise fall through to read more
+        }
+        else if (st == SEC_I_INCOMPLETE_CREDENTIALS)
+        {
+          continue; // server requested a client cert; continue anonymously
+        }
+        else
+        {
+          _sch_fail(s, "InitializeSecurityContext (post-handshake) failed", (long)st);
+          return AZ_AMQP_TRANSPORT_STATUS_ERROR;
+        }
+      }
+      // SEC_E_INCOMPLETE_MESSAGE: fall through to read more ciphertext.
+    }
+
+    if (g_sch.in_len >= _SCH_BUF)
+    {
+      _set_error(s, 0, "TLS record exceeds buffer");
+      return AZ_AMQP_TRANSPORT_STATUS_ERROR;
+    }
+    int n = recv(sock, (char*)(g_sch.in + g_sch.in_len), _SCH_BUF - g_sch.in_len, 0);
+    if (n == 0)
+    {
+      return AZ_AMQP_TRANSPORT_STATUS_CLOSED;
+    }
+    if (n < 0)
+    {
+      return _sock_would_block() ? AZ_AMQP_TRANSPORT_STATUS_WANT_READ
+                                 : AZ_AMQP_TRANSPORT_STATUS_ERROR;
+    }
+    g_sch.in_len += n;
+  }
+}
+
 static az_amqp_transport_status
 _sch_read(az_amqp_sample_transport* s, az_span destination, size_t* out_bytes)
 {
+  // Finish any in-progress TLS post-handshake / renegotiation flight before
+  // serving application data.
+  if (g_sch.reneg_active)
+  {
+    az_amqp_transport_status rs = _sch_drive_reneg(s);
+    if (rs != AZ_AMQP_TRANSPORT_STATUS_OK)
+    {
+      return rs;
+    }
+  }
+
   // Serve any leftover decrypted plaintext first.
   if (g_sch.plain_off < g_sch.plain_len)
   {
@@ -514,6 +709,36 @@ _sch_read(az_amqp_sample_transport* s, az_span destination, size_t* out_bytes)
       else if (st == SEC_I_CONTEXT_EXPIRED)
       {
         return AZ_AMQP_TRANSPORT_STATUS_CLOSED;
+      }
+      else if (st == SEC_I_RENEGOTIATE)
+      {
+        // A TLS post-handshake message (TLS 1.3 NewSessionTicket / KeyUpdate) or
+        // a TLS 1.2 renegotiation request. DecryptMessage hands the handshake
+        // bytes back in a SECBUFFER_EXTRA; move them to the front of g_sch.in and
+        // drive the flight through InitializeSecurityContext, then resume
+        // decrypting application data.
+        SecBuffer* extra = NULL;
+        for (int i = 0; i < 4; i++)
+        {
+          if (bufs[i].BufferType == SECBUFFER_EXTRA)
+          {
+            extra = &bufs[i];
+            break;
+          }
+        }
+        int extra_len = (extra != NULL) ? (int)extra->cbBuffer : 0;
+        if (extra_len > 0 && extra->pvBuffer != NULL)
+        {
+          memmove(g_sch.in, extra->pvBuffer, (size_t)extra_len);
+        }
+        g_sch.in_len = extra_len;
+        g_sch.reneg_active = true;
+        az_amqp_transport_status rs = _sch_drive_reneg(s);
+        if (rs != AZ_AMQP_TRANSPORT_STATUS_OK)
+        {
+          return rs;
+        }
+        continue; // renegotiation complete; try decrypting application data again
       }
       else if (st != SEC_E_INCOMPLETE_MESSAGE)
       {
@@ -769,7 +994,12 @@ _read(az_amqp_transport* transport, az_span destination, size_t* out_bytes)
 #elif defined(_WIN32)
   if (_tls_active(s))
   {
-    return _sch_read(s, destination, out_bytes);
+    az_amqp_transport_status rs = _sch_read(s, destination, out_bytes);
+    if (rs == AZ_AMQP_TRANSPORT_STATUS_CLOSED)
+    {
+      _sch_dbg("peer closed the connection AFTER the TLS handshake (at the AMQP/app layer)");
+    }
+    return rs;
   }
 #endif
 

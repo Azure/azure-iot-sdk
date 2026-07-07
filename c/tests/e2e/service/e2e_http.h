@@ -26,8 +26,12 @@
 extern "C" {
 #endif
 
-#define E2E_HTTP_REQUEST_MAX 4096
-#define E2E_HTTP_RESPONSE_MAX 16384
+/* Sized for the IoT Hub service REST calls, including an ADU deployment twin
+ * PATCH: the request buffer holds headers (incl. the ~300 B SAS token) plus a
+ * ~3 KB desired-property body; the response buffer holds a full twin GET whose
+ * desired properties carry the deployment manifest plus its $metadata. */
+#define E2E_HTTP_REQUEST_MAX 8192
+#define E2E_HTTP_RESPONSE_MAX 32768
 
 typedef enum e2e_http_phase_tag
 {

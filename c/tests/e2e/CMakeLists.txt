@@ -28,27 +28,30 @@ add_subdirectory(service)
 # and hub/eventhub connection strings) supplied by the e2e CI job; it is only
 # built when AZ_IOT_BUILD_E2E and AZ_IOT_WITH_PAHO are enabled.
 # ---------------------------------------------------------------------------
-az_iot_add_cmocka_test(az_iot_tests_e2e tests/e2e_scenarios_test.c)
+az_iot_add_cmocka_test(az_iot_tests_e2e tests/e2e_scenarios_test.c tests/e2e_device.c)
 target_link_libraries(az_iot_tests_e2e PRIVATE az_iot_e2e_service az_iot_adapter_paho)
 
 # ---------------------------------------------------------------------------
 # az_iot_tests_e2e_adu
 #
-# Device Update (ADU) slow-lane placeholder. Provisioning the ADU account/
-# instance takes ~25 min, so this runs in a SEPARATE workflow (ci-c-e2e-adu.yml)
-# on a nightly / dispatch / ADU-paths cadence, NOT in the fast PR job. It carries
-# the ADU pipeline until a real device-side ADU update scenario is written: it is
-# standalone (no device/service link), gates on the provisioned config, and
-# reports a CTest skip (exit 77).
+# Device Update (ADU) e2e suite. It drives a signed deployment end-to-end
+# through the device twin: the cloud PATCHes a signed manifest into desired
+# properties and the device runs the download -> install -> apply workflow
+# (crypto + platform ops mocked, as in the ADU unit test) and reports the
+# outcome back. Because a twin desired-property PATCH is the entire trigger, it
+# needs NO Device Update account, so it is fast. Like the fast suite it plays
+# both halves in one process, so it links the same device (Paho) + service
+# facade libraries.
 #
-# Filtered separately from the fast suite so neither picks up the other or the
-# adu_crypto_openssl unit test: the fast job runs `ctest -R e2e -E adu`; the ADU
-# job runs `ctest -R e2e_adu`.
+# It runs in the fast PR workflow (ci-c-e2e.yml, `ctest -R e2e`, which matches
+# BOTH e2e executables) AND, as an interim placeholder, in the nightly ADU
+# workflow (ci-c-e2e-adu.yml, `ctest -R e2e_adu`, which selects only this one)
+# until the real-ADU suite -- one that provisions an actual Device Update
+# account and triggers updates through the ADU service -- lands. The `e2e` name
+# filters never match the adu_crypto_openssl unit test.
 # ---------------------------------------------------------------------------
-add_executable(az_iot_tests_e2e_adu tests/e2e_adu_test.c)
-az_iot_apply_warnings(az_iot_tests_e2e_adu)
-add_test(NAME az_iot_tests_e2e_adu COMMAND az_iot_tests_e2e_adu)
-set_tests_properties(az_iot_tests_e2e_adu PROPERTIES SKIP_RETURN_CODE 77)
+az_iot_add_cmocka_test(az_iot_tests_e2e_adu tests/e2e_adu_test.c tests/e2e_device.c)
+target_link_libraries(az_iot_tests_e2e_adu PRIVATE az_iot_e2e_service az_iot_adapter_paho)
 
 # ---------------------------------------------------------------------------
 # az_iot_tests_e2e_csr
