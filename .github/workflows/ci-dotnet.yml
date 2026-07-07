@@ -72,12 +72,11 @@ jobs:
     - name: Copy Faultable MQTT broker from AIO SDK repo
       run: |
         mkdir faultablemqttbroker
-        cd faultablemqttbroker
-        Invoke-WebRequest -Uri "https://raw.githubusercontent.com/Azure/iot-operations-sdks/refs/heads/main/eng/test/faultablemqttbroker/src/Azure.Iot.Operations.FaultableMqttBroker/Azure.Iot.Operations.FaultableMqttBroker.csproj" -OutFile "./Azure.Iot.Operations.FaultableMqttBroker.csproj"
-        Invoke-WebRequest -Uri "https://raw.githubusercontent.com/Azure/iot-operations-sdks/refs/heads/main/eng/test/faultablemqttbroker/src/Azure.Iot.Operations.FaultableMqttBroker/FaultHandling.cs" -OutFile "./FaultHandling.cs"
-        Invoke-WebRequest -Uri "https://raw.githubusercontent.com/Azure/iot-operations-sdks/refs/heads/main/eng/test/faultablemqttbroker/src/Azure.Iot.Operations.FaultableMqttBroker/FaultableMqttBroker.cs" -OutFile "./FaultableMqttBroker.cs"
-        Invoke-WebRequest -Uri "https://raw.githubusercontent.com/Azure/iot-operations-sdks/refs/heads/main/eng/test/faultablemqttbroker/src/Azure.Iot.Operations.FaultableMqttBroker/FaultableMqttBrokerWorker.cs" -OutFile "./FaultableMqttBrokerWorker.cs"
-        Invoke-WebRequest -Uri "https://raw.githubusercontent.com/Azure/iot-operations-sdks/refs/heads/main/eng/test/faultablemqttbroker/src/Azure.Iot.Operations.FaultableMqttBroker/Program.cs" -OutFile "./Program.cs"
+        Invoke-WebRequest -Uri "https://raw.githubusercontent.com/Azure/iot-operations-sdks/refs/heads/main/eng/test/faultablemqttbroker/src/Azure.Iot.Operations.FaultableMqttBroker/Azure.Iot.Operations.FaultableMqttBroker.csproj" -OutFile "./faultablemqttbroker/Azure.Iot.Operations.FaultableMqttBroker.csproj"
+        Invoke-WebRequest -Uri "https://raw.githubusercontent.com/Azure/iot-operations-sdks/refs/heads/main/eng/test/faultablemqttbroker/src/Azure.Iot.Operations.FaultableMqttBroker/FaultHandling.cs" -OutFile "./faultablemqttbroker/FaultHandling.cs"
+        Invoke-WebRequest -Uri "https://raw.githubusercontent.com/Azure/iot-operations-sdks/refs/heads/main/eng/test/faultablemqttbroker/src/Azure.Iot.Operations.FaultableMqttBroker/FaultableMqttBroker.cs" -OutFile "./faultablemqttbroker/FaultableMqttBroker.cs"
+        Invoke-WebRequest -Uri "https://raw.githubusercontent.com/Azure/iot-operations-sdks/refs/heads/main/eng/test/faultablemqttbroker/src/Azure.Iot.Operations.FaultableMqttBroker/FaultableMqttBrokerWorker.cs" -OutFile "./faultablemqttbroker/FaultableMqttBrokerWorker.cs"
+        Invoke-WebRequest -Uri "https://raw.githubusercontent.com/Azure/iot-operations-sdks/refs/heads/main/eng/test/faultablemqttbroker/src/Azure.Iot.Operations.FaultableMqttBroker/Program.cs" -OutFile "./faultablemqttbroker/Program.cs"
 
     - name: Microsoft.Azure.Devices.Client.IntegrationTests Package Code Coverage
       uses: irongut/CodeCoverageSummary@v1.3.0
