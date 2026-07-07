@@ -218,7 +218,7 @@ bool az_iot_e2e_service_do_work(az_iot_e2e_service* svc, int timeout_ms)
     {
         return true;
     }
-    if (!e2e_amqp_telemetry_pump(svc->telemetry, timeout_ms))
+    if (!e2e_amqp_telemetry_do_work(svc->telemetry, timeout_ms))
     {
         set_error(svc, "telemetry: connection failed");
         return false;
@@ -368,7 +368,9 @@ bool az_iot_e2e_service_twin_patch_desired_begin(
     }
     char path[256];
     snprintf(path, sizeof(path), "/twins/%s?api-version=%s", device_id, E2E_API_VERSION);
-    char body[1024];
+    /* Large enough for an ADU deployment desired PATCH (~3 KB: signed JWS +
+     * escaped v5 manifest) wrapped in the properties/desired envelope. */
+    char body[4096];
     snprintf(
         body,
         sizeof(body),

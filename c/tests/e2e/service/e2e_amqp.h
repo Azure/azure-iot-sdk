@@ -76,9 +76,9 @@ bool e2e_amqp_telemetry_begin(
     int partition_count,
     const char** err_out);
 
-/* Pump the telemetry connection once, waiting up to @p wait_ms for socket I/O.
+/* Advance the telemetry connection once, waiting up to @p wait_ms for socket I/O.
  * Returns false if the connection has failed. */
-bool e2e_amqp_telemetry_pump(e2e_amqp_telemetry_t* t, int wait_ms);
+bool e2e_amqp_telemetry_do_work(e2e_amqp_telemetry_t* t, int wait_ms);
 
 /* Returns true if any captured telemetry body contains @p needle. */
 bool e2e_amqp_telemetry_seen(const e2e_amqp_telemetry_t* t, const char* needle);
