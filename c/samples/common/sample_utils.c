@@ -4,6 +4,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+// Returns a heap copy of `s` (NUL-terminated), or NULL when `s` is NULL or on
+// allocation failure. Caller frees with free().
 static char* dup_cstr(const char* s)
 {
     if (!s) return NULL;
@@ -13,6 +15,10 @@ static char* dup_cstr(const char* s)
     return out;
 }
 
+// Reads a REQUIRED environment variable, logging to stderr and returning NULL
+// when it is unset/empty. On Windows the returned string is CRT-heap-owned
+// (_dupenv_s) and freed by sample_config_release; on POSIX it points into the
+// process environment and must not be freed.
 static char* read_env_var(const char* name)
 {
     char* value;
@@ -39,6 +45,8 @@ static char* read_env_var(const char* name)
     return value;
 }
 
+// Reads an OPTIONAL environment variable, returning NULL (no logging) when it
+// is unset/empty. Same platform ownership rules as read_env_var().
 static char* read_env_var_optional(const char* name)
 {
     char* value;

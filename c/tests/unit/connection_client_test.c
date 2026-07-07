@@ -784,6 +784,33 @@ static void send_csr_error_reports_service_code(void** state)
     assert_int_equal((int)tc.retry_after_s, 5);
 }
 
+static void send_csr_cancel_frees_slot(void** state)
+{
+    fixture_t* fx = *state;
+    (void)connect_fixture(fx);
+
+    csr_test_ctx_t tc = {0};
+    az_iot_certificate_signing_request_t csr = { .csr_base64 = "TESTCSR==" };
+
+    /* Nothing in flight: cancel reports NOT_FOUND. */
+    assert_int_equal(az_iot_connection_client_cancel_csr(fx->client), AZ_IOT_ERR_NOT_FOUND);
+
+    /* One in flight; a second is rejected BUSY. */
+    assert_int_equal(
+        az_iot_connection_client_send_csr(fx->client, &csr, "req-a", NULL, on_csr_evt, &tc),
+        AZ_IOT_OK);
+    assert_int_equal(
+        az_iot_connection_client_send_csr(fx->client, &csr, "req-b", NULL, on_csr_evt, &tc),
+        AZ_IOT_ERR_BUSY);
+
+    /* Cancel frees the slot without firing a callback; a new send then succeeds. */
+    assert_int_equal(az_iot_connection_client_cancel_csr(fx->client), AZ_IOT_OK);
+    assert_int_equal(tc.accepted + tc.issued + tc.failed, 0);
+    assert_int_equal(
+        az_iot_connection_client_send_csr(fx->client, &csr, "req-c", NULL, on_csr_evt, &tc),
+        AZ_IOT_OK);
+}
+
 int main(void)
 {
     const struct CMUnitTest tests[] = {
@@ -805,6 +832,7 @@ int main(void)
         cmocka_unit_test(dps_csr_flow_sends_csr_and_stores_issued_chain),
         cmocka_unit_test_setup_teardown(send_csr_two_phase_delivers_issued_chain, setup, teardown),
         cmocka_unit_test_setup_teardown(send_csr_error_reports_service_code, setup, teardown),
+        cmocka_unit_test_setup_teardown(send_csr_cancel_frees_slot, setup, teardown),
     };
     return cmocka_run_group_tests(tests, NULL, NULL);
 }

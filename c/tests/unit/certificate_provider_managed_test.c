@@ -15,7 +15,9 @@
 
 #include "az_iot_certificate_provider_managed.h"
 
+#include <openssl/bio.h>
 #include <openssl/evp.h>
+#include <openssl/pem.h>
 #include <openssl/x509.h>
 
 /* Test-local file paths (created in the test working directory). */
@@ -44,6 +46,43 @@ static X509_REQ* decode_csr(const char* b64)
     X509_REQ* req = d2i_X509_REQ(NULL, &p, (long)der_len);
     free(der);
     return req;
+}
+
+/* Build a real, self-signed PEM certificate (heap; caller frees) so persistence
+ * tests exercise the provider's parse-based cert-validity check with a cert that
+ * actually decodes, not a placeholder string. */
+static char* make_self_signed_pem(void)
+{
+    EVP_PKEY* key = EVP_PKEY_Q_keygen(NULL, NULL, "EC", "P-256");
+    assert_non_null(key);
+    X509* x = X509_new();
+    assert_non_null(x);
+    ASN1_INTEGER_set(X509_get_serialNumber(x), 1);
+    X509_gmtime_adj(X509_getm_notBefore(x), 0);
+    X509_gmtime_adj(X509_getm_notAfter(x), 3600);
+    assert_int_equal(1, X509_set_pubkey(x, key));
+    X509_NAME* name = X509_NAME_new();
+    assert_non_null(name);
+    X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_UTF8, (const unsigned char*)"az-iot-test", -1, -1, 0);
+    assert_int_equal(1, X509_set_subject_name(x, name));
+    assert_int_equal(1, X509_set_issuer_name(x, name));
+    X509_NAME_free(name);
+    assert_true(X509_sign(x, key, EVP_sha256()) > 0);
+
+    BIO* b = BIO_new(BIO_s_mem());
+    assert_non_null(b);
+    assert_int_equal(1, PEM_write_bio_X509(b, x));
+    char* data = NULL;
+    long n = BIO_get_mem_data(b, &data);
+    assert_true(n > 0);
+    char* pem = (char*)malloc((size_t)n + 1);
+    assert_non_null(pem);
+    memcpy(pem, data, (size_t)n);
+    pem[n] = '\0';
+    BIO_free(b);
+    X509_free(x);
+    EVP_PKEY_free(key);
+    return pem;
 }
 
 static void managed_init_generates_key_and_valid_csr(void** state)
@@ -113,7 +152,6 @@ static void managed_store_persists_and_survives_restart(void** state)
 {
     (void)state;
     remove_test_files();
-
     az_iot_certificate_provider_managed_options_t opts = {
         .bootstrap_cert_pem_path   = BOOT_CRT,
         .bootstrap_key_pem_path    = BOOT_KEY,
@@ -124,10 +162,10 @@ static void managed_store_persists_and_survives_restart(void** state)
     az_iot_certificate_provider_managed_t prov;
     assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov, &opts));
 
-    const char* chain[2] = {
-        "-----BEGIN CERTIFICATE-----\nQUJD\n-----END CERTIFICATE-----\n",
-        "-----BEGIN CERTIFICATE-----\nWFla\n-----END CERTIFICATE-----\n",
-    };
+    /* A real, parseable PEM cert - the provider now rejects empty/garbage files
+     * as "no operational cert", so the persisted chain must be valid. */
+    char* cert_pem = make_self_signed_pem();
+    const char* chain[2] = { cert_pem, cert_pem };
     az_iot_issued_certificate_t issued = {
         .client_cert_chain_pem = chain,
         .count = 2,
@@ -165,6 +203,7 @@ static void managed_store_persists_and_survives_restart(void** state)
     prov2.base.vtable->release_csr(&prov2.base, &csr);
 
     az_iot_certificate_provider_managed_deinit(&prov2);
+    free(cert_pem);
     remove_test_files();
 }
 

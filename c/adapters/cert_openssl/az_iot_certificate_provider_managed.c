@@ -59,11 +59,18 @@ static az_iot_result_t write_key_file(const char* path, EVP_PKEY* key)
     return (ok == 1) ? AZ_IOT_OK : AZ_IOT_ERR_INTERNAL;
 }
 
-static bool file_exists(const char* path)
+static bool operational_cert_is_valid(const char* path)
 {
+    /* Treat the operational cert as present only when the file holds at least one
+     * parseable PEM certificate. A zero-length or partially-written file (e.g. a
+     * crash mid-write, or a pre-created empty file) must NOT be mistaken for a
+     * usable identity, or TLS would later fail to load a valid chain. */
     BIO* b = BIO_new_file(path, "rb");
     if (!b) { ERR_clear_error(); return false; }
+    X509* cert = PEM_read_bio_X509(b, NULL, NULL, NULL);
     BIO_free(b);
+    if (!cert) { ERR_clear_error(); return false; }
+    X509_free(cert);
     return true;
 }
 
@@ -293,7 +300,7 @@ az_iot_result_t az_iot_certificate_provider_managed_init(
 
     /* An operational cert persisted by a previous run means we can connect
      * with the OPERATIONAL identity immediately (no re-enrollment needed). */
-    provider->has_operational = file_exists(provider->operational_cert_path);
+    provider->has_operational = operational_cert_is_valid(provider->operational_cert_path);
 
     provider->loaded = true;
     return AZ_IOT_OK;

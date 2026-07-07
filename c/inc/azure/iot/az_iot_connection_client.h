@@ -206,6 +206,7 @@ struct az_iot_connection_client_tag
         char  request_id[64];
         az_iot_csr_cb cb;
         void* user_ctx;
+        uint64_t deadline_ms;      /* abandon the op if no terminal response by here */
     } csr_op;
 };
 
@@ -267,7 +268,10 @@ az_iot_result_t az_iot_connection_client_do_work(az_iot_connection_client_t* cli
  *   replace:    NULL, or "*" / a request id to supersede an active hub-side op.
  * The request's device id is taken from the connected client_id. Only one CSR
  * operation may be in flight; returns AZ_IOT_ERR_BUSY otherwise. The issued
- * chain in AZ_IOT_CSR_ISSUED is valid only for the duration of the callback. */
+ * chain in AZ_IOT_CSR_ISSUED is valid only for the duration of the callback.
+ * If no terminal (200/error) response arrives within an internal timeout, the
+ * callback fires once with AZ_IOT_CSR_FAILED / AZ_IOT_ERR_TIMEOUT and the slot
+ * is released, so a lost response can never wedge renewal permanently. */
 az_iot_result_t az_iot_connection_client_send_csr(
     az_iot_connection_client_t* client,
     const az_iot_certificate_signing_request_t* csr,
@@ -275,6 +279,11 @@ az_iot_result_t az_iot_connection_client_send_csr(
     const char* replace,
     az_iot_csr_cb cb,
     void* user_ctx);
+
+/* Abandon the in-flight CSR renewal (if any) without waiting for the timeout,
+ * freeing the one-operation slot for a new az_iot_connection_client_send_csr().
+ * No callback fires. Returns AZ_IOT_ERR_NOT_FOUND when no operation is active. */
+az_iot_result_t az_iot_connection_client_cancel_csr(az_iot_connection_client_t* client);
 
 #ifdef __cplusplus
 }

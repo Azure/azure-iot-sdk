@@ -12,8 +12,14 @@ The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "S
 
 ## Status
 
-Proposed / for evaluation. Not yet implemented. Tracks the "cert management" open
-question in `docs/design.md` (§4.3) and the intended flow in `docs/dps-integration.md`
+Implemented. The certificate-provider vtable is versioned to v2 with the
+role-aware `load()`, CSR hooks (`get_csr`/`release_csr`), issued-cert storage,
+and the non-extractable-key `sign()` hook; the connection client performs DPS
+CSR enrollment (opt-in via `dps.request_operational_certificate`) and Classic-hub
+runtime renewal (`az_iot_connection_client_send_csr`). An optional OpenSSL 3.0+
+"managed" provider (`az_iot_certificate_provider_managed`), unit + E2E tests, and
+`samples/authentication/` ship alongside. Realizes the "cert management" open
+question in `docs/design.md` (§4.3) and the flow in `docs/dps-integration.md`
 ("REGISTER + CMS" → "RESULT (… Issued Cert)").
 
 ## Abstract

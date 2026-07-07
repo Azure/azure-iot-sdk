@@ -743,13 +743,20 @@ static az_iot_result_t start_connect_attempt(az_iot_connection_client_t* c)
         }
     }
 
-    /* Populate TLS from certificate_provider if available. Use the DPS/Hub-issued
-     * operational cert once one has been stored; otherwise the bootstrap identity. */
+    /* Populate TLS from certificate_provider if available. Prefer the issued
+     * OPERATIONAL identity (from this DPS session, or persisted by the provider
+     * on a prior run, or supplied for a direct hub connection); fall back to the
+     * BOOTSTRAP identity when the provider has no operational cert yet. */
     if (c->opts.certificate_provider)
     {
-        az_iot_cert_role_t role = c->dps_have_issued_cert ? AZ_IOT_CRED_OPERATIONAL : AZ_IOT_CRED_BOOTSTRAP;
+        az_iot_certificate_provider_t* prov = c->opts.certificate_provider;
         az_iot_certificate_material_t mat = {0};
-        if (c->opts.certificate_provider->vtable->load(c->opts.certificate_provider, role, &mat) == AZ_IOT_OK)
+        az_iot_result_t lr = prov->vtable->load(prov, AZ_IOT_CRED_OPERATIONAL, &mat);
+        if (lr == AZ_IOT_ERR_NOT_FOUND || lr == AZ_IOT_ERR_NOT_INITIALIZED)
+        {
+            lr = prov->vtable->load(prov, AZ_IOT_CRED_BOOTSTRAP, &mat);
+        }
+        if (lr == AZ_IOT_OK)
         {
             copts.tls.trusted_ca_path   = mat.trusted_ca_path;
             copts.tls.client_cert_path  = mat.client_cert_path;
@@ -759,7 +766,7 @@ static az_iot_result_t start_connect_attempt(az_iot_connection_client_t* c)
             copts.tls.client_cert_pem   = mat.client_cert_pem;
             copts.tls.client_key_pem    = mat.client_key_pem;
             copts.tls.verify_server     = true;
-            c->opts.certificate_provider->vtable->release(c->opts.certificate_provider, &mat);
+            prov->vtable->release(prov, &mat);
         }
     }
 
@@ -1175,6 +1182,21 @@ az_iot_result_t az_iot_connection_client_do_work(
 
     apply_deferred(client);
 
+    /* Fail an in-flight CSR renewal that never received a terminal response
+     * (lost 200/error after a 202, or a hub that went silent) so the one-op
+     * slot is not stuck BUSY for the life of the connection. */
+    if (client->csr_op.in_use && az_iot_time_mono_ms() >= client->csr_op.deadline_ms)
+    {
+        az_iot_csr_cb cb = client->csr_op.cb;
+        void* uc = client->csr_op.user_ctx;
+        client->csr_op.in_use = false;
+        az_iot_csr_event_t evt;
+        memset(&evt, 0, sizeof(evt));
+        evt.kind = AZ_IOT_CSR_FAILED;
+        evt.status = AZ_IOT_ERR_TIMEOUT;
+        if (cb) cb(&evt, uc);
+    }
+
     /* If we're waiting to reconnect and the deadline has passed, attempt it. */
     if (client->state == AZ_IOT_CONN_STATE_RECONNECTING &&
         client->active_client == NULL &&
@@ -1386,6 +1408,7 @@ az_iot_result_t az_iot_connection_client__add_subscription_on_connect(
 #define CSR_RES_PREFIX  "$iothub/credentials/res/"
 #define CSR_RES_FILTER  "$iothub/credentials/res/#"
 #define CSR_MAX_BASE64  8192   /* service cap: CSR <= 8 KB */
+#define CSR_OP_TIMEOUT_MS 120000u /* give up on a renewal with no terminal response after 2 min */
 
 static bool csr_is_base64(const char* s, size_t* out_len)
 {
@@ -1474,7 +1497,9 @@ static void on_csr_response(void* user_ctx, const az_iot_mqtt_message_t* msg)
 
     if (status == 202)
     {
-        /* Accepted: signing in progress; keep the op open for the 200/error. */
+        /* Accepted: signing in progress; keep the op open for the 200/error and
+         * extend the deadline so a slow-but-alive signer is not timed out. */
+        c->csr_op.deadline_ms = az_iot_time_mono_ms() + CSR_OP_TIMEOUT_MS;
         evt.kind = AZ_IOT_CSR_ACCEPTED;
         evt.status = AZ_IOT_OK;
         if (cb) cb(&evt, uc);
@@ -1619,10 +1644,22 @@ az_iot_result_t az_iot_connection_client_send_csr(
     client->csr_op.cb = cb;
     client->csr_op.user_ctx = user_ctx;
     client->csr_op.in_use = true;
+    client->csr_op.deadline_ms = az_iot_time_mono_ms() + CSR_OP_TIMEOUT_MS;
 
     az_iot_result_t r = az_iot_connection_client__publish(client, &msg, NULL, NULL);
     free(body);
     if (r != AZ_IOT_OK) { client->csr_op.in_use = false; return r; }
+    return AZ_IOT_OK;
+}
+
+az_iot_result_t az_iot_connection_client_cancel_csr(az_iot_connection_client_t* client)
+{
+    if (!client) return AZ_IOT_ERR_INVALID_ARG;
+    if (!client->csr_op.in_use) return AZ_IOT_ERR_NOT_FOUND;
+    /* App-initiated abandon: drop the in-flight operation so a new send_csr()
+     * can proceed. No callback fires (the caller already knows). A late hub
+     * response for this rid is ignored (in_use is clear). */
+    client->csr_op.in_use = false;
     return AZ_IOT_OK;
 }
 
