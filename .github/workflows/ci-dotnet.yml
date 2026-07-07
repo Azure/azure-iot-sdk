@@ -4,12 +4,14 @@ on:
   workflow_dispatch:
   pull_request:
     paths:
+      - '.github/**'
       - 'dotnet/**'
       - 'common/**'
   push:
     branches:
     - main
     paths:
+      - '.github/**'
       - 'dotnet/**'
       - 'common/**'
   schedule:
@@ -48,7 +50,7 @@ jobs:
    
     - name: Run Faultable MQTT Broker (port 1884)
       run: RUNNER_TRACKING_ID="" && dotnet run --project ./faultablemqttbroker/Azure.Iot.Operations.FaultableMqttBroker.csproj &
-      
+
     - name: Create Azure Test Resources
       uses: azure/powershell@v3
       with:
