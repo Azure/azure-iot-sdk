@@ -21,6 +21,14 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
         public async Task Foo()
         {
             MqttSessionClient mqttClient = new();
+
+            MqttClientDisconnectReason expectedReason = MqttClientDisconnectReason.ServerBusy;
+            List<MqttUserProperty> ConnectUserProperties =
+            [
+                new MqttUserProperty(FaultInjectionTestConstants.rejectConnectFaultName, "" + ((int)expectedReason)),
+                new MqttUserProperty(FaultInjectionTestConstants.faultRequestIdName, Guid.NewGuid().ToString()),
+            ];
+
             MqttConnect connectPacket = new()
             {
                 HostName = "localhost",
@@ -28,7 +36,11 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
                 CleanSession = true,
                 CleanStart = true,
                 ClientId = Guid.NewGuid().ToString(),
+                UserProperties = ConnectUserProperties
             };
+
+            // The first connection attempt should fail, but the session client's retry policy should make it
+            // connect again. The broker should accept the second connection attempt.
             var connAck = await mqttClient.ConnectAsync(connectPacket);
             Assert.Equal(MqttConnectResultCode.Success, connAck.ResultCode);
         }
