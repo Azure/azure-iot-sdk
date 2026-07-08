@@ -14,13 +14,23 @@ inputs:
     description: Resource group name prefix (e.g. CSDKE2EFast-).
     required: true
   azure-location:
-    description: Azure region to provision in. ADU is only available in a subset (EastUS).
+    description: >-
+      Azure region to provision in. ADU is only available in a subset (EastUS);
+      certificate management (ADR) is a preview feature and needs a canary region
+      (e.g. centraluseuap).
     required: false
     default: EastUS
   enable-adu:
     description: New-AzIotTestEnvironment -EnableADU value (None|Gen1|Gen2).
     required: false
     default: None
+  enable-certificate-management:
+    description: >-
+      When 'true', pass -EnableCertificateManagement to New-AzIotTestEnvironment so DPS is
+      provisioned with Azure Device Registration (ADR) integration -- the enrollments can then
+      issue an operational certificate in response to a device CSR (required by the CSR e2e).
+    required: false
+    default: 'false'
   iothub-x509-thumbprint-devices:
     description: Number of x509-thumbprint IoT Hub devices to create.
     required: false
@@ -66,5 +76,5 @@ runs:
           $TestEnvInfo = New-AzIotTestEnvironment -AzureLocation "${{ inputs.azure-location }}" -ResourceGroup $ResourceGroupName `
             -IotHubX509ThumbprintDevices ${{ inputs.iothub-x509-thumbprint-devices }} `
             -DpsX509IndividualEnrollments ${{ inputs.dps-x509-individual-enrollments }} `
-            -EnableADU ${{ inputs.enable-adu }}
+            -EnableADU ${{ inputs.enable-adu }} ${{ inputs.enable-certificate-management == 'true' && '-EnableCertificateManagement' || '' }}
           & "${{ inputs.config-cmdlet }}" -TestEnvInfo $TestEnvInfo -Target ${{ inputs.config-target }} -OutFile "${{ inputs.out-file }}"
