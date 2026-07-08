@@ -18,6 +18,13 @@
 #include <openssl/pem.h>
 #include <openssl/x509.h>
 
+/* Operational key parameters. */
+#define MANAGED_RSA_KEY_BITS   2048
+#define MANAGED_EC_CURVE_NAME  "P-256"
+
+/* Encoded length (excluding NUL) of base64 over `binary_len` bytes. */
+#define BASE64_ENCODED_LEN(binary_len) ((((binary_len) + 2) / 3) * 4)
+
 /* --------------------------------------------------------------------------
  * Small helpers
  * ------------------------------------------------------------------------ */
@@ -26,7 +33,7 @@ static char* dup_str(const char* s)
 {
     if (!s) return NULL;
     size_t n = strlen(s);
-    char* out = (char*)malloc(n + 1);
+    char* out = malloc(n + 1);
     if (!out) return NULL;
     memcpy(out, s, n + 1);
     return out;
@@ -36,9 +43,9 @@ static EVP_PKEY* generate_key(int key_type)
 {
     if (key_type == AZ_IOT_MANAGED_KEY_RSA_2048)
     {
-        return EVP_PKEY_Q_keygen(NULL, NULL, "RSA", (size_t)2048);
+        return EVP_PKEY_Q_keygen(NULL, NULL, "RSA", (size_t)MANAGED_RSA_KEY_BITS);
     }
-    return EVP_PKEY_Q_keygen(NULL, NULL, "EC", "P-256");
+    return EVP_PKEY_Q_keygen(NULL, NULL, "EC", MANAGED_EC_CURVE_NAME);
 }
 
 static EVP_PKEY* load_key_file(const char* path)
@@ -149,8 +156,8 @@ static az_iot_result_t managed_get_csr(
         int der_len = i2d_X509_REQ(req, &der);
         if (der_len <= 0 || der == NULL) goto done;
 
-        size_t b64_cap = (size_t)(((der_len + 2) / 3) * 4) + 1;
-        b64 = (char*)malloc(b64_cap);
+        size_t b64_cap = BASE64_ENCODED_LEN((size_t)der_len) + 1;
+        b64 = malloc(b64_cap);
         if (!b64) { rc = AZ_IOT_ERR_OUT_OF_MEMORY; goto done; }
         int b64_len = EVP_EncodeBlock((unsigned char*)b64, der, der_len);
         if (b64_len <= 0) goto done;
