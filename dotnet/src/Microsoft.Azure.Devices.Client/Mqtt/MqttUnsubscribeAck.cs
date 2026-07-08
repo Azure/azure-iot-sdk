@@ -6,7 +6,7 @@ namespace Microsoft.Azure.Devices.Client.Mqtt
         /// <summary>
         ///     Gets the result for every topic filter item.
         /// </summary>
-        public MqttClientUnsubscribeResultCode ResultCode { get; set; }
+        public IReadOnlyCollection<MqttUnsubscribeAckItem> Items { get; set; }
 
         /// <summary>
         ///     Gets the reason string.

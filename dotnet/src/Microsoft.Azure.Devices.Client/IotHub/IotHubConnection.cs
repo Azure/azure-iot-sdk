@@ -121,7 +121,7 @@ namespace Microsoft.Azure.Devices.Client.IotHub
                     QualityOfServiceLevel = MqttQualityOfServiceLevel.AtMostOnce, // QoS 0 because we don't care about the MQTT-level ack for this message.  The service will send a fully-fledged MQTT publish as the ack and we will listen for that below
                 };
 
-                birthMessage.UserProperties.Add(new() { Name = "type", Value = Encoding.UTF8.GetBytes("birth:1") });
+                birthMessage.UserProperties.Add(new("type", Encoding.UTF8.GetBytes("birth:1")));
 
                 TaskCompletionSource<BirthAck> birthAckReceivedTaskCompletionSource = new();
                 Func<MqttPublishReceivedEventArgs, Task> HandleReceivedBirthAck = (args) =>

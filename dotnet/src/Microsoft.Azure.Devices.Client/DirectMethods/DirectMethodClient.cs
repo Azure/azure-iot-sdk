@@ -139,7 +139,7 @@ namespace Microsoft.Azure.Devices.Client.DirectMethods
                     MessageExpiryInterval = remainingConnectTimeoutInSeconds,
                 };
 
-                probeAckPublish.UserProperties.Add(new() { Name = "type", Value = Encoding.UTF8.GetBytes(string.Format("probe-ack:1")) });
+                probeAckPublish.UserProperties.Add(new("type", Encoding.UTF8.GetBytes(string.Format("probe-ack:1"))));
 
                 if (probeAck.Ready != default)
                 {
@@ -225,7 +225,7 @@ namespace Microsoft.Azure.Devices.Client.DirectMethods
                     MessageExpiryInterval = remainingResponseTimeoutInSeconds,
                 };
 
-                resultPublish.UserProperties.Add(new() { Name = "type", Value = Encoding.UTF8.GetBytes(string.Format("result:1")) });
+                resultPublish.UserProperties.Add(new("type", Encoding.UTF8.GetBytes(string.Format("result:1"))));
 
                 await _connection.PublishAsync(resultPublish);
             }

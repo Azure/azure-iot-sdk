@@ -110,7 +110,7 @@ namespace Microsoft.Azure.Devices.Client.Twin
                     }.ToByteArray(),
                 };
 
-                publish.UserProperties.Add(new() { Name = "type", Value = Encoding.UTF8.GetBytes("get:1") });
+                publish.UserProperties.Add(new("type", Encoding.UTF8.GetBytes("get:1")));
             }
             else
             {
@@ -166,7 +166,7 @@ namespace Microsoft.Azure.Devices.Client.Twin
                     }.ToByteArray(),
                 };
 
-                publish.UserProperties.Add(new() { Name = "type", Value = Encoding.UTF8.GetBytes("reported-patch:1") });
+                publish.UserProperties.Add(new("type", Encoding.UTF8.GetBytes("reported-patch:1")));
             }
             else
             {

@@ -134,7 +134,7 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
             {
                 foreach (var userProperty in connectResult.UserProperties)
                 {
-                    genericConnectResult.UserProperties.Add(new() { Name = userProperty.Name, Value = userProperty.ValueBuffer });
+                    genericConnectResult.UserProperties.Add(new(userProperty.Name, userProperty.ValueBuffer));
                 }
             }
 
@@ -257,7 +257,7 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
             {
                 foreach (var userProperty in args.ApplicationMessage.UserProperties)
                 {
-                    genericArgs.Publish.UserProperties.Add(new() { Name = userProperty.Name, Value = userProperty.ValueBuffer });
+                    genericArgs.Publish.UserProperties.Add(new(userProperty.Name, userProperty.ValueBuffer));
                 }
             }
 
@@ -305,7 +305,7 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
             {
                 foreach (var userProperty in args.UserProperties)
                 {
-                    genericArgs.UserProperties.Add(new() { Name = userProperty.Name, Value = userProperty.ValueBuffer });
+                    genericArgs.UserProperties.Add(new(userProperty.Name, userProperty.ValueBuffer));
                 }
             }
 

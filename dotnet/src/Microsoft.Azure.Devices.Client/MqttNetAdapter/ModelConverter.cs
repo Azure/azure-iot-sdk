@@ -29,7 +29,7 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
             {
                 foreach (var mqttNetUserProperty in userProperties)
                 {
-                    generic.Add(new Mqtt.MqttUserProperty() { Name = mqttNetUserProperty.Name, Value = mqttNetUserProperty.ValueBuffer });
+                    generic.Add(new Mqtt.MqttUserProperty(mqttNetUserProperty.Name, mqttNetUserProperty.ValueBuffer));
                 }
             }
 
@@ -44,7 +44,7 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
             {
                 foreach (var mqttNetUserProperty in userProperties)
                 {
-                    generic.Add(new Mqtt.MqttUserProperty() { Name = mqttNetUserProperty.Name, Value = mqttNetUserProperty.ValueBuffer });
+                    generic.Add(new Mqtt.MqttUserProperty(mqttNetUserProperty.Name, mqttNetUserProperty.ValueBuffer));
                 }
             }
 
@@ -303,9 +303,20 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
             return new()
             {
                 ReasonString = unsuback.ReasonString,
-                ResultCode = toGeneric(unsuback.Items.FirstOrDefault().ResultCode),
+                Items = toGeneric(unsuback.Items),
                 UserProperties = ToGeneric(unsuback.UserProperties)
             };
+        }
+
+        private static IReadOnlyCollection<MqttUnsubscribeAckItem> toGeneric(IReadOnlyCollection<MqttClientUnsubscribeResultItem> unsubackItem)
+        {
+            List<MqttUnsubscribeAckItem> generic = new();
+            foreach (MqttClientUnsubscribeResultItem item in unsubackItem)
+            {
+                generic.Add(new(item.TopicFilter, toGeneric(item.ResultCode)));
+            }
+
+            return generic;
         }
 
         private static Mqtt.MqttClientUnsubscribeResultCode toGeneric(MQTTnet.MqttClientUnsubscribeResultCode resultCode)
