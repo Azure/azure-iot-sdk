@@ -57,7 +57,8 @@ namespace Microsoft.Azure.Devices.Client.Telemetry
                 var mqttMessage = new MqttPublish
                 {
                     Topic = "someTelemetryTopic",
-                    PayloadAsByteArray = message.Payload
+                    PayloadAsByteArray = message.Payload,
+                    QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce,
                 };
 
                 await _connection.PublishAsync(mqttMessage, cancellationToken);

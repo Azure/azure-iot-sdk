@@ -47,7 +47,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
             Assert.Equal(MqttConnectResultCode.Success, connAck.ResultCode);
         }
 
-        [Fact]
+        [Fact(Timeout = Setup.TestTimeoutMilliseconds)]
         public async Task TestSessionClientHandlesDisconnectWhileIdle()
         {
             MqttSessionClient mqttClient = new();
@@ -96,7 +96,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
             Assert.Equal(MqttClientPublishReasonCode.NoMatchingSubscribers, result.ReasonCode);
         }
 
-        [Fact]
+        [Fact(Timeout = Setup.TestTimeoutMilliseconds)]
         public async Task TestSessionClientHandlesDisconnectDuringPublish()
         {
             MqttSessionClient mqttClient = new();
@@ -130,7 +130,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
             Assert.Equal(MqttClientPublishReasonCode.NoMatchingSubscribers, result.ReasonCode);
         }
 
-        [Fact]
+        [Fact(Timeout = Setup.TestTimeoutMilliseconds)]
         public async Task TestSessionClientHandlesDisconnectDuringSubscribe()
         {
             MqttSessionClient mqttClient = new();
@@ -156,7 +156,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
             Assert.Single(subscribeResult.Items);
         }
 
-        [Fact]
+        [Fact(Timeout = Setup.TestTimeoutMilliseconds)]
         public async Task TestSessionClientHandlesDisconnectDuringUnsubscribe()
         {
             MqttSessionClient mqttClient = new();
