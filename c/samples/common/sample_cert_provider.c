@@ -15,6 +15,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* PEM framing written around each base64 DER certificate the service issues. */
+#define PEM_CERT_BEGIN "-----BEGIN CERTIFICATE-----\n"
+#define PEM_CERT_END   "\n-----END CERTIFICATE-----\n"
+
 static char* dup_str(const char* s)
 {
     if (!s) return NULL;
@@ -96,19 +100,26 @@ static az_iot_result_t provider_store(
     az_iot_certificate_provider_t* self, const az_iot_issued_certificate_t* issued)
 {
     sample_cert_provider_t* p = (sample_cert_provider_t*)self;
-    if (!p || !issued || !issued->client_cert_chain_pem || issued->count == 0)
+    if (!p || !issued || !issued->certificates || issued->count == 0)
         return AZ_IOT_ERR_INVALID_ARG;
 
     FILE* f = fopen(p->operational_cert_path, "wb");
     if (!f) return AZ_IOT_ERR_INTERNAL;
+
+    /* PEM-wrap each base64 DER cert (leaf first) into the operational cert file. */
     az_iot_result_t rc = AZ_IOT_OK;
     for (size_t i = 0; i < issued->count; ++i)
     {
-        const char* pem = issued->client_cert_chain_pem[i];
-        if (!pem) continue;
-        size_t n = strlen(pem);
-        if (n && fwrite(pem, 1, n, f) != n) { rc = AZ_IOT_ERR_INTERNAL; break; }
-        if (n && pem[n - 1] != '\n') fputc('\n', f);
+        az_span cert = issued->certificates[i];
+        size_t len = (size_t)az_span_size(cert);
+        if (len == 0) continue;
+        if (fputs(PEM_CERT_BEGIN, f) < 0
+            || fwrite(az_span_ptr(cert), 1, len, f) != len
+            || fputs(PEM_CERT_END, f) < 0)
+        {
+            rc = AZ_IOT_ERR_INTERNAL;
+            break;
+        }
     }
     if (fclose(f) != 0) rc = AZ_IOT_ERR_INTERNAL;
 

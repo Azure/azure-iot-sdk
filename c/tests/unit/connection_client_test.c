@@ -542,11 +542,12 @@ static az_iot_result_t fake_store(
     fake_csr_provider_t* f = (fake_csr_provider_t*)s;
     f->store_calls++;
     f->stored_count = issued->count;
-    if (issued->count > 0 && issued->client_cert_chain_pem[0])
+    if (issued->count > 0)
     {
-        size_t n = strlen(issued->client_cert_chain_pem[0]);
+        az_span leaf = issued->certificates[0];
+        size_t n = (size_t)az_span_size(leaf);
         if (n >= sizeof(f->stored_leaf)) n = sizeof(f->stored_leaf) - 1;
-        memcpy(f->stored_leaf, issued->client_cert_chain_pem[0], n);
+        memcpy(f->stored_leaf, az_span_ptr(leaf), n);
         f->stored_leaf[n] = '\0';
     }
     return AZ_IOT_OK;
@@ -643,8 +644,8 @@ static void dps_csr_flow_sends_csr_and_stores_issued_chain(void** state)
     /* Provider received the PEM-wrapped issued chain. */
     assert_int_equal(prov.store_calls, 1);
     assert_int_equal((int)prov.stored_count, 2);
-    assert_non_null(strstr(prov.stored_leaf, "-----BEGIN CERTIFICATE-----"));
-    assert_non_null(strstr(prov.stored_leaf, "TEEF"));
+    /* The stored leaf is the wire base64 DER (providers PEM-wrap when persisting). */
+    assert_string_equal(prov.stored_leaf, "TEEF");
 
     /* Hub connect selected the OPERATIONAL identity. */
     assert_int_equal(prov.last_load_role, AZ_IOT_CRED_OPERATIONAL);
@@ -680,11 +681,12 @@ static void on_csr_evt(const az_iot_csr_event_t* evt, void* uc)
             if (evt->issued)
             {
                 t->issued_count = evt->issued->count;
-                if (evt->issued->count > 0 && evt->issued->client_cert_chain_pem[0])
+                if (evt->issued->count > 0)
                 {
-                    size_t n = strlen(evt->issued->client_cert_chain_pem[0]);
+                    az_span leaf = evt->issued->certificates[0];
+                    size_t n = (size_t)az_span_size(leaf);
                     if (n >= sizeof(t->issued_leaf)) n = sizeof(t->issued_leaf) - 1;
-                    memcpy(t->issued_leaf, evt->issued->client_cert_chain_pem[0], n);
+                    memcpy(t->issued_leaf, az_span_ptr(leaf), n);
                     t->issued_leaf[n] = '\0';
                 }
             }
@@ -758,8 +760,8 @@ static void send_csr_two_phase_delivers_issued_chain(void** state)
     (void)az_iot_connection_client_do_work(fx->client, 0);
     assert_int_equal(tc.issued, 1);
     assert_int_equal((int)tc.issued_count, 2);
-    assert_non_null(strstr(tc.issued_leaf, "-----BEGIN CERTIFICATE-----"));
-    assert_non_null(strstr(tc.issued_leaf, "TEEF"));
+    /* The delivered leaf is the wire base64 DER (apps/providers wrap if needed). */
+    assert_string_equal(tc.issued_leaf, "TEEF");
 }
 
 static void send_csr_error_reports_service_code(void** state)

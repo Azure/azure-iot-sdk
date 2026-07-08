@@ -61,14 +61,16 @@ static int env_is_set(const char* name)
 #endif
 }
 
+#ifndef _WIN32
 static char* dup_cstr(const char* s)
 {
     if (!s) return NULL;
     size_t n = strlen(s) + 1;
-    char* out = (char*)malloc(n);
+    char* out = malloc(n);
     if (out) memcpy(out, s, n);
     return out;
 }
+#endif
 
 static char* env_dup(const char* name)
 {
@@ -85,12 +87,6 @@ static char* env_dup(const char* name)
     const char* v = getenv(name);
     return (v && v[0]) ? dup_cstr(v) : NULL;
 #endif
-}
-
-static char* env_dup_or(const char* name, const char* fallback)
-{
-    char* v = env_dup(name);
-    return v ? v : dup_cstr(fallback);
 }
 
 /* ---- device callbacks ----------------------------------------------------- */
@@ -117,29 +113,30 @@ static void on_operational_cert(const az_iot_issued_certificate_t* issued, void*
 
 /* ---- scenario ------------------------------------------------------------- */
 
-static void test_dps_csr_enrollment(void** state)
+static void run_csr_enrollment(az_iot_certificate_managed_key_type_t key_type, const char* label)
 {
-    (void)state;
-
     char* id_scope = env_dup("AZ_IOT_DPS_ID_SCOPE");
     char* reg_id   = env_dup("AZ_IOT_DPS_REGISTRATION_ID");
     char* cert     = env_dup("AZ_IOT_CLIENT_CERT");
     char* key      = env_dup("AZ_IOT_CLIENT_KEY");
     char* ca       = env_dup("AZ_IOT_TRUSTED_CA");
     char* global   = env_dup("AZ_IOT_DPS_GLOBAL_ENDPOINT"); /* optional */
-    char* op_key   = env_dup_or("AZ_IOT_OPERATIONAL_KEY", "e2e_operational_key.pem");
-    char* op_cert  = env_dup_or("AZ_IOT_OPERATIONAL_CERT", "e2e_operational_cert.pem");
+
+    /* Per-key-type operational files so the EC and RSA legs never share state. */
+    char op_key[128];
+    char op_cert[128];
+    (void)snprintf(op_key, sizeof(op_key), "e2e_operational_key_%s.pem", label);
+    (void)snprintf(op_cert, sizeof(op_cert), "e2e_operational_cert_%s.pem", label);
 
     assert_non_null(id_scope);
     assert_non_null(reg_id);
     assert_non_null(cert);
     assert_non_null(key);
     assert_non_null(ca);
-    assert_non_null(op_key);
-    assert_non_null(op_cert);
 
-    /* Force a fresh issuance: drop any operational cert left by a prior run. */
+    /* Force a fresh issuance: drop anything left by a prior run. */
     remove(op_cert);
+    remove(op_key);
 
     csr_ctx_t ctx = {0};
     az_iot_certificate_provider_managed_t provider = {0};
@@ -151,7 +148,7 @@ static void test_dps_csr_enrollment(void** state)
         .trusted_ca_pem_path       = ca,
         .operational_key_pem_path  = op_key,
         .operational_cert_pem_path = op_cert,
-        .key_type                  = AZ_IOT_MANAGED_KEY_EC_P256,
+        .key_type                  = key_type,
     };
     assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&provider, &mopts));
 
@@ -207,8 +204,18 @@ static void test_dps_csr_enrollment(void** state)
     free(key);
     free(ca);
     free(global);
-    free(op_key);
-    free(op_cert);
+}
+
+static void test_dps_csr_enrollment_ec(void** state)
+{
+    (void)state;
+    run_csr_enrollment(AZ_IOT_MANAGED_KEY_EC_P256, "ec");
+}
+
+static void test_dps_csr_enrollment_rsa(void** state)
+{
+    (void)state;
+    run_csr_enrollment(AZ_IOT_MANAGED_KEY_RSA_2048, "rsa");
 }
 
 int main(void)
@@ -227,7 +234,8 @@ int main(void)
     az_iot_log_set_global_sink(&log);
 
     const struct CMUnitTest tests[] = {
-        cmocka_unit_test(test_dps_csr_enrollment),
+        cmocka_unit_test(test_dps_csr_enrollment_ec),
+        cmocka_unit_test(test_dps_csr_enrollment_rsa),
     };
     return cmocka_run_group_tests(tests, NULL, NULL);
 }

@@ -22,6 +22,10 @@
 #define MANAGED_RSA_KEY_BITS   2048
 #define MANAGED_EC_CURVE_NAME  "P-256"
 
+/* PEM framing written around each base64 DER certificate the service issues. */
+#define PEM_CERT_BEGIN "-----BEGIN CERTIFICATE-----\n"
+#define PEM_CERT_END   "\n-----END CERTIFICATE-----\n"
+
 /* Encoded length (excluding NUL) of base64 over `binary_len` bytes. */
 #define BASE64_ENCODED_LEN(binary_len) ((((binary_len) + 2) / 3) * 4)
 
@@ -193,21 +197,24 @@ static az_iot_result_t managed_store(
     az_iot_certificate_provider_managed_t* m = (az_iot_certificate_provider_managed_t*)self;
     if (!m || !issued) return AZ_IOT_ERR_INVALID_ARG;
     if (!m->loaded) return AZ_IOT_ERR_NOT_INITIALIZED;
-    if (!issued->client_cert_chain_pem || issued->count == 0) return AZ_IOT_ERR_INVALID_ARG;
+    if (!issued->certificates || issued->count == 0) return AZ_IOT_ERR_INVALID_ARG;
 
     BIO* b = BIO_new_file(m->operational_cert_path, "wb");
     if (!b) return AZ_IOT_ERR_INTERNAL;
 
+    /* PEM-wrap each base64 DER cert (leaf first) into the operational cert file. */
     az_iot_result_t rc = AZ_IOT_OK;
     for (size_t i = 0; i < issued->count; ++i)
     {
-        const char* pem = issued->client_cert_chain_pem[i];
-        if (!pem) continue;
-        int n = (int)strlen(pem);
-        if (n > 0)
+        az_span cert = issued->certificates[i];
+        int len = (int)az_span_size(cert);
+        if (len <= 0) continue;
+        if (BIO_puts(b, PEM_CERT_BEGIN) < 0
+            || BIO_write(b, az_span_ptr(cert), len) != len
+            || BIO_puts(b, PEM_CERT_END) < 0)
         {
-            if (BIO_write(b, pem, n) != n) { rc = AZ_IOT_ERR_INTERNAL; break; }
-            if (pem[n - 1] != '\n') BIO_write(b, "\n", 1); /* separate PEM blocks */
+            rc = AZ_IOT_ERR_INTERNAL;
+            break;
         }
     }
     BIO_free(b);

@@ -34,6 +34,7 @@
 #include "azure/iot/az_iot_mqtt_iface.h"
 #include "azure/iot/az_iot_result.h"
 
+#include "internal/cert_util.h"
 #include "internal/connection_client_internal.h"
 #include "internal/dispatch.h"
 #include "internal/log_internal.h"
@@ -71,13 +72,9 @@
 #define DPS_JSON_REGISTRATION_STATE    "registrationState"
 #define DPS_JSON_ISSUED_CERT_CHAIN     "issuedCertificateChain"
 
-/* PEM wrapping applied to each base64 DER cert the service returns. */
-#define PEM_CERT_WRAP_FORMAT \
-    "-----BEGIN CERTIFICATE-----\n%.*s\n-----END CERTIFICATE-----\n"
-#define PEM_CERT_WRAP_OVERHEAD 64u   /* BEGIN/END markers + newlines + NUL */
-
 /* Bounds on an issued certificate chain: leaf + a few intermediates, each a
- * base64 DER cert capped at the service size limit. */
+ * base64 DER cert capped at the service size limit (used to size the DPS
+ * register body; the chain itself is delivered as zero-copy spans). */
 #define CERT_CHAIN_MAX_CERTS   6u
 #define CERT_MAX_BASE64_LEN    8192u
 
@@ -272,66 +269,6 @@ static az_iot_result_t dps_do_query_publish(az_iot_connection_client_t* c)
     return r;
 }
 
-/* Reads base64 cert strings from a JSON array (reader positioned so the next
- * tokens are the array's string elements, i.e. the BEGIN_ARRAY was consumed),
- * PEM-wraps each into a heap buffer. On success fills pem[0..*out_count-1]
- * (caller frees each) and returns AZ_IOT_OK; on failure frees any it allocated. */
-static az_iot_result_t json_collect_pem_chain(
-    az_json_reader* jr, char** pem, size_t max, size_t* out_count)
-{
-    size_t count = 0;
-    az_iot_result_t rc = AZ_IOT_OK;
-    while (az_result_succeeded(az_json_reader_next_token(jr))
-           && jr->token.kind != AZ_JSON_TOKEN_END_ARRAY)
-    {
-        if (jr->token.kind != AZ_JSON_TOKEN_STRING)
-        {
-            rc = AZ_IOT_ERR_PROTOCOL;
-            goto fail;
-        }
-        if (count >= max)
-        {
-            rc = AZ_IOT_ERR_NOT_ENOUGH_SPACE;
-            goto fail;
-        }
-
-        char base64[CERT_MAX_BASE64_LEN];
-        int32_t base64_len = 0;
-        if (az_result_failed(az_json_token_get_string(&jr->token, base64, (int32_t)sizeof(base64), &base64_len)))
-        {
-            AZ_IOT_LOG_ERROR("issued cert chain: a certificate exceeds the maximum supported size");
-            rc = AZ_IOT_ERR_NOT_ENOUGH_SPACE;
-            goto fail;
-        }
-
-        size_t pem_cap = (size_t)base64_len + PEM_CERT_WRAP_OVERHEAD;
-        char* pem_cert = malloc(pem_cap);
-        if (pem_cert == NULL)
-        {
-            rc = AZ_IOT_ERR_OUT_OF_MEMORY;
-            goto fail;
-        }
-        int written = snprintf(pem_cert, pem_cap, PEM_CERT_WRAP_FORMAT, (int)base64_len, base64);
-        if (written < 0 || (size_t)written >= pem_cap)
-        {
-            free(pem_cert);
-            rc = AZ_IOT_ERR_INTERNAL;
-            goto fail;
-        }
-        pem[count++] = pem_cert;
-    }
-    *out_count = count;
-    return AZ_IOT_OK;
-
-fail:
-    for (size_t i = 0; i < count; ++i)
-    {
-        free(pem[i]);
-    }
-    *out_count = 0;
-    return rc;
-}
-
 /* Parse registrationState.issuedCertificateChain (an array of base64 DER certs)
  * from the DPS ASSIGNED payload, PEM-wrap each entry, and hand the chain to the
  * certificate_provider to persist as the operational identity. azure-sdk-for-c
@@ -374,16 +311,16 @@ static az_iot_result_t dps_store_issued_cert(az_iot_connection_client_t* c, az_s
     }
     if (!in_chain) return AZ_IOT_ERR_NOT_FOUND;
 
-    /* Collect + PEM-wrap the base64 chain (leaf first). */
-    char* pem[CERT_CHAIN_MAX_CERTS] = {0};
+    /* Collect the base64 chain (leaf first) as zero-copy spans into the payload. */
+    az_span certs[CERT_CHAIN_MAX_CERTS];
     size_t count = 0;
-    az_iot_result_t rc = json_collect_pem_chain(&jr, pem, CERT_CHAIN_MAX_CERTS, &count);
+    az_iot_result_t rc = az_iot_cert_util_collect_chain_spans(&jr, certs, CERT_CHAIN_MAX_CERTS, &count);
     if (rc != AZ_IOT_OK) return rc;
     if (count == 0) return AZ_IOT_ERR_NOT_FOUND;
 
     az_iot_certificate_provider_t* p = c->opts.certificate_provider;
     az_iot_issued_certificate_t issued;
-    issued.client_cert_chain_pem = (const char* const*)pem;
+    issued.certificates = certs;
     issued.count = count;
 
     /* Persist via the provider (if capable) and/or notify the app (D4). The
@@ -400,7 +337,6 @@ static az_iot_result_t dps_store_issued_cert(az_iot_connection_client_t* c, az_s
         handled = true;
     }
     if (rc == AZ_IOT_OK && !handled) rc = AZ_IOT_ERR_NOT_SUPPORTED;
-    for (size_t i = 0; i < count; ++i) free(pem[i]);
     return rc;
 }
 
@@ -1472,33 +1408,6 @@ az_iot_result_t az_iot_connection_client__add_subscription_on_connect(
 #define CSR_JSON_ERROR_CODE    "errorCode"
 #define CSR_JSON_RETRY_AFTER   "retryAfter"
 
-/* LCG mixing constants for the request-id nonce generator. */
-#define CSR_RNG_LCG_MULTIPLIER 6364136223846793005ull
-#define CSR_RNG_LCG_INCREMENT  1442695040888963407ull
-
-static bool csr_is_base64(const char* s, size_t* out_len)
-{
-    size_t n = 0;
-    for (; s[n]; ++n)
-    {
-        char ch = s[n];
-        bool ok = (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z')
-               || (ch >= '0' && ch <= '9') || ch == '+' || ch == '/' || ch == '=';
-        if (!ok) return false;
-    }
-    *out_len = n;
-    return n > 0;
-}
-
-static void csr_gen_request_id(az_iot_connection_client_t* c, char* buf, size_t cap)
-{
-    uint64_t x = az_iot_time_mono_ms()
-               ^ (c->rng_state * CSR_RNG_LCG_MULTIPLIER + CSR_RNG_LCG_INCREMENT);
-    c->rng_state = x;
-    (void)snprintf(buf, cap, "%08x-%08x",
-                   (unsigned)(x >> 32), (unsigned)(x & 0xffffffffu));
-}
-
 /* Parse errorCode + retryAfter (both optional) from an error response body. */
 static void csr_parse_error(az_span payload, int32_t* out_code, int32_t* out_retry)
 {
@@ -1577,7 +1486,7 @@ static void on_csr_response(void* user_ctx, const az_iot_mqtt_message_t* msg)
 
     if (status == 200)
     {
-        char* pem[CERT_CHAIN_MAX_CERTS] = {0};
+        az_span certs[CERT_CHAIN_MAX_CERTS];
         size_t count = 0;
         az_iot_result_t rc = AZ_IOT_ERR_PROTOCOL;
         az_json_reader jr;
@@ -1596,19 +1505,18 @@ static void on_csr_response(void* user_ctx, const az_iot_mqtt_message_t* msg)
                 if (jr.token.kind == AZ_JSON_TOKEN_BEGIN_OBJECT || jr.token.kind == AZ_JSON_TOKEN_BEGIN_ARRAY)
                     if (az_result_failed(az_json_reader_skip_children(&jr))) break;
             }
-            if (in_arr) rc = json_collect_pem_chain(&jr, pem, CERT_CHAIN_MAX_CERTS, &count);
+            if (in_arr) rc = az_iot_cert_util_collect_chain_spans(&jr, certs, CERT_CHAIN_MAX_CERTS, &count);
         }
 
         if (rc == AZ_IOT_OK && count > 0)
         {
             az_iot_issued_certificate_t issued;
-            issued.client_cert_chain_pem = (const char* const*)pem;
+            issued.certificates = certs;
             issued.count = count;
             evt.kind = AZ_IOT_CSR_ISSUED;
             evt.status = AZ_IOT_OK;
             evt.issued = &issued;
             if (cb) cb(&evt, uc);
-            for (size_t i = 0; i < count; ++i) free(pem[i]);
         }
         else
         {
@@ -1650,7 +1558,7 @@ az_iot_result_t az_iot_connection_client_send_csr(
 
     /* Validate the CSR: base64 and within the 8 KB service cap. */
     size_t csr_len = 0;
-    if (!csr_is_base64(csr->csr_base64, &csr_len) || csr_len > CSR_MAX_BASE64)
+    if (!az_iot_cert_util_is_base64(csr->csr_base64, &csr_len) || csr_len > CSR_MAX_BASE64)
         return AZ_IOT_ERR_INVALID_ARG;
 
     /* Request id: caller-provided (resubmit) or generated. */
@@ -1662,7 +1570,7 @@ az_iot_result_t az_iot_connection_client_send_csr(
     }
     else
     {
-        csr_gen_request_id(client, client->csr_op.request_id, sizeof(client->csr_op.request_id));
+        az_iot_cert_util_gen_request_id(&client->rng_state, client->csr_op.request_id, sizeof(client->csr_op.request_id));
     }
 
     /* Subscribe to the response topic + register the handler once. */

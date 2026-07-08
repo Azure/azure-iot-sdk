@@ -48,10 +48,10 @@ static X509_REQ* decode_csr(const char* b64)
     return req;
 }
 
-/* Build a real, self-signed PEM certificate (heap; caller frees) so persistence
- * tests exercise the provider's parse-based cert-validity check with a cert that
- * actually decodes, not a placeholder string. */
-static char* make_self_signed_pem(void)
+/* Build a real, self-signed certificate as base64 DER (heap; caller frees) - the
+ * on-the-wire form the store hook receives. The provider PEM-wraps it, so the
+ * persistence test still exercises the provider's parse-based validity check. */
+static char* make_self_signed_cert_base64(void)
 {
     EVP_PKEY* key = EVP_PKEY_Q_keygen(NULL, NULL, "EC", "P-256");
     assert_non_null(key);
@@ -69,20 +69,20 @@ static char* make_self_signed_pem(void)
     X509_NAME_free(name);
     assert_true(X509_sign(x, key, EVP_sha256()) > 0);
 
-    BIO* b = BIO_new(BIO_s_mem());
-    assert_non_null(b);
-    assert_int_equal(1, PEM_write_bio_X509(b, x));
-    char* data = NULL;
-    long n = BIO_get_mem_data(b, &data);
-    assert_true(n > 0);
-    char* pem = (char*)malloc((size_t)n + 1);
-    assert_non_null(pem);
-    memcpy(pem, data, (size_t)n);
-    pem[n] = '\0';
-    BIO_free(b);
+    unsigned char* der = NULL;
+    int der_len = i2d_X509(x, &der);
+    assert_true(der_len > 0);
+    size_t cap = (((size_t)der_len + 2) / 3) * 4 + 1;
+    char* b64 = malloc(cap);
+    assert_non_null(b64);
+    int b64_len = EVP_EncodeBlock((unsigned char*)b64, der, der_len);
+    assert_true(b64_len > 0);
+    b64[b64_len] = '\0';
+
+    OPENSSL_free(der);
     X509_free(x);
     EVP_PKEY_free(key);
-    return pem;
+    return b64;
 }
 
 static void managed_init_generates_key_and_valid_csr(void** state)
@@ -162,12 +162,12 @@ static void managed_store_persists_and_survives_restart(void** state)
     az_iot_certificate_provider_managed_t prov;
     assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov, &opts));
 
-    /* A real, parseable PEM cert - the provider now rejects empty/garbage files
-     * as "no operational cert", so the persisted chain must be valid. */
-    char* cert_pem = make_self_signed_pem();
-    const char* chain[2] = { cert_pem, cert_pem };
+    /* A real cert as base64 DER (the wire form). The provider PEM-wraps it; the
+     * restart check then rejects empty/garbage, so the chain must be valid. */
+    char* cert_b64 = make_self_signed_cert_base64();
+    az_span chain[2] = { az_span_create_from_str(cert_b64), az_span_create_from_str(cert_b64) };
     az_iot_issued_certificate_t issued = {
-        .client_cert_chain_pem = chain,
+        .certificates = chain,
         .count = 2,
     };
     assert_int_equal(AZ_IOT_OK,
@@ -203,7 +203,7 @@ static void managed_store_persists_and_survives_restart(void** state)
     prov2.base.vtable->release_csr(&prov2.base, &csr);
 
     az_iot_certificate_provider_managed_deinit(&prov2);
-    free(cert_pem);
+    free(cert_b64);
     remove_test_files();
 }
 

@@ -90,11 +90,14 @@ typedef struct az_iot_certificate_signing_request_tag
     const char* csr_base64;
 } az_iot_certificate_signing_request_t;
 
-/* Operational certificate chain issued by the DPS- or Hub-linked CA (leaf first). */
+/* Operational certificate chain issued by the DPS- or Hub-linked CA (leaf first).
+   Each entry is base64 DER (as received on the wire) delivered as a zero-copy
+   az_span into the client's receive buffer; a provider that persists the chain
+   PEM-wraps each entry. Valid only for the store/callback call. */
 typedef struct az_iot_issued_certificate_tag
 {
-    const char* const* client_cert_chain_pem;   /* array of PEM certs, leaf first */
-    size_t             count;
+    const az_span* certificates;   /* base64 DER certs, leaf first */
+    size_t         count;
 } az_iot_issued_certificate_t;
 ```
 

@@ -7,6 +7,7 @@ add_library(az_iot_core
     core/version.c
     core/mqtt_iface.c
     core/connection_client.c
+    core/cert_util.c
     core/reconnect.c
     core/dispatch.c
     core/protocol_profile.c

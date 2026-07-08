@@ -113,8 +113,9 @@ static az_iot_result_t my_store_issued_certificate(
     my_provider_t* m = (my_provider_t*)self;
     if (!m || !issued) return AZ_IOT_ERR_INVALID_ARG;
 
-    /* REPLACE ME: persist issued->client_cert_chain_pem[0..count) wherever your
-     * platform keeps certificates. */
+    /* REPLACE ME: persist issued->certificates[0..count) - each entry is a
+     * base64 DER cert (az_span); PEM-wrap and write it wherever your platform
+     * keeps certificates. */
     fprintf(stderr, "[custom] persisting issued chain: %zu cert(s)\n", issued->count);
     m->has_operational = 1;
     return AZ_IOT_OK;
@@ -166,8 +167,8 @@ int main(void)
     fprintf(stderr, "[custom] get_csr produced: %s\n", csr.csr_base64);
     provider.base.vtable->release_csr(&provider.base, &csr);
 
-    const char* chain[1] = { "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----\n" };
-    az_iot_issued_certificate_t issued = { .client_cert_chain_pem = chain, .count = 1 };
+    az_span chain[1] = { AZ_SPAN_FROM_STR("MIIBase64DERcertGoesHere==") };
+    az_iot_issued_certificate_t issued = { .certificates = chain, .count = 1 };
     (void)provider.base.vtable->store_issued_certificate(&provider.base, &issued);
 
     provider.base.vtable->deinit(&provider.base);
