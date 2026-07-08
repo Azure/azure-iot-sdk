@@ -17,8 +17,8 @@
 # Architecture
 # ------------
 # In-process: the native `az_iot_tests_e2e_csr` CTest is the device. It
-#   1. authenticates to DPS with an X.509 BOOTSTRAP identity (a DPS individual
-#      enrollment created under the ADR-enabled DPS),
+#   1. authenticates to DPS with an X.509 BOOTSTRAP identity (a leaf signed by
+#      the enrollment group's signing CA),
 #   2. sends a CSR (from the OpenSSL managed certificate provider) in the DPS
 #      register body (request_operational_certificate=true),
 #   3. receives the DPS-issued operational certificate chain, and
@@ -26,18 +26,19 @@
 # Reaching CONNECTED with the issued cert is the hub's proof it authenticated a
 # DPS-issued certificate. Both the EC (P-256) and RSA-2048 key types are driven.
 #
-# Because the ADR-enabled DPS issues an operational cert for the individual
-# enrollment, the BOOTSTRAP identity is simply that enrollment's X.509 material
-# (IOT_DPS_INDIVIDUAL_X509_*) -- the same device material the fast job uses -- so
-# this workflow reuses the proven cert/key/CA materialization.
+# The environment is provisioned with an X.509 enrollment GROUP linked to a
+# signing CA (only a group linked to a CA can issue an operational cert for a
+# CSR; a plain individual enrollment cannot). The provisioning emits that CA as
+# PROVISIONING_ROOT_CERT(_KEY); the test step mints the bootstrap leaf from it
+# with `openssl`, so the device's registration id is that leaf's subject CN.
 #
 # Stages
 # ------
-#   1. setup    : provision the cert-management resource group ONCE (DPS + ADR)
-#                 and publish the test-config script as an artifact.
-#   2. test     : build `az_iot_tests_e2e_csr`, materialize the bootstrap X.509
-#                 material, arm the test (AZ_IOT_DPS_CSR_ENABLED=1) and run
-#                 `ctest -R e2e_csr`.
+#   1. setup    : provision the cert-management resource group ONCE (DPS + ADR +
+#                 the X.509 enrollment group) and publish the config as an artifact.
+#   2. test     : build `az_iot_tests_e2e_csr`, mint the bootstrap leaf from the
+#                 emitted signing CA, arm the test (AZ_IOT_DPS_CSR_ENABLED=1) and
+#                 run `ctest -R e2e_csr`.
 #   3. teardown : always() deletes the resource group.
 #
 # The provision/destroy steps live in .github/actions/{provision,destroy}-e2e-
@@ -117,8 +118,13 @@ jobs:
           # Provision the DPS with Azure Device Registration (ADR) integration so
           # the enrollment can issue an operational certificate for the device CSR.
           enable-certificate-management: 'true'
-          # One X.509 individual enrollment: its device material is the CSR
-          # bootstrap identity (a single test leg claims it).
+          # Create an X.509 enrollment GROUP linked to the provisioned signing CA
+          # (emitted as PROVISIONING_ROOT_CERT). The device presents a bootstrap
+          # leaf signed by that CA; DPS authenticates it against the group and
+          # issues the operational certificate in response to the CSR.
+          dps-x509-group-enrollment-devices: '1'
+          # An individual enrollment is also required: the C test-config cmdlet
+          # unconditionally reads IndividualX509[0], so provision at least one.
           dps-x509-individual-enrollments: '1'
 
       - name: Upload test config
@@ -155,45 +161,47 @@ jobs:
       - name: Run CSR e2e
         shell: pwsh
         run: |
-          # Service-side config (IOT_DPS_*) is set by the generated script.
+          # Service-side config (IOT_DPS_*, PROVISIONING_ROOT_CERT*) is set by the
+          # generated script.
           . ./test_config/set_test_env_vars.ps1
 
-          # The CSR test authenticates to DPS with an X.509 BOOTSTRAP identity.
-          # The environment was provisioned with certificate management (ADR)
-          # enabled, so DPS issues an operational certificate in response to the
-          # device's CSR. The bootstrap identity is the single provisioned X.509
-          # individual enrollment. Prefer the indexed (_0) vars and fall back to
-          # the unsuffixed ones for older provisioning scripts.
-          $regId   = (Get-Item "env:IOT_DPS_INDIVIDUAL_REGISTRATION_ID_0" -ErrorAction SilentlyContinue).Value
-          $certB64 = (Get-Item "env:IOT_DPS_INDIVIDUAL_X509_CERTIFICATE_0" -ErrorAction SilentlyContinue).Value
-          $keyB64  = (Get-Item "env:IOT_DPS_INDIVIDUAL_X509_KEY_0" -ErrorAction SilentlyContinue).Value
-          if (-not $regId -or -not $certB64 -or -not $keyB64) {
-            Write-Host "Indexed device 0 not available; using the unsuffixed device vars."
-            $regId   = $env:IOT_DPS_INDIVIDUAL_REGISTRATION_ID
-            $certB64 = $env:IOT_DPS_INDIVIDUAL_X509_CERTIFICATE
-            $keyB64  = $env:IOT_DPS_INDIVIDUAL_X509_KEY
+          if (-not $env:PROVISIONING_ROOT_CERT -or -not $env:PROVISIONING_ROOT_CERT_KEY) {
+            throw "PROVISIONING_ROOT_CERT(_KEY) not found in the provisioning config; the environment was not provisioned with certificate management."
           }
-          if (-not $regId -or -not $certB64 -or -not $keyB64) {
-            throw "CSR e2e bootstrap device material not found in the provisioning config."
-          }
-          Write-Host "CSR e2e bootstrap device: $regId"
 
-          # Materialize the bootstrap X.509 material to files. The in-process test
-          # reads cert/key/CA by PATH, so CI decodes the base64 PEMs and reuses the
-          # system CA trust bundle for the DPS/hub server TLS validation.
           $dir = Join-Path ([System.IO.Path]::GetTempPath()) ("az-iot-c-e2e-csr-" + [Guid]::NewGuid().ToString("N"))
           New-Item -ItemType Directory -Path $dir -Force | Out-Null
-          $certPath = Join-Path $dir "device-cert.pem"
-          $keyPath  = Join-Path $dir "device-key.pem"
-          $caPath   = Join-Path $dir "trusted-ca.pem"
+          $rootCertPath = Join-Path $dir "root-ca.pem"
+          $rootKeyPath  = Join-Path $dir "root-ca-key.pem"
+          $certPath     = Join-Path $dir "device-cert.pem"
+          $keyPath      = Join-Path $dir "device-key.pem"
+          $csrPath      = Join-Path $dir "device.csr"
+          $caPath       = Join-Path $dir "trusted-ca.pem"
 
-          [System.IO.File]::WriteAllText($certPath,
-            [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($certB64)))
-          [System.IO.File]::WriteAllText($keyPath,
-            [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($keyB64)))
+          # The signing CA of the X.509 enrollment GROUP is emitted (base64 PEM) as
+          # PROVISIONING_ROOT_CERT (+ its RSA key). Decode both to disk.
+          [System.IO.File]::WriteAllText($rootCertPath,
+            [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:PROVISIONING_ROOT_CERT)))
+          [System.IO.File]::WriteAllText($rootKeyPath,
+            [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:PROVISIONING_ROOT_CERT_KEY)))
+
+          # Mint the BOOTSTRAP identity: an EC P-256 leaf signed by that CA, whose
+          # subject CN is the DPS registration id. The enrollment group accepts any
+          # leaf chaining to its CA; DPS then issues the operational cert for the CSR.
+          $regId = "csr-e2e-$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"
+          & openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out $keyPath
+          if ($LASTEXITCODE -ne 0) { throw "openssl genpkey failed ($LASTEXITCODE)" }
+          & openssl req -new -key $keyPath -subj "/CN=$regId" -out $csrPath
+          if ($LASTEXITCODE -ne 0) { throw "openssl req failed ($LASTEXITCODE)" }
+          & openssl x509 -req -in $csrPath -CA $rootCertPath -CAkey $rootKeyPath `
+            -CAcreateserial -days 2 -sha256 -out $certPath
+          if ($LASTEXITCODE -ne 0) { throw "openssl x509 (leaf signing) failed ($LASTEXITCODE)" }
+          Write-Host "CSR e2e bootstrap device: $regId"
+
+          # Trusted CA for the DPS/hub SERVER TLS validation = the system bundle.
           Copy-Item "/etc/ssl/certs/ca-certificates.crt" $caPath
 
-          # Map the config's DPS vars onto the names the test consumes.
+          # Map onto the names the test consumes.
           $env:AZ_IOT_DPS_ID_SCOPE        = $env:IOT_DPS_ID_SCOPE
           $env:AZ_IOT_DPS_REGISTRATION_ID = $regId
           $env:AZ_IOT_CLIENT_CERT         = $certPath

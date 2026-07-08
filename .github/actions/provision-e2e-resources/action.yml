@@ -39,6 +39,14 @@ inputs:
     description: Number of DPS x509 individual enrollments to create.
     required: false
     default: '1'
+  dps-x509-group-enrollment-devices:
+    description: >-
+      Number of devices for a DPS x509 ENROLLMENT GROUP linked to the provisioned signing CA
+      (New-AzIotTestEnvironment -DpsX509GroupEnrollmentDevices). A value > 0 creates the group
+      whose issuer certificate is emitted as PROVISIONING_ROOT_CERT(_KEY); required for the CSR
+      e2e, where the device presents a leaf signed by that CA and DPS issues its operational cert.
+    required: false
+    default: '0'
   config-cmdlet:
     description: Cmdlet that renders the per-pipeline test config (e.g. New-AzIotCSDKE2ETestConfig).
     required: false
@@ -76,5 +84,6 @@ runs:
           $TestEnvInfo = New-AzIotTestEnvironment -AzureLocation "${{ inputs.azure-location }}" -ResourceGroup $ResourceGroupName `
             -IotHubX509ThumbprintDevices ${{ inputs.iothub-x509-thumbprint-devices }} `
             -DpsX509IndividualEnrollments ${{ inputs.dps-x509-individual-enrollments }} `
+            -DpsX509GroupEnrollmentDevices ${{ inputs.dps-x509-group-enrollment-devices }} `
             -EnableADU ${{ inputs.enable-adu }} ${{ inputs.enable-certificate-management == 'true' && '-EnableCertificateManagement' || '' }}
           & "${{ inputs.config-cmdlet }}" -TestEnvInfo $TestEnvInfo -Target ${{ inputs.config-target }} -OutFile "${{ inputs.out-file }}"
