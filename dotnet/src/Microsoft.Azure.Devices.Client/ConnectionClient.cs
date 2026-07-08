@@ -41,7 +41,7 @@ namespace Microsoft.Azure.Devices.Client
         /// <summary>
         /// Construct a new <see cref="ConnectionClient"/>
         /// </summary>
-        /// <param name="mqttClient">The MQTT client to use. If null, a default MQTT client will be created for you.</param>
+        /// <param name="mqttClient">The MQTT client to use. If null, a default MQTT client with default retry logic will be created for you.</param>
         public ConnectionClient(IMqttClient? mqttClient = null)
         {
             MqttClient = mqttClient ?? new MqttSessionClient();

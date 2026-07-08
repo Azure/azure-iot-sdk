@@ -8,10 +8,9 @@ using System.Net.Sockets;
 
 namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session
 {
-    public class MqttSessionClient : IMqttClient
+    public class MqttSessionClient : MqttNetClient
     {
         private readonly MqttSessionClientOptions _sessionClientOptions;
-        private readonly MqttNetClient _mqttClient;
         private MqttConnect? _mostRecentConnect;
         private readonly bool _disposed = false;
 
@@ -28,10 +27,6 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session
         private CancellationTokenSource? _reconnectionCancellationToken;
 
         private readonly SemaphoreSlim _disconnectedEventLock = new(1);
-
-        public event Func<MqttPublishReceivedEventArgs, Task> PublishReceivedAsync;
-        public event Func<MqttClientConnectedEventArgs, Task> ConnectedAsync;
-        public event Func<MqttClientDisconnectedEventArgs, Task> DisconnectedAsync;
 
         /// <summary>
         /// Create a MQTT session client where the underlying MQTT client is created for you and the connection is maintained
@@ -51,17 +46,12 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session
         /// </remarks>
         /// <param name="connectionSettings">The configurable options for the underlying MQTT connection(s)</param>
         /// <param name="sessionClientOptions">The configurable options for this MQTT session client.</param>
-        public MqttSessionClient(MqttSessionClientOptions? sessionClientOptions = null)
+        public MqttSessionClient(MqttSessionClientOptions? sessionClientOptions = null) : base()
         {
-            _mqttClient = new MqttNetClient();
             _sessionClientOptions = sessionClientOptions ?? new MqttSessionClientOptions();
             _sessionClientOptions.Validate();
 
-            _mqttClient.DisconnectedAsync += InternalDisconnectedAsync;
-
-            _mqttClient.PublishReceivedAsync += PublishReceivedAsync;
-            _mqttClient.DisconnectedAsync += DisconnectedAsync;
-            _mqttClient.ConnectedAsync += ConnectedAsync;
+            base.DisconnectedAsync += InternalDisconnectedAsync;
 
             _outgoingRequestList = new(_sessionClientOptions.MaxPendingMessages, _sessionClientOptions.PendingMessagesOverflowStrategy);
         }
@@ -132,7 +122,7 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session
 
             _isClosing = true;
             _reconnectionCancellationToken?.Cancel();
-            await _mqttClient.DisconnectAsync(options, cancellationToken);
+            await base.DisconnectAsync(options, cancellationToken);
 
             var disconnectedArgs = new MqttClientDisconnectedEventArgs()
             {
@@ -282,9 +272,9 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session
         {
             if (!_disposed)
             {
-                _mqttClient.DisconnectedAsync -= InternalDisconnectedAsync;
+                base.DisconnectedAsync -= InternalDisconnectedAsync;
 
-                if (_mqttClient.IsConnected || _isDesiredConnected)
+                if (base.IsConnected || _isDesiredConnected)
                 {
                     try
                     {
@@ -318,7 +308,7 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session
 
             // The underlying client has an MQTT client as a managed resource that no other client has access to, so always dispose it
             // alongside all unmanaged resources.
-            _mqttClient.Dispose();
+            base.Dispose();
 
             GC.SuppressFinalize(this);
         }
@@ -332,7 +322,7 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session
             {
                 if (_isDesiredConnected)
                 {
-                    if (_mqttClient.IsConnected)
+                    if (base.IsConnected)
                     {
                         Trace.TraceInformation("Disconnect reported by underlying MQTT client, but it was already handled");
                         return;
@@ -511,7 +501,7 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session
 
         private async Task<MqttConnectAck?> TryEstablishConnectionAsync(MqttConnect options, CancellationToken cancellationToken)
         {
-            if (_mqttClient.IsConnected)
+            if (base.IsConnected)
             {
                 return null;
             }
@@ -523,7 +513,7 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session
             }
 
             MqttConnectAck? connectResult =
-                await _mqttClient.ConnectAsync(options, cancellationToken).ConfigureAwait(false);
+                await base.ConnectAsync(options, cancellationToken).ConfigureAwait(false);
 
             if (connectResult.ResultCode != MqttConnectResultCode.Success)
             {
@@ -573,7 +563,7 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session
         {
             try
             {
-                while (_mqttClient.IsConnected)
+                while (base.IsConnected)
                 {
                     QueuedRequest queuedRequest = await _outgoingRequestList.PeekNextUnsentAsync(connectionLostCancellationToken);
                     connectionLostCancellationToken.ThrowIfCancellationRequested();
@@ -613,7 +603,7 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session
         {
             try
             {
-                MqttPublishAck publishResult = await _mqttClient.PublishAsync(queuedPublish.Request, cancellationToken);
+                MqttPublishAck publishResult = await base.PublishAsync(queuedPublish.Request, cancellationToken);
 
                 await _outgoingRequestList.RemoveAsync(queuedPublish, CancellationToken.None);
                 if (!queuedPublish.ResultTaskCompletionSource.TrySetResult(publishResult))
@@ -647,7 +637,7 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session
         {
             try
             {
-                MqttSubscribeAck subscribeResult = await _mqttClient.SubscribeAsync(queuedSubscribe.Request, cancellationToken);
+                MqttSubscribeAck subscribeResult = await base.SubscribeAsync(queuedSubscribe.Request, cancellationToken);
 
                 await _outgoingRequestList.RemoveAsync(queuedSubscribe, CancellationToken.None);
                 if (!queuedSubscribe.ResultTaskCompletionSource.TrySetResult(subscribeResult))
@@ -681,7 +671,7 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session
         {
             try
             {
-                MqttUnsubscribeAck unsubscribeResult = await _mqttClient.UnsubscribeAsync(queuedUnsubscribe.Request, cancellationToken);
+                MqttUnsubscribeAck unsubscribeResult = await base.UnsubscribeAsync(queuedUnsubscribe.Request, cancellationToken);
                 await _outgoingRequestList.RemoveAsync(queuedUnsubscribe, CancellationToken.None);
                 if (!queuedUnsubscribe.ResultTaskCompletionSource.TrySetResult(unsubscribeResult))
                 {
