@@ -33,6 +33,12 @@ typedef struct az_iot_reconnect_policy_tag
     uint8_t  jitter_pct;               /* 0..100 */
 } az_iot_reconnect_policy_t;
 
+/* Recommended minimum size (bytes) for opts.csr_payload_buffer: enough to build
+ * the largest CSR request body {"id":...,"csr":<base64>,"replace":...} for the
+ * service CSR size limit. Apps that only use small keys (EC / RSA-2048) may size
+ * it smaller. */
+#define AZ_IOT_CSR_PAYLOAD_BUFFER_MIN 8448
+
 typedef struct az_iot_connection_client_options_tag
 {
     const char* host;                  /* hub host (or NULL when using DPS) */
@@ -47,6 +53,14 @@ typedef struct az_iot_connection_client_options_tag
     az_iot_reconnect_policy_t reconnect;
     az_iot_log_sink_t log;
 
+    /* Caller-provided scratch buffer used to BUILD the outbound CSR request
+     * payload - the DPS registration body when dps.request_operational_certificate
+     * is set, and the hub renewal body for az_iot_connection_client_send_csr().
+     * The SDK never allocates or declares a payload buffer of its own; provide
+     * one here (>= AZ_IOT_CSR_PAYLOAD_BUFFER_MIN to cover the service CSR size
+     * limit) when using either CSR feature. Leave AZ_SPAN_EMPTY otherwise. */
+    az_span csr_payload_buffer;
+
     /* DPS provisioning options.  When host is NULL and id_scope is set, the
      * connection client internally provisions via DPS before connecting to the
      * assigned hub. */
@@ -55,6 +69,12 @@ typedef struct az_iot_connection_client_options_tag
         const char* global_endpoint;   /* NULL => "global.azure-devices-provisioning.net" */
         const char* id_scope;
         const char* registration_id;
+        bool        request_operational_certificate;  /* CSR-based enrollment (D2): send a CSR
+                                                        * from the certificate_provider during DPS
+                                                        * registration and connect to the assigned
+                                                        * hub with the issued operational cert.
+                                                        * Requires a provider whose vtable exposes
+                                                        * get_csr (version >= 2). */
     } dps;
 } az_iot_connection_client_options_t;
 
@@ -71,6 +91,33 @@ typedef enum az_iot_connection_state_tag
 typedef void (*az_iot_connection_state_cb)(az_iot_connection_state_t state, az_iot_result_t reason, void* user_ctx);
 
 typedef void (*az_iot_publish_ack_cb)(az_iot_result_t status, void* user_ctx);
+
+/* ---- Runtime Hub-side certificate renewal (Classic hub) ------------------ */
+/* Device-initiated CSR to the connected hub. Two-phase: ACCEPTED (202) then
+ * ISSUED (200) with the new chain, or FAILED. See docs/eng/certificate-management.md. */
+typedef enum az_iot_csr_event_kind_tag
+{
+    AZ_IOT_CSR_ACCEPTED = 0,   /* 202: hub accepted; signing in progress      */
+    AZ_IOT_CSR_ISSUED,         /* 200: issued chain delivered (evt->issued)   */
+    AZ_IOT_CSR_FAILED          /* rejected/failed (evt->status, service_code)  */
+} az_iot_csr_event_kind_t;
+
+typedef struct az_iot_csr_event_tag
+{
+    az_iot_csr_event_kind_t kind;
+    az_iot_result_t status;        /* AZ_IOT_OK unless FAILED                  */
+    int32_t  service_code;         /* hub errorCode on FAILED; 0 otherwise     */
+    uint32_t retry_after_s;        /* suggested retry delay; 0 if none         */
+    const az_iot_issued_certificate_t* issued;  /* non-NULL on ISSUED          */
+} az_iot_csr_event_t;
+
+typedef void (*az_iot_csr_cb)(const az_iot_csr_event_t* evt, void* user_ctx);
+
+/* Fired when the connection client obtains a DPS/provider-issued operational
+ * certificate during provisioning (D4). Optional; use for app-side persistence
+ * or to react (e.g. inventory). The chain is valid only during the callback. */
+typedef void (*az_iot_operational_cert_cb)(
+    const az_iot_issued_certificate_t* issued, void* user_ctx);
 
 /* ------------------------------------------------------------------------- */
 /* Internal struct constants                                                 */
@@ -118,6 +165,8 @@ struct az_iot_connection_client_tag
     az_iot_connection_state_t state;
     az_iot_connection_state_cb state_cb;
     void* state_cb_ctx;
+    az_iot_operational_cert_cb op_cert_cb;
+    void* op_cert_cb_ctx;
 
     bool user_close;
 
@@ -157,10 +206,22 @@ struct az_iot_connection_client_tag
     bool  dps_pending_finalize;
     bool  dps_pending_have_assignment;
     az_iot_result_t dps_pending_status;
+    bool  dps_enrolling;           /* CSR-based enrollment active for this DPS session */
+    bool  dps_have_issued_cert;    /* an operational cert was issued by DPS/Hub and stored */
 
     az_iot_hub_client hub_client;
     bool hub_client_initialized;
     char hub_username[AZ_IOT_MQTT_USERNAME_BUF];
+
+    /* Runtime Hub-side CSR renewal: one in-flight operation, matched by rid. */
+    struct {
+        bool  in_use;
+        bool  subscribed;
+        char  request_id[64];
+        az_iot_csr_cb cb;
+        void* user_ctx;
+        uint64_t deadline_ms;      /* abandon the op if no terminal response by here */
+    } csr_op;
 };
 
 typedef struct az_iot_connection_client_tag az_iot_connection_client_t;
@@ -197,6 +258,13 @@ az_iot_result_t az_iot_connection_client_set_state_callback(
     az_iot_connection_state_cb cb,
     void* user_ctx);
 
+/* Register a callback fired when a DPS/provider-issued operational certificate
+ * is obtained during provisioning (D4). Optional. */
+az_iot_result_t az_iot_connection_client_set_operational_cert_callback(
+    az_iot_connection_client_t* client,
+    az_iot_operational_cert_cb cb,
+    void* user_ctx);
+
 /* Open a session to the configured host. Non-blocking; observe state via callback
  * and drive progress with do_work(). */
 az_iot_result_t az_iot_connection_client_open(az_iot_connection_client_t* client);
@@ -206,6 +274,30 @@ az_iot_result_t az_iot_connection_client_close(az_iot_connection_client_t* clien
 /* Pump network I/O and dispatch callbacks. Single-threaded contract: all user
  * callbacks fire synchronously from inside this call. */
 az_iot_result_t az_iot_connection_client_do_work(az_iot_connection_client_t* client, uint32_t timeout_ms);
+
+/* Request a renewed operational certificate from the connected (Classic) hub by
+ * sending a CSR. Two-phase: the callback fires with AZ_IOT_CSR_ACCEPTED (202),
+ * then AZ_IOT_CSR_ISSUED (200) carrying the new chain, or AZ_IOT_CSR_FAILED.
+ *   request_id: NULL => the SDK generates one; pass a prior id to resubmit.
+ *   replace:    NULL, or "*" / a request id to supersede an active hub-side op.
+ * The request's device id is taken from the connected client_id. Only one CSR
+ * operation may be in flight; returns AZ_IOT_ERR_BUSY otherwise. The issued
+ * chain in AZ_IOT_CSR_ISSUED is valid only for the duration of the callback.
+ * If no terminal (200/error) response arrives within an internal timeout, the
+ * callback fires once with AZ_IOT_CSR_FAILED / AZ_IOT_ERR_TIMEOUT and the slot
+ * is released, so a lost response can never wedge renewal permanently. */
+az_iot_result_t az_iot_connection_client_send_csr(
+    az_iot_connection_client_t* client,
+    const az_iot_certificate_signing_request_t* csr,
+    const char* request_id,
+    const char* replace,
+    az_iot_csr_cb cb,
+    void* user_ctx);
+
+/* Abandon the in-flight CSR renewal (if any) without waiting for the timeout,
+ * freeing the one-operation slot for a new az_iot_connection_client_send_csr().
+ * No callback fires. Returns AZ_IOT_ERR_NOT_FOUND when no operation is active. */
+az_iot_result_t az_iot_connection_client_cancel_csr(az_iot_connection_client_t* client);
 
 #ifdef __cplusplus
 }

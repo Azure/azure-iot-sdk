@@ -110,6 +110,10 @@ if(AZ_IOT_WITH_ADU_CRYPTO_OPENSSL)
     add_subdirectory(adapters/adu/crypto_openssl)
 endif()
 
+if(AZ_IOT_WITH_CERT_PROVIDER_MANAGED)
+    add_subdirectory(adapters/cert_openssl)
+endif()
+
 if(AZ_IOT_BUILD_SAMPLES)
     add_subdirectory(samples)
 endif()

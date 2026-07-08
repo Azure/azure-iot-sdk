@@ -132,7 +132,7 @@ jobs:
         working-directory: c
         run: |
           cmake --preset ${{ matrix.preset }} -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_WITH_PAHO=ON
-          cmake --build --preset ${{ matrix.preset }} ${{ runner.os == 'Windows' && '--config Debug' || '' }} --target az_iot_tests_e2e az_iot_tests_e2e_adu
+          cmake --build --preset ${{ matrix.preset }} ${{ runner.os == 'Windows' && '--config Debug' || '' }} --target az_iot_tests_e2e az_iot_tests_e2e_adu az_iot_tests_e2e_csr
 
       - name: Download shared test config
         uses: actions/download-artifact@v4
@@ -204,9 +204,11 @@ jobs:
 
           New-Item -ItemType Directory -Path ./test_config/results -Force | Out-Null
           $cfg = if ($IsWindows) { @('-C', 'Debug') } else { @() }
-          # `-R e2e` runs BOTH the fast suite (az_iot_tests_e2e) and the mocked
-          # ADU suite (az_iot_tests_e2e_adu). The adu_crypto_openssl unit test is
-          # not matched by the e2e name filter, so it stays out of this job.
+          # `-R e2e` runs the fast suite (az_iot_tests_e2e) and the mocked ADU
+          # suite (az_iot_tests_e2e_adu), plus the CSR enrollment test
+          # (az_iot_tests_e2e_csr), which self-skips (CTest exit 77) unless
+          # AZ_IOT_DPS_CSR_ENABLED is provisioned. The adu_crypto_openssl unit
+          # test is not matched by the e2e name filter, so it stays out of this job.
           ctest --test-dir c/build/${{ matrix.preset }} @cfg -R e2e `
             --verbose --no-tests=error --timeout 900 `
             --output-junit ./test_config/results/e2e-${{ matrix.os }}.xml
