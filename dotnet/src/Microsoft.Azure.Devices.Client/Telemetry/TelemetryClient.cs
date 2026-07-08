@@ -42,6 +42,11 @@ namespace Microsoft.Azure.Devices.Client.Telemetry
         /// <param name="cancellationToken">the cancellation token.</param>
         public async Task SendTelemetryAsync(OutgoingTelemetryMessage message, CancellationToken cancellationToken = default)
         {
+            if (_connection.CurrentConnectionContext == null)
+            {
+                throw new NotSupportedException("Must open the connection before sending telemetry");
+            }
+
             if (_connection.CurrentConnectionContext.IsAzureEventGrid)
             {
                 throw new NotImplementedException("d2c telemetry not implemented in this SDK yet");

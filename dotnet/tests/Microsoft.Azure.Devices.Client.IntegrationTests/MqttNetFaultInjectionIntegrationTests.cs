@@ -6,7 +6,7 @@ using System.Collections.Generic;
 using System.Text;
 using Xunit;
 
-namespace Microsoft.Azure.Devices.Client.IntegrationTests //TODO Do we want to try both MQTTv5 and mqttv3 brokers?
+namespace Microsoft.Azure.Devices.Client.IntegrationTests 
 {
     // This integration test suite has the MQTTnet client adapter connect to a faultable MQTT broker (sourced from the AIO SDK repo here:https://github.com/Azure/iot-operations-sdks/tree/main/eng/test/faultablemqttbroker/src/Azure.Iot.Operations.FaultableMqttBroker).
     //
@@ -22,6 +22,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests //TODO Do we want to t
             return new()
             {
                 HostName = "localhost",
+                ProtocolVersion = MqttProtocolVersion.V500, //TODO Do we want to try both MQTTv5 and mqttv3 brokers? mqttv3 doesn't support user properties, so this is difficult
                 TcpPort = 1884,
                 CleanSession = true,
                 CleanStart = true,
@@ -68,6 +69,8 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests //TODO Do we want to t
             MqttPublish faultMessage = new MqttPublish()
             {
                 PayloadAsArraySegment = expectedPayload,
+                Topic = "some/irrelevant/topic",
+                QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce,
             };
 
             faultMessage.AddUserProperty(FaultInjectionTestConstants.disconnectFaultName, "" + ((int)expectedReason));
@@ -75,7 +78,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests //TODO Do we want to t
             faultMessage.AddUserProperty(FaultInjectionTestConstants.faultRequestIdName, Guid.NewGuid().ToString());
 
             var result = await mqttClient.PublishAsync(faultMessage).WaitAsync(TimeSpan.FromMinutes(1));
-            Assert.Equal(MqttClientPublishReasonCode.Success, result.ReasonCode);
+            Assert.Equal(MqttClientPublishReasonCode.NoMatchingSubscribers, result.ReasonCode);
 
             // Wait until the fault injection happens or until a timeout
             var faultDetails = await faultWasInjectedTcs.Task.WaitAsync(TimeSpan.FromSeconds(30));
@@ -83,7 +86,14 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests //TODO Do we want to t
 
             // The session client should handle the fault and reconnect either prior to this publish or after this publish
             // is initiated. In either case, the publish should be sent successfully
-            await mqttClient.PublishAsync(new MqttPublish());
+            var subsequentPublish = new MqttPublish()
+            {
+                Topic = "some/irrelevant/topic",
+                QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce,
+            };
+
+            result = await mqttClient.PublishAsync(subsequentPublish);
+            Assert.Equal(MqttClientPublishReasonCode.NoMatchingSubscribers, result.ReasonCode);
         }
 
         [Fact]
@@ -107,6 +117,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests //TODO Do we want to t
             MqttPublish faultMessage = new()
             {
                 PayloadAsArraySegment = expectedPayload,
+                Topic = "some/irrelevant/topic",
                 QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce,
             };
 
@@ -116,7 +127,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests //TODO Do we want to t
             var result = await mqttClient.PublishAsync(faultMessage).WaitAsync(TimeSpan.FromMinutes(1));
 
             Assert.Equal(expectedReason, (await faultWasInjectedTcs.Task.WaitAsync(TimeSpan.FromMinutes(1))).Reason);
-            Assert.Equal(MqttClientPublishReasonCode.Success, result.ReasonCode);
+            Assert.Equal(MqttClientPublishReasonCode.NoMatchingSubscribers, result.ReasonCode);
         }
 
         [Fact]

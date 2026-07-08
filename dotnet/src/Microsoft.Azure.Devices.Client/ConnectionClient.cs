@@ -214,21 +214,21 @@ namespace Microsoft.Azure.Devices.Client
 
                 if (status.Equals("202"))
                 {
-                    CertificateSigningRequestAccepted accepted = JsonSerializer.Deserialize<CertificateSigningRequestAccepted>(args.Publish.PayloadAsByteArray);
+                    CertificateSigningRequestAccepted accepted = JsonSerializer.Deserialize<CertificateSigningRequestAccepted>(args.Publish.PayloadAsByteArray)!;
                     pendingCertificateSigningOperation.SetAccepted(accepted);
                     //TODO qos? Ack needed?
                     return;
                 }
                 else if (status.Equals("200"))
                 {
-                    CertificateSigningResponse response = JsonSerializer.Deserialize<CertificateSigningResponse>(args.Publish.PayloadAsByteArray);
+                    CertificateSigningResponse response = JsonSerializer.Deserialize<CertificateSigningResponse>(args.Publish.PayloadAsByteArray)!;
                     pendingCertificateSigningOperation.SetCompleted(response);
                     //TODO qos? Ack needed?
                     return;
                 }
                 else
                 {
-                    CertificateSigningRequestErrorResponse error = JsonSerializer.Deserialize<CertificateSigningRequestErrorResponse>(args.Publish.PayloadAsByteArray);
+                    CertificateSigningRequestErrorResponse error = JsonSerializer.Deserialize<CertificateSigningRequestErrorResponse>(args.Publish.PayloadAsByteArray)!;
                     pendingCertificateSigningOperation.SetFailed(new CertificateSigningRequestFailedException() { Error = error });
                     //TODO qos? Ack needed?
                     return;

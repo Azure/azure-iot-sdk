@@ -244,14 +244,14 @@ namespace Microsoft.Azure.Devices.Client.Provisioning
             {
                 // The initial provisioning request's response topic is shaped like "$dps/registrations/res/202/?$rid=1&retry-after=3"
                 string jsonString = Encoding.UTF8.GetString(receivedEventArgs.Publish.PayloadAsByteArray);
-                RegistrationOperationStatus operation = JsonSerializer.Deserialize<RegistrationOperationStatus>(jsonString, JsonSerializationSettings.Options);
+                RegistrationOperationStatus operation = JsonSerializer.Deserialize<RegistrationOperationStatus>(jsonString, JsonSerializationSettings.Options)!;
                 _startProvisioningRequestStatusSource.TrySetResult(operation);
             }
             else
             {
                 // All status polling requests' response topics are shaped like "$dps/registrations/res/200/?$rid=2"
                 string jsonString = Encoding.UTF8.GetString(receivedEventArgs.Publish.PayloadAsByteArray);
-                RegistrationOperationStatus operation = JsonSerializer.Deserialize<RegistrationOperationStatus>(jsonString, JsonSerializationSettings.Options);
+                RegistrationOperationStatus operation = JsonSerializer.Deserialize<RegistrationOperationStatus>(jsonString, JsonSerializationSettings.Options)!;
 
                 operation.RetryAfter = GetRetryAfterFromTopic(topic, s_defaultOperationPollingInterval);
 

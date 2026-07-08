@@ -243,7 +243,7 @@ namespace Microsoft.Azure.Devices.Client.IotHub
                     {
                         receivedTwinPush = await twinPushReceivedTaskCompletionSource.Task.WaitAsync(twinPushReceivedDefensiveTimeout, cancellationToken);
                     }
-                    catch (TimeoutException e)
+                    catch (TimeoutException)
                     {
                         Trace.TraceWarning("Timed out waiting for an expected twin push message. Disconnecting from the MQTT broker and attempting connection again...");
 
@@ -257,13 +257,13 @@ namespace Microsoft.Azure.Devices.Client.IotHub
 
                     if (receivedTwinPush.Desired != null)
                     {
-                        currentTwin.Desired = JsonNode.Parse(receivedTwinPush.Desired.Payload.Span).AsObject();
+                        currentTwin.Desired = JsonNode.Parse(receivedTwinPush.Desired.Payload.Span)!.AsObject();
                         currentTwin.ReportedVersion = receivedTwinPush.Desired.Version;
                     }
 
                     if (receivedTwinPush.Reported != null)
                     {
-                        currentTwin.Reported = JsonNode.Parse(receivedTwinPush.Reported.Payload.Span).AsObject();
+                        currentTwin.Reported = JsonNode.Parse(receivedTwinPush.Reported.Payload.Span)!.AsObject();
                         currentTwin.ReportedVersion = receivedTwinPush.Reported.Version;
                     }
                 }
@@ -355,7 +355,7 @@ namespace Microsoft.Azure.Devices.Client.IotHub
         {
             const string name = "Microsoft.Azure.Devices.Provisioning.Client";
 
-            string version = typeof(IotHubConnection).GetTypeInfo().Assembly.GetName().Version.ToString(3);
+            string version = typeof(IotHubConnection).GetTypeInfo().Assembly.GetName().Version!.ToString(3);
             string runtime = RuntimeInformation.FrameworkDescription.Trim();
             string operatingSystem = RuntimeInformation.OSDescription.Trim();
             string processorArchitecture = RuntimeInformation.ProcessArchitecture.ToString().Trim();

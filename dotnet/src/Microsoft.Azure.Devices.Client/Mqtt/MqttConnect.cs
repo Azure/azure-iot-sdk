@@ -8,13 +8,13 @@ namespace Microsoft.Azure.Devices.Client.Mqtt
         ///     Gets or sets the authentication data.
         ///     <remarks>MQTT 5.0.0+ feature.</remarks>
         /// </summary>
-        public byte[] AuthenticationData { get; set; }
+        public byte[]? AuthenticationData { get; set; }
 
         /// <summary>
         ///     Gets or sets the authentication method.
         ///     <remarks>MQTT 5.0.0+ feature.</remarks>
         /// </summary>
-        public string AuthenticationMethod { get; set; }
+        public string? AuthenticationMethod { get; set; }
 
         // TODO document that this is for MQTT v3.1.1 only!
         public bool CleanSession { get; set; }
@@ -22,23 +22,23 @@ namespace Microsoft.Azure.Devices.Client.Mqtt
         // TODO document that this is for MQTT v5 only! MQTTnet combined this + clean session into just one field "cleanSession" which is maybe the correct approach
         public bool CleanStart { get; set; }
 
-        public X509Certificate2 ClientCertificate { get; set; }
+        public X509Certificate2? ClientCertificate { get; set; }
 
         /// <summary>
         ///     Gets the client identifier.
         ///     Hint: This identifier needs to be unique over all used clients / devices on the broker to avoid connection issues.
         /// </summary>
-        public string ClientId { get; set; }
+        public string? ClientId { get; set; }
 
-        public string Username { get; set; }
+        public string? Username { get; set; }
 
-        public byte[] Password { get; set; } // Should always be empty array in x509 only world
+        public byte[]? Password { get; set; } // Should always be empty array in x509 only world
         
-        public string HostName { get; set; }
+        public required string HostName { get; set; }
 
         public int TcpPort { get; set; }
 
-        public string WebsocketUri { get; set; }
+        public string? WebsocketUri { get; set; }
 
         public int WebsocketPort { get; set; }
 
@@ -101,7 +101,7 @@ namespace Microsoft.Azure.Devices.Client.Mqtt
         ///     The feature is very similar to the HTTP header concept.
         ///     <remarks>MQTT 5.0.0+ feature.</remarks>
         /// </summary>
-        public List<MqttUserProperty> UserProperties { get; set; }
+        public List<MqttUserProperty> UserProperties { get; set; } = new();
 
         public void AddUserProperty(string key, string value)
         {

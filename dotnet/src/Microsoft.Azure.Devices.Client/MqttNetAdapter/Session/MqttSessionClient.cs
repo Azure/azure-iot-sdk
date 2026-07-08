@@ -69,7 +69,7 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session
         /// via <see cref="MqttSessionClientOptions.ConnectionRetryPolicy"/>.
         /// </remarks>
         /// <exception cref="InvalidOperationException">If this method is called when the client is already managing the connection.</exception>
-        public async Task<MqttConnectAck> ConnectAsync(MqttConnect connect, CancellationToken cancellationToken = default)
+        public override async Task<MqttConnectAck> ConnectAsync(MqttConnect connect, CancellationToken cancellationToken = default)
         {
             //TODO once the session client is fully integrated into RPC/Telemetry tests, the default session expiry interval should be 0
             // so that non-session client applications don't create sessions unknowingly.
@@ -105,7 +105,7 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session
         /// </summary>
         /// <param name="options">The optional parameters that can be sent in the DISCONNECT packet to the MQTT broker.</param>
         /// <param name="cancellationToken">The cancellation token.</param>
-        public async Task DisconnectAsync(MqttDisconnect? options = null, CancellationToken cancellationToken = default)
+        public override async Task DisconnectAsync(MqttDisconnect? options = null, CancellationToken cancellationToken = default)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
             cancellationToken.ThrowIfCancellationRequested();
@@ -148,7 +148,7 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session
         /// This method may be called even when this client is not connected. The request will be sent once the
         /// connection is established.
         /// </remarks>
-        public async Task<MqttPublishAck> PublishAsync(MqttPublish applicationMessage, CancellationToken cancellationToken = default)
+        public override async Task<MqttPublishAck> PublishAsync(MqttPublish applicationMessage, CancellationToken cancellationToken = default)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
             cancellationToken.ThrowIfCancellationRequested();
@@ -192,7 +192,7 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session
         /// This method may be called even when this client is not connected. The request will be sent once the
         /// connection is established.
         /// </remarks>
-        public async Task<MqttSubscribeAck> SubscribeAsync(MqttSubscribe options, CancellationToken cancellationToken = default)
+        public override async Task<MqttSubscribeAck> SubscribeAsync(MqttSubscribe options, CancellationToken cancellationToken = default)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
             cancellationToken.ThrowIfCancellationRequested();
@@ -235,7 +235,7 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session
         /// This method may be called even when this client is not connected. The request will be sent once the
         /// connection is established.
         /// </remarks>
-        public async Task<MqttUnsubscribeAck> UnsubscribeAsync(MqttUnsubscribe options, CancellationToken cancellationToken = default)
+        public override async Task<MqttUnsubscribeAck> UnsubscribeAsync(MqttUnsubscribe options, CancellationToken cancellationToken = default)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
             cancellationToken.ThrowIfCancellationRequested();
@@ -263,38 +263,11 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session
             return await tcs.Task;
         }
 
-        public async ValueTask DisposeAsync()
-        {
-            await DisposeAsync(CancellationToken.None);
-        }
-
-        public async ValueTask DisposeAsync(CancellationToken cancellationToken = default)
+        public void Dispose(CancellationToken cancellationToken = default)
         {
             if (!_disposed)
             {
                 base.DisconnectedAsync -= InternalDisconnectedAsync;
-
-                if (base.IsConnected || _isDesiredConnected)
-                {
-                    try
-                    {
-                        await DisconnectAsync(cancellationToken: cancellationToken); // This also signals to stop any reconnection though it does not wait for that reconnection to finish
-                    }
-                    catch (Exception e)
-                    {
-                        Trace.TraceWarning("Encountered an error while disconnecting during disposal {0}", e);
-                    }
-                }
-
-                // Wait until any reconnection logic has wrapped up before disposing any semaphores that the reconnection logic may still try to release
-                try
-                {
-                    await _disconnectedEventLock.WaitAsync(cancellationToken);
-                }
-                catch (OperationCanceledException)
-                {
-                    Trace.TraceWarning("Mqtt session client disposal was cancelled while waiting on reconnection logic to finish. Some unobserved exceptions may be thrown by the reconnection task");
-                }
 
                 _workerThreadsTaskCancellationTokenSource?.Dispose();
                 _reconnectionCancellationToken?.Dispose();
@@ -398,7 +371,7 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session
                     Trace.TraceError("Encountered a fatal exception while maintaining connection {0}", lastException);
                     if (isReconnection)
                     {
-                        var retryException = new RetryExpiredException("A fatal error was encountered while trying to re-establish the session, so this request cannot be completed.", lastException);
+                        var retryException = new RetryExpiredException("A fatal error was encountered while trying to re-establish the session, so this request cannot be completed.", lastException!);
 
                         // This function was called to reconnect after an unexpected disconnect. Since the error is fatal,
                         // notify the user via callback that the client has crashed, but don't throw the exception since
@@ -420,7 +393,7 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session
                 {
                     // Should not occur as it's indefinite retry
                     Trace.TraceError("Retry policy was exhausted while trying to maintain a connection {0}", lastException);
-                    var retryException = new RetryExpiredException("Retry policy has been exhausted. See inner exception for the latest exception encountered while retrying.", lastException);
+                    var retryException = new RetryExpiredException("Retry policy has been exhausted. See inner exception for the latest exception encountered while retrying.", lastException!);
 
                     if (lastDisconnect != null)
                     {
@@ -794,11 +767,6 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session
             }
 
             return false;
-        }
-
-        public void Dispose()
-        {
-            throw new NotImplementedException();
         }
     }
 }

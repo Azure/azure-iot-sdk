@@ -15,11 +15,12 @@ namespace Microsoft.Azure.Devices.Client.CertificateManagement
         /// The first certificate is the issued device certificate, followed by intermediates.
         /// </summary>
         [JsonPropertyName("certificates")]
-        public IReadOnlyList<string> Certificates { get; set; }
+        public required IReadOnlyList<string> Certificates { get; set; }
+
         /// <summary>
         /// Correlation ID for diagnostic and support purposes.
         /// </summary>
         [JsonPropertyName("correlationId")]
-        public string CorrelationId { get; set; }
+        public required string CorrelationId { get; set; }
     }
 }

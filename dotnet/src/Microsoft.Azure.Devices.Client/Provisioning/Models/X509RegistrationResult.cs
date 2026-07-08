@@ -15,19 +15,19 @@ namespace Microsoft.Azure.Devices.Client.Provisioning.Models
         /// Information about the X509 certificate.
         /// </summary>
         [JsonPropertyName("certificateInfo")]
-        public X509CertificateInfo CertificateInfo { get; set; }
+        public required X509CertificateInfo CertificateInfo { get; set; }
 
         /// <summary>
         /// The device provisioning service enrollment group Id.
         /// </summary>
         [JsonPropertyName("enrollmentGroupId")]
-        public string EnrollmentGroupId { get; set; }
+        public required string EnrollmentGroupId { get; set; }
 
         /// <summary>
         /// Signing information about the certificate.
         /// </summary>
         [JsonPropertyName("signingCertificateInfo")]
-        public X509CertificateInfo SigningCertificateInfo { get; set; }
+        public required X509CertificateInfo SigningCertificateInfo { get; set; }
 
     }
 }

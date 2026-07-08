@@ -16,7 +16,7 @@ namespace Microsoft.Azure.Devices.Client.Provisioning.Models
         /// This id is used to uniquely identify a device registration of an enrollment.
         /// </summary>
         [JsonPropertyName("registrationId")]
-        public string RegistrationId { get; set; }
+        public required string RegistrationId { get; set; }
 
         /// <summary>
         /// Registration create date time (in UTC).
@@ -28,13 +28,13 @@ namespace Microsoft.Azure.Devices.Client.Provisioning.Models
         /// The assigned Azure IoT hub.
         /// </summary>
         [JsonPropertyName("assignedHub")]
-        public string AssignedHub { get; set; }
+        public required string AssignedHub { get; set; }
 
         /// <summary>
         /// The Device Id.
         /// </summary>
         [JsonPropertyName("deviceId")]
-        public string DeviceId { get; set; }
+        public required string DeviceId { get; set; }
 
         /// <summary>
         /// The status of the operation.
@@ -64,13 +64,13 @@ namespace Microsoft.Azure.Devices.Client.Provisioning.Models
         /// Error message.
         /// </summary>
         [JsonPropertyName("errorMessage")]
-        public string ErrorMessage { get; set; }
+        public string? ErrorMessage { get; set; }
 
         /// <summary>
         /// The entity tag associated with the resource.
         /// </summary>
         [JsonPropertyName("etag")]
-        public string ETag { get; set; } //TODO is this actually just a string?
+        public string? ETag { get; set; } //TODO is this actually just a string?
 
         /// <summary>
         /// The custom data returned from the webhook to the device.
@@ -82,38 +82,11 @@ namespace Microsoft.Azure.Devices.Client.Provisioning.Models
         /// The registration result for X.509 certificate authentication.
         /// </summary>
         [JsonPropertyName("x509")]
-        public X509RegistrationResult X509 { get; set; }
+        public X509RegistrationResult? X509 { get; set; }
 
         [JsonPropertyName("issuedCertificateChain")]
-        public IReadOnlyList<string> IssuedClientCertificateChain { get; private set; }
+        public IReadOnlyList<string>? IssuedClientCertificateChain { get; private set; }
 
         public bool IsAzureEventGridHub { get; set; } = false; //TODO manually added field, but I think this is where DPS service folks will add it
-
-        /// <summary>
-        ///  Custom allocation payload (as a type) returned from the webhook to the device.
-        /// </summary>
-        /// <typeparam name="T">The type to deserialize to.</typeparam>
-        /// <param name="value">The value of the payload.</param>
-        /// <returns>True if the value can be converted to the specified type, otherwise false.</returns>
-        public bool TryGetPayload<T>(out T value)
-        {
-            value = default;
-            if (Payload == null 
-                || Payload.Value.ValueKind == JsonValueKind.Null
-                || Payload.Value.ValueKind == JsonValueKind.Undefined)
-            {
-                return false;
-            }
-
-            try
-            {
-                value = JsonSerializer.Deserialize<T>(Payload.Value, JsonSerializationSettings.Options);
-                return true;
-            }
-            catch (JsonException)
-            {
-                return false;
-            }
-        }
     }
 }

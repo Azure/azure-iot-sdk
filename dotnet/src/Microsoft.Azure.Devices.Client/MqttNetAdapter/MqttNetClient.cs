@@ -30,7 +30,7 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
         public event Func<Mqtt.MqttClientConnectedEventArgs, Task>? ConnectedAsync;
         public event Func<Mqtt.MqttClientDisconnectedEventArgs, Task>? DisconnectedAsync;
 
-        public async Task<MqttConnectAck> ConnectAsync(MqttConnect connect, CancellationToken cancellationToken = default)
+        public virtual async Task<MqttConnectAck> ConnectAsync(MqttConnect connect, CancellationToken cancellationToken = default)
         {
             MqttClientOptionsBuilder optionsBuilder;
             if (connect.ProtocolVersion == MqttProtocolVersion.V500)
@@ -71,14 +71,20 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
                         {
                             if (_proxy.Credentials != null)
                             {
-                                NetworkCredential credentials = _proxy.Credentials.GetCredential(serviceUri, "Basic");
-                                string username = credentials.UserName;
-                                string password = credentials.Password;
-                                proxyOptions.WithUsername(username);
-                                proxyOptions.WithPassword(password);
+                                NetworkCredential? credentials = _proxy.Credentials.GetCredential(serviceUri, "Basic");
+                                if (credentials != null)
+                                {
+                                    string username = credentials.UserName;
+                                    string password = credentials.Password;
+                                    proxyOptions.WithUsername(username);
+                                    proxyOptions.WithPassword(password);
+                                }
                             }
 
-                            proxyOptions.WithAddress(proxyUri.AbsoluteUri);
+                            if (proxyUri != null)
+                            {
+                                proxyOptions.WithAddress(proxyUri.AbsoluteUri);
+                            }
                         });
                     }
                 });
@@ -143,7 +149,7 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
             return genericConnectResult;
         }
 
-        public async Task DisconnectAsync(MqttDisconnect disconnect, CancellationToken cancellationToken = default)
+        public virtual async Task DisconnectAsync(MqttDisconnect disconnect, CancellationToken cancellationToken = default)
         {
             var disconnectBuilder = new MqttClientDisconnectOptionsBuilder()
                 .WithReason(ModelConverter.ToMqttNet(disconnect.Reason))
@@ -162,7 +168,7 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
             IsConnected = false;
         }
 
-        public async Task<MqttPublishAck> PublishAsync(MqttPublish publish, CancellationToken cancellationToken = default)
+        public virtual async Task<MqttPublishAck> PublishAsync(MqttPublish publish, CancellationToken cancellationToken = default)
         {
             var messageBuilder = new MqttApplicationMessageBuilder()
                 .WithContentType(publish.ContentType)
@@ -183,7 +189,7 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
             return ModelConverter.ToGeneric(await _underlyingClient.PublishAsync(messageBuilder.Build(), cancellationToken));
         }
 
-        public async Task<MqttSubscribeAck> SubscribeAsync(MqttSubscribe mqttSubscribe, CancellationToken cancellationToken = default)
+        public virtual async Task<MqttSubscribeAck> SubscribeAsync(MqttSubscribe mqttSubscribe, CancellationToken cancellationToken = default)
         {
             var subscribeBuilder = new MqttClientSubscribeOptionsBuilder();
             foreach (var topicFilter in mqttSubscribe.TopicFilters)
@@ -202,7 +208,7 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
             return ModelConverter.ToGeneric(await _underlyingClient.SubscribeAsync(subscribeBuilder.Build(), cancellationToken));
         }
 
-        public async Task<MqttUnsubscribeAck> UnsubscribeAsync(MqttUnsubscribe unsubscribe, CancellationToken cancellationToken = default)
+        public virtual async Task<MqttUnsubscribeAck> UnsubscribeAsync(MqttUnsubscribe unsubscribe, CancellationToken cancellationToken = default)
         {
             var unsubscribeBuilder = new MqttClientUnsubscribeOptionsBuilder();
             foreach (var topicFilter in unsubscribe.TopicFilters)
