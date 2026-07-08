@@ -72,11 +72,9 @@
 #define DPS_JSON_REGISTRATION_STATE    "registrationState"
 #define DPS_JSON_ISSUED_CERT_CHAIN     "issuedCertificateChain"
 
-/* Bounds on an issued certificate chain: leaf + a few intermediates, each a
- * base64 DER cert capped at the service size limit (used to size the DPS
- * register body; the chain itself is delivered as zero-copy spans). */
+/* Max certs in an issued chain (leaf + a few intermediates). The chain is
+ * delivered as zero-copy spans into the payload. */
 #define CERT_CHAIN_MAX_CERTS   6u
-#define CERT_MAX_BASE64_LEN    8192u
 
 /* ------------------------------------------------------------------------- */
 /* helpers                                                                   */
@@ -206,11 +204,10 @@ static az_iot_result_t dps_do_register_publish(az_iot_connection_client_t* c)
     msg.retain = false;
 
     /* CSR-based enrollment (D2): request an operational cert by sending the
-     * provider's CSR as the registration body {"csr":"<base64 DER>"}. The
-     * registration id travels in the DPS username/topic, not the body. The body
-     * is built on the stack (bounded by the service CSR size limit), so this
-     * path performs no heap allocation. */
-    char csr_body[CERT_MAX_BASE64_LEN + sizeof(DPS_REGISTER_CSR_BODY_FORMAT)];
+     * provider's CSR as the registration body {"csr":"<base64 DER>"}, built into
+     * the CALLER-PROVIDED payload buffer (opts.csr_payload_buffer) - the SDK
+     * declares no payload buffer of its own. The registration id travels in the
+     * DPS username/topic, not the body. */
     if (c->dps_enrolling)
     {
         az_iot_certificate_provider_t* provider = c->opts.certificate_provider;
@@ -218,6 +215,14 @@ static az_iot_result_t dps_do_register_publish(az_iot_connection_client_t* c)
         {
             AZ_IOT_LOG_ERROR("dps register: request_operational_certificate is set but the certificate provider does not implement get_csr");
             return AZ_IOT_ERR_NOT_SUPPORTED;
+        }
+
+        char* body = (char*)az_span_ptr(c->opts.csr_payload_buffer);
+        size_t body_cap = (size_t)az_span_size(c->opts.csr_payload_buffer);
+        if (body == NULL || body_cap == 0)
+        {
+            AZ_IOT_LOG_ERROR("dps register: opts.csr_payload_buffer is required for CSR enrollment");
+            return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
         }
 
         az_iot_certificate_signing_request_t csr = {0};
@@ -228,19 +233,19 @@ static az_iot_result_t dps_do_register_publish(az_iot_connection_client_t* c)
             return (csr_result != AZ_IOT_OK) ? csr_result : AZ_IOT_ERR_INTERNAL;
         }
 
-        int written = snprintf(csr_body, sizeof(csr_body), DPS_REGISTER_CSR_BODY_FORMAT, csr.csr_base64);
+        int written = snprintf(body, body_cap, DPS_REGISTER_CSR_BODY_FORMAT, csr.csr_base64);
 
         if (provider->vtable->release_csr != NULL)
         {
             provider->vtable->release_csr(provider, &csr);
         }
-        if (written < 0 || (size_t)written >= sizeof(csr_body))
+        if (written < 0 || (size_t)written >= body_cap)
         {
-            AZ_IOT_LOG_ERROR("dps register: CSR exceeds the maximum registration body size");
+            AZ_IOT_LOG_ERROR("dps register: opts.csr_payload_buffer is too small for the CSR body");
             return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
         }
 
-        msg.payload = (const uint8_t*)csr_body;
+        msg.payload = (const uint8_t*)body;
         msg.payload_len = (size_t)written;
     }
 
@@ -1060,6 +1065,11 @@ az_iot_result_t az_iot_connection_client_open(az_iot_connection_client_t* client
             AZ_IOT_LOG_ERROR("connection_client_open: request_operational_certificate set but provider does not support CSR enrollment");
             return AZ_IOT_ERR_NOT_SUPPORTED;
         }
+        if (az_span_size(client->opts.csr_payload_buffer) <= 0)
+        {
+            AZ_IOT_LOG_ERROR("connection_client_open: request_operational_certificate requires opts.csr_payload_buffer");
+            return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+        }
     }
 
     client->user_close = false;
@@ -1403,6 +1413,11 @@ az_iot_result_t az_iot_connection_client__add_subscription_on_connect(
 #define CSR_MAX_BASE64  8192   /* service cap: CSR <= 8 KB */
 #define CSR_OP_TIMEOUT_MS 120000u /* give up on a renewal with no terminal response after 2 min */
 
+/* Hub renewal request: publish topic + body formats. */
+#define CSR_RENEW_TOPIC_FORMAT         "$iothub/credentials/POST/issueCertificate/?$rid=%s"
+#define CSR_RENEW_BODY_FORMAT          "{\"id\":\"%s\",\"csr\":\"%s\"}"
+#define CSR_RENEW_BODY_REPLACE_FORMAT  "{\"id\":\"%s\",\"csr\":\"%s\",\"replace\":\"%s\"}"
+
 /* Hub renewal response JSON fields (issued chain / error body). */
 #define CSR_JSON_CERTIFICATES  "certificates"
 #define CSR_JSON_ERROR_CODE    "errorCode"
@@ -1555,6 +1570,8 @@ az_iot_result_t az_iot_connection_client_send_csr(
         return AZ_IOT_ERR_NOT_SUPPORTED;   /* Hub-Next (AEG) path not defined yet */
     if (client->csr_op.in_use)
         return AZ_IOT_ERR_BUSY;
+    if (az_span_size(client->opts.csr_payload_buffer) <= 0)
+        return AZ_IOT_ERR_NOT_ENOUGH_SPACE; /* caller must provide opts.csr_payload_buffer */
 
     /* Validate the CSR: base64 and within the 8 KB service cap. */
     size_t csr_len = 0;
@@ -1589,24 +1606,23 @@ az_iot_result_t az_iot_connection_client_send_csr(
         client->csr_op.subscribed = true;
     }
 
-    /* Build the request body: {"id":"<device>","csr":"<base64>"[,"replace":"..."]} */
+    /* Build the request body into the caller-provided payload buffer. */
     const char* device_id = az_iot_connection_client__device_id(client);
     if (!device_id) device_id = "";
-    size_t body_cap = strlen(device_id) + csr_len + (replace ? strlen(replace) : 0) + 64;
-    char* body = (char*)malloc(body_cap);
-    if (!body) return AZ_IOT_ERR_OUT_OF_MEMORY;
+    char* body = (char*)az_span_ptr(client->opts.csr_payload_buffer);
+    size_t body_cap = (size_t)az_span_size(client->opts.csr_payload_buffer);
     int bn = (replace && replace[0])
-        ? snprintf(body, body_cap, "{\"id\":\"%s\",\"csr\":\"%s\",\"replace\":\"%s\"}",
-                   device_id, csr->csr_base64, replace)
-        : snprintf(body, body_cap, "{\"id\":\"%s\",\"csr\":\"%s\"}",
-                   device_id, csr->csr_base64);
-    if (bn < 0 || (size_t)bn >= body_cap) { free(body); return AZ_IOT_ERR_INTERNAL; }
+        ? snprintf(body, body_cap, CSR_RENEW_BODY_REPLACE_FORMAT, device_id, csr->csr_base64, replace)
+        : snprintf(body, body_cap, CSR_RENEW_BODY_FORMAT, device_id, csr->csr_base64);
+    if (bn < 0 || (size_t)bn >= body_cap)
+    {
+        AZ_IOT_LOG_ERROR("send_csr: opts.csr_payload_buffer is too small for the request body");
+        return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+    }
 
     char topic[128];
-    int tn = snprintf(topic, sizeof(topic),
-                      "$iothub/credentials/POST/issueCertificate/?$rid=%s",
-                      client->csr_op.request_id);
-    if (tn < 0 || (size_t)tn >= sizeof(topic)) { free(body); return AZ_IOT_ERR_INTERNAL; }
+    int tn = snprintf(topic, sizeof(topic), CSR_RENEW_TOPIC_FORMAT, client->csr_op.request_id);
+    if (tn < 0 || (size_t)tn >= sizeof(topic)) return AZ_IOT_ERR_INTERNAL;
 
     az_iot_mqtt_message_t msg = {0};
     msg.topic = topic;
@@ -1620,7 +1636,6 @@ az_iot_result_t az_iot_connection_client_send_csr(
     client->csr_op.deadline_ms = az_iot_time_mono_ms() + CSR_OP_TIMEOUT_MS;
 
     az_iot_result_t r = az_iot_connection_client__publish(client, &msg, NULL, NULL);
-    free(body);
     if (r != AZ_IOT_OK) { client->csr_op.in_use = false; return r; }
     return AZ_IOT_OK;
 }

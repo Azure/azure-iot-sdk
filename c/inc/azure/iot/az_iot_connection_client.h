@@ -33,6 +33,12 @@ typedef struct az_iot_reconnect_policy_tag
     uint8_t  jitter_pct;               /* 0..100 */
 } az_iot_reconnect_policy_t;
 
+/* Recommended minimum size (bytes) for opts.csr_payload_buffer: enough to build
+ * the largest CSR request body {"id":...,"csr":<base64>,"replace":...} for the
+ * service CSR size limit. Apps that only use small keys (EC / RSA-2048) may size
+ * it smaller. */
+#define AZ_IOT_CSR_PAYLOAD_BUFFER_MIN 8448
+
 typedef struct az_iot_connection_client_options_tag
 {
     const char* host;                  /* hub host (or NULL when using DPS) */
@@ -46,6 +52,14 @@ typedef struct az_iot_connection_client_options_tag
     az_iot_certificate_provider_t* certificate_provider; /* required for X.509 auth */
     az_iot_reconnect_policy_t reconnect;
     az_iot_log_sink_t log;
+
+    /* Caller-provided scratch buffer used to BUILD the outbound CSR request
+     * payload - the DPS registration body when dps.request_operational_certificate
+     * is set, and the hub renewal body for az_iot_connection_client_send_csr().
+     * The SDK never allocates or declares a payload buffer of its own; provide
+     * one here (>= AZ_IOT_CSR_PAYLOAD_BUFFER_MIN to cover the service CSR size
+     * limit) when using either CSR feature. Leave AZ_SPAN_EMPTY otherwise. */
+    az_span csr_payload_buffer;
 
     /* DPS provisioning options.  When host is NULL and id_scope is set, the
      * connection client internally provisions via DPS before connecting to the

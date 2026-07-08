@@ -51,6 +51,7 @@ typedef struct fixture_tag
     az_iot_connection_client_t* client;
     az_iot_mqtt_factory_t*      factory;
     state_record_t                  rec;
+    uint8_t                     csr_buf[AZ_IOT_CSR_PAYLOAD_BUFFER_MIN];
 } fixture_t;
 
 static int setup(void** state)
@@ -62,6 +63,7 @@ static int setup(void** state)
     opts.host = "broker.example";
     opts.port = 8883;
     opts.client_id = "ut-device";
+    opts.csr_payload_buffer = az_span_create(fx->csr_buf, sizeof(fx->csr_buf));
     assert_int_equal(az_iot_connection_client_init(&fx->client_storage, &opts), AZ_IOT_OK);
     fx->client = &fx->client_storage;
     assert_int_equal(az_iot_connection_client_set_state_callback(fx->client, on_state, &fx->rec),
@@ -579,6 +581,7 @@ static void dps_csr_flow_sends_csr_and_stores_issued_chain(void** state)
     prov.base.vtable = &k_fake_csr_vtable;
 
     az_iot_connection_client_t client;
+    uint8_t csr_buf[AZ_IOT_CSR_PAYLOAD_BUFFER_MIN];
     az_iot_connection_client_options_t opts = {0};
     opts.host = NULL; /* DPS mode */
     opts.client_id = "ut-device";
@@ -586,6 +589,7 @@ static void dps_csr_flow_sends_csr_and_stores_issued_chain(void** state)
     opts.dps.registration_id = "ut-device";
     opts.dps.request_operational_certificate = true;
     opts.certificate_provider = &prov.base;
+    opts.csr_payload_buffer = az_span_create(csr_buf, sizeof(csr_buf));
     assert_int_equal(az_iot_connection_client_init(&client, &opts), AZ_IOT_OK);
 
     g_dps_op_cert_count = 0;
@@ -712,6 +716,29 @@ static az_iot_mock_mqtt_client_t* connect_fixture(fixture_t* fx)
     return m;
 }
 
+/* request_operational_certificate also requires opts.csr_payload_buffer (the SDK
+ * declares no payload buffer of its own). open() must reject when it is empty. */
+static void open_rejects_operational_cert_without_payload_buffer(void** state)
+{
+    (void)state;
+
+    fake_csr_provider_t prov = {0};
+    prov.base.vtable = &k_fake_csr_vtable;
+
+    az_iot_connection_client_t client;
+    az_iot_connection_client_options_t opts = {0};
+    opts.client_id = "ut-device";
+    opts.dps.id_scope = "0ne00000000";
+    opts.dps.registration_id = "ut-device";
+    opts.dps.request_operational_certificate = true;
+    opts.certificate_provider = &prov.base;
+    /* csr_payload_buffer intentionally left empty (AZ_SPAN_EMPTY). */
+    assert_int_equal(az_iot_connection_client_init(&client, &opts), AZ_IOT_OK);
+
+    assert_int_equal(az_iot_connection_client_open(&client), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+    az_iot_connection_client_deinit(&client);
+}
+
 static void send_csr_two_phase_delivers_issued_chain(void** state)
 {
     fixture_t* fx = *state;
@@ -832,6 +859,7 @@ int main(void)
         cmocka_unit_test_setup_teardown(inbound_message_routes_through_dispatch, setup, teardown),
         cmocka_unit_test(open_rejects_operational_cert_without_csr_provider),
         cmocka_unit_test(dps_csr_flow_sends_csr_and_stores_issued_chain),
+        cmocka_unit_test(open_rejects_operational_cert_without_payload_buffer),
         cmocka_unit_test_setup_teardown(send_csr_two_phase_delivers_issued_chain, setup, teardown),
         cmocka_unit_test_setup_teardown(send_csr_error_reports_service_code, setup, teardown),
         cmocka_unit_test_setup_teardown(send_csr_cancel_frees_slot, setup, teardown),

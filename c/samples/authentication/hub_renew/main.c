@@ -111,6 +111,8 @@ int main(void)
 
     az_iot_connection_client_options_t copts =
         az_iot_connection_client_options_get_default(config.id_scope, config.reg_id, &provider.base);
+    uint8_t csr_payload_buf[AZ_IOT_CSR_PAYLOAD_BUFFER_MIN];
+    copts.csr_payload_buffer = az_span_create(csr_payload_buf, sizeof(csr_payload_buf));
 
     if (az_iot_connection_client_init(&connection_client, &copts) != AZ_IOT_OK)
         goto cleanup;
