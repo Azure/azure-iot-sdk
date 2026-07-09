@@ -845,7 +845,14 @@ static void apply_deferred(az_iot_connection_client* c)
 /* When AZ_IOT_HUB_NEXT_MOCK_ENDPOINT is set (e.g. "localhost:8883"), skip DPS
  * entirely and connect to the mock Hub-Next using MQTT v5. The device identity
  * comes from AZ_IOT_DEVICE_ID (must match the cert CN in the mock). This
- * avoids the need for a real DPS service during local development. */
+ * avoids the need for a real DPS service during local development.
+ *
+ * ALLOCATION NOTE: the Windows branch uses _dupenv_s (getenv is deprecated
+ * under MSVC), which allocates; the buffer is freed in the same function, so
+ * nothing is retained. This is the only allocation in the core state machine
+ * and it is dev/test-only -- it runs solely when the mock env vars are set and
+ * never on a production connect path. The non-Windows branch uses getenv and
+ * does not allocate. */
 static bool mock_next_configured(void)
 {
 #ifdef _WIN32
