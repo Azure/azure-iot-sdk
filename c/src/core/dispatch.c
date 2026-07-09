@@ -6,15 +6,15 @@
 
 #include <string.h>
 
-void az_iot_dispatch_init(az_iot_dispatch_table_t* tbl)
+void az_iot_dispatch_init(az_iot_dispatch_table* tbl)
 {
     if (tbl) memset(tbl, 0, sizeof(*tbl));
 }
 
-az_iot_result_t az_iot_dispatch_register_prefix(
-    az_iot_dispatch_table_t* tbl,
+az_iot_result az_iot_dispatch_register_prefix(
+    az_iot_dispatch_table* tbl,
     const char* topic_prefix,
-    az_iot_inbound_handler_cb cb,
+    az_iot_inbound_handler_callback cb,
     void* user_ctx)
 {
     if (!tbl || !topic_prefix || !cb) return AZ_IOT_ERR_INVALID_ARG;
@@ -23,7 +23,7 @@ az_iot_result_t az_iot_dispatch_register_prefix(
     if (n + 1 > AZ_IOT_DISPATCH_PREFIX_MAX) return AZ_IOT_ERR_NOT_SUPPORTED;
 
     /* Find an empty slot. */
-    az_iot_dispatch_entry_t* slot = NULL;
+    az_iot_dispatch_entry* slot = NULL;
     for (size_t i = 0; i < AZ_IOT_MAX_INBOUND_HANDLERS; ++i)
     {
         if (!tbl->entries[i].in_use) { slot = &tbl->entries[i]; break; }
@@ -40,13 +40,13 @@ az_iot_result_t az_iot_dispatch_register_prefix(
 }
 
 size_t az_iot_dispatch_unregister_by_ctx(
-    az_iot_dispatch_table_t* tbl, void* user_ctx)
+    az_iot_dispatch_table* tbl, void* user_ctx)
 {
     if (!tbl) return 0;
     size_t removed = 0;
     for (size_t i = 0; i < AZ_IOT_MAX_INBOUND_HANDLERS; ++i)
     {
-        az_iot_dispatch_entry_t* e = &tbl->entries[i];
+        az_iot_dispatch_entry* e = &tbl->entries[i];
         if (e->in_use && e->user_ctx == user_ctx)
         {
             memset(e, 0, sizeof(*e));
@@ -58,17 +58,17 @@ size_t az_iot_dispatch_unregister_by_ctx(
 }
 
 bool az_iot_dispatch_route(
-    const az_iot_dispatch_table_t* tbl,
-    const az_iot_mqtt_message_t* msg)
+    const az_iot_dispatch_table* tbl,
+    const az_iot_mqtt_message* msg)
 {
     if (!tbl || !msg || !msg->topic) return false;
     size_t topic_len = strlen(msg->topic);
 
     /* Longest-prefix match: walk all entries, track the best one. */
-    const az_iot_dispatch_entry_t* best = NULL;
+    const az_iot_dispatch_entry* best = NULL;
     for (size_t i = 0; i < AZ_IOT_MAX_INBOUND_HANDLERS; ++i)
     {
-        const az_iot_dispatch_entry_t* e = &tbl->entries[i];
+        const az_iot_dispatch_entry* e = &tbl->entries[i];
         if (!e->in_use) continue;
         if (e->prefix_len > topic_len) continue;
         if (memcmp(msg->topic, e->prefix, e->prefix_len) != 0) continue;
@@ -79,7 +79,7 @@ bool az_iot_dispatch_route(
     return true;
 }
 
-size_t az_iot_dispatch_count(const az_iot_dispatch_table_t* tbl)
+size_t az_iot_dispatch_count(const az_iot_dispatch_table* tbl)
 {
     return tbl ? tbl->count : 0;
 }

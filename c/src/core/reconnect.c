@@ -35,7 +35,7 @@ static uint64_t xorshift64(uint64_t* s)
 }
 
 uint32_t az_iot_reconnect_delay_ms(
-    const az_iot_reconnect_policy_t* policy,
+    const az_iot_reconnect_policy* policy,
     uint32_t attempt,
     uint64_t* rng_state)
 {

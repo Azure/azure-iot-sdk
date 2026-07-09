@@ -34,9 +34,9 @@
 /* Inbound dispatch handlers                                                  */
 /* ─────────────────────────────────────────────────────────────────────────── */
 
-static void on_c2d_classic(void* user_ctx, const az_iot_mqtt_message_t* msg)
+static void on_c2d_classic(void* user_ctx, const az_iot_mqtt_message* msg)
 {
-    az_iot_c2d_client_t* c2d = (az_iot_c2d_client_t*)user_ctx;
+    az_iot_c2d_client* c2d = (az_iot_c2d_client*)user_ctx;
     if (!c2d || !msg || !CI(c2d).handler) return;
 
     /* In Classic, content-type is encoded in the topic properties segment.
@@ -45,9 +45,9 @@ static void on_c2d_classic(void* user_ctx, const az_iot_mqtt_message_t* msg)
     CI(c2d).handler(msg->payload, msg->payload_len, NULL, CI(c2d).handler_ctx);
 }
 
-static void on_c2d_next(void* user_ctx, const az_iot_mqtt_message_t* msg)
+static void on_c2d_next(void* user_ctx, const az_iot_mqtt_message* msg)
 {
-    az_iot_c2d_client_t* c2d = (az_iot_c2d_client_t*)user_ctx;
+    az_iot_c2d_client* c2d = (az_iot_c2d_client*)user_ctx;
     if (!c2d || !msg || !CI(c2d).handler) return;
 
     /* In Hub-Next, content-type comes as an MQTT v5 property. */
@@ -62,13 +62,13 @@ static void on_c2d_next(void* user_ctx, const az_iot_mqtt_message_t* msg)
 /* Public API                                                                 */
 /* ─────────────────────────────────────────────────────────────────────────── */
 
-az_iot_result_t az_iot_c2d_client_init(
-    az_iot_c2d_client_t* client,
-    az_iot_connection_client_t* conn)
+az_iot_result az_iot_c2d_client_init(
+    az_iot_c2d_client* client,
+    az_iot_connection_client* conn)
 {
     if (!client || !conn) return AZ_IOT_ERR_INVALID_ARG;
 
-    const az_iot_protocol_profile_t* profile = az_iot_connection_client__profile(conn);
+    const az_iot_protocol_profile* profile = az_iot_connection_client__profile(conn);
     if (!profile) return AZ_IOT_ERR_NOT_SUPPORTED;
 
     memset(client, 0, sizeof(*client));
@@ -93,7 +93,7 @@ az_iot_result_t az_iot_c2d_client_init(
             return AZ_IOT_ERR_INTERNAL;
         }
 
-        az_iot_result_t r = az_iot_connection_client__register_inbound_handler(
+        az_iot_result r = az_iot_connection_client__register_inbound_handler(
             conn, prefix, on_c2d_next, client);
         if (r != AZ_IOT_OK)
         {
@@ -135,7 +135,7 @@ az_iot_result_t az_iot_c2d_client_init(
             return AZ_IOT_ERR_INTERNAL;
         }
 
-        az_iot_result_t r = az_iot_connection_client__register_inbound_handler(
+        az_iot_result r = az_iot_connection_client__register_inbound_handler(
             conn, prefix, on_c2d_classic, client);
         if (r != AZ_IOT_OK)
         {
@@ -167,16 +167,16 @@ az_iot_result_t az_iot_c2d_client_init(
     return AZ_IOT_OK;
 }
 
-void az_iot_c2d_client_deinit(az_iot_c2d_client_t* client)
+void az_iot_c2d_client_destroy(az_iot_c2d_client* client)
 {
     if (!client) return;
     (void)az_iot_connection_client__unregister_inbound_handlers(CI(client).conn, client);
     memset(client, 0, sizeof(*client));
 }
 
-az_iot_result_t az_iot_c2d_client_set_handler(
-    az_iot_c2d_client_t* client,
-    az_iot_c2d_handler_cb cb,
+az_iot_result az_iot_c2d_client_set_handler(
+    az_iot_c2d_client* client,
+    az_iot_c2d_handler_callback cb,
     void* user_ctx)
 {
     if (!client) return AZ_IOT_ERR_INVALID_ARG;

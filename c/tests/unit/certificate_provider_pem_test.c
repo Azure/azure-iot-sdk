@@ -33,12 +33,12 @@ static const char k_ca_pem[] =
 
 #define PATH_BUF 256
 
-typedef struct fixture_tag
+typedef struct fixture
 {
     char cert_path[PATH_BUF];
     char key_path[PATH_BUF];
     char ca_path[PATH_BUF];
-} fixture_t;
+} fixture;
 
 /* Process-unique filename in the cwd, derived from PID + a monotonic counter
  * to avoid the tmpnam/tmpnam_s portability minefield. The cwd during ctest
@@ -63,7 +63,7 @@ static void make_temp(char* out_path, const char* tag, const void* bytes, size_t
 
 static int setup_files(void** state)
 {
-    fixture_t* f = calloc(1, sizeof(*f));
+    fixture* f = calloc(1, sizeof(*f));
     assert_non_null(f);
     make_temp(f->cert_path, "cert", k_cert_pem, sizeof(k_cert_pem) - 1);
     make_temp(f->key_path,  "key",  k_key_pem,  sizeof(k_key_pem)  - 1);
@@ -74,7 +74,7 @@ static int setup_files(void** state)
 
 static int teardown_files(void** state)
 {
-    fixture_t* f = *state;
+    fixture* f = *state;
     if (!f) return 0;
     remove(f->cert_path);
     remove(f->key_path);
@@ -86,10 +86,10 @@ static int teardown_files(void** state)
 static void test_create_rejects_null(void** state)
 {
     (void)state;
-    az_iot_certificate_provider_pem_t mgr;
+    az_iot_certificate_provider_pem mgr;
     assert_int_equal(AZ_IOT_ERR_INVALID_ARG,
         az_iot_certificate_provider_pem_init(&mgr, NULL));
-    az_iot_certificate_provider_pem_options_t opts = { 0 };
+    az_iot_certificate_provider_pem_options opts = { 0 };
     assert_int_equal(AZ_IOT_ERR_INVALID_ARG,
         az_iot_certificate_provider_pem_init(NULL, &opts));
 }
@@ -97,8 +97,8 @@ static void test_create_rejects_null(void** state)
 static void test_create_rejects_missing_required_paths(void** state)
 {
     (void)state;
-    az_iot_certificate_provider_pem_options_t opts = { 0 };
-    az_iot_certificate_provider_pem_t mgr;
+    az_iot_certificate_provider_pem_options opts = { 0 };
+    az_iot_certificate_provider_pem mgr;
     assert_int_equal(AZ_IOT_ERR_INVALID_ARG,
         az_iot_certificate_provider_pem_init(&mgr, &opts));
 
@@ -115,30 +115,30 @@ static void test_create_rejects_missing_required_paths(void** state)
 static void test_create_fails_on_missing_file(void** state)
 {
     (void)state;
-    az_iot_certificate_provider_pem_options_t opts = {
+    az_iot_certificate_provider_pem_options opts = {
         .client_cert_pem_path = "this-file-definitely-does-not-exist.pem",
         .client_key_pem_path  = "this-file-definitely-does-not-exist.pem",
     };
-    az_iot_certificate_provider_pem_t mgr;
+    az_iot_certificate_provider_pem mgr;
     assert_int_equal(AZ_IOT_ERR_NOT_INITIALIZED,
         az_iot_certificate_provider_pem_init(&mgr, &opts));
 }
 
 static void test_load_returns_file_contents(void** state)
 {
-    fixture_t* f = *state;
-    az_iot_certificate_provider_pem_options_t opts = {
+    fixture* f = *state;
+    az_iot_certificate_provider_pem_options opts = {
         .trusted_ca_pem_path  = f->ca_path,
         .client_cert_pem_path = f->cert_path,
         .client_key_pem_path  = f->key_path,
         .client_key_password  = "hunter2",
     };
-    az_iot_certificate_provider_pem_t mgr;
+    az_iot_certificate_provider_pem mgr;
     assert_int_equal(AZ_IOT_OK,
         az_iot_certificate_provider_pem_init(&mgr, &opts));
     assert_non_null(mgr.base.vtable);
 
-    az_iot_certificate_material_t mat;
+    az_iot_certificate_material mat;
     memset(&mat, 0, sizeof(mat));
     assert_int_equal(AZ_IOT_OK, mgr.base.vtable->load(&mgr.base, AZ_IOT_CRED_BOOTSTRAP, &mat));
 
@@ -156,28 +156,28 @@ static void test_load_returns_file_contents(void** state)
      * same content). */
     mgr.base.vtable->release(&mgr.base, &mat);
 
-    az_iot_certificate_material_t mat2;
+    az_iot_certificate_material mat2;
     memset(&mat2, 0, sizeof(mat2));
     assert_int_equal(AZ_IOT_OK, mgr.base.vtable->load(&mgr.base, AZ_IOT_CRED_BOOTSTRAP, &mat2));
     assert_string_equal(k_cert_pem, mat2.client_cert_pem);
     mgr.base.vtable->release(&mgr.base, &mat2);
 
-    az_iot_certificate_provider_pem_deinit(&mgr);
+    az_iot_certificate_provider_pem_destroy(&mgr);
 }
 
 static void test_load_without_optional_fields(void** state)
 {
-    fixture_t* f = *state;
-    az_iot_certificate_provider_pem_options_t opts = {
+    fixture* f = *state;
+    az_iot_certificate_provider_pem_options opts = {
         .client_cert_pem_path = f->cert_path,
         .client_key_pem_path  = f->key_path,
         /* trusted_ca_pem_path and client_key_password intentionally NULL */
     };
-    az_iot_certificate_provider_pem_t mgr;
+    az_iot_certificate_provider_pem mgr;
     assert_int_equal(AZ_IOT_OK,
         az_iot_certificate_provider_pem_init(&mgr, &opts));
 
-    az_iot_certificate_material_t mat;
+    az_iot_certificate_material mat;
     memset(&mat, 0, sizeof(mat));
     assert_int_equal(AZ_IOT_OK, mgr.base.vtable->load(&mgr.base, AZ_IOT_CRED_BOOTSTRAP, &mat));
     assert_null(mat.trusted_ca_pem);
@@ -185,7 +185,7 @@ static void test_load_without_optional_fields(void** state)
     assert_non_null(mat.client_cert_pem);
     assert_non_null(mat.client_key_pem);
 
-    az_iot_certificate_provider_pem_deinit(&mgr);
+    az_iot_certificate_provider_pem_destroy(&mgr);
 }
 
 int main(void)

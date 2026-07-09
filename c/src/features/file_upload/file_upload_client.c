@@ -58,7 +58,7 @@ static const char k_fu_response_topic_prefix[] = "$iothub/device/files/notificat
 /* helpers                                                                   */
 /* ------------------------------------------------------------------------- */
 
-static int find_pending_by_rid(az_iot_file_upload_client_t* c, uint32_t rid)
+static int find_pending_by_rid(az_iot_file_upload_client* c, uint32_t rid)
 {
     for (int i = 0; i < AZ_IOT_FILE_UPLOAD_MAX_PENDING; ++i)
     {
@@ -68,7 +68,7 @@ static int find_pending_by_rid(az_iot_file_upload_client_t* c, uint32_t rid)
     return -1;
 }
 
-static int alloc_pending(az_iot_file_upload_client_t* c)
+static int alloc_pending(az_iot_file_upload_client* c)
 {
     for (int i = 0; i < AZ_IOT_FILE_UPLOAD_MAX_PENDING; ++i)
     {
@@ -166,7 +166,7 @@ static int extract_status(const char* topic)
     return status;
 }
 
-static az_iot_result_t status_to_result(int status)
+static az_iot_result status_to_result(int status)
 {
     if (status >= 200 && status < 300) return AZ_IOT_OK;
     if (status == 404) return AZ_IOT_ERR_INVALID_ARG;
@@ -178,9 +178,9 @@ static az_iot_result_t status_to_result(int status)
 /* inbound dispatch handler                                                  */
 /* ------------------------------------------------------------------------- */
 
-static void on_file_upload_response(void* user_ctx, const az_iot_mqtt_message_t* msg)
+static void on_file_upload_response(void* user_ctx, const az_iot_mqtt_message* msg)
 {
-    az_iot_file_upload_client_t* fu = (az_iot_file_upload_client_t*)user_ctx;
+    az_iot_file_upload_client* fu = (az_iot_file_upload_client*)user_ctx;
     if (!fu || !msg || !msg->topic) return;
 
     uint32_t rid = 0;
@@ -190,11 +190,11 @@ static void on_file_upload_response(void* user_ctx, const az_iot_mqtt_message_t*
     if (idx < 0) return;
 
     int status = extract_status(msg->topic);
-    az_iot_result_t r = status_to_result(status);
+    az_iot_result r = status_to_result(status);
 
     if (FI(fu).pending[idx].kind == FU_PENDING_SAS_URI)
     {
-        az_iot_file_upload_sas_cb cb = FI(fu).pending[idx].cb.sas_cb;
+        az_iot_file_upload_sas_callback cb = FI(fu).pending[idx].cb.sas_cb;
         void* ctx = FI(fu).pending[idx].user_ctx;
         FI(fu).pending[idx].in_use = false;
         FI(fu).pending[idx].kind = FU_PENDING_NONE;
@@ -231,7 +231,7 @@ static void on_file_upload_response(void* user_ctx, const az_iot_mqtt_message_t*
     }
     else if (FI(fu).pending[idx].kind == FU_PENDING_NOTIFY)
     {
-        az_iot_file_upload_complete_cb cb = FI(fu).pending[idx].cb.complete_cb;
+        az_iot_file_upload_complete_callback cb = FI(fu).pending[idx].cb.complete_cb;
         void* ctx = FI(fu).pending[idx].user_ctx;
         FI(fu).pending[idx].in_use = false;
         FI(fu).pending[idx].kind = FU_PENDING_NONE;
@@ -248,13 +248,13 @@ static void on_file_upload_response(void* user_ctx, const az_iot_mqtt_message_t*
 /* public API                                                                */
 /* ------------------------------------------------------------------------- */
 
-az_iot_result_t az_iot_file_upload_client_init(
-    az_iot_file_upload_client_t* client,
-    az_iot_connection_client_t* conn)
+az_iot_result az_iot_file_upload_client_init(
+    az_iot_file_upload_client* client,
+    az_iot_connection_client* conn)
 {
     if (!client || !conn) return AZ_IOT_ERR_INVALID_ARG;
 
-    const az_iot_protocol_profile_t* profile = az_iot_connection_client__profile(conn);
+    const az_iot_protocol_profile* profile = az_iot_connection_client__profile(conn);
 
     /* File upload is Classic-only */
     if (profile && profile->flavor == AZ_IOT_HUB_FLAVOR_NEXT)
@@ -267,7 +267,7 @@ az_iot_result_t az_iot_file_upload_client_init(
     FI(client).next_rid = 1;
 
     /* Register inbound handler for file upload response topic */
-    az_iot_result_t r = az_iot_connection_client__register_inbound_handler(
+    az_iot_result r = az_iot_connection_client__register_inbound_handler(
         conn, k_fu_response_topic_prefix, on_file_upload_response, client);
     if (r != AZ_IOT_OK)
     {
@@ -296,17 +296,17 @@ az_iot_result_t az_iot_file_upload_client_init(
     return AZ_IOT_OK;
 }
 
-void az_iot_file_upload_client_deinit(az_iot_file_upload_client_t* client)
+void az_iot_file_upload_client_destroy(az_iot_file_upload_client* client)
 {
     if (!client) return;
     (void)az_iot_connection_client__unregister_inbound_handlers(FI(client).conn, client);
     memset(client, 0, sizeof(*client));
 }
 
-az_iot_result_t az_iot_file_upload_client_get_sas_uri(
-    az_iot_file_upload_client_t* client,
+az_iot_result az_iot_file_upload_client_get_sas_uri(
+    az_iot_file_upload_client* client,
     const char* blob_name,
-    az_iot_file_upload_sas_cb cb,
+    az_iot_file_upload_sas_callback cb,
     void* user_ctx)
 {
     if (!client || !blob_name || !cb) return AZ_IOT_ERR_INVALID_ARG;
@@ -335,13 +335,13 @@ az_iot_result_t az_iot_file_upload_client_get_sas_uri(
     FI(client).pending[idx].cb.sas_cb = cb;
     FI(client).pending[idx].user_ctx = user_ctx;
 
-    az_iot_mqtt_message_t out = {0};
+    az_iot_mqtt_message out = {0};
     out.topic = topic;
     out.payload = (const uint8_t*)payload;
     out.payload_len = (size_t)strlen(payload);
     out.qos = AZ_IOT_MQTT_QOS_1;
 
-    az_iot_result_t r = az_iot_connection_client__publish(
+    az_iot_result r = az_iot_connection_client__publish(
         FI(client).conn, &out, NULL, NULL);
     if (r != AZ_IOT_OK)
     {
@@ -351,11 +351,11 @@ az_iot_result_t az_iot_file_upload_client_get_sas_uri(
     return r;
 }
 
-az_iot_result_t az_iot_file_upload_client_notify_complete(
-    az_iot_file_upload_client_t* client,
+az_iot_result az_iot_file_upload_client_notify_complete(
+    az_iot_file_upload_client* client,
     const char* correlation_id,
     bool is_success,
-    az_iot_file_upload_complete_cb cb,
+    az_iot_file_upload_complete_callback cb,
     void* user_ctx)
 {
     if (!client || !correlation_id || !cb) return AZ_IOT_ERR_INVALID_ARG;
@@ -386,13 +386,13 @@ az_iot_result_t az_iot_file_upload_client_notify_complete(
     FI(client).pending[idx].cb.complete_cb = cb;
     FI(client).pending[idx].user_ctx = user_ctx;
 
-    az_iot_mqtt_message_t out = {0};
+    az_iot_mqtt_message out = {0};
     out.topic = topic;
     out.payload = (const uint8_t*)payload;
     out.payload_len = (size_t)strlen(payload);
     out.qos = AZ_IOT_MQTT_QOS_1;
 
-    az_iot_result_t r = az_iot_connection_client__publish(
+    az_iot_result r = az_iot_connection_client__publish(
         FI(client).conn, &out, NULL, NULL);
     if (r != AZ_IOT_OK)
     {

@@ -11,7 +11,7 @@
  *
  * This loader is the recommended starting point for X.509 device auth.
  * Production deployments that source cert material from a TPM/HSM/keyvault
- * should implement their own az_iot_certificate_provider_t with the same vtable
+ * should implement their own az_iot_certificate_provider with the same vtable
  * contract and pass it into the relevant client options.
  */
 #ifndef AZ_IOT_CERTIFICATE_PROVIDER_PEM_H
@@ -26,18 +26,18 @@
 extern "C" {
 #endif
 
-typedef struct az_iot_certificate_provider_pem_options_tag
+typedef struct az_iot_certificate_provider_pem_options
 {
     const char* trusted_ca_pem_path;     /* may be NULL                          */
     const char* client_cert_pem_path;    /* required                             */
     const char* client_key_pem_path;     /* required                             */
     const char* client_key_password;     /* may be NULL; copied verbatim         */
-} az_iot_certificate_provider_pem_options_t;
+} az_iot_certificate_provider_pem_options;
 
 /* Caller-owned PEM certificate provider struct. Fields are INTERNAL. */
-typedef struct az_iot_certificate_provider_pem_tag
+typedef struct az_iot_certificate_provider_pem
 {
-    az_iot_certificate_provider_t base;    /* MUST be first (vtable pointer) */
+    az_iot_certificate_provider base;    /* MUST be first (vtable pointer) */
     char* trusted_ca;
     char* client_cert;
     char* client_key;
@@ -46,19 +46,19 @@ typedef struct az_iot_certificate_provider_pem_tag
     char* cert_path;
     char* key_path;
     bool  loaded;
-} az_iot_certificate_provider_pem_t;
+} az_iot_certificate_provider_pem;
 
 /* Initialize a file-backed certificate provider. Reads cert/key files from
  * disk into heap buffers owned by the struct. Returns ERR_INVALID_ARG if
  * required paths are missing. The provider base pointer can be passed wherever
- * az_iot_certificate_provider_t* is expected. */
-az_iot_result_t az_iot_certificate_provider_pem_init(
-    az_iot_certificate_provider_pem_t* provider,
-    const az_iot_certificate_provider_pem_options_t* opts);
+ * az_iot_certificate_provider* is expected. */
+az_iot_result az_iot_certificate_provider_pem_init(
+    az_iot_certificate_provider_pem* provider,
+    const az_iot_certificate_provider_pem_options* opts);
 
 /* Release heap-owned file buffers. Does NOT free the struct itself. */
-void az_iot_certificate_provider_pem_deinit(
-    az_iot_certificate_provider_pem_t* provider);
+void az_iot_certificate_provider_pem_destroy(
+    az_iot_certificate_provider_pem* provider);
 
 #ifdef __cplusplus
 }

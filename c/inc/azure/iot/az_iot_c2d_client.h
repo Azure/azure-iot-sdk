@@ -24,21 +24,21 @@ extern "C" {
  *                      property in Classic). May be NULL if not provided.
  * @param user_ctx      User context passed to az_iot_c2d_client_set_handler().
  */
-typedef void (*az_iot_c2d_handler_cb)(
+typedef void (*az_iot_c2d_handler_callback)(
     const uint8_t* payload,
     size_t payload_len,
     const char* content_type,
     void* user_ctx);
 
-typedef struct az_iot_c2d_client_tag
+typedef struct az_iot_c2d_client
 {
     struct
     {
-        az_iot_connection_client_t* conn;
-        az_iot_c2d_handler_cb handler;
+        az_iot_connection_client* conn;
+        az_iot_c2d_handler_callback handler;
         void* handler_ctx;
     } _internal;
-} az_iot_c2d_client_t;
+} az_iot_c2d_client;
 
 /**
  * @brief Initialize the C2D client.
@@ -50,14 +50,14 @@ typedef struct az_iot_c2d_client_tag
  * @param conn    Connection client (must already be initialized).
  * @return AZ_IOT_OK on success.
  */
-az_iot_result_t az_iot_c2d_client_init(
-    az_iot_c2d_client_t* client,
-    az_iot_connection_client_t* conn);
+az_iot_result az_iot_c2d_client_init(
+    az_iot_c2d_client* client,
+    az_iot_connection_client* conn);
 
 /**
  * @brief Deinitialize the C2D client and unregister inbound handlers.
  */
-void az_iot_c2d_client_deinit(az_iot_c2d_client_t* client);
+void az_iot_c2d_client_destroy(az_iot_c2d_client* client);
 
 /**
  * @brief Set the handler for incoming C2D messages.
@@ -67,9 +67,9 @@ void az_iot_c2d_client_deinit(az_iot_c2d_client_t* client);
  * @param user_ctx  User context forwarded to the callback.
  * @return AZ_IOT_OK on success.
  */
-az_iot_result_t az_iot_c2d_client_set_handler(
-    az_iot_c2d_client_t* client,
-    az_iot_c2d_handler_cb cb,
+az_iot_result az_iot_c2d_client_set_handler(
+    az_iot_c2d_client* client,
+    az_iot_c2d_handler_callback cb,
     void* user_ctx);
 
 #ifdef __cplusplus

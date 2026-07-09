@@ -9,7 +9,7 @@
  *   MQTTAsync_createWithOptions() + MQTTAsync_connectOptions::MQTTVersion.
  * - Paho fires its callbacks from internal threads. We marshal those events
  *   into a thread-safe FIFO; process_loop() drains the FIFO on the calling
- *   thread and invokes the user's az_iot_mqtt_event_cb. This keeps the
+ *   thread and invokes the user's az_iot_mqtt_event_callback. This keeps the
  *   single-threaded contract of API A intact without requiring callers to
  *   know about Paho's threading model.
  * - TLS is intentionally NOT wired in this phase (PAHO_WITH_SSL=OFF in the
@@ -34,76 +34,76 @@
 
 #if defined(_WIN32)
 #  include <windows.h>
-typedef CRITICAL_SECTION paho_mutex_t;
-static void paho_mutex_init(paho_mutex_t* m)    { InitializeCriticalSection(m); }
-static void paho_mutex_destroy(paho_mutex_t* m) { DeleteCriticalSection(m); }
-static void paho_mutex_lock(paho_mutex_t* m)    { EnterCriticalSection(m); }
-static void paho_mutex_unlock(paho_mutex_t* m)  { LeaveCriticalSection(m); }
+typedef CRITICAL_SECTION paho_mutex;
+static void paho_mutex_init(paho_mutex* m)    { InitializeCriticalSection(m); }
+static void paho_mutex_destroy(paho_mutex* m) { DeleteCriticalSection(m); }
+static void paho_mutex_lock(paho_mutex* m)    { EnterCriticalSection(m); }
+static void paho_mutex_unlock(paho_mutex* m)  { LeaveCriticalSection(m); }
 #else
 #  include <pthread.h>
 #  include <time.h>
-typedef pthread_mutex_t paho_mutex_t;
-static void paho_mutex_init(paho_mutex_t* m)    { pthread_mutex_init(m, NULL); }
-static void paho_mutex_destroy(paho_mutex_t* m) { pthread_mutex_destroy(m); }
-static void paho_mutex_lock(paho_mutex_t* m)    { pthread_mutex_lock(m); }
-static void paho_mutex_unlock(paho_mutex_t* m)  { pthread_mutex_unlock(m); }
+typedef pthread_mutex_t paho_mutex;
+static void paho_mutex_init(paho_mutex* m)    { pthread_mutex_init(m, NULL); }
+static void paho_mutex_destroy(paho_mutex* m) { pthread_mutex_destroy(m); }
+static void paho_mutex_lock(paho_mutex* m)    { pthread_mutex_lock(m); }
+static void paho_mutex_unlock(paho_mutex* m)  { pthread_mutex_unlock(m); }
 #endif
 
 /* ------------------------------------------------------------------------- */
 /* event queue                                                               */
 /* ------------------------------------------------------------------------- */
 
-typedef struct queued_event_tag
+typedef struct queued_event
 {
-    az_iot_mqtt_event_t evt;
+    az_iot_mqtt_event evt;
     /* Backing storage for AZ_IOT_MQTT_EVT_MESSAGE events. */
-    az_iot_mqtt_message_t msg;
+    az_iot_mqtt_message msg;
     char*    topic;
     uint8_t* payload;
     size_t   payload_len;
     bool     has_message;
     /* v5 User Properties backing storage (heap-allocated). */
-    az_iot_mqtt_user_property_t* user_props;
+    az_iot_mqtt_user_property* user_props;
     size_t user_props_count;
     /* v5 Content Type (heap copy). */
     char* content_type;
     /* v5 Correlation Data (heap copy). */
     uint8_t* correlation_data;
     size_t   correlation_data_len;
-    struct queued_event_tag* next;
-} queued_event_t;
+    struct queued_event* next;
+} queued_event;
 
 /* ------------------------------------------------------------------------- */
 /* client state                                                              */
 /* ------------------------------------------------------------------------- */
 
-typedef struct paho_client_tag
+typedef struct paho_client
 {
-    az_iot_mqtt_client_t base;          /* MUST be first */
-    az_iot_mqtt_iface_t  iface_storage;
-    az_iot_mqtt_version_t version;
+    az_iot_mqtt_client base;          /* MUST be first */
+    az_iot_mqtt_iface  iface_storage;
+    az_iot_mqtt_version version;
 
     MQTTAsync paho;                  /* Paho async handle, NULL until connect() */
     char*     server_uri;            /* "tcp://host:port" */
     char*     client_id;
 
-    az_iot_mqtt_event_cb inbound_cb;
+    az_iot_mqtt_event_callback inbound_cb;
     void*                    inbound_ctx;
 
     /* Thread-safe event queue. Producer = Paho callback threads. Consumer =
      * process_loop() on the user thread. */
-    paho_mutex_t    q_mutex;
-    queued_event_t* q_head;
-    queued_event_t* q_tail;
-} paho_client_t;
+    paho_mutex    q_mutex;
+    queued_event* q_head;
+    queued_event* q_tail;
+} paho_client;
 
-static paho_client_t* paho_self(az_iot_mqtt_client_t* c) { return (paho_client_t*)c; }
+static paho_client* paho_self(az_iot_mqtt_client* c) { return (paho_client*)c; }
 
 /* ------------------------------------------------------------------------- */
 /* event queue helpers                                                       */
 /* ------------------------------------------------------------------------- */
 
-static void q_push(paho_client_t* m, queued_event_t* node)
+static void q_push(paho_client* m, queued_event* node)
 {
     node->next = NULL;
     paho_mutex_lock(&m->q_mutex);
@@ -113,10 +113,10 @@ static void q_push(paho_client_t* m, queued_event_t* node)
     paho_mutex_unlock(&m->q_mutex);
 }
 
-static queued_event_t* q_pop(paho_client_t* m)
+static queued_event* q_pop(paho_client* m)
 {
     paho_mutex_lock(&m->q_mutex);
-    queued_event_t* n = m->q_head;
+    queued_event* n = m->q_head;
     if (n)
     {
         m->q_head = n->next;
@@ -127,7 +127,7 @@ static queued_event_t* q_pop(paho_client_t* m)
     return n;
 }
 
-static void q_free(queued_event_t* n)
+static void q_free(queued_event* n)
 {
     if (!n) return;
     free(n->topic);
@@ -147,19 +147,19 @@ static void q_free(queued_event_t* n)
     free(n);
 }
 
-static void q_drain_all(paho_client_t* m)
+static void q_drain_all(paho_client* m)
 {
-    queued_event_t* n;
+    queued_event* n;
     while ((n = q_pop(m)) != NULL) q_free(n);
 }
 
 /* Allocate + enqueue a simple status event (no message payload). */
-static void enqueue_status(paho_client_t* m,
-                           az_iot_mqtt_event_kind_t kind,
-                           az_iot_result_t status,
+static void enqueue_status(paho_client* m,
+                           az_iot_mqtt_event_kind kind,
+                           az_iot_result status,
                            uint16_t packet_id)
 {
-    queued_event_t* n = (queued_event_t*)calloc(1, sizeof(*n));
+    queued_event* n = (queued_event*)calloc(1, sizeof(*n));
     if (!n) return;
     n->evt.kind = kind;
     n->evt.status = status;
@@ -169,7 +169,7 @@ static void enqueue_status(paho_client_t* m,
 
 /* Allocate + enqueue an inbound MESSAGE event. Topic + payload are deep-copied
  * so the queued event is self-contained. */
-static void enqueue_message(paho_client_t* m,
+static void enqueue_message(paho_client* m,
                             const char* topic,
                             int topic_len,
                             const void* payload,
@@ -177,7 +177,7 @@ static void enqueue_message(paho_client_t* m,
                             int qos,
                             int retain)
 {
-    queued_event_t* n = (queued_event_t*)calloc(1, sizeof(*n));
+    queued_event* n = (queued_event*)calloc(1, sizeof(*n));
     if (!n) return;
 
     /* Paho passes topic_len == 0 to mean "C string". */
@@ -199,7 +199,7 @@ static void enqueue_message(paho_client_t* m,
     n->msg.topic = n->topic;
     n->msg.payload = n->payload;
     n->msg.payload_len = n->payload_len;
-    n->msg.qos = (az_iot_mqtt_qos_t)qos;
+    n->msg.qos = (az_iot_mqtt_qos)qos;
     n->msg.retain = (retain != 0);
 
     n->evt.kind = AZ_IOT_MQTT_EVT_MESSAGE;
@@ -221,7 +221,7 @@ static char* dup_str_n(const char* src, int len)
 }
 
 /* Extract MQTT v5 properties from a Paho MQTTAsync_message into the queued event. */
-static void extract_v5_props(queued_event_t* n, MQTTAsync_message* msg)
+static void extract_v5_props(queued_event* n, MQTTAsync_message* msg)
 {
     MQTTProperties* props = &msg->properties;
     if (!props || props->count == 0) return;
@@ -259,7 +259,7 @@ static void extract_v5_props(queued_event_t* n, MQTTAsync_message* msg)
     int up_count = MQTTProperties_propertyCount(props, MQTTPROPERTY_CODE_USER_PROPERTY);
     if (up_count > 0)
     {
-        n->user_props = (az_iot_mqtt_user_property_t*)calloc((size_t)up_count, sizeof(az_iot_mqtt_user_property_t));
+        n->user_props = (az_iot_mqtt_user_property*)calloc((size_t)up_count, sizeof(az_iot_mqtt_user_property));
         if (n->user_props)
         {
             for (int i = 0; i < up_count; ++i)
@@ -278,7 +278,7 @@ static void extract_v5_props(queued_event_t* n, MQTTAsync_message* msg)
 
 static int paho_msg_arrived(void* context, char* topic, int topic_len, MQTTAsync_message* msg)
 {
-    paho_client_t* m = (paho_client_t*)context;
+    paho_client* m = (paho_client*)context;
     if (m && msg)
     {
         enqueue_message(m, topic, topic_len, msg->payload, msg->payloadlen, msg->qos, msg->retained);
@@ -286,7 +286,7 @@ static int paho_msg_arrived(void* context, char* topic, int topic_len, MQTTAsync
         if (m->version == AZ_IOT_MQTT_VERSION_5)
         {
             paho_mutex_lock(&m->q_mutex);
-            queued_event_t* tail = m->q_tail;
+            queued_event* tail = m->q_tail;
             paho_mutex_unlock(&m->q_mutex);
             if (tail && tail->has_message)
             {
@@ -301,7 +301,7 @@ static int paho_msg_arrived(void* context, char* topic, int topic_len, MQTTAsync
 
 static void paho_connection_lost(void* context, char* cause)
 {
-    paho_client_t* m = (paho_client_t*)context;
+    paho_client* m = (paho_client*)context;
     fprintf(stderr, "[paho] connection lost: %s\n", cause ? cause : "(unknown)");
     if (m) enqueue_status(m, AZ_IOT_MQTT_EVT_DISCONNECTED, AZ_IOT_OK, 0);
 }
@@ -337,13 +337,13 @@ static void paho_maybe_enable_trace(void)
 static void paho_connect_success(void* context, MQTTAsync_successData* response)
 {
     (void)response;
-    paho_client_t* m = (paho_client_t*)context;
+    paho_client* m = (paho_client*)context;
     if (m) enqueue_status(m, AZ_IOT_MQTT_EVT_CONNECTED, AZ_IOT_OK, 0);
 }
 
 static void paho_connect_failure(void* context, MQTTAsync_failureData* response)
 {
-    paho_client_t* m = (paho_client_t*)context;
+    paho_client* m = (paho_client*)context;
     if (response)
         fprintf(stderr, "[paho] connect failed: rc=%d msg=%s\n", response->code, response->message ? response->message : "(null)");
     else
@@ -353,28 +353,28 @@ static void paho_connect_failure(void* context, MQTTAsync_failureData* response)
 
 static void paho_subscribe_success(void* context, MQTTAsync_successData* response)
 {
-    paho_client_t* m = (paho_client_t*)context;
+    paho_client* m = (paho_client*)context;
     uint16_t pid = response ? (uint16_t)response->token : 0;
     if (m) enqueue_status(m, AZ_IOT_MQTT_EVT_SUBSCRIBE_ACK, AZ_IOT_OK, pid);
 }
 
 static void paho_subscribe_failure(void* context, MQTTAsync_failureData* response)
 {
-    paho_client_t* m = (paho_client_t*)context;
+    paho_client* m = (paho_client*)context;
     uint16_t pid = response ? (uint16_t)response->token : 0;
     if (m) enqueue_status(m, AZ_IOT_MQTT_EVT_SUBSCRIBE_ACK, AZ_IOT_ERR_MQTT, pid);
 }
 
 static void paho_publish_success(void* context, MQTTAsync_successData* response)
 {
-    paho_client_t* m = (paho_client_t*)context;
+    paho_client* m = (paho_client*)context;
     uint16_t pid = response ? (uint16_t)response->token : 0;
     if (m) enqueue_status(m, AZ_IOT_MQTT_EVT_PUBLISH_ACK, AZ_IOT_OK, pid);
 }
 
 static void paho_publish_failure(void* context, MQTTAsync_failureData* response)
 {
-    paho_client_t* m = (paho_client_t*)context;
+    paho_client* m = (paho_client*)context;
     uint16_t pid = response ? (uint16_t)response->token : 0;
     if (m) enqueue_status(m, AZ_IOT_MQTT_EVT_PUBLISH_ACK, AZ_IOT_ERR_MQTT, pid);
 }
@@ -384,10 +384,10 @@ static void paho_publish_failure(void* context, MQTTAsync_failureData* response)
  * MUST register these. */
 static void paho_connect_success5(void* context, MQTTAsync_successData5* response)
 {
-    paho_client_t* m = (paho_client_t*)context;
+    paho_client* m = (paho_client*)context;
     if (!m) return;
     /* Enqueue CONNECTED event with session_present from CONNACK. */
-    queued_event_t* n = (queued_event_t*)calloc(1, sizeof(*n));
+    queued_event* n = (queued_event*)calloc(1, sizeof(*n));
     if (!n) return;
     n->evt.kind = AZ_IOT_MQTT_EVT_CONNECTED;
     n->evt.status = AZ_IOT_OK;
@@ -397,7 +397,7 @@ static void paho_connect_success5(void* context, MQTTAsync_successData5* respons
 
 static void paho_connect_failure5(void* context, MQTTAsync_failureData5* response)
 {
-    paho_client_t* m = (paho_client_t*)context;
+    paho_client* m = (paho_client*)context;
     if (response)
         fprintf(stderr, "[paho] connect5 failed: rc=%d reason_code=%d msg=%s\n", response->code, (int)response->reasonCode, response->message ? response->message : "(null)");
     else
@@ -407,28 +407,28 @@ static void paho_connect_failure5(void* context, MQTTAsync_failureData5* respons
 
 static void paho_subscribe_success5(void* context, MQTTAsync_successData5* response)
 {
-    paho_client_t* m = (paho_client_t*)context;
+    paho_client* m = (paho_client*)context;
     uint16_t pid = response ? (uint16_t)response->token : 0;
     if (m) enqueue_status(m, AZ_IOT_MQTT_EVT_SUBSCRIBE_ACK, AZ_IOT_OK, pid);
 }
 
 static void paho_subscribe_failure5(void* context, MQTTAsync_failureData5* response)
 {
-    paho_client_t* m = (paho_client_t*)context;
+    paho_client* m = (paho_client*)context;
     uint16_t pid = response ? (uint16_t)response->token : 0;
     if (m) enqueue_status(m, AZ_IOT_MQTT_EVT_SUBSCRIBE_ACK, AZ_IOT_ERR_MQTT, pid);
 }
 
 static void paho_publish_success5(void* context, MQTTAsync_successData5* response)
 {
-    paho_client_t* m = (paho_client_t*)context;
+    paho_client* m = (paho_client*)context;
     uint16_t pid = response ? (uint16_t)response->token : 0;
     if (m) enqueue_status(m, AZ_IOT_MQTT_EVT_PUBLISH_ACK, AZ_IOT_OK, pid);
 }
 
 static void paho_publish_failure5(void* context, MQTTAsync_failureData5* response)
 {
-    paho_client_t* m = (paho_client_t*)context;
+    paho_client* m = (paho_client*)context;
     uint16_t pid = response ? (uint16_t)response->token : 0;
     if (m) enqueue_status(m, AZ_IOT_MQTT_EVT_PUBLISH_ACK, AZ_IOT_ERR_MQTT, pid);
 }
@@ -458,10 +458,10 @@ static char* build_server_uri(const char* host, uint16_t port, bool use_ssl)
     return uri;
 }
 
-static az_iot_result_t paho_iface_connect(az_iot_mqtt_client_t* self, const az_iot_mqtt_connect_options_t* opts)
+static az_iot_result paho_iface_connect(az_iot_mqtt_client* self, const az_iot_mqtt_connect_options* opts)
 {
     if (!self || !opts || !opts->host || !opts->client_id) return AZ_IOT_ERR_INVALID_ARG;
-    paho_client_t* m = paho_self(self);
+    paho_client* m = paho_self(self);
 
     /* Determine whether to use SSL based on TLS options being populated. */
     bool use_ssl = (opts->tls.client_cert_path != NULL);
@@ -590,10 +590,10 @@ static az_iot_result_t paho_iface_connect(az_iot_mqtt_client_t* self, const az_i
     return (rc == MQTTASYNC_SUCCESS) ? AZ_IOT_OK : AZ_IOT_ERR_MQTT;
 }
 
-static az_iot_result_t paho_iface_disconnect(az_iot_mqtt_client_t* self)
+static az_iot_result paho_iface_disconnect(az_iot_mqtt_client* self)
 {
     if (!self) return AZ_IOT_ERR_INVALID_ARG;
-    paho_client_t* m = paho_self(self);
+    paho_client* m = paho_self(self);
     if (!m->paho) return AZ_IOT_ERR_NOT_CONNECTED;
 
     MQTTAsync_disconnectOptions opts = MQTTAsync_disconnectOptions_initializer;
@@ -602,13 +602,13 @@ static az_iot_result_t paho_iface_disconnect(az_iot_mqtt_client_t* self)
     return (rc == MQTTASYNC_SUCCESS) ? AZ_IOT_OK : AZ_IOT_ERR_MQTT;
 }
 
-static az_iot_result_t paho_iface_subscribe(az_iot_mqtt_client_t* self,
+static az_iot_result paho_iface_subscribe(az_iot_mqtt_client* self,
                                                 const char* topic_filter,
-                                                az_iot_mqtt_qos_t qos,
+                                                az_iot_mqtt_qos qos,
                                                 uint16_t* out_packet_id)
 {
     if (!self || !topic_filter) return AZ_IOT_ERR_INVALID_ARG;
-    paho_client_t* m = paho_self(self);
+    paho_client* m = paho_self(self);
     if (!m->paho) return AZ_IOT_ERR_NOT_CONNECTED;
 
     MQTTAsync_responseOptions resp = MQTTAsync_responseOptions_initializer;
@@ -628,12 +628,12 @@ static az_iot_result_t paho_iface_subscribe(az_iot_mqtt_client_t* self,
     return (rc == MQTTASYNC_SUCCESS) ? AZ_IOT_OK : AZ_IOT_ERR_MQTT;
 }
 
-static az_iot_result_t paho_iface_unsubscribe(az_iot_mqtt_client_t* self,
+static az_iot_result paho_iface_unsubscribe(az_iot_mqtt_client* self,
                                                   const char* topic_filter,
                                                   uint16_t* out_packet_id)
 {
     if (!self || !topic_filter) return AZ_IOT_ERR_INVALID_ARG;
-    paho_client_t* m = paho_self(self);
+    paho_client* m = paho_self(self);
     if (!m->paho) return AZ_IOT_ERR_NOT_CONNECTED;
 
     MQTTAsync_responseOptions resp = MQTTAsync_responseOptions_initializer;
@@ -643,12 +643,12 @@ static az_iot_result_t paho_iface_unsubscribe(az_iot_mqtt_client_t* self,
     return (rc == MQTTASYNC_SUCCESS) ? AZ_IOT_OK : AZ_IOT_ERR_MQTT;
 }
 
-static az_iot_result_t paho_iface_publish(az_iot_mqtt_client_t* self,
-                                              const az_iot_mqtt_message_t* msg,
+static az_iot_result paho_iface_publish(az_iot_mqtt_client* self,
+                                              const az_iot_mqtt_message* msg,
                                               uint16_t* out_packet_id)
 {
     if (!self || !msg || !msg->topic) return AZ_IOT_ERR_INVALID_ARG;
-    paho_client_t* m = paho_self(self);
+    paho_client* m = paho_self(self);
     if (!m->paho) return AZ_IOT_ERR_NOT_CONNECTED;
 
     MQTTAsync_message paho_msg = MQTTAsync_message_initializer;
@@ -687,7 +687,7 @@ static az_iot_result_t paho_iface_publish(az_iot_mqtt_client_t* self,
         }
         for (size_t i = 0; i < msg->user_properties_count; ++i)
         {
-            const az_iot_mqtt_user_property_t* up = &msg->user_properties[i];
+            const az_iot_mqtt_user_property* up = &msg->user_properties[i];
             if (!up->key) continue;
             MQTTProperty p;
             p.identifier = MQTTPROPERTY_CODE_USER_PROPERTY;
@@ -722,14 +722,14 @@ static az_iot_result_t paho_iface_publish(az_iot_mqtt_client_t* self,
     return (rc == MQTTASYNC_SUCCESS) ? AZ_IOT_OK : AZ_IOT_ERR_MQTT;
 }
 
-static az_iot_result_t paho_iface_process_loop(az_iot_mqtt_client_t* self, uint32_t timeout_ms)
+static az_iot_result paho_iface_process_loop(az_iot_mqtt_client* self, uint32_t timeout_ms)
 {
     if (!self) return AZ_IOT_ERR_INVALID_ARG;
-    paho_client_t* m = paho_self(self);
+    paho_client* m = paho_self(self);
 
     /* Drain the queue. We dispatch in FIFO order; the inbound callback runs on
      * the caller's thread, satisfying the API A single-thread contract. */
-    queued_event_t* n;
+    queued_event* n;
     bool dispatched = false;
     while ((n = q_pop(m)) != NULL)
     {
@@ -752,18 +752,18 @@ static az_iot_result_t paho_iface_process_loop(az_iot_mqtt_client_t* self, uint3
     return AZ_IOT_OK;
 }
 
-static void paho_iface_set_inbound_cb(az_iot_mqtt_client_t* self, az_iot_mqtt_event_cb cb, void* user_ctx)
+static void paho_iface_set_inbound_cb(az_iot_mqtt_client* self, az_iot_mqtt_event_callback cb, void* user_ctx)
 {
     if (!self) return;
-    paho_client_t* m = paho_self(self);
+    paho_client* m = paho_self(self);
     m->inbound_cb  = cb;
     m->inbound_ctx = user_ctx;
 }
 
-static void paho_iface_destroy(az_iot_mqtt_client_t* self)
+static void paho_iface_destroy(az_iot_mqtt_client* self)
 {
     if (!self) return;
-    paho_client_t* m = paho_self(self);
+    paho_client* m = paho_self(self);
     if (m->paho)
     {
         if (MQTTAsync_isConnected(m->paho))
@@ -782,13 +782,13 @@ static void paho_iface_destroy(az_iot_mqtt_client_t* self)
     free(m);
 }
 
-static const az_iot_mqtt_iface_t s_iface_template_v3 = {
+static const az_iot_mqtt_iface s_iface_template_v3 = {
     AZ_IOT_MQTT_VERSION_3_1_1,
     paho_iface_connect, paho_iface_disconnect, paho_iface_subscribe, paho_iface_unsubscribe,
     paho_iface_publish, paho_iface_process_loop, paho_iface_set_inbound_cb, paho_iface_destroy
 };
 
-static const az_iot_mqtt_iface_t s_iface_template_v5 = {
+static const az_iot_mqtt_iface s_iface_template_v5 = {
     AZ_IOT_MQTT_VERSION_5,
     paho_iface_connect, paho_iface_disconnect, paho_iface_subscribe, paho_iface_unsubscribe,
     paho_iface_publish, paho_iface_process_loop, paho_iface_set_inbound_cb, paho_iface_destroy
@@ -798,16 +798,16 @@ static const az_iot_mqtt_iface_t s_iface_template_v5 = {
 /* factory                                                                   */
 /* ------------------------------------------------------------------------- */
 
-typedef struct paho_factory_state_tag
+typedef struct paho_factory_state
 {
-    az_iot_mqtt_factory_t public_;
-} paho_factory_state_t;
+    az_iot_mqtt_factory public_;
+} paho_factory_state;
 
-static az_iot_mqtt_client_t* paho_factory_create(void* factory_ctx)
+static az_iot_mqtt_client* paho_factory_create(void* factory_ctx)
 {
-    paho_factory_state_t* st = (paho_factory_state_t*)factory_ctx;
+    paho_factory_state* st = (paho_factory_state*)factory_ctx;
 
-    paho_client_t* m = (paho_client_t*)calloc(1, sizeof(*m));
+    paho_client* m = (paho_client*)calloc(1, sizeof(*m));
     if (!m) return NULL;
 
     m->version = st->public_.version;
@@ -819,9 +819,9 @@ static az_iot_mqtt_client_t* paho_factory_create(void* factory_ctx)
 
 static void paho_factory_cleanup(void* ctx) { free(ctx); }
 
-static az_iot_mqtt_factory_t* build_factory(az_iot_mqtt_version_t v)
+static az_iot_mqtt_factory* build_factory(az_iot_mqtt_version v)
 {
-    paho_factory_state_t* st = (paho_factory_state_t*)calloc(1, sizeof(*st));
+    paho_factory_state* st = (paho_factory_state*)calloc(1, sizeof(*st));
     if (!st) return NULL;
     st->public_.version = v;
     st->public_.create = paho_factory_create;
@@ -830,19 +830,19 @@ static az_iot_mqtt_factory_t* build_factory(az_iot_mqtt_version_t v)
     return &st->public_;
 }
 
-az_iot_mqtt_factory_t* az_iot_paho_factory_create_v3_1_1(void)
+az_iot_mqtt_factory* az_iot_paho_factory_create_v3_1_1(void)
 {
     return build_factory(AZ_IOT_MQTT_VERSION_3_1_1);
 }
 
-az_iot_mqtt_factory_t* az_iot_paho_factory_create_v5(void)
+az_iot_mqtt_factory* az_iot_paho_factory_create_v5(void)
 {
     return build_factory(AZ_IOT_MQTT_VERSION_5);
 }
 
-void az_iot_paho_factory_destroy(az_iot_mqtt_factory_t* factory)
+void az_iot_paho_factory_destroy(az_iot_mqtt_factory* factory)
 {
     if (!factory) return;
-    paho_factory_state_t* st = (paho_factory_state_t*)factory->factory_ctx;
+    paho_factory_state* st = (paho_factory_state*)factory->factory_ctx;
     free(st);
 }

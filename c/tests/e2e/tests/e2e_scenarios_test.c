@@ -59,14 +59,14 @@
 
 typedef struct
 {
-    e2e_device_t        dev;
+    e2e_device        dev;
     az_iot_e2e_service* service;
-} e2e_fixture_t;
+} e2e_fixture;
 
-static e2e_fixture_t g_fixture;
+static e2e_fixture g_fixture;
 
 /* Advance the device MQTT stack for a single slice. */
-static void device_do_work(e2e_fixture_t* fx, int ms)
+static void device_do_work(e2e_fixture* fx, int ms)
 {
     e2e_device_do_work(&fx->dev, ms);
 }
@@ -91,7 +91,7 @@ static int group_setup(void** state)
     memset(&g_fixture, 0, sizeof(g_fixture));
     srand((unsigned)time(NULL));
 
-    az_iot_log_sink_t log = az_iot_log_stderr_sink(AZ_IOT_LOG_ERROR);
+    az_iot_log_sink log = az_iot_log_stderr_sink(AZ_IOT_LOG_ERROR);
     az_iot_log_set_global_sink(&log);
 
     const char* svc_err = NULL;
@@ -115,7 +115,7 @@ static int group_setup(void** state)
 
 static int group_teardown(void** state)
 {
-    e2e_fixture_t* fx = (e2e_fixture_t*)*state;
+    e2e_fixture* fx = (e2e_fixture*)*state;
     if (fx == NULL)
     {
         return 0;
@@ -134,19 +134,19 @@ static int group_teardown(void** state)
 typedef struct
 {
     int             done;
-    az_iot_result_t status;
-} send_ctx_t;
+    az_iot_result status;
+} send_ctx;
 
-static void on_send_done(az_iot_result_t status, void* user_ctx)
+static void on_send_done(az_iot_result status, void* user_ctx)
 {
-    send_ctx_t* c = (send_ctx_t*)user_ctx;
+    send_ctx* c = (send_ctx*)user_ctx;
     c->status = status;
     c->done = 1;
 }
 
 static void test_telemetry(void** state)
 {
-    e2e_fixture_t* fx = (e2e_fixture_t*)*state;
+    e2e_fixture* fx = (e2e_fixture*)*state;
 
     char marker[64];
     make_marker(marker, sizeof(marker), "tele");
@@ -179,19 +179,19 @@ static void test_telemetry(void** state)
     }
     assert_true(watching);
 
-    az_iot_telemetry_client_t telemetry_client;
+    az_iot_telemetry_client telemetry_client;
     assert_int_equal(az_iot_telemetry_client_init(&telemetry_client, &fx->dev.conn), AZ_IOT_OK);
 
-    az_iot_telemetry_property_t props[] = {
+    az_iot_telemetry_property props[] = {
         { AZ_IOT_MSG_PROP_CONTENT_TYPE, "application/json" },
     };
-    az_iot_telemetry_message_t msg = { 0 };
+    az_iot_telemetry_message msg = { 0 };
     msg.payload          = (const uint8_t*)payload;
     msg.payload_len      = strlen(payload);
     msg.properties       = props;
     msg.properties_count = sizeof(props) / sizeof(props[0]);
 
-    send_ctx_t sc = { 0 };
+    send_ctx sc = { 0 };
     assert_int_equal(az_iot_telemetry_client_send(&telemetry_client, &msg, on_send_done, &sc), AZ_IOT_OK);
 
     bool seen = false;
@@ -215,7 +215,7 @@ static void test_telemetry(void** state)
         device_do_work(fx, E2E_PUMP_MS);
     }
 
-    az_iot_telemetry_client_deinit(&telemetry_client);
+    az_iot_telemetry_client_destroy(&telemetry_client);
     /* Release the AMQP/TLS connection before the next scenario (the Windows
      * reference transport allows only one TLS connection at a time). */
     az_iot_e2e_service_telemetry_watch_end(fx->service);
@@ -237,12 +237,12 @@ typedef struct
     char expected[64];
     bool received;
     bool matched;
-} c2d_ctx_t;
+} c2d_ctx;
 
 static void on_c2d(const uint8_t* payload, size_t payload_len, const char* content_type, void* user_ctx)
 {
     (void)content_type;
-    c2d_ctx_t* c = (c2d_ctx_t*)user_ctx;
+    c2d_ctx* c = (c2d_ctx*)user_ctx;
     size_t expected_len = strlen(c->expected);
     c->matched = (payload_len == expected_len) && (memcmp(payload, c->expected, expected_len) == 0);
     c->received = true;
@@ -250,12 +250,12 @@ static void on_c2d(const uint8_t* payload, size_t payload_len, const char* conte
 
 static void test_c2d(void** state)
 {
-    e2e_fixture_t* fx = (e2e_fixture_t*)*state;
+    e2e_fixture* fx = (e2e_fixture*)*state;
 
-    c2d_ctx_t cctx = { 0 };
+    c2d_ctx cctx = { 0 };
     make_marker(cctx.expected, sizeof(cctx.expected), "c2d");
 
-    az_iot_c2d_client_t c2d;
+    az_iot_c2d_client c2d;
     assert_int_equal(az_iot_c2d_client_init(&c2d, &fx->dev.conn), AZ_IOT_OK);
     assert_int_equal(az_iot_c2d_client_set_handler(&c2d, on_c2d, &cctx), AZ_IOT_OK);
 
@@ -294,7 +294,7 @@ static void test_c2d(void** state)
         device_do_work(fx, E2E_PUMP_MS);
     }
 
-    az_iot_c2d_client_deinit(&c2d);
+    az_iot_c2d_client_destroy(&c2d);
 
     assert_true(cctx.received);
     assert_true(cctx.matched);
@@ -303,7 +303,7 @@ static void test_c2d(void** state)
 /* ---- direct method -------------------------------------------------------- */
 
 static void on_method(
-    az_iot_direct_method_request_t* request,
+    az_iot_direct_method_request* request,
     const char*                     method_name,
     const uint8_t*                  payload,
     size_t                          payload_len,
@@ -317,9 +317,9 @@ static void on_method(
 
 static void test_direct_method(void** state)
 {
-    e2e_fixture_t* fx = (e2e_fixture_t*)*state;
+    e2e_fixture* fx = (e2e_fixture*)*state;
 
-    az_iot_direct_method_client_t dm;
+    az_iot_direct_method_client dm;
     assert_int_equal(az_iot_direct_method_client_init(&dm, &fx->dev.conn), AZ_IOT_OK);
     assert_int_equal(az_iot_direct_method_client_set_handler(&dm, on_method, NULL), AZ_IOT_OK);
 
@@ -344,7 +344,7 @@ static void test_direct_method(void** state)
         }
     }
 
-    az_iot_direct_method_client_deinit(&dm);
+    az_iot_direct_method_client_destroy(&dm);
 
     if (rc != 1)
     {
@@ -362,12 +362,12 @@ typedef struct
     char expected[64];
     bool received;
     bool matched;
-} desired_ctx_t;
+} desired_ctx;
 
 static void on_desired(const uint8_t* patch, size_t patch_len, uint64_t version, void* user_ctx)
 {
     (void)version;
-    desired_ctx_t* d = (desired_ctx_t*)user_ctx;
+    desired_ctx* d = (desired_ctx*)user_ctx;
     /* patch is not NUL-terminated; scan the delivered range for the marker. */
     size_t needle_len = strlen(d->expected);
     if (patch_len >= needle_len)
@@ -387,18 +387,18 @@ static void on_desired(const uint8_t* patch, size_t patch_len, uint64_t version,
 typedef struct
 {
     int             done;
-    az_iot_result_t status;
-} patch_ack_ctx_t;
+    az_iot_result status;
+} patch_ack_ctx;
 
-static void on_patch_ack(az_iot_result_t status, void* user_ctx)
+static void on_patch_ack(az_iot_result status, void* user_ctx)
 {
-    patch_ack_ctx_t* p = (patch_ack_ctx_t*)user_ctx;
+    patch_ack_ctx* p = (patch_ack_ctx*)user_ctx;
     p->status = status;
     p->done = 1;
 }
 
 /* Drive an in-flight REST request to completion while keeping the device serviced. */
-static int drive_request(e2e_fixture_t* fx, int* status, char* resp, size_t resp_size, int timeout_s)
+static int drive_request(e2e_fixture* fx, int* status, char* resp, size_t resp_size, int timeout_s)
 {
     int rc = 0;
     time_t start = time(NULL);
@@ -416,13 +416,13 @@ static int drive_request(e2e_fixture_t* fx, int* status, char* resp, size_t resp
 
 static void test_twin(void** state)
 {
-    e2e_fixture_t* fx = (e2e_fixture_t*)*state;
+    e2e_fixture* fx = (e2e_fixture*)*state;
 
-    az_iot_twin_client_t twin;
+    az_iot_twin_client twin;
     assert_int_equal(az_iot_twin_client_init(&twin, &fx->dev.conn), AZ_IOT_OK);
 
     /* --- desired: cloud patches, device observes ------------------------- */
-    desired_ctx_t dctx = { 0 };
+    desired_ctx dctx = { 0 };
     make_marker(dctx.expected, sizeof(dctx.expected), "desired");
     assert_int_equal(az_iot_twin_client_subscribe_desired(&twin, on_desired, &dctx), AZ_IOT_OK);
 
@@ -463,7 +463,7 @@ static void test_twin(void** state)
     char reported_json[128];
     snprintf(reported_json, sizeof(reported_json), "{\"rep\":\"%s\"}", reported_marker);
 
-    patch_ack_ctx_t pack = { 0 };
+    patch_ack_ctx pack = { 0 };
     assert_int_equal(
         az_iot_twin_client_patch_reported(
             &twin, (const uint8_t*)reported_json, strlen(reported_json), on_patch_ack, &pack),
@@ -506,7 +506,7 @@ static void test_twin(void** state)
     }
     assert_true(reported_seen);
 
-    az_iot_twin_client_deinit(&twin);
+    az_iot_twin_client_destroy(&twin);
 }
 
 int main(void)

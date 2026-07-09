@@ -97,7 +97,7 @@ typedef struct
 {
   uint32_t delivery_id; ///< The delivery-id assigned to this transfer. Library-managed.
   az_span delivery_tag; ///< The caller's delivery tag. Library-managed.
-  void* on_complete; ///< Completion callback (an #az_amqp_link_send_complete_fn). Library-managed.
+  void* on_complete; ///< Completion callback (an #az_amqp_link_send_complete_callback). Library-managed.
   void* user_data; ///< Completion callback context. Library-managed.
   bool in_use; ///< Whether this slot is occupied. Library-managed.
 } az_amqp_link_unsettled;
@@ -110,7 +110,7 @@ typedef struct
  *
  * @param[in] error __[nullable]__ Actionable detail when entering an error/remote-detach state.
  */
-typedef void (*az_amqp_link_state_changed_fn)(
+typedef void (*az_amqp_link_state_changed_callback)(
     az_amqp_link* link,
     az_amqp_link_state previous_state,
     az_amqp_link_state current_state,
@@ -123,7 +123,7 @@ typedef void (*az_amqp_link_state_changed_fn)(
  * @param[in] delivery_tag The tag supplied to #az_amqp_link_send (aliases caller memory).
  * @param[in] delivery_state The full terminal state (outcome + rejected error / modified flags).
  */
-typedef void (*az_amqp_link_send_complete_fn)(
+typedef void (*az_amqp_link_send_complete_callback)(
     az_amqp_link* link,
     az_span delivery_tag,
     az_amqp_delivery_state const* delivery_state,
@@ -132,7 +132,7 @@ typedef void (*az_amqp_link_send_complete_fn)(
 /**
  * @brief (Sender role) Invoked when the peer grants the link additional credit to send.
  */
-typedef void (*az_amqp_link_credit_available_fn)(
+typedef void (*az_amqp_link_credit_available_callback)(
     az_amqp_link* link,
     uint32_t available_credit,
     void* user_data);
@@ -143,7 +143,7 @@ typedef void (*az_amqp_link_credit_available_fn)(
  * @details @p message and @p delivery view the link's reassembly buffer and are valid only for the
  * duration of the callback; copy out anything you need to retain, then settle the delivery.
  */
-typedef void (*az_amqp_link_message_received_fn)(
+typedef void (*az_amqp_link_message_received_callback)(
     az_amqp_link* link,
     az_amqp_message const* message,
     az_amqp_delivery const* delivery,
@@ -188,11 +188,11 @@ struct az_amqp_link
   az_amqp_session* session; ///< The owning session. Library-managed.
   az_amqp_link_options options; ///< The effective options.
   az_amqp_link_state state; ///< Current lifecycle state. Library-managed.
-  az_amqp_link_state_changed_fn state_changed; ///< State callback. Library-managed.
+  az_amqp_link_state_changed_callback state_changed; ///< State callback. Library-managed.
   void* state_changed_user_data; ///< State callback context. Library-managed.
-  az_amqp_link_credit_available_fn credit_available; ///< (Sender) credit callback. Library-managed.
+  az_amqp_link_credit_available_callback credit_available; ///< (Sender) credit callback. Library-managed.
   void* credit_available_user_data; ///< (Sender) credit callback context. Library-managed.
-  az_amqp_link_message_received_fn message_received; ///< (Receiver) message callback. Library-managed.
+  az_amqp_link_message_received_callback message_received; ///< (Receiver) message callback. Library-managed.
   void* message_received_user_data; ///< (Receiver) message callback context. Library-managed.
   uint32_t handle; ///< The local link handle. Library-managed.
   uint32_t remote_handle; ///< The peer's link handle. Library-managed.
@@ -275,17 +275,17 @@ AZ_NODISCARD az_result az_amqp_link_init(
 /// @{
 void az_amqp_link_set_state_callback(
     az_amqp_link* link,
-    az_amqp_link_state_changed_fn state_changed,
+    az_amqp_link_state_changed_callback state_changed,
     void* user_data);
 /// (Sender role) Invoked when the peer grants credit.
 void az_amqp_link_set_credit_callback(
     az_amqp_link* link,
-    az_amqp_link_credit_available_fn credit_available,
+    az_amqp_link_credit_available_callback credit_available,
     void* user_data);
 /// (Receiver role) Invoked for each received message.
 void az_amqp_link_set_message_callback(
     az_amqp_link* link,
-    az_amqp_link_message_received_fn message_received,
+    az_amqp_link_message_received_callback message_received,
     void* user_data);
 /// @}
 
@@ -339,7 +339,7 @@ AZ_NODISCARD az_result az_amqp_link_send(
     az_amqp_link* link,
     az_amqp_message const* message,
     az_span delivery_tag,
-    az_amqp_link_send_complete_fn on_complete,
+    az_amqp_link_send_complete_callback on_complete,
     void* user_data);
 
 /**

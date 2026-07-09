@@ -4,7 +4,7 @@
 /* SPDX-License-Identifier: MIT */
 /* OpenSSL-backed "managed" certificate provider (design decision D5).
  *
- * A ready-to-use az_iot_certificate_provider_t for CSR-based enrollment. It:
+ * A ready-to-use az_iot_certificate_provider for CSR-based enrollment. It:
  *   - authenticates to DPS with a caller-supplied X.509 bootstrap identity;
  *   - owns an operational private key (loaded from disk if present, else
  *     generated on first use and persisted);
@@ -35,9 +35,9 @@ typedef enum
 {
     AZ_IOT_MANAGED_KEY_EC_P256 = 0,   /* default: ECDSA P-256 */
     AZ_IOT_MANAGED_KEY_RSA_2048       /* RSA 2048 */
-} az_iot_certificate_managed_key_type_t;
+} az_iot_certificate_managed_key_type;
 
-typedef struct az_iot_certificate_provider_managed_options_tag
+typedef struct az_iot_certificate_provider_managed_options
 {
     /* Bootstrap X.509 identity that authenticates to DPS. Both required. */
     const char* bootstrap_cert_pem_path;    /* required */
@@ -51,13 +51,13 @@ typedef struct az_iot_certificate_provider_managed_options_tag
      * store_issued_certificate(); read back on load() and on restart. Required. */
     const char* operational_cert_pem_path;  /* required */
     /* Key type used only when generating a new operational key. */
-    az_iot_certificate_managed_key_type_t key_type;
-} az_iot_certificate_provider_managed_options_t;
+    az_iot_certificate_managed_key_type key_type;
+} az_iot_certificate_provider_managed_options;
 
 /* Caller-owned managed certificate provider struct. Fields are INTERNAL. */
-typedef struct az_iot_certificate_provider_managed_tag
+typedef struct az_iot_certificate_provider_managed
 {
-    az_iot_certificate_provider_t base;    /* MUST be first (vtable pointer) */
+    az_iot_certificate_provider base;    /* MUST be first (vtable pointer) */
     char* bootstrap_cert_path;
     char* bootstrap_key_path;
     char* trusted_ca_path;
@@ -67,21 +67,21 @@ typedef struct az_iot_certificate_provider_managed_tag
     int   key_type;
     bool  has_operational;                 /* issued cert present on disk */
     bool  loaded;
-} az_iot_certificate_provider_managed_t;
+} az_iot_certificate_provider_managed;
 
 /* Initialize the managed provider. Loads or generates the operational key and
  * detects any previously-persisted operational certificate. Returns
  * ERR_INVALID_ARG if a required path is missing, or ERR_INTERNAL on OpenSSL
  * failure. The provider base pointer can be passed wherever
- * az_iot_certificate_provider_t* is expected. */
-az_iot_result_t az_iot_certificate_provider_managed_init(
-    az_iot_certificate_provider_managed_t* provider,
-    const az_iot_certificate_provider_managed_options_t* opts);
+ * az_iot_certificate_provider* is expected. */
+az_iot_result az_iot_certificate_provider_managed_init(
+    az_iot_certificate_provider_managed* provider,
+    const az_iot_certificate_provider_managed_options* opts);
 
 /* Release the operational key and heap-owned paths. Does NOT free the struct
  * itself and does NOT delete any files on disk. */
-void az_iot_certificate_provider_managed_deinit(
-    az_iot_certificate_provider_managed_t* provider);
+void az_iot_certificate_provider_managed_destroy(
+    az_iot_certificate_provider_managed* provider);
 
 #ifdef __cplusplus
 }

@@ -15,19 +15,19 @@
 extern "C" {
 #endif
 
-typedef struct az_iot_cert_embedded_tag
+typedef struct az_iot_cert_embedded
 {
-    az_iot_certificate_provider_t base;  /* MUST be first */
+    az_iot_certificate_provider base;  /* MUST be first */
     const char* ca_pem;
     const char* cert_pem;
     const char* key_pem;
-} az_iot_cert_embedded_t;
+} az_iot_cert_embedded;
 
 /* Initialize the provider with NUL-terminated PEM strings. @p ca_pem may be NULL
  * to fall back to the platform CA bundle. The strings are referenced, not
  * copied, so they must outlive the provider. */
 void az_iot_cert_embedded_init(
-    az_iot_cert_embedded_t* provider,
+    az_iot_cert_embedded* provider,
     const char* ca_pem,
     const char* cert_pem,
     const char* key_pem);

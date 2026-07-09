@@ -45,7 +45,7 @@ static char* env_dup(const char* name)
 #endif
 }
 
-static int device_config_load(e2e_device_t* dev)
+static int device_config_load(e2e_device* dev)
 {
     dev->id_scope        = env_dup("AZ_IOT_DPS_ID_SCOPE");
     dev->reg_id          = env_dup("AZ_IOT_DPS_REGISTRATION_ID");
@@ -67,25 +67,25 @@ static int device_config_load(e2e_device_t* dev)
     return 0;
 }
 
-static void on_conn_state(az_iot_connection_state_t s, az_iot_result_t reason, void* user_ctx)
+static void on_conn_state(az_iot_connection_state s, az_iot_result reason, void* user_ctx)
 {
     (void)reason;
-    ((e2e_device_t*)user_ctx)->conn_state = s;
+    ((e2e_device*)user_ctx)->conn_state = s;
 }
 
-void e2e_device_do_work(e2e_device_t* dev, int ms)
+void e2e_device_do_work(e2e_device* dev, int ms)
 {
     (void)az_iot_connection_client_do_work(&dev->conn, ms);
 }
 
-int e2e_device_connect(e2e_device_t* dev)
+int e2e_device_connect(e2e_device* dev)
 {
     if (device_config_load(dev) != 0)
     {
         return 1;
     }
 
-    az_iot_certificate_provider_pem_options_t pem = {
+    az_iot_certificate_provider_pem_options pem = {
         .trusted_ca_pem_path  = dev->ca,
         .client_cert_pem_path = dev->cert,
         .client_key_pem_path  = dev->key,
@@ -97,7 +97,7 @@ int e2e_device_connect(e2e_device_t* dev)
     }
     dev->certs_ok = true;
 
-    az_iot_connection_client_options_t copts =
+    az_iot_connection_client_options copts =
         az_iot_connection_client_options_get_default(dev->id_scope, dev->reg_id, &dev->certs.base);
     if (dev->global_endpoint != NULL)
     {
@@ -144,7 +144,7 @@ int e2e_device_connect(e2e_device_t* dev)
     return 0;
 }
 
-void e2e_device_disconnect(e2e_device_t* dev)
+void e2e_device_disconnect(e2e_device* dev)
 {
     if (dev->conn_ok)
     {
@@ -153,12 +153,12 @@ void e2e_device_disconnect(e2e_device_t* dev)
         {
             e2e_device_do_work(dev, 50);
         }
-        az_iot_connection_client_deinit(&dev->conn);
+        az_iot_connection_client_destroy(&dev->conn);
         dev->conn_ok = false;
     }
     if (dev->certs_ok)
     {
-        az_iot_certificate_provider_pem_deinit(&dev->certs);
+        az_iot_certificate_provider_pem_destroy(&dev->certs);
         dev->certs_ok = false;
     }
     free(dev->id_scope);

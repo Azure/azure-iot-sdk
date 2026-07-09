@@ -4,7 +4,7 @@
 /* SPDX-License-Identifier: MIT */
 #include "azure/iot/az_iot_result.h"
 
-const char* az_iot_result_to_string(az_iot_result_t r)
+const char* az_iot_result_to_string(az_iot_result r)
 {
     switch (r)
     {

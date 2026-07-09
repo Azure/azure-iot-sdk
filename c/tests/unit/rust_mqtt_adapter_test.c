@@ -25,64 +25,64 @@
 /* ------------------------------------------------------------------------- */
 /* Fake Rust client + FFI implementation. */
 
-typedef struct fake_client_tag
+typedef struct fake_client
 {
     int  connected;
     int  destroyed;
     int  process_loop_calls;
-    az_iot_mqtt_event_cb cb;
+    az_iot_mqtt_event_callback cb;
     void* cb_ctx;
-} fake_client_t;
+} fake_client;
 
-static fake_client_t* g_last_client;
+static fake_client* g_last_client;
 static int            g_create_calls;
 static int            g_destroy_calls;
 
-static az_iot_rust_mqtt_client* fake_create(az_iot_mqtt_version_t v, az_iot_mqtt_role_t r)
+static az_iot_rust_mqtt_client* fake_create(az_iot_mqtt_version v, az_iot_mqtt_role r)
 {
     assert_int_equal(v, AZ_IOT_MQTT_VERSION_5);
     assert_int_equal(r, AZ_IOT_MQTT_ROLE_HUB_NEXT);
     g_create_calls++;
-    fake_client_t* fc = (fake_client_t*)test_calloc(1, sizeof(*fc));
+    fake_client* fc = (fake_client*)test_calloc(1, sizeof(*fc));
     g_last_client = fc;
     return (az_iot_rust_mqtt_client*)fc;
 }
 
 static void fake_destroy(az_iot_rust_mqtt_client* c)
 {
-    fake_client_t* fc = (fake_client_t*)c;
+    fake_client* fc = (fake_client*)c;
     fc->destroyed = 1;
     g_destroy_calls++;
     test_free(fc);
 }
 
-static az_iot_result_t fake_connect(az_iot_rust_mqtt_client* c,
-                                        const az_iot_mqtt_connect_options_t* opts)
+static az_iot_result fake_connect(az_iot_rust_mqtt_client* c,
+                                        const az_iot_mqtt_connect_options* opts)
 {
     (void)opts;
-    ((fake_client_t*)c)->connected = 1;
+    ((fake_client*)c)->connected = 1;
     return AZ_IOT_OK;
 }
-static az_iot_result_t fake_disconnect(az_iot_rust_mqtt_client* c)
+static az_iot_result fake_disconnect(az_iot_rust_mqtt_client* c)
 {
-    ((fake_client_t*)c)->connected = 0;
+    ((fake_client*)c)->connected = 0;
     return AZ_IOT_OK;
 }
-static az_iot_result_t fake_subscribe(az_iot_rust_mqtt_client* c, const char* t,
-                                          az_iot_mqtt_qos_t q, uint16_t* p)
+static az_iot_result fake_subscribe(az_iot_rust_mqtt_client* c, const char* t,
+                                          az_iot_mqtt_qos q, uint16_t* p)
 { (void)c; (void)t; (void)q; if (p) *p = 7; return AZ_IOT_OK; }
-static az_iot_result_t fake_unsubscribe(az_iot_rust_mqtt_client* c, const char* t,
+static az_iot_result fake_unsubscribe(az_iot_rust_mqtt_client* c, const char* t,
                                             uint16_t* p)
 { (void)c; (void)t; if (p) *p = 8; return AZ_IOT_OK; }
-static az_iot_result_t fake_publish(az_iot_rust_mqtt_client* c,
-                                        const az_iot_mqtt_message_t* m, uint16_t* p)
+static az_iot_result fake_publish(az_iot_rust_mqtt_client* c,
+                                        const az_iot_mqtt_message* m, uint16_t* p)
 { (void)c; (void)m; if (p) *p = 9; return AZ_IOT_OK; }
-static az_iot_result_t fake_process_loop(az_iot_rust_mqtt_client* c, uint32_t t)
-{ (void)t; ((fake_client_t*)c)->process_loop_calls++; return AZ_IOT_OK; }
-static void fake_set_inbound_cb(az_iot_rust_mqtt_client* c, az_iot_mqtt_event_cb cb, void* u)
-{ ((fake_client_t*)c)->cb = cb; ((fake_client_t*)c)->cb_ctx = u; }
+static az_iot_result fake_process_loop(az_iot_rust_mqtt_client* c, uint32_t t)
+{ (void)t; ((fake_client*)c)->process_loop_calls++; return AZ_IOT_OK; }
+static void fake_set_inbound_cb(az_iot_rust_mqtt_client* c, az_iot_mqtt_event_callback cb, void* u)
+{ ((fake_client*)c)->cb = cb; ((fake_client*)c)->cb_ctx = u; }
 
-static const az_iot_rust_mqtt_ffi_t k_fake_ffi = {
+static const az_iot_rust_mqtt_ffi k_fake_ffi = {
     .create         = fake_create,
     .destroy        = fake_destroy,
     .connect        = fake_connect,
@@ -110,14 +110,14 @@ static int reset_fixture(void** s)
 static void test_factory_returns_null_when_uninstalled(void** s)
 {
     (void)s;
-    az_iot_mqtt_factory_t* f = az_iot_rust_mqtt_factory_create_v5();
+    az_iot_mqtt_factory* f = az_iot_rust_mqtt_factory_create_v5();
     assert_null(f);
 }
 
 static void test_install_rejects_partial_table(void** s)
 {
     (void)s;
-    az_iot_rust_mqtt_ffi_t bad = k_fake_ffi;
+    az_iot_rust_mqtt_ffi bad = k_fake_ffi;
     bad.publish = NULL;
     assert_int_equal(AZ_IOT_ERR_INVALID_ARG, az_iot_rust_mqtt_install(&bad));
     /* Factory still NULL after a rejected install. */
@@ -129,7 +129,7 @@ static void test_install_then_factory_then_dispatch(void** s)
     (void)s;
     assert_int_equal(AZ_IOT_OK, az_iot_rust_mqtt_install(&k_fake_ffi));
 
-    az_iot_mqtt_factory_t* f = az_iot_rust_mqtt_factory_create_v5();
+    az_iot_mqtt_factory* f = az_iot_rust_mqtt_factory_create_v5();
     assert_non_null(f);
     assert_int_equal(f->version, AZ_IOT_MQTT_VERSION_5);
     assert_true((f->supported_roles_mask & (1u << AZ_IOT_MQTT_ROLE_HUB_NEXT)) != 0);
@@ -138,12 +138,12 @@ static void test_install_then_factory_then_dispatch(void** s)
     assert_null(f->create(f->factory_ctx, AZ_IOT_MQTT_ROLE_DPS));
     assert_int_equal(g_create_calls, 0);
 
-    az_iot_mqtt_client_t* c = f->create(f->factory_ctx, AZ_IOT_MQTT_ROLE_HUB_NEXT);
+    az_iot_mqtt_client* c = f->create(f->factory_ctx, AZ_IOT_MQTT_ROLE_HUB_NEXT);
     assert_non_null(c);
     assert_int_equal(g_create_calls, 1);
     assert_non_null(g_last_client);
 
-    az_iot_mqtt_connect_options_t opts = { .host = "h", .port = 8883, .client_id = "id" };
+    az_iot_mqtt_connect_options opts = { .host = "h", .port = 8883, .client_id = "id" };
     assert_int_equal(AZ_IOT_OK, c->iface->connect(c, &opts));
     assert_int_equal(g_last_client->connected, 1);
 
@@ -151,7 +151,7 @@ static void test_install_then_factory_then_dispatch(void** s)
     assert_int_equal(AZ_IOT_OK, c->iface->subscribe(c, "t/#", AZ_IOT_MQTT_QOS_1, &pid));
     assert_int_equal(pid, 7);
 
-    az_iot_mqtt_message_t m = { .topic = "t/x", .payload = (const uint8_t*)"x", .payload_len = 1,
+    az_iot_mqtt_message m = { .topic = "t/x", .payload = (const uint8_t*)"x", .payload_len = 1,
                                     .qos = AZ_IOT_MQTT_QOS_0 };
     pid = 0;
     assert_int_equal(AZ_IOT_OK, c->iface->publish(c, &m, &pid));

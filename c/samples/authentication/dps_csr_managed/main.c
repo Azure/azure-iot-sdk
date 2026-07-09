@@ -35,29 +35,29 @@
 
 typedef struct
 {
-    az_iot_connection_state_t conn_state;
+    az_iot_connection_state conn_state;
     int  issued;
-} user_context_t;
+} user_context;
 
-static void on_conn_state(az_iot_connection_state_t s, az_iot_result_t reason, void* user_ctx)
+static void on_conn_state(az_iot_connection_state s, az_iot_result reason, void* user_ctx)
 {
     (void)reason;
-    ((user_context_t*)user_ctx)->conn_state = s;
+    ((user_context*)user_ctx)->conn_state = s;
 }
 
-static void on_operational_cert(const az_iot_issued_certificate_t* issued, void* user_ctx)
+static void on_operational_cert(const az_iot_issued_certificate* issued, void* user_ctx)
 {
-    ((user_context_t*)user_ctx)->issued = 1;
+    ((user_context*)user_ctx)->issued = 1;
     fprintf(stderr, "[dps_csr] operational certificate issued: %zu cert(s) in chain\n",
         issued ? issued->count : (size_t)0);
 }
 
 int main(void)
 {
-    az_iot_log_sink_t log = az_iot_log_stderr_sink(AZ_IOT_LOG_ERROR);
+    az_iot_log_sink log = az_iot_log_stderr_sink(AZ_IOT_LOG_ERROR);
     az_iot_log_set_global_sink(&log);
 
-    sample_config_t config = {0};
+    sample_config config = {0};
     if (sample_config_load(&config) != 0)
     {
         return 1;
@@ -67,11 +67,11 @@ int main(void)
     char* op_cert = sample_env_dup("AZ_IOT_OPERATIONAL_CERT", "operational_cert.pem");
 
     int rc = 1;
-    user_context_t user_ctx = {0};
-    az_iot_certificate_provider_managed_t provider = {0};
-    az_iot_connection_client_t connection_client = {0};
+    user_context user_ctx = {0};
+    az_iot_certificate_provider_managed provider = {0};
+    az_iot_connection_client connection_client = {0};
 
-    az_iot_certificate_provider_managed_options_t mopts = {
+    az_iot_certificate_provider_managed_options mopts = {
         .bootstrap_cert_pem_path   = config.cert,
         .bootstrap_key_pem_path    = config.key,
         .trusted_ca_pem_path       = config.ca,
@@ -85,7 +85,7 @@ int main(void)
         goto cleanup;
     }
 
-    az_iot_connection_client_options_t copts =
+    az_iot_connection_client_options copts =
         az_iot_connection_client_options_get_default(config.id_scope, config.reg_id, &provider.base);
     uint8_t csr_payload_buf[AZ_IOT_CSR_PAYLOAD_BUFFER_MIN];
     copts.csr_payload_buffer = az_span_create(csr_payload_buf, sizeof(csr_payload_buf));
@@ -123,8 +123,8 @@ int main(void)
         (void)az_iot_connection_client_do_work(&connection_client, 50);
 
 cleanup:
-    az_iot_connection_client_deinit(&connection_client);
-    az_iot_certificate_provider_managed_deinit(&provider);
+    az_iot_connection_client_destroy(&connection_client);
+    az_iot_certificate_provider_managed_destroy(&provider);
     free(op_key);
     free(op_cert);
     sample_config_release(&config);

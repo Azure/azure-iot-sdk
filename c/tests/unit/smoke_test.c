@@ -36,8 +36,8 @@ static void result_to_string_known_codes(void** state)
 static void connection_client_init_rejects_null(void** state)
 {
     (void)state;
-    az_iot_connection_client_t c;
-    az_iot_connection_client_options_t opts = {0};
+    az_iot_connection_client c;
+    az_iot_connection_client_options opts = {0};
     assert_int_equal(az_iot_connection_client_init(NULL, &opts), AZ_IOT_ERR_INVALID_ARG);
     assert_int_equal(az_iot_connection_client_init(&c, NULL), AZ_IOT_ERR_INVALID_ARG);
 }
@@ -45,11 +45,11 @@ static void connection_client_init_rejects_null(void** state)
 static void connection_client_init_deinit_roundtrip(void** state)
 {
     (void)state;
-    az_iot_connection_client_options_t opts = {0};
+    az_iot_connection_client_options opts = {0};
     opts.client_id = "ut-device";
-    az_iot_connection_client_t c;
+    az_iot_connection_client c;
     assert_int_equal(az_iot_connection_client_init(&c, &opts), AZ_IOT_OK);
-    az_iot_connection_client_deinit(&c);
+    az_iot_connection_client_destroy(&c);
 }
 
 int main(void)

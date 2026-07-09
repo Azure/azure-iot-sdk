@@ -5,7 +5,7 @@
 /* Public entry points for the Rust MQTT adapter shell (Phase 6 / P0 stub).
  *
  * The C side ships a pure-C wrapper that adapts the `az_iot_mqtt_iface`
- * vtable to a small FFI surface (`az_iot_rust_mqtt_ffi_t`). At runtime
+ * vtable to a small FFI surface (`az_iot_rust_mqtt_ffi`). At runtime
  * the Rust cdylib is expected to call `az_iot_rust_mqtt_install()` from
  * its initialization to register its function pointers; until that happens,
  * the factory returns NULL and the adapter is effectively absent.
@@ -33,22 +33,22 @@ extern "C" {
  * thread safety and for not calling back into az_iot from inside any of
  * these calls except the inbound event callback the core registers via
  * `set_inbound_cb`. */
-typedef struct az_iot_rust_mqtt_ffi_tag az_iot_rust_mqtt_ffi_t;
+typedef struct az_iot_rust_mqtt_ffi az_iot_rust_mqtt_ffi;
 
 /* Install a Rust-side FFI table. Pass NULL to uninstall (e.g. on Rust
  * shutdown). Returns AZ_IOT_OK on success, AZ_IOT_ERR_INVALID_ARG if
  * any pointer in the table is NULL. After a successful install, the v5
  * factory will start producing live clients; before that it returns NULL. */
-az_iot_result_t az_iot_rust_mqtt_install(const az_iot_rust_mqtt_ffi_t* table);
+az_iot_result az_iot_rust_mqtt_install(const az_iot_rust_mqtt_ffi* table);
 
 /* Build a factory that produces MQTTv5 Rust clients. Returns NULL until a
  * non-NULL FFI table has been installed via `_install()`. Lifetime matches
  * the Paho factory: caller owns the returned pointer and must call
  * `az_iot_rust_mqtt_factory_destroy()` on it. */
-az_iot_mqtt_factory_t* az_iot_rust_mqtt_factory_create_v5(void);
+az_iot_mqtt_factory* az_iot_rust_mqtt_factory_create_v5(void);
 
 /* Destroy a factory produced above. Does not destroy clients handed out. */
-void az_iot_rust_mqtt_factory_destroy(az_iot_mqtt_factory_t* factory);
+void az_iot_rust_mqtt_factory_destroy(az_iot_mqtt_factory* factory);
 
 #ifdef __cplusplus
 }

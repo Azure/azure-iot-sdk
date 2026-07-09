@@ -31,9 +31,9 @@
  * forwarded application properties). Generous for telemetry use cases. */
 #define AZ_IOT_TELEMETRY_MAX_USER_PROPS 16
 
-az_iot_result_t az_iot_telemetry_client_init(
-    az_iot_telemetry_client_t* client,
-    az_iot_connection_client_t* conn)
+az_iot_result az_iot_telemetry_client_init(
+    az_iot_telemetry_client* client,
+    az_iot_connection_client* conn)
 {
     if (client == NULL || conn == NULL)
     {
@@ -45,7 +45,7 @@ az_iot_result_t az_iot_telemetry_client_init(
     return AZ_IOT_OK;
 }
 
-void az_iot_telemetry_client_deinit(az_iot_telemetry_client_t* client)
+void az_iot_telemetry_client_destroy(az_iot_telemetry_client* client)
 {
     if (client == NULL) return;
     memset(client, 0, sizeof(*client));
@@ -68,10 +68,10 @@ static bool append_str(char* dst, size_t cap, size_t* off, const char* src)
 
 /* Build "devices/<device_id>/messages/events/" + optional "<bag>" property
  * string into out_topic. Classic (MQTT v3.1.1) path only. */
-static az_iot_result_t build_topic_classic(
-    const az_iot_protocol_profile_t* profile,
+static az_iot_result build_topic_classic(
+    const az_iot_protocol_profile* profile,
     const char* device_id,
-    const az_iot_telemetry_message_t* msg,
+    const az_iot_telemetry_message* msg,
     char* out_topic, size_t cap)
 {
     /* The profile's d2c_publish_topic_template is the canonical reference
@@ -114,7 +114,7 @@ static az_iot_result_t build_topic_classic(
     bool first = true;
     for (size_t i = 0; i < msg->properties_count; ++i)
     {
-        const az_iot_telemetry_property_t* p = &msg->properties[i];
+        const az_iot_telemetry_property* p = &msg->properties[i];
         if (p->key == NULL || p->key[0] == '\0')
         {
             continue;
@@ -144,8 +144,8 @@ static az_iot_result_t build_topic_classic(
 }
 
 /* Build the flat topic "ih/<device_id>/srv/telemetry" for Next (MQTT v5). */
-static az_iot_result_t build_topic_next(
-    const az_iot_protocol_profile_t* profile,
+static az_iot_result build_topic_next(
+    const az_iot_protocol_profile* profile,
     const char* device_id,
     char* out_topic, size_t cap)
 {
@@ -192,22 +192,22 @@ static az_iot_result_t build_topic_next(
 /* -----------------------------------------------------------------------
  * telemetry_send_classic — Classic IoT Hub path (MQTT v3.1.1, topic-encoded)
  * ----------------------------------------------------------------------- */
-static az_iot_result_t telemetry_send_classic(
-    az_iot_telemetry_client_t* client,
-    const az_iot_protocol_profile_t* profile,
+static az_iot_result telemetry_send_classic(
+    az_iot_telemetry_client* client,
+    const az_iot_protocol_profile* profile,
     const char* device_id,
-    const az_iot_telemetry_message_t* msg,
-    az_iot_telemetry_send_cb cb,
+    const az_iot_telemetry_message* msg,
+    az_iot_telemetry_send_callback cb,
     void* user_ctx)
 {
     char topic[AZ_IOT_TELEMETRY_TOPIC_MAX];
-    az_iot_result_t r = build_topic_classic(profile, device_id, msg, topic, sizeof(topic));
+    az_iot_result r = build_topic_classic(profile, device_id, msg, topic, sizeof(topic));
     if (r != AZ_IOT_OK)
     {
         return r;
     }
 
-    az_iot_mqtt_message_t out = { 0 };
+    az_iot_mqtt_message out = { 0 };
     out.topic = topic;
     out.payload = msg->payload;
     out.payload_len = msg->payload_len;
@@ -219,16 +219,16 @@ static az_iot_result_t telemetry_send_classic(
 /* -----------------------------------------------------------------------
  * telemetry_send_next — IoT Hub Next path (MQTT v5, flat topic + User Props)
  * ----------------------------------------------------------------------- */
-static az_iot_result_t telemetry_send_next(
-    az_iot_telemetry_client_t* client,
-    const az_iot_protocol_profile_t* profile,
+static az_iot_result telemetry_send_next(
+    az_iot_telemetry_client* client,
+    const az_iot_protocol_profile* profile,
     const char* device_id,
-    const az_iot_telemetry_message_t* msg,
-    az_iot_telemetry_send_cb cb,
+    const az_iot_telemetry_message* msg,
+    az_iot_telemetry_send_callback cb,
     void* user_ctx)
 {
     char topic[AZ_IOT_TELEMETRY_TOPIC_MAX];
-    az_iot_result_t r = build_topic_next(profile, device_id, topic, sizeof(topic));
+    az_iot_result r = build_topic_next(profile, device_id, topic, sizeof(topic));
     if (r != AZ_IOT_OK)
     {
         return r;
@@ -236,7 +236,7 @@ static az_iot_result_t telemetry_send_next(
 
     /* MQTT v5 User Properties carry the message type and content-type.
      * Application properties from the caller are also forwarded. */
-    az_iot_mqtt_user_property_t user_props[AZ_IOT_TELEMETRY_MAX_USER_PROPS];
+    az_iot_mqtt_user_property user_props[AZ_IOT_TELEMETRY_MAX_USER_PROPS];
     size_t up_count = 0;
 
     /* Required: type identifier */
@@ -263,7 +263,7 @@ static az_iot_result_t telemetry_send_next(
     /* Forward remaining application properties as User Properties */
     for (size_t i = 0; i < msg->properties_count && up_count < AZ_IOT_TELEMETRY_MAX_USER_PROPS; ++i)
     {
-        const az_iot_telemetry_property_t* p = &msg->properties[i];
+        const az_iot_telemetry_property* p = &msg->properties[i];
         if (p->key == NULL || p->key[0] == '\0') continue;
         /* Skip system properties ($.ct handled above) in user-prop forwarding */
         if (p->key[0] == '$' && p->key[1] == '.') continue;
@@ -272,7 +272,7 @@ static az_iot_result_t telemetry_send_next(
         up_count++;
     }
 
-    az_iot_mqtt_message_t out = { 0 };
+    az_iot_mqtt_message out = { 0 };
     out.topic = topic;
     out.payload = msg->payload;
     out.payload_len = msg->payload_len;
@@ -285,10 +285,10 @@ static az_iot_result_t telemetry_send_next(
     return az_iot_connection_client__publish(client->_internal.conn, &out, cb, user_ctx);
 }
 
-az_iot_result_t az_iot_telemetry_client_send(
-    az_iot_telemetry_client_t* client,
-    const az_iot_telemetry_message_t* msg,
-    az_iot_telemetry_send_cb cb,
+az_iot_result az_iot_telemetry_client_send(
+    az_iot_telemetry_client* client,
+    const az_iot_telemetry_message* msg,
+    az_iot_telemetry_send_callback cb,
     void* user_ctx)
 {
     if (client == NULL || msg == NULL)
@@ -301,7 +301,7 @@ az_iot_result_t az_iot_telemetry_client_send(
         return AZ_IOT_ERR_INVALID_ARG;
     }
 
-    const az_iot_protocol_profile_t* profile =
+    const az_iot_protocol_profile* profile =
         az_iot_connection_client__profile(client->_internal.conn);
     if (profile == NULL)
     {

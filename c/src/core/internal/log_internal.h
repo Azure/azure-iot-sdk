@@ -8,7 +8,7 @@
 #include "azure/iot/az_iot_log.h"
 
 /* Internal dispatch — call through the registered global sink. */
-void az_iot_log_emit(az_iot_log_level_t level, const char* file, int line, const char* msg);
+void az_iot_log_emit(az_iot_log_level level, const char* file, int line, const char* msg);
 
 #define AZ_IOT_LOG_ERROR(msg) \
     az_iot_log_emit(AZ_IOT_LOG_ERROR, __FILE__, __LINE__, (msg))

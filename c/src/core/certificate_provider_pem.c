@@ -11,7 +11,7 @@
 #include "internal/log_internal.h"
 
 /* Read entire file into a NUL-terminated heap string. Caller frees. */
-static az_iot_result_t read_file_content(const char* path, char** out)
+static az_iot_result read_file_content(const char* path, char** out)
 {
     *out = NULL;
     FILE* f = fopen(path, "rb");
@@ -31,10 +31,10 @@ static az_iot_result_t read_file_content(const char* path, char** out)
     return AZ_IOT_OK;
 }
 
-static az_iot_result_t pem_load(
-    az_iot_certificate_provider_t* self, az_iot_cert_role_t role, az_iot_certificate_material_t* out)
+static az_iot_result pem_load(
+    az_iot_certificate_provider* self, az_iot_cert_role role, az_iot_certificate_material* out)
 {
-    az_iot_certificate_provider_pem_t* m = (az_iot_certificate_provider_pem_t*)self;
+    az_iot_certificate_provider_pem* m = (az_iot_certificate_provider_pem*)self;
     (void)role; /* static-cert provider: same material for bootstrap and operational */
     if (!m || !out) return AZ_IOT_ERR_INVALID_ARG;
     if (!m->loaded) return AZ_IOT_ERR_NOT_INITIALIZED;
@@ -52,17 +52,17 @@ static az_iot_result_t pem_load(
 }
 
 static void pem_release(
-    az_iot_certificate_provider_t* self, az_iot_certificate_material_t* material)
+    az_iot_certificate_provider* self, az_iot_certificate_material* material)
 {
     (void)self; (void)material;
 }
 
-static void pem_deinit_vtable(az_iot_certificate_provider_t* self)
+static void pem_deinit_vtable(az_iot_certificate_provider* self)
 {
-    az_iot_certificate_provider_pem_deinit((az_iot_certificate_provider_pem_t*)self);
+    az_iot_certificate_provider_pem_destroy((az_iot_certificate_provider_pem*)self);
 }
 
-static const az_iot_certificate_provider_vtable_t s_pem_vtable = {
+static const az_iot_certificate_provider_vtable s_pem_vtable = {
     .version = AZ_IOT_CERTIFICATE_PROVIDER_VTABLE_VERSION,
     .load    = pem_load,
     .release = pem_release,
@@ -79,8 +79,8 @@ static char* dup_str(const char* s)
     return out;
 }
 
-void az_iot_certificate_provider_pem_deinit(
-    az_iot_certificate_provider_pem_t* provider)
+void az_iot_certificate_provider_pem_destroy(
+    az_iot_certificate_provider_pem* provider)
 {
     if (!provider) return;
     free(provider->trusted_ca);
@@ -93,9 +93,9 @@ void az_iot_certificate_provider_pem_deinit(
     memset(provider, 0, sizeof(*provider));
 }
 
-az_iot_result_t az_iot_certificate_provider_pem_init(
-    az_iot_certificate_provider_pem_t* provider,
-    const az_iot_certificate_provider_pem_options_t* opts)
+az_iot_result az_iot_certificate_provider_pem_init(
+    az_iot_certificate_provider_pem* provider,
+    const az_iot_certificate_provider_pem_options* opts)
 {
     if (!provider || !opts)
     {
@@ -112,31 +112,31 @@ az_iot_result_t az_iot_certificate_provider_pem_init(
     memset(provider, 0, sizeof(*provider));
     provider->base.vtable = &s_pem_vtable;
 
-    az_iot_result_t r = read_file_content(opts->client_cert_pem_path, &provider->client_cert);
-    if (r != AZ_IOT_OK) { AZ_IOT_LOG_ERROR("certificate_provider_pem_init: failed to read client cert file"); az_iot_certificate_provider_pem_deinit(provider); return r; }
+    az_iot_result r = read_file_content(opts->client_cert_pem_path, &provider->client_cert);
+    if (r != AZ_IOT_OK) { AZ_IOT_LOG_ERROR("certificate_provider_pem_init: failed to read client cert file"); az_iot_certificate_provider_pem_destroy(provider); return r; }
 
     r = read_file_content(opts->client_key_pem_path, &provider->client_key);
-    if (r != AZ_IOT_OK) { AZ_IOT_LOG_ERROR("certificate_provider_pem_init: failed to read client key file"); az_iot_certificate_provider_pem_deinit(provider); return r; }
+    if (r != AZ_IOT_OK) { AZ_IOT_LOG_ERROR("certificate_provider_pem_init: failed to read client key file"); az_iot_certificate_provider_pem_destroy(provider); return r; }
 
     if (opts->trusted_ca_pem_path && opts->trusted_ca_pem_path[0])
     {
         r = read_file_content(opts->trusted_ca_pem_path, &provider->trusted_ca);
-        if (r != AZ_IOT_OK) { az_iot_certificate_provider_pem_deinit(provider); return r; }
+        if (r != AZ_IOT_OK) { az_iot_certificate_provider_pem_destroy(provider); return r; }
     }
 
     if (opts->client_key_password)
     {
         provider->key_password = dup_str(opts->client_key_password);
-        if (!provider->key_password) { az_iot_certificate_provider_pem_deinit(provider); return AZ_IOT_ERR_OUT_OF_MEMORY; }
+        if (!provider->key_password) { az_iot_certificate_provider_pem_destroy(provider); return AZ_IOT_ERR_OUT_OF_MEMORY; }
     }
 
     provider->cert_path = dup_str(opts->client_cert_pem_path);
     provider->key_path  = dup_str(opts->client_key_pem_path);
-    if (!provider->cert_path || !provider->key_path) { az_iot_certificate_provider_pem_deinit(provider); return AZ_IOT_ERR_OUT_OF_MEMORY; }
+    if (!provider->cert_path || !provider->key_path) { az_iot_certificate_provider_pem_destroy(provider); return AZ_IOT_ERR_OUT_OF_MEMORY; }
     if (opts->trusted_ca_pem_path && opts->trusted_ca_pem_path[0])
     {
         provider->ca_path = dup_str(opts->trusted_ca_pem_path);
-        if (!provider->ca_path) { az_iot_certificate_provider_pem_deinit(provider); return AZ_IOT_ERR_OUT_OF_MEMORY; }
+        if (!provider->ca_path) { az_iot_certificate_provider_pem_destroy(provider); return AZ_IOT_ERR_OUT_OF_MEMORY; }
     }
 
     provider->loaded = true;

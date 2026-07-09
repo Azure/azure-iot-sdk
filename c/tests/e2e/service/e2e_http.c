@@ -18,7 +18,7 @@
 
 /* Wait briefly for the transport to become ready for @p status's interest, so the
  * pump does not spin. Kept short so an interleaved device pump stays responsive. */
-static void http_wait(e2e_http_request_t* r, az_amqp_transport_status status)
+static void http_wait(e2e_http_request* r, az_amqp_transport_status status)
 {
     az_amqp_io_interest interest = (status == AZ_AMQP_TRANSPORT_STATUS_WANT_WRITE)
         ? AZ_AMQP_IO_INTEREST_WRITE
@@ -51,7 +51,7 @@ static bool ci_starts_with(const uint8_t* line, int line_len, const char* prefix
 }
 
 /* Parse the status line and Content-Length once the header terminator is present. */
-static void http_parse_headers(e2e_http_request_t* r)
+static void http_parse_headers(e2e_http_request* r)
 {
     if (r->headers_done)
     {
@@ -121,7 +121,7 @@ static void http_parse_headers(e2e_http_request_t* r)
 }
 
 bool e2e_http_begin(
-    e2e_http_request_t* r,
+    e2e_http_request* r,
     const char* host,
     const char* method,
     const char* path,
@@ -192,7 +192,7 @@ bool e2e_http_begin(
     return true;
 }
 
-int e2e_http_poll(e2e_http_request_t* r)
+int e2e_http_poll(e2e_http_request* r)
 {
     az_amqp_transport_status status;
     switch (r->phase)
@@ -296,9 +296,9 @@ int e2e_http_poll(e2e_http_request_t* r)
     }
 }
 
-int e2e_http_status(const e2e_http_request_t* r) { return r->http_status; }
+int e2e_http_status(const e2e_http_request* r) { return r->http_status; }
 
-const uint8_t* e2e_http_body(const e2e_http_request_t* r, int* out_len)
+const uint8_t* e2e_http_body(const e2e_http_request* r, int* out_len)
 {
     int available = r->response_len - r->body_start;
     if (!r->headers_done || available < 0)
@@ -316,9 +316,9 @@ const uint8_t* e2e_http_body(const e2e_http_request_t* r, int* out_len)
     return r->response + r->body_start;
 }
 
-const char* e2e_http_error(const e2e_http_request_t* r) { return r->err; }
+const char* e2e_http_error(const e2e_http_request* r) { return r->err; }
 
-void e2e_http_end(e2e_http_request_t* r)
+void e2e_http_end(e2e_http_request* r)
 {
     if (r->transport.vtable == NULL || r->transport.vtable->close == NULL)
     {

@@ -45,7 +45,7 @@ static unsigned long conf_now_ms(void) {
 /* shared state for the suite (set by az_iot_conformance_run)            */
 /* ------------------------------------------------------------------------- */
 
-static az_iot_mqtt_factory_t* g_factory = NULL;
+static az_iot_mqtt_factory* g_factory = NULL;
 static const char*                 g_host   = "localhost";
 static uint16_t                    g_port   = 1883;
 static const unsigned              k_step_timeout_ms = 5000;
@@ -58,20 +58,20 @@ static const unsigned              k_step_timeout_ms = 5000;
 #define CONF_PAYLOAD_MAX 1024
 #define CONF_EVENTS_MAX 16
 
-typedef struct conf_recorder_tag
+typedef struct conf_recorder
 {
     size_t count;
-    az_iot_mqtt_event_kind_t kinds[CONF_EVENTS_MAX];
-    az_iot_result_t          statuses[CONF_EVENTS_MAX];
+    az_iot_mqtt_event_kind kinds[CONF_EVENTS_MAX];
+    az_iot_result          statuses[CONF_EVENTS_MAX];
     uint16_t                     packet_ids[CONF_EVENTS_MAX];
     char                         topics[CONF_EVENTS_MAX][CONF_TOPIC_MAX];
     uint8_t                      payloads[CONF_EVENTS_MAX][CONF_PAYLOAD_MAX];
     size_t                       payload_lens[CONF_EVENTS_MAX];
-} conf_recorder_t;
+} conf_recorder;
 
-static void on_event(const az_iot_mqtt_event_t* evt, void* ctx)
+static void on_event(const az_iot_mqtt_event* evt, void* ctx)
 {
-    conf_recorder_t* r = (conf_recorder_t*)ctx;
+    conf_recorder* r = (conf_recorder*)ctx;
     if (r->count >= CONF_EVENTS_MAX) return;
     size_t i = r->count++;
     r->kinds[i]      = evt->kind;
@@ -95,9 +95,9 @@ static void on_event(const az_iot_mqtt_event_t* evt, void* ctx)
 
 /* Pump process_loop() until either `predicate(recorder)` is true or the
  * timeout elapses. Returns true if the predicate became true. */
-typedef int (*conf_predicate_fn)(const conf_recorder_t*);
+typedef int (*conf_predicate_callback)(const conf_recorder*);
 
-static int wait_until(az_iot_mqtt_client_t* c, const conf_recorder_t* r, conf_predicate_fn p, unsigned timeout_ms)
+static int wait_until(az_iot_mqtt_client* c, const conf_recorder* r, conf_predicate_callback p, unsigned timeout_ms)
 {
     unsigned long deadline = conf_now_ms() + timeout_ms;
     while (conf_now_ms() < deadline)
@@ -109,7 +109,7 @@ static int wait_until(az_iot_mqtt_client_t* c, const conf_recorder_t* r, conf_pr
     return p(r);
 }
 
-static int saw_connected_ok(const conf_recorder_t* r)
+static int saw_connected_ok(const conf_recorder* r)
 {
     for (size_t i = 0; i < r->count; ++i)
     {
@@ -118,7 +118,7 @@ static int saw_connected_ok(const conf_recorder_t* r)
     return 0;
 }
 
-static int saw_subscribe_ack_ok(const conf_recorder_t* r)
+static int saw_subscribe_ack_ok(const conf_recorder* r)
 {
     for (size_t i = 0; i < r->count; ++i)
     {
@@ -127,7 +127,7 @@ static int saw_subscribe_ack_ok(const conf_recorder_t* r)
     return 0;
 }
 
-static int saw_message(const conf_recorder_t* r)
+static int saw_message(const conf_recorder* r)
 {
     for (size_t i = 0; i < r->count; ++i)
     {
@@ -146,23 +146,23 @@ static void unique_client_id(char* buf, size_t cap, const char* prefix)
     snprintf(buf, cap, "%s-%lu", prefix, conf_now_ms());
 }
 
-static az_iot_mqtt_client_t* make_client(void)
+static az_iot_mqtt_client* make_client(void)
 {
-    az_iot_mqtt_client_t* c = g_factory->create(g_factory->factory_ctx);
+    az_iot_mqtt_client* c = g_factory->create(g_factory->factory_ctx);
     assert_non_null(c);
     assert_non_null(c->iface);
     return c;
 }
 
-static void destroy_client(az_iot_mqtt_client_t* c)
+static void destroy_client(az_iot_mqtt_client* c)
 {
     if (c && c->iface && c->iface->destroy) c->iface->destroy(c);
 }
 
-static void connect_client(az_iot_mqtt_client_t* c, conf_recorder_t* rec, const char* client_id)
+static void connect_client(az_iot_mqtt_client* c, conf_recorder* rec, const char* client_id)
 {
     c->iface->set_inbound_cb(c, on_event, rec);
-    az_iot_mqtt_connect_options_t copts = {0};
+    az_iot_mqtt_connect_options copts = {0};
     copts.host = g_host;
     copts.port = g_port;
     copts.client_id = client_id;
@@ -180,8 +180,8 @@ static void connect_disconnect_roundtrip(void** state)
 {
     (void)state;
     char cid[64]; unique_client_id(cid, sizeof(cid), "az-iot-conf-conn");
-    conf_recorder_t rec = {0};
-    az_iot_mqtt_client_t* c = make_client();
+    conf_recorder rec = {0};
+    az_iot_mqtt_client* c = make_client();
     connect_client(c, &rec, cid);
 
     assert_int_equal(c->iface->disconnect(c), AZ_IOT_OK);
@@ -198,8 +198,8 @@ static void publish_subscribe_roundtrip(void** state)
     char topic[128];
     snprintf(topic, sizeof(topic), "az_iot/conformance/%s", cid);
 
-    conf_recorder_t rec = {0};
-    az_iot_mqtt_client_t* c = make_client();
+    conf_recorder rec = {0};
+    az_iot_mqtt_client* c = make_client();
     connect_client(c, &rec, cid);
 
     /* subscribe + wait for SUBSCRIBE_ACK */
@@ -210,7 +210,7 @@ static void publish_subscribe_roundtrip(void** state)
 
     /* publish */
     static const uint8_t body[] = {'p', 'i', 'n', 'g'};
-    az_iot_mqtt_message_t msg = {0};
+    az_iot_mqtt_message msg = {0};
     msg.topic = topic;
     msg.payload = body;
     msg.payload_len = sizeof(body);
@@ -247,8 +247,8 @@ static void publish_subscribe_roundtrip(void** state)
 static void disconnect_without_connect_is_rejected(void** state)
 {
     (void)state;
-    az_iot_mqtt_client_t* c = make_client();
-    az_iot_result_t r = c->iface->disconnect(c);
+    az_iot_mqtt_client* c = make_client();
+    az_iot_result r = c->iface->disconnect(c);
     /* Either NOT_CONNECTED (preferred) or some adapter-specific MQTT error,
      * but never AZ_IOT_OK on a never-connected client. */
     assert_int_not_equal(r, AZ_IOT_OK);
@@ -266,13 +266,13 @@ static int env_truthy(const char* v)
 }
 
 int az_iot_conformance_run(
-    az_iot_conformance_suite_t suite_kind,
-    az_iot_mqtt_factory_t* factory)
+    az_iot_conformance_suite suite_kind,
+    az_iot_mqtt_factory* factory)
 {
     if (!factory) return 1;
 
     /* Validate the factory's advertised version matches the requested suite. */
-    az_iot_mqtt_version_t want = (suite_kind == AZ_IOT_CONFORMANCE_SUITE_V5)
+    az_iot_mqtt_version want = (suite_kind == AZ_IOT_CONFORMANCE_SUITE_V5)
         ? AZ_IOT_MQTT_VERSION_5 : AZ_IOT_MQTT_VERSION_3_1_1;
     if (factory->version != want)
     {

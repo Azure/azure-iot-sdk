@@ -201,9 +201,9 @@ static int32_t psa_sha256_end(void* ctx, uint8_t hash_out[32], void* user_ctx)
     return (st == PSA_SUCCESS) ? AZ_IOT_ADU_RESULT_SUCCESS : AZ_IOT_ADU_RESULT_FAILURE;
 }
 
-az_iot_adu_crypto_hooks_t az_iot_adu_crypto_mbedtls_hooks(void)
+az_iot_adu_crypto_hooks az_iot_adu_crypto_mbedtls_hooks(void)
 {
-    az_iot_adu_crypto_hooks_t hooks;
+    az_iot_adu_crypto_hooks hooks;
     memset(&hooks, 0, sizeof(hooks));
     hooks.verify_rs256_fn = psa_verify_rs256;
     hooks.sha256_fn = psa_sha256_oneshot;

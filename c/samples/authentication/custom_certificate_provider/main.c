@@ -6,7 +6,7 @@
  *
  * The COMPLETE, app-owned certificate-provider path (vs. the shipped "managed"
  * provider used by dps_csr_managed). It wires sample_cert_provider - a real
- * az_iot_certificate_provider_t implemented in samples/common with platform-
+ * az_iot_certificate_provider implemented in samples/common with platform-
  * native CSR issuance (OpenSSL on Linux, CNG on Windows) - into a full DPS CSR
  * enrollment: authenticate to DPS with the bootstrap identity, send a real
  * PKCS#10 CSR, persist the issued operational chain, and connect to the assigned
@@ -31,29 +31,29 @@
 
 typedef struct
 {
-    az_iot_connection_state_t conn_state;
+    az_iot_connection_state conn_state;
     int  issued;
-} user_context_t;
+} user_context;
 
-static void on_conn_state(az_iot_connection_state_t s, az_iot_result_t reason, void* user_ctx)
+static void on_conn_state(az_iot_connection_state s, az_iot_result reason, void* user_ctx)
 {
     (void)reason;
-    ((user_context_t*)user_ctx)->conn_state = s;
+    ((user_context*)user_ctx)->conn_state = s;
 }
 
-static void on_operational_cert(const az_iot_issued_certificate_t* issued, void* user_ctx)
+static void on_operational_cert(const az_iot_issued_certificate* issued, void* user_ctx)
 {
-    ((user_context_t*)user_ctx)->issued = 1;
+    ((user_context*)user_ctx)->issued = 1;
     fprintf(stderr, "[custom_cert] operational certificate issued: %zu cert(s) in chain\n",
         issued ? issued->count : (size_t)0);
 }
 
 int main(void)
 {
-    az_iot_log_sink_t log = az_iot_log_stderr_sink(AZ_IOT_LOG_ERROR);
+    az_iot_log_sink log = az_iot_log_stderr_sink(AZ_IOT_LOG_ERROR);
     az_iot_log_set_global_sink(&log);
 
-    sample_config_t config = {0};
+    sample_config config = {0};
     if (sample_config_load(&config) != 0)
     {
         return 1;
@@ -63,11 +63,11 @@ int main(void)
     char* op_cert = sample_env_dup("AZ_IOT_OPERATIONAL_CERT", "operational_cert.pem");
 
     int rc = 1;
-    user_context_t user_ctx = {0};
-    sample_cert_provider_t provider = {0};
-    az_iot_connection_client_t connection_client = {0};
+    user_context user_ctx = {0};
+    sample_cert_provider provider = {0};
+    az_iot_connection_client connection_client = {0};
 
-    sample_cert_provider_options_t popts = {
+    sample_cert_provider_options popts = {
         .bootstrap_cert_path   = config.cert,
         .bootstrap_key_path    = config.key,
         .trusted_ca_path       = config.ca,
@@ -80,7 +80,7 @@ int main(void)
         goto cleanup;
     }
 
-    az_iot_connection_client_options_t copts =
+    az_iot_connection_client_options copts =
         az_iot_connection_client_options_get_default(config.id_scope, config.reg_id, &provider.base);
     uint8_t csr_payload_buf[AZ_IOT_CSR_PAYLOAD_BUFFER_MIN];
     copts.csr_payload_buffer = az_span_create(csr_payload_buf, sizeof(csr_payload_buf));
@@ -118,8 +118,8 @@ int main(void)
         (void)az_iot_connection_client_do_work(&connection_client, 50);
 
 cleanup:
-    az_iot_connection_client_deinit(&connection_client);
-    sample_cert_provider_deinit(&provider);
+    az_iot_connection_client_destroy(&connection_client);
+    sample_cert_provider_destroy(&provider);
     free(op_key);
     free(op_cert);
     sample_config_release(&config);

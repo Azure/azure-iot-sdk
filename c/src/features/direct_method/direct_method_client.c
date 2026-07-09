@@ -35,9 +35,9 @@
 /* Internal shorthand */
 #define DI(d) ((d)->_internal)
 
-struct az_iot_direct_method_request_tag
+struct az_iot_direct_method_request
 {
-    az_iot_direct_method_client_t* owner;
+    az_iot_direct_method_client* owner;
     /* Classic: request-id from topic query string */
     char rid[AZ_IOT_DM_RID_MAX];
     /* Next: method name + correlation data (used in response topic/property) */
@@ -102,9 +102,9 @@ static bool parse_method_topic_next(
 }
 
 /* Inbound dispatch handler for Classic topics. */
-static void on_method_invocation_classic(void* user_ctx, const az_iot_mqtt_message_t* msg)
+static void on_method_invocation_classic(void* user_ctx, const az_iot_mqtt_message* msg)
 {
-    az_iot_direct_method_client_t* dm = (az_iot_direct_method_client_t*)user_ctx;
+    az_iot_direct_method_client* dm = (az_iot_direct_method_client*)user_ctx;
     if (!dm || !msg || !msg->topic) return;
     if (!DI(dm).handler) return;
 
@@ -115,8 +115,8 @@ static void on_method_invocation_classic(void* user_ctx, const az_iot_mqtt_messa
         return;
     }
 
-    az_iot_direct_method_request_t* req =
-        (az_iot_direct_method_request_t*)calloc(1, sizeof(*req));
+    az_iot_direct_method_request* req =
+        (az_iot_direct_method_request*)calloc(1, sizeof(*req));
     if (!req) return;
     req->owner = dm;
     req->is_next = false;
@@ -126,9 +126,9 @@ static void on_method_invocation_classic(void* user_ctx, const az_iot_mqtt_messa
 }
 
 /* Inbound dispatch handler for Hub-Next topics. */
-static void on_method_invocation_next(void* user_ctx, const az_iot_mqtt_message_t* msg)
+static void on_method_invocation_next(void* user_ctx, const az_iot_mqtt_message* msg)
 {
-    az_iot_direct_method_client_t* dm = (az_iot_direct_method_client_t*)user_ctx;
+    az_iot_direct_method_client* dm = (az_iot_direct_method_client*)user_ctx;
     if (!dm || !msg || !msg->topic) return;
     if (!DI(dm).handler) return;
 
@@ -138,8 +138,8 @@ static void on_method_invocation_next(void* user_ctx, const az_iot_mqtt_message_
         return;
     }
 
-    az_iot_direct_method_request_t* req =
-        (az_iot_direct_method_request_t*)calloc(1, sizeof(*req));
+    az_iot_direct_method_request* req =
+        (az_iot_direct_method_request*)calloc(1, sizeof(*req));
     if (!req) return;
     req->owner = dm;
     req->is_next = true;
@@ -158,15 +158,15 @@ static void on_method_invocation_next(void* user_ctx, const az_iot_mqtt_message_
     DI(dm).handler(req, method_name, msg->payload, msg->payload_len, DI(dm).handler_ctx);
 }
 
-az_iot_result_t az_iot_direct_method_client_init(
-    az_iot_direct_method_client_t* client,
-    az_iot_connection_client_t* conn)
+az_iot_result az_iot_direct_method_client_init(
+    az_iot_direct_method_client* client,
+    az_iot_connection_client* conn)
 {
     if (client == NULL || conn == NULL)
     {
         return AZ_IOT_ERR_INVALID_ARG;
     }
-    const az_iot_protocol_profile_t* profile =
+    const az_iot_protocol_profile* profile =
         az_iot_connection_client__profile(conn);
     if (!profile)
     {
@@ -195,7 +195,7 @@ az_iot_result_t az_iot_direct_method_client_init(
             return AZ_IOT_ERR_INTERNAL;
         }
 
-        az_iot_result_t r = az_iot_connection_client__register_inbound_handler(
+        az_iot_result r = az_iot_connection_client__register_inbound_handler(
             conn, prefix, on_method_invocation_next, client);
         if (r != AZ_IOT_OK)
         {
@@ -230,7 +230,7 @@ az_iot_result_t az_iot_direct_method_client_init(
             return AZ_IOT_ERR_NOT_SUPPORTED;
         }
 
-        az_iot_result_t r = az_iot_connection_client__register_inbound_handler(
+        az_iot_result r = az_iot_connection_client__register_inbound_handler(
             conn, profile->methods_request_topic_prefix, on_method_invocation_classic, client);
         if (r != AZ_IOT_OK)
         {
@@ -259,16 +259,16 @@ az_iot_result_t az_iot_direct_method_client_init(
     return AZ_IOT_OK;
 }
 
-void az_iot_direct_method_client_deinit(az_iot_direct_method_client_t* client)
+void az_iot_direct_method_client_destroy(az_iot_direct_method_client* client)
 {
     if (!client) return;
     (void)az_iot_connection_client__unregister_inbound_handlers(DI(client).conn, client);
     memset(client, 0, sizeof(*client));
 }
 
-az_iot_result_t az_iot_direct_method_client_set_handler(
-    az_iot_direct_method_client_t* dm,
-    az_iot_direct_method_handler_cb cb,
+az_iot_result az_iot_direct_method_client_set_handler(
+    az_iot_direct_method_client* dm,
+    az_iot_direct_method_handler_callback cb,
     void* user_ctx)
 {
     if (dm == NULL)
@@ -280,8 +280,8 @@ az_iot_result_t az_iot_direct_method_client_set_handler(
     return AZ_IOT_OK;
 }
 
-az_iot_result_t az_iot_direct_method_respond(
-    az_iot_direct_method_request_t* request,
+az_iot_result az_iot_direct_method_respond(
+    az_iot_direct_method_request* request,
     int status_code,
     const uint8_t* payload,
     size_t payload_len)
@@ -292,7 +292,7 @@ az_iot_result_t az_iot_direct_method_respond(
         return AZ_IOT_ERR_INVALID_ARG;
     }
 
-    az_iot_direct_method_client_t* dm = request->owner;
+    az_iot_direct_method_client* dm = request->owner;
 
     if (request->is_next)
     {
@@ -311,11 +311,11 @@ az_iot_result_t az_iot_direct_method_respond(
         char status_str[12];
         snprintf(status_str, sizeof(status_str), "%d", status_code);
 
-        az_iot_mqtt_user_property_t user_props[1];
+        az_iot_mqtt_user_property user_props[1];
         user_props[0].key = "status";
         user_props[0].value = status_str;
 
-        az_iot_mqtt_message_t out = { 0 };
+        az_iot_mqtt_message out = { 0 };
         out.topic = topic;
         out.payload = payload;
         out.payload_len = payload_len;
@@ -326,7 +326,7 @@ az_iot_result_t az_iot_direct_method_respond(
         out.correlation_data = request->correlation_data;
         out.correlation_data_len = request->correlation_data_len;
 
-        az_iot_result_t r = az_iot_connection_client__publish(
+        az_iot_result r = az_iot_connection_client__publish(
             DI(dm).conn, &out, NULL, NULL);
         free(request);
         return r;
@@ -343,14 +343,14 @@ az_iot_result_t az_iot_direct_method_respond(
             return AZ_IOT_ERR_NOT_SUPPORTED;
         }
 
-        az_iot_mqtt_message_t out = { 0 };
+        az_iot_mqtt_message out = { 0 };
         out.topic       = topic;
         out.payload     = payload;
         out.payload_len = payload_len;
         out.qos         = AZ_IOT_MQTT_QOS_0;
         out.retain      = false;
 
-        az_iot_result_t r = az_iot_connection_client__publish(
+        az_iot_result r = az_iot_connection_client__publish(
             DI(dm).conn, &out, NULL, NULL);
         free(request);
         return r;

@@ -41,7 +41,7 @@ static int32_t ota_download(
     const az_iot_adu_client_update_manifest_file* file, az_span download_url,
     uint32_t file_index, uint32_t file_count, void* user_ctx)
 {
-    adu_ota_ctx_t* c = (adu_ota_ctx_t*)user_ctx;
+    adu_ota_ctx* c = (adu_ota_ctx*)user_ctx;
 
     /* This sample treats the single payload as the new ESP32 app image and
      * flashes it whole; multi-file updates would loop a partition/file map. */
@@ -144,7 +144,7 @@ static int32_t ota_read_file(
     void* user_ctx)
 {
     (void)file_index;
-    adu_ota_ctx_t* c = (adu_ota_ctx_t*)user_ctx;
+    adu_ota_ctx* c = (adu_ota_ctx*)user_ctx;
     if (!c->update_partition) { *out_read = 0; return AZ_IOT_ADU_RESULT_FAILURE; }
 
     size_t size = c->written ? c->written
@@ -169,7 +169,7 @@ static int32_t ota_read_file(
 static int32_t ota_is_installed(
     const az_iot_adu_client_update_manifest* manifest, void* user_ctx)
 {
-    adu_ota_ctx_t* c = (adu_ota_ctx_t*)user_ctx;
+    adu_ota_ctx* c = (adu_ota_ctx*)user_ctx;
     if (c->installed_version
         && az_span_is_content_equal(
                manifest->update_id.version,
@@ -194,7 +194,7 @@ static int32_t ota_install(
     const az_iot_adu_client_update_manifest* manifest, uint32_t step, void* user_ctx)
 {
     (void)manifest;
-    adu_ota_ctx_t* c = (adu_ota_ctx_t*)user_ctx;
+    adu_ota_ctx* c = (adu_ota_ctx*)user_ctx;
     if (!c->ota_in_progress)
     {
         ESP_LOGE(TAG, "install step %u with no downloaded image", step);
@@ -236,7 +236,7 @@ static int32_t ota_restore(
     const az_iot_adu_client_update_manifest* manifest, uint32_t step, void* user_ctx)
 {
     (void)manifest;
-    adu_ota_ctx_t* c = (adu_ota_ctx_t*)user_ctx;
+    adu_ota_ctx* c = (adu_ota_ctx*)user_ctx;
     ESP_LOGW(TAG, "restore step %u (rollback to running partition)", step);
     if (c->ota_in_progress)
     {
@@ -300,9 +300,9 @@ void adu_esp32_ota_mark_valid(void)
     }
 }
 
-az_iot_adu_platform_hooks_t adu_esp32_ota_hooks(adu_ota_ctx_t* ctx)
+az_iot_adu_platform_hooks adu_esp32_ota_hooks(adu_ota_ctx* ctx)
 {
-    az_iot_adu_platform_hooks_t h;
+    az_iot_adu_platform_hooks h;
     memset(&h, 0, sizeof(h));
     h.download_fn = ota_download;
     h.read_file_fn = ota_read_file;

@@ -26,21 +26,21 @@
 /* fixtures                                                                  */
 /* ------------------------------------------------------------------------- */
 
-typedef struct invocation_record_tag
+typedef struct invocation_record
 {
     bool                fired;
     char                method_name[64];
     char                payload[64];
     size_t              payload_len;
-    az_iot_direct_method_request_t* request; /* owned by user; we'll respond to it */
-} invocation_record_t;
+    az_iot_direct_method_request* request; /* owned by user; we'll respond to it */
+} invocation_record;
 
-static void on_method(az_iot_direct_method_request_t* request,
+static void on_method(az_iot_direct_method_request* request,
                       const char* method_name,
                       const uint8_t* payload, size_t payload_len,
                       void* user_ctx)
 {
-    invocation_record_t* r = (invocation_record_t*)user_ctx;
+    invocation_record* r = (invocation_record*)user_ctx;
     r->fired = true;
     snprintf(r->method_name, sizeof(r->method_name), "%s", method_name);
     if (payload && payload_len > 0 && payload_len < sizeof(r->payload))
@@ -52,20 +52,20 @@ static void on_method(az_iot_direct_method_request_t* request,
     r->request = request;
 }
 
-typedef struct fixture_tag
+typedef struct fixture
 {
-    az_iot_connection_client_t       conn;
-    az_iot_direct_method_client_t   dm;
-    az_iot_mqtt_factory_t*          factory;
-    az_iot_mock_mqtt_client_t*      mock;
-} fixture_t;
+    az_iot_connection_client       conn;
+    az_iot_direct_method_client   dm;
+    az_iot_mqtt_factory*          factory;
+    az_iot_mock_mqtt_client*      mock;
+} fixture;
 
 static int setup(void** state)
 {
-    fixture_t* fx = (fixture_t*)calloc(1, sizeof(*fx));
+    fixture* fx = (fixture*)calloc(1, sizeof(*fx));
     assert_non_null(fx);
 
-    az_iot_connection_client_options_t opts = {0};
+    az_iot_connection_client_options opts = {0};
     opts.host = "broker.example";
     opts.port = 8883;
     opts.client_id = "ut-device";
@@ -83,17 +83,17 @@ static int setup(void** state)
 
 static int teardown(void** state)
 {
-    fixture_t* fx = (fixture_t*)*state;
+    fixture* fx = (fixture*)*state;
     if (fx)
     {
-        az_iot_direct_method_client_deinit(&fx->dm);
-        az_iot_connection_client_deinit(&fx->conn);
+        az_iot_direct_method_client_destroy(&fx->dm);
+        az_iot_connection_client_destroy(&fx->conn);
         free(fx);
     }
     return 0;
 }
 
-static void open_to_connected(fixture_t* fx)
+static void open_to_connected(fixture* fx)
 {
     assert_int_equal(az_iot_connection_client_register_mqtt_factory(&fx->conn, fx->factory),
                      AZ_IOT_OK);
@@ -111,7 +111,7 @@ static void open_to_connected(fixture_t* fx)
 
 static void create_subscribes_methods_topic_on_connect(void** state)
 {
-    fixture_t* fx = (fixture_t*)*state;
+    fixture* fx = (fixture*)*state;
     /* The DirectMethodClient was already created in setup(); now connect and
      * verify a SUBSCRIBE for the methods filter is issued automatically. */
     assert_int_equal(az_iot_connection_client_register_mqtt_factory(&fx->conn, fx->factory),
@@ -127,7 +127,7 @@ static void create_subscribes_methods_topic_on_connect(void** state)
     size_t n = az_iot_mock_mqtt_client_call_count(fx->mock);
     for (size_t i = 0; i < n; ++i)
     {
-        const az_iot_mock_call_t* c = az_iot_mock_mqtt_client_call_at(fx->mock, i);
+        const az_iot_mock_call* c = az_iot_mock_mqtt_client_call_at(fx->mock, i);
         if (c->kind == AZ_IOT_MOCK_CALL_SUBSCRIBE &&
             strcmp(c->topic, "$iothub/methods/POST/#") == 0)
         {
@@ -140,10 +140,10 @@ static void create_subscribes_methods_topic_on_connect(void** state)
 
 static void inbound_invocation_dispatched_to_handler(void** state)
 {
-    fixture_t* fx = (fixture_t*)*state;
+    fixture* fx = (fixture*)*state;
     open_to_connected(fx);
 
-    invocation_record_t rec = {0};
+    invocation_record rec = {0};
     assert_int_equal(az_iot_direct_method_client_set_handler(&fx->dm, on_method, &rec),
                      AZ_IOT_OK);
 
@@ -169,7 +169,7 @@ static void inbound_invocation_dispatched_to_handler(void** state)
         AZ_IOT_OK);
 
     assert_int_equal(az_iot_mock_mqtt_client_call_count(fx->mock), 1);
-    const az_iot_mock_call_t* c = az_iot_mock_mqtt_client_call_at(fx->mock, 0);
+    const az_iot_mock_call* c = az_iot_mock_mqtt_client_call_at(fx->mock, 0);
     assert_int_equal(c->kind, AZ_IOT_MOCK_CALL_PUBLISH);
     assert_string_equal(c->topic, "$iothub/methods/res/200/?$rid=42");
     assert_int_equal(c->qos, AZ_IOT_MQTT_QOS_0);
@@ -179,10 +179,10 @@ static void inbound_invocation_dispatched_to_handler(void** state)
 
 static void malformed_topic_dropped(void** state)
 {
-    fixture_t* fx = (fixture_t*)*state;
+    fixture* fx = (fixture*)*state;
     open_to_connected(fx);
 
-    invocation_record_t rec = {0};
+    invocation_record rec = {0};
     assert_int_equal(az_iot_direct_method_client_set_handler(&fx->dm, on_method, &rec),
                      AZ_IOT_OK);
 

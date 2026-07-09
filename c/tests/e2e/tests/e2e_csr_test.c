@@ -93,31 +93,31 @@ static char* env_dup(const char* name)
 
 typedef struct
 {
-    az_iot_connection_state_t conn_state;
-    az_iot_result_t last_reason;
+    az_iot_connection_state conn_state;
+    az_iot_result last_reason;
     int    issued;
     size_t issued_count;
-} csr_ctx_t;
+} csr_ctx;
 
-static void on_conn_state(az_iot_connection_state_t s, az_iot_result_t reason, void* user_ctx)
+static void on_conn_state(az_iot_connection_state s, az_iot_result reason, void* user_ctx)
 {
-    csr_ctx_t* c = (csr_ctx_t*)user_ctx;
+    csr_ctx* c = (csr_ctx*)user_ctx;
     c->conn_state = s;
     c->last_reason = reason;
     fprintf(stderr, "[e2e-csr] conn state -> 0x%x (reason 0x%x)\n",
         (unsigned)s, (unsigned)reason);
 }
 
-static void on_operational_cert(const az_iot_issued_certificate_t* issued, void* user_ctx)
+static void on_operational_cert(const az_iot_issued_certificate* issued, void* user_ctx)
 {
-    csr_ctx_t* c = (csr_ctx_t*)user_ctx;
+    csr_ctx* c = (csr_ctx*)user_ctx;
     c->issued = 1;
     c->issued_count = issued ? issued->count : 0;
 }
 
 /* ---- scenario ------------------------------------------------------------- */
 
-static void run_csr_enrollment(az_iot_certificate_managed_key_type_t key_type, const char* label)
+static void run_csr_enrollment(az_iot_certificate_managed_key_type key_type, const char* label)
 {
     char* id_scope = env_dup("AZ_IOT_DPS_ID_SCOPE");
     char* reg_id   = env_dup("AZ_IOT_DPS_REGISTRATION_ID");
@@ -142,11 +142,11 @@ static void run_csr_enrollment(az_iot_certificate_managed_key_type_t key_type, c
     remove(op_cert);
     remove(op_key);
 
-    csr_ctx_t ctx = {0};
-    az_iot_certificate_provider_managed_t provider = {0};
-    az_iot_connection_client_t conn = {0};
+    csr_ctx ctx = {0};
+    az_iot_certificate_provider_managed provider = {0};
+    az_iot_connection_client conn = {0};
 
-    az_iot_certificate_provider_managed_options_t mopts = {
+    az_iot_certificate_provider_managed_options mopts = {
         .bootstrap_cert_pem_path   = cert,
         .bootstrap_key_pem_path    = key,
         .trusted_ca_pem_path       = ca,
@@ -156,7 +156,7 @@ static void run_csr_enrollment(az_iot_certificate_managed_key_type_t key_type, c
     };
     assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&provider, &mopts));
 
-    az_iot_connection_client_options_t copts =
+    az_iot_connection_client_options copts =
         az_iot_connection_client_options_get_default(id_scope, reg_id, &provider.base);
     uint8_t csr_buf[AZ_IOT_CSR_PAYLOAD_BUFFER_MIN];
     copts.csr_payload_buffer = az_span_create(csr_buf, sizeof(csr_buf));
@@ -199,8 +199,8 @@ static void run_csr_enrollment(az_iot_certificate_managed_key_type_t key_type, c
         (void)az_iot_connection_client_do_work(&conn, 50);
     }
 
-    az_iot_connection_client_deinit(&conn);
-    az_iot_certificate_provider_managed_deinit(&provider);
+    az_iot_connection_client_destroy(&conn);
+    az_iot_certificate_provider_managed_destroy(&provider);
 
     remove(op_key);
     remove(op_cert);
@@ -238,7 +238,7 @@ int main(void)
 
     /* Log verbosity is env-controlled (AZ_IOT_E2E_LOG_LEVEL=TRACE|DEBUG|INFO|
      * WARN); default ERROR. CI raises it to surface the connect/DPS failure. */
-    az_iot_log_level_t log_level = AZ_IOT_LOG_ERROR;
+    az_iot_log_level log_level = AZ_IOT_LOG_ERROR;
     char* lvl = env_dup("AZ_IOT_E2E_LOG_LEVEL");
     if (lvl != NULL)
     {
@@ -248,7 +248,7 @@ int main(void)
         else if (strcmp(lvl, "WARN")  == 0) log_level = AZ_IOT_LOG_WARN;
         free(lvl);
     }
-    az_iot_log_sink_t log = az_iot_log_stderr_sink(log_level);
+    az_iot_log_sink log = az_iot_log_stderr_sink(log_level);
     az_iot_log_set_global_sink(&log);
 
     const struct CMUnitTest tests[] = {

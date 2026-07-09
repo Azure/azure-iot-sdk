@@ -150,7 +150,7 @@ AZ_NODISCARD az_result az_amqp_link_init(
 
 void az_amqp_link_set_state_callback(
     az_amqp_link* link,
-    az_amqp_link_state_changed_fn state_changed,
+    az_amqp_link_state_changed_callback state_changed,
     void* user_data)
 {
   link->state_changed = state_changed;
@@ -159,7 +159,7 @@ void az_amqp_link_set_state_callback(
 
 void az_amqp_link_set_credit_callback(
     az_amqp_link* link,
-    az_amqp_link_credit_available_fn credit_available,
+    az_amqp_link_credit_available_callback credit_available,
     void* user_data)
 {
   link->credit_available = credit_available;
@@ -168,7 +168,7 @@ void az_amqp_link_set_credit_callback(
 
 void az_amqp_link_set_message_callback(
     az_amqp_link* link,
-    az_amqp_link_message_received_fn message_received,
+    az_amqp_link_message_received_callback message_received,
     void* user_data)
 {
   link->message_received = message_received;
@@ -445,7 +445,7 @@ AZ_NODISCARD az_result az_amqp_link_send(
     az_amqp_link* link,
     az_amqp_message const* message,
     az_span delivery_tag,
-    az_amqp_link_send_complete_fn on_complete,
+    az_amqp_link_send_complete_callback on_complete,
     void* user_data)
 {
   if (link->options.role != AZ_AMQP_ROLE_SENDER || link->state != AZ_AMQP_LINK_STATE_ATTACHED)
@@ -860,7 +860,7 @@ static void _on_disposition(az_amqp_link* link, az_amqp_value const* fields)
     az_amqp_link_unsettled* slot = &link->options.unsettled_storage[i];
     if (slot->in_use && slot->delivery_id >= first && slot->delivery_id <= last)
     {
-      az_amqp_link_send_complete_fn cb = (az_amqp_link_send_complete_fn)slot->on_complete;
+      az_amqp_link_send_complete_callback cb = (az_amqp_link_send_complete_callback)slot->on_complete;
       az_span tag = slot->delivery_tag;
       void* ud = slot->user_data;
       slot->in_use = false;

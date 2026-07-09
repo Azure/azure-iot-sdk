@@ -146,7 +146,7 @@ static void e2e_copy_bounded(char* dst, size_t cap, const char* value, size_t le
     dst[len] = '\0';
 }
 
-bool e2e_conn_info_parse(const char* connection_string, e2e_conn_info_t* out)
+bool e2e_conn_info_parse(const char* connection_string, e2e_conn_info* out)
 {
     if (connection_string == NULL || out == NULL)
     {

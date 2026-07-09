@@ -9,7 +9,7 @@
 extern "C" {
 #endif
 
-typedef enum az_iot_log_level_tag
+typedef enum az_iot_log_level
 {
     AZ_IOT_LOG_TRACE = 0,
     AZ_IOT_LOG_DEBUG,
@@ -17,29 +17,29 @@ typedef enum az_iot_log_level_tag
     AZ_IOT_LOG_WARN,
     AZ_IOT_LOG_ERROR,
     AZ_IOT_LOG_OFF
-} az_iot_log_level_t;
+} az_iot_log_level;
 
-typedef void (*az_iot_log_sink_fn)(
+typedef void (*az_iot_log_sink_callback)(
     void* user_ctx,
-    az_iot_log_level_t level,
+    az_iot_log_level level,
     const char* file,
     int line,
     const char* msg);
 
-typedef struct az_iot_log_sink_tag
+typedef struct az_iot_log_sink
 {
-    az_iot_log_sink_fn sink;
+    az_iot_log_sink_callback sink;
     void* user_ctx;
-    az_iot_log_level_t min_level;
-} az_iot_log_sink_t;
+    az_iot_log_level min_level;
+} az_iot_log_sink;
 
 /* Register a process-wide log sink. Pass NULL to disable logging (default). */
-void az_iot_log_set_global_sink(const az_iot_log_sink_t* sink);
+void az_iot_log_set_global_sink(const az_iot_log_sink* sink);
 
 /* Built-in sink that writes to stderr. Usage:
- *   az_iot_log_sink_t sink = az_iot_log_stderr_sink(AZ_IOT_LOG_ERROR);
+ *   az_iot_log_sink sink = az_iot_log_stderr_sink(AZ_IOT_LOG_ERROR);
  *   az_iot_log_set_global_sink(&sink); */
-az_iot_log_sink_t az_iot_log_stderr_sink(az_iot_log_level_t min_level);
+az_iot_log_sink az_iot_log_stderr_sink(az_iot_log_level min_level);
 
 #ifdef __cplusplus
 }
