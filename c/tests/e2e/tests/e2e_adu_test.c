@@ -403,11 +403,11 @@ static void wire_hooks(hook_log* log,
 /* ------------------------------------------------------------------------- */
 
 /* An ADU agent (twin + ADU client) bound to the shared device connection. One
- * agent is shared by every test in this group -- see adu_agent(). */
+ * agent is shared by every test in this group -- see adu_agent_get(). */
 typedef struct
 {
     az_iot_twin_client twin;
-    az_iot_adu_client  adu;
+    az_iot_adu_client_t  adu;
     hook_log           log;
     uint8_t              dp_buf[256];
 } adu_agent;
@@ -416,7 +416,7 @@ typedef struct
 {
     e2e_device        dev;
     az_iot_e2e_service* service;
-    adu_agent         agent;       /* shared by all tests; see adu_agent() */
+    adu_agent         agent;       /* shared by all tests; see adu_agent_get() */
     bool                agent_ready; /* lazily initialized on first use      */
 } e2e_fixture;
 
@@ -572,7 +572,7 @@ static void adu_read_reported_twin(
  * (there is no per-client unsubscribe); churning a fresh twin per test would
  * exhaust AZ_IOT_MAX_PERSISTENT_SUBS. It also mirrors a real device, which runs
  * one ADU agent across many deployments. Torn down in group_teardown. */
-static adu_agent* adu_agent(e2e_fixture* fx)
+static adu_agent* adu_agent_get(e2e_fixture* fx)
 {
     if (!fx->agent_ready)
     {
@@ -659,7 +659,7 @@ static int group_teardown(void** state)
 static void test_adu_agent_state_report(void** state)
 {
     e2e_fixture* fx = (e2e_fixture*)*state;
-    adu_agent*   a  = adu_agent(fx);
+    adu_agent*   a  = adu_agent_get(fx);
 
     /* Subscribe to the twin, run the startup twin GET, and publish the initial
      * agent-state reported property. */
@@ -693,7 +693,7 @@ static void test_adu_agent_state_report(void** state)
 static void test_adu_update_deployment(void** state)
 {
     e2e_fixture* fx = (e2e_fixture*)*state;
-    adu_agent*   a  = adu_agent(fx);
+    adu_agent*   a  = adu_agent_get(fx);
     adu_log_reset(&a->log);
 
     /* Cloud: PATCH the signed deployment; device: drive it to completion. On the
@@ -722,7 +722,7 @@ static void test_adu_update_deployment(void** state)
 static void test_adu_install_failure_rollback(void** state)
 {
     e2e_fixture* fx = (e2e_fixture*)*state;
-    adu_agent*   a  = adu_agent(fx);
+    adu_agent*   a  = adu_agent_get(fx);
     adu_log_reset(&a->log);
 
     /* Force the install step to fail; the workflow must back out via restore. */
@@ -752,7 +752,7 @@ static void test_adu_install_failure_rollback(void** state)
 static void test_adu_verify_rejects_deployment(void** state)
 {
     e2e_fixture* fx = (e2e_fixture*)*state;
-    adu_agent*   a  = adu_agent(fx);
+    adu_agent*   a  = adu_agent_get(fx);
     adu_log_reset(&a->log);
 
     /* Force signature verification to reject the manifest. */
@@ -783,7 +783,7 @@ static void test_adu_verify_rejects_deployment(void** state)
 static void test_adu_already_installed_noop(void** state)
 {
     e2e_fixture* fx = (e2e_fixture*)*state;
-    adu_agent*   a  = adu_agent(fx);
+    adu_agent*   a  = adu_agent_get(fx);
     adu_log_reset(&a->log);
 
     /* Report the target update as already installed. */

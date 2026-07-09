@@ -39,7 +39,7 @@ az_iot_adu_client_agent_state az_iot_adu__agent_state(az_iot_adu_state state)
 }
 
 az_iot_adu_client_device_properties az_iot_adu__device_properties_view(
-    const az_iot_adu_client* client)
+    const az_iot_adu_client_t* client)
 {
     az_iot_adu_client_device_properties props = az_iot_adu_client_device_properties_default();
 
@@ -83,7 +83,7 @@ az_iot_adu_client_device_properties az_iot_adu__device_properties_view(
     return props;
 }
 
-az_iot_result az_iot_adu__report_state(az_iot_adu_client* client)
+az_iot_result az_iot_adu__report_state(az_iot_adu_client_t* client)
 {
     if (client == NULL) return AZ_IOT_ERR_INVALID_ARG;
     if (ADU_I(client).detached) return AZ_IOT_ERR_DETACHED;

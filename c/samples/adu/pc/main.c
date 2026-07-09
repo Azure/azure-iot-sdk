@@ -251,7 +251,7 @@ typedef struct
     az_iot_certificate_provider_pem  certs;
     az_iot_connection_client         connection_client;
     az_iot_twin_client               twin_client;
-    az_iot_adu_client                adu_client;
+    az_iot_adu_client_t                adu_client;
     sim_ctx                          sim;
     uint8_t                            dp_buffer[512];
 } sample_state;

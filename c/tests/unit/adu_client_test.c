@@ -384,7 +384,7 @@ typedef struct
 {
     az_iot_connection_client conn;
     az_iot_twin_client       twin;
-    az_iot_adu_client        adu;
+    az_iot_adu_client_t        adu;
     az_iot_mqtt_factory*     factory;
     az_iot_mock_mqtt_client* mock;
 
@@ -859,7 +859,7 @@ static void device_props_too_small_is_rejected(void** state)
 
     az_iot_connection_client conn;
     az_iot_twin_client twin;
-    az_iot_adu_client adu;
+    az_iot_adu_client_t adu;
     az_iot_connection_client_options opts = {0};
     opts.host = "broker.example";
     opts.port = 8883;

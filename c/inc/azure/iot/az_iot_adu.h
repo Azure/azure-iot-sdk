@@ -278,12 +278,15 @@ typedef struct az_iot_adu_root_key
 
 /* --- Device properties (plain struct, deep-copied by the client) --------- */
 
-typedef struct az_iot_adu_update_id
+/* NOTE: keeps the _t suffix. The vendored azure-sdk-for-c defines a type of the
+ * same base name (az_iot_adu_update_id) that this header pulls in via
+ * <azure/iot/az_iot_adu_client.h>, so our type must stay distinct. */
+typedef struct az_iot_adu_update_id_t
 {
     const char* provider;
     const char* name;
     const char* version;
-} az_iot_adu_update_id;
+} az_iot_adu_update_id_t;
 
 typedef struct az_iot_adu_custom_property
 {
@@ -301,14 +304,17 @@ typedef struct az_iot_adu_device_properties
 {
     const char*                         manufacturer;
     const char*                         model;
-    az_iot_adu_update_id              installed_update_id;
+    az_iot_adu_update_id_t              installed_update_id;
     const az_iot_adu_custom_property* custom_properties;       /* caller's array, MAY be NULL */
     size_t                              custom_properties_count;
 } az_iot_adu_device_properties;
 
 /* --- Client struct -------------------------------------------------------- */
 
-typedef struct az_iot_adu_client
+/* NOTE: keeps the _t suffix. The vendored azure-sdk-for-c defines az_iot_adu_client
+ * (the low-level parser handle, embedded below as the `az` field), so our
+ * higher-level client type must stay distinct from it. */
+typedef struct az_iot_adu_client_t
 {
     struct
     {
@@ -385,7 +391,7 @@ typedef struct az_iot_adu_client
         /* Connection-state observer / detach safety (see design doc §16). */
         bool                              detached;
     } _internal;
-} az_iot_adu_client;
+} az_iot_adu_client_t;
 
 /* --- Lifecycle ----------------------------------------------------------- */
 
@@ -413,7 +419,7 @@ typedef struct az_iot_adu_client
  * platform-hook signatures use upstream parsing types.
  */
 AZ_NODISCARD az_iot_result az_iot_adu_client_initialize(
-    az_iot_adu_client* client,
+    az_iot_adu_client_t* client,
     az_iot_twin_client* twin,
     const az_iot_adu_platform_hooks* hooks,
     const az_iot_adu_crypto_hooks* crypto,
@@ -430,13 +436,13 @@ AZ_NODISCARD az_iot_result az_iot_adu_client_initialize(
  */
 const az_iot_adu_root_key* az_iot_adu_microsoft_root_keys(size_t* out_count);
 
-void az_iot_adu_client_destroy(az_iot_adu_client* client);
+void az_iot_adu_client_destroy(az_iot_adu_client_t* client);
 
 /**
  * Resume a workflow after device reboot. The application SHOULD call this during
  * startup. If no persisted state exists, this is a no-op. (Phase 5.)
  */
-AZ_NODISCARD az_iot_result az_iot_adu_client_resume(az_iot_adu_client* client);
+AZ_NODISCARD az_iot_result az_iot_adu_client_resume(az_iot_adu_client_t* client);
 
 /* --- Runtime ------------------------------------------------------------- */
 
@@ -444,13 +450,13 @@ AZ_NODISCARD az_iot_result az_iot_adu_client_resume(az_iot_adu_client* client);
  * Drive the ADU state machine. The application MUST call this from its do_work
  * loop. Non-blocking: processes at most one chunk of work per invocation.
  */
-AZ_NODISCARD az_iot_result az_iot_adu_client_do_work(az_iot_adu_client* client);
+AZ_NODISCARD az_iot_result az_iot_adu_client_do_work(az_iot_adu_client_t* client);
 
 /** Check if cancellation has been requested (called from within platform hooks). */
-bool az_iot_adu_is_cancelled(const az_iot_adu_client* client);
+bool az_iot_adu_is_cancelled(const az_iot_adu_client_t* client);
 
 /** Get the current ADU agent state. */
-az_iot_adu_state az_iot_adu_client_get_state(const az_iot_adu_client* client);
+az_iot_adu_state az_iot_adu_client_get_state(const az_iot_adu_client_t* client);
 
 /**
  * Update the cached device properties and request a report. Deep-copies
@@ -463,7 +469,7 @@ az_iot_adu_state az_iot_adu_client_get_state(const az_iot_adu_client* client);
  * externally serialized with do_work().
  */
 AZ_NODISCARD az_iot_result az_iot_adu_client_update_device_properties(
-    az_iot_adu_client* client,
+    az_iot_adu_client_t* client,
     const az_iot_adu_device_properties* device_props);
 
 /* --- Agent core-library API (library mode / bring-your-own state machine) - */

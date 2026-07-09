@@ -165,7 +165,7 @@ void app_main(void)
     dp.installed_update_id.version = ADU_UPDATE_VERSION;
 
     static uint8_t dp_buffer[512];
-    az_iot_adu_client adu;
+    az_iot_adu_client_t adu;
     if (az_iot_adu_client_initialize(
             &adu, &twin, &hooks, &crypto, root_keys, root_key_count,
             &dp, dp_buffer, sizeof(dp_buffer)) != AZ_IOT_OK)
