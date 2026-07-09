@@ -204,6 +204,8 @@ jobs:
           if ($env:IOT_DPS_GLOBAL_ENDPOINT) { $env:AZ_IOT_DPS_GLOBAL_ENDPOINT = $env:IOT_DPS_GLOBAL_ENDPOINT }
           # Arm the CSR test; without this it reports a CTest skip (exit 77).
           $env:AZ_IOT_DPS_CSR_ENABLED = '1'
+          # Verbose SDK logging so a connect/DPS failure surfaces its reason.
+          $env:AZ_IOT_E2E_LOG_LEVEL = 'TRACE'
 
           New-Item -ItemType Directory -Path ./test_config/results -Force | Out-Null
           # `-R e2e_csr` selects ONLY az_iot_tests_e2e_csr.

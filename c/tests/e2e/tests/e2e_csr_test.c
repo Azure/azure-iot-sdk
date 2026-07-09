@@ -94,14 +94,18 @@ static char* env_dup(const char* name)
 typedef struct
 {
     az_iot_connection_state_t conn_state;
+    az_iot_result_t last_reason;
     int    issued;
     size_t issued_count;
 } csr_ctx_t;
 
 static void on_conn_state(az_iot_connection_state_t s, az_iot_result_t reason, void* user_ctx)
 {
-    (void)reason;
-    ((csr_ctx_t*)user_ctx)->conn_state = s;
+    csr_ctx_t* c = (csr_ctx_t*)user_ctx;
+    c->conn_state = s;
+    c->last_reason = reason;
+    fprintf(stderr, "[e2e-csr] conn state -> 0x%x (reason 0x%x)\n",
+        (unsigned)s, (unsigned)reason);
 }
 
 static void on_operational_cert(const az_iot_issued_certificate_t* issued, void* user_ctx)
@@ -232,7 +236,19 @@ int main(void)
         return E2E_CSR_SKIP;
     }
 
-    az_iot_log_sink_t log = az_iot_log_stderr_sink(AZ_IOT_LOG_ERROR);
+    /* Log verbosity is env-controlled (AZ_IOT_E2E_LOG_LEVEL=TRACE|DEBUG|INFO|
+     * WARN); default ERROR. CI raises it to surface the connect/DPS failure. */
+    az_iot_log_level_t log_level = AZ_IOT_LOG_ERROR;
+    char* lvl = env_dup("AZ_IOT_E2E_LOG_LEVEL");
+    if (lvl != NULL)
+    {
+        if      (strcmp(lvl, "TRACE") == 0) log_level = AZ_IOT_LOG_TRACE;
+        else if (strcmp(lvl, "DEBUG") == 0) log_level = AZ_IOT_LOG_DEBUG;
+        else if (strcmp(lvl, "INFO")  == 0) log_level = AZ_IOT_LOG_INFO;
+        else if (strcmp(lvl, "WARN")  == 0) log_level = AZ_IOT_LOG_WARN;
+        free(lvl);
+    }
+    az_iot_log_sink_t log = az_iot_log_stderr_sink(log_level);
     az_iot_log_set_global_sink(&log);
 
     const struct CMUnitTest tests[] = {
