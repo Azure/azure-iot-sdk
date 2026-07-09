@@ -925,21 +925,21 @@ static az_iot_result apply_mock_next_bypass(az_iot_connection_client* c)
     char host[256];
     uint16_t port = parse_host_port(endpoint, host, sizeof(host));
 
-    az_iot_result r;
-    r = replace_owned_string(&c->owned_host, &c->opts.host, host);
-    if (r != AZ_IOT_OK) goto done;
-    c->opts.port = port;
-    r = replace_owned_string(&c->owned_client_id, &c->opts.client_id, device_id);
-    if (r != AZ_IOT_OK) goto done;
+    az_iot_result r = replace_owned_string(&c->owned_host, &c->opts.host, host);
+    if (r == AZ_IOT_OK)
+    {
+        c->opts.port = port;
+        r = replace_owned_string(&c->owned_client_id, &c->opts.client_id, device_id);
+    }
+    if (r == AZ_IOT_OK)
+    {
+        c->session_role = AZ_IOT_MQTT_ROLE_HUB_NEXT;
+        c->dps_phase = DPS_PHASE_DONE;
 
-    c->session_role = AZ_IOT_MQTT_ROLE_HUB_NEXT;
-    c->dps_phase = DPS_PHASE_DONE;
+        fprintf(stderr, "[conn] Mock-Next bypass: host=%s port=%u device=%s\n",
+                host, (unsigned)port, device_id);
+    }
 
-    fprintf(stderr, "[conn] Mock-Next bypass: host=%s port=%u device=%s\n",
-            host, (unsigned)port, device_id);
-    r = AZ_IOT_OK;
-
-done:
 #ifdef _WIN32
     free(ep_buf);
     free(id_buf);
