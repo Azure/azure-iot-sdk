@@ -2,6 +2,22 @@
 // Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
 /* SPDX-License-Identifier: MIT */
+
+/* ALLOCATION POLICY -- deliberate, documented exception to the SDK's
+ * "no dynamic allocation in src/" rule.
+ *
+ * This is the *reference* filesystem PEM loader: an I/O boundary, in the same
+ * category as the Paho/OpenSSL MQTT adapters (which are likewise permitted to
+ * allocate). It reads variable-size cert/key/CA files into heap buffers ONCE at
+ * init() -- never on any hot path -- so a device that has a filesystem can
+ * bootstrap X.509 auth with minimal ceremony. Reading arbitrary-size files
+ * without a hard size cap is what intrinsically requires the allocation.
+ *
+ * The core state machine (connection_client) and the feature clients remain
+ * allocation-free. Constrained / no-filesystem targets should instead supply
+ * their own az_iot_certificate_provider (TPM/HSM/secure element, or compiled-in
+ * PEM) that performs no allocation and no file I/O -- the vtable contract is
+ * identical. */
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
