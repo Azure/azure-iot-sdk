@@ -9,7 +9,7 @@ namespace Microsoft.Azure.Devices.Client.Mqtt
         ///     The content type must be a UTF-8 encoded string. The content type value identifies the kind of UTF-8 encoded
         ///     payload.
         /// </summary>
-        public string ContentType { get; set; }
+        public string? ContentType { get; set; }
 
         /// <summary>
         ///     Gets or sets the correlation data.
@@ -17,7 +17,7 @@ namespace Microsoft.Azure.Devices.Client.Mqtt
         ///     published message.
         ///     Hint: MQTT 5 feature only.
         /// </summary>
-        public byte[] CorrelationData { get; set; }
+        public byte[]? CorrelationData { get; set; }
 
         /// <summary>
         ///     Gets or sets the message expiry interval.
@@ -96,7 +96,7 @@ namespace Microsoft.Azure.Devices.Client.Mqtt
         ///     The topic consists of one or more topic levels. Each topic level is separated by a forward slash (topic level
         ///     separator).
         /// </summary>
-        public string Topic { get; set; }
+        public required string Topic { get; set; }
 
         /// <summary>
         ///     Gets or sets the user properties.
@@ -107,7 +107,7 @@ namespace Microsoft.Azure.Devices.Client.Mqtt
         ///     The feature is very similar to the HTTP header concept.
         ///     Hint: MQTT 5 feature only.
         /// </summary>
-        public List<MqttUserProperty> UserProperties { get; set; }
+        public List<MqttUserProperty> UserProperties { get; set; } = new();
 
         public void AddUserProperty(string key, string value)
         {

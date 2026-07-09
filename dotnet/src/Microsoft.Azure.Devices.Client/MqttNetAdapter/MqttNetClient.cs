@@ -57,12 +57,12 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
             }
             else
             {
-                string uriString = connect.WebsocketUri; // TODO this is diff for hub vs DPS
+                string? uriString = connect.WebsocketUri; // TODO this is diff for hub vs DPS
                 optionsBuilder.WithWebSocketServer(options =>
                 {
                     options.WithUri(uriString);
 
-                    if (_proxy != null)
+                    if (_proxy != null && uriString != null)
                     {
                         Uri serviceUri = new(uriString);
                         Uri? proxyUri = _proxy.GetProxy(serviceUri);

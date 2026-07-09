@@ -236,13 +236,7 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
 
         internal static MqttSubscribeAck ToGeneric(MqttClientSubscribeResult suback)
         {
-            MqttSubscribeAck generic = new()
-            {
-                UserProperties = ToGeneric(suback.UserProperties),
-                ReasonString = suback.ReasonString
-            };
-
-            List<MqttSubscribeResult> genericItems = new();
+            List<MqttSubscribeAckItem> genericItems = new();
             if (suback.Items != null)
             {
                 foreach (var mqttnetSubscribeResultItem in suback.Items)
@@ -254,6 +248,13 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
                     });
                 }
             }
+
+            MqttSubscribeAck generic = new()
+            {
+                UserProperties = ToGeneric(suback.UserProperties),
+                ReasonString = suback.ReasonString,
+                Items = genericItems,
+            };
 
             generic.Items = genericItems;
 

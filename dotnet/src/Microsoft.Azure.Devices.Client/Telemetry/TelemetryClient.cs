@@ -56,7 +56,7 @@ namespace Microsoft.Azure.Devices.Client.Telemetry
                 //TODO fill in content type, encoding, etc from message user properties
                 var mqttMessage = new MqttPublish
                 {
-                    Topic = "someTelemetryTopic",
+                    Topic = "devices/" + _connection.CurrentConnectionContext.DeviceId + "/messages/events/",
                     PayloadAsByteArray = message.Payload,
                     QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce,
                 };

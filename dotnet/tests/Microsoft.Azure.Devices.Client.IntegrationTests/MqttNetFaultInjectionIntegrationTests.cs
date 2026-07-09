@@ -43,7 +43,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
 
             // The first connection attempt should fail, but the session client's retry policy should make it
             // connect again. The broker should accept the second connection attempt.
-            var connAck = await mqttClient.ConnectAsync(connectPacket);
+            var connAck = await mqttClient.ConnectAsync(connectPacket, TestContext.Current.CancellationToken);
             Assert.Equal(MqttConnectResultCode.Success, connAck.ResultCode);
         }
 
@@ -52,7 +52,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
         {
             MqttSessionClient mqttClient = new();
             MqttConnect connectPacket = CreateConnectPacket();
-            await mqttClient.ConnectAsync(connectPacket);
+            await mqttClient.ConnectAsync(connectPacket, TestContext.Current.CancellationToken);
 
             TaskCompletionSource<MqttClientDisconnectedEventArgs> faultWasInjectedTcs = new();
             mqttClient.DisconnectedAsync += (args) =>
@@ -77,11 +77,11 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
             faultMessage.AddUserProperty(FaultInjectionTestConstants.disconnectFaultDelayName, "1");
             faultMessage.AddUserProperty(FaultInjectionTestConstants.faultRequestIdName, Guid.NewGuid().ToString());
 
-            var result = await mqttClient.PublishAsync(faultMessage).WaitAsync(TimeSpan.FromMinutes(1));
+            var result = await mqttClient.PublishAsync(faultMessage, TestContext.Current.CancellationToken);
             Assert.Equal(MqttClientPublishReasonCode.NoMatchingSubscribers, result.ReasonCode);
 
             // Wait until the fault injection happens or until a timeout
-            var faultDetails = await faultWasInjectedTcs.Task.WaitAsync(TimeSpan.FromSeconds(30));
+            var faultDetails = await faultWasInjectedTcs.Task.WaitAsync(TestContext.Current.CancellationToken);
             Assert.Equal(expectedReason, faultDetails.Reason);
 
             // The session client should handle the fault and reconnect either prior to this publish or after this publish
@@ -92,7 +92,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
                 QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce,
             };
 
-            result = await mqttClient.PublishAsync(subsequentPublish);
+            result = await mqttClient.PublishAsync(subsequentPublish, TestContext.Current.CancellationToken);
             Assert.Equal(MqttClientPublishReasonCode.NoMatchingSubscribers, result.ReasonCode);
         }
 
@@ -101,7 +101,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
         {
             MqttSessionClient mqttClient = new();
             MqttConnect connectPacket = CreateConnectPacket();
-            await mqttClient.ConnectAsync(connectPacket);
+            await mqttClient.ConnectAsync(connectPacket, TestContext.Current.CancellationToken);
 
 
             TaskCompletionSource<MqttClientDisconnectedEventArgs> faultWasInjectedTcs = new();
@@ -124,9 +124,9 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
             faultMessage.AddUserProperty(FaultInjectionTestConstants.disconnectFaultName, "" + ((int)expectedReason));
             faultMessage.AddUserProperty(FaultInjectionTestConstants.faultRequestIdName, Guid.NewGuid().ToString());
 
-            var result = await mqttClient.PublishAsync(faultMessage).WaitAsync(TimeSpan.FromMinutes(1));
+            var result = await mqttClient.PublishAsync(faultMessage, TestContext.Current.CancellationToken);
 
-            Assert.Equal(expectedReason, (await faultWasInjectedTcs.Task.WaitAsync(TimeSpan.FromMinutes(1))).Reason);
+            Assert.Equal(expectedReason, (await faultWasInjectedTcs.Task.WaitAsync(TestContext.Current.CancellationToken)).Reason);
             Assert.Equal(MqttClientPublishReasonCode.NoMatchingSubscribers, result.ReasonCode);
         }
 
@@ -135,7 +135,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
         {
             MqttSessionClient mqttClient = new();
             MqttConnect connectPacket = CreateConnectPacket();
-            await mqttClient.ConnectAsync(connectPacket);
+            await mqttClient.ConnectAsync(connectPacket, TestContext.Current.CancellationToken);
 
             TaskCompletionSource<MqttClientDisconnectedEventArgs> faultWasInjectedTcs = new();
             mqttClient.DisconnectedAsync += (args) =>
@@ -150,9 +150,9 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
             subscribeOptions.AddUserProperty(FaultInjectionTestConstants.disconnectFaultName, "" + ((int)expectedReason));
             subscribeOptions.AddUserProperty(FaultInjectionTestConstants.faultRequestIdName, Guid.NewGuid().ToString());
 
-            MqttSubscribeAck subscribeResult = await mqttClient.SubscribeAsync(subscribeOptions).WaitAsync(TimeSpan.FromMinutes(1));
+            MqttSubscribeAck subscribeResult = await mqttClient.SubscribeAsync(subscribeOptions, TestContext.Current.CancellationToken);
 
-            Assert.Equal(expectedReason, (await faultWasInjectedTcs.Task.WaitAsync(TimeSpan.FromMinutes(1))).Reason);
+            Assert.Equal(expectedReason, (await faultWasInjectedTcs.Task.WaitAsync(TestContext.Current.CancellationToken)).Reason);
             Assert.Single(subscribeResult.Items);
         }
 
@@ -161,7 +161,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
         {
             MqttSessionClient mqttClient = new();
             MqttConnect connectPacket = CreateConnectPacket();
-            await mqttClient.ConnectAsync(connectPacket);
+            await mqttClient.ConnectAsync(connectPacket, TestContext.Current.CancellationToken);
 
             TaskCompletionSource<MqttClientDisconnectedEventArgs> faultWasInjectedTcs = new();
             mqttClient.DisconnectedAsync += (args) =>
@@ -171,16 +171,16 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
             };
 
             string expectedTopic = "myTopic/" + Guid.NewGuid().ToString();
-            await mqttClient.SubscribeAsync(new MqttSubscribe(expectedTopic, MqttQualityOfServiceLevel.AtLeastOnce));
+            await mqttClient.SubscribeAsync(new MqttSubscribe(expectedTopic, MqttQualityOfServiceLevel.AtLeastOnce), TestContext.Current.CancellationToken);
 
             MqttClientDisconnectReason expectedReason = MqttClientDisconnectReason.ConnectionRateExceeded;
             var unsubscribeOptions = new MqttUnsubscribe(expectedTopic);
             unsubscribeOptions.AddUserProperty(FaultInjectionTestConstants.disconnectFaultName, "" + ((int)expectedReason));
             unsubscribeOptions.AddUserProperty(FaultInjectionTestConstants.faultRequestIdName, Guid.NewGuid().ToString());
             MqttUnsubscribeAck unsubscribeResult =
-                await mqttClient.UnsubscribeAsync(unsubscribeOptions).WaitAsync(TimeSpan.FromMinutes(1));
+                await mqttClient.UnsubscribeAsync(unsubscribeOptions, TestContext.Current.CancellationToken);
 
-            Assert.Equal(expectedReason, (await faultWasInjectedTcs.Task.WaitAsync(TimeSpan.FromMinutes(1))).Reason);
+            Assert.Equal(expectedReason, (await faultWasInjectedTcs.Task.WaitAsync(TestContext.Current.CancellationToken)).Reason);
             Assert.Single(unsubscribeResult.Items);
         }
     }

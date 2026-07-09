@@ -13,26 +13,26 @@ namespace Microsoft.Azure.Devices.Client.FileUpload
         /// returned from IoT hub when first getting the SAS Uri for this file upload 
         /// </summary>
         [JsonPropertyName("correlationId")]
-        public string CorrelationId { get; set; }
+        public required string CorrelationId { get; set; }
 
         /// <summary>
         /// Whether the file upload was successful or not. This field is mandatory.
         /// </summary>
         [JsonPropertyName("isSuccess")]
-        public bool IsSuccess { get; set; }
+        public required bool IsSuccess { get; set; }
 
         /// <summary>
         /// The status code for the file upload. This is user defined and will be presented to the service client listening
         /// for file upload notifications. This field is optional.
         /// </summary>
         [JsonPropertyName("statusCode")]
-        public int StatusCode { get; set; }
+        public int? StatusCode { get; set; }
 
         /// <summary>
         /// A brief description of the file upload status. This is user defined and will be presented to the service client listening
         /// for file upload notifications. This field is optional.
         /// </summary>
         [JsonPropertyName("statusDescription")]
-        public string StatusDescription { get; set; }
+        public string? StatusDescription { get; set; }
     }
 }

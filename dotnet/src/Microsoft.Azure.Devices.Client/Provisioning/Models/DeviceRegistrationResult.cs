@@ -16,7 +16,7 @@ namespace Microsoft.Azure.Devices.Client.Provisioning.Models
         /// This id is used to uniquely identify a device registration of an enrollment.
         /// </summary>
         [JsonPropertyName("registrationId")]
-        public required string RegistrationId { get; set; }
+        public string RegistrationId { get; set; }
 
         /// <summary>
         /// Registration create date time (in UTC).
@@ -28,13 +28,13 @@ namespace Microsoft.Azure.Devices.Client.Provisioning.Models
         /// The assigned Azure IoT hub.
         /// </summary>
         [JsonPropertyName("assignedHub")]
-        public required string AssignedHub { get; set; }
+        public string AssignedHub { get; set; }
 
         /// <summary>
         /// The Device Id.
         /// </summary>
         [JsonPropertyName("deviceId")]
-        public required string DeviceId { get; set; }
+        public string DeviceId { get; set; }
 
         /// <summary>
         /// The status of the operation.

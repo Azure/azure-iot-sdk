@@ -185,7 +185,6 @@ namespace Microsoft.Azure.Devices.Client.DirectMethods
                 DirectMethodRequestReceivedEventArgs directMethodInvokedArgs = new()
                 {
                     MethodName = methodName,
-                    RequestId = requestId.Value.ToString(),
                     Payload = exec.Params.Span.ToArray()
                 };
 
@@ -270,7 +269,6 @@ namespace Microsoft.Azure.Devices.Client.DirectMethods
             {
                 Payload = payload,
                 MethodName = methodName,
-                RequestId = requestId,
             };
 
             DirectMethodResponse methodResponse = await DirectMethodInvokedAsync!.Invoke(methodRequest);
