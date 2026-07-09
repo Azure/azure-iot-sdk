@@ -150,7 +150,7 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c);
 
 /* Forward decl — used in dps_apply_deferred(). */
 static az_iot_result replace_owned_string(
-    char** owned_slot, const char** opts_slot, const char* s);
+    char* owned_buf, size_t buf_cap, const char** opts_slot, const char* s);
 
 static void schedule_reconnect(az_iot_connection_client* c, az_iot_result reason)
 {
@@ -610,9 +610,9 @@ static void dps_apply_deferred(az_iot_connection_client* c)
 
     /* Apply the assigned hub + device_id and connect to the hub. */
     az_iot_result r;
-    r = replace_owned_string(&c->owned_host, &c->opts.host, c->dps_assigned_hub);
+    r = replace_owned_string(c->owned_host, sizeof(c->owned_host), &c->opts.host, c->dps_assigned_hub);
     if (r != AZ_IOT_OK) { transition(c, AZ_IOT_CONN_STATE_FAULTED, r); return; }
-    r = replace_owned_string(&c->owned_client_id, &c->opts.client_id, c->dps_assigned_device_id);
+    r = replace_owned_string(c->owned_client_id, sizeof(c->owned_client_id), &c->opts.client_id, c->dps_assigned_device_id);
     if (r != AZ_IOT_OK) { transition(c, AZ_IOT_CONN_STATE_FAULTED, r); return; }
     c->session_role = AZ_IOT_MQTT_ROLE_HUB_CLASSIC;
     c->dps_phase = DPS_PHASE_NONE;
@@ -925,11 +925,11 @@ static az_iot_result apply_mock_next_bypass(az_iot_connection_client* c)
     char host[256];
     uint16_t port = parse_host_port(endpoint, host, sizeof(host));
 
-    az_iot_result r = replace_owned_string(&c->owned_host, &c->opts.host, host);
+    az_iot_result r = replace_owned_string(c->owned_host, sizeof(c->owned_host), &c->opts.host, host);
     if (r == AZ_IOT_OK)
     {
         c->opts.port = port;
-        r = replace_owned_string(&c->owned_client_id, &c->opts.client_id, device_id);
+        r = replace_owned_string(c->owned_client_id, sizeof(c->owned_client_id), &c->opts.client_id, device_id);
     }
     if (r == AZ_IOT_OK)
     {
@@ -1000,7 +1000,7 @@ az_iot_result az_iot_connection_client_init(
         if (dev_id && dev_id[0])
         {
             (void)replace_owned_string(
-                &client->owned_client_id, &client->opts.client_id, dev_id);
+                client->owned_client_id, sizeof(client->owned_client_id), &client->opts.client_id, dev_id);
         }
 #ifdef _WIN32
         free(id_buf);
@@ -1028,8 +1028,7 @@ void az_iot_connection_client_destroy(az_iot_connection_client* client)
         if (client->factories[i].destroy)
             client->factories[i].destroy(client->factories[i].factory_ctx);
     }
-    free(client->owned_host);
-    free(client->owned_client_id);
+    /* owned_host / owned_client_id are inline fixed buffers; nothing to free. */
 }
 
 az_iot_result az_iot_connection_client_register_mqtt_factory(
@@ -1259,21 +1258,17 @@ az_iot_result az_iot_connection_client__set_session_role(
     return AZ_IOT_OK;
 }
 
-/* Internal helper used by both __set_host and __set_client_id. Duplicates `s`,
- * frees `*owned_slot`'s previous value, and writes the new pointer to both
- * `*owned_slot` (for ownership/free) and `*opts_slot` (the live pointer the
- * rest of the code reads). */
+/* Internal helper used by both __set_host and __set_client_id. Copies `s` into
+ * the in-struct fixed buffer `owned_buf` (bounded by `buf_cap`) and points
+ * `*opts_slot` (the live pointer the rest of the code reads) at it. No heap. */
 static az_iot_result replace_owned_string(
-    char** owned_slot, const char** opts_slot, const char* s)
+    char* owned_buf, size_t buf_cap, const char** opts_slot, const char* s)
 {
     if (!s || !s[0]) return AZ_IOT_ERR_INVALID_ARG;
     size_t n = strlen(s);
-    char* dup = (char*)malloc(n + 1);
-    if (!dup) return AZ_IOT_ERR_OUT_OF_MEMORY;
-    memcpy(dup, s, n + 1);
-    free(*owned_slot);
-    *owned_slot = dup;
-    *opts_slot = dup;
+    if (n + 1 > buf_cap) return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+    memcpy(owned_buf, s, n + 1);
+    *opts_slot = owned_buf;
     return AZ_IOT_OK;
 }
 
@@ -1282,7 +1277,7 @@ az_iot_result az_iot_connection_client__set_host(
 {
     if (!client) return AZ_IOT_ERR_INVALID_ARG;
     if (client->state != AZ_IOT_CONN_STATE_IDLE) return AZ_IOT_ERR_ALREADY_INITIALIZED;
-    return replace_owned_string(&client->owned_host, &client->opts.host, host);
+    return replace_owned_string(client->owned_host, sizeof(client->owned_host), &client->opts.host, host);
 }
 
 az_iot_result az_iot_connection_client__set_client_id(
@@ -1290,7 +1285,7 @@ az_iot_result az_iot_connection_client__set_client_id(
 {
     if (!client) return AZ_IOT_ERR_INVALID_ARG;
     if (client->state != AZ_IOT_CONN_STATE_IDLE) return AZ_IOT_ERR_ALREADY_INITIALIZED;
-    return replace_owned_string(&client->owned_client_id, &client->opts.client_id, client_id);
+    return replace_owned_string(client->owned_client_id, sizeof(client->owned_client_id), &client->opts.client_id, client_id);
 }
 
 void az_iot_connection_client__seed_rng(

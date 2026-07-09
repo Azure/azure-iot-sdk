@@ -192,8 +192,10 @@ struct az_iot_connection_client
         bool  in_use;
     } persistent_subs[AZ_IOT_MAX_PERSISTENT_SUBS];
 
-    char* owned_host;
-    char* owned_client_id;
+    /* Effective host / client_id when not caller-provided (DPS-assigned, mock, or
+     * runtime-set). Inline fixed buffers in this caller-allocated struct -- no heap. */
+    char  owned_host[AZ_IOT_DPS_HOST_BUF];
+    char  owned_client_id[AZ_IOT_DPS_DEVICE_ID_BUF];
 
     int dps_phase;
     az_iot_provisioning_client dps_prov;
