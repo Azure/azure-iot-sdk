@@ -429,8 +429,19 @@ static void on_dps_mqtt_event(const az_iot_mqtt_event_t* evt, void* user_ctx)
                 }
                 case AZ_IOT_PROVISIONING_STATUS_FAILED:
                 case AZ_IOT_PROVISIONING_STATUS_DISABLED:
-                    dps_finalize(c, AZ_IOT_ERR_MQTT, false);
+                {
+                    /* Surface the DPS-reported failure (errorCode/errorMessage in
+                     * the response body) so a provisioning rejection is
+                     * diagnosable instead of an opaque fault. */
+                    char detail[384];
+                    (void)snprintf(detail, sizeof(detail),
+                        "dps register: provisioning failed/disabled; DPS response: %.*s",
+                        (int)az_span_size(payload_span),
+                        (const char*)az_span_ptr(payload_span));
+                    AZ_IOT_LOG_ERROR(detail);
+                    dps_finalize(c, AZ_IOT_ERR_DPS, false);
                     return;
+                }
 
                 case AZ_IOT_PROVISIONING_STATUS_UNASSIGNED:
                 case AZ_IOT_PROVISIONING_STATUS_ASSIGNING:
