@@ -68,6 +68,13 @@
 /* DPS registration body carrying the operational-cert CSR (base64 DER). */
 #define DPS_REGISTER_CSR_BODY_FORMAT   "{\"csr\":\"%s\"}"
 
+/* CSR-based operational-certificate issuance (Azure Device Registration / ADR)
+ * requires a newer DPS API version than the azure-sdk-for-c default GA version
+ * ("2019-03-31"), which does not support it. When enrolling for an operational
+ * certificate the DPS MQTT username is rebuilt with this version. */
+#define DPS_CSR_API_VERSION            "2025-07-01-preview"
+#define DPS_USERNAME_CSR_FORMAT        "%s/registrations/%s/api-version=" DPS_CSR_API_VERSION
+
 /* DPS ASSIGNED result fields that carry the issued operational chain. */
 #define DPS_JSON_REGISTRATION_STATE    "registrationState"
 #define DPS_JSON_ISSUED_CERT_CHAIN     "issuedCertificateChain"
@@ -507,12 +514,24 @@ static az_iot_result_t dps_start(az_iot_connection_client_t* c)
     copts.keep_alive_seconds = 30;
     copts.connect_timeout_ms = 30000;
 
-    /* Build DPS MQTT username via azure-sdk-for-c. */
+    /* Build the DPS MQTT username. CSR-based operational-certificate issuance
+     * (Azure Device Registration) requires a newer DPS API version than the
+     * azure-sdk-for-c default (2019-03-31); build the username with it when
+     * enrolling, otherwise use the SDK helper for the default version. */
     char dps_username[AZ_IOT_MQTT_USERNAME_BUF];
-    size_t dps_username_len = 0;
-    ar = az_iot_provisioning_client_get_user_name(
-        &c->dps_prov, dps_username, sizeof(dps_username), &dps_username_len);
-    if (az_result_failed(ar)) return AZ_IOT_ERR_INTERNAL;
+    if (c->opts.dps.request_operational_certificate)
+    {
+        int n = snprintf(dps_username, sizeof(dps_username), DPS_USERNAME_CSR_FORMAT,
+                         c->opts.dps.id_scope, c->opts.dps.registration_id);
+        if (n < 0 || (size_t)n >= sizeof(dps_username)) return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+    }
+    else
+    {
+        size_t dps_username_len = 0;
+        ar = az_iot_provisioning_client_get_user_name(
+            &c->dps_prov, dps_username, sizeof(dps_username), &dps_username_len);
+        if (az_result_failed(ar)) return AZ_IOT_ERR_INTERNAL;
+    }
     copts.username = dps_username;
     fprintf(stderr, "[conn] DPS username: %s\n", dps_username);
 
