@@ -7,6 +7,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdbool.h>
 
 #include "az_iot_result.h"
 #include "az_iot_connection_client.h"
@@ -15,8 +16,32 @@
 extern "C" {
 #endif
 
-/* Opaque request handle delivered to the user; required to respond. */
-typedef struct az_iot_direct_method_request az_iot_direct_method_request;
+/* Storage bounds for the request handle (see az_iot_direct_method_request). */
+#define AZ_IOT_DM_METHOD_NAME_MAX 96
+#define AZ_IOT_DM_RID_MAX         32
+#define AZ_IOT_DM_CORR_DATA_MAX   64
+/* Max concurrent in-flight method requests one client can hold. Requests may
+ * outlive the handler (the app can respond asynchronously), so they live in a
+ * bounded pool inside this caller-allocated struct rather than on the heap. */
+#define AZ_IOT_DM_MAX_INFLIGHT    4
+
+typedef struct az_iot_direct_method_client az_iot_direct_method_client;
+
+/* Request handle delivered to the user's handler and passed back to
+ * az_iot_direct_method_respond(). Opaque to callers -- do NOT read _internal. */
+typedef struct az_iot_direct_method_request
+{
+    struct
+    {
+        az_iot_direct_method_client* owner;
+        char rid[AZ_IOT_DM_RID_MAX];
+        char method_name[AZ_IOT_DM_METHOD_NAME_MAX];
+        uint8_t correlation_data[AZ_IOT_DM_CORR_DATA_MAX];
+        size_t correlation_data_len;
+        bool is_next;
+        bool in_use; /* pool slot occupied: acquired -> responded */
+    } _internal;
+} az_iot_direct_method_request;
 
 typedef void (*az_iot_direct_method_handler_callback)(
     az_iot_direct_method_request* request,
@@ -32,6 +57,7 @@ typedef struct az_iot_direct_method_client
         az_iot_connection_client* conn;
         az_iot_direct_method_handler_callback handler;
         void* handler_ctx;
+        az_iot_direct_method_request req_pool[AZ_IOT_DM_MAX_INFLIGHT];
     } _internal;
 } az_iot_direct_method_client;
 
