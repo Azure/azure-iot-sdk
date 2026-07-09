@@ -14,13 +14,23 @@ inputs:
     description: Resource group name prefix (e.g. CSDKE2EFast-).
     required: true
   azure-location:
-    description: Azure region to provision in. ADU is only available in a subset (EastUS).
+    description: >-
+      Azure region to provision in. ADU is only available in a subset (EastUS);
+      certificate management (ADR) is a preview feature and needs a canary region
+      (e.g. centraluseuap).
     required: false
     default: EastUS
   enable-adu:
     description: New-AzIotTestEnvironment -EnableADU value (None|Gen1|Gen2).
     required: false
     default: None
+  enable-certificate-management:
+    description: >-
+      When 'true', pass -EnableCertificateManagement to New-AzIotTestEnvironment so DPS is
+      provisioned with Azure Device Registration (ADR) integration -- the enrollments can then
+      issue an operational certificate in response to a device CSR (required by the CSR e2e).
+    required: false
+    default: 'false'
   iothub-x509-thumbprint-devices:
     description: Number of x509-thumbprint IoT Hub devices to create.
     required: false
@@ -29,6 +39,14 @@ inputs:
     description: Number of DPS x509 individual enrollments to create.
     required: false
     default: '1'
+  dps-x509-group-enrollment-devices:
+    description: >-
+      Number of devices for a DPS x509 ENROLLMENT GROUP linked to the provisioned signing CA
+      (New-AzIotTestEnvironment -DpsX509GroupEnrollmentDevices). A value > 0 creates the group
+      whose issuer certificate is emitted as PROVISIONING_ROOT_CERT(_KEY); required for the CSR
+      e2e, where the device presents a leaf signed by that CA and DPS issues its operational cert.
+    required: false
+    default: '0'
   config-cmdlet:
     description: Cmdlet that renders the per-pipeline test config (e.g. New-AzIotCSDKE2ETestConfig).
     required: false
@@ -66,5 +84,40 @@ runs:
           $TestEnvInfo = New-AzIotTestEnvironment -AzureLocation "${{ inputs.azure-location }}" -ResourceGroup $ResourceGroupName `
             -IotHubX509ThumbprintDevices ${{ inputs.iothub-x509-thumbprint-devices }} `
             -DpsX509IndividualEnrollments ${{ inputs.dps-x509-individual-enrollments }} `
-            -EnableADU ${{ inputs.enable-adu }}
+            -DpsX509GroupEnrollmentDevices ${{ inputs.dps-x509-group-enrollment-devices }} `
+            -EnableADU ${{ inputs.enable-adu }} ${{ inputs.enable-certificate-management == 'true' && '-EnableCertificateManagement' || '' }}
           & "${{ inputs.config-cmdlet }}" -TestEnvInfo $TestEnvInfo -Target ${{ inputs.config-target }} -OutFile "${{ inputs.out-file }}"
+
+          # When an X.509 enrollment GROUP was provisioned, the group's issuer is
+          # an INTERMEDIATE CA (created by the framework and signed by the root);
+          # PROVISIONING_ROOT_CERT is NOT that issuer, so a root-signed leaf would
+          # be rejected. Emit a bootstrap device identity under the group (a leaf
+          # signed by the group's issuer CA) as a full chain (leaf + issuer CA +
+          # root) + key + registration id, for consumers driving a CSR flow. The
+          # config cmdlets do not emit group X.509 identities, so do it here.
+          # Guarded on GroupX509 presence -> no-op for callers without a group.
+          if ($TestEnvInfo.Dps.Enrollments.GroupX509.Count -gt 0) {
+            $group = $TestEnvInfo.Dps.Enrollments.GroupX509[0]
+            # Reuse a device identity minted during provisioning; mint one only if
+            # the group has none (both paths produce a leaf signed by the issuer CA).
+            if ($group.Identities.Count -gt 0) {
+              $identity = $group.Identities[0]
+            } else {
+              $identity = $group.AddIdentity("csr-bootstrap-$(Get-Random -Minimum 100000 -Maximum 999999)", [timespan]::FromDays(2))
+            }
+            $regId = $identity.Id
+            $chainPem = $identity.Certificate.ToPem() + "`n" + $group.Certificate.ToPem() + "`n" + $TestEnvInfo.Dps.RootCaCertificates[0].ToPem()
+            $keyPem = $identity.Certificate.PrivateKey.ToRsaPkcs1Pem()
+            $certB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($chainPem))
+            $keyB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($keyPem))
+            if ("${{ inputs.config-target }}" -eq "powershell") {
+              Add-Content -Path "${{ inputs.out-file }}" -Value "`$env:IOT_DPS_GROUP_X509_CERTIFICATE = `"$certB64`""
+              Add-Content -Path "${{ inputs.out-file }}" -Value "`$env:IOT_DPS_GROUP_X509_KEY = `"$keyB64`""
+              Add-Content -Path "${{ inputs.out-file }}" -Value "`$env:IOT_DPS_GROUP_X509_REGISTRATION_ID = `"$regId`""
+            } else {
+              Add-Content -Path "${{ inputs.out-file }}" -Value "export IOT_DPS_GROUP_X509_CERTIFICATE=`"$certB64`""
+              Add-Content -Path "${{ inputs.out-file }}" -Value "export IOT_DPS_GROUP_X509_KEY=`"$keyB64`""
+              Add-Content -Path "${{ inputs.out-file }}" -Value "export IOT_DPS_GROUP_X509_REGISTRATION_ID=`"$regId`""
+            }
+            Write-Host "Emitted X.509 group bootstrap identity: $regId"
+          }

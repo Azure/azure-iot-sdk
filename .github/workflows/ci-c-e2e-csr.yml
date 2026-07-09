@@ -1,0 +1,243 @@
+# Copyright (c) Microsoft. All rights reserved.
+# Licensed under the MIT license. See LICENSE file in the project root for full license information.
+
+# End-to-end CSR-based DPS enrollment (certificate management) test for the C SDK.
+#
+# Why a separate workflow
+# -----------------------
+# The certificate-management CSR scenario needs a HEAVIER environment than the
+# fast e2e job: the Device Provisioning Service must be provisioned with Azure
+# Device Registration (ADR) integration so it can issue an OPERATIONAL
+# certificate in response to a device's CSR. The fast ci-c-e2e job provisions a
+# plain DPS, so the CSR test (`az_iot_tests_e2e_csr`) self-skips there (CTest
+# exit 77 unless AZ_IOT_DPS_CSR_ENABLED is set). This workflow provisions the
+# cert-management environment (via `enable-certificate-management` on the shared
+# provision step) and actually exercises the CSR path.
+#
+# Architecture
+# ------------
+# In-process: the native `az_iot_tests_e2e_csr` CTest is the device. It
+#   1. authenticates to DPS with an X.509 BOOTSTRAP identity (a leaf signed by
+#      the enrollment group's signing CA),
+#   2. sends a CSR (from the OpenSSL managed certificate provider) in the DPS
+#      register body (request_operational_certificate=true),
+#   3. receives the DPS-issued operational certificate chain, and
+#   4. connects to the assigned IoT Hub with the issued OPERATIONAL identity.
+# Reaching CONNECTED with the issued cert is the hub's proof it authenticated a
+# DPS-issued certificate. Both the EC (P-256) and RSA-2048 key types are driven.
+#
+# The environment is provisioned with an X.509 enrollment GROUP linked to a
+# signing CA (only a group linked to a CA can issue an operational cert for a
+# CSR; a plain individual enrollment cannot). The group's issuer is an
+# intermediate CA the framework creates, so the provisioning step also mints a
+# bootstrap device identity UNDER the group (a leaf signed by that issuer) and
+# emits it as IOT_DPS_GROUP_X509_* for the test to use directly.
+#
+# Stages
+# ------
+#   1. setup    : provision the cert-management resource group ONCE (DPS + ADR +
+#                 the X.509 enrollment group), mint the bootstrap identity, and
+#                 publish the config as an artifact.
+#   2. test     : build `az_iot_tests_e2e_csr`, materialize the bootstrap chain +
+#                 key, arm the test (AZ_IOT_DPS_CSR_ENABLED=1) and run
+#                 `ctest -R e2e_csr`.
+#   3. teardown : always() deletes the resource group.
+#
+# The provision/destroy steps live in .github/actions/{provision,destroy}-e2e-
+# resources so other pipelines can reuse them.
+
+name: ci-c-e2e-csr
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      # CSR / certificate-management device-side code.
+      - 'c/src/core/connection_client.c'
+      - 'c/src/core/cert_util.c'
+      - 'c/src/core/internal/cert_util.h'
+      - 'c/adapters/cert_openssl/**'
+      - 'c/inc/azure/iot/az_iot_certificate_provider.h'
+      - 'c/inc/azure/iot/az_iot_connection_client.h'
+      # The e2e harness (shared device fixture + CSR test + service facade) and
+      # the provisioning wiring this workflow depends on.
+      - 'c/tests/e2e/**'
+      - '.github/workflows/ci-c-e2e-csr.yml'
+      - '.github/actions/provision-e2e-resources/**'
+      - '.github/actions/destroy-e2e-resources/**'
+  push:
+    branches: [ main ]
+    paths:
+      - 'c/src/core/connection_client.c'
+      - 'c/src/core/cert_util.c'
+      - 'c/src/core/internal/cert_util.h'
+      - 'c/adapters/cert_openssl/**'
+      - 'c/inc/azure/iot/az_iot_certificate_provider.h'
+      - 'c/inc/azure/iot/az_iot_connection_client.h'
+      - 'c/tests/e2e/**'
+      - '.github/workflows/ci-c-e2e-csr.yml'
+      - '.github/actions/provision-e2e-resources/**'
+      - '.github/actions/destroy-e2e-resources/**'
+  schedule:
+    - cron: '0 12 * * *'  # Nightly at 5am PST (offset from the fast + ADU workflows)
+
+# Cancel superseded runs on the same ref to avoid leaking parallel resource groups.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  id-token: write   # required for azure/login OIDC
+
+jobs:
+  setup:
+    name: setup (provision)
+    runs-on: ubuntu-latest
+    # Cert-management provisioning is heavier than the fast path: it creates an
+    # ADR namespace/policy, role assignments, and an ADR-integrated DPS.
+    timeout-minutes: 60
+    outputs:
+      rg: ${{ steps.provision.outputs.resource-group }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure Login via OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Provision cert-management resources
+        id: provision
+        uses: ./.github/actions/provision-e2e-resources
+        with:
+          rg-prefix: CSDKE2ECert-
+          # Azure Device Registration (ADR) is a preview feature available only
+          # in canary regions; provision there (matches the cert-mgmt pipeline).
+          azure-location: centraluseuap
+          # Provision the DPS with Azure Device Registration (ADR) integration so
+          # the enrollment can issue an operational certificate for the device CSR.
+          enable-certificate-management: 'true'
+          # Create an X.509 enrollment GROUP linked to the provisioned signing CA
+          # (emitted as PROVISIONING_ROOT_CERT). The device presents a bootstrap
+          # leaf signed by that CA; DPS authenticates it against the group and
+          # issues the operational certificate in response to the CSR.
+          dps-x509-group-enrollment-devices: '1'
+          # An individual enrollment is also required: the C test-config cmdlet
+          # unconditionally reads IndividualX509[0], so provision at least one.
+          dps-x509-individual-enrollments: '1'
+
+      - name: Upload test config
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-csr-test-config
+          path: test_config/set_test_env_vars.ps1
+          retention-days: 1
+          if-no-files-found: error
+
+  test:
+    name: csr (ubuntu-latest)
+    needs: setup
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ninja (Linux)
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+
+      - name: Build CSR e2e test
+        working-directory: c
+        run: |
+          cmake --preset linux-gcc-debug -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_WITH_PAHO=ON
+          cmake --build --preset linux-gcc-debug --target az_iot_tests_e2e_csr
+
+      - name: Download shared test config
+        uses: actions/download-artifact@v4
+        with:
+          name: e2e-csr-test-config
+          path: test_config
+
+      - name: Run CSR e2e
+        shell: pwsh
+        run: |
+          # Service-side config (IOT_DPS_*, IOT_DPS_GROUP_X509_*) is set by the
+          # generated script.
+          . ./test_config/set_test_env_vars.ps1
+
+          # The provisioning step minted the BOOTSTRAP identity under the X.509
+          # enrollment group: a leaf signed by the group's issuer CA, emitted as a
+          # base64 PEM full chain (leaf + issuer CA + root) plus its key. Presenting
+          # it authenticates the device to the group; DPS then issues the
+          # operational certificate in response to the CSR.
+          $regId   = $env:IOT_DPS_GROUP_X509_REGISTRATION_ID
+          $certB64 = $env:IOT_DPS_GROUP_X509_CERTIFICATE
+          $keyB64  = $env:IOT_DPS_GROUP_X509_KEY
+          if (-not $regId -or -not $certB64 -or -not $keyB64) {
+            throw "IOT_DPS_GROUP_X509_* not found in the provisioning config; the environment was not provisioned with an X.509 enrollment group."
+          }
+          Write-Host "CSR e2e bootstrap device: $regId"
+
+          $dir = Join-Path ([System.IO.Path]::GetTempPath()) ("az-iot-c-e2e-csr-" + [Guid]::NewGuid().ToString("N"))
+          New-Item -ItemType Directory -Path $dir -Force | Out-Null
+          $certPath = Join-Path $dir "device-cert.pem"
+          $keyPath  = Join-Path $dir "device-key.pem"
+          $caPath   = Join-Path $dir "trusted-ca.pem"
+
+          # Materialize the bootstrap chain + key. The in-process test reads
+          # cert/key/CA by PATH.
+          [System.IO.File]::WriteAllText($certPath,
+            [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($certB64)))
+          [System.IO.File]::WriteAllText($keyPath,
+            [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($keyB64)))
+          # Trusted CA for the DPS/hub SERVER TLS validation = the system bundle.
+          Copy-Item "/etc/ssl/certs/ca-certificates.crt" $caPath
+
+          # Map onto the names the test consumes.
+          $env:AZ_IOT_DPS_ID_SCOPE        = $env:IOT_DPS_ID_SCOPE
+          $env:AZ_IOT_DPS_REGISTRATION_ID = $regId
+          $env:AZ_IOT_CLIENT_CERT         = $certPath
+          $env:AZ_IOT_CLIENT_KEY          = $keyPath
+          $env:AZ_IOT_TRUSTED_CA          = $caPath
+          if ($env:IOT_DPS_GLOBAL_ENDPOINT) { $env:AZ_IOT_DPS_GLOBAL_ENDPOINT = $env:IOT_DPS_GLOBAL_ENDPOINT }
+          # Arm the CSR test; without this it reports a CTest skip (exit 77).
+          $env:AZ_IOT_DPS_CSR_ENABLED = '1'
+          # Verbose SDK logging so a connect/DPS failure surfaces its reason.
+          $env:AZ_IOT_E2E_LOG_LEVEL = 'TRACE'
+
+          New-Item -ItemType Directory -Path ./test_config/results -Force | Out-Null
+          # `-R e2e_csr` selects ONLY az_iot_tests_e2e_csr.
+          ctest --test-dir c/build/linux-gcc-debug -R e2e_csr `
+            --verbose --no-tests=error --timeout 900 `
+            --output-junit ./test_config/results/e2e-csr.xml
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-csr-results
+          path: ./test_config/results/**/*.xml
+          if-no-files-found: ignore
+
+  teardown:
+    name: teardown (delete resources)
+    needs: [setup, test]
+    if: always() && needs.setup.result != 'skipped'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure Login via OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Delete Azure resources
+        uses: ./.github/actions/destroy-e2e-resources
+        with:
+          resource-group: ${{ needs.setup.outputs.rg }}
