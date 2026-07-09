@@ -412,7 +412,7 @@ typedef struct az_iot_adu_client
  * azure-sdk-for-c's az_iot_adu_client_init(), which is visible here because the
  * platform-hook signatures use upstream parsing types.
  */
-az_iot_result az_iot_adu_client_initialize(
+AZ_NODISCARD az_iot_result az_iot_adu_client_initialize(
     az_iot_adu_client* client,
     az_iot_twin_client* twin,
     const az_iot_adu_platform_hooks* hooks,
@@ -436,7 +436,7 @@ void az_iot_adu_client_destroy(az_iot_adu_client* client);
  * Resume a workflow after device reboot. The application SHOULD call this during
  * startup. If no persisted state exists, this is a no-op. (Phase 5.)
  */
-az_iot_result az_iot_adu_client_resume(az_iot_adu_client* client);
+AZ_NODISCARD az_iot_result az_iot_adu_client_resume(az_iot_adu_client* client);
 
 /* --- Runtime ------------------------------------------------------------- */
 
@@ -444,7 +444,7 @@ az_iot_result az_iot_adu_client_resume(az_iot_adu_client* client);
  * Drive the ADU state machine. The application MUST call this from its do_work
  * loop. Non-blocking: processes at most one chunk of work per invocation.
  */
-az_iot_result az_iot_adu_client_do_work(az_iot_adu_client* client);
+AZ_NODISCARD az_iot_result az_iot_adu_client_do_work(az_iot_adu_client* client);
 
 /** Check if cancellation has been requested (called from within platform hooks). */
 bool az_iot_adu_is_cancelled(const az_iot_adu_client* client);
@@ -462,7 +462,7 @@ az_iot_adu_state az_iot_adu_client_get_state(const az_iot_adu_client* client);
  * Single-threaded contract: MUST be called on the do_work thread or be
  * externally serialized with do_work().
  */
-az_iot_result az_iot_adu_client_update_device_properties(
+AZ_NODISCARD az_iot_result az_iot_adu_client_update_device_properties(
     az_iot_adu_client* client,
     const az_iot_adu_device_properties* device_props);
 
@@ -516,7 +516,7 @@ typedef int32_t (*az_iot_adu_read_chunk_callback)(
  * AZ_IOT_ERR_INVALID_ARG on bad arguments or malformed input, or
  * AZ_IOT_ERR_AUTH when manifest verification fails.
  */
-az_iot_result az_iot_adu_parse_update_request(
+AZ_NODISCARD az_iot_result az_iot_adu_parse_update_request(
     az_span request_json,
     const az_iot_adu_crypto_hooks* crypto,
     const az_iot_adu_root_key* root_keys,
@@ -535,7 +535,7 @@ az_iot_result az_iot_adu_parse_update_request(
  * arguments, or AZ_IOT_ERR_AUTH on a missing sha256 entry, a hook/read error,
  * or a hash mismatch.
  */
-az_iot_result az_iot_adu_verify_file_hash(
+AZ_NODISCARD az_iot_result az_iot_adu_verify_file_hash(
     const az_iot_adu_client_update_manifest_file* file,
     const az_iot_adu_crypto_hooks* crypto,
     az_iot_adu_read_chunk_callback read_chunk,
@@ -559,7 +559,7 @@ az_iot_result az_iot_adu_verify_file_hash(
  * Returns AZ_IOT_OK on success, AZ_IOT_ERR_INVALID_ARG on bad arguments, or
  * AZ_IOT_ERR_NOT_ENOUGH_SPACE if the payload does not fit @p out_json.
  */
-az_iot_result az_iot_adu_build_report(
+AZ_NODISCARD az_iot_result az_iot_adu_build_report(
     const az_iot_adu_device_properties* device_props,
     const az_iot_adu_client_install_result* result,
     const az_iot_adu_client_update_request* request,

@@ -50,13 +50,13 @@ typedef struct az_iot_telemetry_message
 
 typedef void (*az_iot_telemetry_send_callback)(az_iot_result status, void* user_ctx);
 
-az_iot_result az_iot_telemetry_client_init(
+AZ_NODISCARD az_iot_result az_iot_telemetry_client_init(
     az_iot_telemetry_client* client,
     az_iot_connection_client* conn);
 
 void az_iot_telemetry_client_destroy(az_iot_telemetry_client* client);
 
-az_iot_result az_iot_telemetry_client_send(
+AZ_NODISCARD az_iot_result az_iot_telemetry_client_send(
     az_iot_telemetry_client* client,
     const az_iot_telemetry_message* msg,
     az_iot_telemetry_send_callback cb,

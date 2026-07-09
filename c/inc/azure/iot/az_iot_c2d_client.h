@@ -50,7 +50,7 @@ typedef struct az_iot_c2d_client
  * @param conn    Connection client (must already be initialized).
  * @return AZ_IOT_OK on success.
  */
-az_iot_result az_iot_c2d_client_init(
+AZ_NODISCARD az_iot_result az_iot_c2d_client_init(
     az_iot_c2d_client* client,
     az_iot_connection_client* conn);
 
@@ -67,7 +67,7 @@ void az_iot_c2d_client_destroy(az_iot_c2d_client* client);
  * @param user_ctx  User context forwarded to the callback.
  * @return AZ_IOT_OK on success.
  */
-az_iot_result az_iot_c2d_client_set_handler(
+AZ_NODISCARD az_iot_result az_iot_c2d_client_set_handler(
     az_iot_c2d_client* client,
     az_iot_c2d_handler_callback cb,
     void* user_ctx);

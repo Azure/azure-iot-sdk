@@ -52,7 +52,7 @@ typedef struct az_iot_certificate_provider_pem
  * disk into heap buffers owned by the struct. Returns ERR_INVALID_ARG if
  * required paths are missing. The provider base pointer can be passed wherever
  * az_iot_certificate_provider* is expected. */
-az_iot_result az_iot_certificate_provider_pem_init(
+AZ_NODISCARD az_iot_result az_iot_certificate_provider_pem_init(
     az_iot_certificate_provider_pem* provider,
     const az_iot_certificate_provider_pem_options* opts);
 

@@ -35,18 +35,18 @@ typedef struct az_iot_direct_method_client
     } _internal;
 } az_iot_direct_method_client;
 
-az_iot_result az_iot_direct_method_client_init(
+AZ_NODISCARD az_iot_result az_iot_direct_method_client_init(
     az_iot_direct_method_client* client,
     az_iot_connection_client* conn);
 
 void az_iot_direct_method_client_destroy(az_iot_direct_method_client* client);
 
-az_iot_result az_iot_direct_method_client_set_handler(
+AZ_NODISCARD az_iot_result az_iot_direct_method_client_set_handler(
     az_iot_direct_method_client* dm,
     az_iot_direct_method_handler_callback cb,
     void* user_ctx);
 
-az_iot_result az_iot_direct_method_respond(
+AZ_NODISCARD az_iot_result az_iot_direct_method_respond(
     az_iot_direct_method_request* request,
     int status_code,
     const uint8_t* payload,

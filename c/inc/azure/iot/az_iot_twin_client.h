@@ -76,15 +76,15 @@ typedef struct az_iot_twin_client
     } _internal;
 } az_iot_twin_client;
 
-az_iot_result az_iot_twin_client_init(
+AZ_NODISCARD az_iot_result az_iot_twin_client_init(
     az_iot_twin_client* client,
     az_iot_connection_client* conn);
 
 void az_iot_twin_client_destroy(az_iot_twin_client* client);
 
-az_iot_result az_iot_twin_client_get(az_iot_twin_client* twin, az_iot_twin_get_callback cb, void* user_ctx);
+AZ_NODISCARD az_iot_result az_iot_twin_client_get(az_iot_twin_client* twin, az_iot_twin_get_callback cb, void* user_ctx);
 
-az_iot_result az_iot_twin_client_patch_reported(
+AZ_NODISCARD az_iot_result az_iot_twin_client_patch_reported(
     az_iot_twin_client* twin,
     const uint8_t* patch,
     size_t patch_len,
@@ -96,12 +96,12 @@ az_iot_result az_iot_twin_client_patch_reported(
  * whether it carries keys it cares about. Returns AZ_IOT_ERR_NOT_SUPPORTED when
  * the application pool is full, AZ_IOT_ERR_BUSY if called from within a dispatch.
  */
-az_iot_result az_iot_twin_client_subscribe_desired(
+AZ_NODISCARD az_iot_result az_iot_twin_client_subscribe_desired(
     az_iot_twin_client* twin,
     az_iot_twin_desired_callback cb,
     void* user_ctx);
 
-az_iot_result az_iot_twin_client_unsubscribe_desired(
+AZ_NODISCARD az_iot_result az_iot_twin_client_unsubscribe_desired(
     az_iot_twin_client* twin,
     az_iot_twin_desired_callback cb,
     void* user_ctx);

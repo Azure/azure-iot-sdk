@@ -5,6 +5,8 @@
 #ifndef AZ_IOT_RESULT_H
 #define AZ_IOT_RESULT_H
 
+#include <azure/az_core.h> /* AZ_NODISCARD (and az_span, used across the public headers) */
+
 #ifdef __cplusplus
 extern "C" {
 #endif

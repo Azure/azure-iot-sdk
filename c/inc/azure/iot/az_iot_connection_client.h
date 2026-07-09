@@ -239,7 +239,7 @@ az_iot_connection_client_options az_iot_connection_client_options_get_default(
     const char* registration_id,
     az_iot_certificate_provider* certificate_provider);
 
-az_iot_result az_iot_connection_client_init(
+AZ_NODISCARD az_iot_result az_iot_connection_client_init(
     az_iot_connection_client* client,
     const az_iot_connection_client_options* opts);
 
@@ -249,31 +249,31 @@ void az_iot_connection_client_destroy(az_iot_connection_client* client);
  * multiple factories; at session-open time it picks the one whose
  * (version, supported_roles_mask) matches the required (version, role) for that
  * session. Adapters for DPS+Classic must be v3.1.1; adapters for Next must be v5. */
-az_iot_result az_iot_connection_client_register_mqtt_factory(
+AZ_NODISCARD az_iot_result az_iot_connection_client_register_mqtt_factory(
     az_iot_connection_client* client,
     const az_iot_mqtt_factory* factory);
 
-az_iot_result az_iot_connection_client_set_state_callback(
+AZ_NODISCARD az_iot_result az_iot_connection_client_set_state_callback(
     az_iot_connection_client* client,
     az_iot_connection_state_callback cb,
     void* user_ctx);
 
 /* Register a callback fired when a DPS/provider-issued operational certificate
  * is obtained during provisioning (D4). Optional. */
-az_iot_result az_iot_connection_client_set_operational_cert_callback(
+AZ_NODISCARD az_iot_result az_iot_connection_client_set_operational_cert_callback(
     az_iot_connection_client* client,
     az_iot_operational_cert_callback cb,
     void* user_ctx);
 
 /* Open a session to the configured host. Non-blocking; observe state via callback
  * and drive progress with do_work(). */
-az_iot_result az_iot_connection_client_open(az_iot_connection_client* client);
+AZ_NODISCARD az_iot_result az_iot_connection_client_open(az_iot_connection_client* client);
 
-az_iot_result az_iot_connection_client_close(az_iot_connection_client* client);
+AZ_NODISCARD az_iot_result az_iot_connection_client_close(az_iot_connection_client* client);
 
 /* Pump network I/O and dispatch callbacks. Single-threaded contract: all user
  * callbacks fire synchronously from inside this call. */
-az_iot_result az_iot_connection_client_do_work(az_iot_connection_client* client, uint32_t timeout_ms);
+AZ_NODISCARD az_iot_result az_iot_connection_client_do_work(az_iot_connection_client* client, uint32_t timeout_ms);
 
 /* Request a renewed operational certificate from the connected (Classic) hub by
  * sending a CSR. Two-phase: the callback fires with AZ_IOT_CSR_ACCEPTED (202),
@@ -286,7 +286,7 @@ az_iot_result az_iot_connection_client_do_work(az_iot_connection_client* client,
  * If no terminal (200/error) response arrives within an internal timeout, the
  * callback fires once with AZ_IOT_CSR_FAILED / AZ_IOT_ERR_TIMEOUT and the slot
  * is released, so a lost response can never wedge renewal permanently. */
-az_iot_result az_iot_connection_client_send_csr(
+AZ_NODISCARD az_iot_result az_iot_connection_client_send_csr(
     az_iot_connection_client* client,
     const az_iot_certificate_signing_request* csr,
     const char* request_id,
@@ -297,7 +297,7 @@ az_iot_result az_iot_connection_client_send_csr(
 /* Abandon the in-flight CSR renewal (if any) without waiting for the timeout,
  * freeing the one-operation slot for a new az_iot_connection_client_send_csr().
  * No callback fires. Returns AZ_IOT_ERR_NOT_FOUND when no operation is active. */
-az_iot_result az_iot_connection_client_cancel_csr(az_iot_connection_client* client);
+AZ_NODISCARD az_iot_result az_iot_connection_client_cancel_csr(az_iot_connection_client* client);
 
 #ifdef __cplusplus
 }

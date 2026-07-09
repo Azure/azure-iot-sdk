@@ -39,7 +39,7 @@ typedef struct az_iot_rust_mqtt_ffi az_iot_rust_mqtt_ffi;
  * shutdown). Returns AZ_IOT_OK on success, AZ_IOT_ERR_INVALID_ARG if
  * any pointer in the table is NULL. After a successful install, the v5
  * factory will start producing live clients; before that it returns NULL. */
-az_iot_result az_iot_rust_mqtt_install(const az_iot_rust_mqtt_ffi* table);
+AZ_NODISCARD az_iot_result az_iot_rust_mqtt_install(const az_iot_rust_mqtt_ffi* table);
 
 /* Build a factory that produces MQTTv5 Rust clients. Returns NULL until a
  * non-NULL FFI table has been installed via `_install()`. Lifetime matches

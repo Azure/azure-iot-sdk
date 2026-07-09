@@ -73,7 +73,7 @@ typedef struct az_iot_file_upload_client
  * @param conn    Connection client (must already be initialized).
  * @return AZ_IOT_OK on success.
  */
-az_iot_result az_iot_file_upload_client_init(
+AZ_NODISCARD az_iot_result az_iot_file_upload_client_init(
     az_iot_file_upload_client* client,
     az_iot_connection_client* conn);
 
@@ -94,7 +94,7 @@ void az_iot_file_upload_client_destroy(az_iot_file_upload_client* client);
  * @param user_ctx   User context forwarded to the callback.
  * @return AZ_IOT_OK if the request was published successfully.
  */
-az_iot_result az_iot_file_upload_client_get_sas_uri(
+AZ_NODISCARD az_iot_result az_iot_file_upload_client_get_sas_uri(
     az_iot_file_upload_client* client,
     const char* blob_name,
     az_iot_file_upload_sas_callback cb,
@@ -113,7 +113,7 @@ az_iot_result az_iot_file_upload_client_get_sas_uri(
  * @param user_ctx        User context forwarded to the callback.
  * @return AZ_IOT_OK if the notification was published successfully.
  */
-az_iot_result az_iot_file_upload_client_notify_complete(
+AZ_NODISCARD az_iot_result az_iot_file_upload_client_notify_complete(
     az_iot_file_upload_client* client,
     const char* correlation_id,
     bool is_success,
