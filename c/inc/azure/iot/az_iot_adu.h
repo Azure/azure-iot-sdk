@@ -69,6 +69,18 @@ extern "C" {
 #define AZ_IOT_ADU_REQUEST_BUFFER_SIZE 4096
 #endif
 
+/* In-struct scratch used to (de)serialize the persisted workflow state passed to
+ * persist_state_fn / load_state_fn. Sized as the request buffer plus a fixed
+ * overhead for the persistence header and v2 trailer (retry offset/len, manifest
+ * CRC, install-result ints, per-step result pairs and a trailing CRC-32). The
+ * overhead is generous; a compile-time assertion in adu_client.c guarantees the
+ * exact serialized size always fits. This lives in the caller-allocated client
+ * struct (one per instance) so no file-scope static or heap buffer is needed. */
+#ifndef AZ_IOT_ADU_PERSIST_OVERHEAD
+#define AZ_IOT_ADU_PERSIST_OVERHEAD 256
+#endif
+#define AZ_IOT_ADU_PERSIST_BLOB_SIZE (AZ_IOT_ADU_REQUEST_BUFFER_SIZE + AZ_IOT_ADU_PERSIST_OVERHEAD)
+
 /* Capacities for the copied-out deployment identity (workflow `id` and
  * `retryTimestamp`) used to distinguish a retry/replacement from a harmless
  * redelivery. Deployment ids are GUID-shaped (~36 chars) and retry timestamps
@@ -360,6 +372,11 @@ typedef struct az_iot_adu_client_t
          * spans (the live twin patch buffer is gone after the callback). */
         uint8_t                           request_buffer[AZ_IOT_ADU_REQUEST_BUFFER_SIZE];
         size_t                            request_len;
+
+        /* Scratch for (de)serializing persisted workflow state (persist/resume).
+         * Per-instance so multiple ADU clients never share it; persist and resume
+         * never run concurrently, so one buffer serves both directions. */
+        uint8_t                           persist_scratch[AZ_IOT_ADU_PERSIST_BLOB_SIZE];
 
         /* The unescaped manifest text within request_buffer (parse_manifest
          * sets this; persistence/resume re-parses it). */

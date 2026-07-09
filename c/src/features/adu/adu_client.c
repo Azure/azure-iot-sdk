@@ -1108,9 +1108,20 @@ void az_iot_adu_client_destroy(az_iot_adu_client_t* client)
 /* Fixed part of the v2 trailer (retry off/len + manifest crc + 3 result ints),
  * excluding the variable per-step pairs and the trailing crc32. */
 #define AZ_IOT_ADU_PERSIST_TRAILER_FIXED 24u
-/* Upper bound on the whole v2 trailer + crc, used to size the static blob. */
+/* Upper bound on the whole v2 trailer + crc, used to size the persist scratch. */
 #define AZ_IOT_ADU_PERSIST_TRAILER_MAX \
     (AZ_IOT_ADU_PERSIST_TRAILER_FIXED + (uint32_t)(_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS) * 8u + 4u)
+
+/* The per-instance persist_scratch (AZ_IOT_ADU_PERSIST_BLOB_SIZE, in the client
+ * struct) must hold the largest serialized blob: header + full request buffer +
+ * the maximum v2 trailer. C99-portable compile-time check (negative array size
+ * on failure) so bumping the step count without growing the overhead is caught
+ * at build time rather than overflowing at run time. */
+typedef char az_iot_adu_persist_blob_fits[
+    (AZ_IOT_ADU_PERSIST_HEADER_SIZE + AZ_IOT_ADU_REQUEST_BUFFER_SIZE + AZ_IOT_ADU_PERSIST_TRAILER_MAX
+     <= AZ_IOT_ADU_PERSIST_BLOB_SIZE)
+        ? 1
+        : -1];
 
 static void wr_u16le(uint8_t* p, uint16_t v)
 {
@@ -1171,8 +1182,7 @@ static void adu_persist(az_iot_adu_client_t* client)
     uint32_t request_len = (uint32_t)ADU_I(client).request_len;
     if (request_len > AZ_IOT_ADU_REQUEST_BUFFER_SIZE) return;
 
-    static uint8_t blob[AZ_IOT_ADU_PERSIST_HEADER_SIZE + AZ_IOT_ADU_REQUEST_BUFFER_SIZE
-                        + AZ_IOT_ADU_PERSIST_TRAILER_MAX];
+    uint8_t* blob = ADU_I(client).persist_scratch;
     uint16_t flags = 0;
     if (ADU_I(client).cancel_requested) flags |= 0x1u;
     if (ADU_I(client).have_request) flags |= 0x2u;
@@ -1230,11 +1240,10 @@ az_iot_result az_iot_adu_client_resume(az_iot_adu_client_t* client)
     if (ADU_I(client).detached) return AZ_IOT_ERR_DETACHED;
     if (ADU_I(client).hooks.load_state_fn == NULL) return AZ_IOT_OK;
 
-    static uint8_t blob[AZ_IOT_ADU_PERSIST_HEADER_SIZE + AZ_IOT_ADU_REQUEST_BUFFER_SIZE
-                        + AZ_IOT_ADU_PERSIST_TRAILER_MAX];
+    uint8_t* blob = ADU_I(client).persist_scratch;
     size_t blen = 0;
     if (ADU_I(client).hooks.load_state_fn(
-            blob, sizeof(blob), &blen, ADU_I(client).hooks.user_ctx)
+            blob, sizeof(ADU_I(client).persist_scratch), &blen, ADU_I(client).hooks.user_ctx)
         != 0)
     {
         return AZ_IOT_OK; /* nothing persisted */
