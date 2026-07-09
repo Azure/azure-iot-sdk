@@ -28,17 +28,19 @@
 #
 # The environment is provisioned with an X.509 enrollment GROUP linked to a
 # signing CA (only a group linked to a CA can issue an operational cert for a
-# CSR; a plain individual enrollment cannot). The provisioning emits that CA as
-# PROVISIONING_ROOT_CERT(_KEY); the test step mints the bootstrap leaf from it
-# with `openssl`, so the device's registration id is that leaf's subject CN.
+# CSR; a plain individual enrollment cannot). The group's issuer is an
+# intermediate CA the framework creates, so the provisioning step also mints a
+# bootstrap device identity UNDER the group (a leaf signed by that issuer) and
+# emits it as IOT_DPS_GROUP_X509_* for the test to use directly.
 #
 # Stages
 # ------
 #   1. setup    : provision the cert-management resource group ONCE (DPS + ADR +
-#                 the X.509 enrollment group) and publish the config as an artifact.
-#   2. test     : build `az_iot_tests_e2e_csr`, mint the bootstrap leaf from the
-#                 emitted signing CA, arm the test (AZ_IOT_DPS_CSR_ENABLED=1) and
-#                 run `ctest -R e2e_csr`.
+#                 the X.509 enrollment group), mint the bootstrap identity, and
+#                 publish the config as an artifact.
+#   2. test     : build `az_iot_tests_e2e_csr`, materialize the bootstrap chain +
+#                 key, arm the test (AZ_IOT_DPS_CSR_ENABLED=1) and run
+#                 `ctest -R e2e_csr`.
 #   3. teardown : always() deletes the resource group.
 #
 # The provision/destroy steps live in .github/actions/{provision,destroy}-e2e-
@@ -161,43 +163,35 @@ jobs:
       - name: Run CSR e2e
         shell: pwsh
         run: |
-          # Service-side config (IOT_DPS_*, PROVISIONING_ROOT_CERT*) is set by the
+          # Service-side config (IOT_DPS_*, IOT_DPS_GROUP_X509_*) is set by the
           # generated script.
           . ./test_config/set_test_env_vars.ps1
 
-          if (-not $env:PROVISIONING_ROOT_CERT -or -not $env:PROVISIONING_ROOT_CERT_KEY) {
-            throw "PROVISIONING_ROOT_CERT(_KEY) not found in the provisioning config; the environment was not provisioned with certificate management."
+          # The provisioning step minted the BOOTSTRAP identity under the X.509
+          # enrollment group: a leaf signed by the group's issuer CA, emitted as a
+          # base64 PEM full chain (leaf + issuer CA + root) plus its key. Presenting
+          # it authenticates the device to the group; DPS then issues the
+          # operational certificate in response to the CSR.
+          $regId   = $env:IOT_DPS_GROUP_X509_REGISTRATION_ID
+          $certB64 = $env:IOT_DPS_GROUP_X509_CERTIFICATE
+          $keyB64  = $env:IOT_DPS_GROUP_X509_KEY
+          if (-not $regId -or -not $certB64 -or -not $keyB64) {
+            throw "IOT_DPS_GROUP_X509_* not found in the provisioning config; the environment was not provisioned with an X.509 enrollment group."
           }
+          Write-Host "CSR e2e bootstrap device: $regId"
 
           $dir = Join-Path ([System.IO.Path]::GetTempPath()) ("az-iot-c-e2e-csr-" + [Guid]::NewGuid().ToString("N"))
           New-Item -ItemType Directory -Path $dir -Force | Out-Null
-          $rootCertPath = Join-Path $dir "root-ca.pem"
-          $rootKeyPath  = Join-Path $dir "root-ca-key.pem"
-          $certPath     = Join-Path $dir "device-cert.pem"
-          $keyPath      = Join-Path $dir "device-key.pem"
-          $csrPath      = Join-Path $dir "device.csr"
-          $caPath       = Join-Path $dir "trusted-ca.pem"
+          $certPath = Join-Path $dir "device-cert.pem"
+          $keyPath  = Join-Path $dir "device-key.pem"
+          $caPath   = Join-Path $dir "trusted-ca.pem"
 
-          # The signing CA of the X.509 enrollment GROUP is emitted (base64 PEM) as
-          # PROVISIONING_ROOT_CERT (+ its RSA key). Decode both to disk.
-          [System.IO.File]::WriteAllText($rootCertPath,
-            [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:PROVISIONING_ROOT_CERT)))
-          [System.IO.File]::WriteAllText($rootKeyPath,
-            [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:PROVISIONING_ROOT_CERT_KEY)))
-
-          # Mint the BOOTSTRAP identity: an EC P-256 leaf signed by that CA, whose
-          # subject CN is the DPS registration id. The enrollment group accepts any
-          # leaf chaining to its CA; DPS then issues the operational cert for the CSR.
-          $regId = "csr-e2e-$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"
-          & openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out $keyPath
-          if ($LASTEXITCODE -ne 0) { throw "openssl genpkey failed ($LASTEXITCODE)" }
-          & openssl req -new -key $keyPath -subj "/CN=$regId" -out $csrPath
-          if ($LASTEXITCODE -ne 0) { throw "openssl req failed ($LASTEXITCODE)" }
-          & openssl x509 -req -in $csrPath -CA $rootCertPath -CAkey $rootKeyPath `
-            -CAcreateserial -days 2 -sha256 -out $certPath
-          if ($LASTEXITCODE -ne 0) { throw "openssl x509 (leaf signing) failed ($LASTEXITCODE)" }
-          Write-Host "CSR e2e bootstrap device: $regId"
-
+          # Materialize the bootstrap chain + key. The in-process test reads
+          # cert/key/CA by PATH.
+          [System.IO.File]::WriteAllText($certPath,
+            [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($certB64)))
+          [System.IO.File]::WriteAllText($keyPath,
+            [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($keyB64)))
           # Trusted CA for the DPS/hub SERVER TLS validation = the system bundle.
           Copy-Item "/etc/ssl/certs/ca-certificates.crt" $caPath
 

@@ -87,3 +87,37 @@ runs:
             -DpsX509GroupEnrollmentDevices ${{ inputs.dps-x509-group-enrollment-devices }} `
             -EnableADU ${{ inputs.enable-adu }} ${{ inputs.enable-certificate-management == 'true' && '-EnableCertificateManagement' || '' }}
           & "${{ inputs.config-cmdlet }}" -TestEnvInfo $TestEnvInfo -Target ${{ inputs.config-target }} -OutFile "${{ inputs.out-file }}"
+
+          # When an X.509 enrollment GROUP was provisioned, the group's issuer is
+          # an INTERMEDIATE CA (created by the framework and signed by the root);
+          # PROVISIONING_ROOT_CERT is NOT that issuer, so a root-signed leaf would
+          # be rejected. Emit a bootstrap device identity under the group (a leaf
+          # signed by the group's issuer CA) as a full chain (leaf + issuer CA +
+          # root) + key + registration id, for consumers driving a CSR flow. The
+          # config cmdlets do not emit group X.509 identities, so do it here.
+          # Guarded on GroupX509 presence -> no-op for callers without a group.
+          if ($TestEnvInfo.Dps.Enrollments.GroupX509.Count -gt 0) {
+            $group = $TestEnvInfo.Dps.Enrollments.GroupX509[0]
+            # Reuse a device identity minted during provisioning; mint one only if
+            # the group has none (both paths produce a leaf signed by the issuer CA).
+            if ($group.Identities.Count -gt 0) {
+              $identity = $group.Identities[0]
+            } else {
+              $identity = $group.AddIdentity("csr-bootstrap-$(Get-Random -Minimum 100000 -Maximum 999999)", [timespan]::FromDays(2))
+            }
+            $regId = $identity.Id
+            $chainPem = $identity.Certificate.ToPem() + "`n" + $group.Certificate.ToPem() + "`n" + $TestEnvInfo.Dps.RootCaCertificates[0].ToPem()
+            $keyPem = $identity.Certificate.PrivateKey.ToRsaPkcs1Pem()
+            $certB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($chainPem))
+            $keyB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($keyPem))
+            if ("${{ inputs.config-target }}" -eq "powershell") {
+              Add-Content -Path "${{ inputs.out-file }}" -Value "`$env:IOT_DPS_GROUP_X509_CERTIFICATE = `"$certB64`""
+              Add-Content -Path "${{ inputs.out-file }}" -Value "`$env:IOT_DPS_GROUP_X509_KEY = `"$keyB64`""
+              Add-Content -Path "${{ inputs.out-file }}" -Value "`$env:IOT_DPS_GROUP_X509_REGISTRATION_ID = `"$regId`""
+            } else {
+              Add-Content -Path "${{ inputs.out-file }}" -Value "export IOT_DPS_GROUP_X509_CERTIFICATE=`"$certB64`""
+              Add-Content -Path "${{ inputs.out-file }}" -Value "export IOT_DPS_GROUP_X509_KEY=`"$keyB64`""
+              Add-Content -Path "${{ inputs.out-file }}" -Value "export IOT_DPS_GROUP_X509_REGISTRATION_ID=`"$regId`""
+            }
+            Write-Host "Emitted X.509 group bootstrap identity: $regId"
+          }
