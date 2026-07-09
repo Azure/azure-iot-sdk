@@ -2,6 +2,7 @@
 using Microsoft.Azure.Devices.Client.IotHub;
 using Microsoft.Azure.Devices.Client.Mqtt;
 using Microsoft.Azure.Devices.Client.MQTTnetAdapter;
+using Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session;
 using Microsoft.Azure.Devices.Client.Provisioning;
 using Microsoft.Azure.Devices.Client.Provisioning.Models;
 using Microsoft.Azure.Devices.Client.Retry;
@@ -40,10 +41,10 @@ namespace Microsoft.Azure.Devices.Client
         /// <summary>
         /// Construct a new <see cref="ConnectionClient"/>
         /// </summary>
-        /// <param name="mqttClient">The MQTT client to use. If null, a default MQTT client will be created for you.</param>
+        /// <param name="mqttClient">The MQTT client to use. If null, a default MQTT client with default retry logic will be created for you.</param>
         public ConnectionClient(IMqttClient? mqttClient = null)
         {
-            MqttClient = mqttClient ?? new MqttNetClient(new MQTTnet.MqttClientFactory().CreateMqttClient());
+            MqttClient = mqttClient ?? new MqttSessionClient();
         }
 
         /// <summary>
@@ -175,14 +176,14 @@ namespace Microsoft.Azure.Devices.Client
             return await MqttClient.PublishAsync(mqttApplicationMessage, cancellationToken);
         }
 
-        internal async Task<MqttSubscribeAck> SubscribeAsync(string topic, MqttQualityOfServiceLevel qos = MqttQualityOfServiceLevel.AtLeastOnce, CancellationToken cancellationToken = default)
+        internal async Task<MqttSubscribeAck> SubscribeAsync(MqttSubscribe subscribe, CancellationToken cancellationToken = default)
         {
-            return await MqttClient.SubscribeAsync(new(topic, qos), cancellationToken);
+            return await MqttClient.SubscribeAsync(subscribe, cancellationToken);
         }
 
-        internal async Task<MqttUnsubscribeAck> UnsubscribeAsync(string topic, CancellationToken cancellationToken = default)
+        internal async Task<MqttUnsubscribeAck> UnsubscribeAsync(MqttUnsubscribe unsubscribe, CancellationToken cancellationToken = default)
         {
-            return await MqttClient.UnsubscribeAsync(topic, new(), cancellationToken);
+            return await MqttClient.UnsubscribeAsync(unsubscribe, cancellationToken);
         }
 
         internal async Task DelegateReceivedPublishAsync(MqttPublishReceivedEventArgs args)
@@ -213,21 +214,21 @@ namespace Microsoft.Azure.Devices.Client
 
                 if (status.Equals("202"))
                 {
-                    CertificateSigningRequestAccepted accepted = JsonSerializer.Deserialize<CertificateSigningRequestAccepted>(args.Publish.PayloadAsByteArray);
+                    CertificateSigningRequestAccepted accepted = JsonSerializer.Deserialize<CertificateSigningRequestAccepted>(args.Publish.PayloadAsByteArray)!;
                     pendingCertificateSigningOperation.SetAccepted(accepted);
                     //TODO qos? Ack needed?
                     return;
                 }
                 else if (status.Equals("200"))
                 {
-                    CertificateSigningResponse response = JsonSerializer.Deserialize<CertificateSigningResponse>(args.Publish.PayloadAsByteArray);
+                    CertificateSigningResponse response = JsonSerializer.Deserialize<CertificateSigningResponse>(args.Publish.PayloadAsByteArray)!;
                     pendingCertificateSigningOperation.SetCompleted(response);
                     //TODO qos? Ack needed?
                     return;
                 }
                 else
                 {
-                    CertificateSigningRequestErrorResponse error = JsonSerializer.Deserialize<CertificateSigningRequestErrorResponse>(args.Publish.PayloadAsByteArray);
+                    CertificateSigningRequestErrorResponse error = JsonSerializer.Deserialize<CertificateSigningRequestErrorResponse>(args.Publish.PayloadAsByteArray)!;
                     pendingCertificateSigningOperation.SetFailed(new CertificateSigningRequestFailedException() { Error = error });
                     //TODO qos? Ack needed?
                     return;

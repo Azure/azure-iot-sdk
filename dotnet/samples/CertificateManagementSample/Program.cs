@@ -77,7 +77,7 @@ internal class Program
         using var cert = X509Certificate2.CreateFromPem(certPem, keyPem);
 
         // Note: On Windows, we need to export and reimport to allow ephemeral key use
-        using var exportedCert = new X509Certificate2(cert.Export(X509ContentType.Pfx));
+        using var exportedCert = X509CertificateLoader.LoadCertificate(cert.Export(X509ContentType.Pfx));
 
         return exportedCert;
     }

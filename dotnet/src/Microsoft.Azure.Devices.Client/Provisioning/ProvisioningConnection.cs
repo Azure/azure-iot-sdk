@@ -23,8 +23,8 @@ namespace Microsoft.Azure.Devices.Client.Provisioning
 
         private static readonly TimeSpan s_defaultOperationPollingInterval = TimeSpan.FromSeconds(2);
 
-        private TaskCompletionSource<RegistrationOperationStatus> _startProvisioningRequestStatusSource;
-        private TaskCompletionSource<RegistrationOperationStatus> _checkRegistrationOperationStatusSource;
+        private TaskCompletionSource<RegistrationOperationStatus>? _startProvisioningRequestStatusSource;
+        private TaskCompletionSource<RegistrationOperationStatus>? _checkRegistrationOperationStatusSource;
         private int _requestId;
 
         internal async Task<DeviceRegistrationResult> RegisterAsync(
@@ -62,7 +62,7 @@ namespace Microsoft.Azure.Devices.Client.Provisioning
                 .ConnectAsync(connect, cancellationToken)
                 .ConfigureAwait(false);
 
-            if (connectResult.ResultCode != MqttClientConnectResultCode.Success)
+            if (connectResult.ResultCode != MqttConnectResultCode.Success)
             {
                 throw new Exception("TODO: " + connectResult.ResultCode);
             }
@@ -91,7 +91,7 @@ namespace Microsoft.Azure.Devices.Client.Provisioning
             {
                 await mqttClient.DisconnectAsync(disconnect, cancellationToken);
             }
-            catch (Exception ex)
+            catch (Exception)
             {
                 // Deliberately not rethrowing the exception because this is a "best effort" close.
                 // The service may not have acknowledged that the client closed the connection, but
@@ -109,7 +109,7 @@ namespace Microsoft.Azure.Devices.Client.Provisioning
             {
                 MqttSubscribeAck subscribeResults = await mqttClient.SubscribeAsync(new(SubscribeFilter, MqttQualityOfServiceLevel.AtLeastOnce), cancellationToken).ConfigureAwait(false);
 
-                if (subscribeResults.Items.FirstOrDefault().ResultCode != MqttClientSubscribeResultCode.GrantedQoS1)
+                if (subscribeResults.Items.FirstOrDefault()!.ResultCode != MqttClientSubscribeResultCode.GrantedQoS1)
                 {
                     throw new Exception("todo");
                 }
@@ -151,7 +151,7 @@ namespace Microsoft.Azure.Devices.Client.Provisioning
                     //TODO
                 }
             }
-            catch (Exception ex)
+            catch (Exception)
             {
                 //TODO
             }
@@ -244,28 +244,27 @@ namespace Microsoft.Azure.Devices.Client.Provisioning
             {
                 // The initial provisioning request's response topic is shaped like "$dps/registrations/res/202/?$rid=1&retry-after=3"
                 string jsonString = Encoding.UTF8.GetString(receivedEventArgs.Publish.PayloadAsByteArray);
-                RegistrationOperationStatus operation = JsonSerializer.Deserialize<RegistrationOperationStatus>(jsonString, JsonSerializationSettings.Options);
+                RegistrationOperationStatus operation = JsonSerializer.Deserialize<RegistrationOperationStatus>(jsonString, JsonSerializationSettings.Options)!;
                 _startProvisioningRequestStatusSource.TrySetResult(operation);
             }
             else
             {
                 // All status polling requests' response topics are shaped like "$dps/registrations/res/200/?$rid=2"
                 string jsonString = Encoding.UTF8.GetString(receivedEventArgs.Publish.PayloadAsByteArray);
-                RegistrationOperationStatus operation = JsonSerializer.Deserialize<RegistrationOperationStatus>(jsonString, JsonSerializationSettings.Options);
+                try
+                {
+                    RegistrationOperationStatus operation = JsonSerializer.Deserialize<RegistrationOperationStatus>(jsonString, JsonSerializationSettings.Options)!;
+                    operation.RetryAfter = GetRetryAfterFromTopic(topic, s_defaultOperationPollingInterval);
 
-                operation.RetryAfter = GetRetryAfterFromTopic(topic, s_defaultOperationPollingInterval);
-
-                _checkRegistrationOperationStatusSource.TrySetResult(operation);
+                    _checkRegistrationOperationStatusSource!.TrySetResult(operation);
+                }
+                catch (Exception e)
+                {
+                    throw e;
+                }
             }
 
             return Task.CompletedTask;
-        }
-
-        internal static bool ContainsAuthenticationException(Exception ex)
-        {
-            return ex != null
-                && (ex is AuthenticationException
-                    || ContainsAuthenticationException(ex.InnerException));
         }
 
         private static TimeSpan? GetRetryAfterFromTopic(string topic, TimeSpan defaultPoolingInterval)
@@ -298,7 +297,7 @@ namespace Microsoft.Azure.Devices.Client.Provisioning
         {
             const string name = "Microsoft.Azure.Devices.Provisioning.Client";
 
-            string version = typeof(ProvisioningConnection).GetTypeInfo().Assembly.GetName().Version.ToString(3);
+            string version = typeof(ProvisioningConnection).GetTypeInfo().Assembly.GetName().Version!.ToString(3);
             string runtime = RuntimeInformation.FrameworkDescription.Trim();
             string operatingSystem = RuntimeInformation.OSDescription.Trim();
             string processorArchitecture = RuntimeInformation.ProcessArchitecture.ToString().Trim();

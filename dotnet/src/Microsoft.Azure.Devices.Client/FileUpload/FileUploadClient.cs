@@ -65,19 +65,27 @@ namespace Microsoft.Azure.Devices.Client.FileUpload
 
             if (httpResponse.StatusCode == System.Net.HttpStatusCode.OK)
             {
-                return JsonSerializer.Deserialize<FileUploadSasUriResponse>(await httpResponse.Content.ReadAsStringAsync());
+                return JsonSerializer.Deserialize<FileUploadSasUriResponse>(await httpResponse.Content.ReadAsStringAsync())!;
             }
             else
             {
-                var errorPayload = JsonSerializer.Deserialize<IotHubServiceError>(await httpResponse.Content.ReadAsStringAsync());
-                var nestedErrorPayload = JsonSerializer.Deserialize<IotHubNestedServiceException>(errorPayload.ErrorDetails);
-                var exception = new IotHubServiceException($"Failed to get the file upload Sas Uri: {nestedErrorPayload.Message}.")
+                string errorContent = await httpResponse.Content.ReadAsStringAsync();
+                var errorPayload = JsonSerializer.Deserialize<IotHubServiceError>(errorContent);
+                if (errorPayload != null)
                 {
-                    ErrorMessage = errorPayload.ExceptionMessage,
-                    ErrorDetails = nestedErrorPayload,
-                };
+                    var nestedErrorPayload = JsonSerializer.Deserialize<IotHubNestedServiceException>(errorPayload.ErrorDetails);
+                    if (nestedErrorPayload != null)
+                    {
+                        var exception = new IotHubServiceException($"Failed to get the file upload Sas Uri: {nestedErrorPayload.Message}.")
+                        {
+                            ErrorMessage = errorPayload.ExceptionMessage,
+                            ErrorDetails = nestedErrorPayload,
+                        };
+                        throw exception;
+                    }
+                }
 
-                throw exception;
+                throw new IotHubServiceException($"Received an error message from IoT hub with an unexpected format: {errorContent}");
             }
         }
 
@@ -100,15 +108,23 @@ namespace Microsoft.Azure.Devices.Client.FileUpload
             var httpResponse = await _httpClient.SendAsync(requestMessage, cancellationToken);
             if (httpResponse.StatusCode != System.Net.HttpStatusCode.NoContent)
             {
-                var errorPayload = JsonSerializer.Deserialize<IotHubServiceError>(await httpResponse.Content.ReadAsStringAsync());
-                var nestedErrorPayload = JsonSerializer.Deserialize<IotHubNestedServiceException>(errorPayload.ErrorDetails);
-                var exception = new IotHubServiceException($"Failed to complete the file upload Sas Uri: {nestedErrorPayload.Message}")
+                string errorContent = await httpResponse.Content.ReadAsStringAsync();
+                var errorPayload = JsonSerializer.Deserialize<IotHubServiceError>(errorContent);
+                if (errorPayload != null)
                 {
-                    ErrorMessage = errorPayload.ExceptionMessage,
-                    ErrorDetails = nestedErrorPayload,
-                };
+                    var nestedErrorPayload = JsonSerializer.Deserialize<IotHubNestedServiceException>(errorPayload.ErrorDetails);
+                    if (nestedErrorPayload != null)
+                    {
+                        var exception = new IotHubServiceException($"Failed to complete the file upload Sas Uri: {nestedErrorPayload.Message}")
+                        {
+                            ErrorMessage = errorPayload.ExceptionMessage,
+                            ErrorDetails = nestedErrorPayload,
+                        };
+                        throw exception;
+                    }
+                }
 
-                throw exception;
+                throw new IotHubServiceException($"Received an error message from IoT hub with an unexpected format: {errorContent}");
             }
         }
 

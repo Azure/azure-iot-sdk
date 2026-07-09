@@ -20,7 +20,7 @@ namespace Microsoft.Azure.Devices.Client.IotHub
         private static TimeSpan birthAckReceivedDefensiveTimeout = TimeSpan.FromSeconds(5); //TODO value is magic number
         private static TimeSpan twinPushReceivedDefensiveTimeout = TimeSpan.FromSeconds(5); //TODO value is magic number
 
-        internal async Task<Twin.Twin> ConnectToAzureEventGridIotHubAsync(IMqttClient mqttClient, string hostname, string deviceId, X509AuthenticationProvider x509AuthenticationProvider, TwinPushOptions twinPushOptions, CancellationToken cancellationToken = default)
+        internal async Task<Twin.Twin> ConnectToAzureEventGridIotHubAsync(IMqttClient mqttClient, string hostname, string deviceId, X509AuthenticationProvider x509AuthenticationProvider, TwinPushOptions? twinPushOptions, CancellationToken cancellationToken = default)
         {
             bool subscribed = false;
 
@@ -63,7 +63,7 @@ namespace Microsoft.Azure.Devices.Client.IotHub
                     continue; // Start the connect process over again
                 }
 
-                if (connack.ResultCode != MqttClientConnectResultCode.Success)
+                if (connack.ResultCode != MqttConnectResultCode.Success)
                 {
                     subscribed = false;
                     Trace.TraceWarning("Received CONNACK with unsuccessful result code: {0}. Attempting connection again...", connack.ResultCode);
@@ -121,7 +121,7 @@ namespace Microsoft.Azure.Devices.Client.IotHub
                     QualityOfServiceLevel = MqttQualityOfServiceLevel.AtMostOnce, // QoS 0 because we don't care about the MQTT-level ack for this message.  The service will send a fully-fledged MQTT publish as the ack and we will listen for that below
                 };
 
-                birthMessage.UserProperties.Add(new() { Name = "type", Value = Encoding.UTF8.GetBytes("birth:1") });
+                birthMessage.UserProperties.Add(new("type", Encoding.UTF8.GetBytes("birth:1")));
 
                 TaskCompletionSource<BirthAck> birthAckReceivedTaskCompletionSource = new();
                 Func<MqttPublishReceivedEventArgs, Task> HandleReceivedBirthAck = (args) =>
@@ -243,7 +243,7 @@ namespace Microsoft.Azure.Devices.Client.IotHub
                     {
                         receivedTwinPush = await twinPushReceivedTaskCompletionSource.Task.WaitAsync(twinPushReceivedDefensiveTimeout, cancellationToken);
                     }
-                    catch (TimeoutException e)
+                    catch (TimeoutException)
                     {
                         Trace.TraceWarning("Timed out waiting for an expected twin push message. Disconnecting from the MQTT broker and attempting connection again...");
 
@@ -257,13 +257,13 @@ namespace Microsoft.Azure.Devices.Client.IotHub
 
                     if (receivedTwinPush.Desired != null)
                     {
-                        currentTwin.Desired = JsonNode.Parse(receivedTwinPush.Desired.Payload.Span).AsObject();
+                        currentTwin.Desired = JsonNode.Parse(receivedTwinPush.Desired.Payload.Span)!.AsObject();
                         currentTwin.ReportedVersion = receivedTwinPush.Desired.Version;
                     }
 
                     if (receivedTwinPush.Reported != null)
                     {
-                        currentTwin.Reported = JsonNode.Parse(receivedTwinPush.Reported.Payload.Span).AsObject();
+                        currentTwin.Reported = JsonNode.Parse(receivedTwinPush.Reported.Payload.Span)!.AsObject();
                         currentTwin.ReportedVersion = receivedTwinPush.Reported.Version;
                     }
                 }
@@ -299,7 +299,7 @@ namespace Microsoft.Azure.Devices.Client.IotHub
 
             var connack = await mqttClient.ConnectAsync(connectPacket, cancellationToken);
 
-            if (connack.ResultCode != MqttClientConnectResultCode.Success)
+            if (connack.ResultCode != MqttConnectResultCode.Success)
             {
                 throw new Exception("TODO");
             }
@@ -355,7 +355,7 @@ namespace Microsoft.Azure.Devices.Client.IotHub
         {
             const string name = "Microsoft.Azure.Devices.Provisioning.Client";
 
-            string version = typeof(IotHubConnection).GetTypeInfo().Assembly.GetName().Version.ToString(3);
+            string version = typeof(IotHubConnection).GetTypeInfo().Assembly.GetName().Version!.ToString(3);
             string runtime = RuntimeInformation.FrameworkDescription.Trim();
             string operatingSystem = RuntimeInformation.OSDescription.Trim();
             string processorArchitecture = RuntimeInformation.ProcessArchitecture.ToString().Trim();

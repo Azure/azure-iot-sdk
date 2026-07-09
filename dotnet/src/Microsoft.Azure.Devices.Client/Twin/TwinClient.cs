@@ -110,7 +110,7 @@ namespace Microsoft.Azure.Devices.Client.Twin
                     }.ToByteArray(),
                 };
 
-                publish.UserProperties.Add(new() { Name = "type", Value = Encoding.UTF8.GetBytes("get:1") });
+                publish.UserProperties.Add(new("type", Encoding.UTF8.GetBytes("get:1")));
             }
             else
             {
@@ -166,7 +166,7 @@ namespace Microsoft.Azure.Devices.Client.Twin
                     }.ToByteArray(),
                 };
 
-                publish.UserProperties.Add(new() { Name = "type", Value = Encoding.UTF8.GetBytes("reported-patch:1") });
+                publish.UserProperties.Add(new("type", Encoding.UTF8.GetBytes("reported-patch:1")));
             }
             else
             {
@@ -234,8 +234,8 @@ namespace Microsoft.Azure.Devices.Client.Twin
 
                 pendingGetTwinRequest.TwinResponseTask.TrySetResult(new()
                 {
-                    DesiredProperties = JsonObject.Parse(twinGetResponse.DesiredPayload.Span).AsObject(),
-                    ReportedProperties = JsonObject.Parse(twinGetResponse.ReportedPayload.Span).AsObject(),
+                    DesiredProperties = JsonObject.Parse(twinGetResponse.DesiredPayload.Span)!.AsObject(),
+                    ReportedProperties = JsonObject.Parse(twinGetResponse.ReportedPayload.Span)!.AsObject(),
                     DesiredPropertiesVersion = twinGetResponse.DesiredVersion,
                     ReportedPropertiesVersion = twinGetResponse.ReportedVersion,
                 });
@@ -253,7 +253,7 @@ namespace Microsoft.Azure.Devices.Client.Twin
 
                 var desiredPatchArgs = new DesiredPatchReceivedEventArgs()
                 {
-                    DesiredProperties = JsonObject.Parse(receivedDesiredPatch.Payload.Span).AsObject(),
+                    DesiredProperties = JsonObject.Parse(receivedDesiredPatch.Payload.Span)!.AsObject(),
                     DesiredPropertiesVersion = receivedDesiredPatch.Version,
                 };
 
@@ -267,7 +267,7 @@ namespace Microsoft.Azure.Devices.Client.Twin
                 {
                     twinPushArgs.Desired = new()
                     {
-                        Properties = JsonObject.Parse(receivedTwinPush.Desired.Payload.Span).AsObject(),
+                        Properties = JsonObject.Parse(receivedTwinPush.Desired.Payload.Span)!.AsObject(),
                         PropertiesVersion = receivedTwinPush.Desired.Version
                     };
                 }
@@ -276,7 +276,7 @@ namespace Microsoft.Azure.Devices.Client.Twin
                 {
                     twinPushArgs.Desired = new()
                     {
-                        Properties = JsonObject.Parse(receivedTwinPush.Reported.Payload.Span).AsObject(),
+                        Properties = JsonObject.Parse(receivedTwinPush.Reported.Payload.Span)!.AsObject(),
                         PropertiesVersion = receivedTwinPush.Reported.Version
                     };
                 }
@@ -302,19 +302,19 @@ namespace Microsoft.Azure.Devices.Client.Twin
                     Guid requestIdGuid = new Guid(receivedRequestId);
                     if (_pendingGetTwinOperations.TryRemove(requestIdGuid, out PendingGetTwinRequest? getTwinOperation))
                     {
-                        var clientTwinProperties = JsonNode.Parse(payloadBytes).AsObject();
+                        var clientTwinProperties = JsonNode.Parse(payloadBytes)!.AsObject();
 
-                        var desiredVersion = clientTwinProperties["desired"][VersionKey];
-                        ulong desiredPropertiesVersion = (ulong) desiredVersion.AsValue();
-
-                        // Remove the "$version" entry so that the twin object more closely mimics how it would in AEG scenario
-                        clientTwinProperties["desired"].AsObject().Remove(VersionKey);
-
-                        var reportedVersion = clientTwinProperties["reported"][VersionKey];
-                        ulong reportedPropertiesVersion = (ulong)reportedVersion.AsValue();
+                        var desiredVersion = clientTwinProperties["desired"]![VersionKey];
+                        ulong desiredPropertiesVersion = (ulong) desiredVersion!.AsValue();
 
                         // Remove the "$version" entry so that the twin object more closely mimics how it would in AEG scenario
-                        clientTwinProperties["reported"].AsObject().Remove(VersionKey);
+                        clientTwinProperties["desired"]!.AsObject().Remove(VersionKey);
+
+                        var reportedVersion = clientTwinProperties["reported"]![VersionKey];
+                        ulong reportedPropertiesVersion = (ulong)reportedVersion!.AsValue();
+
+                        // Remove the "$version" entry so that the twin object more closely mimics how it would in AEG scenario
+                        clientTwinProperties["reported"]!.AsObject().Remove(VersionKey);
 
                         var twinGetResponse = new TwinGetResponseWrapper()
                         {
@@ -326,12 +326,12 @@ namespace Microsoft.Azure.Devices.Client.Twin
                         // will intentionally remove the desired/reported properties in such a way to mimic that service behavior when connected to a classic hub.
                         if (getTwinOperation.GetDesired && (getTwinOperation.IfNotMatchDesired < desiredPropertiesVersion))
                         {
-                            twinGetResponse.DesiredProperties = clientTwinProperties["desired"].AsObject();
+                            twinGetResponse.DesiredProperties = clientTwinProperties["desired"]!.AsObject();
                         }
 
                         if (getTwinOperation.GetReported && (getTwinOperation.IfNotMatchReported < reportedPropertiesVersion))
                         {
-                            twinGetResponse.ReportedProperties = clientTwinProperties["reported"].AsObject();
+                            twinGetResponse.ReportedProperties = clientTwinProperties["reported"]!.AsObject();
                         }
 
                         getTwinOperation.TwinResponseTask.TrySetResult(twinGetResponse);
@@ -343,7 +343,7 @@ namespace Microsoft.Azure.Devices.Client.Twin
                         pendingReportedPropertiesUpdateRequest.ReportedPropertyUpdateResponse.TrySetResult(new ReportedPatchResponse()
                         {
                             Result = Result.Ok, // TODO mapping possible classic integer error codes to this new error enum
-                            Version = response.Version
+                            Version = response!.Version
                         });
                     }
                 }
@@ -354,7 +354,7 @@ namespace Microsoft.Azure.Devices.Client.Twin
                 if (DesiredPatchReceived != null)
                 {
                     var desiredPropertiesWithVersion = JsonNode.Parse(args.Publish.PayloadAsByteArray)!.AsObject();
-                    ulong desiredPropertiesVersion = (ulong)desiredPropertiesWithVersion[VersionKey];
+                    ulong desiredPropertiesVersion = (ulong)desiredPropertiesWithVersion[VersionKey]!;
                     desiredPropertiesWithVersion.Remove(VersionKey);
 
                     var desiredPropertyPatch = new DesiredPatchReceivedEventArgs()
@@ -389,7 +389,7 @@ namespace Microsoft.Azure.Devices.Client.Twin
 
             // match.Groups[1] evaluates to the query string key-value pair parameters
             NameValueCollection queryStringKeyValuePairs = HttpUtility.ParseQueryString(match.Groups[2].Value);
-            rid = queryStringKeyValuePairs.Get(RequestIdTopicKey);
+            rid = queryStringKeyValuePairs.Get(RequestIdTopicKey)!;
 
             if (status == 204)
             {

@@ -4,19 +4,19 @@ using System.Text;
 
 namespace Microsoft.Azure.Devices.Client.Mqtt
 {
-    public class MqttSubscribe
+    public class MqttUnsubscribe
     {
-        public MqttSubscribe()
+        public MqttUnsubscribe()
         { 
         
         }
 
-        public MqttSubscribe(string topic, MqttQualityOfServiceLevel qos)
+        public MqttUnsubscribe(string topic)
         {
-            TopicFilters.Add(new(topic, qos));
+            TopicFilters.Add(topic);
         }
 
-        public List<MqttTopicFilter> TopicFilters { get; set; } = new();
+        public List<string> TopicFilters { get; set; } = new();
 
         public List<MqttUserProperty> UserProperties { get; set; } = new();
 

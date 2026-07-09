@@ -6,8 +6,8 @@ namespace Microsoft.Azure.Devices.Client.DirectMethods
 {
     public class DirectMethodRequestProbeReceivedEventArgs : EventArgs
     {
-        public string MethodName { get; init; }
+        public required string MethodName { get; init; }
 
-        public uint ResponseTimeoutSeconds { get; init; }
+        public required uint ResponseTimeoutSeconds { get; init; }
     }
 }

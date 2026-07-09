@@ -3,7 +3,7 @@ namespace Microsoft.Azure.Devices.Client.Mqtt
 {
     public class MqttClientDisconnectedEventArgs : EventArgs
     {
-        public Exception Exception { get; set; }
+        public Exception? Exception { get; set; }
 
         /// <summary>
         ///     Gets or sets the reason.
@@ -11,8 +11,8 @@ namespace Microsoft.Azure.Devices.Client.Mqtt
         /// </summary>
         public MqttClientDisconnectReason Reason { get; set; }
 
-        public string ReasonString { get; set; }
+        public string? ReasonString { get; set; }
 
-        public List<MqttUserProperty> UserProperties { get; set; }
+        public List<MqttUserProperty> UserProperties { get; set; } = new();
     }
 }

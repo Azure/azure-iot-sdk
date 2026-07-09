@@ -18,18 +18,18 @@ namespace Microsoft.Azure.Devices.Client.FileUpload
     public class IotHubNestedServiceException
     {
         [JsonPropertyName("errorCode")]
-        public int ErrorCode { get; set; }
+        public required int ErrorCode { get; set; }
 
         [JsonPropertyName("message")]
-        public string Message { get; set; }
+        public required string Message { get; set; }
 
         [JsonPropertyName("trackingId")]
-        public string TrackingId { get; set; }
+        public required string TrackingId { get; set; }
 
         [JsonPropertyName("timestampUtc")]
-        public string TimestampUtc { get; set; }
+        public required string TimestampUtc { get; set; }
 
         [JsonPropertyName("info")]
-        public string Info { get; set; } //TODO what is this?
+        public string? Info { get; set; } //TODO what is this?
     }
 }

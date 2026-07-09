@@ -46,7 +46,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
             // Upon getting the newly signed certificate, disconnect from IoT Hub and then reconnect with that new certificate
             await connectionClient.DisconnectAsync(cts.Token);
 
-            X509AuthenticationProvider newX509AuthenticationProvider = new(CreateX509CertificateFromKeyAndCert(CertificateListToPem(csrResponse.Certificates), testDeviceContext.PrivateKeyPem));
+            X509AuthenticationProvider newX509AuthenticationProvider = new(CreateX509CertificateFromKeyAndCert(CertificateListToPem(csrResponse.Certificates), testDeviceContext.PrivateKeyPem!));
             await connectionClient.ConnectAsync(testDeviceContext.ConnectionContext, newX509AuthenticationProvider, cancellationToken:cts.Token);
 
             await connectionClient.DisconnectAsync(cts.Token);
@@ -58,7 +58,8 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
             using var cert = X509Certificate2.CreateFromPem(certificate, key);
 
             // Note: On Windows, we need to export and reimport to allow ephemeral key use
-            using var exportedCert = new X509Certificate2(cert.Export(X509ContentType.Pfx));
+            byte[] certificateBytes = cert.Export(X509ContentType.Pfx);
+            using var exportedCert = X509CertificateLoader.LoadCertificate(certificateBytes);
 
             return exportedCert;
         }

@@ -5,7 +5,7 @@ using System.Security.Cryptography.X509Certificates;
 
 namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
 {
-    public class MqttNetClient : Mqtt.IMqttClient
+    public class MqttNetClient : Mqtt.IMqttClient 
     {
         private MQTTnet.IMqttClient _underlyingClient;
 
@@ -15,9 +15,9 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
         // TODO Is this an appropriate way to give the user a chance to change tls settings/proxy settings/etc? Or maybe just ask users to provide their own impl at that point
         public Func<MqttClientOptionsBuilder, MqttClientOptionsBuilder>? ClientOptionsOverrider { get; set; }
 
-        public MqttNetClient(MQTTnet.IMqttClient underlyingClient, bool useWebsocket = false, IWebProxy? proxy = null)
+        public MqttNetClient(MQTTnet.IMqttClient? underlyingClient = null, bool useWebsocket = false, IWebProxy? proxy = null)
         {
-            _underlyingClient = underlyingClient;
+            _underlyingClient = underlyingClient ?? new MQTTnet.MqttClientFactory().CreateMqttClient();
             _useWebsocket = useWebsocket;
             _proxy = proxy;
 
@@ -30,7 +30,7 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
         public event Func<Mqtt.MqttClientConnectedEventArgs, Task>? ConnectedAsync;
         public event Func<Mqtt.MqttClientDisconnectedEventArgs, Task>? DisconnectedAsync;
 
-        public async Task<MqttConnectAck> ConnectAsync(MqttConnect connect, CancellationToken cancellationToken = default)
+        public virtual async Task<MqttConnectAck> ConnectAsync(MqttConnect connect, CancellationToken cancellationToken = default)
         {
             MqttClientOptionsBuilder optionsBuilder;
             if (connect.ProtocolVersion == MqttProtocolVersion.V500)
@@ -49,7 +49,6 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
             optionsBuilder
                 .WithKeepAlivePeriod(connect.KeepAlivePeriod)
                 .WithClientId(connect.ClientId)
-                .WithKeepAlivePeriod(connect.KeepAlivePeriod)
                 .WithCredentials(connect.Username, connect.Password);
 
             if (!_useWebsocket)
@@ -58,12 +57,12 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
             }
             else
             {
-                string uriString = connect.WebsocketUri; // TODO this is diff for hub vs DPS
+                string? uriString = connect.WebsocketUri; // TODO this is diff for hub vs DPS
                 optionsBuilder.WithWebSocketServer(options =>
                 {
                     options.WithUri(uriString);
 
-                    if (_proxy != null)
+                    if (_proxy != null && uriString != null)
                     {
                         Uri serviceUri = new(uriString);
                         Uri? proxyUri = _proxy.GetProxy(serviceUri);
@@ -72,41 +71,50 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
                         {
                             if (_proxy.Credentials != null)
                             {
-                                NetworkCredential credentials = _proxy.Credentials.GetCredential(serviceUri, "Basic");
-                                string username = credentials.UserName;
-                                string password = credentials.Password;
-                                proxyOptions.WithUsername(username);
-                                proxyOptions.WithPassword(password);
+                                NetworkCredential? credentials = _proxy.Credentials.GetCredential(serviceUri, "Basic");
+                                if (credentials != null)
+                                {
+                                    string username = credentials.UserName;
+                                    string password = credentials.Password;
+                                    proxyOptions.WithUsername(username);
+                                    proxyOptions.WithPassword(password);
+                                }
                             }
 
-                            proxyOptions.WithAddress(proxyUri.AbsoluteUri);
+                            if (proxyUri != null)
+                            {
+                                proxyOptions.WithAddress(proxyUri.AbsoluteUri);
+                            }
                         });
                     }
                 });
             }
 
-            optionsBuilder.WithTlsOptions(tlsOptions =>
+            if (connect.ClientCertificate != null)
             {
-                tlsOptions.WithClientCertificates(new List<X509Certificate2>
+                optionsBuilder.WithTlsOptions(tlsOptions =>
+                {
+                    tlsOptions.WithClientCertificates(new List<X509Certificate2>
                 {
                     connect.ClientCertificate,
                 });
 
-                /*
-                if (_settings.RemoteCertificateValidationCallback != null)
-                {
-                    tlsOptions.WithCertificateValidationHandler((args) => _settings.RemoteCertificateValidationCallback.Invoke(
-                        mqttClient,
-                        args.Certificate,
-                        args.Chain,
-                        args.SslPolicyErrors));
-                }
-                */
+                    /*
+                    if (_settings.RemoteCertificateValidationCallback != null)
+                    {
+                        tlsOptions.WithCertificateValidationHandler((args) => _settings.RemoteCertificateValidationCallback.Invoke(
+                            mqttClient,
+                            args.Certificate,
+                            args.Chain,
+                            args.SslPolicyErrors));
+                    }
+                    */
 
-                tlsOptions.UseTls(true);
-                tlsOptions.WithSslProtocols(System.Security.Authentication.SslProtocols.Tls12); //TODO support 1.3
-                //tlsOptions.WithIgnoreCertificateRevocationErrors(!_settings.CertificateRevocationCheck);
-            });
+                    tlsOptions.UseTls(true);
+                    tlsOptions.WithSslProtocols(System.Security.Authentication.SslProtocols.Tls12); //TODO support 1.3
+                                                                                                    //tlsOptions.WithIgnoreCertificateRevocationErrors(!_settings.CertificateRevocationCheck);
+                });
+            }
 
             if (ClientOptionsOverrider != null)
             {
@@ -121,34 +129,27 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
                 o.UserProperties = new();
             }
 
-            try
+            var connectResult = await _underlyingClient.ConnectAsync(o, cancellationToken);
+
+            var genericConnectResult = new MqttConnectAck()
             {
-                var connectResult = await _underlyingClient.ConnectAsync(o, cancellationToken);
+                ResultCode = ModelConverter.ToGeneric(connectResult.ResultCode),
+            };
 
-                var genericConnectResult = new MqttConnectAck()
+            if (connectResult.UserProperties != null)
+            {
+                foreach (var userProperty in connectResult.UserProperties)
                 {
-                    ResultCode = ModelConverter.ToGeneric(connectResult.ResultCode),
-                };
-
-                if (connectResult.UserProperties != null)
-                {
-                    foreach (var userProperty in connectResult.UserProperties)
-                    {
-                        genericConnectResult.UserProperties.Add(new() { Name = userProperty.Name, Value = userProperty.ValueBuffer });
-                    }
+                    genericConnectResult.UserProperties.Add(new(userProperty.Name, userProperty.ValueBuffer));
                 }
-
-                return genericConnectResult;
-            }
-            catch (NullReferenceException e)
-            {
-                Console.WriteLine(e.StackTrace);
-                throw;
             }
 
+            IsConnected = genericConnectResult.ResultCode == MqttConnectResultCode.Success;
+
+            return genericConnectResult;
         }
 
-        public async Task DisconnectAsync(MqttDisconnect disconnect, CancellationToken cancellationToken = default)
+        public virtual async Task DisconnectAsync(MqttDisconnect disconnect, CancellationToken cancellationToken = default)
         {
             var disconnectBuilder = new MqttClientDisconnectOptionsBuilder()
                 .WithReason(ModelConverter.ToMqttNet(disconnect.Reason))
@@ -164,9 +165,10 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
             }
 
             await _underlyingClient.DisconnectAsync(disconnectBuilder.Build(), cancellationToken);
+            IsConnected = false;
         }
 
-        public async Task<MqttPublishAck> PublishAsync(MqttPublish publish, CancellationToken cancellationToken = default)
+        public virtual async Task<MqttPublishAck> PublishAsync(MqttPublish publish, CancellationToken cancellationToken = default)
         {
             var messageBuilder = new MqttApplicationMessageBuilder()
                 .WithContentType(publish.ContentType)
@@ -187,7 +189,7 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
             return ModelConverter.ToGeneric(await _underlyingClient.PublishAsync(messageBuilder.Build(), cancellationToken));
         }
 
-        public async Task<MqttSubscribeAck> SubscribeAsync(MqttSubscribe mqttSubscribe, CancellationToken cancellationToken = default)
+        public virtual async Task<MqttSubscribeAck> SubscribeAsync(MqttSubscribe mqttSubscribe, CancellationToken cancellationToken = default)
         {
             var subscribeBuilder = new MqttClientSubscribeOptionsBuilder();
             foreach (var topicFilter in mqttSubscribe.TopicFilters)
@@ -206,13 +208,17 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
             return ModelConverter.ToGeneric(await _underlyingClient.SubscribeAsync(subscribeBuilder.Build(), cancellationToken));
         }
 
-        public async Task<MqttUnsubscribeAck> UnsubscribeAsync(string topic, List<MqttUserProperty> userProperties, CancellationToken cancellationToken = default)
+        public virtual async Task<MqttUnsubscribeAck> UnsubscribeAsync(MqttUnsubscribe unsubscribe, CancellationToken cancellationToken = default)
         {
-            var unsubscribeBuilder = new MqttClientUnsubscribeOptionsBuilder()
-                .WithTopicFilter(topic);
-            if (userProperties != null)
+            var unsubscribeBuilder = new MqttClientUnsubscribeOptionsBuilder();
+            foreach (var topicFilter in unsubscribe.TopicFilters)
+            { 
+                unsubscribeBuilder.WithTopicFilter(topicFilter);
+            }
+
+            if (unsubscribe.UserProperties != null)
             {
-                foreach (MqttUserProperty userProperty in userProperties)
+                foreach (MqttUserProperty userProperty in unsubscribe.UserProperties)
                 {
                     unsubscribeBuilder.WithUserProperty(userProperty.Name, userProperty.Value);
                 }
@@ -229,6 +235,8 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
 
             _underlyingClient.Dispose();
         }
+
+        public bool IsConnected { get; internal set; }
 
         private Task DelegateReceivedPublishAsync(MqttApplicationMessageReceivedEventArgs args)
         {
@@ -255,7 +263,7 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
             {
                 foreach (var userProperty in args.ApplicationMessage.UserProperties)
                 {
-                    genericArgs.Publish.UserProperties.Add(new() { Name = userProperty.Name, Value = userProperty.ValueBuffer });
+                    genericArgs.Publish.UserProperties.Add(new(userProperty.Name, userProperty.ValueBuffer));
                 }
             }
 
@@ -276,6 +284,8 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
                 return Task.CompletedTask;
             }
 
+            IsConnected = true;
+
             return ConnectedAsync.Invoke(new()
             {
                 ConnectAck = ModelConverter.ToGeneric(args.ConnectResult),
@@ -295,11 +305,13 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
                 Reason = ModelConverter.ToGeneric(args.Reason),
             };
 
+            IsConnected = false;
+
             if (args.UserProperties != null)
             {
                 foreach (var userProperty in args.UserProperties)
                 {
-                    genericArgs.UserProperties.Add(new() { Name = userProperty.Name, Value = userProperty.ValueBuffer });
+                    genericArgs.UserProperties.Add(new(userProperty.Name, userProperty.ValueBuffer));
                 }
             }
 
