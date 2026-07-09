@@ -15,10 +15,13 @@
 #
 # Scope
 # -----
-# This workflow runs the fast scenarios (telemetry/c2d/method/twin). Device
-# Update (ADU) e2e lives in a separate slow-lane workflow (ci-c-e2e-adu.yml)
-# because its Device Update provisioning is slow (~25 min); it uses the same
-# in-process model on a nightly / dispatch / ADU-paths cadence.
+# This workflow runs the fast scenarios (telemetry/c2d/method/twin) AND the
+# mocked Device Update (ADU) e2e suite (az_iot_tests_e2e_adu), which drives a
+# signed deployment through the device twin with the crypto/platform ops mocked
+# -- no Device Update account is required, so it is fast. A separate workflow
+# (ci-c-e2e-adu.yml) is reserved for the future real-ADU suite (which provisions
+# an actual Device Update account and triggers updates THROUGH the ADU service);
+# until that lands it runs this same mocked suite nightly as a placeholder.
 #
 # Stages
 # ------
@@ -82,6 +85,10 @@ jobs:
         uses: ./.github/actions/provision-e2e-resources
         with:
           rg-prefix: CSDKE2EFast-
+          # Two DPS enrollments so the parallel Linux/Windows test legs can each
+          # claim their own device (see the per-leg device-index selection below)
+          # and never share a device twin.
+          dps-x509-individual-enrollments: '2'
 
       - name: Upload test config
         uses: actions/upload-artifact@v4
@@ -104,8 +111,10 @@ jobs:
         include:
           - os: ubuntu-latest
             preset: linux-gcc-debug
+            device-index: 0
           - os: windows-latest
             preset: windows-msvc-debug
+            device-index: 1
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
@@ -119,11 +128,11 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y ninja-build
 
-      - name: Build e2e test
+      - name: Build e2e tests
         working-directory: c
         run: |
           cmake --preset ${{ matrix.preset }} -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_WITH_PAHO=ON
-          cmake --build --preset ${{ matrix.preset }} ${{ runner.os == 'Windows' && '--config Debug' || '' }} --target az_iot_tests_e2e
+          cmake --build --preset ${{ matrix.preset }} ${{ runner.os == 'Windows' && '--config Debug' || '' }} --target az_iot_tests_e2e az_iot_tests_e2e_adu az_iot_tests_e2e_csr
 
       - name: Download shared test config
         uses: actions/download-artifact@v4
@@ -137,6 +146,25 @@ jobs:
           # Service-side config (IOTHUB_*, IOT_DPS_*) is set by the generated script.
           . ./test_config/set_test_env_vars.ps1
 
+          # Select this leg's device. Two DPS enrollments are provisioned; the
+          # Linux and Windows legs each claim a DISTINCT one (via matrix
+          # device-index) so they never share a device twin -- the mocked ADU
+          # suite patches large desired properties, and a shared twin would bloat
+          # the other leg's twin GET and flake test_twin. Fall back to the
+          # unsuffixed index-0 vars if an older (pre-indexing) provisioning script
+          # is fetched from iot-sdks-e2e-fx master.
+          $idx = '${{ matrix.device-index }}'
+          $regId   = (Get-Item "env:IOT_DPS_INDIVIDUAL_REGISTRATION_ID_$idx" -ErrorAction SilentlyContinue).Value
+          $certB64 = (Get-Item "env:IOT_DPS_INDIVIDUAL_X509_CERTIFICATE_$idx" -ErrorAction SilentlyContinue).Value
+          $keyB64  = (Get-Item "env:IOT_DPS_INDIVIDUAL_X509_KEY_$idx" -ErrorAction SilentlyContinue).Value
+          if (-not $regId -or -not $certB64 -or -not $keyB64) {
+            Write-Host "Indexed device $idx not available; using the shared index-0 device."
+            $regId   = $env:IOT_DPS_INDIVIDUAL_REGISTRATION_ID
+            $certB64 = $env:IOT_DPS_INDIVIDUAL_X509_CERTIFICATE
+            $keyB64  = $env:IOT_DPS_INDIVIDUAL_X509_KEY
+          }
+          Write-Host "e2e device (index $idx): $regId"
+
           # Materialize the device X.509 material to files. The in-process test
           # reads cert/key/CA by PATH, so CI decodes the base64 PEMs and builds a
           # CA trust bundle here (no network download).
@@ -147,9 +175,9 @@ jobs:
           $caPath   = Join-Path $dir "trusted-ca.pem"
 
           [System.IO.File]::WriteAllText($certPath,
-            [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:IOT_DPS_INDIVIDUAL_X509_CERTIFICATE)))
+            [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($certB64)))
           [System.IO.File]::WriteAllText($keyPath,
-            [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:IOT_DPS_INDIVIDUAL_X509_KEY)))
+            [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($keyB64)))
 
           if ($IsLinux -and (Test-Path "/etc/ssl/certs/ca-certificates.crt")) {
             Copy-Item "/etc/ssl/certs/ca-certificates.crt" $caPath
@@ -168,7 +196,7 @@ jobs:
 
           # Map the config's DPS vars onto the names the test consumes.
           $env:AZ_IOT_DPS_ID_SCOPE        = $env:IOT_DPS_ID_SCOPE
-          $env:AZ_IOT_DPS_REGISTRATION_ID = $env:IOT_DPS_INDIVIDUAL_REGISTRATION_ID
+          $env:AZ_IOT_DPS_REGISTRATION_ID = $regId
           $env:AZ_IOT_CLIENT_CERT         = $certPath
           $env:AZ_IOT_CLIENT_KEY          = $keyPath
           $env:AZ_IOT_TRUSTED_CA          = $caPath
@@ -176,10 +204,12 @@ jobs:
 
           New-Item -ItemType Directory -Path ./test_config/results -Force | Out-Null
           $cfg = if ($IsWindows) { @('-C', 'Debug') } else { @() }
-          # `-R e2e -E adu` runs the fast suite (az_iot_tests_e2e) but NOT the
-          # slow-lane ADU placeholder (az_iot_tests_e2e_adu); ADU has its own
-          # workflow (ci-c-e2e-adu.yml).
-          ctest --test-dir c/build/${{ matrix.preset }} @cfg -R e2e -E adu `
+          # `-R e2e` runs the fast suite (az_iot_tests_e2e) and the mocked ADU
+          # suite (az_iot_tests_e2e_adu), plus the CSR enrollment test
+          # (az_iot_tests_e2e_csr), which self-skips (CTest exit 77) unless
+          # AZ_IOT_DPS_CSR_ENABLED is provisioned. The adu_crypto_openssl unit
+          # test is not matched by the e2e name filter, so it stays out of this job.
+          ctest --test-dir c/build/${{ matrix.preset }} @cfg -R e2e `
             --verbose --no-tests=error --timeout 900 `
             --output-junit ./test_config/results/e2e-${{ matrix.os }}.xml
 

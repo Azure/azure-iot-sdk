@@ -303,7 +303,7 @@ error:
     return false;
 }
 
-bool e2e_amqp_telemetry_pump(e2e_amqp_telemetry_t* t, int wait_ms)
+bool e2e_amqp_telemetry_do_work(e2e_amqp_telemetry_t* t, int wait_ms)
 {
     if (!t->started)
     {
@@ -326,37 +326,39 @@ bool e2e_amqp_telemetry_seen(const e2e_amqp_telemetry_t* t, const char* needle)
 
 void e2e_amqp_telemetry_end(e2e_amqp_telemetry_t* t)
 {
-    if (!t->started)
+    if (t->started)
     {
-        return;
-    }
-    t->started = false;
+        t->started = false;
 
-    for (int p = 0; p < t->partition_count; p++)
-    {
-        E2E_AMQP_DISCARD(az_amqp_link_detach(&t->receivers[p], NULL));
-    }
-    E2E_AMQP_DISCARD(az_amqp_cbs_close(&t->cbs));
-    E2E_AMQP_DISCARD(az_amqp_session_end(&t->session, NULL));
-    E2E_AMQP_DISCARD(az_amqp_connection_close(&t->connection, NULL));
-
-    for (int i = 0; i < 40; i++)
-    {
-        az_amqp_connection_state state = az_amqp_connection_get_state(&t->connection);
-        if (state == AZ_AMQP_CONNECTION_STATE_CLOSED || state == AZ_AMQP_CONNECTION_STATE_ERROR)
+        for (int p = 0; p < t->partition_count; p++)
         {
-            break;
+            E2E_AMQP_DISCARD(az_amqp_link_detach(&t->receivers[p], NULL));
         }
-        if (!pump_connection(&t->connection, &t->transport_storage, &t->connection_failed, 100))
+        E2E_AMQP_DISCARD(az_amqp_cbs_close(&t->cbs));
+        E2E_AMQP_DISCARD(az_amqp_session_end(&t->session, NULL));
+        E2E_AMQP_DISCARD(az_amqp_connection_close(&t->connection, NULL));
+
+        for (int i = 0; i < 40; i++)
         {
-            break;
+            az_amqp_connection_state state = az_amqp_connection_get_state(&t->connection);
+            if (state == AZ_AMQP_CONNECTION_STATE_CLOSED || state == AZ_AMQP_CONNECTION_STATE_ERROR)
+            {
+                break;
+            }
+            if (!pump_connection(&t->connection, &t->transport_storage, &t->connection_failed, 100))
+            {
+                break;
+            }
         }
     }
 
-    /* Close the transport so its TLS slot is released. az_amqp_connection_close
-     * tears down the AMQP session but leaves the caller-owned transport open; on
-     * Windows the Schannel adapter uses a single global slot, so the next
-     * connection (c2d/method/twin) can only handshake once this one is closed. */
+    /* Always release the transport's TLS slot, even if we failed BEFORE fully
+     * starting (t->started stays false until the very end of _begin). On Windows
+     * the Schannel adapter uses a single global slot; a failed attempt that left
+     * the slot open would force every subsequent retry -- and the c2d/method/twin
+     * connections -- to reuse the dead session instead of performing a fresh TLS
+     * handshake. az_amqp_connection_close tears down the AMQP session but leaves
+     * the caller-owned transport open, so close it here explicitly. */
     if (t->transport.vtable != NULL && t->transport.vtable->close != NULL)
     {
         (void)t->transport.vtable->close(&t->transport);

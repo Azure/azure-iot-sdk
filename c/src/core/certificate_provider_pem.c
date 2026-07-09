@@ -32,9 +32,10 @@ static az_iot_result_t read_file_content(const char* path, char** out)
 }
 
 static az_iot_result_t pem_load(
-    az_iot_certificate_provider_t* self, az_iot_certificate_material_t* out)
+    az_iot_certificate_provider_t* self, az_iot_cert_role_t role, az_iot_certificate_material_t* out)
 {
     az_iot_certificate_provider_pem_t* m = (az_iot_certificate_provider_pem_t*)self;
+    (void)role; /* static-cert provider: same material for bootstrap and operational */
     if (!m || !out) return AZ_IOT_ERR_INVALID_ARG;
     if (!m->loaded) return AZ_IOT_ERR_NOT_INITIALIZED;
 
@@ -45,6 +46,8 @@ static az_iot_result_t pem_load(
     out->trusted_ca_path     = m->ca_path;
     out->client_cert_path    = m->cert_path;
     out->client_key_path     = m->key_path;
+    out->client_key_uri      = NULL;
+    out->crypto_engine_id    = NULL;
     return AZ_IOT_OK;
 }
 
@@ -60,9 +63,10 @@ static void pem_deinit_vtable(az_iot_certificate_provider_t* self)
 }
 
 static const az_iot_certificate_provider_vtable_t s_pem_vtable = {
-    pem_load,
-    pem_release,
-    pem_deinit_vtable
+    .version = AZ_IOT_CERTIFICATE_PROVIDER_VTABLE_VERSION,
+    .load    = pem_load,
+    .release = pem_release,
+    .deinit  = pem_deinit_vtable,
 };
 
 static char* dup_str(const char* s)
