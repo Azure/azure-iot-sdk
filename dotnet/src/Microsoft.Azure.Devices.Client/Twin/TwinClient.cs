@@ -107,6 +107,11 @@ namespace Microsoft.Azure.Devices.Client.Twin
         /// <exception cref="PublishRejectedException">Thrown if this get twin request is rejected by IoT Hub for any reason.</exception>
         public async Task<TwinGetResponseWrapper> GetTwinAsync(bool getReported = true, bool getDesired = true, ulong ifNotMatchReported = 0, ulong ifNotMatchDesired = 0,  CancellationToken cancellationToken = default)
         {
+            if (_connection.CurrentConnectionContext == null)
+            {
+                throw new NotSupportedException("Must be connected before calling this method.");
+            }
+
             Guid requestId = Guid.NewGuid();
 
             // Note the request as "in progress" before actually sending it so that no matter how quickly the service
@@ -168,6 +173,11 @@ namespace Microsoft.Azure.Devices.Client.Twin
         /// <exception cref="PublishRejectedException">Thrown if this reported property update message is rejected by IoT Hub for any reason.</exception>
         public async Task<ReportedPatchResponse> UpdateReportedPropertiesAsync(ReportedPatchRequest patch, CancellationToken cancellationToken = default)
         {
+            if (_connection.CurrentConnectionContext == null)
+            {
+                throw new NotSupportedException("Must be connected before calling this method.");
+            }
+
             Guid requestId = Guid.NewGuid();
             
             // Note the request as "in progress" before actually sending it so that no matter how quickly the service
@@ -217,7 +227,6 @@ namespace Microsoft.Azure.Devices.Client.Twin
 
             return updateReportedPropertiesResponse;
         }
-
 
         private async Task HandleReceivedAzureEventGridMqttPublish(MqttPublishReceivedEventArgs args)
         { 

@@ -42,7 +42,7 @@ namespace Microsoft.Azure.Devices.Client.Telemetry
         {
             if (_connection.CurrentConnectionContext == null)
             {
-                throw new NotSupportedException("Must open the connection before sending telemetry");
+                throw new NotSupportedException("Must be connected before calling this method.");
             }
 
             if (_connection.CurrentConnectionContext.IsAzureEventGrid)

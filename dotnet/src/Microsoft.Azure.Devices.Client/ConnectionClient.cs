@@ -12,9 +12,9 @@ using System.Text.Json;
 
 namespace Microsoft.Azure.Devices.Client
 {
-    public class ConnectionClient : IDisposable
+    public class ConnectionClient : IDisposable //TODO make this class mockable?
     {
-        private IMqttClient MqttClient;
+        private IMqttClient _mqttClient;
 
         internal event Func<MqttPublishReceivedEventArgs, Task>? ApplicationMessageReceivedAsync;
 
@@ -41,10 +41,22 @@ namespace Microsoft.Azure.Devices.Client
         /// <summary>
         /// Construct a new <see cref="ConnectionClient"/>
         /// </summary>
-        /// <param name="mqttClient">The MQTT client to use. If null, a default MQTT client with default retry logic will be created for you.</param>
-        public ConnectionClient(IMqttClient? mqttClient = null)
+        /// <param name="mqttClient">The MQTT client to use. If null, a default MQTT client will be created for you.</param>
+        /// <param name="retryPolicy">
+        /// The retry policy for the MQTT client to use when reconnecting after unexpected disconnects. This policy does not apply to individual operations like
+        /// sending telemetry.
+        /// </param>
+        public ConnectionClient(IMqttClient? mqttClient = null, ConnectionClientOptions? options = null)
         {
-            MqttClient = mqttClient ?? new MqttSessionClient();
+            options ??= new ConnectionClientOptions();
+
+            MqttSessionClientOptions sessionClientOptions = new()
+            {
+                ConnectionRetryPolicy = options.ConnectionRetryPolicy,
+                EnableMqttLogging = options.EnableMqttLogging,
+            };
+
+            _mqttClient = mqttClient ?? new MqttSessionClient(sessionClientOptions);
         }
 
         /// <summary>
@@ -61,7 +73,7 @@ namespace Microsoft.Azure.Devices.Client
 
             //TODO several mqtt client options should not be provided by the user (ie, host name). Add checks here that validate all of them
 
-            MqttClient.PublishReceivedAsync += DelegateReceivedPublishAsync;
+            _mqttClient.PublishReceivedAsync += DelegateReceivedPublishAsync;
 
             CurrentConnectionContext = new ConnectionContext()
             {
@@ -82,18 +94,9 @@ namespace Microsoft.Azure.Devices.Client
         /// <param name="cancellationToken">The cancellation token.</param>
         public async Task DisconnectAsync(CancellationToken cancellationToken = default)
         {
-            MqttClient.PublishReceivedAsync -= DelegateReceivedPublishAsync;
-            await MqttClient.DisconnectAsync(new MqttDisconnect() { Reason = MqttClientDisconnectOptionsReason.NormalDisconnection }, cancellationToken);
+            _mqttClient.PublishReceivedAsync -= DelegateReceivedPublishAsync;
+            await _mqttClient.DisconnectAsync(new MqttDisconnect() { Reason = MqttClientDisconnectOptionsReason.NormalDisconnection }, cancellationToken);
             CurrentConnectionContext = null;
-        }
-
-        /// <summary>
-        /// Override the default exponential-backoff with jitter retry algorithm used when attempting to re-connect over MQTT
-        /// </summary>
-        /// <param name="retryPolicy">The custom retry policy to use.</param>
-        public void SetRetryPolicy(IRetryPolicy retryPolicy)
-        {
-            throw new NotImplementedException();
         }
 
         /// <summary>
@@ -106,7 +109,7 @@ namespace Microsoft.Azure.Devices.Client
         {
             if (CurrentConnectionContext == null)
             {
-                throw new Exception("Must be connected before calling this method.");
+                throw new NotSupportedException("Must be connected before calling this method.");
             }
 
             CertificateSigningOperation operation = new();
@@ -118,10 +121,10 @@ namespace Microsoft.Azure.Devices.Client
             }
             else
             {
-                MqttClient.PublishReceivedAsync += HandleReceivedCertificateSigningPublish;
+                _mqttClient.PublishReceivedAsync += HandleReceivedCertificateSigningPublish;
                 _pendingCertificateSigningOperations.TryAdd(request.RequestId, operation);
 
-                await MqttClient.SubscribeAsync(new(CertificateSigningResponseTopicFilter, MqttQualityOfServiceLevel.AtLeastOnce)); // TODO QoS correct?
+                await _mqttClient.SubscribeAsync(new(CertificateSigningResponseTopicFilter, MqttQualityOfServiceLevel.AtLeastOnce)); // TODO QoS correct?
 
                 MqttPublish certificateSigningRequestPublish = new()
                 {
@@ -129,7 +132,9 @@ namespace Microsoft.Azure.Devices.Client
                     Payload = JsonSerializer.SerializeToUtf8Bytes(request),
                 };
 
-                await MqttClient.PublishAsync(certificateSigningRequestPublish, cancellationToken: cancellationToken);
+                MqttPublishAck puback = await _mqttClient.PublishAsync(certificateSigningRequestPublish, cancellationToken: cancellationToken);
+
+                PublishRejectedException.ThrowIfUnsuccessfulPuback(puback, "Failed to send the certificate signing request because the MQTT broker rejected the publish.");
             }
 
             return operation;
@@ -149,41 +154,41 @@ namespace Microsoft.Azure.Devices.Client
 
             CurrentConnectionContext = connectionContext;
 
-            MqttClient.PublishReceivedAsync += DelegateReceivedPublishAsync; //TODO add integration test for this scenario!
+            _mqttClient.PublishReceivedAsync += DelegateReceivedPublishAsync; //TODO add integration test for this scenario!
 
             if (connectionContext.IsAzureEventGrid)
             {
                 // Connect to the new Azure Event Grid endpoint using MQTT v5 using the provisioning result credentials
-                return await iotHubConnection.ConnectToAzureEventGridIotHubAsync(MqttClient, connectionContext.IotHubHostName, connectionContext.DeviceId, authentication, twinPushOptions, cancellationToken);
+                return await iotHubConnection.ConnectToAzureEventGridIotHubAsync(_mqttClient, connectionContext.IotHubHostName, connectionContext.DeviceId, authentication, twinPushOptions, cancellationToken);
             }
             else
             {
                 // Connect to the legacy IoT hub endpoint using MQTT v3 using the provisioning result credentials
-                return await iotHubConnection.ConnectToClassicIotHubAsync(MqttClient, connectionContext.IotHubHostName, connectionContext.DeviceId, authentication, this, twinPushOptions, cancellationToken);
+                return await iotHubConnection.ConnectToClassicIotHubAsync(_mqttClient, connectionContext.IotHubHostName, connectionContext.DeviceId, authentication, this, twinPushOptions, cancellationToken);
             }
         }
 
         internal async Task<DeviceRegistrationResult> ProvisionAsync(ProvisioningSettings provisioningSettings, X509AuthenticationProvider authentication, CancellationToken cancellationToken = default)
         {
             ProvisioningConnection provisioningConnection = new();
-            return await provisioningConnection.RegisterAsync(MqttClient, new() { ClientCertificateSigningRequest = null, Payload = provisioningSettings.ProvisioningPayload }, authentication, provisioningSettings.IdScope, provisioningSettings.GlobalEndpointAddress, cancellationToken);
+            return await provisioningConnection.RegisterAsync(_mqttClient, new() { ClientCertificateSigningRequest = null, Payload = provisioningSettings.ProvisioningPayload }, authentication, provisioningSettings.IdScope, provisioningSettings.GlobalEndpointAddress, cancellationToken);
 
             //TODO do we care about initial twin as returned by DPS?
         }
 
         internal async Task<MqttPublishAck> PublishAsync(MqttPublish mqttApplicationMessage, CancellationToken cancellationToken = default)
         {
-            return await MqttClient.PublishAsync(mqttApplicationMessage, cancellationToken);
+            return await _mqttClient.PublishAsync(mqttApplicationMessage, cancellationToken);
         }
 
         internal async Task<MqttSubscribeAck> SubscribeAsync(MqttSubscribe subscribe, CancellationToken cancellationToken = default)
         {
-            return await MqttClient.SubscribeAsync(subscribe, cancellationToken);
+            return await _mqttClient.SubscribeAsync(subscribe, cancellationToken);
         }
 
         internal async Task<MqttUnsubscribeAck> UnsubscribeAsync(MqttUnsubscribe unsubscribe, CancellationToken cancellationToken = default)
         {
-            return await MqttClient.UnsubscribeAsync(unsubscribe, cancellationToken);
+            return await _mqttClient.UnsubscribeAsync(unsubscribe, cancellationToken);
         }
 
         internal async Task DelegateReceivedPublishAsync(MqttPublishReceivedEventArgs args)
@@ -238,10 +243,10 @@ namespace Microsoft.Azure.Devices.Client
 
         public void Dispose()
         {
-            MqttClient.PublishReceivedAsync -= DelegateReceivedPublishAsync;
-            MqttClient.PublishReceivedAsync -= HandleReceivedCertificateSigningPublish;
+            _mqttClient.PublishReceivedAsync -= DelegateReceivedPublishAsync;
+            _mqttClient.PublishReceivedAsync -= HandleReceivedCertificateSigningPublish;
 
-            MqttClient.Dispose();
+            _mqttClient.Dispose();
         }
     }
 }
