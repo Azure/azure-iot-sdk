@@ -48,13 +48,15 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
                 CorrelationId = Guid.NewGuid().ToString(),
             };
 
+            outgoingTelemetryMessage.UserProperties.Add("SomeUserPropertyKey", "SomeUserPropertyValue");
+
             await telemetryClient.SendTelemetryAsync(outgoingTelemetryMessage, cts.Token);
         }
 
         public class TestObject
         {
             [JsonPropertyName("SomeString")]
-            public string SomeString { get; set; }
+            public string? SomeString { get; set; }
         }
     }
 }
