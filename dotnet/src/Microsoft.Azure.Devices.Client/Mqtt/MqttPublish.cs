@@ -50,7 +50,7 @@ namespace Microsoft.Azure.Devices.Client.Mqtt
 
         public ReadOnlySequence<byte> PayloadAsReadOnlySequence { get; set; }
 
-        public byte[] PayloadAsByteArray 
+        public byte[] Payload 
         {
             get
             {

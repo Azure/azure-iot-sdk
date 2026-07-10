@@ -126,7 +126,7 @@ namespace Microsoft.Azure.Devices.Client
                 MqttPublish certificateSigningRequestPublish = new()
                 {
                     Topic = CertificateSigningRequestTopic + request.RequestId,
-                    PayloadAsByteArray = JsonSerializer.SerializeToUtf8Bytes(request),
+                    Payload = JsonSerializer.SerializeToUtf8Bytes(request),
                 };
 
                 await MqttClient.PublishAsync(certificateSigningRequestPublish, cancellationToken: cancellationToken);
@@ -214,21 +214,21 @@ namespace Microsoft.Azure.Devices.Client
 
                 if (status.Equals("202"))
                 {
-                    CertificateSigningRequestAccepted accepted = JsonSerializer.Deserialize<CertificateSigningRequestAccepted>(args.Publish.PayloadAsByteArray)!;
+                    CertificateSigningRequestAccepted accepted = JsonSerializer.Deserialize<CertificateSigningRequestAccepted>(args.Publish.Payload)!;
                     pendingCertificateSigningOperation.SetAccepted(accepted);
                     //TODO qos? Ack needed?
                     return;
                 }
                 else if (status.Equals("200"))
                 {
-                    CertificateSigningResponse response = JsonSerializer.Deserialize<CertificateSigningResponse>(args.Publish.PayloadAsByteArray)!;
+                    CertificateSigningResponse response = JsonSerializer.Deserialize<CertificateSigningResponse>(args.Publish.Payload)!;
                     pendingCertificateSigningOperation.SetCompleted(response);
                     //TODO qos? Ack needed?
                     return;
                 }
                 else
                 {
-                    CertificateSigningRequestErrorResponse error = JsonSerializer.Deserialize<CertificateSigningRequestErrorResponse>(args.Publish.PayloadAsByteArray)!;
+                    CertificateSigningRequestErrorResponse error = JsonSerializer.Deserialize<CertificateSigningRequestErrorResponse>(args.Publish.Payload)!;
                     pendingCertificateSigningOperation.SetFailed(new CertificateSigningRequestFailedException() { Error = error });
                     //TODO qos? Ack needed?
                     return;

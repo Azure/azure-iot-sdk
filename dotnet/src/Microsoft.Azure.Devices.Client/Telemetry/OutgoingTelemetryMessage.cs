@@ -1,67 +1,82 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Text;
+﻿using System.Buffers;
 
 namespace Microsoft.Azure.Devices.Client.Telemetry
 {
+    /// <summary>
+    /// A single device-to-cloud telemetry message.
+    /// </summary>
     public class OutgoingTelemetryMessage
     {
-        public byte[] Payload { get; set; }
+        //TODO do we want configurable QoS here?
 
         /// <summary>
-        /// [Required for two way requests] Used to correlate two-way communication.
-        /// Format: A case-sensitive string ( up to 128 char long) of ASCII 7-bit alphanumeric chars
-        /// + {'-', ':', '/', '\', '.', '+', '%', '_', '#', '*', '?', '!', '(', ')', ',', '=', '@', ';', '$', '''}.
-        /// Non-alphanumeric characters are from URN RFC.
+        /// The optional payload of the outgoing telemetry.
         /// </summary>
-        public string MessageId
+        public ArraySegment<byte> PayloadAsArraySegment
         {
-            get => GetSystemProperty<string>(MessageSystemPropertyNames.MessageId);
-            set => SystemProperties[MessageSystemPropertyNames.MessageId] = value;
+            get
+            {
+                if (PayloadAsReadOnlySequence.IsEmpty)
+                {
+                    return ArraySegment<byte>.Empty;
+                }
+
+                return new ArraySegment<byte>(PayloadAsReadOnlySequence.ToArray()); //TOOD perf considerations?
+            }
+            set
+            {
+                PayloadAsReadOnlySequence = new(value);
+            }
         }
 
         /// <summary>
-        /// Used in message responses and feedback
+        /// The optional payload of the outgoing telemetry.
         /// </summary>
-        public string CorrelationId
+        public ReadOnlySequence<byte> PayloadAsReadOnlySequence { get; set; }
+
+        /// <summary>
+        /// The optional payload of the outgoing telemetry.
+        /// </summary>
+        public byte[] Payload
         {
-            get => GetSystemProperty<string>(MessageSystemPropertyNames.CorrelationId);
-            set => SystemProperties[MessageSystemPropertyNames.CorrelationId] = value;
+            get
+            {
+                if (PayloadAsReadOnlySequence.IsEmpty)
+                {
+                    return Array.Empty<byte>();
+                }
+
+                return PayloadAsReadOnlySequence.ToArray();
+            }
+            set
+            {
+                PayloadAsReadOnlySequence = new(value);
+            }
         }
 
         /// <summary>
-        /// Used to specify the content type of the message.
+        /// The message Id for this telemetry message
         /// </summary>
-        public string ContentType
-        {
-            get => GetSystemProperty<string>(MessageSystemPropertyNames.ContentType);
-            set => SystemProperties[MessageSystemPropertyNames.ContentType] = value;
-        }
+        public string? MessageId { get; set; }
 
         /// <summary>
-        /// Used to specify the content encoding type of the message.
+        /// The correlation Id for this telemetry message
         /// </summary>
-        public string ContentEncoding
-        {
-            get => GetSystemProperty<string>(MessageSystemPropertyNames.ContentEncoding);
-            set => SystemProperties[MessageSystemPropertyNames.ContentEncoding] = value;
-        }
+        public string? CorrelationId { get; set; }
 
         /// <summary>
-        /// Gets the dictionary of user properties which are set when user send the data.
+        /// The content type of this telemetry message's payload. Should only be set if <see cref="PayloadAsReadOnlySequence"/> is not empty.
         /// </summary>
-        public IDictionary<string, string> Properties { get; private set; }
+        public string? ContentType { get; set; }
 
         /// <summary>
-        /// Gets the dictionary of system properties which are managed internally.
+        /// The content encoding of this telemetry message's payload. Should only be set if <see cref="PayloadAsReadOnlySequence"/> is not empty.
         /// </summary>
-        internal IDictionary<string, object> SystemProperties { get; private set; }
+        public string? ContentEncoding { get; set; }
 
-        private T GetSystemProperty<T>(string key)
-        {
-            return SystemProperties.ContainsKey(key)
-                ? (T)SystemProperties[key]
-                : default;
-        }
+        /// <summary>
+        /// Custom user properties to include with this telemetry message.
+        /// </summary>
+        public Dictionary<string, string> UserProperties { get; set; } = new();
     }
 }

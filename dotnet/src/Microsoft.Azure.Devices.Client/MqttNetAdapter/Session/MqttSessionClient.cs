@@ -126,7 +126,7 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session
 
             var disconnectedArgs = new MqttClientDisconnectedEventArgs()
             {
-                Reason = MqttClientDisconnectReason.NormalDisconnection,
+                Reason = MqttDisconnectReason.NormalDisconnection,
                 ReasonString = "User closed the connection manually"
             };
 
@@ -683,25 +683,25 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session
         }
 
         // These reason codes are fatal if the broker sends a DISCONNECT packet with this reason.
-        private static bool IsFatal(MqttClientDisconnectReason code)
+        private static bool IsFatal(MqttDisconnectReason code)
         {
             switch (code)
             {
-                case MqttClientDisconnectReason.MalformedPacket:
-                case MqttClientDisconnectReason.ProtocolError:
-                case MqttClientDisconnectReason.NotAuthorized:
-                case MqttClientDisconnectReason.SessionTakenOver:
-                case MqttClientDisconnectReason.TopicFilterInvalid:
-                case MqttClientDisconnectReason.TopicNameInvalid:
-                case MqttClientDisconnectReason.TopicAliasInvalid:
-                case MqttClientDisconnectReason.PacketTooLarge:
-                case MqttClientDisconnectReason.PayloadFormatInvalid:
-                case MqttClientDisconnectReason.RetainNotSupported:
-                case MqttClientDisconnectReason.QosNotSupported:
-                case MqttClientDisconnectReason.ServerMoved:
-                case MqttClientDisconnectReason.SharedSubscriptionsNotSupported:
-                case MqttClientDisconnectReason.SubscriptionIdentifiersNotSupported:
-                case MqttClientDisconnectReason.WildcardSubscriptionsNotSupported:
+                case MqttDisconnectReason.MalformedPacket:
+                case MqttDisconnectReason.ProtocolError:
+                case MqttDisconnectReason.NotAuthorized:
+                case MqttDisconnectReason.SessionTakenOver:
+                case MqttDisconnectReason.TopicFilterInvalid:
+                case MqttDisconnectReason.TopicNameInvalid:
+                case MqttDisconnectReason.TopicAliasInvalid:
+                case MqttDisconnectReason.PacketTooLarge:
+                case MqttDisconnectReason.PayloadFormatInvalid:
+                case MqttDisconnectReason.RetainNotSupported:
+                case MqttDisconnectReason.QosNotSupported:
+                case MqttDisconnectReason.ServerMoved:
+                case MqttDisconnectReason.SharedSubscriptionsNotSupported:
+                case MqttDisconnectReason.SubscriptionIdentifiersNotSupported:
+                case MqttDisconnectReason.WildcardSubscriptionsNotSupported:
                     return true;
             }
 

@@ -10,6 +10,9 @@ using System.Web;
 
 namespace Microsoft.Azure.Devices.Client.DirectMethods
 {
+    /// <summary>
+    /// A feature client for receiving and responding to direct method requests from IoT Hub.
+    /// </summary>
     public class DirectMethodClient : IDisposable
     {
         internal const string ClassicDirectMethodsRequestTopic = "$iothub/methods/POST/";
@@ -38,6 +41,29 @@ namespace Microsoft.Azure.Devices.Client.DirectMethods
         /// <remarks>This feature is only supported by IoT hubs that use Azure Event Grid. Older IoT hubs will never send this probe.</remarks>
         public event Func<DirectMethodRequestProbeReceivedEventArgs, Task<ProbeAck>>? DirectMethodProbeReceivedAsync;
 
+
+        /// <summary>
+        /// Construct a new <see cref="DirectMethodClient"/> instance.
+        /// </summary>
+        /// <param name="connection">The connection client this feature client will use.</param>
+        /// <para>
+        /// The provided connection client does not need to be connected before this constructor is called. However, the provided connection client must be connected prior
+        /// to using this feature client to receive any direct methods.
+        /// </remarks>
+        /// <example>
+        /// The recommended order to instantiate feature clients and the connection client is as follows:
+        /// <code>
+        /// // Construct all the clients your device will use
+        /// ConnectionClient connectionClient = new();
+        /// DirectMethodClient directMethodClient = new(connectionClient);
+        /// 
+        /// //Set all handlers 
+        /// directMethodClient.DirectMethodInvokedAsync += SomeDirectMethodHandlingMethod;
+        /// 
+        /// // Open the connection (and start receiving direct methods)
+        /// await connectionClient.ProvisionAndConnectAsync();
+        /// </code>
+        /// </example>
         public DirectMethodClient(ConnectionClient connection)
         {
             _connection = connection;
@@ -104,7 +130,7 @@ namespace Microsoft.Azure.Devices.Client.DirectMethods
                 uint connectTimeoutRemainingUponReceivingProbe = publish.MessageExpiryInterval;
                 Stopwatch stopwatch = Stopwatch.StartNew();
 
-                Probe probe = Probe.Parser.ParseFrom(publish.PayloadAsByteArray);
+                Probe probe = Probe.Parser.ParseFrom(publish.Payload);
 
                 ProbeAck probeAck = await DirectMethodProbeReceivedAsync.Invoke(new() { MethodName = probe.MethodName, ResponseTimeoutSeconds = probe.ResponseTimeoutSeconds });
 
@@ -134,7 +160,7 @@ namespace Microsoft.Azure.Devices.Client.DirectMethods
                 {
                     Topic = string.Format("ih/{deviceId}/srv/methods", _connection.CurrentConnectionContext.DeviceId),
                     QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce,
-                    PayloadAsByteArray = probeAck.ToByteArray(),
+                    Payload = probeAck.ToByteArray(),
                     CorrelationData = publish.CorrelationData,
                     MessageExpiryInterval = remainingConnectTimeoutInSeconds,
                 };
@@ -148,7 +174,12 @@ namespace Microsoft.Azure.Devices.Client.DirectMethods
                     _pendingExpectedDirectMethodNames.TryAdd(requestId.Value, probe.MethodName);
                 }
 
-                await _connection.PublishAsync(probeAckPublish);
+                MqttPublishAck puback = await _connection.PublishAsync(probeAckPublish);
+
+                if (puback.ReasonCode != MqttPublishAckReasonCode.Success)
+                {
+                    Trace.TraceError("Failed to send the response to a direct method probe because the MQTT broker rejected the publish with reason code {0} and reason string {1}", puback.ReasonCode, puback.ReasonString);
+                }
             }
             else if (directMethodMessageType.Equals("exec"))
             {
@@ -174,7 +205,7 @@ namespace Microsoft.Azure.Devices.Client.DirectMethods
                 uint responseTimeoutInSeconds = publish.MessageExpiryInterval;
                 Stopwatch stopwatch = Stopwatch.StartNew();
 
-                Exec exec = Exec.Parser.ParseFrom(publish.PayloadAsByteArray);
+                Exec exec = Exec.Parser.ParseFrom(publish.Payload);
 
                 if (!expectedReadyId.Equals(exec.ReadyId))
                 {
@@ -200,7 +231,7 @@ namespace Microsoft.Azure.Devices.Client.DirectMethods
                 catch (InvalidCastException)
                 {
                     // Should only happen if the double grows so large that a uint can't contain it.
-                    Trace.TraceError("Could not calculate time since exedc message was received. This likely means the 'DirectMethodInvokedAsync' callback took too long. Cannot send result, so discarding this probe message");
+                    Trace.TraceError("Could not calculate time since exec message was received. This likely means the 'DirectMethodInvokedAsync' callback took too long. Cannot send result, so discarding this probe message");
                     return;
                 }
 
@@ -219,14 +250,19 @@ namespace Microsoft.Azure.Devices.Client.DirectMethods
                 {
                     Topic = string.Format("ih/{deviceId}/srv/methods", _connection.CurrentConnectionContext.DeviceId),
                     QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce,
-                    PayloadAsByteArray = result.ToByteArray(),
+                    Payload = result.ToByteArray(),
                     CorrelationData = publish.CorrelationData,
                     MessageExpiryInterval = remainingResponseTimeoutInSeconds,
                 };
 
                 resultPublish.UserProperties.Add(new("type", Encoding.UTF8.GetBytes(string.Format("result:1"))));
 
-                await _connection.PublishAsync(resultPublish);
+                MqttPublishAck puback = await _connection.PublishAsync(resultPublish);
+
+                if (puback.ReasonCode != MqttPublishAckReasonCode.Success)
+                {
+                    Trace.TraceError("Failed to send the response to a direct method exec because the MQTT broker rejected the publish with reason code {0} and reason string {1}", puback.ReasonCode, puback.ReasonString);
+                }
             }
         }
 
@@ -252,7 +288,7 @@ namespace Microsoft.Azure.Devices.Client.DirectMethods
                 Trace.TraceError("Received a direct method message, but no handler was set on this client to handle it.");            
             }
 
-            byte[] payload = args.Publish.PayloadAsByteArray;
+            byte[] payload = args.Publish.Payload;
 
             string[] tokens = Regex.Split(args.Publish.Topic, "/", RegexOptions.Compiled);
 
@@ -260,7 +296,7 @@ namespace Microsoft.Azure.Devices.Client.DirectMethods
             string? requestId = queryStringKeyValuePairs.Get(RequestIdTopicKey);
             if (requestId == null)
             {
-                throw new Exception("TODO");
+                Trace.TraceError("Received a malformed direct method request. Ignoring it.");
             }
 
             string methodName = tokens[3];
@@ -277,15 +313,15 @@ namespace Microsoft.Azure.Devices.Client.DirectMethods
             MqttPublish publish = new MqttPublish()
             {
                 Topic = responsePublishTopic,
-                PayloadAsByteArray = payload,
+                Payload = payload,
                 QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce,
             };
 
-            MqttPublishAck result = await _connection.PublishAsync(publish, CancellationToken.None);
+            MqttPublishAck puback = await _connection.PublishAsync(publish, CancellationToken.None);
 
-            if (result.ReasonCode != MqttClientPublishReasonCode.Success)
+            if (puback.ReasonCode != MqttPublishAckReasonCode.Success)
             {
-                throw new Exception("TODO");
+                Trace.TraceError("Failed to send the response to a direct method because the MQTT broker rejected the publish with reason code {0} and reason string {1}", puback.ReasonCode, puback.ReasonString);
             }
         }
 
