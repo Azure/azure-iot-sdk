@@ -16,13 +16,28 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
 
         public static string DpsIdScope { get; set; } = Environment.GetEnvironmentVariable("IOT_DPS_ID_SCOPE") ?? throw new ArgumentException("Missing env var");
 
-        private const string _testCertificatesPassword = "some fake password";
+        public const string TestCertificatesPassword = "some fake password";
 
         public static ServiceClient GetIotHubServiceClient() => ServiceClient.CreateFromConnectionString(IotHubConnectionString);
 
         public static RegistryManager GetIotHubRegistryManager() => RegistryManager.CreateFromConnectionString(IotHubConnectionString);
 
         public static ProvisioningServiceClient GetDpsHubServiceClient() => ProvisioningServiceClient.CreateFromConnectionString(DpsConnectionString);
+
+        public static string GetIotHubHostName()
+        {
+            string[] connectionStringKeyValuePairs = IotHubConnectionString.Split(";");
+            foreach (string connectionStringKeyValuePair in connectionStringKeyValuePairs)
+            {
+                string[] keyAndValue = connectionStringKeyValuePair.Split("=");
+                if (keyAndValue[0].Equals("HostName"))
+                {
+                    return keyAndValue[1];
+                }
+            }
+
+            throw new Exception("Malformed IoT hub connection string");
+        }
 
         public const int TestTimeoutMilliseconds = 60 * 1000;
 
@@ -44,7 +59,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
             CreateTestCertificates(pfxPath, certPath, deviceId);
 
             X509Certificate2 certificate = X509CertificateLoader.LoadCertificateFromFile(certPath);
-            X509Certificate2 pfx = X509CertificateLoader.LoadPkcs12FromFile(pfxPath, _testCertificatesPassword);
+            X509Certificate2 pfx = X509CertificateLoader.LoadPkcs12FromFile(pfxPath, TestCertificatesPassword);
 
             // Create individual enrollment for the test device to provision from
             Attestation attestation = X509Attestation.CreateFromClientCertificates(certificate);
@@ -184,7 +199,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
             var cert = req.CreateSelfSigned(DateTimeOffset.Now, DateTimeOffset.Now.AddHours(1));
 
             // Create PFX (PKCS #12) with private key
-            File.WriteAllBytes(pfxPath, cert.Export(X509ContentType.Pfx, _testCertificatesPassword));
+            File.WriteAllBytes(pfxPath, cert.Export(X509ContentType.Pfx, TestCertificatesPassword));
 
             // Create Base 64 encoded CER (public key only)
             File.WriteAllText(certPath,

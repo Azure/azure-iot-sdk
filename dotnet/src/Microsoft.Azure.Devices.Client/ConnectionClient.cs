@@ -154,7 +154,7 @@ namespace Microsoft.Azure.Devices.Client
 
             CurrentConnectionContext = connectionContext;
 
-            _mqttClient.PublishReceivedAsync += DelegateReceivedPublishAsync; //TODO add integration test for this scenario!
+            _mqttClient.PublishReceivedAsync += DelegateReceivedPublishAsync;
 
             if (connectionContext.IsAzureEventGrid)
             {
