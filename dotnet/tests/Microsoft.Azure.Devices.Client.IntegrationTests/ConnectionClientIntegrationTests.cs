@@ -4,6 +4,7 @@ using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using Xunit;
 using static Microsoft.ApplicationInsights.MetricDimensionNames.TelemetryContext;
+using static Microsoft.Azure.Amqp.Serialization.SerializableType;
 
 namespace Microsoft.Azure.Devices.Client.IntegrationTests
 {
@@ -44,12 +45,35 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
             ConnectionContext connectionContext = new()
             {
                 DeviceId = deviceId,
-                IsAzureEventGrid = testAgainstClassicHub,
+                IsAzureEventGrid = !testAgainstClassicHub,
                 IotHubHostName = Setup.GetIotHubHostName(),
             };
 
             ConnectionClient connectionClient = new();
-            await connectionClient.ConnectAsync(connectionContext, new X509AuthenticationProvider(pfx), null, TestContext.Current.CancellationToken);
+
+            // This basic retry logic covers the issue where a device is created on the Hub side, but it still 
+            // rejects the connection for authorization reasons. Usually, after a few seconds, the device is ready to 
+            // authorize the newly created device.
+            bool connected = false;
+            while (!connected)
+            {
+                try
+                {
+                    await connectionClient.ConnectAsync(connectionContext, new X509AuthenticationProvider(pfx), null, TestContext.Current.CancellationToken);
+                    connected = true;
+                }
+                catch (Exception e)
+                {
+                    if (e.Message.Contains("NotAuthorized"))
+                    {
+                        await Task.Delay(TimeSpan.FromSeconds(1), TestContext.Current.CancellationToken);
+                    }
+                    else
+                    {
+                        throw;
+                    }
+                }
+            }
         }
     }
 }
