@@ -71,37 +71,9 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
             ConnectionClient connectionClient = new();
             ProvisioningSettings provisioningSettings = new(DpsIdScope);
 
-            //TODO seeing some Unauthorized errors likely because the enrollment was just created and service isn't ready for the connection
-            // yet. adding some basic retry to cover that
-            bool connected = false;
-            int retryCount = 0;
-            ConnectionContext? connectionContext = null;
-            while (!connected)
-            {
-                try
-                {
-                    connectionContext = await connectionClient.ProvisionAndConnectAsync(provisioningSettings, x509AuthenticationProvider, cancellationToken: cancellationToken);
-                    connected = true;
-                }
-                catch (Exception e)
-                {
-                    if (e.Message.Contains("NotAuthorized"))
-                    {
-                        retryCount++;
-                        await Task.Delay(TimeSpan.FromSeconds(1));
-
-                        if (retryCount > 4)
-                        {
-                            throw;
-                        }
-                    }
-                    else
-                    {
-                        throw;
-                    }
-                }
-
-            }
+            ConnectionContext connectionContext = await RetryAroundAuthorizationAsync<ConnectionContext>(
+                async () => await connectionClient.ProvisionAndConnectAsync(provisioningSettings, x509AuthenticationProvider, cancellationToken: cancellationToken),
+                cancellationToken);
 
             return new TestConnectionClient()
             { 
@@ -150,37 +122,9 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
                 ProvisioningCertificateSigningRequest = csrBase64,
             };
 
-            //TODO seeing some Unauthorized errors likely because the enrollment was just created and service isn't ready for the connection
-            // yet. adding some basic retry to cover that
-            bool connected = false;
-            int retryCount = 0;
-            ConnectionContext? connectionContext = null;
-            while (!connected)
-            {
-                try
-                {
-                    connectionContext = await connectionClient.ProvisionAndConnectAsync(provisioningSettings, x509AuthenticationProvider, cancellationToken: cancellationToken);
-                    connected = true;
-                }
-                catch (Exception e)
-                {
-                    if (e.Message.Contains("NotAuthorized"))
-                    {
-                        retryCount++;
-                        await Task.Delay(TimeSpan.FromSeconds(1));
-
-                        if (retryCount > 4)
-                        {
-                            throw;
-                        }
-                    }
-                    else
-                    {
-                        throw;
-                    }
-                }
-
-            }
+            ConnectionContext connectionContext = await RetryAroundAuthorizationAsync<ConnectionContext>(
+                async () => await connectionClient.ProvisionAndConnectAsync(provisioningSettings, x509AuthenticationProvider, cancellationToken: cancellationToken), 
+                cancellationToken);
 
             return new TestConnectionClient()
             {
@@ -212,6 +156,31 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
         { 
             ECC,
             RSA,
+        }
+
+        // This basic retry logic covers the issue where a device is created on the Hub side, but it still 
+        // rejects the connection for authorization reasons. Usually, after a few seconds, the device is ready to 
+        // authorize the newly created device.
+        public static async Task<T> RetryAroundAuthorizationAsync<T>(Func<Task<T>> taskToRetry, CancellationToken cancellationToken)
+        {
+            while (true)
+            {
+                try
+                {
+                    return await taskToRetry.Invoke();
+                }
+                catch (Exception e)
+                {
+                    if (e.Message.Contains("NotAuthorized"))
+                    {
+                        await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken);
+                    }
+                    else
+                    {
+                        throw;
+                    }
+                }
+            }
         }
 
         public static (string csrBase64, AsymmetricAlgorithm privateKey) GenerateCsr(string registrationId, CsrAlgorithm csrAlgorithm)

@@ -54,26 +54,9 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
             // This basic retry logic covers the issue where a device is created on the Hub side, but it still 
             // rejects the connection for authorization reasons. Usually, after a few seconds, the device is ready to 
             // authorize the newly created device.
-            bool connected = false;
-            while (!connected)
-            {
-                try
-                {
-                    await connectionClient.ConnectAsync(connectionContext, new X509AuthenticationProvider(pfx), null, TestContext.Current.CancellationToken);
-                    connected = true;
-                }
-                catch (Exception e)
-                {
-                    if (e.Message.Contains("NotAuthorized"))
-                    {
-                        await Task.Delay(TimeSpan.FromSeconds(1), TestContext.Current.CancellationToken);
-                    }
-                    else
-                    {
-                        throw;
-                    }
-                }
-            }
+             await Setup.RetryAroundAuthorizationAsync<Twin.Twin>(
+                async () => await connectionClient.ConnectAsync(connectionContext, new X509AuthenticationProvider(pfx), null, TestContext.Current.CancellationToken),
+                TestContext.Current.CancellationToken);
         }
     }
 }
