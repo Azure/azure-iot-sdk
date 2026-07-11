@@ -8,7 +8,7 @@ using System.Net.Sockets;
 
 namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session
 {
-    public class MqttSessionClient : MqttNetClient
+    public class MqttSessionClient : MqttNetClient //TODO naming of this client. "SessionClient" is less applicable now that we care less about the session
     {
         private readonly MqttSessionClientOptions _sessionClientOptions;
         private MqttConnect? _mostRecentConnect;
@@ -360,12 +360,6 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session
                     throw lastException;
                 }
 
-                if (!isReconnection && attemptCount > 1 && !_sessionClientOptions.RetryOnFirstConnect)
-                {
-                    Debug.Assert(lastException != null);
-                    throw lastException;
-                }
-
                 if (IsFatal(lastException!, _reconnectionCancellationToken?.Token.IsCancellationRequested ?? cancellationToken.IsCancellationRequested))
                 {
                     Trace.TraceError("Encountered a fatal exception while maintaining connection {0}", lastException);
@@ -430,17 +424,10 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session
                     cancellationToken.ThrowIfCancellationRequested();
                     Trace.TraceInformation($"Trying to connect. Attempt number {attemptCount}");
 
-                    if (isReconnection || _sessionClientOptions.RetryOnFirstConnect)
-                    {
-                        using CancellationTokenSource reconnectionTimeoutCancellationToken = new();
-                        reconnectionTimeoutCancellationToken.CancelAfter(_sessionClientOptions.ConnectionAttemptTimeout);
-                        using CancellationTokenSource linkedCancellationToken = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, reconnectionTimeoutCancellationToken.Token);
-                        mostRecentConnectResult = await TryEstablishConnectionAsync(options, linkedCancellationToken.Token).ConfigureAwait(false);
-                    }
-                    else
-                    {
-                        mostRecentConnectResult = await TryEstablishConnectionAsync(options, cancellationToken).ConfigureAwait(false);
-                    }
+                    using CancellationTokenSource reconnectionTimeoutCancellationToken = new();
+                    reconnectionTimeoutCancellationToken.CancelAfter(_sessionClientOptions.ConnectionAttemptTimeout);
+                    using CancellationTokenSource linkedCancellationToken = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, reconnectionTimeoutCancellationToken.Token);
+                    mostRecentConnectResult = await TryEstablishConnectionAsync(options, linkedCancellationToken.Token).ConfigureAwait(false);
 
                     if (isReconnection)
                     {

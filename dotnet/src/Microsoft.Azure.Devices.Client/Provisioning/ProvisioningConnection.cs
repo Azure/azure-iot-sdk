@@ -4,6 +4,7 @@
 using Microsoft.Azure.Devices.Client.Mqtt;
 using Microsoft.Azure.Devices.Client.Provisioning.Models;
 using Microsoft.Azure.Devices.Client.Serialization;
+using System.Diagnostics;
 using System.Globalization;
 using System.Reflection;
 using System.Runtime.InteropServices;
@@ -184,6 +185,8 @@ namespace Microsoft.Azure.Devices.Client.Provisioning
                 }
 
                 RegistrationOperationStatus currentStatus = await _checkRegistrationOperationStatusSource.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+
+                Debug.Assert(currentStatus.RegistrationState != null);
 
                 if (currentStatus.RegistrationState.Status != ProvisioningRegistrationStatus.Assigning)
                 {

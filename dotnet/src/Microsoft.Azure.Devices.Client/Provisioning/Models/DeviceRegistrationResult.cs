@@ -28,13 +28,13 @@ namespace Microsoft.Azure.Devices.Client.Provisioning.Models
         /// The assigned Azure IoT hub.
         /// </summary>
         [JsonPropertyName("assignedHub")]
-        public string AssignedHub { get; set; }
+        public string? AssignedHub { get; set; }
 
         /// <summary>
         /// The Device Id.
         /// </summary>
         [JsonPropertyName("deviceId")]
-        public string DeviceId { get; set; }
+        public string? DeviceId { get; set; }
 
         /// <summary>
         /// The status of the operation.
