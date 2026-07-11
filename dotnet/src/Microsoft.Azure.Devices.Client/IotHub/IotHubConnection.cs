@@ -117,7 +117,7 @@ namespace Microsoft.Azure.Devices.Client.IotHub
                 {
                     Topic = string.Format("ih/{deviceId}/srv/presence", deviceId),
                     CorrelationData = connectNonce.ToByteArray(),
-                    PayloadAsByteArray = birth.ToByteArray(),
+                    Payload = birth.ToByteArray(),
                     QualityOfServiceLevel = MqttQualityOfServiceLevel.AtMostOnce, // QoS 0 because we don't care about the MQTT-level ack for this message.  The service will send a fully-fledged MQTT publish as the ack and we will listen for that below
                 };
 
@@ -136,7 +136,7 @@ namespace Microsoft.Azure.Devices.Client.IotHub
                                 && receivedGuid.Equals(connectNonce))
                             {
                                 // The birth message flow is only complete once Hub sends a birth message ack with connection epoch equal to the latest connection epoch we have attempted
-                                birthAckReceivedTaskCompletionSource.TrySetResult(BirthAck.Parser.ParseFrom(args.Publish.PayloadAsByteArray));
+                                birthAckReceivedTaskCompletionSource.TrySetResult(BirthAck.Parser.ParseFrom(args.Publish.Payload));
                             }
                         }
                     }
@@ -156,7 +156,7 @@ namespace Microsoft.Azure.Devices.Client.IotHub
                                 && GuidExtensions.TryParseBytes(publish.CorrelationData, out Guid? receivedGuid)
                                 && receivedGuid.Equals(connectNonce))
                             {
-                                twinPushReceivedTaskCompletionSource.TrySetResult(TwinPush.Parser.ParseFrom(args.Publish.PayloadAsByteArray));
+                                twinPushReceivedTaskCompletionSource.TrySetResult(TwinPush.Parser.ParseFrom(args.Publish.Payload));
                             }
                         }
                     }
@@ -184,7 +184,7 @@ namespace Microsoft.Azure.Devices.Client.IotHub
                     continue; // Start the connect process over again
                 }
 
-                if (birthMessagePuback.ReasonCode != MqttClientPublishReasonCode.Success)
+                if (birthMessagePuback.ReasonCode != MqttPublishAckReasonCode.Success)
                 {
                     Trace.TraceWarning("Received unsuccessful PUBACK when publishing birth message: {0}. Disconnecting from the MQTT broker and attempting connection again...", birthMessagePuback);
                     

@@ -31,6 +31,9 @@ internal class Program
                 MessageId = Guid.NewGuid().ToString(),
             };
 
+            outgoingTelemetry.UserProperties.Add("SomeCustomUserPropertyKey", "SomeCustomUserPropertyValue");
+
+            Console.WriteLine($"Sending telemetry with message Id {outgoingTelemetry.MessageId}");
             await telemetryClient.SendTelemetryAsync(outgoingTelemetry);
             await Task.Delay(TimeSpan.FromSeconds(1));
         }

@@ -7,7 +7,7 @@ namespace Microsoft.Azure.Devices.Client.Mqtt
         ///     Gets or sets the reason code.
         ///     <remarks>MQTT 5.0.0+ feature.</remarks>
         /// </summary>
-        public MqttClientPublishReasonCode ReasonCode { get; set; }
+        public MqttPublishAckReasonCode ReasonCode { get; set; }
 
         /// <summary>
         ///     Gets or sets the reason string.

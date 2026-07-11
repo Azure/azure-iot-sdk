@@ -76,6 +76,7 @@ jobs:
           New-AzIotCSDKE2ETestConfig -TestEnvInfo $TestEnvInfo -Target powershell -OutFile test_config/set_test_env_vars.ps1
           chmod +x ./test_config/set_test_env_vars.ps1
           ./test_config/set_test_env_vars.ps1
+          dotnet build ./dotnet/Project.slnx
           dotnet test ./dotnet/Project.slnx --collect:"XPlat Code Coverage" --logger:"trx;LogFileName=test-results.trx" --environment IOTHUB_CONNECTION_STRING=$env:IOTHUB_CONNECTION_STRING --environment IOT_DPS_CONNECTION_STRING=$env:IOT_DPS_CONNECTION_STRING --environment IOT_DPS_ID_SCOPE=$env:IOT_DPS_ID_SCOPE -- xunit.parallelizeAssembly=true
 
     - name: Microsoft.Azure.Devices.Client.IntegrationTests Package Code Coverage

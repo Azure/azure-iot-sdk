@@ -24,7 +24,13 @@ internal class Program
             Console.WriteLine($"Received direct method with name {args.MethodName}");
             if (args.MethodName.Equals("testMethod"))
             {
-                DirectMethodRequestPayloadObject directMethodRequestPayload = JsonSerializer.Deserialize<DirectMethodRequestPayloadObject>(args.Payload) ?? throw new Exception("TODO");
+                DirectMethodRequestPayloadObject? directMethodRequestPayload = JsonSerializer.Deserialize<DirectMethodRequestPayloadObject>(args.Payload);
+
+                if (directMethodRequestPayload == null)
+                {
+                    Console.WriteLine("Received an unexpected payload format");
+                    return Task.FromResult(new DirectMethodResponse() { Status = 400 });
+                }
 
                 DirectMethodResponsePayloadObject directMethodResponsePayloadObject = new()
                 {

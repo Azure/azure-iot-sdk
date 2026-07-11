@@ -15,6 +15,9 @@ using System.Web;
 
 namespace Microsoft.Azure.Devices.Client.Twin
 {
+    /// <summary>
+    /// The feature client for interacting with a device's twin properties.
+    /// </summary>
     public class TwinClient : IDisposable
     {
         private ConnectionClient _connection;
@@ -53,6 +56,28 @@ namespace Microsoft.Azure.Devices.Client.Twin
         /// </remarks>
         public event Action<TwinPushReceivedEventArgs>? TwinPushReceived;
 
+        /// <summary>
+        /// Construct a new <see cref="TwinClient"/> instance.
+        /// </summary>
+        /// <param name="connection">The connection client this feature client will use.</param>
+        /// <remarks>
+        /// The provided connection client does not need to be connected before this constructor is called. However, the provided connection client must be connected prior
+        /// to using this feature client to send/receive any twin messages.
+        /// </remarks>
+        /// <example>
+        /// The recommended order to instantiate feature clients and the connection client is as follows:
+        /// <code>
+        /// // Construct all the clients your device will use
+        /// ConnectionClient connectionClient = new();
+        /// TwinClient twinClient = new(connectionClient);
+        /// 
+        /// //Set all handlers 
+        /// twinClient.DesiredPatchReceived += SomeDesiredPatchHandlingMethod;
+        /// 
+        /// // Open the connection (and start receiving desired patches)
+        /// await connectionClient.ProvisionAndConnectAsync();
+        /// </code>
+        /// </example>
         public TwinClient(ConnectionClient connection)
         {
             _connection = connection;
@@ -79,8 +104,14 @@ namespace Microsoft.Azure.Devices.Client.Twin
         /// Only IoT hubs that use Azure Event Grid will actually respond to the getReported/getDesired/ifNotMatch flags as this feature is unsupported in older IoT hubs. 
         /// However, this SDK will parse the twin that the service returns to filter out unrequested sections to mimic the behavior of Azure Event Grid IoT hubs.
         /// </remarks>
+        /// <exception cref="PublishRejectedException">Thrown if this get twin request is rejected by IoT Hub for any reason.</exception>
         public async Task<TwinGetResponseWrapper> GetTwinAsync(bool getReported = true, bool getDesired = true, ulong ifNotMatchReported = 0, ulong ifNotMatchDesired = 0,  CancellationToken cancellationToken = default)
         {
+            if (_connection.CurrentConnectionContext == null)
+            {
+                throw new NotSupportedException("Must be connected before calling this method.");
+            }
+
             Guid requestId = Guid.NewGuid();
 
             // Note the request as "in progress" before actually sending it so that no matter how quickly the service
@@ -102,7 +133,7 @@ namespace Microsoft.Azure.Devices.Client.Twin
                     Topic = string.Format(AzureEventGridOutgoingTwinPublishTopicFormat, _connection.CurrentConnectionContext.DeviceId),
                     QualityOfServiceLevel = MqttQualityOfServiceLevel.AtMostOnce,
                     CorrelationData = requestId.ToByteArray(),
-                    PayloadAsByteArray = new TwinGet()
+                    Payload = new TwinGet()
                     {
                         Sections = Sections.Both,
                         IfNotMatchDesired = ifNotMatchDesired,
@@ -123,10 +154,7 @@ namespace Microsoft.Azure.Devices.Client.Twin
 
             MqttPublishAck puback = await _connection.PublishAsync(publish, cancellationToken);
 
-            if (puback.ReasonCode != Mqtt.MqttClientPublishReasonCode.Success)
-            {
-                throw new Exception("TODO");
-            }
+            PublishRejectedException.ThrowIfUnsuccessfulPuback(puback, "Failed to request the twin because the MQTT broker rejected the request.");
 
             // Wait until IoT hub sends a message to this client with the response to this patch twin request.
             var getTwinResponse = await pendingGetTwinRequest.TwinResponseTask.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -142,8 +170,14 @@ namespace Microsoft.Azure.Devices.Client.Twin
         /// <param name="patch">The patch of the reported properties to send to IoT hub</param>
         /// <param name="cancellationToken">The cancellation token.</param>
         /// <returns>Whether IoT hub accepted this patch.</returns>
+        /// <exception cref="PublishRejectedException">Thrown if this reported property update message is rejected by IoT Hub for any reason.</exception>
         public async Task<ReportedPatchResponse> UpdateReportedPropertiesAsync(ReportedPatchRequest patch, CancellationToken cancellationToken = default)
         {
+            if (_connection.CurrentConnectionContext == null)
+            {
+                throw new NotSupportedException("Must be connected before calling this method.");
+            }
+
             Guid requestId = Guid.NewGuid();
             
             // Note the request as "in progress" before actually sending it so that no matter how quickly the service
@@ -159,7 +193,7 @@ namespace Microsoft.Azure.Devices.Client.Twin
                     Topic = string.Format(AzureEventGridOutgoingTwinPublishTopicFormat, _connection.CurrentConnectionContext.DeviceId),
                     QualityOfServiceLevel = MqttQualityOfServiceLevel.AtMostOnce,
                     CorrelationData = requestId.ToByteArray(),
-                    PayloadAsByteArray = new ReportedPatch()
+                    Payload = new ReportedPatch()
                     {
                         IfMatch = patch.IfMatch,
                         Payload = ByteString.CopyFromUtf8(JsonSerializer.Serialize(patch.ReportedProperties))
@@ -176,7 +210,7 @@ namespace Microsoft.Azure.Devices.Client.Twin
                 {
                     Topic = string.Format(ClassicTwinGetTopicFormat, requestId),
                     QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce,
-                    PayloadAsByteArray = new ReportedPatch()
+                    Payload = new ReportedPatch()
                     {
                         IfMatch = patch.IfMatch,
                         Payload = ByteString.CopyFromUtf8(JsonSerializer.Serialize(patch.ReportedProperties))
@@ -186,17 +220,13 @@ namespace Microsoft.Azure.Devices.Client.Twin
 
             MqttPublishAck puback = await _connection.PublishAsync(publish, cancellationToken);
 
-            if (puback.ReasonCode != Mqtt.MqttClientPublishReasonCode.Success)
-            {
-                throw new Exception("TODO");
-            }
+            PublishRejectedException.ThrowIfUnsuccessfulPuback(puback, "Failed to update the reported properties because the MQTT broker rejected the request.");
 
             // Wait until IoT hub sends a message to this client with the response to this patch twin request.
             var updateReportedPropertiesResponse = await pendingReportedPropertiesUpdateRequest.ReportedPropertyUpdateResponse.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
 
             return updateReportedPropertiesResponse;
         }
-
 
         private async Task HandleReceivedAzureEventGridMqttPublish(MqttPublishReceivedEventArgs args)
         { 
@@ -297,7 +327,7 @@ namespace Microsoft.Azure.Devices.Client.Twin
             {
                 if (ParseResponseTopic(args.Publish.Topic, out string receivedRequestId, out int status, out long version))
                 {
-                    byte[] payloadBytes = args.Publish.PayloadAsByteArray ?? Array.Empty<byte>();
+                    byte[] payloadBytes = args.Publish.Payload ?? Array.Empty<byte>();
 
                     Guid requestIdGuid = new Guid(receivedRequestId);
                     if (_pendingGetTwinOperations.TryRemove(requestIdGuid, out PendingGetTwinRequest? getTwinOperation))
@@ -353,7 +383,7 @@ namespace Microsoft.Azure.Devices.Client.Twin
                 // Note that all desired property update messages are QoS 0, so no need to ack the MQTT message here
                 if (DesiredPatchReceived != null)
                 {
-                    var desiredPropertiesWithVersion = JsonNode.Parse(args.Publish.PayloadAsByteArray)!.AsObject();
+                    var desiredPropertiesWithVersion = JsonNode.Parse(args.Publish.Payload)!.AsObject();
                     ulong desiredPropertiesVersion = (ulong)desiredPropertiesWithVersion[VersionKey]!;
                     desiredPropertiesWithVersion.Remove(VersionKey);
 

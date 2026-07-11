@@ -25,6 +25,14 @@ namespace Microsoft.Azure.Devices.Client.Retry
         private readonly TimeSpan _maxDelay;
         private readonly bool _useJitter;
 
+        public ExponentialBackoffRetryPolicy()
+        {
+            //TODO magic number defaults
+            _maxRetries = uint.MaxValue;
+            _maxDelay = TimeSpan.FromMinutes(30);
+            _useJitter = true;
+        }
+
         /// <summary>
         /// Creates an instance of this class with a default base exponent equals 6.
         /// </summary>

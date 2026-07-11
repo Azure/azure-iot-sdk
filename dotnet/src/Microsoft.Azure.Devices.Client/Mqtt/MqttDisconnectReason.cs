@@ -4,7 +4,7 @@ using System.Text;
 
 namespace Microsoft.Azure.Devices.Client.Mqtt
 {
-    public enum MqttClientDisconnectReason
+    public enum MqttDisconnectReason
     {
         NormalDisconnection = 0,
         DisconnectWithWillMessage = 4,

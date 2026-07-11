@@ -10,7 +10,7 @@ namespace Microsoft.Azure.Devices.Client
         public required string IotHubHostName { get; init; }
 
         //TODO naming since AEG is implementation detail on service side
-        public bool IsAzureEventGrid { get; init; }
+        public required bool IsAzureEventGrid { get; init; }
 
         public IReadOnlyList<string>? IssuedClientCertificates { get; init; }
     }

@@ -8,7 +8,7 @@ using System.Net.Sockets;
 
 namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session
 {
-    public class MqttSessionClient : MqttNetClient
+    public class MqttSessionClient : MqttNetClient //TODO naming of this client. "SessionClient" is less applicable now that we care less about the session
     {
         private readonly MqttSessionClientOptions _sessionClientOptions;
         private MqttConnect? _mostRecentConnect;
@@ -126,7 +126,7 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session
 
             var disconnectedArgs = new MqttClientDisconnectedEventArgs()
             {
-                Reason = MqttClientDisconnectReason.NormalDisconnection,
+                Reason = MqttDisconnectReason.NormalDisconnection,
                 ReasonString = "User closed the connection manually"
             };
 
@@ -360,12 +360,6 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session
                     throw lastException;
                 }
 
-                if (!isReconnection && attemptCount > 1 && !_sessionClientOptions.RetryOnFirstConnect)
-                {
-                    Debug.Assert(lastException != null);
-                    throw lastException;
-                }
-
                 if (IsFatal(lastException!, _reconnectionCancellationToken?.Token.IsCancellationRequested ?? cancellationToken.IsCancellationRequested))
                 {
                     Trace.TraceError("Encountered a fatal exception while maintaining connection {0}", lastException);
@@ -430,17 +424,10 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session
                     cancellationToken.ThrowIfCancellationRequested();
                     Trace.TraceInformation($"Trying to connect. Attempt number {attemptCount}");
 
-                    if (isReconnection || _sessionClientOptions.RetryOnFirstConnect)
-                    {
-                        using CancellationTokenSource reconnectionTimeoutCancellationToken = new();
-                        reconnectionTimeoutCancellationToken.CancelAfter(_sessionClientOptions.ConnectionAttemptTimeout);
-                        using CancellationTokenSource linkedCancellationToken = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, reconnectionTimeoutCancellationToken.Token);
-                        mostRecentConnectResult = await TryEstablishConnectionAsync(options, linkedCancellationToken.Token).ConfigureAwait(false);
-                    }
-                    else
-                    {
-                        mostRecentConnectResult = await TryEstablishConnectionAsync(options, cancellationToken).ConfigureAwait(false);
-                    }
+                    using CancellationTokenSource reconnectionTimeoutCancellationToken = new();
+                    reconnectionTimeoutCancellationToken.CancelAfter(_sessionClientOptions.ConnectionAttemptTimeout);
+                    using CancellationTokenSource linkedCancellationToken = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, reconnectionTimeoutCancellationToken.Token);
+                    mostRecentConnectResult = await TryEstablishConnectionAsync(options, linkedCancellationToken.Token).ConfigureAwait(false);
 
                     if (isReconnection)
                     {
@@ -683,25 +670,25 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session
         }
 
         // These reason codes are fatal if the broker sends a DISCONNECT packet with this reason.
-        private static bool IsFatal(MqttClientDisconnectReason code)
+        private static bool IsFatal(MqttDisconnectReason code)
         {
             switch (code)
             {
-                case MqttClientDisconnectReason.MalformedPacket:
-                case MqttClientDisconnectReason.ProtocolError:
-                case MqttClientDisconnectReason.NotAuthorized:
-                case MqttClientDisconnectReason.SessionTakenOver:
-                case MqttClientDisconnectReason.TopicFilterInvalid:
-                case MqttClientDisconnectReason.TopicNameInvalid:
-                case MqttClientDisconnectReason.TopicAliasInvalid:
-                case MqttClientDisconnectReason.PacketTooLarge:
-                case MqttClientDisconnectReason.PayloadFormatInvalid:
-                case MqttClientDisconnectReason.RetainNotSupported:
-                case MqttClientDisconnectReason.QosNotSupported:
-                case MqttClientDisconnectReason.ServerMoved:
-                case MqttClientDisconnectReason.SharedSubscriptionsNotSupported:
-                case MqttClientDisconnectReason.SubscriptionIdentifiersNotSupported:
-                case MqttClientDisconnectReason.WildcardSubscriptionsNotSupported:
+                case MqttDisconnectReason.MalformedPacket:
+                case MqttDisconnectReason.ProtocolError:
+                case MqttDisconnectReason.NotAuthorized:
+                case MqttDisconnectReason.SessionTakenOver:
+                case MqttDisconnectReason.TopicFilterInvalid:
+                case MqttDisconnectReason.TopicNameInvalid:
+                case MqttDisconnectReason.TopicAliasInvalid:
+                case MqttDisconnectReason.PacketTooLarge:
+                case MqttDisconnectReason.PayloadFormatInvalid:
+                case MqttDisconnectReason.RetainNotSupported:
+                case MqttDisconnectReason.QosNotSupported:
+                case MqttDisconnectReason.ServerMoved:
+                case MqttDisconnectReason.SharedSubscriptionsNotSupported:
+                case MqttDisconnectReason.SubscriptionIdentifiersNotSupported:
+                case MqttDisconnectReason.WildcardSubscriptionsNotSupported:
                     return true;
             }
 

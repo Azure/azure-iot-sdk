@@ -4,6 +4,7 @@
 using Microsoft.Azure.Devices.Client.Mqtt;
 using Microsoft.Azure.Devices.Client.Provisioning.Models;
 using Microsoft.Azure.Devices.Client.Serialization;
+using System.Diagnostics;
 using System.Globalization;
 using System.Reflection;
 using System.Runtime.InteropServices;
@@ -135,7 +136,7 @@ namespace Microsoft.Azure.Devices.Client.Provisioning
             string registrationTopic = string.Format(CultureInfo.InvariantCulture, RegisterTopic, ++_requestId);
             MqttPublish publish = new MqttPublish()
             {
-                PayloadAsByteArray = serializedPayload,
+                Payload = serializedPayload,
                 Topic = registrationTopic,
                 QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce
             };
@@ -146,7 +147,7 @@ namespace Microsoft.Azure.Devices.Client.Provisioning
             {
                 MqttPublishAck puback = await mqttClient.PublishAsync(publish, cancellationToken).ConfigureAwait(false);
 
-                if (puback.ReasonCode != MqttClientPublishReasonCode.Success)
+                if (puback.ReasonCode != MqttPublishAckReasonCode.Success)
                 {
                     //TODO
                 }
@@ -178,12 +179,14 @@ namespace Microsoft.Azure.Devices.Client.Provisioning
 
                 MqttPublishAck puback = await mqttClient.PublishAsync(message, cancellationToken).ConfigureAwait(false);
 
-                if (puback.ReasonCode != MqttClientPublishReasonCode.Success)
+                if (puback.ReasonCode != MqttPublishAckReasonCode.Success)
                 {
                     throw new Exception("TODO");
                 }
 
                 RegistrationOperationStatus currentStatus = await _checkRegistrationOperationStatusSource.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+
+                Debug.Assert(currentStatus.RegistrationState != null);
 
                 if (currentStatus.RegistrationState.Status != ProvisioningRegistrationStatus.Assigning)
                 {
@@ -243,14 +246,14 @@ namespace Microsoft.Azure.Devices.Client.Provisioning
             if (!_startProvisioningRequestStatusSource.Task.IsCompleted)
             {
                 // The initial provisioning request's response topic is shaped like "$dps/registrations/res/202/?$rid=1&retry-after=3"
-                string jsonString = Encoding.UTF8.GetString(receivedEventArgs.Publish.PayloadAsByteArray);
+                string jsonString = Encoding.UTF8.GetString(receivedEventArgs.Publish.Payload);
                 RegistrationOperationStatus operation = JsonSerializer.Deserialize<RegistrationOperationStatus>(jsonString, JsonSerializationSettings.Options)!;
                 _startProvisioningRequestStatusSource.TrySetResult(operation);
             }
             else
             {
                 // All status polling requests' response topics are shaped like "$dps/registrations/res/200/?$rid=2"
-                string jsonString = Encoding.UTF8.GetString(receivedEventArgs.Publish.PayloadAsByteArray);
+                string jsonString = Encoding.UTF8.GetString(receivedEventArgs.Publish.Payload);
                 try
                 {
                     RegistrationOperationStatus operation = JsonSerializer.Deserialize<RegistrationOperationStatus>(jsonString, JsonSerializationSettings.Options)!;

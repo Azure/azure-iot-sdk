@@ -33,24 +33,12 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session
         /// 
         /// This value cannot be null.
         /// </remarks>
-        public IRetryPolicy ConnectionRetryPolicy { get; set; } = new ExponentialBackoffRetryPolicy(uint.MaxValue, TimeSpan.FromSeconds(60));
+        public IRetryPolicy ConnectionRetryPolicy { get; set; } = new ExponentialBackoffRetryPolicy();
 
         /// <summary>
         /// True if you want the session client to enable MQTT-level logs. False if you do not want these logs.
         /// </summary>
         public bool EnableMqttLogging { get; set; }
-
-        /// <summary>
-        /// If true, this client will use the same retry policy when first connecting as it would during a reconnection.
-        /// If false, this client will only make one attempt to connect when calling <see cref="MqttSessionClient.ConnectAsync(MQTTnet.MqttClientOptions, CancellationToken)"/>.
-        /// </summary>
-        /// <remarks>
-        /// Generally, this field should be set to true since you can expect mostly the same set of errors when initially connecting 
-        /// compared to when reconnecting. However, there are some exceptions that you are likely to see when initially connecting
-        /// if you have a misconfiguration somewhere. This value is false by default so that these configuration errors are easier
-        /// to catch.
-        /// </remarks>
-        public bool RetryOnFirstConnect { get; set; }
 
         /// <summary>
         /// How long to wait for a single connection attempt to finish before abandoning it.
@@ -60,13 +48,7 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session
         /// connection and reconnection scenarios. Note that this value is ignored for the initial 
         /// connect attempt if <see cref="RetryOnFirstConnect"/> is false.
         /// </remarks>
-        public TimeSpan ConnectionAttemptTimeout { get; set; } = TimeSpan.FromSeconds(2);
-
-        /// <summary>
-        /// If true, any attempt to publish, subscribe, or unsubscribe while the session client is not either connected or reconnecting will immediately throw
-        /// a <see cref="SessionClosedException"/>. If false, the publish/subscribe/unsubscribe will remain enqueued and can be sent when the session starts again.
-        /// </summary>
-        public bool ThrowIfUsedWhenSessionInactive { get; set; } = false;
+        public TimeSpan ConnectionAttemptTimeout { get; set; } = TimeSpan.FromSeconds(10);
 
         internal void Validate()
         {
