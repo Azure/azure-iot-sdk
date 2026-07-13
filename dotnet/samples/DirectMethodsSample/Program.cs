@@ -55,7 +55,8 @@ internal class Program
         directMethodClient.DirectMethodInvokedAsync += HandleDirectMethodAsync;
 
         ProvisioningSettings provisioningSettings = new(idScope);
-        await connectionClient.ProvisionAndConnectAsync(provisioningSettings, authentication); 
+        await connectionClient.ProvisionAndConnectAsync(provisioningSettings, authentication);
+        Console.WriteLine("Device is connected and now waiting for direct method invocations...");
 
         await Task.Delay(-1, cts.Token);
 

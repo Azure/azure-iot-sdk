@@ -5,6 +5,7 @@
     <Project Path="samples/CustomMqttClientSample/CustomMqttClientSample.csproj" Id="d9e54799-f86c-440a-b7a7-63f4fc150000" />
     <Project Path="samples/DirectMethodsSample/DirectMethodsClientSample.csproj" />
     <Project Path="samples/TelemetryClientSample/TelemetryClientSample.csproj" Id="648020f8-cf99-467d-9196-258cbc909fd4" />
+    <Project Path="samples/FileUploadSample/FileUploadSample.csproj" Id="76fb8ccd-23dc-4efd-94bc-218306f6d8eb" />
     <Project Path="samples/SetupSampleDevice/SetupSampleDevice.csproj" Id="7bd6b448-6702-4afa-921c-53f0f5ee6aae" />
   </Folder>
   <Folder Name="/src/">
