@@ -330,9 +330,10 @@ int main(void)
     }
 
     /* Connection client (DPS provisioning is internal when host == NULL). */
-    az_iot_connection_client_options copts =
-        az_iot_connection_client_options_get_default(
-            st.config.id_scope, st.config.reg_id, &st.certs.base);
+    az_iot_connection_client_options copts = az_iot_connection_client_options_default();
+    copts.dps.id_scope = st.config.id_scope;
+    copts.dps.registration_id = st.config.reg_id;
+    copts.certificate_provider = &st.certs.base;
     /* Announce the Device Update PnP model id at connection. Device Update
      * imports and classifies a device ONLY if it advertises a model id as part
      * of the MQTT CONNECT; without it the device never lands in the ADU

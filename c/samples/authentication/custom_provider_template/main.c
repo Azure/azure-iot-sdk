@@ -159,8 +159,8 @@ int main(void)
     provider.trusted_ca_path     = "trusted_ca.pem";
 
     /* Pass &provider.base wherever an az_iot_certificate_provider* is expected
-     * (az_iot_connection_client_options_get_default, etc.). Here we just
-     * exercise the vtable to prove the wiring. */
+     * (assign to az_iot_connection_client_options.certificate_provider, etc.).
+     * Here we just exercise the vtable to prove the wiring. */
     az_iot_certificate_signing_request csr = {0};
     if (provider.base.vtable->get_csr(&provider.base, "my-device-id", &csr) != AZ_IOT_OK)
         return 1;

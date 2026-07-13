@@ -234,12 +234,13 @@ typedef struct az_iot_connection_client az_iot_connection_client;
 
 const char* az_iot_connection_state_to_string(az_iot_connection_state s);
 
-/* Returns a default options struct pre-filled for DPS provisioning with X.509.
- * Sets port=8883, host=NULL, reconnect defaults, and the DPS fields. */
-az_iot_connection_client_options az_iot_connection_client_options_get_default(
-    const char* id_scope,
-    const char* registration_id,
-    az_iot_certificate_provider* certificate_provider);
+/* Returns an options struct with optional fields defaulted (port=8883, no
+ * reconnect, no log sink). Set the required fields for your auth/provisioning
+ * mode on the returned struct before az_iot_connection_client_init():
+ *   - DPS + X.509 (host==NULL): dps.id_scope, dps.registration_id,
+ *     certificate_provider.
+ *   - Direct hub connect: host, client_id, certificate_provider. */
+AZ_NODISCARD az_iot_connection_client_options az_iot_connection_client_options_default(void);
 
 AZ_NODISCARD az_iot_result az_iot_connection_client_init(
     az_iot_connection_client* client,

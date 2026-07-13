@@ -958,19 +958,10 @@ static az_iot_result apply_mock_next_bypass(az_iot_connection_client* c)
 /* public API                                                                */
 /* ------------------------------------------------------------------------- */
 
-az_iot_connection_client_options az_iot_connection_client_options_get_default(
-    const char* id_scope,
-    const char* registration_id,
-    az_iot_certificate_provider* certificate_provider)
+az_iot_connection_client_options az_iot_connection_client_options_default(void)
 {
     az_iot_connection_client_options opts = { 0 };
-    opts.host = NULL;
     opts.port = 8883;
-    opts.client_id = NULL;
-    opts.certificate_provider = certificate_provider;
-    opts.dps.global_endpoint = NULL;
-    opts.dps.id_scope = id_scope;
-    opts.dps.registration_id = registration_id;
     return opts;
 }
 

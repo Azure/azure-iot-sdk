@@ -97,8 +97,10 @@ int e2e_device_connect(e2e_device* dev)
     }
     dev->certs_ok = true;
 
-    az_iot_connection_client_options copts =
-        az_iot_connection_client_options_get_default(dev->id_scope, dev->reg_id, &dev->certs.base);
+    az_iot_connection_client_options copts = az_iot_connection_client_options_default();
+    copts.dps.id_scope = dev->id_scope;
+    copts.dps.registration_id = dev->reg_id;
+    copts.certificate_provider = &dev->certs.base;
     if (dev->global_endpoint != NULL)
     {
         copts.dps.global_endpoint = dev->global_endpoint;

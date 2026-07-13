@@ -246,8 +246,10 @@ against `samples/telemetry/main.c`:
         .client_key_pem_path  = cfg.key };
     az_iot_certificate_provider_pem_init(&s.certs, &pem);
 
-    az_iot_connection_client_options_t copts =
-        az_iot_connection_client_options_get_default(cfg.id_scope, cfg.reg_id, &s.certs.base);
+    az_iot_connection_client_options copts = az_iot_connection_client_options_default();
+    copts.dps.id_scope = cfg.id_scope;
+    copts.dps.registration_id = cfg.reg_id;
+    copts.certificate_provider = &s.certs.base;
 ```
 
 ```c
@@ -262,8 +264,10 @@ against `samples/telemetry/main.c`:
         .issued_cert_pem_path     = cfg.op_cert };  /* persisted issued cert (reuse)    */
     az_iot_certificate_provider_managed_init(&s.certs, &mopts);
 
-    az_iot_connection_client_options_t copts =
-        az_iot_connection_client_options_get_default(cfg.id_scope, cfg.reg_id, &s.certs.base);
+    az_iot_connection_client_options copts = az_iot_connection_client_options_default();
+    copts.dps.id_scope = cfg.id_scope;
+    copts.dps.registration_id = cfg.reg_id;
+    copts.certificate_provider = &s.certs.base;
     copts.dps.request_operational_certificate = true;   /* <-- the only behavioral opt-in */
 ```
 

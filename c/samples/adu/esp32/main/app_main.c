@@ -114,9 +114,10 @@ void app_main(void)
                               device_cert_pem_start, device_key_pem_start);
 
     /* Connection client: DPS provisioning + X.509, announcing the ADU model id. */
-    az_iot_connection_client_options copts =
-        az_iot_connection_client_options_get_default(
-            CONFIG_ADU_DPS_ID_SCOPE, CONFIG_ADU_DPS_REGISTRATION_ID, &certs.base);
+    az_iot_connection_client_options copts = az_iot_connection_client_options_default();
+    copts.dps.id_scope = CONFIG_ADU_DPS_ID_SCOPE;
+    copts.dps.registration_id = CONFIG_ADU_DPS_REGISTRATION_ID;
+    copts.certificate_provider = &certs.base;
     copts.model_id = "dtmi:azure:iot:deviceUpdateContractModel;2";
     copts.reconnect.initial_delay_ms = 2000;
     copts.reconnect.max_delay_ms     = 60000;
