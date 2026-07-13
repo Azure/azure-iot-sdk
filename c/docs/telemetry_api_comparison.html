@@ -53,10 +53,10 @@
 {
     <span style="color: #6a9955;">// ─── Step 1: X.509 Certificate provider ──────────────────</span>
     <span style="color: #6a9955;">// One struct with three file paths — no #ifdef, no embedded PEM blobs</span>
-    az_iot_certificate_provider_pem_options_t pem = {
-        .trusted_ca_pem_path  = config.ca,
-        .client_cert_pem_path = config.cert,
-        .client_key_pem_path  = config.key };
+    az_iot_certificate_provider_pem_options pem = az_iot_certificate_provider_pem_options_default();
+    pem.trusted_ca_pem_path  = config.ca;
+    pem.client_cert_pem_path = config.cert;
+    pem.client_key_pem_path  = config.key;
     az_iot_certificate_provider_pem_init(&amp;certs, &amp;pem);
 
     <span style="color: #6a9955;">// ─── Step 2: Connection client (DPS is automatic) ────────</span>

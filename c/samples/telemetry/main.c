@@ -66,10 +66,10 @@ int main(void)
     user_context user_ctx = {0};
 
     /* Certificate provider */
-    az_iot_certificate_provider_pem_options pem = {
-        .trusted_ca_pem_path = state.config.ca,
-        .client_cert_pem_path = state.config.cert,
-        .client_key_pem_path = state.config.key };
+    az_iot_certificate_provider_pem_options pem = az_iot_certificate_provider_pem_options_default();
+    pem.trusted_ca_pem_path = state.config.ca;
+    pem.client_cert_pem_path = state.config.cert;
+    pem.client_key_pem_path = state.config.key;
 
     if (az_iot_certificate_provider_pem_init(&state.certs, &pem) != AZ_IOT_OK)
     {

@@ -85,11 +85,10 @@ int e2e_device_connect(e2e_device* dev)
         return 1;
     }
 
-    az_iot_certificate_provider_pem_options pem = {
-        .trusted_ca_pem_path  = dev->ca,
-        .client_cert_pem_path = dev->cert,
-        .client_key_pem_path  = dev->key,
-    };
+    az_iot_certificate_provider_pem_options pem = az_iot_certificate_provider_pem_options_default();
+    pem.trusted_ca_pem_path  = dev->ca;
+    pem.client_cert_pem_path = dev->cert;
+    pem.client_key_pem_path  = dev->key;
     if (az_iot_certificate_provider_pem_init(&dev->certs, &pem) != AZ_IOT_OK)
     {
         fprintf(stderr, "[e2e] certificate provider init failed\n");

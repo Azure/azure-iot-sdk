@@ -83,6 +83,17 @@ static int teardown_files(void** state)
     return 0;
 }
 
+static void test_options_default_is_zeroed(void** state)
+{
+    (void)state;
+    az_iot_certificate_provider_pem_options opts =
+        az_iot_certificate_provider_pem_options_default();
+    assert_null(opts.trusted_ca_pem_path);
+    assert_null(opts.client_cert_pem_path);
+    assert_null(opts.client_key_pem_path);
+    assert_null(opts.client_key_password);
+}
+
 static void test_create_rejects_null(void** state)
 {
     (void)state;
@@ -191,6 +202,7 @@ static void test_load_without_optional_fields(void** state)
 int main(void)
 {
     const struct CMUnitTest tests[] = {
+        cmocka_unit_test(test_options_default_is_zeroed),
         cmocka_unit_test(test_create_rejects_null),
         cmocka_unit_test(test_create_rejects_missing_required_paths),
         cmocka_unit_test(test_create_fails_on_missing_file),

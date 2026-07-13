@@ -319,10 +319,10 @@ int main(void)
     int rc = 1;
 
     /* Certificate provider. */
-    az_iot_certificate_provider_pem_options pem = {
-        .trusted_ca_pem_path = st.config.ca,
-        .client_cert_pem_path = st.config.cert,
-        .client_key_pem_path = st.config.key };
+    az_iot_certificate_provider_pem_options pem = az_iot_certificate_provider_pem_options_default();
+    pem.trusted_ca_pem_path = st.config.ca;
+    pem.client_cert_pem_path = st.config.cert;
+    pem.client_key_pem_path = st.config.key;
     if (az_iot_certificate_provider_pem_init(&st.certs, &pem) != AZ_IOT_OK)
     {
         sample_state_destroy(&st);

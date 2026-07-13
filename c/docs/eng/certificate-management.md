@@ -238,12 +238,12 @@ against `samples/telemetry/main.c`:
 
 ```c
     /* --- BEFORE: static cert used for both DPS and Hub --- */
-    az_iot_certificate_provider_pem_t certs;                       // in sample_state_t
+    az_iot_certificate_provider_pem certs;                         // in sample_state_t
 
-    az_iot_certificate_provider_pem_options_t pem = {
-        .trusted_ca_pem_path  = cfg.ca,
-        .client_cert_pem_path = cfg.cert,
-        .client_key_pem_path  = cfg.key };
+    az_iot_certificate_provider_pem_options pem = az_iot_certificate_provider_pem_options_default();
+    pem.trusted_ca_pem_path  = cfg.ca;
+    pem.client_cert_pem_path = cfg.cert;
+    pem.client_key_pem_path  = cfg.key;
     az_iot_certificate_provider_pem_init(&s.certs, &pem);
 
     az_iot_connection_client_options copts = az_iot_connection_client_options_default();

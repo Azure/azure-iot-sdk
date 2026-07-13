@@ -87,12 +87,11 @@ worker thread internally and exposes blocking `*_sync` calls.
 #include "azure/iot/az_iot_telemetry_client.h"
 #include "azure/iot/adapters/az_iot_adapter_paho.h"
 
-az_iot_certificate_provider_pem_options_t pem = {
-    .trusted_ca_pem_path  = getenv("AZ_IOT_TRUSTED_CA"),  /* optional */
-    .client_cert_pem_path = getenv("AZ_IOT_CLIENT_CERT"),
-    .client_key_pem_path  = getenv("AZ_IOT_CLIENT_KEY"),
-};
-az_iot_certificate_provider_pem_t cm;
+az_iot_certificate_provider_pem_options pem = az_iot_certificate_provider_pem_options_default();
+pem.trusted_ca_pem_path  = getenv("AZ_IOT_TRUSTED_CA");  /* optional */
+pem.client_cert_pem_path = getenv("AZ_IOT_CLIENT_CERT");
+pem.client_key_pem_path  = getenv("AZ_IOT_CLIENT_KEY");
+az_iot_certificate_provider_pem cm;
 az_iot_certificate_provider_pem_init(&cm, &pem);
 
 az_iot_easy_options_t opts = {

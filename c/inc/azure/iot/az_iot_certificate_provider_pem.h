@@ -34,6 +34,12 @@ typedef struct az_iot_certificate_provider_pem_options
     const char* client_key_password;     /* may be NULL; copied verbatim         */
 } az_iot_certificate_provider_pem_options;
 
+/* Returns an options struct with all fields defaulted (every path NULL). Set at
+ * least client_cert_pem_path and client_key_pem_path on the returned struct
+ * before az_iot_certificate_provider_pem_init(). */
+AZ_NODISCARD az_iot_certificate_provider_pem_options
+az_iot_certificate_provider_pem_options_default(void);
+
 /* Caller-owned PEM certificate provider struct. Fields are INTERNAL. */
 typedef struct az_iot_certificate_provider_pem
 {

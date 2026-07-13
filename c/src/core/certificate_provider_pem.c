@@ -109,6 +109,12 @@ void az_iot_certificate_provider_pem_destroy(
     memset(provider, 0, sizeof(*provider));
 }
 
+az_iot_certificate_provider_pem_options az_iot_certificate_provider_pem_options_default(void)
+{
+    az_iot_certificate_provider_pem_options opts = { 0 };
+    return opts;
+}
+
 az_iot_result az_iot_certificate_provider_pem_init(
     az_iot_certificate_provider_pem* provider,
     const az_iot_certificate_provider_pem_options* opts)
