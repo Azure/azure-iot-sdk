@@ -7,6 +7,6 @@ namespace Microsoft.Azure.Devices.Client.Mqtt
         ///     Gets the authentication result.
         ///     <remarks>MQTT 5.0.0+ feature.</remarks>
         /// </summary>
-        public MqttConnectAck ConnectAck { get; set; }
+        public required MqttConnectAck ConnectAck { get; set; }
     }
 }

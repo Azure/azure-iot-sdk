@@ -28,7 +28,7 @@ namespace Microsoft.Azure.Devices.Client.Provisioning.Models
         /// Gets or sets device registration status.
         /// </summary>
         [JsonPropertyName("registrationState")]
-        public DeviceRegistrationResult RegistrationState { get; set; }
+        public DeviceRegistrationResult? RegistrationState { get; set; }
 
         /// <summary>
         /// Gets or sets the Retry-After header.

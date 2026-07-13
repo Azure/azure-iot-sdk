@@ -12,8 +12,8 @@ namespace Microsoft.Azure.Devices.Client.FileUpload
         
         }
 
-        public string ErrorMessage { get; set; }
+        public string? ErrorMessage { get; set; }
 
-        public IotHubNestedServiceException ErrorDetails { get; set; }
+        public IotHubNestedServiceException? ErrorDetails { get; set; }
     }
 }

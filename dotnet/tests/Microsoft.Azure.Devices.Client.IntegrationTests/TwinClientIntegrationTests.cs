@@ -41,17 +41,17 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
 
             DesiredPatchReceivedEventArgs receivedDesiredPropertyUpdate = await onDesiredPropertiesUpdateReceived.Task.WaitAsync(cts.Token);
             Assert.True(receivedDesiredPropertyUpdate.DesiredProperties.ContainsKey(expectedDesiredPropertyKey));
-            Assert.Equal(expectedDesiredPropertyValue, (string) receivedDesiredPropertyUpdate.DesiredProperties[expectedDesiredPropertyKey]);
+            Assert.Equal(expectedDesiredPropertyValue, (string) receivedDesiredPropertyUpdate.DesiredProperties[expectedDesiredPropertyKey]!);
 
             // Get the twin again from the device side, this time looking for the updated desired property
             getTwinResponse = await twinClient.GetTwinAsync(cancellationToken: cts.Token);
-            Assert.True(getTwinResponse.DesiredProperties.ContainsKey(expectedDesiredPropertyKey));
-            Assert.Equal(expectedDesiredPropertyValue, (string) getTwinResponse.DesiredProperties[expectedDesiredPropertyKey]);
+            Assert.True(getTwinResponse.DesiredProperties!.ContainsKey(expectedDesiredPropertyKey));
+            Assert.Equal(expectedDesiredPropertyValue, (string) getTwinResponse.DesiredProperties[expectedDesiredPropertyKey]!);
 
             string expectedReportedPropertyKey = Guid.NewGuid().ToString();
             string expectedReportedPropertyValue = Guid.NewGuid().ToString();
 
-            getTwinResponse.ReportedProperties[expectedReportedPropertyKey] = expectedReportedPropertyValue;
+            getTwinResponse.ReportedProperties![expectedReportedPropertyKey] = expectedReportedPropertyValue;
 
             ReportedPatchRequest reportedPatch = new()
             {

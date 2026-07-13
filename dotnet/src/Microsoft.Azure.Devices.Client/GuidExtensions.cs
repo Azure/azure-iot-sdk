@@ -8,7 +8,7 @@ namespace Microsoft.Azure.Devices.Client
 {
     public static class GuidExtensions
     {
-        public static bool TryParseBytes(byte[] bytes, [NotNullWhen(returnValue: true)] out Guid? result)
+        public static bool TryParseBytes(byte[]? bytes, [NotNullWhen(returnValue: true)] out Guid? result)
         {
             result = null!;
             if (bytes == null || bytes.Length != 16)

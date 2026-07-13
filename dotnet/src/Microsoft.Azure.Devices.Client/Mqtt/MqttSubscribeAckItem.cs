@@ -4,7 +4,7 @@ using System.Text;
 
 namespace Microsoft.Azure.Devices.Client.Mqtt
 {
-    public class MqttSubscribeResult
+    public class MqttSubscribeAckItem
     {
         /// <summary>
         ///     Gets or sets the result code.

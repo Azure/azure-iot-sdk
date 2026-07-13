@@ -11,9 +11,9 @@ namespace Microsoft.Azure.Devices.Client.FileUpload
     public class IotHubServiceError
     {
         [JsonPropertyName("Message")]
-        public string ErrorDetails { get; set; }
+        public required string ErrorDetails { get; set; }
 
         [JsonPropertyName("ExceptionMessage")]
-        public string ExceptionMessage { get; set; }
+        public string? ExceptionMessage { get; set; }
     }
 }

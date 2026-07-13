@@ -15,12 +15,13 @@ namespace Microsoft.Azure.Devices.Client.CertificateManagement
         /// Correlation ID for diagnostic and support purposes.
         /// </summary>
         [JsonPropertyName("correlationId")]
-        public string CorrelationId { get; set; }
+        public required string CorrelationId { get; set; }
+
         /// <summary>
         /// Time when the operation expires and will be discarded if not completed.
         /// Default is approximately 12 hours from acceptance.
         /// </summary>
         [JsonPropertyName("operationExpires")]
-        public DateTimeOffset OperationExpires { get; set; }
+        public required DateTimeOffset OperationExpires { get; set; }
     }
 }

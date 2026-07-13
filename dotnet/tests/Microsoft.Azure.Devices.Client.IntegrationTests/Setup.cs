@@ -16,13 +16,28 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
 
         public static string DpsIdScope { get; set; } = Environment.GetEnvironmentVariable("IOT_DPS_ID_SCOPE") ?? throw new ArgumentException("Missing env var");
 
-        private const string _testCertificatesPassword = "some fake password";
+        public const string TestCertificatesPassword = "some fake password";
 
         public static ServiceClient GetIotHubServiceClient() => ServiceClient.CreateFromConnectionString(IotHubConnectionString);
 
         public static RegistryManager GetIotHubRegistryManager() => RegistryManager.CreateFromConnectionString(IotHubConnectionString);
 
         public static ProvisioningServiceClient GetDpsHubServiceClient() => ProvisioningServiceClient.CreateFromConnectionString(DpsConnectionString);
+
+        public static string GetIotHubHostName()
+        {
+            string[] connectionStringKeyValuePairs = IotHubConnectionString.Split(";");
+            foreach (string connectionStringKeyValuePair in connectionStringKeyValuePairs)
+            {
+                string[] keyAndValue = connectionStringKeyValuePair.Split("=");
+                if (keyAndValue[0].Equals("HostName"))
+                {
+                    return keyAndValue[1];
+                }
+            }
+
+            throw new Exception("Malformed IoT hub connection string");
+        }
 
         public const int TestTimeoutMilliseconds = 60 * 1000;
 
@@ -44,7 +59,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
             CreateTestCertificates(pfxPath, certPath, deviceId);
 
             X509Certificate2 certificate = X509CertificateLoader.LoadCertificateFromFile(certPath);
-            X509Certificate2 pfx = X509CertificateLoader.LoadPkcs12FromFile(pfxPath, _testCertificatesPassword);
+            X509Certificate2 pfx = X509CertificateLoader.LoadPkcs12FromFile(pfxPath, TestCertificatesPassword);
 
             // Create individual enrollment for the test device to provision from
             Attestation attestation = X509Attestation.CreateFromClientCertificates(certificate);
@@ -56,37 +71,9 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
             ConnectionClient connectionClient = new();
             ProvisioningSettings provisioningSettings = new(DpsIdScope);
 
-            //TODO seeing some Unauthorized errors likely because the enrollment was just created and service isn't ready for the connection
-            // yet. adding some basic retry to cover that
-            bool connected = false;
-            int retryCount = 0;
-            ConnectionContext? connectionContext = null;
-            while (!connected)
-            {
-                try
-                {
-                    connectionContext = await connectionClient.ProvisionAndConnectAsync(provisioningSettings, x509AuthenticationProvider, cancellationToken: cancellationToken);
-                    connected = true;
-                }
-                catch (Exception e)
-                {
-                    if (e.Message.Contains("NotAuthorized"))
-                    {
-                        retryCount++;
-                        await Task.Delay(TimeSpan.FromSeconds(1));
-
-                        if (retryCount > 4)
-                        {
-                            throw;
-                        }
-                    }
-                    else
-                    {
-                        throw;
-                    }
-                }
-
-            }
+            ConnectionContext connectionContext = await RetryAroundAuthorizationAsync<ConnectionContext>(
+                async () => await connectionClient.ProvisionAndConnectAsync(provisioningSettings, x509AuthenticationProvider, cancellationToken: cancellationToken),
+                cancellationToken);
 
             return new TestConnectionClient()
             { 
@@ -135,37 +122,9 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
                 ProvisioningCertificateSigningRequest = csrBase64,
             };
 
-            //TODO seeing some Unauthorized errors likely because the enrollment was just created and service isn't ready for the connection
-            // yet. adding some basic retry to cover that
-            bool connected = false;
-            int retryCount = 0;
-            ConnectionContext? connectionContext = null;
-            while (!connected)
-            {
-                try
-                {
-                    connectionContext = await connectionClient.ProvisionAndConnectAsync(provisioningSettings, x509AuthenticationProvider, cancellationToken: cancellationToken);
-                    connected = true;
-                }
-                catch (Exception e)
-                {
-                    if (e.Message.Contains("NotAuthorized"))
-                    {
-                        retryCount++;
-                        await Task.Delay(TimeSpan.FromSeconds(1));
-
-                        if (retryCount > 4)
-                        {
-                            throw;
-                        }
-                    }
-                    else
-                    {
-                        throw;
-                    }
-                }
-
-            }
+            ConnectionContext connectionContext = await RetryAroundAuthorizationAsync<ConnectionContext>(
+                async () => await connectionClient.ProvisionAndConnectAsync(provisioningSettings, x509AuthenticationProvider, cancellationToken: cancellationToken), 
+                cancellationToken);
 
             return new TestConnectionClient()
             {
@@ -184,7 +143,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
             var cert = req.CreateSelfSigned(DateTimeOffset.Now, DateTimeOffset.Now.AddHours(1));
 
             // Create PFX (PKCS #12) with private key
-            File.WriteAllBytes(pfxPath, cert.Export(X509ContentType.Pfx, _testCertificatesPassword));
+            File.WriteAllBytes(pfxPath, cert.Export(X509ContentType.Pfx, TestCertificatesPassword));
 
             // Create Base 64 encoded CER (public key only)
             File.WriteAllText(certPath,
@@ -197,6 +156,31 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
         { 
             ECC,
             RSA,
+        }
+
+        // This basic retry logic covers the issue where a device is created on the Hub side, but it still 
+        // rejects the connection for authorization reasons. Usually, after a few seconds, the device is ready to 
+        // authorize the newly created device.
+        public static async Task<T> RetryAroundAuthorizationAsync<T>(Func<Task<T>> taskToRetry, CancellationToken cancellationToken)
+        {
+            while (true)
+            {
+                try
+                {
+                    return await taskToRetry.Invoke();
+                }
+                catch (Exception e)
+                {
+                    if (e.Message.Contains("NotAuthorized"))
+                    {
+                        await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken);
+                    }
+                    else
+                    {
+                        throw;
+                    }
+                }
+            }
         }
 
         public static (string csrBase64, AsymmetricAlgorithm privateKey) GenerateCsr(string registrationId, CsrAlgorithm csrAlgorithm)

@@ -22,6 +22,12 @@ internal class Program
 
         Action<DesiredPatchReceivedEventArgs> HandleDesiredPropertiesUpdateAsync = async (args) =>
         {
+            if (currentTwin == null)
+            {
+                // The full twin wasn't received yet, so disregard any piecemeal updates that came before it 
+                return;
+            }
+
             Console.WriteLine($"Received desired property update");
             currentTwin.DesiredVersion = args.DesiredPropertiesVersion;
             currentTwin.Desired = args.DesiredProperties;

@@ -4,12 +4,14 @@ on:
   workflow_dispatch:
   pull_request:
     paths:
+      - '.github/**'
       - 'dotnet/**'
       - 'common/**'
   push:
     branches:
     - main
     paths:
+      - '.github/**'
       - 'dotnet/**'
       - 'common/**'
   schedule:
@@ -43,6 +45,21 @@ jobs:
         tenant-id: ${{ secrets.AZURE_TENANT_ID }}
         subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
+    - name: Copy Faultable MQTT broker from AIO SDK repo
+      run: |
+        mkdir faultablemqttbroker
+        wget "https://raw.githubusercontent.com/Azure/iot-operations-sdks/refs/heads/main/eng/test/faultablemqttbroker/src/Azure.Iot.Operations.FaultableMqttBroker/Azure.Iot.Operations.FaultableMqttBroker.csproj" -O "./faultablemqttbroker/Azure.Iot.Operations.FaultableMqttBroker.csproj"
+        wget "https://raw.githubusercontent.com/Azure/iot-operations-sdks/refs/heads/main/eng/test/faultablemqttbroker/src/Azure.Iot.Operations.FaultableMqttBroker/FaultHandling.cs" -O "./faultablemqttbroker/FaultHandling.cs"
+        wget "https://raw.githubusercontent.com/Azure/iot-operations-sdks/refs/heads/main/eng/test/faultablemqttbroker/src/Azure.Iot.Operations.FaultableMqttBroker/FaultableMqttBroker.cs" -O "./faultablemqttbroker/FaultableMqttBroker.cs"
+        wget "https://raw.githubusercontent.com/Azure/iot-operations-sdks/refs/heads/main/eng/test/faultablemqttbroker/src/Azure.Iot.Operations.FaultableMqttBroker/FaultableMqttBrokerWorker.cs" -O "./faultablemqttbroker/FaultableMqttBrokerWorker.cs"
+        wget "https://raw.githubusercontent.com/Azure/iot-operations-sdks/refs/heads/main/eng/test/faultablemqttbroker/src/Azure.Iot.Operations.FaultableMqttBroker/Program.cs" -O "./faultablemqttbroker/Program.cs"
+
+    - name: Build Faultable MQTT Broker
+      run: dotnet build ./faultablemqttbroker/Azure.Iot.Operations.FaultableMqttBroker.csproj
+   
+    - name: Run Faultable MQTT Broker (port 1884)
+      run: RUNNER_TRACKING_ID="" && dotnet run --project ./faultablemqttbroker/Azure.Iot.Operations.FaultableMqttBroker.csproj &
+
     - name: Create Azure Test Resources
       uses: azure/powershell@v3
       with:
@@ -59,6 +76,7 @@ jobs:
           New-AzIotCSDKE2ETestConfig -TestEnvInfo $TestEnvInfo -Target powershell -OutFile test_config/set_test_env_vars.ps1
           chmod +x ./test_config/set_test_env_vars.ps1
           ./test_config/set_test_env_vars.ps1
+          dotnet build ./dotnet/Project.slnx
           dotnet test ./dotnet/Project.slnx --collect:"XPlat Code Coverage" --logger:"trx;LogFileName=test-results.trx" --environment IOTHUB_CONNECTION_STRING=$env:IOTHUB_CONNECTION_STRING --environment IOT_DPS_CONNECTION_STRING=$env:IOT_DPS_CONNECTION_STRING --environment IOT_DPS_ID_SCOPE=$env:IOT_DPS_ID_SCOPE -- xunit.parallelizeAssembly=true
 
     - name: Microsoft.Azure.Devices.Client.IntegrationTests Package Code Coverage

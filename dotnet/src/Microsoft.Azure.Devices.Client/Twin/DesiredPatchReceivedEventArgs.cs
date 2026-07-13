@@ -8,8 +8,8 @@ namespace Microsoft.Azure.Devices.Client.Twin
 {
     public class DesiredPatchReceivedEventArgs : EventArgs
     {
-        public ulong DesiredPropertiesVersion { get; set; }
+        public required ulong DesiredPropertiesVersion { get; set; }
 
-        public JsonObject DesiredProperties { get; set; }
+        public required JsonObject DesiredProperties { get; set; }
     }
 }

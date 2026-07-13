@@ -26,7 +26,7 @@
         /// <summary>
         ///     Gets the result code.
         /// </summary>
-        public MqttClientConnectResultCode ResultCode { get; set; }
+        public MqttConnectResultCode ResultCode { get; set; }
 
         /// <summary>
         ///     MQTTv5 only.

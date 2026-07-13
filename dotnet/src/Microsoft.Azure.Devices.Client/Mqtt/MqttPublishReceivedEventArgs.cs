@@ -2,18 +2,18 @@
 {
     public abstract class MqttPublishReceivedEventArgs : EventArgs
     {
-        public MqttPublish Publish { get; set; }
-
         /// <summary>
-        ///     Gets the client identifier.
-        ///     Hint: This identifier needs to be unique over all used clients / devices on the broker to avoid connection issues.
+        /// The MQTT publish that was received by this client.
         /// </summary>
-        //public string ClientId { get; set; } probably not needed? How to route responses back to service client, though?
+        /// <remarks>
+        /// If this publish is QoS 1 or higher, then it must be acknowledged by calling <see cref="AcknowledgeAsync(CancellationToken)"/>.
+        /// </remarks>
+        public MqttPublish Publish { get; set; }
 
         /// <summary>
         ///     Gets or sets the reason code which will be sent to the server in the ACK packet.
         /// </summary>
-        public MqttPublishReceivedReasonCode ReasonCode { get; set; }
+        public MqttPublishAckReasonCode ReasonCode { get; set; }
 
         /// <summary>
         ///     Gets or sets the reason string which will be sent to the server in the ACK packet.

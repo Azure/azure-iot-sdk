@@ -8,8 +8,6 @@ namespace Microsoft.Azure.Devices.Client.DirectMethods
     {
         public byte[]? Payload { get; init; }
 
-        public string MethodName { get; init; }
-
-        internal string RequestId { get; init; }
+        public required string MethodName { get; init; }
     }
 }

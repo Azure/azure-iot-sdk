@@ -6,13 +6,13 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
 {
     public class TestConnectionClient : IAsyncDisposable
     {
-        public ConnectionClient ConnectionClient { get; set; }
+        public required ConnectionClient ConnectionClient { get; set; }
 
-        public ConnectionContext ConnectionContext { get; set; }
+        public required ConnectionContext ConnectionContext { get; set; }
 
-        public X509AuthenticationProvider AuthenticationProvider { get; set; }
+        public required X509AuthenticationProvider AuthenticationProvider { get; set; }
 
-        public string PrivateKeyPem { get; set; }
+        public string? PrivateKeyPem { get; set; }
 
         public async ValueTask DisposeAsync()
         {
