@@ -59,7 +59,7 @@ typedef void (*az_iot_direct_method_handler_callback)(
     size_t payload_len,
     void* user_ctx);
 
-typedef struct az_iot_direct_method_client
+struct az_iot_direct_method_client
 {
     struct
     {
@@ -68,7 +68,7 @@ typedef struct az_iot_direct_method_client
         void* handler_ctx;
         az_iot_direct_method_request req_pool[AZ_IOT_DM_MAX_INFLIGHT];
     } _internal;
-} az_iot_direct_method_client;
+};
 
 AZ_NODISCARD az_iot_result az_iot_direct_method_client_init(
     az_iot_direct_method_client* client,
