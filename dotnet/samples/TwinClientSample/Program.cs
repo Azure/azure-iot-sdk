@@ -41,6 +41,7 @@ internal class Program
                 IfMatch = 1 //TODO how does this work again?
             };
 
+            Console.WriteLine($"Responding to desired patch by sending a reported patch");
             ReportedPatchResponse patchResponse = await twinClient.UpdateReportedPropertiesAsync(reportedPatch);
             currentTwin.ReportedVersion = patchResponse.Version;
             if (patchResponse.Result == Result.Ok)
@@ -60,6 +61,8 @@ internal class Program
         };
 
         var connectionContext = await connectionClient.ProvisionAndConnectAsync(provisioningSettings, authentication, twinPushOptions);
+        Console.WriteLine("Device is now connected. Now listening for desired property patches");
+
         currentTwin = connectionContext.InitialTwinPush;
 
         await Task.Delay(-1, cts.Token);

@@ -23,6 +23,7 @@ internal class Program
 
         ProvisioningSettings provisioningSettings = new(idScope);
         var connectionContext = await connectionClient.ProvisionAndConnectAsync(provisioningSettings, authentication);
+        Console.WriteLine("Device is now connected.");
 
         while (!cts.Token.IsCancellationRequested)
         {

@@ -20,10 +20,12 @@ Before running this sample, you simply need to enter your service-side DPS + Hub
     public static string IotHubHostName = "Some-Fake-IoT-Hub-Hostname.azure-devices.net";
 ```
 
+This sample can be run again to delete the previous credentials and create a new device and new credentials.
+
 ### How to run the device samples
 
-By running the above sample, you should see a set of credential files saved at the root of this samples directory like "deviceId.txt", "certificate.pfx", and more. Once you have those, all you need to do is run the sample like
+By running the above sample, you should see a set of credential files saved at the root of this samples directory like "deviceId.txt", "certificate.pfx", and more. Once you have those, all you need to do is run a command from this directory like:
 
 ```bash
-dotnet run ./TelemetryClientSample/TelemetryClientSample.csproj
+dotnet run --project samples/DirectMethodsSample
 ```

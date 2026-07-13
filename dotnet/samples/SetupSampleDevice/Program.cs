@@ -46,7 +46,7 @@ internal class Program
         SampleConstants.SaveHostname(IotHubHostName);
         SampleConstants.SaveIdScope(DpsIdScope);
 
-        Console.WriteLine("Device credentials saved in root of the samples directory");
+        Console.WriteLine($"Device with Id {deviceId} has been registered with DPS. That device's credentials saved in root of the samples directory");
     }
 
     public static void CreateTestCertificates(string deviceId)

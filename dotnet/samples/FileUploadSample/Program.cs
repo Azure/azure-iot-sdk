@@ -33,7 +33,23 @@ internal class Program
             BlobName = "TestFile.txt",
         };
         Console.WriteLine("Getting a SAS URI from IoT hub...");
-        var sasUri = await fileUploadClient.GetFileUploadSasUriAsync(sasUriRequest, cts.Token);
+
+        FileUploadSasUriResponse sasUri;
+        try
+        {
+            sasUri = await fileUploadClient.GetFileUploadSasUriAsync(sasUriRequest, cts.Token);
+        }
+        catch (IotHubServiceException e)
+        {
+            // A common pitfall is not enabling the file upload feature on your IoT Hub
+            if (e.ErrorDetails != null && e.ErrorDetails.ErrorCode == 400014)
+            {
+                Console.WriteLine("You must enable file upload (and setup an associated Azure Storage account) on your IoT Hub through the Azure Portal");
+                return;
+            }
+
+            throw;
+        }
 
         bool wasFileUploadSuccessful = false;
         try
@@ -45,9 +61,9 @@ internal class Program
             await blobClient.UploadAsync(dummyFileStream, new BlobUploadOptions(), cts.Token);
             wasFileUploadSuccessful = true;
         }
-        catch (Exception e)
+        catch (Exception)
         {
-            Console.WriteLine("Encountered an error during file upload. Will send a negative completion notification to IoT hub");
+            Console.WriteLine("Encountered an error during file upload. Will send a negative file upload completion notification to IoT hub");
         }
 
         FileUploadCompletionNotification completionNotification = new()
