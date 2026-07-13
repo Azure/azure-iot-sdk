@@ -1083,7 +1083,9 @@ void az_iot_adu_client_destroy(az_iot_adu_client_t* client)
     if (client == NULL) return;
     if (ADU_I(client).twin != NULL)
     {
-        (void)az_iot_twin_client_unsubscribe_desired(ADU_I(client).twin, on_desired, client);
+        /* Best-effort unsubscribe during teardown; the result is intentionally ignored. */
+        az_iot_result rc = az_iot_twin_client_unsubscribe_desired(ADU_I(client).twin, on_desired, client);
+        (void)rc;
     }
     memset(client, 0, sizeof(*client));
 }

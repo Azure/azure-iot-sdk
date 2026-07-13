@@ -284,14 +284,16 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_register_mqtt_factory(
     az_iot_connection_client* client,
     const az_iot_mqtt_factory* factory);
 
-AZ_NODISCARD az_iot_result az_iot_connection_client_set_state_callback(
+/* Not AZ_NODISCARD: configuration setters that fail only on invalid arguments
+ * (a programming error), so callers routinely fire-and-forget them. */
+az_iot_result az_iot_connection_client_set_state_callback(
     az_iot_connection_client* client,
     az_iot_connection_state_callback cb,
     void* user_ctx);
 
 /* Register a callback fired when a DPS/provider-issued operational certificate
  * is obtained during provisioning (D4). Optional. */
-AZ_NODISCARD az_iot_result az_iot_connection_client_set_operational_cert_callback(
+az_iot_result az_iot_connection_client_set_operational_cert_callback(
     az_iot_connection_client* client,
     az_iot_operational_cert_callback cb,
     void* user_ctx);
@@ -300,11 +302,14 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_set_operational_cert_callbac
  * and drive progress with do_work(). */
 AZ_NODISCARD az_iot_result az_iot_connection_client_open(az_iot_connection_client* client);
 
-AZ_NODISCARD az_iot_result az_iot_connection_client_close(az_iot_connection_client* client);
+/* Not AZ_NODISCARD: teardown/lifecycle op commonly called fire-and-forget. */
+az_iot_result az_iot_connection_client_close(az_iot_connection_client* client);
 
 /* Pump network I/O and dispatch callbacks. Single-threaded contract: all user
- * callbacks fire synchronously from inside this call. */
-AZ_NODISCARD az_iot_result az_iot_connection_client_do_work(az_iot_connection_client* client, uint32_t timeout_ms);
+ * callbacks fire synchronously from inside this call. Not AZ_NODISCARD: this is a
+ * pump, commonly called in a loop where the per-call result is observed via the
+ * state callback rather than the return value. */
+az_iot_result az_iot_connection_client_do_work(az_iot_connection_client* client, uint32_t timeout_ms);
 
 /* Request a renewed operational certificate from the connected (Classic) hub by
  * sending a CSR. Two-phase: the callback fires with AZ_IOT_CSR_ACCEPTED (202),

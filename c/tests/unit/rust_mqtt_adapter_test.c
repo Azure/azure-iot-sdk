@@ -100,7 +100,8 @@ static int reset_fixture(void** s)
 {
     (void)s;
     /* Always start from a clean (uninstalled) state. */
-    (void)az_iot_rust_mqtt_install(NULL);
+    az_iot_result rc = az_iot_rust_mqtt_install(NULL);
+    (void)rc;
     g_last_client = NULL;
     g_create_calls = 0;
     g_destroy_calls = 0;

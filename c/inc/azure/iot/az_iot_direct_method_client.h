@@ -76,12 +76,14 @@ AZ_NODISCARD az_iot_result az_iot_direct_method_client_init(
 
 void az_iot_direct_method_client_destroy(az_iot_direct_method_client* client);
 
-AZ_NODISCARD az_iot_result az_iot_direct_method_client_set_handler(
+/* Not AZ_NODISCARD: a configuration setter (fails only on invalid arguments). */
+az_iot_result az_iot_direct_method_client_set_handler(
     az_iot_direct_method_client* dm,
     az_iot_direct_method_handler_callback cb,
     void* user_ctx);
 
-AZ_NODISCARD az_iot_result az_iot_direct_method_respond(
+/* Not AZ_NODISCARD: best-effort response send, commonly fire-and-forget. */
+az_iot_result az_iot_direct_method_respond(
     az_iot_direct_method_request* request,
     int status_code,
     const uint8_t* payload,

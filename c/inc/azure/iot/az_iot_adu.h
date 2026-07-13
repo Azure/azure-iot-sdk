@@ -511,9 +511,10 @@ AZ_NODISCARD az_iot_result az_iot_adu_client_resume(az_iot_adu_client_t* client)
 
 /**
  * Drive the ADU state machine. The application MUST call this from its do_work
- * loop. Non-blocking: processes at most one chunk of work per invocation.
+ * loop. Non-blocking: processes at most one chunk of work per invocation. Not
+ * AZ_NODISCARD: a pump whose result is typically observed via state, not return.
  */
-AZ_NODISCARD az_iot_result az_iot_adu_client_do_work(az_iot_adu_client_t* client);
+az_iot_result az_iot_adu_client_do_work(az_iot_adu_client_t* client);
 
 /** Check if cancellation has been requested (called from within platform hooks). */
 bool az_iot_adu_is_cancelled(const az_iot_adu_client_t* client);

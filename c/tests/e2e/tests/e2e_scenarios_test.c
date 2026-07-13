@@ -312,7 +312,8 @@ static void on_method(
     (void)method_name;
     (void)user_ctx;
     /* Echo the request payload back with a 200. */
-    (void)az_iot_direct_method_respond(request, 200, payload, payload_len);
+    az_iot_result rc = az_iot_direct_method_respond(request, 200, payload, payload_len);
+    (void)rc;
 }
 
 static void test_direct_method(void** state)
