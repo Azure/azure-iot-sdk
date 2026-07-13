@@ -1,6 +1,7 @@
 ﻿using Microsoft.Azure.Devices.Client;
 using Microsoft.Azure.Devices.Client.Mqtt;
 using Microsoft.Azure.Devices.Client.MQTTnetAdapter;
+using SetupSampleDevice;
 using System.Diagnostics;
 using System.Security.Cryptography.X509Certificates;
 
@@ -10,10 +11,10 @@ internal class Program
 
     private static async Task Main(string[] args)
     {
-        string idScope = Environment.GetEnvironmentVariable("DPS_ID_SCOPE") ?? throw new Exception("");
-        string pcks12CertificatePath = Environment.GetEnvironmentVariable("X509_CERTIFICATE_PATH") ?? throw new Exception("");
-        string pcks12CertificatePassword = Environment.GetEnvironmentVariable("X509_CERTIFICATE_PASSWORD") ?? throw new Exception("");
-        X509AuthenticationProvider authentication = new(X509CertificateLoader.LoadPkcs12FromFile(pcks12CertificatePath, pcks12CertificatePassword));
+        string deviceId = SampleConstants.LoadDeviceId();
+        string hostName = SampleConstants.LoadHostname();
+        string idScope = SampleConstants.LoadIdScope();
+        X509AuthenticationProvider authentication = SampleConstants.LoadAuthenticationProvider();
 
         // This MQTT client interface allows users to bring their own MQTT client implementation
         IMqttClient mqttClient;

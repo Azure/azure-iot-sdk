@@ -57,3 +57,10 @@ TestResult.xml
 nunit-*.xml
 
 /dotnet/.vs
+
+# Ignore any device credentials generated when running the samples
+/dotnet/samples/deviceId.txt
+/dotnet/samples/hostname.txt
+/dotnet/samples/idscope.txt
+/dotnet/samples/certificate.cer
+/dotnet/samples/certificate.pfx

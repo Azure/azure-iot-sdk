@@ -9,6 +9,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Microsoft.Azure.Devices.Client\Microsoft.Azure.Devices.Client.csproj" />
+    <ProjectReference Include="..\SetupSampleDevice\SetupSampleDevice.csproj" />
   </ItemGroup>
 
 </Project>

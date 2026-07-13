@@ -1,6 +1,7 @@
 ﻿using DirectMethodsClientSample;
 using Microsoft.Azure.Devices.Client;
 using Microsoft.Azure.Devices.Client.DirectMethods;
+using SetupSampleDevice;
 using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
 
@@ -11,10 +12,10 @@ internal class Program
         using CancellationTokenSource cts = new CancellationTokenSource();
         cts.CancelAfter(TimeSpan.FromSeconds(20));
 
-        string idScope = Environment.GetEnvironmentVariable("DPS_ID_SCOPE") ?? throw new Exception("");
-        string pcks12CertificatePath = Environment.GetEnvironmentVariable("X509_CERTIFICATE_PATH") ?? throw new Exception("");
-        string pcks12CertificatePassword = Environment.GetEnvironmentVariable("X509_CERTIFICATE_PASSWORD") ?? throw new Exception("");
-        X509AuthenticationProvider authentication = new(X509CertificateLoader.LoadPkcs12FromFile(pcks12CertificatePath, pcks12CertificatePassword));
+        string deviceId = SampleConstants.LoadDeviceId();
+        string hostName = SampleConstants.LoadHostname();
+        string idScope = SampleConstants.LoadIdScope();
+        X509AuthenticationProvider authentication = SampleConstants.LoadAuthenticationProvider();
 
         using ConnectionClient connectionClient = new ConnectionClient();
 
