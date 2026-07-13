@@ -413,23 +413,52 @@ typedef struct az_iot_adu_client_t
 /* --- Lifecycle ----------------------------------------------------------- */
 
 /**
+ * Configuration for az_iot_adu_client_initialize(). Obtain a zero-initialized
+ * instance from az_iot_adu_client_options_t_default() and set the required
+ * fields before calling initialize.
+ *
+ * NOTE: named with the `_t` suffix (like az_iot_adu_client_t) to avoid colliding
+ * with azure-sdk-for-c's own az_iot_adu_client_options, which is visible here
+ * because the platform-hook signatures use upstream parsing types.
+ */
+typedef struct az_iot_adu_client_options_t
+{
+    /* Platform operations (download/install/apply/...). MUST be non-NULL. */
+    const az_iot_adu_platform_hooks* hooks;
+    /* Pure-primitive crypto hooks (RSA verify + SHA-256). MUST be non-NULL. */
+    const az_iot_adu_crypto_hooks* crypto;
+    /* Caller-owned RSA root public keys that anchor manifest trust. The core
+     * copies the small descriptor array into its fixed store (key BYTES are
+     * referenced, not copied, so they MUST outlive the client). Capped at
+     * AZ_IOT_ADU_MAX_ROOT_KEYS. For Microsoft-signed updates, pass
+     * az_iot_adu_microsoft_root_keys(). */
+    const az_iot_adu_root_key* root_keys;
+    size_t                     root_key_count;
+    /* Caller-owned device properties, DEEP-COPIED into the cache. May be
+     * mutated/freed by the caller after initialize returns. MUST be non-NULL. */
+    const az_iot_adu_device_properties* device_props;
+    /* Caller-owned cache the client copies device_props into. No hidden
+     * allocation; the buffer MUST outlive the client. MUST be non-NULL. */
+    uint8_t* device_props_buffer;
+    size_t   device_props_buffer_size;
+} az_iot_adu_client_options_t;
+
+/* Returns an options struct with all fields zero-initialized. Set hooks, crypto,
+ * root_keys/root_key_count, device_props and device_props_buffer/size on the
+ * returned struct before passing it to az_iot_adu_client_initialize(). (The
+ * `_t_default` spelling mirrors the `_t`-suffixed type; see the note above.) */
+AZ_NODISCARD az_iot_adu_client_options_t az_iot_adu_client_options_t_default(void);
+
+/**
  * Initialize the ADU client.
  *
  *   twin: an initialized twin client; the ADU client registers as a
  *     feature-client desired-property subscriber.
- *   hooks: platform operations (download/install/apply/...). MUST be non-NULL.
- *   crypto: pure-primitive crypto hooks (RSA verify + SHA-256). MUST be non-NULL.
- *   root_keys / root_key_count: caller-owned RSA root public keys that anchor
- *     manifest trust. Core copies the small descriptor array into its fixed
- *     store (key BYTES are referenced, not copied, so they MUST outlive the
- *     client). Returns AZ_IOT_ERR_NOT_ENOUGH_SPACE if root_key_count exceeds
- *     AZ_IOT_ADU_MAX_ROOT_KEYS. For Microsoft-signed updates, pass
- *     az_iot_adu_microsoft_root_keys().
- *   device_props: caller-owned device properties, DEEP-COPIED into the cache.
- *     May be mutated/freed by the caller after this returns.
- *   device_props_buffer / size: caller-owned cache the client copies into. No
- *     hidden allocation; the buffer MUST outlive the client. Returns
- *     AZ_IOT_ERR_NOT_ENOUGH_SPACE if too small for device_props.
+ *   options: configuration (hooks, crypto, trust store, device properties and
+ *     the caller-owned cache); see az_iot_adu_client_options_t. Returns
+ *     AZ_IOT_ERR_INVALID_ARG if any required field is NULL,
+ *     AZ_IOT_ERR_NOT_ENOUGH_SPACE if root_key_count exceeds
+ *     AZ_IOT_ADU_MAX_ROOT_KEYS or the buffer is too small for device_props.
  *
  * NOTE: named *_initialize (not *_init) to avoid colliding with
  * azure-sdk-for-c's az_iot_adu_client_init(), which is visible here because the
@@ -438,13 +467,7 @@ typedef struct az_iot_adu_client_t
 AZ_NODISCARD az_iot_result az_iot_adu_client_initialize(
     az_iot_adu_client_t* client,
     az_iot_twin_client* twin,
-    const az_iot_adu_platform_hooks* hooks,
-    const az_iot_adu_crypto_hooks* crypto,
-    const az_iot_adu_root_key* root_keys,
-    size_t root_key_count,
-    const az_iot_adu_device_properties* device_props,
-    uint8_t* device_props_buffer,
-    size_t device_props_buffer_size);
+    const az_iot_adu_client_options_t* options);
 
 /**
  * Return Microsoft's compiled-in ADU root public keys (const, static storage).

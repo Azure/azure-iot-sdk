@@ -403,10 +403,15 @@ int main(void)
     dp.custom_properties = customs;
     dp.custom_properties_count = sizeof(customs) / sizeof(customs[0]);
 
-    if (az_iot_adu_client_initialize(
-            &st.adu_client, &st.twin_client, &hooks, &crypto,
-            root_keys, root_key_count,
-            &dp, st.dp_buffer, sizeof(st.dp_buffer)) != AZ_IOT_OK)
+    az_iot_adu_client_options_t adu_opts = az_iot_adu_client_options_t_default();
+    adu_opts.hooks = &hooks;
+    adu_opts.crypto = &crypto;
+    adu_opts.root_keys = root_keys;
+    adu_opts.root_key_count = root_key_count;
+    adu_opts.device_props = &dp;
+    adu_opts.device_props_buffer = st.dp_buffer;
+    adu_opts.device_props_buffer_size = sizeof(st.dp_buffer);
+    if (az_iot_adu_client_initialize(&st.adu_client, &st.twin_client, &adu_opts) != AZ_IOT_OK)
     {
         fprintf(stderr, "az_iot_adu_client_initialize failed\n");
         sample_state_destroy(&st);

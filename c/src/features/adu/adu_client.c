@@ -987,42 +987,43 @@ static void on_initial_twin_get(
 /* lifecycle                                                                 */
 /* ------------------------------------------------------------------------- */
 
+az_iot_adu_client_options_t az_iot_adu_client_options_t_default(void)
+{
+    az_iot_adu_client_options_t opts = { 0 };
+    return opts;
+}
+
 az_iot_result az_iot_adu_client_initialize(
     az_iot_adu_client_t* client,
     az_iot_twin_client* twin,
-    const az_iot_adu_platform_hooks* hooks,
-    const az_iot_adu_crypto_hooks* crypto,
-    const az_iot_adu_root_key* root_keys,
-    size_t root_key_count,
-    const az_iot_adu_device_properties* device_props,
-    uint8_t* device_props_buffer,
-    size_t device_props_buffer_size)
+    const az_iot_adu_client_options_t* options)
 {
-    if (client == NULL || twin == NULL || hooks == NULL || crypto == NULL ||
-        device_props == NULL || device_props_buffer == NULL)
+    if (client == NULL || twin == NULL || options == NULL || options->hooks == NULL ||
+        options->crypto == NULL || options->device_props == NULL ||
+        options->device_props_buffer == NULL)
     {
         return AZ_IOT_ERR_INVALID_ARG;
     }
-    if (root_key_count > AZ_IOT_ADU_MAX_ROOT_KEYS)
+    if (options->root_key_count > AZ_IOT_ADU_MAX_ROOT_KEYS)
     {
         return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
     }
 
     memset(client, 0, sizeof(*client));
     ADU_I(client).twin = twin;
-    ADU_I(client).hooks = *hooks;
-    ADU_I(client).crypto = *crypto;
-    ADU_I(client).device_props_buffer = device_props_buffer;
-    ADU_I(client).device_props_buffer_size = device_props_buffer_size;
+    ADU_I(client).hooks = *options->hooks;
+    ADU_I(client).crypto = *options->crypto;
+    ADU_I(client).device_props_buffer = options->device_props_buffer;
+    ADU_I(client).device_props_buffer_size = options->device_props_buffer_size;
     ADU_I(client).state = AZ_IOT_ADU_STATE_IDLE;
 
-    if (root_keys != NULL && root_key_count > 0)
+    if (options->root_keys != NULL && options->root_key_count > 0)
     {
-        for (size_t i = 0; i < root_key_count; ++i)
+        for (size_t i = 0; i < options->root_key_count; ++i)
         {
-            ADU_I(client).root_keys[i] = root_keys[i];
+            ADU_I(client).root_keys[i] = options->root_keys[i];
         }
-        ADU_I(client).root_key_count = root_key_count;
+        ADU_I(client).root_key_count = options->root_key_count;
     }
 
     if (az_result_failed(az_iot_adu_client_init(&ADU_I(client).az, NULL)))
@@ -1031,7 +1032,7 @@ az_iot_result az_iot_adu_client_initialize(
         return AZ_IOT_ERR_INTERNAL;
     }
 
-    az_iot_result r = cache_device_properties(client, device_props);
+    az_iot_result r = cache_device_properties(client, options->device_props);
     if (r != AZ_IOT_OK)
     {
         memset(client, 0, sizeof(*client));

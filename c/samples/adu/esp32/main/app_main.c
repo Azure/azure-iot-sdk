@@ -167,9 +167,15 @@ void app_main(void)
 
     static uint8_t dp_buffer[512];
     az_iot_adu_client_t adu;
-    if (az_iot_adu_client_initialize(
-            &adu, &twin, &hooks, &crypto, root_keys, root_key_count,
-            &dp, dp_buffer, sizeof(dp_buffer)) != AZ_IOT_OK)
+    az_iot_adu_client_options_t adu_opts = az_iot_adu_client_options_t_default();
+    adu_opts.hooks = &hooks;
+    adu_opts.crypto = &crypto;
+    adu_opts.root_keys = root_keys;
+    adu_opts.root_key_count = root_key_count;
+    adu_opts.device_props = &dp;
+    adu_opts.device_props_buffer = dp_buffer;
+    adu_opts.device_props_buffer_size = sizeof(dp_buffer);
+    if (az_iot_adu_client_initialize(&adu, &twin, &adu_opts) != AZ_IOT_OK)
     {
         ESP_LOGE(TAG, "adu_client_initialize failed");
         esp_restart();

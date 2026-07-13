@@ -470,11 +470,16 @@ static int setup(void** state)
     dp.installed_update_id.name = "Foobar";
     dp.installed_update_id.version = "1.0";
 
+    az_iot_adu_client_options_t adu_opts = az_iot_adu_client_options_t_default();
+    adu_opts.hooks = &hooks;
+    adu_opts.crypto = &crypto;
+    adu_opts.root_keys = k_root_keys;
+    adu_opts.root_key_count = sizeof(k_root_keys) / sizeof(k_root_keys[0]);
+    adu_opts.device_props = &dp;
+    adu_opts.device_props_buffer = fx->dp_buf;
+    adu_opts.device_props_buffer_size = sizeof(fx->dp_buf);
     assert_int_equal(
-        az_iot_adu_client_initialize(
-            &fx->adu, &fx->twin, &hooks, &crypto,
-            k_root_keys, sizeof(k_root_keys) / sizeof(k_root_keys[0]),
-            &dp, fx->dp_buf, sizeof(fx->dp_buf)),
+        az_iot_adu_client_initialize(&fx->adu, &fx->twin, &adu_opts),
         AZ_IOT_OK);
 
     *state = fx;
@@ -881,9 +886,14 @@ static void device_props_too_small_is_rejected(void** state)
     dp.model = "AndAModelToo";
 
     uint8_t tiny[8];
+    az_iot_adu_client_options_t adu_opts = az_iot_adu_client_options_t_default();
+    adu_opts.hooks = &hooks;
+    adu_opts.crypto = &crypto;
+    adu_opts.device_props = &dp;
+    adu_opts.device_props_buffer = tiny;
+    adu_opts.device_props_buffer_size = sizeof(tiny);
     assert_int_equal(
-        az_iot_adu_client_initialize(
-            &adu, &twin, &hooks, &crypto, NULL, 0, &dp, tiny, sizeof(tiny)),
+        az_iot_adu_client_initialize(&adu, &twin, &adu_opts),
         AZ_IOT_ERR_NOT_ENOUGH_SPACE);
 
     az_iot_twin_client_destroy(&twin);

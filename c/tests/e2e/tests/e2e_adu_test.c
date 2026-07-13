@@ -440,11 +440,16 @@ static void adu_agent_init(adu_agent* a)
     dp.installed_update_id.name = "Foobar";
     dp.installed_update_id.version = "1.0";
 
+    az_iot_adu_client_options_t adu_opts = az_iot_adu_client_options_t_default();
+    adu_opts.hooks = &hooks;
+    adu_opts.crypto = &crypto;
+    adu_opts.root_keys = k_root_keys;
+    adu_opts.root_key_count = sizeof(k_root_keys) / sizeof(k_root_keys[0]);
+    adu_opts.device_props = &dp;
+    adu_opts.device_props_buffer = a->dp_buf;
+    adu_opts.device_props_buffer_size = sizeof(a->dp_buf);
     assert_int_equal(
-        az_iot_adu_client_initialize(
-            &a->adu, &a->twin, &hooks, &crypto,
-            k_root_keys, sizeof(k_root_keys) / sizeof(k_root_keys[0]),
-            &dp, a->dp_buf, sizeof(a->dp_buf)),
+        az_iot_adu_client_initialize(&a->adu, &a->twin, &adu_opts),
         AZ_IOT_OK);
 }
 
