@@ -142,13 +142,16 @@ int main(void)
 
     if (user_ctx.conn_state == AZ_IOT_CONN_STATE_CONNECTED)
     {
-        /* Issue twin GET */
-        az_iot_twin_client_get(&state.twin_client, on_get, &user_ctx);
+        /* Issue twin GET (the return is the send/queue status; the twin data
+         * arrives asynchronously via on_get, checked below). */
+        az_iot_result get_rc = az_iot_twin_client_get(&state.twin_client, on_get, &user_ctx);
+        (void)get_rc;
 
-        /* Issue twin PATCH reported */
+        /* Issue twin PATCH reported (the ack arrives via on_patch). */
         static const uint8_t patch[] = "{\"sample\":\"hello\"}";
-        az_iot_twin_client_patch_reported(
+        az_iot_result patch_rc = az_iot_twin_client_patch_reported(
             &state.twin_client, patch, sizeof(patch) - 1, on_patch, &user_ctx);
+        (void)patch_rc;
 
         /* Pump until both responses arrive */
         for (int i = 0; i < 600 && (!user_ctx.get_done || !user_ctx.patch_done); ++i)
