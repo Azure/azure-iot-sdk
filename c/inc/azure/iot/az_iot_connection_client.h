@@ -39,6 +39,12 @@ typedef struct az_iot_reconnect_policy
  * it smaller. */
 #define AZ_IOT_CSR_PAYLOAD_BUFFER_MIN 8448
 
+/* Declares a correctly-sized CSR payload buffer named `name`; wrap it in an
+ * az_span for opts.csr_payload_buffer:
+ *   AZ_IOT_CSR_PAYLOAD_STORAGE(csr_buf);
+ *   copts.csr_payload_buffer = az_span_create(csr_buf, sizeof(csr_buf)); */
+#define AZ_IOT_CSR_PAYLOAD_STORAGE(name) uint8_t name[AZ_IOT_CSR_PAYLOAD_BUFFER_MIN]
+
 typedef struct az_iot_connection_client_options
 {
     const char* host;                  /* hub host (or NULL when using DPS) */
@@ -121,17 +127,39 @@ typedef void (*az_iot_operational_cert_callback)(
 
 /* ------------------------------------------------------------------------- */
 /* Internal struct constants                                                 */
+/*                                                                           */
+/* Compile-time footprint knobs sizing the caller-allocated client's in-     */
+/* struct buffers/pools. #define any of them (or pass -D...) before including */
+/* this header to tune memory use; the defaults suit a typical device.       */
 /* ------------------------------------------------------------------------- */
 
+#ifndef AZ_IOT_MAX_MQTT_FACTORIES
 #define AZ_IOT_MAX_MQTT_FACTORIES       4
+#endif
+#ifndef AZ_IOT_MAX_PENDING_PUBACKS
 #define AZ_IOT_MAX_PENDING_PUBACKS      16
+#endif
+#ifndef AZ_IOT_MAX_PERSISTENT_SUBS
 #define AZ_IOT_MAX_PERSISTENT_SUBS      8
+#endif
+#ifndef AZ_IOT_PERSISTENT_SUB_TOPIC_MAX
 #define AZ_IOT_PERSISTENT_SUB_TOPIC_MAX 128
+#endif
+#ifndef AZ_IOT_DPS_TOPIC_BUF
 #define AZ_IOT_DPS_TOPIC_BUF           256
+#endif
+#ifndef AZ_IOT_DPS_OPERATION_ID_MAX
 #define AZ_IOT_DPS_OPERATION_ID_MAX     64
+#endif
+#ifndef AZ_IOT_DPS_HOST_BUF
 #define AZ_IOT_DPS_HOST_BUF            128
+#endif
+#ifndef AZ_IOT_DPS_DEVICE_ID_BUF
 #define AZ_IOT_DPS_DEVICE_ID_BUF       128
+#endif
+#ifndef AZ_IOT_MQTT_USERNAME_BUF
 #define AZ_IOT_MQTT_USERNAME_BUF        256
+#endif
 
 /* ------------------------------------------------------------------------- */
 /* struct az_iot_connection_client (caller-owned, init/deinit lifecycle)    */

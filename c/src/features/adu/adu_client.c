@@ -53,6 +53,30 @@
  * (packed as NUL-terminated strings, with an upstream-shaped az_span view built
  * over them for the agent-state formatter).
  */
+size_t az_iot_adu_device_props_buffer_size(const az_iot_adu_device_properties* device_props)
+{
+    if (device_props == NULL) return 0;
+    /* Mirrors cache_device_properties()'s packing: the header plus each
+     * non-NULL NUL-terminated string. Keep the two in sync. */
+    size_t n = sizeof(az_iot_adu_device_properties);
+    #define ADU_DP_ADD(s) do { if ((s) != NULL) n += strlen(s) + 1u; } while (0)
+    ADU_DP_ADD(device_props->manufacturer);
+    ADU_DP_ADD(device_props->model);
+    ADU_DP_ADD(device_props->installed_update_id.provider);
+    ADU_DP_ADD(device_props->installed_update_id.name);
+    ADU_DP_ADD(device_props->installed_update_id.version);
+    if (device_props->custom_properties != NULL)
+    {
+        for (size_t i = 0; i < device_props->custom_properties_count; ++i)
+        {
+            ADU_DP_ADD(device_props->custom_properties[i].name);
+            ADU_DP_ADD(device_props->custom_properties[i].value);
+        }
+    }
+    #undef ADU_DP_ADD
+    return n;
+}
+
 static az_iot_result cache_device_properties(
     az_iot_adu_client_t* client,
     const az_iot_adu_device_properties* src)

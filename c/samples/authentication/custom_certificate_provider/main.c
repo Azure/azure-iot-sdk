@@ -84,7 +84,7 @@ int main(void)
     copts.dps.id_scope = config.id_scope;
     copts.dps.registration_id = config.reg_id;
     copts.certificate_provider = &provider.base;
-    uint8_t csr_payload_buf[AZ_IOT_CSR_PAYLOAD_BUFFER_MIN];
+    AZ_IOT_CSR_PAYLOAD_STORAGE(csr_payload_buf);
     copts.csr_payload_buffer = az_span_create(csr_payload_buf, sizeof(csr_payload_buf));
     copts.dps.request_operational_certificate = true; /* opt in to CSR enrollment */
 

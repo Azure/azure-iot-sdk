@@ -32,7 +32,9 @@ typedef void (*az_iot_twin_desired_callback)(
     uint64_t version,
     void* user_ctx);
 
+#ifndef AZ_IOT_TWIN_MAX_PENDING
 #define AZ_IOT_TWIN_MAX_PENDING 8
+#endif
 
 /* Desired-property subscriber registry capacity (compile-time configurable).
  * Two pools: feature-client slots (e.g. ADU) are notified before application

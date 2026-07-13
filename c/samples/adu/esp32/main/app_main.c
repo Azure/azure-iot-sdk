@@ -165,7 +165,7 @@ void app_main(void)
     dp.installed_update_id.name = ADU_UPDATE_NAME;
     dp.installed_update_id.version = ADU_UPDATE_VERSION;
 
-    static uint8_t dp_buffer[512];
+    static AZ_IOT_ADU_DEVICE_PROPS_STORAGE(dp_buffer);
     az_iot_adu_client_t adu;
     az_iot_adu_client_options_t adu_opts = az_iot_adu_client_options_t_default();
     adu_opts.hooks = &hooks;

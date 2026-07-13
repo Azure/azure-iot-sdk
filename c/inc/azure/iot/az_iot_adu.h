@@ -321,6 +321,29 @@ typedef struct az_iot_adu_device_properties
     size_t                              custom_properties_count;
 } az_iot_adu_device_properties;
 
+/* Default size (bytes) for the caller-owned device-properties cache buffer set
+ * in az_iot_adu_client_options_t. Override before including if your device
+ * properties (manufacturer/model/update-id/custom props) are larger, or size a
+ * buffer exactly with az_iot_adu_device_props_buffer_size(). */
+#ifndef AZ_IOT_ADU_DEVICE_PROPS_BUFFER_SIZE
+#define AZ_IOT_ADU_DEVICE_PROPS_BUFFER_SIZE 512
+#endif
+
+/* Declares a device-properties cache buffer named `name`, sized by
+ * AZ_IOT_ADU_DEVICE_PROPS_BUFFER_SIZE, for az_iot_adu_client_options_t:
+ *   AZ_IOT_ADU_DEVICE_PROPS_STORAGE(dp_buf);
+ *   opts.device_props_buffer = dp_buf;
+ *   opts.device_props_buffer_size = sizeof(dp_buf); */
+#define AZ_IOT_ADU_DEVICE_PROPS_STORAGE(name) uint8_t name[AZ_IOT_ADU_DEVICE_PROPS_BUFFER_SIZE]
+
+/* Returns the exact number of bytes az_iot_adu_client_initialize() needs in
+ * device_props_buffer to cache `device_props` (a az_iot_adu_device_properties
+ * header plus the packed NUL-terminated strings). Use it to size the buffer
+ * precisely instead of the AZ_IOT_ADU_DEVICE_PROPS_BUFFER_SIZE default. Returns
+ * 0 if device_props is NULL. */
+AZ_NODISCARD size_t az_iot_adu_device_props_buffer_size(
+    const az_iot_adu_device_properties* device_props);
+
 /* --- Client struct -------------------------------------------------------- */
 
 /* NOTE: keeps the _t suffix. The vendored azure-sdk-for-c defines az_iot_adu_client

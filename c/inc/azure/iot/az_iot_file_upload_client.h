@@ -40,7 +40,9 @@ typedef void (*az_iot_file_upload_sas_callback)(
  */
 typedef void (*az_iot_file_upload_complete_callback)(az_iot_result status, void* user_ctx);
 
+#ifndef AZ_IOT_FILE_UPLOAD_MAX_PENDING
 #define AZ_IOT_FILE_UPLOAD_MAX_PENDING 4
+#endif
 
 typedef struct az_iot_file_upload_client
 {

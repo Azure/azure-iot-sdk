@@ -16,14 +16,23 @@
 extern "C" {
 #endif
 
-/* Storage bounds for the request handle (see az_iot_direct_method_request). */
+/* Storage bounds for the request handle (see az_iot_direct_method_request).
+ * Compile-time footprint knobs: #define before including to tune. */
+#ifndef AZ_IOT_DM_METHOD_NAME_MAX
 #define AZ_IOT_DM_METHOD_NAME_MAX 96
+#endif
+#ifndef AZ_IOT_DM_RID_MAX
 #define AZ_IOT_DM_RID_MAX         32
+#endif
+#ifndef AZ_IOT_DM_CORR_DATA_MAX
 #define AZ_IOT_DM_CORR_DATA_MAX   64
+#endif
 /* Max concurrent in-flight method requests one client can hold. Requests may
  * outlive the handler (the app can respond asynchronously), so they live in a
  * bounded pool inside this caller-allocated struct rather than on the heap. */
+#ifndef AZ_IOT_DM_MAX_INFLIGHT
 #define AZ_IOT_DM_MAX_INFLIGHT    4
+#endif
 
 typedef struct az_iot_direct_method_client az_iot_direct_method_client;
 

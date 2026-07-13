@@ -160,7 +160,7 @@ static void run_csr_enrollment(az_iot_certificate_managed_key_type key_type, con
     copts.dps.id_scope = id_scope;
     copts.dps.registration_id = reg_id;
     copts.certificate_provider = &provider.base;
-    uint8_t csr_buf[AZ_IOT_CSR_PAYLOAD_BUFFER_MIN];
+    AZ_IOT_CSR_PAYLOAD_STORAGE(csr_buf);
     copts.csr_payload_buffer = az_span_create(csr_buf, sizeof(csr_buf));
     copts.dps.request_operational_certificate = true;
     if (global != NULL)

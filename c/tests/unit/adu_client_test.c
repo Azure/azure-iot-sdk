@@ -900,6 +900,68 @@ static void device_props_too_small_is_rejected(void** state)
     az_iot_connection_client_destroy(&conn);
 }
 
+static void device_props_buffer_size_matches_need(void** state)
+{
+    fixture* fx = (fixture*)*state;
+    (void)fx;
+
+    assert_int_equal(az_iot_adu_device_props_buffer_size(NULL), 0);
+
+    az_iot_connection_client conn;
+    az_iot_twin_client twin;
+    az_iot_connection_client_options opts = {0};
+    opts.host = "broker.example";
+    opts.port = 8883;
+    opts.client_id = "ut-device3";
+    assert_int_equal(az_iot_connection_client_init(&conn, &opts), AZ_IOT_OK);
+    assert_int_equal(az_iot_twin_client_init(&twin, &conn), AZ_IOT_OK);
+
+    hook_log log = {0};
+    az_iot_adu_platform_hooks hooks = {0};
+    az_iot_adu_crypto_hooks crypto = {0};
+    hooks.install_fn = mock_install;
+    hooks.apply_fn = mock_apply;
+    hooks.user_ctx = &log;
+    crypto.verify_rs256_fn = mock_verify_rs256;
+    crypto.user_ctx = &log;
+
+    az_iot_adu_custom_property customs[] = { { "location", "building42" } };
+    az_iot_adu_device_properties dp = {0};
+    dp.manufacturer = "Contoso";
+    dp.model = "Foobar";
+    dp.installed_update_id.provider = "Contoso";
+    dp.installed_update_id.name = "Foobar";
+    dp.installed_update_id.version = "1.0";
+    dp.custom_properties = customs;
+    dp.custom_properties_count = 1;
+
+    size_t need = az_iot_adu_device_props_buffer_size(&dp);
+    assert_true(need > sizeof(az_iot_adu_device_properties));
+
+    uint8_t buf[256];
+    assert_true(need <= sizeof(buf));
+
+    az_iot_adu_client_options_t o = az_iot_adu_client_options_t_default();
+    o.hooks = &hooks;
+    o.crypto = &crypto;
+    o.device_props = &dp;
+    o.device_props_buffer = buf;
+
+    /* Exactly `need` bytes must succeed; one byte short must be rejected. */
+    az_iot_adu_client_t adu_ok;
+    o.device_props_buffer_size = need;
+    assert_int_equal(az_iot_adu_client_initialize(&adu_ok, &twin, &o), AZ_IOT_OK);
+    az_iot_adu_client_destroy(&adu_ok);
+
+    az_iot_adu_client_t adu_short;
+    o.device_props_buffer_size = need - 1;
+    assert_int_equal(
+        az_iot_adu_client_initialize(&adu_short, &twin, &o), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+
+    az_iot_twin_client_destroy(&twin);
+    az_iot_connection_client_destroy(&conn);
+}
+
 static void duplicate_redelivery_is_ignored(void** state)
 {
     fixture* fx = (fixture*)*state;
@@ -1073,6 +1135,7 @@ int main(void)
         cmocka_unit_test_setup_teardown(update_device_properties_sets_report_pending, setup, teardown),
         cmocka_unit_test_setup_teardown(custom_device_properties_are_reported, setup, teardown),
         cmocka_unit_test_setup_teardown(device_props_too_small_is_rejected, setup, teardown),
+        cmocka_unit_test_setup_teardown(device_props_buffer_size_matches_need, setup, teardown),
         cmocka_unit_test_setup_teardown(duplicate_redelivery_is_ignored, setup, teardown),
         cmocka_unit_test_setup_teardown(retry_with_newer_timestamp_restarts, setup, teardown),
         cmocka_unit_test_setup_teardown(replacement_with_new_id_restarts, setup, teardown),
