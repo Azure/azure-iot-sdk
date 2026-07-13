@@ -28,7 +28,7 @@ connection transitions. This creates three problems:
    register inbound handlers into the connection client's dispatch table. If the
    application destroys the connection client while a feature client still holds
    it, the next feature-client call dereferences freed memory.
-3. **Lossy diagnostics.** The single `az_iot_result_t reason` collapses MQTT,
+3. **Lossy diagnostics.** The single `az_iot_result reason` collapses MQTT,
    TLS, and socket failures into one SDK-level code, discarding the raw
    information an application needs for telemetry or recovery decisions.
 
@@ -52,20 +52,20 @@ The application **MUST NOT** be able to register as a feature client — the fla
 is set by the registration helper, never passed by the caller.
 
 ```c
-typedef void (*az_iot_connection_state_observer_cb)(
-    az_iot_connection_state_t   state,
-    const az_iot_conn_status_t* status,   /* never NULL; see §4 */
+typedef void (*az_iot_connection_state_observer_callback)(
+    az_iot_connection_state   state,
+    const az_iot_conn_status* status,   /* never NULL; see §4 */
     void*                       user_ctx);
 
 /* Public — application */
-az_iot_result_t az_iot_connection_client_add_state_observer(
-    az_iot_connection_client_t*, az_iot_connection_state_observer_cb, void* user_ctx);
-az_iot_result_t az_iot_connection_client_remove_state_observer(
-    az_iot_connection_client_t*, az_iot_connection_state_observer_cb, void* user_ctx);
+az_iot_result az_iot_connection_client_add_state_observer(
+    az_iot_connection_client*, az_iot_connection_state_observer_callback, void* user_ctx);
+az_iot_result az_iot_connection_client_remove_state_observer(
+    az_iot_connection_client*, az_iot_connection_state_observer_callback, void* user_ctx);
 
 /* Internal header — feature clients */
-az_iot_result_t az_iot_connection_client__add_state_observer(
-    az_iot_connection_client_t*, az_iot_connection_state_observer_cb, void* user_ctx);
+az_iot_result az_iot_connection_client__add_state_observer(
+    az_iot_connection_client*, az_iot_connection_state_observer_callback, void* user_ctx);
 ```
 
 ### 2.2 Dispatch ordering
@@ -122,7 +122,7 @@ Re-initializing a `deinit`'d struct **is NOT supported** and **MUST** be
 rejected via a poison magic field:
 
 ```c
-az_iot_result_t az_iot_connection_client_init(...) {
+az_iot_result az_iot_connection_client_init(...) {
     if (client->magic == AZ_IOT_CONN_MAGIC_ALIVE) return AZ_IOT_ERR_ALREADY_INITIALIZED;
     if (client->magic == AZ_IOT_CONN_MAGIC_DEAD)  return AZ_IOT_ERR_NOT_SUPPORTED; /* no reuse */
     ...
@@ -158,7 +158,7 @@ declared struct to `init`.
 
 ### 4.1 State enum (single enum)
 
-Lifecycle and connection state share one enum (`az_iot_connection_state_t`),
+Lifecycle and connection state share one enum (`az_iot_connection_state`),
 with a terminal lifecycle value:
 
 - `IDLE`, `CONNECTING`, `CONNECTED`, `RECONNECTING`, `DISCONNECTING`, `FAULTED`,
@@ -166,7 +166,7 @@ with a terminal lifecycle value:
 
 ### 4.2 Observer signature
 
-The bare `az_iot_result_t reason` is replaced by a status struct passed by const
+The bare `az_iot_result reason` is replaced by a status struct passed by const
 pointer (never NULL). The struct and any string it references are **valid only
 for the duration of the callback**; observers **MUST** copy anything they need to
 retain.
@@ -179,12 +179,12 @@ typedef struct
     /* SDK-level result of the operation that produced this status. This is the
      * normalized azure-iot-sdk return code (AZ_IOT_OK on success, or an
      * AZ_IOT_ERR_* value). Always populated. */
-    az_iot_result_t       result;
+    az_iot_result       result;
 
     /* WHY the transition/fault happened, as a stable high-level category
      * (see §4.4 taxonomy). Drives application decisions without requiring it to
      * decode raw protocol/transport codes. Always populated. */
-    az_iot_conn_reason_t  reason;
+    az_iot_conn_reason  reason;
 
     /* Client-computed hint: will the SDK keep trying on its own (true) or has it
      * given up / is this terminal (false)? Convenience derived from `reason`. */
@@ -192,7 +192,7 @@ typedef struct
 
     /* Which layer the fault originated in (CLIENT / TRANSPORT / TLS / SOCKET /
      * OTHER / NONE). Tells the application where to look; NONE on success. */
-    az_iot_error_source_t source;
+    az_iot_error_source source;
 
     /* Raw messaging-protocol reason code, verbatim from the transport protocol
      * (e.g. an MQTT CONNACK or DISCONNECT reason code). 0 when not applicable.
@@ -206,7 +206,7 @@ typedef struct
     /* Optional human-readable detail string. May be NULL. VALID ONLY for the
      * duration of the callback — copy it if you need to retain it. */
     const char*           message;
-} az_iot_conn_status_t;
+} az_iot_conn_status;
 ```
 
 - **`is_retriable`** — included. Derivable from `reason`, but it directly answers
@@ -223,7 +223,7 @@ typedef struct
       AZ_IOT_ERROR_SOURCE_TLS,       /* TLS handshake / cert validation */
       AZ_IOT_ERROR_SOURCE_SOCKET,    /* TCP / DNS / errno transport */
       AZ_IOT_ERROR_SOURCE_OTHER      /* BYO / third-party adapter, uncategorized */
-  } az_iot_error_source_t;
+  } az_iot_error_source;
   ```
   `TRANSPORT` (rather than `MQTT`) keeps the layer name protocol-agnostic for
   future non-MQTT transports. `OTHER` is needed because the SDK supports
@@ -236,7 +236,7 @@ typedef struct
 
 ### 4.4 Reason taxonomy
 
-`az_iot_conn_reason_t` distinguishes retriable vs. terminal causes:
+`az_iot_conn_reason` distinguishes retriable vs. terminal causes:
 
 | Reason | Typical `source` | `is_retriable` | Meaning |
 |---|---|---|---|
@@ -283,8 +283,8 @@ SDK collapsing them.
 ### Example 1 — minimal app: only cares about session availability
 
 ```c
-static void on_conn(az_iot_connection_state_t state,
-                    const az_iot_conn_status_t* status, void* ctx)
+static void on_conn(az_iot_connection_state state,
+                    const az_iot_conn_status* status, void* ctx)
 {
     (void)status;
     ((app_t*)ctx)->online = (state == AZ_IOT_CONN_STATE_CONNECTED);
@@ -294,8 +294,8 @@ static void on_conn(az_iot_connection_state_t state,
 ### Example 2 — reconnection-aware app: re-report on fresh session, log drops
 
 ```c
-static void on_conn(az_iot_connection_state_t state,
-                    const az_iot_conn_status_t* status, void* ctx)
+static void on_conn(az_iot_connection_state state,
+                    const az_iot_conn_status* status, void* ctx)
 {
     app_t* app = ctx;
     switch (state)
@@ -322,8 +322,8 @@ static void on_conn(az_iot_connection_state_t state,
 ### Example 3 — diagnostics-heavy app: decide whether to alert vs. wait
 
 ```c
-static void on_conn(az_iot_connection_state_t state,
-                    const az_iot_conn_status_t* status, void* ctx)
+static void on_conn(az_iot_connection_state state,
+                    const az_iot_conn_status* status, void* ctx)
 {
     app_t* app = ctx;
     if (state == AZ_IOT_CONN_STATE_CONNECTED) { app->online = true; return; }
@@ -356,8 +356,8 @@ static void on_conn(az_iot_connection_state_t state,
 ### Example 4 — teardown: only poison local state; never call back in
 
 ```c
-static void on_conn(az_iot_connection_state_t state,
-                    const az_iot_conn_status_t* status, void* ctx)
+static void on_conn(az_iot_connection_state state,
+                    const az_iot_conn_status* status, void* ctx)
 {
     (void)status;
     if (state == AZ_IOT_CONN_STATE_DEINITIALIZING)

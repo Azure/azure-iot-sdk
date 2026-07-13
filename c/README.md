@@ -69,8 +69,8 @@ To validate your own adapter, link against `az_iot_conformance` and call `az_iot
 The suite needs a reachable MQTT broker; configure via:
 
 ```sh
-export az_iot_MQTT_BROKER_HOST=localhost
-export az_iot_MQTT_BROKER_PORT=1883
+export AZ_IOT_MQTT_BROKER_HOST=localhost
+export AZ_IOT_MQTT_BROKER_PORT=1883
 ctest --preset linux-gcc-debug --output-on-failure -R conformance
 ```
 
@@ -94,21 +94,21 @@ pem.client_key_pem_path  = getenv("AZ_IOT_CLIENT_KEY");
 az_iot_certificate_provider_pem cm;
 az_iot_certificate_provider_pem_init(&cm, &pem);
 
-az_iot_easy_options_t opts = {
+az_iot_easy_options opts = {
     .host = getenv("AZ_IOT_HOST"), .port = 8883,
     .client_id = getenv("AZ_IOT_DEVICE_ID"), .certificate_provider = &cm.base,
     .reconnect = { .initial_delay_ms = 500, .max_delay_ms = 10000, .jitter_pct = 25 },
 };
-az_iot_easy_client_t* easy = NULL;
+az_iot_easy_client* easy = NULL;
 az_iot_easy_client_create(&opts, &easy);
 
-az_iot_mqtt_factory_t* paho = az_iot_paho_factory_create_v3_1_1();
+az_iot_mqtt_factory* paho = az_iot_paho_factory_create_v3_1_1();
 az_iot_easy_client_register_mqtt_factory(easy, paho);
 
 az_iot_easy_client_open_sync(easy, 30000);
 
 const char* body = "{\"hello\":\"world\"}";
-az_iot_telemetry_message_t msg = {
+az_iot_telemetry_message msg = {
     .payload = (const uint8_t*)body, .payload_len = strlen(body),
     .content_type = "application/json",
 };
@@ -117,7 +117,7 @@ az_iot_easy_client_send_telemetry_sync(easy, &msg, 5000);
 az_iot_easy_client_close_sync(easy, 5000);
 az_iot_easy_client_destroy(easy);
 az_iot_paho_factory_destroy(paho);
-az_iot_certificate_provider_pem_deinit(&cm);
+az_iot_certificate_provider_pem_destroy(&cm);
 ```
 
 The full source is in [samples/telemetry_quickstart/main.c](samples/telemetry_quickstart/main.c).

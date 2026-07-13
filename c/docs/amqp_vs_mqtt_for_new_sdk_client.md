@@ -59,7 +59,7 @@ Data drawn from the existing Azure IoT C SDK (`azure-iot-sdk-c`):
 
 The new client's architecture is **MQTT-native by design**:
 
-- The adapter vtable (`az_iot_mqtt_iface_t`) exposes `connect`, `subscribe`, `publish`, `process_loop` — MQTT semantics.
+- The adapter vtable (`az_iot_mqtt_iface`) exposes `connect`, `subscribe`, `publish`, `process_loop` — MQTT semantics.
 - Topic-based dispatch routes inbound messages by parsing MQTT topic strings.
 - Adding AMQP would require:
   1. A **parallel adapter interface** (link/session/sender/receiver semantics don't map to pub/sub).

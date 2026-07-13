@@ -32,18 +32,18 @@
 <span style="color: #6a9955;">// ─── Application State (all SDK objects in one struct) ───────</span>
 <span style="color: #0000ff;">typedef struct</span> {
     sample_config_t             config;
-    az_iot_certificate_provider_pem_t certs;          <span style="color: #6a9955;">// X.509 cert provider</span>
-    az_iot_connection_client_t  connection_client;    <span style="color: #6a9955;">// DPS + Hub connection</span>
-    az_iot_telemetry_client_t   telemetry_client;    <span style="color: #6a9955;">// telemetry sender</span>
+    az_iot_certificate_provider_pem certs;          <span style="color: #6a9955;">// X.509 cert provider</span>
+    az_iot_connection_client  connection_client;    <span style="color: #6a9955;">// DPS + Hub connection</span>
+    az_iot_telemetry_client   telemetry_client;    <span style="color: #6a9955;">// telemetry sender</span>
 } sample_state_t;
 
 <span style="color: #6a9955;">// ─── Callbacks (simple, typed) ───────────────────────────────</span>
-<span style="color: #0000ff;">static void</span> <span style="color: #795e26;">on_conn_state</span>(az_iot_connection_state_t s, az_iot_result_t reason, <span style="color: #0000ff;">void</span>* ctx)
+<span style="color: #0000ff;">static void</span> <span style="color: #795e26;">on_conn_state</span>(az_iot_connection_state s, az_iot_result reason, <span style="color: #0000ff;">void</span>* ctx)
 {   <span style="color: #6a9955;">// Just store the new state — 3 lines total</span>
     ((user_context_t*)ctx)-&gt;conn_state = s;
 }
 
-<span style="color: #0000ff;">static void</span> <span style="color: #795e26;">on_send_done</span>(az_iot_result_t status, <span style="color: #0000ff;">void</span>* ctx)
+<span style="color: #0000ff;">static void</span> <span style="color: #795e26;">on_send_done</span>(az_iot_result status, <span style="color: #0000ff;">void</span>* ctx)
 {   <span style="color: #6a9955;">// Delivery confirmation — 2 lines</span>
     ((user_context_t*)ctx)-&gt;send_status = status;
     ((user_context_t*)ctx)-&gt;send_done = <span style="color: #098658;">1</span>;
@@ -82,7 +82,7 @@
         az_iot_connection_client_do_work(&amp;conn, <span style="color: #098658;">50</span>);
 
     <span style="color: #6a9955;">// ─── Step 6: Send telemetry ──────────────────────────────</span>
-    az_iot_telemetry_message_t msg = {
+    az_iot_telemetry_message msg = {
         .payload = <span style="color: #a31515;">"{\"temp\":23}"</span>, .payload_len = <span style="color: #098658;">11</span>,
         .properties = props, .properties_count = <span style="color: #098658;">1</span> };
     az_iot_telemetry_client_send(&amp;telemetry, &amp;msg, on_send_done, &amp;ctx);
@@ -295,7 +295,7 @@ device_ll = ...CreateFromDeviceAuth(ctx.uri, ctx.id, tp);<br>
 <tr>
 <td style="padding: 8px 12px; vertical-align: top; border-right: 1px solid #e0e0e0; font-family: Consolas, monospace; font-size: 11px; background: #fafafa;">
 <span style="color: #6a9955;">// Build message struct directly (stack)</span><br>
-az_iot_telemetry_message_t msg = {<br>
+az_iot_telemetry_message msg = {<br>
 &nbsp;&nbsp;.payload = <span style="color: #a31515;">"{\"temp\":23}"</span>,<br>
 &nbsp;&nbsp;.payload_len = 11,<br>
 &nbsp;&nbsp;.properties = props,<br>
@@ -445,7 +445,7 @@ IoTHub_Deinit();
 <!-- Error handling pattern -->
 <tr>
 <td style="padding: 8px 12px; font-weight: 600; background: #f4f4f4; border-right: 1px solid #e0e0e0;">Error Handling</td>
-<td style="padding: 8px 12px; border-right: 1px solid #e0e0e0;"><span style="color: #107c10; font-weight: 600;">&#10003;</span> Consistent <code>az_iot_result_t</code> return + typed callback status</td>
+<td style="padding: 8px 12px; border-right: 1px solid #e0e0e0;"><span style="color: #107c10; font-weight: 600;">&#10003;</span> Consistent <code>az_iot_result</code> return + typed callback status</td>
 <td style="padding: 8px 12px;"><span style="color: #c19c00; font-weight: 600;">~</span> Multiple enum types (<code>PROV_DEVICE_RESULT</code>, <code>IOTHUB_CLIENT_RESULT</code>, <code>IOTHUB_CLIENT_CONFIRMATION_RESULT</code>)</td>
 </tr>
 

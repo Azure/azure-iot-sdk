@@ -15,15 +15,15 @@ Canonical pending-work tracker for IoT Hub Next (AEG) integration.
 
 ## Phase 2: Protocol Profile for Next
 
-- [x] Extend `az_iot_protocol_profile_t` with Next-specific fields
+- [x] Extend `az_iot_protocol_profile` with Next-specific fields
 - [x] Implement `s_profile_next` in `protocol_profile.c`
 - [ ] Unit test: `profile_for_hub_next_role_is_next`
 
 ## Phase 3: MQTT v5 Properties in Adapter Interface
 
-- [x] Add `az_iot_mqtt_user_property_t` type to `az_iot_mqtt_iface.h`
-- [x] Extend `az_iot_mqtt_message_t` with typed user_properties array
-- [x] Extend inbound `az_iot_mqtt_event_t` (done — piggybacks on message_t)
+- [x] Add `az_iot_mqtt_user_property` type to `az_iot_mqtt_iface.h`
+- [x] Extend `az_iot_mqtt_message` with typed user_properties array
+- [x] Extend inbound `az_iot_mqtt_event` (done — piggybacks on message)
 - [ ] Update Paho v5 adapter to set v5 User Properties on outbound PUBLISH
 - [ ] Update Paho v5 adapter to extract User Properties from inbound MESSAGE events
 - [ ] Wire `session_present` from CONNACK into `EVT_CONNECTED` event

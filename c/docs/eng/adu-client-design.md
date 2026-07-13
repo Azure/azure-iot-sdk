@@ -1569,7 +1569,7 @@ target_link_libraries(az_iot_adu
 [docs/eng/connection-state-and-error-propagation.md](connection-state-and-error-propagation.md)):
 - Replace the single `set_state_callback` with the shared observer registry
   (public + internal registration, two-pass dispatch, compile-time capacity).
-- `az_iot_conn_status_t` + `az_iot_conn_reason_t` + `az_iot_error_source_t`; wire
+- `az_iot_conn_status` + `az_iot_conn_reason` + `az_iot_error_source`; wire
   `protocol_code`/`transport_code` from the MQTT iface.
 - Lifecycle guards: `DEINITIALIZING` notification, poison-magic re-init guard,
   `AZ_IOT_ERR_DETACHED`, feature-client self-detach.
@@ -1583,7 +1583,7 @@ target_link_libraries(az_iot_adu
 - Extend `az_iot_twin_client` with the desired-property subscriber registry
   (public + internal registration, two-pass dispatch, compile-time capacity,
   reentrancy guard); remove `set_desired_callback`.
-- `az_iot_adu_client_t` struct, init/deinit, do_work.
+- `az_iot_adu_client_t` struct, init/destroy, do_work.
 - Device-properties cache (deep-copied struct + `update_device_properties()`),
   startup/reconnect/manual reporting, feature-client state observer registration.
 - State machine (all transitions, cancellation, error handling, multi-step iteration).

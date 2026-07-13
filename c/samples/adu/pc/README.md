@@ -235,7 +235,7 @@ keys. The sample calls `az_iot_adu_microsoft_root_keys()` — Microsoft's publis
 ADU production roots, compiled into the SDK (`src/features/adu/adu_root_keys_microsoft.c`)
 — so updates imported through the real Device Update service (which signs every
 manifest with Microsoft's signing service) verify with no extra setup. To accept
-updates signed by your **own** root instead, build your own `az_iot_adu_root_key_t`
+updates signed by your **own** root instead, build your own `az_iot_adu_root_key`
 array and pass it to `az_iot_adu_client_initialize()` in place of the Microsoft keys.
 
 ### What the scripts do
