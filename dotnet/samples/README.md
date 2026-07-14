@@ -17,7 +17,6 @@ Before running this sample, you simply need to enter your service-side DPS + Hub
     // Fake credentials for demonstration purposes only
     public static string DpsConnectionString = "HostName=Some-Fake-DPS-Hostname.azure-devices-provisioning.net;SharedAccessKeyName=provisioningserviceowner;SharedAccessKey=XXXXXXXXXXX";
     public static string DpsIdScope = "0ne12345678";
-    public static string IotHubHostName = "Some-Fake-IoT-Hub-Hostname.azure-devices.net";
 ```
 
 Once you edit the above section, run the sample from this directory with:

@@ -21,7 +21,6 @@ namespace SetupSampleDevice
             try
             {
                 File.Delete(outputPath + "deviceId.txt");
-                File.Delete(outputPath + "hostname.txt");
                 File.Delete(outputPath + "idscope.txt");
                 File.Delete(outputPath + "certificate.cer");
                 File.Delete(outputPath + "certificate.pfx");
@@ -35,11 +34,6 @@ namespace SetupSampleDevice
         public static void SaveDeviceId(string deviceId)
         {
             File.WriteAllText(outputPath + "deviceId.txt", deviceId);
-        }
-
-        public static void SaveHostname(string hostname)
-        {
-            File.WriteAllText(outputPath + "hostname.txt", hostname);
         }
 
         public static void SaveIdScope(string idScope)
