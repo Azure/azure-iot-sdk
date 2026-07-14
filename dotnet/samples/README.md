@@ -28,6 +28,8 @@ dotnet run --project SetupSampleDevice --property WarningLevel=0
 
 This sample can be run again to delete the previous credentials and create a new device and new credentials.
 
+Alternatively, you may run the [bug bash setup script](../../bugbash/INSTRUCTIONS.md) to generate all the device credentials needed to run the device samples
+
 ### How to run the device samples
 
 By running the above sample, you should see a set of credential files saved at the root of this samples directory like "deviceId.txt", "certificate.pfx", and more. Once you have those, all you need to do is run a command from this directory like:
