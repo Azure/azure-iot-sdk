@@ -1011,16 +1011,16 @@ static void on_initial_twin_get(
 /* lifecycle                                                                 */
 /* ------------------------------------------------------------------------- */
 
-az_iot_adu_client_options_t az_iot_adu_client_options_t_default(void)
+az_iot_adu_client_config_options az_iot_adu_client_config_options_default(void)
 {
-    az_iot_adu_client_options_t opts = { 0 };
+    az_iot_adu_client_config_options opts = { 0 };
     return opts;
 }
 
 az_iot_result az_iot_adu_client_initialize(
     az_iot_adu_client_t* client,
     az_iot_twin_client* twin,
-    const az_iot_adu_client_options_t* options)
+    const az_iot_adu_client_config_options* options)
 {
     if (client == NULL || twin == NULL || options == NULL || options->hooks == NULL ||
         options->crypto == NULL || options->device_props == NULL ||
@@ -1137,7 +1137,7 @@ void az_iot_adu_client_destroy(az_iot_adu_client_t* client)
 #define AZ_IOT_ADU_PERSIST_TRAILER_FIXED 24u
 /* Upper bound on the whole v2 trailer + crc, used to size the persist scratch. */
 #define AZ_IOT_ADU_PERSIST_TRAILER_MAX \
-    (AZ_IOT_ADU_PERSIST_TRAILER_FIXED + (uint32_t)(_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS) * 8u + 4u)
+    (AZ_IOT_ADU_PERSIST_TRAILER_FIXED + ((uint32_t)(_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS) * 8u) + 4u)
 
 /* The per-instance persist_scratch (AZ_IOT_ADU_PERSIST_BLOB_SIZE, in the client
  * struct) must hold the largest serialized blob: header + full request buffer +

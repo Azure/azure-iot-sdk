@@ -344,10 +344,10 @@ int main(void)
      * long-running sample recovers transparently from transient drops (e.g.
      * a duplicate-connection eviction or a network blip) while it waits for a
      * deployment. initial_delay_ms > 0 is what arms the reconnect machinery. */
-    copts.reconnect.initial_delay_ms = 2000;     /* first retry after 2s */
-    copts.reconnect.max_delay_ms     = 60000;    /* cap backoff at 60s */
-    copts.reconnect.max_attempts     = 0;        /* 0 = retry forever */
-    copts.reconnect.jitter_pct       = 20;       /* +/-20% jitter */
+    copts.reconnection_policy.initial_delay_ms = 2000;     /* first retry after 2s */
+    copts.reconnection_policy.max_delay_ms     = 60000;    /* cap backoff at 60s */
+    copts.reconnection_policy.max_attempts     = 0;        /* 0 = retry forever */
+    copts.reconnection_policy.jitter_pct       = 20;       /* +/-20% jitter */
     if (az_iot_connection_client_init(&st.connection_client, &copts) != AZ_IOT_OK)
     {
         sample_state_destroy(&st);
@@ -403,7 +403,7 @@ int main(void)
     dp.custom_properties = customs;
     dp.custom_properties_count = sizeof(customs) / sizeof(customs[0]);
 
-    az_iot_adu_client_options_t adu_opts = az_iot_adu_client_options_t_default();
+    az_iot_adu_client_config_options adu_opts = az_iot_adu_client_config_options_default();
     adu_opts.hooks = &hooks;
     adu_opts.crypto = &crypto;
     adu_opts.root_keys = root_keys;

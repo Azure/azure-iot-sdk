@@ -440,7 +440,7 @@ static void adu_agent_init(adu_agent* a)
     dp.installed_update_id.name = "Foobar";
     dp.installed_update_id.version = "1.0";
 
-    az_iot_adu_client_options_t adu_opts = az_iot_adu_client_options_t_default();
+    az_iot_adu_client_config_options adu_opts = az_iot_adu_client_config_options_default();
     adu_opts.hooks = &hooks;
     adu_opts.crypto = &crypto;
     adu_opts.root_keys = k_root_keys;

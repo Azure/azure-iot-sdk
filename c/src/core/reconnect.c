@@ -35,7 +35,7 @@ static uint64_t xorshift64(uint64_t* s)
 }
 
 uint32_t az_iot_reconnect_delay_ms(
-    const az_iot_reconnect_policy* policy,
+    const az_iot_reconnection_policy* policy,
     uint32_t attempt,
     uint64_t* rng_state)
 {
@@ -68,4 +68,15 @@ uint32_t az_iot_reconnect_delay_ms(
     if (result < 1) result = 1;
     if ((uint64_t)result > (uint64_t)cap) result = (int64_t)cap;
     return (uint32_t)result;
+}
+
+az_iot_reconnection_policy az_iot_reconnection_policy_default(void)
+{
+    az_iot_reconnection_policy p = {
+        .initial_delay_ms = 1000u,   /* first retry after 1s           */
+        .max_delay_ms     = 30000u,  /* cap exponential backoff at 30s */
+        .max_attempts     = 0u,      /* 0 = retry forever              */
+        .jitter_pct       = 20u,     /* +/-20% randomization            */
+    };
+    return p;
 }

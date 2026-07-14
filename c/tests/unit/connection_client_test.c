@@ -109,10 +109,10 @@ static int setup_with_reconnect(void** state)
     opts.host = "broker.example";
     opts.port = 8883;
     opts.client_id = "ut-device";
-    opts.reconnect.initial_delay_ms = 20;
-    opts.reconnect.max_delay_ms     = 20;
-    opts.reconnect.max_attempts     = 2;
-    opts.reconnect.jitter_pct       = 0;
+    opts.reconnection_policy.initial_delay_ms = 20;
+    opts.reconnection_policy.max_delay_ms     = 20;
+    opts.reconnection_policy.max_attempts     = 2;
+    opts.reconnection_policy.jitter_pct       = 0;
     assert_int_equal(az_iot_connection_client_init(&fx->client_storage, &opts), AZ_IOT_OK);
     fx->client = &fx->client_storage;
     assert_int_equal(az_iot_connection_client_set_state_callback(fx->client, on_state, &fx->rec),

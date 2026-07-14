@@ -290,15 +290,16 @@ typedef struct az_iot_adu_root_key
 
 /* --- Device properties (plain struct, deep-copied by the client) --------- */
 
-/* NOTE: keeps the _t suffix. The vendored azure-sdk-for-c defines a type of the
- * same base name (az_iot_adu_update_id) that this header pulls in via
- * <azure/iot/az_iot_adu_client.h>, so our type must stay distinct. */
-typedef struct az_iot_adu_update_id_t
+/* NOTE: the `_info` suffix is deliberate. The vendored azure-sdk-for-c already
+ * defines a type of the base name az_iot_adu_update_id, pulled in here via
+ * <azure/iot/az_iot_adu_client.h>; `_info` keeps this device-facing struct
+ * distinct from the upstream type without resorting to a bare `_t` tag. */
+typedef struct az_iot_adu_update_id_info
 {
     const char* provider;
     const char* name;
     const char* version;
-} az_iot_adu_update_id_t;
+} az_iot_adu_update_id_info;
 
 typedef struct az_iot_adu_custom_property
 {
@@ -316,13 +317,13 @@ typedef struct az_iot_adu_device_properties
 {
     const char*                         manufacturer;
     const char*                         model;
-    az_iot_adu_update_id_t              installed_update_id;
+    az_iot_adu_update_id_info           installed_update_id;
     const az_iot_adu_custom_property* custom_properties;       /* caller's array, MAY be NULL */
     size_t                              custom_properties_count;
 } az_iot_adu_device_properties;
 
 /* Default size (bytes) for the caller-owned device-properties cache buffer set
- * in az_iot_adu_client_options_t. Override before including if your device
+ * in az_iot_adu_client_config_options. Override before including if your device
  * properties (manufacturer/model/update-id/custom props) are larger, or size a
  * buffer exactly with az_iot_adu_device_props_buffer_size(). */
 #ifndef AZ_IOT_ADU_DEVICE_PROPS_BUFFER_SIZE
@@ -330,7 +331,7 @@ typedef struct az_iot_adu_device_properties
 #endif
 
 /* Declares a device-properties cache buffer named `name`, sized by
- * AZ_IOT_ADU_DEVICE_PROPS_BUFFER_SIZE, for az_iot_adu_client_options_t:
+ * AZ_IOT_ADU_DEVICE_PROPS_BUFFER_SIZE, for az_iot_adu_client_config_options:
  *   AZ_IOT_ADU_DEVICE_PROPS_STORAGE(dp_buf);
  *   opts.device_props_buffer = dp_buf;
  *   opts.device_props_buffer_size = sizeof(dp_buf); */
@@ -437,14 +438,16 @@ typedef struct az_iot_adu_client_t
 
 /**
  * Configuration for az_iot_adu_client_initialize(). Obtain a zero-initialized
- * instance from az_iot_adu_client_options_t_default() and set the required
+ * instance from az_iot_adu_client_config_options_default() and set the required
  * fields before calling initialize.
  *
- * NOTE: named with the `_t` suffix (like az_iot_adu_client_t) to avoid colliding
- * with azure-sdk-for-c's own az_iot_adu_client_options, which is visible here
- * because the platform-hook signatures use upstream parsing types.
+ * NOTE: named az_iot_adu_client_config_options (not ..._options) to avoid
+ * colliding with azure-sdk-for-c's own az_iot_adu_client_options, which is
+ * visible here because the platform-hook signatures use upstream parsing types.
+ * The `config_` qualifier keeps our configuration struct distinct without a
+ * bare `_t` tag.
  */
-typedef struct az_iot_adu_client_options_t
+typedef struct az_iot_adu_client_config_options
 {
     /* Platform operations (download/install/apply/...). MUST be non-NULL. */
     const az_iot_adu_platform_hooks* hooks;
@@ -464,13 +467,12 @@ typedef struct az_iot_adu_client_options_t
      * allocation; the buffer MUST outlive the client. MUST be non-NULL. */
     uint8_t* device_props_buffer;
     size_t   device_props_buffer_size;
-} az_iot_adu_client_options_t;
+} az_iot_adu_client_config_options;
 
 /* Returns an options struct with all fields zero-initialized. Set hooks, crypto,
  * root_keys/root_key_count, device_props and device_props_buffer/size on the
- * returned struct before passing it to az_iot_adu_client_initialize(). (The
- * `_t_default` spelling mirrors the `_t`-suffixed type; see the note above.) */
-AZ_NODISCARD az_iot_adu_client_options_t az_iot_adu_client_options_t_default(void);
+ * returned struct before passing it to az_iot_adu_client_initialize(). */
+AZ_NODISCARD az_iot_adu_client_config_options az_iot_adu_client_config_options_default(void);
 
 /**
  * Initialize the ADU client.
@@ -478,7 +480,7 @@ AZ_NODISCARD az_iot_adu_client_options_t az_iot_adu_client_options_t_default(voi
  *   twin: an initialized twin client; the ADU client registers as a
  *     feature-client desired-property subscriber.
  *   options: configuration (hooks, crypto, trust store, device properties and
- *     the caller-owned cache); see az_iot_adu_client_options_t. Returns
+ *     the caller-owned cache); see az_iot_adu_client_config_options. Returns
  *     AZ_IOT_ERR_INVALID_ARG if any required field is NULL,
  *     AZ_IOT_ERR_NOT_ENOUGH_SPACE if root_key_count exceeds
  *     AZ_IOT_ADU_MAX_ROOT_KEYS or the buffer is too small for device_props.
@@ -490,7 +492,7 @@ AZ_NODISCARD az_iot_adu_client_options_t az_iot_adu_client_options_t_default(voi
 AZ_NODISCARD az_iot_result az_iot_adu_client_initialize(
     az_iot_adu_client_t* client,
     az_iot_twin_client* twin,
-    const az_iot_adu_client_options_t* options);
+    const az_iot_adu_client_config_options* options);
 
 /**
  * Return Microsoft's compiled-in ADU root public keys (const, static storage).

@@ -119,10 +119,10 @@ void app_main(void)
     copts.dps.registration_id = CONFIG_ADU_DPS_REGISTRATION_ID;
     copts.certificate_provider = &certs.base;
     copts.model_id = "dtmi:azure:iot:deviceUpdateContractModel;2";
-    copts.reconnect.initial_delay_ms = 2000;
-    copts.reconnect.max_delay_ms     = 60000;
-    copts.reconnect.max_attempts     = 0;   /* retry forever */
-    copts.reconnect.jitter_pct       = 20;
+    copts.reconnection_policy.initial_delay_ms = 2000;
+    copts.reconnection_policy.max_delay_ms     = 60000;
+    copts.reconnection_policy.max_attempts     = 0;   /* retry forever */
+    copts.reconnection_policy.jitter_pct       = 20;
 
     az_iot_connection_client conn;
     if (az_iot_connection_client_init(&conn, &copts) != AZ_IOT_OK)
@@ -167,7 +167,7 @@ void app_main(void)
 
     static AZ_IOT_ADU_DEVICE_PROPS_STORAGE(dp_buffer);
     az_iot_adu_client_t adu;
-    az_iot_adu_client_options_t adu_opts = az_iot_adu_client_options_t_default();
+    az_iot_adu_client_config_options adu_opts = az_iot_adu_client_config_options_default();
     adu_opts.hooks = &hooks;
     adu_opts.crypto = &crypto;
     adu_opts.root_keys = root_keys;

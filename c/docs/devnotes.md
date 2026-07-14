@@ -143,7 +143,7 @@ _Captured from conversation as the C99 client repo was being scaffolded. Each bu
 - Reconnect (backoff + jitter), certificate_provider / X.509 plumbing, and the `protocol_profile` dispatch table for feature clients are deferred to Phase 2.2 / 2.3.
 
 ### Reconnect (Phase 2.2)
-- Reconnect is **opt-in**: enabled when `opts.reconnect.initial_delay_ms > 0`. Zero-policy means a peer drop or CONNACK failure terminates the session (`IDLE` for clean disconnect, `FAULTED` for failure).
+- Reconnect is **opt-in**: enabled when `opts.reconnection_policy.initial_delay_ms > 0`. Zero-policy means a peer drop or CONNACK failure terminates the session (`IDLE` for clean disconnect, `FAULTED` for failure).
 - When enabled:
   - Unexpected `EVT_DISCONNECTED`, failed `EVT_CONNECTED`, and inbound `EVT_ERROR` schedule a reconnect attempt instead of terminating.
   - User-initiated `close()` is honoured regardless: if we're in `RECONNECTING`, the schedule is cancelled and we go straight to `IDLE`.

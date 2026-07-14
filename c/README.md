@@ -97,7 +97,7 @@ az_iot_certificate_provider_pem_init(&cm, &pem);
 az_iot_easy_options opts = {
     .host = getenv("AZ_IOT_HOST"), .port = 8883,
     .client_id = getenv("AZ_IOT_DEVICE_ID"), .certificate_provider = &cm.base,
-    .reconnect = { .initial_delay_ms = 500, .max_delay_ms = 10000, .jitter_pct = 25 },
+    .reconnection_policy = { .initial_delay_ms = 500, .max_delay_ms = 10000, .jitter_pct = 25 },
 };
 az_iot_easy_client* easy = NULL;
 az_iot_easy_client_create(&opts, &easy);

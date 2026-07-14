@@ -19,7 +19,7 @@
  * do_work()); the adapter is responsible for marshalling its own background
  * thread events into that callback.
  *
- * Reconnect (Phase 2.2): when opts.reconnect is enabled
+ * Reconnect (Phase 2.2): when opts.reconnection_policy is enabled
  * (initial_delay_ms > 0), unexpected drops (CONNACK fail, peer DISCONNECT,
  * inbound ERROR) transition to RECONNECTING; do_work() then re-opens after the
  * computed backoff (with jitter). User-initiated close() always goes to IDLE
@@ -100,7 +100,7 @@ const char* az_iot_mqtt_role_to_string(az_iot_mqtt_role r)
 
 static bool reconnect_enabled(const az_iot_connection_client* c)
 {
-    return c->opts.reconnect.initial_delay_ms > 0;
+    return c->opts.reconnection_policy.initial_delay_ms > 0;
 }
 
 static void transition(az_iot_connection_client* c,
@@ -157,15 +157,15 @@ static void schedule_reconnect(az_iot_connection_client* c, az_iot_result reason
     teardown_active(c);
     c->reconnect_attempt++;
 
-    if (c->opts.reconnect.max_attempts > 0 &&
-        c->reconnect_attempt > c->opts.reconnect.max_attempts)
+    if (c->opts.reconnection_policy.max_attempts > 0 &&
+        c->reconnect_attempt > c->opts.reconnection_policy.max_attempts)
     {
         transition(c, AZ_IOT_CONN_STATE_FAULTED, reason);
         return;
     }
 
     uint32_t delay = az_iot_reconnect_delay_ms(
-        &c->opts.reconnect, c->reconnect_attempt, &c->rng_state);
+        &c->opts.reconnection_policy, c->reconnect_attempt, &c->rng_state);
     c->reconnect_due_ms = az_iot_time_mono_ms() + delay;
     transition(c, AZ_IOT_CONN_STATE_RECONNECTING, reason);
 }
@@ -610,9 +610,9 @@ static void dps_apply_deferred(az_iot_connection_client* c)
 
     /* Apply the assigned hub + device_id and connect to the hub. */
     az_iot_result r;
-    r = replace_owned_string(c->owned_host, sizeof(c->owned_host), &c->opts.host, c->dps_assigned_hub);
+    r = replace_owned_string(c->provisioned_iot_hub_hostname, sizeof(c->provisioned_iot_hub_hostname), &c->opts.host, c->dps_assigned_hub);
     if (r != AZ_IOT_OK) { transition(c, AZ_IOT_CONN_STATE_FAULTED, r); return; }
-    r = replace_owned_string(c->owned_client_id, sizeof(c->owned_client_id), &c->opts.client_id, c->dps_assigned_device_id);
+    r = replace_owned_string(c->provisioned_device_id, sizeof(c->provisioned_device_id), &c->opts.client_id, c->dps_assigned_device_id);
     if (r != AZ_IOT_OK) { transition(c, AZ_IOT_CONN_STATE_FAULTED, r); return; }
     c->session_role = AZ_IOT_MQTT_ROLE_HUB_CLASSIC;
     c->dps_phase = DPS_PHASE_NONE;
@@ -932,11 +932,11 @@ static az_iot_result apply_mock_next_bypass(az_iot_connection_client* c)
     char host[256];
     uint16_t port = parse_host_port(endpoint, host, sizeof(host));
 
-    az_iot_result r = replace_owned_string(c->owned_host, sizeof(c->owned_host), &c->opts.host, host);
+    az_iot_result r = replace_owned_string(c->provisioned_iot_hub_hostname, sizeof(c->provisioned_iot_hub_hostname), &c->opts.host, host);
     if (r == AZ_IOT_OK)
     {
         c->opts.port = port;
-        r = replace_owned_string(c->owned_client_id, sizeof(c->owned_client_id), &c->opts.client_id, device_id);
+        r = replace_owned_string(c->provisioned_device_id, sizeof(c->provisioned_device_id), &c->opts.client_id, device_id);
     }
     if (r == AZ_IOT_OK)
     {
@@ -998,7 +998,7 @@ az_iot_result az_iot_connection_client_init(
         if (dev_id && dev_id[0])
         {
             (void)replace_owned_string(
-                client->owned_client_id, sizeof(client->owned_client_id), &client->opts.client_id, dev_id);
+                client->provisioned_device_id, sizeof(client->provisioned_device_id), &client->opts.client_id, dev_id);
         }
 #ifdef _WIN32
         free(id_buf);
@@ -1026,7 +1026,7 @@ void az_iot_connection_client_destroy(az_iot_connection_client* client)
         if (client->factories[i].destroy)
             client->factories[i].destroy(client->factories[i].factory_ctx);
     }
-    /* owned_host / owned_client_id are inline fixed buffers; nothing to free. */
+    /* provisioned_iot_hub_hostname / provisioned_device_id are inline fixed buffers; nothing to free. */
 }
 
 az_iot_result az_iot_connection_client_register_mqtt_factory(
@@ -1275,7 +1275,7 @@ az_iot_result az_iot_connection_client__set_host(
 {
     if (!client) return AZ_IOT_ERR_INVALID_ARG;
     if (client->state != AZ_IOT_CONN_STATE_IDLE) return AZ_IOT_ERR_ALREADY_INITIALIZED;
-    return replace_owned_string(client->owned_host, sizeof(client->owned_host), &client->opts.host, host);
+    return replace_owned_string(client->provisioned_iot_hub_hostname, sizeof(client->provisioned_iot_hub_hostname), &client->opts.host, host);
 }
 
 az_iot_result az_iot_connection_client__set_client_id(
@@ -1283,7 +1283,7 @@ az_iot_result az_iot_connection_client__set_client_id(
 {
     if (!client) return AZ_IOT_ERR_INVALID_ARG;
     if (client->state != AZ_IOT_CONN_STATE_IDLE) return AZ_IOT_ERR_ALREADY_INITIALIZED;
-    return replace_owned_string(client->owned_client_id, sizeof(client->owned_client_id), &client->opts.client_id, client_id);
+    return replace_owned_string(client->provisioned_device_id, sizeof(client->provisioned_device_id), &client->opts.client_id, client_id);
 }
 
 void az_iot_connection_client__seed_rng(

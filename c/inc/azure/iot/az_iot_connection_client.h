@@ -25,13 +25,18 @@ extern "C" {
  * It is learned from DPS at provisioning time and the SDK selects the
  * appropriate MQTT version (v3.1.1 for Classic, v5 for Next) internally. */
 
-typedef struct az_iot_reconnect_policy
+typedef struct az_iot_reconnection_policy
 {
     uint32_t initial_delay_ms;
     uint32_t max_delay_ms;
     uint32_t max_attempts;             /* 0 = infinite */
     uint8_t  jitter_pct;               /* 0..100 */
-} az_iot_reconnect_policy;
+} az_iot_reconnection_policy;
+
+/* Returns a reasonable default reconnection policy: 1s initial delay, 30s max
+ * backoff, infinite attempts, 20% jitter. Assign it to
+ * az_iot_connection_client_options.reconnection_policy, then override as needed. */
+az_iot_reconnection_policy az_iot_reconnection_policy_default(void);
 
 /* Recommended minimum size (bytes) for opts.csr_payload_buffer: enough to build
  * the largest CSR request body {"id":...,"csr":<base64>,"replace":...} for the
@@ -56,7 +61,7 @@ typedef struct az_iot_connection_client_options
                                         * device; e.g.
                                         * "dtmi:azure:iot:deviceUpdateContractModel;2". */
     az_iot_certificate_provider* certificate_provider; /* required for X.509 auth */
-    az_iot_reconnect_policy reconnect;
+    az_iot_reconnection_policy reconnection_policy;
     az_iot_log_sink log;
 
     /* Caller-provided scratch buffer used to BUILD the outbound CSR request
@@ -220,10 +225,11 @@ struct az_iot_connection_client
         bool  in_use;
     } persistent_subs[AZ_IOT_MAX_PERSISTENT_SUBS];
 
-    /* Effective host / client_id when not caller-provided (DPS-assigned, mock, or
-     * runtime-set). Inline fixed buffers in this caller-allocated struct -- no heap. */
-    char  owned_host[AZ_IOT_DPS_HOST_BUF];
-    char  owned_client_id[AZ_IOT_DPS_DEVICE_ID_BUF];
+    /* Effective hub hostname / device id when not caller-provided (DPS-assigned,
+     * mock, or runtime-set). Inline fixed buffers in this caller-allocated struct
+     * -- no heap. */
+    char  provisioned_iot_hub_hostname[AZ_IOT_DPS_HOST_BUF];
+    char  provisioned_device_id[AZ_IOT_DPS_DEVICE_ID_BUF];
 
     int dps_phase;
     az_iot_provisioning_client dps_prov;

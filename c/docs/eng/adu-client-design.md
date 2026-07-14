@@ -785,12 +785,12 @@ typedef struct az_iot_adu_root_key
 
 /* --- Device properties (plain struct, deep-copied by the client) --------- */
 
-typedef struct az_iot_adu_update_id_t
+typedef struct az_iot_adu_update_id_info
 {
     const char* provider;
     const char* name;
     const char* version;
-} az_iot_adu_update_id_t;
+} az_iot_adu_update_id_info;
 
 typedef struct az_iot_adu_custom_property
 {
@@ -808,7 +808,7 @@ typedef struct az_iot_adu_device_properties
 {
     const char*                         manufacturer;
     const char*                         model;
-    az_iot_adu_update_id_t              installed_update_id;
+    az_iot_adu_update_id_info           installed_update_id;
     const az_iot_adu_custom_property* custom_properties;       /* caller's array, MAY be NULL */
     size_t                              custom_properties_count;
 } az_iot_adu_device_properties;
@@ -845,7 +845,7 @@ typedef struct az_iot_adu_client_t
 
 /**
  * Configuration for az_iot_adu_client_initialize(). Zero-initialize via
- * az_iot_adu_client_options_t_default() and set the required fields:
+ * az_iot_adu_client_config_options_default() and set the required fields:
  *   hooks:   platform operations (download/install/apply/...). See §6.
  *   crypto:  pure-primitive crypto hooks (RSA verify + SHA-256). See §6.
  *   root_keys / root_key_count: caller-owned RSA root public keys that anchor
@@ -859,10 +859,10 @@ typedef struct az_iot_adu_client_t
  *     No hidden allocation; the buffer MUST outlive the client. Size it exactly
  *     with az_iot_adu_device_props_buffer_size().
  *
- * Named with the _t suffix (like az_iot_adu_client_t) to avoid colliding with
- * azure-sdk-for-c's own az_iot_adu_client_options.
+ * Named az_iot_adu_client_config_options (the `config_` qualifier) to avoid
+ * colliding with azure-sdk-for-c's own az_iot_adu_client_options.
  */
-typedef struct az_iot_adu_client_options_t
+typedef struct az_iot_adu_client_config_options
 {
     const az_iot_adu_platform_hooks*    hooks;
     const az_iot_adu_crypto_hooks*      crypto;
@@ -871,9 +871,9 @@ typedef struct az_iot_adu_client_options_t
     const az_iot_adu_device_properties* device_props;
     uint8_t*                            device_props_buffer;
     size_t                              device_props_buffer_size;
-} az_iot_adu_client_options_t;
+} az_iot_adu_client_config_options;
 
-az_iot_adu_client_options_t az_iot_adu_client_options_t_default(void);
+az_iot_adu_client_config_options az_iot_adu_client_config_options_default(void);
 
 /**
  * Initialize the ADU client. `twin` is the initialized twin client the ADU
@@ -886,7 +886,7 @@ az_iot_adu_client_options_t az_iot_adu_client_options_t_default(void);
 az_iot_result az_iot_adu_client_initialize(
     az_iot_adu_client_t* client,
     az_iot_twin_client* twin,
-    const az_iot_adu_client_options_t* options);
+    const az_iot_adu_client_config_options* options);
 
 /**
  * Return Microsoft's compiled-in ADU root public keys (const, static storage).
@@ -972,7 +972,7 @@ az_iot_adu_device_properties props = {
 uint8_t props_cache[256];
 size_t root_key_count;
 const az_iot_adu_root_key* root_keys = az_iot_adu_microsoft_root_keys(&root_key_count);
-az_iot_adu_client_options_t adu_opts = az_iot_adu_client_options_t_default();
+az_iot_adu_client_config_options adu_opts = az_iot_adu_client_config_options_default();
 adu_opts.hooks = &hooks;
 adu_opts.crypto = &crypto;
 adu_opts.root_keys = root_keys;
@@ -1360,7 +1360,7 @@ int main(void)
                                              .model = "ADU-Sim",
                                              .installed_update_id = { "Contoso", "ADU-Sim", "1.0.0" } };
     uint8_t props_cache[256];
-    az_iot_adu_client_options_t adu_opts = az_iot_adu_client_options_t_default();
+    az_iot_adu_client_config_options adu_opts = az_iot_adu_client_config_options_default();
     adu_opts.hooks = &hooks;
     adu_opts.crypto = &crypto;
     adu_opts.root_keys = root_keys;

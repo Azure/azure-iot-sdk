@@ -141,12 +141,12 @@ provided as hooks, so the core links no crypto library and no OS-specific code.
 
 ```c
 /* Lifecycle */
-az_iot_adu_client_options_t az_iot_adu_client_options_t_default(void);
+az_iot_adu_client_config_options az_iot_adu_client_config_options_default(void);
 
 az_iot_result az_iot_adu_client_initialize(
     az_iot_adu_client_t* client,
     az_iot_twin_client* twin,
-    const az_iot_adu_client_options_t* options);  /* hooks, crypto, root keys,
+    const az_iot_adu_client_config_options* options);  /* hooks, crypto, root keys,
                                                      device props + caller cache */
 
 void az_iot_adu_client_destroy(az_iot_adu_client_t* client);
@@ -213,7 +213,7 @@ az_iot_adu_device_properties props = {
 };
 
 uint8_t props_cache[256];
-az_iot_adu_client_options_t adu_opts = az_iot_adu_client_options_t_default();
+az_iot_adu_client_config_options adu_opts = az_iot_adu_client_config_options_default();
 adu_opts.hooks = &hooks;
 adu_opts.crypto = &crypto;
 adu_opts.root_keys = root_keys;
@@ -444,7 +444,7 @@ az_iot_adu_transport t = az_iot_adu_transport_twin(&twin);
 az_iot_adu_transport t = az_iot_adu_transport_http(&adu_http /* endpoint, X.509, poll cfg */);
 
 /* The transport vtable replaces the twin argument; hooks/crypto/keys/props are
- * carried by az_iot_adu_client_options_t as in the shipping API. */
+ * carried by az_iot_adu_client_config_options as in the shipping API. */
 az_iot_adu_client_initialize(&adu, &t, &options);
 ```
 
