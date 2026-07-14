@@ -23,7 +23,7 @@ Before running this sample, you simply need to enter your service-side DPS + Hub
 Once you edit the above section, run the sample from this directory with:
 
 ```bash
-dotnet run --project SetupSampleDevice
+dotnet run --project SetupSampleDevice --property WarningLevel=0
 ```
 
 This sample can be run again to delete the previous credentials and create a new device and new credentials.
@@ -33,5 +33,5 @@ This sample can be run again to delete the previous credentials and create a new
 By running the above sample, you should see a set of credential files saved at the root of this samples directory like "deviceId.txt", "certificate.pfx", and more. Once you have those, all you need to do is run a command from this directory like:
 
 ```bash
-dotnet run --project DirectMethodsSample
+dotnet run --project DirectMethodsSample  --property WarningLevel=0
 ```
