@@ -100,7 +100,7 @@ flowchart TB
 
 ### MQTT adapter registry
 
-The ConnectionClient does not hold a single MQTT adapter — it holds an **adapter registry** keyed by `az_iot_mqtt_version_t`:
+The ConnectionClient does not hold a single MQTT adapter — it holds an **adapter registry** keyed by `az_iot_mqtt_version`:
 
 - DPS requires a v3.1.1 adapter.
 - Hub-Classic requires a v3.1.1 adapter.
@@ -206,6 +206,6 @@ sequenceDiagram
 ## 4. Open design questions (tracked)
 
 1. DPS → device handoff: how the device learns whether the assigned hub is Classic or Next. Currently assumed to be carried in the DPS assignment payload (`version_hint`). Revisit once Auth design discussion closes.
-2. Reconnect policy defaults (initial delay, max delay, max attempts, jitter %); all user-overridable via `az_iot_reconnect_policy_t`.
-3. Whether cert management is mandatory on Next. Current assumption: optional surface, mandatory pluggable hook (`az_iot_certificate_provider_t`).
+2. Reconnect policy defaults (initial delay, max delay, max attempts, jitter %); all user-overridable via `az_iot_reconnection_policy`, with `az_iot_reconnection_policy_default()` as a sensible starting point.
+3. Whether cert management is mandatory on Next. Current assumption: optional surface, mandatory pluggable hook (`az_iot_certificate_provider`).
 4. Adapter sharing across roles: should a single adapter object be reusable across the DPS→Hub transition (when both are v3.1.1, i.e., DPS→Classic)? Current assumption: **no** — always destroy and recreate to keep the lifecycle uniform and reconnect logic simple. Revisit if the extra TLS handshake hurts cold-start latency.

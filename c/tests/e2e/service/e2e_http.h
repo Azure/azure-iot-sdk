@@ -33,7 +33,7 @@ extern "C" {
 #define E2E_HTTP_REQUEST_MAX 8192
 #define E2E_HTTP_RESPONSE_MAX 32768
 
-typedef enum e2e_http_phase_tag
+typedef enum e2e_http_phase
 {
     E2E_HTTP_PHASE_CONNECTING,
     E2E_HTTP_PHASE_WRITING,
@@ -42,7 +42,7 @@ typedef enum e2e_http_phase_tag
     E2E_HTTP_PHASE_FAILED,
 } e2e_http_phase;
 
-typedef struct e2e_http_request_tag
+typedef struct e2e_http_request
 {
     az_amqp_sample_transport transport_storage;
     az_amqp_transport transport;
@@ -61,7 +61,7 @@ typedef struct e2e_http_request_tag
     int http_status;
 
     const char* err;
-} e2e_http_request_t;
+} e2e_http_request;
 
 /* Prepare (but do not send) an HTTPS request to @p host (port 443, TLS). @p method
  * is e.g. "GET"/"POST"/"PATCH"; @p path is the origin-form request target incl. any
@@ -69,7 +69,7 @@ typedef struct e2e_http_request_tag
  * @p json_body may be NULL for a body-less request. Returns false only on a request
  * that will not fit the request buffer. */
 bool e2e_http_begin(
-    e2e_http_request_t* r,
+    e2e_http_request* r,
     const char* host,
     const char* method,
     const char* path,
@@ -78,19 +78,19 @@ bool e2e_http_begin(
 
 /* Advance the request state machine a little without blocking on the device.
  * Returns 0 while pending, 1 when the response is complete, -1 on error. */
-int e2e_http_poll(e2e_http_request_t* r);
+int e2e_http_poll(e2e_http_request* r);
 
 /* Valid once e2e_http_poll returns 1: the parsed HTTP status code. */
-int e2e_http_status(const e2e_http_request_t* r);
+int e2e_http_status(const e2e_http_request* r);
 
 /* Valid once e2e_http_poll returns 1: the response body bytes and length. */
-const uint8_t* e2e_http_body(const e2e_http_request_t* r, int* out_len);
+const uint8_t* e2e_http_body(const e2e_http_request* r, int* out_len);
 
 /* A static description of the last failure, or NULL. */
-const char* e2e_http_error(const e2e_http_request_t* r);
+const char* e2e_http_error(const e2e_http_request* r);
 
 /* Close the underlying transport (best-effort). */
-void e2e_http_end(e2e_http_request_t* r);
+void e2e_http_end(e2e_http_request* r);
 
 #ifdef __cplusplus
 }

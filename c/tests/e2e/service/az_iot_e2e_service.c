@@ -18,13 +18,13 @@
 
 struct az_iot_e2e_service
 {
-    e2e_conn_info_t hub_info; /* IoT Hub service endpoint (method/twin/c2d) */
-    e2e_conn_info_t eh_info; /* Event Hub-compatible endpoint (telemetry)   */
+    e2e_conn_info hub_info; /* IoT Hub service endpoint (method/twin/c2d) */
+    e2e_conn_info eh_info; /* Event Hub-compatible endpoint (telemetry)   */
     char entity[128]; /* Event Hub entity name                       */
     int partition_count;
 
-    e2e_amqp_telemetry_t* telemetry; /* non-NULL while watching */
-    e2e_http_request_t* http; /* non-NULL while a REST call is in flight */
+    e2e_amqp_telemetry* telemetry; /* non-NULL while watching */
+    e2e_http_request* http; /* non-NULL while a REST call is in flight */
 
     char last_error[256];
 };
@@ -193,7 +193,7 @@ bool az_iot_e2e_service_telemetry_watch_begin(az_iot_e2e_service* svc)
         return false;
     }
 
-    svc->telemetry = (e2e_amqp_telemetry_t*)calloc(1, sizeof(*svc->telemetry));
+    svc->telemetry = (e2e_amqp_telemetry*)calloc(1, sizeof(*svc->telemetry));
     if (svc->telemetry == NULL)
     {
         set_error(svc, "telemetry: out of memory");
@@ -303,7 +303,7 @@ static bool begin_request(
         free(svc->http);
         svc->http = NULL;
     }
-    svc->http = (e2e_http_request_t*)calloc(1, sizeof(*svc->http));
+    svc->http = (e2e_http_request*)calloc(1, sizeof(*svc->http));
     if (svc->http == NULL)
     {
         set_error(svc, "rest: out of memory");

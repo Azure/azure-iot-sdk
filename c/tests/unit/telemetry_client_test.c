@@ -25,33 +25,33 @@
 /* fixtures                                                                  */
 /* ------------------------------------------------------------------------- */
 
-typedef struct send_record_tag
+typedef struct send_record
 {
     bool                fired;
-    az_iot_result_t status;
-} send_record_t;
+    az_iot_result status;
+} send_record;
 
-static void on_send(az_iot_result_t status, void* user_ctx)
+static void on_send(az_iot_result status, void* user_ctx)
 {
-    send_record_t* r = (send_record_t*)user_ctx;
+    send_record* r = (send_record*)user_ctx;
     r->fired = true;
     r->status = status;
 }
 
-typedef struct fixture_tag
+typedef struct fixture
 {
-    az_iot_connection_client_t    conn;
-    az_iot_telemetry_client_t   tc;
-    az_iot_mqtt_factory_t*      factory;
-    az_iot_mock_mqtt_client_t*  mock; /* convenience alias */
-} fixture_t;
+    az_iot_connection_client    conn;
+    az_iot_telemetry_client   tc;
+    az_iot_mqtt_factory*      factory;
+    az_iot_mock_mqtt_client*  mock; /* convenience alias */
+} fixture;
 
 static int setup(void** state)
 {
-    fixture_t* fx = (fixture_t*)calloc(1, sizeof(*fx));
+    fixture* fx = (fixture*)calloc(1, sizeof(*fx));
     assert_non_null(fx);
 
-    az_iot_connection_client_options_t opts = {0};
+    az_iot_connection_client_options opts = {0};
     opts.host = "broker.example";
     opts.port = 8883;
     opts.client_id = "ut-device";
@@ -69,18 +69,18 @@ static int setup(void** state)
 
 static int teardown(void** state)
 {
-    fixture_t* fx = (fixture_t*)*state;
+    fixture* fx = (fixture*)*state;
     if (fx)
     {
-        az_iot_telemetry_client_deinit(&fx->tc);
-        az_iot_connection_client_deinit(&fx->conn);
+        az_iot_telemetry_client_destroy(&fx->tc);
+        az_iot_connection_client_destroy(&fx->conn);
         free(fx);
     }
     return 0;
 }
 
 /* Drive the connection through CONNECTING -> CONNECTED on the mock. */
-static void open_to_connected(fixture_t* fx)
+static void open_to_connected(fixture* fx)
 {
     assert_int_equal(az_iot_connection_client_register_mqtt_factory(&fx->conn, fx->factory),
                      AZ_IOT_OK);
@@ -105,22 +105,22 @@ static void open_to_connected(fixture_t* fx)
 static void init_rejects_nulls(void** state)
 {
     (void)state;
-    az_iot_telemetry_client_t tc;
-    az_iot_connection_client_t* dummy = (az_iot_connection_client_t*)(uintptr_t)1;
+    az_iot_telemetry_client tc;
+    az_iot_connection_client* dummy = (az_iot_connection_client*)(uintptr_t)1;
     assert_int_equal(az_iot_telemetry_client_init(NULL, dummy), AZ_IOT_ERR_INVALID_ARG);
     assert_int_equal(az_iot_telemetry_client_init(&tc, NULL), AZ_IOT_ERR_INVALID_ARG);
     /* deinit(NULL) is a no-op. */
-    az_iot_telemetry_client_deinit(NULL);
+    az_iot_telemetry_client_destroy(NULL);
 }
 
 static void send_before_connect_returns_not_connected(void** state)
 {
-    fixture_t* fx = (fixture_t*)*state;
+    fixture* fx = (fixture*)*state;
     assert_int_equal(az_iot_connection_client_register_mqtt_factory(&fx->conn, fx->factory),
                      AZ_IOT_OK);
     /* Not opened yet - publish must refuse. */
     static const uint8_t payload[] = "hello";
-    az_iot_telemetry_message_t msg = {0};
+    az_iot_telemetry_message msg = {0};
     msg.payload = payload;
     msg.payload_len = sizeof(payload) - 1;
     assert_int_equal(az_iot_telemetry_client_send(&fx->tc, &msg, NULL, NULL),
@@ -129,20 +129,20 @@ static void send_before_connect_returns_not_connected(void** state)
 
 static void send_publishes_qos1(void** state)
 {
-    fixture_t* fx = (fixture_t*)*state;
+    fixture* fx = (fixture*)*state;
     open_to_connected(fx);
 
     static const uint8_t payload[] = "hello";
-    az_iot_telemetry_message_t msg = {0};
+    az_iot_telemetry_message msg = {0};
     msg.payload = payload;
     msg.payload_len = sizeof(payload) - 1;
 
-    send_record_t r = {0};
+    send_record r = {0};
     assert_int_equal(az_iot_telemetry_client_send(&fx->tc, &msg, on_send, &r), AZ_IOT_OK);
 
     /* Always QoS 1 -> publish() called once with the expected D2C topic. */
     assert_int_equal(az_iot_mock_mqtt_client_call_count(fx->mock), 1);
-    const az_iot_mock_call_t* c0 = az_iot_mock_mqtt_client_call_at(fx->mock, 0);
+    const az_iot_mock_call* c0 = az_iot_mock_mqtt_client_call_at(fx->mock, 0);
     assert_int_equal(c0->kind, AZ_IOT_MOCK_CALL_PUBLISH);
     assert_string_equal(c0->topic, "devices/ut-device/messages/events/");
     assert_int_equal(c0->payload_len, 5);
@@ -155,20 +155,20 @@ static void send_publishes_qos1(void** state)
 
 static void send_qos1_defers_cb_until_puback(void** state)
 {
-    fixture_t* fx = (fixture_t*)*state;
+    fixture* fx = (fixture*)*state;
     open_to_connected(fx);
 
     static const uint8_t payload[] = "{\"t\":1}";
-    az_iot_telemetry_message_t msg = {0};
+    az_iot_telemetry_message msg = {0};
     msg.payload = payload;
     msg.payload_len = sizeof(payload) - 1;
 
-    send_record_t r = {0};
+    send_record r = {0};
     assert_int_equal(az_iot_telemetry_client_send(&fx->tc, &msg, on_send, &r), AZ_IOT_OK);
 
     /* publish() was called and a packet_id was assigned. */
     assert_int_equal(az_iot_mock_mqtt_client_call_count(fx->mock), 1);
-    const az_iot_mock_call_t* c0 = az_iot_mock_mqtt_client_call_at(fx->mock, 0);
+    const az_iot_mock_call* c0 = az_iot_mock_mqtt_client_call_at(fx->mock, 0);
     assert_int_equal(c0->kind, AZ_IOT_MOCK_CALL_PUBLISH);
     assert_int_equal(c0->qos, AZ_IOT_MQTT_QOS_1);
     uint16_t pid = c0->packet_id;
@@ -178,7 +178,7 @@ static void send_qos1_defers_cb_until_puback(void** state)
     assert_false(r.fired);
 
     /* Inject the matching PUBLISH_ACK. */
-    az_iot_mqtt_event_t evt = {0};
+    az_iot_mqtt_event evt = {0};
     evt.kind      = AZ_IOT_MQTT_EVT_PUBLISH_ACK;
     evt.packet_id = pid;
     evt.status    = AZ_IOT_OK;
@@ -191,17 +191,17 @@ static void send_qos1_defers_cb_until_puback(void** state)
 
 static void send_propagates_content_type_and_properties(void** state)
 {
-    fixture_t* fx = (fixture_t*)*state;
+    fixture* fx = (fixture*)*state;
     open_to_connected(fx);
 
-    az_iot_telemetry_property_t props[] = {
+    az_iot_telemetry_property props[] = {
         { AZ_IOT_MSG_PROP_CONTENT_TYPE, "application/json" },
         { AZ_IOT_MSG_PROP_CONTENT_ENCODING, "utf-8" },
         { "k1", "v1" },
         { "k2", "v2" }
     };
     static const uint8_t payload[] = "p";
-    az_iot_telemetry_message_t msg = {0};
+    az_iot_telemetry_message msg = {0};
     msg.payload          = payload;
     msg.payload_len      = 1;
     msg.properties       = props;
@@ -210,7 +210,7 @@ static void send_propagates_content_type_and_properties(void** state)
     assert_int_equal(az_iot_telemetry_client_send(&fx->tc, &msg, NULL, NULL), AZ_IOT_OK);
 
     assert_int_equal(az_iot_mock_mqtt_client_call_count(fx->mock), 1);
-    const az_iot_mock_call_t* c0 = az_iot_mock_mqtt_client_call_at(fx->mock, 0);
+    const az_iot_mock_call* c0 = az_iot_mock_mqtt_client_call_at(fx->mock, 0);
     assert_int_equal(c0->kind, AZ_IOT_MOCK_CALL_PUBLISH);
     /* IoT Hub Classic topic with system + application properties appended. */
     assert_string_equal(
@@ -220,10 +220,10 @@ static void send_propagates_content_type_and_properties(void** state)
 
 static void send_rejects_invalid_args(void** state)
 {
-    fixture_t* fx = (fixture_t*)*state;
+    fixture* fx = (fixture*)*state;
     open_to_connected(fx);
 
-    az_iot_telemetry_message_t msg = {0};
+    az_iot_telemetry_message msg = {0};
     msg.payload_len = 4; /* but payload is NULL */
     assert_int_equal(az_iot_telemetry_client_send(&fx->tc, &msg, NULL, NULL),
                      AZ_IOT_ERR_INVALID_ARG);

@@ -32,10 +32,10 @@ static const char* TAG = "az_mqtt_esp";
 /* queued event                                                              */
 /* ------------------------------------------------------------------------- */
 
-typedef struct queued_event_tag
+typedef struct queued_event
 {
-    az_iot_mqtt_event_t evt;
-    az_iot_mqtt_message_t msg;       /* backing storage for evt.message */
+    az_iot_mqtt_event evt;
+    az_iot_mqtt_message msg;       /* backing storage for evt.message */
     char*    topic;
     uint8_t* payload;
     size_t   payload_len;
@@ -44,25 +44,25 @@ typedef struct queued_event_tag
     char*    response_topic;
     uint8_t* correlation_data;
     size_t   correlation_data_len;
-    az_iot_mqtt_user_property_t* user_props;
+    az_iot_mqtt_user_property* user_props;
     size_t   user_props_count;
-    struct queued_event_tag* next;
-} queued_event_t;
+    struct queued_event* next;
+} queued_event;
 
-typedef struct esp_client_tag
+typedef struct esp_client
 {
-    az_iot_mqtt_client_t base;       /* MUST be first */
-    az_iot_mqtt_iface_t  iface_storage;
-    az_iot_mqtt_version_t version;
+    az_iot_mqtt_client base;       /* MUST be first */
+    az_iot_mqtt_iface  iface_storage;
+    az_iot_mqtt_version version;
 
     esp_mqtt_client_handle_t handle; /* NULL until connect() */
 
-    az_iot_mqtt_event_cb inbound_cb;
+    az_iot_mqtt_event_callback inbound_cb;
     void*                inbound_ctx;
 
     SemaphoreHandle_t q_mutex;
-    queued_event_t*   q_head;
-    queued_event_t*   q_tail;
+    queued_event*   q_head;
+    queued_event*   q_tail;
 
     /* Reassembly buffer for fragmented inbound PUBLISH payloads (esp-mqtt
      * delivers payloads larger than its RX buffer across several DATA events).
@@ -73,15 +73,15 @@ typedef struct esp_client_tag
     size_t   asm_filled;
     int      asm_qos;
     int      asm_retain;
-} esp_client_t;
+} esp_client;
 
-static esp_client_t* esp_self(az_iot_mqtt_client_t* c) { return (esp_client_t*)c; }
+static esp_client* esp_self(az_iot_mqtt_client* c) { return (esp_client*)c; }
 
 /* ------------------------------------------------------------------------- */
 /* queue helpers                                                             */
 /* ------------------------------------------------------------------------- */
 
-static void q_push(esp_client_t* m, queued_event_t* n)
+static void q_push(esp_client* m, queued_event* n)
 {
     n->next = NULL;
     xSemaphoreTake(m->q_mutex, portMAX_DELAY);
@@ -91,10 +91,10 @@ static void q_push(esp_client_t* m, queued_event_t* n)
     xSemaphoreGive(m->q_mutex);
 }
 
-static queued_event_t* q_pop(esp_client_t* m)
+static queued_event* q_pop(esp_client* m)
 {
     xSemaphoreTake(m->q_mutex, portMAX_DELAY);
-    queued_event_t* n = m->q_head;
+    queued_event* n = m->q_head;
     if (n)
     {
         m->q_head = n->next;
@@ -105,7 +105,7 @@ static queued_event_t* q_pop(esp_client_t* m)
     return n;
 }
 
-static void q_free(queued_event_t* n)
+static void q_free(queued_event* n)
 {
     if (!n) return;
     free(n->topic);
@@ -125,17 +125,17 @@ static void q_free(queued_event_t* n)
     free(n);
 }
 
-static void q_drain_all(esp_client_t* m)
+static void q_drain_all(esp_client* m)
 {
-    queued_event_t* n;
+    queued_event* n;
     while ((n = q_pop(m)) != NULL) q_free(n);
 }
 
-static void enqueue_status(esp_client_t* m, az_iot_mqtt_event_kind_t kind,
-                           az_iot_result_t status, uint16_t packet_id,
+static void enqueue_status(esp_client* m, az_iot_mqtt_event_kind kind,
+                           az_iot_result status, uint16_t packet_id,
                            bool session_present)
 {
-    queued_event_t* n = (queued_event_t*)calloc(1, sizeof(*n));
+    queued_event* n = (queued_event*)calloc(1, sizeof(*n));
     if (!n) return;
     n->evt.kind = kind;
     n->evt.status = status;
@@ -157,7 +157,7 @@ static char* dup_n(const char* src, int len)
     return d;
 }
 
-static void extract_v5_props(queued_event_t* n, esp_mqtt_event_handle_t e)
+static void extract_v5_props(queued_event* n, esp_mqtt_event_handle_t e)
 {
     esp_mqtt5_event_property_t* p = e->property;
     if (!p) return;
@@ -192,8 +192,8 @@ static void extract_v5_props(queued_event_t* n, esp_mqtt_event_handle_t e)
     {
         esp_mqtt5_user_property_item_t* items =
             (esp_mqtt5_user_property_item_t*)calloc(count, sizeof(*items));
-        az_iot_mqtt_user_property_t* out =
-            (az_iot_mqtt_user_property_t*)calloc(count, sizeof(*out));
+        az_iot_mqtt_user_property* out =
+            (az_iot_mqtt_user_property*)calloc(count, sizeof(*out));
         if (items && out
             && esp_mqtt5_client_get_user_property(p->user_property, items, &count) == ESP_OK)
         {
@@ -222,7 +222,7 @@ static void extract_v5_props(queued_event_t* n, esp_mqtt_event_handle_t e)
 /* inbound message assembly + enqueue                                        */
 /* ------------------------------------------------------------------------- */
 
-static void asm_reset(esp_client_t* m)
+static void asm_reset(esp_client* m)
 {
     free(m->asm_topic);
     free(m->asm_buf);
@@ -233,9 +233,9 @@ static void asm_reset(esp_client_t* m)
 
 /* Finalize a fully-reassembled message into a queued event. Takes ownership of
  * asm_topic/asm_buf. */
-static void enqueue_message(esp_client_t* m, esp_mqtt_event_handle_t e)
+static void enqueue_message(esp_client* m, esp_mqtt_event_handle_t e)
 {
-    queued_event_t* n = (queued_event_t*)calloc(1, sizeof(*n));
+    queued_event* n = (queued_event*)calloc(1, sizeof(*n));
     if (!n) { asm_reset(m); return; }
 
     n->topic = m->asm_topic;          /* transfer ownership */
@@ -247,7 +247,7 @@ static void enqueue_message(esp_client_t* m, esp_mqtt_event_handle_t e)
     n->msg.topic = n->topic;
     n->msg.payload = n->payload;
     n->msg.payload_len = n->payload_len;
-    n->msg.qos = (az_iot_mqtt_qos_t)m->asm_qos;
+    n->msg.qos = (az_iot_mqtt_qos)m->asm_qos;
     n->msg.retain = (m->asm_retain != 0);
 
 #if defined(CONFIG_MQTT_PROTOCOL_5)
@@ -265,7 +265,7 @@ static void enqueue_message(esp_client_t* m, esp_mqtt_event_handle_t e)
     asm_reset(m);
 }
 
-static void on_data(esp_client_t* m, esp_mqtt_event_handle_t e)
+static void on_data(esp_client* m, esp_mqtt_event_handle_t e)
 {
     /* First fragment of a new message: capture topic + allocate the full
      * reassembly buffer (total_data_len is the complete payload size). */
@@ -311,7 +311,7 @@ static void mqtt_event_handler(void* args, esp_event_base_t base,
                                int32_t event_id, void* event_data)
 {
     (void)base;
-    esp_client_t* m = (esp_client_t*)args;
+    esp_client* m = (esp_client*)args;
     esp_mqtt_event_handle_t e = (esp_mqtt_event_handle_t)event_data;
 
     switch ((esp_mqtt_event_id_t)event_id)
@@ -350,10 +350,10 @@ static void mqtt_event_handler(void* args, esp_event_base_t base,
 /* iface vtable                                                              */
 /* ------------------------------------------------------------------------- */
 
-static az_iot_result_t esp_connect(az_iot_mqtt_client_t* self,
-                                   const az_iot_mqtt_connect_options_t* opts)
+static az_iot_result esp_connect(az_iot_mqtt_client* self,
+                                   const az_iot_mqtt_connect_options* opts)
 {
-    esp_client_t* m = esp_self(self);
+    esp_client* m = esp_self(self);
     if (m->handle) return AZ_IOT_ERR_ALREADY_INITIALIZED;
 
     esp_mqtt_client_config_t cfg = {0};
@@ -416,21 +416,21 @@ static az_iot_result_t esp_connect(az_iot_mqtt_client_t* self,
     return AZ_IOT_OK;
 }
 
-static az_iot_result_t esp_disconnect(az_iot_mqtt_client_t* self)
+static az_iot_result esp_disconnect(az_iot_mqtt_client* self)
 {
-    esp_client_t* m = esp_self(self);
+    esp_client* m = esp_self(self);
     if (!m->handle) return AZ_IOT_ERR_NOT_CONNECTED;
     esp_mqtt_client_disconnect(m->handle);
     enqueue_status(m, AZ_IOT_MQTT_EVT_DISCONNECTED, AZ_IOT_OK, 0, false);
     return AZ_IOT_OK;
 }
 
-static az_iot_result_t esp_subscribe(az_iot_mqtt_client_t* self,
+static az_iot_result esp_subscribe(az_iot_mqtt_client* self,
                                      const char* topic_filter,
-                                     az_iot_mqtt_qos_t qos,
+                                     az_iot_mqtt_qos qos,
                                      uint16_t* out_packet_id)
 {
-    esp_client_t* m = esp_self(self);
+    esp_client* m = esp_self(self);
     if (!m->handle) return AZ_IOT_ERR_NOT_CONNECTED;
     int id = esp_mqtt_client_subscribe(m->handle, topic_filter, (int)qos);
     if (id < 0) return AZ_IOT_ERR_MQTT;
@@ -438,11 +438,11 @@ static az_iot_result_t esp_subscribe(az_iot_mqtt_client_t* self,
     return AZ_IOT_OK;
 }
 
-static az_iot_result_t esp_unsubscribe(az_iot_mqtt_client_t* self,
+static az_iot_result esp_unsubscribe(az_iot_mqtt_client* self,
                                        const char* topic_filter,
                                        uint16_t* out_packet_id)
 {
-    esp_client_t* m = esp_self(self);
+    esp_client* m = esp_self(self);
     if (!m->handle) return AZ_IOT_ERR_NOT_CONNECTED;
     int id = esp_mqtt_client_unsubscribe(m->handle, topic_filter);
     if (id < 0) return AZ_IOT_ERR_MQTT;
@@ -450,11 +450,11 @@ static az_iot_result_t esp_unsubscribe(az_iot_mqtt_client_t* self,
     return AZ_IOT_OK;
 }
 
-static az_iot_result_t esp_publish(az_iot_mqtt_client_t* self,
-                                   const az_iot_mqtt_message_t* msg,
+static az_iot_result esp_publish(az_iot_mqtt_client* self,
+                                   const az_iot_mqtt_message* msg,
                                    uint16_t* out_packet_id)
 {
-    esp_client_t* m = esp_self(self);
+    esp_client* m = esp_self(self);
     if (!m->handle) return AZ_IOT_ERR_NOT_CONNECTED;
 
 #if defined(CONFIG_MQTT_PROTOCOL_5)
@@ -508,12 +508,12 @@ static az_iot_result_t esp_publish(az_iot_mqtt_client_t* self,
     return AZ_IOT_OK;
 }
 
-static az_iot_result_t esp_process_loop(az_iot_mqtt_client_t* self, uint32_t timeout_ms)
+static az_iot_result esp_process_loop(az_iot_mqtt_client* self, uint32_t timeout_ms)
 {
-    esp_client_t* m = esp_self(self);
+    esp_client* m = esp_self(self);
 
     /* Drain queued events on the SDK thread (the single-threaded contract). */
-    queued_event_t* n;
+    queued_event* n;
     while ((n = q_pop(m)) != NULL)
     {
         if (m->inbound_cb) m->inbound_cb(&n->evt, m->inbound_ctx);
@@ -526,17 +526,17 @@ static az_iot_result_t esp_process_loop(az_iot_mqtt_client_t* self, uint32_t tim
     return AZ_IOT_OK;
 }
 
-static void esp_set_inbound_cb(az_iot_mqtt_client_t* self,
-                               az_iot_mqtt_event_cb cb, void* user_ctx)
+static void esp_set_inbound_cb(az_iot_mqtt_client* self,
+                               az_iot_mqtt_event_callback cb, void* user_ctx)
 {
-    esp_client_t* m = esp_self(self);
+    esp_client* m = esp_self(self);
     m->inbound_cb = cb;
     m->inbound_ctx = user_ctx;
 }
 
-static void esp_destroy(az_iot_mqtt_client_t* self)
+static void esp_destroy(az_iot_mqtt_client* self)
 {
-    esp_client_t* m = esp_self(self);
+    esp_client* m = esp_self(self);
     if (!m) return;
     if (m->handle)
     {
@@ -554,11 +554,11 @@ static void esp_destroy(az_iot_mqtt_client_t* self)
 /* factory                                                                   */
 /* ------------------------------------------------------------------------- */
 
-static az_iot_mqtt_client_t* esp_factory_create(void* factory_ctx)
+static az_iot_mqtt_client* esp_factory_create(void* factory_ctx)
 {
-    az_iot_mqtt_version_t version = (az_iot_mqtt_version_t)(intptr_t)factory_ctx;
+    az_iot_mqtt_version version = (az_iot_mqtt_version)(intptr_t)factory_ctx;
 
-    esp_client_t* m = (esp_client_t*)calloc(1, sizeof(*m));
+    esp_client* m = (esp_client*)calloc(1, sizeof(*m));
     if (!m) return NULL;
     m->q_mutex = xSemaphoreCreateMutex();
     if (!m->q_mutex) { free(m); return NULL; }
@@ -577,9 +577,9 @@ static az_iot_mqtt_client_t* esp_factory_create(void* factory_ctx)
     return &m->base;
 }
 
-static az_iot_mqtt_factory_t* make_factory(az_iot_mqtt_version_t version)
+static az_iot_mqtt_factory* make_factory(az_iot_mqtt_version version)
 {
-    az_iot_mqtt_factory_t* f = (az_iot_mqtt_factory_t*)calloc(1, sizeof(*f));
+    az_iot_mqtt_factory* f = (az_iot_mqtt_factory*)calloc(1, sizeof(*f));
     if (!f) return NULL;
     f->version = version;
     f->create = esp_factory_create;
@@ -588,17 +588,17 @@ static az_iot_mqtt_factory_t* make_factory(az_iot_mqtt_version_t version)
     return f;
 }
 
-az_iot_mqtt_factory_t* az_iot_esp_mqtt_factory_create_v3_1_1(void)
+az_iot_mqtt_factory* az_iot_esp_mqtt_factory_create_v3_1_1(void)
 {
     return make_factory(AZ_IOT_MQTT_VERSION_3_1_1);
 }
 
-az_iot_mqtt_factory_t* az_iot_esp_mqtt_factory_create_v5(void)
+az_iot_mqtt_factory* az_iot_esp_mqtt_factory_create_v5(void)
 {
     return make_factory(AZ_IOT_MQTT_VERSION_5);
 }
 
-void az_iot_esp_mqtt_factory_destroy(az_iot_mqtt_factory_t* factory)
+void az_iot_esp_mqtt_factory_destroy(az_iot_mqtt_factory* factory)
 {
     free(factory);
 }

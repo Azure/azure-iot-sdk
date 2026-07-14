@@ -46,7 +46,7 @@
 /* ------------------------------------------------------------------------- */
 
 /* Find the pending slot matching a given request-id. Returns slot index or -1. */
-static int find_pending_by_rid(az_iot_twin_client_t* t, uint32_t rid)
+static int find_pending_by_rid(az_iot_twin_client* t, uint32_t rid)
 {
     for (int i = 0; i < AZ_IOT_TWIN_MAX_PENDING; ++i)
     {
@@ -59,7 +59,7 @@ static int find_pending_by_rid(az_iot_twin_client_t* t, uint32_t rid)
 }
 
 /* Allocate an unused pending slot. Returns slot index or -1 if full. */
-static int alloc_pending(az_iot_twin_client_t* t)
+static int alloc_pending(az_iot_twin_client* t)
 {
     for (int i = 0; i < AZ_IOT_TWIN_MAX_PENDING; ++i)
     {
@@ -75,11 +75,11 @@ static int alloc_pending(az_iot_twin_client_t* t)
 /* Add cb/user_ctx to the given pool. Returns AZ_IOT_OK, AZ_IOT_ERR_BUSY (during
  * dispatch), AZ_IOT_ERR_INVALID_ARG, or AZ_IOT_ERR_NOT_SUPPORTED (pool full).
  * Idempotent: re-subscribing the same (cb,user_ctx) is a no-op success. */
-static az_iot_result_t desired_subscribe(
-    az_iot_twin_client_t* t,
-    az_iot_twin_desired_sub_t* pool,
+static az_iot_result desired_subscribe(
+    az_iot_twin_client* t,
+    az_iot_twin_desired_sub* pool,
     size_t pool_cap,
-    az_iot_twin_desired_cb cb,
+    az_iot_twin_desired_callback cb,
     void* user_ctx)
 {
     if (!t || !cb) return AZ_IOT_ERR_INVALID_ARG;
@@ -109,7 +109,7 @@ static az_iot_result_t desired_subscribe(
  * registration order), then application pool. The dispatching guard forbids
  * subscribe/unsubscribe from within a callback. */
 static void dispatch_desired(
-    az_iot_twin_client_t* t,
+    az_iot_twin_client* t,
     const uint8_t* payload,
     size_t payload_len,
     uint64_t version)
@@ -117,12 +117,12 @@ static void dispatch_desired(
     TI(t).dispatching = true;
     for (size_t i = 0; i < AZ_IOT_TWIN_MAX_DESIRED_FEATURE_SUBS; ++i)
     {
-        az_iot_twin_desired_sub_t* s = &TI(t).desired_feature_subs[i];
+        az_iot_twin_desired_sub* s = &TI(t).desired_feature_subs[i];
         if (s->in_use && s->cb) s->cb(payload, payload_len, version, s->user_ctx);
     }
     for (size_t i = 0; i < AZ_IOT_TWIN_MAX_DESIRED_APP_SUBS; ++i)
     {
-        az_iot_twin_desired_sub_t* s = &TI(t).desired_app_subs[i];
+        az_iot_twin_desired_sub* s = &TI(t).desired_app_subs[i];
         if (s->in_use && s->cb) s->cb(payload, payload_len, version, s->user_ctx);
     }
     TI(t).dispatching = false;
@@ -156,7 +156,7 @@ static bool query_value(const char* qs, const char* key,
 }
 
 /* Map an HTTP-style status (200, 204, 404, 429, 5xx) to an az_iot result code. */
-static az_iot_result_t status_to_result(int status)
+static az_iot_result status_to_result(int status)
 {
     if (status >= 200 && status < 300) return AZ_IOT_OK;
     if (status == 404) return AZ_IOT_ERR_INVALID_ARG;
@@ -168,9 +168,9 @@ static az_iot_result_t status_to_result(int status)
 /* dispatch handlers — Classic                                               */
 /* ------------------------------------------------------------------------- */
 
-static void on_twin_response(void* user_ctx, const az_iot_mqtt_message_t* msg)
+static void on_twin_response(void* user_ctx, const az_iot_mqtt_message* msg)
 {
-    az_iot_twin_client_t* t = (az_iot_twin_client_t*)user_ctx;
+    az_iot_twin_client* t = (az_iot_twin_client*)user_ctx;
     if (!t || !msg || !msg->topic) return;
 
     /* Topic: "$iothub/twin/res/<status>/?$rid=<n>[&$version=<v>]". */
@@ -194,10 +194,10 @@ static void on_twin_response(void* user_ctx, const az_iot_mqtt_message_t* msg)
     int idx = find_pending_by_rid(t, rid);
     if (idx < 0) return; /* stale or unknown rid */
 
-    az_iot_result_t r = status_to_result(status);
+    az_iot_result r = status_to_result(status);
     if (TI(t).pending[idx].kind == TWIN_PENDING_GET)
     {
-        az_iot_twin_get_cb cb = TI(t).pending[idx].cb.get_cb;
+        az_iot_twin_get_callback cb = TI(t).pending[idx].cb.get_cb;
         void* ctx = TI(t).pending[idx].user_ctx;
         TI(t).pending[idx].in_use = false;
         TI(t).pending[idx].kind = TWIN_PENDING_NONE;
@@ -205,7 +205,7 @@ static void on_twin_response(void* user_ctx, const az_iot_mqtt_message_t* msg)
     }
     else if (TI(t).pending[idx].kind == TWIN_PENDING_PATCH)
     {
-        az_iot_twin_patch_ack_cb cb = TI(t).pending[idx].cb.patch_cb;
+        az_iot_twin_patch_ack_callback cb = TI(t).pending[idx].cb.patch_cb;
         void* ctx = TI(t).pending[idx].user_ctx;
         TI(t).pending[idx].in_use = false;
         TI(t).pending[idx].kind = TWIN_PENDING_NONE;
@@ -217,9 +217,9 @@ static void on_twin_response(void* user_ctx, const az_iot_mqtt_message_t* msg)
     }
 }
 
-static void on_twin_desired(void* user_ctx, const az_iot_mqtt_message_t* msg)
+static void on_twin_desired(void* user_ctx, const az_iot_mqtt_message* msg)
 {
-    az_iot_twin_client_t* t = (az_iot_twin_client_t*)user_ctx;
+    az_iot_twin_client* t = (az_iot_twin_client*)user_ctx;
     if (!t || !msg || !msg->topic) return;
 
     /* Topic: "$iothub/twin/PATCH/properties/desired/?$version=<v>". */
@@ -242,9 +242,9 @@ static void on_twin_desired(void* user_ctx, const az_iot_mqtt_message_t* msg)
 
 /* Inbound on "ih/{device_id}/dev/twin/get/response" — correlate by rid in
  * correlation_data. */
-static void on_twin_get_response_next(void* user_ctx, const az_iot_mqtt_message_t* msg)
+static void on_twin_get_response_next(void* user_ctx, const az_iot_mqtt_message* msg)
 {
-    az_iot_twin_client_t* t = (az_iot_twin_client_t*)user_ctx;
+    az_iot_twin_client* t = (az_iot_twin_client*)user_ctx;
     if (!t || !msg) return;
 
     /* Match correlation_data to a pending rid */
@@ -264,7 +264,7 @@ static void on_twin_get_response_next(void* user_ctx, const az_iot_mqtt_message_
 
     if (TI(t).pending[idx].kind == TWIN_PENDING_GET)
     {
-        az_iot_twin_get_cb cb = TI(t).pending[idx].cb.get_cb;
+        az_iot_twin_get_callback cb = TI(t).pending[idx].cb.get_cb;
         void* ctx = TI(t).pending[idx].user_ctx;
         TI(t).pending[idx].in_use = false;
         TI(t).pending[idx].kind = TWIN_PENDING_NONE;
@@ -277,9 +277,9 @@ static void on_twin_get_response_next(void* user_ctx, const az_iot_mqtt_message_
 }
 
 /* Inbound on "ih/{device_id}/dev/twin/reported/response" — ack for patch. */
-static void on_twin_reported_response_next(void* user_ctx, const az_iot_mqtt_message_t* msg)
+static void on_twin_reported_response_next(void* user_ctx, const az_iot_mqtt_message* msg)
 {
-    az_iot_twin_client_t* t = (az_iot_twin_client_t*)user_ctx;
+    az_iot_twin_client* t = (az_iot_twin_client*)user_ctx;
     if (!t || !msg) return;
 
     uint32_t rid = 0;
@@ -298,7 +298,7 @@ static void on_twin_reported_response_next(void* user_ctx, const az_iot_mqtt_mes
 
     if (TI(t).pending[idx].kind == TWIN_PENDING_PATCH)
     {
-        az_iot_twin_patch_ack_cb cb = TI(t).pending[idx].cb.patch_cb;
+        az_iot_twin_patch_ack_callback cb = TI(t).pending[idx].cb.patch_cb;
         void* ctx = TI(t).pending[idx].user_ctx;
         TI(t).pending[idx].in_use = false;
         TI(t).pending[idx].kind = TWIN_PENDING_NONE;
@@ -311,9 +311,9 @@ static void on_twin_reported_response_next(void* user_ctx, const az_iot_mqtt_mes
 }
 
 /* Inbound on "ih/{device_id}/dev/twin/desired" — desired property push. */
-static void on_twin_desired_next(void* user_ctx, const az_iot_mqtt_message_t* msg)
+static void on_twin_desired_next(void* user_ctx, const az_iot_mqtt_message* msg)
 {
-    az_iot_twin_client_t* t = (az_iot_twin_client_t*)user_ctx;
+    az_iot_twin_client* t = (az_iot_twin_client*)user_ctx;
     if (!t || !msg) return;
 
     /* Version could come from a user property; for now default to 0 */
@@ -325,15 +325,15 @@ static void on_twin_desired_next(void* user_ctx, const az_iot_mqtt_message_t* ms
 /* public API                                                                 */
 /* ------------------------------------------------------------------------- */
 
-az_iot_result_t az_iot_twin_client_init(
-    az_iot_twin_client_t* client,
-    az_iot_connection_client_t* conn)
+az_iot_result az_iot_twin_client_init(
+    az_iot_twin_client* client,
+    az_iot_connection_client* conn)
 {
     if (client == NULL || conn == NULL)
     {
         return AZ_IOT_ERR_INVALID_ARG;
     }
-    const az_iot_protocol_profile_t* profile =
+    const az_iot_protocol_profile* profile =
         az_iot_connection_client__profile(conn);
     if (!profile)
     {
@@ -361,7 +361,7 @@ az_iot_result_t az_iot_twin_client_init(
         char prefix[AZ_IOT_TWIN_TOPIC_MAX];
         char filter[AZ_IOT_TWIN_TOPIC_MAX];
         int n;
-        az_iot_result_t r;
+        az_iot_result r;
 
         /* Register handler for twin/get/response */
         n = snprintf(prefix, sizeof(prefix), "ih/%s/dev/twin/get/response", device_id);
@@ -443,7 +443,7 @@ az_iot_result_t az_iot_twin_client_init(
             return AZ_IOT_ERR_NOT_SUPPORTED;
         }
 
-        az_iot_result_t r = az_iot_connection_client__register_inbound_handler(
+        az_iot_result r = az_iot_connection_client__register_inbound_handler(
             conn, profile->twin_response_topic_prefix, on_twin_response, client);
         if (r != AZ_IOT_OK) { memset(client, 0, sizeof(*client)); return r; }
 
@@ -494,15 +494,15 @@ az_iot_result_t az_iot_twin_client_init(
     return AZ_IOT_OK;
 }
 
-void az_iot_twin_client_deinit(az_iot_twin_client_t* client)
+void az_iot_twin_client_destroy(az_iot_twin_client* client)
 {
     if (!client) return;
     (void)az_iot_connection_client__unregister_inbound_handlers(TI(client).conn, client);
     memset(client, 0, sizeof(*client));
 }
 
-az_iot_result_t az_iot_twin_client_get(
-    az_iot_twin_client_t* twin, az_iot_twin_get_cb cb, void* user_ctx)
+az_iot_result az_iot_twin_client_get(
+    az_iot_twin_client* twin, az_iot_twin_get_callback cb, void* user_ctx)
 {
     if (!twin) return AZ_IOT_ERR_INVALID_ARG;
 
@@ -512,7 +512,7 @@ az_iot_result_t az_iot_twin_client_get(
     uint32_t rid = TI(twin).next_rid++;
     if (TI(twin).next_rid == 0) TI(twin).next_rid = 1; /* never reuse 0 */
 
-    const az_iot_protocol_profile_t* profile =
+    const az_iot_protocol_profile* profile =
         az_iot_connection_client__profile(TI(twin).conn);
 
     char topic[AZ_IOT_TWIN_TOPIC_MAX];
@@ -542,7 +542,7 @@ az_iot_result_t az_iot_twin_client_get(
     TI(twin).pending[idx].cb.get_cb = cb;
     TI(twin).pending[idx].user_ctx  = user_ctx;
 
-    az_iot_mqtt_message_t out = { 0 };
+    az_iot_mqtt_message out = { 0 };
     out.topic = topic;
     out.qos   = (profile && profile->flavor == AZ_IOT_HUB_FLAVOR_NEXT)
         ? AZ_IOT_MQTT_QOS_1 : AZ_IOT_MQTT_QOS_0;
@@ -553,7 +553,7 @@ az_iot_result_t az_iot_twin_client_get(
         out.correlation_data_len = (size_t)corr_len;
     }
 
-    az_iot_result_t r = az_iot_connection_client__publish(
+    az_iot_result r = az_iot_connection_client__publish(
         TI(twin).conn, &out, NULL, NULL);
     if (r != AZ_IOT_OK)
     {
@@ -563,11 +563,11 @@ az_iot_result_t az_iot_twin_client_get(
     return r;
 }
 
-az_iot_result_t az_iot_twin_client_patch_reported(
-    az_iot_twin_client_t* twin,
+az_iot_result az_iot_twin_client_patch_reported(
+    az_iot_twin_client* twin,
     const uint8_t* patch,
     size_t patch_len,
-    az_iot_twin_patch_ack_cb cb,
+    az_iot_twin_patch_ack_callback cb,
     void* user_ctx)
 {
     if (!twin) return AZ_IOT_ERR_INVALID_ARG;
@@ -579,7 +579,7 @@ az_iot_result_t az_iot_twin_client_patch_reported(
     uint32_t rid = TI(twin).next_rid++;
     if (TI(twin).next_rid == 0) TI(twin).next_rid = 1;
 
-    const az_iot_protocol_profile_t* profile =
+    const az_iot_protocol_profile* profile =
         az_iot_connection_client__profile(TI(twin).conn);
 
     char topic[AZ_IOT_TWIN_TOPIC_MAX];
@@ -606,7 +606,7 @@ az_iot_result_t az_iot_twin_client_patch_reported(
     TI(twin).pending[idx].cb.patch_cb = cb;
     TI(twin).pending[idx].user_ctx    = user_ctx;
 
-    az_iot_mqtt_message_t out = { 0 };
+    az_iot_mqtt_message out = { 0 };
     out.topic       = topic;
     out.payload     = patch;
     out.payload_len = patch_len;
@@ -619,7 +619,7 @@ az_iot_result_t az_iot_twin_client_patch_reported(
         out.correlation_data_len = (size_t)corr_len;
     }
 
-    az_iot_result_t r = az_iot_connection_client__publish(
+    az_iot_result r = az_iot_connection_client__publish(
         TI(twin).conn, &out, NULL, NULL);
     if (r != AZ_IOT_OK)
     {
@@ -629,9 +629,9 @@ az_iot_result_t az_iot_twin_client_patch_reported(
     return r;
 }
 
-az_iot_result_t az_iot_twin_client_subscribe_desired(
-    az_iot_twin_client_t* twin,
-    az_iot_twin_desired_cb cb,
+az_iot_result az_iot_twin_client_subscribe_desired(
+    az_iot_twin_client* twin,
+    az_iot_twin_desired_callback cb,
     void* user_ctx)
 {
     if (!twin) return AZ_IOT_ERR_INVALID_ARG;
@@ -639,9 +639,9 @@ az_iot_result_t az_iot_twin_client_subscribe_desired(
         twin, TI(twin).desired_app_subs, AZ_IOT_TWIN_MAX_DESIRED_APP_SUBS, cb, user_ctx);
 }
 
-az_iot_result_t az_iot_twin_client__subscribe_desired(
-    az_iot_twin_client_t* twin,
-    az_iot_twin_desired_cb cb,
+az_iot_result az_iot_twin_client__subscribe_desired(
+    az_iot_twin_client* twin,
+    az_iot_twin_desired_callback cb,
     void* user_ctx)
 {
     if (!twin) return AZ_IOT_ERR_INVALID_ARG;
@@ -649,9 +649,9 @@ az_iot_result_t az_iot_twin_client__subscribe_desired(
         twin, TI(twin).desired_feature_subs, AZ_IOT_TWIN_MAX_DESIRED_FEATURE_SUBS, cb, user_ctx);
 }
 
-az_iot_result_t az_iot_twin_client_unsubscribe_desired(
-    az_iot_twin_client_t* twin,
-    az_iot_twin_desired_cb cb,
+az_iot_result az_iot_twin_client_unsubscribe_desired(
+    az_iot_twin_client* twin,
+    az_iot_twin_desired_callback cb,
     void* user_ctx)
 {
     if (!twin || !cb) return AZ_IOT_ERR_INVALID_ARG;
@@ -660,7 +660,7 @@ az_iot_result_t az_iot_twin_client_unsubscribe_desired(
     /* Search both pools; an entry matches on (cb, user_ctx). */
     for (size_t i = 0; i < AZ_IOT_TWIN_MAX_DESIRED_FEATURE_SUBS; ++i)
     {
-        az_iot_twin_desired_sub_t* s = &TI(twin).desired_feature_subs[i];
+        az_iot_twin_desired_sub* s = &TI(twin).desired_feature_subs[i];
         if (s->in_use && s->cb == cb && s->user_ctx == user_ctx)
         {
             s->in_use = false; s->cb = NULL; s->user_ctx = NULL;
@@ -669,7 +669,7 @@ az_iot_result_t az_iot_twin_client_unsubscribe_desired(
     }
     for (size_t i = 0; i < AZ_IOT_TWIN_MAX_DESIRED_APP_SUBS; ++i)
     {
-        az_iot_twin_desired_sub_t* s = &TI(twin).desired_app_subs[i];
+        az_iot_twin_desired_sub* s = &TI(twin).desired_app_subs[i];
         if (s->in_use && s->cb == cb && s->user_ctx == user_ctx)
         {
             s->in_use = false; s->cb = NULL; s->user_ctx = NULL;

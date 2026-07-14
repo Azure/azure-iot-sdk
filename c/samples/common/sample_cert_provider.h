@@ -2,7 +2,7 @@
 // Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
 /* SPDX-License-Identifier: MIT */
-/* sample_cert_provider - a COMPLETE, app-owned az_iot_certificate_provider_t for
+/* sample_cert_provider - a COMPLETE, app-owned az_iot_certificate_provider for
  * the samples, using platform-native crypto to issue the CSR:
  *   - Linux / non-Windows: OpenSSL 3.0+ (sample_csr_openssl.c)
  *   - Windows:             CNG / NCrypt   (sample_csr_cng.c)
@@ -35,29 +35,29 @@ typedef struct
     const char* trusted_ca_path;        /* may be NULL */
     const char* operational_key_path;   /* required: operational key (PEM; loaded or generated) */
     const char* operational_cert_path;  /* required: issued chain is persisted here */
-} sample_cert_provider_options_t;
+} sample_cert_provider_options;
 
 /* Caller-owned struct; fields are INTERNAL. */
 typedef struct
 {
-    az_iot_certificate_provider_t base; /* MUST be first (vtable pointer) */
+    az_iot_certificate_provider base; /* MUST be first (vtable pointer) */
     char* bootstrap_cert_path;
     char* bootstrap_key_path;
     char* trusted_ca_path;
     char* operational_key_path;
     char* operational_cert_path;
     int   has_operational;
-} sample_cert_provider_t;
+} sample_cert_provider;
 
 /* Initialize the provider. Detects any operational cert already on disk (so a
  * prior enrollment survives restart). Returns AZ_IOT_ERR_INVALID_ARG on a
  * missing required path. Pass &provider.base wherever an
- * az_iot_certificate_provider_t* is expected. */
-az_iot_result_t sample_cert_provider_init(
-    sample_cert_provider_t* provider, const sample_cert_provider_options_t* opts);
+ * az_iot_certificate_provider* is expected. */
+az_iot_result sample_cert_provider_init(
+    sample_cert_provider* provider, const sample_cert_provider_options* opts);
 
 /* Release heap-owned paths. Does NOT delete files on disk. */
-void sample_cert_provider_deinit(sample_cert_provider_t* provider);
+void sample_cert_provider_destroy(sample_cert_provider* provider);
 
 #ifdef __cplusplus
 }

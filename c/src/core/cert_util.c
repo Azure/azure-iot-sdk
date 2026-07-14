@@ -36,7 +36,7 @@ void az_iot_cert_util_gen_request_id(uint64_t* rng_state, char* buf, size_t cap)
                    (unsigned)(x >> 32), (unsigned)(x & 0xffffffffu));
 }
 
-az_iot_result_t az_iot_cert_util_collect_chain_spans(
+az_iot_result az_iot_cert_util_collect_chain_spans(
     az_json_reader* jr, az_span* certs, size_t max, size_t* out_count)
 {
     size_t count = 0;

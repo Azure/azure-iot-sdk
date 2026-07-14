@@ -80,7 +80,7 @@ typedef enum
  * backend status); otherwise `NULL`. Valid only for the duration of the callback.
  * @param[in] user_data The pointer supplied to #az_amqp_connection_set_state_callback.
  */
-typedef void (*az_amqp_connection_state_changed_fn)(
+typedef void (*az_amqp_connection_state_changed_callback)(
     az_amqp_connection* connection,
     az_amqp_connection_state previous_state,
     az_amqp_connection_state current_state,
@@ -142,7 +142,7 @@ struct az_amqp_connection
   az_amqp_connection_storage storage; ///< The caller-provided buffers and session registry.
   az_amqp_connection_options options; ///< The effective options.
   az_amqp_connection_state state; ///< Current state. Library-managed.
-  az_amqp_connection_state_changed_fn state_changed; ///< State callback. Library-managed.
+  az_amqp_connection_state_changed_callback state_changed; ///< State callback. Library-managed.
   void* state_changed_user_data; ///< State callback context. Library-managed.
   az_amqp_error_detail last_error; ///< Most recent failure detail. Library-managed.
   int32_t phase; ///< Internal open/close sub-state-machine step. Library-managed.
@@ -237,7 +237,7 @@ AZ_NODISCARD az_result az_amqp_connection_init(
  */
 void az_amqp_connection_set_state_callback(
     az_amqp_connection* connection,
-    az_amqp_connection_state_changed_fn state_changed,
+    az_amqp_connection_state_changed_callback state_changed,
     void* user_data);
 
 /**

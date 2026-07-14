@@ -5,10 +5,9 @@
 
 The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "SHOULD NOT", "RECOMMENDED", "MAY", and "OPTIONAL" in this document are to be interpreted as described in [RFC 2119](https://datatracker.ietf.org/doc/html/rfc2119).
 
-> **Naming:** this doc and the accompanying code use the current `main` convention —
-> project types keep the `_t` suffix (struct/enum **tags** use `_tag`, callbacks `_cb`). A
-> separate, comprehensive rename to drop `_t` project-wide is planned; when it lands these
-> names lose the suffix along with the rest of the SDK.
+> **Naming:** types use the current SDK convention — no `_t` suffix (except a few that
+> collide with vendored azure-sdk-for-c names, e.g. `az_iot_adu_client_t`), struct/enum
+> tags match the type name, and callbacks use the `_callback` suffix.
 
 ## Status
 
@@ -25,7 +24,7 @@ question in `docs/design.md` (§4.3) and the flow in `docs/dps-integration.md`
 ## Abstract
 
 Today the C connection client uses a single, static X.509 certificate for both the
-DPS connection and the IoT Hub connection. The pluggable `az_iot_certificate_provider_t`
+DPS connection and the IoT Hub connection. The pluggable `az_iot_certificate_provider`
 hook only *loads* pre-existing PEM material; nothing generates a certificate signing
 request (CSR), sends one to DPS, or consumes an issued certificate.
 
@@ -75,9 +74,9 @@ whatever owns key material.
 
 ## Change 1 — New value types
 
-New in `inc/azure/iot/az_iot_certificate_provider_t.h`. Small value structs, wrapped for
+New in `inc/azure/iot/az_iot_certificate_provider.h`. Small value structs, wrapped for
 future-proofing (expiry, key handles) and for consistency with
-`az_iot_certificate_material_t`. **Encoding matches the service / C# contract**: the CSR
+`az_iot_certificate_material`. **Encoding matches the service / C# contract**: the CSR
 is base64-encoded PKCS#10 DER (no PEM headers/newlines), and the issued material is a
 **chain** (leaf first).
 
@@ -85,52 +84,52 @@ is base64-encoded PKCS#10 DER (no PEM headers/newlines), and the issued material
 /* PKCS#10 certificate signing request produced by the provider.
  * Base64-encoded DER, no PEM headers/newlines — matches the DPS register "csr"
  * field and the Hub "$iothub/credentials" CSR "csr" field. */
-typedef struct az_iot_certificate_signing_request_tag
+typedef struct az_iot_certificate_signing_request
 {
     const char* csr_base64;
-} az_iot_certificate_signing_request_t;
+} az_iot_certificate_signing_request;
 
 /* Operational certificate chain issued by the DPS- or Hub-linked CA (leaf first).
    Each entry is base64 DER (as received on the wire) delivered as a zero-copy
    az_span into the client's receive buffer; a provider that persists the chain
    PEM-wraps each entry. Valid only for the store/callback call. */
-typedef struct az_iot_issued_certificate_tag
+typedef struct az_iot_issued_certificate
 {
     const az_span* certificates;   /* base64 DER certs, leaf first */
     size_t         count;
-} az_iot_issued_certificate_t;
+} az_iot_issued_certificate;
 ```
 
 ## Change 2 — Extend the certificate-provider vtable (+ `load()` semantics)
 
-Append three **OPTIONAL** hooks to `az_iot_certificate_provider_vtable_t`. Appending is
+Append three **OPTIONAL** hooks to `az_iot_certificate_provider_vtable`. Appending is
 source-compatible: the in-tree PEM provider uses a positional initializer
 `{ pem_load, pem_release, pem_deinit_vtable }`, and C zero-fills the trailing slots to
 `NULL` — so it keeps compiling untouched and simply reports "no CSR support".
 
 ```c
-typedef struct az_iot_certificate_provider_vtable_tag
+typedef struct az_iot_certificate_provider_vtable
 {
     /* --- v1: unchanged --- */
-    az_iot_result_t (*load)   (az_iot_certificate_provider_t* self, az_iot_certificate_material_t* out_material);
-    void            (*release)(az_iot_certificate_provider_t* self, az_iot_certificate_material_t* material);
-    void            (*deinit) (az_iot_certificate_provider_t* self);
+    az_iot_result (*load)   (az_iot_certificate_provider* self, az_iot_certificate_material* out_material);
+    void            (*release)(az_iot_certificate_provider* self, az_iot_certificate_material* material);
+    void            (*deinit) (az_iot_certificate_provider* self);
 
     /* --- v2: CSR-based enrollment (certificate management). Optional. --- */
     /* NULL get_csr => provider does not support enrollment. */
-    az_iot_result_t (*get_csr)(
-        az_iot_certificate_provider_t* self,
+    az_iot_result (*get_csr)(
+        az_iot_certificate_provider* self,
         const char* subject_common_name,          /* SDK passes registration_id; CSR CN MUST be this */
-        az_iot_certificate_signing_request_t* out_csr);
+        az_iot_certificate_signing_request* out_csr);
 
     void            (*release_csr)(
-        az_iot_certificate_provider_t* self,
-        az_iot_certificate_signing_request_t* csr);
+        az_iot_certificate_provider* self,
+        az_iot_certificate_signing_request* csr);
 
-    az_iot_result_t (*store_issued_certificate)(
-        az_iot_certificate_provider_t* self,
-        const az_iot_issued_certificate_t* issued);
-} az_iot_certificate_provider_vtable_t;
+    az_iot_result (*store_issued_certificate)(
+        az_iot_certificate_provider* self,
+        const az_iot_issued_certificate* issued);
+} az_iot_certificate_provider_vtable;
 ```
 
 **Revised `load()` contract** (documented, no signature change): returns the *best
@@ -146,8 +145,8 @@ gets the operational material.
 
 ## Change 3 — Connection client DPS option (opt-in)
 
-One new field in the `dps` sub-struct of `az_iot_connection_client_options_t` in
-`inc/azure/iot/az_iot_connection_client_t.h`:
+One new field in the `dps` sub-struct of `az_iot_connection_client_options` in
+`inc/azure/iot/az_iot_connection_client.h`:
 
 ```c
 struct
@@ -162,17 +161,17 @@ struct
 Validation (at `open()`): if `request_operational_certificate == true` but
 `provider->vtable->get_csr == NULL` → return `AZ_IOT_ERR_NOT_SUPPORTED`. Reuses existing
 result codes (`AZ_IOT_ERR_DPS`, `AZ_IOT_ERR_NOT_SUPPORTED`); no additions to
-`inc/azure/iot/az_iot_result_t.h`.
+`inc/azure/iot/az_iot_result.h`.
 
 ## Change 4 — Reference provider that actually does CSR
 
 The PEM loader (`certificate_provider_pem`) stays a static loader (documented "no
-generation"). Add a new provider `az_iot_certificate_provider_managed_t`, backed by the
+generation"). Add a new provider `az_iot_certificate_provider_managed`, backed by the
 existing OpenSSL crypto adapter under `adapters/adu/crypto_openssl/`, built only when
-OpenSSL is available. New header `inc/azure/iot/az_iot_certificate_provider_managed_t.h`:
+OpenSSL is available. New header `inc/azure/iot/az_iot_certificate_provider_managed.h`:
 
 ```c
-typedef struct az_iot_certificate_provider_managed_options_tag
+typedef struct az_iot_certificate_provider_managed_options
 {
     /* Bootstrap identity — authenticates the DPS TLS connection. Required. */
     const char* bootstrap_cert_pem_path;
@@ -187,20 +186,20 @@ typedef struct az_iot_certificate_provider_managed_options_tag
     /* Persist the DPS-issued operational cert so it survives restarts and the
      * device can skip re-enrolling every boot. NULL = memory-only. */
     const char* issued_cert_pem_path;      /* may be NULL */
-} az_iot_certificate_provider_managed_options_t;
+} az_iot_certificate_provider_managed_options;
 
-typedef struct az_iot_certificate_provider_managed_tag
+typedef struct az_iot_certificate_provider_managed
 {
-    az_iot_certificate_provider_t base;    /* MUST be first (vtable pointer) */
+    az_iot_certificate_provider base;    /* MUST be first (vtable pointer) */
     void* impl;                            /* internal (OpenSSL state) */
-} az_iot_certificate_provider_managed_t;
+} az_iot_certificate_provider_managed;
 
-az_iot_result_t az_iot_certificate_provider_managed_init(
-    az_iot_certificate_provider_managed_t* provider,
-    const az_iot_certificate_provider_managed_options_t* opts);
+az_iot_result az_iot_certificate_provider_managed_init(
+    az_iot_certificate_provider_managed* provider,
+    const az_iot_certificate_provider_managed_options* opts);
 
-void az_iot_certificate_provider_managed_deinit(
-    az_iot_certificate_provider_managed_t* provider);
+void az_iot_certificate_provider_managed_destroy(
+    az_iot_certificate_provider_managed* provider);
 ```
 
 Behavior: `get_csr()` builds a PKCS#10 over the operational key with
@@ -238,23 +237,25 @@ against `samples/telemetry/main.c`:
 
 ```c
     /* --- BEFORE: static cert used for both DPS and Hub --- */
-    az_iot_certificate_provider_pem_t certs;                       // in sample_state_t
+    az_iot_certificate_provider_pem certs;                         // in sample_state_t
 
-    az_iot_certificate_provider_pem_options_t pem = {
-        .trusted_ca_pem_path  = cfg.ca,
-        .client_cert_pem_path = cfg.cert,
-        .client_key_pem_path  = cfg.key };
+    az_iot_certificate_provider_pem_options pem = az_iot_certificate_provider_pem_options_default();
+    pem.trusted_ca_pem_path  = cfg.ca;
+    pem.client_cert_pem_path = cfg.cert;
+    pem.client_key_pem_path  = cfg.key;
     az_iot_certificate_provider_pem_init(&s.certs, &pem);
 
-    az_iot_connection_client_options_t copts =
-        az_iot_connection_client_options_get_default(cfg.id_scope, cfg.reg_id, &s.certs.base);
+    az_iot_connection_client_options copts = az_iot_connection_client_options_default();
+    copts.dps.id_scope = cfg.id_scope;
+    copts.dps.registration_id = cfg.reg_id;
+    copts.certificate_provider = &s.certs.base;
 ```
 
 ```c
     /* --- AFTER: CSR-based enrollment (operational cert from DPS) --- */
-    az_iot_certificate_provider_managed_t certs;                   // in sample_state_t
+    az_iot_certificate_provider_managed certs;                   // in sample_state_t
 
-    az_iot_certificate_provider_managed_options_t mopts = {
+    az_iot_certificate_provider_managed_options mopts = {
         .bootstrap_cert_pem_path  = cfg.cert,       /* identity cert to auth to DPS   */
         .bootstrap_key_pem_path   = cfg.key,
         .trusted_ca_pem_path      = cfg.ca,
@@ -262,12 +263,14 @@ against `samples/telemetry/main.c`:
         .issued_cert_pem_path     = cfg.op_cert };  /* persisted issued cert (reuse)    */
     az_iot_certificate_provider_managed_init(&s.certs, &mopts);
 
-    az_iot_connection_client_options_t copts =
-        az_iot_connection_client_options_get_default(cfg.id_scope, cfg.reg_id, &s.certs.base);
+    az_iot_connection_client_options copts = az_iot_connection_client_options_default();
+    copts.dps.id_scope = cfg.id_scope;
+    copts.dps.registration_id = cfg.reg_id;
+    copts.certificate_provider = &s.certs.base;
     copts.dps.request_operational_certificate = true;   /* <-- the only behavioral opt-in */
 ```
 
-`sample_state_destroy()` swaps `..._pem_deinit` → `..._managed_deinit`; `sample_config_t`
+`sample_state_destroy()` swaps `..._pem_destroy` → `..._managed_destroy`; `sample_config_t`
 gains `op_key` / `op_cert` paths. Everything else (factory registration, `open()`,
 `do_work()` loop, telemetry send) is unchanged.
 
@@ -315,28 +318,28 @@ typedef enum
     AZ_IOT_CSR_ACCEPTED = 0,   /* 202: Hub accepted, signing in progress */
     AZ_IOT_CSR_ISSUED,         /* 200: issued chain delivered            */
     AZ_IOT_CSR_FAILED          /* rejected/failed (see status + code)    */
-} az_iot_csr_event_kind_t;
+} az_iot_csr_event_kind;
 
 typedef struct
 {
-    az_iot_csr_event_kind_t kind;
-    az_iot_result_t         status;         /* AZ_IOT_OK unless FAILED       */
+    az_iot_csr_event_kind kind;
+    az_iot_result         status;         /* AZ_IOT_OK unless FAILED       */
     int32_t                 service_code;   /* e.g. 409005; 0 if none         */
     uint32_t                retry_after_s;  /* 0 if none                      */
-    const az_iot_issued_certificate_t* issued;  /* non-NULL on ISSUED         */
-} az_iot_csr_event_t;
+    const az_iot_issued_certificate* issued;  /* non-NULL on ISSUED         */
+} az_iot_csr_event;
 
-typedef void (*az_iot_csr_cb)(const az_iot_csr_event_t* evt, void* user_ctx);
+typedef void (*az_iot_csr_callback)(const az_iot_csr_event* evt, void* user_ctx);
 
 /* Device-initiated renewal against the connected Hub. request_id NULL => the
  * SDK generates one; pass a prior id to resubmit. replace NULL, or "*" to
  * supersede any active request. */
-az_iot_result_t az_iot_connection_client_send_csr(
-    az_iot_connection_client_t* client,
-    const az_iot_certificate_signing_request_t* csr,
+az_iot_result az_iot_connection_client_send_csr(
+    az_iot_connection_client* client,
+    const az_iot_certificate_signing_request* csr,
     const char* request_id,
     const char* replace,
-    az_iot_csr_cb cb,
+    az_iot_csr_callback cb,
     void* user_ctx);
 ```
 
@@ -421,19 +424,19 @@ already covered; HSM/TPM needs one addition.
 
 | Storage method | Example | Fit | Gap |
 |---|---|---|---|
-| **File on disk (pinned)** — PEM/PKCS#12 at a fixed path | Linux gateway | `certificate_provider_pem` + `az_iot_certificate_material_t.*_path`; "pinned" = fixed `trusted_ca_path` | none |
-| **Compiled into firmware image** (`const` in flash) | MCU, no filesystem | `az_iot_certificate_material_t.*_pem` string blobs from a custom provider | none |
+| **File on disk (pinned)** — PEM/PKCS#12 at a fixed path | Linux gateway | `certificate_provider_pem` + `az_iot_certificate_material.*_path`; "pinned" = fixed `trusted_ca_path` | none |
+| **Compiled into firmware image** (`const` in flash) | MCU, no filesystem | `az_iot_certificate_material.*_pem` string blobs from a custom provider | none |
 | **OS keystore** — Windows Cert Store, macOS Keychain | Desktop/server | Custom provider; OK if key is exportable to PEM | else → HSM row |
 | **HSM / TPM / secure element** — key non-extractable | ATECC608, TPM 2.0, PKCS#11 | Custom provider; `get_csr` signs *inside* the device so the key never leaves | **key reference (below)** |
 | **Remote/cloud key** — Key Vault, KMS | rare on-device | Only via a `sign()` callback model | callback (below) |
 
-**The gap:** `az_iot_certificate_material_t` today expresses the private key only as PEM
+**The gap:** `az_iot_certificate_material` today expresses the private key only as PEM
 or a file path. An HSM key is a *handle*, not a PEM — and the **TLS handshake** (not just
 the CSR) must sign with it. .NET hides this inside `X509Certificate2` (a CNG handle); C
 has no universal object, so the design needs an explicit key-reference escape hatch:
 
 ```c
-typedef struct az_iot_certificate_material_tag
+typedef struct az_iot_certificate_material
 {
     /* ... existing PEM/path fields ... */
 
@@ -441,13 +444,13 @@ typedef struct az_iot_certificate_material_tag
      * TLS adapter uses this reference instead. */
     const char* client_key_uri;    /* e.g. PKCS#11: "pkcs11:token=...;object=..." */
     const char* crypto_engine_id;  /* OpenSSL ENGINE/provider id: "pkcs11", "tpm2", ... */
-} az_iot_certificate_material_t;
+} az_iot_certificate_material;
 ```
 
 Two implications:
 
 - The **MQTT/TLS adapter must honor it** — e.g. Paho + OpenSSL built with ENGINE/provider
-  support (`libp11`, `tpm2-openssl`). This is a joint `certificate_material_t` + adapter
+  support (`libp11`, `tpm2-openssl`). This is a joint `certificate_material` + adapter
   change.
 - Where no engine abstraction exists, the fallback is a **`sign()` callback** on the
   provider vtable that the TLS layer invokes — heavier, but the only path to full custody
@@ -515,34 +518,34 @@ typedef enum
 {
     AZ_IOT_CRED_BOOTSTRAP = 0,   /* identity that authenticates to DPS         */
     AZ_IOT_CRED_OPERATIONAL      /* DPS/Hub-issued operational cert, once held  */
-} az_iot_cert_role_t;
+} az_iot_cert_role;
 
 #define AZ_IOT_CERTIFICATE_PROVIDER_VTABLE_VERSION 2u
 
-typedef struct az_iot_certificate_provider_vtable_tag
+typedef struct az_iot_certificate_provider_vtable
 {
     uint32_t version;   /* = AZ_IOT_CERTIFICATE_PROVIDER_VTABLE_VERSION (D1) */
 
     /* v1 core */
-    az_iot_result_t (*load)(az_iot_certificate_provider_t* self,
-                          az_iot_cert_role_t role,                 /* D3 */
-                          az_iot_certificate_material_t* out_material);
-    void          (*release)(az_iot_certificate_provider_t* self, az_iot_certificate_material_t* material);
-    void          (*deinit)(az_iot_certificate_provider_t* self);
+    az_iot_result (*load)(az_iot_certificate_provider* self,
+                          az_iot_cert_role role,                 /* D3 */
+                          az_iot_certificate_material* out_material);
+    void          (*release)(az_iot_certificate_provider* self, az_iot_certificate_material* material);
+    void          (*deinit)(az_iot_certificate_provider* self);
 
     /* v2 CSR enrollment (optional; NULL get_csr => not supported) */
-    az_iot_result_t (*get_csr)(az_iot_certificate_provider_t* self,
+    az_iot_result (*get_csr)(az_iot_certificate_provider* self,
                              const char* subject_common_name,
-                             az_iot_certificate_signing_request_t* out_csr);
-    void          (*release_csr)(az_iot_certificate_provider_t* self, az_iot_certificate_signing_request_t* csr);
-    az_iot_result_t (*store_issued_certificate)(az_iot_certificate_provider_t* self, const az_iot_issued_certificate_t* issued);
+                             az_iot_certificate_signing_request* out_csr);
+    void          (*release_csr)(az_iot_certificate_provider* self, az_iot_certificate_signing_request* csr);
+    az_iot_result (*store_issued_certificate)(az_iot_certificate_provider* self, const az_iot_issued_certificate* issued);
 
     /* v2 non-extractable key custody (optional; D8). When present the TLS
      * adapter calls sign() instead of reading a private key. */
-    az_iot_result_t (*sign)(az_iot_certificate_provider_t* self,
+    az_iot_result (*sign)(az_iot_certificate_provider* self,
                           const uint8_t* digest, size_t digest_len,
                           uint8_t* out_sig, size_t out_sig_cap, size_t* out_sig_len);
-} az_iot_certificate_provider_vtable_t;
+} az_iot_certificate_provider_vtable;
 ```
 
 ---

@@ -115,21 +115,21 @@ set by the registration helper, never passed by the caller.
 
 ```c
 /* Unchanged callback signature. */
-typedef void (*az_iot_twin_desired_cb)(
+typedef void (*az_iot_twin_desired_callback)(
     const uint8_t* desired_patch,
     size_t desired_patch_len,
     uint64_t version,
     void* user_ctx);
 
 /* Public — application. */
-az_iot_result_t az_iot_twin_client_subscribe_desired(
-    az_iot_twin_client_t* twin, az_iot_twin_desired_cb cb, void* user_ctx);
-az_iot_result_t az_iot_twin_client_unsubscribe_desired(
-    az_iot_twin_client_t* twin, az_iot_twin_desired_cb cb, void* user_ctx);
+az_iot_result az_iot_twin_client_subscribe_desired(
+    az_iot_twin_client* twin, az_iot_twin_desired_callback cb, void* user_ctx);
+az_iot_result az_iot_twin_client_unsubscribe_desired(
+    az_iot_twin_client* twin, az_iot_twin_desired_callback cb, void* user_ctx);
 
 /* Internal header — feature clients (e.g. ADU). */
-az_iot_result_t az_iot_twin_client__subscribe_desired(
-    az_iot_twin_client_t* twin, az_iot_twin_desired_cb cb, void* user_ctx);
+az_iot_result az_iot_twin_client__subscribe_desired(
+    az_iot_twin_client* twin, az_iot_twin_desired_callback cb, void* user_ctx);
 ```
 
 `az_iot_twin_client_set_desired_callback()` is **removed** and replaced by the
@@ -287,7 +287,7 @@ The application supplies device properties as a **plain struct** that the librar
 The design (full API in [§5.2](#52-device-properties-api)):
 
 1. **Caller-owned struct, library-owned cache.** At `init` the application passes
-   an `az_iot_adu_device_properties_t` (manufacturer, model, installedUpdateId,
+   an `az_iot_adu_device_properties` (manufacturer, model, installedUpdateId,
    and an array of custom properties) plus a cache buffer. The library
    **deep-copies** every string into the cache; after `init` returns the
    application MAY mutate or free its own struct.
@@ -328,7 +328,7 @@ The `az_iot_adu_client_workflow` struct contains `action`, `id`, and `retry_time
 
 ### Cloud State Mapping
 
-The internal fine-grained states (`az_iot_adu_state_t`) MUST be mapped to the protocol-defined agent states when reporting to the cloud:
+The internal fine-grained states (`az_iot_adu_state`) MUST be mapped to the protocol-defined agent states when reporting to the cloud:
 
 | Internal State(s) | Reported `state` value | Protocol Meaning |
 |-------------------|----------------------|------------------|
@@ -515,7 +515,7 @@ across MCU endianness.
 | 0 | `magic` | `uint8[4]` | ASCII `"ADUS"`. Mismatch ⇒ not our blob. |
 | 4 | `version` | `uint8` | `AZ_IOT_ADU_STATE_BLOB_VERSION`. Mismatch ⇒ discard. |
 | 5 | `flags` | `uint8` | bit0 `backup_taken` summary; reserved bits MUST be 0. |
-| 6 | `state` | `uint8` | `az_iot_adu_state_t` to re-enter (see Resume semantics). |
+| 6 | `state` | `uint8` | `az_iot_adu_state` to re-enter (see Resume semantics). |
 | 7 | `action` | `uint8` | workflow action (ApplyDeployment/Cancel) from the request. |
 | 8 | `current_step` | `uint16` | step index in progress. |
 | 10 | `step_count` | `uint16` | total steps (== `step_results` entries). |
@@ -599,7 +599,7 @@ extern "C" {
 
 /* --- State enum ---------------------------------------------------------- */
 
-typedef enum az_iot_adu_state_tag
+typedef enum az_iot_adu_state
 {
     AZ_IOT_ADU_STATE_IDLE = 0,
     AZ_IOT_ADU_STATE_MANIFEST_RECEIVED,
@@ -613,11 +613,11 @@ typedef enum az_iot_adu_state_tag
     AZ_IOT_ADU_STATE_APPLY_STARTED,
     AZ_IOT_ADU_STATE_RESTORE_STARTED,
     AZ_IOT_ADU_STATE_FAILED,
-} az_iot_adu_state_t;
+} az_iot_adu_state;
 
 /* --- Platform hooks (vtable) --------------------------------------------- */
 
-typedef struct az_iot_adu_platform_hooks_tag
+typedef struct az_iot_adu_platform_hooks
 {
     /**
      * Download one file. Called once per file, once per do_work iteration.
@@ -696,7 +696,7 @@ typedef struct az_iot_adu_platform_hooks_tag
         void* user_ctx);
 
     void* user_ctx;
-} az_iot_adu_platform_hooks_t;
+} az_iot_adu_platform_hooks;
 
 /* --- Crypto hooks (REQUIRED) --------------------------------------------- */
 
@@ -712,7 +712,7 @@ typedef struct az_iot_adu_platform_hooks_tag
  *
  * Pre-built implementations are available in adapters/adu/ for convenience.
  */
-typedef struct az_iot_adu_crypto_hooks_tag
+typedef struct az_iot_adu_crypto_hooks
 {
     /**
      * Verify an RSASSA-PKCS1-v1_5 signature over SHA-256 (JWS "alg":"RS256").
@@ -759,7 +759,7 @@ typedef struct az_iot_adu_crypto_hooks_tag
     int32_t (*sha256_final_fn)(void* ctx, uint8_t hash_out[32], void* user_ctx);
 
     void* user_ctx;
-} az_iot_adu_crypto_hooks_t;
+} az_iot_adu_crypto_hooks;
 
 /* --- Root key store (owned and managed by ADU core) ---------------------- */
 
@@ -772,7 +772,7 @@ typedef struct az_iot_adu_crypto_hooks_tag
  * bytes); the arrays MUST outlive the client. Keys may be compiled-in
  * constants (see az_iot_adu_microsoft_root_keys()) or loaded at runtime.
  */
-typedef struct az_iot_adu_root_key_tag
+typedef struct az_iot_adu_root_key
 {
     const char*    kid;           /* JWK key id, matched against the SJWK header `kid`. */
     const uint8_t* modulus;       /* big-endian RSA modulus (n). */
@@ -781,22 +781,22 @@ typedef struct az_iot_adu_root_key_tag
     size_t         exponent_len;
     bool           disabled;      /* true = revoked/disabled; rejected during resolution.
                                      Kept in the list only for auditability. */
-} az_iot_adu_root_key_t;
+} az_iot_adu_root_key;
 
 /* --- Device properties (plain struct, deep-copied by the client) --------- */
 
-typedef struct az_iot_adu_update_id_tag
+typedef struct az_iot_adu_update_id_info
 {
     const char* provider;
     const char* name;
     const char* version;
-} az_iot_adu_update_id_t;
+} az_iot_adu_update_id_info;
 
-typedef struct az_iot_adu_custom_property_tag
+typedef struct az_iot_adu_custom_property
 {
     const char* name;
     const char* value;
-} az_iot_adu_custom_property_t;
+} az_iot_adu_custom_property;
 
 /**
  * Device properties supplied by the application. All fields are caller-owned;
@@ -804,29 +804,29 @@ typedef struct az_iot_adu_custom_property_tag
  * update_device_properties(). After those calls return, the application MAY
  * mutate or free this struct and the arrays/strings it points to.
  */
-typedef struct az_iot_adu_device_properties_tag
+typedef struct az_iot_adu_device_properties
 {
     const char*                         manufacturer;
     const char*                         model;
-    az_iot_adu_update_id_t              installed_update_id;
-    const az_iot_adu_custom_property_t* custom_properties;       /* caller's array, MAY be NULL */
+    az_iot_adu_update_id_info           installed_update_id;
+    const az_iot_adu_custom_property* custom_properties;       /* caller's array, MAY be NULL */
     size_t                              custom_properties_count;
-} az_iot_adu_device_properties_t;
+} az_iot_adu_device_properties;
 
 /* --- Client struct -------------------------------------------------------- */
 
-typedef struct az_iot_adu_client_tag
+typedef struct az_iot_adu_client_t
 {
     struct
     {
-        az_iot_twin_client_t* twin;
-        az_iot_adu_platform_hooks_t hooks;
-        az_iot_adu_crypto_hooks_t crypto;
+        az_iot_twin_client* twin;
+        az_iot_adu_platform_hooks hooks;
+        az_iot_adu_crypto_hooks crypto;
         /* Root-key store (core-owned). Pointers reference caller arrays; see §7.
          * Capacity is compile-time (AZ_IOT_ADU_MAX_ROOT_KEYS). */
-        az_iot_adu_root_key_t root_keys[AZ_IOT_ADU_MAX_ROOT_KEYS];
+        az_iot_adu_root_key root_keys[AZ_IOT_ADU_MAX_ROOT_KEYS];
         size_t root_key_count;
-        az_iot_adu_state_t state;
+        az_iot_adu_state state;
         az_iot_adu_client_update_request current_request;
         az_iot_adu_client_update_manifest current_manifest;
         uint32_t current_step;
@@ -844,45 +844,64 @@ typedef struct az_iot_adu_client_tag
 /* --- Lifecycle ----------------------------------------------------------- */
 
 /**
- * Initialize the ADU client.
- *   crypto: pure-primitive crypto hooks (RSA verify + SHA-256). See §6.
+ * Configuration for az_iot_adu_client_initialize(). Zero-initialize via
+ * az_iot_adu_client_config_options_default() and set the required fields:
+ *   hooks:   platform operations (download/install/apply/...). See §6.
+ *   crypto:  pure-primitive crypto hooks (RSA verify + SHA-256). See §6.
  *   root_keys / root_key_count: caller-owned RSA root public keys that anchor
  *     manifest trust (see §7). Core copies the small descriptor array into its
- *     fixed root_keys[] store (the key BYTES are referenced, not copied, so
- *     they MUST outlive the client). Returns AZ_IOT_ERR_NOT_ENOUGH_SPACE if
- *     root_key_count > AZ_IOT_ADU_MAX_ROOT_KEYS. For Microsoft-signed updates,
- *     pass az_iot_adu_microsoft_root_keys().
+ *     fixed store (the key BYTES are referenced, not copied, so they MUST
+ *     outlive the client), capped at AZ_IOT_ADU_MAX_ROOT_KEYS. For
+ *     Microsoft-signed updates, pass az_iot_adu_microsoft_root_keys().
  *   device_props: caller-owned device properties, DEEP-COPIED into the cache.
- *     May be mutated/freed by the caller after this returns.
+ *     May be mutated/freed by the caller after init returns.
  *   device_props_buffer / size: caller-owned cache the client copies into.
- *     No hidden allocation; the buffer MUST outlive the client. Returns
- *     AZ_IOT_ERR_NOT_ENOUGH_SPACE if too small for device_props.
+ *     No hidden allocation; the buffer MUST outlive the client. Size it exactly
+ *     with az_iot_adu_device_props_buffer_size().
+ *
+ * Named az_iot_adu_client_config_options (the `config_` qualifier) to avoid
+ * colliding with azure-sdk-for-c's own az_iot_adu_client_options.
  */
-az_iot_result_t az_iot_adu_client_initialize(
+typedef struct az_iot_adu_client_config_options
+{
+    const az_iot_adu_platform_hooks*    hooks;
+    const az_iot_adu_crypto_hooks*      crypto;
+    const az_iot_adu_root_key*          root_keys;
+    size_t                              root_key_count;
+    const az_iot_adu_device_properties* device_props;
+    uint8_t*                            device_props_buffer;
+    size_t                              device_props_buffer_size;
+} az_iot_adu_client_config_options;
+
+az_iot_adu_client_config_options az_iot_adu_client_config_options_default(void);
+
+/**
+ * Initialize the ADU client. `twin` is the initialized twin client the ADU
+ * client subscribes to for desired properties; `options` carries the rest
+ * (hooks, crypto, trust store, device properties + caller cache). Returns
+ * AZ_IOT_ERR_INVALID_ARG if a required field is NULL, or
+ * AZ_IOT_ERR_NOT_ENOUGH_SPACE if root_key_count > AZ_IOT_ADU_MAX_ROOT_KEYS or
+ * the buffer is too small for device_props.
+ */
+az_iot_result az_iot_adu_client_initialize(
     az_iot_adu_client_t* client,
-    az_iot_twin_client_t* twin,
-    const az_iot_adu_platform_hooks_t* hooks,
-    const az_iot_adu_crypto_hooks_t* crypto,
-    const az_iot_adu_root_key_t* root_keys,
-    size_t root_key_count,
-    const az_iot_adu_device_properties_t* device_props,
-    uint8_t* device_props_buffer,
-    size_t device_props_buffer_size);
+    az_iot_twin_client* twin,
+    const az_iot_adu_client_config_options* options);
 
 /**
  * Return Microsoft's compiled-in ADU root public keys (const, static storage).
  * Convenience for the common case; equivalent to passing your own array to
  * az_iot_adu_client_initialize(). Pointer and count reference static data.
  */
-const az_iot_adu_root_key_t* az_iot_adu_microsoft_root_keys(size_t* out_count);
+const az_iot_adu_root_key* az_iot_adu_microsoft_root_keys(size_t* out_count);
 
-void az_iot_adu_client_deinit(az_iot_adu_client_t* client);
+void az_iot_adu_client_destroy(az_iot_adu_client_t* client);
 
 /**
  * Resume a workflow after device reboot. The application MUST call this during startup.
  * If no persisted state exists, this is a no-op.
  */
-az_iot_result_t az_iot_adu_client_resume(az_iot_adu_client_t* client);
+az_iot_result az_iot_adu_client_resume(az_iot_adu_client_t* client);
 
 /* --- Runtime ------------------------------------------------------------- */
 
@@ -890,7 +909,7 @@ az_iot_result_t az_iot_adu_client_resume(az_iot_adu_client_t* client);
  * Drive the ADU state machine. The application MUST call this from its do_work loop.
  * Non-blocking: MUST process at most one chunk of work per invocation.
  */
-az_iot_result_t az_iot_adu_client_do_work(az_iot_adu_client_t* client);
+az_iot_result az_iot_adu_client_do_work(az_iot_adu_client_t* client);
 
 /**
  * Check if cancellation has been requested (called from within platform hooks).
@@ -900,7 +919,7 @@ bool az_iot_adu_is_cancelled(const az_iot_adu_client_t* client);
 /**
  * Get the current ADU agent state.
  */
-az_iot_adu_state_t az_iot_adu_client_get_state(const az_iot_adu_client_t* client);
+az_iot_adu_state az_iot_adu_client_get_state(const az_iot_adu_client_t* client);
 
 /**
  * Update the cached device properties and request a report. Deep-copies
@@ -912,9 +931,9 @@ az_iot_adu_state_t az_iot_adu_client_get_state(const az_iot_adu_client_t* client
  * Single-threaded contract: MUST be called on the do_work thread or be
  * externally serialized with do_work().
  */
-az_iot_result_t az_iot_adu_client_update_device_properties(
+az_iot_result az_iot_adu_client_update_device_properties(
     az_iot_adu_client_t* client,
-    const az_iot_adu_device_properties_t* device_props);
+    const az_iot_adu_device_properties* device_props);
 
 #ifdef __cplusplus
 }
@@ -929,7 +948,7 @@ Device properties are supplied as a **plain struct** that the client
 shared ownership: once `init` (or `update_device_properties`) returns, the
 application owns its struct outright and may mutate or free it.
 
-- At `init` the application passes `az_iot_adu_device_properties_t` plus a cache
+- At `init` the application passes `az_iot_adu_device_properties` plus a cache
   buffer. The client MUST copy every string into the cache.
 - The client maps the cached values onto azure-sdk-for-c's
   `az_iot_adu_client_device_properties` internally, only when formatting the
@@ -939,10 +958,10 @@ application owns its struct outright and may mutate or free it.
 
 ```c
 /* Build the struct on the stack; strings are caller-owned. */
-static const az_iot_adu_custom_property_t custom[] = {
+static const az_iot_adu_custom_property custom[] = {
     { "region", "westus2" },
 };
-az_iot_adu_device_properties_t props = {
+az_iot_adu_device_properties props = {
     .manufacturer = "Contoso",
     .model        = "Thermostat-9000",
     .installed_update_id = { .provider = "Contoso", .name = "Thermostat", .version = "1.0.0" },
@@ -952,10 +971,16 @@ az_iot_adu_device_properties_t props = {
 
 uint8_t props_cache[256];
 size_t root_key_count;
-const az_iot_adu_root_key_t* root_keys = az_iot_adu_microsoft_root_keys(&root_key_count);
-az_iot_adu_client_initialize(&adu, &twin, &hooks, &crypto,
-                       root_keys, root_key_count,
-                       &props, props_cache, sizeof(props_cache));
+const az_iot_adu_root_key* root_keys = az_iot_adu_microsoft_root_keys(&root_key_count);
+az_iot_adu_client_config_options adu_opts = az_iot_adu_client_config_options_default();
+adu_opts.hooks = &hooks;
+adu_opts.crypto = &crypto;
+adu_opts.root_keys = root_keys;
+adu_opts.root_key_count = root_key_count;
+adu_opts.device_props = &props;
+adu_opts.device_props_buffer = props_cache;
+adu_opts.device_props_buffer_size = sizeof(props_cache);
+az_iot_adu_client_initialize(&adu, &twin, &adu_opts);
 /* `props` and its strings may now be freed/reused; the client holds a deep copy. */
 
 /* Later, when firmware version or a custom property changes at runtime: */
@@ -1024,10 +1049,10 @@ path.
  * (no deviceUpdate/service component), AZ_IOT_ERR_INVALID_ARG (bad args or
  * malformed JSON), or AZ_IOT_ERR_AUTH (signature/trust verification failed).
  */
-az_iot_result_t az_iot_adu_parse_update_request(
+az_iot_result az_iot_adu_parse_update_request(
     az_span request_json,
-    const az_iot_adu_crypto_hooks_t* crypto,
-    const az_iot_adu_root_key_t* root_keys,
+    const az_iot_adu_crypto_hooks* crypto,
+    const az_iot_adu_root_key* root_keys,
     size_t root_key_count,
     az_iot_adu_client_update_request* out_request,
     az_iot_adu_client_update_manifest* out_manifest);
@@ -1037,9 +1062,9 @@ az_iot_result_t az_iot_adu_parse_update_request(
  * own download loop (payload bytes are not present at parse time). read_chunk is
  * invoked repeatedly until it reports the end of the file.
  */
-az_iot_result_t az_iot_adu_verify_file_hash(
+az_iot_result az_iot_adu_verify_file_hash(
     const az_iot_adu_client_update_manifest_file* file,
-    const az_iot_adu_crypto_hooks_t* crypto,
+    const az_iot_adu_crypto_hooks* crypto,
     int32_t (*read_chunk)(size_t offset, uint8_t* buf, size_t cap, size_t* out_read, void* ctx),
     void* read_ctx);
 
@@ -1049,11 +1074,11 @@ az_iot_result_t az_iot_adu_verify_file_hash(
  * turns it into the twin reported-properties (ADUv1) or the reportStatus body
  * (ADUv2, see adu-feature-support.md Part B §5a).
  */
-az_iot_result_t az_iot_adu_build_report(
-    const az_iot_adu_device_properties_t* device_props,
+az_iot_result az_iot_adu_build_report(
+    const az_iot_adu_device_properties* device_props,
     const az_iot_adu_client_install_result* result,
     const az_iot_adu_client_update_request* request,
-    az_iot_adu_state_t state,
+    az_iot_adu_state state,
     uint8_t* out_json,
     size_t out_size,
     size_t* out_len);
@@ -1072,7 +1097,7 @@ download handlers, diagnostics/log upload, and privilege separation
 
 ### Design Decision: No Built-in Crypto Backend
 
-The core ADU library (`src/features/adu/`) MUST NOT link any crypto library (no mbedTLS, no OpenSSL). All cryptographic operations MUST be provided exclusively through `az_iot_adu_crypto_hooks_t`. Rationale:
+The core ADU library (`src/features/adu/`) MUST NOT link any crypto library (no mbedTLS, no OpenSSL). All cryptographic operations MUST be provided exclusively through `az_iot_adu_crypto_hooks`. Rationale:
 
 1. **Portability** — Different platforms use different crypto stacks (mbedTLS on ESP32, OpenSSL on Linux, WolfSSL on some RTOS, hardware crypto on secure MCUs). Linking any one forces an unwanted dependency on all others.
 2. **HSM support** — Customers with hardware security modules need their crypto to route through PKCS#11 or vendor APIs. A hooks-only model naturally supports this.
@@ -1125,7 +1150,7 @@ established two ways, and the doc/contract reflect both:
 
 ### Pre-built Crypto Adapters
 
-For convenience, we ship ready-to-use `az_iot_adu_crypto_hooks_t` implementations.
+For convenience, we ship ready-to-use `az_iot_adu_crypto_hooks` implementations.
 Because root keys now live in core, an adapter's factory takes **no key
 material** — it only wires the primitives:
 
@@ -1136,7 +1161,7 @@ material** — it only wires the primitives:
 
 ```c
 /* adapters/adu/crypto_mbedtls/az_iot_adu_crypto_mbedtls.h */
-az_iot_adu_crypto_hooks_t az_iot_adu_crypto_mbedtls_hooks(void);
+az_iot_adu_crypto_hooks az_iot_adu_crypto_mbedtls_hooks(void);
 ```
 
 ### Manifest Signature (JWS) Verification Flow
@@ -1219,7 +1244,7 @@ capacity is compile-time configurable:
 #endif
 ```
 
-`az_iot_adu_client_initialize` accepts an `az_iot_adu_root_key_t[]` and copies the
+`az_iot_adu_client_initialize` accepts an `az_iot_adu_root_key[]` and copies the
 descriptors into the fixed `root_keys[AZ_IOT_ADU_MAX_ROOT_KEYS]` array (key bytes
 are referenced, not copied). `init` returns `AZ_IOT_ERR_NOT_ENOUGH_SPACE` if more
 keys are supplied than the store can hold.
@@ -1230,7 +1255,7 @@ keys are supplied than the store can hold.
 - These serve as the "trust on first use" baseline for new devices.
 
 **Runtime-loadable keys:**
-- The caller MAY instead pass its own `az_iot_adu_root_key_t[]` at `init`,
+- The caller MAY instead pass its own `az_iot_adu_root_key[]` at `init`,
   enabling: (a) loading keys from a config file or NVS, (b) provisioning keys at
   manufacturing, (c) private deployment keys.
 
@@ -1324,19 +1349,26 @@ int main(void)
     az_iot_twin_client_init(&twin, &conn);
 
     /* 2. real crypto (OpenSSL) + real Microsoft root keys */
-    az_iot_adu_crypto_hooks_t crypto = az_iot_adu_crypto_openssl_hooks();
+    az_iot_adu_crypto_hooks crypto = az_iot_adu_crypto_openssl_hooks();
     size_t rk_count;
-    const az_iot_adu_root_key_t* root_keys = az_iot_adu_microsoft_root_keys(&rk_count);
+    const az_iot_adu_root_key* root_keys = az_iot_adu_microsoft_root_keys(&rk_count);
 
     /* 3. SIMULATED platform hooks (this sample's whole point) */
-    az_iot_adu_platform_hooks_t hooks = adu_sim_hooks();  /* defined in this sample */
+    az_iot_adu_platform_hooks hooks = adu_sim_hooks();  /* defined in this sample */
 
-    az_iot_adu_device_properties_t props = { .manufacturer = "Contoso",
+    az_iot_adu_device_properties props = { .manufacturer = "Contoso",
                                              .model = "ADU-Sim",
                                              .installed_update_id = { "Contoso", "ADU-Sim", "1.0.0" } };
     uint8_t props_cache[256];
-    az_iot_adu_client_initialize(&adu, &twin, &hooks, &crypto,
-                           root_keys, rk_count, &props, props_cache, sizeof props_cache);
+    az_iot_adu_client_config_options adu_opts = az_iot_adu_client_config_options_default();
+    adu_opts.hooks = &hooks;
+    adu_opts.crypto = &crypto;
+    adu_opts.root_keys = root_keys;
+    adu_opts.root_key_count = rk_count;
+    adu_opts.device_props = &props;
+    adu_opts.device_props_buffer = props_cache;
+    adu_opts.device_props_buffer_size = sizeof props_cache;
+    az_iot_adu_client_initialize(&adu, &twin, &adu_opts);
 
     az_iot_connection_client_open(&conn);
     az_iot_adu_client_resume(&adu);   /* continue if a prior run persisted state */
@@ -1537,7 +1569,7 @@ target_link_libraries(az_iot_adu
 [docs/eng/connection-state-and-error-propagation.md](connection-state-and-error-propagation.md)):
 - Replace the single `set_state_callback` with the shared observer registry
   (public + internal registration, two-pass dispatch, compile-time capacity).
-- `az_iot_conn_status_t` + `az_iot_conn_reason_t` + `az_iot_error_source_t`; wire
+- `az_iot_conn_status` + `az_iot_conn_reason` + `az_iot_error_source`; wire
   `protocol_code`/`transport_code` from the MQTT iface.
 - Lifecycle guards: `DEINITIALIZING` notification, poison-magic re-init guard,
   `AZ_IOT_ERR_DETACHED`, feature-client self-detach.
@@ -1551,7 +1583,7 @@ target_link_libraries(az_iot_adu
 - Extend `az_iot_twin_client` with the desired-property subscriber registry
   (public + internal registration, two-pass dispatch, compile-time capacity,
   reentrancy guard); remove `set_desired_callback`.
-- `az_iot_adu_client_t` struct, init/deinit, do_work.
+- `az_iot_adu_client_t` struct, init/destroy, do_work.
 - Device-properties cache (deep-copied struct + `update_device_properties()`),
   startup/reconnect/manual reporting, feature-client state observer registration.
 - State machine (all transitions, cancellation, error handling, multi-step iteration).
@@ -1863,21 +1895,21 @@ Each shipped adapter is tested against a fake of its dependency, not the cloud:
 
 Mirroring the MQTT-iface conformance library, ship a reusable
 `az_iot_adu_conformance` static library that validates **any**
-`az_iot_adu_platform_hooks_t` + `az_iot_adu_crypto_hooks_t` implementation a
+`az_iot_adu_platform_hooks` + `az_iot_adu_crypto_hooks` implementation a
 customer provides — without a broker or the cloud.
 
 ```c
 /* tests/conformance/adu/az_iot_adu_conformance.h */
-typedef enum { AZ_IOT_ADU_CONF_SUITE_FULL = 0 } az_iot_adu_conformance_suite_t;
+typedef enum { AZ_IOT_ADU_CONF_SUITE_FULL = 0 } az_iot_adu_conformance_suite;
 
 /* Returns 0 pass / 1 fail / 77 skip (suitable as main()'s return). The suite
  * drives a real az_iot_adu_client over a fake twin, calling the customer's
  * hooks, and asserts protocol-correct behavior across all states. */
 int az_iot_adu_conformance_run(
-    az_iot_adu_conformance_suite_t suite_kind,
-    const az_iot_adu_platform_hooks_t* hooks,
-    const az_iot_adu_crypto_hooks_t* crypto,
-    const az_iot_adu_root_key_t* root_keys,
+    az_iot_adu_conformance_suite suite_kind,
+    const az_iot_adu_platform_hooks* hooks,
+    const az_iot_adu_crypto_hooks* crypto,
+    const az_iot_adu_root_key* root_keys,
     size_t root_key_count);
 ```
 

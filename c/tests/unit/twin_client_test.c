@@ -28,18 +28,18 @@
 /* fixtures                                                                  */
 /* ------------------------------------------------------------------------- */
 
-typedef struct get_record_tag
+typedef struct get_record
 {
     bool                fired;
-    az_iot_result_t status;
+    az_iot_result status;
     char                payload[64];
     size_t              payload_len;
-} get_record_t;
+} get_record;
 
-static void on_get(az_iot_result_t status,
+static void on_get(az_iot_result status,
                    const uint8_t* payload, size_t payload_len, void* user_ctx)
 {
-    get_record_t* r = (get_record_t*)user_ctx;
+    get_record* r = (get_record*)user_ctx;
     r->fired = true;
     r->status = status;
     if (payload && payload_len > 0 && payload_len < sizeof(r->payload))
@@ -50,30 +50,30 @@ static void on_get(az_iot_result_t status,
     }
 }
 
-typedef struct patch_record_tag
+typedef struct patch_record
 {
     bool                fired;
-    az_iot_result_t status;
-} patch_record_t;
+    az_iot_result status;
+} patch_record;
 
-static void on_patch(az_iot_result_t status, void* user_ctx)
+static void on_patch(az_iot_result status, void* user_ctx)
 {
-    patch_record_t* r = (patch_record_t*)user_ctx;
+    patch_record* r = (patch_record*)user_ctx;
     r->fired = true;
     r->status = status;
 }
 
-typedef struct desired_record_tag
+typedef struct desired_record
 {
     bool     fired;
     char     payload[64];
     size_t   payload_len;
     uint64_t version;
-} desired_record_t;
+} desired_record;
 
 static void on_desired(const uint8_t* payload, size_t payload_len, uint64_t version, void* user_ctx)
 {
-    desired_record_t* r = (desired_record_t*)user_ctx;
+    desired_record* r = (desired_record*)user_ctx;
     r->fired = true;
     r->version = version;
     if (payload && payload_len > 0 && payload_len < sizeof(r->payload))
@@ -84,20 +84,20 @@ static void on_desired(const uint8_t* payload, size_t payload_len, uint64_t vers
     }
 }
 
-typedef struct fixture_tag
+typedef struct fixture
 {
-    az_iot_connection_client_t    conn;
-    az_iot_twin_client_t        twin;
-    az_iot_mqtt_factory_t*      factory;
-    az_iot_mock_mqtt_client_t*  mock;
-} fixture_t;
+    az_iot_connection_client    conn;
+    az_iot_twin_client        twin;
+    az_iot_mqtt_factory*      factory;
+    az_iot_mock_mqtt_client*  mock;
+} fixture;
 
 static int setup(void** state)
 {
-    fixture_t* fx = (fixture_t*)calloc(1, sizeof(*fx));
+    fixture* fx = (fixture*)calloc(1, sizeof(*fx));
     assert_non_null(fx);
 
-    az_iot_connection_client_options_t opts = {0};
+    az_iot_connection_client_options opts = {0};
     opts.host = "broker.example";
     opts.port = 8883;
     opts.client_id = "ut-device";
@@ -115,17 +115,17 @@ static int setup(void** state)
 
 static int teardown(void** state)
 {
-    fixture_t* fx = (fixture_t*)*state;
+    fixture* fx = (fixture*)*state;
     if (fx)
     {
-        az_iot_twin_client_deinit(&fx->twin);
-        az_iot_connection_client_deinit(&fx->conn);
+        az_iot_twin_client_destroy(&fx->twin);
+        az_iot_connection_client_destroy(&fx->conn);
         free(fx);
     }
     return 0;
 }
 
-static void open_to_connected(fixture_t* fx)
+static void open_to_connected(fixture* fx)
 {
     assert_int_equal(az_iot_connection_client_register_mqtt_factory(&fx->conn, fx->factory),
                      AZ_IOT_OK);
@@ -139,23 +139,23 @@ static void open_to_connected(fixture_t* fx)
 
 /* Walk the mock call history; return the topic of the first PUBLISH found
  * (or NULL). */
-static const char* first_publish_topic(az_iot_mock_mqtt_client_t* m)
+static const char* first_publish_topic(az_iot_mock_mqtt_client* m)
 {
     size_t n = az_iot_mock_mqtt_client_call_count(m);
     for (size_t i = 0; i < n; ++i)
     {
-        const az_iot_mock_call_t* c = az_iot_mock_mqtt_client_call_at(m, i);
+        const az_iot_mock_call* c = az_iot_mock_mqtt_client_call_at(m, i);
         if (c->kind == AZ_IOT_MOCK_CALL_PUBLISH) return c->topic;
     }
     return NULL;
 }
 
-static bool history_has_subscribe(az_iot_mock_mqtt_client_t* m, const char* expected)
+static bool history_has_subscribe(az_iot_mock_mqtt_client* m, const char* expected)
 {
     size_t n = az_iot_mock_mqtt_client_call_count(m);
     for (size_t i = 0; i < n; ++i)
     {
-        const az_iot_mock_call_t* c = az_iot_mock_mqtt_client_call_at(m, i);
+        const az_iot_mock_call* c = az_iot_mock_mqtt_client_call_at(m, i);
         if (c->kind == AZ_IOT_MOCK_CALL_SUBSCRIBE && strcmp(c->topic, expected) == 0)
         {
             return true;
@@ -170,7 +170,7 @@ static bool history_has_subscribe(az_iot_mock_mqtt_client_t* m, const char* expe
 
 static void create_subscribes_response_and_desired(void** state)
 {
-    fixture_t* fx = (fixture_t*)*state;
+    fixture* fx = (fixture*)*state;
     assert_int_equal(az_iot_connection_client_register_mqtt_factory(&fx->conn, fx->factory),
                      AZ_IOT_OK);
     assert_int_equal(az_iot_connection_client_open(&fx->conn), AZ_IOT_OK);
@@ -185,10 +185,10 @@ static void create_subscribes_response_and_desired(void** state)
 
 static void get_publishes_and_response_fires_callback(void** state)
 {
-    fixture_t* fx = (fixture_t*)*state;
+    fixture* fx = (fixture*)*state;
     open_to_connected(fx);
 
-    get_record_t rec = {0};
+    get_record rec = {0};
     assert_int_equal(az_iot_twin_client_get(&fx->twin, on_get, &rec), AZ_IOT_OK);
 
     const char* topic = first_publish_topic(fx->mock);
@@ -212,10 +212,10 @@ static void get_publishes_and_response_fires_callback(void** state)
 
 static void patch_publishes_and_204_response_fires_callback(void** state)
 {
-    fixture_t* fx = (fixture_t*)*state;
+    fixture* fx = (fixture*)*state;
     open_to_connected(fx);
 
-    patch_record_t rec = {0};
+    patch_record rec = {0};
     static const uint8_t patch[] = "{\"reported\":{\"x\":1}}";
     assert_int_equal(
         az_iot_twin_client_patch_reported(
@@ -237,10 +237,10 @@ static void patch_publishes_and_204_response_fires_callback(void** state)
 
 static void desired_message_dispatched_to_callback(void** state)
 {
-    fixture_t* fx = (fixture_t*)*state;
+    fixture* fx = (fixture*)*state;
     open_to_connected(fx);
 
-    desired_record_t rec = {0};
+    desired_record rec = {0};
     assert_int_equal(
         az_iot_twin_client_subscribe_desired(&fx->twin, on_desired, &rec),
         AZ_IOT_OK);
@@ -259,7 +259,7 @@ static void desired_message_dispatched_to_callback(void** state)
 
 static void unknown_rid_drops_response(void** state)
 {
-    fixture_t* fx = (fixture_t*)*state;
+    fixture* fx = (fixture*)*state;
     open_to_connected(fx);
 
     /* No request issued; response with rid=99 should not crash. */
@@ -276,28 +276,28 @@ static void unknown_rid_drops_response(void** state)
 
 static int g_desired_seq;
 
-typedef struct order_record_tag
+typedef struct order_record
 {
     int order; /* dispatch order, captured from g_desired_seq */
-} order_record_t;
+} order_record;
 
 static void on_desired_feature(const uint8_t* p, size_t n, uint64_t v, void* ctx)
 {
     (void)p; (void)n; (void)v;
-    ((order_record_t*)ctx)->order = ++g_desired_seq;
+    ((order_record*)ctx)->order = ++g_desired_seq;
 }
 static void on_desired_app_a(const uint8_t* p, size_t n, uint64_t v, void* ctx)
 {
     (void)p; (void)n; (void)v;
-    ((order_record_t*)ctx)->order = ++g_desired_seq;
+    ((order_record*)ctx)->order = ++g_desired_seq;
 }
 static void on_desired_app_b(const uint8_t* p, size_t n, uint64_t v, void* ctx)
 {
     (void)p; (void)n; (void)v;
-    ((order_record_t*)ctx)->order = ++g_desired_seq;
+    ((order_record*)ctx)->order = ++g_desired_seq;
 }
 
-static void inject_desired(fixture_t* fx, const char* body)
+static void inject_desired(fixture* fx, const char* body)
 {
     char topic[] = "$iothub/twin/PATCH/properties/desired/?$version=7";
     assert_true(az_iot_mock_mqtt_client_inject_message(
@@ -307,11 +307,11 @@ static void inject_desired(fixture_t* fx, const char* body)
 
 static void feature_subscribers_notified_before_app(void** state)
 {
-    fixture_t* fx = (fixture_t*)*state;
+    fixture* fx = (fixture*)*state;
     open_to_connected(fx);
 
     g_desired_seq = 0;
-    order_record_t feat = {0}, app_a = {0}, app_b = {0};
+    order_record feat = {0}, app_a = {0}, app_b = {0};
 
     /* Register application subs first, feature sub last, to prove ordering is
      * by pool (feature-before-app) and NOT by registration time. */
@@ -327,7 +327,7 @@ static void feature_subscribers_notified_before_app(void** state)
 
 static void app_pool_full_returns_not_supported(void** state)
 {
-    fixture_t* fx = (fixture_t*)*state;
+    fixture* fx = (fixture*)*state;
     open_to_connected(fx);
 
     int a = 0, b = 0, c = 0;
@@ -340,10 +340,10 @@ static void app_pool_full_returns_not_supported(void** state)
 
 static void resubscribe_same_pair_is_idempotent(void** state)
 {
-    fixture_t* fx = (fixture_t*)*state;
+    fixture* fx = (fixture*)*state;
     open_to_connected(fx);
 
-    desired_record_t rec = {0};
+    desired_record rec = {0};
     assert_int_equal(az_iot_twin_client_subscribe_desired(&fx->twin, on_desired, &rec), AZ_IOT_OK);
     assert_int_equal(az_iot_twin_client_subscribe_desired(&fx->twin, on_desired, &rec), AZ_IOT_OK);
 
@@ -354,10 +354,10 @@ static void resubscribe_same_pair_is_idempotent(void** state)
 
 static void unsubscribe_stops_delivery(void** state)
 {
-    fixture_t* fx = (fixture_t*)*state;
+    fixture* fx = (fixture*)*state;
     open_to_connected(fx);
 
-    desired_record_t rec = {0};
+    desired_record rec = {0};
     assert_int_equal(az_iot_twin_client_subscribe_desired(&fx->twin, on_desired, &rec), AZ_IOT_OK);
     assert_int_equal(az_iot_twin_client_unsubscribe_desired(&fx->twin, on_desired, &rec), AZ_IOT_OK);
     /* Removing an absent entry reports invalid arg. */
@@ -368,17 +368,17 @@ static void unsubscribe_stops_delivery(void** state)
     assert_false(rec.fired);
 }
 
-typedef struct busy_record_tag
+typedef struct busy_record
 {
-    az_iot_twin_client_t* twin;
-    az_iot_result_t       sub_result;
-    az_iot_result_t       unsub_result;
-} busy_record_t;
+    az_iot_twin_client* twin;
+    az_iot_result       sub_result;
+    az_iot_result       unsub_result;
+} busy_record;
 
 static void on_desired_reentrant(const uint8_t* p, size_t n, uint64_t v, void* ctx)
 {
     (void)p; (void)n; (void)v;
-    busy_record_t* r = (busy_record_t*)ctx;
+    busy_record* r = (busy_record*)ctx;
     /* Mutating the registry mid-dispatch MUST be rejected. */
     r->sub_result   = az_iot_twin_client_subscribe_desired(r->twin, on_desired_app_a, NULL);
     r->unsub_result = az_iot_twin_client_unsubscribe_desired(r->twin, on_desired_reentrant, ctx);
@@ -386,10 +386,10 @@ static void on_desired_reentrant(const uint8_t* p, size_t n, uint64_t v, void* c
 
 static void mutating_registry_during_dispatch_is_busy(void** state)
 {
-    fixture_t* fx = (fixture_t*)*state;
+    fixture* fx = (fixture*)*state;
     open_to_connected(fx);
 
-    busy_record_t rec = { .twin = &fx->twin, .sub_result = AZ_IOT_OK, .unsub_result = AZ_IOT_OK };
+    busy_record rec = { .twin = &fx->twin, .sub_result = AZ_IOT_OK, .unsub_result = AZ_IOT_OK };
     assert_int_equal(az_iot_twin_client_subscribe_desired(&fx->twin, on_desired_reentrant, &rec), AZ_IOT_OK);
 
     inject_desired(fx, "{\"a\":1}");

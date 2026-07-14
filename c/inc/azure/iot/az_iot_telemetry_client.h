@@ -16,22 +16,22 @@
 extern "C" {
 #endif
 
-typedef struct az_iot_telemetry_client_tag
+typedef struct az_iot_telemetry_client
 {
     struct
     {
-        az_iot_connection_client_t* conn;
+        az_iot_connection_client* conn;
     } _internal;
-} az_iot_telemetry_client_t;
+} az_iot_telemetry_client;
 
-typedef struct az_iot_telemetry_property_tag
+typedef struct az_iot_telemetry_property
 {
     const char* key;
     const char* value;
-} az_iot_telemetry_property_t;
+} az_iot_telemetry_property;
 
 /* Well-known system property keys. Use these as the `key` in
- * az_iot_telemetry_property_t to set IoT Hub system properties. */
+ * az_iot_telemetry_property to set IoT Hub system properties. */
 #define AZ_IOT_MSG_PROP_CONTENT_TYPE     "$.ct"
 #define AZ_IOT_MSG_PROP_CONTENT_ENCODING "$.ce"
 #define AZ_IOT_MSG_PROP_MESSAGE_ID       "$.mid"
@@ -40,26 +40,26 @@ typedef struct az_iot_telemetry_property_tag
 #define AZ_IOT_MSG_PROP_CREATION_TIME    "$.ctime"
 #define AZ_IOT_MSG_PROP_COMPONENT_NAME   "$.sub"
 
-typedef struct az_iot_telemetry_message_tag
+typedef struct az_iot_telemetry_message
 {
     const uint8_t* payload;
     size_t payload_len;
-    const az_iot_telemetry_property_t* properties;
+    const az_iot_telemetry_property* properties;
     size_t properties_count;
-} az_iot_telemetry_message_t;
+} az_iot_telemetry_message;
 
-typedef void (*az_iot_telemetry_send_cb)(az_iot_result_t status, void* user_ctx);
+typedef void (*az_iot_telemetry_send_callback)(az_iot_result status, void* user_ctx);
 
-az_iot_result_t az_iot_telemetry_client_init(
-    az_iot_telemetry_client_t* client,
-    az_iot_connection_client_t* conn);
+AZ_NODISCARD az_iot_result az_iot_telemetry_client_init(
+    az_iot_telemetry_client* client,
+    az_iot_connection_client* conn);
 
-void az_iot_telemetry_client_deinit(az_iot_telemetry_client_t* client);
+void az_iot_telemetry_client_destroy(az_iot_telemetry_client* client);
 
-az_iot_result_t az_iot_telemetry_client_send(
-    az_iot_telemetry_client_t* client,
-    const az_iot_telemetry_message_t* msg,
-    az_iot_telemetry_send_cb cb,
+AZ_NODISCARD az_iot_result az_iot_telemetry_client_send(
+    az_iot_telemetry_client* client,
+    const az_iot_telemetry_message* msg,
+    az_iot_telemetry_send_callback cb,
     void* user_ctx);
 
 #ifdef __cplusplus

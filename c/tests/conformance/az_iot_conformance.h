@@ -11,7 +11,7 @@
  * customer:
  *
  *   1. Builds their adapter as a static or shared library that exposes a
- *      function returning an `az_iot_mqtt_factory_t*` for one or both
+ *      function returning an `az_iot_mqtt_factory*` for one or both
  *      MQTT versions.
  *   2. Links the conformance library (`az_iot_conformance`) and produces
  *      one harness exe per (version, role) tuple that calls
@@ -43,11 +43,11 @@ extern "C" {
 
 /* Which suite to run. Each suite is a curated set of cmocka tests appropriate
  * for the given MQTT version. */
-typedef enum az_iot_conformance_suite_tag
+typedef enum az_iot_conformance_suite
 {
     AZ_IOT_CONFORMANCE_SUITE_V3_1_1 = 0,
     AZ_IOT_CONFORMANCE_SUITE_V5     = 1
-} az_iot_conformance_suite_t;
+} az_iot_conformance_suite;
 
 /* Run the conformance suite for `suite_kind` against the given factory.
  * Returns:
@@ -57,8 +57,8 @@ typedef enum az_iot_conformance_suite_tag
  *
  * Suitable to use directly as the return value of main() in a harness exe. */
 int az_iot_conformance_run(
-    az_iot_conformance_suite_t suite_kind,
-    az_iot_mqtt_factory_t* factory);
+    az_iot_conformance_suite suite_kind,
+    az_iot_mqtt_factory* factory);
 
 #ifdef __cplusplus
 }

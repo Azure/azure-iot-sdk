@@ -4,7 +4,7 @@
 # Rust MQTT adapter shell (Phase 6, P0 stub).
 #
 # Builds a pure-C library that wraps a runtime-installed FFI table
-# (`az_iot_rust_mqtt_ffi_t`) into the iface vtable. There is no
+# (`az_iot_rust_mqtt_ffi`) into the iface vtable. There is no
 # link-time dependency on a Rust toolchain - the Rust cdylib is expected
 # to call az_iot_rust_mqtt_install() at startup.
 

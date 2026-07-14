@@ -37,7 +37,7 @@ static const uint8_t k_sha256_abc[32] = {
 static void sha256_oneshot_matches_known_vector(void** state)
 {
     (void)state;
-    az_iot_adu_crypto_hooks_t h = az_iot_adu_crypto_openssl_hooks();
+    az_iot_adu_crypto_hooks h = az_iot_adu_crypto_openssl_hooks();
     uint8_t out[32];
     assert_int_equal(
         h.sha256_fn((const uint8_t*)"abc", 3, out, h.user_ctx), AZ_IOT_ADU_RESULT_SUCCESS);
@@ -47,7 +47,7 @@ static void sha256_oneshot_matches_known_vector(void** state)
 static void sha256_incremental_matches_known_vector(void** state)
 {
     (void)state;
-    az_iot_adu_crypto_hooks_t h = az_iot_adu_crypto_openssl_hooks();
+    az_iot_adu_crypto_hooks h = az_iot_adu_crypto_openssl_hooks();
     void* ctx = NULL;
     assert_int_equal(h.sha256_init_fn(&ctx, h.user_ctx), AZ_IOT_ADU_RESULT_SUCCESS);
     assert_non_null(ctx);
@@ -96,7 +96,7 @@ static EVP_PKEY* gen_key_and_sign(
 static void verify_rs256_accepts_valid_signature(void** state)
 {
     (void)state;
-    az_iot_adu_crypto_hooks_t h = az_iot_adu_crypto_openssl_hooks();
+    az_iot_adu_crypto_hooks h = az_iot_adu_crypto_openssl_hooks();
 
     const uint8_t data[] = "the quick brown fox";
     uint8_t modulus[512], exponent[16], sig[512];
@@ -114,7 +114,7 @@ static void verify_rs256_accepts_valid_signature(void** state)
 static void verify_rs256_rejects_tampered_signature(void** state)
 {
     (void)state;
-    az_iot_adu_crypto_hooks_t h = az_iot_adu_crypto_openssl_hooks();
+    az_iot_adu_crypto_hooks h = az_iot_adu_crypto_openssl_hooks();
 
     const uint8_t data[] = "the quick brown fox";
     uint8_t modulus[512], exponent[16], sig[512];
@@ -133,7 +133,7 @@ static void verify_rs256_rejects_tampered_signature(void** state)
 static void verify_rs256_rejects_modified_data(void** state)
 {
     (void)state;
-    az_iot_adu_crypto_hooks_t h = az_iot_adu_crypto_openssl_hooks();
+    az_iot_adu_crypto_hooks h = az_iot_adu_crypto_openssl_hooks();
 
     const uint8_t data[] = "the quick brown fox";
     uint8_t modulus[512], exponent[16], sig[512];

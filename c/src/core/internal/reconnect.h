@@ -39,7 +39,7 @@ uint64_t az_iot_time_mono_ms(void);
  * seed it deterministically; production seeds it from time_mono.
  */
 uint32_t az_iot_reconnect_delay_ms(
-    const az_iot_reconnect_policy_t* policy,
+    const az_iot_reconnection_policy* policy,
     uint32_t attempt,
     uint64_t* rng_state);
 

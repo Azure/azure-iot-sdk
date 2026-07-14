@@ -26,8 +26,8 @@ extern "C" {
  *                        Valid only for the lifetime of this callback. Copy if needed.
  * @param user_ctx        User context passed to get_sas_uri().
  */
-typedef void (*az_iot_file_upload_sas_cb)(
-    az_iot_result_t status,
+typedef void (*az_iot_file_upload_sas_callback)(
+    az_iot_result status,
     const char* blob_sas_uri,
     const char* correlation_id,
     void* user_ctx);
@@ -38,15 +38,17 @@ typedef void (*az_iot_file_upload_sas_cb)(
  * @param status    AZ_IOT_OK on success.
  * @param user_ctx  User context passed to notify_complete().
  */
-typedef void (*az_iot_file_upload_complete_cb)(az_iot_result_t status, void* user_ctx);
+typedef void (*az_iot_file_upload_complete_callback)(az_iot_result status, void* user_ctx);
 
+#ifndef AZ_IOT_FILE_UPLOAD_MAX_PENDING
 #define AZ_IOT_FILE_UPLOAD_MAX_PENDING 4
+#endif
 
-typedef struct az_iot_file_upload_client_tag
+typedef struct az_iot_file_upload_client
 {
     struct
     {
-        az_iot_connection_client_t* conn;
+        az_iot_connection_client* conn;
         uint32_t next_rid;
         struct
         {
@@ -55,13 +57,13 @@ typedef struct az_iot_file_upload_client_tag
             int kind; /* 0=none, 1=sas_uri, 2=notify */
             union
             {
-                az_iot_file_upload_sas_cb sas_cb;
-                az_iot_file_upload_complete_cb complete_cb;
+                az_iot_file_upload_sas_callback sas_cb;
+                az_iot_file_upload_complete_callback complete_cb;
             } cb;
             void* user_ctx;
         } pending[AZ_IOT_FILE_UPLOAD_MAX_PENDING];
     } _internal;
-} az_iot_file_upload_client_t;
+} az_iot_file_upload_client;
 
 /**
  * @brief Initialize the file upload client.
@@ -73,14 +75,14 @@ typedef struct az_iot_file_upload_client_tag
  * @param conn    Connection client (must already be initialized).
  * @return AZ_IOT_OK on success.
  */
-az_iot_result_t az_iot_file_upload_client_init(
-    az_iot_file_upload_client_t* client,
-    az_iot_connection_client_t* conn);
+AZ_NODISCARD az_iot_result az_iot_file_upload_client_init(
+    az_iot_file_upload_client* client,
+    az_iot_connection_client* conn);
 
 /**
  * @brief Deinitialize the file upload client and unregister inbound handlers.
  */
-void az_iot_file_upload_client_deinit(az_iot_file_upload_client_t* client);
+void az_iot_file_upload_client_destroy(az_iot_file_upload_client* client);
 
 /**
  * @brief Request a SAS URI for uploading a blob.
@@ -94,10 +96,10 @@ void az_iot_file_upload_client_deinit(az_iot_file_upload_client_t* client);
  * @param user_ctx   User context forwarded to the callback.
  * @return AZ_IOT_OK if the request was published successfully.
  */
-az_iot_result_t az_iot_file_upload_client_get_sas_uri(
-    az_iot_file_upload_client_t* client,
+AZ_NODISCARD az_iot_result az_iot_file_upload_client_get_sas_uri(
+    az_iot_file_upload_client* client,
     const char* blob_name,
-    az_iot_file_upload_sas_cb cb,
+    az_iot_file_upload_sas_callback cb,
     void* user_ctx);
 
 /**
@@ -113,11 +115,11 @@ az_iot_result_t az_iot_file_upload_client_get_sas_uri(
  * @param user_ctx        User context forwarded to the callback.
  * @return AZ_IOT_OK if the notification was published successfully.
  */
-az_iot_result_t az_iot_file_upload_client_notify_complete(
-    az_iot_file_upload_client_t* client,
+AZ_NODISCARD az_iot_result az_iot_file_upload_client_notify_complete(
+    az_iot_file_upload_client* client,
     const char* correlation_id,
     bool is_success,
-    az_iot_file_upload_complete_cb cb,
+    az_iot_file_upload_complete_callback cb,
     void* user_ctx);
 
 #ifdef __cplusplus

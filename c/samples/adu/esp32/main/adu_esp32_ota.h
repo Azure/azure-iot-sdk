@@ -25,7 +25,7 @@
 extern "C" {
 #endif
 
-typedef struct adu_ota_ctx_tag
+typedef struct adu_ota_ctx
 {
     const char* installed_version;      /* this firmware's baked-in version */
 
@@ -35,11 +35,11 @@ typedef struct adu_ota_ctx_tag
     size_t                 written;     /* bytes written to the partition */
 
     bool reboot_pending;                /* install asked for a reboot */
-} adu_ota_ctx_t;
+} adu_ota_ctx;
 
 /* Build the platform-hooks vtable bound to @p ctx. The caller owns @p ctx and
  * must keep it alive for the lifetime of the ADU client. */
-az_iot_adu_platform_hooks_t adu_esp32_ota_hooks(adu_ota_ctx_t* ctx);
+az_iot_adu_platform_hooks adu_esp32_ota_hooks(adu_ota_ctx* ctx);
 
 /* Confirm the running image is healthy so the bootloader does not roll it back
  * (no-op unless this boot is pending verification). Call once the device has

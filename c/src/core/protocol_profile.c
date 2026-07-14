@@ -10,7 +10,7 @@
  * contract. These constants are deliberately local rather than re-exported
  * from azure-sdk-for-c so this profile module stays a leaf with no upstream
  * coupling. */
-static const az_iot_protocol_profile_t s_profile_classic = {
+static const az_iot_protocol_profile s_profile_classic = {
     AZ_IOT_HUB_FLAVOR_CLASSIC,
     AZ_IOT_MQTT_VERSION_3_1_1,
     /* Classic topic prefixes */
@@ -28,7 +28,7 @@ static const az_iot_protocol_profile_t s_profile_classic = {
 /* Next (MQTT v5) profile: flat topics with metadata in User Properties.
  * Classic topic fields are NULL — feature clients must use the Next-specific
  * path (next_topic_base_template + User Properties). */
-static const az_iot_protocol_profile_t s_profile_next = {
+static const az_iot_protocol_profile s_profile_next = {
     AZ_IOT_HUB_FLAVOR_NEXT,
     AZ_IOT_MQTT_VERSION_5,
     /* Classic topic prefixes (unused for Next) */
@@ -43,8 +43,8 @@ static const az_iot_protocol_profile_t s_profile_next = {
     30000u
 };
 
-const az_iot_protocol_profile_t* az_iot_protocol_profile_for_role(
-    az_iot_mqtt_role_t role)
+const az_iot_protocol_profile* az_iot_protocol_profile_for_role(
+    az_iot_mqtt_role role)
 {
     switch (role)
     {
@@ -63,7 +63,7 @@ const az_iot_protocol_profile_t* az_iot_protocol_profile_for_role(
     }
 }
 
-const char* az_iot_hub_flavor_to_string(az_iot_hub_flavor_t f)
+const char* az_iot_hub_flavor_to_string(az_iot_hub_flavor f)
 {
     switch (f)
     {

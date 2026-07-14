@@ -30,7 +30,7 @@ as a complete, working reference.
 
 ### `custom_provider_template`
 Self-contained, no external dependencies, does not connect. A copy-paste
-starting point for a custom `az_iot_certificate_provider_t`. Its `main()`
+starting point for a custom `az_iot_certificate_provider`. Its `main()`
 exercises the vtable so the wiring compiles and round-trips.
 
 ### `dps_csr_managed`
@@ -45,7 +45,7 @@ a fresh CSR from the managed provider, calls `az_iot_connection_client_send_csr(
 and persists the renewed chain. Requires the managed provider and Paho.
 
 ### `custom_certificate_provider`
-The COMPLETE app-owned path: a full `az_iot_certificate_provider_t`
+The COMPLETE app-owned path: a full `az_iot_certificate_provider`
 (`samples/common/sample_cert_provider.*`) that issues a real PKCS#10 CSR with
 platform-native crypto (OpenSSL on Linux, CNG on Windows), persists the issued
 chain, and drives the same DPS CSR enrollment as `dps_csr_managed`. Copy this to

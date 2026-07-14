@@ -26,16 +26,16 @@
 #include "azure/iot/az_iot_certificate_provider.h"
 #include "azure/iot/az_iot_result.h"
 
-/* Your provider's state. The az_iot_certificate_provider_t base MUST be first
+/* Your provider's state. The az_iot_certificate_provider base MUST be first
  * so a pointer to it can be cast to/from your struct. */
 typedef struct
 {
-    az_iot_certificate_provider_t base;
+    az_iot_certificate_provider base;
     const char* bootstrap_cert_path;
     const char* bootstrap_key_path;
     const char* trusted_ca_path;
     int         has_operational;
-} my_provider_t;
+} my_provider;
 
 static char* dup_cstr(const char* s)
 {
@@ -46,10 +46,10 @@ static char* dup_cstr(const char* s)
     return out;
 }
 
-static az_iot_result_t my_load(
-    az_iot_certificate_provider_t* self, az_iot_cert_role_t role, az_iot_certificate_material_t* out)
+static az_iot_result my_load(
+    az_iot_certificate_provider* self, az_iot_cert_role role, az_iot_certificate_material* out)
 {
-    my_provider_t* m = (my_provider_t*)self;
+    my_provider* m = (my_provider*)self;
     if (!m || !out) return AZ_IOT_ERR_INVALID_ARG;
 
     memset(out, 0, sizeof(*out));
@@ -74,15 +74,15 @@ static az_iot_result_t my_load(
     return AZ_IOT_OK;
 }
 
-static void my_release(az_iot_certificate_provider_t* self, az_iot_certificate_material_t* material)
+static void my_release(az_iot_certificate_provider* self, az_iot_certificate_material* material)
 {
     (void)self; (void)material; /* nothing heap-allocated in load() above */
 }
 
-static az_iot_result_t my_get_csr(
-    az_iot_certificate_provider_t* self,
+static az_iot_result my_get_csr(
+    az_iot_certificate_provider* self,
     const char* subject_common_name,
-    az_iot_certificate_signing_request_t* out_csr)
+    az_iot_certificate_signing_request* out_csr)
 {
     (void)self;
     if (!out_csr) return AZ_IOT_ERR_INVALID_ARG;
@@ -97,7 +97,7 @@ static az_iot_result_t my_get_csr(
 }
 
 static void my_release_csr(
-    az_iot_certificate_provider_t* self, az_iot_certificate_signing_request_t* csr)
+    az_iot_certificate_provider* self, az_iot_certificate_signing_request* csr)
 {
     (void)self;
     if (csr && csr->csr_base64)
@@ -107,10 +107,10 @@ static void my_release_csr(
     }
 }
 
-static az_iot_result_t my_store_issued_certificate(
-    az_iot_certificate_provider_t* self, const az_iot_issued_certificate_t* issued)
+static az_iot_result my_store_issued_certificate(
+    az_iot_certificate_provider* self, const az_iot_issued_certificate* issued)
 {
-    my_provider_t* m = (my_provider_t*)self;
+    my_provider* m = (my_provider*)self;
     if (!m || !issued) return AZ_IOT_ERR_INVALID_ARG;
 
     /* REPLACE ME: persist issued->certificates[0..count) - each entry is a
@@ -121,8 +121,8 @@ static az_iot_result_t my_store_issued_certificate(
     return AZ_IOT_OK;
 }
 
-static az_iot_result_t my_sign(
-    az_iot_certificate_provider_t* self,
+static az_iot_result my_sign(
+    az_iot_certificate_provider* self,
     const uint8_t* digest, size_t digest_len,
     uint8_t* out_sig, size_t out_sig_cap, size_t* out_sig_len)
 {
@@ -134,16 +134,16 @@ static az_iot_result_t my_sign(
     return AZ_IOT_ERR_NOT_SUPPORTED;
 }
 
-static void my_deinit(az_iot_certificate_provider_t* self)
+static void my_destroy(az_iot_certificate_provider* self)
 {
     (void)self; /* nothing owned in this template */
 }
 
-static const az_iot_certificate_provider_vtable_t s_my_vtable = {
+static const az_iot_certificate_provider_vtable s_my_vtable = {
     .version                  = AZ_IOT_CERTIFICATE_PROVIDER_VTABLE_VERSION,
     .load                     = my_load,
     .release                  = my_release,
-    .deinit                   = my_deinit,
+    .deinit                   = my_destroy,
     .get_csr                  = my_get_csr,
     .release_csr              = my_release_csr,
     .store_issued_certificate = my_store_issued_certificate,
@@ -152,23 +152,23 @@ static const az_iot_certificate_provider_vtable_t s_my_vtable = {
 
 int main(void)
 {
-    my_provider_t provider = {0};
+    my_provider provider = {0};
     provider.base.vtable       = &s_my_vtable;
     provider.bootstrap_cert_path = "bootstrap_cert.pem";
     provider.bootstrap_key_path  = "bootstrap_key.pem";
     provider.trusted_ca_path     = "trusted_ca.pem";
 
-    /* Pass &provider.base wherever an az_iot_certificate_provider_t* is expected
-     * (az_iot_connection_client_options_get_default, etc.). Here we just
-     * exercise the vtable to prove the wiring. */
-    az_iot_certificate_signing_request_t csr = {0};
+    /* Pass &provider.base wherever an az_iot_certificate_provider* is expected
+     * (assign to az_iot_connection_client_options.certificate_provider, etc.).
+     * Here we just exercise the vtable to prove the wiring. */
+    az_iot_certificate_signing_request csr = {0};
     if (provider.base.vtable->get_csr(&provider.base, "my-device-id", &csr) != AZ_IOT_OK)
         return 1;
     fprintf(stderr, "[custom] get_csr produced: %s\n", csr.csr_base64);
     provider.base.vtable->release_csr(&provider.base, &csr);
 
     az_span chain[1] = { AZ_SPAN_FROM_STR("MIIBase64DERcertGoesHere==") };
-    az_iot_issued_certificate_t issued = { .certificates = chain, .count = 1 };
+    az_iot_issued_certificate issued = { .certificates = chain, .count = 1 };
     (void)provider.base.vtable->store_issued_certificate(&provider.base, &issued);
 
     provider.base.vtable->deinit(&provider.base);

@@ -6,10 +6,10 @@
 
 #include <stddef.h>
 
-static az_iot_result_t embedded_load(
-    az_iot_certificate_provider_t* self, az_iot_cert_role_t role, az_iot_certificate_material_t* out)
+static az_iot_result embedded_load(
+    az_iot_certificate_provider* self, az_iot_cert_role role, az_iot_certificate_material* out)
 {
-    az_iot_cert_embedded_t* p = (az_iot_cert_embedded_t*)self;
+    az_iot_cert_embedded* p = (az_iot_cert_embedded*)self;
     (void)role; /* static-cert provider: same material for bootstrap and operational */
     out->trusted_ca_pem = p->ca_pem;
     out->client_cert_pem = p->cert_pem;
@@ -26,25 +26,25 @@ static az_iot_result_t embedded_load(
 }
 
 static void embedded_release(
-    az_iot_certificate_provider_t* self, az_iot_certificate_material_t* material)
+    az_iot_certificate_provider* self, az_iot_certificate_material* material)
 {
     (void)self; (void)material; /* nothing to free; PEM is static firmware data */
 }
 
-static void embedded_deinit(az_iot_certificate_provider_t* self)
+static void embedded_destroy(az_iot_certificate_provider* self)
 {
     (void)self;
 }
 
-static const az_iot_certificate_provider_vtable_t k_embedded_vtable = {
+static const az_iot_certificate_provider_vtable k_embedded_vtable = {
     .version = AZ_IOT_CERTIFICATE_PROVIDER_VTABLE_VERSION,
     .load = embedded_load,
     .release = embedded_release,
-    .deinit = embedded_deinit,
+    .deinit = embedded_destroy,
 };
 
 void az_iot_cert_embedded_init(
-    az_iot_cert_embedded_t* provider,
+    az_iot_cert_embedded* provider,
     const char* ca_pem, const char* cert_pem, const char* key_pem)
 {
     provider->base.vtable = &k_embedded_vtable;

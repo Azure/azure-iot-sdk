@@ -42,22 +42,22 @@ The contract is in [inc/azure/iot/az_iot_mqtt_iface.h](../inc/azure/iot/az_iot_m
 | `disconnect`      | Initiate DISCONNECT. Non-blocking. Eventually emits `EVT_DISCONNECTED`.                              |
 | `subscribe`       | Send SUBSCRIBE. Return `out_packet_id` synchronously; emit `EVT_SUBSCRIBE_ACK` when SUBACK arrives.   |
 | `unsubscribe`     | Send UNSUBSCRIBE. Same pattern as `subscribe`. Emit `EVT_UNSUBSCRIBE_ACK`.                            |
-| `publish`         | Send PUBLISH. For QoS>0, emit `EVT_PUBLISH_ACK` when PUBACK arrives. For v5: set `content_type`, `response_topic`, `correlation_data`, and `user_properties` from `az_iot_mqtt_message_t` on the outbound packet. |
+| `publish`         | Send PUBLISH. For QoS>0, emit `EVT_PUBLISH_ACK` when PUBACK arrives. For v5: set `content_type`, `response_topic`, `correlation_data`, and `user_properties` from `az_iot_mqtt_message` on the outbound packet. |
 | `process_loop`    | Drive any pending I/O and dispatch queued inbound events on the calling thread.                       |
-| `set_inbound_cb`  | Register the callback the SDK uses to receive `az_iot_mqtt_event_t` notifications.                |
+| `set_inbound_cb`  | Register the callback the SDK uses to receive `az_iot_mqtt_event` notifications.                |
 | `destroy`         | Tear down the client. The SDK may call this even on a never-connected client.                        |
 
 ### MQTT v5 property handling (critical for HUB_NEXT)
 
 The SDK's feature clients (direct methods, twin, C2D) use MQTT v5 properties extensively when connected to Hub-Next. Your v5 adapter **must**:
 
-**On outbound PUBLISH** — propagate these `az_iot_mqtt_message_t` fields as MQTT v5 properties:
+**On outbound PUBLISH** — propagate these `az_iot_mqtt_message` fields as MQTT v5 properties:
 - `correlation_data` / `correlation_data_len` → Correlation Data property
 - `response_topic` → Response Topic property
 - `content_type` → Content Type property
 - `user_properties` / `user_properties_count` → User Property pairs
 
-**On inbound MESSAGE** — extract these MQTT v5 properties from the received packet and populate the corresponding `az_iot_mqtt_message_t` fields before delivering `EVT_MESSAGE`:
+**On inbound MESSAGE** — extract these MQTT v5 properties from the received packet and populate the corresponding `az_iot_mqtt_message` fields before delivering `EVT_MESSAGE`:
 - Correlation Data → `correlation_data` / `correlation_data_len`
 - Response Topic → `response_topic`
 - Content Type → `content_type`
@@ -65,7 +65,7 @@ The SDK's feature clients (direct methods, twin, C2D) use MQTT v5 properties ext
 
 If any property is absent in the packet, set the pointer to NULL and the length/count to 0.
 
-**On CONNACK** — populate `session_present` in the `az_iot_mqtt_event_t` delivered with `EVT_CONNECTED`.
+**On CONNACK** — populate `session_present` in the `az_iot_mqtt_event` delivered with `EVT_CONNECTED`.
 
 A v3.1.1 adapter may ignore all v5-only fields (they will always be NULL/zero when passed to `publish`).
 
@@ -81,13 +81,13 @@ The Paho adapter implements exactly this in [adapters/paho/az_iot_mqtt_paho.c](.
 
 ### Concrete client struct
 
-The vtable expects `az_iot_mqtt_client_t*` to point at a struct whose **first member** is `const az_iot_mqtt_iface_t* iface`. Embed your adapter state behind it:
+The vtable expects `az_iot_mqtt_client*` to point at a struct whose **first member** is `const az_iot_mqtt_iface* iface`. Embed your adapter state behind it:
 
 ```c
 typedef struct mymqtt_client_tag {
-    az_iot_mqtt_client_t base;          /* MUST be first */
-    az_iot_mqtt_iface_t  iface_storage;
-    az_iot_mqtt_version_t version;
+    az_iot_mqtt_client base;          /* MUST be first */
+    az_iot_mqtt_iface  iface_storage;
+    az_iot_mqtt_version version;
     /* ... your state ... */
 } mymqtt_client_t;
 ```
@@ -98,17 +98,17 @@ A factory is just a struct + a `create` function:
 
 ```c
 typedef struct mymqtt_factory_state_tag {
-    az_iot_mqtt_factory_t public_;
+    az_iot_mqtt_factory public_;
     /* ... your state ... */
 } mymqtt_factory_state_t;
 
-static az_iot_mqtt_client_t* mymqtt_factory_create(void* factory_ctx)
+static az_iot_mqtt_client* mymqtt_factory_create(void* factory_ctx)
 {
     mymqtt_factory_state_t* st = factory_ctx;
     /* allocate, fill iface_storage, return &client->base */
 }
 
-az_iot_mqtt_factory_t* az_iot_mymqtt_factory_create_v3_1_1(void)
+az_iot_mqtt_factory* az_iot_mymqtt_factory_create_v3_1_1(void)
 {
     mymqtt_factory_state_t* st = calloc(1, sizeof(*st));
     st->public_.version = AZ_IOT_MQTT_VERSION_3_1_1;
@@ -149,8 +149,8 @@ For each MQTT version your adapter supports, add a tiny harness that hands your 
 #include "azure/iot/adapters/az_iot_adapter_mymqtt.h"
 
 int main(void) {
-    az_iot_mqtt_factory_t* f = az_iot_mymqtt_factory_create_v3_1_1();
-    int rc = az_iot_conformance_run(az_iot_CONFORMANCE_SUITE_V3_1_1, f);
+    az_iot_mqtt_factory* f = az_iot_mymqtt_factory_create_v3_1_1();
+    int rc = az_iot_conformance_run(AZ_IOT_CONFORMANCE_SUITE_V3_1_1, f);
     az_iot_mymqtt_factory_destroy(f);
     return rc;
 }
@@ -182,11 +182,11 @@ docker run -d --name aeg-mosq -p 1883:1883 eclipse-mosquitto:2 \
 Configure the suite to point at it:
 
 ```sh
-export az_iot_MQTT_BROKER_HOST=localhost
-export az_iot_MQTT_BROKER_PORT=1883
+export AZ_IOT_MQTT_BROKER_HOST=localhost
+export AZ_IOT_MQTT_BROKER_PORT=1883
 ```
 
-If `az_iot_MQTT_BROKER_HOST` is unset (or empty, or `az_iot_MQTT_BROKER_SKIP=1`), the harness reports itself as `Skipped` (CTest exit 77) instead of failing. This lets developers without a broker keep the rest of the suite green.
+If `AZ_IOT_MQTT_BROKER_HOST` is unset (or empty, or `AZ_IOT_MQTT_BROKER_SKIP=1`), the harness reports itself as `Skipped` (CTest exit 77) instead of failing. This lets developers without a broker keep the rest of the suite green.
 
 ### 4.3 — Run
 
@@ -218,7 +218,7 @@ More tests will be added as the SDK grows (reconnect semantics, large payloads, 
 Once the conformance suite is green, plug the factory into the connection client:
 
 ```c
-az_iot_mqtt_factory_t* f = az_iot_mymqtt_factory_create_v3_1_1();
+az_iot_mqtt_factory* f = az_iot_mymqtt_factory_create_v3_1_1();
 az_iot_connection_client_register_mqtt_factory(client, f);
 /* register a v5 factory too if you support HUB_NEXT */
 ```

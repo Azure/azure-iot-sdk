@@ -19,12 +19,12 @@ extern "C" {
 #endif
 
 /**
- * Return an az_iot_adu_crypto_hooks_t wired to the OpenSSL (3.0+) backend.
+ * Return an az_iot_adu_crypto_hooks wired to the OpenSSL (3.0+) backend.
  * The returned struct is by value; it references static function pointers and
  * carries no allocated state (user_ctx is NULL). Safe to pass directly to
  * az_iot_adu_client_initialize().
  */
-az_iot_adu_crypto_hooks_t az_iot_adu_crypto_openssl_hooks(void);
+az_iot_adu_crypto_hooks az_iot_adu_crypto_openssl_hooks(void);
 
 #ifdef __cplusplus
 }

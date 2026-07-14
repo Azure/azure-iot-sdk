@@ -8,10 +8,10 @@
 #include <stdio.h>
 #include <string.h>
 
-static az_iot_log_sink_t s_global_sink;
+static az_iot_log_sink s_global_sink;
 static int s_sink_active;
 
-void az_iot_log_set_global_sink(const az_iot_log_sink_t* sink)
+void az_iot_log_set_global_sink(const az_iot_log_sink* sink)
 {
     if (sink)
     {
@@ -25,7 +25,7 @@ void az_iot_log_set_global_sink(const az_iot_log_sink_t* sink)
     }
 }
 
-void az_iot_log_emit(az_iot_log_level_t level, const char* file, int line, const char* msg)
+void az_iot_log_emit(az_iot_log_level level, const char* file, int line, const char* msg)
 {
     if (!s_sink_active) return;
     if (level < s_global_sink.min_level) return;
@@ -38,7 +38,7 @@ void az_iot_log_emit(az_iot_log_level_t level, const char* file, int line, const
 /* Built-in stderr sink implementation. */
 static void stderr_sink_fn(
     void* user_ctx,
-    az_iot_log_level_t level,
+    az_iot_log_level level,
     const char* file,
     int line,
     const char* msg)
@@ -49,9 +49,9 @@ static void stderr_sink_fn(
     fprintf(stderr, "[%s] %s:%d: %s\n", lvl, file, line, msg);
 }
 
-az_iot_log_sink_t az_iot_log_stderr_sink(az_iot_log_level_t min_level)
+az_iot_log_sink az_iot_log_stderr_sink(az_iot_log_level min_level)
 {
-    az_iot_log_sink_t sink;
+    az_iot_log_sink sink;
     sink.sink = stderr_sink_fn;
     sink.user_ctx = NULL;
     sink.min_level = min_level;

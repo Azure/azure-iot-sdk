@@ -141,34 +141,33 @@ provided as hooks, so the core links no crypto library and no OS-specific code.
 
 ```c
 /* Lifecycle */
-az_iot_result_t az_iot_adu_client_initialize(
-    az_iot_adu_client_t* client,
-    az_iot_twin_client_t* twin,
-    const az_iot_adu_platform_hooks_t* hooks,   /* download/install/apply/backup/restore/persist */
-    const az_iot_adu_crypto_hooks_t*   crypto,  /* verify_rs256 + sha256 primitives */
-    const az_iot_adu_root_key_t* root_keys, size_t root_key_count,
-    const az_iot_adu_device_properties_t* device_props,
-    uint8_t* device_props_buffer, size_t device_props_buffer_size);
+az_iot_adu_client_config_options az_iot_adu_client_config_options_default(void);
 
-void az_iot_adu_client_deinit(az_iot_adu_client_t* client);
+az_iot_result az_iot_adu_client_initialize(
+    az_iot_adu_client_t* client,
+    az_iot_twin_client* twin,
+    const az_iot_adu_client_config_options* options);  /* hooks, crypto, root keys,
+                                                     device props + caller cache */
+
+void az_iot_adu_client_destroy(az_iot_adu_client_t* client);
 
 /* Resume an interrupted workflow after a reboot (no-op if none persisted). */
-az_iot_result_t az_iot_adu_client_resume(az_iot_adu_client_t* client);
+az_iot_result az_iot_adu_client_resume(az_iot_adu_client_t* client);
 
 /* Runtime — call from the application's do_work loop. Non-blocking. */
-az_iot_result_t az_iot_adu_client_do_work(az_iot_adu_client_t* client);
+az_iot_result az_iot_adu_client_do_work(az_iot_adu_client_t* client);
 
 /* Observe / control. */
-az_iot_adu_state_t az_iot_adu_client_get_state(const az_iot_adu_client_t* client);
-bool              az_iot_adu_is_cancelled(const az_iot_adu_client_t* client);
+az_iot_adu_state az_iot_adu_client_get_state(const az_iot_adu_client_t* client);
+bool             az_iot_adu_is_cancelled(const az_iot_adu_client_t* client);
 
 /* Update reported device properties (deep-copied; published on next do_work). */
-az_iot_result_t az_iot_adu_client_update_device_properties(
+az_iot_result az_iot_adu_client_update_device_properties(
     az_iot_adu_client_t* client,
-    const az_iot_adu_device_properties_t* device_props);
+    const az_iot_adu_device_properties* device_props);
 
 /* Convenience: Microsoft's compiled-in ADU root public keys. */
-const az_iot_adu_root_key_t* az_iot_adu_microsoft_root_keys(size_t* out_count);
+const az_iot_adu_root_key* az_iot_adu_microsoft_root_keys(size_t* out_count);
 ```
 
 The crypto hook surface is deliberately minimal — pure primitives only — while
@@ -187,7 +186,7 @@ typedef struct {
     int32_t (*sha256_update_fn)(void* ctx, const uint8_t*, size_t, void*);
     int32_t (*sha256_final_fn)(void* ctx, uint8_t out[32], void*);
     void* user_ctx;
-} az_iot_adu_crypto_hooks_t;
+} az_iot_adu_crypto_hooks;
 ```
 
 ---
@@ -200,22 +199,29 @@ az_iot_connection_client_init(&conn, /* hub/device credentials */ ...);
 az_iot_twin_client_init(&twin, &conn);
 
 /* Crypto primitives + root keys (Microsoft defaults shown). */
-az_iot_adu_crypto_hooks_t crypto = az_iot_adu_crypto_openssl_hooks();
+az_iot_adu_crypto_hooks crypto = az_iot_adu_crypto_openssl_hooks();
 size_t rk_count;
-const az_iot_adu_root_key_t* root_keys = az_iot_adu_microsoft_root_keys(&rk_count);
+const az_iot_adu_root_key* root_keys = az_iot_adu_microsoft_root_keys(&rk_count);
 
 /* Platform hooks: download/install/apply/backup/restore/persist for this device. */
-az_iot_adu_platform_hooks_t hooks = my_platform_hooks();
+az_iot_adu_platform_hooks hooks = my_platform_hooks();
 
-az_iot_adu_device_properties_t props = {
+az_iot_adu_device_properties props = {
     .manufacturer = "Contoso",
     .model        = "Thermostat-9000",
     .installed_update_id = { .provider = "Contoso", .name = "Thermostat", .version = "1.0.0" },
 };
 
 uint8_t props_cache[256];
-az_iot_adu_client_initialize(&adu, &twin, &hooks, &crypto,
-                       root_keys, rk_count, &props, props_cache, sizeof props_cache);
+az_iot_adu_client_config_options adu_opts = az_iot_adu_client_config_options_default();
+adu_opts.hooks = &hooks;
+adu_opts.crypto = &crypto;
+adu_opts.root_keys = root_keys;
+adu_opts.root_key_count = rk_count;
+adu_opts.device_props = &props;
+adu_opts.device_props_buffer = props_cache;
+adu_opts.device_props_buffer_size = sizeof props_cache;
+az_iot_adu_client_initialize(&adu, &twin, &adu_opts);
 
 az_iot_connection_client_open(&conn);
 az_iot_adu_client_resume(&adu);   /* continue if a prior run rebooted mid-update */
@@ -424,21 +430,22 @@ twin-backed one (v1) and an HTTPS data-plane one (v2).
 ```c
 typedef struct {
     /* Pull/receive the next assigned manifest, if any. Non-blocking. */
-    az_iot_result_t (*get_manifest_fn)(void* ctx, az_span* out_manifest, bool* out_available);
+    az_iot_result (*get_manifest_fn)(void* ctx, az_span* out_manifest, bool* out_available);
     /* Deliver the terminal report as STRUCTURED data; the provider serializes it
      * (v1: twin reported properties; v2: the reportStatus payload, §5a). */
-    az_iot_result_t (*report_fn)(void* ctx, const az_iot_adu_report_t* report);
+    az_iot_result (*report_fn)(void* ctx, const az_iot_adu_report* report);
     void* ctx;
-} az_iot_adu_transport_t;
+} az_iot_adu_transport;
 
 /* v1: twin-backed transport (push arrives as desired-property deltas) */
-az_iot_adu_transport_t t = az_iot_adu_transport_twin(&twin);
+az_iot_adu_transport t = az_iot_adu_transport_twin(&twin);
 
 /* v2: HTTPS data-plane transport (requestUpdates poll + reportStatus, mTLS X.509) */
-az_iot_adu_transport_t t = az_iot_adu_transport_http(&adu_http /* endpoint, X.509, poll cfg */);
+az_iot_adu_transport t = az_iot_adu_transport_http(&adu_http /* endpoint, X.509, poll cfg */);
 
-az_iot_adu_client_initialize(&adu, &t, &hooks, &crypto,
-                       root_keys, rk_count, &props, buf, sizeof buf);
+/* The transport vtable replaces the twin argument; hooks/crypto/keys/props are
+ * carried by az_iot_adu_client_config_options as in the shipping API. */
+az_iot_adu_client_initialize(&adu, &t, &options);
 ```
 
 - **Pros:** one engine, one test surface for verify/download/install; v1 and v2
@@ -623,7 +630,7 @@ drive the decision:
 
 | You asked about… | …which is | Public surface |
 |---|---|---|
-| `adu_update_provider_t` interface implemented by both the twin client and a future HTTPS client | **Approach 1** (`az_iot_adu_transport_t` vtable) | One client type + one injected vtable |
+| `adu_update_provider_t` interface implemented by both the twin client and a future HTTPS client | **Approach 1** (`az_iot_adu_transport` vtable) | One client type + one injected vtable |
 | Shared engine that takes the manifest JSON directly | **Approach 3** (`engine_submit_manifest` + `engine_collect_report` returning **structured** data) | One engine + two thin clients |
 | Completely separate Gen2 client | **Approach 2** (`az_adu_client`) | Two independent clients |
 
@@ -725,29 +732,29 @@ shape is:
  * are populated only on AZ_IOT_OK. The manifest is unescaped in place, so spans
  * in out_manifest point into `request_json`, which the caller owns and MUST keep
  * alive (and stable) while using out_manifest. No heap, no transport, no twin. */
-az_iot_result_t az_iot_adu_parse_update_request(
+az_iot_result az_iot_adu_parse_update_request(
     az_span request_json,
-    const az_iot_adu_crypto_hooks_t* crypto,
-    const az_iot_adu_root_key_t* root_keys, size_t root_key_count,
+    const az_iot_adu_crypto_hooks* crypto,
+    const az_iot_adu_root_key* root_keys, size_t root_key_count,
     az_iot_adu_client_update_request*  out_request,
     az_iot_adu_client_update_manifest* out_manifest);
 
 /* Per-file SHA-256 check the consumer calls during their own download loop
  * (payload bytes are not present at parse time). */
-az_iot_result_t az_iot_adu_verify_file_hash(
+az_iot_result az_iot_adu_verify_file_hash(
     const az_iot_adu_client_update_manifest_file* file,
-    const az_iot_adu_crypto_hooks_t* crypto,
+    const az_iot_adu_crypto_hooks* crypto,
     int32_t (*read_chunk)(size_t offset, uint8_t* buf, size_t cap, size_t* out_read, void* ctx),
     void* read_ctx);
 
 /* Build the report from the consumer's own outcome data. Emits structured
  * result; the gen-specific serializer turns it into the twin payload (v1) or
  * the reportStatus body (v2, Part B §5a). */
-az_iot_result_t az_iot_adu_build_report(
-    const az_iot_adu_device_properties_t* device_props,
+az_iot_result az_iot_adu_build_report(
+    const az_iot_adu_device_properties* device_props,
     const az_iot_adu_client_install_result* result,
     const az_iot_adu_client_update_request* request,
-    az_iot_adu_state_t state,
+    az_iot_adu_state state,
     uint8_t* out_json, size_t out_size, size_t* out_len);
 ```
 

@@ -40,10 +40,10 @@ static int cert_file_has_pem(const char* path)
     return (n > 0) && (strstr(buf, "-----BEGIN CERTIFICATE-----") != NULL);
 }
 
-static az_iot_result_t provider_load(
-    az_iot_certificate_provider_t* self, az_iot_cert_role_t role, az_iot_certificate_material_t* out)
+static az_iot_result provider_load(
+    az_iot_certificate_provider* self, az_iot_cert_role role, az_iot_certificate_material* out)
 {
-    sample_cert_provider_t* p = (sample_cert_provider_t*)self;
+    sample_cert_provider* p = (sample_cert_provider*)self;
     if (!p || !out) return AZ_IOT_ERR_INVALID_ARG;
 
     memset(out, 0, sizeof(*out));
@@ -64,17 +64,17 @@ static az_iot_result_t provider_load(
 }
 
 static void provider_release(
-    az_iot_certificate_provider_t* self, az_iot_certificate_material_t* material)
+    az_iot_certificate_provider* self, az_iot_certificate_material* material)
 {
     (void)self; (void)material; /* paths are owned by the provider struct */
 }
 
-static az_iot_result_t provider_get_csr(
-    az_iot_certificate_provider_t* self,
+static az_iot_result provider_get_csr(
+    az_iot_certificate_provider* self,
     const char* subject_common_name,
-    az_iot_certificate_signing_request_t* out_csr)
+    az_iot_certificate_signing_request* out_csr)
 {
-    sample_cert_provider_t* p = (sample_cert_provider_t*)self;
+    sample_cert_provider* p = (sample_cert_provider*)self;
     if (!p || !out_csr) return AZ_IOT_ERR_INVALID_ARG;
 
     char* csr = NULL;
@@ -86,7 +86,7 @@ static az_iot_result_t provider_get_csr(
 }
 
 static void provider_release_csr(
-    az_iot_certificate_provider_t* self, az_iot_certificate_signing_request_t* csr)
+    az_iot_certificate_provider* self, az_iot_certificate_signing_request* csr)
 {
     (void)self;
     if (csr && csr->csr_base64)
@@ -96,10 +96,10 @@ static void provider_release_csr(
     }
 }
 
-static az_iot_result_t provider_store(
-    az_iot_certificate_provider_t* self, const az_iot_issued_certificate_t* issued)
+static az_iot_result provider_store(
+    az_iot_certificate_provider* self, const az_iot_issued_certificate* issued)
 {
-    sample_cert_provider_t* p = (sample_cert_provider_t*)self;
+    sample_cert_provider* p = (sample_cert_provider*)self;
     if (!p || !issued || !issued->certificates || issued->count == 0)
         return AZ_IOT_ERR_INVALID_ARG;
 
@@ -107,7 +107,7 @@ static az_iot_result_t provider_store(
     if (!f) return AZ_IOT_ERR_INTERNAL;
 
     /* PEM-wrap each base64 DER cert (leaf first) into the operational cert file. */
-    az_iot_result_t rc = AZ_IOT_OK;
+    az_iot_result rc = AZ_IOT_OK;
     for (size_t i = 0; i < issued->count; ++i)
     {
         az_span cert = issued->certificates[i];
@@ -127,12 +127,12 @@ static az_iot_result_t provider_store(
     return rc;
 }
 
-static void provider_deinit_vtable(az_iot_certificate_provider_t* self)
+static void provider_deinit_vtable(az_iot_certificate_provider* self)
 {
-    sample_cert_provider_deinit((sample_cert_provider_t*)self);
+    sample_cert_provider_destroy((sample_cert_provider*)self);
 }
 
-static const az_iot_certificate_provider_vtable_t s_vtable = {
+static const az_iot_certificate_provider_vtable s_vtable = {
     .version                  = AZ_IOT_CERTIFICATE_PROVIDER_VTABLE_VERSION,
     .load                     = provider_load,
     .release                  = provider_release,
@@ -142,7 +142,7 @@ static const az_iot_certificate_provider_vtable_t s_vtable = {
     .store_issued_certificate = provider_store,
 };
 
-void sample_cert_provider_deinit(sample_cert_provider_t* provider)
+void sample_cert_provider_destroy(sample_cert_provider* provider)
 {
     if (!provider) return;
     free(provider->bootstrap_cert_path);
@@ -153,8 +153,8 @@ void sample_cert_provider_deinit(sample_cert_provider_t* provider)
     memset(provider, 0, sizeof(*provider));
 }
 
-az_iot_result_t sample_cert_provider_init(
-    sample_cert_provider_t* provider, const sample_cert_provider_options_t* opts)
+az_iot_result sample_cert_provider_init(
+    sample_cert_provider* provider, const sample_cert_provider_options* opts)
 {
     if (!provider || !opts) return AZ_IOT_ERR_INVALID_ARG;
     if (!opts->bootstrap_cert_path   || !opts->bootstrap_cert_path[0] ||
@@ -174,7 +174,7 @@ az_iot_result_t sample_cert_provider_init(
     if (!provider->bootstrap_cert_path || !provider->bootstrap_key_path ||
         !provider->operational_key_path || !provider->operational_cert_path)
     {
-        sample_cert_provider_deinit(provider);
+        sample_cert_provider_destroy(provider);
         return AZ_IOT_ERR_OUT_OF_MEMORY;
     }
     if (opts->trusted_ca_path && opts->trusted_ca_path[0])
@@ -182,7 +182,7 @@ az_iot_result_t sample_cert_provider_init(
         provider->trusted_ca_path = dup_str(opts->trusted_ca_path);
         if (!provider->trusted_ca_path)
         {
-            sample_cert_provider_deinit(provider);
+            sample_cert_provider_destroy(provider);
             return AZ_IOT_ERR_OUT_OF_MEMORY;
         }
     }

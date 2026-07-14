@@ -56,7 +56,7 @@
  * verify out of the box.
  *
  * To accept updates signed by your OWN root instead, build your own
- * az_iot_adu_root_key_t array (kid + big-endian modulus/exponent) and pass it
+ * az_iot_adu_root_key array (kid + big-endian modulus/exponent) and pass it
  * to az_iot_adu_client_initialize() in place of the Microsoft keys.
  */
 
@@ -73,7 +73,7 @@ typedef struct
     const char* state_file;
 
     int  reboot_signalled; /* set by install_fn when it returns REBOOT_REQUIRED */
-} sim_ctx_t;
+} sim_ctx;
 
 static void sleep_ms(long ms)
 {
@@ -107,7 +107,7 @@ static int32_t sim_download(
     uint32_t file_index, uint32_t file_count, void* user_ctx)
 {
     (void)url;
-    sim_ctx_t* s = (sim_ctx_t*)user_ctx;
+    sim_ctx* s = (sim_ctx*)user_ctx;
     printf("  [download] file %u/%u (%lld bytes) [simulated]\n",
            file_index + 1, file_count, (long long)file->size_in_bytes);
     sleep_ms(s->delay_ms);
@@ -123,7 +123,7 @@ static int32_t sim_read_file(
     void* user_ctx)
 {
     (void)file_index;
-    sim_ctx_t* s = (sim_ctx_t*)user_ctx;
+    sim_ctx* s = (sim_ctx*)user_ctx;
     size_t size = (file->size_in_bytes > 0) ? (size_t)file->size_in_bytes : 0;
     if (offset >= size)
     {
@@ -161,7 +161,7 @@ static int32_t sim_install(
     const az_iot_adu_client_update_manifest* manifest, uint32_t step, void* user_ctx)
 {
     (void)manifest;
-    sim_ctx_t* s = (sim_ctx_t*)user_ctx;
+    sim_ctx* s = (sim_ctx*)user_ctx;
     if (s->fail_step > 0 && (uint32_t)(s->fail_step - 1) == step)
     {
         printf("  [install] step %u -> FORCED FAILURE (ADU_SIM_FAIL_STEP)\n", step);
@@ -195,7 +195,7 @@ static int32_t sim_restore(
 
 static int32_t sim_persist(const uint8_t* blob, size_t len, void* user_ctx)
 {
-    sim_ctx_t* s = (sim_ctx_t*)user_ctx;
+    sim_ctx* s = (sim_ctx*)user_ctx;
     FILE* f = fopen(s->state_file, "wb");
     if (f == NULL) return AZ_IOT_ADU_RESULT_FAILURE;
     size_t w = fwrite(blob, 1, len, f);
@@ -207,7 +207,7 @@ static int32_t sim_persist(const uint8_t* blob, size_t len, void* user_ctx)
 
 static int32_t sim_load(uint8_t* blob, size_t cap, size_t* out_len, void* user_ctx)
 {
-    sim_ctx_t* s = (sim_ctx_t*)user_ctx;
+    sim_ctx* s = (sim_ctx*)user_ctx;
     FILE* f = fopen(s->state_file, "rb");
     if (f == NULL) return 1; /* nothing persisted */
     size_t r = fread(blob, 1, cap, f);
@@ -222,7 +222,7 @@ static int32_t sim_load(uint8_t* blob, size_t cap, size_t* out_len, void* user_c
 /* helpers                                                                   */
 /* ------------------------------------------------------------------------- */
 
-static const char* adu_state_name(az_iot_adu_state_t s)
+static const char* adu_state_name(az_iot_adu_state s)
 {
     switch (s)
     {
@@ -247,26 +247,26 @@ static void on_sigint(int signo) { (void)signo; g_stop = 1; }
 
 typedef struct
 {
-    sample_config_t                    config;
-    az_iot_certificate_provider_pem_t  certs;
-    az_iot_connection_client_t         connection_client;
-    az_iot_twin_client_t               twin_client;
+    sample_config                    config;
+    az_iot_certificate_provider_pem  certs;
+    az_iot_connection_client         connection_client;
+    az_iot_twin_client               twin_client;
     az_iot_adu_client_t                adu_client;
-    sim_ctx_t                          sim;
+    sim_ctx                          sim;
     uint8_t                            dp_buffer[512];
-} sample_state_t;
+} sample_state;
 
-static void sample_state_destroy(sample_state_t* s)
+static void sample_state_destroy(sample_state* s)
 {
-    az_iot_adu_client_deinit(&s->adu_client);
-    az_iot_twin_client_deinit(&s->twin_client);
-    az_iot_connection_client_deinit(&s->connection_client);
-    az_iot_certificate_provider_pem_deinit(&s->certs);
+    az_iot_adu_client_destroy(&s->adu_client);
+    az_iot_twin_client_destroy(&s->twin_client);
+    az_iot_connection_client_destroy(&s->connection_client);
+    az_iot_certificate_provider_pem_destroy(&s->certs);
     sample_config_release(&s->config);
 }
 
-static az_iot_connection_state_t g_conn_state = AZ_IOT_CONN_STATE_IDLE;
-static const char* conn_state_name(az_iot_connection_state_t s)
+static az_iot_connection_state g_conn_state = AZ_IOT_CONN_STATE_IDLE;
+static const char* conn_state_name(az_iot_connection_state s)
 {
     switch (s)
     {
@@ -279,7 +279,7 @@ static const char* conn_state_name(az_iot_connection_state_t s)
         default:                              return "?";
     }
 }
-static void on_conn_state(az_iot_connection_state_t st, az_iot_result_t reason, void* user_ctx)
+static void on_conn_state(az_iot_connection_state st, az_iot_result reason, void* user_ctx)
 {
     (void)user_ctx;
     if (st != g_conn_state)
@@ -296,12 +296,12 @@ static void on_conn_state(az_iot_connection_state_t st, az_iot_result_t reason, 
 
 int main(void)
 {
-    az_iot_log_sink_t log = az_iot_log_stderr_sink(AZ_IOT_LOG_ERROR);
+    az_iot_log_sink log = az_iot_log_stderr_sink(AZ_IOT_LOG_ERROR);
     az_iot_log_set_global_sink(&log);
 
     signal(SIGINT, on_sigint);
 
-    sample_state_t st = {0};
+    sample_state st = {0};
 
     /* Simulation knobs from the environment. */
     const char* env;
@@ -319,10 +319,10 @@ int main(void)
     int rc = 1;
 
     /* Certificate provider. */
-    az_iot_certificate_provider_pem_options_t pem = {
-        .trusted_ca_pem_path = st.config.ca,
-        .client_cert_pem_path = st.config.cert,
-        .client_key_pem_path = st.config.key };
+    az_iot_certificate_provider_pem_options pem = az_iot_certificate_provider_pem_options_default();
+    pem.trusted_ca_pem_path = st.config.ca;
+    pem.client_cert_pem_path = st.config.cert;
+    pem.client_key_pem_path = st.config.key;
     if (az_iot_certificate_provider_pem_init(&st.certs, &pem) != AZ_IOT_OK)
     {
         sample_state_destroy(&st);
@@ -330,9 +330,10 @@ int main(void)
     }
 
     /* Connection client (DPS provisioning is internal when host == NULL). */
-    az_iot_connection_client_options_t copts =
-        az_iot_connection_client_options_get_default(
-            st.config.id_scope, st.config.reg_id, &st.certs.base);
+    az_iot_connection_client_options copts = az_iot_connection_client_options_default();
+    copts.dps.id_scope = st.config.id_scope;
+    copts.dps.registration_id = st.config.reg_id;
+    copts.certificate_provider = &st.certs.base;
     /* Announce the Device Update PnP model id at connection. Device Update
      * imports and classifies a device ONLY if it advertises a model id as part
      * of the MQTT CONNECT; without it the device never lands in the ADU
@@ -343,10 +344,10 @@ int main(void)
      * long-running sample recovers transparently from transient drops (e.g.
      * a duplicate-connection eviction or a network blip) while it waits for a
      * deployment. initial_delay_ms > 0 is what arms the reconnect machinery. */
-    copts.reconnect.initial_delay_ms = 2000;     /* first retry after 2s */
-    copts.reconnect.max_delay_ms     = 60000;    /* cap backoff at 60s */
-    copts.reconnect.max_attempts     = 0;        /* 0 = retry forever */
-    copts.reconnect.jitter_pct       = 20;       /* +/-20% jitter */
+    copts.reconnection_policy.initial_delay_ms = 2000;     /* first retry after 2s */
+    copts.reconnection_policy.max_delay_ms     = 60000;    /* cap backoff at 60s */
+    copts.reconnection_policy.max_attempts     = 0;        /* 0 = retry forever */
+    copts.reconnection_policy.jitter_pct       = 20;       /* +/-20% jitter */
     if (az_iot_connection_client_init(&st.connection_client, &copts) != AZ_IOT_OK)
     {
         sample_state_destroy(&st);
@@ -371,7 +372,7 @@ int main(void)
     }
 
     /* ADU client. */
-    az_iot_adu_platform_hooks_t hooks = {0};
+    az_iot_adu_platform_hooks hooks = {0};
     hooks.download_fn = sim_download;
     hooks.read_file_fn = sim_read_file;
     hooks.install_fn = sim_install;
@@ -383,17 +384,17 @@ int main(void)
     hooks.load_state_fn = sim_load;
     hooks.user_ctx = &st.sim;
 
-    az_iot_adu_crypto_hooks_t crypto = az_iot_adu_crypto_openssl_hooks();
+    az_iot_adu_crypto_hooks crypto = az_iot_adu_crypto_openssl_hooks();
 
     /* Microsoft's compiled-in ADU production root keys: anchors the trust chain
      * for updates signed by the real Device Update service. */
     size_t root_key_count = 0;
-    const az_iot_adu_root_key_t* root_keys = az_iot_adu_microsoft_root_keys(&root_key_count);
+    const az_iot_adu_root_key* root_keys = az_iot_adu_microsoft_root_keys(&root_key_count);
 
-    static const az_iot_adu_custom_property_t customs[] = {
+    static const az_iot_adu_custom_property customs[] = {
         { "environment", "sim" },
     };
-    az_iot_adu_device_properties_t dp = {0};
+    az_iot_adu_device_properties dp = {0};
     dp.manufacturer = "Contoso";
     dp.model = "ADU-Sim";
     dp.installed_update_id.provider = "Contoso";
@@ -402,10 +403,15 @@ int main(void)
     dp.custom_properties = customs;
     dp.custom_properties_count = sizeof(customs) / sizeof(customs[0]);
 
-    if (az_iot_adu_client_initialize(
-            &st.adu_client, &st.twin_client, &hooks, &crypto,
-            root_keys, root_key_count,
-            &dp, st.dp_buffer, sizeof(st.dp_buffer)) != AZ_IOT_OK)
+    az_iot_adu_client_config_options adu_opts = az_iot_adu_client_config_options_default();
+    adu_opts.hooks = &hooks;
+    adu_opts.crypto = &crypto;
+    adu_opts.root_keys = root_keys;
+    adu_opts.root_key_count = root_key_count;
+    adu_opts.device_props = &dp;
+    adu_opts.device_props_buffer = st.dp_buffer;
+    adu_opts.device_props_buffer_size = sizeof(st.dp_buffer);
+    if (az_iot_adu_client_initialize(&st.adu_client, &st.twin_client, &adu_opts) != AZ_IOT_OK)
     {
         fprintf(stderr, "az_iot_adu_client_initialize failed\n");
         sample_state_destroy(&st);
@@ -438,7 +444,7 @@ int main(void)
                "installedUpdateId=1.0.0.\n");
         printf("Waiting for a deployment (Ctrl-C to exit)...\n");
 
-        az_iot_adu_state_t prev = az_iot_adu_client_get_state(&st.adu_client);
+        az_iot_adu_state prev = az_iot_adu_client_get_state(&st.adu_client);
         int saw_active = (prev != AZ_IOT_ADU_STATE_IDLE);
 
         while (!g_stop)
@@ -446,7 +452,7 @@ int main(void)
             (void)az_iot_connection_client_do_work(&st.connection_client, 50);
             (void)az_iot_adu_client_do_work(&st.adu_client);
 
-            az_iot_adu_state_t cur = az_iot_adu_client_get_state(&st.adu_client);
+            az_iot_adu_state cur = az_iot_adu_client_get_state(&st.adu_client);
             if (cur != prev)
             {
                 printf("ADU state: %s -> %s\n", adu_state_name(prev), adu_state_name(cur));
