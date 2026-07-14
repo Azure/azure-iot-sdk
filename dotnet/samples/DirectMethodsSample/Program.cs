@@ -13,7 +13,6 @@ internal class Program
         cts.CancelAfter(TimeSpan.FromSeconds(20));
 
         string deviceId = SampleConstants.LoadDeviceId();
-        string hostName = SampleConstants.LoadHostname();
         string idScope = SampleConstants.LoadIdScope();
         X509AuthenticationProvider authentication = SampleConstants.LoadAuthenticationProvider();
 

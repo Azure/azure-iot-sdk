@@ -12,7 +12,6 @@ internal class Program
     private static async Task Main(string[] args)
     {
         string deviceId = SampleConstants.LoadDeviceId();
-        string hostName = SampleConstants.LoadHostname();
         string idScope = SampleConstants.LoadIdScope();
         X509AuthenticationProvider authentication = SampleConstants.LoadAuthenticationProvider();
 
