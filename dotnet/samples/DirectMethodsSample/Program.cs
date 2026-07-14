@@ -10,7 +10,14 @@ internal class Program
     private static async Task Main(string[] args)
     {
         using CancellationTokenSource cts = new CancellationTokenSource();
-        cts.CancelAfter(TimeSpan.FromSeconds(20));
+        cts.CancelAfter(TimeSpan.FromMinutes(10));
+
+        // Cancel sample on key press
+        Console.CancelKeyPress += (sender, eventArgs) =>
+        {
+            cts.Cancel();
+            eventArgs.Cancel = true;
+        };
 
         string deviceId = SampleConstants.LoadDeviceId();
         string idScope = SampleConstants.LoadIdScope();
@@ -28,7 +35,7 @@ internal class Program
 
                 if (directMethodRequestPayload == null)
                 {
-                    Console.WriteLine("Received an unexpected payload format");
+                    Console.WriteLine("Received an unexpected payload format. Responding to direct method request with 400 response");
                     return Task.FromResult(new DirectMethodResponse() { Status = 400 });
                 }
 
@@ -38,7 +45,8 @@ internal class Program
                     SomeLongField = 10000000,
                 };
 
-                // Note that the user callback here doesn't know/doesn't care if the IoT hub was a classic IoT hub vs an AEG IoT hub. It works for both.
+                Console.WriteLine($"Responding to the direct method request with a 200 response");
+
                 return Task.FromResult(new DirectMethodResponse()
                 {
                     Status = 200,
@@ -47,7 +55,7 @@ internal class Program
             }
             else
             {
-                // Undefined method was invoked, so return "not found"
+                Console.WriteLine($"Received a direct method request with an unexpected method name {args.MethodName}. Responding to direct method request with 404 response");
                 return Task.FromResult(new DirectMethodResponse() { Status = 404 });
             }
         };
@@ -55,9 +63,17 @@ internal class Program
 
         ProvisioningSettings provisioningSettings = new(idScope);
         await connectionClient.ProvisionAndConnectAsync(provisioningSettings, authentication);
-        Console.WriteLine("Device is connected and now waiting for direct method invocations...");
+        Console.WriteLine($"Device {deviceId} is now provisioned and connected to IoT Hub. Now waiting for direct method invocations...");
 
-        await Task.Delay(-1, cts.Token);
+        try
+        {
+            Console.WriteLine("Press 'Ctrl+C' to end the sample");
+            await Task.Delay(-1, cts.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            Console.WriteLine("Sample timeout has completed. Shutting down the sample...");
+        }
 
         directMethodClient.DirectMethodInvokedAsync -= HandleDirectMethodAsync;
         await connectionClient.DisconnectAsync();

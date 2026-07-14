@@ -3,7 +3,6 @@ using Microsoft.Azure.Devices.Client.Mqtt;
 using Microsoft.Azure.Devices.Client.MQTTnetAdapter;
 using SetupSampleDevice;
 using System.Diagnostics;
-using System.Security.Cryptography.X509Certificates;
 
 internal class Program
 {
@@ -34,6 +33,7 @@ internal class Program
         ProvisioningSettings provisioningSettings = new(idScope);
         Console.WriteLine("Provisioning and connecting to IoT hub using the provided MQTT client");
         await connectionClient.ProvisionAndConnectAsync(provisioningSettings, authentication);
+        Console.WriteLine($"Device {deviceId} is now provisioned and connected to IoT Hub.");
 
         await Task.Delay(TimeSpan.FromSeconds(1));
 

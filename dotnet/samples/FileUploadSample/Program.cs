@@ -25,7 +25,7 @@ internal class Program
 
         ProvisioningSettings provisioningSettings = new(idScope);
         var connectionContext = await connectionClient.ProvisionAndConnectAsync(provisioningSettings, authentication);
-        Console.WriteLine("Device is now connected.");
+        Console.WriteLine($"Device {deviceId} is now provisioned and connected to IoT Hub.");
 
         FileUploadSasUriRequest sasUriRequest = new()
         {

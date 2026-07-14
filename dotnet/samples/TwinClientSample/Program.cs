@@ -2,6 +2,7 @@
 using Microsoft.Azure.Devices.Client.Twin;
 using SetupSampleDevice;
 using System.Security.Cryptography.X509Certificates;
+using System.Text.Json;
 
 internal class Program
 {
@@ -10,7 +11,14 @@ internal class Program
     private static async Task Main(string[] args)
     {
         using CancellationTokenSource cts = new CancellationTokenSource();
-        cts.CancelAfter(TimeSpan.FromSeconds(20));
+        cts.CancelAfter(TimeSpan.FromMinutes(10));
+
+        // Cancel sample on key press
+        Console.CancelKeyPress += (sender, eventArgs) =>
+        {
+            cts.Cancel();
+            eventArgs.Cancel = true;
+        };
 
         string deviceId = SampleConstants.LoadDeviceId();
         string idScope = SampleConstants.LoadIdScope();
@@ -60,11 +68,20 @@ internal class Program
         };
 
         var connectionContext = await connectionClient.ProvisionAndConnectAsync(provisioningSettings, authentication, twinPushOptions);
-        Console.WriteLine("Device is now connected. Now listening for desired property patches");
+        Console.WriteLine($"Device {deviceId} is now provisioned and connected to IoT Hub. Now listening for desired property patches");
 
         currentTwin = connectionContext.InitialTwinPush;
+        Console.WriteLine($"The current twin is: {JsonSerializer.Serialize(currentTwin)}");
 
-        await Task.Delay(-1, cts.Token);
+        try
+        {
+            Console.WriteLine("Press 'Ctrl+C' to end the sample");
+            await Task.Delay(-1, cts.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            Console.WriteLine("Sample timeout has completed. Shutting down the sample...");
+        }
 
         twinClient.DesiredPatchReceived -= HandleDesiredPropertiesUpdateAsync;
         await connectionClient.DisconnectAsync();

@@ -14,7 +14,7 @@ internal class Program //TODO distinguish naming on operational vs boot certific
     public static async Task Main(string[] args)
     {
         using CancellationTokenSource cts = new CancellationTokenSource();
-        cts.CancelAfter(TimeSpan.FromSeconds(20));
+        cts.CancelAfter(TimeSpan.FromMinutes(10));
 
         string deviceId = SampleConstants.LoadDeviceId();
         string registrationId = deviceId; //TODO this isn't correct, right?
