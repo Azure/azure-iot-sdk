@@ -55,6 +55,12 @@ namespace SetupSampleDevice
 
         public static string LoadDeviceId()
         {
+            string? deviceId = System.Environment.GetEnvironmentVariable("SAMPLE_DEVICE_ID");
+            if (deviceId != null)
+            {
+                return deviceId;
+            }
+
             if (!File.Exists(outputPath + "deviceId.txt"))
             {
                 throw new Exception("Run the SetupSampleDevice sample first to generate a test device + credentials");
@@ -63,19 +69,15 @@ namespace SetupSampleDevice
             return File.ReadAllText(outputPath + "deviceId.txt");
         }
 
-        public static string LoadHostname()
-        {
-            if (!File.Exists(outputPath + "deviceId.txt"))
-            {
-                throw new Exception("Run the SetupSampleDevice sample first to generate a test device + credentials");
-            }
-
-            return File.ReadAllText(outputPath + "hostname.txt");
-        }
-
         public static string LoadIdScope()
         {
-            if (!File.Exists(outputPath + "deviceId.txt"))
+            string? idScope = System.Environment.GetEnvironmentVariable("DPS_ID_SCOPE");
+            if (idScope != null)
+            {
+                return idScope;
+            }
+
+            if (!File.Exists(outputPath + "idscope.txt"))
             {
                 throw new Exception("Run the SetupSampleDevice sample first to generate a test device + credentials");
             }
@@ -85,7 +87,7 @@ namespace SetupSampleDevice
 
         public static byte[] LoadPfx()
         {
-            if (!File.Exists(outputPath + "deviceId.txt"))
+            if (!File.Exists(outputPath + "certificate.pfx"))
             {
                 throw new Exception("Run the SetupSampleDevice sample first to generate a test device + credentials");
             }
@@ -95,7 +97,25 @@ namespace SetupSampleDevice
 
         public static X509AuthenticationProvider LoadAuthenticationProvider()
         {
-            return new(X509CertificateLoader.LoadPkcs12(SampleConstants.LoadPfx(), SampleConstants.TestCertificatesPassword));
+            X509Certificate2 certificate;
+            string? certPassword = System.Environment.GetEnvironmentVariable("_PASSWORD");
+            if (string.IsNullOrEmpty(certPassword))
+            {
+                certPassword = SampleConstants.TestCertificatesPassword;
+            }
+
+            string? pfxContentsPath = System.Environment.GetEnvironmentVariable("X509_CERTIFICATE_PATH");
+
+            if (!string.IsNullOrEmpty(pfxContentsPath) && File.Exists(pfxContentsPath))
+            {
+                certificate = X509CertificateLoader.LoadPkcs12FromFile(pfxContentsPath, certPassword);
+            }
+            else 
+            {
+                certificate = X509CertificateLoader.LoadPkcs12(SampleConstants.LoadPfx(), certPassword);
+            }
+
+            return new(certificate);
         }
     }
 }

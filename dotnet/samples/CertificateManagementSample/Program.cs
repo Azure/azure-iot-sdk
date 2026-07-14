@@ -18,7 +18,6 @@ internal class Program //TODO distinguish naming on operational vs boot certific
 
         string deviceId = SampleConstants.LoadDeviceId();
         string registrationId = deviceId; //TODO this isn't correct, right?
-        string hostName = SampleConstants.LoadHostname();
         string idScope = SampleConstants.LoadIdScope();
         X509AuthenticationProvider authentication = SampleConstants.LoadAuthenticationProvider();
 
