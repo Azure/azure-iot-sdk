@@ -1,5 +1,6 @@
 ﻿using Microsoft.Azure.Devices.Client;
 using Microsoft.Azure.Devices.Client.Twin;
+using SetupSampleDevice;
 using System.Security.Cryptography.X509Certificates;
 
 internal class Program
@@ -11,10 +12,10 @@ internal class Program
         using CancellationTokenSource cts = new CancellationTokenSource();
         cts.CancelAfter(TimeSpan.FromSeconds(20));
 
-        string idScope = Environment.GetEnvironmentVariable("DPS_ID_SCOPE") ?? throw new Exception("");
-        string pcks12CertificatePath = Environment.GetEnvironmentVariable("X509_CERTIFICATE_PATH") ?? throw new Exception("");
-        string pcks12CertificatePassword = Environment.GetEnvironmentVariable("X509_CERTIFICATE_PASSWORD") ?? throw new Exception("");
-        X509AuthenticationProvider authentication = new(X509CertificateLoader.LoadPkcs12FromFile(pcks12CertificatePath, pcks12CertificatePassword));
+        string deviceId = SampleConstants.LoadDeviceId();
+        string hostName = SampleConstants.LoadHostname();
+        string idScope = SampleConstants.LoadIdScope();
+        X509AuthenticationProvider authentication = SampleConstants.LoadAuthenticationProvider();
 
         using ConnectionClient connectionClient = new ConnectionClient();
 
@@ -40,6 +41,7 @@ internal class Program
                 IfMatch = 1 //TODO how does this work again?
             };
 
+            Console.WriteLine($"Responding to desired patch by sending a reported patch");
             ReportedPatchResponse patchResponse = await twinClient.UpdateReportedPropertiesAsync(reportedPatch);
             currentTwin.ReportedVersion = patchResponse.Version;
             if (patchResponse.Result == Result.Ok)
@@ -59,6 +61,8 @@ internal class Program
         };
 
         var connectionContext = await connectionClient.ProvisionAndConnectAsync(provisioningSettings, authentication, twinPushOptions);
+        Console.WriteLine("Device is now connected. Now listening for desired property patches");
+
         currentTwin = connectionContext.InitialTwinPush;
 
         await Task.Delay(-1, cts.Token);

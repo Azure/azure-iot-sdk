@@ -1,10 +1,11 @@
 ﻿using Microsoft.Azure.Devices.Client;
 using Microsoft.Azure.Devices.Client.CertificateManagement;
+using SetupSampleDevice;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 
-internal class Program
+internal class Program //TODO distinguish naming on operational vs boot certificates
 {
     public const string PrivateKeyPath = "./PrivateKey.pem";
     public const string InitialSignedCertificatesPath = "./PublicCertificateChain.pem"; // The certificates signed by DPS during the initial device provisioning
@@ -15,13 +16,11 @@ internal class Program
         using CancellationTokenSource cts = new CancellationTokenSource();
         cts.CancelAfter(TimeSpan.FromSeconds(20));
 
-        string idScope = Environment.GetEnvironmentVariable("DPS_ID_SCOPE") ?? throw new Exception("");
-        string registrationId = Environment.GetEnvironmentVariable("DPS_REGISTRATION_ID") ?? throw new Exception("");
-
-        // These credentials are only used when provisioning. When connecting to IoT Hub, this sample uses the certificate that was signing by DPS during provisioning
-        string pcks12CertificatePath = Environment.GetEnvironmentVariable("X509_CERTIFICATE_PATH") ?? throw new Exception("");
-        string pcks12CertificatePassword = Environment.GetEnvironmentVariable("X509_CERTIFICATE_PASSWORD") ?? throw new Exception("");
-        X509AuthenticationProvider authentication = new(X509CertificateLoader.LoadPkcs12FromFile(pcks12CertificatePath, pcks12CertificatePassword));
+        string deviceId = SampleConstants.LoadDeviceId();
+        string registrationId = deviceId; //TODO this isn't correct, right?
+        string hostName = SampleConstants.LoadHostname();
+        string idScope = SampleConstants.LoadIdScope();
+        X509AuthenticationProvider authentication = SampleConstants.LoadAuthenticationProvider();
 
         using ConnectionClient connectionClient = new();
 
