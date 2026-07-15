@@ -41,12 +41,10 @@ namespace Microsoft.Azure.Devices.Client
         /// <summary>
         /// Construct a new <see cref="ConnectionClient"/>
         /// </summary>
-        /// <param name="mqttClient">The MQTT client to use. If null, a default MQTT client will be created for you.</param>
-        /// <param name="retryPolicy">
-        /// The retry policy for the MQTT client to use when reconnecting after unexpected disconnects. This policy does not apply to individual operations like
-        /// sending telemetry.
+        /// <param name="options">
+        /// The optional configurations that this client will use
         /// </param>
-        public ConnectionClient(IMqttClient? mqttClient = null, ConnectionClientOptions? options = null)
+        public ConnectionClient(ConnectionClientOptions? options = null)
         {
             options ??= new ConnectionClientOptions();
 
@@ -56,7 +54,7 @@ namespace Microsoft.Azure.Devices.Client
                 EnableMqttLogging = options.EnableMqttLogging,
             };
 
-            _mqttClient = mqttClient ?? new MqttSessionClient(sessionClientOptions);
+            _mqttClient = options.MqttClient ?? new MqttSessionClient(sessionClientOptions);
         }
 
         /// <summary>

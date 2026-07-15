@@ -429,7 +429,7 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session
 
                     if (isReconnection)
                     {
-                        Trace.TraceInformation("Reconnection finished after successfully connecting to the MQTT broker again and re-joining the existing MQTT session.");
+                        Trace.TraceInformation("Reconnection finished after successfully connecting to the MQTT broker again.");
                     }
 
                     if (mostRecentConnectResult != null
