@@ -10,14 +10,14 @@ typedef struct sample_config
     char* ca;
     char* device_id;         /* AZ_IOT_DEVICE_ID (optional, for mock bypass) */
     char* mock_endpoint;     /* AZ_IOT_HUB_NEXT_MOCK_ENDPOINT (optional) */
-} sample_config_t;
+} sample_config;
 
 // Reads DPS configuration from environment variables.
 // Returns 0 on success, non-zero if any required variable is missing.
-int sample_config_load(sample_config_t* config);
+int sample_config_load(sample_config* config);
 
 // Releases memory allocated by sample_config_load (Windows only; no-op on Linux).
-void sample_config_release(sample_config_t* config);
+void sample_config_release(sample_config* config);
 
 // Returns a heap copy of environment variable `name`, or a heap copy of
 // `fallback` when the variable is unset/empty (fallback may be NULL). Caller

@@ -29,7 +29,7 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #pragma comment(lib, "ws2_32.lib")
-typedef SOCKET _sock_t;
+typedef SOCKET _sock;
 #define _SOCK_INVALID INVALID_SOCKET
 #define _sock_would_block() (WSAGetLastError() == WSAEWOULDBLOCK)
 #define _sock_in_progress() (WSAGetLastError() == WSAEWOULDBLOCK || WSAGetLastError() == WSAEINPROGRESS)
@@ -45,7 +45,7 @@ typedef SOCKET _sock_t;
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <unistd.h>
-typedef int _sock_t;
+typedef int _sock;
 #define _SOCK_INVALID (-1)
 #define _sock_would_block() (errno == EWOULDBLOCK || errno == EAGAIN)
 #define _sock_in_progress() (errno == EINPROGRESS || errno == EWOULDBLOCK)
@@ -109,7 +109,7 @@ static void _ensure_wsa(void)
 #endif
 }
 
-static void _set_nonblocking(_sock_t sock)
+static void _set_nonblocking(_sock sock)
 {
 #ifdef _WIN32
   u_long mode = 1;
@@ -285,7 +285,7 @@ static void _sch_fail(az_amqp_sample_transport* s, char const* where, long statu
 // Sends as much pending ciphertext as the socket accepts. OK when drained; WANT_WRITE if more remains.
 static az_amqp_transport_status _sch_flush(az_amqp_sample_transport* s)
 {
-  _sock_t sock = (_sock_t)s->file_descriptor;
+  _sock sock = (_sock)s->file_descriptor;
   while (g_sch.out_off < g_sch.out_len)
   {
     int n = send(sock, (char const*)(g_sch.out + g_sch.out_off), g_sch.out_len - g_sch.out_off, 0);
@@ -404,7 +404,7 @@ static az_amqp_transport_status _sch_handshake(az_amqp_sample_transport* s)
   }
 
   // Read more handshake ciphertext.
-  _sock_t sock = (_sock_t)s->file_descriptor;
+  _sock sock = (_sock)s->file_descriptor;
   int n = recv(sock, (char*)(g_sch.in + g_sch.in_len), _SCH_BUF - g_sch.in_len, 0);
   if (n == 0)
   {
@@ -534,7 +534,7 @@ static az_amqp_transport_status _sch_drive_reneg(az_amqp_sample_transport* s)
 
   DWORD const isc_flags = ISC_REQ_SEQUENCE_DETECT | ISC_REQ_REPLAY_DETECT | ISC_REQ_CONFIDENTIALITY
       | ISC_REQ_ALLOCATE_MEMORY | ISC_REQ_STREAM;
-  _sock_t sock = (_sock_t)s->file_descriptor;
+  _sock sock = (_sock)s->file_descriptor;
 
   for (;;)
   {
@@ -654,7 +654,7 @@ _sch_read(az_amqp_sample_transport* s, az_span destination, size_t* out_bytes)
     return AZ_AMQP_TRANSPORT_STATUS_OK;
   }
 
-  _sock_t sock = (_sock_t)s->file_descriptor;
+  _sock sock = (_sock)s->file_descriptor;
   for (;;)
   {
     if (g_sch.in_len > 0)
@@ -857,7 +857,7 @@ static az_amqp_transport_status _open(az_amqp_transport* transport)
     return AZ_AMQP_TRANSPORT_STATUS_ERROR;
   }
 
-  _sock_t sock = socket(result->ai_family, result->ai_socktype, result->ai_protocol);
+  _sock sock = socket(result->ai_family, result->ai_socktype, result->ai_protocol);
   if (sock == _SOCK_INVALID)
   {
     freeaddrinfo(result);
@@ -891,7 +891,7 @@ static az_amqp_transport_status _process(az_amqp_transport* transport)
 
   if (s->phase == _PHASE_CONNECTING)
   {
-    _sock_t sock = (_sock_t)s->file_descriptor;
+    _sock sock = (_sock)s->file_descriptor;
 
     // Confirm the non-blocking connect has completed (socket writable) before proceeding. On
     // Windows a still-in-progress connect reports SO_ERROR == 0, so checking writability is what
@@ -1003,7 +1003,7 @@ _read(az_amqp_transport* transport, az_span destination, size_t* out_bytes)
   }
 #endif
 
-  _sock_t sock = (_sock_t)s->file_descriptor;
+  _sock sock = (_sock)s->file_descriptor;
   int n = recv(sock, (char*)az_span_ptr(destination), (int)az_span_size(destination), 0);
   if (n > 0)
   {
@@ -1057,7 +1057,7 @@ _write(az_amqp_transport* transport, az_span source, size_t* out_bytes)
   }
 #endif
 
-  _sock_t sock = (_sock_t)s->file_descriptor;
+  _sock sock = (_sock)s->file_descriptor;
   int n = send(sock, (char const*)az_span_ptr(source), (int)az_span_size(source), 0);
   if (n > 0)
   {
@@ -1095,7 +1095,7 @@ static az_amqp_transport_status _close(az_amqp_transport* transport)
 #endif
   if (s->file_descriptor >= 0)
   {
-    _sock_close((_sock_t)s->file_descriptor);
+    _sock_close((_sock)s->file_descriptor);
     s->file_descriptor = -1;
   }
   s->phase = _PHASE_CLOSED;

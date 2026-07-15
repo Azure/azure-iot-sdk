@@ -21,9 +21,9 @@ extern "C" {
  * az_iot_twin_client_subscribe_desired(), which can only register into the
  * application pool. Returns AZ_IOT_ERR_NOT_SUPPORTED when the feature pool is
  * full, AZ_IOT_ERR_BUSY if called from within a dispatch. */
-az_iot_result_t az_iot_twin_client__subscribe_desired(
-    az_iot_twin_client_t* twin,
-    az_iot_twin_desired_cb cb,
+az_iot_result az_iot_twin_client__subscribe_desired(
+    az_iot_twin_client* twin,
+    az_iot_twin_desired_callback cb,
     void* user_ctx);
 
 #ifdef __cplusplus

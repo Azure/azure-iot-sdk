@@ -22,11 +22,11 @@
 
 /* --- shared callbacks / pump ---------------------------------------------- */
 
-typedef struct put_token_result_tag
+typedef struct put_token_result
 {
     bool done;
     uint32_t status;
-} put_token_result_t;
+} put_token_result;
 
 static void on_connection_state_changed(
     az_amqp_connection* connection,
@@ -66,7 +66,7 @@ static void on_put_token_complete(
 {
     (void)cbs;
     (void)status_description;
-    put_token_result_t* result = (put_token_result_t*)user_data;
+    put_token_result* result = (put_token_result*)user_data;
     result->status = status_code;
     result->done = true;
 }
@@ -100,7 +100,7 @@ static void on_message_received(
     az_amqp_delivery const* delivery,
     void* user_data)
 {
-    e2e_amqp_telemetry_t* t = (e2e_amqp_telemetry_t*)user_data;
+    e2e_amqp_telemetry* t = (e2e_amqp_telemetry*)user_data;
 
     az_amqp_message_body_kind body_kind;
     az_span body;
@@ -122,7 +122,7 @@ static void on_message_received(
 }
 
 bool e2e_amqp_telemetry_begin(
-    e2e_amqp_telemetry_t* t,
+    e2e_amqp_telemetry* t,
     const char* eh_host,
     const char* entity_path,
     const char* sas_token,
@@ -232,7 +232,7 @@ bool e2e_amqp_telemetry_begin(
         }
     }
 
-    put_token_result_t put_token = { 0 };
+    put_token_result put_token = { 0 };
     if (az_result_failed(az_amqp_cbs_put_token(
             &t->cbs,
             AZ_SPAN_FROM_STR(AZ_AMQP_CBS_TOKEN_TYPE_SAS),
@@ -303,7 +303,7 @@ error:
     return false;
 }
 
-bool e2e_amqp_telemetry_do_work(e2e_amqp_telemetry_t* t, int wait_ms)
+bool e2e_amqp_telemetry_do_work(e2e_amqp_telemetry* t, int wait_ms)
 {
     if (!t->started)
     {
@@ -312,7 +312,7 @@ bool e2e_amqp_telemetry_do_work(e2e_amqp_telemetry_t* t, int wait_ms)
     return pump_connection(&t->connection, &t->transport_storage, &t->connection_failed, wait_ms);
 }
 
-bool e2e_amqp_telemetry_seen(const e2e_amqp_telemetry_t* t, const char* needle)
+bool e2e_amqp_telemetry_seen(const e2e_amqp_telemetry* t, const char* needle)
 {
     for (int i = 0; i < t->captured_count; i++)
     {
@@ -324,7 +324,7 @@ bool e2e_amqp_telemetry_seen(const e2e_amqp_telemetry_t* t, const char* needle)
     return false;
 }
 
-void e2e_amqp_telemetry_end(e2e_amqp_telemetry_t* t)
+void e2e_amqp_telemetry_end(e2e_amqp_telemetry* t)
 {
     if (t->started)
     {
@@ -367,7 +367,7 @@ void e2e_amqp_telemetry_end(e2e_amqp_telemetry_t* t)
 
 /* --- cloud-to-device sender ----------------------------------------------- */
 
-typedef struct e2e_amqp_c2d_ctx_tag
+typedef struct e2e_amqp_c2d_ctx
 {
     az_amqp_sample_transport transport_storage;
     az_amqp_transport transport;
@@ -387,11 +387,11 @@ typedef struct e2e_amqp_c2d_ctx_tag
     char to_buffer[256];
 } e2e_amqp_c2d_ctx;
 
-typedef struct send_result_tag
+typedef struct send_result
 {
     bool done;
     az_amqp_delivery_outcome outcome;
-} send_result_t;
+} send_result;
 
 static void on_send_complete(
     az_amqp_link* link,
@@ -401,7 +401,7 @@ static void on_send_complete(
 {
     (void)link;
     (void)delivery_tag;
-    send_result_t* result = (send_result_t*)user_data;
+    send_result* result = (send_result*)user_data;
     result->outcome = delivery_state->outcome;
     result->done = true;
 }
@@ -522,7 +522,7 @@ bool e2e_amqp_send_c2d(
             goto cleanup;
         }
     }
-    put_token_result_t put_token = { 0 };
+    put_token_result put_token = { 0 };
     if (az_result_failed(az_amqp_cbs_put_token(
             &c->cbs,
             AZ_SPAN_FROM_STR(AZ_AMQP_CBS_TOKEN_TYPE_SAS),
@@ -586,7 +586,7 @@ bool e2e_amqp_send_c2d(
     E2E_AMQP_DISCARD(az_amqp_message_set_body_data(
         &message, az_span_create((uint8_t*)(uintptr_t)payload, (int32_t)payload_len)));
 
-    send_result_t send = { 0 };
+    send_result send = { 0 };
     uint8_t delivery_tag_bytes[] = { 0x00, 0x00, 0x00, 0x01 };
     if (az_result_failed(az_amqp_link_send(
             &c->sender, &message, AZ_SPAN_FROM_BUFFER(delivery_tag_bytes), on_send_complete, &send)))

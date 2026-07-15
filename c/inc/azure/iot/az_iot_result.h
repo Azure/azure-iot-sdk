@@ -5,11 +5,13 @@
 #ifndef AZ_IOT_RESULT_H
 #define AZ_IOT_RESULT_H
 
+#include <azure/az_core.h> /* AZ_NODISCARD (and az_span, used across the public headers) */
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-typedef enum az_iot_result_tag
+typedef enum az_iot_result
 {
     AZ_IOT_OK = 0,
     AZ_IOT_ERR_INVALID_ARG,
@@ -29,9 +31,9 @@ typedef enum az_iot_result_tag
     AZ_IOT_ERR_DETACHED,
     AZ_IOT_ERR_INTERNAL,
     AZ_IOT_ERR_NOT_FOUND
-} az_iot_result_t;
+} az_iot_result;
 
-const char* az_iot_result_to_string(az_iot_result_t r);
+const char* az_iot_result_to_string(az_iot_result r);
 
 #ifdef __cplusplus
 }

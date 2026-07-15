@@ -4,7 +4,7 @@
 /* SPDX-License-Identifier: MIT */
 #include "azure/iot/az_iot_mqtt_iface.h"
 
-const char* az_iot_mqtt_version_to_string(az_iot_mqtt_version_t v)
+const char* az_iot_mqtt_version_to_string(az_iot_mqtt_version v)
 {
     switch (v)
     {

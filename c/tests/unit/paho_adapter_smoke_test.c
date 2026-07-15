@@ -18,11 +18,11 @@
 static void v3_factory_creates_v3_client(void** state)
 {
     (void)state;
-    az_iot_mqtt_factory_t* f = az_iot_paho_factory_create_v3_1_1();
+    az_iot_mqtt_factory* f = az_iot_paho_factory_create_v3_1_1();
     assert_non_null(f);
     assert_int_equal(f->version, AZ_IOT_MQTT_VERSION_3_1_1);
 
-    az_iot_mqtt_client_t* c = f->create(f->factory_ctx);
+    az_iot_mqtt_client* c = f->create(f->factory_ctx);
     assert_non_null(c);
     assert_non_null(c->iface);
     assert_int_equal(c->iface->version, AZ_IOT_MQTT_VERSION_3_1_1);
@@ -47,11 +47,11 @@ static void v3_factory_creates_v3_client(void** state)
 static void v5_factory_creates_v5_client(void** state)
 {
     (void)state;
-    az_iot_mqtt_factory_t* f = az_iot_paho_factory_create_v5();
+    az_iot_mqtt_factory* f = az_iot_paho_factory_create_v5();
     assert_non_null(f);
     assert_int_equal(f->version, AZ_IOT_MQTT_VERSION_5);
 
-    az_iot_mqtt_client_t* c = f->create(f->factory_ctx);
+    az_iot_mqtt_client* c = f->create(f->factory_ctx);
     assert_non_null(c);
     assert_int_equal(c->iface->version, AZ_IOT_MQTT_VERSION_5);
     c->iface->destroy(c);

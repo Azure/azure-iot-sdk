@@ -93,7 +93,7 @@ AZ_NODISCARD az_result az_amqp_session_init(
 
 void az_amqp_session_set_state_callback(
     az_amqp_session* session,
-    az_amqp_session_state_changed_fn state_changed,
+    az_amqp_session_state_changed_callback state_changed,
     void* user_data)
 {
   session->state_changed = state_changed;

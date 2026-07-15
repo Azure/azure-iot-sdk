@@ -90,7 +90,7 @@ static void managed_init_generates_key_and_valid_csr(void** state)
     (void)state;
     remove_test_files();
 
-    az_iot_certificate_provider_managed_options_t opts = {
+    az_iot_certificate_provider_managed_options opts = {
         .bootstrap_cert_pem_path   = BOOT_CRT,
         .bootstrap_key_pem_path    = BOOT_KEY,
         .trusted_ca_pem_path       = TRUST_CA,
@@ -98,14 +98,14 @@ static void managed_init_generates_key_and_valid_csr(void** state)
         .operational_cert_pem_path = OP_CERT,
         .key_type                  = AZ_IOT_MANAGED_KEY_EC_P256,
     };
-    az_iot_certificate_provider_managed_t prov;
+    az_iot_certificate_provider_managed prov;
     assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov, &opts));
     assert_non_null(prov.base.vtable);
     assert_int_equal(AZ_IOT_CERTIFICATE_PROVIDER_VTABLE_VERSION, prov.base.vtable->version);
 
     /* CSR carries the requested CN and is self-consistent (verifies with its
      * own public key). */
-    az_iot_certificate_signing_request_t csr;
+    az_iot_certificate_signing_request csr;
     memset(&csr, 0, sizeof(csr));
     assert_int_equal(AZ_IOT_OK,
         prov.base.vtable->get_csr(&prov.base, "my-device-id", &csr));
@@ -132,7 +132,7 @@ static void managed_init_generates_key_and_valid_csr(void** state)
 
     /* Before any issuance, BOOTSTRAP load returns the bootstrap paths and
      * OPERATIONAL load reports nothing to serve yet. */
-    az_iot_certificate_material_t mat;
+    az_iot_certificate_material mat;
     memset(&mat, 0, sizeof(mat));
     assert_int_equal(AZ_IOT_OK,
         prov.base.vtable->load(&prov.base, AZ_IOT_CRED_BOOTSTRAP, &mat));
@@ -144,7 +144,7 @@ static void managed_init_generates_key_and_valid_csr(void** state)
     assert_int_equal(AZ_IOT_ERR_NOT_FOUND,
         prov.base.vtable->load(&prov.base, AZ_IOT_CRED_OPERATIONAL, &mat));
 
-    az_iot_certificate_provider_managed_deinit(&prov);
+    az_iot_certificate_provider_managed_destroy(&prov);
     remove_test_files();
 }
 
@@ -152,21 +152,21 @@ static void managed_store_persists_and_survives_restart(void** state)
 {
     (void)state;
     remove_test_files();
-    az_iot_certificate_provider_managed_options_t opts = {
+    az_iot_certificate_provider_managed_options opts = {
         .bootstrap_cert_pem_path   = BOOT_CRT,
         .bootstrap_key_pem_path    = BOOT_KEY,
         .operational_key_pem_path  = OP_KEY,
         .operational_cert_pem_path = OP_CERT,
         .key_type                  = AZ_IOT_MANAGED_KEY_RSA_2048,
     };
-    az_iot_certificate_provider_managed_t prov;
+    az_iot_certificate_provider_managed prov;
     assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov, &opts));
 
     /* A real cert as base64 DER (the wire form). The provider PEM-wraps it; the
      * restart check then rejects empty/garbage, so the chain must be valid. */
     char* cert_b64 = make_self_signed_cert_base64();
     az_span chain[2] = { az_span_create_from_str(cert_b64), az_span_create_from_str(cert_b64) };
-    az_iot_issued_certificate_t issued = {
+    az_iot_issued_certificate issued = {
         .certificates = chain,
         .count = 2,
     };
@@ -174,19 +174,19 @@ static void managed_store_persists_and_survives_restart(void** state)
         prov.base.vtable->store_issued_certificate(&prov.base, &issued));
 
     /* After storing, OPERATIONAL load serves the persisted cert + op key. */
-    az_iot_certificate_material_t mat;
+    az_iot_certificate_material mat;
     memset(&mat, 0, sizeof(mat));
     assert_int_equal(AZ_IOT_OK,
         prov.base.vtable->load(&prov.base, AZ_IOT_CRED_OPERATIONAL, &mat));
     assert_string_equal(OP_CERT, mat.client_cert_path);
     assert_string_equal(OP_KEY, mat.client_key_path);
 
-    az_iot_certificate_provider_managed_deinit(&prov);
+    az_iot_certificate_provider_managed_destroy(&prov);
 
     /* Simulate a process restart: a fresh provider over the same paths loads
      * the persisted key and immediately has an operational identity (no
      * re-enrollment) and can still produce a CSR from the loaded key. */
-    az_iot_certificate_provider_managed_t prov2;
+    az_iot_certificate_provider_managed prov2;
     assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov2, &opts));
     assert_true(prov2.has_operational);
 
@@ -195,14 +195,14 @@ static void managed_store_persists_and_survives_restart(void** state)
         prov2.base.vtable->load(&prov2.base, AZ_IOT_CRED_OPERATIONAL, &mat));
     assert_string_equal(OP_CERT, mat.client_cert_path);
 
-    az_iot_certificate_signing_request_t csr;
+    az_iot_certificate_signing_request csr;
     memset(&csr, 0, sizeof(csr));
     assert_int_equal(AZ_IOT_OK,
         prov2.base.vtable->get_csr(&prov2.base, "my-device-id", &csr));
     assert_non_null(csr.csr_base64);
     prov2.base.vtable->release_csr(&prov2.base, &csr);
 
-    az_iot_certificate_provider_managed_deinit(&prov2);
+    az_iot_certificate_provider_managed_destroy(&prov2);
     free(cert_b64);
     remove_test_files();
 }
@@ -210,12 +210,12 @@ static void managed_store_persists_and_survives_restart(void** state)
 static void managed_init_rejects_bad_args(void** state)
 {
     (void)state;
-    az_iot_certificate_provider_managed_t prov;
+    az_iot_certificate_provider_managed prov;
 
     assert_int_equal(AZ_IOT_ERR_INVALID_ARG,
         az_iot_certificate_provider_managed_init(NULL, NULL));
 
-    az_iot_certificate_provider_managed_options_t opts = {
+    az_iot_certificate_provider_managed_options opts = {
         .bootstrap_cert_pem_path   = NULL, /* required, missing */
         .bootstrap_key_pem_path    = BOOT_KEY,
         .operational_key_pem_path  = OP_KEY,

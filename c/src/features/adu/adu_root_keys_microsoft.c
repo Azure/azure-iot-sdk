@@ -93,7 +93,7 @@ static const uint8_t k_modulus_ADU_200703_R[] = {
 
 static const uint8_t k_exponent_65537[] = { 0x01, 0x00, 0x01 };
 
-static const az_iot_adu_root_key_t k_microsoft_root_keys[] = {
+static const az_iot_adu_root_key k_microsoft_root_keys[] = {
     {
         .kid = "ADU.200702.R",
         .modulus = k_modulus_ADU_200702_R,
@@ -112,7 +112,7 @@ static const az_iot_adu_root_key_t k_microsoft_root_keys[] = {
     },
 };
 
-const az_iot_adu_root_key_t* az_iot_adu_microsoft_root_keys(size_t* out_count)
+const az_iot_adu_root_key* az_iot_adu_microsoft_root_keys(size_t* out_count)
 {
     if (out_count != NULL)
     {

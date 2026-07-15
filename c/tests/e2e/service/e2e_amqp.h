@@ -36,7 +36,7 @@ extern "C" {
  *
  * The struct is large (frame + per-partition buffers) and therefore intended to
  * be heap-allocated as part of the owning service object. */
-typedef struct e2e_amqp_telemetry_tag
+typedef struct e2e_amqp_telemetry
 {
     az_amqp_sample_transport transport_storage;
     az_amqp_transport transport;
@@ -62,14 +62,14 @@ typedef struct e2e_amqp_telemetry_tag
     char source_addr[E2E_AMQP_MAX_PARTITIONS][192];
     char link_name[E2E_AMQP_MAX_PARTITIONS][32];
     char audience_buffer[256];
-} e2e_amqp_telemetry_t;
+} e2e_amqp_telemetry;
 
 /* Connect to @p eh_host:5671, CBS-authorize @p sas_token against the entity, and
  * attach one earliest-position receiver to each of @p partition_count partitions.
  * On failure, returns false and (when non-NULL) points @p err_out at a static
  * message. */
 bool e2e_amqp_telemetry_begin(
-    e2e_amqp_telemetry_t* t,
+    e2e_amqp_telemetry* t,
     const char* eh_host,
     const char* entity_path,
     const char* sas_token,
@@ -78,13 +78,13 @@ bool e2e_amqp_telemetry_begin(
 
 /* Advance the telemetry connection once, waiting up to @p wait_ms for socket I/O.
  * Returns false if the connection has failed. */
-bool e2e_amqp_telemetry_do_work(e2e_amqp_telemetry_t* t, int wait_ms);
+bool e2e_amqp_telemetry_do_work(e2e_amqp_telemetry* t, int wait_ms);
 
 /* Returns true if any captured telemetry body contains @p needle. */
-bool e2e_amqp_telemetry_seen(const e2e_amqp_telemetry_t* t, const char* needle);
+bool e2e_amqp_telemetry_seen(const e2e_amqp_telemetry* t, const char* needle);
 
 /* Detach receivers and close the telemetry connection (best-effort). */
-void e2e_amqp_telemetry_end(e2e_amqp_telemetry_t* t);
+void e2e_amqp_telemetry_end(e2e_amqp_telemetry* t);
 
 /* Send one cloud-to-device message to @p device_id via the IoT Hub service AMQP
  * endpoint (@p hub_host:5671), authorizing with @p sas_token (audience = hub

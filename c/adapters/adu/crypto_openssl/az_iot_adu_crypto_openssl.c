@@ -183,9 +183,9 @@ static int32_t openssl_sha256_final(void* ctx, uint8_t hash_out[32], void* user_
     return AZ_IOT_ADU_RESULT_SUCCESS;
 }
 
-az_iot_adu_crypto_hooks_t az_iot_adu_crypto_openssl_hooks(void)
+az_iot_adu_crypto_hooks az_iot_adu_crypto_openssl_hooks(void)
 {
-    az_iot_adu_crypto_hooks_t hooks;
+    az_iot_adu_crypto_hooks hooks;
     memset(&hooks, 0, sizeof(hooks));
     hooks.verify_rs256_fn = openssl_verify_rs256;
     hooks.sha256_fn = openssl_sha256;

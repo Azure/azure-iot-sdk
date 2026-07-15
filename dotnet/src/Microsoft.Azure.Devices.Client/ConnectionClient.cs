@@ -20,6 +20,8 @@ namespace Microsoft.Azure.Devices.Client
 
         internal ConnectionContext? CurrentConnectionContext { get; set; }
 
+        internal X509AuthenticationProvider AuthenticationProvider { get; set; }
+
         private const string CertificateSigningRequestTopic = "$iothub/credentials/POST/issueCertificate/?$rid=";
         private const string CertificateSigningResponseTopicFilter = "$iothub/credentials/res/#";
         private const string CertificateSigningResponseTopic = "$iothub/credentials/res/";
@@ -72,7 +74,7 @@ namespace Microsoft.Azure.Devices.Client
             //TODO several mqtt client options should not be provided by the user (ie, host name). Add checks here that validate all of them
 
             _mqttClient.PublishReceivedAsync += DelegateReceivedPublishAsync;
-
+            AuthenticationProvider = authentication;
             CurrentConnectionContext = new ConnectionContext()
             {
                 DeviceId = provisioningResult.DeviceId,

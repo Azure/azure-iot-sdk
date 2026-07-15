@@ -8,6 +8,7 @@ using System.Diagnostics;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.Encodings.Web;
 using System.Text.Json.Nodes;
 
 namespace Microsoft.Azure.Devices.Client.IotHub
@@ -36,6 +37,10 @@ namespace Microsoft.Azure.Devices.Client.IotHub
                 string clientId = deviceId;
 
                 string hexEncodedConnectNonce = BitConverter.ToString(Encoding.UTF8.GetBytes(connectNonce.ToString())).Replace("-", "");
+
+                // Should look something like "correlationId=4f3c2a1b9d8e47f0a1b2c3d4e5f60718&clientVersion=csharp%2F1.42.0"
+                // TODO do we want to also include previous user agent details like OS, architecture, etc? Service currently discards those
+                string username = $"correlationId={Uri.EscapeDataString(hexEncodedConnectNonce)}&clientVersion={Uri.EscapeDataString($"csharp/{GetPackageVersion()}")}";
 
                 MqttConnect connectPacket = new MqttConnect()
                 {
@@ -350,16 +355,20 @@ namespace Microsoft.Azure.Devices.Client.IotHub
 
         private string GetUserAgentString()
         {
-            const string name = "Microsoft.Azure.Devices.Provisioning.Client";
+            const string name = "Microsoft.Azure.Devices.Client";
 
-            string version = typeof(IotHubConnection).GetTypeInfo().Assembly.GetName().Version!.ToString(3);
             string runtime = RuntimeInformation.FrameworkDescription.Trim();
             string operatingSystem = RuntimeInformation.OSDescription.Trim();
             string processorArchitecture = RuntimeInformation.ProcessArchitecture.ToString().Trim();
 
-            string userAgent = $"{name}/{version} ({runtime}; {operatingSystem}; {processorArchitecture})";
+            string userAgent = $"{name}/{GetPackageVersion()} ({runtime}; {operatingSystem}; {processorArchitecture})";
 
             return userAgent;
+        }
+
+        private string GetPackageVersion()
+        {
+            return typeof(IotHubConnection).GetTypeInfo().Assembly.GetName().Version!.ToString(3);
         }
     }
 }

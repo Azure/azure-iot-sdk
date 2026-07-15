@@ -68,7 +68,7 @@ static char* read_env_var_optional(const char* name)
     return value;
 }
 
-int sample_config_load(sample_config_t* config)
+int sample_config_load(sample_config* config)
 {
     memset(config, 0, sizeof(*config));
 
@@ -91,7 +91,7 @@ int sample_config_load(sample_config_t* config)
     return 0;
 }
 
-void sample_config_release(sample_config_t* config)
+void sample_config_release(sample_config* config)
 {
 #ifdef _WIN32
     free(config->id_scope);

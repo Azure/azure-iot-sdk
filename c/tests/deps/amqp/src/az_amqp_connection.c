@@ -436,7 +436,7 @@ AZ_NODISCARD az_result az_amqp_connection_init(
 
 void az_amqp_connection_set_state_callback(
     az_amqp_connection* connection,
-    az_amqp_connection_state_changed_fn state_changed,
+    az_amqp_connection_state_changed_callback state_changed,
     void* user_data)
 {
   connection->state_changed = state_changed;

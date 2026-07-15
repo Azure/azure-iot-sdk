@@ -3,7 +3,7 @@
 
 /* SPDX-License-Identifier: MIT */
 /* FFI surface that a Rust cdylib must implement to act as an MQTT client
- * for azure-iot-sdk. Mirrors `az_iot_mqtt_iface_t` one-for-one with
+ * for azure-iot-sdk. Mirrors `az_iot_mqtt_iface` one-for-one with
  * primitive C types so that bindgen / cbindgen can translate it directly.
  *
  * Memory ownership rules:
@@ -33,46 +33,46 @@ extern "C" {
 /* Opaque Rust-side client handle. */
 typedef struct az_iot_rust_mqtt_client az_iot_rust_mqtt_client;
 
-typedef struct az_iot_rust_mqtt_ffi_tag
+typedef struct az_iot_rust_mqtt_ffi
 {
     /* Construct a client of the given MQTT version. Must return NULL on
      * allocation failure. P0 only invokes this with version=v5. */
     az_iot_rust_mqtt_client* (*create)(
-        az_iot_mqtt_version_t version);
+        az_iot_mqtt_version version);
 
     void (*destroy)(az_iot_rust_mqtt_client* client);
 
-    az_iot_result_t (*connect)(
+    az_iot_result (*connect)(
         az_iot_rust_mqtt_client* client,
-        const az_iot_mqtt_connect_options_t* opts);
+        const az_iot_mqtt_connect_options* opts);
 
-    az_iot_result_t (*disconnect)(az_iot_rust_mqtt_client* client);
+    az_iot_result (*disconnect)(az_iot_rust_mqtt_client* client);
 
-    az_iot_result_t (*subscribe)(
-        az_iot_rust_mqtt_client* client,
-        const char* topic_filter,
-        az_iot_mqtt_qos_t qos,
-        uint16_t* out_packet_id);
-
-    az_iot_result_t (*unsubscribe)(
+    az_iot_result (*subscribe)(
         az_iot_rust_mqtt_client* client,
         const char* topic_filter,
+        az_iot_mqtt_qos qos,
         uint16_t* out_packet_id);
 
-    az_iot_result_t (*publish)(
+    az_iot_result (*unsubscribe)(
         az_iot_rust_mqtt_client* client,
-        const az_iot_mqtt_message_t* message,
+        const char* topic_filter,
         uint16_t* out_packet_id);
 
-    az_iot_result_t (*process_loop)(
+    az_iot_result (*publish)(
+        az_iot_rust_mqtt_client* client,
+        const az_iot_mqtt_message* message,
+        uint16_t* out_packet_id);
+
+    az_iot_result (*process_loop)(
         az_iot_rust_mqtt_client* client,
         uint32_t timeout_ms);
 
     void (*set_inbound_cb)(
         az_iot_rust_mqtt_client* client,
-        az_iot_mqtt_event_cb cb,
+        az_iot_mqtt_event_callback cb,
         void* user_ctx);
-} az_iot_rust_mqtt_ffi_t;
+} az_iot_rust_mqtt_ffi;
 
 #ifdef __cplusplus
 }

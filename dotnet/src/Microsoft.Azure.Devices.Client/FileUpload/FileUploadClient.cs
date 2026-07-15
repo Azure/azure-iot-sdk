@@ -8,41 +8,47 @@ namespace Microsoft.Azure.Devices.Client.FileUpload
 {
     public class FileUploadClient : IDisposable
     {
-        private readonly HttpClient _httpClient;
-        private readonly ConnectionContext _connectionContext;
+        private HttpClient? _httpClient;
+        private readonly ConnectionClient _connectionClient;
+        private bool _isInitialized = false;
 
         public FileUploadClient(ConnectionClient connection)
         {
-            throw new NotImplementedException("Using File upload APIs over MQTT requires AEG Hub support which does not exist yet.");   
+            _connectionClient = connection;
+            _httpClient = null;
         }
 
-        public FileUploadClient(ConnectionContext connectionContext, X509AuthenticationProvider authenticationProvider)
+        public FileUploadClient(ConnectionClient connection, HttpClient httpClient)
         {
-            if (connectionContext.IsAzureEventGrid)
+            _connectionClient = connection;
+            _httpClient = httpClient;
+        }
+
+        private void InitializeIfUninitialized()
+        {
+            if (_isInitialized)
+            {
+                return;
+            }
+
+            if (_connectionClient.CurrentConnectionContext == null)
+            {
+                throw new NotSupportedException("Must connect device prior to using this method");
+            }
+
+            if (_connectionClient.CurrentConnectionContext.IsAzureEventGrid && _httpClient != null)
             {
                 throw new NotSupportedException("File upload APIs are done over MQTT when connected to AEG Hub");
             }
 
             var handler = new HttpClientHandler();
-            handler.ClientCertificates.Add(authenticationProvider.ClientCertificate); // TODO what about when this gets rotated by cert management APIs?
+            handler.ClientCertificates.Add(_connectionClient.AuthenticationProvider.ClientCertificate); // TODO what about when this gets rotated by cert management APIs?
             handler.ServerCertificateCustomValidationCallback = (message, cert2, chain, errors) => true;
             _httpClient = new(handler);
 
-            _connectionContext = connectionContext;
-            _httpClient.BaseAddress = new Uri("https://" + connectionContext.IotHubHostName);
-        }
+            _httpClient.BaseAddress = new Uri("https://" + _connectionClient.CurrentConnectionContext.IotHubHostName);
 
-        public FileUploadClient(ConnectionContext connectionContext, HttpClient httpClient)
-        {
-            if (connectionContext.IsAzureEventGrid)
-            {
-                throw new NotSupportedException("File upload APIs are done over MQTT when connected to AEG Hub");
-            }
-
-            _httpClient = httpClient;
-
-            _connectionContext = connectionContext;
-            _httpClient.BaseAddress = new Uri("https://" + connectionContext.IotHubHostName);
+            _isInitialized = true;
         }
 
         /// <summary>
@@ -53,7 +59,9 @@ namespace Microsoft.Azure.Devices.Client.FileUpload
         /// <returns>The SAS URI.</returns>
         public async Task<FileUploadSasUriResponse> GetFileUploadSasUriAsync(FileUploadSasUriRequest request, CancellationToken cancellationToken = default)
         {
-            string requestUri = $"devices/{_connectionContext.DeviceId}/files?api-version={IotHubConnection.ClassicHubApiVersion}";
+            InitializeIfUninitialized();
+
+            string requestUri = $"devices/{_connectionClient.CurrentConnectionContext.DeviceId}/files?api-version={IotHubConnection.ClassicHubApiVersion}";
 
             HttpRequestMessage requestMessage = new(HttpMethod.Post, requestUri)
             {
@@ -97,7 +105,9 @@ namespace Microsoft.Azure.Devices.Client.FileUpload
         /// <param name="cancellationToken">the cancellation token</param>
         public async Task CompleteFileUploadSasUriAsync(FileUploadCompletionNotification completion, CancellationToken cancellationToken = default)
         {
-            string requestUri = $"devices/{_connectionContext.DeviceId}/files/notifications?api-version={IotHubConnection.ClassicHubApiVersion}";
+            InitializeIfUninitialized();
+
+            string requestUri = $"devices/{_connectionClient.CurrentConnectionContext.DeviceId}/files/notifications?api-version={IotHubConnection.ClassicHubApiVersion}";
 
             HttpRequestMessage requestMessage = new(HttpMethod.Post, requestUri)
             {

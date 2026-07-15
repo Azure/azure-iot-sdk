@@ -203,7 +203,7 @@ AZ_NODISCARD az_result az_amqp_cbs_put_token(
     az_span audience,
     az_span token,
     int64_t expires_at_unix_ms,
-    az_amqp_cbs_put_token_complete_fn on_complete,
+    az_amqp_cbs_put_token_complete_callback on_complete,
     void* user_data)
 {
   (void)expires_at_unix_ms;

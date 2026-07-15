@@ -44,7 +44,7 @@
 /* ------------------------------------------------------------------------- */
 /*
  * Layout inside the caller-provided device_props_buffer:
- *   [ az_iot_adu_device_properties_t header ][ packed NUL-terminated strings ]
+ *   [ az_iot_adu_device_properties header ][ packed NUL-terminated strings ]
  * The header's pointers are rebased to point into the packed-string region, so
  * the cache is fully self-contained and the caller's original struct/strings
  * can be freed after the copy.
@@ -53,20 +53,44 @@
  * (packed as NUL-terminated strings, with an upstream-shaped az_span view built
  * over them for the agent-state formatter).
  */
-static az_iot_result_t cache_device_properties(
+size_t az_iot_adu_device_props_buffer_size(const az_iot_adu_device_properties* device_props)
+{
+    if (device_props == NULL) return 0;
+    /* Mirrors cache_device_properties()'s packing: the header plus each
+     * non-NULL NUL-terminated string. Keep the two in sync. */
+    size_t n = sizeof(az_iot_adu_device_properties);
+    #define ADU_DP_ADD(s) do { if ((s) != NULL) n += strlen(s) + 1u; } while (0)
+    ADU_DP_ADD(device_props->manufacturer);
+    ADU_DP_ADD(device_props->model);
+    ADU_DP_ADD(device_props->installed_update_id.provider);
+    ADU_DP_ADD(device_props->installed_update_id.name);
+    ADU_DP_ADD(device_props->installed_update_id.version);
+    if (device_props->custom_properties != NULL)
+    {
+        for (size_t i = 0; i < device_props->custom_properties_count; ++i)
+        {
+            ADU_DP_ADD(device_props->custom_properties[i].name);
+            ADU_DP_ADD(device_props->custom_properties[i].value);
+        }
+    }
+    #undef ADU_DP_ADD
+    return n;
+}
+
+static az_iot_result cache_device_properties(
     az_iot_adu_client_t* client,
-    const az_iot_adu_device_properties_t* src)
+    const az_iot_adu_device_properties* src)
 {
     if (src == NULL) return AZ_IOT_ERR_INVALID_ARG;
 
     uint8_t* buf = ADU_I(client).device_props_buffer;
     size_t cap = ADU_I(client).device_props_buffer_size;
-    if (buf == NULL || cap < sizeof(az_iot_adu_device_properties_t))
+    if (buf == NULL || cap < sizeof(az_iot_adu_device_properties))
     {
         return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
     }
 
-    az_iot_adu_device_properties_t* hdr = (az_iot_adu_device_properties_t*)(void*)buf;
+    az_iot_adu_device_properties* hdr = (az_iot_adu_device_properties*)(void*)buf;
     char* strings = (char*)(buf + sizeof(*hdr));
     char* const strings_end = (char*)(buf + cap);
 
@@ -152,9 +176,9 @@ static az_iot_result_t cache_device_properties(
     return AZ_IOT_OK;
 }
 
-az_iot_result_t az_iot_adu__cache_device_properties(
+az_iot_result az_iot_adu__cache_device_properties(
     az_iot_adu_client_t* client,
-    const az_iot_adu_device_properties_t* device_props)
+    const az_iot_adu_device_properties* device_props)
 {
     return cache_device_properties(client, device_props);
 }
@@ -351,12 +375,12 @@ static uint32_t manifest_fingerprint(az_span manifest)
 
 /* Resolve a JWS `kid` against a root-key store. Returns the matching key, or
  * NULL if unknown or disabled (revoked). */
-static const az_iot_adu_root_key_t* resolve_root_key(
-    const az_iot_adu_root_key_t* root_keys, size_t root_key_count, az_span kid)
+static const az_iot_adu_root_key* resolve_root_key(
+    const az_iot_adu_root_key* root_keys, size_t root_key_count, az_span kid)
 {
     for (size_t i = 0; i < root_key_count; ++i)
     {
-        const az_iot_adu_root_key_t* rk = &root_keys[i];
+        const az_iot_adu_root_key* rk = &root_keys[i];
         if (rk->kid == NULL) continue;
         az_span rk_kid = az_span_create_from_str((char*)(uintptr_t)rk->kid);
         if (az_span_is_content_equal(kid, rk_kid))
@@ -375,8 +399,8 @@ static const az_iot_adu_root_key_t* resolve_root_key(
          return AZ_IOT_ADU_RESULT_FAILURE; } while (0)
 
 static int32_t verify_manifest_core(
-    const az_iot_adu_crypto_hooks_t* crypto,
-    const az_iot_adu_root_key_t* root_keys,
+    const az_iot_adu_crypto_hooks* crypto,
+    const az_iot_adu_root_key* root_keys,
     size_t root_key_count,
     az_span manifest,
     az_span jws)
@@ -427,7 +451,7 @@ static int32_t verify_manifest_core(
         ADU_VERIFY_FAIL("step 2: sjwk is not a valid 3-part token");
     }
 
-    const az_iot_adu_root_key_t* root = NULL;
+    const az_iot_adu_root_key* root = NULL;
     {
         uint8_t shdr_buf[512];
         az_span shdr = jws_b64url(s_hdr_b64, shdr_buf, (int32_t)sizeof(shdr_buf));
@@ -563,9 +587,9 @@ static int32_t verify_manifest(az_iot_adu_client_t* client)
  * hook/read error. Client-independent so the public API and the managed state
  * machine share one implementation. */
 static int32_t verify_file_hash_core(
-    const az_iot_adu_crypto_hooks_t* crypto,
+    const az_iot_adu_crypto_hooks* crypto,
     const az_iot_adu_client_update_manifest_file* file,
-    az_iot_adu_read_chunk_fn read_chunk,
+    az_iot_adu_read_chunk_callback read_chunk,
     void* read_ctx)
 {
     if (crypto == NULL || file == NULL || read_chunk == NULL
@@ -651,7 +675,7 @@ static int32_t verify_file_hash_core(
  * file_index) to the generic read-chunk callback verify_file_hash_core expects. */
 struct adu_read_file_ctx
 {
-    az_iot_adu_platform_hooks_t* hooks;
+    az_iot_adu_platform_hooks* hooks;
     const az_iot_adu_client_update_manifest_file* file;
     uint32_t file_index;
 };
@@ -694,7 +718,7 @@ static void reset_to_idle(az_iot_adu_client_t* client)
  * the upstream manifest parser only stores spans pointing into the unescaped
  * text, that text MUST remain valid as long as current_manifest is used — so we
  * unescape in place within a client-owned scratch buffer. */
-static az_iot_result_t parse_manifest(az_iot_adu_client_t* client)
+static az_iot_result parse_manifest(az_iot_adu_client_t* client)
 {
     az_span manifest = ADU_I(client).current_request.update_manifest;
     if (az_span_size(manifest) <= 0) return AZ_IOT_ERR_INVALID_ARG;
@@ -727,7 +751,7 @@ static az_iot_result_t parse_manifest(az_iot_adu_client_t* client)
  * Returns AZ_IOT_OK (out_req filled), AZ_IOT_ERR_NOT_FOUND (no
  * deviceUpdate/service object — ignore), or AZ_IOT_ERR_INVALID_ARG (malformed).
  * out_req spans point into `patch`, which MUST outlive out_req. */
-static az_iot_result_t parse_service_request(
+static az_iot_result parse_service_request(
     az_iot_adu_client* az, az_span patch, az_iot_adu_client_update_request* out_req)
 {
     az_json_reader jr;
@@ -947,7 +971,7 @@ static void on_desired(
  *   { "desired": { "deviceUpdate": {...}, "$version": N }, "reported": {...} }.
  * Extract the raw "desired" object and feed it through the same path as a push. */
 static void on_initial_twin_get(
-    az_iot_result_t status, const uint8_t* twin_payload, size_t twin_payload_len, void* user_ctx)
+    az_iot_result status, const uint8_t* twin_payload, size_t twin_payload_len, void* user_ctx)
 {
     az_iot_adu_client_t* client = (az_iot_adu_client_t*)user_ctx;
     if (client == NULL || ADU_I(client).detached) return;
@@ -987,42 +1011,43 @@ static void on_initial_twin_get(
 /* lifecycle                                                                 */
 /* ------------------------------------------------------------------------- */
 
-az_iot_result_t az_iot_adu_client_initialize(
-    az_iot_adu_client_t* client,
-    az_iot_twin_client_t* twin,
-    const az_iot_adu_platform_hooks_t* hooks,
-    const az_iot_adu_crypto_hooks_t* crypto,
-    const az_iot_adu_root_key_t* root_keys,
-    size_t root_key_count,
-    const az_iot_adu_device_properties_t* device_props,
-    uint8_t* device_props_buffer,
-    size_t device_props_buffer_size)
+az_iot_adu_client_config_options az_iot_adu_client_config_options_default(void)
 {
-    if (client == NULL || twin == NULL || hooks == NULL || crypto == NULL ||
-        device_props == NULL || device_props_buffer == NULL)
+    az_iot_adu_client_config_options opts = { 0 };
+    return opts;
+}
+
+az_iot_result az_iot_adu_client_initialize(
+    az_iot_adu_client_t* client,
+    az_iot_twin_client* twin,
+    const az_iot_adu_client_config_options* options)
+{
+    if (client == NULL || twin == NULL || options == NULL || options->hooks == NULL ||
+        options->crypto == NULL || options->device_props == NULL ||
+        options->device_props_buffer == NULL)
     {
         return AZ_IOT_ERR_INVALID_ARG;
     }
-    if (root_key_count > AZ_IOT_ADU_MAX_ROOT_KEYS)
+    if (options->root_key_count > AZ_IOT_ADU_MAX_ROOT_KEYS)
     {
         return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
     }
 
     memset(client, 0, sizeof(*client));
     ADU_I(client).twin = twin;
-    ADU_I(client).hooks = *hooks;
-    ADU_I(client).crypto = *crypto;
-    ADU_I(client).device_props_buffer = device_props_buffer;
-    ADU_I(client).device_props_buffer_size = device_props_buffer_size;
+    ADU_I(client).hooks = *options->hooks;
+    ADU_I(client).crypto = *options->crypto;
+    ADU_I(client).device_props_buffer = options->device_props_buffer;
+    ADU_I(client).device_props_buffer_size = options->device_props_buffer_size;
     ADU_I(client).state = AZ_IOT_ADU_STATE_IDLE;
 
-    if (root_keys != NULL && root_key_count > 0)
+    if (options->root_keys != NULL && options->root_key_count > 0)
     {
-        for (size_t i = 0; i < root_key_count; ++i)
+        for (size_t i = 0; i < options->root_key_count; ++i)
         {
-            ADU_I(client).root_keys[i] = root_keys[i];
+            ADU_I(client).root_keys[i] = options->root_keys[i];
         }
-        ADU_I(client).root_key_count = root_key_count;
+        ADU_I(client).root_key_count = options->root_key_count;
     }
 
     if (az_result_failed(az_iot_adu_client_init(&ADU_I(client).az, NULL)))
@@ -1031,7 +1056,7 @@ az_iot_result_t az_iot_adu_client_initialize(
         return AZ_IOT_ERR_INTERNAL;
     }
 
-    az_iot_result_t r = cache_device_properties(client, device_props);
+    az_iot_result r = cache_device_properties(client, options->device_props);
     if (r != AZ_IOT_OK)
     {
         memset(client, 0, sizeof(*client));
@@ -1053,12 +1078,14 @@ az_iot_result_t az_iot_adu_client_initialize(
     return AZ_IOT_OK;
 }
 
-void az_iot_adu_client_deinit(az_iot_adu_client_t* client)
+void az_iot_adu_client_destroy(az_iot_adu_client_t* client)
 {
     if (client == NULL) return;
     if (ADU_I(client).twin != NULL)
     {
-        (void)az_iot_twin_client_unsubscribe_desired(ADU_I(client).twin, on_desired, client);
+        /* Best-effort unsubscribe during teardown; the result is intentionally ignored. */
+        az_iot_result rc = az_iot_twin_client_unsubscribe_desired(ADU_I(client).twin, on_desired, client);
+        (void)rc;
     }
     memset(client, 0, sizeof(*client));
 }
@@ -1108,9 +1135,20 @@ void az_iot_adu_client_deinit(az_iot_adu_client_t* client)
 /* Fixed part of the v2 trailer (retry off/len + manifest crc + 3 result ints),
  * excluding the variable per-step pairs and the trailing crc32. */
 #define AZ_IOT_ADU_PERSIST_TRAILER_FIXED 24u
-/* Upper bound on the whole v2 trailer + crc, used to size the static blob. */
+/* Upper bound on the whole v2 trailer + crc, used to size the persist scratch. */
 #define AZ_IOT_ADU_PERSIST_TRAILER_MAX \
-    (AZ_IOT_ADU_PERSIST_TRAILER_FIXED + (uint32_t)(_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS) * 8u + 4u)
+    (AZ_IOT_ADU_PERSIST_TRAILER_FIXED + ((uint32_t)(_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS) * 8u) + 4u)
+
+/* The per-instance persist_scratch (AZ_IOT_ADU_PERSIST_BLOB_SIZE, in the client
+ * struct) must hold the largest serialized blob: header + full request buffer +
+ * the maximum v2 trailer. C99-portable compile-time check (negative array size
+ * on failure) so bumping the step count without growing the overhead is caught
+ * at build time rather than overflowing at run time. */
+typedef char az_iot_adu_persist_blob_fits[
+    (AZ_IOT_ADU_PERSIST_HEADER_SIZE + AZ_IOT_ADU_REQUEST_BUFFER_SIZE + AZ_IOT_ADU_PERSIST_TRAILER_MAX
+     <= AZ_IOT_ADU_PERSIST_BLOB_SIZE)
+        ? 1
+        : -1];
 
 static void wr_u16le(uint8_t* p, uint16_t v)
 {
@@ -1165,14 +1203,13 @@ static uint32_t request_offset(const az_iot_adu_client_t* client, az_span s)
 /* Serialize the current workflow position and hand it to persist_state_fn. */
 static void adu_persist(az_iot_adu_client_t* client)
 {
-    az_iot_adu_platform_hooks_t* h = &ADU_I(client).hooks;
+    az_iot_adu_platform_hooks* h = &ADU_I(client).hooks;
     if (h->persist_state_fn == NULL) return;
 
     uint32_t request_len = (uint32_t)ADU_I(client).request_len;
     if (request_len > AZ_IOT_ADU_REQUEST_BUFFER_SIZE) return;
 
-    static uint8_t blob[AZ_IOT_ADU_PERSIST_HEADER_SIZE + AZ_IOT_ADU_REQUEST_BUFFER_SIZE
-                        + AZ_IOT_ADU_PERSIST_TRAILER_MAX];
+    uint8_t* blob = ADU_I(client).persist_scratch;
     uint16_t flags = 0;
     if (ADU_I(client).cancel_requested) flags |= 0x1u;
     if (ADU_I(client).have_request) flags |= 0x2u;
@@ -1224,17 +1261,16 @@ static void adu_persist(az_iot_adu_client_t* client)
     (void)h->persist_state_fn(blob, (size_t)crc_region + 4u, h->user_ctx);
 }
 
-az_iot_result_t az_iot_adu_client_resume(az_iot_adu_client_t* client)
+az_iot_result az_iot_adu_client_resume(az_iot_adu_client_t* client)
 {
     if (client == NULL) return AZ_IOT_ERR_INVALID_ARG;
     if (ADU_I(client).detached) return AZ_IOT_ERR_DETACHED;
     if (ADU_I(client).hooks.load_state_fn == NULL) return AZ_IOT_OK;
 
-    static uint8_t blob[AZ_IOT_ADU_PERSIST_HEADER_SIZE + AZ_IOT_ADU_REQUEST_BUFFER_SIZE
-                        + AZ_IOT_ADU_PERSIST_TRAILER_MAX];
+    uint8_t* blob = ADU_I(client).persist_scratch;
     size_t blen = 0;
     if (ADU_I(client).hooks.load_state_fn(
-            blob, sizeof(blob), &blen, ADU_I(client).hooks.user_ctx)
+            blob, sizeof(ADU_I(client).persist_scratch), &blen, ADU_I(client).hooks.user_ctx)
         != 0)
     {
         return AZ_IOT_OK; /* nothing persisted */
@@ -1307,7 +1343,7 @@ az_iot_result_t az_iot_adu_client_resume(az_iot_adu_client_t* client)
         retry_ts = az_span_create(ADU_I(client).request_buffer + retry_off, (int32_t)retry_len);
     }
     ADU_I(client).current_request.workflow.retry_timestamp = retry_ts;
-    ADU_I(client).state = (az_iot_adu_state_t)state;
+    ADU_I(client).state = (az_iot_adu_state)state;
     ADU_I(client).current_step = step;
     ADU_I(client).current_file = file;
     ADU_I(client).cancel_requested = (flags & 0x1u) != 0;
@@ -1380,7 +1416,7 @@ static void begin_rollback(az_iot_adu_client_t* client, uint32_t restore_count)
     ADU_I(client).state = AZ_IOT_ADU_STATE_FAILED;
 }
 
-az_iot_result_t az_iot_adu_client_do_work(az_iot_adu_client_t* client)
+az_iot_result az_iot_adu_client_do_work(az_iot_adu_client_t* client)
 {
     if (client == NULL) return AZ_IOT_ERR_INVALID_ARG;
     if (ADU_I(client).detached) return AZ_IOT_ERR_DETACHED;
@@ -1420,7 +1456,7 @@ az_iot_result_t az_iot_adu_client_do_work(az_iot_adu_client_t* client)
         return AZ_IOT_OK;
     }
 
-    az_iot_adu_platform_hooks_t* h = &ADU_I(client).hooks;
+    az_iot_adu_platform_hooks* h = &ADU_I(client).hooks;
 
     switch (ADU_I(client).state)
     {
@@ -1641,20 +1677,20 @@ bool az_iot_adu_is_cancelled(const az_iot_adu_client_t* client)
     return ADU_I(client).cancel_requested;
 }
 
-az_iot_adu_state_t az_iot_adu_client_get_state(const az_iot_adu_client_t* client)
+az_iot_adu_state az_iot_adu_client_get_state(const az_iot_adu_client_t* client)
 {
     if (client == NULL) return AZ_IOT_ADU_STATE_IDLE;
     return ADU_I(client).state;
 }
 
-az_iot_result_t az_iot_adu_client_update_device_properties(
+az_iot_result az_iot_adu_client_update_device_properties(
     az_iot_adu_client_t* client,
-    const az_iot_adu_device_properties_t* device_props)
+    const az_iot_adu_device_properties* device_props)
 {
     if (client == NULL || device_props == NULL) return AZ_IOT_ERR_INVALID_ARG;
     if (ADU_I(client).detached) return AZ_IOT_ERR_DETACHED;
 
-    az_iot_result_t r = cache_device_properties(client, device_props);
+    az_iot_result r = cache_device_properties(client, device_props);
     if (r != AZ_IOT_OK) return r;
 
     ADU_I(client).device_props_report_pending = true;
@@ -1665,10 +1701,10 @@ az_iot_result_t az_iot_adu_client_update_device_properties(
 /* agent core-library API (library mode / bring-your-own state machine)      */
 /* ------------------------------------------------------------------------- */
 
-az_iot_result_t az_iot_adu_parse_update_request(
+az_iot_result az_iot_adu_parse_update_request(
     az_span request_json,
-    const az_iot_adu_crypto_hooks_t* crypto,
-    const az_iot_adu_root_key_t* root_keys,
+    const az_iot_adu_crypto_hooks* crypto,
+    const az_iot_adu_root_key* root_keys,
     size_t root_key_count,
     az_iot_adu_client_update_request* out_request,
     az_iot_adu_client_update_manifest* out_manifest)
@@ -1690,7 +1726,7 @@ az_iot_result_t az_iot_adu_parse_update_request(
     }
 
     az_iot_adu_client_update_request req;
-    az_iot_result_t r = parse_service_request(&az, request_json, &req);
+    az_iot_result r = parse_service_request(&az, request_json, &req);
     if (r != AZ_IOT_OK)
     {
         return r; /* NOT_FOUND (no deviceUpdate/service) or INVALID_ARG */
@@ -1733,10 +1769,10 @@ az_iot_result_t az_iot_adu_parse_update_request(
     return AZ_IOT_OK;
 }
 
-az_iot_result_t az_iot_adu_verify_file_hash(
+az_iot_result az_iot_adu_verify_file_hash(
     const az_iot_adu_client_update_manifest_file* file,
-    const az_iot_adu_crypto_hooks_t* crypto,
-    az_iot_adu_read_chunk_fn read_chunk,
+    const az_iot_adu_crypto_hooks* crypto,
+    az_iot_adu_read_chunk_callback read_chunk,
     void* read_ctx)
 {
     if (file == NULL || crypto == NULL || read_chunk == NULL)

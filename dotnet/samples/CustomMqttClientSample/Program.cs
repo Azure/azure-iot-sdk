@@ -1,8 +1,8 @@
 ﻿using Microsoft.Azure.Devices.Client;
 using Microsoft.Azure.Devices.Client.Mqtt;
 using Microsoft.Azure.Devices.Client.MQTTnetAdapter;
+using SetupSampleDevice;
 using System.Diagnostics;
-using System.Security.Cryptography.X509Certificates;
 
 internal class Program
 {
@@ -10,10 +10,9 @@ internal class Program
 
     private static async Task Main(string[] args)
     {
-        string idScope = Environment.GetEnvironmentVariable("DPS_ID_SCOPE") ?? throw new Exception("");
-        string pcks12CertificatePath = Environment.GetEnvironmentVariable("X509_CERTIFICATE_PATH") ?? throw new Exception("");
-        string pcks12CertificatePassword = Environment.GetEnvironmentVariable("X509_CERTIFICATE_PASSWORD") ?? throw new Exception("");
-        X509AuthenticationProvider authentication = new(X509CertificateLoader.LoadPkcs12FromFile(pcks12CertificatePath, pcks12CertificatePassword));
+        string deviceId = SampleConstants.LoadDeviceId();
+        string idScope = SampleConstants.LoadIdScope();
+        X509AuthenticationProvider authentication = SampleConstants.LoadAuthenticationProvider();
 
         // This MQTT client interface allows users to bring their own MQTT client implementation
         IMqttClient mqttClient;
@@ -39,6 +38,7 @@ internal class Program
         ProvisioningSettings provisioningSettings = new(idScope);
         Console.WriteLine("Provisioning and connecting to IoT hub using the provided MQTT client");
         await connectionClient.ProvisionAndConnectAsync(provisioningSettings, authentication);
+        Console.WriteLine($"Device {deviceId} is now provisioned and connected to IoT Hub.");
 
         await Task.Delay(TimeSpan.FromSeconds(1));
 

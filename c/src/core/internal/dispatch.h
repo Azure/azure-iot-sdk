@@ -15,22 +15,22 @@
 extern "C" {
 #endif
 
-void az_iot_dispatch_init(az_iot_dispatch_table_t* tbl);
+void az_iot_dispatch_init(az_iot_dispatch_table* tbl);
 
-az_iot_result_t az_iot_dispatch_register_prefix(
-    az_iot_dispatch_table_t* tbl,
+az_iot_result az_iot_dispatch_register_prefix(
+    az_iot_dispatch_table* tbl,
     const char* topic_prefix,
-    az_iot_inbound_handler_cb cb,
+    az_iot_inbound_handler_callback cb,
     void* user_ctx);
 
 size_t az_iot_dispatch_unregister_by_ctx(
-    az_iot_dispatch_table_t* tbl, void* user_ctx);
+    az_iot_dispatch_table* tbl, void* user_ctx);
 
 bool az_iot_dispatch_route(
-    const az_iot_dispatch_table_t* tbl,
-    const az_iot_mqtt_message_t* msg);
+    const az_iot_dispatch_table* tbl,
+    const az_iot_mqtt_message* msg);
 
-size_t az_iot_dispatch_count(const az_iot_dispatch_table_t* tbl);
+size_t az_iot_dispatch_count(const az_iot_dispatch_table* tbl);
 
 #ifdef __cplusplus
 }

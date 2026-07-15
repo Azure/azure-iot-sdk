@@ -68,7 +68,7 @@ static const char k_patch_fmt[]
  * ignores the key bytes, so dummy modulus/exponent are sufficient here. */
 static const uint8_t k_root_mod[] = { 0x01, 0x02, 0x03 };
 static const uint8_t k_root_exp[] = { 0x01, 0x00, 0x01 };
-static const az_iot_adu_root_key_t k_root_keys[]
+static const az_iot_adu_root_key k_root_keys[]
     = { { "testkid", k_root_mod, sizeof(k_root_mod), k_root_exp, sizeof(k_root_exp), false } };
 
 /* base64url-encode `data` into a NUL-terminated C string. az_core 1.5.0 ships
@@ -195,13 +195,13 @@ typedef enum
 {
     OP_VERIFY = 1, OP_IS_INSTALLED, OP_DOWNLOAD, OP_BACKUP, OP_INSTALL,
     OP_APPLY, OP_RESTORE
-} op_kind_t;
+} op_kind;
 
 #define MAX_OPS 32
 
 typedef struct
 {
-    op_kind_t ops[MAX_OPS];
+    op_kind ops[MAX_OPS];
     uint32_t  op_steps[MAX_OPS];
     size_t    op_count;
 
@@ -225,9 +225,9 @@ typedef struct
     uint8_t   persist_blob[AZ_IOT_ADU_REQUEST_BUFFER_SIZE + 128];
     size_t    persist_len;
     bool      have_persist;
-} hook_log_t;
+} hook_log;
 
-static void log_op(hook_log_t* l, op_kind_t k, uint32_t step)
+static void log_op(hook_log* l, op_kind k, uint32_t step)
 {
     if (l->op_count < MAX_OPS)
     {
@@ -242,7 +242,7 @@ static int32_t mock_download(
     uint32_t file_index, uint32_t file_count, void* ctx)
 {
     (void)file; (void)url; (void)file_index; (void)file_count;
-    hook_log_t* l = (hook_log_t*)ctx;
+    hook_log* l = (hook_log*)ctx;
     log_op(l, OP_DOWNLOAD, file_index);
     return l->download_result;
 }
@@ -251,7 +251,7 @@ static int32_t mock_install(
     const az_iot_adu_client_update_manifest* m, uint32_t step, void* ctx)
 {
     (void)m;
-    hook_log_t* l = (hook_log_t*)ctx;
+    hook_log* l = (hook_log*)ctx;
     log_op(l, OP_INSTALL, step);
     if (l->install_in_progress_once && !l->install_in_progress_consumed)
     {
@@ -265,7 +265,7 @@ static int32_t mock_apply(
     const az_iot_adu_client_update_manifest* m, uint32_t step, void* ctx)
 {
     (void)m;
-    hook_log_t* l = (hook_log_t*)ctx;
+    hook_log* l = (hook_log*)ctx;
     log_op(l, OP_APPLY, step);
     return l->apply_result;
 }
@@ -274,7 +274,7 @@ static int32_t mock_backup(
     const az_iot_adu_client_update_manifest* m, uint32_t step, void* ctx)
 {
     (void)m;
-    hook_log_t* l = (hook_log_t*)ctx;
+    hook_log* l = (hook_log*)ctx;
     log_op(l, OP_BACKUP, step);
     return l->backup_result;
 }
@@ -283,7 +283,7 @@ static int32_t mock_restore(
     const az_iot_adu_client_update_manifest* m, uint32_t step, void* ctx)
 {
     (void)m;
-    hook_log_t* l = (hook_log_t*)ctx;
+    hook_log* l = (hook_log*)ctx;
     log_op(l, OP_RESTORE, step);
     return l->restore_result;
 }
@@ -292,7 +292,7 @@ static int32_t mock_is_installed(
     const az_iot_adu_client_update_manifest* m, void* ctx)
 {
     (void)m;
-    hook_log_t* l = (hook_log_t*)ctx;
+    hook_log* l = (hook_log*)ctx;
     log_op(l, OP_IS_INSTALLED, 0);
     return l->is_installed_result;
 }
@@ -304,7 +304,7 @@ static int32_t mock_verify_rs256(
 {
     (void)mod; (void)mod_len; (void)exp; (void)exp_len;
     (void)signed_data; (void)signed_len; (void)sig; (void)sig_len;
-    hook_log_t* l = (hook_log_t*)ctx;
+    hook_log* l = (hook_log*)ctx;
     log_op(l, OP_VERIFY, 0);
     return l->verify_result;
 }
@@ -323,7 +323,7 @@ static int32_t mock_read_file(
     size_t offset, uint8_t* buffer, size_t buffer_size, size_t* out_read, void* ctx)
 {
     (void)file; (void)file_index;
-    hook_log_t* l = (hook_log_t*)ctx;
+    hook_log* l = (hook_log*)ctx;
     if (offset >= l->file_len)
     {
         *out_read = 0;
@@ -352,14 +352,14 @@ static int32_t mock_sha_update(void* c, const uint8_t* data, size_t len, void* c
 static int32_t mock_sha_final(void* c, uint8_t out[32], void* ctx)
 {
     (void)c;
-    hook_log_t* l = (hook_log_t*)ctx;
+    hook_log* l = (hook_log*)ctx;
     memcpy(out, l->file_hash, 32);
     return AZ_IOT_ADU_RESULT_SUCCESS;
 }
 
 static int32_t mock_persist(const uint8_t* blob, size_t len, void* ctx)
 {
-    hook_log_t* l = (hook_log_t*)ctx;
+    hook_log* l = (hook_log*)ctx;
     assert_true(len <= sizeof(l->persist_blob));
     memcpy(l->persist_blob, blob, len);
     l->persist_len = len;
@@ -369,7 +369,7 @@ static int32_t mock_persist(const uint8_t* blob, size_t len, void* ctx)
 
 static int32_t mock_load(uint8_t* blob, size_t cap, size_t* out_len, void* ctx)
 {
-    hook_log_t* l = (hook_log_t*)ctx;
+    hook_log* l = (hook_log*)ctx;
     if (!l->have_persist || l->persist_len > cap) return 1; /* nothing persisted */
     memcpy(blob, l->persist_blob, l->persist_len);
     *out_len = l->persist_len;
@@ -382,19 +382,19 @@ static int32_t mock_load(uint8_t* blob, size_t cap, size_t* out_len, void* ctx)
 
 typedef struct
 {
-    az_iot_connection_client_t conn;
-    az_iot_twin_client_t       twin;
+    az_iot_connection_client conn;
+    az_iot_twin_client       twin;
     az_iot_adu_client_t        adu;
-    az_iot_mqtt_factory_t*     factory;
-    az_iot_mock_mqtt_client_t* mock;
+    az_iot_mqtt_factory*     factory;
+    az_iot_mock_mqtt_client* mock;
 
-    hook_log_t                 log;
+    hook_log                 log;
     uint8_t                    dp_buf[256];
-} fixture_t;
+} fixture;
 
-static void wire_hooks(hook_log_t* log,
-                       az_iot_adu_platform_hooks_t* hooks,
-                       az_iot_adu_crypto_hooks_t* crypto)
+static void wire_hooks(hook_log* log,
+                       az_iot_adu_platform_hooks* hooks,
+                       az_iot_adu_crypto_hooks* crypto)
 {
     memset(hooks, 0, sizeof(*hooks));
     memset(crypto, 0, sizeof(*crypto));
@@ -436,19 +436,19 @@ static void wire_hooks(hook_log_t* log,
     assert_int_equal(hw, 32);
 }
 
-static void init_hooks(fixture_t* fx,
-                       az_iot_adu_platform_hooks_t* hooks,
-                       az_iot_adu_crypto_hooks_t* crypto)
+static void init_hooks(fixture* fx,
+                       az_iot_adu_platform_hooks* hooks,
+                       az_iot_adu_crypto_hooks* crypto)
 {
     wire_hooks(&fx->log, hooks, crypto);
 }
 
 static int setup(void** state)
 {
-    fixture_t* fx = (fixture_t*)calloc(1, sizeof(*fx));
+    fixture* fx = (fixture*)calloc(1, sizeof(*fx));
     assert_non_null(fx);
 
-    az_iot_connection_client_options_t opts = {0};
+    az_iot_connection_client_options opts = {0};
     opts.host = "broker.example";
     opts.port = 8883;
     opts.client_id = "ut-device";
@@ -459,22 +459,27 @@ static int setup(void** state)
 
     assert_int_equal(az_iot_twin_client_init(&fx->twin, &fx->conn), AZ_IOT_OK);
 
-    az_iot_adu_platform_hooks_t hooks;
-    az_iot_adu_crypto_hooks_t crypto;
+    az_iot_adu_platform_hooks hooks;
+    az_iot_adu_crypto_hooks crypto;
     init_hooks(fx, &hooks, &crypto);
 
-    az_iot_adu_device_properties_t dp = {0};
+    az_iot_adu_device_properties dp = {0};
     dp.manufacturer = "Contoso";
     dp.model = "Foobar";
     dp.installed_update_id.provider = "Contoso";
     dp.installed_update_id.name = "Foobar";
     dp.installed_update_id.version = "1.0";
 
+    az_iot_adu_client_config_options adu_opts = az_iot_adu_client_config_options_default();
+    adu_opts.hooks = &hooks;
+    adu_opts.crypto = &crypto;
+    adu_opts.root_keys = k_root_keys;
+    adu_opts.root_key_count = sizeof(k_root_keys) / sizeof(k_root_keys[0]);
+    adu_opts.device_props = &dp;
+    adu_opts.device_props_buffer = fx->dp_buf;
+    adu_opts.device_props_buffer_size = sizeof(fx->dp_buf);
     assert_int_equal(
-        az_iot_adu_client_initialize(
-            &fx->adu, &fx->twin, &hooks, &crypto,
-            k_root_keys, sizeof(k_root_keys) / sizeof(k_root_keys[0]),
-            &dp, fx->dp_buf, sizeof(fx->dp_buf)),
+        az_iot_adu_client_initialize(&fx->adu, &fx->twin, &adu_opts),
         AZ_IOT_OK);
 
     *state = fx;
@@ -483,7 +488,7 @@ static int setup(void** state)
 
 static int teardown(void** state)
 {
-    fixture_t* fx = (fixture_t*)*state;
+    fixture* fx = (fixture*)*state;
     if (fx)
     {
         /* A registered factory is adopted by the connection client and freed by
@@ -491,9 +496,9 @@ static int teardown(void** state)
          * open_to_connected) is still owned by the test and must be destroyed
          * here. Check before deinit() clears factory_count. */
         bool factory_adopted = (fx->conn.factory_count > 0);
-        az_iot_adu_client_deinit(&fx->adu);
-        az_iot_twin_client_deinit(&fx->twin);
-        az_iot_connection_client_deinit(&fx->conn);
+        az_iot_adu_client_destroy(&fx->adu);
+        az_iot_twin_client_destroy(&fx->twin);
+        az_iot_connection_client_destroy(&fx->conn);
         if (!factory_adopted)
             az_iot_mock_mqtt_factory_destroy(fx->factory);
         free(fx);
@@ -501,7 +506,7 @@ static int teardown(void** state)
     return 0;
 }
 
-static void open_to_connected(fixture_t* fx)
+static void open_to_connected(fixture* fx)
 {
     assert_int_equal(
         az_iot_connection_client_register_mqtt_factory(&fx->conn, fx->factory), AZ_IOT_OK);
@@ -513,7 +518,7 @@ static void open_to_connected(fixture_t* fx)
     az_iot_mock_mqtt_client_clear_calls(fx->mock);
 }
 
-static void inject_patch(fixture_t* fx, const char* body)
+static void inject_patch(fixture* fx, const char* body)
 {
     char topic[] = "$iothub/twin/PATCH/properties/desired/?$version=7";
     assert_true(az_iot_mock_mqtt_client_inject_message(
@@ -522,7 +527,7 @@ static void inject_patch(fixture_t* fx, const char* body)
 }
 
 /* Pump the ADU state machine until Idle or a max iteration cap. */
-static void pump(fixture_t* fx, int max_iters)
+static void pump(fixture* fx, int max_iters)
 {
     for (int i = 0; i < max_iters; ++i)
     {
@@ -535,7 +540,7 @@ static void pump(fixture_t* fx, int max_iters)
     }
 }
 
-static bool ops_contain_sequence(const hook_log_t* l, const op_kind_t* seq, size_t n)
+static bool ops_contain_sequence(const hook_log* l, const op_kind* seq, size_t n)
 {
     if (l->op_count < n) return false;
     /* Find seq as an ordered (contiguous-relative) subsequence. */
@@ -553,7 +558,7 @@ static bool ops_contain_sequence(const hook_log_t* l, const op_kind_t* seq, size
 
 static void init_starts_idle_and_pending_report(void** state)
 {
-    fixture_t* fx = (fixture_t*)*state;
+    fixture* fx = (fixture*)*state;
     assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
     /* The startup device-properties report is pending; first do_work consumes
      * it and stays Idle. */
@@ -564,7 +569,7 @@ static void init_starts_idle_and_pending_report(void** state)
 
 static void deployment_drives_full_workflow_single_step(void** state)
 {
-    fixture_t* fx = (fixture_t*)*state;
+    fixture* fx = (fixture*)*state;
     open_to_connected(fx);
 
     inject_patch(fx, signed_patch());
@@ -578,7 +583,7 @@ static void deployment_drives_full_workflow_single_step(void** state)
     assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
 
     /* Expected ordered op sequence for one step. */
-    static const op_kind_t expect[]
+    static const op_kind expect[]
         = { OP_VERIFY, OP_IS_INSTALLED, OP_DOWNLOAD, OP_BACKUP, OP_INSTALL, OP_APPLY };
     assert_true(ops_contain_sequence(&fx->log, expect, sizeof(expect) / sizeof(expect[0])));
     /* No rollback on the happy path. */
@@ -590,7 +595,7 @@ static void deployment_drives_full_workflow_single_step(void** state)
 
 static void verify_failure_blocks_download_and_fails(void** state)
 {
-    fixture_t* fx = (fixture_t*)*state;
+    fixture* fx = (fixture*)*state;
     open_to_connected(fx);
 
     fx->log.verify_result = AZ_IOT_ADU_RESULT_FAILURE;
@@ -612,7 +617,7 @@ static void verify_failure_blocks_download_and_fails(void** state)
 
 static void install_failure_triggers_rollback(void** state)
 {
-    fixture_t* fx = (fixture_t*)*state;
+    fixture* fx = (fixture*)*state;
     open_to_connected(fx);
 
     fx->log.install_result = AZ_IOT_ADU_RESULT_FAILURE;
@@ -635,7 +640,7 @@ static void install_failure_triggers_rollback(void** state)
 
 static void hash_mismatch_blocks_install_and_fails(void** state)
 {
-    fixture_t* fx = (fixture_t*)*state;
+    fixture* fx = (fixture*)*state;
     open_to_connected(fx);
 
     /* Make the streaming SHA-256 disagree with the manifest's expected hash. */
@@ -659,7 +664,7 @@ static void hash_mismatch_blocks_install_and_fails(void** state)
 
 static void already_installed_is_rejected_without_download(void** state)
 {
-    fixture_t* fx = (fixture_t*)*state;
+    fixture* fx = (fixture*)*state;
     open_to_connected(fx);
 
     fx->log.is_installed_result = AZ_IOT_ADU_RESULT_ALREADY_INSTALLED;
@@ -680,7 +685,7 @@ static void already_installed_is_rejected_without_download(void** state)
 
 static void install_in_progress_reenters_then_completes(void** state)
 {
-    fixture_t* fx = (fixture_t*)*state;
+    fixture* fx = (fixture*)*state;
     open_to_connected(fx);
 
     fx->log.install_in_progress_once = true;
@@ -703,7 +708,7 @@ static void install_in_progress_reenters_then_completes(void** state)
 
 static void reboot_required_persists_and_resumes(void** state)
 {
-    fixture_t* fx = (fixture_t*)*state;
+    fixture* fx = (fixture*)*state;
     open_to_connected(fx);
 
     /* Install requires a reboot: the workflow snapshots itself via persist. */
@@ -737,7 +742,7 @@ static void reboot_required_persists_and_resumes(void** state)
 
 static void resume_with_no_persisted_state_stays_idle(void** state)
 {
-    fixture_t* fx = (fixture_t*)*state;
+    fixture* fx = (fixture*)*state;
     open_to_connected(fx);
 
     /* No blob persisted yet: resume is a clean no-op. */
@@ -748,7 +753,7 @@ static void resume_with_no_persisted_state_stays_idle(void** state)
 
 static void cancel_action_sets_cancelled_flag(void** state)
 {
-    fixture_t* fx = (fixture_t*)*state;
+    fixture* fx = (fixture*)*state;
     open_to_connected(fx);
 
     /* Start a deployment, then cancel mid-flight at a phase boundary. */
@@ -766,13 +771,13 @@ static void cancel_action_sets_cancelled_flag(void** state)
 
 static void update_device_properties_sets_report_pending(void** state)
 {
-    fixture_t* fx = (fixture_t*)*state;
+    fixture* fx = (fixture*)*state;
     open_to_connected(fx);
     /* drain the startup report */
     assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
     az_iot_mock_mqtt_client_clear_calls(fx->mock);
 
-    az_iot_adu_device_properties_t dp = {0};
+    az_iot_adu_device_properties dp = {0};
     dp.manufacturer = "Contoso";
     dp.model = "Foobar2";
     dp.installed_update_id.provider = "Contoso";
@@ -788,7 +793,7 @@ static void update_device_properties_sets_report_pending(void** state)
     bool saw_reported_publish = false;
     for (size_t i = 0; i < n; ++i)
     {
-        const az_iot_mock_call_t* c = az_iot_mock_mqtt_client_call_at(fx->mock, i);
+        const az_iot_mock_call* c = az_iot_mock_mqtt_client_call_at(fx->mock, i);
         if (c->kind == AZ_IOT_MOCK_CALL_PUBLISH && c->topic[0] != '\0' &&
             strstr(c->topic, "twin/PATCH/properties/reported") != NULL)
         {
@@ -799,7 +804,7 @@ static void update_device_properties_sets_report_pending(void** state)
 }
 
 /* Search a recorded PUBLISH payload for a literal needle. */
-static bool payload_contains(const az_iot_mock_call_t* c, const char* needle)
+static bool payload_contains(const az_iot_mock_call* c, const char* needle)
 {
     size_t nlen = strlen(needle);
     if (c->payload_len < nlen) return false;
@@ -812,17 +817,17 @@ static bool payload_contains(const az_iot_mock_call_t* c, const char* needle)
 
 static void custom_device_properties_are_reported(void** state)
 {
-    fixture_t* fx = (fixture_t*)*state;
+    fixture* fx = (fixture*)*state;
     open_to_connected(fx);
     /* drain the startup report */
     assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
     az_iot_mock_mqtt_client_clear_calls(fx->mock);
 
-    static const az_iot_adu_custom_property_t customs[] = {
+    static const az_iot_adu_custom_property customs[] = {
         { "location", "building42" },
         { "tier", "gold" },
     };
-    az_iot_adu_device_properties_t dp = {0};
+    az_iot_adu_device_properties dp = {0};
     dp.manufacturer = "Contoso";
     dp.model = "Foobar";
     dp.installed_update_id.provider = "Contoso";
@@ -840,7 +845,7 @@ static void custom_device_properties_are_reported(void** state)
     bool saw_customs = false;
     for (size_t i = 0; i < n; ++i)
     {
-        const az_iot_mock_call_t* c = az_iot_mock_mqtt_client_call_at(fx->mock, i);
+        const az_iot_mock_call* c = az_iot_mock_mqtt_client_call_at(fx->mock, i);
         if (c->kind == AZ_IOT_MOCK_CALL_PUBLISH &&
             strstr(c->topic, "twin/PATCH/properties/reported") != NULL &&
             payload_contains(c, "location") && payload_contains(c, "building42") &&
@@ -854,45 +859,112 @@ static void custom_device_properties_are_reported(void** state)
 
 static void device_props_too_small_is_rejected(void** state)
 {
-    fixture_t* fx = (fixture_t*)*state;
+    fixture* fx = (fixture*)*state;
     (void)fx;
 
-    az_iot_connection_client_t conn;
-    az_iot_twin_client_t twin;
+    az_iot_connection_client conn;
+    az_iot_twin_client twin;
     az_iot_adu_client_t adu;
-    az_iot_connection_client_options_t opts = {0};
+    az_iot_connection_client_options opts = {0};
     opts.host = "broker.example";
     opts.port = 8883;
     opts.client_id = "ut-device2";
     assert_int_equal(az_iot_connection_client_init(&conn, &opts), AZ_IOT_OK);
     assert_int_equal(az_iot_twin_client_init(&twin, &conn), AZ_IOT_OK);
 
-    hook_log_t log = {0};
-    az_iot_adu_platform_hooks_t hooks = {0};
-    az_iot_adu_crypto_hooks_t crypto = {0};
+    hook_log log = {0};
+    az_iot_adu_platform_hooks hooks = {0};
+    az_iot_adu_crypto_hooks crypto = {0};
     hooks.install_fn = mock_install;
     hooks.apply_fn = mock_apply;
     hooks.user_ctx = &log;
     crypto.verify_rs256_fn = mock_verify_rs256;
     crypto.user_ctx = &log;
 
-    az_iot_adu_device_properties_t dp = {0};
+    az_iot_adu_device_properties dp = {0};
     dp.manufacturer = "AReallyLongManufacturerNameThatWillNotFit";
     dp.model = "AndAModelToo";
 
     uint8_t tiny[8];
+    az_iot_adu_client_config_options adu_opts = az_iot_adu_client_config_options_default();
+    adu_opts.hooks = &hooks;
+    adu_opts.crypto = &crypto;
+    adu_opts.device_props = &dp;
+    adu_opts.device_props_buffer = tiny;
+    adu_opts.device_props_buffer_size = sizeof(tiny);
     assert_int_equal(
-        az_iot_adu_client_initialize(
-            &adu, &twin, &hooks, &crypto, NULL, 0, &dp, tiny, sizeof(tiny)),
+        az_iot_adu_client_initialize(&adu, &twin, &adu_opts),
         AZ_IOT_ERR_NOT_ENOUGH_SPACE);
 
-    az_iot_twin_client_deinit(&twin);
-    az_iot_connection_client_deinit(&conn);
+    az_iot_twin_client_destroy(&twin);
+    az_iot_connection_client_destroy(&conn);
+}
+
+static void device_props_buffer_size_matches_need(void** state)
+{
+    fixture* fx = (fixture*)*state;
+    (void)fx;
+
+    assert_int_equal(az_iot_adu_device_props_buffer_size(NULL), 0);
+
+    az_iot_connection_client conn;
+    az_iot_twin_client twin;
+    az_iot_connection_client_options opts = {0};
+    opts.host = "broker.example";
+    opts.port = 8883;
+    opts.client_id = "ut-device3";
+    assert_int_equal(az_iot_connection_client_init(&conn, &opts), AZ_IOT_OK);
+    assert_int_equal(az_iot_twin_client_init(&twin, &conn), AZ_IOT_OK);
+
+    hook_log log = {0};
+    az_iot_adu_platform_hooks hooks = {0};
+    az_iot_adu_crypto_hooks crypto = {0};
+    hooks.install_fn = mock_install;
+    hooks.apply_fn = mock_apply;
+    hooks.user_ctx = &log;
+    crypto.verify_rs256_fn = mock_verify_rs256;
+    crypto.user_ctx = &log;
+
+    az_iot_adu_custom_property customs[] = { { "location", "building42" } };
+    az_iot_adu_device_properties dp = {0};
+    dp.manufacturer = "Contoso";
+    dp.model = "Foobar";
+    dp.installed_update_id.provider = "Contoso";
+    dp.installed_update_id.name = "Foobar";
+    dp.installed_update_id.version = "1.0";
+    dp.custom_properties = customs;
+    dp.custom_properties_count = 1;
+
+    size_t need = az_iot_adu_device_props_buffer_size(&dp);
+    assert_true(need > sizeof(az_iot_adu_device_properties));
+
+    uint8_t buf[256];
+    assert_true(need <= sizeof(buf));
+
+    az_iot_adu_client_config_options o = az_iot_adu_client_config_options_default();
+    o.hooks = &hooks;
+    o.crypto = &crypto;
+    o.device_props = &dp;
+    o.device_props_buffer = buf;
+
+    /* Exactly `need` bytes must succeed; one byte short must be rejected. */
+    az_iot_adu_client_t adu_ok;
+    o.device_props_buffer_size = need;
+    assert_int_equal(az_iot_adu_client_initialize(&adu_ok, &twin, &o), AZ_IOT_OK);
+    az_iot_adu_client_destroy(&adu_ok);
+
+    az_iot_adu_client_t adu_short;
+    o.device_props_buffer_size = need - 1;
+    assert_int_equal(
+        az_iot_adu_client_initialize(&adu_short, &twin, &o), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+
+    az_iot_twin_client_destroy(&twin);
+    az_iot_connection_client_destroy(&conn);
 }
 
 static void duplicate_redelivery_is_ignored(void** state)
 {
-    fixture_t* fx = (fixture_t*)*state;
+    fixture* fx = (fixture*)*state;
     open_to_connected(fx);
 
     /* Run the deployment to completion. */
@@ -918,7 +990,7 @@ static void duplicate_redelivery_is_ignored(void** state)
 
 static void retry_with_newer_timestamp_restarts(void** state)
 {
-    fixture_t* fx = (fixture_t*)*state;
+    fixture* fx = (fixture*)*state;
     open_to_connected(fx);
 
     /* Initial deployment (no retryTimestamp) runs to completion. */
@@ -937,14 +1009,14 @@ static void retry_with_newer_timestamp_restarts(void** state)
     pump(fx, 40);
     assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
     /* The full op sequence ran a second time. */
-    static const op_kind_t expect[]
+    static const op_kind expect[]
         = { OP_VERIFY, OP_IS_INSTALLED, OP_DOWNLOAD, OP_BACKUP, OP_INSTALL, OP_APPLY };
     assert_true(ops_contain_sequence(&fx->log, expect, sizeof(expect) / sizeof(expect[0])));
 }
 
 static void replacement_with_new_id_restarts(void** state)
 {
-    fixture_t* fx = (fixture_t*)*state;
+    fixture* fx = (fixture*)*state;
     open_to_connected(fx);
     /* Drain the startup device-properties report so the next do_work advances
      * the state machine rather than the report. */
@@ -970,7 +1042,7 @@ static void replacement_with_new_id_restarts(void** state)
 
 static void retry_timestamp_survives_resume(void** state)
 {
-    fixture_t* fx = (fixture_t*)*state;
+    fixture* fx = (fixture*)*state;
     open_to_connected(fx);
 
     /* A deployment carrying a retryTimestamp installs and requires a reboot, so
@@ -1006,7 +1078,7 @@ static void retry_timestamp_survives_resume(void** state)
 
 static void same_id_changed_manifest_restarts(void** state)
 {
-    fixture_t* fx = (fixture_t*)*state;
+    fixture* fx = (fixture*)*state;
     open_to_connected(fx);
 
     /* A deployment (id X, manifest version 1.1) runs to completion. */
@@ -1024,7 +1096,7 @@ static void same_id_changed_manifest_restarts(void** state)
 
     pump(fx, 40);
     assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
-    static const op_kind_t expect[]
+    static const op_kind expect[]
         = { OP_VERIFY, OP_IS_INSTALLED, OP_DOWNLOAD, OP_BACKUP, OP_INSTALL, OP_APPLY };
     assert_true(ops_contain_sequence(&fx->log, expect, sizeof(expect) / sizeof(expect[0])));
 }
@@ -1033,7 +1105,7 @@ static void microsoft_root_keys_are_embedded(void** state)
 {
     (void)state;
     size_t count = 0;
-    const az_iot_adu_root_key_t* keys = az_iot_adu_microsoft_root_keys(&count);
+    const az_iot_adu_root_key* keys = az_iot_adu_microsoft_root_keys(&count);
     assert_non_null(keys);
     assert_true(count >= 2);
     for (size_t i = 0; i < count; i++)
@@ -1063,6 +1135,7 @@ int main(void)
         cmocka_unit_test_setup_teardown(update_device_properties_sets_report_pending, setup, teardown),
         cmocka_unit_test_setup_teardown(custom_device_properties_are_reported, setup, teardown),
         cmocka_unit_test_setup_teardown(device_props_too_small_is_rejected, setup, teardown),
+        cmocka_unit_test_setup_teardown(device_props_buffer_size_matches_need, setup, teardown),
         cmocka_unit_test_setup_teardown(duplicate_redelivery_is_ignored, setup, teardown),
         cmocka_unit_test_setup_teardown(retry_with_newer_timestamp_restarts, setup, teardown),
         cmocka_unit_test_setup_teardown(replacement_with_new_id_restarts, setup, teardown),

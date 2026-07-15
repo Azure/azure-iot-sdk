@@ -22,19 +22,19 @@ extern "C" {
 
 /* Parsed fields of an Azure connection string (IoT Hub service or Event
  * Hub-compatible endpoint). Unused fields are empty strings. */
-typedef struct e2e_conn_info_tag
+typedef struct e2e_conn_info
 {
     char host[256];        /* HostName=<..>, or Endpoint=sb://<host>/ (scheme+slash stripped) */
     char key_name[128];    /* SharedAccessKeyName */
     char key[256];         /* SharedAccessKey (base64 text, verbatim)                         */
     char entity_path[128]; /* EntityPath (Event Hub connection strings only; may be empty)     */
-} e2e_conn_info_t;
+} e2e_conn_info;
 
 /* Parse an Azure connection string. Recognizes the HostName, Endpoint,
  * SharedAccessKeyName, SharedAccessKey and EntityPath segments (';'-separated,
  * each 'Key=Value' split on the FIRST '='). Returns true when at least a host
  * and a key were found. */
-bool e2e_conn_info_parse(const char* connection_string, e2e_conn_info_t* out);
+bool e2e_conn_info_parse(const char* connection_string, e2e_conn_info* out);
 
 /* Build an Azure Shared Access Signature authorizing @p resource_uri (unescaped)
  * until @p expiry_unix_sec, signed with @p key using HMAC-SHA256.

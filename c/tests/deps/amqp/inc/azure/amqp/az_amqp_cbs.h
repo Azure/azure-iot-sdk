@@ -62,7 +62,7 @@ typedef enum
  * callback.
  * @param[in] user_data The pointer supplied to #az_amqp_cbs_put_token.
  */
-typedef void (*az_amqp_cbs_put_token_complete_fn)(
+typedef void (*az_amqp_cbs_put_token_complete_callback)(
     az_amqp_cbs* cbs,
     uint32_t status_code,
     az_span status_description,
@@ -90,7 +90,7 @@ struct az_amqp_cbs
   az_amqp_session* session; ///< The owning session. Library-managed.
   az_amqp_cbs_options options; ///< The effective options.
   az_amqp_cbs_state state; ///< Current state. Library-managed.
-  az_amqp_cbs_put_token_complete_fn put_token_complete; ///< Completion callback. Library-managed.
+  az_amqp_cbs_put_token_complete_callback put_token_complete; ///< Completion callback. Library-managed.
   void* put_token_user_data; ///< Completion callback context. Library-managed.
   az_amqp_error_detail last_error; ///< Most recent failure detail. Library-managed.
   uint64_t pending_correlation_id; ///< Correlation id of the in-flight request. Library-managed.
@@ -153,7 +153,7 @@ AZ_NODISCARD az_result az_amqp_cbs_put_token(
     az_span audience,
     az_span token,
     int64_t expires_at_unix_ms,
-    az_amqp_cbs_put_token_complete_fn on_complete,
+    az_amqp_cbs_put_token_complete_callback on_complete,
     void* user_data);
 
 /**

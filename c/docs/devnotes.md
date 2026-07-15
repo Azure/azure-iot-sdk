@@ -122,8 +122,8 @@ _Captured from conversation as the C99 client repo was being scaffolded. Each bu
 ### Testing
 - Test framework: **cmocka** (chosen for mocking support and alignment with `azure-sdk-for-c`). Integrated via FetchContent (`cmocka-1.1.7`), forced static (`BUILD_SHARED_LIBS=OFF` in cache with `FORCE`, save/restore around the subdir).
 - Tests run via `ctest` from CMake presets on both Windows and Linux.
-- An MQTT iface **conformance suite** lives in `tests/conformance/`. It is a reusable cmocka library that exercises any `az_iot_mqtt_factory_t` end-to-end against a real broker — it does not depend on Paho or any specific adapter. Customers can link `az_iot_conformance` and instantiate their own factory to validate that their MQTT client+adapter is plug-compatible. Two suites: `az_iot_CONFORMANCE_SUITE_V3_1_1` and `az_iot_CONFORMANCE_SUITE_V5`.
-- Conformance tests skip themselves (CTest exit 77) unless `az_iot_MQTT_BROKER_HOST` is set, so local builds without a broker stay green.
+- An MQTT iface **conformance suite** lives in `tests/conformance/`. It is a reusable cmocka library that exercises any `az_iot_mqtt_factory` end-to-end against a real broker — it does not depend on Paho or any specific adapter. Customers can link `az_iot_conformance` and instantiate their own factory to validate that their MQTT client+adapter is plug-compatible. Two suites: `AZ_IOT_CONFORMANCE_SUITE_V3_1_1` and `AZ_IOT_CONFORMANCE_SUITE_V5`.
+- Conformance tests skip themselves (CTest exit 77) unless `AZ_IOT_MQTT_BROKER_HOST` is set, so local builds without a broker stay green.
 - CI runs an `eclipse-mosquitto:2` service container on the Linux jobs and points the conformance harnesses at it.
 
 ### Repository hygiene / process
@@ -138,12 +138,12 @@ _Captured from conversation as the C99 client repo was being scaffolded. Each bu
 ### ConnectionClient lifecycle (Phase 2.1)
 - States: `IDLE -> CONNECTING -> CONNECTED -> DISCONNECTING -> IDLE`, plus `RECONNECTING` (Phase 2.2) and `FAULTED` (CONNACK / inbound ERROR).
 - Single-threaded contract: every state transition and the user state-callback fires from inside `az_iot_connection_client_do_work()`. `on_mqtt_event()` is called from the adapter's `process_loop()` (which `do_work()` drives), and any state change requiring teardown of the active adapter is *deferred* out of the callback to avoid destroying the adapter while it is still on the call stack.
-- Adapter registry validates the MQTT version on registration: each factory must declare a valid `az_iot_mqtt_version_t`. The SDK internally maps services to required versions (DPS/Classic → v3.1.1, Hub-Next → v5) and selects the matching registered factory at connection time.
+- Adapter registry validates the MQTT version on registration: each factory must declare a valid `az_iot_mqtt_version`. The SDK internally maps services to required versions (DPS/Classic → v3.1.1, Hub-Next → v5) and selects the matching registered factory at connection time.
 - Without DPS, direct-host opens default to `HUB_CLASSIC` (v3.1.1). DPS overrides this via the **internal-only** `az_iot_connection_client__set_session_role()` (header `src/core/internal/connection_client_internal.h`, NOT part of the public ABI) before driving the post-provisioning open.
 - Reconnect (backoff + jitter), certificate_provider / X.509 plumbing, and the `protocol_profile` dispatch table for feature clients are deferred to Phase 2.2 / 2.3.
 
 ### Reconnect (Phase 2.2)
-- Reconnect is **opt-in**: enabled when `opts.reconnect.initial_delay_ms > 0`. Zero-policy means a peer drop or CONNACK failure terminates the session (`IDLE` for clean disconnect, `FAULTED` for failure).
+- Reconnect is **opt-in**: enabled when `opts.reconnection_policy.initial_delay_ms > 0`. Zero-policy means a peer drop or CONNACK failure terminates the session (`IDLE` for clean disconnect, `FAULTED` for failure).
 - When enabled:
   - Unexpected `EVT_DISCONNECTED`, failed `EVT_CONNECTED`, and inbound `EVT_ERROR` schedule a reconnect attempt instead of terminating.
   - User-initiated `close()` is honoured regardless: if we're in `RECONNECTING`, the schedule is cancelled and we go straight to `IDLE`.
@@ -156,7 +156,7 @@ _Captured from conversation as the C99 client repo was being scaffolded. Each bu
   - The jitter PRNG seed is auto-initialised from the monotonic clock; tests use the internal `az_iot_connection_client__seed_rng()` to make timing deterministic.
 
 ### Protocol profile + inbound dispatch (Phase 2.3)
-- `src/core/internal/protocol_profile.h` exposes `az_iot_protocol_profile_t`: hub flavor, MQTT version, topic prefixes (twin response / twin desired / methods request / D2C template), default request/response timeout. The Classic profile (Phase 2.3) is implemented; the Next profile is intentionally NULL until Phase 3 lands its feature-client implementations. DPS sessions reuse the Classic profile so its mqtt_version/timeout defaults are still consultable.
+- `src/core/internal/protocol_profile.h` exposes `az_iot_protocol_profile`: hub flavor, MQTT version, topic prefixes (twin response / twin desired / methods request / D2C template), default request/response timeout. The Classic profile (Phase 2.3) is implemented; the Next profile is intentionally NULL until Phase 3 lands its feature-client implementations. DPS sessions reuse the Classic profile so its mqtt_version/timeout defaults are still consultable.
 - `src/core/internal/dispatch.h` is a small (`az_iot_MAX_INBOUND_HANDLERS` = 8) topic-prefix → handler registry with longest-prefix-wins routing and `unregister_by_ctx` for clean feature-client teardown. The table is heap-allocated (lazy on first registration) so sessions that never register a handler pay nothing.
 - `ConnectionClient` owns one dispatch table and routes every `EVT_MESSAGE` through it (unmatched topics drop silently, matching MQTT-broker behaviour for unsubscribed wildcards). `*_ACK` events stay absorbed pending the Phase 3 correlation table.
 - New internal entry points (`internal/connection_client_internal.h`):

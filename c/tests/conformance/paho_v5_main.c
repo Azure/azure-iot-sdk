@@ -8,7 +8,7 @@
 
 int main(void)
 {
-    az_iot_mqtt_factory_t* f = az_iot_paho_factory_create_v5();
+    az_iot_mqtt_factory* f = az_iot_paho_factory_create_v5();
     int rc = az_iot_conformance_run(AZ_IOT_CONFORMANCE_SUITE_V5, f);
     az_iot_paho_factory_destroy(f);
     return rc;

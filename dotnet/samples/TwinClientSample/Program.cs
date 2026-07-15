@@ -1,6 +1,8 @@
 ﻿using Microsoft.Azure.Devices.Client;
 using Microsoft.Azure.Devices.Client.Twin;
+using SetupSampleDevice;
 using System.Security.Cryptography.X509Certificates;
+using System.Text.Json;
 
 internal class Program
 {
@@ -9,12 +11,18 @@ internal class Program
     private static async Task Main(string[] args)
     {
         using CancellationTokenSource cts = new CancellationTokenSource();
-        cts.CancelAfter(TimeSpan.FromSeconds(20));
+        cts.CancelAfter(TimeSpan.FromMinutes(10));
 
-        string idScope = Environment.GetEnvironmentVariable("DPS_ID_SCOPE") ?? throw new Exception("");
-        string pcks12CertificatePath = Environment.GetEnvironmentVariable("X509_CERTIFICATE_PATH") ?? throw new Exception("");
-        string pcks12CertificatePassword = Environment.GetEnvironmentVariable("X509_CERTIFICATE_PASSWORD") ?? throw new Exception("");
-        X509AuthenticationProvider authentication = new(X509CertificateLoader.LoadPkcs12FromFile(pcks12CertificatePath, pcks12CertificatePassword));
+        // Cancel sample on key press
+        Console.CancelKeyPress += (sender, eventArgs) =>
+        {
+            cts.Cancel();
+            eventArgs.Cancel = true;
+        };
+
+        string deviceId = SampleConstants.LoadDeviceId();
+        string idScope = SampleConstants.LoadIdScope();
+        X509AuthenticationProvider authentication = SampleConstants.LoadAuthenticationProvider();
 
         using ConnectionClient connectionClient = new ConnectionClient();
 
@@ -40,6 +48,7 @@ internal class Program
                 IfMatch = 1 //TODO how does this work again?
             };
 
+            Console.WriteLine($"Responding to desired patch by sending a reported patch");
             ReportedPatchResponse patchResponse = await twinClient.UpdateReportedPropertiesAsync(reportedPatch);
             currentTwin.ReportedVersion = patchResponse.Version;
             if (patchResponse.Result == Result.Ok)
@@ -59,9 +68,20 @@ internal class Program
         };
 
         var connectionContext = await connectionClient.ProvisionAndConnectAsync(provisioningSettings, authentication, twinPushOptions);
-        currentTwin = connectionContext.InitialTwinPush;
+        Console.WriteLine($"Device {deviceId} is now provisioned and connected to IoT Hub. Now listening for desired property patches");
 
-        await Task.Delay(-1, cts.Token);
+        currentTwin = connectionContext.InitialTwinPush;
+        Console.WriteLine($"The current twin is: {JsonSerializer.Serialize(currentTwin)}");
+
+        try
+        {
+            Console.WriteLine("Press 'Ctrl+C' to end the sample");
+            await Task.Delay(-1, cts.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            Console.WriteLine("Sample timeout has completed. Shutting down the sample...");
+        }
 
         twinClient.DesiredPatchReceived -= HandleDesiredPropertiesUpdateAsync;
         await connectionClient.DisconnectAsync();

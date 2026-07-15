@@ -31,16 +31,16 @@
 extern "C" {
 #endif
 
-typedef enum az_iot_hub_flavor_tag
+typedef enum az_iot_hub_flavor
 {
     AZ_IOT_HUB_FLAVOR_CLASSIC = 0, /* IoT Hub Classic (MQTT v3.1.1) */
     AZ_IOT_HUB_FLAVOR_NEXT    = 1  /* IoT Hub Next    (MQTT v5)     */
-} az_iot_hub_flavor_t;
+} az_iot_hub_flavor;
 
-typedef struct az_iot_protocol_profile_tag
+typedef struct az_iot_protocol_profile
 {
-    az_iot_hub_flavor_t   flavor;
-    az_iot_mqtt_version_t mqtt_version;
+    az_iot_hub_flavor   flavor;
+    az_iot_mqtt_version mqtt_version;
 
     /* ----- Classic-specific fields (MQTT v3.1.1 topic-encoded) ----- */
 
@@ -73,15 +73,15 @@ typedef struct az_iot_protocol_profile_tag
      * (twin get, direct-method response). Per-call overrides are still
      * supported by the feature client APIs themselves. */
     uint32_t default_request_response_timeout_ms;
-} az_iot_protocol_profile_t;
+} az_iot_protocol_profile;
 
 /* Returns the active profile for the given session role, or NULL when no
  * profile is implemented yet for that role (Next stub returns NULL). The
  * pointer is to module-static data; never freed. */
-const az_iot_protocol_profile_t* az_iot_protocol_profile_for_role(
-    az_iot_mqtt_role_t role);
+const az_iot_protocol_profile* az_iot_protocol_profile_for_role(
+    az_iot_mqtt_role role);
 
-const char* az_iot_hub_flavor_to_string(az_iot_hub_flavor_t f);
+const char* az_iot_hub_flavor_to_string(az_iot_hub_flavor f);
 
 #ifdef __cplusplus
 }

@@ -24,7 +24,7 @@
 #define AZ_IOT_ADU_REPORT_BUFFER_SIZE 1024
 #endif
 
-az_iot_adu_client_agent_state az_iot_adu__agent_state(az_iot_adu_state_t state)
+az_iot_adu_client_agent_state az_iot_adu__agent_state(az_iot_adu_state state)
 {
     switch (state)
     {
@@ -46,8 +46,8 @@ az_iot_adu_client_device_properties az_iot_adu__device_properties_view(
     /* The cache layout (see az_iot_adu__cache_device_properties) packs
      * NUL-terminated manufacturer/model/installed-update-id strings into the
      * caller's buffer. We rebuild az_span views over those C strings here. */
-    const az_iot_adu_device_properties_t* cached =
-        (const az_iot_adu_device_properties_t*)(const void*)ADU_I(client).device_props_buffer;
+    const az_iot_adu_device_properties* cached =
+        (const az_iot_adu_device_properties*)(const void*)ADU_I(client).device_props_buffer;
 
     if (ADU_I(client).device_props_buffer != NULL)
     {
@@ -83,7 +83,7 @@ az_iot_adu_client_device_properties az_iot_adu__device_properties_view(
     return props;
 }
 
-az_iot_result_t az_iot_adu__report_state(az_iot_adu_client_t* client)
+az_iot_result az_iot_adu__report_state(az_iot_adu_client_t* client)
 {
     if (client == NULL) return AZ_IOT_ERR_INVALID_ARG;
     if (ADU_I(client).detached) return AZ_IOT_ERR_DETACHED;
@@ -137,11 +137,11 @@ az_iot_result_t az_iot_adu__report_state(az_iot_adu_client_t* client)
 /* agent core-library API: standalone report builder                         */
 /* ------------------------------------------------------------------------- */
 
-az_iot_result_t az_iot_adu_build_report(
-    const az_iot_adu_device_properties_t* device_props,
+az_iot_result az_iot_adu_build_report(
+    const az_iot_adu_device_properties* device_props,
     const az_iot_adu_client_install_result* result,
     const az_iot_adu_client_update_request* request,
-    az_iot_adu_state_t state,
+    az_iot_adu_state state,
     uint8_t* out_json,
     size_t out_size,
     size_t* out_len)

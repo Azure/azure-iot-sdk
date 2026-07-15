@@ -20,33 +20,33 @@
 
 typedef struct
 {
-    sample_config_t                      config;
-    az_iot_certificate_provider_pem_t    certs;
-    az_iot_connection_client_t           connection_client;
-    az_iot_direct_method_client_t        method_client;
-} sample_state_t;
+    sample_config                      config;
+    az_iot_certificate_provider_pem    certs;
+    az_iot_connection_client           connection_client;
+    az_iot_direct_method_client        method_client;
+} sample_state;
 
-static void sample_state_destroy(sample_state_t* s)
+static void sample_state_destroy(sample_state* s)
 {
-    az_iot_direct_method_client_deinit(&s->method_client);
-    az_iot_connection_client_deinit(&s->connection_client);
-    az_iot_certificate_provider_pem_deinit(&s->certs);
+    az_iot_direct_method_client_destroy(&s->method_client);
+    az_iot_connection_client_destroy(&s->connection_client);
+    az_iot_certificate_provider_pem_destroy(&s->certs);
     sample_config_release(&s->config);
 }
 
 typedef struct
 {
-    az_iot_connection_state_t conn_state;
-} user_context_t;
+    az_iot_connection_state conn_state;
+} user_context;
 
-static void on_conn_state(az_iot_connection_state_t s, az_iot_result_t reason, void* user_ctx)
+static void on_conn_state(az_iot_connection_state s, az_iot_result reason, void* user_ctx)
 {
     (void)reason;
-    ((user_context_t*)user_ctx)->conn_state = s;
+    ((user_context*)user_ctx)->conn_state = s;
 }
 
 static void on_method(
-    az_iot_direct_method_request_t* request,
+    az_iot_direct_method_request* request,
     const char* method_name,
     const uint8_t* payload,
     size_t payload_len,
@@ -61,76 +61,77 @@ static void on_method(
 
 int main(void)
 {
-    az_iot_log_sink_t log = az_iot_log_stderr_sink(AZ_IOT_LOG_ERROR);
+    az_iot_log_sink log = az_iot_log_stderr_sink(AZ_IOT_LOG_ERROR);
     az_iot_log_set_global_sink(&log);
 
-    sample_state_t sample_state = {0};
-    if (sample_config_load(&sample_state.config) != 0)
+    sample_state state = {0};
+    if (sample_config_load(&state.config) != 0)
     {
         return 1;
     }
 
     int rc = 1;
-    user_context_t user_ctx = {0};
+    user_context user_ctx = {0};
 
     /* Certificate provider */
-    az_iot_certificate_provider_pem_options_t pem = {
-        .trusted_ca_pem_path = sample_state.config.ca,
-        .client_cert_pem_path = sample_state.config.cert,
-        .client_key_pem_path = sample_state.config.key };
+    az_iot_certificate_provider_pem_options pem = az_iot_certificate_provider_pem_options_default();
+    pem.trusted_ca_pem_path = state.config.ca;
+    pem.client_cert_pem_path = state.config.cert;
+    pem.client_key_pem_path = state.config.key;
 
-    if (az_iot_certificate_provider_pem_init(&sample_state.certs, &pem) != AZ_IOT_OK)
+    if (az_iot_certificate_provider_pem_init(&state.certs, &pem) != AZ_IOT_OK)
     {
-        sample_state_destroy(&sample_state);
+        sample_state_destroy(&state);
         return 1;
     }
 
     /* Connection client (DPS provisioning is internal when host==NULL) */
-    az_iot_connection_client_options_t copts =
-        az_iot_connection_client_options_get_default(
-            sample_state.config.id_scope, sample_state.config.reg_id, &sample_state.certs.base);
+    az_iot_connection_client_options copts = az_iot_connection_client_options_default();
+    copts.dps.id_scope = state.config.id_scope;
+    copts.dps.registration_id = state.config.reg_id;
+    copts.certificate_provider = &state.certs.base;
 
-    if (az_iot_connection_client_init(&sample_state.connection_client, &copts) != AZ_IOT_OK)
+    if (az_iot_connection_client_init(&state.connection_client, &copts) != AZ_IOT_OK)
     {
-        sample_state_destroy(&sample_state);
+        sample_state_destroy(&state);
         return 1;
     }
-    az_iot_connection_client_set_state_callback(&sample_state.connection_client, on_conn_state, &user_ctx);
+    az_iot_connection_client_set_state_callback(&state.connection_client, on_conn_state, &user_ctx);
 
     /* MQTT adapters: register both v3.1.1 (DPS + Classic) and v5 (Next).
      * The connection client selects the appropriate factory based on the
      * session role. Both may be backed by different MQTT libraries. */
     if (az_iot_connection_client_register_mqtt_factory(
-            &sample_state.connection_client, az_iot_paho_factory_create_v3_1_1()) != AZ_IOT_OK)
+            &state.connection_client, az_iot_paho_factory_create_v3_1_1()) != AZ_IOT_OK)
     {
-        sample_state_destroy(&sample_state);
+        sample_state_destroy(&state);
         return 1;
     }
     if (az_iot_connection_client_register_mqtt_factory(
-            &sample_state.connection_client, az_iot_paho_factory_create_v5()) != AZ_IOT_OK)
+            &state.connection_client, az_iot_paho_factory_create_v5()) != AZ_IOT_OK)
     {
-        sample_state_destroy(&sample_state);
+        sample_state_destroy(&state);
         return 1;
     }
 
     /* Direct method client */
-    if (az_iot_direct_method_client_init(&sample_state.method_client, &sample_state.connection_client) != AZ_IOT_OK)
+    if (az_iot_direct_method_client_init(&state.method_client, &state.connection_client) != AZ_IOT_OK)
     {
-        sample_state_destroy(&sample_state);
+        sample_state_destroy(&state);
         return 1;
     }
-    az_iot_direct_method_client_set_handler(&sample_state.method_client, on_method, &user_ctx);
+    az_iot_direct_method_client_set_handler(&state.method_client, on_method, &user_ctx);
 
     /* Open (internally provisions via DPS then connects to assigned hub) */
-    if (az_iot_connection_client_open(&sample_state.connection_client) != AZ_IOT_OK)
+    if (az_iot_connection_client_open(&state.connection_client) != AZ_IOT_OK)
     {
-        sample_state_destroy(&sample_state);
+        sample_state_destroy(&state);
         return 1;
     }
 
     for (int i = 0; i < 1200 && user_ctx.conn_state != AZ_IOT_CONN_STATE_CONNECTED; ++i)
     {
-        (void)az_iot_connection_client_do_work(&sample_state.connection_client, 50);
+        (void)az_iot_connection_client_do_work(&state.connection_client, 50);
         if (user_ctx.conn_state == AZ_IOT_CONN_STATE_FAULTED)
             break;
     }
@@ -141,18 +142,18 @@ int main(void)
 
         /* Pump for ~60 seconds (600 * 100ms) */
         for (int i = 0; i < 600; ++i)
-            (void)az_iot_connection_client_do_work(&sample_state.connection_client, 100);
+            (void)az_iot_connection_client_do_work(&state.connection_client, 100);
 
         rc = 0;
     }
 
     /* Close connection */
-    az_iot_connection_client_close(&sample_state.connection_client);
+    az_iot_connection_client_close(&state.connection_client);
 
     for (int i = 0; i < 100 && user_ctx.conn_state != AZ_IOT_CONN_STATE_IDLE; ++i)
-        (void)az_iot_connection_client_do_work(&sample_state.connection_client, 50);
+        (void)az_iot_connection_client_do_work(&state.connection_client, 50);
 
-    sample_state_destroy(&sample_state);
+    sample_state_destroy(&state);
 
     return rc;
 }
