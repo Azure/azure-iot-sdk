@@ -130,15 +130,13 @@ namespace Microsoft.Azure.Devices.Client.Provisioning
 
         private async Task SubscribeToRegistrationResponseMessagesAsync(IMqttClient mqttClient, CancellationToken cancellationToken)
         {
-            Trace.TraceInformation("Subscribing to DPS response topic");
+            Trace.TraceInformation("Subscribing to DPS response topic {0}", SubscribeFilter);
             MqttSubscribeAck subscribeResults = await mqttClient.SubscribeAsync(new(SubscribeFilter, MqttQualityOfServiceLevel.AtLeastOnce), cancellationToken).ConfigureAwait(false);
 
             if (subscribeResults.Items.FirstOrDefault()!.ResultCode != MqttClientSubscribeResultCode.GrantedQoS1)
             {
                 throw new Exception("todo");
             }
-
-            Trace.TraceInformation("Successfully subscribed to DPS response topic");
         }
 
         private async Task<RegistrationOperationStatus> PublishRegistrationRequestAsync(
@@ -163,7 +161,7 @@ namespace Microsoft.Azure.Devices.Client.Provisioning
 
             _startProvisioningRequestStatusSource = new TaskCompletionSource<RegistrationOperationStatus>(TaskCreationOptions.RunContinuationsAsynchronously);
 
-            Trace.TraceInformation("Publishing registration request to DPS with request Id {0}", _requestId);
+            Trace.TraceInformation("Publishing to DPS on topic {0}", registrationTopic);
 
             MqttPublishAck puback = await mqttClient.PublishAsync(publish, cancellationToken).ConfigureAwait(false);
 
@@ -171,34 +169,46 @@ namespace Microsoft.Azure.Devices.Client.Provisioning
 
             Trace.TraceInformation("Successfully published registration request to DPS with request Id {0}", _requestId);
 
-            RegistrationOperationStatus registrationStatus = await _startProvisioningRequestStatusSource.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                RegistrationOperationStatus registrationStatus = await _startProvisioningRequestStatusSource.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
 
-            Trace.TraceInformation("Received the initial registration response from DPS with status {0}", registrationStatus.Status);
-
-            return registrationStatus.Status != ProvisioningRegistrationStatus.Assigning
-                ? throw new Exception("TODO")
-                : registrationStatus;
+                return registrationStatus.Status != ProvisioningRegistrationStatus.Assigning
+                    ? throw new Exception("TODO")
+                    : registrationStatus;
+            }
+            catch (OperationCanceledException e)
+            {
+                throw new OperationCanceledException("Timed out waiting for DPS to send the initial provisioning response", e);
+            }
         }
 
         private async Task<DeviceRegistrationResult> PollUntilProvisionigFinishesAsync(IMqttClient mqttClient, string operationId, CancellationToken cancellationToken)
         {
             while (true)
             {
-                string topicName = string.Format(CultureInfo.InvariantCulture, GetOperationsTopic, ++_requestId, operationId);
+                string topic = string.Format(CultureInfo.InvariantCulture, GetOperationsTopic, ++_requestId, operationId);
                 MqttPublish message = new MqttPublish()
                 {
-                    Topic = topicName,
+                    Topic = topic,
                     QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce
                 };
 
                 _checkRegistrationOperationStatusSource = new TaskCompletionSource<RegistrationOperationStatus>(TaskCreationOptions.RunContinuationsAsynchronously);
 
-                Trace.TraceInformation("Publishing a poll request for the registration operation status to DPS with request Id {0} and operation id {}.", _requestId, operationId);
+                Trace.TraceInformation("Publishing to DPS on topic {0}", topic);
                 MqttPublishAck puback = await mqttClient.PublishAsync(message, cancellationToken).ConfigureAwait(false);
                 PublishRejectedException.ThrowIfUnsuccessfulPuback(puback, "MQTT publish rejected while polling for the registration status");
 
-                RegistrationOperationStatus currentStatus = await _checkRegistrationOperationStatusSource.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
-                Trace.TraceInformation("Received poll response for the registration operation status with operation Id {0} containing registration state {1}", operationId, currentStatus.RegistrationState);
+                RegistrationOperationStatus currentStatus;
+                try
+                {
+                    currentStatus = await _checkRegistrationOperationStatusSource.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException e)
+                {
+                    throw new OperationCanceledException("Timed out waiting for DPS to send a response to the polling request", e);
+                }
 
                 Debug.Assert(currentStatus.RegistrationState != null);
 
@@ -258,6 +268,8 @@ namespace Microsoft.Azure.Devices.Client.Provisioning
                 // TODO This seems to happen around reconnect scenarios? Not sure how though since we always connect with clean session
                 return Task.CompletedTask;
             }
+
+            Trace.TraceInformation("Received MQTT publish from DPS on topic {0}", receivedEventArgs.Publish.Topic);
 
             if (!_startProvisioningRequestStatusSource.Task.IsCompleted)
             {
