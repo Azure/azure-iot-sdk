@@ -12,7 +12,7 @@ namespace Microsoft.Azure.Devices.Client
     /// <remarks>
     /// This error signals that the connect request made it to IoT Hub, but there was something wrong with the request or the request could not be accepted at this time.
     /// </remarks>
-    public class ConnectRejectedException : Exception //TODO distinguish between DPS connection and Hub connection?
+    public class ConnectRejectedException : Exception
     {
         public ConnectRejectedException(string message) : base(message)
         {
@@ -23,7 +23,7 @@ namespace Microsoft.Azure.Devices.Client
         {
             if (connack.ResultCode != MqttConnectResultCode.Success)
             {
-                throw new ConnectRejectedException(errorMessage)
+                throw new ConnectRejectedException(errorMessage + $" Result code: {connack.ResultCode}")
                 {
                     ReasonCode = connack.ResultCode,
                     ReasonString = connack.ReasonString,
