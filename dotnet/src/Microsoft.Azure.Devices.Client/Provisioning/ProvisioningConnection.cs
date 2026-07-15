@@ -74,7 +74,7 @@ namespace Microsoft.Azure.Devices.Client.Provisioning
                 {
                     MqttConnectAck connack = await mqttClient.ConnectAsync(connect, cancellationToken).ConfigureAwait(false);
 
-                    ConnectRejectedException.ThrowIfUnsuccessfulConnack(connack, "Connection to IoT Hub was rejected.");
+                    ConnectRejectedException.ThrowIfUnsuccessfulConnack(connack, "Connection to DPS was rejected.");
 
                     await SubscribeToRegistrationResponseMessagesAsync(mqttClient, linkedCancellationToken.Token).ConfigureAwait(false);
 
