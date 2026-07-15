@@ -299,10 +299,7 @@ namespace Microsoft.Azure.Devices.Client.IotHub
 
             var connack = await mqttClient.ConnectAsync(connectPacket, cancellationToken);
 
-            if (connack.ResultCode != MqttConnectResultCode.Success)
-            {
-                throw new Exception("TODO");
-            }
+            ConnectRejectedException.ThrowIfUnsuccessfulConnack(connack, "Connection to IoT Hub was rejected.");
 
             //TODO feels a bit weird to do these subs outside of the method client/twin client, and it forces the user to construct their direct method/twin clients
             //and set their callbacks before connecting, but not sure what other approach works when AEG style hub mandates subscriptions as part of the connect birth message

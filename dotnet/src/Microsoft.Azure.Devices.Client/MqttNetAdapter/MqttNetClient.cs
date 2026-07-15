@@ -2,12 +2,15 @@
 using MQTTnet;
 using System.Net;
 using System.Security.Cryptography.X509Certificates;
+using System.Text;
 
 namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
 {
     public class MqttNetClient : Mqtt.IMqttClient 
     {
         private MQTTnet.IMqttClient _underlyingClient;
+
+        internal MqttConnectAck? mostRecentConnectAck;
 
         private bool _useWebsocket;
         private IWebProxy? _proxy;
@@ -131,7 +134,7 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
 
             var connectResult = await _underlyingClient.ConnectAsync(o, cancellationToken);
 
-            var genericConnectResult = new MqttConnectAck()
+            mostRecentConnectAck = new MqttConnectAck()
             {
                 ResultCode = ModelConverter.ToGeneric(connectResult.ResultCode),
             };
@@ -140,13 +143,11 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
             {
                 foreach (var userProperty in connectResult.UserProperties)
                 {
-                    genericConnectResult.UserProperties.Add(new(userProperty.Name, userProperty.ValueBuffer));
+                    mostRecentConnectAck.UserProperties.Add(new(userProperty.Name, userProperty.ValueBuffer));
                 }
             }
 
-            IsConnected = genericConnectResult.ResultCode == MqttConnectResultCode.Success;
-
-            return genericConnectResult;
+            return mostRecentConnectAck;
         }
 
         public virtual async Task DisconnectAsync(MqttDisconnect disconnect, CancellationToken cancellationToken = default)
@@ -165,7 +166,6 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
             }
 
             await _underlyingClient.DisconnectAsync(disconnectBuilder.Build(), cancellationToken);
-            IsConnected = false;
         }
 
         public virtual async Task<MqttPublishAck> PublishAsync(MqttPublish publish, CancellationToken cancellationToken = default)
@@ -236,7 +236,7 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
             _underlyingClient.Dispose();
         }
 
-        public bool IsConnected { get; internal set; }
+        public bool IsConnected => _underlyingClient.IsConnected;
 
         private Task DelegateReceivedPublishAsync(MqttApplicationMessageReceivedEventArgs args)
         {
@@ -284,8 +284,6 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
                 return Task.CompletedTask;
             }
 
-            IsConnected = true;
-
             return ConnectedAsync.Invoke(new()
             {
                 ConnectAck = ModelConverter.ToGeneric(args.ConnectResult),
@@ -304,8 +302,6 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
                 Exception = args.Exception,
                 Reason = ModelConverter.ToGeneric(args.Reason),
             };
-
-            IsConnected = false;
 
             if (args.UserProperties != null)
             {
