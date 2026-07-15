@@ -41,83 +41,101 @@ namespace Microsoft.Azure.Devices.Client.Provisioning
             MqttConnect connect = CreateMqttConnectPacket(authentication, idScope, globalDeviceEndpoint);
             mqttClient.PublishReceivedAsync += HandleReceivedPublishAsync;
 
-            using var connectionLostCancellationToken = new CancellationTokenSource();
-
-            // Link the user-supplied cancellation token with a cancellation token that is cancelled
-            // when the connection is lost so that all operations stop when either the user
-            // cancels the token or when the connection is lost.
-            using var linkedCancellationToken = CancellationTokenSource.CreateLinkedTokenSource(
-                cancellationToken,
-                connectionLostCancellationToken.Token);
-
-            Task HandleDisconnectionAsync(MqttClientDisconnectedEventArgs disconnectedEventArgs)
+            // Attempt provisioning until user cancels or a fatal error is thrown by the underlying MQTT client
+            while (true)
             {
-                // If it was an unexpected disconnect. Ignore cases when the user intentionally closes the connection.
-                connectionLostCancellationToken.Cancel();
-                return Task.CompletedTask;
+                using var connectionLostCancellationToken = new CancellationTokenSource();
+
+                // Link the user-supplied cancellation token with a cancellation token that is cancelled
+                // when the connection is lost so that all operations stop when either the user
+                // cancels the token or when the connection is lost.
+                using var linkedCancellationToken = CancellationTokenSource.CreateLinkedTokenSource(
+                    cancellationToken,
+                    connectionLostCancellationToken.Token);
+
+                bool isInitialConnect = true;
+                Task HandleConnectionAsync(MqttClientConnectedEventArgs connectedEventArgs)
+                {
+                    // Because DPS cannot persist sessions, any connection loss should be treated as a session loss. Restart provisioning from the start to re-build the session.
+                    if (!isInitialConnect)
+                    {
+                        connectionLostCancellationToken.Cancel();
+                    }
+
+                    // Now that the initial connect has passed, subsequent connects should signal a need to restart provisioning
+                    isInitialConnect = false;
+
+                    return Task.CompletedTask;
+                }
+                
+                mqttClient.ConnectedAsync += HandleConnectionAsync;
+
+                try
+                {
+                    MqttConnectAck connack = await mqttClient.ConnectAsync(connect, cancellationToken).ConfigureAwait(false);
+
+                    ConnectRejectedException.ThrowIfUnsuccessfulConnack(connack, "Connection to DPS was rejected.");
+
+                    await SubscribeToRegistrationResponseMessagesAsync(mqttClient, linkedCancellationToken.Token).ConfigureAwait(false);
+
+                    RegistrationOperationStatus registrationStatus = await PublishRegistrationRequestAsync(
+                            mqttClient,
+                            payload,
+                            linkedCancellationToken.Token)
+                        .ConfigureAwait(false);
+
+                    //TODO there is a bug under investigation wherein a device that reaches this point, then loses connection, then reconnects, stalls.
+                    // It stalls after the puback is received for the "publish registration request" call after reconnecting. This SDK expects to receive a PUBLISH from DPS,
+                    // but it never seems to come? Need to check with DPS folks what the expectation here is since we are already reconnecting with a fresh session and using a new request id
+                    // on the "publish registration request" call
+                    DeviceRegistrationResult registrationResult = await PollUntilProvisionigFinishesAsync(
+                            mqttClient,
+                            registrationStatus.OperationId,
+                            linkedCancellationToken.Token)
+                        .ConfigureAwait(false);
+
+                    return registrationResult;
+                }
+                catch (OperationCanceledException)
+                {
+                    // This will be thrown either because the user requested cancellation or because the underlying MQTT client lost the MQTT session.
+                    // In the case of the former, immediately abandon provisioning and throw.
+                    // In the case of the latter, just restart provisioning from the beginnging
+                    if (cancellationToken.IsCancellationRequested)
+                    {
+                        throw;
+                    }
+                }
+                finally
+                {
+                    // Always close MQTT connection between provisioning attempts and after a successful provisioning
+                    mqttClient.PublishReceivedAsync -= HandleReceivedPublishAsync;
+                    mqttClient.ConnectedAsync -= HandleConnectionAsync;
+                    var disconnect = new MqttDisconnect() { Reason = MqttClientDisconnectOptionsReason.NormalDisconnection };
+
+                    try
+                    {
+                        await mqttClient.DisconnectAsync(disconnect, cancellationToken);
+                    }
+                    catch (Exception)
+                    {
+                        // Deliberately not rethrowing the exception because this is a "best effort" close.
+                        // The service may not have acknowledged that the client closed the connection, but
+                        // all local resources have been closed. The service will eventually realize the
+                        // connection is closed in cases like these.
+                    }
+                }
             }
-
-            // Additional context to be included in the error message thrown if the connection is lost to explain
-            // when the connection was lost. Mostly for e2e test debugging, but users may find this helpful as well.
-            MqttConnectAck connectResult = await mqttClient
-                .ConnectAsync(connect, cancellationToken)
-                .ConfigureAwait(false);
-
-            if (connectResult.ResultCode != MqttConnectResultCode.Success)
-            {
-                throw new Exception("TODO: " + connectResult.ResultCode);
-            }
-
-            mqttClient.DisconnectedAsync += HandleDisconnectionAsync;
-
-            await SubscribeToRegistrationResponseMessagesAsync(mqttClient, linkedCancellationToken.Token).ConfigureAwait(false);
-
-            RegistrationOperationStatus registrationStatus = await PublishRegistrationRequestAsync(
-                    mqttClient,
-                    payload,
-                    linkedCancellationToken.Token)
-                .ConfigureAwait(false);
-
-            DeviceRegistrationResult registrationResult = await PollUntilProvisionigFinishesAsync(
-                    mqttClient,
-                    registrationStatus.OperationId,
-                    linkedCancellationToken.Token)
-                .ConfigureAwait(false);
-
-            mqttClient.PublishReceivedAsync -= HandleReceivedPublishAsync;
-            mqttClient.DisconnectedAsync -= HandleDisconnectionAsync;
-            var disconnect = new MqttDisconnect() { Reason = MqttClientDisconnectOptionsReason.NormalDisconnection };
-
-            try
-            {
-                await mqttClient.DisconnectAsync(disconnect, cancellationToken);
-            }
-            catch (Exception)
-            {
-                // Deliberately not rethrowing the exception because this is a "best effort" close.
-                // The service may not have acknowledged that the client closed the connection, but
-                // all local resources have been closed. The service will eventually realize the
-                // connection is closed in cases like these.
-            }
-
-            return registrationResult;
-
         }
 
         private async Task SubscribeToRegistrationResponseMessagesAsync(IMqttClient mqttClient, CancellationToken cancellationToken)
         {
-            try
-            {
-                MqttSubscribeAck subscribeResults = await mqttClient.SubscribeAsync(new(SubscribeFilter, MqttQualityOfServiceLevel.AtLeastOnce), cancellationToken).ConfigureAwait(false);
+            Trace.TraceInformation("Subscribing to DPS response topic {0}", SubscribeFilter);
+            MqttSubscribeAck subscribeResults = await mqttClient.SubscribeAsync(new(SubscribeFilter, MqttQualityOfServiceLevel.AtLeastOnce), cancellationToken).ConfigureAwait(false);
 
-                if (subscribeResults.Items.FirstOrDefault()!.ResultCode != MqttClientSubscribeResultCode.GrantedQoS1)
-                {
-                    throw new Exception("todo");
-                }
-            }
-            catch (Exception ex)
+            if (subscribeResults.Items.FirstOrDefault()!.ResultCode != MqttClientSubscribeResultCode.GrantedQoS1)
             {
-                throw new Exception("todo: " + ex.Message);
+                throw new Exception("todo");
             }
         }
 
@@ -143,48 +161,54 @@ namespace Microsoft.Azure.Devices.Client.Provisioning
 
             _startProvisioningRequestStatusSource = new TaskCompletionSource<RegistrationOperationStatus>(TaskCreationOptions.RunContinuationsAsynchronously);
 
+            Trace.TraceInformation("Publishing to DPS on topic {0}", registrationTopic);
+
+            MqttPublishAck puback = await mqttClient.PublishAsync(publish, cancellationToken).ConfigureAwait(false);
+
+            PublishRejectedException.ThrowIfUnsuccessfulPuback(puback, "MQTT publish rejected during provisioning");
+
+            Trace.TraceInformation("Successfully published registration request to DPS with request Id {0}", _requestId);
+
             try
             {
-                MqttPublishAck puback = await mqttClient.PublishAsync(publish, cancellationToken).ConfigureAwait(false);
+                RegistrationOperationStatus registrationStatus = await _startProvisioningRequestStatusSource.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
 
-                if (puback.ReasonCode != MqttPublishAckReasonCode.Success)
-                {
-                    //TODO
-                }
+                return registrationStatus.Status != ProvisioningRegistrationStatus.Assigning
+                    ? throw new Exception("TODO")
+                    : registrationStatus;
             }
-            catch (Exception)
+            catch (OperationCanceledException e)
             {
-                //TODO
+                throw new OperationCanceledException("Timed out waiting for DPS to send the initial provisioning response", e);
             }
-
-            RegistrationOperationStatus registrationStatus = await _startProvisioningRequestStatusSource.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
-
-            return registrationStatus.Status != ProvisioningRegistrationStatus.Assigning
-                ? throw new Exception("TODO")
-                : registrationStatus;
         }
 
         private async Task<DeviceRegistrationResult> PollUntilProvisionigFinishesAsync(IMqttClient mqttClient, string operationId, CancellationToken cancellationToken)
         {
             while (true)
             {
-                string topicName = string.Format(CultureInfo.InvariantCulture, GetOperationsTopic, ++_requestId, operationId);
+                string topic = string.Format(CultureInfo.InvariantCulture, GetOperationsTopic, ++_requestId, operationId);
                 MqttPublish message = new MqttPublish()
                 {
-                    Topic = topicName,
+                    Topic = topic,
                     QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce
                 };
 
                 _checkRegistrationOperationStatusSource = new TaskCompletionSource<RegistrationOperationStatus>(TaskCreationOptions.RunContinuationsAsynchronously);
 
+                Trace.TraceInformation("Publishing to DPS on topic {0}", topic);
                 MqttPublishAck puback = await mqttClient.PublishAsync(message, cancellationToken).ConfigureAwait(false);
+                PublishRejectedException.ThrowIfUnsuccessfulPuback(puback, "MQTT publish rejected while polling for the registration status");
 
-                if (puback.ReasonCode != MqttPublishAckReasonCode.Success)
+                RegistrationOperationStatus currentStatus;
+                try
                 {
-                    throw new Exception("TODO");
+                    currentStatus = await _checkRegistrationOperationStatusSource.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
                 }
-
-                RegistrationOperationStatus currentStatus = await _checkRegistrationOperationStatusSource.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+                catch (OperationCanceledException e)
+                {
+                    throw new OperationCanceledException("Timed out waiting for DPS to send a response to the polling request", e);
+                }
 
                 Debug.Assert(currentStatus.RegistrationState != null);
 
@@ -225,7 +249,9 @@ namespace Microsoft.Azure.Devices.Client.Provisioning
                 WebsocketPort = 443,
                 WebsocketUri = $"wss://{hostName}",
                 ClientCertificate = authentication.ClientCertificate,
-                CleanSession = true,
+                CleanSession = true, // The DPS MQTT broker does not support session persistence, so setting these clean start/clean session flags does nothing
+                CleanStart = true,
+                SessionExpiryInterval = 0,
                 Username = username,
                 Password = Array.Empty<byte>(),
                 ClientId = authentication.GetRegistrationId(),
@@ -239,9 +265,11 @@ namespace Microsoft.Azure.Devices.Client.Provisioning
 
             if (_startProvisioningRequestStatusSource == null)
             {
-                // TODO This seems to happen around reconnect scenarios? Not sure how though since we always connecto with clean session
+                // TODO This seems to happen around reconnect scenarios? Not sure how though since we always connect with clean session
                 return Task.CompletedTask;
             }
+
+            Trace.TraceInformation("Received MQTT publish from DPS on topic {0}", receivedEventArgs.Publish.Topic);
 
             if (!_startProvisioningRequestStatusSource.Task.IsCompleted)
             {

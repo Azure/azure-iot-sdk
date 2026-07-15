@@ -27,8 +27,13 @@ internal class Program
             mqttClient = new MqttNetClient(new MQTTnet.MqttClientFactory().CreateMqttClient());
         }
 
+        ConnectionClientOptions connectionClientOptions = new()
+        {
+            MqttClient = mqttClient,
+        };
+
         // This connection client will dispose the underlying mqtt client when it is disposed
-        using ConnectionClient connectionClient = new ConnectionClient(mqttClient);
+        using ConnectionClient connectionClient = new ConnectionClient(connectionClientOptions);
 
         ProvisioningSettings provisioningSettings = new(idScope);
         Console.WriteLine("Provisioning and connecting to IoT hub using the provided MQTT client");

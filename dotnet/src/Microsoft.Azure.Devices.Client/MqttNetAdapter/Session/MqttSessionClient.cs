@@ -174,7 +174,7 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session
                 queuedRequest,
                 cancellationToken);
 
-            MqttPublishAck publishResult = await tcs.Task;
+            MqttPublishAck publishResult = await tcs.Task.WaitAsync(cancellationToken);
 
             return publishResult;
         }
@@ -217,9 +217,7 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session
                 queuedRequest,
                 cancellationToken);
 
-            MqttSubscribeAck result = await tcs.Task;
-
-            return result;
+            return await tcs.Task.WaitAsync(cancellationToken);
         }
 
         /// <summary>
@@ -260,7 +258,7 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session
                 queuedRequest,
                 cancellationToken);
 
-            return await tcs.Task;
+            return await tcs.Task.WaitAsync(cancellationToken);
         }
 
         public void Dispose(CancellationToken cancellationToken = default)
@@ -431,7 +429,7 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session
 
                     if (isReconnection)
                     {
-                        Trace.TraceInformation("Reconnection finished after successfully connecting to the MQTT broker again and re-joining the existing MQTT session.");
+                        Trace.TraceInformation("Reconnection finished after successfully connecting to the MQTT broker again.");
                     }
 
                     if (mostRecentConnectResult != null
@@ -463,17 +461,10 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session
         {
             if (base.IsConnected)
             {
-                return null;
+                return base.mostRecentConnectAck;
             }
 
-            // When reconnecting, never use a clean session. This client wants to recover the session and the connection.
-            if (_isDesiredConnected)
-            {
-                options.CleanSession = false;
-            }
-
-            MqttConnectAck? connectResult =
-                await base.ConnectAsync(options, cancellationToken).ConfigureAwait(false);
+            MqttConnectAck? connectResult = await base.ConnectAsync(options, cancellationToken).ConfigureAwait(false);
 
             if (connectResult.ResultCode != MqttConnectResultCode.Success)
             {
