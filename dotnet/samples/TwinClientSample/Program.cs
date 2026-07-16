@@ -56,6 +56,8 @@ internal class Program
                 currentTwin.Reported = args.DesiredProperties;
                 currentTwin.ReportedVersion = args.DesiredPropertiesVersion;
             }
+
+            Console.WriteLine($"The current twin is now: {JsonSerializer.Serialize(currentTwin)}");
         };
 
         twinClient.DesiredPatchReceived += HandleDesiredPropertiesUpdateAsync;
