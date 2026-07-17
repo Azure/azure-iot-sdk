@@ -38,6 +38,7 @@ namespace Microsoft.Azure.Devices.Client.Telemetry
         /// <param name="cancellationToken">the cancellation token.</param>
         /// <exception cref="NotSupportedException">Thrown only if this method is called while the provided <see cref="ConnectionClient"/> is disconnected and not trying to reconnect.</exception>
         /// <exception cref="PublishRejectedException">Thrown if this telemetry message is rejected by IoT Hub for any reason.</exception>
+        /// <exception cref="MessageTooLargeException">Thrown if the message's payload's size exceeds the supported limits of IoT hub.</exception>
         public async Task SendTelemetryAsync(OutgoingTelemetryMessage message, CancellationToken cancellationToken = default)
         {
             if (_connection.CurrentConnectionContext == null)
@@ -51,6 +52,11 @@ namespace Microsoft.Azure.Devices.Client.Telemetry
             }
             else
             {
+                if (message.Payload != null && message.Payload.Length > 255000) //Leaving some buffer b/c classic hub message size calc is not strictly about payload size
+                {
+                    throw new MessageTooLargeException("This telemetry message is too large to be accepted by IoT Hub. It will not be sent.");
+                }
+
                 //TODO fill in content type, encoding, etc from message user properties
                 var mqttMessage = new MqttPublish
                 {
