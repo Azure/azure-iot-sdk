@@ -20,10 +20,10 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
             using TwinClient twinClient = new TwinClient(testDeviceContext.ConnectionClient);
 
             TaskCompletionSource<DesiredPatchReceivedEventArgs> onDesiredPropertiesUpdateReceived = new();
-            int count = 0;
+            int desiredPatchesReceived = 0;
             twinClient.DesiredPatchReceived += (args) =>
             {
-                count++;
+                desiredPatchesReceived++;
                 onDesiredPropertiesUpdateReceived.TrySetResult(args);
             };
 
@@ -65,8 +65,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
             var updateReportedPropertiesResponse = await twinClient.UpdateReportedPropertiesAsync(reportedPatch, cts.Token);
             Assert.Equal(Result.Ok, updateReportedPropertiesResponse.Result);
 
-            await Task.Delay(TimeSpan.FromSeconds(1));
-            Assert.Equal(1, count);
+            Assert.Equal(1, desiredPatchesReceived);
 
             /*
             twin = await registryManager.GetTwinAsync(deviceId);
