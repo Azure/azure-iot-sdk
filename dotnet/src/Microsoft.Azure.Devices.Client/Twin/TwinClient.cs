@@ -78,8 +78,8 @@ namespace Microsoft.Azure.Devices.Client.Twin
         public TwinClient(ConnectionClient connection)
         {
             _connection = connection;
-            _connection.ApplicationMessageReceivedAsync += HandleReceivedAzureEventGridMqttPublish;
-            _connection.ApplicationMessageReceivedAsync += HandleReceivedClassicMqttPublish;
+            _connection.ApplicationMessageReceivedAsync += HandleReceivedAzureEventGridHubMqttPublish;
+            _connection.ApplicationMessageReceivedAsync += HandleReceivedClassicHubMqttPublish;
         }
 
         /// <summary>
@@ -149,6 +149,7 @@ namespace Microsoft.Azure.Devices.Client.Twin
                 };
             }
 
+            Trace.TraceInformation("Publishing 'GetTwin' request on topic " + publish.Topic);
             MqttPublishAck puback = await _connection.PublishAsync(publish, cancellationToken);
 
             PublishRejectedException.ThrowIfUnsuccessfulPuback(puback, "Failed to request the twin because the MQTT broker rejected the request.");
@@ -212,6 +213,7 @@ namespace Microsoft.Azure.Devices.Client.Twin
                 };
             }
 
+            Trace.TraceInformation("Publishing 'PatchReported' request on topic " + publish.Topic);
             MqttPublishAck puback = await _connection.PublishAsync(publish, cancellationToken);
 
             PublishRejectedException.ThrowIfUnsuccessfulPuback(puback, "Failed to update the reported properties because the MQTT broker rejected the request.");
@@ -222,7 +224,7 @@ namespace Microsoft.Azure.Devices.Client.Twin
             return updateReportedPropertiesResponse;
         }
 
-        private async Task HandleReceivedAzureEventGridMqttPublish(MqttPublishReceivedEventArgs args)
+        private async Task HandleReceivedAzureEventGridHubMqttPublish(MqttPublishReceivedEventArgs args)
         { 
             if (!_connection.CurrentConnectionContext!.IsAzureEventGrid)
             {
@@ -308,7 +310,7 @@ namespace Microsoft.Azure.Devices.Client.Twin
             }
         }
 
-        private async Task HandleReceivedClassicMqttPublish(MqttPublishReceivedEventArgs args)
+        private async Task HandleReceivedClassicHubMqttPublish(MqttPublishReceivedEventArgs args)
         {
             if (_connection.CurrentConnectionContext!.IsAzureEventGrid)
             {
@@ -324,6 +326,8 @@ namespace Microsoft.Azure.Devices.Client.Twin
                     byte[] payloadBytes = args.Publish.Payload ?? Array.Empty<byte>();
 
                     Guid requestIdGuid = new Guid(receivedRequestId);
+
+                    Trace.TraceInformation("Received twin response message on topic " + args.Publish.Topic);
                     if (_pendingGetTwinOperations.TryRemove(requestIdGuid, out PendingGetTwinRequest? getTwinOperation))
                     {
                         var clientTwinProperties = JsonNode.Parse(payloadBytes)!.AsObject();
@@ -367,15 +371,6 @@ namespace Microsoft.Azure.Devices.Client.Twin
                             Result = Result.Ok, // TODO mapping possible classic integer error codes to this new error enum
                             Version = version,
                         });
-                    }
-                    else
-                    {
-                        string s = "";
-                        if (args.Publish.Payload != null)
-                        {
-                            s = Encoding.UTF8.GetString(args.Publish.Payload);
-                        }
-                        Console.WriteLine();
                     }
                 }
             }
@@ -434,8 +429,8 @@ namespace Microsoft.Azure.Devices.Client.Twin
 
         public void Dispose()
         {
-            _connection.ApplicationMessageReceivedAsync -= HandleReceivedAzureEventGridMqttPublish;
-            _connection.ApplicationMessageReceivedAsync -= HandleReceivedClassicMqttPublish;
+            _connection.ApplicationMessageReceivedAsync -= HandleReceivedAzureEventGridHubMqttPublish;
+            _connection.ApplicationMessageReceivedAsync -= HandleReceivedClassicHubMqttPublish;
         }
     }
 }

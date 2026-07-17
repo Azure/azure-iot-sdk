@@ -334,7 +334,7 @@ namespace Microsoft.Azure.Devices.Client.IotHub
             if (twinPushOptions.ReceiveReportedPropertiesUponConnect || twinPushOptions.ReceiveDesiredPropertyUpdates)
             {
                 //TODO ewwwwwww
-                TwinClient twinClient = new(connectionClient);
+                using TwinClient twinClient = new(connectionClient);
                 var currentTwin = await twinClient.GetTwinAsync(twinPushOptions.ReceiveReportedPropertiesUponConnect, twinPushOptions.ReceiveDesiredPropertyUpdates, 0, 0, cancellationToken);
 
                 if (twinPushOptions.ReceiveDesiredPropertyUpdates)
