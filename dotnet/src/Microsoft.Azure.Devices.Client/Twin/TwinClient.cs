@@ -1,8 +1,5 @@
 ﻿using Google.Protobuf;
-using Microsoft.Azure.Devices.Client.CertificateManagement;
 using Microsoft.Azure.Devices.Client.Mqtt;
-using Microsoft.Azure.Devices.Client.Serialization;
-using Microsoft.Azure.Devices.Client.Twin.LegacyTwinObjects;
 using System.Collections.Concurrent;
 using System.Collections.Specialized;
 using System.Diagnostics;
@@ -205,16 +202,13 @@ namespace Microsoft.Azure.Devices.Client.Twin
             else
             {
                 string topic = string.Format(CultureInfo.InvariantCulture, ClassicTwinReportedPropertiesPatchTopicFormat, requestId);
+                string payload = JsonSerializer.Serialize(patch.ReportedProperties);
 
                 publish = new MqttPublish()
                 {
-                    Topic = string.Format(ClassicTwinGetTopicFormat, requestId),
+                    Topic = topic,
                     QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce,
-                    Payload = new ReportedPatch()
-                    {
-                        IfMatch = patch.IfMatch,
-                        Payload = ByteString.CopyFromUtf8(JsonSerializer.Serialize(patch.ReportedProperties))
-                    }.ToByteArray(), // TODO no idea if this AEG payload works for the classic reported properties patch payload
+                    Payload = JsonSerializer.SerializeToUtf8Bytes(patch.ReportedProperties), 
                 };
             }
 
@@ -325,7 +319,7 @@ namespace Microsoft.Azure.Devices.Client.Twin
             // Note that all twin response messages are QoS 0, so no need to ack the MQTT message here
             if (args.Publish.Topic.StartsWith(ClassicTwinResponseTopic, StringComparison.InvariantCulture))
             {
-                if (ParseResponseTopic(args.Publish.Topic, out string receivedRequestId, out int status, out long version))
+                if (ParseResponseTopic(args.Publish.Topic, out string receivedRequestId, out int status, out ulong version))
                 {
                     byte[] payloadBytes = args.Publish.Payload ?? Array.Empty<byte>();
 
@@ -335,7 +329,7 @@ namespace Microsoft.Azure.Devices.Client.Twin
                         var clientTwinProperties = JsonNode.Parse(payloadBytes)!.AsObject();
 
                         var desiredVersion = clientTwinProperties["desired"]![VersionKey];
-                        ulong desiredPropertiesVersion = (ulong) desiredVersion!.AsValue();
+                        ulong desiredPropertiesVersion = (ulong)desiredVersion!.AsValue();
 
                         // Remove the "$version" entry so that the twin object more closely mimics how it would in AEG scenario
                         clientTwinProperties["desired"]!.AsObject().Remove(VersionKey);
@@ -368,13 +362,20 @@ namespace Microsoft.Azure.Devices.Client.Twin
                     }
                     else if (_pendingReportedPropertyUpdateOperations.TryRemove(requestIdGuid, out PendingReportedPropertiesUpdateRequest? pendingReportedPropertiesUpdateRequest))
                     {
-                        ReportedPropertyUpdateResponse? response = JsonSerializer.Deserialize<ReportedPropertyUpdateResponse>(payloadBytes, JsonSerializationSettings.Options);
-
                         pendingReportedPropertiesUpdateRequest.ReportedPropertyUpdateResponse.TrySetResult(new ReportedPatchResponse()
                         {
                             Result = Result.Ok, // TODO mapping possible classic integer error codes to this new error enum
-                            Version = response!.Version
+                            Version = version,
                         });
+                    }
+                    else
+                    {
+                        string s = "";
+                        if (args.Publish.Payload != null)
+                        {
+                            s = Encoding.UTF8.GetString(args.Publish.Payload);
+                        }
+                        Console.WriteLine();
                     }
                 }
             }
@@ -397,7 +398,7 @@ namespace Microsoft.Azure.Devices.Client.Twin
             }
         }
 
-        private bool ParseResponseTopic(string topicName, out string rid, out int status, out long version)
+        private bool ParseResponseTopic(string topicName, out string rid, out int status, out ulong version)
         {
             rid = "";
             status = 500;
@@ -425,7 +426,7 @@ namespace Microsoft.Azure.Devices.Client.Twin
             {
                 // This query string key-value pair is only expected in a successful patch twin response message.
                 // Get twin requests will contain the twin version in the payload instead.
-                _ = long.TryParse(queryStringKeyValuePairs.Get(VersionKey), out version);
+                _ = ulong.TryParse(queryStringKeyValuePairs.Get(VersionKey), out version);
             }
 
             return true;
