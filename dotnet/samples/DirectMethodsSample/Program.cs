@@ -71,7 +71,7 @@ internal class Program
         directMethodClient.DirectMethodInvokedAsync += HandleDirectMethodAsync;
 
         ProvisioningSettings provisioningSettings = new(idScope);
-        await connectionClient.ProvisionAndConnectAsync(provisioningSettings, authentication);
+        await connectionClient.ProvisionAndConnectAsync(provisioningSettings, authentication, cancellationToken: cts.Token);
         Console.WriteLine($"Device {deviceId} is now provisioned and connected to IoT Hub. Now waiting for direct method invocations...");
 
         try

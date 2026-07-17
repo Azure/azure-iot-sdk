@@ -40,7 +40,7 @@ internal class Program
         await connectionClient.ProvisionAndConnectAsync(provisioningSettings, authentication);
         Console.WriteLine($"Device {deviceId} is now provisioned and connected to IoT Hub.");
 
-        await Task.Delay(TimeSpan.FromSeconds(1));
+        Console.WriteLine("Shutting down sample...");
 
         await connectionClient.DisconnectAsync();
     }
