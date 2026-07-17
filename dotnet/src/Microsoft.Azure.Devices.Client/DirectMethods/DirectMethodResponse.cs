@@ -8,6 +8,6 @@ namespace Microsoft.Azure.Devices.Client.DirectMethods
     {
         public byte[]? Payload { get; set; }
 
-        public int Status { get; set; }
+        public required int Status { get; set; }
     }
 }
