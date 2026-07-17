@@ -55,11 +55,19 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
             var directMethodInvocation = new CloudToDeviceMethod(expectedDirectMethodName);
             SimpleDirectMethodPayload expectedRequestPayload = new()
             {
-                SomeInt = new Random().Next(0, 10000),
+                SomeInt = 5,
+                SomeString = Guid.NewGuid().ToString(),
+            };
+
+            SimpleDirectMethodPayload expectedResponsePayload = new()
+            {
+                SomeInt = 6,
                 SomeString = Guid.NewGuid().ToString(),
             };
 
             directMethodInvocation.SetPayloadJson(expectedRequestPayload.ToJson());
+
+            int actualDirectMethodRequestsReceivedCount = 0;
 
             directMethodClient.DirectMethodInvokedAsync += (args) =>
             {
@@ -69,10 +77,11 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
 
                     if (requestPayload.SomeString.Equals(expectedRequestPayload.SomeString) && requestPayload.SomeInt == expectedRequestPayload.SomeInt)
                     {
+                        actualDirectMethodRequestsReceivedCount++;
                         DirectMethodResponse response = new()
                         {
                             Status = 200,
-                            Payload = requestPayload.ToJsonByteArray(), // Echo back the request payload
+                            Payload = expectedResponsePayload.ToJsonByteArray(), // Echo back the request payload
                         };
 
                         return Task.FromResult(response);
@@ -95,8 +104,9 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
 
             Assert.NotNull(directMethodResponse.GetPayloadAsJson());
             SimpleDirectMethodPayload responsePayload = SimpleDirectMethodPayload.FromJson(directMethodResponse.GetPayloadAsJson());
-            Assert.Equal(expectedRequestPayload.SomeInt, responsePayload.SomeInt);
-            Assert.Equal(expectedRequestPayload.SomeString, responsePayload.SomeString);
+            Assert.Equal(expectedResponsePayload.SomeInt, responsePayload.SomeInt);
+            Assert.Equal(expectedResponsePayload.SomeString, responsePayload.SomeString);
+            Assert.Equal(1, actualDirectMethodRequestsReceivedCount);
         }
     }
 }

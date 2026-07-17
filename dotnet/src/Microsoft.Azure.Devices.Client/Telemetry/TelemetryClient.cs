@@ -59,29 +59,32 @@ namespace Microsoft.Azure.Devices.Client.Telemetry
                     QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce,
                 };
 
+                // When publishing to MQTTv3 Hub, the topic string includes all the system properties (correlation id, message id, etc.)
+                // and all the custom user properties. The values of all these properties must be URL encoded. The user property keys should
+                // also be URL encoded, but the system properties' keys should not be URL encoded.
                 if (message.MessageId != null)
                 {
-                    mqttMessage.Topic += $"&{MessagePropertyMessageId}={message.MessageId}";
+                    mqttMessage.Topic += $"&{MessagePropertyMessageId}={Uri.EscapeDataString(message.MessageId)}";
                 }
 
                 if (message.CorrelationId != null)
                 {
-                    mqttMessage.Topic += $"&{MessagePropertyCorrelationId}={message.CorrelationId}";
+                    mqttMessage.Topic += $"&{MessagePropertyCorrelationId}={Uri.EscapeDataString(message.CorrelationId)}";
                 }
 
                 if (message.ContentType != null)
                 {
-                    mqttMessage.Topic += $"&{MessagePropertyContentType}={message.ContentType}";
+                    mqttMessage.Topic += $"&{MessagePropertyContentType}={Uri.EscapeDataString(message.ContentType)}";
                 }
 
                 if (message.ContentEncoding != null)
                 {
-                    mqttMessage.Topic += $"&{MessagePropertyContentEncoding}={message.ContentEncoding}";
+                    mqttMessage.Topic += $"&{MessagePropertyContentEncoding}={Uri.EscapeDataString(message.ContentEncoding)}";
                 }
 
                 foreach (var customUserPropertyKey in message.UserProperties.Keys)
                 { 
-                    mqttMessage.Topic += $"&{customUserPropertyKey}={message.UserProperties[customUserPropertyKey]}";
+                    mqttMessage.Topic += $"&{Uri.EscapeDataString(customUserPropertyKey)}={Uri.EscapeDataString(message.UserProperties[customUserPropertyKey])}";
                 }
 
                 MqttPublishAck puback = await _connection.PublishAsync(mqttMessage, cancellationToken);

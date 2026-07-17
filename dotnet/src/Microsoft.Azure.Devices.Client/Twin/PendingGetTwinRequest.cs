@@ -20,7 +20,7 @@ namespace Microsoft.Azure.Devices.Client.Twin
         /// <remarks>
         /// Will be null if this if this class is not being used for get twin.
         /// </remarks>
-        public TaskCompletionSource<TwinGetResponseWrapper> TwinResponseTask { get; }
+        public TaskCompletionSource<Twin> TwinResponseTask { get; }
 
         /// <summary>
         /// When the request was sent so we know when to time out older operations

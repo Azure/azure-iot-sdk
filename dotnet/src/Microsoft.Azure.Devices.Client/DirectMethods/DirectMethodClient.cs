@@ -313,9 +313,14 @@ namespace Microsoft.Azure.Devices.Client.DirectMethods
             MqttPublish publish = new MqttPublish()
             {
                 Topic = responsePublishTopic,
-                Payload = payload,
                 QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce,
             };
+
+            if (methodResponse.Payload != null)
+            {
+                publish.Payload = methodResponse.Payload;
+
+            }
 
             MqttPublishAck puback = await _connection.PublishAsync(publish, CancellationToken.None);
 

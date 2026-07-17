@@ -105,7 +105,7 @@ namespace Microsoft.Azure.Devices.Client.Twin
         /// However, this SDK will parse the twin that the service returns to filter out unrequested sections to mimic the behavior of Azure Event Grid IoT hubs.
         /// </remarks>
         /// <exception cref="PublishRejectedException">Thrown if this get twin request is rejected by IoT Hub for any reason.</exception>
-        public async Task<TwinGetResponseWrapper> GetTwinAsync(bool getReported = true, bool getDesired = true, ulong ifNotMatchReported = 0, ulong ifNotMatchDesired = 0,  CancellationToken cancellationToken = default)
+        public async Task<Twin> GetTwinAsync(bool getReported = true, bool getDesired = true, ulong ifNotMatchReported = 0, ulong ifNotMatchDesired = 0,  CancellationToken cancellationToken = default)
         {
             if (_connection.CurrentConnectionContext == null)
             {
@@ -264,10 +264,10 @@ namespace Microsoft.Azure.Devices.Client.Twin
 
                 pendingGetTwinRequest.TwinResponseTask.TrySetResult(new()
                 {
-                    DesiredProperties = JsonObject.Parse(twinGetResponse.DesiredPayload.Span)!.AsObject(),
-                    ReportedProperties = JsonObject.Parse(twinGetResponse.ReportedPayload.Span)!.AsObject(),
-                    DesiredPropertiesVersion = twinGetResponse.DesiredVersion,
-                    ReportedPropertiesVersion = twinGetResponse.ReportedVersion,
+                    Desired = JsonObject.Parse(twinGetResponse.DesiredPayload.Span)!.AsObject(),
+                    Reported = JsonObject.Parse(twinGetResponse.ReportedPayload.Span)!.AsObject(),
+                    DesiredVersion = twinGetResponse.DesiredVersion,
+                    ReportedVersion = twinGetResponse.ReportedVersion,
                 });
             }
             else if (type.Equals("reported-patch-response")
@@ -346,22 +346,22 @@ namespace Microsoft.Azure.Devices.Client.Twin
                         // Remove the "$version" entry so that the twin object more closely mimics how it would in AEG scenario
                         clientTwinProperties["reported"]!.AsObject().Remove(VersionKey);
 
-                        var twinGetResponse = new TwinGetResponseWrapper()
+                        var twinGetResponse = new Twin()
                         {
-                            DesiredPropertiesVersion = desiredPropertiesVersion,
-                            ReportedPropertiesVersion = reportedPropertiesVersion,
+                            DesiredVersion = desiredPropertiesVersion,
+                            ReportedVersion = reportedPropertiesVersion,
                         };
 
                         // These user-supplied configurations are handled by the service if it is an AEG broker, but classic hub does not actually support them. The below
                         // will intentionally remove the desired/reported properties in such a way to mimic that service behavior when connected to a classic hub.
                         if (getTwinOperation.GetDesired && (getTwinOperation.IfNotMatchDesired < desiredPropertiesVersion))
                         {
-                            twinGetResponse.DesiredProperties = clientTwinProperties["desired"]!.AsObject();
+                            twinGetResponse.Desired = clientTwinProperties["desired"]!.AsObject();
                         }
 
                         if (getTwinOperation.GetReported && (getTwinOperation.IfNotMatchReported < reportedPropertiesVersion))
                         {
-                            twinGetResponse.ReportedProperties = clientTwinProperties["reported"]!.AsObject();
+                            twinGetResponse.Reported = clientTwinProperties["reported"]!.AsObject();
                         }
 
                         getTwinOperation.TwinResponseTask.TrySetResult(twinGetResponse);

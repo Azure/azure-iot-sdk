@@ -18,9 +18,9 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
         // TODO Is this an appropriate way to give the user a chance to change tls settings/proxy settings/etc? Or maybe just ask users to provide their own impl at that point
         public Func<MqttClientOptionsBuilder, MqttClientOptionsBuilder>? ClientOptionsOverrider { get; set; }
 
-        public MqttNetClient(MQTTnet.IMqttClient? underlyingClient = null, bool useWebsocket = false, IWebProxy? proxy = null)
+        public MqttNetClient(MQTTnet.IMqttClient? underlyingClient = null, bool useWebsocket = false, bool enableMqttLogs = false, IWebProxy? proxy = null)
         {
-            _underlyingClient = underlyingClient ?? new MQTTnet.MqttClientFactory().CreateMqttClient();
+            _underlyingClient = underlyingClient ?? (enableMqttLogs ? new MQTTnet.MqttClientFactory().CreateMqttClient(): new MQTTnet.MqttClientFactory().CreateMqttClient(MqttNetTraceLogger.CreateTraceLogger()));
             _useWebsocket = useWebsocket;
             _proxy = proxy;
 
