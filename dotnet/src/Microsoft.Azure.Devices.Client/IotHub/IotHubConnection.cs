@@ -334,19 +334,19 @@ namespace Microsoft.Azure.Devices.Client.IotHub
             if (twinPushOptions.ReceiveReportedPropertiesUponConnect || twinPushOptions.ReceiveDesiredPropertyUpdates)
             {
                 //TODO ewwwwwww
-                TwinClient twinClient = new(connectionClient);
+                using TwinClient twinClient = new(connectionClient);
                 var currentTwin = await twinClient.GetTwinAsync(twinPushOptions.ReceiveReportedPropertiesUponConnect, twinPushOptions.ReceiveDesiredPropertyUpdates, 0, 0, cancellationToken);
 
                 if (twinPushOptions.ReceiveDesiredPropertyUpdates)
                 {
-                    twinPush.Desired = currentTwin.DesiredProperties;
-                    twinPush.DesiredVersion = currentTwin.DesiredPropertiesVersion;
+                    twinPush.Desired = currentTwin.Desired;
+                    twinPush.DesiredVersion = currentTwin.DesiredVersion;
                 }
 
                 if (twinPushOptions.ReceiveReportedPropertiesUponConnect)
                 {
-                    twinPush.Reported = currentTwin.ReportedProperties;
-                    twinPush.ReportedVersion = currentTwin.ReportedPropertiesVersion;
+                    twinPush.Reported = currentTwin.Reported;
+                    twinPush.ReportedVersion = currentTwin.ReportedVersion;
                 }
             }
 

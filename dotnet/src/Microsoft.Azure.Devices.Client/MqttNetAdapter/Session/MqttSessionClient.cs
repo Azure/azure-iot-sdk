@@ -46,7 +46,7 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session
         /// </remarks>
         /// <param name="connectionSettings">The configurable options for the underlying MQTT connection(s)</param>
         /// <param name="sessionClientOptions">The configurable options for this MQTT session client.</param>
-        public MqttSessionClient(MqttSessionClientOptions? sessionClientOptions = null) : base()
+        public MqttSessionClient(MqttSessionClientOptions? sessionClientOptions = null) : base(enableMqttLogs: sessionClientOptions != null ? sessionClientOptions.EnableMqttLogging : false)
         {
             _sessionClientOptions = sessionClientOptions ?? new MqttSessionClientOptions();
             _sessionClientOptions.Validate();

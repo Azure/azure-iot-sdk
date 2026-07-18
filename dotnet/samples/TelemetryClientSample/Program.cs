@@ -28,7 +28,7 @@ internal class Program
         TelemetryClient telemetryClient = new TelemetryClient(connectionClient);
 
         ProvisioningSettings provisioningSettings = new(idScope);
-        var connectionContext = await connectionClient.ProvisionAndConnectAsync(provisioningSettings, authentication);
+        var connectionContext = await connectionClient.ProvisionAndConnectAsync(provisioningSettings, authentication, cancellationToken: cts.Token);
         Console.WriteLine($"Device {deviceId} is now provisioned and connected to IoT Hub.");
         Console.WriteLine("Press 'Ctrl+C' to end the sample");
 
@@ -43,8 +43,15 @@ internal class Program
             outgoingTelemetry.UserProperties.Add("SomeCustomUserPropertyKey", "SomeCustomUserPropertyValue");
 
             Console.WriteLine($"Sending telemetry with message Id {outgoingTelemetry.MessageId}");
-            await telemetryClient.SendTelemetryAsync(outgoingTelemetry);
-            await Task.Delay(TimeSpan.FromSeconds(1));
+            try
+            {
+                await telemetryClient.SendTelemetryAsync(outgoingTelemetry, cts.Token);
+                await Task.Delay(TimeSpan.FromSeconds(1), cts.Token);
+            }
+            catch (OperationCanceledException)
+            { 
+                // Expected when user cancels the sample    
+            }
         }
 
         await connectionClient.DisconnectAsync();

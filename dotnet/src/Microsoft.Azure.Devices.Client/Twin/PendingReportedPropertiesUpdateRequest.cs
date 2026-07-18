@@ -1,9 +1,4 @@
-﻿using Microsoft.Azure.Devices.Client.Twin.LegacyTwinObjects;
-using System;
-using System.Collections.Generic;
-using System.Text;
-
-namespace Microsoft.Azure.Devices.Client.Twin
+﻿namespace Microsoft.Azure.Devices.Client.Twin
 {
     internal class PendingReportedPropertiesUpdateRequest
     {

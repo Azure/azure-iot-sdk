@@ -53,6 +53,28 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
             await telemetryClient.SendTelemetryAsync(outgoingTelemetryMessage, cts.Token);
         }
 
+        [Theory(Timeout = Setup.TestTimeoutMilliseconds)]
+        [InlineData(true)]
+        [InlineData(false)]
+        public async Task TelemetryClientEncodesUserProperties(bool testAgainstClassicHub)
+        {
+            using CancellationTokenSource cts = new();
+            cts.CancelAfter(Setup.TestTimeoutMilliseconds - 1000);
+
+            await using TestConnectionClient testDeviceContext = await Setup.CreateConnectedConnectionClientAsync(testAgainstClassicHub, cts.Token);
+
+            TelemetryClient telemetryClient = new TelemetryClient(testDeviceContext.ConnectionClient);
+
+            OutgoingTelemetryMessage message = new()
+            {
+                MessageId = Guid.NewGuid().ToString(),
+                CorrelationId = Guid.NewGuid().ToString(),
+            };
+            message.UserProperties.Add("!@#$%^&*()", "!@#$%%^&*()");
+
+            await telemetryClient.SendTelemetryAsync(message, TestContext.Current.CancellationToken);
+        }
+
         public class TestObject
         {
             [JsonPropertyName("SomeString")]

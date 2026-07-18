@@ -1,8 +1,5 @@
 ﻿using Google.Protobuf;
-using Microsoft.Azure.Devices.Client.CertificateManagement;
 using Microsoft.Azure.Devices.Client.Mqtt;
-using Microsoft.Azure.Devices.Client.Serialization;
-using Microsoft.Azure.Devices.Client.Twin.LegacyTwinObjects;
 using System.Collections.Concurrent;
 using System.Collections.Specialized;
 using System.Diagnostics;
@@ -81,8 +78,8 @@ namespace Microsoft.Azure.Devices.Client.Twin
         public TwinClient(ConnectionClient connection)
         {
             _connection = connection;
-            _connection.ApplicationMessageReceivedAsync += HandleReceivedAzureEventGridMqttPublish;
-            _connection.ApplicationMessageReceivedAsync += HandleReceivedClassicMqttPublish;
+            _connection.ApplicationMessageReceivedAsync += HandleReceivedAzureEventGridHubMqttPublish;
+            _connection.ApplicationMessageReceivedAsync += HandleReceivedClassicHubMqttPublish;
         }
 
         /// <summary>
@@ -105,7 +102,7 @@ namespace Microsoft.Azure.Devices.Client.Twin
         /// However, this SDK will parse the twin that the service returns to filter out unrequested sections to mimic the behavior of Azure Event Grid IoT hubs.
         /// </remarks>
         /// <exception cref="PublishRejectedException">Thrown if this get twin request is rejected by IoT Hub for any reason.</exception>
-        public async Task<TwinGetResponseWrapper> GetTwinAsync(bool getReported = true, bool getDesired = true, ulong ifNotMatchReported = 0, ulong ifNotMatchDesired = 0,  CancellationToken cancellationToken = default)
+        public async Task<Twin> GetTwinAsync(bool getReported = true, bool getDesired = true, ulong ifNotMatchReported = 0, ulong ifNotMatchDesired = 0,  CancellationToken cancellationToken = default)
         {
             if (_connection.CurrentConnectionContext == null)
             {
@@ -152,6 +149,7 @@ namespace Microsoft.Azure.Devices.Client.Twin
                 };
             }
 
+            Trace.TraceInformation("Publishing 'GetTwin' request on topic " + publish.Topic);
             MqttPublishAck puback = await _connection.PublishAsync(publish, cancellationToken);
 
             PublishRejectedException.ThrowIfUnsuccessfulPuback(puback, "Failed to request the twin because the MQTT broker rejected the request.");
@@ -205,19 +203,17 @@ namespace Microsoft.Azure.Devices.Client.Twin
             else
             {
                 string topic = string.Format(CultureInfo.InvariantCulture, ClassicTwinReportedPropertiesPatchTopicFormat, requestId);
+                string payload = JsonSerializer.Serialize(patch.ReportedProperties);
 
                 publish = new MqttPublish()
                 {
-                    Topic = string.Format(ClassicTwinGetTopicFormat, requestId),
+                    Topic = topic,
                     QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce,
-                    Payload = new ReportedPatch()
-                    {
-                        IfMatch = patch.IfMatch,
-                        Payload = ByteString.CopyFromUtf8(JsonSerializer.Serialize(patch.ReportedProperties))
-                    }.ToByteArray(), // TODO no idea if this AEG payload works for the classic reported properties patch payload
+                    Payload = JsonSerializer.SerializeToUtf8Bytes(patch.ReportedProperties), 
                 };
             }
 
+            Trace.TraceInformation("Publishing 'PatchReported' request on topic " + publish.Topic);
             MqttPublishAck puback = await _connection.PublishAsync(publish, cancellationToken);
 
             PublishRejectedException.ThrowIfUnsuccessfulPuback(puback, "Failed to update the reported properties because the MQTT broker rejected the request.");
@@ -228,7 +224,7 @@ namespace Microsoft.Azure.Devices.Client.Twin
             return updateReportedPropertiesResponse;
         }
 
-        private async Task HandleReceivedAzureEventGridMqttPublish(MqttPublishReceivedEventArgs args)
+        private async Task HandleReceivedAzureEventGridHubMqttPublish(MqttPublishReceivedEventArgs args)
         { 
             if (!_connection.CurrentConnectionContext!.IsAzureEventGrid)
             {
@@ -264,10 +260,10 @@ namespace Microsoft.Azure.Devices.Client.Twin
 
                 pendingGetTwinRequest.TwinResponseTask.TrySetResult(new()
                 {
-                    DesiredProperties = JsonObject.Parse(twinGetResponse.DesiredPayload.Span)!.AsObject(),
-                    ReportedProperties = JsonObject.Parse(twinGetResponse.ReportedPayload.Span)!.AsObject(),
-                    DesiredPropertiesVersion = twinGetResponse.DesiredVersion,
-                    ReportedPropertiesVersion = twinGetResponse.ReportedVersion,
+                    Desired = JsonObject.Parse(twinGetResponse.DesiredPayload.Span)!.AsObject(),
+                    Reported = JsonObject.Parse(twinGetResponse.ReportedPayload.Span)!.AsObject(),
+                    DesiredVersion = twinGetResponse.DesiredVersion,
+                    ReportedVersion = twinGetResponse.ReportedVersion,
                 });
             }
             else if (type.Equals("reported-patch-response")
@@ -314,7 +310,7 @@ namespace Microsoft.Azure.Devices.Client.Twin
             }
         }
 
-        private async Task HandleReceivedClassicMqttPublish(MqttPublishReceivedEventArgs args)
+        private async Task HandleReceivedClassicHubMqttPublish(MqttPublishReceivedEventArgs args)
         {
             if (_connection.CurrentConnectionContext!.IsAzureEventGrid)
             {
@@ -325,17 +321,19 @@ namespace Microsoft.Azure.Devices.Client.Twin
             // Note that all twin response messages are QoS 0, so no need to ack the MQTT message here
             if (args.Publish.Topic.StartsWith(ClassicTwinResponseTopic, StringComparison.InvariantCulture))
             {
-                if (ParseResponseTopic(args.Publish.Topic, out string receivedRequestId, out int status, out long version))
+                if (ParseResponseTopic(args.Publish.Topic, out string receivedRequestId, out int status, out ulong version))
                 {
                     byte[] payloadBytes = args.Publish.Payload ?? Array.Empty<byte>();
 
                     Guid requestIdGuid = new Guid(receivedRequestId);
+
+                    Trace.TraceInformation("Received twin response message on topic " + args.Publish.Topic);
                     if (_pendingGetTwinOperations.TryRemove(requestIdGuid, out PendingGetTwinRequest? getTwinOperation))
                     {
                         var clientTwinProperties = JsonNode.Parse(payloadBytes)!.AsObject();
 
                         var desiredVersion = clientTwinProperties["desired"]![VersionKey];
-                        ulong desiredPropertiesVersion = (ulong) desiredVersion!.AsValue();
+                        ulong desiredPropertiesVersion = (ulong)desiredVersion!.AsValue();
 
                         // Remove the "$version" entry so that the twin object more closely mimics how it would in AEG scenario
                         clientTwinProperties["desired"]!.AsObject().Remove(VersionKey);
@@ -346,34 +344,32 @@ namespace Microsoft.Azure.Devices.Client.Twin
                         // Remove the "$version" entry so that the twin object more closely mimics how it would in AEG scenario
                         clientTwinProperties["reported"]!.AsObject().Remove(VersionKey);
 
-                        var twinGetResponse = new TwinGetResponseWrapper()
+                        var twinGetResponse = new Twin()
                         {
-                            DesiredPropertiesVersion = desiredPropertiesVersion,
-                            ReportedPropertiesVersion = reportedPropertiesVersion,
+                            DesiredVersion = desiredPropertiesVersion,
+                            ReportedVersion = reportedPropertiesVersion,
                         };
 
                         // These user-supplied configurations are handled by the service if it is an AEG broker, but classic hub does not actually support them. The below
                         // will intentionally remove the desired/reported properties in such a way to mimic that service behavior when connected to a classic hub.
                         if (getTwinOperation.GetDesired && (getTwinOperation.IfNotMatchDesired < desiredPropertiesVersion))
                         {
-                            twinGetResponse.DesiredProperties = clientTwinProperties["desired"]!.AsObject();
+                            twinGetResponse.Desired = clientTwinProperties["desired"]!.AsObject();
                         }
 
                         if (getTwinOperation.GetReported && (getTwinOperation.IfNotMatchReported < reportedPropertiesVersion))
                         {
-                            twinGetResponse.ReportedProperties = clientTwinProperties["reported"]!.AsObject();
+                            twinGetResponse.Reported = clientTwinProperties["reported"]!.AsObject();
                         }
 
                         getTwinOperation.TwinResponseTask.TrySetResult(twinGetResponse);
                     }
                     else if (_pendingReportedPropertyUpdateOperations.TryRemove(requestIdGuid, out PendingReportedPropertiesUpdateRequest? pendingReportedPropertiesUpdateRequest))
                     {
-                        ReportedPropertyUpdateResponse? response = JsonSerializer.Deserialize<ReportedPropertyUpdateResponse>(payloadBytes, JsonSerializationSettings.Options);
-
                         pendingReportedPropertiesUpdateRequest.ReportedPropertyUpdateResponse.TrySetResult(new ReportedPatchResponse()
                         {
                             Result = Result.Ok, // TODO mapping possible classic integer error codes to this new error enum
-                            Version = response!.Version
+                            Version = version,
                         });
                     }
                 }
@@ -397,7 +393,7 @@ namespace Microsoft.Azure.Devices.Client.Twin
             }
         }
 
-        private bool ParseResponseTopic(string topicName, out string rid, out int status, out long version)
+        private bool ParseResponseTopic(string topicName, out string rid, out int status, out ulong version)
         {
             rid = "";
             status = 500;
@@ -425,7 +421,7 @@ namespace Microsoft.Azure.Devices.Client.Twin
             {
                 // This query string key-value pair is only expected in a successful patch twin response message.
                 // Get twin requests will contain the twin version in the payload instead.
-                _ = long.TryParse(queryStringKeyValuePairs.Get(VersionKey), out version);
+                _ = ulong.TryParse(queryStringKeyValuePairs.Get(VersionKey), out version);
             }
 
             return true;
@@ -433,8 +429,8 @@ namespace Microsoft.Azure.Devices.Client.Twin
 
         public void Dispose()
         {
-            _connection.ApplicationMessageReceivedAsync -= HandleReceivedAzureEventGridMqttPublish;
-            _connection.ApplicationMessageReceivedAsync -= HandleReceivedClassicMqttPublish;
+            _connection.ApplicationMessageReceivedAsync -= HandleReceivedAzureEventGridHubMqttPublish;
+            _connection.ApplicationMessageReceivedAsync -= HandleReceivedClassicHubMqttPublish;
         }
     }
 }

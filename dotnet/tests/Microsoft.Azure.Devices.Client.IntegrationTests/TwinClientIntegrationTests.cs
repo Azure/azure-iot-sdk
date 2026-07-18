@@ -1,5 +1,4 @@
 ﻿using Microsoft.Azure.Devices.Client.Twin;
-using Microsoft.Azure.Devices.Client.Twin.LegacyTwinObjects;
 using Xunit;
 
 namespace Microsoft.Azure.Devices.Client.IntegrationTests
@@ -18,18 +17,19 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
 
             RegistryManager registryManager = Setup.GetIotHubRegistryManager();
             using TwinClient twinClient = new TwinClient(testDeviceContext.ConnectionClient);
-
             TaskCompletionSource<DesiredPatchReceivedEventArgs> onDesiredPropertiesUpdateReceived = new();
+            int desiredPatchesReceived = 0;
             twinClient.DesiredPatchReceived += (args) =>
             {
+                desiredPatchesReceived++;
                 onDesiredPropertiesUpdateReceived.TrySetResult(args);
             };
 
             var getTwinResponse = await twinClient.GetTwinAsync(cancellationToken: cts.Token);
-            Assert.NotNull(getTwinResponse.DesiredProperties);
-            Assert.NotNull(getTwinResponse.ReportedProperties);
-            Assert.Empty(getTwinResponse.DesiredProperties);
-            Assert.Empty(getTwinResponse.ReportedProperties);
+            Assert.NotNull(getTwinResponse.Desired);
+            Assert.NotNull(getTwinResponse.Reported);
+            Assert.Empty(getTwinResponse.Desired);
+            Assert.Empty(getTwinResponse.Reported);
 
             string expectedDesiredPropertyKey = Guid.NewGuid().ToString();
             string expectedDesiredPropertyValue = Guid.NewGuid().ToString();
@@ -45,29 +45,31 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
 
             // Get the twin again from the device side, this time looking for the updated desired property
             getTwinResponse = await twinClient.GetTwinAsync(cancellationToken: cts.Token);
-            Assert.True(getTwinResponse.DesiredProperties!.ContainsKey(expectedDesiredPropertyKey));
-            Assert.Equal(expectedDesiredPropertyValue, (string) getTwinResponse.DesiredProperties[expectedDesiredPropertyKey]!);
+            Assert.True(getTwinResponse.Desired!.ContainsKey(expectedDesiredPropertyKey));
+            Assert.Equal(expectedDesiredPropertyValue, (string) getTwinResponse.Desired[expectedDesiredPropertyKey]!);
 
             string expectedReportedPropertyKey = Guid.NewGuid().ToString();
             string expectedReportedPropertyValue = Guid.NewGuid().ToString();
 
-            getTwinResponse.ReportedProperties![expectedReportedPropertyKey] = expectedReportedPropertyValue;
-
+            getTwinResponse.Reported![expectedReportedPropertyKey] = expectedReportedPropertyValue;
             ReportedPatchRequest reportedPatch = new()
             {
-                ReportedProperties = getTwinResponse.ReportedProperties,
+                ReportedProperties = new(),
             };
 
             reportedPatch.ReportedProperties[expectedReportedPropertyKey] = expectedReportedPropertyValue;
 
             var updateReportedPropertiesResponse = await twinClient.UpdateReportedPropertiesAsync(reportedPatch, cts.Token);
             Assert.Equal(Result.Ok, updateReportedPropertiesResponse.Result);
+            Assert.Equal((ulong) 2, updateReportedPropertiesResponse.Version);
 
-            /*
-            twin = await registryManager.GetTwinAsync(deviceId);
+            // Check that only one desired property patch was received during this test
+            Assert.Equal(1, desiredPatchesReceived);
+
+            // Check from the service side that the reported properties were received
+            twin = await registryManager.GetTwinAsync(deviceId, TestContext.Current.CancellationToken);
             Assert.True(twin.Properties.Reported.Contains(expectedReportedPropertyKey));
-            Assert.Equal(expectedReportedPropertyValue, twin.Properties.Reported[expectedReportedPropertyKey]);
-            */ // TODO even worth checking?
+            Assert.Equal(expectedReportedPropertyValue, (string) twin.Properties.Reported[expectedReportedPropertyKey]);
         }
     }
 }

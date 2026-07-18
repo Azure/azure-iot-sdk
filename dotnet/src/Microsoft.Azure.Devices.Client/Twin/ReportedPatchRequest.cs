@@ -7,7 +7,7 @@ namespace Microsoft.Azure.Devices.Client.Twin
 {
     public class ReportedPatchRequest
     {
-        public JsonObject ReportedProperties { get; set; }
+        public required JsonObject ReportedProperties { get; set; }
 
         public UInt64 IfMatch { get; set; }
     }

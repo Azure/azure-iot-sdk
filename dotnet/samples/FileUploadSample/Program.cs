@@ -24,7 +24,7 @@ internal class Program
         FileUploadClient fileUploadClient = new FileUploadClient(connectionClient);
 
         ProvisioningSettings provisioningSettings = new(idScope);
-        var connectionContext = await connectionClient.ProvisionAndConnectAsync(provisioningSettings, authentication);
+        var connectionContext = await connectionClient.ProvisionAndConnectAsync(provisioningSettings, authentication, cancellationToken: cts.Token);
         Console.WriteLine($"Device {deviceId} is now provisioned and connected to IoT Hub.");
 
         FileUploadSasUriRequest sasUriRequest = new()

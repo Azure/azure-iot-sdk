@@ -1,4 +1,5 @@
-﻿using Microsoft.Azure.Devices.Client.CertificateManagement;
+﻿using Google.Protobuf.WellKnownTypes;
+using Microsoft.Azure.Devices.Client.CertificateManagement;
 using Microsoft.Azure.Devices.Client.IotHub;
 using Microsoft.Azure.Devices.Client.Mqtt;
 using Microsoft.Azure.Devices.Client.MQTTnetAdapter;
@@ -18,7 +19,7 @@ namespace Microsoft.Azure.Devices.Client
 
         internal event Func<MqttPublishReceivedEventArgs, Task>? ApplicationMessageReceivedAsync;
 
-        internal ConnectionContext? CurrentConnectionContext { get; set; }
+        public ConnectionContext? CurrentConnectionContext { get; set; }
 
         internal X509AuthenticationProvider AuthenticationProvider { get; set; }
 
@@ -46,7 +47,7 @@ namespace Microsoft.Azure.Devices.Client
         /// <param name="options">
         /// The optional configurations that this client will use
         /// </param>
-        public ConnectionClient(ConnectionClientOptions? options = null)
+        public ConnectionClient(ConnectionClientOptions options)
         {
             options ??= new ConnectionClientOptions();
 
@@ -58,6 +59,15 @@ namespace Microsoft.Azure.Devices.Client
 
             _mqttClient = options.MqttClient ?? new MqttSessionClient(sessionClientOptions);
         }
+
+        /// <summary>
+        /// Empty constructor mostly for mocking purposes
+        /// </summary>
+        public ConnectionClient()
+        {
+            _mqttClient = new MqttSessionClient(new());
+        }
+
 
         /// <summary>
         /// Provision this device with the provided credentials using Device Provisioning Service, then connect this device to the IoT hub it was provisioned to.
@@ -73,7 +83,6 @@ namespace Microsoft.Azure.Devices.Client
 
             //TODO several mqtt client options should not be provided by the user (ie, host name). Add checks here that validate all of them
 
-            _mqttClient.PublishReceivedAsync += DelegateReceivedPublishAsync;
             AuthenticationProvider = authentication;
             CurrentConnectionContext = new ConnectionContext()
             {

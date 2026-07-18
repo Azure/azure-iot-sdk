@@ -69,7 +69,7 @@ internal class Program
             ReceiveReportedPropertiesUponConnect = true,
         };
 
-        var connectionContext = await connectionClient.ProvisionAndConnectAsync(provisioningSettings, authentication, twinPushOptions);
+        var connectionContext = await connectionClient.ProvisionAndConnectAsync(provisioningSettings, authentication, twinPushOptions, cts.Token);
         Console.WriteLine($"Device {deviceId} is now provisioned and connected to IoT Hub. Now listening for desired property patches");
 
         currentTwin = connectionContext.InitialTwinPush;
