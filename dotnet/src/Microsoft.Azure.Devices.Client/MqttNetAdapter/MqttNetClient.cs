@@ -20,7 +20,7 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
 
         public MqttNetClient(MQTTnet.IMqttClient? underlyingClient = null, bool useWebsocket = false, bool enableMqttLogs = false, IWebProxy? proxy = null)
         {
-            _underlyingClient = underlyingClient ?? (enableMqttLogs ? new MQTTnet.MqttClientFactory().CreateMqttClient(): new MQTTnet.MqttClientFactory().CreateMqttClient(MqttNetTraceLogger.CreateTraceLogger()));
+            _underlyingClient = underlyingClient ?? (enableMqttLogs ? new MQTTnet.MqttClientFactory().CreateMqttClient(MqttNetTraceLogger.CreateTraceLogger()) : new MQTTnet.MqttClientFactory().CreateMqttClient());
             _useWebsocket = useWebsocket;
             _proxy = proxy;
 
