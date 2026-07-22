@@ -55,7 +55,9 @@ typedef int _sock;
 
 #if defined(AZ_AMQP_SAMPLE_USE_OPENSSL)
 #include <openssl/err.h>
+#include <openssl/pem.h>
 #include <openssl/ssl.h>
+#include <openssl/x509.h>
 #endif
 
 enum
@@ -150,6 +152,75 @@ static void _set_ssl_error(az_amqp_sample_transport* s, char const* where)
   _set_error(s, (int32_t)e, buf);
 }
 
+// Loads the client certificate + private key for mutual TLS when both are
+// configured. Returns true when the material was applied (or when none was
+// configured); false on a decode/mismatch error. The device file-upload REST
+// calls to IoT Hub authenticate the X.509 device via this client certificate.
+static bool _openssl_apply_client_cert(SSL_CTX* ctx, az_span cert_pem, az_span key_pem)
+{
+  if (az_span_size(cert_pem) <= 0 || az_span_size(key_pem) <= 0)
+  {
+    return true; // no mutual-TLS material configured; server-auth only
+  }
+
+  bool ok = false;
+  BIO* cbio = BIO_new_mem_buf(az_span_ptr(cert_pem), (int)az_span_size(cert_pem));
+  BIO* kbio = BIO_new_mem_buf(az_span_ptr(key_pem), (int)az_span_size(key_pem));
+  X509* leaf = NULL;
+  EVP_PKEY* pkey = NULL;
+  if (cbio == NULL || kbio == NULL)
+  {
+    goto cleanup;
+  }
+
+  leaf = PEM_read_bio_X509(cbio, NULL, NULL, NULL);
+  if (leaf == NULL || SSL_CTX_use_certificate(ctx, leaf) != 1)
+  {
+    goto cleanup;
+  }
+  // Append any intermediate certificates in the PEM to the presented chain.
+  for (;;)
+  {
+    X509* issuer = PEM_read_bio_X509(cbio, NULL, NULL, NULL);
+    if (issuer == NULL)
+    {
+      ERR_clear_error(); // benign PEM_R_NO_START_LINE at end of the chain
+      break;
+    }
+    if (SSL_CTX_add_extra_chain_cert(ctx, issuer) != 1) // takes ownership on success
+    {
+      X509_free(issuer);
+      goto cleanup;
+    }
+  }
+
+  pkey = PEM_read_bio_PrivateKey(kbio, NULL, NULL, NULL);
+  if (pkey == NULL || SSL_CTX_use_PrivateKey(ctx, pkey) != 1 || SSL_CTX_check_private_key(ctx) != 1)
+  {
+    goto cleanup;
+  }
+  ok = true;
+
+cleanup:
+  if (pkey != NULL)
+  {
+    EVP_PKEY_free(pkey);
+  }
+  if (leaf != NULL)
+  {
+    X509_free(leaf);
+  }
+  if (kbio != NULL)
+  {
+    BIO_free(kbio);
+  }
+  if (cbio != NULL)
+  {
+    BIO_free(cbio);
+  }
+  return ok;
+}
+
 static az_amqp_transport_status _tls_handshake(az_amqp_sample_transport* s)
 {
   if (s->tls_session == NULL)
@@ -163,6 +234,14 @@ static az_amqp_transport_status _tls_handshake(az_amqp_sample_transport* s)
     (void)SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
     (void)SSL_CTX_set_default_verify_paths(ctx); // system CA store validates Azure's chain
     SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, NULL);
+
+    if (!_openssl_apply_client_cert(
+            ctx, s->options.tls.client_certificate, s->options.tls.client_private_key))
+    {
+      SSL_CTX_free(ctx);
+      _set_ssl_error(s, "loading client certificate failed");
+      return AZ_AMQP_TRANSPORT_STATUS_ERROR;
+    }
 
     SSL* ssl = SSL_new(ctx);
     if (ssl == NULL)
@@ -221,7 +300,11 @@ static az_amqp_transport_status _tls_handshake(az_amqp_sample_transport* s)
 #include <schannel.h>
 #include <security.h>
 #include <sspi.h>
+#include <bcrypt.h>
+#include <ncrypt.h>
 #pragma comment(lib, "secur32.lib")
+#pragma comment(lib, "crypt32.lib")
+#pragma comment(lib, "ncrypt.lib")
 
 #define _SCH_BUF 32768
 
@@ -235,6 +318,8 @@ static struct
   bool done;
   bool reneg_active; // driving a TLS post-handshake / renegotiation flight
   bool reneg_isc_done; // reneg ISC returned SEC_E_OK; only the final flush remains
+  PCCERT_CONTEXT client_cert; // mutual-TLS client certificate (NULL = server-auth only)
+  HCERTSTORE cert_store; // in-memory PFX store owning the client cert's ephemeral CNG key
   SecPkgContext_StreamSizes sizes;
   uint8_t in[_SCH_BUF]; // accumulated inbound ciphertext
   int in_len;
@@ -319,6 +404,219 @@ static bool _sch_queue(uint8_t const* p, int n)
   return true;
 }
 
+// Builds a certificate context with an associated private key for mutual TLS
+// from PEM material, storing the handles in g_sch for reuse across the handshake
+// and for teardown in _sch_close. The device authenticates its IoT Hub file-upload
+// REST calls with this certificate. The private key is expected in RSA PKCS#1 PEM
+// (BEGIN RSA PRIVATE KEY) -- the format the e2e provisioning emits.
+//
+// The key is imported into a temporary, exportable CNG key, combined with the
+// certificate into an in-memory PKCS#12 (PFX) blob, and then re-imported with
+// PKCS12_NO_PERSIST_KEY. That final import yields a certificate whose private key
+// is an ephemeral, in-process key created and owned by the PFX-import machinery --
+// the exact shape .NET (SslStream) and curl hand to Schannel for PEM client certs.
+// Two earlier approaches both failed: an ephemeral key bound via
+// CERT_KEY_CONTEXT_PROP_ID is rejected at AcquireCredentialsHandle with
+// SEC_E_UNKNOWN_CREDENTIALS, and a persisted named CNG key bound via
+// CERT_KEY_PROV_INFO_PROP_ID presents locally but not on locked-down CI runners
+// (Schannel cannot sign CertificateVerify with the persisted key there). The
+// no-persist PFX key avoids both. Returns true on success, or true when no client
+// certificate was configured (server-auth only).
+static bool _sch_build_client_cert(az_amqp_sample_transport* s, az_span cert_pem, az_span key_pem)
+{
+  if (az_span_size(cert_pem) <= 0 || az_span_size(key_pem) <= 0)
+  {
+    return true; // no mutual-TLS material configured
+  }
+
+  bool ok = false;
+  BYTE* cert_der = NULL;
+  BYTE* key_der = NULL;
+  BYTE* cng_blob = NULL;
+  DWORD cert_der_len = 0;
+  DWORD key_der_len = 0;
+  DWORD cng_blob_len = 0;
+  PCCERT_CONTEXT tmp_cert = NULL; // source cert carrying the exportable key for PFX export
+  NCRYPT_PROV_HANDLE prov = 0;
+  NCRYPT_KEY_HANDLE tmp_key = 0; // temporary exportable CNG key, deleted after export
+  wchar_t key_name[64];
+  HCERTSTORE mem_store = NULL; // temporary memory store holding tmp_cert during export
+  CRYPT_DATA_BLOB pfx = { 0, NULL }; // exported PKCS#12 bytes
+
+  // Certificate: strip the PEM armor to DER, then build a temporary context.
+  if (!CryptStringToBinaryA(
+          (LPCSTR)az_span_ptr(cert_pem), (DWORD)az_span_size(cert_pem), CRYPT_STRING_BASE64HEADER,
+          NULL, &cert_der_len, NULL, NULL))
+  {
+    goto cleanup;
+  }
+  cert_der = (BYTE*)malloc(cert_der_len);
+  if (cert_der == NULL
+      || !CryptStringToBinaryA(
+             (LPCSTR)az_span_ptr(cert_pem), (DWORD)az_span_size(cert_pem), CRYPT_STRING_BASE64HEADER,
+             cert_der, &cert_der_len, NULL, NULL))
+  {
+    goto cleanup;
+  }
+  tmp_cert
+      = CertCreateCertificateContext(X509_ASN_ENCODING | PKCS_7_ASN_ENCODING, cert_der, cert_der_len);
+  if (tmp_cert == NULL)
+  {
+    goto cleanup;
+  }
+
+  // Private key: PKCS#1 PEM -> DER -> CNG RSA private-key blob.
+  if (!CryptStringToBinaryA(
+          (LPCSTR)az_span_ptr(key_pem), (DWORD)az_span_size(key_pem), CRYPT_STRING_BASE64HEADER, NULL,
+          &key_der_len, NULL, NULL))
+  {
+    goto cleanup;
+  }
+  key_der = (BYTE*)malloc(key_der_len);
+  if (key_der == NULL
+      || !CryptStringToBinaryA(
+             (LPCSTR)az_span_ptr(key_pem), (DWORD)az_span_size(key_pem), CRYPT_STRING_BASE64HEADER,
+             key_der, &key_der_len, NULL, NULL))
+  {
+    goto cleanup;
+  }
+  if (!CryptDecodeObjectEx(
+          X509_ASN_ENCODING, CNG_RSA_PRIVATE_KEY_BLOB, key_der, key_der_len, CRYPT_DECODE_ALLOC_FLAG,
+          NULL, &cng_blob, &cng_blob_len))
+  {
+    goto cleanup;
+  }
+
+  // Import the key into a temporary, EXPORTABLE, uniquely-named CNG key. It exists
+  // only long enough to assemble a PKCS#12 blob (below) and is deleted before this
+  // function returns; the key Schannel ultimately uses is the no-persist one that
+  // PFXImportCertStore produces.
+  (void)_snwprintf_s(
+      key_name, _countof(key_name), _TRUNCATE, L"az-iot-e2e-mtls-%lu-%lu",
+      (unsigned long)GetCurrentProcessId(), (unsigned long)GetTickCount());
+  if (NCryptOpenStorageProvider(&prov, MS_KEY_STORAGE_PROVIDER, 0) != ERROR_SUCCESS)
+  {
+    prov = 0;
+    goto cleanup;
+  }
+  {
+    NCryptBuffer name_buf;
+    name_buf.BufferType = NCRYPTBUFFER_PKCS_KEY_NAME;
+    name_buf.cbBuffer = (ULONG)((wcslen(key_name) + 1) * sizeof(wchar_t));
+    name_buf.pvBuffer = key_name;
+    NCryptBufferDesc params;
+    params.ulVersion = NCRYPTBUFFER_VERSION;
+    params.cBuffers = 1;
+    params.pBuffers = &name_buf;
+    // Import unfinalized so the export policy can be set before the key is sealed.
+    if (NCryptImportKey(
+            prov, 0, BCRYPT_RSAPRIVATE_BLOB, &params, &tmp_key, cng_blob, cng_blob_len,
+            NCRYPT_OVERWRITE_KEY_FLAG | NCRYPT_DO_NOT_FINALIZE_FLAG)
+        != ERROR_SUCCESS)
+    {
+      tmp_key = 0;
+      goto cleanup;
+    }
+    DWORD export_policy = NCRYPT_ALLOW_EXPORT_FLAG | NCRYPT_ALLOW_PLAINTEXT_EXPORT_FLAG;
+    if (NCryptSetProperty(
+            tmp_key, NCRYPT_EXPORT_POLICY_PROPERTY, (PBYTE)&export_policy, sizeof(export_policy),
+            NCRYPT_SILENT_FLAG)
+            != ERROR_SUCCESS
+        || NCryptFinalizeKey(tmp_key, NCRYPT_SILENT_FLAG) != ERROR_SUCCESS)
+    {
+      goto cleanup;
+    }
+  }
+
+  // Bind the temporary key to the source cert so PFXExportCertStore can locate it.
+  {
+    CRYPT_KEY_PROV_INFO kpi;
+    memset(&kpi, 0, sizeof(kpi));
+    kpi.pwszContainerName = key_name;
+    kpi.pwszProvName = (LPWSTR)MS_KEY_STORAGE_PROVIDER;
+    kpi.dwProvType = 0;
+    if (!CertSetCertificateContextProperty(tmp_cert, CERT_KEY_PROV_INFO_PROP_ID, 0, &kpi))
+    {
+      goto cleanup;
+    }
+  }
+
+  // Assemble an in-memory PKCS#12 (PFX) from the certificate + its private key.
+  mem_store = CertOpenStore(CERT_STORE_PROV_MEMORY, 0, 0, CERT_STORE_CREATE_NEW_FLAG, NULL);
+  if (mem_store == NULL
+      || !CertAddCertificateContextToStore(mem_store, tmp_cert, CERT_STORE_ADD_ALWAYS, NULL))
+  {
+    goto cleanup;
+  }
+  if (!PFXExportCertStoreEx(
+          mem_store, &pfx, L"", NULL, EXPORT_PRIVATE_KEYS | REPORT_NOT_ABLE_TO_EXPORT_PRIVATE_KEY))
+  {
+    goto cleanup;
+  }
+  pfx.pbData = (BYTE*)malloc(pfx.cbData);
+  if (pfx.pbData == NULL
+      || !PFXExportCertStoreEx(
+             mem_store, &pfx, L"", NULL,
+             EXPORT_PRIVATE_KEYS | REPORT_NOT_ABLE_TO_EXPORT_PRIVATE_KEY))
+  {
+    goto cleanup;
+  }
+
+  // Re-import the PKCS#12. The resulting certificate's private key is a fresh CNG key
+  // created by the PFX-import machinery -- the exact path .NET (SslStream) and curl use
+  // for PEM client certs, and one Schannel reliably signs CertificateVerify with. The
+  // key is persisted under a random KSP container and deleted again in _sch_close.
+  // (PKCS12_NO_PERSIST_KEY was tried first but yields a key Schannel cannot acquire.)
+  g_sch.cert_store = PFXImportCertStore(&pfx, L"", PKCS12_ALWAYS_CNG_KSP | CRYPT_EXPORTABLE);
+  if (g_sch.cert_store == NULL)
+  {
+    goto cleanup;
+  }
+  g_sch.client_cert = CertFindCertificateInStore(
+      g_sch.cert_store, X509_ASN_ENCODING | PKCS_7_ASN_ENCODING, 0, CERT_FIND_HAS_PRIVATE_KEY, NULL,
+      NULL);
+  if (g_sch.client_cert == NULL)
+  {
+    goto cleanup;
+  }
+
+  ok = true;
+
+cleanup:
+  if (pfx.pbData != NULL)
+  {
+    free(pfx.pbData);
+  }
+  if (mem_store != NULL)
+  {
+    CertCloseStore(mem_store, 0);
+  }
+  if (tmp_cert != NULL)
+  {
+    CertFreeCertificateContext(tmp_cert);
+  }
+  if (tmp_key != 0)
+  {
+    // NCryptDeleteKey removes the temporary persisted key and frees its handle.
+    (void)NCryptDeleteKey(tmp_key, NCRYPT_SILENT_FLAG);
+  }
+  if (prov != 0)
+  {
+    NCryptFreeObject(prov);
+  }
+  if (cng_blob != NULL)
+  {
+    LocalFree(cng_blob);
+  }
+  free(key_der);
+  free(cert_der);
+  if (!ok)
+  {
+    _set_error(s, 0, "building mutual-TLS client certificate failed");
+  }
+  return ok;
+}
+
 static az_amqp_transport_status _sch_handshake(az_amqp_sample_transport* s)
 {
   char host[256];
@@ -346,6 +644,13 @@ static az_amqp_transport_status _sch_handshake(az_amqp_sample_transport* s)
   {
     memset(&g_sch, 0, sizeof(g_sch));
     _sch_dbg("starting TLS handshake to %s:%u", host, (unsigned)s->options.port);
+    // Present the device's client certificate (mutual TLS) when configured. Must
+    // run after the memset above so the handles land in the freshly-cleared slot.
+    if (!_sch_build_client_cert(
+            s, s->options.tls.client_certificate, s->options.tls.client_private_key))
+    {
+      return AZ_AMQP_TRANSPORT_STATUS_ERROR;
+    }
     // Use the modern SCH_CREDENTIALS structure. The legacy SCHANNEL_CRED caps
     // negotiation at TLS 1.2; SCH_CREDENTIALS lets Schannel negotiate TLS 1.3
     // where available (falling back to 1.2). We disable only TLS 1.0/1.1 so the
@@ -362,6 +667,11 @@ static az_amqp_transport_status _sch_handshake(az_amqp_sample_transport* s)
     cred.dwFlags = SCH_USE_STRONG_CRYPTO | SCH_CRED_AUTO_CRED_VALIDATION | SCH_CRED_NO_DEFAULT_CREDS;
     cred.cTlsParameters = 1;
     cred.pTlsParameters = &tls_params;
+    if (g_sch.client_cert != NULL)
+    {
+      cred.cCreds = 1;
+      cred.paCred = &g_sch.client_cert;
+    }
     SECURITY_STATUS st = AcquireCredentialsHandleA(
         NULL, (SEC_CHAR*)UNISP_NAME_A, SECPKG_CRED_OUTBOUND, NULL, &cred, NULL, NULL, &g_sch.cred, NULL);
     if (st != SEC_E_OK)
@@ -444,11 +754,11 @@ static az_amqp_transport_status _sch_handshake(az_amqp_sample_transport* s)
 
     if (st == SEC_I_INCOMPLETE_CREDENTIALS)
     {
-      // The server requested (optional) TLS client authentication. This transport
-      // authenticates via SAS/CBS and never presents a client certificate, so continue
-      // the handshake anonymously by re-invoking InitializeSecurityContext with the same
-      // server flight. Azure IoT Hub's AMQP endpoint issues this request; Event Hubs does
-      // not, which is why only the c2d (IoT Hub) connection was affected.
+      // The server requested (optional) TLS client authentication but Schannel has no
+      // certificate to offer -- either none was configured (the SAS/CBS AMQP
+      // connections) or the configured one was not usable. Continue the handshake
+      // anonymously by re-invoking InitializeSecurityContext with the same server
+      // flight. Azure IoT Hub's endpoint issues this request; Event Hubs does not.
       if (++incomplete_creds_seen > 2)
       {
         _sch_fail(s, "InitializeSecurityContext: incomplete credentials", (long)st);
@@ -642,6 +952,19 @@ _sch_read(az_amqp_sample_transport* s, az_span destination, size_t* out_bytes)
     }
   }
 
+  // Flush any outbound ciphertext still pending from a best-effort write. The
+  // write path buffers a whole TLS record and only attempts to send it; if the
+  // socket was not fully writable the remainder is left here. Without draining it
+  // before we block on the response, the peer never receives the complete request
+  // and eventually closes the connection (observed as an empty/zero-status reply).
+  {
+    az_amqp_transport_status fs = _sch_flush(s);
+    if (fs == AZ_AMQP_TRANSPORT_STATUS_WANT_WRITE || fs == AZ_AMQP_TRANSPORT_STATUS_ERROR)
+    {
+      return fs;
+    }
+  }
+
   // Serve any leftover decrypted plaintext first.
   if (g_sch.plain_off < g_sch.plain_len)
   {
@@ -821,6 +1144,30 @@ static void _sch_close(void)
   {
     FreeCredentialsHandle(&g_sch.cred);
     g_sch.cred_ok = false;
+  }
+  // Release the mutual-TLS client certificate and the in-memory PFX store. The PFX
+  // import persisted the private key under a random KSP container, so acquire and
+  // delete it first (before freeing the context that references it), then close the
+  // store. NCryptDeleteKey both removes the container and frees the handle.
+  if (g_sch.client_cert != NULL)
+  {
+    HCRYPTPROV_OR_NCRYPT_KEY_HANDLE key = 0;
+    DWORD key_spec = 0;
+    BOOL caller_free = FALSE;
+    if (CryptAcquireCertificatePrivateKey(
+            g_sch.client_cert, CRYPT_ACQUIRE_SILENT_FLAG | CRYPT_ACQUIRE_ALLOW_NCRYPT_KEY_FLAG, NULL,
+            &key, &key_spec, &caller_free)
+        && key_spec == CERT_NCRYPT_KEY_SPEC)
+    {
+      (void)NCryptDeleteKey((NCRYPT_KEY_HANDLE)key, NCRYPT_SILENT_FLAG);
+    }
+    CertFreeCertificateContext(g_sch.client_cert);
+    g_sch.client_cert = NULL;
+  }
+  if (g_sch.cert_store != NULL)
+  {
+    CertCloseStore(g_sch.cert_store, 0);
+    g_sch.cert_store = NULL;
   }
   // Fully reset the single global slot so the next connection performs a fresh
   // handshake. Clearing `started` alone is not enough: `_sch_handshake` tests

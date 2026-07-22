@@ -89,6 +89,10 @@ jobs:
           # claim their own device (see the per-leg device-index selection below)
           # and never share a device twin.
           dps-x509-individual-enrollments: '2'
+          # Provision an Azure Storage account associated with the hub so the
+          # always-run file-upload e2e (az_iot_tests_e2e_fileupload) can obtain a
+          # SAS URI and upload a blob.
+          enable-file-upload: 'true'
 
       - name: Upload test config
         uses: actions/upload-artifact@v4
@@ -132,7 +136,7 @@ jobs:
         working-directory: c
         run: |
           cmake --preset ${{ matrix.preset }} -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_WITH_PAHO=ON
-          cmake --build --preset ${{ matrix.preset }} ${{ runner.os == 'Windows' && '--config Debug' || '' }} --target az_iot_tests_e2e az_iot_tests_e2e_adu az_iot_tests_e2e_csr
+          cmake --build --preset ${{ matrix.preset }} ${{ runner.os == 'Windows' && '--config Debug' || '' }} --target az_iot_tests_e2e az_iot_tests_e2e_adu az_iot_tests_e2e_csr az_iot_tests_e2e_fileupload
 
       - name: Download shared test config
         uses: actions/download-artifact@v4

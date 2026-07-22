@@ -31,6 +31,12 @@ inputs:
       issue an operational certificate in response to a device CSR (required by the CSR e2e).
     required: false
     default: 'false'
+  enable-file-upload:
+    description: >-
+      When 'true', pass -EnableFileUpload to New-AzIotTestEnvironment so an Azure Storage account
+      is created and associated with the IoT Hub for file upload (required by the file-upload e2e).
+    required: false
+    default: 'false'
   iothub-x509-thumbprint-devices:
     description: Number of x509-thumbprint IoT Hub devices to create.
     required: false
@@ -85,7 +91,7 @@ runs:
             -IotHubX509ThumbprintDevices ${{ inputs.iothub-x509-thumbprint-devices }} `
             -DpsX509IndividualEnrollments ${{ inputs.dps-x509-individual-enrollments }} `
             -DpsX509GroupEnrollmentDevices ${{ inputs.dps-x509-group-enrollment-devices }} `
-            -EnableADU ${{ inputs.enable-adu }} ${{ inputs.enable-certificate-management == 'true' && '-EnableCertificateManagement' || '' }}
+            -EnableADU ${{ inputs.enable-adu }} ${{ inputs.enable-certificate-management == 'true' && '-EnableCertificateManagement' || '' }} ${{ inputs.enable-file-upload == 'true' && '-EnableFileUpload' || '' }}
           & "${{ inputs.config-cmdlet }}" -TestEnvInfo $TestEnvInfo -Target ${{ inputs.config-target }} -OutFile "${{ inputs.out-file }}"
 
           # When an X.509 enrollment GROUP was provisioned, the group's issuer is

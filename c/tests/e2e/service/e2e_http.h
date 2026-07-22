@@ -76,6 +76,26 @@ bool e2e_http_begin(
     const char* authorization,
     const char* json_body);
 
+/* Like e2e_http_begin, but for device-side flows: an optional mutual-TLS client
+ * certificate (PEM text), an optional single extra header line, an explicit
+ * content type, and a raw (possibly binary) body. Pass @p authorization == NULL
+ * to omit the Authorization header (device mutual TLS, or a SAS token already in
+ * @p path). @p client_cert_pem / @p client_key_pem may be NULL to disable mutual
+ * TLS. The peer is validated against the platform's default trust store. Returns
+ * false only on a request that will not fit the request buffer. */
+bool e2e_http_begin_ex(
+    e2e_http_request* r,
+    const char* host,
+    const char* method,
+    const char* path,
+    const char* authorization,
+    const char* content_type,
+    const char* extra_header,
+    const void* body,
+    size_t body_len,
+    const char* client_cert_pem,
+    const char* client_key_pem);
+
 /* Advance the request state machine a little without blocking on the device.
  * Returns 0 while pending, 1 when the response is complete, -1 on error. */
 int e2e_http_poll(e2e_http_request* r);

@@ -38,6 +38,18 @@ if(AZ_IOT_WITH_PAHO)
     target_include_directories(az_iot_sample_file_upload PRIVATE common)
     target_link_libraries(az_iot_sample_file_upload
         PRIVATE az_iot_core az_iot_adapter_paho)
+    # File upload is HTTPS-only and the SDK ships no HTTP client, so the sample
+    # uses libcurl (when available) to perform the SAS-URI request, the blob PUT
+    # to Azure Storage, and the completion notification. Optional: without curl
+    # the sample still provisions, connects, and prints the request it built.
+    find_package(CURL QUIET)
+    if(CURL_FOUND)
+        target_compile_definitions(az_iot_sample_file_upload PRIVATE AZ_IOT_SAMPLE_WITH_CURL)
+        target_link_libraries(az_iot_sample_file_upload PRIVATE CURL::libcurl)
+    else()
+        message(STATUS "az_iot_sample_file_upload: libcurl not found; building without the "
+                       "HTTPS upload path. Install libcurl (e.g. 'vcpkg install curl') to enable it.")
+    endif()
     az_iot_apply_warnings(az_iot_sample_file_upload)
 
     # The ADU sample additionally needs the OpenSSL crypto adapter for real

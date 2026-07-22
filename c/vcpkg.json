@@ -12,6 +12,12 @@
                 "openssl"
             ]
         },
+        "curl": {
+            "description": "libcurl for the HTTPS file upload sample (bring-your-own HTTP client)",
+            "dependencies": [
+                "curl"
+            ]
+        },
         "tests": {
             "description": "Build unit tests",
             "dependencies": []

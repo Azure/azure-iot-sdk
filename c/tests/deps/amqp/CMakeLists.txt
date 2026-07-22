@@ -60,9 +60,11 @@ target_link_libraries(az_amqp_transport PUBLIC az_amqp)
 
 if(WIN32)
     # Schannel path. secur32/ws2_32 are also #pragma comment(lib)'d in the source;
-    # listed here too so non-MSVC Windows toolchains link them, plus crypt32 for
-    # the transient PEM certificate store the Schannel adapter builds.
-    target_link_libraries(az_amqp_transport PUBLIC ws2_32 secur32 crypt32)
+    # listed here too so non-MSVC Windows toolchains link them, plus crypt32 +
+    # ncrypt for the mutual-TLS client certificate the Schannel adapter imports
+    # (PEM -> CERT_CONTEXT + a persisted CNG RSA key, which supports the RSA-PSS
+    # CertificateVerify signature TLS 1.3 client authentication requires).
+    target_link_libraries(az_amqp_transport PUBLIC ws2_32 secur32 crypt32 ncrypt)
 else()
     find_package(OpenSSL REQUIRED)
     target_link_libraries(az_amqp_transport PUBLIC OpenSSL::SSL OpenSSL::Crypto)
