@@ -50,7 +50,7 @@ namespace Microsoft.Azure.Devices.Client.IotHub
                     WebsocketUri = $"wss://{hostname}/$iothub/websocket",
                     ClientCertificate = x509AuthenticationProvider.ClientCertificate,
                     CleanSession = true, // TODO user configurable?
-                    Username = hexEncodedConnectNonce,
+                    Username = username,
                     Password = Array.Empty<byte>(),
                     ClientId = clientId,
                     ProtocolVersion = MqttProtocolVersion.V311
@@ -60,7 +60,6 @@ namespace Microsoft.Azure.Devices.Client.IotHub
                 try
                 {
                     connack = await mqttClient.ConnectAsync(connectPacket, cancellationToken);
-
                 }
                 catch (Exception ex)
                 {
