@@ -1329,6 +1329,16 @@ const char* az_iot_connection_client__device_id(
     return client ? client->opts.client_id : NULL;
 }
 
+const char* az_iot_connection_client_get_iothub_address(
+    const az_iot_connection_client* client)
+{
+    /* opts.host tracks the effective hub: the caller-supplied host for a direct
+     * connection, or the DPS-assigned hub (copied into provisioned_iot_hub_hostname
+     * and pointed-to here) after provisioning. NULL for a not-yet-provisioned
+     * DPS-only client. */
+    return client ? client->opts.host : NULL;
+}
+
 az_iot_result az_iot_connection_client__publish(
     az_iot_connection_client* client,
     const az_iot_mqtt_message* msg,

@@ -341,6 +341,16 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_send_csr(
  * No callback fires. Returns AZ_IOT_ERR_NOT_FOUND when no operation is active. */
 AZ_NODISCARD az_iot_result az_iot_connection_client_cancel_csr(az_iot_connection_client* client);
 
+/* Returns the effective IoT Hub address (FQDN) this client is bound to: the
+ * host supplied in options for a direct-hub connection, or the DPS-assigned hub
+ * once provisioning completes. Returns NULL when no host has been established
+ * yet (e.g. a DPS-only client that has not finished provisioning). The returned
+ * pointer is owned by the client and stays valid until destroy(). Useful for
+ * protocol-independent, HTTPS-only features such as file upload that must reach
+ * the hub's REST endpoint directly rather than over the MQTT session. */
+const char* az_iot_connection_client_get_iothub_address(
+    const az_iot_connection_client* client);
+
 #ifdef __cplusplus
 }
 #endif

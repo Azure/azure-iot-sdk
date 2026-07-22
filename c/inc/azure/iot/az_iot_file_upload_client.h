@@ -16,15 +16,55 @@
 extern "C" {
 #endif
 
+/* Azure IoT Hub file upload — one seamless API, transport chosen by hub flavor.
+ *
+ * The control plane (request a blob SAS URI, then notify the hub of completion)
+ * uses a different transport depending on the hub the connection resolved to,
+ * but the API below is identical for both (the client dispatches internally on
+ * the connection's protocol profile, like az_iot_twin_client):
+ *
+ *   - IoT Hub Classic: the two operations are HTTPS REST calls to the hub. This
+ *     SDK ships no HTTP client by design, so the application provides one via an
+ *     az_iot_file_upload_http_transport hook registered at init(); the SDK
+ *     builds the request and parses the response.
+ *   - IoT Hub Next (AEG): the two operations travel over the existing MQTT
+ *     connection (topics ih/{deviceId}/srv|dev/files). The SDK handles this
+ *     internally; no HTTP hook is used for the control plane.
+ *
+ * The blob bytes themselves ALWAYS go to Azure Storage via an HTTPS PUT to the
+ * returned SAS URI — the application's responsibility on both flavors (it can
+ * reuse the same HTTP client it provides for the Classic hook).
+ *
+ * Usage (identical regardless of flavor):
+ *   1. get_sas_uri(blob_name, cb)  -> cb delivers {blob_sas_uri, correlation_id}
+ *   2. app PUTs the file to blob_sas_uri  (header "x-ms-blob-type: BlockBlob")
+ *   3. notify_complete(correlation_id, is_success, cb)
+ */
+
+/** @brief Maximum length of a built request URL (incl. NUL). */
+#ifndef AZ_IOT_FILE_UPLOAD_URL_MAX
+#define AZ_IOT_FILE_UPLOAD_URL_MAX 512
+#endif
+/** @brief Maximum length of a built request body (incl. NUL). */
+#ifndef AZ_IOT_FILE_UPLOAD_BODY_MAX
+#define AZ_IOT_FILE_UPLOAD_BODY_MAX 512
+#endif
+/** @brief Maximum length of the assembled blob SAS URI (incl. NUL). */
+#ifndef AZ_IOT_FILE_UPLOAD_SAS_URI_MAX
+#define AZ_IOT_FILE_UPLOAD_SAS_URI_MAX 2048
+#endif
+/** @brief Maximum length of a correlation id (incl. NUL). */
+#ifndef AZ_IOT_FILE_UPLOAD_CORR_ID_MAX
+#define AZ_IOT_FILE_UPLOAD_CORR_ID_MAX 192
+#endif
+
 /**
- * @brief Callback invoked when a SAS URI response is received from IoT Hub.
+ * @brief Delivers the result of get_sas_uri().
  *
  * @param status          AZ_IOT_OK on success.
- * @param blob_sas_uri    The SAS URI to use for uploading the blob to Azure Storage.
- *                        Valid only for the lifetime of this callback. Copy if needed.
- * @param correlation_id  Opaque ID that must be passed back to notify_complete().
- *                        Valid only for the lifetime of this callback. Copy if needed.
- * @param user_ctx        User context passed to get_sas_uri().
+ * @param blob_sas_uri    URI to PUT the blob to (valid only during the callback).
+ * @param correlation_id  Pass back to notify_complete() (valid only during the callback).
+ * @param user_ctx        Context passed to get_sas_uri().
  */
 typedef void (*az_iot_file_upload_sas_callback)(
     az_iot_result status,
@@ -33,68 +73,103 @@ typedef void (*az_iot_file_upload_sas_callback)(
     void* user_ctx);
 
 /**
- * @brief Callback invoked when the upload completion notification is acknowledged.
- *
- * @param status    AZ_IOT_OK on success.
- * @param user_ctx  User context passed to notify_complete().
+ * @brief Delivers the result of notify_complete().
  */
-typedef void (*az_iot_file_upload_complete_callback)(az_iot_result status, void* user_ctx);
+typedef void (*az_iot_file_upload_complete_callback)(
+    az_iot_result status,
+    void* user_ctx);
 
-#ifndef AZ_IOT_FILE_UPLOAD_MAX_PENDING
-#define AZ_IOT_FILE_UPLOAD_MAX_PENDING 4
-#endif
+/**
+ * @brief Response buffer the application fills when performing a Classic HTTP
+ *        request through the transport hook.
+ */
+typedef struct az_iot_file_upload_http_response
+{
+    int      status_code;    /**< HTTP status the app observed (e.g. 200). */
+    uint8_t* body;           /**< App-provided buffer to receive the response body. */
+    size_t   body_capacity;  /**< Capacity of @p body. */
+    size_t   body_len;       /**< Set by the app to the number of bytes written. */
+} az_iot_file_upload_http_response;
+
+/**
+ * @brief Application HTTP transport for the Classic control plane.
+ *
+ * Called synchronously by the SDK to perform one HTTPS request to IoT Hub and
+ * return its response. For X.509 devices the app authenticates with mutual TLS
+ * using the device certificate, and @p authorization is "" (SAS-key devices
+ * place a SharedAccessSignature token there).
+ *
+ * @return AZ_IOT_OK if the request was performed (even for a non-2xx status,
+ *         which is reported via response.status_code); an error only on a
+ *         transport-level failure.
+ */
+typedef az_iot_result (*az_iot_file_upload_http_send_fn)(
+    const char* method,
+    const char* url,
+    const char* authorization,
+    const char* content_type,
+    const uint8_t* body,
+    size_t body_len,
+    az_iot_file_upload_http_response* response,
+    void* hook_ctx);
+
+/**
+ * @brief HTTP transport hook: required on a Classic hub, ignored on Next.
+ */
+typedef struct az_iot_file_upload_http_transport
+{
+    az_iot_file_upload_http_send_fn send;
+    void*                           ctx;
+} az_iot_file_upload_http_transport;
 
 typedef struct az_iot_file_upload_client
 {
     struct
     {
-        az_iot_connection_client* conn;
-        uint32_t next_rid;
-        struct
-        {
-            bool in_use;
-            uint32_t rid;
-            int kind; /* 0=none, 1=sas_uri, 2=notify */
-            union
-            {
-                az_iot_file_upload_sas_callback sas_cb;
-                az_iot_file_upload_complete_callback complete_cb;
-            } cb;
-            void* user_ctx;
-        } pending[AZ_IOT_FILE_UPLOAD_MAX_PENDING];
+        az_iot_connection_client*       conn;
+        az_iot_file_upload_http_send_fn http_send;
+        void*                           http_ctx;
+        char hub_hostname[AZ_IOT_DPS_HOST_BUF];
+        char device_id[AZ_IOT_DPS_DEVICE_ID_BUF];
     } _internal;
 } az_iot_file_upload_client;
 
 /**
  * @brief Initialize the file upload client.
  *
- * File upload is supported only on Classic IoT Hub (MQTT v3.1.1). Calling this
- * when connected to IoT/AEG Hub returns AZ_IOT_ERR_NOT_SUPPORTED.
+ * Call after the connection has resolved its hub (for a DPS client, once it
+ * reaches CONNECTED) so the hub address and device id are known.
  *
- * @param client  File upload client instance to initialize.
- * @param conn    Connection client (must already be initialized).
- * @return AZ_IOT_OK on success.
+ * @param client          Instance to initialize.
+ * @param conn            The (connected) connection client.
+ * @param http_transport  HTTP transport for the Classic control plane. REQUIRED
+ *                        on a Classic hub; may be NULL on Next.
+ * @return AZ_IOT_OK on success; AZ_IOT_ERR_INVALID_ARG if a Classic connection is
+ *         missing the HTTP transport or the hub/device id are not yet available.
  */
 AZ_NODISCARD az_iot_result az_iot_file_upload_client_init(
     az_iot_file_upload_client* client,
-    az_iot_connection_client* conn);
+    az_iot_connection_client* conn,
+    const az_iot_file_upload_http_transport* http_transport);
 
 /**
- * @brief Deinitialize the file upload client and unregister inbound handlers.
+ * @brief Deinitialize the file upload client.
  */
 void az_iot_file_upload_client_destroy(az_iot_file_upload_client* client);
 
 /**
- * @brief Request a SAS URI for uploading a blob.
+ * @brief Request a blob SAS URI (step 1).
  *
- * Publishes a request to IoT Hub. The response arrives asynchronously via
- * the callback during a subsequent do_work() call.
+ * Asynchronous: the result is delivered via @p cb — during this call on Classic
+ * (synchronous HTTP hook), or during a later do_work() on Next.
  *
  * @param client     File upload client instance.
  * @param blob_name  Name of the blob to upload (e.g. "mydata/sensor.csv").
- * @param cb         Callback invoked with the SAS URI on success or error.
- * @param user_ctx   User context forwarded to the callback.
- * @return AZ_IOT_OK if the request was published successfully.
+ * @param cb         Callback delivering the SAS URI + correlation id.
+ * @param user_ctx   Context forwarded to @p cb.
+ * @return AZ_IOT_OK if the request was dispatched (result arrives via @p cb);
+ *         AZ_IOT_ERR_NOT_SUPPORTED on a Next/AEG hub until the AEG Files message
+ *         schema is implemented; another error if it could not be dispatched.
  */
 AZ_NODISCARD az_iot_result az_iot_file_upload_client_get_sas_uri(
     az_iot_file_upload_client* client,
@@ -103,17 +178,16 @@ AZ_NODISCARD az_iot_result az_iot_file_upload_client_get_sas_uri(
     void* user_ctx);
 
 /**
- * @brief Notify IoT Hub that the file upload is complete.
- *
- * After the application has uploaded the blob to Azure Storage (HTTP PUT using
- * the SAS URI), call this to inform IoT Hub of the result.
+ * @brief Notify IoT Hub that the upload finished (step 3), after the app PUT the
+ *        blob to Azure Storage. Result delivered via @p cb (see get_sas_uri()).
  *
  * @param client          File upload client instance.
- * @param correlation_id  The correlation ID received in the SAS URI callback.
+ * @param correlation_id  The correlation id from the get_sas_uri() callback.
  * @param is_success      Whether the blob upload succeeded.
- * @param cb              Callback invoked when the notification is acknowledged.
- * @param user_ctx        User context forwarded to the callback.
- * @return AZ_IOT_OK if the notification was published successfully.
+ * @param cb              Callback delivering the acknowledgement status.
+ * @param user_ctx        Context forwarded to @p cb.
+ * @return AZ_IOT_OK if dispatched; AZ_IOT_ERR_NOT_SUPPORTED on Next until the
+ *         AEG Files schema is implemented.
  */
 AZ_NODISCARD az_iot_result az_iot_file_upload_client_notify_complete(
     az_iot_file_upload_client* client,
