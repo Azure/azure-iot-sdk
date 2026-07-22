@@ -39,11 +39,12 @@ namespace Microsoft.Azure.Devices.Client.Provisioning
             cancellationToken.ThrowIfCancellationRequested();
 
             MqttConnect connect = CreateMqttConnectPacket(authentication, idScope, globalDeviceEndpoint);
-            mqttClient.PublishReceivedAsync += HandleReceivedPublishAsync;
 
             // Attempt provisioning until user cancels or a fatal error is thrown by the underlying MQTT client
             while (true)
             {
+                mqttClient.PublishReceivedAsync += HandleReceivedPublishAsync;
+
                 using var connectionLostCancellationToken = new CancellationTokenSource();
 
                 // Link the user-supplied cancellation token with a cancellation token that is cancelled
@@ -53,22 +54,15 @@ namespace Microsoft.Azure.Devices.Client.Provisioning
                     cancellationToken,
                     connectionLostCancellationToken.Token);
 
-                bool isInitialConnect = true;
-                Task HandleConnectionAsync(MqttClientConnectedEventArgs connectedEventArgs)
+                Task HandleDisconnectionAsync(MqttClientDisconnectedEventArgs disconnectedEventArgs)
                 {
                     // Because DPS cannot persist sessions, any connection loss should be treated as a session loss. Restart provisioning from the start to re-build the session.
-                    if (!isInitialConnect)
-                    {
-                        connectionLostCancellationToken.Cancel();
-                    }
-
-                    // Now that the initial connect has passed, subsequent connects should signal a need to restart provisioning
-                    isInitialConnect = false;
+                    connectionLostCancellationToken.Cancel();
 
                     return Task.CompletedTask;
                 }
                 
-                mqttClient.ConnectedAsync += HandleConnectionAsync;
+                mqttClient.DisconnectedAsync += HandleDisconnectionAsync;
 
                 try
                 {
@@ -110,7 +104,7 @@ namespace Microsoft.Azure.Devices.Client.Provisioning
                 {
                     // Always close MQTT connection between provisioning attempts and after a successful provisioning
                     mqttClient.PublishReceivedAsync -= HandleReceivedPublishAsync;
-                    mqttClient.ConnectedAsync -= HandleConnectionAsync;
+                    mqttClient.DisconnectedAsync -= HandleDisconnectionAsync;
                     var disconnect = new MqttDisconnect() { Reason = MqttClientDisconnectOptionsReason.NormalDisconnection };
 
                     try
