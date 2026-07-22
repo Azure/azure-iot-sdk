@@ -192,6 +192,97 @@ bool e2e_http_begin(
     return true;
 }
 
+bool e2e_http_begin_ex(
+    e2e_http_request* r,
+    const char* host,
+    const char* method,
+    const char* path,
+    const char* authorization,
+    const char* content_type,
+    const char* extra_header,
+    const void* body,
+    size_t body_len,
+    const char* client_cert_pem,
+    const char* client_key_pem)
+{
+    memset(r, 0, sizeof(*r));
+    r->phase = E2E_HTTP_PHASE_CONNECTING;
+    r->content_length = -1;
+    r->http_status = 0;
+
+    az_amqp_transport_options transport_options = { 0 };
+
+    /* Build the header block, then append the (possibly binary) body. */
+    const int cap = (int)sizeof(r->request);
+    int len = snprintf(r->request, (size_t)cap, "%s %s HTTP/1.1\r\nHost: %s\r\n",
+                       method, path, host);
+    if (len < 0 || len >= cap) goto too_large;
+
+    if (authorization != NULL && authorization[0] != '\0')
+    {
+        int n = snprintf(r->request + len, (size_t)(cap - len), "Authorization: %s\r\n", authorization);
+        if (n < 0 || n >= cap - len) goto too_large;
+        len += n;
+    }
+    if (body != NULL && body_len > 0)
+    {
+        if (content_type != NULL && content_type[0] != '\0')
+        {
+            int n = snprintf(r->request + len, (size_t)(cap - len), "Content-Type: %s\r\n", content_type);
+            if (n < 0 || n >= cap - len) goto too_large;
+            len += n;
+        }
+        int n = snprintf(r->request + len, (size_t)(cap - len), "Content-Length: %d\r\n", (int)body_len);
+        if (n < 0 || n >= cap - len) goto too_large;
+        len += n;
+    }
+    if (extra_header != NULL && extra_header[0] != '\0')
+    {
+        int n = snprintf(r->request + len, (size_t)(cap - len), "%s\r\n", extra_header);
+        if (n < 0 || n >= cap - len) goto too_large;
+        len += n;
+    }
+    {
+        int n = snprintf(r->request + len, (size_t)(cap - len), "Connection: close\r\n\r\n");
+        if (n < 0 || n >= cap - len) goto too_large;
+        len += n;
+    }
+    if (body != NULL && body_len > 0)
+    {
+        if ((size_t)(cap - len) < body_len) goto too_large;
+        memcpy(r->request + len, body, body_len);
+        len += (int)body_len;
+    }
+    r->request_len = len;
+
+    transport_options.host_name = az_span_create_from_str((char*)(uintptr_t)host);
+    transport_options.port = E2E_HTTPS_PORT;
+    transport_options.tls_enabled = true;
+    if (client_cert_pem != NULL && client_cert_pem[0] != '\0')
+    {
+        transport_options.tls.client_certificate =
+            az_span_create_from_str((char*)(uintptr_t)client_cert_pem);
+    }
+    if (client_key_pem != NULL && client_key_pem[0] != '\0')
+    {
+        transport_options.tls.client_private_key =
+            az_span_create_from_str((char*)(uintptr_t)client_key_pem);
+    }
+    if (az_result_failed(
+            az_amqp_sample_transport_init(&r->transport, &r->transport_storage, &transport_options)))
+    {
+        r->phase = E2E_HTTP_PHASE_FAILED;
+        r->err = "http: transport init failed";
+        return false;
+    }
+    return true;
+
+too_large:
+    r->phase = E2E_HTTP_PHASE_FAILED;
+    r->err = "http: request too large";
+    return false;
+}
+
 int e2e_http_poll(e2e_http_request* r)
 {
     az_amqp_transport_status status;

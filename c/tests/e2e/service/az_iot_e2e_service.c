@@ -426,3 +426,106 @@ int az_iot_e2e_service_request_poll(
     svc->http = NULL;
     return rc;
 }
+
+/* ---- Device-side HTTPS helper --------------------------------------------- */
+
+/* Read a whole file into a NUL-terminated heap buffer (caller frees). */
+static char* read_file_alloc(const char* path)
+{
+#ifdef _WIN32
+    FILE* f = NULL;
+    if (fopen_s(&f, path, "rb") != 0 || f == NULL) return NULL;
+#else
+    FILE* f = fopen(path, "rb");
+    if (f == NULL) return NULL;
+#endif
+    char* buf = NULL;
+    if (fseek(f, 0, SEEK_END) == 0)
+    {
+        long size = ftell(f);
+        if (size >= 0 && fseek(f, 0, SEEK_SET) == 0)
+        {
+            buf = (char*)malloc((size_t)size + 1);
+            if (buf != NULL)
+            {
+                size_t got = fread(buf, 1, (size_t)size, f);
+                buf[got] = '\0';
+            }
+        }
+    }
+    fclose(f);
+    return buf;
+}
+
+bool az_iot_e2e_https_request(
+    const char* host,
+    const char* method,
+    const char* path,
+    const char* client_cert_path,
+    const char* client_key_path,
+    const char* content_type,
+    const char* extra_header,
+    const void* body,
+    size_t body_len,
+    int* out_status,
+    char* resp_buf,
+    size_t resp_buf_size,
+    size_t* out_resp_len)
+{
+    char* cert_pem = (client_cert_path != NULL) ? read_file_alloc(client_cert_path) : NULL;
+    char* key_pem  = (client_key_path != NULL) ? read_file_alloc(client_key_path) : NULL;
+    if ((client_cert_path != NULL && cert_pem == NULL)
+        || (client_key_path != NULL && key_pem == NULL))
+    {
+        free(cert_pem);
+        free(key_pem);
+        return false;
+    }
+
+    e2e_http_request* r = (e2e_http_request*)calloc(1, sizeof(*r));
+    if (r == NULL)
+    {
+        free(cert_pem);
+        free(key_pem);
+        return false;
+    }
+
+    bool ok = e2e_http_begin_ex(
+        r, host, method, path, NULL /* no Authorization */,
+        content_type, extra_header, body, body_len, cert_pem, key_pem);
+
+    if (ok)
+    {
+        int rc;
+        time_t start = time(NULL);
+        do
+        {
+            rc = e2e_http_poll(r);
+        } while (rc == 0 && (time(NULL) - start) < 60);
+
+        if (rc == 1)
+        {
+            if (out_status != NULL) *out_status = e2e_http_status(r);
+            int b_len = 0;
+            const uint8_t* b = e2e_http_body(r, &b_len);
+            size_t copy = (size_t)b_len;
+            if (resp_buf != NULL && resp_buf_size > 0)
+            {
+                if (copy > resp_buf_size - 1) copy = resp_buf_size - 1;
+                memcpy(resp_buf, b, copy);
+                resp_buf[copy] = '\0';
+            }
+            if (out_resp_len != NULL) *out_resp_len = copy;
+        }
+        else
+        {
+            ok = false;
+        }
+    }
+
+    e2e_http_end(r);
+    free(r);
+    free(cert_pem);
+    free(key_pem);
+    return ok;
+}

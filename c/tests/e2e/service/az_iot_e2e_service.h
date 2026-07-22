@@ -101,6 +101,34 @@ int az_iot_e2e_service_request_poll(
     char* resp_buf,
     size_t resp_buf_size);
 
+/* ---- Device-side HTTPS (for e2e device features such as file upload) ------- */
+
+/* Perform a blocking HTTPS request using the harness's TLS transport, so an e2e
+ * test can drive the device side of an HTTPS feature without an external HTTP
+ * client. Enables mutual TLS when @p client_cert_path / @p client_key_path are
+ * non-NULL (e.g. a device authenticating to IoT Hub); pass NULL for an anonymous
+ * request (e.g. an Azure Storage PUT authenticated by a SAS token already in
+ * @p path). @p content_type and @p extra_header (a single header line, e.g.
+ * "x-ms-blob-type: BlockBlob") are optional. On completion, writes the HTTP
+ * status to @p out_status and the response body (NUL-terminated, truncated to
+ * fit) to @p resp_buf with its length in @p out_resp_len (all optional). The
+ * peer is validated against the platform's default trust store. Returns true
+ * when the exchange completed (any HTTP status), false on transport failure. */
+bool az_iot_e2e_https_request(
+    const char* host,
+    const char* method,
+    const char* path,
+    const char* client_cert_path,
+    const char* client_key_path,
+    const char* content_type,
+    const char* extra_header,
+    const void* body,
+    size_t body_len,
+    int* out_status,
+    char* resp_buf,
+    size_t resp_buf_size,
+    size_t* out_resp_len);
+
 #ifdef __cplusplus
 }
 #endif

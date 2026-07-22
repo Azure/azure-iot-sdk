@@ -67,3 +67,22 @@ if(TARGET az_iot_certificate_provider_managed)
         az_iot_adapter_paho az_iot_certificate_provider_managed)
     set_tests_properties(az_iot_tests_e2e_csr PROPERTIES SKIP_RETURN_CODE 77)
 endif()
+
+# ---------------------------------------------------------------------------
+# az_iot_tests_e2e_fileupload
+#
+# Classic file-upload device flow (request SAS URI -> PUT blob to Storage ->
+# notify) against a real hub that has an Azure Storage account associated for
+# file upload. The Classic HTTP hook and the Storage PUT go through the e2e
+# service lib's HTTPS helper (the harness az_amqp TLS transport), so there is no
+# external HTTP dependency. It requires the standard e2e device env + a
+# file-upload-capable hub. The `e2e` name matches the fast job's `ctest -R e2e`
+# filter.
+#
+# Runs on the Linux e2e legs. On Windows the harness's Schannel transport does
+# not present the self-signed device certificate on the CI runners, so the test
+# self-skips (CTest exit 77); the file-upload sample still builds and runs there.
+# ---------------------------------------------------------------------------
+az_iot_add_cmocka_test(az_iot_tests_e2e_fileupload tests/e2e_fileupload_test.c)
+target_link_libraries(az_iot_tests_e2e_fileupload PRIVATE az_iot_e2e_service az_iot_adapter_paho)
+set_tests_properties(az_iot_tests_e2e_fileupload PROPERTIES SKIP_RETURN_CODE 77)
