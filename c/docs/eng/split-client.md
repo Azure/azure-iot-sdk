@@ -374,7 +374,7 @@ sequenceDiagram
 people) drift: twin, direct methods, C2D, telemetry, and especially **ADU** can
 diverge in behavior, error mapping, or API shape. ADU already differs by channel
 (ADUv1 over twin vs ADUv2 over HTTPS/ADR — see
-[eng/adu-feature-support.md](eng/adu-feature-support.md)), which compounds the
+[eng/adu-client-plan.md](eng/adu-client-plan.md)), which compounds the
 risk.
 
 **Mitigations.**

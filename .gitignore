@@ -64,3 +64,9 @@ nunit-*.xml
 /dotnet/samples/idscope.txt
 /dotnet/samples/certificate.cer
 /dotnet/samples/certificate.pfx
+
+# Internal ADU working notes (meeting transcripts, scrapped internal docs,
+# dev-environment access info). Kept local only -- MUST NOT be published to
+# this public repo. The synthesized, public-safe plan lives at
+# c/docs/eng/adu-client-plan.md.
+adu-notes/
