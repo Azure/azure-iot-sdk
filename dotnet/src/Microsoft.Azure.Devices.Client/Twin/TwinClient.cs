@@ -31,8 +31,8 @@ namespace Microsoft.Azure.Devices.Client.Twin
 
         private const string TwinDesiredPropertiesPatchTopic = "$iothub/twin/PATCH/properties/desired/";
 
-        private const string AzureEventGridOutgoingTwinPublishTopicFormat = "ih/{deviceId}/srv/twin";
-        private const string AzureEventGridIncomingTwinPublishTopicFormat = "ih/{deviceId}/dev/twin";
+        private const string AzureEventGridOutgoingTwinPublishTopicFormat = "ih/{0}/srv/twin";
+        private const string AzureEventGridIncomingTwinPublishTopicFormat = "ih/{0}/dev/twin";
 
         private const string RequestIdTopicKey = "$rid";
         internal const string VersionKey = "$version";

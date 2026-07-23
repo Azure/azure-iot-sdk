@@ -82,7 +82,7 @@ namespace Microsoft.Azure.Devices.Client.IotHub
                     try
                     {
                         // TODO this feels a bit optimistic since there is a chance that the session was established -> connection lost happened on the previous connection prior to this subscribe happening
-                        var suback = await mqttClient.SubscribeAsync(new(string.Format("ih/{deviceId}/dev/#", deviceId), MqttQualityOfServiceLevel.AtLeastOnce), cancellationToken);
+                        var suback = await mqttClient.SubscribeAsync(new(string.Format("ih/{0}/dev/#", deviceId), MqttQualityOfServiceLevel.AtLeastOnce), cancellationToken);
                         if (suback.Items.FirstOrDefault().ResultCode != MqttClientSubscribeResultCode.GrantedQoS1)
                         {
                             Trace.TraceWarning("Received SUBACK on devicebound SUBSCRIBE with unsuccessful result code: {0}. Attempting connection again...", suback.Items.FirstOrDefault().ResultCode);
@@ -119,7 +119,7 @@ namespace Microsoft.Azure.Devices.Client.IotHub
 
                 MqttPublish birthMessage = new MqttPublish()
                 {
-                    Topic = string.Format("ih/{deviceId}/srv/presence", deviceId),
+                    Topic = string.Format("ih/{0}/srv/presence", deviceId),
                     CorrelationData = connectNonce.ToByteArray(),
                     Payload = birth.ToByteArray(),
                     QualityOfServiceLevel = MqttQualityOfServiceLevel.AtMostOnce, // QoS 0 because we don't care about the MQTT-level ack for this message.  The service will send a fully-fledged MQTT publish as the ack and we will listen for that below
@@ -131,7 +131,7 @@ namespace Microsoft.Azure.Devices.Client.IotHub
                 Func<MqttPublishReceivedEventArgs, Task> HandleReceivedBirthAck = (args) =>
                 {
                     MqttPublish publish = args.Publish;
-                    if (publish.Topic.Equals(string.Format("ih/{deviceId}/dev/presence", deviceId)))
+                    if (publish.Topic.Equals(string.Format("ih/{0}/dev/presence", deviceId)))
                     {
                         if (publish.UserProperties.TryGetType(out string? messageType, out int? version))
                         {
@@ -152,7 +152,7 @@ namespace Microsoft.Azure.Devices.Client.IotHub
                 Func<MqttPublishReceivedEventArgs, Task> HandleReceivedTwinPush = (args) =>
                 {
                     MqttPublish publish = args.Publish;
-                    if (publish.Topic.Equals(string.Format("ih/{deviceId}/dev/presence", deviceId)))
+                    if (publish.Topic.Equals(string.Format("ih/{0}/dev/presence", deviceId)))
                     {
                         if (publish.UserProperties.TryGetType(out string? messageType, out int? version))
                         {

@@ -90,7 +90,7 @@ namespace Microsoft.Azure.Devices.Client.DirectMethods
                 return;
             }
 
-            if (!args.Publish.Topic.Equals(string.Format("ih/{deviceId}/dev/methods", _connection.CurrentConnectionContext.DeviceId)))
+            if (!args.Publish.Topic.Equals(string.Format("ih/{0}/dev/methods", _connection.CurrentConnectionContext.DeviceId)))
             {
                 // Message isn't relevant to this client. Ignore it.
                 return;
@@ -158,14 +158,14 @@ namespace Microsoft.Azure.Devices.Client.DirectMethods
 
                 MqttPublish probeAckPublish = new()
                 {
-                    Topic = string.Format("ih/{deviceId}/srv/methods", _connection.CurrentConnectionContext.DeviceId),
+                    Topic = string.Format("ih/{0}/srv/methods", _connection.CurrentConnectionContext.DeviceId),
                     QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce,
                     Payload = probeAck.ToByteArray(),
                     CorrelationData = publish.CorrelationData,
                     MessageExpiryInterval = remainingConnectTimeoutInSeconds,
                 };
 
-                probeAckPublish.UserProperties.Add(new("type", Encoding.UTF8.GetBytes(string.Format("probe-ack:1"))));
+                probeAckPublish.UserProperties.Add(new("type", Encoding.UTF8.GetBytes("probe-ack:1")));
 
                 if (probeAck.Ready != default)
                 {
@@ -248,14 +248,14 @@ namespace Microsoft.Azure.Devices.Client.DirectMethods
 
                 MqttPublish resultPublish = new()
                 {
-                    Topic = string.Format("ih/{deviceId}/srv/methods", _connection.CurrentConnectionContext.DeviceId),
+                    Topic = string.Format("ih/{0}/srv/methods", _connection.CurrentConnectionContext.DeviceId),
                     QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce,
                     Payload = result.ToByteArray(),
                     CorrelationData = publish.CorrelationData,
                     MessageExpiryInterval = remainingResponseTimeoutInSeconds,
                 };
 
-                resultPublish.UserProperties.Add(new("type", Encoding.UTF8.GetBytes(string.Format("result:1"))));
+                resultPublish.UserProperties.Add(new("type", Encoding.UTF8.GetBytes("result:1")));
 
                 MqttPublishAck puback = await _connection.PublishAsync(resultPublish);
 
