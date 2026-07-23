@@ -1,4 +1,8 @@
 <Solution>
+  <Folder Name="/iot hub only samples/">
+    <Project Path="iothub only samples/SetupDevice/SetupDevice.csproj" />
+    <Project Path="iothub only samples/TestDevice/TestDevice.csproj" />
+  </Folder>
   <Folder Name="/samples/">
     <Project Path="samples/TwinClientSample/TwinClientSample.csproj" Id="879a8071-71e3-4c19-b220-2d337c3b54ed" />
     <Project Path="samples/CertificateManagementSample/CertificateManagementSample.csproj" Id="9cbac237-d923-4a86-a44f-1b5547a69752" />

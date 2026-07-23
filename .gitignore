@@ -64,3 +64,8 @@ nunit-*.xml
 /dotnet/samples/idscope.txt
 /dotnet/samples/certificate.cer
 /dotnet/samples/certificate.pfx
+dotnet/iothub only samples/certificate.pfx
+dotnet/iothub only samples/certificate.cer
+dotnet/iothub only samples/deviceId.txt
+dotnet/iothub only samples/hostname.txt
+dotnet/iothub only samples/thumbprint.txt
