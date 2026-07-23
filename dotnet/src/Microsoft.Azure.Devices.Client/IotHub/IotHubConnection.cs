@@ -311,7 +311,7 @@ namespace Microsoft.Azure.Devices.Client.IotHub
             //TODO check for previous connack isSessionPresent flag before firing off all these subscriptions?
             MqttSubscribe mqttSubscribe = new();
             var expectedQos = MqttQualityOfServiceLevel.AtMostOnce;
-            //mqttSubscribe.TopicFilters.Add(new(string.Format(TelemetryClient.DeviceBoundMessagesTopicFormat + "#", deviceId), expectedQos)); // C2D not currently supported
+            mqttSubscribe.TopicFilters.Add(new(string.Format(CloudToDeviceTelemetryClient.DeviceBoundMessagesTopicFormat + "#", deviceId), expectedQos));
             mqttSubscribe.TopicFilters.Add(new(TwinClient.ClassicTwinResponseTopic + "#", expectedQos));
             mqttSubscribe.TopicFilters.Add(new(TwinClient.ClassicTwinDesiredPropertiesPatchTopic + "#", expectedQos));
             mqttSubscribe.TopicFilters.Add(new(DirectMethodClient.ClassicDirectMethodsRequestTopic + "#", expectedQos));

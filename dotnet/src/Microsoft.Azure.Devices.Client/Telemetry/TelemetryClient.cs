@@ -10,8 +10,6 @@ namespace Microsoft.Azure.Devices.Client.Telemetry
     {
         private ConnectionClient _connection;
 
-        internal const string DeviceBoundMessagesTopicFormat = "devices/{0}/messages/devicebound/";
-
         public const string MessagePropertyCorrelationId = "$.cid";
         public const string MessagePropertyMessageId = "$.mid";
         public const string MessagePropertyContentType = "$.ct";
