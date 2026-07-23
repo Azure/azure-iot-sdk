@@ -15,9 +15,6 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
         private bool _useWebsocket;
         private IWebProxy? _proxy;
 
-        // TODO Is this an appropriate way to give the user a chance to change tls settings/proxy settings/etc? Or maybe just ask users to provide their own impl at that point
-        public Func<MqttClientOptionsBuilder, MqttClientOptionsBuilder>? ClientOptionsOverrider { get; set; }
-
         public MqttNetClient(MQTTnet.IMqttClient? underlyingClient = null, bool useWebsocket = false, bool enableMqttLogs = false, IWebProxy? proxy = null)
         {
             _underlyingClient = underlyingClient ?? (enableMqttLogs ? new MQTTnet.MqttClientFactory().CreateMqttClient(MqttNetTraceLogger.CreateTraceLogger()) : new MQTTnet.MqttClientFactory().CreateMqttClient());
@@ -60,7 +57,7 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
             }
             else
             {
-                string? uriString = connect.WebsocketUri; // TODO this is diff for hub vs DPS
+                string? uriString = connect.WebsocketUri;
                 optionsBuilder.WithWebSocketServer(options =>
                 {
                     options.WithUri(uriString);
@@ -98,31 +95,14 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
                 optionsBuilder.WithTlsOptions(tlsOptions =>
                 {
                     tlsOptions.WithClientCertificates(new List<X509Certificate2>
-                {
-                    connect.ClientCertificate,
-                });
-
-                    /*
-                    if (_settings.RemoteCertificateValidationCallback != null)
                     {
-                        tlsOptions.WithCertificateValidationHandler((args) => _settings.RemoteCertificateValidationCallback.Invoke(
-                            mqttClient,
-                            args.Certificate,
-                            args.Chain,
-                            args.SslPolicyErrors));
-                    }
-                    */
+                        connect.ClientCertificate,
+                    });
 
                     tlsOptions.UseTls(true);
-                    tlsOptions.WithSslProtocols(System.Security.Authentication.SslProtocols.Tls12); //TODO support 1.3
-                                                                                                    //tlsOptions.WithIgnoreCertificateRevocationErrors(!_settings.CertificateRevocationCheck);
+                    tlsOptions.WithSslProtocols(System.Security.Authentication.SslProtocols.Tls12 | System.Security.Authentication.SslProtocols.Tls13);
+                    tlsOptions.WithIgnoreCertificateRevocationErrors(false);
                 });
-            }
-
-            if (ClientOptionsOverrider != null)
-            {
-                // This allows the user to provide any MQTTnet-level settings that we may not already handle easily for them. Think TLS level settings like custom cipher suites
-                optionsBuilder = ClientOptionsOverrider.Invoke(optionsBuilder);
             }
 
             var o = optionsBuilder.Build();
