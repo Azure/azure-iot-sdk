@@ -75,6 +75,53 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
             await telemetryClient.SendTelemetryAsync(message, TestContext.Current.CancellationToken);
         }
 
+        [Theory(Timeout = Setup.TestTimeoutMilliseconds)]
+        [InlineData(true)]
+        [InlineData(false)]
+        public async Task TestCloudToDeviceMessages(bool testAgainstClassicHub)
+        {
+            using CancellationTokenSource cts = new();
+            cts.CancelAfter(Setup.TestTimeoutMilliseconds - 1000);
+
+            await using TestConnectionClient testDeviceContext = await Setup.CreateConnectedConnectionClientAsync(testAgainstClassicHub, cts.Token);
+            ConnectionClient connectionClient = testDeviceContext.ConnectionClient;
+
+            ServiceClient serviceClient = Setup.GetIotHubServiceClient();
+            CloudToDeviceTelemetryClient telemetryClient = new CloudToDeviceTelemetryClient(connectionClient);
+
+            TaskCompletionSource<CloudToDeviceTelemetry> c2dMessageReceived = new();
+
+            telemetryClient.CloudToDeviceTelemetryReceivedAsync += (args) =>
+            {
+                c2dMessageReceived.TrySetResult(args);
+                return Task.CompletedTask;
+            };
+
+            byte[] expectedPayload = Guid.NewGuid().ToByteArray();
+            string expectedCorrelationId = Guid.NewGuid().ToString();
+            string expectedMessageId = Guid.NewGuid().ToString();
+            string expectedContentType = "SomeFakeContentType";
+            string expectedContentEncoding = "SomeFakeContentEncoding";
+            Message cloudToDeviceMessageToSend = new(expectedPayload)
+            {
+                MessageId = expectedMessageId,
+                CorrelationId = expectedCorrelationId,
+                ContentType = expectedContentType,
+                ContentEncoding = expectedContentEncoding
+            };
+
+            await serviceClient.SendAsync(testDeviceContext.ConnectionContext.DeviceId, cloudToDeviceMessageToSend);
+
+            CloudToDeviceTelemetry receivedC2dMessage = await c2dMessageReceived.Task.WaitAsync(cts.Token);
+
+            Assert.Equal(expectedMessageId, receivedC2dMessage.MessageId);
+            Assert.Equal(expectedCorrelationId, receivedC2dMessage.CorrelationId);
+            Assert.True(Enumerable.SequenceEqual(expectedPayload, receivedC2dMessage.Payload));
+            Assert.Equal(expectedContentType, receivedC2dMessage.ContentType);
+            Assert.Equal(expectedContentEncoding, receivedC2dMessage.ContentEncoding);
+        }
+
+
         public class TestObject
         {
             [JsonPropertyName("SomeString")]
