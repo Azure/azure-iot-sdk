@@ -1964,8 +1964,9 @@ ADU touch points that rely on it:
 
 ## 17. References
 
-- [adu-client-plan.md](adu-client-plan.md) — ADU status, cost & feature manual (supersedes the old feature-coverage matrix); covers ADUv1 and the ADUv2 data-plane transport
-- **ADU Device Data Plane Protocol** (DRAFT, api-version `2026-11-02-preview`) — the source of truth for the ADUv2 `syncConfiguration` / `requestUpdates` / `reportStatus` wire contract and the new D2C report structure. Owner: ADU protocol/API team (Darko Aleksic); integration contact: Leo
+- [adu-client-plan.md](adu-client-plan.md) — ADU status, cost & feature manual (supersedes the old feature-coverage matrix); covers ADUv1 and the ADUv2 (via DPS) transport
+- [aduv2-spec.md](aduv2-spec.md) — **ADUv2 (via DPS) design summary** + diagrams: the device-facing DPS update APIs (`GetOnboardingDeviceUpdate` / `GetDeviceUpdate` / `ReportDeviceUpdateStatus`) and how the client uses them
+- **ADU device update via DPS** (DRAFT, api-version `2026-11-02-preview`) — ADUv2's device-facing delivery is now **fronted by DPS** (an authenticated pass-through to ADR → ADU); there is **no dedicated ADU endpoint** and **no separate `syncConfiguration`** (service config is returned inline in the fetch response). The manifest content and the D2C report structure are unchanged. See [aduv2-spec.md](aduv2-spec.md). Owner: ADU protocol/API team (Darko Aleksic); integration contact: Leo
 - [Azure Device Update documentation](https://learn.microsoft.com/azure/iot-hub-device-update/)
 - [ADU reference agent (iot-hub-device-update)](https://github.com/Azure/iot-hub-device-update) — architecture in `docs/architecture-deep-dive.md`
 - [Update Manifest v5 schema](https://learn.microsoft.com/azure/iot-hub-device-update/update-manifest)
