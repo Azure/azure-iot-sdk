@@ -53,7 +53,7 @@ namespace Microsoft.Azure.Devices.Client.IotHub
                     Username = username,
                     Password = Array.Empty<byte>(),
                     ClientId = clientId,
-                    ProtocolVersion = MqttProtocolVersion.V311
+                    ProtocolVersion = MqttProtocolVersion.V500
                 };
 
                 MqttConnectAck connack;
