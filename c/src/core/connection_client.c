@@ -1004,6 +1004,13 @@ az_iot_result az_iot_connection_client_init(
         free(id_buf);
 #endif
     }
+    else if (client->opts.host && client->opts.hub_protocol == AZ_IOT_HUB_PROTOCOL_NEXT)
+    {
+        /* Direct connect to an IoT Hub Next / AEG endpoint (MQTT v5). For DPS
+         * (host == NULL) the flavor is learned during provisioning, so
+         * hub_protocol is honored only when a direct host is supplied. */
+        client->session_role = AZ_IOT_MQTT_ROLE_HUB_NEXT;
+    }
     else
     {
         client->session_role = AZ_IOT_MQTT_ROLE_HUB_CLASSIC;

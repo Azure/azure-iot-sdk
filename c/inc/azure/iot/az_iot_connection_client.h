@@ -21,9 +21,24 @@
 extern "C" {
 #endif
 
-/* Note: the hub flavor (Classic vs Next) is NOT a caller-facing knob.
- * It is learned from DPS at provisioning time and the SDK selects the
- * appropriate MQTT version (v3.1.1 for Classic, v5 for Next) internally. */
+/* Hub flavor (Classic vs Next) selection:
+ *   - DPS connect (host == NULL): learned from DPS at provisioning time; the
+ *     SDK selects the MQTT version (v3.1.1 for Classic, v5 for Next) internally
+ *     and opts.hub_protocol is ignored.
+ *   - Direct connect (host set, no DPS): the SDK cannot discover the flavor, so
+ *     the caller selects it via opts.hub_protocol (see az_iot_hub_protocol).
+ *     Defaults to Classic (MQTT v3.1.1); set AZ_IOT_HUB_PROTOCOL_NEXT for an
+ *     IoT Hub Next / Event Grid (AEG) endpoint (MQTT v5). */
+
+/* Hub protocol flavor for a DIRECT hub connection (opts.host set, DPS unused).
+ * Classic IoT Hub speaks MQTT v3.1.1; IoT Hub Next / Event Grid (AEG) speaks
+ * MQTT v5. Ignored when connecting through DPS, where the flavor is learned
+ * during provisioning. */
+typedef enum az_iot_hub_protocol
+{
+    AZ_IOT_HUB_PROTOCOL_CLASSIC = 0,  /* MQTT v3.1.1 (default) */
+    AZ_IOT_HUB_PROTOCOL_NEXT          /* MQTT v5 (IoT Hub Next / AEG) */
+} az_iot_hub_protocol;
 
 typedef struct az_iot_reconnection_policy
 {
@@ -55,6 +70,9 @@ typedef struct az_iot_connection_client_options
     const char* host;                  /* hub host (or NULL when using DPS) */
     uint16_t    port;                  /* default 8883 */
     const char* client_id;             /* device id */
+    az_iot_hub_protocol hub_protocol;  /* direct-connect hub flavor (host set, no
+                                        * DPS): Classic (v3.1.1, default) or Next
+                                        * (v5, AEG). Ignored when using DPS. */
     const char* model_id;              /* IoT Plug and Play model id announced at
                                         * connection (NULL = none). Required for
                                         * Device Update (ADU) to discover the
@@ -273,7 +291,9 @@ const char* az_iot_connection_state_to_string(az_iot_connection_state s);
  * mode on the returned struct before az_iot_connection_client_init():
  *   - DPS + X.509 (host==NULL): dps.id_scope, dps.registration_id,
  *     certificate_provider.
- *   - Direct hub connect: host, client_id, certificate_provider. */
+ *   - Direct hub connect: host, client_id, certificate_provider; also set
+ *     hub_protocol = AZ_IOT_HUB_PROTOCOL_NEXT for an IoT Hub Next / AEG (v5)
+ *     endpoint (defaults to Classic v3.1.1). */
 AZ_NODISCARD az_iot_connection_client_options az_iot_connection_client_options_default(void);
 
 AZ_NODISCARD az_iot_result az_iot_connection_client_init(

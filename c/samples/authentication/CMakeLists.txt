@@ -13,6 +13,19 @@ add_executable(az_iot_sample_auth_custom_provider_template
 target_link_libraries(az_iot_sample_auth_custom_provider_template PRIVATE az_iot_core)
 az_iot_apply_warnings(az_iot_sample_auth_custom_provider_template)
 
+# Direct hub connect (no DPS): caller supplies the hub FQDN + X.509 device
+# credentials and selects the hub flavor (Classic v3.1.1 or Next/AEG v5) via
+# opts.hub_protocol. Needs the Paho adapter to connect; the PEM provider ships
+# in az_iot_core.
+if(AZ_IOT_WITH_PAHO)
+    add_executable(az_iot_sample_auth_direct_hub
+        direct-hub/main.c ${_auth_common}/sample_utils.c)
+    target_include_directories(az_iot_sample_auth_direct_hub PRIVATE ${_auth_common})
+    target_link_libraries(az_iot_sample_auth_direct_hub
+        PRIVATE az_iot_core az_iot_adapter_paho)
+    az_iot_apply_warnings(az_iot_sample_auth_direct_hub)
+endif()
+
 # The DPS-CSR and hub-renewal samples need the Paho adapter to connect and the
 # OpenSSL "managed" provider for real CSR generation + persistence.
 if(AZ_IOT_WITH_PAHO AND TARGET az_iot_certificate_provider_managed)
