@@ -21,7 +21,7 @@ internal class Program
 
         using ConnectionClient connectionClient = new ConnectionClient();
 
-        FileUploadClient fileUploadClient = new FileUploadClient(connectionClient);
+        FileUploadClient fileUploadClient = new FileUploadClient(connectionClient, authentication.ClientCertificate);
 
         ProvisioningSettings provisioningSettings = new(idScope);
         var connectionContext = await connectionClient.ProvisionAndConnectAsync(provisioningSettings, authentication, cancellationToken: cts.Token);
