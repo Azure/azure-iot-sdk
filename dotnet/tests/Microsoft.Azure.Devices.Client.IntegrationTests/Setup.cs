@@ -10,11 +10,11 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
 {
     public class Setup
     {
-        public static string IotHubConnectionString { get; set; } = Environment.GetEnvironmentVariable("IOTHUB_CONNECTION_STRING") ?? throw new ArgumentException("Missing env var");
+        public static string IotHubConnectionString { get; set; } = GetEnvVarOrThrow("IOTHUB_CONNECTION_STRING");
 
-        public static string DpsConnectionString { get; set; } = Environment.GetEnvironmentVariable("IOT_DPS_CONNECTION_STRING") ?? throw new ArgumentException("Missing env var");
+        public static string DpsConnectionString { get; set; } = GetEnvVarOrThrow("IOT_DPS_CONNECTION_STRING");
 
-        public static string DpsIdScope { get; set; } = Environment.GetEnvironmentVariable("IOT_DPS_ID_SCOPE") ?? throw new ArgumentException("Missing env var");
+        public static string DpsIdScope { get; set; } = GetEnvVarOrThrow("IOT_DPS_ID_SCOPE");
 
         public const string TestCertificatesPassword = "some fake password";
 
@@ -79,58 +79,6 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
             { 
                 ConnectionClient = connectionClient,
                 ConnectionContext = connectionContext!,
-                AuthenticationProvider = x509AuthenticationProvider,
-            };
-        }
-
-        public static async Task<TestConnectionClient> CreateConnectedConnectionClientWithCertificateSigningAsync(bool testAgainstClassicHub, CancellationToken cancellationToken = default)
-        {
-            if (!testAgainstClassicHub)
-            {
-                Assert.Skip("No AEG hub to test against yet");
-            }
-
-            ServiceClient iotHubServiceClient = ServiceClient.CreateFromConnectionString(IotHubConnectionString);
-            ProvisioningServiceClient provisioningServiceClient = ProvisioningServiceClient.CreateFromConnectionString(DpsConnectionString);
-
-            string registrationId = Environment.GetEnvironmentVariable("IOT_DPS_INDIVIDUAL_REGISTRATION_ID") ?? throw new Exception("TODO");
-            string deviceId = registrationId;
-            string certificatePem = Environment.GetEnvironmentVariable("IOT_DPS_INDIVIDUAL_X509_CERTIFICATE") ?? throw new Exception("TODO");
-            string pfxPem = Environment.GetEnvironmentVariable("IOT_DPS_INDIVIDUAL_X509_KEY") ?? throw new Exception("TODO");
-
-            Assert.False(string.IsNullOrWhiteSpace(certificatePem));
-            Assert.False(string.IsNullOrWhiteSpace(pfxPem));
-
-            byte[] certificateBytes = Convert.FromBase64String(certificatePem);
-            byte[] pfxBytes = Convert.FromBase64String(pfxPem);
-
-            X509Certificate2 certificate = X509CertificateLoader.LoadCertificate(certificateBytes);
-            X509Certificate2 pfx = X509CertificateLoader.LoadPkcs12(pfxBytes, null);
-
-            // Create individual enrollment for the test device to provision from
-            Attestation attestation = X509Attestation.CreateFromClientCertificates(certificate);
-            IndividualEnrollment individualEnrollment = new(registrationId, attestation);
-            individualEnrollment = await provisioningServiceClient.CreateOrUpdateIndividualEnrollmentAsync(individualEnrollment, cancellationToken);
-
-            X509AuthenticationProvider x509AuthenticationProvider = new(pfx);
-
-            var (csrBase64, privateKey) = GenerateCsr(registrationId, CsrAlgorithm.RSA);
-
-            ConnectionClient connectionClient = new();
-            ProvisioningSettings provisioningSettings = new(DpsIdScope)
-            {
-                ProvisioningCertificateSigningRequest = csrBase64,
-            };
-
-            ConnectionContext connectionContext = await RetryAroundAuthorizationAsync<ConnectionContext>(
-                async () => await connectionClient.ProvisionAndConnectAsync(provisioningSettings, x509AuthenticationProvider, cancellationToken: cancellationToken), 
-                cancellationToken);
-
-            return new TestConnectionClient()
-            {
-                ConnectionClient = connectionClient,
-                ConnectionContext = connectionContext!,
-                PrivateKeyPem = pfxPem,
                 AuthenticationProvider = x509AuthenticationProvider,
             };
         }
@@ -210,26 +158,10 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
             }
         }
 
-        private static AsymmetricAlgorithm LoadPrivateKeyFromPem(string keyPem)
-        {
-            // Try ECC first, then RSA
-            if (keyPem.Contains("EC PRIVATE KEY") || keyPem.Contains("PRIVATE KEY"))
-            {
-                try
-                {
-                    var ecdsa = ECDsa.Create();
-                    ecdsa.ImportFromPem(keyPem);
-                    return ecdsa;
-                }
-                catch (CryptographicException)
-                {
-                    // Not an ECC key, try RSA
-                }
-            }
 
-            var rsa = RSA.Create();
-            rsa.ImportFromPem(keyPem);
-            return rsa;
+        public static string GetEnvVarOrThrow(string envVarName)
+        {
+            return Environment.GetEnvironmentVariable(envVarName) ?? throw new ArgumentException($"Missing environment variable: {envVarName}");
         }
     }
 }
