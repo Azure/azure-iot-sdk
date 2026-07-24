@@ -314,7 +314,11 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
             List<MqttUnsubscribeAckItem> generic = new();
             foreach (MqttClientUnsubscribeResultItem item in unsubackItem)
             {
-                generic.Add(new(item.TopicFilter, toGeneric(item.ResultCode)));
+                generic.Add(new()
+                { 
+                    ResultCode = toGeneric(item.ResultCode),
+                    TopicFilter = item.TopicFilter,
+                });
             }
 
             return generic;
