@@ -156,6 +156,7 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
                 .WithPayloadFormatIndicator(ModelConverter.ToMqttNet(publish.PayloadFormatIndicator))
                 .WithPayload(publish.PayloadAsReadOnlySequence)
                 .WithQualityOfServiceLevel(ModelConverter.ToMqttNet(publish.QualityOfServiceLevel))
+                .WithCorrelationData(publish.CorrelationData)
                 .WithMessageExpiryInterval(publish.MessageExpiryInterval);
 
             if (publish.UserProperties != null)
