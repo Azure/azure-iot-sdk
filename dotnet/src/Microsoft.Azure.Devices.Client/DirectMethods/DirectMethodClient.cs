@@ -26,7 +26,7 @@ namespace Microsoft.Azure.Devices.Client.DirectMethods
         // Only applicable for AEG Hub scenario. Maps from request Id (GUID) to method name.
         private ConcurrentDictionary<Guid, string> _pendingExpectedDirectMethodNames = new();
 
-        private ConnectionClient _connection;
+        private IConnectionClient _connection;
 
         /// <summary>
         /// An event that executes whenever this device receives a direct method request from IoT hub. After executing the direct method, the device must
@@ -64,7 +64,7 @@ namespace Microsoft.Azure.Devices.Client.DirectMethods
         /// await connectionClient.ProvisionAndConnectAsync();
         /// </code>
         /// </example>
-        public DirectMethodClient(ConnectionClient connection)
+        public DirectMethodClient(IConnectionClient connection)
         {
             _connection = connection;
             _connection.ApplicationMessageReceivedAsync += HandleReceivedAzureEventGridMqttPublish;
@@ -84,13 +84,13 @@ namespace Microsoft.Azure.Devices.Client.DirectMethods
 
         private async Task HandleReceivedAzureEventGridMqttPublish(MqttPublishReceivedEventArgs args)
         {
-            if (!_connection.CurrentConnectionContext!.IsAzureEventGrid)
+            if (!_connection.GetCurrentConnectionContext()!.IsAzureEventGrid)
             {
                 // The other handler covers this scenario
                 return;
             }
 
-            if (!args.Publish.Topic.Equals(string.Format("ih/{0}/dev/methods", _connection.CurrentConnectionContext.DeviceId)))
+            if (!args.Publish.Topic.Equals(string.Format("ih/{0}/dev/methods", _connection.GetCurrentConnectionContext().DeviceId)))
             {
                 // Message isn't relevant to this client. Ignore it.
                 return;
@@ -158,7 +158,7 @@ namespace Microsoft.Azure.Devices.Client.DirectMethods
 
                 MqttPublish probeAckPublish = new()
                 {
-                    Topic = string.Format("ih/{0}/srv/methods", _connection.CurrentConnectionContext.DeviceId),
+                    Topic = string.Format("ih/{0}/srv/methods", _connection.GetCurrentConnectionContext().DeviceId),
                     QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce,
                     Payload = probeAck.ToByteArray(),
                     CorrelationData = publish.CorrelationData,
@@ -248,7 +248,7 @@ namespace Microsoft.Azure.Devices.Client.DirectMethods
 
                 MqttPublish resultPublish = new()
                 {
-                    Topic = string.Format("ih/{0}/srv/methods", _connection.CurrentConnectionContext.DeviceId),
+                    Topic = string.Format("ih/{0}/srv/methods", _connection.GetCurrentConnectionContext().DeviceId),
                     QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce,
                     Payload = result.ToByteArray(),
                     CorrelationData = publish.CorrelationData,
@@ -268,7 +268,7 @@ namespace Microsoft.Azure.Devices.Client.DirectMethods
 
         private async Task HandleReceivedClassicMqttPublish(MqttPublishReceivedEventArgs args)
         {
-            if (_connection.CurrentConnectionContext!.IsAzureEventGrid)
+            if (_connection.GetCurrentConnectionContext()!.IsAzureEventGrid)
             {
                 // The other handler covers this scenario
                 return;

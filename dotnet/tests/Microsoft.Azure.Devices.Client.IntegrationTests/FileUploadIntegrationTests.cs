@@ -28,7 +28,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
                     handler.ClientCertificates.Add(testDeviceContext.AuthenticationProvider.ClientCertificate);
                     handler.ServerCertificateCustomValidationCallback = (message, cert2, chain, errors) => true;
                     HttpClient userProvidedHttpClient = new(handler);
-                    fileUploadClient = new FileUploadClient(testDeviceContext.ConnectionClient, userProvidedHttpClient);
+                    fileUploadClient = new FileUploadClient(testDeviceContext.ConnectionClient, testDeviceContext.AuthenticationProvider.ClientCertificate, userProvidedHttpClient);
                 }
                 else
                 {
