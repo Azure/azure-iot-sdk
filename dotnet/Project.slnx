@@ -1,6 +1,5 @@
 <Solution>
   <Folder Name="/iot hub only samples/">
-    <Project Path="iothub only samples/SetupDevice/SetupDevice.csproj" />
     <Project Path="iothub only samples/TestDevice/TestDevice.csproj" />
   </Folder>
   <Folder Name="/samples/">

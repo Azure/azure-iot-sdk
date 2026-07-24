@@ -18,8 +18,8 @@ namespace Microsoft.Azure.Devices.Client.IotHub
         internal const string ClassicHubApiVersion = "2025-08-01-preview";
 
         private const bool UseSubscribeElide = false; // Maybe user-configurable? It is a very small optimization that is probably more risk than it is worth for .NET users compared to C users
-        private static TimeSpan birthAckReceivedDefensiveTimeout = TimeSpan.FromSeconds(5); //TODO value is magic number
-        private static TimeSpan twinPushReceivedDefensiveTimeout = TimeSpan.FromSeconds(5); //TODO value is magic number
+        private static TimeSpan birthAckReceivedDefensiveTimeout = TimeSpan.FromSeconds(60); //TODO value is magic number
+        private static TimeSpan twinPushReceivedDefensiveTimeout = TimeSpan.FromSeconds(60); //TODO value is magic number
 
         internal async Task<Twin.Twin> ConnectToAzureEventGridIotHubAsync(IMqttClient mqttClient, string hostname, string deviceId, X509AuthenticationProvider x509AuthenticationProvider, TwinPushOptions? twinPushOptions, CancellationToken cancellationToken = default)
         {
