@@ -129,7 +129,7 @@ namespace Microsoft.Azure.Devices.Client.Twin
                 {
                     Topic = string.Format(AzureEventGridOutgoingTwinPublishTopicFormat, _connection.CurrentConnectionContext.DeviceId),
                     QualityOfServiceLevel = MqttQualityOfServiceLevel.AtMostOnce,
-                    CorrelationData = requestId.ToByteArray(),
+                    CorrelationData = requestId.ToByteArray(bigEndian: true),
                     Payload = new TwinGet()
                     {
                         Sections = Sections.Both,
@@ -190,7 +190,7 @@ namespace Microsoft.Azure.Devices.Client.Twin
                 {
                     Topic = string.Format(AzureEventGridOutgoingTwinPublishTopicFormat, _connection.CurrentConnectionContext.DeviceId),
                     QualityOfServiceLevel = MqttQualityOfServiceLevel.AtMostOnce,
-                    CorrelationData = requestId.ToByteArray(),
+                    CorrelationData = requestId.ToByteArray(bigEndian: true),
                     Payload = new ReportedPatch()
                     {
                         IfMatch = patch.IfMatch,
