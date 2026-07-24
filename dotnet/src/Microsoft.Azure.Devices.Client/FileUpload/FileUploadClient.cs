@@ -14,9 +14,10 @@ namespace Microsoft.Azure.Devices.Client.FileUpload
         private readonly X509Certificate2 _clientCertificate;
         private bool _isInitialized = false;
 
-        public FileUploadClient(IConnectionClient connection)
+        public FileUploadClient(IConnectionClient connection, X509Certificate2 clientCertificate) //TODO passing in the cert for AEG case makes no sense. Clean this up later
         {
             _connectionClient = connection;
+            _clientCertificate = clientCertificate;
             _httpClient = null;
         }
 

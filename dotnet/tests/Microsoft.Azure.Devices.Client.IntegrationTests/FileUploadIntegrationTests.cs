@@ -32,12 +32,12 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
                 }
                 else
                 {
-                    fileUploadClient = new FileUploadClient(testDeviceContext.ConnectionClient);
+                    fileUploadClient = new FileUploadClient(testDeviceContext.ConnectionClient, testDeviceContext.AuthenticationProvider.ClientCertificate);
                 }
             }
             else 
             {
-                fileUploadClient = new FileUploadClient(testDeviceContext.ConnectionClient);
+                fileUploadClient = new FileUploadClient(testDeviceContext.ConnectionClient, testDeviceContext.AuthenticationProvider.ClientCertificate);
             }
 
             FileUploadSasUriRequest sasUriRequest = new()
@@ -76,7 +76,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
             await using TestConnectionClient testDeviceContext = await Setup.CreateConnectedConnectionClientAsync(testAgainstClassicHub, cts.Token);
 
             FileUploadClient fileUploadClient;
-            fileUploadClient = new FileUploadClient(testDeviceContext.ConnectionClient);
+            fileUploadClient = new FileUploadClient(testDeviceContext.ConnectionClient, testDeviceContext.AuthenticationProvider.ClientCertificate);
 
             FileUploadSasUriRequest sasUriRequest = new()
             {
