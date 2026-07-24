@@ -9,22 +9,16 @@ namespace Microsoft.Azure.Devices.Client.Mqtt
     /// </summary>
     public class MqttUnsubscribeAckItem
     {
-        public MqttUnsubscribeAckItem(string topicFilter, MqttClientUnsubscribeResultCode resultCode)
-        {
-            TopicFilter = topicFilter ?? throw new ArgumentNullException(nameof(topicFilter));
-            ResultCode = resultCode;
-        }
-
         /// <summary>
         ///     Gets or sets the result code.
         ///     <remarks>MQTT 5.0.0+ feature.</remarks>
         /// </summary>
-        public MqttClientUnsubscribeResultCode ResultCode { get; }
+        public required MqttClientUnsubscribeResultCode ResultCode { get; set;  }
 
         /// <summary>
         ///     Gets or sets the topic filter.
         ///     The topic filter can contain topics and wildcards.
         /// </summary>
-        public string TopicFilter { get; }
+        public required string TopicFilter { get; set; }
     }
 }

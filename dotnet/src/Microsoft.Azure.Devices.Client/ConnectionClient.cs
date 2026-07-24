@@ -9,19 +9,18 @@ using Microsoft.Azure.Devices.Client.Provisioning.Models;
 using Microsoft.Azure.Devices.Client.Retry;
 using Microsoft.Azure.Devices.Client.Twin;
 using System.Collections.Concurrent;
+using System.ComponentModel;
 using System.Text.Json;
 
 namespace Microsoft.Azure.Devices.Client
 {
-    public class ConnectionClient : IDisposable //TODO make this class mockable?
+    public class ConnectionClient : IConnectionClient
     {
         private IMqttClient _mqttClient;
 
-        internal event Func<MqttPublishReceivedEventArgs, Task>? ApplicationMessageReceivedAsync;
+        private ConnectionContext? CurrentConnectionContext { get; set; }
 
-        public ConnectionContext? CurrentConnectionContext { get; set; }
-
-        internal X509AuthenticationProvider AuthenticationProvider { get; set; }
+        public ConnectionContext? GetCurrentConnectionContext() => CurrentConnectionContext;
 
         private const string CertificateSigningRequestTopic = "$iothub/credentials/POST/issueCertificate/?$rid=";
         private const string CertificateSigningResponseTopicFilter = "$iothub/credentials/res/#";
@@ -31,15 +30,15 @@ namespace Microsoft.Azure.Devices.Client
 
         private readonly ConcurrentDictionary<string, CertificateSigningOperation> _pendingCertificateSigningOperations = new();
 
-        /// <summary>
-        /// An event that executes each time this client is connected to either Device Provisioning Service or IoT hub.
-        /// </summary>
+        /// <inheritdoc/>
+        [EditorBrowsable(EditorBrowsableState.Advanced)]
+        public event Func<MqttPublishReceivedEventArgs, Task>? ApplicationMessageReceivedAsync;
+
+        /// <inheritdoc/>
         public event Action<MqttClientConnectedEventArgs>? ConnectedAsync; //TODO include twin push details?
 
-        /// <summary>
-        /// An event that executes each time this client is disconnected from either Device Provisioning Service or IoT hub.
-        /// </summary>
-        public event Action<MqttClientDisconnectedEventArgs>? DisconnectedAsync; //TODO do we want to hide the expected disconnection from DPS after provisioning completes?
+        /// <inheritdoc/>
+        public event Action<MqttClientDisconnectedEventArgs>? DisconnectedAsync;
 
         /// <summary>
         /// Construct a new <see cref="ConnectionClient"/>
@@ -68,7 +67,6 @@ namespace Microsoft.Azure.Devices.Client
             _mqttClient = new MqttSessionClient(new());
         }
 
-
         /// <summary>
         /// Provision this device with the provided credentials using Device Provisioning Service, then connect this device to the IoT hub it was provisioned to.
         /// </summary>
@@ -83,7 +81,6 @@ namespace Microsoft.Azure.Devices.Client
 
             //TODO several mqtt client options should not be provided by the user (ie, host name). Add checks here that validate all of them
 
-            AuthenticationProvider = authentication;
             CurrentConnectionContext = new ConnectionContext()
             {
                 DeviceId = provisioningResult.DeviceId,
@@ -185,17 +182,23 @@ namespace Microsoft.Azure.Devices.Client
             //TODO do we care about initial twin as returned by DPS?
         }
 
-        internal async Task<MqttPublishAck> PublishAsync(MqttPublish mqttApplicationMessage, CancellationToken cancellationToken = default)
+        /// <inheritdoc/>
+        [EditorBrowsable(EditorBrowsableState.Advanced)]
+        public async Task<MqttPublishAck> PublishAsync(MqttPublish mqttApplicationMessage, CancellationToken cancellationToken = default)
         {
             return await _mqttClient.PublishAsync(mqttApplicationMessage, cancellationToken);
         }
 
-        internal async Task<MqttSubscribeAck> SubscribeAsync(MqttSubscribe subscribe, CancellationToken cancellationToken = default)
+        /// <inheritdoc/>
+        [EditorBrowsable(EditorBrowsableState.Advanced)]
+        public async Task<MqttSubscribeAck> SubscribeAsync(MqttSubscribe subscribe, CancellationToken cancellationToken = default)
         {
             return await _mqttClient.SubscribeAsync(subscribe, cancellationToken);
         }
 
-        internal async Task<MqttUnsubscribeAck> UnsubscribeAsync(MqttUnsubscribe unsubscribe, CancellationToken cancellationToken = default)
+        /// <inheritdoc/>
+        [EditorBrowsable(EditorBrowsableState.Advanced)]
+        public async Task<MqttUnsubscribeAck> UnsubscribeAsync(MqttUnsubscribe unsubscribe, CancellationToken cancellationToken = default)
         {
             return await _mqttClient.UnsubscribeAsync(unsubscribe, cancellationToken);
         }

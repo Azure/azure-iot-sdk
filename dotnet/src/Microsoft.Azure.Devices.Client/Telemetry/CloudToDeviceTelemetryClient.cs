@@ -11,14 +11,14 @@ namespace Microsoft.Azure.Devices.Client.Telemetry
     {
         internal const string DeviceBoundMessagesTopicFormat = "devices/{0}/messages/devicebound/";
 
-        private readonly ConnectionClient _connection;
+        private readonly IConnectionClient _connection;
 
         /// <summary>
         /// An event that executes every time this device receives cloud-to-device telemetry. Once received, the application must decide how to complete that telemetry.
         /// </summary>
         public event Func<CloudToDeviceTelemetry, Task>? CloudToDeviceTelemetryReceivedAsync;
 
-        public CloudToDeviceTelemetryClient(ConnectionClient connection)
+        public CloudToDeviceTelemetryClient(IConnectionClient connection)
         {
             _connection = connection;
             _connection.ApplicationMessageReceivedAsync += HandleReceivedMqttPublish;
@@ -26,14 +26,14 @@ namespace Microsoft.Azure.Devices.Client.Telemetry
 
         private async Task HandleReceivedMqttPublish(MqttPublishReceivedEventArgs args)
         {
-            if (_connection.CurrentConnectionContext!.IsAzureEventGrid)
+            if (_connection.GetCurrentConnectionContext()!.IsAzureEventGrid)
             {
                 throw new NotSupportedException("c2d is not supported when connected to AEG Hub currently");
             }
             else
             {
                 //TODO it is a bit awkward to build this now instead of in the constructor, but the deviceId isn't present until after hub connection :/
-                var expectedDeviceBoundMessagesTopic = string.Format(CultureInfo.InvariantCulture, DeviceBoundMessagesTopicFormat, _connection.CurrentConnectionContext!.DeviceId);
+                var expectedDeviceBoundMessagesTopic = string.Format(CultureInfo.InvariantCulture, DeviceBoundMessagesTopicFormat, _connection.GetCurrentConnectionContext()!.DeviceId);
 
                 if (args.Publish.Topic.StartsWith(expectedDeviceBoundMessagesTopic))
                 {
