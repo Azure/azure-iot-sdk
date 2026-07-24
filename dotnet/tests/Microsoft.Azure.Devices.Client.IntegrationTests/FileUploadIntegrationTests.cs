@@ -28,16 +28,16 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
                     handler.ClientCertificates.Add(testDeviceContext.AuthenticationProvider.ClientCertificate);
                     handler.ServerCertificateCustomValidationCallback = (message, cert2, chain, errors) => true;
                     HttpClient userProvidedHttpClient = new(handler);
-                    fileUploadClient = new FileUploadClient(testDeviceContext.ConnectionClient, userProvidedHttpClient);
+                    fileUploadClient = new FileUploadClient(testDeviceContext.ConnectionClient, testDeviceContext.AuthenticationProvider.ClientCertificate, userProvidedHttpClient);
                 }
                 else
                 {
-                    fileUploadClient = new FileUploadClient(testDeviceContext.ConnectionClient);
+                    fileUploadClient = new FileUploadClient(testDeviceContext.ConnectionClient, testDeviceContext.AuthenticationProvider.ClientCertificate);
                 }
             }
             else 
             {
-                fileUploadClient = new FileUploadClient(testDeviceContext.ConnectionClient);
+                fileUploadClient = new FileUploadClient(testDeviceContext.ConnectionClient, testDeviceContext.AuthenticationProvider.ClientCertificate);
             }
 
             FileUploadSasUriRequest sasUriRequest = new()
@@ -76,7 +76,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
             await using TestConnectionClient testDeviceContext = await Setup.CreateConnectedConnectionClientAsync(testAgainstClassicHub, cts.Token);
 
             FileUploadClient fileUploadClient;
-            fileUploadClient = new FileUploadClient(testDeviceContext.ConnectionClient);
+            fileUploadClient = new FileUploadClient(testDeviceContext.ConnectionClient, testDeviceContext.AuthenticationProvider.ClientCertificate);
 
             FileUploadSasUriRequest sasUriRequest = new()
             {

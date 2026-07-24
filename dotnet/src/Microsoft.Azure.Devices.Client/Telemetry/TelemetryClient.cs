@@ -8,7 +8,7 @@ namespace Microsoft.Azure.Devices.Client.Telemetry
     /// </summary>
     public class TelemetryClient
     {
-        private ConnectionClient _connection;
+        private IConnectionClient _connection;
 
         public const string MessagePropertyCorrelationId = "$.cid";
         public const string MessagePropertyMessageId = "$.mid";
@@ -23,7 +23,7 @@ namespace Microsoft.Azure.Devices.Client.Telemetry
         /// The provided connection client does not need to be connected before this constructor is called. However, the provided connection client must be connected prior
         /// to using this feature client to send any telemetry.
         /// </remarks>
-        public TelemetryClient(ConnectionClient connection)
+        public TelemetryClient(IConnectionClient connection)
         {
             _connection = connection;
         }
@@ -39,12 +39,12 @@ namespace Microsoft.Azure.Devices.Client.Telemetry
         /// <exception cref="MessageTooLargeException">Thrown if the message's payload's size exceeds the supported limits of IoT hub.</exception>
         public async Task SendTelemetryAsync(OutgoingTelemetryMessage message, CancellationToken cancellationToken = default)
         {
-            if (_connection.CurrentConnectionContext == null)
+            if (_connection.GetCurrentConnectionContext() == null)
             {
                 throw new NotSupportedException("Must be connected before calling this method.");
             }
 
-            if (_connection.CurrentConnectionContext.IsAzureEventGrid)
+            if (_connection.GetCurrentConnectionContext().IsAzureEventGrid)
             {
                 throw new NotImplementedException("d2c telemetry not implemented for AEG Hub in this SDK yet");
             }
@@ -58,7 +58,7 @@ namespace Microsoft.Azure.Devices.Client.Telemetry
                 //TODO fill in content type, encoding, etc from message user properties
                 var mqttMessage = new MqttPublish
                 {
-                    Topic = "devices/" + _connection.CurrentConnectionContext.DeviceId + "/messages/events/",
+                    Topic = "devices/" + _connection.GetCurrentConnectionContext().DeviceId + "/messages/events/",
                     PayloadAsReadOnlySequence = message.PayloadAsReadOnlySequence,
                     QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce,
                 };
