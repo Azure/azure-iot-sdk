@@ -13,6 +13,12 @@ namespace Microsoft.Azure.Devices.Client.UnitTests
         public async Task TelemetryClientThrowsIfMessageTooLarge()
         {
             MockConnectionClient mockConnectionClient = new();
+            mockConnectionClient.SetCurrentConnectionContext(new ConnectionContext()
+            {
+                DeviceId = "SomeDeviceId",
+                IsAzureEventGrid = false,
+                IotHubHostName = "SomeHostName",
+            });
             TelemetryClient telemetryClient = new(mockConnectionClient);
 
             OutgoingTelemetryMessage outgoingTelemetryMessage = new()
