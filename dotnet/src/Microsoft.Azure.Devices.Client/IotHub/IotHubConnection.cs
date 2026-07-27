@@ -18,8 +18,8 @@ namespace Microsoft.Azure.Devices.Client.IotHub
         internal const string ClassicHubApiVersion = "2025-08-01-preview";
 
         private const bool UseSubscribeElide = false; // Maybe user-configurable? It is a very small optimization that is probably more risk than it is worth for .NET users compared to C users
-        private static TimeSpan birthAckReceivedDefensiveTimeout = TimeSpan.FromSeconds(5); //TODO value is magic number
-        private static TimeSpan twinPushReceivedDefensiveTimeout = TimeSpan.FromSeconds(5); //TODO value is magic number
+        private static TimeSpan birthAckReceivedDefensiveTimeout = TimeSpan.FromSeconds(60); //TODO value is magic number
+        private static TimeSpan twinPushReceivedDefensiveTimeout = TimeSpan.FromSeconds(60); //TODO value is magic number
 
         internal async Task<Twin.Twin> ConnectToAzureEventGridIotHubAsync(IMqttClient mqttClient, string hostname, string deviceId, X509AuthenticationProvider x509AuthenticationProvider, TwinPushOptions? twinPushOptions, CancellationToken cancellationToken = default)
         {
@@ -31,12 +31,11 @@ namespace Microsoft.Azure.Devices.Client.IotHub
 
                 Trace.TraceInformation("Attempting to establish connection and presence for device {0} with IoT Hub {1}", deviceId, hostname);
 
-                //TODO verify this is 16 bytes
                 Guid connectNonce = Guid.NewGuid(); //Note that this nonce must be unique per connection attempt, not per successfuly connection
 
                 string clientId = deviceId;
 
-                string hexEncodedConnectNonce = BitConverter.ToString(Encoding.UTF8.GetBytes(connectNonce.ToString())).Replace("-", "");
+                string hexEncodedConnectNonce = Convert.ToHexString(connectNonce.ToByteArray(bigEndian: true));
 
                 // Should look something like "correlationId=4f3c2a1b9d8e47f0a1b2c3d4e5f60718&clientVersion=csharp%2F1.42.0"
                 // TODO do we want to also include previous user agent details like OS, architecture, etc? Service currently discards those
@@ -74,8 +73,8 @@ namespace Microsoft.Azure.Devices.Client.IotHub
                     continue; // Start the connect process over again
                 }
 
-                // Only send the subscribe if it hasn't been sent in this MQTT session yet and 
-                if (!(connack.IsSessionPresent && subscribed) && UseSubscribeElide)
+                // Only send the subscribe if it hasn't been sent in this MQTT session yet
+                if (!subscribed || !connack.IsSessionPresent) //TODO subscribe elide logic
                 {
                     subscribed = false;
 
@@ -120,7 +119,7 @@ namespace Microsoft.Azure.Devices.Client.IotHub
                 MqttPublish birthMessage = new MqttPublish()
                 {
                     Topic = string.Format("ih/{0}/srv/presence", deviceId),
-                    CorrelationData = connectNonce.ToByteArray(),
+                    CorrelationData = connectNonce.ToByteArray(bigEndian: true),
                     Payload = birth.ToByteArray(),
                     QualityOfServiceLevel = MqttQualityOfServiceLevel.AtMostOnce, // QoS 0 because we don't care about the MQTT-level ack for this message.  The service will send a fully-fledged MQTT publish as the ack and we will listen for that below
                 };
@@ -128,39 +127,63 @@ namespace Microsoft.Azure.Devices.Client.IotHub
                 birthMessage.UserProperties.Add(new("type", Encoding.UTF8.GetBytes("birth:1")));
 
                 TaskCompletionSource<BirthAck> birthAckReceivedTaskCompletionSource = new();
-                Func<MqttPublishReceivedEventArgs, Task> HandleReceivedBirthAck = (args) =>
+                Func<MqttPublishReceivedEventArgs, Task> HandleReceivedBirthAck = async (args) =>
                 {
+                    // Birth ack messages are QoS 0, so no need to ack
                     MqttPublish publish = args.Publish;
                     if (publish.Topic.Equals(string.Format("ih/{0}/dev/presence", deviceId)))
                     {
                         if (publish.UserProperties.TryGetType(out string? messageType, out int? version))
                         {
-                            if (messageType.Equals("birth-ack")
-                                && GuidExtensions.TryParseBytes(publish.CorrelationData, out Guid? receivedGuid)
-                                && receivedGuid.Equals(connectNonce))
+                            if (messageType.Equals("birth-ack"))
                             {
-                                // The birth message flow is only complete once Hub sends a birth message ack with connection epoch equal to the latest connection epoch we have attempted
-                                birthAckReceivedTaskCompletionSource.TrySetResult(BirthAck.Parser.ParseFrom(args.Publish.Payload));
+                                if (GuidExtensions.TryParseBytes(publish.CorrelationData, out Guid? receivedGuid))
+                                {
+                                    if (receivedGuid.Equals(connectNonce))
+                                    {
+                                        // The birth message flow is only complete once Hub sends a birth message ack with connection epoch equal to the latest connection epoch we have attempted
+                                        birthAckReceivedTaskCompletionSource.TrySetResult(BirthAck.Parser.ParseFrom(args.Publish.Payload));
+                                    }
+                                    else
+                                    {
+                                        Trace.TraceWarning("Received birth ack, but for an unexpected connection nonce. Expected {0}, but was {1}", connectNonce.ToString(), receivedGuid.ToString());
+                                    }
+                                }
+                                else
+                                { 
+                                    Trace.TraceWarning("Received birth ack, with a malformed connection nonce");
+                                }
                             }
                         }
                     }
-
-                    return Task.CompletedTask;
                 };
 
                 TaskCompletionSource<TwinPush> twinPushReceivedTaskCompletionSource = new();
                 Func<MqttPublishReceivedEventArgs, Task> HandleReceivedTwinPush = (args) =>
                 {
+                    // Twin push messages are QoS 0, so no need to ack
                     MqttPublish publish = args.Publish;
                     if (publish.Topic.Equals(string.Format("ih/{0}/dev/presence", deviceId)))
                     {
                         if (publish.UserProperties.TryGetType(out string? messageType, out int? version))
                         {
-                            if (messageType.Equals("twin-push")
-                                && GuidExtensions.TryParseBytes(publish.CorrelationData, out Guid? receivedGuid)
-                                && receivedGuid.Equals(connectNonce))
+                            if (messageType.Equals("twin-push"))
                             {
-                                twinPushReceivedTaskCompletionSource.TrySetResult(TwinPush.Parser.ParseFrom(args.Publish.Payload));
+                                if (GuidExtensions.TryParseBytes(publish.CorrelationData, out Guid? receivedGuid))
+                                {
+                                    if (receivedGuid.Equals(connectNonce))
+                                    {
+                                        twinPushReceivedTaskCompletionSource.TrySetResult(TwinPush.Parser.ParseFrom(args.Publish.Payload));
+                                    }
+                                    else
+                                    {
+                                        Trace.TraceWarning("Received twin push message, but for an unexpected connection nonce. Expected {0}, but was {1}", connectNonce.ToString(), receivedGuid.ToString());
+                                    }
+                                }
+                                else
+                                {
+                                    Trace.TraceWarning("Received twin push message, but with a malformed connection nonce.");
+                                }
                             }
                         }
                     }

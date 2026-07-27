@@ -17,7 +17,7 @@ namespace Microsoft.Azure.Devices.Client.Twin
     /// </summary>
     public class TwinClient : IDisposable
     {
-        private ConnectionClient _connection;
+        private IConnectionClient _connection;
 
         // Response topics to subscribe to
         internal const string ClassicTwinResponseTopic = "$iothub/twin/res/";
@@ -75,7 +75,7 @@ namespace Microsoft.Azure.Devices.Client.Twin
         /// await connectionClient.ProvisionAndConnectAsync();
         /// </code>
         /// </example>
-        public TwinClient(ConnectionClient connection)
+        public TwinClient(IConnectionClient connection)
         {
             _connection = connection;
             _connection.ApplicationMessageReceivedAsync += HandleReceivedAzureEventGridHubMqttPublish;
@@ -104,7 +104,7 @@ namespace Microsoft.Azure.Devices.Client.Twin
         /// <exception cref="PublishRejectedException">Thrown if this get twin request is rejected by IoT Hub for any reason.</exception>
         public async Task<Twin> GetTwinAsync(bool getReported = true, bool getDesired = true, ulong ifNotMatchReported = 0, ulong ifNotMatchDesired = 0,  CancellationToken cancellationToken = default)
         {
-            if (_connection.CurrentConnectionContext == null)
+            if (_connection.GetCurrentConnectionContext() == null)
             {
                 throw new NotSupportedException("Must be connected before calling this method.");
             }
@@ -123,13 +123,13 @@ namespace Microsoft.Azure.Devices.Client.Twin
             _pendingGetTwinOperations[requestId] = pendingGetTwinRequest;
 
             MqttPublish publish;
-            if (_connection.CurrentConnectionContext!.IsAzureEventGrid)
+            if (_connection.GetCurrentConnectionContext()!.IsAzureEventGrid)
             {
                 publish = new MqttPublish()
                 {
-                    Topic = string.Format(AzureEventGridOutgoingTwinPublishTopicFormat, _connection.CurrentConnectionContext.DeviceId),
+                    Topic = string.Format(AzureEventGridOutgoingTwinPublishTopicFormat, _connection.GetCurrentConnectionContext().DeviceId),
                     QualityOfServiceLevel = MqttQualityOfServiceLevel.AtMostOnce,
-                    CorrelationData = requestId.ToByteArray(),
+                    CorrelationData = requestId.ToByteArray(bigEndian: true),
                     Payload = new TwinGet()
                     {
                         Sections = Sections.Both,
@@ -171,7 +171,7 @@ namespace Microsoft.Azure.Devices.Client.Twin
         /// <exception cref="PublishRejectedException">Thrown if this reported property update message is rejected by IoT Hub for any reason.</exception>
         public async Task<ReportedPatchResponse> UpdateReportedPropertiesAsync(ReportedPatchRequest patch, CancellationToken cancellationToken = default)
         {
-            if (_connection.CurrentConnectionContext == null)
+            if (_connection.GetCurrentConnectionContext() == null)
             {
                 throw new NotSupportedException("Must be connected before calling this method.");
             }
@@ -184,13 +184,13 @@ namespace Microsoft.Azure.Devices.Client.Twin
             _pendingReportedPropertyUpdateOperations[requestId] = pendingReportedPropertiesUpdateRequest;
 
             MqttPublish publish;
-            if (_connection.CurrentConnectionContext!.IsAzureEventGrid)
+            if (_connection.GetCurrentConnectionContext()!.IsAzureEventGrid)
             {
                 publish = new MqttPublish()
                 {
-                    Topic = string.Format(AzureEventGridOutgoingTwinPublishTopicFormat, _connection.CurrentConnectionContext.DeviceId),
+                    Topic = string.Format(AzureEventGridOutgoingTwinPublishTopicFormat, _connection.GetCurrentConnectionContext().DeviceId),
                     QualityOfServiceLevel = MqttQualityOfServiceLevel.AtMostOnce,
-                    CorrelationData = requestId.ToByteArray(),
+                    CorrelationData = requestId.ToByteArray(bigEndian: true),
                     Payload = new ReportedPatch()
                     {
                         IfMatch = patch.IfMatch,
@@ -226,13 +226,13 @@ namespace Microsoft.Azure.Devices.Client.Twin
 
         private async Task HandleReceivedAzureEventGridHubMqttPublish(MqttPublishReceivedEventArgs args)
         { 
-            if (!_connection.CurrentConnectionContext!.IsAzureEventGrid)
+            if (!_connection.GetCurrentConnectionContext()!.IsAzureEventGrid)
             {
                 // The other handler covers this scenario
                 return;
             }
 
-            if (!args.Publish.Topic.Equals(string.Format(AzureEventGridIncomingTwinPublishTopicFormat, _connection.CurrentConnectionContext.DeviceId)))
+            if (!args.Publish.Topic.Equals(string.Format(AzureEventGridIncomingTwinPublishTopicFormat, _connection.GetCurrentConnectionContext().DeviceId)))
             {
                 // This message wasn't a twin message, so ignore it
                 return;
@@ -312,7 +312,7 @@ namespace Microsoft.Azure.Devices.Client.Twin
 
         private async Task HandleReceivedClassicHubMqttPublish(MqttPublishReceivedEventArgs args)
         {
-            if (_connection.CurrentConnectionContext!.IsAzureEventGrid)
+            if (_connection.GetCurrentConnectionContext()!.IsAzureEventGrid)
             {
                 // The other handler covers this scenario
                 return;
