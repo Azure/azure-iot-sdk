@@ -22,6 +22,11 @@ runs:
           $rg = "${{ inputs.resource-group }}"
           if ([string]::IsNullOrWhiteSpace($rg)) {
             Write-Host "No resource group name available; nothing to delete."
+          } elseif ((az group exists --name $rg --only-show-errors) -ne 'true') {
+            # Expected when the caller passes a DETERMINISTIC name and provisioning
+            # never got as far as creating the group (e.g. the setup job was
+            # cancelled early). Not an error.
+            Write-Host "Resource group $rg does not exist; nothing to delete."
           } else {
             Write-Host "Deleting resource group $rg"
             az group delete --name $rg --yes --no-wait

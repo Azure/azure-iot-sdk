@@ -63,6 +63,14 @@ permissions:
   contents: read
   id-token: write   # required for azure/login OIDC
 
+# Resource group name derived from the RUN, not from a random GUID published as a
+# job output. A CANCELLED job does not propagate its `outputs`, so a teardown that
+# reads `needs.setup.outputs.rg` receives an empty string and silently deletes
+# nothing while the group stays behind. Both setup and teardown compute this name
+# independently, so teardown never depends on setup completing.
+env:
+  E2E_RESOURCE_GROUP: CSDKE2EAdu-${{ github.run_id }}-${{ github.run_attempt }}
+
 jobs:
   setup:
     name: setup (provision)
@@ -71,8 +79,6 @@ jobs:
     # suite will add (slow). The current mocked placeholder provisions only the
     # base resources and finishes quickly.
     timeout-minutes: 60
-    outputs:
-      rg: ${{ steps.provision.outputs.resource-group }}
     steps:
       - uses: actions/checkout@v4
 
@@ -90,7 +96,7 @@ jobs:
         id: provision
         uses: ./.github/actions/provision-e2e-resources
         with:
-          rg-prefix: CSDKE2EAdu-
+          rg-name: ${{ env.E2E_RESOURCE_GROUP }}
           enable-adu: Gen1
           # Two DPS enrollments so the parallel Linux/Windows test legs can each
           # claim their own device (see the per-leg device-index selection below)
@@ -222,7 +228,10 @@ jobs:
   teardown:
     name: teardown (delete resources)
     needs: [setup, test]
-    if: always() && needs.setup.result != 'skipped'
+    # `always()` also covers cancellation. The group name comes from the workflow
+    # `env` (not from `needs.setup.outputs`), so a cancelled setup still gets torn
+    # down; the destroy action no-ops when the group was never created.
+    if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -238,4 +247,4 @@ jobs:
       - name: Delete Azure resources
         uses: ./.github/actions/destroy-e2e-resources
         with:
-          resource-group: ${{ needs.setup.outputs.rg }}
+          resource-group: ${{ env.E2E_RESOURCE_GROUP }}
