@@ -38,7 +38,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
             byte[] pfxBytes = Convert.FromBase64String(pfxPem);
 
             X509Certificate2 certificate = X509CertificateLoader.LoadCertificate(certificateBytes);
-            X509Certificate2 pfx = X509CertificateLoader.LoadCertificate(pfxBytes); // throwing
+            X509Certificate2 pfx = X509CertificateLoader.LoadPkcs12(pfxBytes, null);
 
             // Create individual enrollment for the test device to provision from
             Attestation attestation = X509Attestation.CreateFromClientCertificates(certificate);
