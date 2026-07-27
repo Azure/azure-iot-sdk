@@ -41,7 +41,9 @@
 #   2. test     : build `az_iot_tests_e2e_csr`, materialize the bootstrap chain +
 #                 key, arm the test (AZ_IOT_DPS_CSR_ENABLED=1) and run
 #                 `ctest -R e2e_csr`.
-#   3. teardown : always() deletes the resource group.
+#   3. teardown : always() deletes the resource group. It recomputes the group
+#                 name from the run id rather than reading a setup output, so it
+#                 also cleans up after a CANCELLED setup job (see `env` below).
 #
 # The provision/destroy steps live in .github/actions/{provision,destroy}-e2e-
 # resources so other pipelines can reuse them.
@@ -90,6 +92,15 @@ permissions:
   contents: read
   id-token: write   # required for azure/login OIDC
 
+# Resource group name derived from the RUN, not from a random GUID published as a
+# job output. A CANCELLED job does not propagate its `outputs`, so a teardown that
+# reads `needs.setup.outputs.rg` receives an empty string and silently deletes
+# nothing ("No resource group name available") while the group stays behind --
+# exactly how `cancel-in-progress` runs leaked CSDKE2ECert-* groups. Both setup and
+# teardown compute this name independently, so teardown never depends on setup.
+env:
+  E2E_RESOURCE_GROUP: CSDKE2ECert-${{ github.run_id }}-${{ github.run_attempt }}
+
 jobs:
   setup:
     name: setup (provision)
@@ -97,8 +108,6 @@ jobs:
     # Cert-management provisioning is heavier than the fast path: it creates an
     # ADR namespace/policy, role assignments, and an ADR-integrated DPS.
     timeout-minutes: 60
-    outputs:
-      rg: ${{ steps.provision.outputs.resource-group }}
     steps:
       - uses: actions/checkout@v4
 
@@ -113,7 +122,7 @@ jobs:
         id: provision
         uses: ./.github/actions/provision-e2e-resources
         with:
-          rg-prefix: CSDKE2ECert-
+          rg-name: ${{ env.E2E_RESOURCE_GROUP }}
           # Azure Device Registration (ADR) is a preview feature available only
           # in canary regions; provision there (matches the cert-mgmt pipeline).
           azure-location: centraluseuap
@@ -224,7 +233,10 @@ jobs:
   teardown:
     name: teardown (delete resources)
     needs: [setup, test]
-    if: always() && needs.setup.result != 'skipped'
+    # `always()` also covers cancellation. The group name comes from the workflow
+    # `env` (not from `needs.setup.outputs`), so a cancelled setup still gets torn
+    # down; the destroy action no-ops when the group was never created.
+    if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -240,4 +252,4 @@ jobs:
       - name: Delete Azure resources
         uses: ./.github/actions/destroy-e2e-resources
         with:
-          resource-group: ${{ needs.setup.outputs.rg }}
+          resource-group: ${{ env.E2E_RESOURCE_GROUP }}

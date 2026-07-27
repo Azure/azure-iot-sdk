@@ -165,7 +165,9 @@ job grants `permissions: id-token: write`.
 Each job downloads the shared
 [`iot-sdks-e2e-fx`](https://github.com/Azure/iot-sdks-e2e-fx) script and:
 
-1. `New-AzureResourceGroupName` → writes the RG name to a file.
+1. The workflow computes the RG name from the run itself
+   (`CSDKE2E<Flavor>-<run_id>-<run_attempt>`, a workflow-level `env`) and passes
+   it to the provision action as `rg-name`.
 2. `New-AzIotTestEnvironment` → provisions IoT Hub + DPS + enrollments.
 3. `New-AzIotCSDKE2ETestConfig -Target powershell` → emits an env-var script
    that is dot-sourced.
@@ -175,16 +177,31 @@ Each job downloads the shared
 5. **Always** (`if: always()`) deletes the resource group (`az group delete
    --no-wait`).
 
+The RG name is deliberately *derived from the run* rather than published as a
+setup job output: **a cancelled job does not propagate its `outputs`**, so a
+teardown reading `needs.setup.outputs.rg` would receive an empty string and
+delete nothing while the group stayed behind — which is how superseded
+(`cancel-in-progress`) runs used to leak `CSDKE2E*` groups. Because teardown
+recomputes the same name, it cleans up even when `setup` is cancelled or times
+out; `destroy-e2e-resources` no-ops when the group was never created.
+
+[`cleanup-e2e-resources.yml`](../../../.github/workflows/cleanup-e2e-resources.yml)
+is the nightly backstop: it reaps any `CSDKE2E*` (C) or `DotnetE2ETestPipeline-*`
+(dotnet) group older than 6 h (via `Remove-LeftoverAzureResourceGroups`),
+covering what teardown structurally cannot — an asynchronous `--no-wait` delete
+failure, or a runner that dies before teardown.
+
 ### Jobs
 
 | Job | Runs on | Purpose |
 | --- | --- | --- |
 | `setup` | ubuntu | provisions one resource group (IoT Hub + DPS) via the shared `provision-e2e-resources` action and publishes the test-config artifact |
 | `test` | ubuntu + windows (matrix) | builds `az_iot_tests_e2e`, materializes the device X.509 material, and runs `ctest -R e2e` |
-| `teardown` | ubuntu | `always()` deletes the resource group via `destroy-e2e-resources` |
+| `teardown` | ubuntu | `always()` deletes the resource group via `destroy-e2e-resources`, using the run-derived name (not a `setup` output) |
 
 The two `test` legs share the one resource group provisioned by `setup`, and
-`teardown` runs even if a leg fails so resources are never leaked.
+`teardown` runs even if a leg fails — or if the run is cancelled — so resources
+are never leaked.
 
 > **ADU e2e runs in a separate slow-lane workflow**
 > ([`ci-c-e2e-adu.yml`](../../../.github/workflows/ci-c-e2e-adu.yml)) because the

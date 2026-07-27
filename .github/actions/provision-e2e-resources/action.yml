@@ -10,9 +10,21 @@ name: Provision e2e Azure resources
 description: Provision a resource group + IoT Hub/DPS/devices (optionally ADU) and emit a test-config script.
 
 inputs:
+  rg-name:
+    description: >-
+      Exact resource group name to provision into. PREFERRED over `rg-prefix`: a caller that
+      derives the name from the run itself (e.g. CSDKE2EFast-<run_id>-<run_attempt>) can compute
+      the same name in its teardown job WITHOUT reading this action's `resource-group` output --
+      which a CANCELLED provisioning job never publishes, orphaning the group. When empty, falls
+      back to `rg-prefix` + a random GUID.
+    required: false
+    default: ''
   rg-prefix:
-    description: Resource group name prefix (e.g. CSDKE2EFast-).
-    required: true
+    description: >-
+      Resource group name prefix (e.g. CSDKE2EFast-) used to generate a random name. Ignored when
+      `rg-name` is set. Required only when `rg-name` is empty.
+    required: false
+    default: ''
   azure-location:
     description: >-
       Azure region to provision in. ADU is only available in a subset (EastUS);
@@ -77,15 +89,35 @@ runs:
     - name: Provision resources
       id: provision
       uses: azure/powershell@v3
+      env:
+        # Passed via env (not string-interpolated into the script) so the value is
+        # data, never code.
+        AZ_IOT_RG_NAME: ${{ inputs.rg-name }}
       with:
         azPSVersion: "latest"
         inlineScript: |
           Invoke-WebRequest -Uri "https://raw.githubusercontent.com/Azure/iot-sdks-e2e-fx/refs/heads/master/scripts/Azure.Iot.Sdk.Test.psm1" -OutFile "./Azure.Iot.Sdk.Test.psm1"
           Import-Module "./Azure.Iot.Sdk.Test.psm1"
           New-Item -ItemType Directory -Force -Path (Split-Path -Parent "${{ inputs.out-file }}") | Out-Null
-          $ResourceGroupName = New-AzureResourceGroupName -Prefix "${{ inputs.rg-prefix }}"
+          if (-not [string]::IsNullOrWhiteSpace($env:AZ_IOT_RG_NAME)) {
+            # Caller-computed (deterministic) name -- it can reproduce this exact
+            # name in teardown without depending on this job's outputs.
+            # Azure allows alphanumerics, underscore, parentheses, hyphen and
+            # period, up to 90 characters, but the name may NOT end in a period.
+            # Anchored with \z, not $, so a trailing newline cannot slip through.
+            if ($env:AZ_IOT_RG_NAME -notmatch '^[A-Za-z0-9._()-]{0,89}[A-Za-z0-9_()-]\z') {
+              throw "rg-name '$($env:AZ_IOT_RG_NAME)' is not a valid Azure resource group name."
+            }
+            $ResourceGroupName = $env:AZ_IOT_RG_NAME
+          } elseif (-not [string]::IsNullOrWhiteSpace("${{ inputs.rg-prefix }}")) {
+            $ResourceGroupName = New-AzureResourceGroupName -Prefix "${{ inputs.rg-prefix }}"
+          } else {
+            throw "Either 'rg-name' or 'rg-prefix' must be provided."
+          }
           # Publish the RG name up-front so teardown can delete it even if the
-          # provisioning below fails part-way through.
+          # provisioning below fails part-way through. NOTE: job outputs are NOT
+          # propagated when the job is CANCELLED, so this output alone is not a
+          # reliable teardown handle -- prefer a deterministic 'rg-name'.
           "rg=$ResourceGroupName" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           $TestEnvInfo = New-AzIotTestEnvironment -AzureLocation "${{ inputs.azure-location }}" -ResourceGroup $ResourceGroupName `
             -IotHubX509ThumbprintDevices ${{ inputs.iothub-x509-thumbprint-devices }} `
