@@ -115,13 +115,22 @@ jobs:
         azPSVersion: "latest"
         inlineScript: |
           $rg = $env:E2E_RESOURCE_GROUP
-          if ((az group exists --name $rg --only-show-errors) -ne 'true') {
+          $exists = az group exists --name $rg --only-show-errors
+          if ($LASTEXITCODE -ne 0) {
+            # Never treat an az failure (expired login, wrong subscription, ...)
+            # as "the group is not there" -- that would silently leak it.
+            throw "Could not determine whether resource group $rg exists (az exit code $LASTEXITCODE); refusing to skip deletion."
+          }
+          if ($exists -ne 'true') {
             # Expected when the run was cancelled before provisioning created the
             # group. Not an error.
             Write-Host "Resource group $rg does not exist; nothing to delete."
           } else {
             Write-Host "Deleting Azure resource group: " $rg
             az group delete --name $rg --yes --no-wait
+            if ($LASTEXITCODE -ne 0) {
+              throw "Failed to queue deletion of resource group $rg (az exit code $LASTEXITCODE)."
+            }
           }
 
     - uses: dorny/test-reporter@v3

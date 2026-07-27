@@ -102,7 +102,10 @@ runs:
           if (-not [string]::IsNullOrWhiteSpace($env:AZ_IOT_RG_NAME)) {
             # Caller-computed (deterministic) name -- it can reproduce this exact
             # name in teardown without depending on this job's outputs.
-            if ($env:AZ_IOT_RG_NAME -notmatch '^[A-Za-z0-9._()-]{1,90}$') {
+            # Azure allows alphanumerics, underscore, parentheses, hyphen and
+            # period, up to 90 characters, but the name may NOT end in a period.
+            # Anchored with \z, not $, so a trailing newline cannot slip through.
+            if ($env:AZ_IOT_RG_NAME -notmatch '^[A-Za-z0-9._()-]{0,89}[A-Za-z0-9_()-]\z') {
               throw "rg-name '$($env:AZ_IOT_RG_NAME)' is not a valid Azure resource group name."
             }
             $ResourceGroupName = $env:AZ_IOT_RG_NAME

@@ -22,12 +22,23 @@ runs:
           $rg = "${{ inputs.resource-group }}"
           if ([string]::IsNullOrWhiteSpace($rg)) {
             Write-Host "No resource group name available; nothing to delete."
-          } elseif ((az group exists --name $rg --only-show-errors) -ne 'true') {
-            # Expected when the caller passes a DETERMINISTIC name and provisioning
-            # never got as far as creating the group (e.g. the setup job was
-            # cancelled early). Not an error.
-            Write-Host "Resource group $rg does not exist; nothing to delete."
           } else {
-            Write-Host "Deleting resource group $rg"
-            az group delete --name $rg --yes --no-wait
+            $exists = az group exists --name $rg --only-show-errors
+            if ($LASTEXITCODE -ne 0) {
+              # Never treat an az failure (expired login, wrong subscription, ...)
+              # as "the group is not there" -- that would silently leak it.
+              throw "Could not determine whether resource group $rg exists (az exit code $LASTEXITCODE); refusing to skip deletion."
+            }
+            if ($exists -ne 'true') {
+              # Expected when the caller passes a DETERMINISTIC name and provisioning
+              # never got as far as creating the group (e.g. the setup job was
+              # cancelled early). Not an error.
+              Write-Host "Resource group $rg does not exist; nothing to delete."
+            } else {
+              Write-Host "Deleting resource group $rg"
+              az group delete --name $rg --yes --no-wait
+              if ($LASTEXITCODE -ne 0) {
+                throw "Failed to queue deletion of resource group $rg (az exit code $LASTEXITCODE)."
+              }
+            }
           }
