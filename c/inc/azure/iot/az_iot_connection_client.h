@@ -190,9 +190,9 @@ typedef void (*az_iot_operational_cert_callback)(
 #endif
 /* How long to wait for the SUBACK + birth-ack that complete the AEG/Hub-Next
  * presence handshake before abandoning the attempt (mirrors the .NET SDK's
- * 5s defensive birth-ack timeout). */
+ * 60s defensive birth-ack timeout). */
 #ifndef AZ_IOT_PRESENCE_BIRTH_ACK_TIMEOUT_MS
-#define AZ_IOT_PRESENCE_BIRTH_ACK_TIMEOUT_MS  5000u
+#define AZ_IOT_PRESENCE_BIRTH_ACK_TIMEOUT_MS  60000u
 #endif
 
 /* ------------------------------------------------------------------------- */
