@@ -183,6 +183,17 @@ typedef void (*az_iot_operational_cert_callback)(
 #ifndef AZ_IOT_MQTT_USERNAME_BUF
 #define AZ_IOT_MQTT_USERNAME_BUF        256
 #endif
+/* Buffer sizing the ih/{deviceId}/srv|dev/presence topics built for the
+ * AEG/Hub-Next birth handshake. */
+#ifndef AZ_IOT_PRESENCE_TOPIC_BUF
+#define AZ_IOT_PRESENCE_TOPIC_BUF       256
+#endif
+/* How long to wait for the SUBACK + birth-ack that complete the AEG/Hub-Next
+ * presence handshake before abandoning the attempt (mirrors the .NET SDK's
+ * 5s defensive birth-ack timeout). */
+#ifndef AZ_IOT_PRESENCE_BIRTH_ACK_TIMEOUT_MS
+#define AZ_IOT_PRESENCE_BIRTH_ACK_TIMEOUT_MS  5000u
+#endif
 
 /* ------------------------------------------------------------------------- */
 /* struct az_iot_connection_client (caller-owned, init/deinit lifecycle)    */
@@ -192,6 +203,10 @@ typedef void (*az_iot_operational_cert_callback)(
 enum { AZ_IOT_CONN_DEFER_NONE = 0, AZ_IOT_CONN_DEFER_FAULT, AZ_IOT_CONN_DEFER_RECONNECT, AZ_IOT_CONN_DEFER_IDLE };
 enum { AZ_IOT_DPS_PHASE_NONE = 0, AZ_IOT_DPS_PHASE_CONNECTING, AZ_IOT_DPS_PHASE_SUBSCRIBING,
        AZ_IOT_DPS_PHASE_REGISTERING, AZ_IOT_DPS_PHASE_POLLING, AZ_IOT_DPS_PHASE_DONE };
+/* AEG/Hub-Next presence (birth) handshake phases. Classic/DPS sessions never
+ * leave AZ_IOT_PRESENCE_PHASE_NONE. */
+enum { AZ_IOT_PRESENCE_PHASE_NONE = 0, AZ_IOT_PRESENCE_PHASE_SUBSCRIBING,
+       AZ_IOT_PRESENCE_PHASE_BIRTH, AZ_IOT_PRESENCE_PHASE_DONE };
 
 /* Session role: determines which Azure service the connection targets and
  * which MQTT version is required. This is an SDK-internal concept — adapters
@@ -276,6 +291,19 @@ struct az_iot_connection_client
         void* user_ctx;
         uint64_t deadline_ms;      /* abandon the op if no terminal response by here */
     } csr_op;
+
+    /* AEG/Hub-Next presence (birth) handshake. After CONNACK on a HUB_NEXT (v5)
+     * session the client SUBSCRIBEs to ih/{deviceId}/dev/presence, PUBLISHes a
+     * birth message to ih/{deviceId}/srv/presence, and only announces CONNECTED
+     * once it receives a birth-ack whose correlation data matches `nonce`.
+     * Classic/DPS sessions leave phase == AZ_IOT_PRESENCE_PHASE_NONE. */
+    struct {
+        int      phase;
+        bool     session_present;  /* observed in CONNACK; reported in birth */
+        uint16_t sub_packet_id;    /* SUBACK correlation for the dev/presence sub */
+        uint8_t  nonce[16];        /* connection nonce echoed by birth-ack */
+        uint64_t deadline_ms;      /* handshake timeout (monotonic ms) */
+    } presence;
 };
 
 typedef struct az_iot_connection_client az_iot_connection_client;
