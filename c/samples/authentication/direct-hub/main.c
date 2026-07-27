@@ -27,6 +27,12 @@
  *   AZ_IOT_CLIENT_KEY     device private key PEM path
  *   AZ_IOT_TRUSTED_CA     trusted CA PEM path (optional; system store if unset)
  *   AZ_IOT_HUB_PROTOCOL   "next" (default, AEG/v5) or "classic" (v3.1.1)
+ *
+ * Diagnostics (optional):
+ *   AZ_IOT_PAHO_TRACE     enables Paho MQTT trace + verbose OpenSSL TLS errors.
+ *                         Value selects verbosity: "error" < "protocol" <
+ *                         "min" < "medium" < "max". Any truthy value (e.g. "1")
+ *                         => minimum. Example: AZ_IOT_PAHO_TRACE=max
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -103,14 +109,16 @@ static void print_usage(void)
 typedef struct
 {
     az_iot_connection_state conn_state;
+    az_iot_result conn_reason;   /* reason for the latest state transition */
     int send_done;
     az_iot_result send_status;
 } user_context;
 
 static void on_conn_state(az_iot_connection_state s, az_iot_result reason, void* user_ctx)
 {
-    (void)reason;
-    ((user_context*)user_ctx)->conn_state = s;
+    user_context* ctx = (user_context*)user_ctx;
+    ctx->conn_state = s;
+    ctx->conn_reason = reason;
 }
 
 static void on_send_done(az_iot_result status, void* user_ctx)
@@ -227,8 +235,9 @@ int main(void)
     }
     else
     {
-        fprintf(stderr, "[direct-hub] failed to connect (state=%s)\n",
-                az_iot_connection_state_to_string(user_ctx.conn_state));
+        fprintf(stderr, "[direct-hub] failed to connect (state=%s, reason=%s)\n",
+                az_iot_connection_state_to_string(user_ctx.conn_state),
+                az_iot_result_to_string(user_ctx.conn_reason));
     }
 
     az_iot_connection_client_close(&connection_client);
