@@ -104,7 +104,7 @@ namespace Microsoft.Azure.Devices.Client.DirectMethods
 
 
             MqttPublish publish = args.Publish;
-            if (publish.UserProperties.TryGetType(out string? directMethodMessageType, out int? directMethodMessageTypeValue))
+            if (!publish.UserProperties.TryGetType(out string? directMethodMessageType, out int? directMethodMessageTypeValue))
             {
                 Trace.TraceWarning("Received a direct method message, but it is either missing the message type or the message type is malformed. Ignoring it.");
                 return;
