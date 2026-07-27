@@ -98,9 +98,9 @@
 #define PRESENCE_TOPIC_DEV_FMT     "ih/%s/dev/presence"
 /* The device subscribes to the whole dev/# space (per RFC topics.md and the
  * .NET SDK) rather than the narrower dev/presence: one subscription that AEG's
- * topic-space authorization is guaranteed to grant and that also covers every
- * other dev/* feature topic. The birth-ack is still matched by its exact
- * dev/presence topic. */
+ * topic-space authorization is guaranteed to grant and that also covers the
+ * other device-bound feature topics. The birth-ack is still matched by its
+ * exact dev/presence topic. */
 #define PRESENCE_TOPIC_DEV_SUB_FMT "ih/%s/dev/#"
 /* MQTT v5 User Property key carrying the message type, plus the value we send
  * and the type we match. The service stamps "<type>:<schemaVersion>"; the
