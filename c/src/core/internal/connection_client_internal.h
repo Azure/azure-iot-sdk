@@ -45,7 +45,8 @@ void az_iot_connection_client__seed_rng(
 
 /* Test seam: force any in-flight AEG/Hub-Next presence (birth) handshake to time
  * out on the next do_work(). No-op when no handshake is active. Lets unit tests
- * exercise the birth-ack timeout path without waiting the real 5s. */
+ * exercise the birth-ack timeout path without waiting the real
+ * AZ_IOT_PRESENCE_BIRTH_ACK_TIMEOUT_MS. */
 void az_iot_connection_client__presence_force_timeout(
     az_iot_connection_client* client);
 

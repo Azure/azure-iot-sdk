@@ -293,14 +293,15 @@ struct az_iot_connection_client
     } csr_op;
 
     /* AEG/Hub-Next presence (birth) handshake. After CONNACK on a HUB_NEXT (v5)
-     * session the client SUBSCRIBEs to ih/{deviceId}/dev/presence, PUBLISHes a
-     * birth message to ih/{deviceId}/srv/presence, and only announces CONNECTED
-     * once it receives a birth-ack whose correlation data matches `nonce`.
+     * session the client SUBSCRIBEs to ih/{deviceId}/dev/#, PUBLISHes a birth
+     * message to ih/{deviceId}/srv/presence, and only announces CONNECTED once
+     * it receives a birth-ack -- matched by the exact ih/{deviceId}/dev/presence
+     * topic -- whose correlation data matches `nonce`.
      * Classic/DPS sessions leave phase == AZ_IOT_PRESENCE_PHASE_NONE. */
     struct {
         int      phase;
         bool     session_present;  /* observed in CONNACK; reported in birth */
-        uint16_t sub_packet_id;    /* SUBACK correlation for the dev/presence sub */
+        uint16_t sub_packet_id;    /* SUBACK correlation for the dev/# sub */
         uint8_t  nonce[16];        /* connection nonce echoed by birth-ack */
         uint64_t deadline_ms;      /* handshake timeout (monotonic ms) */
     } presence;

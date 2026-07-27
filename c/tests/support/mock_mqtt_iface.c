@@ -120,8 +120,11 @@ static void copy_str(char* dst, size_t cap, const char* src)
 
 static void copy_bytes(uint8_t* dst, size_t cap, const uint8_t* src, size_t n, size_t* out_n)
 {
+    /* A NULL source records nothing: reporting the caller's length would leave
+     * the recorded buffer holding stale bytes and make assertions on it lie. */
+    if (!src) n = 0;
     if (n > cap) n = cap;
-    if (n && src) memcpy(dst, src, n);
+    if (n) memcpy(dst, src, n);
     *out_n = n;
 }
 

@@ -664,9 +664,10 @@ static void dps_apply_deferred(az_iot_connection_client* c)
 /* device must announce presence by publishing a birth message and waiting for */
 /* a birth-ack before the SDK reports CONNECTED. Classic/DPS sessions skip all */
 /* of this. Sequenced as a small sub-state machine driven from on_mqtt_event:  */
-/*   CONNACK  -> SUBSCRIBE ih/{id}/dev/presence           (phase SUBSCRIBING)   */
+/*   CONNACK  -> SUBSCRIBE ih/{id}/dev/#                  (phase SUBSCRIBING)   */
 /*   SUBACK   -> PUBLISH   ih/{id}/srv/presence (birth)   (phase BIRTH)         */
-/*   birth-ack MESSAGE (matching nonce) -> announce CONNECTED (phase DONE)      */
+/*   birth-ack MESSAGE on ih/{id}/dev/presence, matching nonce                  */
+/*                                     -> announce CONNECTED (phase DONE)       */
 /* A stalled handshake is timed out from do_work().                            */
 /* ------------------------------------------------------------------------- */
 
@@ -693,8 +694,11 @@ static void presence_gen_nonce(az_iot_connection_client* c, uint8_t out[PRESENCE
  * "correlationId=<hex nonce>&clientVersion=c%2F<version>", mirroring the .NET
  * SDK. correlationId is the uppercase hex of the 16-byte connection nonce; the
  * SAME nonce bytes ride the birth message as raw Correlation Data so the
- * service can correlate the CONNECT with the birth. */
-static void presence_build_username(const az_iot_connection_client* c, char* buf, size_t cap)
+ * service can correlate the CONNECT with the birth.
+ *
+ * Returns false if `cap` (AZ_IOT_MQTT_USERNAME_BUF) cannot hold the whole
+ * username; `buf` is left unusable and the caller must fail the attempt. */
+static bool presence_build_username(const az_iot_connection_client* c, char* buf, size_t cap)
 {
     static const char hexdigits[] = "0123456789ABCDEF";
     char hex[PRESENCE_NONCE_LEN * 2u + 1u];
@@ -707,8 +711,14 @@ static void presence_build_username(const az_iot_connection_client* c, char* buf
 
     /* clientVersion is URL-escaped as in the .NET SDK: '/' -> %2F. The version
      * string itself (digits + dots) needs no escaping. */
-    (void)snprintf(buf, cap, "correlationId=%s&clientVersion=c%%2F%s",
-                   hex, az_iot_version_string());
+    int n = snprintf(buf, cap, "correlationId=%s&clientVersion=c%%2F%s",
+                     hex, az_iot_version_string());
+
+    /* A truncated username is worse than none: it would carry a partial
+     * correlationId, so the service could not tie the CONNECT to the birth and
+     * the handshake would surface much later as an opaque birth-ack timeout.
+     * Report it here so the connect attempt fails with a precise reason. */
+    return n >= 0 && (size_t)n < cap;
 }
 
 /* Encode a proto3 Birth message (common/Protos/presence.proto) into `out`.
@@ -1026,7 +1036,12 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
          * rides the CONNECT username (correlationId) and is reused as the birth
          * Correlation Data. The auth webhook denies an empty username. */
         presence_gen_nonce(c, c->presence.nonce);
-        presence_build_username(c, c->hub_username, sizeof(c->hub_username));
+        if (!presence_build_username(c, c->hub_username, sizeof(c->hub_username)))
+        {
+            AZ_IOT_LOG_ERROR("connection: AZ_IOT_MQTT_USERNAME_BUF is too small for the hub-next CONNECT username");
+            mc->iface->destroy(mc);
+            return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+        }
         copts.username = c->hub_username;
     }
 
