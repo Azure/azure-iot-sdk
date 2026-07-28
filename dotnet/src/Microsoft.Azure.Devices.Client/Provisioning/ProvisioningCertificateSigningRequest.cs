@@ -7,7 +7,7 @@ namespace Microsoft.Azure.Devices.Client.Provisioning
 {
     public class ProvisioningCertificateSigningRequest
     {
-        public AsymmetricAlgorithm PrivateKey { get; set; }
+        public AsymmetricAlgorithm PrivateKey { get; set; } //TODO feels weird to ask for this, but it is necessary, right?
 
         public string Base64CertificateSigningRequest { get; set; }
 

@@ -95,6 +95,7 @@ namespace Microsoft.Azure.Devices.Client
             // If CSR was a part of the provisioning request, then connect to IoT hub using the issued client certificates rather than the same certs used to connect to DPS.
             if (provisioningResult.IssuedClientCertificateChain != null && provisioningResult.IssuedClientCertificateChain.Count > 0)
             {
+                //TODO any security concerns around owning this step in the SDK?
                 // Convert to PEM and save
                 string pemChain = CertificateUtilities.ConvertToPem(provisioningResult.IssuedClientCertificateChain);
 
