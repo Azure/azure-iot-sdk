@@ -166,9 +166,10 @@ namespace Microsoft.Azure.Devices.Client.Provisioning
             try
             {
                 RegistrationOperationStatus registrationStatus = await _startProvisioningRequestStatusSource.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
-
+                string noStatus = "";
+                string filler = registrationStatus.RegistrationState != null ? registrationStatus.RegistrationState.ErrorCode+"" : noStatus;
                 return registrationStatus.Status != ProvisioningRegistrationStatus.Assigning
-                    ? throw new Exception($"Provisioning ended with status '{registrationStatus.Status}'")
+                    ? throw new Exception($"Provisioning ended with status '{registrationStatus.Status}' and substatus '{filler}'")
                     : registrationStatus;
             }
             catch (OperationCanceledException e)
