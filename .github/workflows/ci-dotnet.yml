@@ -72,12 +72,12 @@ jobs:
           Write-Host "Creating new resource group"
           $ResourceGroupName = New-AzureResourceGroupName -Prefix "DotnetE2ETestPipeline-" -OutFile "test_config/azure-resource-group-name.txt"
           Write-Host "Adding Azure resources to the new resource group with name " $ResourceGroupName
-          $TestEnvInfo = New-AzIotTestEnvironment -AzureLocation "EastUS" -ResourceGroup $ResourceGroupName -EnableFileUpload -EnableCertificateManagement -DpsX509IndividualEnrollments 1
+          $TestEnvInfo = New-AzIotTestEnvironment -AzureLocation "EastUS" -ResourceGroup $ResourceGroupName -EnableFileUpload -EnableCertificateManagement
           New-AzIotNetSDKE2ETestConfig -TestEnvInfo $TestEnvInfo -Target powershell -OutFile test_config/set_test_env_vars.ps1
           chmod +x ./test_config/set_test_env_vars.ps1
           ./test_config/set_test_env_vars.ps1
           dotnet build ./dotnet/Project.slnx
-          dotnet test ./dotnet/Project.slnx --collect:"XPlat Code Coverage" --logger:"trx;LogFileName=test-results.trx" --environment IOTHUB_CONNECTION_STRING=$env:IOTHUB_CONNECTION_STRING --environment IOT_DPS_CONNECTION_STRING=$env:IOT_DPS_CONNECTION_STRING --environment IOT_DPS_ID_SCOPE=$env:IOT_DPS_ID_SCOPE --environment IOT_DPS_INDIVIDUAL_X509_CERTIFICATE=$env:IOT_DPS_INDIVIDUAL_X509_CERTIFICATE  --environment IOT_DPS_INDIVIDUAL_X509_KEY=$env:IOT_DPS_INDIVIDUAL_X509_KEY --environment IOT_DPS_INDIVIDUAL_REGISTRATION_ID=$env:IOT_DPS_INDIVIDUAL_REGISTRATION_ID  -- xunit.parallelizeAssembly=true
+          dotnet test ./dotnet/Project.slnx --collect:"XPlat Code Coverage" --logger:"trx;LogFileName=test-results.trx" --environment IOTHUB_CONNECTION_STRING=$env:IOTHUB_CONNECTION_STRING --environment IOT_DPS_CONNECTION_STRING=$env:IOT_DPS_CONNECTION_STRING --environment IOT_DPS_ID_SCOPE=$env:IOT_DPS_ID_SCOPE  -- xunit.parallelizeAssembly=true
 
     - name: Microsoft.Azure.Devices.Client.IntegrationTests Package Code Coverage
       uses: irongut/CodeCoverageSummary@v1.3.0
