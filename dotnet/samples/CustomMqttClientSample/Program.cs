@@ -1,6 +1,7 @@
 ﻿using Microsoft.Azure.Devices.Client;
 using Microsoft.Azure.Devices.Client.Mqtt;
 using Microsoft.Azure.Devices.Client.MQTTnetAdapter;
+using Microsoft.Azure.Devices.Client.Provisioning;
 using SetupSampleDevice;
 using System.Diagnostics;
 

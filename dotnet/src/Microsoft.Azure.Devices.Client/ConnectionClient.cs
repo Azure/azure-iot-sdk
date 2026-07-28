@@ -10,6 +10,7 @@ using Microsoft.Azure.Devices.Client.Retry;
 using Microsoft.Azure.Devices.Client.Twin;
 using System.Collections.Concurrent;
 using System.ComponentModel;
+using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
 
 namespace Microsoft.Azure.Devices.Client
@@ -89,7 +90,27 @@ namespace Microsoft.Azure.Devices.Client
                 IssuedClientCertificates = provisioningResult.IssuedClientCertificateChain,                
             };
 
-            CurrentConnectionContext.InitialTwinPush = await ConnectAsync(CurrentConnectionContext, authentication, twinOptions, cancellationToken);
+            X509AuthenticationProvider hubAuthenticationProvider;
+
+            // If CSR was a part of the provisioning request, then connect to IoT hub using the issued client certificates rather than the same certs used to connect to DPS.
+            if (provisioningResult.IssuedClientCertificateChain != null && provisioningResult.IssuedClientCertificateChain.Count > 0)
+            {
+                // Convert to PEM and save
+                string pemChain = CertificateUtilities.ConvertToPem(provisioningResult.IssuedClientCertificateChain);
+
+                using X509Certificate2 deviceCertTemp = CertificateUtilities.CreateCertificateWithPrivateKey(provisioningResult.IssuedClientCertificateChain, provisioningSettings.CertificateSigningRequest!.PrivateKey);
+
+                // Export and reimport with Exportable flag
+                byte[] pfxBytes = deviceCertTemp.Export(X509ContentType.Pfx);
+                hubAuthenticationProvider = new(new X509Certificate2(pfxBytes, (string?)null, X509KeyStorageFlags.Exportable));
+            }
+            else
+            {
+                // Otherwise use the same certs when connecting to IoT hub that were used to connect to DPS
+                hubAuthenticationProvider = authentication;
+            }
+
+            CurrentConnectionContext.InitialTwinPush = await ConnectAsync(CurrentConnectionContext, hubAuthenticationProvider, twinOptions, cancellationToken);
 
             return CurrentConnectionContext;
         }

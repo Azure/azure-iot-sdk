@@ -1,6 +1,6 @@
 ﻿using System.Text.Json.Nodes;
 
-namespace Microsoft.Azure.Devices.Client
+namespace Microsoft.Azure.Devices.Client.Provisioning
 {
     public class ProvisioningSettings
     {
@@ -17,6 +17,6 @@ namespace Microsoft.Azure.Devices.Client
 
         public JsonNode? ProvisioningPayload { get; set; }
 
-        public string ProvisioningCertificateSigningRequest { get; set; }
+        public ProvisioningCertificateSigningRequest? CertificateSigningRequest { get; set; }
     }
 }

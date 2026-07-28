@@ -1,5 +1,6 @@
 ﻿using Microsoft.Azure.Devices.Client;
 using Microsoft.Azure.Devices.Client.CertificateManagement;
+using Microsoft.Azure.Devices.Client.Provisioning;
 using SetupSampleDevice;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;

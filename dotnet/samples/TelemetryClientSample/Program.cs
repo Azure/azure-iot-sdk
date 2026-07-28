@@ -1,4 +1,5 @@
 ﻿using Microsoft.Azure.Devices.Client;
+using Microsoft.Azure.Devices.Client.Provisioning;
 using Microsoft.Azure.Devices.Client.Telemetry;
 using Microsoft.Azure.Devices.Client.Twin;
 using SetupSampleDevice;

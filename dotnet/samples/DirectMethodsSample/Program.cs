@@ -1,6 +1,7 @@
 ﻿using DirectMethodsClientSample;
 using Microsoft.Azure.Devices.Client;
 using Microsoft.Azure.Devices.Client.DirectMethods;
+using Microsoft.Azure.Devices.Client.Provisioning;
 using SetupSampleDevice;
 using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
