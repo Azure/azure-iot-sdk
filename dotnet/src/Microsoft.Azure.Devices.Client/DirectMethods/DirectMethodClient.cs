@@ -15,6 +15,8 @@ namespace Microsoft.Azure.Devices.Client.DirectMethods
     /// </summary>
     public class DirectMethodClient : IDisposable
     {
+        private const string ProtobufContentType = "application/protobuf";
+
         internal const string ClassicDirectMethodsRequestTopic = "$iothub/methods/POST/";
         private const string ClassicDirectMethodsResponseTopicFormat = "$iothub/methods/res/{0}/?$rid={1}";
         private const string RequestIdTopicKey = "$rid";
@@ -163,6 +165,7 @@ namespace Microsoft.Azure.Devices.Client.DirectMethods
                     Payload = probeAck.ToByteArray(),
                     CorrelationData = publish.CorrelationData,
                     MessageExpiryInterval = remainingConnectTimeoutInSeconds,
+                    ContentType = ProtobufContentType
                 };
 
                 probeAckPublish.UserProperties.Add(new("type", Encoding.UTF8.GetBytes("probe-ack:1")));
@@ -253,6 +256,7 @@ namespace Microsoft.Azure.Devices.Client.DirectMethods
                     Payload = result.ToByteArray(),
                     CorrelationData = publish.CorrelationData,
                     MessageExpiryInterval = remainingResponseTimeoutInSeconds,
+                    ContentType = ProtobufContentType
                 };
 
                 resultPublish.UserProperties.Add(new("type", Encoding.UTF8.GetBytes("result:1")));

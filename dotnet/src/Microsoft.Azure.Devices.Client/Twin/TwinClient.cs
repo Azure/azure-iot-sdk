@@ -17,6 +17,8 @@ namespace Microsoft.Azure.Devices.Client.Twin
     /// </summary>
     public class TwinClient : IDisposable
     {
+        private const string ProtobufContentType = "application/protobuf";
+
         private IConnectionClient _connection;
 
         // Response topics to subscribe to
@@ -136,6 +138,7 @@ namespace Microsoft.Azure.Devices.Client.Twin
                         IfNotMatchDesired = ifNotMatchDesired,
                         IfNotMatchReported = ifNotMatchReported,
                     }.ToByteArray(),
+                    ContentType = ProtobufContentType,
                 };
 
                 publish.UserProperties.Add(new("type", Encoding.UTF8.GetBytes("get:1")));
@@ -196,6 +199,7 @@ namespace Microsoft.Azure.Devices.Client.Twin
                         IfMatch = patch.IfMatch,
                         Payload = ByteString.CopyFromUtf8(JsonSerializer.Serialize(patch.ReportedProperties))
                     }.ToByteArray(),
+                    ContentType = ProtobufContentType,
                 };
 
                 publish.UserProperties.Add(new("type", Encoding.UTF8.GetBytes("reported-patch:1")));
