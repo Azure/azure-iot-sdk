@@ -391,9 +391,10 @@ typedef struct
     az_iot_result status;
 } patch_ack_ctx;
 
-static void on_patch_ack(az_iot_result status, void* user_ctx)
+static void on_patch_ack(az_iot_result status, const az_iot_twin_patch_result* result, void* user_ctx)
 {
     patch_ack_ctx* p = (patch_ack_ctx*)user_ctx;
+    (void)result;
     p->status = status;
     p->done = 1;
 }

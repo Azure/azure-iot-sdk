@@ -90,6 +90,20 @@ bool az_iot_connection_client__is_connected(
 const char* az_iot_connection_client__device_id(
     const az_iot_connection_client* client);
 
+/* Fill `out` with a fresh 16-byte RFC 4122 version 4 UUID from the client's
+ * PRNG. Feature clients use this for the per-attempt Correlation Data that the
+ * AEG request/response flows (twin GET, reported patch, ...) require. */
+void az_iot_connection_client__gen_uuid(
+    az_iot_connection_client* client, uint8_t out[16]);
+
+/* Copy the current connection's birth nonce into `out`. Backend-initiated
+ * dev-bound messages (twin-push, desired-patch) carry it as Correlation Data so
+ * the device can tell traffic for this connection from traffic left over from a
+ * defunct one. Returns AZ_IOT_ERR_NOT_CONNECTED when no presence handshake has
+ * completed on this connection (Classic/DPS sessions included). */
+az_iot_result az_iot_connection_client__presence_nonce(
+    const az_iot_connection_client* client, uint8_t out[16]);
+
 /* Publish through the active adapter. Returns ERR_NOT_CONNECTED when not in
  * CONNECTED state. For QoS 1, callers may pass a non-NULL ack_cb; it is
  * invoked synchronously from inside do_work() when the matching PUBLISH_ACK

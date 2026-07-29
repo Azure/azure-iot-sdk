@@ -40,6 +40,7 @@
 #include "internal/dispatch.h"
 #include "internal/log_internal.h"
 #include "internal/protocol_profile.h"
+#include "internal/proto3.h"
 #include "internal/reconnect.h"
 
 #include <azure/az_core.h>
@@ -671,15 +672,13 @@ static void dps_apply_deferred(az_iot_connection_client* c)
 /* A stalled handshake is timed out from do_work().                            */
 /* ------------------------------------------------------------------------- */
 
-/* Fill `out` with the per-connection nonce: a fresh RFC 4122 version 4 UUID,
- * regenerated on every CONNECT attempt (not per successful CONNACK). It is
- * echoed on the birth-ack so the SDK can discard acks from a prior attempt.
- * Uses the same LCG as the CSR request-id generator, advanced through the
- * client's rng_state and salted by the attempt count so successive attempts
- * never collide. */
-static void presence_gen_nonce(az_iot_connection_client* c, uint8_t out[PRESENCE_NONCE_LEN])
+/* Fill `out` with a fresh RFC 4122 version 4 UUID drawn from the client's PRNG.
+ * Uses the same LCG as the CSR request-id generator, advanced through
+ * rng_state and salted by the attempt count so successive draws never collide.
+ * Uniqueness (not cryptographic strength) is what these identifiers need. */
+static void gen_uuid_v4(az_iot_connection_client* c, uint8_t out[16])
 {
-    for (size_t i = 0; i < PRESENCE_NONCE_LEN; i += 8)
+    for (size_t i = 0; i < 16u; i += 8)
     {
         uint64_t x = az_iot_time_mono_ms()
                    ^ (c->rng_state * 6364136223846793005ull + 1442695040888963407ull)
@@ -689,11 +688,18 @@ static void presence_gen_nonce(az_iot_connection_client* c, uint8_t out[PRESENCE
             out[i + b] = (uint8_t)(x >> (b * 8u));
     }
 
-    /* Stamp the RFC 4122 version (4 = random) and variant (10xx) bits so the
-     * nonce is a well-formed UUID, which is what the presence protocol
-     * specifies and what the .NET client produces via Guid.NewGuid(). */
+    /* Stamp the RFC 4122 version (4 = random) and variant (10xx) bits. */
     out[6] = (uint8_t)((out[6] & 0x0Fu) | 0x40u);
     out[8] = (uint8_t)((out[8] & 0x3Fu) | 0x80u);
+}
+
+/* Fill `out` with the per-connection nonce: a fresh UUID regenerated on every
+ * CONNECT attempt (not per successful CONNACK). It is echoed on the birth-ack
+ * so the SDK can discard acks from a prior attempt, and it tags the
+ * backend-initiated dev-bound traffic belonging to this connection. */
+static void presence_gen_nonce(az_iot_connection_client* c, uint8_t out[PRESENCE_NONCE_LEN])
+{
+    gen_uuid_v4(c, out);
 }
 
 /* Build the Hub-Next (AEG) CONNECT username. The IoT Hub auth webhook denies a
@@ -745,27 +751,6 @@ static size_t presence_encode_birth(uint8_t* out, size_t cap, bool session_prese
     return n;
 }
 
-/* Read a proto3 varint from buf[*pos]. Returns false on a truncated or
- * over-long (> 10 byte) encoding, which ends parsing of the message. */
-static bool presence_read_varint(const uint8_t* buf, size_t len, size_t* pos, uint64_t* out)
-{
-    uint64_t v = 0;
-    unsigned shift = 0;
-    while (*pos < len)
-    {
-        uint8_t b = buf[(*pos)++];
-        if (shift < 64u) v |= ((uint64_t)(b & 0x7Fu)) << shift;
-        if ((b & 0x80u) == 0)
-        {
-            *out = v;
-            return true;
-        }
-        shift += 7u;
-        if (shift > 63u) return false;
-    }
-    return false;
-}
-
 /* Decode the twin recovery state the service returns on the birth-ack
  * (common/Protos/presence.proto BirthAck): desired_version (field 10) and
  * reported_version (field 11), both varints. These are the authoritative
@@ -783,28 +768,21 @@ static void presence_decode_birth_ack(az_iot_connection_client* c,
     size_t pos = 0;
     while (pos < len)
     {
-        uint64_t key = 0;
-        if (!presence_read_varint(buf, len, &pos, &key)) return;
-        uint64_t field = key >> 3;
-        uint8_t wire = (uint8_t)(key & 0x07u);
+        uint32_t field = 0;
+        uint8_t wire = 0;
+        if (!az_iot_proto3_read_tag(buf, len, &pos, &field, &wire)) return;
 
-        if (wire == 0) /* varint */
+        if (wire == AZ_IOT_PROTO3_WIRE_VARINT && (field == 10u || field == 11u))
         {
             uint64_t v = 0;
-            if (!presence_read_varint(buf, len, &pos, &v)) return;
+            if (!az_iot_proto3_read_varint(buf, len, &pos, &v)) return;
             if (field == 10u) c->presence.desired_version = v;
-            else if (field == 11u) c->presence.reported_version = v;
+            else c->presence.reported_version = v;
         }
-        else if (wire == 2) /* length-delimited */
+        else if (!az_iot_proto3_skip_field(buf, len, &pos, wire))
         {
-            uint64_t n = 0;
-            if (!presence_read_varint(buf, len, &pos, &n)) return;
-            if (n > (uint64_t)(len - pos)) return;
-            pos += (size_t)n;
+            return;
         }
-        else if (wire == 5) { if (len - pos < 4u) return; pos += 4u; }  /* 32-bit */
-        else if (wire == 1) { if (len - pos < 8u) return; pos += 8u; }  /* 64-bit */
-        else return; /* groups (3/4) and unknown wire types: stop */
     }
 }
 
@@ -1692,6 +1670,24 @@ az_iot_result az_iot_connection_client__presence_twin_versions(
 
     *out_desired_version = client->presence.desired_version;
     *out_reported_version = client->presence.reported_version;
+    return AZ_IOT_OK;
+}
+
+void az_iot_connection_client__gen_uuid(
+    az_iot_connection_client* client, uint8_t out[16])
+{
+    if (!client || !out) return;
+    gen_uuid_v4(client, out);
+}
+
+az_iot_result az_iot_connection_client__presence_nonce(
+    const az_iot_connection_client* client, uint8_t out[16])
+{
+    if (!client || !out) return AZ_IOT_ERR_INVALID_ARG;
+    if (client->presence.phase != AZ_IOT_PRESENCE_PHASE_DONE)
+        return AZ_IOT_ERR_NOT_CONNECTED;
+
+    memcpy(out, client->presence.nonce, 16u);
     return AZ_IOT_OK;
 }
 

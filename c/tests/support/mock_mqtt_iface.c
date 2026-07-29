@@ -186,6 +186,7 @@ static az_iot_result mock_publish(az_iot_mqtt_client* self, const az_iot_mqtt_me
          * birth tests can read the client's nonce and assert the message type. */
         copy_bytes(c->correlation_data, sizeof(c->correlation_data),
                    msg->correlation_data, msg->correlation_data_len, &c->correlation_data_len);
+        copy_str(c->content_type, sizeof(c->content_type), msg->content_type);
         for (size_t i = 0; i < msg->user_properties_count; ++i)
         {
             const az_iot_mqtt_user_property* up = &msg->user_properties[i];

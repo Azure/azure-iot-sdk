@@ -967,17 +967,29 @@ static void on_desired(
 
 /* Initial twin GET response: a deployment may already be sitting in the desired
  * properties (e.g. the device was offline when it was created, so no push will
- * arrive). The GET payload is the full twin document
- *   { "desired": { "deviceUpdate": {...}, "$version": N }, "reported": {...} }.
- * Extract the raw "desired" object and feed it through the same path as a push. */
+ * arrive).
+ *
+ * IoT Hub Next returns the desired section on its own, so it goes straight
+ * through. Classic returns the full twin document
+ *   { "desired": { "deviceUpdate": {...}, "$version": N }, "reported": {...} }
+ * so the raw "desired" object is extracted first. Both then feed the same path
+ * as a desired push. */
 static void on_initial_twin_get(
-    az_iot_result status, const uint8_t* twin_payload, size_t twin_payload_len, void* user_ctx)
+    az_iot_result status, const az_iot_twin_state* twin, void* user_ctx)
 {
     az_iot_adu_client_t* client = (az_iot_adu_client_t*)user_ctx;
     if (client == NULL || ADU_I(client).detached) return;
-    if (status != AZ_IOT_OK || twin_payload == NULL || twin_payload_len == 0) return;
+    if (status != AZ_IOT_OK || twin == NULL) return;
 
-    az_span doc = az_span_create((uint8_t*)(uintptr_t)twin_payload, (int32_t)twin_payload_len);
+    if (twin->desired.payload != NULL && twin->desired.payload_len > 0)
+    {
+        process_desired_patch(client, twin->desired.payload, twin->desired.payload_len);
+        return;
+    }
+
+    if (twin->document == NULL || twin->document_len == 0) return;
+
+    az_span doc = az_span_create((uint8_t*)(uintptr_t)twin->document, (int32_t)twin->document_len);
     az_json_reader jr;
     if (az_result_failed(az_json_reader_init(&jr, doc, NULL))) return;
     if (az_result_failed(az_json_reader_next_token(&jr))) return;

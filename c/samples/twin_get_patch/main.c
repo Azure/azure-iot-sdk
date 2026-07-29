@@ -48,20 +48,40 @@ static void on_conn_state(az_iot_connection_state s, az_iot_result reason, void*
     ((user_context*)user_ctx)->conn_state = s;
 }
 
-static void on_get(az_iot_result status, const uint8_t* body, size_t len, void* user_ctx)
+static void on_get(az_iot_result status, const az_iot_twin_state* twin, void* user_ctx)
 {
     user_context* ctx = (user_context*)user_ctx;
     ctx->get_status = status;
     ctx->get_done = 1;
-    if (status == AZ_IOT_OK)
-        printf("twin GET: %.*s\n", (int)len, (const char*)body);
+    if (status != AZ_IOT_OK || twin == NULL) return;
+
+    /* Classic returns one document; Hub-Next returns the sections separately,
+     * each with its authoritative version. */
+    if (twin->document)
+    {
+        printf("twin GET: %.*s\n", (int)twin->document_len, (const char*)twin->document);
+        return;
+    }
+    printf("twin GET desired (v%llu): %.*s\n",
+           (unsigned long long)twin->desired.version,
+           (int)twin->desired.payload_len,
+           twin->desired.payload ? (const char*)twin->desired.payload : "");
+    printf("twin GET reported (v%llu): %.*s\n",
+           (unsigned long long)twin->reported.version,
+           (int)twin->reported.payload_len,
+           twin->reported.payload ? (const char*)twin->reported.payload : "");
 }
 
-static void on_patch(az_iot_result status, void* user_ctx)
+static void on_patch(az_iot_result status, const az_iot_twin_patch_result* result, void* user_ctx)
 {
     user_context* ctx = (user_context*)user_ctx;
     ctx->patch_status = status;
     ctx->patch_done = 1;
+    if (status == AZ_IOT_OK && result && result->status != AZ_IOT_TWIN_PATCH_OK)
+    {
+        printf("twin PATCH rejected: status=%d (authoritative version %llu)\n",
+               (int)result->status, (unsigned long long)result->version);
+    }
 }
 
 int main(void)

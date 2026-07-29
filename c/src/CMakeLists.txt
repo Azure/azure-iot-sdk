@@ -11,6 +11,7 @@ add_library(az_iot_core
     core/reconnect.c
     core/dispatch.c
     core/protocol_profile.c
+    core/proto3.c
     core/certificate_provider_pem.c
     features/twin/twin_client.c
     features/direct_method/direct_method_client.c

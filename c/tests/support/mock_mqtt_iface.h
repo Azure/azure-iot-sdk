@@ -61,6 +61,7 @@ typedef struct az_iot_mock_call
     uint8_t correlation_data[64];
     size_t  correlation_data_len;
     char    user_type[64];         /* value of the "type" User Property, "" if none */
+    char    content_type[64];      /* PUBLISH content type, "" if none */
     char    username[256];         /* CONNECT username, "" if none */
 } az_iot_mock_call;
 
