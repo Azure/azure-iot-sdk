@@ -311,7 +311,48 @@ static void paho_trace_callback(enum MQTTASYNC_TRACE_LEVELS level, char* message
     fprintf(stderr, "[paho-trace] (%d) %s\n", (int)level, message ? message : "");
 }
 
-/* Enable Paho's library-level trace logging when AZ_IOT_PAHO_TRACE is set.
+/* OpenSSL error handler wired into MQTTAsync_SSLOptions.ssl_error_cb. On a failed
+ * TLS handshake Paho routes each OpenSSL error-queue line here (bad certificate,
+ * chain/verify failure, protocol or cipher mismatch, ...), giving a concrete
+ * reason instead of a generic connect failure. Enabled whenever AZ_IOT_PAHO_TRACE
+ * is set. */
+static int paho_ssl_error_callback(const char* str, size_t len, void* u)
+{
+    (void)len; (void)u;
+    fprintf(stderr, "[paho-ssl] %s", str ? str : "");
+    return 1; /* keep draining the remaining OpenSSL error-queue lines */
+}
+
+/* Maps AZ_IOT_PAHO_TRACE to a Paho trace level, or returns -1 when unset/empty
+ * (tracing disabled). Case-insensitive keywords, least to most verbose:
+ * "error", "protocol", "min"/"minimum", "medium", "max"/"maximum". Any other
+ * non-empty value (e.g. "1", "on") defaults to MINIMUM for backward compat. */
+static int paho_trace_level_from_env(void)
+{
+    char buf[16];
+#if defined(_WIN32)
+    size_t len = 0;
+    if (getenv_s(&len, buf, sizeof(buf), "AZ_IOT_PAHO_TRACE") != 0 || len == 0) return -1;
+#else
+    const char* env = getenv("AZ_IOT_PAHO_TRACE");
+    if (!env || !env[0]) return -1;
+    size_t i = 0;
+    for (; env[i] && i + 1 < sizeof(buf); ++i) buf[i] = env[i];
+    buf[i] = '\0';
+#endif
+    for (char* p = buf; *p; ++p)
+        if (*p >= 'A' && *p <= 'Z') *p = (char)(*p - 'A' + 'a');
+
+    if (strcmp(buf, "max") == 0 || strcmp(buf, "maximum") == 0) return MQTTASYNC_TRACE_MAXIMUM;
+    if (strcmp(buf, "medium") == 0)                             return MQTTASYNC_TRACE_MEDIUM;
+    if (strcmp(buf, "protocol") == 0)                           return MQTTASYNC_TRACE_PROTOCOL;
+    if (strcmp(buf, "error") == 0)                              return MQTTASYNC_TRACE_ERROR;
+    return MQTTASYNC_TRACE_MINIMUM; /* "min"/"minimum"/"1"/anything else */
+}
+
+/* Enable Paho's library-level trace logging when AZ_IOT_PAHO_TRACE is set. The
+ * value selects verbosity (see paho_trace_level_from_env); the same variable also
+ * turns on verbose OpenSSL TLS error reporting via ssl_error_cb in connect().
  * Useful for diagnosing "connection lost: (unknown)" - the trace reveals the
  * underlying cause (socket error, server DISCONNECT, keep-alive timeout, etc.).
  * Idempotent: the callback/level are only installed once per process. */
@@ -321,17 +362,11 @@ static void paho_maybe_enable_trace(void)
     if (s_trace_initialized) return;
     s_trace_initialized = true;
 
-#if defined(_WIN32)
-    char buf[16];
-    size_t len = 0;
-    if (getenv_s(&len, buf, sizeof(buf), "AZ_IOT_PAHO_TRACE") != 0 || len == 0) return;
-#else
-    const char* env = getenv("AZ_IOT_PAHO_TRACE");
-    if (!env || !env[0]) return;
-#endif
+    int level = paho_trace_level_from_env();
+    if (level < 0) return;
 
     MQTTAsync_setTraceCallback(paho_trace_callback);
-    MQTTAsync_setTraceLevel(MQTTASYNC_TRACE_MINIMUM);
+    MQTTAsync_setTraceLevel((enum MQTTASYNC_TRACE_LEVELS)level);
 }
 
 static void paho_connect_success(void* context, MQTTAsync_successData* response)
@@ -408,8 +443,20 @@ static void paho_connect_failure5(void* context, MQTTAsync_failureData5* respons
 static void paho_subscribe_success5(void* context, MQTTAsync_successData5* response)
 {
     paho_client* m = (paho_client*)context;
+    if (!m) return;
     uint16_t pid = response ? (uint16_t)response->token : 0;
-    if (m) enqueue_status(m, AZ_IOT_MQTT_EVT_SUBSCRIBE_ACK, AZ_IOT_OK, pid);
+    /* Honor the MQTT5 SUBACK reason code. A granted subscription returns the
+     * granted QoS (0..2); a value >= 0x80 (e.g. 0x87 Not authorized, 0x8F Topic
+     * filter invalid) is a refusal. Paho invokes onSuccess5 whenever a SUBACK
+     * arrives regardless of the code, so without this check a denied
+     * subscription would be reported to the core as a successful one. */
+    az_iot_result status = AZ_IOT_OK;
+    if (response && (int)response->reasonCode >= 0x80)
+    {
+        fprintf(stderr, "[paho] SUBACK refused: reason_code=%d\n", (int)response->reasonCode);
+        status = AZ_IOT_ERR_MQTT;
+    }
+    enqueue_status(m, AZ_IOT_MQTT_EVT_SUBSCRIBE_ACK, status, pid);
 }
 
 static void paho_subscribe_failure5(void* context, MQTTAsync_failureData5* response)
@@ -463,8 +510,15 @@ static az_iot_result paho_iface_connect(az_iot_mqtt_client* self, const az_iot_m
     if (!self || !opts || !opts->host || !opts->client_id) return AZ_IOT_ERR_INVALID_ARG;
     paho_client* m = paho_self(self);
 
-    /* Determine whether to use SSL based on TLS options being populated. */
-    bool use_ssl = (opts->tls.client_cert_path != NULL);
+    /* Use TLS when any TLS material or server verification is requested: a
+     * client identity (cert), a server trust anchor (CA), their in-memory PEM
+     * variants, or an explicit verify_server. Keying off client_cert_path alone
+     * would wrongly fall back to plaintext for server-auth-only connections. */
+    bool use_ssl = opts->tls.client_cert_path != NULL
+                || opts->tls.client_cert_pem  != NULL
+                || opts->tls.trusted_ca_path  != NULL
+                || opts->tls.trusted_ca_pem   != NULL
+                || opts->tls.verify_server;
 
     /* (Re)build the underlying Paho handle. */
     if (m->paho)
@@ -503,10 +557,14 @@ static az_iot_result paho_iface_connect(az_iot_mqtt_client* self, const az_iot_m
         ssl_opts.privateKey         = opts->tls.client_key_path;
         ssl_opts.privateKeyPassword = opts->tls.client_key_password;
         ssl_opts.enableServerCertAuth = opts->tls.verify_server ? 1 : 0;
-        fprintf(stderr, "[paho] SSL: trustStore=%s keyStore=%s privateKey=%s\n",
+        /* AZ_IOT_PAHO_TRACE also enables detailed OpenSSL handshake error output. */
+        if (paho_trace_level_from_env() >= 0)
+            ssl_opts.ssl_error_cb = paho_ssl_error_callback;
+        fprintf(stderr, "[paho] SSL: trustStore=%s keyStore=%s privateKey=%s verboseErrors=%s\n",
             ssl_opts.trustStore ? ssl_opts.trustStore : "(null)",
             ssl_opts.keyStore ? ssl_opts.keyStore : "(null)",
-            ssl_opts.privateKey ? ssl_opts.privateKey : "(null)");
+            ssl_opts.privateKey ? ssl_opts.privateKey : "(null)",
+            ssl_opts.ssl_error_cb ? "on" : "off");
     }
 #else
     if (use_ssl)

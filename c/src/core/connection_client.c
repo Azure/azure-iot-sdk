@@ -33,6 +33,7 @@
 #include "azure/iot/az_iot_connection_client.h"
 #include "azure/iot/az_iot_mqtt_iface.h"
 #include "azure/iot/az_iot_result.h"
+#include "azure/iot/az_iot_version.h"
 
 #include "internal/cert_util.h"
 #include "internal/connection_client_internal.h"
@@ -84,6 +85,35 @@
 #define CERT_CHAIN_MAX_CERTS   6u
 
 /* ------------------------------------------------------------------------- */
+/* AEG/Hub-Next presence (birth) handshake wire constants. Mirrors the .NET    */
+/* SDK's ConnectToAzureEventGridIotHubAsync and common/Protos/presence.proto.  */
+/* ------------------------------------------------------------------------- */
+#define PRESENCE_PHASE_NONE        AZ_IOT_PRESENCE_PHASE_NONE
+#define PRESENCE_PHASE_SUBSCRIBING AZ_IOT_PRESENCE_PHASE_SUBSCRIBING
+#define PRESENCE_PHASE_BIRTH       AZ_IOT_PRESENCE_PHASE_BIRTH
+#define PRESENCE_PHASE_DONE        AZ_IOT_PRESENCE_PHASE_DONE
+
+/* Device publishes the birth message here; the birth-ack arrives on dev/. */
+#define PRESENCE_TOPIC_SRV_FMT     "ih/%s/srv/presence"
+#define PRESENCE_TOPIC_DEV_FMT     "ih/%s/dev/presence"
+/* The device subscribes to the whole dev/# space (per RFC topics.md and the
+ * .NET SDK) rather than the narrower dev/presence: one subscription that AEG's
+ * topic-space authorization is guaranteed to grant and that also covers the
+ * other device-bound feature topics. The birth-ack is still matched by its
+ * exact dev/presence topic. */
+#define PRESENCE_TOPIC_DEV_SUB_FMT "ih/%s/dev/#"
+/* MQTT v5 User Property key carrying the message type, plus the value we send
+ * and the type we match. The service stamps "<type>:<schemaVersion>"; the
+ * schema suffix is ignored when matching the birth-ack. */
+#define PRESENCE_TYPE_KEY        "type"
+#define PRESENCE_TYPE_BIRTH      "birth:1"
+#define PRESENCE_TYPE_BIRTH_ACK  "birth-ack"
+/* Connection nonce carried as MQTT v5 Correlation Data on the birth PUBLISH and
+ * echoed unchanged on the birth-ack. 16 bytes matches the .NET GUID nonce. */
+#define PRESENCE_NONCE_LEN       16u
+
+
+/* ------------------------------------------------------------------------- */
 /* helpers                                                                   */
 /* ------------------------------------------------------------------------- */
 
@@ -132,6 +162,9 @@ static void teardown_active(az_iot_connection_client* c)
         c->active_client->iface->destroy(c->active_client);
     }
     c->active_client = NULL;
+    /* Abandon any in-flight AEG presence (birth) handshake: it belonged to the
+     * now-destroyed session and must restart from CONNACK on the next connect. */
+    c->presence.phase = PRESENCE_PHASE_NONE;
     /* Drop any pending PUBACK correlation entries: the packet_ids belonged to
      * the now-destroyed adapter session and won't be reused. Callers waiting
      * on these acks won't be notified, which matches the at-least-once
@@ -624,6 +657,207 @@ static void dps_apply_deferred(az_iot_connection_client* c)
     }
 }
 
+/* ------------------------------------------------------------------------- */
+/* AEG/Hub-Next presence (birth) handshake                                    */
+/*                                                                           */
+/* On a HUB_NEXT (MQTT v5) session the connection is not "up" at CONNACK: the  */
+/* device must announce presence by publishing a birth message and waiting for */
+/* a birth-ack before the SDK reports CONNECTED. Classic/DPS sessions skip all */
+/* of this. Sequenced as a small sub-state machine driven from on_mqtt_event:  */
+/*   CONNACK  -> SUBSCRIBE ih/{id}/dev/#                  (phase SUBSCRIBING)   */
+/*   SUBACK   -> PUBLISH   ih/{id}/srv/presence (birth)   (phase BIRTH)         */
+/*   birth-ack MESSAGE on ih/{id}/dev/presence, matching nonce                  */
+/*                                     -> announce CONNECTED (phase DONE)       */
+/* A stalled handshake is timed out from do_work().                            */
+/* ------------------------------------------------------------------------- */
+
+/* Fill `out` with a per-connection nonce. Uniqueness (not cryptographic
+ * strength) is what matters: it is echoed on the birth-ack so the SDK can
+ * discard acks from a prior attempt. Uses the same LCG as the CSR request-id
+ * generator, advanced through the client's rng_state and salted by the attempt
+ * count so successive attempts never collide. */
+static void presence_gen_nonce(az_iot_connection_client* c, uint8_t out[PRESENCE_NONCE_LEN])
+{
+    for (size_t i = 0; i < PRESENCE_NONCE_LEN; i += 8)
+    {
+        uint64_t x = az_iot_time_mono_ms()
+                   ^ (c->rng_state * 6364136223846793005ull + 1442695040888963407ull)
+                   ^ ((uint64_t)(c->reconnect_attempt + 1u) << 40);
+        c->rng_state = x;
+        for (size_t b = 0; b < 8u; ++b)
+            out[i + b] = (uint8_t)(x >> (b * 8u));
+    }
+}
+
+/* Build the Hub-Next (AEG) CONNECT username. The IoT Hub auth webhook denies a
+ * connect with an empty username (WebhookAuthUserNameMissing), so the SDK sends
+ * "correlationId=<hex nonce>&clientVersion=c%2F<version>", mirroring the .NET
+ * SDK. correlationId is the uppercase hex of the 16-byte connection nonce; the
+ * SAME nonce bytes ride the birth message as raw Correlation Data so the
+ * service can correlate the CONNECT with the birth.
+ *
+ * Returns false if `cap` (AZ_IOT_MQTT_USERNAME_BUF) cannot hold the whole
+ * username; `buf` is left unusable and the caller must fail the attempt. */
+static bool presence_build_username(const az_iot_connection_client* c, char* buf, size_t cap)
+{
+    static const char hexdigits[] = "0123456789ABCDEF";
+    char hex[PRESENCE_NONCE_LEN * 2u + 1u];
+    for (size_t i = 0; i < PRESENCE_NONCE_LEN; ++i)
+    {
+        hex[i * 2u]      = hexdigits[(c->presence.nonce[i] >> 4) & 0x0Fu];
+        hex[i * 2u + 1u] = hexdigits[c->presence.nonce[i] & 0x0Fu];
+    }
+    hex[PRESENCE_NONCE_LEN * 2u] = '\0';
+
+    /* clientVersion is URL-escaped as in the .NET SDK: '/' -> %2F. The version
+     * string itself (digits + dots) needs no escaping. */
+    int n = snprintf(buf, cap, "correlationId=%s&clientVersion=c%%2F%s",
+                     hex, az_iot_version_string());
+
+    /* A truncated username is worse than none: it would carry a partial
+     * correlationId, so the service could not tie the CONNECT to the birth and
+     * the handshake would surface much later as an opaque birth-ack timeout.
+     * Report it here so the connect attempt fails with a precise reason. */
+    return n >= 0 && (size_t)n < cap;
+}
+
+/* Encode a proto3 Birth message (common/Protos/presence.proto) into `out`.
+ * proto3 omits default-valued fields, matching Google.Protobuf on the .NET
+ * side. We emit push_desired/push_reported (both true) and, when set,
+ * session_present; reported_version/desired_version stay 0 (the device does not
+ * persist twin state yet) and are omitted. Returns the encoded length. */
+static size_t presence_encode_birth(uint8_t* out, size_t cap, bool session_present)
+{
+    size_t n = 0;
+    if (session_present && n + 2u <= cap) { out[n++] = 0x08; out[n++] = 0x01; } /* f1  session_present */
+    if (n + 2u <= cap) { out[n++] = 0x60; out[n++] = 0x01; }                    /* f12 push_desired = true */
+    if (n + 2u <= cap) { out[n++] = 0x68; out[n++] = 0x01; }                    /* f13 push_reported = true */
+    return n;
+}
+
+/* Announce CONNECTED and (re)issue every persistent subscription so feature
+ * clients (DirectMethod, Twin, C2D) regain their inbound topic filters
+ * transparently across reconnects. SUBACK failures are absorbed for now. */
+static void announce_connected(az_iot_connection_client* c)
+{
+    transition(c, AZ_IOT_CONN_STATE_CONNECTED, AZ_IOT_OK);
+    if (c->active_client && c->active_client->iface)
+    {
+        for (size_t i = 0; i < AZ_IOT_MAX_PERSISTENT_SUBS; ++i)
+        {
+            if (!c->persistent_subs[i].in_use) continue;
+            uint16_t pid = 0;
+            (void)c->active_client->iface->subscribe(
+                c->active_client,
+                c->persistent_subs[i].topic_filter,
+                c->persistent_subs[i].qos,
+                &pid);
+        }
+    }
+}
+
+/* Begin the presence handshake after a successful HUB_NEXT CONNACK: subscribe
+ * to the device-bound topic space (dev/#) so the birth-ack can be received. */
+static az_iot_result presence_start(az_iot_connection_client* c, bool session_present)
+{
+    if (!c->active_client || !c->active_client->iface) return AZ_IOT_ERR_NOT_CONNECTED;
+
+    const char* device_id = c->opts.client_id ? c->opts.client_id : "";
+    char topic[AZ_IOT_PRESENCE_TOPIC_BUF];
+    int wn = snprintf(topic, sizeof(topic), PRESENCE_TOPIC_DEV_SUB_FMT, device_id);
+    if (wn < 0 || (size_t)wn >= sizeof(topic)) return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+
+    c->presence.session_present = session_present;
+    /* The connection nonce was generated at CONNECT time (start_connect_attempt)
+     * so it could ride the CONNECT username as correlationId; reuse it here as
+     * the birth Correlation Data. Do NOT regenerate it, or the username's
+     * correlationId and the birth would diverge and the service could not
+     * correlate them. */
+    c->presence.deadline_ms = az_iot_time_mono_ms() + AZ_IOT_PRESENCE_BIRTH_ACK_TIMEOUT_MS;
+
+    uint16_t pid = 0;
+    az_iot_result r = c->active_client->iface->subscribe(
+        c->active_client, topic, AZ_IOT_MQTT_QOS_1, &pid);
+    if (r != AZ_IOT_OK) return r;
+
+    c->presence.sub_packet_id = pid;
+    c->presence.phase = PRESENCE_PHASE_SUBSCRIBING;
+    return AZ_IOT_OK;
+}
+
+/* Publish the birth message once the dev/presence SUBSCRIBE is acked. Birth is
+ * QoS 0: the service acknowledges it with a full birth-ack PUBLISH rather than
+ * a PUBACK. The nonce rides as Correlation Data; "type"="birth:1" as a User
+ * Property. */
+static az_iot_result presence_publish_birth(az_iot_connection_client* c)
+{
+    if (!c->active_client || !c->active_client->iface) return AZ_IOT_ERR_NOT_CONNECTED;
+
+    const char* device_id = c->opts.client_id ? c->opts.client_id : "";
+    char topic[AZ_IOT_PRESENCE_TOPIC_BUF];
+    int wn = snprintf(topic, sizeof(topic), PRESENCE_TOPIC_SRV_FMT, device_id);
+    if (wn < 0 || (size_t)wn >= sizeof(topic)) return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+
+    uint8_t body[8];
+    size_t body_len = presence_encode_birth(body, sizeof(body), c->presence.session_present);
+
+    az_iot_mqtt_user_property type_prop = { PRESENCE_TYPE_KEY, PRESENCE_TYPE_BIRTH };
+
+    az_iot_mqtt_message msg = {0};
+    msg.topic = topic;
+    msg.payload = body;
+    msg.payload_len = body_len;
+    msg.qos = AZ_IOT_MQTT_QOS_0;
+    msg.user_properties = &type_prop;
+    msg.user_properties_count = 1;
+    msg.correlation_data = c->presence.nonce;
+    msg.correlation_data_len = PRESENCE_NONCE_LEN;
+
+    uint16_t pid = 0;
+    az_iot_result r = c->active_client->iface->publish(c->active_client, &msg, &pid);
+    if (r != AZ_IOT_OK) return r;
+
+    /* Give the birth-ack its own full window now that the birth is on the wire. */
+    c->presence.deadline_ms = az_iot_time_mono_ms() + AZ_IOT_PRESENCE_BIRTH_ACK_TIMEOUT_MS;
+    c->presence.phase = PRESENCE_PHASE_BIRTH;
+    return AZ_IOT_OK;
+}
+
+/* True when `msg` is the birth-ack for the in-flight handshake: it arrives on
+ * ih/{deviceId}/dev/presence, carries "type"="birth-ack[:*]", and echoes our
+ * connection nonce as Correlation Data. Non-matching acks (e.g. from a prior
+ * attempt) are ignored per presence.proto. */
+static bool presence_is_birth_ack(const az_iot_connection_client* c,
+                                  const az_iot_mqtt_message* msg)
+{
+    if (!msg || !msg->topic) return false;
+
+    const char* device_id = c->opts.client_id ? c->opts.client_id : "";
+    char topic[AZ_IOT_PRESENCE_TOPIC_BUF];
+    int wn = snprintf(topic, sizeof(topic), PRESENCE_TOPIC_DEV_FMT, device_id);
+    if (wn < 0 || (size_t)wn >= sizeof(topic)) return false;
+    if (strcmp(msg->topic, topic) != 0) return false;
+
+    if (msg->correlation_data_len != PRESENCE_NONCE_LEN
+        || msg->correlation_data == NULL
+        || memcmp(msg->correlation_data, c->presence.nonce, PRESENCE_NONCE_LEN) != 0)
+    {
+        return false;
+    }
+
+    for (size_t i = 0; i < msg->user_properties_count; ++i)
+    {
+        const az_iot_mqtt_user_property* up = &msg->user_properties[i];
+        if (!up->key || strcmp(up->key, PRESENCE_TYPE_KEY) != 0) continue;
+        if (!up->value) return false;
+        size_t n = strlen(PRESENCE_TYPE_BIRTH_ACK);
+        /* Match "birth-ack" exactly or "birth-ack:<schemaVersion>". */
+        return strncmp(up->value, PRESENCE_TYPE_BIRTH_ACK, n) == 0
+               && (up->value[n] == '\0' || up->value[n] == ':');
+    }
+    return false;
+}
+
 /* Inbound MQTT events are dispatched here (synchronously from process_loop). */
 static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
 {
@@ -635,27 +869,27 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
         case AZ_IOT_MQTT_EVT_CONNECTED:
             if (evt->status == AZ_IOT_OK)
             {
-                /* Successful CONNACK: clear the burst counter and announce. */
+                /* Successful CONNACK: clear the burst counter. */
                 c->reconnect_attempt = 0;
                 c->reconnect_due_ms = 0;
-                transition(c, AZ_IOT_CONN_STATE_CONNECTED, AZ_IOT_OK);
-                /* Re-issue every persistent subscription so feature clients
-                 * (DirectMethod, Twin) regain their inbound topic filters
-                 * transparently across reconnects. SUBACK failures are
-                 * absorbed for now; later phases may surface them. */
-                if (c->active_client && c->active_client->iface)
+
+                /* AEG/Hub-Next (MQTT v5): the connection is not usable until
+                 * presence is established. Kick off the birth handshake and
+                 * defer the CONNECTED announcement until the birth-ack arrives.
+                 * Classic (and DPS-assigned Classic) sessions announce now. */
+                if (c->session_role == AZ_IOT_MQTT_ROLE_HUB_NEXT)
                 {
-                    for (size_t i = 0; i < AZ_IOT_MAX_PERSISTENT_SUBS; ++i)
+                    az_iot_result pr = presence_start(c, evt->session_present);
+                    if (pr != AZ_IOT_OK)
                     {
-                        if (!c->persistent_subs[i].in_use) continue;
-                        uint16_t pid = 0;
-                        (void)c->active_client->iface->subscribe(
-                            c->active_client,
-                            c->persistent_subs[i].topic_filter,
-                            c->persistent_subs[i].qos,
-                            &pid);
+                        c->presence.phase = PRESENCE_PHASE_NONE;
+                        c->deferred = (reconnect_enabled(c) && !c->user_close) ? DEFER_RECONNECT : DEFER_FAULT;
+                        c->deferred_reason = pr;
                     }
+                    break;
                 }
+
+                announce_connected(c);
             }
             else
             {
@@ -691,6 +925,15 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
         case AZ_IOT_MQTT_EVT_MESSAGE:
             if (evt->message)
             {
+                /* During the AEG birth handshake, intercept the birth-ack and
+                 * complete the connection; everything else routes normally. */
+                if (c->presence.phase == PRESENCE_PHASE_BIRTH
+                    && presence_is_birth_ack(c, evt->message))
+                {
+                    c->presence.phase = PRESENCE_PHASE_DONE;
+                    announce_connected(c);
+                    break;
+                }
                 (void)az_iot_dispatch_route(&c->dispatch, evt->message);
             }
             break;
@@ -715,10 +958,26 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
             }
             break;
 
-        /* SUBSCRIBE_ACK / UNSUBSCRIBE_ACK get correlation handlers in later
-         * Phase 3 slices when feature clients need to know subscriptions are
-         * live. For now we just absorb them. */
+        /* The dev/presence SUBACK advances the AEG birth handshake: publish the
+         * birth message now that the ack topic is subscribed. Other SUBACKs are
+         * absorbed (feature clients don't yet need SUBACK correlation). */
         case AZ_IOT_MQTT_EVT_SUBSCRIBE_ACK:
+            if (c->presence.phase == PRESENCE_PHASE_SUBSCRIBING
+                && evt->packet_id == c->presence.sub_packet_id)
+            {
+                az_iot_result pr = (evt->status == AZ_IOT_OK)
+                    ? presence_publish_birth(c) : evt->status;
+                if (pr != AZ_IOT_OK)
+                {
+                    c->presence.phase = PRESENCE_PHASE_NONE;
+                    c->deferred = (reconnect_enabled(c) && !c->user_close) ? DEFER_RECONNECT : DEFER_FAULT;
+                    c->deferred_reason = pr;
+                }
+            }
+            break;
+
+        /* UNSUBSCRIBE_ACK gets correlation handlers in later Phase 3 slices when
+         * feature clients need to know subscriptions are live. For now absorb. */
         case AZ_IOT_MQTT_EVT_UNSUBSCRIBE_ACK:
         default:
             break;
@@ -769,6 +1028,21 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
                 &c->hub_client, c->hub_username, sizeof(c->hub_username), &ulen);
             if (az_result_succeeded(ar)) copts.username = c->hub_username;
         }
+    }
+    else if (c->session_role == AZ_IOT_MQTT_ROLE_HUB_NEXT &&
+             c->opts.host && c->opts.client_id)
+    {
+        /* Hub-Next (AEG): generate the per-attempt connection nonce now so it
+         * rides the CONNECT username (correlationId) and is reused as the birth
+         * Correlation Data. The auth webhook denies an empty username. */
+        presence_gen_nonce(c, c->presence.nonce);
+        if (!presence_build_username(c, c->hub_username, sizeof(c->hub_username)))
+        {
+            AZ_IOT_LOG_ERROR("connection: AZ_IOT_MQTT_USERNAME_BUF is too small for the hub-next CONNECT username");
+            mc->iface->destroy(mc);
+            return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+        }
+        copts.username = c->hub_username;
     }
 
     /* Populate TLS from certificate_provider if available. Prefer the issued
@@ -1004,6 +1278,13 @@ az_iot_result az_iot_connection_client_init(
         free(id_buf);
 #endif
     }
+    else if (client->opts.host && client->opts.hub_protocol == AZ_IOT_HUB_PROTOCOL_NEXT)
+    {
+        /* Direct connect to an IoT Hub Next / AEG endpoint (MQTT v5). For DPS
+         * (host == NULL) the flavor is learned during provisioning, so
+         * hub_protocol is honored only when a direct host is supplied. */
+        client->session_role = AZ_IOT_MQTT_ROLE_HUB_NEXT;
+    }
     else
     {
         client->session_role = AZ_IOT_MQTT_ROLE_HUB_CLASSIC;
@@ -1227,6 +1508,26 @@ az_iot_result az_iot_connection_client_do_work(
         if (cb) cb(&evt, uc);
     }
 
+    /* Fail a stalled AEG presence (birth) handshake so a missing SUBACK or
+     * birth-ack can't wedge the client in CONNECTING forever. Reconnect when a
+     * policy is configured (mirrors the .NET SDK, which disconnects and
+     * retries), otherwise fault. */
+    if ((client->presence.phase == AZ_IOT_PRESENCE_PHASE_SUBSCRIBING
+         || client->presence.phase == AZ_IOT_PRESENCE_PHASE_BIRTH)
+        && az_iot_time_mono_ms() >= client->presence.deadline_ms)
+    {
+        client->presence.phase = AZ_IOT_PRESENCE_PHASE_NONE;
+        if (reconnect_enabled(client) && !client->user_close)
+        {
+            schedule_reconnect(client, AZ_IOT_ERR_TIMEOUT);
+        }
+        else
+        {
+            teardown_active(client);
+            transition(client, AZ_IOT_CONN_STATE_FAULTED, AZ_IOT_ERR_TIMEOUT);
+        }
+    }
+
     /* If we're waiting to reconnect and the deadline has passed, attempt it. */
     if (client->state == AZ_IOT_CONN_STATE_RECONNECTING &&
         client->active_client == NULL &&
@@ -1291,6 +1592,17 @@ void az_iot_connection_client__seed_rng(
 {
     if (!client) return;
     client->rng_state = seed ? seed : 1ull;
+}
+
+void az_iot_connection_client__presence_force_timeout(
+    az_iot_connection_client* client)
+{
+    if (!client) return;
+    if (client->presence.phase == AZ_IOT_PRESENCE_PHASE_SUBSCRIBING
+        || client->presence.phase == AZ_IOT_PRESENCE_PHASE_BIRTH)
+    {
+        client->presence.deadline_ms = 0;
+    }
 }
 
 const az_iot_protocol_profile* az_iot_connection_client__profile(

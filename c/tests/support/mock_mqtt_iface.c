@@ -120,8 +120,11 @@ static void copy_str(char* dst, size_t cap, const char* src)
 
 static void copy_bytes(uint8_t* dst, size_t cap, const uint8_t* src, size_t n, size_t* out_n)
 {
+    /* A NULL source records nothing: reporting the caller's length would leave
+     * the recorded buffer holding stale bytes and make assertions on it lie. */
+    if (!src) n = 0;
     if (n > cap) n = cap;
-    if (n && src) memcpy(dst, src, n);
+    if (n) memcpy(dst, src, n);
     *out_n = n;
 }
 
@@ -133,7 +136,11 @@ static az_iot_result mock_connect(az_iot_mqtt_client* self, const az_iot_mqtt_co
 {
     az_iot_mock_mqtt_client* m = mock_self(self);
     az_iot_mock_call* c = push_call(m, AZ_IOT_MOCK_CALL_CONNECT);
-    if (opts) copy_str(c->topic, sizeof(c->topic), opts->host);
+    if (opts)
+    {
+        copy_str(c->topic, sizeof(c->topic), opts->host);
+        copy_str(c->username, sizeof(c->username), opts->username);
+    }
     return take_override(m, AZ_IOT_MOCK_CALL_CONNECT);
 }
 
@@ -175,6 +182,19 @@ static az_iot_result mock_publish(az_iot_mqtt_client* self, const az_iot_mqtt_me
         copy_bytes(c->payload, sizeof(c->payload), msg->payload, msg->payload_len, &c->payload_len);
         c->qos = msg->qos;
         c->retain = msg->retain;
+        /* Capture the MQTT v5 correlation data + "type" property so presence/
+         * birth tests can read the client's nonce and assert the message type. */
+        copy_bytes(c->correlation_data, sizeof(c->correlation_data),
+                   msg->correlation_data, msg->correlation_data_len, &c->correlation_data_len);
+        for (size_t i = 0; i < msg->user_properties_count; ++i)
+        {
+            const az_iot_mqtt_user_property* up = &msg->user_properties[i];
+            if (up->key && strcmp(up->key, "type") == 0)
+            {
+                copy_str(c->user_type, sizeof(c->user_type), up->value);
+                break;
+            }
+        }
     }
     c->packet_id = alloc_packet_id(m);
     if (out_packet_id) *out_packet_id = c->packet_id;

@@ -21,9 +21,24 @@
 extern "C" {
 #endif
 
-/* Note: the hub flavor (Classic vs Next) is NOT a caller-facing knob.
- * It is learned from DPS at provisioning time and the SDK selects the
- * appropriate MQTT version (v3.1.1 for Classic, v5 for Next) internally. */
+/* Hub flavor (Classic vs Next) selection:
+ *   - DPS connect (host == NULL): learned from DPS at provisioning time; the
+ *     SDK selects the MQTT version (v3.1.1 for Classic, v5 for Next) internally
+ *     and opts.hub_protocol is ignored.
+ *   - Direct connect (host set, no DPS): the SDK cannot discover the flavor, so
+ *     the caller selects it via opts.hub_protocol (see az_iot_hub_protocol).
+ *     Defaults to Classic (MQTT v3.1.1); set AZ_IOT_HUB_PROTOCOL_NEXT for an
+ *     IoT Hub Next / Event Grid (AEG) endpoint (MQTT v5). */
+
+/* Hub protocol flavor for a DIRECT hub connection (opts.host set, DPS unused).
+ * Classic IoT Hub speaks MQTT v3.1.1; IoT Hub Next / Event Grid (AEG) speaks
+ * MQTT v5. Ignored when connecting through DPS, where the flavor is learned
+ * during provisioning. */
+typedef enum az_iot_hub_protocol
+{
+    AZ_IOT_HUB_PROTOCOL_CLASSIC = 0,  /* MQTT v3.1.1 (default) */
+    AZ_IOT_HUB_PROTOCOL_NEXT          /* MQTT v5 (IoT Hub Next / AEG) */
+} az_iot_hub_protocol;
 
 typedef struct az_iot_reconnection_policy
 {
@@ -55,6 +70,9 @@ typedef struct az_iot_connection_client_options
     const char* host;                  /* hub host (or NULL when using DPS) */
     uint16_t    port;                  /* default 8883 */
     const char* client_id;             /* device id */
+    az_iot_hub_protocol hub_protocol;  /* direct-connect hub flavor (host set, no
+                                        * DPS): Classic (v3.1.1, default) or Next
+                                        * (v5, AEG). Ignored when using DPS. */
     const char* model_id;              /* IoT Plug and Play model id announced at
                                         * connection (NULL = none). Required for
                                         * Device Update (ADU) to discover the
@@ -165,6 +183,17 @@ typedef void (*az_iot_operational_cert_callback)(
 #ifndef AZ_IOT_MQTT_USERNAME_BUF
 #define AZ_IOT_MQTT_USERNAME_BUF        256
 #endif
+/* Buffer sizing the ih/{deviceId}/srv|dev/presence topics built for the
+ * AEG/Hub-Next birth handshake. */
+#ifndef AZ_IOT_PRESENCE_TOPIC_BUF
+#define AZ_IOT_PRESENCE_TOPIC_BUF       256
+#endif
+/* How long to wait for the SUBACK + birth-ack that complete the AEG/Hub-Next
+ * presence handshake before abandoning the attempt (mirrors the .NET SDK's
+ * 60s defensive birth-ack timeout). */
+#ifndef AZ_IOT_PRESENCE_BIRTH_ACK_TIMEOUT_MS
+#define AZ_IOT_PRESENCE_BIRTH_ACK_TIMEOUT_MS  60000u
+#endif
 
 /* ------------------------------------------------------------------------- */
 /* struct az_iot_connection_client (caller-owned, init/deinit lifecycle)    */
@@ -174,6 +203,10 @@ typedef void (*az_iot_operational_cert_callback)(
 enum { AZ_IOT_CONN_DEFER_NONE = 0, AZ_IOT_CONN_DEFER_FAULT, AZ_IOT_CONN_DEFER_RECONNECT, AZ_IOT_CONN_DEFER_IDLE };
 enum { AZ_IOT_DPS_PHASE_NONE = 0, AZ_IOT_DPS_PHASE_CONNECTING, AZ_IOT_DPS_PHASE_SUBSCRIBING,
        AZ_IOT_DPS_PHASE_REGISTERING, AZ_IOT_DPS_PHASE_POLLING, AZ_IOT_DPS_PHASE_DONE };
+/* AEG/Hub-Next presence (birth) handshake phases. Classic/DPS sessions never
+ * leave AZ_IOT_PRESENCE_PHASE_NONE. */
+enum { AZ_IOT_PRESENCE_PHASE_NONE = 0, AZ_IOT_PRESENCE_PHASE_SUBSCRIBING,
+       AZ_IOT_PRESENCE_PHASE_BIRTH, AZ_IOT_PRESENCE_PHASE_DONE };
 
 /* Session role: determines which Azure service the connection targets and
  * which MQTT version is required. This is an SDK-internal concept — adapters
@@ -258,6 +291,20 @@ struct az_iot_connection_client
         void* user_ctx;
         uint64_t deadline_ms;      /* abandon the op if no terminal response by here */
     } csr_op;
+
+    /* AEG/Hub-Next presence (birth) handshake. After CONNACK on a HUB_NEXT (v5)
+     * session the client SUBSCRIBEs to ih/{deviceId}/dev/#, PUBLISHes a birth
+     * message to ih/{deviceId}/srv/presence, and only announces CONNECTED once
+     * it receives a birth-ack -- matched by the exact ih/{deviceId}/dev/presence
+     * topic -- whose correlation data matches `nonce`.
+     * Classic/DPS sessions leave phase == AZ_IOT_PRESENCE_PHASE_NONE. */
+    struct {
+        int      phase;
+        bool     session_present;  /* observed in CONNACK; reported in birth */
+        uint16_t sub_packet_id;    /* SUBACK correlation for the dev/# sub */
+        uint8_t  nonce[16];        /* connection nonce echoed by birth-ack */
+        uint64_t deadline_ms;      /* handshake timeout (monotonic ms) */
+    } presence;
 };
 
 typedef struct az_iot_connection_client az_iot_connection_client;
@@ -273,7 +320,9 @@ const char* az_iot_connection_state_to_string(az_iot_connection_state s);
  * mode on the returned struct before az_iot_connection_client_init():
  *   - DPS + X.509 (host==NULL): dps.id_scope, dps.registration_id,
  *     certificate_provider.
- *   - Direct hub connect: host, client_id, certificate_provider. */
+ *   - Direct hub connect: host, client_id, certificate_provider; also set
+ *     hub_protocol = AZ_IOT_HUB_PROTOCOL_NEXT for an IoT Hub Next / AEG (v5)
+ *     endpoint (defaults to Classic v3.1.1). */
 AZ_NODISCARD az_iot_connection_client_options az_iot_connection_client_options_default(void);
 
 AZ_NODISCARD az_iot_result az_iot_connection_client_init(

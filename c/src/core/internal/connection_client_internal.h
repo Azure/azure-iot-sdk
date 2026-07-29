@@ -43,6 +43,13 @@ az_iot_result az_iot_connection_client__set_client_id(
 void az_iot_connection_client__seed_rng(
     az_iot_connection_client* client, uint64_t seed);
 
+/* Test seam: force any in-flight AEG/Hub-Next presence (birth) handshake to time
+ * out on the next do_work(). No-op when no handshake is active. Lets unit tests
+ * exercise the birth-ack timeout path without waiting the real
+ * AZ_IOT_PRESENCE_BIRTH_ACK_TIMEOUT_MS. */
+void az_iot_connection_client__presence_force_timeout(
+    az_iot_connection_client* client);
+
 /* Return the protocol profile selected by the current session_role. May be
  * NULL when the role has no profile yet (e.g. HUB_NEXT in Phase 2.3). */
 const az_iot_protocol_profile* az_iot_connection_client__profile(
