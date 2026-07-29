@@ -246,8 +246,13 @@ namespace Microsoft.Azure.Devices.Client.DirectMethods
                     return;
                 }
 
-                Result result = Result.Parser.ParseFrom(methodResponse.Payload);
-                result.Status = methodResponse.Status;
+                Result result = new()
+                {
+                    Status = methodResponse.Status,
+                    Body = methodResponse.Payload is null
+                        ? ByteString.Empty
+                        : ByteString.CopyFrom(methodResponse.Payload)
+                };
 
                 MqttPublish resultPublish = new()
                 {
