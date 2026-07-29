@@ -50,6 +50,17 @@ void az_iot_connection_client__seed_rng(
 void az_iot_connection_client__presence_force_timeout(
     az_iot_connection_client* client);
 
+/* Authoritative twin versions the service reported on the most recent AEG
+ * birth-ack, as of birth admission on the current connection. The twin client
+ * uses `reported_version` as the if_match anchor for its next reported patch
+ * and `desired_version` as its view of the current desired version. Both are 0
+ * before the first birth-ack, on Classic/DPS sessions, and when the service
+ * omits the fields. Returns AZ_IOT_ERR_INVALID_ARG on NULL arguments. */
+az_iot_result az_iot_connection_client__presence_twin_versions(
+    const az_iot_connection_client* client,
+    uint64_t* out_desired_version,
+    uint64_t* out_reported_version);
+
 /* Return the protocol profile selected by the current session_role. May be
  * NULL when the role has no profile yet (e.g. HUB_NEXT in Phase 2.3). */
 const az_iot_protocol_profile* az_iot_connection_client__profile(

@@ -671,11 +671,12 @@ static void dps_apply_deferred(az_iot_connection_client* c)
 /* A stalled handshake is timed out from do_work().                            */
 /* ------------------------------------------------------------------------- */
 
-/* Fill `out` with a per-connection nonce. Uniqueness (not cryptographic
- * strength) is what matters: it is echoed on the birth-ack so the SDK can
- * discard acks from a prior attempt. Uses the same LCG as the CSR request-id
- * generator, advanced through the client's rng_state and salted by the attempt
- * count so successive attempts never collide. */
+/* Fill `out` with the per-connection nonce: a fresh RFC 4122 version 4 UUID,
+ * regenerated on every CONNECT attempt (not per successful CONNACK). It is
+ * echoed on the birth-ack so the SDK can discard acks from a prior attempt.
+ * Uses the same LCG as the CSR request-id generator, advanced through the
+ * client's rng_state and salted by the attempt count so successive attempts
+ * never collide. */
 static void presence_gen_nonce(az_iot_connection_client* c, uint8_t out[PRESENCE_NONCE_LEN])
 {
     for (size_t i = 0; i < PRESENCE_NONCE_LEN; i += 8)
@@ -687,20 +688,26 @@ static void presence_gen_nonce(az_iot_connection_client* c, uint8_t out[PRESENCE
         for (size_t b = 0; b < 8u; ++b)
             out[i + b] = (uint8_t)(x >> (b * 8u));
     }
+
+    /* Stamp the RFC 4122 version (4 = random) and variant (10xx) bits so the
+     * nonce is a well-formed UUID, which is what the presence protocol
+     * specifies and what the .NET client produces via Guid.NewGuid(). */
+    out[6] = (uint8_t)((out[6] & 0x0Fu) | 0x40u);
+    out[8] = (uint8_t)((out[8] & 0x3Fu) | 0x80u);
 }
 
 /* Build the Hub-Next (AEG) CONNECT username. The IoT Hub auth webhook denies a
  * connect with an empty username (WebhookAuthUserNameMissing), so the SDK sends
  * "correlationId=<hex nonce>&clientVersion=c%2F<version>", mirroring the .NET
- * SDK. correlationId is the uppercase hex of the 16-byte connection nonce; the
- * SAME nonce bytes ride the birth message as raw Correlation Data so the
- * service can correlate the CONNECT with the birth.
+ * SDK. correlationId is the 32-character lowercase hex of the 16-byte
+ * connection nonce; the SAME nonce bytes ride the birth message as raw
+ * Correlation Data so the service can correlate the CONNECT with the birth.
  *
  * Returns false if `cap` (AZ_IOT_MQTT_USERNAME_BUF) cannot hold the whole
  * username; `buf` is left unusable and the caller must fail the attempt. */
 static bool presence_build_username(const az_iot_connection_client* c, char* buf, size_t cap)
 {
-    static const char hexdigits[] = "0123456789ABCDEF";
+    static const char hexdigits[] = "0123456789abcdef";
     char hex[PRESENCE_NONCE_LEN * 2u + 1u];
     for (size_t i = 0; i < PRESENCE_NONCE_LEN; ++i)
     {
@@ -723,16 +730,82 @@ static bool presence_build_username(const az_iot_connection_client* c, char* buf
 
 /* Encode a proto3 Birth message (common/Protos/presence.proto) into `out`.
  * proto3 omits default-valued fields, matching Google.Protobuf on the .NET
- * side. We emit push_desired/push_reported (both true) and, when set,
- * session_present; reported_version/desired_version stay 0 (the device does not
- * persist twin state yet) and are omitted. Returns the encoded length. */
-static size_t presence_encode_birth(uint8_t* out, size_t cap, bool session_present)
+ * side, so a false push bit is simply absent from the payload.
+ * push_desired/push_reported advertise which twin traffic the application wants
+ * dispatched on this connection (opts.twin_push); reported_version and
+ * desired_version stay 0 (the device does not persist twin state yet) and are
+ * omitted. Returns the encoded length. */
+static size_t presence_encode_birth(uint8_t* out, size_t cap, bool session_present,
+                                    bool push_desired, bool push_reported)
 {
     size_t n = 0;
     if (session_present && n + 2u <= cap) { out[n++] = 0x08; out[n++] = 0x01; } /* f1  session_present */
-    if (n + 2u <= cap) { out[n++] = 0x60; out[n++] = 0x01; }                    /* f12 push_desired = true */
-    if (n + 2u <= cap) { out[n++] = 0x68; out[n++] = 0x01; }                    /* f13 push_reported = true */
+    if (push_desired    && n + 2u <= cap) { out[n++] = 0x60; out[n++] = 0x01; } /* f12 push_desired */
+    if (push_reported   && n + 2u <= cap) { out[n++] = 0x68; out[n++] = 0x01; } /* f13 push_reported */
     return n;
+}
+
+/* Read a proto3 varint from buf[*pos]. Returns false on a truncated or
+ * over-long (> 10 byte) encoding, which ends parsing of the message. */
+static bool presence_read_varint(const uint8_t* buf, size_t len, size_t* pos, uint64_t* out)
+{
+    uint64_t v = 0;
+    unsigned shift = 0;
+    while (*pos < len)
+    {
+        uint8_t b = buf[(*pos)++];
+        if (shift < 64u) v |= ((uint64_t)(b & 0x7Fu)) << shift;
+        if ((b & 0x80u) == 0)
+        {
+            *out = v;
+            return true;
+        }
+        shift += 7u;
+        if (shift > 63u) return false;
+    }
+    return false;
+}
+
+/* Decode the twin recovery state the service returns on the birth-ack
+ * (common/Protos/presence.proto BirthAck): desired_version (field 10) and
+ * reported_version (field 11), both varints. These are the authoritative
+ * versions as of birth admission; the device adopts them as its view for this
+ * connection. Fields the service omits keep the proto3 default of 0, and
+ * unknown fields are skipped so a service-side schema addition does not break
+ * the handshake. */
+static void presence_decode_birth_ack(az_iot_connection_client* c,
+                                      const uint8_t* buf, size_t len)
+{
+    c->presence.desired_version = 0;
+    c->presence.reported_version = 0;
+    if (!buf) return;
+
+    size_t pos = 0;
+    while (pos < len)
+    {
+        uint64_t key = 0;
+        if (!presence_read_varint(buf, len, &pos, &key)) return;
+        uint64_t field = key >> 3;
+        uint8_t wire = (uint8_t)(key & 0x07u);
+
+        if (wire == 0) /* varint */
+        {
+            uint64_t v = 0;
+            if (!presence_read_varint(buf, len, &pos, &v)) return;
+            if (field == 10u) c->presence.desired_version = v;
+            else if (field == 11u) c->presence.reported_version = v;
+        }
+        else if (wire == 2) /* length-delimited */
+        {
+            uint64_t n = 0;
+            if (!presence_read_varint(buf, len, &pos, &n)) return;
+            if (n > (uint64_t)(len - pos)) return;
+            pos += (size_t)n;
+        }
+        else if (wire == 5) { if (len - pos < 4u) return; pos += 4u; }  /* 32-bit */
+        else if (wire == 1) { if (len - pos < 8u) return; pos += 8u; }  /* 64-bit */
+        else return; /* groups (3/4) and unknown wire types: stop */
+    }
 }
 
 /* Announce CONNECTED and (re)issue every persistent subscription so feature
@@ -799,7 +872,9 @@ static az_iot_result presence_publish_birth(az_iot_connection_client* c)
     if (wn < 0 || (size_t)wn >= sizeof(topic)) return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
 
     uint8_t body[8];
-    size_t body_len = presence_encode_birth(body, sizeof(body), c->presence.session_present);
+    size_t body_len = presence_encode_birth(body, sizeof(body), c->presence.session_present,
+                                            c->opts.twin_push.push_desired,
+                                            c->opts.twin_push.push_reported);
 
     az_iot_mqtt_user_property type_prop = { PRESENCE_TYPE_KEY, PRESENCE_TYPE_BIRTH };
 
@@ -930,6 +1005,8 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
                 if (c->presence.phase == PRESENCE_PHASE_BIRTH
                     && presence_is_birth_ack(c, evt->message))
                 {
+                    presence_decode_birth_ack(c, evt->message->payload,
+                                              evt->message->payload_len);
                     c->presence.phase = PRESENCE_PHASE_DONE;
                     announce_connected(c);
                     break;
@@ -1603,6 +1680,19 @@ void az_iot_connection_client__presence_force_timeout(
     {
         client->presence.deadline_ms = 0;
     }
+}
+
+az_iot_result az_iot_connection_client__presence_twin_versions(
+    const az_iot_connection_client* client,
+    uint64_t* out_desired_version,
+    uint64_t* out_reported_version)
+{
+    if (!client || !out_desired_version || !out_reported_version)
+        return AZ_IOT_ERR_INVALID_ARG;
+
+    *out_desired_version = client->presence.desired_version;
+    *out_reported_version = client->presence.reported_version;
+    return AZ_IOT_OK;
 }
 
 const az_iot_protocol_profile* az_iot_connection_client__profile(

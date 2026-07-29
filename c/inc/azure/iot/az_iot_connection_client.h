@@ -105,6 +105,26 @@ typedef struct az_iot_connection_client_options
                                                         * Requires a provider whose vtable exposes
                                                         * get_csr (version >= 2). */
     } dps;
+
+    /* IoT Hub Next (AEG) twin push advertisement. These two bits ride the birth
+     * message on every connection and tell the service which twin traffic this
+     * device wants dispatched to it. They reflect the application's
+     * configuration at init and MUST stay constant for the lifetime of the
+     * client: changing push mode at runtime would desynchronize the device's
+     * expectation from the service's most recently recorded decision.
+     *
+     * Both default to false (pull-only), which is what this SDK can honor
+     * today: it does not yet consume the service's twin-push dispatch, so
+     * advertising a push would ask for messages the client would drop. Read the
+     * twin with az_iot_twin_client_get() instead. Ignored for Classic hubs and
+     * for DPS sessions. */
+    struct
+    {
+        bool push_desired;   /* request push of the desired payload on connect,
+                              * plus incremental desired patches while connected */
+        bool push_reported;  /* request one-shot rehydration of the reported
+                              * payload on connect (for volatile devices) */
+    } twin_push;
 } az_iot_connection_client_options;
 
 typedef enum az_iot_connection_state
@@ -304,6 +324,8 @@ struct az_iot_connection_client
         uint16_t sub_packet_id;    /* SUBACK correlation for the dev/# sub */
         uint8_t  nonce[16];        /* connection nonce echoed by birth-ack */
         uint64_t deadline_ms;      /* handshake timeout (monotonic ms) */
+        uint64_t desired_version;  /* authoritative twin versions carried by the */
+        uint64_t reported_version; /* last birth-ack (0 when the service omits them) */
     } presence;
 };
 
