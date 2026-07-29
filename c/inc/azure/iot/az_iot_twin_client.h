@@ -108,6 +108,38 @@ typedef void (*az_iot_twin_desired_callback)(
  * Size an encode buffer to your largest patch plus this. */
 #define AZ_IOT_TWIN_ENCODE_OVERHEAD 24
 
+/* How many desired patches the SDK buffers while resynchronizing after a gap in
+ * the desired-patch stream. The bound keeps memory predictable if the GET that
+ * resolves the gap is slow while patches keep arriving; on overflow the SDK
+ * discards the buffer and re-issues the GET, whose snapshot subsumes whatever
+ * was dropped. */
+#ifndef AZ_IOT_TWIN_MAX_RESYNC_PATCHES
+#define AZ_IOT_TWIN_MAX_RESYNC_PATCHES 8
+#endif
+
+/* Which twin sections a GET should retrieve. */
+typedef enum az_iot_twin_sections
+{
+    AZ_IOT_TWIN_SECTIONS_DESIRED = 1,
+    AZ_IOT_TWIN_SECTIONS_REPORTED = 2,
+    AZ_IOT_TWIN_SECTIONS_BOTH = 3
+} az_iot_twin_sections;
+
+typedef struct az_iot_twin_get_options
+{
+    /* Sections to retrieve; 0 is treated as BOTH. */
+    az_iot_twin_sections sections;
+
+    /* Optional per-section "if not match" filter (IoT Hub Next only). When a
+     * requested section's authoritative version equals the value supplied here,
+     * the response carries that section's version but omits its payload --
+     * useful when the device already holds the content and only wants to learn
+     * whether it is still current. 0 means no filter: the payload is always
+     * returned. */
+    uint64_t if_not_match_desired;
+    uint64_t if_not_match_reported;
+} az_iot_twin_get_options;
+
 /* Desired-property subscriber registry capacity (compile-time configurable).
  * Two pools: feature-client slots (e.g. ADU) are notified before application
  * slots. See az_iot_twin_client_subscribe_desired(). */
@@ -137,13 +169,19 @@ typedef struct az_iot_twin_client
         bool                        dispatching;
         uint32_t                    next_rid;
 
-        /* Hub-Next only. The device's view of the authoritative versions,
-         * seeded from the birth-ack of the current connection and advanced by
-         * every response and patch the service sends. `reported_version` is
-         * what the SDK sends as if_match on the next reported patch.
+        /* Hub-Next only. Version bookkeeping for the current connection.
+         *
+         * `desired_local` is the version whose desired payload the device has
+         * actually applied; it only advances when a snapshot or an in-order
+         * patch is applied, and it is what the desired state machine compares
+         * incoming patches against. `desired_auth` is what the birth-ack said
+         * was authoritative, used to decide whether a twin-push is expected.
+         * `reported_version` is the authoritative reported version and is what
+         * the SDK sends as if_match on the next reported patch.
          * `nonce` is the connection those versions belong to, so they can be
-         * re-seeded when the client reconnects. */
-        uint64_t                  desired_version;
+         * re-anchored when the client reconnects. */
+        uint64_t                  desired_local;
+        uint64_t                  desired_auth;
         uint64_t                  reported_version;
         uint8_t                   nonce[16];
         bool                      nonce_valid;
@@ -154,6 +192,27 @@ typedef struct az_iot_twin_client
         /* Caller-provided scratch used to frame outbound Hub-Next patches. */
         uint8_t*                  encode_buffer;
         size_t                    encode_buffer_len;
+        size_t                    saved_patch_len;   /* caller payload kept for retry */
+
+        /* Expectation of a birth-triggered twin-push (twin.md 8.5). */
+        bool                      push_expected;
+        uint64_t                  push_deadline_ms;
+        uint32_t                  push_attempt;
+
+        /* Desired-section resync (twin.md 7.1). While `resyncing`, patches are
+         * buffered in the caller-provided arena until the GET that resolves the
+         * gap returns a snapshot. */
+        bool                      resyncing;
+        uint8_t*                  resync_buffer;
+        size_t                    resync_buffer_len;
+        size_t                    resync_used;
+        size_t                    resync_count;
+        struct
+        {
+            uint64_t version;
+            size_t   offset;
+            size_t   len;
+        } resync_patches[AZ_IOT_TWIN_MAX_RESYNC_PATCHES];
 
         struct
         {
@@ -166,6 +225,13 @@ typedef struct az_iot_twin_client
                 az_iot_twin_patch_ack_callback patch_cb;
             } cb;
             void* user_ctx;
+            /* Defensive timeout for this exchange (Hub-Next). `attempt` drives
+             * the escalating schedule; `internal` marks a GET the SDK issued
+             * for its own resync rather than on behalf of the application. */
+            uint64_t deadline_ms;
+            uint32_t attempt;
+            bool     internal;
+            az_iot_twin_get_options get_opts;
         } pending[AZ_IOT_TWIN_MAX_PENDING];
     } _internal;
 } az_iot_twin_client;
@@ -177,6 +243,16 @@ AZ_NODISCARD az_iot_result az_iot_twin_client_init(
 void az_iot_twin_client_destroy(az_iot_twin_client* client);
 
 AZ_NODISCARD az_iot_result az_iot_twin_client_get(az_iot_twin_client* twin, az_iot_twin_get_callback cb, void* user_ctx);
+
+/* As az_iot_twin_client_get(), but retrieves only the requested sections and
+ * honors the per-section if_not_match filters. `opts` may be NULL, which is
+ * equivalent to az_iot_twin_client_get(). Classic ignores the options and
+ * always returns the whole twin document. */
+AZ_NODISCARD az_iot_result az_iot_twin_client_get_with_options(
+    az_iot_twin_client* twin,
+    const az_iot_twin_get_options* opts,
+    az_iot_twin_get_callback cb,
+    void* user_ctx);
 
 AZ_NODISCARD az_iot_result az_iot_twin_client_patch_reported(
     az_iot_twin_client* twin,
@@ -213,13 +289,35 @@ AZ_NODISCARD az_iot_result az_iot_twin_client_set_push_callback(
  * on IoT Hub Next (the protobuf envelope around your payload). The SDK never
  * allocates and never declares a payload buffer of its own; without one,
  * az_iot_twin_client_patch_reported() returns AZ_IOT_ERR_NOT_ENOUGH_SPACE on
- * Hub-Next. Size it to your largest patch plus AZ_IOT_TWIN_ENCODE_OVERHEAD.
- * The buffer must outlive the client. Not used by Classic, which publishes the
- * patch payload verbatim. */
+ * Hub-Next. The buffer must outlive the client.
+ *
+ * The SDK also keeps a copy of your patch here so it can re-send it with a
+ * fresh if_match if the service does not answer, so size it to twice your
+ * largest patch plus AZ_IOT_TWIN_ENCODE_OVERHEAD. Not used by Classic, which
+ * publishes the patch payload verbatim. */
 AZ_NODISCARD az_iot_result az_iot_twin_client_set_encode_buffer(
     az_iot_twin_client* twin,
     uint8_t* buffer,
     size_t buffer_len);
+
+/* Provide the arena the SDK buffers desired patches in while it resynchronizes
+ * after a gap in the patch stream. Optional: without it the SDK still detects
+ * the gap and issues the GET that resolves it, but patches arriving during the
+ * resync are dropped rather than replayed on top of the snapshot -- correct,
+ * because the snapshot subsumes them, but it costs a round trip of freshness.
+ * The buffer must outlive the client. Hub-Next only. */
+AZ_NODISCARD az_iot_result az_iot_twin_client_set_resync_buffer(
+    az_iot_twin_client* twin,
+    uint8_t* buffer,
+    size_t buffer_len);
+
+/* Advance time-driven twin work: the defensive timeouts that recover a twin
+ * exchange the service never answered, and the cleanup of exchanges abandoned
+ * by a disconnect. Call it from the same loop that pumps
+ * az_iot_connection_client_do_work(). Without it the twin client still works,
+ * but a lost QoS 0 response leaves its exchange outstanding indefinitely.
+ * No-op on Classic. */
+az_iot_result az_iot_twin_client_do_work(az_iot_twin_client* twin);
 
 #ifdef __cplusplus
 }

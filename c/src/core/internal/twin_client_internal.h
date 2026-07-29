@@ -26,6 +26,11 @@ az_iot_result az_iot_twin_client__subscribe_desired(
     az_iot_twin_desired_callback cb,
     void* user_ctx);
 
+/* Test seam: expire every armed twin defensive timeout so the next
+ * az_iot_twin_client_do_work() acts on it. Lets unit tests exercise the
+ * recovery paths without waiting out the real multi-minute schedule. */
+void az_iot_twin_client__force_timeouts(az_iot_twin_client* twin);
+
 #ifdef __cplusplus
 }
 #endif

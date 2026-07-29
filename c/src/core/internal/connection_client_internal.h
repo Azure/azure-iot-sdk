@@ -104,6 +104,15 @@ void az_iot_connection_client__gen_uuid(
 az_iot_result az_iot_connection_client__presence_nonce(
     const az_iot_connection_client* client, uint8_t out[16]);
 
+/* The twin push advertisement the application configured (options.twin_push).
+ * The twin client uses it to decide whether a birth-triggered twin-push is
+ * expected on this connection, and therefore whether to arm a defensive timeout
+ * for one. Both outputs are false when `client` is NULL. */
+void az_iot_connection_client__twin_push_flags(
+    const az_iot_connection_client* client,
+    bool* out_push_desired,
+    bool* out_push_reported);
+
 /* Publish through the active adapter. Returns ERR_NOT_CONNECTED when not in
  * CONNECTED state. For QoS 1, callers may pass a non-NULL ack_cb; it is
  * invoked synchronously from inside do_work() when the matching PUBLISH_ACK

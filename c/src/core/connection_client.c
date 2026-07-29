@@ -1691,6 +1691,15 @@ az_iot_result az_iot_connection_client__presence_nonce(
     return AZ_IOT_OK;
 }
 
+void az_iot_connection_client__twin_push_flags(
+    const az_iot_connection_client* client,
+    bool* out_push_desired,
+    bool* out_push_reported)
+{
+    if (out_push_desired) *out_push_desired = client && client->opts.twin_push.push_desired;
+    if (out_push_reported) *out_push_reported = client && client->opts.twin_push.push_reported;
+}
+
 const az_iot_protocol_profile* az_iot_connection_client__profile(
     const az_iot_connection_client* client)
 {
