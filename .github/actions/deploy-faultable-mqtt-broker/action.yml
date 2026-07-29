@@ -10,6 +10,7 @@ runs:
   using: composite
   steps:
     - name: Copy Faultable MQTT broker from AIO SDK repo
+      uses: azure/powershell@v3
       run: |
         mkdir faultablemqttbroker
         wget "https://raw.githubusercontent.com/Azure/iot-operations-sdks/refs/heads/main/eng/test/faultablemqttbroker/src/Azure.Iot.Operations.FaultableMqttBroker/Azure.Iot.Operations.FaultableMqttBroker.csproj" -O "./faultablemqttbroker/Azure.Iot.Operations.FaultableMqttBroker.csproj"
@@ -19,8 +20,10 @@ runs:
         wget "https://raw.githubusercontent.com/Azure/iot-operations-sdks/refs/heads/main/eng/test/faultablemqttbroker/src/Azure.Iot.Operations.FaultableMqttBroker/Program.cs" -O "./faultablemqttbroker/Program.cs"
 
     - name: Build Faultable MQTT Broker
+      uses: azure/powershell@v3
       run: dotnet build ./faultablemqttbroker/Azure.Iot.Operations.FaultableMqttBroker.csproj
    
     - name: Run Faultable MQTT Broker (port 1884)
+      uses: azure/powershell@v3
       run: RUNNER_TRACKING_ID="" && dotnet run --project ./faultablemqttbroker/Azure.Iot.Operations.FaultableMqttBroker.csproj &
 
