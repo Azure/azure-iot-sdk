@@ -1,0 +1,26 @@
+# Reusable step (analog of an e2e-fx `steps-destroy-azure-resources.yaml`
+# template): deletes the resource group provisioned by the
+# provision-e2e-resources action. Fully language-agnostic, so any pipeline
+# (C, dotnet, ...) can reuse it. The caller must run `azure/login` BEFORE this
+# step and is responsible for `if: always()` so cleanup runs even on failure.
+name: Deploy faultable MQTT broker
+description: Copy faultable MQTT broker from AIO SDK repo, build it, and run it on port 1884 for local fault injection testing
+
+runs:
+  using: composite
+  steps:
+    - name: Copy Faultable MQTT broker from AIO SDK repo
+      run: |
+        mkdir faultablemqttbroker
+        wget "https://raw.githubusercontent.com/Azure/iot-operations-sdks/refs/heads/main/eng/test/faultablemqttbroker/src/Azure.Iot.Operations.FaultableMqttBroker/Azure.Iot.Operations.FaultableMqttBroker.csproj" -O "./faultablemqttbroker/Azure.Iot.Operations.FaultableMqttBroker.csproj"
+        wget "https://raw.githubusercontent.com/Azure/iot-operations-sdks/refs/heads/main/eng/test/faultablemqttbroker/src/Azure.Iot.Operations.FaultableMqttBroker/FaultHandling.cs" -O "./faultablemqttbroker/FaultHandling.cs"
+        wget "https://raw.githubusercontent.com/Azure/iot-operations-sdks/refs/heads/main/eng/test/faultablemqttbroker/src/Azure.Iot.Operations.FaultableMqttBroker/FaultableMqttBroker.cs" -O "./faultablemqttbroker/FaultableMqttBroker.cs"
+        wget "https://raw.githubusercontent.com/Azure/iot-operations-sdks/refs/heads/main/eng/test/faultablemqttbroker/src/Azure.Iot.Operations.FaultableMqttBroker/FaultableMqttBrokerWorker.cs" -O "./faultablemqttbroker/FaultableMqttBrokerWorker.cs"
+        wget "https://raw.githubusercontent.com/Azure/iot-operations-sdks/refs/heads/main/eng/test/faultablemqttbroker/src/Azure.Iot.Operations.FaultableMqttBroker/Program.cs" -O "./faultablemqttbroker/Program.cs"
+
+    - name: Build Faultable MQTT Broker
+      run: dotnet build ./faultablemqttbroker/Azure.Iot.Operations.FaultableMqttBroker.csproj
+   
+    - name: Run Faultable MQTT Broker (port 1884)
+      run: RUNNER_TRACKING_ID="" && dotnet run --project ./faultablemqttbroker/Azure.Iot.Operations.FaultableMqttBroker.csproj &
+
