@@ -78,7 +78,10 @@ internal class Program
         return Task.FromResult(new DirectMethodResponse()
         {
             Status = 200,
-            Payload = Encoding.UTF8.GetBytes("Some response payload"),
+            Payload = JsonSerializer.SerializeToUtf8Bytes(new
+            {
+                message = "Some response payload"
+            }),
         });
     }
 
