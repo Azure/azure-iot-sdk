@@ -23,19 +23,4 @@ runs:
         inlineScript: |
           dotnet build ./faultablemqttbroker/Azure.Iot.Operations.FaultableMqttBroker.csproj
    
-    - name: Run Faultable MQTT Broker (port 1884)
-      uses: azure/powershell@v3
-      with:
-        azPSVersion: "latest"
-        inlineScript: |
-          $WorkingDirectory = pwd
-          $job = Start-Job -ScriptBlock { dotnet run --project ".\faultablemqttbroker\Azure.Iot.Operations.FaultableMqttBroker.csproj" } -WorkingDirectory $WorkingDirectory
-          
-          # Check that the job is running correctly
-          Start-Sleep -Seconds 3
-          $job
-          if ($job.State -ne "Running")
-          {
-            Write-Output "Faultable MQTT broker did not start up correctly:"
-            exit 1
-          }
+

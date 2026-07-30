@@ -105,6 +105,21 @@ jobs:
       - name: Run e2e
         shell: pwsh
         run: |
+
+          # Start faultable mqtt broker in the background on port 1884
+          $WorkingDirectory = pwd
+          $job = Start-Job -ScriptBlock { dotnet run --project ".\faultablemqttbroker\Azure.Iot.Operations.FaultableMqttBroker.csproj" } -WorkingDirectory $WorkingDirectory
+          
+          # Check that the job is running correctly
+          Start-Sleep -Seconds 3
+          $job
+          if ($job.State -ne "Running")
+          {
+            Write-Output "Faultable MQTT broker did not start up correctly:"
+            exit 1
+          }
+
+
           # Service-side config (IOTHUB_*, IOT_DPS_*) is set by the generated script.
           . ./test_config/set_test_env_vars.ps1
 
