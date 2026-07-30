@@ -187,10 +187,12 @@ static az_iot_result http_status_to_result(int status)
 
 /* Copy the connection's current hub address and device id into the client.
  *
- * Read per operation rather than cached once at init(): the connection re-points
- * both when DPS assigns -- or reassigns -- a hub, so a client created before a
- * reassignment would otherwise keep addressing the previous hub's REST endpoint
- * with the previous device id. */
+ * Read per operation rather than cached once at init(). Today that is not a
+ * behavioural difference -- the connection assigns its hub exactly once, before
+ * a file upload client can exist -- but the connection client is the owner of
+ * both values, and keeping a second copy that stays correct only by accident of
+ * the current control flow would be a trap for re-provisioning, hub failover, or
+ * the IDLE-time host setter the connection already exposes internally. */
 static az_iot_result fileupload_resolve_endpoint(az_iot_file_upload_client* client)
 {
     az_iot_result r = fileupload_copy(

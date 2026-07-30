@@ -45,15 +45,20 @@ extern "C" {
 #ifndef AZ_IOT_FILE_UPLOAD_URL_MAX
 #define AZ_IOT_FILE_UPLOAD_URL_MAX 512
 #endif
-/** @brief Maximum length of a built request body (incl. NUL).
+/** @brief Size in bytes of the buffer used to build a request body.
+ *
+ * The body is passed to the transport hook as a (pointer, length) pair and is
+ * NOT NUL-terminated, so a hook must never treat it as a C string.
  *
  * This bounds the blob name: the SAS-URI request body is {"blobName":"<name>"},
- * so a name (after JSON escaping) longer than this minus ~15 bytes is refused
- * with AZ_IOT_ERR_NOT_ENOUGH_SPACE. The default leaves room for ~495 characters,
- * well beyond typical names; raise it if the application uses longer ones (Azure
- * Storage permits up to 1024). It also bounds the correlation id accepted by
- * notify_complete(). Each operation allocates one buffer of this size on the
- * stack. */
+ * so a name whose JSON-ESCAPED form does not fit in this many bytes minus the 15
+ * bytes of envelope is refused with AZ_IOT_ERR_NOT_ENOUGH_SPACE. Escaping is what
+ * counts, not characters -- a quote or backslash costs two bytes, and non-ASCII
+ * costs its UTF-8 length -- so the default admits up to ~495 bytes of escaped
+ * name. That is well beyond typical names; raise it if the application uses
+ * longer ones (Azure Storage permits blob names of up to 1024 characters). It
+ * also bounds the correlation id accepted by notify_complete(). Each operation
+ * places one buffer of this size on the stack. */
 #ifndef AZ_IOT_FILE_UPLOAD_BODY_MAX
 #define AZ_IOT_FILE_UPLOAD_BODY_MAX 512
 #endif
@@ -168,9 +173,9 @@ typedef struct az_iot_file_upload_client
  * @brief Initialize the file upload client.
  *
  * Call after the connection has resolved its hub (for a DPS client, once it
- * reaches CONNECTED) so the hub address and device id are known. Both are
- * re-read from the connection on every operation, so a client stays valid if the
- * connection is later reassigned to a different hub.
+ * reaches CONNECTED) so the hub address and device id are known. Both are read
+ * from the connection on each operation rather than captured here, so the
+ * connection stays the single source of truth for them.
  *
  * @param client          Instance to initialize.
  * @param conn            The (connected) connection client.
