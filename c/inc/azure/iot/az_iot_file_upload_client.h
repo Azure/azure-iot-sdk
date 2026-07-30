@@ -164,8 +164,6 @@ typedef struct az_iot_file_upload_client
         az_iot_connection_client*       conn;
         az_iot_file_upload_http_send_fn http_send;
         void*                           http_ctx;
-        char hub_hostname[AZ_IOT_DPS_HOST_BUF];
-        char device_id[AZ_IOT_DPS_DEVICE_ID_BUF];
     } _internal;
 } az_iot_file_upload_client;
 
@@ -173,12 +171,14 @@ typedef struct az_iot_file_upload_client
  * @brief Initialize the file upload client.
  *
  * Call after the connection has resolved its hub (for a DPS client, once it
- * reaches CONNECTED) so the hub address and device id are known. Both are read
- * from the connection on each operation rather than captured here, so the
- * connection stays the single source of truth for them.
+ * reaches CONNECTED) so the hub address and device id are known. Neither is
+ * copied: both are read from the connection on each operation, so the connection
+ * stays the single source of truth and a later hub assignment is picked up
+ * without re-initializing this client.
  *
  * @param client          Instance to initialize.
- * @param conn            The (connected) connection client.
+ * @param conn            The (connected) connection client. Must outlive
+ *                        @p client.
  * @param http_transport  HTTP transport for the Classic control plane. REQUIRED
  *                        on a Classic hub; may be NULL on Next.
  * @return AZ_IOT_OK on success;

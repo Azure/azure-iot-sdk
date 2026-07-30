@@ -451,10 +451,19 @@ static void init_rejects_missing_device_id(void** state)
     az_iot_connection_client_destroy(&conn);
 }
 
-static void init_rejects_oversized_hub_address(void** state)
+/* An endpoint too long to form a request URL is rejected where the length
+ * actually matters -- at the operation -- not at init(). init() checks that the
+ * connection HAS a hub address and device id; it cannot usefully check their
+ * length, because the hub in force at init() need not be the one an operation
+ * later addresses. Rejecting at init would also be over-strict: the real limit
+ * is the whole URL fitting AZ_IOT_FILE_UPLOAD_URL_MAX, not any per-field bound.
+ *
+ * Both operations build a URL, so both are asserted; the notification URL is the
+ * longer of the two, so a host that defeats the SAS request defeats it as well. */
+static void oversized_hub_address_is_rejected_at_the_operation(void** state)
 {
     (void)state;
-    char long_host[AZ_IOT_DPS_HOST_BUF + 16];
+    char long_host[AZ_IOT_FILE_UPLOAD_URL_MAX];
     memset(long_host, 'h', sizeof(long_host) - 1);
     long_host[sizeof(long_host) - 1] = '\0';
 
@@ -467,16 +476,29 @@ static void init_rejects_oversized_hub_address(void** state)
 
     az_iot_file_upload_client fu2;
     az_iot_file_upload_http_transport http = { mock_send, NULL };
-    assert_int_equal(
-        az_iot_file_upload_client_init(&fu2, &conn, &http), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+    assert_int_equal(az_iot_file_upload_client_init(&fu2, &conn, &http), AZ_IOT_OK);
 
+    memset(&g_http, 0, sizeof(g_http));
+    rec r;
+    memset(&r, 0, sizeof(r));
+    assert_int_equal(
+        az_iot_file_upload_client_get_sas_uri(&fu2, "b", on_sas, &r),
+        AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+    assert_int_equal(
+        az_iot_file_upload_client_notify_complete(&fu2, "c", true, on_notify, &r),
+        AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+
+    /* Refused locally: no truncated URL reached the transport. */
+    assert_int_equal(g_http.call_count, 0);
+
+    az_iot_file_upload_client_destroy(&fu2);
     az_iot_connection_client_destroy(&conn);
 }
 
-static void init_rejects_oversized_device_id(void** state)
+static void oversized_device_id_is_rejected_at_the_operation(void** state)
 {
     (void)state;
-    char long_id[AZ_IOT_DPS_DEVICE_ID_BUF + 16];
+    char long_id[AZ_IOT_FILE_UPLOAD_URL_MAX];
     memset(long_id, 'd', sizeof(long_id) - 1);
     long_id[sizeof(long_id) - 1] = '\0';
 
@@ -489,9 +511,21 @@ static void init_rejects_oversized_device_id(void** state)
 
     az_iot_file_upload_client fu2;
     az_iot_file_upload_http_transport http = { mock_send, NULL };
-    assert_int_equal(
-        az_iot_file_upload_client_init(&fu2, &conn, &http), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+    assert_int_equal(az_iot_file_upload_client_init(&fu2, &conn, &http), AZ_IOT_OK);
 
+    memset(&g_http, 0, sizeof(g_http));
+    rec r;
+    memset(&r, 0, sizeof(r));
+    assert_int_equal(
+        az_iot_file_upload_client_get_sas_uri(&fu2, "b", on_sas, &r),
+        AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+    assert_int_equal(
+        az_iot_file_upload_client_notify_complete(&fu2, "c", true, on_notify, &r),
+        AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+
+    assert_int_equal(g_http.call_count, 0);
+
+    az_iot_file_upload_client_destroy(&fu2);
     az_iot_connection_client_destroy(&conn);
 }
 
@@ -606,8 +640,10 @@ static void two_clients_share_one_connection(void** state)
  * client created before a DPS (re)assignment addresses the CURRENT hub -- caching
  * them at init() would keep aiming the REST calls at the previous one. The
  * connection re-points opts.host / opts.client_id at its own provisioned buffers
- * when an assignment lands; do the same here. */
-static void requests_follow_a_hub_reassignment(void** state)
+ * when an assignment lands; do the same here.
+ *
+ * Asserted once per operation, because each builds its own URL. */
+static void sas_uri_requests_follow_a_hub_reassignment(void** state)
 {
     fixture* fx = (fixture*)*state;
     g_http.resp_status = 200;
@@ -631,11 +667,28 @@ static void requests_follow_a_hub_reassignment(void** state)
     assert_string_equal(
         g_http.last_url,
         "https://otherhub.azure-devices.net/devices/dev2/files?api-version=2021-04-12");
+}
 
+static void notifications_follow_a_hub_reassignment(void** state)
+{
+    fixture* fx = (fixture*)*state;
     g_http.resp_status = 204;
+
+    rec r;
     memset(&r, 0, sizeof(r));
     assert_int_equal(
         az_iot_file_upload_client_notify_complete(&fx->fu, "c", true, on_notify, &r), AZ_IOT_OK);
+    assert_string_equal(
+        g_http.last_url,
+        "https://" TEST_HUB "/devices/" TEST_DEVICE "/files/notifications?api-version=2021-04-12");
+
+    fx->conn.opts.host = "otherhub.azure-devices.net";
+    fx->conn.opts.client_id = "dev2";
+
+    memset(&r, 0, sizeof(r));
+    assert_int_equal(
+        az_iot_file_upload_client_notify_complete(&fx->fu, "c", true, on_notify, &r), AZ_IOT_OK);
+    assert_int_equal(r.notify_status, AZ_IOT_OK);
     assert_string_equal(
         g_http.last_url,
         "https://otherhub.azure-devices.net/devices/dev2/files/notifications?api-version=2021-04-12");
@@ -644,24 +697,23 @@ static void requests_follow_a_hub_reassignment(void** state)
 /* The connection may have no endpoint to hand out: it has not provisioned yet,
  * or -- once hub reassignment is supported -- it is between hubs. An operation
  * must refuse locally instead of building a request against an empty or stale
- * host, and must recover on its own once the endpoint is back, without the
- * caller re-initializing anything. That recovery is the whole point of resolving
- * per operation, so it is asserted here rather than assumed.
+ * host.
  *
  * The return code is NOT_CONNECTED rather than INVALID_ARG on purpose: this is a
  * transient state of the connection, and an application told its arguments were
- * invalid would audit them instead of retrying. */
-static void requests_fail_while_the_connection_has_no_endpoint(void** state)
+ * invalid would audit them instead of retrying.
+ *
+ * The two halves of an endpoint go missing independently, so each gets its own
+ * test; recovery afterwards is a third, separate behaviour. */
+static void requests_fail_while_the_hub_address_is_unavailable(void** state)
 {
     fixture* fx = (fixture*)*state;
     g_http.resp_status = 200;
     g_http.resp_body = k_sas_json;
 
-    const char* const real_host = fx->conn.opts.host;
-    rec r;
-
-    /* No hub address. */
     fx->conn.opts.host = NULL;
+
+    rec r;
     memset(&r, 0, sizeof(r));
     assert_int_equal(
         az_iot_file_upload_client_get_sas_uri(&fx->fu, "b", on_sas, &r),
@@ -669,25 +721,92 @@ static void requests_fail_while_the_connection_has_no_endpoint(void** state)
     assert_int_equal(
         az_iot_file_upload_client_notify_complete(&fx->fu, "c", true, on_notify, &r),
         AZ_IOT_ERR_NOT_CONNECTED);
+
+    /* Refused locally: no callback fired and nothing reached the network. */
     assert_false(r.sas_done);
     assert_false(r.notify_done);
+    assert_int_equal(g_http.call_count, 0);
+}
 
-    /* No device id. */
-    fx->conn.opts.host = real_host;
-    fx->conn.opts.client_id = NULL;
+/* An empty host is as unusable as a missing one, and reaches the check by a
+ * different route -- opts.host pointing at a zero-length buffer rather than at
+ * nothing. */
+static void requests_fail_while_the_hub_address_is_empty(void** state)
+{
+    fixture* fx = (fixture*)*state;
+    g_http.resp_status = 200;
+    g_http.resp_body = k_sas_json;
+
+    fx->conn.opts.host = "";
+
+    rec r;
     memset(&r, 0, sizeof(r));
     assert_int_equal(
         az_iot_file_upload_client_get_sas_uri(&fx->fu, "b", on_sas, &r),
         AZ_IOT_ERR_NOT_CONNECTED);
     assert_false(r.sas_done);
-
-    /* Nothing reached the network in either case. */
     assert_int_equal(g_http.call_count, 0);
+}
 
-    /* Endpoint restored -- possibly a different hub than before -- and the same
-     * client instance works again with no re-initialization. */
+static void requests_fail_while_the_device_id_is_unavailable(void** state)
+{
+    fixture* fx = (fixture*)*state;
+    g_http.resp_status = 200;
+    g_http.resp_body = k_sas_json;
+
+    fx->conn.opts.client_id = NULL;
+
+    rec r;
+    memset(&r, 0, sizeof(r));
+    assert_int_equal(
+        az_iot_file_upload_client_get_sas_uri(&fx->fu, "b", on_sas, &r),
+        AZ_IOT_ERR_NOT_CONNECTED);
+    assert_int_equal(
+        az_iot_file_upload_client_notify_complete(&fx->fu, "c", true, on_notify, &r),
+        AZ_IOT_ERR_NOT_CONNECTED);
+
+    assert_false(r.sas_done);
+    assert_false(r.notify_done);
+    assert_int_equal(g_http.call_count, 0);
+}
+
+static void requests_fail_while_the_device_id_is_empty(void** state)
+{
+    fixture* fx = (fixture*)*state;
+    g_http.resp_status = 200;
+    g_http.resp_body = k_sas_json;
+
+    fx->conn.opts.client_id = "";
+
+    rec r;
+    memset(&r, 0, sizeof(r));
+    assert_int_equal(
+        az_iot_file_upload_client_get_sas_uri(&fx->fu, "b", on_sas, &r),
+        AZ_IOT_ERR_NOT_CONNECTED);
+    assert_false(r.sas_done);
+    assert_int_equal(g_http.call_count, 0);
+}
+
+/* Recovering without re-initialization is the whole point of resolving per
+ * operation, so it is asserted rather than assumed: the same client instance
+ * works again once the endpoint returns -- possibly a different hub than the one
+ * it was initialized against. */
+static void requests_resume_when_the_endpoint_returns(void** state)
+{
+    fixture* fx = (fixture*)*state;
+    g_http.resp_status = 200;
+    g_http.resp_body = k_sas_json;
+
+    fx->conn.opts.host = NULL;
+    rec r;
+    memset(&r, 0, sizeof(r));
+    assert_int_equal(
+        az_iot_file_upload_client_get_sas_uri(&fx->fu, "b", on_sas, &r),
+        AZ_IOT_ERR_NOT_CONNECTED);
+
     fx->conn.opts.host = "otherhub.azure-devices.net";
     fx->conn.opts.client_id = "dev2";
+
     memset(&r, 0, sizeof(r));
     assert_int_equal(
         az_iot_file_upload_client_get_sas_uri(&fx->fu, "b", on_sas, &r), AZ_IOT_OK);
@@ -1347,9 +1466,11 @@ static void notify_complete_oversized_correlation_id_is_refused(void** state)
     assert_int_equal(g_http.call_count, 0);
 }
 
-/* A URL that cannot be built (hub host + device id at their limits) is refused
- * before anything is sent. */
-static void get_sas_uri_oversized_url_is_refused(void** state)
+/* The complement of the two oversized-endpoint tests: the longest hub host and
+ * device id the connection client can hold still fit AZ_IOT_FILE_UPLOAD_URL_MAX,
+ * so both URLs must build. (Formerly named ..._oversized_url_is_refused, which
+ * described the opposite of what it asserts.) */
+static void max_length_endpoint_still_builds_a_url(void** state)
 {
     (void)state;
     char long_host[AZ_IOT_DPS_HOST_BUF];
@@ -1408,8 +1529,8 @@ int main(void)
         cmocka_unit_test_setup_teardown(classic_init_rejects_transport_with_null_send, setup, teardown),
         cmocka_unit_test(init_rejects_unresolved_hub_address),
         cmocka_unit_test(init_rejects_missing_device_id),
-        cmocka_unit_test(init_rejects_oversized_hub_address),
-        cmocka_unit_test(init_rejects_oversized_device_id),
+        cmocka_unit_test(oversized_hub_address_is_rejected_at_the_operation),
+        cmocka_unit_test(oversized_device_id_is_rejected_at_the_operation),
         cmocka_unit_test(failed_init_leaves_client_unusable),
 
         /* lifecycle */
@@ -1417,8 +1538,16 @@ int main(void)
         cmocka_unit_test_setup_teardown(destroy_is_null_safe_and_idempotent, setup, teardown),
         cmocka_unit_test_setup_teardown(reinit_over_live_client_succeeds, setup, teardown),
         cmocka_unit_test_setup_teardown(two_clients_share_one_connection, setup, teardown),
-        cmocka_unit_test_setup_teardown(requests_follow_a_hub_reassignment, setup, teardown),
-        cmocka_unit_test_setup_teardown(requests_fail_while_the_connection_has_no_endpoint, setup, teardown),
+
+        /* endpoint resolution (per operation, never cached) */
+        cmocka_unit_test_setup_teardown(sas_uri_requests_follow_a_hub_reassignment, setup, teardown),
+        cmocka_unit_test_setup_teardown(notifications_follow_a_hub_reassignment, setup, teardown),
+        cmocka_unit_test_setup_teardown(requests_fail_while_the_hub_address_is_unavailable, setup, teardown),
+        cmocka_unit_test_setup_teardown(requests_fail_while_the_hub_address_is_empty, setup, teardown),
+        cmocka_unit_test_setup_teardown(requests_fail_while_the_device_id_is_unavailable, setup, teardown),
+        cmocka_unit_test_setup_teardown(requests_fail_while_the_device_id_is_empty, setup, teardown),
+        cmocka_unit_test_setup_teardown(requests_resume_when_the_endpoint_returns, setup, teardown),
+
         cmocka_unit_test_setup_teardown(get_sas_uri_is_reentrant_from_callback, setup, teardown),
 
         /* HTTP status mapping */
@@ -1449,7 +1578,7 @@ int main(void)
         cmocka_unit_test_setup_teardown(get_sas_uri_escapes_blob_name, setup, teardown),
         cmocka_unit_test_setup_teardown(get_sas_uri_oversized_blob_name_is_refused, setup, teardown),
         cmocka_unit_test_setup_teardown(notify_complete_oversized_correlation_id_is_refused, setup, teardown),
-        cmocka_unit_test(get_sas_uri_oversized_url_is_refused),
+        cmocka_unit_test(max_length_endpoint_still_builds_a_url),
 
         /* Next / AEG dispatch */
         cmocka_unit_test_setup_teardown(next_init_without_http_hook_succeeds, setup_next, teardown),
