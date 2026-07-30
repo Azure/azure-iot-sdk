@@ -11,19 +11,27 @@ runs:
   steps:
     - name: Copy Faultable MQTT broker from AIO SDK repo
       uses: azure/powershell@v3
-      run: |
-        mkdir faultablemqttbroker
-        wget "https://raw.githubusercontent.com/Azure/iot-operations-sdks/refs/heads/main/eng/test/faultablemqttbroker/src/Azure.Iot.Operations.FaultableMqttBroker/Azure.Iot.Operations.FaultableMqttBroker.csproj" -O "./faultablemqttbroker/Azure.Iot.Operations.FaultableMqttBroker.csproj"
-        wget "https://raw.githubusercontent.com/Azure/iot-operations-sdks/refs/heads/main/eng/test/faultablemqttbroker/src/Azure.Iot.Operations.FaultableMqttBroker/FaultHandling.cs" -O "./faultablemqttbroker/FaultHandling.cs"
-        wget "https://raw.githubusercontent.com/Azure/iot-operations-sdks/refs/heads/main/eng/test/faultablemqttbroker/src/Azure.Iot.Operations.FaultableMqttBroker/FaultableMqttBroker.cs" -O "./faultablemqttbroker/FaultableMqttBroker.cs"
-        wget "https://raw.githubusercontent.com/Azure/iot-operations-sdks/refs/heads/main/eng/test/faultablemqttbroker/src/Azure.Iot.Operations.FaultableMqttBroker/FaultableMqttBrokerWorker.cs" -O "./faultablemqttbroker/FaultableMqttBrokerWorker.cs"
-        wget "https://raw.githubusercontent.com/Azure/iot-operations-sdks/refs/heads/main/eng/test/faultablemqttbroker/src/Azure.Iot.Operations.FaultableMqttBroker/Program.cs" -O "./faultablemqttbroker/Program.cs"
+      with:
+        azPSVersion: "latest"
+        inlineScript: |
+          mkdir faultablemqttbroker
+          wget "https://raw.githubusercontent.com/Azure/iot-operations-sdks/refs/heads/main/eng/test/faultablemqttbroker/src/Azure.Iot.Operations.FaultableMqttBroker/Azure.Iot.Operations.FaultableMqttBroker.csproj" -O "./faultablemqttbroker/Azure.Iot.Operations.FaultableMqttBroker.csproj"
+          wget "https://raw.githubusercontent.com/Azure/iot-operations-sdks/refs/heads/main/eng/test/faultablemqttbroker/src/Azure.Iot.Operations.FaultableMqttBroker/FaultHandling.cs" -O "./faultablemqttbroker/FaultHandling.cs"
+          wget "https://raw.githubusercontent.com/Azure/iot-operations-sdks/refs/heads/main/eng/test/faultablemqttbroker/src/Azure.Iot.Operations.FaultableMqttBroker/FaultableMqttBroker.cs" -O "./faultablemqttbroker/FaultableMqttBroker.cs"
+          wget "https://raw.githubusercontent.com/Azure/iot-operations-sdks/refs/heads/main/eng/test/faultablemqttbroker/src/Azure.Iot.Operations.FaultableMqttBroker/FaultableMqttBrokerWorker.cs" -O "./faultablemqttbroker/FaultableMqttBrokerWorker.cs"
+          wget "https://raw.githubusercontent.com/Azure/iot-operations-sdks/refs/heads/main/eng/test/faultablemqttbroker/src/Azure.Iot.Operations.FaultableMqttBroker/Program.cs" -O "./faultablemqttbroker/Program.cs"
 
     - name: Build Faultable MQTT Broker
       uses: azure/powershell@v3
-      run: dotnet build ./faultablemqttbroker/Azure.Iot.Operations.FaultableMqttBroker.csproj
+      with:
+        azPSVersion: "latest"
+        inlineScript: |
+          dotnet build ./faultablemqttbroker/Azure.Iot.Operations.FaultableMqttBroker.csproj
    
     - name: Run Faultable MQTT Broker (port 1884)
       uses: azure/powershell@v3
-      run: RUNNER_TRACKING_ID="" && dotnet run --project ./faultablemqttbroker/Azure.Iot.Operations.FaultableMqttBroker.csproj &
+      with:
+        azPSVersion: "latest"
+        inlineScript: |
+          RUNNER_TRACKING_ID="" && dotnet run --project ./faultablemqttbroker/Azure.Iot.Operations.FaultableMqttBroker.csproj &
 
