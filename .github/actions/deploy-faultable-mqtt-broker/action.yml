@@ -33,9 +33,9 @@ runs:
           
           # Check that the job is running correctly
           Start-Sleep -Seconds 3
+          $job
           if ($job.State -ne "Running")
           {
             Write-Output "Faultable MQTT broker did not start up correctly:"
-            $job
             exit 1
           }
