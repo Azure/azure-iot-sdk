@@ -1,8 +1,3 @@
-# Reusable step (analog of an e2e-fx `steps-destroy-azure-resources.yaml`
-# template): deletes the resource group provisioned by the
-# provision-e2e-resources action. Fully language-agnostic, so any pipeline
-# (C, dotnet, ...) can reuse it. The caller must run `azure/login` BEFORE this
-# step and is responsible for `if: always()` so cleanup runs even on failure.
 name: Deploy faultable MQTT broker
 description: Copy faultable MQTT broker from AIO SDK repo, build it, and run it on port 1884 for local fault injection testing
 
@@ -33,5 +28,5 @@ runs:
       with:
         azPSVersion: "latest"
         inlineScript: |
-          RUNNER_TRACKING_ID="" && dotnet run --project ./faultablemqttbroker/Azure.Iot.Operations.FaultableMqttBroker.csproj &
+          $job = Start-Job -ScriptBlock { dotnet run --project ".\faultablemqttbroker\Azure.Iot.Operations.FaultableMqttBroker.csproj" } -WorkingDirectory pwd
 
