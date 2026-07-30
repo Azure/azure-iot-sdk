@@ -256,7 +256,8 @@ static void classic_init_requires_http_hook(void** state)
         AZ_IOT_ERR_INVALID_ARG);
 }
 
-static void get_sas_uri_builds_request_and_delivers_uri(void** state)
+/* The request half of the exchange: method, URL and body handed to the hook. */
+static void get_sas_uri_builds_the_request(void** state)
 {
     fixture* fx = (fixture*)*state;
     g_http.resp_status = 200;
@@ -268,15 +269,31 @@ static void get_sas_uri_builds_request_and_delivers_uri(void** state)
         az_iot_file_upload_client_get_sas_uri(&fx->fu, "sample-data/test.txt", on_sas, &r),
         AZ_IOT_OK);
 
-    /* The request the SDK built and handed to the hook. */
     assert_int_equal(g_http.call_count, 1);
     assert_string_equal(g_http.last_method, "POST");
     assert_string_equal(
         g_http.last_url,
         "https://" TEST_HUB "/devices/" TEST_DEVICE "/files?api-version=2021-04-12");
     assert_string_equal(g_http.last_body, "{\"blobName\":\"sample-data/test.txt\"}");
+}
 
-    /* Result delivered synchronously via the callback (Classic). */
+/* The response half of the same exchange: the SAS URI assembled from the hub's
+ * JSON fields, delivered with its correlation id. Kept apart from the request
+ * test because it fails for a different reason -- response parsing rather than
+ * request construction. */
+static void get_sas_uri_delivers_the_sas_uri_and_correlation_id(void** state)
+{
+    fixture* fx = (fixture*)*state;
+    g_http.resp_status = 200;
+    g_http.resp_body   = k_sas_json;
+
+    rec r;
+    memset(&r, 0, sizeof(r));
+    assert_int_equal(
+        az_iot_file_upload_client_get_sas_uri(&fx->fu, "sample-data/test.txt", on_sas, &r),
+        AZ_IOT_OK);
+
+    /* Delivered synchronously via the callback (Classic). */
     assert_true(r.sas_done);
     assert_int_equal(r.sas_status, AZ_IOT_OK);
     assert_string_equal(r.correlation_id, "corr-123");
@@ -328,7 +345,7 @@ static void get_sas_uri_rejects_bad_args(void** state)
         AZ_IOT_ERR_INVALID_ARG);
 }
 
-static void notify_complete_builds_request_and_acks(void** state)
+static void notify_complete_builds_the_request(void** state)
 {
     fixture* fx = (fixture*)*state;
     g_http.resp_status = 204;
@@ -349,6 +366,21 @@ static void notify_complete_builds_request_and_acks(void** state)
         g_http.last_body,
         "{\"correlationId\":\"corr-9\",\"isSuccess\":true,"
         "\"statusCode\":200,\"statusDescription\":\"Succeeded\"}");
+}
+
+/* The hub acknowledges with 204 and no body; the client must still report
+ * completion through the callback. Separate from the request test: this is the
+ * status-mapping path, not the request builder. */
+static void notify_complete_delivers_the_ack(void** state)
+{
+    fixture* fx = (fixture*)*state;
+    g_http.resp_status = 204;
+
+    rec r;
+    memset(&r, 0, sizeof(r));
+    assert_int_equal(
+        az_iot_file_upload_client_notify_complete(&fx->fu, "corr-9", true, on_notify, &r),
+        AZ_IOT_OK);
 
     assert_true(r.notify_done);
     assert_int_equal(r.notify_status, AZ_IOT_OK);
@@ -580,10 +612,17 @@ static void calls_after_destroy_are_rejected(void** state)
     /* The fixture teardown destroys again: destroy must be idempotent. */
 }
 
-static void destroy_is_null_safe_and_idempotent(void** state)
+static void destroy_is_null_safe(void** state)
+{
+    (void)state;
+    az_iot_file_upload_client_destroy(NULL);
+}
+
+/* Destroying twice must be harmless: the second call meets an already-scrubbed
+ * instance. The fixture teardown makes it a third. */
+static void destroy_is_idempotent(void** state)
 {
     fixture* fx = (fixture*)*state;
-    az_iot_file_upload_client_destroy(NULL);
     az_iot_file_upload_client_destroy(&fx->fu);
     az_iot_file_upload_client_destroy(&fx->fu);
 }
@@ -628,12 +667,28 @@ static void two_clients_share_one_connection(void** state)
     assert_int_equal(r2.sas_status, AZ_IOT_OK);
     assert_int_equal(g_http.call_count, 2);
 
-    /* Destroying one must not disturb the other. */
     az_iot_file_upload_client_destroy(&fu2);
-    memset(&r1, 0, sizeof(r1));
+}
+
+/* Destroying one client must not disturb another sharing the same connection.
+ * destroy() unregisters from the connection, so a bug there would take the
+ * survivor down with it -- a different failure than the sharing above. */
+static void destroying_one_client_leaves_the_other_working(void** state)
+{
+    fixture* fx = (fixture*)*state;
+    az_iot_file_upload_client fu2;
+    az_iot_file_upload_http_transport http = { mock_send, NULL };
+    assert_int_equal(az_iot_file_upload_client_init(&fu2, &fx->conn, &http), AZ_IOT_OK);
+
+    az_iot_file_upload_client_destroy(&fu2);
+
+    g_http.resp_status = 200;
+    g_http.resp_body = k_sas_json;
+    rec r;
+    memset(&r, 0, sizeof(r));
     assert_int_equal(
-        az_iot_file_upload_client_get_sas_uri(&fx->fu, "three.txt", on_sas, &r1), AZ_IOT_OK);
-    assert_int_equal(r1.sas_status, AZ_IOT_OK);
+        az_iot_file_upload_client_get_sas_uri(&fx->fu, "three.txt", on_sas, &r), AZ_IOT_OK);
+    assert_int_equal(r.sas_status, AZ_IOT_OK);
 }
 
 /* The hub address and device id are read from the connection per operation, so a
@@ -917,9 +972,22 @@ static void next_still_rejects_bad_args(void** state)
         AZ_IOT_ERR_INVALID_ARG);
 }
 
-/* A hook supplied on Next is accepted and then ignored: the control plane goes
- * over MQTT, so the application transport must never be called. */
-static void next_init_accepts_and_ignores_http_hook(void** state)
+/* A hook supplied on Next is accepted: the hub flavor decides the transport, not
+ * the presence of a hook. */
+static void next_init_accepts_an_http_hook(void** state)
+{
+    fixture* fx = (fixture*)*state;
+    az_iot_file_upload_client fu2;
+    az_iot_file_upload_http_transport http = { mock_send, NULL };
+    assert_int_equal(az_iot_file_upload_client_init(&fu2, &fx->conn, &http), AZ_IOT_OK);
+    az_iot_file_upload_client_destroy(&fu2);
+}
+
+/* ...and is then ignored. The Next control plane goes over MQTT, so an
+ * application hook must never be called, however the operations end. Accepting
+ * the hook and never using it are separate promises; a client that called it
+ * would still pass the test above. */
+static void next_never_calls_the_http_hook(void** state)
 {
     fixture* fx = (fixture*)*state;
     az_iot_file_upload_client fu2;
@@ -1370,8 +1438,9 @@ static void get_sas_uri_rejects_a_redirected_response_buffer(void** state)
 /* ------------------------------------------------------------------------- */
 
 /* Both operations authenticate with mutual TLS in the application's hook, so the
- * SDK sends an empty Authorization and always a JSON content type. */
-static void requests_carry_empty_authorization_and_json_content_type(void** state)
+ * SDK sends an empty Authorization and always a JSON content type. Asserted per
+ * operation: each builds its own request, so each can regress on its own. */
+static void sas_uri_request_carries_empty_auth_and_json_content_type(void** state)
 {
     fixture* fx = (fixture*)*state;
     g_http.resp_status = 200;
@@ -1383,17 +1452,23 @@ static void requests_carry_empty_authorization_and_json_content_type(void** stat
         az_iot_file_upload_client_get_sas_uri(&fx->fu, "b", on_sas, &r), AZ_IOT_OK);
     assert_string_equal(g_http.last_authorization, "");
     assert_string_equal(g_http.last_content_type, "application/json");
+}
 
+static void notification_request_carries_empty_auth_and_json_content_type(void** state)
+{
+    fixture* fx = (fixture*)*state;
     g_http.resp_status = 204;
+
+    rec r;
+    memset(&r, 0, sizeof(r));
     assert_int_equal(
         az_iot_file_upload_client_notify_complete(&fx->fu, "c", true, on_notify, &r), AZ_IOT_OK);
     assert_string_equal(g_http.last_authorization, "");
     assert_string_equal(g_http.last_content_type, "application/json");
 }
 
-/* get_sas_uri needs the response body; notify_complete does not read one, so the
- * hook is handed an empty sink and must tolerate it. */
-static void response_sink_matches_the_operation(void** state)
+/* get_sas_uri reads the response body, so the hook is handed a real buffer. */
+static void sas_uri_request_supplies_a_response_buffer(void** state)
 {
     fixture* fx = (fixture*)*state;
     g_http.resp_status = 200;
@@ -1405,8 +1480,18 @@ static void response_sink_matches_the_operation(void** state)
         az_iot_file_upload_client_get_sas_uri(&fx->fu, "b", on_sas, &r), AZ_IOT_OK);
     assert_false(g_http.last_resp_body_null);
     assert_int_equal((int)g_http.last_resp_body_capacity, AZ_IOT_FILE_UPLOAD_SAS_URI_MAX);
+}
 
+/* notify_complete reads no response body, so the hook gets an empty sink and
+ * must tolerate it. The opposite expectation to the test above, which is why it
+ * is not folded in with it. */
+static void notification_request_supplies_no_response_buffer(void** state)
+{
+    fixture* fx = (fixture*)*state;
     g_http.resp_status = 204;
+
+    rec r;
+    memset(&r, 0, sizeof(r));
     assert_int_equal(
         az_iot_file_upload_client_notify_complete(&fx->fu, "c", true, on_notify, &r), AZ_IOT_OK);
     assert_true(g_http.last_resp_body_null);
@@ -1516,11 +1601,13 @@ int main(void)
     const struct CMUnitTest tests[] = {
         cmocka_unit_test(init_rejects_null),
         cmocka_unit_test_setup_teardown(classic_init_requires_http_hook, setup, teardown),
-        cmocka_unit_test_setup_teardown(get_sas_uri_builds_request_and_delivers_uri, setup, teardown),
+        cmocka_unit_test_setup_teardown(get_sas_uri_builds_the_request, setup, teardown),
+        cmocka_unit_test_setup_teardown(get_sas_uri_delivers_the_sas_uri_and_correlation_id, setup, teardown),
         cmocka_unit_test_setup_teardown(get_sas_uri_http_error_delivers_error, setup, teardown),
         cmocka_unit_test_setup_teardown(get_sas_uri_transport_failure_delivers_error, setup, teardown),
         cmocka_unit_test_setup_teardown(get_sas_uri_rejects_bad_args, setup, teardown),
-        cmocka_unit_test_setup_teardown(notify_complete_builds_request_and_acks, setup, teardown),
+        cmocka_unit_test_setup_teardown(notify_complete_builds_the_request, setup, teardown),
+        cmocka_unit_test_setup_teardown(notify_complete_delivers_the_ack, setup, teardown),
         cmocka_unit_test_setup_teardown(notify_complete_failure_body, setup, teardown),
         cmocka_unit_test_setup_teardown(notify_complete_rejects_bad_args, setup, teardown),
         cmocka_unit_test_setup_teardown(get_sas_uri_rejects_null_client, setup, teardown),
@@ -1535,9 +1622,11 @@ int main(void)
 
         /* lifecycle */
         cmocka_unit_test_setup_teardown(calls_after_destroy_are_rejected, setup, teardown),
-        cmocka_unit_test_setup_teardown(destroy_is_null_safe_and_idempotent, setup, teardown),
+        cmocka_unit_test(destroy_is_null_safe),
+        cmocka_unit_test_setup_teardown(destroy_is_idempotent, setup, teardown),
         cmocka_unit_test_setup_teardown(reinit_over_live_client_succeeds, setup, teardown),
         cmocka_unit_test_setup_teardown(two_clients_share_one_connection, setup, teardown),
+        cmocka_unit_test_setup_teardown(destroying_one_client_leaves_the_other_working, setup, teardown),
 
         /* endpoint resolution (per operation, never cached) */
         cmocka_unit_test_setup_teardown(sas_uri_requests_follow_a_hub_reassignment, setup, teardown),
@@ -1573,8 +1662,10 @@ int main(void)
         cmocka_unit_test_setup_teardown(get_sas_uri_accepts_large_fields, setup, teardown),
 
         /* request building */
-        cmocka_unit_test_setup_teardown(requests_carry_empty_authorization_and_json_content_type, setup, teardown),
-        cmocka_unit_test_setup_teardown(response_sink_matches_the_operation, setup, teardown),
+        cmocka_unit_test_setup_teardown(sas_uri_request_carries_empty_auth_and_json_content_type, setup, teardown),
+        cmocka_unit_test_setup_teardown(notification_request_carries_empty_auth_and_json_content_type, setup, teardown),
+        cmocka_unit_test_setup_teardown(sas_uri_request_supplies_a_response_buffer, setup, teardown),
+        cmocka_unit_test_setup_teardown(notification_request_supplies_no_response_buffer, setup, teardown),
         cmocka_unit_test_setup_teardown(get_sas_uri_escapes_blob_name, setup, teardown),
         cmocka_unit_test_setup_teardown(get_sas_uri_oversized_blob_name_is_refused, setup, teardown),
         cmocka_unit_test_setup_teardown(notify_complete_oversized_correlation_id_is_refused, setup, teardown),
@@ -1585,7 +1676,8 @@ int main(void)
         cmocka_unit_test_setup_teardown(next_get_sas_uri_returns_not_supported, setup_next, teardown),
         cmocka_unit_test_setup_teardown(next_notify_complete_returns_not_supported, setup_next, teardown),
         cmocka_unit_test_setup_teardown(next_still_rejects_bad_args, setup_next, teardown),
-        cmocka_unit_test_setup_teardown(next_init_accepts_and_ignores_http_hook, setup_next, teardown),
+        cmocka_unit_test_setup_teardown(next_init_accepts_an_http_hook, setup_next, teardown),
+        cmocka_unit_test_setup_teardown(next_never_calls_the_http_hook, setup_next, teardown),
     };
     return cmocka_run_group_tests_name("file_upload_client", tests, NULL, NULL);
 }
