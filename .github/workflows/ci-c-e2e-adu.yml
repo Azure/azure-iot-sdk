@@ -47,10 +47,13 @@ on:
       - 'c/adapters/adu/**'
       - 'c/inc/azure/iot/az_iot_adu.h'
       - 'c/samples/adu/**'
-      # The e2e harness (shared device fixture + ADU test + service facade) and
-      # this workflow itself: changes here must be validated against real Azure.
+      # The e2e harness (shared device fixture + ADU test + service facade), this
+      # workflow itself, and the provisioning wiring it depends on: changes here
+      # must be validated against real Azure.
       - 'c/tests/e2e/**'
       - '.github/workflows/ci-c-e2e-adu.yml'
+      - '.github/actions/provision-e2e-resources/**'
+      - '.github/actions/destroy-e2e-resources/**'
   schedule:
     - cron: '30 11 * * *'  # Nightly at 4:30am PST (offset from the fast workflow)
 
