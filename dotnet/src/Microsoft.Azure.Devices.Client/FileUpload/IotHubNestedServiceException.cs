@@ -23,11 +23,14 @@ namespace Microsoft.Azure.Devices.Client.FileUpload
         [JsonPropertyName("message")]
         public required string Message { get; set; }
 
+        // Diagnostic only, and not required: an error whose code and message are present
+        // must still surface as a typed exception even if the hub (or a gateway in front
+        // of it) omits the tracking fields.
         [JsonPropertyName("trackingId")]
-        public required string TrackingId { get; set; }
+        public string? TrackingId { get; set; }
 
         [JsonPropertyName("timestampUtc")]
-        public required string TimestampUtc { get; set; }
+        public string? TimestampUtc { get; set; }
 
         [JsonPropertyName("info")]
         public string? Info { get; set; } //TODO what is this?
