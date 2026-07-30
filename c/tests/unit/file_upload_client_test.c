@@ -640,6 +640,60 @@ static void requests_follow_a_hub_reassignment(void** state)
         "https://otherhub.azure-devices.net/devices/dev2/files/notifications?api-version=2021-04-12");
 }
 
+/* The connection may have no endpoint to hand out: it has not provisioned yet,
+ * or -- once hub reassignment is supported -- it is between hubs. An operation
+ * must refuse locally instead of building a request against an empty or stale
+ * host, and must recover on its own once the endpoint is back, without the
+ * caller re-initializing anything. That recovery is the whole point of resolving
+ * per operation, so it is asserted here rather than assumed.
+ *
+ * The return code pins CURRENT behaviour and is worth revisiting:
+ * AZ_IOT_ERR_INVALID_ARG reads as "the caller passed something bad", which is not
+ * what happened and would discourage an application from retrying. */
+static void requests_fail_while_the_connection_has_no_endpoint(void** state)
+{
+    fixture* fx = (fixture*)*state;
+    g_http.resp_status = 200;
+    g_http.resp_body = k_sas_json;
+
+    const char* const real_host = fx->conn.opts.host;
+    rec r;
+
+    /* No hub address. */
+    fx->conn.opts.host = NULL;
+    memset(&r, 0, sizeof(r));
+    assert_int_equal(
+        az_iot_file_upload_client_get_sas_uri(&fx->fu, "b", on_sas, &r), AZ_IOT_ERR_INVALID_ARG);
+    assert_int_equal(
+        az_iot_file_upload_client_notify_complete(&fx->fu, "c", true, on_notify, &r),
+        AZ_IOT_ERR_INVALID_ARG);
+    assert_false(r.sas_done);
+    assert_false(r.notify_done);
+
+    /* No device id. */
+    fx->conn.opts.host = real_host;
+    fx->conn.opts.client_id = NULL;
+    memset(&r, 0, sizeof(r));
+    assert_int_equal(
+        az_iot_file_upload_client_get_sas_uri(&fx->fu, "b", on_sas, &r), AZ_IOT_ERR_INVALID_ARG);
+    assert_false(r.sas_done);
+
+    /* Nothing reached the network in either case. */
+    assert_int_equal(g_http.call_count, 0);
+
+    /* Endpoint restored -- possibly a different hub than before -- and the same
+     * client instance works again with no re-initialization. */
+    fx->conn.opts.host = "otherhub.azure-devices.net";
+    fx->conn.opts.client_id = "dev2";
+    memset(&r, 0, sizeof(r));
+    assert_int_equal(
+        az_iot_file_upload_client_get_sas_uri(&fx->fu, "b", on_sas, &r), AZ_IOT_OK);
+    assert_int_equal(r.sas_status, AZ_IOT_OK);
+    assert_string_equal(
+        g_http.last_url,
+        "https://otherhub.azure-devices.net/devices/dev2/files?api-version=2021-04-12");
+}
+
 /* The Classic path is stateless per call, so starting the next request from
  * inside the completion callback is legal. Locking this in matters because the
  * Next/MQTT path will hold per-request state and must preserve the behaviour. */
@@ -1361,6 +1415,7 @@ int main(void)
         cmocka_unit_test_setup_teardown(reinit_over_live_client_succeeds, setup, teardown),
         cmocka_unit_test_setup_teardown(two_clients_share_one_connection, setup, teardown),
         cmocka_unit_test_setup_teardown(requests_follow_a_hub_reassignment, setup, teardown),
+        cmocka_unit_test_setup_teardown(requests_fail_while_the_connection_has_no_endpoint, setup, teardown),
         cmocka_unit_test_setup_teardown(get_sas_uri_is_reentrant_from_callback, setup, teardown),
 
         /* HTTP status mapping */
