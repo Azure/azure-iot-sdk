@@ -162,6 +162,24 @@ typedef struct az_iot_mqtt_factory
 
 const char* az_iot_mqtt_version_to_string(az_iot_mqtt_version v);
 
+/* Map a CONNACK code from the wire onto the status an adapter reports with
+ * AZ_IOT_MQTT_EVT_CONNECTED. Adapters should route every CONNACK rejection
+ * through this so the core sees one consistent vocabulary regardless of which
+ * MQTT client is underneath.
+ *
+ * The distinction that matters to the core is identity-versus-transport: codes
+ * that mean "this client id / credential / authorization is not acceptable"
+ * become AZ_IOT_ERR_IDENTITY_REJECTED, which is what makes the SDK
+ * re-provision through DPS instead of retrying an identity the broker has
+ * already refused. Everything else stays AZ_IOT_ERR_MQTT and is retried.
+ *
+ * `connack_code` is the value carried in the CONNACK packet: a v3.1.1 return
+ * code (1..5) or a v5 reason code (>= 0x80). 0 means success. A negative value
+ * is treated as an adapter-internal failure (socket, TLS, library error) rather
+ * than a code that came off the wire, and maps to AZ_IOT_ERR_MQTT. */
+AZ_NODISCARD az_iot_result az_iot_mqtt_connack_result(
+    az_iot_mqtt_version version, int connack_code);
+
 #ifdef __cplusplus
 }
 #endif

@@ -67,6 +67,8 @@ If any property is absent in the packet, set the pointer to NULL and the length/
 
 **On CONNACK** — populate `session_present` in the `az_iot_mqtt_event` delivered with `EVT_CONNECTED`.
 
+**On a rejected CONNACK** — set `status` from `az_iot_mqtt_connack_result(version, connack_code)` rather than reporting a blanket `AZ_IOT_ERR_MQTT`. Pass the code exactly as it came off the wire (a v3.1.1 return code, or a v5 reason code); pass a negative value for failures your client raised itself, such as a refused socket or a TLS handshake error. The helper decides whether the broker refused the *identity* (`AZ_IOT_ERR_IDENTITY_REJECTED`) or merely failed to carry the *connection* (`AZ_IOT_ERR_MQTT`), and the SDK re-provisions through DPS on the former and only on the former. An adapter that flattens the two leaves a device unable to follow a DPS hub reassignment.
+
 A v3.1.1 adapter may ignore all v5-only fields (they will always be NULL/zero when passed to `publish`).
 
 ### The single-thread contract (important)
