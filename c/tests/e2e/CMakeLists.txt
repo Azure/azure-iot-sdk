@@ -85,9 +85,11 @@ endif()
 # strings, and a file-upload-capable hub. The `e2e` name matches the fast job's
 # `ctest -R e2e` filter.
 #
-# Runs on the Linux e2e legs. On Windows the harness's Schannel transport does
-# not present the self-signed device certificate on the CI runners, so the test
-# self-skips (CTest exit 77); the file-upload sample still builds and runs there.
+# Runs on BOTH e2e legs. Only the notification scenario self-skips on Windows
+# (the harness TLS transport keeps a single process-wide Schannel session, so it
+# cannot hold the watcher's AMQP connection open across the HTTPS calls); the
+# whole upload round trip runs there. SKIP_RETURN_CODE is kept so the suite can
+# still report a wholesale skip if its environment is unavailable.
 # ---------------------------------------------------------------------------
 az_iot_add_cmocka_test(az_iot_tests_e2e_fileupload tests/e2e_fileupload_test.c tests/e2e_device.c)
 target_link_libraries(az_iot_tests_e2e_fileupload PRIVATE az_iot_e2e_service az_iot_adapter_paho)

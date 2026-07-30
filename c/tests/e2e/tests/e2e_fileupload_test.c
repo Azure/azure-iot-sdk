@@ -2,41 +2,45 @@
 // Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
 /* SPDX-License-Identifier: MIT */
-/* File upload end-to-end (Classic IoT Hub). Runs on the Linux e2e legs; skipped
- * on Windows (see the note in main()).
+/* File upload end-to-end (Classic IoT Hub).
  *
  * Proves the device-side file-upload path against a real Azure IoT Hub that has
  * an Azure Storage account associated for file upload. The device provisions via
  * DPS (X.509) and connects to the assigned hub once, then every scenario runs
  * against that connection:
  *
+ *   failure      an upload the device reports as FAILED is accepted by the hub
+ *                and must NOT produce a notification.
  *   round trip   get_sas_uri -> PUT the blob -> read it back and compare bytes ->
- *                notify_complete(success), then wait for IoT Hub to post the
- *                file-upload notification to the service endpoint. That
- *                notification is the only CLOUD-side proof the round trip
- *                completed: the device alone merely sees the hub accept its
- *                completion message.
- *   failure      an upload the device reports as FAILED must be accepted by the
- *                hub and must NOT produce a notification. Ordering makes the
- *                absence check deterministic: the failed upload is reported
- *                first, and its absence is asserted only after the later
- *                successful upload's notification has arrived.
+ *                notify_complete(success).
+ *   notification IoT Hub publishes the completion to the service-side file-upload
+ *                notification endpoint. That notification is the only CLOUD-side
+ *                proof the round trip completed -- the device alone merely sees
+ *                the hub accept its completion message -- and the failed upload
+ *                above must be absent from it.
  *   rejection    a completion notification carrying an unknown correlation id is
  *                rejected by the hub and surfaces as a mapped error.
  *   arguments    the client refuses malformed arguments locally, without
  *                touching the network.
  *
+ * The first three run IN ORDER on purpose: reporting the failed upload before the
+ * successful one makes the absence check deterministic, because once the later
+ * notification arrives the hub has demonstrably processed both.
+ *
  * The device HTTP hook (Classic control plane) and the Storage PUT/GET go through
  * the e2e harness's own TLS transport (az_iot_e2e_https_request) -- the same
  * az_amqp transport the service facade uses -- so there is no external HTTP
- * client dependency. Mutual TLS with the device certificate authenticates the
- * hub REST calls; on Windows the harness's Schannel transport does not present
- * the self-signed device certificate on the CI runners, so the test self-skips
- * there (the OpenSSL transport on Linux presents it correctly).
+ * client dependency, and mutual TLS with the device certificate authenticates the
+ * hub REST calls.
+ *
+ * On Windows the notification scenario self-skips: that harness transport keeps a
+ * single process-wide Schannel session, so it cannot hold the notification
+ * watcher's AMQP connection open across the HTTPS calls. Every other scenario --
+ * including the entire upload round trip -- runs on both platforms.
  *
  * Requires the standard e2e device environment and the service connection
  * strings (both provided by the e2e job), and a hub with an Azure Storage
- * account associated for file upload.
+ * account associated for file upload AND file-upload notifications enabled.
  */
 #include <stdarg.h>
 #include <stddef.h>
@@ -159,6 +163,10 @@ typedef struct
     az_iot_file_upload_client fu;
     hub_http_ctx              http_ctx;
     bool                      fu_ok;
+    bool                      watching_notifications;
+    /* Blob names produced by the first two scenarios, checked by the third. */
+    char                      failed_blob[96];
+    char                      uploaded_blob[96];
 } fixture;
 
 static fixture g_fx;
@@ -212,13 +220,21 @@ static int group_setup(void** state)
         return -1;
     }
 
-    /* Watch before any completion is reported: notifications are delivered once. */
+    /* Watch before any completion is reported: notifications are delivered once.
+     *
+     * Not on Windows: the harness TLS transport keeps a single process-wide
+     * Schannel session, so an AMQP connection held open here would be torn down by
+     * the first HTTPS request (and vice versa). The notification scenario
+     * self-skips there; every other scenario is sequential HTTPS and runs fine. */
+#ifndef _WIN32
     if (!az_iot_e2e_service_file_notification_watch_begin(g_fx.svc, g_fx.dev.device_id))
     {
         fprintf(stderr, "file upload e2e: notification watch failed: %s\n",
                 az_iot_e2e_service_last_error(g_fx.svc));
         return -1;
     }
+    g_fx.watching_notifications = true;
+#endif
 
     g_fx.http_ctx.cert = g_fx.dev.cert;
     g_fx.http_ctx.key = g_fx.dev.key;
@@ -248,32 +264,37 @@ static int group_teardown(void** state)
 
 /* ---- scenarios ------------------------------------------------------------ */
 
-/* The full round trip, verified from both ends: the blob really lands in storage
- * with the bytes the device sent, and IoT Hub really publishes the completion to
- * the service-side notification endpoint. A failed upload reported in the same
- * session must be accepted but must NOT be notified. */
-static void test_upload_round_trip_and_failure_reporting(void** state)
+/* An upload the device abandons and reports as FAILED. The hub must accept the
+ * report; it must not publish a notification for it (asserted further down, once
+ * a later successful upload's notification proves the hub got this far). */
+static void test_failed_upload_is_accepted(void** state)
 {
     (void)state;
     fixture* fx = &g_fx;
 
-    /* 1. An upload the device abandons and reports as failed. Nothing is PUT. */
-    char failed_blob[96];
-    make_blob_name(failed_blob, sizeof(failed_blob), "failed");
+    make_blob_name(fx->failed_blob, sizeof(fx->failed_blob), "failed");
     upload_ctx failed;
-    request_sas(fx, failed_blob, &failed);
+    request_sas(fx, fx->failed_blob, &failed);
 
+    /* Nothing is PUT: this upload never happened. */
     assert_int_equal(AZ_IOT_OK,
         az_iot_file_upload_client_notify_complete(
             &fx->fu, failed.correlation_id, false, on_notify, &failed));
     assert_true(failed.notify_done);
     assert_int_equal(failed.notify_status, AZ_IOT_OK);
+}
 
-    /* 2. A successful upload in the same session. */
-    char blob_name[96];
-    make_blob_name(blob_name, sizeof(blob_name), "ok");
+/* The full device-side round trip, verified against storage: the blob really
+ * lands with the bytes the device sent. The hub granting a URI is no proof that
+ * the payload arrived intact, so it is read back and compared. */
+static void test_upload_round_trip(void** state)
+{
+    (void)state;
+    fixture* fx = &g_fx;
+
+    make_blob_name(fx->uploaded_blob, sizeof(fx->uploaded_blob), "ok");
     upload_ctx u;
-    request_sas(fx, blob_name, &u);
+    request_sas(fx, fx->uploaded_blob, &u);
 
     char blob_host[256];
     char blob_path[2048];
@@ -285,8 +306,6 @@ static void test_upload_round_trip_and_failure_reporting(void** state)
         k_blob_content, strlen(k_blob_content), &put_status, NULL, 0, NULL));
     assert_in_range(put_status, 200, 299);
 
-    /* 3. Read the blob back through the same SAS URI and compare the bytes: the
-     *    hub granting a URI is no proof that the payload arrived intact. */
     char readback[256];
     int get_status = 0;
     size_t read_len = 0;
@@ -297,26 +316,41 @@ static void test_upload_round_trip_and_failure_reporting(void** state)
     assert_int_equal((int)read_len, (int)strlen(k_blob_content));
     assert_memory_equal(readback, k_blob_content, strlen(k_blob_content));
 
-    /* 4. Report success. */
     assert_int_equal(AZ_IOT_OK,
         az_iot_file_upload_client_notify_complete(
             &fx->fu, u.correlation_id, true, on_notify, &u));
     assert_true(u.notify_done);
     assert_int_equal(u.notify_status, AZ_IOT_OK);
+}
 
-    /* 5. IoT Hub must publish the completion to the service notification
-     *    endpoint. Pump both halves until it arrives. */
+/* The cloud half: IoT Hub must publish the successful upload to the service-side
+ * notification endpoint, and must not publish the failed one. */
+static void test_hub_publishes_a_completion_notification(void** state)
+{
+    (void)state;
+    fixture* fx = &g_fx;
+
+    if (!fx->watching_notifications)
+    {
+        /* Windows: the harness TLS transport cannot hold this watcher's AMQP
+         * connection open across the HTTPS calls the scenarios above make. */
+        skip();
+    }
+
+    assert_true(fx->uploaded_blob[0] != '\0');
+    assert_true(fx->failed_blob[0] != '\0');
+
     time_t start = time(NULL);
-    while (!az_iot_e2e_service_file_notification_seen(fx->svc, blob_name)
+    while (!az_iot_e2e_service_file_notification_seen(fx->svc, fx->uploaded_blob)
            && (time(NULL) - start) < E2E_NOTIFICATION_TIMEOUT_S)
     {
         pump(fx, 500);
     }
-    assert_true(az_iot_e2e_service_file_notification_seen(fx->svc, blob_name));
+    assert_true(az_iot_e2e_service_file_notification_seen(fx->svc, fx->uploaded_blob));
 
-    /* 6. The hub processed the failed upload BEFORE this one, so its
-     *    notification would already have arrived if the hub emitted one. */
-    assert_false(az_iot_e2e_service_file_notification_seen(fx->svc, failed_blob));
+    /* The hub processed the failed upload BEFORE this one, so its notification
+     * would already have arrived if the hub emitted one. */
+    assert_false(az_iot_e2e_service_file_notification_seen(fx->svc, fx->failed_blob));
 }
 
 /* A completion notification for a correlation id the hub never issued is
@@ -407,29 +441,17 @@ int main(void)
     az_iot_log_sink log = az_iot_log_stderr_sink(log_level);
     az_iot_log_set_global_sink(&log);
 
+    /* The first three are ORDER-DEPENDENT: the failed upload must be reported
+     * before the successful one so that the notification check can assert its
+     * absence deterministically (see the file header). */
     const struct CMUnitTest tests[] = {
-        cmocka_unit_test(test_upload_round_trip_and_failure_reporting),
+        cmocka_unit_test(test_failed_upload_is_accepted),
+        cmocka_unit_test(test_upload_round_trip),
+        cmocka_unit_test(test_hub_publishes_a_completion_notification),
         cmocka_unit_test(test_notify_with_unknown_correlation_id_is_rejected),
         cmocka_unit_test(test_client_rejects_invalid_arguments),
         cmocka_unit_test(test_sequential_uploads_reuse_the_client),
     };
 
-#ifdef _WIN32
-    /* Skipped on Windows: the e2e harness's Schannel TLS transport does not
-     * present the self-signed X.509 device certificate during the mutual-TLS
-     * hub REST handshake on the CI runners -- Schannel declines to send it even
-     * though the private key is accessible, whereas the OpenSSL transport on
-     * Linux presents it correctly. The file-upload SDK feature is covered by the
-     * Linux e2e legs, and the file-upload sample builds and runs natively on
-     * Windows. Return the CTest skip code (77) rather than fail. */
-    (void)tests;
-    (void)group_setup;
-    (void)group_teardown;
-    fprintf(stderr,
-        "az_iot_tests_e2e_fileupload: skipped on Windows (harness Schannel transport does "
-        "not present the client certificate on CI); covered on the Linux e2e legs.\n");
-    return 77;
-#else
     return cmocka_run_group_tests(tests, group_setup, group_teardown);
-#endif
 }
