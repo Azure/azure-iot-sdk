@@ -82,12 +82,19 @@ typedef void (*az_iot_file_upload_complete_callback)(
 /**
  * @brief Response buffer the application fills when performing a Classic HTTP
  *        request through the transport hook.
+ *
+ * The SDK supplies @p body and @p body_capacity and the application sets
+ * @p status_code and @p body_len. @p body is NULL with a zero @p body_capacity
+ * for requests whose response body the SDK does not read (the completion
+ * notification): a hook must tolerate that and simply discard the body.
+ * @p body_len is clamped to @p body_capacity by the SDK, and a success status
+ * carrying no body is reported to the caller as AZ_IOT_ERR_PROTOCOL.
  */
 typedef struct az_iot_file_upload_http_response
 {
     int      status_code;    /**< HTTP status the app observed (e.g. 200). */
-    uint8_t* body;           /**< App-provided buffer to receive the response body. */
-    size_t   body_capacity;  /**< Capacity of @p body. */
+    uint8_t* body;           /**< SDK-provided buffer to receive the response body; may be NULL. */
+    size_t   body_capacity;  /**< Capacity of @p body; 0 when no body is read. */
     size_t   body_len;       /**< Set by the app to the number of bytes written. */
 } az_iot_file_upload_http_response;
 
