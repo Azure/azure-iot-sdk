@@ -181,8 +181,11 @@ typedef struct az_iot_file_upload_client
  * @param conn            The (connected) connection client.
  * @param http_transport  HTTP transport for the Classic control plane. REQUIRED
  *                        on a Classic hub; may be NULL on Next.
- * @return AZ_IOT_OK on success; AZ_IOT_ERR_INVALID_ARG if a Classic connection is
- *         missing the HTTP transport or the hub/device id are not yet available.
+ * @return AZ_IOT_OK on success;
+ *         AZ_IOT_ERR_INVALID_ARG for a caller mistake -- a NULL argument, or a
+ *         Classic connection with no HTTP transport;
+ *         AZ_IOT_ERR_NOT_CONNECTED if the connection cannot yet supply a hub
+ *         address and device id, which is transient: retry once it is connected.
  */
 AZ_NODISCARD az_iot_result az_iot_file_upload_client_init(
     az_iot_file_upload_client* client,
@@ -209,8 +212,10 @@ void az_iot_file_upload_client_destroy(az_iot_file_upload_client* client);
  *         @p cb, including for HTTP and transport failures);
  *         AZ_IOT_ERR_NOT_SUPPORTED on a Next/AEG hub until the AEG Files message
  *         schema is implemented; another error if it could not be dispatched at
- *         all — notably AZ_IOT_ERR_NOT_ENOUGH_SPACE for a blob name that does not
- *         fit. No callback fires when this returns anything but AZ_IOT_OK.
+ *         all -- AZ_IOT_ERR_NOT_ENOUGH_SPACE for a blob name that does not fit,
+ *         or AZ_IOT_ERR_NOT_CONNECTED while the connection has no hub address
+ *         and device id to address the request to (retry once it is connected).
+ *         No callback fires when this returns anything but AZ_IOT_OK.
  */
 AZ_NODISCARD az_iot_result az_iot_file_upload_client_get_sas_uri(
     az_iot_file_upload_client* client,
@@ -229,7 +234,9 @@ AZ_NODISCARD az_iot_result az_iot_file_upload_client_get_sas_uri(
  * @param user_ctx        Context forwarded to @p cb.
  * @return AZ_IOT_OK if dispatched (the result then arrives via @p cb);
  *         AZ_IOT_ERR_NOT_SUPPORTED on Next until the AEG Files schema is
- *         implemented. No callback fires when this returns anything but
+ *         implemented; AZ_IOT_ERR_NOT_CONNECTED while the connection has no hub
+ *         address and device id to address the request to (retry once it is
+ *         connected). No callback fires when this returns anything but
  *         AZ_IOT_OK.
  */
 AZ_NODISCARD az_iot_result az_iot_file_upload_client_notify_complete(

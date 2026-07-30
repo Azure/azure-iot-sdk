@@ -58,10 +58,10 @@
 /* helpers                                                                   */
 /* ------------------------------------------------------------------------- */
 
-/* Copy a non-empty NUL-terminated string into a fixed buffer, bounds-checked. */
+/* Copy a NUL-terminated string into a fixed buffer, bounds-checked. Callers
+ * establish that @p src is present; this only decides whether it fits. */
 static az_iot_result fileupload_copy(char* dst, size_t cap, const char* src)
 {
-    if (!src || !src[0]) return AZ_IOT_ERR_INVALID_ARG;
     size_t n = strlen(src);
     if (n + 1 > cap) return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
     memcpy(dst, src, n + 1);
@@ -195,14 +195,25 @@ static az_iot_result http_status_to_result(int status)
  * the IDLE-time host setter the connection already exposes internally. */
 static az_iot_result fileupload_resolve_endpoint(az_iot_file_upload_client* client)
 {
-    az_iot_result r = fileupload_copy(
-        FI(client).hub_hostname, sizeof(FI(client).hub_hostname),
-        az_iot_connection_client_get_iothub_address(FI(client).conn));
+    const char* host = az_iot_connection_client_get_iothub_address(FI(client).conn);
+    const char* device_id = az_iot_connection_client__device_id(FI(client).conn);
+
+    /* The connection has no endpoint to give: it has not provisioned yet, or --
+     * once hub reassignment is supported -- it is between hubs. That is a
+     * transient state of the CONNECTION, not a mistake by the caller, and the
+     * two call for opposite responses: an application told AZ_IOT_ERR_INVALID_ARG
+     * would go auditing its own arguments, when what it should do is retry once
+     * the connection is up. */
+    if (!host || !host[0] || !device_id || !device_id[0])
+    {
+        return AZ_IOT_ERR_NOT_CONNECTED;
+    }
+
+    az_iot_result r
+        = fileupload_copy(FI(client).hub_hostname, sizeof(FI(client).hub_hostname), host);
     if (r != AZ_IOT_OK) return r;
 
-    return fileupload_copy(
-        FI(client).device_id, sizeof(FI(client).device_id),
-        az_iot_connection_client__device_id(FI(client).conn));
+    return fileupload_copy(FI(client).device_id, sizeof(FI(client).device_id), device_id);
 }
 
 /* ------------------------------------------------------------------------- */

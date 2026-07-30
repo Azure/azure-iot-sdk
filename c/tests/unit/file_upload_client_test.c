@@ -413,7 +413,8 @@ static void classic_init_rejects_transport_with_null_send(void** state)
         az_iot_file_upload_client_init(&fu2, &fx->conn, &http), AZ_IOT_ERR_INVALID_ARG);
 }
 
-/* A DPS-only connection that has not provisioned yet has no hub address. */
+/* A DPS-only connection that has not provisioned yet has no hub address. That is
+ * the connection's state, not a bad argument, so it reports NOT_CONNECTED. */
 static void init_rejects_unresolved_hub_address(void** state)
 {
     (void)state;
@@ -427,7 +428,7 @@ static void init_rejects_unresolved_hub_address(void** state)
     az_iot_file_upload_client fu2;
     az_iot_file_upload_http_transport http = { mock_send, NULL };
     assert_int_equal(
-        az_iot_file_upload_client_init(&fu2, &conn, &http), AZ_IOT_ERR_INVALID_ARG);
+        az_iot_file_upload_client_init(&fu2, &conn, &http), AZ_IOT_ERR_NOT_CONNECTED);
 
     az_iot_connection_client_destroy(&conn);
 }
@@ -445,7 +446,7 @@ static void init_rejects_missing_device_id(void** state)
     az_iot_file_upload_client fu2;
     az_iot_file_upload_http_transport http = { mock_send, NULL };
     assert_int_equal(
-        az_iot_file_upload_client_init(&fu2, &conn, &http), AZ_IOT_ERR_INVALID_ARG);
+        az_iot_file_upload_client_init(&fu2, &conn, &http), AZ_IOT_ERR_NOT_CONNECTED);
 
     az_iot_connection_client_destroy(&conn);
 }
@@ -508,7 +509,7 @@ static void failed_init_leaves_client_unusable(void** state)
     az_iot_file_upload_client fu2;
     az_iot_file_upload_http_transport http = { mock_send, NULL };
     assert_int_equal(
-        az_iot_file_upload_client_init(&fu2, &conn, &http), AZ_IOT_ERR_INVALID_ARG);
+        az_iot_file_upload_client_init(&fu2, &conn, &http), AZ_IOT_ERR_NOT_CONNECTED);
 
     rec r;
     memset(&r, 0, sizeof(r));
@@ -647,9 +648,9 @@ static void requests_follow_a_hub_reassignment(void** state)
  * caller re-initializing anything. That recovery is the whole point of resolving
  * per operation, so it is asserted here rather than assumed.
  *
- * The return code pins CURRENT behaviour and is worth revisiting:
- * AZ_IOT_ERR_INVALID_ARG reads as "the caller passed something bad", which is not
- * what happened and would discourage an application from retrying. */
+ * The return code is NOT_CONNECTED rather than INVALID_ARG on purpose: this is a
+ * transient state of the connection, and an application told its arguments were
+ * invalid would audit them instead of retrying. */
 static void requests_fail_while_the_connection_has_no_endpoint(void** state)
 {
     fixture* fx = (fixture*)*state;
@@ -663,10 +664,11 @@ static void requests_fail_while_the_connection_has_no_endpoint(void** state)
     fx->conn.opts.host = NULL;
     memset(&r, 0, sizeof(r));
     assert_int_equal(
-        az_iot_file_upload_client_get_sas_uri(&fx->fu, "b", on_sas, &r), AZ_IOT_ERR_INVALID_ARG);
+        az_iot_file_upload_client_get_sas_uri(&fx->fu, "b", on_sas, &r),
+        AZ_IOT_ERR_NOT_CONNECTED);
     assert_int_equal(
         az_iot_file_upload_client_notify_complete(&fx->fu, "c", true, on_notify, &r),
-        AZ_IOT_ERR_INVALID_ARG);
+        AZ_IOT_ERR_NOT_CONNECTED);
     assert_false(r.sas_done);
     assert_false(r.notify_done);
 
@@ -675,7 +677,8 @@ static void requests_fail_while_the_connection_has_no_endpoint(void** state)
     fx->conn.opts.client_id = NULL;
     memset(&r, 0, sizeof(r));
     assert_int_equal(
-        az_iot_file_upload_client_get_sas_uri(&fx->fu, "b", on_sas, &r), AZ_IOT_ERR_INVALID_ARG);
+        az_iot_file_upload_client_get_sas_uri(&fx->fu, "b", on_sas, &r),
+        AZ_IOT_ERR_NOT_CONNECTED);
     assert_false(r.sas_done);
 
     /* Nothing reached the network in either case. */
