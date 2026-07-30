@@ -82,17 +82,20 @@ namespace Microsoft.Azure.Devices.Client.FileUpload
 
             string requestUri = $"devices/{_connectionClient.GetCurrentConnectionContext().DeviceId}/files?api-version={IotHubConnection.ClassicHubApiVersion}";
 
-            HttpRequestMessage requestMessage = new(HttpMethod.Post, requestUri)
+            using HttpRequestMessage requestMessage = new(HttpMethod.Post, requestUri)
             {
                 Content = new StringContent(JsonSerializer.Serialize(request), Encoding.UTF8, "application/json")
             };
             requestMessage.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
 
-            var httpResponse = await _httpClient.SendAsync(requestMessage, cancellationToken);
+            // Disposed so the connection returns to the pool promptly; a device that
+            // uploads on a schedule would otherwise accumulate them.
+            using HttpResponseMessage httpResponse = await _httpClient.SendAsync(requestMessage, cancellationToken);
 
             if (httpResponse.StatusCode == System.Net.HttpStatusCode.OK)
             {
-                return JsonSerializer.Deserialize<FileUploadSasUriResponse>(await httpResponse.Content.ReadAsStringAsync())!;
+                return JsonSerializer.Deserialize<FileUploadSasUriResponse>(
+                    await httpResponse.Content.ReadAsStringAsync(cancellationToken))!;
             }
 
             throw BuildServiceException(
@@ -147,13 +150,13 @@ namespace Microsoft.Azure.Devices.Client.FileUpload
 
             string requestUri = $"devices/{_connectionClient.GetCurrentConnectionContext().DeviceId}/files/notifications?api-version={IotHubConnection.ClassicHubApiVersion}";
 
-            HttpRequestMessage requestMessage = new(HttpMethod.Post, requestUri)
+            using HttpRequestMessage requestMessage = new(HttpMethod.Post, requestUri)
             {
                 Content = new StringContent(JsonSerializer.Serialize(completion), Encoding.UTF8, "application/json")
             };
             requestMessage.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
 
-            var httpResponse = await _httpClient.SendAsync(requestMessage, cancellationToken);
+            using HttpResponseMessage httpResponse = await _httpClient.SendAsync(requestMessage, cancellationToken);
             if (httpResponse.StatusCode != System.Net.HttpStatusCode.NoContent)
             {
                 throw BuildServiceException(
