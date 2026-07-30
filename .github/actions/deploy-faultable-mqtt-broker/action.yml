@@ -30,4 +30,12 @@ runs:
         inlineScript: |
           $WorkingDirectory = pwd
           $job = Start-Job -ScriptBlock { dotnet run --project ".\faultablemqttbroker\Azure.Iot.Operations.FaultableMqttBroker.csproj" } -WorkingDirectory $WorkingDirectory
-
+          
+          # Check that the job is running correctly
+          Start-Sleep -Seconds 3
+          if ($job.State -ne "Running")
+          {
+            Write-Output "Faultable MQTT broker did not start up correctly:"
+            $job
+            exit 1
+          }
