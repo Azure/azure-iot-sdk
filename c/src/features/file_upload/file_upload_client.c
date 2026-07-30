@@ -185,6 +185,24 @@ static az_iot_result http_status_to_result(int status)
     return AZ_IOT_ERR_PROTOCOL;
 }
 
+/* Copy the connection's current hub address and device id into the client.
+ *
+ * Read per operation rather than cached once at init(): the connection re-points
+ * both when DPS assigns -- or reassigns -- a hub, so a client created before a
+ * reassignment would otherwise keep addressing the previous hub's REST endpoint
+ * with the previous device id. */
+static az_iot_result fileupload_resolve_endpoint(az_iot_file_upload_client* client)
+{
+    az_iot_result r = fileupload_copy(
+        FI(client).hub_hostname, sizeof(FI(client).hub_hostname),
+        az_iot_connection_client_get_iothub_address(FI(client).conn));
+    if (r != AZ_IOT_OK) return r;
+
+    return fileupload_copy(
+        FI(client).device_id, sizeof(FI(client).device_id),
+        az_iot_connection_client__device_id(FI(client).conn));
+}
+
 /* ------------------------------------------------------------------------- */
 /* public API                                                                */
 /* ------------------------------------------------------------------------- */
@@ -215,12 +233,7 @@ az_iot_result az_iot_file_upload_client_init(
         return AZ_IOT_ERR_INVALID_ARG;
     }
 
-    az_iot_result r = fileupload_copy(FI(client).hub_hostname, sizeof(FI(client).hub_hostname),
-                              az_iot_connection_client_get_iothub_address(conn));
-    if (r != AZ_IOT_OK) { memset(client, 0, sizeof(*client)); return r; }
-
-    r = fileupload_copy(FI(client).device_id, sizeof(FI(client).device_id),
-                az_iot_connection_client__device_id(conn));
+    az_iot_result r = fileupload_resolve_endpoint(client);
     if (r != AZ_IOT_OK) { memset(client, 0, sizeof(*client)); return r; }
 
     return AZ_IOT_OK;
@@ -257,6 +270,9 @@ az_iot_result az_iot_file_upload_client_get_sas_uri(
 
     /* Classic: synchronous HTTPS request via the application's transport hook. */
     if (!FI(client).http_send) return AZ_IOT_ERR_NOT_INITIALIZED;
+
+    az_iot_result er = fileupload_resolve_endpoint(client);
+    if (er != AZ_IOT_OK) return er;
 
     char url[AZ_IOT_FILE_UPLOAD_URL_MAX];
     int n = snprintf(url, sizeof(url), "https://%s/devices/%s/files?api-version=%s",
@@ -335,6 +351,9 @@ az_iot_result az_iot_file_upload_client_notify_complete(
     }
 
     if (!FI(client).http_send) return AZ_IOT_ERR_NOT_INITIALIZED;
+
+    az_iot_result er = fileupload_resolve_endpoint(client);
+    if (er != AZ_IOT_OK) return er;
 
     char url[AZ_IOT_FILE_UPLOAD_URL_MAX];
     int n = snprintf(url, sizeof(url), "https://%s/devices/%s/files/notifications?api-version=%s",
