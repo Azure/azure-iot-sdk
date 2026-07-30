@@ -442,19 +442,23 @@ int main(void)
     };
 
 #ifdef _WIN32
-    /* Skipped on Windows: the e2e harness's Schannel TLS transport does not
-     * present the self-signed X.509 device certificate during the mutual-TLS
-     * hub REST handshake on the CI runners -- Schannel declines to send it even
-     * though the private key is accessible, whereas the OpenSSL transport on
-     * Linux presents it correctly. The file-upload SDK feature is covered by the
-     * Linux e2e legs, and the file-upload sample builds and runs natively on
-     * Windows. Return the CTest skip code (77) rather than fail. */
+    /* Skipped on Windows: the mutual-TLS hub REST call the Classic control plane
+     * needs does not work through the e2e harness's Schannel transport on the CI
+     * runners. MEASURED (run 30506101665, where this skip was lifted to test the
+     * assumption): every get_sas_uri and notify_complete came back
+     * AZ_IOT_ERR_PROTOCOL after ~16s, i.e. the exchange produced no HTTP status
+     * line at all rather than an auth failure -- the hub closes the connection
+     * without responding. Only the argument-validation scenario, which touches no
+     * network, passed. The OpenSSL transport on Linux performs the same calls
+     * fine, so this is a harness limitation and not an SDK one; the feature is
+     * covered by the Linux e2e legs, and the file-upload sample builds and runs
+     * natively on Windows. Return the CTest skip code (77) rather than fail. */
     (void)tests;
     (void)group_setup;
     (void)group_teardown;
     fprintf(stderr,
-        "az_iot_tests_e2e_fileupload: skipped on Windows (harness Schannel transport does "
-        "not present the client certificate on CI); covered on the Linux e2e legs.\n");
+        "az_iot_tests_e2e_fileupload: skipped on Windows (the harness TLS transport cannot "
+        "complete the mutual-TLS hub REST call); covered on the Linux e2e legs.\n");
     return 77;
 #else
     return cmocka_run_group_tests(tests, group_setup, group_teardown);
