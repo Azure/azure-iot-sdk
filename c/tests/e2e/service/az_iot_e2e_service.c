@@ -220,10 +220,14 @@ bool az_iot_e2e_service_telemetry_watch_begin(az_iot_e2e_service* svc)
 
 bool az_iot_e2e_service_do_work(az_iot_e2e_service* svc, int timeout_ms)
 {
-    /* Split the budget when both watchers are up so neither starves the other. */
-    int slice = (svc->telemetry != NULL && svc->filenotify != NULL)
-        ? (timeout_ms / 2)
-        : timeout_ms;
+    /* Split the budget when both watchers are up so neither starves the other,
+     * but never below 1ms: halving a 1ms budget would turn both pumps into
+     * no-wait calls and busy-spin the caller. */
+    int slice = timeout_ms;
+    if (svc->telemetry != NULL && svc->filenotify != NULL && timeout_ms > 1)
+    {
+        slice = timeout_ms / 2;
+    }
 
     if (svc->telemetry != NULL && !e2e_amqp_telemetry_do_work(svc->telemetry, slice))
     {
@@ -298,6 +302,25 @@ bool az_iot_e2e_service_file_notification_watch_begin(
 bool az_iot_e2e_service_file_notification_seen(const az_iot_e2e_service* svc, const char* needle)
 {
     return svc->filenotify != NULL && e2e_amqp_filenotify_seen(svc->filenotify, needle);
+}
+
+void az_iot_e2e_service_file_notification_stats(
+    const az_iot_e2e_service* svc,
+    int* out_delivered,
+    int* out_captured,
+    int* out_released,
+    int* out_unparsed)
+{
+    if (svc->filenotify != NULL)
+    {
+        e2e_amqp_filenotify_stats(
+            svc->filenotify, out_delivered, out_captured, out_released, out_unparsed);
+        return;
+    }
+    if (out_delivered != NULL) *out_delivered = 0;
+    if (out_captured != NULL) *out_captured = 0;
+    if (out_released != NULL) *out_released = 0;
+    if (out_unparsed != NULL) *out_unparsed = 0;
 }
 
 void az_iot_e2e_service_file_notification_watch_end(az_iot_e2e_service* svc)

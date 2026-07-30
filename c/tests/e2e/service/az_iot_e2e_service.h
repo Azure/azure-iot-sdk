@@ -79,6 +79,17 @@ bool az_iot_e2e_service_file_notification_watch_begin(
  * blob name). Pump with az_iot_e2e_service_do_work while waiting. */
 bool az_iot_e2e_service_file_notification_seen(const az_iot_e2e_service* svc, const char* needle);
 
+/* Delivery counters for the notification watcher. A notification that never
+ * arrives looks exactly like one that arrived and was filtered out or could not
+ * be decoded, so a test whose wait times out should report these. Any output
+ * pointer may be NULL. */
+void az_iot_e2e_service_file_notification_stats(
+    const az_iot_e2e_service* svc,
+    int* out_delivered,
+    int* out_captured,
+    int* out_released,
+    int* out_unparsed);
+
 /* Stop watching file-upload notifications. Safe to call when not watching. */
 void az_iot_e2e_service_file_notification_watch_end(az_iot_e2e_service* svc);
 

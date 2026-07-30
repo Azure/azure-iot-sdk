@@ -662,12 +662,15 @@ static void on_filenotify_received(
     void* user_data)
 {
     e2e_amqp_filenotify* f = (e2e_amqp_filenotify*)user_data;
+    f->delivered_count++;
 
     az_amqp_message_body_kind body_kind;
     az_span body;
     if (az_result_failed(az_amqp_message_get_body(message, &body_kind, &body))
-        || body_kind != AZ_AMQP_MESSAGE_BODY_KIND_DATA)
+        || body_kind != AZ_AMQP_MESSAGE_BODY_KIND_DATA
+        || az_span_size(body) <= 0)
     {
+        f->unparsed_count++;
         E2E_AMQP_DISCARD(az_amqp_link_accept(link, delivery->number));
         return;
     }
@@ -685,6 +688,7 @@ static void on_filenotify_received(
      * RELEASED so the hub redelivers it to the leg that is waiting for it. */
     if (f->match[0] != '\0' && strstr(text, f->match) == NULL)
     {
+        f->released_count++;
         E2E_AMQP_DISCARD(az_amqp_link_release(link, delivery->number));
         return;
     }
@@ -712,9 +716,16 @@ bool e2e_amqp_filenotify_begin(
 
     snprintf(f->match, sizeof(f->match), "%s", (match != NULL) ? match : "");
 
-    /* CBS audience for the IoT Hub service endpoint is the hub host. */
+    /* CBS audience for the IoT Hub service endpoint is the hub host. snprintf
+     * reports what it WOULD have written, so a longer host must not be turned
+     * into a span that runs past the buffer. */
     int audience_length
         = snprintf(f->audience_buffer, sizeof(f->audience_buffer), "%s", hub_host);
+    if (audience_length < 0 || (size_t)audience_length >= sizeof(f->audience_buffer))
+    {
+        err = "filenotify: hub host too long for the CBS audience";
+        goto error;
+    }
     az_span audience = az_span_create((uint8_t*)f->audience_buffer, audience_length);
 
     /* 1. TLS transport. */
@@ -875,6 +886,19 @@ bool e2e_amqp_filenotify_seen(const e2e_amqp_filenotify* f, const char* needle)
         }
     }
     return false;
+}
+
+void e2e_amqp_filenotify_stats(
+    const e2e_amqp_filenotify* f,
+    int* out_delivered,
+    int* out_captured,
+    int* out_released,
+    int* out_unparsed)
+{
+    if (out_delivered != NULL) *out_delivered = f->delivered_count;
+    if (out_captured != NULL) *out_captured = f->captured_count;
+    if (out_released != NULL) *out_released = f->released_count;
+    if (out_unparsed != NULL) *out_unparsed = f->unparsed_count;
 }
 
 void e2e_amqp_filenotify_end(e2e_amqp_filenotify* f)

@@ -124,6 +124,13 @@ typedef struct e2e_amqp_filenotify
     int captured_count;
     char match[128]; /* only notifications containing this are consumed */
 
+    /* Diagnostics. A notification that never arrives is indistinguishable from
+     * one that arrived and was filtered out or could not be decoded, so count
+     * every disposition and let a failing test report them. */
+    int delivered_count; /* deliveries the endpoint handed us, whatever their shape */
+    int released_count;  /* released because they name another device */
+    int unparsed_count;  /* body missing or not a DATA body */
+
     uint8_t incoming_buffer[AZ_AMQP_DEFAULT_MAX_FRAME_SIZE];
     uint8_t outgoing_buffer[AZ_AMQP_DEFAULT_MAX_FRAME_SIZE];
     az_amqp_session* session_slots[1];
@@ -154,6 +161,14 @@ bool e2e_amqp_filenotify_do_work(e2e_amqp_filenotify* f, int wait_ms);
 
 /* Returns true if any captured notification body contains @p needle. */
 bool e2e_amqp_filenotify_seen(const e2e_amqp_filenotify* f, const char* needle);
+
+/* Delivery counters, for reporting why a wait timed out. */
+void e2e_amqp_filenotify_stats(
+    const e2e_amqp_filenotify* f,
+    int* out_delivered,
+    int* out_captured,
+    int* out_released,
+    int* out_unparsed);
 
 /* Detach the receiver and close the connection (best-effort). */
 void e2e_amqp_filenotify_end(e2e_amqp_filenotify* f);

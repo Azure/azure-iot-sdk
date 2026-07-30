@@ -56,8 +56,9 @@
 #include "e2e_device.h"
 
 /* How long to wait for IoT Hub to post a file-upload notification. The hub
- * batches these, so the budget is tens of seconds, not milliseconds. */
-#define E2E_NOTIFICATION_TIMEOUT_S 90
+ * batches these and a freshly provisioned hub is slower still, so the budget is
+ * minutes, not seconds. It stays well inside the 900s CTest timeout. */
+#define E2E_NOTIFICATION_TIMEOUT_S 300
 #define E2E_PUMP_SLICE_MS 50
 
 static const char k_blob_content[] =
@@ -169,8 +170,31 @@ static void pump(fixture* fx, int ms)
     for (int elapsed = 0; elapsed < ms; elapsed += E2E_PUMP_SLICE_MS)
     {
         e2e_device_do_work(&fx->dev, E2E_PUMP_SLICE_MS);
-        (void)az_iot_e2e_service_do_work(fx->svc, E2E_PUMP_SLICE_MS);
+        /* A dead service connection would otherwise look exactly like a hub that
+         * never published: fail loudly instead of waiting out the timeout. */
+        if (!az_iot_e2e_service_do_work(fx->svc, E2E_PUMP_SLICE_MS))
+        {
+            fail_msg("service connection failed while pumping: %s",
+                     az_iot_e2e_service_last_error(fx->svc));
+        }
     }
+}
+
+/* Describe what the notification watcher actually saw, so a wait that times out
+ * distinguishes "the hub published nothing" from "it published something we
+ * filtered out or could not decode". */
+static void report_notification_stats(fixture* fx)
+{
+    int delivered = 0;
+    int captured = 0;
+    int released = 0;
+    int unparsed = 0;
+    az_iot_e2e_service_file_notification_stats(
+        fx->svc, &delivered, &captured, &released, &unparsed);
+    fprintf(stderr,
+            "file-upload notifications: delivered=%d captured=%d "
+            "released(other device)=%d undecodable=%d\n",
+            delivered, captured, released, unparsed);
 }
 
 /* A unique blob name per run and per scenario avoids collisions across repeated
@@ -312,6 +336,7 @@ static void test_upload_round_trip_and_failure_reporting(void** state)
     {
         pump(fx, 500);
     }
+    report_notification_stats(fx);
     assert_true(az_iot_e2e_service_file_notification_seen(fx->svc, blob_name));
 
     /* 6. The hub processed the failed upload BEFORE this one, so its
@@ -378,9 +403,11 @@ static void test_sequential_uploads_reuse_the_client(void** state)
     /* Release both so the hub does not keep them pending against the account. */
     assert_int_equal(AZ_IOT_OK, az_iot_file_upload_client_notify_complete(
         &fx->fu, first.correlation_id, false, on_notify, &first));
+    assert_true(first.notify_done);
     assert_int_equal(first.notify_status, AZ_IOT_OK);
     assert_int_equal(AZ_IOT_OK, az_iot_file_upload_client_notify_complete(
         &fx->fu, second.correlation_id, false, on_notify, &second));
+    assert_true(second.notify_done);
     assert_int_equal(second.notify_status, AZ_IOT_OK);
 }
 
