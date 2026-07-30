@@ -28,8 +28,10 @@ inputs:
   azure-location:
     description: >-
       Azure region to provision in. ADU is only available in a subset (EastUS);
-      certificate management (ADR) is a preview feature and needs a canary region
-      (e.g. centraluseuap).
+      certificate management (ADR) is available in EastUS too. Avoid canary
+      regions (e.g. centraluseuap): Microsoft.DeviceRegistry there rejects
+      namespace creation from the CI service principal with
+      400 ResourceCreationValidateFailed.
     required: false
     default: EastUS
   enable-adu:
