@@ -587,6 +587,45 @@ static void two_clients_share_one_connection(void** state)
     assert_int_equal(r1.sas_status, AZ_IOT_OK);
 }
 
+/* The hub address and device id are read from the connection per operation, so a
+ * client created before a DPS (re)assignment addresses the CURRENT hub -- caching
+ * them at init() would keep aiming the REST calls at the previous one. The
+ * connection re-points opts.host / opts.client_id at its own provisioned buffers
+ * when an assignment lands; do the same here. */
+static void requests_follow_a_hub_reassignment(void** state)
+{
+    fixture* fx = (fixture*)*state;
+    g_http.resp_status = 200;
+    g_http.resp_body = k_sas_json;
+
+    rec r;
+    memset(&r, 0, sizeof(r));
+    assert_int_equal(
+        az_iot_file_upload_client_get_sas_uri(&fx->fu, "b", on_sas, &r), AZ_IOT_OK);
+    assert_string_equal(
+        g_http.last_url,
+        "https://" TEST_HUB "/devices/" TEST_DEVICE "/files?api-version=2021-04-12");
+
+    fx->conn.opts.host = "otherhub.azure-devices.net";
+    fx->conn.opts.client_id = "dev2";
+
+    memset(&r, 0, sizeof(r));
+    assert_int_equal(
+        az_iot_file_upload_client_get_sas_uri(&fx->fu, "b", on_sas, &r), AZ_IOT_OK);
+    assert_int_equal(r.sas_status, AZ_IOT_OK);
+    assert_string_equal(
+        g_http.last_url,
+        "https://otherhub.azure-devices.net/devices/dev2/files?api-version=2021-04-12");
+
+    g_http.resp_status = 204;
+    memset(&r, 0, sizeof(r));
+    assert_int_equal(
+        az_iot_file_upload_client_notify_complete(&fx->fu, "c", true, on_notify, &r), AZ_IOT_OK);
+    assert_string_equal(
+        g_http.last_url,
+        "https://otherhub.azure-devices.net/devices/dev2/files/notifications?api-version=2021-04-12");
+}
+
 /* The Classic path is stateless per call, so starting the next request from
  * inside the completion callback is legal. Locking this in matters because the
  * Next/MQTT path will hold per-request state and must preserve the behaviour. */
@@ -1291,6 +1330,7 @@ int main(void)
         cmocka_unit_test_setup_teardown(destroy_is_null_safe_and_idempotent, setup, teardown),
         cmocka_unit_test_setup_teardown(reinit_over_live_client_succeeds, setup, teardown),
         cmocka_unit_test_setup_teardown(two_clients_share_one_connection, setup, teardown),
+        cmocka_unit_test_setup_teardown(requests_follow_a_hub_reassignment, setup, teardown),
         cmocka_unit_test_setup_teardown(get_sas_uri_is_reentrant_from_callback, setup, teardown),
 
         /* HTTP status mapping */

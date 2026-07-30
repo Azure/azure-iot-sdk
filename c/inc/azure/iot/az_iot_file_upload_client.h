@@ -45,7 +45,15 @@ extern "C" {
 #ifndef AZ_IOT_FILE_UPLOAD_URL_MAX
 #define AZ_IOT_FILE_UPLOAD_URL_MAX 512
 #endif
-/** @brief Maximum length of a built request body (incl. NUL). */
+/** @brief Maximum length of a built request body (incl. NUL).
+ *
+ * This bounds the blob name: the SAS-URI request body is {"blobName":"<name>"},
+ * so a name (after JSON escaping) longer than this minus ~15 bytes is refused
+ * with AZ_IOT_ERR_NOT_ENOUGH_SPACE. The default leaves room for ~495 characters,
+ * well beyond typical names; raise it if the application uses longer ones (Azure
+ * Storage permits up to 1024). It also bounds the correlation id accepted by
+ * notify_complete(). Each operation allocates one buffer of this size on the
+ * stack. */
 #ifndef AZ_IOT_FILE_UPLOAD_BODY_MAX
 #define AZ_IOT_FILE_UPLOAD_BODY_MAX 512
 #endif
@@ -102,9 +110,18 @@ typedef struct az_iot_file_upload_http_response
  * @brief Application HTTP transport for the Classic control plane.
  *
  * Called synchronously by the SDK to perform one HTTPS request to IoT Hub and
- * return its response. For X.509 devices the app authenticates with mutual TLS
- * using the device certificate, and @p authorization is "" (SAS-key devices
- * place a SharedAccessSignature token there).
+ * return its response. The hook owns authentication: this SDK authenticates
+ * devices with X.509, so the hook is expected to perform mutual TLS with the
+ * device certificate and @p authorization is always "". The parameter is kept
+ * for hooks that need to supply their own credential (for example a gateway
+ * that fronts the hub) and for future token-based authentication.
+ *
+ * The hook must also validate the hub's server certificate; the SDK cannot do it
+ * on the application's behalf on this transport.
+ *
+ * The call blocks the SDK for its whole duration. When an operation is started
+ * from inside another callback it runs on the connection's do_work() thread, so
+ * a hook without a bounded timeout stalls the MQTT pump.
  *
  * @return AZ_IOT_OK if the request was performed (even for a non-2xx status,
  *         which is reported via response.status_code); an error only on a
@@ -145,7 +162,9 @@ typedef struct az_iot_file_upload_client
  * @brief Initialize the file upload client.
  *
  * Call after the connection has resolved its hub (for a DPS client, once it
- * reaches CONNECTED) so the hub address and device id are known.
+ * reaches CONNECTED) so the hub address and device id are known. Both are
+ * re-read from the connection on every operation, so a client stays valid if the
+ * connection is later reassigned to a different hub.
  *
  * @param client          Instance to initialize.
  * @param conn            The (connected) connection client.
@@ -171,12 +190,16 @@ void az_iot_file_upload_client_destroy(az_iot_file_upload_client* client);
  * (synchronous HTTP hook), or during a later do_work() on Next.
  *
  * @param client     File upload client instance.
- * @param blob_name  Name of the blob to upload (e.g. "mydata/sensor.csv").
+ * @param blob_name  Name of the blob to upload (e.g. "mydata/sensor.csv"). Must
+ *                   fit AZ_IOT_FILE_UPLOAD_BODY_MAX once JSON-escaped.
  * @param cb         Callback delivering the SAS URI + correlation id.
  * @param user_ctx   Context forwarded to @p cb.
- * @return AZ_IOT_OK if the request was dispatched (result arrives via @p cb);
+ * @return AZ_IOT_OK if the request was dispatched (the result then arrives via
+ *         @p cb, including for HTTP and transport failures);
  *         AZ_IOT_ERR_NOT_SUPPORTED on a Next/AEG hub until the AEG Files message
- *         schema is implemented; another error if it could not be dispatched.
+ *         schema is implemented; another error if it could not be dispatched at
+ *         all — notably AZ_IOT_ERR_NOT_ENOUGH_SPACE for a blob name that does not
+ *         fit. No callback fires when this returns anything but AZ_IOT_OK.
  */
 AZ_NODISCARD az_iot_result az_iot_file_upload_client_get_sas_uri(
     az_iot_file_upload_client* client,
@@ -193,8 +216,10 @@ AZ_NODISCARD az_iot_result az_iot_file_upload_client_get_sas_uri(
  * @param is_success      Whether the blob upload succeeded.
  * @param cb              Callback delivering the acknowledgement status.
  * @param user_ctx        Context forwarded to @p cb.
- * @return AZ_IOT_OK if dispatched; AZ_IOT_ERR_NOT_SUPPORTED on Next until the
- *         AEG Files schema is implemented.
+ * @return AZ_IOT_OK if dispatched (the result then arrives via @p cb);
+ *         AZ_IOT_ERR_NOT_SUPPORTED on Next until the AEG Files schema is
+ *         implemented. No callback fires when this returns anything but
+ *         AZ_IOT_OK.
  */
 AZ_NODISCARD az_iot_result az_iot_file_upload_client_notify_complete(
     az_iot_file_upload_client* client,
