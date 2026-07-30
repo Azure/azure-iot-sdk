@@ -652,3 +652,258 @@ cleanup:
     }
     return ok;
 }
+
+/* --- file-upload notification receiver ------------------------------------ */
+
+static void on_filenotify_received(
+    az_amqp_link* link,
+    az_amqp_message const* message,
+    az_amqp_delivery const* delivery,
+    void* user_data)
+{
+    e2e_amqp_filenotify* f = (e2e_amqp_filenotify*)user_data;
+
+    az_amqp_message_body_kind body_kind;
+    az_span body;
+    if (az_result_failed(az_amqp_message_get_body(message, &body_kind, &body))
+        || body_kind != AZ_AMQP_MESSAGE_BODY_KIND_DATA)
+    {
+        E2E_AMQP_DISCARD(az_amqp_link_accept(link, delivery->number));
+        return;
+    }
+
+    char text[E2E_AMQP_NOTIFY_BODY_MAX];
+    int n = az_span_size(body);
+    if (n > (int)sizeof(text) - 1)
+    {
+        n = (int)sizeof(text) - 1;
+    }
+    memcpy(text, az_span_ptr(body), (size_t)n);
+    text[n] = '\0';
+
+    /* The notification node is hub-wide. A notification for someone else is
+     * RELEASED so the hub redelivers it to the leg that is waiting for it. */
+    if (f->match[0] != '\0' && strstr(text, f->match) == NULL)
+    {
+        E2E_AMQP_DISCARD(az_amqp_link_release(link, delivery->number));
+        return;
+    }
+
+    if (f->captured_count < E2E_AMQP_NOTIFY_CAPTURE_MAX)
+    {
+        memcpy(f->captured[f->captured_count], text, (size_t)n + 1);
+        f->captured_count++;
+    }
+
+    /* Settle ours so the hub does not redeliver it to a later run. */
+    E2E_AMQP_DISCARD(az_amqp_link_accept(link, delivery->number));
+}
+
+bool e2e_amqp_filenotify_begin(
+    e2e_amqp_filenotify* f,
+    const char* hub_host,
+    const char* sas_token,
+    const char* match,
+    const char** err_out)
+{
+    const char* err = NULL;
+    az_span fqdn = az_span_create_from_str((char*)(uintptr_t)hub_host);
+    az_span token = az_span_create_from_str((char*)(uintptr_t)sas_token);
+
+    snprintf(f->match, sizeof(f->match), "%s", (match != NULL) ? match : "");
+
+    /* CBS audience for the IoT Hub service endpoint is the hub host. */
+    int audience_length
+        = snprintf(f->audience_buffer, sizeof(f->audience_buffer), "%s", hub_host);
+    az_span audience = az_span_create((uint8_t*)f->audience_buffer, audience_length);
+
+    /* 1. TLS transport. */
+    az_amqp_transport_options transport_options = { 0 };
+    transport_options.host_name = fqdn;
+    transport_options.port = AZ_AMQP_PORT_AMQPS;
+    transport_options.tls_enabled = true;
+    if (az_result_failed(
+            az_amqp_sample_transport_init(&f->transport, &f->transport_storage, &transport_options)))
+    {
+        err = "filenotify: transport init failed";
+        goto error;
+    }
+
+    /* 2. Connection with SASL ANONYMOUS (authorization happens over CBS). */
+    f->session_slots[0] = NULL;
+    az_amqp_connection_storage connection_storage = {
+        .incoming_buffer = AZ_SPAN_FROM_BUFFER(f->incoming_buffer),
+        .outgoing_buffer = AZ_SPAN_FROM_BUFFER(f->outgoing_buffer),
+        .sessions = f->session_slots,
+        .sessions_capacity = 1,
+    };
+    az_amqp_connection_options connection_options = az_amqp_connection_options_default();
+    connection_options.container_id = AZ_SPAN_FROM_STR("az-iot-e2e-filenotify");
+    connection_options.hostname = fqdn;
+    connection_options.idle_timeout_milliseconds = 240000;
+    connection_options.sasl.mechanism = AZ_AMQP_SASL_MECHANISM_ANONYMOUS;
+    if (az_result_failed(az_amqp_connection_init(
+            &f->connection, &f->transport, &connection_storage, &connection_options)))
+    {
+        err = "filenotify: connection init failed";
+        goto error;
+    }
+    az_amqp_connection_set_state_callback(
+        &f->connection, on_connection_state_changed, &f->connection_failed);
+    if (az_result_failed(az_amqp_connection_open(&f->connection)))
+    {
+        err = "filenotify: connection open failed";
+        goto error;
+    }
+    while (az_amqp_connection_get_state(&f->connection) == AZ_AMQP_CONNECTION_STATE_OPENING)
+    {
+        if (!pump_connection(&f->connection, &f->transport_storage, &f->connection_failed, 500))
+        {
+            err = "filenotify: connection failed during open";
+            goto error;
+        }
+    }
+
+    /* 3. Session (CBS pair + receiver). */
+    az_amqp_session_storage session_storage = { .links = f->link_slots, .links_capacity = 3 };
+    if (az_result_failed(az_amqp_session_init(&f->session, &f->connection, &session_storage, NULL))
+        || az_result_failed(az_amqp_session_begin(&f->session)))
+    {
+        err = "filenotify: session begin failed";
+        goto error;
+    }
+    while (az_amqp_session_get_state(&f->session) == AZ_AMQP_SESSION_STATE_BEGINNING)
+    {
+        if (!pump_connection(&f->connection, &f->transport_storage, &f->connection_failed, 500))
+        {
+            err = "filenotify: connection failed during session begin";
+            goto error;
+        }
+    }
+
+    /* 4. CBS authorize the hub host. */
+    az_amqp_cbs_options cbs_options = az_amqp_cbs_options_default();
+    cbs_options.reply_buffer = AZ_SPAN_FROM_BUFFER(f->cbs_reply_buffer);
+    if (az_result_failed(az_amqp_cbs_init(&f->cbs, &f->session, &cbs_options))
+        || az_result_failed(az_amqp_cbs_open(&f->cbs)))
+    {
+        err = "filenotify: cbs open failed";
+        goto error;
+    }
+    while (az_amqp_cbs_get_state(&f->cbs) == AZ_AMQP_CBS_STATE_OPENING)
+    {
+        if (!pump_connection(&f->connection, &f->transport_storage, &f->connection_failed, 500))
+        {
+            err = "filenotify: connection failed during cbs open";
+            goto error;
+        }
+    }
+    put_token_result put_token = { 0 };
+    if (az_result_failed(az_amqp_cbs_put_token(
+            &f->cbs,
+            AZ_SPAN_FROM_STR(AZ_AMQP_CBS_TOKEN_TYPE_SAS),
+            audience,
+            token,
+            0,
+            on_put_token_complete,
+            &put_token)))
+    {
+        err = "filenotify: put-token request failed to queue";
+        goto error;
+    }
+    while (!put_token.done)
+    {
+        if (!pump_connection(&f->connection, &f->transport_storage, &f->connection_failed, 500))
+        {
+            err = "filenotify: connection failed during cbs authorization";
+            goto error;
+        }
+    }
+    if (put_token.status / 100 != 2)
+    {
+        err = "filenotify: cbs authorization rejected";
+        goto error;
+    }
+
+    /* 5. Receiver on the file-notification node. */
+    az_amqp_link_options receiver_options = az_amqp_link_receiver_options_default(
+        AZ_SPAN_FROM_STR("e2e-filenotify-recv"),
+        az_amqp_source_from_address(AZ_SPAN_FROM_STR("/messages/serviceBound/filenotifications")),
+        AZ_AMQP_RECEIVER_SETTLE_MODE_FIRST,
+        AZ_SPAN_FROM_BUFFER(f->recv_buffer),
+        10 /* prefetch credit */);
+    if (az_result_failed(az_amqp_link_init(&f->receiver, &f->session, &receiver_options)))
+    {
+        err = "filenotify: receiver init failed";
+        goto error;
+    }
+    az_amqp_link_set_message_callback(&f->receiver, on_filenotify_received, f);
+    if (az_result_failed(az_amqp_link_attach(&f->receiver)))
+    {
+        err = "filenotify: receiver attach failed";
+        goto error;
+    }
+
+    f->started = true;
+    return true;
+
+error:
+    if (err_out != NULL)
+    {
+        *err_out = err;
+    }
+    e2e_amqp_filenotify_end(f);
+    return false;
+}
+
+bool e2e_amqp_filenotify_do_work(e2e_amqp_filenotify* f, int wait_ms)
+{
+    if (!f->started)
+    {
+        return false;
+    }
+    return pump_connection(&f->connection, &f->transport_storage, &f->connection_failed, wait_ms);
+}
+
+bool e2e_amqp_filenotify_seen(const e2e_amqp_filenotify* f, const char* needle)
+{
+    for (int i = 0; i < f->captured_count; i++)
+    {
+        if (strstr(f->captured[i], needle) != NULL)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+void e2e_amqp_filenotify_end(e2e_amqp_filenotify* f)
+{
+    if (f->started)
+    {
+        f->started = false;
+        E2E_AMQP_DISCARD(az_amqp_link_detach(&f->receiver, NULL));
+        E2E_AMQP_DISCARD(az_amqp_cbs_close(&f->cbs));
+        E2E_AMQP_DISCARD(az_amqp_session_end(&f->session, NULL));
+        E2E_AMQP_DISCARD(az_amqp_connection_close(&f->connection, NULL));
+
+        for (int i = 0; i < 40; i++)
+        {
+            az_amqp_connection_state state = az_amqp_connection_get_state(&f->connection);
+            if (state == AZ_AMQP_CONNECTION_STATE_CLOSED || state == AZ_AMQP_CONNECTION_STATE_ERROR)
+            {
+                break;
+            }
+            if (!pump_connection(&f->connection, &f->transport_storage, &f->connection_failed, 100))
+            {
+                break;
+            }
+        }
+    }
+
+    /* Always release the transport's TLS slot (see e2e_amqp_telemetry_end). */
+    if (f->transport.vtable != NULL && f->transport.vtable->close != NULL)
+    {
+        (void)f->transport.vtable->close(&f->transport);
+    }
+}
