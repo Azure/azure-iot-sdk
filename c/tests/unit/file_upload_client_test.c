@@ -59,9 +59,13 @@ typedef struct
     const char*   resp_body;
     size_t        resp_body_len;    /* 0 => strlen(resp_body) */
     size_t        resp_claim_body_len; /* >0 => report this body_len regardless of what was written */
+    bool          resp_redirect_body;  /* true => point response->body at the hook's own buffer */
 } mock_http;
 
 static mock_http g_http;
+
+/* Storage a misbehaving hook could redirect the SDK to. */
+static uint8_t g_foreign_buffer[256];
 
 static az_iot_result mock_send(
     const char* method, const char* url, const char* authorization,
@@ -94,13 +98,14 @@ static az_iot_result mock_send(
         return g_http.transport_result;
 
     response->status_code = g_http.resp_status;
-    if (response->body && g_http.resp_body)
+    if (response->body != NULL && response->body_capacity > 0 && g_http.resp_body != NULL)
     {
         size_t n = g_http.resp_body_len ? g_http.resp_body_len : strlen(g_http.resp_body);
         /* A real hook can never write past the capacity it was handed; the mock
          * clamps the same way, which is what produces a TRUNCATED response body
-         * when a test programs an oversized payload. */
-        if (n >= response->body_capacity) n = response->body_capacity - 1;
+         * when a test programs an oversized payload. Guarding on a non-zero
+         * capacity above keeps this subtraction from wrapping. */
+        if (n > response->body_capacity - 1) n = response->body_capacity - 1;
         memcpy(response->body, g_http.resp_body, n);
         response->body_len = n;
     }
@@ -115,6 +120,15 @@ static az_iot_result mock_send(
                    response->body_capacity - response->body_len);
         }
         response->body_len = g_http.resp_claim_body_len;
+    }
+    if (g_http.resp_redirect_body)
+    {
+        /* Simulate a hook that answers with storage of its own instead of the
+         * buffer the SDK provided. */
+        memset(g_foreign_buffer, 'x', sizeof(g_foreign_buffer));
+        response->body = g_foreign_buffer;
+        response->body_capacity = sizeof(g_foreign_buffer);
+        response->body_len = sizeof(g_foreign_buffer);
     }
     return AZ_IOT_OK;
 }
@@ -1120,6 +1134,22 @@ static void get_sas_uri_accepts_large_fields(void** state)
     assert_int_equal((int)strlen(r.sas_uri), 8 + 100 + 1 + 63 + 1 + 200 + 1 + 1000);
 }
 
+/* A hook that answers with a buffer of its own is refused: the SDK parses only
+ * the storage it handed out, so a redirected pointer cannot steer the reader. */
+static void get_sas_uri_rejects_a_redirected_response_buffer(void** state)
+{
+    fixture* fx = (fixture*)*state;
+    g_http.resp_status = 200;
+    g_http.resp_body = k_sas_json;
+    g_http.resp_redirect_body = true;
+
+    rec r;
+    memset(&r, 0, sizeof(r));
+    assert_int_equal(az_iot_file_upload_client_get_sas_uri(&fx->fu, "b", on_sas, &r), AZ_IOT_OK);
+    assert_true(r.sas_done);
+    assert_int_equal(r.sas_status, AZ_IOT_ERR_PROTOCOL);
+}
+
 /* ------------------------------------------------------------------------- */
 /* request building                                                          */
 /* ------------------------------------------------------------------------- */
@@ -1304,6 +1334,7 @@ int main(void)
         cmocka_unit_test_setup_teardown(get_sas_uri_malformed_json_reports_protocol, setup, teardown),
         cmocka_unit_test_setup_teardown(get_sas_uri_empty_response_reports_protocol, setup, teardown),
         cmocka_unit_test_setup_teardown(get_sas_uri_clamps_overreported_body_len, setup, teardown),
+        cmocka_unit_test_setup_teardown(get_sas_uri_rejects_a_redirected_response_buffer, setup, teardown),
         cmocka_unit_test_setup_teardown(get_sas_uri_missing_field_reports_protocol, setup, teardown),
         cmocka_unit_test_setup_teardown(get_sas_uri_wrong_field_type_reports_protocol, setup, teardown),
         cmocka_unit_test_setup_teardown(get_sas_uri_skips_unknown_nested_members, setup, teardown),

@@ -288,17 +288,21 @@ az_iot_result az_iot_file_upload_client_get_sas_uri(
     {
         /* Never hand the JSON reader an empty span: az_json_reader_init requires
          * at least one byte and its precondition handler does not return. A
-         * success status with no body is a protocol error, not a crash. The
-         * length is also clamped to the buffer the hook was given, so a hook that
-         * over-reports body_len cannot make the parser read past the buffer. */
-        size_t json_len = (resp.body_len > resp.body_capacity) ? resp.body_capacity : resp.body_len;
-        if (resp.body == NULL || json_len == 0)
+         * success status with no body is a protocol error, not a crash.
+         *
+         * The bounds come from THIS function's own buffer, not from the response
+         * fields: the struct is mutable and the hook is application code, so a
+         * hook that pointed `body` elsewhere or grew `body_capacity` must not be
+         * able to widen the span the parser reads. Anything but the buffer we
+         * handed out is refused outright. */
+        size_t json_len = (resp.body_len > sizeof(rbuf)) ? sizeof(rbuf) : resp.body_len;
+        if (resp.body != rbuf || json_len == 0)
         {
             cb(AZ_IOT_ERR_PROTOCOL, NULL, NULL, user_ctx);
             return AZ_IOT_OK;
         }
 
-        az_span json = az_span_create(resp.body, (int32_t)json_len);
+        az_span json = az_span_create(rbuf, (int32_t)json_len);
         char sas_uri[AZ_IOT_FILE_UPLOAD_SAS_URI_MAX];
         char corr_id[AZ_IOT_FILE_UPLOAD_CORR_ID_MAX];
         if (assemble_sas_uri(json, sas_uri, sizeof(sas_uri))

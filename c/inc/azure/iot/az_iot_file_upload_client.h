@@ -84,11 +84,17 @@ typedef void (*az_iot_file_upload_complete_callback)(
  *        request through the transport hook.
  *
  * The SDK supplies @p body and @p body_capacity and the application sets
- * @p status_code and @p body_len. @p body is NULL with a zero @p body_capacity
- * for requests whose response body the SDK does not read (the completion
- * notification): a hook must tolerate that and simply discard the body.
- * @p body_len is clamped to @p body_capacity by the SDK, and a success status
- * carrying no body is reported to the caller as AZ_IOT_ERR_PROTOCOL.
+ * @p status_code and, when it wrote one, @p body_len.
+ *
+ * For a request whose response body the SDK does not read -- the completion
+ * notification -- @p body is NULL and @p body_capacity is 0. A hook must tolerate
+ * that and simply discard the body it received.
+ *
+ * For a request whose body the SDK does parse -- the SAS-URI request -- the SDK
+ * ignores any change the hook made to @p body or @p body_capacity and bounds the
+ * parse by the buffer it originally handed out, so an over-reported @p body_len
+ * cannot read past it. A success status that arrives with no body at all is
+ * reported to the caller as AZ_IOT_ERR_PROTOCOL.
  */
 typedef struct az_iot_file_upload_http_response
 {
