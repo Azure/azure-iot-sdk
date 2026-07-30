@@ -264,6 +264,7 @@ jobs:
           name: e2e-results-${{ matrix.os }}
           path: ./test_config/results/**/*.xml
           if-no-files-found: ignore
+
   teardown:
     name: teardown (delete resources)
     needs: [setup, test]
