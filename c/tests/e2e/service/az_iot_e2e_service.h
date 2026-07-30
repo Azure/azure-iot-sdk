@@ -48,8 +48,8 @@ const char* az_iot_e2e_service_last_error(const az_iot_e2e_service* svc);
 bool az_iot_e2e_service_telemetry_watch_begin(az_iot_e2e_service* svc);
 
 /* Pump the service transport for up to @p timeout_ms. Call this interleaved with
- * the device's own do_work while waiting for telemetry. Returns false if the
- * service connection has failed. */
+ * the device's own do_work while waiting for telemetry or a file-upload
+ * notification. Returns false if a service connection has failed. */
 bool az_iot_e2e_service_do_work(az_iot_e2e_service* svc, int timeout_ms);
 
 /* Returns true once a telemetry body containing @p needle has been received. */
@@ -58,6 +58,29 @@ bool az_iot_e2e_service_telemetry_seen(const az_iot_e2e_service* svc, const char
 /* Stop watching telemetry and release the underlying connection. Safe to call
  * when not watching. */
 void az_iot_e2e_service_telemetry_watch_end(az_iot_e2e_service* svc);
+
+/* ---- File-upload notifications (AMQP receive, pumped like telemetry) ------ */
+
+/* Begin watching the IoT Hub file-upload notification endpoint. IoT Hub posts
+ * one notification per upload a device reported as SUCCESSFUL, so this is the
+ * only cloud-side proof that a file-upload round trip really completed -- the
+ * device itself only sees the hub accept its completion notification.
+ *
+ * The endpoint is HUB-WIDE: only notifications mentioning @p device_id are
+ * consumed, the rest are released back for other watchers. Start watching BEFORE
+ * the device notifies completion; notifications are delivered once and are not
+ * replayed to a later watcher. Returns false on setup failure (see
+ * az_iot_e2e_service_last_error). */
+bool az_iot_e2e_service_file_notification_watch_begin(
+    az_iot_e2e_service* svc,
+    const char* device_id);
+
+/* Returns true once a received notification body contains @p needle (e.g. the
+ * blob name). Pump with az_iot_e2e_service_do_work while waiting. */
+bool az_iot_e2e_service_file_notification_seen(const az_iot_e2e_service* svc, const char* needle);
+
+/* Stop watching file-upload notifications. Safe to call when not watching. */
+void az_iot_e2e_service_file_notification_watch_end(az_iot_e2e_service* svc);
 
 /* ---- Cloud-to-device (AMQP send; blocks until IoT Hub accepts) ------------ */
 
