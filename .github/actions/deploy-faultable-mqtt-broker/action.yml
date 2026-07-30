@@ -28,5 +28,6 @@ runs:
       with:
         azPSVersion: "latest"
         inlineScript: |
-          $job = Start-Job -ScriptBlock { dotnet run --project ".\faultablemqttbroker\Azure.Iot.Operations.FaultableMqttBroker.csproj" } -WorkingDirectory pwd
+          $WorkingDirectory = pwd
+          $job = Start-Job -ScriptBlock { dotnet run --project ".\faultablemqttbroker\Azure.Iot.Operations.FaultableMqttBroker.csproj" } -WorkingDirectory $WorkingDirectory
 
