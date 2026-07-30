@@ -10,6 +10,9 @@ on:
     paths:
       - 'c/**'
       - 'common/**'
+      # A change to this workflow decides what the build/test legs do, so it has
+      # to run them.
+      - '.github/workflows/ci-c.yml'
   workflow_dispatch:
 
 # All run steps execute from the c/ project directory (where CMakePresets.json
