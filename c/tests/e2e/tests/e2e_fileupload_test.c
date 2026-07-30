@@ -60,6 +60,10 @@
  * minutes, not seconds. It stays well inside the 900s CTest timeout. */
 #define E2E_NOTIFICATION_TIMEOUT_S 300
 #define E2E_PUMP_SLICE_MS 50
+/* The watcher spends this wait deliberately idle, and IoT Hub drops an idle AMQP
+ * connection, so reattaching is expected rather than exceptional. Bound it so a
+ * genuinely broken connection still fails instead of looping. */
+#define E2E_NOTIFICATION_MAX_REATTACH 5
 
 static const char k_blob_content[] =
     "Hello from the Azure IoT C SDK file upload e2e test.\n";
@@ -164,18 +168,65 @@ typedef struct
 
 static fixture g_fx;
 
-/* Keep the device MQTT session and the service AMQP watcher alive for @p ms. */
-static void pump(fixture* fx, int ms)
+/* Keep the device MQTT session and the service AMQP watcher alive for @p ms.
+ * Returns false once the service connection has dropped -- the caller decides
+ * whether that is fatal or merely something to reattach after. */
+static bool pump(fixture* fx, int ms)
 {
     for (int elapsed = 0; elapsed < ms; elapsed += E2E_PUMP_SLICE_MS)
     {
         e2e_device_do_work(&fx->dev, E2E_PUMP_SLICE_MS);
-        /* A dead service connection would otherwise look exactly like a hub that
-         * never published: fail loudly instead of waiting out the timeout. */
         if (!az_iot_e2e_service_do_work(fx->svc, E2E_PUMP_SLICE_MS))
         {
-            fail_msg("service connection failed while pumping: %s",
-                     az_iot_e2e_service_last_error(fx->svc));
+            return false;
+        }
+    }
+    return true;
+}
+
+/* Wait for the hub to publish @p wanted_blob to the service-side notification
+ * endpoint, latching whether @p unwanted_blob ever showed up alongside it.
+ *
+ * The connection is idle by construction while we wait, and IoT Hub drops idle
+ * AMQP connections, so a peer close here is routine rather than a failure:
+ * reattach and keep waiting. Notifications stay queued server-side until they
+ * are settled, so reattaching resumes the wait instead of missing one. Captured
+ * bodies do NOT survive a reattach, which is why an unwanted-blob sighting is
+ * latched here rather than re-read from the watcher afterwards. */
+static bool await_notification(
+    fixture* fx, const char* wanted_blob, const char* unwanted_blob, bool* out_saw_unwanted)
+{
+    time_t start = time(NULL);
+    int reattaches = 0;
+    *out_saw_unwanted = false;
+
+    for (;;)
+    {
+        if (unwanted_blob != NULL
+            && az_iot_e2e_service_file_notification_seen(fx->svc, unwanted_blob))
+        {
+            *out_saw_unwanted = true;
+        }
+        if (az_iot_e2e_service_file_notification_seen(fx->svc, wanted_blob))
+        {
+            return true;
+        }
+        if ((time(NULL) - start) >= E2E_NOTIFICATION_TIMEOUT_S)
+        {
+            return false;
+        }
+
+        if (!pump(fx, 500))
+        {
+            fprintf(stderr, "notification watcher reattaching after: %s\n",
+                    az_iot_e2e_service_last_error(fx->svc));
+            az_iot_e2e_service_file_notification_watch_end(fx->svc);
+            if (++reattaches > E2E_NOTIFICATION_MAX_REATTACH
+                || !az_iot_e2e_service_file_notification_watch_begin(fx->svc, fx->dev.device_id))
+            {
+                fail_msg("notification watcher could not be re-established after %d attempt(s): %s",
+                         reattaches, az_iot_e2e_service_last_error(fx->svc));
+            }
         }
     }
 }
@@ -329,19 +380,14 @@ static void test_upload_round_trip_and_failure_reporting(void** state)
     assert_int_equal(u.notify_status, AZ_IOT_OK);
 
     /* 5. IoT Hub must publish the completion to the service notification
-     *    endpoint. Pump both halves until it arrives. */
-    time_t start = time(NULL);
-    while (!az_iot_e2e_service_file_notification_seen(fx->svc, blob_name)
-           && (time(NULL) - start) < E2E_NOTIFICATION_TIMEOUT_S)
-    {
-        pump(fx, 500);
-    }
+     *    endpoint, and must NOT publish one for the upload reported as failed.
+     *    That upload was reported FIRST, so by the time this notification lands
+     *    the hub has demonstrably processed both. */
+    bool saw_failed = false;
+    bool saw_uploaded = await_notification(fx, blob_name, failed_blob, &saw_failed);
     report_notification_stats(fx);
-    assert_true(az_iot_e2e_service_file_notification_seen(fx->svc, blob_name));
-
-    /* 6. The hub processed the failed upload BEFORE this one, so its
-     *    notification would already have arrived if the hub emitted one. */
-    assert_false(az_iot_e2e_service_file_notification_seen(fx->svc, failed_blob));
+    assert_true(saw_uploaded);
+    assert_false(saw_failed);
 }
 
 /* A completion notification for a correlation id the hub never issued is
