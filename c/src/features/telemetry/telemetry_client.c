@@ -11,9 +11,14 @@
  * after PUBACK for QoS 1.
  *
  * NOTE on encoding: per the Azure IoT Hub Classic MQTT topic spec, property
- * bag entries must be URL-encoded. Phase 3.1 forwards keys/values verbatim;
- * callers are responsible for pre-encoding values containing '%', '&', '=',
- * '?', or non-ASCII bytes. Full URL-encoding is tracked as a follow-up.
+ * bag entries are URL-encoded, and both halves of every pair are encoded here.
+ * Values must be, because an unencoded '&', '=' or '%' would otherwise be read
+ * by the service as bag structure rather than content. Keys must be, because
+ * the system property names begin with '$': encoding turns "$.ct" into
+ * "%24.ct", which is byte-for-byte the form azure-sdk-for-c puts on the wire
+ * (see AZ_IOT_MESSAGE_PROPERTIES_CONTENT_TYPE) and keeps the reserved '$' out
+ * of the topic. Callers therefore always pass plain text, never pre-encoded
+ * text, for both key and value.
  */
 #include <stdbool.h>
 #include <stdint.h>
@@ -98,8 +103,8 @@ static az_iot_result build_topic_classic(
     }
 
     /* Property bag: system and application properties serialize uniformly as
-     * key=value pairs separated by '&'. System properties use well-known keys
-     * such as "$.ct". */
+     * key=value pairs separated by '&'. Both halves are percent-encoded; only
+     * the '&' and '=' emitted here carry structure. */
     bool first = true;
     for (size_t i = 0; i < msg->properties_count; ++i)
     {
@@ -112,11 +117,11 @@ static az_iot_result build_topic_classic(
         {
             az_iot_span_writer_append_u8(&writer, (uint8_t)'&');
         }
-        az_iot_span_writer_append_str(&writer, p->key);
+        az_iot_span_writer_append_url_encoded(&writer, p->key);
         if (p->value != NULL)
         {
             az_iot_span_writer_append_u8(&writer, (uint8_t)'=');
-            az_iot_span_writer_append_str(&writer, p->value);
+            az_iot_span_writer_append_url_encoded(&writer, p->value);
         }
         first = false;
     }
