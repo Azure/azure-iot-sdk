@@ -61,7 +61,7 @@ jobs:
           # Provision an Azure Storage account associated with the hub so the
           # always-run file-upload e2e (az_iot_tests_e2e_fileupload) can obtain a
           # SAS URI and upload a blob.
-          enable-file-upload: 'false'
+          enable-file-upload: 'false' #TODO to revert
           enable-certificate-management: 'true'
           config-cmdlet: 'New-AzIotNetSDKE2ETestConfig'
       - name: Upload test config
