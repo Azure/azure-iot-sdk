@@ -257,6 +257,27 @@ static void connack_negative_codes_map_to_mqtt(void** state)
     assert_int_equal(az_iot_mqtt_connack_result(AZ_IOT_MQTT_VERSION_5, -1), AZ_IOT_ERR_MQTT);
 }
 
+/* An unrecognized version must not be interpreted as either scheme. The codes
+ * overlap numerically -- 2, 4 and 5 are identity refusals in v3.1.1 and mean
+ * something else in v5 -- so picking a scheme would be picking whether to
+ * re-provision. The values below are exactly the ones that WOULD map to
+ * IDENTITY_REJECTED if an unknown version silently fell through to v3.1.1. */
+static void connack_unknown_version_never_rejects_the_identity(void** state)
+{
+    (void)state;
+    const az_iot_mqtt_version bogus = (az_iot_mqtt_version)99;
+    /* Exactly the v3.1.1 identity codes -- 2, 4, 5 -- which is what an unknown
+     * version would have been scored against had it fallen through to v3.1.1. */
+    static const int codes[] = { 2, 4, 5 };
+    for (size_t i = 0; i < sizeof(codes) / sizeof(codes[0]); ++i)
+    {
+        assert_int_equal(az_iot_mqtt_connack_result(bogus, codes[i]), AZ_IOT_ERR_MQTT);
+    }
+
+    /* A success code is still success: it carries no scheme-specific meaning. */
+    assert_int_equal(az_iot_mqtt_connack_result(bogus, 0), AZ_IOT_OK);
+}
+
 static void mapped_connack_status_reaches_the_inbound_callback(void** state)
 {
     (void)state;
@@ -297,6 +318,7 @@ int main(void)
         cmocka_unit_test(connack_v5_identity_codes_map_to_identity_rejected),
         cmocka_unit_test(connack_v5_transport_codes_map_to_mqtt),
         cmocka_unit_test(connack_negative_codes_map_to_mqtt),
+        cmocka_unit_test(connack_unknown_version_never_rejects_the_identity),
         cmocka_unit_test(mapped_connack_status_reaches_the_inbound_callback),
     };
     return cmocka_run_group_tests(tests, NULL, NULL);

@@ -54,13 +54,28 @@ az_iot_result az_iot_mqtt_connack_result(az_iot_mqtt_version version, int connac
         }
     }
 
-    switch (connack_code)
+    if (version == AZ_IOT_MQTT_VERSION_3_1_1)
     {
-        case CONNACK_V3_IDENTIFIER_REJECTED:
-        case CONNACK_V3_BAD_CREDENTIALS:
-        case CONNACK_V3_NOT_AUTHORIZED:
-            return AZ_IOT_ERR_IDENTITY_REJECTED;
-        default:
-            return AZ_IOT_ERR_MQTT;
+        switch (connack_code)
+        {
+            case CONNACK_V3_IDENTIFIER_REJECTED:
+            case CONNACK_V3_BAD_CREDENTIALS:
+            case CONNACK_V3_NOT_AUTHORIZED:
+                return AZ_IOT_ERR_IDENTITY_REJECTED;
+            default:
+                return AZ_IOT_ERR_MQTT;
+        }
     }
+
+    /* A version this function does not know. The code cannot be interpreted --
+     * the two schemes overlap numerically (2, 4 and 5 mean identity refusals in
+     * v3.1.1 and something else entirely in v5) -- so guessing a scheme would be
+     * guessing whether to re-provision. Report a connection failure, which is the
+     * conservative half of the split: a device retries instead of abandoning
+     * credentials that may be perfectly good.
+     *
+     * This is a public entry point that byo-MQTT adapters call with a version
+     * they supply (see how_to_byo_mqtt_client.md), so the value is genuinely
+     * untrusted here rather than an internal invariant. */
+    return AZ_IOT_ERR_MQTT;
 }

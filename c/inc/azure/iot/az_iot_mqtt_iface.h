@@ -176,7 +176,13 @@ const char* az_iot_mqtt_version_to_string(az_iot_mqtt_version v);
  * `connack_code` is the value carried in the CONNACK packet: a v3.1.1 return
  * code (1..5) or a v5 reason code (>= 0x80). 0 means success. A negative value
  * is treated as an adapter-internal failure (socket, TLS, library error) rather
- * than a code that came off the wire, and maps to AZ_IOT_ERR_MQTT. */
+ * than a code that came off the wire, and maps to AZ_IOT_ERR_MQTT.
+ *
+ * `version` selects which of the two code schemes applies; they overlap
+ * numerically, so it is not optional. A version this function does not
+ * recognize yields AZ_IOT_ERR_MQTT for any non-zero code -- guessing a scheme
+ * would be guessing whether to re-provision, and the retryable answer is the
+ * safe one. */
 AZ_NODISCARD az_iot_result az_iot_mqtt_connack_result(
     az_iot_mqtt_version version, int connack_code);
 
