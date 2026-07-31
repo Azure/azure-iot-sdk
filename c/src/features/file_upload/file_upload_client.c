@@ -58,16 +58,6 @@
 /* helpers                                                                   */
 /* ------------------------------------------------------------------------- */
 
-/* Copy a non-empty NUL-terminated string into a fixed buffer, bounds-checked. */
-static az_iot_result fileupload_copy(char* dst, size_t cap, const char* src)
-{
-    if (!src || !src[0]) return AZ_IOT_ERR_INVALID_ARG;
-    size_t n = strlen(src);
-    if (n + 1 > cap) return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
-    memcpy(dst, src, n + 1);
-    return AZ_IOT_OK;
-}
-
 /* Read a top-level string property @p name from JSON object @p json, copying its
  * (unescaped) value into @p out (NUL-terminated). Returns true on success. Uses
  * the azure-sdk-for-c JSON reader rather than hand-rolled parsing. */
@@ -185,6 +175,43 @@ static az_iot_result http_status_to_result(int status)
     return AZ_IOT_ERR_PROTOCOL;
 }
 
+/* Borrow the connection's current hub address and device id.
+ *
+ * Read per operation rather than cached once at init(). Today that is not a
+ * behavioural difference -- the connection assigns its hub exactly once, before
+ * a file upload client can exist -- but the connection client is the owner of
+ * both values, and keeping a second copy that stays correct only by accident of
+ * the current control flow would be a trap for re-provisioning, hub failover, or
+ * the IDLE-time host setter the connection already exposes internally.
+ *
+ * The strings are borrowed, not copied. That adds no lifetime dependency this
+ * client does not already have -- it holds @p client->_internal.conn itself --
+ * and the borrow is confined to the calling function, which formats the URL and
+ * is done with the pointers before it returns; nothing in between pumps the
+ * connection, invokes a callback, or otherwise lets the connection re-point
+ * them. Storing them WOULD be unsafe, which is precisely why we do not. */
+static az_iot_result fileupload_resolve_endpoint(
+    az_iot_file_upload_client* client, const char** out_host, const char** out_device_id)
+{
+    const char* host = az_iot_connection_client_get_iothub_address(FI(client).conn);
+    const char* device_id = az_iot_connection_client__device_id(FI(client).conn);
+
+    /* The connection has no endpoint to give: it has not provisioned yet, or --
+     * once hub reassignment is supported -- it is between hubs. That is a
+     * transient state of the CONNECTION, not a mistake by the caller, and the
+     * two call for opposite responses: an application told AZ_IOT_ERR_INVALID_ARG
+     * would go auditing its own arguments, when what it should do is retry once
+     * the connection is up. */
+    if (!host || !host[0] || !device_id || !device_id[0])
+    {
+        return AZ_IOT_ERR_NOT_CONNECTED;
+    }
+
+    *out_host = host;
+    *out_device_id = device_id;
+    return AZ_IOT_OK;
+}
+
 /* ------------------------------------------------------------------------- */
 /* public API                                                                */
 /* ------------------------------------------------------------------------- */
@@ -215,12 +242,13 @@ az_iot_result az_iot_file_upload_client_init(
         return AZ_IOT_ERR_INVALID_ARG;
     }
 
-    az_iot_result r = fileupload_copy(FI(client).hub_hostname, sizeof(FI(client).hub_hostname),
-                              az_iot_connection_client_get_iothub_address(conn));
-    if (r != AZ_IOT_OK) { memset(client, 0, sizeof(*client)); return r; }
-
-    r = fileupload_copy(FI(client).device_id, sizeof(FI(client).device_id),
-                az_iot_connection_client__device_id(conn));
+    /* Fail a connection that cannot name a hub here rather than at the first
+     * upload. This checks PRESENCE only -- whether the endpoint fits a request
+     * URL is checked per operation, since the hub in force at init() need not be
+     * the one an operation later addresses. */
+    const char* host = NULL;
+    const char* device_id = NULL;
+    az_iot_result r = fileupload_resolve_endpoint(client, &host, &device_id);
     if (r != AZ_IOT_OK) { memset(client, 0, sizeof(*client)); return r; }
 
     return AZ_IOT_OK;
@@ -258,9 +286,14 @@ az_iot_result az_iot_file_upload_client_get_sas_uri(
     /* Classic: synchronous HTTPS request via the application's transport hook. */
     if (!FI(client).http_send) return AZ_IOT_ERR_NOT_INITIALIZED;
 
+    const char* host = NULL;
+    const char* device_id = NULL;
+    az_iot_result er = fileupload_resolve_endpoint(client, &host, &device_id);
+    if (er != AZ_IOT_OK) return er;
+
     char url[AZ_IOT_FILE_UPLOAD_URL_MAX];
     int n = snprintf(url, sizeof(url), "https://%s/devices/%s/files?api-version=%s",
-                     FI(client).hub_hostname, FI(client).device_id, AZ_IOT_FILEUPLOAD_API_VERSION);
+                     host, device_id, AZ_IOT_FILEUPLOAD_API_VERSION);
     if (n < 0 || (size_t)n >= sizeof(url)) return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
 
     char body[AZ_IOT_FILE_UPLOAD_BODY_MAX];
@@ -286,7 +319,23 @@ az_iot_result az_iot_file_upload_client_get_sas_uri(
     az_iot_result r = http_status_to_result(resp.status_code);
     if (r == AZ_IOT_OK)
     {
-        az_span json = az_span_create(resp.body, (int32_t)resp.body_len);
+        /* Never hand the JSON reader an empty span: az_json_reader_init requires
+         * at least one byte and its precondition handler does not return. A
+         * success status with no body is a protocol error, not a crash.
+         *
+         * The bounds come from THIS function's own buffer, not from the response
+         * fields: the struct is mutable and the hook is application code, so a
+         * hook that pointed `body` elsewhere or grew `body_capacity` must not be
+         * able to widen the span the parser reads. Anything but the buffer we
+         * handed out is refused outright. */
+        size_t json_len = (resp.body_len > sizeof(rbuf)) ? sizeof(rbuf) : resp.body_len;
+        if (resp.body != rbuf || json_len == 0)
+        {
+            cb(AZ_IOT_ERR_PROTOCOL, NULL, NULL, user_ctx);
+            return AZ_IOT_OK;
+        }
+
+        az_span json = az_span_create(rbuf, (int32_t)json_len);
         char sas_uri[AZ_IOT_FILE_UPLOAD_SAS_URI_MAX];
         char corr_id[AZ_IOT_FILE_UPLOAD_CORR_ID_MAX];
         if (assemble_sas_uri(json, sas_uri, sizeof(sas_uri))
@@ -320,9 +369,14 @@ az_iot_result az_iot_file_upload_client_notify_complete(
 
     if (!FI(client).http_send) return AZ_IOT_ERR_NOT_INITIALIZED;
 
+    const char* host = NULL;
+    const char* device_id = NULL;
+    az_iot_result er = fileupload_resolve_endpoint(client, &host, &device_id);
+    if (er != AZ_IOT_OK) return er;
+
     char url[AZ_IOT_FILE_UPLOAD_URL_MAX];
     int n = snprintf(url, sizeof(url), "https://%s/devices/%s/files/notifications?api-version=%s",
-                     FI(client).hub_hostname, FI(client).device_id, AZ_IOT_FILEUPLOAD_API_VERSION);
+                     host, device_id, AZ_IOT_FILEUPLOAD_API_VERSION);
     if (n < 0 || (size_t)n >= sizeof(url)) return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
 
     char body[AZ_IOT_FILE_UPLOAD_BODY_MAX];

@@ -20,6 +20,99 @@
         (void)_e2e_discard_r;              \
     } while (0)
 
+/* --- error messages -------------------------------------------------------
+ * Reported through the *_begin / *_send `err_out` parameters and surfaced to a
+ * test by az_iot_e2e_service_last_error(). Defined in one place so a message is
+ * written once rather than repeated at each site, and so rewording one cannot
+ * leave near-duplicates behind.
+ *
+ * The three watchers fail in the same sequence -- transport, connection,
+ * session, CBS, then link -- so the subsystem prefix is factored out and the
+ * shared reasons are spelled once. Adjacent string literals are concatenated by
+ * the compiler, so each macro is still a single static string.
+ */
+#define E2E_AMQP_PFX_TELEMETRY  "telemetry: "
+#define E2E_AMQP_PFX_C2D        "c2d: "
+#define E2E_AMQP_PFX_FILENOTIFY "filenotify: "
+
+#define E2E_AMQP_R_TRANSPORT_INIT   "transport init failed"
+#define E2E_AMQP_R_CONN_INIT        "connection init failed"
+#define E2E_AMQP_R_CONN_OPEN        "connection open failed"
+#define E2E_AMQP_R_CONN_DURING_OPEN "connection failed during open"
+#define E2E_AMQP_R_SESSION_BEGIN    "session begin failed"
+#define E2E_AMQP_R_CONN_DURING_SESSION_BEGIN "connection failed during session begin"
+#define E2E_AMQP_R_CBS_OPEN         "cbs open failed"
+#define E2E_AMQP_R_CONN_DURING_CBS_OPEN "connection failed during cbs open"
+#define E2E_AMQP_R_PUT_TOKEN_QUEUE  "put-token request failed to queue"
+#define E2E_AMQP_R_CONN_DURING_CBS_AUTH "connection failed during cbs authorization"
+#define E2E_AMQP_R_CBS_AUTH_REJECTED "cbs authorization rejected"
+#define E2E_AMQP_R_RECEIVER_INIT    "receiver init failed"
+#define E2E_AMQP_R_RECEIVER_ATTACH  "receiver attach failed"
+
+/* telemetry */
+#define E2E_ERR_TELEMETRY_TRANSPORT_INIT   E2E_AMQP_PFX_TELEMETRY E2E_AMQP_R_TRANSPORT_INIT
+#define E2E_ERR_TELEMETRY_CONN_INIT        E2E_AMQP_PFX_TELEMETRY E2E_AMQP_R_CONN_INIT
+#define E2E_ERR_TELEMETRY_CONN_OPEN        E2E_AMQP_PFX_TELEMETRY E2E_AMQP_R_CONN_OPEN
+#define E2E_ERR_TELEMETRY_CONN_DURING_OPEN E2E_AMQP_PFX_TELEMETRY E2E_AMQP_R_CONN_DURING_OPEN
+#define E2E_ERR_TELEMETRY_SESSION_BEGIN    E2E_AMQP_PFX_TELEMETRY E2E_AMQP_R_SESSION_BEGIN
+#define E2E_ERR_TELEMETRY_CONN_DURING_SESSION_BEGIN \
+    E2E_AMQP_PFX_TELEMETRY E2E_AMQP_R_CONN_DURING_SESSION_BEGIN
+#define E2E_ERR_TELEMETRY_CBS_OPEN         E2E_AMQP_PFX_TELEMETRY E2E_AMQP_R_CBS_OPEN
+#define E2E_ERR_TELEMETRY_CONN_DURING_CBS_OPEN \
+    E2E_AMQP_PFX_TELEMETRY E2E_AMQP_R_CONN_DURING_CBS_OPEN
+#define E2E_ERR_TELEMETRY_PUT_TOKEN_QUEUE  E2E_AMQP_PFX_TELEMETRY E2E_AMQP_R_PUT_TOKEN_QUEUE
+#define E2E_ERR_TELEMETRY_CONN_DURING_CBS_AUTH \
+    E2E_AMQP_PFX_TELEMETRY E2E_AMQP_R_CONN_DURING_CBS_AUTH
+#define E2E_ERR_TELEMETRY_CBS_AUTH_REJECTED E2E_AMQP_PFX_TELEMETRY E2E_AMQP_R_CBS_AUTH_REJECTED
+#define E2E_ERR_TELEMETRY_RECEIVER_INIT    E2E_AMQP_PFX_TELEMETRY E2E_AMQP_R_RECEIVER_INIT
+#define E2E_ERR_TELEMETRY_RECEIVER_ATTACH  E2E_AMQP_PFX_TELEMETRY E2E_AMQP_R_RECEIVER_ATTACH
+
+/* c2d */
+#define E2E_ERR_C2D_OUT_OF_MEMORY    E2E_AMQP_PFX_C2D "out of memory"
+#define E2E_ERR_C2D_TRANSPORT_INIT   E2E_AMQP_PFX_C2D E2E_AMQP_R_TRANSPORT_INIT
+#define E2E_ERR_C2D_CONN_INIT        E2E_AMQP_PFX_C2D E2E_AMQP_R_CONN_INIT
+#define E2E_ERR_C2D_CONN_OPEN        E2E_AMQP_PFX_C2D E2E_AMQP_R_CONN_OPEN
+#define E2E_ERR_C2D_CONN_DURING_OPEN E2E_AMQP_PFX_C2D E2E_AMQP_R_CONN_DURING_OPEN
+#define E2E_ERR_C2D_SESSION_BEGIN    E2E_AMQP_PFX_C2D E2E_AMQP_R_SESSION_BEGIN
+#define E2E_ERR_C2D_CONN_DURING_SESSION_BEGIN \
+    E2E_AMQP_PFX_C2D E2E_AMQP_R_CONN_DURING_SESSION_BEGIN
+#define E2E_ERR_C2D_CBS_OPEN         E2E_AMQP_PFX_C2D E2E_AMQP_R_CBS_OPEN
+#define E2E_ERR_C2D_CONN_DURING_CBS_OPEN E2E_AMQP_PFX_C2D E2E_AMQP_R_CONN_DURING_CBS_OPEN
+#define E2E_ERR_C2D_PUT_TOKEN_QUEUE  E2E_AMQP_PFX_C2D E2E_AMQP_R_PUT_TOKEN_QUEUE
+#define E2E_ERR_C2D_CONN_DURING_CBS_AUTH E2E_AMQP_PFX_C2D E2E_AMQP_R_CONN_DURING_CBS_AUTH
+#define E2E_ERR_C2D_CBS_AUTH_REJECTED E2E_AMQP_PFX_C2D E2E_AMQP_R_CBS_AUTH_REJECTED
+#define E2E_ERR_C2D_SENDER_ATTACH    E2E_AMQP_PFX_C2D "sender attach failed"
+#define E2E_ERR_C2D_CONN_DURING_SENDER_ATTACH \
+    E2E_AMQP_PFX_C2D "connection failed during sender attach"
+#define E2E_ERR_C2D_SEND_QUEUE       E2E_AMQP_PFX_C2D "send failed to queue"
+#define E2E_ERR_C2D_CONN_DURING_SEND E2E_AMQP_PFX_C2D "connection failed during send"
+#define E2E_ERR_C2D_NOT_ACCEPTED     E2E_AMQP_PFX_C2D "message not accepted by IoT Hub"
+
+/* filenotify */
+#define E2E_ERR_FILENOTIFY_AUDIENCE_TOO_LONG \
+    E2E_AMQP_PFX_FILENOTIFY "hub host too long for the CBS audience"
+#define E2E_ERR_FILENOTIFY_TRANSPORT_INIT   E2E_AMQP_PFX_FILENOTIFY E2E_AMQP_R_TRANSPORT_INIT
+#define E2E_ERR_FILENOTIFY_CONN_INIT        E2E_AMQP_PFX_FILENOTIFY E2E_AMQP_R_CONN_INIT
+#define E2E_ERR_FILENOTIFY_CONN_OPEN        E2E_AMQP_PFX_FILENOTIFY E2E_AMQP_R_CONN_OPEN
+#define E2E_ERR_FILENOTIFY_CONN_DURING_OPEN E2E_AMQP_PFX_FILENOTIFY E2E_AMQP_R_CONN_DURING_OPEN
+#define E2E_ERR_FILENOTIFY_SESSION_BEGIN    E2E_AMQP_PFX_FILENOTIFY E2E_AMQP_R_SESSION_BEGIN
+#define E2E_ERR_FILENOTIFY_CONN_DURING_SESSION_BEGIN \
+    E2E_AMQP_PFX_FILENOTIFY E2E_AMQP_R_CONN_DURING_SESSION_BEGIN
+#define E2E_ERR_FILENOTIFY_CBS_OPEN         E2E_AMQP_PFX_FILENOTIFY E2E_AMQP_R_CBS_OPEN
+#define E2E_ERR_FILENOTIFY_CONN_DURING_CBS_OPEN \
+    E2E_AMQP_PFX_FILENOTIFY E2E_AMQP_R_CONN_DURING_CBS_OPEN
+#define E2E_ERR_FILENOTIFY_PUT_TOKEN_QUEUE  E2E_AMQP_PFX_FILENOTIFY E2E_AMQP_R_PUT_TOKEN_QUEUE
+#define E2E_ERR_FILENOTIFY_CONN_DURING_CBS_AUTH \
+    E2E_AMQP_PFX_FILENOTIFY E2E_AMQP_R_CONN_DURING_CBS_AUTH
+#define E2E_ERR_FILENOTIFY_CBS_AUTH_REJECTED \
+    E2E_AMQP_PFX_FILENOTIFY E2E_AMQP_R_CBS_AUTH_REJECTED
+#define E2E_ERR_FILENOTIFY_RECEIVER_INIT    E2E_AMQP_PFX_FILENOTIFY E2E_AMQP_R_RECEIVER_INIT
+#define E2E_ERR_FILENOTIFY_RECEIVER_ATTACH  E2E_AMQP_PFX_FILENOTIFY E2E_AMQP_R_RECEIVER_ATTACH
+#define E2E_ERR_FILENOTIFY_CONN_DURING_RECEIVER_ATTACH \
+    E2E_AMQP_PFX_FILENOTIFY "connection failed during receiver attach"
+#define E2E_ERR_FILENOTIFY_RECEIVER_ATTACH_REFUSED \
+    E2E_AMQP_PFX_FILENOTIFY "receiver attach refused by the hub"
+
 /* --- shared callbacks / pump ---------------------------------------------- */
 
 typedef struct put_token_result
@@ -155,7 +248,7 @@ bool e2e_amqp_telemetry_begin(
     if (az_result_failed(
             az_amqp_sample_transport_init(&t->transport, &t->transport_storage, &transport_options)))
     {
-        err = "telemetry: transport init failed";
+        err = E2E_ERR_TELEMETRY_TRANSPORT_INIT;
         goto error;
     }
 
@@ -176,7 +269,7 @@ bool e2e_amqp_telemetry_begin(
     if (az_result_failed(az_amqp_connection_init(
             &t->connection, &t->transport, &connection_storage, &connection_options)))
     {
-        err = "telemetry: connection init failed";
+        err = E2E_ERR_TELEMETRY_CONN_INIT;
         goto error;
     }
     az_amqp_connection_set_state_callback(
@@ -184,14 +277,14 @@ bool e2e_amqp_telemetry_begin(
 
     if (az_result_failed(az_amqp_connection_open(&t->connection)))
     {
-        err = "telemetry: connection open failed";
+        err = E2E_ERR_TELEMETRY_CONN_OPEN;
         goto error;
     }
     while (az_amqp_connection_get_state(&t->connection) == AZ_AMQP_CONNECTION_STATE_OPENING)
     {
         if (!pump_connection(&t->connection, &t->transport_storage, &t->connection_failed, 500))
         {
-            err = "telemetry: connection failed during open";
+            err = E2E_ERR_TELEMETRY_CONN_DURING_OPEN;
             goto error;
         }
     }
@@ -202,14 +295,14 @@ bool e2e_amqp_telemetry_begin(
     if (az_result_failed(az_amqp_session_init(&t->session, &t->connection, &session_storage, NULL))
         || az_result_failed(az_amqp_session_begin(&t->session)))
     {
-        err = "telemetry: session begin failed";
+        err = E2E_ERR_TELEMETRY_SESSION_BEGIN;
         goto error;
     }
     while (az_amqp_session_get_state(&t->session) == AZ_AMQP_SESSION_STATE_BEGINNING)
     {
         if (!pump_connection(&t->connection, &t->transport_storage, &t->connection_failed, 500))
         {
-            err = "telemetry: connection failed during session begin";
+            err = E2E_ERR_TELEMETRY_CONN_DURING_SESSION_BEGIN;
             goto error;
         }
     }
@@ -220,14 +313,14 @@ bool e2e_amqp_telemetry_begin(
     if (az_result_failed(az_amqp_cbs_init(&t->cbs, &t->session, &cbs_options))
         || az_result_failed(az_amqp_cbs_open(&t->cbs)))
     {
-        err = "telemetry: cbs open failed";
+        err = E2E_ERR_TELEMETRY_CBS_OPEN;
         goto error;
     }
     while (az_amqp_cbs_get_state(&t->cbs) == AZ_AMQP_CBS_STATE_OPENING)
     {
         if (!pump_connection(&t->connection, &t->transport_storage, &t->connection_failed, 500))
         {
-            err = "telemetry: connection failed during cbs open";
+            err = E2E_ERR_TELEMETRY_CONN_DURING_CBS_OPEN;
             goto error;
         }
     }
@@ -242,20 +335,20 @@ bool e2e_amqp_telemetry_begin(
             on_put_token_complete,
             &put_token)))
     {
-        err = "telemetry: put-token request failed to queue";
+        err = E2E_ERR_TELEMETRY_PUT_TOKEN_QUEUE;
         goto error;
     }
     while (!put_token.done)
     {
         if (!pump_connection(&t->connection, &t->transport_storage, &t->connection_failed, 500))
         {
-            err = "telemetry: connection failed during cbs authorization";
+            err = E2E_ERR_TELEMETRY_CONN_DURING_CBS_AUTH;
             goto error;
         }
     }
     if (put_token.status / 100 != 2)
     {
-        err = "telemetry: cbs authorization rejected";
+        err = E2E_ERR_TELEMETRY_CBS_AUTH_REJECTED;
         goto error;
     }
 
@@ -280,13 +373,13 @@ bool e2e_amqp_telemetry_begin(
 
         if (az_result_failed(az_amqp_link_init(&t->receivers[p], &t->session, &receiver_options)))
         {
-            err = "telemetry: receiver init failed";
+            err = E2E_ERR_TELEMETRY_RECEIVER_INIT;
             goto error;
         }
         az_amqp_link_set_message_callback(&t->receivers[p], on_message_received, t);
         if (az_result_failed(az_amqp_link_attach(&t->receivers[p])))
         {
-            err = "telemetry: receiver attach failed";
+            err = E2E_ERR_TELEMETRY_RECEIVER_ATTACH;
             goto error;
         }
     }
@@ -420,7 +513,7 @@ bool e2e_amqp_send_c2d(
     {
         if (err_out != NULL)
         {
-            *err_out = "c2d: out of memory";
+            *err_out = E2E_ERR_C2D_OUT_OF_MEMORY;
         }
         return false;
     }
@@ -446,7 +539,7 @@ bool e2e_amqp_send_c2d(
     if (az_result_failed(
             az_amqp_sample_transport_init(&c->transport, &c->transport_storage, &transport_options)))
     {
-        err = "c2d: transport init failed";
+        err = E2E_ERR_C2D_TRANSPORT_INIT;
         goto cleanup;
     }
 
@@ -465,7 +558,7 @@ bool e2e_amqp_send_c2d(
     if (az_result_failed(az_amqp_connection_init(
             &c->connection, &c->transport, &connection_storage, &connection_options)))
     {
-        err = "c2d: connection init failed";
+        err = E2E_ERR_C2D_CONN_INIT;
         goto cleanup;
     }
     connection_ok = true;
@@ -473,14 +566,14 @@ bool e2e_amqp_send_c2d(
         &c->connection, on_connection_state_changed, &c->connection_failed);
     if (az_result_failed(az_amqp_connection_open(&c->connection)))
     {
-        err = "c2d: connection open failed";
+        err = E2E_ERR_C2D_CONN_OPEN;
         goto cleanup;
     }
     while (az_amqp_connection_get_state(&c->connection) == AZ_AMQP_CONNECTION_STATE_OPENING)
     {
         if (!pump_connection(&c->connection, &c->transport_storage, &c->connection_failed, 500))
         {
-            err = "c2d: connection failed during open";
+            err = E2E_ERR_C2D_CONN_DURING_OPEN;
             goto cleanup;
         }
     }
@@ -491,7 +584,7 @@ bool e2e_amqp_send_c2d(
     if (az_result_failed(az_amqp_session_init(&c->session, &c->connection, &session_storage, NULL))
         || az_result_failed(az_amqp_session_begin(&c->session)))
     {
-        err = "c2d: session begin failed";
+        err = E2E_ERR_C2D_SESSION_BEGIN;
         goto cleanup;
     }
     session_ok = true;
@@ -499,7 +592,7 @@ bool e2e_amqp_send_c2d(
     {
         if (!pump_connection(&c->connection, &c->transport_storage, &c->connection_failed, 500))
         {
-            err = "c2d: connection failed during session begin";
+            err = E2E_ERR_C2D_CONN_DURING_SESSION_BEGIN;
             goto cleanup;
         }
     }
@@ -510,7 +603,7 @@ bool e2e_amqp_send_c2d(
     if (az_result_failed(az_amqp_cbs_init(&c->cbs, &c->session, &cbs_options))
         || az_result_failed(az_amqp_cbs_open(&c->cbs)))
     {
-        err = "c2d: cbs open failed";
+        err = E2E_ERR_C2D_CBS_OPEN;
         goto cleanup;
     }
     cbs_ok = true;
@@ -518,7 +611,7 @@ bool e2e_amqp_send_c2d(
     {
         if (!pump_connection(&c->connection, &c->transport_storage, &c->connection_failed, 500))
         {
-            err = "c2d: connection failed during cbs open";
+            err = E2E_ERR_C2D_CONN_DURING_CBS_OPEN;
             goto cleanup;
         }
     }
@@ -532,20 +625,20 @@ bool e2e_amqp_send_c2d(
             on_put_token_complete,
             &put_token)))
     {
-        err = "c2d: put-token request failed to queue";
+        err = E2E_ERR_C2D_PUT_TOKEN_QUEUE;
         goto cleanup;
     }
     while (!put_token.done)
     {
         if (!pump_connection(&c->connection, &c->transport_storage, &c->connection_failed, 500))
         {
-            err = "c2d: connection failed during cbs authorization";
+            err = E2E_ERR_C2D_CONN_DURING_CBS_AUTH;
             goto cleanup;
         }
     }
     if (put_token.status / 100 != 2)
     {
-        err = "c2d: cbs authorization rejected";
+        err = E2E_ERR_C2D_CBS_AUTH_REJECTED;
         goto cleanup;
     }
 
@@ -559,7 +652,7 @@ bool e2e_amqp_send_c2d(
     if (az_result_failed(az_amqp_link_init(&c->sender, &c->session, &sender_options))
         || az_result_failed(az_amqp_link_attach(&c->sender)))
     {
-        err = "c2d: sender attach failed";
+        err = E2E_ERR_C2D_SENDER_ATTACH;
         goto cleanup;
     }
     sender_ok = true;
@@ -568,7 +661,7 @@ bool e2e_amqp_send_c2d(
     {
         if (!pump_connection(&c->connection, &c->transport_storage, &c->connection_failed, 500))
         {
-            err = "c2d: connection failed during sender attach";
+            err = E2E_ERR_C2D_CONN_DURING_SENDER_ATTACH;
             goto cleanup;
         }
     }
@@ -591,20 +684,20 @@ bool e2e_amqp_send_c2d(
     if (az_result_failed(az_amqp_link_send(
             &c->sender, &message, AZ_SPAN_FROM_BUFFER(delivery_tag_bytes), on_send_complete, &send)))
     {
-        err = "c2d: send failed to queue";
+        err = E2E_ERR_C2D_SEND_QUEUE;
         goto cleanup;
     }
     while (!send.done)
     {
         if (!pump_connection(&c->connection, &c->transport_storage, &c->connection_failed, 500))
         {
-            err = "c2d: connection failed during send";
+            err = E2E_ERR_C2D_CONN_DURING_SEND;
             goto cleanup;
         }
     }
     if (send.outcome != AZ_AMQP_DELIVERY_OUTCOME_ACCEPTED)
     {
-        err = "c2d: message not accepted by IoT Hub";
+        err = E2E_ERR_C2D_NOT_ACCEPTED;
         goto cleanup;
     }
     ok = true;
@@ -651,4 +744,323 @@ cleanup:
         *err_out = err;
     }
     return ok;
+}
+
+/* --- file-upload notification receiver ------------------------------------ */
+
+static void on_filenotify_received(
+    az_amqp_link* link,
+    az_amqp_message const* message,
+    az_amqp_delivery const* delivery,
+    void* user_data)
+{
+    e2e_amqp_filenotify* f = (e2e_amqp_filenotify*)user_data;
+    f->delivered_count++;
+
+    az_amqp_message_body_kind body_kind;
+    az_span body;
+    if (az_result_failed(az_amqp_message_get_body(message, &body_kind, &body))
+        || body_kind != AZ_AMQP_MESSAGE_BODY_KIND_DATA
+        || az_span_size(body) <= 0)
+    {
+        f->unparsed_count++;
+        E2E_AMQP_DISCARD(az_amqp_link_accept(link, delivery->number));
+        return;
+    }
+
+    char text[E2E_AMQP_NOTIFY_BODY_MAX];
+    int n = az_span_size(body);
+    if (n > (int)sizeof(text) - 1)
+    {
+        n = (int)sizeof(text) - 1;
+    }
+    memcpy(text, az_span_ptr(body), (size_t)n);
+    text[n] = '\0';
+
+    /* The notification node is hub-wide. A notification for someone else is
+     * RELEASED so the hub redelivers it to the leg that is waiting for it. */
+    if (f->match[0] != '\0' && strstr(text, f->match) == NULL)
+    {
+        f->released_count++;
+        E2E_AMQP_DISCARD(az_amqp_link_release(link, delivery->number));
+        return;
+    }
+
+    if (f->captured_count < E2E_AMQP_NOTIFY_CAPTURE_MAX)
+    {
+        memcpy(f->captured[f->captured_count], text, (size_t)n + 1);
+        f->captured_count++;
+    }
+
+    /* Settle ours so the hub does not redeliver it to a later run. */
+    E2E_AMQP_DISCARD(az_amqp_link_accept(link, delivery->number));
+}
+
+bool e2e_amqp_filenotify_begin(
+    e2e_amqp_filenotify* f,
+    const char* hub_host,
+    const char* sas_token,
+    const char* match,
+    const char** err_out,
+    bool* attach_refused_out)
+{
+    const char* err = NULL;
+    bool attach_refused = false;
+    az_span fqdn = az_span_create_from_str((char*)(uintptr_t)hub_host);
+    az_span token = az_span_create_from_str((char*)(uintptr_t)sas_token);
+
+    snprintf(f->match, sizeof(f->match), "%s", (match != NULL) ? match : "");
+
+    /* CBS audience for the IoT Hub service endpoint is the hub host. snprintf
+     * reports what it WOULD have written, so a longer host must not be turned
+     * into a span that runs past the buffer. */
+    int audience_length
+        = snprintf(f->audience_buffer, sizeof(f->audience_buffer), "%s", hub_host);
+    if (audience_length < 0 || (size_t)audience_length >= sizeof(f->audience_buffer))
+    {
+        err = E2E_ERR_FILENOTIFY_AUDIENCE_TOO_LONG;
+        goto error;
+    }
+    az_span audience = az_span_create((uint8_t*)f->audience_buffer, audience_length);
+
+    /* 1. TLS transport. */
+    az_amqp_transport_options transport_options = { 0 };
+    transport_options.host_name = fqdn;
+    transport_options.port = AZ_AMQP_PORT_AMQPS;
+    transport_options.tls_enabled = true;
+    if (az_result_failed(
+            az_amqp_sample_transport_init(&f->transport, &f->transport_storage, &transport_options)))
+    {
+        err = E2E_ERR_FILENOTIFY_TRANSPORT_INIT;
+        goto error;
+    }
+
+    /* 2. Connection with SASL ANONYMOUS (authorization happens over CBS). */
+    f->session_slots[0] = NULL;
+    az_amqp_connection_storage connection_storage = {
+        .incoming_buffer = AZ_SPAN_FROM_BUFFER(f->incoming_buffer),
+        .outgoing_buffer = AZ_SPAN_FROM_BUFFER(f->outgoing_buffer),
+        .sessions = f->session_slots,
+        .sessions_capacity = 1,
+    };
+    az_amqp_connection_options connection_options = az_amqp_connection_options_default();
+    connection_options.container_id = AZ_SPAN_FROM_STR("az-iot-e2e-filenotify");
+    connection_options.hostname = fqdn;
+    connection_options.idle_timeout_milliseconds = 240000;
+    connection_options.sasl.mechanism = AZ_AMQP_SASL_MECHANISM_ANONYMOUS;
+    if (az_result_failed(az_amqp_connection_init(
+            &f->connection, &f->transport, &connection_storage, &connection_options)))
+    {
+        err = E2E_ERR_FILENOTIFY_CONN_INIT;
+        goto error;
+    }
+    az_amqp_connection_set_state_callback(
+        &f->connection, on_connection_state_changed, &f->connection_failed);
+    if (az_result_failed(az_amqp_connection_open(&f->connection)))
+    {
+        err = E2E_ERR_FILENOTIFY_CONN_OPEN;
+        goto error;
+    }
+    while (az_amqp_connection_get_state(&f->connection) == AZ_AMQP_CONNECTION_STATE_OPENING)
+    {
+        if (!pump_connection(&f->connection, &f->transport_storage, &f->connection_failed, 500))
+        {
+            err = E2E_ERR_FILENOTIFY_CONN_DURING_OPEN;
+            goto error;
+        }
+    }
+
+    /* 3. Session (CBS pair + receiver). */
+    az_amqp_session_storage session_storage = { .links = f->link_slots, .links_capacity = 3 };
+    if (az_result_failed(az_amqp_session_init(&f->session, &f->connection, &session_storage, NULL))
+        || az_result_failed(az_amqp_session_begin(&f->session)))
+    {
+        err = E2E_ERR_FILENOTIFY_SESSION_BEGIN;
+        goto error;
+    }
+    while (az_amqp_session_get_state(&f->session) == AZ_AMQP_SESSION_STATE_BEGINNING)
+    {
+        if (!pump_connection(&f->connection, &f->transport_storage, &f->connection_failed, 500))
+        {
+            err = E2E_ERR_FILENOTIFY_CONN_DURING_SESSION_BEGIN;
+            goto error;
+        }
+    }
+
+    /* 4. CBS authorize the hub host. */
+    az_amqp_cbs_options cbs_options = az_amqp_cbs_options_default();
+    cbs_options.reply_buffer = AZ_SPAN_FROM_BUFFER(f->cbs_reply_buffer);
+    if (az_result_failed(az_amqp_cbs_init(&f->cbs, &f->session, &cbs_options))
+        || az_result_failed(az_amqp_cbs_open(&f->cbs)))
+    {
+        err = E2E_ERR_FILENOTIFY_CBS_OPEN;
+        goto error;
+    }
+    while (az_amqp_cbs_get_state(&f->cbs) == AZ_AMQP_CBS_STATE_OPENING)
+    {
+        if (!pump_connection(&f->connection, &f->transport_storage, &f->connection_failed, 500))
+        {
+            err = E2E_ERR_FILENOTIFY_CONN_DURING_CBS_OPEN;
+            goto error;
+        }
+    }
+    put_token_result put_token = { 0 };
+    if (az_result_failed(az_amqp_cbs_put_token(
+            &f->cbs,
+            AZ_SPAN_FROM_STR(AZ_AMQP_CBS_TOKEN_TYPE_SAS),
+            audience,
+            token,
+            0,
+            on_put_token_complete,
+            &put_token)))
+    {
+        err = E2E_ERR_FILENOTIFY_PUT_TOKEN_QUEUE;
+        goto error;
+    }
+    while (!put_token.done)
+    {
+        if (!pump_connection(&f->connection, &f->transport_storage, &f->connection_failed, 500))
+        {
+            err = E2E_ERR_FILENOTIFY_CONN_DURING_CBS_AUTH;
+            goto error;
+        }
+    }
+    if (put_token.status / 100 != 2)
+    {
+        err = E2E_ERR_FILENOTIFY_CBS_AUTH_REJECTED;
+        goto error;
+    }
+
+    /* 5. Receiver on the file-notification node. */
+    az_amqp_link_options receiver_options = az_amqp_link_receiver_options_default(
+        AZ_SPAN_FROM_STR("e2e-filenotify-recv"),
+        az_amqp_source_from_address(AZ_SPAN_FROM_STR("/messages/serviceBound/filenotifications")),
+        AZ_AMQP_RECEIVER_SETTLE_MODE_FIRST,
+        AZ_SPAN_FROM_BUFFER(f->recv_buffer),
+        10 /* prefetch credit */);
+    if (az_result_failed(az_amqp_link_init(&f->receiver, &f->session, &receiver_options)))
+    {
+        err = E2E_ERR_FILENOTIFY_RECEIVER_INIT;
+        goto error;
+    }
+    az_amqp_link_set_message_callback(&f->receiver, on_filenotify_received, f);
+    if (az_result_failed(az_amqp_link_attach(&f->receiver)))
+    {
+        err = E2E_ERR_FILENOTIFY_RECEIVER_ATTACH;
+        goto error;
+    }
+
+    /* Wait for the peer's attach, exactly as steps 3 and 4 wait for theirs.
+     * Returning as soon as `attach` is QUEUED would report success for a link the
+     * hub is about to refuse -- and it does refuse, transiently, while the
+     * enableFileUploadNotifications flag set during provisioning propagates. The
+     * caller would then watch a link that does not exist: nothing is ever
+     * delivered, no traffic keeps the connection alive, and the only symptom is
+     * an idle disconnect ~240s later followed by a notification timeout that
+     * blames the hub for publishing nothing. Fail here instead, with the reason. */
+    while (az_amqp_link_get_state(&f->receiver) == AZ_AMQP_LINK_STATE_ATTACHING)
+    {
+        if (!pump_connection(&f->connection, &f->transport_storage, &f->connection_failed, 500))
+        {
+            err = E2E_ERR_FILENOTIFY_CONN_DURING_RECEIVER_ATTACH;
+            goto error;
+        }
+    }
+    if (az_amqp_link_get_state(&f->receiver) != AZ_AMQP_LINK_STATE_ATTACHED)
+    {
+        az_amqp_error_detail detail = az_amqp_link_get_last_error(&f->receiver);
+        fprintf(
+            stderr,
+            "[e2e amqp] filenotify receiver attach refused: state=%d code=0x%08x "
+            "condition='%.*s' description='%.*s'\n",
+            (int)az_amqp_link_get_state(&f->receiver),
+            (unsigned)detail.code,
+            (int)az_span_size(detail.amqp.condition),
+            (const char*)az_span_ptr(detail.amqp.condition),
+            (int)az_span_size(detail.amqp.description),
+            (const char*)az_span_ptr(detail.amqp.description));
+        err = E2E_ERR_FILENOTIFY_RECEIVER_ATTACH_REFUSED;
+        attach_refused = true;
+        goto error;
+    }
+
+    f->started = true;
+    return true;
+
+error:
+    if (err_out != NULL)
+    {
+        *err_out = err;
+    }
+    if (attach_refused_out != NULL)
+    {
+        *attach_refused_out = attach_refused;
+    }
+    e2e_amqp_filenotify_end(f);
+    return false;
+}
+
+bool e2e_amqp_filenotify_do_work(e2e_amqp_filenotify* f, int wait_ms)
+{
+    if (!f->started)
+    {
+        return false;
+    }
+    return pump_connection(&f->connection, &f->transport_storage, &f->connection_failed, wait_ms);
+}
+
+bool e2e_amqp_filenotify_seen(const e2e_amqp_filenotify* f, const char* needle)
+{
+    for (int i = 0; i < f->captured_count; i++)
+    {
+        if (strstr(f->captured[i], needle) != NULL)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+void e2e_amqp_filenotify_stats(
+    const e2e_amqp_filenotify* f,
+    int* out_delivered,
+    int* out_captured,
+    int* out_released,
+    int* out_unparsed)
+{
+    if (out_delivered != NULL) *out_delivered = f->delivered_count;
+    if (out_captured != NULL) *out_captured = f->captured_count;
+    if (out_released != NULL) *out_released = f->released_count;
+    if (out_unparsed != NULL) *out_unparsed = f->unparsed_count;
+}
+
+void e2e_amqp_filenotify_end(e2e_amqp_filenotify* f)
+{
+    if (f->started)
+    {
+        f->started = false;
+        E2E_AMQP_DISCARD(az_amqp_link_detach(&f->receiver, NULL));
+        E2E_AMQP_DISCARD(az_amqp_cbs_close(&f->cbs));
+        E2E_AMQP_DISCARD(az_amqp_session_end(&f->session, NULL));
+        E2E_AMQP_DISCARD(az_amqp_connection_close(&f->connection, NULL));
+
+        for (int i = 0; i < 40; i++)
+        {
+            az_amqp_connection_state state = az_amqp_connection_get_state(&f->connection);
+            if (state == AZ_AMQP_CONNECTION_STATE_CLOSED || state == AZ_AMQP_CONNECTION_STATE_ERROR)
+            {
+                break;
+            }
+            if (!pump_connection(&f->connection, &f->transport_storage, &f->connection_failed, 100))
+            {
+                break;
+            }
+        }
+    }
+
+    /* Always release the transport's TLS slot (see e2e_amqp_telemetry_end). */
+    if (f->transport.vtable != NULL && f->transport.vtable->close != NULL)
+    {
+        (void)f->transport.vtable->close(&f->transport);
+    }
 }

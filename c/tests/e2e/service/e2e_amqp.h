@@ -99,6 +99,89 @@ bool e2e_amqp_send_c2d(
     size_t payload_len,
     const char** err_out);
 
+#define E2E_AMQP_NOTIFY_CAPTURE_MAX 8
+#define E2E_AMQP_NOTIFY_BODY_MAX 2048
+
+/* A file-upload notification watcher: an AMQP connection to the IoT Hub service
+ * endpoint with a single receiver on /messages/serviceBound/filenotifications.
+ *
+ * IoT Hub emits one notification per completed upload the device reported as
+ * successful, so this is the only way to prove the whole file-upload round trip
+ * from the CLOUD side -- the device merely sees the hub accept its notification.
+ * Bodies are captured into a small ring so a test can poll for the blob name. */
+typedef struct e2e_amqp_filenotify
+{
+    az_amqp_sample_transport transport_storage;
+    az_amqp_transport transport;
+    az_amqp_connection connection;
+    az_amqp_session session;
+    az_amqp_cbs cbs;
+    az_amqp_link receiver;
+    bool started;
+    bool connection_failed;
+
+    char captured[E2E_AMQP_NOTIFY_CAPTURE_MAX][E2E_AMQP_NOTIFY_BODY_MAX];
+    int captured_count;
+    char match[128]; /* only notifications containing this are consumed */
+
+    /* Diagnostics. A notification that never arrives is indistinguishable from
+     * one that arrived and was filtered out or could not be decoded, so count
+     * every disposition and let a failing test report them. */
+    int delivered_count; /* deliveries the endpoint handed us, whatever their shape */
+    int released_count;  /* released because they name another device */
+    int unparsed_count;  /* body missing or not a DATA body */
+
+    uint8_t incoming_buffer[AZ_AMQP_DEFAULT_MAX_FRAME_SIZE];
+    uint8_t outgoing_buffer[AZ_AMQP_DEFAULT_MAX_FRAME_SIZE];
+    az_amqp_session* session_slots[1];
+    az_amqp_link* link_slots[3]; /* CBS pair (2) + notification receiver (1) */
+    uint8_t cbs_reply_buffer[1024];
+    uint8_t recv_buffer[4096];
+    char audience_buffer[256];
+} e2e_amqp_filenotify;
+
+/* Connect to @p hub_host:5671, CBS-authorize the hub host with @p sas_token and
+ * attach a receiver to the file-notification node.
+ *
+ * The notification node is HUB-WIDE, so several test legs can be listening at
+ * once. Only notifications whose body contains @p match (typically this test's
+ * device id) are captured and settled; everything else is RELEASED so the hub
+ * redelivers it to its rightful watcher. On failure returns false and (when
+ * non-NULL) points @p err_out at a static message.
+ *
+ * @p attach_refused_out, when non-NULL, is set to true only when the hub
+ * REFUSED the receiver link on the notification node, and false for every other
+ * failure. That one case is transient -- it is what a hub reports while the
+ * enableFileUploadNotifications flag is still propagating -- so a caller can
+ * retry it while failing fast on out-of-memory, a bad token, or an unreachable
+ * host. Distinguishing it here rather than by comparing @p err_out keeps the
+ * decision from silently breaking if a message is reworded. */
+bool e2e_amqp_filenotify_begin(
+    e2e_amqp_filenotify* f,
+    const char* hub_host,
+    const char* sas_token,
+    const char* match,
+    const char** err_out,
+    bool* attach_refused_out);
+
+/* Advance the watcher once, waiting up to @p wait_ms for socket I/O. Returns
+ * false if the connection has failed. */
+bool e2e_amqp_filenotify_do_work(e2e_amqp_filenotify* f, int wait_ms);
+
+/* Returns true if any captured notification body contains @p needle. */
+bool e2e_amqp_filenotify_seen(const e2e_amqp_filenotify* f, const char* needle);
+
+/* Delivery counters, for reporting why a wait timed out. */
+void e2e_amqp_filenotify_stats(
+    const e2e_amqp_filenotify* f,
+    int* out_delivered,
+    int* out_captured,
+    int* out_released,
+    int* out_unparsed);
+
+/* Detach the receiver and close the connection (best-effort). */
+void e2e_amqp_filenotify_end(e2e_amqp_filenotify* f);
+
 #ifdef __cplusplus
 }
 #endif

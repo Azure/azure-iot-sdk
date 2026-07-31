@@ -48,11 +48,20 @@ on:
     paths:
       - 'c/**'
       - 'common/**'
+      # This workflow and the provisioning wiring it depends on: a change to any
+      # of them alters what the e2e legs actually do, so it has to be validated
+      # against real Azure rather than merged on the strength of the other jobs.
+      - '.github/workflows/ci-c-e2e.yml'
+      - '.github/actions/provision-e2e-resources/**'
+      - '.github/actions/destroy-e2e-resources/**'
   push:
     branches: [ main ]
     paths:
       - 'c/**'
       - 'common/**'
+      - '.github/workflows/ci-c-e2e.yml'
+      - '.github/actions/provision-e2e-resources/**'
+      - '.github/actions/destroy-e2e-resources/**'
   schedule:
     - cron: '0 11 * * *'  # Nightly at 4am PST
 
@@ -138,13 +147,21 @@ jobs:
 
       - name: Install ninja (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y ninja-build
+        # libcurl backs the file upload sample's HTTP hook; without it CMake builds
+        # the sample with a stub hook that cannot perform the Classic control-plane
+        # calls, and the sample run below would prove nothing.
+        run: sudo apt-get update && sudo apt-get install -y ninja-build libcurl4-openssl-dev
 
       - name: Build e2e tests
         working-directory: c
         run: |
           cmake --preset ${{ matrix.preset }} -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_WITH_PAHO=ON
           cmake --build --preset ${{ matrix.preset }} ${{ runner.os == 'Windows' && '--config Debug' || '' }} --target az_iot_tests_e2e az_iot_tests_e2e_adu az_iot_tests_e2e_csr az_iot_tests_e2e_fileupload
+
+      - name: Build the file upload sample (Linux)
+        if: runner.os == 'Linux'
+        working-directory: c
+        run: cmake --build --preset ${{ matrix.preset }} --target az_iot_sample_file_upload
 
       - name: Download shared test config
         uses: actions/download-artifact@v4
@@ -214,6 +231,16 @@ jobs:
           $env:AZ_IOT_TRUSTED_CA          = $caPath
           if ($env:IOT_DPS_GLOBAL_ENDPOINT) { $env:AZ_IOT_DPS_GLOBAL_ENDPOINT = $env:IOT_DPS_GLOBAL_ENDPOINT }
 
+          # Republish the DEVICE-side configuration (an id scope, a registration id
+          # and three file paths -- no secrets) so the sample step below can reuse
+          # this leg's device without re-materializing the X.509 material.
+          foreach ($name in @('AZ_IOT_DPS_ID_SCOPE', 'AZ_IOT_DPS_REGISTRATION_ID',
+                              'AZ_IOT_CLIENT_CERT', 'AZ_IOT_CLIENT_KEY',
+                              'AZ_IOT_TRUSTED_CA', 'AZ_IOT_DPS_GLOBAL_ENDPOINT')) {
+            $value = (Get-Item "env:$name" -ErrorAction SilentlyContinue).Value
+            if ($value) { "$name=$value" | Out-File -FilePath $env:GITHUB_ENV -Append }
+          }
+
           New-Item -ItemType Directory -Path ./test_config/results -Force | Out-Null
           $cfg = if ($IsWindows) { @('-C', 'Debug') } else { @() }
           # `-R e2e` runs the fast suite (az_iot_tests_e2e) and the mocked ADU
@@ -224,6 +251,20 @@ jobs:
           ctest --test-dir c/build/${{ matrix.preset }} @cfg -R e2e `
             --verbose --no-tests=error --timeout 900 `
             --output-junit ./test_config/results/e2e-${{ matrix.os }}.xml
+
+      - name: Run the file upload sample (Linux)
+        if: runner.os == 'Linux'
+        shell: pwsh
+        # The sample is the reference integration of the application HTTP hook the
+        # Classic file-upload control plane requires (this SDK ships no HTTP
+        # client). Building it proves nothing about that hook, so run it against
+        # the real hub: it provisions, requests a SAS URI, PUTs the blob with
+        # libcurl and reports completion, exiting non-zero if any step fails.
+        run: |
+          $exe = "c/build/${{ matrix.preset }}/samples/az_iot_sample_file_upload"
+          if (-not (Test-Path $exe)) { throw "sample not built at $exe" }
+          & $exe
+          if ($LASTEXITCODE -ne 0) { throw "file upload sample failed ($LASTEXITCODE)" }
 
       - name: Upload test results
         if: always()
