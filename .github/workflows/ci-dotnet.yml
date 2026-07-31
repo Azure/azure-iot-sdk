@@ -1,146 +1,228 @@
+# Copyright (c) Microsoft. All rights reserved.
+# Licensed under the MIT license. See LICENSE file in the project root for full license information.
+
 name: ci-dotnet
 
 on:
   workflow_dispatch:
   pull_request:
     paths:
-      - '.github/**'
       - 'dotnet/**'
       - 'common/**'
   push:
-    branches:
-    - main
+    branches: [ main ]
     paths:
-      - '.github/**'
       - 'dotnet/**'
       - 'common/**'
   schedule:
-  - cron: '0 11 * * *'  # Nightly at 4am PST
+    - cron: '0 11 * * *'  # Nightly at 4am PST
 
-
-# only allow one run / branch at a time
+# Cancel superseded runs on the same ref to avoid leaking parallel resource groups.
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
   cancel-in-progress: true
 
 permissions:
   contents: read
-  actions: read
-  checks: write
-  id-token: write
+  id-token: write   # required for azure/login OIDC
 
-# Resource group name derived from the RUN. Unlike the C e2e workflows this is a
-# single job, so the create/delete steps could share a file on the runner -- but
-# deriving the name means the delete step needs nothing from the create step at
-# all, so it still works if provisioning is cancelled or dies before writing that
-# file. It also makes a leaked group traceable back to its run.
+# Resource group name derived from the RUN, not from a random GUID published as a
+# job output. A CANCELLED job does not propagate its `outputs`, so a teardown that
+# reads `needs.setup.outputs.rg` receives an empty string and silently deletes
+# nothing while the group stays behind. Both setup and teardown compute this name
+# independently, so teardown never depends on setup completing.
 env:
   E2E_RESOURCE_GROUP: DotnetE2ETestPipeline-${{ github.run_id }}-${{ github.run_attempt }}
 
 jobs:
-  build:
+  setup:
+    name: setup (provision)
     runs-on: ubuntu-latest
-    name: CI-dotnet
     timeout-minutes: 30
-
     steps:
-    - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
 
-    - name: Azure Login via OIDC
-      uses: azure/login@v2
-      with:
-        client-id: ${{ secrets.AZURE_CLIENT_ID }}
-        tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-        subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Azure Login via OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-    - name: Copy Faultable MQTT broker from AIO SDK repo
-      run: |
-        mkdir faultablemqttbroker
-        wget "https://raw.githubusercontent.com/Azure/iot-operations-sdks/refs/heads/main/eng/test/faultablemqttbroker/src/Azure.Iot.Operations.FaultableMqttBroker/Azure.Iot.Operations.FaultableMqttBroker.csproj" -O "./faultablemqttbroker/Azure.Iot.Operations.FaultableMqttBroker.csproj"
-        wget "https://raw.githubusercontent.com/Azure/iot-operations-sdks/refs/heads/main/eng/test/faultablemqttbroker/src/Azure.Iot.Operations.FaultableMqttBroker/FaultHandling.cs" -O "./faultablemqttbroker/FaultHandling.cs"
-        wget "https://raw.githubusercontent.com/Azure/iot-operations-sdks/refs/heads/main/eng/test/faultablemqttbroker/src/Azure.Iot.Operations.FaultableMqttBroker/FaultableMqttBroker.cs" -O "./faultablemqttbroker/FaultableMqttBroker.cs"
-        wget "https://raw.githubusercontent.com/Azure/iot-operations-sdks/refs/heads/main/eng/test/faultablemqttbroker/src/Azure.Iot.Operations.FaultableMqttBroker/FaultableMqttBrokerWorker.cs" -O "./faultablemqttbroker/FaultableMqttBrokerWorker.cs"
-        wget "https://raw.githubusercontent.com/Azure/iot-operations-sdks/refs/heads/main/eng/test/faultablemqttbroker/src/Azure.Iot.Operations.FaultableMqttBroker/Program.cs" -O "./faultablemqttbroker/Program.cs"
+      - name: Provision resources
+        id: provision
+        uses: ./.github/actions/provision-e2e-resources
+        with:
+          rg-name: ${{ env.E2E_RESOURCE_GROUP }}
+          # Two DPS enrollments so the parallel Linux/Windows test legs can each
+          # claim their own device (see the per-leg device-index selection below)
+          # and never share a device twin.
+          dps-x509-individual-enrollments: '2'
+          # Provision an Azure Storage account associated with the hub so the
+          # always-run file-upload e2e (az_iot_tests_e2e_fileupload) can obtain a
+          # SAS URI and upload a blob.
+          enable-file-upload: 'false' #TODO to revert
+          enable-certificate-management: 'true'
+          config-cmdlet: 'New-AzIotNetSDKE2ETestConfig'
+      - name: Upload test config
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-test-config
+          path: test_config/set_test_env_vars.ps1
+          retention-days: 1
+          if-no-files-found: error
 
-    - name: Build Faultable MQTT Broker
-      run: dotnet build ./faultablemqttbroker/Azure.Iot.Operations.FaultableMqttBroker.csproj
-   
-    - name: Run Faultable MQTT Broker (port 1884)
-      run: RUNNER_TRACKING_ID="" && dotnet run --project ./faultablemqttbroker/Azure.Iot.Operations.FaultableMqttBroker.csproj &
+  test:
+    name: ${{ matrix.os }}
+    needs: setup
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            device-index: 0
+          - os: windows-latest
+            device-index: 1
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
 
-    - name: Create Azure Test Resources
-      uses: azure/powershell@v3
-      with:
-        azPSVersion: "latest"
-        inlineScript: |
-          Write-Host "Downloading setup script from Azure/iot-sdks-e2e-fx repo..."
-          Invoke-WebRequest -Uri "https://raw.githubusercontent.com/Azure/iot-sdks-e2e-fx/refs/heads/master/scripts/Azure.Iot.Sdk.Test.psm1" -OutFile "./Azure.Iot.Sdk.Test.psm1"
-          Write-Host "Importing setup script powershell module"
-          Import-Module "./Azure.Iot.Sdk.Test.psm1"
-          $ResourceGroupName = $env:E2E_RESOURCE_GROUP
-          Write-Host "Adding Azure resources to the new resource group with name " $ResourceGroupName
-          $TestEnvInfo = New-AzIotTestEnvironment -AzureLocation "EastUS" -ResourceGroup $ResourceGroupName -EnableFileUpload
-          New-AzIotCSDKE2ETestConfig -TestEnvInfo $TestEnvInfo -Target powershell -OutFile test_config/set_test_env_vars.ps1
-          chmod +x ./test_config/set_test_env_vars.ps1
-          ./test_config/set_test_env_vars.ps1
-          dotnet build ./dotnet/Project.slnx
-          dotnet test ./dotnet/Project.slnx --collect:"XPlat Code Coverage" --logger:"trx;LogFileName=test-results.trx" --environment IOTHUB_CONNECTION_STRING=$env:IOTHUB_CONNECTION_STRING --environment IOT_DPS_CONNECTION_STRING=$env:IOT_DPS_CONNECTION_STRING --environment IOT_DPS_ID_SCOPE=$env:IOT_DPS_ID_SCOPE -- xunit.parallelizeAssembly=true
+      - name: Build e2e tests
+        working-directory: dotnet
+        run: |
+          dotnet build ./Project.slnx
 
-    - name: Microsoft.Azure.Devices.Client.IntegrationTests Package Code Coverage
-      uses: irongut/CodeCoverageSummary@v1.3.0
-      if: always()
-      with:
-        filename: ./dotnet/**/**.IntegrationTests/TestResults/*/coverage.cobertura.xml
-        format: markdown
-        hide_branch_rate: false
-        hide_complexity: false
-        indicators: true
-        output: both
+      - name: Deploy faultable MQTT broker
+        uses: ./.github/actions/deploy-faultable-mqtt-broker
 
-    - name: Microsoft.Azure.Devices.Client.UnitTests Package Code Coverage
-      uses: irongut/CodeCoverageSummary@v1.3.0
-      if: always()
-      with:
-        filename: ./dotnet/**/**.UnitTests/TestResults/*/coverage.cobertura.xml
-        format: markdown
-        hide_branch_rate: false
-        hide_complexity: false
-        indicators: true
-        output: both
+      - name: Download shared test config
+        uses: actions/download-artifact@v4
+        with:
+          name: e2e-test-config
+          path: test_config
 
-    - name: Delete Azure Test Resources
-      uses: azure/powershell@v3
-      if: always()
-      with:
-        azPSVersion: "latest"
-        inlineScript: |
-          $rg = $env:E2E_RESOURCE_GROUP
-          $exists = az group exists --name $rg --only-show-errors
-          if ($LASTEXITCODE -ne 0) {
-            # Never treat an az failure (expired login, wrong subscription, ...)
-            # as "the group is not there" -- that would silently leak it.
-            throw "Could not determine whether resource group $rg exists (az exit code $LASTEXITCODE); refusing to skip deletion."
+      - name: Run e2e
+        shell: pwsh
+        run: |
+
+          # Start faultable mqtt broker in the background on port 1884
+          # 
+          # For some reason, running this same block within the "deploy-faultable-mqtt-broker" template does not work, so 
+          # the faultable broker process needs to be started here.
+          $WorkingDirectory = pwd
+          $job = Start-Job -ScriptBlock { dotnet run --project ".\faultablemqttbroker\Azure.Iot.Operations.FaultableMqttBroker.csproj" } -WorkingDirectory $WorkingDirectory
+          
+          # Check that the job is running correctly
+          Start-Sleep -Seconds 3
+          $job
+          if ($job.State -ne "Running")
+          {
+            Write-Output "Faultable MQTT broker did not start up correctly:"
+            exit 1
           }
-          if ($exists -ne 'true') {
-            # Expected when the run was cancelled before provisioning created the
-            # group. Not an error.
-            Write-Host "Resource group $rg does not exist; nothing to delete."
-          } else {
-            Write-Host "Deleting Azure resource group: " $rg
-            az group delete --name $rg --yes --no-wait
-            if ($LASTEXITCODE -ne 0) {
-              throw "Failed to queue deletion of resource group $rg (az exit code $LASTEXITCODE)."
+
+
+          # Service-side config (IOTHUB_*, IOT_DPS_*) is set by the generated script.
+          . ./test_config/set_test_env_vars.ps1
+
+          # Select this leg's device. Two DPS enrollments are provisioned; the
+          # Linux and Windows legs each claim a DISTINCT one (via matrix
+          # device-index) so they never share a device twin -- the mocked ADU
+          # suite patches large desired properties, and a shared twin would bloat
+          # the other leg's twin GET and flake test_twin. Fall back to the
+          # unsuffixed index-0 vars if an older (pre-indexing) provisioning script
+          # is fetched from iot-sdks-e2e-fx master.
+          $idx = '${{ matrix.device-index }}'
+          $regId   = (Get-Item "env:IOT_DPS_INDIVIDUAL_REGISTRATION_ID_$idx" -ErrorAction SilentlyContinue).Value
+          $certB64 = (Get-Item "env:IOT_DPS_INDIVIDUAL_X509_CERTIFICATE_$idx" -ErrorAction SilentlyContinue).Value
+          $keyB64  = (Get-Item "env:IOT_DPS_INDIVIDUAL_X509_KEY_$idx" -ErrorAction SilentlyContinue).Value
+          if (-not $regId -or -not $certB64 -or -not $keyB64) {
+            Write-Host "Indexed device $idx not available; using the shared index-0 device."
+            $regId   = $env:IOT_DPS_INDIVIDUAL_REGISTRATION_ID
+            $certB64 = $env:IOT_DPS_INDIVIDUAL_X509_CERTIFICATE
+            $keyB64  = $env:IOT_DPS_INDIVIDUAL_X509_KEY
+          }
+          Write-Host "e2e device (index $idx): $regId"
+
+          # Materialize the device X.509 material to files. The in-process test
+          # reads cert/key/CA by PATH, so CI decodes the base64 PEMs and builds a
+          # CA trust bundle here (no network download).
+          $dir = Join-Path ([System.IO.Path]::GetTempPath()) ("az-iot-c-e2e-" + [Guid]::NewGuid().ToString("N"))
+          New-Item -ItemType Directory -Path $dir -Force | Out-Null
+          $certPath = Join-Path $dir "device-cert.pem"
+          $keyPath  = Join-Path $dir "device-key.pem"
+          $caPath   = Join-Path $dir "trusted-ca.pem"
+
+          [System.IO.File]::WriteAllText($certPath,
+            [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($certB64)))
+          [System.IO.File]::WriteAllText($keyPath,
+            [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($keyB64)))
+
+          if ($IsLinux -and (Test-Path "/etc/ssl/certs/ca-certificates.crt")) {
+            Copy-Item "/etc/ssl/certs/ca-certificates.crt" $caPath
+          }
+          else {
+            # Export the machine + user Root stores as a PEM bundle.
+            $sb = New-Object System.Text.StringBuilder
+            foreach ($loc in @('LocalMachine', 'CurrentUser')) {
+              $store = New-Object System.Security.Cryptography.X509Certificates.X509Store('Root', $loc)
+              $store.Open('ReadOnly')
+              foreach ($c in $store.Certificates) { [void]$sb.AppendLine($c.ExportCertificatePem()) }
+              $store.Close()
             }
+            [System.IO.File]::WriteAllText($caPath, $sb.ToString())
           }
 
-    - uses: dorny/test-reporter@v3
-      id: test-reporter
-      if: always()
-      with:
-        name: dotnet test report
-        path: '**/test-results.trx'
-        reporter: dotnet-trx  
+          # Map the config's DPS vars onto the names the test consumes.
+          $env:AZ_IOT_DPS_ID_SCOPE        = $env:IOT_DPS_ID_SCOPE
+          $env:AZ_IOT_DPS_REGISTRATION_ID = $regId
+          $env:AZ_IOT_CLIENT_CERT         = $certPath
+          $env:AZ_IOT_CLIENT_KEY          = $keyPath
+          $env:AZ_IOT_TRUSTED_CA          = $caPath
+          if ($env:IOT_DPS_GLOBAL_ENDPOINT) { $env:AZ_IOT_DPS_GLOBAL_ENDPOINT = $env:IOT_DPS_GLOBAL_ENDPOINT }
 
-    - name: Annotate Test Report
-      if: always()
-      run: echo Test Report ${{ steps.test-reporter.outputs.url_html }} >> $GITHUB_STEP_SUMMARY
+          dotnet test ./dotnet/Project.slnx `
+            --collect:"XPlat Code Coverage" `
+            --logger:"trx;LogFileName=test-results.trx" `
+            --environment IOTHUB_CONNECTION_STRING=$env:IOTHUB_CONNECTION_STRING `
+            --environment IOT_DPS_CONNECTION_STRING=$env:IOT_DPS_CONNECTION_STRING `
+            --environment IOT_DPS_ID_SCOPE=$env:IOT_DPS_ID_SCOPE `
+            -- xunit.parallelizeAssembly=true
+
+      - uses: dorny/test-reporter@v3
+        id: test-reporter
+        if: always()
+        with:
+          name: dotnet test report
+          path: '**/test-results.trx'
+          reporter: dotnet-trx  
+
+      - name: Annotate Test Report
+        if: always()
+        run: echo Test Report ${{ steps.test-reporter.outputs.url_html }} >> $GITHUB_STEP_SUMMARY
+
+  teardown:
+    name: teardown (delete resources)
+    needs: [setup, test]
+    # `always()` also covers cancellation. The group name comes from the workflow
+    # `env` (not from `needs.setup.outputs`), so a cancelled setup still gets torn
+    # down; the destroy action no-ops when the group was never created.
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure Login via OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Delete Azure resources
+        uses: ./.github/actions/destroy-e2e-resources
+        with:
+          resource-group: ${{ env.E2E_RESOURCE_GROUP }}
+
