@@ -24,6 +24,7 @@ struct az_iot_e2e_service
     int partition_count;
 
     e2e_amqp_telemetry* telemetry; /* non-NULL while watching */
+    e2e_amqp_filenotify* filenotify; /* non-NULL while watching file notifications */
     e2e_http_request* http; /* non-NULL while a REST call is in flight */
 
     char last_error[256];
@@ -154,6 +155,11 @@ void az_iot_e2e_service_destroy(az_iot_e2e_service* svc)
         e2e_amqp_telemetry_end(svc->telemetry);
         free(svc->telemetry);
     }
+    if (svc->filenotify != NULL)
+    {
+        e2e_amqp_filenotify_end(svc->filenotify);
+        free(svc->filenotify);
+    }
     if (svc->http != NULL)
     {
         e2e_http_end(svc->http);
@@ -214,13 +220,23 @@ bool az_iot_e2e_service_telemetry_watch_begin(az_iot_e2e_service* svc)
 
 bool az_iot_e2e_service_do_work(az_iot_e2e_service* svc, int timeout_ms)
 {
-    if (svc->telemetry == NULL)
+    /* Split the budget when both watchers are up so neither starves the other,
+     * but never below 1ms: halving a 1ms budget would turn both pumps into
+     * no-wait calls and busy-spin the caller. */
+    int slice = timeout_ms;
+    if (svc->telemetry != NULL && svc->filenotify != NULL && timeout_ms > 1)
     {
-        return true;
+        slice = timeout_ms / 2;
     }
-    if (!e2e_amqp_telemetry_do_work(svc->telemetry, timeout_ms))
+
+    if (svc->telemetry != NULL && !e2e_amqp_telemetry_do_work(svc->telemetry, slice))
     {
         set_error(svc, "telemetry: connection failed");
+        return false;
+    }
+    if (svc->filenotify != NULL && !e2e_amqp_filenotify_do_work(svc->filenotify, slice))
+    {
+        set_error(svc, "filenotify: connection failed");
         return false;
     }
     return true;
@@ -238,6 +254,82 @@ void az_iot_e2e_service_telemetry_watch_end(az_iot_e2e_service* svc)
         e2e_amqp_telemetry_end(svc->telemetry);
         free(svc->telemetry);
         svc->telemetry = NULL;
+    }
+}
+
+bool az_iot_e2e_service_file_notification_watch_begin(
+    az_iot_e2e_service* svc,
+    const char* device_id)
+{
+    if (svc->filenotify != NULL)
+    {
+        return true; /* already watching */
+    }
+
+    /* IoT Hub service SAS: HMAC key is base64-decode(key); audience is the host. */
+    char sas[512];
+    if (!e2e_sas_token_create(
+            svc->hub_info.host,
+            svc->hub_info.key_name,
+            svc->hub_info.key,
+            true,
+            sas_expiry(),
+            sas,
+            sizeof(sas)))
+    {
+        set_error(svc, "filenotify: failed to build SAS token");
+        return false;
+    }
+
+    svc->filenotify = (e2e_amqp_filenotify*)calloc(1, sizeof(*svc->filenotify));
+    if (svc->filenotify == NULL)
+    {
+        set_error(svc, "filenotify: out of memory");
+        return false;
+    }
+
+    const char* err = NULL;
+    if (!e2e_amqp_filenotify_begin(svc->filenotify, svc->hub_info.host, sas, device_id, &err))
+    {
+        set_error(svc, (err != NULL) ? err : "filenotify: begin failed");
+        free(svc->filenotify);
+        svc->filenotify = NULL;
+        return false;
+    }
+    return true;
+}
+
+bool az_iot_e2e_service_file_notification_seen(const az_iot_e2e_service* svc, const char* needle)
+{
+    return svc->filenotify != NULL && e2e_amqp_filenotify_seen(svc->filenotify, needle);
+}
+
+void az_iot_e2e_service_file_notification_stats(
+    const az_iot_e2e_service* svc,
+    int* out_delivered,
+    int* out_captured,
+    int* out_released,
+    int* out_unparsed)
+{
+    if (svc->filenotify != NULL)
+    {
+        e2e_amqp_filenotify_stats(
+            svc->filenotify, out_delivered, out_captured, out_released, out_unparsed);
+        return;
+    }
+    if (out_delivered != NULL) *out_delivered = 0;
+    if (out_captured != NULL) *out_captured = 0;
+    if (out_released != NULL) *out_released = 0;
+    if (out_unparsed != NULL) *out_unparsed = 0;
+}
+
+void az_iot_e2e_service_file_notification_watch_end(az_iot_e2e_service* svc)
+{
+    if (svc->filenotify != NULL)
+    {
+        e2e_amqp_filenotify_end(svc->filenotify);
+        free(svc->filenotify);
+        svc->filenotify = NULL;
     }
 }
 
