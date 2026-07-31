@@ -855,6 +855,39 @@ bool e2e_amqp_filenotify_begin(
         goto error;
     }
 
+    /* Wait for the peer's attach, exactly as steps 3 and 4 wait for theirs.
+     * Returning as soon as `attach` is QUEUED would report success for a link the
+     * hub is about to refuse -- and it does refuse, transiently, while the
+     * enableFileUploadNotifications flag set during provisioning propagates. The
+     * caller would then watch a link that does not exist: nothing is ever
+     * delivered, no traffic keeps the connection alive, and the only symptom is
+     * an idle disconnect ~240s later followed by a notification timeout that
+     * blames the hub for publishing nothing. Fail here instead, with the reason. */
+    while (az_amqp_link_get_state(&f->receiver) == AZ_AMQP_LINK_STATE_ATTACHING)
+    {
+        if (!pump_connection(&f->connection, &f->transport_storage, &f->connection_failed, 500))
+        {
+            err = "filenotify: connection failed during receiver attach";
+            goto error;
+        }
+    }
+    if (az_amqp_link_get_state(&f->receiver) != AZ_AMQP_LINK_STATE_ATTACHED)
+    {
+        az_amqp_error_detail detail = az_amqp_link_get_last_error(&f->receiver);
+        fprintf(
+            stderr,
+            "[e2e amqp] filenotify receiver attach refused: state=%d code=0x%08x "
+            "condition='%.*s' description='%.*s'\n",
+            (int)az_amqp_link_get_state(&f->receiver),
+            (unsigned)detail.code,
+            (int)az_span_size(detail.amqp.condition),
+            (const char*)az_span_ptr(detail.amqp.condition),
+            (int)az_span_size(detail.amqp.description),
+            (const char*)az_span_ptr(detail.amqp.description));
+        err = "filenotify: receiver attach refused by the hub";
+        goto error;
+    }
+
     f->started = true;
     return true;
 

@@ -65,6 +65,13 @@
  * genuinely broken connection still fails instead of looping. */
 #define E2E_NOTIFICATION_MAX_REATTACH 5
 
+/* How long to keep retrying the initial attach of the notification receiver, and
+ * how long to pause between attempts. Provisioning turns on the hub's
+ * enableFileUploadNotifications moments before this test runs, and that ARM
+ * update is eventually consistent: until it lands, the hub refuses the link. */
+#define E2E_WATCH_ATTACH_TIMEOUT_S 120
+#define E2E_WATCH_ATTACH_RETRY_MS  5000
+
 static const char k_blob_content[] =
     "Hello from the Azure IoT C SDK file upload e2e test.\n";
 
@@ -167,6 +174,31 @@ typedef struct
 } fixture;
 
 static fixture g_fx;
+
+/* Attach the notification receiver, retrying while the hub refuses it.
+ *
+ * A refusal right after provisioning means the enableFileUploadNotifications
+ * update has not propagated yet, which is transient and worth waiting out. A
+ * refusal that persists past the budget is real and fails the run, carrying the
+ * hub's own reason (printed by the AMQP layer on each attempt). */
+static bool watch_begin_with_retry(fixture* fx)
+{
+    time_t start = time(NULL);
+    for (;;)
+    {
+        if (az_iot_e2e_service_file_notification_watch_begin(fx->svc, fx->dev.device_id))
+        {
+            return true;
+        }
+        if ((time(NULL) - start) >= E2E_WATCH_ATTACH_TIMEOUT_S)
+        {
+            return false;
+        }
+        fprintf(stderr, "file upload e2e: notification watch not ready (%s); retrying\n",
+                az_iot_e2e_service_last_error(fx->svc));
+        e2e_device_do_work(&fx->dev, E2E_WATCH_ATTACH_RETRY_MS);
+    }
+}
 
 /* Keep the device MQTT session and the service AMQP watcher alive for @p ms.
  * Returns false once the service connection has dropped -- the caller decides
@@ -287,11 +319,18 @@ static int group_setup(void** state)
         return -1;
     }
 
-    /* Watch before any completion is reported: notifications are delivered once. */
-    if (!az_iot_e2e_service_file_notification_watch_begin(g_fx.svc, g_fx.dev.device_id))
+    /* Watch before any completion is reported: notifications are delivered once.
+     *
+     * Retried, because provisioning enables enableFileUploadNotifications on the
+     * hub moments earlier and that ARM update is eventually consistent: until it
+     * lands the hub refuses the receiver link on the notification node. Retrying
+     * here costs a few seconds in the rare case and removes a failure mode that
+     * had nothing to do with the SDK. A link the hub keeps refusing still fails
+     * the run, with the hub's own condition text. */
+    if (!watch_begin_with_retry(&g_fx))
     {
-        fprintf(stderr, "file upload e2e: notification watch failed: %s\n",
-                az_iot_e2e_service_last_error(g_fx.svc));
+        fprintf(stderr, "file upload e2e: notification watch failed after %d s: %s\n",
+                E2E_WATCH_ATTACH_TIMEOUT_S, az_iot_e2e_service_last_error(g_fx.svc));
         return -1;
     }
 
