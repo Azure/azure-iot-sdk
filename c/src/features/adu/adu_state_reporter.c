@@ -6,7 +6,6 @@
  * payload (via azure-sdk-for-c) and publishes it through the twin client. The
  * upstream az_iot_adu_client_device_properties type never escapes to the
  * application; it is built here, on demand, from the client-owned cache. */
-#include <stdio.h>
 #include <string.h>
 
 #include <azure/core/az_json.h>
@@ -17,6 +16,7 @@
 #include "azure/iot/az_iot_twin_client.h"
 
 #include "internal/adu_internal.h"
+#include "internal/span_writer.h"
 
 /* Reported-property payload buffer. v5 manifests with the upper-bounded step
  * count fit comfortably; bounded and stack-local, no heap. */
@@ -160,16 +160,22 @@ az_iot_result az_iot_adu_build_report(
 
     /* Serialize the installed-update-id object the service expects. */
     char update_id_json[128];
+    size_t update_id_json_len = 0;
     const char* prov = device_props->installed_update_id.provider
         ? device_props->installed_update_id.provider : "";
     const char* name = device_props->installed_update_id.name
         ? device_props->installed_update_id.name : "";
     const char* ver = device_props->installed_update_id.version
         ? device_props->installed_update_id.version : "";
-    int idn = snprintf(
-        update_id_json, sizeof(update_id_json),
-        "{\"provider\":\"%s\",\"name\":\"%s\",\"version\":\"%s\"}", prov, name, ver);
-    if (idn < 0 || (size_t)idn >= sizeof(update_id_json))
+    const char* update_id_parts[] = {
+        "{\"provider\":\"", prov,
+        "\",\"name\":\"", name,
+        "\",\"version\":\"", ver,
+        "\"}"
+    };
+    if (az_iot_span_writer_build_str(
+            AZ_SPAN_FROM_BUFFER(update_id_json), &update_id_json_len,
+            update_id_parts, 7) != AZ_IOT_OK)
     {
         return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
     }
@@ -183,7 +189,7 @@ az_iot_result az_iot_adu_build_report(
     {
         props.model = az_span_create_from_str((char*)(uintptr_t)device_props->model);
     }
-    props.update_id = az_span_create((uint8_t*)update_id_json, idn);
+    props.update_id = az_span_create((uint8_t*)update_id_json, (int32_t)update_id_json_len);
     props.adu_version = AZ_SPAN_FROM_STR(AZ_IOT_ADU_CLIENT_AGENT_VERSION);
 
     /* Custom properties (az_span views over the caller's strings; read-only for

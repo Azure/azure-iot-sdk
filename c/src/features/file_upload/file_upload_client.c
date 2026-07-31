@@ -17,7 +17,6 @@
  */
 #include <stdbool.h>
 #include <stdint.h>
-#include <stdio.h>
 #include <string.h>
 
 #include <azure/core/az_json.h>
@@ -28,6 +27,7 @@
 
 #include "internal/connection_client_internal.h"
 #include "internal/protocol_profile.h"
+#include "internal/span_writer.h"
 
 /* IoT Hub device REST API version for the Classic file-upload endpoints. */
 #define AZ_IOT_FILEUPLOAD_API_VERSION "2021-04-12"
@@ -117,8 +117,10 @@ static bool assemble_sas_uri(az_span json, char* out, size_t out_cap)
         return false;
     }
 
-    int n = snprintf(out, out_cap, "https://%s/%s/%s%s", host, container, blob, sas);
-    return (n > 0 && (size_t)n < out_cap);
+    const char* parts[] = { "https://", host, "/", container, "/", blob, sas };
+    return az_iot_span_writer_build_str(
+               az_span_create((uint8_t*)out, (int32_t)out_cap), NULL, parts, 7)
+        == AZ_IOT_OK;
 }
 
 /* Build {"blobName":"<name>"} using the azure-sdk-for-c JSON writer. */
@@ -292,9 +294,14 @@ az_iot_result az_iot_file_upload_client_get_sas_uri(
     if (er != AZ_IOT_OK) return er;
 
     char url[AZ_IOT_FILE_UPLOAD_URL_MAX];
-    int n = snprintf(url, sizeof(url), "https://%s/devices/%s/files?api-version=%s",
-                     host, device_id, AZ_IOT_FILEUPLOAD_API_VERSION);
-    if (n < 0 || (size_t)n >= sizeof(url)) return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+    const char* url_parts[] = {
+        "https://", host, "/devices/", device_id,
+        "/files?api-version=" AZ_IOT_FILEUPLOAD_API_VERSION
+    };
+    if (az_iot_span_writer_build_str(AZ_SPAN_FROM_BUFFER(url), NULL, url_parts, 5) != AZ_IOT_OK)
+    {
+        return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+    }
 
     char body[AZ_IOT_FILE_UPLOAD_BODY_MAX];
     size_t body_len = 0;
@@ -375,9 +382,14 @@ az_iot_result az_iot_file_upload_client_notify_complete(
     if (er != AZ_IOT_OK) return er;
 
     char url[AZ_IOT_FILE_UPLOAD_URL_MAX];
-    int n = snprintf(url, sizeof(url), "https://%s/devices/%s/files/notifications?api-version=%s",
-                     host, device_id, AZ_IOT_FILEUPLOAD_API_VERSION);
-    if (n < 0 || (size_t)n >= sizeof(url)) return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+    const char* url_parts[] = {
+        "https://", host, "/devices/", device_id,
+        "/files/notifications?api-version=" AZ_IOT_FILEUPLOAD_API_VERSION
+    };
+    if (az_iot_span_writer_build_str(AZ_SPAN_FROM_BUFFER(url), NULL, url_parts, 5) != AZ_IOT_OK)
+    {
+        return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+    }
 
     char body[AZ_IOT_FILE_UPLOAD_BODY_MAX];
     size_t body_len = 0;

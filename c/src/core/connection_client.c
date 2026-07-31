@@ -41,6 +41,7 @@
 #include "internal/log_internal.h"
 #include "internal/protocol_profile.h"
 #include "internal/reconnect.h"
+#include "internal/span_writer.h"
 
 #include <azure/az_core.h>
 #include <azure/iot/az_iot_hub_client.h>
@@ -67,14 +68,16 @@
 /* ------------------------------------------------------------------------- */
 
 /* DPS registration body carrying the operational-cert CSR (base64 DER). */
-#define DPS_REGISTER_CSR_BODY_FORMAT   "{\"csr\":\"%s\"}"
+#define DPS_REGISTER_CSR_BODY_PREFIX   "{\"csr\":\""
+#define DPS_REGISTER_CSR_BODY_SUFFIX   "\"}"
 
 /* CSR-based operational-certificate issuance (Azure Device Registration / ADR)
  * requires a newer DPS API version than the azure-sdk-for-c default GA version
  * ("2019-03-31"), which does not support it. When enrolling for an operational
  * certificate the DPS MQTT username is rebuilt with this version. */
 #define DPS_CSR_API_VERSION            "2025-07-01-preview"
-#define DPS_USERNAME_CSR_FORMAT        "%s/registrations/%s/api-version=" DPS_CSR_API_VERSION
+#define DPS_USERNAME_CSR_INFIX         "/registrations/"
+#define DPS_USERNAME_CSR_SUFFIX        "/api-version=" DPS_CSR_API_VERSION
 
 /* DPS ASSIGNED result fields that carry the issued operational chain. */
 #define DPS_JSON_REGISTRATION_STATE    "registrationState"
@@ -93,15 +96,17 @@
 #define PRESENCE_PHASE_BIRTH       AZ_IOT_PRESENCE_PHASE_BIRTH
 #define PRESENCE_PHASE_DONE        AZ_IOT_PRESENCE_PHASE_DONE
 
-/* Device publishes the birth message here; the birth-ack arrives on dev/. */
-#define PRESENCE_TOPIC_SRV_FMT     "ih/%s/srv/presence"
-#define PRESENCE_TOPIC_DEV_FMT     "ih/%s/dev/presence"
-/* The device subscribes to the whole dev/# space (per RFC topics.md and the
- * .NET SDK) rather than the narrower dev/presence: one subscription that AEG's
- * topic-space authorization is guaranteed to grant and that also covers the
- * other device-bound feature topics. The birth-ack is still matched by its
- * exact dev/presence topic. */
-#define PRESENCE_TOPIC_DEV_SUB_FMT "ih/%s/dev/#"
+/* Device publishes the birth message here; the birth-ack arrives on dev/. All
+ * three are "ih/" + device id + one of these suffixes. */
+#define PRESENCE_TOPIC_PREFIX      "ih/"
+#define PRESENCE_TOPIC_SRV_SUFFIX  "/srv/presence"
+#define PRESENCE_TOPIC_DEV_SUFFIX  "/dev/presence"
+/* The device subscribes to the whole device-bound topic space (per RFC
+ * topics.md and the .NET SDK) rather than the narrower dev/presence: one
+ * subscription that AEG's topic-space authorization is guaranteed to grant and
+ * that also covers the other device-bound feature topics. The birth-ack is
+ * still matched by its exact dev/presence topic. */
+#define PRESENCE_TOPIC_DEV_SUB_SUFFIX "/dev/#"
 /* MQTT v5 User Property key carrying the message type, plus the value we send
  * and the type we match. The service stamps "<type>:<schemaVersion>"; the
  * schema suffix is ignored when matching the birth-ack. */
@@ -273,20 +278,24 @@ static az_iot_result dps_do_register_publish(az_iot_connection_client* c)
             return (csr_result != AZ_IOT_OK) ? csr_result : AZ_IOT_ERR_INTERNAL;
         }
 
-        int written = snprintf(body, body_cap, DPS_REGISTER_CSR_BODY_FORMAT, csr.csr_base64);
+        size_t body_len = 0;
+        const char* body_parts[]
+            = { DPS_REGISTER_CSR_BODY_PREFIX, csr.csr_base64, DPS_REGISTER_CSR_BODY_SUFFIX };
+        az_iot_result body_result = az_iot_span_writer_build_str(
+            c->opts.csr_payload_buffer, &body_len, body_parts, 3);
 
         if (provider->vtable->release_csr != NULL)
         {
             provider->vtable->release_csr(provider, &csr);
         }
-        if (written < 0 || (size_t)written >= body_cap)
+        if (body_result != AZ_IOT_OK)
         {
             AZ_IOT_LOG_ERROR("dps register: opts.csr_payload_buffer is too small for the CSR body");
             return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
         }
 
         msg.payload = (const uint8_t*)body;
-        msg.payload_len = (size_t)written;
+        msg.payload_len = body_len;
     }
 
     uint16_t pid = 0;
@@ -554,9 +563,15 @@ static az_iot_result dps_start(az_iot_connection_client* c)
     char dps_username[AZ_IOT_MQTT_USERNAME_BUF];
     if (c->opts.dps.request_operational_certificate)
     {
-        int n = snprintf(dps_username, sizeof(dps_username), DPS_USERNAME_CSR_FORMAT,
-                         c->opts.dps.id_scope, c->opts.dps.registration_id);
-        if (n < 0 || (size_t)n >= sizeof(dps_username)) return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+        const char* username_parts[] = {
+            c->opts.dps.id_scope, DPS_USERNAME_CSR_INFIX,
+            c->opts.dps.registration_id, DPS_USERNAME_CSR_SUFFIX
+        };
+        if (az_iot_span_writer_build_str(
+                AZ_SPAN_FROM_BUFFER(dps_username), NULL, username_parts, 4) != AZ_IOT_OK)
+        {
+            return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+        }
     }
     else
     {
@@ -710,15 +725,20 @@ static bool presence_build_username(const az_iot_connection_client* c, char* buf
     hex[PRESENCE_NONCE_LEN * 2u] = '\0';
 
     /* clientVersion is URL-escaped as in the .NET SDK: '/' -> %2F. The version
-     * string itself (digits + dots) needs no escaping. */
-    int n = snprintf(buf, cap, "correlationId=%s&clientVersion=c%%2F%s",
-                     hex, az_iot_version_string());
+     * string is percent-encoded too, which leaves today's digits-and-dots form
+     * untouched but keeps the pair well-formed if it ever gains a suffix. */
+    az_iot_span_writer writer;
+    az_iot_span_writer_init(&writer, az_span_create((uint8_t*)buf, (int32_t)cap));
+    az_iot_span_writer_append_str(&writer, "correlationId=");
+    az_iot_span_writer_append_str(&writer, hex);
+    az_iot_span_writer_append_str(&writer, "&clientVersion=c%2F");
+    az_iot_span_writer_append_url_encoded(&writer, az_iot_version_string());
 
     /* A truncated username is worse than none: it would carry a partial
      * correlationId, so the service could not tie the CONNECT to the birth and
      * the handshake would surface much later as an opaque birth-ack timeout.
      * Report it here so the connect attempt fails with a precise reason. */
-    return n >= 0 && (size_t)n < cap;
+    return az_iot_span_writer_end_str(&writer, NULL) == AZ_IOT_OK;
 }
 
 /* Encode a proto3 Birth message (common/Protos/presence.proto) into `out`.
@@ -764,8 +784,13 @@ static az_iot_result presence_start(az_iot_connection_client* c, bool session_pr
 
     const char* device_id = c->opts.client_id ? c->opts.client_id : "";
     char topic[AZ_IOT_PRESENCE_TOPIC_BUF];
-    int wn = snprintf(topic, sizeof(topic), PRESENCE_TOPIC_DEV_SUB_FMT, device_id);
-    if (wn < 0 || (size_t)wn >= sizeof(topic)) return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+    const char* topic_parts[]
+        = { PRESENCE_TOPIC_PREFIX, device_id, PRESENCE_TOPIC_DEV_SUB_SUFFIX };
+    if (az_iot_span_writer_build_str(
+            AZ_SPAN_FROM_BUFFER(topic), NULL, topic_parts, 3) != AZ_IOT_OK)
+    {
+        return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+    }
 
     c->presence.session_present = session_present;
     /* The connection nonce was generated at CONNECT time (start_connect_attempt)
@@ -795,8 +820,13 @@ static az_iot_result presence_publish_birth(az_iot_connection_client* c)
 
     const char* device_id = c->opts.client_id ? c->opts.client_id : "";
     char topic[AZ_IOT_PRESENCE_TOPIC_BUF];
-    int wn = snprintf(topic, sizeof(topic), PRESENCE_TOPIC_SRV_FMT, device_id);
-    if (wn < 0 || (size_t)wn >= sizeof(topic)) return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+    const char* topic_parts[]
+        = { PRESENCE_TOPIC_PREFIX, device_id, PRESENCE_TOPIC_SRV_SUFFIX };
+    if (az_iot_span_writer_build_str(
+            AZ_SPAN_FROM_BUFFER(topic), NULL, topic_parts, 3) != AZ_IOT_OK)
+    {
+        return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+    }
 
     uint8_t body[8];
     size_t body_len = presence_encode_birth(body, sizeof(body), c->presence.session_present);
@@ -834,8 +864,13 @@ static bool presence_is_birth_ack(const az_iot_connection_client* c,
 
     const char* device_id = c->opts.client_id ? c->opts.client_id : "";
     char topic[AZ_IOT_PRESENCE_TOPIC_BUF];
-    int wn = snprintf(topic, sizeof(topic), PRESENCE_TOPIC_DEV_FMT, device_id);
-    if (wn < 0 || (size_t)wn >= sizeof(topic)) return false;
+    const char* topic_parts[]
+        = { PRESENCE_TOPIC_PREFIX, device_id, PRESENCE_TOPIC_DEV_SUFFIX };
+    if (az_iot_span_writer_build_str(
+            AZ_SPAN_FROM_BUFFER(topic), NULL, topic_parts, 3) != AZ_IOT_OK)
+    {
+        return false;
+    }
     if (strcmp(msg->topic, topic) != 0) return false;
 
     if (msg->correlation_data_len != PRESENCE_NONCE_LEN
@@ -1759,9 +1794,11 @@ az_iot_result az_iot_connection_client__add_subscription_on_connect(
 #define CSR_OP_TIMEOUT_MS 120000u /* give up on a renewal with no terminal response after 2 min */
 
 /* Hub renewal request: publish topic + body formats. */
-#define CSR_RENEW_TOPIC_FORMAT         "$iothub/credentials/POST/issueCertificate/?$rid=%s"
-#define CSR_RENEW_BODY_FORMAT          "{\"id\":\"%s\",\"csr\":\"%s\"}"
-#define CSR_RENEW_BODY_REPLACE_FORMAT  "{\"id\":\"%s\",\"csr\":\"%s\",\"replace\":\"%s\"}"
+#define CSR_RENEW_TOPIC_PREFIX         "$iothub/credentials/POST/issueCertificate/?$rid="
+#define CSR_RENEW_BODY_ID_PREFIX       "{\"id\":\""
+#define CSR_RENEW_BODY_CSR_INFIX       "\",\"csr\":\""
+#define CSR_RENEW_BODY_REPLACE_INFIX   "\",\"replace\":\""
+#define CSR_RENEW_BODY_SUFFIX          "\"}"
 
 /* Hub renewal response JSON fields (issued chain / error body). */
 #define CSR_JSON_CERTIFICATES  "certificates"
@@ -1955,24 +1992,37 @@ az_iot_result az_iot_connection_client_send_csr(
     const char* device_id = az_iot_connection_client__device_id(client);
     if (!device_id) device_id = "";
     char* body = (char*)az_span_ptr(client->opts.csr_payload_buffer);
-    size_t body_cap = (size_t)az_span_size(client->opts.csr_payload_buffer);
-    int bn = (replace && replace[0])
-        ? snprintf(body, body_cap, CSR_RENEW_BODY_REPLACE_FORMAT, device_id, csr->csr_base64, replace)
-        : snprintf(body, body_cap, CSR_RENEW_BODY_FORMAT, device_id, csr->csr_base64);
-    if (bn < 0 || (size_t)bn >= body_cap)
+    size_t body_len = 0;
+    const char* body_parts[] = {
+        CSR_RENEW_BODY_ID_PREFIX, device_id,
+        CSR_RENEW_BODY_CSR_INFIX, csr->csr_base64,
+        CSR_RENEW_BODY_REPLACE_INFIX, replace,
+        CSR_RENEW_BODY_SUFFIX
+    };
+    /* Without a replacement id the body stops after the csr field, so the last
+     * three parts collapse to the closing brace. */
+    const bool with_replace = (replace != NULL && replace[0] != '\0');
+    if (!with_replace) body_parts[4] = CSR_RENEW_BODY_SUFFIX;
+    if (az_iot_span_writer_build_str(
+            client->opts.csr_payload_buffer, &body_len, body_parts,
+            with_replace ? 7u : 5u) != AZ_IOT_OK)
     {
         AZ_IOT_LOG_ERROR("send_csr: opts.csr_payload_buffer is too small for the request body");
         return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
     }
 
     char topic[128];
-    int tn = snprintf(topic, sizeof(topic), CSR_RENEW_TOPIC_FORMAT, client->csr_op.request_id);
-    if (tn < 0 || (size_t)tn >= sizeof(topic)) return AZ_IOT_ERR_INTERNAL;
+    const char* topic_parts[] = { CSR_RENEW_TOPIC_PREFIX, client->csr_op.request_id };
+    if (az_iot_span_writer_build_str(
+            AZ_SPAN_FROM_BUFFER(topic), NULL, topic_parts, 2) != AZ_IOT_OK)
+    {
+        return AZ_IOT_ERR_INTERNAL;
+    }
 
     az_iot_mqtt_message msg = {0};
     msg.topic = topic;
     msg.payload = (const uint8_t*)body;
-    msg.payload_len = (size_t)bn;
+    msg.payload_len = body_len;
     msg.qos = AZ_IOT_MQTT_QOS_1;
 
     client->csr_op.cb = cb;

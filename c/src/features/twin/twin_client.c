@@ -20,7 +20,6 @@
  *   Desired        : ih/{device_id}/dev/twin/desired
  */
 #include <stdbool.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -29,6 +28,7 @@
 
 #include "internal/connection_client_internal.h"
 #include "internal/protocol_profile.h"
+#include "internal/span_writer.h"
 #include "internal/twin_client_internal.h"
 
 #define AZ_IOT_TWIN_TOPIC_MAX   192
@@ -360,12 +360,12 @@ az_iot_result az_iot_twin_client_init(
 
         char prefix[AZ_IOT_TWIN_TOPIC_MAX];
         char filter[AZ_IOT_TWIN_TOPIC_MAX];
-        int n;
         az_iot_result r;
 
         /* Register handler for twin/get/response */
-        n = snprintf(prefix, sizeof(prefix), "ih/%s/dev/twin/get/response", device_id);
-        if (n < 0 || (size_t)n >= sizeof(prefix))
+        const char* get_parts[] = { "ih/", device_id, "/dev/twin/get/response" };
+        if (az_iot_span_writer_build_str(
+                AZ_SPAN_FROM_BUFFER(prefix), NULL, get_parts, 3) != AZ_IOT_OK)
         {
             memset(client, 0, sizeof(*client));
             return AZ_IOT_ERR_INTERNAL;
@@ -384,8 +384,9 @@ az_iot_result az_iot_twin_client_init(
         }
 
         /* Register handler for twin/reported/response */
-        n = snprintf(prefix, sizeof(prefix), "ih/%s/dev/twin/reported/response", device_id);
-        if (n < 0 || (size_t)n >= sizeof(prefix))
+        const char* reported_parts[] = { "ih/", device_id, "/dev/twin/reported/response" };
+        if (az_iot_span_writer_build_str(
+                AZ_SPAN_FROM_BUFFER(prefix), NULL, reported_parts, 3) != AZ_IOT_OK)
         {
             (void)az_iot_connection_client__unregister_inbound_handlers(conn, client);
             memset(client, 0, sizeof(*client));
@@ -409,8 +410,9 @@ az_iot_result az_iot_twin_client_init(
         }
 
         /* Register handler for twin/desired */
-        n = snprintf(filter, sizeof(filter), "ih/%s/dev/twin/desired", device_id);
-        if (n < 0 || (size_t)n >= sizeof(filter))
+        const char* desired_parts[] = { "ih/", device_id, "/dev/twin/desired" };
+        if (az_iot_span_writer_build_str(
+                AZ_SPAN_FROM_BUFFER(filter), NULL, desired_parts, 3) != AZ_IOT_OK)
         {
             (void)az_iot_connection_client__unregister_inbound_handlers(conn, client);
             memset(client, 0, sizeof(*client));
@@ -458,8 +460,9 @@ az_iot_result az_iot_twin_client_init(
 
         /* Persistent subscriptions: response + desired wildcards. */
         char filter[AZ_IOT_TWIN_TOPIC_MAX];
-        int n = snprintf(filter, sizeof(filter), "%s#", profile->twin_response_topic_prefix);
-        if (n < 0 || (size_t)n >= sizeof(filter))
+        const char* response_filter_parts[] = { profile->twin_response_topic_prefix, "#" };
+        if (az_iot_span_writer_build_str(
+                AZ_SPAN_FROM_BUFFER(filter), NULL, response_filter_parts, 2) != AZ_IOT_OK)
         {
             (void)az_iot_connection_client__unregister_inbound_handlers(conn, client);
             memset(client, 0, sizeof(*client));
@@ -474,8 +477,9 @@ az_iot_result az_iot_twin_client_init(
             return r;
         }
 
-        n = snprintf(filter, sizeof(filter), "%s#", profile->twin_desired_topic_prefix);
-        if (n < 0 || (size_t)n >= sizeof(filter))
+        const char* desired_filter_parts[] = { profile->twin_desired_topic_prefix, "#" };
+        if (az_iot_span_writer_build_str(
+                AZ_SPAN_FROM_BUFFER(filter), NULL, desired_filter_parts, 2) != AZ_IOT_OK)
         {
             (void)az_iot_connection_client__unregister_inbound_handlers(conn, client);
             memset(client, 0, sizeof(*client));
@@ -516,24 +520,35 @@ az_iot_result az_iot_twin_client_get(
         az_iot_connection_client__profile(TI(twin).conn);
 
     char topic[AZ_IOT_TWIN_TOPIC_MAX];
-    int n;
 
     /* Correlation data (rid as ASCII string) */
     char corr_buf[16];
-    int corr_len = snprintf(corr_buf, sizeof(corr_buf), "%u", (unsigned)rid);
+    size_t corr_len = 0;
+    az_iot_span_writer corr_writer;
+    az_iot_span_writer_init(&corr_writer, AZ_SPAN_FROM_BUFFER(corr_buf));
+    az_iot_span_writer_append_u32(&corr_writer, rid);
+    if (az_iot_span_writer_end_str(&corr_writer, &corr_len) != AZ_IOT_OK)
+    {
+        return AZ_IOT_ERR_NOT_SUPPORTED;
+    }
 
+    az_iot_span_writer writer;
+    az_iot_span_writer_init(&writer, AZ_SPAN_FROM_BUFFER(topic));
     if (profile && profile->flavor == AZ_IOT_HUB_FLAVOR_NEXT)
     {
         /* Next: publish to "ih/{device_id}/srv/twin/get" with correlation_data */
-        const char* device_id = az_iot_connection_client__device_id(TI(twin).conn);
-        n = snprintf(topic, sizeof(topic), "ih/%s/srv/twin/get", device_id);
+        az_iot_span_writer_append_str(&writer, "ih/");
+        az_iot_span_writer_append_str(
+            &writer, az_iot_connection_client__device_id(TI(twin).conn));
+        az_iot_span_writer_append_str(&writer, "/srv/twin/get");
     }
     else
     {
         /* Classic: "$iothub/twin/GET/?$rid=<n>" */
-        n = snprintf(topic, sizeof(topic), "$iothub/twin/GET/?$rid=%u", (unsigned)rid);
+        az_iot_span_writer_append_str(&writer, "$iothub/twin/GET/?$rid=");
+        az_iot_span_writer_append_u32(&writer, rid);
     }
-    if (n < 0 || (size_t)n >= sizeof(topic)) return AZ_IOT_ERR_NOT_SUPPORTED;
+    if (az_iot_span_writer_end_str(&writer, NULL) != AZ_IOT_OK) return AZ_IOT_ERR_NOT_SUPPORTED;
 
     /* Reserve the slot before publish. */
     TI(twin).pending[idx].in_use    = true;
@@ -583,22 +598,32 @@ az_iot_result az_iot_twin_client_patch_reported(
         az_iot_connection_client__profile(TI(twin).conn);
 
     char topic[AZ_IOT_TWIN_TOPIC_MAX];
-    int n;
 
     char corr_buf[16];
-    int corr_len = snprintf(corr_buf, sizeof(corr_buf), "%u", (unsigned)rid);
+    size_t corr_len = 0;
+    az_iot_span_writer corr_writer;
+    az_iot_span_writer_init(&corr_writer, AZ_SPAN_FROM_BUFFER(corr_buf));
+    az_iot_span_writer_append_u32(&corr_writer, rid);
+    if (az_iot_span_writer_end_str(&corr_writer, &corr_len) != AZ_IOT_OK)
+    {
+        return AZ_IOT_ERR_NOT_SUPPORTED;
+    }
 
+    az_iot_span_writer writer;
+    az_iot_span_writer_init(&writer, AZ_SPAN_FROM_BUFFER(topic));
     if (profile && profile->flavor == AZ_IOT_HUB_FLAVOR_NEXT)
     {
-        const char* device_id = az_iot_connection_client__device_id(TI(twin).conn);
-        n = snprintf(topic, sizeof(topic), "ih/%s/srv/twin/reported", device_id);
+        az_iot_span_writer_append_str(&writer, "ih/");
+        az_iot_span_writer_append_str(
+            &writer, az_iot_connection_client__device_id(TI(twin).conn));
+        az_iot_span_writer_append_str(&writer, "/srv/twin/reported");
     }
     else
     {
-        n = snprintf(topic, sizeof(topic),
-                     "$iothub/twin/PATCH/properties/reported/?$rid=%u", (unsigned)rid);
+        az_iot_span_writer_append_str(&writer, "$iothub/twin/PATCH/properties/reported/?$rid=");
+        az_iot_span_writer_append_u32(&writer, rid);
     }
-    if (n < 0 || (size_t)n >= sizeof(topic)) return AZ_IOT_ERR_NOT_SUPPORTED;
+    if (az_iot_span_writer_end_str(&writer, NULL) != AZ_IOT_OK) return AZ_IOT_ERR_NOT_SUPPORTED;
 
     TI(twin).pending[idx].in_use      = true;
     TI(twin).pending[idx].rid         = rid;

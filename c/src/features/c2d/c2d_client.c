@@ -15,7 +15,6 @@
  *   Inbound    "ih/{device_id}/dev/c2d"
  */
 #include <stdbool.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -24,6 +23,7 @@
 
 #include "internal/connection_client_internal.h"
 #include "internal/protocol_profile.h"
+#include "internal/span_writer.h"
 
 #define AZ_IOT_C2D_TOPIC_MAX 192
 
@@ -86,8 +86,9 @@ az_iot_result az_iot_c2d_client_init(
 
         /* Dispatch prefix = exact topic (no wildcard in Next) */
         char prefix[AZ_IOT_C2D_TOPIC_MAX];
-        int n = snprintf(prefix, sizeof(prefix), "ih/%s/dev/c2d", device_id);
-        if (n < 0 || (size_t)n >= sizeof(prefix))
+        const char* prefix_parts[] = { "ih/", device_id, "/dev/c2d" };
+        if (az_iot_span_writer_build_str(
+                AZ_SPAN_FROM_BUFFER(prefix), NULL, prefix_parts, 3) != AZ_IOT_OK)
         {
             memset(client, 0, sizeof(*client));
             return AZ_IOT_ERR_INTERNAL;
@@ -127,9 +128,9 @@ az_iot_result az_iot_c2d_client_init(
 
         /* Dispatch prefix (no wildcard — prefix match handles sub-topics) */
         char prefix[AZ_IOT_C2D_TOPIC_MAX];
-        int n = snprintf(prefix, sizeof(prefix),
-            "devices/%s/messages/devicebound/", device_id);
-        if (n < 0 || (size_t)n >= sizeof(prefix))
+        const char* prefix_parts[] = { "devices/", device_id, "/messages/devicebound/" };
+        if (az_iot_span_writer_build_str(
+                AZ_SPAN_FROM_BUFFER(prefix), NULL, prefix_parts, 3) != AZ_IOT_OK)
         {
             memset(client, 0, sizeof(*client));
             return AZ_IOT_ERR_INTERNAL;
@@ -145,9 +146,9 @@ az_iot_result az_iot_c2d_client_init(
 
         /* MQTT subscription filter with '#' wildcard */
         char filter[AZ_IOT_C2D_TOPIC_MAX];
-        n = snprintf(filter, sizeof(filter),
-            "devices/%s/messages/devicebound/#", device_id);
-        if (n < 0 || (size_t)n >= sizeof(filter))
+        const char* filter_parts[] = { "devices/", device_id, "/messages/devicebound/#" };
+        if (az_iot_span_writer_build_str(
+                AZ_SPAN_FROM_BUFFER(filter), NULL, filter_parts, 3) != AZ_IOT_OK)
         {
             (void)az_iot_connection_client__unregister_inbound_handlers(conn, client);
             memset(client, 0, sizeof(*client));
