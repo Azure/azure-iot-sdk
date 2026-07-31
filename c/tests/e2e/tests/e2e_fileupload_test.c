@@ -57,8 +57,18 @@
 
 /* How long to wait for IoT Hub to post a file-upload notification. The hub
  * batches these and a freshly provisioned hub is slower still, so the budget is
- * minutes, not seconds. It stays well inside the 900s CTest timeout. */
-#define E2E_NOTIFICATION_TIMEOUT_S 300
+ * minutes, not seconds. Per ATTEMPT -- the round trip is tried
+ * E2E_ROUND_TRIP_ATTEMPTS times, so the worst case stays inside the 900s CTest
+ * timeout. Observed good runs deliver in under 20s; this is slack, not a
+ * expected duration. */
+#define E2E_NOTIFICATION_TIMEOUT_S 240
+
+/* A completion reported inside the hub's settling window after
+ * enableFileUploadNotifications is switched on is accepted and then never
+ * published, so the only way to find out whether the hub is publishing yet is to
+ * upload again. Two attempts cover the ~10s margin measured in CI with room to
+ * spare; a hub that publishes nothing across both is a real failure. */
+#define E2E_ROUND_TRIP_ATTEMPTS 2
 #define E2E_PUMP_SLICE_MS 50
 /* The watcher spends this wait deliberately idle, and IoT Hub drops an idle AMQP
  * connection, so reattaching is expected rather than exceptional. Bound it so a
@@ -392,48 +402,81 @@ static void test_upload_round_trip_and_failure_reporting(void** state)
     assert_true(failed.notify_done);
     assert_int_equal(failed.notify_status, AZ_IOT_OK);
 
-    /* 2. A successful upload in the same session. */
-    char blob_name[96];
-    make_blob_name(blob_name, sizeof(blob_name), "ok");
-    upload_ctx u;
-    request_sas(fx, blob_name, &u);
-
-    char blob_host[256];
-    char blob_path[2048];
-    assert_true(split_url(u.sas_uri, blob_host, sizeof(blob_host), blob_path, sizeof(blob_path)));
-
-    int put_status = 0;
-    assert_true(az_iot_e2e_https_request(
-        blob_host, "PUT", blob_path, NULL, NULL, NULL, "x-ms-blob-type: BlockBlob",
-        k_blob_content, strlen(k_blob_content), &put_status, NULL, 0, NULL));
-    assert_in_range(put_status, 200, 299);
-
-    /* 3. Read the blob back through the same SAS URI and compare the bytes: the
-     *    hub granting a URI is no proof that the payload arrived intact. */
-    char readback[256];
-    int get_status = 0;
-    size_t read_len = 0;
-    assert_true(az_iot_e2e_https_request(
-        blob_host, "GET", blob_path, NULL, NULL, NULL, NULL,
-        NULL, 0, &get_status, readback, sizeof(readback), &read_len));
-    assert_in_range(get_status, 200, 299);
-    assert_int_equal((int)read_len, (int)strlen(k_blob_content));
-    assert_memory_equal(readback, k_blob_content, strlen(k_blob_content));
-
-    /* 4. Report success. */
-    assert_int_equal(AZ_IOT_OK,
-        az_iot_file_upload_client_notify_complete(
-            &fx->fu, u.correlation_id, true, on_notify, &u));
-    assert_true(u.notify_done);
-    assert_int_equal(u.notify_status, AZ_IOT_OK);
-
-    /* 5. IoT Hub must publish the completion to the service notification
-     *    endpoint, and must NOT publish one for the upload reported as failed.
-     *    That upload was reported FIRST, so by the time this notification lands
-     *    the hub has demonstrably processed both. */
+    /* 2. A successful upload in the same session, retried if the hub publishes
+     *    no notification for it.
+     *
+     *    A completion reported inside the hub's settling window after
+     *    enableFileUploadNotifications is turned on is ACCEPTED (2xx) and then
+     *    never published, and waiting does not help: the hub decided at notify
+     *    time. Measured against CI, runs reaching this point ~137s after the
+     *    flag was set saw nothing, while runs reaching it at ~148s and later
+     *    saw the notification within seconds. Provisioning sets the flag about
+     *    two minutes before this test runs, so the margin is thin and which side
+     *    of it a run lands on is decided by build-time jitter.
+     *
+     *    Uploading again is what actually probes whether the hub is publishing
+     *    yet, so that is what this does. Each attempt uses a fresh blob and a
+     *    fresh correlation id -- a completion may be reported once per id. */
     bool saw_failed = false;
-    bool saw_uploaded = await_notification(fx, blob_name, failed_blob, &saw_failed);
-    report_notification_stats(fx);
+    bool saw_uploaded = false;
+    char blob_name[96];
+
+    for (int attempt = 1; attempt <= E2E_ROUND_TRIP_ATTEMPTS && !saw_uploaded; attempt++)
+    {
+        char tag[32];
+        (void)snprintf(tag, sizeof(tag), "ok-%d", attempt);
+        make_blob_name(blob_name, sizeof(blob_name), tag);
+        upload_ctx u;
+        request_sas(fx, blob_name, &u);
+
+        char blob_host[256];
+        char blob_path[2048];
+        assert_true(
+            split_url(u.sas_uri, blob_host, sizeof(blob_host), blob_path, sizeof(blob_path)));
+
+        int put_status = 0;
+        assert_true(az_iot_e2e_https_request(
+            blob_host, "PUT", blob_path, NULL, NULL, NULL, "x-ms-blob-type: BlockBlob",
+            k_blob_content, strlen(k_blob_content), &put_status, NULL, 0, NULL));
+        assert_in_range(put_status, 200, 299);
+
+        /* 3. Read the blob back through the same SAS URI and compare the bytes:
+         *    the hub granting a URI is no proof that the payload arrived intact. */
+        char readback[256];
+        int get_status = 0;
+        size_t read_len = 0;
+        assert_true(az_iot_e2e_https_request(
+            blob_host, "GET", blob_path, NULL, NULL, NULL, NULL,
+            NULL, 0, &get_status, readback, sizeof(readback), &read_len));
+        assert_in_range(get_status, 200, 299);
+        assert_int_equal((int)read_len, (int)strlen(k_blob_content));
+        assert_memory_equal(readback, k_blob_content, strlen(k_blob_content));
+
+        /* 4. Report success. */
+        assert_int_equal(AZ_IOT_OK,
+            az_iot_file_upload_client_notify_complete(
+                &fx->fu, u.correlation_id, true, on_notify, &u));
+        assert_true(u.notify_done);
+        assert_int_equal(u.notify_status, AZ_IOT_OK);
+
+        /* 5. IoT Hub must publish the completion to the service notification
+         *    endpoint, and must NOT publish one for the upload reported as
+         *    failed. That upload was reported FIRST, so by the time this
+         *    notification lands the hub has demonstrably processed both. */
+        bool saw_failed_this_attempt = false;
+        saw_uploaded = await_notification(fx, blob_name, failed_blob, &saw_failed_this_attempt);
+        saw_failed = saw_failed || saw_failed_this_attempt;
+        report_notification_stats(fx);
+
+        if (!saw_uploaded && attempt < E2E_ROUND_TRIP_ATTEMPTS)
+        {
+            fprintf(stderr,
+                    "file upload e2e: no notification for attempt %d; the hub may not be "
+                    "publishing yet. Uploading again.\n",
+                    attempt);
+        }
+    }
+
     assert_true(saw_uploaded);
     assert_false(saw_failed);
 }
