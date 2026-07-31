@@ -63,7 +63,7 @@ jobs:
           # SAS URI and upload a blob.
           enable-file-upload: 'true'
           enable-certificate-management: 'true'
-
+          config-cmdlet: 'New-AzIotNetSDKE2ETestConfig'
       - name: Upload test config
         uses: actions/upload-artifact@v4
         with:
