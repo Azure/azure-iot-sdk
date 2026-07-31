@@ -8,7 +8,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
 {
     public class FileUploadIntegrationTests
     {
-        [Theory(Timeout = Setup.TestTimeoutMilliseconds)]
+        [Theory(Timeout = Setup.TestTimeoutMilliseconds, Skip = "TODO Test infrastructure has issues. See CI pipeline yaml")]
         [InlineData(true, false)]
         [InlineData(true, true)]
         [InlineData(false, false)]
@@ -65,7 +65,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
             fileUploadClient.Dispose();
         }
 
-        [Theory(Timeout = Setup.TestTimeoutMilliseconds)]
+        [Theory(Timeout = Setup.TestTimeoutMilliseconds, Skip = "TODO Test infrastructure has issues. See CI pipeline yaml")]
         [InlineData(true)]
         [InlineData(false)]
         public async Task TestFileUpload_BadFormat(bool testAgainstClassicHub)
