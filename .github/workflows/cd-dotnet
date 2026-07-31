@@ -4,7 +4,10 @@ on:
   workflow_dispatch:
   schedule:
   - cron: '0 11 * * *'  # Nightly at 4am PST
-
+  push:
+    branches: [ main ]
+    paths:
+      - '.github/workflows/cd-dotnet'
 
 # only allow one run / branch at a time
 concurrency:
@@ -28,7 +31,6 @@ jobs:
     - run: |
         date="$(date +%F)"
         versionWithSuffix="2.0.0-"$date
-
-        dotnet pack ./dotnet/src/Microsoft.Azure.Devices.Client/Microsoft.Azure.Devices.Client.csproj /p:Version=$versionWithSuffix
-        dotnet nuget push "./dotnet/src/Microsoft.Azure.Devices.Client/bin/Release/*.nupkg" --api-key " " https://msazure.pkgs.visualstudio.com/One/_packaging/IoTPlatform/nuget/v3/index.json
+        dotnet pack ./dotnet/src/Microsoft.Azure.Devices.Client/Microsoft.Azure.Devices.Client.csproj --version $versionWithSuffix
+        dotnet nuget push "./dotnet/src/Microsoft.Azure.Devices.Client/bin/Release/*.nupkg" --api-key " " --source https://msazure.pkgs.visualstudio.com/One/_packaging/IoTPlatform/nuget/v3/index.json
 
