@@ -107,6 +107,9 @@ jobs:
         run: |
 
           # Start faultable mqtt broker in the background on port 1884
+          # 
+          # For some reason, running this same block within the "deploy-faultable-mqtt-broker" template does not work, so 
+          # the faultable broker process needs to be started here.
           $WorkingDirectory = pwd
           $job = Start-Job -ScriptBlock { dotnet run --project ".\faultablemqttbroker\Azure.Iot.Operations.FaultableMqttBroker.csproj" } -WorkingDirectory $WorkingDirectory
           
