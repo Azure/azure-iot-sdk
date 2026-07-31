@@ -25,7 +25,6 @@
  * touching the state machine.
  */
 #include <stdint.h>
-#include <stdio.h>
 #include <string.h>
 
 #include <azure/core/az_base64.h>
@@ -37,6 +36,7 @@
 #include "azure/iot/az_iot_twin_client.h"
 
 #include "internal/adu_internal.h"
+#include "internal/log_internal.h"
 #include "internal/span_writer.h"
 #include "internal/twin_client_internal.h"
 
@@ -398,9 +398,9 @@ static const az_iot_adu_root_key* resolve_root_key(
 
 /* Log the reason a manifest fails verification, then bail. Verification has
  * many independent failure paths; naming each one makes a Failed deployment
- * diagnosable from the device console instead of a single opaque "Failed". */
+ * diagnosable from the application's log instead of a single opaque "Failed". */
 #define ADU_VERIFY_FAIL(why) \
-    do { fprintf(stderr, "[adu] manifest verification failed: %s\n", (why)); \
+    do { AZ_IOT_LOG_ERRORF("adu: manifest verification failed: %s", (why)); \
          return AZ_IOT_ADU_RESULT_FAILURE; } while (0)
 
 static int32_t verify_manifest_core(
@@ -902,8 +902,8 @@ static void process_desired_patch(
     if (ADU_I(client).detached) return;
     if (patch_len > sizeof(ADU_I(client).request_buffer)) return; /* too large to back */
 
-    fprintf(stderr, "[adu] deviceUpdate desired-property received (%zu bytes):\n%.*s\n",
-            patch_len, (int)patch_len, (const char*)patch);
+    AZ_IOT_LOG_DEBUGF("adu: deviceUpdate desired property received (%u bytes): %.*s",
+                      (unsigned)patch_len, (int)patch_len, (const char*)patch);
 
     /* Probe the transient buffer for the workflow identity. These spans are only
      * valid for the duration of this call, which is enough to decide what to do. */

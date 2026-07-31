@@ -42,6 +42,8 @@
 #include "azure/iot/adapters/az_iot_adapter_paho.h"
 #include "az_iot_certificate_provider_managed.h"
 
+#include "e2e_log.h"
+
 #define E2E_CONNECT_TIMEOUT_S 120
 #define E2E_CSR_SKIP          77
 
@@ -240,18 +242,7 @@ int main(void)
 
     /* Log verbosity is env-controlled (AZ_IOT_E2E_LOG_LEVEL=TRACE|DEBUG|INFO|
      * WARN); default ERROR. CI raises it to surface the connect/DPS failure. */
-    az_iot_log_level log_level = AZ_IOT_LOG_ERROR;
-    char* lvl = env_dup("AZ_IOT_E2E_LOG_LEVEL");
-    if (lvl != NULL)
-    {
-        if      (strcmp(lvl, "TRACE") == 0) log_level = AZ_IOT_LOG_TRACE;
-        else if (strcmp(lvl, "DEBUG") == 0) log_level = AZ_IOT_LOG_DEBUG;
-        else if (strcmp(lvl, "INFO")  == 0) log_level = AZ_IOT_LOG_INFO;
-        else if (strcmp(lvl, "WARN")  == 0) log_level = AZ_IOT_LOG_WARN;
-        free(lvl);
-    }
-    az_iot_log_sink log = az_iot_log_stderr_sink(log_level);
-    az_iot_log_set_global_sink(&log);
+    e2e_install_log_sink();
 
     const struct CMUnitTest tests[] = {
         cmocka_unit_test(test_dps_csr_enrollment_ec),

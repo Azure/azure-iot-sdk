@@ -26,7 +26,6 @@
  * regardless. If max_attempts > 0 is configured and reached, we transition to
  * FAULTED.
  */
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -481,13 +480,13 @@ static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
                 {
                     /* Surface the DPS-reported failure (errorCode/errorMessage in
                      * the response body) so a provisioning rejection is
-                     * diagnosable instead of an opaque fault. */
-                    char detail[384];
-                    (void)snprintf(detail, sizeof(detail),
+                     * diagnosable instead of an opaque fault. The formatted text
+                     * is truncated if the response is long, which is right for a
+                     * diagnostic: a shortened message still names the cause. */
+                    AZ_IOT_LOG_ERRORF(
                         "dps register: provisioning failed/disabled; DPS response: %.*s",
                         (int)az_span_size(payload_span),
                         (const char*)az_span_ptr(payload_span));
-                    AZ_IOT_LOG_ERROR(detail);
                     dps_finalize(c, AZ_IOT_ERR_DPS, false);
                     return;
                 }
@@ -581,7 +580,7 @@ static az_iot_result dps_start(az_iot_connection_client* c)
         if (az_result_failed(ar)) return AZ_IOT_ERR_INTERNAL;
     }
     copts.username = dps_username;
-    fprintf(stderr, "[conn] DPS username: %s\n", dps_username);
+    AZ_IOT_LOG_DEBUGF("dps: connecting with username %s", dps_username);
 
     /* Populate TLS from certificate_provider if available. DPS uses the bootstrap
      * identity; the operational cert (if any) is issued during this exchange. */
@@ -598,20 +597,20 @@ static az_iot_result dps_start(az_iot_connection_client* c)
             copts.tls.client_cert_pem   = mat.client_cert_pem;
             copts.tls.client_key_pem    = mat.client_key_pem;
             copts.tls.verify_server     = true;
-            fprintf(stderr, "[conn] TLS ca=%s cert=%s key=%s\n",
-                mat.trusted_ca_path ? mat.trusted_ca_path : "(null)",
-                mat.client_cert_path ? mat.client_cert_path : "(null)",
-                mat.client_key_path ? mat.client_key_path : "(null)");
+            AZ_IOT_LOG_DEBUGF("dps: bootstrap TLS ca=%s cert=%s key=%s",
+                mat.trusted_ca_path ? mat.trusted_ca_path : "(none)",
+                mat.client_cert_path ? mat.client_cert_path : "(none)",
+                mat.client_key_path ? mat.client_key_path : "(none)");
             c->opts.certificate_provider->vtable->release(c->opts.certificate_provider, &mat);
         }
         else
         {
-            fprintf(stderr, "[conn] certificate_provider load() failed\n");
+            AZ_IOT_LOG_ERROR("dps: certificate provider load() failed for the bootstrap identity");
         }
     }
     else
     {
-        fprintf(stderr, "[conn] no certificate_provider set\n");
+        AZ_IOT_LOG_DEBUG("dps: no certificate provider configured; connecting without client TLS");
     }
 
     c->dps_mqtt = mc;
@@ -1252,8 +1251,10 @@ static az_iot_result apply_mock_next_bypass(az_iot_connection_client* c)
         c->session_role = AZ_IOT_MQTT_ROLE_HUB_NEXT;
         c->dps_phase = DPS_PHASE_DONE;
 
-        fprintf(stderr, "[conn] Mock-Next bypass: host=%s port=%u device=%s\n",
-                host, (unsigned)port, device_id);
+        /* Warn, not debug: provisioning was skipped entirely, so anyone reading
+         * the log needs to know this session never talked to DPS. */
+        AZ_IOT_LOG_WARNF("dps: mock-next bypass active; host=%s port=%u device=%s",
+                         host, (unsigned)port, device_id);
     }
 
 #ifdef _WIN32

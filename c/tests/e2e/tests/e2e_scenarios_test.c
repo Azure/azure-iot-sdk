@@ -45,6 +45,7 @@
 
 #include "az_iot_e2e_service.h"
 #include "e2e_device.h"
+#include "e2e_log.h"
 
 /* ---- timing budgets ------------------------------------------------------- */
 #define E2E_TELEMETRY_TIMEOUT_S 90 /* publish + EH-side receive               */
@@ -91,8 +92,7 @@ static int group_setup(void** state)
     memset(&g_fixture, 0, sizeof(g_fixture));
     srand((unsigned)time(NULL));
 
-    az_iot_log_sink log = az_iot_log_stderr_sink(AZ_IOT_LOG_ERROR);
-    az_iot_log_set_global_sink(&log);
+    e2e_install_log_sink();
 
     const char* svc_err = NULL;
     g_fixture.service = az_iot_e2e_service_create(&svc_err);

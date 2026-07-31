@@ -296,7 +296,7 @@ static void on_conn_state(az_iot_connection_state st, az_iot_result reason, void
 
 int main(void)
 {
-    az_iot_log_sink log = az_iot_log_stderr_sink(AZ_IOT_LOG_ERROR);
+    az_iot_log_sink log = az_iot_log_stderr_sink(AZ_IOT_LOG_LEVEL_INFO);
     az_iot_log_set_global_sink(&log);
 
     signal(SIGINT, on_sigint);
