@@ -45,7 +45,20 @@ extern "C" {
 #ifndef AZ_IOT_FILE_UPLOAD_URL_MAX
 #define AZ_IOT_FILE_UPLOAD_URL_MAX 512
 #endif
-/** @brief Maximum length of a built request body (incl. NUL). */
+/** @brief Size in bytes of the buffer used to build a request body.
+ *
+ * The body is passed to the transport hook as a (pointer, length) pair and is
+ * NOT NUL-terminated, so a hook must never treat it as a C string.
+ *
+ * This bounds the blob name: the SAS-URI request body is {"blobName":"<name>"},
+ * so a name whose JSON-ESCAPED form does not fit in this many bytes minus the 15
+ * bytes of envelope is refused with AZ_IOT_ERR_NOT_ENOUGH_SPACE. Escaping is what
+ * counts, not characters -- a quote or backslash costs two bytes, and non-ASCII
+ * costs its UTF-8 length -- so the default admits up to ~495 bytes of escaped
+ * name. That is well beyond typical names; raise it if the application uses
+ * longer ones (Azure Storage permits blob names of up to 1024 characters). It
+ * also bounds the correlation id accepted by notify_complete(). Each operation
+ * places one buffer of this size on the stack. */
 #ifndef AZ_IOT_FILE_UPLOAD_BODY_MAX
 #define AZ_IOT_FILE_UPLOAD_BODY_MAX 512
 #endif
@@ -82,12 +95,25 @@ typedef void (*az_iot_file_upload_complete_callback)(
 /**
  * @brief Response buffer the application fills when performing a Classic HTTP
  *        request through the transport hook.
+ *
+ * The SDK supplies @p body and @p body_capacity and the application sets
+ * @p status_code and, when it wrote one, @p body_len.
+ *
+ * For a request whose response body the SDK does not read -- the completion
+ * notification -- @p body is NULL and @p body_capacity is 0. A hook must tolerate
+ * that and simply discard the body it received.
+ *
+ * For a request whose body the SDK does parse -- the SAS-URI request -- the SDK
+ * ignores any change the hook made to @p body or @p body_capacity and bounds the
+ * parse by the buffer it originally handed out, so an over-reported @p body_len
+ * cannot read past it. A success status that arrives with no body at all is
+ * reported to the caller as AZ_IOT_ERR_PROTOCOL.
  */
 typedef struct az_iot_file_upload_http_response
 {
     int      status_code;    /**< HTTP status the app observed (e.g. 200). */
-    uint8_t* body;           /**< App-provided buffer to receive the response body. */
-    size_t   body_capacity;  /**< Capacity of @p body. */
+    uint8_t* body;           /**< SDK-provided buffer to receive the response body; may be NULL. */
+    size_t   body_capacity;  /**< Capacity of @p body; 0 when no body is read. */
     size_t   body_len;       /**< Set by the app to the number of bytes written. */
 } az_iot_file_upload_http_response;
 
@@ -95,9 +121,18 @@ typedef struct az_iot_file_upload_http_response
  * @brief Application HTTP transport for the Classic control plane.
  *
  * Called synchronously by the SDK to perform one HTTPS request to IoT Hub and
- * return its response. For X.509 devices the app authenticates with mutual TLS
- * using the device certificate, and @p authorization is "" (SAS-key devices
- * place a SharedAccessSignature token there).
+ * return its response. The hook owns authentication: this SDK authenticates
+ * devices with X.509, so the hook is expected to perform mutual TLS with the
+ * device certificate and @p authorization is always "". The parameter is kept
+ * for hooks that need to supply their own credential (for example a gateway
+ * that fronts the hub) and for future token-based authentication.
+ *
+ * The hook must also validate the hub's server certificate; the SDK cannot do it
+ * on the application's behalf on this transport.
+ *
+ * The call blocks the SDK for its whole duration. When an operation is started
+ * from inside another callback it runs on the connection's do_work() thread, so
+ * a hook without a bounded timeout stalls the MQTT pump.
  *
  * @return AZ_IOT_OK if the request was performed (even for a non-2xx status,
  *         which is reported via response.status_code); an error only on a
@@ -129,8 +164,6 @@ typedef struct az_iot_file_upload_client
         az_iot_connection_client*       conn;
         az_iot_file_upload_http_send_fn http_send;
         void*                           http_ctx;
-        char hub_hostname[AZ_IOT_DPS_HOST_BUF];
-        char device_id[AZ_IOT_DPS_DEVICE_ID_BUF];
     } _internal;
 } az_iot_file_upload_client;
 
@@ -138,14 +171,21 @@ typedef struct az_iot_file_upload_client
  * @brief Initialize the file upload client.
  *
  * Call after the connection has resolved its hub (for a DPS client, once it
- * reaches CONNECTED) so the hub address and device id are known.
+ * reaches CONNECTED) so the hub address and device id are known. Neither is
+ * copied: both are read from the connection on each operation, so the connection
+ * stays the single source of truth and a later hub assignment is picked up
+ * without re-initializing this client.
  *
  * @param client          Instance to initialize.
- * @param conn            The (connected) connection client.
+ * @param conn            The (connected) connection client. Must outlive
+ *                        @p client.
  * @param http_transport  HTTP transport for the Classic control plane. REQUIRED
  *                        on a Classic hub; may be NULL on Next.
- * @return AZ_IOT_OK on success; AZ_IOT_ERR_INVALID_ARG if a Classic connection is
- *         missing the HTTP transport or the hub/device id are not yet available.
+ * @return AZ_IOT_OK on success;
+ *         AZ_IOT_ERR_INVALID_ARG for a caller mistake -- a NULL argument, or a
+ *         Classic connection with no HTTP transport;
+ *         AZ_IOT_ERR_NOT_CONNECTED if the connection cannot yet supply a hub
+ *         address and device id, which is transient: retry once it is connected.
  */
 AZ_NODISCARD az_iot_result az_iot_file_upload_client_init(
     az_iot_file_upload_client* client,
@@ -164,12 +204,18 @@ void az_iot_file_upload_client_destroy(az_iot_file_upload_client* client);
  * (synchronous HTTP hook), or during a later do_work() on Next.
  *
  * @param client     File upload client instance.
- * @param blob_name  Name of the blob to upload (e.g. "mydata/sensor.csv").
+ * @param blob_name  Name of the blob to upload (e.g. "mydata/sensor.csv"). Must
+ *                   fit AZ_IOT_FILE_UPLOAD_BODY_MAX once JSON-escaped.
  * @param cb         Callback delivering the SAS URI + correlation id.
  * @param user_ctx   Context forwarded to @p cb.
- * @return AZ_IOT_OK if the request was dispatched (result arrives via @p cb);
+ * @return AZ_IOT_OK if the request was dispatched (the result then arrives via
+ *         @p cb, including for HTTP and transport failures);
  *         AZ_IOT_ERR_NOT_SUPPORTED on a Next/AEG hub until the AEG Files message
- *         schema is implemented; another error if it could not be dispatched.
+ *         schema is implemented; another error if it could not be dispatched at
+ *         all -- AZ_IOT_ERR_NOT_ENOUGH_SPACE for a blob name that does not fit,
+ *         or AZ_IOT_ERR_NOT_CONNECTED while the connection has no hub address
+ *         and device id to address the request to (retry once it is connected).
+ *         No callback fires when this returns anything but AZ_IOT_OK.
  */
 AZ_NODISCARD az_iot_result az_iot_file_upload_client_get_sas_uri(
     az_iot_file_upload_client* client,
@@ -186,8 +232,12 @@ AZ_NODISCARD az_iot_result az_iot_file_upload_client_get_sas_uri(
  * @param is_success      Whether the blob upload succeeded.
  * @param cb              Callback delivering the acknowledgement status.
  * @param user_ctx        Context forwarded to @p cb.
- * @return AZ_IOT_OK if dispatched; AZ_IOT_ERR_NOT_SUPPORTED on Next until the
- *         AEG Files schema is implemented.
+ * @return AZ_IOT_OK if dispatched (the result then arrives via @p cb);
+ *         AZ_IOT_ERR_NOT_SUPPORTED on Next until the AEG Files schema is
+ *         implemented; AZ_IOT_ERR_NOT_CONNECTED while the connection has no hub
+ *         address and device id to address the request to (retry once it is
+ *         connected). No callback fires when this returns anything but
+ *         AZ_IOT_OK.
  */
 AZ_NODISCARD az_iot_result az_iot_file_upload_client_notify_complete(
     az_iot_file_upload_client* client,
