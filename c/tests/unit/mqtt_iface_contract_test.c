@@ -180,6 +180,129 @@ static void destroy_via_iface_is_recorded(void** state)
     az_iot_mock_mqtt_factory_destroy(f);
 }
 
+/* ---- CONNACK code mapping -------------------------------------------------
+ * The core re-provisions through DPS on AZ_IOT_ERR_IDENTITY_REJECTED and only
+ * on that result, so which side of the identity/transport line each code falls
+ * on is behaviour, not cosmetics. */
+
+static void connack_success_maps_to_ok(void** state)
+{
+    (void)state;
+    assert_int_equal(az_iot_mqtt_connack_result(AZ_IOT_MQTT_VERSION_3_1_1, 0), AZ_IOT_OK);
+    assert_int_equal(az_iot_mqtt_connack_result(AZ_IOT_MQTT_VERSION_5, 0), AZ_IOT_OK);
+}
+
+static void connack_v3_identity_codes_map_to_identity_rejected(void** state)
+{
+    (void)state;
+    /* 2 identifier rejected, 4 bad user name or password, 5 not authorized. */
+    static const int codes[] = { 2, 4, 5 };
+    for (size_t i = 0; i < sizeof(codes) / sizeof(codes[0]); ++i)
+    {
+        assert_int_equal(
+            az_iot_mqtt_connack_result(AZ_IOT_MQTT_VERSION_3_1_1, codes[i]),
+            AZ_IOT_ERR_IDENTITY_REJECTED);
+    }
+}
+
+static void connack_v3_transport_codes_map_to_mqtt(void** state)
+{
+    (void)state;
+    /* 1 unacceptable protocol version, 3 server unavailable. Neither is a
+     * verdict on the device identity, so neither may trigger re-provisioning. */
+    static const int codes[] = { 1, 3 };
+    for (size_t i = 0; i < sizeof(codes) / sizeof(codes[0]); ++i)
+    {
+        assert_int_equal(
+            az_iot_mqtt_connack_result(AZ_IOT_MQTT_VERSION_3_1_1, codes[i]),
+            AZ_IOT_ERR_MQTT);
+    }
+}
+
+static void connack_v5_identity_codes_map_to_identity_rejected(void** state)
+{
+    (void)state;
+    /* 0x85 client identifier not valid, 0x86 bad user name or password,
+     * 0x87 not authorized, 0x8C bad authentication method. */
+    static const int codes[] = { 0x85, 0x86, 0x87, 0x8C };
+    for (size_t i = 0; i < sizeof(codes) / sizeof(codes[0]); ++i)
+    {
+        assert_int_equal(
+            az_iot_mqtt_connack_result(AZ_IOT_MQTT_VERSION_5, codes[i]),
+            AZ_IOT_ERR_IDENTITY_REJECTED);
+    }
+}
+
+static void connack_v5_transport_codes_map_to_mqtt(void** state)
+{
+    (void)state;
+    /* 0x80 unspecified, 0x88 server unavailable, 0x89 server busy,
+     * 0x97 quota exceeded -- all retryable against the same identity. */
+    static const int codes[] = { 0x80, 0x88, 0x89, 0x97 };
+    for (size_t i = 0; i < sizeof(codes) / sizeof(codes[0]); ++i)
+    {
+        assert_int_equal(
+            az_iot_mqtt_connack_result(AZ_IOT_MQTT_VERSION_5, codes[i]),
+            AZ_IOT_ERR_MQTT);
+    }
+}
+
+static void connack_negative_codes_map_to_mqtt(void** state)
+{
+    (void)state;
+    /* Adapters report their own failures (socket refused, TLS handshake) with
+     * negative codes. Those never reached a broker, so they say nothing about
+     * the identity no matter which MQTT version is in play. */
+    assert_int_equal(az_iot_mqtt_connack_result(AZ_IOT_MQTT_VERSION_3_1_1, -1), AZ_IOT_ERR_MQTT);
+    assert_int_equal(az_iot_mqtt_connack_result(AZ_IOT_MQTT_VERSION_5, -1), AZ_IOT_ERR_MQTT);
+}
+
+/* An unrecognized version must not be interpreted as either scheme. The codes
+ * overlap numerically -- 2, 4 and 5 are identity refusals in v3.1.1 and mean
+ * something else in v5 -- so picking a scheme would be picking whether to
+ * re-provision. The values below are exactly the ones that WOULD map to
+ * IDENTITY_REJECTED if an unknown version silently fell through to v3.1.1. */
+static void connack_unknown_version_never_rejects_the_identity(void** state)
+{
+    (void)state;
+    const az_iot_mqtt_version bogus = (az_iot_mqtt_version)99;
+    /* Exactly the v3.1.1 identity codes -- 2, 4, 5 -- which is what an unknown
+     * version would have been scored against had it fallen through to v3.1.1. */
+    static const int codes[] = { 2, 4, 5 };
+    for (size_t i = 0; i < sizeof(codes) / sizeof(codes[0]); ++i)
+    {
+        assert_int_equal(az_iot_mqtt_connack_result(bogus, codes[i]), AZ_IOT_ERR_MQTT);
+    }
+
+    /* A success code is still success: it carries no scheme-specific meaning. */
+    assert_int_equal(az_iot_mqtt_connack_result(bogus, 0), AZ_IOT_OK);
+}
+
+static void mapped_connack_status_reaches_the_inbound_callback(void** state)
+{
+    (void)state;
+    az_iot_mqtt_factory* f = az_iot_mock_mqtt_factory_create(
+        AZ_IOT_MQTT_VERSION_5);
+    az_iot_mqtt_client* c = f->create(f->factory_ctx);
+    az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_client_from(c);
+
+    collected_events col = {0};
+    c->iface->set_inbound_cb(c, on_event, &col);
+
+    /* Stand in for an adapter that saw CONNACK 0x87 and mapped it before
+     * reporting: the discriminated status must survive the event plumbing
+     * intact, since that is the only thing the core gets to look at. */
+    assert_true(az_iot_mock_mqtt_client_inject_connected(
+        m, az_iot_mqtt_connack_result(AZ_IOT_MQTT_VERSION_5, 0x87)));
+    assert_int_equal(c->iface->process_loop(c, 0), AZ_IOT_OK);
+
+    assert_int_equal(col.count, 1);
+    assert_int_equal(col.kinds[0], AZ_IOT_MQTT_EVT_CONNECTED);
+    assert_int_equal(col.statuses[0], AZ_IOT_ERR_IDENTITY_REJECTED);
+
+    az_iot_mock_mqtt_factory_destroy(f);
+}
+
 int main(void)
 {
     const struct CMUnitTest tests[] = {
@@ -189,6 +312,14 @@ int main(void)
         cmocka_unit_test(scripted_failure_propagates_to_caller),
         cmocka_unit_test(process_loop_drains_one_event_per_call),
         cmocka_unit_test(destroy_via_iface_is_recorded),
+        cmocka_unit_test(connack_success_maps_to_ok),
+        cmocka_unit_test(connack_v3_identity_codes_map_to_identity_rejected),
+        cmocka_unit_test(connack_v3_transport_codes_map_to_mqtt),
+        cmocka_unit_test(connack_v5_identity_codes_map_to_identity_rejected),
+        cmocka_unit_test(connack_v5_transport_codes_map_to_mqtt),
+        cmocka_unit_test(connack_negative_codes_map_to_mqtt),
+        cmocka_unit_test(connack_unknown_version_never_rejects_the_identity),
+        cmocka_unit_test(mapped_connack_status_reaches_the_inbound_callback),
     };
     return cmocka_run_group_tests(tests, NULL, NULL);
 }

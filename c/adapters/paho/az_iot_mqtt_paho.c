@@ -369,6 +369,33 @@ static void paho_maybe_enable_trace(void)
     MQTTAsync_setTraceLevel((enum MQTTASYNC_TRACE_LEVELS)level);
 }
 
+/* Paho reports a broker-side CONNACK rejection through nextOrClose(), which
+ * fills failureData::code with the CONNACK return code and sets the message to
+ * "CONNACK return code". Every other connect failure it reports here is one of
+ * its own negative MQTTASYNC_* codes (socket refused, TLS handshake, bad
+ * argument), and az_iot_mqtt_connack_result already treats negatives as
+ * transport failures -- so the code can be handed over unfiltered. */
+static az_iot_result paho_connect_failure_result(
+    const paho_client* m, const MQTTAsync_failureData* response)
+{
+    if (!response) return AZ_IOT_ERR_MQTT;
+    return az_iot_mqtt_connack_result(m->version, response->code);
+}
+
+/* Same idea for v5, with one wrinkle: on the CONNACK path Paho puts the v5
+ * reason code in `code` and leaves `reasonCode` at its initializer
+ * (MQTTREASONCODE_SUCCESS), while failures raised elsewhere do populate
+ * `reasonCode`. Prefer `reasonCode` only when it actually holds a refusal
+ * (>= 0x80), otherwise trust `code`. */
+static az_iot_result paho_connect_failure5_result(
+    const paho_client* m, const MQTTAsync_failureData5* response)
+{
+    if (!response) return AZ_IOT_ERR_MQTT;
+    int code = ((int)response->reasonCode >= 0x80)
+        ? (int)response->reasonCode : response->code;
+    return az_iot_mqtt_connack_result(m->version, code);
+}
+
 static void paho_connect_success(void* context, MQTTAsync_successData* response)
 {
     (void)response;
@@ -383,7 +410,7 @@ static void paho_connect_failure(void* context, MQTTAsync_failureData* response)
         fprintf(stderr, "[paho] connect failed: rc=%d msg=%s\n", response->code, response->message ? response->message : "(null)");
     else
         fprintf(stderr, "[paho] connect failed: (no response data)\n");
-    if (m) enqueue_status(m, AZ_IOT_MQTT_EVT_CONNECTED, AZ_IOT_ERR_MQTT, 0);
+    if (m) enqueue_status(m, AZ_IOT_MQTT_EVT_CONNECTED, paho_connect_failure_result(m, response), 0);
 }
 
 static void paho_subscribe_success(void* context, MQTTAsync_successData* response)
@@ -437,7 +464,7 @@ static void paho_connect_failure5(void* context, MQTTAsync_failureData5* respons
         fprintf(stderr, "[paho] connect5 failed: rc=%d reason_code=%d msg=%s\n", response->code, (int)response->reasonCode, response->message ? response->message : "(null)");
     else
         fprintf(stderr, "[paho] connect5 failed: (no response data)\n");
-    if (m) enqueue_status(m, AZ_IOT_MQTT_EVT_CONNECTED, AZ_IOT_ERR_MQTT, 0);
+    if (m) enqueue_status(m, AZ_IOT_MQTT_EVT_CONNECTED, paho_connect_failure5_result(m, response), 0);
 }
 
 static void paho_subscribe_success5(void* context, MQTTAsync_successData5* response)

@@ -30,7 +30,14 @@ typedef enum az_iot_result
     AZ_IOT_ERR_NOT_ENOUGH_SPACE,
     AZ_IOT_ERR_DETACHED,
     AZ_IOT_ERR_INTERNAL,
-    AZ_IOT_ERR_NOT_FOUND
+    AZ_IOT_ERR_NOT_FOUND,
+    /* The broker refused the identity itself (rejected client id, credentials or
+     * authorization) rather than failing to carry the connection. Distinct from
+     * AZ_IOT_ERR_MQTT because retrying the same identity cannot help: the SDK
+     * re-provisions through DPS on this result, and only on this result, so a
+     * hub outage never turns into a DPS stampede. New values must keep being
+     * appended here so existing numeric values do not shift. */
+    AZ_IOT_ERR_IDENTITY_REJECTED
 } az_iot_result;
 
 const char* az_iot_result_to_string(az_iot_result r);
