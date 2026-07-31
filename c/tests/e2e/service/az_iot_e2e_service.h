@@ -70,10 +70,16 @@ void az_iot_e2e_service_telemetry_watch_end(az_iot_e2e_service* svc);
  * consumed, the rest are released back for other watchers. Start watching BEFORE
  * the device notifies completion; notifications are delivered once and are not
  * replayed to a later watcher. Returns false on setup failure (see
- * az_iot_e2e_service_last_error). */
+ * az_iot_e2e_service_last_error).
+ *
+ * @p attach_refused_out, when non-NULL, distinguishes the ONE transient failure
+ * -- the hub refusing the receiver link while enableFileUploadNotifications is
+ * still propagating -- from every other cause. Retry on true; fail fast on
+ * false, where a retry would only delay diagnosing a bad configuration. */
 bool az_iot_e2e_service_file_notification_watch_begin(
     az_iot_e2e_service* svc,
-    const char* device_id);
+    const char* device_id,
+    bool* attach_refused_out);
 
 /* Returns true once a received notification body contains @p needle (e.g. the
  * blob name). Pump with az_iot_e2e_service_do_work while waiting. */

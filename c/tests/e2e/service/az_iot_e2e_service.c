@@ -259,8 +259,13 @@ void az_iot_e2e_service_telemetry_watch_end(az_iot_e2e_service* svc)
 
 bool az_iot_e2e_service_file_notification_watch_begin(
     az_iot_e2e_service* svc,
-    const char* device_id)
+    const char* device_id,
+    bool* attach_refused_out)
 {
+    if (attach_refused_out != NULL)
+    {
+        *attach_refused_out = false;
+    }
     if (svc->filenotify != NULL)
     {
         return true; /* already watching */
@@ -289,7 +294,8 @@ bool az_iot_e2e_service_file_notification_watch_begin(
     }
 
     const char* err = NULL;
-    if (!e2e_amqp_filenotify_begin(svc->filenotify, svc->hub_info.host, sas, device_id, &err))
+    if (!e2e_amqp_filenotify_begin(
+            svc->filenotify, svc->hub_info.host, sas, device_id, &err, attach_refused_out))
     {
         set_error(svc, (err != NULL) ? err : "filenotify: begin failed");
         free(svc->filenotify);

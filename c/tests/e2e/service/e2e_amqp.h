@@ -147,13 +147,22 @@ typedef struct e2e_amqp_filenotify
  * once. Only notifications whose body contains @p match (typically this test's
  * device id) are captured and settled; everything else is RELEASED so the hub
  * redelivers it to its rightful watcher. On failure returns false and (when
- * non-NULL) points @p err_out at a static message. */
+ * non-NULL) points @p err_out at a static message.
+ *
+ * @p attach_refused_out, when non-NULL, is set to true only when the hub
+ * REFUSED the receiver link on the notification node, and false for every other
+ * failure. That one case is transient -- it is what a hub reports while the
+ * enableFileUploadNotifications flag is still propagating -- so a caller can
+ * retry it while failing fast on out-of-memory, a bad token, or an unreachable
+ * host. Distinguishing it here rather than by comparing @p err_out keeps the
+ * decision from silently breaking if a message is reworded. */
 bool e2e_amqp_filenotify_begin(
     e2e_amqp_filenotify* f,
     const char* hub_host,
     const char* sas_token,
     const char* match,
-    const char** err_out);
+    const char** err_out,
+    bool* attach_refused_out);
 
 /* Advance the watcher once, waiting up to @p wait_ms for socket I/O. Returns
  * false if the connection has failed. */

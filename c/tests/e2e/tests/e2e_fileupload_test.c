@@ -175,20 +175,28 @@ typedef struct
 
 static fixture g_fx;
 
-/* Attach the notification receiver, retrying while the hub refuses it.
+/* Attach the notification receiver, retrying only while the hub refuses the link.
  *
  * A refusal right after provisioning means the enableFileUploadNotifications
- * update has not propagated yet, which is transient and worth waiting out. A
- * refusal that persists past the budget is real and fails the run, carrying the
- * hub's own reason (printed by the AMQP layer on each attempt). */
+ * update has not propagated yet, which is transient and worth waiting out. Every
+ * other failure -- out of memory, a SAS token that will not build, a host that
+ * does not resolve, a rejected CBS authorization -- is a configuration or
+ * environment problem that a two-minute retry loop would only hide, so those
+ * fail immediately with their own message. */
 static bool watch_begin_with_retry(fixture* fx)
 {
     time_t start = time(NULL);
     for (;;)
     {
-        if (az_iot_e2e_service_file_notification_watch_begin(fx->svc, fx->dev.device_id))
+        bool attach_refused = false;
+        if (az_iot_e2e_service_file_notification_watch_begin(
+                fx->svc, fx->dev.device_id, &attach_refused))
         {
             return true;
+        }
+        if (!attach_refused)
+        {
+            return false; /* not the transient case: report it now */
         }
         if ((time(NULL) - start) >= E2E_WATCH_ATTACH_TIMEOUT_S)
         {
@@ -254,7 +262,8 @@ static bool await_notification(
                     az_iot_e2e_service_last_error(fx->svc));
             az_iot_e2e_service_file_notification_watch_end(fx->svc);
             if (++reattaches > E2E_NOTIFICATION_MAX_REATTACH
-                || !az_iot_e2e_service_file_notification_watch_begin(fx->svc, fx->dev.device_id))
+                || !az_iot_e2e_service_file_notification_watch_begin(
+                       fx->svc, fx->dev.device_id, NULL))
             {
                 fail_msg("notification watcher could not be re-established after %d attempt(s): %s",
                          reattaches, az_iot_e2e_service_last_error(fx->svc));
@@ -321,16 +330,16 @@ static int group_setup(void** state)
 
     /* Watch before any completion is reported: notifications are delivered once.
      *
-     * Retried, because provisioning enables enableFileUploadNotifications on the
-     * hub moments earlier and that ARM update is eventually consistent: until it
-     * lands the hub refuses the receiver link on the notification node. Retrying
-     * here costs a few seconds in the rare case and removes a failure mode that
-     * had nothing to do with the SDK. A link the hub keeps refusing still fails
-     * the run, with the hub's own condition text. */
+     * The attach is retried, but only while the hub is REFUSING the link:
+     * provisioning enables enableFileUploadNotifications moments earlier and that
+     * ARM update is eventually consistent, so an early refusal says nothing about
+     * the SDK. Any other failure is reported immediately -- see
+     * watch_begin_with_retry. A link the hub keeps refusing still fails the run,
+     * with the hub's own condition text. */
     if (!watch_begin_with_retry(&g_fx))
     {
-        fprintf(stderr, "file upload e2e: notification watch failed after %d s: %s\n",
-                E2E_WATCH_ATTACH_TIMEOUT_S, az_iot_e2e_service_last_error(g_fx.svc));
+        fprintf(stderr, "file upload e2e: notification watch failed: %s\n",
+                az_iot_e2e_service_last_error(g_fx.svc));
         return -1;
     }
 
