@@ -1,0 +1,37 @@
+[
+    {
+        "name": "core",
+        "prefix": "src/core/",
+        "line": null,
+        "branch": null,
+        "comment": "Core: connection, dispatch, reconnect, protocol profile, cert helpers."
+    },
+    {
+        "name": "features",
+        "prefix": "src/features/",
+        "line": null,
+        "branch": null,
+        "comment": "Feature clients: telemetry, twin, direct method, c2d, file upload, adu."
+    },
+    {
+        "name": "adapter-paho",
+        "prefix": "adapters/paho/",
+        "line": null,
+        "branch": null,
+        "comment": "Shipped (AZ_IOT_WITH_PAHO default ON). Coverage comes almost entirely from the broker-gated conformance suites, not from unit tests."
+    },
+    {
+        "name": "adapter-adu-crypto",
+        "prefix": "adapters/adu/crypto_openssl/",
+        "line": null,
+        "branch": null,
+        "comment": "Shipped (AZ_IOT_WITH_ADU_CRYPTO_OPENSSL default ON, requires OpenSSL 3.0+)."
+    },
+    {
+        "name": "adapter-cert-managed",
+        "prefix": "adapters/cert_openssl/",
+        "line": null,
+        "branch": null,
+        "comment": "Shipped (AZ_IOT_WITH_CERT_PROVIDER_MANAGED default ON, requires OpenSSL 3.0+)."
+    }
+]
