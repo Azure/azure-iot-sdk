@@ -26,6 +26,12 @@ jobs:
   changes:
     name: detect changes
     runs-on: ubuntu-latest
+    # dorny/paths-filter calls the pulls/listFiles API on pull_request events.
+    # Without pull-requests:read it fails with "Resource not accessible by
+    # integration".
+    permissions:
+      contents: read
+      pull-requests: read
     outputs:
       c: ${{ steps.filter.outputs.c }}
     steps:
@@ -356,7 +362,7 @@ jobs:
   # lets it run despite a failed dependency.
   coverage-gate:
     name: coverage-gate
-    needs: [coverage-c]
+    needs: [changes, coverage-c]
     if: always()
     runs-on: ubuntu-latest
     # This job does not check out the repo, so the workflow-level
@@ -367,11 +373,22 @@ jobs:
     steps:
       - name: Check coverage job outcome
         run: |
-          result='${{ needs.coverage-c.result }}'
-          echo "coverage-c result: $result"
-          if [ "$result" = "success" ] || [ "$result" = "skipped" ]; then
+          changes_result='${{ needs.changes.result }}'
+          coverage_result='${{ needs.coverage-c.result }}'
+          echo "changes:    $changes_result"
+          echo "coverage-c: $coverage_result"
+
+          # A broken `changes` job skips coverage-c, and a skipped coverage-c
+          # would otherwise be read as "no C code touched" and pass. Never let
+          # an infrastructure failure upstream produce a green gate.
+          if [ "$changes_result" != "success" ]; then
+            echo "::error::coverage gate: change detection did not succeed ($changes_result), so coverage was never evaluated"
+            exit 1
+          fi
+
+          if [ "$coverage_result" = "success" ] || [ "$coverage_result" = "skipped" ]; then
             exit 0
           fi
-          echo "::error::coverage gate failed (coverage-c: $result)"
+          echo "::error::coverage gate failed (coverage-c: $coverage_result)"
           exit 1
 
