@@ -44,20 +44,25 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     # Mosquitto service container for the MQTT iface conformance suite.
-    # GitHub Actions service containers only run on Linux runners; the Windows
-    # job skips the conformance tests (CTest exit 77) automatically because
-    # AZ_IOT_MQTT_BROKER_HOST is not set there.
+    # GitHub Actions service containers only run on Linux runners; on Windows
+    # AZ_IOT_MQTT_BROKER_HOST is set to the empty string, which the harness
+    # treats the same as unset, so the conformance tests skip themselves
+    # (CTest exit 77).
     services:
       mosquitto:
         image: ${{ matrix.os == 'ubuntu-latest' && 'eclipse-mosquitto:2' || '' }}
         ports:
           - 1883:1883
-        # mosquitto:2 needs a config file that opts into anonymous + listener.
-        # We bake one in by overriding the entrypoint.
+        # A real liveness probe: mosquitto_pub succeeds only once the broker is
+        # accepting connections. The previous `mosquitto_sub '$SYS/#' ... ||
+        # exit 0` form reported healthy unconditionally, so the conformance
+        # suites could race broker startup. That was harmless only while those
+        # suites were silently skipping.
         options: >-
-          --health-cmd="mosquitto_sub -t '$$SYS/#' -C 1 -W 3 -h localhost || exit 0"
+          --health-cmd="mosquitto_pub -h localhost -p 1883 -t healthcheck -m ok"
           --health-interval=5s
-          --health-retries=5
+          --health-retries=10
+          --health-start-period=5s
 
     steps:
       - uses: actions/checkout@v4
@@ -80,8 +85,9 @@ jobs:
           # This job does not run inside a container, so the mosquitto service
           # container is published on the runner's own localhost -- NOT at the
           # service label `mosquitto`, which only resolves for containerized
-          # jobs. On Windows we leave these unset so the conformance harnesses
-          # skip themselves (CTest exit 77).
+          # jobs. On Windows there is no service container, so these are set to
+          # the empty string; the conformance harness treats empty the same as
+          # unset and skips itself (CTest exit 77).
           AZ_IOT_MQTT_BROKER_HOST: ${{ runner.os == 'Linux' && 'localhost' || '' }}
           AZ_IOT_MQTT_BROKER_PORT: ${{ runner.os == 'Linux' && '1883' || '' }}
         run: ctest --preset ${{ matrix.preset }} ${{ runner.os == 'Windows' && format('-C {0}', matrix.build_type) || '' }} --output-on-failure
@@ -94,6 +100,15 @@ jobs:
         image: eclipse-mosquitto:2
         ports:
           - 1883:1883
+        # This job previously had no health check at all, which was harmless
+        # only because AZ_IOT_AEG_BUILD_TESTS meant it never ran a test. It now
+        # builds and runs the conformance suites, which connect immediately, so
+        # it needs to wait for the broker like every other job.
+        options: >-
+          --health-cmd="mosquitto_pub -h localhost -p 1883 -t healthcheck -m ok"
+          --health-interval=5s
+          --health-retries=10
+          --health-start-period=5s
     steps:
       - uses: actions/checkout@v4
       - name: Install ninja
@@ -134,9 +149,10 @@ jobs:
         ports:
           - 1883:1883
         options: >-
-          --health-cmd="mosquitto_sub -t '$$SYS/#' -C 1 -W 3 -h localhost || exit 0"
+          --health-cmd="mosquitto_pub -h localhost -p 1883 -t healthcheck -m ok"
           --health-interval=5s
-          --health-retries=5
+          --health-retries=10
+          --health-start-period=5s
     steps:
       - uses: actions/checkout@v4
       - name: Install deps
