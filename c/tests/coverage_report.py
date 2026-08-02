@@ -59,14 +59,32 @@ def verdict(value, floor):
 
 
 def discover_sources(source_root, prefix):
-    """Every .c file on disk under prefix, relative to source_root."""
-    found = []
+    """Every .c file on disk under prefix, relative to source_root.
+
+    A missing or misspelled prefix is a hard error rather than an empty result:
+    silently returning nothing would satisfy the denominator assertion and print
+    a 0-file row, which is precisely the "shipped code stopped being measured"
+    failure this script exists to catch.
+    """
     base = os.path.join(source_root, prefix)
+    if not os.path.isdir(base):
+        raise SystemExit(
+            "coverage_report: component prefix '{}' does not resolve to a "
+            "directory under {} (looked in {}). Fix coverage-components.json.".format(
+                prefix, source_root, base))
+
+    found = []
     for dirpath, _dirnames, filenames in os.walk(base):
         for name in filenames:
             if name.endswith(".c"):
                 rel = os.path.relpath(os.path.join(dirpath, name), source_root)
                 found.append(rel.replace(os.sep, "/"))
+
+    if not found:
+        raise SystemExit(
+            "coverage_report: component prefix '{}' contains no .c files. "
+            "Fix coverage-components.json.".format(prefix))
+
     return found
 
 

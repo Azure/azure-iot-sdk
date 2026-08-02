@@ -256,10 +256,16 @@ jobs:
         image: eclipse-mosquitto:2
         ports:
           - 1883:1883
+        # A real liveness probe: mosquitto_pub succeeds only if the broker
+        # accepted a connection. The `mosquitto_sub '$SYS/#' ... || exit 0`
+        # form used by the older jobs in this file always reports healthy --
+        # both because of the `|| exit 0` and because the first $SYS message
+        # can take longer to arrive than the timeout allows.
         options: >-
-          --health-cmd="mosquitto_sub -t '$$SYS/#' -C 1 -W 3 -h localhost || exit 0"
+          --health-cmd="mosquitto_pub -h localhost -p 1883 -t healthcheck -m ok"
           --health-interval=5s
-          --health-retries=5
+          --health-retries=10
+          --health-start-period=5s
     steps:
       - uses: actions/checkout@v4
         with:
@@ -340,12 +346,18 @@ jobs:
           diff-cover build/linux-gcc-coverage/coverage/cobertura.xml \
             --compare-branch "origin/${{ github.base_ref }}" \
             --markdown-report build/linux-gcc-coverage/coverage/patch.md \
-            --src-roots . || true
+            --src-roots . || echo "::warning::diff-cover failed; patch coverage not reported"
           {
             echo ""
             echo "## Patch coverage (report-only)"
             echo ""
-            cat build/linux-gcc-coverage/coverage/patch.md
+            # diff-cover may have failed before writing the report. This step is
+            # informational, so a missing file must not fail the job.
+            if [ -f build/linux-gcc-coverage/coverage/patch.md ]; then
+              cat build/linux-gcc-coverage/coverage/patch.md
+            else
+              echo "_diff-cover produced no report._"
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload coverage report

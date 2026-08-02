@@ -4,8 +4,12 @@
 # Code coverage — C SDK
 
 This document is the design for collecting, publishing, and gating on code
-coverage metrics for the C SDK (`c/`) from CI. It is a **design only** — nothing
-described here is implemented yet.
+coverage metrics for the C SDK (`c/`) from CI.
+
+**Status: Phase 1 is implemented and running.** Coverage is measured and
+published on every pull request, and nothing fails on a coverage number yet.
+Phases 2 to 4 — per-component floors, the patch gate, and the Windows/e2e legs
+— are still design.
 
 > Scope: the C SDK exclusively. The unit of measurement is first-party C code
 > (`c/src/`, `c/adapters/`). Fetched dependencies, test code, and samples are
@@ -135,21 +139,27 @@ from a checked-in manifest that drives both the thresholds and the
 presence assertion:
 
 ```jsonc
-// c/tests/coverage-components.json   (floors are placeholders until Phase 1)
+// c/tests/coverage-components.json
+// `line`/`branch` are the floors; null means measured and reported but not
+// gated. They are all null today (Phase 1) and get filled in for Phase 2.
 [
-  { "name": "core",                 "filter": "src/core/",                     "line": 0, "branch": 0 },
-  { "name": "features",             "filter": "src/features/",                 "line": 0, "branch": 0 },
-  { "name": "adapter-paho",         "filter": "adapters/paho/",                "line": 0, "branch": 0 },
-  { "name": "adapter-adu-crypto",   "filter": "adapters/adu/crypto_openssl/",  "line": 0, "branch": 0 },
-  { "name": "adapter-cert-managed", "filter": "adapters/cert_openssl/",        "line": 0, "branch": 0 },
-  { "name": "adapter-rust-mqtt",    "filter": "adapters/rust_mqtt/",           "line": null, "branch": null }
+  { "name": "core",                 "prefix": "src/core/",                     "line": null, "branch": null },
+  { "name": "features",             "prefix": "src/features/",                 "line": null, "branch": null },
+  { "name": "adapter-paho",         "prefix": "adapters/paho/",                "line": null, "branch": null },
+  { "name": "adapter-adu-crypto",   "prefix": "adapters/adu/crypto_openssl/",  "line": null, "branch": null },
+  { "name": "adapter-cert-managed", "prefix": "adapters/cert_openssl/",        "line": null, "branch": null }
 ]
 ```
 
-The job runs gcovr once per component with that component's `--filter` and
-`--fail-under-line` / `--fail-under-branch`, and reports every component in the
-job summary whether it passed or not. `null` means *measured and reported but
-not gated*.
+`prefix` is a path relative to `c/`. It does double duty: it selects the
+component's files out of the gcovr report (the same role gcovr's `--filter`
+plays), and it is the directory walked on disk for the denominator assertion.
+A prefix that does not resolve to a directory containing `.c` files is a hard
+error rather than an empty row.
+
+`tests/coverage_report.py` aggregates the gcovr `--json-summary` per component,
+reports every one of them in the job summary whether it passed or not, and with
+`--enforce` exits non-zero on a missed floor or an unmeasured source file.
 
 ### Which adapters are gated
 
@@ -358,41 +368,46 @@ extension for inline annotation while writing tests.
 
 ### gcovr invocation
 
+One gcovr pass produces every artifact and carries **no** threshold:
+
 ```sh
-gcovr --root "${SRC}/c" \
-      --filter 'src/' --filter 'adapters/' \
+gcovr --root "$PWD" "$PWD/build/linux-gcc-coverage" \
+      --filter "$PWD/src/" --filter "$PWD/adapters/" \
       --exclude '.*/_deps/.*' \
       --exclude '.*/tests/.*' \
       --exclude '.*/samples/.*' \
       --cobertura coverage/cobertura.xml --cobertura-pretty \
       --lcov coverage/lcov.info \
+      --json-summary coverage/summary.json --json-summary-pretty \
       --html-details coverage/html/index.html \
-      --json-summary coverage/summary.json \
-      --markdown-summary coverage/summary.md \
       --txt --print-summary
 ```
 
-That pass produces the artifacts and carries **no** threshold. Gating is a
-second pass, once per component, so a failure names the component that caused
-it:
+Two details that are easy to get wrong:
+
+- The build tree must be given as an **explicit positional search path**.
+  `--root` only declares where sources live; gcovr otherwise searches the root
+  for `.gcda` files, finds none, and cheerfully reports `0.0% (0 out of 0)`.
+- Branch counters need no extra flag. gcovr's `--branches` (now
+  `--txt-metric branch`) only selects which metric the *text* report displays;
+  `--json-summary` and the Cobertura output carry `branch_total` /
+  `branch_covered` unconditionally.
+
+Aggregation and gating are then a single pass over that summary:
 
 ```sh
-jq -c '.[]' tests/coverage-components.json | while read -r comp; do
-    name=$(jq -r .name   <<<"$comp")
-    filt=$(jq -r .filter <<<"$comp")
-    line=$(jq -r .line   <<<"$comp")
-    [ "$line" = null ] && continue          # measured, reported, not gated
-    gcovr --root "${SRC}/c" --filter "$filt" \
-          --fail-under-line "$line" \
-          --fail-under-branch "$(jq -r .branch <<<"$comp")" \
-      || { echo "::error::component '$name' below floor"; fail=1; }
-done
-[ -z "$fail" ]
+python3 tests/coverage_report.py \
+  --summary build/linux-gcc-coverage/coverage/summary.json \
+  --components tests/coverage-components.json \
+  --source-root "$PWD" \
+  --output build/linux-gcc-coverage/coverage/summary.md \
+  [--enforce]
 ```
 
-The loop runs every component before failing, so one job gives the full picture
-rather than one component per push. `coverage/summary.json` is what the
-denominator assertion compares against `find src adapters -name '*.c'`.
+Doing it in one script rather than one gcovr invocation per component means
+every component is evaluated before the job fails, so a single run reports the
+full picture instead of one problem per push. `--enforce` is what turns a missed
+floor or an unmeasured source file into a non-zero exit; Phase 1 omits it.
 
 ### .gitignore
 
@@ -441,8 +456,9 @@ jobs. Shape:
 - `ctest --output-on-failure` — the full suite except `e2e`.
 - **Denominator assertion:** every `.c` under `src/` and `adapters/` must
   appear in the gcovr report.
-- Run gcovr once per entry in `coverage-components.json`, each with its own
-  filter and floors; run `diff-cover` with the patch floor.
+- Run gcovr once over the whole tree, then `tests/coverage_report.py` to
+  aggregate per component and apply the floors; run `diff-cover` with the patch
+  floor.
 - Write the per-component table and the `diff-cover` markdown into
   `$GITHUB_STEP_SUMMARY`.
 - Upload `coverage/` as an artifact (Cobertura, LCOV, HTML, text), with
@@ -710,7 +726,7 @@ of cloud dependencies, not merely a convenience.
 New files:
 
 - cmake/az_iot_coverage.cmake — `az_iot_apply_coverage()` + the `coverage` custom target
-- tests/coverage-components.json — per-component filters and floors; also the
+- tests/coverage-components.json — per-component prefixes and floors; also the
   source of truth for the denominator assertion
 
 Modified:
