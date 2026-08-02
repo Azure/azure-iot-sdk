@@ -169,7 +169,13 @@ static void test_uninstall_disables_factory(void** s)
 {
     (void)s;
     assert_int_equal(AZ_IOT_OK, az_iot_rust_mqtt_install(&k_fake_ffi));
-    assert_non_null(az_iot_rust_mqtt_factory_create_v5());
+
+    /* The caller owns the factory: hold it so it can be destroyed. Asserting on
+     * the call inline leaked it, which valgrind flags as definitely lost. */
+    az_iot_mqtt_factory* f = az_iot_rust_mqtt_factory_create_v5();
+    assert_non_null(f);
+    az_iot_rust_mqtt_factory_destroy(f);
+
     assert_int_equal(AZ_IOT_OK, az_iot_rust_mqtt_install(NULL));
     assert_null(az_iot_rust_mqtt_factory_create_v5());
 }
