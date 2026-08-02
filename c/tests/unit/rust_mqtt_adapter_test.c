@@ -38,10 +38,9 @@ static fake_client* g_last_client;
 static int            g_create_calls;
 static int            g_destroy_calls;
 
-static az_iot_rust_mqtt_client* fake_create(az_iot_mqtt_version v, az_iot_mqtt_role r)
+static az_iot_rust_mqtt_client* fake_create(az_iot_mqtt_version v)
 {
     assert_int_equal(v, AZ_IOT_MQTT_VERSION_5);
-    assert_int_equal(r, AZ_IOT_MQTT_ROLE_HUB_NEXT);
     g_create_calls++;
     fake_client* fc = (fake_client*)test_calloc(1, sizeof(*fc));
     g_last_client = fc;
@@ -133,13 +132,8 @@ static void test_install_then_factory_then_dispatch(void** s)
     az_iot_mqtt_factory* f = az_iot_rust_mqtt_factory_create_v5();
     assert_non_null(f);
     assert_int_equal(f->version, AZ_IOT_MQTT_VERSION_5);
-    assert_true((f->supported_roles_mask & (1u << AZ_IOT_MQTT_ROLE_HUB_NEXT)) != 0);
 
-    /* Wrong role -> NULL. */
-    assert_null(f->create(f->factory_ctx, AZ_IOT_MQTT_ROLE_DPS));
-    assert_int_equal(g_create_calls, 0);
-
-    az_iot_mqtt_client* c = f->create(f->factory_ctx, AZ_IOT_MQTT_ROLE_HUB_NEXT);
+    az_iot_mqtt_client* c = f->create(f->factory_ctx);
     assert_non_null(c);
     assert_int_equal(g_create_calls, 1);
     assert_non_null(g_last_client);
