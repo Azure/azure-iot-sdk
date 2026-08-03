@@ -1,0 +1,11 @@
+# Revisions git blame should look through rather than at.
+#
+# Enable locally once with:
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+# GitHub honours this file automatically.
+#
+# Only whole-tree mechanical reformats belong here. A commit listed here must
+# contain no behaviour change whatsoever.
+
+# Reformat the C sources with the adopted azure-sdk-for-c clang-format style.
+c6774c23f5dceb690574740bed354a33083e8ddb
