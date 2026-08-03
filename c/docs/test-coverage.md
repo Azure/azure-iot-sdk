@@ -13,6 +13,18 @@ Scope: Azure IoT C SDK (`c/`). One table per feature area.
 
 Types: **unit** = cmocka + fake MQTT adapter, no network (`c/tests/unit`); **conformance** = live MQTT broker via `AZ_IOT_MQTT_BROKER_HOST`, no Azure service (`c/tests/conformance`); **e2e** = real DPS + IoT Hub with the Paho adapter (`c/tests/e2e`). There is no separate `integration` tier — `conformance` fills that role.
 
+Areas: [Connection](#connection) · [Telemetry](#telemetry-device-to-cloud) ·
+[Cloud-to-device](#cloud-to-device-messages) · [Direct methods](#direct-methods) ·
+[Device twin](#device-twin) · [File upload](#file-upload) · [Device update](#device-update-adu) ·
+[Certificate management](#certificate-management) · [Core primitives](#core-primitives).
+
+Every area below is scoped to **IoT Hub Classic** (MQTT v3.1.1) unless a row says
+otherwise. [IoT Hub Classic protocol conformance](#iot-hub-classic-protocol-conformance)
+maps the service's documented MQTT surface onto what the SDK implements and what is
+pinned by a test — read it first to see which gaps are missing *tests* and which are
+missing *code*. The Hub-Next / AEG (MQTT v5) surface is tracked separately, see
+[Hub-Next / AEG, deferred](#hub-next--aeg-deferred). Device update is frozen for this pass.
+
 ## Connection
 
 Covers `az_iot_connection_client` lifecycle, CONNACK handling, reconnection, the Hub-Next presence handshake, DPS-before-connect, and TLS/transport. Certificate issuance and CSR renewal are tracked in a future *Certificate management* section; only the connect-time gating of those options appears here.
@@ -148,7 +160,9 @@ Covers `az_iot_connection_client` lifecycle, CONNACK handling, reconnection, the
 | Adapters | Factory advertises version | Factory `version` field matches the clients it creates. | unit | Done | [factory_advertises_version](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/mqtt_iface_contract_test.c#L59) |
 | | Client carries iface with version | All vtable slots populated on the created client. | unit | Done | [client_carries_iface_pointer_with_version](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/mqtt_iface_contract_test.c#L68) |
 | | Connect failure propagates to caller | Adapter `connect()` error returned synchronously. | unit | Done | [scripted_failure_propagates_to_caller](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/mqtt_iface_contract_test.c#L118) |
+| | Publish records topic payload and assigns a packet id | Publish contract: the adapter hands back the id the PUBACK will carry. | unit | Done | [publish_records_topic_payload_and_assigns_packet_id](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/mqtt_iface_contract_test.c#L88) |
 | | Process loop drains one event per call | Pump contract: one CONNECTED/MESSAGE event per `process_loop()`. | unit | Done | [process_loop_drains_one_event_per_call](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/mqtt_iface_contract_test.c#L135) |
+| | Destroy through the iface is recorded | Teardown contract: the core reaches `destroy()` on the vtable, not a concrete type. | unit | Done | [destroy_via_iface_is_recorded](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/mqtt_iface_contract_test.c#L170) |
 | | Paho v3 factory creates v3 client | MQTT v3.1.1. | unit | Done | [v3_factory_creates_v3_client](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/paho_adapter_smoke_test.c#L19) |
 | | Paho v5 factory creates v5 client | MQTT v5. | unit | Done | [v5_factory_creates_v5_client](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/paho_adapter_smoke_test.c#L48) |
 | | Rust adapter install and dispatch | FFI, v5 only: install vtable, create client, dispatch events. | unit | Done | [test_install_then_factory_then_dispatch](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/rust_mqtt_adapter_test.c#L159) |
@@ -174,11 +188,600 @@ Covers `az_iot_connection_client` lifecycle, CONNACK handling, reconnection, the
 | | Long haul connection stability | Multi-hour; belongs on a nightly schedule, not the PR gate. | e2e | Pending | *e2e (new)* |
 | | Connect with wrong device id rejected | Needs an identity provisioned in DPS but absent from the hub. | e2e | Pending | *e2e_scenarios_test.c* |
 
-## Not implemented, and why
+## Telemetry (device-to-cloud)
 
-Every remaining `Pending` row is blocked on infrastructure or on a decision, not on
-effort. Each entry says what specifically is missing, so the cost of closing it is
-visible rather than implied.
+Covers `az_iot_telemetry_client`: the Classic D2C topic
+`devices/{device_id}/messages/events/`, the percent-encoded `{property-bag}` that carries
+system and application properties, and the QoS-1 send completion. Wire format per
+[Send device-to-cloud messages](https://learn.microsoft.com/azure/iot-hub/iot-mqtt-connect-to-iot-hub#send-device-to-cloud-messages).
+
+| Group | Test | Scenario | Type | Status | Code Location |
+| --- | --- | --- | --- | --- | --- |
+| Init & destroy | Init rejects a null client | — | unit | Done | [init_rejects_nulls](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/telemetry_client_test.c#L105) |
+| | Init rejects a null connection | — | unit | Done | [init_rejects_nulls](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/telemetry_client_test.c#L105) |
+| | Init zeroes a reused instance | A stack instance must not inherit the previous client's connection. | unit | Pending | *telemetry_client_test.c* |
+| | Destroy tolerates null | — | unit | Done | [init_rejects_nulls](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/telemetry_client_test.c#L105) |
+| | Destroy is idempotent | — | unit | Pending | *telemetry_client_test.c* |
+| | Send after destroy is refused | `destroy()` zeroes `conn`; the next send must not follow a stale pointer. | unit | Pending | *telemetry_client_test.c* |
+| Send arguments | Send rejects a null client | — | unit | Done | [send_rejects_invalid_args](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/telemetry_client_test.c#L301) |
+| | Send rejects a null message | — | unit | Done | [send_rejects_invalid_args](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/telemetry_client_test.c#L301) |
+| | Send rejects a null payload with a non-zero length | — | unit | Done | [send_rejects_invalid_args](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/telemetry_client_test.c#L301) |
+| | Send accepts a null payload with a zero length | An empty heartbeat is a valid message. | unit | Pending | *telemetry_client_test.c* |
+| | Send before connect returns not connected | — | unit | Done | [send_before_connect_returns_not_connected](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/telemetry_client_test.c#L116) |
+| | Send with no resolved device id returns not initialized | DPS client still provisioning. | unit | Pending | *telemetry_client_test.c* |
+| Publish shape | Topic is the classic d2c topic | `devices/{device_id}/messages/events/`. | unit | Done | [send_publishes_qos1](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/telemetry_client_test.c#L130) |
+| | Topic ends with a slash when there are no properties | The property bag hangs off the trailing slash, not a `?`. | unit | Done | [send_publishes_qos1](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/telemetry_client_test.c#L130) |
+| | Payload is forwarded byte for byte | — | unit | Done | [send_publishes_qos1](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/telemetry_client_test.c#L130) |
+| | Publish uses qos 1 | — | unit | Done | [send_publishes_qos1](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/telemetry_client_test.c#L130), [send_qos1_defers_cb_until_puback](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/telemetry_client_test.c#L156) |
+| | Publish never uses qos 2 | IoT Hub closes the network connection on a QoS 2 publish. | unit | Pending | *telemetry_client_test.c* |
+| | Publish never sets the retain flag | IoT Hub does not persist retained messages; it turns the flag into an `mqtt-retain` application property instead. | unit | Pending | *telemetry_client_test.c* |
+| | Topic uses the device id assigned by dps | Not the registration id. | unit | Pending | *telemetry_client_test.c* |
+| | Adapter publish failure returns to the caller | — | unit | Pending | *telemetry_client_test.c* |
+| | Adapter publish failure fires no callback | — | unit | Pending | *telemetry_client_test.c* |
+| | Nothing is published when the topic build fails | — | unit | Done | [send_reports_not_enough_space_when_the_bag_overflows](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/telemetry_client_test.c#L276) |
+| Send completion | A packet id is assigned for qos 1 | — | unit | Done | [send_qos1_defers_cb_until_puback](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/telemetry_client_test.c#L156) |
+| | Callback does not fire before the puback | — | unit | Done | [send_publishes_qos1](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/telemetry_client_test.c#L130), [send_qos1_defers_cb_until_puback](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/telemetry_client_test.c#L156) |
+| | Callback fires with ok on the matching puback | — | unit | Done | [send_qos1_defers_cb_until_puback](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/telemetry_client_test.c#L156) |
+| | Callback receives the context it was given | — | unit | Pending | *telemetry_client_test.c* |
+| | A send with no callback still publishes | — | unit | Done | [send_propagates_content_type_and_properties](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/telemetry_client_test.c#L192) |
+| | Callback fires with not connected when the session drops first | C-3 seen from the telemetry surface. | unit | Pending | *telemetry_client_test.c* |
+| | Puback table full is reported after the publish went out | `AZ_IOT_MAX_PENDING_PUBACKS` reached; the PUBLISH is already on the wire when `NOT_SUPPORTED` comes back. | unit | Pending | *telemetry_client_test.c* |
+| Property bag | A single property is appended as key equals value | — | unit | Done | [send_propagates_content_type_and_properties](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/telemetry_client_test.c#L192) |
+| | Properties are separated by an ampersand | — | unit | Done | [send_propagates_content_type_and_properties](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/telemetry_client_test.c#L192) |
+| | Property order is preserved | — | unit | Done | [send_propagates_content_type_and_properties](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/telemetry_client_test.c#L192) |
+| | Keys are percent encoded | Keeps the reserved `$` out of the topic. | unit | Done | [send_propagates_content_type_and_properties](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/telemetry_client_test.c#L192), [send_url_encodes_property_values](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/telemetry_client_test.c#L222) |
+| | Values are percent encoded | `&`, `=`, `%` and space cannot forge bag structure. | unit | Done | [send_url_encodes_property_values](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/telemetry_client_test.c#L222) |
+| | Rfc 3986 unreserved characters pass through | `-_.~` and alphanumerics are not escaped. | unit | Done | [send_url_encodes_property_values](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/telemetry_client_test.c#L222) |
+| | Content type and encoding match the azure sdk wire form | `%24.ct`, `%24.ce`. | unit | Done | [send_propagates_content_type_and_properties](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/telemetry_client_test.c#L192) |
+| | Message id and correlation id match the azure sdk wire form | `%24.mid`, `%24.cid`. | unit | Done | [send_url_encodes_property_values](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/telemetry_client_test.c#L222), [system_property_keys_match_the_azure_sdk_wire_form](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/telemetry_client_test.c#L250) |
+| | User id creation time and component name match the wire form | `$.uid`, `$.ctime`, `$.sub` are declared in the public header but never asserted. | unit | Pending | *telemetry_client_test.c* |
+| | A routing content type survives encoding | `application/json;charset=utf-8` → `application%2Fjson%3Bcharset%3Dutf-8`, the form IoT Hub requires to route on the message body. | unit | Pending | *telemetry_client_test.c* |
+| | A property with a null value emits a bare key | The `=` is omitted. | unit | Pending | *telemetry_client_test.c* |
+| | A property with an empty value emits key and equals | — | unit | Pending | *telemetry_client_test.c* |
+| | A null key is skipped | — | unit | Pending | *telemetry_client_test.c* |
+| | An empty key is skipped | — | unit | Pending | *telemetry_client_test.c* |
+| | A skipped key leaves no dangling separator | The `&` belongs to the pair that was dropped. | unit | Pending | *telemetry_client_test.c* |
+| | Bag overflow reports not enough space | Topic buffer exhausted. | unit | Done | [send_reports_not_enough_space_when_the_bag_overflows](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/telemetry_client_test.c#L276) |
+| End-to-end | Telemetry reaches the built-in endpoint | Marker payload observed on the Event Hub-compatible endpoint. | e2e | Done | [test_telemetry](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/e2e/tests/e2e_scenarios_test.c#L148) |
+| | System properties observed service side | Only the body is asserted today; `$.ct` / `$.mid` are never read back. | e2e | Pending | *e2e_scenarios_test.c* |
+| | Application properties observed service side | — | e2e | Pending | *e2e_scenarios_test.c* |
+| | Several messages in flight keep their order | — | e2e | Pending | *e2e_scenarios_test.c* |
+| | A payload at the 256 kb limit is accepted | The hub measures body plus all property names and values. | e2e | Pending | *e2e_scenarios_test.c* |
+| | A payload past the 256 kb limit is rejected | — | e2e | Pending | *e2e_scenarios_test.c* |
+
+## Cloud-to-device messages
+
+Covers `az_iot_c2d_client`: the `devices/{device_id}/messages/devicebound/#` subscription
+and the dispatch of inbound messages to the application handler. Wire format per
+[Receive cloud-to-device messages](https://learn.microsoft.com/azure/iot-hub/iot-mqtt-connect-to-iot-hub#receive-cloud-to-device-messages).
+
+**There is no `c2d_client_test.c`** — C2D is the only feature client with zero unit
+coverage. Its single test is the e2e round trip, so every argument-validation, topic-build
+and teardown path below is unexercised. All `Pending` rows land in a new file.
+
+| Group | Test | Scenario | Type | Status | Code Location |
+| --- | --- | --- | --- | --- | --- |
+| Init | Init rejects a null client | — | unit | Pending | *c2d_client_test.c (new)* |
+| | Init rejects a null connection | — | unit | Pending | *c2d_client_test.c (new)* |
+| | Init subscribes the devicebound filter | `devices/{device_id}/messages/devicebound/#`. | unit | Pending | *c2d_client_test.c (new)* |
+| | The subscription uses qos 1 | The hub grants at most QoS 1 regardless, but the request should say 1. | unit | Pending | *c2d_client_test.c (new)* |
+| | Init registers a dispatch prefix without the wildcard | The prefix stops at the trailing slash so property-bag sub-topics still route. | unit | Pending | *c2d_client_test.c (new)* |
+| | Init prefers the dps registration id | — | unit | Pending | *c2d_client_test.c (new)* |
+| | Init falls back to the client id | No DPS registration id configured. | unit | Pending | *c2d_client_test.c (new)* |
+| | Init without either id returns not initialized | — | unit | Pending | *c2d_client_test.c (new)* |
+| | Init with a device id that overflows the topic buffer returns internal | Past `AZ_IOT_C2D_TOPIC_MAX`. | unit | Pending | *c2d_client_test.c (new)* |
+| | A failed init leaves the client zeroed | — | unit | Pending | *c2d_client_test.c (new)* |
+| | A failed subscription unregisters the handler | No orphan dispatch entry survives. | unit | Pending | *c2d_client_test.c (new)* |
+| Destroy | Destroy unregisters the inbound handler | — | unit | Pending | *c2d_client_test.c (new)* |
+| | Destroy zeroes the client | — | unit | Pending | *c2d_client_test.c (new)* |
+| | Destroy tolerates null | — | unit | Pending | *c2d_client_test.c (new)* |
+| | Destroy is idempotent | — | unit | Pending | *c2d_client_test.c (new)* |
+| | A message after destroy reaches nobody | — | unit | Pending | *c2d_client_test.c (new)* |
+| Handler | Set handler rejects a null client | — | unit | Pending | *c2d_client_test.c (new)* |
+| | Set handler accepts a null callback | Clearing delivery without tearing the subscription down. | unit | Pending | *c2d_client_test.c (new)* |
+| | Set handler stores the user context | — | unit | Pending | *c2d_client_test.c (new)* |
+| | A later set handler replaces the earlier one | — | unit | Pending | *c2d_client_test.c (new)* |
+| | A message before any handler is set is dropped | — | unit | Pending | *c2d_client_test.c (new)* |
+| Delivery | Payload and length reach the handler unchanged | — | unit | Pending | *c2d_client_test.c (new)* |
+| | An empty payload is delivered | — | unit | Pending | *c2d_client_test.c (new)* |
+| | A message on the bare devicebound topic is delivered | No property bag present. | unit | Pending | *c2d_client_test.c (new)* |
+| | A message on a property bag sub-topic is delivered | Prefix match, not exact match. | unit | Pending | *c2d_client_test.c (new)* |
+| | Content type is null on classic | Pins limitation D-1. | unit | Pending | *c2d_client_test.c (new)* |
+| | A property bag pair is not surfaced | `key=value` form; pins D-1. | unit | Pending | *c2d_client_test.c (new)* |
+| | A valueless property bag key is not surfaced | `key` form (null value); pins D-1. | unit | Pending | *c2d_client_test.c (new)* |
+| | An empty-valued property bag key is not surfaced | `key=` form; pins D-1. | unit | Pending | *c2d_client_test.c (new)* |
+| | A message addressed to another device is not delivered | Different `{device_id}` in the topic. | unit | Pending | *c2d_client_test.c (new)* |
+| | Two clients on one connection both receive | — | unit | Pending | *c2d_client_test.c (new)* |
+| | Destroying one client leaves the other receiving | — | unit | Pending | *c2d_client_test.c (new)* |
+| | The subscription is reissued after a reconnect | The generic persistent-sub tests cover the mechanism; this covers the C2D filter. | unit | Pending | *c2d_client_test.c (new)* |
+| End-to-end | Cloud to device message received | Service sends over AMQP; the device matches the marker. | e2e | Done | [test_c2d](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/e2e/tests/e2e_scenarios_test.c#L260) |
+| | A message queued while offline arrives after reconnect | The adapter connects with CleanSession 0, so the subscription persists across sessions. | e2e | Pending | *e2e_scenarios_test.c* |
+| | Application properties are delivered | Blocked on D-1. | e2e | Pending | *e2e_scenarios_test.c* |
+
+**Limitation D-1:** on Classic the topic property bag is never parsed, so the handler gets
+`content_type = NULL` and no application properties at all. The `Pending` rows above pin the
+behaviour as it ships; see [Defects and limitations](#defects-and-limitations).
+
+## Direct methods
+
+Covers `az_iot_direct_method_client`: the `$iothub/methods/POST/#` subscription, parsing
+`{method-name}` and `$rid` out of the invocation topic, and publishing the answer on
+`$iothub/methods/res/{status}/?$rid={request-id}`. Wire format per
+[Respond to a direct method](https://learn.microsoft.com/azure/iot-hub/iot-mqtt-connect-to-iot-hub#respond-to-a-direct-method).
+
+| Group | Test | Scenario | Type | Status | Code Location |
+| --- | --- | --- | --- | --- | --- |
+| Init | Init rejects a null client | — | unit | Pending | *direct_method_client_test.c* |
+| | Init rejects a null connection | — | unit | Pending | *direct_method_client_test.c* |
+| | Init subscribes the methods filter | `$iothub/methods/POST/#`. | unit | Done | [create_subscribes_methods_topic_on_connect](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/direct_method_client_test.c#L114) |
+| | The subscription uses qos 0 | — | unit | Pending | *direct_method_client_test.c* |
+| | Init registers the methods dispatch prefix | — | unit | Pending | *direct_method_client_test.c* |
+| | Init on a profile without a methods prefix returns not supported | — | unit | Pending | *direct_method_client_test.c* |
+| | A failed subscription unregisters the handler | — | unit | Pending | *direct_method_client_test.c* |
+| Destroy | Destroy unregisters the handler | — | unit | Pending | *direct_method_client_test.c* |
+| | Destroy zeroes the client | — | unit | Pending | *direct_method_client_test.c* |
+| | Destroy tolerates null | — | unit | Pending | *direct_method_client_test.c* |
+| | Destroy is idempotent | — | unit | Pending | *direct_method_client_test.c* |
+| | An invocation after destroy reaches nobody | — | unit | Pending | *direct_method_client_test.c* |
+| Handler | Set handler rejects a null client | — | unit | Pending | *direct_method_client_test.c* |
+| | Set handler stores the user context | — | unit | Done | [inbound_invocation_dispatched_to_handler](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/direct_method_client_test.c#L142) |
+| | A later set handler replaces the earlier one | — | unit | Pending | *direct_method_client_test.c* |
+| | An invocation with no handler is dropped | No pool slot is consumed. | unit | Pending | *direct_method_client_test.c* |
+| Topic parsing | The method name is parsed from the topic | — | unit | Done | [inbound_invocation_dispatched_to_handler](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/direct_method_client_test.c#L142) |
+| | The rid is parsed from the topic | Proven by the rid echoed on the response topic. | unit | Done | [inbound_invocation_dispatched_to_handler](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/direct_method_client_test.c#L142) |
+| | The payload reaches the handler | — | unit | Done | [inbound_invocation_dispatched_to_handler](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/direct_method_client_test.c#L142) |
+| | An invocation with an empty body is delivered | The service sends either valid JSON or an empty body. | unit | Pending | *direct_method_client_test.c* |
+| | A topic with no rid marker is dropped | — | unit | Done | [malformed_topic_dropped](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/direct_method_client_test.c#L181) |
+| | A topic with an empty rid is dropped | `?$rid=` with nothing after it. | unit | Pending | *direct_method_client_test.c* |
+| | A topic with an empty method name is dropped | `$iothub/methods/POST//?$rid=1`. | unit | Pending | *direct_method_client_test.c* |
+| | A topic with the wrong prefix is dropped | — | unit | Pending | *direct_method_client_test.c* |
+| | A method name past the bound is dropped | Longer than `AZ_IOT_DM_METHOD_NAME_MAX`. | unit | Pending | *direct_method_client_test.c* |
+| | A rid past the bound is dropped | Longer than `AZ_IOT_DM_RID_MAX`. | unit | Pending | *direct_method_client_test.c* |
+| | A non-numeric rid is accepted | The service defines `$rid` as any valid message property value, not an integer. | unit | Pending | *direct_method_client_test.c* |
+| Response | Respond rejects a null request | — | unit | Done | [respond_rejects_null_request](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/direct_method_client_test.c#L196) |
+| | Respond rejects a null payload with a non-zero length | — | unit | Pending | *direct_method_client_test.c* |
+| | The response topic is the classic res topic | `$iothub/methods/res/{status}/?$rid={rid}`. | unit | Done | [inbound_invocation_dispatched_to_handler](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/direct_method_client_test.c#L142) |
+| | The response rid matches the request | — | unit | Done | [inbound_invocation_dispatched_to_handler](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/direct_method_client_test.c#L142) |
+| | The response status appears in the topic | — | unit | Done | [inbound_invocation_dispatched_to_handler](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/direct_method_client_test.c#L142) |
+| | A non-200 status appears in the topic | 404 / 500 from the application. | unit | Pending | *direct_method_client_test.c* |
+| | The response payload is forwarded byte for byte | — | unit | Done | [inbound_invocation_dispatched_to_handler](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/direct_method_client_test.c#L142) |
+| | The response is published at qos 0 | — | unit | Done | [inbound_invocation_dispatched_to_handler](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/direct_method_client_test.c#L142) |
+| | Respond with an empty payload publishes an empty body | — | unit | Pending | *direct_method_client_test.c* |
+| | Respond releases the pool slot | The slot is reusable by the next invocation. | unit | Pending | *direct_method_client_test.c* |
+| | Respond twice does not publish twice | — | unit | Pending | *direct_method_client_test.c* |
+| | Respond after the handler returned still publishes | Async respond: the request outlives the callback. | unit | Pending | *direct_method_client_test.c* |
+| | Respond while disconnected reports not connected | — | unit | Pending | *direct_method_client_test.c* |
+| | Respond after destroy is refused | `destroy()` zeroes the owner the request points at. | unit | Pending | *direct_method_client_test.c* |
+| | The pool holds the documented number of concurrent requests | `AZ_IOT_DM_MAX_INFLIGHT` unanswered invocations all reach the handler. | unit | Pending | *direct_method_client_test.c* |
+| | An invocation past the pool capacity is dropped | Pins limitation D-2. | unit | Pending | *direct_method_client_test.c* |
+| End-to-end | Direct method invoked and answered | Service invokes; the device echoes the payload with 200. | e2e | Done | [test_direct_method](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/e2e/tests/e2e_scenarios_test.c#L328) |
+| | A non-success status reaches the caller | Device answers 500; the service sees it. | e2e | Pending | *e2e_scenarios_test.c* |
+| | A method invoked with no payload | — | e2e | Pending | *e2e_scenarios_test.c* |
+| | An unanswered method times out service side | — | e2e | Pending | *e2e_scenarios_test.c* |
+
+**Limitation D-2:** an unanswered request leaks its pool slot permanently, and once the
+pool is exhausted every further invocation is dropped silently. See
+[Defects and limitations](#defects-and-limitations).
+
+## Device twin
+
+Covers `az_iot_twin_client`: GET, PATCH reported, `$rid` correlation of
+`$iothub/twin/res/{status}/?$rid={rid}` responses, and the two-pool desired-property
+subscriber registry. Wire format and status codes per
+[Retrieve device twin properties](https://learn.microsoft.com/azure/iot-hub/iot-mqtt-connect-to-iot-hub#retrieve-device-twin-properties).
+
+| Group | Test | Scenario | Type | Status | Code Location |
+| --- | --- | --- | --- | --- | --- |
+| Init | Init rejects a null client | — | unit | Pending | *twin_client_test.c* |
+| | Init rejects a null connection | — | unit | Pending | *twin_client_test.c* |
+| | Init subscribes the response filter | `$iothub/twin/res/#`. | unit | Done | [create_subscribes_response_and_desired](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L171) |
+| | Init subscribes the desired filter | `$iothub/twin/PATCH/properties/desired/#`. | unit | Done | [create_subscribes_response_and_desired](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L171) |
+| | Both subscriptions use qos 0 | The filter is asserted today, the QoS is not. | unit | Pending | *twin_client_test.c* |
+| | Init seeds the first rid at one | Rid 0 is never used. | unit | Done | [get_publishes_and_response_fires_callback](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L186) |
+| | A failed subscription unregisters both handlers | — | unit | Pending | *twin_client_test.c* |
+| Destroy | Destroy unregisters both handlers | — | unit | Pending | *twin_client_test.c* |
+| | Destroy zeroes the client | — | unit | Pending | *twin_client_test.c* |
+| | Destroy tolerates null | — | unit | Pending | *twin_client_test.c* |
+| | Destroy is idempotent | — | unit | Pending | *twin_client_test.c* |
+| Get | Get publishes the classic get topic | `$iothub/twin/GET/?$rid=<n>`. | unit | Done | [get_publishes_and_response_fires_callback](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L186) |
+| | Get publishes an empty body | The service expects an empty message. | unit | Pending | *twin_client_test.c* |
+| | Get does not fire the callback before the response | — | unit | Done | [get_publishes_and_response_fires_callback](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L186) |
+| | A 200 response delivers the twin body | — | unit | Done | [get_publishes_and_response_fires_callback](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L186) |
+| | Get rejects a null client | — | unit | Pending | *twin_client_test.c* |
+| | Get with a full pending table is rejected | `AZ_IOT_TWIN_MAX_PENDING` in flight → `NOT_SUPPORTED`. | unit | Pending | *twin_client_test.c* |
+| | A publish failure releases the pending slot | A refused PUBLISH must not leak a slot. | unit | Pending | *twin_client_test.c* |
+| Patch reported | Patch publishes the classic patch topic | `$iothub/twin/PATCH/properties/reported/?$rid=<n>`. | unit | Done | [patch_publishes_and_204_response_fires_callback](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L212) |
+| | The patch body is forwarded byte for byte | — | unit | Pending | *twin_client_test.c* |
+| | A 204 response fires the ack callback | — | unit | Done | [patch_publishes_and_204_response_fires_callback](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L212) |
+| | The reported version on the ack topic is ignored | `$version` rides the 204 topic but the ack callback has no parameter for it — pins limitation D-4. | unit | Pending | *twin_client_test.c* |
+| | Patch rejects a null client | — | unit | Pending | *twin_client_test.c* |
+| | Patch rejects a null patch with a non-zero length | — | unit | Pending | *twin_client_test.c* |
+| | An empty patch is publishable | `patch_len = 0`. | unit | Pending | *twin_client_test.c* |
+| Response correlation | An unknown rid drops the response | Stale or foreign `$rid`. | unit | Done | [unknown_rid_drops_response](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L258) |
+| | A get response does not satisfy a patch slot | Kind is checked as well as rid. | unit | Pending | *twin_client_test.c* |
+| | Concurrent get and patch correlate independently | Two rids in flight, answered out of order. | unit | Pending | *twin_client_test.c* |
+| | A second response for the same rid is dropped | The slot was released by the first. | unit | Pending | *twin_client_test.c* |
+| | Status 429 is reported as a distinct code | Throttling; the app must back off rather than retry immediately. | unit | Pending | *twin_client_test.c* |
+| | Status 400 is reported as a distinct code | Malformed reported-properties JSON — today it falls into the generic MQTT error. | unit | Pending | *twin_client_test.c* |
+| | Status 5xx is reported as an error | — | unit | Pending | *twin_client_test.c* |
+| | A response topic with a non-numeric status is dropped | — | unit | Pending | *twin_client_test.c* |
+| | A response topic with no query string is dropped | — | unit | Pending | *twin_client_test.c* |
+| | A response topic with no rid is dropped | — | unit | Pending | *twin_client_test.c* |
+| | A response topic with the wrong prefix is dropped | — | unit | Pending | *twin_client_test.c* |
+| | The rid counter wraps without reusing zero | — | unit | Pending | *twin_client_test.c* |
+| | Pending requests survive a reconnect | Nothing completes them today — pins limitation D-3. | unit | Pending | *twin_client_test.c* |
+| Desired properties | A desired patch reaches the subscriber | — | unit | Done | [desired_message_dispatched_to_callback](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L235) |
+| | The version is parsed from the topic | `?$version=<v>` reaches the callback. | unit | Done | [desired_message_dispatched_to_callback](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L235) |
+| | A desired topic with no version yields zero | — | unit | Pending | *twin_client_test.c* |
+| | A version past 32 bits is preserved | The callback takes a `uint64_t`. | unit | Pending | *twin_client_test.c* |
+| | Feature subscribers are notified before app subscribers | — | unit | Done | [feature_subscribers_notified_before_app](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L311) |
+| | Every subscriber in a pool is notified | Not just the first slot. | unit | Pending | *twin_client_test.c* |
+| | Subscribe rejects a null client | — | unit | Pending | *twin_client_test.c* |
+| | Subscribe rejects a null callback | — | unit | Pending | *twin_client_test.c* |
+| | The app pool full returns not supported | Beyond `AZ_IOT_TWIN_MAX_DESIRED_APP_SUBS`. | unit | Done | [app_pool_full_returns_not_supported](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L334) |
+| | Resubscribing the same pair consumes one slot | — | unit | Done | [resubscribe_same_pair_is_idempotent](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L350) |
+| | The same callback with a different context takes a second slot | The pair is the identity, not the function pointer. | unit | Pending | *twin_client_test.c* |
+| | Unsubscribe stops delivery | — | unit | Done | [unsubscribe_stops_delivery](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L365) |
+| | Unsubscribe frees the slot for reuse | — | unit | Pending | *twin_client_test.c* |
+| | Unsubscribing an unregistered pair leaves the others alone | — | unit | Pending | *twin_client_test.c* |
+| | Subscribing during a dispatch is busy | — | unit | Done | [mutating_registry_during_dispatch_is_busy](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L399) |
+| | Unsubscribing during a dispatch is busy | — | unit | Done | [mutating_registry_during_dispatch_is_busy](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L399) |
+| | The dispatch guard is cleared after a dispatch | A subscribe issued after the callback returns must succeed. | unit | Pending | *twin_client_test.c* |
+| End-to-end | Desired patch observed and reported patch visible | Cloud patches desired, device observes; device patches reported, cloud reads it back. | e2e | Done | [test_twin](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/e2e/tests/e2e_scenarios_test.c#L429) |
+| | Twin get returns the full document | `az_iot_twin_client_get()` is never exercised against a live hub. | e2e | Pending | *e2e_scenarios_test.c* |
+| | A null member in a reported patch deletes the property | Documented service semantics. | e2e | Pending | *e2e_scenarios_test.c* |
+| | Desired updates missed while offline are picked up by a get | The hub only sends change notifications to connected devices. | e2e | Pending | *e2e_scenarios_test.c* |
+
+**Limitations D-3 and D-4:** a request in flight when the connection drops never fires its
+callback and never releases its slot; and the `$version` the hub returns on a reported-property
+ack is discarded. See [Defects and limitations](#defects-and-limitations).
+
+## File upload
+
+Covers `az_iot_file_upload_client`: on Classic, building the two HTTPS control-plane
+requests, driving them through the application's transport hook, and parsing the SAS-URI
+response. The blob PUT itself is the application's job and is deliberately out of scope.
+
+| Group | Test | Scenario | Type | Status | Code Location |
+| --- | --- | --- | --- | --- | --- |
+| Lifecycle | Init rejects null | — | unit | Done | [init_rejects_null](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/file_upload_client_test.c#L255) |
+| | Classic init requires an http hook | — | unit | Done | [classic_init_requires_http_hook](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/file_upload_client_test.c#L263) |
+| | Classic init rejects a transport with a null send | Struct present, function pointer missing. | unit | Done | [classic_init_rejects_transport_with_null_send](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/file_upload_client_test.c#L440) |
+| | Init rejects an unresolved hub address | — | unit | Done | [init_rejects_unresolved_hub_address](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/file_upload_client_test.c#L450) |
+| | Init rejects a missing device id | — | unit | Done | [init_rejects_missing_device_id](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/file_upload_client_test.c#L467) |
+| | Failed init leaves the client unusable | No half-built client survives. | unit | Done | [failed_init_leaves_client_unusable](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/file_upload_client_test.c#L562) |
+| | Calls after destroy are rejected | — | unit | Done | [calls_after_destroy_are_rejected](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/file_upload_client_test.c#L591) |
+| | Destroy is null safe | — | unit | Done | [destroy_is_null_safe](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/file_upload_client_test.c#L608) |
+| | Destroy is idempotent | — | unit | Done | [destroy_is_idempotent](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/file_upload_client_test.c#L616) |
+| | Reinit over a live client succeeds | — | unit | Done | [reinit_over_live_client_succeeds](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/file_upload_client_test.c#L624) |
+| | Destroying one client leaves the other working | — | unit | Done | [destroying_one_client_leaves_the_other_working](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/file_upload_client_test.c#L666) |
+| Get sas uri | Get sas uri builds the request | Method, URL and body. | unit | Done | [get_sas_uri_builds_the_request](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/file_upload_client_test.c#L272) |
+| | Get sas uri delivers the uri and correlation id | — | unit | Done | [get_sas_uri_delivers_the_sas_uri_and_correlation_id](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/file_upload_client_test.c#L295) |
+| | Get sas uri http error delivers an error | Non-2xx status from the hook. | unit | Done | [get_sas_uri_http_error_delivers_error](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/file_upload_client_test.c#L317) |
+| | Get sas uri transport failure delivers an error | The hook itself fails. | unit | Done | [get_sas_uri_transport_failure_delivers_error](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/file_upload_client_test.c#L329) |
+| | Get sas uri rejects bad args | — | unit | Done | [get_sas_uri_rejects_bad_args](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/file_upload_client_test.c#L341) |
+| | Get sas uri rejects a null client | — | unit | Done | [get_sas_uri_rejects_null_client](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/file_upload_client_test.c#L425) |
+| | Get sas uri maps failure status | HTTP status → `az_iot_result`. | unit | Done | [get_sas_uri_maps_failure_status](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/file_upload_client_test.c#L1013) |
+| | Get sas uri accepts any 2xx | — | unit | Done | [get_sas_uri_accepts_any_2xx](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/file_upload_client_test.c#L1064) |
+| | Get sas uri is reentrant from a callback | A second request started from inside the first's callback. | unit | Done | [get_sas_uri_is_reentrant_from_callback](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/file_upload_client_test.c#L883) |
+| | Get sas uri escapes the blob name | JSON escaping in the request body. | unit | Done | [get_sas_uri_escapes_blob_name](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/file_upload_client_test.c#L1501) |
+| | Get sas uri oversized blob name is refused | Escaped form past `AZ_IOT_FILE_UPLOAD_BODY_MAX`. | unit | Done | [get_sas_uri_oversized_blob_name_is_refused](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/file_upload_client_test.c#L1522) |
+| Notify complete | Notify complete builds the request | — | unit | Done | [notify_complete_builds_the_request](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/file_upload_client_test.c#L352) |
+| | Notify complete delivers the ack | — | unit | Done | [notify_complete_delivers_the_ack](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/file_upload_client_test.c#L376) |
+| | Notify complete failure body | `isSuccess:false` reported to the hub. | unit | Done | [notify_complete_failure_body](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/file_upload_client_test.c#L390) |
+| | Notify complete rejects bad args | — | unit | Done | [notify_complete_rejects_bad_args](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/file_upload_client_test.c#L406) |
+| | Notify complete maps failure status | — | unit | Done | [notify_complete_maps_failure_status](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/file_upload_client_test.c#L1040) |
+| | Notify complete accepts any 2xx | — | unit | Done | [notify_complete_accepts_any_2xx](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/file_upload_client_test.c#L1082) |
+| | Notify complete transport failure delivers an error | — | unit | Done | [notify_complete_transport_failure_delivers_error](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/file_upload_client_test.c#L1098) |
+| | Notify complete oversized correlation id is refused | — | unit | Done | [notify_complete_oversized_correlation_id_is_refused](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/file_upload_client_test.c#L1537) |
+| Response parsing | Malformed json reports protocol | — | unit | Done | [get_sas_uri_malformed_json_reports_protocol](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/file_upload_client_test.c#L1129) |
+| | Empty response reports protocol | 2xx with no body. | unit | Done | [get_sas_uri_empty_response_reports_protocol](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/file_upload_client_test.c#L1152) |
+| | Overreported body length is clamped | A hook that lies about `body_len` cannot read past the buffer. | unit | Done | [get_sas_uri_clamps_overreported_body_len](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/file_upload_client_test.c#L1168) |
+| | Missing field reports protocol | — | unit | Done | [get_sas_uri_missing_field_reports_protocol](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/file_upload_client_test.c#L1185) |
+| | Wrong field type reports protocol | — | unit | Done | [get_sas_uri_wrong_field_type_reports_protocol](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/file_upload_client_test.c#L1209) |
+| | Unknown nested members are skipped | Forward compatibility with new response fields. | unit | Done | [get_sas_uri_skips_unknown_nested_members](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/file_upload_client_test.c#L1235) |
+| | Json strings are unescaped | — | unit | Done | [get_sas_uri_unescapes_json_strings](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/file_upload_client_test.c#L1260) |
+| | Unicode escape reports protocol | `\uXXXX` is not decoded; refused rather than mangled. | unit | Done | [get_sas_uri_unicode_escape_reports_protocol](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/file_upload_client_test.c#L1284) |
+| | Duplicate property uses the first | — | unit | Done | [get_sas_uri_duplicate_property_uses_first](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/file_upload_client_test.c#L1296) |
+| | Oversized field reports protocol | Past `AZ_IOT_FILE_UPLOAD_SAS_URI_MAX` / `_CORR_ID_MAX`. | unit | Done | [get_sas_uri_oversized_field_reports_protocol](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/file_upload_client_test.c#L1325) |
+| | Truncated response reports protocol | — | unit | Done | [get_sas_uri_truncated_response_reports_protocol](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/file_upload_client_test.c#L1364) |
+| | Large fields are accepted | At the documented bounds, not past them. | unit | Done | [get_sas_uri_accepts_large_fields](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/file_upload_client_test.c#L1384) |
+| | A redirected response buffer is rejected | A hook that swaps `body` for its own pointer. | unit | Done | [get_sas_uri_rejects_a_redirected_response_buffer](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/file_upload_client_test.c#L1422) |
+| Request shape | Sas uri request carries empty auth and json content type | X.509 mutual TLS owns authentication. | unit | Done | [sas_uri_request_carries_empty_auth_and_json_content_type](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/file_upload_client_test.c#L1443) |
+| | Notification request carries empty auth and json content type | — | unit | Done | [notification_request_carries_empty_auth_and_json_content_type](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/file_upload_client_test.c#L1456) |
+| | Sas uri request supplies a response buffer | — | unit | Done | [sas_uri_request_supplies_a_response_buffer](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/file_upload_client_test.c#L1470) |
+| | Notification request supplies no response buffer | The hook must tolerate `body == NULL`. | unit | Done | [notification_request_supplies_no_response_buffer](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/file_upload_client_test.c#L1486) |
+| | Max length endpoint still builds a url | — | unit | Done | [max_length_endpoint_still_builds_a_url](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/file_upload_client_test.c#L1556) |
+| Endpoint resolution | Two clients share one connection | — | unit | Done | [two_clients_share_one_connection](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/file_upload_client_test.c#L639) |
+| | Sas uri requests follow a hub reassignment | The connection stays the single source of truth. | unit | Done | [sas_uri_requests_follow_a_hub_reassignment](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/file_upload_client_test.c#L691) |
+| | Notifications follow a hub reassignment | — | unit | Done | [notifications_follow_a_hub_reassignment](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/file_upload_client_test.c#L714) |
+| | Requests fail while the hub address is unavailable | — | unit | Done | [requests_fail_while_the_hub_address_is_unavailable](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/file_upload_client_test.c#L750) |
+| | Requests fail while the hub address is empty | — | unit | Done | [requests_fail_while_the_hub_address_is_empty](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/file_upload_client_test.c#L775) |
+| | Requests fail while the device id is unavailable | — | unit | Done | [requests_fail_while_the_device_id_is_unavailable](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/file_upload_client_test.c#L791) |
+| | Requests fail while the device id is empty | — | unit | Done | [requests_fail_while_the_device_id_is_empty](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/file_upload_client_test.c#L812) |
+| | Requests resume when the endpoint returns | Failure is transient, not latched. | unit | Done | [requests_resume_when_the_endpoint_returns](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/file_upload_client_test.c#L832) |
+| | Oversized hub address is rejected at the operation | — | unit | Done | [oversized_hub_address_is_rejected_at_the_operation](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/file_upload_client_test.c#L493) |
+| | Oversized device id is rejected at the operation | — | unit | Done | [oversized_device_id_is_rejected_at_the_operation](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/file_upload_client_test.c#L527) |
+| End-to-end | Upload round trip and failure reporting | Real SAS URI, real blob PUT, real completion notification. | e2e | Done | [test_upload_round_trip_and_failure_reporting](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/e2e/tests/e2e_fileupload_test.c#L425) |
+| | Notify with an unknown correlation id is rejected | — | e2e | Done | [test_notify_with_unknown_correlation_id_is_rejected](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/e2e/tests/e2e_fileupload_test.c#L547) |
+| | Client rejects invalid arguments | — | e2e | Done | [test_client_rejects_invalid_arguments](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/e2e/tests/e2e_fileupload_test.c#L564) |
+| | Sequential uploads reuse the client | — | e2e | Done | [test_sequential_uploads_reuse_the_client](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/e2e/tests/e2e_fileupload_test.c#L587) |
+| | A slow hook does not wedge the mqtt pump | The hook is called synchronously on the `do_work()` thread; the header documents the risk but nothing measures it. | unit | Pending | *file_upload_client_test.c* |
+
+## Device update (ADU)
+
+> **Frozen for this pass.** The ADU feature is expected to change, so the table below is
+> an inventory of what exists today and is deliberately not expanded with new `Pending`
+> rows. Revisit once the feature settles.
+
+Covers `az_iot_adu_client`: the deployment workflow driven off desired properties, the
+agent state reported back through the twin, and the manifest crypto (SHA-256 file hashes,
+RS256 signature verification) in `c/adapters/adu/crypto_openssl`.
+
+| Group | Test | Scenario | Type | Status | Code Location |
+| --- | --- | --- | --- | --- | --- |
+| Workflow | Init starts idle with a pending report | — | unit | Done | [init_starts_idle_and_pending_report](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_client_test.c#L597) |
+| | Deployment drives the full workflow | Single-step update: download → verify → install → apply. | unit | Done | [deployment_drives_full_workflow_single_step](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_client_test.c#L608) |
+| | Verify failure blocks download and fails | — | unit | Done | [verify_failure_blocks_download_and_fails](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_client_test.c#L633) |
+| | Install failure triggers rollback | — | unit | Done | [install_failure_triggers_rollback](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_client_test.c#L657) |
+| | Hash mismatch blocks install and fails | — | unit | Done | [hash_mismatch_blocks_install_and_fails](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_client_test.c#L683) |
+| | Already installed is rejected without download | No bytes fetched for a no-op deployment. | unit | Done | [already_installed_is_rejected_without_download](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_client_test.c#L710) |
+| | Install in progress reenters then completes | — | unit | Done | [install_in_progress_reenters_then_completes](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_client_test.c#L733) |
+| | Reboot required persists and resumes | State survives a restart. | unit | Done | [reboot_required_persists_and_resumes](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_client_test.c#L758) |
+| | Resume with no persisted state stays idle | — | unit | Done | [resume_with_no_persisted_state_stays_idle](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_client_test.c#L792) |
+| | Cancel action sets the cancelled flag | — | unit | Done | [cancel_action_sets_cancelled_flag](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_client_test.c#L803) |
+| | Multi step update runs every step in order | Only the single-step path is covered today. | unit | Pending | *adu_client_test.c* |
+| | Download failure is reported and does not install | — | unit | Pending | *adu_client_test.c* |
+| | Cancel during download aborts the transfer | The flag is set, but no test proves the transfer stops. | unit | Pending | *adu_client_test.c* |
+| Deduplication | Duplicate redelivery is ignored | Same manifest re-sent by the service. | unit | Done | [duplicate_redelivery_is_ignored](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_client_test.c#L1014) |
+| | Retry with a newer timestamp restarts | — | unit | Done | [retry_with_newer_timestamp_restarts](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_client_test.c#L1040) |
+| | Replacement with a new id restarts | — | unit | Done | [replacement_with_new_id_restarts](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_client_test.c#L1064) |
+| | Retry timestamp survives resume | — | unit | Done | [retry_timestamp_survives_resume](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_client_test.c#L1087) |
+| | Same id with a changed manifest restarts | — | unit | Done | [same_id_changed_manifest_restarts](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_client_test.c#L1119) |
+| Device properties | Update device properties sets report pending | — | unit | Done | [update_device_properties_sets_report_pending](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_client_test.c#L822) |
+| | Custom device properties are reported | — | unit | Done | [custom_device_properties_are_reported](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_client_test.c#L869) |
+| | Device props too small is rejected | — | unit | Done | [device_props_too_small_is_rejected](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_client_test.c#L910) |
+| | Device props buffer size matches the need | The reported requirement is exact, not an estimate. | unit | Done | [device_props_buffer_size_matches_need](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_client_test.c#L952) |
+| | Build report with too small a buffer is rejected | `az_iot_adu_build_report()` bound. | unit | Pending | *adu_client_test.c* |
+| Manifest & crypto | Microsoft root keys are embedded | The shipped roots match the published values. | unit | Done | [microsoft_root_keys_are_embedded](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_client_test.c#L1143) |
+| | Sha256 oneshot matches a known vector | — | unit | Done | [sha256_oneshot_matches_known_vector](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_crypto_openssl_test.c#L37) |
+| | Sha256 incremental matches a known vector | Streaming a large file in chunks. | unit | Done | [sha256_incremental_matches_known_vector](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_crypto_openssl_test.c#L47) |
+| | Verify rs256 accepts a valid signature | — | unit | Done | [verify_rs256_accepts_valid_signature](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_crypto_openssl_test.c#L100) |
+| | Verify rs256 rejects a tampered signature | — | unit | Done | [verify_rs256_rejects_tampered_signature](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_crypto_openssl_test.c#L118) |
+| | Verify rs256 rejects modified data | — | unit | Done | [verify_rs256_rejects_modified_data](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_crypto_openssl_test.c#L137) |
+| | Manifest signed by an unknown root key is rejected | End-to-end through `az_iot_adu_parse_update_request()`. | unit | Pending | *adu_client_test.c* |
+| | Malformed jws is rejected | Wrong segment count, bad base64url, missing header. | unit | Pending | *adu_client_test.c* |
+| | Malformed manifest json is rejected | — | unit | Pending | *adu_client_test.c* |
+| | Verify file hash rejects an unsupported algorithm | — | unit | Pending | *adu_client_test.c* |
+| End-to-end | Agent state report | Device reports its ADU agent state through the twin. | e2e | Done | [test_adu_agent_state_report](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/e2e/tests/e2e_adu_test.c#L707) |
+| | Update deployment | Real deployment driven from the service. | e2e | Done | [test_adu_update_deployment](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/e2e/tests/e2e_adu_test.c#L744) |
+| | Install failure rollback | — | e2e | Done | [test_adu_install_failure_rollback](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/e2e/tests/e2e_adu_test.c#L773) |
+| | Verify rejects the deployment | — | e2e | Done | [test_adu_verify_rejects_deployment](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/e2e/tests/e2e_adu_test.c#L803) |
+| | Already installed is a noop | — | e2e | Done | [test_adu_already_installed_noop](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/e2e/tests/e2e_adu_test.c#L834) |
+| | Cancelled deployment reported service side | — | e2e | Pending | *e2e_adu_test.c* |
+
+## Certificate management
+
+Covers `az_iot_certificate_provider` and its two bundled implementations (file-path PEM,
+and the managed provider that generates a key, emits a CSR and stores the issued chain),
+plus the two issuance paths: CSR-in-DPS-registration, and runtime renewal against the
+connected hub over `$iothub/credentials/...` per
+[Renew a device certificate](https://learn.microsoft.com/azure/iot-hub/iot-mqtt-connect-to-iot-hub#renew-a-device-certificate-operational-certificate).
+
+| Group | Test | Scenario | Type | Status | Code Location |
+| --- | --- | --- | --- | --- | --- |
+| PEM provider | Options default is zeroed | — | unit | Done | [test_options_default_is_zeroed](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/certificate_provider_pem_test.c#L93) |
+| | Create rejects a null provider | — | unit | Done | [test_create_rejects_null](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/certificate_provider_pem_test.c#L103) |
+| | Create rejects null options | — | unit | Done | [test_create_rejects_null](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/certificate_provider_pem_test.c#L103) |
+| | Create rejects a missing certificate path | — | unit | Done | [test_create_rejects_missing_required_paths](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/certificate_provider_pem_test.c#L112) |
+| | Create rejects a missing key path | — | unit | Done | [test_create_rejects_missing_required_paths](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/certificate_provider_pem_test.c#L112) |
+| | Create fails on a file that does not exist | — | unit | Done | [test_create_fails_on_missing_file](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/certificate_provider_pem_test.c#L127) |
+| | Load returns the certificate contents | — | unit | Done | [test_load_returns_file_contents](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/certificate_provider_pem_test.c#L138) |
+| | Load returns the key and ca contents | — | unit | Done | [test_load_returns_file_contents](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/certificate_provider_pem_test.c#L138) |
+| | Load without the optional fields | No CA path, no key password. | unit | Done | [test_load_without_optional_fields](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/certificate_provider_pem_test.c#L178) |
+| | Load of an unreadable file is reported | Permissions, not absence. | unit | Pending | *certificate_provider_pem_test.c* |
+| | Load of an operational credential with none stored returns not found | The connect path falls back to BOOTSTRAP on this code. | unit | Pending | *certificate_provider_pem_test.c* |
+| | Destroy tolerates null | — | unit | Pending | *certificate_provider_pem_test.c* |
+| | Destroy is idempotent | — | unit | Pending | *certificate_provider_pem_test.c* |
+| Managed provider | Init generates a key | — | unit | Done | [managed_init_generates_key_and_valid_csr](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/certificate_provider_managed_test.c#L90) |
+| | Init emits a parseable csr | — | unit | Done | [managed_init_generates_key_and_valid_csr](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/certificate_provider_managed_test.c#L90) |
+| | The csr subject carries the registration id | — | unit | Done | [managed_init_generates_key_and_valid_csr](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/certificate_provider_managed_test.c#L90) |
+| | Init rejects bad args | — | unit | Done | [managed_init_rejects_bad_args](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/certificate_provider_managed_test.c#L206) |
+| | Store persists the issued chain | — | unit | Done | [managed_store_persists_and_survives_restart](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/certificate_provider_managed_test.c#L151) |
+| | The persisted chain reloads after a restart | — | unit | Done | [managed_store_persists_and_survives_restart](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/certificate_provider_managed_test.c#L151) |
+| | A csr buffer that is too small is reported | — | unit | Pending | *certificate_provider_managed_test.c* |
+| | Storing a malformed chain is rejected | Not PEM, or a leaf that does not match the generated key. | unit | Pending | *certificate_provider_managed_test.c* |
+| | Store overwrites a previously issued chain | Renewal replaces rather than appends. | unit | Pending | *certificate_provider_managed_test.c* |
+| | The sign hook is exercised | `az_iot_certificate_provider.sign` has no test on either provider. | unit | Pending | *certificate_provider_managed_test.c* |
+| Issuance via dps | The csr rides the dps registration body | — | unit | Done | [dps_csr_flow_sends_csr_and_stores_issued_chain](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_client_test.c#L908) |
+| | The issued chain is handed to the provider | — | unit | Done | [dps_csr_flow_sends_csr_and_stores_issued_chain](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_client_test.c#L908) |
+| | Open is refused without a csr-capable provider | — | unit | Done | [open_rejects_operational_cert_without_csr_provider](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_client_test.c#L793) |
+| | Open is refused without a payload buffer | — | unit | Done | [open_rejects_operational_cert_without_payload_buffer](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_client_test.c#L1056) |
+| | The dps username carries the csr api version | The CSR flow needs a newer api-version than the azure-sdk-for-c default. | unit | Pending | *connection_client_test.c* |
+| | The operational cert callback fires with the issued chain | `az_iot_connection_client_set_operational_cert_callback()` has no test. | unit | Pending | *connection_client_test.c* |
+| Hub-side renewal | A renewal publishes the issue-certificate topic | `$iothub/credentials/POST/issueCertificate/?$rid=<id>`. | unit | Done | [send_csr_two_phase_delivers_issued_chain](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_client_test.c#L1077) |
+| | A 202 reports accepted without completing | — | unit | Done | [send_csr_two_phase_delivers_issued_chain](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_client_test.c#L1077) |
+| | A 200 delivers the issued chain | — | unit | Done | [send_csr_two_phase_delivers_issued_chain](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_client_test.c#L1077) |
+| | An error status reports the service code | 409 conflict with an `errorCode` body. | unit | Done | [send_csr_error_reports_service_code](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_client_test.c#L1135) |
+| | Only one renewal is in flight at a time | A second `send_csr()` is refused while one is open. | unit | Done | [send_csr_cancel_frees_slot](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_client_test.c#L1160) |
+| | Cancel frees the slot for a new renewal | — | unit | Done | [send_csr_cancel_frees_slot](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_client_test.c#L1160) |
+| | The renewal subscribes the credentials response filter | `$iothub/credentials/res/#`. | unit | Pending | *connection_client_test.c* |
+| | The request body carries the device id and csr | — | unit | Pending | *connection_client_test.c* |
+| | The optional replace field is emitted only when supplied | `"replace":"*"`. | unit | Pending | *connection_client_test.c* |
+| | A response for a different rid is ignored | — | unit | Pending | *connection_client_test.c* |
+| | A 400 reports the service code | Invalid request payload. | unit | Pending | *connection_client_test.c* |
+| | A 412 reports the service code | No matching request to replace. | unit | Pending | *connection_client_test.c* |
+| | A 429 surfaces the retry-after hint | The response body carries `retryAfter`. | unit | Pending | *connection_client_test.c* |
+| | A malformed issued chain reports a protocol error | 200 whose body has no `certificates` array. | unit | Pending | *connection_client_test.c* |
+| | A renewal with no response times out | `CSR_OP_TIMEOUT_MS` elapses. | unit | Pending | *connection_client_test.c* |
+| | A 202 extends the timeout deadline | A slow-but-alive signer is not abandoned. | unit | Pending | *connection_client_test.c* |
+| | Send csr while disconnected is refused | — | unit | Pending | *connection_client_test.c* |
+| | A renewal open across a reconnect is completed or failed | Same family as C-3 / D-3. | unit | Pending | *connection_client_test.c* |
+| | A csr larger than the service cap is refused | `CSR_MAX_BASE64` is 8 KB. | unit | Pending | *connection_client_test.c* |
+| End-to-end | Dps csr enrollment with an ec key | — | e2e | Done | [test_dps_csr_enrollment_ec](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/e2e/tests/e2e_csr_test.c#L222) |
+| | Dps csr enrollment with an rsa key | — | e2e | Done | [test_dps_csr_enrollment_rsa](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/e2e/tests/e2e_csr_test.c#L228) |
+| | Hub-side renewal against a live hub | `az_iot_connection_client_send_csr()` is unit-tested only. | e2e | Pending | *e2e_csr_test.c* |
+| | A reconnect on the renewed certificate | The renewed chain is actually usable to authenticate. | e2e | Pending | *e2e_csr_test.c* |
+
+## Core primitives
+
+Shared infrastructure every feature client sits on. These have no service surface of their
+own, so they are unit-tested only.
+
+| Group | Test | Scenario | Type | Status | Code Location |
+| --- | --- | --- | --- | --- | --- |
+| Span writer | Empty destination latches failure | — | unit | Done | [empty_destination_latches_failure](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/span_writer_test.c#L26) |
+| | Builds a topic that fits exactly | — | unit | Done | [builds_a_topic_that_fits_exactly](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/span_writer_test.c#L35) |
+| | Content fitting without room for the terminator fails | — | unit | Done | [content_fitting_without_room_for_terminator_fails](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/span_writer_test.c#L52) |
+| | Overflow leaves an empty string not a partial one | No truncated topic can reach the wire. | unit | Done | [overflow_leaves_an_empty_string_not_a_partial_one](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/span_writer_test.c#L70) |
+| | First failure is latched | Later appends cannot clear it. | unit | Done | [first_failure_is_latched](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/span_writer_test.c#L85) |
+| | Null string is reported rather than undefined | Unlike `printf("%s", NULL)`. | unit | Done | [null_string_is_reported_rather_than_undefined](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/span_writer_test.c#L99) |
+| | Empty appends are no ops | — | unit | Done | [empty_appends_are_no_ops](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/span_writer_test.c#L112) |
+| | Decimal matches snprintf at the extremes | — | unit | Done | [decimal_matches_snprintf_at_the_extremes](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/span_writer_test.c#L127) |
+| | Hex pads clamps and widens | — | unit | Done | [hex_pads_clamps_and_widens](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/span_writer_test.c#L160) |
+| | A number that does not fit writes nothing | — | unit | Done | [a_number_that_does_not_fit_writes_nothing](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/span_writer_test.c#L187) |
+| | Matches snprintf for a real url | — | unit | Done | [matches_snprintf_for_a_real_url](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/span_writer_test.c#L200) |
+| | Matches snprintf for a mixed topic | — | unit | Done | [matches_snprintf_for_a_mixed_topic](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/span_writer_test.c#L232) |
+| | Null writer is rejected | — | unit | Done | [null_writer_is_rejected](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/span_writer_test.c#L250) |
+| | Appends spans and bytes | — | unit | Done | [appends_spans_and_bytes](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/span_writer_test.c#L262) |
+| | Url encoding follows rfc3986 unreserved | — | unit | Done | [url_encoding_follows_rfc3986_unreserved](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/span_writer_test.c#L277) |
+| | Url encoding is all or nothing on overflow | No half-encoded escape survives. | unit | Done | [url_encoding_is_all_or_nothing_on_overflow](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/span_writer_test.c#L307) |
+| | Url encoding rejects null | — | unit | Done | [url_encoding_rejects_null](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/span_writer_test.c#L326) |
+| | Build str concatenates parts | — | unit | Done | [build_str_concatenates_parts](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/span_writer_test.c#L336) |
+| | Build str reports its failures | — | unit | Done | [build_str_reports_its_failures](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/span_writer_test.c#L349) |
+| Dispatch & profile | Profile for classic role is v3 | — | unit | Done | [profile_for_classic_role_is_v3](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/protocol_profile_dispatch_test.c#L26) |
+| | Profile for dps role is classic | — | unit | Done | [profile_for_dps_role_is_classic](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/protocol_profile_dispatch_test.c#L40) |
+| | Profile for next role is a stub | — | unit | Done | [profile_for_next_role_is_stub_null](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/protocol_profile_dispatch_test.c#L48) |
+| | Route returns false when no match | — | unit | Done | [dispatch_route_returns_false_when_no_match](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/protocol_profile_dispatch_test.c#L84) |
+| | Routes to the matching prefix | — | unit | Done | [dispatch_routes_to_matching_prefix](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/protocol_profile_dispatch_test.c#L95) |
+| | Longest prefix wins | Twin response vs twin desired share a stem. | unit | Done | [dispatch_longest_prefix_wins](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/protocol_profile_dispatch_test.c#L122) |
+| | Unregister by ctx removes all owned | One feature client's teardown leaves the others intact. | unit | Done | [dispatch_unregister_by_ctx_removes_all_owned](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/protocol_profile_dispatch_test.c#L150) |
+| | Register rejects when full | — | unit | Done | [dispatch_register_rejects_when_full](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/protocol_profile_dispatch_test.c#L174) |
+| | Register validates args | — | unit | Done | [dispatch_register_validates_args](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/protocol_profile_dispatch_test.c#L193) |
+| | Inbound message routes through dispatch | The connection hands MESSAGE events to the table. | unit | Done | [inbound_message_routes_through_dispatch](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_client_test.c#L437) |
+| | Unmatched inbound topic is dropped quietly | No handler owns the prefix. | unit | Pending | *protocol_profile_dispatch_test.c* |
+| Logging | Nothing is emitted without a sink | — | unit | Done | [nothing_is_emitted_without_a_sink](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/log_test.c#L77) |
+| | Plain and formatted messages reach the sink | — | unit | Done | [plain_and_formatted_messages_reach_the_sink](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/log_test.c#L89) |
+| | Every level is routed | — | unit | Done | [every_level_is_routed](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/log_test.c#L105) |
+| | Levels below the minimum are dropped | — | unit | Done | [levels_below_the_minimum_are_dropped](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/log_test.c#L121) |
+| | An oversized message is truncated not dropped | — | unit | Done | [an_oversized_message_is_truncated_not_dropped](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/log_test.c#L142) |
+| | A precision bounded argument is not over read | `%.*s` on a non-terminated buffer. | unit | Done | [a_precision_bounded_argument_is_not_over_read](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/log_test.c#L156) |
+| | Null message and file reach the sink as text | — | unit | Done | [null_message_and_file_reach_the_sink_as_text](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/log_test.c#L166) |
+| Result & version | Result to string known codes | A sample of the enum. | unit | Done | [result_to_string_known_codes](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/smoke_test.c#L30) |
+| | Result to string covers every code | No enumerator falls through to the unknown string. | unit | Pending | *smoke_test.c* |
+| | Version string matches the header macros | `az_iot_version_string()` vs `AZ_IOT_VERSION_STRING`. | unit | Pending | *smoke_test.c* |
+
+## IoT Hub Classic protocol conformance
+
+Checked against [Use MQTT to communicate with Azure IoT Hub](https://learn.microsoft.com/azure/iot-hub/iot-mqtt-connect-to-iot-hub)
+and [Understand message format](https://learn.microsoft.com/azure/iot-hub/iot-hub-devguide-messages-construct)
+(retrieved 2026-08-03). **SDK** is about the shipping library, not the tests; **Tests** says
+whether the behaviour is pinned anywhere. A requirement with `Implemented` + `none` is the
+riskiest kind of row: it works today and nothing would notice if it stopped.
+
+### Connect and transport
+
+| Spec requirement | SDK | Tests |
+| --- | --- | --- |
+| MQTT v3.1.1 over TLS on port 8883 | Implemented — `port` defaults to 8883; the Paho adapter builds an `ssl://` URI when TLS material is configured. | Connection → TLS & transport |
+| MQTT over WebSockets on port 443 | **Not implemented** — `build_server_uri()` emits only `ssl://` or `tcp://`. Devices behind a firewall that blocks 8883 cannot connect. | — |
+| TLS is mandatory; port 1883 unsupported | Partial — the adapter falls back to `tcp://`+1883 when no TLS material is set. That path exists for the local conformance broker, but nothing prevents it being aimed at a hub. | — |
+| ClientId is the device id | Implemented. | [open_connects_to_the_configured_endpoint](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_lifecycle_test.c#L172) |
+| Username is `{host}/{device-id}/?api-version=…` | Implemented — delegated to `az_iot_hub_client_get_user_name()`. | **none** — nothing asserts the Classic username, and the spec calls out omitting `api-version` as a source of unexpected behaviour |
+| X.509 client authentication | Implemented via `az_iot_certificate_provider`. | Certificate management; e2e |
+| SAS token password | Not implemented, by design — this SDK authenticates with X.509 only and never sets `password`. | — |
+| Plug and Play model id announced at connect | Implemented — `opts.model_id` → `az_iot_hub_client_options.model_id`. Required for ADU to discover the device. | **none** |
+| CleanSession 0 so subscriptions persist | Implemented — the Paho adapter sets `cleansession = 0`. | **none** |
+| Client keep-alive is configurable | **Not implemented** — hardcoded to 30 s in `start_connect_attempt()`, with no option to change it (D-5). | — |
+| Connect timeout is configurable | **Not implemented** — hardcoded to 30 s. | — |
+| A second connection for the same device id evicts the first | Service behaviour; surfaces to the SDK as a plain DISCONNECT. Also the cheapest way to force the drop the reconnect e2e rows need. | Connection → End-to-end (pending) |
+| Will message published as telemetry on disconnect | **Not implemented** — `az_iot_mqtt_connect_options` has no Will fields. | — |
+| Module identity (`{device-id}/{module-id}`) | **Not implemented** — no module option; every topic the SDK builds is device-scoped. | — |
+| A device may subscribe to at most five topics | Partial — `AZ_IOT_MAX_PERSISTENT_SUBS` defaults to 8, so the SDK accepts filters the hub will refuse (D-6). A device using C2D + methods + twin (×2) + credential renewal is already at 5. | — |
+| QoS 2 publish closes the connection | Implemented — every publish is QoS 0 or QoS 1. | **none** |
+| RETAIN is turned into an `mqtt-retain` property | Implemented — every publish sets `retain = false`. | **none** |
+
+### Device-to-cloud
+
+| Spec requirement | SDK | Tests |
+| --- | --- | --- |
+| Topic `devices/{device-id}/messages/events/` | Implemented. | Done |
+| `{property-bag}` in HTTPS query-string encoding | Implemented — both halves percent-encoded. | Done |
+| System properties `$.ct` `$.ce` `$.mid` `$.cid` `$.uid` `$.ctime` `$.sub` | Implemented — all seven are public constants. | Partial — only `$.ct` `$.ce` `$.mid` `$.cid` are asserted |
+| `$.ct=application/json;charset=utf-8` enables body-based routing | Implemented — the caller supplies it as an ordinary property. | **none** |
+| 256 KB maximum message size | Not enforced client-side; the hub rejects. | — |
+| Device-to-cloud batching | **Not implemented.** | — |
+
+### Cloud-to-device
+
+| Spec requirement | SDK | Tests |
+| --- | --- | --- |
+| Subscribe `devices/{device-id}/messages/devicebound/#` | Implemented. | e2e only |
+| Deliver the `{property-bag}` (system + application properties) | **Not implemented** (D-1) — the bag is never parsed and the callback is not given the topic. | pending rows |
+| The three property-bag value forms (`key`, `key=`, `key=value`) | **Not implemented** (D-1). | pending rows |
+| Reject / abandon is unavailable on MQTT | Matches the API — there is no settle call to misuse. | — |
+
+### Device twin
+
+| Spec requirement | SDK | Tests |
+| --- | --- | --- |
+| Subscribe `$iothub/twin/res/#` | Implemented. | Done |
+| GET `$iothub/twin/GET/?$rid={request-id}` with an empty body | Implemented. | Done (topic); body untested |
+| PATCH `$iothub/twin/PATCH/properties/reported/?$rid={request-id}` | Implemented. | Done |
+| Desired notification `$iothub/twin/PATCH/properties/desired/?$version={v}` | Implemented, version parsed. | Done |
+| GET status 200 | Implemented. | Done |
+| PATCH status 204 | Implemented. | Done |
+| PATCH status 400 (malformed JSON) | Partial — folded into the generic MQTT error, indistinguishable from a transport failure. | — |
+| Status 429 (throttled) | Partial — mapped to `NOT_SUPPORTED`, the same code a full pending table returns, so a caller cannot tell "back off" from "my table is full". | — |
+| Status 5xx | Implemented. | **none** |
+| `$version` on the reported-properties ack | **Not surfaced** (D-4) — the topic carries it, the ack callback has no parameter for it. | — |
+| A `null` member deletes the property | Service-side semantics; the SDK forwards the body verbatim. | — |
+
+### Direct methods
+
+| Spec requirement | SDK | Tests |
+| --- | --- | --- |
+| Subscribe `$iothub/methods/POST/#` | Implemented. | Done |
+| Parse `{method-name}` and `$rid` from the request topic | Implemented. | Done |
+| Respond on `$iothub/methods/res/{status}/?$rid={request-id}` | Implemented. | Done |
+| `$rid` may be any valid message property value | Implemented — kept as an opaque string, not parsed as an integer. | **none** |
+| `status` must be an integer | Implemented. | Done |
+| Request and response bodies are valid JSON or empty | Caller's responsibility; the SDK forwards bytes. | — |
+
+### File upload
+
+| Spec requirement | SDK | Tests |
+| --- | --- | --- |
+| `POST /devices/{deviceId}/files?api-version=…` for the SAS URI | Implemented. | Done |
+| `POST /devices/{deviceId}/files/notifications?api-version=…` for completion | Implemented. | Done |
+| Blob PUT to the returned SAS URI | Out of scope by design — the application's HTTP client. | e2e |
+
+### Operational certificate renewal
+
+| Spec requirement | SDK | Tests |
+| --- | --- | --- |
+| Publish `$iothub/credentials/POST/issueCertificate/?$rid={request-id}` | Implemented. | Done |
+| Request body carries `id`, `csr` and optional `replace` | Implemented. | **none** |
+| Subscribe the response filter | Implemented as `$iothub/credentials/res/#` (plural). **The Learn article is internally inconsistent** — it says subscribe `$iothub/credential/#` and receive on `$iothub/credential/res/{status}` (singular) while publishing to `$iothub/credentials/…` (plural). Worth confirming against the service before treating either spelling as authoritative. | — |
+| Status 200 (issued) and 202 (accepted) | Implemented, two-phase. | Done |
+| Status 409 (conflict) | Implemented. | Done |
+| Status 400 / 412 / 429 / 5xx | Implemented generically; `errorCode` and `retryAfter` are parsed. | **none** |
+
+## Hub-Next / AEG, deferred
+
+Not enumerated yet, by decision — this pass covers IoT Hub Classic. The Hub-Next (MQTT v5)
+paths that already ship tests are listed in place: the presence handshake and the v5 CONNACK
+mapping under [Connection](#connection), and the `NOT_SUPPORTED` contract of the Next file
+upload control plane under [File upload](#file-upload). Everything else on that surface —
+`ih/{device_id}/…` topics for telemetry, C2D, methods and twin, MQTT v5 user properties and
+correlation data, and the AEG Files message schema — gets its own pass.
+
+## Connection: not implemented, and why
+
+The `Pending` rows in the [Connection](#connection) table are blocked on infrastructure or
+on a decision, not on effort — each entry below says what specifically is missing, so the
+cost of closing it is visible rather than implied. The `Pending` rows in the feature-area
+tables above are not: those are tests that simply have not been written yet.
 
 ### TLS cases that need broker-side fixtures
 
@@ -213,9 +816,13 @@ and fixture change rather than a test change, which is why it is not in this ser
 | Connect with wrong device id rejected | An identity provisioned in DPS but absent from (or disabled in) the hub, created and torn down by the provisioning step. The e2e resource provisioning is [downloaded at runtime from `Azure/iot-sdks-e2e-fx`](https://github.com/Azure/iot-sdks-e2e-fx), so the fixture change lands in that repository, not this one. |
 
 
-Defects and limitations found while building the coverage above. All five have been
-fixed; the rows that used to pin the shipping behaviour now assert the corrected
-behaviour instead.
+## Defects and limitations
+
+`C-*` were found while building the Connection coverage; all five are fixed, and the rows
+that used to pin the shipping behaviour now assert the corrected behaviour instead. `D-*`
+were found while surveying the feature clients for this pass and are **open** — each has a
+`Pending` row that will pin the current behaviour, and closing it is an API or design
+decision rather than a test.
 
 | Id | Severity | Status | Finding |
 | --- | --- | --- | --- |
@@ -224,3 +831,9 @@ behaviour instead.
 | C-3 | Low | **Fixed** | In-flight QoS-1 publish callbacks were dropped, not completed, when a session ended: `teardown_active()` cleared every `pending_pubacks` slot without invoking the callbacks, so an app tracking outstanding publishes leaked one entry per unacknowledged publish on every reconnect and was never told to resend. They are now completed with `AZ_IOT_ERR_NOT_CONNECTED`, slot released first so a callback that republishes immediately can claim it. `destroy()` deliberately stays silent — the caller is tearing the client down and the context those callbacks close over may already be gone. |
 | C-4 | Low | **Fixed** | An unparsable DPS registration response was skipped silently — no fault, no re-poll, no diagnostic — leaving the client in CONNECTING indistinguishably from a hang. It now fails the provisioning attempt with `AZ_IOT_ERR_PROTOCOL` and logs the body. |
 | C-5 | **High** | **Fixed** | A NULL or empty `dps.registration_id` (with a valid `dps.id_scope`) made `az_iot_connection_client_open()` hang forever: `dps_configured()` checks only `id_scope`, so the empty value reached `az_iot_provisioning_client_init()`, and this build has `AZ_NO_PRECONDITION_CHECKING=OFF` with no precondition handler installed — az_core's default is an infinite `while(1)` loop. `dps_start()` now validates both `id_scope` and `registration_id` up front and returns `AZ_IOT_ERR_INVALID_ARG`. |
+| D-1 | Medium | Open | Classic C2D drops every message property. `on_c2d_classic()` passes `content_type = NULL` unconditionally and the topic's property bag is never parsed, so neither the content type nor any application property reaches the handler — and the application cannot recover them itself, because `az_iot_c2d_handler_callback` is not given the topic. Closing it is an API change (widen the callback, or hand back a parsed property collection). |
+| D-2 | Medium | Open | A direct-method request slot is released only by `az_iot_direct_method_respond()`. A handler that returns without responding — including on its own error paths — leaks the slot permanently; after `AZ_IOT_DM_MAX_INFLIGHT` (default 4) such requests every further invocation is dropped silently, with no log line and no way for the application to notice. |
+| D-3 | Medium | Open | Twin `pending[]` slots are never cleared when the connection drops, so a GET or PATCH issued just before an outage never fires its callback and never releases its slot; after `AZ_IOT_TWIN_MAX_PENDING` (default 8) outages the client refuses every request with `NOT_SUPPORTED`. Same family as C-3, which fixed the equivalent hole for QoS-1 publish callbacks but did not reach the twin's own correlation table. |
+| D-4 | Low | Open | The `$version` IoT Hub returns on a reported-properties ack (`$iothub/twin/res/204/?$rid=1&$version=6`) is parsed off the topic and thrown away — `az_iot_twin_patch_ack_callback` takes only a status. An application that tracks the reported-properties version to detect lost updates cannot. Closing it is a callback-signature change. |
+| D-5 | Medium | Open | The MQTT keep-alive is hardcoded to 30 s in `start_connect_attempt()` and there is no option to change it; the connect timeout is likewise fixed at 30 s. IoT Hub's server-side timeout is 1.5× the client value (capped at 1767 s), and every other Azure IoT device SDK exposes this. A battery-powered or metered-link device cannot lengthen it, and a device on a lossy link cannot shorten it. |
+| D-6 | Low | Open | `AZ_IOT_MAX_PERSISTENT_SUBS` defaults to 8 while IoT Hub allows a device **five** topic subscriptions. The SDK therefore accepts a sixth filter locally and only finds out at SUBACK time. A device using C2D + direct methods + twin (response and desired) + credential renewal already sits at exactly five, so there is no headroom left for an application filter. |
