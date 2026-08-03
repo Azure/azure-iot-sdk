@@ -182,6 +182,87 @@ static void open_connects_to_the_configured_endpoint(void** state)
 }
 
 /* ------------------------------------------------------------------------- */
+/* keep-alive and connect timeout                                            */
+/* ------------------------------------------------------------------------- */
+
+/* Open a throwaway client with the given options and hand back the CONNECT the
+ * adapter recorded. The record is copied out by value before destroy(), which
+ * frees the mock the call history lives in. */
+static void connect_call_for(
+    const az_iot_connection_client_options* opts,
+    az_iot_mock_call* out_connect)
+{
+  az_iot_connection_client c;
+  assert_int_equal(az_iot_connection_client_init(&c, opts), AZ_IOT_OK);
+  az_iot_mqtt_factory* f = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
+  assert_non_null(f);
+  assert_int_equal(az_iot_connection_client_register_mqtt_factory(&c, f), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_open(&c), AZ_IOT_OK);
+
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(f);
+  assert_non_null(m);
+  const az_iot_mock_call* rec = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_CONNECT);
+  assert_non_null(rec);
+  *out_connect = *rec;
+
+  az_iot_connection_client_destroy(&c);
+}
+
+static void keep_alive_defaults_when_unset(void** state)
+{
+  (void)state;
+  az_iot_connection_client_options opts = az_iot_test_classic_options();
+  az_iot_mock_call c;
+  connect_call_for(&opts, &c);
+  assert_int_equal(c.connect.keep_alive_seconds, AZ_IOT_DEFAULT_KEEP_ALIVE_SECONDS);
+}
+
+static void keep_alive_is_configurable(void** state)
+{
+  (void)state;
+  /* IoT Hub derives its own timeout from this value (1.5x, capped at 1767 s),
+   * so a device on a metered link has a real reason to raise it and a device
+   * on a lossy one has a real reason to lower it. It used to be hardcoded. */
+  az_iot_connection_client_options opts = az_iot_test_classic_options();
+  opts.keep_alive_seconds = 120;
+  az_iot_mock_call c;
+  connect_call_for(&opts, &c);
+  assert_int_equal(c.connect.keep_alive_seconds, 120);
+}
+
+static void the_largest_useful_keep_alive_reaches_the_adapter(void** state)
+{
+  (void)state;
+  /* 1177 s is the largest value IoT Hub does not clamp (1177 * 1.5 = 1765.5,
+   * under the 1767 s server cap). The SDK must pass it through rather than
+   * truncating it into a uint8 or its own smaller bound. */
+  az_iot_connection_client_options opts = az_iot_test_classic_options();
+  opts.keep_alive_seconds = 1177;
+  az_iot_mock_call c;
+  connect_call_for(&opts, &c);
+  assert_int_equal(c.connect.keep_alive_seconds, 1177);
+}
+
+static void connect_timeout_defaults_when_unset(void** state)
+{
+  (void)state;
+  az_iot_connection_client_options opts = az_iot_test_classic_options();
+  az_iot_mock_call c;
+  connect_call_for(&opts, &c);
+  assert_int_equal(c.connect.connect_timeout_ms, AZ_IOT_DEFAULT_CONNECT_TIMEOUT_MS);
+}
+
+static void connect_timeout_is_configurable(void** state)
+{
+  (void)state;
+  az_iot_connection_client_options opts = az_iot_test_classic_options();
+  opts.connect_timeout_ms = 5000;
+  az_iot_mock_call c;
+  connect_call_for(&opts, &c);
+  assert_int_equal(c.connect.connect_timeout_ms, 5000);
+}
+
+/* ------------------------------------------------------------------------- */
 /* close()                                                                   */
 /* ------------------------------------------------------------------------- */
 
@@ -568,6 +649,11 @@ int main(void)
     cmocka_unit_test_setup_teardown(open_from_faulted_is_rejected, setup, teardown),
     cmocka_unit_test(open_rejects_factory_of_the_wrong_version),
     cmocka_unit_test_setup_teardown(open_connects_to_the_configured_endpoint, setup, teardown),
+    cmocka_unit_test(keep_alive_defaults_when_unset),
+    cmocka_unit_test(keep_alive_is_configurable),
+    cmocka_unit_test(the_largest_useful_keep_alive_reaches_the_adapter),
+    cmocka_unit_test(connect_timeout_defaults_when_unset),
+    cmocka_unit_test(connect_timeout_is_configurable),
     /* close() */
     cmocka_unit_test(close_rejects_null_client),
     cmocka_unit_test_setup_teardown(

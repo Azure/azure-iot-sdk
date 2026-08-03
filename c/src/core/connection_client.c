@@ -167,6 +167,23 @@ static const az_iot_mqtt_factory* find_factory(
   return NULL;
 }
 
+/* Apply the caller's keep-alive and connect timeout, or the SDK defaults when
+ * they were left at 0.
+ *
+ * Shared by both connect paths on purpose. The DPS bootstrap connect used to
+ * carry its own hardcoded copies, so an application that lengthened the
+ * keep-alive for a metered link silently got the old value while provisioning
+ * -- the one connect that happens on an unattended first boot. */
+static void apply_timing_options(
+    const az_iot_connection_client* c,
+    az_iot_mqtt_connect_options* copts)
+{
+  copts->keep_alive_seconds
+      = c->opts.keep_alive_seconds ? c->opts.keep_alive_seconds : AZ_IOT_DEFAULT_KEEP_ALIVE_SECONDS;
+  copts->connect_timeout_ms
+      = c->opts.connect_timeout_ms ? c->opts.connect_timeout_ms : AZ_IOT_DEFAULT_CONNECT_TIMEOUT_MS;
+}
+
 static void teardown_active(az_iot_connection_client* c)
 {
   if (c->active_client && c->active_client->iface && c->active_client->iface->destroy)
@@ -685,8 +702,7 @@ static az_iot_result dps_start(az_iot_connection_client* c)
   copts.host = endpoint;
   copts.port = 8883;
   copts.client_id = c->opts.dps.registration_id;
-  copts.keep_alive_seconds = 30;
-  copts.connect_timeout_ms = 30000;
+  apply_timing_options(c, &copts);
 
   /* Build the DPS MQTT username. CSR-based operational-certificate issuance
    * (Azure Device Registration) requires a newer DPS API version than the
@@ -1236,8 +1252,7 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
   copts.host = c->opts.host;
   copts.port = c->opts.port ? c->opts.port : (uint16_t)8883;
   copts.client_id = c->opts.client_id;
-  copts.keep_alive_seconds = 30;
-  copts.connect_timeout_ms = 30000;
+  apply_timing_options(c, &copts);
 
   /* Build hub MQTT username via azure-sdk-for-c (Classic only).
    * Hub-Next does not use the Classic username format. */

@@ -326,6 +326,51 @@ static void dps_honors_a_custom_global_endpoint(void** state)
   az_iot_connection_client_destroy(&c);
 }
 
+/* Provisioning is the one connect that happens unattended on a first boot, so
+ * an application that tuned the timings for its link needs them to apply there
+ * too. They used to be hardcoded on this path. */
+static void dps_honors_the_configured_timings(void** state)
+{
+  (void)state;
+  az_iot_connection_client_options opts = dps_options();
+  opts.keep_alive_seconds = 120;
+  opts.connect_timeout_ms = 7000;
+
+  az_iot_connection_client c;
+  assert_int_equal(az_iot_connection_client_init(&c, &opts), AZ_IOT_OK);
+  az_iot_mqtt_factory* factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
+  assert_int_equal(az_iot_connection_client_register_mqtt_factory(&c, factory), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_open(&c), AZ_IOT_OK);
+
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(factory);
+  const az_iot_mock_call* call = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_CONNECT);
+  assert_non_null(call);
+  assert_int_equal(call->connect.keep_alive_seconds, 120);
+  assert_int_equal(call->connect.connect_timeout_ms, 7000);
+
+  az_iot_connection_client_destroy(&c);
+}
+
+static void dps_defaults_the_timings_when_unset(void** state)
+{
+  (void)state;
+  az_iot_connection_client_options opts = dps_options();
+
+  az_iot_connection_client c;
+  assert_int_equal(az_iot_connection_client_init(&c, &opts), AZ_IOT_OK);
+  az_iot_mqtt_factory* factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
+  assert_int_equal(az_iot_connection_client_register_mqtt_factory(&c, factory), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_open(&c), AZ_IOT_OK);
+
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(factory);
+  const az_iot_mock_call* call = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_CONNECT);
+  assert_non_null(call);
+  assert_int_equal(call->connect.keep_alive_seconds, AZ_IOT_DEFAULT_KEEP_ALIVE_SECONDS);
+  assert_int_equal(call->connect.connect_timeout_ms, AZ_IOT_DEFAULT_CONNECT_TIMEOUT_MS);
+
+  az_iot_connection_client_destroy(&c);
+}
+
 /* DPS speaks MQTT v3.1.1 only. Even when the device is headed for a v5
  * Hub-Next endpoint, the provisioning leg must pick the v3.1.1 factory. */
 static void dps_uses_v3_1_1_even_when_the_hub_is_next(void** state)
@@ -670,6 +715,8 @@ int main(void)
     /* endpoint + version selection */
     cmocka_unit_test_setup_teardown(
         dps_connects_to_the_global_endpoint_by_default, setup, teardown),
+    cmocka_unit_test(dps_honors_the_configured_timings),
+    cmocka_unit_test(dps_defaults_the_timings_when_unset),
     cmocka_unit_test(dps_honors_a_custom_global_endpoint),
     cmocka_unit_test(dps_uses_v3_1_1_even_when_the_hub_is_next),
     cmocka_unit_test(dps_without_a_v3_1_1_factory_is_not_supported),
