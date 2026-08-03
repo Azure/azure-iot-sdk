@@ -72,6 +72,25 @@ extern "C"
       az_iot_connection_client* client,
       void* user_ctx);
 
+  /* Register a callback invoked when the MQTT session ends -- a peer
+   * disconnect, a transport error, or a user close. A feature client that
+   * correlates a request against the session (a twin $rid, a certificate
+   * renewal) uses this to complete those requests with
+   * AZ_IOT_ERR_NOT_CONNECTED and release their slots, instead of holding them
+   * until the pool is exhausted. Registration is keyed on user_ctx: registering
+   * the same user_ctx twice replaces the callback rather than consuming a
+   * second slot. Returns ERR_NOT_SUPPORTED when the registry is full. */
+  az_iot_result az_iot_connection_client__register_session_end_handler(
+      az_iot_connection_client* client,
+      az_iot_session_end_callback cb,
+      void* user_ctx);
+
+  /* Remove the session-end handler registered for user_ctx, if any. Returns the
+   * number removed (0 or 1). */
+  size_t az_iot_connection_client__unregister_session_end_handler(
+      az_iot_connection_client* client,
+      void* user_ctx);
+
   /* True when the connection is in CONNECTED state. */
   bool az_iot_connection_client__is_connected(const az_iot_connection_client* client);
 

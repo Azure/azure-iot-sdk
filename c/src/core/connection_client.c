@@ -202,6 +202,23 @@ static void teardown_active(az_iot_connection_client* c)
       cb(AZ_IOT_ERR_NOT_CONNECTED, user_ctx);
     }
   }
+
+  /* Tell the feature clients the session is gone. A twin GET correlated by
+   * $rid, or an open certificate renewal, can never be answered now: the
+   * response would have travelled on the session that just died. Without this
+   * they hold their slot forever and the pool is permanently one entry
+   * smaller after every outage.
+   *
+   * Runs last so a handler that immediately re-issues its request sees a fully
+   * torn-down session and gets a clean NOT_CONNECTED rather than publishing
+   * into a half-freed adapter. */
+  for (size_t i = 0; i < AZ_IOT_MAX_SESSION_HANDLERS; ++i)
+  {
+    if (c->session_handlers[i].in_use && c->session_handlers[i].cb)
+    {
+      c->session_handlers[i].cb(c->session_handlers[i].user_ctx);
+    }
+  }
 }
 
 /* Forward decl — used in on_mqtt_event via the deferred-action queue. */
@@ -1548,6 +1565,15 @@ void az_iot_connection_client_destroy(az_iot_connection_client* client)
     client->pending_pubacks[i].user_ctx = NULL;
     client->pending_pubacks[i].packet_id = 0;
   }
+  /* Same reasoning for the session-end handlers: on destroy() the feature
+   * clients are being torn down alongside this one, so calling into them is
+   * at best pointless and at worst a use-after-free. */
+  for (size_t i = 0; i < AZ_IOT_MAX_SESSION_HANDLERS; ++i)
+  {
+    client->session_handlers[i].in_use = false;
+    client->session_handlers[i].cb = NULL;
+    client->session_handlers[i].user_ctx = NULL;
+  }
   teardown_active(client);
   dps_teardown_mqtt(client);
   /* dispatch is embedded; nothing to free. */
@@ -1924,6 +1950,64 @@ size_t az_iot_connection_client__unregister_inbound_handlers(
   if (!client)
     return 0;
   return az_iot_dispatch_unregister_by_ctx(&client->dispatch, user_ctx);
+}
+
+az_iot_result az_iot_connection_client__register_session_end_handler(
+    az_iot_connection_client* client,
+    az_iot_session_end_callback cb,
+    void* user_ctx)
+{
+  if (!client || !cb)
+    return AZ_IOT_ERR_INVALID_ARG;
+
+  size_t free_slot = AZ_IOT_MAX_SESSION_HANDLERS;
+  for (size_t i = 0; i < AZ_IOT_MAX_SESSION_HANDLERS; ++i)
+  {
+    /* Keyed on user_ctx: a feature client that re-initializes over a live
+     * instance replaces its entry instead of consuming a second slot. */
+    if (client->session_handlers[i].in_use)
+    {
+      if (client->session_handlers[i].user_ctx == user_ctx)
+      {
+        client->session_handlers[i].cb = cb;
+        return AZ_IOT_OK;
+      }
+    }
+    else if (free_slot == AZ_IOT_MAX_SESSION_HANDLERS)
+    {
+      free_slot = i;
+    }
+  }
+
+  if (free_slot == AZ_IOT_MAX_SESSION_HANDLERS)
+  {
+    AZ_IOT_LOG_ERROR("connection: session-end handler registry is full");
+    return AZ_IOT_ERR_NOT_SUPPORTED;
+  }
+
+  client->session_handlers[free_slot].cb = cb;
+  client->session_handlers[free_slot].user_ctx = user_ctx;
+  client->session_handlers[free_slot].in_use = true;
+  return AZ_IOT_OK;
+}
+
+size_t az_iot_connection_client__unregister_session_end_handler(
+    az_iot_connection_client* client,
+    void* user_ctx)
+{
+  if (!client)
+    return 0;
+  for (size_t i = 0; i < AZ_IOT_MAX_SESSION_HANDLERS; ++i)
+  {
+    if (client->session_handlers[i].in_use && client->session_handlers[i].user_ctx == user_ctx)
+    {
+      client->session_handlers[i].in_use = false;
+      client->session_handlers[i].cb = NULL;
+      client->session_handlers[i].user_ctx = NULL;
+      return 1;
+    }
+  }
+  return 0;
 }
 
 bool az_iot_connection_client__is_connected(const az_iot_connection_client* client)

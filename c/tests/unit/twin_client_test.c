@@ -136,6 +136,20 @@ static void open_to_connected(fixture* fx)
   az_iot_mock_mqtt_client_clear_calls(fx->mock);
 }
 
+/* Start a second session on a client that is already back in IDLE. Deliberately
+ * does NOT re-register the factory: registration appends, and destroy() calls
+ * every registered entry's destroy hook, so registering the same factory twice
+ * frees it twice. */
+static void reopen_to_connected(fixture* fx)
+{
+  assert_int_equal(az_iot_connection_client_open(&fx->conn), AZ_IOT_OK);
+  fx->mock = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  assert_non_null(fx->mock);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(fx->mock, AZ_IOT_OK));
+  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+  az_iot_mock_mqtt_client_clear_calls(fx->mock);
+}
+
 /* Walk the mock call history; return the topic of the first PUBLISH found
  * (or NULL). */
 static const char* first_publish_topic(az_iot_mock_mqtt_client* m)
@@ -265,6 +279,208 @@ static void unknown_rid_drops_response(void** state)
       fx->mock, "$iothub/twin/res/200/?$rid=99", NULL, 0, AZ_IOT_MQTT_QOS_0));
   assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
   /* No assertion needed: surviving the call is the test. */
+}
+
+/* ---- service status mapping ---------------------------------------------- */
+
+/* Drive one GET to completion against the given service status and hand back
+ * the result the caller was given. */
+static az_iot_result get_result_for_status(fixture* fx, const char* status_topic)
+{
+  get_record rec = { 0 };
+  assert_int_equal(az_iot_twin_client_get(&fx->twin, on_get, &rec), AZ_IOT_OK);
+  assert_true(
+      az_iot_mock_mqtt_client_inject_message(fx->mock, status_topic, NULL, 0, AZ_IOT_MQTT_QOS_0));
+  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+  assert_true(rec.fired);
+  return rec.status;
+}
+
+static void throttled_status_is_reported_as_busy(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  /* 429 must be distinguishable from a locally full pending table, which is
+   * what NOT_SUPPORTED means on this API. One says "back off and retry", the
+   * other says "you have too many requests in flight"; a caller that cannot
+   * tell them apart cannot do either correctly. */
+  assert_int_equal(get_result_for_status(fx, "$iothub/twin/res/429/?$rid=1"), (int)AZ_IOT_ERR_BUSY);
+}
+
+static void bad_request_status_is_reported_as_invalid_arg(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  /* 400 is the service rejecting the reported-properties JSON this device
+   * sent. Resending it unchanged cannot succeed, so it must not look like a
+   * transport error the caller should retry. */
+  assert_int_equal(
+      get_result_for_status(fx, "$iothub/twin/res/400/?$rid=1"), (int)AZ_IOT_ERR_INVALID_ARG);
+}
+
+static void not_found_status_is_reported_as_not_found(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  assert_int_equal(
+      get_result_for_status(fx, "$iothub/twin/res/404/?$rid=1"), (int)AZ_IOT_ERR_NOT_FOUND);
+}
+
+static void server_error_status_is_reported_as_an_mqtt_error(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  assert_int_equal(get_result_for_status(fx, "$iothub/twin/res/500/?$rid=1"), (int)AZ_IOT_ERR_MQTT);
+}
+
+static void success_statuses_are_reported_as_ok(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  assert_int_equal(get_result_for_status(fx, "$iothub/twin/res/200/?$rid=1"), (int)AZ_IOT_OK);
+  assert_int_equal(get_result_for_status(fx, "$iothub/twin/res/204/?$rid=2"), (int)AZ_IOT_OK);
+}
+
+/* ---- pending requests across a dropped session --------------------------- */
+
+static void a_pending_get_is_failed_when_the_session_drops(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  get_record rec = { 0 };
+  assert_int_equal(az_iot_twin_client_get(&fx->twin, on_get, &rec), AZ_IOT_OK);
+  assert_false(rec.fired);
+
+  /* The response would have travelled on the session that just died, so it can
+   * never arrive. Leaving the caller waiting is indistinguishable from a hang. */
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(fx->mock));
+  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+
+  assert_true(rec.fired);
+  assert_int_equal(rec.status, AZ_IOT_ERR_NOT_CONNECTED);
+}
+
+static void a_pending_patch_is_failed_when_the_session_drops(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  patch_record rec = { 0 };
+  static const uint8_t patch[] = "{\"x\":1}";
+  assert_int_equal(
+      az_iot_twin_client_patch_reported(&fx->twin, patch, sizeof(patch) - 1, on_patch, &rec),
+      AZ_IOT_OK);
+  assert_false(rec.fired);
+
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(fx->mock));
+  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+
+  assert_true(rec.fired);
+  assert_int_equal(rec.status, AZ_IOT_ERR_NOT_CONNECTED);
+}
+
+static void every_pending_request_is_failed_not_just_the_first(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  get_record gets[AZ_IOT_TWIN_MAX_PENDING];
+  memset(gets, 0, sizeof(gets));
+  for (int i = 0; i < AZ_IOT_TWIN_MAX_PENDING; ++i)
+  {
+    assert_int_equal(az_iot_twin_client_get(&fx->twin, on_get, &gets[i]), AZ_IOT_OK);
+  }
+
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(fx->mock));
+  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+
+  for (int i = 0; i < AZ_IOT_TWIN_MAX_PENDING; ++i)
+  {
+    assert_true(gets[i].fired);
+    assert_int_equal(gets[i].status, AZ_IOT_ERR_NOT_CONNECTED);
+  }
+}
+
+static void the_pending_pool_is_reusable_after_a_dropped_session(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  /* Fill the pool, drop the session, and fill it again. Before the slots were
+   * released on teardown this second round returned NOT_SUPPORTED, so a device
+   * on a flaky link lost the ability to talk to its twin at all after
+   * AZ_IOT_TWIN_MAX_PENDING outages. */
+  get_record first[AZ_IOT_TWIN_MAX_PENDING];
+  memset(first, 0, sizeof(first));
+  for (int i = 0; i < AZ_IOT_TWIN_MAX_PENDING; ++i)
+  {
+    assert_int_equal(az_iot_twin_client_get(&fx->twin, on_get, &first[i]), AZ_IOT_OK);
+  }
+  assert_int_equal(az_iot_twin_client_get(&fx->twin, on_get, &first[0]), AZ_IOT_ERR_NOT_SUPPORTED);
+
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(fx->mock));
+  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+
+  /* Reconnect and prove the whole pool came back. */
+  reopen_to_connected(fx);
+  get_record second[AZ_IOT_TWIN_MAX_PENDING];
+  memset(second, 0, sizeof(second));
+  for (int i = 0; i < AZ_IOT_TWIN_MAX_PENDING; ++i)
+  {
+    assert_int_equal(az_iot_twin_client_get(&fx->twin, on_get, &second[i]), AZ_IOT_OK);
+  }
+}
+
+static void a_destroyed_twin_client_is_not_called_on_a_later_session_end(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  get_record rec = { 0 };
+  assert_int_equal(az_iot_twin_client_get(&fx->twin, on_get, &rec), AZ_IOT_OK);
+
+  /* destroy() must unhook the handler. If it did not, the connection would
+   * call into a zeroed client -- and, worse, into whatever the application had
+   * already freed behind the user context. */
+  az_iot_twin_client_destroy(&fx->twin);
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(fx->mock));
+  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+
+  assert_false(rec.fired);
+
+  /* Re-init so the shared teardown() has a valid client to destroy. */
+  assert_int_equal(az_iot_twin_client_init(&fx->twin, &fx->conn), AZ_IOT_OK);
+}
+
+static void destroying_the_connection_does_not_complete_pending_requests(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  get_record rec = { 0 };
+  assert_int_equal(az_iot_twin_client_get(&fx->twin, on_get, &rec), AZ_IOT_OK);
+
+  /* Same rule the QoS-1 acknowledgements follow: on destroy() the application
+   * is tearing everything down and the context the callback closes over may
+   * already be gone, so calling into it would turn cleanup into a
+   * use-after-free. */
+  az_iot_twin_client_destroy(&fx->twin);
+  az_iot_connection_client_destroy(&fx->conn);
+  assert_false(rec.fired);
+
+  /* Rebuild what teardown() expects to tear down. */
+  az_iot_connection_client_options opts = { 0 };
+  opts.host = "broker.example";
+  opts.port = 8883;
+  opts.client_id = "ut-device";
+  assert_int_equal(az_iot_connection_client_init(&fx->conn, &opts), AZ_IOT_OK);
+  assert_int_equal(az_iot_twin_client_init(&fx->twin, &fx->conn), AZ_IOT_OK);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -424,6 +640,24 @@ int main(void)
     cmocka_unit_test_setup_teardown(unsubscribe_stops_delivery, setup, teardown),
     cmocka_unit_test_setup_teardown(mutating_registry_during_dispatch_is_busy, setup, teardown),
     cmocka_unit_test_setup_teardown(unknown_rid_drops_response, setup, teardown),
+    cmocka_unit_test_setup_teardown(success_statuses_are_reported_as_ok, setup, teardown),
+    cmocka_unit_test_setup_teardown(throttled_status_is_reported_as_busy, setup, teardown),
+    cmocka_unit_test_setup_teardown(bad_request_status_is_reported_as_invalid_arg, setup, teardown),
+    cmocka_unit_test_setup_teardown(not_found_status_is_reported_as_not_found, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        server_error_status_is_reported_as_an_mqtt_error, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_pending_get_is_failed_when_the_session_drops, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_pending_patch_is_failed_when_the_session_drops, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        every_pending_request_is_failed_not_just_the_first, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        the_pending_pool_is_reusable_after_a_dropped_session, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_destroyed_twin_client_is_not_called_on_a_later_session_end, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        destroying_the_connection_does_not_complete_pending_requests, setup, teardown),
   };
   return cmocka_run_group_tests_name("twin_client", tests, NULL, NULL);
 }
