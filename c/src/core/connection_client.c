@@ -1006,6 +1006,18 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
     case AZ_IOT_MQTT_EVT_CONNECTED:
       if (evt->status == AZ_IOT_OK)
       {
+        /* A CONNACK that arrives after the application asked to close belongs
+         * to an attempt it has already abandoned. Announcing CONNECTED here
+         * would report a session the caller did not ask for, and anything that
+         * publishes on CONNECTED would write into a socket that is already
+         * being torn down. The DISCONNECTED event still on its way settles the
+         * session to IDLE. */
+        if (c->user_close || c->state == AZ_IOT_CONN_STATE_DISCONNECTING)
+        {
+          AZ_IOT_LOG_DEBUG("connack ignored: close already requested");
+          break;
+        }
+
         /* Successful CONNACK: clear the burst counter. */
         c->reconnect_attempt = 0;
         c->reconnect_due_ms = 0;
