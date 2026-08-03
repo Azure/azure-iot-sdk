@@ -201,16 +201,11 @@ static void close_while_connecting_disconnects_the_adapter(void** state)
   assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_DISCONNECT), 1);
 }
 
-/* KNOWN DEFECT (pinned, not endorsed). close() during CONNECTING sets
- * user_close and asks the adapter to disconnect, but the CONNACK handler
- * announces CONNECTED unconditionally -- it consults user_close only on the
- * FAILURE branch. So a CONNACK already in flight resurrects a session the app
- * has abandoned: the state callback reports CONNECTED after close(), and
- * anything that publishes on CONNECTED writes into a socket being torn down.
- * The session does settle to IDLE once DISCONNECTED arrives.
- * This test locks in the SHIPPING behaviour so the fix is a visible, deliberate
- * diff. See docs/test-coverage.md ("known gaps"). */
-static void close_while_connecting_does_not_suppress_a_late_connack(void** state)
+/* A CONNACK that lands after the application asked to close belongs to an
+ * attempt it has already abandoned. Announcing CONNECTED for it would report a
+ * session nobody asked for, and any code that publishes on CONNECTED would
+ * write into a socket already being torn down. */
+static void close_while_connecting_suppresses_a_late_connack(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
   az_iot_mock_mqtt_client* m = open_to_connecting(fx);
@@ -219,15 +214,27 @@ static void close_while_connecting_does_not_suppress_a_late_connack(void** state
   assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
   (void)az_iot_connection_client_do_work(fx->client, 0);
 
-  /* Today: CONNECTED wins over the pending close. */
-  assert_true(az_iot_test_saw_state(&fx->log, AZ_IOT_CONN_STATE_CONNECTED));
+  assert_false(az_iot_connection_client__is_connected(fx->client));
+  assert_false(az_iot_test_saw_state(&fx->log, AZ_IOT_CONN_STATE_CONNECTED));
 
-  /* The close is not lost, though: the disconnect was already requested and
-   * the session lands on IDLE (not RECONNECTING) once it completes. */
+  /* The close still completes normally once the disconnect lands. */
   assert_true(az_iot_mock_mqtt_client_inject_disconnected(m));
   (void)az_iot_connection_client_do_work(fx->client, 0);
   (void)az_iot_connection_client_do_work(fx->client, 0);
   assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_IDLE);
+}
+
+/* The suppression must key on "the user asked to close", not on a stale state:
+ * a normal CONNACK on a live attempt is still announced. */
+static void a_connack_without_a_pending_close_still_connects(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_mock_mqtt_client* m = open_to_connecting(fx);
+
+  assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  assert_true(az_iot_connection_client__is_connected(fx->client));
 }
 
 static void close_twice_is_idempotent(void** state)
@@ -566,7 +573,9 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         close_while_connecting_disconnects_the_adapter, setup, teardown),
     cmocka_unit_test_setup_teardown(
-        close_while_connecting_does_not_suppress_a_late_connack, setup, teardown),
+        close_while_connecting_suppresses_a_late_connack, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_connack_without_a_pending_close_still_connects, setup, teardown),
     cmocka_unit_test_setup_teardown(close_twice_is_idempotent, setup, teardown),
     cmocka_unit_test_setup_teardown(close_from_faulted_reports_not_initialized, setup, teardown),
     /* destroy() */
