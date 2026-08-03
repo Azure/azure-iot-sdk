@@ -43,6 +43,23 @@
             "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" }
         },
         {
+            "name": "linux-gcc-coverage",
+            "inherits": "linux-base",
+            "generator": "Ninja",
+            "cacheVariables": {
+                "CMAKE_C_COMPILER": "gcc",
+                "CMAKE_BUILD_TYPE": "Debug",
+                "CMAKE_C_FLAGS": "-O0",
+                "AZ_IOT_BUILD_TESTS": "ON",
+                "AZ_IOT_ENABLE_COVERAGE": "ON",
+                "AZ_IOT_WITH_PAHO": "ON",
+                "AZ_IOT_WITH_RUST_MQTT": "OFF",
+                "AZ_IOT_WITH_ADU_CRYPTO_OPENSSL": "ON",
+                "AZ_IOT_WITH_CERT_PROVIDER_MANAGED": "ON"
+            },
+            "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" }
+        },
+        {
             "name": "windows-msvc-debug",
             "inherits": "base",
             "generator": "Ninja Multi-Config",
@@ -55,11 +72,13 @@
     "buildPresets": [
         { "name": "linux-gcc-debug",   "configurePreset": "linux-gcc-debug" },
         { "name": "linux-clang-debug", "configurePreset": "linux-clang-debug" },
+        { "name": "linux-gcc-coverage", "configurePreset": "linux-gcc-coverage" },
         { "name": "windows-msvc-debug", "configurePreset": "windows-msvc-debug", "configuration": "Debug" }
     ],
     "testPresets": [
         { "name": "linux-gcc-debug",   "configurePreset": "linux-gcc-debug",   "output": { "outputOnFailure": true } },
         { "name": "linux-clang-debug", "configurePreset": "linux-clang-debug", "output": { "outputOnFailure": true } },
+        { "name": "linux-gcc-coverage", "configurePreset": "linux-gcc-coverage", "output": { "outputOnFailure": true } },
         { "name": "windows-msvc-debug", "configurePreset": "windows-msvc-debug", "configuration": "Debug", "output": { "outputOnFailure": true } }
     ]
 }

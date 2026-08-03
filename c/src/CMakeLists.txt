@@ -54,4 +54,5 @@ target_link_libraries(az_iot_core
 )
 
 az_iot_apply_warnings(az_iot_core)
+az_iot_apply_coverage(az_iot_core)
 

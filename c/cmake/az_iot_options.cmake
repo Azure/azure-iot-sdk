@@ -15,6 +15,12 @@ option(AZ_IOT_BUILD_E2E        "Build the end-to-end test device agent"         
 option(AZ_IOT_USE_SYSTEM_DEPS  "Prefer find_package() over fetched deps"       OFF)
 option(AZ_IOT_USE_CPM          "Use CPM.cmake to fetch deps from source"       OFF)
 option(AZ_IOT_WARNINGS_AS_ERRORS "Treat compiler warnings as errors"           ON)
+# Code coverage (gcov/gcovr) for first-party targets. Off by default: it forces
+# -O0-style instrumentation and roughly doubles test wall time, so it gets its
+# own build tree (the linux-gcc-coverage preset) rather than riding along with
+# the normal debug build. No-op on MSVC -- Windows coverage is collected
+# externally by OpenCppCoverage against an ordinary build.
+option(AZ_IOT_ENABLE_COVERAGE  "Instrument first-party targets for gcov"       OFF)
 # azure-sdk-for-c (az::core + az::iot::hub + az::iot::provisioning) is a
 # MANDATORY dependency. It is how we talk to DPS and IoTHub-Classic. There is
 # intentionally no option to disable it.

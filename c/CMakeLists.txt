@@ -25,6 +25,7 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 include(az_iot_options)
 include(compiler_warnings)
+include(az_iot_coverage)
 
 # azure-sdk-for-c is a mandatory dependency.
 #   az::core                 — spans, JSON, log, contexts, result codes.
@@ -122,3 +123,6 @@ if(AZ_IOT_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)
 endif()
+
+# Declared last so it sees every instrumented target.
+az_iot_add_coverage_target()
