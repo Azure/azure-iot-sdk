@@ -98,6 +98,7 @@ target_include_directories(az_iot_tests_reconnect_policy PRIVATE
 az_iot_add_cmocka_test(az_iot_tests_span_writer unit/span_writer_test.c)
 target_include_directories(az_iot_tests_span_writer PRIVATE
     ${CMAKE_SOURCE_DIR}/src/core)
+az_iot_add_cmocka_test(az_iot_tests_log unit/log_test.c)
 az_iot_add_cmocka_test(az_iot_tests_protocol_profile_dispatch unit/protocol_profile_dispatch_test.c)
 target_include_directories(az_iot_tests_protocol_profile_dispatch PRIVATE
     ${CMAKE_SOURCE_DIR}/src/core)

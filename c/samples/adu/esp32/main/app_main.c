@@ -105,7 +105,7 @@ void app_main(void)
         esp_restart();
     }
 
-    az_iot_log_sink log = az_iot_log_stderr_sink(AZ_IOT_LOG_INFO);
+    az_iot_log_sink log = az_iot_log_stderr_sink(AZ_IOT_LOG_LEVEL_INFO);
     az_iot_log_set_global_sink(&log);
 
     /* Certificate provider: hands the SDK the embedded PEM material. */

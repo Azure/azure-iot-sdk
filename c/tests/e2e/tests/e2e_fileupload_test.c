@@ -54,6 +54,7 @@
 
 #include "az_iot_e2e_service.h"
 #include "e2e_device.h"
+#include "e2e_log.h"
 
 /* How long to wait for IoT Hub to post a file-upload notification. The hub
  * batches these and a freshly provisioned hub is slower still, so the budget is
@@ -550,26 +551,7 @@ static void test_sequential_uploads_reuse_the_client(void** state)
 
 int main(void)
 {
-    az_iot_log_level log_level = AZ_IOT_LOG_ERROR;
-#ifdef _WIN32
-    char* lvl = NULL;
-    size_t lvl_len = 0;
-    if (_dupenv_s(&lvl, &lvl_len, "AZ_IOT_E2E_LOG_LEVEL") != 0) lvl = NULL;
-#else
-    const char* lvl = getenv("AZ_IOT_E2E_LOG_LEVEL");
-#endif
-    if (lvl != NULL && lvl[0] != '\0')
-    {
-        if      (strcmp(lvl, "TRACE") == 0) log_level = AZ_IOT_LOG_TRACE;
-        else if (strcmp(lvl, "DEBUG") == 0) log_level = AZ_IOT_LOG_DEBUG;
-        else if (strcmp(lvl, "INFO")  == 0) log_level = AZ_IOT_LOG_INFO;
-        else if (strcmp(lvl, "WARN")  == 0) log_level = AZ_IOT_LOG_WARN;
-    }
-#ifdef _WIN32
-    free(lvl);
-#endif
-    az_iot_log_sink log = az_iot_log_stderr_sink(log_level);
-    az_iot_log_set_global_sink(&log);
+    e2e_install_log_sink();
 
     const struct CMUnitTest tests[] = {
         cmocka_unit_test(test_upload_round_trip_and_failure_reporting),

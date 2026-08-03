@@ -5,6 +5,7 @@
 #include "azure/iot/az_iot_log.h"
 #include "internal/log_internal.h"
 
+#include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -25,14 +26,44 @@ void az_iot_log_set_global_sink(const az_iot_log_sink* sink)
     }
 }
 
+bool az_iot_log_is_enabled(az_iot_log_level level)
+{
+    return s_sink_active && s_global_sink.sink != NULL && level >= s_global_sink.min_level;
+}
+
+/* Sinks are handed to plain "%s" formatting far more often than not -- the
+ * built-in stderr sink does exactly that -- so a NULL reaching one is
+ * undefined behaviour in code the SDK does not own. Now that emit is public,
+ * substitute here rather than trusting every caller and every sink. */
+static const char* log_text_or(const char* value, const char* fallback)
+{
+    return value != NULL ? value : fallback;
+}
+
 void az_iot_log_emit(az_iot_log_level level, const char* file, int line, const char* msg)
 {
-    if (!s_sink_active) return;
-    if (level < s_global_sink.min_level) return;
-    if (s_global_sink.sink)
-    {
-        s_global_sink.sink(s_global_sink.user_ctx, level, file, line, msg);
-    }
+    if (!az_iot_log_is_enabled(level)) return;
+    s_global_sink.sink(
+        s_global_sink.user_ctx, level, log_text_or(file, "?"), line, log_text_or(msg, ""));
+}
+
+void az_iot_log_emitf(az_iot_log_level level, const char* file, int line, const char* fmt, ...)
+{
+    /* Test the sink before formatting so a disabled level costs one comparison
+     * rather than a full vsnprintf. */
+    if (fmt == NULL || !az_iot_log_is_enabled(level)) return;
+
+    char msg[AZ_IOT_LOG_MESSAGE_MAX];
+    va_list args;
+    va_start(args, fmt);
+    int written = vsnprintf(msg, sizeof(msg), fmt, args);
+    va_end(args);
+
+    /* vsnprintf truncates on its own when the text does not fit; a negative
+     * count is a genuine encoding failure and there is nothing to report. */
+    if (written < 0) return;
+
+    s_global_sink.sink(s_global_sink.user_ctx, level, log_text_or(file, "?"), line, msg);
 }
 
 /* Built-in stderr sink implementation. */
@@ -45,7 +76,7 @@ static void stderr_sink_fn(
 {
     (void)user_ctx;
     static const char* level_names[] = { "TRACE", "DEBUG", "INFO", "WARN", "ERROR" };
-    const char* lvl = (level >= 0 && level <= AZ_IOT_LOG_ERROR) ? level_names[level] : "?";
+    const char* lvl = (level >= 0 && level <= AZ_IOT_LOG_LEVEL_ERROR) ? level_names[level] : "?";
     fprintf(stderr, "[%s] %s:%d: %s\n", lvl, file, line, msg);
 }
 

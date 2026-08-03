@@ -26,12 +26,20 @@ typedef struct az_iot_telemetry_client
 
 typedef struct az_iot_telemetry_property
 {
+    /* Plain text, never pre-encoded. On the Classic (MQTT v3.1.1) path the SDK
+     * percent-encodes both halves into the topic's property bag, so "$.ct"
+     * goes on the wire as "%24.ct" and a value of "application/json" as
+     * "application%2Fjson". Pre-encoding here would be encoded again. On the
+     * Hub-Next (MQTT v5) path they travel as User Properties and need no
+     * encoding at all. */
     const char* key;
     const char* value;
 } az_iot_telemetry_property;
 
 /* Well-known system property keys. Use these as the `key` in
- * az_iot_telemetry_property to set IoT Hub system properties. */
+ * az_iot_telemetry_property to set IoT Hub system properties. They are spelled
+ * in readable form; azure-sdk-for-c spells the same names pre-encoded
+ * ("%24.ct"), and the bytes this SDK publishes are identical. */
 #define AZ_IOT_MSG_PROP_CONTENT_TYPE     "$.ct"
 #define AZ_IOT_MSG_PROP_CONTENT_ENCODING "$.ce"
 #define AZ_IOT_MSG_PROP_MESSAGE_ID       "$.mid"
