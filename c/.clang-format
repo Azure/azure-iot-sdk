@@ -1,14 +1,29 @@
-# Copyright (c) Microsoft. All rights reserved.
-# Licensed under the MIT license. See LICENSE file in the project root for full license information.
-
-BasedOnStyle: Microsoft
-Language: Cpp
-Standard: c++03
-IndentWidth: 4
-ColumnLimit: 110
+---
+# Adopted from azure-sdk-for-c's .clang-format so this project reads the same
+# way as the SDK it is built on. Keep it in sync when upstream changes.
+#
+# We'll use defaults from the LLVM style, but with the following differences.
+BasedOnStyle: LLVM
+AlignAfterOpenBracket: AlwaysBreak
+AlignEscapedNewlines: Left
+AlignOperands: false
+AlignTrailingComments: false
+AllowAllParametersOfDeclarationOnNextLine: false
+BinPackArguments: false
+BinPackParameters: false
+BreakBeforeBinaryOperators: All
 BreakBeforeBraces: Allman
-AllowShortFunctionsOnASingleLine: None
-AllowShortIfStatementsOnASingleLine: false
-AllowShortLoopsOnASingleLine: false
-SortIncludes: false
+ColumnLimit: 100
+Cpp11BracedListStyle: false
+IndentCaseLabels: true
+PenaltyReturnTypeOnItsOwnLine: 300
 PointerAlignment: Left
+StatementMacros: ['_az_PUSH_IGNORE_DEPRECATIONS', '_az_POP_WARNINGS']
+# The one deviation from upstream, and it is load-bearing rather than taste.
+# LLVM enables SortIncludes, which sorts <cmocka.h> to the top of its block.
+# cmocka.h does not include what it needs and documents that <stdarg.h>,
+# <stddef.h>, <setjmp.h> and <stdint.h> must precede it, so every unit test
+# stops compiling with "unknown type name 'size_t'". Include order is
+# load-bearing in C; leave this off.
+SortIncludes: false
+...

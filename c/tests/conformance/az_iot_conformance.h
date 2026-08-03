@@ -1,5 +1,6 @@
 // Copyright (c) Microsoft. All rights reserved.
-// Licensed under the MIT license. See LICENSE file in the project root for full license information.
+// Licensed under the MIT license. See LICENSE file in the project root for full license
+// information.
 
 /* SPDX-License-Identifier: MIT */
 /* MQTT iface conformance suite for azure-iot-sdk.
@@ -38,27 +39,26 @@
 #include "azure/iot/az_iot_mqtt_iface.h"
 
 #ifdef __cplusplus
-extern "C" {
+extern "C"
+{
 #endif
 
-/* Which suite to run. Each suite is a curated set of cmocka tests appropriate
- * for the given MQTT version. */
-typedef enum az_iot_conformance_suite
-{
+  /* Which suite to run. Each suite is a curated set of cmocka tests appropriate
+   * for the given MQTT version. */
+  typedef enum az_iot_conformance_suite
+  {
     AZ_IOT_CONFORMANCE_SUITE_V3_1_1 = 0,
-    AZ_IOT_CONFORMANCE_SUITE_V5     = 1
-} az_iot_conformance_suite;
+    AZ_IOT_CONFORMANCE_SUITE_V5 = 1
+  } az_iot_conformance_suite;
 
-/* Run the conformance suite for `suite_kind` against the given factory.
- * Returns:
- *   0  on success (all tests passed)
- *   77 if the suite was skipped (no broker configured)
- *   1  on failure (one or more tests failed)
- *
- * Suitable to use directly as the return value of main() in a harness exe. */
-int az_iot_conformance_run(
-    az_iot_conformance_suite suite_kind,
-    az_iot_mqtt_factory* factory);
+  /* Run the conformance suite for `suite_kind` against the given factory.
+   * Returns:
+   *   0  on success (all tests passed)
+   *   77 if the suite was skipped (no broker configured)
+   *   1  on failure (one or more tests failed)
+   *
+   * Suitable to use directly as the return value of main() in a harness exe. */
+  int az_iot_conformance_run(az_iot_conformance_suite suite_kind, az_iot_mqtt_factory* factory);
 
 #ifdef __cplusplus
 }

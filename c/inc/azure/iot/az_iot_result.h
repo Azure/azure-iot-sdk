@@ -1,5 +1,6 @@
 // Copyright (c) Microsoft. All rights reserved.
-// Licensed under the MIT license. See LICENSE file in the project root for full license information.
+// Licensed under the MIT license. See LICENSE file in the project root for full license
+// information.
 
 /* SPDX-License-Identifier: MIT */
 #ifndef AZ_IOT_RESULT_H
@@ -8,11 +9,12 @@
 #include <azure/az_core.h> /* AZ_NODISCARD (and az_span, used across the public headers) */
 
 #ifdef __cplusplus
-extern "C" {
+extern "C"
+{
 #endif
 
-typedef enum az_iot_result
-{
+  typedef enum az_iot_result
+  {
     AZ_IOT_OK = 0,
     AZ_IOT_ERR_INVALID_ARG,
     AZ_IOT_ERR_OUT_OF_MEMORY,
@@ -38,9 +40,9 @@ typedef enum az_iot_result
      * hub outage never turns into a DPS stampede. New values must keep being
      * appended here so existing numeric values do not shift. */
     AZ_IOT_ERR_IDENTITY_REJECTED
-} az_iot_result;
+  } az_iot_result;
 
-const char* az_iot_result_to_string(az_iot_result r);
+  const char* az_iot_result_to_string(az_iot_result r);
 
 #ifdef __cplusplus
 }
