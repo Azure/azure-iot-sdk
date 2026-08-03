@@ -70,20 +70,25 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     # Mosquitto service container for the MQTT iface conformance suite.
-    # GitHub Actions service containers only run on Linux runners; the Windows
-    # job skips the conformance tests (CTest exit 77) automatically because
-    # AZ_IOT_AEG_MQTT_BROKER_HOST is not set there.
+    # GitHub Actions service containers only run on Linux runners; on Windows
+    # AZ_IOT_MQTT_BROKER_HOST is set to the empty string, which the harness
+    # treats the same as unset, so the conformance tests skip themselves
+    # (CTest exit 77).
     services:
       mosquitto:
         image: ${{ matrix.os == 'ubuntu-latest' && 'eclipse-mosquitto:2' || '' }}
         ports:
           - 1883:1883
-        # mosquitto:2 needs a config file that opts into anonymous + listener.
-        # We bake one in by overriding the entrypoint.
+        # A real liveness probe: mosquitto_pub succeeds only once the broker is
+        # accepting connections. The previous `mosquitto_sub '$SYS/#' ... ||
+        # exit 0` form reported healthy unconditionally, so the conformance
+        # suites could race broker startup. That was harmless only while those
+        # suites were silently skipping.
         options: >-
-          --health-cmd="mosquitto_sub -t '$$SYS/#' -C 1 -W 3 -h localhost || exit 0"
+          --health-cmd="mosquitto_pub -h localhost -p 1883 -t healthcheck -m ok"
           --health-interval=5s
-          --health-retries=5
+          --health-retries=10
+          --health-start-period=5s
 
     steps:
       - uses: actions/checkout@v4
@@ -97,17 +102,20 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y ninja-build
 
       - name: Configure
-        run: cmake --preset ${{ matrix.preset }} -DAZ_IOT_AEG_WITH_PAHO=${{ matrix.with_paho }}
+        run: cmake --preset ${{ matrix.preset }} -DAZ_IOT_WITH_PAHO=${{ matrix.with_paho }}
       - name: Build
         run: cmake --build --preset ${{ matrix.preset }} --config ${{ matrix.build_type }}
 
       - name: Test
         env:
-          # On Linux, the mosquitto service container is reachable as
-          # `mosquitto:1883`. On Windows we leave these unset so the
-          # conformance harnesses skip themselves (CTest exit 77).
-          AZ_IOT_AEG_MQTT_BROKER_HOST: ${{ runner.os == 'Linux' && 'mosquitto' || '' }}
-          AZ_IOT_AEG_MQTT_BROKER_PORT: ${{ runner.os == 'Linux' && '1883' || '' }}
+          # This job does not run inside a container, so the mosquitto service
+          # container is published on the runner's own localhost -- NOT at the
+          # service label `mosquitto`, which only resolves for containerized
+          # jobs. On Windows there is no service container, so these are set to
+          # the empty string; the conformance harness treats empty the same as
+          # unset and skips itself (CTest exit 77).
+          AZ_IOT_MQTT_BROKER_HOST: ${{ runner.os == 'Linux' && 'localhost' || '' }}
+          AZ_IOT_MQTT_BROKER_PORT: ${{ runner.os == 'Linux' && '1883' || '' }}
         run: ctest --preset ${{ matrix.preset }} ${{ runner.os == 'Windows' && format('-C {0}', matrix.build_type) || '' }} --output-on-failure
 
   c99-strict:
@@ -120,6 +128,15 @@ jobs:
         image: eclipse-mosquitto:2
         ports:
           - 1883:1883
+        # This job previously had no health check at all, which was harmless
+        # only because AZ_IOT_AEG_BUILD_TESTS meant it never ran a test. It now
+        # builds and runs the conformance suites, which connect immediately, so
+        # it needs to wait for the broker like every other job.
+        options: >-
+          --health-cmd="mosquitto_pub -h localhost -p 1883 -t healthcheck -m ok"
+          --health-interval=5s
+          --health-retries=10
+          --health-start-period=5s
     steps:
       - uses: actions/checkout@v4
       - name: Install ninja
@@ -128,15 +145,15 @@ jobs:
         run: >
           cmake -S . -B build/c99-strict -G Ninja
           -DCMAKE_C_COMPILER=gcc
-          -DAZ_IOT_AEG_WITH_PAHO=ON
-          -DAZ_IOT_AEG_BUILD_TESTS=ON
+          -DAZ_IOT_WITH_PAHO=ON
+          -DAZ_IOT_BUILD_TESTS=ON
           -DCMAKE_C_FLAGS="-std=c99 -pedantic -Wall -Wextra -Werror"
       - name: Build
         run: cmake --build build/c99-strict
       - name: Test
         env:
-          AZ_IOT_AEG_MQTT_BROKER_HOST: mosquitto
-          AZ_IOT_AEG_MQTT_BROKER_PORT: '1883'
+          AZ_IOT_MQTT_BROKER_HOST: localhost
+          AZ_IOT_MQTT_BROKER_PORT: '1883'
         run: ctest --test-dir build/c99-strict --output-on-failure
 
   # ---------------------------------------------------------------------------
@@ -162,9 +179,10 @@ jobs:
         ports:
           - 1883:1883
         options: >-
-          --health-cmd="mosquitto_sub -t '$$SYS/#' -C 1 -W 3 -h localhost || exit 0"
+          --health-cmd="mosquitto_pub -h localhost -p 1883 -t healthcheck -m ok"
           --health-interval=5s
-          --health-retries=5
+          --health-retries=10
+          --health-start-period=5s
     steps:
       - uses: actions/checkout@v4
       - name: Install deps
@@ -172,14 +190,18 @@ jobs:
       - name: Configure
         run: >
           cmake --preset linux-gcc-debug
-          -DAZ_IOT_AEG_WITH_PAHO=ON
-          -DAZ_IOT_AEG_WITH_RUST_MQTT=ON
+          -DAZ_IOT_WITH_PAHO=ON
+          -DAZ_IOT_WITH_RUST_MQTT=ON
       - name: Build
         run: cmake --build --preset linux-gcc-debug
       - name: Test under valgrind
         env:
-          AZ_IOT_AEG_MQTT_BROKER_HOST: mosquitto
-          AZ_IOT_AEG_MQTT_BROKER_PORT: '1883'
+          # Set for completeness. This step excludes the conformance suites
+          # anyway (-E conformance): running a live-broker network suite under
+          # valgrind is slow and its failures would be about the broker, not
+          # about memory.
+          AZ_IOT_MQTT_BROKER_HOST: localhost
+          AZ_IOT_MQTT_BROKER_PORT: '1883'
         working-directory: c/build/linux-gcc-debug
         run: |
           ctest --output-on-failure -E conformance \
@@ -215,11 +237,15 @@ jobs:
         # / protocol_profile_dispatch / telemetry / direct_method / twin /
         # dps_client / dps_handoff / certificate_provider_pem / easy_client /
         # rust_mqtt_adapter) cover everything we want ASan to vet.
+        #
+        # NOTE: until this commit these were AZ_IOT_AEG_* -- names no option
+        # ever declared -- so Paho was in fact ON here, contradicting the
+        # paragraph above. It is genuinely OFF now.
         shell: pwsh
         run: >
           cmake --preset windows-msvc-debug
-          -DAZ_IOT_AEG_WITH_PAHO=OFF
-          -DAZ_IOT_AEG_WITH_RUST_MQTT=ON
+          -DAZ_IOT_WITH_PAHO=OFF
+          -DAZ_IOT_WITH_RUST_MQTT=ON
           -DCMAKE_C_FLAGS="/fsanitize=address /Zi"
       - name: Build
         run: cmake --build --preset windows-msvc-debug --config Debug
@@ -248,8 +274,8 @@ jobs:
     env:
       # Lowest acceptable number of CTest suites. Guards against a
       # misconfigured build silently running zero tests and reporting coverage
-      # computed over nothing -- which is exactly what the dead
-      # AZ_IOT_AEG_BUILD_TESTS option does to the c99-strict job today.
+      # computed over nothing -- the failure mode the dead AZ_IOT_AEG_* option
+      # names used to cause in this workflow.
       MIN_TESTS: '16'
     services:
       mosquitto:
@@ -257,10 +283,7 @@ jobs:
         ports:
           - 1883:1883
         # A real liveness probe: mosquitto_pub succeeds only if the broker
-        # accepted a connection. The `mosquitto_sub '$SYS/#' ... || exit 0`
-        # form used by the older jobs in this file always reports healthy --
-        # both because of the `|| exit 0` and because the first $SYS message
-        # can take longer to arrive than the timeout allows.
+        # accepted a connection.
         options: >-
           --health-cmd="mosquitto_pub -h localhost -p 1883 -t healthcheck -m ok"
           --health-interval=5s
@@ -303,11 +326,8 @@ jobs:
 
       - name: Test
         env:
-          # NOTE: the real variable names. The other jobs in this workflow set
-          # AZ_IOT_AEG_MQTT_BROKER_HOST, which nothing reads, so their
-          # conformance suites have always silently skipped.
           # Service containers are reachable on localhost for jobs that do not
-          # themselves run in a container.
+          # themselves run in a container -- NOT at the service label.
           AZ_IOT_MQTT_BROKER_HOST: localhost
           AZ_IOT_MQTT_BROKER_PORT: '1883'
         run: ctest --preset linux-gcc-coverage -E e2e
