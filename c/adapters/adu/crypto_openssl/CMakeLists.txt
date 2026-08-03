@@ -9,6 +9,13 @@
 
 find_package(OpenSSL 3.0 QUIET)
 if(NOT OPENSSL_FOUND)
+    # Under coverage this adapter silently leaving the build would shrink the
+    # denominator and RAISE the reported number, so refuse to configure instead.
+    if(AZ_IOT_ENABLE_COVERAGE)
+        message(FATAL_ERROR
+            "OpenSSL 3.0+ not found, but AZ_IOT_ENABLE_COVERAGE is ON. Shipped "
+            "adapters may not be dropped from a coverage build.")
+    endif()
     message(STATUS "OpenSSL 3.0+ NOT found - ADU OpenSSL crypto adapter disabled")
     return()
 endif()
@@ -32,3 +39,4 @@ target_link_libraries(az_iot_adu_crypto_openssl
         OpenSSL::Crypto
 )
 az_iot_apply_warnings(az_iot_adu_crypto_openssl)
+az_iot_apply_coverage(az_iot_adu_crypto_openssl)

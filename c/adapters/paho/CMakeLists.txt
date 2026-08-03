@@ -132,6 +132,7 @@ if(_PAHO_SSL)
     target_link_libraries(az_iot_adapter_paho PRIVATE OpenSSL::SSL OpenSSL::Crypto)
 endif()
 az_iot_apply_warnings(az_iot_adapter_paho)
+az_iot_apply_coverage(az_iot_adapter_paho)
 
 if(WIN32)
     # Paho on Windows needs ws2_32 + crypt32 even without SSL.
