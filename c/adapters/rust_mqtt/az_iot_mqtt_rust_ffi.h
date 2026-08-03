@@ -33,7 +33,11 @@ extern "C" {
 /* Opaque Rust-side client handle. */
 typedef struct az_iot_rust_mqtt_client az_iot_rust_mqtt_client;
 
-typedef struct az_iot_rust_mqtt_ffi
+/* Plain `struct`, NOT `typedef struct ... az_iot_rust_mqtt_ffi`. The public
+ * header az_iot_adapter_rust_mqtt.h already forward-declares the typedef, and
+ * C99 forbids defining the same typedef name twice: gcc/clang reject it with
+ * -Werror=pedantic (MSVC accepts it, so this only breaks the Linux legs). */
+struct az_iot_rust_mqtt_ffi
 {
     /* Construct a client of the given MQTT version. Must return NULL on
      * allocation failure. P0 only invokes this with version=v5. */
@@ -72,7 +76,7 @@ typedef struct az_iot_rust_mqtt_ffi
         az_iot_rust_mqtt_client* client,
         az_iot_mqtt_event_callback cb,
         void* user_ctx);
-} az_iot_rust_mqtt_ffi;
+};
 
 #ifdef __cplusplus
 }
