@@ -1596,6 +1596,29 @@ az_iot_result az_iot_connection_client_register_mqtt_factory(
     return AZ_IOT_ERR_INVALID_ARG;
   }
 
+  /* Registering the same factory twice used to append a second entry. It was
+   * never reachable -- find_factory() returns the first match for a version --
+   * but destroy() walks the whole registry and calls every entry's destroy
+   * hook, so the duplicate freed the same factory_ctx a second time. A
+   * double free is a disproportionate punishment for a redundant call, and
+   * "register the transport" is exactly the kind of setup step an application
+   * repeats on a reconfigure path.
+   *
+   * An exact duplicate is therefore idempotent: the registry already routes
+   * this version to this factory, so there is nothing to do. Registering a
+   * DIFFERENT factory for a version that already has one still appends, and
+   * still loses to the first one at lookup -- that is a separate question
+   * about override semantics, not a memory-safety bug. */
+  for (size_t i = 0; i < client->factory_count; ++i)
+  {
+    const az_iot_mqtt_factory* f = &client->factories[i];
+    if (f->create == factory->create && f->factory_ctx == factory->factory_ctx
+        && f->destroy == factory->destroy && f->version == factory->version)
+    {
+      return AZ_IOT_OK;
+    }
+  }
+
   if (client->factory_count >= AZ_IOT_MAX_MQTT_FACTORIES)
   {
     return AZ_IOT_ERR_NOT_SUPPORTED;
