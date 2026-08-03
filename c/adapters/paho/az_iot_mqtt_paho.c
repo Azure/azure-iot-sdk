@@ -747,12 +747,32 @@ static az_iot_result paho_iface_connect(
     conn.onSuccess = paho_connect_success;
     conn.onFailure = paho_connect_failure;
     conn.keepAliveInterval = opts->keep_alive_seconds ? opts->keep_alive_seconds : 60;
-    conn.cleansession = 1;
+    /* v3.1.1 has no separate Clean Start: the caller's clean_start maps onto
+     * the Clean Session flag. This used to be hardcoded to 1, which quietly
+     * defeated the whole point of the option -- IoT Hub only holds a device's
+     * subscriptions and anything it queued while the device was away when the
+     * session is NOT clean, so every reconnect started deaf and lost whatever
+     * had arrived in the meantime. */
+    conn.cleansession = opts->clean_start ? 1 : 0;
     conn.MQTTVersion = MQTTVERSION_3_1_1;
     if (opts->username)
       conn.username = opts->username;
     if (opts->password)
       conn.password = opts->password;
+
+    /* LWT. v3.1.1 has no Will Delay Interval, so will_delay_seconds is
+     * ignored here; the will fires as soon as the broker notices the drop. */
+    MQTTAsync_willOptions will_opts = MQTTAsync_willOptions_initializer;
+    if (opts->lwt.topic && opts->lwt.topic[0])
+    {
+      will_opts.topicName = opts->lwt.topic;
+      will_opts.message = NULL; /* use struct payload */
+      will_opts.qos = (int)opts->lwt.qos;
+      will_opts.retained = opts->lwt.retain ? 1 : 0;
+      will_opts.payload.data = (char*)(uintptr_t)opts->lwt.payload;
+      will_opts.payload.len = (int)opts->lwt.payload_len;
+      conn.will = &will_opts;
+    }
 #ifdef AZ_IOT_PAHO_SSL
     if (use_ssl)
       conn.ssl = &ssl_opts;

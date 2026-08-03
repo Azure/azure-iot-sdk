@@ -310,6 +310,87 @@ static void send_rejects_invalid_args(void** state)
   assert_int_equal(az_iot_telemetry_client_send(&fx->tc, NULL, NULL, NULL), AZ_IOT_ERR_INVALID_ARG);
 }
 
+/* ---- wire invariants IoT Hub enforces ------------------------------------ */
+
+static void the_publish_never_uses_qos_2(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  /* IoT Hub does not support QoS 2: a device that publishes one has its
+   * network connection closed. Nothing else in the SDK stops this, so pin it
+   * where the application's data actually goes out. */
+  az_iot_telemetry_property props[] = { { AZ_IOT_MSG_PROP_CONTENT_TYPE, "application/json" } };
+  static const uint8_t payload[] = "{}";
+  az_iot_telemetry_message msg = { 0 };
+  msg.payload = payload;
+  msg.payload_len = 2;
+  msg.properties = props;
+  msg.properties_count = 1;
+  assert_int_equal(az_iot_telemetry_client_send(&fx->tc, &msg, NULL, NULL), AZ_IOT_OK);
+
+  size_t n = az_iot_mock_mqtt_client_call_count(fx->mock);
+  size_t publishes = 0;
+  for (size_t i = 0; i < n; ++i)
+  {
+    const az_iot_mock_call* c = az_iot_mock_mqtt_client_call_at(fx->mock, i);
+    if (c->kind != AZ_IOT_MOCK_CALL_PUBLISH)
+      continue;
+    publishes++;
+    assert_true(c->qos == AZ_IOT_MQTT_QOS_0 || c->qos == AZ_IOT_MQTT_QOS_1);
+  }
+  /* Without this the test would also pass if send() stopped publishing at all,
+   * which is the one way "no QoS 2 was used" could be true and useless. */
+  assert_int_equal(publishes, 1);
+}
+
+static void the_publish_never_sets_retain(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  /* IoT Hub does not persist retained messages. It converts the flag into an
+   * "mqtt-retain" application property and hands the message to the backend,
+   * so setting it would quietly change the shape of every message a routing
+   * query sees. */
+  static const uint8_t payload[] = "{}";
+  az_iot_telemetry_message msg = { 0 };
+  msg.payload = payload;
+  msg.payload_len = 2;
+  assert_int_equal(az_iot_telemetry_client_send(&fx->tc, &msg, NULL, NULL), AZ_IOT_OK);
+
+  assert_int_equal(az_iot_mock_mqtt_client_call_count(fx->mock), 1);
+  const az_iot_mock_call* c = az_iot_mock_mqtt_client_call_at(fx->mock, 0);
+  assert_int_equal(c->kind, AZ_IOT_MOCK_CALL_PUBLISH);
+  assert_false(c->retain);
+}
+
+static void a_routing_content_type_survives_encoding(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  /* To route on the message BODY, IoT Hub requires the content type to be
+   * exactly "application/json;charset=utf-8" once decoded. Both the '/' and
+   * the ';' have to arrive percent-encoded or the property bag is misparsed
+   * and body-based routing silently stops matching. */
+  az_iot_telemetry_property props[]
+      = { { AZ_IOT_MSG_PROP_CONTENT_TYPE, "application/json;charset=utf-8" } };
+  static const uint8_t payload[] = "{}";
+  az_iot_telemetry_message msg = { 0 };
+  msg.payload = payload;
+  msg.payload_len = 2;
+  msg.properties = props;
+  msg.properties_count = 1;
+  assert_int_equal(az_iot_telemetry_client_send(&fx->tc, &msg, NULL, NULL), AZ_IOT_OK);
+
+  assert_int_equal(az_iot_mock_mqtt_client_call_count(fx->mock), 1);
+  const az_iot_mock_call* c = az_iot_mock_mqtt_client_call_at(fx->mock, 0);
+  assert_int_equal(c->kind, AZ_IOT_MOCK_CALL_PUBLISH);
+  assert_string_equal(
+      c->topic, "devices/ut-device/messages/events/%24.ct=application%2Fjson%3Bcharset%3Dutf-8");
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -324,6 +405,9 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         send_reports_not_enough_space_when_the_bag_overflows, setup, teardown),
     cmocka_unit_test_setup_teardown(send_rejects_invalid_args, setup, teardown),
+    cmocka_unit_test_setup_teardown(the_publish_never_uses_qos_2, setup, teardown),
+    cmocka_unit_test_setup_teardown(the_publish_never_sets_retain, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_routing_content_type_survives_encoding, setup, teardown),
   };
   return cmocka_run_group_tests_name("telemetry_client", tests, NULL, NULL);
 }
