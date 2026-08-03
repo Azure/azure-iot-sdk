@@ -157,6 +157,29 @@ static void a_precision_bounded_argument_is_not_over_read(void** state)
     assert_string_equal(g_capture.msg, "body: ab");
 }
 
+static void null_message_and_file_reach_the_sink_as_text(void** state)
+{
+    (void)state;
+    /* emit is public, so a sink can be handed a NULL that the SDK never
+     * produced itself. Sinks format both with "%s" -- the built-in stderr one
+     * does -- so the substitution has to happen before the call, not in the
+     * sink. */
+    az_iot_log_emit(AZ_IOT_LOG_LEVEL_ERROR, NULL, 7, NULL);
+    assert_int_equal(g_capture.count, 1);
+    assert_string_equal(g_capture.msg, "");
+    assert_string_equal(g_capture.file, "?");
+    assert_int_equal(g_capture.line, 7);
+
+    az_iot_log_emitf(AZ_IOT_LOG_LEVEL_WARN, NULL, 9, "value %d", 3);
+    assert_int_equal(g_capture.count, 2);
+    assert_string_equal(g_capture.msg, "value 3");
+    assert_string_equal(g_capture.file, "?");
+
+    /* A NULL format has no message to build, so nothing is emitted. */
+    az_iot_log_emitf(AZ_IOT_LOG_LEVEL_WARN, __FILE__, __LINE__, NULL);
+    assert_int_equal(g_capture.count, 2);
+}
+
 int main(void)
 {
     const struct CMUnitTest tests[] = {
@@ -166,6 +189,7 @@ int main(void)
         cmocka_unit_test_setup_teardown(levels_below_the_minimum_are_dropped, setup, teardown),
         cmocka_unit_test_setup_teardown(an_oversized_message_is_truncated_not_dropped, setup, teardown),
         cmocka_unit_test_setup_teardown(a_precision_bounded_argument_is_not_over_read, setup, teardown),
+        cmocka_unit_test_setup_teardown(null_message_and_file_reach_the_sink_as_text, setup, teardown),
     };
     return cmocka_run_group_tests_name("log", tests, NULL, NULL);
 }

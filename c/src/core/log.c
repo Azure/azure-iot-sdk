@@ -31,10 +31,20 @@ bool az_iot_log_is_enabled(az_iot_log_level level)
     return s_sink_active && s_global_sink.sink != NULL && level >= s_global_sink.min_level;
 }
 
+/* Sinks are handed to plain "%s" formatting far more often than not -- the
+ * built-in stderr sink does exactly that -- so a NULL reaching one is
+ * undefined behaviour in code the SDK does not own. Now that emit is public,
+ * substitute here rather than trusting every caller and every sink. */
+static const char* log_text_or(const char* value, const char* fallback)
+{
+    return value != NULL ? value : fallback;
+}
+
 void az_iot_log_emit(az_iot_log_level level, const char* file, int line, const char* msg)
 {
     if (!az_iot_log_is_enabled(level)) return;
-    s_global_sink.sink(s_global_sink.user_ctx, level, file, line, msg);
+    s_global_sink.sink(
+        s_global_sink.user_ctx, level, log_text_or(file, "?"), line, log_text_or(msg, ""));
 }
 
 void az_iot_log_emitf(az_iot_log_level level, const char* file, int line, const char* fmt, ...)
@@ -53,7 +63,7 @@ void az_iot_log_emitf(az_iot_log_level level, const char* file, int line, const 
      * count is a genuine encoding failure and there is nothing to report. */
     if (written < 0) return;
 
-    s_global_sink.sink(s_global_sink.user_ctx, level, file, line, msg);
+    s_global_sink.sink(s_global_sink.user_ctx, level, log_text_or(file, "?"), line, msg);
 }
 
 /* Built-in stderr sink implementation. */

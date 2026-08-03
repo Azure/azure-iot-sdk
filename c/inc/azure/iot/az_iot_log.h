@@ -56,11 +56,14 @@ az_iot_log_sink az_iot_log_stderr_sink(az_iot_log_level min_level);
  * would be wasted when logging is off. */
 bool az_iot_log_is_enabled(az_iot_log_level level);
 
-/* Route a ready-made message to the registered sink. */
+/* Route a ready-made message to the registered sink. A NULL @p msg or @p file
+ * is replaced with a placeholder before the sink sees it, so a sink may format
+ * both with "%s" unconditionally. */
 void az_iot_log_emit(az_iot_log_level level, const char* file, int line, const char* msg);
 
 /* Route a printf-formatted message to the registered sink. Nothing is
- * formatted when no sink would accept @p level. */
+ * formatted when no sink would accept @p level, and a NULL @p fmt emits
+ * nothing at all. */
 void az_iot_log_emitf(az_iot_log_level level, const char* file, int line, const char* fmt, ...)
 #if defined(__GNUC__) || defined(__clang__)
     __attribute__((format(printf, 4, 5)))
