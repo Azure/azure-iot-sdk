@@ -272,6 +272,22 @@ static void close_from_faulted_reports_not_initialized(void** state)
 /* destroy()                                                                 */
 /* ------------------------------------------------------------------------- */
 
+/* Register a factory the client will NOT free.
+ *
+ * destroy() calls every registered factory's destroy hook, and the mock's hook
+ * frees the factory itself -- so a test that inspects the factory AFTER
+ * destroy() would be reading freed memory. glibc happens to leave the bytes
+ * looking like the values the assertions want, which is why this passed on
+ * Linux; the MSVC debug CRT fills freed blocks with 0xDD and the same
+ * assertion failed. The client copies the struct, so detaching the hook on a
+ * local copy leaves the real factory alive and owned by the test. */
+static void register_without_adopting(az_iot_connection_client* c, az_iot_mqtt_factory* factory)
+{
+  az_iot_mqtt_factory borrowed = *factory;
+  borrowed.destroy = NULL;
+  assert_int_equal(az_iot_connection_client_register_mqtt_factory(c, &borrowed), AZ_IOT_OK);
+}
+
 static void destroy_while_connected_destroys_the_adapter(void** state)
 {
   (void)state;
@@ -280,7 +296,8 @@ static void destroy_while_connected_destroys_the_adapter(void** state)
   assert_int_equal(az_iot_connection_client_init(&c, &opts), AZ_IOT_OK);
 
   az_iot_mqtt_factory* factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
-  assert_int_equal(az_iot_connection_client_register_mqtt_factory(&c, factory), AZ_IOT_OK);
+  assert_non_null(factory);
+  register_without_adopting(&c, factory);
   assert_int_equal(az_iot_connection_client_open(&c), AZ_IOT_OK);
   az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(factory);
   assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
@@ -290,6 +307,8 @@ static void destroy_while_connected_destroys_the_adapter(void** state)
    * from the factory: a destroyed client detaches itself from last_client. */
   az_iot_connection_client_destroy(&c);
   assert_null(az_iot_mock_mqtt_factory_last_client(factory));
+
+  az_iot_mock_mqtt_factory_destroy(factory);
 }
 
 static void destroy_while_connecting_destroys_the_adapter(void** state)
@@ -300,12 +319,15 @@ static void destroy_while_connecting_destroys_the_adapter(void** state)
   assert_int_equal(az_iot_connection_client_init(&c, &opts), AZ_IOT_OK);
 
   az_iot_mqtt_factory* factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
-  assert_int_equal(az_iot_connection_client_register_mqtt_factory(&c, factory), AZ_IOT_OK);
+  assert_non_null(factory);
+  register_without_adopting(&c, factory);
   assert_int_equal(az_iot_connection_client_open(&c), AZ_IOT_OK);
   assert_non_null(az_iot_mock_mqtt_factory_last_client(factory));
 
   az_iot_connection_client_destroy(&c);
   assert_null(az_iot_mock_mqtt_factory_last_client(factory));
+
+  az_iot_mock_mqtt_factory_destroy(factory);
 }
 
 static void destroy_is_silent_on_the_state_callback(void** state)
