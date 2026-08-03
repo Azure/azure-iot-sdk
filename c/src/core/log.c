@@ -3,6 +3,14 @@
 // information.
 
 /* SPDX-License-Identifier: MIT */
+
+/* This file IS the logging facade every other translation unit is required to
+ * route through, so it is the one place that legitimately formats with the C
+ * library and writes to a stream. Everything downstream of az_iot_log_emit is
+ * the application's choice of sink.
+ *
+ * az-iot-allow: vsnprintf -- builds the message emitf hands to the sink
+ * az-iot-allow: fprintf -- the built-in stderr sink itself */
 #include "azure/iot/az_iot_log.h"
 #include "internal/log_internal.h"
 

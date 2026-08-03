@@ -1,0 +1,4 @@
+# Shell scripts must keep LF endings regardless of a contributor's core.autocrlf
+# setting: CI runs c/eng/check-banned-constructs.sh on Linux, and a CRLF copy
+# fails there in ways that look nothing like a line-ending problem.
+*.sh text eol=lf
