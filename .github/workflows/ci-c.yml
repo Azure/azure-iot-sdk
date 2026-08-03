@@ -6,13 +6,13 @@ name: ci-c
 on:
   push:
     branches: [ main, 'dev/c' ]
+  # No workflow-level `paths:` filter. Path filtering happens in the `changes`
+  # job below and is applied per job via `if:`. A workflow that never triggers
+  # reports no checks at all, which deadlocks any required status check on a PR
+  # that touches nothing under c/ ("Expected - waiting for status to be
+  # reported"). A job skipped by a job-level `if:` still reports a check run,
+  # and GitHub treats that as satisfied.
   pull_request:
-    paths:
-      - 'c/**'
-      - 'common/**'
-      # A change to this workflow decides what the build/test legs do, so it has
-      # to run them.
-      - '.github/workflows/ci-c.yml'
   workflow_dispatch:
 
 # All run steps execute from the c/ project directory (where CMakePresets.json
@@ -23,8 +23,34 @@ defaults:
     working-directory: c
 
 jobs:
+  changes:
+    name: detect changes
+    runs-on: ubuntu-latest
+    # dorny/paths-filter calls the pulls/listFiles API on pull_request events.
+    # Without pull-requests:read it fails with "Resource not accessible by
+    # integration".
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      c: ${{ steps.filter.outputs.c }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            c:
+              - 'c/**'
+              - 'common/**'
+              # A change to this workflow decides what the build/test legs do,
+              # so it has to run them.
+              - '.github/workflows/ci-c.yml'
+
   build:
     name: ${{ matrix.preset }} / ${{ matrix.build_type }}
+    needs: changes
+    if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
     strategy:
       fail-fast: false
       matrix:
@@ -86,6 +112,8 @@ jobs:
 
   c99-strict:
     name: c99-strict (gcc -pedantic)
+    needs: changes
+    if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     services:
       mosquitto:
@@ -125,6 +153,8 @@ jobs:
 
   valgrind:
     name: linux-gcc / valgrind
+    needs: changes
+    if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     services:
       mosquitto:
@@ -171,6 +201,8 @@ jobs:
 
   asan-windows:
     name: windows-msvc / ASan
+    needs: changes
+    if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -196,3 +228,179 @@ jobs:
         # surfaces that as a test failure in the standard way. There is no
         # broker on Windows, so conformance tests skip themselves anyway.
         run: ctest --preset windows-msvc-debug -C Debug --output-on-failure -E conformance
+
+  # ---------------------------------------------------------------------------
+  # Code coverage (gcov/gcovr) for first-party code -- c/src and c/adapters.
+  #
+  # Phase 1: report-only. The per-component floors in
+  # c/tests/coverage-components.json are all null, so nothing fails on coverage
+  # yet; this run exists to establish the baseline. Phase 2 fills those numbers
+  # in and adds --enforce, at which point a per-component regression or a
+  # shipped adapter dropping out of the build blocks the merge.
+  #
+  # Design: c/docs/eng/code-coverage.md
+  # ---------------------------------------------------------------------------
+  coverage-c:
+    name: coverage (linux-gcc)
+    needs: changes
+    if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    env:
+      # Lowest acceptable number of CTest suites. Guards against a
+      # misconfigured build silently running zero tests and reporting coverage
+      # computed over nothing -- which is exactly what the dead
+      # AZ_IOT_AEG_BUILD_TESTS option does to the c99-strict job today.
+      MIN_TESTS: '16'
+    services:
+      mosquitto:
+        image: eclipse-mosquitto:2
+        ports:
+          - 1883:1883
+        # A real liveness probe: mosquitto_pub succeeds only if the broker
+        # accepted a connection. The `mosquitto_sub '$SYS/#' ... || exit 0`
+        # form used by the older jobs in this file always reports healthy --
+        # both because of the `|| exit 0` and because the first $SYS message
+        # can take longer to arrive than the timeout allows.
+        options: >-
+          --health-cmd="mosquitto_pub -h localhost -p 1883 -t healthcheck -m ok"
+          --health-interval=5s
+          --health-retries=10
+          --health-start-period=5s
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # diff-cover compares against the merge base.
+          fetch-depth: 0
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libssl-dev mosquitto-clients
+          python3 -m pip install --upgrade 'gcovr==7.2' 'diff-cover==9.2.0'
+
+      - name: Verify MQTT broker is reachable
+        # The conformance suites self-skip with CTest exit 77 when no broker is
+        # reachable, and they are where nearly all Paho adapter coverage comes
+        # from. A silent skip would collapse the adapter-paho number and later
+        # fail the gate for an infrastructure reason, so fail loudly here
+        # instead. Same rule the e2e suite follows.
+        run: mosquitto_pub -h localhost -p 1883 -t az-iot/coverage/probe -m ok
+
+      - name: Configure
+        run: cmake --preset linux-gcc-coverage
+
+      - name: Build
+        run: cmake --build --preset linux-gcc-coverage
+
+      - name: Sentinel - test suites were actually discovered
+        run: |
+          discovered=$(ctest --test-dir build/linux-gcc-coverage --show-only=json-v1 | jq '.tests | length')
+          echo "discovered $discovered test suites (minimum $MIN_TESTS)"
+          if [ "$discovered" -lt "$MIN_TESTS" ]; then
+            echo "::error::only $discovered test suites discovered, expected at least $MIN_TESTS"
+            exit 1
+          fi
+
+      - name: Test
+        env:
+          # NOTE: the real variable names. The other jobs in this workflow set
+          # AZ_IOT_AEG_MQTT_BROKER_HOST, which nothing reads, so their
+          # conformance suites have always silently skipped.
+          # Service containers are reachable on localhost for jobs that do not
+          # themselves run in a container.
+          AZ_IOT_MQTT_BROKER_HOST: localhost
+          AZ_IOT_MQTT_BROKER_PORT: '1883'
+        run: ctest --preset linux-gcc-coverage -E e2e
+
+      - name: Generate coverage report
+        run: |
+          mkdir -p build/linux-gcc-coverage/coverage/html
+          gcovr --root "$PWD" "$PWD/build/linux-gcc-coverage" \
+                --filter "$PWD/src/" --filter "$PWD/adapters/" \
+                --exclude '.*/_deps/.*' \
+                --exclude '.*/tests/.*' \
+                --exclude '.*/samples/.*' \
+                --cobertura build/linux-gcc-coverage/coverage/cobertura.xml --cobertura-pretty \
+                --lcov build/linux-gcc-coverage/coverage/lcov.info \
+                --json-summary build/linux-gcc-coverage/coverage/summary.json --json-summary-pretty \
+                --html-details build/linux-gcc-coverage/coverage/html/index.html \
+                --txt --print-summary
+
+      - name: Per-component summary
+        # Phase 1 is report-only: no --enforce. Add it in Phase 2 together with
+        # the floors in coverage-components.json.
+        run: |
+          python3 tests/coverage_report.py \
+            --summary build/linux-gcc-coverage/coverage/summary.json \
+            --components tests/coverage-components.json \
+            --source-root "$PWD" \
+            --output build/linux-gcc-coverage/coverage/summary.md
+          cat build/linux-gcc-coverage/coverage/summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Patch coverage (report-only)
+        if: github.event_name == 'pull_request'
+        # No --fail-under yet; that is Phase 3. This publishes the number so the
+        # 80% floor can be adopted against real data rather than a guess.
+        run: |
+          git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
+          diff-cover build/linux-gcc-coverage/coverage/cobertura.xml \
+            --compare-branch "origin/${{ github.base_ref }}" \
+            --markdown-report build/linux-gcc-coverage/coverage/patch.md \
+            --src-roots . || echo "::warning::diff-cover failed; patch coverage not reported"
+          {
+            echo ""
+            echo "## Patch coverage (report-only)"
+            echo ""
+            # diff-cover may have failed before writing the report. This step is
+            # informational, so a missing file must not fail the job.
+            if [ -f build/linux-gcc-coverage/coverage/patch.md ]; then
+              cat build/linux-gcc-coverage/coverage/patch.md
+            else
+              echo "_diff-cover produced no report._"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-c
+          path: c/build/linux-gcc-coverage/coverage/
+          if-no-files-found: warn
+
+  # Single stable check name for branch-protection to reference. It reports on
+  # every pull request, passes when the coverage job legitimately did not need
+  # to run, and fails whenever the coverage job failed. `if: always()` is what
+  # lets it run despite a failed dependency.
+  coverage-gate:
+    name: coverage-gate
+    needs: [changes, coverage-c]
+    if: always()
+    runs-on: ubuntu-latest
+    # This job does not check out the repo, so the workflow-level
+    # working-directory of c/ would not exist.
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - name: Check coverage job outcome
+        run: |
+          changes_result='${{ needs.changes.result }}'
+          coverage_result='${{ needs.coverage-c.result }}'
+          echo "changes:    $changes_result"
+          echo "coverage-c: $coverage_result"
+
+          # A broken `changes` job skips coverage-c, and a skipped coverage-c
+          # would otherwise be read as "no C code touched" and pass. Never let
+          # an infrastructure failure upstream produce a green gate.
+          if [ "$changes_result" != "success" ]; then
+            echo "::error::coverage gate: change detection did not succeed ($changes_result), so coverage was never evaluated"
+            exit 1
+          fi
+
+          if [ "$coverage_result" = "success" ] || [ "$coverage_result" = "skipped" ]; then
+            exit 0
+          fi
+          echo "::error::coverage gate failed (coverage-c: $coverage_result)"
+          exit 1
+
