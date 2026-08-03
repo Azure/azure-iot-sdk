@@ -1,6 +1,6 @@
 ---
 applyTo: "c/src/**,c/inc/**,c/adapters/**"
-description: "Conventions for the Azure IoT C library: build strings with az_iot_span_writer instead of snprintf, trace through az_iot_log instead of stderr, no dynamic allocation, and propose an azure-sdk-for-c-shaped helper before hand-rolling a libc call."
+description: "Conventions for the Azure IoT C library. In c/src the CI gate bans libc string building, console I/O and dynamic allocation in favour of az_iot_span_writer, AZ_IOT_LOG_* and caller-provided buffers; c/adapters is exempt from those bans but follows the same naming, formatting and error-handling rules. Propose an azure-sdk-for-c-shaped helper before hand-rolling a libc call."
 ---
 
 # Azure IoT C library conventions
@@ -10,8 +10,20 @@ hand-rolled C construct, look for the `az_*` / `az_iot_*` helper. If one does
 not exist, **propose adding it** rather than reaching for the libc call.
 
 Full reasoning: `c/docs/eng/coding-conventions.md`. CI enforces the banned list
-via `c/eng/check-banned-constructs.sh` and the formatting of changed lines via
+via `c/eng/check-banned-constructs.sh` and formatting via
 `c/eng/code-style.sh check`.
+
+## Which rules apply where
+
+| Area | Banned constructs | Naming, formatting, `az_iot_result`, portability |
+|---|---|---|
+| `c/src` (core + features) | **enforced by CI** | yes |
+| `c/inc` (public headers) | n/a - declarations only | yes |
+| `c/adapters` | **exempt** - this is the boundary where libc, OpenSSL and a third-party MQTT stack are unavoidable | yes |
+
+An adapter may allocate and may call libc directly. It still traces through
+`AZ_IOT_LOG_*` rather than `stderr`, because the application owns where
+diagnostics go - that is why the logging facade is public.
 
 ## Formatting
 
@@ -31,7 +43,7 @@ different output and will fight the gate.
 
 | Do not use | Use instead |
 |---|---|
-| `snprintf`, `sprintf`, `strcpy`, `strcat`, `strncpy`, `strncat`, `strtok` | `az_iot_span_writer` (`src/core/internal/span_writer.h`) |
+| `snprintf`, `sprintf`, `vsnprintf`, `vsprintf`, `strcpy`, `strcat`, `strncpy`, `strncat`, `strtok` | `az_iot_span_writer` (`src/core/internal/span_writer.h`) |
 | `printf`, `fprintf`, `puts`, `fputs` | `AZ_IOT_LOG_*` / `AZ_IOT_LOG_*F` (`inc/azure/iot/az_iot_log.h`) |
 | `malloc`, `calloc`, `realloc`, `free`, `strdup` | caller-provided `az_span`/array, or storage inside the caller-allocated client struct |
 

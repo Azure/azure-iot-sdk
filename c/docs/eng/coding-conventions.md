@@ -44,8 +44,10 @@ honours it automatically.
 
 ## 1. Build strings with `az_iot_span_writer`, not the C library
 
-`snprintf`, `sprintf`, `strcpy`, `strcat`, `strncpy`, `strncat` and `strtok`
-are banned in `c/src`.
+`snprintf`, `sprintf`, `vsnprintf`, `vsprintf`, `strcpy`, `strcat`, `strncpy`,
+`strncat` and `strtok` are banned in `c/src`. The `v*` variants are on the list
+too: they are the same hazard reached through a `va_list`, and the logging
+facade - which owns the one legitimate use - carries a waiver for it.
 
 Use [`az_iot_span_writer`](../../src/core/internal/span_writer.h):
 

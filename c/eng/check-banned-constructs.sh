@@ -56,7 +56,10 @@ for entry in "${banned[@]}"; do
         file="${hit%%:*}"
 
         # A file that documents why it needs this symbol is exempt from it.
-        if grep -q "az-iot-allow:[[:space:]]*${symbol}\b" "${file}"; then
+        # POSIX character classes rather than \b: the boundary escape is a GNU
+        # extension, and where it is unsupported a waiver silently stops
+        # matching, which turns this check into a wall of false positives.
+        if grep -qE "az-iot-allow:[[:space:]]*${symbol}([^[:alnum:]_]|\$)" "${file}"; then
             continue
         fi
 
@@ -69,9 +72,11 @@ for entry in "${banned[@]}"; do
         echo "      use ${instead} instead, or add a waiver comment:"
         echo "      az-iot-allow: ${symbol} -- <reason>"
         echo
-    # Match a call, not a mention. Lines that begin a comment are skipped so
-    # that prose naming a banned function does not trip the check.
-    done < <(grep -rnE "\b${symbol}[[:space:]]*\(" \
+    # Match a call, not a mention. The leading class is what keeps `snprintf`
+    # from matching inside `vsnprintf`, and is spelled out rather than using \b
+    # so the check behaves the same on non-GNU grep. Lines that begin a comment
+    # are skipped so prose naming a banned function does not trip the check.
+    done < <(grep -rnE "(^|[^[:alnum:]_])${symbol}[[:space:]]*\(" \
                 --include='*.c' --include='*.h' "${scan_dir}" 2>/dev/null \
              | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(\*|/\*|//)' || true)
 done
