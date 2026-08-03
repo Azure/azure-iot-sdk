@@ -1,5 +1,6 @@
 // Copyright (c) Microsoft. All rights reserved.
-// Licensed under the MIT license. See LICENSE file in the project root for full license information.
+// Licensed under the MIT license. See LICENSE file in the project root for full license
+// information.
 
 /* SPDX-License-Identifier: MIT */
 /* Internal certificate/CSR helpers shared within the connection client. */
@@ -27,6 +28,9 @@ void az_iot_cert_util_gen_request_id(uint64_t* rng_state, char* buf, size_t cap)
  * payload. Fills certs[0..*out_count) and returns AZ_IOT_OK, or a *_PROTOCOL /
  * *_NOT_ENOUGH_SPACE error. */
 az_iot_result az_iot_cert_util_collect_chain_spans(
-    az_json_reader* jr, az_span* certs, size_t max, size_t* out_count);
+    az_json_reader* jr,
+    az_span* certs,
+    size_t max,
+    size_t* out_count);
 
 #endif /* AZ_IOT_INTERNAL_CERT_UTIL_H */

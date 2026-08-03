@@ -1,5 +1,6 @@
 // Copyright (c) Microsoft. All rights reserved.
-// Licensed under the MIT license. See LICENSE file in the project root for full license information.
+// Licensed under the MIT license. See LICENSE file in the project root for full license
+// information.
 
 /* SPDX-License-Identifier: MIT */
 /* sample_cert_provider - a COMPLETE, app-owned az_iot_certificate_provider for
@@ -25,39 +26,41 @@
 #include "azure/iot/az_iot_result.h"
 
 #ifdef __cplusplus
-extern "C" {
+extern "C"
+{
 #endif
 
-typedef struct
-{
-    const char* bootstrap_cert_path;    /* required: X.509 bootstrap cert (PEM) */
-    const char* bootstrap_key_path;     /* required: bootstrap private key (PEM) */
-    const char* trusted_ca_path;        /* may be NULL */
-    const char* operational_key_path;   /* required: operational key (PEM; loaded or generated) */
-    const char* operational_cert_path;  /* required: issued chain is persisted here */
-} sample_cert_provider_options;
+  typedef struct
+  {
+    const char* bootstrap_cert_path; /* required: X.509 bootstrap cert (PEM) */
+    const char* bootstrap_key_path; /* required: bootstrap private key (PEM) */
+    const char* trusted_ca_path; /* may be NULL */
+    const char* operational_key_path; /* required: operational key (PEM; loaded or generated) */
+    const char* operational_cert_path; /* required: issued chain is persisted here */
+  } sample_cert_provider_options;
 
-/* Caller-owned struct; fields are INTERNAL. */
-typedef struct
-{
+  /* Caller-owned struct; fields are INTERNAL. */
+  typedef struct
+  {
     az_iot_certificate_provider base; /* MUST be first (vtable pointer) */
     char* bootstrap_cert_path;
     char* bootstrap_key_path;
     char* trusted_ca_path;
     char* operational_key_path;
     char* operational_cert_path;
-    int   has_operational;
-} sample_cert_provider;
+    int has_operational;
+  } sample_cert_provider;
 
-/* Initialize the provider. Detects any operational cert already on disk (so a
- * prior enrollment survives restart). Returns AZ_IOT_ERR_INVALID_ARG on a
- * missing required path. Pass &provider.base wherever an
- * az_iot_certificate_provider* is expected. */
-az_iot_result sample_cert_provider_init(
-    sample_cert_provider* provider, const sample_cert_provider_options* opts);
+  /* Initialize the provider. Detects any operational cert already on disk (so a
+   * prior enrollment survives restart). Returns AZ_IOT_ERR_INVALID_ARG on a
+   * missing required path. Pass &provider.base wherever an
+   * az_iot_certificate_provider* is expected. */
+  az_iot_result sample_cert_provider_init(
+      sample_cert_provider* provider,
+      const sample_cert_provider_options* opts);
 
-/* Release heap-owned paths. Does NOT delete files on disk. */
-void sample_cert_provider_destroy(sample_cert_provider* provider);
+  /* Release heap-owned paths. Does NOT delete files on disk. */
+  void sample_cert_provider_destroy(sample_cert_provider* provider);
 
 #ifdef __cplusplus
 }

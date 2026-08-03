@@ -1,5 +1,6 @@
 // Copyright (c) Microsoft. All rights reserved.
-// Licensed under the MIT license. See LICENSE file in the project root for full license information.
+// Licensed under the MIT license. See LICENSE file in the project root for full license
+// information.
 
 /* SPDX-License-Identifier: MIT */
 /* esp-mqtt adapter: public factory builders.
@@ -15,18 +16,19 @@
 #include "azure/iot/az_iot_mqtt_iface.h"
 
 #ifdef __cplusplus
-extern "C" {
+extern "C"
+{
 #endif
 
-/* Build a factory that produces MQTT v3.1.1 esp-mqtt clients. */
-az_iot_mqtt_factory* az_iot_esp_mqtt_factory_create_v3_1_1(void);
+  /* Build a factory that produces MQTT v3.1.1 esp-mqtt clients. */
+  az_iot_mqtt_factory* az_iot_esp_mqtt_factory_create_v3_1_1(void);
 
-/* Build a factory that produces MQTT v5 esp-mqtt clients. */
-az_iot_mqtt_factory* az_iot_esp_mqtt_factory_create_v5(void);
+  /* Build a factory that produces MQTT v5 esp-mqtt clients. */
+  az_iot_mqtt_factory* az_iot_esp_mqtt_factory_create_v5(void);
 
-/* Destroy a factory produced by either constructor above. Does not destroy
- * clients the factory has handed out. */
-void az_iot_esp_mqtt_factory_destroy(az_iot_mqtt_factory* factory);
+  /* Destroy a factory produced by either constructor above. Does not destroy
+   * clients the factory has handed out. */
+  void az_iot_esp_mqtt_factory_destroy(az_iot_mqtt_factory* factory);
 
 #ifdef __cplusplus
 }

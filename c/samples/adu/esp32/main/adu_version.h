@@ -1,5 +1,6 @@
 // Copyright (c) Microsoft. All rights reserved.
-// Licensed under the MIT license. See LICENSE file in the project root for full license information.
+// Licensed under the MIT license. See LICENSE file in the project root for full license
+// information.
 
 /* SPDX-License-Identifier: MIT */
 /* The firmware's own ADU update version. This is the version the device reports
@@ -12,7 +13,7 @@
 #define ADU_VERSION_H
 
 #define ADU_UPDATE_PROVIDER "Contoso"
-#define ADU_UPDATE_NAME     "ESP32-ADU"
-#define ADU_UPDATE_VERSION  "1.0.0"
+#define ADU_UPDATE_NAME "ESP32-ADU"
+#define ADU_UPDATE_VERSION "1.0.0"
 
 #endif /* ADU_VERSION_H */

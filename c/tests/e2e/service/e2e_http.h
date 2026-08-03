@@ -1,5 +1,6 @@
 // Copyright (c) Microsoft. All rights reserved.
-// Licensed under the MIT license. See LICENSE file in the project root for full license information.
+// Licensed under the MIT license. See LICENSE file in the project root for full license
+// information.
 
 /* SPDX-License-Identifier: MIT */
 /* Internal helper for the e2e service client: a minimal, non-blocking HTTPS/1.1
@@ -23,7 +24,8 @@
 #include <stdint.h>
 
 #ifdef __cplusplus
-extern "C" {
+extern "C"
+{
 #endif
 
 /* Sized for the IoT Hub service REST calls, including an ADU deployment twin
@@ -33,17 +35,17 @@ extern "C" {
 #define E2E_HTTP_REQUEST_MAX 8192
 #define E2E_HTTP_RESPONSE_MAX 32768
 
-typedef enum e2e_http_phase
-{
+  typedef enum e2e_http_phase
+  {
     E2E_HTTP_PHASE_CONNECTING,
     E2E_HTTP_PHASE_WRITING,
     E2E_HTTP_PHASE_READING,
     E2E_HTTP_PHASE_DONE,
     E2E_HTTP_PHASE_FAILED,
-} e2e_http_phase;
+  } e2e_http_phase;
 
-typedef struct e2e_http_request
-{
+  typedef struct e2e_http_request
+  {
     az_amqp_sample_transport transport_storage;
     az_amqp_transport transport;
     e2e_http_phase phase;
@@ -61,56 +63,56 @@ typedef struct e2e_http_request
     int http_status;
 
     const char* err;
-} e2e_http_request;
+  } e2e_http_request;
 
-/* Prepare (but do not send) an HTTPS request to @p host (port 443, TLS). @p method
- * is e.g. "GET"/"POST"/"PATCH"; @p path is the origin-form request target incl. any
- * query string. @p authorization is the full SAS token for the Authorization header.
- * @p json_body may be NULL for a body-less request. Returns false only on a request
- * that will not fit the request buffer. */
-bool e2e_http_begin(
-    e2e_http_request* r,
-    const char* host,
-    const char* method,
-    const char* path,
-    const char* authorization,
-    const char* json_body);
+  /* Prepare (but do not send) an HTTPS request to @p host (port 443, TLS). @p method
+   * is e.g. "GET"/"POST"/"PATCH"; @p path is the origin-form request target incl. any
+   * query string. @p authorization is the full SAS token for the Authorization header.
+   * @p json_body may be NULL for a body-less request. Returns false only on a request
+   * that will not fit the request buffer. */
+  bool e2e_http_begin(
+      e2e_http_request* r,
+      const char* host,
+      const char* method,
+      const char* path,
+      const char* authorization,
+      const char* json_body);
 
-/* Like e2e_http_begin, but for device-side flows: an optional mutual-TLS client
- * certificate (PEM text), an optional single extra header line, an explicit
- * content type, and a raw (possibly binary) body. Pass @p authorization == NULL
- * to omit the Authorization header (device mutual TLS, or a SAS token already in
- * @p path). @p client_cert_pem / @p client_key_pem may be NULL to disable mutual
- * TLS. The peer is validated against the platform's default trust store. Returns
- * false only on a request that will not fit the request buffer. */
-bool e2e_http_begin_ex(
-    e2e_http_request* r,
-    const char* host,
-    const char* method,
-    const char* path,
-    const char* authorization,
-    const char* content_type,
-    const char* extra_header,
-    const void* body,
-    size_t body_len,
-    const char* client_cert_pem,
-    const char* client_key_pem);
+  /* Like e2e_http_begin, but for device-side flows: an optional mutual-TLS client
+   * certificate (PEM text), an optional single extra header line, an explicit
+   * content type, and a raw (possibly binary) body. Pass @p authorization == NULL
+   * to omit the Authorization header (device mutual TLS, or a SAS token already in
+   * @p path). @p client_cert_pem / @p client_key_pem may be NULL to disable mutual
+   * TLS. The peer is validated against the platform's default trust store. Returns
+   * false only on a request that will not fit the request buffer. */
+  bool e2e_http_begin_ex(
+      e2e_http_request* r,
+      const char* host,
+      const char* method,
+      const char* path,
+      const char* authorization,
+      const char* content_type,
+      const char* extra_header,
+      const void* body,
+      size_t body_len,
+      const char* client_cert_pem,
+      const char* client_key_pem);
 
-/* Advance the request state machine a little without blocking on the device.
- * Returns 0 while pending, 1 when the response is complete, -1 on error. */
-int e2e_http_poll(e2e_http_request* r);
+  /* Advance the request state machine a little without blocking on the device.
+   * Returns 0 while pending, 1 when the response is complete, -1 on error. */
+  int e2e_http_poll(e2e_http_request* r);
 
-/* Valid once e2e_http_poll returns 1: the parsed HTTP status code. */
-int e2e_http_status(const e2e_http_request* r);
+  /* Valid once e2e_http_poll returns 1: the parsed HTTP status code. */
+  int e2e_http_status(const e2e_http_request* r);
 
-/* Valid once e2e_http_poll returns 1: the response body bytes and length. */
-const uint8_t* e2e_http_body(const e2e_http_request* r, int* out_len);
+  /* Valid once e2e_http_poll returns 1: the response body bytes and length. */
+  const uint8_t* e2e_http_body(const e2e_http_request* r, int* out_len);
 
-/* A static description of the last failure, or NULL. */
-const char* e2e_http_error(const e2e_http_request* r);
+  /* A static description of the last failure, or NULL. */
+  const char* e2e_http_error(const e2e_http_request* r);
 
-/* Close the underlying transport (best-effort). */
-void e2e_http_end(e2e_http_request* r);
+  /* Close the underlying transport (best-effort). */
+  void e2e_http_end(e2e_http_request* r);
 
 #ifdef __cplusplus
 }

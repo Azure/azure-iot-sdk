@@ -1,5 +1,6 @@
 // Copyright (c) Microsoft. All rights reserved.
-// Licensed under the MIT license. See LICENSE file in the project root for full license information.
+// Licensed under the MIT license. See LICENSE file in the project root for full license
+// information.
 
 /* SPDX-License-Identifier: MIT */
 #include "az_iot_e2e_service.h"
@@ -18,243 +19,243 @@
 
 struct az_iot_e2e_service
 {
-    e2e_conn_info hub_info; /* IoT Hub service endpoint (method/twin/c2d) */
-    e2e_conn_info eh_info; /* Event Hub-compatible endpoint (telemetry)   */
-    char entity[128]; /* Event Hub entity name                       */
-    int partition_count;
+  e2e_conn_info hub_info; /* IoT Hub service endpoint (method/twin/c2d) */
+  e2e_conn_info eh_info; /* Event Hub-compatible endpoint (telemetry)   */
+  char entity[128]; /* Event Hub entity name                       */
+  int partition_count;
 
-    e2e_amqp_telemetry* telemetry; /* non-NULL while watching */
-    e2e_amqp_filenotify* filenotify; /* non-NULL while watching file notifications */
-    e2e_http_request* http; /* non-NULL while a REST call is in flight */
+  e2e_amqp_telemetry* telemetry; /* non-NULL while watching */
+  e2e_amqp_filenotify* filenotify; /* non-NULL while watching file notifications */
+  e2e_http_request* http; /* non-NULL while a REST call is in flight */
 
-    char last_error[256];
+  char last_error[256];
 };
 
 /* Read an environment variable into @p dst without triggering MSVC's C4996. */
 static bool env_copy(const char* name, char* dst, size_t cap)
 {
-    if (cap == 0)
-    {
-        return false;
-    }
-    dst[0] = '\0';
+  if (cap == 0)
+  {
+    return false;
+  }
+  dst[0] = '\0';
 #ifdef _WIN32
-    size_t needed = 0;
-    if (getenv_s(&needed, dst, cap, name) != 0 || needed == 0)
-    {
-        dst[0] = '\0';
-        return false;
-    }
-    return true;
+  size_t needed = 0;
+  if (getenv_s(&needed, dst, cap, name) != 0 || needed == 0)
+  {
+    dst[0] = '\0';
+    return false;
+  }
+  return true;
 #else
-    const char* value = getenv(name);
-    if (value == NULL || value[0] == '\0')
-    {
-        return false;
-    }
-    snprintf(dst, cap, "%s", value);
-    return true;
+  const char* value = getenv(name);
+  if (value == NULL || value[0] == '\0')
+  {
+    return false;
+  }
+  snprintf(dst, cap, "%s", value);
+  return true;
 #endif
 }
 
 static void set_error(az_iot_e2e_service* svc, const char* message)
 {
-    snprintf(svc->last_error, sizeof(svc->last_error), "%s", (message != NULL) ? message : "unknown");
+  snprintf(svc->last_error, sizeof(svc->last_error), "%s", (message != NULL) ? message : "unknown");
 }
 
 static int64_t sas_expiry(void) { return (int64_t)time(NULL) + E2E_SAS_TTL_SECONDS; }
 
 az_iot_e2e_service* az_iot_e2e_service_create(const char** error_out)
 {
-    char hub_cs[512];
-    char eh_cs[512];
-    if (!env_copy("IOTHUB_CONNECTION_STRING", hub_cs, sizeof(hub_cs)))
+  char hub_cs[512];
+  char eh_cs[512];
+  if (!env_copy("IOTHUB_CONNECTION_STRING", hub_cs, sizeof(hub_cs)))
+  {
+    if (error_out != NULL)
     {
-        if (error_out != NULL)
-        {
-            *error_out = "IOTHUB_CONNECTION_STRING not set";
-        }
-        return NULL;
+      *error_out = "IOTHUB_CONNECTION_STRING not set";
     }
-    if (!env_copy("IOTHUB_EVENTHUB_CONNECTION_STRING", eh_cs, sizeof(eh_cs)))
+    return NULL;
+  }
+  if (!env_copy("IOTHUB_EVENTHUB_CONNECTION_STRING", eh_cs, sizeof(eh_cs)))
+  {
+    if (error_out != NULL)
     {
-        if (error_out != NULL)
-        {
-            *error_out = "IOTHUB_EVENTHUB_CONNECTION_STRING not set";
-        }
-        return NULL;
+      *error_out = "IOTHUB_EVENTHUB_CONNECTION_STRING not set";
     }
+    return NULL;
+  }
 
-    az_iot_e2e_service* svc = (az_iot_e2e_service*)calloc(1, sizeof(*svc));
-    if (svc == NULL)
+  az_iot_e2e_service* svc = (az_iot_e2e_service*)calloc(1, sizeof(*svc));
+  if (svc == NULL)
+  {
+    if (error_out != NULL)
     {
-        if (error_out != NULL)
-        {
-            *error_out = "out of memory";
-        }
-        return NULL;
+      *error_out = "out of memory";
     }
+    return NULL;
+  }
 
-    if (!e2e_conn_info_parse(hub_cs, &svc->hub_info))
+  if (!e2e_conn_info_parse(hub_cs, &svc->hub_info))
+  {
+    free(svc);
+    if (error_out != NULL)
     {
-        free(svc);
-        if (error_out != NULL)
-        {
-            *error_out = "IOTHUB_CONNECTION_STRING is malformed";
-        }
-        return NULL;
+      *error_out = "IOTHUB_CONNECTION_STRING is malformed";
     }
-    if (!e2e_conn_info_parse(eh_cs, &svc->eh_info))
+    return NULL;
+  }
+  if (!e2e_conn_info_parse(eh_cs, &svc->eh_info))
+  {
+    free(svc);
+    if (error_out != NULL)
     {
-        free(svc);
-        if (error_out != NULL)
-        {
-            *error_out = "IOTHUB_EVENTHUB_CONNECTION_STRING is malformed";
-        }
-        return NULL;
+      *error_out = "IOTHUB_EVENTHUB_CONNECTION_STRING is malformed";
     }
+    return NULL;
+  }
 
-    /* Event Hub entity name: from the connection string's EntityPath, else the
-     * explicit listen-name env var. */
-    if (svc->eh_info.entity_path[0] != '\0')
+  /* Event Hub entity name: from the connection string's EntityPath, else the
+   * explicit listen-name env var. */
+  if (svc->eh_info.entity_path[0] != '\0')
+  {
+    snprintf(svc->entity, sizeof(svc->entity), "%s", svc->eh_info.entity_path);
+  }
+  else if (!env_copy("IOTHUB_EVENTHUB_LISTEN_NAME", svc->entity, sizeof(svc->entity)))
+  {
+    free(svc);
+    if (error_out != NULL)
     {
-        snprintf(svc->entity, sizeof(svc->entity), "%s", svc->eh_info.entity_path);
+      *error_out = "Event Hub entity name not found (EntityPath / IOTHUB_EVENTHUB_LISTEN_NAME)";
     }
-    else if (!env_copy("IOTHUB_EVENTHUB_LISTEN_NAME", svc->entity, sizeof(svc->entity)))
-    {
-        free(svc);
-        if (error_out != NULL)
-        {
-            *error_out = "Event Hub entity name not found (EntityPath / IOTHUB_EVENTHUB_LISTEN_NAME)";
-        }
-        return NULL;
-    }
+    return NULL;
+  }
 
-    char partitions[16];
-    svc->partition_count = 4;
-    if (env_copy("IOTHUB_EVENTHUB_PARTITION_COUNT", partitions, sizeof(partitions)))
+  char partitions[16];
+  svc->partition_count = 4;
+  if (env_copy("IOTHUB_EVENTHUB_PARTITION_COUNT", partitions, sizeof(partitions)))
+  {
+    int parsed = atoi(partitions);
+    if (parsed >= 1)
     {
-        int parsed = atoi(partitions);
-        if (parsed >= 1)
-        {
-            svc->partition_count = parsed;
-        }
+      svc->partition_count = parsed;
     }
+  }
 
-    return svc;
+  return svc;
 }
 
 void az_iot_e2e_service_destroy(az_iot_e2e_service* svc)
 {
-    if (svc == NULL)
-    {
-        return;
-    }
-    if (svc->telemetry != NULL)
-    {
-        e2e_amqp_telemetry_end(svc->telemetry);
-        free(svc->telemetry);
-    }
-    if (svc->filenotify != NULL)
-    {
-        e2e_amqp_filenotify_end(svc->filenotify);
-        free(svc->filenotify);
-    }
-    if (svc->http != NULL)
-    {
-        e2e_http_end(svc->http);
-        free(svc->http);
-    }
-    free(svc);
+  if (svc == NULL)
+  {
+    return;
+  }
+  if (svc->telemetry != NULL)
+  {
+    e2e_amqp_telemetry_end(svc->telemetry);
+    free(svc->telemetry);
+  }
+  if (svc->filenotify != NULL)
+  {
+    e2e_amqp_filenotify_end(svc->filenotify);
+    free(svc->filenotify);
+  }
+  if (svc->http != NULL)
+  {
+    e2e_http_end(svc->http);
+    free(svc->http);
+  }
+  free(svc);
 }
 
 const char* az_iot_e2e_service_last_error(const az_iot_e2e_service* svc)
 {
-    if (svc == NULL || svc->last_error[0] == '\0')
-    {
-        return NULL;
-    }
-    return svc->last_error;
+  if (svc == NULL || svc->last_error[0] == '\0')
+  {
+    return NULL;
+  }
+  return svc->last_error;
 }
 
 bool az_iot_e2e_service_telemetry_watch_begin(az_iot_e2e_service* svc)
 {
-    if (svc->telemetry != NULL)
-    {
-        return true; /* already watching */
-    }
+  if (svc->telemetry != NULL)
+  {
+    return true; /* already watching */
+  }
 
-    /* Event Hubs authorizes the entity audience with a SAS whose HMAC key is the
-     * raw key string (NOT base64-decoded) — the Event Hubs/Service Bus convention. */
-    /* Sized for the widest possible "amqps://<host>/<entity>": host[256] + entity[128]
-     * plus scheme and separator. A tighter bound trips GCC -Werror=format-truncation. */
-    char audience[512];
-    snprintf(audience, sizeof(audience), "amqps://%s/%s", svc->eh_info.host, svc->entity);
+  /* Event Hubs authorizes the entity audience with a SAS whose HMAC key is the
+   * raw key string (NOT base64-decoded) — the Event Hubs/Service Bus convention. */
+  /* Sized for the widest possible "amqps://<host>/<entity>": host[256] + entity[128]
+   * plus scheme and separator. A tighter bound trips GCC -Werror=format-truncation. */
+  char audience[512];
+  snprintf(audience, sizeof(audience), "amqps://%s/%s", svc->eh_info.host, svc->entity);
 
-    char sas[512];
-    if (!e2e_sas_token_create(
-            audience, svc->eh_info.key_name, svc->eh_info.key, false, sas_expiry(), sas, sizeof(sas)))
-    {
-        set_error(svc, "telemetry: failed to build SAS token");
-        return false;
-    }
+  char sas[512];
+  if (!e2e_sas_token_create(
+          audience, svc->eh_info.key_name, svc->eh_info.key, false, sas_expiry(), sas, sizeof(sas)))
+  {
+    set_error(svc, "telemetry: failed to build SAS token");
+    return false;
+  }
 
-    svc->telemetry = (e2e_amqp_telemetry*)calloc(1, sizeof(*svc->telemetry));
-    if (svc->telemetry == NULL)
-    {
-        set_error(svc, "telemetry: out of memory");
-        return false;
-    }
+  svc->telemetry = (e2e_amqp_telemetry*)calloc(1, sizeof(*svc->telemetry));
+  if (svc->telemetry == NULL)
+  {
+    set_error(svc, "telemetry: out of memory");
+    return false;
+  }
 
-    const char* err = NULL;
-    if (!e2e_amqp_telemetry_begin(
-            svc->telemetry, svc->eh_info.host, svc->entity, sas, svc->partition_count, &err))
-    {
-        set_error(svc, (err != NULL) ? err : "telemetry: begin failed");
-        free(svc->telemetry);
-        svc->telemetry = NULL;
-        return false;
-    }
-    return true;
+  const char* err = NULL;
+  if (!e2e_amqp_telemetry_begin(
+          svc->telemetry, svc->eh_info.host, svc->entity, sas, svc->partition_count, &err))
+  {
+    set_error(svc, (err != NULL) ? err : "telemetry: begin failed");
+    free(svc->telemetry);
+    svc->telemetry = NULL;
+    return false;
+  }
+  return true;
 }
 
 bool az_iot_e2e_service_do_work(az_iot_e2e_service* svc, int timeout_ms)
 {
-    /* Split the budget when both watchers are up so neither starves the other,
-     * but never below 1ms: halving a 1ms budget would turn both pumps into
-     * no-wait calls and busy-spin the caller. */
-    int slice = timeout_ms;
-    if (svc->telemetry != NULL && svc->filenotify != NULL && timeout_ms > 1)
-    {
-        slice = timeout_ms / 2;
-    }
+  /* Split the budget when both watchers are up so neither starves the other,
+   * but never below 1ms: halving a 1ms budget would turn both pumps into
+   * no-wait calls and busy-spin the caller. */
+  int slice = timeout_ms;
+  if (svc->telemetry != NULL && svc->filenotify != NULL && timeout_ms > 1)
+  {
+    slice = timeout_ms / 2;
+  }
 
-    if (svc->telemetry != NULL && !e2e_amqp_telemetry_do_work(svc->telemetry, slice))
-    {
-        set_error(svc, "telemetry: connection failed");
-        return false;
-    }
-    if (svc->filenotify != NULL && !e2e_amqp_filenotify_do_work(svc->filenotify, slice))
-    {
-        set_error(svc, "filenotify: connection failed");
-        return false;
-    }
-    return true;
+  if (svc->telemetry != NULL && !e2e_amqp_telemetry_do_work(svc->telemetry, slice))
+  {
+    set_error(svc, "telemetry: connection failed");
+    return false;
+  }
+  if (svc->filenotify != NULL && !e2e_amqp_filenotify_do_work(svc->filenotify, slice))
+  {
+    set_error(svc, "filenotify: connection failed");
+    return false;
+  }
+  return true;
 }
 
 bool az_iot_e2e_service_telemetry_seen(const az_iot_e2e_service* svc, const char* needle)
 {
-    return svc->telemetry != NULL && e2e_amqp_telemetry_seen(svc->telemetry, needle);
+  return svc->telemetry != NULL && e2e_amqp_telemetry_seen(svc->telemetry, needle);
 }
 
 void az_iot_e2e_service_telemetry_watch_end(az_iot_e2e_service* svc)
 {
-    if (svc->telemetry != NULL)
-    {
-        e2e_amqp_telemetry_end(svc->telemetry);
-        free(svc->telemetry);
-        svc->telemetry = NULL;
-    }
+  if (svc->telemetry != NULL)
+  {
+    e2e_amqp_telemetry_end(svc->telemetry);
+    free(svc->telemetry);
+    svc->telemetry = NULL;
+  }
 }
 
 bool az_iot_e2e_service_file_notification_watch_begin(
@@ -262,52 +263,52 @@ bool az_iot_e2e_service_file_notification_watch_begin(
     const char* device_id,
     bool* attach_refused_out)
 {
-    if (attach_refused_out != NULL)
-    {
-        *attach_refused_out = false;
-    }
-    if (svc->filenotify != NULL)
-    {
-        return true; /* already watching */
-    }
+  if (attach_refused_out != NULL)
+  {
+    *attach_refused_out = false;
+  }
+  if (svc->filenotify != NULL)
+  {
+    return true; /* already watching */
+  }
 
-    /* IoT Hub service SAS: HMAC key is base64-decode(key); audience is the host. */
-    char sas[512];
-    if (!e2e_sas_token_create(
-            svc->hub_info.host,
-            svc->hub_info.key_name,
-            svc->hub_info.key,
-            true,
-            sas_expiry(),
-            sas,
-            sizeof(sas)))
-    {
-        set_error(svc, "filenotify: failed to build SAS token");
-        return false;
-    }
+  /* IoT Hub service SAS: HMAC key is base64-decode(key); audience is the host. */
+  char sas[512];
+  if (!e2e_sas_token_create(
+          svc->hub_info.host,
+          svc->hub_info.key_name,
+          svc->hub_info.key,
+          true,
+          sas_expiry(),
+          sas,
+          sizeof(sas)))
+  {
+    set_error(svc, "filenotify: failed to build SAS token");
+    return false;
+  }
 
-    svc->filenotify = (e2e_amqp_filenotify*)calloc(1, sizeof(*svc->filenotify));
-    if (svc->filenotify == NULL)
-    {
-        set_error(svc, "filenotify: out of memory");
-        return false;
-    }
+  svc->filenotify = (e2e_amqp_filenotify*)calloc(1, sizeof(*svc->filenotify));
+  if (svc->filenotify == NULL)
+  {
+    set_error(svc, "filenotify: out of memory");
+    return false;
+  }
 
-    const char* err = NULL;
-    if (!e2e_amqp_filenotify_begin(
-            svc->filenotify, svc->hub_info.host, sas, device_id, &err, attach_refused_out))
-    {
-        set_error(svc, (err != NULL) ? err : "filenotify: begin failed");
-        free(svc->filenotify);
-        svc->filenotify = NULL;
-        return false;
-    }
-    return true;
+  const char* err = NULL;
+  if (!e2e_amqp_filenotify_begin(
+          svc->filenotify, svc->hub_info.host, sas, device_id, &err, attach_refused_out))
+  {
+    set_error(svc, (err != NULL) ? err : "filenotify: begin failed");
+    free(svc->filenotify);
+    svc->filenotify = NULL;
+    return false;
+  }
+  return true;
 }
 
 bool az_iot_e2e_service_file_notification_seen(const az_iot_e2e_service* svc, const char* needle)
 {
-    return svc->filenotify != NULL && e2e_amqp_filenotify_seen(svc->filenotify, needle);
+  return svc->filenotify != NULL && e2e_amqp_filenotify_seen(svc->filenotify, needle);
 }
 
 void az_iot_e2e_service_file_notification_stats(
@@ -317,26 +318,30 @@ void az_iot_e2e_service_file_notification_stats(
     int* out_released,
     int* out_unparsed)
 {
-    if (svc->filenotify != NULL)
-    {
-        e2e_amqp_filenotify_stats(
-            svc->filenotify, out_delivered, out_captured, out_released, out_unparsed);
-        return;
-    }
-    if (out_delivered != NULL) *out_delivered = 0;
-    if (out_captured != NULL) *out_captured = 0;
-    if (out_released != NULL) *out_released = 0;
-    if (out_unparsed != NULL) *out_unparsed = 0;
+  if (svc->filenotify != NULL)
+  {
+    e2e_amqp_filenotify_stats(
+        svc->filenotify, out_delivered, out_captured, out_released, out_unparsed);
+    return;
+  }
+  if (out_delivered != NULL)
+    *out_delivered = 0;
+  if (out_captured != NULL)
+    *out_captured = 0;
+  if (out_released != NULL)
+    *out_released = 0;
+  if (out_unparsed != NULL)
+    *out_unparsed = 0;
 }
 
 void az_iot_e2e_service_file_notification_watch_end(az_iot_e2e_service* svc)
 {
-    if (svc->filenotify != NULL)
-    {
-        e2e_amqp_filenotify_end(svc->filenotify);
-        free(svc->filenotify);
-        svc->filenotify = NULL;
-    }
+  if (svc->filenotify != NULL)
+  {
+    e2e_amqp_filenotify_end(svc->filenotify);
+    free(svc->filenotify);
+    svc->filenotify = NULL;
+  }
 }
 
 bool az_iot_e2e_service_send_c2d(
@@ -345,46 +350,46 @@ bool az_iot_e2e_service_send_c2d(
     const uint8_t* payload,
     size_t payload_len)
 {
-    /* IoT Hub service SAS: HMAC key is base64-decode(key); audience is the host. */
-    char sas[512];
-    if (!e2e_sas_token_create(
-            svc->hub_info.host,
-            svc->hub_info.key_name,
-            svc->hub_info.key,
-            true,
-            sas_expiry(),
-            sas,
-            sizeof(sas)))
-    {
-        set_error(svc, "c2d: failed to build SAS token");
-        return false;
-    }
+  /* IoT Hub service SAS: HMAC key is base64-decode(key); audience is the host. */
+  char sas[512];
+  if (!e2e_sas_token_create(
+          svc->hub_info.host,
+          svc->hub_info.key_name,
+          svc->hub_info.key,
+          true,
+          sas_expiry(),
+          sas,
+          sizeof(sas)))
+  {
+    set_error(svc, "c2d: failed to build SAS token");
+    return false;
+  }
 
-    const char* err = NULL;
-    if (!e2e_amqp_send_c2d(svc->hub_info.host, sas, device_id, payload, payload_len, &err))
-    {
-        set_error(svc, (err != NULL) ? err : "c2d: send failed");
-        return false;
-    }
-    return true;
+  const char* err = NULL;
+  if (!e2e_amqp_send_c2d(svc->hub_info.host, sas, device_id, payload, payload_len, &err))
+  {
+    set_error(svc, (err != NULL) ? err : "c2d: send failed");
+    return false;
+  }
+  return true;
 }
 
 /* Build the IoT Hub service SAS used for the REST APIs. */
 static bool build_hub_sas(az_iot_e2e_service* svc, char* out, size_t out_size)
 {
-    if (!e2e_sas_token_create(
-            svc->hub_info.host,
-            svc->hub_info.key_name,
-            svc->hub_info.key,
-            true,
-            sas_expiry(),
-            out,
-            out_size))
-    {
-        set_error(svc, "rest: failed to build SAS token");
-        return false;
-    }
-    return true;
+  if (!e2e_sas_token_create(
+          svc->hub_info.host,
+          svc->hub_info.key_name,
+          svc->hub_info.key,
+          true,
+          sas_expiry(),
+          out,
+          out_size))
+  {
+    set_error(svc, "rest: failed to build SAS token");
+    return false;
+  }
+  return true;
 }
 
 /* Start a REST request, replacing any previous one. */
@@ -395,26 +400,26 @@ static bool begin_request(
     const char* sas,
     const char* body)
 {
-    if (svc->http != NULL)
-    {
-        e2e_http_end(svc->http);
-        free(svc->http);
-        svc->http = NULL;
-    }
-    svc->http = (e2e_http_request*)calloc(1, sizeof(*svc->http));
-    if (svc->http == NULL)
-    {
-        set_error(svc, "rest: out of memory");
-        return false;
-    }
-    if (!e2e_http_begin(svc->http, svc->hub_info.host, method, path, sas, body))
-    {
-        set_error(svc, e2e_http_error(svc->http));
-        free(svc->http);
-        svc->http = NULL;
-        return false;
-    }
-    return true;
+  if (svc->http != NULL)
+  {
+    e2e_http_end(svc->http);
+    free(svc->http);
+    svc->http = NULL;
+  }
+  svc->http = (e2e_http_request*)calloc(1, sizeof(*svc->http));
+  if (svc->http == NULL)
+  {
+    set_error(svc, "rest: out of memory");
+    return false;
+  }
+  if (!e2e_http_begin(svc->http, svc->hub_info.host, method, path, sas, body))
+  {
+    set_error(svc, e2e_http_error(svc->http));
+    free(svc->http);
+    svc->http = NULL;
+    return false;
+  }
+  return true;
 }
 
 bool az_iot_e2e_service_method_invoke_begin(
@@ -423,35 +428,34 @@ bool az_iot_e2e_service_method_invoke_begin(
     const char* method_name,
     const char* json_payload)
 {
-    char sas[512];
-    if (!build_hub_sas(svc, sas, sizeof(sas)))
-    {
-        return false;
-    }
-    char path[256];
-    snprintf(
-        path, sizeof(path), "/twins/%s/methods?api-version=%s", device_id, E2E_API_VERSION);
-    char body[1024];
-    snprintf(
-        body,
-        sizeof(body),
-        "{\"methodName\":\"%s\",\"responseTimeoutInSeconds\":30,"
-        "\"connectTimeoutInSeconds\":30,\"payload\":%s}",
-        method_name,
-        (json_payload != NULL) ? json_payload : "null");
-    return begin_request(svc, "POST", path, sas, body);
+  char sas[512];
+  if (!build_hub_sas(svc, sas, sizeof(sas)))
+  {
+    return false;
+  }
+  char path[256];
+  snprintf(path, sizeof(path), "/twins/%s/methods?api-version=%s", device_id, E2E_API_VERSION);
+  char body[1024];
+  snprintf(
+      body,
+      sizeof(body),
+      "{\"methodName\":\"%s\",\"responseTimeoutInSeconds\":30,"
+      "\"connectTimeoutInSeconds\":30,\"payload\":%s}",
+      method_name,
+      (json_payload != NULL) ? json_payload : "null");
+  return begin_request(svc, "POST", path, sas, body);
 }
 
 bool az_iot_e2e_service_twin_get_begin(az_iot_e2e_service* svc, const char* device_id)
 {
-    char sas[512];
-    if (!build_hub_sas(svc, sas, sizeof(sas)))
-    {
-        return false;
-    }
-    char path[256];
-    snprintf(path, sizeof(path), "/twins/%s?api-version=%s", device_id, E2E_API_VERSION);
-    return begin_request(svc, "GET", path, sas, NULL);
+  char sas[512];
+  if (!build_hub_sas(svc, sas, sizeof(sas)))
+  {
+    return false;
+  }
+  char path[256];
+  snprintf(path, sizeof(path), "/twins/%s?api-version=%s", device_id, E2E_API_VERSION);
+  return begin_request(svc, "GET", path, sas, NULL);
 }
 
 bool az_iot_e2e_service_twin_patch_desired_begin(
@@ -459,22 +463,22 @@ bool az_iot_e2e_service_twin_patch_desired_begin(
     const char* device_id,
     const char* desired_json)
 {
-    char sas[512];
-    if (!build_hub_sas(svc, sas, sizeof(sas)))
-    {
-        return false;
-    }
-    char path[256];
-    snprintf(path, sizeof(path), "/twins/%s?api-version=%s", device_id, E2E_API_VERSION);
-    /* Large enough for an ADU deployment desired PATCH (~3 KB: signed JWS +
-     * escaped v5 manifest) wrapped in the properties/desired envelope. */
-    char body[4096];
-    snprintf(
-        body,
-        sizeof(body),
-        "{\"properties\":{\"desired\":%s}}",
-        (desired_json != NULL) ? desired_json : "{}");
-    return begin_request(svc, "PATCH", path, sas, body);
+  char sas[512];
+  if (!build_hub_sas(svc, sas, sizeof(sas)))
+  {
+    return false;
+  }
+  char path[256];
+  snprintf(path, sizeof(path), "/twins/%s?api-version=%s", device_id, E2E_API_VERSION);
+  /* Large enough for an ADU deployment desired PATCH (~3 KB: signed JWS +
+   * escaped v5 manifest) wrapped in the properties/desired envelope. */
+  char body[4096];
+  snprintf(
+      body,
+      sizeof(body),
+      "{\"properties\":{\"desired\":%s}}",
+      (desired_json != NULL) ? desired_json : "{}");
+  return begin_request(svc, "PATCH", path, sas, body);
 }
 
 int az_iot_e2e_service_request_poll(
@@ -483,46 +487,46 @@ int az_iot_e2e_service_request_poll(
     char* resp_buf,
     size_t resp_buf_size)
 {
-    if (svc->http == NULL)
-    {
-        set_error(svc, "rest: no request in flight");
-        return -1;
-    }
+  if (svc->http == NULL)
+  {
+    set_error(svc, "rest: no request in flight");
+    return -1;
+  }
 
-    int rc = e2e_http_poll(svc->http);
-    if (rc == 0)
-    {
-        return 0;
-    }
+  int rc = e2e_http_poll(svc->http);
+  if (rc == 0)
+  {
+    return 0;
+  }
 
-    if (rc == 1)
+  if (rc == 1)
+  {
+    if (out_http_status != NULL)
     {
-        if (out_http_status != NULL)
-        {
-            *out_http_status = e2e_http_status(svc->http);
-        }
-        if (resp_buf != NULL && resp_buf_size > 0)
-        {
-            int body_len = 0;
-            const uint8_t* body = e2e_http_body(svc->http, &body_len);
-            size_t copy = (size_t)body_len;
-            if (copy > resp_buf_size - 1)
-            {
-                copy = resp_buf_size - 1;
-            }
-            memcpy(resp_buf, body, copy);
-            resp_buf[copy] = '\0';
-        }
+      *out_http_status = e2e_http_status(svc->http);
     }
-    else
+    if (resp_buf != NULL && resp_buf_size > 0)
     {
-        set_error(svc, e2e_http_error(svc->http));
+      int body_len = 0;
+      const uint8_t* body = e2e_http_body(svc->http, &body_len);
+      size_t copy = (size_t)body_len;
+      if (copy > resp_buf_size - 1)
+      {
+        copy = resp_buf_size - 1;
+      }
+      memcpy(resp_buf, body, copy);
+      resp_buf[copy] = '\0';
     }
+  }
+  else
+  {
+    set_error(svc, e2e_http_error(svc->http));
+  }
 
-    e2e_http_end(svc->http);
-    free(svc->http);
-    svc->http = NULL;
-    return rc;
+  e2e_http_end(svc->http);
+  free(svc->http);
+  svc->http = NULL;
+  return rc;
 }
 
 /* ---- Device-side HTTPS helper --------------------------------------------- */
@@ -531,28 +535,30 @@ int az_iot_e2e_service_request_poll(
 static char* read_file_alloc(const char* path)
 {
 #ifdef _WIN32
-    FILE* f = NULL;
-    if (fopen_s(&f, path, "rb") != 0 || f == NULL) return NULL;
+  FILE* f = NULL;
+  if (fopen_s(&f, path, "rb") != 0 || f == NULL)
+    return NULL;
 #else
-    FILE* f = fopen(path, "rb");
-    if (f == NULL) return NULL;
+  FILE* f = fopen(path, "rb");
+  if (f == NULL)
+    return NULL;
 #endif
-    char* buf = NULL;
-    if (fseek(f, 0, SEEK_END) == 0)
+  char* buf = NULL;
+  if (fseek(f, 0, SEEK_END) == 0)
+  {
+    long size = ftell(f);
+    if (size >= 0 && fseek(f, 0, SEEK_SET) == 0)
     {
-        long size = ftell(f);
-        if (size >= 0 && fseek(f, 0, SEEK_SET) == 0)
-        {
-            buf = (char*)malloc((size_t)size + 1);
-            if (buf != NULL)
-            {
-                size_t got = fread(buf, 1, (size_t)size, f);
-                buf[got] = '\0';
-            }
-        }
+      buf = (char*)malloc((size_t)size + 1);
+      if (buf != NULL)
+      {
+        size_t got = fread(buf, 1, (size_t)size, f);
+        buf[got] = '\0';
+      }
     }
-    fclose(f);
-    return buf;
+  }
+  fclose(f);
+  return buf;
 }
 
 bool az_iot_e2e_https_request(
@@ -570,60 +576,72 @@ bool az_iot_e2e_https_request(
     size_t resp_buf_size,
     size_t* out_resp_len)
 {
-    char* cert_pem = (client_cert_path != NULL) ? read_file_alloc(client_cert_path) : NULL;
-    char* key_pem  = (client_key_path != NULL) ? read_file_alloc(client_key_path) : NULL;
-    if ((client_cert_path != NULL && cert_pem == NULL)
-        || (client_key_path != NULL && key_pem == NULL))
-    {
-        free(cert_pem);
-        free(key_pem);
-        return false;
-    }
-
-    e2e_http_request* r = (e2e_http_request*)calloc(1, sizeof(*r));
-    if (r == NULL)
-    {
-        free(cert_pem);
-        free(key_pem);
-        return false;
-    }
-
-    bool ok = e2e_http_begin_ex(
-        r, host, method, path, NULL /* no Authorization */,
-        content_type, extra_header, body, body_len, cert_pem, key_pem);
-
-    if (ok)
-    {
-        int rc;
-        time_t start = time(NULL);
-        do
-        {
-            rc = e2e_http_poll(r);
-        } while (rc == 0 && (time(NULL) - start) < 60);
-
-        if (rc == 1)
-        {
-            if (out_status != NULL) *out_status = e2e_http_status(r);
-            int b_len = 0;
-            const uint8_t* b = e2e_http_body(r, &b_len);
-            size_t copy = (size_t)b_len;
-            if (resp_buf != NULL && resp_buf_size > 0)
-            {
-                if (copy > resp_buf_size - 1) copy = resp_buf_size - 1;
-                memcpy(resp_buf, b, copy);
-                resp_buf[copy] = '\0';
-            }
-            if (out_resp_len != NULL) *out_resp_len = copy;
-        }
-        else
-        {
-            ok = false;
-        }
-    }
-
-    e2e_http_end(r);
-    free(r);
+  char* cert_pem = (client_cert_path != NULL) ? read_file_alloc(client_cert_path) : NULL;
+  char* key_pem = (client_key_path != NULL) ? read_file_alloc(client_key_path) : NULL;
+  if ((client_cert_path != NULL && cert_pem == NULL)
+      || (client_key_path != NULL && key_pem == NULL))
+  {
     free(cert_pem);
     free(key_pem);
-    return ok;
+    return false;
+  }
+
+  e2e_http_request* r = (e2e_http_request*)calloc(1, sizeof(*r));
+  if (r == NULL)
+  {
+    free(cert_pem);
+    free(key_pem);
+    return false;
+  }
+
+  bool ok = e2e_http_begin_ex(
+      r,
+      host,
+      method,
+      path,
+      NULL /* no Authorization */,
+      content_type,
+      extra_header,
+      body,
+      body_len,
+      cert_pem,
+      key_pem);
+
+  if (ok)
+  {
+    int rc;
+    time_t start = time(NULL);
+    do
+    {
+      rc = e2e_http_poll(r);
+    } while (rc == 0 && (time(NULL) - start) < 60);
+
+    if (rc == 1)
+    {
+      if (out_status != NULL)
+        *out_status = e2e_http_status(r);
+      int b_len = 0;
+      const uint8_t* b = e2e_http_body(r, &b_len);
+      size_t copy = (size_t)b_len;
+      if (resp_buf != NULL && resp_buf_size > 0)
+      {
+        if (copy > resp_buf_size - 1)
+          copy = resp_buf_size - 1;
+        memcpy(resp_buf, b, copy);
+        resp_buf[copy] = '\0';
+      }
+      if (out_resp_len != NULL)
+        *out_resp_len = copy;
+    }
+    else
+    {
+      ok = false;
+    }
+  }
+
+  e2e_http_end(r);
+  free(r);
+  free(cert_pem);
+  free(key_pem);
+  return ok;
 }
