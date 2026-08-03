@@ -12,8 +12,35 @@ helper, and if one does not exist yet, propose it rather than reaching for the
 libc call.**
 
 `.github/instructions/c-library.instructions.md` restates the enforceable parts
-for AI-assisted editing, and `c/eng/check-banned-constructs.sh` fails CI when
-they are broken. This document is the reasoning; those two are the teeth.
+for AI-assisted editing, and two scripts make them stick:
+`c/eng/check-banned-constructs.sh` (what you may call) and
+`c/eng/code-style.sh` (how it is laid out). This document is the reasoning;
+those are the teeth.
+
+## 0. Formatting is clang-format's job, not yours
+
+```bash
+bash c/eng/code-style.sh fix      # reformat every tracked C source
+bash c/eng/code-style.sh check    # what CI runs
+```
+
+The style is [`c/.clang-format`](../../.clang-format), adopted from
+azure-sdk-for-c so this project reads like the SDK it is built on: LLVM-derived,
+Allman braces, 2-space indent, 100 columns, one argument per line. Keep it in
+sync when upstream changes.
+
+One deviation, recorded next to the setting: `SortIncludes` stays **off**. LLVM
+enables it, and it sorts `<cmocka.h>` above the headers cmocka requires, which
+stops every unit test compiling. Include order is load-bearing in C.
+
+**Pin the version.** clang-format's output differs between major releases. CI
+uses clang-format 18; Visual Studio 2022 currently bundles 19, so do not rely on
+the IDE's copy. Override with `CLANG_FORMAT=clang-format-18`.
+
+The tree was reformatted wholesale in one commit, which is listed in
+`.git-blame-ignore-revs` so `git blame` looks through it. Enable that locally
+once with `git config blame.ignoreRevsFile .git-blame-ignore-revs`; GitHub
+honours it automatically.
 
 ## 1. Build strings with `az_iot_span_writer`, not the C library
 

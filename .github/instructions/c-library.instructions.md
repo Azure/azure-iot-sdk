@@ -10,7 +10,22 @@ hand-rolled C construct, look for the `az_*` / `az_iot_*` helper. If one does
 not exist, **propose adding it** rather than reaching for the libc call.
 
 Full reasoning: `c/docs/eng/coding-conventions.md`. CI enforces the banned list
-via `c/eng/check-banned-constructs.sh`.
+via `c/eng/check-banned-constructs.sh` and the formatting of changed lines via
+`c/eng/code-style.sh check`.
+
+## Formatting
+
+Do not hand-align code. `c/.clang-format` is the style, adopted from
+azure-sdk-for-c: LLVM-derived, Allman braces, 2-space indent, 100 columns, one
+argument per line. After editing, run:
+
+```bash
+bash c/eng/code-style.sh fix
+```
+
+CI checks every tracked C source, so leave the tree formatted. Use
+clang-format 18 (`CLANG_FORMAT=clang-format-18`); other major versions produce
+different output and will fight the gate.
 
 ## Banned in `c/src` - CI fails on these
 
