@@ -177,16 +177,30 @@ static void teardown_active(az_iot_connection_client* c)
   /* Abandon any in-flight AEG presence (birth) handshake: it belonged to the
    * now-destroyed session and must restart from CONNACK on the next connect. */
   c->presence.phase = PRESENCE_PHASE_NONE;
-  /* Drop any pending PUBACK correlation entries: the packet_ids belonged to
-   * the now-destroyed adapter session and won't be reused. Callers waiting
-   * on these acks won't be notified, which matches the at-least-once
-   * semantics of QoS 1 (the publish must be retried after reconnect). */
+  /* Complete any pending PUBACK correlation entries with an error. The
+   * packet_ids belonged to the now-destroyed session and will never be
+   * acknowledged, so silently dropping the callbacks would leave the caller
+   * tracking a publish that can no longer finish either way. QoS 1 is
+   * at-least-once: the publish must be retried after reconnect, and telling
+   * the caller so is what makes that retry deliberate.
+   *
+   * The slot is released BEFORE the callback runs so a callback that
+   * republishes immediately can claim it. */
   for (size_t i = 0; i < AZ_IOT_MAX_PENDING_PUBACKS; ++i)
   {
+    az_iot_publish_ack_callback cb = c->pending_pubacks[i].cb;
+    void* user_ctx = c->pending_pubacks[i].user_ctx;
+    bool was_pending = c->pending_pubacks[i].in_use;
+
     c->pending_pubacks[i].in_use = false;
     c->pending_pubacks[i].cb = NULL;
     c->pending_pubacks[i].user_ctx = NULL;
     c->pending_pubacks[i].packet_id = 0;
+
+    if (was_pending && cb)
+    {
+      cb(AZ_IOT_ERR_NOT_CONNECTED, user_ctx);
+    }
   }
 }
 
@@ -493,7 +507,22 @@ static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
       az_result ar = az_iot_provisioning_client_parse_received_topic_and_payload(
           &c->dps_prov, topic_span, payload_span, &resp);
       if (az_result_failed(ar))
-        break;
+      {
+        /* A registration response we cannot parse is not something waiting
+         * longer can fix: the operation this session was driving has no
+         * knowable outcome. Silently ignoring it left the client in CONNECTING
+         * with no fault, no re-poll and no diagnostic -- indistinguishable
+         * from a hang. Fail the provisioning attempt instead, and print the
+         * body so the cause is recoverable from a log. The reconnection
+         * policy (if any) decides whether to try again. */
+        AZ_IOT_LOG_ERRORF(
+            "dps register: unparsable response on topic %s; body: %.*s",
+            evt->message->topic,
+            (int)az_span_size(payload_span),
+            (const char*)az_span_ptr(payload_span));
+        dps_finalize(c, AZ_IOT_ERR_PROTOCOL, false);
+        return;
+      }
 
       switch (resp.operation_status)
       {
@@ -1478,6 +1507,19 @@ void az_iot_connection_client_destroy(az_iot_connection_client* client)
 {
   if (!client)
     return;
+  /* Abandon pending QoS-1 acknowledgements WITHOUT completing them. On a
+   * dropped session the callback is useful -- it tells the caller the publish
+   * needs resending. On destroy() it is not: the application is tearing the
+   * client down, and the context those callbacks close over may already be
+   * gone. Calling back into it here would turn cleanup into a use-after-free.
+   * Cleared before teardown_active() so it has nothing left to complete. */
+  for (size_t i = 0; i < AZ_IOT_MAX_PENDING_PUBACKS; ++i)
+  {
+    client->pending_pubacks[i].in_use = false;
+    client->pending_pubacks[i].cb = NULL;
+    client->pending_pubacks[i].user_ctx = NULL;
+    client->pending_pubacks[i].packet_id = 0;
+  }
   teardown_active(client);
   dps_teardown_mqtt(client);
   /* dispatch is embedded; nothing to free. */

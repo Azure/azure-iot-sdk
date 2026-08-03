@@ -501,13 +501,11 @@ static void unmatched_puback_is_ignored(void** state)
   assert_int_equal(probe.calls, 0);
 }
 
-/* KNOWN GAP (pinned, not endorsed). When a session is torn down, the core frees
- * every pending QoS-1 slot WITHOUT invoking the callbacks. An application that
- * tracks in-flight publishes through this callback therefore leaks one entry
- * per unacknowledged publish on every reconnect, with no event telling it to
- * resend. Completing them with an error would let callers retry deliberately.
- * See docs/test-coverage.md ("known gaps"). */
-static void pending_pubacks_are_dropped_without_notice_on_disconnect(void** state)
+/* A publish that was in flight when the session died can never be
+ * acknowledged. Completing the callback with an error is what lets the caller
+ * decide to resend; dropping it silently would leave the app tracking a
+ * publish that can no longer finish either way. */
+static void pending_pubacks_are_completed_with_an_error_on_disconnect(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
   az_iot_mock_mqtt_client* m = open_to_connected(fx);
@@ -518,16 +516,61 @@ static void pending_pubacks_are_dropped_without_notice_on_disconnect(void** stat
   assert_true(az_iot_mock_mqtt_client_inject_disconnected(m));
   (void)az_iot_connection_client_do_work(fx->client, 0);
   (void)az_iot_connection_client_do_work(fx->client, 0);
-  assert_int_equal(probe.calls, 0);
+  assert_int_equal(probe.calls, 1);
+  assert_int_equal(probe.last_status, AZ_IOT_ERR_NOT_CONNECTED);
 
   /* The slot is genuinely released, so a late ack from the dead session on a
-   * recycled packet id cannot resurrect the callback. */
+   * recycled packet id cannot fire the callback a second time. */
   m = advance_to_retry(fx);
   assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
   (void)az_iot_connection_client_do_work(fx->client, 0);
   assert_true(az_iot_mock_mqtt_client_inject_puback(m, pid, AZ_IOT_OK));
   (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_equal(probe.calls, 1);
+}
+
+/* Every outstanding publish must be reported, not just the first. */
+static void all_pending_pubacks_are_completed_on_disconnect(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_mock_mqtt_client* m = open_to_connected(fx);
+
+  puback_probe a = { 0 };
+  puback_probe b = { 0 };
+  puback_probe c = { 0 };
+  (void)publish_qos1(fx, m, &a);
+  (void)publish_qos1(fx, m, &b);
+  (void)publish_qos1(fx, m, &c);
+
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(m));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  assert_int_equal(a.calls, 1);
+  assert_int_equal(b.calls, 1);
+  assert_int_equal(c.calls, 1);
+  assert_int_equal(a.last_status, AZ_IOT_ERR_NOT_CONNECTED);
+  assert_int_equal(b.last_status, AZ_IOT_ERR_NOT_CONNECTED);
+  assert_int_equal(c.last_status, AZ_IOT_ERR_NOT_CONNECTED);
+}
+
+/* destroy() is the one teardown that must stay silent: the application is
+ * tearing the client down, so the context a publish callback closes over may
+ * already be gone and calling into it would be a use-after-free. */
+static void destroy_does_not_complete_pending_pubacks(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_mock_mqtt_client* m = open_to_connected(fx);
+
+  puback_probe probe = { 0 };
+  (void)publish_qos1(fx, m, &probe);
+
+  az_iot_connection_client_destroy(fx->client);
   assert_int_equal(probe.calls, 0);
+
+  /* Neutralize the fixture teardown: already destroyed, factory adopted. */
+  memset(&fx->client_storage, 0, sizeof(fx->client_storage));
+  fx->factory = NULL;
 }
 
 int main(void)
@@ -571,7 +614,11 @@ int main(void)
         matching_puback_invokes_the_callback, setup_two_attempts, teardown),
     cmocka_unit_test_setup_teardown(unmatched_puback_is_ignored, setup_two_attempts, teardown),
     cmocka_unit_test_setup_teardown(
-        pending_pubacks_are_dropped_without_notice_on_disconnect, setup_two_attempts, teardown),
+        pending_pubacks_are_completed_with_an_error_on_disconnect, setup_two_attempts, teardown),
+    cmocka_unit_test_setup_teardown(
+        all_pending_pubacks_are_completed_on_disconnect, setup_two_attempts, teardown),
+    cmocka_unit_test_setup_teardown(
+        destroy_does_not_complete_pending_pubacks, setup_two_attempts, teardown),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }
