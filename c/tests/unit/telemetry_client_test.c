@@ -243,7 +243,9 @@ static void send_url_encodes_property_values(void** state)
 
     assert_int_equal(az_iot_telemetry_client_send(&fx->tc, &msg, NULL, NULL), AZ_IOT_OK);
 
+    assert_int_equal(az_iot_mock_mqtt_client_call_count(fx->mock), 1);
     const az_iot_mock_call* c0 = az_iot_mock_mqtt_client_call_at(fx->mock, 0);
+    assert_int_equal(c0->kind, AZ_IOT_MOCK_CALL_PUBLISH);
     assert_string_equal(
         c0->topic,
         "devices/ut-device/messages/events/"
@@ -272,7 +274,9 @@ static void system_property_keys_match_the_azure_sdk_wire_form(void** state)
 
     assert_int_equal(az_iot_telemetry_client_send(&fx->tc, &msg, NULL, NULL), AZ_IOT_OK);
 
+    assert_int_equal(az_iot_mock_mqtt_client_call_count(fx->mock), 1);
     const az_iot_mock_call* c0 = az_iot_mock_mqtt_client_call_at(fx->mock, 0);
+    assert_int_equal(c0->kind, AZ_IOT_MOCK_CALL_PUBLISH);
     assert_string_equal(
         c0->topic,
         "devices/ut-device/messages/events/%24.mid=m1&%24.cid=c1");
