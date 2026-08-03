@@ -418,19 +418,61 @@ static void dps_malformed_response_is_ignored_without_faulting(void** state)
   assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_CONNECTING);
 }
 
-/* NOT TESTED -- DELIBERATELY. A NULL or empty `dps.registration_id` (with a
- * valid `dps.id_scope`) makes open() spin forever: dps_configured() only checks
- * id_scope, so the empty value reaches az_iot_provisioning_client_init(), whose
- * az_core precondition handler is an infinite `while(1)` loop in this build
- * (AZ_NO_PRECONDITION_CHECKING is OFF and no handler is installed).
- *
- * A test for it could not fail -- it would hang the suite, and CI with it. It
- * is listed as a known gap in docs/test-coverage.md instead. Once open()
- * validates the DPS identity up front, add:
- *
- *   dps_rejects_an_empty_registration_id -> AZ_IOT_ERR_INVALID_ARG
- *   dps_rejects_a_null_registration_id   -> AZ_IOT_ERR_INVALID_ARG
- */
+/* A DPS identity the SDK cannot use must come back as an error, not as a hang.
+ * These spans are handed to az_core, whose precondition handler in this build is
+ * an infinite loop, so the check has to happen before that call: an empty or
+ * missing registration id used to wedge the calling thread inside open(). */
+static void dps_rejects_a_null_registration_id(void** state)
+{
+  (void)state;
+  az_iot_connection_client_options opts = { 0 };
+  opts.client_id = "ut-device";
+  opts.dps.id_scope = "0ne00000000";
+  opts.dps.registration_id = NULL;
+
+  az_iot_connection_client c;
+  assert_int_equal(az_iot_connection_client_init(&c, &opts), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_open(&c), AZ_IOT_ERR_INVALID_ARG);
+  az_iot_connection_client_destroy(&c);
+}
+
+static void dps_rejects_an_empty_registration_id(void** state)
+{
+  (void)state;
+  az_iot_connection_client_options opts = { 0 };
+  opts.client_id = "ut-device";
+  opts.dps.id_scope = "0ne00000000";
+  opts.dps.registration_id = "";
+
+  az_iot_connection_client c;
+  assert_int_equal(az_iot_connection_client_init(&c, &opts), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_open(&c), AZ_IOT_ERR_INVALID_ARG);
+  az_iot_connection_client_destroy(&c);
+}
+
+/* A rejected open() must leave the client reusable, not stuck mid-provisioning. */
+static void dps_rejected_identity_leaves_the_client_idle(void** state)
+{
+  (void)state;
+  az_iot_connection_client_options opts = { 0 };
+  opts.client_id = "ut-device";
+  opts.dps.id_scope = "0ne00000000";
+  opts.dps.registration_id = "";
+
+  az_iot_test_state_log log = { 0 };
+  az_iot_connection_client c;
+  assert_int_equal(az_iot_connection_client_init(&c, &opts), AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_connection_client_set_state_callback(&c, az_iot_test_on_state, &log), AZ_IOT_OK);
+
+  assert_int_equal(az_iot_connection_client_open(&c), AZ_IOT_ERR_INVALID_ARG);
+  assert_false(az_iot_test_saw_state(&log, AZ_IOT_CONN_STATE_CONNECTING));
+  assert_false(az_iot_test_saw_state(&log, AZ_IOT_CONN_STATE_FAULTED));
+
+  /* Still IDLE, so a corrected configuration can be opened on this instance. */
+  assert_int_equal(az_iot_connection_client_open(&c), AZ_IOT_ERR_INVALID_ARG);
+  az_iot_connection_client_destroy(&c);
+}
 
 int main(void)
 {
@@ -462,6 +504,10 @@ int main(void)
     cmocka_unit_test_setup_teardown(dps_disconnect_midflow_faults, setup, teardown),
     cmocka_unit_test_setup_teardown(
         dps_malformed_response_is_ignored_without_faulting, setup, teardown),
+    /* identity validation */
+    cmocka_unit_test(dps_rejects_a_null_registration_id),
+    cmocka_unit_test(dps_rejects_an_empty_registration_id),
+    cmocka_unit_test(dps_rejected_identity_leaves_the_client_idle),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }
