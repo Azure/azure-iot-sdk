@@ -308,8 +308,8 @@ static void on_conn(az_iot_connection_state state,
         case AZ_IOT_CONN_STATE_RECONNECTING:
             app->online = false;
             /* is_retriable is implied here, but reason/message tell the user WHY. */
-            AZ_IOT_LOG_INFO("link dropped: %s (retrying)",
-                            status->message ? status->message : "network");
+            AZ_IOT_LOG_INFOF("link dropped: %s (retrying)",
+                             status->message ? status->message : "network");
             break;
 
         default:
@@ -336,9 +336,9 @@ static void on_conn(az_iot_connection_state state,
     if (status->is_retriable)
     {
         /* SDK will keep trying; just record for telemetry. */
-        AZ_IOT_LOG_WARN("transient (%s): proto=%d transport=%d",
-                        az_iot_error_source_to_string(status->source),
-                        status->protocol_code, status->transport_code);
+        AZ_IOT_LOG_WARNF("transient (%s): proto=%d transport=%d",
+                         az_iot_error_source_to_string(status->source),
+                         status->protocol_code, status->transport_code);
     }
     else
     {

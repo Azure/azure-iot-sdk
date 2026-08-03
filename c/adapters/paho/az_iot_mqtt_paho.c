@@ -22,6 +22,7 @@
 #endif
 
 #include "azure/iot/adapters/az_iot_adapter_paho.h"
+#include "azure/iot/az_iot_log.h"
 #include "azure/iot/az_iot_result.h"
 #include "azure/iot/az_iot_mqtt_iface.h"
 
@@ -302,13 +303,13 @@ static int paho_msg_arrived(void* context, char* topic, int topic_len, MQTTAsync
 static void paho_connection_lost(void* context, char* cause)
 {
     paho_client* m = (paho_client*)context;
-    fprintf(stderr, "[paho] connection lost: %s\n", cause ? cause : "(unknown)");
+    AZ_IOT_LOG_WARNF("paho: connection lost: %s", cause ? cause : "(unknown)");
     if (m) enqueue_status(m, AZ_IOT_MQTT_EVT_DISCONNECTED, AZ_IOT_OK, 0);
 }
 
 static void paho_trace_callback(enum MQTTASYNC_TRACE_LEVELS level, char* message)
 {
-    fprintf(stderr, "[paho-trace] (%d) %s\n", (int)level, message ? message : "");
+    AZ_IOT_LOG_TRACEF("paho: (%d) %s", (int)level, message ? message : "");
 }
 
 /* OpenSSL error handler wired into MQTTAsync_SSLOptions.ssl_error_cb. On a failed
@@ -319,7 +320,9 @@ static void paho_trace_callback(enum MQTTASYNC_TRACE_LEVELS level, char* message
 static int paho_ssl_error_callback(const char* str, size_t len, void* u)
 {
     (void)len; (void)u;
-    fprintf(stderr, "[paho-ssl] %s", str ? str : "");
+    /* OpenSSL hands these over one line at a time, already newline-terminated;
+     * the sink adds its own framing, so trim the trailing newline. */
+    AZ_IOT_LOG_TRACEF("paho ssl: %.*s", str ? (int)strcspn(str, "\n") : 0, str ? str : "");
     return 1; /* keep draining the remaining OpenSSL error-queue lines */
 }
 
@@ -407,9 +410,10 @@ static void paho_connect_failure(void* context, MQTTAsync_failureData* response)
 {
     paho_client* m = (paho_client*)context;
     if (response)
-        fprintf(stderr, "[paho] connect failed: rc=%d msg=%s\n", response->code, response->message ? response->message : "(null)");
+        AZ_IOT_LOG_ERRORF("paho: connect failed: rc=%d msg=%s",
+                          response->code, response->message ? response->message : "(none)");
     else
-        fprintf(stderr, "[paho] connect failed: (no response data)\n");
+        AZ_IOT_LOG_ERROR("paho: connect failed: (no response data)");
     if (m) enqueue_status(m, AZ_IOT_MQTT_EVT_CONNECTED, paho_connect_failure_result(m, response), 0);
 }
 
@@ -461,9 +465,11 @@ static void paho_connect_failure5(void* context, MQTTAsync_failureData5* respons
 {
     paho_client* m = (paho_client*)context;
     if (response)
-        fprintf(stderr, "[paho] connect5 failed: rc=%d reason_code=%d msg=%s\n", response->code, (int)response->reasonCode, response->message ? response->message : "(null)");
+        AZ_IOT_LOG_ERRORF("paho: connect5 failed: rc=%d reason_code=%d msg=%s",
+                          response->code, (int)response->reasonCode,
+                          response->message ? response->message : "(none)");
     else
-        fprintf(stderr, "[paho] connect5 failed: (no response data)\n");
+        AZ_IOT_LOG_ERROR("paho: connect5 failed: (no response data)");
     if (m) enqueue_status(m, AZ_IOT_MQTT_EVT_CONNECTED, paho_connect_failure5_result(m, response), 0);
 }
 
@@ -480,7 +486,7 @@ static void paho_subscribe_success5(void* context, MQTTAsync_successData5* respo
     az_iot_result status = AZ_IOT_OK;
     if (response && (int)response->reasonCode >= 0x80)
     {
-        fprintf(stderr, "[paho] SUBACK refused: reason_code=%d\n", (int)response->reasonCode);
+        AZ_IOT_LOG_WARNF("paho: SUBACK refused: reason_code=%d", (int)response->reasonCode);
         status = AZ_IOT_ERR_MQTT;
     }
     enqueue_status(m, AZ_IOT_MQTT_EVT_SUBSCRIBE_ACK, status, pid);
@@ -560,7 +566,7 @@ static az_iot_result paho_iface_connect(az_iot_mqtt_client* self, const az_iot_m
     m->client_id  = dup_str(opts->client_id);
     if (!m->server_uri || !m->client_id) return AZ_IOT_ERR_OUT_OF_MEMORY;
 
-    fprintf(stderr, "[paho] connecting to %s as '%s'\n", m->server_uri, m->client_id);
+    AZ_IOT_LOG_INFOF("paho: connecting to %s as '%s'", m->server_uri, m->client_id);
 
     paho_maybe_enable_trace();
 
@@ -587,16 +593,16 @@ static az_iot_result paho_iface_connect(az_iot_mqtt_client* self, const az_iot_m
         /* AZ_IOT_PAHO_TRACE also enables detailed OpenSSL handshake error output. */
         if (paho_trace_level_from_env() >= 0)
             ssl_opts.ssl_error_cb = paho_ssl_error_callback;
-        fprintf(stderr, "[paho] SSL: trustStore=%s keyStore=%s privateKey=%s verboseErrors=%s\n",
-            ssl_opts.trustStore ? ssl_opts.trustStore : "(null)",
-            ssl_opts.keyStore ? ssl_opts.keyStore : "(null)",
-            ssl_opts.privateKey ? ssl_opts.privateKey : "(null)",
+        AZ_IOT_LOG_DEBUGF("paho: SSL trustStore=%s keyStore=%s privateKey=%s verboseErrors=%s",
+            ssl_opts.trustStore ? ssl_opts.trustStore : "(none)",
+            ssl_opts.keyStore ? ssl_opts.keyStore : "(none)",
+            ssl_opts.privateKey ? ssl_opts.privateKey : "(none)",
             ssl_opts.ssl_error_cb ? "on" : "off");
     }
 #else
     if (use_ssl)
     {
-        fprintf(stderr, "[paho] ERROR: TLS requested but adapter built without SSL support\n");
+        AZ_IOT_LOG_ERROR("paho: TLS requested but the adapter was built without SSL support");
         return AZ_IOT_ERR_NOT_SUPPORTED;
     }
 #endif

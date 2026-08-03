@@ -306,7 +306,7 @@ static int run_file_upload(sample_state* state)
 
 int main(void)
 {
-    az_iot_log_sink log = az_iot_log_stderr_sink(AZ_IOT_LOG_ERROR);
+    az_iot_log_sink log = az_iot_log_stderr_sink(AZ_IOT_LOG_LEVEL_INFO);
     az_iot_log_set_global_sink(&log);
 
     sample_state state = {0};
