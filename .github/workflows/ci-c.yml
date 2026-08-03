@@ -274,8 +274,8 @@ jobs:
     env:
       # Lowest acceptable number of CTest suites. Guards against a
       # misconfigured build silently running zero tests and reporting coverage
-      # computed over nothing -- which is exactly what the dead
-      # AZ_IOT_AEG_BUILD_TESTS option does to the c99-strict job today.
+      # computed over nothing -- the failure mode the dead AZ_IOT_AEG_* option
+      # names used to cause in this workflow.
       MIN_TESTS: '16'
     services:
       mosquitto:
@@ -283,10 +283,7 @@ jobs:
         ports:
           - 1883:1883
         # A real liveness probe: mosquitto_pub succeeds only if the broker
-        # accepted a connection. The `mosquitto_sub '$SYS/#' ... || exit 0`
-        # form used by the older jobs in this file always reports healthy --
-        # both because of the `|| exit 0` and because the first $SYS message
-        # can take longer to arrive than the timeout allows.
+        # accepted a connection.
         options: >-
           --health-cmd="mosquitto_pub -h localhost -p 1883 -t healthcheck -m ok"
           --health-interval=5s
@@ -329,11 +326,8 @@ jobs:
 
       - name: Test
         env:
-          # NOTE: the real variable names. The other jobs in this workflow set
-          # AZ_IOT_AEG_MQTT_BROKER_HOST, which nothing reads, so their
-          # conformance suites have always silently skipped.
           # Service containers are reachable on localhost for jobs that do not
-          # themselves run in a container.
+          # themselves run in a container -- NOT at the service label.
           AZ_IOT_MQTT_BROKER_HOST: localhost
           AZ_IOT_MQTT_BROKER_PORT: '1883'
         run: ctest --preset linux-gcc-coverage -E e2e
