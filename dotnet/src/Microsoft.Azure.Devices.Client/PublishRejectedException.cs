@@ -6,7 +6,7 @@ using System.Text;
 namespace Microsoft.Azure.Devices.Client
 {
     /// <summary>
-    /// This is thrown by <see cref="Telemetry.TelemetryClient"/> and <see cref="Twin.TwinClient"/> whenever it attempts to send an MQTT PUBLISH and it 
+    /// This is thrown by <see cref="Telemetry.TelemetryClient"/> and <see cref="Unified.Twin.TwinClient"/> whenever it attempts to send an MQTT PUBLISH and it 
     /// fails with an unsuccessful MQTT PUBACK code. Included in this exception are both the PUBACK reason code and the PUBACK reason string (if one was provided by the MQTT broker).
     /// </summary>
     /// <remarks>

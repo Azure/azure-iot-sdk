@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.Text;
 using System.Text.Json.Nodes;
 
-namespace Microsoft.Azure.Devices.Client.Twin
+namespace Microsoft.Azure.Devices.Client.Unified.Twin
 {
     public class ReportedPatchRequest
     {

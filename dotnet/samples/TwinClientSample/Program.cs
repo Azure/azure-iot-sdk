@@ -1,5 +1,7 @@
 ﻿using Microsoft.Azure.Devices.Client;
+using Microsoft.Azure.Devices.Client.Gen2.Twin;
 using Microsoft.Azure.Devices.Client.Twin;
+using Microsoft.Azure.Devices.Client.Unified.Twin;
 using SetupSampleDevice;
 using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;

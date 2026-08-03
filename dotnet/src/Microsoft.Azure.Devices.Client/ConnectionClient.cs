@@ -1,5 +1,6 @@
 ﻿using Google.Protobuf.WellKnownTypes;
 using Microsoft.Azure.Devices.Client.CertificateManagement;
+using Microsoft.Azure.Devices.Client.Gen2.Twin;
 using Microsoft.Azure.Devices.Client.IotHub;
 using Microsoft.Azure.Devices.Client.Mqtt;
 using Microsoft.Azure.Devices.Client.MQTTnetAdapter;
@@ -7,7 +8,7 @@ using Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session;
 using Microsoft.Azure.Devices.Client.Provisioning;
 using Microsoft.Azure.Devices.Client.Provisioning.Models;
 using Microsoft.Azure.Devices.Client.Retry;
-using Microsoft.Azure.Devices.Client.Twin;
+using Microsoft.Azure.Devices.Client.Unified.Twin;
 using System.Collections.Concurrent;
 using System.ComponentModel;
 using System.Text.Json;
@@ -154,7 +155,7 @@ namespace Microsoft.Azure.Devices.Client
         /// <param name="twinPushOptions">The options around receiving a twin push upon connecting.</param>
         /// <param name="cancellationToken">Cancellation token.</param>
         /// <returns>The initial twin of the device if a twin push was configured via <see cref="TwinPushOptions"/></returns>
-        public async Task<Twin.Twin> ConnectAsync(ConnectionContext connectionContext, X509AuthenticationProvider authentication, TwinPushOptions? twinPushOptions = default, CancellationToken cancellationToken = default)
+        public async Task<Unified.Twin.Twin> ConnectAsync(ConnectionContext connectionContext, X509AuthenticationProvider authentication, TwinPushOptions? twinPushOptions = default, CancellationToken cancellationToken = default)
         {
             IotHubConnection iotHubConnection = new();
 

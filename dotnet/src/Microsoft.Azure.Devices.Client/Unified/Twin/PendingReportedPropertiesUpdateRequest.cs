@@ -1,4 +1,6 @@
-﻿namespace Microsoft.Azure.Devices.Client.Twin
+﻿using Microsoft.Azure.Devices.Client.Twin;
+
+namespace Microsoft.Azure.Devices.Client.Unified.Twin
 {
     internal class PendingReportedPropertiesUpdateRequest
     {

@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.Text;
 using System.Text.Json;
 
-namespace Microsoft.Azure.Devices.Client.Twin
+namespace Microsoft.Azure.Devices.Client.Gen2.Twin
 {
     public class TwinPushReceivedEventArgs : EventArgs
     {

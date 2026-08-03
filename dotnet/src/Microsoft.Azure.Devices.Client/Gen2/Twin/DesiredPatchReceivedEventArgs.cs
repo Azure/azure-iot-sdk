@@ -4,7 +4,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
-namespace Microsoft.Azure.Devices.Client.Twin
+namespace Microsoft.Azure.Devices.Client.Gen2.Twin
 {
     public class DesiredPatchReceivedEventArgs : EventArgs
     {

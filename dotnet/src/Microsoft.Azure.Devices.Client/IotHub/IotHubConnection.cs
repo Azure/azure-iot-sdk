@@ -1,9 +1,11 @@
 ﻿using Google.Protobuf;
 using Google.Protobuf.WellKnownTypes;
 using Microsoft.Azure.Devices.Client.DirectMethods;
+using Microsoft.Azure.Devices.Client.Gen2.Twin;
 using Microsoft.Azure.Devices.Client.Mqtt;
 using Microsoft.Azure.Devices.Client.Telemetry;
 using Microsoft.Azure.Devices.Client.Twin;
+using Microsoft.Azure.Devices.Client.Unified.Twin;
 using System.Diagnostics;
 using System.Reflection;
 using System.Runtime.InteropServices;
@@ -21,7 +23,7 @@ namespace Microsoft.Azure.Devices.Client.IotHub
         private static TimeSpan birthAckReceivedDefensiveTimeout = TimeSpan.FromSeconds(60); //TODO value is magic number
         private static TimeSpan twinPushReceivedDefensiveTimeout = TimeSpan.FromSeconds(60); //TODO value is magic number
 
-        internal async Task<Twin.Twin> ConnectToAzureEventGridIotHubAsync(IMqttClient mqttClient, string hostname, string deviceId, X509AuthenticationProvider x509AuthenticationProvider, TwinPushOptions? twinPushOptions, CancellationToken cancellationToken = default)
+        internal async Task<Unified.Twin.Twin> ConnectToAzureEventGridIotHubAsync(IMqttClient mqttClient, string hostname, string deviceId, X509AuthenticationProvider x509AuthenticationProvider, TwinPushOptions? twinPushOptions, CancellationToken cancellationToken = default)
         {
             bool subscribed = false;
 
@@ -259,7 +261,7 @@ namespace Microsoft.Azure.Devices.Client.IotHub
                 var authoritativeDesiredVersion = birthAck.DesiredVersion;
 
                 // By default, the device will not fetch the current twin as part of this connect flow. Setting either of the pushReported or pushDesired flags allows the service to re-hydrate the device's understanding of twin state.
-                Twin.Twin currentTwin = new();
+                Unified.Twin.Twin currentTwin = new();
 
                 // If the device's twin is out of date in any way, and the user wants to re-hydrate reported or desired properties, then wait for the service to send the "twin push" message with that state
                 if ((authoritativeReportedVersion > deviceReportedPropertyVersion || authoritativeDesiredVersion > deviceDesiredPropertyVersion)
@@ -302,7 +304,7 @@ namespace Microsoft.Azure.Devices.Client.IotHub
             }
         }
 
-        internal async Task<Twin.Twin> ConnectToClassicIotHubAsync(IMqttClient mqttClient, string hostname, string deviceId, X509AuthenticationProvider x509AuthenticationProvider, ConnectionClient connectionClient, TwinPushOptions? twinPushOptions = null, CancellationToken cancellationToken = default)
+        internal async Task<Unified.Twin.Twin> ConnectToClassicIotHubAsync(IMqttClient mqttClient, string hostname, string deviceId, X509AuthenticationProvider x509AuthenticationProvider, ConnectionClient connectionClient, TwinPushOptions? twinPushOptions = null, CancellationToken cancellationToken = default)
         {
             string clientId = deviceId;
             //TODO what is the latest Hub API version?
@@ -348,7 +350,7 @@ namespace Microsoft.Azure.Devices.Client.IotHub
                 }
             }
 
-            Twin.Twin twinPush = new();
+            Unified.Twin.Twin twinPush = new();
 
             // This feature was introduced in AEG, and this block attempts to mimic that same behavior to the user. It does not have the same
             // ability to actually specify to the service that the client wants just the reported properties or just the desired properties. It
