@@ -4,10 +4,9 @@
 /* SPDX-License-Identifier: MIT */
 #include "internal/cert_util.h"
 
-#include <stdio.h>
-
 #include "internal/log_internal.h"
 #include "internal/reconnect.h"     /* az_iot_time_mono_ms */
+#include "internal/span_writer.h"
 
 /* LCG mixing constants for the request-id nonce generator. */
 #define CERT_RNG_LCG_MULTIPLIER 6364136223846793005ull
@@ -32,8 +31,17 @@ void az_iot_cert_util_gen_request_id(uint64_t* rng_state, char* buf, size_t cap)
     uint64_t x = az_iot_time_mono_ms()
                ^ (*rng_state * CERT_RNG_LCG_MULTIPLIER + CERT_RNG_LCG_INCREMENT);
     *rng_state = x;
-    (void)snprintf(buf, cap, "%08x-%08x",
-                   (unsigned)(x >> 32), (unsigned)(x & 0xffffffffu));
+
+    az_iot_span_writer writer;
+    az_iot_span_writer_init(&writer, az_span_create((uint8_t*)buf, (int32_t)cap));
+    az_iot_span_writer_append_hex32(&writer, (uint32_t)(x >> 32), 8);
+    az_iot_span_writer_append_u8(&writer, (uint8_t)'-');
+    az_iot_span_writer_append_hex32(&writer, (uint32_t)(x & 0xffffffffu), 8);
+
+    /* A buffer too small to hold the id leaves an empty string behind, which
+     * the callers treat the same way they treated a truncated one. */
+    az_iot_result result = az_iot_span_writer_end_str(&writer, NULL);
+    (void)result;
 }
 
 az_iot_result az_iot_cert_util_collect_chain_spans(

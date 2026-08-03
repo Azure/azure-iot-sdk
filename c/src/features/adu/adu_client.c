@@ -37,6 +37,7 @@
 #include "azure/iot/az_iot_twin_client.h"
 
 #include "internal/adu_internal.h"
+#include "internal/span_writer.h"
 #include "internal/twin_client_internal.h"
 
 /* ------------------------------------------------------------------------- */
@@ -162,15 +163,19 @@ static az_iot_result cache_device_properties(
         const char* prov = src->installed_update_id.provider ? src->installed_update_id.provider : "";
         const char* name = src->installed_update_id.name ? src->installed_update_id.name : "";
         const char* ver  = src->installed_update_id.version ? src->installed_update_id.version : "";
-        int idn = snprintf(
-            ADU_I(client).update_id_json, sizeof(ADU_I(client).update_id_json),
-            "{\"provider\":\"%s\",\"name\":\"%s\",\"version\":\"%s\"}", prov, name, ver);
-        if (idn < 0 || (size_t)idn >= sizeof(ADU_I(client).update_id_json))
+        const char* update_id_parts[] = {
+            "{\"provider\":\"", prov,
+            "\",\"name\":\"", name,
+            "\",\"version\":\"", ver,
+            "\"}"
+        };
+        if (az_iot_span_writer_build_str(
+                AZ_SPAN_FROM_BUFFER(ADU_I(client).update_id_json),
+                &ADU_I(client).update_id_json_len, update_id_parts, 7) != AZ_IOT_OK)
         {
             memset(hdr, 0, sizeof(*hdr));
             return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
         }
-        ADU_I(client).update_id_json_len = (size_t)idn;
     }
 
     return AZ_IOT_OK;

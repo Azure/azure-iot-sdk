@@ -16,6 +16,7 @@
  * '?', or non-ASCII bytes. Full URL-encoding is tracked as a follow-up.
  */
 #include <stdbool.h>
+#include <stdint.h>
 #include <string.h>
 
 #include "azure/iot/az_iot_telemetry_client.h"
@@ -24,6 +25,7 @@
 #include "internal/connection_client_internal.h"
 #include "internal/log_internal.h"
 #include "internal/protocol_profile.h"
+#include "internal/span_writer.h"
 
 #define AZ_IOT_TELEMETRY_TOPIC_MAX 512
 
@@ -51,66 +53,53 @@ void az_iot_telemetry_client_destroy(az_iot_telemetry_client* client)
     memset(client, 0, sizeof(*client));
 }
 
-/* Append a NUL-terminated string to dst at *off, advancing *off. Returns
- * false on overflow without modifying dst beyond *off. */
-static bool append_str(char* dst, size_t cap, size_t* off, const char* src)
+/* The single substitution the profile topic templates use. */
+static const char k_device_id_placeholder[] = "{device_id}";
+
+/* Appends @p tmpl with its "{device_id}" placeholder replaced by @p device_id.
+ * Returns false when the template carries no placeholder, which would mean the
+ * profile table itself is malformed rather than the caller being at fault.
+ * The template is our own NUL-terminated constant, so locating the placeholder
+ * with strstr is a lookup in trusted data, not a parse of untrusted input. */
+static bool append_template_with_device_id(
+    az_iot_span_writer* writer, const char* tmpl, const char* device_id)
 {
-    size_t n = strlen(src);
-    if (*off + n + 1 > cap)
-    {
-        return false; /* +1 leaves room for the trailing NUL */
-    }
-    memcpy(dst + *off, src, n);
-    *off += n;
-    dst[*off] = '\0';
+    const char* placeholder = strstr(tmpl, k_device_id_placeholder);
+    if (placeholder == NULL) return false;
+
+    az_iot_span_writer_append_span(
+        writer,
+        az_span_create((uint8_t*)(uintptr_t)tmpl, (int32_t)(placeholder - tmpl)));
+    az_iot_span_writer_append_str(writer, device_id);
+    az_iot_span_writer_append_str(writer, placeholder + (sizeof(k_device_id_placeholder) - 1));
     return true;
 }
 
-/* Build "devices/<device_id>/messages/events/" + optional "<bag>" property
- * string into out_topic. Classic (MQTT v3.1.1) path only. */
+/* Build "devices/<device_id>/messages/events/" plus the optional property bag
+ * into out_topic. Classic (MQTT v3.1.1) path only. */
 static az_iot_result build_topic_classic(
     const az_iot_protocol_profile* profile,
     const char* device_id,
     const az_iot_telemetry_message* msg,
     char* out_topic, size_t cap)
 {
-    /* The profile's d2c_publish_topic_template is the canonical reference
-     * ("devices/{device_id}/messages/events/"). Phase 3.1 expands the single
-     * {device_id} substring inline rather than carrying a templating helper. */
     const char* tmpl = profile->d2c_publish_topic_template;
     if (tmpl == NULL)
     {
         return AZ_IOT_ERR_NOT_SUPPORTED;
     }
-    static const char k_placeholder[] = "{device_id}";
-    const char* placeholder = strstr(tmpl, k_placeholder);
-    if (placeholder == NULL)
+
+    az_iot_span_writer writer;
+    az_iot_span_writer_init(&writer, az_span_create((uint8_t*)out_topic, (int32_t)cap));
+
+    if (!append_template_with_device_id(&writer, tmpl, device_id))
     {
         return AZ_IOT_ERR_INTERNAL;
     }
 
-    size_t off = 0;
-    size_t prefix_len = (size_t)(placeholder - tmpl);
-    if (prefix_len + 1 > cap)
-    {
-        return AZ_IOT_ERR_NOT_SUPPORTED;
-    }
-    memcpy(out_topic, tmpl, prefix_len);
-    off = prefix_len;
-    out_topic[off] = '\0';
-
-    if (!append_str(out_topic, cap, &off, device_id))
-    {
-        return AZ_IOT_ERR_NOT_SUPPORTED;
-    }
-    if (!append_str(out_topic, cap, &off, placeholder + (sizeof(k_placeholder) - 1)))
-    {
-        return AZ_IOT_ERR_NOT_SUPPORTED;
-    }
-
-    /* Property bag: all properties (system and application) are serialized
-     * uniformly as key=value pairs separated by '&'. System properties use
-     * well-known keys like "$.ct", "$.ce", etc. */
+    /* Property bag: system and application properties serialize uniformly as
+     * key=value pairs separated by '&'. System properties use well-known keys
+     * such as "$.ct". */
     bool first = true;
     for (size_t i = 0; i < msg->properties_count; ++i)
     {
@@ -119,28 +108,20 @@ static az_iot_result build_topic_classic(
         {
             continue;
         }
-        if (!first && !append_str(out_topic, cap, &off, "&"))
+        if (!first)
         {
-            return AZ_IOT_ERR_NOT_SUPPORTED;
+            az_iot_span_writer_append_u8(&writer, (uint8_t)'&');
         }
-        if (!append_str(out_topic, cap, &off, p->key))
-        {
-            return AZ_IOT_ERR_NOT_SUPPORTED;
-        }
+        az_iot_span_writer_append_str(&writer, p->key);
         if (p->value != NULL)
         {
-            if (!append_str(out_topic, cap, &off, "="))
-            {
-                return AZ_IOT_ERR_NOT_SUPPORTED;
-            }
-            if (!append_str(out_topic, cap, &off, p->value))
-            {
-                return AZ_IOT_ERR_NOT_SUPPORTED;
-            }
+            az_iot_span_writer_append_u8(&writer, (uint8_t)'=');
+            az_iot_span_writer_append_str(&writer, p->value);
         }
         first = false;
     }
-    return AZ_IOT_OK;
+
+    return az_iot_span_writer_end_str(&writer, NULL);
 }
 
 /* Build the flat topic "ih/<device_id>/srv/telemetry" for Next (MQTT v5). */
@@ -154,39 +135,17 @@ static az_iot_result build_topic_next(
     {
         return AZ_IOT_ERR_NOT_SUPPORTED;
     }
-    static const char k_placeholder[] = "{device_id}";
-    static const char k_suffix[] = "/srv/telemetry";
-    const char* placeholder = strstr(tmpl, k_placeholder);
-    if (placeholder == NULL)
+
+    az_iot_span_writer writer;
+    az_iot_span_writer_init(&writer, az_span_create((uint8_t*)out_topic, (int32_t)cap));
+
+    if (!append_template_with_device_id(&writer, tmpl, device_id))
     {
         return AZ_IOT_ERR_INTERNAL;
     }
+    az_iot_span_writer_append_str(&writer, "/srv/telemetry");
 
-    size_t off = 0;
-    size_t prefix_len = (size_t)(placeholder - tmpl);
-    if (prefix_len + 1 > cap)
-    {
-        return AZ_IOT_ERR_NOT_SUPPORTED;
-    }
-    memcpy(out_topic, tmpl, prefix_len);
-    off = prefix_len;
-    out_topic[off] = '\0';
-
-    if (!append_str(out_topic, cap, &off, device_id))
-    {
-        return AZ_IOT_ERR_NOT_SUPPORTED;
-    }
-    /* Append remainder of template after placeholder */
-    if (!append_str(out_topic, cap, &off, placeholder + (sizeof(k_placeholder) - 1)))
-    {
-        return AZ_IOT_ERR_NOT_SUPPORTED;
-    }
-    /* Append /srv/telemetry */
-    if (!append_str(out_topic, cap, &off, k_suffix))
-    {
-        return AZ_IOT_ERR_NOT_SUPPORTED;
-    }
-    return AZ_IOT_OK;
+    return az_iot_span_writer_end_str(&writer, NULL);
 }
 
 /* -----------------------------------------------------------------------

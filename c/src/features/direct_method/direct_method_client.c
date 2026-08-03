@@ -17,7 +17,6 @@
  *   Respond    "ih/{device_id}/srv/methods/{methodName}/response" + correlation_data
  */
 #include <stdbool.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -26,6 +25,7 @@
 
 #include "internal/connection_client_internal.h"
 #include "internal/protocol_profile.h"
+#include "internal/span_writer.h"
 
 /* Method-name / rid / correlation bounds live in the public header (they size the
  * request handle). This one is response-topic scratch, internal to this TU. */
@@ -190,8 +190,9 @@ az_iot_result az_iot_direct_method_client_init(
 
         /* Build topic prefix for inbound dispatch: "ih/{device_id}/dev/methods/" */
         char prefix[AZ_IOT_DM_RESP_TOPIC_MAX];
-        int n = snprintf(prefix, sizeof(prefix), "ih/%s/dev/methods/", device_id);
-        if (n < 0 || (size_t)n >= sizeof(prefix))
+        const char* prefix_parts[] = { "ih/", device_id, "/dev/methods/" };
+        if (az_iot_span_writer_build_str(
+                AZ_SPAN_FROM_BUFFER(prefix), NULL, prefix_parts, 3) != AZ_IOT_OK)
         {
             memset(client, 0, sizeof(*client));
             return AZ_IOT_ERR_INTERNAL;
@@ -207,8 +208,9 @@ az_iot_result az_iot_direct_method_client_init(
 
         /* Build wildcard subscription: "ih/{device_id}/dev/methods/+" */
         char filter[AZ_IOT_DM_RESP_TOPIC_MAX];
-        n = snprintf(filter, sizeof(filter), "ih/%s/dev/methods/+", device_id);
-        if (n < 0 || (size_t)n >= sizeof(filter))
+        const char* filter_parts[] = { "ih/", device_id, "/dev/methods/+" };
+        if (az_iot_span_writer_build_str(
+                AZ_SPAN_FROM_BUFFER(filter), NULL, filter_parts, 3) != AZ_IOT_OK)
         {
             (void)az_iot_connection_client__unregister_inbound_handlers(conn, client);
             memset(client, 0, sizeof(*client));
@@ -241,8 +243,9 @@ az_iot_result az_iot_direct_method_client_init(
         }
 
         char filter[AZ_IOT_DM_RESP_TOPIC_MAX];
-        int n = snprintf(filter, sizeof(filter), "%s#", profile->methods_request_topic_prefix);
-        if (n < 0 || (size_t)n >= sizeof(filter))
+        const char* filter_parts[] = { profile->methods_request_topic_prefix, "#" };
+        if (az_iot_span_writer_build_str(
+                AZ_SPAN_FROM_BUFFER(filter), NULL, filter_parts, 2) != AZ_IOT_OK)
         {
             (void)az_iot_connection_client__unregister_inbound_handlers(conn, client);
             memset(client, 0, sizeof(*client));
@@ -298,12 +301,15 @@ az_iot_result az_iot_direct_method_respond(
 
     if (request->_internal.is_next)
     {
-        /* Hub-Next: respond on "ih/{device_id}/srv/methods/{methodName}/response" */
+        /* Hub-Next: respond on "ih/{device_id}/srv/methods/{methodName}/response".
+         * A connection that never got a client id yields a NULL device id, and
+         * the writer reports that instead of dereferencing it. */
         const char* device_id = az_iot_connection_client__device_id(DI(dm).conn);
         char topic[AZ_IOT_DM_RESP_TOPIC_MAX];
-        int n = snprintf(topic, sizeof(topic), "ih/%s/srv/methods/%s/response",
-                         device_id, request->_internal.method_name);
-        if (n < 0 || (size_t)n >= sizeof(topic))
+        const char* topic_parts[]
+            = { "ih/", device_id, "/srv/methods/", request->_internal.method_name, "/response" };
+        if (az_iot_span_writer_build_str(
+                AZ_SPAN_FROM_BUFFER(topic), NULL, topic_parts, 5) != AZ_IOT_OK)
         {
             request->_internal.in_use = false;
             return AZ_IOT_ERR_NOT_SUPPORTED;
@@ -311,7 +317,14 @@ az_iot_result az_iot_direct_method_respond(
 
         /* Build status property as user property */
         char status_str[12];
-        snprintf(status_str, sizeof(status_str), "%d", status_code);
+        az_iot_span_writer status_writer;
+        az_iot_span_writer_init(&status_writer, AZ_SPAN_FROM_BUFFER(status_str));
+        az_iot_span_writer_append_i32(&status_writer, (int32_t)status_code);
+        if (az_iot_span_writer_end_str(&status_writer, NULL) != AZ_IOT_OK)
+        {
+            request->_internal.in_use = false;
+            return AZ_IOT_ERR_NOT_SUPPORTED;
+        }
 
         az_iot_mqtt_user_property user_props[1];
         user_props[0].key = "status";
@@ -337,9 +350,13 @@ az_iot_result az_iot_direct_method_respond(
     {
         /* Classic: "$iothub/methods/res/{status}/?$rid={rid}" */
         char topic[AZ_IOT_DM_RESP_TOPIC_MAX];
-        int n = snprintf(topic, sizeof(topic), "$iothub/methods/res/%d/?$rid=%s",
-                         status_code, request->_internal.rid);
-        if (n < 0 || (size_t)n >= sizeof(topic))
+        az_iot_span_writer writer;
+        az_iot_span_writer_init(&writer, AZ_SPAN_FROM_BUFFER(topic));
+        az_iot_span_writer_append_str(&writer, "$iothub/methods/res/");
+        az_iot_span_writer_append_i32(&writer, (int32_t)status_code);
+        az_iot_span_writer_append_str(&writer, "/?$rid=");
+        az_iot_span_writer_append_str(&writer, request->_internal.rid);
+        if (az_iot_span_writer_end_str(&writer, NULL) != AZ_IOT_OK)
         {
             request->_internal.in_use = false;
             return AZ_IOT_ERR_NOT_SUPPORTED;
