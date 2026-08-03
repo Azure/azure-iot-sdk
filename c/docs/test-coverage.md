@@ -317,7 +317,7 @@ Covers `az_iot_direct_method_client`: the `$iothub/methods/POST/#` subscription,
 | --- | --- | --- | --- | --- | --- |
 | Init | Init rejects a null client | — | unit | Pending | *direct_method_client_test.c* |
 | | Init rejects a null connection | — | unit | Pending | *direct_method_client_test.c* |
-| | Init subscribes the methods filter | `$iothub/methods/POST/#`. | unit | Done | [create_subscribes_methods_topic_on_connect](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/direct_method_client_test.c#L114) |
+| | Init subscribes the methods filter | `$iothub/methods/POST/#`. | unit | Done | [create_subscribes_methods_topic_on_connect](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/direct_method_client_test.c#L115) |
 | | The subscription uses qos 0 | — | unit | Pending | *direct_method_client_test.c* |
 | | Init registers the methods dispatch prefix | — | unit | Pending | *direct_method_client_test.c* |
 | | Init on a profile without a methods prefix returns not supported | — | unit | Pending | *direct_method_client_test.c* |
@@ -328,43 +328,45 @@ Covers `az_iot_direct_method_client`: the `$iothub/methods/POST/#` subscription,
 | | Destroy is idempotent | — | unit | Pending | *direct_method_client_test.c* |
 | | An invocation after destroy reaches nobody | — | unit | Pending | *direct_method_client_test.c* |
 | Handler | Set handler rejects a null client | — | unit | Pending | *direct_method_client_test.c* |
-| | Set handler stores the user context | — | unit | Done | [inbound_invocation_dispatched_to_handler](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/direct_method_client_test.c#L142) |
+| | Set handler stores the user context | — | unit | Done | [inbound_invocation_dispatched_to_handler](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/direct_method_client_test.c#L143) |
 | | A later set handler replaces the earlier one | — | unit | Pending | *direct_method_client_test.c* |
 | | An invocation with no handler is dropped | No pool slot is consumed. | unit | Pending | *direct_method_client_test.c* |
-| Topic parsing | The method name is parsed from the topic | — | unit | Done | [inbound_invocation_dispatched_to_handler](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/direct_method_client_test.c#L142) |
-| | The rid is parsed from the topic | Proven by the rid echoed on the response topic. | unit | Done | [inbound_invocation_dispatched_to_handler](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/direct_method_client_test.c#L142) |
-| | The payload reaches the handler | — | unit | Done | [inbound_invocation_dispatched_to_handler](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/direct_method_client_test.c#L142) |
+| Topic parsing | The method name is parsed from the topic | — | unit | Done | [inbound_invocation_dispatched_to_handler](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/direct_method_client_test.c#L143) |
+| | The rid is parsed from the topic | Proven by the rid echoed on the response topic. | unit | Done | [inbound_invocation_dispatched_to_handler](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/direct_method_client_test.c#L143) |
+| | The payload reaches the handler | — | unit | Done | [inbound_invocation_dispatched_to_handler](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/direct_method_client_test.c#L143) |
 | | An invocation with an empty body is delivered | The service sends either valid JSON or an empty body. | unit | Pending | *direct_method_client_test.c* |
-| | A topic with no rid marker is dropped | — | unit | Done | [malformed_topic_dropped](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/direct_method_client_test.c#L181) |
+| | A topic with no rid marker is dropped | — | unit | Done | [malformed_topic_dropped](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/direct_method_client_test.c#L182) |
+| | An unparsable topic says why | Dropping in silence looked like the service having stopped delivering. | unit | Done | [an_unparsable_topic_says_why](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/direct_method_client_test.c#L391) |
 | | A topic with an empty rid is dropped | `?$rid=` with nothing after it. | unit | Pending | *direct_method_client_test.c* |
 | | A topic with an empty method name is dropped | `$iothub/methods/POST//?$rid=1`. | unit | Pending | *direct_method_client_test.c* |
 | | A topic with the wrong prefix is dropped | — | unit | Pending | *direct_method_client_test.c* |
 | | A method name past the bound is dropped | Longer than `AZ_IOT_DM_METHOD_NAME_MAX`. | unit | Pending | *direct_method_client_test.c* |
 | | A rid past the bound is dropped | Longer than `AZ_IOT_DM_RID_MAX`. | unit | Pending | *direct_method_client_test.c* |
 | | A non-numeric rid is accepted | The service defines `$rid` as any valid message property value, not an integer. | unit | Pending | *direct_method_client_test.c* |
-| Response | Respond rejects a null request | — | unit | Done | [respond_rejects_null_request](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/direct_method_client_test.c#L196) |
-| | Respond rejects a null payload with a non-zero length | — | unit | Pending | *direct_method_client_test.c* |
-| | The response topic is the classic res topic | `$iothub/methods/res/{status}/?$rid={rid}`. | unit | Done | [inbound_invocation_dispatched_to_handler](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/direct_method_client_test.c#L142) |
-| | The response rid matches the request | — | unit | Done | [inbound_invocation_dispatched_to_handler](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/direct_method_client_test.c#L142) |
-| | The response status appears in the topic | — | unit | Done | [inbound_invocation_dispatched_to_handler](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/direct_method_client_test.c#L142) |
-| | A non-200 status appears in the topic | 404 / 500 from the application. | unit | Pending | *direct_method_client_test.c* |
-| | The response payload is forwarded byte for byte | — | unit | Done | [inbound_invocation_dispatched_to_handler](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/direct_method_client_test.c#L142) |
-| | The response is published at qos 0 | — | unit | Done | [inbound_invocation_dispatched_to_handler](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/direct_method_client_test.c#L142) |
+| Response | Respond rejects a null request | — | unit | Done | [respond_rejects_null_request](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/direct_method_client_test.c#L197) |
+| | Respond rejects a null payload with a non-zero length | Rejecting the arguments does not consume the request. | unit | Done | [respond_rejects_a_null_payload_with_a_length](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/direct_method_client_test.c#L314) |
+| | The response topic is the classic res topic | `$iothub/methods/res/{status}/?$rid={rid}`. | unit | Done | [inbound_invocation_dispatched_to_handler](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/direct_method_client_test.c#L143) |
+| | The response rid matches the request | — | unit | Done | [inbound_invocation_dispatched_to_handler](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/direct_method_client_test.c#L143) |
+| | The response status appears in the topic | — | unit | Done | [inbound_invocation_dispatched_to_handler](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/direct_method_client_test.c#L143) |
+| | A non-200 status appears in the topic | 404 / 500 from the application. | unit | Done | [respond_carries_a_non_success_status](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/direct_method_client_test.c#L295) |
+| | The response payload is forwarded byte for byte | — | unit | Done | [inbound_invocation_dispatched_to_handler](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/direct_method_client_test.c#L143) |
+| | The response is published at qos 0 | — | unit | Done | [inbound_invocation_dispatched_to_handler](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/direct_method_client_test.c#L143) |
 | | Respond with an empty payload publishes an empty body | — | unit | Pending | *direct_method_client_test.c* |
-| | Respond releases the pool slot | The slot is reusable by the next invocation. | unit | Pending | *direct_method_client_test.c* |
-| | Respond twice does not publish twice | — | unit | Pending | *direct_method_client_test.c* |
+| | Respond releases the pool slot | The slot is reusable by the next invocation. | unit | Done | [responding_frees_the_slot_for_the_next_invocation](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/direct_method_client_test.c#L253) |
+| | Respond twice does not publish twice | The slot may already belong to another invocation, so a second answer would carry the wrong rid. | unit | Done | [responding_twice_is_rejected](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/direct_method_client_test.c#L273) |
 | | Respond after the handler returned still publishes | Async respond: the request outlives the callback. | unit | Pending | *direct_method_client_test.c* |
 | | Respond while disconnected reports not connected | — | unit | Pending | *direct_method_client_test.c* |
 | | Respond after destroy is refused | `destroy()` zeroes the owner the request points at. | unit | Pending | *direct_method_client_test.c* |
-| | The pool holds the documented number of concurrent requests | `AZ_IOT_DM_MAX_INFLIGHT` unanswered invocations all reach the handler. | unit | Pending | *direct_method_client_test.c* |
-| | An invocation past the pool capacity is dropped | Pins limitation D-2. | unit | Pending | *direct_method_client_test.c* |
+| | The pool holds the documented number of concurrent requests | `AZ_IOT_DM_MAX_INFLIGHT` unanswered invocations all reach the handler. | unit | Done | [the_pool_holds_the_documented_number_of_concurrent_requests](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/direct_method_client_test.c#L214) |
+| | An invocation past the pool capacity is dropped | — | unit | Done | [an_invocation_past_the_pool_capacity_is_dropped](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/direct_method_client_test.c#L232) |
+| | A dropped invocation says why | The warning names the pool bound and points at the missing `respond()`. | unit | Done | [a_dropped_invocation_says_why](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/direct_method_client_test.c#L366) |
 | End-to-end | Direct method invoked and answered | Service invokes; the device echoes the payload with 200. | e2e | Done | [test_direct_method](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/e2e/tests/e2e_scenarios_test.c#L328) |
 | | A non-success status reaches the caller | Device answers 500; the service sees it. | e2e | Pending | *e2e_scenarios_test.c* |
 | | A method invoked with no payload | — | e2e | Pending | *e2e_scenarios_test.c* |
 | | An unanswered method times out service side | — | e2e | Pending | *e2e_scenarios_test.c* |
 
-**Limitation D-2:** an unanswered request leaks its pool slot permanently, and once the
-pool is exhausted every further invocation is dropped silently. See
+**Limitation D-2:** an unanswered request still leaks its pool slot; the client now says so
+instead of dropping later invocations in silence. See
 [Defects and limitations](#defects-and-limitations).
 
 ## Device twin
@@ -843,7 +845,7 @@ decision rather than a test.
 | C-4 | Low | **Fixed** | An unparsable DPS registration response was skipped silently — no fault, no re-poll, no diagnostic — leaving the client in CONNECTING indistinguishably from a hang. It now fails the provisioning attempt with `AZ_IOT_ERR_PROTOCOL` and logs the body. |
 | C-5 | **High** | **Fixed** | A NULL or empty `dps.registration_id` (with a valid `dps.id_scope`) made `az_iot_connection_client_open()` hang forever: `dps_configured()` checks only `id_scope`, so the empty value reached `az_iot_provisioning_client_init()`, and this build has `AZ_NO_PRECONDITION_CHECKING=OFF` with no precondition handler installed — az_core's default is an infinite `while(1)` loop. `dps_start()` now validates both `id_scope` and `registration_id` up front and returns `AZ_IOT_ERR_INVALID_ARG`. |
 | D-1 | Medium | Open | Classic C2D drops every message property. `on_c2d_classic()` passes `content_type = NULL` unconditionally and the topic's property bag is never parsed, so neither the content type nor any application property reaches the handler — and the application cannot recover them itself, because `az_iot_c2d_handler_callback` is not given the topic. Closing it is an API change (widen the callback, or hand back a parsed property collection). |
-| D-2 | Medium | Open | A direct-method request slot is released only by `az_iot_direct_method_respond()`. A handler that returns without responding — including on its own error paths — leaks the slot permanently; after `AZ_IOT_DM_MAX_INFLIGHT` (default 4) such requests every further invocation is dropped silently, with no log line and no way for the application to notice. |
+| D-2 | Medium | **Partly fixed** | A direct-method request slot is released only by `az_iot_direct_method_respond()`. A handler that returns without responding -- including on its own error paths -- leaks the slot; after `AZ_IOT_DM_MAX_INFLIGHT` (default 4) such requests every further invocation was dropped **silently**, which is indistinguishable from the service having stopped delivering. Two things are fixed: a dropped invocation now logs a warning naming the bound and the missing `respond()` call, and an unparsable request topic logs the topic it rejected. Responding twice is now rejected too -- the slot may already have been handed to another invocation, so the second answer carried that invocation's rid and replied to the wrong call. **Still open:** nothing reclaims a slot the application abandons. Whether to add a timeout, or to make it the application's documented contract, is a design call. |
 | D-3 | Medium | **Fixed** | Twin `pending[]` slots were never cleared when the connection dropped, so a GET or PATCH issued just before an outage never fired its callback and never released its slot; after `AZ_IOT_TWIN_MAX_PENDING` (default 8) outages the client refused every request with `NOT_SUPPORTED`. Same family as C-3, which fixed the equivalent hole for QoS-1 publish callbacks but did not reach the twin's own correlation table. The connection client now notifies registered feature clients when a session ends, and the twin client completes its pending requests with `AZ_IOT_ERR_NOT_CONNECTED`, releasing each slot before the callback runs so a callback that re-issues immediately can claim it. `destroy()` stays silent, for the same reason C-3 does. |
 | D-3b | Low | **Fixed** | Twin service statuses collapsed onto codes the caller could not act on: 429 (throttled) mapped to `NOT_SUPPORTED` — the same code a locally full pending table returns, so "back off" was indistinguishable from "too many requests in flight here" — and 400 (malformed reported-properties JSON) fell through to the generic `ERR_MQTT`, looking like a transport failure worth retrying. Now 400 maps to `INVALID_ARG`, 404 to `NOT_FOUND`, 429 to `BUSY`, and everything else to `ERR_MQTT`. |
 | D-4 | Low | Open | The `$version` IoT Hub returns on a reported-properties ack (`$iothub/twin/res/204/?$rid=1&$version=6`) is parsed off the topic and thrown away — `az_iot_twin_patch_ack_callback` takes only a status. An application that tracks the reported-properties version to detect lost updates cannot. Closing it is a callback-signature change. |

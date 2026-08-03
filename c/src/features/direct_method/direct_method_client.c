@@ -25,6 +25,7 @@
 #include "azure/iot/az_iot_mqtt_iface.h"
 
 #include "internal/connection_client_internal.h"
+#include "internal/log_internal.h"
 #include "internal/protocol_profile.h"
 #include "internal/span_writer.h"
 
@@ -37,7 +38,14 @@
 
 /* Acquire a free request slot from the client's bounded pool (NULL if full).
  * Requests may outlive the handler (async respond), so they live in the
- * caller-allocated client struct instead of on the heap. */
+ * caller-allocated client struct instead of on the heap.
+ *
+ * A slot is returned to the pool only by az_iot_direct_method_respond(). An
+ * application that drops a request -- a handler that returns without
+ * responding, including on its own error paths -- keeps the slot forever, and
+ * once AZ_IOT_DM_MAX_INFLIGHT of them have leaked every further invocation is
+ * dropped. That used to happen in complete silence, which made it look like
+ * the service had stopped delivering; say so instead. */
 static az_iot_direct_method_request* dm_request_acquire(az_iot_direct_method_client* dm)
 {
   for (size_t i = 0; i < AZ_IOT_DM_MAX_INFLIGHT; ++i)
@@ -51,6 +59,11 @@ static az_iot_direct_method_request* dm_request_acquire(az_iot_direct_method_cli
       return r;
     }
   }
+  AZ_IOT_LOG_WARNF(
+      "direct_method: dropping an invocation, all %d in-flight slots are taken. A slot is "
+      "released by az_iot_direct_method_respond(); a handler that returns without responding "
+      "leaks one.",
+      (int)AZ_IOT_DM_MAX_INFLIGHT);
   return NULL;
 }
 
@@ -129,6 +142,7 @@ static void on_method_invocation_classic(void* user_ctx, const az_iot_mqtt_messa
   char rid[AZ_IOT_DM_RID_MAX];
   if (!parse_method_topic_classic(msg->topic, method_name, sizeof(method_name), rid, sizeof(rid)))
   {
+    AZ_IOT_LOG_WARNF("direct_method: dropping an unparsable request topic: %s", msg->topic);
     return;
   }
 
@@ -308,6 +322,15 @@ az_iot_result az_iot_direct_method_respond(
     return AZ_IOT_ERR_INVALID_ARG;
   if (payload_len > 0 && payload == NULL)
   {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  /* Responding twice used to publish a second answer on a slot that had
+   * already been handed to another invocation, so the reply carried that
+   * invocation's rid and answered the wrong call. The service also treats a
+   * duplicate rid as an error. Catch it here rather than on the wire. */
+  if (!request->_internal.in_use || request->_internal.owner == NULL)
+  {
+    AZ_IOT_LOG_ERROR("direct_method: respond() called on a request that was already answered");
     return AZ_IOT_ERR_INVALID_ARG;
   }
 

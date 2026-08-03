@@ -18,6 +18,7 @@
 
 #include "azure/iot/az_iot_connection_client.h"
 #include "azure/iot/az_iot_direct_method_client.h"
+#include "azure/iot/az_iot_log.h"
 #include "azure/iot/az_iot_mqtt_iface.h"
 #include "azure/iot/az_iot_result.h"
 
@@ -199,6 +200,214 @@ static void respond_rejects_null_request(void** state)
   assert_int_equal(az_iot_direct_method_respond(NULL, 200, NULL, 0), AZ_IOT_ERR_INVALID_ARG);
 }
 
+/* ---- in-flight request pool ---------------------------------------------- */
+
+/* Deliver one invocation named "m<n>" with rid <n>. */
+static void inject_invocation(fixture* fx, int n)
+{
+  char topic[64];
+  snprintf(topic, sizeof(topic), "$iothub/methods/POST/m%d/?$rid=%d", n, n);
+  assert_true(az_iot_mock_mqtt_client_inject_message(fx->mock, topic, NULL, 0, AZ_IOT_MQTT_QOS_0));
+  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+}
+
+static void the_pool_holds_the_documented_number_of_concurrent_requests(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  invocation_record rec = { 0 };
+  assert_int_equal(az_iot_direct_method_client_set_handler(&fx->dm, on_method, &rec), AZ_IOT_OK);
+
+  /* Requests may legitimately outlive the handler, so holding this many at
+   * once has to work. */
+  for (int i = 0; i < AZ_IOT_DM_MAX_INFLIGHT; ++i)
+  {
+    rec.fired = false;
+    inject_invocation(fx, i);
+    assert_true(rec.fired);
+  }
+}
+
+static void an_invocation_past_the_pool_capacity_is_dropped(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  invocation_record rec = { 0 };
+  assert_int_equal(az_iot_direct_method_client_set_handler(&fx->dm, on_method, &rec), AZ_IOT_OK);
+
+  for (int i = 0; i < AZ_IOT_DM_MAX_INFLIGHT; ++i)
+  {
+    inject_invocation(fx, i);
+  }
+
+  /* Nothing has been answered, so every slot is still taken and the extra
+   * invocation cannot be delivered. That it is not dropped in silence is
+   * asserted separately, by a_dropped_invocation_says_why. */
+  rec.fired = false;
+  inject_invocation(fx, AZ_IOT_DM_MAX_INFLIGHT);
+  assert_false(rec.fired);
+}
+
+static void responding_frees_the_slot_for_the_next_invocation(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  invocation_record rec = { 0 };
+  assert_int_equal(az_iot_direct_method_client_set_handler(&fx->dm, on_method, &rec), AZ_IOT_OK);
+
+  for (int i = 0; i < AZ_IOT_DM_MAX_INFLIGHT; ++i)
+  {
+    inject_invocation(fx, i);
+  }
+  assert_non_null(rec.request);
+  assert_int_equal(az_iot_direct_method_respond(rec.request, 200, NULL, 0), AZ_IOT_OK);
+
+  rec.fired = false;
+  inject_invocation(fx, 99);
+  assert_true(rec.fired);
+}
+
+static void responding_twice_is_rejected(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  invocation_record rec = { 0 };
+  assert_int_equal(az_iot_direct_method_client_set_handler(&fx->dm, on_method, &rec), AZ_IOT_OK);
+  inject_invocation(fx, 7);
+  assert_true(rec.fired);
+  assert_non_null(rec.request);
+
+  az_iot_mock_mqtt_client_clear_calls(fx->mock);
+  assert_int_equal(az_iot_direct_method_respond(rec.request, 200, NULL, 0), AZ_IOT_OK);
+  assert_int_equal(az_iot_mock_mqtt_client_call_count(fx->mock), 1);
+
+  /* The slot is back in the pool and may already belong to another
+   * invocation, so a second answer would carry that invocation's rid and
+   * reply to the wrong call. */
+  assert_int_equal(az_iot_direct_method_respond(rec.request, 200, NULL, 0), AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(az_iot_mock_mqtt_client_call_count(fx->mock), 1);
+}
+
+static void respond_carries_a_non_success_status(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  invocation_record rec = { 0 };
+  assert_int_equal(az_iot_direct_method_client_set_handler(&fx->dm, on_method, &rec), AZ_IOT_OK);
+  inject_invocation(fx, 5);
+  assert_non_null(rec.request);
+
+  az_iot_mock_mqtt_client_clear_calls(fx->mock);
+  assert_int_equal(az_iot_direct_method_respond(rec.request, 501, NULL, 0), AZ_IOT_OK);
+
+  const az_iot_mock_call* c = az_iot_mock_mqtt_client_call_at(fx->mock, 0);
+  assert_int_equal(c->kind, AZ_IOT_MOCK_CALL_PUBLISH);
+  assert_string_equal(c->topic, "$iothub/methods/res/501/?$rid=5");
+  assert_int_equal(c->payload_len, 0);
+}
+
+static void respond_rejects_a_null_payload_with_a_length(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  invocation_record rec = { 0 };
+  assert_int_equal(az_iot_direct_method_client_set_handler(&fx->dm, on_method, &rec), AZ_IOT_OK);
+  inject_invocation(fx, 3);
+  assert_non_null(rec.request);
+
+  assert_int_equal(az_iot_direct_method_respond(rec.request, 200, NULL, 4), AZ_IOT_ERR_INVALID_ARG);
+  /* Rejecting the arguments must not consume the request: the application can
+   * still answer it properly. */
+  assert_int_equal(az_iot_direct_method_respond(rec.request, 200, NULL, 0), AZ_IOT_OK);
+}
+
+/* ---- diagnostics ---------------------------------------------------------- */
+
+typedef struct log_capture
+{
+  int warn_count;
+  char last_warning[AZ_IOT_LOG_MESSAGE_MAX];
+} log_capture;
+
+static void capture_warnings(
+    void* user_ctx,
+    az_iot_log_level level,
+    const char* file,
+    int line,
+    const char* msg)
+{
+  log_capture* c = (log_capture*)user_ctx;
+  (void)file;
+  (void)line;
+  if (level != AZ_IOT_LOG_LEVEL_WARN || msg == NULL)
+  {
+    return;
+  }
+  c->warn_count++;
+  snprintf(c->last_warning, sizeof(c->last_warning), "%s", msg);
+}
+
+static void install_warning_capture(log_capture* c)
+{
+  memset(c, 0, sizeof(*c));
+  az_iot_log_sink sink;
+  sink.sink = capture_warnings;
+  sink.user_ctx = c;
+  sink.min_level = AZ_IOT_LOG_LEVEL_WARN;
+  az_iot_log_set_global_sink(&sink);
+}
+
+static void a_dropped_invocation_says_why(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  invocation_record rec = { 0 };
+  assert_int_equal(az_iot_direct_method_client_set_handler(&fx->dm, on_method, &rec), AZ_IOT_OK);
+  for (int i = 0; i < AZ_IOT_DM_MAX_INFLIGHT; ++i)
+  {
+    inject_invocation(fx, i);
+  }
+
+  /* Dropping in silence looked exactly like the service having stopped
+   * delivering, with nothing to point at the application's own missing
+   * respond() call. Assert the text, not just that something was logged. */
+  log_capture cap;
+  install_warning_capture(&cap);
+  inject_invocation(fx, AZ_IOT_DM_MAX_INFLIGHT);
+  az_iot_log_set_global_sink(NULL);
+
+  assert_int_equal(cap.warn_count, 1);
+  assert_non_null(strstr(cap.last_warning, "in-flight"));
+  assert_non_null(strstr(cap.last_warning, "respond"));
+}
+
+static void an_unparsable_topic_says_why(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  invocation_record rec = { 0 };
+  assert_int_equal(az_iot_direct_method_client_set_handler(&fx->dm, on_method, &rec), AZ_IOT_OK);
+
+  log_capture cap;
+  install_warning_capture(&cap);
+  assert_true(az_iot_mock_mqtt_client_inject_message(
+      fx->mock, "$iothub/methods/POST/foo/", NULL, 0, AZ_IOT_MQTT_QOS_0));
+  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+  az_iot_log_set_global_sink(NULL);
+
+  assert_false(rec.fired);
+  assert_int_equal(cap.warn_count, 1);
+  assert_non_null(strstr(cap.last_warning, "$iothub/methods/POST/foo/"));
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -206,6 +415,17 @@ int main(void)
     cmocka_unit_test_setup_teardown(inbound_invocation_dispatched_to_handler, setup, teardown),
     cmocka_unit_test_setup_teardown(malformed_topic_dropped, setup, teardown),
     cmocka_unit_test(respond_rejects_null_request),
+    cmocka_unit_test_setup_teardown(
+        the_pool_holds_the_documented_number_of_concurrent_requests, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_invocation_past_the_pool_capacity_is_dropped, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        responding_frees_the_slot_for_the_next_invocation, setup, teardown),
+    cmocka_unit_test_setup_teardown(responding_twice_is_rejected, setup, teardown),
+    cmocka_unit_test_setup_teardown(respond_carries_a_non_success_status, setup, teardown),
+    cmocka_unit_test_setup_teardown(respond_rejects_a_null_payload_with_a_length, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_dropped_invocation_says_why, setup, teardown),
+    cmocka_unit_test_setup_teardown(an_unparsable_topic_says_why, setup, teardown),
   };
   return cmocka_run_group_tests_name("direct_method_client", tests, NULL, NULL);
 }
