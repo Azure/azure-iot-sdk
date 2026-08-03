@@ -1,0 +1,140 @@
+# C library coding conventions
+
+Scope: `c/src` (core + feature clients) and `c/inc`. Adapters under `c/adapters`
+are the boundary where libc, OpenSSL or a third-party MQTT stack is
+unavoidable, and they are held to the naming and error-handling rules but not
+to the no-allocation or no-libc-string rules. Tests and samples are application
+code.
+
+The short version: **this library is built out of azure-sdk-for-c primitives.
+Before writing a hand-rolled C construct, look for the `az_*` or `az_iot_*`
+helper, and if one does not exist yet, propose it rather than reaching for the
+libc call.**
+
+`.github/instructions/c-library.instructions.md` restates the enforceable parts
+for AI-assisted editing, and `c/eng/check-banned-constructs.sh` fails CI when
+they are broken. This document is the reasoning; those two are the teeth.
+
+## 1. Build strings with `az_iot_span_writer`, not the C library
+
+`snprintf`, `sprintf`, `strcpy`, `strcat`, `strncpy`, `strncat` and `strtok`
+are banned in `c/src`.
+
+Use [`az_iot_span_writer`](../../src/core/internal/span_writer.h):
+
+```c
+char topic[AZ_IOT_C2D_TOPIC_MAX];
+const char* parts[] = { "ih/", device_id, "/dev/c2d" };
+if (az_iot_span_writer_build_str(AZ_SPAN_FROM_BUFFER(topic), NULL, parts, 3) != AZ_IOT_OK)
+{
+    return AZ_IOT_ERR_INTERNAL;
+}
+```
+
+or, when the parts are not all strings, the append/`end_str` sequence. Appends
+never fail loudly; the first failure is latched and one check at the end
+reports it.
+
+Why, concretely:
+
+- A `%s` argument that is NULL is undefined behaviour. The writer reports
+  `AZ_IOT_ERR_INVALID_ARG`. Two real NULL-`device_id` paths were fixed by the
+  conversion alone.
+- Overflow leaves an **empty** string, not a half-built one, so a caller that
+  ignores the result cannot publish a truncated topic.
+- Truncation is a returned error, not something each call site has to notice.
+
+`memcpy`, `strlen`, `strcmp`, `strncmp` and `strstr` are **not** banned - the
+writer itself is built on the first two. They are the crossing point between the
+`const char*` MQTT interface and the span world. Prefer `az_span` and
+`az_span_find` when the data is already a span; reach for the libc call only at
+that boundary.
+
+## 2. Never call `az_span_copy` or `az_span_slice` on unvalidated input
+
+This project builds with `AZ_NO_PRECONDITION_CHECKING=OFF` and installs no
+precondition handler, so az_core's default handler **spins forever**. A copy
+that does not fit hangs the device instead of returning an error.
+
+- `az_span_copy`, `az_span_copy_u8`, `az_span_slice`, `az_span_u32toa` and the
+  `az_json_*` entry points all carry preconditions.
+- `az_iot_span_writer` exists partly to avoid them: it touches `az_span` only
+  through `az_span_ptr` and `az_span_size`, which have none.
+- Turning preconditions *off* is not the fix - it removes the check and leaves
+  the unchecked `memcpy`, which is a buffer overflow rather than a hang.
+
+If you must call one of them, bounds-check with `az_span_size()` first.
+
+## 3. Trace through the logging facade, never to a stream
+
+`printf`, `fprintf`, `puts` and `fputs` are banned in `c/src`. Use
+`AZ_IOT_LOG_{TRACE,DEBUG,INFO,WARN,ERROR}` for a ready-made message and the
+`...F` variants for a formatted one, from
+[`az_iot_log.h`](../../inc/azure/iot/az_iot_log.h).
+
+The application chooses where diagnostics go. A library that writes to `stderr`
+overrides that choice, cannot be switched off, and - as this SDK did until
+recently - can print things like the DPS username and the TLS key path.
+
+Adapters use the same macros; that is why the facade is public.
+
+Log formatting is the one place truncation is preferred over failure, which is
+the opposite of `az_iot_span_writer`: a shortened diagnostic still names the
+cause, while a shortened topic is a correctness bug.
+
+## 4. No dynamic allocation in `c/src`
+
+`malloc`, `calloc`, `realloc`, `free` and `strdup` are banned. Buffers are
+caller-provided (`az_span` or a sized array) or live inside the caller-allocated
+client struct.
+
+Two documented exceptions remain, both waived in-file: the reference filesystem
+PEM loader, and the Windows `_dupenv_s` used by the dev-only mock bypass.
+
+## 5. Follow azure-sdk-for-c naming and shapes
+
+- No `_t` type suffixes. Three ADU types keep theirs because they would
+  otherwise collide with vendored upstream names.
+- Every options struct gets `az_iot_<x>_options_default(void)` taking no
+  arguments; required fields are set by the caller afterwards.
+- Error type is this project's `az_iot_result`, not `az_result`.
+- `AZ_NODISCARD` goes on functions where ignoring the result is *likely a bug*
+  (init/open/send/parse). Do **not** put it on pump, setter, close or
+  best-effort functions: the codebase calls those fire-and-forget, and on gcc a
+  `(void)` cast does **not** silence `warn_unused_result`.
+- Check `_deps/` for a name collision before adding any `az_iot_*` symbol. This
+  has bitten twice.
+
+## When the helper does not exist
+
+That is the interesting case, and the answer is not "use libc this once".
+
+1. Check whether az_core already has it. `az_span_find`,
+   `az_span_is_content_equal_ignoring_case`, `az_span_atou32` and the
+   `az_json_*` readers/writers cover a lot.
+2. Check whether it exists but is az_core-*internal* (`_az_`-prefixed, e.g.
+   `_az_span_token`, `_az_span_url_encode`). `c/src` uses **zero** `_az_*`
+   symbols and should keep it that way: they are unstable, and the ESP32 sample
+   compiles az_core from source so a patched dependency would not reach it.
+   Reimplement in our own layer instead.
+3. Otherwise **propose adding it** to `c/src/core/` next to `span_writer`, with
+   unit tests for its boundary and overflow cases. Say so in the PR description
+   so the shape gets reviewed before it has callers.
+
+Adding a small, tested helper is nearly always better than one more hand-rolled
+buffer walk. `az_iot_span_writer` itself came out of this exact question.
+
+## Waiving a rule
+
+Add a comment to the file, naming the symbol and the reason:
+
+```c
+/* az-iot-allow: fprintf -- the built-in stderr sink itself */
+```
+
+The waiver is per file and per symbol. It is deliberately verbose to write,
+because each one is a decision a reviewer should see. Run the check locally with:
+
+```bash
+bash c/eng/check-banned-constructs.sh
+```

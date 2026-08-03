@@ -118,6 +118,19 @@ jobs:
           AZ_IOT_MQTT_BROKER_PORT: ${{ runner.os == 'Linux' && '1883' || '' }}
         run: ctest --preset ${{ matrix.preset }} ${{ runner.os == 'Windows' && format('-C {0}', matrix.build_type) || '' }} --output-on-failure
 
+  conventions:
+    name: coding conventions (c/src)
+    needs: changes
+    if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Guards the rules in c/docs/eng/coding-conventions.md. Cheap and
+      # dependency-free on purpose: it is the only part of those rules that a
+      # reviewer cannot forget to apply.
+      - name: Check for banned constructs
+        run: bash eng/check-banned-constructs.sh
+
   c99-strict:
     name: c99-strict (gcc -pedantic)
     needs: changes
