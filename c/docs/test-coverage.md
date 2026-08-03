@@ -50,7 +50,7 @@ Covers `az_iot_connection_client` lifecycle, CONNACK handling, reconnection, the
 | | Destroy while connecting frees the adapter | — | unit | Done | [destroy_while_connecting_destroys_the_adapter](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_lifecycle_test.c#L295) |
 | | Destroy fires no state callback | — | unit | Done | [destroy_is_silent_on_the_state_callback](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_lifecycle_test.c#L311) |
 | | Destroy tolerates null | — | unit | Done | [destroy_tolerates_null](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_lifecycle_test.c#L326) |
-| | Destroy while reconnect scheduled | `destroy()` during the RECONNECTING backoff window. | unit | Pending | *connection_lifecycle_test.c* |
+| | Destroy while reconnect scheduled | No adapter to tear down, deadline still armed; no retry fires after. | unit | Done | [destroy_while_reconnect_is_scheduled](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_reconnect_test.c#L561) |
 | | Do work rejects null client | — | unit | Done | [do_work_rejects_null_client](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_lifecycle_test.c#L336) |
 | | Do work before open is inert | No adapter created, no transition. | unit | Done | [do_work_before_open_touches_no_adapter](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_lifecycle_test.c#L342) |
 | | Do work after close is inert | — | unit | Done | [do_work_after_close_touches_no_adapter](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_lifecycle_test.c#L353) |
@@ -107,7 +107,7 @@ Covers `az_iot_connection_client` lifecycle, CONNACK handling, reconnection, the
 | | Unmatched puback is ignored | Unknown packet id does not fire a callback. | unit | Done | [unmatched_puback_is_ignored](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_reconnect_test.c#L491) |
 | | Pending pubacks completed with an error on disconnect | Caller is told to resend; the slot is released. | unit | Done | [pending_pubacks_are_completed_with_an_error_on_disconnect](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_reconnect_test.c#L508) |
 | | All pending pubacks are completed | Every outstanding publish is reported, not just the first. | unit | Done | [all_pending_pubacks_are_completed_on_disconnect](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_reconnect_test.c#L533) |
-| | Destroy does not complete pending pubacks | The caller's context may already be gone. | unit | Done | [destroy_does_not_complete_pending_pubacks](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_reconnect_test.c#L560) |
+| | Destroy does not complete pending pubacks | The caller's context may already be gone. | unit | Done | [destroy_does_not_complete_pending_pubacks](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_reconnect_test.c#L584) |
 | | Keep alive drop is retried like any disconnect | Reaches the core as a plain DISCONNECTED. | unit | Done | [keep_alive_drop_is_retried_like_any_disconnect](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_reconnect_test.c#L161) |
 | Hub-Next presence (v5) | Hub next births then connects | CONNACK → sub `dev/#` → SUBACK → birth → birth-ack → CONNECTED. | unit | Done | [hub_next_births_then_connects_on_birth_ack](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_client_test.c#L567) |
 | | Hub next username carries nonce | CONNECT username `correlationId` equals the birth correlation data. | unit | Done | [hub_next_connect_username_carries_correlation_nonce](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_client_test.c#L609) |
@@ -117,10 +117,10 @@ Covers `az_iot_connection_client` lifecycle, CONNACK handling, reconnection, the
 | | Hub next suback failure faults | `dev/#` SUBACK error → FAULTED. | unit | Done | [hub_next_suback_failure_faults](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_client_test.c#L684) |
 | | Hub next birth ack timeout faults | No birth-ack within the timeout, no reconnect policy → FAULTED/TIMEOUT. | unit | Done | [hub_next_birth_ack_timeout_faults](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_client_test.c#L767) |
 | | Classic skips birth handshake | v3.1.1 contrast: CONNACK → CONNECTED with no presence traffic. | unit | Done | [classic_connect_skips_birth_handshake](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_client_test.c#L747) |
-| | Hub next birth publish failure faults | Adapter rejects the birth PUBLISH. | unit | Pending | *connection_client_test.c* |
-| | Hub next birth timeout retries with new nonce | Reconnect policy enabled: retry uses a fresh nonce. | unit | Pending | *connection_client_test.c* |
-| | Hub next without v5 factory not supported | Only a v3.1.1 factory registered. | unit | Pending | *connection_client_test.c* |
-| | Hub next birth ack before suback ignored | Out-of-order presence traffic must not short-circuit the handshake. | unit | Pending | *connection_client_test.c* |
+| | Hub next birth publish failure faults | Adapter rejects the birth PUBLISH. | unit | Done | [hub_next_birth_publish_failure_faults](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_client_test.c#L1211) |
+| | Hub next birth timeout retries with new nonce | A stale ack must not satisfy the retry. | unit | Done | [hub_next_birth_timeout_retries_with_a_new_nonce](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_client_test.c#L1290) |
+| | Hub next without v5 factory not supported | No silent downgrade to a Classic session. | unit | Done | [hub_next_without_v5_factory_is_not_supported](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_client_test.c#L1190) |
+| | Hub next birth ack before suback ignored | No nonce exists yet to match against. | unit | Done | [hub_next_birth_ack_before_suback_is_ignored](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_client_test.c#L1236) |
 | DPS provisioning | Dps csr flow stores issued chain | DPS register with CSR → ASSIGNED → operational chain stored. | unit | Done | [dps_csr_flow_sends_csr_and_stores_issued_chain](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_client_test.c#L908) |
 | | Open rejects operational cert without csr provider | `request_operational_certificate` set but provider has no `get_csr`. | unit | Done | [open_rejects_operational_cert_without_csr_provider](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_client_test.c#L793) |
 | | Open rejects operational cert without payload buffer | `request_operational_certificate` set but `csr_payload_buffer` empty. | unit | Done | [open_rejects_operational_cert_without_payload_buffer](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_client_test.c#L1056) |
@@ -142,9 +142,9 @@ Covers `az_iot_connection_client` lifecycle, CONNACK handling, reconnection, the
 | | Dps disconnect midflow faults | Link drops between REGISTER and ASSIGNED. | unit | Done | [dps_disconnect_midflow_faults](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_dps_test.c#L556) |
 | | Dps malformed response faults | Unparsable body → FAULTED / `ERR_PROTOCOL`, body logged. | unit | Done | [dps_malformed_response_faults_with_a_protocol_error](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_dps_test.c#L575) |
 | | Dps empty response body faults | MQTT permits an empty payload; the parse call requires a non-empty one and az_core's precondition handler does not return, so it is rejected before the call. | unit | Done | [dps_empty_response_body_faults_without_a_null_deref](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_dps_test.c#L595) |
-| | Dps rejects a null registration id | `id_scope` set, identity missing. | unit | Done | [dps_rejects_a_null_registration_id](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_dps_test.c#L595) |
-| | Dps rejects an empty registration id | Empty string, not just NULL. | unit | Done | [dps_rejects_an_empty_registration_id](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_dps_test.c#L609) |
-| | Dps rejected identity leaves the client idle | No half-started session; the instance stays reusable. | unit | Done | [dps_rejected_identity_leaves_the_client_idle](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_dps_test.c#L624) |
+| | Dps rejects a null registration id | `id_scope` set, identity missing. | unit | Done | [dps_rejects_a_null_registration_id](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_dps_test.c#L615) |
+| | Dps rejects an empty registration id | Empty string, not just NULL. | unit | Done | [dps_rejects_an_empty_registration_id](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_dps_test.c#L629) |
+| | Dps rejected identity leaves the client idle | No half-started session; the instance stays reusable. | unit | Done | [dps_rejected_identity_leaves_the_client_idle](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_dps_test.c#L644) |
 | Adapters | Factory advertises version | Factory `version` field matches the clients it creates. | unit | Done | [factory_advertises_version](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/mqtt_iface_contract_test.c#L59) |
 | | Client carries iface with version | All vtable slots populated on the created client. | unit | Done | [client_carries_iface_pointer_with_version](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/mqtt_iface_contract_test.c#L68) |
 | | Connect failure propagates to caller | Adapter `connect()` error returned synchronously. | unit | Done | [scripted_failure_propagates_to_caller](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/mqtt_iface_contract_test.c#L118) |
@@ -174,11 +174,48 @@ Covers `az_iot_connection_client` lifecycle, CONNACK handling, reconnection, the
 | | Long haul connection stability | Multi-hour; belongs on a nightly schedule, not the PR gate. | e2e | Pending | *e2e (new)* |
 | | Connect with wrong device id rejected | Needs an identity provisioned in DPS but absent from the hub. | e2e | Pending | *e2e_scenarios_test.c* |
 
-## Known gaps
+## Not implemented, and why
 
-Defects and limitations found while building the coverage above. Each `Pins defect`
-row in the table locks in the behaviour that shipped, so that changing it produces a
-visible test diff rather than a silent one.
+Every remaining `Pending` row is blocked on infrastructure or on a decision, not on
+effort. Each entry says what specifically is missing, so the cost of closing it is
+visible rather than implied.
+
+### TLS cases that need broker-side fixtures
+
+The conformance suite talks to whatever broker `AZ_IOT_MQTT_BROKER_HOST` names. It can
+supply its own *client* material and its own trust anchors, but it cannot reconfigure
+the broker, and CI runs a plain mosquitto service container with no TLS listener. Note
+this already affects a **shipping** test: `server_cert_validation_rejects_untrusted`
+exists and passes locally, but skips in CI for exactly this reason.
+
+| Row | What is missing |
+| --- | --- |
+| Server cert hostname mismatch rejected | A TLS listener **whose CA the suite trusts**, reachable under a name the certificate does not cover. Without a trusted CA the handshake fails for the wrong reason and the test proves nothing — it would pass even if hostname verification were disabled. |
+| Expired client cert rejected | A listener configured for mutual TLS (`require_certificate true`), plus generated expired-leaf fixtures. The assertion belongs to the broker's verification, so a broker that does not ask for a client certificate cannot exercise it. |
+
+**To close both:** add a TLS listener to the CI broker with a generated CA/server/client
+set and export `AZ_IOT_MQTT_BROKER_TLS_HOST` / `_TLS_PORT` plus the CA path. That is a CI
+and fixture change rather than a test change, which is why it is not in this series.
+
+### Adapter capability, not SDK behaviour
+
+| Row | What is missing |
+| --- | --- |
+| Connect with in memory ca pem | `az_iot_mqtt_tls_options` exposes both file-path and in-memory PEM fields, and adapters are free to support either. The bundled Paho adapter is file-path only (it hands `trustStore`/`keyStore` to OpenSSL). A conformance test asserting in-memory PEM works would therefore fail for a *conforming* adapter. Making it testable needs a capability flag on the iface so the suite can skip adapters that do not advertise support — a public API change that should be decided on its own merits. |
+
+### End-to-end
+
+| Row | What is missing |
+| --- | --- |
+| Reconnect after service disconnect | A way to force a server-initiated drop. The e2e harness has no service-side device disable/enable, and `e2e_device` connects with no reconnection policy, so there is nothing to recover. Two viable designs: (a) add disable/enable to the service half, or (b) open a second connection with the same device identity — IoT Hub evicts the first — which is deterministic and needs no new service API. Either way `e2e_device_connect()` must configure a reconnection policy first. |
+| Reconnect restores feature clients | Depends entirely on the row above for a way to force the drop; the assertions themselves (twin/method/C2D after recovery) are straightforward once it exists. |
+| Long haul connection stability | Multi-hour runtime. This does not belong on a PR gate at all — it needs a scheduled job with its own timeout budget and leak/reconnect-counter reporting. |
+| Connect with wrong device id rejected | An identity provisioned in DPS but absent from (or disabled in) the hub, created and torn down by the provisioning step. The e2e resource provisioning is [downloaded at runtime from `Azure/iot-sdks-e2e-fx`](https://github.com/Azure/iot-sdks-e2e-fx), so the fixture change lands in that repository, not this one. |
+
+
+Defects and limitations found while building the coverage above. All five have been
+fixed; the rows that used to pin the shipping behaviour now assert the corrected
+behaviour instead.
 
 | Id | Severity | Status | Finding |
 | --- | --- | --- | --- |
