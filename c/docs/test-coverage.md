@@ -58,23 +58,23 @@ Covers `az_iot_connection_client` lifecycle, CONNACK handling, reconnection, the
 | | Connack without a pending close still connects | Guards against over-suppressing a live attempt. | unit | Done | [a_connack_without_a_pending_close_still_connects](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_lifecycle_test.c#L229) |
 | | Close twice is idempotent | Second close fires no transition. | unit | Done | [close_twice_is_idempotent](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_lifecycle_test.c#L240) |
 | | Close from faulted reports not initialized | Adapter is already gone. | unit | Done | [close_from_faulted_reports_not_initialized](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_lifecycle_test.c#L258) |
-| | Destroy while connected frees the adapter | No use-after-free, no leak. | unit | Done | [destroy_while_connected_destroys_the_adapter](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_lifecycle_test.c#L275) |
-| | Destroy while connecting frees the adapter | — | unit | Done | [destroy_while_connecting_destroys_the_adapter](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_lifecycle_test.c#L295) |
-| | Destroy fires no state callback | — | unit | Done | [destroy_is_silent_on_the_state_callback](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_lifecycle_test.c#L311) |
-| | Destroy tolerates null | — | unit | Done | [destroy_tolerates_null](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_lifecycle_test.c#L326) |
+| | Destroy while connected frees the adapter | No use-after-free, no leak. | unit | Done | [destroy_while_connected_destroys_the_adapter](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_lifecycle_test.c#L291) |
+| | Destroy while connecting frees the adapter | — | unit | Done | [destroy_while_connecting_destroys_the_adapter](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_lifecycle_test.c#L314) |
+| | Destroy fires no state callback | — | unit | Done | [destroy_is_silent_on_the_state_callback](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_lifecycle_test.c#L333) |
+| | Destroy tolerates null | — | unit | Done | [destroy_tolerates_null](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_lifecycle_test.c#L348) |
 | | Destroy while reconnect scheduled | No adapter to tear down, deadline still armed; no retry fires after. | unit | Done | [destroy_while_reconnect_is_scheduled](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_reconnect_test.c#L561) |
-| | Do work rejects null client | — | unit | Done | [do_work_rejects_null_client](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_lifecycle_test.c#L336) |
-| | Do work before open is inert | No adapter created, no transition. | unit | Done | [do_work_before_open_touches_no_adapter](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_lifecycle_test.c#L342) |
-| | Do work after close is inert | — | unit | Done | [do_work_after_close_touches_no_adapter](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_lifecycle_test.c#L353) |
-| | Do work forwards the timeout | Reaches the adapter `process_loop()` unchanged. | unit | Done | [do_work_forwards_the_timeout_to_the_adapter](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_lifecycle_test.c#L368) |
-| | Do work surfaces the pump error | Adapter error is returned to the caller. | unit | Done | [do_work_surfaces_the_adapter_pump_error](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_lifecycle_test.c#L379) |
-| | Reopen after close starts a second session | Fresh adapter, second CONNECTED. | unit | Done | [reopen_after_close_starts_a_second_session](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_lifecycle_test.c#L392) |
-| | Set state callback rejects null client | — | unit | Done | [set_state_callback_rejects_null_client](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_lifecycle_test.c#L418) |
-| | State callback carries the failure reason | Reason recorded with FAULTED matches the CONNACK status. | unit | Done | [state_callback_carries_the_failure_reason](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_lifecycle_test.c#L426) |
-| | State callback can be replaced | Later registration wins; the old one goes quiet. | unit | Done | [state_callback_can_be_replaced](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_lifecycle_test.c#L439) |
-| | Publish before connected rejected | — | unit | Done | [publish_before_connected_is_rejected](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_lifecycle_test.c#L458) |
-| | Subscribe before connected rejected | — | unit | Done | [subscribe_before_connected_is_rejected](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_lifecycle_test.c#L470) |
-| | Publish after disconnect rejected | — | unit | Done | [publish_after_disconnect_is_rejected](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_lifecycle_test.c#L482) |
+| | Do work rejects null client | — | unit | Done | [do_work_rejects_null_client](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_lifecycle_test.c#L358) |
+| | Do work before open is inert | No adapter created, no transition. | unit | Done | [do_work_before_open_touches_no_adapter](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_lifecycle_test.c#L364) |
+| | Do work after close is inert | — | unit | Done | [do_work_after_close_touches_no_adapter](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_lifecycle_test.c#L375) |
+| | Do work forwards the timeout | Reaches the adapter `process_loop()` unchanged. | unit | Done | [do_work_forwards_the_timeout_to_the_adapter](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_lifecycle_test.c#L390) |
+| | Do work surfaces the pump error | Adapter error is returned to the caller. | unit | Done | [do_work_surfaces_the_adapter_pump_error](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_lifecycle_test.c#L401) |
+| | Reopen after close starts a second session | Fresh adapter, second CONNECTED. | unit | Done | [reopen_after_close_starts_a_second_session](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_lifecycle_test.c#L414) |
+| | Set state callback rejects null client | — | unit | Done | [set_state_callback_rejects_null_client](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_lifecycle_test.c#L440) |
+| | State callback carries the failure reason | Reason recorded with FAULTED matches the CONNACK status. | unit | Done | [state_callback_carries_the_failure_reason](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_lifecycle_test.c#L448) |
+| | State callback can be replaced | Later registration wins; the old one goes quiet. | unit | Done | [state_callback_can_be_replaced](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_lifecycle_test.c#L461) |
+| | Publish before connected rejected | — | unit | Done | [publish_before_connected_is_rejected](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_lifecycle_test.c#L480) |
+| | Subscribe before connected rejected | — | unit | Done | [subscribe_before_connected_is_rejected](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_lifecycle_test.c#L492) |
+| | Publish after disconnect rejected | — | unit | Done | [publish_after_disconnect_is_rejected](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_lifecycle_test.c#L504) |
 | CONNACK mapping | Connack success maps to ok | Code 0, both v3.1.1 and v5. | unit | Done | [connack_success_maps_to_ok](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/mqtt_iface_contract_test.c#L187) |
 | | Connack v3 identity codes rejected | v3.1.1 codes 2/4/5 → `IDENTITY_REJECTED`. | unit | Done | [connack_v3_identity_codes_map_to_identity_rejected](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/mqtt_iface_contract_test.c#L194) |
 | | Connack v3 transport codes | v3.1.1 codes 1/3 → `ERR_MQTT`. | unit | Done | [connack_v3_transport_codes_map_to_mqtt](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/mqtt_iface_contract_test.c#L207) |
@@ -83,8 +83,8 @@ Covers `az_iot_connection_client` lifecycle, CONNACK handling, reconnection, the
 | | Connack negative codes | Adapter pre-CONNACK failures (socket, TLS) → `ERR_MQTT`. | unit | Done | [connack_negative_codes_map_to_mqtt](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/mqtt_iface_contract_test.c#L245) |
 | | Connack unknown version never rejects identity | Unknown version must not trigger re-provisioning. | unit | Done | [connack_unknown_version_never_rejects_the_identity](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/mqtt_iface_contract_test.c#L260) |
 | | Mapped connack reaches callback | Mapping survives the adapter → inbound callback hop. | unit | Done | [mapped_connack_status_reaches_the_inbound_callback](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/mqtt_iface_contract_test.c#L276) |
-| | Connack rejection tears the adapter down | No adapter is kept alive behind a FAULTED state. | unit | Done | [connack_rejection_tears_the_adapter_down](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_lifecycle_test.c#L523) |
-| | Identity rejection faults without a policy | Reconnect disabled: FAULTED carrying `IDENTITY_REJECTED`. | unit | Done | [identity_rejection_faults_when_reconnect_is_disabled](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_lifecycle_test.c#L509) |
+| | Connack rejection tears the adapter down | No adapter is kept alive behind a FAULTED state. | unit | Done | [connack_rejection_tears_the_adapter_down](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_lifecycle_test.c#L545) |
+| | Identity rejection faults without a policy | Reconnect disabled: FAULTED carrying `IDENTITY_REJECTED`. | unit | Done | [identity_rejection_faults_when_reconnect_is_disabled](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_lifecycle_test.c#L531) |
 | | Identity rejected reprovisions through dps | Retry targets DPS, not the hub that refused the credential. | unit | Done | [hub_identity_rejection_reprovisions_through_dps](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_dps_test.c#L177) |
 | | Transport error does not reprovision | Cached hub assignment stays valid. | unit | Done | [hub_transport_error_reconnects_without_reprovisioning](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_dps_test.c#L200) |
 | | Reprovisioning connects to the new assignment | Full loop: rejection → DPS → new hub → CONNECTED. | unit | Done | [reprovisioning_connects_to_the_new_assignment](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_dps_test.c#L222) |
@@ -231,7 +231,7 @@ system and application properties, and the QoS-1 send completion. Wire format pe
 | | Property order is preserved | — | unit | Done | [send_propagates_content_type_and_properties](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/telemetry_client_test.c#L192) |
 | | Keys are percent encoded | Keeps the reserved `$` out of the topic. | unit | Done | [send_propagates_content_type_and_properties](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/telemetry_client_test.c#L192), [send_url_encodes_property_values](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/telemetry_client_test.c#L222) |
 | | Values are percent encoded | `&`, `=`, `%` and space cannot forge bag structure. | unit | Done | [send_url_encodes_property_values](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/telemetry_client_test.c#L222) |
-| | Rfc 3986 unreserved characters pass through | `-_.~` and alphanumerics are not escaped. | unit | Done | [send_url_encodes_property_values](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/telemetry_client_test.c#L222) |
+| | RFC 3986 unreserved characters pass through | `-_.~` and alphanumerics are not escaped. | unit | Done | [send_url_encodes_property_values](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/telemetry_client_test.c#L222) |
 | | Content type and encoding match the azure sdk wire form | `%24.ct`, `%24.ce`. | unit | Done | [send_propagates_content_type_and_properties](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/telemetry_client_test.c#L192) |
 | | Message id and correlation id match the azure sdk wire form | `%24.mid`, `%24.cid`. | unit | Done | [send_url_encodes_property_values](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/telemetry_client_test.c#L222), [system_property_keys_match_the_azure_sdk_wire_form](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/telemetry_client_test.c#L250) |
 | | User id creation time and component name match the wire form | `$.uid`, `$.ctime`, `$.sub` are declared in the public header but never asserted. | unit | Pending | *telemetry_client_test.c* |
@@ -295,7 +295,7 @@ and teardown path below is unexercised. All `Pending` rows land in a new file.
 | | Destroying one client leaves the other receiving | — | unit | Pending | *c2d_client_test.c (new)* |
 | | The subscription is reissued after a reconnect | The generic persistent-sub tests cover the mechanism; this covers the C2D filter. | unit | Pending | *c2d_client_test.c (new)* |
 | End-to-end | Cloud to device message received | Service sends over AMQP; the device matches the marker. | e2e | Done | [test_c2d](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/e2e/tests/e2e_scenarios_test.c#L260) |
-| | A message queued while offline arrives after reconnect | The adapter connects with CleanSession 0, so the subscription persists across sessions. | e2e | Pending | *e2e_scenarios_test.c* |
+| | A message queued while offline arrives after reconnect | Requires a persistent session; the Paho adapter's v3.1.1 path sets `cleansession = 1` today, so this cannot pass until that is fixed. | e2e | Pending | *e2e_scenarios_test.c* |
 | | Application properties are delivered | Blocked on D-1. | e2e | Pending | *e2e_scenarios_test.c* |
 
 **Limitation D-1:** on Classic the topic property bag is never parsed, so the handler gets
@@ -510,9 +510,10 @@ response. The blob PUT itself is the application's job and is deliberately out o
 
 ## Device update (ADU)
 
-> **Frozen for this pass.** The ADU feature is expected to change, so the table below is
-> an inventory of what exists today and is deliberately not expanded with new `Pending`
-> rows. Revisit once the feature settles.
+> **Frozen for this pass.** The ADU feature is expected to change, so the table below
+> inventories what exists today — including the `Pending` rows already known — and is not
+> being extended with newly identified gaps the way the other areas are. Revisit once the
+> feature settles.
 
 Covers `az_iot_adu_client`: the deployment workflow driven off desired properties, the
 agent state reported back through the twin, and the manifest crypto (SHA-256 file hashes,
@@ -691,11 +692,11 @@ riskiest kind of row: it works today and nothing would notice if it stopped.
 | X.509 client authentication | Implemented via `az_iot_certificate_provider`. | Certificate management; e2e |
 | SAS token password | Not implemented, by design — this SDK authenticates with X.509 only and never sets `password`. | — |
 | Plug and Play model id announced at connect | Implemented — `opts.model_id` → `az_iot_hub_client_options.model_id`. Required for ADU to discover the device. | **none** |
-| CleanSession 0 so subscriptions persist | Implemented — the Paho adapter sets `cleansession = 0`. | **none** |
+| CleanSession 0 so subscriptions persist | **Not implemented on Classic** — the core leaves `clean_start` false, but the Paho adapter's MQTT v3.1.1 path hardcodes `conn.cleansession = 1` and never reads the option. Subscriptions and anything the hub queued while the device was away are therefore lost on every reconnect. The v5 path does honour it. | — |
 | Client keep-alive is configurable | **Not implemented** — hardcoded to 30 s in `start_connect_attempt()`, with no option to change it (D-5). | — |
 | Connect timeout is configurable | **Not implemented** — hardcoded to 30 s. | — |
 | A second connection for the same device id evicts the first | Service behaviour; surfaces to the SDK as a plain DISCONNECT. Also the cheapest way to force the drop the reconnect e2e rows need. | Connection → End-to-end (pending) |
-| Will message published as telemetry on disconnect | **Not implemented** — `az_iot_mqtt_connect_options` has no Will fields. | — |
+| Will message published as telemetry on disconnect | **Not exposed** — `az_iot_mqtt_connect_options` does carry an `lwt` section and the Paho v5 path wires it to Paho's will options, but `az_iot_connection_client` never populates it and the v3.1.1 path ignores it, so no application can set a Will. The plumbing exists; the surface does not. | — |
 | Module identity (`{device-id}/{module-id}`) | **Not implemented** — no module option; every topic the SDK builds is device-scoped. | — |
 | A device may subscribe to at most five topics | Partial — `AZ_IOT_MAX_PERSISTENT_SUBS` defaults to 8, so the SDK accepts filters the hub will refuse (D-6). A device using C2D + methods + twin (×2) + credential renewal is already at 5. | — |
 | QoS 2 publish closes the connection | Implemented — every publish is QoS 0 or QoS 1. | **none** |
