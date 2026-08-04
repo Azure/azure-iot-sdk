@@ -64,14 +64,13 @@ namespace Microsoft.Azure.Devices.Client.Twin.Gen2
         public TwinClient(IConnectionClient connection)
         {
             _connection = connection;
-            _connection.ApplicationMessageReceivedAsync += HandleReceivedAzureEventGridHubMqttPublish;
+            _connection.MqttClient.PublishReceivedAsync += HandleReceivedAzureEventGridHubMqttPublish;
         }
 
         internal TwinClient(Connection.Unified.IConnectionClient connection)
         {
-            //TODO how will this work, exactly? Need to pass the underlying MQTT client and its current connection state. Anything else? Auth shouldn't be needed, right?
-            _connection = new Connection.Gen2.ConnectionClient(connection.);
-            _connection.ApplicationMessageReceivedAsync += HandleReceivedAzureEventGridHubMqttPublish;
+            _connection = new Connection.Gen2.ConnectionClient(connection);
+            _connection.MqttClient.PublishReceivedAsync += HandleReceivedAzureEventGridHubMqttPublish;
         }
 
         /// <summary>
@@ -130,7 +129,7 @@ namespace Microsoft.Azure.Devices.Client.Twin.Gen2
             try
             {
                 Trace.TraceInformation("Publishing 'GetTwin' request on topic " + publish.Topic);
-                MqttPublishAck puback = await _connection.PublishAsync(publish, cancellationToken);
+                MqttPublishAck puback = await _connection.MqttClient.PublishAsync(publish, cancellationToken);
 
                 PublishRejectedException.ThrowIfUnsuccessfulPuback(puback, "Failed to request the twin because the MQTT broker rejected the request.");
 
@@ -181,7 +180,7 @@ namespace Microsoft.Azure.Devices.Client.Twin.Gen2
             try
             {
                 Trace.TraceInformation("Publishing 'PatchReported' request on topic " + publish.Topic);
-                MqttPublishAck puback = await _connection.PublishAsync(publish, cancellationToken);
+                MqttPublishAck puback = await _connection.MqttClient.PublishAsync(publish, cancellationToken);
 
                 PublishRejectedException.ThrowIfUnsuccessfulPuback(puback, "Failed to update the reported properties because the MQTT broker rejected the request.");
 
@@ -302,7 +301,7 @@ namespace Microsoft.Azure.Devices.Client.Twin.Gen2
 
         public void Dispose()
         {
-            _connection.ApplicationMessageReceivedAsync -= HandleReceivedAzureEventGridHubMqttPublish;
+            _connection.MqttClient.PublishReceivedAsync -= HandleReceivedAzureEventGridHubMqttPublish;
         }
     }
 }

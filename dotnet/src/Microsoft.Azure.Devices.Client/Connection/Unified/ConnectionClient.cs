@@ -16,6 +16,8 @@ namespace Microsoft.Azure.Devices.Client.Connection.Unified
 
         private ConnectionContext? CurrentConnectionContext { get; set; }
 
+        public IMqttClient MqttClient => _mqttClient;
+
         public ConnectionContext? GetCurrentConnectionContext() => CurrentConnectionContext;
 
         private const string CertificateSigningRequestTopic = "$iothub/credentials/POST/issueCertificate/?$rid=";
@@ -120,7 +122,6 @@ namespace Microsoft.Azure.Devices.Client.Connection.Unified
         /// <param name="cancellationToken">The cancellation token.</param>
         public async Task DisconnectAsync(CancellationToken cancellationToken = default)
         {
-            _mqttClient.PublishReceivedAsync -= DelegateReceivedPublishAsync;
             await _mqttClient.DisconnectAsync(new MqttDisconnect() { Reason = MqttClientDisconnectOptionsReason.NormalDisconnection }, cancellationToken);
             CurrentConnectionContext = null;
         }
@@ -176,8 +177,6 @@ namespace Microsoft.Azure.Devices.Client.Connection.Unified
         {
             CurrentConnectionContext = connectionContext;
 
-            _mqttClient.PublishReceivedAsync += DelegateReceivedPublishAsync;
-
             if (connectionContext.IsAzureEventGrid)
             {
                 // Connect to the new Azure Event Grid endpoint using MQTT v5 using the provisioning result credentials
@@ -196,35 +195,6 @@ namespace Microsoft.Azure.Devices.Client.Connection.Unified
             return await provisioningConnection.RegisterAsync(_mqttClient, new() { ClientCertificateSigningRequest = null, Payload = provisioningSettings.ProvisioningPayload }, authentication, provisioningSettings.IdScope, provisioningSettings.GlobalEndpointAddress, cancellationToken);
 
             //TODO do we care about initial twin as returned by DPS?
-        }
-
-        /// <inheritdoc/>
-        [EditorBrowsable(EditorBrowsableState.Advanced)]
-        public async Task<MqttPublishAck> PublishAsync(MqttPublish mqttApplicationMessage, CancellationToken cancellationToken = default)
-        {
-            return await _mqttClient.PublishAsync(mqttApplicationMessage, cancellationToken);
-        }
-
-        /// <inheritdoc/>
-        [EditorBrowsable(EditorBrowsableState.Advanced)]
-        public async Task<MqttSubscribeAck> SubscribeAsync(MqttSubscribe subscribe, CancellationToken cancellationToken = default)
-        {
-            return await _mqttClient.SubscribeAsync(subscribe, cancellationToken);
-        }
-
-        /// <inheritdoc/>
-        [EditorBrowsable(EditorBrowsableState.Advanced)]
-        public async Task<MqttUnsubscribeAck> UnsubscribeAsync(MqttUnsubscribe unsubscribe, CancellationToken cancellationToken = default)
-        {
-            return await _mqttClient.UnsubscribeAsync(unsubscribe, cancellationToken);
-        }
-
-        internal async Task DelegateReceivedPublishAsync(MqttPublishReceivedEventArgs args)
-        {
-            if (ApplicationMessageReceivedAsync != null)
-            {
-                await ApplicationMessageReceivedAsync.Invoke(args);
-            }
         }
 
         private async Task HandleReceivedCertificateSigningPublish(MqttPublishReceivedEventArgs args)
@@ -271,7 +241,6 @@ namespace Microsoft.Azure.Devices.Client.Connection.Unified
 
         public void Dispose()
         {
-            _mqttClient.PublishReceivedAsync -= DelegateReceivedPublishAsync;
             _mqttClient.PublishReceivedAsync -= HandleReceivedCertificateSigningPublish;
             _mqttClient.Dispose();
         }

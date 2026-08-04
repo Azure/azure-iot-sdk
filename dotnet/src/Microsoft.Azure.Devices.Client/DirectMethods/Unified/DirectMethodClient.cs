@@ -54,7 +54,7 @@ namespace Microsoft.Azure.Devices.Client.DirectMethods.Unified
         public DirectMethodClient(IConnectionClient connection)
         {
             _connection = connection;
-            _connection.ApplicationMessageReceivedAsync += HandleReceivedClassicMqttPublish;
+            _connection.MqttClient.PublishReceivedAsync += HandleReceivedClassicMqttPublish;
             
             _aegDirectMethodClient = new(_connection);
             _aegDirectMethodClient.DirectMethodProbeReceivedAsync += HandleAegDirectMethodProbeRequestAsync;
@@ -152,7 +152,7 @@ namespace Microsoft.Azure.Devices.Client.DirectMethods.Unified
                 publish.Payload = methodResponse.Payload;
             }
 
-            MqttPublishAck puback = await _connection.PublishAsync(publish, CancellationToken.None);
+            MqttPublishAck puback = await _connection.MqttClient.PublishAsync(publish, CancellationToken.None);
 
             if (puback.ReasonCode != MqttPublishAckReasonCode.Success)
             {
@@ -162,7 +162,7 @@ namespace Microsoft.Azure.Devices.Client.DirectMethods.Unified
 
         public void Dispose()
         {
-            _connection.ApplicationMessageReceivedAsync -= HandleReceivedClassicMqttPublish;
+            _connection.MqttClient.PublishReceivedAsync -= HandleReceivedClassicMqttPublish;
 
             _aegDirectMethodClient.DirectMethodProbeReceivedAsync -= HandleAegDirectMethodProbeRequestAsync;
             _aegDirectMethodClient.DirectMethodInvokedAsync -= HandleAegDirectMethodRequestAsync;

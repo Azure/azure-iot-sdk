@@ -63,14 +63,13 @@ namespace Microsoft.Azure.Devices.Client.DirectMethods.Gen2
         public DirectMethodClient(IConnectionClient connection)
         {
             _connection = connection;
-            _connection.ApplicationMessageReceivedAsync += HandleReceivedAzureEventGridMqttPublish;
+            _connection.MqttClient.PublishReceivedAsync+= HandleReceivedAzureEventGridMqttPublish;
         }
 
         internal DirectMethodClient(Connection.Unified.IConnectionClient connection)
         {
-            //TODO how will this work, exactly? Need to pass the underlying MQTT client and its current connection state. Anything else? Auth shouldn't be needed, right?
-            _connection = new Connection.Gen2.ConnectionClient(connection.);
-            _connection.ApplicationMessageReceivedAsync += HandleReceivedAzureEventGridMqttPublish;
+            _connection = new Connection.Gen2.ConnectionClient(connection);
+            _connection.MqttClient.PublishReceivedAsync += HandleReceivedAzureEventGridMqttPublish;
         }
 
         private async Task HandleReceivedAzureEventGridMqttPublish(MqttPublishReceivedEventArgs args)
@@ -168,7 +167,7 @@ namespace Microsoft.Azure.Devices.Client.DirectMethods.Gen2
                     _pendingExpectedDirectMethodNames.TryAdd(requestId.Value, probe.MethodName);
                 }
 
-                MqttPublishAck puback = await _connection.PublishAsync(probeAckPublish);
+                MqttPublishAck puback = await _connection.MqttClient.PublishAsync(probeAckPublish);
 
                 if (puback.ReasonCode != MqttPublishAckReasonCode.Success)
                 {
@@ -263,7 +262,7 @@ namespace Microsoft.Azure.Devices.Client.DirectMethods.Gen2
 
                 resultPublish.UserProperties.Add(new("type", Encoding.UTF8.GetBytes("result:1")));
 
-                MqttPublishAck puback = await _connection.PublishAsync(resultPublish);
+                MqttPublishAck puback = await _connection.MqttClient.PublishAsync(resultPublish);
 
                 if (puback.ReasonCode != MqttPublishAckReasonCode.Success)
                 {
@@ -274,7 +273,7 @@ namespace Microsoft.Azure.Devices.Client.DirectMethods.Gen2
 
         public void Dispose()
         {
-            _connection.ApplicationMessageReceivedAsync -= HandleReceivedAzureEventGridMqttPublish;
+            _connection.MqttClient.PublishReceivedAsync -= HandleReceivedAzureEventGridMqttPublish;
         }
     }
 }

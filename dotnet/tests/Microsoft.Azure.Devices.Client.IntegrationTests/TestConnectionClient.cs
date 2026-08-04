@@ -1,7 +1,4 @@
 ﻿using Microsoft.Azure.Devices.Client.Connection.Unified;
-using System;
-using System.Collections.Generic;
-using System.Text;
 
 namespace Microsoft.Azure.Devices.Client.IntegrationTests
 {

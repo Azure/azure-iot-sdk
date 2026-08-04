@@ -20,7 +20,7 @@ namespace Microsoft.Azure.Devices.Client.FileUpload.Unified
             _connectionClient = connection;
             _clientCertificate = clientCertificate;
             _httpClient = null;
-            _aegFileUploadClient = new(_connectionClient);
+            _aegFileUploadClient = new(new Connection.Gen2.ConnectionClient(_connectionClient));
         }
 
         public FileUploadClient(IConnectionClient connection, X509Certificate2 clientCertificate, HttpClient httpClient)
@@ -28,7 +28,7 @@ namespace Microsoft.Azure.Devices.Client.FileUpload.Unified
             _connectionClient = connection;
             _httpClient = httpClient;
             _clientCertificate = clientCertificate;
-            _aegFileUploadClient = new(_connectionClient);
+            _aegFileUploadClient = new(new Connection.Gen2.ConnectionClient(_connectionClient));
         }
 
         private void InitializeIfUninitialized()

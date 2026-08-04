@@ -17,17 +17,10 @@ namespace Microsoft.Azure.Devices.Client.Connection.Gen2
 
         private ConnectionContext? CurrentConnectionContext { get; set; }
 
+        //TODO include twin push details upon each connect event? Or just leave that to the twin client to handle?
+        public IMqttClient MqttClient => _mqttClient;
+
         public ConnectionContext? GetCurrentConnectionContext() => CurrentConnectionContext;
-
-        /// <inheritdoc/>
-        [EditorBrowsable(EditorBrowsableState.Advanced)]
-        public event Func<MqttPublishReceivedEventArgs, Task>? ApplicationMessageReceivedAsync;
-
-        /// <inheritdoc/>
-        public event Action<MqttClientConnectedEventArgs>? ConnectedAsync; //TODO include twin push details?
-
-        /// <inheritdoc/>
-        public event Action<MqttClientDisconnectedEventArgs>? DisconnectedAsync;
 
         /// <summary>
         /// Construct a new <see cref="ConnectionClient"/>
@@ -46,6 +39,25 @@ namespace Microsoft.Azure.Devices.Client.Connection.Gen2
             };
 
             _mqttClient = options.MqttClient ?? new MqttSessionClient(sessionClientOptions);
+        }
+
+        // This ctor allows the unified clients to create Gen2-specific connection clients to feed into the Gen2-specific feature clients
+        internal ConnectionClient(Unified.IConnectionClient unifiedConnection)
+        {
+            //TODO does this pass by value cause issues later? How does it work when current connection status gets updated? Reprovisioning in particular?
+            _mqttClient = unifiedConnection.MqttClient;
+            var unifiedConnectionContext = unifiedConnection.GetCurrentConnectionContext();
+            if (unifiedConnectionContext != null)
+            {
+                CurrentConnectionContext = new()
+                {
+                    DeviceId = unifiedConnectionContext.DeviceId,
+                    IsAzureEventGrid = unifiedConnectionContext.IsAzureEventGrid,
+                    InitialTwinPush = null,
+                    IotHubHostName = unifiedConnectionContext.IotHubHostName,
+                    IssuedClientCertificates = unifiedConnectionContext.IssuedClientCertificates,
+                };
+            }
         }
 
         /// <summary>
@@ -89,7 +101,6 @@ namespace Microsoft.Azure.Devices.Client.Connection.Gen2
         /// <param name="cancellationToken">The cancellation token.</param>
         public async Task DisconnectAsync(CancellationToken cancellationToken = default)
         {
-            _mqttClient.PublishReceivedAsync -= DelegateReceivedPublishAsync;
             await _mqttClient.DisconnectAsync(new MqttDisconnect() { Reason = MqttClientDisconnectOptionsReason.NormalDisconnection }, cancellationToken);
             CurrentConnectionContext = null;
         }
@@ -119,8 +130,6 @@ namespace Microsoft.Azure.Devices.Client.Connection.Gen2
 
             CurrentConnectionContext = connectionContext;
 
-            _mqttClient.PublishReceivedAsync += DelegateReceivedPublishAsync;
-
             return await IotHubConnection.ConnectToAzureEventGridIotHubAsync(_mqttClient, connectionContext.IotHubHostName, connectionContext.DeviceId, authentication, twinPushOptions, cancellationToken);
         }
 
@@ -132,39 +141,8 @@ namespace Microsoft.Azure.Devices.Client.Connection.Gen2
             //TODO do we care about initial twin as returned by DPS?
         }
 
-        /// <inheritdoc/>
-        [EditorBrowsable(EditorBrowsableState.Advanced)]
-        public async Task<MqttPublishAck> PublishAsync(MqttPublish mqttApplicationMessage, CancellationToken cancellationToken = default)
-        {
-            return await _mqttClient.PublishAsync(mqttApplicationMessage, cancellationToken);
-        }
-
-        /// <inheritdoc/>
-        [EditorBrowsable(EditorBrowsableState.Advanced)]
-        public async Task<MqttSubscribeAck> SubscribeAsync(MqttSubscribe subscribe, CancellationToken cancellationToken = default)
-        {
-            return await _mqttClient.SubscribeAsync(subscribe, cancellationToken);
-        }
-
-        /// <inheritdoc/>
-        [EditorBrowsable(EditorBrowsableState.Advanced)]
-        public async Task<MqttUnsubscribeAck> UnsubscribeAsync(MqttUnsubscribe unsubscribe, CancellationToken cancellationToken = default)
-        {
-            return await _mqttClient.UnsubscribeAsync(unsubscribe, cancellationToken);
-        }
-
-        internal async Task DelegateReceivedPublishAsync(MqttPublishReceivedEventArgs args)
-        {
-            if (ApplicationMessageReceivedAsync != null)
-            {
-                await ApplicationMessageReceivedAsync.Invoke(args);
-            }
-        }
-
         public void Dispose()
         {
-            _mqttClient.PublishReceivedAsync -= DelegateReceivedPublishAsync;
-
             _mqttClient.Dispose();
         }
     }

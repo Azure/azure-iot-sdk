@@ -19,7 +19,7 @@ namespace Microsoft.Azure.Devices.Client.Telemetry.Unified
         public CloudToDeviceTelemetryClient(IConnectionClient connection)
         {
             _connection = connection;
-            _connection.ApplicationMessageReceivedAsync += HandleReceivedMqttPublish;
+            _connection.MqttClient.PublishReceivedAsync += HandleReceivedMqttPublish;
         }
 
         private async Task HandleReceivedMqttPublish(MqttPublishReceivedEventArgs args)

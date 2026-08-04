@@ -19,14 +19,13 @@ namespace Microsoft.Azure.Devices.Client.Telemetry.Gen2
         public CloudToDeviceTelemetryClient(IConnectionClient connection)
         {
             _connection = connection;
-            _connection.ApplicationMessageReceivedAsync += HandleReceivedMqttPublish;
+            _connection.MqttClient.PublishReceivedAsync += HandleReceivedMqttPublish;
         }
 
         internal CloudToDeviceTelemetryClient(Connection.Unified.IConnectionClient connection)
         {
-            //TODO how will this work, exactly? Need to pass the underlying MQTT client and its current connection state. Anything else? Auth shouldn't be needed, right?
-            _connection = new Connection.Gen2.ConnectionClient(connection.);
-            _connection.ApplicationMessageReceivedAsync += HandleReceivedMqttPublish;
+            _connection = new Connection.Gen2.ConnectionClient(connection);
+            _connection.MqttClient.PublishReceivedAsync += HandleReceivedMqttPublish;
         }
 
         private async Task HandleReceivedMqttPublish(MqttPublishReceivedEventArgs args)

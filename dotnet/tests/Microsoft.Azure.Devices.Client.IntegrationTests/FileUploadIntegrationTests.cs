@@ -1,14 +1,13 @@
 ﻿using Azure.Storage.Blobs.Models;
 using Azure.Storage.Blobs.Specialized;
-using Microsoft.Azure.Devices.Client.FileUpload;
-using Microsoft.Azure.Devices.Client.FileUpload.Gen2;
+using Microsoft.Azure.Devices.Client.FileUpload.Unified;
 using Microsoft.Azure.Devices.Client.FileUpload.Models;
 using System.Text;
 using Xunit;
 
 namespace Microsoft.Azure.Devices.Client.IntegrationTests
 {
-    public class FileUploadIntegrationTests
+    public class FileUploadIntegrationTests //TODO gen2 client
     {
         [Theory(Timeout = Setup.TestTimeoutMilliseconds, Skip = "TODO Test infrastructure has issues. See CI pipeline yaml")]
         [InlineData(true, false)]

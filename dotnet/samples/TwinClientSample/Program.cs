@@ -1,8 +1,6 @@
 ﻿using Microsoft.Azure.Devices.Client;
 using Microsoft.Azure.Devices.Client.Connection.Models;
 using Microsoft.Azure.Devices.Client.Connection.Unified;
-using Microsoft.Azure.Devices.Client.Twin;
-using Microsoft.Azure.Devices.Client.Twin.Gen2;
 using Microsoft.Azure.Devices.Client.Twin.Models;
 using Microsoft.Azure.Devices.Client.Twin.Unified;
 using SetupSampleDevice;
@@ -47,14 +45,10 @@ internal class Program
 
             // Some application-level processing based on what desired properties changed
 
-            ReportedPatchRequest reportedPatch = new()
-            {
-                ReportedProperties = args.DesiredProperties, // Echo back the desired properties as the current reported properties
-                IfMatch = 1 //TODO how does this work again?
-            };
+            var reportedProperties = args.DesiredProperties; // Echo back the desired properties as the current reported properties
 
             Console.WriteLine($"Responding to desired patch by sending a reported patch");
-            ReportedPatchResponse patchResponse = await twinClient.UpdateReportedPropertiesAsync(reportedPatch);
+            ReportedPatchResponse patchResponse = await twinClient.UpdateReportedPropertiesAsync(reportedProperties);
             currentTwin.ReportedVersion = patchResponse.Version;
             if (patchResponse.Result == Result.Ok)
             {
@@ -68,16 +62,11 @@ internal class Program
         twinClient.DesiredPatchReceived += HandleDesiredPropertiesUpdateAsync;
 
         ProvisioningSettings provisioningSettings = new(idScope);
-        TwinPushOptions twinPushOptions = new()
-        {
-            ReceiveDesiredPropertyUpdates = true,
-            ReceiveReportedPropertiesUponConnect = true,
-        };
 
-        var connectionContext = await connectionClient.ProvisionAndConnectAsync(provisioningSettings, authentication, twinPushOptions, cts.Token);
+        var connectionContext = await connectionClient.ProvisionAndConnectAsync(provisioningSettings, authentication, cts.Token);
         Console.WriteLine($"Device {deviceId} is now provisioned and connected to IoT Hub. Now listening for desired property patches");
 
-        currentTwin = connectionContext.InitialTwinPush;
+        currentTwin = await twinClient.GetTwinAsync(cts.Token);
         Console.WriteLine($"The current twin is: {JsonSerializer.Serialize(currentTwin)}");
 
         try

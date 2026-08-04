@@ -1,5 +1,6 @@
 ﻿using Google.Protobuf;
 using Microsoft.Azure.Devices.Client.IotHub;
+using Microsoft.Azure.Devices.Client.IotHub.Connection.Models;
 using Microsoft.Azure.Devices.Client.Mqtt;
 using Microsoft.Azure.Devices.Client.Twin.Gen2;
 using Microsoft.Azure.Devices.Client.Twin.Models;

@@ -75,7 +75,7 @@ namespace Microsoft.Azure.Devices.Client.Twin.Unified
             _connection = connection;
             _aegHubTwinClient = new Gen2.TwinClient(connection);
             _aegHubTwinClient.DesiredPatchReceived += HandleAegDesiredPatchReceivedAsync;
-            _connection.ApplicationMessageReceivedAsync += HandleReceivedClassicHubMqttPublish;
+            _connection.MqttClient.PublishReceivedAsync += HandleReceivedClassicHubMqttPublish;
         }
 
         private void HandleAegDesiredPatchReceivedAsync(DesiredPatchReceivedEventArgs args)
@@ -125,7 +125,7 @@ namespace Microsoft.Azure.Devices.Client.Twin.Unified
                 try
                 {
                     Trace.TraceInformation("Publishing 'GetTwin' request on topic " + publish.Topic);
-                    MqttPublishAck puback = await _connection.PublishAsync(publish, cancellationToken);
+                    MqttPublishAck puback = await _connection.MqttClient.PublishAsync(publish, cancellationToken);
 
                     PublishRejectedException.ThrowIfUnsuccessfulPuback(puback, "Failed to request the twin because the MQTT broker rejected the request.");
 
@@ -184,7 +184,7 @@ namespace Microsoft.Azure.Devices.Client.Twin.Unified
                 try
                 {
                     Trace.TraceInformation("Publishing 'PatchReported' request on topic " + publish.Topic);
-                    MqttPublishAck puback = await _connection.PublishAsync(publish, cancellationToken);
+                    MqttPublishAck puback = await _connection.MqttClient.PublishAsync(publish, cancellationToken);
 
                     PublishRejectedException.ThrowIfUnsuccessfulPuback(puback, "Failed to update the reported properties because the MQTT broker rejected the request.");
 
@@ -332,7 +332,7 @@ namespace Microsoft.Azure.Devices.Client.Twin.Unified
         public void Dispose()
         {
             _aegHubTwinClient.DesiredPatchReceived -= HandleAegDesiredPatchReceivedAsync;
-            _connection.ApplicationMessageReceivedAsync -= HandleReceivedClassicHubMqttPublish;
+            _connection.MqttClient.PublishReceivedAsync -= HandleReceivedClassicHubMqttPublish;
         }
     }
 }

@@ -1,7 +1,7 @@
 ﻿using Microsoft.Azure.Devices.Client.Twin;
-using Microsoft.Azure.Devices.Client.Twin.Gen2;
 using Microsoft.Azure.Devices.Client.Twin.Models;
 using Microsoft.Azure.Devices.Client.Twin.Unified;
+using System.Text.Json.Nodes;
 using Xunit;
 
 namespace Microsoft.Azure.Devices.Client.IntegrationTests
@@ -55,14 +55,11 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
             string expectedReportedPropertyValue = Guid.NewGuid().ToString();
 
             getTwinResponse.Reported![expectedReportedPropertyKey] = expectedReportedPropertyValue;
-            ReportedPatchRequest reportedPatch = new()
-            {
-                ReportedProperties = new(),
-            };
+            var reportedProperties = new JsonObject();
 
-            reportedPatch.ReportedProperties[expectedReportedPropertyKey] = expectedReportedPropertyValue;
+            reportedProperties[expectedReportedPropertyKey] = expectedReportedPropertyValue;
 
-            var updateReportedPropertiesResponse = await twinClient.UpdateReportedPropertiesAsync(reportedPatch, cts.Token);
+            var updateReportedPropertiesResponse = await twinClient.UpdateReportedPropertiesAsync(reportedProperties, cts.Token);
             Assert.Equal(Result.Ok, updateReportedPropertiesResponse.Result);
             Assert.Equal((ulong) 2, updateReportedPropertiesResponse.Version);
 

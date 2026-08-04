@@ -1,8 +1,6 @@
-﻿using Microsoft.Azure.Devices.Client.CertificateManagement;
-using Microsoft.Azure.Devices.Client.Connection.Models;
+﻿using Microsoft.Azure.Devices.Client.Connection.Models;
 using Microsoft.Azure.Devices.Client.Connection.Unified;
 using Microsoft.Azure.Devices.Provisioning.Service;
-using System.Reflection.Metadata;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
@@ -170,6 +168,32 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
                 try
                 {
                     return await taskToRetry.Invoke();
+                }
+                catch (Exception e)
+                {
+                    if (e.Message.Contains("NotAuthorized"))
+                    {
+                        await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken);
+                    }
+                    else
+                    {
+                        throw;
+                    }
+                }
+            }
+        }
+
+
+        // This basic retry logic covers the issue where a device is created on the Hub side, but it still 
+        // rejects the connection for authorization reasons. Usually, after a few seconds, the device is ready to 
+        // authorize the newly created device.
+        public static async Task RetryAroundAuthorizationAsync(Func<Task> taskToRetry, CancellationToken cancellationToken)
+        {
+            while (true)
+            {
+                try
+                {
+                    await taskToRetry.Invoke();
                 }
                 catch (Exception e)
                 {
