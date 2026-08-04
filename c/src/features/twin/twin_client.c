@@ -388,6 +388,21 @@ static bool twin_next_frame_patch(az_iot_twin_client* t, size_t* out_len)
     return true;
 }
 
+/* True when a reported patch is already awaiting its response. The saved
+ * payload twin_next_frame_patch() re-frames from is single-slot, so only one
+ * patch may be outstanding at a time. See az_iot_twin_client_patch_reported(). */
+static bool twin_next_patch_in_flight(const az_iot_twin_client* t)
+{
+    for (int i = 0; i < AZ_IOT_TWIN_MAX_PENDING; ++i)
+    {
+        if (TI(t).pending[i].in_use && TI(t).pending[i].kind == TWIN_PENDING_PATCH)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
 /* Forward declaration: the desired state machine issues its own GET. */
 static az_iot_result twin_next_issue_get(
     az_iot_twin_client* t, const az_iot_twin_get_options* opts,
@@ -635,8 +650,15 @@ static void on_desired_patch_next(az_iot_twin_client* t, const az_iot_mqtt_messa
         }
     }
 
-    /* Anything at or behind the applied version is stale in every state. */
-    if (version <= TI(t).desired_local && !(has_payload && TI(t).resyncing)) return;
+    /* Anything at or behind the applied version is stale in every state,
+     * resyncing included. desired_local only advances through
+     * twin_resync_complete() (which ends the resync) or the non-resyncing push
+     * branch, so it stays pinned at the last applied version for the whole
+     * resync -- and twin_resync_complete() would skip such a patch on replay
+     * anyway, since the snapshot it applies is never older. Buffering one would
+     * only burn resync buffer space and a replay slot, and an overflow there
+     * costs a cancelled GET and a second round trip. */
+    if (version <= TI(t).desired_local) return;
 
     if (TI(t).resyncing)
     {
@@ -1112,15 +1134,31 @@ az_iot_result az_iot_twin_client_patch_reported(
     if (!twin) return AZ_IOT_ERR_INVALID_ARG;
     if (patch_len > 0 && patch == NULL) return AZ_IOT_ERR_INVALID_ARG;
 
+    const az_iot_protocol_profile* profile =
+        az_iot_connection_client__profile(TI(twin).conn);
+    bool is_next = profile && profile->flavor == AZ_IOT_HUB_FLAVOR_NEXT;
+
+    /* Hub-Next serializes reported patches, for two independent reasons.
+     *
+     * The retry path re-frames from a single saved payload (the caller's
+     * encode buffer), so a second concurrent patch would overwrite the first's
+     * body and a timeout on the first would re-publish the wrong one under its
+     * correlation id -- then report success for a patch the device never sent.
+     *
+     * More fundamentally, every patch carries if_match = the device's view of
+     * the authoritative reported version. Two in flight at once necessarily
+     * carry the same if_match, so the service accepts one and rejects the
+     * other with VERSION_MISMATCH. Concurrency here is not something the
+     * protocol supports and then this SDK declines; it has no meaning to begin
+     * with. Failing fast tells the application that, instead of spending a
+     * round trip to discover it. */
+    if (is_next && twin_next_patch_in_flight(twin)) return AZ_IOT_ERR_BUSY;
+
     int idx = alloc_pending(twin);
     if (idx < 0) return AZ_IOT_ERR_NOT_SUPPORTED;
 
     uint32_t rid = TI(twin).next_rid++;
     if (TI(twin).next_rid == 0) TI(twin).next_rid = 1;
-
-    const az_iot_protocol_profile* profile =
-        az_iot_connection_client__profile(TI(twin).conn);
-    bool is_next = profile && profile->flavor == AZ_IOT_HUB_FLAVOR_NEXT;
 
     char topic[AZ_IOT_TWIN_TOPIC_MAX];
     int n;

@@ -254,6 +254,14 @@ AZ_NODISCARD az_iot_result az_iot_twin_client_get_with_options(
     az_iot_twin_get_callback cb,
     void* user_ctx);
 
+/* Publish a reported-properties patch. `patch` is borrowed only for the
+ * duration of the call.
+ *
+ * On IoT Hub Next only one patch may be outstanding at a time; a second call
+ * before the first is acknowledged returns AZ_IOT_ERR_BUSY. The patch carries
+ * if_match = the device's view of the authoritative reported version, so two in
+ * flight would carry the same one and the service would reject whichever it saw
+ * second with VERSION_MISMATCH. Classic has no such constraint. */
 AZ_NODISCARD az_iot_result az_iot_twin_client_patch_reported(
     az_iot_twin_client* twin,
     const uint8_t* patch,

@@ -1298,6 +1298,140 @@ static void next_patch_timeout_resends_with_current_if_match(void** state)
     assert_memory_equal(retry->payload, expect, sizeof(expect));
 }
 
+/* That re-send works from a single saved payload, so a second patch accepted
+ * while the first is outstanding would overwrite the body the first would be
+ * retried with -- publishing the wrong patch under the first's correlation id
+ * and then reporting success for something the device never sent.
+ *
+ * The protocol does not permit the overlap anyway: both patches would carry the
+ * same if_match, so the service would reject one with VERSION_MISMATCH. The SDK
+ * says so immediately instead of spending a round trip on it. */
+static void next_second_concurrent_reported_patch_is_rejected(void** state)
+{
+    next_fixture* nf = (next_fixture*)*state;
+    open_to_connected_next(nf, 0, 9);
+
+    patch_record first = {0}, second = {0};
+    static const uint8_t patch_a[] = "{\"a\":1}";
+    static const uint8_t patch_b[] = "{\"bbbbbbbbbb\":2}";
+
+    assert_int_equal(
+        az_iot_twin_client_patch_reported(&nf->base.twin, patch_a, sizeof(patch_a) - 1,
+                                          on_patch, &first),
+        AZ_IOT_OK);
+    const az_iot_mock_call* pub = last_call_of_kind(nf->base.mock, AZ_IOT_MOCK_CALL_PUBLISH);
+    assert_non_null(pub);
+    uint8_t corr[16];
+    memcpy(corr, pub->correlation_data, 16);
+
+    assert_int_equal(
+        az_iot_twin_client_patch_reported(&nf->base.twin, patch_b, sizeof(patch_b) - 1,
+                                          on_patch, &second),
+        AZ_IOT_ERR_BUSY);
+    assert_false(second.fired);
+
+    /* Once the exchange finishes, the next patch is accepted. */
+    const uint8_t ok_body[] = { 0x08, 0x00, 0x10, 0x0A }; /* result=OK, version=10 */
+    inject_next(nf, "reported-patch-response:1", corr, ok_body, sizeof(ok_body));
+    assert_true(first.fired);
+    assert_int_equal(first.status, AZ_IOT_OK);
+
+    assert_int_equal(
+        az_iot_twin_client_patch_reported(&nf->base.twin, patch_b, sizeof(patch_b) - 1,
+                                          on_patch, &second),
+        AZ_IOT_OK);
+}
+
+/* The concrete corruption the rejection prevents: a rejected second patch must
+ * leave the first one's saved payload untouched, so its retry re-sends what the
+ * caller actually asked for. */
+static void next_rejected_patch_does_not_clobber_the_pending_payload(void** state)
+{
+    next_fixture* nf = (next_fixture*)*state;
+    open_to_connected_next(nf, 0, 9);
+
+    patch_record first = {0}, second = {0};
+    static const uint8_t patch_a[] = "{\"a\":1}";
+    static const uint8_t patch_b[] = "{\"bbbbbbbbbb\":2}";
+
+    assert_int_equal(
+        az_iot_twin_client_patch_reported(&nf->base.twin, patch_a, sizeof(patch_a) - 1,
+                                          on_patch, &first),
+        AZ_IOT_OK);
+    assert_int_equal(
+        az_iot_twin_client_patch_reported(&nf->base.twin, patch_b, sizeof(patch_b) - 1,
+                                          on_patch, &second),
+        AZ_IOT_ERR_BUSY);
+
+    az_iot_twin_client__force_timeouts(&nf->base.twin);
+    assert_int_equal(az_iot_twin_client_do_work(&nf->base.twin), AZ_IOT_OK);
+
+    const az_iot_mock_call* retry = last_call_of_kind(nf->base.mock, AZ_IOT_MOCK_CALL_PUBLISH);
+    assert_non_null(retry);
+    assert_string_equal(retry->user_type, "reported-patch:1");
+    const uint8_t expect_a[] = { 0x08, 0x09, 0x12, 0x07, '{', '"', 'a', '"', ':', '1', '}' };
+    assert_int_equal(retry->payload_len, sizeof(expect_a));
+    assert_memory_equal(retry->payload, expect_a, sizeof(expect_a));
+}
+
+/* A desired patch at or behind the applied version is stale in every state.
+ * desired_local is pinned for the whole resync, and twin_resync_complete()
+ * would drop such a patch on replay regardless, so buffering it only burns
+ * space -- and an overflow there costs a cancelled GET and a second round trip
+ * for information the device already has. */
+static void next_stale_desired_patch_is_not_buffered_during_resync(void** state)
+{
+    next_fixture* nf = (next_fixture*)*state;
+    open_to_connected_next(nf, 0, 0);
+    /* Room for one 7-byte payload and no more. */
+    assert_int_equal(
+        az_iot_twin_client_set_resync_buffer(&nf->base.twin, nf->resync_buf, 10), AZ_IOT_OK);
+
+    desired_seq_record rec = {0};
+    assert_int_equal(
+        az_iot_twin_client_subscribe_desired(&nf->base.twin, on_desired_seq, &rec), AZ_IOT_OK);
+
+    uint8_t body[32];
+    size_t n;
+
+    /* Apply 1 and 2 in order, then open a gap at 4 to start the resync. */
+    n = make_desired_patch(body, 1, "{\"v\":1}");
+    inject_next(nf, "desired-patch:1", nf->nonce, body, n);
+    n = make_desired_patch(body, 2, "{\"v\":2}");
+    inject_next(nf, "desired-patch:1", nf->nonce, body, n);
+    assert_int_equal(rec.count, 2);
+
+    n = make_desired_patch(body, 4, "{\"v\":4}");
+    inject_next(nf, "desired-patch:1", nf->nonce, body, n);
+    const az_iot_mock_call* get_pub = last_call_of_kind(nf->base.mock, AZ_IOT_MOCK_CALL_PUBLISH);
+    assert_non_null(get_pub);
+    assert_string_equal(get_pub->user_type, "get:1");
+    uint8_t corr[16];
+    memcpy(corr, get_pub->correlation_data, 16);
+
+    /* Re-delivery of an already-applied patch. The resync buffer has no room
+     * left, so buffering it would overflow, cancel the outstanding GET and
+     * issue a fresh one. */
+    n = make_desired_patch(body, 2, "{\"v\":2}");
+    inject_next(nf, "desired-patch:1", nf->nonce, body, n);
+
+    const az_iot_mock_call* after = last_call_of_kind(nf->base.mock, AZ_IOT_MOCK_CALL_PUBLISH);
+    assert_non_null(after);
+    assert_memory_equal(after->correlation_data, corr, 16);
+    assert_int_equal(rec.count, 2);
+
+    /* The original GET still resolves the resync, and 4 replays on top of it. */
+    uint8_t resp[64];
+    n = make_get_response_desired(resp, 3, "{\"snap\":1}");
+    inject_next(nf, "get-response:1", corr, resp, n);
+
+    assert_int_equal(rec.count, 4);
+    assert_int_equal(rec.versions[2], 3);
+    assert_string_equal(rec.payloads[2], "{\"snap\":1}");
+    assert_int_equal(rec.versions[3], 4);
+    assert_string_equal(rec.payloads[3], "{\"v\":4}");
+}
+
 /* A twin-push the service promised but never delivered means it believes the
  * device holds state the device never saw. Only a fresh connection re-runs that
  * decision, so the SDK reconnects rather than papering over it with a GET. */
@@ -1376,6 +1510,9 @@ int main(void)
         cmocka_unit_test_setup_teardown(next_desired_probe_matching_is_dropped, setup_next, teardown_next),
         cmocka_unit_test_setup_teardown(next_desired_probe_ahead_triggers_resync, setup_next, teardown_next),
         cmocka_unit_test_setup_teardown(next_resync_buffer_overflow_reissues_get, setup_next, teardown_next),
+        cmocka_unit_test_setup_teardown(next_second_concurrent_reported_patch_is_rejected, setup_next, teardown_next),
+        cmocka_unit_test_setup_teardown(next_rejected_patch_does_not_clobber_the_pending_payload, setup_next, teardown_next),
+        cmocka_unit_test_setup_teardown(next_stale_desired_patch_is_not_buffered_during_resync, setup_next, teardown_next),
         cmocka_unit_test_setup_teardown(next_get_options_encode_sections_and_filters, setup_next, teardown_next),
         cmocka_unit_test_setup_teardown(next_get_timeout_reissues_with_fresh_correlation, setup_next, teardown_next),
         cmocka_unit_test_setup_teardown(next_patch_timeout_resends_with_current_if_match, setup_next_pull, teardown_next),
