@@ -10,6 +10,7 @@
 #include <stdint.h>
 
 #include "az_iot_result.h"
+#include "az_iot_message.h"
 #include "az_iot_mqtt_iface.h"
 #include "az_iot_connection_client.h"
 
@@ -33,22 +34,13 @@ extern "C"
      * goes on the wire as "%24.ct" and a value of "application/json" as
      * "application%2Fjson". Pre-encoding here would be encoded again. On the
      * Hub-Next (MQTT v5) path they travel as User Properties and need no
-     * encoding at all. */
+     * encoding at all.
+     *
+     * The well-known keys live in az_iot_message.h and are shared with the
+     * receive side, so a property survives a round trip unchanged. */
     const char* key;
     const char* value;
   } az_iot_telemetry_property;
-
-/* Well-known system property keys. Use these as the `key` in
- * az_iot_telemetry_property to set IoT Hub system properties. They are spelled
- * in readable form; azure-sdk-for-c spells the same names pre-encoded
- * ("%24.ct"), and the bytes this SDK publishes are identical. */
-#define AZ_IOT_MSG_PROP_CONTENT_TYPE "$.ct"
-#define AZ_IOT_MSG_PROP_CONTENT_ENCODING "$.ce"
-#define AZ_IOT_MSG_PROP_MESSAGE_ID "$.mid"
-#define AZ_IOT_MSG_PROP_CORRELATION_ID "$.cid"
-#define AZ_IOT_MSG_PROP_USER_ID "$.uid"
-#define AZ_IOT_MSG_PROP_CREATION_TIME "$.ctime"
-#define AZ_IOT_MSG_PROP_COMPONENT_NAME "$.sub"
 
   typedef struct az_iot_telemetry_message
   {

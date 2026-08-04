@@ -333,6 +333,130 @@ static void url_encoding_rejects_null(void** state)
   assert_int_equal(az_iot_span_writer_end_str(&writer, NULL), AZ_IOT_ERR_INVALID_ARG);
 }
 
+/* ---- url decoding -------------------------------------------------------- */
+
+/* Decode @p in and return the writer's verdict; the text lands in @p out. */
+static az_iot_result decode_into(const char* in, char* out, size_t capacity)
+{
+  az_iot_span_writer writer;
+  az_iot_span_writer_init(&writer, az_span_create((uint8_t*)out, (int32_t)capacity));
+  az_iot_span_writer_append_url_decoded(&writer, in, strlen(in));
+  return az_iot_span_writer_end_str(&writer, NULL);
+}
+
+static void url_decoding_reverses_the_encoder(void** state)
+{
+  (void)state;
+  /* Whatever the encoder produces, the decoder has to give back -- otherwise a
+   * property does not survive a round trip through the SDK. */
+  static const char* const originals[]
+      = { "a&b=c d%e", "-_.~AZaz09", "$.ct", "application/json;charset=utf-8", "" };
+
+  for (size_t i = 0; i < sizeof(originals) / sizeof(originals[0]); ++i)
+  {
+    char encoded[128];
+    az_iot_span_writer writer;
+    az_iot_span_writer_init(&writer, AZ_SPAN_FROM_BUFFER(encoded));
+    az_iot_span_writer_append_url_encoded(&writer, originals[i]);
+    assert_int_equal(az_iot_span_writer_end_str(&writer, NULL), AZ_IOT_OK);
+
+    char decoded[128];
+    assert_int_equal(decode_into(encoded, decoded, sizeof(decoded)), AZ_IOT_OK);
+    assert_string_equal(decoded, originals[i]);
+  }
+}
+
+static void url_decoding_accepts_either_hex_case(void** state)
+{
+  (void)state;
+  char out[16];
+  assert_int_equal(decode_into("%2f%2F", out, sizeof(out)), AZ_IOT_OK);
+  assert_string_equal(out, "//");
+}
+
+static void url_decoding_rejects_a_malformed_escape(void** state)
+{
+  (void)state;
+  char out[16];
+  /* Non-hexadecimal digits, and a '%' with fewer than two bytes after it. The
+   * service never sends these, so one means the topic is not what we think it
+   * is -- inventing a byte from it would hand the caller data nobody sent. */
+  assert_int_equal(decode_into("a%zzb", out, sizeof(out)), AZ_IOT_ERR_PROTOCOL);
+  assert_int_equal(decode_into("a%2", out, sizeof(out)), AZ_IOT_ERR_PROTOCOL);
+  assert_int_equal(decode_into("a%", out, sizeof(out)), AZ_IOT_ERR_PROTOCOL);
+}
+
+static void url_decoding_writes_nothing_on_failure(void** state)
+{
+  (void)state;
+  /* Validation completes before any byte is written, so a bad escape late in
+   * the input cannot leave a half-decoded value behind. */
+  char out[16];
+  assert_int_equal(decode_into("good%zz", out, sizeof(out)), AZ_IOT_ERR_PROTOCOL);
+  assert_string_equal(out, "");
+}
+
+static void url_decoding_reports_a_destination_that_is_too_small(void** state)
+{
+  (void)state;
+  char out[3]; /* "ab" plus a terminator is exactly 3; "abc" does not fit. */
+  assert_int_equal(decode_into("%61%62%63", out, sizeof(out)), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  assert_string_equal(out, "");
+
+  assert_int_equal(decode_into("%61%62", out, sizeof(out)), AZ_IOT_OK);
+  assert_string_equal(out, "ab");
+}
+
+static void url_decoding_rejects_a_null_source(void** state)
+{
+  (void)state;
+  char out[8];
+  az_iot_span_writer writer;
+  az_iot_span_writer_init(&writer, AZ_SPAN_FROM_BUFFER(out));
+  az_iot_span_writer_append_url_decoded(&writer, NULL, 4);
+  assert_int_equal(az_iot_span_writer_end_str(&writer, NULL), AZ_IOT_ERR_INVALID_ARG);
+}
+
+static void url_decoding_rejects_a_length_past_the_writers_range(void** state)
+{
+  (void)state;
+  /* The writer measures in int32_t. A length past INT32_MAX would overflow the
+   * decoded-length counter into a negative reserve, which the writer would
+   * apply by moving its cursor backwards. The pointer is never dereferenced
+   * because the length is rejected first. */
+  char out[8];
+  az_iot_span_writer writer;
+  az_iot_span_writer_init(&writer, AZ_SPAN_FROM_BUFFER(out));
+  az_iot_span_writer_append_url_decoded(&writer, "abc", (size_t)INT32_MAX + 1);
+  assert_int_equal(az_iot_span_writer_end_str(&writer, NULL), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+}
+
+static void url_decoding_of_nothing_is_a_no_op(void** state)
+{
+  (void)state;
+  char out[8];
+  az_iot_span_writer writer;
+  az_iot_span_writer_init(&writer, AZ_SPAN_FROM_BUFFER(out));
+  az_iot_span_writer_append_url_decoded(&writer, NULL, 0);
+  az_iot_span_writer_append_str(&writer, "kept");
+  assert_int_equal(az_iot_span_writer_end_str(&writer, NULL), AZ_IOT_OK);
+  assert_string_equal(out, "kept");
+}
+
+static void length_tracks_what_has_been_written(void** state)
+{
+  (void)state;
+  char out[16];
+  az_iot_span_writer writer;
+  az_iot_span_writer_init(&writer, AZ_SPAN_FROM_BUFFER(out));
+  assert_int_equal((int)az_iot_span_writer_length(&writer), 0);
+  az_iot_span_writer_append_str(&writer, "abc");
+  assert_int_equal((int)az_iot_span_writer_length(&writer), 3);
+  az_iot_span_writer_append_u8(&writer, 0);
+  assert_int_equal((int)az_iot_span_writer_length(&writer), 4);
+  assert_int_equal((int)az_iot_span_writer_length(NULL), 0);
+}
+
 static void build_str_concatenates_parts(void** state)
 {
   (void)state;
@@ -393,6 +517,15 @@ int main(void)
     cmocka_unit_test(url_encoding_follows_rfc3986_unreserved),
     cmocka_unit_test(url_encoding_is_all_or_nothing_on_overflow),
     cmocka_unit_test(url_encoding_rejects_null),
+    cmocka_unit_test(url_decoding_reverses_the_encoder),
+    cmocka_unit_test(url_decoding_accepts_either_hex_case),
+    cmocka_unit_test(url_decoding_rejects_a_malformed_escape),
+    cmocka_unit_test(url_decoding_writes_nothing_on_failure),
+    cmocka_unit_test(url_decoding_reports_a_destination_that_is_too_small),
+    cmocka_unit_test(url_decoding_rejects_a_null_source),
+    cmocka_unit_test(url_decoding_rejects_a_length_past_the_writers_range),
+    cmocka_unit_test(url_decoding_of_nothing_is_a_no_op),
+    cmocka_unit_test(length_tracks_what_has_been_written),
     cmocka_unit_test(build_str_concatenates_parts),
     cmocka_unit_test(build_str_reports_its_failures),
   };

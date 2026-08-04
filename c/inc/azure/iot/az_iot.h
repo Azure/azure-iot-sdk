@@ -8,6 +8,7 @@
 
 #include "az_iot_result.h"
 #include "az_iot_log.h"
+#include "az_iot_message.h"
 #include "az_iot_certificate_provider.h"
 #include "az_iot_certificate_provider_pem.h"
 #include "az_iot_connection_client.h"
