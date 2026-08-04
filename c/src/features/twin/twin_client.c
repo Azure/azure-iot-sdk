@@ -541,6 +541,29 @@ static void on_patch_response_next(az_iot_twin_client* t, int idx,
     if (cb) cb(AZ_IOT_OK, &result, ctx);
 }
 
+/* Release a pending slot and report `r` to whoever is waiting on it. Used when
+ * a response correlates to the slot but cannot be decoded as the answer it was
+ * waiting for, so no result will ever arrive for it. */
+static void twin_next_fail_pending(az_iot_twin_client* t, int idx, az_iot_result r)
+{
+    uint8_t kind = TI(t).pending[idx].kind;
+    void* ctx = TI(t).pending[idx].user_ctx;
+    az_iot_twin_get_callback get_cb = TI(t).pending[idx].cb.get_cb;
+    az_iot_twin_patch_ack_callback patch_cb = TI(t).pending[idx].cb.patch_cb;
+
+    TI(t).pending[idx].in_use = false;
+    TI(t).pending[idx].kind = TWIN_PENDING_NONE;
+
+    if (kind == TWIN_PENDING_GET)
+    {
+        if (get_cb) get_cb(r, NULL, ctx);
+    }
+    else if (kind == TWIN_PENDING_PATCH)
+    {
+        if (patch_cb) patch_cb(r, NULL, ctx);
+    }
+}
+
 /* Single inbound handler for "ih/{device_id}/dev/twin". Everything the service
  * sends for twin arrives here and is dispatched on the "type" user property
  * (twin.md 2). */
@@ -565,13 +588,25 @@ static void on_twin_next(void* user_ctx, const az_iot_mqtt_message* msg)
     int idx = find_pending_by_corr(t, msg);
     if (idx < 0) return;
 
-    if (next_type_is(msg, TWIN_TYPE_GET_RESPONSE))
+    if (next_type_is(msg, TWIN_TYPE_GET_RESPONSE) && TI(t).pending[idx].kind == TWIN_PENDING_GET)
     {
-        if (TI(t).pending[idx].kind == TWIN_PENDING_GET) on_get_response_next(t, idx, msg);
+        on_get_response_next(t, idx, msg);
     }
-    else if (next_type_is(msg, TWIN_TYPE_PATCH_RESPONSE))
+    else if (next_type_is(msg, TWIN_TYPE_PATCH_RESPONSE)
+             && TI(t).pending[idx].kind == TWIN_PENDING_PATCH)
     {
-        if (TI(t).pending[idx].kind == TWIN_PENDING_PATCH) on_patch_response_next(t, idx, msg);
+        on_patch_response_next(t, idx, msg);
+    }
+    else
+    {
+        /* The correlation id is one we minted, so this message is the answer to
+         * that request -- but it is missing its "type", carries one the SDK
+         * does not know, or answers a different request kind than the slot is
+         * waiting for. The service will not send a second answer, so dropping
+         * it would strand the slot forever and, after AZ_IOT_TWIN_MAX_PENDING
+         * such messages, wedge the client with no way to recover. Release it
+         * and let the application decide whether to retry. */
+        twin_next_fail_pending(t, idx, AZ_IOT_ERR_PROTOCOL);
     }
 }
 
@@ -944,7 +979,14 @@ az_iot_result az_iot_twin_client_set_encode_buffer(
     size_t buffer_len)
 {
     if (!twin) return AZ_IOT_ERR_INVALID_ARG;
-    if (buffer && buffer_len <= AZ_IOT_TWIN_ENCODE_OVERHEAD) return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+    /* The documented contract is "largest patch plus AZ_IOT_TWIN_ENCODE_OVERHEAD",
+     * so a buffer of exactly the overhead is the valid minimum: it holds the
+     * framing for a zero-length patch. Rejecting it would make the smallest
+     * size the header describes impossible to supply. This is only an early
+     * check for an obviously-unusable buffer -- every field write is bounds
+     * checked against encode_buffer_len at publish time, which is what actually
+     * guarantees the patch fits. */
+    if (buffer && buffer_len < AZ_IOT_TWIN_ENCODE_OVERHEAD) return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
 
     TI(twin).encode_buffer = buffer;
     TI(twin).encode_buffer_len = buffer ? buffer_len : 0;
