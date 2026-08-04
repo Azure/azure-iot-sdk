@@ -746,7 +746,12 @@ static size_t presence_encode_birth(uint8_t* out, size_t cap, bool session_prese
 }
 
 /* Read a proto3 varint from buf[*pos]. Returns false on a truncated or
- * over-long (> 10 byte) encoding, which ends parsing of the message. */
+ * over-long (> 10 byte) encoding, which ends parsing of the message.
+ *
+ * 10 bytes is the widest legal uint64: nine 7-bit groups cover bits 0..62 and
+ * the tenth contributes bit 63 alone. So `shift` must still be accepted at 63
+ * and only rejected once it passes that, which is why the bound below is
+ * checked after the shift advances rather than before the byte is consumed. */
 static bool presence_read_varint(const uint8_t* buf, size_t len, size_t* pos, uint64_t* out)
 {
     uint64_t v = 0;

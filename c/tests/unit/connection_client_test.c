@@ -907,6 +907,51 @@ static void hub_next_birth_ack_skips_unknown_fields(void** state)
     assert_int_equal(reported, 300);
 }
 
+/* A twin version is a uint64, and proto3 spends 10 bytes on any value with bit
+ * 63 set — the widest legal varint. The 10th byte contributes only bit 63, so
+ * the shift bound has to admit shift == 63 and stop after it. Getting that
+ * boundary wrong would not fail loudly: the decode would abort mid-message and
+ * silently drop every field after the version, leaving the device to patch
+ * against a stale if_match. */
+static void hub_next_birth_ack_decodes_ten_byte_versions(void** state)
+{
+    fixture* fx = (fixture*)*state;
+    const uint8_t ack_body[] = {
+        /* f10 desired_version = UINT64_MAX */
+        0x50, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x01,
+        /* f11 reported_version = 2^63 */
+        0x58, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x01,
+    };
+    drive_to_connected_with_birth_ack(fx, ack_body, sizeof(ack_body));
+
+    uint64_t desired = 0, reported = 0;
+    assert_int_equal(
+        az_iot_connection_client__presence_twin_versions(fx->client, &desired, &reported),
+        AZ_IOT_OK);
+    assert_true(desired == UINT64_MAX);
+    assert_true(reported == (uint64_t)1 << 63);
+}
+
+/* Eleven bytes cannot encode a uint64, so the value is corrupt and everything
+ * after it is unparseable. Stop rather than accept a truncated interpretation. */
+static void hub_next_birth_ack_rejects_over_long_varint(void** state)
+{
+    fixture* fx = (fixture*)*state;
+    const uint8_t ack_body[] = {
+        0x50, 0x07,                                     /* f10 desired_version = 7 */
+        0x58, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,             /* f11, 11-byte varint     */
+        0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x01,
+    };
+    drive_to_connected_with_birth_ack(fx, ack_body, sizeof(ack_body));
+
+    uint64_t desired = 0, reported = 99;
+    assert_int_equal(
+        az_iot_connection_client__presence_twin_versions(fx->client, &desired, &reported),
+        AZ_IOT_OK);
+    assert_int_equal(desired, 7);
+    assert_int_equal(reported, 0);
+}
+
 /* A truncated body (varint with the continuation bit set at the end) must stop
  * the decode without reading past the buffer. */
 static void hub_next_birth_ack_truncated_payload_is_safe(void** state)
@@ -1318,6 +1363,8 @@ int main(void)
         cmocka_unit_test_setup_teardown(hub_next_birth_ack_records_twin_versions, setup_next, teardown),
         cmocka_unit_test_setup_teardown(hub_next_birth_ack_without_versions_yields_zero, setup_next, teardown),
         cmocka_unit_test_setup_teardown(hub_next_birth_ack_skips_unknown_fields, setup_next, teardown),
+        cmocka_unit_test_setup_teardown(hub_next_birth_ack_decodes_ten_byte_versions, setup_next, teardown),
+        cmocka_unit_test_setup_teardown(hub_next_birth_ack_rejects_over_long_varint, setup_next, teardown),
         cmocka_unit_test_setup_teardown(hub_next_birth_ack_truncated_payload_is_safe, setup_next, teardown),
         cmocka_unit_test_setup_teardown(hub_next_ignores_mismatched_birth_ack, setup_next, teardown),
         cmocka_unit_test_setup_teardown(hub_next_ignores_wrong_type_ack, setup_next, teardown),
