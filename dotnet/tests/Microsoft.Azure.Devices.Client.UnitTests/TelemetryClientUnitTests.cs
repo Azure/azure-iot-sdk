@@ -1,4 +1,6 @@
-﻿using Microsoft.Azure.Devices.Client.Telemetry;
+﻿using Microsoft.Azure.Devices.Client.Connection.Models;
+using Microsoft.Azure.Devices.Client.Telemetry.Models;
+using Microsoft.Azure.Devices.Client.Telemetry.Unified;
 using Moq;
 using System;
 using System.Collections.Generic;

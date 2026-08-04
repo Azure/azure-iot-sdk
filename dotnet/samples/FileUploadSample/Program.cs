@@ -1,7 +1,11 @@
 ﻿using Azure.Storage.Blobs.Models;
 using Azure.Storage.Blobs.Specialized;
 using Microsoft.Azure.Devices.Client;
+using Microsoft.Azure.Devices.Client.Connection.Models;
+using Microsoft.Azure.Devices.Client.Connection.Unified;
 using Microsoft.Azure.Devices.Client.FileUpload;
+using Microsoft.Azure.Devices.Client.FileUpload.Gen2;
+using Microsoft.Azure.Devices.Client.FileUpload.Models;
 using Microsoft.Azure.Devices.Client.Telemetry;
 using Microsoft.Azure.Devices.Client.Twin;
 using SetupSampleDevice;

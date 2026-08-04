@@ -23,8 +23,4 @@
     <Protobuf Include="..\..\..\common\Protos\directmethods.proto" />
     <Protobuf Include="..\..\..\common\Protos\twin.proto" />
   </ItemGroup>
-
-  <ItemGroup>
-    <Folder Include="Twin\" />
-  </ItemGroup>
 </Project>

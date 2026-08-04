@@ -1,4 +1,6 @@
 ﻿using Microsoft.Azure.Devices.Client.DirectMethods;
+using Microsoft.Azure.Devices.Client.DirectMethods.Gen2;
+using Microsoft.Azure.Devices.Client.DirectMethods.Models;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Xunit;

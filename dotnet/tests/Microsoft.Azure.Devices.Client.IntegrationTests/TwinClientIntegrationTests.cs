@@ -1,6 +1,7 @@
-﻿using Microsoft.Azure.Devices.Client.Gen2.Twin;
-using Microsoft.Azure.Devices.Client.Twin;
-using Microsoft.Azure.Devices.Client.Unified.Twin;
+﻿using Microsoft.Azure.Devices.Client.Twin;
+using Microsoft.Azure.Devices.Client.Twin.Gen2;
+using Microsoft.Azure.Devices.Client.Twin.Models;
+using Microsoft.Azure.Devices.Client.Twin.Unified;
 using Xunit;
 
 namespace Microsoft.Azure.Devices.Client.IntegrationTests

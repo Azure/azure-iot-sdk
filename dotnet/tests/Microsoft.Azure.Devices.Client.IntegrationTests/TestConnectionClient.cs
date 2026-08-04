@@ -1,4 +1,5 @@
-﻿using System;
+﻿using Microsoft.Azure.Devices.Client.Connection.Unified;
+using System;
 using System.Collections.Generic;
 using System.Text;
 

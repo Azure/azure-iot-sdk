@@ -1,10 +1,13 @@
 ﻿using Microsoft.Azure.Devices.Client;
-using Microsoft.Azure.Devices.Client.Gen2.Twin;
+using Microsoft.Azure.Devices.Client.Connection.Models;
+using Microsoft.Azure.Devices.Client.Connection.Unified;
 using Microsoft.Azure.Devices.Client.Twin;
-using Microsoft.Azure.Devices.Client.Unified.Twin;
+using Microsoft.Azure.Devices.Client.Twin.Gen2;
+using Microsoft.Azure.Devices.Client.Twin.Models;
+using Microsoft.Azure.Devices.Client.Twin.Unified;
 using SetupSampleDevice;
-using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
+using TwinClient = Microsoft.Azure.Devices.Client.Twin.Unified.TwinClient;
 
 internal class Program
 {

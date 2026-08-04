@@ -1,4 +1,6 @@
 ﻿using Microsoft.Azure.Devices.Client.CertificateManagement;
+using Microsoft.Azure.Devices.Client.Connection.Models;
+using Microsoft.Azure.Devices.Client.Connection.Unified;
 using Microsoft.Azure.Devices.Provisioning.Service;
 using System.Reflection.Metadata;
 using System.Security.Cryptography;

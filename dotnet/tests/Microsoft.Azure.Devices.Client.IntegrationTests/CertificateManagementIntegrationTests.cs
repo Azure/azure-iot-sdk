@@ -1,4 +1,5 @@
 ﻿using Microsoft.Azure.Devices.Client.CertificateManagement;
+using Microsoft.Azure.Devices.Client.Connection.Unified;
 using System.Security.Cryptography.X509Certificates;
 using Xunit;
 using Xunit.Sdk;
