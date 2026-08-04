@@ -1247,7 +1247,9 @@ static void apply_deferred(az_iot_connection_client* c)
  * nothing is retained. This is the only allocation in the core state machine
  * and it is dev/test-only -- it runs solely when the mock env vars are set and
  * never on a production connect path. The non-Windows branch uses getenv and
- * does not allocate. */
+ * does not allocate.
+ *
+ * az-iot-allow: free -- releases the _dupenv_s buffer in the same function */
 static bool mock_next_configured(void)
 {
 #ifdef _WIN32

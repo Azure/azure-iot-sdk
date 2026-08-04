@@ -18,7 +18,10 @@
  * allocation-free. Constrained / no-filesystem targets should instead supply
  * their own az_iot_certificate_provider (TPM/HSM/secure element, or compiled-in
  * PEM) that performs no allocation and no file I/O -- the vtable contract is
- * identical. */
+ * identical.
+ *
+ * az-iot-allow: malloc -- reference filesystem PEM loader; files have no size cap
+ * az-iot-allow: free -- pairs with the malloc above */
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
