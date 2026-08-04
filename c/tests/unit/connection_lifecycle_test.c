@@ -277,10 +277,11 @@ static void close_from_faulted_reports_not_initialized(void** state)
  * destroy() calls every registered factory's destroy hook, and the mock's hook
  * frees the factory itself -- so a test that inspects the factory AFTER
  * destroy() would be reading freed memory. glibc happens to leave the bytes
- * looking like the values the assertions want, which is why this passed on
- * Linux; the MSVC debug CRT fills freed blocks with 0xDD and the same
- * assertion failed. The client copies the struct, so detaching the hook on a
- * local copy leaves the real factory alive and owned by the test. */
+ * looking like the values the assertions want, which is why this passes on a
+ * plain Linux build; valgrind reports an invalid read, and the MSVC debug CRT
+ * fills freed blocks with 0xDD so the assertion fails outright. The client
+ * copies the struct, so detaching the hook on a local copy leaves the real
+ * factory alive and owned by the test. */
 static void register_without_adopting(az_iot_connection_client* c, az_iot_mqtt_factory* factory)
 {
   az_iot_mqtt_factory borrowed = *factory;
