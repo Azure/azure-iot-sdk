@@ -202,6 +202,13 @@ extern "C"
 #ifndef AZ_IOT_MAX_PERSISTENT_SUBS
 #define AZ_IOT_MAX_PERSISTENT_SUBS 8
 #endif
+/* Topic subscriptions IoT Hub Classic allows a single device. This is a
+ * service limit, not a footprint knob: AZ_IOT_MAX_PERSISTENT_SUBS is
+ * deliberately larger because Hub-Next needs more slots, so exceeding this on a
+ * Classic session is diagnosed rather than refused. A full-featured Classic
+ * device uses exactly five: C2D, direct methods, twin response, twin desired
+ * and certificate renewal. */
+#define AZ_IOT_HUB_MAX_SUBSCRIPTIONS 5
 /* Feature clients that correlate a request against a session (twin GET/PATCH,
  * hub certificate renewal) register here to be told when that session ends. */
 #ifndef AZ_IOT_MAX_SESSION_HANDLERS
