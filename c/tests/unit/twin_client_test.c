@@ -560,8 +560,10 @@ static void inject_next(next_fixture* nf, const char* type,
     msg.topic = NEXT_DEV_TOPIC;
     msg.payload = body;
     msg.payload_len = body_len;
-    msg.user_properties = &type_prop;
-    msg.user_properties_count = 1;
+    /* A NULL type models a service message that arrived without the property
+     * at all, which is distinct from one carrying a type the SDK cannot use. */
+    msg.user_properties = type ? &type_prop : NULL;
+    msg.user_properties_count = type ? 1 : 0;
     msg.correlation_data = corr;
     msg.correlation_data_len = 16;
 
@@ -864,6 +866,127 @@ static void next_desired_patch_probe_not_dispatched(void** state)
     inject_next(nf, "desired-patch:1", nf->nonce, body, sizeof(body));
 
     assert_false(rec.fired);
+}
+
+/* Issue a GET and hand back the 16-byte correlation id it published under. */
+static void next_get_and_capture_corr(next_fixture* nf, get_record* rec, uint8_t corr[16])
+{
+    assert_int_equal(az_iot_twin_client_get(&nf->base.twin, on_get, rec), AZ_IOT_OK);
+    const az_iot_mock_call* pub = last_call_of_kind(nf->base.mock, AZ_IOT_MOCK_CALL_PUBLISH);
+    assert_non_null(pub);
+    memcpy(corr, pub->correlation_data, 16);
+}
+
+/* Everything the service sends for twin shares one topic and is told apart by
+ * the "type" user property. A message that correlates to a pending request but
+ * carries a type the SDK cannot act on is still, unambiguously, the answer to
+ * that request -- nothing else will arrive for it. Dropping it silently would
+ * strand the slot, so the request is failed instead. */
+static void next_response_with_unusable_type_fails_the_request(void** state)
+{
+    next_fixture* nf = (next_fixture*)*state;
+    open_to_connected_next(nf, 0, 0);
+
+    get_record rec = {0};
+    uint8_t corr[16];
+    next_get_and_capture_corr(nf, &rec, corr);
+
+    const uint8_t body[] = { 0x08, 0x07 };
+    inject_next(nf, "some-future-response:1", corr, body, sizeof(body));
+
+    assert_true(rec.fired);
+    assert_int_equal(rec.status, AZ_IOT_ERR_PROTOCOL);
+}
+
+/* Same contract when the property is absent entirely rather than unrecognised. */
+static void next_response_without_a_type_fails_the_request(void** state)
+{
+    next_fixture* nf = (next_fixture*)*state;
+    open_to_connected_next(nf, 0, 0);
+
+    get_record rec = {0};
+    uint8_t corr[16];
+    next_get_and_capture_corr(nf, &rec, corr);
+
+    const uint8_t body[] = { 0x08, 0x07 };
+    inject_next(nf, NULL, corr, body, sizeof(body));
+
+    assert_true(rec.fired);
+    assert_int_equal(rec.status, AZ_IOT_ERR_PROTOCOL);
+}
+
+/* A well-formed type that answers a different request kind than the slot is
+ * waiting for is equally unusable, and must not be decoded as if it matched. */
+static void next_response_of_the_wrong_kind_fails_the_request(void** state)
+{
+    next_fixture* nf = (next_fixture*)*state;
+    open_to_connected_next(nf, 0, 0);
+
+    patch_record rec = {0};
+    static const uint8_t patch[] = "{\"x\":1}";
+    assert_int_equal(
+        az_iot_twin_client_patch_reported(&nf->base.twin, patch, sizeof(patch) - 1, on_patch, &rec),
+        AZ_IOT_OK);
+    const az_iot_mock_call* pub = last_call_of_kind(nf->base.mock, AZ_IOT_MOCK_CALL_PUBLISH);
+    assert_non_null(pub);
+    uint8_t corr[16];
+    memcpy(corr, pub->correlation_data, 16);
+
+    /* A get-response answering a pending patch. */
+    const uint8_t body[] = { 0x08, 0x07, 0x10, 0x09 };
+    inject_next(nf, "get-response:1", corr, body, sizeof(body));
+
+    assert_true(rec.fired);
+    assert_int_equal(rec.status, AZ_IOT_ERR_PROTOCOL);
+}
+
+/* The reason the above matters: pending slots are a fixed pool with no timeout
+ * reaping them. If unusable responses leaked slots, AZ_IOT_TWIN_MAX_PENDING of
+ * them would wedge the twin client permanently, with no API to recover. This
+ * fills the pool that way and then shows it still accepts new work. */
+static void next_unusable_responses_do_not_exhaust_the_pending_pool(void** state)
+{
+    next_fixture* nf = (next_fixture*)*state;
+    open_to_connected_next(nf, 0, 0);
+
+    get_record recs[AZ_IOT_TWIN_MAX_PENDING] = {{0}};
+    uint8_t corrs[AZ_IOT_TWIN_MAX_PENDING][16];
+    for (int i = 0; i < AZ_IOT_TWIN_MAX_PENDING; ++i)
+    {
+        next_get_and_capture_corr(nf, &recs[i], corrs[i]);
+    }
+
+    /* The pool is now full. */
+    get_record overflow = {0};
+    assert_int_equal(az_iot_twin_client_get(&nf->base.twin, on_get, &overflow),
+                     AZ_IOT_ERR_NOT_SUPPORTED);
+
+    const uint8_t body[] = { 0x08, 0x07 };
+    for (int i = 0; i < AZ_IOT_TWIN_MAX_PENDING; ++i)
+    {
+        inject_next(nf, "some-future-response:1", corrs[i], body, sizeof(body));
+        assert_true(recs[i].fired);
+        assert_int_equal(recs[i].status, AZ_IOT_ERR_PROTOCOL);
+    }
+
+    get_record after = {0};
+    assert_int_equal(az_iot_twin_client_get(&nf->base.twin, on_get, &after), AZ_IOT_OK);
+}
+
+/* AZ_IOT_TWIN_ENCODE_OVERHEAD is documented as "your largest patch plus this",
+ * so a buffer of exactly the overhead is the valid minimum -- it is what a
+ * zero-length patch needs. Rejecting it would make the smallest size the header
+ * describes impossible to supply. */
+static void set_encode_buffer_accepts_exactly_the_documented_overhead(void** state)
+{
+    next_fixture* nf = (next_fixture*)*state;
+    static uint8_t buf[AZ_IOT_TWIN_ENCODE_OVERHEAD];
+
+    assert_int_equal(az_iot_twin_client_set_encode_buffer(&nf->base.twin, buf, sizeof(buf)),
+                     AZ_IOT_OK);
+    assert_int_equal(
+        az_iot_twin_client_set_encode_buffer(&nf->base.twin, buf, sizeof(buf) - 1),
+        AZ_IOT_ERR_NOT_ENOUGH_SPACE);
 }
 
 /* Without an encode buffer the SDK has nowhere to frame the patch, and says so
@@ -1240,6 +1363,11 @@ int main(void)
         cmocka_unit_test_setup_teardown(next_twin_push_from_stale_connection_ignored, setup_next, teardown_next),
         cmocka_unit_test_setup_teardown(next_desired_patch_dispatched_with_version, setup_next, teardown_next),
         cmocka_unit_test_setup_teardown(next_desired_patch_probe_not_dispatched, setup_next, teardown_next),
+        cmocka_unit_test_setup_teardown(next_response_with_unusable_type_fails_the_request, setup_next, teardown_next),
+        cmocka_unit_test_setup_teardown(next_response_without_a_type_fails_the_request, setup_next, teardown_next),
+        cmocka_unit_test_setup_teardown(next_response_of_the_wrong_kind_fails_the_request, setup_next, teardown_next),
+        cmocka_unit_test_setup_teardown(next_unusable_responses_do_not_exhaust_the_pending_pool, setup_next, teardown_next),
+        cmocka_unit_test_setup_teardown(set_encode_buffer_accepts_exactly_the_documented_overhead, setup_next, teardown_next),
         cmocka_unit_test_setup_teardown(next_patch_without_encode_buffer_reports_no_space, setup_next, teardown_next),
 
         cmocka_unit_test_setup_teardown(next_desired_patch_gap_triggers_resync_get, setup_next, teardown_next),

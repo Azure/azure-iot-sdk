@@ -24,6 +24,10 @@ bool az_iot_proto3_read_varint(
             return true;
         }
         shift += 7u;
+        /* 10 bytes is the widest legal uint64: nine 7-bit groups cover bits
+         * 0..62 and the tenth contributes bit 63 alone. So shift == 63 must
+         * still be accepted, which is why this is checked after the shift
+         * advances rather than before the byte is consumed. */
         if (shift > 63u) return false; /* > 10 bytes: malformed */
     }
     return false; /* ran off the end mid-varint */
