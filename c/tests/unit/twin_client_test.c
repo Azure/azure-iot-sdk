@@ -316,7 +316,7 @@ static void desired_message_dispatched_to_callback(void** state)
   assert_true(rec.fired);
   assert_int_equal(rec.payload_len, sizeof(body) - 1);
   assert_string_equal(rec.payload, "{\"x\":2}");
-  assert_int_equal((int)rec.version, 99);
+  assert_true(rec.version == UINT64_C(99));
 }
 
 static void unknown_rid_drops_response(void** state)

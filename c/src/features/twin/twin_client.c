@@ -293,7 +293,9 @@ static void on_twin_response(void* user_ctx, const az_iot_mqtt_message* msg)
   {
     char ver_buf[24];
     if (query_value(qmark, "$version", ver_buf, sizeof(ver_buf)))
+    {
       version = strtoull(ver_buf, NULL, 10);
+    }
   }
 
   int idx = find_pending_by_rid(t, rid);

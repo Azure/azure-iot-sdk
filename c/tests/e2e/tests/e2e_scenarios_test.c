@@ -396,12 +396,14 @@ typedef struct
 {
   int done;
   az_iot_result status;
+  uint64_t version;
 } patch_ack_ctx;
 
-static void on_patch_ack(az_iot_result status, void* user_ctx)
+static void on_patch_ack(az_iot_result status, uint64_t version, void* user_ctx)
 {
   patch_ack_ctx* p = (patch_ack_ctx*)user_ctx;
   p->status = status;
+  p->version = version;
   p->done = 1;
 }
 
@@ -489,6 +491,9 @@ static void test_twin(void** state)
   }
   assert_true(pack.done);
   assert_int_equal(pack.status, AZ_IOT_OK);
+  /* The service assigns a version to every accepted reported patch, so a
+   * successful ack against a real hub must carry a non-zero one. */
+  assert_true(pack.version > 0);
 
   /* Reported-property propagation to the REST twin store is eventually
    * consistent: even after the device's PATCH-reported is ACKed, the value can
