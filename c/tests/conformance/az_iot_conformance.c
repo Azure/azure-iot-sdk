@@ -385,6 +385,190 @@ static void server_cert_validation_rejects_untrusted(void** state)
 }
 
 /* ------------------------------------------------------------------------- */
+/* transport failure paths                                                    */
+/* ------------------------------------------------------------------------- */
+
+/* Connect to a port nothing is listening on. The adapter must surface the
+ * refusal (or at minimum never claim success) rather than hanging: a device
+ * that believes it is connected to a closed port never retries. */
+static void connect_to_a_closed_port_is_rejected(void** state)
+{
+  (void)state;
+  char cid[64];
+  unique_client_id(cid, sizeof(cid), "az-iot-conf-refused");
+  conf_recorder rec = { 0 };
+  az_iot_mqtt_client* c = make_client();
+  c->iface->set_inbound_cb(c, on_event, &rec);
+
+  az_iot_mqtt_connect_options copts = { 0 };
+  copts.host = g_host;
+  /* Port 1 (tcpmux) is reserved and effectively never bound on CI images. */
+  copts.port = 1;
+  copts.client_id = cid;
+  copts.keep_alive_seconds = 30;
+  copts.connect_timeout_ms = k_step_timeout_ms;
+
+  az_iot_result r = c->iface->connect(c, &copts);
+  if (r == AZ_IOT_OK)
+  {
+    assert_true(wait_until(c, &rec, saw_connect_failure, k_step_timeout_ms));
+  }
+  assert_false(saw_connected_ok(&rec));
+
+  (void)c->iface->disconnect(c);
+  destroy_client(c);
+}
+
+/* A name that cannot resolve must fail the same way -- promptly and visibly.
+ * .invalid is reserved by RFC 2606 precisely so it can never resolve. */
+static void connect_to_an_unresolvable_host_is_rejected(void** state)
+{
+  (void)state;
+  char cid[64];
+  unique_client_id(cid, sizeof(cid), "az-iot-conf-dns");
+  conf_recorder rec = { 0 };
+  az_iot_mqtt_client* c = make_client();
+  c->iface->set_inbound_cb(c, on_event, &rec);
+
+  az_iot_mqtt_connect_options copts = { 0 };
+  copts.host = "no-such-broker.invalid";
+  copts.port = g_port;
+  copts.client_id = cid;
+  copts.keep_alive_seconds = 30;
+  copts.connect_timeout_ms = k_step_timeout_ms;
+
+  az_iot_result r = c->iface->connect(c, &copts);
+  if (r == AZ_IOT_OK)
+  {
+    assert_true(wait_until(c, &rec, saw_connect_failure, k_step_timeout_ms));
+  }
+  assert_false(saw_connected_ok(&rec));
+
+  (void)c->iface->disconnect(c);
+  destroy_client(c);
+}
+
+/* A black-holed address (RFC 5737 TEST-NET-3, guaranteed unrouted) never
+ * answers. The decisive property is that the adapter does not report a
+ * connection it does not have; connect_timeout_ms bounds how long the caller
+ * waits. */
+static void connect_to_a_black_holed_address_never_reports_connected(void** state)
+{
+  (void)state;
+  char cid[64];
+  unique_client_id(cid, sizeof(cid), "az-iot-conf-timeout");
+  conf_recorder rec = { 0 };
+  az_iot_mqtt_client* c = make_client();
+  c->iface->set_inbound_cb(c, on_event, &rec);
+
+  az_iot_mqtt_connect_options copts = { 0 };
+  copts.host = "203.0.113.1";
+  copts.port = 8883;
+  copts.client_id = cid;
+  copts.keep_alive_seconds = 30;
+  copts.connect_timeout_ms = 2000;
+
+  az_iot_result r = c->iface->connect(c, &copts);
+  if (r == AZ_IOT_OK)
+  {
+    /* Give the adapter its own timeout plus slack, then check the invariant. */
+    (void)wait_until(c, &rec, saw_connect_failure, 4000);
+  }
+  assert_false(saw_connected_ok(&rec));
+
+  (void)c->iface->disconnect(c);
+  destroy_client(c);
+}
+
+/* ------------------------------------------------------------------------- */
+/* session longevity                                                          */
+/* ------------------------------------------------------------------------- */
+
+/* With no application traffic for longer than the keep-alive interval, the
+ * adapter must keep the session alive on its own (PINGREQ/PINGRESP). If it did
+ * not, the broker would drop the client and the round trip below would fail --
+ * which is exactly how an idle device silently stops receiving C2D messages. */
+static void idle_session_survives_the_keep_alive_interval(void** state)
+{
+  (void)state;
+  char cid[64];
+  unique_client_id(cid, sizeof(cid), "az-iot-conf-keepalive");
+  conf_recorder rec = { 0 };
+  az_iot_mqtt_client* c = make_client();
+  c->iface->set_inbound_cb(c, on_event, &rec);
+
+  char topic[128];
+  snprintf(topic, sizeof(topic), "az-iot-conf/%s/keepalive", cid);
+
+  az_iot_mqtt_connect_options copts = { 0 };
+  copts.host = g_host;
+  copts.port = g_port;
+  copts.client_id = cid;
+  copts.keep_alive_seconds = 2;
+  copts.connect_timeout_ms = k_step_timeout_ms;
+  assert_int_equal(c->iface->connect(c, &copts), AZ_IOT_OK);
+  assert_true(wait_until(c, &rec, saw_connected_ok, k_step_timeout_ms));
+
+  uint16_t sub_pid = 0;
+  assert_int_equal(c->iface->subscribe(c, topic, AZ_IOT_MQTT_QOS_1, &sub_pid), AZ_IOT_OK);
+  assert_true(wait_until(c, &rec, saw_subscribe_ack_ok, k_step_timeout_ms));
+
+  /* Idle well past keep_alive_seconds while still pumping (the adapter needs
+   * process_loop() to emit its PINGREQ -- that is the contract). */
+  unsigned long idle_deadline = conf_now_ms() + 5000;
+  while (conf_now_ms() < idle_deadline)
+  {
+    c->iface->process_loop(c, 100);
+    conf_sleep_ms(50);
+  }
+  assert_false(saw_connect_failure(&rec));
+
+  /* The session must still carry traffic. */
+  rec.count = 0;
+  az_iot_mqtt_message msg = { 0 };
+  msg.topic = topic;
+  msg.payload = (const uint8_t*)"alive";
+  msg.payload_len = 5;
+  msg.qos = AZ_IOT_MQTT_QOS_1;
+  uint16_t pub_pid = 0;
+  assert_int_equal(c->iface->publish(c, &msg, &pub_pid), AZ_IOT_OK);
+  assert_true(wait_until(c, &rec, saw_message, k_step_timeout_ms));
+
+  (void)c->iface->disconnect(c);
+  destroy_client(c);
+}
+
+/* A client instance must be reusable after a clean disconnect: the SDK's own
+ * reconnect path builds a fresh adapter, but a BYO adapter that leaks state
+ * across sessions would break any caller that reuses one. */
+static void connect_after_disconnect_reuses_the_client(void** state)
+{
+  (void)state;
+  char cid[64];
+  unique_client_id(cid, sizeof(cid), "az-iot-conf-reuse");
+  conf_recorder rec = { 0 };
+  az_iot_mqtt_client* c = make_client();
+
+  connect_client(c, &rec, cid);
+  assert_int_equal(c->iface->disconnect(c), AZ_IOT_OK);
+  conf_sleep_ms(200);
+  (void)c->iface->process_loop(c, 100);
+
+  rec.count = 0;
+  az_iot_mqtt_connect_options copts = { 0 };
+  copts.host = g_host;
+  copts.port = g_port;
+  copts.client_id = cid;
+  copts.keep_alive_seconds = 30;
+  copts.connect_timeout_ms = k_step_timeout_ms;
+  assert_int_equal(c->iface->connect(c, &copts), AZ_IOT_OK);
+  assert_true(wait_until(c, &rec, saw_connected_ok, k_step_timeout_ms));
+
+  (void)c->iface->disconnect(c);
+  destroy_client(c);
+}
+
+/* ------------------------------------------------------------------------- */
 /* entry point                                                                */
 /* ------------------------------------------------------------------------- */
 
@@ -455,6 +639,11 @@ int az_iot_conformance_run(az_iot_conformance_suite suite_kind, az_iot_mqtt_fact
     cmocka_unit_test(connect_disconnect_roundtrip),
     cmocka_unit_test(publish_subscribe_roundtrip),
     cmocka_unit_test(disconnect_without_connect_is_rejected),
+    cmocka_unit_test(connect_after_disconnect_reuses_the_client),
+    cmocka_unit_test(connect_to_a_closed_port_is_rejected),
+    cmocka_unit_test(connect_to_an_unresolvable_host_is_rejected),
+    cmocka_unit_test(connect_to_a_black_holed_address_never_reports_connected),
+    cmocka_unit_test(idle_session_survives_the_keep_alive_interval),
     cmocka_unit_test(server_cert_validation_rejects_untrusted),
   };
   int failed = cmocka_run_group_tests(tests, NULL, NULL);

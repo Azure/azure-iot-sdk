@@ -64,6 +64,24 @@ extern "C"
     size_t correlation_data_len;
     char user_type[64]; /* value of the "type" User Property, "" if none */
     char username[256]; /* CONNECT username, "" if none */
+    /* CONNECT options, captured so tests can assert which endpoint/identity the
+     * core targeted. `topic` also carries the host for backwards compatibility. */
+    struct
+    {
+      char host[AZ_IOT_MOCK_TOPIC_MAX];
+      char client_id[128];
+      uint16_t port;
+      uint16_t keep_alive_seconds;
+      uint32_t connect_timeout_ms;
+      bool clean_start;
+      bool verify_server;
+      char trusted_ca_path[256];
+      char client_cert_path[256];
+      char client_key_path[256];
+      bool has_trusted_ca_pem;
+      bool has_client_cert_pem;
+      bool has_client_key_pem;
+    } connect;
   } az_iot_mock_call;
 
   typedef struct az_iot_mock_mqtt_client az_iot_mock_mqtt_client;
@@ -105,6 +123,32 @@ extern "C"
 
   /* Convenience: queue a CONNECTED event with the given status. */
   bool az_iot_mock_mqtt_client_inject_connected(az_iot_mock_mqtt_client* m, az_iot_result status);
+
+  /* Convenience: queue a DISCONNECTED event (peer- or transport-initiated). */
+  bool az_iot_mock_mqtt_client_inject_disconnected(az_iot_mock_mqtt_client* m);
+
+  /* Convenience: queue an adapter ERROR event (socket/TLS/library failure). */
+  bool az_iot_mock_mqtt_client_inject_error(az_iot_mock_mqtt_client* m, az_iot_result status);
+
+  /* Convenience: queue a PUBLISH_ACK / SUBSCRIBE_ACK for the given packet id. */
+  bool az_iot_mock_mqtt_client_inject_puback(
+      az_iot_mock_mqtt_client* m,
+      uint16_t packet_id,
+      az_iot_result status);
+  bool az_iot_mock_mqtt_client_inject_suback(
+      az_iot_mock_mqtt_client* m,
+      uint16_t packet_id,
+      az_iot_result status);
+
+  /* Number of calls of the given kind currently in the history. */
+  size_t az_iot_mock_mqtt_client_count_of(
+      const az_iot_mock_mqtt_client* m,
+      az_iot_mock_call_kind k);
+
+  /* The most recent call of the given kind, or NULL if there is none. */
+  const az_iot_mock_call* az_iot_mock_mqtt_client_last_of(
+      const az_iot_mock_mqtt_client* m,
+      az_iot_mock_call_kind k);
 
   /* Convenience: queue an inbound MESSAGE event. The mock copies topic+payload into
    * its own storage; safe to free the inputs immediately. */

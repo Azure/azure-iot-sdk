@@ -92,6 +92,18 @@ target_link_libraries(az_iot_tests_connection_client PRIVATE az_iot_test_support
 # to drive RNG seeding and time helpers deterministically.
 target_include_directories(az_iot_tests_connection_client PRIVATE
     ${CMAKE_SOURCE_DIR}/src/core)
+az_iot_add_cmocka_test(az_iot_tests_connection_lifecycle unit/connection_lifecycle_test.c)
+target_link_libraries(az_iot_tests_connection_lifecycle PRIVATE az_iot_test_support)
+target_include_directories(az_iot_tests_connection_lifecycle PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/core)
+az_iot_add_cmocka_test(az_iot_tests_connection_reconnect unit/connection_reconnect_test.c)
+target_link_libraries(az_iot_tests_connection_reconnect PRIVATE az_iot_test_support)
+target_include_directories(az_iot_tests_connection_reconnect PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/core)
+az_iot_add_cmocka_test(az_iot_tests_connection_dps unit/connection_dps_test.c)
+target_link_libraries(az_iot_tests_connection_dps PRIVATE az_iot_test_support)
+target_include_directories(az_iot_tests_connection_dps PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/core)
 az_iot_add_cmocka_test(az_iot_tests_reconnect_policy unit/reconnect_policy_test.c)
 target_include_directories(az_iot_tests_reconnect_policy PRIVATE
     ${CMAKE_SOURCE_DIR}/src/core)
