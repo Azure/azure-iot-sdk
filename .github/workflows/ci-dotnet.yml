@@ -79,7 +79,9 @@ jobs:
             -- xunit.parallelizeAssembly=true
 
       - name: Copy Test Report
-        run: cp ./**/Microsoft.Azure.Devices.Client.UnitTests/TestResults/*/coverage.cobertura.xml coverage/Microsoft.Azure.Devices.Client.UnitTests/coverage.cobertura.xml
+        shell: pwsh
+        run: |
+          Copy-Item -Path "./**/Microsoft.Azure.Devices.Client.UnitTests/TestResults/*/coverage.cobertura.xml" -Destination "coverage/Microsoft.Azure.Devices.Client.UnitTests/coverage.cobertura.xml"
 
       - name: Upload Test Report Artifact
         uses: actions/upload-artifact@v4
