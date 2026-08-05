@@ -196,6 +196,13 @@ jobs:
           path: '**/test-results.trx'
           reporter: dotnet-trx  
 
+      # Generate coverage badge
+      - name: Generate coverage badge
+        uses: tj-actions/coverage-badge-go@v2
+        with:
+          filename: coverage-badge.svg
+          coverage-file: '**/TestResults/coverage/*.lcov'
+
       - name: Annotate Test Report
         if: always()
         run: echo Test Report ${{ steps.test-reporter.outputs.url_html }} >> $GITHUB_STEP_SUMMARY
