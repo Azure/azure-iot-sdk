@@ -76,7 +76,7 @@ jobs:
           dotnet test ./dotnet/Project.slnx `
             --collect:"XPlat Code Coverage" `
             --logger:"trx;LogFileName=test-results.trx" `
-            --results-directory ./coverage
+            --results-directory ./coverage `
             -- xunit.parallelizeAssembly=true
 
       - name: Upload Test Report Artifact
