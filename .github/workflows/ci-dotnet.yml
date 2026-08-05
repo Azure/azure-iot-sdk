@@ -105,10 +105,12 @@ jobs:
   report-coverage:
     runs-on: ubuntu-latest # Irongut tool is only usable on linux, so this is a separate job from the windows and linux jobs that runs the tests
     name: Report code coverage numbers
-    matrix:
-        include:
-          - os: ubuntu-latest
-          - os: windows-latest
+    strategy:
+          fail-fast: false
+          matrix:
+            include:
+              - os: ubuntu-latest
+              - os: windows-latest
     needs: [test]
     permissions:
       contents: read
