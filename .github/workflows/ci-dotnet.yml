@@ -88,7 +88,7 @@ jobs:
         with:
           name: test-report-${{ matrix.os }}
           path: ./coverage/*
-          if-no-files-found: warn
+          if-no-files-found: error
 
       - uses: dorny/test-reporter@v3
         id: test-reporter
