@@ -78,6 +78,15 @@ jobs:
             --logger:"trx;LogFileName=test-results.trx" `
             -- xunit.parallelizeAssembly=true
 
+      - name: Copy Test Report
+        run: cp ./**/Microsoft.Azure.Devices.Client.UnitTests/TestResults/*/coverage.cobertura.xml coverage/Microsoft.Azure.Devices.Client.UnitTests/coverage.cobertura.xml
+
+      - name: Upload Test Report Artifact
+        uses: actions/upload-artifact@v2.2.4
+        with:
+          name: test-report
+          path: coverage/
+
       - uses: dorny/test-reporter@v3
         id: test-reporter
         if: always()
@@ -86,19 +95,31 @@ jobs:
           path: '**/test-results.trx'
           reporter: dotnet-trx  
 
-      - name: Code Coverage Summary Report
-        uses: irongut/CodeCoverageSummary@v1.3.0
-        with:
-          filename: ./**/Microsoft.Azure.Devices.Client.UnitTests/TestResults/*/coverage.cobertura.xml
-          format: markdown
-          hide_branch_rate: false
-          hide_complexity: false
-          indicators: true
-          output: both
-
       - name: Annotate Test Report
         if: always()
         run: echo Test Report ${{ steps.test-reporter.outputs.url_html }} >> $GITHUB_STEP_SUMMARY
+
+  report-coverage:
+    runs-on: ubuntu-latest # Irongut tool is only usable on linux, so this is a separate job from the windows and linux jobs that runs the tests
+    name: Report code coverage numbers
+    needs: [setup, test]
+    permissions:
+      contents: read
+    steps:
+    - name: Download Test Report Artifact
+      uses: actions/download-artifact@v2
+      with:
+        name: test-report
+
+    - name: Code Coverage Summary Report
+      uses: irongut/CodeCoverageSummary@v1.3.0
+      with:
+        filename: ./**/Microsoft.Azure.Devices.Client.UnitTests/TestResults/*/coverage.cobertura.xml
+        format: markdown
+        hide_branch_rate: false
+        hide_complexity: false
+        indicators: true
+        output: both
 
   teardown:
     name: teardown (delete resources)
