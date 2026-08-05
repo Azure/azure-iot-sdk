@@ -144,8 +144,27 @@ static az_iot_result mock_connect(az_iot_mqtt_client* self, const az_iot_mqtt_co
   az_iot_mock_call* c = push_call(m, AZ_IOT_MOCK_CALL_CONNECT);
   if (opts)
   {
+    /* `topic` keeps carrying the host so older assertions still work. */
     copy_str(c->topic, sizeof(c->topic), opts->host);
     copy_str(c->username, sizeof(c->username), opts->username);
+    copy_str(c->connect.host, sizeof(c->connect.host), opts->host);
+    copy_str(c->connect.client_id, sizeof(c->connect.client_id), opts->client_id);
+    c->connect.port = opts->port;
+    c->connect.keep_alive_seconds = opts->keep_alive_seconds;
+    c->connect.connect_timeout_ms = opts->connect_timeout_ms;
+    c->connect.clean_start = opts->clean_start;
+    c->connect.verify_server = opts->tls.verify_server;
+    copy_str(
+        c->connect.trusted_ca_path, sizeof(c->connect.trusted_ca_path), opts->tls.trusted_ca_path);
+    copy_str(
+        c->connect.client_cert_path,
+        sizeof(c->connect.client_cert_path),
+        opts->tls.client_cert_path);
+    copy_str(
+        c->connect.client_key_path, sizeof(c->connect.client_key_path), opts->tls.client_key_path);
+    c->connect.has_trusted_ca_pem = (opts->tls.trusted_ca_pem != NULL);
+    c->connect.has_client_cert_pem = (opts->tls.client_cert_pem != NULL);
+    c->connect.has_client_key_pem = (opts->tls.client_key_pem != NULL);
   }
   return take_override(m, AZ_IOT_MOCK_CALL_CONNECT);
 }
@@ -432,6 +451,77 @@ bool az_iot_mock_mqtt_client_inject_connected(az_iot_mock_mqtt_client* m, az_iot
   evt.kind = AZ_IOT_MQTT_EVT_CONNECTED;
   evt.status = status;
   return az_iot_mock_mqtt_client_inject_event(m, &evt);
+}
+
+bool az_iot_mock_mqtt_client_inject_disconnected(az_iot_mock_mqtt_client* m)
+{
+  az_iot_mqtt_event evt;
+  memset(&evt, 0, sizeof(evt));
+  evt.kind = AZ_IOT_MQTT_EVT_DISCONNECTED;
+  evt.status = AZ_IOT_OK;
+  return az_iot_mock_mqtt_client_inject_event(m, &evt);
+}
+
+bool az_iot_mock_mqtt_client_inject_error(az_iot_mock_mqtt_client* m, az_iot_result status)
+{
+  az_iot_mqtt_event evt;
+  memset(&evt, 0, sizeof(evt));
+  evt.kind = AZ_IOT_MQTT_EVT_ERROR;
+  evt.status = status;
+  return az_iot_mock_mqtt_client_inject_event(m, &evt);
+}
+
+bool az_iot_mock_mqtt_client_inject_puback(
+    az_iot_mock_mqtt_client* m,
+    uint16_t packet_id,
+    az_iot_result status)
+{
+  az_iot_mqtt_event evt;
+  memset(&evt, 0, sizeof(evt));
+  evt.kind = AZ_IOT_MQTT_EVT_PUBLISH_ACK;
+  evt.packet_id = packet_id;
+  evt.status = status;
+  return az_iot_mock_mqtt_client_inject_event(m, &evt);
+}
+
+bool az_iot_mock_mqtt_client_inject_suback(
+    az_iot_mock_mqtt_client* m,
+    uint16_t packet_id,
+    az_iot_result status)
+{
+  az_iot_mqtt_event evt;
+  memset(&evt, 0, sizeof(evt));
+  evt.kind = AZ_IOT_MQTT_EVT_SUBSCRIBE_ACK;
+  evt.packet_id = packet_id;
+  evt.status = status;
+  return az_iot_mock_mqtt_client_inject_event(m, &evt);
+}
+
+size_t az_iot_mock_mqtt_client_count_of(const az_iot_mock_mqtt_client* m, az_iot_mock_call_kind k)
+{
+  if (!m)
+    return 0;
+  size_t n = 0;
+  for (size_t i = 0; i < m->call_count; ++i)
+  {
+    if (m->calls[i].kind == k)
+      n++;
+  }
+  return n;
+}
+
+const az_iot_mock_call* az_iot_mock_mqtt_client_last_of(
+    const az_iot_mock_mqtt_client* m,
+    az_iot_mock_call_kind k)
+{
+  if (!m)
+    return NULL;
+  for (size_t i = m->call_count; i > 0; --i)
+  {
+    if (m->calls[i - 1].kind == k)
+      return &m->calls[i - 1];
+  }
+  return NULL;
 }
 
 bool az_iot_mock_mqtt_client_inject_message(
