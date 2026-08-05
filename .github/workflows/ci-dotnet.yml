@@ -113,9 +113,9 @@ jobs:
     steps:
     - name: Download Test Report Artifact
       uses: actions/download-artifact@v4
-      path: ./coverage/
       with:
         name: test-report-${{ matrix.os }}
+        path: ./coverage/
 
     - name: Code Coverage Summary Report
       uses: irongut/CodeCoverageSummary@v1.3.0
