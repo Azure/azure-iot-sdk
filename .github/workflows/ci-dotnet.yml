@@ -87,12 +87,15 @@ jobs:
           path: '**/test-results.trx'
           reporter: dotnet-trx  
 
-      # Generate coverage badge
-      - name: Generate coverage badge
-        uses: tj-actions/coverage-badge-go@v2
+      - name: Code Coverage Summary Report
+        uses: irongut/CodeCoverageSummary@v1.3.0
         with:
-          filename: coverage-badge.svg
-          coverage-file: '**/TestResults/coverage/*.lcov'
+          filename: ./**/Microsoft.Azure.Devices.Client.UnitTests/TestResults/*/coverage.cobertura.xml
+          format: markdown
+          hide_branch_rate: false
+          hide_complexity: false
+          indicators: true
+          output: both
 
       - name: Annotate Test Report
         if: always()
