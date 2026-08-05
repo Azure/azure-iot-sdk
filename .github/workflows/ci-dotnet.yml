@@ -185,6 +185,9 @@ jobs:
           dotnet test ./dotnet/Project.slnx `
             --collect:"XPlat Code Coverage" `
             --logger:"trx;LogFileName=test-results.trx" `
+            --environment IOTHUB_CONNECTION_STRING=$env:IOTHUB_CONNECTION_STRING `
+            --environment IOT_DPS_CONNECTION_STRING=$env:IOT_DPS_CONNECTION_STRING `
+            --environment IOT_DPS_ID_SCOPE=$env:IOT_DPS_ID_SCOPE `
             --results-directory ./coverage `
             -- xunit.parallelizeAssembly=true
 
