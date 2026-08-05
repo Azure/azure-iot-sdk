@@ -76,8 +76,8 @@ jobs:
           dotnet test ./dotnet/Project.slnx `
             --collect:"XPlat Code Coverage" `
             --logger:"trx;LogFileName=test-results.trx" `
-            --xunit.parallelizeAssembly=true `
-            --results-directory coverage
+            --results-directory coverage `
+            -- xunit.parallelizeAssembly=true
 
       - uses: dorny/test-reporter@v3
         id: test-reporter
