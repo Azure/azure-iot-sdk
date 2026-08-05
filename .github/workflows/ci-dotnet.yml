@@ -87,7 +87,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: test-report
-          path: coverage/
+          path: coverage/${{ matrix.os }}
           if-no-files-found: warn
 
       - uses: dorny/test-reporter@v3
@@ -105,7 +105,11 @@ jobs:
   report-coverage:
     runs-on: ubuntu-latest # Irongut tool is only usable on linux, so this is a separate job from the windows and linux jobs that runs the tests
     name: Report code coverage numbers
-    needs: [setup, test]
+    matrix:
+        include:
+          - os: ubuntu-latest
+          - os: windows-latest
+    needs: [test]
     permissions:
       contents: read
     steps:
@@ -117,7 +121,7 @@ jobs:
     - name: Code Coverage Summary Report
       uses: irongut/CodeCoverageSummary@v1.3.0
       with:
-        filename: ./**/Microsoft.Azure.Devices.Client.UnitTests/TestResults/*/coverage.cobertura.xml
+        filename: coverage/${{ matrix.os }}/**/Microsoft.Azure.Devices.Client.UnitTests/TestResults/*/coverage.cobertura.xml
         format: markdown
         hide_branch_rate: false
         hide_complexity: false
