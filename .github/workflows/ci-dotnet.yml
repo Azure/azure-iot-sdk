@@ -185,10 +185,8 @@ jobs:
           dotnet test ./dotnet/Project.slnx `
             --collect:"XPlat Code Coverage" `
             --logger:"trx;LogFileName=test-results.trx" `
-            --environment IOTHUB_CONNECTION_STRING=$env:IOTHUB_CONNECTION_STRING `
-            --environment IOT_DPS_CONNECTION_STRING=$env:IOT_DPS_CONNECTION_STRING `
-            --environment IOT_DPS_ID_SCOPE=$env:IOT_DPS_ID_SCOPE `
-            -- xunit.parallelizeAssembly=true
+            --xunit.parallelizeAssembly=true `
+            --results-directory coverage
 
       - uses: dorny/test-reporter@v3
         id: test-reporter
@@ -201,6 +199,13 @@ jobs:
       - name: Annotate Test Report
         if: always()
         run: echo Test Report ${{ steps.test-reporter.outputs.url_html }} >> $GITHUB_STEP_SUMMARY
+
+      # Upload coverage report as artifact
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: code-coverage-report
+          path: **/TestResults/coverage/*.lcov
 
   teardown:
     name: teardown (delete resources)
