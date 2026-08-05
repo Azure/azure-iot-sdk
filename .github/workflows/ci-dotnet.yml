@@ -119,7 +119,7 @@ jobs:
     - name: Code Coverage Summary Report
       uses: irongut/CodeCoverageSummary@v1.3.0
       with:
-        filename: coverage/${{ matrix.os }}/**/Microsoft.Azure.Devices.Client.UnitTests/TestResults/*/coverage.cobertura.xml
+        filename: ./coverage/**/coverage.cobertura.xml
         format: markdown
         hide_branch_rate: false
         hide_complexity: false
