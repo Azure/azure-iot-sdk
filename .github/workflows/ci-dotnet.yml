@@ -81,13 +81,13 @@ jobs:
       - name: Copy Test Report
         shell: pwsh
         run: |
-          Copy-Item -Path "./**/Microsoft.Azure.Devices.Client.UnitTests/TestResults/*/coverage.cobertura.xml" -Destination "coverage/Microsoft.Azure.Devices.Client.UnitTests/coverage.cobertura.xml"
+          Copy-Item -Path "./**/Microsoft.Azure.Devices.Client.UnitTests/TestResults/*/coverage.cobertura.xml" -Destination "./coverage/Microsoft.Azure.Devices.Client.UnitTests/coverage.cobertura.xml"
 
       - name: Upload Test Report Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: test-report
-          path: coverage/${{ matrix.os }}
+          name: test-report-${{ matrix.os }}
+          path: ./coverage/*
           if-no-files-found: warn
 
       - uses: dorny/test-reporter@v3
@@ -118,7 +118,7 @@ jobs:
     - name: Download Test Report Artifact
       uses: actions/download-artifact@v4
       with:
-        name: test-report
+        name: test-report-${{ matrix.os }}
 
     - name: Code Coverage Summary Report
       uses: irongut/CodeCoverageSummary@v1.3.0
