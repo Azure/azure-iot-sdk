@@ -93,6 +93,15 @@ jobs:
         run: |
           dotnet build ./Project.slnx
 
+      - name: Deploy faultable MQTT broker
+        uses: ./.github/actions/deploy-faultable-mqtt-broker
+
+      - name: Download shared test config
+        uses: actions/download-artifact@v4
+        with:
+          name: e2e-test-config
+          path: test_config
+
       - name: Run e2e
         shell: pwsh
         run: |
