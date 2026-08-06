@@ -259,17 +259,18 @@ extern "C"
 
     bool user_close;
 
+    /* Set when the hub refused this identity and the device provisions through
+     * DPS: the next reconnect attempt re-provisions instead of reconnecting to
+     * the rejected credential. Kept beside user_close so it lands in the
+     * padding that already precedes `deferred` rather than adding its own. */
+    bool reprovision_pending;
+
     int deferred;
     az_iot_result deferred_reason;
 
     uint32_t reconnect_attempt;
     uint64_t reconnect_due_ms;
     uint64_t rng_state;
-
-    /* Set when the hub refused this identity and the device provisions through
-     * DPS: the next reconnect attempt re-provisions instead of reconnecting to
-     * the rejected credential. */
-    bool reprovision_pending;
 
     az_iot_dispatch_table dispatch;
 
