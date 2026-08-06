@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-option csharp_namespace = "Microsoft.Azure.Devices.Client.IotHub";
+option csharp_namespace = "Microsoft.Azure.Devices.Client.IotHub.Connection.Models";
 
 // Birth: Device → Service
 // type = "birth:1"

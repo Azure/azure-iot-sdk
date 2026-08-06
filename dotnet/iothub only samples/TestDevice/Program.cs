@@ -1,13 +1,16 @@
 ﻿using Google.Protobuf;
 using Microsoft.Azure.Devices.Client;
-using Microsoft.Azure.Devices.Client.DirectMethods;
-using Microsoft.Azure.Devices.Client.Mqtt;
-using Microsoft.Azure.Devices.Client.MQTTnetAdapter;
-using Microsoft.Azure.Devices.Client.Twin;
+using Microsoft.Azure.Devices.Client.Connection.Models;
+using Microsoft.Azure.Devices.Client.Connection.Gen2;
+using Microsoft.Azure.Devices.Client.DirectMethods.Gen2;
+using Microsoft.Azure.Devices.Client.DirectMethods.Models;
+using Microsoft.Azure.Devices.Client.Twin.Gen2;
+using Microsoft.Azure.Devices.Client.Twin.Models;
 using System.Diagnostics;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.Json;
+using TwinClient = Microsoft.Azure.Devices.Client.Twin.Gen2.TwinClient;
 
 internal class Program
 {
@@ -119,18 +122,6 @@ internal class Program
         else
         {
             Console.WriteLine("Received twin push with no reported section or desired section");
-        }
-    }
-
-    private static IMqttClient CreateMqttClient()
-    {
-        if (EnableMqttLogs)
-        {
-            return new MqttNetClient(new MQTTnet.MqttClientFactory().CreateMqttClient(MqttNetTraceLogger.CreateTraceLogger()));
-        }
-        else
-        {
-            return new MqttNetClient(new MQTTnet.MqttClientFactory().CreateMqttClient());
         }
     }
 }

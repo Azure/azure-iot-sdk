@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-option csharp_namespace = "Microsoft.Azure.Devices.Client.Twin";
+option csharp_namespace = "Microsoft.Azure.Devices.Client.Twin.Models";
 
 // Backend-initiated full-state push: Service → Device
 // type = "twin-push:1"

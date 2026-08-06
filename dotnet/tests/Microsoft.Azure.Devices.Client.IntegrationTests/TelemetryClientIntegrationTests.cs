@@ -1,4 +1,6 @@
-﻿using Microsoft.Azure.Devices.Client.Telemetry;
+﻿using Microsoft.Azure.Devices.Client.Connection.Unified;
+using Microsoft.Azure.Devices.Client.Telemetry.Models;
+using Microsoft.Azure.Devices.Client.Telemetry.Unified;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Xunit;

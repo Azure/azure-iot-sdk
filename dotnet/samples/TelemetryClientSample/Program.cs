@@ -1,5 +1,8 @@
 ﻿using Microsoft.Azure.Devices.Client;
-using Microsoft.Azure.Devices.Client.Telemetry;
+using Microsoft.Azure.Devices.Client.Connection.Models;
+using Microsoft.Azure.Devices.Client.Connection.Unified;
+using Microsoft.Azure.Devices.Client.Telemetry.Models;
+using Microsoft.Azure.Devices.Client.Telemetry.Unified;
 using Microsoft.Azure.Devices.Client.Twin;
 using SetupSampleDevice;
 using System.Security.Cryptography.X509Certificates;
