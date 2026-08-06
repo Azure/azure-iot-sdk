@@ -1042,6 +1042,20 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
       }
       else
       {
+        /* An identity rejection is not a transient transport failure: the
+         * broker has refused this client id / credential, so retrying the same
+         * one cannot succeed. When the device provisions through DPS, ask DPS
+         * for a fresh assignment instead -- that is the whole reason the
+         * adapter contract maps these CONNACK codes to a distinct result. The
+         * retry is still scheduled through the reconnection policy, so backoff
+         * and max_attempts continue to bound it (a device whose enrollment has
+         * been deleted must not hammer DPS either). */
+        if (evt->status == AZ_IOT_ERR_IDENTITY_REJECTED && dps_configured(c) && !c->user_close
+            && reconnect_enabled(c))
+        {
+          AZ_IOT_LOG_WARN("connack: identity rejected; re-provisioning through DPS");
+          c->reprovision_pending = true;
+        }
         c->deferred = (reconnect_enabled(c) && !c->user_close) ? DEFER_RECONNECT : DEFER_FAULT;
         c->deferred_reason = evt->status;
       }
@@ -1565,6 +1579,7 @@ az_iot_result az_iot_connection_client_open(az_iot_connection_client* client)
   client->user_close = false;
   client->reconnect_attempt = 0;
   client->reconnect_due_ms = 0;
+  client->reprovision_pending = false;
 
   /* --- Mock-Next bypass: when AZ_IOT_HUB_NEXT_MOCK_ENDPOINT is set,
    * skip DPS and connect directly to the mock Hub-Next (MQTT v5). --- */
@@ -1719,7 +1734,22 @@ az_iot_result az_iot_connection_client_do_work(
   if (client->state == AZ_IOT_CONN_STATE_RECONNECTING && client->active_client == NULL
       && az_iot_time_mono_ms() >= client->reconnect_due_ms)
   {
-    az_iot_result cr = start_connect_attempt(client);
+    az_iot_result cr;
+    if (client->reprovision_pending)
+    {
+      /* The hub refused this identity; go back to DPS for a new assignment
+       * rather than reconnecting to the same rejected credential. Cleared
+       * before the attempt so a failure here falls back to a normal retry
+       * instead of looping through provisioning forever. */
+      client->reprovision_pending = false;
+      client->dps_phase = DPS_PHASE_NONE;
+      client->session_role = AZ_IOT_MQTT_ROLE_DPS;
+      cr = dps_start(client);
+    }
+    else
+    {
+      cr = start_connect_attempt(client);
+    }
     if (cr != AZ_IOT_OK)
     {
       schedule_reconnect(client, cr);
