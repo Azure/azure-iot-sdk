@@ -194,6 +194,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
                 try
                 {
                     await taskToRetry.Invoke();
+                    return;
                 }
                 catch (Exception e)
                 {
