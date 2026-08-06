@@ -666,6 +666,47 @@ static void hub_next_ignores_mismatched_birth_ack(void** state)
   assert_int_equal(fx->rec.states[fx->rec.count - 1], AZ_IOT_CONN_STATE_CONNECTING);
 }
 
+/* On the Hub-Next path it is the birth-ack, not the CONNACK, that completes
+ * the connection. Suppressing only the late CONNACK would therefore leave this
+ * route able to announce CONNECTED for an attempt the application has already
+ * abandoned: the broker's birth-ack was on the wire before close() reached it
+ * and lands in a later process_loop batch. */
+static void hub_next_birth_ack_after_close_is_ignored(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_mock_mqtt_client* m = NULL;
+  const az_iot_mock_call* birth = drive_to_birth_published(fx, false, &m);
+
+  /* Capture the nonce before closing: it must outlive the delivering do_work. */
+  uint8_t nonce[16];
+  memcpy(nonce, birth->correlation_data, sizeof(nonce));
+
+  /* The application gives up while the birth is still in flight. */
+  assert_int_equal(az_iot_connection_client_close(fx->client), AZ_IOT_OK);
+
+  /* A birth-ack that matches the nonce now arrives anyway. */
+  az_iot_mqtt_user_property ack_type = { "type", "birth-ack:1" };
+  az_iot_mqtt_message ack_msg;
+  memset(&ack_msg, 0, sizeof(ack_msg));
+  ack_msg.topic = "ih/ut-device/dev/presence";
+  ack_msg.correlation_data = nonce;
+  ack_msg.correlation_data_len = sizeof(nonce);
+  ack_msg.user_properties = &ack_type;
+  ack_msg.user_properties_count = 1;
+  az_iot_mqtt_event ack;
+  memset(&ack, 0, sizeof(ack));
+  ack.kind = AZ_IOT_MQTT_EVT_MESSAGE;
+  ack.message = &ack_msg;
+  assert_true(az_iot_mock_mqtt_client_inject_event(m, &ack));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  /* CONNECTED must never be announced, at any point in the sequence. */
+  for (size_t i = 0; i < fx->rec.count; ++i)
+  {
+    assert_int_not_equal(fx->rec.states[i], AZ_IOT_CONN_STATE_CONNECTED);
+  }
+}
+
 /* CONNACK with Session Present = 1 is reflected in the birth payload (proto3
  * field 1), on top of the always-present push_desired/push_reported. */
 static void hub_next_birth_reports_session_present(void** state)
@@ -1213,6 +1254,8 @@ int main(void)
         hub_next_connect_username_carries_correlation_nonce, setup_next, teardown),
     cmocka_unit_test_setup_teardown(hub_next_birth_reports_session_present, setup_next, teardown),
     cmocka_unit_test_setup_teardown(hub_next_ignores_mismatched_birth_ack, setup_next, teardown),
+    cmocka_unit_test_setup_teardown(
+        hub_next_birth_ack_after_close_is_ignored, setup_next, teardown),
     cmocka_unit_test_setup_teardown(hub_next_ignores_wrong_type_ack, setup_next, teardown),
     cmocka_unit_test_setup_teardown(hub_next_suback_failure_faults, setup_next, teardown),
     cmocka_unit_test_setup_teardown(hub_next_birth_ack_timeout_faults, setup_next, teardown),

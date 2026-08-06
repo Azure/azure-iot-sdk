@@ -1078,6 +1078,18 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
          * complete the connection; everything else routes normally. */
         if (c->presence.phase == PRESENCE_PHASE_BIRTH && presence_is_birth_ack(c, evt->message))
         {
+          /* Same reasoning as the CONNACK case above. On the Hub-Next path it
+           * is the birth-ack, not the CONNACK, that completes the connection,
+           * so suppressing only the CONNACK would leave this route able to
+           * announce CONNECTED for an attempt the application has already
+           * abandoned. A birth-ack the broker sent before close() reached it
+           * arrives in a later process_loop batch, when user_close is set and
+           * the state is DISCONNECTING. */
+          if (c->user_close || c->state == AZ_IOT_CONN_STATE_DISCONNECTING)
+          {
+            AZ_IOT_LOG_DEBUG("birth-ack ignored: close already requested");
+            break;
+          }
           c->presence.phase = PRESENCE_PHASE_DONE;
           announce_connected(c);
           break;
