@@ -587,6 +587,27 @@ static void dps_malformed_response_faults_with_a_protocol_error(void** state)
   assert_false(az_iot_test_saw_state(&fx->log, AZ_IOT_CONN_STATE_CONNECTED));
 }
 
+/* MQTT permits an empty payload, and an adapter may legally report that as a
+ * NULL pointer with zero length. An empty body cannot parse, so the diagnostic
+ * path above runs -- and it must not hand that NULL to the logger's "%.*s",
+ * which is undefined behaviour even at precision 0. The fault must still be
+ * reported normally. */
+static void dps_empty_response_body_faults_without_a_null_deref(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_mock_mqtt_client* m = dps_open_to_registering(fx);
+
+  assert_true(az_iot_mock_mqtt_client_inject_message(
+      m, DPS_RESPONSE_TOPIC_ASSIGNED, NULL, 0, AZ_IOT_MQTT_QOS_1));
+  for (int i = 0; i < 3; ++i)
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_FAULTED);
+  assert_int_equal(
+      az_iot_test_reason_for(&fx->log, AZ_IOT_CONN_STATE_FAULTED), AZ_IOT_ERR_PROTOCOL);
+  assert_false(az_iot_test_saw_state(&fx->log, AZ_IOT_CONN_STATE_CONNECTED));
+}
+
 /* A DPS identity the SDK cannot use must come back as an error, not as a hang.
  * These spans are handed to az_core, whose precondition handler in this build is
  * an infinite loop, so the check has to happen before that call: an empty or
@@ -673,6 +694,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(dps_disconnect_midflow_faults, setup, teardown),
     cmocka_unit_test_setup_teardown(
         dps_malformed_response_faults_with_a_protocol_error, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        dps_empty_response_body_faults_without_a_null_deref, setup, teardown),
     /* identity validation */
     cmocka_unit_test(dps_rejects_a_null_registration_id),
     cmocka_unit_test(dps_rejects_an_empty_registration_id),

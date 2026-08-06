@@ -498,6 +498,22 @@ static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
       if (c->dps_phase != DPS_PHASE_REGISTERING && c->dps_phase != DPS_PHASE_POLLING)
         break;
 
+      /* MQTT permits an empty payload, and an adapter may report that as a NULL
+       * pointer with zero length. az_iot_provisioning_client_parse_received_topic_and_payload
+       * requires a non-empty one -- _az_PRECONDITION_VALID_SPAN(received_payload, 1, false) --
+       * and az_core's precondition handler does not return: it spins forever
+       * ("when a precondition fails the calling thread spins forever"). Handing
+       * it an empty body would therefore wedge this thread rather than fail the
+       * attempt, so the check has to happen before the call -- the same reason
+       * the registration id is validated before open() hands it over. An empty
+       * registration response has no parseable outcome in any case. */
+      if (evt->message->payload == NULL || evt->message->payload_len == 0)
+      {
+        AZ_IOT_LOG_ERRORF("dps register: empty response body on topic %s", evt->message->topic);
+        dps_finalize(c, AZ_IOT_ERR_PROTOCOL, false);
+        return;
+      }
+
       az_span topic_span = az_span_create(
           (uint8_t*)(uintptr_t)evt->message->topic, (int32_t)strlen(evt->message->topic));
       az_span payload_span = az_span_create(
