@@ -582,6 +582,22 @@ static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
 /* Start the DPS provisioning flow. Called from _open() when DPS is configured. */
 static az_iot_result dps_start(az_iot_connection_client* c)
 {
+  /* Validate the provisioning identity before handing it to az_core. Empty
+   * spans trip an az_core precondition, and this build ships with
+   * AZ_NO_PRECONDITION_CHECKING OFF and no handler installed -- the default
+   * handler is an infinite loop, so a misconfigured device would hang inside
+   * open() instead of getting an error back. */
+  if (!c->opts.dps.id_scope || !c->opts.dps.id_scope[0])
+  {
+    AZ_IOT_LOG_ERROR("dps_start: dps.id_scope is required for DPS provisioning");
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if (!c->opts.dps.registration_id || !c->opts.dps.registration_id[0])
+  {
+    AZ_IOT_LOG_ERROR("dps_start: dps.registration_id is required for DPS provisioning");
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+
   const char* endpoint = c->opts.dps.global_endpoint;
   if (!endpoint || !endpoint[0])
     endpoint = "global.azure-devices-provisioning.net";
