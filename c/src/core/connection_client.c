@@ -582,6 +582,22 @@ static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
 /* Start the DPS provisioning flow. Called from _open() when DPS is configured. */
 static az_iot_result dps_start(az_iot_connection_client* c)
 {
+  /* Validate the provisioning identity before handing it to az_core. Empty
+   * spans trip an az_core precondition, and this build ships with
+   * AZ_NO_PRECONDITION_CHECKING OFF and no handler installed -- the default
+   * handler is an infinite loop, so a misconfigured device would hang inside
+   * open() instead of getting an error back. */
+  if (!c->opts.dps.id_scope || !c->opts.dps.id_scope[0])
+  {
+    AZ_IOT_LOG_ERROR("dps_start: dps.id_scope is required for DPS provisioning");
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if (!c->opts.dps.registration_id || !c->opts.dps.registration_id[0])
+  {
+    AZ_IOT_LOG_ERROR("dps_start: dps.registration_id is required for DPS provisioning");
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+
   const char* endpoint = c->opts.dps.global_endpoint;
   if (!endpoint || !endpoint[0])
     endpoint = "global.azure-devices-provisioning.net";
@@ -990,6 +1006,18 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
     case AZ_IOT_MQTT_EVT_CONNECTED:
       if (evt->status == AZ_IOT_OK)
       {
+        /* A CONNACK that arrives after the application asked to close belongs
+         * to an attempt it has already abandoned. Announcing CONNECTED here
+         * would report a session the caller did not ask for, and anything that
+         * publishes on CONNECTED would write into a socket that is already
+         * being torn down. The DISCONNECTED event still on its way settles the
+         * session to IDLE. */
+        if (c->user_close || c->state == AZ_IOT_CONN_STATE_DISCONNECTING)
+        {
+          AZ_IOT_LOG_DEBUG("connack ignored: close already requested");
+          break;
+        }
+
         /* Successful CONNACK: clear the burst counter. */
         c->reconnect_attempt = 0;
         c->reconnect_due_ms = 0;
@@ -1014,6 +1042,20 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
       }
       else
       {
+        /* An identity rejection is not a transient transport failure: the
+         * broker has refused this client id / credential, so retrying the same
+         * one cannot succeed. When the device provisions through DPS, ask DPS
+         * for a fresh assignment instead -- that is the whole reason the
+         * adapter contract maps these CONNACK codes to a distinct result. The
+         * retry is still scheduled through the reconnection policy, so backoff
+         * and max_attempts continue to bound it (a device whose enrollment has
+         * been deleted must not hammer DPS either). */
+        if (evt->status == AZ_IOT_ERR_IDENTITY_REJECTED && dps_configured(c) && !c->user_close
+            && reconnect_enabled(c))
+        {
+          AZ_IOT_LOG_WARN("connack: identity rejected; re-provisioning through DPS");
+          c->reprovision_pending = true;
+        }
         c->deferred = (reconnect_enabled(c) && !c->user_close) ? DEFER_RECONNECT : DEFER_FAULT;
         c->deferred_reason = evt->status;
       }
@@ -1050,6 +1092,18 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
          * complete the connection; everything else routes normally. */
         if (c->presence.phase == PRESENCE_PHASE_BIRTH && presence_is_birth_ack(c, evt->message))
         {
+          /* Same reasoning as the CONNACK case above. On the Hub-Next path it
+           * is the birth-ack, not the CONNACK, that completes the connection,
+           * so suppressing only the CONNACK would leave this route able to
+           * announce CONNECTED for an attempt the application has already
+           * abandoned. A birth-ack the broker sent before close() reached it
+           * arrives in a later process_loop batch, when user_close is set and
+           * the state is DISCONNECTING. */
+          if (c->user_close || c->state == AZ_IOT_CONN_STATE_DISCONNECTING)
+          {
+            AZ_IOT_LOG_DEBUG("birth-ack ignored: close already requested");
+            break;
+          }
           c->presence.phase = PRESENCE_PHASE_DONE;
           announce_connected(c);
           break;
@@ -1525,6 +1579,7 @@ az_iot_result az_iot_connection_client_open(az_iot_connection_client* client)
   client->user_close = false;
   client->reconnect_attempt = 0;
   client->reconnect_due_ms = 0;
+  client->reprovision_pending = false;
 
   /* --- Mock-Next bypass: when AZ_IOT_HUB_NEXT_MOCK_ENDPOINT is set,
    * skip DPS and connect directly to the mock Hub-Next (MQTT v5). --- */
@@ -1679,7 +1734,22 @@ az_iot_result az_iot_connection_client_do_work(
   if (client->state == AZ_IOT_CONN_STATE_RECONNECTING && client->active_client == NULL
       && az_iot_time_mono_ms() >= client->reconnect_due_ms)
   {
-    az_iot_result cr = start_connect_attempt(client);
+    az_iot_result cr;
+    if (client->reprovision_pending)
+    {
+      /* The hub refused this identity; go back to DPS for a new assignment
+       * rather than reconnecting to the same rejected credential. Cleared
+       * before the attempt so a failure here falls back to a normal retry
+       * instead of looping through provisioning forever. */
+      client->reprovision_pending = false;
+      client->dps_phase = DPS_PHASE_NONE;
+      client->session_role = AZ_IOT_MQTT_ROLE_DPS;
+      cr = dps_start(client);
+    }
+    else
+    {
+      cr = start_connect_attempt(client);
+    }
     if (cr != AZ_IOT_OK)
     {
       schedule_reconnect(client, cr);

@@ -6,7 +6,20 @@
 include(FetchContent)
 
 set(CMOCKA_TAG "cmocka-1.1.7" CACHE STRING "cmocka git tag")
-set(CMOCKA_REPO "https://git.cryptomilk.org/projects/cmocka.git" CACHE STRING "cmocka git repository")
+# cmocka is developed on GitLab; git.cryptomilk.org is the maintainer's older
+# host and is the less reliable of the two. On 2026-08-05 it began answering
+# clones with "info/refs not valid: could not determine hash algorithm", which
+# broke every configuration that builds the unit tests -- main included --
+# because this is the only dependency we fetch at configure time.
+#
+# Both serve the same code: the cmocka-1.1.7 tag resolves to commit
+# a01cc69ee9536f90e57c61a198f2d1944d3d4313 on either host. (On GitLab the tag
+# is annotated, so refs/tags/cmocka-1.1.7 is a tag object; peeling it with ^{}
+# gives that commit.)
+#
+# Still overridable, so a mirror or a local clone can be substituted:
+#   cmake -DCMOCKA_REPO=<url> ...
+set(CMOCKA_REPO "https://gitlab.com/cmocka/cmocka.git" CACHE STRING "cmocka git repository")
 
 # cmocka's single `cmocka` target follows BUILD_SHARED_LIBS. Force static here so
 # downstream test exes don't need a runtime DLL on Windows. Restore afterward
