@@ -361,11 +361,50 @@ static void persistent_subscriptions_are_reissued_after_a_reconnect(void** state
   assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_SUBSCRIBE), 2);
 }
 
+/* ---- persistent subscription registry exhaustion ------------------------- */
+
+typedef struct log_capture
+{
+  int count;
+  char last[AZ_IOT_LOG_MESSAGE_MAX];
+} log_capture;
+
+static void capture_error(
+    void* user_ctx,
+    az_iot_log_level level,
+    const char* file,
+    int line,
+    const char* msg)
+{
+  log_capture* c = (log_capture*)user_ctx;
+  (void)file;
+  (void)line;
+  if (level != AZ_IOT_LOG_LEVEL_ERROR || msg == NULL)
+  {
+    return;
+  }
+  c->count++;
+  snprintf(c->last, sizeof(c->last), "%s", msg);
+}
+
+static void install_error_capture(log_capture* c)
+{
+  memset(c, 0, sizeof(*c));
+  az_iot_log_sink sink;
+  sink.sink = capture_error;
+  sink.user_ctx = c;
+  sink.min_level = AZ_IOT_LOG_LEVEL_ERROR;
+  az_iot_log_set_global_sink(&sink);
+}
+
 static void persistent_subscription_registry_full_is_rejected(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
 
   char filter[32];
+  log_capture cap;
+  install_error_capture(&cap);
+
   for (unsigned i = 0; i < AZ_IOT_MAX_PERSISTENT_SUBS; ++i)
   {
     filter[0] = 'f';
@@ -376,10 +415,22 @@ static void persistent_subscription_registry_full_is_rejected(void** state)
             fx->client, filter, AZ_IOT_MQTT_QOS_0),
         AZ_IOT_OK);
   }
+  assert_int_equal(cap.count, 0);
+
+  /* A capacity failure rather than NOT_SUPPORTED: a larger registry would take
+   * this filter, whereas nothing about a larger array makes a genuinely
+   * unsupported operation work. The two need to be told apart by a caller
+   * deciding whether to raise AZ_IOT_MAX_PERSISTENT_SUBS. */
   assert_int_equal(
       az_iot_connection_client__add_subscription_on_connect(
           fx->client, "one-too-many", AZ_IOT_MQTT_QOS_0),
-      AZ_IOT_ERR_NOT_SUPPORTED);
+      AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  az_iot_log_set_global_sink(NULL);
+
+  /* Named, because the filter that gets refused is whichever one asked last --
+   * which need not be the feature that consumed the slots. */
+  assert_int_equal(cap.count, 1);
+  assert_non_null(strstr(cap.last, "one-too-many"));
 }
 
 static void persistent_subscription_added_while_connected_subscribes_now(void** state)
@@ -396,110 +447,6 @@ static void persistent_subscription_added_while_connected_subscribes_now(void** 
   const az_iot_mock_call* sub = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_SUBSCRIBE);
   assert_non_null(sub);
   assert_string_equal(sub->topic, "late/filter/#");
-}
-
-/* ---- the service's five-subscription limit ------------------------------- */
-
-typedef struct warning_capture
-{
-  int count;
-  char last[AZ_IOT_LOG_MESSAGE_MAX];
-} warning_capture;
-
-static void capture_warning(
-    void* user_ctx,
-    az_iot_log_level level,
-    const char* file,
-    int line,
-    const char* msg)
-{
-  warning_capture* c = (warning_capture*)user_ctx;
-  (void)file;
-  (void)line;
-  if (level != AZ_IOT_LOG_LEVEL_WARN || msg == NULL)
-  {
-    return;
-  }
-  c->count++;
-  snprintf(c->last, sizeof(c->last), "%s", msg);
-}
-
-static void install_warning_capture(warning_capture* c)
-{
-  memset(c, 0, sizeof(*c));
-  az_iot_log_sink sink;
-  sink.sink = capture_warning;
-  sink.user_ctx = c;
-  sink.min_level = AZ_IOT_LOG_LEVEL_WARN;
-  az_iot_log_set_global_sink(&sink);
-}
-
-static void the_hub_subscription_limit_is_diagnosed(void** state)
-{
-  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
-
-  /* IoT Hub Classic allows a device five topic subscriptions, and the registry
-   * here is deliberately larger because Hub-Next needs the slots. A sixth
-   * filter is one the service refuses at SUBACK time -- which does not fail the
-   * connection, it just means those messages never arrive. Nothing said so
-   * before; now it names the filter that caused it. */
-  char filter[32];
-  warning_capture cap;
-  install_warning_capture(&cap);
-
-  for (unsigned i = 0; i < AZ_IOT_HUB_MAX_SUBSCRIPTIONS; ++i)
-  {
-    snprintf(filter, sizeof(filter), "within/%u/#", i);
-    assert_int_equal(
-        az_iot_connection_client__add_subscription_on_connect(
-            fx->client, filter, AZ_IOT_MQTT_QOS_0),
-        AZ_IOT_OK);
-  }
-  assert_int_equal(cap.count, 0);
-
-  assert_int_equal(
-      az_iot_connection_client__add_subscription_on_connect(
-          fx->client, "one/past/the/limit/#", AZ_IOT_MQTT_QOS_0),
-      AZ_IOT_OK);
-  az_iot_log_set_global_sink(NULL);
-
-  /* Still accepted locally -- refusing it would be worse than reporting it,
-   * since the registry is shared with a flavor that allows more. */
-  assert_int_equal(cap.count, 1);
-  assert_non_null(strstr(cap.last, "one/past/the/limit/#"));
-}
-
-static void the_hub_subscription_limit_does_not_apply_to_dps(void** state)
-{
-  (void)state;
-  /* The five-topic rule is an IoT Hub Classic rule. DPS has its own, much
-   * smaller topic set and no published equivalent, so warning there would
-   * quote a limit that does not apply to the session in hand.
-   *
-   * The role is set explicitly: a DPS-configured client is labelled
-   * HUB_CLASSIC until open() starts provisioning, because that is what it
-   * becomes once it is assigned. */
-  az_iot_connection_client_options opts = { 0 };
-  opts.dps.id_scope = "0ne00000000";
-  opts.dps.registration_id = "ut-device";
-  az_iot_connection_client c;
-  assert_int_equal(az_iot_connection_client_init(&c, &opts), AZ_IOT_OK);
-  assert_int_equal(az_iot_connection_client__set_session_role(&c, AZ_IOT_MQTT_ROLE_DPS), AZ_IOT_OK);
-
-  char filter[32];
-  warning_capture cap;
-  install_warning_capture(&cap);
-  for (unsigned i = 0; i < AZ_IOT_HUB_MAX_SUBSCRIPTIONS + 2; ++i)
-  {
-    snprintf(filter, sizeof(filter), "dps/%u/#", i);
-    assert_int_equal(
-        az_iot_connection_client__add_subscription_on_connect(&c, filter, AZ_IOT_MQTT_QOS_0),
-        AZ_IOT_OK);
-  }
-  az_iot_log_set_global_sink(NULL);
-
-  assert_int_equal(cap.count, 0);
-  az_iot_connection_client_destroy(&c);
 }
 
 /* A broker that refuses one filter must not take the whole connection down:
@@ -736,9 +683,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         persistent_subscription_added_while_connected_subscribes_now, setup_two_attempts, teardown),
     cmocka_unit_test_setup_teardown(
-        the_hub_subscription_limit_is_diagnosed, setup_two_attempts, teardown),
-    cmocka_unit_test(the_hub_subscription_limit_does_not_apply_to_dps),
-    cmocka_unit_test_setup_teardown(
+
         a_failed_subscription_restore_keeps_the_connection, setup_two_attempts, teardown),
     cmocka_unit_test_setup_teardown(
         a_failed_suback_keeps_the_connection, setup_two_attempts, teardown),

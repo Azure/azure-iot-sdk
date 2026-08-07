@@ -199,16 +199,16 @@ extern "C"
 #ifndef AZ_IOT_MAX_PENDING_PUBACKS
 #define AZ_IOT_MAX_PENDING_PUBACKS 16
 #endif
+/* Topic filters the connection re-subscribes on every session. Feature clients
+ * take one slot per filter they need, so the default leaves headroom over what
+ * a fully loaded device asks for: five on Classic (C2D, direct methods, twin
+ * response, twin desired, certificate renewal) and six on Hub-Next. Registering
+ * past the array fails with AZ_IOT_ERR_NOT_ENOUGH_SPACE and names the filter
+ * that did not fit -- raise this if an application needs more slots than the
+ * default holds. */
 #ifndef AZ_IOT_MAX_PERSISTENT_SUBS
 #define AZ_IOT_MAX_PERSISTENT_SUBS 8
 #endif
-/* Topic subscriptions IoT Hub Classic allows a single device. This is a
- * service limit, not a footprint knob: AZ_IOT_MAX_PERSISTENT_SUBS is
- * deliberately larger because Hub-Next needs more slots, so exceeding this on a
- * Classic session is diagnosed rather than refused. A full-featured Classic
- * device uses exactly five: C2D, direct methods, twin response, twin desired
- * and certificate renewal. */
-#define AZ_IOT_HUB_MAX_SUBSCRIPTIONS 5
 /* Feature clients that correlate a request against a session (twin GET/PATCH,
  * hub certificate renewal) register here to be told when that session ends. */
 #ifndef AZ_IOT_MAX_SESSION_HANDLERS

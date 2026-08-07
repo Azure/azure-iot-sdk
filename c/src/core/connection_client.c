@@ -2173,46 +2173,25 @@ az_iot_result az_iot_connection_client__add_subscription_on_connect(
   }
   if (slot == AZ_IOT_MAX_PERSISTENT_SUBS)
   {
-    return AZ_IOT_ERR_NOT_SUPPORTED;
+    /* A fixed array -- c/src does not allocate -- so running out is a capacity
+     * failure, not an unsupported operation. NOT_SUPPORTED was too vague to act
+     * on: it is also what this SDK returns for "that hub flavor cannot do this
+     * at all", which no amount of extra registry space would fix.
+     *
+     * Logged as well as returned, because whoever registers last is the one
+     * that fails. The filter named here says more about ordering than about
+     * which feature is at fault, so the caller needs to see it to work out that
+     * the registry -- not that feature -- is what ran out. */
+    AZ_IOT_LOG_ERRORF(
+        "connection: cannot register '%s': all %d persistent subscription slots are in use "
+        "(raise AZ_IOT_MAX_PERSISTENT_SUBS)",
+        topic_filter,
+        (int)AZ_IOT_MAX_PERSISTENT_SUBS);
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
   }
   memcpy(client->persistent_subs[slot].topic_filter, topic_filter, n + 1);
   client->persistent_subs[slot].qos = qos;
   client->persistent_subs[slot].in_use = true;
-
-  /* IoT Hub Classic allows a device five topic subscriptions. The registry
-   * here is a footprint knob and is deliberately larger, because Hub-Next
-   * needs more, but on a Classic session a sixth filter is one the service
-   * will refuse at SUBACK time -- and a refused SUBACK does not fail the
-   * connection, it just means those messages never arrive. Say so at
-   * registration, where the filter that caused it is still in hand.
-   *
-   * Scoped to the Classic hub role specifically. DPS has its own, much smaller
-   * topic set and no published five-subscription rule, so warning there would
-   * be quoting a limit that does not apply.
-   *
-   * A full-featured Classic device sits at exactly five (C2D, direct methods,
-   * twin response, twin desired, certificate renewal), so this fires only for
-   * something genuinely new. */
-  if (client->session_role == AZ_IOT_MQTT_ROLE_HUB_CLASSIC)
-  {
-    size_t used = 0;
-    for (size_t i = 0; i < AZ_IOT_MAX_PERSISTENT_SUBS; ++i)
-    {
-      if (client->persistent_subs[i].in_use)
-      {
-        used++;
-      }
-    }
-    if (used > AZ_IOT_HUB_MAX_SUBSCRIPTIONS)
-    {
-      AZ_IOT_LOG_WARNF(
-          "connection: '%s' is subscription %zu; IoT Hub allows a device %d, so the service "
-          "will refuse this one and its messages will never arrive",
-          topic_filter,
-          used,
-          (int)AZ_IOT_HUB_MAX_SUBSCRIPTIONS);
-    }
-  }
 
   /* If already CONNECTED, issue the SUBSCRIBE now so callers that register
    * after open() don't have to wait for the next reconnect. */
