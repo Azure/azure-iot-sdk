@@ -54,13 +54,15 @@ typedef struct patch_record
 {
   bool fired;
   az_iot_result status;
+  uint64_t version;
 } patch_record;
 
-static void on_patch(az_iot_result status, void* user_ctx)
+static void on_patch(az_iot_result status, uint64_t version, void* user_ctx)
 {
   patch_record* r = (patch_record*)user_ctx;
   r->fired = true;
   r->status = status;
+  r->version = version;
 }
 
 typedef struct desired_record
@@ -244,6 +246,54 @@ static void patch_publishes_and_204_response_fires_callback(void** state)
 
   assert_true(rec.fired);
   assert_int_equal(rec.status, AZ_IOT_OK);
+  /* The service returns the new version of the reported-properties section
+   * alongside the acknowledgement. An application that tracks it can tell an
+   * applied update from a lost one. Compared at full width: a twin version is
+   * a uint64_t and narrowing it here would hide a truncation bug. */
+  assert_true(rec.version == UINT64_C(42));
+}
+
+static void a_patch_ack_without_a_version_reports_zero(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  patch_record rec = { 0 };
+  static const uint8_t patch[] = "{\"x\":1}";
+  assert_int_equal(
+      az_iot_twin_client_patch_reported(&fx->twin, patch, sizeof(patch) - 1, on_patch, &rec),
+      AZ_IOT_OK);
+
+  assert_true(az_iot_mock_mqtt_client_inject_message(
+      fx->mock, "$iothub/twin/res/204/?$rid=1", NULL, 0, AZ_IOT_MQTT_QOS_0));
+  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+
+  assert_true(rec.fired);
+  assert_int_equal(rec.status, AZ_IOT_OK);
+  assert_true(rec.version == UINT64_C(0));
+}
+
+static void a_failed_patch_reports_version_zero(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  patch_record rec = { 0 };
+  static const uint8_t patch[] = "{\"x\":1}";
+  assert_int_equal(
+      az_iot_twin_client_patch_reported(&fx->twin, patch, sizeof(patch) - 1, on_patch, &rec),
+      AZ_IOT_OK);
+
+  /* A version only means something when the update was applied. Reporting one
+   * from a rejected patch would let a caller record a version for something
+   * the service never stored. */
+  assert_true(az_iot_mock_mqtt_client_inject_message(
+      fx->mock, "$iothub/twin/res/429/?$rid=1&$version=77", NULL, 0, AZ_IOT_MQTT_QOS_0));
+  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+
+  assert_true(rec.fired);
+  assert_int_equal(rec.status, AZ_IOT_ERR_BUSY);
+  assert_true(rec.version == UINT64_C(0));
 }
 
 static void desired_message_dispatched_to_callback(void** state)
@@ -266,7 +316,7 @@ static void desired_message_dispatched_to_callback(void** state)
   assert_true(rec.fired);
   assert_int_equal(rec.payload_len, sizeof(body) - 1);
   assert_string_equal(rec.payload, "{\"x\":2}");
-  assert_int_equal((int)rec.version, 99);
+  assert_true(rec.version == UINT64_C(99));
 }
 
 static void unknown_rid_drops_response(void** state)
@@ -633,6 +683,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(get_publishes_and_response_fires_callback, setup, teardown),
     cmocka_unit_test_setup_teardown(
         patch_publishes_and_204_response_fires_callback, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_patch_ack_without_a_version_reports_zero, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_failed_patch_reports_version_zero, setup, teardown),
     cmocka_unit_test_setup_teardown(desired_message_dispatched_to_callback, setup, teardown),
     cmocka_unit_test_setup_teardown(feature_subscribers_notified_before_app, setup, teardown),
     cmocka_unit_test_setup_teardown(app_pool_full_returns_not_supported, setup, teardown),

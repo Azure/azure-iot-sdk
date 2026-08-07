@@ -249,7 +249,7 @@ static void twin_fail_pending(void* user_ctx)
     }
     else if (kind == TWIN_PENDING_PATCH && patch_cb)
     {
-      patch_cb(AZ_IOT_ERR_NOT_CONNECTED, ctx);
+      patch_cb(AZ_IOT_ERR_NOT_CONNECTED, 0, ctx);
     }
   }
 }
@@ -286,6 +286,18 @@ static void on_twin_response(void* user_ctx, const az_iot_mqtt_message* msg)
     return;
   uint32_t rid = (uint32_t)strtoul(rid_buf, NULL, 10);
 
+  /* A reported-properties acknowledgement carries the new version of that
+   * section: "$iothub/twin/res/204/?$rid=1&$version=6". An application that
+   * tracks it can tell an applied update from a lost one. */
+  uint64_t version = 0;
+  {
+    char ver_buf[24];
+    if (query_value(qmark, "$version", ver_buf, sizeof(ver_buf)))
+    {
+      version = strtoull(ver_buf, NULL, 10);
+    }
+  }
+
   int idx = find_pending_by_rid(t, rid);
   if (idx < 0)
     return; /* stale or unknown rid */
@@ -307,7 +319,12 @@ static void on_twin_response(void* user_ctx, const az_iot_mqtt_message* msg)
     TI(t).pending[idx].in_use = false;
     TI(t).pending[idx].kind = TWIN_PENDING_NONE;
     if (cb)
-      cb(r, ctx);
+    {
+      /* A version only means something when the update was applied. If the
+       * service ever attached one to a non-2xx response, reporting it would
+       * let a caller record a version for a patch that was rejected. */
+      cb(r, (r == AZ_IOT_OK) ? version : 0, ctx);
+    }
   }
   else
   {
@@ -407,7 +424,11 @@ static void on_twin_reported_response_next(void* user_ctx, const az_iot_mqtt_mes
     TI(t).pending[idx].in_use = false;
     TI(t).pending[idx].kind = TWIN_PENDING_NONE;
     if (cb)
-      cb(AZ_IOT_OK, ctx);
+    {
+      /* Hub-Next acknowledges on its own topic and does not carry a reported
+       * version yet, so there is nothing to report but the status. */
+      cb(AZ_IOT_OK, 0, ctx);
+    }
   }
   else
   {

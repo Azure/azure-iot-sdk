@@ -24,7 +24,19 @@ extern "C"
       size_t twin_payload_len,
       void* user_ctx);
 
-  typedef void (*az_iot_twin_patch_ack_callback)(az_iot_result status, void* user_ctx);
+  /**
+   * @brief Delivers the result of az_iot_twin_client_patch_reported().
+   *
+   * @param status   AZ_IOT_OK when the service accepted the patch.
+   * @param version  The new version of the reported-properties section, taken
+   *                 from the `$version` the service returns alongside the
+   *                 acknowledgement. An application that tracks this can tell a
+   *                 lost update from an applied one. 0 when the service did not
+   *                 send a version, which includes every failure.
+   * @param user_ctx Context passed to patch_reported().
+   */
+  typedef void (
+      *az_iot_twin_patch_ack_callback)(az_iot_result status, uint64_t version, void* user_ctx);
 
   typedef void (*az_iot_twin_desired_callback)(
       const uint8_t* desired_patch,

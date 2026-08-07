@@ -41,6 +41,7 @@ typedef struct
   int patch_done;
   az_iot_result get_status;
   az_iot_result patch_status;
+  uint64_t patch_version;
 } user_context;
 
 static void on_conn_state(az_iot_connection_state s, az_iot_result reason, void* user_ctx)
@@ -58,10 +59,11 @@ static void on_get(az_iot_result status, const uint8_t* body, size_t len, void* 
     printf("twin GET: %.*s\n", (int)len, (const char*)body);
 }
 
-static void on_patch(az_iot_result status, void* user_ctx)
+static void on_patch(az_iot_result status, uint64_t version, void* user_ctx)
 {
   user_context* ctx = (user_context*)user_ctx;
   ctx->patch_status = status;
+  ctx->patch_version = version;
   ctx->patch_done = 1;
 }
 
@@ -171,9 +173,10 @@ int main(void)
         user_ctx.get_done,
         az_iot_result_to_string(user_ctx.get_status));
     printf(
-        "patch_reported: done=%d status=%s\n",
+        "patch_reported: done=%d status=%s version=%llu\n",
         user_ctx.patch_done,
-        az_iot_result_to_string(user_ctx.patch_status));
+        az_iot_result_to_string(user_ctx.patch_status),
+        (unsigned long long)user_ctx.patch_version);
   }
 
   /* Close connection */
