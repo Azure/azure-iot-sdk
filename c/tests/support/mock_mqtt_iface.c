@@ -151,7 +151,7 @@ static az_iot_result mock_connect(az_iot_mqtt_client* self, const az_iot_mqtt_co
     copy_str(c->connect.client_id, sizeof(c->connect.client_id), opts->client_id);
     c->connect.port = opts->port;
     c->connect.keep_alive_seconds = opts->keep_alive_seconds;
-    c->connect.connect_timeout_ms = opts->connect_timeout_ms;
+    c->connect.connect_timeout_seconds = opts->connect_timeout_seconds;
     c->connect.clean_start = opts->clean_start;
     c->connect.verify_server = opts->tls.verify_server;
     copy_str(

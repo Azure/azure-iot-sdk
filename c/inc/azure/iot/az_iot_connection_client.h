@@ -85,9 +85,13 @@ extern "C"
      * Applies to the DPS bootstrap connect as well as the hub connect. */
     uint16_t keep_alive_seconds;
 
-    /* How long to wait for the transport to connect, in milliseconds.
-     * 0 selects AZ_IOT_DEFAULT_CONNECT_TIMEOUT_MS. */
-    uint32_t connect_timeout_ms;
+    /* How long to wait for the transport to connect, in seconds. 0 selects
+     * AZ_IOT_DEFAULT_CONNECT_TIMEOUT_SECONDS.
+     *
+     * In seconds like keep_alive_seconds above, so every timing option on this
+     * struct reads on one scale. Sub-second connect timeouts are not useful
+     * over TLS on a cellular or satellite link. */
+    uint32_t connect_timeout_seconds;
     const char* client_id; /* device id */
     az_iot_hub_protocol hub_protocol; /* direct-connect hub flavor (host set, no
                                        * DPS): Classic (v3.1.1, default) or Next
@@ -208,8 +212,8 @@ extern "C"
 #ifndef AZ_IOT_DEFAULT_KEEP_ALIVE_SECONDS
 #define AZ_IOT_DEFAULT_KEEP_ALIVE_SECONDS 30
 #endif
-#ifndef AZ_IOT_DEFAULT_CONNECT_TIMEOUT_MS
-#define AZ_IOT_DEFAULT_CONNECT_TIMEOUT_MS 30000
+#ifndef AZ_IOT_DEFAULT_CONNECT_TIMEOUT_SECONDS
+#define AZ_IOT_DEFAULT_CONNECT_TIMEOUT_SECONDS 30
 #endif
 #ifndef AZ_IOT_PERSISTENT_SUB_TOPIC_MAX
 #define AZ_IOT_PERSISTENT_SUB_TOPIC_MAX 128

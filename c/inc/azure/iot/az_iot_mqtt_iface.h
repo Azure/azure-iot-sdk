@@ -82,7 +82,7 @@ extern "C"
     const char* username; /* may be NULL */
     const char* password; /* may be NULL */
     uint16_t keep_alive_seconds;
-    uint32_t connect_timeout_ms;
+    uint32_t connect_timeout_seconds;
     az_iot_mqtt_tls_options tls;
     /* MQTTv5-only fields. */
     bool clean_start; /* v5 Clean Start flag (v3.1.1: maps to cleanSession) */

@@ -249,17 +249,17 @@ static void connect_timeout_defaults_when_unset(void** state)
   az_iot_connection_client_options opts = az_iot_test_classic_options();
   az_iot_mock_call c;
   connect_call_for(&opts, &c);
-  assert_int_equal(c.connect.connect_timeout_ms, AZ_IOT_DEFAULT_CONNECT_TIMEOUT_MS);
+  assert_int_equal(c.connect.connect_timeout_seconds, AZ_IOT_DEFAULT_CONNECT_TIMEOUT_SECONDS);
 }
 
 static void connect_timeout_is_configurable(void** state)
 {
   (void)state;
   az_iot_connection_client_options opts = az_iot_test_classic_options();
-  opts.connect_timeout_ms = 5000;
+  opts.connect_timeout_seconds = 5;
   az_iot_mock_call c;
   connect_call_for(&opts, &c);
-  assert_int_equal(c.connect.connect_timeout_ms, 5000);
+  assert_int_equal(c.connect.connect_timeout_seconds, 5);
 }
 
 /* ------------------------------------------------------------------------- */

@@ -334,7 +334,7 @@ static void dps_honors_the_configured_timings(void** state)
   (void)state;
   az_iot_connection_client_options opts = dps_options();
   opts.keep_alive_seconds = 120;
-  opts.connect_timeout_ms = 7000;
+  opts.connect_timeout_seconds = 7;
 
   az_iot_connection_client c;
   assert_int_equal(az_iot_connection_client_init(&c, &opts), AZ_IOT_OK);
@@ -346,7 +346,7 @@ static void dps_honors_the_configured_timings(void** state)
   const az_iot_mock_call* call = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_CONNECT);
   assert_non_null(call);
   assert_int_equal(call->connect.keep_alive_seconds, 120);
-  assert_int_equal(call->connect.connect_timeout_ms, 7000);
+  assert_int_equal(call->connect.connect_timeout_seconds, 7);
 
   az_iot_connection_client_destroy(&c);
 }
@@ -366,7 +366,7 @@ static void dps_defaults_the_timings_when_unset(void** state)
   const az_iot_mock_call* call = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_CONNECT);
   assert_non_null(call);
   assert_int_equal(call->connect.keep_alive_seconds, AZ_IOT_DEFAULT_KEEP_ALIVE_SECONDS);
-  assert_int_equal(call->connect.connect_timeout_ms, AZ_IOT_DEFAULT_CONNECT_TIMEOUT_MS);
+  assert_int_equal(call->connect.connect_timeout_seconds, AZ_IOT_DEFAULT_CONNECT_TIMEOUT_SECONDS);
 
   az_iot_connection_client_destroy(&c);
 }

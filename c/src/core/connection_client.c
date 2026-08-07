@@ -180,8 +180,9 @@ static void apply_timing_options(
 {
   copts->keep_alive_seconds
       = c->opts.keep_alive_seconds ? c->opts.keep_alive_seconds : AZ_IOT_DEFAULT_KEEP_ALIVE_SECONDS;
-  copts->connect_timeout_ms
-      = c->opts.connect_timeout_ms ? c->opts.connect_timeout_ms : AZ_IOT_DEFAULT_CONNECT_TIMEOUT_MS;
+  copts->connect_timeout_seconds = c->opts.connect_timeout_seconds
+      ? c->opts.connect_timeout_seconds
+      : AZ_IOT_DEFAULT_CONNECT_TIMEOUT_SECONDS;
 }
 
 static void teardown_active(az_iot_connection_client* c)

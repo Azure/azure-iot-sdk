@@ -59,6 +59,8 @@ static uint16_t g_port = 1883;
 static const char* g_tls_host = "localhost";
 static uint16_t g_tls_port = 0;
 static const unsigned k_step_timeout_ms = 5000;
+/* Same budget as k_step_timeout_ms, on the scale the connect option uses. */
+static const unsigned k_step_timeout_seconds = 5;
 
 /* ------------------------------------------------------------------------- */
 /* event recorder used by every test                                         */
@@ -207,7 +209,7 @@ static void connect_client(az_iot_mqtt_client* c, conf_recorder* rec, const char
   copts.port = g_port;
   copts.client_id = client_id;
   copts.keep_alive_seconds = 30;
-  copts.connect_timeout_ms = k_step_timeout_ms;
+  copts.connect_timeout_seconds = k_step_timeout_seconds;
   assert_int_equal(c->iface->connect(c, &copts), AZ_IOT_OK);
   assert_true(wait_until(c, rec, saw_connected_ok, k_step_timeout_ms));
 }
@@ -365,7 +367,7 @@ static void server_cert_validation_rejects_untrusted(void** state)
   copts.port = g_tls_port;
   copts.client_id = cid;
   copts.keep_alive_seconds = 30;
-  copts.connect_timeout_ms = k_step_timeout_ms;
+  copts.connect_timeout_seconds = k_step_timeout_seconds;
   copts.tls.trusted_ca_path = ca_path; /* wrong CA: cannot sign the server cert */
   copts.tls.verify_server = true; /* must validate the server certificate */
 
@@ -406,7 +408,7 @@ static void connect_to_a_closed_port_is_rejected(void** state)
   copts.port = 1;
   copts.client_id = cid;
   copts.keep_alive_seconds = 30;
-  copts.connect_timeout_ms = k_step_timeout_ms;
+  copts.connect_timeout_seconds = k_step_timeout_seconds;
 
   az_iot_result r = c->iface->connect(c, &copts);
   if (r == AZ_IOT_OK)
@@ -435,7 +437,7 @@ static void connect_to_an_unresolvable_host_is_rejected(void** state)
   copts.port = g_port;
   copts.client_id = cid;
   copts.keep_alive_seconds = 30;
-  copts.connect_timeout_ms = k_step_timeout_ms;
+  copts.connect_timeout_seconds = k_step_timeout_seconds;
 
   az_iot_result r = c->iface->connect(c, &copts);
   if (r == AZ_IOT_OK)
@@ -450,8 +452,8 @@ static void connect_to_an_unresolvable_host_is_rejected(void** state)
 
 /* A black-holed address (RFC 5737 TEST-NET-3, guaranteed unrouted) never
  * answers. The decisive property is that the adapter does not report a
- * connection it does not have; connect_timeout_ms bounds how long the caller
- * waits. */
+ * connection it does not have; connect_timeout_seconds bounds how long the
+ * caller waits. */
 static void connect_to_a_black_holed_address_never_reports_connected(void** state)
 {
   (void)state;
@@ -466,7 +468,7 @@ static void connect_to_a_black_holed_address_never_reports_connected(void** stat
   copts.port = 8883;
   copts.client_id = cid;
   copts.keep_alive_seconds = 30;
-  copts.connect_timeout_ms = 2000;
+  copts.connect_timeout_seconds = 2;
 
   az_iot_result r = c->iface->connect(c, &copts);
   if (r == AZ_IOT_OK)
@@ -505,7 +507,7 @@ static void idle_session_survives_the_keep_alive_interval(void** state)
   copts.port = g_port;
   copts.client_id = cid;
   copts.keep_alive_seconds = 2;
-  copts.connect_timeout_ms = k_step_timeout_ms;
+  copts.connect_timeout_seconds = k_step_timeout_seconds;
   assert_int_equal(c->iface->connect(c, &copts), AZ_IOT_OK);
   assert_true(wait_until(c, &rec, saw_connected_ok, k_step_timeout_ms));
 
@@ -560,7 +562,7 @@ static void connect_after_disconnect_reuses_the_client(void** state)
   copts.port = g_port;
   copts.client_id = cid;
   copts.keep_alive_seconds = 30;
-  copts.connect_timeout_ms = k_step_timeout_ms;
+  copts.connect_timeout_seconds = k_step_timeout_seconds;
   assert_int_equal(c->iface->connect(c, &copts), AZ_IOT_OK);
   assert_true(wait_until(c, &rec, saw_connected_ok, k_step_timeout_ms));
 
