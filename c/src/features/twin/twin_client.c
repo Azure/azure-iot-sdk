@@ -39,10 +39,11 @@
 #define TWIN_PENDING_GET 1
 #define TWIN_PENDING_PATCH 2
 
-/* Twin response status codes. IoT Hub reuses HTTP status semantics on the twin
- * response topic. azure-sdk-for-c spells the same values as AZ_HTTP_STATUS_CODE_*,
- * but those live in az_http.h next to the HTTP pipeline types and nothing else in
- * c/src includes an azure/core header directly. */
+/* Status codes carried on the twin response topic, per the IoT Hub twin
+ * documentation. The values happen to coincide with HTTP status codes, but the
+ * service contract does not state that they are HTTP codes, so nothing here
+ * depends on that: they are declared as twin constants rather than borrowed
+ * from an HTTP header. */
 #define TWIN_STATUS_SUCCESS_MIN 200
 #define TWIN_STATUS_SUCCESS_LIMIT 300 /* exclusive upper bound */
 #define TWIN_STATUS_BAD_REQUEST 400
