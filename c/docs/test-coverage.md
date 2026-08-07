@@ -264,52 +264,47 @@ Covers `az_iot_c2d_client`: the `devices/{device_id}/messages/devicebound/#` sub
 and the dispatch of inbound messages to the application handler. Wire format per
 [Receive cloud-to-device messages](https://learn.microsoft.com/azure/iot-hub/iot-mqtt-connect-to-iot-hub#receive-cloud-to-device-messages).
 
-**There is no `c2d_client_test.c`** — C2D is the only feature client with zero unit
-coverage. Its single test is the e2e round trip, so every argument-validation, topic-build
-and teardown path below is unexercised. All `Pending` rows land in a new file.
+C2D was the last feature client with **no unit coverage at all** — its only test was the e2e
+round trip, so every argument-validation, topic-build and teardown path was unexercised.
+`c2d_client_test.c` now covers them; what is left `Pending` is noted per row.
 
 | Group | Test | Scenario | Type | Status | Code Location |
 | --- | --- | --- | --- | --- | --- |
-| Init | Init rejects a null client | — | unit | Pending | *c2d_client_test.c (new)* |
-| | Init rejects a null connection | — | unit | Pending | *c2d_client_test.c (new)* |
-| | Init subscribes the devicebound filter | `devices/{device_id}/messages/devicebound/#`. | unit | Pending | *c2d_client_test.c (new)* |
-| | The subscription uses qos 1 | The hub grants at most QoS 1 regardless, but the request should say 1. | unit | Pending | *c2d_client_test.c (new)* |
-| | Init registers a dispatch prefix without the wildcard | The prefix stops at the trailing slash so property-bag sub-topics still route. | unit | Pending | *c2d_client_test.c (new)* |
-| | Init prefers the dps registration id | — | unit | Pending | *c2d_client_test.c (new)* |
-| | Init falls back to the client id | No DPS registration id configured. | unit | Pending | *c2d_client_test.c (new)* |
-| | Init without either id returns not initialized | — | unit | Pending | *c2d_client_test.c (new)* |
-| | Init with a device id that overflows the topic buffer returns internal | Past `AZ_IOT_C2D_TOPIC_MAX`. | unit | Pending | *c2d_client_test.c (new)* |
-| | A failed init leaves the client zeroed | — | unit | Pending | *c2d_client_test.c (new)* |
-| | A failed subscription unregisters the handler | No orphan dispatch entry survives. | unit | Pending | *c2d_client_test.c (new)* |
-| Destroy | Destroy unregisters the inbound handler | — | unit | Pending | *c2d_client_test.c (new)* |
-| | Destroy zeroes the client | — | unit | Pending | *c2d_client_test.c (new)* |
-| | Destroy tolerates null | — | unit | Pending | *c2d_client_test.c (new)* |
-| | Destroy is idempotent | — | unit | Pending | *c2d_client_test.c (new)* |
-| | A message after destroy reaches nobody | — | unit | Pending | *c2d_client_test.c (new)* |
-| Handler | Set handler rejects a null client | — | unit | Pending | *c2d_client_test.c (new)* |
-| | Set handler accepts a null callback | Clearing delivery without tearing the subscription down. | unit | Pending | *c2d_client_test.c (new)* |
-| | Set handler stores the user context | — | unit | Pending | *c2d_client_test.c (new)* |
-| | A later set handler replaces the earlier one | — | unit | Pending | *c2d_client_test.c (new)* |
-| | A message before any handler is set is dropped | — | unit | Pending | *c2d_client_test.c (new)* |
-| Delivery | Payload and length reach the handler unchanged | — | unit | Pending | *c2d_client_test.c (new)* |
-| | An empty payload is delivered | — | unit | Pending | *c2d_client_test.c (new)* |
-| | A message on the bare devicebound topic is delivered | No property bag present. | unit | Pending | *c2d_client_test.c (new)* |
-| | A message on a property bag sub-topic is delivered | Prefix match, not exact match. | unit | Pending | *c2d_client_test.c (new)* |
-| | Content type is null on classic | Pins limitation D-1. | unit | Pending | *c2d_client_test.c (new)* |
-| | A property bag pair is not surfaced | `key=value` form; pins D-1. | unit | Pending | *c2d_client_test.c (new)* |
-| | A valueless property bag key is not surfaced | `key` form (null value); pins D-1. | unit | Pending | *c2d_client_test.c (new)* |
-| | An empty-valued property bag key is not surfaced | `key=` form; pins D-1. | unit | Pending | *c2d_client_test.c (new)* |
-| | A message addressed to another device is not delivered | Different `{device_id}` in the topic. | unit | Pending | *c2d_client_test.c (new)* |
-| | Two clients on one connection both receive | — | unit | Pending | *c2d_client_test.c (new)* |
-| | Destroying one client leaves the other receiving | — | unit | Pending | *c2d_client_test.c (new)* |
-| | The subscription is reissued after a reconnect | The generic persistent-sub tests cover the mechanism; this covers the C2D filter. | unit | Pending | *c2d_client_test.c (new)* |
+| Init | Init rejects a null client | — | unit | Done | [init_rejects_a_null_client](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/c2d_client_test.c#L156) |
+| | Init rejects a null connection | — | unit | Done | [init_rejects_a_null_connection](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/c2d_client_test.c#L162) |
+| | Init subscribes the devicebound filter | `devices/{device_id}/messages/devicebound/#`. | unit | Done | [init_subscribes_the_devicebound_filter](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/c2d_client_test.c#L169) |
+| | The subscription uses qos 1 | The hub grants at most QoS 1 regardless, but the request should say 1. | unit | Done | [the_subscription_uses_qos_1](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/c2d_client_test.c#L179) |
+| | Init registers a dispatch prefix without the wildcard | The prefix stops at the trailing slash so property-bag sub-topics still route. | unit | Done | [a_message_on_a_property_bag_sub_topic_is_delivered](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/c2d_client_test.c#L398) |
+| | Init prefers the dps registration id | — | unit | Done | [init_prefers_the_dps_registration_id](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/c2d_client_test.c#L217) |
+| | Init falls back to the client id | No DPS registration id configured. | unit | Done | [init_falls_back_to_the_client_id](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/c2d_client_test.c#L189) |
+| | Init without either id returns not initialized | — | unit | Done | [init_without_any_device_id_is_rejected](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/c2d_client_test.c#L248) |
+| | Init with a device id that overflows the topic buffer returns internal | Past `AZ_IOT_C2D_TOPIC_MAX`; refused rather than truncated into another device's topic. | unit | Done | [init_with_a_device_id_that_overflows_the_topic_is_rejected](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/c2d_client_test.c#L263) |
+| | A failed init leaves the client zeroed | — | unit | Done | [a_failed_init_leaves_no_handler_registered](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/c2d_client_test.c#L284) |
+| | A failed subscription unregisters the handler | Needs a mock that refuses a SUBSCRIBE at registration time. | unit | Pending | *c2d_client_test.c* |
+| Destroy | Destroy unregisters the inbound handler | A message after `destroy()` reaches nobody. | unit | Done | [a_message_after_destroy_reaches_nobody](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/c2d_client_test.c#L526) |
+| | Destroy tolerates null | — | unit | Done | [destroy_tolerates_null](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/c2d_client_test.c#L542) |
+| | Destroy is idempotent | — | unit | Done | [destroy_is_idempotent](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/c2d_client_test.c#L548) |
+| Handler | Set handler rejects a null client | — | unit | Done | [set_handler_rejects_a_null_client](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/c2d_client_test.c#L310) |
+| | Set handler accepts a null callback | Pauses delivery without tearing the subscription down; a later handler resumes it. | unit | Done | [clearing_the_handler_stops_delivery](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/c2d_client_test.c#L341) |
+| | A later set handler replaces the earlier one | Context as well as callback. | unit | Done | [a_later_handler_replaces_the_earlier_one](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/c2d_client_test.c#L325) |
+| | A message before any handler is set is dropped | — | unit | Done | [a_message_before_any_handler_is_set_is_dropped](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/c2d_client_test.c#L316) |
+| Delivery | Payload and length reach the handler unchanged | — | unit | Done | [the_payload_reaches_the_handler_unchanged](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/c2d_client_test.c#L366) |
+| | An empty payload is delivered | A message whose whole content is in its properties. | unit | Done | [an_empty_payload_is_delivered](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/c2d_client_test.c#L381) |
+| | A message on a property bag sub-topic is delivered | Prefix match, not exact match. | unit | Done | [a_message_on_a_property_bag_sub_topic_is_delivered](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/c2d_client_test.c#L398) |
+| | Content type is null on classic | Pins limitation D-1. | unit | Done | [classic_delivers_a_null_content_type](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/c2d_client_test.c#L432) |
+| | The three property bag value forms are not surfaced | `key`, `key=`, `key=value` all reach the topic and none reaches the handler; pins D-1. | unit | Pending | *c2d_client_test.c* |
+| | A message addressed to another device is not delivered | Different `{device_id}` in the topic. | unit | Done | [a_message_addressed_to_another_device_is_not_delivered](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/c2d_client_test.c#L414) |
+| | Only one of two clients on the same prefix receives | Pins limitation D-8. | unit | Done | [only_one_of_two_clients_on_the_same_prefix_receives](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/c2d_client_test.c#L450) |
+| | Destroying one client leaves the other receiving | — | unit | Done | [destroying_one_client_leaves_the_other_receiving](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/c2d_client_test.c#L475) |
+| | The subscription is reissued after a reconnect | Losing it silently loses every message sent afterwards. | unit | Done | [the_subscription_is_reissued_after_a_reconnect](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/c2d_client_test.c#L495) |
 | End-to-end | Cloud to device message received | Service sends over AMQP; the device matches the marker. | e2e | Done | [test_c2d](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/e2e/tests/e2e_scenarios_test.c#L260) |
 | | A message queued while offline arrives after reconnect | Requires a persistent session; the Paho adapter's v3.1.1 path sets `cleansession = 1` today, so this cannot pass until that is fixed. | e2e | Pending | *e2e_scenarios_test.c* |
 | | Application properties are delivered | Blocked on D-1. | e2e | Pending | *e2e_scenarios_test.c* |
 
-**Limitation D-1:** on Classic the topic property bag is never parsed, so the handler gets
-`content_type = NULL` and no application properties at all. The `Pending` rows above pin the
-behaviour as it ships; see [Defects and limitations](#defects-and-limitations).
+**Limitations D-1 and D-8:** on Classic the topic property bag is never parsed, so the
+handler gets `content_type = NULL` and no application properties; and two C2D clients on one
+connection register the identical dispatch prefix, so only one of them receives. Both are
+pinned by the rows above; see [Defects and limitations](#defects-and-limitations).
 
 ## Direct methods
 
@@ -734,7 +729,7 @@ riskiest kind of row: it works today and nothing would notice if it stopped.
 
 | Spec requirement | SDK | Tests |
 | --- | --- | --- |
-| Subscribe `devices/{device-id}/messages/devicebound/#` | Implemented. | e2e only |
+| Subscribe `devices/{device-id}/messages/devicebound/#` | Implemented. | Done |
 | Deliver the `{property-bag}` (system + application properties) | **Not implemented** (D-1) — the bag is never parsed and the callback is not given the topic. | pending rows |
 | The three property-bag value forms (`key`, `key=`, `key=value`) | **Not implemented** (D-1). | pending rows |
 | Reject / abandon is unavailable on MQTT | Matches the API — there is no settle call to misuse. | — |
@@ -857,3 +852,4 @@ decision rather than a test.
 | D-5 | Medium | **Fixed** | The MQTT keep-alive was hardcoded to 30 s in `start_connect_attempt()` with no option to change it, and the connect timeout was likewise fixed at 30 s. IoT Hub's server-side timeout is 1.5x the client value (capped at 1767 s, so 1177 s is the largest useful setting), and every other Azure IoT device SDK exposes this: a battery-powered or metered-link device could not lengthen it, and a device on a lossy link could not shorten it to notice a dead link sooner. Now `opts.keep_alive_seconds` and `opts.connect_timeout_seconds`, with 0 selecting the previous values so existing callers are unaffected. |
 | D-6 | Low | Open | `AZ_IOT_MAX_PERSISTENT_SUBS` defaults to 8 while IoT Hub allows a device **five** topic subscriptions. The SDK therefore accepts a sixth filter locally and only finds out at SUBACK time. A device using C2D + direct methods + twin (response and desired) + credential renewal already sits at exactly five, so there is no headroom left for an application filter. |
 | D-7 | **High** | **Fixed** | `az_iot_connection_client_register_mqtt_factory()` appended unconditionally, so registering the same factory twice stored two entries pointing at one `factory_ctx`. The duplicate was never reachable -- `find_factory()` returns the first match for a version -- but `destroy()` walks the whole registry and calls every entry's `destroy` hook, so it freed that `factory_ctx` twice and corrupted the heap. Found while writing the D-3 tests: a test that re-opened a connection through the existing `open_to_connected()` helper aborted with `double free or corruption (fasttop)`. An exact duplicate (same `create`, `factory_ctx`, `destroy` and `version`) is now idempotent; a genuinely different factory still registers. |
+| D-8 | Low | Open | Two `az_iot_c2d_client` instances on one connection register the identical dispatch prefix, and dispatch is longest-prefix-wins over a single table, so only one of them ever receives -- silently. The twin client solved the same problem with an explicit two-pool subscriber registry (feature clients then application clients); C2D has no equivalent. Either give C2D a subscriber registry, or reject a second registration for a prefix that is already taken so the mistake is loud. Pinned by `only_one_of_two_clients_on_the_same_prefix_receives`. |

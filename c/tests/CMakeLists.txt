@@ -129,6 +129,8 @@ target_include_directories(az_iot_tests_protocol_profile_dispatch PRIVATE
     ${CMAKE_SOURCE_DIR}/src/core)
 az_iot_add_cmocka_test(az_iot_tests_telemetry_client unit/telemetry_client_test.c)
 target_link_libraries(az_iot_tests_telemetry_client PRIVATE az_iot_test_support)
+az_iot_add_cmocka_test(az_iot_tests_c2d_client unit/c2d_client_test.c)
+target_link_libraries(az_iot_tests_c2d_client PRIVATE az_iot_test_support)
 az_iot_add_cmocka_test(az_iot_tests_direct_method_client unit/direct_method_client_test.c)
 target_link_libraries(az_iot_tests_direct_method_client PRIVATE az_iot_test_support)
 az_iot_add_cmocka_test(az_iot_tests_twin_client unit/twin_client_test.c)
