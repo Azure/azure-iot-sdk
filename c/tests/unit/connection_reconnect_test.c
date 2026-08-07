@@ -15,12 +15,14 @@
 #include <setjmp.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include <cmocka.h>
 
 #include "azure/iot/az_iot_connection_client.h"
+#include "azure/iot/az_iot_log.h"
 #include "azure/iot/az_iot_mqtt_iface.h"
 #include "azure/iot/az_iot_result.h"
 
@@ -359,11 +361,50 @@ static void persistent_subscriptions_are_reissued_after_a_reconnect(void** state
   assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_SUBSCRIBE), 2);
 }
 
+/* ---- persistent subscription registry exhaustion ------------------------- */
+
+typedef struct log_capture
+{
+  int count;
+  char last[AZ_IOT_LOG_MESSAGE_MAX];
+} log_capture;
+
+static void capture_error(
+    void* user_ctx,
+    az_iot_log_level level,
+    const char* file,
+    int line,
+    const char* msg)
+{
+  log_capture* c = (log_capture*)user_ctx;
+  (void)file;
+  (void)line;
+  if (level != AZ_IOT_LOG_LEVEL_ERROR || msg == NULL)
+  {
+    return;
+  }
+  c->count++;
+  snprintf(c->last, sizeof(c->last), "%s", msg);
+}
+
+static void install_error_capture(log_capture* c)
+{
+  memset(c, 0, sizeof(*c));
+  az_iot_log_sink sink;
+  sink.sink = capture_error;
+  sink.user_ctx = c;
+  sink.min_level = AZ_IOT_LOG_LEVEL_ERROR;
+  az_iot_log_set_global_sink(&sink);
+}
+
 static void persistent_subscription_registry_full_is_rejected(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
 
   char filter[32];
+  log_capture cap;
+  install_error_capture(&cap);
+
   for (unsigned i = 0; i < AZ_IOT_MAX_PERSISTENT_SUBS; ++i)
   {
     filter[0] = 'f';
@@ -374,10 +415,22 @@ static void persistent_subscription_registry_full_is_rejected(void** state)
             fx->client, filter, AZ_IOT_MQTT_QOS_0),
         AZ_IOT_OK);
   }
+  assert_int_equal(cap.count, 0);
+
+  /* A capacity failure rather than NOT_SUPPORTED: a larger registry would take
+   * this filter, whereas nothing about a larger array makes a genuinely
+   * unsupported operation work. The two need to be told apart by a caller
+   * deciding whether to raise AZ_IOT_MAX_PERSISTENT_SUBS. */
   assert_int_equal(
       az_iot_connection_client__add_subscription_on_connect(
           fx->client, "one-too-many", AZ_IOT_MQTT_QOS_0),
-      AZ_IOT_ERR_NOT_SUPPORTED);
+      AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  az_iot_log_set_global_sink(NULL);
+
+  /* Named, because the filter that gets refused is whichever one asked last --
+   * which need not be the feature that consumed the slots. */
+  assert_int_equal(cap.count, 1);
+  assert_non_null(strstr(cap.last, "one-too-many"));
 }
 
 static void persistent_subscription_added_while_connected_subscribes_now(void** state)
@@ -630,6 +683,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         persistent_subscription_added_while_connected_subscribes_now, setup_two_attempts, teardown),
     cmocka_unit_test_setup_teardown(
+
         a_failed_subscription_restore_keeps_the_connection, setup_two_attempts, teardown),
     cmocka_unit_test_setup_teardown(
         a_failed_suback_keeps_the_connection, setup_two_attempts, teardown),

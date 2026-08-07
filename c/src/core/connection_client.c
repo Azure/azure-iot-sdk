@@ -174,7 +174,7 @@ static const az_iot_mqtt_factory* find_factory(
  * carry its own hardcoded copies, so an application that lengthened the
  * keep-alive for a metered link silently got the old value while provisioning
  * -- the one connect that happens on an unattended first boot. */
-static void apply_timing_options(
+static void resolve_connect_timings(
     const az_iot_connection_client* c,
     az_iot_mqtt_connect_options* copts)
 {
@@ -208,14 +208,14 @@ static void teardown_active(az_iot_connection_client* c)
   {
     az_iot_publish_ack_callback cb = c->pending_pubacks[i].cb;
     void* user_ctx = c->pending_pubacks[i].user_ctx;
-    bool was_pending = c->pending_pubacks[i].in_use;
+    bool was_awaiting_puback = c->pending_pubacks[i].in_use;
 
     c->pending_pubacks[i].in_use = false;
     c->pending_pubacks[i].cb = NULL;
     c->pending_pubacks[i].user_ctx = NULL;
     c->pending_pubacks[i].packet_id = 0;
 
-    if (was_pending && cb)
+    if (was_awaiting_puback && cb)
     {
       cb(AZ_IOT_ERR_NOT_CONNECTED, user_ctx);
     }
@@ -273,7 +273,7 @@ static void schedule_reconnect(az_iot_connection_client* c, az_iot_result reason
 
 static bool dps_configured(const az_iot_connection_client* c)
 {
-  return c->opts.dps.id_scope != NULL && c->opts.dps.id_scope[0] != '\0';
+  return is_nonempty_cstr(c->opts.dps.id_scope);
 }
 
 static void dps_teardown_mqtt(az_iot_connection_client* c)
@@ -667,20 +667,22 @@ static az_iot_result dps_start(az_iot_connection_client* c)
    * AZ_NO_PRECONDITION_CHECKING OFF and no handler installed -- the default
    * handler is an infinite loop, so a misconfigured device would hang inside
    * open() instead of getting an error back. */
-  if (!c->opts.dps.id_scope || !c->opts.dps.id_scope[0])
+  if (!is_nonempty_cstr(c->opts.dps.id_scope))
   {
     AZ_IOT_LOG_ERROR("dps_start: dps.id_scope is required for DPS provisioning");
     return AZ_IOT_ERR_INVALID_ARG;
   }
-  if (!c->opts.dps.registration_id || !c->opts.dps.registration_id[0])
+  if (!is_nonempty_cstr(c->opts.dps.registration_id))
   {
     AZ_IOT_LOG_ERROR("dps_start: dps.registration_id is required for DPS provisioning");
     return AZ_IOT_ERR_INVALID_ARG;
   }
 
   const char* endpoint = c->opts.dps.global_endpoint;
-  if (!endpoint || !endpoint[0])
+  if (!is_nonempty_cstr(endpoint))
+  {
     endpoint = "global.azure-devices-provisioning.net";
+  }
 
   az_span ep_span = az_span_create_from_str((char*)(uintptr_t)endpoint);
   az_span scope_span = az_span_create_from_str((char*)(uintptr_t)c->opts.dps.id_scope);
@@ -703,7 +705,7 @@ static az_iot_result dps_start(az_iot_connection_client* c)
   copts.host = endpoint;
   copts.port = 8883;
   copts.client_id = c->opts.dps.registration_id;
-  apply_timing_options(c, &copts);
+  resolve_connect_timings(c, &copts);
 
   /* Build the DPS MQTT username. CSR-based operational-certificate issuance
    * (Azure Device Registration) requires a newer DPS API version than the
@@ -1253,7 +1255,7 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
   copts.host = c->opts.host;
   copts.port = c->opts.port ? c->opts.port : (uint16_t)8883;
   copts.client_id = c->opts.client_id;
-  apply_timing_options(c, &copts);
+  resolve_connect_timings(c, &copts);
 
   /* Build hub MQTT username via azure-sdk-for-c (Classic only).
    * Hub-Next does not use the Classic username format. */
@@ -1264,7 +1266,7 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
       az_span host_span = az_span_create_from_str((char*)(uintptr_t)c->opts.host);
       az_span id_span = az_span_create_from_str((char*)(uintptr_t)c->opts.client_id);
       az_iot_hub_client_options hub_opts = az_iot_hub_client_options_default();
-      if (c->opts.model_id && c->opts.model_id[0])
+      if (is_nonempty_cstr(c->opts.model_id))
       {
         hub_opts.model_id = az_span_create_from_str((char*)(uintptr_t)c->opts.model_id);
       }
@@ -1387,7 +1389,7 @@ static bool mock_next_configured(void)
 #ifdef _WIN32
   char* buf = NULL;
   size_t len = 0;
-  if (_dupenv_s(&buf, &len, "AZ_IOT_HUB_NEXT_MOCK_ENDPOINT") != 0 || !buf || !buf[0])
+  if (_dupenv_s(&buf, &len, "AZ_IOT_HUB_NEXT_MOCK_ENDPOINT") != 0 || !is_nonempty_cstr(buf))
   {
     free(buf);
     return false;
@@ -1396,7 +1398,7 @@ static bool mock_next_configured(void)
   return true;
 #else
   const char* val = getenv("AZ_IOT_HUB_NEXT_MOCK_ENDPOINT");
-  return val && val[0];
+  return is_nonempty_cstr(val);
 #endif
 }
 
@@ -1435,8 +1437,10 @@ static az_iot_result apply_mock_next_bypass(az_iot_connection_client* c)
   char* id_buf = NULL;
   size_t ep_len = 0, id_len = 0;
   if (_dupenv_s(&ep_buf, &ep_len, "AZ_IOT_HUB_NEXT_MOCK_ENDPOINT") != 0 || !ep_buf)
+  {
     return AZ_IOT_ERR_INTERNAL;
-  if (_dupenv_s(&id_buf, &id_len, "AZ_IOT_DEVICE_ID") != 0 || !id_buf || !id_buf[0])
+  }
+  if (_dupenv_s(&id_buf, &id_len, "AZ_IOT_DEVICE_ID") != 0 || !is_nonempty_cstr(id_buf))
   {
     /* Fall back to DPS registration_id if AZ_IOT_DEVICE_ID not set. */
     free(id_buf);
@@ -1447,11 +1451,13 @@ static az_iot_result apply_mock_next_bypass(az_iot_connection_client* c)
 #else
   endpoint = getenv("AZ_IOT_HUB_NEXT_MOCK_ENDPOINT");
   device_id = getenv("AZ_IOT_DEVICE_ID");
-  if (!device_id || !device_id[0])
+  if (!is_nonempty_cstr(device_id))
+  {
     device_id = c->opts.dps.registration_id;
+  }
 #endif
 
-  if (!endpoint || !endpoint[0] || !device_id || !device_id[0])
+  if (!is_nonempty_cstr(endpoint) || !is_nonempty_cstr(device_id))
   {
 #ifdef _WIN32
     free(ep_buf);
@@ -1526,14 +1532,18 @@ az_iot_result az_iot_connection_client_init(
 #ifdef _WIN32
     char* id_buf = NULL;
     size_t id_len = 0;
-    if (_dupenv_s(&id_buf, &id_len, "AZ_IOT_DEVICE_ID") == 0 && id_buf && id_buf[0])
+    if (_dupenv_s(&id_buf, &id_len, "AZ_IOT_DEVICE_ID") == 0 && is_nonempty_cstr(id_buf))
+    {
       dev_id = id_buf;
+    }
 #else
     dev_id = getenv("AZ_IOT_DEVICE_ID");
 #endif
-    if (!dev_id || !dev_id[0])
+    if (!is_nonempty_cstr(dev_id))
+    {
       dev_id = client->opts.dps.registration_id;
-    if (dev_id && dev_id[0])
+    }
+    if (is_nonempty_cstr(dev_id))
     {
       (void)replace_owned_string(
           client->provisioned_device_id,
@@ -1907,8 +1917,10 @@ static az_iot_result replace_owned_string(
     const char** opts_slot,
     const char* s)
 {
-  if (!s || !s[0])
+  if (!is_nonempty_cstr(s))
+  {
     return AZ_IOT_ERR_INVALID_ARG;
+  }
   size_t n = strlen(s);
   if (n + 1 > buf_cap)
     return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
@@ -2161,7 +2173,21 @@ az_iot_result az_iot_connection_client__add_subscription_on_connect(
   }
   if (slot == AZ_IOT_MAX_PERSISTENT_SUBS)
   {
-    return AZ_IOT_ERR_NOT_SUPPORTED;
+    /* A fixed array -- c/src does not allocate -- so running out is a capacity
+     * failure, not an unsupported operation. NOT_SUPPORTED was too vague to act
+     * on: it is also what this SDK returns for "that hub flavor cannot do this
+     * at all", which no amount of extra registry space would fix.
+     *
+     * Logged as well as returned, because whoever registers last is the one
+     * that fails. The filter named here says more about ordering than about
+     * which feature is at fault, so the caller needs to see it to work out that
+     * the registry -- not that feature -- is what ran out. */
+    AZ_IOT_LOG_ERRORF(
+        "connection: cannot register '%s': all %d persistent subscription slots are in use "
+        "(raise AZ_IOT_MAX_PERSISTENT_SUBS)",
+        topic_filter,
+        (int)AZ_IOT_MAX_PERSISTENT_SUBS);
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
   }
   memcpy(client->persistent_subs[slot].topic_filter, topic_filter, n + 1);
   client->persistent_subs[slot].qos = qos;
@@ -2366,17 +2392,23 @@ az_iot_result az_iot_connection_client_send_csr(
   if (client->session_role != AZ_IOT_MQTT_ROLE_HUB_CLASSIC)
     return AZ_IOT_ERR_NOT_SUPPORTED; /* Hub-Next (AEG) path not defined yet */
   if (client->csr_op.in_use)
+  {
     return AZ_IOT_ERR_BUSY;
+  }
   if (az_span_size(client->opts.csr_payload_buffer) <= 0)
+  {
     return AZ_IOT_ERR_NOT_ENOUGH_SPACE; /* caller must provide opts.csr_payload_buffer */
+  }
 
   /* Validate the CSR: base64 and within the 8 KB service cap. */
   size_t csr_len = 0;
   if (!az_iot_cert_util_is_base64(csr->csr_base64, &csr_len) || csr_len > CSR_MAX_BASE64)
+  {
     return AZ_IOT_ERR_INVALID_ARG;
+  }
 
   /* Request id: caller-provided (resubmit) or generated. */
-  if (request_id && request_id[0])
+  if (is_nonempty_cstr(request_id))
   {
     size_t n = strlen(request_id);
     if (n + 1 > sizeof(client->csr_op.request_id))
@@ -2417,7 +2449,7 @@ az_iot_result az_iot_connection_client_send_csr(
           CSR_RENEW_BODY_REPLACE_INFIX, replace,   CSR_RENEW_BODY_SUFFIX };
   /* Without a replacement id the body stops after the csr field, so the last
    * three parts collapse to the closing brace. */
-  const bool with_replace = (replace != NULL && replace[0] != '\0');
+  const bool with_replace = is_nonempty_cstr(replace);
   if (!with_replace)
     body_parts[4] = CSR_RENEW_BODY_SUFFIX;
   if (az_iot_span_writer_build_str(
