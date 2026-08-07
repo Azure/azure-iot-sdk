@@ -1,5 +1,5 @@
 ﻿using Microsoft.Azure.Devices.Client.CertificateManagement;
-using Microsoft.Azure.Devices.Client.Connection.Unified;
+using Microsoft.Azure.Devices.Client.Unified.Connection;
 using System.Security.Cryptography.X509Certificates;
 using Xunit;
 using Xunit.Sdk;
@@ -16,7 +16,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
             using CancellationTokenSource cts = new();
             cts.CancelAfter(Setup.TestTimeoutMilliseconds - 1000);
 
-            await using TestConnectionClient testDeviceContext = await Setup.CreateConnectedConnectionClientWithCertificateSigningAsync(testAgainstClassicHub, cts.Token);
+            await using TestConnectionClient testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientWithCertificateSigningAsync(testAgainstClassicHub, cts.Token);
             ConnectionClient connectionClient = testDeviceContext.ConnectionClient;
 
             var (csrBase64, privateKey) = Setup.GenerateCsr(testDeviceContext.ConnectionContext.DeviceId, Setup.CsrAlgorithm.RSA);

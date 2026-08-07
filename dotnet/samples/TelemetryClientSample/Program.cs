@@ -1,9 +1,8 @@
 ﻿using Microsoft.Azure.Devices.Client;
-using Microsoft.Azure.Devices.Client.Connection.Models;
-using Microsoft.Azure.Devices.Client.Connection.Unified;
-using Microsoft.Azure.Devices.Client.Telemetry.Models;
-using Microsoft.Azure.Devices.Client.Telemetry.Unified;
+using Microsoft.Azure.Devices.Client.Models;
 using Microsoft.Azure.Devices.Client.Twin;
+using Microsoft.Azure.Devices.Client.Unified.Connection;
+using Microsoft.Azure.Devices.Client.Unified.Telemetry;
 using SetupSampleDevice;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
@@ -29,9 +28,8 @@ internal class Program
         using ConnectionClient connectionClient = new ConnectionClient();
 
         TelemetryClient telemetryClient = new TelemetryClient(connectionClient);
-        CloudToDeviceTelemetryClient cloudToDeviceTelemetryClient = new CloudToDeviceTelemetryClient(connectionClient);
 
-        cloudToDeviceTelemetryClient.CloudToDeviceTelemetryReceivedAsync += async (args) =>
+        telemetryClient.CloudToDeviceTelemetryReceivedAsync += async (args) =>
         {
             Console.WriteLine($"Received a cloud to device message with message id {args.MessageId}");
         };

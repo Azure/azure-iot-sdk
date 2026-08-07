@@ -1,9 +1,9 @@
 ﻿using Azure.Storage.Blobs.Models;
 using Azure.Storage.Blobs.Specialized;
-using Microsoft.Azure.Devices.Client.FileUpload.Unified;
-using Microsoft.Azure.Devices.Client.FileUpload.Models;
 using System.Text;
 using Xunit;
+using Microsoft.Azure.Devices.Client.Models;
+using Microsoft.Azure.Devices.Client.Unified.FileUpload;
 
 namespace Microsoft.Azure.Devices.Client.IntegrationTests
 {
@@ -18,7 +18,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
             using CancellationTokenSource cts = new();
             cts.CancelAfter(Setup.TestTimeoutMilliseconds - 1000);
 
-            await using TestConnectionClient testDeviceContext = await Setup.CreateConnectedConnectionClientAsync(testAgainstClassicHub, cts.Token);
+            await using TestConnectionClient testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientAsync(testAgainstClassicHub, cts.Token);
 
             FileUploadClient fileUploadClient;
             if (testAgainstClassicHub)
@@ -74,7 +74,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
             using CancellationTokenSource cts = new();
             cts.CancelAfter(Setup.TestTimeoutMilliseconds - 1000);
 
-            await using TestConnectionClient testDeviceContext = await Setup.CreateConnectedConnectionClientAsync(testAgainstClassicHub, cts.Token);
+            await using TestConnectionClient testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientAsync(testAgainstClassicHub, cts.Token);
 
             FileUploadClient fileUploadClient;
             fileUploadClient = new FileUploadClient(testDeviceContext.ConnectionClient, testDeviceContext.AuthenticationProvider.ClientCertificate);

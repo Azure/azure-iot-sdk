@@ -1,12 +1,11 @@
 ﻿using DirectMethodsClientSample;
 using Microsoft.Azure.Devices.Client;
-using Microsoft.Azure.Devices.Client.Connection.Models;
-using Microsoft.Azure.Devices.Client.Connection.Unified;
 using Microsoft.Azure.Devices.Client.DirectMethods.Unified;
-using Microsoft.Azure.Devices.Client.DirectMethods.Models;
 using SetupSampleDevice;
 using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
+using Microsoft.Azure.Devices.Client.Unified.Connection;
+using Microsoft.Azure.Devices.Client.Models;
 
 internal class Program
 {

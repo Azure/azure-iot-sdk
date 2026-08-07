@@ -1,6 +1,7 @@
-﻿using Microsoft.Azure.Devices.Client.Twin;
+﻿using Microsoft.Azure.Devices.Client.Models;
+using Microsoft.Azure.Devices.Client.Twin;
 using Microsoft.Azure.Devices.Client.Twin.Models;
-using Microsoft.Azure.Devices.Client.Twin.Unified;
+using Microsoft.Azure.Devices.Client.Unified.Twin;
 using System.Text.Json.Nodes;
 using Xunit;
 
@@ -15,7 +16,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
         {
             using CancellationTokenSource cts = new();
             cts.CancelAfter(Setup.TestTimeoutMilliseconds - 1000);
-            await using TestConnectionClient testDeviceContext = await Setup.CreateConnectedConnectionClientAsync(testAgainstClassicHub, cts.Token);
+            await using TestConnectionClient testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientAsync(testAgainstClassicHub, cts.Token);
             string deviceId = testDeviceContext.ConnectionContext.DeviceId;
 
             RegistryManager registryManager = Setup.GetIotHubRegistryManager();

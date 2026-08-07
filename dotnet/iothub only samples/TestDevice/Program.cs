@@ -1,16 +1,15 @@
 ﻿using Google.Protobuf;
 using Microsoft.Azure.Devices.Client;
-using Microsoft.Azure.Devices.Client.Connection.Models;
-using Microsoft.Azure.Devices.Client.Connection.Gen2;
-using Microsoft.Azure.Devices.Client.DirectMethods.Gen2;
 using Microsoft.Azure.Devices.Client.DirectMethods.Models;
-using Microsoft.Azure.Devices.Client.Twin.Gen2;
-using Microsoft.Azure.Devices.Client.Twin.Models;
 using System.Diagnostics;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.Json;
-using TwinClient = Microsoft.Azure.Devices.Client.Twin.Gen2.TwinClient;
+using TwinClient = Microsoft.Azure.Devices.Client.Gen2.Twin.TwinClient;
+using Microsoft.Azure.Devices.Client.Gen2.Twin;
+using Microsoft.Azure.Devices.Client.Models;
+using Microsoft.Azure.Devices.Client.Gen2.Connection;
+using Microsoft.Azure.Devices.Client.Gen2.DirectMethods;
 
 internal class Program
 {
