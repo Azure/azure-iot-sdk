@@ -1,4 +1,6 @@
 ﻿using Microsoft.Azure.Devices.Client.CertificateManagement;
+using Microsoft.Azure.Devices.Client.Connection.Models;
+using Microsoft.Azure.Devices.Client.Connection.Unified;
 using Microsoft.Azure.Devices.Client.Mqtt;
 
 namespace Microsoft.Azure.Devices.Client.UnitTests
@@ -16,6 +18,8 @@ namespace Microsoft.Azure.Devices.Client.UnitTests
         public event Action<MqttClientDisconnectedEventArgs>? DisconnectedAsync;
 
         private ConnectionContext? _currentConnectionContext;
+
+        public IMqttClient MqttClient => throw new NotImplementedException(); //TODO need a mock IMqttClient
 
         public ConnectionContext? GetCurrentConnectionContext()
         {
@@ -44,84 +48,6 @@ namespace Microsoft.Azure.Devices.Client.UnitTests
         public Task<CertificateSigningOperation> SendCertificateSigningRequestAsync(CertificateSigningRequest request, CancellationToken cancellationToken = default)
         {
             throw new NotImplementedException("No unit test needs this yet");
-        }
-
-        public Task<MqttPublishAck> PublishAsync(MqttPublish publish, CancellationToken cancellationToken = default)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            if (OnPublishAttempt != null)
-            {
-                return OnPublishAttempt.Invoke(publish);
-            }
-
-            return Task.FromResult(new MqttPublishAck()
-            { 
-                ReasonCode = MqttPublishAckReasonCode.Success
-            });
-        }
-
-        public Task<MqttSubscribeAck> SubscribeAsync(MqttSubscribe subscribe, CancellationToken cancellationToken = default)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            if (OnSubscribeAttempt != null)
-            {
-                return OnSubscribeAttempt.Invoke(subscribe);
-            }
-
-            var subackEntries = new List<MqttSubscribeAckItem>();
-            foreach (var subscribeEntry in subscribe.TopicFilters)
-            {
-                if (subscribeEntry.QualityOfServiceLevel == MqttQualityOfServiceLevel.AtLeastOnce)
-                {
-                    subackEntries.Add(new MqttSubscribeAckItem()
-                    {
-                        ResultCode = MqttClientSubscribeResultCode.GrantedQoS1,
-                    });
-                }
-                else if (subscribeEntry.QualityOfServiceLevel == MqttQualityOfServiceLevel.AtMostOnce)
-                {
-                    subackEntries.Add(new MqttSubscribeAckItem()
-                    {
-                        ResultCode = MqttClientSubscribeResultCode.GrantedQoS0,
-                    });
-                }
-            }
-
-            var defaultSuback = new MqttSubscribeAck()
-            {
-                Items = subackEntries
-            };
-
-            return Task.FromResult(defaultSuback);
-        }
-
-        public Task<MqttUnsubscribeAck> UnsubscribeAsync(MqttUnsubscribe unsubscribe, CancellationToken cancellationToken = default)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            if (OnUnsubscribeAttempt != null)
-            {
-                return OnUnsubscribeAttempt.Invoke(unsubscribe);
-            }
-
-            var unsubackEntries = new List<MqttUnsubscribeAckItem>();
-            foreach (var unsubscribeTopic in unsubscribe.TopicFilters)
-            {
-                unsubackEntries.Add(new MqttUnsubscribeAckItem()
-                {
-                    ResultCode = MqttClientUnsubscribeResultCode.Success,
-                    TopicFilter = unsubscribeTopic
-                });
-            }
-
-            var defaultunsuback = new MqttUnsubscribeAck()
-            {
-                Items = unsubackEntries
-            };
-
-            return Task.FromResult(defaultunsuback);
         }
 
         public void Dispose()

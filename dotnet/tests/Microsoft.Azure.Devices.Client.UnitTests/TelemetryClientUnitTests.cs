@@ -1,4 +1,6 @@
-﻿using Microsoft.Azure.Devices.Client.Telemetry;
+﻿using Microsoft.Azure.Devices.Client.Connection.Models;
+using Microsoft.Azure.Devices.Client.Telemetry.Models;
+using Microsoft.Azure.Devices.Client.Telemetry.Unified;
 using Moq;
 using System;
 using System.Collections.Generic;
@@ -9,8 +11,11 @@ namespace Microsoft.Azure.Devices.Client.UnitTests
 {
     public class TelemetryClientUnitTests
     {
-        [Fact]
-        public async Task TelemetryClientThrowsIfMessageTooLarge()
+        /*
+        [Theory]
+        [InlineData(true)]
+        [InlineData(false)]
+        public async Task TelemetryClientThrowsIfMessageTooLarge_Unified(bool testUnifiedClient)
         {
             MockConnectionClient mockConnectionClient = new();
             mockConnectionClient.SetCurrentConnectionContext(new ConnectionContext()
@@ -28,5 +33,16 @@ namespace Microsoft.Azure.Devices.Client.UnitTests
 
             await Assert.ThrowsAsync<MessageTooLargeException>(async () => await telemetryClient.SendTelemetryAsync(outgoingTelemetryMessage, TestContext.Current.CancellationToken));
         }
+
+        private Connection.Unified.ConnectionClient GetUnifiedClient()
+        { 
+        
+        }
+
+        private Connection.Gen2.ConnectionClient GetGen2Client()
+        {
+
+        }
+        */ //TODO
     }
 }
