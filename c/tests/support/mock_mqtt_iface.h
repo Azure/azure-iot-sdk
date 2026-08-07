@@ -72,7 +72,7 @@ extern "C"
       char client_id[128];
       uint16_t port;
       uint16_t keep_alive_seconds;
-      uint32_t connect_timeout_ms;
+      uint32_t connect_timeout_seconds;
       bool clean_start;
       bool verify_server;
       char trusted_ca_path[256];

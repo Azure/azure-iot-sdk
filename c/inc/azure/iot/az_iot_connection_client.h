@@ -71,6 +71,27 @@ extern "C"
   {
     const char* host; /* hub host (or NULL when using DPS) */
     uint16_t port; /* default 8883 */
+
+    /* MQTT keep-alive, in seconds. 0 selects AZ_IOT_DEFAULT_KEEP_ALIVE_SECONDS.
+     *
+     * IoT Hub's server-side timeout is 1.5x this value, capped at 1767 s, so
+     * the largest useful setting is 1177 s; anything above that is clamped by
+     * the service rather than by the SDK. Any traffic resets the timer.
+     *
+     * Shorten it to notice a dead link sooner, at the cost of more PINGREQs;
+     * lengthen it on a metered or battery-powered device, at the cost of the
+     * service taking longer to notice the device is gone.
+     *
+     * Applies to the DPS bootstrap connect as well as the hub connect. */
+    uint16_t keep_alive_seconds;
+
+    /* How long to wait for the transport to connect, in seconds. 0 selects
+     * AZ_IOT_DEFAULT_CONNECT_TIMEOUT_SECONDS.
+     *
+     * In seconds like keep_alive_seconds above, so every timing option on this
+     * struct reads on one scale. Sub-second connect timeouts are not useful
+     * over TLS on a cellular or satellite link. */
+    uint32_t connect_timeout_seconds;
     const char* client_id; /* device id */
     az_iot_hub_protocol hub_protocol; /* direct-connect hub flavor (host set, no
                                        * DPS): Classic (v3.1.1, default) or Next
@@ -185,6 +206,14 @@ extern "C"
  * hub certificate renewal) register here to be told when that session ends. */
 #ifndef AZ_IOT_MAX_SESSION_HANDLERS
 #define AZ_IOT_MAX_SESSION_HANDLERS 4
+#endif
+
+/* Defaults applied when the corresponding option is left at 0. */
+#ifndef AZ_IOT_DEFAULT_KEEP_ALIVE_SECONDS
+#define AZ_IOT_DEFAULT_KEEP_ALIVE_SECONDS 30
+#endif
+#ifndef AZ_IOT_DEFAULT_CONNECT_TIMEOUT_SECONDS
+#define AZ_IOT_DEFAULT_CONNECT_TIMEOUT_SECONDS 30
 #endif
 #ifndef AZ_IOT_PERSISTENT_SUB_TOPIC_MAX
 #define AZ_IOT_PERSISTENT_SUB_TOPIC_MAX 128

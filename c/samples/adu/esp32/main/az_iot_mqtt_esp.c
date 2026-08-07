@@ -421,7 +421,9 @@ static az_iot_result esp_connect(az_iot_mqtt_client* self, const az_iot_mqtt_con
 
   /* The SDK owns reconnect (backoff/jitter); keep esp-mqtt from racing it. */
   cfg.network.disable_auto_reconnect = true;
-  cfg.network.timeout_ms = opts->connect_timeout_ms ? (int)opts->connect_timeout_ms : 30000;
+  /* esp-mqtt wants milliseconds; the SDK option is in seconds. */
+  cfg.network.timeout_ms
+      = opts->connect_timeout_seconds ? (int)(opts->connect_timeout_seconds * 1000) : 30000;
 
   /* A roomy RX buffer keeps multi-KB twin/ADU payloads in a single fragment;
    * on_data() still reassembles if a payload exceeds it. */
