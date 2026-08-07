@@ -56,7 +56,9 @@ az_iot_result az_iot_telemetry_client_init(
 void az_iot_telemetry_client_destroy(az_iot_telemetry_client* client)
 {
   if (client == NULL)
+  {
     return;
+  }
   memset(client, 0, sizeof(*client));
 }
 
@@ -75,7 +77,9 @@ static bool append_template_with_device_id(
 {
   const char* placeholder = strstr(tmpl, k_device_id_placeholder);
   if (placeholder == NULL)
+  {
     return false;
+  }
 
   az_iot_span_writer_append_span(
       writer, az_span_create((uint8_t*)(uintptr_t)tmpl, (int32_t)(placeholder - tmpl)));
@@ -234,10 +238,14 @@ static az_iot_result telemetry_send_next(
   {
     const az_iot_telemetry_property* p = &msg->properties[i];
     if (p->key == NULL || p->key[0] == '\0')
+    {
       continue;
+    }
     /* Skip system properties ($.ct handled above) in user-prop forwarding */
     if (p->key[0] == '$' && p->key[1] == '.')
+    {
       continue;
+    }
     user_props[up_count].key = p->key;
     user_props[up_count].value = p->value ? p->value : "";
     up_count++;

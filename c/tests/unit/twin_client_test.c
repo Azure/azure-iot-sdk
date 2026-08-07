@@ -161,7 +161,9 @@ static const char* first_publish_topic(az_iot_mock_mqtt_client* m)
   {
     const az_iot_mock_call* c = az_iot_mock_mqtt_client_call_at(m, i);
     if (c->kind == AZ_IOT_MOCK_CALL_PUBLISH)
+    {
       return c->topic;
+    }
   }
   return NULL;
 }

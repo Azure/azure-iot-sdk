@@ -52,7 +52,9 @@ static const char* log_text_or(const char* value, const char* fallback)
 void az_iot_log_emit(az_iot_log_level level, const char* file, int line, const char* msg)
 {
   if (!az_iot_log_is_enabled(level))
+  {
     return;
+  }
   s_global_sink.sink(
       s_global_sink.user_ctx, level, log_text_or(file, "?"), line, log_text_or(msg, ""));
 }
@@ -62,7 +64,9 @@ void az_iot_log_emitf(az_iot_log_level level, const char* file, int line, const 
   /* Test the sink before formatting so a disabled level costs one comparison
    * rather than a full vsnprintf. */
   if (fmt == NULL || !az_iot_log_is_enabled(level))
+  {
     return;
+  }
 
   char msg[AZ_IOT_LOG_MESSAGE_MAX];
   va_list args;
@@ -73,7 +77,9 @@ void az_iot_log_emitf(az_iot_log_level level, const char* file, int line, const 
   /* vsnprintf truncates on its own when the text does not fit; a negative
    * count is a genuine encoding failure and there is nothing to report. */
   if (written < 0)
+  {
     return;
+  }
 
   s_global_sink.sink(s_global_sink.user_ctx, level, log_text_or(file, "?"), line, msg);
 }

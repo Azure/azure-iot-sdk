@@ -9,11 +9,15 @@
 static char* dup_cstr(const char* s)
 {
   if (!s)
+  {
     return NULL;
+  }
   size_t n = strlen(s) + 1;
   char* out = (char*)malloc(n);
   if (out)
+  {
     memcpy(out, s, n);
+  }
   return out;
 }
 
@@ -121,7 +125,9 @@ char* sample_env_dup(const char* name, const char* fallback)
 #else
   const char* v = getenv(name);
   if (v && v[0])
+  {
     return dup_cstr(v);
+  }
   return dup_cstr(fallback);
 #endif
 }

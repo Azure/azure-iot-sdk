@@ -112,11 +112,17 @@ static void b64url_str(const void* data, int32_t len, char* dst, int32_t cap)
   {
     char c = dst[i];
     if (c == '=')
+    {
       continue;
+    }
     if (c == '+')
+    {
       c = '-';
+    }
     else if (c == '/')
+    {
       c = '_';
+    }
     dst[out++] = c;
   }
   assert_true(out < cap);
@@ -237,7 +243,9 @@ static bool ops_contain(const hook_log* l, op_kind k)
   for (size_t i = 0; i < l->op_count; ++i)
   {
     if (l->ops[i] == k)
+    {
       return true;
+    }
   }
   return false;
 }
@@ -249,7 +257,9 @@ static bool ops_in_order(const hook_log* l, const op_kind* seq, size_t n)
   for (size_t i = 0; i < l->op_count && si < n; ++i)
   {
     if (l->ops[i] == seq[si])
+    {
       si++;
+    }
   }
   return si == n;
 }

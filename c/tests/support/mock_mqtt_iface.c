@@ -111,12 +111,16 @@ static void copy_str(char* dst, size_t cap, const char* src)
   if (!src || !cap)
   {
     if (cap)
+    {
       dst[0] = '\0';
+    }
     return;
   }
   size_t n = strlen(src);
   if (n >= cap)
+  {
     n = cap - 1;
+  }
   memcpy(dst, src, n);
   dst[n] = '\0';
 }
@@ -126,11 +130,17 @@ static void copy_bytes(uint8_t* dst, size_t cap, const uint8_t* src, size_t n, s
   /* A NULL source records nothing: reporting the caller's length would leave
    * the recorded buffer holding stale bytes and make assertions on it lie. */
   if (!src)
+  {
     n = 0;
+  }
   if (n > cap)
+  {
     n = cap;
+  }
   if (n)
+  {
     memcpy(dst, src, n);
+  }
   *out_n = n;
 }
 
@@ -188,7 +198,9 @@ static az_iot_result mock_subscribe(
   c->qos = qos;
   c->packet_id = alloc_packet_id(m);
   if (out_packet_id)
+  {
     *out_packet_id = c->packet_id;
+  }
   return take_override(m, AZ_IOT_MOCK_CALL_SUBSCRIBE);
 }
 
@@ -202,7 +214,9 @@ static az_iot_result mock_unsubscribe(
   copy_str(c->topic, sizeof(c->topic), topic_filter);
   c->packet_id = alloc_packet_id(m);
   if (out_packet_id)
+  {
     *out_packet_id = c->packet_id;
+  }
   return take_override(m, AZ_IOT_MOCK_CALL_UNSUBSCRIBE);
 }
 
@@ -239,7 +253,9 @@ static az_iot_result mock_publish(
   }
   c->packet_id = alloc_packet_id(m);
   if (out_packet_id)
+  {
     *out_packet_id = c->packet_id;
+  }
   return take_override(m, AZ_IOT_MOCK_CALL_PUBLISH);
 }
 
@@ -286,7 +302,9 @@ static void mock_set_inbound_cb(
 static void mock_destroy(az_iot_mqtt_client* self)
 {
   if (!self)
+  {
     return;
+  }
   az_iot_mock_mqtt_client* m = mock_self(self);
   push_call(m, AZ_IOT_MOCK_CALL_DESTROY);
   /* Detach from owner's last_client cache so factory destroy doesn't double-free. */
@@ -322,7 +340,9 @@ static az_iot_mqtt_client* mock_factory_create(void* factory_ctx)
 
   az_iot_mock_mqtt_client* m = (az_iot_mock_mqtt_client*)calloc(1, sizeof(*m));
   if (!m)
+  {
     return NULL;
+  }
 
   m->iface_storage
       = (st->public_.version == AZ_IOT_MQTT_VERSION_5) ? s_iface_template_v5 : s_iface_template_v3;
@@ -340,7 +360,9 @@ az_iot_mqtt_factory* az_iot_mock_mqtt_factory_create(az_iot_mqtt_version version
 {
   az_iot_mock_mqtt_factory_state* st = (az_iot_mock_mqtt_factory_state*)calloc(1, sizeof(*st));
   if (!st)
+  {
     return NULL;
+  }
   st->public_.version = version;
   st->public_.create = mock_factory_create;
   st->public_.factory_ctx = st;
@@ -351,7 +373,9 @@ az_iot_mqtt_factory* az_iot_mock_mqtt_factory_create(az_iot_mqtt_version version
 void az_iot_mock_mqtt_factory_destroy(az_iot_mqtt_factory* factory)
 {
   if (!factory)
+  {
     return;
+  }
   az_iot_mock_mqtt_factory_state* st = (az_iot_mock_mqtt_factory_state*)factory->factory_ctx;
   if (st->last_client)
   {
@@ -364,7 +388,9 @@ void az_iot_mock_mqtt_factory_destroy(az_iot_mqtt_factory* factory)
 az_iot_mock_mqtt_client* az_iot_mock_mqtt_factory_last_client(const az_iot_mqtt_factory* factory)
 {
   if (!factory)
+  {
     return NULL;
+  }
   const az_iot_mock_mqtt_factory_state* st
       = (const az_iot_mock_mqtt_factory_state*)factory->factory_ctx;
   return st->last_client;
@@ -387,14 +413,18 @@ size_t az_iot_mock_mqtt_client_call_count(const az_iot_mock_mqtt_client* m)
 const az_iot_mock_call* az_iot_mock_mqtt_client_call_at(const az_iot_mock_mqtt_client* m, size_t i)
 {
   if (!m || i >= m->call_count)
+  {
     return NULL;
+  }
   return &m->calls[i];
 }
 
 void az_iot_mock_mqtt_client_clear_calls(az_iot_mock_mqtt_client* m)
 {
   if (!m)
+  {
     return;
+  }
   m->call_count = 0;
 }
 
@@ -404,7 +434,9 @@ void az_iot_mock_mqtt_client_set_next_result(
     az_iot_result result)
 {
   if (!m || kind >= AZ_IOT_MOCK_CALL_KIND_COUNT)
+  {
     return;
+  }
   m->has_override[kind] = true;
   m->override_result[kind] = result;
 }
@@ -412,9 +444,13 @@ void az_iot_mock_mqtt_client_set_next_result(
 bool az_iot_mock_mqtt_client_inject_event(az_iot_mock_mqtt_client* m, const az_iot_mqtt_event* evt)
 {
   if (!m || !evt)
+  {
     return false;
+  }
   if (m->pending_count >= AZ_IOT_MOCK_EVENT_QUEUE_MAX)
+  {
     return false;
+  }
 
   size_t tail = (m->pending_head + m->pending_count) % AZ_IOT_MOCK_EVENT_QUEUE_MAX;
   queued_event* q = &m->pending[tail];
@@ -500,12 +536,16 @@ bool az_iot_mock_mqtt_client_inject_suback(
 size_t az_iot_mock_mqtt_client_count_of(const az_iot_mock_mqtt_client* m, az_iot_mock_call_kind k)
 {
   if (!m)
+  {
     return 0;
+  }
   size_t n = 0;
   for (size_t i = 0; i < m->call_count; ++i)
   {
     if (m->calls[i].kind == k)
+    {
       n++;
+    }
   }
   return n;
 }
@@ -515,11 +555,15 @@ const az_iot_mock_call* az_iot_mock_mqtt_client_last_of(
     az_iot_mock_call_kind k)
 {
   if (!m)
+  {
     return NULL;
+  }
   for (size_t i = m->call_count; i > 0; --i)
   {
     if (m->calls[i - 1].kind == k)
+    {
       return &m->calls[i - 1];
+    }
   }
   return NULL;
 }

@@ -107,7 +107,9 @@ static az_iot_result mock_send(
   }
 
   if (g_http.transport_result != AZ_IOT_OK)
+  {
     return g_http.transport_result;
+  }
 
   response->status_code = g_http.resp_status;
   if (response->body != NULL && response->body_capacity > 0 && g_http.resp_body != NULL)
@@ -118,7 +120,9 @@ static az_iot_result mock_send(
      * when a test programs an oversized payload. Guarding on a non-zero
      * capacity above keeps this subtraction from wrapping. */
     if (n > response->body_capacity - 1)
+    {
       n = response->body_capacity - 1;
+    }
     memcpy(response->body, g_http.resp_body, n);
     response->body_len = n;
   }
@@ -166,9 +170,13 @@ static void on_sas(az_iot_result status, const char* uri, const char* corr, void
   r->sas_done = true;
   r->sas_status = status;
   if (uri)
+  {
     snprintf(r->sas_uri, sizeof(r->sas_uri), "%s", uri);
+  }
   if (corr)
+  {
     snprintf(r->correlation_id, sizeof(r->correlation_id), "%s", corr);
+  }
 }
 
 static void on_notify(az_iot_result status, void* ctx)
@@ -1142,7 +1150,9 @@ static void get_sas_uri_malformed_json_reports_protocol(void** state)
   for (size_t i = 0; i < sizeof(k_bad) / sizeof(k_bad[0]); ++i)
   {
     if (sas_result_for_body(fx, k_bad[i]) != AZ_IOT_ERR_PROTOCOL)
+    {
       fail_msg("body '%s' should have reported PROTOCOL", k_bad[i]);
+    }
   }
 }
 
@@ -1202,7 +1212,9 @@ static void get_sas_uri_missing_field_reports_protocol(void** state)
   for (size_t i = 0; i < sizeof(k_missing) / sizeof(k_missing[0]); ++i)
   {
     if (sas_result_for_body(fx, k_missing[i]) != AZ_IOT_ERR_PROTOCOL)
+    {
       fail_msg("case %u: missing-field body should have reported PROTOCOL", (unsigned)i);
+    }
   }
 }
 
@@ -1226,7 +1238,9 @@ static void get_sas_uri_wrong_field_type_reports_protocol(void** state)
   for (size_t i = 0; i < sizeof(k_wrong) / sizeof(k_wrong[0]); ++i)
   {
     if (sas_result_for_body(fx, k_wrong[i]) != AZ_IOT_ERR_PROTOCOL)
+    {
       fail_msg("case %u: wrong-typed field should have reported PROTOCOL", (unsigned)i);
+    }
   }
 }
 

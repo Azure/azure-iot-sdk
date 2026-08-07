@@ -79,7 +79,9 @@ static az_iot_result fake_subscribe(
   (void)t;
   (void)q;
   if (p)
+  {
     *p = 7;
+  }
   return AZ_IOT_OK;
 }
 static az_iot_result fake_unsubscribe(az_iot_rust_mqtt_client* c, const char* t, uint16_t* p)
@@ -87,7 +89,9 @@ static az_iot_result fake_unsubscribe(az_iot_rust_mqtt_client* c, const char* t,
   (void)c;
   (void)t;
   if (p)
+  {
     *p = 8;
+  }
   return AZ_IOT_OK;
 }
 static az_iot_result fake_publish(
@@ -98,7 +102,9 @@ static az_iot_result fake_publish(
   (void)c;
   (void)m;
   if (p)
+  {
     *p = 9;
+  }
   return AZ_IOT_OK;
 }
 static az_iot_result fake_process_loop(az_iot_rust_mqtt_client* c, uint32_t t)

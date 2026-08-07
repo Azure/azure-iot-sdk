@@ -87,9 +87,13 @@ az_iot_adu_client_device_properties az_iot_adu__device_properties_view(
 az_iot_result az_iot_adu__report_state(az_iot_adu_client_t* client)
 {
   if (client == NULL)
+  {
     return AZ_IOT_ERR_INVALID_ARG;
+  }
   if (ADU_I(client).detached)
+  {
     return AZ_IOT_ERR_DETACHED;
+  }
 
   uint8_t buffer[AZ_IOT_ADU_REPORT_BUFFER_SIZE];
   az_json_writer jw;

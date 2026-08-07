@@ -26,4 +26,15 @@ StatementMacros: ['_az_PUSH_IGNORE_DEPRECATIONS', '_az_POP_WARNINGS']
 # stops compiling with "unknown type name 'size_t'". Include order is
 # load-bearing in C; leave this off.
 SortIncludes: false
+# Brace every control-flow body, including single statements. This is a real
+# defect class rather than taste: an unbraced body silently excludes the line
+# added beneath it, which is how goto fail and similar bugs happen. Enforcing it
+# here also removes the manual review step -- the formatter adds the braces, so
+# they can no longer be forgotten in the first place.
+#
+# clang-format documents this option as one to review rather than trust blindly,
+# since it works without full semantic information. The guard is that a correct
+# run only ever ADDS "{" and "}" lines: any deletion or any change to a line of
+# actual code means something else happened and the diff needs inspecting.
+InsertBraces: true
 ...

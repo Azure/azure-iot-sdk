@@ -46,7 +46,9 @@ static uint8_t* writer_reserve(az_iot_span_writer* writer, int32_t count)
 void az_iot_span_writer_init(az_iot_span_writer* writer, az_span destination)
 {
   if (writer == NULL)
+  {
     return;
+  }
 
   memset(writer, 0, sizeof(*writer));
   writer->_internal.buffer = az_span_ptr(destination);
@@ -71,7 +73,9 @@ void az_iot_span_writer_append_span(az_iot_span_writer* writer, az_span value)
     return;
   }
   if (size == 0)
+  {
     return; /* Appending nothing always succeeds. */
+  }
 
   uint8_t* cursor = writer_reserve(writer, size);
   if (cursor != NULL)
@@ -98,7 +102,9 @@ void az_iot_span_writer_append_str(az_iot_span_writer* writer, const char* value
     return;
   }
   if (length == 0)
+  {
     return;
+  }
 
   uint8_t* cursor = writer_reserve(writer, (int32_t)length);
   if (cursor != NULL)
@@ -144,13 +150,17 @@ void az_iot_span_writer_append_url_encoded(az_iot_span_writer* writer, const cha
     encoded_length += url_should_encode(source[i]) ? 3 : 1;
   }
   if (encoded_length == 0)
+  {
     return;
+  }
 
   /* Reserving the encoded length up front keeps this all-or-nothing, unlike
    * an encoder that discovers the overflow partway through the output. */
   uint8_t* cursor = writer_reserve(writer, encoded_length);
   if (cursor == NULL)
+  {
     return;
+  }
 
   for (size_t i = 0; i < length; ++i)
   {
@@ -284,7 +294,9 @@ static void writer_append_decimal(az_iot_span_writer* writer, uint32_t magnitude
 
   uint8_t* cursor = writer_reserve(writer, count + (negative ? 1 : 0));
   if (cursor == NULL)
+  {
     return;
+  }
 
   if (negative)
   {
@@ -337,7 +349,9 @@ void az_iot_span_writer_append_hex32(az_iot_span_writer* writer, uint32_t value,
 
   uint8_t* cursor = writer_reserve(writer, width);
   if (cursor == NULL)
+  {
     return;
+  }
 
   for (int32_t i = width - 1; i >= 0; --i)
   {
@@ -349,9 +363,13 @@ void az_iot_span_writer_append_hex32(az_iot_span_writer* writer, uint32_t value,
 az_iot_result az_iot_span_writer_end(az_iot_span_writer* writer, az_span* out_written)
 {
   if (writer == NULL)
+  {
     return AZ_IOT_ERR_INVALID_ARG;
+  }
   if (writer->_internal.failure != AZ_IOT_OK)
+  {
     return writer->_internal.failure;
+  }
 
   if (out_written != NULL)
   {
@@ -365,7 +383,9 @@ az_iot_result az_iot_span_writer_end(az_iot_span_writer* writer, az_span* out_wr
 az_iot_result az_iot_span_writer_end_str(az_iot_span_writer* writer, size_t* out_length)
 {
   if (writer == NULL)
+  {
     return AZ_IOT_ERR_INVALID_ARG;
+  }
 
   az_iot_result result = writer->_internal.failure;
   if (result == AZ_IOT_OK && writer->_internal.length >= writer->_internal.capacity)
@@ -399,7 +419,9 @@ az_iot_result az_iot_span_writer_build_str(
     size_t count)
 {
   if (parts == NULL && count > 0)
+  {
     return AZ_IOT_ERR_INVALID_ARG;
+  }
 
   az_iot_span_writer writer;
   az_iot_span_writer_init(&writer, destination);

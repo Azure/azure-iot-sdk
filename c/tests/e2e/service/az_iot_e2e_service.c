@@ -325,13 +325,21 @@ void az_iot_e2e_service_file_notification_stats(
     return;
   }
   if (out_delivered != NULL)
+  {
     *out_delivered = 0;
+  }
   if (out_captured != NULL)
+  {
     *out_captured = 0;
+  }
   if (out_released != NULL)
+  {
     *out_released = 0;
+  }
   if (out_unparsed != NULL)
+  {
     *out_unparsed = 0;
+  }
 }
 
 void az_iot_e2e_service_file_notification_watch_end(az_iot_e2e_service* svc)
@@ -537,11 +545,15 @@ static char* read_file_alloc(const char* path)
 #ifdef _WIN32
   FILE* f = NULL;
   if (fopen_s(&f, path, "rb") != 0 || f == NULL)
+  {
     return NULL;
+  }
 #else
   FILE* f = fopen(path, "rb");
   if (f == NULL)
+  {
     return NULL;
+  }
 #endif
   char* buf = NULL;
   if (fseek(f, 0, SEEK_END) == 0)
@@ -619,19 +631,25 @@ bool az_iot_e2e_https_request(
     if (rc == 1)
     {
       if (out_status != NULL)
+      {
         *out_status = e2e_http_status(r);
+      }
       int b_len = 0;
       const uint8_t* b = e2e_http_body(r, &b_len);
       size_t copy = (size_t)b_len;
       if (resp_buf != NULL && resp_buf_size > 0)
       {
         if (copy > resp_buf_size - 1)
+        {
           copy = resp_buf_size - 1;
+        }
         memcpy(resp_buf, b, copy);
         resp_buf[copy] = '\0';
       }
       if (out_resp_len != NULL)
+      {
         *out_resp_len = copy;
+      }
     }
     else
     {

@@ -111,10 +111,14 @@ static void rust_iface_set_inbound_cb(
 static void rust_iface_destroy(az_iot_mqtt_client* self)
 {
   if (self == NULL)
+  {
     return;
+  }
   rust_client* c = (rust_client*)self;
   if (c->handle != NULL && g_ffi_installed)
+  {
     g_ffi.destroy(c->handle);
+  }
   free(c);
 }
 
@@ -137,11 +141,15 @@ static az_iot_mqtt_client* rust_factory_create(void* factory_ctx)
 {
   (void)factory_ctx;
   if (!g_ffi_installed)
+  {
     return NULL;
+  }
 
   az_iot_rust_mqtt_client* handle = g_ffi.create(AZ_IOT_MQTT_VERSION_5);
   if (handle == NULL)
+  {
     return NULL;
+  }
 
   rust_client* c = (rust_client*)calloc(1, sizeof(*c));
   if (c == NULL)
@@ -159,10 +167,14 @@ static void rust_factory_cleanup(void* ctx) { free(ctx); }
 az_iot_mqtt_factory* az_iot_rust_mqtt_factory_create_v5(void)
 {
   if (!g_ffi_installed)
+  {
     return NULL;
+  }
   az_iot_mqtt_factory* f = (az_iot_mqtt_factory*)calloc(1, sizeof(*f));
   if (f == NULL)
+  {
     return NULL;
+  }
   f->version = AZ_IOT_MQTT_VERSION_5;
   f->create = rust_factory_create;
   f->factory_ctx = f;

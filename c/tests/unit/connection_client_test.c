@@ -89,7 +89,9 @@ static int teardown(void** state)
     bool factory_adopted = (fx->client->factory_count > 0);
     az_iot_connection_client_destroy(&fx->client_storage);
     if (!factory_adopted)
+    {
       az_iot_mock_mqtt_factory_destroy(fx->factory);
+    }
     free(fx);
   }
   return 0;
@@ -323,8 +325,12 @@ static size_t count_states(const state_record* r, az_iot_connection_state s)
 {
   size_t n = 0;
   for (size_t i = 0; i < r->count; ++i)
+  {
     if (r->states[i] == s)
+    {
       ++n;
+    }
+  }
   return n;
 }
 
@@ -482,7 +488,9 @@ static void inbound_record_cb(void* user_ctx, const az_iot_mqtt_message* msg)
   {
     size_t n = strlen(msg->topic);
     if (n >= sizeof(r->last_topic))
+    {
       n = sizeof(r->last_topic) - 1;
+    }
     memcpy(r->last_topic, msg->topic, n);
     r->last_topic[n] = '\0';
   }
@@ -566,7 +574,9 @@ static const az_iot_mock_call* last_call_of_kind(
   {
     const az_iot_mock_call* call = az_iot_mock_mqtt_client_call_at(m, i - 1);
     if (call->kind == kind)
+    {
       return call;
+    }
   }
   return NULL;
 }
@@ -612,7 +622,9 @@ static const az_iot_mock_call* drive_to_birth_published(
   const az_iot_mock_call* birth = last_call_of_kind(m, AZ_IOT_MOCK_CALL_PUBLISH);
   assert_non_null(birth);
   if (out_m)
+  {
     *out_m = m;
+  }
   return birth;
 }
 
@@ -975,7 +987,9 @@ static az_iot_result fake_store(
     az_span leaf = issued->certificates[0];
     size_t n = (size_t)az_span_size(leaf);
     if (n >= sizeof(f->stored_leaf))
+    {
       n = sizeof(f->stored_leaf) - 1;
+    }
     memcpy(f->stored_leaf, az_span_ptr(leaf), n);
     f->stored_leaf[n] = '\0';
   }
@@ -1072,7 +1086,9 @@ static void dps_csr_flow_sends_csr_and_stores_issued_chain(void** state)
   /* Drive the flow to completion (message -> store -> deferred finalize ->
    * hub connect). Several do_work iterations cover the deferred steps. */
   for (int i = 0; i < 5; ++i)
+  {
     (void)az_iot_connection_client_do_work(&client, 0);
+  }
 
   /* Provider received the PEM-wrapped issued chain. */
   assert_int_equal(prov.store_calls, 1);
@@ -1119,7 +1135,9 @@ static void on_csr_evt(const az_iot_csr_event* evt, void* uc)
           az_span leaf = evt->issued->certificates[0];
           size_t n = (size_t)az_span_size(leaf);
           if (n >= sizeof(t->issued_leaf))
+          {
             n = sizeof(t->issued_leaf) - 1;
+          }
           memcpy(t->issued_leaf, az_span_ptr(leaf), n);
           t->issued_leaf[n] = '\0';
         }

@@ -217,13 +217,17 @@ bool e2e_http_begin_ex(
   const int cap = (int)sizeof(r->request);
   int len = snprintf(r->request, (size_t)cap, "%s %s HTTP/1.1\r\nHost: %s\r\n", method, path, host);
   if (len < 0 || len >= cap)
+  {
     goto too_large;
+  }
 
   if (authorization != NULL && authorization[0] != '\0')
   {
     int n = snprintf(r->request + len, (size_t)(cap - len), "Authorization: %s\r\n", authorization);
     if (n < 0 || n >= cap - len)
+    {
       goto too_large;
+    }
     len += n;
   }
   if (body != NULL && body_len > 0)
@@ -232,32 +236,42 @@ bool e2e_http_begin_ex(
     {
       int n = snprintf(r->request + len, (size_t)(cap - len), "Content-Type: %s\r\n", content_type);
       if (n < 0 || n >= cap - len)
+      {
         goto too_large;
+      }
       len += n;
     }
     int n
         = snprintf(r->request + len, (size_t)(cap - len), "Content-Length: %d\r\n", (int)body_len);
     if (n < 0 || n >= cap - len)
+    {
       goto too_large;
+    }
     len += n;
   }
   if (extra_header != NULL && extra_header[0] != '\0')
   {
     int n = snprintf(r->request + len, (size_t)(cap - len), "%s\r\n", extra_header);
     if (n < 0 || n >= cap - len)
+    {
       goto too_large;
+    }
     len += n;
   }
   {
     int n = snprintf(r->request + len, (size_t)(cap - len), "Connection: close\r\n\r\n");
     if (n < 0 || n >= cap - len)
+    {
       goto too_large;
+    }
     len += n;
   }
   if (body != NULL && body_len > 0)
   {
     if ((size_t)(cap - len) < body_len)
+    {
       goto too_large;
+    }
     memcpy(r->request + len, body, body_len);
     len += (int)body_len;
   }

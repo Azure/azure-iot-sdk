@@ -85,7 +85,9 @@ static void on_event(const az_iot_mqtt_event* evt, void* ctx)
 {
   conf_recorder* r = (conf_recorder*)ctx;
   if (r->count >= CONF_EVENTS_MAX)
+  {
     return;
+  }
   size_t i = r->count++;
   r->kinds[i] = evt->kind;
   r->statuses[i] = evt->status;
@@ -96,15 +98,21 @@ static void on_event(const az_iot_mqtt_event* evt, void* ctx)
     {
       size_t n = strlen(evt->message->topic);
       if (n >= CONF_TOPIC_MAX)
+      {
         n = CONF_TOPIC_MAX - 1;
+      }
       memcpy(r->topics[i], evt->message->topic, n);
       r->topics[i][n] = '\0';
     }
     size_t plen = evt->message->payload_len;
     if (plen > CONF_PAYLOAD_MAX)
+    {
       plen = CONF_PAYLOAD_MAX;
+    }
     if (plen)
+    {
       memcpy(r->payloads[i], evt->message->payload, plen);
+    }
     r->payload_lens[i] = plen;
   }
 }
@@ -124,7 +132,9 @@ static int wait_until(
   {
     c->iface->process_loop(c, 50);
     if (p(r))
+    {
       return 1;
+    }
     conf_sleep_ms(10);
   }
   return p(r);
@@ -135,7 +145,9 @@ static int saw_connected_ok(const conf_recorder* r)
   for (size_t i = 0; i < r->count; ++i)
   {
     if (r->kinds[i] == AZ_IOT_MQTT_EVT_CONNECTED && r->statuses[i] == AZ_IOT_OK)
+    {
       return 1;
+    }
   }
   return 0;
 }
@@ -162,7 +174,9 @@ static int saw_subscribe_ack_ok(const conf_recorder* r)
   for (size_t i = 0; i < r->count; ++i)
   {
     if (r->kinds[i] == AZ_IOT_MQTT_EVT_SUBSCRIBE_ACK && r->statuses[i] == AZ_IOT_OK)
+    {
       return 1;
+    }
   }
   return 0;
 }
@@ -172,7 +186,9 @@ static int saw_message(const conf_recorder* r)
   for (size_t i = 0; i < r->count; ++i)
   {
     if (r->kinds[i] == AZ_IOT_MQTT_EVT_MESSAGE)
+    {
       return 1;
+    }
   }
   return 0;
 }
@@ -198,7 +214,9 @@ static az_iot_mqtt_client* make_client(void)
 static void destroy_client(az_iot_mqtt_client* c)
 {
   if (c && c->iface && c->iface->destroy)
+  {
     c->iface->destroy(c);
+  }
 }
 
 static void connect_client(az_iot_mqtt_client* c, conf_recorder* rec, const char* client_id)
@@ -245,7 +263,9 @@ static int write_temp_pem(const char* pem, char* path_out, size_t cap)
   snprintf(path_out, cap, "az_iot_conf_bogus_ca_%lu.pem", conf_now_ms());
   FILE* f = fopen(path_out, "wb");
   if (!f)
+  {
     return 0;
+  }
   size_t n = strlen(pem);
   size_t w = fwrite(pem, 1, n, f);
   fclose(f);
@@ -577,14 +597,18 @@ static void connect_after_disconnect_reuses_the_client(void** state)
 static int env_truthy(const char* v)
 {
   if (!v || !*v)
+  {
     return 0;
+  }
   return (v[0] == '1' || v[0] == 't' || v[0] == 'T' || v[0] == 'y' || v[0] == 'Y');
 }
 
 int az_iot_conformance_run(az_iot_conformance_suite suite_kind, az_iot_mqtt_factory* factory)
 {
   if (!factory)
+  {
     return 1;
+  }
 
   /* Validate the factory's advertised version matches the requested suite. */
   az_iot_mqtt_version want = (suite_kind == AZ_IOT_CONFORMANCE_SUITE_V5)

@@ -68,13 +68,19 @@ static size_t der_enc_int(uint8_t* out, size_t cap, const uint8_t* val, size_t v
 
   size_t o = 0;
   if (o + 1 > cap)
+  {
     return 0;
+  }
   out[o++] = 0x02; /* INTEGER */
   o += der_enc_len(out + o, content_len);
   if (o + content_len > cap)
+  {
     return 0;
+  }
   if (pad)
+  {
     out[o++] = 0x00;
+  }
   memcpy(out + o, val, val_len);
   o += val_len;
   return o;
@@ -95,20 +101,28 @@ static size_t build_rsa_public_der(
 
   n = der_enc_int(body + bo, sizeof(body) - bo, modulus, modulus_len);
   if (n == 0)
+  {
     return 0;
+  }
   bo += n;
   n = der_enc_int(body + bo, sizeof(body) - bo, exponent, exponent_len);
   if (n == 0)
+  {
     return 0;
+  }
   bo += n;
 
   size_t o = 0;
   if (o + 1 > der_cap)
+  {
     return 0;
+  }
   der[o++] = 0x30; /* SEQUENCE */
   o += der_enc_len(der + o, bo);
   if (o + bo > der_cap)
+  {
     return 0;
+  }
   memcpy(der + o, body, bo);
   o += bo;
   return o;
@@ -137,13 +151,17 @@ static int32_t psa_verify_rs256(
   }
 
   if (psa_crypto_init() != PSA_SUCCESS)
+  {
     return AZ_IOT_ADU_RESULT_FAILURE;
+  }
 
   uint8_t der[DER_BUFFER_SIZE];
   size_t der_len
       = build_rsa_public_der(der, sizeof(der), modulus, modulus_len, exponent, exponent_len);
   if (der_len == 0)
+  {
     return AZ_IOT_ADU_RESULT_FAILURE;
+  }
 
   psa_algorithm_t alg = PSA_ALG_RSA_PKCS1V15_SIGN(PSA_ALG_SHA_256);
   psa_key_attributes_t attr = PSA_KEY_ATTRIBUTES_INIT;
@@ -179,9 +197,13 @@ static int32_t psa_sha256_oneshot(
 {
   (void)user_ctx;
   if (!hash_out || (!data && data_len != 0))
+  {
     return AZ_IOT_ADU_RESULT_FAILURE;
+  }
   if (psa_crypto_init() != PSA_SUCCESS)
+  {
     return AZ_IOT_ADU_RESULT_FAILURE;
+  }
 
   size_t hash_len = 0;
   return (psa_hash_compute(PSA_ALG_SHA_256, data, data_len, hash_out, 32, &hash_len) == PSA_SUCCESS)
@@ -193,7 +215,9 @@ static int32_t psa_sha256_begin(void** ctx_out, void* user_ctx)
 {
   (void)user_ctx;
   if (!ctx_out)
+  {
     return AZ_IOT_ADU_RESULT_FAILURE;
+  }
   if (psa_crypto_init() != PSA_SUCCESS)
   {
     *ctx_out = NULL;
@@ -222,7 +246,9 @@ static int32_t psa_sha256_feed(void* ctx, const uint8_t* data, size_t len, void*
 {
   (void)user_ctx;
   if (!ctx || (!data && len != 0))
+  {
     return AZ_IOT_ADU_RESULT_FAILURE;
+  }
   return (psa_hash_update((psa_hash_operation_t*)ctx, data, len) == PSA_SUCCESS)
       ? AZ_IOT_ADU_RESULT_SUCCESS
       : AZ_IOT_ADU_RESULT_FAILURE;

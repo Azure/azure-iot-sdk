@@ -61,7 +61,9 @@ static int teardown(void** state)
     bool adopted = (fx->client->factory_count > 0);
     az_iot_connection_client_destroy(&fx->client_storage);
     if (!adopted)
+    {
       az_iot_mock_mqtt_factory_destroy(fx->factory);
+    }
     free(fx);
   }
   return 0;

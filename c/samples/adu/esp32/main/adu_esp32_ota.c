@@ -29,9 +29,13 @@ static bool span_to_cstr(az_span s, char* out, size_t cap)
 {
   int32_t n = az_span_size(s);
   if (n < 0 || (size_t)n + 1 > cap)
+  {
     return false;
+  }
   if (n > 0)
+  {
     memcpy(out, az_span_ptr(s), (size_t)n);
+  }
   out[n] = '\0';
   return true;
 }
@@ -86,7 +90,9 @@ static int32_t ota_download(
   };
   esp_http_client_handle_t client = esp_http_client_init(&http);
   if (!client)
+  {
     return AZ_IOT_ADU_RESULT_FAILURE;
+  }
 
   int32_t result = AZ_IOT_ADU_RESULT_FAILURE;
   esp_err_t err = esp_http_client_open(client, 0);
@@ -123,9 +129,13 @@ static int32_t ota_download(
     if (r == 0)
     {
       if (esp_http_client_is_complete_data_received(client))
+      {
         break;
+      }
       if (esp_http_client_is_chunked_response(client))
+      {
         break;
+      }
       break;
     }
     if (esp_ota_write(c->ota_handle, buf, (size_t)r) != ESP_OK)
@@ -282,7 +292,9 @@ static int32_t ota_restore(
   /* Point boot back at the currently-running (good) partition. */
   const esp_partition_t* running = esp_ota_get_running_partition();
   if (running)
+  {
     esp_ota_set_boot_partition(running);
+  }
   return AZ_IOT_ADU_RESULT_SUCCESS;
 }
 
@@ -295,7 +307,9 @@ static int32_t ota_persist(const uint8_t* blob, size_t len, void* user_ctx)
   (void)user_ctx;
   nvs_handle_t h;
   if (nvs_open(ADU_NVS_NAMESPACE, NVS_READWRITE, &h) != ESP_OK)
+  {
     return AZ_IOT_ADU_RESULT_FAILURE;
+  }
   int32_t result = AZ_IOT_ADU_RESULT_FAILURE;
   if (nvs_set_blob(h, ADU_NVS_STATE_KEY, blob, len) == ESP_OK && nvs_commit(h) == ESP_OK)
   {
@@ -311,12 +325,16 @@ static int32_t ota_load(uint8_t* blob, size_t cap, size_t* out_len, void* user_c
   (void)user_ctx;
   nvs_handle_t h;
   if (nvs_open(ADU_NVS_NAMESPACE, NVS_READONLY, &h) != ESP_OK)
+  {
     return 1; /* nothing persisted */
+  }
   size_t len = cap;
   esp_err_t err = nvs_get_blob(h, ADU_NVS_STATE_KEY, blob, &len);
   nvs_close(h);
   if (err != ESP_OK)
+  {
     return 1;
+  }
   *out_len = len;
   return 0;
 }
@@ -333,7 +351,9 @@ void adu_esp32_ota_mark_valid(void)
       && state == ESP_OTA_IMG_PENDING_VERIFY)
   {
     if (esp_ota_mark_app_valid_cancel_rollback() == ESP_OK)
+    {
       ESP_LOGI(TAG, "image confirmed valid; rollback cancelled");
+    }
   }
 }
 
