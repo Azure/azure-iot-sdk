@@ -23,6 +23,16 @@
 #define MANAGED_RSA_KEY_BITS 2048
 #define MANAGED_EC_CURVE_NAME "P-256"
 
+/* An optional C string a caller may leave unset either way: NULL and "" both
+ * mean "not supplied". Stated positively so call sites read as "this was
+ * supplied" rather than a negated absence; the parameter is parenthesised so an
+ * expression argument cannot misparse.
+ *
+ * Duplicated from c/src/core/internal/span_writer.h on purpose: adapters may
+ * include only public azure/iot headers, so they cannot reach that one. The
+ * Paho adapter carries the same copy for the same reason. */
+#define is_nonempty_cstr(s) ((s) != NULL && (s)[0] != '\0')
+
 /* PEM framing written around each base64 DER certificate the service issues. */
 #define PEM_CERT_BEGIN "-----BEGIN CERTIFICATE-----\n"
 #define PEM_CERT_END "\n-----END CERTIFICATE-----\n"
@@ -194,8 +204,8 @@ static az_iot_result managed_get_csr(
     goto done;
   }
   {
-    const char* cn = (subject_common_name && subject_common_name[0]) ? subject_common_name
-                                                                     : "azure-iot-device";
+    const char* cn
+        = is_nonempty_cstr(subject_common_name) ? subject_common_name : "azure-iot-device";
     if (X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_UTF8, (const unsigned char*)cn, -1, -1, 0)
         != 1)
     {
@@ -368,10 +378,10 @@ az_iot_result az_iot_certificate_provider_managed_init(
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
-  if (!opts->bootstrap_cert_pem_path || !opts->bootstrap_cert_pem_path[0]
-      || !opts->bootstrap_key_pem_path || !opts->bootstrap_key_pem_path[0]
-      || !opts->operational_key_pem_path || !opts->operational_key_pem_path[0]
-      || !opts->operational_cert_pem_path || !opts->operational_cert_pem_path[0])
+  if (!is_nonempty_cstr(opts->bootstrap_cert_pem_path)
+      || !is_nonempty_cstr(opts->bootstrap_key_pem_path)
+      || !is_nonempty_cstr(opts->operational_key_pem_path)
+      || !is_nonempty_cstr(opts->operational_cert_pem_path))
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
@@ -390,7 +400,7 @@ az_iot_result az_iot_certificate_provider_managed_init(
     az_iot_certificate_provider_managed_destroy(provider);
     return AZ_IOT_ERR_OUT_OF_MEMORY;
   }
-  if (opts->trusted_ca_pem_path && opts->trusted_ca_pem_path[0])
+  if (is_nonempty_cstr(opts->trusted_ca_pem_path))
   {
     provider->trusted_ca_path = dup_str(opts->trusted_ca_pem_path);
     if (!provider->trusted_ca_path)

@@ -240,7 +240,7 @@ static az_iot_result fileupload_resolve_endpoint(
    * two call for opposite responses: an application told AZ_IOT_ERR_INVALID_ARG
    * would go auditing its own arguments, when what it should do is retry once
    * the connection is up. */
-  if (!host || !host[0] || !device_id || !device_id[0])
+  if (!is_nonempty_cstr(host) || !is_nonempty_cstr(device_id))
   {
     return AZ_IOT_ERR_NOT_CONNECTED;
   }
@@ -323,7 +323,7 @@ az_iot_result az_iot_file_upload_client_get_sas_uri(
     az_iot_file_upload_sas_callback cb,
     void* user_ctx)
 {
-  if (!client || !blob_name || !blob_name[0] || !cb)
+  if (!client || !is_nonempty_cstr(blob_name) || !cb)
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
@@ -438,7 +438,7 @@ az_iot_result az_iot_file_upload_client_notify_complete(
     az_iot_file_upload_complete_callback cb,
     void* user_ctx)
 {
-  if (!client || !correlation_id || !correlation_id[0] || !cb)
+  if (!client || !is_nonempty_cstr(correlation_id) || !cb)
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }

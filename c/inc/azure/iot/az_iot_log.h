@@ -77,7 +77,29 @@ extern "C"
  * not an alternative: the application chooses where diagnostics go.
  *
  * The severity constants are spelled AZ_IOT_LOG_LEVEL_* precisely so that these
- * macro names stay free; nothing here shadows an enumerator. */
+ * macro names stay free; nothing here shadows an enumerator.
+ *
+ * WHY TWO FAMILIES. AZ_IOT_LOG_X takes a ready-made string; AZ_IOT_LOG_XF takes
+ * a printf format and arguments. A single variadic family would be shorter to
+ * declare, and would be wrong for two reasons.
+ *
+ * The first is safety, and it is the one that matters everywhere. In a variadic
+ * family the first argument is a format string, so AZ_IOT_LOG_ERROR(msg) would
+ * hand a runtime value to printf as a format. Any percent sign travelling in
+ * that value -- a topic filter, a service response, anything reflected back
+ * from the network -- is then interpreted as a conversion with no argument
+ * behind it, which is undefined behaviour and historically a way to read the
+ * stack. Splitting the families makes the safe form the default and the shorter
+ * name, so reaching for the dangerous one has to be deliberate. The F variants
+ * carry __attribute__((format(printf))) on GCC and clang, so their arguments
+ * are checked at compile time.
+ *
+ * The second is footprint, and it is conditional. az_iot_log_emit() never calls
+ * vsnprintf, so a build that uses only the non-F macros does not pull the
+ * formatting machinery onto the link line. That is worth real bytes on an
+ * embedded libc where stdio is opt-in -- newlib-nano and similar -- and worth
+ * nothing on a hosted glibc build, which links printf regardless of what this
+ * SDK calls. Claim the saving only for the former. */
 #define AZ_IOT_LOG_TRACE(msg) az_iot_log_emit(AZ_IOT_LOG_LEVEL_TRACE, __FILE__, __LINE__, (msg))
 #define AZ_IOT_LOG_DEBUG(msg) az_iot_log_emit(AZ_IOT_LOG_LEVEL_DEBUG, __FILE__, __LINE__, (msg))
 #define AZ_IOT_LOG_INFO(msg) az_iot_log_emit(AZ_IOT_LOG_LEVEL_INFO, __FILE__, __LINE__, (msg))

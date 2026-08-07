@@ -406,7 +406,7 @@ static int paho_trace_level_from_env(void)
   }
 #else
   const char* env = getenv("AZ_IOT_PAHO_TRACE");
-  if (!env || !env[0])
+  if (!is_nonempty_cstr(env))
   {
     return -1;
   }
