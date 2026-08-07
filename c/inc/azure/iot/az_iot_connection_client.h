@@ -126,6 +126,17 @@ extern "C"
 
   typedef void (*az_iot_publish_ack_callback)(az_iot_result status, void* user_ctx);
 
+  /* Notified when an MQTT session ends -- peer disconnect, transport error, or a
+   * user close -- so a feature client can complete whatever it had correlated
+   * against that session instead of waiting forever for a response that can no
+   * longer arrive. Registered through the internal header; applications use
+   * az_iot_connection_client_set_state_callback() instead.
+   *
+   * Deliberately NOT invoked from destroy(), for the same reason pending QoS-1
+   * acknowledgements are not completed there: the application is tearing the
+   * client down and the context the callback closes over may already be gone. */
+  typedef void (*az_iot_session_end_callback)(void* user_ctx);
+
   /* ---- Runtime Hub-side certificate renewal (Classic hub) ------------------ */
   /* Device-initiated CSR to the connected hub. Two-phase: ACCEPTED (202) then
    * ISSUED (200) with the new chain, or FAILED. See docs/eng/certificate-management.md. */
@@ -169,6 +180,11 @@ extern "C"
 #endif
 #ifndef AZ_IOT_MAX_PERSISTENT_SUBS
 #define AZ_IOT_MAX_PERSISTENT_SUBS 8
+#endif
+/* Feature clients that correlate a request against a session (twin GET/PATCH,
+ * hub certificate renewal) register here to be told when that session ends. */
+#ifndef AZ_IOT_MAX_SESSION_HANDLERS
+#define AZ_IOT_MAX_SESSION_HANDLERS 4
 #endif
 #ifndef AZ_IOT_PERSISTENT_SUB_TOPIC_MAX
 #define AZ_IOT_PERSISTENT_SUB_TOPIC_MAX 128
@@ -288,6 +304,13 @@ extern "C"
       az_iot_mqtt_qos qos;
       bool in_use;
     } persistent_subs[AZ_IOT_MAX_PERSISTENT_SUBS];
+
+    struct
+    {
+      az_iot_session_end_callback cb;
+      void* user_ctx;
+      bool in_use;
+    } session_handlers[AZ_IOT_MAX_SESSION_HANDLERS];
 
     /* Effective hub hostname / device id when not caller-provided (DPS-assigned,
      * mock, or runtime-set). Inline fixed buffers in this caller-allocated struct

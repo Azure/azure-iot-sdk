@@ -39,6 +39,17 @@
 #define TWIN_PENDING_GET 1
 #define TWIN_PENDING_PATCH 2
 
+/* Status codes carried on the twin response topic, per the IoT Hub twin
+ * documentation. The values happen to coincide with HTTP status codes, but the
+ * service contract does not state that they are HTTP codes, so nothing here
+ * depends on that: they are declared as twin constants rather than borrowed
+ * from an HTTP header. */
+#define TWIN_STATUS_SUCCESS_MIN 200
+#define TWIN_STATUS_SUCCESS_LIMIT 300 /* exclusive upper bound */
+#define TWIN_STATUS_BAD_REQUEST 400
+#define TWIN_STATUS_NOT_FOUND 404
+#define TWIN_STATUS_THROTTLED 429
+
 /* Internal shorthand to access _internal fields */
 #define TI(t) ((t)->_internal)
 
@@ -165,16 +176,82 @@ static bool query_value(const char* qs, const char* key, char* out, size_t cap)
   return false;
 }
 
-/* Map an HTTP-style status (200, 204, 404, 429, 5xx) to an az_iot result code. */
+/* Map the service status on a twin response onto an az_iot result.
+ *
+ * The documented set is 200 (GET success), 204 (PATCH success), 400 (malformed
+ * reported-properties JSON), 429 (throttled) and 5xx (server errors). Each one
+ * the caller can act on differently gets its own code:
+ *
+ *   400 -> INVALID_ARG   the patch this device sent was not accepted; resending
+ *                        it unchanged will fail again.
+ *   404 -> NOT_FOUND     undocumented for twin but cheap to distinguish.
+ *   429 -> BUSY          back off and retry. Deliberately NOT NOT_SUPPORTED,
+ *                        which is what a full pending table returns -- a caller
+ *                        must be able to tell "the service is throttling me"
+ *                        from "I have too many requests in flight locally".
+ *   else -> MQTT         server errors and anything unrecognised. */
 static az_iot_result status_to_result(int status)
 {
-  if (status >= 200 && status < 300)
+  if (status >= TWIN_STATUS_SUCCESS_MIN && status < TWIN_STATUS_SUCCESS_LIMIT)
+  {
     return AZ_IOT_OK;
-  if (status == 404)
+  }
+  if (status == TWIN_STATUS_BAD_REQUEST)
+  {
     return AZ_IOT_ERR_INVALID_ARG;
-  if (status == 429)
-    return AZ_IOT_ERR_NOT_SUPPORTED;
+  }
+  if (status == TWIN_STATUS_NOT_FOUND)
+  {
+    return AZ_IOT_ERR_NOT_FOUND;
+  }
+  if (status == TWIN_STATUS_THROTTLED)
+  {
+    return AZ_IOT_ERR_BUSY;
+  }
   return AZ_IOT_ERR_MQTT;
+}
+
+/* Complete every pending request with an error and release its slot.
+ *
+ * Called when the MQTT session ends. The responses these requests were waiting
+ * for would have arrived on that session, so they can never come now; holding
+ * the slots would leak one per outage until AZ_IOT_TWIN_MAX_PENDING is gone and
+ * the client refuses every further request.
+ *
+ * The slot is released BEFORE the callback runs so a callback that re-issues
+ * its request immediately can claim it. */
+static void twin_fail_pending(void* user_ctx)
+{
+  az_iot_twin_client* t = (az_iot_twin_client*)user_ctx;
+  if (!t)
+  {
+    return;
+  }
+
+  for (int i = 0; i < AZ_IOT_TWIN_MAX_PENDING; ++i)
+  {
+    if (!TI(t).pending[i].in_use)
+    {
+      continue;
+    }
+
+    int kind = TI(t).pending[i].kind;
+    az_iot_twin_get_callback get_cb = TI(t).pending[i].cb.get_cb;
+    az_iot_twin_patch_ack_callback patch_cb = TI(t).pending[i].cb.patch_cb;
+    void* ctx = TI(t).pending[i].user_ctx;
+
+    TI(t).pending[i].in_use = false;
+    TI(t).pending[i].kind = TWIN_PENDING_NONE;
+
+    if (kind == TWIN_PENDING_GET && get_cb)
+    {
+      get_cb(AZ_IOT_ERR_NOT_CONNECTED, NULL, 0, ctx);
+    }
+    else if (kind == TWIN_PENDING_PATCH && patch_cb)
+    {
+      patch_cb(AZ_IOT_ERR_NOT_CONNECTED, ctx);
+    }
+  }
 }
 
 /* ------------------------------------------------------------------------- */
@@ -522,6 +599,21 @@ az_iot_result az_iot_twin_client_init(az_iot_twin_client* client, az_iot_connect
     }
   }
 
+  /* Be told when the session ends so pending GET/PATCH requests are completed
+   * and their slots released, rather than waiting for a response that died
+   * with the session. Registered last: everything above can still fail and
+   * unwind, and this must not outlive a failed init. */
+  {
+    az_iot_result r
+        = az_iot_connection_client__register_session_end_handler(conn, twin_fail_pending, client);
+    if (r != AZ_IOT_OK)
+    {
+      (void)az_iot_connection_client__unregister_inbound_handlers(conn, client);
+      memset(client, 0, sizeof(*client));
+      return r;
+    }
+  }
+
   return AZ_IOT_OK;
 }
 
@@ -529,6 +621,7 @@ void az_iot_twin_client_destroy(az_iot_twin_client* client)
 {
   if (!client)
     return;
+  (void)az_iot_connection_client__unregister_session_end_handler(TI(client).conn, client);
   (void)az_iot_connection_client__unregister_inbound_handlers(TI(client).conn, client);
   memset(client, 0, sizeof(*client));
 }
