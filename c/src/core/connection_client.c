@@ -1958,7 +1958,9 @@ az_iot_result az_iot_connection_client__register_session_end_handler(
     void* user_ctx)
 {
   if (!client || !cb)
+  {
     return AZ_IOT_ERR_INVALID_ARG;
+  }
 
   size_t free_slot = AZ_IOT_MAX_SESSION_HANDLERS;
   for (size_t i = 0; i < AZ_IOT_MAX_SESSION_HANDLERS; ++i)
@@ -1996,7 +1998,9 @@ size_t az_iot_connection_client__unregister_session_end_handler(
     void* user_ctx)
 {
   if (!client)
+  {
     return 0;
+  }
   for (size_t i = 0; i < AZ_IOT_MAX_SESSION_HANDLERS; ++i)
   {
     if (client->session_handlers[i].in_use && client->session_handlers[i].user_ctx == user_ctx)

@@ -39,6 +39,16 @@
 #define TWIN_PENDING_GET 1
 #define TWIN_PENDING_PATCH 2
 
+/* Twin response status codes. IoT Hub reuses HTTP status semantics on the twin
+ * response topic. azure-sdk-for-c spells the same values as AZ_HTTP_STATUS_CODE_*,
+ * but those live in az_http.h next to the HTTP pipeline types and nothing else in
+ * c/src includes an azure/core header directly. */
+#define TWIN_STATUS_SUCCESS_MIN 200
+#define TWIN_STATUS_SUCCESS_LIMIT 300 /* exclusive upper bound */
+#define TWIN_STATUS_BAD_REQUEST 400
+#define TWIN_STATUS_NOT_FOUND 404
+#define TWIN_STATUS_THROTTLED 429
+
 /* Internal shorthand to access _internal fields */
 #define TI(t) ((t)->_internal)
 
@@ -181,14 +191,22 @@ static bool query_value(const char* qs, const char* key, char* out, size_t cap)
  *   else -> MQTT         server errors and anything unrecognised. */
 static az_iot_result status_to_result(int status)
 {
-  if (status >= 200 && status < 300)
+  if (status >= TWIN_STATUS_SUCCESS_MIN && status < TWIN_STATUS_SUCCESS_LIMIT)
+  {
     return AZ_IOT_OK;
-  if (status == 400)
+  }
+  if (status == TWIN_STATUS_BAD_REQUEST)
+  {
     return AZ_IOT_ERR_INVALID_ARG;
-  if (status == 404)
+  }
+  if (status == TWIN_STATUS_NOT_FOUND)
+  {
     return AZ_IOT_ERR_NOT_FOUND;
-  if (status == 429)
+  }
+  if (status == TWIN_STATUS_THROTTLED)
+  {
     return AZ_IOT_ERR_BUSY;
+  }
   return AZ_IOT_ERR_MQTT;
 }
 
@@ -205,12 +223,16 @@ static void twin_fail_pending(void* user_ctx)
 {
   az_iot_twin_client* t = (az_iot_twin_client*)user_ctx;
   if (!t)
+  {
     return;
+  }
 
   for (int i = 0; i < AZ_IOT_TWIN_MAX_PENDING; ++i)
   {
     if (!TI(t).pending[i].in_use)
+    {
       continue;
+    }
 
     int kind = TI(t).pending[i].kind;
     az_iot_twin_get_callback get_cb = TI(t).pending[i].cb.get_cb;
@@ -221,9 +243,13 @@ static void twin_fail_pending(void* user_ctx)
     TI(t).pending[i].kind = TWIN_PENDING_NONE;
 
     if (kind == TWIN_PENDING_GET && get_cb)
+    {
       get_cb(AZ_IOT_ERR_NOT_CONNECTED, NULL, 0, ctx);
+    }
     else if (kind == TWIN_PENDING_PATCH && patch_cb)
+    {
       patch_cb(AZ_IOT_ERR_NOT_CONNECTED, ctx);
+    }
   }
 }
 
