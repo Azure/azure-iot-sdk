@@ -1021,13 +1021,21 @@ void e2e_amqp_filenotify_stats(
     int* out_unparsed)
 {
   if (out_delivered != NULL)
+  {
     *out_delivered = f->delivered_count;
+  }
   if (out_captured != NULL)
+  {
     *out_captured = f->captured_count;
+  }
   if (out_released != NULL)
+  {
     *out_released = f->released_count;
+  }
   if (out_unparsed != NULL)
+  {
     *out_unparsed = f->unparsed_count;
+  }
 }
 
 void e2e_amqp_filenotify_end(e2e_amqp_filenotify* f)

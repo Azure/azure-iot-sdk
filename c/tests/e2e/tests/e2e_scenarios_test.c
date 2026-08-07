@@ -520,7 +520,9 @@ static void test_twin(void** state)
     if (!reported_seen)
     {
       for (int i = 0; i < 50; ++i)
+      {
         device_do_work(fx, E2E_PUMP_MS);
+      }
     }
   }
   assert_true(reported_seen);

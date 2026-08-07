@@ -100,23 +100,33 @@ static bool split_url(const char* url, char* host, size_t host_cap, char* path, 
 {
   const char* p = url;
   if (strncmp(p, "https://", 8) == 0)
+  {
     p += 8;
+  }
   else if (strncmp(p, "http://", 7) == 0)
+  {
     p += 7;
+  }
   else
+  {
     return false;
+  }
 
   const char* slash = strchr(p, '/');
   size_t host_len = (slash != NULL) ? (size_t)(slash - p) : strlen(p);
   if (host_len == 0 || host_len + 1 > host_cap)
+  {
     return false;
+  }
   memcpy(host, p, host_len);
   host[host_len] = '\0';
 
   const char* rest = (slash != NULL) ? slash : "/";
   size_t path_len = strlen(rest);
   if (path_len + 1 > path_cap)
+  {
     return false;
+  }
   memcpy(path, rest, path_len + 1);
   return true;
 }
@@ -139,7 +149,9 @@ static az_iot_result e2e_http_send(
   char host[256];
   char path[1024];
   if (!split_url(url, host, sizeof(host), path, sizeof(path)))
+  {
     return AZ_IOT_ERR_INVALID_ARG;
+  }
 
   int status = 0;
   size_t resp_len = 0;
@@ -183,9 +195,13 @@ static void on_sas(az_iot_result status, const char* uri, const char* corr, void
   u->sas_done = true;
   u->sas_status = status;
   if (uri)
+  {
     snprintf(u->sas_uri, sizeof(u->sas_uri), "%s", uri);
+  }
   if (corr)
+  {
     snprintf(u->correlation_id, sizeof(u->correlation_id), "%s", corr);
+  }
 }
 
 static void on_notify(az_iot_result status, void* ctx)
@@ -405,7 +421,9 @@ static int group_teardown(void** state)
 {
   (void)state;
   if (g_fx.fu_ok)
+  {
     az_iot_file_upload_client_destroy(&g_fx.fu);
+  }
   if (g_fx.svc != NULL)
   {
     az_iot_e2e_service_file_notification_watch_end(g_fx.svc);

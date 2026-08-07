@@ -70,7 +70,9 @@ static inline bool az_iot_test_saw_state(
   for (size_t i = 0; i < log->count; ++i)
   {
     if (log->states[i] == state)
+    {
       return true;
+    }
   }
   return false;
 }
@@ -84,7 +86,9 @@ static inline size_t az_iot_test_count_state(
   for (size_t i = 0; i < log->count; ++i)
   {
     if (log->states[i] == state)
+    {
       n++;
+    }
   }
   return n;
 }
@@ -97,7 +101,9 @@ static inline az_iot_result az_iot_test_reason_for(
   for (size_t i = 0; i < log->count; ++i)
   {
     if (log->states[i] == state)
+    {
       return log->reasons[i];
+    }
   }
   return AZ_IOT_OK;
 }

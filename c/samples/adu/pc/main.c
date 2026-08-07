@@ -79,7 +79,9 @@ typedef struct
 static void sleep_ms(long ms)
 {
   if (ms <= 0)
+  {
     return;
+  }
 #if defined(_WIN32)
   Sleep((DWORD)ms);
 #else
@@ -98,7 +100,9 @@ static char* sample_getenv(const char* name)
   char* v = NULL;
   size_t n = 0;
   if (_dupenv_s(&v, &n, name) != 0)
+  {
     return NULL;
+  }
   return v;
 #else
   return getenv(name);
@@ -222,11 +226,15 @@ static int32_t sim_persist(const uint8_t* blob, size_t len, void* user_ctx)
   sim_ctx* s = (sim_ctx*)user_ctx;
   FILE* f = fopen(s->state_file, "wb");
   if (f == NULL)
+  {
     return AZ_IOT_ADU_RESULT_FAILURE;
+  }
   size_t w = fwrite(blob, 1, len, f);
   fclose(f);
   if (w != len)
+  {
     return AZ_IOT_ADU_RESULT_FAILURE;
+  }
   printf("  [persist] %zu bytes -> %s\n", len, s->state_file);
   return AZ_IOT_ADU_RESULT_SUCCESS;
 }
@@ -236,12 +244,16 @@ static int32_t sim_load(uint8_t* blob, size_t cap, size_t* out_len, void* user_c
   sim_ctx* s = (sim_ctx*)user_ctx;
   FILE* f = fopen(s->state_file, "rb");
   if (f == NULL)
+  {
     return 1; /* nothing persisted */
+  }
   size_t r = fread(blob, 1, cap, f);
   int eof = feof(f);
   fclose(f);
   if (!eof)
+  {
     return 1; /* blob did not fit in cap -> treat as no state */
+  }
   *out_len = r;
   return 0;
 }
@@ -494,7 +506,9 @@ int main(void)
   {
     (void)az_iot_connection_client_do_work(&st.connection_client, 50);
     if (g_conn_state == AZ_IOT_CONN_STATE_FAULTED)
+    {
       break;
+    }
   }
 
   if (g_conn_state == AZ_IOT_CONN_STATE_CONNECTED)
@@ -518,7 +532,9 @@ int main(void)
         prev = cur;
       }
       if (cur != AZ_IOT_ADU_STATE_IDLE)
+      {
         saw_active = 1;
+      }
 
       /* A (simulated) reboot was requested: state is persisted; exit so
        * the operator can "reboot" and re-run to resume. */
@@ -549,7 +565,9 @@ int main(void)
 
   az_iot_connection_client_close(&st.connection_client);
   for (int i = 0; i < 100 && g_conn_state != AZ_IOT_CONN_STATE_IDLE; ++i)
+  {
     (void)az_iot_connection_client_do_work(&st.connection_client, 50);
+  }
 
   sample_state_destroy(&st);
   return rc;

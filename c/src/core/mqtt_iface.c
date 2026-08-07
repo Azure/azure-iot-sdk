@@ -38,13 +38,17 @@ const char* az_iot_mqtt_version_to_string(az_iot_mqtt_version v)
 az_iot_result az_iot_mqtt_connack_result(az_iot_mqtt_version version, int connack_code)
 {
   if (connack_code == 0)
+  {
     return AZ_IOT_OK;
+  }
 
   /* Adapters signal their own failures (socket refused, TLS handshake, client
    * library error) with negative codes. Those never reached a broker, so they
    * carry no verdict about the identity. */
   if (connack_code < 0)
+  {
     return AZ_IOT_ERR_MQTT;
+  }
 
   if (version == AZ_IOT_MQTT_VERSION_5)
   {

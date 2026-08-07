@@ -66,15 +66,25 @@ static EVP_PKEY* rsa_pubkey_from_raw(
 
 cleanup:
   if (ctx != NULL)
+  {
     EVP_PKEY_CTX_free(ctx);
+  }
   if (params != NULL)
+  {
     OSSL_PARAM_free(params);
+  }
   if (bld != NULL)
+  {
     OSSL_PARAM_BLD_free(bld);
+  }
   if (e != NULL)
+  {
     BN_free(e);
+  }
   if (n != NULL)
+  {
     BN_free(n);
+  }
   return pkey;
 }
 
@@ -151,7 +161,9 @@ static int32_t openssl_sha256_init(void** ctx_out, void* user_ctx)
   if (md_ctx == NULL || EVP_DigestInit_ex(md_ctx, EVP_sha256(), NULL) != 1)
   {
     if (md_ctx != NULL)
+    {
       EVP_MD_CTX_free(md_ctx);
+    }
     *ctx_out = NULL;
     return AZ_IOT_ADU_RESULT_FAILURE;
   }
@@ -180,7 +192,9 @@ static int32_t openssl_sha256_final(void* ctx, uint8_t hash_out[32], void* user_
   {
     /* Still free the context if present to avoid a leak on misuse. */
     if (ctx != NULL)
+    {
       EVP_MD_CTX_free((EVP_MD_CTX*)ctx);
+    }
     return AZ_IOT_ADU_RESULT_FAILURE;
   }
 

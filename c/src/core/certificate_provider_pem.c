@@ -36,7 +36,9 @@ static az_iot_result read_file_content(const char* path, char** out)
   *out = NULL;
   FILE* f = fopen(path, "rb");
   if (!f)
+  {
     return AZ_IOT_ERR_NOT_INITIALIZED;
+  }
   if (fseek(f, 0, SEEK_END) != 0)
   {
     fclose(f);
@@ -80,9 +82,13 @@ static az_iot_result pem_load(
   az_iot_certificate_provider_pem* m = (az_iot_certificate_provider_pem*)self;
   (void)role; /* static-cert provider: same material for bootstrap and operational */
   if (!m || !out)
+  {
     return AZ_IOT_ERR_INVALID_ARG;
+  }
   if (!m->loaded)
+  {
     return AZ_IOT_ERR_NOT_INITIALIZED;
+  }
 
   out->trusted_ca_pem = m->trusted_ca;
   out->client_cert_pem = m->client_cert;
@@ -117,11 +123,15 @@ static const az_iot_certificate_provider_vtable s_pem_vtable = {
 static char* dup_str(const char* s)
 {
   if (!s)
+  {
     return NULL;
+  }
   size_t n = strlen(s);
   char* out = (char*)malloc(n + 1);
   if (!out)
+  {
     return NULL;
+  }
   memcpy(out, s, n + 1);
   return out;
 }
@@ -129,7 +139,9 @@ static char* dup_str(const char* s)
 void az_iot_certificate_provider_pem_destroy(az_iot_certificate_provider_pem* provider)
 {
   if (!provider)
+  {
     return;
+  }
   free(provider->trusted_ca);
   free(provider->client_cert);
   free(provider->client_key);

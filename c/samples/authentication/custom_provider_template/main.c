@@ -41,11 +41,15 @@ typedef struct
 static char* dup_cstr(const char* s)
 {
   if (!s)
+  {
     return NULL;
+  }
   size_t n = strlen(s) + 1;
   char* out = (char*)malloc(n);
   if (out)
+  {
     memcpy(out, s, n);
+  }
   return out;
 }
 
@@ -56,7 +60,9 @@ static az_iot_result my_load(
 {
   my_provider* m = (my_provider*)self;
   if (!m || !out)
+  {
     return AZ_IOT_ERR_INVALID_ARG;
+  }
 
   memset(out, 0, sizeof(*out));
   out->trusted_ca_path = m->trusted_ca_path;
@@ -64,7 +70,9 @@ static az_iot_result my_load(
   if (role == AZ_IOT_CRED_OPERATIONAL)
   {
     if (!m->has_operational)
+    {
       return AZ_IOT_ERR_NOT_FOUND;
+    }
     /* Point the adapter at your issued operational cert. For a
      * non-extractable key, leave client_key_* NULL and set client_key_uri
      * (e.g. "pkcs11:token=...;object=...") + crypto_engine_id so the TLS
@@ -94,7 +102,9 @@ static az_iot_result my_get_csr(
 {
   (void)self;
   if (!out_csr)
+  {
     return AZ_IOT_ERR_INVALID_ARG;
+  }
 
   /* REPLACE ME: build a real PKCS#10 CSR (base64 DER, no PEM headers) whose
    * subject CN is `subject_common_name`, signed by your device key. The
@@ -123,7 +133,9 @@ static az_iot_result my_store_issued_certificate(
 {
   my_provider* m = (my_provider*)self;
   if (!m || !issued)
+  {
     return AZ_IOT_ERR_INVALID_ARG;
+  }
 
   /* REPLACE ME: persist issued->certificates[0..count) - each entry is a
    * base64 DER cert (az_span); PEM-wrap and write it wherever your platform
@@ -182,7 +194,9 @@ int main(void)
    * Here we just exercise the vtable to prove the wiring. */
   az_iot_certificate_signing_request csr = { 0 };
   if (provider.base.vtable->get_csr(&provider.base, "my-device-id", &csr) != AZ_IOT_OK)
+  {
     return 1;
+  }
   fprintf(stderr, "[custom] get_csr produced: %s\n", csr.csr_base64);
   provider.base.vtable->release_csr(&provider.base, &csr);
 

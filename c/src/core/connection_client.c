@@ -147,10 +147,14 @@ static void transition(
     az_iot_result reason)
 {
   if (c->state == next)
+  {
     return;
+  }
   c->state = next;
   if (c->state_cb)
+  {
     c->state_cb(next, reason, c->state_cb_ctx);
+  }
 }
 
 static const az_iot_mqtt_factory* find_factory(
@@ -161,7 +165,9 @@ static const az_iot_mqtt_factory* find_factory(
   {
     const az_iot_mqtt_factory* f = &c->factories[i];
     if (f->version != version)
+    {
       continue;
+    }
     return f;
   }
   return NULL;
@@ -279,14 +285,18 @@ static bool dps_configured(const az_iot_connection_client* c)
 static void dps_teardown_mqtt(az_iot_connection_client* c)
 {
   if (c->dps_mqtt && c->dps_mqtt->iface && c->dps_mqtt->iface->destroy)
+  {
     c->dps_mqtt->iface->destroy(c->dps_mqtt);
+  }
   c->dps_mqtt = NULL;
 }
 
 static void dps_finalize(az_iot_connection_client* c, az_iot_result status, bool have_assignment)
 {
   if (c->dps_pending_finalize)
+  {
     return;
+  }
   c->dps_pending_finalize = true;
   c->dps_pending_status = status;
   c->dps_pending_have_assignment = have_assignment;
@@ -299,7 +309,9 @@ static az_iot_result dps_do_register_publish(az_iot_connection_client* c)
   az_result ar = az_iot_provisioning_client_register_get_publish_topic(
       &c->dps_prov, topic, sizeof(topic), &topic_len);
   if (az_result_failed(ar))
+  {
     return AZ_IOT_ERR_INTERNAL;
+  }
 
   az_iot_mqtt_message msg = { 0 };
   msg.topic = topic;
@@ -363,7 +375,9 @@ static az_iot_result dps_do_register_publish(az_iot_connection_client* c)
   uint16_t pid = 0;
   az_iot_result r = c->dps_mqtt->iface->publish(c->dps_mqtt, &msg, &pid);
   if (r == AZ_IOT_OK)
+  {
     c->dps_phase = DPS_PHASE_REGISTERING;
+  }
   return r;
 }
 
@@ -375,7 +389,9 @@ static az_iot_result dps_do_query_publish(az_iot_connection_client* c)
   az_result ar = az_iot_provisioning_client_query_status_get_publish_topic(
       &c->dps_prov, op_id, topic, sizeof(topic), &topic_len);
   if (az_result_failed(ar))
+  {
     return AZ_IOT_ERR_INTERNAL;
+  }
 
   az_iot_mqtt_message msg = { 0 };
   msg.topic = topic;
@@ -384,7 +400,9 @@ static az_iot_result dps_do_query_publish(az_iot_connection_client* c)
   uint16_t pid = 0;
   az_iot_result r = c->dps_mqtt->iface->publish(c->dps_mqtt, &msg, &pid);
   if (r == AZ_IOT_OK)
+  {
     c->dps_phase = DPS_PHASE_REGISTERING;
+  }
   return r;
 }
 
@@ -408,21 +426,31 @@ static az_iot_result dps_store_issued_cert(az_iot_connection_client* c, az_span 
          && jr.token.kind != AZ_JSON_TOKEN_END_OBJECT)
   {
     if (jr.token.kind != AZ_JSON_TOKEN_PROPERTY_NAME)
+    {
       continue;
+    }
     bool m = az_json_token_is_text_equal(&jr.token, AZ_SPAN_FROM_STR(DPS_JSON_REGISTRATION_STATE));
     if (az_result_failed(az_json_reader_next_token(&jr)))
+    {
       return AZ_IOT_ERR_PROTOCOL;
+    }
     if (m && jr.token.kind == AZ_JSON_TOKEN_BEGIN_OBJECT)
     {
       in_reg = true;
       break;
     }
     if (jr.token.kind == AZ_JSON_TOKEN_BEGIN_OBJECT || jr.token.kind == AZ_JSON_TOKEN_BEGIN_ARRAY)
+    {
       if (az_result_failed(az_json_reader_skip_children(&jr)))
+      {
         return AZ_IOT_ERR_PROTOCOL;
+      }
+    }
   }
   if (!in_reg)
+  {
     return AZ_IOT_ERR_NOT_FOUND;
+  }
 
   /* Find issuedCertificateChain array. */
   bool in_chain = false;
@@ -430,30 +458,44 @@ static az_iot_result dps_store_issued_cert(az_iot_connection_client* c, az_span 
          && jr.token.kind != AZ_JSON_TOKEN_END_OBJECT)
   {
     if (jr.token.kind != AZ_JSON_TOKEN_PROPERTY_NAME)
+    {
       continue;
+    }
     bool m = az_json_token_is_text_equal(&jr.token, AZ_SPAN_FROM_STR(DPS_JSON_ISSUED_CERT_CHAIN));
     if (az_result_failed(az_json_reader_next_token(&jr)))
+    {
       return AZ_IOT_ERR_PROTOCOL;
+    }
     if (m && jr.token.kind == AZ_JSON_TOKEN_BEGIN_ARRAY)
     {
       in_chain = true;
       break;
     }
     if (jr.token.kind == AZ_JSON_TOKEN_BEGIN_OBJECT || jr.token.kind == AZ_JSON_TOKEN_BEGIN_ARRAY)
+    {
       if (az_result_failed(az_json_reader_skip_children(&jr)))
+      {
         return AZ_IOT_ERR_PROTOCOL;
+      }
+    }
   }
   if (!in_chain)
+  {
     return AZ_IOT_ERR_NOT_FOUND;
+  }
 
   /* Collect the base64 chain (leaf first) as zero-copy spans into the payload. */
   az_span certs[CERT_CHAIN_MAX_CERTS];
   size_t count = 0;
   az_iot_result rc = az_iot_cert_util_collect_chain_spans(&jr, certs, CERT_CHAIN_MAX_CERTS, &count);
   if (rc != AZ_IOT_OK)
+  {
     return rc;
+  }
   if (count == 0)
+  {
     return AZ_IOT_ERR_NOT_FOUND;
+  }
 
   az_iot_certificate_provider* p = c->opts.certificate_provider;
   az_iot_issued_certificate issued;
@@ -474,7 +516,9 @@ static az_iot_result dps_store_issued_cert(az_iot_connection_client* c, az_span 
     handled = true;
   }
   if (rc == AZ_IOT_OK && !handled)
+  {
     rc = AZ_IOT_ERR_NOT_SUPPORTED;
+  }
   return rc;
 }
 
@@ -482,7 +526,9 @@ static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
 {
   az_iot_connection_client* c = (az_iot_connection_client*)user_ctx;
   if (!c || !evt)
+  {
     return;
+  }
 
   switch (evt->kind)
   {
@@ -510,7 +556,9 @@ static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
 
     case AZ_IOT_MQTT_EVT_SUBSCRIBE_ACK:
       if (c->dps_phase != DPS_PHASE_SUBSCRIBING)
+      {
         break;
+      }
       if (evt->status != AZ_IOT_OK)
       {
         dps_finalize(c, evt->status, false);
@@ -529,9 +577,13 @@ static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
     case AZ_IOT_MQTT_EVT_MESSAGE:
     {
       if (!evt->message || !evt->message->topic)
+      {
         break;
+      }
       if (c->dps_phase != DPS_PHASE_REGISTERING && c->dps_phase != DPS_PHASE_POLLING)
+      {
         break;
+      }
 
       /* MQTT permits an empty payload, and an adapter may report that as a NULL
        * pointer with zero length. az_iot_provisioning_client_parse_received_topic_and_payload
@@ -689,15 +741,21 @@ static az_iot_result dps_start(az_iot_connection_client* c)
   az_span reg_span = az_span_create_from_str((char*)(uintptr_t)c->opts.dps.registration_id);
   az_result ar = az_iot_provisioning_client_init(&c->dps_prov, ep_span, scope_span, reg_span, NULL);
   if (az_result_failed(ar))
+  {
     return AZ_IOT_ERR_INVALID_ARG;
+  }
 
   const az_iot_mqtt_factory* f = find_factory(c, AZ_IOT_MQTT_VERSION_3_1_1);
   if (!f)
+  {
     return AZ_IOT_ERR_NOT_SUPPORTED;
+  }
 
   az_iot_mqtt_client* mc = f->create(f->factory_ctx);
   if (!mc || !mc->iface)
+  {
     return AZ_IOT_ERR_INTERNAL;
+  }
 
   mc->iface->set_inbound_cb(mc, on_dps_mqtt_event, c);
 
@@ -730,7 +788,9 @@ static az_iot_result dps_start(az_iot_connection_client* c)
     ar = az_iot_provisioning_client_get_user_name(
         &c->dps_prov, dps_username, sizeof(dps_username), &dps_username_len);
     if (az_result_failed(ar))
+    {
       return AZ_IOT_ERR_INTERNAL;
+    }
   }
   copts.username = dps_username;
   AZ_IOT_LOG_DEBUGF("dps: connecting with username %s", dps_username);
@@ -793,7 +853,9 @@ static az_iot_result dps_start(az_iot_connection_client* c)
 static void dps_apply_deferred(az_iot_connection_client* c)
 {
   if (!c->dps_pending_finalize)
+  {
     return;
+  }
   bool have_assignment = c->dps_pending_have_assignment;
   az_iot_result status = c->dps_pending_status;
   c->dps_pending_finalize = false;
@@ -802,7 +864,9 @@ static void dps_apply_deferred(az_iot_connection_client* c)
 
   /* Disconnect and destroy the DPS MQTT session. */
   if (c->dps_mqtt && c->dps_mqtt->iface && c->dps_mqtt->iface->disconnect)
+  {
     (void)c->dps_mqtt->iface->disconnect(c->dps_mqtt);
+  }
   dps_teardown_mqtt(c);
   c->dps_phase = DPS_PHASE_DONE;
 
@@ -872,7 +936,9 @@ static void presence_gen_nonce(az_iot_connection_client* c, uint8_t out[PRESENCE
         ^ ((uint64_t)(c->reconnect_attempt + 1u) << 40);
     c->rng_state = x;
     for (size_t b = 0; b < 8u; ++b)
+    {
       out[i + b] = (uint8_t)(x >> (b * 8u));
+    }
   }
 }
 
@@ -950,7 +1016,9 @@ static void announce_connected(az_iot_connection_client* c)
     for (size_t i = 0; i < AZ_IOT_MAX_PERSISTENT_SUBS; ++i)
     {
       if (!c->persistent_subs[i].in_use)
+      {
         continue;
+      }
       uint16_t pid = 0;
       (void)c->active_client->iface->subscribe(
           c->active_client, c->persistent_subs[i].topic_filter, c->persistent_subs[i].qos, &pid);
@@ -963,7 +1031,9 @@ static void announce_connected(az_iot_connection_client* c)
 static az_iot_result presence_start(az_iot_connection_client* c, bool session_present)
 {
   if (!c->active_client || !c->active_client->iface)
+  {
     return AZ_IOT_ERR_NOT_CONNECTED;
+  }
 
   const char* device_id = c->opts.client_id ? c->opts.client_id : "";
   char topic[AZ_IOT_PRESENCE_TOPIC_BUF];
@@ -985,7 +1055,9 @@ static az_iot_result presence_start(az_iot_connection_client* c, bool session_pr
   az_iot_result r
       = c->active_client->iface->subscribe(c->active_client, topic, AZ_IOT_MQTT_QOS_1, &pid);
   if (r != AZ_IOT_OK)
+  {
     return r;
+  }
 
   c->presence.sub_packet_id = pid;
   c->presence.phase = PRESENCE_PHASE_SUBSCRIBING;
@@ -999,7 +1071,9 @@ static az_iot_result presence_start(az_iot_connection_client* c, bool session_pr
 static az_iot_result presence_publish_birth(az_iot_connection_client* c)
 {
   if (!c->active_client || !c->active_client->iface)
+  {
     return AZ_IOT_ERR_NOT_CONNECTED;
+  }
 
   const char* device_id = c->opts.client_id ? c->opts.client_id : "";
   char topic[AZ_IOT_PRESENCE_TOPIC_BUF];
@@ -1027,7 +1101,9 @@ static az_iot_result presence_publish_birth(az_iot_connection_client* c)
   uint16_t pid = 0;
   az_iot_result r = c->active_client->iface->publish(c->active_client, &msg, &pid);
   if (r != AZ_IOT_OK)
+  {
     return r;
+  }
 
   /* Give the birth-ack its own full window now that the birth is on the wire. */
   c->presence.deadline_ms = az_iot_time_mono_ms() + AZ_IOT_PRESENCE_BIRTH_ACK_TIMEOUT_MS;
@@ -1042,7 +1118,9 @@ static az_iot_result presence_publish_birth(az_iot_connection_client* c)
 static bool presence_is_birth_ack(const az_iot_connection_client* c, const az_iot_mqtt_message* msg)
 {
   if (!msg || !msg->topic)
+  {
     return false;
+  }
 
   const char* device_id = c->opts.client_id ? c->opts.client_id : "";
   char topic[AZ_IOT_PRESENCE_TOPIC_BUF];
@@ -1052,7 +1130,9 @@ static bool presence_is_birth_ack(const az_iot_connection_client* c, const az_io
     return false;
   }
   if (strcmp(msg->topic, topic) != 0)
+  {
     return false;
+  }
 
   if (msg->correlation_data_len != PRESENCE_NONCE_LEN || msg->correlation_data == NULL
       || memcmp(msg->correlation_data, c->presence.nonce, PRESENCE_NONCE_LEN) != 0)
@@ -1064,9 +1144,13 @@ static bool presence_is_birth_ack(const az_iot_connection_client* c, const az_io
   {
     const az_iot_mqtt_user_property* up = &msg->user_properties[i];
     if (!up->key || strcmp(up->key, PRESENCE_TYPE_KEY) != 0)
+    {
       continue;
+    }
     if (!up->value)
+    {
       return false;
+    }
     size_t n = strlen(PRESENCE_TYPE_BIRTH_ACK);
     /* Match "birth-ack" exactly or "birth-ack:<schemaVersion>". */
     return strncmp(up->value, PRESENCE_TYPE_BIRTH_ACK, n) == 0
@@ -1080,7 +1164,9 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
 {
   az_iot_connection_client* c = (az_iot_connection_client*)user_ctx;
   if (!c || !evt)
+  {
     return;
+  }
 
   switch (evt->kind)
   {
@@ -1207,7 +1293,9 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
           c->pending_pubacks[i].cb = NULL;
           c->pending_pubacks[i].user_ctx = NULL;
           if (cb)
+          {
             cb(evt->status, ctx);
+          }
           break;
         }
       }
@@ -1243,11 +1331,15 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
   az_iot_mqtt_version version = az_iot_mqtt_required_version_for_role(c->session_role);
   const az_iot_mqtt_factory* f = find_factory(c, version);
   if (!f)
+  {
     return AZ_IOT_ERR_NOT_SUPPORTED;
+  }
 
   az_iot_mqtt_client* mc = f->create(f->factory_ctx);
   if (!mc || !mc->iface)
+  {
     return AZ_IOT_ERR_INTERNAL;
+  }
 
   mc->iface->set_inbound_cb(mc, on_mqtt_event, c);
 
@@ -1272,7 +1364,9 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
       }
       az_result ar = az_iot_hub_client_init(&c->hub_client, host_span, id_span, &hub_opts);
       if (az_result_succeeded(ar))
+      {
         c->hub_client_initialized = true;
+      }
     }
     if (c->hub_client_initialized)
     {
@@ -1280,7 +1374,9 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
       az_result ar = az_iot_hub_client_get_user_name(
           &c->hub_client, c->hub_username, sizeof(c->hub_username), &ulen);
       if (az_result_succeeded(ar))
+      {
         copts.username = c->hub_username;
+      }
     }
   }
   else if (c->session_role == AZ_IOT_MQTT_ROLE_HUB_NEXT && c->opts.host && c->opts.client_id)
@@ -1340,7 +1436,9 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
 static void apply_deferred(az_iot_connection_client* c)
 {
   if (c->deferred == DEFER_NONE)
+  {
     return;
+  }
   int action = c->deferred;
   az_iot_result reason = c->deferred_reason;
   c->deferred = DEFER_NONE;
@@ -1414,14 +1512,18 @@ static uint16_t parse_host_port(const char* endpoint, char* out_host, size_t cap
     host_len = (size_t)(colon - endpoint);
     unsigned long p = strtoul(colon + 1, NULL, 10);
     if (p > 0 && p <= 65535)
+    {
       port = (uint16_t)p;
+    }
   }
   else
   {
     host_len = strlen(endpoint);
   }
   if (host_len >= cap)
+  {
     host_len = cap - 1;
+  }
   memcpy(out_host, endpoint, host_len);
   out_host[host_len] = '\0';
   return port;
@@ -1570,14 +1672,18 @@ az_iot_result az_iot_connection_client_init(
    * if they need determinism. */
   client->rng_state = az_iot_time_mono_ms() ^ 0xA5A5C3C3DEADBEEFull;
   if (client->rng_state == 0)
+  {
     client->rng_state = 1ull;
+  }
   return AZ_IOT_OK;
 }
 
 void az_iot_connection_client_destroy(az_iot_connection_client* client)
 {
   if (!client)
+  {
     return;
+  }
   /* Abandon pending QoS-1 acknowledgements WITHOUT completing them. On a
    * dropped session the callback is useful -- it tells the caller the publish
    * needs resending. On destroy() it is not: the application is tearing the
@@ -1606,7 +1712,9 @@ void az_iot_connection_client_destroy(az_iot_connection_client* client)
   for (size_t i = 0; i < client->factory_count; ++i)
   {
     if (client->factories[i].destroy)
+    {
       client->factories[i].destroy(client->factories[i].factory_ctx);
+    }
   }
   /* provisioned_iot_hub_hostname / provisioned_device_id are inline fixed buffers; nothing to free.
    */
@@ -1659,7 +1767,9 @@ az_iot_result az_iot_connection_client_set_state_callback(
     void* user_ctx)
 {
   if (!client)
+  {
     return AZ_IOT_ERR_INVALID_ARG;
+  }
   client->state_cb = cb;
   client->state_cb_ctx = user_ctx;
   return AZ_IOT_OK;
@@ -1671,7 +1781,9 @@ az_iot_result az_iot_connection_client_set_operational_cert_callback(
     void* user_ctx)
 {
   if (!client)
+  {
     return AZ_IOT_ERR_INVALID_ARG;
+  }
   client->op_cert_cb = cb;
   client->op_cert_cb_ctx = user_ctx;
   return AZ_IOT_OK;
@@ -1762,7 +1874,9 @@ az_iot_result az_iot_connection_client_open(az_iot_connection_client* client)
 az_iot_result az_iot_connection_client_close(az_iot_connection_client* client)
 {
   if (!client)
+  {
     return AZ_IOT_ERR_INVALID_ARG;
+  }
   if (client->state == AZ_IOT_CONN_STATE_IDLE)
   {
     return AZ_IOT_OK; /* idempotent */
@@ -1780,7 +1894,9 @@ az_iot_result az_iot_connection_client_close(az_iot_connection_client* client)
   }
 
   if (!client->active_client)
+  {
     return AZ_IOT_ERR_NOT_INITIALIZED;
+  }
 
   client->user_close = true;
   transition(client, AZ_IOT_CONN_STATE_DISCONNECTING, AZ_IOT_OK);
@@ -1797,7 +1913,9 @@ az_iot_result az_iot_connection_client_do_work(
     uint32_t timeout_ms)
 {
   if (!client)
+  {
     return AZ_IOT_ERR_INVALID_ARG;
+  }
 
   /* --- DPS provisioning pump --- */
   if (client->dps_phase != DPS_PHASE_NONE && client->dps_phase != DPS_PHASE_DONE)
@@ -1807,12 +1925,16 @@ az_iot_result az_iot_connection_client_do_work(
     {
       az_iot_result r = dps_do_query_publish(client);
       if (r != AZ_IOT_OK)
+      {
         dps_finalize(client, r, false);
+      }
     }
 
     az_iot_result r = AZ_IOT_OK;
     if (client->dps_mqtt && client->dps_mqtt->iface && client->dps_mqtt->iface->process_loop)
+    {
       r = client->dps_mqtt->iface->process_loop(client->dps_mqtt, timeout_ms);
+    }
 
     dps_apply_deferred(client);
     return r;
@@ -1840,7 +1962,9 @@ az_iot_result az_iot_connection_client_do_work(
     evt.kind = AZ_IOT_CSR_FAILED;
     evt.status = AZ_IOT_ERR_TIMEOUT;
     if (cb)
+    {
       cb(&evt, uc);
+    }
   }
 
   /* Fail a stalled AEG presence (birth) handshake so a missing SUBACK or
@@ -1901,9 +2025,13 @@ az_iot_result az_iot_connection_client__set_session_role(
     az_iot_mqtt_role role)
 {
   if (!client)
+  {
     return AZ_IOT_ERR_INVALID_ARG;
+  }
   if (client->state != AZ_IOT_CONN_STATE_IDLE)
+  {
     return AZ_IOT_ERR_ALREADY_INITIALIZED;
+  }
   client->session_role = role;
   return AZ_IOT_OK;
 }
@@ -1923,7 +2051,9 @@ static az_iot_result replace_owned_string(
   }
   size_t n = strlen(s);
   if (n + 1 > buf_cap)
+  {
     return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  }
   memcpy(owned_buf, s, n + 1);
   *opts_slot = owned_buf;
   return AZ_IOT_OK;
@@ -1932,9 +2062,13 @@ static az_iot_result replace_owned_string(
 az_iot_result az_iot_connection_client__set_host(az_iot_connection_client* client, const char* host)
 {
   if (!client)
+  {
     return AZ_IOT_ERR_INVALID_ARG;
+  }
   if (client->state != AZ_IOT_CONN_STATE_IDLE)
+  {
     return AZ_IOT_ERR_ALREADY_INITIALIZED;
+  }
   return replace_owned_string(
       client->provisioned_iot_hub_hostname,
       sizeof(client->provisioned_iot_hub_hostname),
@@ -1947,9 +2081,13 @@ az_iot_result az_iot_connection_client__set_client_id(
     const char* client_id)
 {
   if (!client)
+  {
     return AZ_IOT_ERR_INVALID_ARG;
+  }
   if (client->state != AZ_IOT_CONN_STATE_IDLE)
+  {
     return AZ_IOT_ERR_ALREADY_INITIALIZED;
+  }
   return replace_owned_string(
       client->provisioned_device_id,
       sizeof(client->provisioned_device_id),
@@ -1960,14 +2098,18 @@ az_iot_result az_iot_connection_client__set_client_id(
 void az_iot_connection_client__seed_rng(az_iot_connection_client* client, uint64_t seed)
 {
   if (!client)
+  {
     return;
+  }
   client->rng_state = seed ? seed : 1ull;
 }
 
 void az_iot_connection_client__presence_force_timeout(az_iot_connection_client* client)
 {
   if (!client)
+  {
     return;
+  }
   if (client->presence.phase == AZ_IOT_PRESENCE_PHASE_SUBSCRIBING
       || client->presence.phase == AZ_IOT_PRESENCE_PHASE_BIRTH)
   {
@@ -1979,7 +2121,9 @@ const az_iot_protocol_profile* az_iot_connection_client__profile(
     const az_iot_connection_client* client)
 {
   if (!client)
+  {
     return NULL;
+  }
   return az_iot_protocol_profile_for_role(client->session_role);
 }
 
@@ -1990,7 +2134,9 @@ az_iot_result az_iot_connection_client__register_inbound_handler(
     void* user_ctx)
 {
   if (!client)
+  {
     return AZ_IOT_ERR_INVALID_ARG;
+  }
   return az_iot_dispatch_register_prefix(&client->dispatch, topic_prefix, cb, user_ctx);
 }
 
@@ -1999,7 +2145,9 @@ size_t az_iot_connection_client__unregister_inbound_handlers(
     void* user_ctx)
 {
   if (!client)
+  {
     return 0;
+  }
   return az_iot_dispatch_unregister_by_ctx(&client->dispatch, user_ctx);
 }
 
@@ -2091,7 +2239,9 @@ az_iot_result az_iot_connection_client__publish(
     void* ack_user_ctx)
 {
   if (!client || !msg)
+  {
     return AZ_IOT_ERR_INVALID_ARG;
+  }
   if (!client->active_client || client->state != AZ_IOT_CONN_STATE_CONNECTED)
   {
     return AZ_IOT_ERR_NOT_CONNECTED;
@@ -2100,13 +2250,17 @@ az_iot_result az_iot_connection_client__publish(
   uint16_t pid = 0;
   az_iot_result r = client->active_client->iface->publish(client->active_client, msg, &pid);
   if (r != AZ_IOT_OK)
+  {
     return r;
+  }
 
   /* QoS 0: there is no PUBACK on the wire. Fire the cb synchronously. */
   if (msg->qos == AZ_IOT_MQTT_QOS_0)
   {
     if (ack_cb)
+    {
       ack_cb(AZ_IOT_OK, ack_user_ctx);
+    }
     return AZ_IOT_OK;
   }
 
@@ -2139,7 +2293,9 @@ az_iot_result az_iot_connection_client__subscribe(
     uint16_t* out_packet_id)
 {
   if (!client || !topic_filter)
+  {
     return AZ_IOT_ERR_INVALID_ARG;
+  }
   if (!client->active_client || client->state != AZ_IOT_CONN_STATE_CONNECTED)
   {
     return AZ_IOT_ERR_NOT_CONNECTED;
@@ -2154,7 +2310,9 @@ az_iot_result az_iot_connection_client__add_subscription_on_connect(
     az_iot_mqtt_qos qos)
 {
   if (!client || !topic_filter)
+  {
     return AZ_IOT_ERR_INVALID_ARG;
+  }
   size_t n = strlen(topic_filter);
   if (n == 0 || n + 1 > AZ_IOT_PERSISTENT_SUB_TOPIC_MAX)
   {
@@ -2240,26 +2398,36 @@ static void csr_parse_error(az_span payload, int32_t* out_code, int32_t* out_ret
          && jr.token.kind != AZ_JSON_TOKEN_END_OBJECT)
   {
     if (jr.token.kind != AZ_JSON_TOKEN_PROPERTY_NAME)
+    {
       continue;
+    }
     bool is_code = az_json_token_is_text_equal(&jr.token, AZ_SPAN_FROM_STR(CSR_JSON_ERROR_CODE));
     bool is_retry = az_json_token_is_text_equal(&jr.token, AZ_SPAN_FROM_STR(CSR_JSON_RETRY_AFTER));
     if (az_result_failed(az_json_reader_next_token(&jr)))
+    {
       return;
+    }
     if (is_code && jr.token.kind == AZ_JSON_TOKEN_NUMBER)
     {
       if (az_result_failed(az_json_token_get_int32(&jr.token, out_code)))
+      {
         *out_code = 0;
+      }
     }
     else if (is_retry && jr.token.kind == AZ_JSON_TOKEN_NUMBER)
     {
       if (az_result_failed(az_json_token_get_int32(&jr.token, out_retry)))
+      {
         *out_retry = 0;
+      }
     }
     else if (
         jr.token.kind == AZ_JSON_TOKEN_BEGIN_OBJECT || jr.token.kind == AZ_JSON_TOKEN_BEGIN_ARRAY)
     {
       if (az_result_failed(az_json_reader_skip_children(&jr)))
+      {
         return;
+      }
     }
   }
 }
@@ -2269,7 +2437,9 @@ static void on_csr_response(void* user_ctx, const az_iot_mqtt_message* msg)
 {
   az_iot_connection_client* c = (az_iot_connection_client*)user_ctx;
   if (!c || !msg || !msg->topic || !c->csr_op.in_use)
+  {
     return;
+  }
 
   /* Parse the status code and $rid from the topic. */
   const char* p = msg->topic + (sizeof(CSR_RES_PREFIX) - 1);
@@ -2281,7 +2451,9 @@ static void on_csr_response(void* user_ctx, const az_iot_mqtt_message* msg)
   }
   const char* rid = strstr(p, "$rid=");
   if (!rid)
+  {
     return;
+  }
   rid += 5;
   size_t rid_len = strcspn(rid, "&");
   if (rid_len != strlen(c->csr_op.request_id) || strncmp(rid, c->csr_op.request_id, rid_len) != 0)
@@ -2303,7 +2475,9 @@ static void on_csr_response(void* user_ctx, const az_iot_mqtt_message* msg)
     evt.kind = AZ_IOT_CSR_ACCEPTED;
     evt.status = AZ_IOT_OK;
     if (cb)
+    {
       cb(&evt, uc);
+    }
     return;
   }
 
@@ -2325,10 +2499,14 @@ static void on_csr_response(void* user_ctx, const az_iot_mqtt_message* msg)
              && jr.token.kind != AZ_JSON_TOKEN_END_OBJECT)
       {
         if (jr.token.kind != AZ_JSON_TOKEN_PROPERTY_NAME)
+        {
           continue;
+        }
         bool m = az_json_token_is_text_equal(&jr.token, AZ_SPAN_FROM_STR(CSR_JSON_CERTIFICATES));
         if (az_result_failed(az_json_reader_next_token(&jr)))
+        {
           break;
+        }
         if (m && jr.token.kind == AZ_JSON_TOKEN_BEGIN_ARRAY)
         {
           in_arr = true;
@@ -2336,11 +2514,17 @@ static void on_csr_response(void* user_ctx, const az_iot_mqtt_message* msg)
         }
         if (jr.token.kind == AZ_JSON_TOKEN_BEGIN_OBJECT
             || jr.token.kind == AZ_JSON_TOKEN_BEGIN_ARRAY)
+        {
           if (az_result_failed(az_json_reader_skip_children(&jr)))
+          {
             break;
+          }
+        }
       }
       if (in_arr)
+      {
         rc = az_iot_cert_util_collect_chain_spans(&jr, certs, CERT_CHAIN_MAX_CERTS, &count);
+      }
     }
 
     if (rc == AZ_IOT_OK && count > 0)
@@ -2352,14 +2536,18 @@ static void on_csr_response(void* user_ctx, const az_iot_mqtt_message* msg)
       evt.status = AZ_IOT_OK;
       evt.issued = &issued;
       if (cb)
+      {
         cb(&evt, uc);
+      }
     }
     else
     {
       evt.kind = AZ_IOT_CSR_FAILED;
       evt.status = (rc == AZ_IOT_OK) ? AZ_IOT_ERR_PROTOCOL : rc;
       if (cb)
+      {
         cb(&evt, uc);
+      }
     }
     return;
   }
@@ -2373,7 +2561,9 @@ static void on_csr_response(void* user_ctx, const az_iot_mqtt_message* msg)
     evt.service_code = code;
     evt.retry_after_s = (uint32_t)(retry > 0 ? retry : 0);
     if (cb)
+    {
       cb(&evt, uc);
+    }
   }
 }
 
@@ -2386,11 +2576,17 @@ az_iot_result az_iot_connection_client_send_csr(
     void* user_ctx)
 {
   if (!client || !csr || !csr->csr_base64 || !cb)
+  {
     return AZ_IOT_ERR_INVALID_ARG;
+  }
   if (!az_iot_connection_client__is_connected(client))
+  {
     return AZ_IOT_ERR_NOT_CONNECTED;
+  }
   if (client->session_role != AZ_IOT_MQTT_ROLE_HUB_CLASSIC)
+  {
     return AZ_IOT_ERR_NOT_SUPPORTED; /* Hub-Next (AEG) path not defined yet */
+  }
   if (client->csr_op.in_use)
   {
     return AZ_IOT_ERR_BUSY;
@@ -2412,7 +2608,9 @@ az_iot_result az_iot_connection_client_send_csr(
   {
     size_t n = strlen(request_id);
     if (n + 1 > sizeof(client->csr_op.request_id))
+    {
       return AZ_IOT_ERR_INVALID_ARG;
+    }
     memcpy(client->csr_op.request_id, request_id, n + 1);
   }
   else
@@ -2427,7 +2625,9 @@ az_iot_result az_iot_connection_client_send_csr(
     az_iot_result r = az_iot_connection_client__register_inbound_handler(
         client, CSR_RES_PREFIX, on_csr_response, client);
     if (r != AZ_IOT_OK)
+    {
       return r;
+    }
     r = az_iot_connection_client__add_subscription_on_connect(
         client, CSR_RES_FILTER, AZ_IOT_MQTT_QOS_1);
     if (r != AZ_IOT_OK)
@@ -2441,7 +2641,9 @@ az_iot_result az_iot_connection_client_send_csr(
   /* Build the request body into the caller-provided payload buffer. */
   const char* device_id = az_iot_connection_client__device_id(client);
   if (!device_id)
+  {
     device_id = "";
+  }
   char* body = (char*)az_span_ptr(client->opts.csr_payload_buffer);
   size_t body_len = 0;
   const char* body_parts[]
@@ -2451,7 +2653,9 @@ az_iot_result az_iot_connection_client_send_csr(
    * three parts collapse to the closing brace. */
   const bool with_replace = is_nonempty_cstr(replace);
   if (!with_replace)
+  {
     body_parts[4] = CSR_RENEW_BODY_SUFFIX;
+  }
   if (az_iot_span_writer_build_str(
           client->opts.csr_payload_buffer, &body_len, body_parts, with_replace ? 7u : 5u)
       != AZ_IOT_OK)
@@ -2490,9 +2694,13 @@ az_iot_result az_iot_connection_client_send_csr(
 az_iot_result az_iot_connection_client_cancel_csr(az_iot_connection_client* client)
 {
   if (!client)
+  {
     return AZ_IOT_ERR_INVALID_ARG;
+  }
   if (!client->csr_op.in_use)
+  {
     return AZ_IOT_ERR_NOT_FOUND;
+  }
   /* App-initiated abandon: drop the in-flight operation so a new send_csr()
    * can proceed. No callback fires (the caller already knows). A late hub
    * response for this rid is ignored (in_use is clear). */

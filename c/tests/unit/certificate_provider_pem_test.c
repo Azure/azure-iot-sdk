@@ -82,7 +82,9 @@ static int teardown_files(void** state)
 {
   fixture* f = *state;
   if (!f)
+  {
     return 0;
+  }
   remove(f->cert_path);
   remove(f->key_path);
   remove(f->ca_path);

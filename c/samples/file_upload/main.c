@@ -115,7 +115,9 @@ static long https_request(
 {
   CURL* curl = curl_easy_init();
   if (!curl)
+  {
     return -1;
+  }
 
   struct curl_slist* headers = NULL;
   if (content_type && content_type[0])
@@ -131,11 +133,15 @@ static long https_request(
     headers = curl_slist_append(headers, h);
   }
   if (extra_header && extra_header[0])
+  {
     headers = curl_slist_append(headers, extra_header);
+  }
 
   response_sink sink = { resp, resp_cap, 0 };
   if (resp && resp_cap)
+  {
     resp[0] = '\0';
+  }
 
   curl_easy_setopt(curl, CURLOPT_URL, url);
   curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, method);
@@ -145,7 +151,9 @@ static long https_request(
     curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, (long)body_len);
   }
   if (headers)
+  {
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+  }
   curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, on_curl_write);
   curl_easy_setopt(curl, CURLOPT_WRITEDATA, &sink);
   if (client_cert && client_key)
@@ -159,14 +167,22 @@ static long https_request(
   long status = -1;
   CURLcode cc = curl_easy_perform(curl);
   if (cc == CURLE_OK)
+  {
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
+  }
   else
+  {
     fprintf(stderr, "HTTP %s failed: %s\n", method, curl_easy_strerror(cc));
+  }
 
   if (resp_len)
+  {
     *resp_len = sink.len;
+  }
   if (headers)
+  {
     curl_slist_free_all(headers);
+  }
   curl_easy_cleanup(curl);
   return status;
 }
@@ -209,7 +225,9 @@ static az_iot_result curl_http_send(
       response->body_capacity,
       &response->body_len);
   if (status < 0)
+  {
     return AZ_IOT_ERR_MQTT; /* transport failure */
+  }
   response->status_code = (int)status;
   return AZ_IOT_OK;
 #else
@@ -398,7 +416,9 @@ int main(void)
   {
     (void)az_iot_connection_client_do_work(&state.connection_client, 50);
     if (user_ctx.conn_state == AZ_IOT_CONN_STATE_FAULTED)
+    {
       break;
+    }
   }
 
   if (user_ctx.conn_state == AZ_IOT_CONN_STATE_CONNECTED)
@@ -437,7 +457,9 @@ int main(void)
   az_iot_connection_client_close(&state.connection_client);
 
   for (int i = 0; i < 100 && user_ctx.conn_state != AZ_IOT_CONN_STATE_IDLE; ++i)
+  {
     (void)az_iot_connection_client_do_work(&state.connection_client, 50);
+  }
 
   sample_state_destroy(&state);
 

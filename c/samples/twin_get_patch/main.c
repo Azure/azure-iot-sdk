@@ -56,7 +56,9 @@ static void on_get(az_iot_result status, const uint8_t* body, size_t len, void* 
   ctx->get_status = status;
   ctx->get_done = 1;
   if (status == AZ_IOT_OK)
+  {
     printf("twin GET: %.*s\n", (int)len, (const char*)body);
+  }
 }
 
 static void on_patch(az_iot_result status, uint64_t version, void* user_ctx)
@@ -142,7 +144,9 @@ int main(void)
   {
     (void)az_iot_connection_client_do_work(&state.connection_client, 50);
     if (user_ctx.conn_state == AZ_IOT_CONN_STATE_FAULTED)
+    {
       break;
+    }
   }
 
   if (user_ctx.conn_state == AZ_IOT_CONN_STATE_CONNECTED)
@@ -160,7 +164,9 @@ int main(void)
 
     /* Pump until both responses arrive */
     for (int i = 0; i < 600 && (!user_ctx.get_done || !user_ctx.patch_done); ++i)
+    {
       (void)az_iot_connection_client_do_work(&state.connection_client, 50);
+    }
 
     if (user_ctx.get_done && user_ctx.get_status == AZ_IOT_OK && user_ctx.patch_done
         && user_ctx.patch_status == AZ_IOT_OK)
@@ -183,7 +189,9 @@ int main(void)
   az_iot_connection_client_close(&state.connection_client);
 
   for (int i = 0; i < 100 && user_ctx.conn_state != AZ_IOT_CONN_STATE_IDLE; ++i)
+  {
     (void)az_iot_connection_client_do_work(&state.connection_client, 50);
+  }
 
   sample_state_destroy(&state);
 

@@ -79,15 +79,21 @@ static bool parse_method_topic_classic(
   static const char k_prefix[] = "$iothub/methods/POST/";
   size_t prefix_len = sizeof(k_prefix) - 1;
   if (strncmp(topic, k_prefix, prefix_len) != 0)
+  {
     return false;
+  }
   const char* name = topic + prefix_len;
   /* methodName is up to the next '/'. */
   const char* slash = strchr(name, '/');
   if (!slash || slash == name)
+  {
     return false;
+  }
   size_t name_len = (size_t)(slash - name);
   if (name_len + 1 > method_cap)
+  {
     return false;
+  }
   memcpy(out_method, name, name_len);
   out_method[name_len] = '\0';
 
@@ -95,11 +101,15 @@ static bool parse_method_topic_classic(
   static const char k_rid_marker[] = "?$rid=";
   const char* rid_marker = strstr(slash, k_rid_marker);
   if (!rid_marker)
+  {
     return false;
+  }
   const char* rid_val = rid_marker + (sizeof(k_rid_marker) - 1);
   size_t rid_len = strlen(rid_val);
   if (rid_len == 0 || rid_len + 1 > rid_cap)
+  {
     return false;
+  }
   memcpy(out_rid, rid_val, rid_len);
   out_rid[rid_len] = '\0';
   return true;
@@ -112,18 +122,26 @@ static bool parse_method_topic_next(const char* topic, char* out_method, size_t 
   /* Expected: "ih/<id>/dev/methods/<name>" */
   static const char k_prefix[] = "ih/";
   if (strncmp(topic, k_prefix, 3) != 0)
+  {
     return false;
+  }
   /* Find "/dev/methods/" after device_id */
   const char* dev_methods = strstr(topic + 3, "/dev/methods/");
   if (!dev_methods)
+  {
     return false;
+  }
   const char* name = dev_methods + 13; /* strlen("/dev/methods/") */
   size_t name_len = strlen(name);
   /* Strip trailing '/' if present */
   while (name_len > 0 && name[name_len - 1] == '/')
+  {
     name_len--;
+  }
   if (name_len == 0 || name_len + 1 > method_cap)
+  {
     return false;
+  }
   memcpy(out_method, name, name_len);
   out_method[name_len] = '\0';
   return true;
@@ -134,9 +152,13 @@ static void on_method_invocation_classic(void* user_ctx, const az_iot_mqtt_messa
 {
   az_iot_direct_method_client* dm = (az_iot_direct_method_client*)user_ctx;
   if (!dm || !msg || !msg->topic)
+  {
     return;
+  }
   if (!DI(dm).handler)
+  {
     return;
+  }
 
   char method_name[AZ_IOT_DM_METHOD_NAME_MAX];
   char rid[AZ_IOT_DM_RID_MAX];
@@ -148,7 +170,9 @@ static void on_method_invocation_classic(void* user_ctx, const az_iot_mqtt_messa
 
   az_iot_direct_method_request* req = dm_request_acquire(dm);
   if (!req)
+  {
     return;
+  }
   req->_internal.is_next = false;
   memcpy(req->_internal.rid, rid, strlen(rid) + 1);
 
@@ -160,9 +184,13 @@ static void on_method_invocation_next(void* user_ctx, const az_iot_mqtt_message*
 {
   az_iot_direct_method_client* dm = (az_iot_direct_method_client*)user_ctx;
   if (!dm || !msg || !msg->topic)
+  {
     return;
+  }
   if (!DI(dm).handler)
+  {
     return;
+  }
 
   char method_name[AZ_IOT_DM_METHOD_NAME_MAX];
   if (!parse_method_topic_next(msg->topic, method_name, sizeof(method_name)))
@@ -172,7 +200,9 @@ static void on_method_invocation_next(void* user_ctx, const az_iot_mqtt_message*
 
   az_iot_direct_method_request* req = dm_request_acquire(dm);
   if (!req)
+  {
     return;
+  }
   req->_internal.is_next = true;
   memcpy(req->_internal.method_name, method_name, strlen(method_name) + 1);
 
@@ -181,7 +211,9 @@ static void on_method_invocation_next(void* user_ctx, const az_iot_mqtt_message*
   {
     size_t copy_len = msg->correlation_data_len;
     if (copy_len > AZ_IOT_DM_CORR_DATA_MAX)
+    {
       copy_len = AZ_IOT_DM_CORR_DATA_MAX;
+    }
     memcpy(req->_internal.correlation_data, msg->correlation_data, copy_len);
     req->_internal.correlation_data_len = copy_len;
   }
@@ -293,7 +325,9 @@ az_iot_result az_iot_direct_method_client_init(
 void az_iot_direct_method_client_destroy(az_iot_direct_method_client* client)
 {
   if (!client)
+  {
     return;
+  }
   (void)az_iot_connection_client__unregister_inbound_handlers(DI(client).conn, client);
   memset(client, 0, sizeof(*client));
 }
@@ -319,7 +353,9 @@ az_iot_result az_iot_direct_method_respond(
     size_t payload_len)
 {
   if (request == NULL)
+  {
     return AZ_IOT_ERR_INVALID_ARG;
+  }
   if (payload_len > 0 && payload == NULL)
   {
     return AZ_IOT_ERR_INVALID_ARG;

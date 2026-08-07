@@ -22,7 +22,9 @@ bool az_iot_cert_util_is_base64(const char* s, size_t* out_len)
     bool ok = (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9')
         || ch == '+' || ch == '/' || ch == '=';
     if (!ok)
+    {
       return false;
+    }
   }
   *out_len = n;
   return n > 0;

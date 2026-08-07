@@ -68,11 +68,15 @@ static int env_is_set(const char* name)
 static char* dup_cstr(const char* s)
 {
   if (!s)
+  {
     return NULL;
+  }
   size_t n = strlen(s) + 1;
   char* out = malloc(n);
   if (out)
+  {
     memcpy(out, s, n);
+  }
   return out;
 }
 #endif

@@ -84,11 +84,17 @@ static void b64url_str(const void* data, int32_t len, char* dst, int32_t cap)
   {
     char c = dst[i];
     if (c == '=')
+    {
       continue;
+    }
     if (c == '+')
+    {
       c = '-';
+    }
     else if (c == '/')
+    {
       c = '_';
+    }
     dst[out++] = c;
   }
   assert_true(out < cap);
@@ -406,7 +412,9 @@ static int32_t mock_load(uint8_t* blob, size_t cap, size_t* out_len, void* ctx)
 {
   hook_log* l = (hook_log*)ctx;
   if (!l->have_persist || l->persist_len > cap)
+  {
     return 1; /* nothing persisted */
+  }
   memcpy(blob, l->persist_blob, l->persist_len);
   *out_len = l->persist_len;
   return 0;
@@ -537,7 +545,9 @@ static int teardown(void** state)
     az_iot_twin_client_destroy(&fx->twin);
     az_iot_connection_client_destroy(&fx->conn);
     if (!factory_adopted)
+    {
       az_iot_mock_mqtt_factory_destroy(fx->factory);
+    }
     free(fx);
   }
   return 0;
@@ -579,13 +589,17 @@ static void pump(fixture* fx, int max_iters)
 static bool ops_contain_sequence(const hook_log* l, const op_kind* seq, size_t n)
 {
   if (l->op_count < n)
+  {
     return false;
+  }
   /* Find seq as an ordered (contiguous-relative) subsequence. */
   size_t si = 0;
   for (size_t i = 0; i < l->op_count && si < n; ++i)
   {
     if (l->ops[i] == seq[si])
+    {
       si++;
+    }
   }
   return si == n;
 }
@@ -644,9 +658,13 @@ static void verify_failure_blocks_download_and_fails(void** state)
   for (size_t i = 0; i < fx->log.op_count; ++i)
   {
     if (fx->log.ops[i] == OP_VERIFY)
+    {
       saw_verify = true;
+    }
     if (fx->log.ops[i] == OP_DOWNLOAD)
+    {
       saw_download = true;
+    }
   }
   assert_true(saw_verify);
   assert_false(saw_download);
@@ -668,11 +686,17 @@ static void install_failure_triggers_rollback(void** state)
   for (size_t i = 0; i < fx->log.op_count; ++i)
   {
     if (fx->log.ops[i] == OP_INSTALL)
+    {
       saw_install = true;
+    }
     if (fx->log.ops[i] == OP_RESTORE)
+    {
       saw_restore = true;
+    }
     if (fx->log.ops[i] == OP_APPLY)
+    {
       saw_apply = true;
+    }
   }
   assert_true(saw_install);
   assert_true(saw_restore);
@@ -695,11 +719,17 @@ static void hash_mismatch_blocks_install_and_fails(void** state)
   for (size_t i = 0; i < fx->log.op_count; ++i)
   {
     if (fx->log.ops[i] == OP_DOWNLOAD)
+    {
       saw_download = true;
+    }
     if (fx->log.ops[i] == OP_INSTALL)
+    {
       saw_install = true;
+    }
     if (fx->log.ops[i] == OP_APPLY)
+    {
       saw_apply = true;
+    }
   }
   assert_true(saw_download);
   assert_false(saw_install);
@@ -721,9 +751,13 @@ static void already_installed_is_rejected_without_download(void** state)
   for (size_t i = 0; i < fx->log.op_count; ++i)
   {
     if (fx->log.ops[i] == OP_IS_INSTALLED)
+    {
       saw_is_installed = true;
+    }
     if (fx->log.ops[i] == OP_DOWNLOAD)
+    {
       saw_download = true;
+    }
   }
   assert_true(saw_is_installed);
   assert_false(saw_download);
@@ -746,9 +780,13 @@ static void install_in_progress_reenters_then_completes(void** state)
   for (size_t i = 0; i < fx->log.op_count; ++i)
   {
     if (fx->log.ops[i] == OP_INSTALL)
+    {
       install_calls++;
+    }
     if (fx->log.ops[i] == OP_APPLY)
+    {
       saw_apply = true;
+    }
   }
   assert_true(install_calls >= 2);
   assert_true(saw_apply);
@@ -783,7 +821,9 @@ static void reboot_required_persists_and_resumes(void** state)
   for (size_t i = 0; i < fx->log.op_count; ++i)
   {
     if (fx->log.ops[i] == OP_APPLY)
+    {
       saw_apply = true;
+    }
   }
   assert_true(saw_apply);
   assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
@@ -857,11 +897,15 @@ static bool payload_contains(const az_iot_mock_call* c, const char* needle)
 {
   size_t nlen = strlen(needle);
   if (c->payload_len < nlen)
+  {
     return false;
+  }
   for (size_t i = 0; i + nlen <= c->payload_len; ++i)
   {
     if (memcmp(c->payload + i, needle, nlen) == 0)
+    {
       return true;
+    }
   }
   return false;
 }

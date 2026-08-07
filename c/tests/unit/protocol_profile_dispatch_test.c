@@ -75,7 +75,9 @@ static void hit_handler(void* user_ctx, const az_iot_mqtt_message* msg)
   {
     size_t n = strlen(msg->topic);
     if (n >= sizeof(h->last_topic))
+    {
       n = sizeof(h->last_topic) - 1;
+    }
     memcpy(h->last_topic, msg->topic, n);
     h->last_topic[n] = '\0';
   }
