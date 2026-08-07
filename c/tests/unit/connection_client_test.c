@@ -1225,6 +1225,143 @@ static void send_csr_cancel_frees_slot(void** state)
       AZ_IOT_OK);
 }
 
+/* Hub-Next requires MQTT v5. With only a v3.1.1 factory registered there is no
+ * adapter that can speak the protocol, and open() must say so rather than
+ * silently downgrading to a Classic session. */
+static void hub_next_without_v5_factory_is_not_supported(void** state)
+{
+  (void)state;
+  az_iot_connection_client_options opts = { 0 };
+  opts.host = "broker.example";
+  opts.port = 8883;
+  opts.client_id = "ut-device";
+  opts.hub_protocol = AZ_IOT_HUB_PROTOCOL_NEXT;
+
+  az_iot_connection_client c;
+  assert_int_equal(az_iot_connection_client_init(&c, &opts), AZ_IOT_OK);
+  az_iot_mqtt_factory* v3 = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
+  assert_int_equal(az_iot_connection_client_register_mqtt_factory(&c, v3), AZ_IOT_OK);
+
+  assert_int_equal(az_iot_connection_client_open(&c), AZ_IOT_ERR_NOT_SUPPORTED);
+  az_iot_connection_client_destroy(&c);
+}
+
+/* If the birth PUBLISH itself cannot be handed to the adapter the handshake
+ * can never complete, so the attempt must end rather than sit in CONNECTING
+ * waiting for an ack that was never solicited. */
+static void hub_next_birth_publish_failure_faults(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(fx->client, fx->factory), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
+
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  assert_non_null(m);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  const az_iot_mock_call* sub = last_call_of_kind(m, AZ_IOT_MOCK_CALL_SUBSCRIBE);
+  assert_non_null(sub);
+  az_iot_mock_mqtt_client_set_next_result(m, AZ_IOT_MOCK_CALL_PUBLISH, AZ_IOT_ERR_MQTT);
+  assert_true(az_iot_mock_mqtt_client_inject_suback(m, sub->packet_id, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  assert_int_equal(fx->rec.states[fx->rec.count - 1], AZ_IOT_CONN_STATE_FAULTED);
+}
+
+/* Presence traffic that arrives before the subscription is confirmed cannot be
+ * an ack for a birth we have not published yet. Accepting it would announce
+ * CONNECTED without ever completing the handshake. */
+static void hub_next_birth_ack_before_suback_is_ignored(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(fx->client, fx->factory), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
+
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  assert_non_null(m);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  /* No birth has been published, so no nonce exists to match. */
+  assert_true(az_iot_mock_mqtt_client_inject_message(
+      m, "ih/ut-device/dev/presence", (const uint8_t*)"", 0, AZ_IOT_MQTT_QOS_0));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  assert_int_equal(fx->rec.states[fx->rec.count - 1], AZ_IOT_CONN_STATE_CONNECTING);
+  assert_false(az_iot_connection_client__is_connected(fx->client));
+}
+
+/* Fixture variant: HUB_NEXT with a reconnection policy, so a stalled handshake
+ * retries instead of faulting. */
+static int setup_next_with_reconnect(void** state)
+{
+  fixture* fx = (fixture*)calloc(1, sizeof(*fx));
+  assert_non_null(fx);
+
+  az_iot_connection_client_options opts = { 0 };
+  opts.host = "broker.example";
+  opts.port = 8883;
+  opts.client_id = "ut-device";
+  opts.hub_protocol = AZ_IOT_HUB_PROTOCOL_NEXT;
+  opts.reconnection_policy.initial_delay_ms = 20;
+  opts.reconnection_policy.max_delay_ms = 20;
+  opts.reconnection_policy.max_attempts = 3;
+  opts.reconnection_policy.jitter_pct = 0;
+  assert_int_equal(az_iot_connection_client_init(&fx->client_storage, &opts), AZ_IOT_OK);
+  fx->client = &fx->client_storage;
+  assert_int_equal(
+      az_iot_connection_client_set_state_callback(fx->client, on_state, &fx->rec), AZ_IOT_OK);
+  az_iot_connection_client__seed_rng(fx->client, 0xC0FFEEFEEDFACEull);
+
+  fx->factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_5);
+  assert_non_null(fx->factory);
+
+  *state = fx;
+  return 0;
+}
+
+/* The nonce identifies one connection attempt. If a retry reused it, a
+ * birth-ack left over from the abandoned attempt would satisfy the new
+ * handshake and the client would announce CONNECTED on a session the service
+ * never acknowledged. */
+static void hub_next_birth_timeout_retries_with_a_new_nonce(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_mock_mqtt_client* m = NULL;
+  const az_iot_mock_call* first_birth = drive_to_birth_published(fx, false, &m);
+
+  uint8_t first_nonce[64];
+  size_t first_len = first_birth->correlation_data_len;
+  assert_true(first_len > 0);
+  memcpy(first_nonce, first_birth->correlation_data, first_len);
+
+  /* Abandon the handshake; the policy turns it into a retry. */
+  az_iot_connection_client__presence_force_timeout(fx->client);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_equal(fx->rec.states[fx->rec.count - 1], AZ_IOT_CONN_STATE_RECONNECTING);
+
+  wait_ms(25);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  az_iot_mock_mqtt_client* m2 = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  assert_non_null(m2);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(m2, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  const az_iot_mock_call* sub2 = last_call_of_kind(m2, AZ_IOT_MOCK_CALL_SUBSCRIBE);
+  assert_non_null(sub2);
+  assert_true(az_iot_mock_mqtt_client_inject_suback(m2, sub2->packet_id, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  const az_iot_mock_call* second_birth = last_call_of_kind(m2, AZ_IOT_MOCK_CALL_PUBLISH);
+  assert_non_null(second_birth);
+  assert_int_equal(second_birth->correlation_data_len, first_len);
+  assert_memory_not_equal(second_birth->correlation_data, first_nonce, first_len);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -1260,6 +1397,12 @@ int main(void)
     cmocka_unit_test_setup_teardown(hub_next_suback_failure_faults, setup_next, teardown),
     cmocka_unit_test_setup_teardown(hub_next_birth_ack_timeout_faults, setup_next, teardown),
     cmocka_unit_test_setup_teardown(classic_connect_skips_birth_handshake, setup, teardown),
+    cmocka_unit_test(hub_next_without_v5_factory_is_not_supported),
+    cmocka_unit_test_setup_teardown(hub_next_birth_publish_failure_faults, setup_next, teardown),
+    cmocka_unit_test_setup_teardown(
+        hub_next_birth_ack_before_suback_is_ignored, setup_next, teardown),
+    cmocka_unit_test_setup_teardown(
+        hub_next_birth_timeout_retries_with_a_new_nonce, setup_next_with_reconnect, teardown),
     cmocka_unit_test(open_rejects_operational_cert_without_csr_provider),
     cmocka_unit_test(dps_csr_flow_sends_csr_and_stores_issued_chain),
     cmocka_unit_test(open_rejects_operational_cert_without_payload_buffer),

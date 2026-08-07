@@ -554,6 +554,30 @@ static void all_pending_pubacks_are_completed_on_disconnect(void** state)
   assert_int_equal(c.last_status, AZ_IOT_ERR_NOT_CONNECTED);
 }
 
+/* Destroying inside the backoff window is the awkward case: there is no
+ * adapter to tear down (it was destroyed when the retry was scheduled) but a
+ * deadline is still armed. Nothing must be left pointing at freed memory, and
+ * no retry may fire afterwards. */
+static void destroy_while_reconnect_is_scheduled(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_mock_mqtt_client* m = open_to_connected(fx);
+
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(m));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_RECONNECTING);
+  assert_null(az_iot_mock_mqtt_factory_last_client(fx->factory));
+
+  size_t transitions = fx->log.count;
+  az_iot_connection_client_destroy(fx->client);
+  assert_int_equal(fx->log.count, transitions);
+
+  /* Neutralize the fixture teardown: already destroyed, factory adopted. */
+  memset(&fx->client_storage, 0, sizeof(fx->client_storage));
+  fx->factory = NULL;
+}
+
 /* destroy() is the one teardown that must stay silent: the application is
  * tearing the client down, so the context a publish callback closes over may
  * already be gone and calling into it would be a use-after-free. */
@@ -619,6 +643,8 @@ int main(void)
         all_pending_pubacks_are_completed_on_disconnect, setup_two_attempts, teardown),
     cmocka_unit_test_setup_teardown(
         destroy_does_not_complete_pending_pubacks, setup_two_attempts, teardown),
+    cmocka_unit_test_setup_teardown(
+        destroy_while_reconnect_is_scheduled, setup_two_attempts, teardown),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }
