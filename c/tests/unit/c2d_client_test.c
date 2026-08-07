@@ -42,27 +42,42 @@ typedef struct message_record
   bool had_payload_pointer;
   bool content_type_was_null;
   char content_type[64];
+  size_t properties_count;
+  char keys[AZ_IOT_C2D_MAX_PROPERTIES][64];
+  char values[AZ_IOT_C2D_MAX_PROPERTIES][64];
+  bool value_was_null[AZ_IOT_C2D_MAX_PROPERTIES];
 } message_record;
 
-static void on_c2d(
-    const uint8_t* payload,
-    size_t payload_len,
-    const char* content_type,
-    void* user_ctx)
+static void on_c2d(const az_iot_c2d_message* msg, void* user_ctx)
 {
   message_record* r = (message_record*)user_ctx;
   r->count++;
-  r->payload_len = payload_len;
-  r->had_payload_pointer = (payload != NULL);
-  r->content_type_was_null = (content_type == NULL);
-  if (content_type != NULL)
+  r->payload_len = msg->payload_len;
+  r->had_payload_pointer = (msg->payload != NULL);
+  r->content_type_was_null = (msg->content_type == NULL);
+  if (msg->content_type != NULL)
   {
-    snprintf(r->content_type, sizeof(r->content_type), "%s", content_type);
+    snprintf(r->content_type, sizeof(r->content_type), "%s", msg->content_type);
   }
-  if (payload != NULL && payload_len > 0 && payload_len < sizeof(r->payload))
+  if (msg->payload != NULL && msg->payload_len > 0 && msg->payload_len < sizeof(r->payload))
   {
-    memcpy(r->payload, payload, payload_len);
-    r->payload[payload_len] = '\0';
+    memcpy(r->payload, msg->payload, msg->payload_len);
+    r->payload[msg->payload_len] = '\0';
+  }
+
+  /* Copy the properties out: the header promises they are valid only for the
+   * duration of this call, and a test that read them afterwards would be
+   * asserting on a dangling pointer. */
+  r->properties_count = msg->properties_count;
+  for (size_t i = 0; i < msg->properties_count && i < AZ_IOT_C2D_MAX_PROPERTIES; ++i)
+  {
+    snprintf(r->keys[i], sizeof(r->keys[i]), "%s", msg->properties[i].key);
+    r->value_was_null[i] = (msg->properties[i].value == NULL);
+    snprintf(
+        r->values[i],
+        sizeof(r->values[i]),
+        "%s",
+        msg->properties[i].value ? msg->properties[i].value : "");
   }
 }
 
@@ -424,12 +439,11 @@ static void a_message_addressed_to_another_device_is_not_delivered(void** state)
   assert_int_equal(rec.count, 0);
 }
 
-/* The Classic path hands the application a NULL content type and never parses
- * the property bag, so neither the content type nor any application property
- * survives the trip. This test pins the behaviour as it ships (limitation D-1
- * in docs/test-coverage.md); closing it is an API change, because the callback
- * is not even given the topic to re-parse. */
-static void classic_delivers_a_null_content_type(void** state)
+/* ------------------------------------------------------------------------- */
+/* properties                                                                */
+/* ------------------------------------------------------------------------- */
+
+static void the_content_type_is_decoded_from_the_property_bag(void** state)
 {
   fixture* fx = (fixture*)*state;
   open_to_connected(fx);
@@ -440,7 +454,140 @@ static void classic_delivers_a_null_content_type(void** state)
   inject(fx, C2D_TOPIC "%24.ct=application%2Fjson", "{}");
 
   assert_int_equal(rec.count, 1);
+  assert_false(rec.content_type_was_null);
+  assert_string_equal(rec.content_type, "application/json");
+}
+
+static void property_keys_and_values_arrive_as_plain_text(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  message_record rec = { 0 };
+  assert_int_equal(az_iot_c2d_client_set_handler(&fx->c2d, on_c2d, &rec), AZ_IOT_OK);
+
+  /* The same spelling the sender passed to az_iot_telemetry_property: a system
+   * key as "$.mid" rather than "%24.mid", and reserved characters restored. */
+  inject(fx, C2D_TOPIC "%24.mid=id-1&note=a%26b%3Dc%20d%25e", "body");
+
+  assert_int_equal(rec.count, 1);
+  assert_int_equal(rec.properties_count, 2);
+  assert_string_equal(rec.keys[0], "$.mid");
+  assert_string_equal(rec.values[0], "id-1");
+  assert_string_equal(rec.keys[1], "note");
+  assert_string_equal(rec.values[1], "a&b=c d%e");
+}
+
+static void the_three_property_bag_value_forms_are_distinguished(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  message_record rec = { 0 };
+  assert_int_equal(az_iot_c2d_client_set_handler(&fx->c2d, on_c2d, &rec), AZ_IOT_OK);
+
+  /* IoT Hub encodes a null value as a bare key, an empty value as a trailing
+   * '=', and anything else as "key=value". Collapsing the first two would lose
+   * the difference between "unset" and "set to nothing". */
+  inject(fx, C2D_TOPIC "?prop1&prop2=&prop3=a%20string", "body");
+
+  assert_int_equal(rec.count, 1);
+  assert_int_equal(rec.properties_count, 3);
+
+  assert_string_equal(rec.keys[0], "?prop1");
+  assert_true(rec.value_was_null[0]);
+
+  assert_string_equal(rec.keys[1], "prop2");
+  assert_false(rec.value_was_null[1]);
+  assert_string_equal(rec.values[1], "");
+
+  assert_string_equal(rec.keys[2], "prop3");
+  assert_string_equal(rec.values[2], "a string");
+}
+
+static void a_message_with_no_property_bag_has_no_properties(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  message_record rec = { 0 };
+  assert_int_equal(az_iot_c2d_client_set_handler(&fx->c2d, on_c2d, &rec), AZ_IOT_OK);
+
+  inject(fx, C2D_TOPIC, "plain");
+
+  assert_int_equal(rec.count, 1);
+  assert_int_equal(rec.properties_count, 0);
   assert_true(rec.content_type_was_null);
+}
+
+static void a_malformed_escape_drops_the_properties_but_keeps_the_message(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  message_record rec = { 0 };
+  assert_int_equal(az_iot_c2d_client_set_handler(&fx->c2d, on_c2d, &rec), AZ_IOT_OK);
+
+  /* "%zz" is not a valid escape. Guessing at it would hand the application
+   * bytes the service never sent, but losing the payload over an unreadable
+   * property would be the worse trade. */
+  inject(fx, C2D_TOPIC "good=1&bad=%zz", "still delivered");
+
+  assert_int_equal(rec.count, 1);
+  assert_string_equal(rec.payload, "still delivered");
+  assert_int_equal(rec.properties_count, 0);
+}
+
+static void properties_past_the_bound_are_dropped_and_the_message_survives(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  message_record rec = { 0 };
+  assert_int_equal(az_iot_c2d_client_set_handler(&fx->c2d, on_c2d, &rec), AZ_IOT_OK);
+
+  char topic[512];
+  int n = snprintf(topic, sizeof(topic), "%s", C2D_TOPIC);
+  for (int i = 0; i < AZ_IOT_C2D_MAX_PROPERTIES + 3; ++i)
+  {
+    n += snprintf(topic + n, sizeof(topic) - (size_t)n, "%sk%d=v%d", i ? "&" : "", i, i);
+  }
+  inject(fx, topic, "body");
+
+  assert_int_equal(rec.count, 1);
+  assert_string_equal(rec.payload, "body");
+  assert_int_equal(rec.properties_count, AZ_IOT_C2D_MAX_PROPERTIES);
+}
+
+static void a_property_can_be_looked_up_by_name(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  message_record rec = { 0 };
+  assert_int_equal(az_iot_c2d_client_set_handler(&fx->c2d, on_c2d, &rec), AZ_IOT_OK);
+  inject(fx, C2D_TOPIC "%24.ct=text%2Fplain&colour=blue", "body");
+  assert_int_equal(rec.count, 1);
+
+  /* Rebuild an equivalent message to exercise the accessor directly: the
+   * SDK-owned one is gone once the handler returns. */
+  az_iot_c2d_property props[] = { { "$.ct", "text/plain" }, { "colour", "blue" } };
+  az_iot_c2d_message msg = { 0 };
+  msg.properties = props;
+  msg.properties_count = 2;
+
+  assert_string_equal(az_iot_c2d_message_property(&msg, "colour"), "blue");
+  assert_string_equal(
+      az_iot_c2d_message_property(&msg, AZ_IOT_MSG_PROP_CONTENT_TYPE), "text/plain");
+  assert_null(az_iot_c2d_message_property(&msg, "absent"));
+  assert_null(az_iot_c2d_message_property(NULL, "colour"));
+  assert_null(az_iot_c2d_message_property(&msg, NULL));
+
+  /* A hand-built message with a count but no array is a caller mistake, and
+   * this is public API: answer NULL rather than dereferencing it. */
+  az_iot_c2d_message bad = { 0 };
+  bad.properties_count = 3;
+  assert_null(az_iot_c2d_message_property(&bad, "colour"));
 }
 
 /* ------------------------------------------------------------------------- */
@@ -610,7 +757,18 @@ int main(void)
         a_message_on_a_property_bag_sub_topic_is_delivered, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_message_addressed_to_another_device_is_not_delivered, setup, teardown),
-    cmocka_unit_test_setup_teardown(classic_delivers_a_null_content_type, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        the_content_type_is_decoded_from_the_property_bag, setup, teardown),
+    cmocka_unit_test_setup_teardown(property_keys_and_values_arrive_as_plain_text, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        the_three_property_bag_value_forms_are_distinguished, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_message_with_no_property_bag_has_no_properties, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_malformed_escape_drops_the_properties_but_keeps_the_message, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        properties_past_the_bound_are_dropped_and_the_message_survives, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_property_can_be_looked_up_by_name, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_second_client_for_the_same_identity_is_rejected, setup, teardown),
     cmocka_unit_test_setup_teardown(

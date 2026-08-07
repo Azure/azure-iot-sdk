@@ -81,7 +81,27 @@ extern "C"
    * az_core applies to HTTP query parameters. */
   void az_iot_span_writer_append_url_encoded(az_iot_span_writer* writer, const char* value);
 
+  /* Appends @p length bytes of @p value with percent-escapes decoded -- the
+   * inverse of az_iot_span_writer_append_url_encoded(), used to turn an inbound
+   * topic property bag back into the plain text the caller passed on the way
+   * out. Takes an explicit length because the source is a slice of a topic
+   * rather than a NUL-terminated string.
+   *
+   * A malformed escape (truncated, or not two hexadecimal digits) latches
+   * AZ_IOT_ERR_PROTOCOL. Decoding never grows the input, so this cannot overflow
+   * a destination that already holds the encoded form. */
+  void az_iot_span_writer_append_url_decoded(
+      az_iot_span_writer* writer,
+      const char* value,
+      size_t length);
+
   void az_iot_span_writer_append_u8(az_iot_span_writer* writer, uint8_t value);
+
+  /* Bytes written so far. Useful when several NUL-terminated strings are built
+   * back to back into one buffer and the caller needs to remember where each
+   * one started. Returns the length even after a failure has latched, so an
+   * offset recorded before an append stays meaningful. */
+  size_t az_iot_span_writer_length(const az_iot_span_writer* writer);
 
   /* Decimal, unpadded, no locale involvement. */
   void az_iot_span_writer_append_u32(az_iot_span_writer* writer, uint32_t value);

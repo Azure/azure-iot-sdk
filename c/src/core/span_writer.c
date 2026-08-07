@@ -168,6 +168,92 @@ void az_iot_span_writer_append_url_encoded(az_iot_span_writer* writer, const cha
   }
 }
 
+/* Value of one hexadecimal digit, or -1 when @p c is not one. */
+static int hex_digit_value(uint8_t c)
+{
+  if (c >= '0' && c <= '9')
+  {
+    return c - '0';
+  }
+  if (c >= 'A' && c <= 'F')
+  {
+    return c - 'A' + 10;
+  }
+  if (c >= 'a' && c <= 'f')
+  {
+    return c - 'a' + 10;
+  }
+  return -1;
+}
+
+void az_iot_span_writer_append_url_decoded(
+    az_iot_span_writer* writer,
+    const char* value,
+    size_t length)
+{
+  if (value == NULL && length > 0)
+  {
+    writer_fail(writer, AZ_IOT_ERR_INVALID_ARG);
+    return;
+  }
+  if (length == 0)
+  {
+    return;
+  }
+  /* The writer measures in int32_t. Decoding never grows the input, so the
+   * result fits whenever the input length does -- but a length past INT32_MAX
+   * would overflow the counter below into a negative reserve, which the writer
+   * would happily apply. */
+  if (length > (size_t)INT32_MAX)
+  {
+    writer_fail(writer, AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+    return;
+  }
+
+  const uint8_t* source = (const uint8_t*)value;
+
+  /* Measure and validate in one pass before writing anything, so a malformed
+   * escape late in the input cannot leave a half-decoded value behind. A
+   * truncated or non-hexadecimal escape is rejected rather than passed through:
+   * the service always sends well-formed encoding, so a bad one means the topic
+   * was not what we think it is, and inventing a plausible value from it would
+   * hand the application data that was never sent. */
+  int32_t decoded_length = 0;
+  for (size_t i = 0; i < length; ++i)
+  {
+    if (source[i] == (uint8_t)'%')
+    {
+      if (i + 2 >= length || hex_digit_value(source[i + 1]) < 0
+          || hex_digit_value(source[i + 2]) < 0)
+      {
+        writer_fail(writer, AZ_IOT_ERR_PROTOCOL);
+        return;
+      }
+      i += 2;
+    }
+    decoded_length++;
+  }
+
+  uint8_t* cursor = writer_reserve(writer, decoded_length);
+  if (cursor == NULL)
+  {
+    return;
+  }
+
+  for (size_t i = 0; i < length; ++i)
+  {
+    if (source[i] == (uint8_t)'%')
+    {
+      *cursor++ = (uint8_t)((hex_digit_value(source[i + 1]) << 4) | hex_digit_value(source[i + 2]));
+      i += 2;
+    }
+    else
+    {
+      *cursor++ = source[i];
+    }
+  }
+}
+
 void az_iot_span_writer_append_u8(az_iot_span_writer* writer, uint8_t value)
 {
   uint8_t* cursor = writer_reserve(writer, 1);
@@ -175,6 +261,11 @@ void az_iot_span_writer_append_u8(az_iot_span_writer* writer, uint8_t value)
   {
     *cursor = value;
   }
+}
+
+size_t az_iot_span_writer_length(const az_iot_span_writer* writer)
+{
+  return (writer != NULL && writer->_internal.length > 0) ? (size_t)writer->_internal.length : 0;
 }
 
 /* Emits @p magnitude in decimal, preceded by '-' when @p negative. Digits fall

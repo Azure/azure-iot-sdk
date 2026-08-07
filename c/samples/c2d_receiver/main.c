@@ -46,20 +46,29 @@ static void on_conn_state(az_iot_connection_state s, az_iot_result reason, void*
   ((user_context*)user_ctx)->conn_state = s;
 }
 
-static void on_c2d(
-    const uint8_t* payload,
-    size_t payload_len,
-    const char* content_type,
-    void* user_ctx)
+static void on_c2d(const az_iot_c2d_message* msg, void* user_ctx)
 {
   user_context* ctx = (user_context*)user_ctx;
   ctx->messages_received++;
 
-  printf("C2D #%d: %zu bytes", ctx->messages_received, payload_len);
-  if (content_type)
-    printf(" [%s]", content_type);
-  if (payload_len > 0 && payload_len <= 256)
-    printf(" => %.*s", (int)payload_len, (const char*)payload);
+  printf("C2D #%d: %zu bytes", ctx->messages_received, msg->payload_len);
+  if (msg->content_type)
+  {
+    printf(" [%s]", msg->content_type);
+  }
+
+  /* Properties arrive as plain text -- the same spelling the sender used, with
+   * the topic's percent-encoding already undone. */
+  for (size_t i = 0; i < msg->properties_count; ++i)
+  {
+    printf(
+        " %s=%s", msg->properties[i].key, msg->properties[i].value ? msg->properties[i].value : "");
+  }
+
+  if (msg->payload_len > 0 && msg->payload_len <= 256)
+  {
+    printf(" => %.*s", (int)msg->payload_len, (const char*)msg->payload);
+  }
   printf("\n");
 }
 

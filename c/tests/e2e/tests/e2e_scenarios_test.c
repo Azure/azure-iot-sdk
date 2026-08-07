@@ -244,16 +244,12 @@ typedef struct
   bool matched;
 } c2d_ctx;
 
-static void on_c2d(
-    const uint8_t* payload,
-    size_t payload_len,
-    const char* content_type,
-    void* user_ctx)
+static void on_c2d(const az_iot_c2d_message* msg, void* user_ctx)
 {
-  (void)content_type;
   c2d_ctx* c = (c2d_ctx*)user_ctx;
   size_t expected_len = strlen(c->expected);
-  c->matched = (payload_len == expected_len) && (memcmp(payload, c->expected, expected_len) == 0);
+  c->matched = (msg->payload_len == expected_len)
+      && (memcmp(msg->payload, c->expected, expected_len) == 0);
   c->received = true;
 }
 
