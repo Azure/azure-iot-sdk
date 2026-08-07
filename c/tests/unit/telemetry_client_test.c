@@ -335,7 +335,9 @@ static void the_publish_never_uses_qos_2(void** state)
   {
     const az_iot_mock_call* c = az_iot_mock_mqtt_client_call_at(fx->mock, i);
     if (c->kind != AZ_IOT_MOCK_CALL_PUBLISH)
+    {
       continue;
+    }
     publishes++;
     assert_true(c->qos == AZ_IOT_MQTT_QOS_0 || c->qos == AZ_IOT_MQTT_QOS_1);
   }

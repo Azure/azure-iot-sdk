@@ -101,6 +101,12 @@ typedef struct paho_client
 
 static paho_client* paho_self(az_iot_mqtt_client* c) { return (paho_client*)c; }
 
+/* An optional C string the caller may leave unset either way: NULL or "" both
+ * mean "not supplied". Spelled once so the three option checks below cannot
+ * drift apart, and stated positively so call sites read as a plain
+ * "this was supplied" rather than a negated absence. */
+#define is_nonempty_cstr(s) ((s) != NULL && (s)[0] != '\0')
+
 /* ------------------------------------------------------------------------- */
 /* event queue helpers                                                       */
 /* ------------------------------------------------------------------------- */
@@ -711,7 +717,7 @@ static az_iot_result paho_iface_connect(
     /* LWT (Last Will and Testament). */
     MQTTAsync_willOptions will_opts = MQTTAsync_willOptions_initializer;
     MQTTProperties will_props = MQTTProperties_initializer;
-    if (opts->lwt.topic && opts->lwt.topic[0])
+    if (is_nonempty_cstr(opts->lwt.topic))
     {
       will_opts.topicName = opts->lwt.topic;
       will_opts.message = NULL; /* use struct payload */
@@ -763,7 +769,7 @@ static az_iot_result paho_iface_connect(
     /* LWT. v3.1.1 has no Will Delay Interval, so will_delay_seconds is
      * ignored here; the will fires as soon as the broker notices the drop. */
     MQTTAsync_willOptions will_opts = MQTTAsync_willOptions_initializer;
-    if (opts->lwt.topic && opts->lwt.topic[0])
+    if (is_nonempty_cstr(opts->lwt.topic))
     {
       will_opts.topicName = opts->lwt.topic;
       will_opts.message = NULL; /* use struct payload */
@@ -867,7 +873,7 @@ static az_iot_result paho_iface_publish(
   MQTTProperties props = MQTTProperties_initializer;
   if (m->version == AZ_IOT_MQTT_VERSION_5)
   {
-    if (msg->content_type && msg->content_type[0])
+    if (is_nonempty_cstr(msg->content_type))
     {
       MQTTProperty p;
       p.identifier = MQTTPROPERTY_CODE_CONTENT_TYPE;
