@@ -6,6 +6,8 @@ using System.Text;
 using Microsoft.Azure.Devices.Client.Unified.Connection;
 using Microsoft.Azure.Devices.Client.Models;
 using Microsoft.Azure.Devices.Client.Unified.FileUpload;
+using Microsoft.Azure.Devices.Client.Models.FileUpload;
+using Microsoft.Azure.Devices.Client.Exceptions;
 
 internal class Program
 {

@@ -1,4 +1,7 @@
-﻿using Microsoft.Azure.Devices.Client.Models;
+﻿using Microsoft.Azure.Devices.Client.IntegrationTests.Gen2;
+using Microsoft.Azure.Devices.Client.IntegrationTests.Unified;
+using Microsoft.Azure.Devices.Client.Models;
+using Microsoft.Azure.Devices.Client.Models.Twin;
 using Microsoft.Azure.Devices.Client.Unified.Connection;
 using Microsoft.Azure.Devices.Provisioning.Service;
 using System.Security.Cryptography;
@@ -40,12 +43,14 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
         }
 
         public const int TestTimeoutMilliseconds = 60 * 1000;
-        public static async Task<TestConnectionClient> CreateConnectedGen2ConnectionClientAsync(bool testAgainstClassicHub, CancellationToken cancellationToken = default)
+
+        public static Task<Gen2DeviceTestContext> CreateConnectedGen2ConnectionClientAsync(DeviceTwin? initialTwin, CancellationToken cancellationToken = default)
         {
-            throw new NotImplementedException();
+            Assert.Skip("No test infrastructure setup for Gen2 client testing yet.");
+            return Task.FromResult((Gen2DeviceTestContext)null);
         }
 
-        public static async Task<TestConnectionClient> CreateConnectedUnifiedConnectionClientAsync(bool testAgainstClassicHub, CancellationToken cancellationToken = default)
+        public static async Task<UnifiedDeviceTestContext> CreateConnectedUnifiedConnectionClientAsync(bool testAgainstClassicHub, CancellationToken cancellationToken = default)
         {
             if (!testAgainstClassicHub)
             {
@@ -79,7 +84,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
                 async () => await connectionClient.ProvisionAndConnectAsync(provisioningSettings, x509AuthenticationProvider, cancellationToken: cancellationToken),
                 cancellationToken);
 
-            return new TestConnectionClient()
+            return new UnifiedDeviceTestContext()
             { 
                 ConnectionClient = connectionClient,
                 ConnectionContext = connectionContext!,
@@ -87,7 +92,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
             };
         }
 
-        public static async Task<TestConnectionClient> CreateConnectedUnifiedConnectionClientWithCertificateSigningAsync(bool testAgainstClassicHub, CancellationToken cancellationToken = default)
+        public static async Task<UnifiedDeviceTestContext> CreateConnectedUnifiedConnectionClientWithCertificateSigningAsync(bool testAgainstClassicHub, CancellationToken cancellationToken = default)
         {
             if (!testAgainstClassicHub)
             {
@@ -130,7 +135,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
                 async () => await connectionClient.ProvisionAndConnectAsync(provisioningSettings, x509AuthenticationProvider, cancellationToken: cancellationToken), 
                 cancellationToken);
 
-            return new TestConnectionClient()
+            return new UnifiedDeviceTestContext()
             {
                 ConnectionClient = connectionClient,
                 ConnectionContext = connectionContext!,

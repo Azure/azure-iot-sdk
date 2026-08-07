@@ -1,8 +1,9 @@
 ﻿using Google.Protobuf;
+using Microsoft.Azure.Devices.Client.Exceptions;
 using Microsoft.Azure.Devices.Client.Gen2.Connection;
-using Microsoft.Azure.Devices.Client.Models;
+using Microsoft.Azure.Devices.Client.Models.Twin;
+using Microsoft.Azure.Devices.Client.Models.Twin;
 using Microsoft.Azure.Devices.Client.Mqtt;
-using Microsoft.Azure.Devices.Client.Twin.Models;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Text;
@@ -93,7 +94,7 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Twin
         /// However, this SDK will parse the twin that the service returns to filter out unrequested sections to mimic the behavior of Azure Event Grid IoT hubs.
         /// </remarks>
         /// <exception cref="PublishRejectedException">Thrown if this get twin request is rejected by IoT Hub for any reason.</exception>
-        public async Task<Models.Twin> GetTwinAsync(bool getReported = true, bool getDesired = true, ulong ifNotMatchReported = 0, ulong ifNotMatchDesired = 0,  CancellationToken cancellationToken = default)
+        public async Task<DeviceTwin> GetTwinAsync(bool getReported = true, bool getDesired = true, ulong ifNotMatchReported = 0, ulong ifNotMatchDesired = 0,  CancellationToken cancellationToken = default)
         {
             var currentConnectionContext = EnsureCorrectConnectionContext();
 

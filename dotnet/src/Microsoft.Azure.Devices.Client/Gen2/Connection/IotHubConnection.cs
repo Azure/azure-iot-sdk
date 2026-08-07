@@ -1,9 +1,7 @@
 ﻿using Google.Protobuf;
 using Microsoft.Azure.Devices.Client.Gen2.Twin;
-using Microsoft.Azure.Devices.Client.IotHub;
-using Microsoft.Azure.Devices.Client.IotHub.Connection.Models;
+using Microsoft.Azure.Devices.Client.Models.Twin;
 using Microsoft.Azure.Devices.Client.Mqtt;
-using Microsoft.Azure.Devices.Client.Twin.Models;
 using System.Diagnostics;
 using System.Reflection;
 using System.Text;
@@ -19,7 +17,7 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Connection
         private static TimeSpan birthAckReceivedDefensiveTimeout = TimeSpan.FromSeconds(60); //TODO value is magic number
         private static TimeSpan twinPushReceivedDefensiveTimeout = TimeSpan.FromSeconds(60); //TODO value is magic number
 
-        internal static async Task<Models.Twin> ConnectToAzureEventGridIotHubAsync(IMqttClient mqttClient, string hostname, string deviceId, X509AuthenticationProvider x509AuthenticationProvider, TwinPushOptions? twinPushOptions, CancellationToken cancellationToken = default)
+        internal static async Task<DeviceTwin> ConnectToAzureEventGridIotHubAsync(IMqttClient mqttClient, string hostname, string deviceId, X509AuthenticationProvider x509AuthenticationProvider, TwinPushOptions? twinPushOptions, CancellationToken cancellationToken = default)
         {
             bool subscribed = false;
 
@@ -257,7 +255,7 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Connection
                 var authoritativeDesiredVersion = birthAck.DesiredVersion;
 
                 // By default, the device will not fetch the current twin as part of this connect flow. Setting either of the pushReported or pushDesired flags allows the service to re-hydrate the device's understanding of twin state.
-                Models.Twin currentTwin = new();
+                DeviceTwin currentTwin = new();
 
                 // If the device's twin is out of date in any way, and the user wants to re-hydrate reported or desired properties, then wait for the service to send the "twin push" message with that state
                 if ((authoritativeReportedVersion > deviceReportedPropertyVersion || authoritativeDesiredVersion > deviceDesiredPropertyVersion)

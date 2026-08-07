@@ -1,4 +1,5 @@
-﻿using Microsoft.Azure.Devices.Client.Models;
+﻿using Microsoft.Azure.Devices.Client.Exceptions;
+using Microsoft.Azure.Devices.Client.Models.Telemetry;
 using Microsoft.Azure.Devices.Client.Mqtt;
 using Microsoft.Azure.Devices.Client.Unified.Connection;
 using System.Globalization;
@@ -57,7 +58,7 @@ namespace Microsoft.Azure.Devices.Client.Unified.Telemetry
         /// <exception cref="NotSupportedException">Thrown only if this method is called while the provided <see cref="ConnectionClient"/> is disconnected and not trying to reconnect.</exception>
         /// <exception cref="PublishRejectedException">Thrown if this telemetry message is rejected by IoT Hub for any reason.</exception>
         /// <exception cref="MessageTooLargeException">Thrown if the message's payload's size exceeds the supported limits of IoT hub.</exception>
-        public async Task SendTelemetryAsync(OutgoingTelemetryMessage message, CancellationToken cancellationToken = default)
+        public async Task SendTelemetryAsync(DeviceToCloudTelemetry message, CancellationToken cancellationToken = default)
         {
             var currentConnectionContext = _connection.GetCurrentConnectionContext();
             if (currentConnectionContext == null)

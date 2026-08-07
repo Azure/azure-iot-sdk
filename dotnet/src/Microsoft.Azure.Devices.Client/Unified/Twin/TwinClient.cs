@@ -1,7 +1,7 @@
-﻿using Microsoft.Azure.Devices.Client.Gen2.Twin;
-using Microsoft.Azure.Devices.Client.Models;
+﻿using Microsoft.Azure.Devices.Client.Exceptions;
+using Microsoft.Azure.Devices.Client.Gen2.Twin;
+using Microsoft.Azure.Devices.Client.Models.Twin;
 using Microsoft.Azure.Devices.Client.Mqtt;
-using Microsoft.Azure.Devices.Client.Twin.Models;
 using Microsoft.Azure.Devices.Client.Unified.Connection;
 using System.Collections.Concurrent;
 using System.Collections.Specialized;
@@ -92,7 +92,7 @@ namespace Microsoft.Azure.Devices.Client.Unified.Twin
         /// <param name="cancellationToken">The cancellation token.</param>
         /// <returns>The returned twin.</returns>
         /// <exception cref="PublishRejectedException">Thrown if this get twin request is rejected by IoT Hub for any reason.</exception>
-        public async Task<Models.Twin> GetTwinAsync(CancellationToken cancellationToken = default)
+        public async Task<DeviceTwin> GetTwinAsync(CancellationToken cancellationToken = default)
         {
             var currentConnectionContext = EnsureCorrectConnectionContext();
 
@@ -235,7 +235,7 @@ namespace Microsoft.Azure.Devices.Client.Unified.Twin
                         // Remove the "$version" entry so that the twin object more closely mimics how it would in AEG scenario
                         clientTwinProperties["reported"]!.AsObject().Remove(VersionKey);
 
-                        var twinGetResponse = new Models.Twin()
+                        var twinGetResponse = new DeviceTwin()
                         {
                             DesiredVersion = desiredPropertiesVersion,
                             ReportedVersion = reportedPropertiesVersion,
@@ -259,6 +259,7 @@ namespace Microsoft.Azure.Devices.Client.Unified.Twin
                     {
                         pendingReportedPropertiesUpdateRequest.ReportedPropertyUpdateResponse.TrySetResult(new ReportedPatchResponse()
                         {
+                            //TODO this is probably not common enough between hub types. Remove this field in the unified namespace
                             Result = Result.Ok, // TODO mapping possible classic integer error codes to this new error enum
                             Version = version,
                         });

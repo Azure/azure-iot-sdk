@@ -1,5 +1,6 @@
-﻿using Microsoft.Azure.Devices.Client.CertificateManagement;
+﻿using Microsoft.Azure.Devices.Client.Exceptions;
 using Microsoft.Azure.Devices.Client.Models;
+using Microsoft.Azure.Devices.Client.Models.CertificateManagement;
 using Microsoft.Azure.Devices.Client.Mqtt;
 using Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session;
 using Microsoft.Azure.Devices.Client.Provisioning;

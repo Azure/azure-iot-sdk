@@ -1,4 +1,6 @@
-﻿using Microsoft.Azure.Devices.Client.Models;
+﻿using Microsoft.Azure.Devices.Client.Exceptions;
+using Microsoft.Azure.Devices.Client.Models;
+using Microsoft.Azure.Devices.Client.Models.FileUpload;
 using Microsoft.Azure.Devices.Client.Unified.Connection;
 using System.Net.Http.Headers;
 using System.Security.Cryptography.X509Certificates;

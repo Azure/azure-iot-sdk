@@ -1,7 +1,6 @@
 ﻿using Google.Protobuf;
-using Microsoft.Azure.Devices.Client.DirectMethods.Models;
 using Microsoft.Azure.Devices.Client.Gen2.DirectMethods;
-using Microsoft.Azure.Devices.Client.Models;
+using Microsoft.Azure.Devices.Client.Models.DirectMethods;
 using Microsoft.Azure.Devices.Client.Mqtt;
 using Microsoft.Azure.Devices.Client.Unified.Connection;
 using System.Collections.Specialized;
