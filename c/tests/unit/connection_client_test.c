@@ -152,6 +152,60 @@ static void register_rejects_null_create(void** state)
       az_iot_connection_client_register_mqtt_factory(fx->client, &bad), AZ_IOT_ERR_INVALID_ARG);
 }
 
+static void registering_the_same_factory_twice_does_not_grow_the_registry(void** state)
+{
+  fixture* fx = (fixture*)*state;
+
+  /* The duplicate entry was never reachable -- find_factory() returns the
+   * first match for a version -- but destroy() calls every entry's destroy
+   * hook, so it freed the same factory_ctx twice and corrupted the heap. */
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(fx->client, fx->factory), AZ_IOT_OK);
+  assert_int_equal(fx->client->factory_count, 1);
+
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(fx->client, fx->factory), AZ_IOT_OK);
+  assert_int_equal(fx->client->factory_count, 1);
+}
+
+static void a_duplicate_registration_leaves_the_connection_usable(void** state)
+{
+  fixture* fx = (fixture*)*state;
+
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(fx->client, fx->factory), AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(fx->client, fx->factory), AZ_IOT_OK);
+
+  /* Swallowing the duplicate must not swallow the registration itself. */
+  assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
+  az_iot_mock_mqtt_client* mock = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  assert_non_null(mock);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(mock, AZ_IOT_OK));
+  assert_int_equal(az_iot_connection_client_do_work(fx->client, 0), AZ_IOT_OK);
+  assert_true(fx->rec.count > 0);
+  assert_int_equal(fx->rec.states[fx->rec.count - 1], AZ_IOT_CONN_STATE_CONNECTED);
+}
+
+static void a_distinct_factory_for_the_same_version_still_registers(void** state)
+{
+  fixture* fx = (fixture*)*state;
+
+  /* Only an EXACT duplicate is folded away. A different factory is a different
+   * registration, even when it serves a version that already has one. */
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(fx->client, fx->factory), AZ_IOT_OK);
+  assert_int_equal(fx->client->factory_count, 1);
+
+  az_iot_mqtt_factory* other = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
+  assert_non_null(other);
+  assert_int_equal(az_iot_connection_client_register_mqtt_factory(fx->client, other), AZ_IOT_OK);
+  assert_int_equal(fx->client->factory_count, 2);
+
+  /* Both are now adopted by the client, which frees each exactly once from
+   * destroy(); the fixture teardown must not free either. */
+}
+
 static void open_without_factory_returns_not_supported(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -1366,6 +1420,12 @@ int main(void)
 {
   const struct CMUnitTest tests[] = {
     cmocka_unit_test_setup_teardown(register_rejects_null_create, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        registering_the_same_factory_twice_does_not_grow_the_registry, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_duplicate_registration_leaves_the_connection_usable, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_distinct_factory_for_the_same_version_still_registers, setup, teardown),
     cmocka_unit_test_setup_teardown(open_without_factory_returns_not_supported, setup, teardown),
     cmocka_unit_test_setup_teardown(
         open_invokes_connect_and_transitions_to_connecting, setup, teardown),
