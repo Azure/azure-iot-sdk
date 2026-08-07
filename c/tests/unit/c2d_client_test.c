@@ -447,49 +447,80 @@ static void classic_delivers_a_null_content_type(void** state)
 /* multiple clients and reconnects                                           */
 /* ------------------------------------------------------------------------- */
 
-static void only_one_of_two_clients_on_the_same_prefix_receives(void** state)
+static void a_second_client_for_the_same_identity_is_rejected(void** state)
 {
   fixture* fx = (fixture*)*state;
 
+  /* There is one device-bound stream per identity, so a second C2D client
+   * could never receive anything. Dispatch is longest-prefix-wins with no
+   * tie-break, so before this was refused the loser simply went quiet for the
+   * life of the connection with nothing to show for it. */
   az_iot_c2d_client second;
-  assert_int_equal(az_iot_c2d_client_init(&second, &fx->conn), AZ_IOT_OK);
+  assert_int_equal(az_iot_c2d_client_init(&second, &fx->conn), AZ_IOT_ERR_ALREADY_INITIALIZED);
+
+  /* The rejection must not disturb the client that already holds the stream. */
   open_to_connected(fx);
-
-  message_record a = { 0 };
-  message_record b = { 0 };
-  assert_int_equal(az_iot_c2d_client_set_handler(&fx->c2d, on_c2d, &a), AZ_IOT_OK);
-  assert_int_equal(az_iot_c2d_client_set_handler(&second, on_c2d, &b), AZ_IOT_OK);
-
-  inject(fx, C2D_TOPIC, "shared");
-
-  /* Dispatch is longest-prefix-wins over a single table, so two clients on the
-   * identical prefix cannot both be reached -- exactly one handler fires and
-   * the other client is silently deaf. Which one wins is not defined, and the
-   * assertion deliberately does not pretend otherwise; that this is a bad
-   * bargain at all is the point. */
-  assert_int_equal(a.count + b.count, 1);
-
-  az_iot_c2d_client_destroy(&second);
+  message_record rec = { 0 };
+  assert_int_equal(az_iot_c2d_client_set_handler(&fx->c2d, on_c2d, &rec), AZ_IOT_OK);
+  inject(fx, C2D_TOPIC, "still mine");
+  assert_int_equal(rec.count, 1);
 }
 
-static void destroying_one_client_leaves_the_other_receiving(void** state)
+static void a_client_for_a_different_identity_registers_alongside(void** state)
 {
   fixture* fx = (fixture*)*state;
 
-  az_iot_c2d_client second;
-  assert_int_equal(az_iot_c2d_client_init(&second, &fx->conn), AZ_IOT_OK);
+  /* A different identity produces a different device-bound topic, so its C2D
+   * client is not the duplicate the previous test refuses.
+   *
+   * This deliberately does NOT claim to exercise connection multiplexing:
+   * these are two separate az_iot_connection_client instances with separate
+   * dispatch tables. That distinct prefixes coexist in ONE table -- the part
+   * multiplexing actually rests on -- is asserted by
+   * dispatch_allows_distinct_identities_to_coexist, where the table is
+   * directly in view. */
+  az_iot_connection_client_options opts = { 0 };
+  opts.host = "broker.example";
+  opts.client_id = "other-device";
+  az_iot_connection_client other_conn;
+  assert_int_equal(az_iot_connection_client_init(&other_conn, &opts), AZ_IOT_OK);
+
+  az_iot_c2d_client other;
+  assert_int_equal(az_iot_c2d_client_init(&other, &other_conn), AZ_IOT_OK);
+
+  az_iot_c2d_client_destroy(&other);
+  az_iot_connection_client_destroy(&other_conn);
+
+  /* And on this connection, the slot frees up once its holder goes away. */
+  az_iot_c2d_client_destroy(&fx->c2d);
+  az_iot_c2d_client replacement;
+  assert_int_equal(az_iot_c2d_client_init(&replacement, &fx->conn), AZ_IOT_OK);
+  az_iot_c2d_client_destroy(&replacement);
+
+  assert_int_equal(az_iot_c2d_client_init(&fx->c2d, &fx->conn), AZ_IOT_OK);
+}
+
+static void a_replacement_client_takes_over_delivery(void** state)
+{
+  fixture* fx = (fixture*)*state;
   open_to_connected(fx);
 
-  message_record a = { 0 };
-  message_record b = { 0 };
-  assert_int_equal(az_iot_c2d_client_set_handler(&fx->c2d, on_c2d, &a), AZ_IOT_OK);
-  assert_int_equal(az_iot_c2d_client_set_handler(&second, on_c2d, &b), AZ_IOT_OK);
+  message_record first = { 0 };
+  assert_int_equal(az_iot_c2d_client_set_handler(&fx->c2d, on_c2d, &first), AZ_IOT_OK);
+  inject(fx, C2D_TOPIC, "to the first");
+  assert_int_equal(first.count, 1);
 
-  az_iot_c2d_client_destroy(&second);
-  inject(fx, C2D_TOPIC, "still here");
+  /* Tearing a client down and standing another one up in its place is the
+   * supported way to re-point delivery, now that two cannot coexist. */
+  az_iot_c2d_client_destroy(&fx->c2d);
+  assert_int_equal(az_iot_c2d_client_init(&fx->c2d, &fx->conn), AZ_IOT_OK);
 
-  assert_int_equal(b.count, 0);
-  assert_int_equal(a.count, 1);
+  message_record second = { 0 };
+  assert_int_equal(az_iot_c2d_client_set_handler(&fx->c2d, on_c2d, &second), AZ_IOT_OK);
+  inject(fx, C2D_TOPIC, "to the second");
+
+  assert_int_equal(first.count, 1);
+  assert_int_equal(second.count, 1);
 }
 
 static void the_subscription_is_reissued_after_a_reconnect(void** state)
@@ -581,9 +612,10 @@ int main(void)
         a_message_addressed_to_another_device_is_not_delivered, setup, teardown),
     cmocka_unit_test_setup_teardown(classic_delivers_a_null_content_type, setup, teardown),
     cmocka_unit_test_setup_teardown(
-        only_one_of_two_clients_on_the_same_prefix_receives, setup, teardown),
+        a_second_client_for_the_same_identity_is_rejected, setup, teardown),
     cmocka_unit_test_setup_teardown(
-        destroying_one_client_leaves_the_other_receiving, setup, teardown),
+        a_client_for_a_different_identity_registers_alongside, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_replacement_client_takes_over_delivery, setup, teardown),
     cmocka_unit_test_setup_teardown(
         the_subscription_is_reissued_after_a_reconnect, setup, teardown),
     cmocka_unit_test_setup_teardown(a_message_after_destroy_reaches_nobody, setup, teardown),

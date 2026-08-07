@@ -203,6 +203,73 @@ static void dispatch_register_validates_args(void** state)
   assert_int_equal(az_iot_dispatch_register_prefix(&t, "p/", NULL, &ctx), AZ_IOT_ERR_INVALID_ARG);
 }
 
+static void dispatch_register_rejects_a_duplicate_prefix(void** state)
+{
+  (void)state;
+  az_iot_dispatch_table t;
+  az_iot_dispatch_init(&t);
+  hit_record first = { 0 };
+  hit_record second = { 0 };
+
+  /* Routing is longest-prefix-wins with no tie-break, so a second handler on
+   * the identical prefix could never be reached. Refusing the registration
+   * turns a silently deaf feature client into an error at init. */
+  assert_int_equal(
+      az_iot_dispatch_register_prefix(&t, "devices/dev-1/c2d/", hit_handler, &first), AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_dispatch_register_prefix(&t, "devices/dev-1/c2d/", hit_handler, &second),
+      AZ_IOT_ERR_ALREADY_INITIALIZED);
+  assert_int_equal((int)az_iot_dispatch_count(&t), 1);
+
+  /* The rejection must not disturb the holder. */
+  az_iot_mqtt_message msg = { 0 };
+  msg.topic = "devices/dev-1/c2d/prop=1";
+  assert_true(az_iot_dispatch_route(&t, &msg));
+  assert_int_equal((int)first.hits, 1);
+  assert_int_equal((int)second.hits, 0);
+}
+
+static void dispatch_allows_distinct_identities_to_coexist(void** state)
+{
+  (void)state;
+  az_iot_dispatch_table t;
+  az_iot_dispatch_init(&t);
+  hit_record one = { 0 };
+  hit_record two = { 0 };
+
+  /* Connection multiplexing puts several identities on one connection, and
+   * their topics differ by device id. Only an EXACT duplicate is refused, so
+   * two identities can hold the same kind of subscription side by side. */
+  assert_int_equal(
+      az_iot_dispatch_register_prefix(&t, "devices/dev-1/c2d/", hit_handler, &one), AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_dispatch_register_prefix(&t, "devices/dev-2/c2d/", hit_handler, &two), AZ_IOT_OK);
+  assert_int_equal((int)az_iot_dispatch_count(&t), 2);
+
+  az_iot_mqtt_message msg = { 0 };
+  msg.topic = "devices/dev-2/c2d/";
+  assert_true(az_iot_dispatch_route(&t, &msg));
+  assert_int_equal((int)one.hits, 0);
+  assert_int_equal((int)two.hits, 1);
+}
+
+static void dispatch_frees_a_prefix_when_its_owner_unregisters(void** state)
+{
+  (void)state;
+  az_iot_dispatch_table t;
+  az_iot_dispatch_init(&t);
+  hit_record first = { 0 };
+  hit_record second = { 0 };
+
+  assert_int_equal(az_iot_dispatch_register_prefix(&t, "p/", hit_handler, &first), AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_dispatch_register_prefix(&t, "p/", hit_handler, &second),
+      AZ_IOT_ERR_ALREADY_INITIALIZED);
+
+  assert_int_equal((int)az_iot_dispatch_unregister_by_ctx(&t, &first), 1);
+  assert_int_equal(az_iot_dispatch_register_prefix(&t, "p/", hit_handler, &second), AZ_IOT_OK);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -215,6 +282,9 @@ int main(void)
     cmocka_unit_test(dispatch_unregister_by_ctx_removes_all_owned),
     cmocka_unit_test(dispatch_register_rejects_when_full),
     cmocka_unit_test(dispatch_register_validates_args),
+    cmocka_unit_test(dispatch_register_rejects_a_duplicate_prefix),
+    cmocka_unit_test(dispatch_allows_distinct_identities_to_coexist),
+    cmocka_unit_test(dispatch_frees_a_prefix_when_its_owner_unregisters),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

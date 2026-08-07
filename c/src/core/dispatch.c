@@ -26,18 +26,40 @@ az_iot_result az_iot_dispatch_register_prefix(
   if (n + 1 > AZ_IOT_DISPATCH_PREFIX_MAX)
     return AZ_IOT_ERR_NOT_SUPPORTED;
 
-  /* Find an empty slot. */
+  /* Find an empty slot, and reject a prefix that is already claimed.
+   *
+   * Routing is longest-prefix-wins with no tie-break, so a second registration
+   * for the identical prefix would shadow the first and the loser would
+   * silently receive nothing for the life of the connection. Two feature
+   * clients of the same type on one connection is a programming error -- there
+   * is one C2D stream, one twin and one method channel per identity -- and it
+   * should look like one.
+   *
+   * The check is deliberately EXACT-match only. Connection multiplexing puts
+   * several identities on one connection, and their topics differ by device id
+   * ("devices/{device-id}/..."), so distinct identities never collide here and
+   * stay free to register side by side. Only a genuine duplicate is refused. */
   az_iot_dispatch_entry* slot = NULL;
   for (size_t i = 0; i < AZ_IOT_MAX_INBOUND_HANDLERS; ++i)
   {
-    if (!tbl->entries[i].in_use)
+    az_iot_dispatch_entry* e = &tbl->entries[i];
+    if (!e->in_use)
     {
-      slot = &tbl->entries[i];
-      break;
+      if (!slot)
+      {
+        slot = e;
+      }
+      continue;
+    }
+    if (e->prefix_len == n && memcmp(e->prefix, topic_prefix, n) == 0)
+    {
+      return AZ_IOT_ERR_ALREADY_INITIALIZED;
     }
   }
   if (!slot)
+  {
     return AZ_IOT_ERR_NOT_SUPPORTED;
+  }
 
   memcpy(slot->prefix, topic_prefix, n + 1);
   slot->prefix_len = n;
