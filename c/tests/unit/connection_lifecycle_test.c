@@ -263,6 +263,85 @@ static void connect_timeout_is_configurable(void** state)
 }
 
 /* ------------------------------------------------------------------------- */
+/* Classic CONNECT packet shape                                              */
+/*                                                                           */
+/* These pin what IoT Hub actually requires of the CONNECT. They all passed  */
+/* the day they were written -- the point is that nothing would have noticed */
+/* if they stopped passing, and the service rejects or misroutes a device    */
+/* that gets any of them wrong.                                              */
+/* ------------------------------------------------------------------------- */
+
+static void the_username_carries_the_host_and_device_id(void** state)
+{
+  (void)state;
+  /* IoT Hub expects "{iothub-hostname}/{device-id}/?api-version=...". The
+   * hostname is how the service identifies the hub behind a shared gateway,
+   * and the "/?" is what separates the identity from the query string -- a
+   * username missing it is malformed, so the check has to include it. */
+  static const char k_expected_prefix[] = "broker.example/ut-device/?";
+  az_iot_connection_client_options opts = az_iot_test_classic_options();
+  az_iot_mock_call c;
+  connect_call_for(&opts, &c);
+  assert_int_equal(strncmp(c.username, k_expected_prefix, sizeof(k_expected_prefix) - 1), 0);
+}
+
+static void the_username_carries_an_api_version(void** state)
+{
+  (void)state;
+  /* The service documents omitting api-version as a source of "unexpected
+   * behaviour", and the SDK gets it from azure-sdk-for-c rather than building
+   * it here -- so a dependency bump could drop it without anything failing. */
+  az_iot_connection_client_options opts = az_iot_test_classic_options();
+  az_iot_mock_call c;
+  connect_call_for(&opts, &c);
+  assert_non_null(strstr(c.username, "api-version="));
+}
+
+static void the_model_id_is_announced_in_the_username(void** state)
+{
+  (void)state;
+  /* Plug and Play model announcement. Device Update discovers a device by this
+   * value, so losing it silently disables ADU on every device. */
+  az_iot_connection_client_options opts = az_iot_test_classic_options();
+  opts.model_id = "dtmi:azure:iot:deviceUpdateContractModel;2";
+  az_iot_mock_call c;
+  connect_call_for(&opts, &c);
+  assert_non_null(strstr(c.username, "model-id="));
+  assert_non_null(strstr(c.username, "deviceUpdateContractModel"));
+}
+
+static void no_model_id_means_none_in_the_username(void** state)
+{
+  (void)state;
+  az_iot_connection_client_options opts = az_iot_test_classic_options();
+  az_iot_mock_call c;
+  connect_call_for(&opts, &c);
+  assert_null(strstr(c.username, "model-id="));
+}
+
+static void an_empty_model_id_is_treated_as_none(void** state)
+{
+  (void)state;
+  az_iot_connection_client_options opts = az_iot_test_classic_options();
+  opts.model_id = "";
+  az_iot_mock_call c;
+  connect_call_for(&opts, &c);
+  assert_null(strstr(c.username, "model-id="));
+}
+
+static void the_connect_does_not_request_a_clean_session(void** state)
+{
+  (void)state;
+  /* CleanSession 0 is what makes the C2D subscription survive a reconnect and
+   * lets the hub deliver messages queued while the device was away. Asking for
+   * a clean session would drop them, and the loss would be invisible. */
+  az_iot_connection_client_options opts = az_iot_test_classic_options();
+  az_iot_mock_call c;
+  connect_call_for(&opts, &c);
+  assert_false(c.connect.clean_start);
+}
+
+/* ------------------------------------------------------------------------- */
 /* close()                                                                   */
 /* ------------------------------------------------------------------------- */
 
@@ -654,6 +733,12 @@ int main(void)
     cmocka_unit_test(the_largest_useful_keep_alive_reaches_the_adapter),
     cmocka_unit_test(connect_timeout_defaults_when_unset),
     cmocka_unit_test(connect_timeout_is_configurable),
+    cmocka_unit_test(the_username_carries_the_host_and_device_id),
+    cmocka_unit_test(the_username_carries_an_api_version),
+    cmocka_unit_test(the_model_id_is_announced_in_the_username),
+    cmocka_unit_test(no_model_id_means_none_in_the_username),
+    cmocka_unit_test(an_empty_model_id_is_treated_as_none),
+    cmocka_unit_test(the_connect_does_not_request_a_clean_session),
     /* close() */
     cmocka_unit_test(close_rejects_null_client),
     cmocka_unit_test_setup_teardown(
