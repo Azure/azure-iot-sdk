@@ -1,5 +1,5 @@
-﻿using Microsoft.Azure.Devices.Client.Connection.Models;
-using Microsoft.Azure.Devices.Client.Connection.Unified;
+﻿using Microsoft.Azure.Devices.Client.Models;
+using Microsoft.Azure.Devices.Client.Unified.Connection;
 using Microsoft.Azure.Devices.Provisioning.Service;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
@@ -40,8 +40,12 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
         }
 
         public const int TestTimeoutMilliseconds = 60 * 1000;
+        public static async Task<TestConnectionClient> CreateConnectedGen2ConnectionClientAsync(bool testAgainstClassicHub, CancellationToken cancellationToken = default)
+        {
+            throw new NotImplementedException();
+        }
 
-        public static async Task<TestConnectionClient> CreateConnectedConnectionClientAsync(bool testAgainstClassicHub, CancellationToken cancellationToken = default)
+        public static async Task<TestConnectionClient> CreateConnectedUnifiedConnectionClientAsync(bool testAgainstClassicHub, CancellationToken cancellationToken = default)
         {
             if (!testAgainstClassicHub)
             {
@@ -83,7 +87,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
             };
         }
 
-        public static async Task<TestConnectionClient> CreateConnectedConnectionClientWithCertificateSigningAsync(bool testAgainstClassicHub, CancellationToken cancellationToken = default)
+        public static async Task<TestConnectionClient> CreateConnectedUnifiedConnectionClientWithCertificateSigningAsync(bool testAgainstClassicHub, CancellationToken cancellationToken = default)
         {
             if (!testAgainstClassicHub)
             {

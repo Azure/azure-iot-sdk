@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 using Microsoft.Azure.Devices.Client.Mqtt;
-using Microsoft.Azure.Devices.Client.Retry;
+using Microsoft.Azure.Devices.Client.MqttNetAdapter.Session.Retry;
 using System.Diagnostics;
 using System.Net.Sockets;
 

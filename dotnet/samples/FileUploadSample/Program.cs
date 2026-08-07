@@ -1,15 +1,11 @@
 ﻿using Azure.Storage.Blobs.Models;
 using Azure.Storage.Blobs.Specialized;
 using Microsoft.Azure.Devices.Client;
-using Microsoft.Azure.Devices.Client.Connection.Models;
-using Microsoft.Azure.Devices.Client.Connection.Unified;
-using Microsoft.Azure.Devices.Client.FileUpload.Unified;
-using Microsoft.Azure.Devices.Client.FileUpload.Models;
-using Microsoft.Azure.Devices.Client.Telemetry;
-using Microsoft.Azure.Devices.Client.Twin;
 using SetupSampleDevice;
-using System.Security.Cryptography.X509Certificates;
 using System.Text;
+using Microsoft.Azure.Devices.Client.Unified.Connection;
+using Microsoft.Azure.Devices.Client.Models;
+using Microsoft.Azure.Devices.Client.Unified.FileUpload;
 
 internal class Program
 {

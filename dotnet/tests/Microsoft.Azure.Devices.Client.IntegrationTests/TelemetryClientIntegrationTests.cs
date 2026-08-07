@@ -1,6 +1,6 @@
-﻿using Microsoft.Azure.Devices.Client.Connection.Unified;
-using Microsoft.Azure.Devices.Client.Telemetry.Models;
-using Microsoft.Azure.Devices.Client.Telemetry.Unified;
+﻿using Microsoft.Azure.Devices.Client.Models;
+using Microsoft.Azure.Devices.Client.Unified.Connection;
+using Microsoft.Azure.Devices.Client.Unified.Telemetry;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Xunit;
@@ -17,7 +17,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
             using CancellationTokenSource cts = new();
             cts.CancelAfter(Setup.TestTimeoutMilliseconds - 1000);
 
-            await using TestConnectionClient testDeviceContext = await Setup.CreateConnectedConnectionClientAsync(testAgainstClassicHub, cts.Token);
+            await using TestConnectionClient testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientAsync(testAgainstClassicHub, cts.Token);
 
             TelemetryClient telemetryClient = new TelemetryClient(testDeviceContext.ConnectionClient);
 
@@ -37,7 +37,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
             using CancellationTokenSource cts = new();
             cts.CancelAfter(Setup.TestTimeoutMilliseconds - 1000);
 
-            await using TestConnectionClient testDeviceContext = await Setup.CreateConnectedConnectionClientAsync(testAgainstClassicHub, cts.Token);
+            await using TestConnectionClient testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientAsync(testAgainstClassicHub, cts.Token);
 
             TelemetryClient telemetryClient = new TelemetryClient(testDeviceContext.ConnectionClient);
 
@@ -63,7 +63,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
             using CancellationTokenSource cts = new();
             cts.CancelAfter(Setup.TestTimeoutMilliseconds - 1000);
 
-            await using TestConnectionClient testDeviceContext = await Setup.CreateConnectedConnectionClientAsync(testAgainstClassicHub, cts.Token);
+            await using TestConnectionClient testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientAsync(testAgainstClassicHub, cts.Token);
 
             TelemetryClient telemetryClient = new TelemetryClient(testDeviceContext.ConnectionClient);
 
@@ -85,11 +85,11 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
             using CancellationTokenSource cts = new();
             cts.CancelAfter(Setup.TestTimeoutMilliseconds - 1000);
 
-            await using TestConnectionClient testDeviceContext = await Setup.CreateConnectedConnectionClientAsync(testAgainstClassicHub, cts.Token);
+            await using TestConnectionClient testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientAsync(testAgainstClassicHub, cts.Token);
             ConnectionClient connectionClient = testDeviceContext.ConnectionClient;
 
             ServiceClient serviceClient = Setup.GetIotHubServiceClient();
-            CloudToDeviceTelemetryClient telemetryClient = new CloudToDeviceTelemetryClient(connectionClient);
+            TelemetryClient telemetryClient = new TelemetryClient(connectionClient);
 
             TaskCompletionSource<CloudToDeviceTelemetry> c2dMessageReceived = new();
 

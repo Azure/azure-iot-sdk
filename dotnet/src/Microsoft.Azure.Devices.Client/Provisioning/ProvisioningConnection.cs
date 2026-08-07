@@ -1,10 +1,9 @@
 ﻿// Copyright (c) Microsoft. All rights reserved.
 // Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
-using Microsoft.Azure.Devices.Client.Connection.Models;
+using Microsoft.Azure.Devices.Client.Models;
 using Microsoft.Azure.Devices.Client.Mqtt;
 using Microsoft.Azure.Devices.Client.Provisioning.Models;
-using Microsoft.Azure.Devices.Client.Serialization;
 using System.Diagnostics;
 using System.Globalization;
 using System.Reflection;
@@ -79,10 +78,6 @@ namespace Microsoft.Azure.Devices.Client.Provisioning
                             linkedCancellationToken.Token)
                         .ConfigureAwait(false);
 
-                    //TODO there is a bug under investigation wherein a device that reaches this point, then loses connection, then reconnects, stalls.
-                    // It stalls after the puback is received for the "publish registration request" call after reconnecting. This SDK expects to receive a PUBLISH from DPS,
-                    // but it never seems to come? Need to check with DPS folks what the expectation here is since we are already reconnecting with a fresh session and using a new request id
-                    // on the "publish registration request" call
                     DeviceRegistrationResult registrationResult = await PollUntilProvisionigFinishesAsync(
                             mqttClient,
                             registrationStatus.OperationId,
@@ -238,7 +233,6 @@ namespace Microsoft.Azure.Devices.Client.Provisioning
 
             return new MqttConnect()
             {
-                // TODO feels a little clunky to pass down both the TCP port + TCP host and the WS uri + WS port
                 HostName = hostName,
                 TcpPort = 8883,
                 WebsocketPort = 443,

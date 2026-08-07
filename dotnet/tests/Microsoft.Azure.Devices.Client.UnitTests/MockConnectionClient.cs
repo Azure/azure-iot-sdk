@@ -1,7 +1,6 @@
 ﻿using Microsoft.Azure.Devices.Client.CertificateManagement;
-using Microsoft.Azure.Devices.Client.Connection.Models;
-using Microsoft.Azure.Devices.Client.Connection.Unified;
 using Microsoft.Azure.Devices.Client.Mqtt;
+using Microsoft.Azure.Devices.Client.Unified.Connection;
 
 namespace Microsoft.Azure.Devices.Client.UnitTests
 {

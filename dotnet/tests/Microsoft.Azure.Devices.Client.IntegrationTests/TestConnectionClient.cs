@@ -1,4 +1,4 @@
-﻿using Microsoft.Azure.Devices.Client.Connection.Unified;
+﻿using Microsoft.Azure.Devices.Client.Unified.Connection;
 
 namespace Microsoft.Azure.Devices.Client.IntegrationTests
 {
