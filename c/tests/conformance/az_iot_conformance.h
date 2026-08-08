@@ -29,9 +29,11 @@
  * Broker discovery: the suite reads the broker address from the environment
  *   AZ_IOT_MQTT_BROKER_HOST (default: "localhost")
  *   AZ_IOT_MQTT_BROKER_PORT (default: "1883")
- * If `AZ_IOT_MQTT_BROKER_SKIP=1` (or `AZ_IOT_MQTT_BROKER_HOST` is the
- * empty string), the suite is reported as skipped (CTest exit code 77) so
- * developers without a broker configured don't see false failures locally.
+ * Whether the suite runs at all is a build-time decision: it is registered as
+ * a CTest test only when AZ_IOT_BUILD_CONFORMANCE_TESTS is on. Once registered
+ * it never excuses itself -- an unset or empty AZ_IOT_MQTT_BROKER_HOST is a
+ * failure, because a suite that skips itself is one nobody notices has stopped
+ * running.
  */
 #ifndef AZ_IOT_CONFORMANCE_H
 #define AZ_IOT_CONFORMANCE_H

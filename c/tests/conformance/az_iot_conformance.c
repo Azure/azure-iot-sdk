@@ -54,10 +54,12 @@ static unsigned long conf_now_ms(void)
 static az_iot_mqtt_factory* g_factory = NULL;
 static const char* g_host = "localhost";
 static uint16_t g_port = 1883;
-/* Optional TLS endpoint for the server-certificate-validation test. When
- * g_tls_port == 0 that test is skipped (no TLS broker configured). */
+#ifdef AZ_IOT_CONFORMANCE_WITH_TLS
+/* TLS endpoint for the server-certificate-validation test, which is compiled in
+ * only when that option is set. */
 static const char* g_tls_host = "localhost";
 static uint16_t g_tls_port = 0;
+#endif
 static const unsigned k_step_timeout_ms = 5000;
 /* Same budget as k_step_timeout_ms, on the scale the connect option uses. */
 static const unsigned k_step_timeout_seconds = 5;
@@ -232,6 +234,7 @@ static void connect_client(az_iot_mqtt_client* c, conf_recorder* rec, const char
   assert_true(wait_until(c, rec, saw_connected_ok, k_step_timeout_ms));
 }
 
+#ifdef AZ_IOT_CONFORMANCE_WITH_TLS
 /* A self-signed CA that signs nothing the broker presents. Embedded so the
  * server-cert-validation test is self-contained: a correctly-validating client
  * given only this trust anchor MUST reject the broker's real server cert. */
@@ -271,6 +274,7 @@ static int write_temp_pem(const char* pem, char* path_out, size_t cap)
   fclose(f);
   return w == n;
 }
+#endif /* AZ_IOT_CONFORMANCE_WITH_TLS */
 
 /* ------------------------------------------------------------------------- */
 /* test cases                                                                 */
@@ -359,19 +363,17 @@ static void disconnect_without_connect_is_rejected(void** state)
  * a trust anchor that does NOT sign the broker's certificate, the TLS handshake
  * must be rejected and the client must never reach CONNECTED. If validation were
  * disabled, the handshake would succeed and a CONNACK would arrive (CONNECTED
- * ok), failing this test. Requires a TLS endpoint (AZ_IOT_MQTT_BROKER_TLS_PORT);
- * skipped otherwise. */
+ * ok), failing this test.
+ *
+ * Compiled only when AZ_IOT_CONFORMANCE_WITH_TLS is defined, which the
+ * AZ_IOT_BUILD_CONFORMANCE_TESTS_TLS option sets. It used to be compiled
+ * unconditionally and call cmocka's skip() when no TLS port was configured --
+ * which is how a mandatory security check sat inside a green suite without ever
+ * running. Whether it runs is now visible in the build configuration. */
+#ifdef AZ_IOT_CONFORMANCE_WITH_TLS
 static void server_cert_validation_rejects_untrusted(void** state)
 {
   (void)state;
-  if (g_tls_port == 0)
-  {
-    fprintf(
-        stderr,
-        "conformance: server-cert-validation test skipped "
-        "(set AZ_IOT_MQTT_BROKER_TLS_PORT to a TLS broker)\n");
-    skip();
-  }
 
   char ca_path[128];
   assert_true(write_temp_pem(k_bogus_ca_pem, ca_path, sizeof(ca_path)));
@@ -405,6 +407,7 @@ static void server_cert_validation_rejects_untrusted(void** state)
   destroy_client(c);
   remove(ca_path);
 }
+#endif /* AZ_IOT_CONFORMANCE_WITH_TLS */
 
 /* ------------------------------------------------------------------------- */
 /* transport failure paths                                                    */
@@ -594,15 +597,6 @@ static void connect_after_disconnect_reuses_the_client(void** state)
 /* entry point                                                                */
 /* ------------------------------------------------------------------------- */
 
-static int env_truthy(const char* v)
-{
-  if (!v || !*v)
-  {
-    return 0;
-  }
-  return (v[0] == '1' || v[0] == 't' || v[0] == 'T' || v[0] == 'y' || v[0] == 'Y');
-}
-
 int az_iot_conformance_run(az_iot_conformance_suite suite_kind, az_iot_mqtt_factory* factory)
 {
   if (!factory)
@@ -627,32 +621,46 @@ int az_iot_conformance_run(az_iot_conformance_suite suite_kind, az_iot_mqtt_fact
   /* Resolve broker config from env. */
   const char* host = getenv("AZ_IOT_MQTT_BROKER_HOST");
   const char* port = getenv("AZ_IOT_MQTT_BROKER_PORT");
-  const char* skip = getenv("AZ_IOT_MQTT_BROKER_SKIP");
 
-  if (env_truthy(skip) || !host || !*host)
+  if (!host || !*host)
   {
+    /* A failure, not a skip. Whether this suite runs is decided at build time
+     * by AZ_IOT_BUILD_CONFORMANCE_TESTS; if it was built and registered, the
+     * broker address is a promise the caller has already made. Excusing
+     * ourselves here would hide a misconfigured job that silently stopped
+     * exercising the adapter. */
     fprintf(
         stderr,
-        "conformance: skipped (set AZ_IOT_MQTT_BROKER_HOST to a reachable broker; "
-        "current: host=%s skip=%s)\n",
-        host ? host : "(unset)",
-        skip ? skip : "(unset)");
-    return 77; /* CTest SKIP_RETURN_CODE */
+        "conformance: AZ_IOT_MQTT_BROKER_HOST is unset or empty, but this suite was built with "
+        "AZ_IOT_BUILD_CONFORMANCE_TESTS=ON. Point it at a reachable broker, or configure with "
+        "AZ_IOT_BUILD_CONFORMANCE_TESTS=OFF so the suite is not registered.\n");
+    return 1;
   }
 
   g_factory = factory;
   g_host = host;
   g_port = port ? (uint16_t)atoi(port) : (uint16_t)1883;
 
-  /* Optional TLS endpoint for the server-cert-validation test. Defaults its
-   * host to the plaintext broker host; the test is skipped when no TLS port
-   * is provided. */
+  /* TLS endpoint for the server-cert-validation test. Only consulted when that
+   * test is compiled in; an absent port is then a failure, not a reason to
+   * quietly drop a security check. */
+#ifdef AZ_IOT_CONFORMANCE_WITH_TLS
   {
     const char* tls_host = getenv("AZ_IOT_MQTT_BROKER_TLS_HOST");
     const char* tls_port = getenv("AZ_IOT_MQTT_BROKER_TLS_PORT");
     g_tls_host = (tls_host && *tls_host) ? tls_host : g_host;
     g_tls_port = (tls_port && *tls_port) ? (uint16_t)atoi(tls_port) : 0;
+    if (g_tls_port == 0)
+    {
+      fprintf(
+          stderr,
+          "conformance: AZ_IOT_MQTT_BROKER_TLS_PORT is unset, but this suite was built with "
+          "AZ_IOT_BUILD_CONFORMANCE_TESTS_TLS=ON. Point it at a TLS broker, or configure with "
+          "that option off so the certificate-validation test is not compiled in.\n");
+      return 1;
+    }
   }
+#endif
 
   fprintf(
       stderr,
@@ -670,7 +678,9 @@ int az_iot_conformance_run(az_iot_conformance_suite suite_kind, az_iot_mqtt_fact
     cmocka_unit_test(connect_to_an_unresolvable_host_is_rejected),
     cmocka_unit_test(connect_to_a_black_holed_address_never_reports_connected),
     cmocka_unit_test(idle_session_survives_the_keep_alive_interval),
+#ifdef AZ_IOT_CONFORMANCE_WITH_TLS
     cmocka_unit_test(server_cert_validation_rejects_untrusted),
+#endif
   };
   int failed = cmocka_run_group_tests(tests, NULL, NULL);
   return (failed == 0) ? 0 : 1;

@@ -3,8 +3,10 @@
 // information.
 
 /* SPDX-License-Identifier: MIT */
-/* File upload end-to-end (Classic IoT Hub). Runs on the Linux e2e legs; skipped
- * on Windows (see the note in main()).
+/* File upload end-to-end (Classic IoT Hub). Runs on the Linux e2e legs. On
+ * Windows the executable is built but not registered as a CTest test, so MSVC
+ * keeps compiling it while nothing skips at run time -- see the note in main()
+ * and c/tests/e2e/CMakeLists.txt.
  *
  * Proves the device-side file-upload path against a real Azure IoT Hub that has
  * an Azure Storage account associated for file upload. The device provisions via
@@ -32,8 +34,8 @@
  * az_amqp transport the service facade uses -- so there is no external HTTP
  * client dependency. Mutual TLS with the device certificate authenticates the
  * hub REST calls; on Windows the harness's Schannel transport does not present
- * the self-signed device certificate on the CI runners, so the test self-skips
- * there (the OpenSSL transport on Linux presents it correctly).
+ * the self-signed device certificate on the CI runners, so the test is not
+ * registered there (the OpenSSL transport on Linux presents it correctly).
  *
  * Requires the standard e2e device environment and the service connection
  * strings (both provided by the e2e job), and a hub with an Azure Storage
@@ -644,10 +646,10 @@ int main(void)
     cmocka_unit_test(test_sequential_uploads_reuse_the_client),
   };
 
-#ifdef _WIN32
-  /* Skipped on Windows: the mutual-TLS hub REST call the Classic control plane
-   * needs does not work through the e2e harness's Schannel transport on the CI
-   * runners. MEASURED (run 30506101665, where this skip was lifted to test the
+  /* Not registered as a test on Windows -- see c/tests/e2e/CMakeLists.txt. The
+   * mutual-TLS hub REST call the Classic control plane needs does not work
+   * through the e2e harness's Schannel transport on the CI runners. MEASURED
+   * (run 30506101665, where the old runtime skip was lifted to test the
    * assumption): every get_sas_uri and notify_complete came back
    * AZ_IOT_ERR_PROTOCOL after ~16s, i.e. the exchange produced no HTTP status
    * line at all rather than an auth failure -- the hub closes the connection
@@ -655,16 +657,6 @@ int main(void)
    * network, passed. The OpenSSL transport on Linux performs the same calls
    * fine, so this is a harness limitation and not an SDK one; the feature is
    * covered by the Linux e2e legs, and the file-upload sample builds and runs
-   * natively on Windows. Return the CTest skip code (77) rather than fail. */
-  (void)tests;
-  (void)group_setup;
-  (void)group_teardown;
-  fprintf(
-      stderr,
-      "az_iot_tests_e2e_fileupload: skipped on Windows (the harness TLS transport cannot "
-      "complete the mutual-TLS hub REST call); covered on the Linux e2e legs.\n");
-  return 77;
-#else
+   * natively on Windows. */
   return cmocka_run_group_tests(tests, group_setup, group_teardown);
-#endif
 }

@@ -1917,17 +1917,19 @@ The suite exercises: accept/reject, single- and multi-step manifests, download +
 hash verification, install/apply/reboot/`resume()`, cancellation, and rollback —
 asserting the reported-property JSON matches the expected agent-state at each
 step. It is **host-only** (fake twin) so customers can validate their adapters in
-CI with no Azure dependency. It self-skips (CTest exit 77) only for sub-tests that
-genuinely require a capability the supplied hooks declare unsupported (e.g. no
-`persist_state_fn`).
+CI with no Azure dependency. Where a sub-test needs a capability the supplied
+hooks declare unsupported (e.g. no `persist_state_fn`), it is compiled out rather
+than skipped at run time — see the no-self-skips rule below.
 
 ### L4 — End-to-End (gated, real Azure Device Update service)
 
 The smallest layer: a real device identity, a real ADU instance, and a real
 deployment, validating the wire contract end to end. Because it consumes cloud
-quota and is slow, it is **gated** behind an env var (mirroring
-`AZ_IOT_MQTT_BROKER_*`), e.g. `AZ_IOT_ADU_E2E=1` with hub/instance/deployment
-coordinates; absent that, the test reports skipped (CTest exit 77). Scope:
+quota and is slow, it is **gated at build time** (mirroring
+`AZ_IOT_BUILD_E2E_CSR`), e.g. `AZ_IOT_BUILD_E2E_ADU_LIVE=ON` plus hub/instance/
+deployment coordinates supplied by the environment; without the option the test
+is not built. It must never inspect the environment and excuse itself: a suite
+that skips itself is one nobody notices has stopped running. Scope:
 provision → deploy a signed test update → assert the device drives to success
 (result_code 700) → assert the service marks the deployment succeeded.
 
