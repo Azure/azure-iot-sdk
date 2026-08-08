@@ -118,7 +118,7 @@ static az_iot_result build_topic_classic(
   for (size_t i = 0; i < msg->properties_count; ++i)
   {
     const az_iot_telemetry_property* p = &msg->properties[i];
-    if (p->key == NULL || p->key[0] == '\0')
+    if (!is_nonempty_cstr(p->key))
     {
       continue;
     }
@@ -237,7 +237,7 @@ static az_iot_result telemetry_send_next(
   for (size_t i = 0; i < msg->properties_count && up_count < AZ_IOT_TELEMETRY_MAX_USER_PROPS; ++i)
   {
     const az_iot_telemetry_property* p = &msg->properties[i];
-    if (p->key == NULL || p->key[0] == '\0')
+    if (!is_nonempty_cstr(p->key))
     {
       continue;
     }
