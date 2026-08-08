@@ -280,11 +280,13 @@ jobs:
   # ---------------------------------------------------------------------------
   # Code coverage (gcov/gcovr) for first-party code -- c/src and c/adapters.
   #
-  # Phase 1: report-only. The per-component floors in
-  # c/tests/coverage-components.json are all null, so nothing fails on coverage
-  # yet; this run exists to establish the baseline. Phase 2 fills those numbers
-  # in and adds --enforce, at which point a per-component regression or a
-  # shipped adapter dropping out of the build blocks the merge.
+  # Report-only, deliberately. The per-component floors in
+  # c/tests/coverage-components.json are now SET -- derived from the measured
+  # unit+conformance numbers -- so the table marks each component PASS or FAIL.
+  # `--enforce` is still absent, so none of that can fail the build yet, and the
+  # report says so in as many words. Adding --enforce is the remaining step, at
+  # which point a per-component regression or a shipped adapter dropping out of
+  # the build blocks the merge.
   #
   # Design: c/docs/eng/code-coverage.md
   # ---------------------------------------------------------------------------
@@ -387,8 +389,10 @@ jobs:
           if-no-files-found: error
 
       - name: Per-component summary
-        # Phase 1 is report-only: no --enforce. Add it in Phase 2 together with
-        # the floors in coverage-components.json.
+        # Floors are set but NOT enforced: no --enforce here, so a component
+        # below its floor is reported and does not fail the job. Verified
+        # satisfiable against both the per-PR and nightly datasets before being
+        # committed, so turning --enforce on is a one-line change when wanted.
         run: |
           python3 tests/coverage_report.py \
             --summary build/linux-gcc-coverage/coverage/summary.json \
@@ -399,8 +403,10 @@ jobs:
 
       - name: Patch coverage (report-only)
         if: github.event_name == 'pull_request'
-        # No --fail-under yet; that is Phase 3. This publishes the number so the
-        # 80% floor can be adopted against real data rather than a guess.
+        # No --fail-under yet. This publishes the number so the 80% patch floor
+        # can be adopted against real data rather than a guess -- the same
+        # approach used for the per-component floors, which were set from
+        # measured values rather than chosen up front.
         run: |
           git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
           diff-cover build/linux-gcc-coverage/coverage/cobertura.xml \

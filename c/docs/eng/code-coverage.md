@@ -208,6 +208,45 @@ Paho adapter) and is the more honest measure of how much of the error handling
 is exercised. Expect the branch floors to be set well below the line floors
 initially.
 
+### The floors, and how they were chosen
+
+Floors are now set for every component and every metric. They are **configured
+but not enforced**: the report prints them and marks each component PASS or
+FAIL, and the job still cannot fail the build. The report says so explicitly, so
+a FAIL row is not mistaken for a broken gate.
+
+They are derived from the **unit + conformance** numbers, not from the nightly
+combined ones. The same `coverage-components.json` is read by both the per-PR
+job and the nightly combined job, so a floor set from the combined figure would
+be unreachable on every pull request. The e2e suites add roughly a point overall
+(72.5% → 73.7% line), so the two are close, but the per-PR number is the one
+that has to be satisfiable.
+
+The rule: round down to a multiple of 5 below the measured value, keeping at
+least 2 points of headroom. Round numbers because a floor is a policy decision
+rather than a measurement, and headroom because an ordinary refactor moves these
+figures by a point or so and a gate that fires on noise gets switched off.
+
+| Component | line | branch | function |
+| --- | ---: | ---: | ---: |
+| `core` | 75 | 60 | 80 |
+| `features` | 65 | 50 | 85 |
+| `adapter-paho` | 60 | 35 | 75 |
+| `adapter-adu-crypto` | 75 | 40 | 95 |
+| `adapter-cert-managed` | 75 | 55 | 80 |
+
+Minimum headroom across all fifteen floors is 2.7 points (`features` function).
+The Paho adapter carries the lowest floors deliberately: its coverage comes
+almost entirely from the broker-gated conformance suites, so a broker outage
+moves it further than any other component.
+
+These are a **ratchet against regression, not the target**. The stated goal is
+80% on the lower bar; `core` is the only component near it and the overall
+figure is 72.5%. Raising the floors means writing tests, and each floor should
+be lifted as its component clears the next multiple of 5 -- not left to drift
+upward automatically, which would turn an unrelated improvement into someone
+else's build failure.
+
 ### The Paho adapter's coverage depends entirely on the broker
 
 | | Lines |

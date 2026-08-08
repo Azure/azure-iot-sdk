@@ -73,7 +73,11 @@ def verdict(pairs):
     if not configured:
         return "-"
     if any(value is None for value, _ in configured):
-        return "n/a"
+        # A gated metric with no denominator cannot be shown to have met its
+        # floor, so it does not get a passing status. This has to agree with the
+        # enforcement path above, or the table would report a green component on
+        # the run that failed the build.
+        return "**NO DATA**"
     return "PASS" if all(value >= floor for value, floor in configured) else "**FAIL**"
 
 
@@ -160,7 +164,20 @@ def main():
         for metric, value, floor in (("line", line_pct, comp.get("line")),
                                      ("branch", branch_pct, comp.get("branch")),
                                      ("function", function_pct, comp.get("function"))):
-            if floor is not None and value is not None and value < floor:
+            if floor is None:
+                continue
+            if value is None:
+                # No denominator for a metric that is supposed to be gated. The
+                # tempting reading is "nothing to check, carry on", but that is
+                # a false green: a floor is configured and this run cannot show
+                # it was met. The realistic cause is a coverage build without
+                # branch instrumentation, which zeroes branch_total for every
+                # component at once and would quietly disarm every branch floor
+                # in the file while the report still looked gated.
+                failures.append(
+                    "{}: {} coverage has no data (denominator is 0) but a {:.1f}% "
+                    "floor is configured".format(name, metric, floor))
+            elif value < floor:
                 failures.append(
                     "{}: {} coverage {:.1f}% is below the {:.1f}% floor".format(
                         name, metric, value, floor))
@@ -231,10 +248,19 @@ def main():
             lines.append("- {}".format(failure))
         lines.append("")
 
-    if not any(comp.get(metric) is not None
-               for comp in components
-               for metric in ("line", "branch", "function")):
+    # State plainly whether this run can fail the build. Once floors are set but
+    # --enforce is still off, the table starts showing **FAIL** rows that block
+    # nothing; without this line a reader would reasonably assume the build was
+    # broken, or -- worse -- that the gate was working when it was not.
+    any_floor = any(comp.get(metric) is not None
+                    for comp in components
+                    for metric in ("line", "branch", "function"))
+    if not any_floor:
         lines.append("_Floors are not yet configured; this run is report-only._")
+        lines.append("")
+    elif not args.enforce:
+        lines.append("_Floors are configured but **not enforced**: this run reports them "
+                     "and cannot fail the build. Any **FAIL** above is informational._")
         lines.append("")
 
     text = "\n".join(lines)
