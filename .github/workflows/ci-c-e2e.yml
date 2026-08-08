@@ -130,8 +130,15 @@ jobs:
       # on both), and it preserves Windows local-dev parity.
       matrix:
         include:
+          # The Linux leg builds instrumented (linux-gcc-e2e-coverage) so its run
+          # contributes to the coverage picture. e2e is where the feature clients
+          # are actually driven end to end, and unit tests alone cannot reach
+          # those paths. Running it twice -- once plain, once instrumented --
+          # would double the Azure resources this workflow consumes, so it runs
+          # once, instrumented. gcov overhead is CPU-only and this suite is
+          # network-bound, so it does not move the wall clock.
           - os: ubuntu-latest
-            preset: linux-gcc-debug
+            preset: linux-gcc-e2e-coverage
             device-index: 0
           - os: windows-latest
             preset: windows-msvc-debug
@@ -150,7 +157,9 @@ jobs:
         # libcurl backs the file upload sample's HTTP hook; without it CMake builds
         # the sample with a stub hook that cannot perform the Classic control-plane
         # calls, and the sample run below would prove nothing.
-        run: sudo apt-get update && sudo apt-get install -y ninja-build libcurl4-openssl-dev
+        run: |
+          sudo apt-get update && sudo apt-get install -y ninja-build libcurl4-openssl-dev
+          python3 -m pip install --upgrade 'gcovr==7.2'
 
       - name: Build e2e tests
         working-directory: c
@@ -274,6 +283,22 @@ jobs:
           name: e2e-results-${{ matrix.os }}
           path: ./test_config/results/**/*.xml
           if-no-files-found: ignore
+
+      - name: Collect coverage (Linux)
+        # Deliberately not `if: always()`. A failed or timed-out e2e run leaves
+        # partial or absent .gcda, and feeding that into the combined report
+        # would understate coverage for a reason unrelated to the change.
+        if: runner.os == 'Linux' && success()
+        working-directory: c
+        run: bash eng/collect-coverage.sh build/linux-gcc-e2e-coverage coverage/e2e.json e2e-linux
+
+      - name: Upload coverage tracefile (Linux)
+        if: runner.os == 'Linux' && success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-trace-e2e
+          path: c/coverage/e2e.json
+          if-no-files-found: error
 
   teardown:
     name: teardown (delete resources)

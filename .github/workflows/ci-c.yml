@@ -372,6 +372,20 @@ jobs:
                 --html-details build/linux-gcc-coverage/coverage/html/index.html \
                 --txt --print-summary
 
+      - name: Collect coverage tracefile
+        # The merge-able intermediate, produced by the same script the e2e legs
+        # use so the filter sets cannot drift apart. Tracefiles built with
+        # different --filter/--exclude sets combine into a quietly wrong number
+        # rather than an obvious error.
+        run: bash eng/collect-coverage.sh build/linux-gcc-coverage coverage/unit.json unit-conformance
+
+      - name: Upload coverage tracefile
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-trace-unit
+          path: c/coverage/unit.json
+          if-no-files-found: error
+
       - name: Per-component summary
         # Phase 1 is report-only: no --enforce. Add it in Phase 2 together with
         # the floors in coverage-components.json.
