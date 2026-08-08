@@ -442,10 +442,10 @@ jobs. Shape:
 - `runs-on: ubuntu-latest`, with the same `eclipse-mosquitto:2` service
   container the `build` and `valgrind` jobs already declare.
 - **Broker precondition:** assert the broker is actually reachable and fail if
-  not. The conformance suites self-skip via CTest exit 77 when it is missing,
-  and they are where nearly all Paho adapter coverage comes from — a silent
-  skip would collapse `adapter-paho` and fail the PR for an infrastructure
-  reason.
+  not. The conformance suites are where nearly all Paho adapter coverage comes
+  from, and they now fail rather than skip when the broker is missing — so
+  probing first turns an infrastructure outage into an obvious error instead of
+  a wall of connection failures.
 - `actions/checkout@v4` with `fetch-depth: 0` — `diff-cover` needs the
   merge-base.
 - Install `ninja-build`, `libssl-dev` (the OpenSSL adapters are mandatory
@@ -807,13 +807,16 @@ the merge-base is available.
 - **Never set coverage flags globally.** `-DCMAKE_C_FLAGS=--coverage` leaks
   into `FetchContent` dependencies, instrumenting azure-sdk-for-c and cmocka.
   Same failure mode that made warnings target-scoped.
-- **A skipped conformance suite is a false gate failure — and it is the Paho
-  adapter's whole coverage story.** The conformance harnesses self-skip via
-  CTest exit 77 when no broker is reachable. If the mosquitto service container
-  fails to start, the suite "passes" while `az_iot_mqtt_paho.c` goes almost
-  entirely uncovered, and the `adapter-paho` floor then fails the PR for an
-  infrastructure reason with no bearing on the change. Asserting broker
-  reachability in the coverage job is therefore mandatory, not advisory — the
+- **A missing conformance suite is a false gate failure — and it is the Paho
+  adapter's whole coverage story.** Historically the harnesses self-skipped via
+  CTest exit 77 when no broker was reachable, so if the mosquitto service
+  container failed to start the suite "passed" while `az_iot_mqtt_paho.c` went
+  almost entirely uncovered, and the `adapter-paho` floor then failed the PR
+  for an infrastructure reason with no bearing on the change. The self-skip is
+  gone — the suites are registered only when built with
+  `AZ_IOT_BUILD_CONFORMANCE_TESTS`, and once registered they fail on a missing
+  broker. Asserting broker reachability in the coverage job remains mandatory,
+  not advisory — the
   same "missing resources fail loudly, never a silent skip" rule the e2e suite
   already follows.
 - **Exclusion lists are reviewed, not ad-hoc.** Excluding `tests/` and

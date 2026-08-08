@@ -66,11 +66,26 @@ if(TARGET cmocka)
 endif()
 
 # Helper to register a cmocka-based test executable.
+#
+# Pass NO_CTEST anywhere in the argument list to build the executable without
+# registering it with CTest. That is how a suite opts out of a platform it
+# cannot run on: the file still compiles, so the platform's compiler keeps
+# checking it, but CTest has no test to run. The alternative -- registering it
+# and having it report a skip at run time -- hides the fact that it stopped
+# running.
 function(az_iot_add_cmocka_test name)
-    add_executable(${name} ${ARGN})
+    set(sources "${ARGN}")
+    set(register TRUE)
+    if("NO_CTEST" IN_LIST sources)
+        list(REMOVE_ITEM sources NO_CTEST)
+        set(register FALSE)
+    endif()
+    add_executable(${name} ${sources})
     target_link_libraries(${name} PRIVATE az_iot_core cmocka)
     az_iot_apply_warnings(${name})
-    add_test(NAME ${name} COMMAND ${name})
+    if(register)
+        add_test(NAME ${name} COMMAND ${name})
+    endif()
     # If cmocka built as a shared lib (e.g. on Windows when something forced
     # BUILD_SHARED_LIBS=ON), copy the DLL next to the test exe.
     if(WIN32 AND TARGET cmocka)
@@ -186,8 +201,13 @@ endif()
 # Reusable test library that operates strictly through az_iot_mqtt_iface.
 # Customers can link this library to validate their own MQTT client+adapter
 # implementations. Two harness exes are shipped that wire the bundled Paho
-# adapter (one per MQTT version) into the suite. The suite skips itself
-# (CTest exit 77) unless AZ_IOT_MQTT_BROKER_HOST is set.
+# adapter (one per MQTT version) into the suite.
+#
+# The exes always build; they are registered as CTest tests only when
+# AZ_IOT_BUILD_CONFORMANCE_TESTS is on, because they need a reachable broker.
+# The address comes from AZ_IOT_MQTT_BROKER_HOST / _PORT, and a missing host is
+# now a hard failure rather than a self-skip: a suite that excuses itself at run
+# time is one nobody notices has stopped running.
 # ---------------------------------------------------------------------------
 add_library(az_iot_conformance STATIC
     conformance/az_iot_conformance.c
@@ -196,6 +216,9 @@ target_include_directories(az_iot_conformance PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/conformance
 )
 target_link_libraries(az_iot_conformance PUBLIC az_iot_core cmocka)
+if(AZ_IOT_BUILD_CONFORMANCE_TESTS_TLS)
+    target_compile_definitions(az_iot_conformance PRIVATE AZ_IOT_CONFORMANCE_WITH_TLS)
+endif()
 if(UNIX)
     # Enable POSIX (clock_gettime, nanosleep, CLOCK_MONOTONIC).
     target_compile_definitions(az_iot_conformance PRIVATE
@@ -210,15 +233,16 @@ if(AZ_IOT_WITH_PAHO)
     target_link_libraries(az_iot_conformance_paho_v3 PRIVATE
         az_iot_conformance az_iot_adapter_paho)
     az_iot_apply_warnings(az_iot_conformance_paho_v3)
-    add_test(NAME az_iot_conformance_paho_v3 COMMAND az_iot_conformance_paho_v3)
-    set_tests_properties(az_iot_conformance_paho_v3 PROPERTIES SKIP_RETURN_CODE 77)
 
     add_executable(az_iot_conformance_paho_v5 conformance/paho_v5_main.c)
     target_link_libraries(az_iot_conformance_paho_v5 PRIVATE
         az_iot_conformance az_iot_adapter_paho)
     az_iot_apply_warnings(az_iot_conformance_paho_v5)
-    add_test(NAME az_iot_conformance_paho_v5 COMMAND az_iot_conformance_paho_v5)
-    set_tests_properties(az_iot_conformance_paho_v5 PROPERTIES SKIP_RETURN_CODE 77)
+
+    if(AZ_IOT_BUILD_CONFORMANCE_TESTS)
+        add_test(NAME az_iot_conformance_paho_v3 COMMAND az_iot_conformance_paho_v3)
+        add_test(NAME az_iot_conformance_paho_v5 COMMAND az_iot_conformance_paho_v5)
+    endif()
 endif()
 
 # ---------------------------------------------------------------------------

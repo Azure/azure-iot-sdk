@@ -16,11 +16,12 @@
  *      the DPS-issued certificate.
  *
  * This requires a DPS enrollment (group) linked to a signing CA so DPS issues an
- * operational cert - a setup the fast e2e job does not provision. It therefore
- * gates on AZ_IOT_DPS_CSR_ENABLED and reports a CTest SKIP (exit 77) when that
- * environment is absent, so it stays dormant in the normal suite.
+ * operational cert - a setup only the ci-c-e2e-csr workflow provisions. It is
+ * therefore built only when AZ_IOT_BUILD_E2E_CSR is set, which that workflow
+ * passes. There is no runtime gate: if this binary exists, it runs, and if it
+ * cannot run it should not have been built.
  *
- * Environment (when AZ_IOT_DPS_CSR_ENABLED is set):
+ * Environment:
  *   AZ_IOT_DPS_ID_SCOPE, AZ_IOT_DPS_REGISTRATION_ID,
  *   AZ_IOT_CLIENT_CERT, AZ_IOT_CLIENT_KEY, AZ_IOT_TRUSTED_CA  (bootstrap X.509),
  *   AZ_IOT_DPS_GLOBAL_ENDPOINT (optional),
@@ -46,23 +47,6 @@
 #include "e2e_log.h"
 
 #define E2E_CONNECT_TIMEOUT_S 120
-#define E2E_CSR_SKIP 77
-
-/* ---- environment helpers -------------------------------------------------- */
-
-static int env_is_set(const char* name)
-{
-#ifdef _WIN32
-  char* value = NULL;
-  size_t len = 0;
-  int set = (_dupenv_s(&value, &len, name) == 0 && value != NULL && value[0] != '\0');
-  free(value);
-  return set;
-#else
-  const char* value = getenv(name);
-  return (value != NULL && value[0] != '\0');
-#endif
-}
 
 #ifndef _WIN32
 static char* dup_cstr(const char* s)
@@ -237,16 +221,11 @@ static void test_dps_csr_enrollment_rsa(void** state)
 
 int main(void)
 {
-  /* Dormant unless a CSR enrollment (group linked to a signing CA) has been
-   * provisioned for this run. */
-  if (!env_is_set("AZ_IOT_DPS_CSR_ENABLED"))
-  {
-    fprintf(
-        stderr,
-        "[e2e-csr] AZ_IOT_DPS_CSR_ENABLED not set; CSR enrollment not "
-        "provisioned. Reporting CTest skip.\n");
-    return E2E_CSR_SKIP;
-  }
+  /* No environment gate. Whether this test exists is decided at build time by
+   * AZ_IOT_BUILD_E2E_CSR, which only the ci-c-e2e-csr workflow sets -- it is
+   * the one that provisions a DPS enrollment linked to a signing CA. Building
+   * the test and then having it excuse itself hid the fact that it was not
+   * running anywhere else. */
 
   /* Log verbosity is env-controlled (AZ_IOT_E2E_LOG_LEVEL=TRACE|DEBUG|INFO|
    * WARN); default ERROR. CI raises it to surface the connect/DPS failure. */

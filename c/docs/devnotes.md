@@ -123,7 +123,7 @@ _Captured from conversation as the C99 client repo was being scaffolded. Each bu
 - Test framework: **cmocka** (chosen for mocking support and alignment with `azure-sdk-for-c`). Integrated via FetchContent (`cmocka-1.1.7`), forced static (`BUILD_SHARED_LIBS=OFF` in cache with `FORCE`, save/restore around the subdir).
 - Tests run via `ctest` from CMake presets on both Windows and Linux.
 - An MQTT iface **conformance suite** lives in `tests/conformance/`. It is a reusable cmocka library that exercises any `az_iot_mqtt_factory` end-to-end against a real broker — it does not depend on Paho or any specific adapter. Customers can link `az_iot_conformance` and instantiate their own factory to validate that their MQTT client+adapter is plug-compatible. Two suites: `AZ_IOT_CONFORMANCE_SUITE_V3_1_1` and `AZ_IOT_CONFORMANCE_SUITE_V5`.
-- Conformance tests skip themselves (CTest exit 77) unless `AZ_IOT_MQTT_BROKER_HOST` is set, so local builds without a broker stay green.
+  - Conformance tests are registered only when the build sets `AZ_IOT_BUILD_CONFORMANCE_TESTS` (the Linux presets do). They never skip themselves: once registered, an unset `AZ_IOT_MQTT_BROKER_HOST` is a failure. A local build without a broker simply does not have the tests.
 - CI runs an `eclipse-mosquitto:2` service container on the Linux jobs and points the conformance harnesses at it.
 
 ### Repository hygiene / process
