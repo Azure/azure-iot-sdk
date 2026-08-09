@@ -412,70 +412,82 @@ subscriber registry. Wire format and status codes per
 
 | Group | Test | Scenario | Type | Status | Code Location |
 | --- | --- | --- | --- | --- | --- |
-| Init | Init rejects a null client | — | unit | Pending | *twin_client_test.c* |
-| | Init rejects a null connection | — | unit | Pending | *twin_client_test.c* |
-| | Init subscribes the response filter | `$iothub/twin/res/#`. | unit | Done | [create_subscribes_response_and_desired](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L189) |
-| | Init subscribes the desired filter | `$iothub/twin/PATCH/properties/desired/#`. | unit | Done | [create_subscribes_response_and_desired](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L189) |
-| | Both subscriptions use qos 0 | The filter is asserted today, the QoS is not. | unit | Pending | *twin_client_test.c* |
-| | Init seeds the first rid at one | Rid 0 is never used. | unit | Done | [get_publishes_and_response_fires_callback](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L204) |
+| Init | Init rejects a null client | — | unit | Done | [init_rejects_a_null_client](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L741) |
+| | Init rejects a null connection | — | unit | Done | [init_rejects_a_null_connection](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L747) |
+| | Init subscribes the response filter | `$iothub/twin/res/#`. | unit | Done | [create_subscribes_response_and_desired](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L200) |
+| | Init subscribes the desired filter | `$iothub/twin/PATCH/properties/desired/#`. | unit | Done | [create_subscribes_response_and_desired](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L200) |
+| | Both subscriptions use qos 0 | Subscribing at qos 1 would make the hub retain and redeliver, which the client does not de-duplicate. | unit | Done | [both_subscriptions_use_qos_0](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L754) |
+| | Init seeds the first rid at one | Rid 0 is never used. | unit | Done | [get_publishes_and_response_fires_callback](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L216) |
 | | A failed subscription unregisters both handlers | — | unit | Pending | *twin_client_test.c* |
-| Destroy | Destroy unregisters both handlers | — | unit | Pending | *twin_client_test.c* |
-| | Destroy zeroes the client | — | unit | Pending | *twin_client_test.c* |
-| | Destroy tolerates null | — | unit | Pending | *twin_client_test.c* |
-| | Destroy is idempotent | — | unit | Pending | *twin_client_test.c* |
-| Get | Get publishes the classic get topic | `$iothub/twin/GET/?$rid=<n>`. | unit | Done | [get_publishes_and_response_fires_callback](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L204) |
-| | Get publishes an empty body | The service expects an empty message. | unit | Pending | *twin_client_test.c* |
-| | Get does not fire the callback before the response | — | unit | Done | [get_publishes_and_response_fires_callback](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L204) |
-| | A 200 response delivers the twin body | — | unit | Done | [get_publishes_and_response_fires_callback](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L204) |
-| | Get rejects a null client | — | unit | Pending | *twin_client_test.c* |
-| | Get with a full pending table is rejected | `AZ_IOT_TWIN_MAX_PENDING` in flight → `NOT_SUPPORTED`. | unit | Pending | *twin_client_test.c* |
-| | A publish failure releases the pending slot | A refused PUBLISH must not leak a slot. | unit | Pending | *twin_client_test.c* |
-| Patch reported | Patch publishes the classic patch topic | `$iothub/twin/PATCH/properties/reported/?$rid=<n>`. | unit | Done | [patch_publishes_and_204_response_fires_callback](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L230) |
-| | The patch body is forwarded byte for byte | — | unit | Pending | *twin_client_test.c* |
-| | A 204 response fires the ack callback | — | unit | Done | [patch_publishes_and_204_response_fires_callback](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L230) |
-| | The reported version reaches the ack callback | `$version` rides the 204 topic and is handed to the caller. | unit | Done | [patch_publishes_and_204_response_fires_callback](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L230) |
-| | A patch ack without a version reports zero | — | unit | Done | [a_patch_ack_without_a_version_reports_zero](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L258) |
-| | A failed patch reports version zero | A non-2xx status must not look like an applied update. | unit | Done | [a_failed_patch_reports_version_zero](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L278) |
-| | Patch rejects a null client | — | unit | Pending | *twin_client_test.c* |
-| | Patch rejects a null patch with a non-zero length | — | unit | Pending | *twin_client_test.c* |
-| | An empty patch is publishable | `patch_len = 0`. | unit | Pending | *twin_client_test.c* |
-| Response correlation | An unknown rid drops the response | Stale or foreign `$rid`. | unit | Done | [unknown_rid_drops_response](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L324) |
-| | A get response does not satisfy a patch slot | Kind is checked as well as rid. | unit | Pending | *twin_client_test.c* |
-| | Concurrent get and patch correlate independently | Two rids in flight, answered out of order. | unit | Pending | *twin_client_test.c* |
-| | A second response for the same rid is dropped | The slot was released by the first. | unit | Pending | *twin_client_test.c* |
-| | Status 429 is reported as a distinct code | Throttling; `BUSY`, not the `NOT_SUPPORTED` a full pending table returns. | unit | Done | [throttled_status_is_reported_as_busy](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L351) |
-| | Status 400 is reported as a distinct code | Malformed reported-properties JSON. | unit | Done | [bad_request_status_is_reported_as_invalid_arg](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L363) |
-| | Status 404 is reported as not found | Undocumented for twin, but distinguishable. | unit | Done | [not_found_status_is_reported_as_not_found](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L375) |
-| | Status 5xx is reported as an error | — | unit | Done | [server_error_status_is_reported_as_an_mqtt_error](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L384) |
-| | Statuses 200 and 204 are reported as ok | — | unit | Done | [success_statuses_are_reported_as_ok](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L392) |
-| | A response topic with a non-numeric status is dropped | — | unit | Pending | *twin_client_test.c* |
-| | A response topic with no query string is dropped | — | unit | Pending | *twin_client_test.c* |
-| | A response topic with no rid is dropped | — | unit | Pending | *twin_client_test.c* |
-| | A response topic with the wrong prefix is dropped | — | unit | Pending | *twin_client_test.c* |
-| | The rid counter wraps without reusing zero | — | unit | Pending | *twin_client_test.c* |
-| | A pending get is failed when the session drops | Completed with `NOT_CONNECTED` instead of waiting for a response that died with the session. | unit | Done | [a_pending_get_is_failed_when_the_session_drops](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L403) |
-| | A pending patch is failed when the session drops | — | unit | Done | [a_pending_patch_is_failed_when_the_session_drops](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L421) |
-| | Every pending request is failed, not just the first | — | unit | Done | [every_pending_request_is_failed_not_just_the_first](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L440) |
-| | The pending pool is reusable after a dropped session | The outage that used to cost a slot permanently. | unit | Done | [the_pending_pool_is_reusable_after_a_dropped_session](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L462) |
-| | A destroyed client is not called on a later session end | `destroy()` unhooks the handler. | unit | Done | [a_destroyed_twin_client_is_not_called_on_a_later_session_end](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L492) |
-| | Destroying the connection does not complete pending requests | Same rule as the QoS-1 acks: the caller's context may already be gone. | unit | Done | [destroying_the_connection_does_not_complete_pending_requests](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L513) |
-| Desired properties | A desired patch reaches the subscriber | — | unit | Done | [desired_message_dispatched_to_callback](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L301) |
-| | The version is parsed from the topic | `?$version=<v>` reaches the callback. | unit | Done | [desired_message_dispatched_to_callback](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L301) |
-| | A desired topic with no version yields zero | — | unit | Pending | *twin_client_test.c* |
-| | A version past 32 bits is preserved | The callback takes a `uint64_t`. | unit | Pending | *twin_client_test.c* |
-| | Feature subscribers are notified before app subscribers | — | unit | Done | [feature_subscribers_notified_before_app](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L579) |
-| | Every subscriber in a pool is notified | Not just the first slot. | unit | Pending | *twin_client_test.c* |
-| | Subscribe rejects a null client | — | unit | Pending | *twin_client_test.c* |
-| | Subscribe rejects a null callback | — | unit | Pending | *twin_client_test.c* |
-| | The app pool full returns not supported | Beyond `AZ_IOT_TWIN_MAX_DESIRED_APP_SUBS`. | unit | Done | [app_pool_full_returns_not_supported](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L602) |
-| | Resubscribing the same pair consumes one slot | — | unit | Done | [resubscribe_same_pair_is_idempotent](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L618) |
-| | The same callback with a different context takes a second slot | The pair is the identity, not the function pointer. | unit | Pending | *twin_client_test.c* |
-| | Unsubscribe stops delivery | — | unit | Done | [unsubscribe_stops_delivery](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L633) |
-| | Unsubscribe frees the slot for reuse | — | unit | Pending | *twin_client_test.c* |
-| | Unsubscribing an unregistered pair leaves the others alone | — | unit | Pending | *twin_client_test.c* |
-| | Subscribing during a dispatch is busy | — | unit | Done | [mutating_registry_during_dispatch_is_busy](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L667) |
-| | Unsubscribing during a dispatch is busy | — | unit | Done | [mutating_registry_during_dispatch_is_busy](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L667) |
-| | The dispatch guard is cleared after a dispatch | A subscribe issued after the callback returns must succeed. | unit | Pending | *twin_client_test.c* |
+| Destroy | Destroy unregisters both handlers | — | unit | Done | [destroy_unregisters_both_handlers](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L807) |
+| | Destroy zeroes the client | — | unit | Done | [destroy_zeroes_the_client](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L776) |
+| | Destroy tolerates null | — | unit | Done | [destroy_tolerates_null](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L770) |
+| | Destroy is idempotent | — | unit | Done | [destroy_is_idempotent](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L795) |
+| Get | Get publishes the classic get topic | `$iothub/twin/GET/?$rid=<n>`. | unit | Done | [get_publishes_and_response_fires_callback](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L216) |
+| | Get publishes an empty body | The service expects an empty message. | unit | Done | [get_publishes_an_empty_body](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L846) |
+| | Get does not fire the callback before the response | — | unit | Done | [get_publishes_and_response_fires_callback](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L216) |
+| | A 200 response delivers the twin body | — | unit | Done | [get_publishes_and_response_fires_callback](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L216) |
+| | Get rejects a null client | — | unit | Done | [get_rejects_a_null_client](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L839) |
+| | Get with a full pending table is rejected | `AZ_IOT_TWIN_MAX_PENDING` in flight → `NOT_SUPPORTED`. | unit | Done | [get_with_a_full_pending_table_is_rejected](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L861) |
+| | A publish failure releases the pending slot | A refused PUBLISH must not leak a slot. | unit | Done | [a_publish_failure_releases_the_pending_slot](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L880) |
+| Patch reported | Patch publishes the classic patch topic | `$iothub/twin/PATCH/properties/reported/?$rid=<n>`. | unit | Done | [patch_publishes_and_204_response_fires_callback](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L242) |
+| | The patch body is forwarded byte for byte | — | unit | Done | [the_patch_body_is_forwarded_byte_for_byte](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L946) |
+| | A 204 response fires the ack callback | — | unit | Done | [patch_publishes_and_204_response_fires_callback](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L242) |
+| | The reported version reaches the ack callback | `$version` rides the 204 topic and is handed to the caller. | unit | Done | [patch_publishes_and_204_response_fires_callback](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L242) |
+| | A patch ack without a version reports zero | — | unit | Done | [a_patch_ack_without_a_version_reports_zero](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L270) |
+| | A failed patch reports version zero | A non-2xx status must not look like an applied update. | unit | Done | [a_failed_patch_reports_version_zero](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L290) |
+| | Patch rejects a null client | — | unit | Done | [patch_rejects_a_null_client](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L903) |
+| | Patch rejects a null patch with a non-zero length | — | unit | Done | [patch_rejects_a_null_patch_with_a_length](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L913) |
+| | An empty patch is publishable | `patch_len = 0`. | unit | Done | [an_empty_patch_is_publishable](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L931) |
+| Response correlation | An unknown rid drops the response | Stale or foreign `$rid`. | unit | Done | [unknown_rid_drops_response](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L336) |
+| | A get response does not satisfy a patch slot | Kind is checked as well as rid. | unit | Done | [a_get_response_does_not_satisfy_a_patch_slot](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L969) |
+| | Concurrent get and patch correlate independently | Two rids in flight, answered out of order. | unit | Done | [concurrent_get_and_patch_correlate_independently](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L989) |
+| | A second response for the same rid is dropped | The slot was released by the first. | unit | Done | [a_second_response_for_the_same_rid_is_dropped](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L1018) |
+| | Status 429 is reported as a distinct code | Throttling; `BUSY`, not the `NOT_SUPPORTED` a full pending table returns. | unit | Done | [throttled_status_is_reported_as_busy](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L363) |
+| | Status 400 is reported as a distinct code | Malformed reported-properties JSON. | unit | Done | [bad_request_status_is_reported_as_invalid_arg](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L375) |
+| | Status 404 is reported as not found | Undocumented for twin, but distinguishable. | unit | Done | [not_found_status_is_reported_as_not_found](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L387) |
+| | Status 5xx is reported as an error | — | unit | Done | [server_error_status_is_reported_as_an_mqtt_error](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L396) |
+| | Statuses 200 and 204 are reported as ok | — | unit | Done | [success_statuses_are_reported_as_ok](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L404) |
+| | A response topic with a non-numeric status is dropped | — | unit | Done | [a_response_topic_with_a_non_numeric_status_is_dropped](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L1042) |
+| | A response topic with no query string is dropped | — | unit | Done | [a_response_topic_with_no_query_string_is_dropped](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L1056) |
+| | A response topic with no rid is dropped | — | unit | Done | [a_response_topic_with_no_rid_is_dropped](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L1070) |
+| | A response topic with the wrong prefix is dropped | — | unit | Done | [a_response_topic_with_the_wrong_prefix_is_dropped](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L1085) |
+| | The rid counter wraps without reusing zero | — | unit | Done | [the_rid_counter_wraps_without_reusing_zero](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L1099) |
+| | A pending get is failed when the session drops | Completed with `NOT_CONNECTED` instead of waiting for a response that died with the session. | unit | Done | [a_pending_get_is_failed_when_the_session_drops](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L415) |
+| | A pending patch is failed when the session drops | — | unit | Done | [a_pending_patch_is_failed_when_the_session_drops](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L433) |
+| | Every pending request is failed, not just the first | — | unit | Done | [every_pending_request_is_failed_not_just_the_first](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L452) |
+| | The pending pool is reusable after a dropped session | The outage that used to cost a slot permanently. | unit | Done | [the_pending_pool_is_reusable_after_a_dropped_session](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L474) |
+| | A destroyed client is not called on a later session end | `destroy()` unhooks the handler. | unit | Done | [a_destroyed_twin_client_is_not_called_on_a_later_session_end](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L504) |
+| | Destroying the connection does not complete pending requests | Same rule as the QoS-1 acks: the caller's context may already be gone. | unit | Done | [destroying_the_connection_does_not_complete_pending_requests](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L525) |
+| Desired properties | A desired patch reaches the subscriber | — | unit | Done | [desired_message_dispatched_to_callback](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L313) |
+| | The version is parsed from the topic | `?$version=<v>` reaches the callback. | unit | Done | [desired_message_dispatched_to_callback](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L313) |
+| | A desired topic with no version yields zero | — | unit | Done | [a_desired_topic_with_no_version_yields_zero](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L1127) |
+| | A version past 32 bits is preserved | The callback takes a `uint64_t`. | unit | Done | [a_desired_version_past_32_bits_is_preserved](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L1151) |
+| | Feature subscribers are notified before app subscribers | — | unit | Done | [feature_subscribers_notified_before_app](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L591) |
+| | Every subscriber in a pool is notified | Not just the first slot. | unit | Done | [every_subscriber_in_a_pool_is_notified](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L1174) |
+| | Subscribe rejects a null client | — | unit | Done | [subscribe_desired_rejects_a_null_client](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L1198) |
+| | Subscribe rejects a null callback | — | unit | Done | [subscribe_desired_rejects_a_null_callback](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L1206) |
+| | The app pool full returns not supported | Beyond `AZ_IOT_TWIN_MAX_DESIRED_APP_SUBS`. | unit | Done | [app_pool_full_returns_not_supported](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L614) |
+| | Resubscribing the same pair consumes one slot | — | unit | Done | [resubscribe_same_pair_is_idempotent](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L630) |
+| | The same callback with a different context takes a second slot | The pair is the identity, not the function pointer. | unit | Done | [the_same_callback_with_a_different_context_takes_a_second_slot](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L1214) |
+| | Unsubscribe stops delivery | — | unit | Done | [unsubscribe_stops_delivery](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L645) |
+| | Unsubscribe frees the slot for reuse | — | unit | Done | [unsubscribe_frees_the_slot_for_reuse](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L1234) |
+| | Unsubscribing an unregistered pair leaves the others alone | — | unit | Done | [unsubscribing_an_unregistered_pair_leaves_the_others_alone](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L1253) |
+| | Subscribing during a dispatch is busy | — | unit | Done | [mutating_registry_during_dispatch_is_busy](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L679) |
+| | Unsubscribing during a dispatch is busy | — | unit | Done | [mutating_registry_during_dispatch_is_busy](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L679) |
+| | The dispatch guard is cleared after a dispatch | A subscribe issued after the callback returns must succeed. | unit | Done | [the_dispatch_guard_is_cleared_after_a_dispatch](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L1303) |
+| Hub-Next (AEG) | Init subscribes the three twin filters | `ih/{device}/dev/twin/get/response`, `.../reported/response` and `.../desired`: Next splits what Classic covers with two wildcards into three exact, device-scoped topics. | unit | Done | [next_init_subscribes_the_three_twin_filters](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L1466) |
+|  | Get publishes to the service topic with correlation data | `ih/{device}/srv/twin/get` at qos 1, empty body, rid carried as decimal text in Correlation Data. | unit | Done | [next_get_publishes_to_the_service_topic_with_correlation_data](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L1478) |
+|  | A get response fires the callback | Correlated by Correlation Data rather than `$rid`. | unit | Done | [next_get_response_fires_the_callback](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L1499) |
+|  | A get response with an unknown rid is dropped | Stale correlation data from an earlier session must not complete a live request. | unit | Done | [next_get_response_with_an_unknown_rid_is_dropped](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L1517) |
+|  | A get response without correlation data is dropped | With no correlator the rid reads as 0, which is the free-slot marker. | unit | Done | [next_get_response_without_correlation_data_is_dropped](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L1534) |
+|  | Correlation data longer than the rid buffer is dropped | Truncated into the buffer rather than overrunning it, and the truncation must not parse back to a live rid. | unit | Done | [next_correlation_data_longer_than_the_rid_buffer_is_dropped](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L1661) |
+|  | Patch publishes to the service topic | `ih/{device}/srv/twin/reported` at qos 1 with the body forwarded verbatim. | unit | Done | [next_patch_publishes_to_the_service_topic](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L1549) |
+|  | A reported response fires the ack callback | Next acknowledges on its own topic and carries no reported version yet, so the ack reports zero. | unit | Done | [next_reported_response_fires_the_ack_callback](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L1570) |
+|  | A reported response with an unknown rid is dropped | — | unit | Done | [next_reported_response_with_an_unknown_rid_is_dropped](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L1592) |
+|  | A get response does not satisfy a patch slot | The pending kind is checked as well as the correlator. | unit | Done | [next_a_get_response_does_not_satisfy_a_patch_slot](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L1609) |
+|  | A reported response does not satisfy a get slot | — | unit | Done | [next_a_reported_response_does_not_satisfy_a_get_slot](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L1629) |
+|  | A desired push reaches the subscriber | Exact topic with no version in it, so the callback sees zero until the service carries one. | unit | Done | [next_desired_push_reaches_the_subscriber](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/twin_client_test.c#L1643) |
 | End-to-end | Desired patch observed and reported patch visible | Cloud patches desired, device observes; device patches reported, cloud reads it back. | e2e | Done | [test_twin](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/e2e/tests/e2e_scenarios_test.c#L427) |
 | | Twin get returns the full document | `az_iot_twin_client_get()` is never exercised against a live hub. | e2e | Pending | *e2e_scenarios_test.c* |
 | | A null member in a reported patch deletes the property | Documented service semantics. | e2e | Pending | *e2e_scenarios_test.c* |
