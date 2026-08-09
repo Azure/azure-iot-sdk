@@ -706,6 +706,16 @@ static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
       break;
     }
 
+    /* Nothing to do, but listed rather than left to default: so that a new
+     * event kind has to be considered here instead of being swallowed. The
+     * registration PUBLISH is fire-and-forget as far as this state machine is
+     * concerned -- progress is driven by the response on the subscribed topic,
+     * not by its ack -- and the unsubscribe ack only arrives during teardown,
+     * once the outcome is already decided. */
+    case AZ_IOT_MQTT_EVT_PUBLISH_ACK:
+    case AZ_IOT_MQTT_EVT_UNSUBSCRIBE_ACK:
+      break;
+
     default:
       break;
   }
