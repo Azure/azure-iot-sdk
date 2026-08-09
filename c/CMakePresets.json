@@ -18,7 +18,8 @@
             "inherits": "base",
             "cacheVariables": {
                 "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
-                "AZ_IOT_BUILD_CONFORMANCE_TESTS": "ON"
+                "AZ_IOT_BUILD_CONFORMANCE_TESTS": "ON",
+                "AZ_IOT_BUILD_CONFORMANCE_TESTS_TLS": "ON"
             }
         },
         {

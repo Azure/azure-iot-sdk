@@ -215,8 +215,21 @@ add_library(az_iot_conformance STATIC
 target_include_directories(az_iot_conformance PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/conformance
 )
-target_link_libraries(az_iot_conformance PUBLIC az_iot_core cmocka)
+target_link_libraries(az_iot_conformance PUBLIC az_iot_core cmocka az_iot_test_proxy)
+# The certificate-validation tests drive TLS through the in-process test proxy,
+# which generates and presents the certificates itself, so they need OpenSSL
+# rather than a separately provisioned TLS broker. Refuse to configure when the
+# option is on but OpenSSL is missing: dropping a mandatory security check is
+# exactly the outcome this option exists to make visible.
 if(AZ_IOT_BUILD_CONFORMANCE_TESTS_TLS)
+    find_package(OpenSSL 3.0 QUIET)
+    if(NOT OPENSSL_FOUND)
+        message(FATAL_ERROR
+            "AZ_IOT_BUILD_CONFORMANCE_TESTS_TLS=ON but OpenSSL 3.0+ was not found. The "
+            "certificate-validation tests terminate TLS in the in-process test proxy, which "
+            "needs OpenSSL to generate the CA and leaf it presents. Install OpenSSL 3.0+, or "
+            "configure with -DAZ_IOT_BUILD_CONFORMANCE_TESTS_TLS=OFF to leave those tests out.")
+    endif()
     target_compile_definitions(az_iot_conformance PRIVATE AZ_IOT_CONFORMANCE_WITH_TLS)
 endif()
 if(UNIX)
@@ -227,6 +240,45 @@ if(UNIX)
     target_link_libraries(az_iot_conformance PUBLIC pthread)
 endif()
 az_iot_apply_warnings(az_iot_conformance)
+
+# ---------------------------------------------------------------------------
+# For-testing TCP passthrough proxy.
+#
+# In-process proxy that interposes a raw TCP passthrough between an MQTT client
+# and a real upstream broker, so connect / reconnect / network-error paths on
+# the genuine client + TLS stack become deterministically drivable. Standalone
+# (sockets + libc only, no MQTT/core dependency) so it builds on every CI leg.
+#
+# With OpenSSL it also terminates TLS using a CA and leaf generated at run time,
+# which is what lets the certificate-validation tests above run without a
+# separately provisioned TLS broker.
+# ---------------------------------------------------------------------------
+add_library(az_iot_test_proxy STATIC
+    conformance/az_iot_test_proxy.c
+)
+target_include_directories(az_iot_test_proxy PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/conformance
+)
+# TLS termination needs OpenSSL. Without it the proxy is plaintext-only, and the
+# conformance library refuses to configure with
+# AZ_IOT_BUILD_CONFORMANCE_TESTS_TLS=ON rather than silently dropping the
+# certificate tests.
+find_package(OpenSSL 3.0 QUIET)
+if(OPENSSL_FOUND)
+    target_compile_definitions(az_iot_test_proxy PRIVATE AZ_IOT_TEST_PROXY_TLS)
+    target_link_libraries(az_iot_test_proxy PUBLIC OpenSSL::SSL OpenSSL::Crypto)
+endif()
+if(UNIX)
+    # Enable POSIX (getaddrinfo, select, nanosleep, CLOCK_MONOTONIC) under -std=c99.
+    target_compile_definitions(az_iot_test_proxy PRIVATE
+        _POSIX_C_SOURCE=200809L
+        _DEFAULT_SOURCE)
+    target_link_libraries(az_iot_test_proxy PUBLIC pthread)
+endif()
+if(WIN32)
+    target_link_libraries(az_iot_test_proxy PUBLIC ws2_32)
+endif()
+az_iot_apply_warnings(az_iot_test_proxy)
 
 if(AZ_IOT_WITH_PAHO)
     add_executable(az_iot_conformance_paho_v3 conformance/paho_v3_main.c)
@@ -242,6 +294,34 @@ if(AZ_IOT_WITH_PAHO)
     if(AZ_IOT_BUILD_CONFORMANCE_TESTS)
         add_test(NAME az_iot_conformance_paho_v3 COMMAND az_iot_conformance_paho_v3)
         add_test(NAME az_iot_conformance_paho_v5 COMMAND az_iot_conformance_paho_v5)
+    endif()
+endif()
+
+# ---------------------------------------------------------------------------
+# Real-stack reconnect integration test.
+#
+# Drives the core connection client's reconnect state machine over the GENUINE
+# Paho adapter, using the in-process test proxy to induce a real network drop.
+# This complements (does not replace) the fast, deterministic mock-based
+# connection_client_test.
+#
+# It needs the same reachable broker the conformance suites need, so it is
+# registered under the same option rather than a second knob a job could forget
+# to set. Built everywhere regardless, so every compiler keeps checking it.
+# ---------------------------------------------------------------------------
+if(AZ_IOT_WITH_PAHO)
+    az_iot_add_cmocka_test(az_iot_reconnect_integration
+        integration/reconnect_real_stack_test.c NO_CTEST)
+    target_include_directories(az_iot_reconnect_integration PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/conformance)
+    target_link_libraries(az_iot_reconnect_integration PRIVATE
+        az_iot_adapter_paho az_iot_test_proxy)
+    if(UNIX)
+        target_compile_definitions(az_iot_reconnect_integration PRIVATE
+            _POSIX_C_SOURCE=200809L _DEFAULT_SOURCE)
+    endif()
+    if(AZ_IOT_BUILD_CONFORMANCE_TESTS)
+        add_test(NAME az_iot_reconnect_integration COMMAND az_iot_reconnect_integration)
     endif()
 endif()
 
