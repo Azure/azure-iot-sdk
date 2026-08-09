@@ -772,6 +772,11 @@ static az_iot_result paho_iface_connect(
     ssl_opts.privateKey = opts->tls.client_key_path;
     ssl_opts.privateKeyPassword = opts->tls.client_key_password;
     ssl_opts.enableServerCertAuth = opts->tls.verify_server ? 1 : 0;
+    /* Verify the server hostname against the certificate too, not just the
+     * chain: a chain-valid certificate issued for the wrong host must be
+     * rejected. Paho checks X509_check_host and falls back to
+     * X509_check_ip_asc for IP-literal peers. */
+    ssl_opts.verify = opts->tls.verify_server ? 1 : 0;
     /* AZ_IOT_PAHO_TRACE also enables detailed OpenSSL handshake error output. */
     if (paho_trace_level_from_env() >= 0)
     {
