@@ -98,7 +98,11 @@ jobs:
 
       - name: Install ninja (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y ninja-build
+        # libssl-dev is explicit rather than assumed from the runner image: the
+        # Linux presets set AZ_IOT_BUILD_CONFORMANCE_TESTS_TLS, and that option
+        # fails the configure step outright when OpenSSL is missing instead of
+        # dropping the certificate-validation tests.
+        run: sudo apt-get update && sudo apt-get install -y ninja-build libssl-dev
 
       - name: Configure
         run: cmake --preset ${{ matrix.preset }} -DAZ_IOT_WITH_PAHO=${{ matrix.with_paho }}
@@ -302,7 +306,7 @@ jobs:
       # actually had -- coverage computed over fewer tests than anyone thought.
       # Now that no suite decides at run time whether to participate, the count
       # is deterministic, so assert it exactly. Bump this when adding a suite.
-      EXPECTED_TESTS: '22'
+      EXPECTED_TESTS: '23'
     services:
       mosquitto:
         image: eclipse-mosquitto:2
