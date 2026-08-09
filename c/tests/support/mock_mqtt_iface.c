@@ -220,6 +220,22 @@ static az_iot_result mock_unsubscribe(
   return take_override(m, AZ_IOT_MOCK_CALL_UNSUBSCRIBE);
 }
 
+const char* az_iot_mock_call_user_property(const az_iot_mock_call* c, const char* key)
+{
+  if (!c || !key)
+  {
+    return NULL;
+  }
+  for (size_t i = 0; i < c->user_properties_count; ++i)
+  {
+    if (strcmp(c->user_properties[i].key, key) == 0)
+    {
+      return c->user_properties[i].value;
+    }
+  }
+  return NULL;
+}
+
 static az_iot_result mock_publish(
     az_iot_mqtt_client* self,
     const az_iot_mqtt_message* msg,
@@ -241,13 +257,19 @@ static az_iot_result mock_publish(
         msg->correlation_data,
         msg->correlation_data_len,
         &c->correlation_data_len);
+    copy_str(c->content_type, sizeof(c->content_type), msg->content_type);
     for (size_t i = 0; i < msg->user_properties_count; ++i)
     {
       const az_iot_mqtt_user_property* up = &msg->user_properties[i];
       if (up->key && strcmp(up->key, "type") == 0)
       {
         copy_str(c->user_type, sizeof(c->user_type), up->value);
-        break;
+      }
+      if (c->user_properties_count < AZ_IOT_MOCK_MAX_USER_PROPS)
+      {
+        size_t k = c->user_properties_count++;
+        copy_str(c->user_properties[k].key, sizeof(c->user_properties[k].key), up->key);
+        copy_str(c->user_properties[k].value, sizeof(c->user_properties[k].value), up->value);
       }
     }
   }

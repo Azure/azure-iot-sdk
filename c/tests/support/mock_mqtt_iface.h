@@ -46,6 +46,11 @@ extern "C"
   } az_iot_mock_call_kind;
 
 #define AZ_IOT_MOCK_TOPIC_MAX 256
+/* Must be at least the largest number any feature client can send on one
+ * PUBLISH (telemetry forwards up to AZ_IOT_TELEMETRY_MAX_USER_PROPS = 16),
+ * otherwise the mock silently truncates and a test asserting on the tail
+ * stops checking anything. */
+#define AZ_IOT_MOCK_MAX_USER_PROPS 20
 #define AZ_IOT_MOCK_PAYLOAD_MAX 4096
 #define AZ_IOT_MOCK_HISTORY_MAX 64
 
@@ -63,6 +68,16 @@ extern "C"
     uint8_t correlation_data[64];
     size_t correlation_data_len;
     char user_type[64]; /* value of the "type" User Property, "" if none */
+    /* Every User Property in order, so a test can assert what a feature client
+     * actually forwarded rather than only the "type" marker. Properties past
+     * the bound are dropped; assert on the count if that matters. */
+    struct
+    {
+      char key[64];
+      char value[128];
+    } user_properties[AZ_IOT_MOCK_MAX_USER_PROPS];
+    size_t user_properties_count;
+    char content_type[64]; /* PUBLISH Content Type, "" if none */
     char username[256]; /* CONNECT username, "" if none */
     /* CONNECT options, captured so tests can assert which endpoint/identity the
      * core targeted. `topic` also carries the host for backwards compatibility. */
@@ -97,6 +112,10 @@ extern "C"
 
   /* Cast an az_iot_mqtt_client to its mock backing if it came from this factory. */
   az_iot_mock_mqtt_client* az_iot_mock_mqtt_client_from(az_iot_mqtt_client* c);
+
+  /* Value of the User Property named `key` on a recorded call, or NULL if the
+   * call did not carry one. */
+  const char* az_iot_mock_call_user_property(const az_iot_mock_call* c, const char* key);
 
   /* Recorded call history. Newest call is at index (count - 1). */
   size_t az_iot_mock_mqtt_client_call_count(const az_iot_mock_mqtt_client* m);
