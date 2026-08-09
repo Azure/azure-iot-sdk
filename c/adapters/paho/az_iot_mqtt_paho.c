@@ -371,6 +371,23 @@ static void paho_connection_lost(void* context, char* cause)
   }
 }
 
+/* MQTT 5 server-initiated DISCONNECT. Paho routes these here rather than to the
+ * connectionLost callback, so without this the app would never learn the server
+ * tore the session down. Surface it as a DISCONNECTED event. */
+static void paho_disconnected(
+    void* context,
+    MQTTProperties* properties,
+    enum MQTTReasonCodes reasonCode)
+{
+  paho_client* m = (paho_client*)context;
+  (void)properties;
+  AZ_IOT_LOG_WARNF("paho: server sent DISCONNECT (reason %d)", (int)reasonCode);
+  if (m)
+  {
+    enqueue_status(m, AZ_IOT_MQTT_EVT_DISCONNECTED, AZ_IOT_OK, 0);
+  }
+}
+
 static void paho_trace_callback(enum MQTTASYNC_TRACE_LEVELS level, char* message)
 {
   AZ_IOT_LOG_TRACEF("paho: (%d) %s", (int)level, message ? message : "");
@@ -758,6 +775,14 @@ static az_iot_result paho_iface_connect(
   }
 
   rc = MQTTAsync_setCallbacks(m->paho, m, paho_connection_lost, paho_msg_arrived, NULL);
+  if (rc != MQTTASYNC_SUCCESS)
+  {
+    return AZ_IOT_ERR_MQTT;
+  }
+
+  /* Surface a v5 server-initiated DISCONNECT (Paho routes these to the
+   * disconnected callback, not connectionLost) as a DISCONNECTED event. */
+  rc = MQTTAsync_setDisconnected(m->paho, m, paho_disconnected);
   if (rc != MQTTASYNC_SUCCESS)
   {
     return AZ_IOT_ERR_MQTT;
