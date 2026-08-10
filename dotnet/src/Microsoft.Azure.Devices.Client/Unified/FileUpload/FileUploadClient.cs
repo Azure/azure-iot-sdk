@@ -31,7 +31,8 @@ namespace Microsoft.Azure.Devices.Client.Unified.FileUpload
         /// <param name="httpClient">The user-supplied HTTP client for this client to use when applicable</param>
         /// <remarks>
         /// <para>
-        /// File upload operations are done over HTTP only when connected to a Gen 1 IoT hub. File upload operations use MQTT when connected to Gen 2 IoT Hubs.
+        /// File upload operations are done over HTTP only when connected to a Gen 1 IoT hub. File upload operations use MQTT when connected to Gen 2 IoT Hubs. Since devices using this "unified" flavor of the file upload 
+        /// client may be provisioned to either a Gen 1 IoT Hub or a Gen 2 IoT Hub, the user-supplied HTTP client may not always be used.
         /// </para>
         /// <para>
         /// When providing a custom HTTP client, you must configure it to present the same client certificates that the provided <see cref="IConnectionClient"/> uses. However, this client will set the base address of the http client
