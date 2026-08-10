@@ -10,7 +10,7 @@ C99 client SDK for Azure IoT Hub Classic and IoT Hub Next (AEG).
 ## Highlights
 
 - **C99-strict**, no submodules. Dependencies via vcpkg manifest (primary) or CPM.cmake (fallback).
-- **Two layered public APIs**: API A (low-level, single-threaded `do_work()` pump) and API B (convenience wrapper with internal worker thread).
+- **Single public API**: low-level, single-threaded `do_work()` pump; all callbacks fire on the caller's thread.
 - **Pluggable MQTT** with version + role tagging:
   - DPS + IoTHub-Classic require **MQTT v3.1.1**.
   - IoTHub-Next requires **MQTT v5**.
@@ -38,19 +38,19 @@ cmake --build --preset windows-msvc-debug --config Debug
 ctest --preset windows-msvc-debug -C Debug
 ```
 
-Run the smoke binary:
+Run a sample binary:
 
 ```sh
-./build/linux-gcc-debug/samples/az_iot_smoke
+./build/linux-gcc-debug/samples/az_iot_sample_telemetry
 ```
 
 ## Project layout
 
 ```
-inc/azure/iot/        public headers (API A)
+inc/azure/iot/        public headers
 src/{core,features}/ implementation
 adapters/{paho,rust_mqtt}/ MQTT adapters
-samples/                  examples + smoke
+samples/                  examples
 tests/                    ctest suites
 tests/conformance/        reusable MQTT iface conformance suite
 docs/                     design + dev notes
@@ -76,89 +76,78 @@ ctest --preset linux-gcc-debug --output-on-failure -R conformance
 
 Those env vars are required once the conformance tests are registered: configure with `-DAZ_IOT_BUILD_CONFORMANCE_TESTS=ON` (the Linux presets do it for you) and an unset `AZ_IOT_MQTT_BROKER_HOST` is then a **failure**, not a skip. Without the option the tests are simply not registered, so a build with no broker to hand stays green by not pretending to run them. CI runs an `eclipse-mosquitto:2` service container automatically.
 
-## Quickstart — send telemetry in ~30 lines
+## Quickstart — send telemetry
 
-The easiest path uses **API B** (`az_iot_easy_client`), which spins one
-worker thread internally and exposes blocking `*_sync` calls.
+The SDK is a single-threaded pump: the application drives `do_work()` and every
+callback fires on that thread. Provisioning through DPS is internal to the
+connection client — leave `host` unset and fill in the `dps` fields.
 
 ```c
-#include "azure/iot/easy/az_iot_easy_client.h"
-#include "azure/iot/az_iot_certificate_provider_pem.h"
-#include "azure/iot/az_iot_telemetry_client.h"
+#include "azure/iot/az_iot.h"
 #include "azure/iot/adapters/az_iot_adapter_paho.h"
 
+static void on_send_done(az_iot_result status, void* user_ctx)
+{
+  *(int*)user_ctx = 1;
+}
+
+/* Certificate provider (X.509) */
 az_iot_certificate_provider_pem_options pem = az_iot_certificate_provider_pem_options_default();
 pem.trusted_ca_pem_path  = getenv("AZ_IOT_TRUSTED_CA");  /* optional */
 pem.client_cert_pem_path = getenv("AZ_IOT_CLIENT_CERT");
 pem.client_key_pem_path  = getenv("AZ_IOT_CLIENT_KEY");
-az_iot_certificate_provider_pem cm;
-az_iot_certificate_provider_pem_init(&cm, &pem);
+az_iot_certificate_provider_pem certs;
+az_iot_certificate_provider_pem_init(&certs, &pem);
 
-az_iot_easy_options opts = {
-    .host = getenv("AZ_IOT_HOST"), .port = 8883,
-    .client_id = getenv("AZ_IOT_DEVICE_ID"), .certificate_provider = &cm.base,
-    .reconnection_policy = { .initial_delay_ms = 500, .max_delay_ms = 10000, .jitter_pct = 25 },
-};
-az_iot_easy_client* easy = NULL;
-az_iot_easy_client_create(&opts, &easy);
+/* Connection client — DPS runs internally when host == NULL */
+az_iot_connection_client_options copts = az_iot_connection_client_options_default();
+copts.dps.id_scope        = getenv("AZ_IOT_ID_SCOPE");
+copts.dps.registration_id = getenv("AZ_IOT_REGISTRATION_ID");
+copts.certificate_provider = &certs.base;
 
-az_iot_mqtt_factory* paho = az_iot_paho_factory_create_v3_1_1();
-az_iot_easy_client_register_mqtt_factory(easy, paho);
+az_iot_connection_client conn;
+az_iot_connection_client_init(&conn, &copts);
 
-az_iot_easy_client_open_sync(easy, 30000);
+/* Register both MQTT versions: v3.1.1 for DPS + Classic, v5 for Next. */
+az_iot_connection_client_register_mqtt_factory(&conn, az_iot_paho_factory_create_v3_1_1());
+az_iot_connection_client_register_mqtt_factory(&conn, az_iot_paho_factory_create_v5());
+
+az_iot_telemetry_client tel;
+az_iot_telemetry_client_init(&tel, &conn);
+
+az_iot_connection_client_open(&conn);
 
 const char* body = "{\"hello\":\"world\"}";
 az_iot_telemetry_message msg = {
     .payload = (const uint8_t*)body, .payload_len = strlen(body),
-    .content_type = "application/json",
 };
-az_iot_easy_client_send_telemetry_sync(easy, &msg, 5000);
 
-az_iot_easy_client_close_sync(easy, 5000);
-az_iot_easy_client_destroy(easy);
-az_iot_paho_factory_destroy(paho);
-az_iot_certificate_provider_pem_destroy(&cm);
+int sent = 0;
+az_iot_telemetry_client_send(&tel, &msg, on_send_done, &sent);
+
+while (!sent)
+{
+  az_iot_connection_client_do_work(&conn, 100);
+}
+
+az_iot_connection_client_close(&conn);
+az_iot_telemetry_client_destroy(&tel);
+az_iot_connection_client_destroy(&conn);
+az_iot_certificate_provider_pem_destroy(&certs);
 ```
 
-The full source is in [samples/telemetry_quickstart/main.c](samples/telemetry_quickstart/main.c).
-
-To run it, set the env vars and invoke the built binary:
-
-```sh
-export AEG_HOST=<my-hub>.azure-devices.net
-export AEG_DEVICE_ID=my-device
-export AEG_CLIENT_CERT=/path/to/device.crt.pem
-export AEG_CLIENT_KEY=/path/to/device.key.pem
-export AEG_TRUSTED_CA=/path/to/ca.pem        # optional
-
-./build/linux-gcc-debug/samples/az_iot_sample_telemetry_quickstart
-```
-
-If any required env var is unset, the sample prints a usage hint and exits 0
-so it can be safely included in a default build matrix without a broker.
+The full source is in [samples/telemetry/main.c](samples/telemetry/main.c). Each sample
+is a no-op when its required env vars are unset, so a default build matrix without
+cloud resources stays green.
 
 ## Samples
 
-| Sample | API | What it shows |
-| --- | --- | --- |
-| [telemetry_quickstart](samples/telemetry_quickstart/) | B (Easy) | Cert mgr + Easy client + 5 QoS-0 sends. The 3-minute path. |
-| [twin_get_patch](samples/twin_get_patch/) | A (core) | Manual `do_work()` pump, `twin_get` + `patch_reported`. |
-| [direct_method_responder](samples/direct_method_responder/) | A (core) | Subscribe for direct methods, echo payload back via `az_iot_direct_method_respond`. |
-| [smoke](samples/smoke/) | — | Phase 0 link-only smoke binary. |
-
-## API A vs API B
-
-There are two layered public API surfaces. They are **fully interoperable** — API B is a thin wrapper over A — and both ship in the same package.
-
-|  | **API A** (core) | **API B** (easy) |
-| --- | --- | --- |
-| Header root | `azure/iot/...` | `azure/iot/easy/...` |
-| Library target | `az_iot_core` | `az_iot_easy` |
-| Threading | Single-threaded; **caller** drives `do_work(timeout_ms)`. | One internal worker thread per Easy client. |
-| Calls | Non-blocking, completion via callback. | Blocking `*_sync(timeout_ms)`. |
-| Callbacks fire on | The thread that called `do_work()`. | The internal worker thread (with internal lock held). |
-| Allocations | Bounded; no hidden heap on the hot path. | Same, plus one mutex + condvar + thread per client. |
-| Best for | Embedded, RTOS-friendly designs, single-threaded apps, custom event loops. | Desktop/server apps that want a simple synchronous send/receive API. |
-| DPS support | Yes (internal to `az_iot_connection_client`; set `opts.dps` fields). | Removed. |
-
-See [docs/api_a_vs_b.md](docs/api_a_vs_b.md) for the full comparison.
+| Sample | What it shows |
+| --- | --- |
+| [telemetry](samples/telemetry/) | DPS provisioning + `do_work()` pump + a telemetry send. The starting point. |
+| [twin_get_patch](samples/twin_get_patch/) | `twin_get` + `patch_reported`, and desired-property delivery. |
+| [direct_method_responder](samples/direct_method_responder/) | Subscribe for direct methods, echo the payload back via `az_iot_direct_method_respond`. |
+| [c2d_receiver](samples/c2d_receiver/) | Receive cloud-to-device messages and their properties. |
+| [file_upload](samples/file_upload/) | SAS-URI request, blob PUT via libcurl, completion notification. |
+| [authentication](samples/authentication/) | Certificate providers, CSR enrollment, operational certificates. |
+| [adu](samples/adu/) | Device Update agent: manifest verify, download, install, report. |

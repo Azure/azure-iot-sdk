@@ -3,7 +3,7 @@
 // information.
 
 /* SPDX-License-Identifier: MIT */
-/* authentication/direct-hub - API A sample.
+/* authentication/direct-hub - sample.
  *
  * Connect DIRECTLY to an IoT Hub (no DPS) with a caller-supplied hub FQDN and
  * X.509 device credentials, then send one telemetry message and close.

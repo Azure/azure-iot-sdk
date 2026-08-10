@@ -3,7 +3,7 @@
 // information.
 
 /* SPDX-License-Identifier: MIT */
-/* c2d_receiver - API A sample.
+/* c2d_receiver - sample.
  *
  * Provision via DPS, open connection, subscribe for cloud-to-device messages,
  * print received payloads. Runs for ~60 seconds then exits. DPS is handled

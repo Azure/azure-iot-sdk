@@ -5,7 +5,6 @@ option(AZ_IOT_WITH_PAHO        "Build the Paho-C MQTT adapter (default)"      ON
 option(AZ_IOT_WITH_RUST_MQTT   "Build the Rust MQTT adapter shell"             OFF)
 option(AZ_IOT_WITH_ADU_CRYPTO_OPENSSL "Build the OpenSSL ADU crypto adapter"   ON)
 option(AZ_IOT_WITH_CERT_PROVIDER_MANAGED "Build the OpenSSL managed certificate provider" ON)
-option(AZ_IOT_WITH_EASY        "Build API B (easy / convenience layer)"        ON)
 option(AZ_IOT_BUILD_SAMPLES    "Build sample apps"                              ON)
 option(AZ_IOT_BUILD_TESTS      "Build unit tests"                               OFF)
 # End-to-end tests talk to a REAL Azure IoT Hub/DPS instance and are off by
