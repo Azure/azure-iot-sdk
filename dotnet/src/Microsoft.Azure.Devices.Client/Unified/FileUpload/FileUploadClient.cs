@@ -10,8 +10,9 @@ namespace Microsoft.Azure.Devices.Client.Unified.FileUpload
 {
     public class FileUploadClient : IDisposable
     {
-        private bool isInitialized = false;
-        private HttpClient? _httpClient; //TODO some documentation explaining why this override is only sometimes applicable since file upload is done over MQTT on Gen2 hub.
+        private bool _isInitialized = false;
+        private bool _isUserSuppliedHttpClient;
+        private HttpClient? _httpClient;
         private readonly IConnectionClient _connectionClient;
         private Gen2.FileUpload.FileUploadClient _aegFileUploadClient;
 
@@ -19,29 +20,35 @@ namespace Microsoft.Azure.Devices.Client.Unified.FileUpload
         {
             _connectionClient = connection;
             _httpClient = null;
+            _isUserSuppliedHttpClient = false;
             _aegFileUploadClient = new(new Gen2.Connection.ConnectionClient(_connectionClient));
         }
 
         /// <summary>
-        /// 
+        /// Create a file upload client that uses a user-provided http client when applicable.
         /// </summary>
         /// <param name="connection"></param>
-        /// <param name="clientCertificate"></param>
-        /// <param name="httpClient"></param>
+        /// <param name="httpClient">The user-supplied HTTP client for this client to use when applicable</param>
         /// <remarks>
-        /// 
+        /// <para>
+        /// File upload operations are done over HTTP only when connected to a Gen 1 IoT hub. File upload operations use MQTT when connected to Gen 2 IoT Hubs.
+        /// </para>
+        /// <para>
+        /// When providing a custom HTTP client, you must configure it to present the same client certificates that the provided <see cref="IConnectionClient"/> uses. However, this client will set the base address of the http client
+        /// to target the IoT Hub endpoint correctly.
+        /// </para>
         /// </remarks>
         public FileUploadClient(IConnectionClient connection, HttpClient httpClient)
         {
             _connectionClient = connection;
             _httpClient = httpClient;
-            _httpClient.BaseAddress = new Uri("asdf");
+            _isUserSuppliedHttpClient = true;
             _aegFileUploadClient = new(new Gen2.Connection.ConnectionClient(_connectionClient));
         }
 
         private void InitializeIfUninitialized()
         {
-            if (isInitialized)
+            if (_isInitialized)
             {
                 return;
             }
@@ -69,6 +76,8 @@ namespace Microsoft.Azure.Devices.Client.Unified.FileUpload
                 // so it is the user's responsibility to set that up when creating the HTTP client that they passed in.
                 _httpClient.BaseAddress = new Uri("https://" + currentConnectionContext.IotHubHostName);
             }
+
+            _isInitialized = true;
         }
 
         /// <summary>
@@ -109,23 +118,8 @@ namespace Microsoft.Azure.Devices.Client.Unified.FileUpload
             }
             else
             {
-                string errorContent = await httpResponse.Content.ReadAsStringAsync();
-                var errorPayload = JsonSerializer.Deserialize<IotHubServiceError>(errorContent);
-                if (errorPayload != null)
-                {
-                    var nestedErrorPayload = JsonSerializer.Deserialize<IotHubNestedServiceException>(errorPayload.ErrorDetails);
-                    if (nestedErrorPayload != null)
-                    {
-                        var exception = new IotHubServiceException($"Failed to get the file upload Sas Uri: {nestedErrorPayload.Message}.")
-                        {
-                            ErrorMessage = errorPayload.ExceptionMessage,
-                            ErrorDetails = nestedErrorPayload,
-                        };
-                        throw exception;
-                    }
-                }
-
-                throw new IotHubServiceException($"Received an error message from IoT hub with an unexpected format: {errorContent}");
+                throw BuildServiceException(
+                    "Failed to get the file upload Sas Uri", await httpResponse.Content.ReadAsStringAsync(cancellationToken));
             }
         }
 
@@ -163,31 +157,60 @@ namespace Microsoft.Azure.Devices.Client.Unified.FileUpload
             var httpResponse = await _httpClient.SendAsync(requestMessage, cancellationToken);
             if (httpResponse.StatusCode != System.Net.HttpStatusCode.NoContent)
             {
-                string errorContent = await httpResponse.Content.ReadAsStringAsync();
+                throw BuildServiceException(
+                    "Failed to complete the file upload Sas Uri", await httpResponse.Content.ReadAsStringAsync(cancellationToken));
+            }
+        }
+
+        private static IotHubServiceException BuildServiceException(string errorMessage, string errorContent)
+        {
+            try
+            {
                 var errorPayload = JsonSerializer.Deserialize<IotHubServiceError>(errorContent);
                 if (errorPayload != null)
                 {
                     var nestedErrorPayload = JsonSerializer.Deserialize<IotHubNestedServiceException>(errorPayload.ErrorDetails);
                     if (nestedErrorPayload != null)
                     {
-                        var exception = new IotHubServiceException($"Failed to complete the file upload Sas Uri: {nestedErrorPayload.Message}")
+                        return new IotHubServiceException($"{errorMessage}: {nestedErrorPayload.Message}.")
                         {
                             ErrorMessage = errorPayload.ExceptionMessage,
                             ErrorDetails = nestedErrorPayload,
                         };
-                        throw exception;
                     }
                 }
-
-                throw new IotHubServiceException($"Received an error message from IoT hub with an unexpected format: {errorContent}");
             }
+            catch (JsonException)
+            {
+                // Not an error shape this SDK recognizes; fall through to the generic report.
+            }
+
+            return new IotHubServiceException(
+                $"Received an error message from IoT hub with an unexpected format: {errorContent}");
         }
 
         public void Dispose()
         {
+            // Unconditionally dispose the underlying HTTP client
             if (_httpClient != null)
             {
                 _httpClient.Dispose();
+            }
+        }
+
+        public void Dispose(bool disposing)
+        {
+            // Dispose the underlying HTTP client depending on if it was user-supplied and if the disposing flag is set
+            if (_httpClient != null)
+            {
+                if (disposing)
+                {
+                    _httpClient.Dispose();
+                }
+                else if (!_isUserSuppliedHttpClient)
+                { 
+                    _httpClient.Dispose();
+                }
             }
         }
     }
