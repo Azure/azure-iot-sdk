@@ -29,18 +29,17 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Unified
                 {
                     var handler = new HttpClientHandler();
                     handler.ClientCertificates.Add(testDeviceContext.AuthenticationProvider.ClientCertificate);
-                    handler.ServerCertificateCustomValidationCallback = (message, cert2, chain, errors) => true;
                     HttpClient userProvidedHttpClient = new(handler);
-                    fileUploadClient = new FileUploadClient(testDeviceContext.ConnectionClient, testDeviceContext.AuthenticationProvider.ClientCertificate, userProvidedHttpClient);
+                    fileUploadClient = new FileUploadClient(testDeviceContext.ConnectionClient, userProvidedHttpClient);
                 }
                 else
                 {
-                    fileUploadClient = new FileUploadClient(testDeviceContext.ConnectionClient, testDeviceContext.AuthenticationProvider.ClientCertificate);
+                    fileUploadClient = new FileUploadClient(testDeviceContext.ConnectionClient);
                 }
             }
             else 
             {
-                fileUploadClient = new FileUploadClient(testDeviceContext.ConnectionClient, testDeviceContext.AuthenticationProvider.ClientCertificate);
+                fileUploadClient = new FileUploadClient(testDeviceContext.ConnectionClient);
             }
 
             FileUploadSasUriRequest sasUriRequest = new()
@@ -79,7 +78,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Unified
             await using UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientAsync(testAgainstClassicHub, cts.Token);
 
             FileUploadClient fileUploadClient;
-            fileUploadClient = new FileUploadClient(testDeviceContext.ConnectionClient, testDeviceContext.AuthenticationProvider.ClientCertificate);
+            fileUploadClient = new FileUploadClient(testDeviceContext.ConnectionClient);
 
             FileUploadSasUriRequest sasUriRequest = new()
             {

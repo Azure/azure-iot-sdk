@@ -12,5 +12,7 @@
         public required bool IsAzureEventGrid { get; init; }
 
         public IReadOnlyList<string>? IssuedClientCertificates { get; init; }
+
+        public required X509AuthenticationProvider AuthenticationProvider { get; init; }
     }
 }

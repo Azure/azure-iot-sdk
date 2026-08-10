@@ -54,6 +54,7 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Connection
                     InitialTwinPush = null,
                     IotHubHostName = unifiedConnectionContext.IotHubHostName,
                     IssuedClientCertificates = unifiedConnectionContext.IssuedClientCertificates,
+                    AuthenticationProvider = unifiedConnectionContext.AuthenticationProvider,
                 };
             }
         }
@@ -85,7 +86,8 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Connection
                 DeviceId = provisioningResult.DeviceId,
                 IotHubHostName = provisioningResult.AssignedHub,
                 IsAzureEventGrid = provisioningResult.IsAzureEventGridHub,
-                IssuedClientCertificates = provisioningResult.IssuedClientCertificateChain,                
+                IssuedClientCertificates = provisioningResult.IssuedClientCertificateChain,
+                AuthenticationProvider = authentication,
             };
 
             CurrentConnectionContext.InitialTwinPush = await ConnectAsync(CurrentConnectionContext, authentication, twinOptions, cancellationToken);

@@ -90,7 +90,8 @@ namespace Microsoft.Azure.Devices.Client.Unified.Connection
                 DeviceId = provisioningResult.DeviceId,
                 IotHubHostName = provisioningResult.AssignedHub,
                 IsAzureEventGrid = provisioningResult.IsAzureEventGridHub,
-                IssuedClientCertificates = provisioningResult.IssuedClientCertificateChain,                
+                IssuedClientCertificates = provisioningResult.IssuedClientCertificateChain,
+                AuthenticationProvider = authentication,
             };
 
             // After successful provisioning, connect using the appropriate logic based on the Hub this device was provisioned to
@@ -103,7 +104,8 @@ namespace Microsoft.Azure.Devices.Client.Unified.Connection
                         DeviceId = provisioningResult.DeviceId,
                         IsAzureEventGrid = provisioningResult.IsAzureEventGridHub,
                         IotHubHostName = provisioningResult.AssignedHub,
-                        IssuedClientCertificates = provisioningResult.IssuedClientCertificateChain
+                        IssuedClientCertificates = provisioningResult.IssuedClientCertificateChain,
+                        AuthenticationProvider = authentication,
                     },
                     authentication,
                     null,

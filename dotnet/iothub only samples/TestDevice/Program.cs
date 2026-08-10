@@ -48,7 +48,8 @@ internal class Program
         {
             DeviceId = deviceId,
             IsAzureEventGrid = true, // Set to false when connecting to an in-market non AEG IoT hub
-            IotHubHostName = hostName
+            IotHubHostName = hostName,
+            AuthenticationProvider = authentication,
         };
 
         TwinClient twinClient = new(connectionClient);

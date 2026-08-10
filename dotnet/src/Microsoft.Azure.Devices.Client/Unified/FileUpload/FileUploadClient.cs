@@ -3,7 +3,6 @@ using Microsoft.Azure.Devices.Client.Models;
 using Microsoft.Azure.Devices.Client.Models.FileUpload;
 using Microsoft.Azure.Devices.Client.Unified.Connection;
 using System.Net.Http.Headers;
-using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.Json;
 
@@ -14,13 +13,11 @@ namespace Microsoft.Azure.Devices.Client.Unified.FileUpload
         private bool isInitialized = false;
         private HttpClient? _httpClient; //TODO some documentation explaining why this override is only sometimes applicable since file upload is done over MQTT on Gen2 hub.
         private readonly IConnectionClient _connectionClient;
-        private readonly X509Certificate2 _clientCertificate;
         private Gen2.FileUpload.FileUploadClient _aegFileUploadClient;
 
-        public FileUploadClient(IConnectionClient connection, X509Certificate2 clientCertificate) //TODO passing in the cert for AEG case makes no sense. Clean this up later
+        public FileUploadClient(IConnectionClient connection)
         {
             _connectionClient = connection;
-            _clientCertificate = clientCertificate;
             _httpClient = null;
             _aegFileUploadClient = new(new Gen2.Connection.ConnectionClient(_connectionClient));
         }
@@ -34,12 +31,11 @@ namespace Microsoft.Azure.Devices.Client.Unified.FileUpload
         /// <remarks>
         /// 
         /// </remarks>
-        public FileUploadClient(IConnectionClient connection, X509Certificate2 clientCertificate, HttpClient httpClient)
+        public FileUploadClient(IConnectionClient connection, HttpClient httpClient)
         {
             _connectionClient = connection;
             _httpClient = httpClient;
             _httpClient.BaseAddress = new Uri("asdf");
-            _clientCertificate = clientCertificate;
             _aegFileUploadClient = new(new Gen2.Connection.ConnectionClient(_connectionClient));
         }
 
@@ -61,7 +57,7 @@ namespace Microsoft.Azure.Devices.Client.Unified.FileUpload
             {
                 // If no user-supplied HTTP client, create one for them
                 var handler = new HttpClientHandler();
-                handler.ClientCertificates.Add(_clientCertificate); // TODO what about when this gets rotated by cert management APIs?
+                handler.ClientCertificates.Add(currentConnectionContext.AuthenticationProvider.ClientCertificate); // TODO what about when this gets rotated by cert management APIs?
                 _httpClient = new(handler)
                 {
                     BaseAddress = new Uri("https://" + currentConnectionContext.IotHubHostName)

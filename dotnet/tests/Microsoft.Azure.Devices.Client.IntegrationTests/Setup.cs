@@ -105,7 +105,8 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
                 { 
                     DeviceId = deviceId,
                     IsAzureEventGrid = true,
-                    IotHubHostName = null,                
+                    IotHubHostName = null,
+                    AuthenticationProvider = x509AuthenticationProvider,
                 },
                 AuthenticationProvider = x509AuthenticationProvider,
             };
@@ -152,6 +153,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
                     DeviceId = deviceId,
                     IsAzureEventGrid = true,
                     IotHubHostName = null,
+                    AuthenticationProvider = x509AuthenticationProvider,
                 },
                 AuthenticationProvider = x509AuthenticationProvider,
             };

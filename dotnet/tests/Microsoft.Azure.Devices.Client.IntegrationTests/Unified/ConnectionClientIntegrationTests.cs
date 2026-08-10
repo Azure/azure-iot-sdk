@@ -26,6 +26,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Unified
 
             X509Certificate2 certificate = X509CertificateLoader.LoadCertificateFromFile(certPath);
             X509Certificate2 pfx = X509CertificateLoader.LoadPkcs12FromFile(pfxPath, Setup.TestCertificatesPassword);
+            var authenticationProvider = new X509AuthenticationProvider(pfx);
 
             Device device = new(deviceId)
             {
@@ -52,6 +53,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Unified
                 DeviceId = deviceId,
                 IsAzureEventGrid = !testAgainstClassicHub,
                 IotHubHostName = testAgainstClassicHub ? Setup.GetGen1IotHubHostName() : Setup.GetGen2IotHubHostName(),
+                AuthenticationProvider = authenticationProvider,
             };
 
             ConnectionClient connectionClient = new();
@@ -60,7 +62,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Unified
             // rejects the connection for authorization reasons. Usually, after a few seconds, the device is ready to 
             // authorize the newly created device.
              await Setup.RetryAroundAuthorizationAsync(
-                async () => await connectionClient.ConnectAsync(connectionContext, new X509AuthenticationProvider(pfx), TestContext.Current.CancellationToken),
+                async () => await connectionClient.ConnectAsync(connectionContext, authenticationProvider, TestContext.Current.CancellationToken),
                 TestContext.Current.CancellationToken);
         }
     }
