@@ -19,6 +19,7 @@
 #include "azure/iot/az_iot_mqtt_iface.h"
 #include "azure/iot/az_iot_result.h"
 
+#include "internal/cert_util.h"
 #include "internal/connection_client_internal.h"
 #include "internal/reconnect.h"
 
@@ -1434,6 +1435,304 @@ static void hub_next_birth_timeout_retries_with_a_new_nonce(void** state)
   assert_memory_not_equal(second_birth->correlation_data, first_nonce, first_len);
 }
 
+/* Most recent PUBLISH to the issueCertificate topic, or NULL. */
+static const az_iot_mock_call* last_csr_publish(az_iot_mock_mqtt_client* m)
+{
+  size_t n = az_iot_mock_mqtt_client_call_count(m);
+  for (size_t i = n; i > 0; --i)
+  {
+    const az_iot_mock_call* c = az_iot_mock_mqtt_client_call_at(m, i - 1);
+    if (c->kind == AZ_IOT_MOCK_CALL_PUBLISH && strstr(c->topic, "issueCertificate"))
+    {
+      return c;
+    }
+  }
+  return NULL;
+}
+
+/* NUL-terminated copy of a recorded payload, so string searches are safe. */
+static void copy_payload(const az_iot_mock_call* c, char* out, size_t cap)
+{
+  size_t n = c->payload_len < cap - 1 ? c->payload_len : cap - 1;
+  memcpy(out, c->payload, n);
+  out[n] = '\0';
+}
+
+/* The response filter has to be in place before the request goes out, or the
+ * answer to a renewal arrives on a topic nobody is listening to. */
+static void send_csr_subscribes_the_credentials_response_filter(void** state)
+{
+  fixture* fx = *state;
+  az_iot_mock_mqtt_client* m = connect_fixture(fx);
+
+  csr_test_ctx tc = { 0 };
+  az_iot_certificate_signing_request csr = { .csr_base64 = "TESTCSR==" };
+  assert_int_equal(
+      az_iot_connection_client_send_csr(fx->client, &csr, "req-sub", NULL, on_csr_evt, &tc),
+      AZ_IOT_OK);
+
+  bool subscribed = false;
+  bool published = false;
+  size_t publish_at = 0;
+  size_t subscribe_at = 0;
+  for (size_t i = 0; i < az_iot_mock_mqtt_client_call_count(m); ++i)
+  {
+    const az_iot_mock_call* call = az_iot_mock_mqtt_client_call_at(m, i);
+    if (!subscribed && call->kind == AZ_IOT_MOCK_CALL_SUBSCRIBE
+        && strcmp(call->topic, "$iothub/credentials/res/#") == 0)
+    {
+      subscribed = true;
+      subscribe_at = i;
+    }
+    if (!published && call->kind == AZ_IOT_MOCK_CALL_PUBLISH
+        && strstr(call->topic, "issueCertificate"))
+    {
+      published = true;
+      publish_at = i;
+    }
+  }
+  /* The FIRST of each: keeping the last publish would let an earlier,
+   * unsubscribed request slip through as long as a later one followed. */
+  assert_true(subscribed);
+  assert_true(published);
+  assert_true(subscribe_at < publish_at);
+}
+
+/* "replace" tells the service to supersede an existing request. Emitting it
+ * unconditionally would turn every first-time enrollment into a replacement. */
+static void send_csr_emits_the_replace_field_only_when_supplied(void** state)
+{
+  fixture* fx = *state;
+  az_iot_mock_mqtt_client* m = connect_fixture(fx);
+
+  csr_test_ctx tc = { 0 };
+  az_iot_certificate_signing_request csr = { .csr_base64 = "TESTCSR==" };
+  assert_int_equal(
+      az_iot_connection_client_send_csr(fx->client, &csr, "req-norep", NULL, on_csr_evt, &tc),
+      AZ_IOT_OK);
+  const az_iot_mock_call* first = last_csr_publish(m);
+  assert_non_null(first);
+  char body[512];
+  copy_payload(first, body, sizeof(body));
+  assert_null(strstr(body, "replace"));
+
+  assert_int_equal(az_iot_connection_client_cancel_csr(fx->client), AZ_IOT_OK);
+  az_iot_mock_mqtt_client_clear_calls(m);
+
+  assert_int_equal(
+      az_iot_connection_client_send_csr(fx->client, &csr, "req-rep", "*", on_csr_evt, &tc),
+      AZ_IOT_OK);
+  const az_iot_mock_call* second = last_csr_publish(m);
+  assert_non_null(second);
+  copy_payload(second, body, sizeof(body));
+  assert_non_null(strstr(body, "\"replace\":\"*\""));
+}
+
+/* Only one renewal is open at a time, so a response carrying someone else's
+ * rid is either stale or misrouted; completing on it would hand the caller a
+ * chain that was never requested. */
+static void a_credentials_response_for_a_different_rid_is_ignored(void** state)
+{
+  fixture* fx = *state;
+  az_iot_mock_mqtt_client* m = connect_fixture(fx);
+
+  csr_test_ctx tc = { 0 };
+  az_iot_certificate_signing_request csr = { .csr_base64 = "TESTCSR==" };
+  assert_int_equal(
+      az_iot_connection_client_send_csr(fx->client, &csr, "req-mine", NULL, on_csr_evt, &tc),
+      AZ_IOT_OK);
+
+  const char* r200 = "{\"certificates\":[\"TEEF\"]}";
+  assert_true(az_iot_mock_mqtt_client_inject_message(
+      m,
+      "$iothub/credentials/res/200/?$rid=req-someone-else",
+      (const uint8_t*)r200,
+      strlen(r200),
+      AZ_IOT_MQTT_QOS_1));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  assert_int_equal(tc.accepted + tc.issued + tc.failed, 0);
+}
+
+static void a_400_reports_the_service_code(void** state)
+{
+  fixture* fx = *state;
+  az_iot_mock_mqtt_client* m = connect_fixture(fx);
+
+  csr_test_ctx tc = { 0 };
+  az_iot_certificate_signing_request csr = { .csr_base64 = "TESTCSR==" };
+  assert_int_equal(
+      az_iot_connection_client_send_csr(fx->client, &csr, "req-400", NULL, on_csr_evt, &tc),
+      AZ_IOT_OK);
+
+  const char* err = "{\"errorCode\":400001,\"message\":\"invalid request payload\"}";
+  assert_true(az_iot_mock_mqtt_client_inject_message(
+      m,
+      "$iothub/credentials/res/400/?$rid=req-400",
+      (const uint8_t*)err,
+      strlen(err),
+      AZ_IOT_MQTT_QOS_1));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  assert_int_equal(tc.failed, 1);
+  assert_int_equal(tc.service_code, 400001);
+}
+
+/* 412 is "no matching request to replace": distinguishable from a malformed
+ * request so a caller can retry without the replace field. */
+static void a_412_reports_the_service_code(void** state)
+{
+  fixture* fx = *state;
+  az_iot_mock_mqtt_client* m = connect_fixture(fx);
+
+  csr_test_ctx tc = { 0 };
+  az_iot_certificate_signing_request csr = { .csr_base64 = "TESTCSR==" };
+  assert_int_equal(
+      az_iot_connection_client_send_csr(fx->client, &csr, "req-412", "*", on_csr_evt, &tc),
+      AZ_IOT_OK);
+
+  const char* err = "{\"errorCode\":412001,\"message\":\"precondition failed\"}";
+  assert_true(az_iot_mock_mqtt_client_inject_message(
+      m,
+      "$iothub/credentials/res/412/?$rid=req-412",
+      (const uint8_t*)err,
+      strlen(err),
+      AZ_IOT_MQTT_QOS_1));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  assert_int_equal(tc.failed, 1);
+  assert_int_equal(tc.service_code, 412001);
+}
+
+/* Throttling carries a wait hint. Losing it turns a recoverable delay into a
+ * retry storm against a service that already said it was overloaded. */
+static void a_429_surfaces_the_retry_after_hint(void** state)
+{
+  fixture* fx = *state;
+  az_iot_mock_mqtt_client* m = connect_fixture(fx);
+
+  csr_test_ctx tc = { 0 };
+  az_iot_certificate_signing_request csr = { .csr_base64 = "TESTCSR==" };
+  assert_int_equal(
+      az_iot_connection_client_send_csr(fx->client, &csr, "req-429", NULL, on_csr_evt, &tc),
+      AZ_IOT_OK);
+
+  const char* err = "{\"errorCode\":429001,\"message\":\"throttled\",\"retryAfter\":30}";
+  assert_true(az_iot_mock_mqtt_client_inject_message(
+      m,
+      "$iothub/credentials/res/429/?$rid=req-429",
+      (const uint8_t*)err,
+      strlen(err),
+      AZ_IOT_MQTT_QOS_1));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  assert_int_equal(tc.failed, 1);
+  assert_int_equal(tc.service_code, 429001);
+  assert_int_equal((int)tc.retry_after_s, 30);
+}
+
+/* A 200 whose body has no certificates array is a broken success. Reporting it
+ * as issued would hand the provider an empty chain to persist over a working
+ * identity. */
+static void a_200_without_a_certificates_array_reports_a_failure(void** state)
+{
+  fixture* fx = *state;
+  az_iot_mock_mqtt_client* m = connect_fixture(fx);
+
+  csr_test_ctx tc = { 0 };
+  az_iot_certificate_signing_request csr = { .csr_base64 = "TESTCSR==" };
+  assert_int_equal(
+      az_iot_connection_client_send_csr(fx->client, &csr, "req-bad", NULL, on_csr_evt, &tc),
+      AZ_IOT_OK);
+
+  const char* r200 = "{\"correlationId\":\"x\"}";
+  assert_true(az_iot_mock_mqtt_client_inject_message(
+      m,
+      "$iothub/credentials/res/200/?$rid=req-bad",
+      (const uint8_t*)r200,
+      strlen(r200),
+      AZ_IOT_MQTT_QOS_1));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  assert_int_equal(tc.issued, 0);
+  assert_int_equal(tc.failed, 1);
+}
+
+/* There is no session to carry the request, so refusing up front is better
+ * than opening a renewal slot that can never complete. */
+static void send_csr_while_disconnected_is_refused(void** state)
+{
+  fixture* fx = *state;
+
+  csr_test_ctx tc = { 0 };
+  az_iot_certificate_signing_request csr = { .csr_base64 = "TESTCSR==" };
+  assert_int_equal(
+      az_iot_connection_client_send_csr(fx->client, &csr, "req-off", NULL, on_csr_evt, &tc),
+      AZ_IOT_ERR_NOT_CONNECTED);
+  assert_int_equal(tc.accepted + tc.issued + tc.failed, 0);
+
+  /* The slot was never taken, so a renewal still works once connected. */
+  (void)connect_fixture(fx);
+  assert_int_equal(
+      az_iot_connection_client_send_csr(fx->client, &csr, "req-on", NULL, on_csr_evt, &tc),
+      AZ_IOT_OK);
+}
+
+/* The service caps a CSR at 8 KB. Publishing a larger one would be rejected on
+ * the wire after burning a renewal slot for the full timeout. */
+static void a_csr_larger_than_the_service_cap_is_refused(void** state)
+{
+  fixture* fx = *state;
+  (void)connect_fixture(fx);
+
+  /* Valid base64 (length a multiple of 4, alphabet only) one quantum past the
+   * cap, so it is the size that is rejected rather than the encoding. */
+  size_t oversized_len = 8196;
+  char* big = (char*)malloc(oversized_len + 1);
+  assert_non_null(big);
+  memset(big, 'A', oversized_len);
+  big[oversized_len] = '\0';
+
+  csr_test_ctx tc = { 0 };
+  az_iot_certificate_signing_request csr = { .csr_base64 = big };
+  assert_int_equal(
+      az_iot_connection_client_send_csr(fx->client, &csr, "req-big", NULL, on_csr_evt, &tc),
+      AZ_IOT_ERR_INVALID_ARG);
+  free(big);
+
+  /* A refused request must not consume the single renewal slot. */
+  az_iot_certificate_signing_request ok_csr = { .csr_base64 = "TESTCSR==" };
+  assert_int_equal(
+      az_iot_connection_client_send_csr(fx->client, &ok_csr, "req-ok", NULL, on_csr_evt, &tc),
+      AZ_IOT_OK);
+}
+
+/* send_csr() generates a request id when the caller does not supply one. It has
+ * to be fresh every time: repeating one would make the service treat a new
+ * renewal as a duplicate of the previous request. */
+static void cert_util_generates_a_distinct_request_id(void** state)
+{
+  (void)state;
+  uint64_t rng = 0;
+  char a[32] = { 0 };
+  char b[32] = { 0 };
+  az_iot_cert_util_gen_request_id(&rng, a, sizeof(a));
+  az_iot_cert_util_gen_request_id(&rng, b, sizeof(b));
+
+  /* 8 hex digits, a separator, 8 more. */
+  assert_int_equal(strlen(a), 17);
+  assert_int_equal(a[8], '-');
+  for (size_t i = 0; i < strlen(a); ++i)
+  {
+    if (i == 8)
+    {
+      continue;
+    }
+    assert_non_null(strchr("0123456789abcdefABCDEF", a[i]));
+  }
+  assert_string_not_equal(a, b);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -1487,6 +1786,20 @@ int main(void)
     cmocka_unit_test_setup_teardown(send_csr_two_phase_delivers_issued_chain, setup, teardown),
     cmocka_unit_test_setup_teardown(send_csr_error_reports_service_code, setup, teardown),
     cmocka_unit_test_setup_teardown(send_csr_cancel_frees_slot, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        send_csr_subscribes_the_credentials_response_filter, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        send_csr_emits_the_replace_field_only_when_supplied, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_credentials_response_for_a_different_rid_is_ignored, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_400_reports_the_service_code, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_412_reports_the_service_code, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_429_surfaces_the_retry_after_hint, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_200_without_a_certificates_array_reports_a_failure, setup, teardown),
+    cmocka_unit_test_setup_teardown(send_csr_while_disconnected_is_refused, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_csr_larger_than_the_service_cap_is_refused, setup, teardown),
+    cmocka_unit_test(cert_util_generates_a_distinct_request_id),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

@@ -1608,6 +1608,60 @@ static void max_length_endpoint_still_builds_a_url(void** state)
   az_iot_connection_client_destroy(&conn);
 }
 
+/* A SAS response with members the client does not care about, including a
+ * nested object and an array, ahead of the ones it does. The reader has to skip
+ * those at object scope rather than descending into them and matching a
+ * same-named member of the wrong object. */
+static const char k_sas_json_nested[]
+    = "{"
+      "\"meta\":{\"blobName\":\"decoy-from-nested-object\",\"n\":1},"
+      "\"tags\":[\"a\",\"b\"],"
+      "\"correlationId\":\"corr-nested\","
+      "\"hostName\":\"acct.blob.core.windows.net\","
+      "\"containerName\":\"uploads\","
+      "\"blobName\":\"dev1/sample-data/test.txt\","
+      "\"sasToken\":\"?sv=2021-04-12&sr=b&sig=ABC%2F123&se=2026-01-01&sp=rw\""
+      "}";
+
+static void a_sas_response_with_nested_members_still_finds_the_fields(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  g_http.resp_status = 200;
+  g_http.resp_body = k_sas_json_nested;
+
+  rec r;
+  memset(&r, 0, sizeof(r));
+  assert_int_equal(
+      az_iot_file_upload_client_get_sas_uri(&fx->fu, "sample-data/test.txt", on_sas, &r),
+      AZ_IOT_OK);
+
+  assert_true(r.sas_done);
+  assert_int_equal(r.sas_status, AZ_IOT_OK);
+  assert_string_equal(r.correlation_id, "corr-nested");
+  /* The decoy inside "meta" must not win. */
+  assert_string_equal(
+      r.sas_uri,
+      "https://acct.blob.core.windows.net/uploads/dev1/sample-data/test.txt"
+      "?sv=2021-04-12&sr=b&sig=ABC%2F123&se=2026-01-01&sp=rw");
+}
+
+/* A response that is not a JSON object at all cannot yield any field. */
+static void a_sas_response_that_is_not_an_object_is_refused(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  g_http.resp_status = 200;
+  g_http.resp_body = "[\"not\",\"an\",\"object\"]";
+
+  rec r;
+  memset(&r, 0, sizeof(r));
+  assert_int_equal(
+      az_iot_file_upload_client_get_sas_uri(&fx->fu, "sample-data/test.txt", on_sas, &r),
+      AZ_IOT_OK);
+
+  assert_true(r.sas_done);
+  assert_int_not_equal(r.sas_status, AZ_IOT_OK);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -1702,6 +1756,10 @@ int main(void)
     cmocka_unit_test_setup_teardown(next_still_rejects_bad_args, setup_next, teardown),
     cmocka_unit_test_setup_teardown(next_init_accepts_an_http_hook, setup_next, teardown),
     cmocka_unit_test_setup_teardown(next_never_calls_the_http_hook, setup_next, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_sas_response_with_nested_members_still_finds_the_fields, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_sas_response_that_is_not_an_object_is_refused, setup, teardown),
   };
   return cmocka_run_group_tests_name("file_upload_client", tests, NULL, NULL);
 }
