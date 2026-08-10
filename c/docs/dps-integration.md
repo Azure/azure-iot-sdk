@@ -7,6 +7,14 @@
 
 This document tries bridge many needs regarding the clients for working with the new Azure IoT/AEG Hub, and yet providing an easy transition for customer from Azure IoT Hub (Classic).
 
+> **Update (08/10/2026).** Everything below still holds: DPS remains a phase
+> *inside* `az_iot_connection_client`, there is no separate provisioning client,
+> and the two-adapter dance is unchanged. The one addition from
+> [eng/client-separation.md](eng/client-separation.md) is that the hub version
+> DPS returns is no longer consumed purely privately — it is published to the
+> application as `az_iot_hub_profile.generation` via
+> `az_iot_connection_client_get_hub_profile()`, so the application can pick the
+> matching per-generation feature clients.
 
 ## Proposed Design
 

@@ -3,6 +3,21 @@
 
 # Splitting the SDK by IoT Hub Flavor
 
+> **SUPERSEDED (08/10/2026) by [client-separation.md](client-separation.md).**
+> This document evaluated splitting the whole SDK by **build target**
+> (`AZ_IOT_FLAVOR=classic|next|universal`). That is not what was adopted, on two
+> counts. A configure-time flag compiles one flavor out, so a single binary
+> cannot connect and then adapt to whichever hub DPS assigned it. And the split
+> turned out not to need to reach that far: the **connection client stays
+> single** and keeps DPS internal, and only the **feature clients** divide by
+> generation.
+>
+> The considerations below — migration risk, DPS duplication, feature drift,
+> doubled CI — were written against the larger split. Several are reduced or
+> moot at feature-client scope (DPS is never duplicated; the connection state
+> machine is never forked). Read them as the risk analysis of the maximal
+> version. Kept for the record.
+
 ## Abstract
 
 There is a growing desire to split `azure-iot-sdk` into **two separate client
@@ -25,8 +40,8 @@ separate SDKs turn that into a **synchronized device + service change**.
 > **Context.** The current design is a *single* SDK with a runtime
 > `protocol_profile` (`Classic | Next`) switch, an MQTT **adapter registry**
 > keyed by MQTT version, and a DPS exchange that returns the target
-> `hub_version`. See [design.md](design.md) and
-> [dps-integration.md](dps-integration.md) for the baseline architecture.
+> `hub_version`. See [design.md](../design.md) and
+> [dps-integration.md](../dps-integration.md) for the baseline architecture.
 
 ---
 
@@ -59,7 +74,7 @@ the SDK — and those two changes must be coordinated, or the device bricks its
 connectivity.
 
 This is a regression in the exact scenario the `hub_version` flag was designed to
-enable (see [dps-integration.md](dps-integration.md)).
+enable (see [dps-integration.md](../dps-integration.md)).
 
 **Mitigations.**
 
@@ -265,7 +280,7 @@ given device runs.
 - Coordinate with the **DPS service team** on enrollment-group-level policy so
   that flavor routing is explicit and gated, not implicit. (The DPS team already
   owns how `hub_version=1` vs `=2` is decided — see
-  [dps-integration.md](dps-integration.md).)
+  [dps-integration.md](../dps-integration.md).)
 
 **Flow — issue vs. solution.**
 
@@ -374,7 +389,8 @@ sequenceDiagram
 people) drift: twin, direct methods, C2D, telemetry, and especially **ADU** can
 diverge in behavior, error mapping, or API shape. ADU already differs by channel
 (ADUv1 over twin vs ADUv2 over HTTPS/ADR — see
-[eng/adu-client-plan.md](eng/adu-client-plan.md)), which compounds the
+[adu-client-plan.md](adu-client-plan.md)), which compounds the
+
 risk.
 
 **Mitigations.**
