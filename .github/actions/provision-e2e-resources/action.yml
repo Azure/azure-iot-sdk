@@ -98,7 +98,7 @@ runs:
       with:
         azPSVersion: "latest"
         inlineScript: |
-          Invoke-WebRequest -Uri "https://raw.githubusercontent.com/Azure/iot-sdks-e2e-fx/refs/heads/timtay/params/scripts/Azure.Iot.Sdk.Test.psm1" -OutFile "./Azure.Iot.Sdk.Test.psm1"
+          Invoke-WebRequest -Uri "https://raw.githubusercontent.com/Azure/iot-sdks-e2e-fx/refs/heads/master/scripts/Azure.Iot.Sdk.Test.psm1" -OutFile "./Azure.Iot.Sdk.Test.psm1"
           Import-Module "./Azure.Iot.Sdk.Test.psm1"
           New-Item -ItemType Directory -Force -Path (Split-Path -Parent "${{ inputs.out-file }}") | Out-Null
           if (-not [string]::IsNullOrWhiteSpace($env:AZ_IOT_RG_NAME)) {
@@ -142,29 +142,13 @@ runs:
               throw "Could not parse HostName from the IoT Hub connection string."
             }
             $IotHubName = ($HostNamePair -replace '^HostName=', '').Split('.')[0]
-
-
-            if ($null -ne $AzureIoTHub.properties.deviceRegistry.namespaceResourceId) {
-              # For gen2 hubs, must include ADR namespace resource id and ADR identity resource id 
-              Write-Host "Enabling IoT Hub file-upload notifications ($IotHubName)"
-              az iot hub update --name $IotHubName --resource-group $ResourceGroupName `
-                --fileupload-notifications true --only-show-errors --adr-ns-id $TestEnvInfo.AdrNamespaceResourceId --adr-identity-id $TestEnvInfo.AdrIdentityResourceId | Out-Null
-              if ($LASTEXITCODE -ne 0) {
-                throw "Failed to enable file-upload notifications on $IotHubName."
-              }
-            }
-            else {
-              # For gen1 hubs, don't include ADR namespace resource id or ADR identity resource id 
-              Write-Host "Enabling IoT Hub file-upload notifications ($IotHubName)"
-              az iot hub update --name $IotHubName --resource-group $ResourceGroupName `
-                --fileupload-notifications true --only-show-errors | Out-Null
-              if ($LASTEXITCODE -ne 0) {
-                throw "Failed to enable file-upload notifications on $IotHubName."
-              }
+            Write-Host "Enabling IoT Hub file-upload notifications ($IotHubName)"
+            az iot hub update --name $IotHubName --resource-group $ResourceGroupName `
+              --fileupload-notifications true --only-show-errors | Out-Null
+            if ($LASTEXITCODE -ne 0) {
+              throw "Failed to enable file-upload notifications on $IotHubName."
             }
           }
-
-
 
           # When an X.509 enrollment GROUP was provisioned, the group's issuer is
           # an INTERMEDIATE CA (created by the framework and signed by the root);
