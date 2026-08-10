@@ -18,7 +18,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Unified
             await using UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientAsync(testAgainstClassicHub, TestContext.Current.CancellationToken);
             using DirectMethodClient directMethodClient = new DirectMethodClient(testDeviceContext.ConnectionClient);
 
-            ServiceClient serviceClient = Setup.GetIotHubServiceClient();
+            ServiceClient serviceClient = Setup.GetGen1IotHubServiceClient();
             var directMethodInvocation = new CloudToDeviceMethod(expectedDirectMethodName, TimeSpan.FromSeconds(expectedResponseTimeout));
             SimpleDirectMethodPayload expectedRequestPayload = new()
             {

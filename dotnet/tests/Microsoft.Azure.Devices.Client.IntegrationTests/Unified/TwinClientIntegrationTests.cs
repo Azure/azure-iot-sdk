@@ -12,12 +12,10 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Unified
         [InlineData(false)]
         public async Task TestTwin(bool testAgainstClassicHub)
         {
-            using CancellationTokenSource cts = new();
-            cts.CancelAfter(Setup.TestTimeoutMilliseconds - 1000);
-            await using UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientAsync(testAgainstClassicHub, cts.Token);
+            await using UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientAsync(testAgainstClassicHub, TestContext.Current.CancellationToken);
             string deviceId = testDeviceContext.ConnectionContext.DeviceId;
 
-            RegistryManager registryManager = Setup.GetIotHubRegistryManager();
+            RegistryManager registryManager = Setup.GetGen1IotHubRegistryManager();
             using TwinClient twinClient = new TwinClient(testDeviceContext.ConnectionClient);
             TaskCompletionSource<DesiredPatchReceivedEventArgs> onDesiredPropertiesUpdateReceived = new();
             int desiredPatchesReceived = 0;
@@ -27,7 +25,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Unified
                 onDesiredPropertiesUpdateReceived.TrySetResult(args);
             };
 
-            var getTwinResponse = await twinClient.GetTwinAsync(cancellationToken: cts.Token);
+            var getTwinResponse = await twinClient.GetTwinAsync(cancellationToken: TestContext.Current.CancellationToken);
             Assert.NotNull(getTwinResponse.Desired);
             Assert.NotNull(getTwinResponse.Reported);
             Assert.Empty(getTwinResponse.Desired);
@@ -36,17 +34,17 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Unified
             string expectedDesiredPropertyKey = Guid.NewGuid().ToString();
             string expectedDesiredPropertyValue = Guid.NewGuid().ToString();
 
-            var twin = await registryManager.GetTwinAsync(deviceId, cts.Token);
+            var twin = await registryManager.GetTwinAsync(deviceId, TestContext.Current.CancellationToken);
 
             twin.Properties.Desired[expectedDesiredPropertyKey] = expectedDesiredPropertyValue;
-            await registryManager.UpdateTwinAsync(deviceId, twin, twin.ETag, cts.Token);
+            await registryManager.UpdateTwinAsync(deviceId, twin, twin.ETag, TestContext.Current.CancellationToken);
 
-            DesiredPatchReceivedEventArgs receivedDesiredPropertyUpdate = await onDesiredPropertiesUpdateReceived.Task.WaitAsync(cts.Token);
+            DesiredPatchReceivedEventArgs receivedDesiredPropertyUpdate = await onDesiredPropertiesUpdateReceived.Task.WaitAsync(TestContext.Current.CancellationToken);
             Assert.True(receivedDesiredPropertyUpdate.DesiredProperties.ContainsKey(expectedDesiredPropertyKey));
             Assert.Equal(expectedDesiredPropertyValue, (string) receivedDesiredPropertyUpdate.DesiredProperties[expectedDesiredPropertyKey]!);
 
             // Get the twin again from the device side, this time looking for the updated desired property
-            getTwinResponse = await twinClient.GetTwinAsync(cancellationToken: cts.Token);
+            getTwinResponse = await twinClient.GetTwinAsync(cancellationToken: TestContext.Current.CancellationToken);
             Assert.True(getTwinResponse.Desired!.ContainsKey(expectedDesiredPropertyKey));
             Assert.Equal(expectedDesiredPropertyValue, (string) getTwinResponse.Desired[expectedDesiredPropertyKey]!);
 
@@ -58,7 +56,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Unified
 
             reportedProperties[expectedReportedPropertyKey] = expectedReportedPropertyValue;
 
-            var updateReportedPropertiesResponse = await twinClient.UpdateReportedPropertiesAsync(reportedProperties, cts.Token);
+            var updateReportedPropertiesResponse = await twinClient.UpdateReportedPropertiesAsync(reportedProperties, TestContext.Current.CancellationToken);
             Assert.Equal(Result.Ok, updateReportedPropertiesResponse.Result);
             Assert.Equal((ulong) 2, updateReportedPropertiesResponse.Version);
 

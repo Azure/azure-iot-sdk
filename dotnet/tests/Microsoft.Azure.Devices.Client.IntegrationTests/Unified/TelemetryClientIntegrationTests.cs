@@ -88,7 +88,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Unified
             await using UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientAsync(testAgainstClassicHub, cts.Token);
             ConnectionClient connectionClient = testDeviceContext.ConnectionClient;
 
-            ServiceClient serviceClient = Setup.GetIotHubServiceClient();
+            ServiceClient serviceClient = Setup.GetGen1IotHubServiceClient();
             TelemetryClient telemetryClient = new TelemetryClient(connectionClient);
 
             TaskCompletionSource<CloudToDeviceTelemetry> c2dMessageReceived = new();

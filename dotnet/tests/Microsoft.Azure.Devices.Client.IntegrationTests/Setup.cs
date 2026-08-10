@@ -4,16 +4,20 @@ using Microsoft.Azure.Devices.Client.Models;
 using Microsoft.Azure.Devices.Client.Models.Twin;
 using Microsoft.Azure.Devices.Client.Unified.Connection;
 using Microsoft.Azure.Devices.Provisioning.Service;
+using Microsoft.Azure.Devices.Shared;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
+using System.Text.Json;
 using Xunit;
 
 namespace Microsoft.Azure.Devices.Client.IntegrationTests
 {
     public class Setup
     {
-        public static string IotHubConnectionString { get; set; } = Environment.GetEnvironmentVariable("IOTHUB_CONNECTION_STRING") ?? throw new ArgumentException("Missing env var");
+        public static string Gen1IotHubConnectionString { get; set; } = Environment.GetEnvironmentVariable("IOTHUB_CONNECTION_STRING") ?? throw new ArgumentException("Missing env var");
+
+        public static string Gen2IotHubConnectionString { get; set; } = Environment.GetEnvironmentVariable("IOTHUB_CONNECTION_STRING_GEN2") ?? "No test infrastructure setup for this yet";
 
         public static string DpsConnectionString { get; set; } = Environment.GetEnvironmentVariable("IOT_DPS_CONNECTION_STRING") ?? throw new ArgumentException("Missing env var");
 
@@ -21,15 +25,35 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
 
         public const string TestCertificatesPassword = "some fake password";
 
-        public static ServiceClient GetIotHubServiceClient() => ServiceClient.CreateFromConnectionString(IotHubConnectionString);
+        public static ServiceClient GetGen1IotHubServiceClient() => ServiceClient.CreateFromConnectionString(Gen1IotHubConnectionString);
 
-        public static RegistryManager GetIotHubRegistryManager() => RegistryManager.CreateFromConnectionString(IotHubConnectionString);
+        public static RegistryManager GetGen1IotHubRegistryManager() => RegistryManager.CreateFromConnectionString(Gen1IotHubConnectionString);
+
+        public static ServiceClient GetGen2IotHubServiceClient() => ServiceClient.CreateFromConnectionString(Gen2IotHubConnectionString);
+
+        public static RegistryManager GetGen2IotHubRegistryManager() => RegistryManager.CreateFromConnectionString(Gen2IotHubConnectionString);
 
         public static ProvisioningServiceClient GetDpsHubServiceClient() => ProvisioningServiceClient.CreateFromConnectionString(DpsConnectionString);
 
-        public static string GetIotHubHostName()
+        public static string GetGen1IotHubHostName()
         {
-            string[] connectionStringKeyValuePairs = IotHubConnectionString.Split(";");
+            string[] connectionStringKeyValuePairs = Gen1IotHubConnectionString.Split(";");
+            foreach (string connectionStringKeyValuePair in connectionStringKeyValuePairs)
+            {
+                string[] keyAndValue = connectionStringKeyValuePair.Split("=");
+                if (keyAndValue[0].Equals("HostName"))
+                {
+                    return keyAndValue[1];
+                }
+            }
+
+            throw new Exception("Malformed IoT hub connection string");
+        }
+
+
+        public static string GetGen2IotHubHostName()
+        {
+            string[] connectionStringKeyValuePairs = Gen2IotHubConnectionString.Split(";");
             foreach (string connectionStringKeyValuePair in connectionStringKeyValuePairs)
             {
                 string[] keyAndValue = connectionStringKeyValuePair.Split("=");
@@ -44,10 +68,131 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
 
         public const int TestTimeoutMilliseconds = 60 * 1000;
 
-        public static Task<Gen2DeviceTestContext> CreateConnectedGen2ConnectionClientAsync(DeviceTwin? initialTwin, CancellationToken cancellationToken = default)
+        public static async Task<Gen2DeviceTestContext> CreateProvisionableGen2DeviceAsync(DeviceTwin? initialTwin, CancellationToken cancellationToken = default)
         {
             Assert.Skip("No test infrastructure setup for Gen2 client testing yet.");
-            return Task.FromResult((Gen2DeviceTestContext)null);
+            
+            ServiceClient iotHubServiceClient = ServiceClient.CreateFromConnectionString(Gen1IotHubConnectionString);
+            ProvisioningServiceClient provisioningServiceClient = ProvisioningServiceClient.CreateFromConnectionString(DpsConnectionString);
+
+            string deviceId = Guid.NewGuid().ToString();
+            string registrationId = deviceId;
+            string certId = Guid.NewGuid().ToString();
+            string certPath = $"./{certId}.cer";
+            string pfxPath = $"./{certId}.pfx";
+            CreateTestCertificates(pfxPath, certPath, deviceId);
+
+            X509Certificate2 certificate = X509CertificateLoader.LoadCertificateFromFile(certPath);
+            X509Certificate2 pfx = X509CertificateLoader.LoadPkcs12FromFile(pfxPath, TestCertificatesPassword);
+
+            // Create individual enrollment for the test device to provision from
+            Attestation attestation = X509Attestation.CreateFromClientCertificates(certificate);
+            TwinCollection intialDesiredProperties = new(JsonSerializer.Serialize(initialTwin.Desired));
+            IndividualEnrollment individualEnrollment = new(registrationId, attestation)
+            {
+                InitialTwinState = new(new(), intialDesiredProperties)
+            };
+            individualEnrollment = await provisioningServiceClient.CreateOrUpdateIndividualEnrollmentAsync(individualEnrollment, cancellationToken);
+
+            X509AuthenticationProvider x509AuthenticationProvider = new(pfx);
+
+            Client.Gen2.Connection.ConnectionClient connectionClient = new();
+
+            return new Gen2DeviceTestContext()
+            { 
+                ConnectionClient = connectionClient,
+                ConnectionContext = new() // Not a full context because the device has not connected yet
+                { 
+                    DeviceId = deviceId,
+                    IsAzureEventGrid = true,
+                    IotHubHostName = null,                
+                },
+                AuthenticationProvider = x509AuthenticationProvider,
+            };
+        }
+
+        // Skip DPS registration + provisioning. Just create a device identity on the IoT hub
+        public static async Task<Gen2DeviceTestContext> CreateGen2DeviceOnDirectlyOnHubAsync(CancellationToken cancellationToken = default)
+        {
+            Assert.Skip("No test infrastructure setup for Gen2 client testing yet.");
+
+            string deviceId = Guid.NewGuid().ToString();
+            string registrationId = deviceId;
+            string certId = Guid.NewGuid().ToString();
+            string certPath = $"./{certId}.cer";
+            string pfxPath = $"./{certId}.pfx";
+            CreateTestCertificates(pfxPath, certPath, deviceId);
+
+            X509Certificate2 certificate = X509CertificateLoader.LoadCertificateFromFile(certPath);
+            X509Certificate2 pfx = X509CertificateLoader.LoadPkcs12FromFile(pfxPath, TestCertificatesPassword);
+
+            Device device = new(deviceId)
+            {
+                Authentication = new AuthenticationMechanism()
+                {
+                    X509Thumbprint = new()
+                    {
+                        PrimaryThumbprint = certificate.Thumbprint
+                    }
+                }
+            };
+
+            await GetGen1IotHubRegistryManager().AddDeviceAsync(device);
+
+            X509AuthenticationProvider x509AuthenticationProvider = new(pfx);
+
+            Client.Gen2.Connection.ConnectionClient connectionClient = new();
+            ProvisioningSettings provisioningSettings = new(DpsIdScope);
+
+            return new Gen2DeviceTestContext()
+            {
+                ConnectionClient = connectionClient,
+                ConnectionContext = new() // Not a full context because the device has not connected yet
+                {
+                    DeviceId = deviceId,
+                    IsAzureEventGrid = true,
+                    IotHubHostName = null,
+                },
+                AuthenticationProvider = x509AuthenticationProvider,
+            };
+        }
+
+        public static async Task<Gen2DeviceTestContext> CreateConnectedGen2ConnectionClientAsync(DeviceTwin? initialTwin, CancellationToken cancellationToken = default)
+        {
+            Assert.Skip("No test infrastructure setup for Gen2 client testing yet.");
+
+            ProvisioningServiceClient provisioningServiceClient = ProvisioningServiceClient.CreateFromConnectionString(DpsConnectionString);
+
+            string deviceId = Guid.NewGuid().ToString();
+            string registrationId = deviceId;
+            string certId = Guid.NewGuid().ToString();
+            string certPath = $"./{certId}.cer";
+            string pfxPath = $"./{certId}.pfx";
+            CreateTestCertificates(pfxPath, certPath, deviceId);
+
+            X509Certificate2 certificate = X509CertificateLoader.LoadCertificateFromFile(certPath);
+            X509Certificate2 pfx = X509CertificateLoader.LoadPkcs12FromFile(pfxPath, TestCertificatesPassword);
+
+            // Create individual enrollment for the test device to provision from
+            Attestation attestation = X509Attestation.CreateFromClientCertificates(certificate);
+            IndividualEnrollment individualEnrollment = new(registrationId, attestation);
+            individualEnrollment = await provisioningServiceClient.CreateOrUpdateIndividualEnrollmentAsync(individualEnrollment, cancellationToken);
+
+            X509AuthenticationProvider x509AuthenticationProvider = new(pfx);
+
+            Client.Gen2.Connection.ConnectionClient connectionClient = new();
+            ProvisioningSettings provisioningSettings = new(DpsIdScope);
+
+            Client.Gen2.Connection.ConnectionContext connectionContext = await RetryAroundAuthorizationAsync<Client.Gen2.Connection.ConnectionContext>(
+                async () => await connectionClient.ProvisionAndConnectAsync(provisioningSettings, x509AuthenticationProvider, cancellationToken: cancellationToken),
+                cancellationToken);
+
+            return new Gen2DeviceTestContext()
+            {
+                ConnectionClient = connectionClient,
+                ConnectionContext = connectionContext!,
+                AuthenticationProvider = x509AuthenticationProvider,
+            };
         }
 
         public static async Task<UnifiedDeviceTestContext> CreateConnectedUnifiedConnectionClientAsync(bool testAgainstClassicHub, CancellationToken cancellationToken = default)
@@ -57,7 +202,6 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
                 Assert.Skip("No AEG hub to test against yet");
             }
 
-            ServiceClient iotHubServiceClient = ServiceClient.CreateFromConnectionString(IotHubConnectionString);
             ProvisioningServiceClient provisioningServiceClient = ProvisioningServiceClient.CreateFromConnectionString(DpsConnectionString);
 
             string deviceId = Guid.NewGuid().ToString();
@@ -99,7 +243,6 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
                 Assert.Skip("No AEG hub to test against yet");
             }
 
-            ServiceClient iotHubServiceClient = ServiceClient.CreateFromConnectionString(IotHubConnectionString);
             ProvisioningServiceClient provisioningServiceClient = ProvisioningServiceClient.CreateFromConnectionString(DpsConnectionString);
 
             string registrationId = Environment.GetEnvironmentVariable("IOT_DPS_INDIVIDUAL_REGISTRATION_ID") ?? throw new Exception("TODO");

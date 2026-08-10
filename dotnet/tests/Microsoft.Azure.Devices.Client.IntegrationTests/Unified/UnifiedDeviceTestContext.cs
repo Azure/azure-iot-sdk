@@ -16,7 +16,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Unified
         {
             if (ConnectionContext.DeviceId != null)
             {
-                await Setup.GetIotHubRegistryManager().RemoveDeviceAsync(ConnectionContext.DeviceId);
+                await Setup.GetGen1IotHubRegistryManager().RemoveDeviceAsync(ConnectionContext.DeviceId);
             }
 
             await ConnectionClient.DisconnectAsync();

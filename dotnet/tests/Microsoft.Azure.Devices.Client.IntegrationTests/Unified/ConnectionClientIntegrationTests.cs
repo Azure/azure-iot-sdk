@@ -2,10 +2,7 @@
 using System;
 using System.Collections.Generic;
 using System.Security.Cryptography.X509Certificates;
-using System.Text;
 using Xunit;
-using static Microsoft.ApplicationInsights.MetricDimensionNames.TelemetryContext;
-using static Microsoft.Azure.Amqp.Serialization.SerializableType;
 
 namespace Microsoft.Azure.Devices.Client.IntegrationTests.Unified
 {
@@ -41,13 +38,20 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Unified
                 }
             };
 
-            await Setup.GetIotHubRegistryManager().AddDeviceAsync(device, TestContext.Current.CancellationToken);
+            if (testAgainstClassicHub)
+            {
+                await Setup.GetGen1IotHubRegistryManager().AddDeviceAsync(device, TestContext.Current.CancellationToken);
+            }
+            else
+            { 
+                await Setup.GetGen2IotHubRegistryManager().AddDeviceAsync(device, TestContext.Current.CancellationToken);
+            }
 
             ConnectionContext connectionContext = new()
             {
                 DeviceId = deviceId,
                 IsAzureEventGrid = !testAgainstClassicHub,
-                IotHubHostName = Setup.GetIotHubHostName(),
+                IotHubHostName = testAgainstClassicHub ? Setup.GetGen1IotHubHostName() : Setup.GetGen2IotHubHostName(),
             };
 
             ConnectionClient connectionClient = new();

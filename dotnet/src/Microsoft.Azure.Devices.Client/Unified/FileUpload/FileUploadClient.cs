@@ -11,10 +11,10 @@ namespace Microsoft.Azure.Devices.Client.Unified.FileUpload
 {
     public class FileUploadClient : IDisposable
     {
+        private bool isInitialized = false;
         private HttpClient? _httpClient; //TODO some documentation explaining why this override is only sometimes applicable since file upload is done over MQTT on Gen2 hub.
         private readonly IConnectionClient _connectionClient;
         private readonly X509Certificate2 _clientCertificate;
-        private bool _isInitialized = false;
         private Gen2.FileUpload.FileUploadClient _aegFileUploadClient;
 
         public FileUploadClient(IConnectionClient connection, X509Certificate2 clientCertificate) //TODO passing in the cert for AEG case makes no sense. Clean this up later
@@ -25,17 +25,27 @@ namespace Microsoft.Azure.Devices.Client.Unified.FileUpload
             _aegFileUploadClient = new(new Gen2.Connection.ConnectionClient(_connectionClient));
         }
 
+        /// <summary>
+        /// 
+        /// </summary>
+        /// <param name="connection"></param>
+        /// <param name="clientCertificate"></param>
+        /// <param name="httpClient"></param>
+        /// <remarks>
+        /// 
+        /// </remarks>
         public FileUploadClient(IConnectionClient connection, X509Certificate2 clientCertificate, HttpClient httpClient)
         {
             _connectionClient = connection;
             _httpClient = httpClient;
+            _httpClient.BaseAddress = new Uri("asdf");
             _clientCertificate = clientCertificate;
             _aegFileUploadClient = new(new Gen2.Connection.ConnectionClient(_connectionClient));
         }
 
         private void InitializeIfUninitialized()
         {
-            if (_isInitialized)
+            if (isInitialized)
             {
                 return;
             }
@@ -47,15 +57,22 @@ namespace Microsoft.Azure.Devices.Client.Unified.FileUpload
                 throw new NotSupportedException("Must connect device prior to using this method");
             }
 
-            var handler = new HttpClientHandler();
-            handler.ClientCertificates.Add(_clientCertificate); // TODO what about when this gets rotated by cert management APIs?
-            handler.ServerCertificateCustomValidationCallback = (message, cert2, chain, errors) => true;
-            _httpClient = new(handler)
+            if (_httpClient == null)
             {
-                BaseAddress = new Uri("https://" + currentConnectionContext.IotHubHostName)
-            };
-
-            _isInitialized = true;
+                // If no user-supplied HTTP client, create one for them
+                var handler = new HttpClientHandler();
+                handler.ClientCertificates.Add(_clientCertificate); // TODO what about when this gets rotated by cert management APIs?
+                _httpClient = new(handler)
+                {
+                    BaseAddress = new Uri("https://" + currentConnectionContext.IotHubHostName)
+                };
+            }
+            else
+            {
+                // If user supplied an HTTP client, just target its base address appropriately. We cannot load the client certificates into this client due to how the .NET HTTP client works, 
+                // so it is the user's responsibility to set that up when creating the HTTP client that they passed in.
+                _httpClient.BaseAddress = new Uri("https://" + currentConnectionContext.IotHubHostName);
+            }
         }
 
         /// <summary>
