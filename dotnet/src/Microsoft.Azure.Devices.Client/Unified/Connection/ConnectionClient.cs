@@ -7,12 +7,16 @@ using Microsoft.Azure.Devices.Client.Provisioning;
 using Microsoft.Azure.Devices.Client.Provisioning.Models;
 using System.Collections.Concurrent;
 using System.ComponentModel;
+using System.Data.Common;
 using System.Text.Json;
 
 namespace Microsoft.Azure.Devices.Client.Unified.Connection
 {
     public class ConnectionClient : IConnectionClient
     {
+        private bool _isDisposed = false;
+        private bool _isUserSuppliedMqttClient = false;
+
         private IMqttClient _mqttClient;
 
         private ConnectionContext? CurrentConnectionContext { get; set; }
@@ -57,6 +61,8 @@ namespace Microsoft.Azure.Devices.Client.Unified.Connection
                 EnableMqttLogging = options.EnableMqttLogging,
             };
 
+            _isUserSuppliedMqttClient = options.MqttClient != null;
+
             _mqttClient = options.MqttClient ?? new MqttSessionClient(sessionClientOptions);
 
             _genConnectionClient = new(options);
@@ -81,6 +87,8 @@ namespace Microsoft.Azure.Devices.Client.Unified.Connection
         /// <returns>The received twin push upon connecting to IoT hub if any part of the twin was configured to be pushed in <see cref="TwinPushOptions"/>.</returns>
         public async Task<ConnectionContext> ProvisionAndConnectAsync(ProvisioningSettings provisioningSettings, X509AuthenticationProvider authentication, CancellationToken cancellationToken = default)
         {
+            ObjectDisposedException.ThrowIf(_isDisposed, this);
+
             var provisioningResult = await ProvisionAsync(provisioningSettings, authentication, cancellationToken);
 
             //TODO several mqtt client options should not be provided by the user (ie, host name). Add checks here that validate all of them
@@ -125,6 +133,8 @@ namespace Microsoft.Azure.Devices.Client.Unified.Connection
         /// <param name="cancellationToken">The cancellation token.</param>
         public async Task DisconnectAsync(CancellationToken cancellationToken = default)
         {
+            ObjectDisposedException.ThrowIf(_isDisposed, this);
+
             await _mqttClient.DisconnectAsync(new MqttDisconnect() { Reason = MqttClientDisconnectOptionsReason.NormalDisconnection }, cancellationToken);
             CurrentConnectionContext = null;
         }
@@ -137,6 +147,8 @@ namespace Microsoft.Azure.Devices.Client.Unified.Connection
         /// <returns>A set of tasks. One that completes when IoT hub accepts the request (and starts signing), one that completes when IoT hub completes the signing, and one that completes if any step in the process fails.</returns>
         public async Task<CertificateSigningOperation> SendCertificateSigningRequestAsync(CertificateSigningRequest request, CancellationToken cancellationToken = default)
         {
+            ObjectDisposedException.ThrowIf(_isDisposed, this);
+
             if (CurrentConnectionContext == null)
             {
                 throw new NotSupportedException("Must be connected before calling this method.");
@@ -178,6 +190,8 @@ namespace Microsoft.Azure.Devices.Client.Unified.Connection
         /// <returns>The initial twin of the device if a twin push was configured via <see cref="TwinPushOptions"/></returns>
         public async Task ConnectAsync(ConnectionContext connectionContext, X509AuthenticationProvider authentication, CancellationToken cancellationToken = default)
         {
+            ObjectDisposedException.ThrowIf(_isDisposed, this);
+
             CurrentConnectionContext = connectionContext;
 
             if (connectionContext.IsAzureEventGrid)
@@ -242,10 +256,35 @@ namespace Microsoft.Azure.Devices.Client.Unified.Connection
             }
         }
 
+
+        /// <summary>
+        /// Releases the unmanaged resources used by this client and optionally disposes of the managed resources.
+        /// </summary>
+        /// <param name="disposing">true to release both managed and unmanaged resources; false to releases only unmanaged resources.</param>
+        public void Dispose(bool disposing)
+        {
+            _mqttClient.PublishReceivedAsync -= HandleReceivedCertificateSigningPublish;
+            if (disposing)
+            {
+                _mqttClient.Dispose();
+            }
+            else if (!_isUserSuppliedMqttClient)
+            {
+                _mqttClient.Dispose();
+            }
+
+            _isDisposed = true;
+        }
+
+        /// <summary>
+        /// Releases the unmanaged resources and disposes of the managed resources used by this client 
+        /// </summary>
         public void Dispose()
         {
             _mqttClient.PublishReceivedAsync -= HandleReceivedCertificateSigningPublish;
             _mqttClient.Dispose();
+
+            _isDisposed = true;
         }
     }
 }

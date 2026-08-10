@@ -160,12 +160,34 @@ namespace Microsoft.Azure.Devices.Client.DirectMethods.Unified
             }
         }
 
+        /// <summary>
+        /// Releases the unmanaged resources used by this client and optionally disposes of the managed resources.
+        /// </summary>
+        /// <param name="disposing">true to release both managed and unmanaged resources; false to releases only unmanaged resources.</param>
+        public void Dispose(bool disposing)
+        {
+            _connection.MqttClient.PublishReceivedAsync -= HandleReceivedClassicMqttPublish;
+
+            _aegDirectMethodClient.DirectMethodProbeReceivedAsync -= HandleAegDirectMethodProbeRequestAsync;
+            _aegDirectMethodClient.DirectMethodInvokedAsync -= HandleAegDirectMethodRequestAsync;
+
+            if (disposing)
+            {
+                _connection.Dispose();
+            }
+        }
+
+        /// <summary>
+        /// Releases the unmanaged resources and disposes of the managed resources used by this client 
+        /// </summary>
         public void Dispose()
         {
             _connection.MqttClient.PublishReceivedAsync -= HandleReceivedClassicMqttPublish;
 
             _aegDirectMethodClient.DirectMethodProbeReceivedAsync -= HandleAegDirectMethodProbeRequestAsync;
             _aegDirectMethodClient.DirectMethodInvokedAsync -= HandleAegDirectMethodRequestAsync;
+
+            _connection.Dispose();
         }
     }
 }

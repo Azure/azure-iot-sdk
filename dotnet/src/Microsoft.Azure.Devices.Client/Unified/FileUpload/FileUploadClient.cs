@@ -2,6 +2,7 @@
 using Microsoft.Azure.Devices.Client.Models;
 using Microsoft.Azure.Devices.Client.Models.FileUpload;
 using Microsoft.Azure.Devices.Client.Unified.Connection;
+using System.Data.Common;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
@@ -10,18 +11,19 @@ namespace Microsoft.Azure.Devices.Client.Unified.FileUpload
 {
     public class FileUploadClient : IDisposable
     {
+        private bool _isDisposed = false;
         private bool _isInitialized = false;
         private bool _isUserSuppliedHttpClient;
         private HttpClient? _httpClient;
-        private readonly IConnectionClient _connectionClient;
+        private readonly IConnectionClient _connection;
         private Gen2.FileUpload.FileUploadClient _aegFileUploadClient;
 
         public FileUploadClient(IConnectionClient connection)
         {
-            _connectionClient = connection;
+            _connection = connection;
             _httpClient = null;
             _isUserSuppliedHttpClient = false;
-            _aegFileUploadClient = new(new Gen2.Connection.ConnectionClient(_connectionClient));
+            _aegFileUploadClient = new(new Gen2.Connection.ConnectionClient(_connection));
         }
 
         /// <summary>
@@ -41,10 +43,10 @@ namespace Microsoft.Azure.Devices.Client.Unified.FileUpload
         /// </remarks>
         public FileUploadClient(IConnectionClient connection, HttpClient httpClient)
         {
-            _connectionClient = connection;
+            _connection = connection;
             _httpClient = httpClient;
             _isUserSuppliedHttpClient = true;
-            _aegFileUploadClient = new(new Gen2.Connection.ConnectionClient(_connectionClient));
+            _aegFileUploadClient = new(new Gen2.Connection.ConnectionClient(_connection));
         }
 
         private void InitializeIfUninitialized()
@@ -54,7 +56,7 @@ namespace Microsoft.Azure.Devices.Client.Unified.FileUpload
                 return;
             }
 
-            var currentConnectionContext = _connectionClient.GetCurrentConnectionContext();
+            var currentConnectionContext = _connection.GetCurrentConnectionContext();
 
             if (currentConnectionContext == null)
             {
@@ -89,9 +91,10 @@ namespace Microsoft.Azure.Devices.Client.Unified.FileUpload
         /// <returns>The SAS URI.</returns>
         public async Task<FileUploadSasUriResponse> GetFileUploadSasUriAsync(FileUploadSasUriRequest request, CancellationToken cancellationToken = default)
         {
+            ObjectDisposedException.ThrowIf(_isDisposed, this);
             InitializeIfUninitialized();
 
-            var currentConnectionContext = _connectionClient.GetCurrentConnectionContext();
+            var currentConnectionContext = _connection.GetCurrentConnectionContext();
 
             if (currentConnectionContext == null)
             {
@@ -132,9 +135,10 @@ namespace Microsoft.Azure.Devices.Client.Unified.FileUpload
         /// <param name="cancellationToken">the cancellation token</param>
         public async Task CompleteFileUploadSasUriAsync(FileUploadCompletionNotification completion, CancellationToken cancellationToken = default)
         {
+            ObjectDisposedException.ThrowIf(_isDisposed, this);
             InitializeIfUninitialized();
 
-            var currentConnectionContext = _connectionClient.GetCurrentConnectionContext();
+            var currentConnectionContext = _connection.GetCurrentConnectionContext();
 
             if (currentConnectionContext == null)
             {
@@ -190,29 +194,40 @@ namespace Microsoft.Azure.Devices.Client.Unified.FileUpload
                 $"Received an error message from IoT hub with an unexpected format: {errorContent}");
         }
 
-        public void Dispose()
-        {
-            // Unconditionally dispose the underlying HTTP client
-            if (_httpClient != null)
-            {
-                _httpClient.Dispose();
-            }
-        }
-
+        /// <summary>
+        /// Releases the unmanaged resources used by this client and optionally disposes of the managed resources.
+        /// </summary>
+        /// <param name="disposing">true to release both managed and unmanaged resources; false to releases only unmanaged resources.</param>
         public void Dispose(bool disposing)
         {
             // Dispose the underlying HTTP client depending on if it was user-supplied and if the disposing flag is set
-            if (_httpClient != null)
+            if (disposing)
             {
-                if (disposing)
-                {
-                    _httpClient.Dispose();
-                }
-                else if (!_isUserSuppliedHttpClient)
-                { 
-                    _httpClient.Dispose();
-                }
+                _httpClient?.Dispose();
             }
+            else if (!_isUserSuppliedHttpClient)
+            {
+                _httpClient?.Dispose();
+            }
+
+            if (disposing)
+            {
+                _connection.Dispose();
+            }
+
+            _isDisposed = true;
+        }
+
+        /// <summary>
+        /// Releases the unmanaged resources and disposes of the managed resources used by this client 
+        /// </summary>
+        public void Dispose()
+        {
+            _httpClient?.Dispose();
+
+            _connection.Dispose();
+
+            _isDisposed = true;
         }
     }
 }

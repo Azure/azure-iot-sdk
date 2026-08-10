@@ -12,6 +12,8 @@ namespace Microsoft.Azure.Devices.Client.Unified.Telemetry
     /// </summary>
     public class TelemetryClient : IDisposable
     {
+        private bool _isDisposed = false;
+
         private const string ClassicTelemetryTopicFormat = "devices/{0}/messages/events/";
         internal const string DeviceBoundMessagesTopicFormat = "devices/{0}/messages/devicebound/";
 
@@ -60,6 +62,8 @@ namespace Microsoft.Azure.Devices.Client.Unified.Telemetry
         /// <exception cref="MessageTooLargeException">Thrown if the message's payload's size exceeds the supported limits of IoT hub.</exception>
         public async Task SendTelemetryAsync(DeviceToCloudTelemetry message, CancellationToken cancellationToken = default)
         {
+            ObjectDisposedException.ThrowIf(_isDisposed, this);
+
             var currentConnectionContext = _connection.GetCurrentConnectionContext();
             if (currentConnectionContext == null)
             {
@@ -182,10 +186,31 @@ namespace Microsoft.Azure.Devices.Client.Unified.Telemetry
             }
         }
 
+        /// <summary>
+        /// Releases the unmanaged resources used by this client and optionally disposes of the managed resources.
+        /// </summary>
+        /// <param name="disposing">true to release both managed and unmanaged resources; false to releases only unmanaged resources.</param>
+        public void Dispose(bool disposing)
+        {
+            _connection.MqttClient.PublishReceivedAsync -= HandleReceivedMqttPublish;
+            _aegTelemetryClient.CloudToDeviceTelemetryReceivedAsync -= DelegateGen2CloudToDeviceTelemetry;
+            if (disposing)
+            {
+                _connection.Dispose();
+            }
+
+            _isDisposed = true;
+        }
+
+        /// <summary>
+        /// Releases the unmanaged resources and disposes of the managed resources used by this client 
+        /// </summary>
         public void Dispose()
         {
             _connection.MqttClient.PublishReceivedAsync -= HandleReceivedMqttPublish;
             _aegTelemetryClient.CloudToDeviceTelemetryReceivedAsync -= DelegateGen2CloudToDeviceTelemetry;
+            _connection.Dispose();
+            _isDisposed = true;
         }
     }
 }

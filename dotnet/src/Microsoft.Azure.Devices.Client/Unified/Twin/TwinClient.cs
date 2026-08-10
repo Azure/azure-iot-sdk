@@ -19,7 +19,7 @@ namespace Microsoft.Azure.Devices.Client.Unified.Twin
     /// </summary>
     public class TwinClient : IDisposable
     {
-        private const string ProtobufContentType = "application/protobuf";
+        private bool _isDisposed = false;
 
         private IConnectionClient _connection;
 
@@ -94,6 +94,8 @@ namespace Microsoft.Azure.Devices.Client.Unified.Twin
         /// <exception cref="PublishRejectedException">Thrown if this get twin request is rejected by IoT Hub for any reason.</exception>
         public async Task<DeviceTwin> GetTwinAsync(CancellationToken cancellationToken = default)
         {
+            ObjectDisposedException.ThrowIf(_isDisposed, this);
+
             var currentConnectionContext = EnsureCorrectConnectionContext();
 
             if (_connection.GetCurrentConnectionContext()!.IsAzureEventGrid)
@@ -151,6 +153,8 @@ namespace Microsoft.Azure.Devices.Client.Unified.Twin
         /// <exception cref="PublishRejectedException">Thrown if this reported property update message is rejected by IoT Hub for any reason.</exception>
         public async Task<ReportedPatchResponse> UpdateReportedPropertiesAsync(JsonObject reportedProperties, CancellationToken cancellationToken = default)
         {
+            ObjectDisposedException.ThrowIf(_isDisposed, this);
+
             var currentConnectionContext = EnsureCorrectConnectionContext();
 
             MqttPublish publish;
@@ -330,10 +334,30 @@ namespace Microsoft.Azure.Devices.Client.Unified.Twin
             return currentConnectionContext;
         }
 
+        /// <summary>
+        /// Releases the unmanaged resources used by this client and optionally disposes of the managed resources.
+        /// </summary>
+        /// <param name="disposing">true to release both managed and unmanaged resources; false to releases only unmanaged resources.</param>
+        public void Dispose(bool disposing)
+        {
+            _aegHubTwinClient.DesiredPatchReceived -= HandleAegDesiredPatchReceivedAsync;
+            _connection.MqttClient.PublishReceivedAsync -= HandleReceivedClassicHubMqttPublish;
+            if (disposing)
+            {
+                _connection.Dispose();
+            }
+            _isDisposed = true;
+        }
+
+        /// <summary>
+        /// Releases the unmanaged resources and disposes of the managed resources used by this client 
+        /// </summary>
         public void Dispose()
         {
             _aegHubTwinClient.DesiredPatchReceived -= HandleAegDesiredPatchReceivedAsync;
             _connection.MqttClient.PublishReceivedAsync -= HandleReceivedClassicHubMqttPublish;
+            _connection.Dispose();
+            _isDisposed = true;
         }
     }
 }

@@ -2,7 +2,6 @@
 using Microsoft.Azure.Devices.Client.Exceptions;
 using Microsoft.Azure.Devices.Client.Gen2.Connection;
 using Microsoft.Azure.Devices.Client.Models.Twin;
-using Microsoft.Azure.Devices.Client.Models.Twin;
 using Microsoft.Azure.Devices.Client.Mqtt;
 using System.Collections.Concurrent;
 using System.Diagnostics;
@@ -17,6 +16,8 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Twin
     /// </summary>
     public class TwinClient : IDisposable
     {
+        private bool _isDisposed = false;
+
         private const string ProtobufContentType = "application/protobuf";
 
         private IConnectionClient _connection;
@@ -96,6 +97,8 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Twin
         /// <exception cref="PublishRejectedException">Thrown if this get twin request is rejected by IoT Hub for any reason.</exception>
         public async Task<DeviceTwin> GetTwinAsync(bool getReported = true, bool getDesired = true, ulong ifNotMatchReported = 0, ulong ifNotMatchDesired = 0,  CancellationToken cancellationToken = default)
         {
+            ObjectDisposedException.ThrowIf(_isDisposed, this);
+
             var currentConnectionContext = EnsureCorrectConnectionContext();
 
             Guid requestId = Guid.NewGuid();
@@ -154,6 +157,8 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Twin
         /// <exception cref="PublishRejectedException">Thrown if this reported property update message is rejected by IoT Hub for any reason.</exception>
         public async Task<ReportedPatchResponse> UpdateReportedPropertiesAsync(ReportedPatchRequest patch, CancellationToken cancellationToken = default)
         {
+            ObjectDisposedException.ThrowIf(_isDisposed, this);
+
             var currentConnectionContext = EnsureCorrectConnectionContext();
 
             Guid requestId = Guid.NewGuid();
@@ -300,9 +305,28 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Twin
             }
         }
 
+        /// <summary>
+        /// Releases the unmanaged resources used by this client and optionally disposes of the managed resources.
+        /// </summary>
+        /// <param name="disposing">true to release both managed and unmanaged resources; false to releases only unmanaged resources.</param>
+        public void Dispose(bool disposing)
+        {
+            _connection.MqttClient.PublishReceivedAsync -= HandleReceivedAzureEventGridHubMqttPublish;
+            if (disposing)
+            {
+                _connection.Dispose();
+            }
+            _isDisposed = true;
+        }
+
+        /// <summary>
+        /// Releases the unmanaged resources and disposes of the managed resources used by this client 
+        /// </summary>
         public void Dispose()
         {
             _connection.MqttClient.PublishReceivedAsync -= HandleReceivedAzureEventGridHubMqttPublish;
+            _connection.Dispose();
+            _isDisposed = true;
         }
     }
 }

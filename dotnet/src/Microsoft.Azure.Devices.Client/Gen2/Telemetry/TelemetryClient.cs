@@ -12,6 +12,8 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Telemetry
     /// </summary>
     public class TelemetryClient : IDisposable
     {
+        private bool _isDisposed = false;
+
         internal const string DeviceBoundMessagesTopicFormat = "devices/{0}/messages/devicebound/";
 
         private const string NewTelemetryTopicFormat = "ih/{0}/srv/telemetry";
@@ -55,6 +57,8 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Telemetry
         /// <exception cref="MessageTooLargeException">Thrown if the message's payload's size exceeds the supported limits of IoT hub.</exception>
         public async Task SendTelemetryAsync(DeviceToCloudTelemetry message, CancellationToken cancellationToken = default)
         {
+            ObjectDisposedException.ThrowIf(_isDisposed, this);
+
             var currentConnectionContext = _connection.GetCurrentConnectionContext();
             if (currentConnectionContext == null)
             {
@@ -178,9 +182,30 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Telemetry
             }
         }
 
+        /// <summary>
+        /// Releases the unmanaged resources used by this client and optionally disposes of the managed resources.
+        /// </summary>
+        /// <param name="disposing">true to release both managed and unmanaged resources; false to releases only unmanaged resources.</param>
+        public void Dispose(bool disposing)
+        {
+            _connection.MqttClient.PublishReceivedAsync -= HandleReceivedMqttPublish;
+            if (disposing)
+            {
+                _connection.Dispose();
+            }
+
+            _isDisposed = true;
+        }
+
+        /// <summary>
+        /// Releases the unmanaged resources and disposes of the managed resources used by this client 
+        /// </summary>
         public void Dispose()
         {
             _connection.MqttClient.PublishReceivedAsync -= HandleReceivedMqttPublish;
+            _connection.Dispose();
+
+            _isDisposed = true;
         }
     }
 }

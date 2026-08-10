@@ -11,6 +11,9 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Connection
 {
     public class ConnectionClient : IConnectionClient
     {
+        private bool _isDisposed = false;
+        private bool _isUserSuppliedMqttClient = false;
+
         private IMqttClient _mqttClient;
 
         private ConnectionContext? CurrentConnectionContext { get; set; }
@@ -77,6 +80,8 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Connection
         /// <returns>The received twin push upon connecting to IoT hub if any part of the twin was configured to be pushed in <see cref="TwinPushOptions"/>.</returns>
         public async Task<ConnectionContext> ProvisionAndConnectAsync(ProvisioningSettings provisioningSettings, X509AuthenticationProvider authentication, TwinPushOptions? twinOptions = default, CancellationToken cancellationToken = default)
         {
+            ObjectDisposedException.ThrowIf(_isDisposed, this);
+
             var provisioningResult = await ProvisionAsync(provisioningSettings, authentication, cancellationToken);
 
             //TODO several mqtt client options should not be provided by the user (ie, host name). Add checks here that validate all of them
@@ -101,6 +106,8 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Connection
         /// <param name="cancellationToken">The cancellation token.</param>
         public async Task DisconnectAsync(CancellationToken cancellationToken = default)
         {
+            ObjectDisposedException.ThrowIf(_isDisposed, this);
+
             await _mqttClient.DisconnectAsync(new MqttDisconnect() { Reason = MqttClientDisconnectOptionsReason.NormalDisconnection }, cancellationToken);
             CurrentConnectionContext = null;
         }
@@ -113,6 +120,8 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Connection
         /// <returns>A set of tasks. One that completes when IoT hub accepts the request (and starts signing), one that completes when IoT hub completes the signing, and one that completes if any step in the process fails.</returns>
         public async Task<CertificateSigningOperation> SendCertificateSigningRequestAsync(CertificateSigningRequest request, CancellationToken cancellationToken = default)
         {
+            ObjectDisposedException.ThrowIf(_isDisposed, this);
+
             throw new NotImplementedException("Not a supported feature on Gen 2 Hubs yet");
         }
 
@@ -126,6 +135,8 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Connection
         /// <returns>The initial twin of the device if a twin push was configured via <see cref="TwinPushOptions"/></returns>
         public async Task<DeviceTwin> ConnectAsync(ConnectionContext connectionContext, X509AuthenticationProvider authentication, TwinPushOptions? twinPushOptions = default, CancellationToken cancellationToken = default)
         {
+            ObjectDisposedException.ThrowIf(_isDisposed, this);
+
             IotHubConnection iotHubConnection = new();
 
             CurrentConnectionContext = connectionContext;
@@ -141,9 +152,32 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Connection
             //TODO do we care about initial twin as returned by DPS?
         }
 
+        /// <summary>
+        /// Releases the unmanaged resources used by this client and optionally disposes of the managed resources.
+        /// </summary>
+        /// <param name="disposing">true to release both managed and unmanaged resources; false to releases only unmanaged resources.</param>
+        public void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                _mqttClient.Dispose();
+            }
+            else if (!_isUserSuppliedMqttClient)
+            {
+                _mqttClient.Dispose();
+            }
+
+            _isDisposed = true;
+        }
+
+        /// <summary>
+        /// Releases the unmanaged resources and disposes of the managed resources used by this client 
+        /// </summary>
         public void Dispose()
         {
             _mqttClient.Dispose();
+
+            _isDisposed = true;
         }
     }
 }
