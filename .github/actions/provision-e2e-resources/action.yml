@@ -145,15 +145,6 @@ runs:
 
 
             if ($null -ne $AzureIoTHub.properties.deviceRegistry.namespaceResourceId) {
-
-              if ([string]::IsNullOrWhiteSpace($TestEnvInfo.AdrNamespaceResourceId)) {
-                throw "Missing the necessary ADR namespace resource id."              
-              }
-
-              if ([string]::IsNullOrWhiteSpace($TestEnvInfo.AdrIdentityResourceId)) {
-                throw "Missing the necessary ADR identity resource id."
-              }
-
               # For gen2 hubs, must include ADR namespace resource id and ADR identity resource id 
               Write-Host "Enabling IoT Hub file-upload notifications ($IotHubName)"
               az iot hub update --name $IotHubName --resource-group $ResourceGroupName `
