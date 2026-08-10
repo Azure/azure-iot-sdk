@@ -203,7 +203,7 @@ Covers `az_iot_connection_client` lifecycle, CONNACK handling, reconnection, the
 |  | Connect carries a username and password | The bundled adapter authenticates with X.509, so these fields are set only by a BYO caller and are entirely unexercised. | conformance | Pending | *az_iot_conformance.c* |
 |  | A subscribe refused mid-flight is reported | Test proxy, reset after the SUBSCRIBE packet: drives the adapter's subscribe-failure callbacks (v3 and v5), which no test reaches today. | conformance | Pending | *az_iot_conformance.c* |
 |  | A publish refused mid-flight is reported | Same shape for the publish-failure callbacks. | conformance | Pending | *az_iot_conformance.c* |
-|  | Fragmented and delayed writes are reassembled | The proxy can split every forwarded write and delay it; neither control is used by any test, so the adapter's partial-read handling is unproven. | conformance | Pending | *az_iot_conformance.c* |
+|  | Fragmented and delayed writes are reassembled | The proxy delivers the broker's side one byte per write, so no read yields a whole packet. The case asserts the proxy's write count as well as the payload, since it would otherwise pass just as well if the shaping were silently ignored. | conformance | Done | [roundtrip_survives_broker_to_client_fragmentation](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/conformance/az_iot_conformance.c#L1062) |
 |  | The trace level is parsed from the environment | The `max`/`medium`/`protocol`/`error` spellings and the case-folding around them are pure string handling and the cheapest uncovered block in the adapter. | unit | Pending | *paho_adapter_smoke_test.c* |
 |  | The vtable rejects null arguments | Every entry point guards its arguments; none of those guards is exercised. | unit | Pending | *paho_adapter_smoke_test.c* |
 | TLS & transport | Connect disconnect roundtrip | v3.1.1 and v5 suites. | conformance | Done | [connect_disconnect_roundtrip](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/conformance/az_iot_conformance.c#L286) |
@@ -225,6 +225,9 @@ Covers `az_iot_connection_client` lifecycle, CONNACK handling, reconnection, the
 | | Reconnect over the real stack | The core reconnect state machine driven over genuine Paho + sockets, with the drop induced by the test proxy. Complements the mock-based reconnect tests rather than replacing them. | integration | Done | [reconnect_after_real_drop](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/integration/reconnect_real_stack_test.c#L113) |
 | | Expired client cert rejected | Needs a broker configured for mutual TLS plus expired-leaf client fixtures; the proxy presents server certificates, it does not request client ones. | conformance | Pending | *az_iot_conformance.c* |
 | | Connect with in memory CA PEM | Optional adapter capability; the bundled Paho adapter is file-path only, so this cannot be a suite-wide assertion. | conformance | Pending | *az_iot_conformance.c* |
+| | Latency and jitter change timing, not outcomes | Both directions delayed with seeded jitter: a client that races its own acknowledgements fails here. The elapsed floor has to clear the harness's poll interval to mean anything. | conformance | Done | [roundtrip_survives_latency_and_jitter](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/conformance/az_iot_conformance.c#L1112) |
+| | A bandwidth ceiling slows a payload without corrupting it | Token-bucket rate limit on the broker's side: every byte still arrives, in order. Rate limiting that truncated or reordered the stream would be worse than no limit at all. | conformance | Done | [bandwidth_ceiling_slows_a_payload_without_corrupting_it](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/conformance/az_iot_conformance.c#L1167) |
+| | A stalled link resumes without losing the session | Traffic held for well under the keep-alive, then released: the backlog arrives intact and no disconnect is reported. A stall is what a radio gap or a suspended VM looks like, and it must not be mistaken for a dead connection. | conformance | Done | [a_stalled_link_resumes_without_losing_the_session](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/conformance/az_iot_conformance.c#L1223) |
 | End-to-end | Device connects via DPS | X.509 individual enrollment → DPS → assigned hub, Paho v3.1.1/v5, Linux + Windows. | e2e | Done | [e2e_device_connect](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/e2e/tests/e2e_device.c#L83) |
 | | Device disconnects cleanly | `close()` pumps to IDLE and releases the certificate provider. | e2e | Done | [e2e_device_disconnect](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/e2e/tests/e2e_device.c#L153) |
 | | DPS CSR enrollment EC | EC key, DPS-issued operational cert, then hub connect. | e2e | Done | [test_dps_csr_enrollment_ec](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/e2e/tests/e2e_csr_test.c#L210) |
@@ -973,9 +976,12 @@ It can drive:
 - **Deterministic drops** — hard-reset the connection immediately, after N forwarded bytes,
   or after the Nth client-to-broker MQTT packet. Counting packets is what makes "drop
   during the SUBSCRIBE" a repeatable test rather than a race.
-- **Write shaping** — a per-write delay and a maximum chunk size, in both directions, which
-  is how the adapter's partial-read handling gets exercised. Neither control is used by any
-  test today.
+- **Network impairment** — per-direction added latency, seeded jitter, write fragmentation,
+  a bandwidth ceiling, and a timed stall that holds traffic without dropping the session.
+  Because the proxy is a userspace relay these are all scheduling of buffered bytes, so
+  they behave identically on every CI leg with no `tc`/`netem`, no WinDivert and no
+  administrator rights. Fragmenting the broker-to-client direction is what exercises the
+  adapter's partial-read and reassembly handling.
 - **Server-side TLS** — a CA and leaf generated per run, presented as untrusted, expired, or
   issued for the wrong name, with the CA exported only when the chain is meant to validate.
 - **Synthetic control packets** — answer the client's CONNECT with any CONNACK reason code,
@@ -991,6 +997,13 @@ It cannot, and these are the limits that decide which rows stay blocked:
   for an unknown packet id, or a truncated PUBLISH are not expressible today.
 - **Mutate forwarded bytes.** Traffic is passed through unchanged; it is a fault injector,
   not a fuzzer.
+- **Drop, reorder or duplicate packets.** Below the proxy the kernel retransmits, so
+  discarding bytes corrupts the stream instead of simulating loss; and TCP delivers in
+  order, so reordering or duplicating bytes corrupts it too rather than reproducing
+  anything a real network does. What loss looks like to a client — delay spikes, stalls,
+  resets — is covered by the impairment and drop controls above. Duplication that a client
+  can actually observe is packet-level (a PUBLISH with `DUP` set) and so belongs with
+  synthesised control packets.
 - **Fail the client's own allocations.** The out-of-memory branches in the adapter and core
   need a malloc seam, not a network fault.
 
