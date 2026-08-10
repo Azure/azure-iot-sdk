@@ -178,6 +178,21 @@ static int saw_subscribe_ack_ok(const conf_recorder* r)
   return 0;
 }
 
+/* A SUBSCRIBE_ACK carrying an error status. The broker granting nothing is not
+ * a transport failure, so it has to arrive as a failed ack rather than as a
+ * disconnect or as silence. */
+static int saw_subscribe_ack_error(const conf_recorder* r)
+{
+  for (size_t i = 0; i < r->count; ++i)
+  {
+    if (r->kinds[i] == AZ_IOT_MQTT_EVT_SUBSCRIBE_ACK && r->statuses[i] != AZ_IOT_OK)
+    {
+      return 1;
+    }
+  }
+  return 0;
+}
+
 static int saw_message(const conf_recorder* r)
 {
   for (size_t i = 0; i < r->count; ++i)
@@ -1269,6 +1284,197 @@ static void a_stalled_link_resumes_without_losing_the_session(void** state)
 }
 
 /* ------------------------------------------------------------------------- */
+/* scripted broker faults                                                     */
+/* ------------------------------------------------------------------------- */
+
+/* A broker that refuses a subscription answers with a SUBACK whose reason code
+ * says so. No real broker will do that on demand, so the proxy swallows the
+ * SUBSCRIBE and answers it itself, echoing the client's packet id -- an ack
+ * carrying the wrong id would be discarded before the adapter's failure path
+ * ever ran.
+ *
+ * Everything else on the connection is still the real broker; only this one
+ * exchange is scripted. */
+static void a_refused_subscribe_is_reported(void** state)
+{
+  (void)state;
+  uint16_t proxy_port = 0;
+  az_iot_test_proxy* proxy = start_proxy(&proxy_port);
+
+  uint8_t suback[8];
+  size_t suback_len;
+  if (g_factory->version == AZ_IOT_MQTT_VERSION_5)
+  {
+    /* packet id, property length 0, reason 0x87 (Not authorized). */
+    suback[0] = 0x90;
+    suback[1] = 0x04;
+    suback[2] = 0x00;
+    suback[3] = 0x00;
+    suback[4] = 0x00;
+    suback[5] = 0x87;
+    suback_len = 6;
+  }
+  else
+  {
+    /* packet id, return code 0x80 (Failure). */
+    suback[0] = 0x90;
+    suback[1] = 0x03;
+    suback[2] = 0x00;
+    suback[3] = 0x00;
+    suback[4] = 0x80;
+    suback_len = 5;
+  }
+
+  az_iot_test_proxy_rule swallow = { 0 };
+  swallow.dir = AZ_IOT_TEST_PROXY_C2B;
+  swallow.on_packet = AZ_IOT_TEST_PROXY_PKT_SUBSCRIBE;
+  swallow.action = AZ_IOT_TEST_PROXY_ACTION_SUPPRESS;
+  assert_true(az_iot_test_proxy_add_rule(proxy, &swallow) >= 0);
+
+  az_iot_test_proxy_rule refuse = { 0 };
+  refuse.dir = AZ_IOT_TEST_PROXY_C2B;
+  refuse.on_packet = AZ_IOT_TEST_PROXY_PKT_SUBSCRIBE;
+  refuse.action = AZ_IOT_TEST_PROXY_ACTION_INJECT;
+  refuse.inject_dir = AZ_IOT_TEST_PROXY_B2C;
+  refuse.bytes = suback;
+  refuse.bytes_len = suback_len;
+  refuse.echo_packet_id = 1;
+  refuse.packet_id_offset = 2;
+  int refuse_id = az_iot_test_proxy_add_rule(proxy, &refuse);
+  assert_true(refuse_id >= 0);
+
+  char cid[64];
+  unique_client_id(cid, sizeof(cid), "az-iot-conf-subrefuse");
+  char topic[128];
+  snprintf(topic, sizeof(topic), "az_iot/conformance/%s", cid);
+
+  conf_recorder rec = { 0 };
+  az_iot_mqtt_client* c = make_client();
+  connect_via_proxy(c, &rec, cid, proxy_port);
+
+  uint16_t sub_pid = 0;
+  assert_int_equal(c->iface->subscribe(c, topic, AZ_IOT_MQTT_QOS_1, &sub_pid), AZ_IOT_OK);
+
+  /* The refusal must arrive as a failed ack, not as silence and not as a
+   * successful one. */
+  assert_true(wait_until(c, &rec, saw_subscribe_ack_error, k_step_timeout_ms));
+  assert_false(saw_subscribe_ack_ok(&rec));
+  assert_int_equal(az_iot_test_proxy_rule_hits(proxy, (size_t)refuse_id), 1);
+
+  (void)c->iface->disconnect(c);
+  destroy_client(c);
+  az_iot_test_proxy_stop(proxy);
+}
+
+/* A PUBLISH cut short mid-flight must never reach the application. Half a
+ * packet is not a message, and a client that surfaced one would hand the
+ * application a truncated payload it has no way to detect. */
+static void a_truncated_publish_is_never_surfaced_as_a_message(void** state)
+{
+  (void)state;
+  uint16_t proxy_port = 0;
+  az_iot_test_proxy* proxy = start_proxy(&proxy_port);
+
+  /* Keep only the first four bytes of the broker's copy, so the topic and
+   * payload never arrive. */
+  az_iot_test_proxy_rule cut = { 0 };
+  cut.dir = AZ_IOT_TEST_PROXY_B2C;
+  cut.on_packet = AZ_IOT_TEST_PROXY_PKT_PUBLISH;
+  cut.action = AZ_IOT_TEST_PROXY_ACTION_TRUNCATE;
+  cut.truncate_to = 4;
+  int cut_id = az_iot_test_proxy_add_rule(proxy, &cut);
+  assert_true(cut_id >= 0);
+
+  char cid[64];
+  unique_client_id(cid, sizeof(cid), "az-iot-conf-trunc");
+  char topic[128];
+  snprintf(topic, sizeof(topic), "az_iot/conformance/%s", cid);
+
+  conf_recorder rec = { 0 };
+  az_iot_mqtt_client* c = make_client();
+  connect_via_proxy(c, &rec, cid, proxy_port);
+
+  uint16_t sub_pid = 0;
+  assert_int_equal(c->iface->subscribe(c, topic, AZ_IOT_MQTT_QOS_1, &sub_pid), AZ_IOT_OK);
+  assert_true(wait_until(c, &rec, saw_subscribe_ack_ok, k_step_timeout_ms));
+
+  static const uint8_t body[] = { 't', 'r', 'u', 'n', 'c', 'a', 't', 'e', 'd' };
+  az_iot_mqtt_message msg = { 0 };
+  msg.topic = topic;
+  msg.payload = body;
+  msg.payload_len = sizeof(body);
+  msg.qos = AZ_IOT_MQTT_QOS_1;
+  uint16_t pub_pid = 0;
+  assert_int_equal(c->iface->publish(c, &msg, &pub_pid), AZ_IOT_OK);
+
+  assert_false(wait_until(c, &rec, saw_message, 1500));
+  /* Without this the case would pass on a proxy that never truncated anything. */
+  assert_true(az_iot_test_proxy_rule_hits(proxy, (size_t)cut_id) >= 1);
+
+  (void)c->iface->disconnect(c);
+  destroy_client(c);
+  az_iot_test_proxy_stop(proxy);
+}
+
+/* A PUBACK for a packet id the client never used is the sort of thing a
+ * confused or malicious peer sends. It must be ignored: not matched against
+ * some unrelated in-flight publish, and not treated as a protocol error that
+ * tears down a working session. */
+static void an_acknowledgement_for_an_unknown_packet_id_is_ignored(void** state)
+{
+  (void)state;
+  uint16_t proxy_port = 0;
+  az_iot_test_proxy* proxy = start_proxy(&proxy_port);
+
+  /* Ride along with the SUBSCRIBE so the injection lands in the middle of a
+   * live session rather than before it is up. The SUBSCRIBE itself is still
+   * forwarded; this rule only adds traffic. */
+  static const uint8_t stray_puback[] = { 0x40, 0x02, 0xBE, 0xEF };
+  az_iot_test_proxy_rule stray = { 0 };
+  stray.dir = AZ_IOT_TEST_PROXY_C2B;
+  stray.on_packet = AZ_IOT_TEST_PROXY_PKT_SUBSCRIBE;
+  stray.action = AZ_IOT_TEST_PROXY_ACTION_INJECT;
+  stray.inject_dir = AZ_IOT_TEST_PROXY_B2C;
+  stray.bytes = stray_puback;
+  stray.bytes_len = sizeof(stray_puback);
+  int stray_id = az_iot_test_proxy_add_rule(proxy, &stray);
+  assert_true(stray_id >= 0);
+
+  char cid[64];
+  unique_client_id(cid, sizeof(cid), "az-iot-conf-strayack");
+  char topic[128];
+  snprintf(topic, sizeof(topic), "az_iot/conformance/%s", cid);
+
+  conf_recorder rec = { 0 };
+  az_iot_mqtt_client* c = make_client();
+  connect_via_proxy(c, &rec, cid, proxy_port);
+
+  uint16_t sub_pid = 0;
+  assert_int_equal(c->iface->subscribe(c, topic, AZ_IOT_MQTT_QOS_1, &sub_pid), AZ_IOT_OK);
+  assert_true(wait_until(c, &rec, saw_subscribe_ack_ok, k_step_timeout_ms));
+  assert_int_equal(az_iot_test_proxy_rule_hits(proxy, (size_t)stray_id), 1);
+
+  /* The session has to still work afterwards: a stray ack must not wedge the
+   * client or be mistaken for the answer to a later publish. */
+  static const uint8_t body[] = { 'a', 'f', 't', 'e', 'r' };
+  az_iot_mqtt_message msg = { 0 };
+  msg.topic = topic;
+  msg.payload = body;
+  msg.payload_len = sizeof(body);
+  msg.qos = AZ_IOT_MQTT_QOS_1;
+  uint16_t pub_pid = 0;
+  assert_int_equal(c->iface->publish(c, &msg, &pub_pid), AZ_IOT_OK);
+
+  assert_true(wait_until(c, &rec, saw_message, k_step_timeout_ms));
+  assert_true(found_message(&rec, topic, body, sizeof(body)));
+  assert_false(saw_disconnected(&rec));
+
+  (void)c->iface->disconnect(c);
+  destroy_client(c);
+  az_iot_test_proxy_stop(proxy);
+}
+
+/* ------------------------------------------------------------------------- */
 /* entry point                                                                */
 /* ------------------------------------------------------------------------- */
 
@@ -1290,7 +1496,10 @@ static void a_stalled_link_resumes_without_losing_the_session(void** state)
       cmocka_unit_test(roundtrip_survives_broker_to_client_fragmentation),                       \
       cmocka_unit_test(roundtrip_survives_latency_and_jitter),                                   \
       cmocka_unit_test(bandwidth_ceiling_slows_a_payload_without_corrupting_it),                 \
-      cmocka_unit_test(a_stalled_link_resumes_without_losing_the_session)
+      cmocka_unit_test(a_stalled_link_resumes_without_losing_the_session),                       \
+      cmocka_unit_test(a_refused_subscribe_is_reported),                                         \
+      cmocka_unit_test(a_truncated_publish_is_never_surfaced_as_a_message),                      \
+      cmocka_unit_test(an_acknowledgement_for_an_unknown_packet_id_is_ignored)
 
 /* Expands to nothing when the certificate cases were compiled out, so the two
  * lists above stay a single expression either way. */
