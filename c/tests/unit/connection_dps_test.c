@@ -85,7 +85,9 @@ static int teardown(void** state)
     bool adopted = (fx->client->factory_count > 0);
     az_iot_connection_client_destroy(&fx->client_storage);
     if (!adopted)
+    {
       az_iot_mock_mqtt_factory_destroy(fx->factory);
+    }
     free(fx);
   }
   return 0;
@@ -161,7 +163,9 @@ static az_iot_mock_mqtt_client* provision_to_hub_connecting(az_iot_test_conn* fx
   az_iot_mock_mqtt_client* dps = dps_open_to_registering(fx);
   assert_true(inject_dps_response(dps, DPS_RESPONSE_TOPIC_ASSIGNED, k_assigned_body));
   for (int i = 0; i < 5; ++i)
+  {
     (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
 
   az_iot_mock_mqtt_client* hub = az_iot_mock_mqtt_factory_last_client(fx->factory);
   assert_non_null(hub);
@@ -244,7 +248,9 @@ static void reprovisioning_connects_to_the_new_assignment(void** state)
         "\"assignedHub\":\"otherhub.azure-devices.net\",\"deviceId\":\"assigned-device\"}}";
   assert_true(inject_dps_response(dps2, DPS_RESPONSE_TOPIC_ASSIGNED, k_reassigned));
   for (int i = 0; i < 5; ++i)
+  {
     (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
 
   az_iot_mock_mqtt_client* hub2 = az_iot_mock_mqtt_factory_last_client(fx->factory);
   assert_non_null(hub2);
@@ -273,7 +279,9 @@ static void repeated_identity_rejection_still_honors_max_attempts(void** state)
     (void)az_iot_connection_client_do_work(fx->client, 0);
     m = az_iot_mock_mqtt_factory_last_client(fx->factory);
     if (!m)
+    {
       break;
+    }
   }
   assert_true(az_iot_test_saw_state(&fx->log, AZ_IOT_CONN_STATE_FAULTED));
 }
@@ -287,7 +295,9 @@ static void identity_rejection_without_a_policy_faults(void** state)
 
   assert_true(az_iot_mock_mqtt_client_inject_connected(hub, AZ_IOT_ERR_IDENTITY_REJECTED));
   for (int i = 0; i < 3; ++i)
+  {
     (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
 
   assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_FAULTED);
 }
@@ -475,7 +485,9 @@ static void dps_honors_the_retry_after_delay(void** state)
   (void)az_iot_connection_client_do_work(fx->client, 0);
 
   for (int i = 0; i < 5; ++i)
+  {
     (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
   assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_PUBLISH), 0);
 
   az_iot_test_wait_ms(1050);
@@ -494,7 +506,9 @@ static void dps_assignment_connects_to_the_assigned_hub(void** state)
 
   assert_true(inject_dps_response(dps, DPS_RESPONSE_TOPIC_ASSIGNED, k_assigned_body));
   for (int i = 0; i < 5; ++i)
+  {
     (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
 
   az_iot_mock_mqtt_client* hub = az_iot_mock_mqtt_factory_last_client(fx->factory);
   assert_non_null(hub);
@@ -512,7 +526,9 @@ static void dps_assignment_uses_the_assigned_device_id(void** state)
 
   assert_true(inject_dps_response(dps, DPS_RESPONSE_TOPIC_ASSIGNED, k_assigned_body));
   for (int i = 0; i < 5; ++i)
+  {
     (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
 
   az_iot_mock_mqtt_client* hub = az_iot_mock_mqtt_factory_last_client(fx->factory);
   const az_iot_mock_call* c = az_iot_mock_mqtt_client_last_of(hub, AZ_IOT_MOCK_CALL_CONNECT);
@@ -527,7 +543,9 @@ static void dps_session_reaches_connected_after_assignment(void** state)
 
   assert_true(inject_dps_response(dps, DPS_RESPONSE_TOPIC_ASSIGNED, k_assigned_body));
   for (int i = 0; i < 5; ++i)
+  {
     (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
 
   az_iot_mock_mqtt_client* hub = az_iot_mock_mqtt_factory_last_client(fx->factory);
   assert_true(az_iot_mock_mqtt_client_inject_connected(hub, AZ_IOT_OK));
@@ -547,7 +565,9 @@ static void dps_failed_status_faults_with_a_dps_error(void** state)
 
   assert_true(inject_dps_response(m, DPS_RESPONSE_TOPIC_ASSIGNED, k_failed_body));
   for (int i = 0; i < 3; ++i)
+  {
     (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
 
   assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_FAULTED);
   assert_int_equal(az_iot_test_reason_for(&fx->log, AZ_IOT_CONN_STATE_FAULTED), AZ_IOT_ERR_DPS);
@@ -560,7 +580,9 @@ static void dps_disabled_status_faults_with_a_dps_error(void** state)
 
   assert_true(inject_dps_response(m, DPS_RESPONSE_TOPIC_ASSIGNED, k_disabled_body));
   for (int i = 0; i < 3; ++i)
+  {
     (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
 
   assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_FAULTED);
   assert_int_equal(az_iot_test_reason_for(&fx->log, AZ_IOT_CONN_STATE_FAULTED), AZ_IOT_ERR_DPS);
@@ -573,7 +595,9 @@ static void dps_connack_failure_faults(void** state)
 
   assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_ERR_IDENTITY_REJECTED));
   for (int i = 0; i < 3; ++i)
+  {
     (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
 
   assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_FAULTED);
   assert_int_equal(
@@ -592,7 +616,9 @@ static void dps_suback_failure_faults(void** state)
 
   assert_true(az_iot_mock_mqtt_client_inject_suback(m, sub->packet_id, AZ_IOT_ERR_MQTT));
   for (int i = 0; i < 3; ++i)
+  {
     (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
 
   assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_FAULTED);
   assert_int_equal(az_iot_test_reason_for(&fx->log, AZ_IOT_CONN_STATE_FAULTED), AZ_IOT_ERR_MQTT);
@@ -606,7 +632,9 @@ static void dps_disconnect_midflow_faults(void** state)
   /* The link drops between REGISTER and the assignment response. */
   assert_true(az_iot_mock_mqtt_client_inject_disconnected(m));
   for (int i = 0; i < 3; ++i)
+  {
     (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
 
   assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_FAULTED);
   assert_int_equal(
@@ -624,7 +652,9 @@ static void dps_malformed_response_faults_with_a_protocol_error(void** state)
 
   assert_true(inject_dps_response(m, DPS_RESPONSE_TOPIC_ASSIGNED, "{ not json"));
   for (int i = 0; i < 3; ++i)
+  {
     (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
 
   assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_FAULTED);
   assert_int_equal(
@@ -645,7 +675,9 @@ static void dps_empty_response_body_faults_without_a_null_deref(void** state)
   assert_true(az_iot_mock_mqtt_client_inject_message(
       m, DPS_RESPONSE_TOPIC_ASSIGNED, NULL, 0, AZ_IOT_MQTT_QOS_1));
   for (int i = 0; i < 3; ++i)
+  {
     (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
 
   assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_FAULTED);
   assert_int_equal(

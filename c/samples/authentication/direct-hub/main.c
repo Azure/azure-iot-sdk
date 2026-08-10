@@ -182,7 +182,9 @@ int main(void)
   copts.certificate_provider = &certs.base;
 
   if (az_iot_connection_client_init(&connection_client, &copts) != AZ_IOT_OK)
+  {
     goto cleanup;
+  }
 
   az_iot_connection_client_set_state_callback(&connection_client, on_conn_state, &user_ctx);
 
@@ -191,23 +193,33 @@ int main(void)
   if (az_iot_connection_client_register_mqtt_factory(
           &connection_client, az_iot_paho_factory_create_v3_1_1())
       != AZ_IOT_OK)
+  {
     goto cleanup;
+  }
   if (az_iot_connection_client_register_mqtt_factory(
           &connection_client, az_iot_paho_factory_create_v5())
       != AZ_IOT_OK)
+  {
     goto cleanup;
+  }
 
   if (az_iot_telemetry_client_init(&telemetry_client, &connection_client) != AZ_IOT_OK)
+  {
     goto cleanup;
+  }
 
   if (az_iot_connection_client_open(&connection_client) != AZ_IOT_OK)
+  {
     goto cleanup;
+  }
 
   for (int i = 0; i < 1200 && user_ctx.conn_state != AZ_IOT_CONN_STATE_CONNECTED; ++i)
   {
     (void)az_iot_connection_client_do_work(&connection_client, 50);
     if (user_ctx.conn_state == AZ_IOT_CONN_STATE_FAULTED)
+    {
       break;
+    }
   }
 
   if (user_ctx.conn_state == AZ_IOT_CONN_STATE_CONNECTED)
@@ -227,7 +239,9 @@ int main(void)
     if (az_iot_telemetry_client_send(&telemetry_client, &msg, on_send_done, &user_ctx) == AZ_IOT_OK)
     {
       for (int i = 0; i < 600 && !user_ctx.send_done; ++i)
+      {
         (void)az_iot_connection_client_do_work(&connection_client, 50);
+      }
 
       if (user_ctx.send_done && user_ctx.send_status == AZ_IOT_OK)
       {
@@ -247,7 +261,9 @@ int main(void)
 
   az_iot_connection_client_close(&connection_client);
   for (int i = 0; i < 100 && user_ctx.conn_state != AZ_IOT_CONN_STATE_IDLE; ++i)
+  {
     (void)az_iot_connection_client_do_work(&connection_client, 50);
+  }
 
 cleanup:
   az_iot_telemetry_client_destroy(&telemetry_client);

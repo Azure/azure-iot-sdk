@@ -164,8 +164,9 @@ Wire it into `tests/CMakeLists.txt` next to the existing Paho harnesses:
 add_executable(az_iot_conformance_mymqtt_v3 conformance/mymqtt_v3_main.c)
 target_link_libraries(az_iot_conformance_mymqtt_v3 PRIVATE
     az_iot_conformance az_iot_adapter_mymqtt)
-add_test(NAME az_iot_conformance_mymqtt_v3 COMMAND az_iot_conformance_mymqtt_v3)
-set_tests_properties(az_iot_conformance_mymqtt_v3 PROPERTIES SKIP_RETURN_CODE 77)
+if(AZ_IOT_BUILD_CONFORMANCE_TESTS)
+    add_test(NAME az_iot_conformance_mymqtt_v3 COMMAND az_iot_conformance_mymqtt_v3)
+endif()
 ```
 
 Repeat for `_v5` if applicable.
@@ -188,7 +189,7 @@ export AZ_IOT_MQTT_BROKER_HOST=localhost
 export AZ_IOT_MQTT_BROKER_PORT=1883
 ```
 
-If `AZ_IOT_MQTT_BROKER_HOST` is unset (or empty, or `AZ_IOT_MQTT_BROKER_SKIP=1`), the harness reports itself as `Skipped` (CTest exit 77) instead of failing. This lets developers without a broker keep the rest of the suite green.
+If `AZ_IOT_MQTT_BROKER_HOST` is unset or empty, the harness **fails**. Whether the suite runs at all is a build-time decision (`AZ_IOT_BUILD_CONFORMANCE_TESTS`): if you have no broker, configure without it and the tests are not registered. The harness used to report itself as `Skipped` instead, which meant a suite could stop running without anyone noticing.
 
 ### 4.3 — Run
 

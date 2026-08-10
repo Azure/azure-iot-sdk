@@ -41,13 +41,21 @@ static inline az_iot_log_level e2e_log_level_from_env(void)
   if (value != NULL && value[0] != '\0')
   {
     if (strcmp(value, "TRACE") == 0)
+    {
       level = AZ_IOT_LOG_LEVEL_TRACE;
+    }
     else if (strcmp(value, "DEBUG") == 0)
+    {
       level = AZ_IOT_LOG_LEVEL_DEBUG;
+    }
     else if (strcmp(value, "INFO") == 0)
+    {
       level = AZ_IOT_LOG_LEVEL_INFO;
+    }
     else if (strcmp(value, "WARN") == 0)
+    {
       level = AZ_IOT_LOG_LEVEL_WARN;
+    }
   }
 
 #ifdef _WIN32

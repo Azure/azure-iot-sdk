@@ -74,7 +74,7 @@ export AZ_IOT_MQTT_BROKER_PORT=1883
 ctest --preset linux-gcc-debug --output-on-failure -R conformance
 ```
 
-Without those env vars the conformance tests report `Skipped` (CTest exit 77) so the rest of the suite stays green for developers without a broker handy. CI runs an `eclipse-mosquitto:2` service container automatically.
+Those env vars are required once the conformance tests are registered: configure with `-DAZ_IOT_BUILD_CONFORMANCE_TESTS=ON` (the Linux presets do it for you) and an unset `AZ_IOT_MQTT_BROKER_HOST` is then a **failure**, not a skip. Without the option the tests are simply not registered, so a build with no broker to hand stays green by not pretending to run them. CI runs an `eclipse-mosquitto:2` service container automatically.
 
 ## Quickstart — send telemetry in ~30 lines
 

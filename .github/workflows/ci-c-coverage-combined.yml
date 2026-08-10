@@ -1,0 +1,179 @@
+name: ci-c-coverage-combined
+
+# Combined C coverage across every suite that measures it.
+#
+# The per-PR coverage job in ci-c.yml reports unit + conformance only, because
+# those are the suites that run on every pull request. The e2e suites need
+# provisioned Azure resources and run nightly on their own schedules, so the
+# picture that includes them can only be assembled after the fact -- which is
+# what this workflow does.
+#
+# TIMING. The contributing nightlies start at 11:00, 11:30 and 12:00 UTC and take
+# up to 30 minutes each. This runs at 13:00 UTC, comfortably after the last of
+# them, and reads the artifacts they left behind.
+#
+# CORRECTNESS. Those runs are independent, so nothing guarantees they used the
+# same commit -- a merge to main between 11:00 and 12:00 is enough to split them.
+# Merging tracefiles from different revisions of a file attributes hits to lines
+# that have since moved, producing a plausible but wrong percentage rather than
+# an error. Two defences: this workflow only accepts runs whose head_sha matches
+# the target commit, and combine-coverage.sh independently verifies the per-line
+# md5 that gcovr records, which checks the source content itself rather than
+# trusting CI metadata.
+
+on:
+  schedule:
+    - cron: '0 13 * * *'  # after the nightly e2e legs (11:00 / 11:30 / 12:00 UTC)
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: 'Commit to build the report for (default: the last nightly e2e run)'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  combine:
+    name: combined coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Resolve the target commit
+        id: target
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PINNED: ${{ inputs.sha }}
+        run: |
+          set -euo pipefail
+          if [ -n "${PINNED}" ]; then
+            sha="${PINNED}"
+            echo "using the dispatched commit"
+          else
+            # ci-c-e2e is the broadest of the nightlies, so its last green run is
+            # the natural anchor for the others to agree with.
+            sha=$(gh run list --repo "$REPO" --workflow ci-c-e2e.yml \
+                    --branch main --status success --limit 1 --json headSha \
+                    --jq '.[0].headSha // empty')
+            if [ -z "$sha" ]; then
+              echo "::error::no successful ci-c-e2e run on main to anchor the report to"
+              exit 1
+            fi
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "target commit: $sha"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.target.outputs.sha }}
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libssl-dev mosquitto-clients
+          python3 -m pip install --upgrade 'gcovr==7.2'
+
+      - name: Download tracefiles from the nightly e2e runs
+        id: fetch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ steps.target.outputs.sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p traces
+          have=""
+          # Each nightly uploads exactly one tracefile artifact. A leg whose last
+          # green run is on a DIFFERENT commit is skipped rather than merged --
+          # see the correctness note at the top of this file.
+          add () {          # $1 = workflow file, $2 = artifact name, $3 = label
+            run_sha=$(gh run list --repo "$REPO" --workflow "$1" --branch main \
+                        --status success --limit 1 --json headSha --jq '.[0].headSha // empty')
+            if [ -z "$run_sha" ]; then
+              echo "::warning::$3: no successful run found; excluded"
+              return 0
+            fi
+            if [ "$run_sha" != "$SHA" ]; then
+              echo "::warning::$3: last green run is $run_sha, not the target $SHA; excluded"
+              return 0
+            fi
+            run_id=$(gh run list --repo "$REPO" --workflow "$1" --branch main \
+                       --status success --limit 1 --json databaseId --jq '.[0].databaseId')
+            if gh run download "$run_id" --repo "$REPO" -n "$2" -D "traces/$3" 2>/dev/null; then
+              f=$(find "traces/$3" -name '*.json' | head -1)
+              echo "  $3: $f"
+              have="$have $3=$f"
+            else
+              echo "::warning::$3: artifact '$2' not found on run $run_id; excluded"
+            fi
+          }
+          add ci-c-e2e.yml       coverage-trace-e2e     e2e
+          add ci-c-e2e-csr.yml   coverage-trace-e2e-csr e2e-csr
+          add ci-c-e2e-adu.yml   coverage-trace-e2e-adu e2e-adu
+          echo "pairs=$have" >> "$GITHUB_OUTPUT"
+
+      - name: Build and run unit + conformance at the target commit
+        # Produced here rather than downloaded, so this half is guaranteed to be
+        # the target commit. It is also cheap: the instrumented build and the
+        # unit suite together take well under a minute.
+        env:
+          AZ_IOT_MQTT_BROKER_HOST: localhost
+          AZ_IOT_MQTT_BROKER_PORT: '1883'
+        working-directory: c
+        run: |
+          set -euo pipefail
+          docker run -d --name mosq -p 1883:1883 eclipse-mosquitto:2 \
+            sh -c "echo 'listener 1883' > /m.conf; \
+                   echo 'allow_anonymous true' >> /m.conf; \
+                   mosquitto -c /m.conf"
+          for i in $(seq 1 30); do
+            mosquitto_pub -h localhost -p 1883 -t probe -m ok 2>/dev/null && break
+            sleep 1
+          done
+          mosquitto_pub -h localhost -p 1883 -t probe -m ok
+          cmake --preset linux-gcc-coverage
+          cmake --build --preset linux-gcc-coverage
+          ctest --preset linux-gcc-coverage -E e2e
+          bash eng/collect-coverage.sh build/linux-gcc-coverage traces/unit.json unit
+
+      - name: Build the combined and per-suite reports
+        env:
+          PAIRS: ${{ steps.fetch.outputs.pairs }}
+        run: |
+          set -euo pipefail
+          # Paths from the download step are relative to the workspace root; the
+          # unit tracefile was written under c/.
+          pairs=""
+          for p in $PAIRS; do
+            pairs="$pairs ${p%%=*}=$PWD/${p#*=}"
+          done
+          bash c/eng/combine-coverage.sh "$PWD/coverage-combined" \
+            unit="$PWD/c/traces/unit.json" $pairs
+
+      - name: Publish to the job summary
+        if: always()
+        run: |
+          {
+            echo "# Combined C coverage"
+            echo ""
+            echo "Commit \`${{ steps.target.outputs.sha }}\`"
+            echo ""
+            [ -f coverage-combined/contribution.md ] && cat coverage-combined/contribution.md
+            echo ""
+            [ -f coverage-combined/combined.md ] && cat coverage-combined/combined.md
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload combined coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-combined
+          path: coverage-combined/
+          if-no-files-found: warn
+
+      - name: Stop the broker
+        if: always()
+        run: docker rm -f mosq 2>/dev/null || true

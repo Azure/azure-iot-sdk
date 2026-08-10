@@ -58,7 +58,9 @@
 size_t az_iot_adu_device_props_buffer_size(const az_iot_adu_device_properties* device_props)
 {
   if (device_props == NULL)
+  {
     return 0;
+  }
   /* Mirrors cache_device_properties()'s packing: the header plus each
    * non-NULL NUL-terminated string. Keep the two in sync. */
   size_t n = sizeof(az_iot_adu_device_properties);
@@ -90,7 +92,9 @@ static az_iot_result cache_device_properties(
     const az_iot_adu_device_properties* src)
 {
   if (src == NULL)
+  {
     return AZ_IOT_ERR_INVALID_ARG;
+  }
 
   uint8_t* buf = ADU_I(client).device_props_buffer;
   size_t cap = ADU_I(client).device_props_buffer_size;
@@ -222,7 +226,9 @@ static void result_init_steps(az_iot_adu_client_t* client, int32_t step_count)
   az_iot_adu_client_install_result* r = &ADU_I(client).install_result;
   memset(r, 0, sizeof(*r));
   if (step_count < 0)
+  {
     step_count = 0;
+  }
   if (step_count > _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS)
   {
     step_count = _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS;
@@ -305,18 +311,26 @@ static bool jws_split(
   /* Locate the first '.' and, within the remainder, the second one. */
   int32_t d1 = az_span_find(jws, dot);
   if (d1 <= 0)
+  {
     return false;
+  }
   int32_t d2_rel = az_span_find(az_span_slice_to_end(jws, d1 + 1), dot);
   if (d2_rel < 0)
+  {
     return false;
+  }
   int32_t d2 = d1 + 1 + d2_rel;
 
   /* Need all three parts non-empty, and the signature must not itself contain a
    * further '.' (a 4th segment ⇒ not a valid compact JWS). */
   if (d2 <= d1 + 1 || d2 >= n - 1)
+  {
     return false;
+  }
   if (az_span_find(az_span_slice_to_end(jws, d2 + 1), dot) >= 0)
+  {
     return false;
+  }
   *header = az_span_slice(jws, 0, d1);
   *payload = az_span_slice(jws, d1 + 1, d2);
   *sig = az_span_slice(jws, d2 + 1, n);
@@ -378,14 +392,20 @@ static az_span jws_json_str(az_span obj, az_span name, char* out_buf, int32_t ca
          && jr.token.kind != AZ_JSON_TOKEN_END_OBJECT)
   {
     if (jr.token.kind != AZ_JSON_TOKEN_PROPERTY_NAME)
+    {
       continue;
+    }
     bool match = az_json_token_is_text_equal(&jr.token, name);
     if (az_result_failed(az_json_reader_next_token(&jr)))
+    {
       return AZ_SPAN_EMPTY;
+    }
     if (match)
     {
       if (jr.token.kind != AZ_JSON_TOKEN_STRING)
+      {
         return AZ_SPAN_EMPTY;
+      }
       int32_t len = 0;
       if (az_result_failed(az_json_token_get_string(&jr.token, out_buf, cap, &len)))
       {
@@ -397,7 +417,9 @@ static az_span jws_json_str(az_span obj, az_span name, char* out_buf, int32_t ca
     if (jr.token.kind == AZ_JSON_TOKEN_BEGIN_OBJECT || jr.token.kind == AZ_JSON_TOKEN_BEGIN_ARRAY)
     {
       if (az_result_failed(az_json_reader_skip_children(&jr)))
+      {
         return AZ_SPAN_EMPTY;
+      }
     }
   }
   return AZ_SPAN_EMPTY;
@@ -414,7 +436,9 @@ static uint32_t manifest_fingerprint(az_span manifest)
 {
   int32_t n = az_span_size(manifest);
   if (n <= 0)
+  {
     return 0;
+  }
   return adu_crc32(az_span_ptr(manifest), (size_t)n);
 }
 
@@ -429,7 +453,9 @@ static const az_iot_adu_root_key* resolve_root_key(
   {
     const az_iot_adu_root_key* rk = &root_keys[i];
     if (rk->kid == NULL)
+    {
       continue;
+    }
     az_span rk_kid = az_span_create_from_str((char*)(uintptr_t)rk->kid);
     if (az_span_is_content_equal(kid, rk_kid))
     {
@@ -545,7 +571,9 @@ static int32_t verify_manifest_core(
     uint8_t s_sig_buf[1024];
     az_span s_sig = jws_b64url(s_sig_b64, s_sig_buf, (int32_t)sizeof(s_sig_buf));
     if (az_span_size(s_sig) <= 0)
+    {
       ADU_VERIFY_FAIL("step 3: sjwk signature is not valid base64url");
+    }
     if (crypto->verify_rs256_fn(
             root->modulus,
             root->modulus_len,
@@ -574,7 +602,9 @@ static int32_t verify_manifest_core(
     uint8_t spl_buf[2048];
     az_span spl = jws_b64url(s_pl_b64, spl_buf, (int32_t)sizeof(spl_buf));
     if (az_span_size(spl) <= 0)
+    {
       ADU_VERIFY_FAIL("step 4: sjwk payload is not valid base64url");
+    }
 
     char n_b64[1024];
     char e_b64[64];
@@ -597,7 +627,9 @@ static int32_t verify_manifest_core(
     uint8_t m_sig_buf[1024];
     az_span m_sig = jws_b64url(m_sig_b64, m_sig_buf, (int32_t)sizeof(m_sig_buf));
     if (az_span_size(m_sig) <= 0)
+    {
       ADU_VERIFY_FAIL("step 5: manifest signature is not valid base64url");
+    }
     if (crypto->verify_rs256_fn(
             az_span_ptr(n_raw),
             (size_t)az_span_size(n_raw),
@@ -620,13 +652,17 @@ static int32_t verify_manifest_core(
     uint8_t pl_buf[256];
     az_span pl = jws_b64url(m_pl_b64, pl_buf, (int32_t)sizeof(pl_buf));
     if (az_span_size(pl) <= 0)
+    {
       ADU_VERIFY_FAIL("step 6: manifest JWS payload is not valid base64url");
+    }
 
     char hash_b64[128];
     az_span hash_field
         = jws_json_str(pl, AZ_SPAN_FROM_STR("sha256"), hash_b64, (int32_t)sizeof(hash_b64));
     if (az_span_size(hash_field) <= 0)
+    {
       ADU_VERIFY_FAIL("step 6: manifest JWS payload has no sha256");
+    }
 
     uint8_t expected[32];
     int32_t exp_written = 0;
@@ -804,7 +840,9 @@ static az_iot_result parse_manifest(az_iot_adu_client_t* client)
 {
   az_span manifest = ADU_I(client).current_request.update_manifest;
   if (az_span_size(manifest) <= 0)
+  {
     return AZ_IOT_ERR_INVALID_ARG;
+  }
 
   /* Unescape in place: the unescaped form is never longer than the source.
    * az_json_string_unescape returns the unescaped span (empty on failure). */
@@ -841,40 +879,58 @@ static az_iot_result parse_service_request(
 {
   az_json_reader jr;
   if (az_result_failed(az_json_reader_init(&jr, patch, NULL)))
+  {
     return AZ_IOT_ERR_INVALID_ARG;
+  }
 
   /* Navigate: { "deviceUpdate": { ... "service": {...} } }. The upstream
    * parser must be positioned ON the "service" property name. */
   if (az_result_failed(az_json_reader_next_token(&jr)))
+  {
     return AZ_IOT_ERR_INVALID_ARG;
+  }
   if (jr.token.kind != AZ_JSON_TOKEN_BEGIN_OBJECT)
+  {
     return AZ_IOT_ERR_INVALID_ARG;
+  }
 
   /* Find the "deviceUpdate" component value object. */
   bool in_component = false;
   while (az_result_succeeded(az_json_reader_next_token(&jr)))
   {
     if (jr.token.kind == AZ_JSON_TOKEN_END_OBJECT)
+    {
       break;
+    }
     if (jr.token.kind != AZ_JSON_TOKEN_PROPERTY_NAME)
+    {
       return AZ_IOT_ERR_INVALID_ARG;
+    }
 
     bool is_component = az_json_token_is_text_equal(
         &jr.token, AZ_SPAN_FROM_STR(AZ_IOT_ADU_CLIENT_PROPERTIES_COMPONENT_NAME));
     if (az_result_failed(az_json_reader_next_token(&jr)))
+    {
       return AZ_IOT_ERR_INVALID_ARG;
+    }
     if (is_component)
     {
       if (jr.token.kind != AZ_JSON_TOKEN_BEGIN_OBJECT)
+      {
         return AZ_IOT_ERR_INVALID_ARG;
+      }
       in_component = true;
       break;
     }
     if (az_result_failed(az_json_reader_skip_children(&jr)))
+    {
       return AZ_IOT_ERR_INVALID_ARG;
+    }
   }
   if (!in_component)
+  {
     return AZ_IOT_ERR_NOT_FOUND;
+  }
 
   /* Inside "deviceUpdate": locate the "service" property name (skipping
    * "__t" and any agent-side properties). Stop ON the "service" prop name. */
@@ -882,9 +938,13 @@ static az_iot_result parse_service_request(
   while (az_result_succeeded(az_json_reader_next_token(&jr)))
   {
     if (jr.token.kind == AZ_JSON_TOKEN_END_OBJECT)
+    {
       break;
+    }
     if (jr.token.kind != AZ_JSON_TOKEN_PROPERTY_NAME)
+    {
       return AZ_IOT_ERR_INVALID_ARG;
+    }
 
     if (az_json_token_is_text_equal(&jr.token, AZ_SPAN_FROM_STR("service")))
     {
@@ -893,12 +953,18 @@ static az_iot_result parse_service_request(
     }
     /* Skip this property's value. */
     if (az_result_failed(az_json_reader_next_token(&jr)))
+    {
       return AZ_IOT_ERR_INVALID_ARG;
+    }
     if (az_result_failed(az_json_reader_skip_children(&jr)))
+    {
       return AZ_IOT_ERR_INVALID_ARG;
+    }
   }
   if (!on_service)
+  {
     return AZ_IOT_ERR_NOT_FOUND;
+  }
 
   memset(out_req, 0, sizeof(*out_req));
   if (az_result_failed(az_iot_adu_client_parse_service_properties(az, &jr, out_req)))
@@ -954,7 +1020,9 @@ static void set_active_workflow(
 static bool same_workflow_id(az_iot_adu_client_t* client, az_span id)
 {
   if (!ADU_I(client).active_workflow_valid)
+  {
     return false;
+  }
   return az_span_is_content_equal(
       id,
       az_span_create(
@@ -965,7 +1033,9 @@ static bool same_workflow_id(az_iot_adu_client_t* client, az_span id)
 static bool same_manifest(az_iot_adu_client_t* client, uint32_t manifest_crc)
 {
   if (!ADU_I(client).active_workflow_valid)
+  {
     return false;
+  }
   return ADU_I(client).active_manifest_crc == manifest_crc;
 }
 
@@ -976,9 +1046,13 @@ static bool same_retry_timestamp(az_iot_adu_client_t* client, az_span retry)
   int32_t rt_len = az_span_size(retry);
   size_t have = ADU_I(client).active_retry_timestamp_len;
   if (rt_len <= 0 && have == 0)
+  {
     return true;
+  }
   if (rt_len <= 0 || have == 0)
+  {
     return false;
+  }
   return az_span_is_content_equal(
       retry, az_span_create(ADU_I(client).active_retry_timestamp, (int32_t)have));
 }
@@ -1002,11 +1076,17 @@ static void process_desired_patch(
     size_t patch_len)
 {
   if (client == NULL || patch == NULL || patch_len == 0)
+  {
     return;
+  }
   if (ADU_I(client).detached)
+  {
     return;
+  }
   if (patch_len > sizeof(ADU_I(client).request_buffer))
+  {
     return; /* too large to back */
+  }
 
   AZ_IOT_LOG_DEBUGF(
       "adu: deviceUpdate desired property received (%u bytes): %.*s",
@@ -1092,47 +1172,71 @@ static void on_initial_twin_get(
 {
   az_iot_adu_client_t* client = (az_iot_adu_client_t*)user_ctx;
   if (client == NULL || ADU_I(client).detached)
+  {
     return;
+  }
   if (status != AZ_IOT_OK || twin_payload == NULL || twin_payload_len == 0)
+  {
     return;
+  }
 
   az_span doc = az_span_create((uint8_t*)(uintptr_t)twin_payload, (int32_t)twin_payload_len);
   az_json_reader jr;
   if (az_result_failed(az_json_reader_init(&jr, doc, NULL)))
+  {
     return;
+  }
   if (az_result_failed(az_json_reader_next_token(&jr)))
+  {
     return;
+  }
   if (jr.token.kind != AZ_JSON_TOKEN_BEGIN_OBJECT)
+  {
     return;
+  }
 
   while (az_result_succeeded(az_json_reader_next_token(&jr)))
   {
     if (jr.token.kind == AZ_JSON_TOKEN_END_OBJECT)
+    {
       break;
+    }
     if (jr.token.kind != AZ_JSON_TOKEN_PROPERTY_NAME)
+    {
       return;
+    }
 
     bool is_desired = az_json_token_is_text_equal(&jr.token, AZ_SPAN_FROM_STR("desired"));
     if (az_result_failed(az_json_reader_next_token(&jr)))
+    {
       return;
+    }
     if (is_desired)
     {
       if (jr.token.kind != AZ_JSON_TOKEN_BEGIN_OBJECT)
+      {
         return;
+      }
       /* Capture the raw object text from its '{' to the matching '}'. The
        * token slice points into the source buffer, so start/end bracket
        * the whole sub-object. */
       uint8_t* start = az_span_ptr(jr.token.slice);
       if (az_result_failed(az_json_reader_skip_children(&jr)))
+      {
         return;
+      }
       uint8_t* end = az_span_ptr(jr.token.slice) + az_span_size(jr.token.slice);
       if (end <= start)
+      {
         return;
+      }
       process_desired_patch(client, start, (size_t)(end - start));
       return;
     }
     if (az_result_failed(az_json_reader_skip_children(&jr)))
+    {
       return;
+    }
   }
 }
 
@@ -1210,7 +1314,9 @@ az_iot_result az_iot_adu_client_initialize(
 void az_iot_adu_client_destroy(az_iot_adu_client_t* client)
 {
   if (client == NULL)
+  {
     return;
+  }
   if (ADU_I(client).twin != NULL)
   {
     /* Best-effort unsubscribe during teardown; the result is intentionally ignored. */
@@ -1329,7 +1435,9 @@ static uint32_t request_offset(const az_iot_adu_client_t* client, az_span s)
   const uint8_t* base = ADU_I(client).request_buffer;
   const uint8_t* p = az_span_ptr(s);
   if (p < base || p > base + ADU_I(client).request_len)
+  {
     return 0;
+  }
   return (uint32_t)(p - base);
 }
 
@@ -1338,18 +1446,26 @@ static void adu_persist(az_iot_adu_client_t* client)
 {
   az_iot_adu_platform_hooks* h = &ADU_I(client).hooks;
   if (h->persist_state_fn == NULL)
+  {
     return;
+  }
 
   uint32_t request_len = (uint32_t)ADU_I(client).request_len;
   if (request_len > AZ_IOT_ADU_REQUEST_BUFFER_SIZE)
+  {
     return;
+  }
 
   uint8_t* blob = ADU_I(client).persist_scratch;
   uint16_t flags = 0;
   if (ADU_I(client).cancel_requested)
+  {
     flags |= 0x1u;
+  }
   if (ADU_I(client).have_request)
+  {
     flags |= 0x2u;
+  }
 
   blob[0] = AZ_IOT_ADU_PERSIST_MAGIC0;
   blob[1] = AZ_IOT_ADU_PERSIST_MAGIC1;
@@ -1377,7 +1493,9 @@ static void adu_persist(az_iot_adu_client_t* client)
   const az_iot_adu_client_install_result* r = &ADU_I(client).install_result;
   int32_t step_count = r->step_results_count;
   if (step_count < 0)
+  {
     step_count = 0;
+  }
   if (step_count > _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS)
   {
     step_count = _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS;
@@ -1402,11 +1520,17 @@ static void adu_persist(az_iot_adu_client_t* client)
 az_iot_result az_iot_adu_client_resume(az_iot_adu_client_t* client)
 {
   if (client == NULL)
+  {
     return AZ_IOT_ERR_INVALID_ARG;
+  }
   if (ADU_I(client).detached)
+  {
     return AZ_IOT_ERR_DETACHED;
+  }
   if (ADU_I(client).hooks.load_state_fn == NULL)
+  {
     return AZ_IOT_OK;
+  }
 
   uint8_t* blob = ADU_I(client).persist_scratch;
   size_t blen = 0;
@@ -1417,23 +1541,31 @@ az_iot_result az_iot_adu_client_resume(az_iot_adu_client_t* client)
     return AZ_IOT_OK; /* nothing persisted */
   }
   if (blen < AZ_IOT_ADU_PERSIST_HEADER_SIZE + 4u)
+  {
     return AZ_IOT_OK; /* too small */
+  }
   if (blob[0] != AZ_IOT_ADU_PERSIST_MAGIC0 || blob[1] != AZ_IOT_ADU_PERSIST_MAGIC1
       || blob[2] != AZ_IOT_ADU_PERSIST_MAGIC2 || blob[3] != AZ_IOT_ADU_PERSIST_MAGIC3)
   {
     return AZ_IOT_OK; /* not our blob */
   }
   if (rd_u16le(&blob[4]) != AZ_IOT_ADU_PERSIST_VERSION)
+  {
     return AZ_IOT_OK;
+  }
 
   uint32_t request_len = rd_u32le(&blob[36]);
   if (request_len > AZ_IOT_ADU_REQUEST_BUFFER_SIZE)
+  {
     return AZ_IOT_OK;
+  }
 
   /* Locate and bounds-check the v2 trailer (retryTimestamp + install_result). */
   uint32_t t = AZ_IOT_ADU_PERSIST_HEADER_SIZE + request_len;
   if ((size_t)t + AZ_IOT_ADU_PERSIST_TRAILER_FIXED > blen)
+  {
     return AZ_IOT_OK;
+  }
   uint32_t retry_off = rd_u32le(&blob[t + 0]);
   uint32_t retry_len = rd_u32le(&blob[t + 4]);
   uint32_t manifest_crc = rd_u32le(&blob[t + 8]);
@@ -1446,9 +1578,13 @@ az_iot_result az_iot_adu_client_resume(az_iot_adu_client_t* client)
   }
   uint32_t crc_region = t + AZ_IOT_ADU_PERSIST_TRAILER_FIXED + (uint32_t)step_count * 8u;
   if ((size_t)crc_region + 4u > blen)
+  {
     return AZ_IOT_OK;
+  }
   if (adu_crc32(blob, crc_region) != rd_u32le(&blob[crc_region]))
+  {
     return AZ_IOT_OK; /* corrupt */
+  }
 
   uint16_t flags = rd_u16le(&blob[6]);
   uint32_t state = rd_u32le(&blob[8]);
@@ -1459,9 +1595,13 @@ az_iot_result az_iot_adu_client_resume(az_iot_adu_client_t* client)
   uint32_t mf_off = rd_u32le(&blob[28]);
   uint32_t mf_len = rd_u32le(&blob[32]);
   if (mf_off + mf_len > request_len || wf_off + wf_len > request_len)
+  {
     return AZ_IOT_OK;
+  }
   if (retry_len != 0 && retry_off + retry_len > request_len)
+  {
     return AZ_IOT_OK;
+  }
 
   /* Restore the request payload and re-derive the manifest from it. */
   memset(&ADU_I(client).current_request, 0, sizeof(ADU_I(client).current_request));
@@ -1530,7 +1670,9 @@ static uint32_t step_file_count(const az_iot_adu_client_t* client, uint32_t step
 {
   const az_iot_adu_client_update_manifest* m = &ADU_I(client).current_manifest;
   if (step >= m->instructions.steps_count)
+  {
     return 0;
+  }
   return m->instructions.steps[step].files_count;
 }
 
@@ -1565,9 +1707,13 @@ static void begin_rollback(az_iot_adu_client_t* client, uint32_t restore_count)
 az_iot_result az_iot_adu_client_do_work(az_iot_adu_client_t* client)
 {
   if (client == NULL)
+  {
     return AZ_IOT_ERR_INVALID_ARG;
+  }
   if (ADU_I(client).detached)
+  {
     return AZ_IOT_ERR_DETACHED;
+  }
 
   /* A pending device-properties / startup report takes priority. */
   if (ADU_I(client).device_props_report_pending)
@@ -1718,7 +1864,9 @@ az_iot_result az_iot_adu_client_do_work(az_iot_adu_client_t* client)
           ? h->backup_fn(&ADU_I(client).current_manifest, step, h->user_ctx)
           : AZ_IOT_ADU_RESULT_SUCCESS;
       if (br == AZ_IOT_ADU_RESULT_IN_PROGRESS)
+      {
         break;
+      }
       if (br != AZ_IOT_ADU_RESULT_SUCCESS)
       {
         result_step_failure(client, step, AZ_IOT_ADU_FACILITY_BACKUP, br);
@@ -1741,7 +1889,9 @@ az_iot_result az_iot_adu_client_do_work(az_iot_adu_client_t* client)
           ? h->install_fn(&ADU_I(client).current_manifest, step, h->user_ctx)
           : AZ_IOT_ADU_RESULT_FAILURE;
       if (ir == AZ_IOT_ADU_RESULT_IN_PROGRESS)
+      {
         break;
+      }
       if (ir == AZ_IOT_ADU_RESULT_REBOOT_REQUIRED)
       {
         /* The install needs a reboot to take effect: snapshot the
@@ -1775,7 +1925,9 @@ az_iot_result az_iot_adu_client_do_work(az_iot_adu_client_t* client)
           ? h->apply_fn(&ADU_I(client).current_manifest, step, h->user_ctx)
           : AZ_IOT_ADU_RESULT_SUCCESS;
       if (ar == AZ_IOT_ADU_RESULT_IN_PROGRESS)
+      {
         break;
+      }
       if (ar != AZ_IOT_ADU_RESULT_SUCCESS && ar != AZ_IOT_ADU_RESULT_REBOOT_REQUIRED)
       {
         result_step_failure(client, step, AZ_IOT_ADU_FACILITY_APPLY, ar);
@@ -1820,14 +1972,18 @@ az_iot_result az_iot_adu_client_do_work(az_iot_adu_client_t* client)
 bool az_iot_adu_is_cancelled(const az_iot_adu_client_t* client)
 {
   if (client == NULL)
+  {
     return false;
+  }
   return ADU_I(client).cancel_requested;
 }
 
 az_iot_adu_state az_iot_adu_client_get_state(const az_iot_adu_client_t* client)
 {
   if (client == NULL)
+  {
     return AZ_IOT_ADU_STATE_IDLE;
+  }
   return ADU_I(client).state;
 }
 
@@ -1836,13 +1992,19 @@ az_iot_result az_iot_adu_client_update_device_properties(
     const az_iot_adu_device_properties* device_props)
 {
   if (client == NULL || device_props == NULL)
+  {
     return AZ_IOT_ERR_INVALID_ARG;
+  }
   if (ADU_I(client).detached)
+  {
     return AZ_IOT_ERR_DETACHED;
+  }
 
   az_iot_result r = cache_device_properties(client, device_props);
   if (r != AZ_IOT_OK)
+  {
     return r;
+  }
 
   ADU_I(client).device_props_report_pending = true;
   return AZ_IOT_OK;

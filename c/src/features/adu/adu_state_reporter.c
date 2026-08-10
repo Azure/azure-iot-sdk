@@ -27,14 +27,34 @@
 
 az_iot_adu_client_agent_state az_iot_adu__agent_state(az_iot_adu_state state)
 {
+  /* The service knows three agent states; the workflow has twelve. Every one is
+   * listed rather than folded into default:, so that adding a workflow state
+   * forces a decision about how the service should see it -- the previous
+   * default: would silently have reported it as in-progress, including for a
+   * state that was actually terminal. */
   switch (state)
   {
     case AZ_IOT_ADU_STATE_IDLE:
       return AZ_IOT_ADU_CLIENT_AGENT_STATE_IDLE;
+
     case AZ_IOT_ADU_STATE_FAILED:
       return AZ_IOT_ADU_CLIENT_AGENT_STATE_FAILED;
+
+    case AZ_IOT_ADU_STATE_MANIFEST_RECEIVED:
+    case AZ_IOT_ADU_STATE_VERIFYING_MANIFEST:
+    case AZ_IOT_ADU_STATE_DOWNLOAD_STARTED:
+    case AZ_IOT_ADU_STATE_DOWNLOAD_COMPLETE:
+    case AZ_IOT_ADU_STATE_BACKUP_STARTED:
+    case AZ_IOT_ADU_STATE_BACKUP_COMPLETE:
+    case AZ_IOT_ADU_STATE_INSTALL_STARTED:
+    case AZ_IOT_ADU_STATE_INSTALL_COMPLETE:
+    case AZ_IOT_ADU_STATE_APPLY_STARTED:
+    case AZ_IOT_ADU_STATE_RESTORE_STARTED:
+      return AZ_IOT_ADU_CLIENT_AGENT_STATE_DEPLOYMENT_IN_PROGRESS;
+
     default:
-      /* Download/Backup/Install/Apply/Restore all map to in-progress. */
+      /* A value from outside the enum: report the deployment as still running
+       * rather than inventing a terminal outcome for it. */
       return AZ_IOT_ADU_CLIENT_AGENT_STATE_DEPLOYMENT_IN_PROGRESS;
   }
 }
@@ -87,9 +107,13 @@ az_iot_adu_client_device_properties az_iot_adu__device_properties_view(
 az_iot_result az_iot_adu__report_state(az_iot_adu_client_t* client)
 {
   if (client == NULL)
+  {
     return AZ_IOT_ERR_INVALID_ARG;
+  }
   if (ADU_I(client).detached)
+  {
     return AZ_IOT_ERR_DETACHED;
+  }
 
   uint8_t buffer[AZ_IOT_ADU_REPORT_BUFFER_SIZE];
   az_json_writer jw;

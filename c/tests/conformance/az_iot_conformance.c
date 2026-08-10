@@ -12,6 +12,7 @@
  *   - Customer self-validation of any MQTT client+adapter they want to plug in
  */
 #include "az_iot_conformance.h"
+#include "az_iot_test_proxy.h"
 
 #include <stdarg.h>
 #include <stddef.h>
@@ -54,10 +55,6 @@ static unsigned long conf_now_ms(void)
 static az_iot_mqtt_factory* g_factory = NULL;
 static const char* g_host = "localhost";
 static uint16_t g_port = 1883;
-/* Optional TLS endpoint for the server-certificate-validation test. When
- * g_tls_port == 0 that test is skipped (no TLS broker configured). */
-static const char* g_tls_host = "localhost";
-static uint16_t g_tls_port = 0;
 static const unsigned k_step_timeout_ms = 5000;
 /* Same budget as k_step_timeout_ms, on the scale the connect option uses. */
 static const unsigned k_step_timeout_seconds = 5;
@@ -85,7 +82,9 @@ static void on_event(const az_iot_mqtt_event* evt, void* ctx)
 {
   conf_recorder* r = (conf_recorder*)ctx;
   if (r->count >= CONF_EVENTS_MAX)
+  {
     return;
+  }
   size_t i = r->count++;
   r->kinds[i] = evt->kind;
   r->statuses[i] = evt->status;
@@ -96,15 +95,21 @@ static void on_event(const az_iot_mqtt_event* evt, void* ctx)
     {
       size_t n = strlen(evt->message->topic);
       if (n >= CONF_TOPIC_MAX)
+      {
         n = CONF_TOPIC_MAX - 1;
+      }
       memcpy(r->topics[i], evt->message->topic, n);
       r->topics[i][n] = '\0';
     }
     size_t plen = evt->message->payload_len;
     if (plen > CONF_PAYLOAD_MAX)
+    {
       plen = CONF_PAYLOAD_MAX;
+    }
     if (plen)
+    {
       memcpy(r->payloads[i], evt->message->payload, plen);
+    }
     r->payload_lens[i] = plen;
   }
 }
@@ -124,7 +129,9 @@ static int wait_until(
   {
     c->iface->process_loop(c, 50);
     if (p(r))
+    {
       return 1;
+    }
     conf_sleep_ms(10);
   }
   return p(r);
@@ -135,7 +142,9 @@ static int saw_connected_ok(const conf_recorder* r)
   for (size_t i = 0; i < r->count; ++i)
   {
     if (r->kinds[i] == AZ_IOT_MQTT_EVT_CONNECTED && r->statuses[i] == AZ_IOT_OK)
+    {
       return 1;
+    }
   }
   return 0;
 }
@@ -162,7 +171,9 @@ static int saw_subscribe_ack_ok(const conf_recorder* r)
   for (size_t i = 0; i < r->count; ++i)
   {
     if (r->kinds[i] == AZ_IOT_MQTT_EVT_SUBSCRIBE_ACK && r->statuses[i] == AZ_IOT_OK)
+    {
       return 1;
+    }
   }
   return 0;
 }
@@ -172,7 +183,36 @@ static int saw_message(const conf_recorder* r)
   for (size_t i = 0; i < r->count; ++i)
   {
     if (r->kinds[i] == AZ_IOT_MQTT_EVT_MESSAGE)
+    {
       return 1;
+    }
+  }
+  return 0;
+}
+
+/* A CONNECTED event carrying an error status (as opposed to a transport-level
+ * disconnect): proves a non-zero CONNACK reason code was routed through the
+ * adapter's connack mapping rather than swallowed. */
+static int saw_connack_error(const conf_recorder* r)
+{
+  for (size_t i = 0; i < r->count; ++i)
+  {
+    if (r->kinds[i] == AZ_IOT_MQTT_EVT_CONNECTED && r->statuses[i] != AZ_IOT_OK)
+    {
+      return 1;
+    }
+  }
+  return 0;
+}
+
+static int saw_disconnected(const conf_recorder* r)
+{
+  for (size_t i = 0; i < r->count; ++i)
+  {
+    if (r->kinds[i] == AZ_IOT_MQTT_EVT_DISCONNECTED)
+    {
+      return 1;
+    }
   }
   return 0;
 }
@@ -198,7 +238,9 @@ static az_iot_mqtt_client* make_client(void)
 static void destroy_client(az_iot_mqtt_client* c)
 {
   if (c && c->iface && c->iface->destroy)
+  {
     c->iface->destroy(c);
+  }
 }
 
 static void connect_client(az_iot_mqtt_client* c, conf_recorder* rec, const char* client_id)
@@ -214,43 +256,28 @@ static void connect_client(az_iot_mqtt_client* c, conf_recorder* rec, const char
   assert_true(wait_until(c, rec, saw_connected_ok, k_step_timeout_ms));
 }
 
-/* A self-signed CA that signs nothing the broker presents. Embedded so the
- * server-cert-validation test is self-contained: a correctly-validating client
- * given only this trust anchor MUST reject the broker's real server cert. */
-static const char* const k_bogus_ca_pem
-    = "-----BEGIN CERTIFICATE-----\n"
-      "MIIDGzCCAgOgAwIBAgIUcY/tipk6Ba3njjZHvp/DevhtRDwwDQYJKoZIhvcNAQEL\n"
-      "BQAwHTEbMBkGA1UEAwwSYm9ndXMtdW50cnVzdGVkLWNhMB4XDTI2MDcyNzE4MTkz\n"
-      "NFoXDTI2MDcyOTE4MTkzNFowHTEbMBkGA1UEAwwSYm9ndXMtdW50cnVzdGVkLWNh\n"
-      "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAxld2x/G0sjUSx/4EF352\n"
-      "aX4lE5KR73P8ZqX8o7H77H7BDpCZkP08QBmlw16YByEkxjiOXjdgthv8u3stl03v\n"
-      "utK0uFaCu8z6DwtHOgrnXiBOlGAbZGDWs34qq1miriMBNPQDEWErVPGJxhyhoad3\n"
-      "1TP2yMN5XsUw0YRoXjXSWHQUBAlOytjrYpVfHmzWBgwjFbwzeWkvKlDHMfm6Ciz+\n"
-      "LJ0D4wXUc1WbbNl8iJUibBevQ+7wTtAGL0nRBqUfCkfHM+ULa5W+/ikReRy2OTcW\n"
-      "40faNCriW+e8DqJ6zV1GobU5di3fgYeJHZ8ad/jGcC+CVt2yD7rJFyVvGvYJAII7\n"
-      "jwIDAQABo1MwUTAdBgNVHQ4EFgQUfqVCmOkcsFlXWiMujLCzJfT0+NEwHwYDVR0j\n"
-      "BBgwFoAUfqVCmOkcsFlXWiMujLCzJfT0+NEwDwYDVR0TAQH/BAUwAwEB/zANBgkq\n"
-      "hkiG9w0BAQsFAAOCAQEAjXnW4IVBfm128GFwYVFHrh/i+Qh+9LKDBcXwm3nj7iTG\n"
-      "Re77I+PqzzISg18V/3AwIGBz7gPI2XYJMMnQqmjtHRXSAeDfd/t8iLTmLNg4YShJ\n"
-      "nsr+cfyzmQrFoSWqhQp028R9wi+v3w8ybEIBIWNjOXq1U84eTIpR0H8jqOTOk2zP\n"
-      "+Svl8I6WTbKnOYnS/XxjlFbWlG0JGfvde4r6XIkvMDb6WZLBTRjZdiduxxYi6gum\n"
-      "CruHIV/vz46VyWtvDQq8NKZeGzzF6Kx7WF7quwbQkWGOR5qQDSUmc4j+Uchc0RG6\n"
-      "lhlEJdpwfD5tV8wtBqfBebpBF1e4ziC3o3tHjp00vQ==\n"
-      "-----END CERTIFICATE-----\n";
-
+#ifdef AZ_IOT_CONFORMANCE_WITH_TLS
 /* Write `pem` to a uniquely-named file in the CWD; returns 1 on success and
- * fills `path_out`. The caller removes it when done. */
+ * fills `path_out`. The caller removes it when done.
+ *
+ * The trust anchor used to be an embedded, pre-generated CA that expired and
+ * had to be re-minted by hand. The test proxy now mints one per run, so what
+ * gets written here is whatever the proxy just generated -- but the adapter
+ * takes a trusted-CA *path*, so it still has to reach the filesystem. */
 static int write_temp_pem(const char* pem, char* path_out, size_t cap)
 {
-  snprintf(path_out, cap, "az_iot_conf_bogus_ca_%lu.pem", conf_now_ms());
+  snprintf(path_out, cap, "az_iot_conf_ca_%lu.pem", conf_now_ms());
   FILE* f = fopen(path_out, "wb");
   if (!f)
+  {
     return 0;
+  }
   size_t n = strlen(pem);
   size_t w = fwrite(pem, 1, n, f);
   fclose(f);
   return w == n;
 }
+#endif /* AZ_IOT_CONFORMANCE_WITH_TLS */
 
 /* ------------------------------------------------------------------------- */
 /* test cases                                                                 */
@@ -335,40 +362,109 @@ static void disconnect_without_connect_is_rejected(void** state)
   destroy_client(c);
 }
 
-/* Server-side certificate validation is mandatory: with verify_server = true and
- * a trust anchor that does NOT sign the broker's certificate, the TLS handshake
- * must be rejected and the client must never reach CONNECTED. If validation were
- * disabled, the handshake would succeed and a CONNACK would arrive (CONNECTED
- * ok), failing this test. Requires a TLS endpoint (AZ_IOT_MQTT_BROKER_TLS_PORT);
- * skipped otherwise. */
-static void server_cert_validation_rejects_untrusted(void** state)
+/* --------------------------------------------------------------------------
+ * Server-certificate validation.
+ *
+ * These cases are compiled only when AZ_IOT_CONFORMANCE_WITH_TLS is defined,
+ * which the AZ_IOT_BUILD_CONFORMANCE_TESTS_TLS option sets. The original
+ * version of this test was compiled unconditionally and called cmocka's skip()
+ * when no TLS port was configured -- which is how a mandatory security check
+ * sat inside a green suite without ever running. Whether these run is visible
+ * in the build configuration, never decided at run time.
+ *
+ * The TLS peer is the in-process test proxy, which mints its own CA and leaf,
+ * so a separately provisioned TLS broker is no longer part of the contract.
+ * -------------------------------------------------------------------------- */
+#ifdef AZ_IOT_CONFORMANCE_WITH_TLS
+
+/* Positive control for the certificate cases below: a leaf signed by the
+ * trusted CA, inside its validity window and matching the connected host, must
+ * be ACCEPTED and the client reaches CONNECTED through the TLS-terminating
+ * proxy. Without this, a handshake broken for some unrelated reason would make
+ * every negative case below pass for the wrong reason. */
+static void tls_handshake_succeeds_with_trusted_valid_cert(void** state)
 {
   (void)state;
-  if (g_tls_port == 0)
-  {
-    fprintf(
-        stderr,
-        "conformance: server-cert-validation test skipped "
-        "(set AZ_IOT_MQTT_BROKER_TLS_PORT to a TLS broker)\n");
-    skip();
-  }
 
+  az_iot_test_proxy_options popts = az_iot_test_proxy_options_default();
+  popts.upstream_host = g_host;
+  popts.upstream_port = g_port;
+  az_iot_test_proxy* proxy = NULL;
+  uint16_t proxy_port = 0;
+  assert_int_equal(az_iot_test_proxy_start(&popts, &proxy, &proxy_port), 0);
+
+  az_iot_test_proxy_tls_options tls
+      = az_iot_test_proxy_tls_options_default(); /* trusted CA, valid window */
+  assert_int_equal(az_iot_test_proxy_enable_tls(proxy, &tls), 0);
+
+  char ca_pem[4096];
+  assert_true(az_iot_test_proxy_ca_pem(proxy, ca_pem, sizeof(ca_pem)) > 0);
   char ca_path[128];
-  assert_true(write_temp_pem(k_bogus_ca_pem, ca_path, sizeof(ca_path)));
+  assert_true(write_temp_pem(ca_pem, ca_path, sizeof(ca_path)));
 
   char cid[64];
-  unique_client_id(cid, sizeof(cid), "az-iot-conf-tlsverify");
+  unique_client_id(cid, sizeof(cid), "az-iot-conf-tlsok");
   conf_recorder rec = { 0 };
   az_iot_mqtt_client* c = make_client();
   c->iface->set_inbound_cb(c, on_event, &rec);
 
   az_iot_mqtt_connect_options copts = { 0 };
-  copts.host = g_tls_host;
-  copts.port = g_tls_port;
+  copts.host = "127.0.0.1";
+  copts.port = proxy_port;
   copts.client_id = cid;
   copts.keep_alive_seconds = 30;
   copts.connect_timeout_seconds = k_step_timeout_seconds;
-  copts.tls.trusted_ca_path = ca_path; /* wrong CA: cannot sign the server cert */
+  copts.tls.trusted_ca_path = ca_path;
+  copts.tls.verify_server = true;
+
+  assert_int_equal(c->iface->connect(c, &copts), AZ_IOT_OK);
+  assert_true(wait_until(c, &rec, saw_connected_ok, k_step_timeout_ms));
+
+  (void)c->iface->disconnect(c);
+  destroy_client(c);
+  az_iot_test_proxy_stop(proxy);
+  remove(ca_path);
+}
+
+/* Server-side certificate validation is mandatory: with verify_server = true and
+ * a leaf the client's trust anchor does NOT sign, the TLS handshake must be
+ * rejected and the client must never reach CONNECTED. The proxy terminates TLS
+ * with a leaf signed by an UNTRUSTED CA while the client is handed the
+ * (different) trusted CA. If validation were disabled the handshake would
+ * succeed and a CONNACK would arrive, failing this test. */
+static void server_cert_validation_rejects_untrusted(void** state)
+{
+  (void)state;
+
+  az_iot_test_proxy_options popts = az_iot_test_proxy_options_default();
+  popts.upstream_host = g_host;
+  popts.upstream_port = g_port;
+  az_iot_test_proxy* proxy = NULL;
+  uint16_t proxy_port = 0;
+  assert_int_equal(az_iot_test_proxy_start(&popts, &proxy, &proxy_port), 0);
+
+  az_iot_test_proxy_tls_options tls = az_iot_test_proxy_tls_options_default();
+  tls.sign_with_untrusted_ca = 1; /* leaf signed by a CA the client won't trust */
+  assert_int_equal(az_iot_test_proxy_enable_tls(proxy, &tls), 0);
+
+  char ca_pem[4096];
+  assert_true(az_iot_test_proxy_ca_pem(proxy, ca_pem, sizeof(ca_pem)) > 0);
+  char ca_path[128];
+  assert_true(write_temp_pem(ca_pem, ca_path, sizeof(ca_path)));
+
+  char cid[64];
+  unique_client_id(cid, sizeof(cid), "az-iot-conf-tlsuntrusted");
+  conf_recorder rec = { 0 };
+  az_iot_mqtt_client* c = make_client();
+  c->iface->set_inbound_cb(c, on_event, &rec);
+
+  az_iot_mqtt_connect_options copts = { 0 };
+  copts.host = "127.0.0.1"; /* connect to the TLS-terminating proxy */
+  copts.port = proxy_port;
+  copts.client_id = cid;
+  copts.keep_alive_seconds = 30;
+  copts.connect_timeout_seconds = k_step_timeout_seconds;
+  copts.tls.trusted_ca_path = ca_path; /* trusts the exported CA, not the leaf's signer */
   copts.tls.verify_server = true; /* must validate the server certificate */
 
   az_iot_result r = c->iface->connect(c, &copts);
@@ -383,8 +479,118 @@ static void server_cert_validation_rejects_untrusted(void** state)
 
   (void)c->iface->disconnect(c);
   destroy_client(c);
+  az_iot_test_proxy_stop(proxy);
   remove(ca_path);
 }
+
+/* An EXPIRED certificate must be rejected even though it chains to the trusted
+ * CA: the proxy presents a leaf the trusted CA signed, whose validity window is
+ * entirely in the past. verify_server = true enables chain *and* validity
+ * checking, so an adapter that only checks the chain fails here. */
+static void server_cert_validation_rejects_expired(void** state)
+{
+  (void)state;
+
+  az_iot_test_proxy_options popts = az_iot_test_proxy_options_default();
+  popts.upstream_host = g_host;
+  popts.upstream_port = g_port;
+  az_iot_test_proxy* proxy = NULL;
+  uint16_t proxy_port = 0;
+  assert_int_equal(az_iot_test_proxy_start(&popts, &proxy, &proxy_port), 0);
+
+  az_iot_test_proxy_tls_options tls = az_iot_test_proxy_tls_options_default();
+  tls.not_before_offset_sec = -7200; /* valid-from two hours ago */
+  tls.not_after_offset_sec = -3600; /* expired one hour ago */
+  assert_int_equal(az_iot_test_proxy_enable_tls(proxy, &tls), 0);
+
+  char ca_pem[4096];
+  assert_true(az_iot_test_proxy_ca_pem(proxy, ca_pem, sizeof(ca_pem)) > 0);
+  char ca_path[128];
+  assert_true(write_temp_pem(ca_pem, ca_path, sizeof(ca_path)));
+
+  char cid[64];
+  unique_client_id(cid, sizeof(cid), "az-iot-conf-tlsexpired");
+  conf_recorder rec = { 0 };
+  az_iot_mqtt_client* c = make_client();
+  c->iface->set_inbound_cb(c, on_event, &rec);
+
+  az_iot_mqtt_connect_options copts = { 0 };
+  copts.host = "127.0.0.1";
+  copts.port = proxy_port;
+  copts.client_id = cid;
+  copts.keep_alive_seconds = 30;
+  copts.connect_timeout_seconds = k_step_timeout_seconds;
+  copts.tls.trusted_ca_path = ca_path;
+  copts.tls.verify_server = true;
+
+  az_iot_result r = c->iface->connect(c, &copts);
+  if (r == AZ_IOT_OK)
+  {
+    assert_true(wait_until(c, &rec, saw_connect_failure, k_step_timeout_ms));
+  }
+  assert_false(saw_connected_ok(&rec));
+
+  (void)c->iface->disconnect(c);
+  destroy_client(c);
+  az_iot_test_proxy_stop(proxy);
+  remove(ca_path);
+}
+
+/* Hostname verification: a certificate that chains to the trusted CA and is
+ * inside its validity window must STILL be rejected when its SAN does not name
+ * the host the client asked for. The proxy presents a leaf for
+ * "DNS:wrong.invalid" while the client connects to 127.0.0.1, so only an
+ * adapter that enables the peer-name check -- not merely chain validation --
+ * rejects it. This is the impersonation case: a certificate legitimately issued
+ * for some other host is otherwise perfectly valid. */
+static void server_cert_validation_rejects_hostname_mismatch(void** state)
+{
+  (void)state;
+
+  az_iot_test_proxy_options popts = az_iot_test_proxy_options_default();
+  popts.upstream_host = g_host;
+  popts.upstream_port = g_port;
+  az_iot_test_proxy* proxy = NULL;
+  uint16_t proxy_port = 0;
+  assert_int_equal(az_iot_test_proxy_start(&popts, &proxy, &proxy_port), 0);
+
+  az_iot_test_proxy_tls_options tls = az_iot_test_proxy_tls_options_default();
+  tls.leaf_san = "DNS:wrong.invalid"; /* trusted + valid, but the wrong host */
+  assert_int_equal(az_iot_test_proxy_enable_tls(proxy, &tls), 0);
+
+  char ca_pem[4096];
+  assert_true(az_iot_test_proxy_ca_pem(proxy, ca_pem, sizeof(ca_pem)) > 0);
+  char ca_path[128];
+  assert_true(write_temp_pem(ca_pem, ca_path, sizeof(ca_path)));
+
+  char cid[64];
+  unique_client_id(cid, sizeof(cid), "az-iot-conf-tlshost");
+  conf_recorder rec = { 0 };
+  az_iot_mqtt_client* c = make_client();
+  c->iface->set_inbound_cb(c, on_event, &rec);
+
+  az_iot_mqtt_connect_options copts = { 0 };
+  copts.host = "127.0.0.1"; /* does not match the leaf's SAN */
+  copts.port = proxy_port;
+  copts.client_id = cid;
+  copts.keep_alive_seconds = 30;
+  copts.connect_timeout_seconds = k_step_timeout_seconds;
+  copts.tls.trusted_ca_path = ca_path;
+  copts.tls.verify_server = true;
+
+  az_iot_result r = c->iface->connect(c, &copts);
+  if (r == AZ_IOT_OK)
+  {
+    assert_true(wait_until(c, &rec, saw_connect_failure, k_step_timeout_ms));
+  }
+  assert_false(saw_connected_ok(&rec));
+
+  (void)c->iface->disconnect(c);
+  destroy_client(c);
+  az_iot_test_proxy_stop(proxy);
+  remove(ca_path);
+}
+#endif /* AZ_IOT_CONFORMANCE_WITH_TLS */
 
 /* ------------------------------------------------------------------------- */
 /* transport failure paths                                                    */
@@ -570,21 +776,272 @@ static void connect_after_disconnect_reuses_the_client(void** state)
   destroy_client(c);
 }
 
+/* A mid-session network drop must surface as a DISCONNECTED/ERROR event (never
+ * be silently swallowed), and the client must reconnect afterwards. An
+ * in-process test proxy interposes a raw TCP passthrough between the client and
+ * the real broker and resets the connection on demand; because the drop is
+ * one-shot, the following reconnect flows through cleanly. Unlike the
+ * fake-adapter retry tests, this drives the genuine client + socket stack. */
+static void reconnect_after_network_drop(void** state)
+{
+  (void)state;
+
+  /* Stand up the proxy in front of the real broker. */
+  az_iot_test_proxy_options popts = az_iot_test_proxy_options_default();
+  popts.upstream_host = g_host;
+  popts.upstream_port = g_port;
+  az_iot_test_proxy* proxy = NULL;
+  uint16_t proxy_port = 0;
+  assert_int_equal(az_iot_test_proxy_start(&popts, &proxy, &proxy_port), 0);
+  assert_int_not_equal(proxy_port, 0);
+
+  char cid[64];
+  unique_client_id(cid, sizeof(cid), "az-iot-conf-drop");
+
+  conf_recorder rec = { 0 };
+  az_iot_mqtt_client* c = make_client();
+  c->iface->set_inbound_cb(c, on_event, &rec);
+
+  az_iot_mqtt_connect_options copts = { 0 };
+  copts.host = "127.0.0.1"; /* connect through the proxy, not the broker */
+  copts.port = proxy_port;
+  copts.client_id = cid;
+  copts.keep_alive_seconds = 30;
+  copts.connect_timeout_seconds = k_step_timeout_seconds;
+
+  /* First connection, established through the proxy. */
+  assert_int_equal(c->iface->connect(c, &copts), AZ_IOT_OK);
+  assert_true(wait_until(c, &rec, saw_connected_ok, k_step_timeout_ms));
+
+  /* Force a mid-session network drop (TCP reset). */
+  az_iot_test_proxy_drop_now(proxy);
+  assert_true(wait_until(c, &rec, saw_connect_failure, k_step_timeout_ms));
+
+  /* Reconnect through the same (now disarmed) proxy must succeed. Use a fresh
+   * recorder so the CONNECTED we observe is the reconnect, not the first one. */
+  conf_recorder rec2 = { 0 };
+  c->iface->set_inbound_cb(c, on_event, &rec2);
+  assert_int_equal(c->iface->connect(c, &copts), AZ_IOT_OK);
+  assert_true(wait_until(c, &rec2, saw_connected_ok, k_step_timeout_ms));
+
+  /* The proxy must have accepted two distinct client connections. */
+  assert_true(az_iot_test_proxy_connections(proxy) >= 2);
+
+  (void)c->iface->disconnect(c);
+  destroy_client(c);
+  az_iot_test_proxy_stop(proxy);
+}
+
+/* A CONNACK carrying a non-zero reason code must be routed to a CONNECTED event
+ * with an error status (via az_iot_mqtt_connack_result), not swallowed. The proxy
+ * acts as a synthetic broker and answers the client's CONNECT with a
+ * "not authorized" CONNACK built for the client's MQTT version. */
+static void connect_connack_error_is_reported(void** state)
+{
+  (void)state;
+
+  az_iot_test_proxy_options popts = az_iot_test_proxy_options_default();
+  popts.upstream_host = g_host;
+  popts.upstream_port = g_port;
+  az_iot_test_proxy* proxy = NULL;
+  uint16_t proxy_port = 0;
+  assert_int_equal(az_iot_test_proxy_start(&popts, &proxy, &proxy_port), 0);
+
+  uint8_t connack[8];
+  size_t connack_len;
+  if (g_factory->version == AZ_IOT_MQTT_VERSION_5)
+  {
+    /* session-present=0, reason=0x87 (Not authorized), property-length=0. */
+    connack[0] = 0x20;
+    connack[1] = 0x03;
+    connack[2] = 0x00;
+    connack[3] = 0x87;
+    connack[4] = 0x00;
+    connack_len = 5;
+  }
+  else
+  {
+    /* ack flags=0, return code=0x05 (Not authorized). */
+    connack[0] = 0x20;
+    connack[1] = 0x02;
+    connack[2] = 0x00;
+    connack[3] = 0x05;
+    connack_len = 4;
+  }
+  assert_int_equal(az_iot_test_proxy_set_synthetic_connack(proxy, connack, connack_len), 0);
+
+  char cid[64];
+  unique_client_id(cid, sizeof(cid), "az-iot-conf-connack");
+  conf_recorder rec = { 0 };
+  az_iot_mqtt_client* c = make_client();
+  c->iface->set_inbound_cb(c, on_event, &rec);
+
+  az_iot_mqtt_connect_options copts = { 0 };
+  copts.host = "127.0.0.1";
+  copts.port = proxy_port;
+  copts.client_id = cid;
+  copts.keep_alive_seconds = 30;
+  copts.connect_timeout_seconds = k_step_timeout_seconds;
+
+  az_iot_result r = c->iface->connect(c, &copts);
+  if (r == AZ_IOT_OK)
+  {
+    assert_true(wait_until(c, &rec, saw_connack_error, k_step_timeout_ms));
+  }
+  /* The reason code must reach the app as a failed CONNECTED, never a success. */
+  assert_true(saw_connack_error(&rec));
+  assert_false(saw_connected_ok(&rec));
+
+  (void)c->iface->disconnect(c);
+  destroy_client(c);
+  az_iot_test_proxy_stop(proxy);
+}
+
+/* With no PINGRESP ever sent, a connected client with a short keep-alive must
+ * detect the dead link and surface a DISCONNECTED event. The proxy answers the
+ * CONNECT with a success CONNACK, then stays silent. */
+static void keep_alive_timeout_is_reported(void** state)
+{
+  (void)state;
+
+  az_iot_test_proxy_options popts = az_iot_test_proxy_options_default();
+  popts.upstream_host = g_host;
+  popts.upstream_port = g_port;
+  az_iot_test_proxy* proxy = NULL;
+  uint16_t proxy_port = 0;
+  assert_int_equal(az_iot_test_proxy_start(&popts, &proxy, &proxy_port), 0);
+
+  uint8_t connack[8];
+  size_t connack_len;
+  if (g_factory->version == AZ_IOT_MQTT_VERSION_5)
+  {
+    connack[0] = 0x20;
+    connack[1] = 0x03;
+    connack[2] = 0x00;
+    connack[3] = 0x00;
+    connack[4] = 0x00;
+    connack_len = 5;
+  }
+  else
+  {
+    connack[0] = 0x20;
+    connack[1] = 0x02;
+    connack[2] = 0x00;
+    connack[3] = 0x00;
+    connack_len = 4;
+  }
+  assert_int_equal(az_iot_test_proxy_set_synthetic_connack(proxy, connack, connack_len), 0);
+
+  char cid[64];
+  unique_client_id(cid, sizeof(cid), "az-iot-conf-keepalive");
+  conf_recorder rec = { 0 };
+  az_iot_mqtt_client* c = make_client();
+  c->iface->set_inbound_cb(c, on_event, &rec);
+
+  az_iot_mqtt_connect_options copts = { 0 };
+  copts.host = "127.0.0.1";
+  copts.port = proxy_port;
+  copts.client_id = cid;
+  copts.keep_alive_seconds = 2; /* short so the timeout fires quickly */
+  copts.connect_timeout_seconds = k_step_timeout_seconds;
+
+  assert_int_equal(c->iface->connect(c, &copts), AZ_IOT_OK);
+  assert_true(wait_until(c, &rec, saw_connected_ok, k_step_timeout_ms));
+
+  /* No PINGRESP will ever arrive; the keep-alive must trip within a few
+   * intervals and surface a disconnect. */
+  assert_true(wait_until(c, &rec, saw_disconnected, 12000));
+
+  (void)c->iface->disconnect(c);
+  destroy_client(c);
+  az_iot_test_proxy_stop(proxy);
+}
+
+/* A v5 server DISCONNECT must be surfaced as a DISCONNECTED event. The proxy
+ * sends a success CONNACK, then injects a DISCONNECT with a reason code.
+ *
+ * MQTT 3.1.1 has no server-sent DISCONNECT packet, so this case belongs only to
+ * the v5 suite. It is registered there and nowhere else rather than checking
+ * g_factory->version and skipping: the two harness executables are built from
+ * separate mains, so the version cannot vary within a run, and a suite that
+ * declines part of its job at run time is one nobody notices has shrunk. */
+static void server_disconnect_is_reported(void** state)
+{
+  (void)state;
+
+  az_iot_test_proxy_options popts = az_iot_test_proxy_options_default();
+  popts.upstream_host = g_host;
+  popts.upstream_port = g_port;
+  az_iot_test_proxy* proxy = NULL;
+  uint16_t proxy_port = 0;
+  assert_int_equal(az_iot_test_proxy_start(&popts, &proxy, &proxy_port), 0);
+
+  uint8_t connack[5] = { 0x20, 0x03, 0x00, 0x00, 0x00 }; /* success */
+  assert_int_equal(az_iot_test_proxy_set_synthetic_connack(proxy, connack, sizeof(connack)), 0);
+  uint8_t disconnect[3] = { 0xE0, 0x01, 0x8B }; /* reason 0x8B: server shutting down */
+  assert_int_equal(
+      az_iot_test_proxy_set_synthetic_disconnect(proxy, disconnect, sizeof(disconnect), 300), 0);
+
+  char cid[64];
+  unique_client_id(cid, sizeof(cid), "az-iot-conf-srvdisc");
+  conf_recorder rec = { 0 };
+  az_iot_mqtt_client* c = make_client();
+  c->iface->set_inbound_cb(c, on_event, &rec);
+
+  az_iot_mqtt_connect_options copts = { 0 };
+  copts.host = "127.0.0.1";
+  copts.port = proxy_port;
+  copts.client_id = cid;
+  copts.keep_alive_seconds = 30;
+  copts.connect_timeout_seconds = k_step_timeout_seconds;
+
+  assert_int_equal(c->iface->connect(c, &copts), AZ_IOT_OK);
+  assert_true(wait_until(c, &rec, saw_connected_ok, k_step_timeout_ms));
+  assert_true(wait_until(c, &rec, saw_disconnected, k_step_timeout_ms));
+
+  (void)c->iface->disconnect(c);
+  destroy_client(c);
+  az_iot_test_proxy_stop(proxy);
+}
+
 /* ------------------------------------------------------------------------- */
 /* entry point                                                                */
 /* ------------------------------------------------------------------------- */
 
-static int env_truthy(const char* v)
-{
-  if (!v || !*v)
-    return 0;
-  return (v[0] == '1' || v[0] == 't' || v[0] == 'T' || v[0] == 'y' || v[0] == 'Y');
-}
+/* The cases both suites run. Kept in a macro so the v3 and v5 lists cannot
+ * drift apart by editing one and forgetting the other: the only intended
+ * difference between them is the v5-only server-DISCONNECT case, which is
+ * appended to the v5 list below. */
+#define AZ_IOT_CONFORMANCE_COMMON_TESTS                                                          \
+  cmocka_unit_test(connect_disconnect_roundtrip), cmocka_unit_test(publish_subscribe_roundtrip), \
+      cmocka_unit_test(disconnect_without_connect_is_rejected),                                  \
+      cmocka_unit_test(connect_after_disconnect_reuses_the_client),                              \
+      cmocka_unit_test(connect_to_a_closed_port_is_rejected),                                    \
+      cmocka_unit_test(connect_to_an_unresolvable_host_is_rejected),                             \
+      cmocka_unit_test(connect_to_a_black_holed_address_never_reports_connected),                \
+      cmocka_unit_test(idle_session_survives_the_keep_alive_interval),                           \
+      TLS_TESTS cmocka_unit_test(reconnect_after_network_drop),                                  \
+      cmocka_unit_test(connect_connack_error_is_reported),                                       \
+      cmocka_unit_test(keep_alive_timeout_is_reported)
+
+/* Expands to nothing when the certificate cases were compiled out, so the two
+ * lists above stay a single expression either way. */
+#ifdef AZ_IOT_CONFORMANCE_WITH_TLS
+#define TLS_TESTS                                                   \
+  cmocka_unit_test(tls_handshake_succeeds_with_trusted_valid_cert), \
+      cmocka_unit_test(server_cert_validation_rejects_untrusted),   \
+      cmocka_unit_test(server_cert_validation_rejects_expired),     \
+      cmocka_unit_test(server_cert_validation_rejects_hostname_mismatch),
+#else
+#define TLS_TESTS
+#endif
 
 int az_iot_conformance_run(az_iot_conformance_suite suite_kind, az_iot_mqtt_factory* factory)
 {
   if (!factory)
+  {
     return 1;
+  }
 
   /* Validate the factory's advertised version matches the requested suite. */
   az_iot_mqtt_version want = (suite_kind == AZ_IOT_CONFORMANCE_SUITE_V5)
@@ -603,32 +1060,31 @@ int az_iot_conformance_run(az_iot_conformance_suite suite_kind, az_iot_mqtt_fact
   /* Resolve broker config from env. */
   const char* host = getenv("AZ_IOT_MQTT_BROKER_HOST");
   const char* port = getenv("AZ_IOT_MQTT_BROKER_PORT");
-  const char* skip = getenv("AZ_IOT_MQTT_BROKER_SKIP");
 
-  if (env_truthy(skip) || !host || !*host)
+  if (!host || !*host)
   {
+    /* A failure, not a skip. Whether this suite runs is decided at build time
+     * by AZ_IOT_BUILD_CONFORMANCE_TESTS; if it was built and registered, the
+     * broker address is a promise the caller has already made. Excusing
+     * ourselves here would hide a misconfigured job that silently stopped
+     * exercising the adapter. */
     fprintf(
         stderr,
-        "conformance: skipped (set AZ_IOT_MQTT_BROKER_HOST to a reachable broker; "
-        "current: host=%s skip=%s)\n",
-        host ? host : "(unset)",
-        skip ? skip : "(unset)");
-    return 77; /* CTest SKIP_RETURN_CODE */
+        "conformance: AZ_IOT_MQTT_BROKER_HOST is unset or empty, but this suite was built with "
+        "AZ_IOT_BUILD_CONFORMANCE_TESTS=ON. Point it at a reachable broker, or configure with "
+        "AZ_IOT_BUILD_CONFORMANCE_TESTS=OFF so the suite is not registered.\n");
+    return 1;
   }
 
   g_factory = factory;
   g_host = host;
   g_port = port ? (uint16_t)atoi(port) : (uint16_t)1883;
 
-  /* Optional TLS endpoint for the server-cert-validation test. Defaults its
-   * host to the plaintext broker host; the test is skipped when no TLS port
-   * is provided. */
-  {
-    const char* tls_host = getenv("AZ_IOT_MQTT_BROKER_TLS_HOST");
-    const char* tls_port = getenv("AZ_IOT_MQTT_BROKER_TLS_PORT");
-    g_tls_host = (tls_host && *tls_host) ? tls_host : g_host;
-    g_tls_port = (tls_port && *tls_port) ? (uint16_t)atoi(tls_port) : 0;
-  }
+  /* The certificate-validation cases used to need a separately provisioned TLS
+   * broker (AZ_IOT_MQTT_BROKER_TLS_HOST/_PORT). They now terminate TLS in the
+   * in-process test proxy against this same plaintext broker, so there is no
+   * second endpoint to configure -- and no way for that configuration to go
+   * missing and take a security check with it. */
 
   fprintf(
       stderr,
@@ -637,17 +1093,17 @@ int az_iot_conformance_run(az_iot_conformance_suite suite_kind, az_iot_mqtt_fact
       g_host,
       (unsigned)g_port);
 
-  const struct CMUnitTest tests[] = {
-    cmocka_unit_test(connect_disconnect_roundtrip),
-    cmocka_unit_test(publish_subscribe_roundtrip),
-    cmocka_unit_test(disconnect_without_connect_is_rejected),
-    cmocka_unit_test(connect_after_disconnect_reuses_the_client),
-    cmocka_unit_test(connect_to_a_closed_port_is_rejected),
-    cmocka_unit_test(connect_to_an_unresolvable_host_is_rejected),
-    cmocka_unit_test(connect_to_a_black_holed_address_never_reports_connected),
-    cmocka_unit_test(idle_session_survives_the_keep_alive_interval),
-    cmocka_unit_test(server_cert_validation_rejects_untrusted),
-  };
-  int failed = cmocka_run_group_tests(tests, NULL, NULL);
+  int failed;
+  if (suite_kind == AZ_IOT_CONFORMANCE_SUITE_V5)
+  {
+    const struct CMUnitTest v5_tests[]
+        = { AZ_IOT_CONFORMANCE_COMMON_TESTS, cmocka_unit_test(server_disconnect_is_reported) };
+    failed = cmocka_run_group_tests(v5_tests, NULL, NULL);
+  }
+  else
+  {
+    const struct CMUnitTest v3_tests[] = { AZ_IOT_CONFORMANCE_COMMON_TESTS };
+    failed = cmocka_run_group_tests(v3_tests, NULL, NULL);
+  }
   return (failed == 0) ? 0 : 1;
 }

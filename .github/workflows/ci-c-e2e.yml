@@ -130,8 +130,15 @@ jobs:
       # on both), and it preserves Windows local-dev parity.
       matrix:
         include:
+          # The Linux leg builds instrumented (linux-gcc-e2e-coverage) so its run
+          # contributes to the coverage picture. e2e is where the feature clients
+          # are actually driven end to end, and unit tests alone cannot reach
+          # those paths. Running it twice -- once plain, once instrumented --
+          # would double the Azure resources this workflow consumes, so it runs
+          # once, instrumented. gcov overhead is CPU-only and this suite is
+          # network-bound, so it does not move the wall clock.
           - os: ubuntu-latest
-            preset: linux-gcc-debug
+            preset: linux-gcc-e2e-coverage
             device-index: 0
           - os: windows-latest
             preset: windows-msvc-debug
@@ -150,13 +157,15 @@ jobs:
         # libcurl backs the file upload sample's HTTP hook; without it CMake builds
         # the sample with a stub hook that cannot perform the Classic control-plane
         # calls, and the sample run below would prove nothing.
-        run: sudo apt-get update && sudo apt-get install -y ninja-build libcurl4-openssl-dev
+        run: |
+          sudo apt-get update && sudo apt-get install -y ninja-build libcurl4-openssl-dev
+          python3 -m pip install --upgrade 'gcovr==7.2'
 
       - name: Build e2e tests
         working-directory: c
         run: |
           cmake --preset ${{ matrix.preset }} -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_WITH_PAHO=ON
-          cmake --build --preset ${{ matrix.preset }} ${{ runner.os == 'Windows' && '--config Debug' || '' }} --target az_iot_tests_e2e az_iot_tests_e2e_adu az_iot_tests_e2e_csr az_iot_tests_e2e_fileupload
+          cmake --build --preset ${{ matrix.preset }} ${{ runner.os == 'Windows' && '--config Debug' || '' }} --target az_iot_tests_e2e az_iot_tests_e2e_adu az_iot_tests_e2e_fileupload
 
       - name: Build the file upload sample (Linux)
         if: runner.os == 'Linux'
@@ -244,10 +253,11 @@ jobs:
           New-Item -ItemType Directory -Path ./test_config/results -Force | Out-Null
           $cfg = if ($IsWindows) { @('-C', 'Debug') } else { @() }
           # `-R e2e` runs the fast suite (az_iot_tests_e2e) and the mocked ADU
-          # suite (az_iot_tests_e2e_adu), plus the CSR enrollment test
-          # (az_iot_tests_e2e_csr), which self-skips (CTest exit 77) unless
-          # AZ_IOT_DPS_CSR_ENABLED is provisioned. The adu_crypto_openssl unit
-          # test is not matched by the e2e name filter, so it stays out of this job.
+          # suite (az_iot_tests_e2e_adu). The CSR enrollment test is not built
+          # here -- it needs a DPS enrollment linked to a signing CA, which only
+          # ci-c-e2e-csr provisions, so it lives behind AZ_IOT_BUILD_E2E_CSR.
+          # The adu_crypto_openssl unit test is not matched by the e2e name
+          # filter, so it stays out of this job.
           ctest --test-dir c/build/${{ matrix.preset }} @cfg -R e2e `
             --verbose --no-tests=error --timeout 900 `
             --output-junit ./test_config/results/e2e-${{ matrix.os }}.xml
@@ -273,6 +283,22 @@ jobs:
           name: e2e-results-${{ matrix.os }}
           path: ./test_config/results/**/*.xml
           if-no-files-found: ignore
+
+      - name: Collect coverage (Linux)
+        # Deliberately not `if: always()`. A failed or timed-out e2e run leaves
+        # partial or absent .gcda, and feeding that into the combined report
+        # would understate coverage for a reason unrelated to the change.
+        if: runner.os == 'Linux' && success()
+        working-directory: c
+        run: bash eng/collect-coverage.sh build/linux-gcc-e2e-coverage coverage/e2e.json e2e-linux
+
+      - name: Upload coverage tracefile (Linux)
+        if: runner.os == 'Linux' && success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-trace-e2e
+          path: c/coverage/e2e.json
+          if-no-files-found: error
 
   teardown:
     name: teardown (delete resources)

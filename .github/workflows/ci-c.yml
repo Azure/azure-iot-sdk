@@ -70,20 +70,19 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     # Mosquitto service container for the MQTT iface conformance suite.
-    # GitHub Actions service containers only run on Linux runners; on Windows
-    # AZ_IOT_MQTT_BROKER_HOST is set to the empty string, which the harness
-    # treats the same as unset, so the conformance tests skip themselves
-    # (CTest exit 77).
+    # GitHub Actions service containers only run on Linux runners. The Windows
+    # preset does not set AZ_IOT_BUILD_CONFORMANCE_TESTS, so those suites are
+    # not registered there and nothing needs a broker.
     services:
       mosquitto:
         image: ${{ matrix.os == 'ubuntu-latest' && 'eclipse-mosquitto:2' || '' }}
         ports:
           - 1883:1883
         # A real liveness probe: mosquitto_pub succeeds only once the broker is
-        # accepting connections. The previous `mosquitto_sub '$SYS/#' ... ||
+        # accepting connections. The previous `mosquitto_sub '$SYS/#' ||
         # exit 0` form reported healthy unconditionally, so the conformance
         # suites could race broker startup. That was harmless only while those
-        # suites were silently skipping.
+        # suites were silently skipping -- they now fail instead.
         options: >-
           --health-cmd="mosquitto_pub -h localhost -p 1883 -t healthcheck -m ok"
           --health-interval=5s
@@ -99,7 +98,11 @@ jobs:
 
       - name: Install ninja (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y ninja-build
+        # libssl-dev is explicit rather than assumed from the runner image: the
+        # Linux presets set AZ_IOT_BUILD_CONFORMANCE_TESTS_TLS, and that option
+        # fails the configure step outright when OpenSSL is missing instead of
+        # dropping the certificate-validation tests.
+        run: sudo apt-get update && sudo apt-get install -y ninja-build libssl-dev
 
       - name: Configure
         run: cmake --preset ${{ matrix.preset }} -DAZ_IOT_WITH_PAHO=${{ matrix.with_paho }}
@@ -111,9 +114,9 @@ jobs:
           # This job does not run inside a container, so the mosquitto service
           # container is published on the runner's own localhost -- NOT at the
           # service label `mosquitto`, which only resolves for containerized
-          # jobs. On Windows there is no service container, so these are set to
-          # the empty string; the conformance harness treats empty the same as
-          # unset and skips itself (CTest exit 77).
+          # jobs. Only the Linux presets register the conformance suites
+          # (AZ_IOT_BUILD_CONFORMANCE_TESTS is set in linux-base), so on Windows
+          # there is nothing that wants a broker and nothing to point at one.
           AZ_IOT_MQTT_BROKER_HOST: ${{ runner.os == 'Linux' && 'localhost' || '' }}
           AZ_IOT_MQTT_BROKER_PORT: ${{ runner.os == 'Linux' && '1883' || '' }}
         run: ctest --preset ${{ matrix.preset }} ${{ runner.os == 'Windows' && format('-C {0}', matrix.build_type) || '' }} --output-on-failure
@@ -168,6 +171,7 @@ jobs:
           -DCMAKE_C_COMPILER=gcc
           -DAZ_IOT_WITH_PAHO=ON
           -DAZ_IOT_BUILD_TESTS=ON
+          -DAZ_IOT_BUILD_CONFORMANCE_TESTS=ON
           -DCMAKE_C_FLAGS="-std=c99 -pedantic -Wall -Wextra -Werror"
       - name: Build
         run: cmake --build build/c99-strict
@@ -272,18 +276,21 @@ jobs:
         run: cmake --build --preset windows-msvc-debug --config Debug
       - name: Test under ASan
         # ASan reports a non-zero exit code on any detected defect; ctest
-        # surfaces that as a test failure in the standard way. There is no
-        # broker on Windows, so conformance tests skip themselves anyway.
+        # surfaces that as a test failure in the standard way. The Windows
+        # preset does not register the conformance suites, so -E conformance is
+        # belt-and-braces rather than load-bearing.
         run: ctest --preset windows-msvc-debug -C Debug --output-on-failure -E conformance
 
   # ---------------------------------------------------------------------------
   # Code coverage (gcov/gcovr) for first-party code -- c/src and c/adapters.
   #
-  # Phase 1: report-only. The per-component floors in
-  # c/tests/coverage-components.json are all null, so nothing fails on coverage
-  # yet; this run exists to establish the baseline. Phase 2 fills those numbers
-  # in and adds --enforce, at which point a per-component regression or a
-  # shipped adapter dropping out of the build blocks the merge.
+  # Report-only, deliberately. The per-component floors in
+  # c/tests/coverage-components.json are now SET -- derived from the measured
+  # unit+conformance numbers -- so the table marks each component PASS or FAIL.
+  # `--enforce` is still absent, so none of that can fail the build yet, and the
+  # report says so in as many words. Adding --enforce is the remaining step, at
+  # which point a per-component regression or a shipped adapter dropping out of
+  # the build blocks the merge.
   #
   # Design: c/docs/eng/code-coverage.md
   # ---------------------------------------------------------------------------
@@ -293,11 +300,13 @@ jobs:
     if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     env:
-      # Lowest acceptable number of CTest suites. Guards against a
-      # misconfigured build silently running zero tests and reporting coverage
-      # computed over nothing -- the failure mode the dead AZ_IOT_AEG_* option
-      # names used to cause in this workflow.
-      MIN_TESTS: '16'
+      # Exact number of CTest suites the coverage preset must register. An
+      # inequality only caught the build collapsing to nothing; it could not
+      # catch a suite quietly dropping out, which is the failure this repo
+      # actually had -- coverage computed over fewer tests than anyone thought.
+      # Now that no suite decides at run time whether to participate, the count
+      # is deterministic, so assert it exactly. Bump this when adding a suite.
+      EXPECTED_TESTS: '24'
     services:
       mosquitto:
         image: eclipse-mosquitto:2
@@ -323,11 +332,11 @@ jobs:
           python3 -m pip install --upgrade 'gcovr==7.2' 'diff-cover==9.2.0'
 
       - name: Verify MQTT broker is reachable
-        # The conformance suites self-skip with CTest exit 77 when no broker is
-        # reachable, and they are where nearly all Paho adapter coverage comes
-        # from. A silent skip would collapse the adapter-paho number and later
-        # fail the gate for an infrastructure reason, so fail loudly here
-        # instead. Same rule the e2e suite follows.
+        # The conformance suites are where nearly all Paho adapter coverage
+        # comes from, and they no longer excuse themselves when the broker is
+        # missing -- they fail. Probing here turns an infrastructure outage into
+        # an obvious error at the top of the log rather than a wall of
+        # connection failures further down.
         run: mosquitto_pub -h localhost -p 1883 -t az-iot/coverage/probe -m ok
 
       - name: Configure
@@ -339,9 +348,11 @@ jobs:
       - name: Sentinel - test suites were actually discovered
         run: |
           discovered=$(ctest --test-dir build/linux-gcc-coverage --show-only=json-v1 | jq '.tests | length')
-          echo "discovered $discovered test suites (minimum $MIN_TESTS)"
-          if [ "$discovered" -lt "$MIN_TESTS" ]; then
-            echo "::error::only $discovered test suites discovered, expected at least $MIN_TESTS"
+          echo "discovered $discovered test suites (expected exactly $EXPECTED_TESTS)"
+          if [ "$discovered" -ne "$EXPECTED_TESTS" ]; then
+            echo "::error::discovered $discovered test suites, expected exactly $EXPECTED_TESTS."
+            echo "If you added or removed a suite, update EXPECTED_TESTS in this workflow."
+            ctest --test-dir build/linux-gcc-coverage -N
             exit 1
           fi
 
@@ -367,9 +378,25 @@ jobs:
                 --html-details build/linux-gcc-coverage/coverage/html/index.html \
                 --txt --print-summary
 
+      - name: Collect coverage tracefile
+        # The merge-able intermediate, produced by the same script the e2e legs
+        # use so the filter sets cannot drift apart. Tracefiles built with
+        # different --filter/--exclude sets combine into a quietly wrong number
+        # rather than an obvious error.
+        run: bash eng/collect-coverage.sh build/linux-gcc-coverage coverage/unit.json unit-conformance
+
+      - name: Upload coverage tracefile
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-trace-unit
+          path: c/coverage/unit.json
+          if-no-files-found: error
+
       - name: Per-component summary
-        # Phase 1 is report-only: no --enforce. Add it in Phase 2 together with
-        # the floors in coverage-components.json.
+        # Floors are set but NOT enforced: no --enforce here, so a component
+        # below its floor is reported and does not fail the job. Verified
+        # satisfiable against both the per-PR and nightly datasets before being
+        # committed, so turning --enforce on is a one-line change when wanted.
         run: |
           python3 tests/coverage_report.py \
             --summary build/linux-gcc-coverage/coverage/summary.json \
@@ -380,8 +407,10 @@ jobs:
 
       - name: Patch coverage (report-only)
         if: github.event_name == 'pull_request'
-        # No --fail-under yet; that is Phase 3. This publishes the number so the
-        # 80% floor can be adopted against real data rather than a guess.
+        # No --fail-under yet. This publishes the number so the 80% patch floor
+        # can be adopted against real data rather than a guess -- the same
+        # approach used for the per-component floors, which were set from
+        # measured values rather than chosen up front.
         run: |
           git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
           diff-cover build/linux-gcc-coverage/coverage/cobertura.xml \

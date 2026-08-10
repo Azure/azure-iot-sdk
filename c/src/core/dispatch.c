@@ -10,7 +10,9 @@
 void az_iot_dispatch_init(az_iot_dispatch_table* tbl)
 {
   if (tbl)
+  {
     memset(tbl, 0, sizeof(*tbl));
+  }
 }
 
 az_iot_result az_iot_dispatch_register_prefix(
@@ -20,11 +22,15 @@ az_iot_result az_iot_dispatch_register_prefix(
     void* user_ctx)
 {
   if (!tbl || !topic_prefix || !cb)
+  {
     return AZ_IOT_ERR_INVALID_ARG;
+  }
 
   size_t n = strlen(topic_prefix);
   if (n + 1 > AZ_IOT_DISPATCH_PREFIX_MAX)
+  {
     return AZ_IOT_ERR_NOT_SUPPORTED;
+  }
 
   /* Find an empty slot, and reject a prefix that is already claimed.
    *
@@ -73,7 +79,9 @@ az_iot_result az_iot_dispatch_register_prefix(
 size_t az_iot_dispatch_unregister_by_ctx(az_iot_dispatch_table* tbl, void* user_ctx)
 {
   if (!tbl)
+  {
     return 0;
+  }
   size_t removed = 0;
   for (size_t i = 0; i < AZ_IOT_MAX_INBOUND_HANDLERS; ++i)
   {
@@ -91,7 +99,9 @@ size_t az_iot_dispatch_unregister_by_ctx(az_iot_dispatch_table* tbl, void* user_
 bool az_iot_dispatch_route(const az_iot_dispatch_table* tbl, const az_iot_mqtt_message* msg)
 {
   if (!tbl || !msg || !msg->topic)
+  {
     return false;
+  }
   size_t topic_len = strlen(msg->topic);
 
   /* Longest-prefix match: walk all entries, track the best one. */
@@ -100,16 +110,26 @@ bool az_iot_dispatch_route(const az_iot_dispatch_table* tbl, const az_iot_mqtt_m
   {
     const az_iot_dispatch_entry* e = &tbl->entries[i];
     if (!e->in_use)
+    {
       continue;
+    }
     if (e->prefix_len > topic_len)
+    {
       continue;
+    }
     if (memcmp(msg->topic, e->prefix, e->prefix_len) != 0)
+    {
       continue;
+    }
     if (!best || e->prefix_len > best->prefix_len)
+    {
       best = e;
+    }
   }
   if (!best)
+  {
     return false;
+  }
   best->cb(best->user_ctx, msg);
   return true;
 }

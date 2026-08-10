@@ -66,11 +66,26 @@ if(TARGET cmocka)
 endif()
 
 # Helper to register a cmocka-based test executable.
+#
+# Pass NO_CTEST anywhere in the argument list to build the executable without
+# registering it with CTest. That is how a suite opts out of a platform it
+# cannot run on: the file still compiles, so the platform's compiler keeps
+# checking it, but CTest has no test to run. The alternative -- registering it
+# and having it report a skip at run time -- hides the fact that it stopped
+# running.
 function(az_iot_add_cmocka_test name)
-    add_executable(${name} ${ARGN})
+    set(sources "${ARGN}")
+    set(register TRUE)
+    if("NO_CTEST" IN_LIST sources)
+        list(REMOVE_ITEM sources NO_CTEST)
+        set(register FALSE)
+    endif()
+    add_executable(${name} ${sources})
     target_link_libraries(${name} PRIVATE az_iot_core cmocka)
     az_iot_apply_warnings(${name})
-    add_test(NAME ${name} COMMAND ${name})
+    if(register)
+        add_test(NAME ${name} COMMAND ${name})
+    endif()
     # If cmocka built as a shared lib (e.g. on Windows when something forced
     # BUILD_SHARED_LIBS=ON), copy the DLL next to the test exe.
     if(WIN32 AND TARGET cmocka)
@@ -124,6 +139,13 @@ az_iot_add_cmocka_test(az_iot_tests_span_writer unit/span_writer_test.c)
 target_include_directories(az_iot_tests_span_writer PRIVATE
     ${CMAKE_SOURCE_DIR}/src/core)
 az_iot_add_cmocka_test(az_iot_tests_log unit/log_test.c)
+# Diagnostic surface: the *_to_string helpers, version string, default
+# reconnection policy and the built-in stderr sink. Pulls internal headers for
+# the role/flavor helpers and the CSR request-id generator, which are internal
+# but still shipped code that nothing was exercising.
+az_iot_add_cmocka_test(az_iot_tests_diagnostics unit/diagnostics_test.c)
+target_include_directories(az_iot_tests_diagnostics PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/core)
 az_iot_add_cmocka_test(az_iot_tests_protocol_profile_dispatch unit/protocol_profile_dispatch_test.c)
 target_include_directories(az_iot_tests_protocol_profile_dispatch PRIVATE
     ${CMAKE_SOURCE_DIR}/src/core)
@@ -186,8 +208,13 @@ endif()
 # Reusable test library that operates strictly through az_iot_mqtt_iface.
 # Customers can link this library to validate their own MQTT client+adapter
 # implementations. Two harness exes are shipped that wire the bundled Paho
-# adapter (one per MQTT version) into the suite. The suite skips itself
-# (CTest exit 77) unless AZ_IOT_MQTT_BROKER_HOST is set.
+# adapter (one per MQTT version) into the suite.
+#
+# The exes always build; they are registered as CTest tests only when
+# AZ_IOT_BUILD_CONFORMANCE_TESTS is on, because they need a reachable broker.
+# The address comes from AZ_IOT_MQTT_BROKER_HOST / _PORT, and a missing host is
+# now a hard failure rather than a self-skip: a suite that excuses itself at run
+# time is one nobody notices has stopped running.
 # ---------------------------------------------------------------------------
 add_library(az_iot_conformance STATIC
     conformance/az_iot_conformance.c
@@ -195,7 +222,23 @@ add_library(az_iot_conformance STATIC
 target_include_directories(az_iot_conformance PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/conformance
 )
-target_link_libraries(az_iot_conformance PUBLIC az_iot_core cmocka)
+target_link_libraries(az_iot_conformance PUBLIC az_iot_core cmocka az_iot_test_proxy)
+# The certificate-validation tests drive TLS through the in-process test proxy,
+# which generates and presents the certificates itself, so they need OpenSSL
+# rather than a separately provisioned TLS broker. Refuse to configure when the
+# option is on but OpenSSL is missing: dropping a mandatory security check is
+# exactly the outcome this option exists to make visible.
+if(AZ_IOT_BUILD_CONFORMANCE_TESTS_TLS)
+    find_package(OpenSSL 3.0 QUIET)
+    if(NOT OPENSSL_FOUND)
+        message(FATAL_ERROR
+            "AZ_IOT_BUILD_CONFORMANCE_TESTS_TLS=ON but OpenSSL 3.0+ was not found. The "
+            "certificate-validation tests terminate TLS in the in-process test proxy, which "
+            "needs OpenSSL to generate the CA and leaf it presents. Install OpenSSL 3.0+, or "
+            "configure with -DAZ_IOT_BUILD_CONFORMANCE_TESTS_TLS=OFF to leave those tests out.")
+    endif()
+    target_compile_definitions(az_iot_conformance PRIVATE AZ_IOT_CONFORMANCE_WITH_TLS)
+endif()
 if(UNIX)
     # Enable POSIX (clock_gettime, nanosleep, CLOCK_MONOTONIC).
     target_compile_definitions(az_iot_conformance PRIVATE
@@ -205,20 +248,88 @@ if(UNIX)
 endif()
 az_iot_apply_warnings(az_iot_conformance)
 
+# ---------------------------------------------------------------------------
+# For-testing TCP passthrough proxy.
+#
+# In-process proxy that interposes a raw TCP passthrough between an MQTT client
+# and a real upstream broker, so connect / reconnect / network-error paths on
+# the genuine client + TLS stack become deterministically drivable. Standalone
+# (sockets + libc only, no MQTT/core dependency) so it builds on every CI leg.
+#
+# With OpenSSL it also terminates TLS using a CA and leaf generated at run time,
+# which is what lets the certificate-validation tests above run without a
+# separately provisioned TLS broker.
+# ---------------------------------------------------------------------------
+add_library(az_iot_test_proxy STATIC
+    conformance/az_iot_test_proxy.c
+)
+target_include_directories(az_iot_test_proxy PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/conformance
+)
+# TLS termination needs OpenSSL. Without it the proxy is plaintext-only, and the
+# conformance library refuses to configure with
+# AZ_IOT_BUILD_CONFORMANCE_TESTS_TLS=ON rather than silently dropping the
+# certificate tests.
+find_package(OpenSSL 3.0 QUIET)
+if(OPENSSL_FOUND)
+    target_compile_definitions(az_iot_test_proxy PRIVATE AZ_IOT_TEST_PROXY_TLS)
+    target_link_libraries(az_iot_test_proxy PUBLIC OpenSSL::SSL OpenSSL::Crypto)
+endif()
+if(UNIX)
+    # Enable POSIX (getaddrinfo, select, nanosleep, CLOCK_MONOTONIC) under -std=c99.
+    target_compile_definitions(az_iot_test_proxy PRIVATE
+        _POSIX_C_SOURCE=200809L
+        _DEFAULT_SOURCE)
+    target_link_libraries(az_iot_test_proxy PUBLIC pthread)
+endif()
+if(WIN32)
+    target_link_libraries(az_iot_test_proxy PUBLIC ws2_32)
+endif()
+az_iot_apply_warnings(az_iot_test_proxy)
+
 if(AZ_IOT_WITH_PAHO)
     add_executable(az_iot_conformance_paho_v3 conformance/paho_v3_main.c)
     target_link_libraries(az_iot_conformance_paho_v3 PRIVATE
         az_iot_conformance az_iot_adapter_paho)
     az_iot_apply_warnings(az_iot_conformance_paho_v3)
-    add_test(NAME az_iot_conformance_paho_v3 COMMAND az_iot_conformance_paho_v3)
-    set_tests_properties(az_iot_conformance_paho_v3 PROPERTIES SKIP_RETURN_CODE 77)
 
     add_executable(az_iot_conformance_paho_v5 conformance/paho_v5_main.c)
     target_link_libraries(az_iot_conformance_paho_v5 PRIVATE
         az_iot_conformance az_iot_adapter_paho)
     az_iot_apply_warnings(az_iot_conformance_paho_v5)
-    add_test(NAME az_iot_conformance_paho_v5 COMMAND az_iot_conformance_paho_v5)
-    set_tests_properties(az_iot_conformance_paho_v5 PROPERTIES SKIP_RETURN_CODE 77)
+
+    if(AZ_IOT_BUILD_CONFORMANCE_TESTS)
+        add_test(NAME az_iot_conformance_paho_v3 COMMAND az_iot_conformance_paho_v3)
+        add_test(NAME az_iot_conformance_paho_v5 COMMAND az_iot_conformance_paho_v5)
+    endif()
+endif()
+
+# ---------------------------------------------------------------------------
+# Real-stack reconnect integration test.
+#
+# Drives the core connection client's reconnect state machine over the GENUINE
+# Paho adapter, using the in-process test proxy to induce a real network drop.
+# This complements (does not replace) the fast, deterministic mock-based
+# connection_client_test.
+#
+# It needs the same reachable broker the conformance suites need, so it is
+# registered under the same option rather than a second knob a job could forget
+# to set. Built everywhere regardless, so every compiler keeps checking it.
+# ---------------------------------------------------------------------------
+if(AZ_IOT_WITH_PAHO)
+    az_iot_add_cmocka_test(az_iot_reconnect_integration
+        integration/reconnect_real_stack_test.c NO_CTEST)
+    target_include_directories(az_iot_reconnect_integration PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/conformance)
+    target_link_libraries(az_iot_reconnect_integration PRIVATE
+        az_iot_adapter_paho az_iot_test_proxy)
+    if(UNIX)
+        target_compile_definitions(az_iot_reconnect_integration PRIVATE
+            _POSIX_C_SOURCE=200809L _DEFAULT_SOURCE)
+    endif()
+    if(AZ_IOT_BUILD_CONFORMANCE_TESTS)
+        add_test(NAME az_iot_reconnect_integration COMMAND az_iot_reconnect_integration)
+    endif()
 endif()
 
 # ---------------------------------------------------------------------------

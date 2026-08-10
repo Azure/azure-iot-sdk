@@ -57,15 +57,23 @@ target_link_libraries(az_iot_tests_e2e_adu PRIVATE az_iot_e2e_service az_iot_ada
 # az_iot_tests_e2e_csr
 #
 # CSR-based DPS enrollment (issued operational cert). Requires a DPS enrollment
-# linked to a signing CA - which the fast job does not provision - so it
-# self-skips (CTest exit 77) unless AZ_IOT_DPS_CSR_ENABLED is set. Built only
-# when the OpenSSL "managed" certificate provider is available.
+# linked to a signing CA, which only the ci-c-e2e-csr workflow provisions, so it
+# is built only when AZ_IOT_BUILD_E2E_CSR is set -- and when the OpenSSL
+# "managed" certificate provider is available.
+#
+# It used to be built everywhere and skip itself at run time. That meant the
+# main e2e leg paid to compile and launch a test that could never do anything,
+# and a CTest "Skipped" line was the only evidence it was not running.
 # ---------------------------------------------------------------------------
-if(TARGET az_iot_certificate_provider_managed)
+if(AZ_IOT_BUILD_E2E_CSR)
+    if(NOT TARGET az_iot_certificate_provider_managed)
+        message(FATAL_ERROR
+            "AZ_IOT_BUILD_E2E_CSR=ON requires the OpenSSL managed certificate provider "
+            "(AZ_IOT_WITH_CERT_PROVIDER_MANAGED=ON).")
+    endif()
     az_iot_add_cmocka_test(az_iot_tests_e2e_csr tests/e2e_csr_test.c)
     target_link_libraries(az_iot_tests_e2e_csr PRIVATE
         az_iot_adapter_paho az_iot_certificate_provider_managed)
-    set_tests_properties(az_iot_tests_e2e_csr PROPERTIES SKIP_RETURN_CODE 77)
 endif()
 
 # ---------------------------------------------------------------------------
@@ -86,9 +94,14 @@ endif()
 # `ctest -R e2e` filter.
 #
 # Runs on the Linux e2e legs. On Windows the harness's Schannel transport does
-# not present the self-signed device certificate on the CI runners, so the test
-# self-skips (CTest exit 77); the file-upload sample still builds and runs there.
+# not present the self-signed device certificate on the CI runners, so it is not
+# registered as a test there -- but the executable is still built, so MSVC keeps
+# compiling it. The file-upload sample also builds and runs natively on Windows.
 # ---------------------------------------------------------------------------
-az_iot_add_cmocka_test(az_iot_tests_e2e_fileupload tests/e2e_fileupload_test.c tests/e2e_device.c)
+set(_e2e_fileupload_ctest "")
+if(WIN32)
+    set(_e2e_fileupload_ctest NO_CTEST)
+endif()
+az_iot_add_cmocka_test(az_iot_tests_e2e_fileupload ${_e2e_fileupload_ctest}
+    tests/e2e_fileupload_test.c tests/e2e_device.c)
 target_link_libraries(az_iot_tests_e2e_fileupload PRIVATE az_iot_e2e_service az_iot_adapter_paho)
-set_tests_properties(az_iot_tests_e2e_fileupload PROPERTIES SKIP_RETURN_CODE 77)

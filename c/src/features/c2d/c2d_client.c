@@ -257,11 +257,15 @@ static void on_c2d_next(void* user_ctx, const az_iot_mqtt_message* msg)
 az_iot_result az_iot_c2d_client_init(az_iot_c2d_client* client, az_iot_connection_client* conn)
 {
   if (!client || !conn)
+  {
     return AZ_IOT_ERR_INVALID_ARG;
+  }
 
   const az_iot_protocol_profile* profile = az_iot_connection_client__profile(conn);
   if (!profile)
+  {
     return AZ_IOT_ERR_NOT_SUPPORTED;
+  }
 
   memset(client, 0, sizeof(*client));
   CI(client).conn = conn;
@@ -311,7 +315,9 @@ az_iot_result az_iot_c2d_client_init(az_iot_c2d_client* client, az_iot_connectio
      * DPS flow). The connection_client resolves this via its DPS config. */
     const char* device_id = conn->opts.dps.registration_id;
     if (!device_id)
+    {
       device_id = conn->opts.client_id;
+    }
     if (!device_id)
     {
       memset(client, 0, sizeof(*client));
@@ -362,7 +368,9 @@ az_iot_result az_iot_c2d_client_init(az_iot_c2d_client* client, az_iot_connectio
 void az_iot_c2d_client_destroy(az_iot_c2d_client* client)
 {
   if (!client)
+  {
     return;
+  }
   (void)az_iot_connection_client__unregister_inbound_handlers(CI(client).conn, client);
   memset(client, 0, sizeof(*client));
 }
@@ -373,7 +381,9 @@ az_iot_result az_iot_c2d_client_set_handler(
     void* user_ctx)
 {
   if (!client)
+  {
     return AZ_IOT_ERR_INVALID_ARG;
+  }
   CI(client).handler = cb;
   CI(client).handler_ctx = user_ctx;
   return AZ_IOT_OK;

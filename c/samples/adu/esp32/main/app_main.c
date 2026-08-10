@@ -219,7 +219,9 @@ void app_main(void)
   {
     (void)az_iot_connection_client_do_work(&conn, 50);
     if (g_conn_state == AZ_IOT_CONN_STATE_FAULTED)
+    {
       break;
+    }
   }
 
   if (g_conn_state != AZ_IOT_CONN_STATE_CONNECTED)

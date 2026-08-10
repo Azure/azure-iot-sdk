@@ -208,6 +208,45 @@ Paho adapter) and is the more honest measure of how much of the error handling
 is exercised. Expect the branch floors to be set well below the line floors
 initially.
 
+### The floors, and how they were chosen
+
+Floors are now set for every component and every metric. They are **configured
+but not enforced**: the report prints them and marks each component PASS or
+FAIL, and the job still cannot fail the build. The report says so explicitly, so
+a FAIL row is not mistaken for a broken gate.
+
+They are derived from the **unit + conformance** numbers, not from the nightly
+combined ones. The same `coverage-components.json` is read by both the per-PR
+job and the nightly combined job, so a floor set from the combined figure would
+be unreachable on every pull request. The e2e suites add roughly a point overall
+(72.5% → 73.7% line), so the two are close, but the per-PR number is the one
+that has to be satisfiable.
+
+The rule: round down to a multiple of 5 below the measured value, keeping at
+least 2 points of headroom. Round numbers because a floor is a policy decision
+rather than a measurement, and headroom because an ordinary refactor moves these
+figures by a point or so and a gate that fires on noise gets switched off.
+
+| Component | line | branch | function |
+| --- | ---: | ---: | ---: |
+| `core` | 75 | 60 | 80 |
+| `features` | 65 | 50 | 85 |
+| `adapter-paho` | 60 | 35 | 75 |
+| `adapter-adu-crypto` | 75 | 40 | 95 |
+| `adapter-cert-managed` | 75 | 55 | 80 |
+
+Minimum headroom across all fifteen floors is 2.7 points (`features` function).
+The Paho adapter carries the lowest floors deliberately: its coverage comes
+almost entirely from the broker-gated conformance suites, so a broker outage
+moves it further than any other component.
+
+These are a **ratchet against regression, not the target**. The stated goal is
+80% on the lower bar; `core` is the only component near it and the overall
+figure is 72.5%. Raising the floors means writing tests, and each floor should
+be lifted as its component clears the next multiple of 5 -- not left to drift
+upward automatically, which would turn an unrelated improvement into someone
+else's build failure.
+
 ### The Paho adapter's coverage depends entirely on the broker
 
 | | Lines |
@@ -442,10 +481,10 @@ jobs. Shape:
 - `runs-on: ubuntu-latest`, with the same `eclipse-mosquitto:2` service
   container the `build` and `valgrind` jobs already declare.
 - **Broker precondition:** assert the broker is actually reachable and fail if
-  not. The conformance suites self-skip via CTest exit 77 when it is missing,
-  and they are where nearly all Paho adapter coverage comes from — a silent
-  skip would collapse `adapter-paho` and fail the PR for an infrastructure
-  reason.
+  not. The conformance suites are where nearly all Paho adapter coverage comes
+  from, and they now fail rather than skip when the broker is missing — so
+  probing first turns an infrastructure outage into an obvious error instead of
+  a wall of connection failures.
 - `actions/checkout@v4` with `fetch-depth: 0` — `diff-cover` needs the
   merge-base.
 - Install `ninja-build`, `libssl-dev` (the OpenSSL adapters are mandatory
@@ -807,13 +846,16 @@ the merge-base is available.
 - **Never set coverage flags globally.** `-DCMAKE_C_FLAGS=--coverage` leaks
   into `FetchContent` dependencies, instrumenting azure-sdk-for-c and cmocka.
   Same failure mode that made warnings target-scoped.
-- **A skipped conformance suite is a false gate failure — and it is the Paho
-  adapter's whole coverage story.** The conformance harnesses self-skip via
-  CTest exit 77 when no broker is reachable. If the mosquitto service container
-  fails to start, the suite "passes" while `az_iot_mqtt_paho.c` goes almost
-  entirely uncovered, and the `adapter-paho` floor then fails the PR for an
-  infrastructure reason with no bearing on the change. Asserting broker
-  reachability in the coverage job is therefore mandatory, not advisory — the
+- **A missing conformance suite is a false gate failure — and it is the Paho
+  adapter's whole coverage story.** Historically the harnesses self-skipped via
+  CTest exit 77 when no broker was reachable, so if the mosquitto service
+  container failed to start the suite "passed" while `az_iot_mqtt_paho.c` went
+  almost entirely uncovered, and the `adapter-paho` floor then failed the PR
+  for an infrastructure reason with no bearing on the change. The self-skip is
+  gone — the suites are registered only when built with
+  `AZ_IOT_BUILD_CONFORMANCE_TESTS`, and once registered they fail on a missing
+  broker. Asserting broker reachability in the coverage job remains mandatory,
+  not advisory — the
   same "missing resources fail loudly, never a silent skip" rule the e2e suite
   already follows.
 - **Exclusion lists are reviewed, not ad-hoc.** Excluding `tests/` and

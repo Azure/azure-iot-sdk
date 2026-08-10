@@ -76,11 +76,15 @@ static bool fileupload_json_str(az_span json, az_span name, char* out, int32_t c
          && jr.token.kind != AZ_JSON_TOKEN_END_OBJECT)
   {
     if (jr.token.kind != AZ_JSON_TOKEN_PROPERTY_NAME)
+    {
       continue;
+    }
 
     bool match = az_json_token_is_text_equal(&jr.token, name);
     if (az_result_failed(az_json_reader_next_token(&jr)))
+    {
       return false;
+    }
 
     if (match)
     {
@@ -97,7 +101,9 @@ static bool fileupload_json_str(az_span json, az_span name, char* out, int32_t c
     if (jr.token.kind == AZ_JSON_TOKEN_BEGIN_OBJECT || jr.token.kind == AZ_JSON_TOKEN_BEGIN_ARRAY)
     {
       if (az_result_failed(az_json_reader_skip_children(&jr)))
+      {
         return false;
+      }
     }
   }
   return false;
@@ -187,13 +193,21 @@ static az_iot_result build_notification_body(
 static az_iot_result http_status_to_result(int status)
 {
   if (status >= AZ_IOT_FILEUPLOAD_HTTP_SUCCESS_MIN && status < AZ_IOT_FILEUPLOAD_HTTP_SUCCESS_MAX)
+  {
     return AZ_IOT_OK;
+  }
   if (status == AZ_IOT_FILEUPLOAD_HTTP_NOT_FOUND)
+  {
     return AZ_IOT_ERR_NOT_FOUND;
+  }
   if (status == AZ_IOT_FILEUPLOAD_HTTP_THROTTLED)
+  {
     return AZ_IOT_ERR_BUSY;
+  }
   if (status >= AZ_IOT_FILEUPLOAD_HTTP_CLIENT_MIN && status < AZ_IOT_FILEUPLOAD_HTTP_CLIENT_MAX)
+  {
     return AZ_IOT_ERR_INVALID_ARG;
+  }
   return AZ_IOT_ERR_PROTOCOL;
 }
 
@@ -226,7 +240,7 @@ static az_iot_result fileupload_resolve_endpoint(
    * two call for opposite responses: an application told AZ_IOT_ERR_INVALID_ARG
    * would go auditing its own arguments, when what it should do is retry once
    * the connection is up. */
-  if (!host || !host[0] || !device_id || !device_id[0])
+  if (!is_nonempty_cstr(host) || !is_nonempty_cstr(device_id))
   {
     return AZ_IOT_ERR_NOT_CONNECTED;
   }
@@ -246,11 +260,15 @@ az_iot_result az_iot_file_upload_client_init(
     const az_iot_file_upload_http_transport* http_transport)
 {
   if (!client || !conn)
+  {
     return AZ_IOT_ERR_INVALID_ARG;
+  }
 
   const az_iot_protocol_profile* profile = az_iot_connection_client__profile(conn);
   if (!profile)
+  {
     return AZ_IOT_ERR_NOT_SUPPORTED;
+  }
 
   memset(client, 0, sizeof(*client));
   FI(client).conn = conn;
@@ -287,11 +305,15 @@ az_iot_result az_iot_file_upload_client_init(
 void az_iot_file_upload_client_destroy(az_iot_file_upload_client* client)
 {
   if (!client)
+  {
     return;
+  }
   /* Harmless today (no handlers are registered yet); keeps teardown correct
    * once the Next/MQTT path registers response handlers. */
   if (FI(client).conn)
+  {
     (void)az_iot_connection_client__unregister_inbound_handlers(FI(client).conn, client);
+  }
   memset(client, 0, sizeof(*client));
 }
 
@@ -301,8 +323,10 @@ az_iot_result az_iot_file_upload_client_get_sas_uri(
     az_iot_file_upload_sas_callback cb,
     void* user_ctx)
 {
-  if (!client || !blob_name || !blob_name[0] || !cb)
+  if (!client || !is_nonempty_cstr(blob_name) || !cb)
+  {
     return AZ_IOT_ERR_INVALID_ARG;
+  }
 
   const az_iot_protocol_profile* profile = az_iot_connection_client__profile(FI(client).conn);
   if (profile && profile->flavor == AZ_IOT_HUB_FLAVOR_NEXT)
@@ -317,13 +341,17 @@ az_iot_result az_iot_file_upload_client_get_sas_uri(
 
   /* Classic: synchronous HTTPS request via the application's transport hook. */
   if (!FI(client).http_send)
+  {
     return AZ_IOT_ERR_NOT_INITIALIZED;
+  }
 
   const char* host = NULL;
   const char* device_id = NULL;
   az_iot_result er = fileupload_resolve_endpoint(client, &host, &device_id);
   if (er != AZ_IOT_OK)
+  {
     return er;
+  }
 
   char url[AZ_IOT_FILE_UPLOAD_URL_MAX];
   const char* url_parts[] = {
@@ -338,7 +366,9 @@ az_iot_result az_iot_file_upload_client_get_sas_uri(
   size_t body_len = 0;
   az_iot_result br = build_sas_request_body(body, sizeof(body), blob_name, &body_len);
   if (br != AZ_IOT_OK)
+  {
     return br;
+  }
 
   uint8_t rbuf[AZ_IOT_FILE_UPLOAD_SAS_URI_MAX];
   az_iot_file_upload_http_response resp;
@@ -386,9 +416,13 @@ az_iot_result az_iot_file_upload_client_get_sas_uri(
     if (assemble_sas_uri(json, sas_uri, sizeof(sas_uri))
         && fileupload_json_str(
             json, AZ_SPAN_FROM_STR("correlationId"), corr_id, (int32_t)sizeof(corr_id)))
+    {
       cb(AZ_IOT_OK, sas_uri, corr_id, user_ctx);
+    }
     else
+    {
       cb(AZ_IOT_ERR_PROTOCOL, NULL, NULL, user_ctx);
+    }
   }
   else
   {
@@ -404,8 +438,10 @@ az_iot_result az_iot_file_upload_client_notify_complete(
     az_iot_file_upload_complete_callback cb,
     void* user_ctx)
 {
-  if (!client || !correlation_id || !correlation_id[0] || !cb)
+  if (!client || !is_nonempty_cstr(correlation_id) || !cb)
+  {
     return AZ_IOT_ERR_INVALID_ARG;
+  }
 
   const az_iot_protocol_profile* profile = az_iot_connection_client__profile(FI(client).conn);
   if (profile && profile->flavor == AZ_IOT_HUB_FLAVOR_NEXT)
@@ -414,13 +450,17 @@ az_iot_result az_iot_file_upload_client_notify_complete(
   }
 
   if (!FI(client).http_send)
+  {
     return AZ_IOT_ERR_NOT_INITIALIZED;
+  }
 
   const char* host = NULL;
   const char* device_id = NULL;
   az_iot_result er = fileupload_resolve_endpoint(client, &host, &device_id);
   if (er != AZ_IOT_OK)
+  {
     return er;
+  }
 
   char url[AZ_IOT_FILE_UPLOAD_URL_MAX];
   const char* url_parts[] = { "https://",
@@ -438,7 +478,9 @@ az_iot_result az_iot_file_upload_client_notify_complete(
   az_iot_result br
       = build_notification_body(body, sizeof(body), correlation_id, is_success, &body_len);
   if (br != AZ_IOT_OK)
+  {
     return br;
+  }
 
   az_iot_file_upload_http_response resp;
   memset(&resp, 0, sizeof(resp));

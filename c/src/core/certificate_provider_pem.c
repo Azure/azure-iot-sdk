@@ -29,6 +29,7 @@
 
 #include "azure/iot/az_iot_certificate_provider_pem.h"
 #include "internal/log_internal.h"
+#include "internal/span_writer.h"
 
 /* Read entire file into a NUL-terminated heap string. Caller frees. */
 static az_iot_result read_file_content(const char* path, char** out)
@@ -36,7 +37,9 @@ static az_iot_result read_file_content(const char* path, char** out)
   *out = NULL;
   FILE* f = fopen(path, "rb");
   if (!f)
+  {
     return AZ_IOT_ERR_NOT_INITIALIZED;
+  }
   if (fseek(f, 0, SEEK_END) != 0)
   {
     fclose(f);
@@ -80,9 +83,13 @@ static az_iot_result pem_load(
   az_iot_certificate_provider_pem* m = (az_iot_certificate_provider_pem*)self;
   (void)role; /* static-cert provider: same material for bootstrap and operational */
   if (!m || !out)
+  {
     return AZ_IOT_ERR_INVALID_ARG;
+  }
   if (!m->loaded)
+  {
     return AZ_IOT_ERR_NOT_INITIALIZED;
+  }
 
   out->trusted_ca_pem = m->trusted_ca;
   out->client_cert_pem = m->client_cert;
@@ -117,11 +124,15 @@ static const az_iot_certificate_provider_vtable s_pem_vtable = {
 static char* dup_str(const char* s)
 {
   if (!s)
+  {
     return NULL;
+  }
   size_t n = strlen(s);
   char* out = (char*)malloc(n + 1);
   if (!out)
+  {
     return NULL;
+  }
   memcpy(out, s, n + 1);
   return out;
 }
@@ -129,7 +140,9 @@ static char* dup_str(const char* s)
 void az_iot_certificate_provider_pem_destroy(az_iot_certificate_provider_pem* provider)
 {
   if (!provider)
+  {
     return;
+  }
   free(provider->trusted_ca);
   free(provider->client_cert);
   free(provider->client_key);
@@ -155,8 +168,7 @@ az_iot_result az_iot_certificate_provider_pem_init(
     AZ_IOT_LOG_ERROR("certificate_provider_pem_init: invalid arguments");
     return AZ_IOT_ERR_INVALID_ARG;
   }
-  if (!opts->client_cert_pem_path || !opts->client_cert_pem_path[0] || !opts->client_key_pem_path
-      || !opts->client_key_pem_path[0])
+  if (!is_nonempty_cstr(opts->client_cert_pem_path) || !is_nonempty_cstr(opts->client_key_pem_path))
   {
     AZ_IOT_LOG_ERROR(
         "certificate_provider_pem_init: client_cert_pem_path and client_key_pem_path are required");
@@ -182,7 +194,7 @@ az_iot_result az_iot_certificate_provider_pem_init(
     return r;
   }
 
-  if (opts->trusted_ca_pem_path && opts->trusted_ca_pem_path[0])
+  if (is_nonempty_cstr(opts->trusted_ca_pem_path))
   {
     r = read_file_content(opts->trusted_ca_pem_path, &provider->trusted_ca);
     if (r != AZ_IOT_OK)
@@ -209,7 +221,7 @@ az_iot_result az_iot_certificate_provider_pem_init(
     az_iot_certificate_provider_pem_destroy(provider);
     return AZ_IOT_ERR_OUT_OF_MEMORY;
   }
-  if (opts->trusted_ca_pem_path && opts->trusted_ca_pem_path[0])
+  if (is_nonempty_cstr(opts->trusted_ca_pem_path))
   {
     provider->ca_path = dup_str(opts->trusted_ca_pem_path);
     if (!provider->ca_path)

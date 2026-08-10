@@ -31,7 +31,9 @@ static void on_event(const az_iot_mqtt_event* evt, void* ctx)
 {
   collected_events* col = (collected_events*)ctx;
   if (col->count >= 8)
+  {
     return;
+  }
   size_t i = col->count++;
   col->kinds[i] = evt->kind;
   col->statuses[i] = evt->status;
@@ -41,15 +43,21 @@ static void on_event(const az_iot_mqtt_event* evt, void* ctx)
     {
       size_t n = strlen(evt->message->topic);
       if (n >= AZ_IOT_MOCK_TOPIC_MAX)
+      {
         n = AZ_IOT_MOCK_TOPIC_MAX - 1;
+      }
       memcpy(col->topics[i], evt->message->topic, n);
       col->topics[i][n] = '\0';
     }
     size_t plen = evt->message->payload_len;
     if (plen > AZ_IOT_MOCK_PAYLOAD_MAX)
+    {
       plen = AZ_IOT_MOCK_PAYLOAD_MAX;
+    }
     if (plen)
+    {
       memcpy(col->payloads[i], evt->message->payload, plen);
+    }
     col->payload_lens[i] = plen;
   }
 }

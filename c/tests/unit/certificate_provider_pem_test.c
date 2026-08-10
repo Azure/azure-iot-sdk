@@ -82,7 +82,9 @@ static int teardown_files(void** state)
 {
   fixture* f = *state;
   if (!f)
+  {
     return 0;
+  }
   remove(f->cert_path);
   remove(f->key_path);
   remove(f->ca_path);
@@ -196,6 +198,148 @@ static void test_load_without_optional_fields(void** state)
   az_iot_certificate_provider_pem_destroy(&mgr);
 }
 
+/* Loading through the vtable after the provider is gone. Keeping the pointer is
+ * how a caller that cached the vtable would reach a destroyed provider. */
+static void test_load_after_destroy_is_refused(void** state)
+{
+  fixture* f = *state;
+  az_iot_certificate_provider_pem_options opts = {
+    .client_cert_pem_path = f->cert_path,
+    .client_key_pem_path = f->key_path,
+  };
+  az_iot_certificate_provider_pem mgr;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_pem_init(&mgr, &opts));
+  const az_iot_certificate_provider_vtable* vt = mgr.base.vtable;
+  assert_non_null(vt);
+
+  az_iot_certificate_provider_pem_destroy(&mgr);
+
+  /* Refused rather than handing back the freed buffers the material used to
+   * point at. */
+  az_iot_certificate_material mat;
+  memset(&mat, 0, sizeof(mat));
+  assert_int_equal(AZ_IOT_ERR_NOT_INITIALIZED, vt->load(&mgr.base, AZ_IOT_CRED_BOOTSTRAP, &mat));
+}
+
+static void test_load_rejects_null_arguments(void** state)
+{
+  fixture* f = *state;
+  az_iot_certificate_provider_pem_options opts = {
+    .client_cert_pem_path = f->cert_path,
+    .client_key_pem_path = f->key_path,
+  };
+  az_iot_certificate_provider_pem mgr;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_pem_init(&mgr, &opts));
+
+  az_iot_certificate_material mat;
+  memset(&mat, 0, sizeof(mat));
+  assert_int_equal(
+      AZ_IOT_ERR_INVALID_ARG, mgr.base.vtable->load(NULL, AZ_IOT_CRED_BOOTSTRAP, &mat));
+  assert_int_equal(
+      AZ_IOT_ERR_INVALID_ARG, mgr.base.vtable->load(&mgr.base, AZ_IOT_CRED_BOOTSTRAP, NULL));
+
+  az_iot_certificate_provider_pem_destroy(&mgr);
+}
+
+/* This provider is a static file loader: it holds one identity and hands it
+ * back for either role. The connect path is what decides to fall back to
+ * BOOTSTRAP, so an operational request here must not fail. */
+static void test_load_of_an_operational_credential_returns_the_static_material(void** state)
+{
+  fixture* f = *state;
+  az_iot_certificate_provider_pem_options opts = {
+    .client_cert_pem_path = f->cert_path,
+    .client_key_pem_path = f->key_path,
+  };
+  az_iot_certificate_provider_pem mgr;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_pem_init(&mgr, &opts));
+
+  az_iot_certificate_material boot;
+  az_iot_certificate_material oper;
+  memset(&boot, 0, sizeof(boot));
+  memset(&oper, 0, sizeof(oper));
+  assert_int_equal(AZ_IOT_OK, mgr.base.vtable->load(&mgr.base, AZ_IOT_CRED_BOOTSTRAP, &boot));
+  assert_int_equal(AZ_IOT_OK, mgr.base.vtable->load(&mgr.base, AZ_IOT_CRED_OPERATIONAL, &oper));
+
+  assert_string_equal(boot.client_cert_pem, oper.client_cert_pem);
+  assert_string_equal(boot.client_key_pem, oper.client_key_pem);
+
+  az_iot_certificate_provider_pem_destroy(&mgr);
+}
+
+static void test_destroy_tolerates_null(void** state)
+{
+  (void)state;
+  az_iot_certificate_provider_pem_destroy(NULL);
+}
+
+static void test_destroy_is_idempotent(void** state)
+{
+  fixture* f = *state;
+  az_iot_certificate_provider_pem_options opts = {
+    .trusted_ca_pem_path = f->ca_path,
+    .client_cert_pem_path = f->cert_path,
+    .client_key_pem_path = f->key_path,
+    .client_key_password = "hunter2",
+  };
+  az_iot_certificate_provider_pem mgr;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_pem_init(&mgr, &opts));
+
+  az_iot_certificate_provider_pem_destroy(&mgr);
+  /* The struct is zeroed by the first call, so the second must not free the
+   * same buffers again. */
+  az_iot_certificate_provider_pem_destroy(&mgr);
+}
+
+/* The vtable's deinit is what a generic owner of an az_iot_certificate_provider
+ * calls; it has to reach the concrete destroy. */
+static void test_deinit_through_the_vtable_destroys_the_provider(void** state)
+{
+  fixture* f = *state;
+  az_iot_certificate_provider_pem_options opts = {
+    .client_cert_pem_path = f->cert_path,
+    .client_key_pem_path = f->key_path,
+  };
+  az_iot_certificate_provider_pem mgr;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_pem_init(&mgr, &opts));
+
+  const az_iot_certificate_provider_vtable* vt = mgr.base.vtable;
+  assert_non_null(vt->deinit);
+  vt->deinit(&mgr.base);
+
+  az_iot_certificate_material mat;
+  memset(&mat, 0, sizeof(mat));
+  assert_int_equal(AZ_IOT_ERR_NOT_INITIALIZED, vt->load(&mgr.base, AZ_IOT_CRED_BOOTSTRAP, &mat));
+}
+
+/* A readable certificate with an unreadable key is the shape a half-provisioned
+ * device has. Init must fail and leave nothing allocated behind. */
+static void test_create_fails_when_only_the_key_is_missing(void** state)
+{
+  fixture* f = *state;
+  az_iot_certificate_provider_pem_options opts = {
+    .client_cert_pem_path = f->cert_path,
+    .client_key_pem_path = "this-key-definitely-does-not-exist.pem",
+  };
+  az_iot_certificate_provider_pem mgr;
+  assert_int_equal(AZ_IOT_ERR_NOT_INITIALIZED, az_iot_certificate_provider_pem_init(&mgr, &opts));
+}
+
+/* The CA path is optional, but naming one that cannot be read is a
+ * configuration error rather than something to silently ignore: connecting
+ * without the trust anchor the operator asked for is worse than not connecting. */
+static void test_create_fails_when_the_named_ca_is_missing(void** state)
+{
+  fixture* f = *state;
+  az_iot_certificate_provider_pem_options opts = {
+    .trusted_ca_pem_path = "this-ca-definitely-does-not-exist.pem",
+    .client_cert_pem_path = f->cert_path,
+    .client_key_pem_path = f->key_path,
+  };
+  az_iot_certificate_provider_pem mgr;
+  assert_int_equal(AZ_IOT_ERR_NOT_INITIALIZED, az_iot_certificate_provider_pem_init(&mgr, &opts));
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -205,6 +349,21 @@ int main(void)
     cmocka_unit_test(test_create_fails_on_missing_file),
     cmocka_unit_test_setup_teardown(test_load_returns_file_contents, setup_files, teardown_files),
     cmocka_unit_test_setup_teardown(test_load_without_optional_fields, setup_files, teardown_files),
+    cmocka_unit_test_setup_teardown(
+        test_load_after_destroy_is_refused, setup_files, teardown_files),
+    cmocka_unit_test_setup_teardown(test_load_rejects_null_arguments, setup_files, teardown_files),
+    cmocka_unit_test_setup_teardown(
+        test_load_of_an_operational_credential_returns_the_static_material,
+        setup_files,
+        teardown_files),
+    cmocka_unit_test(test_destroy_tolerates_null),
+    cmocka_unit_test_setup_teardown(test_destroy_is_idempotent, setup_files, teardown_files),
+    cmocka_unit_test_setup_teardown(
+        test_deinit_through_the_vtable_destroys_the_provider, setup_files, teardown_files),
+    cmocka_unit_test_setup_teardown(
+        test_create_fails_when_only_the_key_is_missing, setup_files, teardown_files),
+    cmocka_unit_test_setup_teardown(
+        test_create_fails_when_the_named_ca_is_missing, setup_files, teardown_files),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

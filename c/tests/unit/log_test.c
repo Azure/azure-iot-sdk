@@ -49,7 +49,9 @@ static void capture_sink(
   {
     size_t n = strlen(msg);
     if (n >= sizeof(c->msg))
+    {
       n = sizeof(c->msg) - 1;
+    }
     memcpy(c->msg, msg, n);
     c->msg[n] = '\0';
   }

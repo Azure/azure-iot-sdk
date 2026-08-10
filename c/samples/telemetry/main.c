@@ -128,7 +128,9 @@ int main(void)
   {
     (void)az_iot_connection_client_do_work(&state.connection_client, 50);
     if (user_ctx.conn_state == AZ_IOT_CONN_STATE_FAULTED)
+    {
       break;
+    }
   }
 
   if (user_ctx.conn_state == AZ_IOT_CONN_STATE_CONNECTED)
@@ -148,10 +150,14 @@ int main(void)
         == AZ_IOT_OK)
     {
       for (int i = 0; i < 600 && !user_ctx.send_done; ++i)
+      {
         (void)az_iot_connection_client_do_work(&state.connection_client, 50);
+      }
 
       if (user_ctx.send_done && user_ctx.send_status == AZ_IOT_OK)
+      {
         rc = 0;
+      }
     }
   }
 
@@ -159,7 +165,9 @@ int main(void)
   az_iot_connection_client_close(&state.connection_client);
 
   for (int i = 0; i < 100 && user_ctx.conn_state != AZ_IOT_CONN_STATE_IDLE; ++i)
+  {
     (void)az_iot_connection_client_do_work(&state.connection_client, 50);
+  }
 
   sample_state_destroy(&state);
 

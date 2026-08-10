@@ -84,11 +84,17 @@ static void b64url_str(const void* data, int32_t len, char* dst, int32_t cap)
   {
     char c = dst[i];
     if (c == '=')
+    {
       continue;
+    }
     if (c == '+')
+    {
       c = '-';
+    }
     else if (c == '/')
+    {
       c = '_';
+    }
     dst[out++] = c;
   }
   assert_true(out < cap);
@@ -406,7 +412,9 @@ static int32_t mock_load(uint8_t* blob, size_t cap, size_t* out_len, void* ctx)
 {
   hook_log* l = (hook_log*)ctx;
   if (!l->have_persist || l->persist_len > cap)
+  {
     return 1; /* nothing persisted */
+  }
   memcpy(blob, l->persist_blob, l->persist_len);
   *out_len = l->persist_len;
   return 0;
@@ -537,7 +545,9 @@ static int teardown(void** state)
     az_iot_twin_client_destroy(&fx->twin);
     az_iot_connection_client_destroy(&fx->conn);
     if (!factory_adopted)
+    {
       az_iot_mock_mqtt_factory_destroy(fx->factory);
+    }
     free(fx);
   }
   return 0;
@@ -579,13 +589,17 @@ static void pump(fixture* fx, int max_iters)
 static bool ops_contain_sequence(const hook_log* l, const op_kind* seq, size_t n)
 {
   if (l->op_count < n)
+  {
     return false;
+  }
   /* Find seq as an ordered (contiguous-relative) subsequence. */
   size_t si = 0;
   for (size_t i = 0; i < l->op_count && si < n; ++i)
   {
     if (l->ops[i] == seq[si])
+    {
       si++;
+    }
   }
   return si == n;
 }
@@ -644,9 +658,13 @@ static void verify_failure_blocks_download_and_fails(void** state)
   for (size_t i = 0; i < fx->log.op_count; ++i)
   {
     if (fx->log.ops[i] == OP_VERIFY)
+    {
       saw_verify = true;
+    }
     if (fx->log.ops[i] == OP_DOWNLOAD)
+    {
       saw_download = true;
+    }
   }
   assert_true(saw_verify);
   assert_false(saw_download);
@@ -668,11 +686,17 @@ static void install_failure_triggers_rollback(void** state)
   for (size_t i = 0; i < fx->log.op_count; ++i)
   {
     if (fx->log.ops[i] == OP_INSTALL)
+    {
       saw_install = true;
+    }
     if (fx->log.ops[i] == OP_RESTORE)
+    {
       saw_restore = true;
+    }
     if (fx->log.ops[i] == OP_APPLY)
+    {
       saw_apply = true;
+    }
   }
   assert_true(saw_install);
   assert_true(saw_restore);
@@ -695,11 +719,17 @@ static void hash_mismatch_blocks_install_and_fails(void** state)
   for (size_t i = 0; i < fx->log.op_count; ++i)
   {
     if (fx->log.ops[i] == OP_DOWNLOAD)
+    {
       saw_download = true;
+    }
     if (fx->log.ops[i] == OP_INSTALL)
+    {
       saw_install = true;
+    }
     if (fx->log.ops[i] == OP_APPLY)
+    {
       saw_apply = true;
+    }
   }
   assert_true(saw_download);
   assert_false(saw_install);
@@ -721,9 +751,13 @@ static void already_installed_is_rejected_without_download(void** state)
   for (size_t i = 0; i < fx->log.op_count; ++i)
   {
     if (fx->log.ops[i] == OP_IS_INSTALLED)
+    {
       saw_is_installed = true;
+    }
     if (fx->log.ops[i] == OP_DOWNLOAD)
+    {
       saw_download = true;
+    }
   }
   assert_true(saw_is_installed);
   assert_false(saw_download);
@@ -746,9 +780,13 @@ static void install_in_progress_reenters_then_completes(void** state)
   for (size_t i = 0; i < fx->log.op_count; ++i)
   {
     if (fx->log.ops[i] == OP_INSTALL)
+    {
       install_calls++;
+    }
     if (fx->log.ops[i] == OP_APPLY)
+    {
       saw_apply = true;
+    }
   }
   assert_true(install_calls >= 2);
   assert_true(saw_apply);
@@ -783,7 +821,9 @@ static void reboot_required_persists_and_resumes(void** state)
   for (size_t i = 0; i < fx->log.op_count; ++i)
   {
     if (fx->log.ops[i] == OP_APPLY)
+    {
       saw_apply = true;
+    }
   }
   assert_true(saw_apply);
   assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
@@ -857,11 +897,15 @@ static bool payload_contains(const az_iot_mock_call* c, const char* needle)
 {
   size_t nlen = strlen(needle);
   if (c->payload_len < nlen)
+  {
     return false;
+  }
   for (size_t i = 0; i + nlen <= c->payload_len; ++i)
   {
     if (memcmp(c->payload + i, needle, nlen) == 0)
+    {
       return true;
+    }
   }
   return false;
 }
@@ -1158,6 +1202,377 @@ static void microsoft_root_keys_are_embedded(void** state)
   }
 }
 
+/* ------------------------------------------------------------------------- */
+/* workflow: multi-step, download failure, cancel mid-flight                 */
+/* ------------------------------------------------------------------------- */
+
+/* Two-step variant of k_patch_fmt. Both steps use the same file so the fixture's
+ * single hash still verifies; what is under test is the ordering, not the file
+ * set. */
+static const char k_patch_two_steps_fmt[]
+    = "{\"deviceUpdate\":{\"__t\":\"c\",\"service\":{"
+      "%s,"
+      "\"updateManifest\":\"{\\\"manifestVersion\\\":\\\"5\\\",\\\"updateId\\\":{\\\"provider\\\":"
+      "\\\"Contoso\\\",\\\"name\\\":\\\"Foobar\\\",\\\"version\\\":\\\"%s\\\"},"
+      "\\\"compatibility\\\":[{\\\"deviceManufacturer\\\":\\\"Contoso\\\",\\\"deviceModel\\\":"
+      "\\\"Foobar\\\"}],\\\"instructions\\\":{\\\"steps\\\":[{\\\"handler\\\":\\\"microsoft/"
+      "swupdate:1\\\",\\\"files\\\":[\\\"f2f4a804ca17afbae\\\"],\\\"handlerProperties\\\":{"
+      "\\\"installedCriteria\\\":\\\"1.0\\\"}},{\\\"handler\\\":\\\"microsoft/"
+      "swupdate:1\\\",\\\"files\\\":[\\\"f2f4a804ca17afbae\\\"],\\\"handlerProperties\\\":{"
+      "\\\"installedCriteria\\\":\\\"1.1\\\"}}]},\\\"files\\\":{\\\"f2f4a804ca17afbae\\\":{"
+      "\\\"fileName\\\":\\\"iot-middleware-sample-adu-v1.1\\\",\\\"sizeInBytes\\\":844976,"
+      "\\\"hashes\\\":{\\\"sha256\\\":\\\"xsoCnYAMkZZ7m9RL9Vyg9jKfFehCNxyuPFaJVM/"
+      "WBi0=\\\"}}},\\\"createdDateTime\\\":\\\"2022-07-07T03:02:48.8449038Z\\\"}\","
+      "\"updateManifestSignature\":\"%s\","
+      "\"fileUrls\":{\"f2f4a804ca17afbae\":\"http://example.com/payload.bin\"}}}}";
+
+static const char* two_step_patch(void)
+{
+  static char patch[4096];
+  char jws[2048];
+  build_jws(jws, (int32_t)sizeof(jws));
+  int n = snprintf(
+      patch,
+      sizeof(patch),
+      k_patch_two_steps_fmt,
+      "\"workflow\":{\"action\":3,\"id\":\"multi-step-deployment\"}",
+      "1.1",
+      jws);
+  assert_true(n > 0 && (size_t)n < sizeof(patch));
+  return patch;
+}
+
+static void multi_step_update_runs_every_step_in_order(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  inject_patch(fx, two_step_patch());
+  pump(fx, 60);
+
+  assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
+
+  /* Step 1 must be fully installed and applied before step 2 begins: a build
+   * that interleaved them would install over a half-applied step. */
+  int install0 = -1, apply0 = -1, install1 = -1, apply1 = -1;
+  for (size_t i = 0; i < fx->log.op_count; ++i)
+  {
+    if (fx->log.ops[i] == OP_INSTALL && fx->log.op_steps[i] == 0 && install0 < 0)
+    {
+      install0 = (int)i;
+    }
+    if (fx->log.ops[i] == OP_APPLY && fx->log.op_steps[i] == 0 && apply0 < 0)
+    {
+      apply0 = (int)i;
+    }
+    if (fx->log.ops[i] == OP_INSTALL && fx->log.op_steps[i] == 1 && install1 < 0)
+    {
+      install1 = (int)i;
+    }
+    if (fx->log.ops[i] == OP_APPLY && fx->log.op_steps[i] == 1 && apply1 < 0)
+    {
+      apply1 = (int)i;
+    }
+  }
+  assert_true(install0 >= 0);
+  assert_true(apply0 >= 0);
+  assert_true(install1 >= 0);
+  assert_true(apply1 >= 0);
+  assert_true(install0 < apply0);
+  assert_true(apply0 < install1);
+  assert_true(install1 < apply1);
+}
+
+static void download_failure_is_reported_and_does_not_install(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  fx->log.download_result = AZ_IOT_ADU_RESULT_FAILURE;
+  inject_patch(fx, signed_patch());
+  pump(fx, 40);
+
+  /* Installing bytes that never arrived is the failure mode this guards. */
+  bool saw_download = false, saw_install = false, saw_apply = false;
+  for (size_t i = 0; i < fx->log.op_count; ++i)
+  {
+    if (fx->log.ops[i] == OP_DOWNLOAD)
+    {
+      saw_download = true;
+    }
+    if (fx->log.ops[i] == OP_INSTALL)
+    {
+      saw_install = true;
+    }
+    if (fx->log.ops[i] == OP_APPLY)
+    {
+      saw_apply = true;
+    }
+  }
+  assert_true(saw_download);
+  assert_false(saw_install);
+  assert_false(saw_apply);
+  assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
+
+  /* The outcome reaches the service rather than the agent going quiet.
+   * The agent-state protocol spells Failed as 255 (0 = Idle,
+   * 6 = DeploymentInProgress); matching on a shorter prefix would also accept
+   * an in-progress report. */
+  bool reported_failed = false;
+  size_t n = az_iot_mock_mqtt_client_call_count(fx->mock);
+  for (size_t i = 0; i < n; ++i)
+  {
+    const az_iot_mock_call* c = az_iot_mock_mqtt_client_call_at(fx->mock, i);
+    if (c->kind == AZ_IOT_MOCK_CALL_PUBLISH && payload_contains(c, "\"state\":255"))
+    {
+      reported_failed = true;
+    }
+  }
+  assert_true(reported_failed);
+}
+
+static void cancel_during_download_aborts_the_transfer(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  /* Hold the deployment inside download so the cancel lands mid-transfer. */
+  fx->log.download_result = AZ_IOT_ADU_RESULT_IN_PROGRESS;
+  inject_patch(fx, signed_patch());
+  pump(fx, 4);
+
+  bool saw_download = false;
+  for (size_t i = 0; i < fx->log.op_count; ++i)
+  {
+    if (fx->log.ops[i] == OP_DOWNLOAD)
+    {
+      saw_download = true;
+    }
+  }
+  assert_true(saw_download);
+
+  size_t ops_at_cancel = fx->log.op_count;
+  inject_patch(fx, k_patch_cancel);
+  /* Let the download hook succeed from here on: if the cancel were ignored the
+   * workflow would now run to completion and install. */
+  fx->log.download_result = AZ_IOT_ADU_RESULT_SUCCESS;
+  pump(fx, 40);
+
+  for (size_t i = ops_at_cancel; i < fx->log.op_count; ++i)
+  {
+    assert_int_not_equal(fx->log.ops[i], OP_INSTALL);
+    assert_int_not_equal(fx->log.ops[i], OP_APPLY);
+  }
+  assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
+}
+
+/* ------------------------------------------------------------------------- */
+/* standalone api: report building, manifest verification                    */
+/* ------------------------------------------------------------------------- */
+
+static void build_report_with_too_small_a_buffer_is_rejected(void** state)
+{
+  (void)state;
+  az_iot_adu_device_properties dp = { 0 };
+  dp.manufacturer = "Contoso";
+  dp.model = "Foobar";
+  dp.installed_update_id.provider = "Contoso";
+  dp.installed_update_id.name = "Foobar";
+  dp.installed_update_id.version = "1.0";
+
+  /* Truncating the report would publish JSON the service cannot parse, so the
+   * bound is reported instead. */
+  uint8_t tiny[8];
+  size_t written = 0;
+  assert_int_equal(
+      az_iot_adu_build_report(&dp, NULL, NULL, AZ_IOT_ADU_STATE_IDLE, tiny, sizeof(tiny), &written),
+      AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+
+  /* The same call succeeds once the buffer is big enough, which proves the
+   * rejection was about size and not about the arguments. */
+  uint8_t big[AZ_IOT_ADU_REQUEST_BUFFER_SIZE];
+  assert_int_equal(
+      az_iot_adu_build_report(&dp, NULL, NULL, AZ_IOT_ADU_STATE_IDLE, big, sizeof(big), &written),
+      AZ_IOT_OK);
+  assert_true(written > 0);
+}
+
+/* Parse a patch with the fixture's crypto hooks and the given root keys. */
+static az_iot_result parse_with_roots(
+    hook_log* log,
+    const char* patch,
+    const az_iot_adu_root_key* roots,
+    size_t root_count,
+    az_iot_adu_client_update_request* out_req,
+    az_iot_adu_client_update_manifest* out_manifest)
+{
+  az_iot_adu_platform_hooks hooks;
+  az_iot_adu_crypto_hooks crypto;
+  wire_hooks(log, &hooks, &crypto);
+
+  /* The parser unescapes the manifest in place, so it needs a writable copy. */
+  static char scratch[AZ_IOT_ADU_REQUEST_BUFFER_SIZE];
+  size_t len = strlen(patch);
+  assert_true(len < sizeof(scratch));
+  memcpy(scratch, patch, len);
+
+  return az_iot_adu_parse_update_request(
+      az_span_create((uint8_t*)scratch, (int32_t)len),
+      &crypto,
+      roots,
+      root_count,
+      out_req,
+      out_manifest);
+}
+
+static void manifest_signed_by_an_unknown_root_key_is_rejected(void** state)
+{
+  fixture* fx = (fixture*)*state;
+
+  /* Same manifest, same signature, a root key set that does not contain the
+   * signing kid. Accepting it would let anyone who can reach the twin deploy
+   * firmware. */
+  static const uint8_t other_mod[] = { 0x09, 0x08, 0x07 };
+  static const uint8_t other_exp[] = { 0x01, 0x00, 0x01 };
+  const az_iot_adu_root_key strangers[] = {
+    { "not-the-testkid", other_mod, sizeof(other_mod), other_exp, sizeof(other_exp), false }
+  };
+
+  az_iot_adu_client_update_request req;
+  az_iot_adu_client_update_manifest manifest;
+  memset(&req, 0, sizeof(req));
+  memset(&manifest, 0, sizeof(manifest));
+  assert_int_equal(
+      parse_with_roots(&fx->log, signed_patch(), strangers, 1, &req, &manifest), AZ_IOT_ERR_AUTH);
+}
+
+static void malformed_jws_is_rejected(void** state)
+{
+  fixture* fx = (fixture*)*state;
+
+  /* Two segments instead of three, then a third with bytes that are not
+   * base64url. Both must be refused before any manifest field is trusted. */
+  const char* broken[] = {
+    "aGVhZGVy.cGF5bG9hZA",
+    "aGVhZGVy.cGF5bG9hZA.!!!not-base64url!!!",
+    "",
+  };
+  for (size_t i = 0; i < sizeof(broken) / sizeof(broken[0]); ++i)
+  {
+    static char patch[4096];
+    int n = snprintf(
+        patch,
+        sizeof(patch),
+        k_patch_fmt,
+        "\"workflow\":{\"action\":3,\"id\":\"bad-jws\"}",
+        "1.1",
+        broken[i]);
+    assert_true(n > 0 && (size_t)n < sizeof(patch));
+
+    az_iot_adu_client_update_request req;
+    az_iot_adu_client_update_manifest manifest;
+    memset(&req, 0, sizeof(req));
+    memset(&manifest, 0, sizeof(manifest));
+    az_iot_result r = parse_with_roots(&fx->log, patch, k_root_keys, 1, &req, &manifest);
+    assert_int_not_equal(r, AZ_IOT_OK);
+  }
+}
+
+static void malformed_manifest_json_is_rejected(void** state)
+{
+  fixture* fx = (fixture*)*state;
+
+  char jws[2048];
+  build_jws(jws, (int32_t)sizeof(jws));
+
+  /* A well-formed envelope whose updateManifest is not parseable JSON. */
+  static char patch[4096];
+  int n = snprintf(
+      patch,
+      sizeof(patch),
+      "{\"deviceUpdate\":{\"__t\":\"c\",\"service\":{"
+      "\"workflow\":{\"action\":3,\"id\":\"bad-manifest\"},"
+      "\"updateManifest\":\"{\\\"manifestVersion\\\":\\\"5\\\",\\\"updateId\\\":{\","
+      "\"updateManifestSignature\":\"%s\","
+      "\"fileUrls\":{\"f\":\"http://example.com/p.bin\"}}}}",
+      jws);
+  assert_true(n > 0 && (size_t)n < sizeof(patch));
+
+  az_iot_adu_client_update_request req;
+  az_iot_adu_client_update_manifest manifest;
+  memset(&req, 0, sizeof(req));
+  memset(&manifest, 0, sizeof(manifest));
+  assert_int_not_equal(
+      parse_with_roots(&fx->log, patch, k_root_keys, 1, &req, &manifest), AZ_IOT_OK);
+}
+
+/* Serves bytes for the standalone hash check. */
+static int32_t standalone_read_chunk(
+    size_t offset,
+    uint8_t* buffer,
+    size_t buffer_size,
+    size_t* out_read,
+    void* read_ctx)
+{
+  (void)read_ctx;
+  size_t total = 64;
+  if (offset >= total)
+  {
+    *out_read = 0;
+    return AZ_IOT_ADU_RESULT_SUCCESS;
+  }
+  size_t n = total - offset;
+  if (n > buffer_size)
+  {
+    n = buffer_size;
+  }
+  memset(buffer, 0x5A, n);
+  *out_read = n;
+  return AZ_IOT_ADU_RESULT_SUCCESS;
+}
+
+static void verify_file_hash_rejects_an_unsupported_algorithm(void** state)
+{
+  fixture* fx = (fixture*)*state;
+
+  /* A manifest whose only listed digest is sha512. The agent cannot compute it,
+   * and treating "no algorithm I know" as a pass would skip integrity entirely. */
+  static const char k_patch_sha512_fmt[]
+      = "{\"deviceUpdate\":{\"__t\":\"c\",\"service\":{"
+        "\"workflow\":{\"action\":3,\"id\":\"sha512-only\"},"
+        "\"updateManifest\":\"{\\\"manifestVersion\\\":\\\"5\\\",\\\"updateId\\\":{"
+        "\\\"provider\\\":\\\"Contoso\\\",\\\"name\\\":\\\"Foobar\\\",\\\"version\\\":"
+        "\\\"1.1\\\"},\\\"compatibility\\\":[{\\\"deviceManufacturer\\\":\\\"Contoso\\\","
+        "\\\"deviceModel\\\":\\\"Foobar\\\"}],\\\"instructions\\\":{\\\"steps\\\":[{"
+        "\\\"handler\\\":\\\"microsoft/swupdate:1\\\",\\\"files\\\":[\\\"f2f4a804ca17afbae\\\"],"
+        "\\\"handlerProperties\\\":{\\\"installedCriteria\\\":\\\"1.0\\\"}}]},\\\"files\\\":{"
+        "\\\"f2f4a804ca17afbae\\\":{\\\"fileName\\\":\\\"payload.bin\\\",\\\"sizeInBytes\\\":64,"
+        "\\\"hashes\\\":{\\\"sha512\\\":\\\"AAAA\\\"}}},\\\"createdDateTime\\\":"
+        "\\\"2022-07-07T03:02:48.8449038Z\\\"}\","
+        "\"updateManifestSignature\":\"%s\","
+        "\"fileUrls\":{\"f2f4a804ca17afbae\":\"http://example.com/payload.bin\"}}}}";
+
+  char jws[2048];
+  build_jws(jws, (int32_t)sizeof(jws));
+  static char patch[4096];
+  int n = snprintf(patch, sizeof(patch), k_patch_sha512_fmt, jws);
+  assert_true(n > 0 && (size_t)n < sizeof(patch));
+
+  az_iot_adu_client_update_request req;
+  az_iot_adu_client_update_manifest manifest;
+  memset(&req, 0, sizeof(req));
+  memset(&manifest, 0, sizeof(manifest));
+  assert_int_equal(parse_with_roots(&fx->log, patch, k_root_keys, 1, &req, &manifest), AZ_IOT_OK);
+  assert_true(manifest.files_count > 0);
+
+  az_iot_adu_platform_hooks hooks;
+  az_iot_adu_crypto_hooks crypto;
+  wire_hooks(&fx->log, &hooks, &crypto);
+  assert_int_equal(
+      az_iot_adu_verify_file_hash(&manifest.files[0], &crypto, standalone_read_chunk, &fx->log),
+      AZ_IOT_ERR_AUTH);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -1182,6 +1597,17 @@ int main(void)
     cmocka_unit_test_setup_teardown(retry_timestamp_survives_resume, setup, teardown),
     cmocka_unit_test_setup_teardown(same_id_changed_manifest_restarts, setup, teardown),
     cmocka_unit_test(microsoft_root_keys_are_embedded),
+    cmocka_unit_test_setup_teardown(multi_step_update_runs_every_step_in_order, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        download_failure_is_reported_and_does_not_install, setup, teardown),
+    cmocka_unit_test_setup_teardown(cancel_during_download_aborts_the_transfer, setup, teardown),
+    cmocka_unit_test(build_report_with_too_small_a_buffer_is_rejected),
+    cmocka_unit_test_setup_teardown(
+        manifest_signed_by_an_unknown_root_key_is_rejected, setup, teardown),
+    cmocka_unit_test_setup_teardown(malformed_jws_is_rejected, setup, teardown),
+    cmocka_unit_test_setup_teardown(malformed_manifest_json_is_rejected, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        verify_file_hash_rejects_an_unsupported_algorithm, setup, teardown),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

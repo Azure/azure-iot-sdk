@@ -121,8 +121,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Linux builds instrumented so this run feeds the combined coverage
+          # report; see the note in ci-c-e2e.yml.
           - os: ubuntu-latest
-            preset: linux-gcc-debug
+            preset: linux-gcc-e2e-coverage
             device-index: 0
           - os: windows-latest
             preset: windows-msvc-debug
@@ -138,7 +140,9 @@ jobs:
 
       - name: Install ninja (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y ninja-build
+        run: |
+          sudo apt-get update && sudo apt-get install -y ninja-build
+          python3 -m pip install --upgrade 'gcovr==7.2'
 
       - name: Build ADU e2e test
         working-directory: c
@@ -227,6 +231,21 @@ jobs:
           name: e2e-adu-results-${{ matrix.os }}
           path: ./test_config/results/**/*.xml
           if-no-files-found: ignore
+
+      - name: Collect coverage (Linux)
+        # Not `if: always()` -- a failed run leaves partial or absent .gcda, and
+        # merging that would understate coverage for an unrelated reason.
+        if: runner.os == 'Linux' && success()
+        working-directory: c
+        run: bash eng/collect-coverage.sh build/linux-gcc-e2e-coverage coverage/e2e-adu.json e2e-adu
+
+      - name: Upload coverage tracefile (Linux)
+        if: runner.os == 'Linux' && success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-trace-e2e-adu
+          path: c/coverage/e2e-adu.json
+          if-no-files-found: error
 
   teardown:
     name: teardown (delete resources)

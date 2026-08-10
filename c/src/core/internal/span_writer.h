@@ -149,4 +149,13 @@ extern "C"
 }
 #endif
 
+/* An optional C string a caller may leave unset either way: NULL and "" both
+ * mean "not supplied". Stated positively so call sites read as "this was
+ * supplied" rather than a negated absence; the parameter is parenthesised so an
+ * expression argument cannot misparse.
+ *
+ * The Paho adapter carries its own copy: adapters may only include public
+ * azure/iot headers, so they cannot reach this one. */
+#define is_nonempty_cstr(s) ((s) != NULL && (s)[0] != '\0')
+
 #endif /* AZ_IOT_SPAN_WRITER_H */
