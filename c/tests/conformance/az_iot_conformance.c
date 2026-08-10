@@ -281,7 +281,16 @@ static void connect_client(az_iot_mqtt_client* c, conf_recorder* rec, const char
  * takes a trusted-CA *path*, so it still has to reach the filesystem. */
 static int write_temp_pem(const char* pem, char* path_out, size_t cap)
 {
-  snprintf(path_out, cap, "az_iot_conf_ca_%lu.pem", conf_now_ms());
+  /* A millisecond stamp alone is not unique: writing a CA and a client
+   * certificate back to back can land both in the same millisecond, and the
+   * second silently overwrites the first -- which presents as a handshake that
+   * fails for no visible reason. */
+  static unsigned long seq = 0;
+  int written = snprintf(path_out, cap, "az_iot_conf_pem_%lu_%lu.pem", conf_now_ms(), seq++);
+  if (written < 0 || (size_t)written >= cap)
+  {
+    return 0; /* a truncated path is how the collision above happens again */
+  }
   FILE* f = fopen(path_out, "wb");
   if (!f)
   {
@@ -1474,6 +1483,191 @@ static void an_acknowledgement_for_an_unknown_packet_id_is_ignored(void** state)
   az_iot_test_proxy_stop(proxy);
 }
 
+#ifdef AZ_IOT_CONFORMANCE_WITH_TLS
+/* Stand up a proxy that terminates TLS and demands a client certificate, and
+ * write out the CA the client must trust. Returns the proxy. */
+static az_iot_test_proxy* start_mutual_tls_proxy(uint16_t* port_out, char* ca_path, size_t ca_cap)
+{
+  az_iot_test_proxy* proxy = start_proxy(port_out);
+
+  az_iot_test_proxy_tls_options tls = az_iot_test_proxy_tls_options_default();
+  tls.require_client_cert = 1;
+  assert_int_equal(az_iot_test_proxy_enable_tls(proxy, &tls), 0);
+
+  char ca_pem[4096];
+  assert_true(az_iot_test_proxy_ca_pem(proxy, ca_pem, sizeof(ca_pem)) > 0);
+  assert_true(write_temp_pem(ca_pem, ca_path, ca_cap));
+  return proxy;
+}
+
+/* Mint a client certificate with the given validity offsets and write the pair
+ * to disk, since the adapter takes paths rather than PEM. */
+static void issue_client_pem(
+    az_iot_test_proxy* proxy,
+    long not_before_offset_sec,
+    long not_after_offset_sec,
+    char* cert_path,
+    size_t cert_path_cap,
+    char* key_path,
+    size_t key_path_cap)
+{
+  az_iot_test_proxy_client_cert_options opt = az_iot_test_proxy_client_cert_options_default();
+  opt.not_before_offset_sec = not_before_offset_sec;
+  opt.not_after_offset_sec = not_after_offset_sec;
+
+  char cert_pem[4096];
+  char key_pem[4096];
+  assert_int_equal(
+      az_iot_test_proxy_issue_client_cert(
+          proxy, &opt, cert_pem, sizeof(cert_pem), key_pem, sizeof(key_pem)),
+      0);
+  assert_true(write_temp_pem(cert_pem, cert_path, cert_path_cap));
+  assert_true(write_temp_pem(key_pem, key_path, key_path_cap));
+}
+
+/* The positive control for the mutual-TLS cases: a client certificate the proxy
+ * issued, inside its validity window, must be ACCEPTED. Without this a
+ * handshake broken for some unrelated reason would make the rejection below
+ * pass for the wrong reason. */
+static void mutual_tls_succeeds_with_a_valid_client_cert(void** state)
+{
+  (void)state;
+  uint16_t proxy_port = 0;
+  char ca_path[128];
+  az_iot_test_proxy* proxy = start_mutual_tls_proxy(&proxy_port, ca_path, sizeof(ca_path));
+
+  char cert_path[128];
+  char key_path[128];
+  issue_client_pem(
+      proxy, -3600, 24L * 3600L, cert_path, sizeof(cert_path), key_path, sizeof(key_path));
+
+  char cid[64];
+  unique_client_id(cid, sizeof(cid), "az-iot-conf-mtlsok");
+  conf_recorder rec = { 0 };
+  az_iot_mqtt_client* c = make_client();
+  c->iface->set_inbound_cb(c, on_event, &rec);
+
+  az_iot_mqtt_connect_options copts = { 0 };
+  copts.host = "127.0.0.1";
+  copts.port = proxy_port;
+  copts.client_id = cid;
+  copts.keep_alive_seconds = 30;
+  copts.connect_timeout_seconds = k_step_timeout_seconds;
+  copts.tls.trusted_ca_path = ca_path;
+  copts.tls.client_cert_path = cert_path;
+  copts.tls.client_key_path = key_path;
+  copts.tls.verify_server = true;
+
+  assert_int_equal(c->iface->connect(c, &copts), AZ_IOT_OK);
+  assert_true(wait_until(c, &rec, saw_connected_ok, k_step_timeout_ms));
+
+  (void)c->iface->disconnect(c);
+  destroy_client(c);
+  az_iot_test_proxy_stop(proxy);
+  remove(ca_path);
+  remove(cert_path);
+  remove(key_path);
+}
+
+/* An expired client certificate must be refused by the peer. The assertion
+ * belongs to the peer's verification, which is why this needed a proxy that
+ * asks for a client certificate at all -- one that never asks cannot refuse.
+ *
+ * The certificate's validity window is placed relative to now, so it is expired
+ * by construction rather than by a checked-in fixture that has to be re-minted
+ * every time it ages out. */
+static void expired_client_cert_is_rejected(void** state)
+{
+  (void)state;
+  uint16_t proxy_port = 0;
+  char ca_path[128];
+  az_iot_test_proxy* proxy = start_mutual_tls_proxy(&proxy_port, ca_path, sizeof(ca_path));
+
+  /* Valid from two days ago until one day ago. */
+  char cert_path[128];
+  char key_path[128];
+  issue_client_pem(
+      proxy,
+      -2L * 24 * 3600,
+      -24L * 3600,
+      cert_path,
+      sizeof(cert_path),
+      key_path,
+      sizeof(key_path));
+
+  char cid[64];
+  unique_client_id(cid, sizeof(cid), "az-iot-conf-mtlsexp");
+  conf_recorder rec = { 0 };
+  az_iot_mqtt_client* c = make_client();
+  c->iface->set_inbound_cb(c, on_event, &rec);
+
+  az_iot_mqtt_connect_options copts = { 0 };
+  copts.host = "127.0.0.1";
+  copts.port = proxy_port;
+  copts.client_id = cid;
+  copts.keep_alive_seconds = 30;
+  copts.connect_timeout_seconds = k_step_timeout_seconds;
+  copts.tls.trusted_ca_path = ca_path;
+  copts.tls.client_cert_path = cert_path;
+  copts.tls.client_key_path = key_path;
+  copts.tls.verify_server = true;
+
+  az_iot_result r = c->iface->connect(c, &copts);
+  if (r == AZ_IOT_OK)
+  {
+    (void)wait_until(c, &rec, saw_connect_failure, k_step_timeout_ms);
+  }
+  /* However it is reported, it must never be reported as connected. */
+  assert_false(saw_connected_ok(&rec));
+
+  (void)c->iface->disconnect(c);
+  destroy_client(c);
+  az_iot_test_proxy_stop(proxy);
+  remove(ca_path);
+  remove(cert_path);
+  remove(key_path);
+}
+
+/* Presenting no certificate at all to a peer that requires one must fail in the
+ * same way. This is the case that distinguishes "the proxy asks" from "the
+ * proxy checks": without it, a proxy that requested a certificate but accepted
+ * its absence would still pass the expired case for the wrong reason. */
+static void a_missing_client_cert_is_rejected(void** state)
+{
+  (void)state;
+  uint16_t proxy_port = 0;
+  char ca_path[128];
+  az_iot_test_proxy* proxy = start_mutual_tls_proxy(&proxy_port, ca_path, sizeof(ca_path));
+
+  char cid[64];
+  unique_client_id(cid, sizeof(cid), "az-iot-conf-mtlsnone");
+  conf_recorder rec = { 0 };
+  az_iot_mqtt_client* c = make_client();
+  c->iface->set_inbound_cb(c, on_event, &rec);
+
+  az_iot_mqtt_connect_options copts = { 0 };
+  copts.host = "127.0.0.1";
+  copts.port = proxy_port;
+  copts.client_id = cid;
+  copts.keep_alive_seconds = 30;
+  copts.connect_timeout_seconds = k_step_timeout_seconds;
+  copts.tls.trusted_ca_path = ca_path;
+  copts.tls.verify_server = true; /* no client certificate offered */
+
+  az_iot_result r = c->iface->connect(c, &copts);
+  if (r == AZ_IOT_OK)
+  {
+    (void)wait_until(c, &rec, saw_connect_failure, k_step_timeout_ms);
+  }
+  assert_false(saw_connected_ok(&rec));
+
+  (void)c->iface->disconnect(c);
+  destroy_client(c);
+  az_iot_test_proxy_stop(proxy);
+  remove(ca_path);
+}
+#endif /* AZ_IOT_CONFORMANCE_WITH_TLS */
+
 /* ------------------------------------------------------------------------- */
 /* entry point                                                                */
 /* ------------------------------------------------------------------------- */
@@ -1504,11 +1698,14 @@ static void an_acknowledgement_for_an_unknown_packet_id_is_ignored(void** state)
 /* Expands to nothing when the certificate cases were compiled out, so the two
  * lists above stay a single expression either way. */
 #ifdef AZ_IOT_CONFORMANCE_WITH_TLS
-#define TLS_TESTS                                                   \
-  cmocka_unit_test(tls_handshake_succeeds_with_trusted_valid_cert), \
-      cmocka_unit_test(server_cert_validation_rejects_untrusted),   \
-      cmocka_unit_test(server_cert_validation_rejects_expired),     \
-      cmocka_unit_test(server_cert_validation_rejects_hostname_mismatch),
+#define TLS_TESTS                                                         \
+  cmocka_unit_test(tls_handshake_succeeds_with_trusted_valid_cert),       \
+      cmocka_unit_test(server_cert_validation_rejects_untrusted),         \
+      cmocka_unit_test(server_cert_validation_rejects_expired),           \
+      cmocka_unit_test(server_cert_validation_rejects_hostname_mismatch), \
+      cmocka_unit_test(mutual_tls_succeeds_with_a_valid_client_cert),     \
+      cmocka_unit_test(expired_client_cert_is_rejected),                  \
+      cmocka_unit_test(a_missing_client_cert_is_rejected),
 #else
 #define TLS_TESTS
 #endif
