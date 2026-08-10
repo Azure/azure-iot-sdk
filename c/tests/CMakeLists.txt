@@ -139,6 +139,13 @@ az_iot_add_cmocka_test(az_iot_tests_span_writer unit/span_writer_test.c)
 target_include_directories(az_iot_tests_span_writer PRIVATE
     ${CMAKE_SOURCE_DIR}/src/core)
 az_iot_add_cmocka_test(az_iot_tests_log unit/log_test.c)
+# Diagnostic surface: the *_to_string helpers, version string, default
+# reconnection policy and the built-in stderr sink. Pulls internal headers for
+# the role/flavor helpers and the CSR request-id generator, which are internal
+# but still shipped code that nothing was exercising.
+az_iot_add_cmocka_test(az_iot_tests_diagnostics unit/diagnostics_test.c)
+target_include_directories(az_iot_tests_diagnostics PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/core)
 az_iot_add_cmocka_test(az_iot_tests_protocol_profile_dispatch unit/protocol_profile_dispatch_test.c)
 target_include_directories(az_iot_tests_protocol_profile_dispatch PRIVATE
     ${CMAKE_SOURCE_DIR}/src/core)
