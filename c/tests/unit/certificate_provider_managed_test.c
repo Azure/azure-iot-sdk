@@ -223,12 +223,257 @@ static void managed_init_rejects_bad_args(void** state)
   assert_int_equal(AZ_IOT_ERR_INVALID_ARG, az_iot_certificate_provider_managed_init(&prov, &opts));
 }
 
+/* Shared options over the test-local paths. */
+static az_iot_certificate_provider_managed_options test_options(void)
+{
+  az_iot_certificate_provider_managed_options opts = {
+    .bootstrap_cert_pem_path = BOOT_CRT,
+    .bootstrap_key_pem_path = BOOT_KEY,
+    .trusted_ca_pem_path = TRUST_CA,
+    .operational_key_pem_path = OP_KEY,
+    .operational_cert_pem_path = OP_CERT,
+    .key_type = AZ_IOT_MANAGED_KEY_EC_P256,
+  };
+  return opts;
+}
+
+static void managed_load_rejects_null_arguments(void** state)
+{
+  (void)state;
+  remove_test_files();
+  az_iot_certificate_provider_managed_options opts = test_options();
+  az_iot_certificate_provider_managed prov;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov, &opts));
+
+  az_iot_certificate_material mat;
+  memset(&mat, 0, sizeof(mat));
+  assert_int_equal(
+      AZ_IOT_ERR_INVALID_ARG, prov.base.vtable->load(NULL, AZ_IOT_CRED_BOOTSTRAP, &mat));
+  assert_int_equal(
+      AZ_IOT_ERR_INVALID_ARG, prov.base.vtable->load(&prov.base, AZ_IOT_CRED_BOOTSTRAP, NULL));
+
+  az_iot_certificate_provider_managed_destroy(&prov);
+  remove_test_files();
+}
+
+/* The connect path uses this code to decide it must still enroll: reporting
+ * anything else would send a device at the hub with no operational identity. */
+static void managed_operational_load_without_a_stored_chain_is_not_found(void** state)
+{
+  (void)state;
+  remove_test_files();
+  az_iot_certificate_provider_managed_options opts = test_options();
+  az_iot_certificate_provider_managed prov;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov, &opts));
+  assert_false(prov.has_operational);
+
+  az_iot_certificate_material mat;
+  memset(&mat, 0, sizeof(mat));
+  assert_int_equal(
+      AZ_IOT_ERR_NOT_FOUND, prov.base.vtable->load(&prov.base, AZ_IOT_CRED_OPERATIONAL, &mat));
+
+  az_iot_certificate_provider_managed_destroy(&prov);
+  remove_test_files();
+}
+
+/* The material is borrowed from the provider struct, so release() must leave it
+ * alone; freeing there would dangle the paths the connection is still using. */
+static void managed_release_leaves_the_material_usable(void** state)
+{
+  (void)state;
+  remove_test_files();
+  az_iot_certificate_provider_managed_options opts = test_options();
+  az_iot_certificate_provider_managed prov;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov, &opts));
+
+  az_iot_certificate_material mat;
+  memset(&mat, 0, sizeof(mat));
+  assert_int_equal(AZ_IOT_OK, prov.base.vtable->load(&prov.base, AZ_IOT_CRED_BOOTSTRAP, &mat));
+  prov.base.vtable->release(&prov.base, &mat);
+
+  az_iot_certificate_material mat2;
+  memset(&mat2, 0, sizeof(mat2));
+  assert_int_equal(AZ_IOT_OK, prov.base.vtable->load(&prov.base, AZ_IOT_CRED_BOOTSTRAP, &mat2));
+  assert_string_equal(BOOT_CRT, mat2.client_cert_path);
+
+  az_iot_certificate_provider_managed_destroy(&prov);
+  remove_test_files();
+}
+
+static void managed_get_csr_rejects_null_arguments(void** state)
+{
+  (void)state;
+  remove_test_files();
+  az_iot_certificate_provider_managed_options opts = test_options();
+  az_iot_certificate_provider_managed prov;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov, &opts));
+
+  az_iot_certificate_signing_request csr;
+  memset(&csr, 0, sizeof(csr));
+  assert_int_equal(AZ_IOT_ERR_INVALID_ARG, prov.base.vtable->get_csr(NULL, "cn", &csr));
+  assert_int_equal(AZ_IOT_ERR_INVALID_ARG, prov.base.vtable->get_csr(&prov.base, "cn", NULL));
+
+  az_iot_certificate_provider_managed_destroy(&prov);
+  remove_test_files();
+}
+
+static void managed_store_rejects_null_arguments(void** state)
+{
+  (void)state;
+  remove_test_files();
+  az_iot_certificate_provider_managed_options opts = test_options();
+  az_iot_certificate_provider_managed prov;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov, &opts));
+
+  assert_int_equal(AZ_IOT_ERR_INVALID_ARG, prov.base.vtable->store_issued_certificate(NULL, NULL));
+  assert_int_equal(
+      AZ_IOT_ERR_INVALID_ARG, prov.base.vtable->store_issued_certificate(&prov.base, NULL));
+
+  /* An issuance with nothing in it is a protocol error, not an empty success:
+   * accepting it would flip has_operational with no certificate on disk. */
+  az_iot_issued_certificate empty = { .certificates = NULL, .count = 0 };
+  assert_int_equal(
+      AZ_IOT_ERR_INVALID_ARG, prov.base.vtable->store_issued_certificate(&prov.base, &empty));
+  assert_false(prov.has_operational);
+
+  az_span chain[1] = { AZ_SPAN_EMPTY };
+  az_iot_issued_certificate no_count = { .certificates = chain, .count = 0 };
+  assert_int_equal(
+      AZ_IOT_ERR_INVALID_ARG, prov.base.vtable->store_issued_certificate(&prov.base, &no_count));
+
+  az_iot_certificate_provider_managed_destroy(&prov);
+  remove_test_files();
+}
+
+static void managed_destroy_tolerates_null(void** state)
+{
+  (void)state;
+  az_iot_certificate_provider_managed_destroy(NULL);
+}
+
+/* The vtable's deinit is what a generic owner of an az_iot_certificate_provider
+ * calls; it has to reach the concrete destroy. */
+static void managed_deinit_through_the_vtable_destroys_the_provider(void** state)
+{
+  (void)state;
+  remove_test_files();
+  az_iot_certificate_provider_managed_options opts = test_options();
+  az_iot_certificate_provider_managed prov;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov, &opts));
+
+  const az_iot_certificate_provider_vtable* vt = prov.base.vtable;
+  assert_non_null(vt->deinit);
+  vt->deinit(&prov.base);
+
+  az_iot_certificate_material mat;
+  memset(&mat, 0, sizeof(mat));
+  assert_int_equal(AZ_IOT_ERR_NOT_INITIALIZED, vt->load(&prov.base, AZ_IOT_CRED_BOOTSTRAP, &mat));
+  remove_test_files();
+}
+
+/* Renewal replaces the identity rather than appending to it: a file that
+ * accumulated every chain ever issued would present a stale leaf on connect.
+ *
+ * Proven through the public API rather than by inspecting the file: store a
+ * valid chain, then store a chain that is not a certificate, then restart. If
+ * the second store had appended, the valid first certificate would still be
+ * there and the restart would find a usable operational identity. */
+static void managed_store_overwrites_a_previously_issued_chain(void** state)
+{
+  (void)state;
+  remove_test_files();
+  az_iot_certificate_provider_managed_options opts = test_options();
+  az_iot_certificate_provider_managed prov;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov, &opts));
+
+  char* good = make_self_signed_cert_base64();
+  az_span chain1[1] = { az_span_create_from_str(good) };
+  az_iot_issued_certificate issued1 = { .certificates = chain1, .count = 1 };
+  assert_int_equal(AZ_IOT_OK, prov.base.vtable->store_issued_certificate(&prov.base, &issued1));
+
+  /* A restart here would find the good chain, which is the control for the
+   * assertion below. */
+  az_iot_certificate_provider_managed_destroy(&prov);
+  az_iot_certificate_provider_managed check;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&check, &opts));
+  assert_true(check.has_operational);
+  az_iot_certificate_provider_managed_destroy(&check);
+
+  az_iot_certificate_provider_managed prov2;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov2, &opts));
+  az_span chain2[1] = { AZ_SPAN_FROM_STR("bm90LWEtY2VydGlmaWNhdGU=") };
+  az_iot_issued_certificate issued2 = { .certificates = chain2, .count = 1 };
+  assert_int_equal(AZ_IOT_OK, prov2.base.vtable->store_issued_certificate(&prov2.base, &issued2));
+  az_iot_certificate_provider_managed_destroy(&prov2);
+
+  az_iot_certificate_provider_managed prov3;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov3, &opts));
+  assert_false(prov3.has_operational);
+  az_iot_certificate_provider_managed_destroy(&prov3);
+
+  free(good);
+  remove_test_files();
+}
+
+static void managed_a_stored_chain_that_is_not_a_certificate_is_rejected_on_restart(void** state)
+{
+  (void)state;
+  remove_test_files();
+  az_iot_certificate_provider_managed_options opts = test_options();
+  az_iot_certificate_provider_managed prov;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov, &opts));
+
+  az_span chain[1] = { AZ_SPAN_FROM_STR("bm90LWEtY2VydGlmaWNhdGU=") };
+  az_iot_issued_certificate issued = { .certificates = chain, .count = 1 };
+  assert_int_equal(AZ_IOT_OK, prov.base.vtable->store_issued_certificate(&prov.base, &issued));
+  az_iot_certificate_provider_managed_destroy(&prov);
+
+  az_iot_certificate_provider_managed prov2;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov2, &opts));
+  assert_false(prov2.has_operational);
+
+  az_iot_certificate_material mat;
+  memset(&mat, 0, sizeof(mat));
+  assert_int_equal(
+      AZ_IOT_ERR_NOT_FOUND, prov2.base.vtable->load(&prov2.base, AZ_IOT_CRED_OPERATIONAL, &mat));
+
+  az_iot_certificate_provider_managed_destroy(&prov2);
+  remove_test_files();
+}
+
+/* Neither bundled provider implements the optional sign() hook, so the connect
+ * path must keep checking it for NULL before calling it. Pinning that here
+ * makes adding an implementation a deliberate act rather than a surprise. */
+static void the_sign_hook_is_not_offered_by_this_provider(void** state)
+{
+  (void)state;
+  remove_test_files();
+  az_iot_certificate_provider_managed_options opts = test_options();
+  az_iot_certificate_provider_managed prov;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov, &opts));
+
+  assert_null(prov.base.vtable->sign);
+
+  az_iot_certificate_provider_managed_destroy(&prov);
+  remove_test_files();
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
     cmocka_unit_test(managed_init_generates_key_and_valid_csr),
     cmocka_unit_test(managed_store_persists_and_survives_restart),
     cmocka_unit_test(managed_init_rejects_bad_args),
+    cmocka_unit_test(managed_load_rejects_null_arguments),
+    cmocka_unit_test(managed_operational_load_without_a_stored_chain_is_not_found),
+    cmocka_unit_test(managed_release_leaves_the_material_usable),
+    cmocka_unit_test(managed_get_csr_rejects_null_arguments),
+    cmocka_unit_test(managed_store_rejects_null_arguments),
+    cmocka_unit_test(managed_destroy_tolerates_null),
+    cmocka_unit_test(managed_deinit_through_the_vtable_destroys_the_provider),
+    cmocka_unit_test(managed_store_overwrites_a_previously_issued_chain),
+    cmocka_unit_test(managed_a_stored_chain_that_is_not_a_certificate_is_rejected_on_restart),
+    cmocka_unit_test(the_sign_hook_is_not_offered_by_this_provider),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }
