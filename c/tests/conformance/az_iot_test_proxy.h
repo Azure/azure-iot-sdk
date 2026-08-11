@@ -21,8 +21,10 @@
  * CA (C2); synthetic CONNACK/DISCONNECT and keep-alive starvation (C3); and
  * per-direction network impairment -- latency, jitter, bandwidth,
  * fragmentation and stalls -- scheduled in userspace so no OS-specific traffic
- * control is needed on any CI leg (C4); and rules that act on parsed MQTT
- * packets, to inject refusals a real broker will not produce on demand (C5).
+ * control is needed on any CI leg (C4); rules that act on parsed MQTT packets,
+ * to inject refusals a real broker will not produce on demand (C5); and mutual
+ * TLS, so the proxy can demand a client certificate and issue the good and bad
+ * ones a test needs to present (C6).
  *
  * Threading: the proxy owns one background thread that accepts a single client
  * connection at a time, opens an upstream connection, and pumps bytes in both
@@ -287,6 +289,13 @@ extern "C"
     /* Sign the leaf with a second CA that is NOT the one az_iot_test_proxy_ca_pem
      * exports, so the client's chain validation fails. */
     int sign_with_untrusted_ca;
+
+    /* Ask the client for a certificate and refuse the handshake if it does not
+     * present one that the proxy's CA signed. Without this the proxy only ever
+     * proves things about *server* certificates, so no amount of client-side
+     * fixture work can produce a rejection: a peer that never asks cannot
+     * refuse. */
+    int require_client_cert;
   } az_iot_test_proxy_tls_options;
 
   az_iot_test_proxy_tls_options az_iot_test_proxy_tls_options_default(void);
@@ -304,6 +313,40 @@ extern "C"
   /* Copy the PEM of the CA the client must trust into `out` (NUL-terminated).
    * Returns bytes written (excluding NUL), or 0 on error / if TLS isn't enabled. */
   size_t az_iot_test_proxy_ca_pem(az_iot_test_proxy* proxy, char* out, size_t cap);
+
+  /* Mint a client certificate for the client to present. Signed by the same CA
+   * the proxy verifies against, unless `sign_with_untrusted_ca` asks for one it
+   * will not accept.
+   *
+   * The offsets place the validity window relative to now, so an expired
+   * certificate is a negative number rather than a fixture that has to be
+   * re-minted by hand every time it ages out -- which is how the previous
+   * embedded fixtures died.
+   *
+   * The default window applies only when BOTH offsets are zero. Setting just
+   * one leaves the other at zero and means it literally: a certificate with
+   * `not_after_offset_sec` unset expires the instant it is issued.
+   *
+   * Writes NUL-terminated PEM into `cert_pem` and `key_pem`. Returns 0 on
+   * success, -1 if TLS is unavailable, no CA has been generated yet, or either
+   * buffer is too small. */
+  typedef struct az_iot_test_proxy_client_cert_options
+  {
+    const char* common_name; /* NULL for a default */
+    long not_before_offset_sec;
+    long not_after_offset_sec;
+    int sign_with_untrusted_ca;
+  } az_iot_test_proxy_client_cert_options;
+
+  az_iot_test_proxy_client_cert_options az_iot_test_proxy_client_cert_options_default(void);
+
+  int az_iot_test_proxy_issue_client_cert(
+      az_iot_test_proxy* proxy,
+      const az_iot_test_proxy_client_cert_options* options,
+      char* cert_pem,
+      size_t cert_cap,
+      char* key_pem,
+      size_t key_cap);
 
   /* --- Control-packet injection / synthetic broker (C3): drive CONNACK-code
    * routing, server DISCONNECT handling and keep-alive timeouts without a real

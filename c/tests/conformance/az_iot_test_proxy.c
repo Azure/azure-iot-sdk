@@ -235,6 +235,10 @@ struct az_iot_test_proxy
   SSL_CTX* ssl_ctx; /* server context presenting the generated leaf; NULL = plaintext */
   char ca_pem[4096]; /* PEM of the CA the client should trust */
   size_t ca_pem_len;
+  /* Retained so client certificates can be issued after the handshake material
+   * is built: a CA that has already been freed cannot sign. */
+  EVP_PKEY* ca_key;
+  X509* ca_cert;
 #endif
 };
 
@@ -1593,18 +1597,18 @@ static void* proxy_thread_entry(void* arg)
 az_iot_test_proxy_options az_iot_test_proxy_options_default(void)
 {
   az_iot_test_proxy_options o;
-  o.upstream_host = NULL;
-  o.upstream_port = 0;
+  memset(&o, 0, sizeof(o));
   return o;
 }
 
 az_iot_test_proxy_tls_options az_iot_test_proxy_tls_options_default(void)
 {
+  /* Zero first: naming each field means every field added later starts life
+   * uninitialised, and the only reason that was noticed here is that valgrind
+   * runs over these tests. */
   az_iot_test_proxy_tls_options o;
+  memset(&o, 0, sizeof(o));
   o.leaf_san = "IP:127.0.0.1";
-  o.not_before_offset_sec = 0;
-  o.not_after_offset_sec = 0;
-  o.sign_with_untrusted_ca = 0;
   return o;
 }
 
@@ -1750,6 +1754,23 @@ int az_iot_test_proxy_enable_tls(az_iot_test_proxy* m, const az_iot_test_proxy_t
   {
     goto done;
   }
+  if (tls.require_client_cert)
+  {
+    /* Ask for a certificate and refuse the handshake without an acceptable
+     * one. The CA also goes into the verification store, or every client
+     * certificate would be rejected as unknown rather than on its own merits. */
+    X509_STORE* store = SSL_CTX_get_cert_store(ctx);
+    if (store == NULL || X509_STORE_add_cert(store, ca_cert) != 1)
+    {
+      goto done;
+    }
+    if (SSL_CTX_add_client_CA(ctx, ca_cert) != 1)
+    {
+      goto done;
+    }
+    SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT, NULL);
+  }
+
   if (SSL_CTX_use_PrivateKey(ctx, leaf_key) != 1)
   {
     goto done;
@@ -1775,6 +1796,20 @@ int az_iot_test_proxy_enable_tls(az_iot_test_proxy* m, const az_iot_test_proxy_t
   memcpy(m->ca_pem, ca_local, ca_local_len);
   m->ca_pem[ca_local_len] = '\0';
   m->ca_pem_len = ca_local_len;
+  /* The proxy takes over the CA so client certificates can still be signed
+   * after this call returns. */
+  if (m->ca_cert != NULL)
+  {
+    X509_free(m->ca_cert);
+  }
+  if (m->ca_key != NULL)
+  {
+    EVP_PKEY_free(m->ca_key);
+  }
+  m->ca_cert = ca_cert;
+  m->ca_key = ca_key;
+  ca_cert = NULL;
+  ca_key = NULL;
   proxy_unlock(&m->lock);
   rc = 0;
 
@@ -1807,6 +1842,183 @@ done:
   {
     EVP_PKEY_free(ca_key);
   }
+  return rc;
+#endif
+}
+
+az_iot_test_proxy_client_cert_options az_iot_test_proxy_client_cert_options_default(void)
+{
+  az_iot_test_proxy_client_cert_options o;
+  memset(&o, 0, sizeof(o));
+  return o;
+}
+
+int az_iot_test_proxy_issue_client_cert(
+    az_iot_test_proxy* m,
+    const az_iot_test_proxy_client_cert_options* options,
+    char* cert_pem,
+    size_t cert_cap,
+    char* key_pem,
+    size_t key_cap)
+{
+#if !defined(AZ_IOT_TEST_PROXY_TLS)
+  (void)m;
+  (void)options;
+  (void)cert_pem;
+  (void)cert_cap;
+  (void)key_pem;
+  (void)key_cap;
+  return -1;
+#else
+  if (m == NULL || cert_pem == NULL || cert_cap == 0 || key_pem == NULL || key_cap == 0)
+  {
+    return -1;
+  }
+
+  az_iot_test_proxy_client_cert_options opt
+      = (options != NULL) ? *options : az_iot_test_proxy_client_cert_options_default();
+  const char* cn = (opt.common_name != NULL && opt.common_name[0] != '\0') ? opt.common_name
+                                                                           : "az-iot-test-client";
+  long nb = opt.not_before_offset_sec;
+  long na = opt.not_after_offset_sec;
+  if (nb == 0 && na == 0)
+  {
+    nb = -3600;
+    na = 24L * 3600L;
+  }
+
+  /* Take a reference while the lock is held: enable_tls() may replace and free
+   * the CA, and signing with a raw pointer read under the lock but used after
+   * releasing it is a use-after-free waiting for the first test that
+   * reconfigures TLS from another thread. */
+  proxy_lock(&m->lock);
+  EVP_PKEY* ca_key = m->ca_key;
+  X509* ca_cert = m->ca_cert;
+  if (ca_key != NULL && ca_cert != NULL && EVP_PKEY_up_ref(ca_key) == 1)
+  {
+    if (X509_up_ref(ca_cert) != 1)
+    {
+      EVP_PKEY_free(ca_key);
+      ca_key = NULL;
+      ca_cert = NULL;
+    }
+  }
+  else
+  {
+    ca_key = NULL;
+    ca_cert = NULL;
+  }
+  proxy_unlock(&m->lock);
+  if (ca_key == NULL || ca_cert == NULL)
+  {
+    return -1; /* enable_tls has not run, so there is nothing to sign with */
+  }
+
+  EVP_PKEY* key = NULL;
+  X509* cert = NULL;
+  EVP_PKEY* rogue_key = NULL;
+  X509* rogue_cert = NULL;
+  BIO* bio = NULL;
+  int rc = -1;
+
+  key = EVP_PKEY_Q_keygen(NULL, NULL, "EC", "P-256");
+  if (key == NULL)
+  {
+    goto done;
+  }
+
+  EVP_PKEY* signer_key = ca_key;
+  X509* signer_cert = ca_cert;
+  if (opt.sign_with_untrusted_ca)
+  {
+    rogue_key = EVP_PKEY_Q_keygen(NULL, NULL, "EC", "P-256");
+    if (rogue_key == NULL)
+    {
+      goto done;
+    }
+    rogue_cert = proxy_make_cert(
+        rogue_key,
+        rogue_key,
+        NULL,
+        "az-iot-test-rogue-client-ca",
+        NULL,
+        1,
+        4,
+        -3600,
+        10L * 365 * 24 * 3600);
+    if (rogue_cert == NULL)
+    {
+      goto done;
+    }
+    signer_key = rogue_key;
+    signer_cert = rogue_cert;
+  }
+
+  /* No SAN: a client certificate is matched on its issuer and validity, not on
+   * a hostname. */
+  cert = proxy_make_cert(key, signer_key, signer_cert, cn, NULL, 0, 5, nb, na);
+  if (cert == NULL)
+  {
+    goto done;
+  }
+
+  bio = BIO_new(BIO_s_mem());
+  if (bio == NULL || PEM_write_bio_X509(bio, cert) != 1)
+  {
+    goto done;
+  }
+  {
+    char* data = NULL;
+    long n = BIO_get_mem_data(bio, &data);
+    if (n <= 0 || (size_t)n >= cert_cap)
+    {
+      goto done;
+    }
+    memcpy(cert_pem, data, (size_t)n);
+    cert_pem[n] = '\0';
+  }
+  BIO_free(bio);
+
+  bio = BIO_new(BIO_s_mem());
+  if (bio == NULL || PEM_write_bio_PrivateKey(bio, key, NULL, NULL, 0, NULL, NULL) != 1)
+  {
+    goto done;
+  }
+  {
+    char* data = NULL;
+    long n = BIO_get_mem_data(bio, &data);
+    if (n <= 0 || (size_t)n >= key_cap)
+    {
+      goto done;
+    }
+    memcpy(key_pem, data, (size_t)n);
+    key_pem[n] = '\0';
+  }
+  rc = 0;
+
+done:
+  if (bio != NULL)
+  {
+    BIO_free(bio);
+  }
+  if (cert != NULL)
+  {
+    X509_free(cert);
+  }
+  if (rogue_cert != NULL)
+  {
+    X509_free(rogue_cert);
+  }
+  if (rogue_key != NULL)
+  {
+    EVP_PKEY_free(rogue_key);
+  }
+  if (key != NULL)
+  {
+    EVP_PKEY_free(key);
+  }
+  X509_free(ca_cert);
+  EVP_PKEY_free(ca_key);
   return rc;
 #endif
 }
@@ -2172,6 +2384,14 @@ void az_iot_test_proxy_stop(az_iot_test_proxy* m)
   if (m->ssl_ctx != NULL)
   {
     SSL_CTX_free(m->ssl_ctx);
+  }
+  if (m->ca_cert != NULL)
+  {
+    X509_free(m->ca_cert);
+  }
+  if (m->ca_key != NULL)
+  {
+    EVP_PKEY_free(m->ca_key);
   }
 #endif
   proxy_mutex_destroy(&m->lock);
