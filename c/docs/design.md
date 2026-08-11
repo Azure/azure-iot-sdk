@@ -268,15 +268,18 @@ sequenceDiagram
    because `on_packet` would become an opaque `kind` and the packet-id echo would generalise
    to a correlation token of arbitrary length.
 
-   **The awkward part is not the codec, it is the synthetic broker.** Framing and packet-id
-   extraction move behind the vtable almost verbatim. The synthetic-broker path is different
-   -- the mode `az_iot_test_proxy_set_synthetic_connack()` switches on, where the proxy
-   answers the client itself rather than forwarding to a broker. It *constructs* MQTT packets
-   and waits for "the client's first complete packet (its CONNECT)". Porting it would need a codec that can build PDUs as well as parse them, which
-   is a much larger interface. The better answer is probably to delete it: the rule engine
-   can already express the same behaviour as "suppress the CONNECT, inject these bytes", so
-   the synthetic mode is now largely redundant with a more general mechanism. That should be
-   confirmed against the four tests that use it before committing to it.
+   **Encoding is already out.** `az_iot_test_mqtt_server` builds the packets a broker sends,
+   so neither the proxy nor the tests assemble bytes. That settles a question this note
+   originally got wrong: it claimed the synthetic-broker path -- the mode
+   `az_iot_test_proxy_set_synthetic_connack()` switches on, where the proxy answers the
+   client itself rather than forwarding -- "constructs MQTT packets", and would therefore
+   need a codec that builds PDUs as well as parsing them. It does not: it sends bytes handed
+   to it. Its only protocol knowledge is the framing used to spot a complete CONNECT, which
+   is the same `frame()` the sketch above already covers.
+
+   So the split is smaller than it first looked: one function's worth of framing behind the
+   vtable, and the type/correlation extraction, with encoding already living somewhere it
+   can stay.
 
    **Cost and trigger.** Roughly half a day: the mechanical work is small and 27 conformance
    cases pin the behaviour, so the risk is regression rather than design. Do it when the

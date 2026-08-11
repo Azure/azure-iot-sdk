@@ -222,7 +222,8 @@ add_library(az_iot_conformance STATIC
 target_include_directories(az_iot_conformance PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/conformance
 )
-target_link_libraries(az_iot_conformance PUBLIC az_iot_core cmocka az_iot_test_proxy)
+target_link_libraries(az_iot_conformance PUBLIC az_iot_core cmocka az_iot_test_proxy
+    az_iot_test_mqtt_server)
 # The certificate-validation tests drive TLS through the in-process test proxy,
 # which generates and presents the certificates itself, so they need OpenSSL
 # rather than a separately provisioned TLS broker. Refuse to configure when the
@@ -286,6 +287,31 @@ if(WIN32)
     target_link_libraries(az_iot_test_proxy PUBLIC ws2_32)
 endif()
 az_iot_apply_warnings(az_iot_test_proxy)
+
+# ---------------------------------------------------------------------------
+# Builders for the MQTT packets a broker sends.
+#
+# The proxy schedules opaque bytes and must stay that way; this is what turns
+# "refuse the subscription" into the bytes for the version under test, so no
+# test hand-assembles a fixed header. Deliberately a separate target from
+# az_iot_test_proxy: linking it there would put protocol knowledge back into
+# the layer that exists to be free of it.
+#
+# Standalone (libc only) -- it encodes MQTT, not anything specific to this SDK.
+# ---------------------------------------------------------------------------
+add_library(az_iot_test_mqtt_server STATIC
+    conformance/az_iot_test_mqtt_server.c
+)
+target_include_directories(az_iot_test_mqtt_server PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/conformance
+)
+az_iot_apply_warnings(az_iot_test_mqtt_server)
+
+# Pins the wire format the builders emit. The conformance cases assert client
+# behaviour and would still pass if a reason code changed to another refusal,
+# so the exact bytes are asserted here instead.
+az_iot_add_cmocka_test(az_iot_tests_test_mqtt_server unit/test_mqtt_server_test.c)
+target_link_libraries(az_iot_tests_test_mqtt_server PRIVATE az_iot_test_mqtt_server)
 
 if(AZ_IOT_WITH_PAHO)
     add_executable(az_iot_conformance_paho_v3 conformance/paho_v3_main.c)
