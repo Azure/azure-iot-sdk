@@ -6,6 +6,7 @@ using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
 using Microsoft.Azure.Devices.Client.Unified.Connection;
 using Microsoft.Azure.Devices.Client.Models;
+using Microsoft.Azure.Devices.Client.Models.DirectMethods;
 
 internal class Program
 {

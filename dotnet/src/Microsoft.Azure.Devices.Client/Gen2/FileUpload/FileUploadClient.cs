@@ -1,5 +1,5 @@
 ﻿using Microsoft.Azure.Devices.Client.Gen2.Connection;
-using Microsoft.Azure.Devices.Client.Models;
+using Microsoft.Azure.Devices.Client.Models.FileUpload;
 
 namespace Microsoft.Azure.Devices.Client.Gen2.FileUpload
 {

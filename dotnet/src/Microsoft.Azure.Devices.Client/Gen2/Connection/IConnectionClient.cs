@@ -2,7 +2,7 @@
 
 namespace Microsoft.Azure.Devices.Client.Gen2.Connection
 {
-    public interface IConnectionClient : IDisposable
+    public interface IConnectionClient : IDisposable //TODO what is the disposal pattern like with feature clients + this client? Mimic HTTP pattern of "disposing" flag?
     {
         /// <summary>
         /// Get the current connection context.

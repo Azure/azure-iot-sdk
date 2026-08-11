@@ -1,6 +1,6 @@
 ﻿using Microsoft.Azure.Devices.Client;
 using Microsoft.Azure.Devices.Client.Models;
-using Microsoft.Azure.Devices.Client.Twin.Models;
+using Microsoft.Azure.Devices.Client.Models.Twin;
 using Microsoft.Azure.Devices.Client.Unified.Connection;
 using SetupSampleDevice;
 using System.Text.Json;
@@ -8,7 +8,7 @@ using TwinClient = Microsoft.Azure.Devices.Client.Unified.Twin.TwinClient;
 
 internal class Program
 {
-    static Twin? currentTwin = null;
+    static DeviceTwin? currentTwin = null;
 
     private static async Task Main(string[] args)
     {

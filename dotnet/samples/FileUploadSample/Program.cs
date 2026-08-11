@@ -6,6 +6,8 @@ using System.Text;
 using Microsoft.Azure.Devices.Client.Unified.Connection;
 using Microsoft.Azure.Devices.Client.Models;
 using Microsoft.Azure.Devices.Client.Unified.FileUpload;
+using Microsoft.Azure.Devices.Client.Models.FileUpload;
+using Microsoft.Azure.Devices.Client.Exceptions;
 
 internal class Program
 {
@@ -20,7 +22,7 @@ internal class Program
 
         using ConnectionClient connectionClient = new ConnectionClient();
 
-        FileUploadClient fileUploadClient = new FileUploadClient(connectionClient, authentication.ClientCertificate);
+        FileUploadClient fileUploadClient = new FileUploadClient(connectionClient);
 
         ProvisioningSettings provisioningSettings = new(idScope);
         var connectionContext = await connectionClient.ProvisionAndConnectAsync(provisioningSettings, authentication, cancellationToken: cts.Token);

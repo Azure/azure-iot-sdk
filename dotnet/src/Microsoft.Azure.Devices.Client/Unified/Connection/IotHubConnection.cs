@@ -1,5 +1,5 @@
-﻿using Microsoft.Azure.Devices.Client.Gen2.Telemetry;
-using Microsoft.Azure.Devices.Client.Models;
+﻿using Microsoft.Azure.Devices.Client.Exceptions;
+using Microsoft.Azure.Devices.Client.Gen2.Telemetry;
 using Microsoft.Azure.Devices.Client.Mqtt;
 using Microsoft.Azure.Devices.Client.Unified.Twin;
 using System.Reflection;

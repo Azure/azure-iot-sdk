@@ -1,6 +1,8 @@
-﻿using Microsoft.Azure.Devices.Client.Gen2.Connection;
-using Microsoft.Azure.Devices.Client.Models;
+﻿using Microsoft.Azure.Devices.Client.Exceptions;
+using Microsoft.Azure.Devices.Client.Gen2.Connection;
+using Microsoft.Azure.Devices.Client.Models.Telemetry;
 using Microsoft.Azure.Devices.Client.Mqtt;
+using System.Diagnostics;
 using System.Globalization;
 using System.Text;
 
@@ -11,6 +13,8 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Telemetry
     /// </summary>
     public class TelemetryClient : IDisposable
     {
+        private bool _isDisposed = false;
+
         internal const string DeviceBoundMessagesTopicFormat = "devices/{0}/messages/devicebound/";
 
         private const string NewTelemetryTopicFormat = "ih/{0}/srv/telemetry";
@@ -52,8 +56,10 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Telemetry
         /// <exception cref="NotSupportedException">Thrown only if this method is called while the provided <see cref="ConnectionClient"/> is disconnected and not trying to reconnect.</exception>
         /// <exception cref="PublishRejectedException">Thrown if this telemetry message is rejected by IoT Hub for any reason.</exception>
         /// <exception cref="MessageTooLargeException">Thrown if the message's payload's size exceeds the supported limits of IoT hub.</exception>
-        public async Task SendTelemetryAsync(OutgoingTelemetryMessage message, CancellationToken cancellationToken = default)
+        public async Task SendTelemetryAsync(DeviceToCloudTelemetry message, CancellationToken cancellationToken = default)
         {
+            ObjectDisposedException.ThrowIf(_isDisposed, this);
+
             var currentConnectionContext = _connection.GetCurrentConnectionContext();
             if (currentConnectionContext == null)
             {
@@ -118,68 +124,33 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Telemetry
 
         private async Task HandleReceivedMqttPublish(MqttPublishReceivedEventArgs args)
         {
-            if (_connection.GetCurrentConnectionContext()!.IsAzureEventGrid)
-            {
-                throw new NotSupportedException("c2d is not supported when connected to AEG Hub currently");
-            }
-            else
-            {
-                //TODO it is a bit awkward to build this now instead of in the constructor, but the deviceId isn't present until after hub connection :/
-                var expectedDeviceBoundMessagesTopic = string.Format(CultureInfo.InvariantCulture, DeviceBoundMessagesTopicFormat, _connection.GetCurrentConnectionContext()!.DeviceId);
-
-                if (args.Publish.Topic.StartsWith(expectedDeviceBoundMessagesTopic))
-                {
-                    if (CloudToDeviceTelemetryReceivedAsync != null)
-                    {
-                        var receivedCloudToDeviceMessage = new CloudToDeviceTelemetry(args.Publish.Payload);
-
-                        // devices/{device-id}/messages/devicebound/{property-bag}
-                        string[] topicSegments = args.Publish.Topic.Split("/", StringSplitOptions.RemoveEmptyEntries);
-
-                        //TODO is there a case where there is no property bag b/c no correlation id + no message id + no user properties?
-
-                        // for example: "%24.mid=febd6d71-df05-474f-8a9b-fe90318c7eb8&%24.to=%2Fdevices%2Fb98a1b81-6b6b-4762-ae77-610fb8d6d3cd%2Fmessages%2FdeviceBound"
-                        string propertyBag = topicSegments[4];
-
-                        string[] keyValuePairs = propertyBag.Split('&');
-                        foreach (var keyValuePair in keyValuePairs)
-                        {
-                            string key = Uri.UnescapeDataString(keyValuePair.Split("=")[0]);
-                            string value = Uri.UnescapeDataString(keyValuePair.Split("=")[1]);
-
-                            if (key.Equals(TelemetryClient.MessagePropertyMessageId))
-                            {
-                                receivedCloudToDeviceMessage.MessageId = value;
-                            }
-                            else if (key.Equals(TelemetryClient.MessagePropertyCorrelationId))
-                            {
-                                receivedCloudToDeviceMessage.CorrelationId = value;
-                            }
-                            else if (key.Equals(TelemetryClient.MessagePropertyContentType))
-                            {
-                                receivedCloudToDeviceMessage.ContentType = value;
-                            }
-                            else if (key.Equals(TelemetryClient.MessagePropertyContentEncoding))
-                            {
-                                receivedCloudToDeviceMessage.ContentEncoding = value;
-                            }
-                            else
-                            {
-                                receivedCloudToDeviceMessage.UserProperties.Add(key, value);
-                            }
-                        }
-
-                        await CloudToDeviceTelemetryReceivedAsync.Invoke(receivedCloudToDeviceMessage);
-
-                        await args.AcknowledgeAsync(CancellationToken.None);
-                    }
-                }
-            }
+            Trace.TraceError("c2d is not supported when connected to AEG Hub currently");
         }
 
+        /// <summary>
+        /// Releases the unmanaged resources used by this client and optionally disposes of the managed resources.
+        /// </summary>
+        /// <param name="disposing">true to release both managed and unmanaged resources; false to releases only unmanaged resources.</param>
+        public void Dispose(bool disposing)
+        {
+            _connection.MqttClient.PublishReceivedAsync -= HandleReceivedMqttPublish;
+            if (disposing)
+            {
+                _connection.Dispose();
+            }
+
+            _isDisposed = true;
+        }
+
+        /// <summary>
+        /// Releases the unmanaged resources and disposes of the managed resources used by this client 
+        /// </summary>
         public void Dispose()
         {
             _connection.MqttClient.PublishReceivedAsync -= HandleReceivedMqttPublish;
+            _connection.Dispose();
+
+            _isDisposed = true;
         }
     }
 }
