@@ -162,6 +162,18 @@ typedef struct proxy_egress
   uint64_t writes; /* drained into the proxy's cumulative counter */
 } proxy_egress;
 
+/* A rule plus the bookkeeping the caller does not supply: `bytes` is copied so
+ * the caller's buffer need not outlive the call, `seen` counts matches of the
+ * trigger including those skipped, and `hits` counts the times it fired. */
+typedef struct proxy_rule
+{
+  az_iot_test_proxy_rule spec;
+  uint8_t bytes[AZ_IOT_TEST_PROXY_RULE_BYTES_MAX];
+  size_t bytes_len;
+  uint32_t seen;
+  uint32_t hits;
+} proxy_rule;
+
 /* ------------------------------------------------------------------------- */
 /* proxy state                                                               */
 /* ------------------------------------------------------------------------- */
@@ -193,6 +205,9 @@ struct az_iot_test_proxy
   uint64_t stall_until_ms[2];
   uint64_t queued_snapshot[2]; /* published for az_iot_test_proxy_queued_bytes */
   uint64_t writes[2];
+
+  proxy_rule rules[AZ_IOT_TEST_PROXY_RULES_MAX];
+  size_t rule_count;
 
   uint64_t conn_c2b_bytes; /* client->broker bytes, current connection */
   uint32_t conn_c2b_packets; /* client->broker MQTT packets, current connection */
@@ -424,62 +439,6 @@ static int proxy_open_listener(struct az_iot_test_proxy* m)
   m->listen_sock = s;
   m->listen_port = ntohs(bound.sin_port);
   return 0;
-}
-
-/* ------------------------------------------------------------------------- */
-/* forwarding + MQTT packet counting                                         */
-/* ------------------------------------------------------------------------- */
-
-/* Advance the client->broker MQTT fixed-header parser over `n` bytes and report
- * how many whole packets completed. Valid because C1 forwards plaintext. */
-static void proxy_count_packets(
-    struct az_iot_test_proxy* m,
-    const char* buf,
-    size_t n,
-    uint32_t* out_new)
-{
-  uint32_t completed = 0;
-  for (size_t i = 0; i < n; ++i)
-  {
-    unsigned char b = (unsigned char)buf[i];
-    if (m->pkt_phase == 0)
-    {
-      m->pkt_phase = 1;
-      m->pkt_rem = 0;
-      m->pkt_mult = 1;
-    }
-    else if (m->pkt_phase == 1)
-    {
-      m->pkt_rem += (uint32_t)(b & 0x7Fu) * m->pkt_mult;
-      m->pkt_mult *= 128u;
-      if ((b & 0x80u) == 0u)
-      {
-        if (m->pkt_rem == 0u)
-        {
-          ++completed;
-          m->pkt_phase = 0;
-        }
-        else
-        {
-          m->pkt_body_left = m->pkt_rem;
-          m->pkt_phase = 2;
-        }
-      }
-    }
-    else /* body */
-    {
-      size_t avail = n - i;
-      size_t skip = (avail < (size_t)m->pkt_body_left) ? avail : (size_t)m->pkt_body_left;
-      m->pkt_body_left -= (uint32_t)skip;
-      i += skip - 1; /* loop's ++i consumes the final body byte */
-      if (m->pkt_body_left == 0u)
-      {
-        ++completed;
-        m->pkt_phase = 0;
-      }
-    }
-  }
-  *out_new = completed;
 }
 
 /* Client-side I/O abstracts plaintext vs. a terminated TLS session. `ssl` is an
@@ -747,6 +706,350 @@ static int eg_flush(
   return 0;
 }
 
+/* ------------------------------------------------------------------------- */
+/* MQTT packet framing and the rule engine                                   */
+/* ------------------------------------------------------------------------- */
+
+/* Rules act on whole packets, so one is reassembled before the proxy decides
+ * what to do with it. Anything larger is streamed through unmatched: the cap
+ * stops a fault injector from turning into a store-and-forward broker, and no
+ * conformance payload comes near it. */
+#define PROXY_PKT_MAX 16384
+
+typedef struct proxy_framer
+{
+  uint8_t buf[PROXY_PKT_MAX];
+  size_t have;
+  size_t need; /* total packet size, once the fixed header decodes */
+  size_t oversized_left; /* bytes of an unbuffered packet still to stream */
+} proxy_framer;
+
+/* Decode the fixed header. Returns 1 with `*hdr_len` and `*total` filled, 0 if
+ * more bytes are needed, or -1 if the remaining-length varint is malformed. */
+static int proxy_frame_size(const uint8_t* buf, size_t have, size_t* hdr_len, size_t* total)
+{
+  if (have < 2)
+  {
+    return 0;
+  }
+  size_t rem = 0;
+  size_t mult = 1;
+  size_t i = 1;
+  for (;;)
+  {
+    if (i > 4)
+    {
+      return -1; /* the varint is four bytes at most */
+    }
+    if (i >= have)
+    {
+      return 0;
+    }
+    uint8_t byte = buf[i];
+    rem += (size_t)(byte & 0x7Fu) * mult;
+    mult *= 128u;
+    ++i;
+    if ((byte & 0x80u) == 0u)
+    {
+      break;
+    }
+  }
+  *hdr_len = i;
+  *total = i + rem;
+  return 1;
+}
+
+/* Count whole packets without buffering or forwarding them. The synthetic
+ * broker never relays anything, so it needs the framing but not the bytes; a
+ * fixed header is five bytes at most, hence no payload buffer here. */
+typedef struct proxy_counter
+{
+  uint8_t hdr[5];
+  size_t have;
+  size_t body_left;
+} proxy_counter;
+
+static void proxy_frame_count(proxy_counter* pc, const char* data, size_t n, uint32_t* out_packets)
+{
+  const uint8_t* p = (const uint8_t*)data;
+  size_t left = n;
+  while (left > 0)
+  {
+    if (pc->body_left > 0)
+    {
+      size_t take = (left < pc->body_left) ? left : pc->body_left;
+      pc->body_left -= take;
+      p += take;
+      left -= take;
+      if (pc->body_left == 0)
+      {
+        ++(*out_packets);
+        pc->have = 0;
+      }
+      continue;
+    }
+
+    pc->hdr[pc->have++] = *p++;
+    --left;
+    size_t hdr_len = 0;
+    size_t total = 0;
+    int r = proxy_frame_size(pc->hdr, pc->have, &hdr_len, &total);
+    if (r < 0)
+    {
+      pc->have = 0;
+    }
+    else if (r == 1)
+    {
+      if (total == pc->have)
+      {
+        ++(*out_packets); /* nothing after the header, e.g. PINGREQ */
+        pc->have = 0;
+      }
+      else
+      {
+        pc->body_left = total - pc->have;
+      }
+    }
+  }
+}
+
+/* Extract the packet id an acknowledgement would have to echo. PUBLISH carries
+ * it after the topic and only above QoS 0; the ack and subscribe families carry
+ * it first. Returns 0 when the packet has no id. */
+static int proxy_packet_id(const uint8_t* pkt, size_t len, uint8_t out[2])
+{
+  size_t hdr = 0;
+  size_t total = 0;
+  if (proxy_frame_size(pkt, len, &hdr, &total) != 1)
+  {
+    return 0;
+  }
+  uint8_t type = (uint8_t)(pkt[0] >> 4);
+  size_t at;
+  if (type == AZ_IOT_TEST_PROXY_PKT_PUBLISH)
+  {
+    if (((pkt[0] >> 1) & 0x03u) == 0u || hdr + 2 > len)
+    {
+      return 0;
+    }
+    at = hdr + 2 + (((size_t)pkt[hdr] << 8) | (size_t)pkt[hdr + 1]);
+  }
+  else if (
+      type == AZ_IOT_TEST_PROXY_PKT_PUBACK || type == AZ_IOT_TEST_PROXY_PKT_PUBREC
+      || type == AZ_IOT_TEST_PROXY_PKT_PUBREL || type == AZ_IOT_TEST_PROXY_PKT_PUBCOMP
+      || type == AZ_IOT_TEST_PROXY_PKT_SUBSCRIBE || type == AZ_IOT_TEST_PROXY_PKT_SUBACK
+      || type == AZ_IOT_TEST_PROXY_PKT_UNSUBSCRIBE || type == AZ_IOT_TEST_PROXY_PKT_UNSUBACK)
+  {
+    at = hdr;
+  }
+  else
+  {
+    return 0;
+  }
+  if (at + 2 > len)
+  {
+    return 0;
+  }
+  out[0] = pkt[at];
+  out[1] = pkt[at + 1];
+  return 1;
+}
+
+/* Run the rule table over one complete packet. May shorten or edit `pkt` in
+ * place. Returns 0 if the packet must not be forwarded.
+ *
+ * Injections are collected under the lock and pushed after releasing it, so
+ * that queueing never happens with the lock held. */
+static int proxy_apply_rules(
+    struct az_iot_test_proxy* m,
+    int dir,
+    proxy_egress* eg,
+    const az_iot_test_proxy_impairment* imp,
+    uint8_t* pkt,
+    size_t* len,
+    int* out_drop)
+{
+  struct
+  {
+    int dir;
+    size_t len;
+    uint8_t bytes[AZ_IOT_TEST_PROXY_RULE_BYTES_MAX];
+  } pending[AZ_IOT_TEST_PROXY_RULES_MAX];
+  size_t pending_count = 0;
+
+  uint8_t pid[2] = { 0, 0 };
+  int have_pid = proxy_packet_id(pkt, *len, pid);
+  uint8_t type = (uint8_t)(pkt[0] >> 4);
+  int forward = 1;
+
+  proxy_lock(&m->lock);
+  for (size_t i = 0; i < m->rule_count; ++i)
+  {
+    proxy_rule* r = &m->rules[i];
+    if ((int)r->spec.dir != dir)
+    {
+      continue;
+    }
+    if (r->spec.on_packet != AZ_IOT_TEST_PROXY_PKT_ANY && r->spec.on_packet != type)
+    {
+      continue;
+    }
+    if (r->seen++ < r->spec.skip)
+    {
+      continue;
+    }
+    if (!r->spec.repeat && r->hits > 0)
+    {
+      continue;
+    }
+    ++r->hits;
+
+    az_iot_test_proxy_action action = r->spec.action;
+    if (action == AZ_IOT_TEST_PROXY_ACTION_SUPPRESS)
+    {
+      forward = 0;
+    }
+    else if (action == AZ_IOT_TEST_PROXY_ACTION_TRUNCATE)
+    {
+      if (r->spec.truncate_to < *len)
+      {
+        *len = r->spec.truncate_to;
+      }
+    }
+    else if (action == AZ_IOT_TEST_PROXY_ACTION_CORRUPT)
+    {
+      if (r->spec.corrupt_offset < *len)
+      {
+        pkt[r->spec.corrupt_offset] ^= r->spec.corrupt_mask;
+      }
+    }
+    else if (action == AZ_IOT_TEST_PROXY_ACTION_DROP)
+    {
+      *out_drop = 1;
+    }
+    else if (action == AZ_IOT_TEST_PROXY_ACTION_STALL)
+    {
+      /* Set directly: az_iot_test_proxy_stall() would take the lock we hold. */
+      m->stall_until_ms[(int)r->spec.stall_dir] = proxy_now_ms() + (uint64_t)r->spec.stall_ms;
+    }
+    else if (
+        action == AZ_IOT_TEST_PROXY_ACTION_INJECT && pending_count < AZ_IOT_TEST_PROXY_RULES_MAX)
+    {
+      memcpy(pending[pending_count].bytes, r->bytes, r->bytes_len);
+      pending[pending_count].len = r->bytes_len;
+      pending[pending_count].dir = (int)r->spec.inject_dir;
+      if (r->spec.echo_packet_id && have_pid && r->spec.packet_id_offset + 2 <= r->bytes_len)
+      {
+        pending[pending_count].bytes[r->spec.packet_id_offset] = pid[0];
+        pending[pending_count].bytes[r->spec.packet_id_offset + 1] = pid[1];
+      }
+      ++pending_count;
+    }
+  }
+  proxy_unlock(&m->lock);
+
+  for (size_t i = 0; i < pending_count; ++i)
+  {
+    int d = pending[i].dir;
+    (void)eg_push(&eg[d], &imp[d], (const char*)pending[i].bytes, pending[i].len);
+  }
+  return forward;
+}
+
+/* Frame `n` bytes read from `dir`, run the rules over each complete packet and
+ * queue whatever survives. Reports how many packets completed so the existing
+ * reset-after-N-packets control keeps its meaning. */
+static void proxy_ingest(
+    struct az_iot_test_proxy* m,
+    int dir,
+    proxy_framer* fr,
+    proxy_egress* eg,
+    const az_iot_test_proxy_impairment* imp,
+    const char* data,
+    size_t n,
+    uint32_t* out_packets,
+    int* out_drop)
+{
+  const uint8_t* p = (const uint8_t*)data;
+  size_t left = n;
+
+  while (left > 0)
+  {
+    if (fr->oversized_left > 0)
+    {
+      size_t take = (left < fr->oversized_left) ? left : fr->oversized_left;
+      (void)eg_push(&eg[dir], &imp[dir], (const char*)p, take);
+      fr->oversized_left -= take;
+      if (fr->oversized_left == 0)
+      {
+        ++(*out_packets);
+      }
+      p += take;
+      left -= take;
+      continue;
+    }
+
+    if (fr->need == 0)
+    {
+      /* One byte at a time until the fixed header decodes; it is five bytes at
+       * most, so this is not the hot path. */
+      fr->buf[fr->have++] = *p++;
+      --left;
+      size_t hdr = 0;
+      size_t total = 0;
+      int r = proxy_frame_size(fr->buf, fr->have, &hdr, &total);
+      if (r < 0)
+      {
+        /* A malformed length cannot be framed. Pass what was buffered through
+         * and resynchronise on the next byte rather than stalling the stream. */
+        (void)eg_push(&eg[dir], &imp[dir], (const char*)fr->buf, fr->have);
+        fr->have = 0;
+      }
+      else if (r == 1)
+      {
+        if (total > PROXY_PKT_MAX)
+        {
+          (void)eg_push(&eg[dir], &imp[dir], (const char*)fr->buf, fr->have);
+          fr->oversized_left = total - fr->have;
+          fr->have = 0;
+        }
+        else
+        {
+          fr->need = total;
+        }
+      }
+      if (fr->need == 0)
+      {
+        continue; /* still short of a fixed header */
+      }
+      /* Otherwise fall through: a packet with an empty body is already
+       * complete, and waiting for more bytes would strand it. */
+    }
+
+    size_t want = fr->need - fr->have;
+    size_t take = (left < want) ? left : want;
+    if (take > 0)
+    {
+      memcpy(fr->buf + fr->have, p, take);
+      fr->have += take;
+      p += take;
+      left -= take;
+    }
+
+    if (fr->have == fr->need)
+    {
+      size_t len = fr->need;
+      if (proxy_apply_rules(m, dir, eg, imp, fr->buf, &len, out_drop) && len > 0)
+      {
+        (void)eg_push(&eg[dir], &imp[dir], (const char*)fr->buf, len);
+      }
+      ++(*out_packets);
+      fr->have = 0;
+      fr->need = 0;
+    }
+  }
+}
+
 #if defined(AZ_IOT_TEST_PROXY_TLS)
 /* Build an X.509 cert. issuer_cert==NULL => self-signed. `san` (e.g.
  * "IP:127.0.0.1") is added for leaf certs; CA certs get basicConstraints
@@ -868,6 +1171,17 @@ static void proxy_pump(
   char buf[8192];
   proxy_egress eg[2];
   memset(eg, 0, sizeof(eg));
+  /* Framing state is per connection, so it lives here rather than in the proxy
+   * and cannot leak a half-read packet into the next session. */
+  proxy_framer* fr = (proxy_framer*)calloc(2, sizeof(*fr));
+  if (fr == NULL)
+  {
+    proxy_client_free(client_ssl);
+    proxy_hard_close(client);
+    proxy_hard_close(upstream);
+    return;
+  }
+  int rule_drop = 0;
   unsigned wait_ms = 200;
 
   for (;;)
@@ -927,11 +1241,16 @@ static void proxy_pump(
           goto done;
         }
         uint32_t new_packets = 0;
-        proxy_count_packets(m, buf, (size_t)n, &new_packets);
-        if (eg_push(&eg[AZ_IOT_TEST_PROXY_C2B], &imp[AZ_IOT_TEST_PROXY_C2B], buf, (size_t)n) != 0)
-        {
-          goto done;
-        }
+        proxy_ingest(
+            m,
+            AZ_IOT_TEST_PROXY_C2B,
+            &fr[AZ_IOT_TEST_PROXY_C2B],
+            eg,
+            imp,
+            buf,
+            (size_t)n,
+            &new_packets,
+            &rule_drop);
 
         int fire = 0;
         proxy_lock(&m->lock);
@@ -965,10 +1284,17 @@ static void proxy_pump(
       {
         goto done;
       }
-      if (eg_push(&eg[AZ_IOT_TEST_PROXY_B2C], &imp[AZ_IOT_TEST_PROXY_B2C], buf, (size_t)n) != 0)
-      {
-        goto done;
-      }
+      uint32_t b2c_packets = 0;
+      proxy_ingest(
+          m,
+          AZ_IOT_TEST_PROXY_B2C,
+          &fr[AZ_IOT_TEST_PROXY_B2C],
+          eg,
+          imp,
+          buf,
+          (size_t)n,
+          &b2c_packets,
+          &rule_drop);
       proxy_lock(&m->lock);
       m->total_bytes += (uint64_t)n;
       proxy_unlock(&m->lock);
@@ -991,6 +1317,14 @@ static void proxy_pump(
             client,
             client_ssl)
         != 0)
+    {
+      goto done;
+    }
+
+    /* A rule asked for a reset. Both queues have just been flushed, so an
+     * "inject, then drop" pair gets its injected packet onto the wire before
+     * the connection goes away -- whichever direction triggered it. */
+    if (rule_drop)
     {
       goto done;
     }
@@ -1036,6 +1370,7 @@ static void proxy_pump(
   }
 
 done:
+  free(fr);
   eg_clear(&eg[0]);
   eg_clear(&eg[1]);
   proxy_lock(&m->lock);
@@ -1082,6 +1417,8 @@ static void proxy_pump_synthetic(struct az_iot_test_proxy* m, proxy_sock client,
   proxy_unlock(&m->lock);
 
   /* Wait for the client's first complete packet (its CONNECT). */
+  proxy_counter counter;
+  memset(&counter, 0, sizeof(counter));
   int have_connect = 0;
   while (!have_connect)
   {
@@ -1102,7 +1439,7 @@ static void proxy_pump_synthetic(struct az_iot_test_proxy* m, proxy_sock client,
       goto done;
     }
     uint32_t new_packets = 0;
-    proxy_count_packets(m, buf, (size_t)n, &new_packets);
+    proxy_frame_count(&counter, buf, (size_t)n, &new_packets);
     proxy_lock(&m->lock);
     m->total_bytes += (uint64_t)n;
     m->total_packets += new_packets;
@@ -1632,6 +1969,79 @@ uint64_t az_iot_test_proxy_queued_bytes(az_iot_test_proxy* m, az_iot_test_proxy_
   uint64_t q = m->queued_snapshot[(int)dir];
   proxy_unlock(&m->lock);
   return q;
+}
+
+int az_iot_test_proxy_add_rule(az_iot_test_proxy* m, const az_iot_test_proxy_rule* rule)
+{
+  if (m == NULL || rule == NULL || (int)rule->dir < 0 || (int)rule->dir > 1)
+  {
+    return -1;
+  }
+  if (rule->action != AZ_IOT_TEST_PROXY_ACTION_INJECT
+      && rule->action != AZ_IOT_TEST_PROXY_ACTION_SUPPRESS
+      && rule->action != AZ_IOT_TEST_PROXY_ACTION_TRUNCATE
+      && rule->action != AZ_IOT_TEST_PROXY_ACTION_CORRUPT
+      && rule->action != AZ_IOT_TEST_PROXY_ACTION_DROP
+      && rule->action != AZ_IOT_TEST_PROXY_ACTION_STALL)
+  {
+    return -1;
+  }
+  if (rule->on_packet > AZ_IOT_TEST_PROXY_PKT_AUTH)
+  {
+    return -1;
+  }
+  if (rule->action == AZ_IOT_TEST_PROXY_ACTION_INJECT
+      && (rule->bytes == NULL || rule->bytes_len == 0
+          || rule->bytes_len > AZ_IOT_TEST_PROXY_RULE_BYTES_MAX || (int)rule->inject_dir < 0
+          || (int)rule->inject_dir > 1))
+  {
+    return -1;
+  }
+
+  proxy_lock(&m->lock);
+  if (m->rule_count >= AZ_IOT_TEST_PROXY_RULES_MAX)
+  {
+    proxy_unlock(&m->lock);
+    return -1;
+  }
+  size_t index = m->rule_count++;
+  proxy_rule* r = &m->rules[index];
+  memset(r, 0, sizeof(*r));
+  r->spec = *rule;
+  if (rule->action == AZ_IOT_TEST_PROXY_ACTION_INJECT)
+  {
+    memcpy(r->bytes, rule->bytes, rule->bytes_len);
+    r->bytes_len = rule->bytes_len;
+  }
+  /* The copy is what gets used; forget the caller's pointer so a dangling one
+   * cannot be dereferenced later. */
+  r->spec.bytes = NULL;
+  proxy_unlock(&m->lock);
+  return (int)index;
+}
+
+void az_iot_test_proxy_clear_rules(az_iot_test_proxy* m)
+{
+  if (m == NULL)
+  {
+    return;
+  }
+  proxy_lock(&m->lock);
+  memset(m->rules, 0, sizeof(m->rules));
+  m->rule_count = 0;
+  proxy_unlock(&m->lock);
+}
+
+uint32_t az_iot_test_proxy_rule_hits(az_iot_test_proxy* m, size_t index)
+{
+  if (m == NULL)
+  {
+    return 0;
+  }
+  proxy_lock(&m->lock);
+  uint32_t hits = (index < m->rule_count) ? m->rules[index].hits : 0u;
+  proxy_unlock(&m->lock);
+  return hits;
 }
 
 uint64_t az_iot_test_proxy_writes(az_iot_test_proxy* m, az_iot_test_proxy_direction dir)

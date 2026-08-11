@@ -21,7 +21,8 @@
  * CA (C2); synthetic CONNACK/DISCONNECT and keep-alive starvation (C3); and
  * per-direction network impairment -- latency, jitter, bandwidth,
  * fragmentation and stalls -- scheduled in userspace so no OS-specific traffic
- * control is needed on any CI leg (C4).
+ * control is needed on any CI leg (C4); and rules that act on parsed MQTT
+ * packets, to inject refusals a real broker will not produce on demand (C5).
  *
  * Threading: the proxy owns one background thread that accepts a single client
  * connection at a time, opens an upstream connection, and pumps bytes in both
@@ -164,6 +165,107 @@ extern "C"
    * was actually applied rather than assume it. This counts calls, never
    * content; the proxy still records no traffic. */
   uint64_t az_iot_test_proxy_writes(az_iot_test_proxy* proxy, az_iot_test_proxy_direction dir);
+
+  /* --- Scriptable broker behaviour. The controls above shape bytes without
+   * looking at them; these act on parsed MQTT packets, which is what it takes
+   * to produce a refusal a real broker would never send on demand -- a SUBACK
+   * carrying a failure code, an acknowledgement for a packet id nobody sent, a
+   * PUBLISH cut short mid-flight.
+   *
+   * A rule matches packets of one type travelling in one direction, and either
+   * changes that packet (suppress, truncate, corrupt) or has a side effect
+   * (inject, drop, stall). "Suppress the SUBSCRIBE, inject a SUBACK" is two
+   * rules, which keeps each one doing a single thing.
+   *
+   * Rules run against a real broker session: everything not matched is still
+   * forwarded, so the failure lands in the middle of a genuine connection
+   * rather than on a stub. --- */
+
+  /* MQTT control packet types, as they appear in the fixed header. Plain
+   * constants rather than an enum so that matching on "any" and switching on a
+   * type stay ordinary integer work. */
+#define AZ_IOT_TEST_PROXY_PKT_ANY 0
+#define AZ_IOT_TEST_PROXY_PKT_CONNECT 1
+#define AZ_IOT_TEST_PROXY_PKT_CONNACK 2
+#define AZ_IOT_TEST_PROXY_PKT_PUBLISH 3
+#define AZ_IOT_TEST_PROXY_PKT_PUBACK 4
+#define AZ_IOT_TEST_PROXY_PKT_PUBREC 5
+#define AZ_IOT_TEST_PROXY_PKT_PUBREL 6
+#define AZ_IOT_TEST_PROXY_PKT_PUBCOMP 7
+#define AZ_IOT_TEST_PROXY_PKT_SUBSCRIBE 8
+#define AZ_IOT_TEST_PROXY_PKT_SUBACK 9
+#define AZ_IOT_TEST_PROXY_PKT_UNSUBSCRIBE 10
+#define AZ_IOT_TEST_PROXY_PKT_UNSUBACK 11
+#define AZ_IOT_TEST_PROXY_PKT_PINGREQ 12
+#define AZ_IOT_TEST_PROXY_PKT_PINGRESP 13
+#define AZ_IOT_TEST_PROXY_PKT_DISCONNECT 14
+#define AZ_IOT_TEST_PROXY_PKT_AUTH 15
+
+/* Injected packets are hand-built acknowledgements, not payloads. */
+#define AZ_IOT_TEST_PROXY_RULE_BYTES_MAX 64
+#define AZ_IOT_TEST_PROXY_RULES_MAX 8
+
+  typedef enum az_iot_test_proxy_action
+  {
+    /* Send `bytes` to `inject_dir`. The matched packet is still forwarded
+     * unless a separate suppress rule says otherwise. */
+    AZ_IOT_TEST_PROXY_ACTION_INJECT = 0,
+    /* Drop the matched packet from the stream; the peer never sees it. */
+    AZ_IOT_TEST_PROXY_ACTION_SUPPRESS,
+    /* Forward only the first `truncate_to` bytes of the matched packet, so the
+     * peer is left waiting for a body that never arrives. */
+    AZ_IOT_TEST_PROXY_ACTION_TRUNCATE,
+    /* XOR `corrupt_mask` into the byte at `corrupt_offset`. */
+    AZ_IOT_TEST_PROXY_ACTION_CORRUPT,
+    /* Reset the connection once the matched packet has been handled. */
+    AZ_IOT_TEST_PROXY_ACTION_DROP,
+    /* Hold `stall_dir` for `stall_ms`. */
+    AZ_IOT_TEST_PROXY_ACTION_STALL
+  } az_iot_test_proxy_action;
+
+  typedef struct az_iot_test_proxy_rule
+  {
+    /* Which stream to watch, and which packet type (ANY matches every type). */
+    az_iot_test_proxy_direction dir;
+    uint8_t on_packet;
+    /* Ignore this many matches before firing: "the second PUBLISH". */
+    uint32_t skip;
+    /* Fire every time rather than once. Zero -- the default for a zeroed
+     * struct -- means once, which is what a one-shot fault wants. */
+    int repeat;
+    az_iot_test_proxy_action action;
+
+    /* INJECT. `bytes` is copied when the rule is added, so it need not outlive
+     * the call. An acknowledgement has to carry the packet id of whatever it
+     * answers, so `echo_packet_id` overwrites the two bytes at
+     * `packet_id_offset` with the id of the matched packet. */
+    az_iot_test_proxy_direction inject_dir;
+    const uint8_t* bytes;
+    size_t bytes_len;
+    int echo_packet_id;
+    size_t packet_id_offset;
+
+    size_t truncate_to;
+    size_t corrupt_offset;
+    uint8_t corrupt_mask;
+    unsigned stall_ms;
+    az_iot_test_proxy_direction stall_dir;
+  } az_iot_test_proxy_rule;
+
+  /* Returns the rule's index, or -1. Rejected: a table that is already full, a
+   * direction or packet type outside its range, an action that is not one of
+   * the values above, and an INJECT with no bytes, more bytes than
+   * AZ_IOT_TEST_PROXY_RULE_BYTES_MAX, or an out-of-range inject_dir. Fields
+   * belonging to other actions are not validated -- a truncate length on an
+   * INJECT rule is ignored, not an error. */
+  int az_iot_test_proxy_add_rule(az_iot_test_proxy* proxy, const az_iot_test_proxy_rule* rule);
+
+  void az_iot_test_proxy_clear_rules(az_iot_test_proxy* proxy);
+
+  /* How many times the rule at `index` fired. Counts are cumulative across
+   * connections; clearing the rules resets them. Lets a test assert the fault
+   * it asked for was actually injected instead of assuming it. */
+  uint32_t az_iot_test_proxy_rule_hits(az_iot_test_proxy* proxy, size_t index);
 
   /* Observability (cumulative across connections). */
   uint64_t az_iot_test_proxy_bytes_forwarded(az_iot_test_proxy* proxy);
