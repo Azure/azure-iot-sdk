@@ -12,7 +12,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Unified
         [InlineData(false)]
         public async Task TestTwin(bool testAgainstClassicHub)
         {
-            await using UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientAsync(testAgainstClassicHub, TestContext.Current.CancellationToken);
+            UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientAsync(testAgainstClassicHub, TestContext.Current.CancellationToken);
             string deviceId = testDeviceContext.ConnectionContext.DeviceId;
 
             RegistryManager registryManager = Setup.GetGen1IotHubRegistryManager();
@@ -67,6 +67,8 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Unified
             twin = await registryManager.GetTwinAsync(deviceId, TestContext.Current.CancellationToken);
             Assert.True(twin.Properties.Reported.Contains(expectedReportedPropertyKey));
             Assert.Equal(expectedReportedPropertyValue, (string) twin.Properties.Reported[expectedReportedPropertyKey]);
+
+            await testDeviceContext.DisposeAsync(); // Dispose this before any feature clients so that the test device identity can be cleaned up and the MQTT client disconnected gracefully
         }
     }
 }

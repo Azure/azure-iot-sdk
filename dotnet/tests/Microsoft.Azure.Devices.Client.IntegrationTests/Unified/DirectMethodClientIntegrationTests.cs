@@ -15,7 +15,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Unified
             string expectedDirectMethodName = "someDirectMethod-" + Guid.NewGuid().ToString();
             uint expectedResponseTimeout = 20;
 
-            await using UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientAsync(testAgainstClassicHub, TestContext.Current.CancellationToken);
+            UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientAsync(testAgainstClassicHub, TestContext.Current.CancellationToken);
             using DirectMethodClient directMethodClient = new DirectMethodClient(testDeviceContext.ConnectionClient);
 
             ServiceClient serviceClient = Setup.GetGen1IotHubServiceClient();
@@ -85,6 +85,8 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Unified
             Assert.Equal(expectedResponsePayload.SomeInt, responsePayload.SomeInt);
             Assert.Equal(expectedResponsePayload.SomeString, responsePayload.SomeString);
             Assert.Equal(1, actualDirectMethodRequestsReceivedCount);
+
+            await testDeviceContext.DisposeAsync(); // Dispose this before any feature clients so that the test device identity can be cleaned up and the MQTT client disconnected gracefully
         }
     }
 }

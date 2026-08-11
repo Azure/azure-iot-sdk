@@ -17,10 +17,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Unified
         [InlineData(false, false)]
         public async Task TestFileUpload(bool testAgainstClassicHub, bool withProvidedHttpClient)
         {
-            using CancellationTokenSource cts = new();
-            cts.CancelAfter(Setup.TestTimeoutMilliseconds - 1000);
-
-            await using UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientAsync(testAgainstClassicHub, cts.Token);
+            UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientAsync(testAgainstClassicHub, TestContext.Current.CancellationToken);
 
             FileUploadClient fileUploadClient;
             if (testAgainstClassicHub)
@@ -47,12 +44,12 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Unified
                 BlobName = "TestFile.txt",
             };
 
-            var sasUri = await fileUploadClient.GetFileUploadSasUriAsync(sasUriRequest, cts.Token);
+            var sasUri = await fileUploadClient.GetFileUploadSasUriAsync(sasUriRequest, TestContext.Current.CancellationToken);
 
             // Use the Azure Storage SDK to upload a dummy file using the credentials provided by IoT Hub
             var blobClient = new BlockBlobClient(sasUri.GetBlobUri());
             MemoryStream dummyFileStream = new MemoryStream(Encoding.UTF8.GetBytes("Hello world"));
-            await blobClient.UploadAsync(dummyFileStream, new BlobUploadOptions(), cts.Token);
+            await blobClient.UploadAsync(dummyFileStream, new BlobUploadOptions(), TestContext.Current.CancellationToken);
 
             FileUploadCompletionNotification completionNotification = new()
             {
@@ -62,8 +59,9 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Unified
                 StatusDescription = "OK",
             };
 
-            await fileUploadClient.CompleteFileUploadSasUriAsync(completionNotification, cts.Token);
+            await fileUploadClient.CompleteFileUploadSasUriAsync(completionNotification, TestContext.Current.CancellationToken);
 
+            await testDeviceContext.DisposeAsync(); // Dispose this before any feature clients so that the test device identity can be cleaned up and the MQTT client disconnected gracefully
             fileUploadClient.Dispose();
         }
 
@@ -72,10 +70,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Unified
         [InlineData(false)]
         public async Task TestFileUpload_BadFormat(bool testAgainstClassicHub)
         {
-            using CancellationTokenSource cts = new();
-            cts.CancelAfter(Setup.TestTimeoutMilliseconds - 1000);
-
-            await using UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientAsync(testAgainstClassicHub, cts.Token);
+            UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientAsync(testAgainstClassicHub, TestContext.Current.CancellationToken);
 
             FileUploadClient fileUploadClient;
             fileUploadClient = new FileUploadClient(testDeviceContext.ConnectionClient);
@@ -86,7 +81,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Unified
             };
 
             // Check that that the file upload client understands how to parse a service error
-            var exception = await Assert.ThrowsAsync<IotHubServiceException>(async () => await fileUploadClient.GetFileUploadSasUriAsync(sasUriRequest, cts.Token));
+            var exception = await Assert.ThrowsAsync<IotHubServiceException>(async () => await fileUploadClient.GetFileUploadSasUriAsync(sasUriRequest, TestContext.Current.CancellationToken));
             Assert.Equal(400004, exception.ErrorDetails.ErrorCode);
 
             // Check that that the file upload client understands how to parse a service error
@@ -95,9 +90,10 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Unified
                 CorrelationId = "ThisCorrelationIdDoesNotExist",
                 IsSuccess = true,
             };
-            exception = await Assert.ThrowsAsync<IotHubServiceException>(async () => await fileUploadClient.CompleteFileUploadSasUriAsync(badFormatCompletionNotification, cts.Token));
+            exception = await Assert.ThrowsAsync<IotHubServiceException>(async () => await fileUploadClient.CompleteFileUploadSasUriAsync(badFormatCompletionNotification, TestContext.Current.CancellationToken));
             Assert.Equal(400000, exception.ErrorDetails.ErrorCode);
 
+            await testDeviceContext.DisposeAsync(); // Dispose this before any feature clients so that the test device identity can be cleaned up and the MQTT client disconnected gracefully
             fileUploadClient.Dispose();
         }
     }

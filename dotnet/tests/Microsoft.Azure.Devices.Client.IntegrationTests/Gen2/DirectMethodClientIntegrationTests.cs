@@ -14,7 +14,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Gen2
             string expectedDirectMethodName = "someDirectMethod-" + Guid.NewGuid().ToString();
             uint expectedResponseTimeout = 20;
 
-            await using Gen2DeviceTestContext testDeviceContext = await Setup.CreateConnectedGen2ConnectionClientAsync(null, TestContext.Current.CancellationToken);
+            Gen2DeviceTestContext testDeviceContext = await Setup.CreateConnectedGen2ConnectionClientAsync(null, TestContext.Current.CancellationToken);
             using DirectMethodClient directMethodClient = new DirectMethodClient(testDeviceContext.ConnectionClient);
 
             ServiceClient serviceClient = Setup.GetGen1IotHubServiceClient();
@@ -107,6 +107,8 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Gen2
             Assert.Equal(expectedResponsePayload.SomeInt, responsePayload.SomeInt);
             Assert.Equal(expectedResponsePayload.SomeString, responsePayload.SomeString);
             Assert.Equal(1, actualDirectMethodRequestsReceivedCount);
+
+            await testDeviceContext.DisposeAsync(); // Dispose this before any feature clients so that the test device identity can be cleaned up and the MQTT client disconnected gracefully
         }
 
         [Fact(Timeout = Setup.TestTimeoutMilliseconds)]
@@ -116,7 +118,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Gen2
             string expectedDirectMethod2Name = "someDirectMethod-" + Guid.NewGuid().ToString();
             uint expectedResponseTimeout = 20;
 
-            await using Gen2DeviceTestContext testDeviceContext = await Setup.CreateConnectedGen2ConnectionClientAsync(null, TestContext.Current.CancellationToken);
+            Gen2DeviceTestContext testDeviceContext = await Setup.CreateConnectedGen2ConnectionClientAsync(null, TestContext.Current.CancellationToken);
             using DirectMethodClient directMethodClient = new DirectMethodClient(testDeviceContext.ConnectionClient);
 
             ServiceClient serviceClient = Setup.GetGen1IotHubServiceClient();
@@ -242,6 +244,8 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Gen2
             Assert.Equal(expectedResponsePayload.SomeInt, responsePayload.SomeInt);
             Assert.Equal(expectedResponsePayload.SomeString, responsePayload.SomeString);
             Assert.Equal(1, actualDirectMethodRequestsReceivedCount);
+
+            await testDeviceContext.DisposeAsync(); // Dispose this before any feature clients so that the test device identity can be cleaned up and the MQTT client disconnected gracefully
         }
     }
 }

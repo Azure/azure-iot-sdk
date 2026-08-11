@@ -24,7 +24,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
             initialTwin.Desired[expectedInitialDesiredPropertyKey] = expectedInitialDesiredPropertyValue;
 
             // Want to defer connecting until TwinClient is set up to consume TwinPush
-            await using Gen2DeviceTestContext testDeviceContext = await Setup.CreateProvisionableGen2DeviceAsync(initialTwin, TestContext.Current.CancellationToken);
+            Gen2DeviceTestContext testDeviceContext = await Setup.CreateProvisionableGen2DeviceAsync(initialTwin, TestContext.Current.CancellationToken);
 
             string deviceId = testDeviceContext.ConnectionContext.DeviceId;
 
@@ -109,6 +109,8 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
             twin = await registryManager.GetTwinAsync(deviceId, TestContext.Current.CancellationToken);
             Assert.True(twin.Properties.Reported.Contains(expectedReportedPropertyKey));
             Assert.Equal(expectedReportedPropertyValue, (string)twin.Properties.Reported[expectedReportedPropertyKey]);
+
+            await testDeviceContext.DisposeAsync(); // Dispose this before any feature clients so that the test device identity can be cleaned up and the MQTT client disconnected gracefully
         }
 
         [Fact(Timeout = Setup.TestTimeoutMilliseconds)]
