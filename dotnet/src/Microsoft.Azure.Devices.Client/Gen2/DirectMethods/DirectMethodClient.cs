@@ -63,17 +63,25 @@ namespace Microsoft.Azure.Devices.Client.Gen2.DirectMethods
         public DirectMethodClient(IConnectionClient connection)
         {
             _connection = connection;
-            _connection.MqttClient.PublishReceivedAsync+= HandleReceivedAzureEventGridMqttPublish;
+            _connection.MqttClient.PublishReceivedAsync += HandleReceivedMqttPublish;
         }
 
         internal DirectMethodClient(Unified.Connection.IConnectionClient connection)
         {
-            _connection = new Gen2.Connection.ConnectionClient(connection);
-            _connection.MqttClient.PublishReceivedAsync += HandleReceivedAzureEventGridMqttPublish;
+            _connection = new ConnectionClient(connection);
+            _connection.MqttClient.PublishReceivedAsync += HandleReceivedMqttPublish;
         }
 
-        private async Task HandleReceivedAzureEventGridMqttPublish(MqttPublishReceivedEventArgs args)
+        private async Task HandleReceivedMqttPublish(MqttPublishReceivedEventArgs args)
         {
+            if (!args.Publish.Topic.StartsWith("ih/") || !args.Publish.Topic.EndsWith("/dev/methods"))
+            {
+                // The publish is not relevant to this client, so ignore it. This check needs to happen prior to checking the deviceId within the topic b/c deviceId is
+                // not available until after provisioning finishes and this client may be setup prior to provisioning. This allows this client to ignore DPS
+                // publishes without needing to know the deviceId.
+                return;
+            }
+
             var currentConnectionContext = _connection.GetCurrentConnectionContext();
 
             if (currentConnectionContext == null)
@@ -85,7 +93,7 @@ namespace Microsoft.Azure.Devices.Client.Gen2.DirectMethods
 
             if (!args.Publish.Topic.Equals(string.Format("ih/{0}/dev/methods", currentConnectionContext.DeviceId)))
             {
-                // Message isn't relevant to this client. Ignore it.
+                // Message isn't relevant to this device. Ignore it.
                 return;
             }
 
@@ -277,7 +285,7 @@ namespace Microsoft.Azure.Devices.Client.Gen2.DirectMethods
         /// <param name="disposing">true to release both managed and unmanaged resources; false to releases only unmanaged resources.</param>
         public void Dispose(bool disposing)
         {
-            _connection.MqttClient.PublishReceivedAsync -= HandleReceivedAzureEventGridMqttPublish;
+            _connection.MqttClient.PublishReceivedAsync -= HandleReceivedMqttPublish;
             if (disposing)
             {
                 _connection.Dispose();
@@ -289,7 +297,7 @@ namespace Microsoft.Azure.Devices.Client.Gen2.DirectMethods
         /// </summary>
         public void Dispose()
         {
-            _connection.MqttClient.PublishReceivedAsync -= HandleReceivedAzureEventGridMqttPublish;
+            _connection.MqttClient.PublishReceivedAsync -= HandleReceivedMqttPublish;
             _connection.Dispose();
         }
     }

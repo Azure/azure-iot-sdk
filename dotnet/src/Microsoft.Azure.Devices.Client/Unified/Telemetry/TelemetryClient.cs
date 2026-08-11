@@ -2,6 +2,7 @@
 using Microsoft.Azure.Devices.Client.Models.Telemetry;
 using Microsoft.Azure.Devices.Client.Mqtt;
 using Microsoft.Azure.Devices.Client.Unified.Connection;
+using System.Diagnostics;
 using System.Globalization;
 using System.Text;
 
@@ -128,60 +129,70 @@ namespace Microsoft.Azure.Devices.Client.Unified.Telemetry
 
         private async Task HandleReceivedMqttPublish(MqttPublishReceivedEventArgs args)
         {
-            if (_connection.GetCurrentConnectionContext()!.IsAzureEventGrid)
+            if (!args.Publish.Topic.StartsWith("devices/") || !args.Publish.Topic.EndsWith("/messages/devicebound/"))
             {
-                throw new NotSupportedException("c2d is not supported when connected to AEG Hub currently");
+                // The publish is not relevant to this client, so ignore it. This check needs to happen prior to checking the deviceId within the topic b/c deviceId is
+                // not available until after provisioning finishes and this client may be setup prior to provisioning. This allows this client to ignore DPS
+                // publishes without needing to know the deviceId.
+                return;
             }
-            else
+
+            var connectionContext = _connection.GetCurrentConnectionContext();
+
+            if (connectionContext == null)
             {
-                var expectedDeviceBoundMessagesTopic = string.Format(CultureInfo.InvariantCulture, DeviceBoundMessagesTopicFormat, _connection.GetCurrentConnectionContext()!.DeviceId);
+                // Should never happen?
+                Trace.TraceWarning("Cannot handle a received MQTT message while disconnected");
+                return;
+            }
 
-                if (args.Publish.Topic.StartsWith(expectedDeviceBoundMessagesTopic))
+            var expectedDeviceBoundMessagesTopic = string.Format(CultureInfo.InvariantCulture, DeviceBoundMessagesTopicFormat, connectionContext.DeviceId);
+
+            if (args.Publish.Topic.StartsWith(expectedDeviceBoundMessagesTopic))
+            {
+                if (CloudToDeviceTelemetryReceivedAsync != null)
                 {
-                    if (CloudToDeviceTelemetryReceivedAsync != null)
+                    var receivedCloudToDeviceMessage = new CloudToDeviceTelemetry(args.Publish.Payload);
+
+                    // devices/{device-id}/messages/devicebound/{property-bag}
+                    string[] topicSegments = args.Publish.Topic.Split("/", StringSplitOptions.RemoveEmptyEntries);
+
+                    //TODO is there a case where there is no property bag b/c no correlation id + no message id + no user properties?
+
+                    // for example: "%24.mid=febd6d71-df05-474f-8a9b-fe90318c7eb8&%24.to=%2Fdevices%2Fb98a1b81-6b6b-4762-ae77-610fb8d6d3cd%2Fmessages%2FdeviceBound"
+                    string propertyBag = topicSegments[4];
+
+                    string[] keyValuePairs = propertyBag.Split('&');
+                    foreach (var keyValuePair in keyValuePairs)
                     {
-                        var receivedCloudToDeviceMessage = new CloudToDeviceTelemetry(args.Publish.Payload);
+                        string key = Uri.UnescapeDataString(keyValuePair.Split("=")[0]);
+                        string value = Uri.UnescapeDataString(keyValuePair.Split("=")[1]);
 
-                        // devices/{device-id}/messages/devicebound/{property-bag}
-                        string[] topicSegments = args.Publish.Topic.Split("/", StringSplitOptions.RemoveEmptyEntries);
-
-                        //TODO is there a case where there is no property bag b/c no correlation id + no message id + no user properties?
-
-                        // for example: "%24.mid=febd6d71-df05-474f-8a9b-fe90318c7eb8&%24.to=%2Fdevices%2Fb98a1b81-6b6b-4762-ae77-610fb8d6d3cd%2Fmessages%2FdeviceBound"
-                        string propertyBag = topicSegments[4];
-
-                        string[] keyValuePairs = propertyBag.Split('&');
-                        foreach (var keyValuePair in keyValuePairs)
+                        if (key.Equals(TelemetryClient.MessagePropertyMessageId))
                         {
-                            string key = Uri.UnescapeDataString(keyValuePair.Split("=")[0]);
-                            string value = Uri.UnescapeDataString(keyValuePair.Split("=")[1]);
-
-                            if (key.Equals(TelemetryClient.MessagePropertyMessageId))
-                            {
-                                receivedCloudToDeviceMessage.MessageId = value;
-                            }
-                            else if (key.Equals(TelemetryClient.MessagePropertyCorrelationId))
-                            {
-                                receivedCloudToDeviceMessage.CorrelationId = value;
-                            }
-                            else if (key.Equals(TelemetryClient.MessagePropertyContentType))
-                            {
-                                receivedCloudToDeviceMessage.ContentType = value;
-                            }
-                            else if (key.Equals(TelemetryClient.MessagePropertyContentEncoding))
-                            {
-                                receivedCloudToDeviceMessage.ContentEncoding = value;
-                            }
-                            else
-                            {
-                                receivedCloudToDeviceMessage.UserProperties.Add(key, value);
-                            }
+                            receivedCloudToDeviceMessage.MessageId = value;
                         }
-
-                        await CloudToDeviceTelemetryReceivedAsync.Invoke(receivedCloudToDeviceMessage);
-
-                        await args.AcknowledgeAsync(CancellationToken.None);
+                        else if (key.Equals(TelemetryClient.MessagePropertyCorrelationId))
+                        {
+                            receivedCloudToDeviceMessage.CorrelationId = value;
+                        }
+                        else if (key.Equals(TelemetryClient.MessagePropertyContentType))
+                        {
+                            receivedCloudToDeviceMessage.ContentType = value;
+                        }
+                        else if (key.Equals(TelemetryClient.MessagePropertyContentEncoding))
+                        {
+                            receivedCloudToDeviceMessage.ContentEncoding = value;
+                        }
+                        else
+                        {
+                            receivedCloudToDeviceMessage.UserProperties.Add(key, value);
+                        }
                     }
+
+                    await CloudToDeviceTelemetryReceivedAsync.Invoke(receivedCloudToDeviceMessage);
+
+                    await args.AcknowledgeAsync(CancellationToken.None);
                 }
             }
         }

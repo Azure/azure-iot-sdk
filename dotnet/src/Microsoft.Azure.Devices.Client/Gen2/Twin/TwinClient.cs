@@ -5,7 +5,6 @@ using Microsoft.Azure.Devices.Client.Models.Twin;
 using Microsoft.Azure.Devices.Client.Mqtt;
 using System.Collections.Concurrent;
 using System.Diagnostics;
-using System.Reflection.Metadata.Ecma335;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -67,13 +66,13 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Twin
         public TwinClient(IConnectionClient connection)
         {
             _connection = connection;
-            _connection.MqttClient.PublishReceivedAsync += HandleReceivedAzureEventGridHubMqttPublish;
+            _connection.MqttClient.PublishReceivedAsync += HandleReceivedMqttPublish;
         }
 
         internal TwinClient(Unified.Connection.IConnectionClient connection)
         {
             _connection = new ConnectionClient(connection);
-            _connection.MqttClient.PublishReceivedAsync += HandleReceivedAzureEventGridHubMqttPublish;
+            _connection.MqttClient.PublishReceivedAsync += HandleReceivedMqttPublish;
         }
 
         /// <summary>
@@ -214,8 +213,16 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Twin
             return currentConnectionContext;
         }
 
-        private async Task HandleReceivedAzureEventGridHubMqttPublish(MqttPublishReceivedEventArgs args)
+        private async Task HandleReceivedMqttPublish(MqttPublishReceivedEventArgs args)
         {
+            if (!args.Publish.Topic.StartsWith("ih/") || !args.Publish.Topic.EndsWith("/dev/twin"))
+            {
+                // The publish is not relevant to this client, so ignore it. This check needs to happen prior to checking the deviceId within the topic b/c deviceId is
+                // not available until after provisioning finishes and this client may be setup prior to provisioning. This allows this client to ignore DPS
+                // publishes without needing to know the deviceId.
+                return;
+            }
+
             var connectionContext = _connection.GetCurrentConnectionContext();
 
             if (connectionContext == null)
@@ -227,7 +234,7 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Twin
 
             if (!args.Publish.Topic.Equals(string.Format(AzureEventGridIncomingTwinPublishTopicFormat, connectionContext.DeviceId)))
             {
-                // This message wasn't a twin message, so ignore it
+                // This message wasn't for this device so ignore it
                 return;
             }
 
@@ -243,7 +250,6 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Twin
                 Trace.TraceWarning("Received a twin message whose type version ({0}) is not supported by this client (supported version: {1}). You may need to upgrade this library's version to handle this kind of message. Ignoring it.", typeVersion, 1);
                 return;
             }
-
 
             if (type.Equals("get-response")
                 && GuidExtensions.TryParseBytes(args.Publish.CorrelationData, out Guid? getResponseCorrelationData)
@@ -309,7 +315,7 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Twin
         /// <param name="disposing">true to release both managed and unmanaged resources; false to releases only unmanaged resources.</param>
         public void Dispose(bool disposing)
         {
-            _connection.MqttClient.PublishReceivedAsync -= HandleReceivedAzureEventGridHubMqttPublish;
+            _connection.MqttClient.PublishReceivedAsync -= HandleReceivedMqttPublish;
             if (disposing)
             {
                 _connection.Dispose();
@@ -322,7 +328,7 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Twin
         /// </summary>
         public void Dispose()
         {
-            _connection.MqttClient.PublishReceivedAsync -= HandleReceivedAzureEventGridHubMqttPublish;
+            _connection.MqttClient.PublishReceivedAsync -= HandleReceivedMqttPublish;
             _connection.Dispose();
             _isDisposed = true;
         }
