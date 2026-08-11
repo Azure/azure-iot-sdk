@@ -178,6 +178,21 @@ static int saw_subscribe_ack_ok(const conf_recorder* r)
   return 0;
 }
 
+/* A SUBSCRIBE_ACK carrying an error status. The broker granting nothing is not
+ * a transport failure, so it has to arrive as a failed ack rather than as a
+ * disconnect or as silence. */
+static int saw_subscribe_ack_error(const conf_recorder* r)
+{
+  for (size_t i = 0; i < r->count; ++i)
+  {
+    if (r->kinds[i] == AZ_IOT_MQTT_EVT_SUBSCRIBE_ACK && r->statuses[i] != AZ_IOT_OK)
+    {
+      return 1;
+    }
+  }
+  return 0;
+}
+
 static int saw_message(const conf_recorder* r)
 {
   for (size_t i = 0; i < r->count; ++i)
@@ -266,7 +281,16 @@ static void connect_client(az_iot_mqtt_client* c, conf_recorder* rec, const char
  * takes a trusted-CA *path*, so it still has to reach the filesystem. */
 static int write_temp_pem(const char* pem, char* path_out, size_t cap)
 {
-  snprintf(path_out, cap, "az_iot_conf_ca_%lu.pem", conf_now_ms());
+  /* A millisecond stamp alone is not unique: writing a CA and a client
+   * certificate back to back can land both in the same millisecond, and the
+   * second silently overwrites the first -- which presents as a handshake that
+   * fails for no visible reason. */
+  static unsigned long seq = 0;
+  int written = snprintf(path_out, cap, "az_iot_conf_pem_%lu_%lu.pem", conf_now_ms(), seq++);
+  if (written < 0 || (size_t)written >= cap)
+  {
+    return 0; /* a truncated path is how the collision above happens again */
+  }
   FILE* f = fopen(path_out, "wb");
   if (!f)
   {
@@ -1269,6 +1293,382 @@ static void a_stalled_link_resumes_without_losing_the_session(void** state)
 }
 
 /* ------------------------------------------------------------------------- */
+/* scripted broker faults                                                     */
+/* ------------------------------------------------------------------------- */
+
+/* A broker that refuses a subscription answers with a SUBACK whose reason code
+ * says so. No real broker will do that on demand, so the proxy swallows the
+ * SUBSCRIBE and answers it itself, echoing the client's packet id -- an ack
+ * carrying the wrong id would be discarded before the adapter's failure path
+ * ever ran.
+ *
+ * Everything else on the connection is still the real broker; only this one
+ * exchange is scripted. */
+static void a_refused_subscribe_is_reported(void** state)
+{
+  (void)state;
+  uint16_t proxy_port = 0;
+  az_iot_test_proxy* proxy = start_proxy(&proxy_port);
+
+  uint8_t suback[8];
+  size_t suback_len;
+  if (g_factory->version == AZ_IOT_MQTT_VERSION_5)
+  {
+    /* packet id, property length 0, reason 0x87 (Not authorized). */
+    suback[0] = 0x90;
+    suback[1] = 0x04;
+    suback[2] = 0x00;
+    suback[3] = 0x00;
+    suback[4] = 0x00;
+    suback[5] = 0x87;
+    suback_len = 6;
+  }
+  else
+  {
+    /* packet id, return code 0x80 (Failure). */
+    suback[0] = 0x90;
+    suback[1] = 0x03;
+    suback[2] = 0x00;
+    suback[3] = 0x00;
+    suback[4] = 0x80;
+    suback_len = 5;
+  }
+
+  az_iot_test_proxy_rule swallow = { 0 };
+  swallow.dir = AZ_IOT_TEST_PROXY_C2B;
+  swallow.on_packet = AZ_IOT_TEST_PROXY_PKT_SUBSCRIBE;
+  swallow.action = AZ_IOT_TEST_PROXY_ACTION_SUPPRESS;
+  assert_true(az_iot_test_proxy_add_rule(proxy, &swallow) >= 0);
+
+  az_iot_test_proxy_rule refuse = { 0 };
+  refuse.dir = AZ_IOT_TEST_PROXY_C2B;
+  refuse.on_packet = AZ_IOT_TEST_PROXY_PKT_SUBSCRIBE;
+  refuse.action = AZ_IOT_TEST_PROXY_ACTION_INJECT;
+  refuse.inject_dir = AZ_IOT_TEST_PROXY_B2C;
+  refuse.bytes = suback;
+  refuse.bytes_len = suback_len;
+  refuse.echo_packet_id = 1;
+  refuse.packet_id_offset = 2;
+  int refuse_id = az_iot_test_proxy_add_rule(proxy, &refuse);
+  assert_true(refuse_id >= 0);
+
+  char cid[64];
+  unique_client_id(cid, sizeof(cid), "az-iot-conf-subrefuse");
+  char topic[128];
+  snprintf(topic, sizeof(topic), "az_iot/conformance/%s", cid);
+
+  conf_recorder rec = { 0 };
+  az_iot_mqtt_client* c = make_client();
+  connect_via_proxy(c, &rec, cid, proxy_port);
+
+  uint16_t sub_pid = 0;
+  assert_int_equal(c->iface->subscribe(c, topic, AZ_IOT_MQTT_QOS_1, &sub_pid), AZ_IOT_OK);
+
+  /* The refusal must arrive as a failed ack, not as silence and not as a
+   * successful one. */
+  assert_true(wait_until(c, &rec, saw_subscribe_ack_error, k_step_timeout_ms));
+  assert_false(saw_subscribe_ack_ok(&rec));
+  assert_int_equal(az_iot_test_proxy_rule_hits(proxy, (size_t)refuse_id), 1);
+
+  (void)c->iface->disconnect(c);
+  destroy_client(c);
+  az_iot_test_proxy_stop(proxy);
+}
+
+/* A PUBLISH cut short mid-flight must never reach the application. Half a
+ * packet is not a message, and a client that surfaced one would hand the
+ * application a truncated payload it has no way to detect. */
+static void a_truncated_publish_is_never_surfaced_as_a_message(void** state)
+{
+  (void)state;
+  uint16_t proxy_port = 0;
+  az_iot_test_proxy* proxy = start_proxy(&proxy_port);
+
+  /* Keep only the first four bytes of the broker's copy, so the topic and
+   * payload never arrive. */
+  az_iot_test_proxy_rule cut = { 0 };
+  cut.dir = AZ_IOT_TEST_PROXY_B2C;
+  cut.on_packet = AZ_IOT_TEST_PROXY_PKT_PUBLISH;
+  cut.action = AZ_IOT_TEST_PROXY_ACTION_TRUNCATE;
+  cut.truncate_to = 4;
+  int cut_id = az_iot_test_proxy_add_rule(proxy, &cut);
+  assert_true(cut_id >= 0);
+
+  char cid[64];
+  unique_client_id(cid, sizeof(cid), "az-iot-conf-trunc");
+  char topic[128];
+  snprintf(topic, sizeof(topic), "az_iot/conformance/%s", cid);
+
+  conf_recorder rec = { 0 };
+  az_iot_mqtt_client* c = make_client();
+  connect_via_proxy(c, &rec, cid, proxy_port);
+
+  uint16_t sub_pid = 0;
+  assert_int_equal(c->iface->subscribe(c, topic, AZ_IOT_MQTT_QOS_1, &sub_pid), AZ_IOT_OK);
+  assert_true(wait_until(c, &rec, saw_subscribe_ack_ok, k_step_timeout_ms));
+
+  static const uint8_t body[] = { 't', 'r', 'u', 'n', 'c', 'a', 't', 'e', 'd' };
+  az_iot_mqtt_message msg = { 0 };
+  msg.topic = topic;
+  msg.payload = body;
+  msg.payload_len = sizeof(body);
+  msg.qos = AZ_IOT_MQTT_QOS_1;
+  uint16_t pub_pid = 0;
+  assert_int_equal(c->iface->publish(c, &msg, &pub_pid), AZ_IOT_OK);
+
+  assert_false(wait_until(c, &rec, saw_message, 1500));
+  /* Without this the case would pass on a proxy that never truncated anything. */
+  assert_true(az_iot_test_proxy_rule_hits(proxy, (size_t)cut_id) >= 1);
+
+  (void)c->iface->disconnect(c);
+  destroy_client(c);
+  az_iot_test_proxy_stop(proxy);
+}
+
+/* A PUBACK for a packet id the client never used is the sort of thing a
+ * confused or malicious peer sends. It must be ignored: not matched against
+ * some unrelated in-flight publish, and not treated as a protocol error that
+ * tears down a working session. */
+static void an_acknowledgement_for_an_unknown_packet_id_is_ignored(void** state)
+{
+  (void)state;
+  uint16_t proxy_port = 0;
+  az_iot_test_proxy* proxy = start_proxy(&proxy_port);
+
+  /* Ride along with the SUBSCRIBE so the injection lands in the middle of a
+   * live session rather than before it is up. The SUBSCRIBE itself is still
+   * forwarded; this rule only adds traffic. */
+  static const uint8_t stray_puback[] = { 0x40, 0x02, 0xBE, 0xEF };
+  az_iot_test_proxy_rule stray = { 0 };
+  stray.dir = AZ_IOT_TEST_PROXY_C2B;
+  stray.on_packet = AZ_IOT_TEST_PROXY_PKT_SUBSCRIBE;
+  stray.action = AZ_IOT_TEST_PROXY_ACTION_INJECT;
+  stray.inject_dir = AZ_IOT_TEST_PROXY_B2C;
+  stray.bytes = stray_puback;
+  stray.bytes_len = sizeof(stray_puback);
+  int stray_id = az_iot_test_proxy_add_rule(proxy, &stray);
+  assert_true(stray_id >= 0);
+
+  char cid[64];
+  unique_client_id(cid, sizeof(cid), "az-iot-conf-strayack");
+  char topic[128];
+  snprintf(topic, sizeof(topic), "az_iot/conformance/%s", cid);
+
+  conf_recorder rec = { 0 };
+  az_iot_mqtt_client* c = make_client();
+  connect_via_proxy(c, &rec, cid, proxy_port);
+
+  uint16_t sub_pid = 0;
+  assert_int_equal(c->iface->subscribe(c, topic, AZ_IOT_MQTT_QOS_1, &sub_pid), AZ_IOT_OK);
+  assert_true(wait_until(c, &rec, saw_subscribe_ack_ok, k_step_timeout_ms));
+  assert_int_equal(az_iot_test_proxy_rule_hits(proxy, (size_t)stray_id), 1);
+
+  /* The session has to still work afterwards: a stray ack must not wedge the
+   * client or be mistaken for the answer to a later publish. */
+  static const uint8_t body[] = { 'a', 'f', 't', 'e', 'r' };
+  az_iot_mqtt_message msg = { 0 };
+  msg.topic = topic;
+  msg.payload = body;
+  msg.payload_len = sizeof(body);
+  msg.qos = AZ_IOT_MQTT_QOS_1;
+  uint16_t pub_pid = 0;
+  assert_int_equal(c->iface->publish(c, &msg, &pub_pid), AZ_IOT_OK);
+
+  assert_true(wait_until(c, &rec, saw_message, k_step_timeout_ms));
+  assert_true(found_message(&rec, topic, body, sizeof(body)));
+  assert_false(saw_disconnected(&rec));
+
+  (void)c->iface->disconnect(c);
+  destroy_client(c);
+  az_iot_test_proxy_stop(proxy);
+}
+
+#ifdef AZ_IOT_CONFORMANCE_WITH_TLS
+/* Stand up a proxy that terminates TLS and demands a client certificate, and
+ * write out the CA the client must trust. Returns the proxy. */
+static az_iot_test_proxy* start_mutual_tls_proxy(uint16_t* port_out, char* ca_path, size_t ca_cap)
+{
+  az_iot_test_proxy* proxy = start_proxy(port_out);
+
+  az_iot_test_proxy_tls_options tls = az_iot_test_proxy_tls_options_default();
+  tls.require_client_cert = 1;
+  assert_int_equal(az_iot_test_proxy_enable_tls(proxy, &tls), 0);
+
+  char ca_pem[4096];
+  assert_true(az_iot_test_proxy_ca_pem(proxy, ca_pem, sizeof(ca_pem)) > 0);
+  assert_true(write_temp_pem(ca_pem, ca_path, ca_cap));
+  return proxy;
+}
+
+/* Mint a client certificate with the given validity offsets and write the pair
+ * to disk, since the adapter takes paths rather than PEM. */
+static void issue_client_pem(
+    az_iot_test_proxy* proxy,
+    long not_before_offset_sec,
+    long not_after_offset_sec,
+    char* cert_path,
+    size_t cert_path_cap,
+    char* key_path,
+    size_t key_path_cap)
+{
+  az_iot_test_proxy_client_cert_options opt = az_iot_test_proxy_client_cert_options_default();
+  opt.not_before_offset_sec = not_before_offset_sec;
+  opt.not_after_offset_sec = not_after_offset_sec;
+
+  char cert_pem[4096];
+  char key_pem[4096];
+  assert_int_equal(
+      az_iot_test_proxy_issue_client_cert(
+          proxy, &opt, cert_pem, sizeof(cert_pem), key_pem, sizeof(key_pem)),
+      0);
+  assert_true(write_temp_pem(cert_pem, cert_path, cert_path_cap));
+  assert_true(write_temp_pem(key_pem, key_path, key_path_cap));
+}
+
+/* The positive control for the mutual-TLS cases: a client certificate the proxy
+ * issued, inside its validity window, must be ACCEPTED. Without this a
+ * handshake broken for some unrelated reason would make the rejection below
+ * pass for the wrong reason. */
+static void mutual_tls_succeeds_with_a_valid_client_cert(void** state)
+{
+  (void)state;
+  uint16_t proxy_port = 0;
+  char ca_path[128];
+  az_iot_test_proxy* proxy = start_mutual_tls_proxy(&proxy_port, ca_path, sizeof(ca_path));
+
+  char cert_path[128];
+  char key_path[128];
+  issue_client_pem(
+      proxy, -3600, 24L * 3600L, cert_path, sizeof(cert_path), key_path, sizeof(key_path));
+
+  char cid[64];
+  unique_client_id(cid, sizeof(cid), "az-iot-conf-mtlsok");
+  conf_recorder rec = { 0 };
+  az_iot_mqtt_client* c = make_client();
+  c->iface->set_inbound_cb(c, on_event, &rec);
+
+  az_iot_mqtt_connect_options copts = { 0 };
+  copts.host = "127.0.0.1";
+  copts.port = proxy_port;
+  copts.client_id = cid;
+  copts.keep_alive_seconds = 30;
+  copts.connect_timeout_seconds = k_step_timeout_seconds;
+  copts.tls.trusted_ca_path = ca_path;
+  copts.tls.client_cert_path = cert_path;
+  copts.tls.client_key_path = key_path;
+  copts.tls.verify_server = true;
+
+  assert_int_equal(c->iface->connect(c, &copts), AZ_IOT_OK);
+  assert_true(wait_until(c, &rec, saw_connected_ok, k_step_timeout_ms));
+
+  (void)c->iface->disconnect(c);
+  destroy_client(c);
+  az_iot_test_proxy_stop(proxy);
+  remove(ca_path);
+  remove(cert_path);
+  remove(key_path);
+}
+
+/* An expired client certificate must be refused by the peer. The assertion
+ * belongs to the peer's verification, which is why this needed a proxy that
+ * asks for a client certificate at all -- one that never asks cannot refuse.
+ *
+ * The certificate's validity window is placed relative to now, so it is expired
+ * by construction rather than by a checked-in fixture that has to be re-minted
+ * every time it ages out. */
+static void expired_client_cert_is_rejected(void** state)
+{
+  (void)state;
+  uint16_t proxy_port = 0;
+  char ca_path[128];
+  az_iot_test_proxy* proxy = start_mutual_tls_proxy(&proxy_port, ca_path, sizeof(ca_path));
+
+  /* Valid from two days ago until one day ago. */
+  char cert_path[128];
+  char key_path[128];
+  issue_client_pem(
+      proxy,
+      -2L * 24 * 3600,
+      -24L * 3600,
+      cert_path,
+      sizeof(cert_path),
+      key_path,
+      sizeof(key_path));
+
+  char cid[64];
+  unique_client_id(cid, sizeof(cid), "az-iot-conf-mtlsexp");
+  conf_recorder rec = { 0 };
+  az_iot_mqtt_client* c = make_client();
+  c->iface->set_inbound_cb(c, on_event, &rec);
+
+  az_iot_mqtt_connect_options copts = { 0 };
+  copts.host = "127.0.0.1";
+  copts.port = proxy_port;
+  copts.client_id = cid;
+  copts.keep_alive_seconds = 30;
+  copts.connect_timeout_seconds = k_step_timeout_seconds;
+  copts.tls.trusted_ca_path = ca_path;
+  copts.tls.client_cert_path = cert_path;
+  copts.tls.client_key_path = key_path;
+  copts.tls.verify_server = true;
+
+  az_iot_result r = c->iface->connect(c, &copts);
+  if (r == AZ_IOT_OK)
+  {
+    (void)wait_until(c, &rec, saw_connect_failure, k_step_timeout_ms);
+  }
+  /* However it is reported, it must never be reported as connected. */
+  assert_false(saw_connected_ok(&rec));
+
+  (void)c->iface->disconnect(c);
+  destroy_client(c);
+  az_iot_test_proxy_stop(proxy);
+  remove(ca_path);
+  remove(cert_path);
+  remove(key_path);
+}
+
+/* Presenting no certificate at all to a peer that requires one must fail in the
+ * same way. This is the case that distinguishes "the proxy asks" from "the
+ * proxy checks": without it, a proxy that requested a certificate but accepted
+ * its absence would still pass the expired case for the wrong reason. */
+static void a_missing_client_cert_is_rejected(void** state)
+{
+  (void)state;
+  uint16_t proxy_port = 0;
+  char ca_path[128];
+  az_iot_test_proxy* proxy = start_mutual_tls_proxy(&proxy_port, ca_path, sizeof(ca_path));
+
+  char cid[64];
+  unique_client_id(cid, sizeof(cid), "az-iot-conf-mtlsnone");
+  conf_recorder rec = { 0 };
+  az_iot_mqtt_client* c = make_client();
+  c->iface->set_inbound_cb(c, on_event, &rec);
+
+  az_iot_mqtt_connect_options copts = { 0 };
+  copts.host = "127.0.0.1";
+  copts.port = proxy_port;
+  copts.client_id = cid;
+  copts.keep_alive_seconds = 30;
+  copts.connect_timeout_seconds = k_step_timeout_seconds;
+  copts.tls.trusted_ca_path = ca_path;
+  copts.tls.verify_server = true; /* no client certificate offered */
+
+  az_iot_result r = c->iface->connect(c, &copts);
+  if (r == AZ_IOT_OK)
+  {
+    (void)wait_until(c, &rec, saw_connect_failure, k_step_timeout_ms);
+  }
+  assert_false(saw_connected_ok(&rec));
+
+  (void)c->iface->disconnect(c);
+  destroy_client(c);
+  az_iot_test_proxy_stop(proxy);
+  remove(ca_path);
+}
+#endif /* AZ_IOT_CONFORMANCE_WITH_TLS */
+
+/* ------------------------------------------------------------------------- */
 /* entry point                                                                */
 /* ------------------------------------------------------------------------- */
 
@@ -1290,16 +1690,22 @@ static void a_stalled_link_resumes_without_losing_the_session(void** state)
       cmocka_unit_test(roundtrip_survives_broker_to_client_fragmentation),                       \
       cmocka_unit_test(roundtrip_survives_latency_and_jitter),                                   \
       cmocka_unit_test(bandwidth_ceiling_slows_a_payload_without_corrupting_it),                 \
-      cmocka_unit_test(a_stalled_link_resumes_without_losing_the_session)
+      cmocka_unit_test(a_stalled_link_resumes_without_losing_the_session),                       \
+      cmocka_unit_test(a_refused_subscribe_is_reported),                                         \
+      cmocka_unit_test(a_truncated_publish_is_never_surfaced_as_a_message),                      \
+      cmocka_unit_test(an_acknowledgement_for_an_unknown_packet_id_is_ignored)
 
 /* Expands to nothing when the certificate cases were compiled out, so the two
  * lists above stay a single expression either way. */
 #ifdef AZ_IOT_CONFORMANCE_WITH_TLS
-#define TLS_TESTS                                                   \
-  cmocka_unit_test(tls_handshake_succeeds_with_trusted_valid_cert), \
-      cmocka_unit_test(server_cert_validation_rejects_untrusted),   \
-      cmocka_unit_test(server_cert_validation_rejects_expired),     \
-      cmocka_unit_test(server_cert_validation_rejects_hostname_mismatch),
+#define TLS_TESTS                                                         \
+  cmocka_unit_test(tls_handshake_succeeds_with_trusted_valid_cert),       \
+      cmocka_unit_test(server_cert_validation_rejects_untrusted),         \
+      cmocka_unit_test(server_cert_validation_rejects_expired),           \
+      cmocka_unit_test(server_cert_validation_rejects_hostname_mismatch), \
+      cmocka_unit_test(mutual_tls_succeeds_with_a_valid_client_cert),     \
+      cmocka_unit_test(expired_client_cert_is_rejected),                  \
+      cmocka_unit_test(a_missing_client_cert_is_rejected),
 #else
 #define TLS_TESTS
 #endif
