@@ -1,10 +1,9 @@
 ﻿using Microsoft.Azure.Devices.Client;
 using Microsoft.Azure.Devices.Client.Models;
-using Microsoft.Azure.Devices.Client.Twin;
+using Microsoft.Azure.Devices.Client.Models.Telemetry;
 using Microsoft.Azure.Devices.Client.Unified.Connection;
 using Microsoft.Azure.Devices.Client.Unified.Telemetry;
 using SetupSampleDevice;
-using System.Security.Cryptography.X509Certificates;
 using System.Text;
 
 internal class Program
@@ -41,7 +40,7 @@ internal class Program
 
         while (!cts.Token.IsCancellationRequested)
         {
-            OutgoingTelemetryMessage outgoingTelemetry = new()
+            DeviceToCloudTelemetry outgoingTelemetry = new()
             {
                 Payload = Encoding.UTF8.GetBytes("Hello world!"),
                 MessageId = Guid.NewGuid().ToString(),

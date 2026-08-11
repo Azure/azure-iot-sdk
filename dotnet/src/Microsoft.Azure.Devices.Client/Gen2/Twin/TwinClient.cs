@@ -1,8 +1,8 @@
 ﻿using Google.Protobuf;
+using Microsoft.Azure.Devices.Client.Exceptions;
 using Microsoft.Azure.Devices.Client.Gen2.Connection;
-using Microsoft.Azure.Devices.Client.Models;
+using Microsoft.Azure.Devices.Client.Models.Twin;
 using Microsoft.Azure.Devices.Client.Mqtt;
-using Microsoft.Azure.Devices.Client.Twin.Models;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Text;
@@ -16,6 +16,8 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Twin
     /// </summary>
     public class TwinClient : IDisposable
     {
+        private bool _isDisposed = false;
+
         private const string ProtobufContentType = "application/protobuf";
 
         private IConnectionClient _connection;
@@ -64,13 +66,13 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Twin
         public TwinClient(IConnectionClient connection)
         {
             _connection = connection;
-            _connection.MqttClient.PublishReceivedAsync += HandleReceivedAzureEventGridHubMqttPublish;
+            _connection.MqttClient.PublishReceivedAsync += HandleReceivedMqttPublish;
         }
 
         internal TwinClient(Unified.Connection.IConnectionClient connection)
         {
             _connection = new ConnectionClient(connection);
-            _connection.MqttClient.PublishReceivedAsync += HandleReceivedAzureEventGridHubMqttPublish;
+            _connection.MqttClient.PublishReceivedAsync += HandleReceivedMqttPublish;
         }
 
         /// <summary>
@@ -93,8 +95,10 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Twin
         /// However, this SDK will parse the twin that the service returns to filter out unrequested sections to mimic the behavior of Azure Event Grid IoT hubs.
         /// </remarks>
         /// <exception cref="PublishRejectedException">Thrown if this get twin request is rejected by IoT Hub for any reason.</exception>
-        public async Task<Models.Twin> GetTwinAsync(bool getReported = true, bool getDesired = true, ulong ifNotMatchReported = 0, ulong ifNotMatchDesired = 0,  CancellationToken cancellationToken = default)
+        public async Task<DeviceTwin> GetTwinAsync(bool getReported = true, bool getDesired = true, ulong ifNotMatchReported = 0, ulong ifNotMatchDesired = 0,  CancellationToken cancellationToken = default)
         {
+            ObjectDisposedException.ThrowIf(_isDisposed, this);
+
             var currentConnectionContext = EnsureCorrectConnectionContext();
 
             Guid requestId = Guid.NewGuid();
@@ -153,6 +157,8 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Twin
         /// <exception cref="PublishRejectedException">Thrown if this reported property update message is rejected by IoT Hub for any reason.</exception>
         public async Task<ReportedPatchResponse> UpdateReportedPropertiesAsync(ReportedPatchRequest patch, CancellationToken cancellationToken = default)
         {
+            ObjectDisposedException.ThrowIf(_isDisposed, this);
+
             var currentConnectionContext = EnsureCorrectConnectionContext();
 
             Guid requestId = Guid.NewGuid();
@@ -204,26 +210,31 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Twin
                 throw new NotSupportedException("Must be connected before calling this method.");
             }
 
-            if (!currentConnectionContext.IsAzureEventGrid)
-            {
-                // Should never happen since Gen2 setup should always provision to a Gen2 IoT Hub
-                throw new NotSupportedException("Cannot use a Gen2 feature client to interact with a Gen1 IoT Hub instance");
-            }
-
             return currentConnectionContext;
         }
 
-        private async Task HandleReceivedAzureEventGridHubMqttPublish(MqttPublishReceivedEventArgs args)
-        { 
-            if (!_connection.GetCurrentConnectionContext()!.IsAzureEventGrid)
+        private async Task HandleReceivedMqttPublish(MqttPublishReceivedEventArgs args)
+        {
+            if (!args.Publish.Topic.StartsWith("ih/") || !args.Publish.Topic.EndsWith("/dev/twin"))
             {
-                // The other handler covers this scenario
+                // The publish is not relevant to this client, so ignore it. This check needs to happen prior to checking the deviceId within the topic b/c deviceId is
+                // not available until after provisioning finishes and this client may be setup prior to provisioning. This allows this client to ignore DPS
+                // publishes without needing to know the deviceId.
                 return;
             }
 
-            if (!args.Publish.Topic.Equals(string.Format(AzureEventGridIncomingTwinPublishTopicFormat, _connection.GetCurrentConnectionContext().DeviceId)))
+            var connectionContext = _connection.GetCurrentConnectionContext();
+
+            if (connectionContext == null)
             {
-                // This message wasn't a twin message, so ignore it
+                // Should never happen?
+                Trace.TraceWarning("Cannot handle a received MQTT message while disconnected");
+                return;
+            }
+
+            if (!args.Publish.Topic.Equals(string.Format(AzureEventGridIncomingTwinPublishTopicFormat, connectionContext.DeviceId)))
+            {
+                // This message wasn't for this device so ignore it
                 return;
             }
 
@@ -239,7 +250,6 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Twin
                 Trace.TraceWarning("Received a twin message whose type version ({0}) is not supported by this client (supported version: {1}). You may need to upgrade this library's version to handle this kind of message. Ignoring it.", typeVersion, 1);
                 return;
             }
-
 
             if (type.Equals("get-response")
                 && GuidExtensions.TryParseBytes(args.Publish.CorrelationData, out Guid? getResponseCorrelationData)
@@ -299,9 +309,28 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Twin
             }
         }
 
+        /// <summary>
+        /// Releases the unmanaged resources used by this client and optionally disposes of the managed resources.
+        /// </summary>
+        /// <param name="disposing">true to release both managed and unmanaged resources; false to releases only unmanaged resources.</param>
+        public void Dispose(bool disposing)
+        {
+            _connection.MqttClient.PublishReceivedAsync -= HandleReceivedMqttPublish;
+            if (disposing)
+            {
+                _connection.Dispose();
+            }
+            _isDisposed = true;
+        }
+
+        /// <summary>
+        /// Releases the unmanaged resources and disposes of the managed resources used by this client 
+        /// </summary>
         public void Dispose()
         {
-            _connection.MqttClient.PublishReceivedAsync -= HandleReceivedAzureEventGridHubMqttPublish;
+            _connection.MqttClient.PublishReceivedAsync -= HandleReceivedMqttPublish;
+            _connection.Dispose();
+            _isDisposed = true;
         }
     }
 }

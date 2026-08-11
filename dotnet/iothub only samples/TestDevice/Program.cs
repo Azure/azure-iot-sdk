@@ -1,6 +1,5 @@
 ﻿using Google.Protobuf;
 using Microsoft.Azure.Devices.Client;
-using Microsoft.Azure.Devices.Client.DirectMethods.Models;
 using System.Diagnostics;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
@@ -10,6 +9,8 @@ using Microsoft.Azure.Devices.Client.Gen2.Twin;
 using Microsoft.Azure.Devices.Client.Models;
 using Microsoft.Azure.Devices.Client.Gen2.Connection;
 using Microsoft.Azure.Devices.Client.Gen2.DirectMethods;
+using Microsoft.Azure.Devices.Client.Models.DirectMethods;
+using Microsoft.Azure.Devices.Client.Models.Twin;
 
 internal class Program
 {
@@ -46,8 +47,8 @@ internal class Program
         ConnectionContext connectionContext = new()
         {
             DeviceId = deviceId,
-            IsAzureEventGrid = true, // Set to false when connecting to an in-market non AEG IoT hub
-            IotHubHostName = hostName
+            IotHubHostName = hostName,
+            AuthenticationProvider = authentication,
         };
 
         TwinClient twinClient = new(connectionClient);

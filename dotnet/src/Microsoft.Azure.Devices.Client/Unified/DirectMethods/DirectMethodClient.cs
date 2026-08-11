@@ -1,7 +1,6 @@
 ﻿using Google.Protobuf;
-using Microsoft.Azure.Devices.Client.DirectMethods.Models;
 using Microsoft.Azure.Devices.Client.Gen2.DirectMethods;
-using Microsoft.Azure.Devices.Client.Models;
+using Microsoft.Azure.Devices.Client.Models.DirectMethods;
 using Microsoft.Azure.Devices.Client.Mqtt;
 using Microsoft.Azure.Devices.Client.Unified.Connection;
 using System.Collections.Specialized;
@@ -55,7 +54,7 @@ namespace Microsoft.Azure.Devices.Client.DirectMethods.Unified
         public DirectMethodClient(IConnectionClient connection)
         {
             _connection = connection;
-            _connection.MqttClient.PublishReceivedAsync += HandleReceivedClassicMqttPublish;
+            _connection.MqttClient.PublishReceivedAsync += HandleReceivedMqttPublish;
             
             _aegDirectMethodClient = new(_connection);
             _aegDirectMethodClient.DirectMethodProbeReceivedAsync += HandleAegDirectMethodProbeRequestAsync;
@@ -89,8 +88,16 @@ namespace Microsoft.Azure.Devices.Client.DirectMethods.Unified
             });
         }
 
-        private async Task HandleReceivedClassicMqttPublish(MqttPublishReceivedEventArgs args)
+        private async Task HandleReceivedMqttPublish(MqttPublishReceivedEventArgs args)
         {
+            if (!args.Publish.Topic.StartsWith("$iothub/methods/"))
+            {
+                // The publish is not relevant to this client, so ignore it. This check needs to happen prior to checking the deviceId within the topic b/c deviceId is
+                // not available until after provisioning finishes and this client may be setup prior to provisioning. This allows this client to ignore DPS
+                // publishes without needing to know the deviceId.
+                return;
+            }
+
             var currentConnectionContext = _connection.GetCurrentConnectionContext();
 
             if (currentConnectionContext == null)
@@ -161,12 +168,34 @@ namespace Microsoft.Azure.Devices.Client.DirectMethods.Unified
             }
         }
 
-        public void Dispose()
+        /// <summary>
+        /// Releases the unmanaged resources used by this client and optionally disposes of the managed resources.
+        /// </summary>
+        /// <param name="disposing">true to release both managed and unmanaged resources; false to releases only unmanaged resources.</param>
+        public void Dispose(bool disposing)
         {
-            _connection.MqttClient.PublishReceivedAsync -= HandleReceivedClassicMqttPublish;
+            _connection.MqttClient.PublishReceivedAsync -= HandleReceivedMqttPublish;
 
             _aegDirectMethodClient.DirectMethodProbeReceivedAsync -= HandleAegDirectMethodProbeRequestAsync;
             _aegDirectMethodClient.DirectMethodInvokedAsync -= HandleAegDirectMethodRequestAsync;
+
+            if (disposing)
+            {
+                _connection.Dispose();
+            }
+        }
+
+        /// <summary>
+        /// Releases the unmanaged resources and disposes of the managed resources used by this client 
+        /// </summary>
+        public void Dispose()
+        {
+            _connection.MqttClient.PublishReceivedAsync -= HandleReceivedMqttPublish;
+
+            _aegDirectMethodClient.DirectMethodProbeReceivedAsync -= HandleAegDirectMethodProbeRequestAsync;
+            _aegDirectMethodClient.DirectMethodInvokedAsync -= HandleAegDirectMethodRequestAsync;
+
+            _connection.Dispose();
         }
     }
 }

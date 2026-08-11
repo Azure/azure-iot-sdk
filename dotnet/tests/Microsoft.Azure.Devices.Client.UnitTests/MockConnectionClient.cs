@@ -1,4 +1,4 @@
-﻿using Microsoft.Azure.Devices.Client.CertificateManagement;
+﻿using Microsoft.Azure.Devices.Client.Models.CertificateManagement;
 using Microsoft.Azure.Devices.Client.Mqtt;
 using Microsoft.Azure.Devices.Client.Unified.Connection;
 
