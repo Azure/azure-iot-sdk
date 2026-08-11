@@ -1005,6 +1005,270 @@ static void server_disconnect_is_reported(void** state)
 }
 
 /* ------------------------------------------------------------------------- */
+/* network impairment                                                         */
+/* ------------------------------------------------------------------------- */
+
+/* Stand up a proxy in front of the real broker and connect a client through it.
+ * Returns the proxy; fills `port_out` with the port the client should dial. */
+static az_iot_test_proxy* start_proxy(uint16_t* port_out)
+{
+  az_iot_test_proxy_options popts = az_iot_test_proxy_options_default();
+  popts.upstream_host = g_host;
+  popts.upstream_port = g_port;
+  az_iot_test_proxy* proxy = NULL;
+  assert_int_equal(az_iot_test_proxy_start(&popts, &proxy, port_out), 0);
+  assert_int_not_equal(*port_out, 0);
+  return proxy;
+}
+
+static void connect_via_proxy(
+    az_iot_mqtt_client* c,
+    conf_recorder* rec,
+    const char* client_id,
+    uint16_t proxy_port)
+{
+  c->iface->set_inbound_cb(c, on_event, rec);
+  az_iot_mqtt_connect_options copts = { 0 };
+  copts.host = "127.0.0.1";
+  copts.port = proxy_port;
+  copts.client_id = client_id;
+  copts.keep_alive_seconds = 30;
+  copts.connect_timeout_seconds = k_step_timeout_seconds;
+  assert_int_equal(c->iface->connect(c, &copts), AZ_IOT_OK);
+  assert_true(wait_until(c, rec, saw_connected_ok, k_step_timeout_ms));
+}
+
+/* Find a recorded MESSAGE matching topic+payload exactly. */
+static int found_message(const conf_recorder* r, const char* topic, const uint8_t* body, size_t len)
+{
+  for (size_t i = 0; i < r->count; ++i)
+  {
+    if (r->kinds[i] == AZ_IOT_MQTT_EVT_MESSAGE && strcmp(r->topics[i], topic) == 0
+        && r->payload_lens[i] == len && memcmp(r->payloads[i], body, len) == 0)
+    {
+      return 1;
+    }
+  }
+  return 0;
+}
+
+/* A broker that writes a packet in single-byte pieces is indistinguishable, at
+ * the socket layer, from a lossy link that dribbles it through. The client must
+ * reassemble rather than assume one read yields one packet.
+ *
+ * This is the direction that matters and the one that used to go unshaped: the
+ * proxy documented both directions but only ever fragmented client->broker,
+ * where the client's own reassembly code is not involved. */
+static void roundtrip_survives_broker_to_client_fragmentation(void** state)
+{
+  (void)state;
+  uint16_t proxy_port = 0;
+  az_iot_test_proxy* proxy = start_proxy(&proxy_port);
+
+  /* One byte per write, from the CONNACK onwards. */
+  az_iot_test_proxy_impairment imp = az_iot_test_proxy_impairment_default();
+  imp.fragment_max = 1;
+  az_iot_test_proxy_set_impairment(proxy, AZ_IOT_TEST_PROXY_B2C, &imp);
+
+  char cid[64];
+  unique_client_id(cid, sizeof(cid), "az-iot-conf-frag");
+  char topic[128];
+  snprintf(topic, sizeof(topic), "az_iot/conformance/%s", cid);
+
+  conf_recorder rec = { 0 };
+  az_iot_mqtt_client* c = make_client();
+  connect_via_proxy(c, &rec, cid, proxy_port);
+
+  uint16_t sub_pid = 0;
+  assert_int_equal(c->iface->subscribe(c, topic, AZ_IOT_MQTT_QOS_1, &sub_pid), AZ_IOT_OK);
+  assert_true(wait_until(c, &rec, saw_subscribe_ack_ok, k_step_timeout_ms));
+
+  static const uint8_t body[] = { 'f', 'r', 'a', 'g', 'm', 'e', 'n', 't', 'e', 'd' };
+  az_iot_mqtt_message msg = { 0 };
+  msg.topic = topic;
+  msg.payload = body;
+  msg.payload_len = sizeof(body);
+  msg.qos = AZ_IOT_MQTT_QOS_1;
+  uint16_t pub_pid = 0;
+  assert_int_equal(c->iface->publish(c, &msg, &pub_pid), AZ_IOT_OK);
+
+  assert_true(wait_until(c, &rec, saw_message, k_step_timeout_ms));
+  assert_true(found_message(&rec, topic, body, sizeof(body)));
+
+  /* Without this the case would pass just as well if the impairment were
+   * silently ignored -- which is exactly the bug it exists to catch. An
+   * unfragmented session needs a handful of writes to reach this point; one
+   * byte at a time needs one per byte. */
+  assert_true(az_iot_test_proxy_writes(proxy, AZ_IOT_TEST_PROXY_B2C) > 50);
+
+  (void)c->iface->disconnect(c);
+  destroy_client(c);
+  az_iot_test_proxy_stop(proxy);
+}
+
+/* Added latency and jitter on both directions must not change any outcome, only
+ * its timing: a client that races its own acknowledgements would fail here. The
+ * jitter seed is fixed so a failure replays. */
+static void roundtrip_survives_latency_and_jitter(void** state)
+{
+  (void)state;
+  uint16_t proxy_port = 0;
+  az_iot_test_proxy* proxy = start_proxy(&proxy_port);
+
+  az_iot_test_proxy_impairment imp = az_iot_test_proxy_impairment_default();
+  imp.base_delay_ms = 150;
+  imp.jitter_ms = 50;
+  imp.seed = 0xC0FFEEu;
+  az_iot_test_proxy_set_impairment(proxy, AZ_IOT_TEST_PROXY_C2B, &imp);
+  imp.seed = 0xBADCAFEu;
+  az_iot_test_proxy_set_impairment(proxy, AZ_IOT_TEST_PROXY_B2C, &imp);
+
+  char cid[64];
+  unique_client_id(cid, sizeof(cid), "az-iot-conf-jitter");
+  char topic[128];
+  snprintf(topic, sizeof(topic), "az_iot/conformance/%s", cid);
+
+  conf_recorder rec = { 0 };
+  az_iot_mqtt_client* c = make_client();
+  connect_via_proxy(c, &rec, cid, proxy_port);
+
+  uint16_t sub_pid = 0;
+  assert_int_equal(c->iface->subscribe(c, topic, AZ_IOT_MQTT_QOS_1, &sub_pid), AZ_IOT_OK);
+  assert_true(wait_until(c, &rec, saw_subscribe_ack_ok, k_step_timeout_ms));
+
+  static const uint8_t body[] = { 'j', 'i', 't', 't', 'e', 'r' };
+  az_iot_mqtt_message msg = { 0 };
+  msg.topic = topic;
+  msg.payload = body;
+  msg.payload_len = sizeof(body);
+  msg.qos = AZ_IOT_MQTT_QOS_1;
+  uint16_t pub_pid = 0;
+  unsigned long started = conf_now_ms();
+  assert_int_equal(c->iface->publish(c, &msg, &pub_pid), AZ_IOT_OK);
+
+  assert_true(wait_until(c, &rec, saw_message, k_step_timeout_ms));
+  unsigned long elapsed = conf_now_ms() - started;
+  assert_true(found_message(&rec, topic, body, sizeof(body)));
+  /* The echo crosses the proxy twice, so it cannot beat two base delays. The
+   * harness pumps in 50 ms steps, so the floor has to clear that quantum to
+   * mean anything: unshaped, this round trip lands in the first poll. */
+  assert_true(elapsed >= 250);
+  /* Slow is not the same as broken: the session must still be up. */
+  assert_false(saw_disconnected(&rec));
+
+  (void)c->iface->disconnect(c);
+  destroy_client(c);
+  az_iot_test_proxy_stop(proxy);
+}
+
+/* A bandwidth ceiling must slow a payload down without corrupting it. The
+ * ceiling is applied only after the session is established, so the delay
+ * measured belongs to the payload and not to the handshake. */
+static void bandwidth_ceiling_slows_a_payload_without_corrupting_it(void** state)
+{
+  (void)state;
+  uint16_t proxy_port = 0;
+  az_iot_test_proxy* proxy = start_proxy(&proxy_port);
+
+  char cid[64];
+  unique_client_id(cid, sizeof(cid), "az-iot-conf-bw");
+  char topic[128];
+  snprintf(topic, sizeof(topic), "az_iot/conformance/%s", cid);
+
+  conf_recorder rec = { 0 };
+  az_iot_mqtt_client* c = make_client();
+  connect_via_proxy(c, &rec, cid, proxy_port);
+
+  uint16_t sub_pid = 0;
+  assert_int_equal(c->iface->subscribe(c, topic, AZ_IOT_MQTT_QOS_1, &sub_pid), AZ_IOT_OK);
+  assert_true(wait_until(c, &rec, saw_subscribe_ack_ok, k_step_timeout_ms));
+
+  /* 1 KiB at 2 KiB/s cannot arrive in under about half a second. */
+  az_iot_test_proxy_impairment imp = az_iot_test_proxy_impairment_default();
+  imp.bytes_per_sec = 2048;
+  az_iot_test_proxy_set_impairment(proxy, AZ_IOT_TEST_PROXY_B2C, &imp);
+
+  static uint8_t body[1024];
+  for (size_t i = 0; i < sizeof(body); ++i)
+  {
+    body[i] = (uint8_t)(i & 0xFFu);
+  }
+  az_iot_mqtt_message msg = { 0 };
+  msg.topic = topic;
+  msg.payload = body;
+  msg.payload_len = sizeof(body);
+  msg.qos = AZ_IOT_MQTT_QOS_1;
+  uint16_t pub_pid = 0;
+  unsigned long started = conf_now_ms();
+  assert_int_equal(c->iface->publish(c, &msg, &pub_pid), AZ_IOT_OK);
+
+  assert_true(wait_until(c, &rec, saw_message, 15000));
+  unsigned long elapsed = conf_now_ms() - started;
+
+  /* Every byte arrives, in order: rate limiting must never truncate or
+   * reorder the stream. */
+  assert_true(found_message(&rec, topic, body, sizeof(body)));
+  /* Unshaped this round trip is a few milliseconds, so a floor well under the
+   * ~500 ms theoretical minimum still proves the ceiling was enforced. */
+  assert_true(elapsed >= 300);
+
+  (void)c->iface->disconnect(c);
+  destroy_client(c);
+  az_iot_test_proxy_stop(proxy);
+}
+
+/* A stall is not a drop: the link goes quiet, buffers fill, and then everything
+ * arrives intact. This is what a client sees across a radio gap or a suspended
+ * VM, and it must not be mistaken for a dead connection. */
+static void a_stalled_link_resumes_without_losing_the_session(void** state)
+{
+  (void)state;
+  uint16_t proxy_port = 0;
+  az_iot_test_proxy* proxy = start_proxy(&proxy_port);
+
+  char cid[64];
+  unique_client_id(cid, sizeof(cid), "az-iot-conf-stall");
+  char topic[128];
+  snprintf(topic, sizeof(topic), "az_iot/conformance/%s", cid);
+
+  conf_recorder rec = { 0 };
+  az_iot_mqtt_client* c = make_client();
+  connect_via_proxy(c, &rec, cid, proxy_port);
+
+  uint16_t sub_pid = 0;
+  assert_int_equal(c->iface->subscribe(c, topic, AZ_IOT_MQTT_QOS_1, &sub_pid), AZ_IOT_OK);
+  assert_true(wait_until(c, &rec, saw_subscribe_ack_ok, k_step_timeout_ms));
+
+  /* Hold the broker's traffic for well under the 30 s keep-alive, so a
+   * disconnect here would be the client giving up early rather than a
+   * legitimate keep-alive expiry. */
+  az_iot_test_proxy_stall(proxy, AZ_IOT_TEST_PROXY_B2C, 1500);
+
+  static const uint8_t body[] = { 's', 't', 'a', 'l', 'l', 'e', 'd' };
+  az_iot_mqtt_message msg = { 0 };
+  msg.topic = topic;
+  msg.payload = body;
+  msg.payload_len = sizeof(body);
+  msg.qos = AZ_IOT_MQTT_QOS_1;
+  uint16_t pub_pid = 0;
+  assert_int_equal(c->iface->publish(c, &msg, &pub_pid), AZ_IOT_OK);
+
+  /* Nothing may arrive while the link is held. */
+  assert_false(wait_until(c, &rec, saw_message, 700));
+  /* The bytes are buffered in the proxy, not lost. */
+  assert_true(az_iot_test_proxy_queued_bytes(proxy, AZ_IOT_TEST_PROXY_B2C) > 0);
+
+  /* Once the stall lifts, the backlog is delivered intact. */
+  assert_true(wait_until(c, &rec, saw_message, k_step_timeout_ms));
+  assert_true(found_message(&rec, topic, body, sizeof(body)));
+  assert_false(saw_disconnected(&rec));
+
+  (void)c->iface->disconnect(c);
+  destroy_client(c);
+  az_iot_test_proxy_stop(proxy);
+}
+
+/* ------------------------------------------------------------------------- */
 /* entry point                                                                */
 /* ------------------------------------------------------------------------- */
 
@@ -1022,7 +1286,11 @@ static void server_disconnect_is_reported(void** state)
       cmocka_unit_test(idle_session_survives_the_keep_alive_interval),                           \
       TLS_TESTS cmocka_unit_test(reconnect_after_network_drop),                                  \
       cmocka_unit_test(connect_connack_error_is_reported),                                       \
-      cmocka_unit_test(keep_alive_timeout_is_reported)
+      cmocka_unit_test(keep_alive_timeout_is_reported),                                          \
+      cmocka_unit_test(roundtrip_survives_broker_to_client_fragmentation),                       \
+      cmocka_unit_test(roundtrip_survives_latency_and_jitter),                                   \
+      cmocka_unit_test(bandwidth_ceiling_slows_a_payload_without_corrupting_it),                 \
+      cmocka_unit_test(a_stalled_link_resumes_without_losing_the_session)
 
 /* Expands to nothing when the certificate cases were compiled out, so the two
  * lists above stay a single expression either way. */

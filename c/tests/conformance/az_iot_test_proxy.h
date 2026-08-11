@@ -16,11 +16,12 @@
  * env-var broker discovery, so BYO-adapter customers can exercise the same
  * failure injection against their own client.
  *
- * Scope of this layer (C1): plaintext TCP passthrough + a control API for
- * deterministic connection drops and write delay/fragmentation, plus a
- * Winsock/POSIX socket shim so both CI legs (linux-gcc/clang and
- * windows-msvc-debug) build it. TLS termination with a runtime-generated CA and
- * control-packet injection are separate, later layers (C2/C3).
+ * Layers, in the order they were added: plaintext TCP passthrough plus
+ * deterministic connection drops (C1); TLS termination with a runtime-generated
+ * CA (C2); synthetic CONNACK/DISCONNECT and keep-alive starvation (C3); and
+ * per-direction network impairment -- latency, jitter, bandwidth,
+ * fragmentation and stalls -- scheduled in userspace so no OS-specific traffic
+ * control is needed on any CI leg (C4).
  *
  * Threading: the proxy owns one background thread that accepts a single client
  * connection at a time, opens an upstream connection, and pumps bytes in both
@@ -84,12 +85,85 @@ extern "C"
   /* Immediately hard-reset the active connection (best-effort; no-op if none). */
   void az_iot_test_proxy_drop_now(az_iot_test_proxy* proxy);
 
-  /* Write shaping applied to every forwarded chunk, both directions.
-   * `delay_ms` sleeps before each write; `max_chunk` splits writes into pieces
-   * of at most that many bytes (0 disables fragmentation). Together they
-   * exercise the adapter's partial-read handling. */
+  /* Write shaping, applied to BOTH directions. Shorthand for setting the
+   * matching field of az_iot_test_proxy_impairment on each direction; see that
+   * struct for the full set (bandwidth, jitter, stall).
+   *
+   * These used to be documented as applying to both directions but only ever
+   * shaped client->broker, which is the less interesting half: it is the
+   * broker->client direction that exercises a client's partial-read and
+   * reassembly paths. */
   void az_iot_test_proxy_set_write_delay_ms(az_iot_test_proxy* proxy, unsigned delay_ms);
   void az_iot_test_proxy_set_fragment(az_iot_test_proxy* proxy, size_t max_chunk);
+
+  /* --- Network impairment: the proxy is a userspace relay, so added latency,
+   * jitter, a bandwidth ceiling and write fragmentation are all just scheduling
+   * of buffered bytes. That means they behave identically on every CI leg with
+   * no tc/netem, no WinDivert, no kernel modules and no administrator rights.
+   *
+   * Deliberately absent, because a TCP relay cannot honestly provide them:
+   *   - Packet loss. Below this proxy the kernel retransmits; dropping bytes
+   *     here corrupts the stream instead of simulating loss. What loss actually
+   *     looks like to an MQTT client -- delay spikes, stalls, resets -- is
+   *     covered by base_delay_ms/jitter_ms, az_iot_test_proxy_stall() and the
+   *     existing reset controls.
+   *   - Reordering and duplication. TCP delivers a byte stream in order, so
+   *     real reordering is invisible above it and reordering bytes here would
+   *     simply corrupt the stream. Duplication that means anything to a client
+   *     is packet-level (a PUBLISH with DUP set), which belongs to control
+   *     packet injection rather than to byte shaping.
+   * --- */
+  typedef enum az_iot_test_proxy_direction
+  {
+    AZ_IOT_TEST_PROXY_C2B = 0, /* client -> broker */
+    AZ_IOT_TEST_PROXY_B2C = 1 /* broker -> client */
+  } az_iot_test_proxy_direction;
+
+  typedef struct az_iot_test_proxy_impairment
+  {
+    /* Added latency before a chunk is released, plus a uniform random extra in
+     * [0, jitter_ms]. Order is always preserved: a jittered chunk never
+     * overtakes one queued before it. */
+    unsigned base_delay_ms;
+    unsigned jitter_ms;
+    /* Split each forwarded buffer into pieces of at most this many bytes.
+     * 0 disables fragmentation. */
+    size_t fragment_max;
+    /* Token-bucket ceiling in bytes per second; 0 is unlimited. */
+    uint32_t bytes_per_sec;
+    /* Seeds the jitter sequence so a failure reproduces. 0 selects a fixed
+     * default seed rather than something time-derived. */
+    uint32_t seed;
+  } az_iot_test_proxy_impairment;
+
+  az_iot_test_proxy_impairment az_iot_test_proxy_impairment_default(void);
+
+  /* Apply (or clear, with a zeroed struct) impairment for one direction. Safe
+   * to call before or during a connection; takes effect on the next chunk. */
+  void az_iot_test_proxy_set_impairment(
+      az_iot_test_proxy* proxy,
+      az_iot_test_proxy_direction dir,
+      const az_iot_test_proxy_impairment* impairment);
+
+  /* Hold all traffic in `dir` for `ms`, then resume. Distinct from a drop: the
+   * connection stays open and nothing is lost, which is what a client sees
+   * during a radio gap or a paused VM. */
+  void az_iot_test_proxy_stall(
+      az_iot_test_proxy* proxy,
+      az_iot_test_proxy_direction dir,
+      unsigned ms);
+
+  /* Bytes currently buffered and not yet released in `dir`. Lets a test wait
+   * for a shaped transfer to finish instead of sleeping for a guessed time. */
+  uint64_t az_iot_test_proxy_queued_bytes(
+      az_iot_test_proxy* proxy,
+      az_iot_test_proxy_direction dir);
+
+  /* Cumulative count of write calls issued in `dir`. A fragmented stream shows
+   * far more writes than packets, so a test can prove the shaping it asked for
+   * was actually applied rather than assume it. This counts calls, never
+   * content; the proxy still records no traffic. */
+  uint64_t az_iot_test_proxy_writes(az_iot_test_proxy* proxy, az_iot_test_proxy_direction dir);
 
   /* Observability (cumulative across connections). */
   uint64_t az_iot_test_proxy_bytes_forwarded(az_iot_test_proxy* proxy);

@@ -98,6 +98,71 @@ static void proxy_ensure_wsa(void)
 }
 
 /* ------------------------------------------------------------------------- */
+/* monotonic clock and deterministic RNG                                     */
+/* ------------------------------------------------------------------------- */
+
+/* Milliseconds from an unspecified origin. Monotonic, so it is unaffected by a
+ * wall-clock step; scheduling must never go backwards mid-test. */
+static uint64_t proxy_now_ms(void)
+{
+#if defined(_WIN32)
+  return (uint64_t)GetTickCount64();
+#else
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return (uint64_t)ts.tv_sec * 1000ull + (uint64_t)(ts.tv_nsec / 1000000L);
+#endif
+}
+
+/* xorshift32. Seeded per direction so a jitter sequence replays exactly; an
+ * impairment failure that cannot be reproduced is worse than no test. */
+static uint32_t proxy_rand(uint32_t* state)
+{
+  uint32_t x = (*state != 0u) ? *state : 0x9E3779B9u;
+  x ^= x << 13;
+  x ^= x >> 17;
+  x ^= x << 5;
+  *state = x;
+  return x;
+}
+
+/* ------------------------------------------------------------------------- */
+/* egress scheduling                                                         */
+/* ------------------------------------------------------------------------- */
+
+/* Buffered bytes waiting for their release time. Shaping cannot be done by
+ * sleeping inline in the pump: that blocks the opposite direction too, turning
+ * "200 ms of latency" into "a 200 ms freeze of the whole session". Each chunk
+ * instead carries a release deadline and the pump sends whatever is due. */
+typedef struct proxy_chunk
+{
+  struct proxy_chunk* next;
+  uint64_t release_at_ms;
+  size_t len;
+  size_t sent; /* partial writes resume here */
+  char* data; /* points just past this header, in the same allocation */
+} proxy_chunk;
+
+/* Backpressure bound. Reached only when a bandwidth ceiling is far below the
+ * offered load; the pump then stops reading that source, which is what a real
+ * congested link does. Dropping buffered bytes instead would corrupt the
+ * stream. */
+#define PROXY_EGRESS_MAX_QUEUED (256u * 1024u)
+
+typedef struct proxy_egress
+{
+  proxy_chunk* head;
+  proxy_chunk* tail;
+  uint64_t queued;
+  double tokens; /* token bucket, bytes */
+  uint64_t tokens_at_ms;
+  uint32_t rng;
+  uint32_t seed_applied; /* the seed `rng` was derived from */
+  int seeded;
+  uint64_t writes; /* drained into the proxy's cumulative counter */
+} proxy_egress;
+
+/* ------------------------------------------------------------------------- */
 /* proxy state                                                               */
 /* ------------------------------------------------------------------------- */
 
@@ -123,8 +188,11 @@ struct az_iot_test_proxy
   int drop_requested;
   uint64_t reset_after_bytes; /* 0 = disarmed; one-shot */
   uint32_t reset_after_packets; /* 0 = disarmed; one-shot */
-  unsigned write_delay_ms;
-  size_t fragment_max; /* 0 = no fragmentation */
+  /* Per-direction impairment, indexed by az_iot_test_proxy_direction. */
+  az_iot_test_proxy_impairment imp[2];
+  uint64_t stall_until_ms[2];
+  uint64_t queued_snapshot[2]; /* published for az_iot_test_proxy_queued_bytes */
+  uint64_t writes[2];
 
   uint64_t conn_c2b_bytes; /* client->broker bytes, current connection */
   uint32_t conn_c2b_packets; /* client->broker MQTT packets, current connection */
@@ -414,34 +482,6 @@ static void proxy_count_packets(
   *out_new = completed;
 }
 
-static int proxy_forward(
-    proxy_sock dst,
-    const char* buf,
-    size_t n,
-    unsigned delay_ms,
-    size_t fragment_max)
-{
-  size_t off = 0;
-  do
-  {
-    size_t chunk = n - off;
-    if (fragment_max > 0 && chunk > fragment_max)
-    {
-      chunk = fragment_max;
-    }
-    if (delay_ms > 0)
-    {
-      proxy_sleep_ms(delay_ms);
-    }
-    if (proxy_send_all(dst, buf + off, chunk) != 0)
-    {
-      return -1;
-    }
-    off += chunk;
-  } while (off < n);
-  return 0;
-}
-
 /* Client-side I/O abstracts plaintext vs. a terminated TLS session. `ssl` is an
  * SSL* when TLS termination is active, NULL otherwise. */
 static void proxy_client_free(void* ssl)
@@ -501,6 +541,210 @@ static int proxy_client_send_all(proxy_sock s, void* ssl, const char* buf, size_
   (void)ssl;
 #endif
   return proxy_send_all(s, buf, len);
+}
+
+/* ------------------------------------------------------------------------- */
+/* egress queue (pump thread only, except the config it copies under lock)    */
+/* ------------------------------------------------------------------------- */
+
+static void eg_clear(proxy_egress* e)
+{
+  proxy_chunk* c = e->head;
+  while (c != NULL)
+  {
+    proxy_chunk* next = c->next;
+    free(c);
+    c = next;
+  }
+  e->head = NULL;
+  e->tail = NULL;
+  e->queued = 0;
+}
+
+/* Split `buf` into release-scheduled chunks. Deadlines never decrease along the
+ * queue: jitter may make a chunk's own deadline earlier than its predecessor's,
+ * and letting it overtake would reorder a TCP byte stream rather than model a
+ * network. Returns -1 only on allocation failure. */
+static int eg_push(
+    proxy_egress* e,
+    const az_iot_test_proxy_impairment* imp,
+    const char* buf,
+    size_t n)
+{
+  size_t frag = (imp->fragment_max > 0 && imp->fragment_max < n) ? imp->fragment_max : n;
+  if (frag == 0)
+  {
+    frag = n;
+  }
+  const uint64_t now = proxy_now_ms();
+
+  size_t off = 0;
+  while (off < n)
+  {
+    size_t chunk = n - off;
+    if (chunk > frag)
+    {
+      chunk = frag;
+    }
+
+    proxy_chunk* q = (proxy_chunk*)malloc(sizeof(*q) + chunk);
+    if (q == NULL)
+    {
+      return -1;
+    }
+
+    uint64_t delay = (uint64_t)imp->base_delay_ms;
+    if (imp->jitter_ms > 0)
+    {
+      delay += (uint64_t)(proxy_rand(&e->rng) % ((uint32_t)imp->jitter_ms + 1u));
+    }
+    uint64_t release = now + delay;
+    if (e->tail != NULL && release < e->tail->release_at_ms)
+    {
+      release = e->tail->release_at_ms;
+    }
+
+    q->next = NULL;
+    q->release_at_ms = release;
+    q->len = chunk;
+    q->sent = 0;
+    q->data = (char*)(q + 1);
+    memcpy(q->data, buf + off, chunk);
+
+    if (e->tail == NULL)
+    {
+      e->head = q;
+      e->tail = q;
+    }
+    else
+    {
+      e->tail->next = q;
+      e->tail = q;
+    }
+    e->queued += (uint64_t)chunk;
+    off += chunk;
+  }
+  return 0;
+}
+
+/* Absolute time the pump next has useful work for this queue, or 0 when the
+ * queue is empty. Returning the head's deadline alone would spin once the
+ * deadline has passed but the token bucket is empty, so a rate-limited queue
+ * reports when it can next afford a byte. */
+static uint64_t eg_next_wakeup_ms(
+    const proxy_egress* e,
+    const az_iot_test_proxy_impairment* imp,
+    uint64_t now)
+{
+  if (e->head == NULL)
+  {
+    return 0;
+  }
+  if (e->head->release_at_ms > now)
+  {
+    return e->head->release_at_ms;
+  }
+  if (imp->bytes_per_sec == 0 || e->tokens >= 1.0)
+  {
+    return now;
+  }
+  double ms = (1.0 - e->tokens) * 1000.0 / (double)imp->bytes_per_sec;
+  return now + (uint64_t)ms + 1u;
+}
+
+/* Send everything that is due, honouring the bandwidth ceiling and any stall.
+ * `ssl` is non-NULL only for the broker->client direction under TLS. Returns -1
+ * if the destination died. */
+static int eg_flush(
+    proxy_egress* e,
+    const az_iot_test_proxy_impairment* imp,
+    uint64_t stall_until_ms,
+    proxy_sock dst,
+    void* ssl)
+{
+  const uint64_t now = proxy_now_ms();
+  if (now < stall_until_ms)
+  {
+    return 0;
+  }
+
+  /* Refill the bucket for the elapsed interval before spending from it. The
+   * bucket starts empty and holds at most 100 ms of credit: a full second of
+   * burst would let every payload a test can hold in memory through instantly,
+   * which is indistinguishable from having no ceiling at all. */
+  if (imp->bytes_per_sec > 0)
+  {
+    if (e->tokens_at_ms == 0)
+    {
+      e->tokens_at_ms = now;
+    }
+    else if (now > e->tokens_at_ms)
+    {
+      e->tokens += (double)(now - e->tokens_at_ms) * (double)imp->bytes_per_sec / 1000.0;
+      e->tokens_at_ms = now;
+    }
+    double burst = (double)imp->bytes_per_sec / 10.0;
+    if (burst < 1.0)
+    {
+      burst = 1.0;
+    }
+    if (e->tokens > burst)
+    {
+      e->tokens = burst;
+    }
+  }
+
+  while (e->head != NULL && e->head->release_at_ms <= now)
+  {
+    proxy_chunk* c = e->head;
+    size_t remaining = c->len - c->sent;
+    size_t allowed = remaining;
+
+    if (imp->bytes_per_sec > 0)
+    {
+      if (e->tokens < 1.0)
+      {
+        break; /* no budget this pass; the pump will come back */
+      }
+      if ((double)allowed > e->tokens)
+      {
+        allowed = (size_t)e->tokens;
+      }
+    }
+
+    int rc;
+    if (ssl != NULL)
+    {
+      rc = proxy_client_send_all(dst, ssl, c->data + c->sent, allowed);
+    }
+    else
+    {
+      rc = proxy_send_all(dst, c->data + c->sent, allowed);
+    }
+    if (rc != 0)
+    {
+      return -1;
+    }
+    ++e->writes;
+
+    if (imp->bytes_per_sec > 0)
+    {
+      e->tokens -= (double)allowed;
+    }
+    c->sent += allowed;
+    e->queued -= (uint64_t)allowed;
+
+    if (c->sent >= c->len)
+    {
+      e->head = c->next;
+      if (e->head == NULL)
+      {
+        e->tail = NULL;
+      }
+      free(c);
+    }
+  }
+  return 0;
 }
 
 #if defined(AZ_IOT_TEST_PROXY_TLS)
@@ -622,15 +866,38 @@ static void proxy_pump(
     proxy_sock upstream)
 {
   char buf[8192];
+  proxy_egress eg[2];
+  memset(eg, 0, sizeof(eg));
+  unsigned wait_ms = 200;
+
   for (;;)
   {
+    az_iot_test_proxy_impairment imp[2];
+    uint64_t stall[2];
+
     proxy_lock(&m->lock);
     int stop = m->should_stop;
     int drop = m->drop_requested;
     m->drop_requested = 0;
-    unsigned delay = m->write_delay_ms;
-    size_t fragment_max = m->fragment_max;
+    imp[0] = m->imp[0];
+    imp[1] = m->imp[1];
+    stall[0] = m->stall_until_ms[0];
+    stall[1] = m->stall_until_ms[1];
     proxy_unlock(&m->lock);
+
+    /* Re-seed whenever the configured seed changes, not just on the first
+     * pass: impairment is documented as taking effect on the next chunk, and a
+     * seed that could only be set before the connection opened would be
+     * useless for reproducing a failure seen mid-run. */
+    for (int d = 0; d < 2; ++d)
+    {
+      if (!eg[d].seeded || eg[d].seed_applied != imp[d].seed)
+      {
+        eg[d].seed_applied = imp[d].seed;
+        eg[d].seeded = 1;
+        eg[d].rng = (imp[d].seed != 0u) ? imp[d].seed : (uint32_t)(0x5EED0001u + (uint32_t)d);
+      }
+    }
 
     if (stop || drop)
     {
@@ -639,13 +906,16 @@ static void proxy_pump(
 
     int client_ready = 0;
     int upstream_ready = 0;
-    int sel = proxy_wait_readable(client, upstream, &client_ready, &upstream_ready, 200);
+    int sel = proxy_wait_readable(client, upstream, &client_ready, &upstream_ready, wait_ms);
     if (sel < 0)
     {
       goto done;
     }
 
-    if (client_ready)
+    /* Read only while the destination queue has room. Past the bound the pump
+     * stops draining the source, which is the backpressure a congested link
+     * applies; discarding queued bytes would corrupt the stream. */
+    if (client_ready && eg[AZ_IOT_TEST_PROXY_C2B].queued < PROXY_EGRESS_MAX_QUEUED)
     {
       /* Drain the client side, including any bytes buffered inside the TLS
        * session that select() cannot see. */
@@ -658,7 +928,7 @@ static void proxy_pump(
         }
         uint32_t new_packets = 0;
         proxy_count_packets(m, buf, (size_t)n, &new_packets);
-        if (proxy_forward(upstream, buf, (size_t)n, delay, fragment_max) != 0)
+        if (eg_push(&eg[AZ_IOT_TEST_PROXY_C2B], &imp[AZ_IOT_TEST_PROXY_C2B], buf, (size_t)n) != 0)
         {
           goto done;
         }
@@ -684,17 +954,18 @@ static void proxy_pump(
         {
           goto done;
         }
-      } while (proxy_ssl_pending(client_ssl));
+      } while (proxy_ssl_pending(client_ssl)
+               && eg[AZ_IOT_TEST_PROXY_C2B].queued < PROXY_EGRESS_MAX_QUEUED);
     }
 
-    if (upstream_ready)
+    if (upstream_ready && eg[AZ_IOT_TEST_PROXY_B2C].queued < PROXY_EGRESS_MAX_QUEUED)
     {
       long n = proxy_recv(upstream, buf, sizeof(buf));
       if (n <= 0)
       {
         goto done;
       }
-      if (proxy_client_send_all(client, client_ssl, buf, (size_t)n) != 0)
+      if (eg_push(&eg[AZ_IOT_TEST_PROXY_B2C], &imp[AZ_IOT_TEST_PROXY_B2C], buf, (size_t)n) != 0)
       {
         goto done;
       }
@@ -702,9 +973,75 @@ static void proxy_pump(
       m->total_bytes += (uint64_t)n;
       proxy_unlock(&m->lock);
     }
+
+    if (eg_flush(
+            &eg[AZ_IOT_TEST_PROXY_C2B],
+            &imp[AZ_IOT_TEST_PROXY_C2B],
+            stall[AZ_IOT_TEST_PROXY_C2B],
+            upstream,
+            NULL)
+        != 0)
+    {
+      goto done;
+    }
+    if (eg_flush(
+            &eg[AZ_IOT_TEST_PROXY_B2C],
+            &imp[AZ_IOT_TEST_PROXY_B2C],
+            stall[AZ_IOT_TEST_PROXY_B2C],
+            client,
+            client_ssl)
+        != 0)
+    {
+      goto done;
+    }
+
+    /* Sleep no longer than the next scheduled release, or a shaped chunk would
+     * be quantised to the poll interval. Computed after the flush so it sees
+     * the token bucket this iteration just spent from. */
+    wait_ms = 200;
+    const uint64_t after = proxy_now_ms();
+    for (int d = 0; d < 2; ++d)
+    {
+      uint64_t due = eg_next_wakeup_ms(&eg[d], &imp[d], after);
+      if (due != 0)
+      {
+        uint64_t in_ms = (due > after) ? (due - after) : 0;
+        if (in_ms < (uint64_t)wait_ms)
+        {
+          wait_ms = (unsigned)in_ms;
+        }
+      }
+      if (stall[d] > after && (stall[d] - after) < (uint64_t)wait_ms)
+      {
+        wait_ms = (unsigned)(stall[d] - after);
+      }
+      /* A source held off by backpressure stays readable, so select() would
+       * return at once; a small floor keeps that from becoming a spin. */
+      if (eg[d].queued >= PROXY_EGRESS_MAX_QUEUED && wait_ms < 5u)
+      {
+        wait_ms = 5u;
+      }
+    }
+
+    /* Republish the queue depth so a test can wait for a shaped transfer to
+     * drain rather than sleeping for a guessed interval. */
+    proxy_lock(&m->lock);
+    for (int d = 0; d < 2; ++d)
+    {
+      m->queued_snapshot[d] = eg[d].queued;
+      m->writes[d] += eg[d].writes; /* cumulative across connections */
+      eg[d].writes = 0;
+    }
+    proxy_unlock(&m->lock);
   }
 
 done:
+  eg_clear(&eg[0]);
+  eg_clear(&eg[1]);
+  proxy_lock(&m->lock);
+  m->queued_snapshot[0] = 0;
+  m->queued_snapshot[1] = 0;
+  proxy_unlock(&m->lock);
   proxy_client_free(client_ssl);
   proxy_hard_close(client);
   proxy_hard_close(upstream);
@@ -1246,17 +1583,92 @@ void az_iot_test_proxy_drop_now(az_iot_test_proxy* m)
   proxy_unlock(&m->lock);
 }
 
+az_iot_test_proxy_impairment az_iot_test_proxy_impairment_default(void)
+{
+  az_iot_test_proxy_impairment imp;
+  memset(&imp, 0, sizeof(imp));
+  return imp;
+}
+
+void az_iot_test_proxy_set_impairment(
+    az_iot_test_proxy* m,
+    az_iot_test_proxy_direction dir,
+    const az_iot_test_proxy_impairment* impairment)
+{
+  if (m == NULL || (int)dir < 0 || (int)dir > 1)
+  {
+    return;
+  }
+  proxy_lock(&m->lock);
+  if (impairment != NULL)
+  {
+    m->imp[(int)dir] = *impairment;
+  }
+  else
+  {
+    memset(&m->imp[(int)dir], 0, sizeof(m->imp[(int)dir]));
+  }
+  proxy_unlock(&m->lock);
+}
+
+void az_iot_test_proxy_stall(az_iot_test_proxy* m, az_iot_test_proxy_direction dir, unsigned ms)
+{
+  if (m == NULL || (int)dir < 0 || (int)dir > 1)
+  {
+    return;
+  }
+  proxy_lock(&m->lock);
+  m->stall_until_ms[(int)dir] = proxy_now_ms() + (uint64_t)ms;
+  proxy_unlock(&m->lock);
+}
+
+uint64_t az_iot_test_proxy_queued_bytes(az_iot_test_proxy* m, az_iot_test_proxy_direction dir)
+{
+  if (m == NULL || (int)dir < 0 || (int)dir > 1)
+  {
+    return 0;
+  }
+  proxy_lock(&m->lock);
+  uint64_t q = m->queued_snapshot[(int)dir];
+  proxy_unlock(&m->lock);
+  return q;
+}
+
+uint64_t az_iot_test_proxy_writes(az_iot_test_proxy* m, az_iot_test_proxy_direction dir)
+{
+  if (m == NULL || (int)dir < 0 || (int)dir > 1)
+  {
+    return 0;
+  }
+  proxy_lock(&m->lock);
+  uint64_t w = m->writes[(int)dir];
+  proxy_unlock(&m->lock);
+  return w;
+}
+
+/* Shorthand that shapes BOTH directions. The previous implementation shaped
+ * only client->broker despite the documented contract. */
 void az_iot_test_proxy_set_write_delay_ms(az_iot_test_proxy* m, unsigned delay_ms)
 {
+  if (m == NULL)
+  {
+    return;
+  }
   proxy_lock(&m->lock);
-  m->write_delay_ms = delay_ms;
+  m->imp[0].base_delay_ms = delay_ms;
+  m->imp[1].base_delay_ms = delay_ms;
   proxy_unlock(&m->lock);
 }
 
 void az_iot_test_proxy_set_fragment(az_iot_test_proxy* m, size_t max_chunk)
 {
+  if (m == NULL)
+  {
+    return;
+  }
   proxy_lock(&m->lock);
-  m->fragment_max = max_chunk;
+  m->imp[0].fragment_max = max_chunk;
+  m->imp[1].fragment_max = max_chunk;
   proxy_unlock(&m->lock);
 }
 
