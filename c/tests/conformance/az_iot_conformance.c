@@ -193,6 +193,20 @@ static int saw_subscribe_ack_error(const conf_recorder* r)
   return 0;
 }
 
+/* A PUBLISH_ACK carrying an error status. A publish the broker refuses is not a
+ * transport failure either: it has to reach the application as a failed ack. */
+static int saw_publish_ack_error(const conf_recorder* r)
+{
+  for (size_t i = 0; i < r->count; ++i)
+  {
+    if (r->kinds[i] == AZ_IOT_MQTT_EVT_PUBLISH_ACK && r->statuses[i] != AZ_IOT_OK)
+    {
+      return 1;
+    }
+  }
+  return 0;
+}
+
 static int saw_message(const conf_recorder* r)
 {
   for (size_t i = 0; i < r->count; ++i)
@@ -1668,14 +1682,80 @@ static void a_missing_client_cert_is_rejected(void** state)
 }
 #endif /* AZ_IOT_CONFORMANCE_WITH_TLS */
 
+/* A publish the broker refuses must surface as a failed PUBLISH_ACK. The proxy
+ * swallows the PUBLISH and answers it with a PUBACK carrying a failure reason,
+ * echoing the client's packet id so the ack is matched to the publish rather
+ * than discarded as unsolicited.
+ *
+ * MQTT 3.1.1 has no reason code in a PUBACK, so a v3 publish can only fail by
+ * losing the connection -- a different path with a different meaning. The case
+ * is therefore registered in the v5 suite alone rather than checking the
+ * version and skipping at run time.
+ *
+ * This closes the last documented gap in the adapter's publish-failure
+ * callbacks. */
+static void a_refused_publish_is_reported(void** state)
+{
+  (void)state;
+  uint16_t proxy_port = 0;
+  az_iot_test_proxy* proxy = start_proxy(&proxy_port);
+
+  /* packet id, reason 0x87 (Not authorized); properties omitted. */
+  static const uint8_t puback[] = { 0x40, 0x03, 0x00, 0x00, 0x87 };
+
+  az_iot_test_proxy_rule swallow = { 0 };
+  swallow.dir = AZ_IOT_TEST_PROXY_C2B;
+  swallow.on_packet = AZ_IOT_TEST_PROXY_PKT_PUBLISH;
+  swallow.action = AZ_IOT_TEST_PROXY_ACTION_SUPPRESS;
+  assert_true(az_iot_test_proxy_add_rule(proxy, &swallow) >= 0);
+
+  az_iot_test_proxy_rule refuse = { 0 };
+  refuse.dir = AZ_IOT_TEST_PROXY_C2B;
+  refuse.on_packet = AZ_IOT_TEST_PROXY_PKT_PUBLISH;
+  refuse.action = AZ_IOT_TEST_PROXY_ACTION_INJECT;
+  refuse.inject_dir = AZ_IOT_TEST_PROXY_B2C;
+  refuse.bytes = puback;
+  refuse.bytes_len = sizeof(puback);
+  refuse.echo_packet_id = 1;
+  refuse.packet_id_offset = 2;
+  int refuse_id = az_iot_test_proxy_add_rule(proxy, &refuse);
+  assert_true(refuse_id >= 0);
+
+  char cid[64];
+  unique_client_id(cid, sizeof(cid), "az-iot-conf-pubrefuse");
+  char topic[128];
+  snprintf(topic, sizeof(topic), "az_iot/conformance/%s", cid);
+
+  conf_recorder rec = { 0 };
+  az_iot_mqtt_client* c = make_client();
+  connect_via_proxy(c, &rec, cid, proxy_port);
+
+  static const uint8_t body[] = { 'r', 'e', 'f', 'u', 's', 'e', 'd' };
+  az_iot_mqtt_message msg = { 0 };
+  msg.topic = topic;
+  msg.payload = body;
+  msg.payload_len = sizeof(body);
+  msg.qos = AZ_IOT_MQTT_QOS_1;
+  uint16_t pub_pid = 0;
+  assert_int_equal(c->iface->publish(c, &msg, &pub_pid), AZ_IOT_OK);
+
+  assert_true(wait_until(c, &rec, saw_publish_ack_error, k_step_timeout_ms));
+  assert_int_equal(az_iot_test_proxy_rule_hits(proxy, (size_t)refuse_id), 1);
+
+  (void)c->iface->disconnect(c);
+  destroy_client(c);
+  az_iot_test_proxy_stop(proxy);
+}
+
 /* ------------------------------------------------------------------------- */
 /* entry point                                                                */
 /* ------------------------------------------------------------------------- */
 
 /* The cases both suites run. Kept in a macro so the v3 and v5 lists cannot
- * drift apart by editing one and forgetting the other: the only intended
- * difference between them is the v5-only server-DISCONNECT case, which is
- * appended to the v5 list below. */
+ * drift apart by editing one and forgetting the other. The intended differences
+ * are the cases appended to the v5 list below, each of which depends on
+ * something MQTT 3.1.1 does not have: a server-sent DISCONNECT packet, and a
+ * reason code in a PUBACK. */
 #define AZ_IOT_CONFORMANCE_COMMON_TESTS                                                          \
   cmocka_unit_test(connect_disconnect_roundtrip), cmocka_unit_test(publish_subscribe_roundtrip), \
       cmocka_unit_test(disconnect_without_connect_is_rejected),                                  \
@@ -1770,8 +1850,9 @@ int az_iot_conformance_run(az_iot_conformance_suite suite_kind, az_iot_mqtt_fact
   int failed;
   if (suite_kind == AZ_IOT_CONFORMANCE_SUITE_V5)
   {
-    const struct CMUnitTest v5_tests[]
-        = { AZ_IOT_CONFORMANCE_COMMON_TESTS, cmocka_unit_test(server_disconnect_is_reported) };
+    const struct CMUnitTest v5_tests[] = { AZ_IOT_CONFORMANCE_COMMON_TESTS,
+                                           cmocka_unit_test(server_disconnect_is_reported),
+                                           cmocka_unit_test(a_refused_publish_is_reported) };
     failed = cmocka_run_group_tests(v5_tests, NULL, NULL);
   }
   else
