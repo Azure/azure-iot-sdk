@@ -129,7 +129,7 @@ namespace Microsoft.Azure.Devices.Client.Unified.Telemetry
 
         private async Task HandleReceivedMqttPublish(MqttPublishReceivedEventArgs args)
         {
-            if (!args.Publish.Topic.StartsWith("devices/") || !args.Publish.Topic.EndsWith("/messages/devicebound/"))
+            if (!args.Publish.Topic.StartsWith("devices/") || !args.Publish.Topic.Contains("/messages/devicebound/"))
             {
                 // The publish is not relevant to this client, so ignore it. This check needs to happen prior to checking the deviceId within the topic b/c deviceId is
                 // not available until after provisioning finishes and this client may be setup prior to provisioning. This allows this client to ignore DPS
