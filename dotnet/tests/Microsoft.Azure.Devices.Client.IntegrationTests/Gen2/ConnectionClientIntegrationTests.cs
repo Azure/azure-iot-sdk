@@ -37,7 +37,6 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Gen2
             ConnectionContext connectionContext = new()
             {
                 DeviceId = deviceId,
-                IsAzureEventGrid = true,
                 IotHubHostName = Setup.GetGen2IotHubHostName(),
                 AuthenticationProvider = authenticationProvider, 
             };

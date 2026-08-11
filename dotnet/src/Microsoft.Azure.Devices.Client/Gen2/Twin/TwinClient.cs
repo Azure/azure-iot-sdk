@@ -5,6 +5,7 @@ using Microsoft.Azure.Devices.Client.Models.Twin;
 using Microsoft.Azure.Devices.Client.Mqtt;
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Reflection.Metadata.Ecma335;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -210,24 +211,21 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Twin
                 throw new NotSupportedException("Must be connected before calling this method.");
             }
 
-            if (!currentConnectionContext.IsAzureEventGrid)
-            {
-                // Should never happen since Gen2 setup should always provision to a Gen2 IoT Hub
-                throw new NotSupportedException("Cannot use a Gen2 feature client to interact with a Gen1 IoT Hub instance");
-            }
-
             return currentConnectionContext;
         }
 
         private async Task HandleReceivedAzureEventGridHubMqttPublish(MqttPublishReceivedEventArgs args)
-        { 
-            if (!_connection.GetCurrentConnectionContext()!.IsAzureEventGrid)
+        {
+            var connectionContext = _connection.GetCurrentConnectionContext();
+
+            if (connectionContext == null)
             {
-                // The other handler covers this scenario
+                // Should never happen?
+                Trace.TraceWarning("Cannot handle a received MQTT message while disconnected");
                 return;
             }
 
-            if (!args.Publish.Topic.Equals(string.Format(AzureEventGridIncomingTwinPublishTopicFormat, _connection.GetCurrentConnectionContext().DeviceId)))
+            if (!args.Publish.Topic.Equals(string.Format(AzureEventGridIncomingTwinPublishTopicFormat, connectionContext.DeviceId)))
             {
                 // This message wasn't a twin message, so ignore it
                 return;

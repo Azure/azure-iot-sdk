@@ -87,10 +87,10 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
 
             // Create individual enrollment for the test device to provision from
             Attestation attestation = X509Attestation.CreateFromClientCertificates(certificate);
-            TwinCollection intialDesiredProperties = new(JsonSerializer.Serialize(initialTwin.Desired));
+            TwinCollection initialDesiredProperties = new(JsonSerializer.Serialize(initialTwin.Desired));
             IndividualEnrollment individualEnrollment = new(registrationId, attestation)
             {
-                InitialTwinState = new(new(), intialDesiredProperties)
+                InitialTwinState = new(new(), initialDesiredProperties)
             };
             individualEnrollment = await provisioningServiceClient.CreateOrUpdateIndividualEnrollmentAsync(individualEnrollment, cancellationToken);
 
@@ -104,7 +104,6 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
                 ConnectionContext = new() // Not a full context because the device has not connected yet
                 { 
                     DeviceId = deviceId,
-                    IsAzureEventGrid = true,
                     IotHubHostName = null,
                     AuthenticationProvider = x509AuthenticationProvider,
                 },
@@ -151,7 +150,6 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
                 ConnectionContext = new() // Not a full context because the device has not connected yet
                 {
                     DeviceId = deviceId,
-                    IsAzureEventGrid = true,
                     IotHubHostName = null,
                     AuthenticationProvider = x509AuthenticationProvider,
                 },

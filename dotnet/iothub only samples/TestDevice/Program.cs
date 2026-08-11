@@ -47,7 +47,6 @@ internal class Program
         ConnectionContext connectionContext = new()
         {
             DeviceId = deviceId,
-            IsAzureEventGrid = true, // Set to false when connecting to an in-market non AEG IoT hub
             IotHubHostName = hostName,
             AuthenticationProvider = authentication,
         };

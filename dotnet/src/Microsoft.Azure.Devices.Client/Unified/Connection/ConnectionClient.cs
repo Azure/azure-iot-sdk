@@ -33,16 +33,6 @@ namespace Microsoft.Azure.Devices.Client.Unified.Connection
 
         private readonly ConcurrentDictionary<string, CertificateSigningOperation> _pendingCertificateSigningOperations = new();
 
-        /// <inheritdoc/>
-        [EditorBrowsable(EditorBrowsableState.Advanced)]
-        public event Func<MqttPublishReceivedEventArgs, Task>? ApplicationMessageReceivedAsync;
-
-        /// <inheritdoc/>
-        public event Action<MqttClientConnectedEventArgs>? ConnectedAsync;
-
-        /// <inheritdoc/>
-        public event Action<MqttClientDisconnectedEventArgs>? DisconnectedAsync;
-
         private Gen2.Connection.ConnectionClient _genConnectionClient;
 
         /// <summary>
@@ -110,7 +100,6 @@ namespace Microsoft.Azure.Devices.Client.Unified.Connection
                     new Gen2.Connection.ConnectionContext()
                     {
                         DeviceId = provisioningResult.DeviceId,
-                        IsAzureEventGrid = provisioningResult.IsAzureEventGridHub,
                         IotHubHostName = provisioningResult.AssignedHub,
                         IssuedClientCertificates = provisioningResult.IssuedClientCertificateChain,
                         AuthenticationProvider = authentication,

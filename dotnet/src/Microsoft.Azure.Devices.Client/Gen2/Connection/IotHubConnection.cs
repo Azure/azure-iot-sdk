@@ -17,7 +17,7 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Connection
         private static TimeSpan birthAckReceivedDefensiveTimeout = TimeSpan.FromSeconds(60); //TODO value is magic number
         private static TimeSpan twinPushReceivedDefensiveTimeout = TimeSpan.FromSeconds(60); //TODO value is magic number
 
-        internal static async Task<DeviceTwin> ConnectToAzureEventGridIotHubAsync(IMqttClient mqttClient, string hostname, string deviceId, X509AuthenticationProvider x509AuthenticationProvider, TwinPushOptions? twinPushOptions, CancellationToken cancellationToken = default)
+        internal static async Task ConnectToAzureEventGridIotHubAsync(IMqttClient mqttClient, string hostname, string deviceId, X509AuthenticationProvider x509AuthenticationProvider, TwinPushOptions? twinPushOptions, CancellationToken cancellationToken = default)
         {
             bool subscribed = false;
 
@@ -155,40 +155,8 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Connection
                 };
 
                 TaskCompletionSource<TwinPush> twinPushReceivedTaskCompletionSource = new();
-                Func<MqttPublishReceivedEventArgs, Task> HandleReceivedTwinPush = (args) =>
-                {
-                    // Twin push messages are QoS 0, so no need to ack
-                    MqttPublish publish = args.Publish;
-                    if (publish.Topic.Equals(string.Format("ih/{0}/dev/presence", deviceId)))
-                    {
-                        if (publish.UserProperties.TryGetType(out string? messageType, out int? version))
-                        {
-                            if (messageType.Equals("twin-push"))
-                            {
-                                if (GuidExtensions.TryParseBytes(publish.CorrelationData, out Guid? receivedGuid))
-                                {
-                                    if (receivedGuid.Equals(connectNonce))
-                                    {
-                                        twinPushReceivedTaskCompletionSource.TrySetResult(TwinPush.Parser.ParseFrom(args.Publish.Payload));
-                                    }
-                                    else
-                                    {
-                                        Trace.TraceWarning("Received twin push message, but for an unexpected connection nonce. Expected {0}, but was {1}", connectNonce.ToString(), receivedGuid.ToString());
-                                    }
-                                }
-                                else
-                                {
-                                    Trace.TraceWarning("Received twin push message, but with a malformed connection nonce.");
-                                }
-                            }
-                        }
-                    }
-
-                    return Task.CompletedTask;
-                };
 
                 mqttClient.PublishReceivedAsync += HandleReceivedBirthAck;
-                mqttClient.PublishReceivedAsync += HandleReceivedTwinPush;
 
                 MqttPublishAck birthMessagePuback;
                 try
@@ -203,7 +171,6 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Connection
                     subscribed = false;
 
                     mqttClient.PublishReceivedAsync -= HandleReceivedBirthAck;
-                    mqttClient.PublishReceivedAsync -= HandleReceivedTwinPush;
                     continue; // Start the connect process over again
                 }
 
@@ -215,7 +182,6 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Connection
                     subscribed = false;
 
                     mqttClient.PublishReceivedAsync -= HandleReceivedBirthAck;
-                    mqttClient.PublishReceivedAsync -= HandleReceivedTwinPush;
                     continue; // // Start the whole connect process over again
                 }
 
@@ -242,59 +208,11 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Connection
                     //TODO add delays here before next connect attempt according to service spec above
 
                     mqttClient.PublishReceivedAsync -= HandleReceivedBirthAck;
-                    mqttClient.PublishReceivedAsync -= HandleReceivedTwinPush;
                     continue; // Start the whole connect process over again
                 }
 
                 // Birth ack was received, so stop listening for birth acks.
                 mqttClient.PublishReceivedAsync -= HandleReceivedBirthAck;
-
-
-                // The authoritative versions as understood by IoT hub
-                var authoritativeReportedVersion = birthAck.ReportedVersion;
-                var authoritativeDesiredVersion = birthAck.DesiredVersion;
-
-                // By default, the device will not fetch the current twin as part of this connect flow. Setting either of the pushReported or pushDesired flags allows the service to re-hydrate the device's understanding of twin state.
-                DeviceTwin currentTwin = new();
-
-                // If the device's twin is out of date in any way, and the user wants to re-hydrate reported or desired properties, then wait for the service to send the "twin push" message with that state
-                if ((authoritativeReportedVersion > deviceReportedPropertyVersion || authoritativeDesiredVersion > deviceDesiredPropertyVersion)
-                    && (pushReported || pushDesired))
-                {
-                    TwinPush receivedTwinPush;
-                    try
-                    {
-                        receivedTwinPush = await twinPushReceivedTaskCompletionSource.Task.WaitAsync(twinPushReceivedDefensiveTimeout, cancellationToken);
-                    }
-                    catch (TimeoutException)
-                    {
-                        Trace.TraceWarning("Timed out waiting for an expected twin push message. Disconnecting from the MQTT broker and attempting connection again...");
-
-                        await mqttClient.DisconnectAsync(new MqttDisconnect() { Reason = MqttClientDisconnectOptionsReason.NormalDisconnection, ReasonString = "Timed out waiting for twin push publish" }, cancellationToken);
-                        subscribed = false;
-
-                        mqttClient.PublishReceivedAsync -= HandleReceivedBirthAck;
-                        mqttClient.PublishReceivedAsync -= HandleReceivedTwinPush;
-                        continue; // Start the whole connect process over again
-                    }
-
-                    if (receivedTwinPush.Desired != null)
-                    {
-                        currentTwin.Desired = JsonNode.Parse(receivedTwinPush.Desired.Payload.Span)!.AsObject();
-                        currentTwin.ReportedVersion = receivedTwinPush.Desired.Version;
-                    }
-
-                    if (receivedTwinPush.Reported != null)
-                    {
-                        currentTwin.Reported = JsonNode.Parse(receivedTwinPush.Reported.Payload.Span)!.AsObject();
-                        currentTwin.ReportedVersion = receivedTwinPush.Reported.Version;
-                    }
-                }
-
-                mqttClient.PublishReceivedAsync -= HandleReceivedTwinPush;
-
-                // Device presence was established and the initial twin push was received (if one was requested), so device connection has completed
-                return currentTwin;
             }
         }
 
