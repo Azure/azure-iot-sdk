@@ -8,8 +8,8 @@
     <Project Path="samples/Gen2/TwinClientSample/TwinClientSample.csproj" />
   </Folder>
   <Folder Name="/samples/Gen2/iot hub only samples/">
-    <Project Path="samples/Gen2/Iothub only samples/SetupDevice/SetupDevice.csproj" />
-    <Project Path="samples/Gen2/Iothub only samples/TestDevice/TestDevice.csproj" />
+    <Project Path="samples/Gen2/Iot hub only samples/SetupDevice/SetupDevice.csproj" />
+    <Project Path="samples/Gen2/Iot hub only samples/TestDevice/TestDevice.csproj" />
   </Folder>
   <Folder Name="/samples/Unified/">
     <Project Path="samples/Unified/CertificateManagementSample/CertificateManagementSample.csproj" Id="9cbac237-d923-4a86-a44f-1b5547a69752" />

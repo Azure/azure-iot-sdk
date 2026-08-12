@@ -9,6 +9,8 @@ using Microsoft.Azure.Devices.Client.Models.DirectMethods;
 
 internal class Program
 {
+    private const string MethodName = "testMethod";
+
     private static async Task Main(string[] args)
     {
         using CancellationTokenSource cts = new CancellationTokenSource();
@@ -31,7 +33,7 @@ internal class Program
         Func<DirectMethodRequestReceivedEventArgs, Task<DirectMethodResponse>> HandleDirectMethodAsync = (args) =>
         {
             Console.WriteLine($"Received direct method with name {args.MethodName}");
-            if (args.MethodName.Equals("testMethod"))
+            if (args.MethodName.Equals(MethodName))
             {
                 DirectMethodRequestPayloadObject? directMethodRequestPayload = null;
                 try
@@ -74,7 +76,7 @@ internal class Program
 
         ProvisioningSettings provisioningSettings = new(idScope);
         await connectionClient.ProvisionAndConnectAsync(provisioningSettings, authentication, cancellationToken: cts.Token);
-        Console.WriteLine($"Device {deviceId} is now provisioned and connected to IoT Hub. Now waiting for direct method invocations...");
+        Console.WriteLine($"Device {deviceId} is now provisioned and connected to IoT Hub. Now waiting for direct method invocations with direct method name '{MethodName}'...");
 
         try
         {
