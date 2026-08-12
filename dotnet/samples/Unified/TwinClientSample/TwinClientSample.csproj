@@ -8,6 +8,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\SetupSampleDevice\SetupSampleDevice.csproj" />
+    <ProjectReference Include="..\..\SetupSampleDevice\SetupSampleDevice.csproj" />
   </ItemGroup>
+
 </Project>

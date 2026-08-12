@@ -8,12 +8,10 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.Azure.Devices" Version="1.41.0" />
+    <ProjectReference Include="..\..\SetupSampleDevice\SetupSampleDevice.csproj" />
   </ItemGroup>
-
   <ItemGroup>
-    <!---Use the direct method payload model types defined in the client's side sample-->
-    <ProjectReference Include="..\DirectMethodsSample\DirectMethodsClientSample.csproj" />
+    <PackageReference Include="Azure.Storage.Blobs" Version="12.29.1" />
   </ItemGroup>
 
 </Project>
