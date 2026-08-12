@@ -12,6 +12,7 @@
  *   - Customer self-validation of any MQTT client+adapter they want to plug in
  */
 #include "az_iot_conformance.h"
+#include "az_iot_test_mqtt_server.h"
 #include "az_iot_test_proxy.h"
 
 #include <stdarg.h>
@@ -244,6 +245,58 @@ static int saw_disconnected(const conf_recorder* r)
     }
   }
   return 0;
+}
+
+/* ------------------------------------------------------------------------- */
+/* helpers                                                                    */
+/* ------------------------------------------------------------------------- */
+
+/* ------------------------------------------------------------------------- */
+/* broker packets                                                             */
+/* ------------------------------------------------------------------------- */
+
+/* Bind the version under test once, so the cases below read as intent rather
+ * than repeating a v3/v5 branch each time they need a refusal. */
+static az_iot_test_mqtt_version conf_mqtt_version(void)
+{
+  return (g_factory->version == AZ_IOT_MQTT_VERSION_5) ? AZ_IOT_TEST_MQTT_V5
+                                                       : AZ_IOT_TEST_MQTT_V3_1_1;
+}
+
+static az_iot_test_mqtt_packet conf_connack(az_iot_test_mqtt_reason reason)
+{
+  return az_iot_test_mqtt_connack(conf_mqtt_version(), reason);
+}
+
+static az_iot_test_mqtt_packet conf_suback(az_iot_test_mqtt_reason reason)
+{
+  return az_iot_test_mqtt_suback(conf_mqtt_version(), reason);
+}
+
+static az_iot_test_mqtt_packet conf_puback(az_iot_test_mqtt_reason reason)
+{
+  return az_iot_test_mqtt_puback(conf_mqtt_version(), reason);
+}
+
+static az_iot_test_mqtt_packet conf_disconnect(az_iot_test_mqtt_reason reason)
+{
+  return az_iot_test_mqtt_disconnect(conf_mqtt_version(), reason);
+}
+
+/* Point an INJECT rule at a built packet. Deliberately here and not in the
+ * proxy's header: the proxy takes opaque bytes and must not learn what an MQTT
+ * packet is. */
+static void inject_packet(
+    az_iot_test_proxy_rule* rule,
+    az_iot_test_proxy_direction dir,
+    const az_iot_test_mqtt_packet* packet)
+{
+  rule->action = AZ_IOT_TEST_PROXY_ACTION_INJECT;
+  rule->inject_dir = dir;
+  rule->bytes = packet->bytes;
+  rule->bytes_len = packet->len;
+  rule->echo_packet_id = packet->echo_packet_id;
+  rule->packet_id_offset = packet->packet_id_offset;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -885,28 +938,8 @@ static void connect_connack_error_is_reported(void** state)
   uint16_t proxy_port = 0;
   assert_int_equal(az_iot_test_proxy_start(&popts, &proxy, &proxy_port), 0);
 
-  uint8_t connack[8];
-  size_t connack_len;
-  if (g_factory->version == AZ_IOT_MQTT_VERSION_5)
-  {
-    /* session-present=0, reason=0x87 (Not authorized), property-length=0. */
-    connack[0] = 0x20;
-    connack[1] = 0x03;
-    connack[2] = 0x00;
-    connack[3] = 0x87;
-    connack[4] = 0x00;
-    connack_len = 5;
-  }
-  else
-  {
-    /* ack flags=0, return code=0x05 (Not authorized). */
-    connack[0] = 0x20;
-    connack[1] = 0x02;
-    connack[2] = 0x00;
-    connack[3] = 0x05;
-    connack_len = 4;
-  }
-  assert_int_equal(az_iot_test_proxy_set_synthetic_connack(proxy, connack, connack_len), 0);
+  az_iot_test_mqtt_packet connack = conf_connack(AZ_IOT_TEST_MQTT_REASON_NOT_AUTHORIZED);
+  assert_int_equal(az_iot_test_proxy_set_synthetic_connack(proxy, connack.bytes, connack.len), 0);
 
   char cid[64];
   unique_client_id(cid, sizeof(cid), "az-iot-conf-connack");
@@ -949,26 +982,8 @@ static void keep_alive_timeout_is_reported(void** state)
   uint16_t proxy_port = 0;
   assert_int_equal(az_iot_test_proxy_start(&popts, &proxy, &proxy_port), 0);
 
-  uint8_t connack[8];
-  size_t connack_len;
-  if (g_factory->version == AZ_IOT_MQTT_VERSION_5)
-  {
-    connack[0] = 0x20;
-    connack[1] = 0x03;
-    connack[2] = 0x00;
-    connack[3] = 0x00;
-    connack[4] = 0x00;
-    connack_len = 5;
-  }
-  else
-  {
-    connack[0] = 0x20;
-    connack[1] = 0x02;
-    connack[2] = 0x00;
-    connack[3] = 0x00;
-    connack_len = 4;
-  }
-  assert_int_equal(az_iot_test_proxy_set_synthetic_connack(proxy, connack, connack_len), 0);
+  az_iot_test_mqtt_packet connack = conf_connack(AZ_IOT_TEST_MQTT_REASON_SUCCESS);
+  assert_int_equal(az_iot_test_proxy_set_synthetic_connack(proxy, connack.bytes, connack.len), 0);
 
   char cid[64];
   unique_client_id(cid, sizeof(cid), "az-iot-conf-keepalive");
@@ -1014,11 +1029,10 @@ static void server_disconnect_is_reported(void** state)
   uint16_t proxy_port = 0;
   assert_int_equal(az_iot_test_proxy_start(&popts, &proxy, &proxy_port), 0);
 
-  uint8_t connack[5] = { 0x20, 0x03, 0x00, 0x00, 0x00 }; /* success */
-  assert_int_equal(az_iot_test_proxy_set_synthetic_connack(proxy, connack, sizeof(connack)), 0);
-  uint8_t disconnect[3] = { 0xE0, 0x01, 0x8B }; /* reason 0x8B: server shutting down */
-  assert_int_equal(
-      az_iot_test_proxy_set_synthetic_disconnect(proxy, disconnect, sizeof(disconnect), 300), 0);
+  az_iot_test_mqtt_packet connack = conf_connack(AZ_IOT_TEST_MQTT_REASON_SUCCESS);
+  assert_int_equal(az_iot_test_proxy_set_synthetic_connack(proxy, connack.bytes, connack.len), 0);
+  az_iot_test_mqtt_packet bye = conf_disconnect(AZ_IOT_TEST_MQTT_REASON_SERVER_SHUTTING_DOWN);
+  assert_int_equal(az_iot_test_proxy_set_synthetic_disconnect(proxy, bye.bytes, bye.len, 300), 0);
 
   char cid[64];
   unique_client_id(cid, sizeof(cid), "az-iot-conf-srvdisc");
@@ -1324,29 +1338,7 @@ static void a_refused_subscribe_is_reported(void** state)
   uint16_t proxy_port = 0;
   az_iot_test_proxy* proxy = start_proxy(&proxy_port);
 
-  uint8_t suback[8];
-  size_t suback_len;
-  if (g_factory->version == AZ_IOT_MQTT_VERSION_5)
-  {
-    /* packet id, property length 0, reason 0x87 (Not authorized). */
-    suback[0] = 0x90;
-    suback[1] = 0x04;
-    suback[2] = 0x00;
-    suback[3] = 0x00;
-    suback[4] = 0x00;
-    suback[5] = 0x87;
-    suback_len = 6;
-  }
-  else
-  {
-    /* packet id, return code 0x80 (Failure). */
-    suback[0] = 0x90;
-    suback[1] = 0x03;
-    suback[2] = 0x00;
-    suback[3] = 0x00;
-    suback[4] = 0x80;
-    suback_len = 5;
-  }
+  az_iot_test_mqtt_packet suback = conf_suback(AZ_IOT_TEST_MQTT_REASON_REFUSED);
 
   az_iot_test_proxy_rule swallow = { 0 };
   swallow.dir = AZ_IOT_TEST_PROXY_C2B;
@@ -1357,12 +1349,7 @@ static void a_refused_subscribe_is_reported(void** state)
   az_iot_test_proxy_rule refuse = { 0 };
   refuse.dir = AZ_IOT_TEST_PROXY_C2B;
   refuse.on_packet = AZ_IOT_TEST_PROXY_PKT_SUBSCRIBE;
-  refuse.action = AZ_IOT_TEST_PROXY_ACTION_INJECT;
-  refuse.inject_dir = AZ_IOT_TEST_PROXY_B2C;
-  refuse.bytes = suback;
-  refuse.bytes_len = suback_len;
-  refuse.echo_packet_id = 1;
-  refuse.packet_id_offset = 2;
+  inject_packet(&refuse, AZ_IOT_TEST_PROXY_B2C, &suback);
   int refuse_id = az_iot_test_proxy_add_rule(proxy, &refuse);
   assert_true(refuse_id >= 0);
 
@@ -1452,14 +1439,15 @@ static void an_acknowledgement_for_an_unknown_packet_id_is_ignored(void** state)
   /* Ride along with the SUBSCRIBE so the injection lands in the middle of a
    * live session rather than before it is up. The SUBSCRIBE itself is still
    * forwarded; this rule only adds traffic. */
-  static const uint8_t stray_puback[] = { 0x40, 0x02, 0xBE, 0xEF };
+  az_iot_test_mqtt_packet stray_puback = conf_puback(AZ_IOT_TEST_MQTT_REASON_SUCCESS);
+  /* Pin an id the client cannot have used, and stop the proxy echoing the real
+   * one over it -- the wrong id is the whole point of the case. */
+  az_iot_test_mqtt_set_packet_id(&stray_puback, 0xBEEF);
+
   az_iot_test_proxy_rule stray = { 0 };
   stray.dir = AZ_IOT_TEST_PROXY_C2B;
   stray.on_packet = AZ_IOT_TEST_PROXY_PKT_SUBSCRIBE;
-  stray.action = AZ_IOT_TEST_PROXY_ACTION_INJECT;
-  stray.inject_dir = AZ_IOT_TEST_PROXY_B2C;
-  stray.bytes = stray_puback;
-  stray.bytes_len = sizeof(stray_puback);
+  inject_packet(&stray, AZ_IOT_TEST_PROXY_B2C, &stray_puback);
   int stray_id = az_iot_test_proxy_add_rule(proxy, &stray);
   assert_true(stray_id >= 0);
 
@@ -1700,8 +1688,7 @@ static void a_refused_publish_is_reported(void** state)
   uint16_t proxy_port = 0;
   az_iot_test_proxy* proxy = start_proxy(&proxy_port);
 
-  /* packet id, reason 0x87 (Not authorized); properties omitted. */
-  static const uint8_t puback[] = { 0x40, 0x03, 0x00, 0x00, 0x87 };
+  az_iot_test_mqtt_packet puback = conf_puback(AZ_IOT_TEST_MQTT_REASON_NOT_AUTHORIZED);
 
   az_iot_test_proxy_rule swallow = { 0 };
   swallow.dir = AZ_IOT_TEST_PROXY_C2B;
@@ -1712,12 +1699,7 @@ static void a_refused_publish_is_reported(void** state)
   az_iot_test_proxy_rule refuse = { 0 };
   refuse.dir = AZ_IOT_TEST_PROXY_C2B;
   refuse.on_packet = AZ_IOT_TEST_PROXY_PKT_PUBLISH;
-  refuse.action = AZ_IOT_TEST_PROXY_ACTION_INJECT;
-  refuse.inject_dir = AZ_IOT_TEST_PROXY_B2C;
-  refuse.bytes = puback;
-  refuse.bytes_len = sizeof(puback);
-  refuse.echo_packet_id = 1;
-  refuse.packet_id_offset = 2;
+  inject_packet(&refuse, AZ_IOT_TEST_PROXY_B2C, &puback);
   int refuse_id = az_iot_test_proxy_add_rule(proxy, &refuse);
   assert_true(refuse_id >= 0);
 
