@@ -224,7 +224,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Gen2
                 var directMethod1Response = await serviceClient.InvokeDeviceMethodAsync(testDeviceContext.ConnectionContext.DeviceId, directMethod1Invocation, TestContext.Current.CancellationToken);
                 Assert.Fail("Expected the first direct method invocation to fail since the device rejects that invocation's probe message");
             }
-            catch (Exception e)
+            catch (Exception)
             { 
                 //TODO what kind of exception will the service client see when a probe message is rejected?
             }

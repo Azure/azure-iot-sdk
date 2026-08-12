@@ -8,7 +8,7 @@ using System.Diagnostics;
 using System.Text.RegularExpressions;
 using System.Web;
 
-namespace Microsoft.Azure.Devices.Client.DirectMethods.Unified
+namespace Microsoft.Azure.Devices.Client.Unified.DirectMethods
 {
     /// <summary>
     /// A feature client for receiving and responding to direct method requests from IoT Hub.

@@ -49,7 +49,7 @@ namespace Microsoft.Azure.Devices.Client.Unified.Connection
             mqttSubscribe.TopicFilters.Add(new(string.Format(TelemetryClient.DeviceBoundMessagesTopicFormat + "#", deviceId), expectedQos));
             mqttSubscribe.TopicFilters.Add(new(TwinClient.ClassicTwinResponseTopic + "#", expectedQos));
             mqttSubscribe.TopicFilters.Add(new(TwinClient.ClassicTwinDesiredPropertiesPatchTopic + "#", expectedQos));
-            mqttSubscribe.TopicFilters.Add(new(DirectMethods.Unified.DirectMethodClient.ClassicDirectMethodsRequestTopic + "#", expectedQos));
+            mqttSubscribe.TopicFilters.Add(new(DirectMethods.DirectMethodClient.ClassicDirectMethodsRequestTopic + "#", expectedQos));
             var suback = await mqttClient.SubscribeAsync(mqttSubscribe, cancellationToken);
 
             foreach (var topicSuback in suback.Items)

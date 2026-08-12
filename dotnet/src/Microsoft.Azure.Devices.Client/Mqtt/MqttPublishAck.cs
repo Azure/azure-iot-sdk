@@ -13,7 +13,7 @@ namespace Microsoft.Azure.Devices.Client.Mqtt
         ///     Gets or sets the reason string.
         ///     <remarks>MQTT 5.0.0+ feature.</remarks>
         /// </summary>
-        public string ReasonString { get; set; }
+        public string? ReasonString { get; set; }
 
         /// <summary>
         ///     Gets or sets the user properties.
@@ -24,6 +24,6 @@ namespace Microsoft.Azure.Devices.Client.Mqtt
         ///     The feature is very similar to the HTTP header concept.
         ///     <remarks>MQTT 5.0.0+ feature.</remarks>
         /// </summary>
-        public IReadOnlyCollection<MqttUserProperty> UserProperties { get; set; }
+        public List<MqttUserProperty> UserProperties { get; set; } = new();
     }
 }

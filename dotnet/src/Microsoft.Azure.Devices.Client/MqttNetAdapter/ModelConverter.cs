@@ -36,7 +36,7 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
             return generic;
         }
 
-        private static IReadOnlyCollection<Mqtt.MqttUserProperty> ToGeneric(IReadOnlyCollection<MQTTnet.Packets.MqttUserProperty> userProperties)
+        private static List<Mqtt.MqttUserProperty> ToGeneric(IReadOnlyCollection<MQTTnet.Packets.MqttUserProperty> userProperties)
         {
             List<Mqtt.MqttUserProperty> generic = new();
 

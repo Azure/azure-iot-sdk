@@ -3,6 +3,7 @@ using Microsoft.Azure.Devices.Client.Models;
 using Microsoft.Azure.Devices.Client.Models.FileUpload;
 using Microsoft.Azure.Devices.Client.Unified.Connection;
 using System.Data.Common;
+using System.Diagnostics;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
@@ -159,6 +160,7 @@ namespace Microsoft.Azure.Devices.Client.Unified.FileUpload
             };
             requestMessage.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
 
+            Debug.Assert(_httpClient != null);
             var httpResponse = await _httpClient.SendAsync(requestMessage, cancellationToken);
             if (httpResponse.StatusCode != System.Net.HttpStatusCode.NoContent)
             {

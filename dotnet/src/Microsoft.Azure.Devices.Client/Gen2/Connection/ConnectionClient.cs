@@ -86,8 +86,8 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Connection
 
             CurrentConnectionContext = new ConnectionContext()
             {
-                DeviceId = provisioningResult.DeviceId,
-                IotHubHostName = provisioningResult.AssignedHub,
+                DeviceId = provisioningResult.DeviceId!,
+                IotHubHostName = provisioningResult.AssignedHub!,
                 IssuedClientCertificates = provisioningResult.IssuedClientCertificateChain,
                 AuthenticationProvider = authentication,
             };

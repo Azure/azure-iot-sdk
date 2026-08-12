@@ -78,9 +78,16 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Connection
                     {
                         // TODO this feels a bit optimistic since there is a chance that the session was established -> connection lost happened on the previous connection prior to this subscribe happening
                         var suback = await mqttClient.SubscribeAsync(new(string.Format("ih/{0}/dev/#", deviceId), MqttQualityOfServiceLevel.AtLeastOnce), cancellationToken);
-                        if (suback.Items.FirstOrDefault().ResultCode != MqttClientSubscribeResultCode.GrantedQoS1)
+                        var subackFirstItem = suback.Items.FirstOrDefault();
+                        if (subackFirstItem == null)
                         {
-                            Trace.TraceWarning("Received SUBACK on devicebound SUBSCRIBE with unsuccessful result code: {0}. Attempting connection again...", suback.Items.FirstOrDefault().ResultCode);
+                            Trace.TraceWarning("Received malformed SUBACK. Attempting connection again...");
+                            continue; // Start the connect process over again
+                        }
+
+                        if (subackFirstItem.ResultCode != MqttClientSubscribeResultCode.GrantedQoS1)
+                        {
+                            Trace.TraceWarning("Received SUBACK on devicebound SUBSCRIBE with unsuccessful result code: {0}. Attempting connection again...", subackFirstItem.ResultCode);
                             continue; // Start the connect process over again
                         }
 

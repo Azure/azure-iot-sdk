@@ -19,19 +19,19 @@
         /// </summary>
         public byte[] Payload { get; set; }
 
-        public string MessageId { get; set; }
+        public string? MessageId { get; set; }
 
-        public string CorrelationId { get; set; }
+        public string? CorrelationId { get; set; }
 
         /// <summary>
         /// Used to specify the content type of the message.
         /// </summary>
-        public string ContentType { get; set; }
+        public string? ContentType { get; set; }
 
         /// <summary>
         /// Used to specify the content encoding type of the message.
         /// </summary>
-        public string ContentEncoding { get; set; }
+        public string? ContentEncoding { get; set; }
 
         public Dictionary<string, string> UserProperties { get; } = new();
     }

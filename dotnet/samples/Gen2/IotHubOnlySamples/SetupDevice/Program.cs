@@ -29,7 +29,7 @@ internal class Program
         File.WriteAllText("../../../../deviceId.txt", deviceId);
         File.WriteAllText("../../../../hostname.txt", HostName);
         File.WriteAllText("../../../../thumbprint.txt", certificate.Thumbprint);
-        Console.WriteLine("Device credentials saved in root of the sln directory");
+        Console.WriteLine("Device credentials saved in root of the 'Iot hub only samples' directory");
         
         Device device = new(deviceId)
         {

@@ -1,4 +1,5 @@
-﻿using Microsoft.Azure.Devices.Client.Exceptions;
+﻿using Google.Protobuf.WellKnownTypes;
+using Microsoft.Azure.Devices.Client.Exceptions;
 using Microsoft.Azure.Devices.Client.Models;
 using Microsoft.Azure.Devices.Client.Models.CertificateManagement;
 using Microsoft.Azure.Devices.Client.Mqtt;
@@ -66,6 +67,7 @@ namespace Microsoft.Azure.Devices.Client.Unified.Connection
         public ConnectionClient()
         {
             _mqttClient = new MqttSessionClient(new());
+            _genConnectionClient = new(new ConnectionClientOptions());
         }
 
         /// <summary>
@@ -85,8 +87,8 @@ namespace Microsoft.Azure.Devices.Client.Unified.Connection
 
             CurrentConnectionContext = new ConnectionContext()
             {
-                DeviceId = provisioningResult.DeviceId,
-                IotHubHostName = provisioningResult.AssignedHub,
+                DeviceId = provisioningResult.DeviceId!,
+                IotHubHostName = provisioningResult.AssignedHub!,
                 IsAzureEventGrid = provisioningResult.IsAzureEventGridHub,
                 IssuedClientCertificates = provisioningResult.IssuedClientCertificateChain,
                 AuthenticationProvider = authentication,
@@ -99,8 +101,8 @@ namespace Microsoft.Azure.Devices.Client.Unified.Connection
                 await _genConnectionClient.ConnectAsync(
                     new Gen2.Connection.ConnectionContext()
                     {
-                        DeviceId = provisioningResult.DeviceId,
-                        IotHubHostName = provisioningResult.AssignedHub,
+                        DeviceId = provisioningResult.DeviceId!,
+                        IotHubHostName = provisioningResult.AssignedHub!,
                         IssuedClientCertificates = provisioningResult.IssuedClientCertificateChain,
                         AuthenticationProvider = authentication,
                     },
