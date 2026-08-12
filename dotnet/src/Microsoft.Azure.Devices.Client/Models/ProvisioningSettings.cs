@@ -17,6 +17,6 @@ namespace Microsoft.Azure.Devices.Client.Models
 
         public JsonNode? ProvisioningPayload { get; set; }
 
-        public string ProvisioningCertificateSigningRequest { get; set; }
+        public string? ProvisioningCertificateSigningRequest { get; set; }
     }
 }

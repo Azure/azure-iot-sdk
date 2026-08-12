@@ -26,7 +26,7 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Telemetry
         public const string MessagePropertyContentType = "$.ct";
         public const string MessagePropertyContentEncoding = "$.ce";
 
-        public event Func<CloudToDeviceTelemetry, Task>? CloudToDeviceTelemetryReceivedAsync;
+        public event Func<CloudToDeviceTelemetry, Task>? CloudToDeviceTelemetryReceivedAsync; //Not supported yet
 
         /// <summary>
         /// Construct a new <see cref="TelemetryClient"/> instance.

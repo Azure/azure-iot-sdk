@@ -82,6 +82,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Unified
 
             // Check that that the file upload client understands how to parse a service error
             var exception = await Assert.ThrowsAsync<IotHubServiceException>(async () => await fileUploadClient.GetFileUploadSasUriAsync(sasUriRequest, TestContext.Current.CancellationToken));
+            Assert.NotNull(exception.ErrorDetails);
             Assert.Equal(400004, exception.ErrorDetails.ErrorCode);
 
             // Check that that the file upload client understands how to parse a service error
@@ -91,6 +92,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Unified
                 IsSuccess = true,
             };
             exception = await Assert.ThrowsAsync<IotHubServiceException>(async () => await fileUploadClient.CompleteFileUploadSasUriAsync(badFormatCompletionNotification, TestContext.Current.CancellationToken));
+            Assert.NotNull(exception.ErrorDetails);
             Assert.Equal(400000, exception.ErrorDetails.ErrorCode);
 
             await testDeviceContext.DisposeAsync(); // Dispose this before any feature clients so that the test device identity can be cleaned up and the MQTT client disconnected gracefully

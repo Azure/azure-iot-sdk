@@ -16,7 +16,7 @@ namespace Microsoft.Azure.Devices.Client.Provisioning.Models
         /// Gets or sets operation Id.
         /// </summary>
         [JsonPropertyName("operationId")]
-        public string OperationId { get; set; }
+        public string? OperationId { get; set; }
 
         /// <summary>
         /// Gets or sets device enrollment status.

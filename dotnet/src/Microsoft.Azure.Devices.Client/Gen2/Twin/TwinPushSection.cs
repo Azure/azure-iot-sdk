@@ -5,8 +5,8 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Twin
 {
     public class TwinPushSection
     {
-        public JsonObject Properties { get; set; }
+        public required JsonObject Properties { get; set; }
 
-        public ulong PropertiesVersion { get; set; }
+        public required ulong PropertiesVersion { get; set; }
     }
 }

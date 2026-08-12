@@ -9,10 +9,10 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Models
     public class SimpleDirectMethodPayload
     {
         [JsonPropertyName("someInt")]
-        public int SomeInt { get; set; }
+        public int? SomeInt { get; set; }
 
         [JsonPropertyName("someString")]
-        public string SomeString { get; set; }
+        public string? SomeString { get; set; }
 
         public static SimpleDirectMethodPayload FromJsonBytes(byte[] json)
         {

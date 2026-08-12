@@ -13,7 +13,7 @@ namespace Microsoft.Azure.Devices.Client.Mqtt
         ///     Gets or sets the reason string.
         ///     <remarks>MQTT 5.0.0+ feature.</remarks>
         /// </summary>
-        public string ReasonString { get; set; }
+        public string? ReasonString { get; set; }
 
         /// <summary>
         ///     Gets or sets the session expiry interval.
@@ -25,7 +25,7 @@ namespace Microsoft.Azure.Devices.Client.Mqtt
         ///     Gets or sets the user properties.
         ///     <remarks>MQTT 5.0.0+ feature.</remarks>
         /// </summary>
-        public List<MqttUserProperty> UserProperties { get; set; }
+        public List<MqttUserProperty> UserProperties { get; set; } = new();
 
         public void AddUserProperty(string key, string value)
         {
