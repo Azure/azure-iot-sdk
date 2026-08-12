@@ -1,15 +1,17 @@
 ﻿using DirectMethodsClientSample;
+using Google.Protobuf;
 using Microsoft.Azure.Devices.Client;
-using Microsoft.Azure.Devices.Client.DirectMethods.Unified;
-using SetupSampleDevice;
-using System.Security.Cryptography.X509Certificates;
-using System.Text.Json;
-using Microsoft.Azure.Devices.Client.Unified.Connection;
+using Microsoft.Azure.Devices.Client.Gen2.Connection;
+using Microsoft.Azure.Devices.Client.Gen2.DirectMethods;
 using Microsoft.Azure.Devices.Client.Models;
 using Microsoft.Azure.Devices.Client.Models.DirectMethods;
+using SetupSampleDevice;
+using System.Text.Json;
 
 internal class Program
 {
+    private const string MethodName = "testMethod";
+
     private static async Task Main(string[] args)
     {
         using CancellationTokenSource cts = new CancellationTokenSource();
@@ -29,10 +31,33 @@ internal class Program
         using ConnectionClient connectionClient = new ConnectionClient();
 
         using DirectMethodClient directMethodClient = new DirectMethodClient(connectionClient);
+        Func<DirectMethodRequestProbeReceivedEventArgs, Task<ProbeAck>> HandleDirectMethodProbeAsync = (args) =>
+        {
+            if (args.MethodName.Equals(MethodName))
+            {
+                //TODO just generate this for the user
+                byte[] readyId = Guid.NewGuid().ToByteArray();
+
+                Console.WriteLine($"Received direct method probe for the expected method '{args.MethodName}'. Responding to IoT Hub that this device is ready for it.");
+
+                return Task.FromResult(new ProbeAck
+                {
+                    Ready = new Ready { ReadyId = ByteString.CopyFrom(readyId) }
+                });
+            }
+            
+            Console.WriteLine($"Received direct method probe for an unknown method '{args.MethodName}'. Rejecting it.");
+
+            return Task.FromResult(new ProbeAck
+            {
+                Rejected = new Rejected { Reason = RejectedReason.MethodNotFound }
+            });
+        };
+
         Func<DirectMethodRequestReceivedEventArgs, Task<DirectMethodResponse>> HandleDirectMethodAsync = (args) =>
         {
             Console.WriteLine($"Received direct method with name {args.MethodName}");
-            if (args.MethodName.Equals("testMethod"))
+            if (args.MethodName.Equals(MethodName))
             {
                 DirectMethodRequestPayloadObject? directMethodRequestPayload = null;
                 try
@@ -71,6 +96,8 @@ internal class Program
                 return Task.FromResult(new DirectMethodResponse() { Status = 404 });
             }
         };
+
+        directMethodClient.DirectMethodProbeReceivedAsync += HandleDirectMethodProbeAsync;
         directMethodClient.DirectMethodInvokedAsync += HandleDirectMethodAsync;
 
         ProvisioningSettings provisioningSettings = new(idScope);

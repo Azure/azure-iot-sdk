@@ -1,10 +1,10 @@
 ﻿using Microsoft.Azure.Devices.Client;
 using Microsoft.Azure.Devices.Client.Models;
 using Microsoft.Azure.Devices.Client.Models.Twin;
-using Microsoft.Azure.Devices.Client.Unified.Connection;
+using Microsoft.Azure.Devices.Client.Gen2.Connection;
+using Microsoft.Azure.Devices.Client.Gen2.Twin;
 using SetupSampleDevice;
 using System.Text.Json;
-using TwinClient = Microsoft.Azure.Devices.Client.Unified.Twin.TwinClient;
 
 internal class Program
 {
@@ -47,7 +47,12 @@ internal class Program
             var reportedProperties = args.DesiredProperties; // Echo back the desired properties as the current reported properties
 
             Console.WriteLine($"Responding to desired patch by sending a reported patch");
-            ReportedPatchResponse patchResponse = await twinClient.UpdateReportedPropertiesAsync(reportedProperties);
+            ReportedPatchRequest reportedPatch = new()
+            {
+                ReportedProperties = reportedProperties,
+                IfMatch = 0,
+            };
+            ReportedPatchResponse patchResponse = await twinClient.UpdateReportedPropertiesAsync(reportedPatch);
             currentTwin.ReportedVersion = patchResponse.Version;
             if (patchResponse.Result == Result.Ok)
             {
@@ -58,14 +63,44 @@ internal class Program
             Console.WriteLine($"The current twin is now: {JsonSerializer.Serialize(currentTwin)}");
         };
 
+        Action<TwinPushReceivedEventArgs> HandleTwinPushAsync = async (args) =>
+        {
+            Console.WriteLine("Received a twin push from IoT Hub. Updating the local reference of this device's twin to match");
+
+            if (currentTwin == null)
+            {
+                currentTwin = new();
+            }
+
+            if (args.Reported != null)
+            {
+                currentTwin.Reported = args.Reported.Properties;
+                currentTwin.ReportedVersion = args.Reported.PropertiesVersion;
+            }
+
+            if (args.Desired != null)
+            {
+                currentTwin.Desired = args.Desired.Properties;
+                currentTwin.DesiredVersion = args.Desired.PropertiesVersion;
+            }
+        };
+
+
         twinClient.DesiredPatchReceived += HandleDesiredPropertiesUpdateAsync;
+        twinClient.TwinPushReceived += HandleTwinPushAsync;
 
         ProvisioningSettings provisioningSettings = new(idScope);
 
-        var connectionContext = await connectionClient.ProvisionAndConnectAsync(provisioningSettings, authentication, cts.Token);
+        TwinPushOptions twinPushOptions = new()
+        {
+            ReceiveDesiredPropertyUpdates = true,
+            ReceiveReportedPropertiesUponConnect = true,
+        };
+
+        var connectionContext = await connectionClient.ProvisionAndConnectAsync(provisioningSettings, authentication, twinPushOptions, cts.Token);
         Console.WriteLine($"Device {deviceId} is now provisioned and connected to IoT Hub. Now listening for desired property patches");
 
-        currentTwin = await twinClient.GetTwinAsync(cts.Token);
+        currentTwin = await twinClient.GetTwinAsync(true, true, 0, 0, cts.Token);
         Console.WriteLine($"The current twin is: {JsonSerializer.Serialize(currentTwin)}");
 
         try

@@ -4,7 +4,6 @@ using System.Diagnostics;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.Json;
-using TwinClient = Microsoft.Azure.Devices.Client.Gen2.Twin.TwinClient;
 using Microsoft.Azure.Devices.Client.Gen2.Twin;
 using Microsoft.Azure.Devices.Client.Models;
 using Microsoft.Azure.Devices.Client.Gen2.Connection;
