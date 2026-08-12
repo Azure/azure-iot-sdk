@@ -1,4 +1,4 @@
-﻿using Microsoft.Azure.Devices.Client.DirectMethods.Unified;
+﻿using Microsoft.Azure.Devices.Client.Unified.DirectMethods;
 using Microsoft.Azure.Devices.Client.IntegrationTests.Models;
 using Microsoft.Azure.Devices.Client.Models.DirectMethods;
 using Xunit;
