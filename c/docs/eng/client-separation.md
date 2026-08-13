@@ -36,16 +36,17 @@ az_iot_connection_client_register_mqtt_factory(&conn, az_iot_paho_factory_create
 az_iot_connection_client_register_mqtt_factory(&conn, az_iot_paho_factory_create_v5());
 az_iot_connection_client_open(&conn);             /* DPS runs internally       */
 
-while (state != AZ_IOT_CONNECTION_STATE_CONNECTED)
+/* open() is non-blocking; pump until the state callback reports CONNECTED. */
+while (state != AZ_IOT_CONN_STATE_CONNECTED)
 {
   az_iot_connection_client_do_work(&conn, 100);
 }
 
 /* The connection now knows which hub generation it landed on. */
-az_iot_hub_profile profile = AZ_IOT_HUB_PROFILE_INIT;
-az_iot_connection_client_get_hub_profile(&conn, &profile);
+az_iot_hub_profile hub = AZ_IOT_HUB_PROFILE_INIT;
+az_iot_connection_client_get_hub_profile(&conn, &hub);
 
-if (profile.profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
+if (hub.connection_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
 {
   az_iot_gen2_telemetry_client tel;
   az_iot_gen2_telemetry_client_init(&tel, &conn);   /* AEG API */
@@ -116,9 +117,9 @@ typedef enum
 
 typedef struct
 {
-  uint32_t _internal_size;            /* stamped by AZ_IOT_HUB_PROFILE_INIT */
-  az_iot_connection_profile profile;
-  const char* profile_raw;            /* verbatim wire string, ALWAYS populated */
+  uint32_t _internal_size;              /* stamped by AZ_IOT_HUB_PROFILE_INIT */
+  az_iot_connection_profile connection_profile;
+  const char* connection_profile_raw;   /* verbatim wire string, ALWAYS populated */
   /* ... to be extended ... */
 } az_iot_hub_profile;
 
@@ -129,7 +130,7 @@ az_iot_result az_iot_connection_client_get_hub_profile(
     az_iot_hub_profile* out_profile);
 ```
 
-`profile_raw` is what makes the extensible union survive the trip into C. A value
+`connection_profile_raw` is what makes the extensible union survive the trip into C. A value
 this SDK has never heard of maps to `UNKNOWN` and is still reported verbatim, so
 an application (or a support engineer reading a log) can see what the service
 actually said. Discarding it would convert a forward-compatible wire format into
@@ -147,7 +148,7 @@ it has two fields and no shipped callers, is the point.
 
 **Decided:** if DPS returns a profile this SDK does not recognise, the connection
 fails with `AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED`. The profile — including
-`profile_raw` — remains readable so the application can log it, report it, or
+`connection_profile_raw` — remains readable so the application can log it, report it, or
 trigger a firmware update.
 
 The reasoning is worth recording, because the extensible union invites the
@@ -469,7 +470,7 @@ exist today:
 - **absent** `connectionProfile` resolves to `classic`, and **`null`** does too
 - an **unrecognised** profile string fails the connection with
   `AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED` and is still readable verbatim
-  through `profile_raw` — the forward-compatibility case the spec exists to
+  through `connection_profile_raw` — the forward-compatibility case the spec exists to
   support, and the one no current test covers
 - the DPS CONNECT username carries `api-version=2026-11-02-preview`
 - `get_hub_profile` before `CONNECTED` returns `AZ_IOT_ERR_NOT_CONNECTED`
