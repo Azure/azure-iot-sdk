@@ -82,58 +82,117 @@ The SDK is a single-threaded pump: the application drives `do_work()` and every
 callback fires on that thread. Provisioning through DPS is internal to the
 connection client — leave `host` unset and fill in the `dps` fields.
 
+`open()` is **non-blocking**: it starts provisioning and connecting, and the
+application must pump until the state callback reports `CONNECTED` before
+sending. Every call below returns `az_iot_result` and is declared `AZ_NODISCARD`,
+so ignoring one is a compile warning (an error under this project's default
+`AZ_IOT_WARNINGS_AS_ERRORS`).
+
 ```c
+#include <stdbool.h>
+#include <stdlib.h>
+
 #include "azure/iot/az_iot.h"
 #include "azure/iot/adapters/az_iot_adapter_paho.h"
 
+typedef struct
+{
+  az_iot_connection_state conn_state;
+  bool send_done;
+  az_iot_result send_status;
+} app_ctx;
+
+static void on_conn_state(az_iot_connection_state s, az_iot_result reason, void* user_ctx)
+{
+  (void)reason;
+  ((app_ctx*)user_ctx)->conn_state = s;
+}
+
 static void on_send_done(az_iot_result status, void* user_ctx)
 {
-  *(int*)user_ctx = 1;
+  app_ctx* ctx = (app_ctx*)user_ctx;
+  ctx->send_status = status;
+  ctx->send_done = true;
 }
 
-/* Certificate provider (X.509) */
-az_iot_certificate_provider_pem_options pem = az_iot_certificate_provider_pem_options_default();
-pem.trusted_ca_pem_path  = getenv("AZ_IOT_TRUSTED_CA");  /* optional */
-pem.client_cert_pem_path = getenv("AZ_IOT_CLIENT_CERT");
-pem.client_key_pem_path  = getenv("AZ_IOT_CLIENT_KEY");
-az_iot_certificate_provider_pem certs;
-az_iot_certificate_provider_pem_init(&certs, &pem);
-
-/* Connection client — DPS runs internally when host == NULL */
-az_iot_connection_client_options copts = az_iot_connection_client_options_default();
-copts.dps.id_scope        = getenv("AZ_IOT_ID_SCOPE");
-copts.dps.registration_id = getenv("AZ_IOT_REGISTRATION_ID");
-copts.certificate_provider = &certs.base;
-
-az_iot_connection_client conn;
-az_iot_connection_client_init(&conn, &copts);
-
-/* Register both MQTT versions: v3.1.1 for DPS + Classic, v5 for Next. */
-az_iot_connection_client_register_mqtt_factory(&conn, az_iot_paho_factory_create_v3_1_1());
-az_iot_connection_client_register_mqtt_factory(&conn, az_iot_paho_factory_create_v5());
-
-az_iot_telemetry_client tel;
-az_iot_telemetry_client_init(&tel, &conn);
-
-az_iot_connection_client_open(&conn);
-
-const char* body = "{\"hello\":\"world\"}";
-az_iot_telemetry_message msg = {
-    .payload = (const uint8_t*)body, .payload_len = strlen(body),
-};
-
-int sent = 0;
-az_iot_telemetry_client_send(&tel, &msg, on_send_done, &sent);
-
-while (!sent)
+int main(void)
 {
-  az_iot_connection_client_do_work(&conn, 100);
-}
+  app_ctx ctx = { 0 };
 
-az_iot_connection_client_close(&conn);
-az_iot_telemetry_client_destroy(&tel);
-az_iot_connection_client_destroy(&conn);
-az_iot_certificate_provider_pem_destroy(&certs);
+  /* Certificate provider (X.509) */
+  az_iot_certificate_provider_pem_options pem = az_iot_certificate_provider_pem_options_default();
+  pem.trusted_ca_pem_path  = getenv("AZ_IOT_TRUSTED_CA");  /* optional */
+  pem.client_cert_pem_path = getenv("AZ_IOT_CLIENT_CERT");
+  pem.client_key_pem_path  = getenv("AZ_IOT_CLIENT_KEY");
+
+  az_iot_certificate_provider_pem certs;
+  if (az_iot_certificate_provider_pem_init(&certs, &pem) != AZ_IOT_OK)
+  {
+    return 1;
+  }
+
+  /* Connection client — DPS runs internally when host == NULL */
+  az_iot_connection_client_options copts = az_iot_connection_client_options_default();
+  copts.dps.id_scope         = getenv("AZ_IOT_ID_SCOPE");
+  copts.dps.registration_id  = getenv("AZ_IOT_REGISTRATION_ID");
+  copts.certificate_provider = &certs.base;
+
+  az_iot_connection_client conn;
+  az_iot_telemetry_client tel;
+  if (az_iot_connection_client_init(&conn, &copts) != AZ_IOT_OK
+      /* Register both MQTT versions: v3.1.1 for DPS + Classic, v5 for Next. */
+      || az_iot_connection_client_register_mqtt_factory(
+             &conn, az_iot_paho_factory_create_v3_1_1())
+          != AZ_IOT_OK
+      || az_iot_connection_client_register_mqtt_factory(&conn, az_iot_paho_factory_create_v5())
+          != AZ_IOT_OK
+      || az_iot_telemetry_client_init(&tel, &conn) != AZ_IOT_OK)
+  {
+    return 1;
+  }
+  az_iot_connection_client_set_state_callback(&conn, on_conn_state, &ctx);
+
+  if (az_iot_connection_client_open(&conn) != AZ_IOT_OK)
+  {
+    return 1;
+  }
+
+  /* Pump until connected. open() is non-blocking, so sending before this
+   * completes would fail with AZ_IOT_ERR_NOT_CONNECTED. Bounded so a hub that
+   * never answers cannot spin forever. */
+  for (int i = 0; i < 1200 && ctx.conn_state != AZ_IOT_CONN_STATE_CONNECTED; ++i)
+  {
+    (void)az_iot_connection_client_do_work(&conn, 50);
+    if (ctx.conn_state == AZ_IOT_CONN_STATE_FAULTED)
+    {
+      break;
+    }
+  }
+
+  int rc = 1;
+  if (ctx.conn_state == AZ_IOT_CONN_STATE_CONNECTED)
+  {
+    static const uint8_t body[] = "{\"hello\":\"world\"}";
+    az_iot_telemetry_message msg = { 0 };
+    msg.payload = body;
+    msg.payload_len = sizeof(body) - 1;
+
+    if (az_iot_telemetry_client_send(&tel, &msg, on_send_done, &ctx) == AZ_IOT_OK)
+    {
+      for (int i = 0; i < 600 && !ctx.send_done; ++i)
+      {
+        (void)az_iot_connection_client_do_work(&conn, 50);
+      }
+      rc = (ctx.send_done && ctx.send_status == AZ_IOT_OK) ? 0 : 1;
+    }
+  }
+
+  az_iot_connection_client_close(&conn);
+  az_iot_telemetry_client_destroy(&tel);
+  az_iot_connection_client_destroy(&conn);
+  az_iot_certificate_provider_pem_destroy(&certs);
+  return rc;
+}
 ```
 
 The full source is in [samples/telemetry/main.c](samples/telemetry/main.c). Each sample
