@@ -1,4 +1,5 @@
 ﻿using Microsoft.Azure.Devices.Client.Gen2.Connection;
+using Microsoft.Azure.Devices.Client.Models;
 using System.Security.Cryptography.X509Certificates;
 using Xunit;
 
@@ -39,6 +40,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Gen2
                 DeviceId = deviceId,
                 IotHubHostName = Setup.GetGen2IotHubHostName(),
                 AuthenticationProvider = authenticationProvider, 
+                IsGen2Hub = true,
             };
 
             ConnectionClient connectionClient = new();

@@ -39,14 +39,9 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Telemetry
         public TelemetryClient(IConnectionClient connection)
         {
             _connection = connection;
-            _connection.MqttClient.PublishReceivedAsync += HandleReceivedMqttPublish;
+            _connection.PublishReceivedAsync += HandleReceivedMqttPublish;
         }
 
-        internal TelemetryClient(Unified.Connection.IConnectionClient connection)
-        {
-            _connection = new ConnectionClient(connection);
-            _connection.MqttClient.PublishReceivedAsync += HandleReceivedMqttPublish;
-        }
 
         /// <summary>
         /// Send device-to-cloud telemetry.
@@ -117,7 +112,7 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Telemetry
                 mqttMessage.UserProperties.Add(new MqttUserProperty(customUserPropertyKey, message.UserProperties[customUserPropertyKey]));
             }
 
-            MqttPublishAck aegPuback = await _connection.MqttClient.PublishAsync(mqttMessage, cancellationToken);
+            MqttPublishAck aegPuback = await _connection.PublishAsync(mqttMessage, cancellationToken);
 
             PublishRejectedException.ThrowIfUnsuccessfulPuback(aegPuback, "Failed to publish this telemetry because the MQTT broker rejected it.");
         }
@@ -133,7 +128,7 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Telemetry
         /// <param name="disposing">true to release both managed and unmanaged resources; false to releases only unmanaged resources.</param>
         public void Dispose(bool disposing)
         {
-            _connection.MqttClient.PublishReceivedAsync -= HandleReceivedMqttPublish;
+            _connection.PublishReceivedAsync -= HandleReceivedMqttPublish;
             if (disposing)
             {
                 _connection.Dispose();
@@ -147,7 +142,7 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Telemetry
         /// </summary>
         public void Dispose()
         {
-            _connection.MqttClient.PublishReceivedAsync -= HandleReceivedMqttPublish;
+            _connection.PublishReceivedAsync -= HandleReceivedMqttPublish;
             _connection.Dispose();
 
             _isDisposed = true;

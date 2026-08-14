@@ -1,4 +1,5 @@
-﻿using Microsoft.Azure.Devices.Client.Unified.Connection;
+﻿using Microsoft.Azure.Devices.Client.Models;
+using Microsoft.Azure.Devices.Client.Unified.Connection;
 using System;
 using System.Collections.Generic;
 using System.Security.Cryptography.X509Certificates;
@@ -51,7 +52,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Unified
             ConnectionContext connectionContext = new()
             {
                 DeviceId = deviceId,
-                IsAzureEventGrid = !testAgainstClassicHub,
+                IsGen2Hub = !testAgainstClassicHub,
                 IotHubHostName = testAgainstClassicHub ? Setup.GetGen1IotHubHostName() : Setup.GetGen2IotHubHostName(),
                 AuthenticationProvider = authenticationProvider,
             };

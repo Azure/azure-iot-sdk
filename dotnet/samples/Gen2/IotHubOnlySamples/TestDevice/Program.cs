@@ -48,6 +48,7 @@ internal class Program
             DeviceId = deviceId,
             IotHubHostName = hostName,
             AuthenticationProvider = authentication,
+            IsGen2Hub = true,
         };
 
         TwinClient twinClient = new(connectionClient);

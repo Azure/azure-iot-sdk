@@ -2,7 +2,6 @@
 using Microsoft.Azure.Devices.Client.Models;
 using Microsoft.Azure.Devices.Client.Models.FileUpload;
 using Microsoft.Azure.Devices.Client.Unified.Connection;
-using System.Data.Common;
 using System.Diagnostics;
 using System.Net.Http.Headers;
 using System.Text;
@@ -24,7 +23,7 @@ namespace Microsoft.Azure.Devices.Client.Unified.FileUpload
             _connection = connection;
             _httpClient = null;
             _isUserSuppliedHttpClient = false;
-            _aegFileUploadClient = new(new Gen2.Connection.ConnectionClient(_connection));
+            _aegFileUploadClient = new(new Stub(_connection));
         }
 
         /// <summary>
@@ -47,7 +46,7 @@ namespace Microsoft.Azure.Devices.Client.Unified.FileUpload
             _connection = connection;
             _httpClient = httpClient;
             _isUserSuppliedHttpClient = true;
-            _aegFileUploadClient = new(new Gen2.Connection.ConnectionClient(_connection));
+            _aegFileUploadClient = new(new Stub(_connection));
         }
 
         private void InitializeIfUninitialized()
@@ -102,7 +101,7 @@ namespace Microsoft.Azure.Devices.Client.Unified.FileUpload
                 throw new NotSupportedException("Must connect device prior to using this method");
             }
 
-            if (currentConnectionContext.IsAzureEventGrid)
+            if (currentConnectionContext.IsGen2Hub)
             {
                 return await _aegFileUploadClient.GetFileUploadSasUriAsync(request, cancellationToken);
             }
@@ -146,7 +145,7 @@ namespace Microsoft.Azure.Devices.Client.Unified.FileUpload
                 throw new NotSupportedException("Must connect device prior to using this method");
             }
 
-            if (currentConnectionContext.IsAzureEventGrid)
+            if (currentConnectionContext.IsGen2Hub)
             {
                 await _aegFileUploadClient.CompleteFileUploadSasUriAsync(completion, cancellationToken);
                 return;
