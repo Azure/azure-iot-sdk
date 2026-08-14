@@ -50,7 +50,7 @@ namespace Microsoft.Azure.Devices.Client.Unified.Connection
         /// <param name="options">
         /// The optional configurations that this client will use
         /// </param>
-        public ConnectionClient(ConnectionClientOptions options)
+        public ConnectionClient(ConnectionClientOptions? options = null)
         {
             options ??= new ConnectionClientOptions();
 
@@ -68,16 +68,15 @@ namespace Microsoft.Azure.Devices.Client.Unified.Connection
 
             _mqttClient.PublishReceivedAsync += HandleReceivedCertificateSigningPublish;
 
-            _mqttClient.PublishReceivedAsync += PublishReceivedAsync; // relay all publishes from the underlying MQTT client to users of this connection client
+            _mqttClient.PublishReceivedAsync += DelegatePublishAsync; // relay all publishes from the underlying MQTT client to users of this connection client
         }
 
-        /// <summary>
-        /// Empty constructor mostly for mocking purposes
-        /// </summary>
-        public ConnectionClient()
+        private async Task DelegatePublishAsync(MqttPublishReceivedEventArgs args)
         {
-            _mqttClient = new MqttSessionClient(new());
-            _gen2ConnectionClient = new(new ConnectionClientOptions());
+            if (PublishReceivedAsync != null)
+            {
+                await PublishReceivedAsync.Invoke(args);
+            }
         }
 
         private async Task HandleGen1IotHubConnectionAsync(MqttClientConnectedEventArgs args)
@@ -118,7 +117,10 @@ namespace Microsoft.Azure.Devices.Client.Unified.Connection
                 }
                 else
                 {
-                    DeviceReadyAsync?.Invoke();
+                    if (DeviceReadyAsync != null)
+                    { 
+                        DeviceReadyAsync.Invoke();
+                    }
                 }
             });
         }
@@ -346,7 +348,7 @@ namespace Microsoft.Azure.Devices.Client.Unified.Connection
         /// <param name="disposing">true to release both managed and unmanaged resources; false to releases only unmanaged resources.</param>
         public void Dispose(bool disposing)
         {
-            _mqttClient.PublishReceivedAsync -= PublishReceivedAsync;
+            _mqttClient.PublishReceivedAsync -= DelegatePublishAsync;
             _mqttClient.PublishReceivedAsync -= HandleReceivedCertificateSigningPublish;
             _mqttClient.ConnectedAsync -= HandleGen1IotHubConnectionAsync;
 

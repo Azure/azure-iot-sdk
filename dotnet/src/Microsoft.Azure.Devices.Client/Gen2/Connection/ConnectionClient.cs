@@ -38,7 +38,7 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Connection
         /// <param name="options">
         /// The optional configurations that this client will use
         /// </param>
-        public ConnectionClient(ConnectionClientOptions options)
+        public ConnectionClient(ConnectionClientOptions? options = null)
         {
             options ??= new ConnectionClientOptions();
 
@@ -49,15 +49,15 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Connection
             };
 
             _mqttClient = options.MqttClient ?? new MqttSessionClient(sessionClientOptions);
-            _mqttClient.PublishReceivedAsync += PublishReceivedAsync; // relay all publishes from the underlying MQTT client to users of this connection client
+            _mqttClient.PublishReceivedAsync += DelegatePublishAsync; // relay all publishes from the underlying MQTT client to users of this connection client
         }
 
-        /// <summary>
-        /// Empty constructor mostly for mocking purposes
-        /// </summary>
-        public ConnectionClient()
+        private async Task DelegatePublishAsync(MqttPublishReceivedEventArgs args)
         {
-            _mqttClient = new MqttSessionClient(new());
+            if (PublishReceivedAsync != null)
+            {
+                await PublishReceivedAsync.Invoke(args);
+            }
         }
 
         /// <summary>
@@ -352,7 +352,7 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Connection
         /// <param name="disposing">true to release both managed and unmanaged resources; false to releases only unmanaged resources.</param>
         public void Dispose(bool disposing)
         {
-            _mqttClient.PublishReceivedAsync -= PublishReceivedAsync;
+            _mqttClient.PublishReceivedAsync -= DelegatePublishAsync;
 
             if (disposing)
             {
@@ -371,7 +371,7 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Connection
         /// </summary>
         public void Dispose()
         {
-            _mqttClient.PublishReceivedAsync -= PublishReceivedAsync;
+            _mqttClient.PublishReceivedAsync -= DelegatePublishAsync;
 
             _mqttClient.Dispose();
 
