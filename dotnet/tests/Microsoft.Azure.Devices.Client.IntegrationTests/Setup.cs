@@ -185,7 +185,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
             Client.Gen2.Connection.ConnectionClient connectionClient = new();
             ProvisioningSettings provisioningSettings = new(DpsIdScope);
 
-            Client.Gen2.Connection.ConnectionContext connectionContext = await RetryAroundAuthorizationAsync<Client.Gen2.Connection.ConnectionContext>(
+            ConnectionContext connectionContext = await RetryAroundAuthorizationAsync<ConnectionContext>(
                 async () => await connectionClient.ProvisionAndConnectAsync(provisioningSettings, x509AuthenticationProvider, cancellationToken: cancellationToken),
                 cancellationToken);
 
