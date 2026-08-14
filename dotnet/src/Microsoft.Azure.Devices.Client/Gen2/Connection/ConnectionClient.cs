@@ -92,7 +92,7 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Connection
                 AuthenticationProvider = authentication,
             };
 
-            await ConnectAsync(CurrentConnectionContext, authentication, twinOptions, cancellationToken);
+            await ConnectAsync(CurrentConnectionContext, twinOptions, cancellationToken);
 
             return CurrentConnectionContext;
         }
@@ -130,7 +130,7 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Connection
         /// <param name="twinPushOptions">The options around receiving a twin push upon connecting.</param>
         /// <param name="cancellationToken">Cancellation token.</param>
         /// <returns>The initial twin of the device if a twin push was configured via <see cref="TwinPushOptions"/></returns>
-        public async Task ConnectAsync(ConnectionContext connectionContext, X509AuthenticationProvider authentication, TwinPushOptions? twinPushOptions = default, CancellationToken cancellationToken = default)
+        public async Task ConnectAsync(ConnectionContext connectionContext, TwinPushOptions? twinPushOptions = default, CancellationToken cancellationToken = default)
         {
             ObjectDisposedException.ThrowIf(_isDisposed, this);
 
@@ -138,7 +138,7 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Connection
 
             CurrentConnectionContext = connectionContext;
 
-            await IotHubConnection.ConnectToAzureEventGridIotHubAsync(_mqttClient, connectionContext.IotHubHostName, connectionContext.DeviceId, authentication, twinPushOptions, cancellationToken);
+            await IotHubConnection.ConnectToAzureEventGridIotHubAsync(_mqttClient, connectionContext.IotHubHostName, connectionContext.DeviceId, connectionContext.AuthenticationProvider, twinPushOptions, cancellationToken);
         }
 
         internal async Task<DeviceRegistrationResult> ProvisionAsync(ProvisioningSettings provisioningSettings, X509AuthenticationProvider authentication, CancellationToken cancellationToken = default)

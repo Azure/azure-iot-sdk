@@ -1,5 +1,4 @@
-﻿using Google.Protobuf.WellKnownTypes;
-using Microsoft.Azure.Devices.Client.Exceptions;
+﻿using Microsoft.Azure.Devices.Client.Exceptions;
 using Microsoft.Azure.Devices.Client.Models;
 using Microsoft.Azure.Devices.Client.Models.CertificateManagement;
 using Microsoft.Azure.Devices.Client.Mqtt;
@@ -7,8 +6,9 @@ using Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session;
 using Microsoft.Azure.Devices.Client.Provisioning;
 using Microsoft.Azure.Devices.Client.Provisioning.Models;
 using System.Collections.Concurrent;
-using System.ComponentModel;
-using System.Data.Common;
+using System.Diagnostics;
+using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 
 namespace Microsoft.Azure.Devices.Client.Unified.Connection
@@ -26,15 +26,21 @@ namespace Microsoft.Azure.Devices.Client.Unified.Connection
 
         public ConnectionContext? GetCurrentConnectionContext() => CurrentConnectionContext;
 
+        /// <summary>
+        /// This event signals that the device is connected and has established all necessary subscriptions with IoT Hub.
+        /// </summary>
+        public event Action? DeviceReadyAsync;
+
         private const string CertificateSigningRequestTopic = "$iothub/credentials/POST/issueCertificate/?$rid=";
         private const string CertificateSigningResponseTopicFilter = "$iothub/credentials/res/#";
         private const string CertificateSigningResponseTopic = "$iothub/credentials/res/";
+        internal const string ClassicHubApiVersion = "2025-08-01-preview";
 
         private const string RequestId = "?$rid=";
 
         private readonly ConcurrentDictionary<string, CertificateSigningOperation> _pendingCertificateSigningOperations = new();
 
-        private Gen2.Connection.ConnectionClient _genConnectionClient;
+        private Gen2.Connection.ConnectionClient _gen2ConnectionClient;
 
         /// <summary>
         /// Construct a new <see cref="ConnectionClient"/>
@@ -56,7 +62,7 @@ namespace Microsoft.Azure.Devices.Client.Unified.Connection
 
             _mqttClient = options.MqttClient ?? new MqttSessionClient(sessionClientOptions);
 
-            _genConnectionClient = new(options);
+            _gen2ConnectionClient = new(options);
 
             _mqttClient.PublishReceivedAsync += HandleReceivedCertificateSigningPublish;
         }
@@ -67,7 +73,50 @@ namespace Microsoft.Azure.Devices.Client.Unified.Connection
         public ConnectionClient()
         {
             _mqttClient = new MqttSessionClient(new());
-            _genConnectionClient = new(new ConnectionClientOptions());
+            _gen2ConnectionClient = new(new ConnectionClientOptions());
+        }
+
+        private async Task HandleGen1IotHubConnectionAsync(MqttClientConnectedEventArgs args)
+        {
+            // Note that this callback handler is only set after provisioning has completed. It is only to respond to IoT Hub connection events, not DPS connection events.
+
+            // Upon an MQTT connection being established, immediately re-subscribe to all twin/telemetry/direct methods topics if there is no session present.
+            if (args.ConnectAck.IsSessionPresent)
+            {
+                return; //TODO gen2 client case?
+            }
+
+            // Run task in background b/c it uses the MQTT client to send a SUBSCRIBE which requires we release this thread
+            _ = Task.Run(async () =>
+            {
+                // This callback should only be reached after provisioning, so their should always be a connection context to use
+                Debug.Assert(CurrentConnectionContext != null);
+
+                //TODO check for previous connack isSessionPresent flag before firing off all these subscriptions?
+                MqttSubscribe mqttSubscribe = new();
+                var expectedQos = MqttQualityOfServiceLevel.AtMostOnce;
+                mqttSubscribe.TopicFilters.Add(new(string.Format(Telemetry.TelemetryClient.DeviceBoundMessagesTopicFormat + "#", CurrentConnectionContext.DeviceId), expectedQos));
+                mqttSubscribe.TopicFilters.Add(new(Twin.TwinClient.ClassicTwinResponseTopic + "#", expectedQos));
+                mqttSubscribe.TopicFilters.Add(new(Twin.TwinClient.ClassicTwinDesiredPropertiesPatchTopic + "#", expectedQos));
+                mqttSubscribe.TopicFilters.Add(new(DirectMethods.DirectMethodClient.ClassicDirectMethodsRequestTopic + "#", expectedQos));
+                var suback = await _mqttClient.SubscribeAsync(mqttSubscribe);
+
+                bool anySubscribeFailed = false;
+                foreach (var topicSuback in suback.Items)
+                {
+                    anySubscribeFailed |= (topicSuback.ResultCode != MqttClientSubscribeResultCode.GrantedQoS0);
+                }
+
+                //TODO how to signal that the connect needs to throw?
+                if (anySubscribeFailed)
+                {
+                    await _mqttClient.DisconnectAsync(new MqttDisconnect() { Reason = MqttClientDisconnectOptionsReason.ImplementationSpecificError }); //Does the session client stop retrying here? Use a disconnect code to signal
+                }
+                else
+                {
+                    DeviceReadyAsync?.Invoke();
+                }
+            });
         }
 
         /// <summary>
@@ -80,6 +129,8 @@ namespace Microsoft.Azure.Devices.Client.Unified.Connection
         public async Task<ConnectionContext> ProvisionAndConnectAsync(ProvisioningSettings provisioningSettings, X509AuthenticationProvider authentication, CancellationToken cancellationToken = default)
         {
             ObjectDisposedException.ThrowIf(_isDisposed, this);
+
+            _mqttClient.ConnectedAsync -= HandleGen1IotHubConnectionAsync; //TODO be very careful about when we register/unregister this callback expecially around connection loss scenarios
 
             var provisioningResult = await ProvisionAsync(provisioningSettings, authentication, cancellationToken);
 
@@ -94,11 +145,13 @@ namespace Microsoft.Azure.Devices.Client.Unified.Connection
                 AuthenticationProvider = authentication,
             };
 
+            _mqttClient.ConnectedAsync += HandleGen1IotHubConnectionAsync;
+
             // After successful provisioning, connect using the appropriate logic based on the Hub this device was provisioned to
             //TODO use issued client certs if CSR was done during provisioning
             if (provisioningResult.IsAzureEventGridHub)
             {
-                await _genConnectionClient.ConnectAsync(
+                await _gen2ConnectionClient.ConnectAsync(
                     new Gen2.Connection.ConnectionContext()
                     {
                         DeviceId = provisioningResult.DeviceId!,
@@ -106,13 +159,12 @@ namespace Microsoft.Azure.Devices.Client.Unified.Connection
                         IssuedClientCertificates = provisioningResult.IssuedClientCertificateChain,
                         AuthenticationProvider = authentication,
                     },
-                    authentication,
                     null,
                     cancellationToken);
             }
             else
             {
-                await ConnectAsync(CurrentConnectionContext, authentication, cancellationToken);
+                await ConnectAsync(CurrentConnectionContext, cancellationToken);
             }
 
             return CurrentConnectionContext;
@@ -150,7 +202,7 @@ namespace Microsoft.Azure.Devices.Client.Unified.Connection
 
             if (CurrentConnectionContext.IsAzureEventGrid)
             {
-                return await _genConnectionClient.SendCertificateSigningRequestAsync(request, cancellationToken);
+                return await _gen2ConnectionClient.SendCertificateSigningRequestAsync(request, cancellationToken);
             }
             else
             {
@@ -176,10 +228,8 @@ namespace Microsoft.Azure.Devices.Client.Unified.Connection
         /// Connect directly to IoT Hub
         /// </summary>
         /// <param name="connectionContext">The details about which IoT hub host to connect to, and which device Id to connect as.</param>
-        /// <param name="authentication">The authentication to use when connecting.</param>
         /// <param name="cancellationToken">Cancellation token.</param>
-        /// <returns>The initial twin of the device if a twin push was configured via <see cref="TwinPushOptions"/></returns>
-        public async Task ConnectAsync(ConnectionContext connectionContext, X509AuthenticationProvider authentication, CancellationToken cancellationToken = default)
+        public async Task ConnectAsync(ConnectionContext connectionContext, CancellationToken cancellationToken = default)
         {
             ObjectDisposedException.ThrowIf(_isDisposed, this);
 
@@ -187,14 +237,50 @@ namespace Microsoft.Azure.Devices.Client.Unified.Connection
 
             if (connectionContext.IsAzureEventGrid)
             {
+                Gen2.Connection.ConnectionContext gen2Context = new()
+                {
+                    AuthenticationProvider = CurrentConnectionContext.AuthenticationProvider,
+                    DeviceId = CurrentConnectionContext.DeviceId,
+                    IotHubHostName = CurrentConnectionContext.IotHubHostName,
+                    IssuedClientCertificates = CurrentConnectionContext.IssuedClientCertificates,
+                };
+
                 // Connect to the new Azure Event Grid endpoint using MQTT v5 using the provisioning result credentials
-                await IotHubConnection.ConnectToAzureEventGridIotHubAsync(_mqttClient, connectionContext.IotHubHostName, connectionContext.DeviceId, authentication, cancellationToken);
+                await _gen2ConnectionClient.ConnectAsync(gen2Context, null, cancellationToken);
+                return;
             }
-            else
+
+            string clientId = connectionContext.DeviceId;
+            string deviceId = connectionContext.DeviceId;
+            string hostname = connectionContext.IotHubHostName;
+
+            //TODO what is the latest Hub API version?
+            string username = $"{hostname}/{clientId}/?api-version={ClassicHubApiVersion}&DeviceClientType={Uri.EscapeDataString(GetUserAgentString())}";
+
+            MqttConnect connectPacket = new MqttConnect()
             {
-                // Connect to the legacy IoT hub endpoint using MQTT v3 using the provisioning result credentials
-                await IotHubConnection.ConnectToClassicIotHubAsync(_mqttClient, connectionContext.IotHubHostName, connectionContext.DeviceId, authentication, cancellationToken);
-            }
+                HostName = hostname,
+                TcpPort = 8883,
+                WebsocketPort = 443,
+                WebsocketUri = $"wss://{hostname}/$iothub/websocket",
+                ClientCertificate = connectionContext.AuthenticationProvider.ClientCertificate,
+                CleanSession = false, //TODO user configurable value?
+                Username = username,
+                Password = Array.Empty<byte>(),
+                ClientId = clientId,
+                ProtocolVersion = MqttProtocolVersion.V311
+            };
+
+            var connack = await _mqttClient.ConnectAsync(connectPacket, cancellationToken);
+            ConnectRejectedException.ThrowIfUnsuccessfulConnack(connack, "Connection to IoT Hub was rejected.");
+
+            TaskCompletionSource OnSubscribedTcs = new();
+            this.DeviceReadyAsync += async () =>
+            {
+                OnSubscribedTcs.TrySetResult();
+            };
+
+            await OnSubscribedTcs.Task.WaitAsync(cancellationToken);
         }
 
         internal async Task<DeviceRegistrationResult> ProvisionAsync(ProvisioningSettings provisioningSettings, X509AuthenticationProvider authentication, CancellationToken cancellationToken = default)
@@ -255,6 +341,8 @@ namespace Microsoft.Azure.Devices.Client.Unified.Connection
         public void Dispose(bool disposing)
         {
             _mqttClient.PublishReceivedAsync -= HandleReceivedCertificateSigningPublish;
+            _mqttClient.ConnectedAsync -= HandleGen1IotHubConnectionAsync;
+
             if (disposing)
             {
                 _mqttClient.Dispose();
@@ -273,9 +361,28 @@ namespace Microsoft.Azure.Devices.Client.Unified.Connection
         public void Dispose()
         {
             _mqttClient.PublishReceivedAsync -= HandleReceivedCertificateSigningPublish;
+            _mqttClient.ConnectedAsync -= HandleGen1IotHubConnectionAsync;
             _mqttClient.Dispose();
 
             _isDisposed = true;
+        }
+
+        private static string GetUserAgentString()
+        {
+            const string name = "Microsoft.Azure.Devices.Client";
+
+            string runtime = RuntimeInformation.FrameworkDescription.Trim();
+            string operatingSystem = RuntimeInformation.OSDescription.Trim();
+            string processorArchitecture = RuntimeInformation.ProcessArchitecture.ToString().Trim();
+
+            string userAgent = $"{name}/{GetPackageVersion()} ({runtime}; {operatingSystem}; {processorArchitecture})";
+
+            return userAgent;
+        }
+
+        private static string GetPackageVersion()
+        {
+            return typeof(ConnectionClient).GetTypeInfo().Assembly.GetName().Version!.ToString(3);
         }
     }
 }

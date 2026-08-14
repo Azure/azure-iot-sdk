@@ -58,7 +58,7 @@ internal class Program
         directMethodClient.DirectMethodProbeReceivedAsync += DirectMethodProbeReceivedAsync;
         directMethodClient.DirectMethodInvokedAsync += DirectMethodInvokedAsync;
 
-        await connectionClient.ConnectAsync(connectionContext, authentication, cancellationToken: cts.Token);
+        await connectionClient.ConnectAsync(connectionContext, null, cancellationToken: cts.Token);
 
         Console.WriteLine($"Connected to IoT hub as device with Id {deviceId}. Now listening for twin/direct method messages");
         await Task.Delay(-1, cts.Token);

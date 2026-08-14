@@ -47,7 +47,8 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Unified
             await connectionClient.DisconnectAsync(cts.Token);
 
             X509AuthenticationProvider newX509AuthenticationProvider = new(CreateX509CertificateFromKeyAndCert(CertificateListToPem(csrResponse.Certificates), testDeviceContext.PrivateKeyPem!));
-            await connectionClient.ConnectAsync(testDeviceContext.ConnectionContext, newX509AuthenticationProvider, cancellationToken:cts.Token);
+            testDeviceContext.ConnectionContext.AuthenticationProvider = newX509AuthenticationProvider;
+            await connectionClient.ConnectAsync(testDeviceContext.ConnectionContext, cancellationToken:cts.Token);
 
             await connectionClient.DisconnectAsync(cts.Token);
         }

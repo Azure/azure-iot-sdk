@@ -11,6 +11,6 @@
 
         public IReadOnlyList<string>? IssuedClientCertificates { get; init; }
 
-        public required X509AuthenticationProvider AuthenticationProvider { get; init; }
+        public required X509AuthenticationProvider AuthenticationProvider { get; set; }
     }
 }

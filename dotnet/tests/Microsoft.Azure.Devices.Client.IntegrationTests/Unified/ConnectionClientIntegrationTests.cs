@@ -62,7 +62,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Unified
             // rejects the connection for authorization reasons. Usually, after a few seconds, the device is ready to 
             // authorize the newly created device.
              await Setup.RetryAroundAuthorizationAsync(
-                async () => await connectionClient.ConnectAsync(connectionContext, authenticationProvider, TestContext.Current.CancellationToken),
+                async () => await connectionClient.ConnectAsync(connectionContext, TestContext.Current.CancellationToken),
                 TestContext.Current.CancellationToken);
         }
     }

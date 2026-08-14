@@ -107,7 +107,7 @@ namespace Microsoft.Azure.Devices.Client.Unified.FileUpload
                 return await _aegFileUploadClient.GetFileUploadSasUriAsync(request, cancellationToken);
             }
 
-            string requestUri = $"devices/{currentConnectionContext.DeviceId}/files?api-version={IotHubConnection.ClassicHubApiVersion}";
+            string requestUri = $"devices/{currentConnectionContext.DeviceId}/files?api-version={Unified.Connection.ConnectionClient.ClassicHubApiVersion}";
 
             HttpRequestMessage requestMessage = new(HttpMethod.Post, requestUri)
             {
@@ -152,7 +152,7 @@ namespace Microsoft.Azure.Devices.Client.Unified.FileUpload
                 return;
             }
 
-            string requestUri = $"devices/{currentConnectionContext.DeviceId}/files/notifications?api-version={IotHubConnection.ClassicHubApiVersion}";
+            string requestUri = $"devices/{currentConnectionContext.DeviceId}/files/notifications?api-version={ConnectionClient.ClassicHubApiVersion}";
 
             HttpRequestMessage requestMessage = new(HttpMethod.Post, requestUri)
             {
