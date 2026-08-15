@@ -33,10 +33,16 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
         public event Func<Mqtt.MqttPublishReceivedEventArgs, Task>? PublishReceivedAsync;
         public event Func<Mqtt.MqttClientConnectedEventArgs, Task>? ConnectedAsync;
         public event Func<Mqtt.MqttClientDisconnectedEventArgs, Task>? DisconnectedAsync;
+        public event Func<MqttConnect, Task<MqttConnect>>? ConnectingAsync;
 
         public virtual async Task<MqttConnectAck> ConnectAsync(MqttConnect connect, CancellationToken cancellationToken = default)
         {
             ObjectDisposedException.ThrowIf(_isDisposed, this);
+
+            if (ConnectingAsync != null)
+            {
+                connect = await ConnectingAsync.Invoke(connect); // Allow Gen2 connection client to inject a fresh connect nonce each time a connect happens
+            }
 
             MqttClientOptionsBuilder optionsBuilder;
             if (connect.ProtocolVersion == MqttProtocolVersion.V500)

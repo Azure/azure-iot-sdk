@@ -7,6 +7,8 @@ namespace Microsoft.Azure.Devices.Client.Mqtt
 
         event Func<MqttClientConnectedEventArgs, Task> ConnectedAsync;
 
+        event Func<MqttConnect, Task<MqttConnect>> ConnectingAsync;
+
         event Func<MqttClientDisconnectedEventArgs, Task> DisconnectedAsync;
 
         //TODO throws MqttConnectingFailedException

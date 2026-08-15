@@ -29,8 +29,8 @@ namespace Microsoft.Azure.Devices.Client.Unified.Connection
         /// <summary>
         /// This event signals that the device is connected and has established all necessary subscriptions with IoT Hub.
         /// </summary>
-        public event Action? DeviceReadyAsync; //TODO Ideally, user wouldn't even have to care about this and it could be private. Just use it to co-ordinate locally around when to send user traffic during/after disconnection handling
-        
+        private event Action? DeviceReadyAsync; //TODO Ideally, user wouldn't even have to care about this
+
         public event Func<MqttPublishReceivedEventArgs, Task>? PublishReceivedAsync;
 
         private const string CertificateSigningRequestTopic = "$iothub/credentials/POST/issueCertificate/?$rid=";
