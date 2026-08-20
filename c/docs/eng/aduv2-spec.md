@@ -22,6 +22,33 @@ operational as an interim.)
 | Who talks to ADU | Device → ADU directly | **Device → DPS → ADR → ADU** (DPS proxies; ADR resolves the device) |
 | Primary scenario | Operational polling | **Update *before* first Register** (bootstrap), plus operational (interim) |
 
+## Service-side shape (why DPS fronts it)
+
+ADUv2 re-homes the device registry: **Azure Device Registry (ADR)** replaces IoT Hub as the entry point,
+with ADU powering updating behind it. A working deployment needs four linked resources — an ADR
+**Namespace**, an ADU **UpdateInstance**, an **IoT Hub**, and a **DPS** instance.
+
+| Service | Owns |
+|---|---|
+| **ADR** | Device identities, grouping (device-query `Group` resources), deployments (`Jobs` / `Runs`), and the stored device updating state |
+| **ADU** | Uploading, hosting and distributing update files; the backend APIs that power ADR's updating capabilities |
+| **IoT Hub** | The operational device gateway, and — post-Ignite — the operational updating API |
+| **DPS** | The onboarding device gateway, the bootstrap updating API, and the Hub binding returned by `Register` |
+
+Neither gateway stores update state. Where the device's reported state lands depends on the flow:
+
+| Flow | Reported state lands in | Because |
+|---|---|---|
+| Operational | The device's ADR **Attributes (Update)** resource — `installedUpdateId`, last install result, agent info | The device exists in ADR |
+| Bootstrap | The bootstrap **update job** | The device is not provisioned yet, so it has no ADR device resource |
+
+Consequence for a device author: **bootstrap progress is observable only through the first-time update
+job**, never on a per-device resource.
+
+Against ADUv1: the registry moves from IoT Hub to ADR, grouping and deployment management move from ADU
+to ADR, and the device gateway moves from the **twin** to an **RPC** fronted by DPS (Ignite '26) and
+later IoT Hub.
+
 ## The three device-facing DPS operations
 
 The device **selects** onboarding vs regular by *which endpoint it calls* — DPS does not infer or validate the
@@ -148,6 +175,27 @@ is a durable write — retry until acked; safe because ADU is idempotent on `wor
 - **Deferred (post-Ignite):** `accountId` delivery + signature binding (manifest-sig-v2) · symmetric-key & TPM
   auth · AMQP · per-enrollment-group enablement toggle · operational path moving to IoT Hub.
 
+### Known gaps to design around
+
+*Operational flow:*
+
+- The interim DPS operational path supports **onboarding auth only**.
+- It carries a **non-obvious dependency on the DPS enrollment group** — delete the enrollment group and
+  operational updating breaks.
+
+*Bootstrap flow:*
+
+- Orchestration is **entirely the customer's and the agent's** responsibility. `Register` does **not**
+  enforce that a device is on a given update version before provisioning it.
+- A bootstrap update job **cannot be targeted at specific enrollment groups** — the update is offered to
+  every compatible device across all of them.
+
+*Deployment behaviour (what a device sees on a retry):*
+
+- **No per-device retry.** Once a device reaches a terminal failure the only recovery is to cancel and
+  reschedule the run, and devices that already installed successfully do not rejoin.
+- Offline devices do not appear in the job's progress metrics.
+
 ## What this means for the ADU client SDK
 
 The **verify → download → install → report engine is unchanged** from ADUv1 (shared core). New client work is the
@@ -164,5 +212,8 @@ The **verify → download → install → report engine is unchanged** from ADUv
 ## References
 
 - **Public REST API (TypeSpec, draft):** [Azure/azure-rest-api-specs#44617](https://github.com/Azure/azure-rest-api-specs/pull/44617) — the three device-update operations, api-version `2026-11-02-preview`.
+- **Service architecture (Microsoft-internal):** *Azure Device Update v2 — Public Preview (Ignite 2026)*,
+  Leo Lie / Joe Heiniger / Darko Aleksic, 7/6/2026 — ADR resource model, division of responsibilities
+  across ADR / ADU / Hub / DPS, and the Ignite '26 gap list.
 - **Design spec (Microsoft-internal):** DPS *"ADU first-time update"* spec package — [Azure-IoT-Hub-DeviceRegistrationService `/specs/002-adu-first-time-update`](https://dev.azure.com/msazure/One/_git/Azure-IoT-Hub-DeviceRegistrationService?path=/specs/002-adu-first-time-update).
 - Related SDK docs: [adu-client-plan.md](adu-client-plan.md), [adu-client-design.md](adu-client-design.md).

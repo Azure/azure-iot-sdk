@@ -13,7 +13,7 @@ The `adu_client` is a new **feature client** in the azure-iot-sdk SDK that imple
 - The ADU client MUST provide **platform abstraction hooks** so customers can plug their own download, install, apply, backup, and restore routines.
 - Pre-built platform adapters SHOULD be shipped for **Linux** and **ESP32** (in `adapters/adu/`, not in core `src/`).
 - The implementation MUST remain C99, single-threaded (callback-driven via `do_work()`), with no hidden allocations on the hot path — consistent with the existing SDK philosophy.
-- The ADU client MUST report update state and results to the cloud via device twin reported properties.
+- The ADU client MUST report update state and results to the cloud. The wire shape is generation-specific: device twin reported properties for ADUv1, `ReportDeviceUpdateStatus` for ADUv2 (see [aduv2-spec.md](aduv2-spec.md)). The engine emits a structured result; each wrapper serializes it.
 - The ADU client MUST support multi-step (composite) updates — the manifest MAY contain multiple instruction steps, each with its own handler type and file set.
 - The SDK SHOULD be usable as an **agent core library**: in addition to the managed client, it SHOULD expose transport-free primitives to *validate + parse* a manifest into a filled struct and to *build* the result report, so consumers can implement their own ADU agent and state machine on top of the SDK's vetted trust code. (See §5.3 and [adu-client-plan.md](adu-client-plan.md) — Library / agent-core mode.)
 
