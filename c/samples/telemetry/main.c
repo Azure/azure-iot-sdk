@@ -3,7 +3,7 @@
 // information.
 
 /* SPDX-License-Identifier: MIT */
-/* telemetry - API A sample.
+/* telemetry - sample.
  *
  * Provision via DPS, open connection, send one telemetry message, close.
  * DPS is handled internally by the connection client when host == NULL and

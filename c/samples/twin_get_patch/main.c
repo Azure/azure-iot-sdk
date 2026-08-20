@@ -3,7 +3,7 @@
 // information.
 
 /* SPDX-License-Identifier: MIT */
-/* twin_get_patch - API A sample.
+/* twin_get_patch - sample.
  *
  * Provision via DPS, open connection, issue twin GET + PATCH reported, close.
  * DPS is handled internally by the connection client when host == NULL and

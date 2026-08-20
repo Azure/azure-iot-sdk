@@ -3,7 +3,7 @@
 // information.
 
 /* SPDX-License-Identifier: MIT */
-/* direct_method_responder - API A sample.
+/* direct_method_responder - sample.
  *
  * Provision via DPS, open connection, subscribe for direct method invocations,
  * echo request payloads back as responses with status 200. Runs for ~60 seconds

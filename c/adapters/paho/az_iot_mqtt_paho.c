@@ -11,7 +11,7 @@
  * - Paho fires its callbacks from internal threads. We marshal those events
  *   into a thread-safe FIFO; process_loop() drains the FIFO on the calling
  *   thread and invokes the user's az_iot_mqtt_event_callback. This keeps the
- *   single-threaded contract of API A intact without requiring callers to
+ *   SDK's single-threaded contract intact without requiring callers to
  *   know about Paho's threading model.
  * - TLS is intentionally NOT wired in this phase (PAHO_WITH_SSL=OFF in the
  *   adapter CMake). The TLS path lands together with certificate_provider in a later
@@ -1114,7 +1114,7 @@ static az_iot_result paho_iface_process_loop(az_iot_mqtt_client* self, uint32_t 
   paho_client* m = paho_self(self);
 
   /* Drain the queue. We dispatch in FIFO order; the inbound callback runs on
-   * the caller's thread, satisfying the API A single-thread contract. */
+   * the caller's thread, satisfying the SDK's single-thread contract. */
   queued_event* n;
   bool dispatched = false;
   while ((n = q_pop(m)) != NULL)
