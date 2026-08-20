@@ -13,12 +13,12 @@ Related documents:
 - [eng/client-separation.md](eng/client-separation.md) — connection profile (§2) and the ADU channel split (§8).
 - [eng/connection-state-and-error-propagation.md](eng/connection-state-and-error-propagation.md) — observer registry and status codes.
 - [dps-integration.md](dps-integration.md), [devnotes.md](devnotes.md) — DPS contract and the running requirements log.
-- **ADUv2 device protocol** — *Azure Device Update v2 — Public Preview (Ignite 2026)*, Leo Lie /
-  Joe Heiniger / Darko Aleksic, 7/6/2026
+- **ADUv2** — [eng/aduv2-spec.md](eng/aduv2-spec.md) is the in-repo digest of the device contract and
+  the source for §7 below (added by PR #24). Background: *Azure Device Update v2 — Public Preview
+  (Ignite 2026)*, Leo Lie / Joe Heiniger / Darko Aleksic, 7/6/2026
   ([SharePoint](https://microsoft.sharepoint.com/:w:/r/teams/DigitalOperations/_layouts/15/Doc.aspx?sourcedoc=%7B0f2203ff-bda7-4f97-b2a5-468fcb95f7f0%7D&action=default&share=cQr_AyIPp72XT7KlRo_LlffwEgUCJRfZ3zpZHPh4PbcI-NloUw)).
-  §7 below is derived from it. [eng/adu-client-design.md](eng/adu-client-design.md) and
-  [eng/adu-feature-support.md](eng/adu-feature-support.md) still describe ADUv1 and the superseded
-  HTTPS-RPC-to-ADR shape, and have **not** been reconciled with it.
+  [eng/adu-client-design.md](eng/adu-client-design.md) covers the shared verify/download/install
+  engine, which is unchanged from ADUv1.
 
 ### Status legend
 
@@ -125,7 +125,7 @@ sequenceDiagram
             DPS-->>Conn: status = assigning (operation_id, retry-after)
             Conn->>DPS: PUBLISH get operation status
         end
-        DPS-->>Conn: status = assigned (assignedHub, deviceId, connectionProfile, issuedCertificateChain, ADU accountId)
+        DPS-->>Conn: status = assigned (assignedHub, deviceId, connectionProfile, issuedCertificateChain)
         opt issued chain present
             Conn->>Cert: store_issued_certificate(chain)
             Conn-->>App: operational_cert_callback(chain)
@@ -162,12 +162,12 @@ Key ordering guarantees that both clients must honour:
    and DPS always uses MQTT 3.1.1 even when the hub session uses v5.
 3. The operational certificate is preferred over the bootstrap certificate on every connect attempt,
    including reconnects.
-4. **The ADUv2 bootstrap update check runs before `open()`, not inside it.** The agent drives
-   `RequestBootstrapUpdate` against the DPS gateway until the service reports no update, and only
-   then does the connection client register. See [§7](#7-aduv2-onboarding-and-renewal-planned).
+4. **The ADUv2 bootstrap update check runs before `open()`, not inside it.** The agent drives the
+   onboarding update call against the DPS gateway until the service reports no update, and only then
+   does the connection client register. The check is **advisory**: if it fails, the device proceeds
+   to register anyway. See [§7](#7-aduv2-onboarding-and-renewal-planned).
 5. The DPS assignment is the single delivery point for everything the device learns about its
-   placement: hub, device id, connection profile, issued certificate chain, and the ADU account id
-   used to validate update downloads.
+   placement: hub, device id, connection profile and issued certificate chain.
 
 ---
 
@@ -292,7 +292,7 @@ checked before backoff is scheduled.
 | Reconnect attempt counter | Reset on success | Incremented per failed attempt. |
 | In-flight QoS 1 PUBACKs | No | Packet ids belong to the destroyed adapter; callers must re-send. |
 | Twin GET/PATCH, method responses, telemetry in flight | No | Feature clients must re-issue. |
-| ADU status report not yet delivered | Yes | Held in durable storage and sent on the next successful `ReportStatus`. |
+| ADU status report not yet acked | Yes | Held in durable storage and retried until acked; idempotent on `workflowId`. |
 | Presence (birth) phase | No | Restarted with a freshly generated nonce. |
 | DPS phase | No | Restarted from `CONNECTING` if DPS is configured. |
 | In-flight CSR operation | No | Abandoned; the callback fires with a failure/timeout result. |
@@ -355,25 +355,34 @@ manifest v5 parsing, JWS/SJWK verification, root keys, SHA-256 integrity, the
 download/backup/install/apply state machine, and reboot/resume persistence — plus an
 **`az_iot_adu_channel`** vtable carrying delivery and reporting.
 
-ADUv2 is a **device-initiated pull protocol**. Nothing is pushed: the agent calls an updating API on
-a gateway, and the gateway forwards to ADR and then ADU. There is no twin, no subscription, and no
-unsolicited offer. Which gateway depends on the phase and the milestone:
+ADUv2 is a **device-initiated pull protocol**, and its device-facing delivery moved **off** a
+dedicated ADU HTTPS endpoint. The agent calls an updating operation on a gateway it already talks to,
+reusing the credential it already has; the gateway is an authenticated pass-through to ADR and then
+ADU. The device never talks to ADU directly, needs no ADU-specific credential, and there is no twin,
+no subscription and no unsolicited offer.
 
-| Phase | Gateway | Auth | Operations |
+| Phase | Gateway | Operation (working name) | ADU route |
 | --- | --- | --- | --- |
-| First-time / bootstrap (**before** provisioning) | DPS | onboarding | `RequestBootstrapUpdate(aduAgentConfig, installedUpdateId)`, `ReportStatus(installedUpdateId, installResult)` |
-| Regular / operational (**after** provisioning) | IoT Hub *(post-Ignite)* | operational | `RequestUpdate(aduAgentConfig, installedUpdateId)`, `ReportStatus(...)`, agent property reporting |
-| Regular / operational, **Ignite '26 preview** | DPS *(interim)* | onboarding only | `RequestUpdate(...)`, `ReportStatus(...)` |
+| First-time / bootstrap (**before** provisioning) | DPS | `GetOnboardingDeviceUpdate` | `POST /devices/requestOnboardingUpdates` |
+| Regular / operational (**after** provisioning) | DPS *(Ignite '26 interim)*, IoT Hub *(post-Ignite)* | `GetDeviceUpdate` | `POST /devices/requestUpdates` |
+| Reporting, either phase | same gateway as the fetch | `ReportDeviceUpdateStatus` | `POST /devices/reportStatus` |
 
-> **The Hub updating API is not ready for Ignite '26.** In preview, the operational update check runs
-> against DPS with onboarding auth and is deprecated as soon as the Hub API ships. Treat the gateway
-> as a channel parameter, not a constant.
+The device selects onboarding vs regular **by which operation it calls**; the gateway does not infer
+or validate the choice.
+
+> **The Hub updating API is not ready for Ignite '26.** In preview, DPS fronts both the bootstrap and
+> the operational flow, using the existing DPS device credential (X.509 in phase 1). The operational
+> path moves to IoT Hub afterwards **with no device-contract change** — same request and response, a
+> different gateway. Treat the gateway as a channel parameter, not a constant.
 
 ### 7.1 Onboarding — bootstrap update, before provisioning
 
 The critical ordering fact for this document: **the bootstrap update check happens before the device
-registers.** The agent, not the connection client, drives it, and `open()` must not be called until
-the check reports no update.
+registers.** The agent, not the connection client, drives it. On the happy path `open()` waits until
+the check reports no update, so several updates can chain before provisioning.
+
+The check is **advisory and must never block provisioning.** If it errors, times out, or the account
+is not linked, the device proceeds to register anyway.
 
 ```mermaid
 sequenceDiagram
@@ -383,20 +392,20 @@ sequenceDiagram
     participant DPS
     participant Hub
 
-    loop until "no update"
-        ADU->>DPS: RequestBootstrapUpdate(aduAgentConfig, installedUpdateId)
+    loop until "no update" or an advisory failure
+        ADU->>DPS: GetOnboardingDeviceUpdate (agentInfo, installedUpdateId, ETags)
         alt update available
-            DPS-->>ADU: update manifest, signature, download URLs
-            ADU->>ADU: verify, download, install (reboot if required)
-            ADU->>DPS: ReportStatus(installedUpdateId, installResult)
+            DPS-->>ADU: serviceConfiguration + updateMetadata (workflowId, manifest, signature, fileUrls)
+            ADU->>ADU: verify signature, download fileUrls, install (reboot if required)
+            ADU->>DPS: ReportDeviceUpdateStatus (workflowId, installedUpdateId, lastInstallResult)
         else no update
-            DPS-->>ADU: no update
+            DPS-->>ADU: 200 with updateMetadata omitted
         end
     end
 
-    Note over ADU,Conn: only now is the device allowed to provision
-    Conn->>DPS: Register (CSR optional)
-    DPS-->>Conn: assignedHub, deviceId, connectionProfile, issuedCertificateChain, ADU accountId
+    Note over ADU,Conn: provisioning proceeds - on success or on an advisory failure
+    Conn->>DPS: Register (unchanged, CSR optional)
+    DPS-->>Conn: assignedHub, deviceId, connectionProfile, issuedCertificateChain
     Conn->>Hub: CONNECT with operational auth
 ```
 
@@ -404,8 +413,12 @@ sequenceDiagram
   deployment can chain.
 - Bootstrap progress is stored **in the bootstrap update job**, not on the device's ADR attributes —
   the device resource does not exist yet.
-- DPS returns the **ADU account id** in the registration result so the device can validate the update
-  source before downloading.
+- Trust comes from the **root-key package** at `serviceConfiguration.rootKeyDownloadUrl` returned by
+  the same call. Account scoping (`accountId` bound into the manifest signature) is **deferred past
+  Ignite '26** — DPS returns no `accountId`, so the device verifies provenance-from-ADU but not
+  account scoping. Base signature validation stays required.
+- `fileUrls` are **not** covered by the signed manifest; payloads are downloaded straight from blob
+  storage and integrity comes from the per-file hashes inside the manifest.
 - Bootstrap orchestration is entirely the agent's responsibility for Ignite '26. DPS does **not**
   enforce that a device is on a given update version before provisioning it.
 
@@ -420,41 +433,41 @@ sequenceDiagram
     participant Store as Durable ADU state
 
     Conn-->>ADU: CONNECTED
-    ADU->>GW: report properties (agentInfo.compatibilityProperties)
-    Note over GW: ADU computes device class, creates the ADR device attribute
     ADU->>Store: load_state()
-    Store-->>ADU: installedUpdateId, unsent installResult
+    Store-->>ADU: installedUpdateId, ETags, unsent report
     opt report pending from a previous session
-        ADU->>GW: ReportStatus(installedUpdateId, installResult)
+        ADU->>GW: ReportDeviceUpdateStatus (workflowId, lastInstallResult)
     end
 
     loop poll at the agent's own cadence
-        ADU->>GW: RequestUpdate(aduAgentConfig, installedUpdateId)
+        ADU->>GW: GetDeviceUpdate (agentInfo, installedUpdateId, ETags)
+        Note over GW: ADU derives the device class from agentProfile + compatibilityProperties
         alt update available
-            GW-->>ADU: update manifest, signature, download URLs
+            GW-->>ADU: serviceConfiguration + updateMetadata (workflowId, manifest, signature, fileUrls)
             ADU->>ADU: verify, download, backup, install, apply
             ADU->>Store: persist_state()
-            ADU->>GW: ReportStatus(installedUpdateId, installResult)
+            ADU->>GW: ReportDeviceUpdateStatus (workflowId, installedUpdateId, lastInstallResult)
         else no update
-            GW-->>ADU: no update
+            GW-->>ADU: 200 with updateMetadata omitted
         end
     end
 
     Conn--xADU: connection drop
-    Note over ADU: install continues, installResult held in durable storage
+    Note over ADU: install continues, report held in durable storage
     Conn-->>ADU: CONNECTED again
-    ADU->>GW: ReportStatus, then resume polling
+    ADU->>GW: retry the report until acked, then resume polling
 ```
 
-`installResult` is the terminal report shape:
+`lastInstallResult` is the report shape:
 
 ```jsonc
 {
-  "outcome": "SUCCEEDED|FAILED|CANCELED",
+  "outcome": "IN_PROGRESS|SUCCEEDED|FAILED|CANCELED|SKIPPED",
   "failureOrigin": "ADU_MANAGED_RESOURCE|AGENT_CORE|DEVICE|...",
   "resultCode": -1,
   "extendedResultCodes": "c00e5011",   // comma-separated hex string
-  "resultDetails": "Failed to download update payload from CDN."
+  "resultDetails": "Failed to download update payload from CDN.",
+  "stepResults": { "step_0": { /* same fields */ } }
 }
 ```
 
@@ -462,21 +475,26 @@ sequenceDiagram
 
 - **Poll, never wait.** The agent owns the cadence. A missed poll is not an error and there is no
   offer to lose, which is why a reconnect needs no replay of ADU subscriptions — there are none.
-- **`installedUpdateId` is the correlation key**, sent on every check. There is no workflow id on the
-  device-facing contract and no per-device retry: once a device reaches terminal failure, the user
-  must cancel and reschedule the run.
-- **Report status is terminal-only and durable.** A result produced while disconnected is held and
-  sent on the next successful call, so an install that completes across a reboot still reports.
-- **ADU never drives the connection.** It does not open, close, or force a reconnect. It does gate
-  the *first* `open()`, via the bootstrap check in §7.1.
-- **Compatibility properties are opaque key/value pairs** reported by the agent; ADU uses them to
-  compute a device class and match deployments. The agent assigns no meaning to them.
+- **`workflowId` is the correlation key.** It arrives in `updateMetadata` and is echoed on the
+  report. Reporting is **idempotent on `workflowId` alone**; a conflicting terminal result for the
+  same id is rejected as a conflict.
+- **The device is the sole retrier.** The gateway fails fast with one attempt per hop. The agent
+  honours `Retry-After` on throttling and retries `ReportDeviceUpdateStatus` until it is acked — a
+  report is a durable write and must not be lost.
+- **Drive behaviour from the machine-readable error code, never the HTTP status.** A stale
+  `agentInfoETag` means resend the full `agentInfo`; a stale `serviceConfigETag` means re-ask without
+  it; an unlinked update account means "no update service configured", which is not a failure.
+- **"No update" is a success.** It is a 200 with the update metadata omitted, not an error.
+- **ADU never drives the connection.** It does not open, close, or force a reconnect. It does
+  sequence ahead of the *first* `open()`, via the advisory bootstrap check in §7.1.
+- **Compatibility properties are opaque key/value pairs** (1–5) reported by the agent alongside an
+  opaque `agentProfile`; the service combines them into a device class. The agent assigns them no
+  meaning.
 - **The gateway is a channel parameter.** Bootstrap always uses DPS; operational uses DPS in the
-  Ignite '26 preview and IoT Hub afterwards. This SDK plans to expose the operational channel as a
-  gen2 feature client ([eng/client-separation.md](eng/client-separation.md) §8), but the service
-  contract binds ADU to the updating APIs, not to a connection profile.
-- **Known preview gap:** the interim DPS operational path depends on the DPS enrollment group
-  continuing to exist. Deleting it breaks operational updating.
+  Ignite '26 preview and IoT Hub afterwards, with no device-contract change. This SDK plans to
+  expose the operational channel as a gen2 feature client
+  ([eng/client-separation.md](eng/client-separation.md) §8), but the service contract binds ADU to
+  the updating operations, not to a connection profile.
 
 ---
 
@@ -488,15 +506,15 @@ deferred effects — they do not happen inline.
 
 ```mermaid
 flowchart TB
-    BOOT["Agent boot"] --> BCHK["ADUv2 bootstrap check<br/>RequestBootstrapUpdate via DPS<br/>onboarding auth"]
-    BCHK -->|"update available"| BINST["Verify, download, install,<br/>ReportStatus, re-check"]
+    BOOT["Agent boot"] --> BCHK["ADUv2 bootstrap check<br/>GetOnboardingDeviceUpdate via DPS"]
+    BCHK -->|"update available"| BINST["Verify, download, install,<br/>report, re-check"]
     BINST --> BCHK
-    BCHK -->|"no update"| IDLE["IDLE"]
+    BCHK -->|"no update, or advisory failure"| IDLE["IDLE"]
 
     IDLE -->|"open() with id_scope"| REG["DPS register<br/>CSR optional"]
     IDLE -->|"open() with host"| CRED
 
-    REG --> ASSIGN["Assignment:<br/>assignedHub, deviceId,<br/>connectionProfile,<br/>issuedCertificateChain,<br/>ADU accountId"]
+    REG --> ASSIGN["Assignment:<br/>assignedHub, deviceId,<br/>connectionProfile,<br/>issuedCertificateChain"]
     ASSIGN --> STORE1["Store issued chain"]
     STORE1 --> PROFILE{"connectionProfile"}
 
@@ -512,7 +530,7 @@ flowchart TB
 
     CONNECTED --> CRENEW["Cert renewal:<br/>send_csr, 202 then 200"]
     CRENEW -.->|"new chain used on<br/>the next connect"| CRED
-    CONNECTED --> ARENEW["ADUv2 operational check:<br/>report properties, then poll<br/>RequestUpdate / ReportStatus"]
+    CONNECTED --> ARENEW["ADUv2 operational check:<br/>poll GetDeviceUpdate,<br/>ReportDeviceUpdateStatus"]
 
     CONNECTED -->|"close()"| DISC["DISCONNECTING"] --> IDLE
     CONNECTED --> DROP{"drop or error"}
@@ -520,7 +538,7 @@ flowchart TB
     DROP -->|"reconnect enabled"| RECON["RECONNECTING<br/>exponential backoff + jitter"]
     RECON -->|"DPS configured"| REG
     RECON -->|"direct host"| CRED
-    ARENEW -.->|"installedUpdateId and<br/>unsent installResult persisted"| RECON
+    ARENEW -.->|"workflowId and unsent<br/>report persisted"| RECON
 ```
 
 Reading it as four overlapping concerns:
@@ -528,7 +546,7 @@ Reading it as four overlapping concerns:
 | Concern | Onboarding (DPS gateway, onboarding auth) | Renewal (post-`CONNECTED`, operational auth) |
 | --- | --- | --- |
 | **Certificates** | CSR in the registration, issued chain in the assignment | `send_csr` over the hub; new chain applies on the next connect |
-| **ADUv2** | `RequestBootstrapUpdate` loop **before** registration; ADU account id returned in the assignment | Agent property report, then polled `RequestUpdate` / `ReportStatus` (Hub post-Ignite, DPS in preview) |
+| **ADUv2** | `GetOnboardingDeviceUpdate` loop **before** registration, advisory | Polled `GetDeviceUpdate` / `ReportDeviceUpdateStatus` (DPS in preview, Hub afterwards) |
 | **Connection profile** | Declared in the assignment; selects MQTT version and generation | Re-resolved on every reconnect that goes through DPS |
 | **Connection** | DPS phases inside `CONNECTING` | Backoff-driven reconnect replays the whole path |
 
@@ -550,4 +568,4 @@ complete first.
 | Connection profile enum, `az_iot_hub_profile`, `get_hub_profile()` | [eng/client-separation.md](eng/client-separation.md) §2 | planned — blocked on the DPS api-version |
 | `adu_core` / `az_iot_adu_channel` split | [eng/client-separation.md](eng/client-separation.md) §8 | planned |
 | ADU engine internals reused by ADUv2 | [c/src/features/adu](../src/features/adu) | implemented (ADUv1 API to be removed) |
-| ADUv2 device contract | *Azure Device Update v2 — Public Preview*, linked above | planned — Hub gateway post-Ignite |
+| ADUv2 device contract | [eng/aduv2-spec.md](eng/aduv2-spec.md) | planned — DPS fronts both flows for Ignite '26 |
