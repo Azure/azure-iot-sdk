@@ -7,6 +7,16 @@ C99 client SDK for IoTHub-Next (AEG), with selectable Classic-vs-Next protocol b
 
 The public surface is a single low-level, single-threaded, callback-based API with a `do_work()` pump. Embedded-friendly, no internal threads, no hidden allocations on the hot path.
 
+> **In flight: the feature clients are being split by hub generation.** This
+> document describes the *current* feature clients, which branch internally on a
+> runtime Classic-vs-Next switch.
+> [eng/client-separation.md](eng/client-separation.md) specifies the target:
+> per-generation feature clients (`az_iot_gen1_*` / `az_iot_gen2_*`) over the
+> **same single connection client**, which keeps DPS internal and reports the
+> resolved generation through `az_iot_connection_client_get_hub_profile()`.
+> Where the two documents disagree, the separation document is the intended end
+> state and this one is the status quo.
+
 ### MQTT version constraint
 
 DPS and IoTHub-Classic speak **MQTT v3.1.1 only**. IoTHub-Next speaks **MQTT v5 only**. Even when a single underlying library can do both versions, the SDK treats each version as a **distinct adapter instance** with its own configuration, lifecycle, and (when needed) its own underlying client object. The MQTT abstraction below makes this explicit so that:
