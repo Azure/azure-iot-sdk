@@ -7,7 +7,8 @@
 
 Today one set of feature clients serves both hub generations. `az_iot_twin_client`,
 `az_iot_telemetry_client` and friends each branch internally on
-`profile->flavor`, resolved through two static tables in
+`profile->flavor` — 13 comparisons across the five feature clients — resolved
+through two static tables in
 [`protocol_profile.c`](../../src/core/protocol_profile.c). The result is that
 every public feature API is the union of what both generations can do, and the
 parts that only one generation supports are discoverable only at run time.
