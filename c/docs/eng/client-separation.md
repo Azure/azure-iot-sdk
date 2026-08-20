@@ -37,10 +37,19 @@ az_iot_connection_client_register_mqtt_factory(&conn, az_iot_paho_factory_create
 az_iot_connection_client_register_mqtt_factory(&conn, az_iot_paho_factory_create_v5());
 az_iot_connection_client_open(&conn);             /* DPS runs internally       */
 
-/* open() is non-blocking; pump until the state callback reports CONNECTED. */
-while (state != AZ_IOT_CONN_STATE_CONNECTED)
+/* open() is non-blocking, and it can end in FAULTED rather than CONNECTED.
+ * Bound the wait and stop on a terminal state -- see samples/telemetry/main.c. */
+for (int i = 0; i < 1200 && state != AZ_IOT_CONN_STATE_CONNECTED; ++i)
 {
-  az_iot_connection_client_do_work(&conn, 100);
+  az_iot_connection_client_do_work(&conn, 50);
+  if (state == AZ_IOT_CONN_STATE_FAULTED)
+  {
+    break;
+  }
+}
+if (state != AZ_IOT_CONN_STATE_CONNECTED)
+{
+  return 1;   /* never reached CONNECTED: there is no profile to read */
 }
 
 /* The connection now knows which hub generation it landed on. */
@@ -148,7 +157,7 @@ it has two fields and no shipped callers, is the point.
 ### An unknown profile fails the connection
 
 **Decided:** if DPS returns a profile this SDK does not recognise, the connection
-fails with `AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED`. The profile — including
+fails with `AZ_IOT_ERR_HUB_PROFILE_UNSUPPORTED`. The profile — including
 `connection_profile_raw` — remains readable so the application can log it, report it, or
 trigger a firmware update.
 
@@ -199,12 +208,23 @@ Candidate mechanisms:
 
 | | Approach | Trade-off |
 |---|---|---|
-| A | Fork the archived repo, carry patches as commits, repoint `AZ_SDK_C_REPO`/`_TAG` | Smallest change here; full history of what we changed and why; needs a fork under an org we control |
-| B | Keep the pin, add `PATCH_COMMAND` with a `.patch` file in this repo | Patch is reviewable in our PRs; but `PATCH_COMMAND` re-runs on reconfigure and fails once applied, so it needs an `git apply --check ||` guard |
+| ~~A~~ | ~~Fork the archived repo, carry patches as commits, repoint `AZ_SDK_C_REPO`/`_TAG`~~ | **Not available** — leadership decision; a fork is not an option |
+| **B** | **Keep the pin, add `PATCH_COMMAND` with a `.patch` file in this repo** | **Chosen.** The patch is reviewable in our own PRs and the pin stays honest. `PATCH_COMMAND` re-runs on reconfigure and fails once applied, so it needs a `git apply --check ||` guard |
 | C | Vendor the source into `c/deps/azure-sdk-for-c` | Hermetic and honest about ownership — archived source will never move; costs thousands of files in-tree and needs explicit coverage/style exclusions |
 
-A is the recommendation: it keeps this repo's diffs about this repo, and an
-archived upstream means the fork will never diverge underneath us.
+**Decided: B.** The re-run hazard is the one thing to get right — an unguarded
+`PATCH_COMMAND` turns the second `cmake` invocation into a failure, which is a
+miserable first experience for anyone who reconfigures. Guard it so applying an
+already-applied patch is a no-op, and cover that with a build that configures
+twice.
+
+**The dead gitlink is reconciled as part of this.** `c/deps/azure-sdk-for-c` is
+registered in `.gitmodules` but uninitialised, consumed by nothing, and pinned to
+exactly the commit tag `1.5.0` resolves to. Under B nothing needs a submodule, so
+the entry and its directory are **removed** rather than adopted — a dead gitlink
+that shadows the real dependency will cost somebody an afternoon. That also
+restores the "no git submodules" rule stated in [devnotes.md](../devnotes.md) and
+the README, which the repo currently violates.
 
 > **Worth stating plainly:** for *this particular* change, patching is not
 > strictly required. The api-version is only consumed by
@@ -230,13 +250,18 @@ Initializing a feature client against a connection of the other generation
 /* conn resolved to GEN2 */
 az_iot_gen1_twin_client twin;
 az_iot_result r = az_iot_gen1_twin_client_init(&twin, &conn);
-/* r == AZ_IOT_ERR_HUB_GENERATION_MISMATCH */
+/* r == AZ_IOT_ERR_HUB_PROFILE_MISMATCH */
 ```
 
 A dedicated result code is added rather than reusing `AZ_IOT_ERR_NOT_SUPPORTED`,
 because this is the single most likely porting mistake and it deserves an
 unambiguous diagnostic. The client is left uninitialized and unusable; there is
 no partial-init state to unwind.
+
+The name is **`HUB_PROFILE`**, not `HUB_GENERATION`: the profile is the thing the
+service actually reports, and the generation is our own derived label for it.
+Error codes should name the wire concept. The sibling code for an unrecognised
+profile is therefore `AZ_IOT_ERR_HUB_PROFILE_UNSUPPORTED`.
 
 The check requires the generation to be known, which means **feature clients must
 be initialized after the connection is open**. That is a change: today's samples
@@ -268,6 +293,20 @@ This is the concrete reason the split is worth doing: today
 opens by promising "one seamless API, transport chosen by hub flavor", and then
 `az_iot_file_upload_client_get_sas_uri()` returns `AZ_IOT_ERR_NOT_SUPPORTED` at
 run time on gen2. Both generations pay for a surface neither fully implements.
+
+### One documented exception: runtime CSR renewal
+
+`az_iot_connection_client_send_csr()` is Classic-only and returns
+`AZ_IOT_ERR_NOT_SUPPORTED` on gen2 — by the rule above, exactly the thing that
+should not exist. It **stays** on the shared connection client anyway, as a single
+function, matching what .NET does.
+
+The rule is worth keeping where it pays: in the feature clients, where the whole
+point is that each generation's header describes only what that generation can
+do. Manufacturing a gen1 certificate-management client purely to satisfy the rule
+would cost users an extra object to construct and wire up, for no gain in
+clarity. Naming the exception is more honest than quietly widening the rule until
+it accommodates it.
 
 ### File upload is redesigned, not just renamed
 
@@ -375,13 +414,23 @@ carrying delivery and reporting.
 | Channel | Generation | Status |
 |---|---|---|
 | Twin-based (ADUv1) | gen1 | Works today; **deprecated** on arrival |
-| DPS onboarding + AEG hub (ADUv2) | gen2 | **Declared, not implemented** |
+| DPS-fronted RPC (ADUv2) | gen2 | **Declared, not implemented** |
 
-> **`adu-feature-support.md` Part B is stale.** It describes ADUv2 as a
-> device-initiated HTTPS RPC protocol reporting to Azure Device Registry; the
-> current direction is DPS onboarding plus the AEG hub. The channel vtable is
-> shaped so either answer plugs in without touching the verify/download/install
-> core, because the service contract is not final.
+> **ADUv2 is specified elsewhere; this section only states where the seam is.**
+> See [aduv2-spec.md](aduv2-spec.md) for the wire contract and
+> [adu-client-plan.md](adu-client-plan.md) for SDK status and cost. Both landed
+> with [PR #24](https://github.com/Azure/azure-iot-sdk/pull/24), which also
+> reduced `adu-feature-support.md` to a superseded stub — do not treat that file
+> as current.
+
+One consequence of the ADUv2 shape is worth pulling into this document, because
+it constrains the seam: the device's update traffic goes **device → DPS → ADR →
+ADU**, reusing the existing DPS endpoint and DPS device auth. The device never
+talks to ADU directly and gains no new credentials. So the ADUv2 channel is not
+"another hub feature" sitting beside twin and telemetry — it hangs off the
+provisioning path, and for the bootstrap case it runs **before the device is
+provisioned at all**. A channel vtable that assumed "there is a connected hub
+session underneath me" would be the wrong shape.
 
 ADUv1 keeps working through the split. Dropping it is a separate decision with
 its own deprecation window, not a side effect of re-layering.
@@ -398,19 +447,69 @@ feature clients must be created **after** the connection is open. Today
 This is a real ergonomic cost and it is worth stating plainly rather than
 discovering it in review: a feature client can no longer be a long-lived
 member constructed alongside the connection at start-up. Applications that
-subscribe to inbound traffic must register handlers after `CONNECTED`, and
-must re-establish feature clients if a reconnect could change generation.
+subscribe to inbound traffic must register handlers after `CONNECTED`.
 
-Two things to settle:
+### The profile can change while the device is running
 
-- **Can a reconnect change the generation?** If DPS can reassign a device from
-  Classic to AEG mid-life, every feature client held by the application becomes
-  invalid at that moment and the application must be told. If reassignment
-  requires a restart, this problem disappears. This is the single most important
-  unanswered question in this document.
-- **Should a mismatched feature client fail at init, or is a
-  "generation changed" connection-state callback also required?** Failing at
-  init handles the start-up case; it does not handle the mid-life case.
+This is not hypothetical, and it is the reason init-time checking alone is not
+enough. A service admin can move a device to another hub, and that hub may be a
+new AEG/IoT hub. Nobody forces the client to disconnect — but the **previous hub**
+may drop it, and the ordinary reconnect path re-runs provisioning, at which point
+the device discovers it has been assigned somewhere else, possibly with a
+different profile.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant App
+    participant Conn as az_iot_connection_client
+    participant DPS
+    participant Old as Previously assigned hub
+    participant New as Newly assigned hub
+
+    Note over App,Old: Steady state - profile = classic, app holds gen1 feature clients
+    App->>Conn: az_iot_gen1_twin_client_init(...)
+
+    Note over Old: Admin reassigns the device service-side (no forced disconnect)
+    Old--xConn: transport drop
+    Conn->>Conn: RECONNECTING - reconnect re-runs provisioning
+    Conn->>DPS: REGISTER
+    DPS-->>Conn: ASSIGNED { assignedHub = New, connectionProfile = mqttV5 }
+    Conn->>New: CONNECT (MQTT v5) + presence handshake
+    New-->>Conn: birth ack
+
+    Note over App,Conn: Profile changed classic -> mqttV5.<br/>Every gen1 feature client the app holds is now stale.
+    Conn-->>App: CONNECTED (app must re-read the profile)
+    App->>App: destroy gen1 clients, construct gen2 clients
+```
+
+**What the application has to do** — and this must be unambiguous in the shipped
+documentation, because getting it wrong is silent:
+
+1. Re-read `az_iot_connection_client_get_hub_profile()` after **every** transition
+   into `CONNECTED`, not only the first.
+2. If the profile differs from the one its feature clients were built against,
+   destroy them and construct the other generation's.
+3. Treat in-flight operations on the old clients as lost, consistent with
+   [connection.md §5.3](../connection.md), which already records that twin
+   GET/PATCH, method responses and in-flight telemetry do not survive a reconnect.
+
+What the SDK owes the application in return is **not yet decided**: whether the
+profile change is signalled through a distinct connection-state reason, a
+dedicated callback, or purely by the documented re-read requirement; and whether
+calls on a now-stale feature client fail with a distinct result or are simply
+undefined. Init-time `AZ_IOT_ERR_HUB_PROFILE_MISMATCH` covers the start-up case
+and does nothing for this one.
+
+Tracked as **[AB#39350066](https://dev.azure.com/msazure/One/_workitems/edit/39350066)**
+— *Define device behaviour when a hub reassignment changes the connection profile*.
+
+Open, and deliberately called out because it makes the invalidation bidirectional
+rather than one-way: **can a device be rolled back to a classic IoT Hub?** Every
+example above moves gen1 → gen2. If gen2 → gen1 is also reachable, then gen1
+feature clients must handle being constructed *after* a gen2 session, and the
+"migrate forward and delete the Classic code" story in
+[§1](#1-shape) stops being a one-way door.
 
 ---
 
@@ -466,11 +565,11 @@ generation's client needs its own unit suite against the in-memory mock, and eac
 needs e2e coverage against a real hub of that generation. New cases that do not
 exist today:
 
-- mismatched init returns `AZ_IOT_ERR_HUB_GENERATION_MISMATCH`, per feature
+- mismatched init returns `AZ_IOT_ERR_HUB_PROFILE_MISMATCH`, per feature
 - `"classic"` and `"mqttV5"` each map to the right profile and MQTT version
 - **absent** `connectionProfile` resolves to `classic`, and **`null`** does too
 - an **unrecognised** profile string fails the connection with
-  `AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED` and is still readable verbatim
+  `AZ_IOT_ERR_HUB_PROFILE_UNSUPPORTED` and is still readable verbatim
   through `connection_profile_raw` — the forward-compatibility case the spec exists to
   support, and the one no current test covers
 - the DPS CONNECT username carries `api-version=2026-11-02-preview`
@@ -479,9 +578,11 @@ exist today:
 - gen1 file upload with no HTTP transport supplied fails at init
 - gen2 file upload exposes no HTTP transport at all (compile-level)
 
-e2e needs provisioned resources for **both** generations. Whether the external
-`iot-sdks-e2e-fx` provisioning module can create an AEG hub yet is unresolved,
-and gates the e2e half of this.
+e2e needs provisioned resources for **both** generations. `iot-sdks-e2e-fx` cannot
+provision an AEG hub today — that arrives once gen2 is deployable through the
+Azure CLI, and the same script is then used for gen2. Until then the gen2 e2e leg
+cannot exist, and gen2 coverage comes from unit tests against the in-memory mock
+plus the conformance suites.
 
 ---
 
@@ -491,8 +592,8 @@ and gates the e2e half of this.
 |---|---|---|---|
 | P0a | Purge the dead "easy"/API B remnants | — | **Done** (`db074c0`) |
 | P0b | This document + doc reconciliation | — | |
-| P1a | Establish the `azure-sdk-for-c` patch mechanism and raise the DPS api-version to `2026-11-02-preview` | — | Prerequisite for everything. Without it `connectionProfile` never arrives. Also resolve the dead `c/deps/azure-sdk-for-c` gitlink. |
-| P1b | `az_iot_hub_profile` + `get_hub_profile()` + `az_iot_connection_profile` + `AZ_IOT_ERR_HUB_GENERATION_MISMATCH` + `AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED`; parse `connectionProfile` in the existing ASSIGNED-payload walk | P1a | Additive. No feature client moves. |
+| P1a | Add the `azure-sdk-for-c` `PATCH_COMMAND` mechanism, raise the DPS api-version to `2026-11-02-preview`, and remove the dead `c/deps/azure-sdk-for-c` submodule | — | Prerequisite for everything. Without it `connectionProfile` never arrives. |
+| P1b | `az_iot_hub_profile` + `get_hub_profile()` + `az_iot_connection_profile` + `AZ_IOT_ERR_HUB_PROFILE_MISMATCH` + `AZ_IOT_ERR_HUB_PROFILE_UNSUPPORTED`; parse `connectionProfile` in the existing ASSIGNED-payload walk | P1a | Additive. No feature client moves. |
 | P2 | Split the feature clients, one PR each: telemetry → c2d → direct methods → twin | P1 | Mutually parallel. Mismatch check per client. |
 | P3 | File upload redesign — HTTP transport becomes gen1-only | P1 | Larger than the others; own PR. |
 | P4 | Delete `protocol_profile.c`'s flavor tables and the last `profile->flavor` branches | P2, P3 | |
@@ -527,27 +628,37 @@ baseline.
 - **The DPS exchange moves to the `2026-11-02-preview` api-version**, and
   `azure-sdk-for-c` is patched in this repo to allow it. The upstream repo is
   archived, so there is no alternative and no risk of divergence.
+- **The patch mechanism is `PATCH_COMMAND`** ([§2](#blocker-the-api-version-must-be-raised)),
+  with a `.patch` file in this repo and a guard so re-running configure is a
+  no-op. Forking the archived repo is not available. The dead
+  `c/deps/azure-sdk-for-c` submodule is removed as part of the same change.
 - **`classic` maps to gen1, `mqttV5` maps to gen2**, for now.
 - **An unrecognised profile fails the connection.** The profile is not expected
   to break, but a device should be defensive about service-side hazards it
   cannot verify.
+- **Runtime CSR renewal stays on the shared connection client** as a single
+  function, matching .NET. This is a deliberate, documented exception to
+  [§4](#4-no-cross-generation-constructs-on-the-public-surface): the rule buys
+  more in the feature clients, where the whole point is that each generation's
+  header describes only what that generation can do, than it does in forcing a
+  certificate-management client into existence purely to satisfy the rule. It
+  is more seamless for users this way. `§4` is amended to name this exception
+  rather than pretend it does not exist.
 
 ## 14. Open questions
 
-1. **Which patch mechanism** — fork and repoint, `PATCH_COMMAND`, or vendor
-   ([§2](#blocker-the-api-version-must-be-raised)). Also decides whether the dead
-   `c/deps/azure-sdk-for-c` submodule is adopted or removed.
-2. **Can a reconnect change the profile?** [§9](#9-consequence-init-ordering-changes).
-   Determines whether feature-client invalidation needs an API.
-3. **Where does runtime CSR renewal live?** `az_iot_connection_client_send_csr()`
-   is Classic-only today and returns `AZ_IOT_ERR_NOT_SUPPORTED` on gen2 — exactly
-   the cross-generation construct [§4](#4-no-cross-generation-constructs-on-the-public-surface)
-   forbids, but it sits on the shared connection client. Move it to a gen1
-   certificate-management feature client, or accept the exception? .NET keeps it
-   on the connection client.
-4. **Is gen1 frozen?** If new features are gen2-only, that needs stating so
-   reviewers stop asking for parity.
-5. **e2e for gen2** — does `iot-sdks-e2e-fx` support provisioning an AEG hub?
+1. **Can a device be rolled back to a classic IoT Hub?**
+   ([§9](#the-profile-can-change-while-the-device-is-running)) Decides whether
+   profile invalidation is one-way or bidirectional. Tracked as
+   [AB#39350066](https://dev.azure.com/msazure/One/_workitems/edit/39350066).
+2. **What does the SDK owe the application when the profile changes mid-life?**
+   A distinct connection-state reason, a dedicated callback, or a documented
+   re-read requirement — and whether calls on a stale feature client fail with a
+   distinct result. Same work item.
+3. **The struct-versioning pattern for `az_iot_hub_profile`**
+   ([§2](#shape)) is specified but not implemented, and the scope (this struct
+   only, or every caller-allocated public struct) is undecided. Tracked as
+   [AB#39350065](https://dev.azure.com/msazure/One/_workitems/edit/39350065).
 
 ---
 
