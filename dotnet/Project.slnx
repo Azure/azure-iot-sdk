@@ -1,16 +1,23 @@
 <Solution>
-  <Folder Name="/iot hub only samples/">
-    <Project Path="iothub only samples/SetupDevice/SetupDevice.csproj" />
-    <Project Path="iothub only samples/TestDevice/TestDevice.csproj" />
-  </Folder>
   <Folder Name="/samples/">
-    <Project Path="samples/TwinClientSample/TwinClientSample.csproj" Id="879a8071-71e3-4c19-b220-2d337c3b54ed" />
-    <Project Path="samples/CertificateManagementSample/CertificateManagementSample.csproj" Id="9cbac237-d923-4a86-a44f-1b5547a69752" />
-    <Project Path="samples/CustomMqttClientSample/CustomMqttClientSample.csproj" Id="d9e54799-f86c-440a-b7a7-63f4fc150000" />
-    <Project Path="samples/DirectMethodsSample/DirectMethodsClientSample.csproj" />
-    <Project Path="samples/TelemetryClientSample/TelemetryClientSample.csproj" Id="648020f8-cf99-467d-9196-258cbc909fd4" />
-    <Project Path="samples/FileUploadSample/FileUploadSample.csproj" Id="76fb8ccd-23dc-4efd-94bc-218306f6d8eb" />
     <Project Path="samples/SetupSampleDevice/SetupSampleDevice.csproj" Id="7bd6b448-6702-4afa-921c-53f0f5ee6aae" />
+  </Folder>
+  <Folder Name="/samples/Gen2/">
+    <Project Path="samples/Gen2/DirectMethodsSample/DirectMethodsClientSample.csproj" />
+    <Project Path="samples/Gen2/TelemetryClientSample/TelemetryClientSample.csproj" />
+    <Project Path="samples/Gen2/TwinClientSample/TwinClientSample.csproj" />
+  </Folder>
+  <Folder Name="/samples/Gen2/IotHubOnlySamples/">
+    <Project Path="samples/Gen2/IotHubOnlySamples/SetupDevice/SetupDevice.csproj" />
+    <Project Path="samples/Gen2/IotHubOnlySamples/TestDevice/TestDevice.csproj" />
+  </Folder>
+  <Folder Name="/samples/Unified/">
+    <Project Path="samples/Unified/CertificateManagementSample/CertificateManagementSample.csproj" Id="9cbac237-d923-4a86-a44f-1b5547a69752" />
+    <Project Path="samples/Unified/CustomMqttClientSample/CustomMqttClientSample.csproj" Id="d9e54799-f86c-440a-b7a7-63f4fc150000" />
+    <Project Path="samples/Unified/DirectMethodsSample/DirectMethodsClientSample.csproj" />
+    <Project Path="samples/Unified/FileUploadSample/FileUploadSample.csproj" Id="76fb8ccd-23dc-4efd-94bc-218306f6d8eb" />
+    <Project Path="samples/Unified/TelemetryClientSample/TelemetryClientSample.csproj" Id="648020f8-cf99-467d-9196-258cbc909fd4" />
+    <Project Path="samples/Unified/TwinClientSample/TwinClientSample.csproj" Id="879a8071-71e3-4c19-b220-2d337c3b54ed" />
   </Folder>
   <Folder Name="/src/">
     <Project Path="src/Microsoft.Azure.Devices.Client/Microsoft.Azure.Devices.Client.csproj" />

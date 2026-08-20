@@ -1,5 +1,6 @@
 // Copyright (c) Microsoft. All rights reserved.
-// Licensed under the MIT license. See LICENSE file in the project root for full license information.
+// Licensed under the MIT license. See LICENSE file in the project root for full license
+// information.
 
 /* SPDX-License-Identifier: MIT */
 /* Real ESP32 OTA platform hooks for the ADU client.
@@ -22,29 +23,30 @@
 #include "esp_ota_ops.h"
 
 #ifdef __cplusplus
-extern "C" {
+extern "C"
+{
 #endif
 
-typedef struct adu_ota_ctx
-{
-    const char* installed_version;      /* this firmware's baked-in version */
+  typedef struct adu_ota_ctx
+  {
+    const char* installed_version; /* this firmware's baked-in version */
 
     const esp_partition_t* update_partition; /* inactive slot being written */
-    esp_ota_handle_t       ota_handle;
-    bool                   ota_in_progress;
-    size_t                 written;     /* bytes written to the partition */
+    esp_ota_handle_t ota_handle;
+    bool ota_in_progress;
+    size_t written; /* bytes written to the partition */
 
-    bool reboot_pending;                /* install asked for a reboot */
-} adu_ota_ctx;
+    bool reboot_pending; /* install asked for a reboot */
+  } adu_ota_ctx;
 
-/* Build the platform-hooks vtable bound to @p ctx. The caller owns @p ctx and
- * must keep it alive for the lifetime of the ADU client. */
-az_iot_adu_platform_hooks adu_esp32_ota_hooks(adu_ota_ctx* ctx);
+  /* Build the platform-hooks vtable bound to @p ctx. The caller owns @p ctx and
+   * must keep it alive for the lifetime of the ADU client. */
+  az_iot_adu_platform_hooks adu_esp32_ota_hooks(adu_ota_ctx* ctx);
 
-/* Confirm the running image is healthy so the bootloader does not roll it back
- * (no-op unless this boot is pending verification). Call once the device has
- * proven itself — e.g. after it connects to IoT Hub. */
-void adu_esp32_ota_mark_valid(void);
+  /* Confirm the running image is healthy so the bootloader does not roll it back
+   * (no-op unless this boot is pending verification). Call once the device has
+   * proven itself — e.g. after it connects to IoT Hub. */
+  void adu_esp32_ota_mark_valid(void);
 
 #ifdef __cplusplus
 }

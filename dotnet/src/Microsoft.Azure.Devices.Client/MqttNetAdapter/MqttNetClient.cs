@@ -8,6 +8,9 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
 {
     public class MqttNetClient : Mqtt.IMqttClient 
     {
+        private bool _isDisposed = false;
+        private bool _isUserSuppliedMqttClient = false;
+
         private MQTTnet.IMqttClient _underlyingClient;
 
         internal MqttConnectAck? mostRecentConnectAck;
@@ -17,6 +20,7 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
 
         public MqttNetClient(MQTTnet.IMqttClient? underlyingClient = null, bool useWebsocket = false, bool enableMqttLogs = false, IWebProxy? proxy = null)
         {
+            _isUserSuppliedMqttClient = underlyingClient != null;
             _underlyingClient = underlyingClient ?? (enableMqttLogs ? new MQTTnet.MqttClientFactory().CreateMqttClient(MqttNetTraceLogger.CreateTraceLogger()) : new MQTTnet.MqttClientFactory().CreateMqttClient());
             _useWebsocket = useWebsocket;
             _proxy = proxy;
@@ -32,6 +36,8 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
 
         public virtual async Task<MqttConnectAck> ConnectAsync(MqttConnect connect, CancellationToken cancellationToken = default)
         {
+            ObjectDisposedException.ThrowIf(_isDisposed, this);
+
             MqttClientOptionsBuilder optionsBuilder;
             if (connect.ProtocolVersion == MqttProtocolVersion.V500)
             {
@@ -132,6 +138,8 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
 
         public virtual async Task DisconnectAsync(MqttDisconnect disconnect, CancellationToken cancellationToken = default)
         {
+            ObjectDisposedException.ThrowIf(_isDisposed, this);
+
             var disconnectBuilder = new MqttClientDisconnectOptionsBuilder()
                 .WithReason(ModelConverter.ToMqttNet(disconnect.Reason))
                 .WithReasonString(disconnect.ReasonString)
@@ -150,12 +158,15 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
 
         public virtual async Task<MqttPublishAck> PublishAsync(MqttPublish publish, CancellationToken cancellationToken = default)
         {
+            ObjectDisposedException.ThrowIf(_isDisposed, this);
+
             var messageBuilder = new MqttApplicationMessageBuilder()
                 .WithContentType(publish.ContentType)
                 .WithTopic(publish.Topic)
                 .WithPayloadFormatIndicator(ModelConverter.ToMqttNet(publish.PayloadFormatIndicator))
                 .WithPayload(publish.PayloadAsReadOnlySequence)
                 .WithQualityOfServiceLevel(ModelConverter.ToMqttNet(publish.QualityOfServiceLevel))
+                .WithCorrelationData(publish.CorrelationData)
                 .WithMessageExpiryInterval(publish.MessageExpiryInterval);
 
             if (publish.UserProperties != null)
@@ -171,6 +182,8 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
 
         public virtual async Task<MqttSubscribeAck> SubscribeAsync(MqttSubscribe mqttSubscribe, CancellationToken cancellationToken = default)
         {
+            ObjectDisposedException.ThrowIf(_isDisposed, this);
+
             var subscribeBuilder = new MqttClientSubscribeOptionsBuilder();
             foreach (var topicFilter in mqttSubscribe.TopicFilters)
             {
@@ -190,6 +203,8 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
 
         public virtual async Task<MqttUnsubscribeAck> UnsubscribeAsync(MqttUnsubscribe unsubscribe, CancellationToken cancellationToken = default)
         {
+            ObjectDisposedException.ThrowIf(_isDisposed, this);
+
             var unsubscribeBuilder = new MqttClientUnsubscribeOptionsBuilder();
             foreach (var topicFilter in unsubscribe.TopicFilters)
             { 
@@ -207,6 +222,31 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
             return ModelConverter.ToGeneric(await _underlyingClient.UnsubscribeAsync(unsubscribeBuilder.Build(), cancellationToken));
         }
 
+        /// <summary>
+        /// Releases the unmanaged resources used by this client and optionally disposes of the managed resources.
+        /// </summary>
+        /// <param name="disposing">true to release both managed and unmanaged resources; false to releases only unmanaged resources.</param>
+        public void Dispose(bool disposing)
+        {
+            _underlyingClient.ApplicationMessageReceivedAsync -= DelegateReceivedPublishAsync;
+            _underlyingClient.ConnectedAsync -= DelegateConnectedAsync;
+            _underlyingClient.DisconnectedAsync -= DelegateDisconnectedAsync;
+
+            if (disposing)
+            {
+                _underlyingClient.Dispose();
+            }
+            else if (!_isUserSuppliedMqttClient)
+            {
+                _underlyingClient.Dispose();
+            }
+
+            _isDisposed = true;
+        }
+
+        /// <summary>
+        /// Releases the unmanaged resources and disposes of the managed resources used by this client 
+        /// </summary>
         public void Dispose()
         {
             _underlyingClient.ApplicationMessageReceivedAsync -= DelegateReceivedPublishAsync;
@@ -214,6 +254,7 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
             _underlyingClient.DisconnectedAsync -= DelegateDisconnectedAsync;
 
             _underlyingClient.Dispose();
+            _isDisposed = true;
         }
 
         public bool IsConnected => _underlyingClient.IsConnected;

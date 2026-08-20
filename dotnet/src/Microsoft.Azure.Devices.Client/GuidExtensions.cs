@@ -17,7 +17,7 @@ namespace Microsoft.Azure.Devices.Client
             }
             try
             {
-                result = new Guid(bytes);
+                result = new Guid(bytes, bigEndian: true);
                 return true;
             }
             catch (Exception ex)

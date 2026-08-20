@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 using Microsoft.Azure.Devices.Client.Mqtt;
-using Microsoft.Azure.Devices.Client.Retry;
+using Microsoft.Azure.Devices.Client.MqttNetAdapter.Session.Retry;
 using System.Diagnostics;
 using System.Net.Sockets;
 
@@ -12,7 +12,7 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session
     {
         private readonly MqttSessionClientOptions _sessionClientOptions;
         private MqttConnect? _mostRecentConnect;
-        private readonly bool _disposed = false;
+        private readonly bool _isDisposed = false;
 
         // "Worker threads" are the threads responsible for polling for enqueued publishes, subscribes, and unsubscribes
         private CancellationTokenSource _workerThreadsTaskCancellationTokenSource = new();
@@ -71,10 +71,7 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session
         /// <exception cref="InvalidOperationException">If this method is called when the client is already managing the connection.</exception>
         public override async Task<MqttConnectAck> ConnectAsync(MqttConnect connect, CancellationToken cancellationToken = default)
         {
-            //TODO once the session client is fully integrated into RPC/Telemetry tests, the default session expiry interval should be 0
-            // so that non-session client applications don't create sessions unknowingly.
-
-            ObjectDisposedException.ThrowIf(_disposed, this);
+            ObjectDisposedException.ThrowIf(_isDisposed, this);
 
             cancellationToken.ThrowIfCancellationRequested();
 
@@ -107,7 +104,7 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session
         /// <param name="cancellationToken">The cancellation token.</param>
         public override async Task DisconnectAsync(MqttDisconnect? options = null, CancellationToken cancellationToken = default)
         {
-            ObjectDisposedException.ThrowIf(_disposed, this);
+            ObjectDisposedException.ThrowIf(_isDisposed, this);
             cancellationToken.ThrowIfCancellationRequested();
 
             if (options != null && options.SessionExpiryInterval != 0)
@@ -150,7 +147,7 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session
         /// </remarks>
         public override async Task<MqttPublishAck> PublishAsync(MqttPublish applicationMessage, CancellationToken cancellationToken = default)
         {
-            ObjectDisposedException.ThrowIf(_disposed, this);
+            ObjectDisposedException.ThrowIf(_isDisposed, this);
             cancellationToken.ThrowIfCancellationRequested();
 
             TaskCompletionSource<MqttPublishAck> tcs = new();
@@ -194,7 +191,7 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session
         /// </remarks>
         public override async Task<MqttSubscribeAck> SubscribeAsync(MqttSubscribe options, CancellationToken cancellationToken = default)
         {
-            ObjectDisposedException.ThrowIf(_disposed, this);
+            ObjectDisposedException.ThrowIf(_isDisposed, this);
             cancellationToken.ThrowIfCancellationRequested();
 
             TaskCompletionSource<MqttSubscribeAck> tcs = new();
@@ -235,7 +232,7 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session
         /// </remarks>
         public override async Task<MqttUnsubscribeAck> UnsubscribeAsync(MqttUnsubscribe options, CancellationToken cancellationToken = default)
         {
-            ObjectDisposedException.ThrowIf(_disposed, this);
+            ObjectDisposedException.ThrowIf(_isDisposed, this);
             cancellationToken.ThrowIfCancellationRequested();
 
             TaskCompletionSource<MqttUnsubscribeAck> tcs = new();
@@ -261,9 +258,9 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session
             return await tcs.Task.WaitAsync(cancellationToken);
         }
 
-        public void Dispose(CancellationToken cancellationToken = default)
+        public new void Dispose()
         {
-            if (!_disposed)
+            if (!_isDisposed)
             {
                 base.DisconnectedAsync -= InternalDisconnectedAsync;
 
@@ -478,7 +475,7 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session
         {
             lock (_ctsLockObj)
             {
-                if (!_disposed)
+                if (!_isDisposed)
                 {
                     Trace.TraceInformation("Starting the session client's worker thread");
                     _ = Task.Run(() => ExecuteQueuedItemsAsync(_workerThreadsTaskCancellationTokenSource.Token), _workerThreadsTaskCancellationTokenSource.Token);

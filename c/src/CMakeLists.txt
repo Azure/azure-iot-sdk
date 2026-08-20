@@ -11,6 +11,7 @@ add_library(az_iot_core
     core/reconnect.c
     core/dispatch.c
     core/protocol_profile.c
+    core/span_writer.c
     core/certificate_provider_pem.c
     features/twin/twin_client.c
     features/direct_method/direct_method_client.c
@@ -54,4 +55,5 @@ target_link_libraries(az_iot_core
 )
 
 az_iot_apply_warnings(az_iot_core)
+az_iot_apply_coverage(az_iot_core)
 

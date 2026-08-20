@@ -47,10 +47,13 @@ on:
       - 'c/adapters/adu/**'
       - 'c/inc/azure/iot/az_iot_adu.h'
       - 'c/samples/adu/**'
-      # The e2e harness (shared device fixture + ADU test + service facade) and
-      # this workflow itself: changes here must be validated against real Azure.
+      # The e2e harness (shared device fixture + ADU test + service facade), this
+      # workflow itself, and the provisioning wiring it depends on: changes here
+      # must be validated against real Azure.
       - 'c/tests/e2e/**'
       - '.github/workflows/ci-c-e2e-adu.yml'
+      - '.github/actions/provision-e2e-resources/**'
+      - '.github/actions/destroy-e2e-resources/**'
   schedule:
     - cron: '30 11 * * *'  # Nightly at 4:30am PST (offset from the fast workflow)
 
@@ -63,6 +66,14 @@ permissions:
   contents: read
   id-token: write   # required for azure/login OIDC
 
+# Resource group name derived from the RUN, not from a random GUID published as a
+# job output. A CANCELLED job does not propagate its `outputs`, so a teardown that
+# reads `needs.setup.outputs.rg` receives an empty string and silently deletes
+# nothing while the group stays behind. Both setup and teardown compute this name
+# independently, so teardown never depends on setup completing.
+env:
+  E2E_RESOURCE_GROUP: CSDKE2EAdu-${{ github.run_id }}-${{ github.run_attempt }}
+
 jobs:
   setup:
     name: setup (provision)
@@ -71,8 +82,6 @@ jobs:
     # suite will add (slow). The current mocked placeholder provisions only the
     # base resources and finishes quickly.
     timeout-minutes: 60
-    outputs:
-      rg: ${{ steps.provision.outputs.resource-group }}
     steps:
       - uses: actions/checkout@v4
 
@@ -90,7 +99,7 @@ jobs:
         id: provision
         uses: ./.github/actions/provision-e2e-resources
         with:
-          rg-prefix: CSDKE2EAdu-
+          rg-name: ${{ env.E2E_RESOURCE_GROUP }}
           enable-adu: Gen1
           # Two DPS enrollments so the parallel Linux/Windows test legs can each
           # claim their own device (see the per-leg device-index selection below)
@@ -112,8 +121,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Linux builds instrumented so this run feeds the combined coverage
+          # report; see the note in ci-c-e2e.yml.
           - os: ubuntu-latest
-            preset: linux-gcc-debug
+            preset: linux-gcc-e2e-coverage
             device-index: 0
           - os: windows-latest
             preset: windows-msvc-debug
@@ -129,7 +140,9 @@ jobs:
 
       - name: Install ninja (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y ninja-build
+        run: |
+          sudo apt-get update && sudo apt-get install -y ninja-build
+          python3 -m pip install --upgrade 'gcovr==7.2'
 
       - name: Build ADU e2e test
         working-directory: c
@@ -219,10 +232,28 @@ jobs:
           path: ./test_config/results/**/*.xml
           if-no-files-found: ignore
 
+      - name: Collect coverage (Linux)
+        # Not `if: always()` -- a failed run leaves partial or absent .gcda, and
+        # merging that would understate coverage for an unrelated reason.
+        if: runner.os == 'Linux' && success()
+        working-directory: c
+        run: bash eng/collect-coverage.sh build/linux-gcc-e2e-coverage coverage/e2e-adu.json e2e-adu
+
+      - name: Upload coverage tracefile (Linux)
+        if: runner.os == 'Linux' && success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-trace-e2e-adu
+          path: c/coverage/e2e-adu.json
+          if-no-files-found: error
+
   teardown:
     name: teardown (delete resources)
     needs: [setup, test]
-    if: always() && needs.setup.result != 'skipped'
+    # `always()` also covers cancellation. The group name comes from the workflow
+    # `env` (not from `needs.setup.outputs`), so a cancelled setup still gets torn
+    # down; the destroy action no-ops when the group was never created.
+    if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -238,4 +269,4 @@ jobs:
       - name: Delete Azure resources
         uses: ./.github/actions/destroy-e2e-resources
         with:
-          resource-group: ${{ needs.setup.outputs.rg }}
+          resource-group: ${{ env.E2E_RESOURCE_GROUP }}

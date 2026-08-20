@@ -5,10 +5,7 @@
 
 C99 client SDK for IoTHub-Next (AEG), with selectable Classic-vs-Next protocol behavior, current Azure DPS support, X.509 auth (P0), and a pluggable MQTT abstraction with Paho-C as the default adapter.
 
-The public surface is split into two layered APIs:
-
-- **API A (core)** — low-level, single-threaded, callback-based with a `do_work()` pump. Embedded-friendly, no internal threads, no hidden allocations on the hot path.
-<!-- API B (easy) removed in remove-easy-api branch -->
+The public surface is a single low-level, single-threaded, callback-based API with a `do_work()` pump. Embedded-friendly, no internal threads, no hidden allocations on the hot path.
 
 ### MQTT version constraint
 
@@ -25,8 +22,7 @@ flowchart TB
     APP["User application"]
 
     subgraph PUB["Public API"]
-        %% API B (easy) removed in remove-easy-api branch
-        APIA["API A (core)<br/>az_iot_connection_client<br/>az_iot_twin_client<br/>az_iot_direct_method_client<br/>az_iot_telemetry_client"]
+        APIA["az_iot_connection_client<br/>az_iot_twin_client<br/>az_iot_direct_method_client<br/>az_iot_telemetry_client"]
     end
 
     subgraph CORE["Core infrastructure"]
@@ -80,8 +76,7 @@ flowchart TB
 
 | Layer | Owns |
 |---|---|
-| API B | Sync wrappers, internal worker thread, defaulted callback plumbing |
-| API A | Public opaque handles, lifecycle, feature client surfaces |
+| Public API | Public opaque handles, lifecycle, feature client surfaces |
 | `connection_client` | TLS/cert config, CONNECT/CONNACK/DISCONNECT, sub/unsub, pub, dispatch table, reconnect, DPS, cert mgmt hooks |
 | Feature clients | Topic templates, payload schemas, request/response correlation, error mapping |
 | `protocol_profile` | Classic-vs-Next switch tables (topics, response timeouts, error codes). Classic + DPS rows delegate to `az::iot::hub` and `az::iot::provisioning` for topic build/parse. |
@@ -123,24 +118,20 @@ Note the explicit two-adapter dance: a v3.1.1 adapter for DPS, then a fresh adap
 ```mermaid
 sequenceDiagram
     autonumber
-    participant App as App (API A or B)
-    %% participant Easy as az_iot_easy / feature clients
+    participant App as App
     participant Conn as az_iot_connection_client (core)
     participant Reg as MQTT adapter registry
     participant M3 as Adapter v3.1.1 (DPS)
     participant M5 as Adapter v5 (Hub-Next)
     participant DPS as Azure DPS
     participant Hub as IoT Hub (Next)
-
-    %% API B (easy) sequence removed in remove-easy-api branch
 ```
 
 For a Classic assignment, step "get_factory(role=HUB_CLASSIC, version=v3_1_1)" returns a v3.1.1 adapter and the Hub session uses that instead of `M5`.
 
 ### Threading contract
 
-- **API A:** every user callback fires from inside `az_iot_connection_client_do_work()`. The application owns the thread that calls it.
-- **API B:** the easy worker thread pumps `do_work()` and forwards user callbacks. The worker thread never holds user-visible locks while invoking callbacks.
+Every user callback fires from inside `az_iot_connection_client_do_work()`. The application owns the thread that calls it.
 
 ## 3. Protocol exchange
 
@@ -209,3 +200,83 @@ sequenceDiagram
 2. Reconnect policy defaults (initial delay, max delay, max attempts, jitter %); all user-overridable via `az_iot_reconnection_policy`, with `az_iot_reconnection_policy_default()` as a sensible starting point.
 3. Whether cert management is mandatory on Next. Current assumption: optional surface, mandatory pluggable hook (`az_iot_certificate_provider`).
 4. Adapter sharing across roles: should a single adapter object be reusable across the DPS→Hub transition (when both are v3.1.1, i.e., DPS→Classic)? Current assumption: **no** — always destroy and recreate to keep the lifecycle uniform and reconnect logic simple. Revisit if the extra TLS handshake hurts cold-start latency.
+
+5. **Test proxy: separate the protocol layer.** The conformance test proxy
+   (`c/tests/conformance/az_iot_test_proxy.c`) decodes MQTT itself. It should not know any
+   protocol: it should reassemble an opaque PDU, hand it to a codec, and act on what the
+   codec reports back. This is recorded rather than done because with exactly one protocol
+   implemented there is nothing to falsify the seam — the right shape only becomes knowable
+   when a second protocol needs it, and guessing now would bake MQTT's assumptions into an
+   interface that claims to be neutral.
+
+   **Where the coupling actually is.** Measured, not estimated: of ~2400 lines, ~404 (16%)
+   are protocol-aware, and they are already clustered rather than smeared through the pump.
+
+   | unit | lines | protocol knowledge |
+   | --- | --- | --- |
+   | `proxy_frame_size` | 32 | fixed header + remaining-length varint |
+   | `proxy_packet_id` | 38 | where the packet id sits, per packet type |
+   | `proxy_apply_rules` | 95 | reads the type nibble (`pkt[0] >> 4`) to match rules |
+   | `proxy_ingest` | 90 | drives the framer; otherwise protocol-neutral |
+   | `proxy_frame_count` | 43 | the same framing again, count-only, for the synthetic path |
+   | `proxy_send_synthetic` + `proxy_pump_synthetic` | 106 | builds and sends canned CONNACK/DISCONNECT |
+
+   The public header leaks the same knowledge through 16 `AZ_IOT_TEST_PROXY_PKT_*`
+   constants and the `on_packet` / `echo_packet_id` / `packet_id_offset` rule fields.
+
+   **The seam.** The proxy only ever asks a byte stream three questions, and those three
+   questions *are* the interface:
+
+   - where does this PDU end?
+   - what kind of PDU is it? (an opaque tag the core only compares for equality)
+   - what bytes correlate a response to a request, and where would they be patched into an
+     injected reply?
+
+   None of the names below exist in the repo. They are a sketch of the shape those three
+   questions imply, not an API anyone can call today:
+
+   ```c
+   typedef struct az_iot_test_proxy_pdu
+   {
+     uint8_t kind;               /* codec-defined; 0 reserved for "match any" */
+     const uint8_t* correlation; /* what a reply must echo, or NULL */
+     size_t correlation_len;
+     size_t correlation_offset;  /* where to patch it into an injected PDU */
+   } az_iot_test_proxy_pdu;
+
+   typedef struct az_iot_test_proxy_protocol
+   {
+     /* 1 = a complete PDU of *total bytes, 0 = need more, -1 = malformed. */
+     int (*frame)(void* ctx, const uint8_t* buf, size_t have, size_t* total);
+     /* Optional. Fills the metadata rules match on; NULL means "bytes only". */
+     int (*describe)(void* ctx, const uint8_t* pdu, size_t len, az_iot_test_proxy_pdu* out);
+     void* ctx;
+   } az_iot_test_proxy_protocol;
+   ```
+
+   A `set_protocol()` entry point would select one, and an MQTT implementation would ship as
+   the default so that existing tests stayed unaffected. Rules would keep working unchanged,
+   because `on_packet` would become an opaque `kind` and the packet-id echo would generalise
+   to a correlation token of arbitrary length.
+
+   **Encoding is already out.** `az_iot_test_mqtt_server` builds the packets a broker sends,
+   so neither the proxy nor the tests assemble bytes. That settles a question this note
+   originally got wrong: it claimed the synthetic-broker path -- the mode
+   `az_iot_test_proxy_set_synthetic_connack()` switches on, where the proxy answers the
+   client itself rather than forwarding -- "constructs MQTT packets", and would therefore
+   need a codec that builds PDUs as well as parsing them. It does not: it sends bytes handed
+   to it. Its only protocol knowledge is the framing used to spot a complete CONNECT, which
+   is the same `frame()` the sketch above already covers.
+
+   So the split is smaller than it first looked: one function's worth of framing behind the
+   vtable, and the type/correlation extraction, with encoding already living somewhere it
+   can stay.
+
+   **Cost and trigger.** Roughly half a day: the mechanical work is small and 27 conformance
+   cases pin the behaviour, so the risk is regression rather than design. Do it when the
+   second protocol arrives, or when someone needs the proxy in front of a non-MQTT endpoint —
+   whichever comes first. Nothing in the current structure blocks the split; it is a pure
+   refactor with no behaviour change, which is exactly why it can wait without accruing
+   interest. What should *not* happen in the meantime is new protocol knowledge leaking into
+   the pump or the egress scheduler: those are protocol-neutral today and should stay that
+   way.

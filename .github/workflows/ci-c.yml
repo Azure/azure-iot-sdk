@@ -6,10 +6,13 @@ name: ci-c
 on:
   push:
     branches: [ main, 'dev/c' ]
+  # No workflow-level `paths:` filter. Path filtering happens in the `changes`
+  # job below and is applied per job via `if:`. A workflow that never triggers
+  # reports no checks at all, which deadlocks any required status check on a PR
+  # that touches nothing under c/ ("Expected - waiting for status to be
+  # reported"). A job skipped by a job-level `if:` still reports a check run,
+  # and GitHub treats that as satisfied.
   pull_request:
-    paths:
-      - 'c/**'
-      - 'common/**'
   workflow_dispatch:
 
 # All run steps execute from the c/ project directory (where CMakePresets.json
@@ -20,8 +23,34 @@ defaults:
     working-directory: c
 
 jobs:
+  changes:
+    name: detect changes
+    runs-on: ubuntu-latest
+    # dorny/paths-filter calls the pulls/listFiles API on pull_request events.
+    # Without pull-requests:read it fails with "Resource not accessible by
+    # integration".
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      c: ${{ steps.filter.outputs.c }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            c:
+              - 'c/**'
+              - 'common/**'
+              # A change to this workflow decides what the build/test legs do,
+              # so it has to run them.
+              - '.github/workflows/ci-c.yml'
+
   build:
     name: ${{ matrix.preset }} / ${{ matrix.build_type }}
+    needs: changes
+    if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
     strategy:
       fail-fast: false
       matrix:
@@ -41,20 +70,24 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     # Mosquitto service container for the MQTT iface conformance suite.
-    # GitHub Actions service containers only run on Linux runners; the Windows
-    # job skips the conformance tests (CTest exit 77) automatically because
-    # AZ_IOT_AEG_MQTT_BROKER_HOST is not set there.
+    # GitHub Actions service containers only run on Linux runners. The Windows
+    # preset does not set AZ_IOT_BUILD_CONFORMANCE_TESTS, so those suites are
+    # not registered there and nothing needs a broker.
     services:
       mosquitto:
         image: ${{ matrix.os == 'ubuntu-latest' && 'eclipse-mosquitto:2' || '' }}
         ports:
           - 1883:1883
-        # mosquitto:2 needs a config file that opts into anonymous + listener.
-        # We bake one in by overriding the entrypoint.
+        # A real liveness probe: mosquitto_pub succeeds only once the broker is
+        # accepting connections. The previous `mosquitto_sub '$SYS/#' ||
+        # exit 0` form reported healthy unconditionally, so the conformance
+        # suites could race broker startup. That was harmless only while those
+        # suites were silently skipping -- they now fail instead.
         options: >-
-          --health-cmd="mosquitto_sub -t '$$SYS/#' -C 1 -W 3 -h localhost || exit 0"
+          --health-cmd="mosquitto_pub -h localhost -p 1883 -t healthcheck -m ok"
           --health-interval=5s
-          --health-retries=5
+          --health-retries=10
+          --health-start-period=5s
 
     steps:
       - uses: actions/checkout@v4
@@ -65,30 +98,69 @@ jobs:
 
       - name: Install ninja (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y ninja-build
+        # libssl-dev is explicit rather than assumed from the runner image: the
+        # Linux presets set AZ_IOT_BUILD_CONFORMANCE_TESTS_TLS, and that option
+        # fails the configure step outright when OpenSSL is missing instead of
+        # dropping the certificate-validation tests.
+        run: sudo apt-get update && sudo apt-get install -y ninja-build libssl-dev
 
       - name: Configure
-        run: cmake --preset ${{ matrix.preset }} -DAZ_IOT_AEG_WITH_PAHO=${{ matrix.with_paho }}
+        run: cmake --preset ${{ matrix.preset }} -DAZ_IOT_WITH_PAHO=${{ matrix.with_paho }}
       - name: Build
         run: cmake --build --preset ${{ matrix.preset }} --config ${{ matrix.build_type }}
 
       - name: Test
         env:
-          # On Linux, the mosquitto service container is reachable as
-          # `mosquitto:1883`. On Windows we leave these unset so the
-          # conformance harnesses skip themselves (CTest exit 77).
-          AZ_IOT_AEG_MQTT_BROKER_HOST: ${{ runner.os == 'Linux' && 'mosquitto' || '' }}
-          AZ_IOT_AEG_MQTT_BROKER_PORT: ${{ runner.os == 'Linux' && '1883' || '' }}
+          # This job does not run inside a container, so the mosquitto service
+          # container is published on the runner's own localhost -- NOT at the
+          # service label `mosquitto`, which only resolves for containerized
+          # jobs. Only the Linux presets register the conformance suites
+          # (AZ_IOT_BUILD_CONFORMANCE_TESTS is set in linux-base), so on Windows
+          # there is nothing that wants a broker and nothing to point at one.
+          AZ_IOT_MQTT_BROKER_HOST: ${{ runner.os == 'Linux' && 'localhost' || '' }}
+          AZ_IOT_MQTT_BROKER_PORT: ${{ runner.os == 'Linux' && '1883' || '' }}
         run: ctest --preset ${{ matrix.preset }} ${{ runner.os == 'Windows' && format('-C {0}', matrix.build_type) || '' }} --output-on-failure
+
+  conventions:
+    name: coding conventions (c/src)
+    needs: changes
+    if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Guards the rules in c/docs/eng/coding-conventions.md. Cheap and
+      # dependency-free on purpose: it is the only part of those rules that a
+      # reviewer cannot forget to apply.
+      - name: Check for banned constructs
+        run: bash eng/check-banned-constructs.sh
+      # Pinned: clang-format output differs between major versions, so an
+      # unpinned binary would make the gate flap when the runner image moves.
+      - name: Install clang-format
+        run: sudo apt-get update && sudo apt-get install -y clang-format-18
+      - name: Check formatting
+        env:
+          CLANG_FORMAT: clang-format-18
+        run: bash eng/code-style.sh check
 
   c99-strict:
     name: c99-strict (gcc -pedantic)
+    needs: changes
+    if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     services:
       mosquitto:
         image: eclipse-mosquitto:2
         ports:
           - 1883:1883
+        # This job previously had no health check at all, which was harmless
+        # only because AZ_IOT_AEG_BUILD_TESTS meant it never ran a test. It now
+        # builds and runs the conformance suites, which connect immediately, so
+        # it needs to wait for the broker like every other job.
+        options: >-
+          --health-cmd="mosquitto_pub -h localhost -p 1883 -t healthcheck -m ok"
+          --health-interval=5s
+          --health-retries=10
+          --health-start-period=5s
     steps:
       - uses: actions/checkout@v4
       - name: Install ninja
@@ -97,15 +169,16 @@ jobs:
         run: >
           cmake -S . -B build/c99-strict -G Ninja
           -DCMAKE_C_COMPILER=gcc
-          -DAZ_IOT_AEG_WITH_PAHO=ON
-          -DAZ_IOT_AEG_BUILD_TESTS=ON
+          -DAZ_IOT_WITH_PAHO=ON
+          -DAZ_IOT_BUILD_TESTS=ON
+          -DAZ_IOT_BUILD_CONFORMANCE_TESTS=ON
           -DCMAKE_C_FLAGS="-std=c99 -pedantic -Wall -Wextra -Werror"
       - name: Build
         run: cmake --build build/c99-strict
       - name: Test
         env:
-          AZ_IOT_AEG_MQTT_BROKER_HOST: mosquitto
-          AZ_IOT_AEG_MQTT_BROKER_PORT: '1883'
+          AZ_IOT_MQTT_BROKER_HOST: localhost
+          AZ_IOT_MQTT_BROKER_PORT: '1883'
         run: ctest --test-dir build/c99-strict --output-on-failure
 
   # ---------------------------------------------------------------------------
@@ -122,6 +195,8 @@ jobs:
 
   valgrind:
     name: linux-gcc / valgrind
+    needs: changes
+    if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     services:
       mosquitto:
@@ -129,9 +204,10 @@ jobs:
         ports:
           - 1883:1883
         options: >-
-          --health-cmd="mosquitto_sub -t '$$SYS/#' -C 1 -W 3 -h localhost || exit 0"
+          --health-cmd="mosquitto_pub -h localhost -p 1883 -t healthcheck -m ok"
           --health-interval=5s
-          --health-retries=5
+          --health-retries=10
+          --health-start-period=5s
     steps:
       - uses: actions/checkout@v4
       - name: Install deps
@@ -139,14 +215,18 @@ jobs:
       - name: Configure
         run: >
           cmake --preset linux-gcc-debug
-          -DAZ_IOT_AEG_WITH_PAHO=ON
-          -DAZ_IOT_AEG_WITH_RUST_MQTT=ON
+          -DAZ_IOT_WITH_PAHO=ON
+          -DAZ_IOT_WITH_RUST_MQTT=ON
       - name: Build
         run: cmake --build --preset linux-gcc-debug
       - name: Test under valgrind
         env:
-          AZ_IOT_AEG_MQTT_BROKER_HOST: mosquitto
-          AZ_IOT_AEG_MQTT_BROKER_PORT: '1883'
+          # Set for completeness. This step excludes the conformance suites
+          # anyway (-E conformance): running a live-broker network suite under
+          # valgrind is slow and its failures would be about the broker, not
+          # about memory.
+          AZ_IOT_MQTT_BROKER_HOST: localhost
+          AZ_IOT_MQTT_BROKER_PORT: '1883'
         working-directory: c/build/linux-gcc-debug
         run: |
           ctest --output-on-failure -E conformance \
@@ -168,6 +248,8 @@ jobs:
 
   asan-windows:
     name: windows-msvc / ASan
+    needs: changes
+    if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -180,16 +262,215 @@ jobs:
         # / protocol_profile_dispatch / telemetry / direct_method / twin /
         # dps_client / dps_handoff / certificate_provider_pem / easy_client /
         # rust_mqtt_adapter) cover everything we want ASan to vet.
+        #
+        # NOTE: until this commit these were AZ_IOT_AEG_* -- names no option
+        # ever declared -- so Paho was in fact ON here, contradicting the
+        # paragraph above. It is genuinely OFF now.
         shell: pwsh
         run: >
           cmake --preset windows-msvc-debug
-          -DAZ_IOT_AEG_WITH_PAHO=OFF
-          -DAZ_IOT_AEG_WITH_RUST_MQTT=ON
+          -DAZ_IOT_WITH_PAHO=OFF
+          -DAZ_IOT_WITH_RUST_MQTT=ON
           -DCMAKE_C_FLAGS="/fsanitize=address /Zi"
       - name: Build
         run: cmake --build --preset windows-msvc-debug --config Debug
       - name: Test under ASan
         # ASan reports a non-zero exit code on any detected defect; ctest
-        # surfaces that as a test failure in the standard way. There is no
-        # broker on Windows, so conformance tests skip themselves anyway.
+        # surfaces that as a test failure in the standard way. The Windows
+        # preset does not register the conformance suites, so -E conformance is
+        # belt-and-braces rather than load-bearing.
         run: ctest --preset windows-msvc-debug -C Debug --output-on-failure -E conformance
+
+  # ---------------------------------------------------------------------------
+  # Code coverage (gcov/gcovr) for first-party code -- c/src and c/adapters.
+  #
+  # Report-only, deliberately. The per-component floors in
+  # c/tests/coverage-components.json are now SET -- derived from the measured
+  # unit+conformance numbers -- so the table marks each component PASS or FAIL.
+  # `--enforce` is still absent, so none of that can fail the build yet, and the
+  # report says so in as many words. Adding --enforce is the remaining step, at
+  # which point a per-component regression or a shipped adapter dropping out of
+  # the build blocks the merge.
+  #
+  # Design: c/docs/eng/code-coverage.md
+  # ---------------------------------------------------------------------------
+  coverage-c:
+    name: coverage (linux-gcc)
+    needs: changes
+    if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    env:
+      # Exact number of CTest suites the coverage preset must register. An
+      # inequality only caught the build collapsing to nothing; it could not
+      # catch a suite quietly dropping out, which is the failure this repo
+      # actually had -- coverage computed over fewer tests than anyone thought.
+      # Now that no suite decides at run time whether to participate, the count
+      # is deterministic, so assert it exactly. Bump this when adding a suite.
+      EXPECTED_TESTS: '25'
+    services:
+      mosquitto:
+        image: eclipse-mosquitto:2
+        ports:
+          - 1883:1883
+        # A real liveness probe: mosquitto_pub succeeds only if the broker
+        # accepted a connection.
+        options: >-
+          --health-cmd="mosquitto_pub -h localhost -p 1883 -t healthcheck -m ok"
+          --health-interval=5s
+          --health-retries=10
+          --health-start-period=5s
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # diff-cover compares against the merge base.
+          fetch-depth: 0
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libssl-dev mosquitto-clients
+          python3 -m pip install --upgrade 'gcovr==7.2' 'diff-cover==9.2.0'
+
+      - name: Verify MQTT broker is reachable
+        # The conformance suites are where nearly all Paho adapter coverage
+        # comes from, and they no longer excuse themselves when the broker is
+        # missing -- they fail. Probing here turns an infrastructure outage into
+        # an obvious error at the top of the log rather than a wall of
+        # connection failures further down.
+        run: mosquitto_pub -h localhost -p 1883 -t az-iot/coverage/probe -m ok
+
+      - name: Configure
+        run: cmake --preset linux-gcc-coverage
+
+      - name: Build
+        run: cmake --build --preset linux-gcc-coverage
+
+      - name: Sentinel - test suites were actually discovered
+        run: |
+          discovered=$(ctest --test-dir build/linux-gcc-coverage --show-only=json-v1 | jq '.tests | length')
+          echo "discovered $discovered test suites (expected exactly $EXPECTED_TESTS)"
+          if [ "$discovered" -ne "$EXPECTED_TESTS" ]; then
+            echo "::error::discovered $discovered test suites, expected exactly $EXPECTED_TESTS."
+            echo "If you added or removed a suite, update EXPECTED_TESTS in this workflow."
+            ctest --test-dir build/linux-gcc-coverage -N
+            exit 1
+          fi
+
+      - name: Test
+        env:
+          # Service containers are reachable on localhost for jobs that do not
+          # themselves run in a container -- NOT at the service label.
+          AZ_IOT_MQTT_BROKER_HOST: localhost
+          AZ_IOT_MQTT_BROKER_PORT: '1883'
+        run: ctest --preset linux-gcc-coverage -E e2e
+
+      - name: Generate coverage report
+        run: |
+          mkdir -p build/linux-gcc-coverage/coverage/html
+          gcovr --root "$PWD" "$PWD/build/linux-gcc-coverage" \
+                --filter "$PWD/src/" --filter "$PWD/adapters/" \
+                --exclude '.*/_deps/.*' \
+                --exclude '.*/tests/.*' \
+                --exclude '.*/samples/.*' \
+                --cobertura build/linux-gcc-coverage/coverage/cobertura.xml --cobertura-pretty \
+                --lcov build/linux-gcc-coverage/coverage/lcov.info \
+                --json-summary build/linux-gcc-coverage/coverage/summary.json --json-summary-pretty \
+                --html-details build/linux-gcc-coverage/coverage/html/index.html \
+                --txt --print-summary
+
+      - name: Collect coverage tracefile
+        # The merge-able intermediate, produced by the same script the e2e legs
+        # use so the filter sets cannot drift apart. Tracefiles built with
+        # different --filter/--exclude sets combine into a quietly wrong number
+        # rather than an obvious error.
+        run: bash eng/collect-coverage.sh build/linux-gcc-coverage coverage/unit.json unit-conformance
+
+      - name: Upload coverage tracefile
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-trace-unit
+          path: c/coverage/unit.json
+          if-no-files-found: error
+
+      - name: Per-component summary
+        # Floors are set but NOT enforced: no --enforce here, so a component
+        # below its floor is reported and does not fail the job. Verified
+        # satisfiable against both the per-PR and nightly datasets before being
+        # committed, so turning --enforce on is a one-line change when wanted.
+        run: |
+          python3 tests/coverage_report.py \
+            --summary build/linux-gcc-coverage/coverage/summary.json \
+            --components tests/coverage-components.json \
+            --source-root "$PWD" \
+            --output build/linux-gcc-coverage/coverage/summary.md
+          cat build/linux-gcc-coverage/coverage/summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Patch coverage (report-only)
+        if: github.event_name == 'pull_request'
+        # No --fail-under yet. This publishes the number so the 80% patch floor
+        # can be adopted against real data rather than a guess -- the same
+        # approach used for the per-component floors, which were set from
+        # measured values rather than chosen up front.
+        run: |
+          git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
+          diff-cover build/linux-gcc-coverage/coverage/cobertura.xml \
+            --compare-branch "origin/${{ github.base_ref }}" \
+            --markdown-report build/linux-gcc-coverage/coverage/patch.md \
+            --src-roots . || echo "::warning::diff-cover failed; patch coverage not reported"
+          {
+            echo ""
+            echo "## Patch coverage (report-only)"
+            echo ""
+            # diff-cover may have failed before writing the report. This step is
+            # informational, so a missing file must not fail the job.
+            if [ -f build/linux-gcc-coverage/coverage/patch.md ]; then
+              cat build/linux-gcc-coverage/coverage/patch.md
+            else
+              echo "_diff-cover produced no report._"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-c
+          path: c/build/linux-gcc-coverage/coverage/
+          if-no-files-found: warn
+
+  # Single stable check name for branch-protection to reference. It reports on
+  # every pull request, passes when the coverage job legitimately did not need
+  # to run, and fails whenever the coverage job failed. `if: always()` is what
+  # lets it run despite a failed dependency.
+  coverage-gate:
+    name: coverage-gate
+    needs: [changes, coverage-c]
+    if: always()
+    runs-on: ubuntu-latest
+    # This job does not check out the repo, so the workflow-level
+    # working-directory of c/ would not exist.
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - name: Check coverage job outcome
+        run: |
+          changes_result='${{ needs.changes.result }}'
+          coverage_result='${{ needs.coverage-c.result }}'
+          echo "changes:    $changes_result"
+          echo "coverage-c: $coverage_result"
+
+          # A broken `changes` job skips coverage-c, and a skipped coverage-c
+          # would otherwise be read as "no C code touched" and pass. Never let
+          # an infrastructure failure upstream produce a green gate.
+          if [ "$changes_result" != "success" ]; then
+            echo "::error::coverage gate: change detection did not succeed ($changes_result), so coverage was never evaluated"
+            exit 1
+          fi
+
+          if [ "$coverage_result" = "success" ] || [ "$coverage_result" = "skipped" ]; then
+            exit 0
+          fi
+          echo "::error::coverage gate failed (coverage-c: $coverage_result)"
+          exit 1
+

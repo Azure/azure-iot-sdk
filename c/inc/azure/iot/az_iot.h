@@ -1,5 +1,6 @@
 // Copyright (c) Microsoft. All rights reserved.
-// Licensed under the MIT license. See LICENSE file in the project root for full license information.
+// Licensed under the MIT license. See LICENSE file in the project root for full license
+// information.
 
 /* SPDX-License-Identifier: MIT */
 #ifndef AZ_IOT_H
@@ -7,6 +8,7 @@
 
 #include "az_iot_result.h"
 #include "az_iot_log.h"
+#include "az_iot_message.h"
 #include "az_iot_certificate_provider.h"
 #include "az_iot_certificate_provider_pem.h"
 #include "az_iot_connection_client.h"

@@ -33,7 +33,9 @@
 #                 native e2e test, downloads the shared test-config, materializes
 #                 the device X.509 material to files, and runs `ctest -R e2e`.
 #   3. teardown : always() deletes the shared resource group (via the reusable
-#                 destroy-e2e-resources step).
+#                 destroy-e2e-resources step). It recomputes the group name from
+#                 the run id rather than reading a setup output, so it also cleans
+#                 up after a CANCELLED setup job (see the `env` block below).
 #
 # The provision/destroy steps live in .github/actions/{provision,destroy}-e2e-
 # resources so other pipelines (e.g. ci-dotnet) can reuse them.
@@ -46,11 +48,20 @@ on:
     paths:
       - 'c/**'
       - 'common/**'
+      # This workflow and the provisioning wiring it depends on: a change to any
+      # of them alters what the e2e legs actually do, so it has to be validated
+      # against real Azure rather than merged on the strength of the other jobs.
+      - '.github/workflows/ci-c-e2e.yml'
+      - '.github/actions/provision-e2e-resources/**'
+      - '.github/actions/destroy-e2e-resources/**'
   push:
     branches: [ main ]
     paths:
       - 'c/**'
       - 'common/**'
+      - '.github/workflows/ci-c-e2e.yml'
+      - '.github/actions/provision-e2e-resources/**'
+      - '.github/actions/destroy-e2e-resources/**'
   schedule:
     - cron: '0 11 * * *'  # Nightly at 4am PST
 
@@ -63,13 +74,19 @@ permissions:
   contents: read
   id-token: write   # required for azure/login OIDC
 
+# Resource group name derived from the RUN, not from a random GUID published as a
+# job output. A CANCELLED job does not propagate its `outputs`, so a teardown that
+# reads `needs.setup.outputs.rg` receives an empty string and silently deletes
+# nothing while the group stays behind. Both setup and teardown compute this name
+# independently, so teardown never depends on setup completing.
+env:
+  E2E_RESOURCE_GROUP: CSDKE2EFast-${{ github.run_id }}-${{ github.run_attempt }}
+
 jobs:
   setup:
     name: setup (provision)
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    outputs:
-      rg: ${{ steps.provision.outputs.resource-group }}
     steps:
       - uses: actions/checkout@v4
 
@@ -84,7 +101,7 @@ jobs:
         id: provision
         uses: ./.github/actions/provision-e2e-resources
         with:
-          rg-prefix: CSDKE2EFast-
+          rg-name: ${{ env.E2E_RESOURCE_GROUP }}
           # Two DPS enrollments so the parallel Linux/Windows test legs can each
           # claim their own device (see the per-leg device-index selection below)
           # and never share a device twin.
@@ -113,8 +130,15 @@ jobs:
       # on both), and it preserves Windows local-dev parity.
       matrix:
         include:
+          # The Linux leg builds instrumented (linux-gcc-e2e-coverage) so its run
+          # contributes to the coverage picture. e2e is where the feature clients
+          # are actually driven end to end, and unit tests alone cannot reach
+          # those paths. Running it twice -- once plain, once instrumented --
+          # would double the Azure resources this workflow consumes, so it runs
+          # once, instrumented. gcov overhead is CPU-only and this suite is
+          # network-bound, so it does not move the wall clock.
           - os: ubuntu-latest
-            preset: linux-gcc-debug
+            preset: linux-gcc-e2e-coverage
             device-index: 0
           - os: windows-latest
             preset: windows-msvc-debug
@@ -130,13 +154,23 @@ jobs:
 
       - name: Install ninja (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y ninja-build
+        # libcurl backs the file upload sample's HTTP hook; without it CMake builds
+        # the sample with a stub hook that cannot perform the Classic control-plane
+        # calls, and the sample run below would prove nothing.
+        run: |
+          sudo apt-get update && sudo apt-get install -y ninja-build libcurl4-openssl-dev
+          python3 -m pip install --upgrade 'gcovr==7.2'
 
       - name: Build e2e tests
         working-directory: c
         run: |
           cmake --preset ${{ matrix.preset }} -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_WITH_PAHO=ON
-          cmake --build --preset ${{ matrix.preset }} ${{ runner.os == 'Windows' && '--config Debug' || '' }} --target az_iot_tests_e2e az_iot_tests_e2e_adu az_iot_tests_e2e_csr az_iot_tests_e2e_fileupload
+          cmake --build --preset ${{ matrix.preset }} ${{ runner.os == 'Windows' && '--config Debug' || '' }} --target az_iot_tests_e2e az_iot_tests_e2e_adu az_iot_tests_e2e_fileupload
+
+      - name: Build the file upload sample (Linux)
+        if: runner.os == 'Linux'
+        working-directory: c
+        run: cmake --build --preset ${{ matrix.preset }} --target az_iot_sample_file_upload
 
       - name: Download shared test config
         uses: actions/download-artifact@v4
@@ -206,16 +240,41 @@ jobs:
           $env:AZ_IOT_TRUSTED_CA          = $caPath
           if ($env:IOT_DPS_GLOBAL_ENDPOINT) { $env:AZ_IOT_DPS_GLOBAL_ENDPOINT = $env:IOT_DPS_GLOBAL_ENDPOINT }
 
+          # Republish the DEVICE-side configuration (an id scope, a registration id
+          # and three file paths -- no secrets) so the sample step below can reuse
+          # this leg's device without re-materializing the X.509 material.
+          foreach ($name in @('AZ_IOT_DPS_ID_SCOPE', 'AZ_IOT_DPS_REGISTRATION_ID',
+                              'AZ_IOT_CLIENT_CERT', 'AZ_IOT_CLIENT_KEY',
+                              'AZ_IOT_TRUSTED_CA', 'AZ_IOT_DPS_GLOBAL_ENDPOINT')) {
+            $value = (Get-Item "env:$name" -ErrorAction SilentlyContinue).Value
+            if ($value) { "$name=$value" | Out-File -FilePath $env:GITHUB_ENV -Append }
+          }
+
           New-Item -ItemType Directory -Path ./test_config/results -Force | Out-Null
           $cfg = if ($IsWindows) { @('-C', 'Debug') } else { @() }
           # `-R e2e` runs the fast suite (az_iot_tests_e2e) and the mocked ADU
-          # suite (az_iot_tests_e2e_adu), plus the CSR enrollment test
-          # (az_iot_tests_e2e_csr), which self-skips (CTest exit 77) unless
-          # AZ_IOT_DPS_CSR_ENABLED is provisioned. The adu_crypto_openssl unit
-          # test is not matched by the e2e name filter, so it stays out of this job.
+          # suite (az_iot_tests_e2e_adu). The CSR enrollment test is not built
+          # here -- it needs a DPS enrollment linked to a signing CA, which only
+          # ci-c-e2e-csr provisions, so it lives behind AZ_IOT_BUILD_E2E_CSR.
+          # The adu_crypto_openssl unit test is not matched by the e2e name
+          # filter, so it stays out of this job.
           ctest --test-dir c/build/${{ matrix.preset }} @cfg -R e2e `
             --verbose --no-tests=error --timeout 900 `
             --output-junit ./test_config/results/e2e-${{ matrix.os }}.xml
+
+      - name: Run the file upload sample (Linux)
+        if: runner.os == 'Linux'
+        shell: pwsh
+        # The sample is the reference integration of the application HTTP hook the
+        # Classic file-upload control plane requires (this SDK ships no HTTP
+        # client). Building it proves nothing about that hook, so run it against
+        # the real hub: it provisions, requests a SAS URI, PUTs the blob with
+        # libcurl and reports completion, exiting non-zero if any step fails.
+        run: |
+          $exe = "c/build/${{ matrix.preset }}/samples/az_iot_sample_file_upload"
+          if (-not (Test-Path $exe)) { throw "sample not built at $exe" }
+          & $exe
+          if ($LASTEXITCODE -ne 0) { throw "file upload sample failed ($LASTEXITCODE)" }
 
       - name: Upload test results
         if: always()
@@ -225,10 +284,29 @@ jobs:
           path: ./test_config/results/**/*.xml
           if-no-files-found: ignore
 
+      - name: Collect coverage (Linux)
+        # Deliberately not `if: always()`. A failed or timed-out e2e run leaves
+        # partial or absent .gcda, and feeding that into the combined report
+        # would understate coverage for a reason unrelated to the change.
+        if: runner.os == 'Linux' && success()
+        working-directory: c
+        run: bash eng/collect-coverage.sh build/linux-gcc-e2e-coverage coverage/e2e.json e2e-linux
+
+      - name: Upload coverage tracefile (Linux)
+        if: runner.os == 'Linux' && success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-trace-e2e
+          path: c/coverage/e2e.json
+          if-no-files-found: error
+
   teardown:
     name: teardown (delete resources)
     needs: [setup, test]
-    if: always() && needs.setup.result != 'skipped'
+    # `always()` also covers cancellation. The group name comes from the workflow
+    # `env` (not from `needs.setup.outputs`), so a cancelled setup still gets torn
+    # down; the destroy action no-ops when the group was never created.
+    if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -244,5 +322,5 @@ jobs:
       - name: Delete Azure resources
         uses: ./.github/actions/destroy-e2e-resources
         with:
-          resource-group: ${{ needs.setup.outputs.rg }}
+          resource-group: ${{ env.E2E_RESOURCE_GROUP }}
 

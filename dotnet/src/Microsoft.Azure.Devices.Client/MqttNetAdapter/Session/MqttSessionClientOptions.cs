@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 using Microsoft.Azure.Devices.Client.MqttNetAdapter.Session;
-using Microsoft.Azure.Devices.Client.Retry;
+using Microsoft.Azure.Devices.Client.MqttNetAdapter.Session.Retry;
 
 namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session
 {

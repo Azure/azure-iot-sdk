@@ -1,5 +1,6 @@
 // Copyright (c) Microsoft. All rights reserved.
-// Licensed under the MIT license. See LICENSE file in the project root for full license information.
+// Licensed under the MIT license. See LICENSE file in the project root for full license
+// information.
 
 /* SPDX-License-Identifier: MIT */
 /* MQTT iface conformance suite for azure-iot-sdk.
@@ -28,9 +29,11 @@
  * Broker discovery: the suite reads the broker address from the environment
  *   AZ_IOT_MQTT_BROKER_HOST (default: "localhost")
  *   AZ_IOT_MQTT_BROKER_PORT (default: "1883")
- * If `AZ_IOT_MQTT_BROKER_SKIP=1` (or `AZ_IOT_MQTT_BROKER_HOST` is the
- * empty string), the suite is reported as skipped (CTest exit code 77) so
- * developers without a broker configured don't see false failures locally.
+ * Whether the suite runs at all is a build-time decision: it is registered as
+ * a CTest test only when AZ_IOT_BUILD_CONFORMANCE_TESTS is on. Once registered
+ * it never excuses itself -- an unset or empty AZ_IOT_MQTT_BROKER_HOST is a
+ * failure, because a suite that skips itself is one nobody notices has stopped
+ * running.
  */
 #ifndef AZ_IOT_CONFORMANCE_H
 #define AZ_IOT_CONFORMANCE_H
@@ -38,27 +41,26 @@
 #include "azure/iot/az_iot_mqtt_iface.h"
 
 #ifdef __cplusplus
-extern "C" {
+extern "C"
+{
 #endif
 
-/* Which suite to run. Each suite is a curated set of cmocka tests appropriate
- * for the given MQTT version. */
-typedef enum az_iot_conformance_suite
-{
+  /* Which suite to run. Each suite is a curated set of cmocka tests appropriate
+   * for the given MQTT version. */
+  typedef enum az_iot_conformance_suite
+  {
     AZ_IOT_CONFORMANCE_SUITE_V3_1_1 = 0,
-    AZ_IOT_CONFORMANCE_SUITE_V5     = 1
-} az_iot_conformance_suite;
+    AZ_IOT_CONFORMANCE_SUITE_V5 = 1
+  } az_iot_conformance_suite;
 
-/* Run the conformance suite for `suite_kind` against the given factory.
- * Returns:
- *   0  on success (all tests passed)
- *   77 if the suite was skipped (no broker configured)
- *   1  on failure (one or more tests failed)
- *
- * Suitable to use directly as the return value of main() in a harness exe. */
-int az_iot_conformance_run(
-    az_iot_conformance_suite suite_kind,
-    az_iot_mqtt_factory* factory);
+  /* Run the conformance suite for `suite_kind` against the given factory.
+   * Returns:
+   *   0  on success (all tests passed)
+   *   77 if the suite was skipped (no broker configured)
+   *   1  on failure (one or more tests failed)
+   *
+   * Suitable to use directly as the return value of main() in a harness exe. */
+  int az_iot_conformance_run(az_iot_conformance_suite suite_kind, az_iot_mqtt_factory* factory);
 
 #ifdef __cplusplus
 }

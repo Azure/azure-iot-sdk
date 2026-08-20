@@ -1,0 +1,42 @@
+[
+    {
+        "name": "core",
+        "prefix": "src/core/",
+        "line": 75,
+        "branch": 60,
+        "function": 80,
+        "comment": "Core: connection, dispatch, reconnect, protocol profile, cert helpers. Measured 78.4/66.1/86.6 on unit+conformance."
+    },
+    {
+        "name": "features",
+        "prefix": "src/features/",
+        "line": 65,
+        "branch": 50,
+        "function": 85,
+        "comment": "Feature clients: telemetry, twin, direct method, c2d, file upload, adu. Measured 68.6/54.6/87.7 on unit+conformance."
+    },
+    {
+        "name": "adapter-paho",
+        "prefix": "adapters/paho/",
+        "line": 60,
+        "branch": 35,
+        "function": 75,
+        "comment": "Shipped (AZ_IOT_WITH_PAHO default ON). Coverage comes almost entirely from the broker-gated conformance suites, not from unit tests. Measured 65.1/41.8/81.6 on unit+conformance; the lowest floors in the file because a broker outage moves this component further than any other."
+    },
+    {
+        "name": "adapter-adu-crypto",
+        "prefix": "adapters/adu/crypto_openssl/",
+        "line": 75,
+        "branch": 40,
+        "function": 95,
+        "comment": "Shipped (AZ_IOT_WITH_ADU_CRYPTO_OPENSSL default ON, requires OpenSSL 3.0+). Measured 78.9/46.5/100.0 on unit+conformance; the e2e suites add nothing here, so the nightly figure is identical."
+    },
+    {
+        "name": "adapter-cert-managed",
+        "prefix": "adapters/cert_openssl/",
+        "line": 75,
+        "branch": 55,
+        "function": 80,
+        "comment": "Shipped (AZ_IOT_WITH_CERT_PROVIDER_MANAGED default ON, requires OpenSSL 3.0+). Measured 78.2/57.9/84.6 on unit+conformance."
+    }
+]

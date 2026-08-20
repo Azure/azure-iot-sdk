@@ -9,7 +9,8 @@ for the full design.
 
 | Scenario | Provider | Sample | Notes |
 |----------|----------|--------|-------|
-| X.509 from files (no CSR) | `az_iot_certificate_provider_pem` | [../telemetry](../telemetry/main.c) and the other feature samples | Baseline device auth. |
+| X.509 from files (no CSR) | `az_iot_certificate_provider_pem` | [../telemetry](../telemetry/main.c) and the other feature samples | Baseline device auth (via DPS). |
+| Direct hub connect, no DPS (Classic or Next/AEG) | `az_iot_certificate_provider_pem` | `direct-hub` | Caller-supplied hub FQDN + device cert/key; selects the MQTT flavor via `opts.hub_protocol`. |
 | DPS CSR enrollment (issued operational cert) | managed (OpenSSL) | `dps_csr_managed` | Bootstrap X.509 → CSR in DPS register → operational cert persisted. |
 | App-notified issuance (D4) | managed (OpenSSL) | `dps_csr_managed` | Uses `set_operational_cert_callback` to observe the issued chain. |
 | Runtime Hub renewal (D7) | managed (OpenSSL) | `hub_renew` | `send_csr()` two-phase renewal on a connected Classic hub. |
@@ -27,6 +28,15 @@ Start from `custom_provider_template` and fill in the marked bodies
 as a complete, working reference.
 
 ## Samples
+
+### `direct-hub`
+Direct (no DPS) connection to an IoT Hub given a hub FQDN and X.509 device
+credentials, then sends one telemetry message. Because there is no DPS step to
+learn the hub flavor, the sample selects it explicitly with
+`opts.hub_protocol` — `AZ_IOT_HUB_PROTOCOL_NEXT` for an IoT Hub Next / Event
+Grid (AEG) endpoint (MQTT v5, the default) or `AZ_IOT_HUB_PROTOCOL_CLASSIC`
+(MQTT v3.1.1). Fill in the `SAMPLE_*` constants at the top of `main.c` or set
+the env vars below. Requires the Paho adapter.
 
 ### `custom_provider_template`
 Self-contained, no external dependencies, does not connect. A copy-paste
@@ -53,7 +63,18 @@ integrate your own crypto. Requires Paho; on non-Windows also OpenSSL 3.0+.
 
 ## Environment variables
 
-Shared (all connecting samples):
+The `direct-hub` sample (no DPS) uses:
+
+| Variable | Meaning |
+|----------|---------|
+| `AZ_IOT_HUB_HOSTNAME` | Direct hub FQDN |
+| `AZ_IOT_DEVICE_ID` | Device id / MQTT client id |
+| `AZ_IOT_CLIENT_CERT` | Device X.509 certificate path |
+| `AZ_IOT_CLIENT_KEY` | Device X.509 private key path |
+| `AZ_IOT_TRUSTED_CA` | Trusted CA path (optional; system store if unset) |
+| `AZ_IOT_HUB_PROTOCOL` | `next` (AEG/v5, default) or `classic` (v3.1.1) |
+
+Shared (all DPS-based connecting samples):
 
 | Variable | Meaning |
 |----------|---------|

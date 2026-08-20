@@ -80,9 +80,7 @@ _Captured from conversation as the C99 client repo was being scaffolded. Each bu
 - Embedded targets are **design-only** for P0 (no embedded build/CI yet); Linux + Windows are the P0 build/CI targets.
 
 ### Public API shape
-- Two API surfaces shipped from the same codebase:
-  - **API A — core**: single-threaded `do_work()` pump owned by the application; all callbacks fire from inside `do_work()`.
-  - **API B — easy**: convenience wrapper built on top of API A with an internal worker thread and `*_sync` helpers.
+- A single API surface: single-threaded `do_work()` pump owned by the application; all callbacks fire from inside `do_work()`.
 - Public symbols use the prefix `az_iot_` (types, functions, macros). Header guards use `az_iot_*_H`. Public headers live under `inc/azure/iot/`.
 - Sample code must use only `az_iot_*` public symbols — no `azure-sdk-for-c` types/functions leaking into samples.
 
@@ -108,7 +106,7 @@ _Captured from conversation as the C99 client repo was being scaffolded. Each bu
 - Eclipse `paho.mqtt.c` is integrated the same way as `azure-sdk-for-c`: **FetchContent**, pinned to a tag (currently `v1.3.13`). No vcpkg requirement.
 - Uses Paho's **MQTTAsync** API; one library covers both MQTTv3.1.1 and v5 (selected per session via `MQTTAsync_createOptions::MQTTVersion`).
 - Two factories shipped: `az_iot_paho_factory_create_v3_1_1()` (DPS + HUB_CLASSIC) and `az_iot_paho_factory_create_v5()` (HUB_NEXT).
-- Paho's callbacks fire on its internal threads; the adapter marshals them into a thread-safe FIFO and dispatches them on the caller's thread inside `process_loop()`. This preserves the API A single-thread contract.
+- Paho's callbacks fire on its internal threads; the adapter marshals them into a thread-safe FIFO and dispatches them on the caller's thread inside `process_loop()`. This preserves the single-thread contract.
 - Built static only (`PAHO_BUILD_STATIC=TRUE`, `PAHO_BUILD_SHARED=FALSE`); no DLL artifacts.
 - TLS is **not** enabled in the adapter yet (`PAHO_WITH_SSL=OFF`); X.509 plumbing arrives together with `certificate_provider` wiring in a later phase.
 
@@ -123,7 +121,7 @@ _Captured from conversation as the C99 client repo was being scaffolded. Each bu
 - Test framework: **cmocka** (chosen for mocking support and alignment with `azure-sdk-for-c`). Integrated via FetchContent (`cmocka-1.1.7`), forced static (`BUILD_SHARED_LIBS=OFF` in cache with `FORCE`, save/restore around the subdir).
 - Tests run via `ctest` from CMake presets on both Windows and Linux.
 - An MQTT iface **conformance suite** lives in `tests/conformance/`. It is a reusable cmocka library that exercises any `az_iot_mqtt_factory` end-to-end against a real broker — it does not depend on Paho or any specific adapter. Customers can link `az_iot_conformance` and instantiate their own factory to validate that their MQTT client+adapter is plug-compatible. Two suites: `AZ_IOT_CONFORMANCE_SUITE_V3_1_1` and `AZ_IOT_CONFORMANCE_SUITE_V5`.
-- Conformance tests skip themselves (CTest exit 77) unless `AZ_IOT_MQTT_BROKER_HOST` is set, so local builds without a broker stay green.
+  - Conformance tests are registered only when the build sets `AZ_IOT_BUILD_CONFORMANCE_TESTS` (the Linux presets do). They never skip themselves: once registered, an unset `AZ_IOT_MQTT_BROKER_HOST` is a failure. A local build without a broker simply does not have the tests.
 - CI runs an `eclipse-mosquitto:2` service container on the Linux jobs and points the conformance harnesses at it.
 
 ### Repository hygiene / process

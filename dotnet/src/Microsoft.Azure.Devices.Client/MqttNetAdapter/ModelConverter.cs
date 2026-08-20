@@ -36,7 +36,7 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
             return generic;
         }
 
-        private static IReadOnlyCollection<Mqtt.MqttUserProperty> ToGeneric(IReadOnlyCollection<MQTTnet.Packets.MqttUserProperty> userProperties)
+        private static List<Mqtt.MqttUserProperty> ToGeneric(IReadOnlyCollection<MQTTnet.Packets.MqttUserProperty> userProperties)
         {
             List<Mqtt.MqttUserProperty> generic = new();
 
@@ -314,7 +314,11 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
             List<MqttUnsubscribeAckItem> generic = new();
             foreach (MqttClientUnsubscribeResultItem item in unsubackItem)
             {
-                generic.Add(new(item.TopicFilter, toGeneric(item.ResultCode)));
+                generic.Add(new()
+                { 
+                    ResultCode = toGeneric(item.ResultCode),
+                    TopicFilter = item.TopicFilter,
+                });
             }
 
             return generic;

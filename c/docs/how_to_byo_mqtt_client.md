@@ -67,11 +67,13 @@ If any property is absent in the packet, set the pointer to NULL and the length/
 
 **On CONNACK** — populate `session_present` in the `az_iot_mqtt_event` delivered with `EVT_CONNECTED`.
 
+**On a rejected CONNACK** — set `status` from `az_iot_mqtt_connack_result(version, connack_code)` rather than reporting a blanket `AZ_IOT_ERR_MQTT`. Pass the code exactly as it came off the wire (a v3.1.1 return code, or a v5 reason code); pass a negative value for failures your client raised itself, such as a refused socket or a TLS handshake error. The helper decides whether the broker refused the *identity* (`AZ_IOT_ERR_IDENTITY_REJECTED`) or merely failed to carry the *connection* (`AZ_IOT_ERR_MQTT`), and the SDK re-provisions through DPS on the former and only on the former. An adapter that flattens the two leaves a device unable to follow a DPS hub reassignment.
+
 A v3.1.1 adapter may ignore all v5-only fields (they will always be NULL/zero when passed to `publish`).
 
 ### The single-thread contract (important)
 
-`azure-iot-sdk` API A is a **single-threaded pump**. All inbound callbacks (the one registered via `set_inbound_cb`) **must fire on the thread that calls `process_loop()`**, not on whatever I/O thread your underlying MQTT client uses internally.
+`azure-iot-sdk` is a **single-threaded pump**. All inbound callbacks (the one registered via `set_inbound_cb`) **must fire on the thread that calls `process_loop()`**, not on whatever I/O thread your underlying MQTT client uses internally.
 
 If your library has its own I/O thread (Paho does), the recommended pattern is:
 1. Capture the event in a tiny thread-safe FIFO from the I/O thread.
@@ -162,8 +164,9 @@ Wire it into `tests/CMakeLists.txt` next to the existing Paho harnesses:
 add_executable(az_iot_conformance_mymqtt_v3 conformance/mymqtt_v3_main.c)
 target_link_libraries(az_iot_conformance_mymqtt_v3 PRIVATE
     az_iot_conformance az_iot_adapter_mymqtt)
-add_test(NAME az_iot_conformance_mymqtt_v3 COMMAND az_iot_conformance_mymqtt_v3)
-set_tests_properties(az_iot_conformance_mymqtt_v3 PROPERTIES SKIP_RETURN_CODE 77)
+if(AZ_IOT_BUILD_CONFORMANCE_TESTS)
+    add_test(NAME az_iot_conformance_mymqtt_v3 COMMAND az_iot_conformance_mymqtt_v3)
+endif()
 ```
 
 Repeat for `_v5` if applicable.
@@ -186,7 +189,7 @@ export AZ_IOT_MQTT_BROKER_HOST=localhost
 export AZ_IOT_MQTT_BROKER_PORT=1883
 ```
 
-If `AZ_IOT_MQTT_BROKER_HOST` is unset (or empty, or `AZ_IOT_MQTT_BROKER_SKIP=1`), the harness reports itself as `Skipped` (CTest exit 77) instead of failing. This lets developers without a broker keep the rest of the suite green.
+If `AZ_IOT_MQTT_BROKER_HOST` is unset or empty, the harness **fails**. Whether the suite runs at all is a build-time decision (`AZ_IOT_BUILD_CONFORMANCE_TESTS`): if you have no broker, configure without it and the tests are not registered. The harness used to report itself as `Skipped` instead, which meant a suite could stop running without anyone noticing.
 
 ### 4.3 — Run
 
@@ -227,7 +230,7 @@ The connection client picks the right factory at session-open time based on the 
 
 ## Common pitfalls
 
-- **Calling the user callback on the wrong thread.** API A's whole point is to keep the user on a single thread. If you hand callbacks straight from your client's I/O thread, all higher-level state machines in the SDK become racy. Use a FIFO + drain in `process_loop`.
+- **Calling the user callback on the wrong thread.** The SDK's whole point is to keep the user on a single thread. If you hand callbacks straight from your client's I/O thread, all higher-level state machines in the SDK become racy. Use a FIFO + drain in `process_loop`.
 - **Returning success synchronously when the operation has not actually completed.** `connect`, `subscribe`, `publish` all return immediately; success/failure of the broker round-trip arrives later through the inbound callback. Returning `az_iot_OK` from `connect` only means "I accepted your CONNECT request and started working on it".
 - **Forgetting to populate every vtable slot.** The conformance suite asserts every slot is non-NULL.
 - **Reusing a single underlying client across DPS → Hub transitions.** Each session asks the factory for a fresh client; do not cache.

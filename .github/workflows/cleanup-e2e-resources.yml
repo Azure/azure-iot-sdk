@@ -1,0 +1,104 @@
+# Copyright (c) Microsoft. All rights reserved.
+# Licensed under the MIT license. See LICENSE file in the project root for full license information.
+
+# Nightly backstop that deletes leaked e2e Azure resource groups for EVERY
+# language pipeline in this repo. Replaces the C-only and dotnet-only janitors.
+#
+# Covered prefixes:
+#   CSDKE2E                 -> ci-c-e2e (Fast), ci-c-e2e-adu (Adu), ci-c-e2e-csr
+#                              (Cert). No trailing dash, so the one entry matches
+#                              all three C flavors.
+#   DotnetE2ETestPipeline-  -> ci-dotnet.
+#
+# Every pipeline already deletes its own resource group in an always() step/job,
+# and derives the group name from the run id so cleanup never depends on a job
+# output (a CANCELLED job does not propagate its `outputs`). This janitor covers
+# what those in-run deletions structurally cannot:
+#   * `az group delete --no-wait` that fails asynchronously -- the run has already
+#     reported success by the time the deletion fails,
+#   * a runner that dies, or a cleanup step killed by the 5-minute cancellation
+#     timeout,
+#   * groups created by an older revision of those workflows.
+#
+# Deletion is age-gated: only groups whose 'CreatedOn' tag (stamped by the
+# iot-sdks-e2e-fx framework at group creation) is older than `minimum-age-hours`
+# are removed, so an in-flight run is never disturbed -- the longest run in this
+# repo is ci-c-e2e-csr, at setup (60 min) + test (30 min). Groups with no
+# parseable 'CreatedOn' tag are reported as SKIP and left alone.
+
+name: cleanup-e2e-resources
+
+on:
+  schedule:
+    - cron: '0 2 * * *'   # Nightly at 2am UTC
+  workflow_dispatch:
+    inputs:
+      prefixes:
+        description: Comma-separated resource group name prefixes to reap.
+        required: false
+        default: 'CSDKE2E,DotnetE2ETestPipeline-'
+      minimum-age-hours:
+        description: Minimum age, in hours, a resource group must have to be deleted.
+        required: false
+        default: '6'
+
+permissions:
+  contents: read
+  id-token: write   # required for azure/login OIDC
+
+jobs:
+  cleanup:
+    name: Nightly cleanup
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Azure Login via OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Delete leaked e2e resource groups
+        uses: azure/powershell@v3
+        env:
+          # Passed via env (not string-interpolated into the script) so the
+          # workflow_dispatch inputs are data, never code. The `||` fallbacks
+          # supply the defaults on the `schedule` trigger, where `inputs` is empty.
+          RG_PREFIXES: ${{ inputs.prefixes || 'CSDKE2E,DotnetE2ETestPipeline-' }}
+          MINIMUM_AGE_HOURS: ${{ inputs.minimum-age-hours || '6' }}
+        with:
+          azPSVersion: "latest"
+          inlineScript: |
+            Invoke-WebRequest -Uri "https://raw.githubusercontent.com/Azure/iot-sdks-e2e-fx/refs/heads/master/scripts/Azure.Iot.Sdk.Test.psm1" -OutFile "./Azure.Iot.Sdk.Test.psm1"
+            Import-Module "./Azure.Iot.Sdk.Test.psm1"
+
+            $ageHours = 0
+            if (-not [int]::TryParse($env:MINIMUM_AGE_HOURS, [ref]$ageHours) -or $ageHours -lt 1) {
+              throw "minimum-age-hours must be a positive integer; got '$($env:MINIMUM_AGE_HOURS)'."
+            }
+
+            $prefixes = @($env:RG_PREFIXES -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+            if ($prefixes.Count -eq 0) {
+              throw "prefixes must list at least one resource group name prefix."
+            }
+
+            # Keep going when one prefix fails, so a transient error reaping one
+            # pipeline's groups never stops the others from being cleaned up.
+            $failed = @()
+            foreach ($prefix in $prefixes) {
+              Write-Host "::group::Cleanup for prefix '$prefix'"
+              try {
+                Remove-LeftoverAzureResourceGroups -Prefix $prefix -MinimumAgeHours $ageHours
+              } catch {
+                Write-Warning "Cleanup failed for prefix '$prefix': $_"
+                $failed += $prefix
+              } finally {
+                Write-Host "::endgroup::"
+              }
+            }
+
+            if ($failed.Count -gt 0) {
+              throw "Cleanup failed for prefix(es): $($failed -join ', ')."
+            }

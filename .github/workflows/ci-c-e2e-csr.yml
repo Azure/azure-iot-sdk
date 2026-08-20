@@ -9,10 +9,10 @@
 # fast e2e job: the Device Provisioning Service must be provisioned with Azure
 # Device Registration (ADR) integration so it can issue an OPERATIONAL
 # certificate in response to a device's CSR. The fast ci-c-e2e job provisions a
-# plain DPS, so the CSR test (`az_iot_tests_e2e_csr`) self-skips there (CTest
-# exit 77 unless AZ_IOT_DPS_CSR_ENABLED is set). This workflow provisions the
-# cert-management environment (via `enable-certificate-management` on the shared
-# provision step) and actually exercises the CSR path.
+# plain DPS, so it does not build the CSR test at all -- `az_iot_tests_e2e_csr`
+# exists only where AZ_IOT_BUILD_E2E_CSR is set, which is here. This workflow
+# provisions the cert-management environment (via `enable-certificate-management`
+# on the shared provision step) and actually exercises the CSR path.
 #
 # Architecture
 # ------------
@@ -38,10 +38,12 @@
 #   1. setup    : provision the cert-management resource group ONCE (DPS + ADR +
 #                 the X.509 enrollment group), mint the bootstrap identity, and
 #                 publish the config as an artifact.
-#   2. test     : build `az_iot_tests_e2e_csr`, materialize the bootstrap chain +
-#                 key, arm the test (AZ_IOT_DPS_CSR_ENABLED=1) and run
+#   2. test     : build `az_iot_tests_e2e_csr` (AZ_IOT_BUILD_E2E_CSR=ON),
+#                 materialize the bootstrap chain + key, and run
 #                 `ctest -R e2e_csr`.
-#   3. teardown : always() deletes the resource group.
+#   3. teardown : always() deletes the resource group. It recomputes the group
+#                 name from the run id rather than reading a setup output, so it
+#                 also cleans up after a CANCELLED setup job (see `env` below).
 #
 # The provision/destroy steps live in .github/actions/{provision,destroy}-e2e-
 # resources so other pipelines can reuse them.
@@ -90,6 +92,15 @@ permissions:
   contents: read
   id-token: write   # required for azure/login OIDC
 
+# Resource group name derived from the RUN, not from a random GUID published as a
+# job output. A CANCELLED job does not propagate its `outputs`, so a teardown that
+# reads `needs.setup.outputs.rg` receives an empty string and silently deletes
+# nothing ("No resource group name available") while the group stays behind --
+# exactly how `cancel-in-progress` runs leaked CSDKE2ECert-* groups. Both setup and
+# teardown compute this name independently, so teardown never depends on setup.
+env:
+  E2E_RESOURCE_GROUP: CSDKE2ECert-${{ github.run_id }}-${{ github.run_attempt }}
+
 jobs:
   setup:
     name: setup (provision)
@@ -97,8 +108,6 @@ jobs:
     # Cert-management provisioning is heavier than the fast path: it creates an
     # ADR namespace/policy, role assignments, and an ADR-integrated DPS.
     timeout-minutes: 60
-    outputs:
-      rg: ${{ steps.provision.outputs.resource-group }}
     steps:
       - uses: actions/checkout@v4
 
@@ -113,10 +122,16 @@ jobs:
         id: provision
         uses: ./.github/actions/provision-e2e-resources
         with:
-          rg-prefix: CSDKE2ECert-
-          # Azure Device Registration (ADR) is a preview feature available only
-          # in canary regions; provision there (matches the cert-mgmt pipeline).
-          azure-location: centraluseuap
+          rg-name: ${{ env.E2E_RESOURCE_GROUP }}
+          # Azure Device Registration (ADR) started out canary-only, so this used
+          # to be `centraluseuap`. It has since rolled out to production regions,
+          # and the canary deployment now rejects `Microsoft.DeviceRegistry/
+          # namespaces` PUTs from this workflow's OIDC service principal with
+          # `400 ResourceCreationValidateFailed` ("The resource validation
+          # failed."), which broke every run of this workflow. EastUS serves the
+          # same namespace + credential + policy resources, and is where the
+          # other e2e pipelines already provision.
+          azure-location: eastus
           # Provision the DPS with Azure Device Registration (ADR) integration so
           # the enrollment can issue an operational certificate for the device CSR.
           enable-certificate-management: 'true'
@@ -146,13 +161,15 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install ninja (Linux)
-        run: sudo apt-get update && sudo apt-get install -y ninja-build
+        run: |
+          sudo apt-get update && sudo apt-get install -y ninja-build
+          python3 -m pip install --upgrade 'gcovr==7.2'
 
       - name: Build CSR e2e test
         working-directory: c
         run: |
-          cmake --preset linux-gcc-debug -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_WITH_PAHO=ON
-          cmake --build --preset linux-gcc-debug --target az_iot_tests_e2e_csr
+          cmake --preset linux-gcc-e2e-coverage -DAZ_IOT_BUILD_E2E_CSR=ON
+          cmake --build --preset linux-gcc-e2e-coverage --target az_iot_tests_e2e_csr
 
       - name: Download shared test config
         uses: actions/download-artifact@v4
@@ -202,14 +219,12 @@ jobs:
           $env:AZ_IOT_CLIENT_KEY          = $keyPath
           $env:AZ_IOT_TRUSTED_CA          = $caPath
           if ($env:IOT_DPS_GLOBAL_ENDPOINT) { $env:AZ_IOT_DPS_GLOBAL_ENDPOINT = $env:IOT_DPS_GLOBAL_ENDPOINT }
-          # Arm the CSR test; without this it reports a CTest skip (exit 77).
-          $env:AZ_IOT_DPS_CSR_ENABLED = '1'
           # Verbose SDK logging so a connect/DPS failure surfaces its reason.
           $env:AZ_IOT_E2E_LOG_LEVEL = 'TRACE'
 
           New-Item -ItemType Directory -Path ./test_config/results -Force | Out-Null
           # `-R e2e_csr` selects ONLY az_iot_tests_e2e_csr.
-          ctest --test-dir c/build/linux-gcc-debug -R e2e_csr `
+          ctest --test-dir c/build/linux-gcc-e2e-coverage -R e2e_csr `
             --verbose --no-tests=error --timeout 900 `
             --output-junit ./test_config/results/e2e-csr.xml
 
@@ -221,10 +236,28 @@ jobs:
           path: ./test_config/results/**/*.xml
           if-no-files-found: ignore
 
+      - name: Collect coverage
+        # Not `if: always()` -- a failed run leaves partial or absent .gcda, and
+        # merging that would understate coverage for an unrelated reason.
+        if: success()
+        working-directory: c
+        run: bash eng/collect-coverage.sh build/linux-gcc-e2e-coverage coverage/e2e-csr.json e2e-csr
+
+      - name: Upload coverage tracefile
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-trace-e2e-csr
+          path: c/coverage/e2e-csr.json
+          if-no-files-found: error
+
   teardown:
     name: teardown (delete resources)
     needs: [setup, test]
-    if: always() && needs.setup.result != 'skipped'
+    # `always()` also covers cancellation. The group name comes from the workflow
+    # `env` (not from `needs.setup.outputs`), so a cancelled setup still gets torn
+    # down; the destroy action no-ops when the group was never created.
+    if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -240,4 +273,4 @@ jobs:
       - name: Delete Azure resources
         uses: ./.github/actions/destroy-e2e-resources
         with:
-          resource-group: ${{ needs.setup.outputs.rg }}
+          resource-group: ${{ env.E2E_RESOURCE_GROUP }}

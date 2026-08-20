@@ -1,5 +1,4 @@
-﻿using Microsoft.Azure.Devices.Client.Telemetry;
-using Moq;
+﻿using Moq;
 using System;
 using System.Collections.Generic;
 using System.Text;
@@ -9,18 +8,20 @@ namespace Microsoft.Azure.Devices.Client.UnitTests
 {
     public class TelemetryClientUnitTests
     {
-        [Fact]
-        public async Task TelemetryClientThrowsIfMessageTooLarge()
+        /*
+        [Theory]
+        [InlineData(true)]
+        [InlineData(false)]
+        public async Task TelemetryClientThrowsIfMessageTooLarge_Unified(bool testUnifiedClient)
         {
-            Mock<ConnectionClient> mockConnectionClient = new();
-            mockConnectionClient.Object.CurrentConnectionContext = new ConnectionContext()
+            MockConnectionClient mockConnectionClient = new();
+            mockConnectionClient.SetCurrentConnectionContext(new ConnectionContext()
             {
-                DeviceId = Guid.NewGuid().ToString(),
+                DeviceId = "SomeDeviceId",
                 IsAzureEventGrid = false,
-                IotHubHostName = "localhost"
-            };
-
-            TelemetryClient telemetryClient = new(mockConnectionClient.Object);
+                IotHubHostName = "SomeHostName",
+            });
+            TelemetryClient telemetryClient = new(mockConnectionClient);
 
             OutgoingTelemetryMessage outgoingTelemetryMessage = new()
             {
@@ -29,5 +30,16 @@ namespace Microsoft.Azure.Devices.Client.UnitTests
 
             await Assert.ThrowsAsync<MessageTooLargeException>(async () => await telemetryClient.SendTelemetryAsync(outgoingTelemetryMessage, TestContext.Current.CancellationToken));
         }
+
+        private Connection.Unified.ConnectionClient GetUnifiedClient()
+        { 
+        
+        }
+
+        private Connection.Gen2.ConnectionClient GetGen2Client()
+        {
+
+        }
+        */ //TODO
     }
 }

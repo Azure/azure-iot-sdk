@@ -1,5 +1,6 @@
 // Copyright (c) Microsoft. All rights reserved.
-// Licensed under the MIT license. See LICENSE file in the project root for full license information.
+// Licensed under the MIT license. See LICENSE file in the project root for full license
+// information.
 
 /* SPDX-License-Identifier: MIT */
 /* mbedTLS-backed ADU crypto primitives (RSASSA-PKCS1-v1_5 over SHA-256 verify +
@@ -12,13 +13,14 @@
 #include "azure/iot/az_iot_adu.h"
 
 #ifdef __cplusplus
-extern "C" {
+extern "C"
+{
 #endif
 
-/* Return az_iot_adu_crypto_hooks wired to the mbedTLS backend. The struct is
- * by value, references static function pointers, and carries no allocated state
- * (user_ctx is NULL). Safe to pass straight to az_iot_adu_client_initialize(). */
-az_iot_adu_crypto_hooks az_iot_adu_crypto_mbedtls_hooks(void);
+  /* Return az_iot_adu_crypto_hooks wired to the mbedTLS backend. The struct is
+   * by value, references static function pointers, and carries no allocated state
+   * (user_ctx is NULL). Safe to pass straight to az_iot_adu_client_initialize(). */
+  az_iot_adu_crypto_hooks az_iot_adu_crypto_mbedtls_hooks(void);
 
 #ifdef __cplusplus
 }

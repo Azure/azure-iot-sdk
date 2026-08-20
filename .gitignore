@@ -44,6 +44,12 @@ ScaffoldingReadMe.txt
 *~
 CodeCoverage/
 
+# gcov / gcovr coverage output (c/)
+*.gcda
+*.gcno
+*.gcov
+coverage/
+
 # MSBuild Binary and Structured Log
 *.binlog
 

@@ -10,14 +10,28 @@ name: Provision e2e Azure resources
 description: Provision a resource group + IoT Hub/DPS/devices (optionally ADU) and emit a test-config script.
 
 inputs:
+  rg-name:
+    description: >-
+      Exact resource group name to provision into. PREFERRED over `rg-prefix`: a caller that
+      derives the name from the run itself (e.g. CSDKE2EFast-<run_id>-<run_attempt>) can compute
+      the same name in its teardown job WITHOUT reading this action's `resource-group` output --
+      which a CANCELLED provisioning job never publishes, orphaning the group. When empty, falls
+      back to `rg-prefix` + a random GUID.
+    required: false
+    default: ''
   rg-prefix:
-    description: Resource group name prefix (e.g. CSDKE2EFast-).
-    required: true
+    description: >-
+      Resource group name prefix (e.g. CSDKE2EFast-) used to generate a random name. Ignored when
+      `rg-name` is set. Required only when `rg-name` is empty.
+    required: false
+    default: ''
   azure-location:
     description: >-
       Azure region to provision in. ADU is only available in a subset (EastUS);
-      certificate management (ADR) is a preview feature and needs a canary region
-      (e.g. centraluseuap).
+      certificate management (ADR) is available in EastUS too. Avoid canary
+      regions (e.g. centraluseuap): Microsoft.DeviceRegistry there rejects
+      namespace creation from the CI service principal with
+      400 ResourceCreationValidateFailed.
     required: false
     default: EastUS
   enable-adu:
@@ -77,15 +91,35 @@ runs:
     - name: Provision resources
       id: provision
       uses: azure/powershell@v3
+      env:
+        # Passed via env (not string-interpolated into the script) so the value is
+        # data, never code.
+        AZ_IOT_RG_NAME: ${{ inputs.rg-name }}
       with:
         azPSVersion: "latest"
         inlineScript: |
           Invoke-WebRequest -Uri "https://raw.githubusercontent.com/Azure/iot-sdks-e2e-fx/refs/heads/master/scripts/Azure.Iot.Sdk.Test.psm1" -OutFile "./Azure.Iot.Sdk.Test.psm1"
           Import-Module "./Azure.Iot.Sdk.Test.psm1"
           New-Item -ItemType Directory -Force -Path (Split-Path -Parent "${{ inputs.out-file }}") | Out-Null
-          $ResourceGroupName = New-AzureResourceGroupName -Prefix "${{ inputs.rg-prefix }}"
+          if (-not [string]::IsNullOrWhiteSpace($env:AZ_IOT_RG_NAME)) {
+            # Caller-computed (deterministic) name -- it can reproduce this exact
+            # name in teardown without depending on this job's outputs.
+            # Azure allows alphanumerics, underscore, parentheses, hyphen and
+            # period, up to 90 characters, but the name may NOT end in a period.
+            # Anchored with \z, not $, so a trailing newline cannot slip through.
+            if ($env:AZ_IOT_RG_NAME -notmatch '^[A-Za-z0-9._()-]{0,89}[A-Za-z0-9_()-]\z') {
+              throw "rg-name '$($env:AZ_IOT_RG_NAME)' is not a valid Azure resource group name."
+            }
+            $ResourceGroupName = $env:AZ_IOT_RG_NAME
+          } elseif (-not [string]::IsNullOrWhiteSpace("${{ inputs.rg-prefix }}")) {
+            $ResourceGroupName = New-AzureResourceGroupName -Prefix "${{ inputs.rg-prefix }}"
+          } else {
+            throw "Either 'rg-name' or 'rg-prefix' must be provided."
+          }
           # Publish the RG name up-front so teardown can delete it even if the
-          # provisioning below fails part-way through.
+          # provisioning below fails part-way through. NOTE: job outputs are NOT
+          # propagated when the job is CANCELLED, so this output alone is not a
+          # reliable teardown handle -- prefer a deterministic 'rg-name'.
           "rg=$ResourceGroupName" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           $TestEnvInfo = New-AzIotTestEnvironment -AzureLocation "${{ inputs.azure-location }}" -ResourceGroup $ResourceGroupName `
             -IotHubX509ThumbprintDevices ${{ inputs.iothub-x509-thumbprint-devices }} `
@@ -93,6 +127,28 @@ runs:
             -DpsX509GroupEnrollmentDevices ${{ inputs.dps-x509-group-enrollment-devices }} `
             -EnableADU ${{ inputs.enable-adu }} ${{ inputs.enable-certificate-management == 'true' && '-EnableCertificateManagement' || '' }} ${{ inputs.enable-file-upload == 'true' && '-EnableFileUpload' || '' }}
           & "${{ inputs.config-cmdlet }}" -TestEnvInfo $TestEnvInfo -Target ${{ inputs.config-target }} -OutFile "${{ inputs.out-file }}"
+
+          # New-AzIotTestEnvironment -EnableFileUpload attaches the storage account
+          # and container, but leaves the hub's enableFileUploadNotifications at its
+          # default of FALSE. Without it IoT Hub accepts a device's completion
+          # notification and then publishes nothing, so the service-side
+          # file-notification endpoint stays silent and an e2e test can only verify
+          # the device half of an upload. Turn it on here (the shared framework does
+          # not expose a switch for it).
+          if ("${{ inputs.enable-file-upload }}" -eq "true") {
+            $HostNamePair = ($TestEnvInfo.IotHub.ConnectionString -split ';' `
+              | Where-Object { $_ -like 'HostName=*' } | Select-Object -First 1)
+            if ([string]::IsNullOrWhiteSpace($HostNamePair)) {
+              throw "Could not parse HostName from the IoT Hub connection string."
+            }
+            $IotHubName = ($HostNamePair -replace '^HostName=', '').Split('.')[0]
+            Write-Host "Enabling IoT Hub file-upload notifications ($IotHubName)"
+            az iot hub update --name $IotHubName --resource-group $ResourceGroupName `
+              --fileupload-notifications true --only-show-errors | Out-Null
+            if ($LASTEXITCODE -ne 0) {
+              throw "Failed to enable file-upload notifications on $IotHubName."
+            }
+          }
 
           # When an X.509 enrollment GROUP was provisioned, the group's issuer is
           # an INTERMEDIATE CA (created by the framework and signed by the root);
