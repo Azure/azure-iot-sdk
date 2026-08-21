@@ -336,6 +336,31 @@ static void dps_honors_a_custom_global_endpoint(void** state)
   az_iot_connection_client_destroy(&c);
 }
 
+/* Guards the azure-sdk-for-c patch in patches/azure-sdk-for-c/. The api-version
+ * rides in the DPS CONNECT username, and connectionProfile only exists from
+ * 2026-11-02-preview onward -- so if the patch silently stops applying (a moved
+ * AZ_SDK_C_TAG, a PATCH_COMMAND that quietly no-ops) the SDK reverts to
+ * 2019-03-31 and the profile never arrives. That failure is otherwise invisible
+ * until a device connects to a real hub. */
+static void dps_connects_with_the_preview_api_version(void** state)
+{
+  (void)state;
+  az_iot_connection_client_options opts = dps_options();
+
+  az_iot_connection_client c;
+  assert_int_equal(az_iot_connection_client_init(&c, &opts), AZ_IOT_OK);
+  az_iot_mqtt_factory* factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
+  assert_int_equal(az_iot_connection_client_register_mqtt_factory(&c, factory), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_open(&c), AZ_IOT_OK);
+
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(factory);
+  const az_iot_mock_call* call = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_CONNECT);
+  assert_non_null(call);
+  assert_non_null(strstr(call->username, "api-version=2026-11-02-preview"));
+
+  az_iot_connection_client_destroy(&c);
+}
+
 /* Provisioning is the one connect that happens unattended on a first boot, so
  * an application that tuned the timings for its link needs them to apply there
  * too. They used to be hardcoded on this path. */
@@ -750,6 +775,7 @@ int main(void)
     cmocka_unit_test(dps_honors_the_configured_timings),
     cmocka_unit_test(dps_defaults_the_timings_when_unset),
     cmocka_unit_test(dps_honors_a_custom_global_endpoint),
+    cmocka_unit_test(dps_connects_with_the_preview_api_version),
     cmocka_unit_test(dps_uses_v3_1_1_even_when_the_hub_is_next),
     cmocka_unit_test(dps_without_a_v3_1_1_factory_is_not_supported),
     /* register handshake */

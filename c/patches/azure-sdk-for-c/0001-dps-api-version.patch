@@ -1,0 +1,13 @@
+diff --git a/sdk/inc/azure/iot/az_iot_provisioning_client.h b/sdk/inc/azure/iot/az_iot_provisioning_client.h
+index 8ba68b1..d8860ff 100644
+--- a/sdk/inc/azure/iot/az_iot_provisioning_client.h
++++ b/sdk/inc/azure/iot/az_iot_provisioning_client.h
+@@ -29,7 +29,7 @@
+ /**
+  * @brief The client is fixed to a specific version of the Azure IoT Provisioning service.
+  */
+-#define AZ_IOT_PROVISIONING_SERVICE_VERSION "2019-03-31"
++#define AZ_IOT_PROVISIONING_SERVICE_VERSION "2026-11-02-preview"
+ 
+ /**
+  * @brief Azure IoT Provisioning Client options.

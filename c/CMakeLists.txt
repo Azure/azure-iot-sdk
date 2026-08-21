@@ -61,11 +61,30 @@ elseif(UNIX)
     set(AZ_PLATFORM_IMPL "POSIX" CACHE STRING "" FORCE)
 endif()
 
+# azure-sdk-for-c is ARCHIVED upstream, so this repo owns it: fixes land here as
+# patches or not at all. 0001 raises the DPS api-version to the preview that
+# carries connectionProfile -- see docs/eng/client-separation.md section 2.
+find_package(Git REQUIRED)
+set(AZ_SDK_C_PATCHES
+    "${CMAKE_CURRENT_SOURCE_DIR}/patches/azure-sdk-for-c/0001-dps-api-version.patch")
+
+set(_az_sdk_c_patch_command "")
+foreach(_patch IN LISTS AZ_SDK_C_PATCHES)
+    list(APPEND _az_sdk_c_patch_command
+        COMMAND ${CMAKE_COMMAND}
+            -DGIT_EXECUTABLE=${GIT_EXECUTABLE}
+            -DSOURCE_DIR=<SOURCE_DIR>
+            -DPATCH_FILE=${_patch}
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/az_iot_apply_patch.cmake")
+endforeach()
+list(POP_FRONT _az_sdk_c_patch_command)
+
 FetchContent_Declare(
     azure_sdk_for_c
     GIT_REPOSITORY ${AZ_SDK_C_REPO}
     GIT_TAG        ${AZ_SDK_C_TAG}
     GIT_SHALLOW    TRUE
+    PATCH_COMMAND  ${_az_sdk_c_patch_command}
 )
 FetchContent_MakeAvailable(azure_sdk_for_c)
 

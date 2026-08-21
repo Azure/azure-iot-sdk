@@ -2,3 +2,7 @@
 # setting: CI runs c/eng/check-banned-constructs.sh on Linux, and a CRLF copy
 # fails there in ways that look nothing like a line-ending problem.
 *.sh text eol=lf
+
+# Patches are byte-exact by definition: a CRLF checkout makes `git apply` reject
+# hunks whose context was generated with LF.
+*.patch -text
