@@ -504,6 +504,36 @@ and does nothing for this one.
 Tracked as **[AB#39350066](https://dev.azure.com/msazure/One/_workitems/edit/39350066)**
 — *Define device behaviour when a hub reassignment changes the connection profile*.
 
+> **The pattern above is not safe yet. Two connection-client defects must be
+> fixed before P2 relies on it.**
+>
+> **1. `CONNECTED` does not mean subscriptions are live.**
+> `announce_connected()` transitions to `CONNECTED` as its *first* statement and
+> only then issues the persistent subscribes, discarding the result; SUBACKs are
+> absorbed and never correlated. So an application that rebuilds feature clients
+> from the `CONNECTED` callback — exactly what step 2 above asks for — does so
+> while no subscription is established, and a request published from that
+> callback can overtake its own response subscription. MQTT does not order a
+> PUBLISH behind a preceding SUBSCRIBE, so the SUBACK is genuinely required.
+> Tracked as [AB#39366084](https://dev.azure.com/msazure/One/_workitems/edit/39366084).
+> The gen2 presence handshake already implements the correct shape — it waits for
+> its own SUBACK before publishing birth — it simply is not applied to feature
+> subscriptions.
+>
+> **2. Persistent subscriptions cannot be removed.**
+> `__add_subscription_on_connect()` has no remove counterpart, and every feature
+> client's `destroy()` leaves its filter registered. Destroying the gen1 set and
+> constructing the gen2 set therefore leaves the Classic filters behind, so the
+> device re-subscribes to `$iothub/...` topics on a gen2 hub and consumes registry
+> slots permanently — past `AZ_IOT_MAX_PERSISTENT_SUBS` (8) and past the
+> service-side limit of five topics per device. Step 2 above cannot work until
+> this exists. Tracked as
+> [AB#39366086](https://dev.azure.com/msazure/One/_workitems/edit/39366086).
+>
+> Both are pre-existing and independent of the split, but P2 is the first thing
+> that depends on them, so they are sequenced ahead of it in
+> [§12](#12-phases).
+
 Open, and deliberately called out because it makes the invalidation bidirectional
 rather than one-way: **can a device be rolled back to a classic IoT Hub?** Every
 example above moves gen1 → gen2. If gen2 → gen1 is also reachable, then gen1
@@ -594,7 +624,8 @@ plus the conformance suites.
 | P0b | This document + doc reconciliation | — | |
 | P1a | Add the `azure-sdk-for-c` `PATCH_COMMAND` mechanism, raise the DPS api-version to `2026-11-02-preview`, and remove the dead `c/deps/azure-sdk-for-c` submodule | — | Prerequisite for everything. Without it `connectionProfile` never arrives. |
 | P1b | `az_iot_hub_profile` + `get_hub_profile()` + `az_iot_connection_profile` + `AZ_IOT_ERR_HUB_PROFILE_MISMATCH` + `AZ_IOT_ERR_HUB_PROFILE_UNSUPPORTED`; parse `connectionProfile` in the existing ASSIGNED-payload walk | P1a | Additive. No feature client moves. |
-| P2 | Split the feature clients, one PR each: telemetry → c2d → direct methods → twin | P1 | Mutually parallel. Mismatch check per client. |
+| P1c | Gate `CONNECTED` on subscriptions being SUBACKed ([AB#39366084](https://dev.azure.com/msazure/One/_workitems/edit/39366084)) and add a persistent-subscription remove path wired into every feature client's `destroy()` ([AB#39366086](https://dev.azure.com/msazure/One/_workitems/edit/39366086)) | — | Pre-existing defects, independent of the split. **P2 depends on both**: §9's rebuild pattern is unsafe without the first and impossible without the second. Own PR, own review. |
+| P2 | Split the feature clients, one PR each: telemetry → c2d → direct methods → twin | P1a, P1b, **P1c** | Mutually parallel. Mismatch check per client. |
 | P3 | File upload redesign — HTTP transport becomes gen1-only | P1 | Larger than the others; own PR. |
 | P4 | Delete `protocol_profile.c`'s flavor tables and the last `profile->flavor` branches | P2, P3 | |
 | P5 | Re-layer ADU onto `adu_core` + channel vtable | P4 | ADUv2 declared only. |
