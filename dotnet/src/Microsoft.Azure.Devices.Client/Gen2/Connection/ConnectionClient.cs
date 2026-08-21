@@ -5,9 +5,9 @@ using Microsoft.Azure.Devices.Client.Models;
 using Microsoft.Azure.Devices.Client.Models.CertificateManagement;
 using Microsoft.Azure.Devices.Client.Models.Twin;
 using Microsoft.Azure.Devices.Client.Mqtt;
-using Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session;
 using Microsoft.Azure.Devices.Client.Provisioning;
 using Microsoft.Azure.Devices.Client.Provisioning.Models;
+using Microsoft.Azure.Devices.Client.Unified.Connection;
 using System.Diagnostics;
 using System.Reflection;
 using System.Text;
@@ -56,7 +56,7 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Connection
                 EnableMqttLogging = options.EnableMqttLogging,
             };
 
-            _mqttClient = options.MqttClient ?? new MqttSessionClient(sessionClientOptions);
+            _mqttClient = options.MqttClient ?? new MqttConnectionManager(sessionClientOptions);
             _mqttClient.PublishReceivedAsync += DelegatePublishAsync; // relay all publishes from the underlying MQTT client to users of this connection client
 
             _mqttClient.DisconnectedAsync += HandleDisconnectionAsync;

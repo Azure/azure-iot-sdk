@@ -24,5 +24,7 @@ namespace Microsoft.Azure.Devices.Client.Mqtt
 
         //TODO throws MqttClientNotConnectedException
         Task<MqttUnsubscribeAck> UnsubscribeAsync(MqttUnsubscribe unsubscribe, CancellationToken cancellationToken = default);
+
+        public bool IsConnected();
     }
 }

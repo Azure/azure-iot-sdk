@@ -285,7 +285,7 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
             _isDisposed = true;
         }
 
-        public bool IsConnected => _underlyingClient.IsConnected;
+        public bool IsConnected() => _underlyingClient.IsConnected;
 
         private Task DelegateReceivedPublishAsync(MqttApplicationMessageReceivedEventArgs args)
         {

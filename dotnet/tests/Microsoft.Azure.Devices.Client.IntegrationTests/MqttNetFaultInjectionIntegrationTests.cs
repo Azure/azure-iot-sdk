@@ -1,6 +1,6 @@
 ﻿using Microsoft.Azure.Devices.Client.Mqtt;
 using Microsoft.Azure.Devices.Client.MQTTnetAdapter;
-using Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session;
+using Microsoft.Azure.Devices.Client.Unified.Connection;
 using System;
 using System.Collections.Generic;
 using System.Text;
@@ -33,7 +33,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
         [Fact(Timeout = Setup.TestTimeoutMilliseconds)]
         public async Task TestSessionClientHandlesFailedConnackDuringConnect()
         {
-            MqttSessionClient mqttClient = new();
+            MqttConnectionManager mqttClient = new();
 
             MqttDisconnectReason expectedReason = MqttDisconnectReason.ServerBusy;
 
@@ -50,7 +50,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
         [Fact(Timeout = Setup.TestTimeoutMilliseconds)]
         public async Task TestSessionClientHandlesDisconnectWhileIdle()
         {
-            MqttSessionClient mqttClient = new();
+            MqttConnectionManager mqttClient = new();
             MqttConnect connectPacket = CreateConnectPacket();
             await mqttClient.ConnectAsync(connectPacket, TestContext.Current.CancellationToken);
 
@@ -99,7 +99,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
         [Fact(Timeout = Setup.TestTimeoutMilliseconds)]
         public async Task TestSessionClientHandlesDisconnectDuringPublish()
         {
-            MqttSessionClient mqttClient = new();
+            MqttConnectionManager mqttClient = new();
             MqttConnect connectPacket = CreateConnectPacket();
             await mqttClient.ConnectAsync(connectPacket, TestContext.Current.CancellationToken);
 
@@ -133,7 +133,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
         [Fact(Timeout = Setup.TestTimeoutMilliseconds)]
         public async Task TestSessionClientHandlesDisconnectDuringSubscribe()
         {
-            MqttSessionClient mqttClient = new();
+            MqttConnectionManager mqttClient = new();
             MqttConnect connectPacket = CreateConnectPacket();
             await mqttClient.ConnectAsync(connectPacket, TestContext.Current.CancellationToken);
 
@@ -159,7 +159,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
         [Fact(Timeout = Setup.TestTimeoutMilliseconds)]
         public async Task TestSessionClientHandlesDisconnectDuringUnsubscribe()
         {
-            MqttSessionClient mqttClient = new();
+            MqttConnectionManager mqttClient = new();
             MqttConnect connectPacket = CreateConnectPacket();
             await mqttClient.ConnectAsync(connectPacket, TestContext.Current.CancellationToken);
 

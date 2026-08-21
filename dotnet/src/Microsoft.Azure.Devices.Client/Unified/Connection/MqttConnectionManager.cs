@@ -2,13 +2,13 @@
 // Licensed under the MIT License.
 
 using Microsoft.Azure.Devices.Client.Mqtt;
-using Microsoft.Azure.Devices.Client.MqttNetAdapter.Session.Retry;
+using Microsoft.Azure.Devices.Client.Unified.Connection.Retry;
 using System.Diagnostics;
 using System.Net.Sockets;
 
-namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session
+namespace Microsoft.Azure.Devices.Client.Unified.Connection
 {
-    public class MqttSessionClient : MqttNetClient //TODO naming of this client. "SessionClient" is less applicable now that we care less about the session
+    internal class MqttConnectionManager
     {
         private readonly MqttSessionClientOptions _sessionClientOptions;
         private MqttConnect? _mostRecentConnect;
@@ -19,6 +19,8 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session
         private CancellationTokenSource? _reconnectionCancellationToken;
 
         private readonly SemaphoreSlim _disconnectedEventLock = new(1);
+
+        private IMqttClient _underlyingMqttClient;
 
         /// <summary>
         /// Create a MQTT session client where the underlying MQTT client is created for you and the connection is maintained
@@ -38,12 +40,13 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session
         /// </remarks>
         /// <param name="connectionSettings">The configurable options for the underlying MQTT connection(s)</param>
         /// <param name="sessionClientOptions">The configurable options for this MQTT session client.</param>
-        public MqttSessionClient(MqttSessionClientOptions? sessionClientOptions = null) : base(enableMqttLogs: sessionClientOptions != null ? sessionClientOptions.EnableMqttLogging : false)
+        public MqttConnectionManager(IMqttClient underlyingMqttClient, MqttSessionClientOptions? sessionClientOptions = null)
         {
+            _underlyingMqttClient = underlyingMqttClient;
             _sessionClientOptions = sessionClientOptions ?? new MqttSessionClientOptions();
             _sessionClientOptions.Validate();
 
-            base.DisconnectedAsync += InternalDisconnectedAsync;
+            _underlyingMqttClient.DisconnectedAsync += InternalDisconnectedAsync;
         }
 
         /// <summary>
@@ -59,7 +62,7 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session
         /// via <see cref="MqttSessionClientOptions.ConnectionRetryPolicy"/>.
         /// </remarks>
         /// <exception cref="InvalidOperationException">If this method is called when the client is already managing the connection.</exception>
-        public override async Task<MqttConnectAck> ConnectAsync(MqttConnect connect, CancellationToken cancellationToken = default)
+        public async Task<MqttConnectAck> ConnectAsync(MqttConnect connect, CancellationToken cancellationToken = default)
         {
             ObjectDisposedException.ThrowIf(_isDisposed, this);
 
@@ -92,7 +95,7 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session
         /// </summary>
         /// <param name="options">The optional parameters that can be sent in the DISCONNECT packet to the MQTT broker.</param>
         /// <param name="cancellationToken">The cancellation token.</param>
-        public override async Task DisconnectAsync(MqttDisconnect? options = null, CancellationToken cancellationToken = default)
+        public async Task DisconnectAsync(bool desireReconnection, MqttDisconnect? options = null, CancellationToken cancellationToken = default)
         {
             ObjectDisposedException.ThrowIf(_isDisposed, this);
             cancellationToken.ThrowIfCancellationRequested();
@@ -109,7 +112,7 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session
 
             _isClosing = true;
             _reconnectionCancellationToken?.Cancel();
-            await base.DisconnectAsync(options, cancellationToken);
+            await _underlyingMqttClient.DisconnectAsync(options, cancellationToken);
 
             var disconnectedArgs = new MqttClientDisconnectedEventArgs()
             {
@@ -125,7 +128,7 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session
         {
             if (!_isDisposed)
             {
-                base.DisconnectedAsync -= InternalDisconnectedAsync;
+                _underlyingMqttClient.DisconnectedAsync -= InternalDisconnectedAsync;
 
                 _reconnectionCancellationToken?.Dispose();
                 _disconnectedEventLock.Dispose();
@@ -135,7 +138,7 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session
 
             // The underlying client has an MQTT client as a managed resource that no other client has access to, so always dispose it
             // alongside all unmanaged resources.
-            base.Dispose();
+            _underlyingMqttClient.Dispose();
 
             GC.SuppressFinalize(this);
         }
@@ -149,7 +152,7 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session
             {
                 if (_isDesiredConnected)
                 {
-                    if (base.IsConnected)
+                    if (_underlyingMqttClient.IsConnected())
                     {
                         Trace.TraceInformation("Disconnect reported by underlying MQTT client, but it was already handled");
                         return;
@@ -303,12 +306,12 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session
 
         private async Task<MqttConnectAck?> TryEstablishConnectionAsync(MqttConnect options, CancellationToken cancellationToken)
         {
-            if (base.IsConnected)
+            if (_underlyingMqttClient.IsConnected())
             {
-                return base.mostRecentConnectAck;
+                return null;
             }
 
-            MqttConnectAck? connectResult = await base.ConnectAsync(options, cancellationToken).ConfigureAwait(false);
+            MqttConnectAck? connectResult = await _underlyingMqttClient.ConnectAsync(options, cancellationToken).ConfigureAwait(false);
 
             if (connectResult.ResultCode != MqttConnectResultCode.Success)
             {

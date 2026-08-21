@@ -1,10 +1,9 @@
 ﻿// Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-using Microsoft.Azure.Devices.Client.MqttNetAdapter.Session;
-using Microsoft.Azure.Devices.Client.MqttNetAdapter.Session.Retry;
+using Microsoft.Azure.Devices.Client.Unified.Connection.Retry;
 
-namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session
+namespace Microsoft.Azure.Devices.Client.Unified.Connection
 {
     /// <summary>
     /// The optional parameters that can be specified when creating a session client.
