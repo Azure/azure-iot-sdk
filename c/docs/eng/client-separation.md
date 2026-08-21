@@ -566,8 +566,18 @@ Tracked as **[AB#39350066](https://dev.azure.com/msazure/One/_workitems/edit/393
 > unsubscribe**: the presence handshake already subscribes
 > `ih/{device_id}/dev/#`, the whole device-bound topic space, before `CONNECTED`.
 > Removal on gen2 is a dispatch-table unregister and no MQTT operation at all.
-> This matters because the AEG hub is not expected to support UNSUBSCRIBE; a
-> shared implementation would have to do the wrong thing for one generation.
+> This matters because on gen2 there is only ever **one** subscription, taken out
+> once at connect and torn down with the session — so a shared implementation
+> that issued UNSUBSCRIBE would be withdrawing the whole device's topic space to
+> retire one feature client. The .NET client behaves the same way: its gen2
+> connection issues a single `SubscribeAsync("ih/{deviceId}/dev/#", AtLeastOnce)`
+> and nothing in the library ever calls `UnsubscribeAsync` — the capability
+> exists on its MQTT interface and is unused.
+>
+> (An earlier revision justified this by saying AEG does not support UNSUBSCRIBE.
+> That is **not** supported by the AEG RFCs — `unsubscribe` does not appear
+> anywhere in them — so the claim is withdrawn. The reason above does not depend
+> on it and is checkable.)
 >
 > **Related defect, same fix.** gen2 feature clients today *also* register their
 > own filters on top of that wildcard — `dev/twin/get/response`,
@@ -575,8 +585,26 @@ Tracked as **[AB#39350066](https://dev.azure.com/msazure/One/_workitems/edit/393
 > every one a strict subset of `ih/{device_id}/dev/#`. So gen2 issues six
 > subscriptions where one suffices, re-issues all six on every reconnect, and
 > spends registry slots it never needed. Dropping them shrinks the removal
-> problem rather than growing it, and is a prerequisite if UNSUBSCRIBE is
-> genuinely unavailable on AEG.
+> problem rather than growing it.
+>
+> **The wildcard genuinely covers everything, including features not yet
+> designed.** The AEG topic RFC (`gateway/rfcs/aeg/topics.md`) defines the
+> `device-dev` topic space as the single template
+> `ih/${client.authenticationName}/dev/#`, and says the `#` "covers all current
+> and future `dev` features with one template". Device-bound features today are
+> `c2d`, `methods`, `twin`, `files`, `session` and `notify`. So ADUv2 — whatever
+> topic it lands on, provided it is under `dev/` — is already covered, and no
+> escape hatch is needed for it.
+>
+> Two caveats worth carrying forward rather than discovering later. First, the
+> RFC describes the wildcard as *authorization* coverage and expects the device
+> to "subscribe to individual feature topics"; both this SDK and the .NET client
+> instead subscribe to the wildcard itself. That is authorized and simpler, but
+> it is a deliberate deviation from the RFC's stated device behaviour, not
+> something the RFC asks for. Second, `dev/notify` is specified to be subscribed
+> **at QoS 0** so it is not queued in the persistent session; a single blanket
+> QoS 1 subscription cannot express a per-feature QoS, and relies on the service
+> publishing notify at QoS 0 for the effective QoS to come out right.
 >
 > Both are pre-existing and independent of the split, but P2 is the first thing
 > that depends on them, so they are sequenced ahead of it in
