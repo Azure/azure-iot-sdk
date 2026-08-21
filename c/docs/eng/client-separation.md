@@ -196,13 +196,16 @@ The seams that already exist:
 
 - `AZ_SDK_C_REPO` and `AZ_SDK_C_TAG` are both `CACHE STRING` in
   [`CMakeLists.txt`](../../CMakeLists.txt) — repointing is a two-line change.
-- There is a **registered but uninitialised submodule** at `c/deps/azure-sdk-for-c`
+- There is a **registered submodule** at `c/deps/azure-sdk-for-c`
   (`.gitmodules`, gitlink `6d6e634a`), pinned to exactly the commit tag `1.5.0`
-  resolves to — i.e. the same source FetchContent builds. Nothing consumes it.
-  It also contradicts the "no git submodules" rule stated in
-  [devnotes.md](../devnotes.md) and the README. It should be either adopted
-  deliberately or removed; leaving a dead gitlink that shadows a real dependency
-  is a trap.
+  resolves to — i.e. the same source FetchContent builds. It is uninitialised on
+  a fresh clone, which makes it look dead. **It is not.** The ESP-IDF component
+  at `c/samples/adu/esp32/components/azure-sdk-for-c` reads its sources straight
+  out of it, and that sample's README tells the user to
+  `git submodule update --init c/deps/azure-sdk-for-c`. It does contradict the
+  "no git submodules" rule stated in [devnotes.md](../devnotes.md) and the
+  README, but it is load-bearing: an ESP-IDF build has no FetchContent step to
+  borrow from.
 
 Candidate mechanisms:
 
@@ -218,13 +221,17 @@ miserable first experience for anyone who reconfigures. Guard it so applying an
 already-applied patch is a no-op, and cover that with a build that configures
 twice.
 
-**The dead gitlink is reconciled as part of this.** `c/deps/azure-sdk-for-c` is
-registered in `.gitmodules` but uninitialised, consumed by nothing, and pinned to
-exactly the commit tag `1.5.0` resolves to. Under B nothing needs a submodule, so
-the entry and its directory are **removed** rather than adopted — a dead gitlink
-that shadows the real dependency will cost somebody an afternoon. That also
-restores the "no git submodules" rule stated in [devnotes.md](../devnotes.md) and
-the README, which the repo currently violates.
+**The submodule stays, and will need the same patches.** An earlier draft of
+this section called `c/deps/azure-sdk-for-c` a dead gitlink and planned to
+delete it. That was wrong: the ESP-IDF component under `c/samples/adu/esp32`
+builds its sources from it, and that sample provisions through DPS — so it needs
+the api-version patch every bit as much as the CMake build does.
+
+That makes the source **two independent copies**. A patch reaching only one of
+them is worse than no patch, because the two builds would then silently speak
+different api-versions. So the patch list has to be single-sourced and applied
+by both consumers: FetchContent through `PATCH_COMMAND`, the ESP-IDF component
+through an in-place apply at configure time.
 
 > **Worth stating plainly:** for *this particular* change, patching is not
 > strictly required. The api-version is only consumed by
@@ -698,8 +705,8 @@ plus the conformance suites.
 |---|---|---|---|
 | P0a | Purge the dead "easy"/API B remnants | — | **Done** (`db074c0`) |
 | P0b | This document + doc reconciliation | — | |
-| P1a | Add the `azure-sdk-for-c` `PATCH_COMMAND` mechanism, raise the DPS api-version to `2026-11-02-preview`, and remove the dead `c/deps/azure-sdk-for-c` submodule | — | Prerequisite for everything. Without it `connectionProfile` never arrives. |
-| P1b | `az_iot_hub_profile` + `get_hub_profile()` + `az_iot_connection_profile` + `AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED`; parse `connectionProfile` in the existing ASSIGNED-payload walk | P1a | Additive. No feature client moves. `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH` is not here — it lands in P2, with the first client that can reject a mismatch. |
+| P1a | Add the `azure-sdk-for-c` patch mechanism and raise the DPS api-version to `2026-11-02-preview`, for **both** consumers of that source: the FetchContent tree (`PATCH_COMMAND`) and the `c/deps/azure-sdk-for-c` submodule the ESP-IDF sample builds from | — | **Blocked on the service.** `2026-11-02-preview` is not deployed ([azure-rest-api-specs#45041](https://github.com/Azure/azure-rest-api-specs/pull/45041) is still open), and requesting it makes the DPS CONNECT fail with CONNACK rc=5. Parked until it ships. |
+| P1b | `az_iot_hub_profile` + `get_hub_profile()` + `az_iot_connection_profile` + `AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED`; parse `connectionProfile` in the existing ASSIGNED-payload walk | — | Additive, and deliberately **not** blocked on P1a: with the stock api-version `connectionProfile` never arrives, absent resolves to `classic`, and the result is exactly the hardcoded behaviour it replaces. Lands inert, activates when P1a ships. `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH` is not here — it lands in P2, with the first client that can reject a mismatch. |
 | P1c | Gate `CONNECTED` on subscriptions being SUBACKed ([AB#39366084](https://dev.azure.com/msazure/One/_workitems/edit/39366084)); tag each persistent-subscription entry with its generation and drop non-matching entries on reconnect *before* re-subscribing; add a remove path wired into every feature client's `destroy()`, UNSUBSCRIBE on gen1 and dispatch-only on gen2; drop the five gen2 filters already covered by `ih/{device_id}/dev/#` ([AB#39366086](https://dev.azure.com/msazure/One/_workitems/edit/39366086)) | — | Pre-existing defects, independent of the split. **P2 depends on both**: §9's rebuild pattern is unsafe without the first and impossible without the second. The generation tagging is not optional — without it the two fixes deadlock each other on a profile change. Own PR, own review. |
 | P2 | Split the feature clients, one PR each: telemetry → c2d → direct methods → twin | P1a, P1b, **P1c** | Mutually parallel. Mismatch check per client. |
 | P3 | File upload redesign — HTTP transport becomes gen1-only | P1 | Larger than the others; own PR. |
@@ -737,8 +744,9 @@ baseline.
   archived, so there is no alternative and no risk of divergence.
 - **The patch mechanism is `PATCH_COMMAND`** ([§2](#blocker-the-api-version-must-be-raised)),
   with a `.patch` file in this repo and a guard so re-running configure is a
-  no-op. Forking the archived repo is not available. The dead
-  `c/deps/azure-sdk-for-c` submodule is removed as part of the same change.
+  no-op. Forking the archived repo is not available. The
+  `c/deps/azure-sdk-for-c` submodule **stays** — the ESP-IDF sample builds from
+  it — and must receive the same patches from the same list.
 - **`classic` maps to gen1, `mqttV5` maps to gen2**, for now.
 - **An unrecognised profile fails the connection.** The profile is not expected
   to break, but a device should be defensive about service-side hazards it
