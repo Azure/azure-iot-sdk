@@ -42,6 +42,44 @@ extern "C"
     AZ_IOT_HUB_PROTOCOL_NEXT /* MQTT v5 (IoT Hub Next / AEG) */
   } az_iot_hub_protocol;
 
+  /* ---- The connection profile ---------------------------------------------- */
+  /* What the device is actually connected to. On a DPS connect this is learned
+   * from the `connectionProfile` property of the ASSIGNED payload; on a direct
+   * connect there is nobody to ask, so it reflects opts.hub_protocol.
+   *
+   * On the wire `connectionProfile` is a STRING and an extensible union -- the
+   * service contract says future hub capabilities pass through without a
+   * breaking change. A closed C enum cannot represent that, which is why the
+   * verbatim string is carried alongside it. See docs/eng/client-separation.md. */
+  typedef enum az_iot_connection_profile
+  {
+    AZ_IOT_CONNECTION_PROFILE_CLASSIC = 0, /* "classic" -- also the absent/null default */
+    AZ_IOT_CONNECTION_PROFILE_MQTT_V5 = 1, /* "mqttV5"                                  */
+    AZ_IOT_CONNECTION_PROFILE_UNKNOWN = -1 /* a value newer than this SDK               */
+  } az_iot_connection_profile;
+
+  /* Caller-allocated and expected to grow, so it carries a size stamp per
+   * docs/struct_versioning.md: a caller compiled against an older header is
+   * defaulted rather than misread. MUST be initialized with
+   * AZ_IOT_HUB_PROFILE_INIT -- a raw `= {0}` stamps size 0 and is rejected. */
+  typedef struct az_iot_hub_profile
+  {
+    uint32_t _internal_size;
+    az_iot_connection_profile connection_profile;
+    /* The wire string, verbatim, ALWAYS populated -- never NULL. This is what
+     * keeps the extensible union from becoming lossy at the C boundary: a
+     * profile this SDK has never heard of still reports UNKNOWN *and* the text
+     * the service sent, so it can be logged or acted on. Points into the
+     * connection client and stays valid until destroy(). */
+    const char* connection_profile_raw;
+  } az_iot_hub_profile;
+
+#define AZ_IOT_HUB_PROFILE_INIT                                                              \
+  {                                                                                          \
+    ._internal_size = sizeof(az_iot_hub_profile),                                            \
+    .connection_profile = AZ_IOT_CONNECTION_PROFILE_CLASSIC, .connection_profile_raw = NULL, \
+  }
+
   typedef struct az_iot_reconnection_policy
   {
     uint32_t initial_delay_ms;
@@ -237,6 +275,13 @@ extern "C"
 #ifndef AZ_IOT_DPS_DEVICE_ID_BUF
 #define AZ_IOT_DPS_DEVICE_ID_BUF 128
 #endif
+/* Holds the verbatim `connectionProfile` string. Sized for a value far longer
+ * than the ones defined today ("classic", "mqttV5") because the property is an
+ * extensible union: the whole point is to report values this SDK has never seen.
+ * A profile longer than this is reported truncated rather than dropped. */
+#ifndef AZ_IOT_CONNECTION_PROFILE_RAW_BUF
+#define AZ_IOT_CONNECTION_PROFILE_RAW_BUF 64
+#endif
 #ifndef AZ_IOT_MQTT_USERNAME_BUF
 #define AZ_IOT_MQTT_USERNAME_BUF 256
 #endif
@@ -368,6 +413,13 @@ extern "C"
     bool dps_enrolling; /* CSR-based enrollment active for this DPS session */
     bool dps_have_issued_cert; /* an operational cert was issued by DPS/Hub and stored */
 
+    /* What this connection is to. Seeded from opts.hub_protocol at init so a
+     * direct connect is always answerable, then overwritten on the DPS path by
+     * whatever `connectionProfile` the ASSIGNED payload carried. The raw string
+     * is kept verbatim so an unrecognised profile is still reportable. */
+    az_iot_connection_profile connection_profile;
+    char connection_profile_raw[AZ_IOT_CONNECTION_PROFILE_RAW_BUF];
+
     az_iot_hub_client hub_client;
     bool hub_client_initialized;
     char hub_username[AZ_IOT_MQTT_USERNAME_BUF];
@@ -492,6 +544,22 @@ extern "C"
    * protocol-independent, HTTPS-only features such as file upload that must reach
    * the hub's REST endpoint directly rather than over the MQTT session. */
   const char* az_iot_connection_client_get_iothub_address(const az_iot_connection_client* client);
+
+  /* Report what this client is connected to, so an application can branch on the
+   * hub generation without inferring it from its own configuration.
+   *
+   * Valid only once the connection has reached CONNECTED; before that it returns
+   * AZ_IOT_ERR_NOT_CONNECTED, because on the DPS path the profile is not known
+   * until provisioning completes. The one deliberate exception is a connection
+   * that failed with AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED: the profile
+   * remains readable there precisely so the offending value can be logged or
+   * reported.
+   *
+   * out_profile MUST have been initialized with AZ_IOT_HUB_PROFILE_INIT;
+   * an unstamped struct returns AZ_IOT_ERR_INVALID_ARG. */
+  AZ_NODISCARD az_iot_result az_iot_connection_client_get_hub_profile(
+      const az_iot_connection_client* client,
+      az_iot_hub_profile* out_profile);
 
 #ifdef __cplusplus
 }

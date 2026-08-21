@@ -47,6 +47,8 @@ const char* az_iot_result_to_string(az_iot_result r)
       return "AZ_IOT_ERR_NOT_FOUND";
     case AZ_IOT_ERR_IDENTITY_REJECTED:
       return "AZ_IOT_ERR_IDENTITY_REJECTED";
+    case AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED:
+      return "AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED";
     default:
       return "AZ_IOT_ERR_UNKNOWN";
   }

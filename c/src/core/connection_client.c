@@ -27,6 +27,7 @@
  * regardless. If max_attempts > 0 is configured and reached, we transition to
  * FAULTED.
  */
+#include <stddef.h> /* offsetof, for the bounded write in get_hub_profile */
 #include <stdlib.h>
 #include <string.h>
 
@@ -82,6 +83,13 @@
 /* DPS ASSIGNED result fields that carry the issued operational chain. */
 #define DPS_JSON_REGISTRATION_STATE "registrationState"
 #define DPS_JSON_ISSUED_CERT_CHAIN "issuedCertificateChain"
+/* The hub generation the device was assigned to. A string, and an extensible
+ * union: absent or null means "classic". New in api-version 2026-11-02-preview,
+ * which this repo patches azure-sdk-for-c up to -- see
+ * patches/azure-sdk-for-c/0001-dps-api-version.patch. */
+#define DPS_JSON_CONNECTION_PROFILE "connectionProfile"
+#define CONNECTION_PROFILE_CLASSIC_STR "classic"
+#define CONNECTION_PROFILE_MQTT_V5_STR "mqttV5"
 
 /* Max certs in an issued chain (leaf + a few intermediates). The chain is
  * delivered as zero-copy spans into the payload. */
@@ -406,22 +414,105 @@ static az_iot_result dps_do_query_publish(az_iot_connection_client* c)
   return r;
 }
 
-/* Parse registrationState.issuedCertificateChain (an array of base64 DER certs)
- * from the DPS ASSIGNED payload, PEM-wrap each entry, and hand the chain to the
- * certificate_provider to persist as the operational identity. azure-sdk-for-c
- * does not surface this field, so we walk the raw payload with az_json. */
-static az_iot_result dps_store_issued_cert(az_iot_connection_client* c, az_span payload)
+/* Position `jr` on the BEGIN_OBJECT of registrationState in a DPS response.
+ * Both the issued-certificate chain and the connection profile live there, and
+ * azure-sdk-for-c surfaces neither, so both walk the raw payload from here. */
+static az_iot_result dps_enter_registration_state(az_json_reader* jr, az_span payload)
 {
-  az_json_reader jr;
-  if (az_result_failed(az_json_reader_init(&jr, payload, NULL))
-      || az_result_failed(az_json_reader_next_token(&jr))
-      || jr.token.kind != AZ_JSON_TOKEN_BEGIN_OBJECT)
+  if (az_result_failed(az_json_reader_init(jr, payload, NULL))
+      || az_result_failed(az_json_reader_next_token(jr))
+      || jr->token.kind != AZ_JSON_TOKEN_BEGIN_OBJECT)
   {
     return AZ_IOT_ERR_PROTOCOL;
   }
 
-  /* Descend into registrationState. */
-  bool in_reg = false;
+  while (az_result_succeeded(az_json_reader_next_token(jr))
+         && jr->token.kind != AZ_JSON_TOKEN_END_OBJECT)
+  {
+    if (jr->token.kind != AZ_JSON_TOKEN_PROPERTY_NAME)
+    {
+      continue;
+    }
+    bool m = az_json_token_is_text_equal(&jr->token, AZ_SPAN_FROM_STR(DPS_JSON_REGISTRATION_STATE));
+    if (az_result_failed(az_json_reader_next_token(jr)))
+    {
+      return AZ_IOT_ERR_PROTOCOL;
+    }
+    if (m && jr->token.kind == AZ_JSON_TOKEN_BEGIN_OBJECT)
+    {
+      return AZ_IOT_OK;
+    }
+    if (jr->token.kind == AZ_JSON_TOKEN_BEGIN_OBJECT || jr->token.kind == AZ_JSON_TOKEN_BEGIN_ARRAY)
+    {
+      if (az_result_failed(az_json_reader_skip_children(jr)))
+      {
+        return AZ_IOT_ERR_PROTOCOL;
+      }
+    }
+  }
+  return AZ_IOT_ERR_NOT_FOUND;
+}
+
+/* Record the connection profile from its verbatim wire form. The raw string is
+ * always stored -- an unrecognised profile is exactly the case where the text
+ * matters -- and only the enum degrades to UNKNOWN. A value too long for the
+ * buffer is stored truncated and treated as unknown, which is correct: every
+ * profile this SDK recognises is short, so an overlong one cannot be one of
+ * them. */
+static void connection_profile_set(az_iot_connection_client* c, az_span raw)
+{
+  int32_t n = az_span_size(raw);
+  if (n < 0)
+  {
+    n = 0;
+  }
+  bool truncated = false;
+  if ((size_t)n >= sizeof(c->connection_profile_raw))
+  {
+    n = (int32_t)(sizeof(c->connection_profile_raw) - 1);
+    truncated = true;
+  }
+  if (n > 0)
+  {
+    memcpy(c->connection_profile_raw, az_span_ptr(raw), (size_t)n);
+  }
+  c->connection_profile_raw[n] = '\0';
+
+  if (truncated)
+  {
+    c->connection_profile = AZ_IOT_CONNECTION_PROFILE_UNKNOWN;
+  }
+  else if (strcmp(c->connection_profile_raw, CONNECTION_PROFILE_CLASSIC_STR) == 0)
+  {
+    c->connection_profile = AZ_IOT_CONNECTION_PROFILE_CLASSIC;
+  }
+  else if (strcmp(c->connection_profile_raw, CONNECTION_PROFILE_MQTT_V5_STR) == 0)
+  {
+    c->connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
+  }
+  else
+  {
+    c->connection_profile = AZ_IOT_CONNECTION_PROFILE_UNKNOWN;
+  }
+}
+
+/* Read registrationState.connectionProfile from the DPS ASSIGNED payload.
+ *
+ * Absent or null is NOT an error -- the service contract documents it as
+ * meaning "classic" -- so the caller is left with the classic default it was
+ * seeded with. Only a malformed payload fails here; an unrecognised *value*
+ * fails later, at the point the session role is chosen, so the profile is
+ * already recorded and readable when it does. */
+static az_iot_result dps_read_connection_profile(az_iot_connection_client* c, az_span payload)
+{
+  az_json_reader jr;
+  az_iot_result r = dps_enter_registration_state(&jr, payload);
+  if (r != AZ_IOT_OK)
+  {
+    /* No registrationState at all: nothing to read, keep the default. */
+    return (r == AZ_IOT_ERR_NOT_FOUND) ? AZ_IOT_OK : r;
+  }
+
   while (az_result_succeeded(az_json_reader_next_token(&jr))
          && jr.token.kind != AZ_JSON_TOKEN_END_OBJECT)
   {
@@ -429,15 +520,19 @@ static az_iot_result dps_store_issued_cert(az_iot_connection_client* c, az_span 
     {
       continue;
     }
-    bool m = az_json_token_is_text_equal(&jr.token, AZ_SPAN_FROM_STR(DPS_JSON_REGISTRATION_STATE));
+    bool m = az_json_token_is_text_equal(&jr.token, AZ_SPAN_FROM_STR(DPS_JSON_CONNECTION_PROFILE));
     if (az_result_failed(az_json_reader_next_token(&jr)))
     {
       return AZ_IOT_ERR_PROTOCOL;
     }
-    if (m && jr.token.kind == AZ_JSON_TOKEN_BEGIN_OBJECT)
+    if (m)
     {
-      in_reg = true;
-      break;
+      if (jr.token.kind == AZ_JSON_TOKEN_STRING)
+      {
+        connection_profile_set(c, jr.token.slice);
+      }
+      /* null (or any non-string) resolves to the classic default. */
+      return AZ_IOT_OK;
     }
     if (jr.token.kind == AZ_JSON_TOKEN_BEGIN_OBJECT || jr.token.kind == AZ_JSON_TOKEN_BEGIN_ARRAY)
     {
@@ -447,9 +542,20 @@ static az_iot_result dps_store_issued_cert(az_iot_connection_client* c, az_span 
       }
     }
   }
-  if (!in_reg)
+  return AZ_IOT_OK;
+}
+
+/* Parse registrationState.issuedCertificateChain (an array of base64 DER certs)
+ * from the DPS ASSIGNED payload, PEM-wrap each entry, and hand the chain to the
+ * certificate_provider to persist as the operational identity. azure-sdk-for-c
+ * does not surface this field, so we walk the raw payload with az_json. */
+static az_iot_result dps_store_issued_cert(az_iot_connection_client* c, az_span payload)
+{
+  az_json_reader jr;
+  az_iot_result entered = dps_enter_registration_state(&jr, payload);
+  if (entered != AZ_IOT_OK)
   {
-    return AZ_IOT_ERR_NOT_FOUND;
+    return entered;
   }
 
   /* Find issuedCertificateChain array. */
@@ -649,6 +755,14 @@ static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
               az_span_ptr(resp.registration_state.device_id),
               (size_t)dev_n);
           c->dps_assigned_device_id[dev_n] = '\0';
+          /* Which hub generation we were assigned to. Read before the issued
+           * cert so the profile is recorded even if the cert path fails. */
+          az_iot_result pr = dps_read_connection_profile(c, payload_span);
+          if (pr != AZ_IOT_OK)
+          {
+            dps_finalize(c, pr, false);
+            return;
+          }
           if (c->dps_enrolling)
           {
             az_iot_result sc = dps_store_issued_cert(c, payload_span);
@@ -908,7 +1022,29 @@ static void dps_apply_deferred(az_iot_connection_client* c)
     transition(c, AZ_IOT_CONN_STATE_FAULTED, r);
     return;
   }
-  c->session_role = AZ_IOT_MQTT_ROLE_HUB_CLASSIC;
+  /* The assigned profile picks the wire protocol for the hub session. An
+   * unrecognised value fails the connection instead of guessing an MQTT version
+   * -- a device that appears to connect and then misbehaves is far worse to
+   * diagnose than one clear error here. The profile stays readable through
+   * az_iot_connection_client_get_hub_profile() so the offending value can be
+   * logged or reported. */
+  switch (c->connection_profile)
+  {
+    case AZ_IOT_CONNECTION_PROFILE_CLASSIC:
+      c->session_role = AZ_IOT_MQTT_ROLE_HUB_CLASSIC;
+      break;
+    case AZ_IOT_CONNECTION_PROFILE_MQTT_V5:
+      c->session_role = AZ_IOT_MQTT_ROLE_HUB_NEXT;
+      break;
+    case AZ_IOT_CONNECTION_PROFILE_UNKNOWN:
+    default:
+      AZ_IOT_LOG_ERRORF(
+          "dps: assigned an unsupported connectionProfile \"%s\"; this SDK does not know which "
+          "protocol to speak",
+          c->connection_profile_raw);
+      transition(c, AZ_IOT_CONN_STATE_FAULTED, AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED);
+      return;
+  }
   c->dps_phase = DPS_PHASE_NONE;
 
   r = start_connect_attempt(c);
@@ -1678,6 +1814,14 @@ az_iot_result az_iot_connection_client_init(
   {
     client->session_role = AZ_IOT_MQTT_ROLE_HUB_CLASSIC;
   }
+  /* Seed the reported profile from the role settled above, so a direct connect
+   * -- where there is no service to ask -- is answerable from init onward. The
+   * DPS path overwrites this when the ASSIGNED payload arrives. */
+  connection_profile_set(
+      client,
+      client->session_role == AZ_IOT_MQTT_ROLE_HUB_NEXT
+          ? AZ_SPAN_FROM_STR(CONNECTION_PROFILE_MQTT_V5_STR)
+          : AZ_SPAN_FROM_STR(CONNECTION_PROFILE_CLASSIC_STR));
   /* Seed jitter PRNG; tests can overwrite via the internal seed entry point
    * if they need determinism. */
   client->rng_state = az_iot_time_mono_ms() ^ 0xA5A5C3C3DEADBEEFull;
@@ -2240,6 +2384,52 @@ const char* az_iot_connection_client_get_iothub_address(const az_iot_connection_
    * and pointed-to here) after provisioning. NULL for a not-yet-provisioned
    * DPS-only client. */
   return client ? client->opts.host : NULL;
+}
+
+az_iot_result az_iot_connection_client_get_hub_profile(
+    const az_iot_connection_client* client,
+    az_iot_hub_profile* out_profile)
+{
+  if (!client || !out_profile)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  /* The size stamp is what makes this struct safe to grow. A zero stamp means
+   * the caller used `= {0}` instead of AZ_IOT_HUB_PROFILE_INIT, so the library
+   * cannot tell which fields it may write -- reject rather than guess. */
+  if (out_profile->_internal_size == 0)
+  {
+    AZ_IOT_LOG_ERROR("get_hub_profile: out_profile was not initialized with "
+                     "AZ_IOT_HUB_PROFILE_INIT");
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  /* A caller built against a newer header than the library is the one case the
+   * size stamp cannot rescue: it would expect fields this build never writes. */
+  if (out_profile->_internal_size > sizeof(az_iot_hub_profile))
+  {
+    return AZ_IOT_ERR_NOT_SUPPORTED;
+  }
+  /* Readable once connected, and also after a profile-driven failure -- that is
+   * the case where an application most needs to see what the service said. */
+  if (client->state != AZ_IOT_CONN_STATE_CONNECTED
+      && client->connection_profile != AZ_IOT_CONNECTION_PROFILE_UNKNOWN)
+  {
+    return AZ_IOT_ERR_NOT_CONNECTED;
+  }
+
+  /* Written field by field, bounded by the caller's stamp, so a caller compiled
+   * against an older (smaller) header is never written past. */
+  if (out_profile->_internal_size
+      >= offsetof(az_iot_hub_profile, connection_profile) + sizeof(out_profile->connection_profile))
+  {
+    out_profile->connection_profile = client->connection_profile;
+  }
+  if (out_profile->_internal_size >= offsetof(az_iot_hub_profile, connection_profile_raw)
+          + sizeof(out_profile->connection_profile_raw))
+  {
+    out_profile->connection_profile_raw = client->connection_profile_raw;
+  }
+  return AZ_IOT_OK;
 }
 
 az_iot_result az_iot_connection_client__publish(

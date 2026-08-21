@@ -157,7 +157,7 @@ it has two fields and no shipped callers, is the point.
 ### An unknown profile fails the connection
 
 **Decided:** if DPS returns a profile this SDK does not recognise, the connection
-fails with `AZ_IOT_ERR_HUB_PROFILE_UNSUPPORTED`. The profile — including
+fails with `AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED`. The profile — including
 `connection_profile_raw` — remains readable so the application can log it, report it, or
 trigger a firmware update.
 
@@ -250,7 +250,7 @@ Initializing a feature client against a connection of the other generation
 /* conn resolved to GEN2 */
 az_iot_gen1_twin_client twin;
 az_iot_result r = az_iot_gen1_twin_client_init(&twin, &conn);
-/* r == AZ_IOT_ERR_HUB_PROFILE_MISMATCH */
+/* r == AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH */
 ```
 
 A dedicated result code is added rather than reusing `AZ_IOT_ERR_NOT_SUPPORTED`,
@@ -261,7 +261,7 @@ no partial-init state to unwind.
 The name is **`HUB_PROFILE`**, not `HUB_GENERATION`: the profile is the thing the
 service actually reports, and the generation is our own derived label for it.
 Error codes should name the wire concept. The sibling code for an unrecognised
-profile is therefore `AZ_IOT_ERR_HUB_PROFILE_UNSUPPORTED`.
+profile is therefore `AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED`.
 
 The check requires the generation to be known, which means **feature clients must
 be initialized after the connection is open**. That is a change: today's samples
@@ -498,7 +498,7 @@ What the SDK owes the application in return is **not yet decided**: whether the
 profile change is signalled through a distinct connection-state reason, a
 dedicated callback, or purely by the documented re-read requirement; and whether
 calls on a now-stale feature client fail with a distinct result or are simply
-undefined. Init-time `AZ_IOT_ERR_HUB_PROFILE_MISMATCH` covers the start-up case
+undefined. Init-time `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH` covers the start-up case
 and does nothing for this one.
 
 Tracked as **[AB#39350066](https://dev.azure.com/msazure/One/_workitems/edit/39350066)**
@@ -671,11 +671,11 @@ generation's client needs its own unit suite against the in-memory mock, and eac
 needs e2e coverage against a real hub of that generation. New cases that do not
 exist today:
 
-- mismatched init returns `AZ_IOT_ERR_HUB_PROFILE_MISMATCH`, per feature
+- mismatched init returns `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH`, per feature
 - `"classic"` and `"mqttV5"` each map to the right profile and MQTT version
 - **absent** `connectionProfile` resolves to `classic`, and **`null`** does too
 - an **unrecognised** profile string fails the connection with
-  `AZ_IOT_ERR_HUB_PROFILE_UNSUPPORTED` and is still readable verbatim
+  `AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED` and is still readable verbatim
   through `connection_profile_raw` — the forward-compatibility case the spec exists to
   support, and the one no current test covers
 - the DPS CONNECT username carries `api-version=2026-11-02-preview`
@@ -699,7 +699,7 @@ plus the conformance suites.
 | P0a | Purge the dead "easy"/API B remnants | — | **Done** (`db074c0`) |
 | P0b | This document + doc reconciliation | — | |
 | P1a | Add the `azure-sdk-for-c` `PATCH_COMMAND` mechanism, raise the DPS api-version to `2026-11-02-preview`, and remove the dead `c/deps/azure-sdk-for-c` submodule | — | Prerequisite for everything. Without it `connectionProfile` never arrives. |
-| P1b | `az_iot_hub_profile` + `get_hub_profile()` + `az_iot_connection_profile` + `AZ_IOT_ERR_HUB_PROFILE_MISMATCH` + `AZ_IOT_ERR_HUB_PROFILE_UNSUPPORTED`; parse `connectionProfile` in the existing ASSIGNED-payload walk | P1a | Additive. No feature client moves. |
+| P1b | `az_iot_hub_profile` + `get_hub_profile()` + `az_iot_connection_profile` + `AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED`; parse `connectionProfile` in the existing ASSIGNED-payload walk | P1a | Additive. No feature client moves. `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH` is not here — it lands in P2, with the first client that can reject a mismatch. |
 | P1c | Gate `CONNECTED` on subscriptions being SUBACKed ([AB#39366084](https://dev.azure.com/msazure/One/_workitems/edit/39366084)); tag each persistent-subscription entry with its generation and drop non-matching entries on reconnect *before* re-subscribing; add a remove path wired into every feature client's `destroy()`, UNSUBSCRIBE on gen1 and dispatch-only on gen2; drop the five gen2 filters already covered by `ih/{device_id}/dev/#` ([AB#39366086](https://dev.azure.com/msazure/One/_workitems/edit/39366086)) | — | Pre-existing defects, independent of the split. **P2 depends on both**: §9's rebuild pattern is unsafe without the first and impossible without the second. The generation tagging is not optional — without it the two fixes deadlock each other on a profile change. Own PR, own review. |
 | P2 | Split the feature clients, one PR each: telemetry → c2d → direct methods → twin | P1a, P1b, **P1c** | Mutually parallel. Mismatch check per client. |
 | P3 | File upload redesign — HTTP transport becomes gen1-only | P1 | Larger than the others; own PR. |
