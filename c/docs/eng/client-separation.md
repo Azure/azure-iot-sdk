@@ -530,6 +530,24 @@ Tracked as **[AB#39350066](https://dev.azure.com/msazure/One/_workitems/edit/393
 > this exists. Tracked as
 > [AB#39366086](https://dev.azure.com/msazure/One/_workitems/edit/39366086).
 >
+> **The fix differs by generation, and that is the point.** On gen1, removal
+> issues an MQTT UNSUBSCRIBE — Classic supports it, and Classic genuinely has
+> per-feature filters that must be withdrawn. On gen2 there is **nothing to
+> unsubscribe**: the presence handshake already subscribes
+> `ih/{device_id}/dev/#`, the whole device-bound topic space, before `CONNECTED`.
+> Removal on gen2 is a dispatch-table unregister and no MQTT operation at all.
+> This matters because the AEG hub is not expected to support UNSUBSCRIBE; a
+> shared implementation would have to do the wrong thing for one generation.
+>
+> **Related defect, same fix.** gen2 feature clients today *also* register their
+> own filters on top of that wildcard — `dev/twin/get/response`,
+> `dev/twin/reported/response`, `dev/twin/desired`, `dev/c2d`, `dev/methods/+` —
+> every one a strict subset of `ih/{device_id}/dev/#`. So gen2 issues six
+> subscriptions where one suffices, re-issues all six on every reconnect, and
+> spends registry slots it never needed. Dropping them shrinks the removal
+> problem rather than growing it, and is a prerequisite if UNSUBSCRIBE is
+> genuinely unavailable on AEG.
+>
 > Both are pre-existing and independent of the split, but P2 is the first thing
 > that depends on them, so they are sequenced ahead of it in
 > [§12](#12-phases).
@@ -624,7 +642,7 @@ plus the conformance suites.
 | P0b | This document + doc reconciliation | — | |
 | P1a | Add the `azure-sdk-for-c` `PATCH_COMMAND` mechanism, raise the DPS api-version to `2026-11-02-preview`, and remove the dead `c/deps/azure-sdk-for-c` submodule | — | Prerequisite for everything. Without it `connectionProfile` never arrives. |
 | P1b | `az_iot_hub_profile` + `get_hub_profile()` + `az_iot_connection_profile` + `AZ_IOT_ERR_HUB_PROFILE_MISMATCH` + `AZ_IOT_ERR_HUB_PROFILE_UNSUPPORTED`; parse `connectionProfile` in the existing ASSIGNED-payload walk | P1a | Additive. No feature client moves. |
-| P1c | Gate `CONNECTED` on subscriptions being SUBACKed ([AB#39366084](https://dev.azure.com/msazure/One/_workitems/edit/39366084)) and add a persistent-subscription remove path wired into every feature client's `destroy()` ([AB#39366086](https://dev.azure.com/msazure/One/_workitems/edit/39366086)) | — | Pre-existing defects, independent of the split. **P2 depends on both**: §9's rebuild pattern is unsafe without the first and impossible without the second. Own PR, own review. |
+| P1c | Gate `CONNECTED` on subscriptions being SUBACKed ([AB#39366084](https://dev.azure.com/msazure/One/_workitems/edit/39366084)); add a persistent-subscription remove path wired into every feature client's `destroy()`, UNSUBSCRIBE on gen1 and dispatch-only on gen2; drop the five gen2 filters already covered by `ih/{device_id}/dev/#` ([AB#39366086](https://dev.azure.com/msazure/One/_workitems/edit/39366086)) | — | Pre-existing defects, independent of the split. **P2 depends on both**: §9's rebuild pattern is unsafe without the first and impossible without the second. Own PR, own review. |
 | P2 | Split the feature clients, one PR each: telemetry → c2d → direct methods → twin | P1a, P1b, **P1c** | Mutually parallel. Mismatch check per client. |
 | P3 | File upload redesign — HTTP transport becomes gen1-only | P1 | Larger than the others; own PR. |
 | P4 | Delete `protocol_profile.c`'s flavor tables and the last `profile->flavor` branches | P2, P3 | |
