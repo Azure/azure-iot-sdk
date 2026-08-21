@@ -62,11 +62,10 @@ elseif(UNIX)
 endif()
 
 # azure-sdk-for-c is ARCHIVED upstream, so this repo owns it: fixes land here as
-# patches or not at all. 0001 raises the DPS api-version to the preview that
-# carries connectionProfile -- see docs/eng/client-separation.md section 2.
+# patches or not at all. The patch list is shared with the ESP-IDF component,
+# which builds the same source from the submodule.
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/az_iot_sdk_c_patches.cmake")
 find_package(Git REQUIRED)
-set(AZ_SDK_C_PATCHES
-    "${CMAKE_CURRENT_SOURCE_DIR}/patches/azure-sdk-for-c/0001-dps-api-version.patch")
 
 set(_az_sdk_c_patch_command "")
 foreach(_patch IN LISTS AZ_SDK_C_PATCHES)
@@ -75,7 +74,7 @@ foreach(_patch IN LISTS AZ_SDK_C_PATCHES)
             -DGIT_EXECUTABLE=${GIT_EXECUTABLE}
             -DSOURCE_DIR=<SOURCE_DIR>
             -DPATCH_FILE=${_patch}
-            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/az_iot_apply_patch.cmake")
+            -P "${AZ_SDK_C_APPLY_PATCH_SCRIPT}")
 endforeach()
 list(POP_FRONT _az_sdk_c_patch_command)
 

@@ -13,6 +13,16 @@
 get_filename_component(AZ_SDK_C_ROOT
     "${CMAKE_CURRENT_LIST_DIR}/../../../../../deps/azure-sdk-for-c" ABSOLUTE)
 
+# This sample provisions through DPS, and connectionProfile only arrives from
+# api-version 2026-11-02-preview onward -- which upstream (archived) does not
+# carry. The CMake build gets that through FetchContent's PATCH_COMMAND; the
+# submodule this component reads is a second, independent copy, so it has to be
+# patched too or the ESP32 build would silently request the old api-version.
+get_filename_component(AZ_IOT_CMAKE_DIR
+    "${CMAKE_CURRENT_LIST_DIR}/../../../../../cmake" ABSOLUTE)
+include("${AZ_IOT_CMAKE_DIR}/az_iot_sdk_c_patches.cmake")
+az_iot_patch_sdk_c_in_place("${AZ_SDK_C_ROOT}")
+
 set(_az_src "${AZ_SDK_C_ROOT}/sdk/src/azure")
 
 set(srcs
