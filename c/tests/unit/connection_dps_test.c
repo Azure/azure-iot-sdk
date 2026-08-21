@@ -1098,6 +1098,54 @@ static void init_rejects_a_connection_profile_the_sdk_cannot_speak(void** state)
   assert_int_equal(az_iot_connection_client_init(&c, &opts), AZ_IOT_ERR_INVALID_ARG);
 }
 
+/* A reassignment can move a device to a different generation. Filters registered
+ * for the old one must not be re-issued at the new hub -- AEG does not grant
+ * $iothub/..., and once CONNECTED is gated on those SUBACKs (P1c) a session
+ * carrying them could never come up. Dropping them is what keeps the two P1c
+ * fixes from deadlocking each other. */
+static void reassignment_to_another_generation_drops_the_old_filters(void** state)
+{
+  (void)state;
+  int owner = 0;
+  profile_fixture pf = { 0 };
+  profile_fixture_open(&pf);
+
+  /* A Classic-shaped filter, registered while the client still defaults to
+   * classic -- exactly what a gen1 feature client would have left behind. */
+  assert_int_equal(
+      az_iot_connection_client__add_subscription_on_connect(
+          &pf.c, "$iothub/twin/res/#", AZ_IOT_MQTT_QOS_1, &owner),
+      AZ_IOT_OK);
+
+  profile_assign(&pf, k_assigned_mqtt_v5);
+  assert_hub_leg_used(&pf, pf.v5);
+
+  /* Drive the presence handshake to completion, because it is announce_connected
+   * -- reached only on the birth-ack -- that re-issues the persistent filters.
+   * Stopping at CONNACK would make this test pass whether or not the stale
+   * filter was dropped. */
+  profile_finish_hub_leg(&pf, true);
+  assert_int_equal(az_iot_test_last_state(&pf.log), AZ_IOT_CONN_STATE_CONNECTED);
+
+  /* The only SUBSCRIBE on a gen2 session is the presence handshake's own
+   * ih/{id}/dev/#; the Classic filter must not have come along. */
+  az_iot_mock_mqtt_client* hub = az_iot_mock_mqtt_factory_last_client(pf.v5);
+  assert_non_null(hub);
+  assert_int_not_equal(az_iot_mock_mqtt_client_count_of(hub, AZ_IOT_MOCK_CALL_SUBSCRIBE), 0);
+  for (size_t i = 0; i < az_iot_mock_mqtt_client_call_count(hub); ++i)
+  {
+    const az_iot_mock_call* call = az_iot_mock_mqtt_client_call_at(hub, i);
+    assert_non_null(call);
+    if (call->kind != AZ_IOT_MOCK_CALL_SUBSCRIBE)
+    {
+      continue;
+    }
+    assert_null(strstr(call->topic, "$iothub/"));
+  }
+
+  profile_fixture_close(&pf);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -1159,6 +1207,7 @@ int main(void)
     cmocka_unit_test(get_hub_profile_rejects_a_newer_caller_struct),
     cmocka_unit_test(get_hub_profile_rejects_null_arguments),
     cmocka_unit_test(init_rejects_a_connection_profile_the_sdk_cannot_speak),
+    cmocka_unit_test(reassignment_to_another_generation_drops_the_old_filters),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

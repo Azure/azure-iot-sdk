@@ -319,7 +319,7 @@ static void persistent_subscription_is_issued_on_connect(void** state)
       az_iot_connection_client_register_mqtt_factory(fx->client, fx->factory), AZ_IOT_OK);
   assert_int_equal(
       az_iot_connection_client__add_subscription_on_connect(
-          fx->client, "devices/ut-device/messages/devicebound/#", AZ_IOT_MQTT_QOS_1),
+          fx->client, "devices/ut-device/messages/devicebound/#", AZ_IOT_MQTT_QOS_1, fx),
       AZ_IOT_OK);
 
   assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
@@ -340,11 +340,11 @@ static void persistent_subscriptions_are_reissued_after_a_reconnect(void** state
       az_iot_connection_client_register_mqtt_factory(fx->client, fx->factory), AZ_IOT_OK);
   assert_int_equal(
       az_iot_connection_client__add_subscription_on_connect(
-          fx->client, "devices/ut-device/messages/devicebound/#", AZ_IOT_MQTT_QOS_1),
+          fx->client, "devices/ut-device/messages/devicebound/#", AZ_IOT_MQTT_QOS_1, fx),
       AZ_IOT_OK);
   assert_int_equal(
       az_iot_connection_client__add_subscription_on_connect(
-          fx->client, "$iothub/methods/POST/#", AZ_IOT_MQTT_QOS_0),
+          fx->client, "$iothub/methods/POST/#", AZ_IOT_MQTT_QOS_0, fx),
       AZ_IOT_OK);
 
   assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
@@ -416,7 +416,7 @@ static void persistent_subscription_registry_full_is_rejected(void** state)
     filter[2] = '\0';
     assert_int_equal(
         az_iot_connection_client__add_subscription_on_connect(
-            fx->client, filter, AZ_IOT_MQTT_QOS_0),
+            fx->client, filter, AZ_IOT_MQTT_QOS_0, fx),
         AZ_IOT_OK);
   }
   assert_int_equal(cap.count, 0);
@@ -427,7 +427,7 @@ static void persistent_subscription_registry_full_is_rejected(void** state)
    * deciding whether to raise AZ_IOT_MAX_PERSISTENT_SUBS. */
   assert_int_equal(
       az_iot_connection_client__add_subscription_on_connect(
-          fx->client, "one-too-many", AZ_IOT_MQTT_QOS_0),
+          fx->client, "one-too-many", AZ_IOT_MQTT_QOS_0, fx),
       AZ_IOT_ERR_NOT_ENOUGH_SPACE);
   az_iot_log_set_global_sink(NULL);
 
@@ -445,12 +445,131 @@ static void persistent_subscription_added_while_connected_subscribes_now(void** 
 
   assert_int_equal(
       az_iot_connection_client__add_subscription_on_connect(
-          fx->client, "late/filter/#", AZ_IOT_MQTT_QOS_1),
+          fx->client, "late/filter/#", AZ_IOT_MQTT_QOS_1, fx),
       AZ_IOT_OK);
 
   const az_iot_mock_call* sub = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_SUBSCRIBE);
   assert_non_null(sub);
   assert_string_equal(sub->topic, "late/filter/#");
+}
+
+/* ------------------------------------------------------------------------- */
+/* withdrawing persistent subscriptions                                      */
+/* ------------------------------------------------------------------------- */
+
+/* Two feature clients share a connection; retiring one must not disturb the
+ * other. Without an owner on the registry entry there is no way to tell them
+ * apart, which is why removal is keyed by owner rather than by filter string. */
+static void removing_one_owner_leaves_the_other_owners_filters(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  int owner_a = 0;
+  int owner_b = 0;
+
+  az_iot_mock_mqtt_client* m = open_to_connected(fx);
+  assert_int_equal(
+      az_iot_connection_client__add_subscription_on_connect(
+          fx->client, "$iothub/twin/res/#", AZ_IOT_MQTT_QOS_1, &owner_a),
+      AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_connection_client__add_subscription_on_connect(
+          fx->client, "$iothub/methods/POST/#", AZ_IOT_MQTT_QOS_0, &owner_b),
+      AZ_IOT_OK);
+
+  assert_int_equal(az_iot_connection_client__remove_subscriptions_for(fx->client, &owner_a), 1);
+
+  /* Only owner_a's filter is withdrawn on the wire ... */
+  const az_iot_mock_call* uns = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_UNSUBSCRIBE);
+  assert_non_null(uns);
+  assert_string_equal(uns->topic, "$iothub/twin/res/#");
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_UNSUBSCRIBE), 1);
+
+  /* ... and only owner_b's is restored on the next connect. */
+  az_iot_mock_mqtt_client_clear_calls(m);
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(m));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  az_iot_test_wait_ms(RETRY_DELAY_MS + 5u);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  az_iot_mock_mqtt_client* m2 = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  assert_non_null(m2);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(m2, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(m2, AZ_IOT_MOCK_CALL_SUBSCRIBE), 1);
+  const az_iot_mock_call* resub = az_iot_mock_mqtt_client_last_of(m2, AZ_IOT_MOCK_CALL_SUBSCRIBE);
+  assert_non_null(resub);
+  assert_string_equal(resub->topic, "$iothub/methods/POST/#");
+}
+
+/* The defect this closes: destroy() used to leave the filter registered, so it
+ * came back on the next reconnect and kept consuming a registry slot forever. */
+static void a_withdrawn_filter_is_not_restored_on_reconnect(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  int owner = 0;
+
+  az_iot_mock_mqtt_client* m = open_to_connected(fx);
+  assert_int_equal(
+      az_iot_connection_client__add_subscription_on_connect(
+          fx->client, "$iothub/twin/res/#", AZ_IOT_MQTT_QOS_1, &owner),
+      AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client__remove_subscriptions_for(fx->client, &owner), 1);
+
+  az_iot_mock_mqtt_client_clear_calls(m);
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(m));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  az_iot_test_wait_ms(RETRY_DELAY_MS + 5u);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  az_iot_mock_mqtt_client* m2 = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  assert_non_null(m2);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(m2, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(m2, AZ_IOT_MOCK_CALL_SUBSCRIBE), 0);
+}
+
+/* Removing while disconnected still has to clear the registry, or the entry
+ * would be resurrected by a reconnect the application never asked for. */
+static void removing_while_disconnected_still_clears_the_registry(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  int owner = 0;
+
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(fx->client, fx->factory), AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_connection_client__add_subscription_on_connect(
+          fx->client, "$iothub/twin/res/#", AZ_IOT_MQTT_QOS_1, &owner),
+      AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client__remove_subscriptions_for(fx->client, &owner), 1);
+
+  assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_SUBSCRIBE), 0);
+}
+
+/* Withdrawing an owner that never registered anything is not an error -- a
+ * feature client whose init failed part-way still runs its destroy(). */
+static void removing_an_unknown_owner_removes_nothing(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  int registered = 0;
+  int never_registered = 0;
+
+  az_iot_mock_mqtt_client* m = open_to_connected(fx);
+  assert_int_equal(
+      az_iot_connection_client__add_subscription_on_connect(
+          fx->client, "$iothub/twin/res/#", AZ_IOT_MQTT_QOS_1, &registered),
+      AZ_IOT_OK);
+
+  assert_int_equal(
+      az_iot_connection_client__remove_subscriptions_for(fx->client, &never_registered), 0);
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_UNSUBSCRIBE), 0);
 }
 
 /* A broker that refuses one filter must not take the whole connection down:
@@ -462,7 +581,7 @@ static void a_failed_subscription_restore_keeps_the_connection(void** state)
       az_iot_connection_client_register_mqtt_factory(fx->client, fx->factory), AZ_IOT_OK);
   assert_int_equal(
       az_iot_connection_client__add_subscription_on_connect(
-          fx->client, "restored/#", AZ_IOT_MQTT_QOS_1),
+          fx->client, "restored/#", AZ_IOT_MQTT_QOS_1, fx),
       AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
 
@@ -482,7 +601,7 @@ static void a_failed_suback_keeps_the_connection(void** state)
       az_iot_connection_client_register_mqtt_factory(fx->client, fx->factory), AZ_IOT_OK);
   assert_int_equal(
       az_iot_connection_client__add_subscription_on_connect(
-          fx->client, "restored/#", AZ_IOT_MQTT_QOS_1),
+          fx->client, "restored/#", AZ_IOT_MQTT_QOS_1, fx),
       AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
 
@@ -686,6 +805,14 @@ int main(void)
         persistent_subscription_registry_full_is_rejected, setup_two_attempts, teardown),
     cmocka_unit_test_setup_teardown(
         persistent_subscription_added_while_connected_subscribes_now, setup_two_attempts, teardown),
+    cmocka_unit_test_setup_teardown(
+        removing_one_owner_leaves_the_other_owners_filters, setup_two_attempts, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_withdrawn_filter_is_not_restored_on_reconnect, setup_two_attempts, teardown),
+    cmocka_unit_test_setup_teardown(
+        removing_while_disconnected_still_clears_the_registry, setup_two_attempts, teardown),
+    cmocka_unit_test_setup_teardown(
+        removing_an_unknown_owner_removes_nothing, setup_two_attempts, teardown),
     cmocka_unit_test_setup_teardown(
 
         a_failed_subscription_restore_keeps_the_connection, setup_two_attempts, teardown),

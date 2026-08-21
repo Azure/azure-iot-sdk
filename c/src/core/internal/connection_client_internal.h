@@ -122,13 +122,33 @@ extern "C"
   /* Register a persistent subscription that is (re)issued on every CONNECTED
    * transition. Feature clients call this at create time so the SUBSCRIBE is
    * automatically refreshed across reconnects. The topic_filter string is
-   * copied. Returns ERR_NOT_SUPPORTED if the persistent-subscription registry
+   * copied. Returns ERR_NOT_ENOUGH_SPACE if the persistent-subscription registry
    * is full (current bound: 8). If the client is already CONNECTED, the
-   * SUBSCRIBE is also issued immediately. */
+   * SUBSCRIBE is also issued immediately.
+   *
+   * `owner` identifies the registering feature client so it can withdraw its
+   * own entries later; pass the same pointer used for the inbound handlers. */
   az_iot_result az_iot_connection_client__add_subscription_on_connect(
       az_iot_connection_client* client,
       const char* topic_filter,
-      az_iot_mqtt_qos qos);
+      az_iot_mqtt_qos qos,
+      const void* owner);
+
+  /* Withdraw every persistent subscription registered by `owner`. Returns the
+   * number removed.
+   *
+   * The MQTT side differs by generation, which is the point. On Classic the
+   * filters are per-feature, so each one is UNSUBSCRIBEd. On AEG the device
+   * holds a single `ih/{device_id}/dev/#` subscription covering the whole
+   * device-bound topic space, so there is nothing to withdraw -- unsubscribing
+   * would tear down every other feature's delivery too. There it is a registry
+   * removal only.
+   *
+   * Safe to call when disconnected: the entries are dropped either way, so a
+   * later reconnect does not resurrect them. */
+  size_t az_iot_connection_client__remove_subscriptions_for(
+      az_iot_connection_client* client,
+      const void* owner);
 
   /* Map session role to required MQTT version (SDK-internal knowledge). */
   static inline az_iot_mqtt_version az_iot_mqtt_required_version_for_role(az_iot_mqtt_role role)
