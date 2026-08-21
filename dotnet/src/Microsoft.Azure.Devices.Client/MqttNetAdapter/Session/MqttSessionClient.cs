@@ -14,14 +14,6 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session
         private MqttConnect? _mostRecentConnect;
         private readonly bool _isDisposed = false;
 
-        // "Worker threads" are the threads responsible for polling for enqueued publishes, subscribes, and unsubscribes
-        private CancellationTokenSource _workerThreadsTaskCancellationTokenSource = new();
-
-        // publish/subscribe/unsubscribe requests that haven't been fulfilled yet. Some may be in flight, though.
-        private readonly BlockingConcurrentList _outgoingRequestList;
-
-        private readonly object _ctsLockObj = new();
-
         private bool _isDesiredConnected;
         private bool _isClosing;
         private CancellationTokenSource? _reconnectionCancellationToken;
@@ -52,8 +44,6 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session
             _sessionClientOptions.Validate();
 
             base.DisconnectedAsync += InternalDisconnectedAsync;
-
-            _outgoingRequestList = new(_sessionClientOptions.MaxPendingMessages, _sessionClientOptions.PendingMessagesOverflowStrategy);
         }
 
         /// <summary>
@@ -128,134 +118,7 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session
             };
 
             await FinalizeSessionAsync(new OperationCanceledException("This operation was canceled because the MQTT client was closed."), disconnectedArgs, cancellationToken);
-            StopPublishingSubscribingAndUnsubscribing();
             Trace.TraceInformation("Successfully disconnected the session client from the MQTT broker. This connection will no longer be maintained.");
-        }
-
-        /// <summary>
-        /// Publish an MQTT message to the MQTT broker.
-        /// </summary>
-        /// <param name="applicationMessage">The message to publish.</param>
-        /// <param name="cancellationToken">The cancellation token.</param>
-        /// <returns>The PUBACK received from the MQTT broker.</returns>
-        /// <remarks>
-        /// If this operation is interrupted by a connection loss, this client will automatically re-send it once
-        /// the client has recovered the connection.
-        /// 
-        /// This method may be called even when this client is not connected. The request will be sent once the
-        /// connection is established.
-        /// </remarks>
-        public override async Task<MqttPublishAck> PublishAsync(MqttPublish applicationMessage, CancellationToken cancellationToken = default)
-        {
-            ObjectDisposedException.ThrowIf(_isDisposed, this);
-            cancellationToken.ThrowIfCancellationRequested();
-
-            TaskCompletionSource<MqttPublishAck> tcs = new();
-
-            var queuedRequest = new QueuedPublishRequest(applicationMessage, tcs, cancellationToken: cancellationToken);
-
-            cancellationToken.Register(async () =>
-            {
-                try
-                {
-                    await _outgoingRequestList.RemoveAsync(queuedRequest, CancellationToken.None);
-                    tcs.TrySetCanceled();
-                }
-                catch (ObjectDisposedException)
-                {
-                    Trace.TraceWarning("Failed to remove a queued publish because the session client was already disposed.");
-                }
-            });
-
-            await _outgoingRequestList.AddLastAsync(
-                queuedRequest,
-                cancellationToken);
-
-            MqttPublishAck publishResult = await tcs.Task.WaitAsync(cancellationToken);
-
-            return publishResult;
-        }
-
-        /// <summary>
-        /// Send a SUBSCRIBE request to the MQTT broker.
-        /// </summary>
-        /// <param name="options">The details of the subscribe request.</param>
-        /// <param name="cancellationToken">The cancellation token.</param>
-        /// <returns>The SUBACK received from the MQTT broker.</returns>
-        /// <remarks>
-        /// If this operation is interrupted by a connection loss, this client will automatically re-send it once
-        /// the client has recovered the connection.
-        /// 
-        /// This method may be called even when this client is not connected. The request will be sent once the
-        /// connection is established.
-        /// </remarks>
-        public override async Task<MqttSubscribeAck> SubscribeAsync(MqttSubscribe options, CancellationToken cancellationToken = default)
-        {
-            ObjectDisposedException.ThrowIf(_isDisposed, this);
-            cancellationToken.ThrowIfCancellationRequested();
-
-            TaskCompletionSource<MqttSubscribeAck> tcs = new();
-
-            var queuedRequest = new QueuedSubscribeRequest(options, tcs, cancellationToken: cancellationToken);
-            cancellationToken.Register(async () =>
-            {
-                try
-                {
-                    await _outgoingRequestList.RemoveAsync(queuedRequest, CancellationToken.None);
-                    tcs.TrySetCanceled();
-                }
-                catch (ObjectDisposedException)
-                {
-                    Trace.TraceWarning("Failed to remove a queued subscribe because the session client was already disposed.");
-                }
-            });
-
-            await _outgoingRequestList.AddLastAsync(
-                queuedRequest,
-                cancellationToken);
-
-            return await tcs.Task.WaitAsync(cancellationToken);
-        }
-
-        /// <summary>
-        /// Send a UNSUBSCRIBE request to the MQTT broker.
-        /// </summary>
-        /// <param name="options">The details of the unsubscribe request.</param>
-        /// <param name="cancellationToken">The cancellation token.</param>
-        /// <returns>The UNSUBACK received from the MQTT broker.</returns>
-        /// <remarks>
-        /// If this operation is interrupted by a connection loss, this client will automatically re-send it once
-        /// the client has recovered the connection.
-        /// 
-        /// This method may be called even when this client is not connected. The request will be sent once the
-        /// connection is established.
-        /// </remarks>
-        public override async Task<MqttUnsubscribeAck> UnsubscribeAsync(MqttUnsubscribe options, CancellationToken cancellationToken = default)
-        {
-            ObjectDisposedException.ThrowIf(_isDisposed, this);
-            cancellationToken.ThrowIfCancellationRequested();
-
-            TaskCompletionSource<MqttUnsubscribeAck> tcs = new();
-
-            var queuedRequest = new QueuedUnsubscribeRequest(options, tcs, cancellationToken: cancellationToken);
-            cancellationToken.Register(async () =>
-            {
-                try
-                {
-                    await _outgoingRequestList.RemoveAsync(queuedRequest, CancellationToken.None);
-                    tcs.TrySetCanceled();
-                }
-                catch (ObjectDisposedException)
-                {
-                    Trace.TraceWarning("Failed to remove a queued unsubscribe because the session client was already disposed.");
-                }
-            });
-
-            await _outgoingRequestList.AddLastAsync(
-                queuedRequest,
-                cancellationToken);
-
-            return await tcs.Task.WaitAsync(cancellationToken);
         }
 
         public new void Dispose()
@@ -264,15 +127,11 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session
             {
                 base.DisconnectedAsync -= InternalDisconnectedAsync;
 
-                _workerThreadsTaskCancellationTokenSource?.Dispose();
                 _reconnectionCancellationToken?.Dispose();
                 _disconnectedEventLock.Dispose();
-                _outgoingRequestList.Dispose();
             }
 
-            _workerThreadsTaskCancellationTokenSource?.Dispose();
             _disconnectedEventLock.Dispose();
-            _outgoingRequestList.Dispose();
 
             // The underlying client has an MQTT client as a managed resource that no other client has access to, so always dispose it
             // alongside all unmanaged resources.
@@ -295,12 +154,6 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session
                         Trace.TraceInformation("Disconnect reported by underlying MQTT client, but it was already handled");
                         return;
                     }
-
-                    StopPublishingSubscribingAndUnsubscribing();
-
-                    // It is important to stop the pub/sub/unsub threads before resetting these message states.
-                    // If you reset the message states first, then pubs/subs/unsubs may be dequeued into about-to-be-cancelled threads.
-                    await ResetMessagesStates(default);
 
                     if (IsFatal(args.Reason))
                     {
@@ -429,12 +282,6 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session
                         Trace.TraceInformation("Reconnection finished after successfully connecting to the MQTT broker again.");
                     }
 
-                    if (mostRecentConnectResult != null
-                        && mostRecentConnectResult.ResultCode == MqttConnectResultCode.Success)
-                    {
-                        StartPublishingSubscribingAndUnsubscribing();
-                    }
-
                     return mostRecentConnectResult;
                 }
                 catch (Exception) when (_isClosing && isReconnection)
@@ -471,190 +318,9 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session
             return connectResult;
         }
 
-        private void StartPublishingSubscribingAndUnsubscribing()
-        {
-            lock (_ctsLockObj)
-            {
-                if (!_isDisposed)
-                {
-                    Trace.TraceInformation("Starting the session client's worker thread");
-                    _ = Task.Run(() => ExecuteQueuedItemsAsync(_workerThreadsTaskCancellationTokenSource.Token), _workerThreadsTaskCancellationTokenSource.Token);
-                }
-            }
-        }
-
-        private void StopPublishingSubscribingAndUnsubscribing()
-        {
-            lock (_ctsLockObj)
-            {
-                try
-                {
-                    Trace.TraceInformation("Stopping the session client's worker thread");
-                    _workerThreadsTaskCancellationTokenSource.Cancel(false);
-                    _workerThreadsTaskCancellationTokenSource.Dispose();
-                    _workerThreadsTaskCancellationTokenSource = new();
-                }
-                catch (ObjectDisposedException)
-                {
-                    // The object was already disposed prior to this method being called
-                }
-            }
-        }
-
-        private async Task ResetMessagesStates(CancellationToken cancellationToken)
-        {
-            Trace.TraceInformation("Resetting the state of all queued messages");
-            await _outgoingRequestList.MarkMessagesAsUnsent(cancellationToken);
-        }
-
-        private async Task ExecuteQueuedItemsAsync(CancellationToken connectionLostCancellationToken)
-        {
-            try
-            {
-                while (base.IsConnected)
-                {
-                    QueuedRequest queuedRequest = await _outgoingRequestList.PeekNextUnsentAsync(connectionLostCancellationToken);
-                    connectionLostCancellationToken.ThrowIfCancellationRequested();
-
-                    // This request can either be cancelled because the connection was lost or because the user cancelled this specific request
-                    using var cts = CancellationTokenSource.CreateLinkedTokenSource(connectionLostCancellationToken, queuedRequest.CancellationToken);
-
-                    if (queuedRequest is QueuedPublishRequest queuedPublishRequest)
-                    {
-                        _ = ExecuteSinglePublishAsync(queuedPublishRequest, cts.Token);
-                    }
-                    else if (queuedRequest is QueuedSubscribeRequest queuedSubscribeRequest)
-                    {
-                        _ = ExecuteSingleSubscribeAsync(queuedSubscribeRequest, cts.Token);
-                    }
-                    else if (queuedRequest is QueuedUnsubscribeRequest queuedUnsubscribeRequest)
-                    {
-                        _ = ExecuteSingleUnsubscribeAsync(queuedUnsubscribeRequest, cts.Token);
-                    }
-                }
-            }
-            catch (OperationCanceledException)
-            {
-                Trace.TraceInformation("Publish message task cancelled.");
-            }
-            catch (Exception exception)
-            {
-                Trace.TraceError("Error while publishing queued application messages. {0}", exception);
-            }
-            finally
-            {
-                Trace.TraceInformation("Stopped publishing messages.");
-            }
-        }
-
-        private async Task ExecuteSinglePublishAsync(QueuedPublishRequest queuedPublish, CancellationToken cancellationToken)
-        {
-            try
-            {
-                MqttPublishAck publishResult = await base.PublishAsync(queuedPublish.Request, cancellationToken);
-
-                await _outgoingRequestList.RemoveAsync(queuedPublish, CancellationToken.None);
-                if (!queuedPublish.ResultTaskCompletionSource.TrySetResult(publishResult))
-                {
-                    Trace.TraceError("Failed to set task completion source for publish request");
-                }
-            }
-            catch (OperationCanceledException)
-            {
-                if (queuedPublish.CancellationToken.IsCancellationRequested)
-                {
-                    // User cancelled this request
-                    await _outgoingRequestList.RemoveAsync(queuedPublish, CancellationToken.None);
-                    queuedPublish.ResultTaskCompletionSource.TrySetCanceled(CancellationToken.None);
-                }
-            }
-            catch (Exception e)
-            {
-                if (IsFatal(e, queuedPublish.CancellationToken.IsCancellationRequested))
-                {
-                    await _outgoingRequestList.RemoveAsync(queuedPublish, CancellationToken.None);
-                    if (!queuedPublish.ResultTaskCompletionSource.TrySetException(e))
-                    {
-                        Trace.TraceError("Failed to set task completion source for publish request");
-                    }
-                }
-            }
-        }
-
-        private async Task ExecuteSingleSubscribeAsync(QueuedSubscribeRequest queuedSubscribe, CancellationToken cancellationToken)
-        {
-            try
-            {
-                MqttSubscribeAck subscribeResult = await base.SubscribeAsync(queuedSubscribe.Request, cancellationToken);
-
-                await _outgoingRequestList.RemoveAsync(queuedSubscribe, CancellationToken.None);
-                if (!queuedSubscribe.ResultTaskCompletionSource.TrySetResult(subscribeResult))
-                {
-                    Trace.TraceError("Failed to set task completion source for subscribe request");
-                }
-            }
-            catch (OperationCanceledException)
-            {
-                if (queuedSubscribe.CancellationToken.IsCancellationRequested)
-                {
-                    // User cancelled this request
-                    await _outgoingRequestList.RemoveAsync(queuedSubscribe, CancellationToken.None);
-                    queuedSubscribe.ResultTaskCompletionSource.TrySetCanceled(CancellationToken.None);
-                }
-            }
-            catch (Exception e)
-            {
-                if (IsFatal(e, queuedSubscribe.CancellationToken.IsCancellationRequested))
-                {
-                    await _outgoingRequestList.RemoveAsync(queuedSubscribe, CancellationToken.None);
-                    if (!queuedSubscribe.ResultTaskCompletionSource.TrySetException(e))
-                    {
-                        Trace.TraceError("Failed to set task completion source for subscribe request");
-                    }
-                }
-            }
-        }
-
-        private async Task ExecuteSingleUnsubscribeAsync(QueuedUnsubscribeRequest queuedUnsubscribe, CancellationToken cancellationToken)
-        {
-            try
-            {
-                MqttUnsubscribeAck unsubscribeResult = await base.UnsubscribeAsync(queuedUnsubscribe.Request, cancellationToken);
-                await _outgoingRequestList.RemoveAsync(queuedUnsubscribe, CancellationToken.None);
-                if (!queuedUnsubscribe.ResultTaskCompletionSource.TrySetResult(unsubscribeResult))
-                {
-                    Trace.TraceError("Failed to set task completion source for unsubscribe request");
-                }
-            }
-            catch (OperationCanceledException)
-            {
-                if (queuedUnsubscribe.CancellationToken.IsCancellationRequested)
-                {
-                    // User cancelled this request
-                    await _outgoingRequestList.RemoveAsync(queuedUnsubscribe, CancellationToken.None);
-                    queuedUnsubscribe.ResultTaskCompletionSource.TrySetCanceled(CancellationToken.None);
-                }
-            }
-            catch (Exception e)
-            {
-                if (IsFatal(e, queuedUnsubscribe.CancellationToken.IsCancellationRequested))
-                {
-                    await _outgoingRequestList.RemoveAsync(queuedUnsubscribe, CancellationToken.None);
-                    if (!queuedUnsubscribe.ResultTaskCompletionSource.TrySetException(e))
-                    {
-                        Trace.TraceError("Failed to set task completion source for unsubscribe request");
-                    }
-                }
-            }
-        }
-
         private async Task FinalizeSessionAsync(Exception queuedItemException, MqttClientDisconnectedEventArgs disconnectedEventArgs, CancellationToken cancellationToken)
         {
-            if (_isDesiredConnected)
-            {
-                _isDesiredConnected = false;
-                await _outgoingRequestList.CancelAllRequestsAsync(queuedItemException, cancellationToken);
-            }
+            _isDesiredConnected = false;
         }
 
         // These reason codes are fatal if the broker sends a DISCONNECT packet with this reason.

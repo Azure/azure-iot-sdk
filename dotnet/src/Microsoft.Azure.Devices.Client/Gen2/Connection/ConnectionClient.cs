@@ -31,7 +31,8 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Connection
 
         public event Func<MqttPublishReceivedEventArgs, Task>? PublishReceivedAsync;
 
-        private TaskCompletionSource? ConnectFlowCompletedTcs;
+        //TODO add to interface? Would feature clients care about this?
+        public event Func<DevicePresenceFlowCompletedArgs, Task>? DevicePresenceFlowCompletedAsync;
 
         private ConnectionContext? CurrentConnectionContext { get; set; }
 
@@ -57,6 +58,13 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Connection
 
             _mqttClient = options.MqttClient ?? new MqttSessionClient(sessionClientOptions);
             _mqttClient.PublishReceivedAsync += DelegatePublishAsync; // relay all publishes from the underlying MQTT client to users of this connection client
+
+            _mqttClient.DisconnectedAsync += HandleDisconnectionAsync;
+        }
+
+        private async Task HandleDisconnectionAsync(MqttClientDisconnectedEventArgs args)
+        {
+            //TODO to delete?
         }
 
         private async Task HandleConnectedToHubAsync(MqttClientConnectedEventArgs args)
@@ -292,8 +300,6 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Connection
         {
             ObjectDisposedException.ThrowIf(_isDisposed, this);
 
-            ConnectFlowCompletedTcs = new();
-
             CurrentConnectionContext = connectionContext;
 
             string deviceId = CurrentConnectionContext.DeviceId;
@@ -303,32 +309,46 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Connection
 
             Trace.TraceInformation("Attempting to establish connection and presence for device {0} with IoT Hub {1}", deviceId, hostname);
 
-            // This is the common shape of all connect packets for this device to this hub. There is an override per-connect attempt elsewhere that
-            // sets the connect nonce on the username field here. This is done so that a new connect nonce can be injected even during reconnection attempts
-            MqttConnect connectPacket = new MqttConnect()
+            TaskCompletionSource<DevicePresenceFlowCompletedArgs> devicePresenceFlowResult = new();
+            Func<DevicePresenceFlowCompletedArgs, Task> HandleDevicePresenceFlowCompleted = (args) =>
             {
-                HostName = hostname,
-                TcpPort = 8883,
-                WebsocketPort = 443,
-                WebsocketUri = $"wss://{hostname}/$iothub/websocket",
-                ClientCertificate = CurrentConnectionContext.AuthenticationProvider.ClientCertificate,
-                CleanSession = true, // TODO user configurable? Less applicable in gen 2 hub connection
-                Password = Array.Empty<byte>(),
-                ProtocolVersion = MqttProtocolVersion.V500,
-                ClientId = deviceId,
+                devicePresenceFlowResult.TrySetResult(args);
+                return Task.CompletedTask;
             };
 
-            MqttConnectAck connack = await _mqttClient.ConnectAsync(connectPacket, cancellationToken);
-            ConnectRejectedException.ThrowIfUnsuccessfulConnack(connack, "Connection to IoT Hub was rejected.");
+            DevicePresenceFlowCompletedAsync += HandleDevicePresenceFlowCompleted;
 
             try
             {
-                await ConnectFlowCompletedTcs.Task.WaitAsync(cancellationToken);
+                // This is the common shape of all connect packets for this device to this hub. There is an override per-connect attempt elsewhere that
+                // sets the connect nonce on the username field here. This is done so that a new connect nonce can be injected even during reconnection attempts
+                MqttConnect connectPacket = new MqttConnect()
+                {
+                    HostName = hostname,
+                    TcpPort = 8883,
+                    WebsocketPort = 443,
+                    WebsocketUri = $"wss://{hostname}/$iothub/websocket",
+                    ClientCertificate = CurrentConnectionContext.AuthenticationProvider.ClientCertificate,
+                    CleanSession = true, // TODO user configurable? Less applicable in gen 2 hub connection
+                    Password = Array.Empty<byte>(),
+                    ProtocolVersion = MqttProtocolVersion.V500,
+                    ClientId = deviceId,
+                };
+
+                MqttConnectAck connack = await _mqttClient.ConnectAsync(connectPacket, cancellationToken);
+                ConnectRejectedException.ThrowIfUnsuccessfulConnack(connack, "Connection to IoT Hub was rejected.");
+
+                var devicePresenceFlowCompletedArgs = await devicePresenceFlowResult.Task.WaitAsync(cancellationToken);
+
+                //TODO retry? Feels a bit odd to retry a connect call, but Hub folks do have a prescribed pattern for connect attempts. Maybe offer one connect with retry, one connect w/o
+                if (devicePresenceFlowCompletedArgs.Exception != null)
+                {
+                    throw devicePresenceFlowCompletedArgs.Exception;
+                }
             }
-            catch (ConnectBirthException)
+            finally
             {
-                //TODO retry? Feels a bit odd to retry a connect call, but Hub folks do have a prescribed pattern for connect attempts
-                throw;
+                DevicePresenceFlowCompletedAsync -= HandleDevicePresenceFlowCompleted;
             }
         }
 
@@ -375,13 +395,44 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Connection
             _isDisposed = true;
         }
 
-        public Task<MqttPublishAck> PublishAsync(MqttPublish publish, CancellationToken cancellationToken = default)
+        public async Task<MqttPublishAck> PublishAsync(MqttPublish publish, CancellationToken cancellationToken = default)
         {
-            //TODO to achieve a sort of "pause" on user-traffic when a reconnection happens, I could cancel this request (upon disconnect) down to the session client and then
-            // re-submit it after connection has been re-established. Can maybe factor this out so that gen2 and unified connection client share it.
-            return _mqttClient.PublishAsync(publish, cancellationToken);
+            TaskCompletionSource<DevicePresenceFlowCompletedArgs> devicePresenceFlowResult = new();
+            Func<DevicePresenceFlowCompletedArgs, Task> HandleDevicePresenceFlowCompleted = (args) =>
+            {
+                devicePresenceFlowResult.TrySetResult(args);
+                return Task.CompletedTask;
+            };
 
-            //TODO the vision here is to check the ConnectFlowCompletedTcs and another TCS (right?) that triggers upon disconnections
+            DevicePresenceFlowCompletedAsync += HandleDevicePresenceFlowCompleted;
+            try
+            {
+
+            }
+            finally
+            {
+                DevicePresenceFlowCompletedAsync -= HandleDevicePresenceFlowCompleted;
+            }
+
+            while (true) // Retry sending publish until user cancels as long as the failure is just that the underlying mqtt client was disconnected.
+            {
+                try
+                {
+                    return await _mqttClient.PublishAsync(publish, cancellationToken);
+                }
+                catch (MqttClientNotConnectedException)
+                {
+                    try
+                    {
+                        Debug.Assert(ConnectFlowCompletedTcs != null); // TODO right?
+                        await ConnectFlowCompletedTcs.Task.WaitAsync(cancellationToken);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        throw new OperationCanceledException("Operation canceled while waiting for reconnection to finish");
+                    }
+                }
+            }
         }
 
         public Task<MqttSubscribeAck> SubscribeAsync(MqttSubscribe subscribe, CancellationToken cancellationToken = default)

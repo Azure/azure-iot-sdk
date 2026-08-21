@@ -162,6 +162,7 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
             await _underlyingClient.DisconnectAsync(disconnectBuilder.Build(), cancellationToken);
         }
 
+        //TODO throws MqttClientNotConnectedException
         public virtual async Task<MqttPublishAck> PublishAsync(MqttPublish publish, CancellationToken cancellationToken = default)
         {
             ObjectDisposedException.ThrowIf(_isDisposed, this);
@@ -183,7 +184,14 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
                 }
             }
 
-            return ModelConverter.ToGeneric(await _underlyingClient.PublishAsync(messageBuilder.Build(), cancellationToken));
+            try
+            {
+                return ModelConverter.ToGeneric(await _underlyingClient.PublishAsync(messageBuilder.Build(), cancellationToken));
+            }
+            catch (MQTTnet.Exceptions.MqttClientNotConnectedException e)
+            {
+                throw new MqttClientNotConnectedException(e.Message, e);
+            }
         }
 
         public virtual async Task<MqttSubscribeAck> SubscribeAsync(MqttSubscribe mqttSubscribe, CancellationToken cancellationToken = default)
@@ -204,7 +212,14 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
                 }
             }
 
-            return ModelConverter.ToGeneric(await _underlyingClient.SubscribeAsync(subscribeBuilder.Build(), cancellationToken));
+            try
+            {
+                return ModelConverter.ToGeneric(await _underlyingClient.SubscribeAsync(subscribeBuilder.Build(), cancellationToken));
+            }
+            catch (MQTTnet.Exceptions.MqttClientNotConnectedException e)
+            {
+                throw new MqttClientNotConnectedException(e.Message, e);
+            }
         }
 
         public virtual async Task<MqttUnsubscribeAck> UnsubscribeAsync(MqttUnsubscribe unsubscribe, CancellationToken cancellationToken = default)
@@ -225,7 +240,14 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
                 }
             }
 
-            return ModelConverter.ToGeneric(await _underlyingClient.UnsubscribeAsync(unsubscribeBuilder.Build(), cancellationToken));
+            try
+            {
+                return ModelConverter.ToGeneric(await _underlyingClient.UnsubscribeAsync(unsubscribeBuilder.Build(), cancellationToken));
+            }
+            catch (MQTTnet.Exceptions.MqttClientNotConnectedException e)
+            {
+                throw new MqttClientNotConnectedException(e.Message, e);
+            }
         }
 
         /// <summary>

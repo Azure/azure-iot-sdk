@@ -12,19 +12,6 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session
     public class MqttSessionClientOptions
     {
         /// <summary>
-        /// The maximum number of publishes, subscribes, or unsubscribes that will be allowed to be enqueued locally at a time.
-        /// </summary>
-        /// <remarks>
-        /// Publishes, subscribes and unsubscribes all occupy separate queues, so this max value is for each of those queues..
-        /// </remarks>
-        public uint MaxPendingMessages { get; set; } = uint.MaxValue;
-
-        /// <summary>
-        /// The strategy for the session client to use when deciding how to handle enqueueing a message when the queue is already full.
-        /// </summary>
-        public MqttPendingMessagesOverflowStrategy PendingMessagesOverflowStrategy { get; set; } = MqttPendingMessagesOverflowStrategy.DropNewMessage;
-
-        /// <summary>
         /// The retry policy that the session client will consult each time it attempts to reconnect and/or each time it attempts the initial connect.
         /// </summary>
         /// <remarks>
@@ -52,18 +39,7 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter.Session
 
         internal void Validate()
         {
-            if (MaxPendingMessages < 1)
-            {
-                throw new NotSupportedException("Max pending message count must be greater than 0");
-            }
-
-            if (PendingMessagesOverflowStrategy != MqttPendingMessagesOverflowStrategy.DropOldestQueuedMessage
-                && PendingMessagesOverflowStrategy != MqttPendingMessagesOverflowStrategy.DropNewMessage)
-            {
-                throw new NotSupportedException("Pending messages overflow strategy must be \"DropOldestQueuedMessage\" or \"DropNewMessage\"");
-            }
-
-            ArgumentNullException.ThrowIfNull(ConnectionRetryPolicy, "A session client must have a retry policy.");
+            ArgumentNullException.ThrowIfNull(ConnectionRetryPolicy, "Connection retry policy must not be null.");
         }
     }
 }

@@ -16,10 +16,13 @@ namespace Microsoft.Azure.Devices.Client.Mqtt
 
         Task DisconnectAsync(MqttDisconnect disconnect, CancellationToken cancellationToken = default);
 
+        //TODO throws MqttClientNotConnectedException
         Task<MqttPublishAck> PublishAsync(MqttPublish publish, CancellationToken cancellationToken = default);
 
+        //TODO throws MqttClientNotConnectedException
         Task<MqttSubscribeAck> SubscribeAsync(MqttSubscribe subscribe, CancellationToken cancellationToken = default);
 
+        //TODO throws MqttClientNotConnectedException
         Task<MqttUnsubscribeAck> UnsubscribeAsync(MqttUnsubscribe unsubscribe, CancellationToken cancellationToken = default);
     }
 }
