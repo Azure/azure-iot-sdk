@@ -159,6 +159,16 @@ Key ordering guarantees that both clients must honour:
 1. `CONNECTED` is announced **after** the birth handshake (Hub-Next) and **after** persistent
    subscriptions have been re-issued, so a feature client never observes `CONNECTED` while its topic
    filters are missing.
+
+   > **Not true of the C client today.** `announce_connected()` transitions to `CONNECTED` first and
+   > only then issues the subscribes, discarding the result; SUBACKs are absorbed. So the callback
+   > can fire while no filter is established, and a request published from inside it reaches the wire
+   > ahead of its own SUBSCRIBE. Treat this as the *intended* contract, not a current guarantee.
+   > Tracked as [AB#39366084](https://dev.azure.com/msazure/One/_workitems/edit/39366084) and fixed
+   > in phase P1c of [eng/client-separation.md](eng/client-separation.md). The Hub-Next birth
+   > handshake in the same diagram *is* correctly gated — it waits for its own SUBACK before
+   > publishing birth — which is the shape the feature subscriptions are being moved to.
+
 2. The DPS session is fully torn down before the hub session is created — they are never concurrent,
    and DPS always uses MQTT 3.1.1 even when the hub session uses v5.
 3. The operational certificate is preferred over the bootstrap certificate on every connect attempt,
@@ -285,7 +295,7 @@ checked before backoff is scheduled.
 
 | Item | Preserved | Behaviour |
 | --- | --- | --- |
-| Persistent subscriptions | Yes | Re-issued before `CONNECTED` is announced. |
+| Persistent subscriptions | Yes | Re-issued on reconnect. Intended to complete before `CONNECTED` is announced; not yet gated on the SUBACK — see the caveat under §4's ordering guarantees. |
 | Assigned hub host / device id | Yes | Cached after the first DPS assignment. |
 | Connection profile | Yes | Re-resolved from the new assignment; a change invalidates held feature clients (open question, §4). |
 | Operational certificate | Yes | Owned by the certificate provider, reloaded on each attempt. |
