@@ -661,7 +661,7 @@ version.
 The mapping lives in one function so that a future third profile, or a rename,
 touches one place.
 
-The internal `az_iot_hub_flavor` and `az_iot_hub_protocol` enums are replaced by
+The internal `az_iot_hub_flavor` and `az_iot_connection_profile` enums are replaced by
 `az_iot_connection_profile`. `az_iot_mqtt_role` keeps its DPS member.
 
 ---

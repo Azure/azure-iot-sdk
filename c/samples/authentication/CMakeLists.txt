@@ -15,7 +15,7 @@ az_iot_apply_warnings(az_iot_sample_auth_custom_provider_template)
 
 # Direct hub connect (no DPS): caller supplies the hub FQDN + X.509 device
 # credentials and selects the hub flavor (Classic v3.1.1 or Next/AEG v5) via
-# opts.hub_protocol. Needs the Paho adapter to connect; the PEM provider ships
+# opts.connection_profile. Needs the Paho adapter to connect; the PEM provider ships
 # in az_iot_core.
 if(AZ_IOT_WITH_PAHO)
     add_executable(az_iot_sample_auth_direct_hub

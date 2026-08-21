@@ -407,7 +407,7 @@ static void dps_uses_v3_1_1_even_when_the_hub_is_next(void** state)
 {
   (void)state;
   az_iot_connection_client_options opts = dps_options();
-  opts.hub_protocol = AZ_IOT_HUB_PROTOCOL_NEXT;
+  opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
 
   az_iot_connection_client c;
   assert_int_equal(az_iot_connection_client_init(&c, &opts), AZ_IOT_OK);
@@ -1085,6 +1085,19 @@ static void get_hub_profile_rejects_null_arguments(void** state)
   az_iot_connection_client_destroy(&c);
 }
 
+/* UNKNOWN only ever comes back FROM the service. A caller declaring it is asking
+ * the SDK to speak a protocol it has no implementation for, so it is refused at
+ * the boundary rather than silently falling through to classic. */
+static void init_rejects_a_connection_profile_the_sdk_cannot_speak(void** state)
+{
+  (void)state;
+  az_iot_connection_client_options opts = dps_options();
+  opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_UNKNOWN;
+
+  az_iot_connection_client c;
+  assert_int_equal(az_iot_connection_client_init(&c, &opts), AZ_IOT_ERR_INVALID_ARG);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -1145,6 +1158,7 @@ int main(void)
     cmocka_unit_test(get_hub_profile_rejects_an_unstamped_struct),
     cmocka_unit_test(get_hub_profile_rejects_a_newer_caller_struct),
     cmocka_unit_test(get_hub_profile_rejects_null_arguments),
+    cmocka_unit_test(init_rejects_a_connection_profile_the_sdk_cannot_speak),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

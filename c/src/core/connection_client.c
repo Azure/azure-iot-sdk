@@ -1771,6 +1771,14 @@ az_iot_result az_iot_connection_client_init(
     AZ_IOT_LOG_ERROR("connection_client_init: invalid arguments");
     return AZ_IOT_ERR_INVALID_ARG;
   }
+  /* UNKNOWN only ever comes back FROM the service; a caller cannot meaningfully
+   * declare a profile the SDK does not know how to speak. */
+  if (opts->connection_profile != AZ_IOT_CONNECTION_PROFILE_CLASSIC
+      && opts->connection_profile != AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
+  {
+    AZ_IOT_LOG_ERROR("connection_client_init: connection_profile is not a profile this SDK speaks");
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
   memset(client, 0, sizeof(*client));
   client->opts = *opts;
   client->state = AZ_IOT_CONN_STATE_IDLE;
@@ -1808,11 +1816,12 @@ az_iot_result az_iot_connection_client_init(
     free(id_buf);
 #endif
   }
-  else if (client->opts.host && client->opts.hub_protocol == AZ_IOT_HUB_PROTOCOL_NEXT)
+  else if (
+      client->opts.host && client->opts.connection_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
   {
     /* Direct connect to an IoT Hub Next / AEG endpoint (MQTT v5). For DPS
-     * (host == NULL) the flavor is learned during provisioning, so
-     * hub_protocol is honored only when a direct host is supplied. */
+     * (host == NULL) the profile is learned during provisioning, so
+     * opts.connection_profile is honored only when a direct host is supplied. */
     client->session_role = AZ_IOT_MQTT_ROLE_HUB_NEXT;
   }
   else
