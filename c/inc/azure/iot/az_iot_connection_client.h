@@ -66,18 +66,30 @@ extern "C"
   {
     uint32_t _internal_size;
     az_iot_connection_profile connection_profile;
-    /* The wire string, verbatim, ALWAYS populated -- never NULL. This is what
-     * keeps the extensible union from becoming lossy at the C boundary: a
-     * profile this SDK has never heard of still reports UNKNOWN *and* the text
-     * the service sent, so it can be logged or acted on. Points into the
-     * connection client and stays valid until destroy(). */
+    /* The wire string, never NULL. This is what keeps the extensible union from
+     * becoming lossy at the C boundary: a profile this SDK has never heard of
+     * still reports UNKNOWN *and* the text the service sent, so it can be logged
+     * or acted on. Points into the connection client and stays valid until
+     * destroy().
+     *
+     * Bounded by AZ_IOT_CONNECTION_PROFILE_RAW_BUF, so it is the value verbatim
+     * only when connection_profile_raw_truncated is false. Callers that report
+     * this value onward MUST check that flag rather than assume the text is
+     * complete. */
     const char* connection_profile_raw;
+    /* The service sent a longer value than connection_profile_raw can hold, so
+     * the text above is a prefix. Such a profile is always UNKNOWN -- every
+     * profile this SDK recognises is short, so an overlong one cannot be one of
+     * them -- and therefore fails the connection. Raise
+     * AZ_IOT_CONNECTION_PROFILE_RAW_BUF if a real profile ever needs the room. */
+    bool connection_profile_raw_truncated;
   } az_iot_hub_profile;
 
 #define AZ_IOT_HUB_PROFILE_INIT                                                              \
   {                                                                                          \
     ._internal_size = sizeof(az_iot_hub_profile),                                            \
     .connection_profile = AZ_IOT_CONNECTION_PROFILE_CLASSIC, .connection_profile_raw = NULL, \
+    .connection_profile_raw_truncated = false,                                               \
   }
 
   typedef struct az_iot_reconnection_policy
@@ -419,6 +431,7 @@ extern "C"
      * is kept verbatim so an unrecognised profile is still reportable. */
     az_iot_connection_profile connection_profile;
     char connection_profile_raw[AZ_IOT_CONNECTION_PROFILE_RAW_BUF];
+    bool connection_profile_raw_truncated;
 
     az_iot_hub_client hub_client;
     bool hub_client_initialized;

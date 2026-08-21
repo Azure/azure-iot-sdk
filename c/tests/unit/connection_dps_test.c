@@ -59,6 +59,10 @@ static const char k_assigned_classic[] = ASSIGNED_BODY_WITH_PROFILE("\"classic\"
 static const char k_assigned_mqtt_v5[] = ASSIGNED_BODY_WITH_PROFILE("\"mqttV5\"");
 static const char k_assigned_profile_null[] = ASSIGNED_BODY_WITH_PROFILE("null");
 static const char k_assigned_profile_unknown[] = ASSIGNED_BODY_WITH_PROFILE("\"mqttV9-quantum\"");
+/* Longer than AZ_IOT_CONNECTION_PROFILE_RAW_BUF (64), so the raw string cannot
+ * be reported whole and the caller has to be told so. */
+static const char k_assigned_profile_overlong[] = ASSIGNED_BODY_WITH_PROFILE(
+    "\"mqttV5-with-an-absurdly-long-forward-compatible-suffix-that-will-not-fit\"");
 
 /* ------------------------------------------------------------------------- */
 /* fixture                                                                   */
@@ -984,6 +988,37 @@ static void dps_unknown_profile_is_still_reported_verbatim(void** state)
   assert_int_equal(az_iot_connection_client_get_hub_profile(&pf.c, &hp), AZ_IOT_OK);
   assert_int_equal(hp.connection_profile, AZ_IOT_CONNECTION_PROFILE_UNKNOWN);
   assert_string_equal(hp.connection_profile_raw, "mqttV9-quantum");
+  assert_false(hp.connection_profile_raw_truncated);
+
+  profile_fixture_close(&pf);
+}
+
+/* A value too long for the buffer cannot be reported verbatim, so the contract
+ * is that it is reported as a PREFIX and says so. Silently handing back a
+ * shortened string as if it were what the service sent would be the one
+ * genuinely misleading outcome -- an operator would chase a profile name that
+ * was never on the wire. */
+static void dps_overlong_profile_is_flagged_as_truncated(void** state)
+{
+  (void)state;
+  profile_fixture pf = { 0 };
+  profile_fixture_open(&pf);
+  profile_assign(&pf, k_assigned_profile_overlong);
+
+  az_iot_hub_profile hp = AZ_IOT_HUB_PROFILE_INIT;
+  assert_int_equal(az_iot_connection_client_get_hub_profile(&pf.c, &hp), AZ_IOT_OK);
+  assert_true(hp.connection_profile_raw_truncated);
+  /* Unknown, so the connection fails closed rather than guessing a protocol. */
+  assert_int_equal(hp.connection_profile, AZ_IOT_CONNECTION_PROFILE_UNKNOWN);
+  assert_int_equal(
+      az_iot_test_reason_for(&pf.log, AZ_IOT_CONN_STATE_FAULTED),
+      AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED);
+  /* What was kept is a genuine prefix of what was sent, not arbitrary bytes. */
+  assert_int_equal(strlen(hp.connection_profile_raw), AZ_IOT_CONNECTION_PROFILE_RAW_BUF - 1);
+  assert_memory_equal(
+      hp.connection_profile_raw,
+      "mqttV5-with-an-absurdly-long",
+      strlen("mqttV5-with-an-absurdly-long"));
 
   profile_fixture_close(&pf);
 }
@@ -1105,6 +1140,7 @@ int main(void)
     cmocka_unit_test(dps_null_profile_defaults_to_classic),
     cmocka_unit_test(dps_unknown_profile_faults_the_connection),
     cmocka_unit_test(dps_unknown_profile_is_still_reported_verbatim),
+    cmocka_unit_test(dps_overlong_profile_is_flagged_as_truncated),
     cmocka_unit_test(get_hub_profile_before_connected_is_rejected),
     cmocka_unit_test(get_hub_profile_rejects_an_unstamped_struct),
     cmocka_unit_test(get_hub_profile_rejects_a_newer_caller_struct),

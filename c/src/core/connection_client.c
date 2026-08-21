@@ -477,9 +477,14 @@ static void connection_profile_set(az_iot_connection_client* c, az_span raw)
     memcpy(c->connection_profile_raw, az_span_ptr(raw), (size_t)n);
   }
   c->connection_profile_raw[n] = '\0';
+  c->connection_profile_raw_truncated = truncated;
 
   if (truncated)
   {
+    AZ_IOT_LOG_ERRORF(
+        "connectionProfile is longer than %u bytes and was truncated to \"%s\"",
+        (unsigned)sizeof(c->connection_profile_raw),
+        c->connection_profile_raw);
     c->connection_profile = AZ_IOT_CONNECTION_PROFILE_UNKNOWN;
   }
   else if (strcmp(c->connection_profile_raw, CONNECTION_PROFILE_CLASSIC_STR) == 0)
@@ -2428,6 +2433,11 @@ az_iot_result az_iot_connection_client_get_hub_profile(
           + sizeof(out_profile->connection_profile_raw))
   {
     out_profile->connection_profile_raw = client->connection_profile_raw;
+  }
+  if (out_profile->_internal_size >= offsetof(az_iot_hub_profile, connection_profile_raw_truncated)
+          + sizeof(out_profile->connection_profile_raw_truncated))
+  {
+    out_profile->connection_profile_raw_truncated = client->connection_profile_raw_truncated;
   }
   return AZ_IOT_OK;
 }
