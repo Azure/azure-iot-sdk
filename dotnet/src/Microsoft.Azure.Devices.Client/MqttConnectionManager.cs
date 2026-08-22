@@ -2,14 +2,22 @@
 // Licensed under the MIT License.
 
 using Microsoft.Azure.Devices.Client.Mqtt;
-using Microsoft.Azure.Devices.Client.Unified.Connection.Retry;
+using Microsoft.Azure.Devices.Client.Retry;
 using System.Diagnostics;
 using System.Net.Sockets;
 
-namespace Microsoft.Azure.Devices.Client.Unified.Connection
+namespace Microsoft.Azure.Devices.Client
 {
     internal class MqttConnectionManager
     {
+        public event Func<MqttPublishReceivedEventArgs, Task>? PublishReceivedAsync;
+
+        public event Func<MqttClientConnectedEventArgs, Task>? ConnectedAsync;
+
+        public event Func<MqttConnect, Task<MqttConnect>>? ConnectingAsync;
+
+        public event Func<MqttClientDisconnectedEventArgs, Task>? DisconnectedAsync;
+
         private readonly MqttSessionClientOptions _sessionClientOptions;
         private MqttConnect? _mostRecentConnect;
         private readonly bool _isDisposed = false;
@@ -47,6 +55,46 @@ namespace Microsoft.Azure.Devices.Client.Unified.Connection
             _sessionClientOptions.Validate();
 
             _underlyingMqttClient.DisconnectedAsync += InternalDisconnectedAsync;
+
+            _underlyingMqttClient.DisconnectedAsync += DelegateDisconnectedAsync;
+            _underlyingMqttClient.ConnectingAsync += DelegateConnectingAsync;
+            _underlyingMqttClient.ConnectedAsync += DelegateConnectedAsync;
+            _underlyingMqttClient.PublishReceivedAsync += DelegatePublishReceivedAsync;
+
+        }
+
+        private async Task DelegatePublishReceivedAsync(MqttPublishReceivedEventArgs args)
+        {
+            if (PublishReceivedAsync != null)
+            {
+                _ = PublishReceivedAsync.Invoke(args);
+            }
+        }
+
+        private async Task DelegateConnectedAsync(MqttClientConnectedEventArgs args)
+        {
+            if (ConnectedAsync != null)
+            {
+                _ = ConnectedAsync.Invoke(args);
+            }
+        }
+
+        private async Task<MqttConnect> DelegateConnectingAsync(MqttConnect connect)
+        {
+            if (ConnectingAsync != null)
+            {
+                connect = await ConnectingAsync.Invoke(connect);
+            }
+
+            return connect;
+        }
+
+        private async Task DelegateDisconnectedAsync(MqttClientDisconnectedEventArgs args)
+        {
+            if (DisconnectedAsync != null)
+            {
+                _ = DisconnectedAsync.Invoke(args);
+            }
         }
 
         /// <summary>
@@ -411,6 +459,21 @@ namespace Microsoft.Azure.Devices.Client.Unified.Connection
             }
 
             return false;
+        }
+
+        public Task<MqttPublishAck> PublishAsync(MqttPublish publish, CancellationToken cancellationToken = default)
+        {
+            return _underlyingMqttClient.PublishAsync(publish, cancellationToken);
+        }
+
+        public Task<MqttSubscribeAck> SubscribeAsync(MqttSubscribe subscribe, CancellationToken cancellationToken = default)
+        {
+            return _underlyingMqttClient.SubscribeAsync(subscribe, cancellationToken);
+        }
+
+        public Task<MqttUnsubscribeAck> UnsubscribeAsync(MqttUnsubscribe unsubscribe, CancellationToken cancellationToken = default)
+        {
+            return _underlyingMqttClient.UnsubscribeAsync(unsubscribe, cancellationToken);
         }
     }
 }

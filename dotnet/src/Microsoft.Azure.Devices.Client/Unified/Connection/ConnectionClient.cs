@@ -1,7 +1,9 @@
 ﻿using Microsoft.Azure.Devices.Client.Exceptions;
+using Microsoft.Azure.Devices.Client.Gen2.Connection;
 using Microsoft.Azure.Devices.Client.Models;
 using Microsoft.Azure.Devices.Client.Models.CertificateManagement;
 using Microsoft.Azure.Devices.Client.Mqtt;
+using Microsoft.Azure.Devices.Client.MQTTnetAdapter;
 using Microsoft.Azure.Devices.Client.Provisioning;
 using Microsoft.Azure.Devices.Client.Provisioning.Models;
 using System.Collections.Concurrent;
@@ -26,7 +28,7 @@ namespace Microsoft.Azure.Devices.Client.Unified.Connection
         /// <summary>
         /// This event signals that the device is connected and has established all necessary subscriptions with IoT Hub.
         /// </summary>
-        private event Action? DeviceReadyAsync; //TODO Ideally, user wouldn't even have to care about this
+        private event Action? DeviceReadyAsync; //TODO need to send back error cases, too. Keep it private so that that ugliness is hidden?
 
         public event Func<MqttPublishReceivedEventArgs, Task>? PublishReceivedAsync;
 
@@ -59,7 +61,7 @@ namespace Microsoft.Azure.Devices.Client.Unified.Connection
 
             _isUserSuppliedMqttClient = options.MqttClient != null;
 
-            _managedMqttConnection = new(options.MqttClient ?? new MqttConnectionManager(sessionClientOptions));
+            _managedMqttConnection = new(options.MqttClient ?? new MqttNetClient(), sessionClientOptions);
 
             _gen2ConnectionClient = new(options);
 
@@ -76,7 +78,7 @@ namespace Microsoft.Azure.Devices.Client.Unified.Connection
             }
         }
 
-        private async Task HandleGen1IotHubConnectionAsync(MqttClientConnectedEventArgs args)
+        private async Task HandleIotHubConnectionAsync(MqttClientConnectedEventArgs args)
         {
             // Note that this callback handler is only set after provisioning has completed. It is only to respond to IoT Hub connection events, not DPS connection events.
 
@@ -110,7 +112,7 @@ namespace Microsoft.Azure.Devices.Client.Unified.Connection
                 //TODO how to signal that the connect needs to throw?
                 if (anySubscribeFailed)
                 {
-                    await _managedMqttConnection.DisconnectAsync(new MqttDisconnect() { Reason = MqttClientDisconnectOptionsReason.ImplementationSpecificError }); //Does the session client stop retrying here? Use a disconnect code to signal
+                    await _managedMqttConnection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttClientDisconnectOptionsReason.ImplementationSpecificError }); //Does the session client stop retrying here? Use a disconnect code to signal
                 }
                 else
                 {
@@ -133,9 +135,10 @@ namespace Microsoft.Azure.Devices.Client.Unified.Connection
         {
             ObjectDisposedException.ThrowIf(_isDisposed, this);
 
-            _managedMqttConnection.ConnectedAsync -= HandleGen1IotHubConnectionAsync; //TODO be very careful about when we register/unregister this callback expecially around connection loss scenarios
+            _managedMqttConnection.ConnectedAsync -= HandleIotHubConnectionAsync; //TODO be very careful about when we register/unregister this callback expecially around connection loss scenarios
 
-            var provisioningResult = await ProvisionAsync(provisioningSettings, authentication, cancellationToken);
+            ProvisioningConnection provisioningConnection = new();
+            var provisioningResult = await provisioningConnection.RegisterAsync(_managedMqttConnection, new() { ClientCertificateSigningRequest = null, Payload = provisioningSettings.ProvisioningPayload }, authentication, provisioningSettings.IdScope, provisioningSettings.GlobalEndpointAddress, cancellationToken);
 
             //TODO several mqtt client options should not be provided by the user (ie, host name). Add checks here that validate all of them
 
@@ -148,7 +151,7 @@ namespace Microsoft.Azure.Devices.Client.Unified.Connection
                 AuthenticationProvider = authentication,
             };
 
-            _managedMqttConnection.ConnectedAsync += HandleGen1IotHubConnectionAsync;
+            _managedMqttConnection.ConnectedAsync += HandleIotHubConnectionAsync;
 
             // After successful provisioning, connect using the appropriate logic based on the Hub this device was provisioned to
             //TODO use issued client certs if CSR was done during provisioning
@@ -182,7 +185,7 @@ namespace Microsoft.Azure.Devices.Client.Unified.Connection
         {
             ObjectDisposedException.ThrowIf(_isDisposed, this);
 
-            await _managedMqttConnection.DisconnectAsync(new MqttDisconnect() { Reason = MqttClientDisconnectOptionsReason.NormalDisconnection }, cancellationToken);
+            await _managedMqttConnection.DisconnectAsync(false, new MqttDisconnect() { Reason = MqttClientDisconnectOptionsReason.NormalDisconnection }, cancellationToken);
             CurrentConnectionContext = null;
         }
 
@@ -288,14 +291,6 @@ namespace Microsoft.Azure.Devices.Client.Unified.Connection
             await OnSubscribedTcs.Task.WaitAsync(cancellationToken);
         }
 
-        internal async Task<DeviceRegistrationResult> ProvisionAsync(ProvisioningSettings provisioningSettings, X509AuthenticationProvider authentication, CancellationToken cancellationToken = default)
-        {
-            ProvisioningConnection provisioningConnection = new();
-            return await provisioningConnection.RegisterAsync(_managedMqttConnection, new() { ClientCertificateSigningRequest = null, Payload = provisioningSettings.ProvisioningPayload }, authentication, provisioningSettings.IdScope, provisioningSettings.GlobalEndpointAddress, cancellationToken);
-
-            //TODO do we care about initial twin as returned by DPS?
-        }
-
         private async Task HandleReceivedCertificateSigningPublish(MqttPublishReceivedEventArgs args)
         {
             if (args.Publish.Topic.StartsWith(CertificateSigningResponseTopic))
@@ -347,7 +342,7 @@ namespace Microsoft.Azure.Devices.Client.Unified.Connection
         {
             _managedMqttConnection.PublishReceivedAsync -= DelegatePublishAsync;
             _managedMqttConnection.PublishReceivedAsync -= HandleReceivedCertificateSigningPublish;
-            _managedMqttConnection.ConnectedAsync -= HandleGen1IotHubConnectionAsync;
+            _managedMqttConnection.ConnectedAsync -= HandleIotHubConnectionAsync;
 
             if (disposing)
             {
@@ -368,7 +363,7 @@ namespace Microsoft.Azure.Devices.Client.Unified.Connection
         {
             _managedMqttConnection.PublishReceivedAsync -= PublishReceivedAsync;
             _managedMqttConnection.PublishReceivedAsync -= HandleReceivedCertificateSigningPublish;
-            _managedMqttConnection.ConnectedAsync -= HandleGen1IotHubConnectionAsync;
+            _managedMqttConnection.ConnectedAsync -= HandleIotHubConnectionAsync;
             _managedMqttConnection.Dispose();
 
             _isDisposed = true;
@@ -392,23 +387,79 @@ namespace Microsoft.Azure.Devices.Client.Unified.Connection
             return typeof(ConnectionClient).GetTypeInfo().Assembly.GetName().Version!.ToString(3);
         }
 
-        public Task<MqttPublishAck> PublishAsync(MqttPublish publish, CancellationToken cancellationToken = default)
+        private async Task<TResp> PerformWhileRespectingConnectionState<TResp>(Func<CancellationToken, Task<TResp>> funcToRetry, CancellationToken cancellationToken)
         {
-            //TODO to achieve a sort of "pause" on user-traffic when a reconnection happens, I could cancel this request (upon disconnect) down to the session client and then
-            // re-submit it after connection has been re-established
-            return _managedMqttConnection.PublishAsync(publish, cancellationToken);
+            // Assume an open connection to start, but increment this by one if MqttClientNotConnectedException is thrown to counteract that assumption
+            using ManualResetEventSlim latch = new();
+            latch.Set();
+            Action HandleDeviceReadyAsync = latch.Set;
+
+            Func<MqttClientDisconnectedEventArgs, Task> HandleDisconnection = (args) =>
+            {
+                latch.Reset();
+                return Task.CompletedTask;
+            };
+
+            DeviceReadyAsync += HandleDeviceReadyAsync;
+            _managedMqttConnection.DisconnectedAsync += HandleDisconnection;
+            try
+            {
+                while (true) // Retry sending publish until user cancels as long as the failure is just that the underlying mqtt client was disconnected.
+                {
+                    try
+                    {
+                        return await funcToRetry.Invoke(cancellationToken);
+                    }
+                    catch (MqttClientNotConnectedException)
+                    {
+                        latch.Reset(); // No-op if the HandleDisconnection already reset this latch. Only here because there is a chance that this method was called while MQTT client was disconnected
+
+                        try
+                        {
+                            latch.Wait(cancellationToken);
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            throw new OperationCanceledException("Operation canceled while waiting for reconnection to finish");
+                        }
+                    }
+                }
+            }
+            finally
+            {
+                DeviceReadyAsync -= HandleDeviceReadyAsync;
+                _managedMqttConnection.DisconnectedAsync -= HandleDisconnection;
+            }
         }
 
-        public Task<MqttSubscribeAck> SubscribeAsync(MqttSubscribe subscribe, CancellationToken cancellationToken = default)
+        public async Task<MqttPublishAck> PublishAsync(MqttPublish publish, CancellationToken cancellationToken = default)
         {
-            // same as publish
-            return _managedMqttConnection.SubscribeAsync(subscribe, cancellationToken);
+            Func<CancellationToken, Task<MqttPublishAck>> funcToRetry = async (args) =>
+            {
+                return await _managedMqttConnection.PublishAsync(publish, cancellationToken);
+            };
+
+            return await PerformWhileRespectingConnectionState(funcToRetry, cancellationToken);
         }
 
-        public Task<MqttUnsubscribeAck> UnsubscribeAsync(MqttUnsubscribe unsubscribe, CancellationToken cancellationToken = default)
+        public async Task<MqttSubscribeAck> SubscribeAsync(MqttSubscribe subscribe, CancellationToken cancellationToken = default)
         {
-            // same as publish
-            return _managedMqttConnection.UnsubscribeAsync(unsubscribe, cancellationToken);
+            Func<CancellationToken, Task<MqttSubscribeAck>> funcToRetry = async (args) =>
+            {
+                return await _managedMqttConnection.SubscribeAsync(subscribe, cancellationToken);
+            };
+
+            return await PerformWhileRespectingConnectionState(funcToRetry, cancellationToken);
+        }
+
+        public async Task<MqttUnsubscribeAck> UnsubscribeAsync(MqttUnsubscribe unsubscribe, CancellationToken cancellationToken = default)
+        {
+            Func<CancellationToken, Task<MqttUnsubscribeAck>> funcToRetry = async (args) =>
+            {
+                return await _managedMqttConnection.UnsubscribeAsync(unsubscribe, cancellationToken);
+            };
+
+            return await PerformWhileRespectingConnectionState(funcToRetry, cancellationToken);
         }
     }
 }

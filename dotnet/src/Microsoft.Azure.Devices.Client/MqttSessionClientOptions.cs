@@ -1,9 +1,9 @@
 ﻿// Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-using Microsoft.Azure.Devices.Client.Unified.Connection.Retry;
+using Microsoft.Azure.Devices.Client.Retry;
 
-namespace Microsoft.Azure.Devices.Client.Unified.Connection
+namespace Microsoft.Azure.Devices.Client
 {
     /// <summary>
     /// The optional parameters that can be specified when creating a session client.

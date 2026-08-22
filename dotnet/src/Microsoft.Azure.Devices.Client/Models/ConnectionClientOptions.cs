@@ -1,5 +1,5 @@
 ﻿using Microsoft.Azure.Devices.Client.Mqtt;
-using Microsoft.Azure.Devices.Client.Unified.Connection.Retry;
+using Microsoft.Azure.Devices.Client.Retry;
 using System;
 using System.Collections.Generic;
 using System.Text;

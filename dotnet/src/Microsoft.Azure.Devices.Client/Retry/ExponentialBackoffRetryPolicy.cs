@@ -2,7 +2,7 @@
 using System.Collections.Generic;
 using System.Text;
 
-namespace Microsoft.Azure.Devices.Client.Unified.Connection.Retry
+namespace Microsoft.Azure.Devices.Client.Retry
 {
     /// <summary>
     /// Implements Binary Exponential Backoff (BEB) retry policy as follows:

@@ -26,4 +26,8 @@
     <ProjectReference Include="..\..\src\Microsoft.Azure.Devices.Client\Microsoft.Azure.Devices.Client.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Folder Include="Unified\" />
+  </ItemGroup>
+
 </Project>
