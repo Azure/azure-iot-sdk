@@ -13,9 +13,9 @@ The `adu_client` is a new **feature client** in the azure-iot-sdk SDK that imple
 - The ADU client MUST provide **platform abstraction hooks** so customers can plug their own download, install, apply, backup, and restore routines.
 - Pre-built platform adapters SHOULD be shipped for **Linux** and **ESP32** (in `adapters/adu/`, not in core `src/`).
 - The implementation MUST remain C99, single-threaded (callback-driven via `do_work()`), with no hidden allocations on the hot path — consistent with the existing SDK philosophy.
-- The ADU client MUST report update state and results to the cloud via device twin reported properties.
+- The ADU client MUST report update state and results to the cloud. The wire shape is generation-specific: device twin reported properties for ADUv1, `ReportDeviceUpdateStatus` for ADUv2 (see [aduv2-spec.md](aduv2-spec.md)). The engine emits a structured result; each wrapper serializes it.
 - The ADU client MUST support multi-step (composite) updates — the manifest MAY contain multiple instruction steps, each with its own handler type and file set.
-- The SDK SHOULD be usable as an **agent core library**: in addition to the managed client, it SHOULD expose transport-free primitives to *validate + parse* a manifest into a filled struct and to *build* the result report, so consumers can implement their own ADU agent and state machine on top of the SDK's vetted trust code. (See §5.3 and [adu-feature-support.md](adu-feature-support.md) Part C.)
+- The SDK SHOULD be usable as an **agent core library**: in addition to the managed client, it SHOULD expose transport-free primitives to *validate + parse* a manifest into a filled struct and to *build* the result report, so consumers can implement their own ADU agent and state machine on top of the SDK's vetted trust code. (See §5.3 and [adu-client-plan.md](adu-client-plan.md) — Library / agent-core mode.)
 
 ### Non-Goals (for this phase)
 
@@ -1017,7 +1017,7 @@ sequenceDiagram
 ### 5.3 Agent Core-Library API (parse-only / BYO state machine)
 
 > Rationale and gap analysis: see
-> [adu-feature-support.md](adu-feature-support.md) Part C (§11–§15). This API
+> [adu-client-plan.md](adu-client-plan.md) — Library / agent-core mode. This API
 > lets a consumer build their **own** ADU agent (in the spirit of
 > [Azure/iot-hub-device-update](https://github.com/Azure/iot-hub-device-update))
 > on top of our vetted parse + trust + report code, without adopting our state
@@ -1072,7 +1072,7 @@ az_iot_result az_iot_adu_verify_file_hash(
  * Build the report payload from the consumer's own outcome data, without the
  * state machine. Emits the structured result; the generation-specific serializer
  * turns it into the twin reported-properties (ADUv1) or the reportStatus body
- * (ADUv2, see adu-feature-support.md Part B §5a).
+ * (ADUv2, see adu-client-plan.md — ADUv2 transport).
  */
 az_iot_result az_iot_adu_build_report(
     const az_iot_adu_device_properties* device_props,
@@ -1089,7 +1089,7 @@ integrity, and report formatting only. Step/content-handler dispatch (switch on
 the manifest `handler` string), component enumeration, delta/`relatedFiles`
 download handlers, diagnostics/log upload, and privilege separation
 (`adu-shell`) remain the agent author's responsibility — see
-[adu-feature-support.md](adu-feature-support.md) §15 for the full mapping.
+[adu-client-plan.md](adu-client-plan.md) — see "Out of scope" for the consumer/core boundary.
 
 ---
 
@@ -1966,8 +1966,9 @@ ADU touch points that rely on it:
 
 ## 17. References
 
-- [adu-feature-support.md](adu-feature-support.md) — ADU protocol feature-coverage matrix (what this SDK supports and why); **Part B** covers the ADUv2 data-plane protocol
-- **ADU Device Data Plane Protocol** (DRAFT, api-version `2026-11-02-preview`) — the source of truth for the ADUv2 `syncConfiguration` / `requestUpdates` / `reportStatus` wire contract and the new D2C report structure. Owner: ADU protocol/API team (Darko Aleksic); integration contact: Leo
+- [adu-client-plan.md](adu-client-plan.md) — ADU status, cost & feature manual (supersedes the old feature-coverage matrix); covers ADUv1 and the ADUv2 (via DPS) transport
+- [aduv2-spec.md](aduv2-spec.md) — **ADUv2 (via DPS) design summary** + diagrams: the device-facing DPS update APIs (`GetOnboardingDeviceUpdate` / `GetDeviceUpdate` / `ReportDeviceUpdateStatus`) and how the client uses them
+- **ADU device update via DPS** (DRAFT, api-version `2026-11-02-preview`) — ADUv2's device-facing delivery is now **fronted by DPS** (an authenticated pass-through to ADR → ADU); there is **no dedicated ADU endpoint** and **no separate `syncConfiguration`** (service config is returned inline in the fetch response). The manifest content and the D2C report structure are unchanged. See [aduv2-spec.md](aduv2-spec.md). Owner: ADU protocol/API team (Darko Aleksic); integration contact: Leo
 - [Azure Device Update documentation](https://learn.microsoft.com/azure/iot-hub-device-update/)
 - [ADU reference agent (iot-hub-device-update)](https://github.com/Azure/iot-hub-device-update) — architecture in `docs/architecture-deep-dive.md`
 - [Update Manifest v5 schema](https://learn.microsoft.com/azure/iot-hub-device-update/update-manifest)
@@ -1975,3 +1976,6 @@ ADU touch points that rely on it:
 - [The Update Framework (TUF)](https://theupdateframework.io/) — key rotation and trust model reference
 - [azure-sdk-for-c `az_iot_adu_client`](https://github.com/Azure/azure-sdk-for-c) — parsing/formatting dependency
 - [azure-iot-sdk SDK design](../design.md) — this project's overall architecture
+- [ADU July/2026 Bugbash instructions](https://loop.cloud.microsoft/p/eyJ1IjoiaHR0cHM6Ly9taWNyb3NvZnQuc2hhcmVwb2ludC5jb20vY29udGVudHN0b3JhZ2UvQ1NQX2Q2NWIzMjg5LTA5MjktNGYzNy1hMTE4LTU0NzVhM2Y2ZjgxZT9uYXY9Y3owbE1rWmpiMjUwWlc1MGMzUnZjbUZuWlNVeVJrTlRVRjlrTmpWaU16STRPUzB3T1RJNUxUUm1NemN0WVRFeE9DMDFORGMxWVRObU5tWTRNV1VtWkQxaUpUSXhhVlJLWWpGcGEwcE9NQzFvUjBaU01XOWZZalJJY1VacVEwVmFaekpyUmsxeVZHOXVhSG96TW5WVE5HMTZUVlV0ZVZwWlJWTTJlQzAxTW14SWJuaGtOU1ptUFRBeFdVOHpSa2hQVmxCVVZWUldTa1ZJVFVSU1FrcElSMEkxVVVOS1ZFeE9TbEVtWXowbE1rWW1ZVDFNYjI5d1FYQndKbkE5SlRRd1pteDFhV1I0SlRKR2JHOXZjQzF3WVdkbExXTnZiblJoYVc1bGNnPT0ifQ%3D%3D?ct=1784232366230&&LOF=1) (Look for "ADU Integration")
+  - [Readme](https://dev.azure.com/msazure/One/_git/azure-iot-adu-tools?path=/demos/bug-bash-scripts/README.md)
+  - [Bug Bash Scripts](https://dev.azure.com/msazure/One/_git/azure-iot-adu-tools?path=/demos/bug-bash-scripts)

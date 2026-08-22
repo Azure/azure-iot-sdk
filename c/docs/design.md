@@ -5,10 +5,17 @@
 
 C99 client SDK for IoTHub-Next (AEG), with selectable Classic-vs-Next protocol behavior, current Azure DPS support, X.509 auth (P0), and a pluggable MQTT abstraction with Paho-C as the default adapter.
 
-The public surface is split into two layered APIs:
+The public surface is a single low-level, single-threaded, callback-based API with a `do_work()` pump. Embedded-friendly, no internal threads, no hidden allocations on the hot path.
 
-- **API A (core)** — low-level, single-threaded, callback-based with a `do_work()` pump. Embedded-friendly, no internal threads, no hidden allocations on the hot path.
-<!-- API B (easy) removed in remove-easy-api branch -->
+> **In flight: the feature clients are being split by hub generation.** This
+> document describes the *current* feature clients, which branch internally on a
+> runtime Classic-vs-Next switch.
+> [eng/client-separation.md](eng/client-separation.md) specifies the target:
+> per-generation feature clients (`az_iot_gen1_*` / `az_iot_gen2_*`) over the
+> **same single connection client**, which keeps DPS internal and reports the
+> resolved generation through `az_iot_connection_client_get_hub_profile()`.
+> Where the two documents disagree, the separation document is the intended end
+> state and this one is the status quo.
 
 ### MQTT version constraint
 
@@ -25,8 +32,7 @@ flowchart TB
     APP["User application"]
 
     subgraph PUB["Public API"]
-        %% API B (easy) removed in remove-easy-api branch
-        APIA["API A (core)<br/>az_iot_connection_client<br/>az_iot_twin_client<br/>az_iot_direct_method_client<br/>az_iot_telemetry_client"]
+        APIA["az_iot_connection_client<br/>az_iot_twin_client<br/>az_iot_direct_method_client<br/>az_iot_telemetry_client"]
     end
 
     subgraph CORE["Core infrastructure"]
@@ -80,8 +86,7 @@ flowchart TB
 
 | Layer | Owns |
 |---|---|
-| API B | Sync wrappers, internal worker thread, defaulted callback plumbing |
-| API A | Public opaque handles, lifecycle, feature client surfaces |
+| Public API | Public opaque handles, lifecycle, feature client surfaces |
 | `connection_client` | TLS/cert config, CONNECT/CONNACK/DISCONNECT, sub/unsub, pub, dispatch table, reconnect, DPS, cert mgmt hooks |
 | Feature clients | Topic templates, payload schemas, request/response correlation, error mapping |
 | `protocol_profile` | Classic-vs-Next switch tables (topics, response timeouts, error codes). Classic + DPS rows delegate to `az::iot::hub` and `az::iot::provisioning` for topic build/parse. |
@@ -123,24 +128,20 @@ Note the explicit two-adapter dance: a v3.1.1 adapter for DPS, then a fresh adap
 ```mermaid
 sequenceDiagram
     autonumber
-    participant App as App (API A or B)
-    %% participant Easy as az_iot_easy / feature clients
+    participant App as App
     participant Conn as az_iot_connection_client (core)
     participant Reg as MQTT adapter registry
     participant M3 as Adapter v3.1.1 (DPS)
     participant M5 as Adapter v5 (Hub-Next)
     participant DPS as Azure DPS
     participant Hub as IoT Hub (Next)
-
-    %% API B (easy) sequence removed in remove-easy-api branch
 ```
 
 For a Classic assignment, step "get_factory(role=HUB_CLASSIC, version=v3_1_1)" returns a v3.1.1 adapter and the Hub session uses that instead of `M5`.
 
 ### Threading contract
 
-- **API A:** every user callback fires from inside `az_iot_connection_client_do_work()`. The application owns the thread that calls it.
-- **API B:** the easy worker thread pumps `do_work()` and forwards user callbacks. The worker thread never holds user-visible locks while invoking callbacks.
+Every user callback fires from inside `az_iot_connection_client_do_work()`. The application owns the thread that calls it.
 
 ## 3. Protocol exchange
 

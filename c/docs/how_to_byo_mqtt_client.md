@@ -73,7 +73,7 @@ A v3.1.1 adapter may ignore all v5-only fields (they will always be NULL/zero wh
 
 ### The single-thread contract (important)
 
-`azure-iot-sdk` API A is a **single-threaded pump**. All inbound callbacks (the one registered via `set_inbound_cb`) **must fire on the thread that calls `process_loop()`**, not on whatever I/O thread your underlying MQTT client uses internally.
+`azure-iot-sdk` is a **single-threaded pump**. All inbound callbacks (the one registered via `set_inbound_cb`) **must fire on the thread that calls `process_loop()`**, not on whatever I/O thread your underlying MQTT client uses internally.
 
 If your library has its own I/O thread (Paho does), the recommended pattern is:
 1. Capture the event in a tiny thread-safe FIFO from the I/O thread.
@@ -230,7 +230,7 @@ The connection client picks the right factory at session-open time based on the 
 
 ## Common pitfalls
 
-- **Calling the user callback on the wrong thread.** API A's whole point is to keep the user on a single thread. If you hand callbacks straight from your client's I/O thread, all higher-level state machines in the SDK become racy. Use a FIFO + drain in `process_loop`.
+- **Calling the user callback on the wrong thread.** The SDK's whole point is to keep the user on a single thread. If you hand callbacks straight from your client's I/O thread, all higher-level state machines in the SDK become racy. Use a FIFO + drain in `process_loop`.
 - **Returning success synchronously when the operation has not actually completed.** `connect`, `subscribe`, `publish` all return immediately; success/failure of the broker round-trip arrives later through the inbound callback. Returning `az_iot_OK` from `connect` only means "I accepted your CONNECT request and started working on it".
 - **Forgetting to populate every vtable slot.** The conformance suite asserts every slot is non-NULL.
 - **Reusing a single underlying client across DPS → Hub transitions.** Each session asks the factory for a fresh client; do not cache.

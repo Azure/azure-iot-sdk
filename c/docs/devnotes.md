@@ -80,9 +80,7 @@ _Captured from conversation as the C99 client repo was being scaffolded. Each bu
 - Embedded targets are **design-only** for P0 (no embedded build/CI yet); Linux + Windows are the P0 build/CI targets.
 
 ### Public API shape
-- Two API surfaces shipped from the same codebase:
-  - **API A — core**: single-threaded `do_work()` pump owned by the application; all callbacks fire from inside `do_work()`.
-  - **API B — easy**: convenience wrapper built on top of API A with an internal worker thread and `*_sync` helpers.
+- A single API surface: single-threaded `do_work()` pump owned by the application; all callbacks fire from inside `do_work()`.
 - Public symbols use the prefix `az_iot_` (types, functions, macros). Header guards use `az_iot_*_H`. Public headers live under `inc/azure/iot/`.
 - Sample code must use only `az_iot_*` public symbols — no `azure-sdk-for-c` types/functions leaking into samples.
 
@@ -108,7 +106,7 @@ _Captured from conversation as the C99 client repo was being scaffolded. Each bu
 - Eclipse `paho.mqtt.c` is integrated the same way as `azure-sdk-for-c`: **FetchContent**, pinned to a tag (currently `v1.3.13`). No vcpkg requirement.
 - Uses Paho's **MQTTAsync** API; one library covers both MQTTv3.1.1 and v5 (selected per session via `MQTTAsync_createOptions::MQTTVersion`).
 - Two factories shipped: `az_iot_paho_factory_create_v3_1_1()` (DPS + HUB_CLASSIC) and `az_iot_paho_factory_create_v5()` (HUB_NEXT).
-- Paho's callbacks fire on its internal threads; the adapter marshals them into a thread-safe FIFO and dispatches them on the caller's thread inside `process_loop()`. This preserves the API A single-thread contract.
+- Paho's callbacks fire on its internal threads; the adapter marshals them into a thread-safe FIFO and dispatches them on the caller's thread inside `process_loop()`. This preserves the single-thread contract.
 - Built static only (`PAHO_BUILD_STATIC=TRUE`, `PAHO_BUILD_SHARED=FALSE`); no DLL artifacts.
 - TLS is **not** enabled in the adapter yet (`PAHO_WITH_SSL=OFF`); X.509 plumbing arrives together with `certificate_provider` wiring in a later phase.
 
@@ -131,9 +129,26 @@ _Captured from conversation as the C99 client repo was being scaffolded. Each bu
 - `devnotes.md` is the running requirements log: every time a new requirement is presented, this document must be updated.
 
 ### Hub flavor selection
-- The IoT Hub flavor (Classic vs Next) is **not** a caller-facing knob. There is no `hub_version` field on any public options struct, and no `az_iot_HUB_*` enum exposed in the public API.
+- **AMENDED (08/10/2026) by [eng/client-separation.md](eng/client-separation.md).** DPS stays a phase *inside* `az_iot_connection_client` and there is still exactly one connection client — that part is unchanged. What changes is that the **feature clients** split per generation (`az_iot_gen1_*` / `az_iot_gen2_*`), so the application must be able to see which generation it landed on in order to pick the right one.
+- ~~The IoT Hub flavor (Classic vs Next) is **not** a caller-facing knob. There is no `hub_version` field on any public options struct, and no `az_iot_HUB_*` enum exposed in the public API.~~ The generation is now readable via `az_iot_connection_client_get_hub_profile()` once connected. It is still **not** a caller-settable knob — nothing selects it, DPS decides and the SDK reports.
 - DPS tells the SDK which hub the device was provisioned to and the SDK selects the appropriate MQTT version internally (v3.1.1 for Classic, v5 for Next).
-- The DPS assignment callback exposes `assigned_hub` + `assigned_device_id` only; the hub flavor it learned is consumed internally and not surfaced to the application.
+- The DPS assignment callback exposes `assigned_hub` + `assigned_device_id`. The generation it learned is surfaced through the hub profile rather than the assignment callback.
+- Falling back from AEG to Classic is **application logic**, not an SDK behaviour. The SDK reports the generation accurately and refuses a mismatched feature client with `AZ_IOT_ERR_HUB_PROFILE_MISMATCH`.
+
+### Connection profile (service contract, 08/10/2026)
+- Source of truth: [azure-rest-api-specs#45041](https://github.com/Azure/azure-rest-api-specs/pull/45041), DPS data-plane api-version **`2026-11-02-preview`**.
+- `connectionProfile` is a `readOnly` **string** property on `DeviceRegistrationResult`, arriving with `assignedHub` / `deviceId` / `issuedCertificateChain`. There is **no** numeric `hub_version` on the wire.
+- Values: `"classic"` (Classic MQTT 3.x hub) and `"mqttV5"` (MQTT 5 hub). **Absent or null resolves to `classic`.**
+- It is an **extensible union** — the spec states future hub capabilities pass through without a breaking change. The SDK must therefore expect values it does not know, and must preserve the raw string rather than collapsing it to a closed enum.
+- **The SDK currently cannot receive this field.** `azure-sdk-for-c` hardcodes `AZ_IOT_PROVISIONING_SERVICE_VERSION "2019-03-31"`, and the api-version travels in the DPS CONNECT username built by `az_iot_provisioning_client_get_user_name()`. Raising it is a prerequisite, not a detail — see [eng/client-separation.md §2](eng/client-separation.md#2-the-connection-profile).
+- **DECIDED:** the DPS exchange moves to the preview api-version, and `azure-sdk-for-c` is **patched in this repo** to allow it.
+- **DECIDED:** `"classic"` maps to gen1, `"mqttV5"` maps to gen2 (for now).
+- **DECIDED:** an unrecognised profile **fails the connection** (`AZ_IOT_ERR_HUB_PROFILE_UNSUPPORTED`). The profile is not expected to break, but devices must be defensive about service-side hazards they cannot verify.
+
+### Dependency ownership: azure-sdk-for-c is ARCHIVED (08/11/2026)
+- `Azure/azure-sdk-for-c` is **archived** upstream (last push 2026-07-15). There will be no upstream fixes, so this repo owns the dependency and must carry its own patches.
+- This supersedes the "No git submodules" / "pinned FetchContent tag" arrangement as the whole story: the pin still holds, but a patch mechanism is now required alongside it.
+- **Latent trap:** `.gitmodules` registers an *uninitialised* submodule at `c/deps/azure-sdk-for-c`, gitlink `6d6e634a` — which is exactly what tag `1.5.0` resolves to. Nothing consumes it; the build uses FetchContent. It contradicts the stated no-submodules rule and shadows the real dependency. Adopt it deliberately or remove it.
 
 ### ConnectionClient lifecycle (Phase 2.1)
 - States: `IDLE -> CONNECTING -> CONNECTED -> DISCONNECTING -> IDLE`, plus `RECONNECTING` (Phase 2.2) and `FAULTED` (CONNACK / inbound ERROR).
