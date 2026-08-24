@@ -23,6 +23,9 @@ namespace Microsoft.Azure.Devices.Client.UnitTests
         public event Func<MqttPublish, Task>? OnPublishAcknowledged;
 
 
+        // The list of publishes/subscribes/unsubscribes as they were "sent on the wire" after any necessary reconnection
+        public List<MockMqttOutgoingTraffic> SentMqttTrafficInOrder = new();
+
         private bool _isGen2;
 
         public MockMqttClient(bool isGen2)
@@ -67,10 +70,15 @@ namespace Microsoft.Azure.Devices.Client.UnitTests
             {
                 var connack = await OnConnectAttempt.Invoke(connect);
 
-                ConnectedAsync?.Invoke(new()
+                if (ConnectedAsync != null)
                 {
-                    ConnectAck = connack,
-                });
+                    await ConnectedAsync.Invoke(new()
+                    {
+                        ConnectAck = connack,
+                    });
+                }
+
+                return connack;
             }
 
             var defaultConnack = new MqttConnectAck()
@@ -78,10 +86,13 @@ namespace Microsoft.Azure.Devices.Client.UnitTests
                 ResultCode = MqttConnectResultCode.Success
             };
 
-            ConnectedAsync?.Invoke(new()
+            if (ConnectedAsync != null)
             {
-                ConnectAck = defaultConnack,
-            });
+                await ConnectedAsync.Invoke(new()
+                {
+                    ConnectAck = defaultConnack,
+                });
+            }
 
             return defaultConnack;
         }
@@ -108,7 +119,7 @@ namespace Microsoft.Azure.Devices.Client.UnitTests
 
         public bool IsConnected() => _isConnected;
 
-        public Task<MqttPublishAck> PublishAsync(MqttPublish publish, CancellationToken cancellationToken = default)
+        public async Task<MqttPublishAck> PublishAsync(MqttPublish publish, CancellationToken cancellationToken = default)
         {
             if (_isGen2)
             {
@@ -129,50 +140,54 @@ namespace Microsoft.Azure.Devices.Client.UnitTests
                 }
             }
 
-            return Task.FromResult(new MqttPublishAck()
+            if (OnPublishAttempt != null)
+            {
+                try
+                {
+                    var puback = await OnPublishAttempt.Invoke(publish);
+                    SentMqttTrafficInOrder.Add(new(publish)); // Only note this as outgoing traffic if the publish attempt returns without throwing
+                    return puback;
+                }
+                catch (MqttClientNotConnectedException)
+                {
+                    throw;
+                }
+            }
+
+            SentMqttTrafficInOrder.Add(new(publish));
+            return new MqttPublishAck()
             {
                 ReasonCode = MqttPublishAckReasonCode.Success
-            });
+            };
         }
 
         public async Task<MqttSubscribeAck> SubscribeAsync(MqttSubscribe subscribe, CancellationToken cancellationToken = default)
         {
             if (OnSubscribeAttempt != null)
             {
-                return await OnSubscribeAttempt.Invoke(subscribe);
+                var suback = await OnSubscribeAttempt.Invoke(subscribe);
+                SentMqttTrafficInOrder.Add(new(subscribe)); // Only note this as outgoing traffic if the subscribe attempt returns without throwing
+                return suback;
             }
 
-            List<MqttSubscribeAckItem> subackItems = new();
-            foreach (var subscribeItem in subscribe.TopicFilters)
-            {
-                subackItems.Add(new MqttSubscribeAckItem()
-                {
-                    ResultCode = subscribeItem.QualityOfServiceLevel == MqttQualityOfServiceLevel.ExactlyOnce ? MqttClientSubscribeResultCode.GrantedQoS2 : subscribeItem.QualityOfServiceLevel == MqttQualityOfServiceLevel.AtLeastOnce ? MqttClientSubscribeResultCode.GrantedQoS1 : MqttClientSubscribeResultCode.GrantedQoS0,
-                    TopicFilter = new(subscribeItem.Topic, subscribeItem.QualityOfServiceLevel)
-                });
-            }
-            return new MqttSubscribeAck()
-            {
-                Items = subackItems,
-            };
+            var defaultSuback = MqttObjectHelpers.CreateSuccessfulSuback(subscribe);
+
+            SentMqttTrafficInOrder.Add(new(subscribe));
+            return defaultSuback;
         }
 
-        public Task<MqttUnsubscribeAck> UnsubscribeAsync(MqttUnsubscribe unsubscribe, CancellationToken cancellationToken = default)
+        public async Task<MqttUnsubscribeAck> UnsubscribeAsync(MqttUnsubscribe unsubscribe, CancellationToken cancellationToken = default)
         {
-            List<MqttUnsubscribeAckItem> unsubackItems = new();
-            foreach (var unsubscribeItem in unsubscribe.TopicFilters)
+            if (OnUnsubscribeAttempt != null)
             {
-                unsubackItems.Add(new MqttUnsubscribeAckItem()
-                {
-                    ResultCode = MqttClientUnsubscribeResultCode.Success,
-                    TopicFilter = unsubscribeItem,
-                });
+                var unsuback = await OnUnsubscribeAttempt.Invoke(unsubscribe);
+                SentMqttTrafficInOrder.Add(new(unsubscribe)); // Only note this as outgoing traffic if the unsubscribe attempt returns without throwing
+                return unsuback;
             }
 
-            return Task.FromResult(new MqttUnsubscribeAck()
-            {
-                Items = unsubackItems,
-            });
+            var defaultUnsuback = MqttObjectHelpers.CreateSuccessfulUnsuback(unsubscribe);
+            SentMqttTrafficInOrder.Add(new(unsubscribe));
+            return defaultUnsuback;
         }
     }
 }

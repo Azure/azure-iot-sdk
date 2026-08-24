@@ -15,8 +15,6 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Telemetry
     {
         private bool _isDisposed = false;
 
-        internal const string DeviceBoundMessagesTopicFormat = "devices/{0}/messages/devicebound/";
-
         private const string NewTelemetryTopicFormat = "ih/{0}/srv/telemetry";
 
         private IConnectionClient _connection;

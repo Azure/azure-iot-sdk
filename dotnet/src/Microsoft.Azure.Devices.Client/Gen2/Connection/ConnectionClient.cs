@@ -237,7 +237,7 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Connection
 
             // Remove any IoT Hub-specific handling of connect attempts when provisioning.
             _managedMqttConnection.ConnectingAsync -= ConstructConnectPatcketAsync;
-            _managedMqttConnection.ConnectedAsync -= HandleConnectedToHubAsync;
+            _managedMqttConnection.ConnectedAsync -= HandleConnectedToHubAsync; 
 
             var provisioningResult = await ProvisionAsync(provisioningSettings, authentication, cancellationToken);
 
@@ -329,6 +329,7 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Connection
                 return Task.CompletedTask;
             };
 
+            // Setup callbacks BEFORE sending CONNECT so that CONNACK can be handled regardless of how quickly it arrives
             DevicePresenceFlowCompletedAsync += HandleDevicePresenceFlowCompleted;
 
             try
@@ -379,6 +380,7 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Connection
         /// <param name="disposing">true to release both managed and unmanaged resources; false to releases only unmanaged resources.</param>
         public void Dispose(bool disposing)
         {
+            _managedMqttConnection.ConnectingAsync -= ConstructConnectPatcketAsync;
             _managedMqttConnection.PublishReceivedAsync -= DelegatePublishAsync;
             _managedMqttConnection.ConnectedAsync -= HandleConnectedToHubAsync;
 
@@ -419,14 +421,7 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Connection
                 return Task.CompletedTask;
             };
 
-            Func<MqttClientDisconnectedEventArgs, Task> HandleDisconnection = (args) =>
-            {
-                latch.Reset();
-                return Task.CompletedTask;
-            };
-
             DevicePresenceFlowCompletedAsync += HandleDevicePresenceFlowCompleted;
-            _managedMqttConnection.DisconnectedAsync += HandleDisconnection;
             try
             {
                 while (true) // Retry sending publish until user cancels as long as the failure is just that the underlying mqtt client was disconnected.
@@ -441,7 +436,7 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Connection
 
                         try
                         {
-                            latch.Wait(cancellationToken);
+                            latch.Wait(cancellationToken); // Wait for device birth flow to finish before resuming this feature client-level traffic
                         }
                         catch (OperationCanceledException)
                         {
@@ -453,7 +448,6 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Connection
             finally
             {
                 DevicePresenceFlowCompletedAsync -= HandleDevicePresenceFlowCompleted;
-                _managedMqttConnection.DisconnectedAsync -= HandleDisconnection;
             }
         }
 

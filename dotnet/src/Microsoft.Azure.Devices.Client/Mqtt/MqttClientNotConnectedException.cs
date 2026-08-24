@@ -10,5 +10,10 @@ namespace Microsoft.Azure.Devices.Client.Mqtt
         { 
         
         }
+
+        public MqttClientNotConnectedException(string message) : base(message)
+        {
+
+        }
     }
 }
