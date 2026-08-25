@@ -750,7 +750,7 @@ static int setup_next(void** state)
   opts.host = "broker.example";
   opts.port = 8883;
   opts.client_id = "ut-device";
-  opts.hub_protocol = AZ_IOT_HUB_PROTOCOL_NEXT;
+  opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
   assert_int_equal(az_iot_connection_client_init(&fx->conn, &opts), AZ_IOT_OK);
 
   fx->factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_5);
