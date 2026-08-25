@@ -232,9 +232,10 @@ static int teardown(void** state)
 /* fixture: unopened direct-host (Next/AEG) connection + file upload client   */
 /* ------------------------------------------------------------------------- */
 
-/* A direct host plus connection_profile = NEXT makes connection_client_init resolve the
- * Next session role immediately, so the file upload client sees the Next profile
- * during its own init() — no open(), no MQTT v5 broker. */
+/* A direct host plus connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5 makes
+ * connection_client_init resolve the Next session role immediately, so the file
+ * upload client sees the Next profile during its own init() — no open(), no
+ * MQTT v5 broker. */
 static int setup_next(void** state)
 {
   fixture* fx = (fixture*)calloc(1, sizeof(*fx));

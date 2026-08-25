@@ -758,8 +758,11 @@ version.
 The mapping lives in one function so that a future third profile, or a rename,
 touches one place.
 
-The internal `az_iot_hub_flavor` and `az_iot_connection_profile` enums are replaced by
-`az_iot_connection_profile`. `az_iot_mqtt_role` keeps its DPS member.
+The internal `az_iot_hub_protocol` enum is gone — collapsed into
+`az_iot_connection_profile`, which is now both the public profile type and the
+internal selector. `az_iot_hub_flavor` deliberately **stays** for now: it is
+internal to `protocol_profile.c` and [P4](#12-phases) deletes it along with the
+flavor tables. `az_iot_mqtt_role` keeps its DPS member.
 
 ---
 
