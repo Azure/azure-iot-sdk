@@ -36,6 +36,16 @@ This design replaces the single callback with a **shared observer registry**,
 adds a **lifecycle/reuse contract** with a teardown notification, and introduces
 a **rich status struct**.
 
+> **Not implemented, and it now shares a boundary with the client split.**
+> Nothing in this document is in the tree. The client-separation work changes the
+> same callback in its phase P1d — `az_iot_connection_state_callback` starts
+> taking one size-stamped `az_iot_connection_state_event` struct carrying the
+> resolved connection profile
+> ([client-separation.md §9](client-separation.md#the-profile-can-change-while-the-device-is-running)).
+> The two must converge rather than fork: the status argument below is the same
+> parameter, so it should grow into that event struct, and a registry built later
+> registers callbacks of that signature.
+
 ---
 
 ## 2. Connection State Observer Registry
