@@ -8,7 +8,7 @@ using System.Net.Sockets;
 
 namespace Microsoft.Azure.Devices.Client
 {
-    internal class MqttConnectionManager
+    internal class MqttConnectionManager //TODO need some logging at this level for the higher-order concepts around going from maintaining connection -> stopping and so on.
     {
         public event Func<MqttPublishReceivedEventArgs, Task>? PublishReceivedAsync;
 
@@ -18,7 +18,10 @@ namespace Microsoft.Azure.Devices.Client
 
         public event Func<MqttClientDisconnectedEventArgs, Task>? DisconnectedAsync;
 
-        private readonly MqttSessionClientOptions _sessionClientOptions;
+        private readonly IRetryPolicy _connectionRetryPolicy;
+
+        private readonly TimeSpan _connectionAttemptTimeout;
+
         private MqttConnect? _mostRecentConnect;
         private readonly bool _isDisposed = false;
 
@@ -30,29 +33,11 @@ namespace Microsoft.Azure.Devices.Client
 
         private IMqttClient _underlyingMqttClient;
 
-        /// <summary>
-        /// Create a MQTT session client where the underlying MQTT client is created for you and the connection is maintained
-        /// for you.
-        /// </summary>
-        /// <remarks>
-        /// <para>
-        /// When an MQTT session client is constructed with this constructor, it will automatically recover the connection
-        /// and all previous subscriptions if it detects that the previous connection was lost.
-        /// It will also enqueue publishes/subscribes/unsubscribes and send them when the connection is alive.
-        /// </para>
-        /// <para>
-        /// An MQTT session client created with this constructor will only report connection loss and/or publish/subscribe/unsubscribe
-        /// failures if they are deemed fatal or if the provided retry policy is exhausted. All transient failures will cause the
-        /// retry policy to be checked, but won't cause the <see cref="DisconnectedAsync"/> event to fire.
-        /// </para>
-        /// </remarks>
-        /// <param name="connectionSettings">The configurable options for the underlying MQTT connection(s)</param>
-        /// <param name="sessionClientOptions">The configurable options for this MQTT session client.</param>
-        public MqttConnectionManager(IMqttClient underlyingMqttClient, MqttSessionClientOptions? sessionClientOptions = null)
+        public MqttConnectionManager(IMqttClient underlyingMqttClient, TimeSpan connectionAttemptTimeout, IRetryPolicy retryPolicy)
         {
             _underlyingMqttClient = underlyingMqttClient;
-            _sessionClientOptions = sessionClientOptions ?? new MqttSessionClientOptions();
-            _sessionClientOptions.Validate();
+            _connectionAttemptTimeout = connectionAttemptTimeout;
+            _connectionRetryPolicy = retryPolicy;
 
             _underlyingMqttClient.DisconnectedAsync += InternalDisconnectedAsync;
 
@@ -97,19 +82,6 @@ namespace Microsoft.Azure.Devices.Client
             }
         }
 
-        /// <summary>
-        /// Connect this client and start a clean MQTT session. Once connected, this client will automatically reconnect
-        /// as needed and recover the MQTT session.
-        /// </summary>
-        /// <param name="options">The details about how to connect to the MQTT broker.</param>
-        /// <param name="cancellationToken">The cancellation token.</param>
-        /// <returns>The CONNACK received from the MQTT broker.</returns>
-        /// <remarks>
-        /// This operation does not retry by default, but can be configured to retry. To do so, set the 
-        /// <see cref="MqttSessionClientOptions.RetryOnFirstConnect"/> flag and optionally configure the retry policy
-        /// via <see cref="MqttSessionClientOptions.ConnectionRetryPolicy"/>.
-        /// </remarks>
-        /// <exception cref="InvalidOperationException">If this method is called when the client is already managing the connection.</exception>
         public async Task<MqttConnectAck> ConnectAsync(MqttConnect connect, CancellationToken cancellationToken = default)
         {
             ObjectDisposedException.ThrowIf(_isDisposed, this);
@@ -133,27 +105,14 @@ namespace Microsoft.Azure.Devices.Client
             // When called by this method, MaintainConnectionAsync should return a non-null value or throw.
             Debug.Assert(connectResult != null);
             _isDesiredConnected = true;
-            Trace.TraceInformation("Successfully connected the session client to the MQTT broker. This connection will now be maintained.");
 
             return connectResult;
         }
 
-        /// <summary>
-        /// Disconnect this client and end the MQTT session.
-        /// </summary>
-        /// <param name="options">The optional parameters that can be sent in the DISCONNECT packet to the MQTT broker.</param>
-        /// <param name="cancellationToken">The cancellation token.</param>
         public async Task DisconnectAsync(bool desireReconnection, MqttDisconnect? options = null, CancellationToken cancellationToken = default)
         {
             ObjectDisposedException.ThrowIf(_isDisposed, this);
             cancellationToken.ThrowIfCancellationRequested();
-
-            if (options != null && options.SessionExpiryInterval != 0)
-            {
-                // This method should only be called when the session is no longer needed. By providing a non-zero value, you are trying
-                // to keep the session alive on the broker.
-                throw new ArgumentException("Cannot use a non-zero session expiry interval");
-            }
 
             options ??= new MqttDisconnect();
             options.SessionExpiryInterval = 0;
@@ -162,17 +121,19 @@ namespace Microsoft.Azure.Devices.Client
             _reconnectionCancellationToken?.Cancel();
             await _underlyingMqttClient.DisconnectAsync(options, cancellationToken);
 
-            var disconnectedArgs = new MqttClientDisconnectedEventArgs()
+            if (!desireReconnection)
             {
-                Reason = MqttDisconnectReason.NormalDisconnection,
-                ReasonString = "User closed the connection manually"
-            };
+                var disconnectedArgs = new MqttClientDisconnectedEventArgs()
+                {
+                    Reason = MqttDisconnectReason.NormalDisconnection,
+                    ReasonString = "User closed the connection manually"
+                };
 
-            await FinalizeSessionAsync(new OperationCanceledException("This operation was canceled because the MQTT client was closed."), disconnectedArgs, cancellationToken);
-            Trace.TraceInformation("Successfully disconnected the session client from the MQTT broker. This connection will no longer be maintained.");
+                await EndConnectionMaintanceAsync(new OperationCanceledException("This operation was canceled because the MQTT client was closed."), disconnectedArgs, cancellationToken);
+            }
         }
 
-        public new void Dispose()
+        public void Dispose()
         {
             if (!_isDisposed)
             {
@@ -202,15 +163,13 @@ namespace Microsoft.Azure.Devices.Client
                 {
                     if (_underlyingMqttClient.IsConnected())
                     {
-                        Trace.TraceInformation("Disconnect reported by underlying MQTT client, but it was already handled");
                         return;
                     }
 
                     if (IsFatal(args.Reason))
                     {
-                        Trace.TraceInformation("Disconnect detected and it was due to fatal error. The client will not attempt to reconnect. Disconnect reason: {0}", args.Reason);
                         var retryException = new RetryExpiredException("A fatal error was encountered while trying to re-establish the session, so this request cannot be completed.", args.Exception);
-                        await FinalizeSessionAsync(retryException, args, CancellationToken.None);
+                        await EndConnectionMaintanceAsync(retryException, args, CancellationToken.None);
                         return;
                     }
 
@@ -269,7 +228,7 @@ namespace Microsoft.Azure.Devices.Client
                         // This function was called to reconnect after an unexpected disconnect. Since the error is fatal,
                         // notify the user via callback that the client has crashed, but don't throw the exception since
                         // this task is unmonitored.
-                        await FinalizeSessionAsync(retryException, lastDisconnect!, cancellationToken);
+                        await EndConnectionMaintanceAsync(retryException, lastDisconnect!, cancellationToken);
                         return null;
                     }
                     else
@@ -282,7 +241,7 @@ namespace Microsoft.Azure.Devices.Client
                 // Always consult the retry policy when reconnecting, but only consult it on attempt > 1 when
                 // initially connecting
                 if ((isReconnection || attemptCount > 1)
-                    && !_sessionClientOptions.ConnectionRetryPolicy.ShouldRetry(attemptCount, lastException!, out retryDelay))
+                    && !_connectionRetryPolicy.ShouldRetry(attemptCount, lastException!, out retryDelay))
                 {
                     // Should not occur as it's indefinite retry
                     Trace.TraceError("Retry policy was exhausted while trying to maintain a connection {0}", lastException);
@@ -301,7 +260,7 @@ namespace Microsoft.Azure.Devices.Client
                             UserProperties = lastDisconnect.UserProperties,
                         };
 
-                        await FinalizeSessionAsync(retryException, disconnectedEventArgs, cancellationToken);
+                        await EndConnectionMaintanceAsync(retryException, disconnectedEventArgs, cancellationToken);
                         return null;
                     }
                     else
@@ -324,7 +283,7 @@ namespace Microsoft.Azure.Devices.Client
                     Trace.TraceInformation($"Trying to connect. Attempt number {attemptCount}");
 
                     using CancellationTokenSource reconnectionTimeoutCancellationToken = new();
-                    reconnectionTimeoutCancellationToken.CancelAfter(_sessionClientOptions.ConnectionAttemptTimeout);
+                    reconnectionTimeoutCancellationToken.CancelAfter(_connectionAttemptTimeout);
                     using CancellationTokenSource linkedCancellationToken = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, reconnectionTimeoutCancellationToken.Token);
                     mostRecentConnectResult = await TryEstablishConnectionAsync(options, linkedCancellationToken.Token).ConfigureAwait(false);
 
@@ -339,7 +298,7 @@ namespace Microsoft.Azure.Devices.Client
                 {
                     // This happens when reconnecting if the user attempts to manually disconnect the session client. When
                     // that happens, we simply want to end the reconnection logic and let the thread end without throwing.
-                    Trace.TraceInformation("Session client reconnection cancelled because the client is being closed.");
+                    Trace.TraceInformation("MQTT reconnection cancelled because the client is being closed.");
                     return null;
                 }
                 catch (Exception e)
@@ -369,9 +328,9 @@ namespace Microsoft.Azure.Devices.Client
             return connectResult;
         }
 
-        private async Task FinalizeSessionAsync(Exception queuedItemException, MqttClientDisconnectedEventArgs disconnectedEventArgs, CancellationToken cancellationToken)
+        private async Task EndConnectionMaintanceAsync(Exception queuedItemException, MqttClientDisconnectedEventArgs disconnectedEventArgs, CancellationToken cancellationToken)
         {
-            _isDesiredConnected = false;
+            _isDesiredConnected = false; //TODO need to actually notify ConnectionClient that a fatal disconnect happened so it can notify the user
         }
 
         // These reason codes are fatal if the broker sends a DISCONNECT packet with this reason.

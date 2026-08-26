@@ -76,16 +76,10 @@ namespace Microsoft.Azure.Devices.Client.Unified.DirectMethods
             return await DirectMethodInvokedAsync.Invoke(args);
         }
 
-        private Task<ProbeAck> HandleAegDirectMethodProbeRequestAsync(DirectMethodRequestProbeReceivedEventArgs args)
+        private async Task<DirectMethodProbeAck> HandleAegDirectMethodProbeRequestAsync(DirectMethodRequestProbeReceivedEventArgs args)
         {
             // Since Classic Hub has no concept of a direct method probe message, make this unified client just accept any received probe request
-            return Task.FromResult(new ProbeAck()
-            {
-                Ready = new()
-                { 
-                    ReadyId = ByteString.CopyFrom(Guid.NewGuid().ToByteArray()) //TODO why should user have to provide this? We do all the correlation internally. Is that justification enough to wrap this proto class?
-                }
-            });
+            return DirectMethodProbeAck.Accepted();
         }
 
         private async Task HandleReceivedMqttPublish(MqttPublishReceivedEventArgs args)
