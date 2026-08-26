@@ -128,5 +128,60 @@ namespace Microsoft.Azure.Devices.Client.UnitTests.Gen2
             Assert.Single(lastTraffic.Subscribe.TopicFilters);
             Assert.Equal(expectedTopicString, lastTraffic.Subscribe.TopicFilters.FirstOrDefault()!.Topic);
         }
+
+        [Theory]
+        [InlineData(true)]
+        [InlineData(false)]
+        public async Task ConnectionClientReannouncesBirthBeforeContinuingUnsubscribe(bool isSessionResumed)
+        {
+            MockMqttClient mockMqttClient = new(true);
+            ConnectionClient connectionClient = new(new()
+            {
+                MqttClient = mockMqttClient
+            });
+
+            await connectionClient.ConnectAsync(GetMockConnectionContext(), cancellationToken: TestContext.Current.CancellationToken);
+
+            // Setup mock MQTT layer to lose connection when telemetry client sends a publish for the first time (subsequent retries will work normally)
+            int retryCount = 0;
+            mockMqttClient.OnConnectAttempt += async (connect) =>
+            {
+                return new MqttConnectAck() { IsSessionPresent = isSessionResumed, ResultCode = MqttConnectResultCode.Success };
+            };
+
+            string expectedTopicString = Guid.NewGuid().ToString();
+
+            mockMqttClient.OnUnsubscribeAttempt += async (unsubscribe) =>
+            {
+                if (retryCount == 0 && unsubscribe.TopicFilters.FirstOrDefault()!.Equals(expectedTopicString))
+                {
+                    _ = mockMqttClient.SimulateServerInitiatedDisconnectAsync(new Exception("mock exception"));
+                    retryCount++;
+                    throw new MqttClientNotConnectedException("mock client not connected exception");
+                }
+
+                return MqttObjectHelpers.CreateSuccessfulUnsuback(unsubscribe);
+            };
+
+            MqttUnsubscribe featureClientLevelUnsubscribeRequest = new(expectedTopicString);
+            await connectionClient.UnsubscribeAsync(featureClientLevelUnsubscribeRequest, TestContext.Current.CancellationToken);
+
+            if (isSessionResumed)
+            {
+                // With session resumed, the birth flow doesn't need to send the subscribe on the presence topic again
+                Assert.Equal(4, mockMqttClient.SentMqttTrafficInOrder.Count);
+            }
+            else
+            {
+                Assert.Equal(5, mockMqttClient.SentMqttTrafficInOrder.Count);
+            }
+
+            var lastTraffic = mockMqttClient.SentMqttTrafficInOrder.Last();
+
+            // Verify that the subscribe sent directly from this test is the last piece of traffic "sent" in this test. It must be preceded by the intial device presence flow traffic and by the reconnection device presence flow traffic
+            Assert.NotNull(lastTraffic.Unsubscribe);
+            Assert.Single(lastTraffic.Unsubscribe.TopicFilters);
+            Assert.Equal(expectedTopicString, lastTraffic.Unsubscribe.TopicFilters.FirstOrDefault());
+        }
     }
 }
