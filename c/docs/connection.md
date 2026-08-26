@@ -377,7 +377,13 @@ Renewal topics (classic hub), identical in both clients:
 
 Rules that apply to every client:
 
-- Only one CSR operation per request id may be in flight; a duplicate fails fast with a *busy* result.
+- Only one CSR operation may be in flight; a further request must fail fast with a *busy* result.
+
+  > **Not enforced in .NET today.** The C client keeps a single CSR slot and rejects a concurrent
+  > request with a busy error. The .NET client keeps a map keyed by request id, ignores the result of
+  > inserting into it, and publishes regardless — so a second request reusing an in-flight request id
+  > is sent, and the caller receives an operation object that is never completed. Treat the rule as
+  > the intended contract, not as current .NET behaviour.
 - The issued chain is delivered leaf-first as base64 DER. Where the client hands it over in a callback
   it is only valid for the duration of that callback, so the application must copy or persist it.
 - A successful renewal does **not** tear down the live session. The new credential takes effect on the
@@ -603,7 +609,7 @@ complete first.
 | Connection profile from DPS ([§4](#4-connection-profile-selection)) | planned — blocked on the api-version | partial — local boolean placeholder, blocked on the api-version |
 | Exponential backoff with jitter ([§5](#5-reconnection)) | implemented, fixed policy | implemented, caller-replaceable policy |
 | Fatal-failure classification ([§5.2](#52-what-triggers-a-reconnect)) | planned | implemented |
-| Certificate renewal over the hub ([§6](#6-certificate-management-onboarding-and-renewal)) | implemented (classic) | implemented (classic); explicit unsupported error on gen2 |
+| Certificate renewal over the hub ([§6](#6-certificate-management-onboarding-and-renewal)) | implemented (classic) | partial (classic) — no busy rejection for a duplicate in-flight request; explicit unsupported error on gen2 |
 | Device update ([§7](#7-device-update-onboarding-and-renewal)) | planned — engine internals implemented and reused | none |
 
 ---

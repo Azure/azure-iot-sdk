@@ -17,10 +17,7 @@ Related documents:
 - [dps-integration.md](../dps-integration.md), [devnotes.md](../devnotes.md) — DPS contract and the running requirements log.
 - **ADUv2** — [aduv2-spec.md](aduv2-spec.md) is the device contract and the source for §7
   below; it owns the request/response shapes, error codes and trust model, which are deliberately not
-  restated here. Background: *Azure Device Update v2 — Public Preview (Ignite 2026)*, Leo Lie /
-  Joe Heiniger / Darko Aleksic, 7/6/2026
-  ([SharePoint](https://microsoft.sharepoint.com/:w:/r/teams/DigitalOperations/_layouts/15/Doc.aspx?sourcedoc=%7B0f2203ff-bda7-4f97-b2a5-468fcb95f7f0%7D&action=default&share=cQr_AyIPp72XT7KlRo_LlffwEgUCJRfZ3zpZHPh4PbcI-NloUw)).
-  [adu-client-design.md](adu-client-design.md) covers the shared verify/download/install
+  restated here. [adu-client-design.md](adu-client-design.md) covers the shared verify/download/install
   engine, which is unchanged from ADUv1.
 
 ### Status legend
