@@ -9,7 +9,7 @@
  * (Classic) connection client — no live hub, no MQTT.
  *
  * The Next/AEG dispatch is covered offline too: a direct-host connection with
- * hub_protocol = AZ_IOT_HUB_PROTOCOL_NEXT resolves to the Next profile at init()
+ * connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5 resolves to the Next profile at init()
  * without ever opening a session, so the flavor switch inside the file upload
  * client can be asserted without a broker. */
 #include <stdarg.h>
@@ -232,9 +232,10 @@ static int teardown(void** state)
 /* fixture: unopened direct-host (Next/AEG) connection + file upload client   */
 /* ------------------------------------------------------------------------- */
 
-/* A direct host plus hub_protocol = NEXT makes connection_client_init resolve the
- * Next session role immediately, so the file upload client sees the Next profile
- * during its own init() — no open(), no MQTT v5 broker. */
+/* A direct host plus connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5 makes
+ * connection_client_init resolve the Next session role immediately, so the file
+ * upload client sees the Next profile during its own init() — no open(), no
+ * MQTT v5 broker. */
 static int setup_next(void** state)
 {
   fixture* fx = (fixture*)calloc(1, sizeof(*fx));
@@ -244,7 +245,7 @@ static int setup_next(void** state)
   opts.host = TEST_HUB;
   opts.port = 8883;
   opts.client_id = TEST_DEVICE;
-  opts.hub_protocol = AZ_IOT_HUB_PROTOCOL_NEXT;
+  opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
   assert_int_equal(az_iot_connection_client_init(&fx->conn, &opts), AZ_IOT_OK);
 
   memset(&g_http, 0, sizeof(g_http));

@@ -108,9 +108,17 @@ static void result_to_string_covers_every_code(void** state)
     { AZ_IOT_ERR_INTERNAL, "AZ_IOT_ERR_INTERNAL" },
     { AZ_IOT_ERR_NOT_FOUND, "AZ_IOT_ERR_NOT_FOUND" },
     { AZ_IOT_ERR_IDENTITY_REJECTED, "AZ_IOT_ERR_IDENTITY_REJECTED" },
+    { AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED, "AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED" },
   };
   const size_t n = sizeof(all) / sizeof(all[0]);
   const char* got[sizeof(all) / sizeof(all[0])];
+
+  /* The table above is hand-maintained, which is exactly how the most recently
+   * added code went missing from it. az_iot_result starts at 0 and is only ever
+   * appended to, so "last enumerator + 1" is how many codes exist -- appending
+   * one without extending this table now fails here, instead of silently
+   * falling back to AZ_IOT_ERR_UNKNOWN at runtime. */
+  assert_int_equal(n, (size_t)AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED + 1);
 
   for (size_t i = 0; i < n; ++i)
   {

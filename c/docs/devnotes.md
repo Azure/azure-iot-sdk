@@ -133,7 +133,7 @@ _Captured from conversation as the C99 client repo was being scaffolded. Each bu
 - ~~The IoT Hub flavor (Classic vs Next) is **not** a caller-facing knob. There is no `hub_version` field on any public options struct, and no `az_iot_HUB_*` enum exposed in the public API.~~ The generation is now readable via `az_iot_connection_client_get_hub_profile()` once connected. It is still **not** a caller-settable knob — nothing selects it, DPS decides and the SDK reports.
 - DPS tells the SDK which hub the device was provisioned to and the SDK selects the appropriate MQTT version internally (v3.1.1 for Classic, v5 for Next).
 - The DPS assignment callback exposes `assigned_hub` + `assigned_device_id`. The generation it learned is surfaced through the hub profile rather than the assignment callback.
-- Falling back from AEG to Classic is **application logic**, not an SDK behaviour. The SDK reports the generation accurately and refuses a mismatched feature client with `AZ_IOT_ERR_HUB_PROFILE_MISMATCH`.
+- Falling back from AEG to Classic is **application logic**, not an SDK behaviour. The SDK reports the generation accurately and refuses a mismatched feature client with `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH`.
 
 ### Connection profile (service contract, 08/10/2026)
 - Source of truth: [azure-rest-api-specs#45041](https://github.com/Azure/azure-rest-api-specs/pull/45041), DPS data-plane api-version **`2026-11-02-preview`**.
@@ -143,12 +143,12 @@ _Captured from conversation as the C99 client repo was being scaffolded. Each bu
 - **The SDK currently cannot receive this field.** `azure-sdk-for-c` hardcodes `AZ_IOT_PROVISIONING_SERVICE_VERSION "2019-03-31"`, and the api-version travels in the DPS CONNECT username built by `az_iot_provisioning_client_get_user_name()`. Raising it is a prerequisite, not a detail — see [eng/client-separation.md §2](eng/client-separation.md#2-the-connection-profile).
 - **DECIDED:** the DPS exchange moves to the preview api-version, and `azure-sdk-for-c` is **patched in this repo** to allow it.
 - **DECIDED:** `"classic"` maps to gen1, `"mqttV5"` maps to gen2 (for now).
-- **DECIDED:** an unrecognised profile **fails the connection** (`AZ_IOT_ERR_HUB_PROFILE_UNSUPPORTED`). The profile is not expected to break, but devices must be defensive about service-side hazards they cannot verify.
+- **DECIDED:** an unrecognised profile **fails the connection** (`AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED`). The profile is not expected to break, but devices must be defensive about service-side hazards they cannot verify.
 
 ### Dependency ownership: azure-sdk-for-c is ARCHIVED (08/11/2026)
 - `Azure/azure-sdk-for-c` is **archived** upstream (last push 2026-07-15). There will be no upstream fixes, so this repo owns the dependency and must carry its own patches.
 - This supersedes the "No git submodules" / "pinned FetchContent tag" arrangement as the whole story: the pin still holds, but a patch mechanism is now required alongside it.
-- **Latent trap:** `.gitmodules` registers an *uninitialised* submodule at `c/deps/azure-sdk-for-c`, gitlink `6d6e634a` — which is exactly what tag `1.5.0` resolves to. Nothing consumes it; the build uses FetchContent. It contradicts the stated no-submodules rule and shadows the real dependency. Adopt it deliberately or remove it.
+- **Not a dead gitlink (corrected):** `.gitmodules` registers a submodule at `c/deps/azure-sdk-for-c`, gitlink `6d6e634a` — exactly what tag `1.5.0` resolves to. It is uninitialised on a fresh clone, which makes it look unused, but the ESP-IDF component under `c/samples/adu/esp32` builds its sources from it (the sample README says to `git submodule update --init` it). So the source exists twice: the FetchContent tree and the submodule, and both must receive the same patches.
 
 ### ConnectionClient lifecycle (Phase 2.1)
 - States: `IDLE -> CONNECTING -> CONNECTED -> DISCONNECTING -> IDLE`, plus `RECONNECTING` (Phase 2.2) and `FAULTED` (CONNACK / inbound ERROR).

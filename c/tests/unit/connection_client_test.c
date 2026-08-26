@@ -540,7 +540,7 @@ static void inbound_message_routes_through_dispatch(void** state)
 /* ------------------------------------------------------------------------- */
 
 /* Fixture variant: a direct HUB_NEXT (AEG, MQTT v5) connection. session_role
- * becomes HUB_NEXT from opts.hub_protocol, so open() drives the birth handshake
+ * becomes HUB_NEXT from opts.connection_profile, so open() drives the birth handshake
  * after CONNACK instead of announcing CONNECTED immediately. */
 static int setup_next(void** state)
 {
@@ -551,7 +551,7 @@ static int setup_next(void** state)
   opts.host = "broker.example";
   opts.port = 8883;
   opts.client_id = "ut-device";
-  opts.hub_protocol = AZ_IOT_HUB_PROTOCOL_NEXT;
+  opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
   opts.csr_payload_buffer = az_span_create(fx->csr_buf, sizeof(fx->csr_buf));
   assert_int_equal(az_iot_connection_client_init(&fx->client_storage, &opts), AZ_IOT_OK);
   fx->client = &fx->client_storage;
@@ -1308,7 +1308,7 @@ static void hub_next_without_v5_factory_is_not_supported(void** state)
   opts.host = "broker.example";
   opts.port = 8883;
   opts.client_id = "ut-device";
-  opts.hub_protocol = AZ_IOT_HUB_PROTOCOL_NEXT;
+  opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
 
   az_iot_connection_client c;
   assert_int_equal(az_iot_connection_client_init(&c, &opts), AZ_IOT_OK);
@@ -1379,7 +1379,7 @@ static int setup_next_with_reconnect(void** state)
   opts.host = "broker.example";
   opts.port = 8883;
   opts.client_id = "ut-device";
-  opts.hub_protocol = AZ_IOT_HUB_PROTOCOL_NEXT;
+  opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
   opts.reconnection_policy.initial_delay_ms = 20;
   opts.reconnection_policy.max_delay_ms = 20;
   opts.reconnection_policy.max_attempts = 3;

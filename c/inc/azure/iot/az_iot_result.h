@@ -39,7 +39,13 @@ extern "C"
      * re-provisions through DPS on this result, and only on this result, so a
      * hub outage never turns into a DPS stampede. New values must keep being
      * appended here so existing numeric values do not shift. */
-    AZ_IOT_ERR_IDENTITY_REJECTED
+    AZ_IOT_ERR_IDENTITY_REJECTED,
+    /* The service reported a connectionProfile this SDK does not recognise, so
+     * it does not know which MQTT version to speak. Connecting anyway would mean
+     * guessing the wire protocol, so the connection fails closed -- the profile
+     * stays readable via az_iot_connection_client_get_hub_profile(), including
+     * the verbatim wire string, so the value can be logged or reported. */
+    AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED
   } az_iot_result;
 
   const char* az_iot_result_to_string(az_iot_result r);
