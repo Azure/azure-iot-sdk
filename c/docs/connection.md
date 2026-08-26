@@ -8,14 +8,7 @@ device update (ADU).
 
 This document owns the *behaviour*. It deliberately names no types, functions or files: each client
 maps the concepts onto its own idioms, and those mappings are collected in
-[§10](#10-language-mapping).
-
-Language-specific detail:
-
-- **C** — [eng/connection-c.md](eng/connection-c.md): enum names, headers, source locations, exact
-  defaults.
-- **.NET** — no separate design doc yet; the mapping table in [§10](#10-language-mapping) is the
-  current record.
+[§9](#9-language-mapping).
 
 Related documents:
 
@@ -28,18 +21,6 @@ Related documents:
   It owns the request/response shapes, error codes and trust model, which are deliberately not restated
   here. [eng/adu-client-design.md](eng/adu-client-design.md) covers the shared verify/download/install
   engine, which is unchanged from ADUv1.
-
-### Status legend
-
-This document describes the target lifecycle. Coverage differs per client, so each section carries a
-status line using these marks:
-
-| Mark | Meaning |
-| --- | --- |
-| **implemented** | Present in that client's code today. |
-| **partial** | Present, but with a known gap called out in the section. |
-| **planned** | Designed and agreed, not yet in code. |
-| **none** | Not implemented and not started in that client. |
 
 ---
 
@@ -62,10 +43,6 @@ status line using these marks:
 ---
 
 ## 2. Top-level state machine
-
-**C:** implemented · **.NET:** partial — the same lifecycle is driven internally, but it is surfaced
-as connect/disconnect events rather than as a single user-visible state value; see
-[§10](#10-language-mapping).
 
 ```mermaid
 stateDiagram-v2
@@ -108,8 +85,6 @@ restarts provisioning from `DPS_CONNECTING`.
 ---
 
 ## 3. Full connect sequence
-
-**C:** implemented · **.NET:** implemented (CSR-in-registration excepted, see below)
 
 ```mermaid
 sequenceDiagram
@@ -172,16 +147,6 @@ Key ordering guarantees that every client must honour:
 1. `CONNECTED` is announced **after** the birth handshake (gen2) and **after** persistent
    subscriptions have been re-issued, so a feature client never observes `CONNECTED` while its topic
    filters are missing.
-
-   > **Client status.** The .NET client honours this: the connect call does not complete, and feature
-   > traffic is latched, until the subscriptions (classic) or the presence flow (gen2) have completed.
-   > The C client does **not** yet: it transitions to `CONNECTED` first and only then issues the
-   > subscribes, discarding the result, so a request published from inside the callback can reach the
-   > wire ahead of its own SUBSCRIBE. Treat the guarantee as the *intended* contract; see
-   > [eng/connection-c.md §3](eng/connection-c.md) for the tracking detail and the fix phase. The
-   > gen2 birth handshake *is* correctly gated in both clients — it waits for its own SUBACK before
-   > publishing birth — which is the shape the feature subscriptions are being moved to.
-
 2. The DPS session is fully torn down before the hub session is created — they are never concurrent,
    and DPS always uses MQTT 3.1.1 even when the hub session uses v5.
 3. The operational certificate is preferred over the bootstrap certificate on every connect attempt,
@@ -193,16 +158,9 @@ Key ordering guarantees that every client must honour:
 5. The DPS assignment is the single delivery point for everything the device learns about its
    placement: hub, device id, connection profile and issued certificate chain.
 
-> **CSR in registration is C-only today.** The .NET client always registers with an empty CSR field,
-> so it can only obtain an operational certificate through the post-connect renewal path of
-> [§6](#6-certificate-management-onboarding-and-renewal).
-
 ---
 
 ## 4. Connection profile selection
-
-**C:** planned · **.NET:** partial — the branch exists and drives protocol and feature selection, but
-it is a locally-set boolean rather than the DPS-declared string.
 
 The profile is what DPS says the device landed on. It is **reported, never selected** — there is no
 caller-facing knob, and falling back from one profile to another is application logic, not SDK
@@ -239,10 +197,8 @@ Rules every client must implement:
 - A feature client from the wrong generation is refused with a generation-mismatch error. Because of
   this, feature clients must be created **after** the connection is open.
 
-> **Blocked on the DPS api-version, in both clients.** `connectionProfile` is new in DPS
-> `2026-11-02-preview`; both clients still request `2019-03-31`, so the field never arrives today.
-> Raising it is a prerequisite for this entire section. Until then the .NET client carries a
-> locally-set boolean placeholder in the registration result, and the C client has no profile at all.
+> **Blocked on the DPS api-version.** `connectionProfile` is new in DPS `2026-11-02-preview`, and
+> raising the requested api-version is a prerequisite for this entire section.
 >
 > **Open:** whether a reconnect can change the generation. If DPS can reassign a device mid-life,
 > every feature client the application holds becomes invalid at that moment and it must be told.
@@ -250,8 +206,6 @@ Rules every client must implement:
 ---
 
 ## 5. Reconnection
-
-**C:** implemented · **.NET:** implemented
 
 ```mermaid
 sequenceDiagram
@@ -307,17 +261,36 @@ attempt.
 
 - CONNACK with a non-success status.
 - Unexpected transport disconnect or adapter error while `CONNECTING` or `CONNECTED`.
-- Any failure during a DPS phase (a reconnect restarts provisioning from the beginning).
+- Failure to establish the hub session on a reconnect attempt — a failed attempt re-arms the backoff
+  rather than faulting, so the attempt counter and the retry policy govern how long this continues.
+- Any failure in the gen2 presence handshake, not only its timeout: the presence SUBSCRIBE failing to
+  be issued, a presence SUBACK carrying a failure status, and the birth PUBLISH failing all abandon
+  the handshake and reconnect.
 - gen2 birth-ack timeout (60 s per handshake step, in both clients).
 
+Two cases are deliberately **not** on that list, because they change where the device goes next
+rather than simply retrying:
+
+- **A DPS registration failure is fatal, not retried.** If provisioning itself fails — the DPS
+  session errors, the register call returns a failure status, or it completes without an assignment —
+  the client goes to `FAULTED`. A reconnect restarts provisioning from the beginning only when the
+  device already had an assignment and is re-establishing the *hub* session.
+- **An unrecognised connection profile is fatal.** DPS returning a profile the client does not know
+  fails the connection rather than reconnecting or guessing a protocol
+  ([§4](#4-connection-profile-selection)).
+
+One case reconnects but not to the same place: a CONNACK rejecting the device's **identity**, when
+the device is DPS-provisioned, marks the client for re-provisioning, so the retry goes back through
+DPS for a fresh assignment instead of presenting the same rejected credential to the same hub.
+
 A user-initiated `close()` never triggers a reconnect: the intent to close is recorded and checked
-before any backoff is scheduled.
+before any backoff is scheduled. Where no retry policy is in effect, every trigger above faults
+instead of reconnecting — reconnection is a policy, and its absence is not an error path of its own.
 
 Some failures are **fatal** and must not be retried, because retrying cannot succeed — protocol
 errors, malformed packets, authorization failures, session-taken-over, invalid topic filters and
 server-moved among them. A fatal failure goes straight to `FAULTED` and is reported to the
-application. This classification is implemented in the .NET client and is the intended behaviour for
-the C client.
+application.
 
 ### 5.3 What is preserved across a reconnect
 
@@ -339,9 +312,6 @@ the C client.
 ---
 
 ## 6. Certificate management: onboarding and renewal
-
-**C:** implemented · **.NET:** partial — renewal is implemented for the classic hub only; the CSR is
-not yet sent during registration, and renewal is not available on a gen2 hub.
 
 Two distinct issuance paths exist; both end with the certificate provider owning the operational
 credential, and neither forces an immediate reconnect.
@@ -378,12 +348,6 @@ Renewal topics (classic hub), identical in both clients:
 Rules that apply to every client:
 
 - Only one CSR operation may be in flight; a further request must fail fast with a *busy* result.
-
-  > **Not enforced in .NET today.** The C client keeps a single CSR slot and rejects a concurrent
-  > request with a busy error. The .NET client keeps a map keyed by request id, ignores the result of
-  > inserting into it, and publishes regardless — so a second request reusing an in-flight request id
-  > is sent, and the caller receives an operation object that is never completed. Treat the rule as
-  > the intended contract, not as current .NET behaviour.
 - The issued chain is delivered leaf-first as base64 DER. Where the client hands it over in a callback
   it is only valid for the duration of that callback, so the application must copy or persist it.
 - A successful renewal does **not** tear down the live session. The new credential takes effect on the
@@ -397,10 +361,6 @@ Rules that apply to every client:
 ---
 
 ## 7. Device update: onboarding and renewal
-
-**C:** planned (the ADUv1 engine internals are implemented and reused; the ADUv1 twin-based public API
-is being removed) · **.NET:** none — no update support exists in the .NET client today, and this
-section is the contract it will have to meet when it is added.
 
 What survives from ADUv1 is everything that has nothing to do with transport. Update support is
 re-layered into a transport-independent **update engine** — manifest parsing, signature and root-key
@@ -569,6 +529,11 @@ flowchart TB
     CONNECTING --> SUBS
     SUBS --> CONNECTED["CONNECTED"]
 
+    REG -->|"registration failed,<br/>or no assignment"| FAULTED
+    CONNECTING -->|"CONNACK failure,<br/>or cannot start the session"| DROP
+    CONNECTING -->|"identity rejected,<br/>DPS configured"| RECON
+    BIRTH -->|"SUBSCRIBE, SUBACK or birth<br/>failure, or birth-ack timeout"| DROP
+
     CONNECTED --> CRENEW["Cert renewal:<br/>CSR over the hub, 202 then 200"]
     CRENEW -.->|"new chain used on<br/>the next connect"| CRED
     CONNECTED --> ARENEW["Operational update check:<br/>poll GetDeviceUpdate,<br/>ReportDeviceUpdateStatus"]
@@ -579,6 +544,7 @@ flowchart TB
     DROP -->|"reconnect enabled"| RECON["RECONNECTING<br/>exponential backoff + jitter"]
     RECON -->|"DPS configured"| REG
     RECON -->|"direct host"| CRED
+    RECON -->|"attempt cannot start"| DROP
     ARENEW -.->|"workflow id and unsent<br/>report persisted"| RECON
 ```
 
@@ -597,24 +563,8 @@ complete first.
 
 ---
 
-## 9. Cross-client status summary
 
-| Area | C | .NET |
-| --- | --- | --- |
-| Top-level states ([§2](#2-top-level-state-machine)) | implemented, user-visible state value | partial — internal lifecycle, surfaced as events, no single state value |
-| DPS provisioning inside connect ([§3](#3-full-connect-sequence)) | implemented | implemented |
-| CSR carried in the registration ([§3](#3-full-connect-sequence)) | implemented | planned — the field is always sent empty |
-| Subscriptions established before `CONNECTED` ([§3](#3-full-connect-sequence)) | partial — not gated on SUBACK | implemented — connect completes, and feature traffic is latched, on readiness |
-| gen2 birth handshake, 60 s timeout ([§3](#3-full-connect-sequence)) | implemented | implemented |
-| Connection profile from DPS ([§4](#4-connection-profile-selection)) | planned — blocked on the api-version | partial — local boolean placeholder, blocked on the api-version |
-| Exponential backoff with jitter ([§5](#5-reconnection)) | implemented, fixed policy | implemented, caller-replaceable policy |
-| Fatal-failure classification ([§5.2](#52-what-triggers-a-reconnect)) | planned | implemented |
-| Certificate renewal over the hub ([§6](#6-certificate-management-onboarding-and-renewal)) | implemented (classic) | partial (classic) — no busy rejection for a duplicate in-flight request; explicit unsupported error on gen2 |
-| Device update ([§7](#7-device-update-onboarding-and-renewal)) | planned — engine internals implemented and reused | none |
-
----
-
-## 10. Language mapping
+## 9. Language mapping
 
 How the vocabulary of this document maps onto each client. Concept names in the left column are the
 normative ones; the language columns are informative and follow the code.
@@ -633,6 +583,3 @@ normative ones; the language columns are informative and follow the code.
 | CSR request / response | `az_iot_connection_client_send_csr()` and its callbacks | `SendCertificateSigningRequestAsync()` returning a `CertificateSigningOperation` |
 | MQTT abstraction | adapter vtable (`how_to_byo_mqtt_client.md`) | `IMqttClient`, default backed by MQTTnet |
 | Update engine / channel | `adu_core` + `az_iot_adu_channel` (planned) | not present |
-
-For the C-side detail behind this table — headers, source files, exact enum spellings and defaults —
-see [eng/connection-c.md](eng/connection-c.md).

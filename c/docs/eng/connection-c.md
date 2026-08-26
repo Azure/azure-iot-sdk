@@ -11,6 +11,7 @@ implementation of it.
 Related documents:
 
 - [design.md](../design.md) — overall layering and adapter model.
+- [connection-impl-status.md](connection-impl-status.md) — per-client coverage of the contract.
 - [certificate-management.md](certificate-management.md) — CSR / operational certificate design.
 - [client-separation.md](client-separation.md) — connection profile (§2) and the ADU channel split (§8).
 - [connection-state-and-error-propagation.md](connection-state-and-error-propagation.md) — observer registry and status codes.
@@ -284,8 +285,28 @@ successful CONNACK.
 
 - CONNACK with a non-success status.
 - Unexpected transport disconnect or adapter error while `CONNECTING` or `CONNECTED`.
-- Any failure during a DPS phase (a reconnect restarts provisioning from the beginning).
-- Hub-Next birth-ack timeout (60 s per handshake step).
+- A reconnect attempt that cannot even start the session: `start_connect_attempt()` (or `dps_start()`
+  when re-provisioning) returning non-OK schedules another reconnect rather than faulting.
+- Any failure in the Hub-Next presence handshake, not only its timeout: `presence_start()` failing
+  after CONNACK, the presence SUBACK arriving with a failure status, and `presence_publish_birth()`
+  failing all clear the phase and reconnect.
+- Hub-Next birth-ack timeout (60 s per handshake step), checked in `_do_work()`.
+
+Not triggers, because they fault instead:
+
+- **DPS registration failure.** `dps_apply_deferred()` transitions to `FAULTED` when the register
+  status is non-OK or no assignment arrived, and again if applying the assigned host or device id
+  fails. Provisioning is re-run on a reconnect only via the re-provision path below.
+- **An unsupported `connectionProfile`.** Faults with
+  `AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED` rather than guessing a protocol (§4).
+
+`AZ_IOT_ERR_IDENTITY_REJECTED` on CONNACK is a special case: when DPS is configured and reconnection
+is enabled, it sets `reprovision_pending`, so the next attempt runs `dps_start()` for a fresh
+assignment instead of reconnecting to the same rejected credential. The flag is cleared before the
+attempt, so a failure there falls back to an ordinary retry rather than looping through provisioning.
+
+Every trigger above is conditional on `reconnect_enabled()`: with no retry policy the same conditions
+transition to `FAULTED`.
 
 A user-initiated `close()` never triggers a reconnect: it sets an internal `user_close` flag that is
 checked before backoff is scheduled.
