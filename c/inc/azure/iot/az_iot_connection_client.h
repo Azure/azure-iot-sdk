@@ -386,6 +386,13 @@ extern "C"
     {
       char topic_filter[AZ_IOT_PERSISTENT_SUB_TOPIC_MAX];
       az_iot_mqtt_qos qos;
+      /* The feature client that registered this filter, so its destroy() can
+       * withdraw exactly its own entries without rebuilding the strings. */
+      const void* owner;
+      /* The generation this filter was built for. A reconnect that resolves a
+       * different profile drops it instead of re-issuing a filter the new hub
+       * will not recognise -- see docs/eng/client-separation.md section 9. */
+      az_iot_connection_profile profile;
       bool in_use;
     } persistent_subs[AZ_IOT_MAX_PERSISTENT_SUBS];
 
