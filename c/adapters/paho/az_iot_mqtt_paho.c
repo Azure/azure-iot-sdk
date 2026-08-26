@@ -397,7 +397,11 @@ static void paho_trace_callback(enum MQTTASYNC_TRACE_LEVELS level, char* message
  * TLS handshake Paho routes each OpenSSL error-queue line here (bad certificate,
  * chain/verify failure, protocol or cipher mismatch, ...), giving a concrete
  * reason instead of a generic connect failure. Enabled whenever AZ_IOT_PAHO_TRACE
- * is set. */
+ * is set.
+ *
+ * Guarded because its only call site is: without SSL there is no
+ * MQTTAsync_SSLOptions to attach it to, and an unused static is -Werror here. */
+#ifdef AZ_IOT_PAHO_SSL
 static int paho_ssl_error_callback(const char* str, size_t len, void* u)
 {
   (void)len;
@@ -407,6 +411,7 @@ static int paho_ssl_error_callback(const char* str, size_t len, void* u)
   AZ_IOT_LOG_TRACEF("paho ssl: %.*s", str ? (int)strcspn(str, "\n") : 0, str ? str : "");
   return 1; /* keep draining the remaining OpenSSL error-queue lines */
 }
+#endif
 
 /* Maps AZ_IOT_PAHO_TRACE to a Paho trace level, or returns -1 when unset/empty
  * (tracing disabled). Case-insensitive keywords, least to most verbose:
