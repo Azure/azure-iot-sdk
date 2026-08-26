@@ -220,6 +220,8 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Connection
 
                 // Birth ack was received, so stop listening for birth acks.
                 mqttClient.PublishReceivedAsync -= HandleReceivedBirthAck;
+
+                return;
             }
         }
 
