@@ -1,4 +1,5 @@
 ﻿using Microsoft.Azure.Devices.Client.Gen2.Connection;
+using Microsoft.Azure.Devices.Client.Models;
 using System.Security.Cryptography.X509Certificates;
 using Xunit;
 
@@ -39,6 +40,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Gen2
                 DeviceId = deviceId,
                 IotHubHostName = Setup.GetGen2IotHubHostName(),
                 AuthenticationProvider = authenticationProvider, 
+                IsGen2Hub = true,
             };
 
             ConnectionClient connectionClient = new();
@@ -47,7 +49,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Gen2
             // rejects the connection for authorization reasons. Usually, after a few seconds, the device is ready to 
             // authorize the newly created device.
             await Setup.RetryAroundAuthorizationAsync(
-               async () => await connectionClient.ConnectAsync(connectionContext, authenticationProvider, cancellationToken: TestContext.Current.CancellationToken),
+               async () => await connectionClient.ConnectAsync(connectionContext, null, cancellationToken: TestContext.Current.CancellationToken),
                TestContext.Current.CancellationToken);
         }
     }

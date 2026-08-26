@@ -2,7 +2,7 @@
 using System.Collections.Generic;
 using System.Text;
 
-namespace Microsoft.Azure.Devices.Client.MqttNetAdapter.Session.Retry
+namespace Microsoft.Azure.Devices.Client.Retry
 {
     public class RetryExpiredException : Exception
     {

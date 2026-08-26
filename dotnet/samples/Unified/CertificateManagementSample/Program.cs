@@ -50,7 +50,8 @@ internal class Program //TODO distinguish naming on operational vs boot certific
         // Upon getting the newly signed certificate, disconnect from IoT Hub and then reconnect with that new certificate
         await connectionClient.DisconnectAsync();
         X509AuthenticationProvider newX509AuthenticationProvider = new(CreateX509CertificateFromKeyAndCert(RenewedSignedCertificatesPath, PrivateKeyPath));
-        await connectionClient.ConnectAsync(connectionContext, newX509AuthenticationProvider);
+        connectionContext.AuthenticationProvider = newX509AuthenticationProvider;
+        await connectionClient.ConnectAsync(connectionContext);
     }
 
     private static string ConvertToPem(IReadOnlyList<string> issuedClientCertificates)

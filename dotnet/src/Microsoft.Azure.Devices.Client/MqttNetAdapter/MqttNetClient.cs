@@ -33,10 +33,16 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
         public event Func<Mqtt.MqttPublishReceivedEventArgs, Task>? PublishReceivedAsync;
         public event Func<Mqtt.MqttClientConnectedEventArgs, Task>? ConnectedAsync;
         public event Func<Mqtt.MqttClientDisconnectedEventArgs, Task>? DisconnectedAsync;
+        public event Func<MqttConnect, Task<MqttConnect>>? ConnectingAsync;
 
         public virtual async Task<MqttConnectAck> ConnectAsync(MqttConnect connect, CancellationToken cancellationToken = default)
         {
             ObjectDisposedException.ThrowIf(_isDisposed, this);
+
+            if (ConnectingAsync != null)
+            {
+                connect = await ConnectingAsync.Invoke(connect); // Allow Gen2 connection client to inject a fresh connect nonce each time a connect happens
+            }
 
             MqttClientOptionsBuilder optionsBuilder;
             if (connect.ProtocolVersion == MqttProtocolVersion.V500)
@@ -156,6 +162,7 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
             await _underlyingClient.DisconnectAsync(disconnectBuilder.Build(), cancellationToken);
         }
 
+        //TODO throws MqttClientNotConnectedException
         public virtual async Task<MqttPublishAck> PublishAsync(MqttPublish publish, CancellationToken cancellationToken = default)
         {
             ObjectDisposedException.ThrowIf(_isDisposed, this);
@@ -177,7 +184,14 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
                 }
             }
 
-            return ModelConverter.ToGeneric(await _underlyingClient.PublishAsync(messageBuilder.Build(), cancellationToken));
+            try
+            {
+                return ModelConverter.ToGeneric(await _underlyingClient.PublishAsync(messageBuilder.Build(), cancellationToken));
+            }
+            catch (MQTTnet.Exceptions.MqttClientNotConnectedException e)
+            {
+                throw new MqttClientNotConnectedException(e.Message, e);
+            }
         }
 
         public virtual async Task<MqttSubscribeAck> SubscribeAsync(MqttSubscribe mqttSubscribe, CancellationToken cancellationToken = default)
@@ -198,7 +212,14 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
                 }
             }
 
-            return ModelConverter.ToGeneric(await _underlyingClient.SubscribeAsync(subscribeBuilder.Build(), cancellationToken));
+            try
+            {
+                return ModelConverter.ToGeneric(await _underlyingClient.SubscribeAsync(subscribeBuilder.Build(), cancellationToken));
+            }
+            catch (MQTTnet.Exceptions.MqttClientNotConnectedException e)
+            {
+                throw new MqttClientNotConnectedException(e.Message, e);
+            }
         }
 
         public virtual async Task<MqttUnsubscribeAck> UnsubscribeAsync(MqttUnsubscribe unsubscribe, CancellationToken cancellationToken = default)
@@ -219,7 +240,14 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
                 }
             }
 
-            return ModelConverter.ToGeneric(await _underlyingClient.UnsubscribeAsync(unsubscribeBuilder.Build(), cancellationToken));
+            try
+            {
+                return ModelConverter.ToGeneric(await _underlyingClient.UnsubscribeAsync(unsubscribeBuilder.Build(), cancellationToken));
+            }
+            catch (MQTTnet.Exceptions.MqttClientNotConnectedException e)
+            {
+                throw new MqttClientNotConnectedException(e.Message, e);
+            }
         }
 
         /// <summary>
@@ -257,7 +285,7 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
             _isDisposed = true;
         }
 
-        public bool IsConnected => _underlyingClient.IsConnected;
+        public bool IsConnected() => _underlyingClient.IsConnected;
 
         private Task DelegateReceivedPublishAsync(MqttApplicationMessageReceivedEventArgs args)
         {

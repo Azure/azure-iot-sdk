@@ -14,7 +14,7 @@ using System.Text.Json;
 
 namespace Microsoft.Azure.Devices.Client.Provisioning
 {
-    internal sealed class ProvisioningConnection
+    internal sealed class ProvisioningConnection //TODO disposable?
     {
         private const string UsernameFormat = "{0}/registrations/{1}/api-version={2}&ClientVersion={3}";
         private const string SubscribeFilter = "$dps/registrations/res/#";
@@ -29,7 +29,7 @@ namespace Microsoft.Azure.Devices.Client.Provisioning
         private int _requestId;
 
         internal async Task<DeviceRegistrationResult> RegisterAsync(
-            IMqttClient mqttClient,
+            MqttConnectionManager mqttClient,
             RegistrationRequestPayload payload,
             X509AuthenticationProvider authentication,
             string idScope,
@@ -105,7 +105,7 @@ namespace Microsoft.Azure.Devices.Client.Provisioning
 
                     try
                     {
-                        await mqttClient.DisconnectAsync(disconnect, cancellationToken);
+                        await mqttClient.DisconnectAsync(false, disconnect, cancellationToken); // Reconnection will be handled in this layer instead. TODO is that even right? Feels a bit odd. Maybe hook up that it should always provision upon connect, and then expose an event for when provisioning finishes akin to device presence flow for Hub?
                     }
                     catch (Exception)
                     {
@@ -118,7 +118,7 @@ namespace Microsoft.Azure.Devices.Client.Provisioning
             }
         }
 
-        private async Task SubscribeToRegistrationResponseMessagesAsync(IMqttClient mqttClient, CancellationToken cancellationToken)
+        private async Task SubscribeToRegistrationResponseMessagesAsync(MqttConnectionManager mqttClient, CancellationToken cancellationToken)
         {
             Trace.TraceInformation("Subscribing to DPS response topic {0}", SubscribeFilter);
             MqttSubscribeAck subscribeResults = await mqttClient.SubscribeAsync(new(SubscribeFilter, MqttQualityOfServiceLevel.AtLeastOnce), cancellationToken).ConfigureAwait(false);
@@ -130,7 +130,7 @@ namespace Microsoft.Azure.Devices.Client.Provisioning
         }
 
         private async Task<RegistrationOperationStatus> PublishRegistrationRequestAsync(
-            IMqttClient mqttClient,
+            MqttConnectionManager mqttClient,
             RegistrationRequestPayload payload,
             CancellationToken cancellationToken)
         {
@@ -173,7 +173,7 @@ namespace Microsoft.Azure.Devices.Client.Provisioning
             }
         }
 
-        private async Task<DeviceRegistrationResult> PollUntilProvisionigFinishesAsync(IMqttClient mqttClient, string operationId, CancellationToken cancellationToken)
+        private async Task<DeviceRegistrationResult> PollUntilProvisionigFinishesAsync(MqttConnectionManager mqttClient, string operationId, CancellationToken cancellationToken)
         {
             while (true)
             {

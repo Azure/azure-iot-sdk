@@ -1,5 +1,6 @@
 ﻿using Microsoft.Azure.Devices.Client.Exceptions;
 using Microsoft.Azure.Devices.Client.Gen2.Twin;
+using Microsoft.Azure.Devices.Client.Models;
 using Microsoft.Azure.Devices.Client.Models.Twin;
 using Microsoft.Azure.Devices.Client.Mqtt;
 using Microsoft.Azure.Devices.Client.Unified.Connection;
@@ -73,9 +74,9 @@ namespace Microsoft.Azure.Devices.Client.Unified.Twin
         public TwinClient(IConnectionClient connection)
         {
             _connection = connection;
-            _aegHubTwinClient = new Gen2.Twin.TwinClient(connection);
+            _aegHubTwinClient = new Gen2.Twin.TwinClient(new Stub(connection));
             _aegHubTwinClient.DesiredPatchReceived += HandleGen2DesiredPatchReceivedAsync;
-            _connection.MqttClient.PublishReceivedAsync += HandleReceivedMqttPublish;
+            _connection.PublishReceivedAsync += HandleReceivedMqttPublish;
         }
 
         private void HandleGen2DesiredPatchReceivedAsync(DesiredPatchReceivedEventArgs args)
@@ -98,7 +99,7 @@ namespace Microsoft.Azure.Devices.Client.Unified.Twin
 
             var currentConnectionContext = EnsureCorrectConnectionContext();
 
-            if (_connection.GetCurrentConnectionContext()!.IsAzureEventGrid)
+            if (_connection.GetCurrentConnectionContext()!.IsGen2Hub)
             {
                 // Unconditionally return the full twin since classic Hub cannot mimic any of the filtering that AEG Hub allows.
                 return await _aegHubTwinClient.GetTwinAsync(true, true, 0, 0, cancellationToken);
@@ -127,7 +128,7 @@ namespace Microsoft.Azure.Devices.Client.Unified.Twin
                 try
                 {
                     Trace.TraceInformation("Publishing 'GetTwin' request on topic " + publish.Topic);
-                    MqttPublishAck puback = await _connection.MqttClient.PublishAsync(publish, cancellationToken);
+                    MqttPublishAck puback = await _connection.PublishAsync(publish, cancellationToken);
 
                     PublishRejectedException.ThrowIfUnsuccessfulPuback(puback, "Failed to request the twin because the MQTT broker rejected the request.");
 
@@ -158,7 +159,7 @@ namespace Microsoft.Azure.Devices.Client.Unified.Twin
             var currentConnectionContext = EnsureCorrectConnectionContext();
 
             MqttPublish publish;
-            if (_connection.GetCurrentConnectionContext()!.IsAzureEventGrid)
+            if (_connection.GetCurrentConnectionContext()!.IsGen2Hub)
             {
                 ReportedPatchRequest aegRequest = new()
                 {
@@ -188,7 +189,7 @@ namespace Microsoft.Azure.Devices.Client.Unified.Twin
                 try
                 {
                     Trace.TraceInformation("Publishing 'PatchReported' request on topic " + publish.Topic);
-                    MqttPublishAck puback = await _connection.MqttClient.PublishAsync(publish, cancellationToken);
+                    MqttPublishAck puback = await _connection.PublishAsync(publish, cancellationToken);
 
                     PublishRejectedException.ThrowIfUnsuccessfulPuback(puback, "Failed to update the reported properties because the MQTT broker rejected the request.");
 
@@ -224,7 +225,7 @@ namespace Microsoft.Azure.Devices.Client.Unified.Twin
                 return;
             }
 
-            if (connectionContext.IsAzureEventGrid)
+            if (connectionContext.IsGen2Hub)
             {
                 // The other handler covers this scenario
                 return;
@@ -358,7 +359,7 @@ namespace Microsoft.Azure.Devices.Client.Unified.Twin
         public void Dispose(bool disposing)
         {
             _aegHubTwinClient.DesiredPatchReceived -= HandleGen2DesiredPatchReceivedAsync;
-            _connection.MqttClient.PublishReceivedAsync -= HandleReceivedMqttPublish;
+            _connection.PublishReceivedAsync -= HandleReceivedMqttPublish;
             if (disposing)
             {
                 _connection.Dispose();
@@ -372,7 +373,7 @@ namespace Microsoft.Azure.Devices.Client.Unified.Twin
         public void Dispose()
         {
             _aegHubTwinClient.DesiredPatchReceived -= HandleGen2DesiredPatchReceivedAsync;
-            _connection.MqttClient.PublishReceivedAsync -= HandleReceivedMqttPublish;
+            _connection.PublishReceivedAsync -= HandleReceivedMqttPublish;
             _connection.Dispose();
             _isDisposed = true;
         }
