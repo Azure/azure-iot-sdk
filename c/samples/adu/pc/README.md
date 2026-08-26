@@ -5,6 +5,12 @@ Licensed under the MIT license. See LICENSE file in the project root for full li
 
 # ADU PC Sample — Device Update over IoT Hub (simulation)
 
+> **Note: this sample uses the ADUv1 twin channel, which is being removed.** The SDK is moving
+> to ADUv2, a device-initiated pull protocol fronted by the DPS gateway, so the parts of this
+> sample that read desired properties and report through the twin will change. The platform hooks
+> (download / install / apply / backup / restore / persist) and the crypto hooks are unaffected —
+> they are the durable half. See [../../../docs/eng/adu-client-plan.md](../../../docs/eng/adu-client-plan.md).
+
 This sample runs the **entire** Azure Device Update (ADU) on-device workflow end
 to end against a real IoT Hub + Device Update instance, but with **simulated**
 download/install hooks so it is safe to run on a dev box or in CI — it never

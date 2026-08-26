@@ -1,5 +1,11 @@
 # ESP32-WROOM real Azure Device Update (OTA) sample
 
+> **Note: this sample uses the ADUv1 twin channel, which is being removed.** The SDK is moving
+> to ADUv2, a device-initiated pull protocol fronted by the DPS gateway, so the parts of this
+> sample that read desired properties and report through the twin will change. The platform hooks
+> (download / install / apply / backup / restore / persist) and the crypto hooks are unaffected —
+> they are the durable half. See [../../../docs/eng/adu-client-plan.md](../../../docs/eng/adu-client-plan.md).
+
 This sample performs a **genuine over-the-air firmware update** on an ESP32-WROOM
 using Azure Device Update (ADU). Unlike [`samples/adu/pc`](../pc), which simulates
 the install with zero-filled payloads and a log-only "install", this sample:

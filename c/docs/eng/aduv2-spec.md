@@ -3,6 +3,8 @@
 > **Status: design summary of a DRAFT, Microsoft-internal spec** (api-version `2026-11-02-preview`).
 > Device-SDK-oriented digest of the DPS *"ADU first-time update"* design. Contract details are still
 > settling and DPS re-syncs on ADU revisions — treat field-level specifics as provisional.
+> **This is the only device-facing ADU channel the SDK will implement — ADUv1 (twin) is cut**
+> ([adu-client-plan.md](adu-client-plan.md#what-aduv1-is-cut-means)).
 > For SDK status/cost, see [adu-client-plan.md](adu-client-plan.md); for the shared engine/crypto core,
 > see [adu-client-design.md](adu-client-design.md).
 
@@ -198,8 +200,9 @@ is a durable write — retry until acked; safe because ADU is idempotent on `wor
 
 ## What this means for the ADU client SDK
 
-The **verify → download → install → report engine is unchanged** from ADUv1 (shared core). New client work is the
-**transport binding + orchestration**:
+The **verify → download → install → report engine is unchanged** from ADUv1 (it becomes the
+transport-free `adu_core`), but **ADUv1's twin delivery is cut** — there is no second channel to
+keep working. New client work is the **transport binding + orchestration**:
 
 1. Call the three DPS ops over the device's **existing DPS transport/auth** (X.509, HTTP/MQTT) — no ADU endpoint,
    no mTLS, no identity headers to set.

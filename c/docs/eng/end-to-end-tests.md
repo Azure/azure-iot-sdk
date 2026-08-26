@@ -253,6 +253,9 @@ are never leaked.
 ### Future work
 
 - Implement the device-side ADU update scenario (currently `az_iot_tests_e2e_adu`
-  is a placeholder that only gates on provisioning). It should connect a device
-  (reuse the ci-c-e2e.yml device-material step) and drive/verify the update via
-  `az iot du` in the ADU workflow's test job.
+  is a placeholder that only gates on provisioning). Write it against **ADUv2**, not the
+  twin channel: ADUv1 is cut, so a twin-driven scenario would be dead on arrival
+  (see [adu-client-plan.md](adu-client-plan.md#what-aduv1-is-cut-means)). It needs a device
+  (reuse the ci-c-e2e.yml device-material step) driving the update check, install and report
+  through the DPS-fronted operations, with the service side verified in the ADU workflow's
+  test job.
