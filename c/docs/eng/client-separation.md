@@ -157,7 +157,7 @@ it has two fields and no shipped callers, is the point.
 ### An unknown profile fails the connection
 
 **Decided:** if DPS returns a profile this SDK does not recognise, the connection
-fails with `AZ_IOT_ERR_HUB_PROFILE_UNSUPPORTED`. The profile — including
+fails with `AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED`. The profile — including
 `connection_profile_raw` — remains readable so the application can log it, report it, or
 trigger a firmware update.
 
@@ -196,13 +196,16 @@ The seams that already exist:
 
 - `AZ_SDK_C_REPO` and `AZ_SDK_C_TAG` are both `CACHE STRING` in
   [`CMakeLists.txt`](../../CMakeLists.txt) — repointing is a two-line change.
-- There is a **registered but uninitialised submodule** at `c/deps/azure-sdk-for-c`
+- There is a **registered submodule** at `c/deps/azure-sdk-for-c`
   (`.gitmodules`, gitlink `6d6e634a`), pinned to exactly the commit tag `1.5.0`
-  resolves to — i.e. the same source FetchContent builds. Nothing consumes it.
-  It also contradicts the "no git submodules" rule stated in
-  [devnotes.md](../devnotes.md) and the README. It should be either adopted
-  deliberately or removed; leaving a dead gitlink that shadows a real dependency
-  is a trap.
+  resolves to — i.e. the same source FetchContent builds. It is uninitialised on
+  a fresh clone, which makes it look dead. **It is not.** The ESP-IDF component
+  at `c/samples/adu/esp32/components/azure-sdk-for-c` reads its sources straight
+  out of it, and that sample's README tells the user to
+  `git submodule update --init c/deps/azure-sdk-for-c`. It does contradict the
+  "no git submodules" rule stated in [devnotes.md](../devnotes.md) and the
+  README, but it is load-bearing: an ESP-IDF build has no FetchContent step to
+  borrow from.
 
 Candidate mechanisms:
 
@@ -218,13 +221,17 @@ miserable first experience for anyone who reconfigures. Guard it so applying an
 already-applied patch is a no-op, and cover that with a build that configures
 twice.
 
-**The dead gitlink is reconciled as part of this.** `c/deps/azure-sdk-for-c` is
-registered in `.gitmodules` but uninitialised, consumed by nothing, and pinned to
-exactly the commit tag `1.5.0` resolves to. Under B nothing needs a submodule, so
-the entry and its directory are **removed** rather than adopted — a dead gitlink
-that shadows the real dependency will cost somebody an afternoon. That also
-restores the "no git submodules" rule stated in [devnotes.md](../devnotes.md) and
-the README, which the repo currently violates.
+**The submodule stays, and will need the same patches.** An earlier draft of
+this section called `c/deps/azure-sdk-for-c` a dead gitlink and planned to
+delete it. That was wrong: the ESP-IDF component under `c/samples/adu/esp32`
+builds its sources from it, and that sample provisions through DPS — so it needs
+the api-version patch every bit as much as the CMake build does.
+
+That makes the source **two independent copies**. A patch reaching only one of
+them is worse than no patch, because the two builds would then silently speak
+different api-versions. So the patch list has to be single-sourced and applied
+by both consumers: FetchContent through `PATCH_COMMAND`, the ESP-IDF component
+through an in-place apply at configure time.
 
 > **Worth stating plainly:** for *this particular* change, patching is not
 > strictly required. The api-version is only consumed by
@@ -250,7 +257,7 @@ Initializing a feature client against a connection of the other generation
 /* conn resolved to GEN2 */
 az_iot_gen1_twin_client twin;
 az_iot_result r = az_iot_gen1_twin_client_init(&twin, &conn);
-/* r == AZ_IOT_ERR_HUB_PROFILE_MISMATCH */
+/* r == AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH */
 ```
 
 A dedicated result code is added rather than reusing `AZ_IOT_ERR_NOT_SUPPORTED`,
@@ -261,7 +268,7 @@ no partial-init state to unwind.
 The name is **`HUB_PROFILE`**, not `HUB_GENERATION`: the profile is the thing the
 service actually reports, and the generation is our own derived label for it.
 Error codes should name the wire concept. The sibling code for an unrecognised
-profile is therefore `AZ_IOT_ERR_HUB_PROFILE_UNSUPPORTED`.
+profile is therefore `AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED`.
 
 The check requires the generation to be known, which means **feature clients must
 be initialized after the connection is open**. That is a change: today's samples
@@ -498,7 +505,7 @@ What the SDK owes the application in return is **not yet decided**: whether the
 profile change is signalled through a distinct connection-state reason, a
 dedicated callback, or purely by the documented re-read requirement; and whether
 calls on a now-stale feature client fail with a distinct result or are simply
-undefined. Init-time `AZ_IOT_ERR_HUB_PROFILE_MISMATCH` covers the start-up case
+undefined. Init-time `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH` covers the start-up case
 and does nothing for this one.
 
 Tracked as **[AB#39350066](https://dev.azure.com/msazure/One/_workitems/edit/39350066)**
@@ -654,8 +661,11 @@ version.
 The mapping lives in one function so that a future third profile, or a rename,
 touches one place.
 
-The internal `az_iot_hub_flavor` and `az_iot_hub_protocol` enums are replaced by
-`az_iot_connection_profile`. `az_iot_mqtt_role` keeps its DPS member.
+The internal `az_iot_hub_protocol` enum is gone — collapsed into
+`az_iot_connection_profile`, which is now both the public profile type and the
+internal selector. `az_iot_hub_flavor` deliberately **stays** for now: it is
+internal to `protocol_profile.c` and [P4](#12-phases) deletes it along with the
+flavor tables. `az_iot_mqtt_role` keeps its DPS member.
 
 ---
 
@@ -671,11 +681,11 @@ generation's client needs its own unit suite against the in-memory mock, and eac
 needs e2e coverage against a real hub of that generation. New cases that do not
 exist today:
 
-- mismatched init returns `AZ_IOT_ERR_HUB_PROFILE_MISMATCH`, per feature
+- mismatched init returns `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH`, per feature
 - `"classic"` and `"mqttV5"` each map to the right profile and MQTT version
 - **absent** `connectionProfile` resolves to `classic`, and **`null`** does too
 - an **unrecognised** profile string fails the connection with
-  `AZ_IOT_ERR_HUB_PROFILE_UNSUPPORTED` and is still readable verbatim
+  `AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED` and is still readable verbatim
   through `connection_profile_raw` — the forward-compatibility case the spec exists to
   support, and the one no current test covers
 - the DPS CONNECT username carries `api-version=2026-11-02-preview`
@@ -698,8 +708,8 @@ plus the conformance suites.
 |---|---|---|---|
 | P0a | Purge the dead "easy"/API B remnants | — | **Done** (`db074c0`) |
 | P0b | This document + doc reconciliation | — | |
-| P1a | Add the `azure-sdk-for-c` `PATCH_COMMAND` mechanism, raise the DPS api-version to `2026-11-02-preview`, and remove the dead `c/deps/azure-sdk-for-c` submodule | — | Prerequisite for everything. Without it `connectionProfile` never arrives. |
-| P1b | `az_iot_hub_profile` + `get_hub_profile()` + `az_iot_connection_profile` + `AZ_IOT_ERR_HUB_PROFILE_MISMATCH` + `AZ_IOT_ERR_HUB_PROFILE_UNSUPPORTED`; parse `connectionProfile` in the existing ASSIGNED-payload walk | P1a | Additive. No feature client moves. |
+| P1a | Add the `azure-sdk-for-c` patch mechanism and raise the DPS api-version to `2026-11-02-preview`, for **both** consumers of that source: the FetchContent tree (`PATCH_COMMAND`) and the `c/deps/azure-sdk-for-c` submodule the ESP-IDF sample builds from | — | **Blocked on the service.** `2026-11-02-preview` is not deployed ([azure-rest-api-specs#45041](https://github.com/Azure/azure-rest-api-specs/pull/45041) is still open), and requesting it makes the DPS CONNECT fail with CONNACK rc=5. Parked until it ships. |
+| P1b | `az_iot_hub_profile` + `get_hub_profile()` + `az_iot_connection_profile` + `AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED`; parse `connectionProfile` in the existing ASSIGNED-payload walk | — | Additive, and deliberately **not** blocked on P1a: with the stock api-version `connectionProfile` never arrives, absent resolves to `classic`, and the result is exactly the hardcoded behaviour it replaces. Lands inert, activates when P1a ships. `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH` is not here — it lands in P2, with the first client that can reject a mismatch. |
 | P1c | Gate `CONNECTED` on subscriptions being SUBACKed ([AB#39366084](https://dev.azure.com/msazure/One/_workitems/edit/39366084)); tag each persistent-subscription entry with its generation and drop non-matching entries on reconnect *before* re-subscribing; add a remove path wired into every feature client's `destroy()`, UNSUBSCRIBE on gen1 and dispatch-only on gen2; drop the five gen2 filters already covered by `ih/{device_id}/dev/#` ([AB#39366086](https://dev.azure.com/msazure/One/_workitems/edit/39366086)) | — | Pre-existing defects, independent of the split. **P2 depends on both**: §9's rebuild pattern is unsafe without the first and impossible without the second. The generation tagging is not optional — without it the two fixes deadlock each other on a profile change. Own PR, own review. |
 | P2 | Split the feature clients, one PR each: telemetry → c2d → direct methods → twin | P1a, P1b, **P1c** | Mutually parallel. Mismatch check per client. |
 | P3 | File upload redesign — HTTP transport becomes gen1-only | P1 | Larger than the others; own PR. |
@@ -737,8 +747,9 @@ baseline.
   archived, so there is no alternative and no risk of divergence.
 - **The patch mechanism is `PATCH_COMMAND`** ([§2](#blocker-the-api-version-must-be-raised)),
   with a `.patch` file in this repo and a guard so re-running configure is a
-  no-op. Forking the archived repo is not available. The dead
-  `c/deps/azure-sdk-for-c` submodule is removed as part of the same change.
+  no-op. Forking the archived repo is not available. The
+  `c/deps/azure-sdk-for-c` submodule **stays** — the ESP-IDF sample builds from
+  it — and must receive the same patches from the same list.
 - **`classic` maps to gen1, `mqttV5` maps to gen2**, for now.
 - **An unrecognised profile fails the connection.** The profile is not expected
   to break, but a device should be defensive about service-side hazards it

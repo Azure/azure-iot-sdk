@@ -15,7 +15,7 @@
  * Hub flavor: an IoT Hub Next / Event Grid (AEG) endpoint speaks MQTT v5, while
  * a Classic hub speaks MQTT v3.1.1. Because there is no DPS step to learn the
  * flavor, the sample selects it explicitly via
- * copts.hub_protocol = AZ_IOT_HUB_PROTOCOL_NEXT (default here) or _CLASSIC.
+ * copts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5 (default here) or _CLASSIC.
  *
  * Fill in the SAMPLE_* placeholders below, or set the matching environment
  * variables (env wins). When required values are missing the sample prints a
@@ -27,7 +27,7 @@
  *   AZ_IOT_CLIENT_CERT    device certificate PEM path
  *   AZ_IOT_CLIENT_KEY     device private key PEM path
  *   AZ_IOT_TRUSTED_CA     trusted CA PEM path (optional; system store if unset)
- *   AZ_IOT_HUB_PROTOCOL   "next" (default, AEG/v5) or "classic" (v3.1.1)
+ *   AZ_IOT_CONNECTION_PROFILE  "mqttV5" (default, AEG/v5) or "classic" (v3.1.1)
  *
  * Diagnostics (optional):
  *   AZ_IOT_PAHO_TRACE     enables Paho MQTT trace + verbose OpenSSL TLS errors.
@@ -50,7 +50,9 @@
 #define SAMPLE_CLIENT_CERT "" /* AZ_IOT_CLIENT_CERT  */
 #define SAMPLE_CLIENT_KEY "" /* AZ_IOT_CLIENT_KEY   */
 #define SAMPLE_TRUSTED_CA "" /* AZ_IOT_TRUSTED_CA (optional) */
-#define SAMPLE_HUB_PROTOCOL "next" /* AZ_IOT_HUB_PROTOCOL: "next" or "classic" */
+/* Values are the ones DPS reports on the wire, so the same spelling works here
+ * and in a provisioned device's connectionProfile. */
+#define SAMPLE_CONNECTION_PROFILE "mqttV5" /* AZ_IOT_CONNECTION_PROFILE: "mqttV5" or "classic" */
 
 typedef struct
 {
@@ -59,7 +61,7 @@ typedef struct
   char* cert;
   char* key;
   char* ca; /* NULL/empty => use the system trust store */
-  char* protocol; /* "next" or "classic" */
+  char* connection_profile; /* "mqttV5" or "classic" */
 } direct_config;
 
 static int is_set(const char* s) { return s != NULL && s[0] != '\0'; }
@@ -71,7 +73,7 @@ static void direct_config_release(direct_config* c)
   free(c->cert);
   free(c->key);
   free(c->ca);
-  free(c->protocol);
+  free(c->connection_profile);
   memset(c, 0, sizeof(*c));
 }
 
@@ -85,7 +87,7 @@ static int direct_config_load(direct_config* c)
   c->cert = sample_env_dup("AZ_IOT_CLIENT_CERT", SAMPLE_CLIENT_CERT);
   c->key = sample_env_dup("AZ_IOT_CLIENT_KEY", SAMPLE_CLIENT_KEY);
   c->ca = sample_env_dup("AZ_IOT_TRUSTED_CA", SAMPLE_TRUSTED_CA);
-  c->protocol = sample_env_dup("AZ_IOT_HUB_PROTOCOL", SAMPLE_HUB_PROTOCOL);
+  c->connection_profile = sample_env_dup("AZ_IOT_CONNECTION_PROFILE", SAMPLE_CONNECTION_PROFILE);
 
   return (is_set(c->host) && is_set(c->device_id) && is_set(c->cert) && is_set(c->key)) ? 0 : 1;
 }
@@ -101,7 +103,7 @@ static void print_usage(void)
       "    AZ_IOT_CLIENT_CERT   device certificate PEM path\n"
       "    AZ_IOT_CLIENT_KEY    device private key PEM path\n"
       "    AZ_IOT_TRUSTED_CA    trusted CA PEM path (optional)\n"
-      "    AZ_IOT_HUB_PROTOCOL  \"next\" (AEG/v5, default) or \"classic\" (v3.1.1)\n");
+      "    AZ_IOT_CONNECTION_PROFILE  \"mqttV5\" (AEG/v5, default) or \"classic\" (v3.1.1)\n");
 }
 
 typedef struct
@@ -139,12 +141,13 @@ int main(void)
     return 0; /* no-op when unconfigured */
   }
 
-  /* Select the hub flavor. AEG endpoints are "next" (MQTT v5). */
-  az_iot_hub_protocol protocol = AZ_IOT_HUB_PROTOCOL_NEXT;
-  if (config.protocol
-      && (strcmp(config.protocol, "classic") == 0 || strcmp(config.protocol, "CLASSIC") == 0))
+  /* Select the generation. AEG endpoints are "mqttV5". */
+  az_iot_connection_profile connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
+  if (config.connection_profile
+      && (strcmp(config.connection_profile, "classic") == 0
+          || strcmp(config.connection_profile, "CLASSIC") == 0))
   {
-    protocol = AZ_IOT_HUB_PROTOCOL_CLASSIC;
+    connection_profile = AZ_IOT_CONNECTION_PROFILE_CLASSIC;
   }
 
   fprintf(
@@ -152,8 +155,8 @@ int main(void)
       "[direct-hub] connecting to %s as device '%s' (%s / MQTT %s)\n",
       config.host,
       config.device_id,
-      protocol == AZ_IOT_HUB_PROTOCOL_NEXT ? "Next/AEG" : "Classic",
-      protocol == AZ_IOT_HUB_PROTOCOL_NEXT ? "v5" : "v3.1.1");
+      connection_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5 ? "Next/AEG" : "Classic",
+      connection_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5 ? "v5" : "v3.1.1");
 
   int rc = 1;
   user_context user_ctx = { 0 };
@@ -174,11 +177,11 @@ int main(void)
   }
 
   /* Connection client: DIRECT hub connect (no DPS). host + client_id +
-   * hub_protocol select the endpoint and MQTT version. */
+   * connection_profile select the endpoint and MQTT version. */
   az_iot_connection_client_options copts = az_iot_connection_client_options_default();
   copts.host = config.host;
   copts.client_id = config.device_id;
-  copts.hub_protocol = protocol;
+  copts.connection_profile = connection_profile;
   copts.certificate_provider = &certs.base;
 
   if (az_iot_connection_client_init(&connection_client, &copts) != AZ_IOT_OK)
@@ -189,7 +192,7 @@ int main(void)
   az_iot_connection_client_set_state_callback(&connection_client, on_conn_state, &user_ctx);
 
   /* Register both MQTT adapters; the client picks v3.1.1 for Classic and v5
-   * for Next based on the selected hub_protocol. */
+   * for Next based on the selected connection_profile. */
   if (az_iot_connection_client_register_mqtt_factory(
           &connection_client, az_iot_paho_factory_create_v3_1_1())
       != AZ_IOT_OK)
