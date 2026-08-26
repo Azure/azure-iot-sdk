@@ -1180,8 +1180,7 @@ static void removal_on_gen2_unsubscribes_only_the_owners_filter(void** state)
   /* Exactly one UNSUBSCRIBE, and it is the feature filter -- never the
    * device-wide wildcard the presence handshake owns. */
   assert_int_equal(az_iot_mock_mqtt_client_count_of(hub, AZ_IOT_MOCK_CALL_UNSUBSCRIBE), 1);
-  const az_iot_mock_call* uns
-      = az_iot_mock_mqtt_client_last_of(hub, AZ_IOT_MOCK_CALL_UNSUBSCRIBE);
+  const az_iot_mock_call* uns = az_iot_mock_mqtt_client_last_of(hub, AZ_IOT_MOCK_CALL_UNSUBSCRIBE);
   assert_non_null(uns);
   assert_string_equal(uns->topic, "ih/assigned-device/dev/twin/desired");
 

@@ -2602,8 +2602,7 @@ size_t az_iot_connection_client__remove_subscriptions_for(
    * per-feature filters are withdrawn, and doing so leaves the wildcard -- and
    * therefore every other feature's delivery -- untouched. */
   const bool unsubscribe_on_the_wire = client->active_client && client->active_client->iface
-      && client->active_client->iface->unsubscribe
-      && client->state == AZ_IOT_CONN_STATE_CONNECTED;
+      && client->active_client->iface->unsubscribe && client->state == AZ_IOT_CONN_STATE_CONNECTED;
 
   size_t removed = 0;
   for (size_t i = 0; i < AZ_IOT_MAX_PERSISTENT_SUBS; ++i)
