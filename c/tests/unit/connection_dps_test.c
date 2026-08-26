@@ -1146,6 +1146,48 @@ static void reassignment_to_another_generation_drops_the_old_filters(void** stat
   profile_fixture_close(&pf);
 }
 
+/* Removal withdraws the filter from the broker on gen2 as well, not just on
+ * Classic. The device-wide ih/{id}/dev/# subscription is not endangered by
+ * that: the presence handshake issues it directly rather than through the
+ * persistent-subscription registry, so it has no owner and removal can never
+ * select it. Anything a gen2 feature client did register is its own, and
+ * leaving it live until the session ends would be the very slot leak this
+ * change exists to close. */
+static void removal_on_gen2_unsubscribes_only_the_owners_filter(void** state)
+{
+  (void)state;
+  int owner = 0;
+  profile_fixture pf = { 0 };
+  profile_fixture_open(&pf);
+
+  profile_assign(&pf, k_assigned_mqtt_v5);
+  assert_hub_leg_used(&pf, pf.v5);
+  profile_finish_hub_leg(&pf, true);
+  assert_int_equal(az_iot_test_last_state(&pf.log), AZ_IOT_CONN_STATE_CONNECTED);
+
+  az_iot_mock_mqtt_client* hub = az_iot_mock_mqtt_factory_last_client(pf.v5);
+  assert_non_null(hub);
+
+  /* A per-feature filter of the shape gen2 feature clients register today,
+   * underneath the presence wildcard. */
+  assert_int_equal(
+      az_iot_connection_client__add_subscription_on_connect(
+          &pf.c, "ih/assigned-device/dev/twin/desired", AZ_IOT_MQTT_QOS_1, &owner),
+      AZ_IOT_OK);
+
+  assert_int_equal(az_iot_connection_client__remove_subscriptions_for(&pf.c, &owner), 1);
+
+  /* Exactly one UNSUBSCRIBE, and it is the feature filter -- never the
+   * device-wide wildcard the presence handshake owns. */
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(hub, AZ_IOT_MOCK_CALL_UNSUBSCRIBE), 1);
+  const az_iot_mock_call* uns
+      = az_iot_mock_mqtt_client_last_of(hub, AZ_IOT_MOCK_CALL_UNSUBSCRIBE);
+  assert_non_null(uns);
+  assert_string_equal(uns->topic, "ih/assigned-device/dev/twin/desired");
+
+  profile_fixture_close(&pf);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -1208,6 +1250,7 @@ int main(void)
     cmocka_unit_test(get_hub_profile_rejects_null_arguments),
     cmocka_unit_test(init_rejects_a_connection_profile_the_sdk_cannot_speak),
     cmocka_unit_test(reassignment_to_another_generation_drops_the_old_filters),
+    cmocka_unit_test(removal_on_gen2_unsubscribes_only_the_owners_filter),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

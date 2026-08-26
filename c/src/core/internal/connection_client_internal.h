@@ -137,12 +137,18 @@ extern "C"
   /* Withdraw every persistent subscription registered by `owner`. Returns the
    * number removed.
    *
-   * The MQTT side differs by generation, which is the point. On Classic the
-   * filters are per-feature, so each one is UNSUBSCRIBEd. On AEG the device
-   * holds a single `ih/{device_id}/dev/#` subscription covering the whole
-   * device-bound topic space, so there is nothing to withdraw -- unsubscribing
-   * would tear down every other feature's delivery too. There it is a registry
-   * removal only.
+   * Each removed entry is also UNSUBSCRIBEd when connected, on both
+   * generations. AEG's device-wide `ih/{device_id}/dev/#` subscription is not
+   * at risk from this: the presence handshake takes it out directly rather than
+   * through the persistent-subscription registry, so it has no owner and this
+   * function can never select it. What AEG feature clients do register are their
+   * own per-feature filters underneath that wildcard, and those are exactly what
+   * should be withdrawn when the client that registered them goes away.
+   * Withdrawing one does not disturb the wildcard, which keeps matching.
+   *
+   * (Those per-feature AEG filters are redundant with the wildcard and are due
+   * to be dropped entirely; until they are, they are real subscriptions and are
+   * released here rather than left live until the session ends.)
    *
    * Safe to call when disconnected: the entries are dropped either way, so a
    * later reconnect does not resurrect them. */

@@ -553,6 +553,7 @@ az_iot_result az_iot_twin_client_init(az_iot_twin_client* client, az_iot_connect
         conn, prefix, AZ_IOT_MQTT_QOS_1, client);
     if (r != AZ_IOT_OK)
     {
+      (void)az_iot_connection_client__remove_subscriptions_for(conn, client);
       (void)az_iot_connection_client__unregister_inbound_handlers(conn, client);
       memset(client, 0, sizeof(*client));
       return r;
@@ -563,6 +564,7 @@ az_iot_result az_iot_twin_client_init(az_iot_twin_client* client, az_iot_connect
     if (az_iot_span_writer_build_str(AZ_SPAN_FROM_BUFFER(prefix), NULL, reported_parts, 3)
         != AZ_IOT_OK)
     {
+      (void)az_iot_connection_client__remove_subscriptions_for(conn, client);
       (void)az_iot_connection_client__unregister_inbound_handlers(conn, client);
       memset(client, 0, sizeof(*client));
       return AZ_IOT_ERR_INTERNAL;
@@ -571,6 +573,7 @@ az_iot_result az_iot_twin_client_init(az_iot_twin_client* client, az_iot_connect
         conn, prefix, on_twin_reported_response_next, client);
     if (r != AZ_IOT_OK)
     {
+      (void)az_iot_connection_client__remove_subscriptions_for(conn, client);
       (void)az_iot_connection_client__unregister_inbound_handlers(conn, client);
       memset(client, 0, sizeof(*client));
       return r;
@@ -579,6 +582,7 @@ az_iot_result az_iot_twin_client_init(az_iot_twin_client* client, az_iot_connect
         conn, prefix, AZ_IOT_MQTT_QOS_1, client);
     if (r != AZ_IOT_OK)
     {
+      (void)az_iot_connection_client__remove_subscriptions_for(conn, client);
       (void)az_iot_connection_client__unregister_inbound_handlers(conn, client);
       memset(client, 0, sizeof(*client));
       return r;
@@ -589,6 +593,7 @@ az_iot_result az_iot_twin_client_init(az_iot_twin_client* client, az_iot_connect
     if (az_iot_span_writer_build_str(AZ_SPAN_FROM_BUFFER(filter), NULL, desired_parts, 3)
         != AZ_IOT_OK)
     {
+      (void)az_iot_connection_client__remove_subscriptions_for(conn, client);
       (void)az_iot_connection_client__unregister_inbound_handlers(conn, client);
       memset(client, 0, sizeof(*client));
       return AZ_IOT_ERR_INTERNAL;
@@ -597,6 +602,7 @@ az_iot_result az_iot_twin_client_init(az_iot_twin_client* client, az_iot_connect
         conn, filter, on_twin_desired_next, client);
     if (r != AZ_IOT_OK)
     {
+      (void)az_iot_connection_client__remove_subscriptions_for(conn, client);
       (void)az_iot_connection_client__unregister_inbound_handlers(conn, client);
       memset(client, 0, sizeof(*client));
       return r;
@@ -605,6 +611,7 @@ az_iot_result az_iot_twin_client_init(az_iot_twin_client* client, az_iot_connect
         conn, filter, AZ_IOT_MQTT_QOS_1, client);
     if (r != AZ_IOT_OK)
     {
+      (void)az_iot_connection_client__remove_subscriptions_for(conn, client);
       (void)az_iot_connection_client__unregister_inbound_handlers(conn, client);
       memset(client, 0, sizeof(*client));
       return r;
@@ -631,6 +638,7 @@ az_iot_result az_iot_twin_client_init(az_iot_twin_client* client, az_iot_connect
         conn, profile->twin_desired_topic_prefix, on_twin_desired, client);
     if (r != AZ_IOT_OK)
     {
+      (void)az_iot_connection_client__remove_subscriptions_for(conn, client);
       (void)az_iot_connection_client__unregister_inbound_handlers(conn, client);
       memset(client, 0, sizeof(*client));
       return r;
@@ -642,6 +650,7 @@ az_iot_result az_iot_twin_client_init(az_iot_twin_client* client, az_iot_connect
     if (az_iot_span_writer_build_str(AZ_SPAN_FROM_BUFFER(filter), NULL, response_filter_parts, 2)
         != AZ_IOT_OK)
     {
+      (void)az_iot_connection_client__remove_subscriptions_for(conn, client);
       (void)az_iot_connection_client__unregister_inbound_handlers(conn, client);
       memset(client, 0, sizeof(*client));
       return AZ_IOT_ERR_INTERNAL;
@@ -650,6 +659,7 @@ az_iot_result az_iot_twin_client_init(az_iot_twin_client* client, az_iot_connect
         conn, filter, AZ_IOT_MQTT_QOS_0, client);
     if (r != AZ_IOT_OK)
     {
+      (void)az_iot_connection_client__remove_subscriptions_for(conn, client);
       (void)az_iot_connection_client__unregister_inbound_handlers(conn, client);
       memset(client, 0, sizeof(*client));
       return r;
@@ -659,6 +669,7 @@ az_iot_result az_iot_twin_client_init(az_iot_twin_client* client, az_iot_connect
     if (az_iot_span_writer_build_str(AZ_SPAN_FROM_BUFFER(filter), NULL, desired_filter_parts, 2)
         != AZ_IOT_OK)
     {
+      (void)az_iot_connection_client__remove_subscriptions_for(conn, client);
       (void)az_iot_connection_client__unregister_inbound_handlers(conn, client);
       memset(client, 0, sizeof(*client));
       return AZ_IOT_ERR_INTERNAL;
@@ -667,6 +678,7 @@ az_iot_result az_iot_twin_client_init(az_iot_twin_client* client, az_iot_connect
         conn, filter, AZ_IOT_MQTT_QOS_0, client);
     if (r != AZ_IOT_OK)
     {
+      (void)az_iot_connection_client__remove_subscriptions_for(conn, client);
       (void)az_iot_connection_client__unregister_inbound_handlers(conn, client);
       memset(client, 0, sizeof(*client));
       return r;
@@ -682,6 +694,7 @@ az_iot_result az_iot_twin_client_init(az_iot_twin_client* client, az_iot_connect
         = az_iot_connection_client__register_session_end_handler(conn, twin_fail_pending, client);
     if (r != AZ_IOT_OK)
     {
+      (void)az_iot_connection_client__remove_subscriptions_for(conn, client);
       (void)az_iot_connection_client__unregister_inbound_handlers(conn, client);
       memset(client, 0, sizeof(*client));
       return r;

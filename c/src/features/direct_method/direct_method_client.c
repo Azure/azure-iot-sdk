@@ -272,6 +272,7 @@ az_iot_result az_iot_direct_method_client_init(
     if (az_iot_span_writer_build_str(AZ_SPAN_FROM_BUFFER(filter), NULL, filter_parts, 3)
         != AZ_IOT_OK)
     {
+      (void)az_iot_connection_client__remove_subscriptions_for(conn, client);
       (void)az_iot_connection_client__unregister_inbound_handlers(conn, client);
       memset(client, 0, sizeof(*client));
       return AZ_IOT_ERR_INTERNAL;
@@ -280,6 +281,7 @@ az_iot_result az_iot_direct_method_client_init(
         conn, filter, AZ_IOT_MQTT_QOS_1, client);
     if (r != AZ_IOT_OK)
     {
+      (void)az_iot_connection_client__remove_subscriptions_for(conn, client);
       (void)az_iot_connection_client__unregister_inbound_handlers(conn, client);
       memset(client, 0, sizeof(*client));
       return r;
@@ -307,6 +309,7 @@ az_iot_result az_iot_direct_method_client_init(
     if (az_iot_span_writer_build_str(AZ_SPAN_FROM_BUFFER(filter), NULL, filter_parts, 2)
         != AZ_IOT_OK)
     {
+      (void)az_iot_connection_client__remove_subscriptions_for(conn, client);
       (void)az_iot_connection_client__unregister_inbound_handlers(conn, client);
       memset(client, 0, sizeof(*client));
       return AZ_IOT_ERR_INTERNAL;
@@ -315,6 +318,7 @@ az_iot_result az_iot_direct_method_client_init(
         conn, filter, AZ_IOT_MQTT_QOS_0, client);
     if (r != AZ_IOT_OK)
     {
+      (void)az_iot_connection_client__remove_subscriptions_for(conn, client);
       (void)az_iot_connection_client__unregister_inbound_handlers(conn, client);
       memset(client, 0, sizeof(*client));
       return r;

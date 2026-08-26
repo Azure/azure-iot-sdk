@@ -666,17 +666,28 @@ Tracked as **[AB#39350066](https://dev.azure.com/msazure/One/_workitems/edit/393
 >
 > **The fix differs by generation, and that is the point.** On gen1, removal
 > issues an MQTT UNSUBSCRIBE — Classic supports it, and Classic genuinely has
-> per-feature filters that must be withdrawn. On gen2 there is **nothing to
-> unsubscribe**: the presence handshake already subscribes
-> `ih/{device_id}/dev/#`, the whole device-bound topic space, before `CONNECTED`.
-> Removal on gen2 is a dispatch-table unregister and no MQTT operation at all.
-> This matters because on gen2 there is only ever **one** subscription, taken out
-> once at connect and torn down with the session — so a shared implementation
-> that issued UNSUBSCRIBE would be withdrawing the whole device's topic space to
-> retire one feature client. The .NET client behaves the same way: its gen2
+> per-feature filters that must be withdrawn. The gen2 *end state* is that there
+> is **nothing to unsubscribe**: the presence handshake already subscribes
+> `ih/{device_id}/dev/#`, the whole device-bound topic space, before `CONNECTED`,
+> so once the redundant per-feature filters below are dropped, removal on gen2 is
+> a dispatch-table unregister and no MQTT operation at all.
+> This matters because on gen2 there is then only ever **one** subscription, taken
+> out once at connect and torn down with the session — and withdrawing *that* one
+> to retire a single feature client would take the whole device's topic space with
+> it. The .NET client behaves the same way: its gen2
 > connection issues a single `SubscribeAsync("ih/{deviceId}/dev/#", AtLeastOnce)`
 > and nothing in the library ever calls `UnsubscribeAsync` — the capability
 > exists on its MQTT interface and is unused.
+>
+> **Until then, gen2 removal must still unsubscribe.** Today gen2 feature clients
+> do register per-feature filters (see the related defect below), so they are real
+> subscriptions and leaving them live until the session ends is the same slot leak
+> in a different place. The device-wide wildcard is never at risk from this: the
+> presence handshake issues it directly rather than through the
+> persistent-subscription registry, so it has no owner and a per-owner removal can
+> never select it. Withdrawing a filter underneath it does not disturb it either —
+> the wildcard keeps matching. So removal unsubscribes on both generations, and
+> becomes a no-op on gen2 for free once those filters are gone.
 >
 > (An earlier revision justified this by saying AEG does not support UNSUBSCRIBE.
 > That is **not** supported by the AEG RFCs — `unsubscribe` does not appear
@@ -807,7 +818,7 @@ plus the conformance suites.
 | P0b | This document + doc reconciliation | — | |
 | P1a | Add the `azure-sdk-for-c` patch mechanism and raise the DPS api-version to `2026-11-02-preview`, for **both** consumers of that source: the FetchContent tree (`PATCH_COMMAND`) and the `c/deps/azure-sdk-for-c` submodule the ESP-IDF sample builds from | — | **Blocked on the service.** `2026-11-02-preview` is not deployed ([azure-rest-api-specs#45041](https://github.com/Azure/azure-rest-api-specs/pull/45041) is still open), and requesting it makes the DPS CONNECT fail with CONNACK rc=5. Parked until it ships. |
 | P1b | `az_iot_hub_profile` + `get_hub_profile()` + `az_iot_connection_profile` + `AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED`; parse `connectionProfile` in the existing ASSIGNED-payload walk | — | Additive, and deliberately **not** blocked on P1a: with the stock api-version `connectionProfile` never arrives, absent resolves to `classic`, and the result is exactly the hardcoded behaviour it replaces. Lands inert, activates when P1a ships. `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH` is not here — it lands in P2, with the first client that can reject a mismatch. |
-| P1c | Gate `CONNECTED` on subscriptions being SUBACKed ([AB#39366084](https://dev.azure.com/msazure/One/_workitems/edit/39366084)); tag each persistent-subscription entry with its generation and drop non-matching entries on reconnect *before* re-subscribing; add a remove path wired into every feature client's `destroy()`, UNSUBSCRIBE on gen1 and dispatch-only on gen2; drop the five gen2 filters already covered by `ih/{device_id}/dev/#` ([AB#39366086](https://dev.azure.com/msazure/One/_workitems/edit/39366086)) | — | Pre-existing defects, independent of the split. **P2 depends on both**: §9's rebuild pattern is unsafe without the first and impossible without the second. The generation tagging is not optional — without it the two fixes deadlock each other on a profile change. Own PR, own review. |
+| P1c | Gate `CONNECTED` on subscriptions being SUBACKed ([AB#39366084](https://dev.azure.com/msazure/One/_workitems/edit/39366084)); tag each persistent-subscription entry with its generation and drop non-matching entries on reconnect *before* re-subscribing; add a remove path wired into every feature client's `destroy()` and into its partial-init unwind, UNSUBSCRIBE on both generations (a no-op on gen2 once its redundant filters are gone); drop the five gen2 filters already covered by `ih/{device_id}/dev/#` ([AB#39366086](https://dev.azure.com/msazure/One/_workitems/edit/39366086)) | — | Pre-existing defects, independent of the split. **P2 depends on both**: §9's rebuild pattern is unsafe without the first and impossible without the second. The generation tagging is not optional — without it the two fixes deadlock each other on a profile change. Own PR, own review. |
 | P1d | Turn the connection-state callback into the extensible `az_iot_connection_state_event` struct, carrying the resolved profile on `CONNECTED` ([§9](#the-profile-can-change-while-the-device-is-running)) | — | Breaking change to a public callback signature, so it is its own PR rather than a rider on the first feature-client split. P2's rebuild pattern reads the profile from this event. 30 registration sites across 11 samples, the unit/integration suites and the e2e agent move with it — build with `AZ_IOT_BUILD_E2E=ON`, since the agent is not compiled by default and this is the exact class of change that has broken it before. |
 | P2 | Split the feature clients, one PR each: telemetry → c2d → direct methods → twin | P1a, P1b, **P1c**, P1d | Mutually parallel. Mismatch check per client, at `_init()` only. The twin PR also repoints `az_iot_adu_client_initialize()` at `az_iot_gen1_twin_client` ([§8](#8-device-update)) — a public header break, no ADU re-layer. |
 | P3 | File upload redesign — HTTP transport becomes gen1-only | P1 | Larger than the others; own PR. |
