@@ -79,8 +79,9 @@ stateDiagram-v2
     DPS_DONE --> [*]: hub host and device id applied
 ```
 
-Any failure or drop in a DPS phase is handled by the same backoff path as a hub failure, and a retry
-restarts provisioning from `DPS_CONNECTING`.
+A transport drop or transient session failure during a DPS phase is handled by the same backoff path
+as a hub failure, and a retry restarts provisioning from `DPS_CONNECTING`. A *registration* failure is
+not: it goes straight to `FAULTED`. See [§5.2](#52-what-triggers-a-reconnect) for the split.
 
 ---
 
