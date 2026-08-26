@@ -63,13 +63,7 @@ namespace Microsoft.Azure.Devices.Client.Gen2.DirectMethods
         public DirectMethodClient(IConnectionClient connection)
         {
             _connection = connection;
-            _connection.MqttClient.PublishReceivedAsync += HandleReceivedMqttPublish;
-        }
-
-        internal DirectMethodClient(Unified.Connection.IConnectionClient connection)
-        {
-            _connection = new ConnectionClient(connection);
-            _connection.MqttClient.PublishReceivedAsync += HandleReceivedMqttPublish;
+            _connection.PublishReceivedAsync += HandleReceivedMqttPublish;
         }
 
         private async Task HandleReceivedMqttPublish(MqttPublishReceivedEventArgs args)
@@ -175,7 +169,7 @@ namespace Microsoft.Azure.Devices.Client.Gen2.DirectMethods
                     _pendingExpectedDirectMethodNames.TryAdd(requestId.Value, probe.MethodName);
                 }
 
-                MqttPublishAck puback = await _connection.MqttClient.PublishAsync(probeAckPublish);
+                MqttPublishAck puback = await _connection.PublishAsync(probeAckPublish);
 
                 if (puback.ReasonCode != MqttPublishAckReasonCode.Success)
                 {
@@ -270,7 +264,7 @@ namespace Microsoft.Azure.Devices.Client.Gen2.DirectMethods
 
                 resultPublish.UserProperties.Add(new("type", Encoding.UTF8.GetBytes("result:1")));
 
-                MqttPublishAck puback = await _connection.MqttClient.PublishAsync(resultPublish);
+                MqttPublishAck puback = await _connection.PublishAsync(resultPublish);
 
                 if (puback.ReasonCode != MqttPublishAckReasonCode.Success)
                 {
@@ -285,7 +279,7 @@ namespace Microsoft.Azure.Devices.Client.Gen2.DirectMethods
         /// <param name="disposing">true to release both managed and unmanaged resources; false to releases only unmanaged resources.</param>
         public void Dispose(bool disposing)
         {
-            _connection.MqttClient.PublishReceivedAsync -= HandleReceivedMqttPublish;
+            _connection.PublishReceivedAsync -= HandleReceivedMqttPublish;
             if (disposing)
             {
                 _connection.Dispose();
@@ -297,7 +291,7 @@ namespace Microsoft.Azure.Devices.Client.Gen2.DirectMethods
         /// </summary>
         public void Dispose()
         {
-            _connection.MqttClient.PublishReceivedAsync -= HandleReceivedMqttPublish;
+            _connection.PublishReceivedAsync -= HandleReceivedMqttPublish;
             _connection.Dispose();
         }
     }

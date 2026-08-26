@@ -1,4 +1,5 @@
 ﻿using Microsoft.Azure.Devices.Client.Gen2.Connection;
+using Microsoft.Azure.Devices.Client.Models;
 
 namespace Microsoft.Azure.Devices.Client.IntegrationTests.Gen2
 {

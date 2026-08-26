@@ -4,7 +4,6 @@ using Microsoft.Azure.Devices.Client.Mqtt;
 using Microsoft.Azure.Devices.Client.Unified.Connection;
 using System.Diagnostics;
 using System.Globalization;
-using System.Text;
 
 namespace Microsoft.Azure.Devices.Client.Unified.Telemetry
 {
@@ -39,8 +38,8 @@ namespace Microsoft.Azure.Devices.Client.Unified.Telemetry
         public TelemetryClient(IConnectionClient connection)
         {
             _connection = connection;
-            _aegTelemetryClient = new(new Gen2.Connection.ConnectionClient(connection));
-            _connection.MqttClient.PublishReceivedAsync += HandleReceivedMqttPublish;
+            _aegTelemetryClient = new(new Stub(_connection));
+            _connection.PublishReceivedAsync += HandleReceivedMqttPublish;
             _aegTelemetryClient.CloudToDeviceTelemetryReceivedAsync += DelegateGen2CloudToDeviceTelemetry;
         }
 
@@ -73,7 +72,7 @@ namespace Microsoft.Azure.Devices.Client.Unified.Telemetry
 
             string deviceId = currentConnectionContext.DeviceId;
 
-            if (currentConnectionContext.IsAzureEventGrid)
+            if (currentConnectionContext.IsGen2Hub)
             {
                 await _aegTelemetryClient.SendTelemetryAsync(message, cancellationToken);
                 return;
@@ -121,7 +120,7 @@ namespace Microsoft.Azure.Devices.Client.Unified.Telemetry
                     mqttMessage.Topic += $"&{Uri.EscapeDataString(customUserPropertyKey)}={Uri.EscapeDataString(message.UserProperties[customUserPropertyKey])}";
                 }
 
-                MqttPublishAck puback = await _connection.MqttClient.PublishAsync(mqttMessage, cancellationToken);
+                MqttPublishAck puback = await _connection.PublishAsync(mqttMessage, cancellationToken);
 
                 PublishRejectedException.ThrowIfUnsuccessfulPuback(puback, "Failed to publish this telemetry because the MQTT broker rejected it.");
             }
@@ -203,7 +202,7 @@ namespace Microsoft.Azure.Devices.Client.Unified.Telemetry
         /// <param name="disposing">true to release both managed and unmanaged resources; false to releases only unmanaged resources.</param>
         public void Dispose(bool disposing)
         {
-            _connection.MqttClient.PublishReceivedAsync -= HandleReceivedMqttPublish;
+            _connection.PublishReceivedAsync -= HandleReceivedMqttPublish;
             _aegTelemetryClient.CloudToDeviceTelemetryReceivedAsync -= DelegateGen2CloudToDeviceTelemetry;
             if (disposing)
             {
@@ -218,7 +217,7 @@ namespace Microsoft.Azure.Devices.Client.Unified.Telemetry
         /// </summary>
         public void Dispose()
         {
-            _connection.MqttClient.PublishReceivedAsync -= HandleReceivedMqttPublish;
+            _connection.PublishReceivedAsync -= HandleReceivedMqttPublish;
             _aegTelemetryClient.CloudToDeviceTelemetryReceivedAsync -= DelegateGen2CloudToDeviceTelemetry;
             _connection.Dispose();
             _isDisposed = true;

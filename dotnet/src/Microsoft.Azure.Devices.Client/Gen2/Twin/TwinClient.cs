@@ -1,6 +1,7 @@
 ﻿using Google.Protobuf;
 using Microsoft.Azure.Devices.Client.Exceptions;
 using Microsoft.Azure.Devices.Client.Gen2.Connection;
+using Microsoft.Azure.Devices.Client.Models;
 using Microsoft.Azure.Devices.Client.Models.Twin;
 using Microsoft.Azure.Devices.Client.Mqtt;
 using System.Collections.Concurrent;
@@ -66,14 +67,9 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Twin
         public TwinClient(IConnectionClient connection)
         {
             _connection = connection;
-            _connection.MqttClient.PublishReceivedAsync += HandleReceivedMqttPublish;
+            _connection.PublishReceivedAsync += HandleReceivedMqttPublish;
         }
 
-        internal TwinClient(Unified.Connection.IConnectionClient connection)
-        {
-            _connection = new ConnectionClient(connection);
-            _connection.MqttClient.PublishReceivedAsync += HandleReceivedMqttPublish;
-        }
 
         /// <summary>
         /// Get the full twin, or some conditional set of the twin properties.
@@ -133,7 +129,7 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Twin
             try
             {
                 Trace.TraceInformation("Publishing 'GetTwin' request on topic " + publish.Topic);
-                MqttPublishAck puback = await _connection.MqttClient.PublishAsync(publish, cancellationToken);
+                MqttPublishAck puback = await _connection.PublishAsync(publish, cancellationToken);
 
                 PublishRejectedException.ThrowIfUnsuccessfulPuback(puback, "Failed to request the twin because the MQTT broker rejected the request.");
 
@@ -186,7 +182,7 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Twin
             try
             {
                 Trace.TraceInformation("Publishing 'PatchReported' request on topic " + publish.Topic);
-                MqttPublishAck puback = await _connection.MqttClient.PublishAsync(publish, cancellationToken);
+                MqttPublishAck puback = await _connection.PublishAsync(publish, cancellationToken);
 
                 PublishRejectedException.ThrowIfUnsuccessfulPuback(puback, "Failed to update the reported properties because the MQTT broker rejected the request.");
 
@@ -315,7 +311,7 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Twin
         /// <param name="disposing">true to release both managed and unmanaged resources; false to releases only unmanaged resources.</param>
         public void Dispose(bool disposing)
         {
-            _connection.MqttClient.PublishReceivedAsync -= HandleReceivedMqttPublish;
+            _connection.PublishReceivedAsync -= HandleReceivedMqttPublish;
             if (disposing)
             {
                 _connection.Dispose();
@@ -328,7 +324,7 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Twin
         /// </summary>
         public void Dispose()
         {
-            _connection.MqttClient.PublishReceivedAsync -= HandleReceivedMqttPublish;
+            _connection.PublishReceivedAsync -= HandleReceivedMqttPublish;
             _connection.Dispose();
             _isDisposed = true;
         }

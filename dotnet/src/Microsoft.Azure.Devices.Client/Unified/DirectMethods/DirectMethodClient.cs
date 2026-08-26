@@ -54,9 +54,9 @@ namespace Microsoft.Azure.Devices.Client.Unified.DirectMethods
         public DirectMethodClient(IConnectionClient connection)
         {
             _connection = connection;
-            _connection.MqttClient.PublishReceivedAsync += HandleReceivedMqttPublish;
+            _connection.PublishReceivedAsync += HandleReceivedMqttPublish;
             
-            _aegDirectMethodClient = new(_connection);
+            _aegDirectMethodClient = new(new Stub(_connection));
             _aegDirectMethodClient.DirectMethodProbeReceivedAsync += HandleAegDirectMethodProbeRequestAsync;
             _aegDirectMethodClient.DirectMethodInvokedAsync += HandleAegDirectMethodRequestAsync;
         }
@@ -107,7 +107,7 @@ namespace Microsoft.Azure.Devices.Client.Unified.DirectMethods
                 return;
             }
 
-            if (currentConnectionContext.IsAzureEventGrid)
+            if (currentConnectionContext.IsGen2Hub)
             {
                 // The underlying Gen2 DirectMethodClient handles this flow
                 return;
@@ -160,7 +160,7 @@ namespace Microsoft.Azure.Devices.Client.Unified.DirectMethods
                 publish.Payload = methodResponse.Payload;
             }
 
-            MqttPublishAck puback = await _connection.MqttClient.PublishAsync(publish, CancellationToken.None);
+            MqttPublishAck puback = await _connection.PublishAsync(publish, CancellationToken.None);
 
             if (puback.ReasonCode != MqttPublishAckReasonCode.Success)
             {
@@ -174,7 +174,7 @@ namespace Microsoft.Azure.Devices.Client.Unified.DirectMethods
         /// <param name="disposing">true to release both managed and unmanaged resources; false to releases only unmanaged resources.</param>
         public void Dispose(bool disposing)
         {
-            _connection.MqttClient.PublishReceivedAsync -= HandleReceivedMqttPublish;
+            _connection.PublishReceivedAsync -= HandleReceivedMqttPublish;
 
             _aegDirectMethodClient.DirectMethodProbeReceivedAsync -= HandleAegDirectMethodProbeRequestAsync;
             _aegDirectMethodClient.DirectMethodInvokedAsync -= HandleAegDirectMethodRequestAsync;
@@ -190,7 +190,7 @@ namespace Microsoft.Azure.Devices.Client.Unified.DirectMethods
         /// </summary>
         public void Dispose()
         {
-            _connection.MqttClient.PublishReceivedAsync -= HandleReceivedMqttPublish;
+            _connection.PublishReceivedAsync -= HandleReceivedMqttPublish;
 
             _aegDirectMethodClient.DirectMethodProbeReceivedAsync -= HandleAegDirectMethodProbeRequestAsync;
             _aegDirectMethodClient.DirectMethodInvokedAsync -= HandleAegDirectMethodRequestAsync;
