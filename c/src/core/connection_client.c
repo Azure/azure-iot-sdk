@@ -255,6 +255,7 @@ static void teardown_active(az_iot_connection_client* c)
 
 /* Forward decl — used in on_mqtt_event via the deferred-action queue. */
 static az_iot_result start_connect_attempt(az_iot_connection_client* c);
+static void drop_subscriptions_from_other_generations(az_iot_connection_client* c);
 
 /* Forward decl — used in dps_apply_deferred(). */
 static az_iot_result replace_owned_string(
@@ -1050,6 +1051,9 @@ static void dps_apply_deferred(az_iot_connection_client* c)
       transition(c, AZ_IOT_CONN_STATE_FAULTED, AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED);
       return;
   }
+  /* The assignment may have moved the device to a different generation than the
+   * one its registered filters were built for. */
+  drop_subscriptions_from_other_generations(c);
   c->dps_phase = DPS_PHASE_NONE;
 
   r = start_connect_attempt(c);
@@ -2526,7 +2530,8 @@ az_iot_result az_iot_connection_client__subscribe(
 az_iot_result az_iot_connection_client__add_subscription_on_connect(
     az_iot_connection_client* client,
     const char* topic_filter,
-    az_iot_mqtt_qos qos)
+    az_iot_mqtt_qos qos,
+    const void* owner)
 {
   if (!client || !topic_filter)
   {
@@ -2568,6 +2573,8 @@ az_iot_result az_iot_connection_client__add_subscription_on_connect(
   }
   memcpy(client->persistent_subs[slot].topic_filter, topic_filter, n + 1);
   client->persistent_subs[slot].qos = qos;
+  client->persistent_subs[slot].owner = owner;
+  client->persistent_subs[slot].profile = client->connection_profile;
   client->persistent_subs[slot].in_use = true;
 
   /* If already CONNECTED, issue the SUBSCRIBE now so callers that register
@@ -2578,6 +2585,64 @@ az_iot_result az_iot_connection_client__add_subscription_on_connect(
     (void)client->active_client->iface->subscribe(client->active_client, topic_filter, qos, &pid);
   }
   return AZ_IOT_OK;
+}
+
+size_t az_iot_connection_client__remove_subscriptions_for(
+    az_iot_connection_client* client,
+    const void* owner)
+{
+  if (!client)
+  {
+    return 0;
+  }
+  /* Withdraw each entry from the broker too, on both generations. This cannot
+   * touch AEG's device-wide ih/{device_id}/dev/# subscription: the presence
+   * handshake issues that one directly, not through this registry, so it has no
+   * owner and never appears in the loop below. Only the feature client's own
+   * per-feature filters are withdrawn, and doing so leaves the wildcard -- and
+   * therefore every other feature's delivery -- untouched. */
+  const bool unsubscribe_on_the_wire = client->active_client && client->active_client->iface
+      && client->active_client->iface->unsubscribe && client->state == AZ_IOT_CONN_STATE_CONNECTED;
+
+  size_t removed = 0;
+  for (size_t i = 0; i < AZ_IOT_MAX_PERSISTENT_SUBS; ++i)
+  {
+    if (!client->persistent_subs[i].in_use || client->persistent_subs[i].owner != owner)
+    {
+      continue;
+    }
+    if (unsubscribe_on_the_wire)
+    {
+      uint16_t pid = 0;
+      (void)client->active_client->iface->unsubscribe(
+          client->active_client, client->persistent_subs[i].topic_filter, &pid);
+    }
+    memset(&client->persistent_subs[i], 0, sizeof(client->persistent_subs[i]));
+    ++removed;
+  }
+  return removed;
+}
+
+/* Drop persistent subscriptions that belong to a different hub generation than
+ * the one now resolved. Without this, a device reassigned from Classic to AEG
+ * would re-issue its $iothub/... filters at the new hub, which does not grant
+ * them -- and once CONNECTED is gated on those SUBACKs, the session could never
+ * come up and the application would never get the callback that would have
+ * removed them. See docs/eng/client-separation.md section 9. */
+static void drop_subscriptions_from_other_generations(az_iot_connection_client* c)
+{
+  for (size_t i = 0; i < AZ_IOT_MAX_PERSISTENT_SUBS; ++i)
+  {
+    if (!c->persistent_subs[i].in_use || c->persistent_subs[i].profile == c->connection_profile)
+    {
+      continue;
+    }
+    AZ_IOT_LOG_WARNF(
+        "connection: dropping '%s' -- registered for a different hub generation than the one now "
+        "assigned",
+        c->persistent_subs[i].topic_filter);
+    memset(&c->persistent_subs[i], 0, sizeof(c->persistent_subs[i]));
+  }
 }
 
 /* ------------------------------------------------------------------------- */
@@ -2848,7 +2913,7 @@ az_iot_result az_iot_connection_client_send_csr(
       return r;
     }
     r = az_iot_connection_client__add_subscription_on_connect(
-        client, CSR_RES_FILTER, AZ_IOT_MQTT_QOS_1);
+        client, CSR_RES_FILTER, AZ_IOT_MQTT_QOS_1, client);
     if (r != AZ_IOT_OK)
     {
       (void)az_iot_connection_client__unregister_inbound_handlers(client, client);
