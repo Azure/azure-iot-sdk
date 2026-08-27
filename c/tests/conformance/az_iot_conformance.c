@@ -965,6 +965,22 @@ static void connect_connack_error_is_reported(void** state)
   assert_true(saw_connack_error(&rec));
   assert_false(saw_connected_ok(&rec));
 
+  /* And the code that produced that status must still be readable. CONNACK and
+   * SUBACK share the rule, so covering only one leaves the other free to start
+   * flattening again without any suite noticing. */
+  int ack = -1;
+  for (size_t i = 0; i < rec.count; ++i)
+  {
+    if (rec.kinds[i] == AZ_IOT_MQTT_EVT_CONNECTED && rec.statuses[i] != AZ_IOT_OK)
+    {
+      ack = (int)i;
+      break;
+    }
+  }
+  assert_true(ack >= 0);
+  assert_int_equal(
+      rec.protocol_codes[ack], (g_factory->version == AZ_IOT_MQTT_VERSION_5) ? 0x87 : 0x05);
+
   (void)c->iface->disconnect(c);
   destroy_client(c);
   az_iot_test_proxy_stop(proxy);

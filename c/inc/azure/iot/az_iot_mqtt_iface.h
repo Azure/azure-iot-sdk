@@ -121,9 +121,12 @@ extern "C"
     const az_iot_mqtt_message* message; /* for AZ_IOT_MQTT_EVT_MESSAGE only */
     bool session_present; /* for AZ_IOT_MQTT_EVT_CONNECTED (v5 CONNACK) */
     /* The code that came off the wire, verbatim, for the ack this event carries
-     * (a CONNACK return/reason code, a SUBACK return/reason code). 0 when the
-     * event carries none, which is also what a producer that never sets it
-     * reports -- so it is only meaningful alongside a failing `status`.
+     * (a CONNACK return/reason code, a SUBACK return/reason code). A non-zero
+     * value is always that code, including the granted QoS on a SUBACK that
+     * succeeded -- a grant is diagnostic too. Only 0 is ambiguous: it means
+     * either "no code applies here" or "a producer that does not populate this
+     * field", and nothing can tell those apart, which is the reason no decision
+     * may rest on it.
      *
      * `status` is the classification the SDK acts on; this is the evidence for
      * it. Both travel because a classification cannot describe a code this SDK
