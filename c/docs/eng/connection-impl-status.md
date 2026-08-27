@@ -45,6 +45,7 @@ Keep this file in step with the code. It is expected to change often; `connectio
 | Connection profile from DPS ([§4](../connection.md#4-connection-profile-selection)) | planned — blocked on the api-version | partial — local boolean placeholder, blocked on the api-version |
 | Exponential backoff with jitter ([§5](../connection.md#5-reconnection)) | implemented, fixed policy | implemented, caller-replaceable policy |
 | Fatal-failure classification ([§5.2](../connection.md#52-what-triggers-a-reconnect)) | planned | implemented |
+| Failure taxonomy — MQTT reason-code fidelity ([§9](../connection.md#9-connection-failure-taxonomy)) | partial — CONNACK codes are classified; SUBACK, PUBACK and server-DISCONNECT codes are flattened | partial — codes are preserved as typed values and classified, with two rows that diverge from the contract |
 | Certificate renewal over the hub ([§6](../connection.md#6-certificate-management-onboarding-and-renewal)) | implemented (classic) | partial (classic) — no busy rejection for a duplicate in-flight request; explicit unsupported error on gen2 |
 | Device update ([§7](../connection.md#7-device-update-onboarding-and-renewal)) | planned — engine internals implemented and reused | none |
 
@@ -102,3 +103,24 @@ filters, server-moved — to go straight to `FAULTED` rather than being retried.
 
 The .NET client classifies these. The C client does not yet: outside the cases listed in
 [connection-c.md](connection-c.md) it retries whenever a retry policy is configured.
+
+### Failure taxonomy — where each client diverges from the contract
+
+[§9](../connection.md#9-connection-failure-taxonomy) classifies every failure as terminal, retryable,
+contained or benign. Both clients diverge from it, in opposite directions.
+
+**C** keeps the wire code only for CONNACK. Refused SUBACKs, failed PUBACKs and server-initiated
+DISCONNECTs all collapse to one generic transport result, so a deterministic refusal is retried and
+`0x8E Session taken over` is indistinguishable from a routine drop. The full list is
+[connection-c.md §9.5](connection-c.md).
+
+**.NET** preserves every code as a typed value and classifies CONNACK and DISCONNECT explicitly.
+Two rows disagree with the contract:
+
+- `0x83 Implementation specific error` on CONNACK is treated as fatal. The contract classes it
+  retryable, because the code is server-defined and opaque — the server has declined to say whether
+  the condition is permanent, and assuming it is abandons a device that could have reconnected.
+- Every socket-level failure is treated as fatal. The contract classes name-resolution failures,
+  refused connections, unreachable networks and resets as retryable. The code carries a comment
+  acknowledging this and calling for the distinction to be drawn.
+
