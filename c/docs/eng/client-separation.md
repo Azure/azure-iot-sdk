@@ -636,14 +636,16 @@ Tracked as **[AB#39350066](https://dev.azure.com/msazure/One/_workitems/edit/393
 > its own SUBACK before publishing birth — it simply is not applied to feature
 > subscriptions.
 >
-> **What a refusal means, and what the gate does about it.** A refused SUBACK is
-> neither a protocol error nor a service fault: MQTT lets a broker decline a
-> filter, and on gen2 that is the topic-space grant
-> `ih/${client.authenticationName}/dev/#` doing its job. It says nothing about the
-> client certificate — X.509 is validated at CONNECT, so a revoked or
-> unvalidatable cert fails the CONNACK as `AZ_IOT_ERR_IDENTITY_REJECTED` long
-> before any SUBACK. A refusal means an already-authenticated identity asked for a
-> filter outside what it may have.
+> **What a refusal means, and what the gate does about it.** A refused SUBACK is a
+> legitimate, spec-defined answer rather than a malfunction: MQTT lets a broker
+> decline a filter, and on gen2 that is the topic-space grant
+> `ih/${client.authenticationName}/dev/#` doing its job. What the refusal *by
+> itself* cannot tell you is whether the cause is permanent or a passing
+> service-side fault; only the reason code separates those, and they need opposite
+> responses. It says nothing about the client certificate either — X.509 is
+> validated at CONNECT, so a revoked or unvalidatable cert fails the CONNACK as
+> `AZ_IOT_ERR_IDENTITY_REJECTED` long before any SUBACK. A refusal means an
+> already-authenticated identity asked for a filter outside what it may have.
 >
 > That leaves two causes with opposite correct responses, so the gate has to tell
 > them apart rather than pick one:
@@ -684,6 +686,29 @@ Tracked as **[AB#39350066](https://dev.azure.com/msazure/One/_workitems/edit/393
 > phase — the distinction is built now because retrofitting it after the gate ships
 > would mean changing the gate's contract.
 >
+> **Scope decides the blast radius; the reason decides only what happens inside
+> it.** These are not independent axes to be combined case by case — leaving the
+> intersection unstated is how two implementations end up disagreeing about what a
+> quota-exceeded custom topic should do:
+>
+> | | `FAILS_SESSION` | `FAILS_SELF` |
+> |---|---|---|
+> | **Deterministic** (not authorized, filter invalid) | session fails terminally, no retry | reported to the owner with the reason and the raw code, entry dropped, `CONNECTED` proceeds |
+> | **Retryable** (quota exceeded, unspecified) | reconnect under the existing policy | identical to the cell above |
+>
+> A `FAILS_SELF` entry never reconnects the session, whatever the reason. Doing so
+> would contradict the scope declared for it — a filter whose failure is defined as
+> contained cannot be allowed to restart the transport — and a SUBSCRIBE is
+> one-shot, so there is no in-session retry to fall back on either. The owner is
+> told *why*, transient or not, and re-registering is its decision, through the
+> same path it used to register in the first place. That costs no new mechanism.
+>
+> **Only `FAILS_SESSION` entries gate `CONNECTED`.** `FAILS_SELF` filters are
+> issued in the same batch but are not waited on: their outcome cannot change
+> whether the session is honest about being live, so holding the transition for
+> them would only delay it. Their SUBACK is reported to the owner whenever it
+> arrives, grant or refusal.
+>
 > **The reason code must survive the adapter.** None of the above is expressible
 > unless the adapter stops flattening SUBACK codes to `AZ_IOT_ERR_MQTT`, which is
 > what both Paho paths do today. That is the same mistake
@@ -709,7 +734,27 @@ Tracked as **[AB#39350066](https://dev.azure.com/msazure/One/_workitems/edit/393
 > timeout covers the gen2 presence handshake, and keep-alive cannot help because
 > the link is alive. A broker that accepts the connection and simply never answers
 > the SUBSCRIBE would otherwise leave the client in `CONNECTING` indefinitely.
-> Expiry is retryable.
+>
+> The contract, stated so two implementations cannot choose differently:
+>
+> - **Duration** — `AZ_IOT_SUBSCRIPTION_ACK_TIMEOUT_MS`, default 60000, overridable
+>   at compile time like the other footprint and timeout knobs in
+>   [`az_iot_connection_client.h`](../../inc/azure/iot/az_iot_connection_client.h).
+>   It matches `AZ_IOT_PRESENCE_BIRTH_ACK_TIMEOUT_MS` because it bounds the same
+>   kind of wait, and having two different "the broker went quiet" windows on one
+>   connect path would be arbitrary.
+> - **Start** — when the gate is armed, that is, once the last SUBSCRIBE of the
+>   batch has been handed to the adapter. Not per filter: they are issued together.
+> - **Reset** — never. One deadline covers the whole batch, and an arriving SUBACK
+>   does not extend it. A per-SUBACK reset would let a broker that acks one filter
+>   just inside each window hold `CONNECTED` open indefinitely, which is the exact
+>   failure the deadline exists to bound.
+> - **Expiry** — retryable: reconnect under the policy, or fault when reconnect is
+>   disabled, the same as any other transient connect failure. It is not
+>   `AZ_IOT_ERR_SUBSCRIPTION_REFUSED`, because silence is not a refusal and the
+>   broker may well grant the filter on the next attempt.
+> - **Scope** — it covers the gated (`FAILS_SESSION`) set only, since that is all
+>   the gate waits on.
 >
 > **2. Persistent subscriptions cannot be removed.**
 > `__add_subscription_on_connect()` has no remove counterpart, and every feature
