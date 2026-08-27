@@ -21,6 +21,8 @@ namespace Microsoft.Azure.Devices.Client.Provisioning
         private const string RegisterTopic = "$dps/registrations/PUT/iotdps-register/?$rid={0}";
         private const string GetOperationsTopic = "$dps/registrations/GET/iotdps-get-operationstatus/?$rid={0}&operationId={1}";
         private const string RetryAfterHeader = "Retry-After";
+        private const string DpsApiVersions = "2026-11-02-preview";
+
 
         private static readonly TimeSpan s_defaultOperationPollingInterval = TimeSpan.FromSeconds(2);
 
@@ -227,7 +229,7 @@ namespace Microsoft.Azure.Devices.Client.Provisioning
                 UsernameFormat,
                 idScope,
                 authentication.GetRegistrationId(),
-                "2019-03-31",
+                DpsApiVersions,
                 Uri.EscapeDataString(GetUserAgentString()));
 
 
