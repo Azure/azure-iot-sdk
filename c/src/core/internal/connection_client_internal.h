@@ -122,13 +122,39 @@ extern "C"
   /* Register a persistent subscription that is (re)issued on every CONNECTED
    * transition. Feature clients call this at create time so the SUBSCRIBE is
    * automatically refreshed across reconnects. The topic_filter string is
-   * copied. Returns ERR_NOT_SUPPORTED if the persistent-subscription registry
+   * copied. Returns ERR_NOT_ENOUGH_SPACE if the persistent-subscription registry
    * is full (current bound: 8). If the client is already CONNECTED, the
-   * SUBSCRIBE is also issued immediately. */
+   * SUBSCRIBE is also issued immediately.
+   *
+   * `owner` identifies the registering feature client so it can withdraw its
+   * own entries later; pass the same pointer used for the inbound handlers. */
   az_iot_result az_iot_connection_client__add_subscription_on_connect(
       az_iot_connection_client* client,
       const char* topic_filter,
-      az_iot_mqtt_qos qos);
+      az_iot_mqtt_qos qos,
+      const void* owner);
+
+  /* Withdraw every persistent subscription registered by `owner`. Returns the
+   * number removed.
+   *
+   * Each removed entry is also UNSUBSCRIBEd when connected, on both
+   * generations. AEG's device-wide `ih/{device_id}/dev/#` subscription is not
+   * at risk from this: the presence handshake takes it out directly rather than
+   * through the persistent-subscription registry, so it has no owner and this
+   * function can never select it. What AEG feature clients do register are their
+   * own per-feature filters underneath that wildcard, and those are exactly what
+   * should be withdrawn when the client that registered them goes away.
+   * Withdrawing one does not disturb the wildcard, which keeps matching.
+   *
+   * (Those per-feature AEG filters are redundant with the wildcard and are due
+   * to be dropped entirely; until they are, they are real subscriptions and are
+   * released here rather than left live until the session ends.)
+   *
+   * Safe to call when disconnected: the entries are dropped either way, so a
+   * later reconnect does not resurrect them. */
+  size_t az_iot_connection_client__remove_subscriptions_for(
+      az_iot_connection_client* client,
+      const void* owner);
 
   /* Map session role to required MQTT version (SDK-internal knowledge). */
   static inline az_iot_mqtt_version az_iot_mqtt_required_version_for_role(az_iot_mqtt_role role)
