@@ -28,7 +28,7 @@ namespace Microsoft.Azure.Devices.Client.Unified.Connection
         /// <summary>
         /// This event signals that the device is connected and has established all necessary subscriptions with IoT Hub.
         /// </summary>
-        private event Action? DeviceReadyAsync; //TODO need to send back error cases, too. Keep it private so that that ugliness is hidden?
+        private event Func<DevicePresenceFlowCompletedArgs, Task>? DevicePresenceFlowCompletedAsync;
 
         public event Func<MqttPublishReceivedEventArgs, Task>? PublishReceivedAsync;
 
@@ -53,15 +53,13 @@ namespace Microsoft.Azure.Devices.Client.Unified.Connection
         {
             options ??= new ConnectionClientOptions();
 
-            MqttSessionClientOptions sessionClientOptions = new()
-            {
-                ConnectionRetryPolicy = options.ConnectionRetryPolicy,
-                EnableMqttLogging = options.EnableMqttLogging,
-            };
-
             _isUserSuppliedMqttClient = options.MqttClient != null;
 
-            _managedMqttConnection = new(options.MqttClient ?? new MqttNetClient(), sessionClientOptions);
+            // This is the basic MQTT client that has no reconnection/retry logic
+            var unmanagedMqttClient = options.MqttClient ?? new MqttNetClient(enableMqttLogs: options.EnableMqttLogging);
+
+            // This is the wrapper that manages reconnection
+            _managedMqttConnection = new(unmanagedMqttClient, options.ConnectionAttemptTimeout, options.ConnectionRetryPolicy);
 
             _gen2ConnectionClient = new(options);
 
@@ -75,9 +73,9 @@ namespace Microsoft.Azure.Devices.Client.Unified.Connection
         private async Task HandleGen2ClientConnectionReady(DevicePresenceFlowCompletedArgs args)
         {
             // When the underlying gen2 connection client has re-established its presence, then it is ready to use (analogous to a gen1 client that has finished re-subscribing to twin/direct methods/telemetry topics)
-            if (DeviceReadyAsync != null)
+            if (DevicePresenceFlowCompletedAsync != null)
             {
-                DeviceReadyAsync.Invoke();
+                await DevicePresenceFlowCompletedAsync.Invoke(new DevicePresenceFlowCompletedArgs() { IsSuccess = true });
             }
         }
 
@@ -96,12 +94,14 @@ namespace Microsoft.Azure.Devices.Client.Unified.Connection
             // Upon an MQTT connection being established, immediately re-subscribe to all twin/telemetry/direct methods topics if there is no session present.
             if (args.ConnectAck.IsSessionPresent)
             {
-                if (DeviceReadyAsync != null)
+                Debug.Assert(CurrentConnectionContext != null); // The context should be set even before the first connect attempt, so this should never fail
+                if (DevicePresenceFlowCompletedAsync != null && !CurrentConnectionContext.IsGen2Hub)
                 {
-                    DeviceReadyAsync.Invoke();
+                    // Only signal device is ready here for gen 1 client case. Gen 2 client still needs to re-announce birth before it is ready to resume normal traffic
+                    await DevicePresenceFlowCompletedAsync.Invoke(new DevicePresenceFlowCompletedArgs() { IsSuccess = true });
                 }
 
-                return; //TODO gen2 client case?
+                return;
             }
 
             // This callback should only be reached after provisioning, so their should always be a connection context to use
@@ -122,16 +122,18 @@ namespace Microsoft.Azure.Devices.Client.Unified.Connection
                 anySubscribeFailed |= (topicSuback.ResultCode != MqttClientSubscribeResultCode.GrantedQoS0);
             }
 
-            //TODO how to signal that the connect needs to throw?
             if (anySubscribeFailed)
             {
-                await _managedMqttConnection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttClientDisconnectOptionsReason.ImplementationSpecificError }); //Does the session client stop retrying here? Use a disconnect code to signal
+                // Signal to the underlying MQTT connection manager that, even though we are manually disconnecting, we still want to reconnect.
+                await _managedMqttConnection.DisconnectAsync(true, new MqttDisconnect());
+
+                Trace.TraceError("Device failed to subscribe to one or more necessary MQTT topics upon connecting to IoT Hub. Disconnecting the MQTT client and trying again.");
             }
             else
             {
-                if (DeviceReadyAsync != null)
-                { 
-                    DeviceReadyAsync.Invoke();
+                if (DevicePresenceFlowCompletedAsync != null)
+                {
+                    await DevicePresenceFlowCompletedAsync.Invoke(new DevicePresenceFlowCompletedArgs() { IsSuccess = true });
                 }
             }
         }
@@ -278,9 +280,16 @@ namespace Microsoft.Azure.Devices.Client.Unified.Connection
 
             // Setup callbacks BEFORE sending CONNECT so that CONNACK can be handled regardless of how quickly it arrives
             TaskCompletionSource OnSubscribedTcs = new();
-            this.DeviceReadyAsync += async () =>
+            this.DevicePresenceFlowCompletedAsync += async (args) =>
             {
-                OnSubscribedTcs.TrySetResult();
+                if (args.IsSuccess)
+                {
+                    OnSubscribedTcs.TrySetResult();
+                }
+                else if (args.Exception != null)
+                {
+                    OnSubscribedTcs.TrySetException(args.Exception);
+                }
             };
 
             var connack = await _managedMqttConnection.ConnectAsync(connectPacket, cancellationToken);
@@ -330,7 +339,6 @@ namespace Microsoft.Azure.Devices.Client.Unified.Connection
                 }
             }
         }
-
 
         /// <summary>
         /// Releases the unmanaged resources used by this client and optionally disposes of the managed resources.
@@ -390,12 +398,16 @@ namespace Microsoft.Azure.Devices.Client.Unified.Connection
             // Assume an open connection to start, but increment this by one if MqttClientNotConnectedException is thrown to counteract that assumption
             using ManualResetEventSlim latch = new();
             latch.Set();
-            Action HandleDeviceReadyAsync = () =>
+
+            Func<DevicePresenceFlowCompletedArgs, Task> HandleDevicePresenceFlowCompletedAsync = async (args) =>
             {
-                latch.Set();
+                if (args.IsSuccess)
+                {
+                    latch.Set();
+                }
             };
 
-            DeviceReadyAsync += HandleDeviceReadyAsync;
+            DevicePresenceFlowCompletedAsync += HandleDevicePresenceFlowCompletedAsync;
             try
             {
                 while (true) // Retry sending publish until user cancels as long as the failure is just that the underlying mqtt client was disconnected.
@@ -421,7 +433,7 @@ namespace Microsoft.Azure.Devices.Client.Unified.Connection
             }
             finally
             {
-                DeviceReadyAsync -= HandleDeviceReadyAsync;
+                DevicePresenceFlowCompletedAsync -= HandleDevicePresenceFlowCompletedAsync;
             }
         }
 
