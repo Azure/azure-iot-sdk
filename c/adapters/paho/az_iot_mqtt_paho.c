@@ -506,10 +506,7 @@ static void paho_maybe_enable_trace(void)
 
 /* Only a code that actually came off the wire is reportable as one. Paho's own
  * failures are negative, and 0 is this field's "not applicable". */
-static int32_t paho_wire_code(int code)
-{
-  return (code > 0) ? (int32_t)code : 0;
-}
+static int32_t paho_wire_code(int code) { return (code > 0) ? (int32_t)code : 0; }
 
 /* Paho reports a broker-side CONNACK rejection through nextOrClose(), which
  * fills failureData::code with the CONNACK return code and sets the message to
