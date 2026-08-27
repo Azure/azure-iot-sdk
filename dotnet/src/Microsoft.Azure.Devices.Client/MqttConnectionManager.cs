@@ -101,6 +101,8 @@ namespace Microsoft.Azure.Devices.Client
             _isClosing = false;
             MqttConnectAck? connectResult = await MaintainConnectionAsync(connect, null, cancellationToken);
 
+            //TODO handle the case where IoT hub CONNACK rejects device identity and the expected device response is to reprovision?
+
             // By design, MaintainConnectionAsync should only return null when called during reconnection.
             // When called by this method, MaintainConnectionAsync should return a non-null value or throw.
             Debug.Assert(connectResult != null);

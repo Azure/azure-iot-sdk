@@ -13,6 +13,7 @@ namespace Microsoft.Azure.Devices.Client.Gen2.DirectMethods
     /// </summary>
     public class DirectMethodClient : IDisposable
     {
+        //TODO need to think more on connection loss scenario. If direct method is received and is mid-processing when connection is lost, what should happen? Is sending response publish upon reconnect enough?
         private const string ProtobufContentType = "application/protobuf";
 
         // Only applicable for AEG Hub scenario. Maps from request Id (GUID) to ready Id (also GUID). When this client receives an Exec message, it should only notify the user about it
