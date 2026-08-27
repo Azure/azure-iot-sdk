@@ -93,6 +93,8 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Twin
         /// <exception cref="PublishRejectedException">Thrown if this get twin request is rejected by IoT Hub for any reason.</exception>
         public async Task<DeviceTwin> GetTwinAsync(bool getReported = true, bool getDesired = true, ulong ifNotMatchReported = 0, ulong ifNotMatchDesired = 0,  CancellationToken cancellationToken = default)
         {
+            //TODO need to handle case where get twin request is successfully published, but connection + session is lost before receiving response.
+            // Would need to re-send the get twin request upon device ready
             ObjectDisposedException.ThrowIf(_isDisposed, this);
 
             var currentConnectionContext = EnsureCorrectConnectionContext();

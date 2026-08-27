@@ -88,16 +88,10 @@ internal class Program
         });
     }
 
-    private static Task<ProbeAck> DirectMethodProbeReceivedAsync(DirectMethodRequestProbeReceivedEventArgs arg)
+    private static Task<DirectMethodProbeAck> DirectMethodProbeReceivedAsync(DirectMethodRequestProbeReceivedEventArgs arg)
     {
         Console.WriteLine("Received direct method probe for method with name " + arg.MethodName + " and response timeout seconds " + arg.ResponseTimeoutSeconds + ". Responding with positive probe ack");
-        return Task.FromResult(new ProbeAck()
-        { 
-            Ready = new Ready()
-            { 
-                ReadyId = ByteString.CopyFrom(Guid.NewGuid().ToByteArray()),
-            }
-        });
+        return Task.FromResult(DirectMethodProbeAck.Accepted());
     }
 
     private static void DesiredPatchReceived(DesiredPatchReceivedEventArgs args)

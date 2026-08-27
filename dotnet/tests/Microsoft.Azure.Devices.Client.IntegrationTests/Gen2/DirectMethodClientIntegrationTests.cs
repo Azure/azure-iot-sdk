@@ -45,16 +45,10 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Gen2
 
                     ProbeReceivedTcs.TrySetResult(args);
 
-                    return Task.FromResult(new ProbeAck
-                    {
-                        Ready = new Ready { ReadyId = ByteString.CopyFrom(readyId) }
-                    });
+                    return Task.FromResult(DirectMethodProbeAck.Accepted());
                 }
 
-                return Task.FromResult(new ProbeAck
-                {
-                    Rejected = new Rejected { Reason =  RejectedReason.MethodNotFound }
-                });
+                return Task.FromResult(DirectMethodProbeAck.Rejected(RejectedReason.MethodNotFound));
             };
 
             TaskCompletionSource<DirectMethodRequestReceivedEventArgs> DirectMethodReceivedTcs = new();
@@ -156,10 +150,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Gen2
                 {
                     Probe1ReceivedTcs.TrySetResult(args);
 
-                    return Task.FromResult(new ProbeAck
-                    {
-                        Rejected = new Rejected { Reason = RejectedReason.DeviceBusy }
-                    });
+                    return Task.FromResult(DirectMethodProbeAck.Rejected(RejectedReason.DeviceBusy));
                 }
                 else if (args.MethodName.Equals(expectedDirectMethod2Name) && args.ResponseTimeoutSeconds == expectedResponseTimeout)
                 {
@@ -167,16 +158,10 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Gen2
 
                     Probe2ReceivedTcs.TrySetResult(args);
                     
-                    return Task.FromResult(new ProbeAck
-                    {
-                        Ready = new Ready { ReadyId = ByteString.CopyFrom(readyId) }
-                    });
+                    return Task.FromResult(DirectMethodProbeAck.Accepted());
                 }
 
-                return Task.FromResult(new ProbeAck
-                {
-                    Rejected = new Rejected { Reason = RejectedReason.MethodNotFound }
-                });
+                return Task.FromResult(DirectMethodProbeAck.Rejected(RejectedReason.MethodNotFound));
             };
 
             TaskCompletionSource<DirectMethodRequestReceivedEventArgs> DirectMethodReceivedTcs = new();

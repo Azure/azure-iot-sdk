@@ -31,27 +31,16 @@ internal class Program
         using ConnectionClient connectionClient = new ConnectionClient();
 
         using DirectMethodClient directMethodClient = new DirectMethodClient(connectionClient);
-        Func<DirectMethodRequestProbeReceivedEventArgs, Task<ProbeAck>> HandleDirectMethodProbeAsync = (args) =>
+        Func<DirectMethodRequestProbeReceivedEventArgs, Task<DirectMethodProbeAck>> HandleDirectMethodProbeAsync = async (args) =>
         {
             if (args.MethodName.Equals(MethodName))
             {
-                //TODO just generate this for the user
-                byte[] readyId = Guid.NewGuid().ToByteArray();
-
                 Console.WriteLine($"Received direct method probe for the expected method '{args.MethodName}'. Responding to IoT Hub that this device is ready for it.");
-
-                return Task.FromResult(new ProbeAck
-                {
-                    Ready = new Ready { ReadyId = ByteString.CopyFrom(readyId) }
-                });
+                return DirectMethodProbeAck.Accepted();
             }
             
             Console.WriteLine($"Received direct method probe for an unknown method '{args.MethodName}'. Rejecting it.");
-
-            return Task.FromResult(new ProbeAck
-            {
-                Rejected = new Rejected { Reason = RejectedReason.MethodNotFound }
-            });
+            return DirectMethodProbeAck.Rejected(RejectedReason.MethodNotFound);
         };
 
         Func<DirectMethodRequestReceivedEventArgs, Task<DirectMethodResponse>> HandleDirectMethodAsync = (args) =>

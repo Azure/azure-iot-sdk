@@ -13,6 +13,7 @@ namespace Microsoft.Azure.Devices.Client.Gen2.DirectMethods
     /// </summary>
     public class DirectMethodClient : IDisposable
     {
+        //TODO need to think more on connection loss scenario. If direct method is received and is mid-processing when connection is lost, what should happen? Is sending response publish upon reconnect enough?
         private const string ProtobufContentType = "application/protobuf";
 
         // Only applicable for AEG Hub scenario. Maps from request Id (GUID) to ready Id (also GUID). When this client receives an Exec message, it should only notify the user about it
@@ -35,7 +36,7 @@ namespace Microsoft.Azure.Devices.Client.Gen2.DirectMethods
         /// and allows your application to decide whether it is ready to receive this direct method or not.
         /// </summary>
         /// <remarks>This feature is only supported by IoT hubs that use Azure Event Grid. Older IoT hubs will never send this probe.</remarks>
-        public event Func<DirectMethodRequestProbeReceivedEventArgs, Task<ProbeAck>>? DirectMethodProbeReceivedAsync;
+        public event Func<DirectMethodRequestProbeReceivedEventArgs, Task<DirectMethodProbeAck>>? DirectMethodProbeReceivedAsync;
 
         /// <summary>
         /// Construct a new <see cref="DirectMethodClient"/> instance.
@@ -126,7 +127,7 @@ namespace Microsoft.Azure.Devices.Client.Gen2.DirectMethods
 
                 Probe probe = Probe.Parser.ParseFrom(publish.Payload);
 
-                ProbeAck probeAck = await DirectMethodProbeReceivedAsync.Invoke(new() { MethodName = probe.MethodName, ResponseTimeoutSeconds = probe.ResponseTimeoutSeconds });
+                DirectMethodProbeAck probeAck = await DirectMethodProbeReceivedAsync.Invoke(new() { MethodName = probe.MethodName, ResponseTimeoutSeconds = probe.ResponseTimeoutSeconds });
 
                 stopwatch.Stop();
 
@@ -154,7 +155,7 @@ namespace Microsoft.Azure.Devices.Client.Gen2.DirectMethods
                 {
                     Topic = string.Format("ih/{0}/srv/methods", currentConnectionContext.DeviceId),
                     QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce,
-                    Payload = probeAck.ToByteArray(),
+                    Payload = probeAck.ProbeAck.ToByteArray(),
                     CorrelationData = publish.CorrelationData,
                     MessageExpiryInterval = remainingConnectTimeoutInSeconds,
                     ContentType = ProtobufContentType
@@ -162,10 +163,10 @@ namespace Microsoft.Azure.Devices.Client.Gen2.DirectMethods
 
                 probeAckPublish.UserProperties.Add(new("type", Encoding.UTF8.GetBytes("probe-ack:1")));
 
-                if (probeAck.Ready != default)
+                if (probeAck.ProbeAck.Ready != default)
                 {
                     // The user signalled that the device was ready for the direct method, so locally save the ready Id and request Id
-                    _pendingExpectedDirectMethodReadyIds.TryAdd(requestId.Value, probeAck.Ready.ReadyId);
+                    _pendingExpectedDirectMethodReadyIds.TryAdd(requestId.Value, probeAck.ProbeAck.Ready.ReadyId);
                     _pendingExpectedDirectMethodNames.TryAdd(requestId.Value, probe.MethodName);
                 }
 
