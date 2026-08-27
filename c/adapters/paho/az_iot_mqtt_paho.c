@@ -179,12 +179,14 @@ static void q_drain_all(paho_client* m)
   }
 }
 
-/* Allocate + enqueue a simple status event (no message payload). */
-static void enqueue_status(
+/* Allocate + enqueue a simple status event (no message payload), carrying the
+ * code that came off the wire. */
+static void enqueue_status_code(
     paho_client* m,
     az_iot_mqtt_event_kind kind,
     az_iot_result status,
-    uint16_t packet_id)
+    uint16_t packet_id,
+    int32_t protocol_code)
 {
   queued_event* n = (queued_event*)calloc(1, sizeof(*n));
   if (!n)
@@ -194,7 +196,18 @@ static void enqueue_status(
   n->evt.kind = kind;
   n->evt.status = status;
   n->evt.packet_id = packet_id;
+  n->evt.protocol_code = protocol_code;
   q_push(m, n);
+}
+
+/* Allocate + enqueue a simple status event (no message payload). */
+static void enqueue_status(
+    paho_client* m,
+    az_iot_mqtt_event_kind kind,
+    az_iot_result status,
+    uint16_t packet_id)
+{
+  enqueue_status_code(m, kind, status, packet_id, 0);
 }
 
 /* Allocate + enqueue an inbound MESSAGE event. Topic + payload are deep-copied
@@ -491,6 +504,13 @@ static void paho_maybe_enable_trace(void)
   MQTTAsync_setTraceLevel((enum MQTTASYNC_TRACE_LEVELS)level);
 }
 
+/* Only a code that actually came off the wire is reportable as one. Paho's own
+ * failures are negative, and 0 is this field's "not applicable". */
+static int32_t paho_wire_code(int code)
+{
+  return (code > 0) ? (int32_t)code : 0;
+}
+
 /* Paho reports a broker-side CONNACK rejection through nextOrClose(), which
  * fills failureData::code with the CONNACK return code and sets the message to
  * "CONNACK return code". Every other connect failure it reports here is one of
@@ -513,6 +533,15 @@ static az_iot_result paho_connect_failure_result(
  * (MQTTREASONCODE_SUCCESS), while failures raised elsewhere do populate
  * `reasonCode`. Prefer `reasonCode` only when it actually holds a refusal
  * (>= 0x80), otherwise trust `code`. */
+static int paho_connect_failure5_code(const MQTTAsync_failureData5* response)
+{
+  if (!response)
+  {
+    return 0;
+  }
+  return ((int)response->reasonCode >= 0x80) ? (int)response->reasonCode : response->code;
+}
+
 static az_iot_result paho_connect_failure5_result(
     const paho_client* m,
     const MQTTAsync_failureData5* response)
@@ -521,8 +550,7 @@ static az_iot_result paho_connect_failure5_result(
   {
     return AZ_IOT_ERR_MQTT;
   }
-  int code = ((int)response->reasonCode >= 0x80) ? (int)response->reasonCode : response->code;
-  return az_iot_mqtt_connack_result(m->version, code);
+  return az_iot_mqtt_connack_result(m->version, paho_connect_failure5_code(response));
 }
 
 static void paho_connect_success(void* context, MQTTAsync_successData* response)
@@ -551,7 +579,12 @@ static void paho_connect_failure(void* context, MQTTAsync_failureData* response)
   }
   if (m)
   {
-    enqueue_status(m, AZ_IOT_MQTT_EVT_CONNECTED, paho_connect_failure_result(m, response), 0);
+    enqueue_status_code(
+        m,
+        AZ_IOT_MQTT_EVT_CONNECTED,
+        paho_connect_failure_result(m, response),
+        0,
+        paho_wire_code(response ? response->code : 0));
   }
 }
 
@@ -561,7 +594,17 @@ static void paho_subscribe_success(void* context, MQTTAsync_successData* respons
   uint16_t pid = response ? (uint16_t)response->token : 0;
   if (m)
   {
-    enqueue_status(m, AZ_IOT_MQTT_EVT_SUBSCRIBE_ACK, AZ_IOT_OK, pid);
+    /* alt.qos is the granted QoS the server returned. 0x80 Failure is the only
+     * refusal MQTT 3.1.1 can express, and it arrives here rather than on the
+     * failure callback, so a SUBACK that denied the filter would otherwise be
+     * reported to the core as a successful subscription. */
+    int code = response ? response->alt.qos : 0;
+    enqueue_status_code(
+        m,
+        AZ_IOT_MQTT_EVT_SUBSCRIBE_ACK,
+        az_iot_mqtt_suback_result(m->version, code),
+        pid,
+        paho_wire_code(code));
   }
 }
 
@@ -571,7 +614,13 @@ static void paho_subscribe_failure(void* context, MQTTAsync_failureData* respons
   uint16_t pid = response ? (uint16_t)response->token : 0;
   if (m)
   {
-    enqueue_status(m, AZ_IOT_MQTT_EVT_SUBSCRIBE_ACK, AZ_IOT_ERR_MQTT, pid);
+    int code = response ? response->code : -1;
+    enqueue_status_code(
+        m,
+        AZ_IOT_MQTT_EVT_SUBSCRIBE_ACK,
+        az_iot_mqtt_suback_result(m->version, code),
+        pid,
+        paho_wire_code(code));
   }
 }
 
@@ -634,7 +683,12 @@ static void paho_connect_failure5(void* context, MQTTAsync_failureData5* respons
   }
   if (m)
   {
-    enqueue_status(m, AZ_IOT_MQTT_EVT_CONNECTED, paho_connect_failure5_result(m, response), 0);
+    enqueue_status_code(
+        m,
+        AZ_IOT_MQTT_EVT_CONNECTED,
+        paho_connect_failure5_result(m, response),
+        0,
+        paho_wire_code(paho_connect_failure5_code(response)));
   }
 }
 
@@ -646,18 +700,15 @@ static void paho_subscribe_success5(void* context, MQTTAsync_successData5* respo
     return;
   }
   uint16_t pid = response ? (uint16_t)response->token : 0;
-  /* Honor the MQTT5 SUBACK reason code. A granted subscription returns the
-   * granted QoS (0..2); a value >= 0x80 (e.g. 0x87 Not authorized, 0x8F Topic
-   * filter invalid) is a refusal. Paho invokes onSuccess5 whenever a SUBACK
-   * arrives regardless of the code, so without this check a denied
-   * subscription would be reported to the core as a successful one. */
-  az_iot_result status = AZ_IOT_OK;
-  if (response && (int)response->reasonCode >= 0x80)
+  /* Paho invokes onSuccess5 whenever a SUBACK arrives, whatever it says, so the
+   * reason code is the only thing separating a grant from a refusal here. */
+  int code = response ? (int)response->reasonCode : 0;
+  az_iot_result status = az_iot_mqtt_suback_result(m->version, code);
+  if (status != AZ_IOT_OK)
   {
-    AZ_IOT_LOG_WARNF("paho: SUBACK refused: reason_code=%d", (int)response->reasonCode);
-    status = AZ_IOT_ERR_MQTT;
+    AZ_IOT_LOG_WARNF("paho: SUBACK refused: reason_code=%d", code);
   }
-  enqueue_status(m, AZ_IOT_MQTT_EVT_SUBSCRIBE_ACK, status, pid);
+  enqueue_status_code(m, AZ_IOT_MQTT_EVT_SUBSCRIBE_ACK, status, pid, paho_wire_code(code));
 }
 
 static void paho_subscribe_failure5(void* context, MQTTAsync_failureData5* response)
@@ -666,7 +717,15 @@ static void paho_subscribe_failure5(void* context, MQTTAsync_failureData5* respo
   uint16_t pid = response ? (uint16_t)response->token : 0;
   if (m)
   {
-    enqueue_status(m, AZ_IOT_MQTT_EVT_SUBSCRIBE_ACK, AZ_IOT_ERR_MQTT, pid);
+    int code = response
+        ? (((int)response->reasonCode >= 0x80) ? (int)response->reasonCode : response->code)
+        : -1;
+    enqueue_status_code(
+        m,
+        AZ_IOT_MQTT_EVT_SUBSCRIBE_ACK,
+        az_iot_mqtt_suback_result(m->version, code),
+        pid,
+        paho_wire_code(code));
   }
 }
 

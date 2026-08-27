@@ -120,6 +120,16 @@ extern "C"
     az_iot_result status; /* for ACK / ERROR events */
     const az_iot_mqtt_message* message; /* for AZ_IOT_MQTT_EVT_MESSAGE only */
     bool session_present; /* for AZ_IOT_MQTT_EVT_CONNECTED (v5 CONNACK) */
+    /* The code that came off the wire, verbatim, for the ack this event carries
+     * (a CONNACK return/reason code, a SUBACK return/reason code). 0 when the
+     * event carries none, which is also what a producer that never sets it
+     * reports -- so it is only meaningful alongside a failing `status`.
+     *
+     * `status` is the classification the SDK acts on; this is the evidence for
+     * it. Both travel because a classification cannot describe a code this SDK
+     * has never seen, and a log that prints only "AZ_IOT_ERR_MQTT" cannot
+     * either. Diagnostics and telemetry only -- never branch on it. */
+    int32_t protocol_code;
   } az_iot_mqtt_event;
 
   typedef void (*az_iot_mqtt_event_callback)(const az_iot_mqtt_event* evt, void* user_ctx);
@@ -196,6 +206,32 @@ extern "C"
    * safe one. */
   AZ_NODISCARD az_iot_result
   az_iot_mqtt_connack_result(az_iot_mqtt_version version, int connack_code);
+
+  /* Map a SUBACK code from the wire onto the status an adapter reports with
+   * AZ_IOT_MQTT_EVT_SUBSCRIBE_ACK. The SUBACK counterpart of
+   * az_iot_mqtt_connack_result(), and adapters should route every SUBACK
+   * through it for the same reason: the core needs one vocabulary regardless of
+   * which MQTT client is underneath.
+   *
+   * The distinction that matters here is permanent-versus-transient. A filter
+   * the broker will never accept (not authorized, invalid filter) becomes
+   * AZ_IOT_ERR_SUBSCRIPTION_REFUSED, because re-issuing it can only be refused
+   * again; a quota or unspecified error stays AZ_IOT_ERR_MQTT and is retried,
+   * which is how a transient service-side fault presents.
+   *
+   * `suback_code` is the value carried in the SUBACK: a granted QoS (0..2), a
+   * v3.1.1 failure (0x80), or a v5 reason code (>= 0x80). **A granted QoS lower
+   * than the one requested is a success, not a refusal** -- the subscription
+   * exists and MQTT delivers at min(publish QoS, granted QoS). A negative value
+   * is treated as an adapter-internal failure (socket, TLS, library error): it
+   * never reached a broker, so it says nothing about the filter and is retried.
+   *
+   * `version` selects which code scheme applies. A version this function does
+   * not recognize yields AZ_IOT_ERR_MQTT for any non-grant code -- guessing a
+   * scheme would be guessing whether to fail the session, and retrying is the
+   * safe half of that split. */
+  AZ_NODISCARD az_iot_result
+  az_iot_mqtt_suback_result(az_iot_mqtt_version version, int suback_code);
 
 #ifdef __cplusplus
 }
