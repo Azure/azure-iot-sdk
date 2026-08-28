@@ -54,16 +54,11 @@ jobs:
         uses: ./.github/actions/provision-e2e-resources
         with:
           rg-name: ${{ env.E2E_RESOURCE_GROUP }}
-          # Two DPS enrollments so the parallel Linux/Windows test legs can each
-          # claim their own device (see the per-leg device-index selection below)
-          # and never share a device twin.
-          dps-x509-individual-enrollments: '2'
-          # Provision an Azure Storage account associated with the hub so the
-          # always-run file-upload e2e (az_iot_tests_e2e_fileupload) can obtain a
-          # SAS URI and upload a blob.
-          enable-file-upload: 'false' #TODO to revert
+          azure-location: eastus
           enable-certificate-management: 'true'
-          config-cmdlet: 'New-AzIotNetSDKE2ETestConfig'
+          dps-x509-group-enrollment-devices: '2'
+          dps-x509-individual-enrollments: '2'
+
       - name: Upload test config
         uses: actions/upload-artifact@v4
         with:
