@@ -32,7 +32,7 @@ internal class Program //TODO distinguish naming on operational vs boot certific
         // Provision and connect to IoT hub using the certificates signed by DPS. Save those certificates signed by DPS locally
         ProvisioningSettings provisioningSettings = new(idScope)
         {
-            ProvisioningCertificateSigningRequest = csrBase64,
+            CertificateSigningRequest = new(privateKey, csrBase64),
         };
         ConnectionContext connectionContext = await connectionClient.ProvisionAndConnectAsync(provisioningSettings, authentication);
         File.WriteAllText(InitialSignedCertificatesPath, ConvertToPem(connectionContext.IssuedClientCertificates)); // Save the DPS-issued certificate locally

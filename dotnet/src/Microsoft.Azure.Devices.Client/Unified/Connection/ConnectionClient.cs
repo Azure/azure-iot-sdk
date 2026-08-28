@@ -10,6 +10,7 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
 
 namespace Microsoft.Azure.Devices.Client.Unified.Connection
@@ -152,7 +153,7 @@ namespace Microsoft.Azure.Devices.Client.Unified.Connection
             _managedMqttConnection.ConnectedAsync -= HandleConnectedToHubAsync; // Don't respond to connection attempts to DPS with IoT hub connection handling
 
             ProvisioningConnection provisioningConnection = new();
-            var provisioningResult = await provisioningConnection.RegisterAsync(_managedMqttConnection, new() { ClientCertificateSigningRequest = null, Payload = provisioningSettings.ProvisioningPayload }, authentication, provisioningSettings.IdScope, provisioningSettings.GlobalEndpointAddress, cancellationToken);
+            var provisioningResult = await provisioningConnection.RegisterAsync(_managedMqttConnection, new() { ClientCertificateSigningRequest = provisioningSettings.CertificateSigningRequest?.Base64CertificateSigningRequest, Payload = provisioningSettings.ProvisioningPayload }, authentication, provisioningSettings.IdScope, provisioningSettings.GlobalEndpointAddress, cancellationToken);
 
             //TODO several mqtt client options should not be provided by the user (ie, host name). Add checks here that validate all of them
 
@@ -167,7 +168,26 @@ namespace Microsoft.Azure.Devices.Client.Unified.Connection
 
             _managedMqttConnection.ConnectedAsync += HandleConnectedToHubAsync;
 
-            //TODO use issued client certs if CSR was done during provisioning
+
+            // If CSR was a part of the provisioning request, then connect to IoT hub using the issued client certificates rather than the same certs used to connect to DPS.
+            if (provisioningResult.IssuedClientCertificateChain != null && provisioningResult.IssuedClientCertificateChain.Count > 0)
+            {
+                //TODO any security concerns around owning this step in the SDK?
+                // Convert to PEM and save
+                string pemChain = CertificateUtilities.ConvertToPem(provisioningResult.IssuedClientCertificateChain);
+
+                using X509Certificate2 deviceCertTemp = CertificateUtilities.CreateCertificateWithPrivateKey(provisioningResult.IssuedClientCertificateChain, provisioningSettings.CertificateSigningRequest!.PrivateKey);
+
+                // Export and reimport with Exportable flag
+                byte[] pfxBytes = deviceCertTemp.Export(X509ContentType.Pfx);
+                CurrentConnectionContext.AuthenticationProvider = new(new X509Certificate2(pfxBytes, (string?)null, X509KeyStorageFlags.Exportable));
+            }
+            else
+            {
+                // Otherwise use the same certs when connecting to IoT hub that were used to connect to DPS
+                CurrentConnectionContext.AuthenticationProvider = authentication;
+            }
+
             await ConnectAsync(CurrentConnectionContext, cancellationToken);
 
             return CurrentConnectionContext;

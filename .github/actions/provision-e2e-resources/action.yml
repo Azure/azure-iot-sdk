@@ -98,7 +98,7 @@ runs:
       with:
         azPSVersion: "latest"
         inlineScript: |
-          Invoke-WebRequest -Uri "https://raw.githubusercontent.com/Azure/iot-sdks-e2e-fx/refs/heads/master/scripts/Azure.Iot.Sdk.Test.psm1" -OutFile "./Azure.Iot.Sdk.Test.psm1"
+          Invoke-WebRequest -Uri "https://raw.githubusercontent.com/Azure/iot-sdks-e2e-fx/refs/heads/timtay/net/scripts/Azure.Iot.Sdk.Test.psm1" -OutFile "./Azure.Iot.Sdk.Test.psm1"
           Import-Module "./Azure.Iot.Sdk.Test.psm1"
           New-Item -ItemType Directory -Force -Path (Split-Path -Parent "${{ inputs.out-file }}") | Out-Null
           if (-not [string]::IsNullOrWhiteSpace($env:AZ_IOT_RG_NAME)) {

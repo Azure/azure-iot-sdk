@@ -84,7 +84,7 @@ namespace Microsoft.Azure.Devices.Client.Provisioning.Models
         public X509RegistrationResult? X509 { get; set; }
 
         [JsonPropertyName("issuedCertificateChain")]
-        public IReadOnlyList<string>? IssuedClientCertificateChain { get; private set; }
+        public IReadOnlyList<string>? IssuedClientCertificateChain { get; set; }
 
         public bool IsAzureEventGridHub { get; set; } = false; //TODO manually added field, but I think this is where DPS service folks will add it
     }

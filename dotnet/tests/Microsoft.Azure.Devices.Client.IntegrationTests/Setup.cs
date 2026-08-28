@@ -273,7 +273,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
             ConnectionClient connectionClient = new();
             ProvisioningSettings provisioningSettings = new(DpsIdScope)
             {
-                ProvisioningCertificateSigningRequest = csrBase64,
+                CertificateSigningRequest = new(privateKey, csrBase64)
             };
 
             ConnectionContext connectionContext = await RetryAroundAuthorizationAsync<ConnectionContext>(
@@ -391,7 +391,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
             }
         }
 
-        private static AsymmetricAlgorithm LoadPrivateKeyFromPem(string keyPem)
+        public static AsymmetricAlgorithm LoadPrivateKeyFromPem(string keyPem)
         {
             // Try ECC first, then RSA
             if (keyPem.Contains("EC PRIVATE KEY") || keyPem.Contains("PRIVATE KEY"))
