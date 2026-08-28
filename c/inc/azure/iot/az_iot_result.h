@@ -45,7 +45,14 @@ extern "C"
      * guessing the wire protocol, so the connection fails closed -- the profile
      * stays readable via az_iot_connection_client_get_hub_profile(), including
      * the verbatim wire string, so the value can be logged or reported. */
-    AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED
+    AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED,
+    /* The broker refused a topic filter for a reason a retry cannot change --
+     * the filter is not authorized, or not one it will ever accept. Distinct
+     * from AZ_IOT_ERR_MQTT so a caller can separate a filter that will be
+     * refused identically next time from one that failed because the service
+     * was briefly unwell. What the connection does with that distinction is
+     * the subscription gate's decision, not this code's. */
+    AZ_IOT_ERR_SUBSCRIPTION_REFUSED
   } az_iot_result;
 
   const char* az_iot_result_to_string(az_iot_result r);

@@ -305,6 +305,85 @@ static void mapped_connack_status_reaches_the_inbound_callback(void** state)
   az_iot_mock_mqtt_factory_destroy(f);
 }
 
+/* ---- SUBACK code mapping ---------------------------------------------------
+ * The gate that withholds CONNECTED until every persistent filter is SUBACKed
+ * acts on this split: a refusal a retry cannot change fails the session, while
+ * a transient one reconnects. Flattening the two -- which is what the adapters
+ * did before this mapper existed -- turns a permanently refused filter into a
+ * reconnect loop with no exit. */
+
+static void suback_granted_qos_maps_to_ok(void** state)
+{
+  (void)state;
+  /* A grant BELOW the QoS requested is still a grant: the subscription exists
+   * and delivery is min(publish QoS, granted QoS). Reading it as a refusal
+   * would fail a session no broker objected to. */
+  for (int code = 0; code <= 2; ++code)
+  {
+    assert_int_equal(az_iot_mqtt_suback_result(AZ_IOT_MQTT_VERSION_3_1_1, code), AZ_IOT_OK);
+    assert_int_equal(az_iot_mqtt_suback_result(AZ_IOT_MQTT_VERSION_5, code), AZ_IOT_OK);
+  }
+}
+
+static void suback_v3_failure_maps_to_subscription_refused(void** state)
+{
+  (void)state;
+  /* 0x80 Failure is the only refusal MQTT 3.1.1 can express and it carries no
+   * reason, so the classification comes from what a Classic device can ask for:
+   * a topic set fixed at compile time, which cannot become acceptable later. */
+  assert_int_equal(
+      az_iot_mqtt_suback_result(AZ_IOT_MQTT_VERSION_3_1_1, 0x80), AZ_IOT_ERR_SUBSCRIPTION_REFUSED);
+}
+
+static void suback_v5_permanent_codes_map_to_subscription_refused(void** state)
+{
+  (void)state;
+  /* 0x87 not authorized, 0x8F topic filter invalid, 0x9E shared subscriptions
+   * not supported, 0xA1 subscription identifiers not supported, 0xA2 wildcard
+   * subscriptions not supported. Re-issuing any of these is refused again. */
+  static const int codes[] = { 0x87, 0x8F, 0x9E, 0xA1, 0xA2 };
+  for (size_t i = 0; i < sizeof(codes) / sizeof(codes[0]); ++i)
+  {
+    assert_int_equal(
+        az_iot_mqtt_suback_result(AZ_IOT_MQTT_VERSION_5, codes[i]),
+        AZ_IOT_ERR_SUBSCRIPTION_REFUSED);
+  }
+}
+
+static void suback_v5_transient_codes_map_to_mqtt(void** state)
+{
+  (void)state;
+  /* 0x80 unspecified, 0x83 implementation specific, 0x91 packet identifier in
+   * use, 0x97 quota exceeded -- how a service-side fault presents, and
+   * re-subscribing is the right answer to every one of them. */
+  static const int codes[] = { 0x80, 0x83, 0x91, 0x97 };
+  for (size_t i = 0; i < sizeof(codes) / sizeof(codes[0]); ++i)
+  {
+    assert_int_equal(az_iot_mqtt_suback_result(AZ_IOT_MQTT_VERSION_5, codes[i]), AZ_IOT_ERR_MQTT);
+  }
+}
+
+static void suback_negative_codes_map_to_mqtt(void** state)
+{
+  (void)state;
+  /* Adapter-internal failures never reached a broker, so they carry no verdict
+   * about the filter and must not fail the session. */
+  assert_int_equal(az_iot_mqtt_suback_result(AZ_IOT_MQTT_VERSION_3_1_1, -1), AZ_IOT_ERR_MQTT);
+  assert_int_equal(az_iot_mqtt_suback_result(AZ_IOT_MQTT_VERSION_5, -1), AZ_IOT_ERR_MQTT);
+}
+
+static void suback_unknown_version_never_fails_the_session(void** state)
+{
+  (void)state;
+  const az_iot_mqtt_version bogus = (az_iot_mqtt_version)99;
+  /* 0x80 is a permanent refusal in v3.1.1 and a transient one in v5, so an
+   * unknown version cannot score it either way. Retrying is the safe half. */
+  assert_int_equal(az_iot_mqtt_suback_result(bogus, 0x80), AZ_IOT_ERR_MQTT);
+  assert_int_equal(az_iot_mqtt_suback_result(bogus, 0x87), AZ_IOT_ERR_MQTT);
+  /* A grant carries no scheme-specific meaning. */
+  assert_int_equal(az_iot_mqtt_suback_result(bogus, 1), AZ_IOT_OK);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -322,6 +401,12 @@ int main(void)
     cmocka_unit_test(connack_negative_codes_map_to_mqtt),
     cmocka_unit_test(connack_unknown_version_never_rejects_the_identity),
     cmocka_unit_test(mapped_connack_status_reaches_the_inbound_callback),
+    cmocka_unit_test(suback_granted_qos_maps_to_ok),
+    cmocka_unit_test(suback_v3_failure_maps_to_subscription_refused),
+    cmocka_unit_test(suback_v5_permanent_codes_map_to_subscription_refused),
+    cmocka_unit_test(suback_v5_transient_codes_map_to_mqtt),
+    cmocka_unit_test(suback_negative_codes_map_to_mqtt),
+    cmocka_unit_test(suback_unknown_version_never_fails_the_session),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

@@ -73,6 +73,7 @@ typedef struct conf_recorder
   size_t count;
   az_iot_mqtt_event_kind kinds[CONF_EVENTS_MAX];
   az_iot_result statuses[CONF_EVENTS_MAX];
+  int32_t protocol_codes[CONF_EVENTS_MAX];
   uint16_t packet_ids[CONF_EVENTS_MAX];
   char topics[CONF_EVENTS_MAX][CONF_TOPIC_MAX];
   uint8_t payloads[CONF_EVENTS_MAX][CONF_PAYLOAD_MAX];
@@ -89,6 +90,7 @@ static void on_event(const az_iot_mqtt_event* evt, void* ctx)
   size_t i = r->count++;
   r->kinds[i] = evt->kind;
   r->statuses[i] = evt->status;
+  r->protocol_codes[i] = evt->protocol_code;
   r->packet_ids[i] = evt->packet_id;
   if (evt->message)
   {
@@ -963,6 +965,22 @@ static void connect_connack_error_is_reported(void** state)
   assert_true(saw_connack_error(&rec));
   assert_false(saw_connected_ok(&rec));
 
+  /* And the code that produced that status must still be readable. CONNACK and
+   * SUBACK share the rule, so covering only one leaves the other free to start
+   * flattening again without any suite noticing. */
+  int ack = -1;
+  for (size_t i = 0; i < rec.count; ++i)
+  {
+    if (rec.kinds[i] == AZ_IOT_MQTT_EVT_CONNECTED && rec.statuses[i] != AZ_IOT_OK)
+    {
+      ack = (int)i;
+      break;
+    }
+  }
+  assert_true(ack >= 0);
+  assert_int_equal(
+      rec.protocol_codes[ack], (g_factory->version == AZ_IOT_MQTT_VERSION_5) ? 0x87 : 0x05);
+
   (void)c->iface->disconnect(c);
   destroy_client(c);
   az_iot_test_proxy_stop(proxy);
@@ -1369,6 +1387,25 @@ static void a_refused_subscribe_is_reported(void** state)
    * successful one. */
   assert_true(wait_until(c, &rec, saw_subscribe_ack_error, k_step_timeout_ms));
   assert_false(saw_subscribe_ack_ok(&rec));
+
+  /* And not merely "an error": the broker will refuse this filter every time it
+   * is asked, so the status has to say so, and the code that justified it has to
+   * still be readable. An adapter that reports a blanket AZ_IOT_ERR_MQTT here
+   * leaves the core reconnecting forever against a filter that can never be
+   * granted, which is precisely what this assertion exists to catch. */
+  int ack = -1;
+  for (size_t i = 0; i < rec.count; ++i)
+  {
+    if (rec.kinds[i] == AZ_IOT_MQTT_EVT_SUBSCRIBE_ACK)
+    {
+      ack = (int)i;
+      break;
+    }
+  }
+  assert_true(ack >= 0);
+  assert_int_equal(rec.statuses[ack], AZ_IOT_ERR_SUBSCRIPTION_REFUSED);
+  assert_int_equal(
+      rec.protocol_codes[ack], (g_factory->version == AZ_IOT_MQTT_VERSION_5) ? 0x87 : 0x80);
   assert_int_equal(az_iot_test_proxy_rule_hits(proxy, (size_t)refuse_id), 1);
 
   (void)c->iface->disconnect(c);
