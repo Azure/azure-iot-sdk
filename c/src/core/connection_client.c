@@ -1160,25 +1160,181 @@ static size_t presence_encode_birth(uint8_t* out, size_t cap, bool session_prese
   return n;
 }
 
-/* Announce CONNECTED and (re)issue every persistent subscription so feature
- * clients (DirectMethod, Twin, C2D) regain their inbound topic filters
- * transparently across reconnects. SUBACK failures are absorbed for now. */
+/* Announce CONNECTED once the session's persistent subscriptions are live.
+ *
+ * The ordering matters and the obvious explanation for why is the wrong one.
+ * MQTT does preserve ordering: a broker processes one connection's control
+ * packets in the order it receives them, so a PUBLISH cannot overtake a
+ * SUBSCRIBE already written to that connection. The problem was that ours had
+ * not been written yet -- transition() invokes the application callback
+ * SYNCHRONOUSLY, so a request published from inside that callback reached the
+ * wire ahead of its own SUBSCRIBE, and ordering worked against us.
+ *
+ * Waiting for the SUBACK rather than merely re-ordering the loop also covers
+ * the case where the broker REFUSES a filter, which no amount of local ordering
+ * would catch. See AB#39366084. */
 static void announce_connected(az_iot_connection_client* c)
 {
   transition(c, AZ_IOT_CONN_STATE_CONNECTED, AZ_IOT_OK);
-  if (c->active_client && c->active_client->iface)
+}
+
+/* Fail the session because a subscription it depends on could not be
+ * established. Reported as a connection failure rather than absorbed: a feature
+ * whose filter is missing is silently inert, which surfaces later as a request
+ * that never gets a response -- far more expensive to diagnose than one error
+ * here.
+ *
+ * A refusal the broker will repeat is terminal even when a reconnection policy
+ * is configured. Reconnecting would re-issue the same filter, be refused again,
+ * and leave the device cycling forever without ever saying why; the application
+ * needs new configuration or a device update, and can only act on that if the
+ * SDK stops and tells it. Anything else is transient and reconnects. */
+static void fail_subscription_restore(az_iot_connection_client* c, az_iot_result reason)
+{
+  memset(&c->sub_gate, 0, sizeof(c->sub_gate));
+  c->deferred
+      = (reason != AZ_IOT_ERR_SUBSCRIPTION_REFUSED && reconnect_enabled(c) && !c->user_close)
+      ? DEFER_RECONNECT
+      : DEFER_FAULT;
+  c->deferred_reason = reason;
+}
+
+/* A FAILS_SELF filter did not come up. Its owner is told -- that subscription
+ * is dead, not optional -- and the entry is dropped so a reconnect cannot
+ * silently re-issue it. The entry is released before the callback runs, so a
+ * callback that re-registers immediately can claim the slot. */
+static void report_and_drop_subscription(
+    az_iot_connection_client* c,
+    size_t index,
+    az_iot_result reason,
+    int32_t protocol_code)
+{
+  az_iot_subscription_failed_callback cb = c->persistent_subs[index].on_failed;
+  const void* owner = c->persistent_subs[index].owner;
+  char topic[AZ_IOT_PERSISTENT_SUB_TOPIC_MAX];
+  memcpy(topic, c->persistent_subs[index].topic_filter, sizeof(topic));
+
+  AZ_IOT_LOG_WARNF(
+      "connection: subscription '%s' failed (reason_code=%d); dropping it, connection stays up",
+      topic,
+      (int)protocol_code);
+  memset(&c->persistent_subs[index], 0, sizeof(c->persistent_subs[index]));
+  if (cb)
   {
-    for (size_t i = 0; i < AZ_IOT_MAX_PERSISTENT_SUBS; ++i)
+    cb(topic, reason, protocol_code, owner);
+  }
+}
+
+/* (Re)issue every persistent subscription and gate CONNECTED on the SUBACKs of
+ * those that the session depends on. Announces immediately when nothing gated
+ * is registered, which is the common case for a connection whose feature
+ * clients are built after open(). */
+static void begin_feature_subscriptions(az_iot_connection_client* c)
+{
+  memset(&c->sub_gate, 0, sizeof(c->sub_gate));
+
+  if (!c->active_client || !c->active_client->iface)
+  {
+    announce_connected(c);
+    return;
+  }
+
+  for (size_t i = 0; i < AZ_IOT_MAX_PERSISTENT_SUBS; ++i)
+  {
+    if (!c->persistent_subs[i].in_use)
     {
-      if (!c->persistent_subs[i].in_use)
+      continue;
+    }
+    const bool gated = c->persistent_subs[i].failure_scope == AZ_IOT_SUBSCRIPTION_FAILS_SESSION;
+    uint16_t pid = 0;
+    az_iot_result r = c->active_client->iface->subscribe(
+        c->active_client, c->persistent_subs[i].topic_filter, c->persistent_subs[i].qos, &pid);
+    if (r != AZ_IOT_OK)
+    {
+      /* A SUBSCRIBE that could not even be written is scoped the same way its
+       * refusal would be. */
+      if (!gated)
       {
+        report_and_drop_subscription(c, i, r, 0);
         continue;
       }
-      uint16_t pid = 0;
-      (void)c->active_client->iface->subscribe(
-          c->active_client, c->persistent_subs[i].topic_filter, c->persistent_subs[i].qos, &pid);
+      AZ_IOT_LOG_ERRORF(
+          "connection: could not re-subscribe '%s' on connect", c->persistent_subs[i].topic_filter);
+      fail_subscription_restore(c, r);
+      return;
+    }
+    size_t p = c->sub_gate.pending_count++;
+    c->sub_gate.pending[p].packet_id = pid;
+    c->sub_gate.pending[p].sub_index = (uint8_t)i;
+    c->sub_gate.pending[p].gated = gated;
+    if (gated)
+    {
+      c->sub_gate.gated_outstanding++;
     }
   }
+
+  if (c->sub_gate.gated_outstanding == 0)
+  {
+    announce_connected(c);
+  }
+  /* Stay armed for any FAILS_SELF acks still in flight, which are tracked past
+   * the transition so their owners are told either way. */
+  if (c->sub_gate.pending_count > 0)
+  {
+    c->sub_gate.active = true;
+    c->sub_gate.deadline_ms = az_iot_time_mono_ms() + AZ_IOT_SUBSCRIPTION_ACK_TIMEOUT_MS;
+  }
+}
+
+/* Returns true when `packet_id` was one this gate was waiting on. */
+static bool sub_gate_settle(
+    az_iot_connection_client* c,
+    uint16_t packet_id,
+    az_iot_result status,
+    int32_t protocol_code)
+{
+  if (!c->sub_gate.active)
+  {
+    return false;
+  }
+  for (size_t i = 0; i < c->sub_gate.pending_count; ++i)
+  {
+    if (c->sub_gate.pending[i].packet_id != packet_id)
+    {
+      continue;
+    }
+    const bool gated = c->sub_gate.pending[i].gated;
+    const size_t sub_index = c->sub_gate.pending[i].sub_index;
+
+    c->sub_gate.pending[i] = c->sub_gate.pending[c->sub_gate.pending_count - 1];
+    c->sub_gate.pending_count--;
+
+    if (status != AZ_IOT_OK)
+    {
+      if (!gated)
+      {
+        report_and_drop_subscription(c, sub_index, status, protocol_code);
+        return true;
+      }
+      AZ_IOT_LOG_ERRORF(
+          "connection: broker refused '%s' on connect (reason_code=%d)",
+          c->persistent_subs[sub_index].topic_filter,
+          (int)protocol_code);
+      fail_subscription_restore(c, status);
+      return true;
+    }
+
+    if (gated && c->sub_gate.gated_outstanding > 0 && --c->sub_gate.gated_outstanding == 0)
+    {
+      announce_connected(c);
+    }
+    if (c->sub_gate.pending_count == 0)
+    {
+      c->sub_gate.active = false;
+    }
+    return true;
+  }
+  return false;
 }
 
 /* Begin the presence handshake after a successful HUB_NEXT CONNACK: subscribe
@@ -1360,7 +1516,7 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
           break;
         }
 
-        announce_connected(c);
+        begin_feature_subscriptions(c);
       }
       else
       {
@@ -1427,7 +1583,7 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
             break;
           }
           c->presence.phase = PRESENCE_PHASE_DONE;
-          announce_connected(c);
+          begin_feature_subscriptions(c);
           break;
         }
         (void)az_iot_dispatch_route(&c->dispatch, evt->message);
@@ -1470,7 +1626,9 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
           c->deferred = (reconnect_enabled(c) && !c->user_close) ? DEFER_RECONNECT : DEFER_FAULT;
           c->deferred_reason = pr;
         }
+        break;
       }
+      (void)sub_gate_settle(c, evt->packet_id, evt->status, evt->protocol_code);
       break;
 
     /* UNSUBSCRIBE_ACK gets correlation handlers in later Phase 3 slices when
@@ -2159,6 +2317,26 @@ az_iot_result az_iot_connection_client_do_work(
     }
   }
 
+  /* Fail a gate whose SUBACKs never arrived, so a broker that accepts the
+   * connection and then goes quiet cannot wedge the client in CONNECTING --
+   * keep-alive cannot notice, because the link is alive. Silence is not a
+   * refusal and the filter may well be granted next time, so this is retryable
+   * rather than terminal. Only the gated set is waited on. */
+  if (client->sub_gate.active && client->sub_gate.gated_outstanding > 0
+      && az_iot_time_mono_ms() >= client->sub_gate.deadline_ms)
+  {
+    memset(&client->sub_gate, 0, sizeof(client->sub_gate));
+    if (reconnect_enabled(client) && !client->user_close)
+    {
+      schedule_reconnect(client, AZ_IOT_ERR_TIMEOUT);
+    }
+    else
+    {
+      teardown_active(client);
+      transition(client, AZ_IOT_CONN_STATE_FAULTED, AZ_IOT_ERR_TIMEOUT);
+    }
+  }
+
   /* If we're waiting to reconnect and the deadline has passed, attempt it. */
   if (client->state == AZ_IOT_CONN_STATE_RECONNECTING && client->active_client == NULL
       && az_iot_time_mono_ms() >= client->reconnect_due_ms)
@@ -2286,6 +2464,14 @@ void az_iot_connection_client__presence_force_timeout(az_iot_connection_client* 
       || client->presence.phase == AZ_IOT_PRESENCE_PHASE_BIRTH)
   {
     client->presence.deadline_ms = 0;
+  }
+}
+
+void az_iot_connection_client__sub_gate_force_timeout(az_iot_connection_client* client)
+{
+  if (client && client->sub_gate.active)
+  {
+    client->sub_gate.deadline_ms = 0;
   }
 }
 
@@ -2531,7 +2717,9 @@ az_iot_result az_iot_connection_client__add_subscription_on_connect(
     az_iot_connection_client* client,
     const char* topic_filter,
     az_iot_mqtt_qos qos,
-    const void* owner)
+    const void* owner,
+    az_iot_subscription_failure_scope failure_scope,
+    az_iot_subscription_failed_callback on_failed)
 {
   if (!client || !topic_filter)
   {
@@ -2575,6 +2763,8 @@ az_iot_result az_iot_connection_client__add_subscription_on_connect(
   client->persistent_subs[slot].qos = qos;
   client->persistent_subs[slot].owner = owner;
   client->persistent_subs[slot].profile = client->connection_profile;
+  client->persistent_subs[slot].failure_scope = failure_scope;
+  client->persistent_subs[slot].on_failed = on_failed;
   client->persistent_subs[slot].in_use = true;
 
   /* If already CONNECTED, issue the SUBSCRIBE now so callers that register
@@ -2913,7 +3103,7 @@ az_iot_result az_iot_connection_client_send_csr(
       return r;
     }
     r = az_iot_connection_client__add_subscription_on_connect(
-        client, CSR_RES_FILTER, AZ_IOT_MQTT_QOS_1, client);
+        client, CSR_RES_FILTER, AZ_IOT_MQTT_QOS_1, client, AZ_IOT_SUBSCRIPTION_FAILS_SESSION, NULL);
     if (r != AZ_IOT_OK)
     {
       (void)az_iot_connection_client__unregister_inbound_handlers(client, client);

@@ -23,6 +23,7 @@
 #include "azure/iot/az_iot_result.h"
 
 #include "support/mock_mqtt_iface.h"
+#include "support/subscription_ack.h"
 
 /* ------------------------------------------------------------------------- */
 /* fixtures                                                                  */
@@ -112,6 +113,7 @@ static void open_to_connected(fixture* fx)
   assert_non_null(fx->mock);
   assert_true(az_iot_mock_mqtt_client_inject_connected(fx->mock, AZ_IOT_OK));
   assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+  az_iot_test_ack_subscriptions(&fx->conn, fx->mock);
   az_iot_mock_mqtt_client_clear_calls(fx->mock);
 }
 
@@ -131,6 +133,7 @@ static void create_subscribes_methods_topic_on_connect(void** state)
   assert_non_null(fx->mock);
   assert_true(az_iot_mock_mqtt_client_inject_connected(fx->mock, AZ_IOT_OK));
   assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+  az_iot_test_ack_subscriptions(&fx->conn, fx->mock);
 
   /* Walk the call history looking for a SUBSCRIBE on the methods filter. */
   bool found = false;
@@ -897,6 +900,9 @@ static void open_to_connected_next(fixture* fx)
 {
   open_next(fx);
   finish_birth_next(fx);
+  /* The birth-ack is what releases the feature subscriptions; they still have
+   * to be acked before CONNECTED. */
+  az_iot_test_ack_subscriptions(&fx->conn, fx->mock);
 }
 
 /* Deliver one Next invocation, optionally carrying Correlation Data. */

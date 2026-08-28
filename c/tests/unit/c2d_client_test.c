@@ -29,6 +29,7 @@
 #include "azure/iot/az_iot_result.h"
 
 #include "support/mock_mqtt_iface.h"
+#include "support/subscription_ack.h"
 
 /* ------------------------------------------------------------------------- */
 /* fixtures                                                                  */
@@ -137,6 +138,7 @@ static void open_to_connected(fixture* fx)
   assert_non_null(fx->mock);
   assert_true(az_iot_mock_mqtt_client_inject_connected(fx->mock, AZ_IOT_OK));
   assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+  az_iot_test_ack_subscriptions(&fx->conn, fx->mock);
 }
 
 /* Deliver one inbound message and pump it through dispatch. */
@@ -688,6 +690,7 @@ static void the_subscription_is_reissued_after_a_reconnect(void** state)
   az_iot_mock_mqtt_client_clear_calls(fx->mock);
   assert_true(az_iot_mock_mqtt_client_inject_connected(fx->mock, AZ_IOT_OK));
   assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+  az_iot_test_ack_subscriptions(&fx->conn, fx->mock);
 
   assert_non_null(find_subscribe(fx->mock, C2D_FILTER));
 

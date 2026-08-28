@@ -30,6 +30,7 @@
 #include "azure/iot/az_iot_adu.h"
 
 #include "support/mock_mqtt_iface.h"
+#include "support/subscription_ack.h"
 
 /* ------------------------------------------------------------------------- */
 /* parser-valid payloads (from azure-sdk-for-c test_az_iot_adu.c)            */
@@ -562,6 +563,7 @@ static void open_to_connected(fixture* fx)
   assert_non_null(fx->mock);
   assert_true(az_iot_mock_mqtt_client_inject_connected(fx->mock, AZ_IOT_OK));
   assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+  az_iot_test_ack_subscriptions(&fx->conn, fx->mock);
   az_iot_mock_mqtt_client_clear_calls(fx->mock);
 }
 

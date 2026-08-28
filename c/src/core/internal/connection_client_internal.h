@@ -52,6 +52,11 @@ extern "C"
    * AZ_IOT_PRESENCE_BIRTH_ACK_TIMEOUT_MS. */
   void az_iot_connection_client__presence_force_timeout(az_iot_connection_client* client);
 
+  /* Test seam: force a pending subscription gate to expire on the next
+   * do_work(). No-op when no gate is armed. Lets unit tests exercise the
+   * never-acked path without waiting AZ_IOT_SUBSCRIPTION_ACK_TIMEOUT_MS. */
+  void az_iot_connection_client__sub_gate_force_timeout(az_iot_connection_client* client);
+
   /* Return the protocol profile selected by the current session_role. May be
    * NULL when the role has no profile yet (e.g. HUB_NEXT in Phase 2.3). */
   const az_iot_protocol_profile* az_iot_connection_client__profile(
@@ -127,12 +132,21 @@ extern "C"
    * SUBSCRIBE is also issued immediately.
    *
    * `owner` identifies the registering feature client so it can withdraw its
-   * own entries later; pass the same pointer used for the inbound handlers. */
+   * own entries later; pass the same pointer used for the inbound handlers.
+   *
+   * `failure_scope` says what a refusal costs. A feature client's own filter is
+   * AZ_IOT_SUBSCRIPTION_FAILS_SESSION: it cannot work without it, so the
+   * connection fails rather than coming up with a dead feature. An
+   * application-supplied topic is AZ_IOT_SUBSCRIPTION_FAILS_SELF, and
+   * `on_failed` is how its owner is told; pass NULL for a gated filter, which
+   * reports through the connection state instead. */
   az_iot_result az_iot_connection_client__add_subscription_on_connect(
       az_iot_connection_client* client,
       const char* topic_filter,
       az_iot_mqtt_qos qos,
-      const void* owner);
+      const void* owner,
+      az_iot_subscription_failure_scope failure_scope,
+      az_iot_subscription_failed_callback on_failed);
 
   /* Withdraw every persistent subscription registered by `owner`. Returns the
    * number removed.
