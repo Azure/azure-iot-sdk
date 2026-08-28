@@ -153,7 +153,7 @@ namespace Microsoft.Azure.Devices.Client.Unified.Connection
             _managedMqttConnection.ConnectedAsync -= HandleConnectedToHubAsync; // Don't respond to connection attempts to DPS with IoT hub connection handling
 
             ProvisioningConnection provisioningConnection = new();
-            var provisioningResult = await provisioningConnection.RegisterAsync(_managedMqttConnection, new() { ClientCertificateSigningRequest = provisioningSettings.CertificateSigningRequest?.Base64CertificateSigningRequest, Payload = provisioningSettings.ProvisioningPayload }, authentication, provisioningSettings.IdScope, provisioningSettings.GlobalEndpointAddress, cancellationToken);
+            var provisioningResult = await provisioningConnection.RegisterAsync(_managedMqttConnection, new() { ClientCertificateSigningRequest = null, Payload = provisioningSettings.ProvisioningPayload }, authentication, provisioningSettings.IdScope, provisioningSettings.GlobalEndpointAddress, cancellationToken);
 
             //TODO several mqtt client options should not be provided by the user (ie, host name). Add checks here that validate all of them
 
