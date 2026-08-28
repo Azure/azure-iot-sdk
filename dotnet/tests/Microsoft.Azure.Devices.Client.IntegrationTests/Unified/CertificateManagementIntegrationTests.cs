@@ -2,10 +2,9 @@
 using Microsoft.Azure.Devices.Client.Models.CertificateManagement;
 using Microsoft.Azure.Devices.Client.Provisioning;
 using Microsoft.Azure.Devices.Client.Unified.Connection;
-using Microsoft.Azure.Devices.Provisioning.Service;
-using System.Reflection.Metadata;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
+using System.Text;
 using Xunit;
 using Xunit.Sdk;
 using static Microsoft.Azure.Devices.Client.IntegrationTests.Setup;
@@ -27,24 +26,13 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Unified
                 Assert.Skip("No AEG hub to test against yet");
             }
 
-            ProvisioningServiceClient provisioningServiceClient = ProvisioningServiceClient.CreateFromConnectionString(DpsConnectionString);
+            string registrationId = Environment.GetEnvironmentVariable("IOT_DPS_INDIVIDUAL_REGISTRATION_ID")
+                ?? throw new InvalidOperationException("Missing IOT_DPS_INDIVIDUAL_REGISTRATION_ID environment variable.");
+            string certificatePem = DecodeBase64EnvironmentVariable("IOT_DPS_INDIVIDUAL_X509_CERTIFICATE");
+            string privateKeyPem = DecodeBase64EnvironmentVariable("IOT_DPS_INDIVIDUAL_X509_KEY");
 
-            string deviceId = Guid.NewGuid().ToString();
-            string registrationId = deviceId;
-            string certId = Guid.NewGuid().ToString();
-            string certPath = $"./{certId}.cer";
-            string pfxPath = $"./{certId}.pfx";
-            CreateTestCertificates(pfxPath, certPath, deviceId);
-
-            X509Certificate2 certificate = X509CertificateLoader.LoadCertificateFromFile(certPath);
-            X509Certificate2 pfx = X509CertificateLoader.LoadPkcs12FromFile(pfxPath, TestCertificatesPassword);
-
-            // Create individual enrollment for the test device to provision from
-            Attestation attestation = X509Attestation.CreateFromClientCertificates(certificate);
-            IndividualEnrollment individualEnrollment = new(registrationId, attestation);
-            individualEnrollment = await provisioningServiceClient.CreateOrUpdateIndividualEnrollmentAsync(individualEnrollment, TestContext.Current.CancellationToken);
-
-            X509AuthenticationProvider x509AuthenticationProvider = new(pfx);
+            using X509Certificate2 deviceCertificate = CreateX509CertificateFromKeyAndCert(certificatePem, privateKeyPem);
+            X509AuthenticationProvider x509AuthenticationProvider = new(deviceCertificate);
 
             // Create initial CSR to be processed by DPS
             var (csrBase64, privateKey) = GenerateCsr(registrationId, CsrAlgorithm.RSA);
@@ -107,14 +95,18 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Unified
 
         private static X509Certificate2 CreateX509CertificateFromKeyAndCert(string certificate, string key)
         {
-            // Create X509Certificate2 from PEM
-            using var cert = X509Certificate2.CreateFromPem(certificate, key);
+            using X509Certificate2 cert = X509Certificate2.CreateFromPem(certificate, key);
 
-            // Note: On Windows, we need to export and reimport to allow ephemeral key use
             byte[] certificateBytes = cert.Export(X509ContentType.Pfx);
-            using var exportedCert = X509CertificateLoader.LoadCertificate(certificateBytes);
+            return X509CertificateLoader.LoadPkcs12(certificateBytes, null, X509KeyStorageFlags.Exportable);
+        }
 
-            return exportedCert;
+        private static string DecodeBase64EnvironmentVariable(string variableName)
+        {
+            string encodedValue = Environment.GetEnvironmentVariable(variableName)
+                ?? throw new InvalidOperationException($"Missing {variableName} environment variable.");
+
+            return Encoding.UTF8.GetString(Convert.FromBase64String(encodedValue));
         }
 
         private static string CertificateListToPem(IReadOnlyList<string> certList)

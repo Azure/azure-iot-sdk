@@ -162,6 +162,9 @@ jobs:
             --environment IOTHUB_CONNECTION_STRING=$env:IOTHUB_CONNECTION_STRING `
             --environment IOT_DPS_CONNECTION_STRING=$env:IOT_DPS_CONNECTION_STRING `
             --environment IOT_DPS_ID_SCOPE=$env:IOT_DPS_ID_SCOPE `
+            --environment IOT_DPS_INDIVIDUAL_REGISTRATION_ID=$regId `
+            --environment IOT_DPS_INDIVIDUAL_X509_CERTIFICATE=$certB64 `
+            --environment IOT_DPS_INDIVIDUAL_X509_KEY=$keyB64 `
             --results-directory ./coverage `
             -- xunit.parallelizeAssembly=true
 
@@ -236,4 +239,3 @@ jobs:
         uses: ./.github/actions/destroy-e2e-resources
         with:
           resource-group: ${{ env.E2E_RESOURCE_GROUP }}
-
