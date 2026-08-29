@@ -229,7 +229,7 @@ namespace Microsoft.Azure.Devices.Client.Provisioning
                 UsernameFormat,
                 idScope,
                 authentication.GetRegistrationId(),
-                "2019-03-31",
+                "2025-07-01-preview",
                 Uri.EscapeDataString(GetUserAgentString()));
 
 
