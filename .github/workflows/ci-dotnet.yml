@@ -55,7 +55,6 @@ jobs:
         with:
           rg-name: ${{ env.E2E_RESOURCE_GROUP }}
           azure-location: eastus
-          enable-file-upload: 'true'
           enable-certificate-management: 'true'
           dps-x509-group-enrollment-devices: '2'
           dps-x509-individual-enrollments: '2'
