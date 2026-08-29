@@ -119,6 +119,14 @@ jobs:
           }
           Write-Host "e2e device (index $idx): $regId"
 
+          $groupRegId   = $env:IOT_DPS_GROUP_X509_REGISTRATION_ID
+          $groupCertB64 = $env:IOT_DPS_GROUP_X509_CERTIFICATE
+          $groupKeyB64  = $env:IOT_DPS_GROUP_X509_KEY
+          if (-not $groupRegId -or -not $groupCertB64 -or -not $groupKeyB64) {
+            throw "IOT_DPS_GROUP_X509_* not found in the provisioning config; the environment was not provisioned with an X.509 enrollment group."
+          }
+          Write-Host "CSR bootstrap device: $groupRegId"
+
           # Materialize the device X.509 material to files. The in-process test
           # reads cert/key/CA by PATH, so CI decodes the base64 PEMs and builds a
           # CA trust bundle here (no network download).
@@ -162,9 +170,9 @@ jobs:
             --environment IOTHUB_CONNECTION_STRING=$env:IOTHUB_CONNECTION_STRING `
             --environment IOT_DPS_CONNECTION_STRING=$env:IOT_DPS_CONNECTION_STRING `
             --environment IOT_DPS_ID_SCOPE=$env:IOT_DPS_ID_SCOPE `
-            --environment IOT_DPS_INDIVIDUAL_REGISTRATION_ID=$regId `
-            --environment IOT_DPS_INDIVIDUAL_X509_CERTIFICATE=$certB64 `
-            --environment IOT_DPS_INDIVIDUAL_X509_KEY=$keyB64 `
+            --environment IOT_DPS_GROUP_X509_REGISTRATION_ID=$groupRegId `
+            --environment IOT_DPS_GROUP_X509_CERTIFICATE=$groupCertB64 `
+            --environment IOT_DPS_GROUP_X509_KEY=$groupKeyB64 `
             --results-directory ./coverage `
             -- xunit.parallelizeAssembly=true
 

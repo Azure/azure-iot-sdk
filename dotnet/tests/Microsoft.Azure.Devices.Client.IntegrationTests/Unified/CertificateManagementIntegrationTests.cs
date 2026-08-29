@@ -26,10 +26,10 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Unified
                 Assert.Skip("No AEG hub to test against yet");
             }
 
-            string registrationId = Environment.GetEnvironmentVariable("IOT_DPS_INDIVIDUAL_REGISTRATION_ID")
-                ?? throw new InvalidOperationException("Missing IOT_DPS_INDIVIDUAL_REGISTRATION_ID environment variable.");
-            string certificatePem = DecodeBase64EnvironmentVariable("IOT_DPS_INDIVIDUAL_X509_CERTIFICATE");
-            string privateKeyPem = DecodeBase64EnvironmentVariable("IOT_DPS_INDIVIDUAL_X509_KEY");
+            string registrationId = Environment.GetEnvironmentVariable("IOT_DPS_GROUP_X509_REGISTRATION_ID")
+                ?? throw new InvalidOperationException("Missing IOT_DPS_GROUP_X509_REGISTRATION_ID environment variable.");
+            string certificatePem = DecodeBase64EnvironmentVariable("IOT_DPS_GROUP_X509_CERTIFICATE");
+            string privateKeyPem = DecodeBase64EnvironmentVariable("IOT_DPS_GROUP_X509_KEY");
 
             using X509Certificate2 deviceCertificate = CreateX509CertificateFromKeyAndCert(certificatePem, privateKeyPem);
             X509AuthenticationProvider x509AuthenticationProvider = new(deviceCertificate);
