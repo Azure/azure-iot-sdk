@@ -82,7 +82,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Unified
             // Convert to PEM and save
             string pemChain = CertificateUtilities.ConvertToPem(hubCsrResponse.Certificates);
 
-            using X509Certificate2 deviceCertTemp = CertificateUtilities.CreateCertificateWithPrivateKey(hubCsrResponse.Certificates, provisioningSettings.CertificateSigningRequest!.PrivateKey);
+            using X509Certificate2 deviceCertTemp = CertificateUtilities.CreateCertificateWithPrivateKey(hubCsrResponse.Certificates, secondPrivateKey);
 
             // Export and reimport with Exportable flag
             byte[] pfxBytes = deviceCertTemp.Export(X509ContentType.Pfx);
