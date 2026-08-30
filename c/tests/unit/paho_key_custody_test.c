@@ -22,6 +22,7 @@
 #include <cmocka.h>
 
 #include "azure/iot/adapters/az_iot_adapter_paho.h"
+#include "azure/iot/az_iot_log.h"
 #include "azure/iot/az_iot_mqtt_iface.h"
 #include "azure/iot/az_iot_result.h"
 
@@ -52,8 +53,36 @@ static const char* temp_dir(void)
       return v;
     }
   }
+#if defined(_WIN32)
   return ".";
+#else
+  return "/tmp";
+#endif
 }
+
+/* The adapter distinguishes its refusals in the LOG, not in the result code --
+ * they are all AZ_IOT_ERR_TLS to the caller. Capturing the log is therefore the
+ * only way a case can assert it took the branch it meant to, rather than
+ * passing because some earlier step failed for an unrelated reason. */
+static char g_last_error[1024];
+
+static void capture_sink(
+    void* user_ctx,
+    az_iot_log_level level,
+    const char* file,
+    int line,
+    const char* msg)
+{
+  (void)user_ctx;
+  (void)file;
+  (void)line;
+  if (level == AZ_IOT_LOG_LEVEL_ERROR && msg != NULL)
+  {
+    snprintf(g_last_error, sizeof(g_last_error), "%s", msg);
+  }
+}
+
+static void capture_reset(void) { g_last_error[0] = '\0'; }
 
 static int group_setup(void** state)
 {
@@ -64,22 +93,23 @@ static int group_setup(void** state)
   assert_true(fwrite(k_software_key_pem, 1, sizeof(k_software_key_pem) - 1, f) > 0);
   fclose(f);
 
-  /* OpenSSL's file store wants a URI, and a URI has forward slashes -- a
-   * Windows path with backslashes is not one. */
-  snprintf(g_key_uri, sizeof(g_key_uri), "file:%s", g_key_path);
-  for (char* p = g_key_uri; *p; ++p)
-  {
-    if (*p == '\\')
-    {
-      *p = '/';
-    }
-  }
+  /* A plain path, not a "file:" URI: OSSL_STORE falls back to the file scheme
+   * for a scheme-less string, and that sidesteps the differences between what
+   * counts as a valid file URI on Windows and elsewhere. */
+  snprintf(g_key_uri, sizeof(g_key_uri), "%s", g_key_path);
+
+  static az_iot_log_sink sink;
+  sink.sink = capture_sink;
+  sink.user_ctx = NULL;
+  sink.min_level = AZ_IOT_LOG_LEVEL_ERROR;
+  az_iot_log_set_global_sink(&sink);
   return 0;
 }
 
 static int group_teardown(void** state)
 {
   (void)state;
+  az_iot_log_set_global_sink(NULL);
   remove(g_key_path);
   return 0;
 }
@@ -230,7 +260,9 @@ static void an_unresolvable_key_uri_fails_before_the_handshake(void** state)
   tls.crypto_engine_id = "default";
 
   const char* path = NULL;
+  capture_reset();
   assert_int_equal(az_iot_paho_key_custody_prepare(&s, &tls, &path), AZ_IOT_ERR_TLS);
+  assert_non_null(strstr(g_last_error, "could not resolve client_key_uri"));
   az_iot_paho_key_custody_release(&s);
 }
 
@@ -248,9 +280,40 @@ static void an_extractable_key_is_refused(void** state)
   tls.crypto_engine_id = "default";
 
   const char* path = NULL;
+  capture_reset();
   assert_int_equal(az_iot_paho_key_custody_prepare(&s, &tls, &path), AZ_IOT_ERR_TLS);
+  /* The key really was resolved and then refused -- not merely unresolvable. */
+  assert_non_null(strstr(g_last_error, "EXTRACTABLE"));
   /* Nothing was left behind. */
   assert_null(s.key_ref_path);
+  az_iot_paho_key_custody_release(&s);
+}
+
+/* A URI longer than the log buffer is truncated rather than overflowing it, and
+ * a URI carrying a PIN is not echoed whole into a log line. Neither is
+ * observable in the result, so the assertion is the refusal still arriving
+ * intact -- the redaction runs on the way there. */
+static void an_over_long_key_uri_is_handled(void** state)
+{
+  (void)state;
+  char long_uri[512];
+  size_t n = 0;
+  n += (size_t)snprintf(long_uri + n, sizeof(long_uri) - n, "pkcs11:token=ut");
+  while (n < sizeof(long_uri) - 32)
+  {
+    n += (size_t)snprintf(long_uri + n, sizeof(long_uri) - n, ";object=aaaaaaaaaaaaaaaa");
+  }
+  snprintf(long_uri + n, sizeof(long_uri) - n, "?pin-value=1234");
+
+  az_iot_paho_key_custody s;
+  memset(&s, 0, sizeof(s));
+  az_iot_mqtt_tls_options tls;
+  memset(&tls, 0, sizeof(tls));
+  tls.client_key_uri = long_uri;
+  tls.crypto_engine_id = "no-such-provider-exists";
+
+  const char* path = NULL;
+  assert_int_equal(az_iot_paho_key_custody_prepare(&s, &tls, &path), AZ_IOT_ERR_NOT_SUPPORTED);
   az_iot_paho_key_custody_release(&s);
 }
 
@@ -333,6 +396,7 @@ int main(void)
     cmocka_unit_test(an_unknown_engine_id_is_not_supported),
     cmocka_unit_test(an_unresolvable_key_uri_fails_before_the_handshake),
     cmocka_unit_test(an_extractable_key_is_refused),
+    cmocka_unit_test(an_over_long_key_uri_is_handled),
     cmocka_unit_test(release_is_idempotent),
 #else
     cmocka_unit_test(custody_without_support_is_refused),

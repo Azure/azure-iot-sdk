@@ -839,6 +839,7 @@ static az_iot_result paho_iface_connect(
   m->client_id = dup_str(opts->client_id);
   if (!m->server_uri || !m->client_id)
   {
+    az_iot_paho_key_custody_release(&m->key_custody);
     return AZ_IOT_ERR_OUT_OF_MEMORY;
   }
 
@@ -855,12 +856,14 @@ static az_iot_result paho_iface_connect(
       &m->paho, m->server_uri, m->client_id, MQTTCLIENT_PERSISTENCE_NONE, NULL, &create_opts);
   if (rc != MQTTASYNC_SUCCESS)
   {
+    az_iot_paho_key_custody_release(&m->key_custody);
     return AZ_IOT_ERR_MQTT;
   }
 
   rc = MQTTAsync_setCallbacks(m->paho, m, paho_connection_lost, paho_msg_arrived, NULL);
   if (rc != MQTTASYNC_SUCCESS)
   {
+    az_iot_paho_key_custody_release(&m->key_custody);
     return AZ_IOT_ERR_MQTT;
   }
 
@@ -869,6 +872,7 @@ static az_iot_result paho_iface_connect(
   rc = MQTTAsync_setDisconnected(m->paho, m, paho_disconnected);
   if (rc != MQTTASYNC_SUCCESS)
   {
+    az_iot_paho_key_custody_release(&m->key_custody);
     return AZ_IOT_ERR_MQTT;
   }
 
@@ -904,6 +908,7 @@ static az_iot_result paho_iface_connect(
   if (use_ssl)
   {
     AZ_IOT_LOG_ERROR("paho: TLS requested but the adapter was built without SSL support");
+    az_iot_paho_key_custody_release(&m->key_custody);
     return AZ_IOT_ERR_NOT_SUPPORTED;
   }
 #endif
@@ -1017,7 +1022,17 @@ static az_iot_result paho_iface_connect(
 #endif
     rc = MQTTAsync_connect(m->paho, &conn);
   }
-  return (rc == MQTTASYNC_SUCCESS) ? AZ_IOT_OK : AZ_IOT_ERR_MQTT;
+
+  if (rc != MQTTASYNC_SUCCESS)
+  {
+    /* Only on failure. A connect that was accepted has NOT read the key yet:
+     * MQTTAsync_connect is asynchronous and Paho opens the TLS session on its
+     * own thread, so the reference file has to outlive this call. It is
+     * released at the next connect and at destroy. */
+    az_iot_paho_key_custody_release(&m->key_custody);
+    return AZ_IOT_ERR_MQTT;
+  }
+  return AZ_IOT_OK;
 }
 
 static az_iot_result paho_iface_disconnect(az_iot_mqtt_client* self)

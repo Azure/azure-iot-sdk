@@ -315,6 +315,44 @@ static void the_forwarded_sign_hook_calls_the_provider(void** state)
       AZ_IOT_ERR_INVALID_ARG);
 }
 
+/* The trampoline re-checks the provider it is handed rather than trusting it.
+ * It runs inside an adapter's TLS callback, where the context came back through
+ * a third-party library, so a wrong or stale pointer has to produce a failed
+ * handshake and not a crash in the middle of one. */
+static void the_forwarded_sign_hook_rejects_an_unusable_provider(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  init_client(fx, false);
+  assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_OK);
+  const az_iot_mock_call* c = last_connect(fx);
+  assert_non_null(c);
+  assert_non_null(c->connect.sign);
+
+  const uint8_t digest[4] = { 1, 2, 3, 4 };
+  uint8_t sig[4] = { 0 };
+  size_t sig_len = 0;
+
+  /* No vtable at all. */
+  az_iot_certificate_provider no_vtable = { .vtable = NULL };
+  assert_int_equal(
+      c->connect.sign(&no_vtable, digest, sizeof(digest), sig, sizeof(sig), &sig_len),
+      AZ_IOT_ERR_INVALID_ARG);
+
+  /* A vtable from before the slot existed. */
+  az_iot_certificate_provider v1 = { .vtable = &k_vtable_v1_with_sign };
+  assert_int_equal(
+      c->connect.sign(&v1, digest, sizeof(digest), sig, sizeof(sig), &sig_len),
+      AZ_IOT_ERR_INVALID_ARG);
+
+  /* v2, but the slot is empty. */
+  az_iot_certificate_provider no_sign = { .vtable = &k_vtable_v2_without_sign };
+  assert_int_equal(
+      c->connect.sign(&no_sign, digest, sizeof(digest), sig, sizeof(sig), &sig_len),
+      AZ_IOT_ERR_INVALID_ARG);
+
+  assert_int_equal(fx->provider.sign_calls, 0);
+}
+
 /* ------------------------------------------------------------------------- */
 /* v2 gating                                                                 */
 /* ------------------------------------------------------------------------- */
@@ -512,6 +550,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(hub_connect_forwards_the_key_reference, setup, teardown),
     cmocka_unit_test_setup_teardown(hub_connect_falls_back_to_bootstrap_material, setup, teardown),
     cmocka_unit_test_setup_teardown(the_forwarded_sign_hook_calls_the_provider, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        the_forwarded_sign_hook_rejects_an_unusable_provider, setup, teardown),
     cmocka_unit_test_setup_teardown(a_v2_provider_without_sign_forwards_no_hook, setup, teardown),
     cmocka_unit_test_setup_teardown(a_v1_provider_sign_slot_is_ignored, setup, teardown),
     cmocka_unit_test_setup_teardown(

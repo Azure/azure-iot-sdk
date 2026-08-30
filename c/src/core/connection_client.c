@@ -280,7 +280,11 @@ static az_iot_result provider_sign_adapter(
     size_t* out_sig_len)
 {
   az_iot_certificate_provider* p = (az_iot_certificate_provider*)ctx;
-  if (!p)
+  /* The whole chain is re-checked rather than assumed. This runs inside an
+   * adapter's TLS callback, where the context came back through a third-party
+   * library: a wrong or stale pointer must produce a failed handshake, not a
+   * crash in the middle of one. */
+  if (!p || !p->vtable || p->vtable->version < 2u || !p->vtable->sign)
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }

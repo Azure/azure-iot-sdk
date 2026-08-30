@@ -87,6 +87,29 @@ static bool pem_carries_private_key(const char* pem, size_t len)
   return false;
 }
 
+/* RFC 7512 puts credentials in the URI's query component ("?pin-value=...",
+ * "?pin-source=..."), and a key URI ends up in error logs. Copy only the path
+ * component, which names the object and nothing secret, and mark the rest.
+ * `out` is always NUL-terminated. */
+static void redact_key_uri(const char* uri, char* out, size_t out_cap)
+{
+  const char* query = strchr(uri, '?');
+  size_t keep = query ? (size_t)(query - uri) : strlen(uri);
+  const char* suffix = query ? "?<redacted>" : "";
+  size_t suffix_len = strlen(suffix);
+  if (keep + suffix_len + 1 > out_cap)
+  {
+    keep = (out_cap > suffix_len + 1) ? out_cap - suffix_len - 1 : 0;
+  }
+  memcpy(out, uri, keep);
+  memcpy(out + keep, suffix, suffix_len);
+  out[keep + suffix_len] = '\0';
+}
+
+/* Enough for a realistic PKCS#11 or TPM object URI; longer ones are truncated,
+ * which is a diagnostic, not a decision. */
+#define AZ_IOT_KEY_URI_LOG_MAX 256
+
 static void log_openssl_errors(const char* what)
 {
   unsigned long e;
@@ -186,16 +209,20 @@ typedef struct az_iot_pk11_uri
   ASN1_UTF8STRING* uri;
 } az_iot_pk11_uri;
 
-/* IMPLEMENT_ASN1_FUNCTIONS defines these with external linkage; declaring them
- * satisfies -Wmissing-prototypes. The az_iot_ prefix keeps them clear of the
+/* Only the allocator pair and the item template are generated: nothing here
+ * ever DECODES this structure -- the provider's own decoder does that when
+ * OpenSSL reads the file back -- so IMPLEMENT_ASN1_FUNCTIONS would emit a d2i
+ * that no call site can reach. Both are external, so they are declared to
+ * satisfy -Wmissing-prototypes; the az_iot_ prefix keeps them clear of the
  * vendored dependencies. */
-DECLARE_ASN1_FUNCTIONS(az_iot_pk11_uri)
+DECLARE_ASN1_ITEM(az_iot_pk11_uri)
+DECLARE_ASN1_ALLOC_FUNCTIONS(az_iot_pk11_uri)
 
 ASN1_SEQUENCE(az_iot_pk11_uri)
     = { ASN1_SIMPLE(az_iot_pk11_uri, description, ASN1_VISIBLESTRING),
         ASN1_SIMPLE(az_iot_pk11_uri, uri, ASN1_UTF8STRING) } ASN1_SEQUENCE_END(az_iot_pk11_uri)
 
-          IMPLEMENT_ASN1_FUNCTIONS(az_iot_pk11_uri)
+          IMPLEMENT_ASN1_ALLOC_FUNCTIONS(az_iot_pk11_uri)
 
     /* Encode `uri` as the reference above, PEM-wrapped, into a memory BIO (caller
      * frees). NULL if it could not be built. */
@@ -215,7 +242,7 @@ ASN1_SEQUENCE(az_iot_pk11_uri)
           (int)(sizeof(AZ_IOT_PK11_URI_DESCRIPTION) - 1))
       && ASN1_STRING_set(obj->uri, uri, (int)strlen(uri)))
   {
-    der_len = i2d_az_iot_pk11_uri(obj, &der);
+    der_len = ASN1_item_i2d((ASN1_VALUE*)obj, &der, ASN1_ITEM_rptr(az_iot_pk11_uri));
   }
   az_iot_pk11_uri_free(obj);
   if (der_len <= 0)
@@ -351,10 +378,12 @@ static az_iot_result write_key_reference(
   if (!mem)
   {
     log_openssl_errors("could not build a key reference");
+    char safe_uri[AZ_IOT_KEY_URI_LOG_MAX];
+    redact_key_uri(uri, safe_uri, sizeof(safe_uri));
     AZ_IOT_LOG_ERRORF(
         "paho: '%s' resolved to a key expressible neither by its own provider nor as a PKCS#11 URI "
         "reference, so there is nothing to hand the TLS stack",
-        uri);
+        safe_uri);
     return AZ_IOT_ERR_TLS;
   }
 
@@ -366,11 +395,13 @@ static az_iot_result write_key_reference(
      * bytes. Writing it out here would do exactly that, silently. */
     OPENSSL_cleanse(pem, (size_t)pem_len);
     BIO_free(mem);
+    char safe_uri[AZ_IOT_KEY_URI_LOG_MAX];
+    redact_key_uri(uri, safe_uri, sizeof(safe_uri));
     AZ_IOT_LOG_ERRORF(
         "paho: '%s' resolved to an EXTRACTABLE private key; refusing to write private key material "
         "to disk. Point client_key_path at the key instead, or use a key the token keeps "
         "non-extractable",
-        uri);
+        safe_uri);
     return AZ_IOT_ERR_TLS;
   }
 
@@ -412,6 +443,9 @@ az_iot_result az_iot_paho_key_custody_prepare(
     return AZ_IOT_ERR_NOT_SUPPORTED;
   }
 
+  char safe_uri[AZ_IOT_KEY_URI_LOG_MAX];
+  redact_key_uri(tls->client_key_uri, safe_uri, sizeof(safe_uri));
+
   az_iot_result r = load_crypto_backend(tls->crypto_engine_id);
   if (r != AZ_IOT_OK)
   {
@@ -425,7 +459,7 @@ az_iot_result az_iot_paho_key_custody_prepare(
     AZ_IOT_LOG_ERRORF(
         "paho: provider '%s' could not resolve client_key_uri '%s'",
         tls->crypto_engine_id,
-        tls->client_key_uri);
+        safe_uri);
     return AZ_IOT_ERR_TLS;
   }
 
@@ -439,7 +473,7 @@ az_iot_result az_iot_paho_key_custody_prepare(
 
   AZ_IOT_LOG_INFOF(
       "paho: TLS will sign with the non-extractable key '%s' via '%s'",
-      tls->client_key_uri,
+      safe_uri,
       tls->crypto_engine_id);
   *out_private_key_path = state->key_ref_path;
   return AZ_IOT_OK;
