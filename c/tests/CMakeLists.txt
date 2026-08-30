@@ -171,11 +171,46 @@ az_iot_add_cmocka_test(az_iot_tests_file_upload unit/file_upload_client_test.c)
 
 az_iot_add_cmocka_test(az_iot_tests_certificate_provider_pem unit/certificate_provider_pem_test.c)
 
+# Non-extractable key custody (D8) through the connection client: the
+# key-reference fields and the sign() hook reaching the adapter on BOTH connect
+# paths, the v2 gating, and the open-time credential validation.
+az_iot_add_cmocka_test(az_iot_tests_connection_key_custody unit/connection_key_custody_test.c)
+target_link_libraries(az_iot_tests_connection_key_custody PRIVATE az_iot_test_support)
+
 
 
 if(AZ_IOT_WITH_PAHO)
     az_iot_add_cmocka_test(az_iot_tests_paho_adapter unit/paho_adapter_smoke_test.c)
     target_link_libraries(az_iot_tests_paho_adapter PRIVATE az_iot_adapter_paho)
+
+    # The Paho adapter's non-extractable key custody (D8). It reaches into the
+    # adapter's private header, so it needs the adapter's source directory on
+    # the include path, and it needs the same AZ_IOT_PAHO_KEY_CUSTODY definition
+    # the adapter was compiled with so the cases match the built behaviour.
+    az_iot_add_cmocka_test(az_iot_tests_paho_key_custody unit/paho_key_custody_test.c)
+    target_link_libraries(az_iot_tests_paho_key_custody PRIVATE az_iot_adapter_paho)
+    target_include_directories(az_iot_tests_paho_key_custody PRIVATE
+        ${CMAKE_SOURCE_DIR}/adapters/paho)
+    get_target_property(_paho_defs az_iot_adapter_paho COMPILE_DEFINITIONS)
+    if(_paho_defs)
+        target_compile_definitions(az_iot_tests_paho_key_custody PRIVATE ${_paho_defs})
+    endif()
+
+    # The same custody code against a REAL PKCS#11 token. Built only when a
+    # token is going to be supplied (AZ_IOT_TEST_PKCS11_KEY_URI); it fails
+    # loudly rather than skipping when the environment is missing.
+    if(AZ_IOT_BUILD_PKCS11_TESTS)
+        find_package(OpenSSL 3.0 REQUIRED)
+        az_iot_add_cmocka_test(az_iot_tests_paho_key_custody_pkcs11
+            unit/paho_key_custody_pkcs11_test.c)
+        target_link_libraries(az_iot_tests_paho_key_custody_pkcs11 PRIVATE
+            az_iot_adapter_paho OpenSSL::SSL OpenSSL::Crypto)
+        target_include_directories(az_iot_tests_paho_key_custody_pkcs11 PRIVATE
+            ${CMAKE_SOURCE_DIR}/adapters/paho)
+        if(_paho_defs)
+            target_compile_definitions(az_iot_tests_paho_key_custody_pkcs11 PRIVATE ${_paho_defs})
+        endif()
+    endif()
 endif()
 
 if(AZ_IOT_WITH_RUST_MQTT)

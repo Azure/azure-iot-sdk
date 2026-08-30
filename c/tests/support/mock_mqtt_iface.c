@@ -175,6 +175,15 @@ static az_iot_result mock_connect(az_iot_mqtt_client* self, const az_iot_mqtt_co
     c->connect.has_trusted_ca_pem = (opts->tls.trusted_ca_pem != NULL);
     c->connect.has_client_cert_pem = (opts->tls.client_cert_pem != NULL);
     c->connect.has_client_key_pem = (opts->tls.client_key_pem != NULL);
+    copy_str(
+        c->connect.client_key_uri, sizeof(c->connect.client_key_uri), opts->tls.client_key_uri);
+    copy_str(
+        c->connect.crypto_engine_id,
+        sizeof(c->connect.crypto_engine_id),
+        opts->tls.crypto_engine_id);
+    c->connect.has_sign = (opts->tls.sign != NULL);
+    c->connect.sign = opts->tls.sign;
+    c->connect.sign_ctx = opts->tls.sign_ctx;
   }
   return take_override(m, AZ_IOT_MOCK_CALL_CONNECT);
 }

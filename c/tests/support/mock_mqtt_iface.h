@@ -96,6 +96,14 @@ extern "C"
       bool has_trusted_ca_pem;
       bool has_client_cert_pem;
       bool has_client_key_pem;
+      /* Non-extractable key custody (D8), captured so a test can assert the
+       * core forwarded the key reference and the sign() hook rather than
+       * dropping them on the way to the adapter. */
+      char client_key_uri[256];
+      char crypto_engine_id[64];
+      bool has_sign;
+      void* sign_ctx;
+      az_iot_mqtt_sign_callback sign;
     } connect;
   } az_iot_mock_call;
 

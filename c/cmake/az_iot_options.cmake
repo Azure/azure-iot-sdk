@@ -3,6 +3,13 @@
 
 option(AZ_IOT_WITH_PAHO        "Build the Paho-C MQTT adapter (default)"      ON)
 option(AZ_IOT_WITH_RUST_MQTT   "Build the Rust MQTT adapter shell"             OFF)
+# Non-extractable key custody (D8) in the Paho adapter: resolve a
+# "pkcs11:"/"tpm2:" key reference through an OpenSSL ENGINE or provider so the
+# TLS handshake signs inside the HSM. Needs the OSSL_STORE/OSSL_ENCODER APIs,
+# so it is compiled in only when OpenSSL 3.0+ is present; the adapter builds
+# either way and refuses a key reference with AZ_IOT_ERR_NOT_SUPPORTED when the
+# support is absent, rather than connecting without a client key.
+option(AZ_IOT_PAHO_KEY_CUSTODY "Honour non-extractable key references in the Paho adapter (needs OpenSSL 3.0+)" ON)
 option(AZ_IOT_WITH_ADU_CRYPTO_OPENSSL "Build the OpenSSL ADU crypto adapter"   ON)
 option(AZ_IOT_WITH_CERT_PROVIDER_MANAGED "Build the OpenSSL managed certificate provider" ON)
 option(AZ_IOT_BUILD_SAMPLES    "Build sample apps"                              ON)
@@ -41,6 +48,11 @@ option(AZ_IOT_BUILD_CONFORMANCE_TESTS_TLS "Include the TLS certificate-validatio
 # only the dedicated ci-c-e2e-csr workflow provisions. Same rule as above: the
 # test is built when it is going to be run, not built-and-skipped.
 option(AZ_IOT_BUILD_E2E_CSR    "Build the CSR enrollment e2e test (needs a CA-linked DPS enrollment)" OFF)
+# The PKCS#11 custody tests drive a REAL token (SoftHSM2 in CI) through an
+# OpenSSL 3.x pkcs11 provider. Same rule as the conformance suites: the test is
+# built when it is going to be run, not built-and-skipped. The token URI comes
+# from AZ_IOT_TEST_PKCS11_KEY_URI at run time and the suite fails if it is unset.
+option(AZ_IOT_BUILD_PKCS11_TESTS "Register the Paho key-custody tests that need a PKCS#11 token" OFF)
 option(AZ_IOT_USE_SYSTEM_DEPS  "Prefer find_package() over fetched deps"       OFF)
 option(AZ_IOT_USE_CPM          "Use CPM.cmake to fetch deps from source"       OFF)
 option(AZ_IOT_WARNINGS_AS_ERRORS "Treat compiler warnings as errors"           ON)

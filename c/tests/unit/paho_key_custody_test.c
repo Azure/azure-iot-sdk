@@ -1,0 +1,323 @@
+// Copyright (c) Microsoft. All rights reserved.
+// Licensed under the MIT license. See LICENSE file in the project root for full license
+// information.
+
+/* SPDX-License-Identifier: MIT */
+/* Paho adapter: non-extractable key custody (D8).
+ *
+ * Every case here is deterministic against a stock OpenSSL: the "default"
+ * provider always loads, so the resolve and extractable-key branches can be
+ * driven without an HSM. The one path that genuinely needs PKCS#11 hardware --
+ * a provider returning a key it will not export -- is exercised by the
+ * SoftHSM2-backed e2e leg, not here. */
+#include <stdarg.h>
+#include <stddef.h>
+#include <setjmp.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include <cmocka.h>
+
+#include "azure/iot/adapters/az_iot_adapter_paho.h"
+#include "azure/iot/az_iot_mqtt_iface.h"
+#include "azure/iot/az_iot_result.h"
+
+#include "az_iot_paho_key_custody.h"
+
+/* A software EC P-256 key. Test material only -- it authenticates nothing and
+ * is here precisely so the adapter can be caught refusing to copy an
+ * EXTRACTABLE key into the reference file. */
+static const char k_software_key_pem[]
+    = "-----BEGIN PRIVATE KEY-----\n"
+      "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgHCsZic6vyzA2wQBw\n"
+      "4MZtYJTGSoHZ8X/WDcllwOLofSGhRANCAASVEx1J3/gQ0Jv1ji3ltb4pBmgeCisb\n"
+      "MXtVqn8vFkldMQtreR/++C6c5D69CKxYhPOXVAjpScUWfAy9Kn3ugcGf\n"
+      "-----END PRIVATE KEY-----\n";
+
+static char g_key_path[512];
+static char g_key_uri[600];
+
+static int group_setup(void** state)
+{
+  (void)state;
+  const char* dir = getenv("TMPDIR");
+  if (!dir || dir[0] == '\0')
+  {
+    dir = "/tmp";
+  }
+  snprintf(g_key_path, sizeof(g_key_path), "%s/az-iot-ut-softkey.pem", dir);
+  FILE* f = fopen(g_key_path, "w");
+  assert_non_null(f);
+  assert_true(fwrite(k_software_key_pem, 1, sizeof(k_software_key_pem) - 1, f) > 0);
+  fclose(f);
+  snprintf(g_key_uri, sizeof(g_key_uri), "file:%s", g_key_path);
+  return 0;
+}
+
+static int group_teardown(void** state)
+{
+  (void)state;
+  remove(g_key_path);
+  return 0;
+}
+
+/* ------------------------------------------------------------------------- */
+/* requested() -- the input to the adapter's use_ssl decision                */
+/* ------------------------------------------------------------------------- */
+
+static az_iot_result sign_stub(
+    void* ctx,
+    const uint8_t* digest,
+    size_t digest_len,
+    uint8_t* out_sig,
+    size_t out_sig_cap,
+    size_t* out_sig_len)
+{
+  (void)ctx;
+  (void)digest;
+  (void)digest_len;
+  (void)out_sig;
+  (void)out_sig_cap;
+  (void)out_sig_len;
+  return AZ_IOT_OK;
+}
+
+/* A URI-only or sign-only credential is a TLS credential. If this said
+ * otherwise the adapter would fall through to a plaintext connect for exactly
+ * the credential that most needs TLS. */
+static void a_key_reference_counts_as_tls_material(void** state)
+{
+  (void)state;
+  assert_false(az_iot_paho_key_custody_requested(NULL));
+
+  az_iot_mqtt_tls_options tls;
+  memset(&tls, 0, sizeof(tls));
+  assert_false(az_iot_paho_key_custody_requested(&tls));
+
+  tls.client_key_path = "/dev/null/key.pem";
+  assert_false(az_iot_paho_key_custody_requested(&tls));
+
+  memset(&tls, 0, sizeof(tls));
+  tls.client_key_uri = "pkcs11:object=k";
+  assert_true(az_iot_paho_key_custody_requested(&tls));
+
+  memset(&tls, 0, sizeof(tls));
+  tls.sign = sign_stub;
+  assert_true(az_iot_paho_key_custody_requested(&tls));
+}
+
+/* ------------------------------------------------------------------------- */
+/* prepare() / release()                                                     */
+/* ------------------------------------------------------------------------- */
+
+static void null_arguments_are_rejected(void** state)
+{
+  (void)state;
+  az_iot_paho_key_custody s;
+  memset(&s, 0, sizeof(s));
+  az_iot_mqtt_tls_options tls;
+  memset(&tls, 0, sizeof(tls));
+  const char* path = NULL;
+
+  assert_int_equal(az_iot_paho_key_custody_prepare(NULL, &tls, &path), AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(az_iot_paho_key_custody_prepare(&s, NULL, &path), AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(az_iot_paho_key_custody_prepare(&s, &tls, NULL), AZ_IOT_ERR_INVALID_ARG);
+
+  /* release() tolerates a NULL and a never-prepared state. */
+  az_iot_paho_key_custody_release(NULL);
+  az_iot_paho_key_custody_release(&s);
+}
+
+/* No custody requested: the caller's own key path passes through untouched,
+ * which is every ordinary PEM/file credential. */
+static void an_ordinary_key_path_passes_through(void** state)
+{
+  (void)state;
+  az_iot_paho_key_custody s;
+  memset(&s, 0, sizeof(s));
+  az_iot_mqtt_tls_options tls;
+  memset(&tls, 0, sizeof(tls));
+  tls.client_key_path = "/dev/null/key.pem";
+
+  const char* path = NULL;
+  assert_int_equal(az_iot_paho_key_custody_prepare(&s, &tls, &path), AZ_IOT_OK);
+  assert_string_equal(path, "/dev/null/key.pem");
+  az_iot_paho_key_custody_release(&s);
+}
+
+#if defined(AZ_IOT_PAHO_KEY_CUSTODY)
+
+/* Paho's SSL options expose no SSL_CTX and no key callback, so a sign() hook
+ * with no key reference cannot be honoured here. Saying so is the point: the
+ * alternative is a handshake with no client key at all. */
+static void a_sign_hook_without_a_key_uri_is_not_supported(void** state)
+{
+  (void)state;
+  az_iot_paho_key_custody s;
+  memset(&s, 0, sizeof(s));
+  az_iot_mqtt_tls_options tls;
+  memset(&tls, 0, sizeof(tls));
+  tls.sign = sign_stub;
+
+  const char* path = NULL;
+  assert_int_equal(az_iot_paho_key_custody_prepare(&s, &tls, &path), AZ_IOT_ERR_NOT_SUPPORTED);
+  az_iot_paho_key_custody_release(&s);
+}
+
+static void a_key_uri_without_an_engine_id_is_not_supported(void** state)
+{
+  (void)state;
+  az_iot_paho_key_custody s;
+  memset(&s, 0, sizeof(s));
+  az_iot_mqtt_tls_options tls;
+  memset(&tls, 0, sizeof(tls));
+  tls.client_key_uri = "pkcs11:object=device-key;type=private";
+
+  const char* path = NULL;
+  assert_int_equal(az_iot_paho_key_custody_prepare(&s, &tls, &path), AZ_IOT_ERR_NOT_SUPPORTED);
+  az_iot_paho_key_custody_release(&s);
+}
+
+static void an_unknown_engine_id_is_not_supported(void** state)
+{
+  (void)state;
+  az_iot_paho_key_custody s;
+  memset(&s, 0, sizeof(s));
+  az_iot_mqtt_tls_options tls;
+  memset(&tls, 0, sizeof(tls));
+  tls.client_key_uri = "pkcs11:object=device-key;type=private";
+  tls.crypto_engine_id = "no-such-provider-exists";
+
+  const char* path = NULL;
+  assert_int_equal(az_iot_paho_key_custody_prepare(&s, &tls, &path), AZ_IOT_ERR_NOT_SUPPORTED);
+  az_iot_paho_key_custody_release(&s);
+}
+
+/* The provider loads but the URI names nothing. This is the diagnostic the
+ * change exists for: it fails here, naming the URI, instead of inside the
+ * handshake. */
+static void an_unresolvable_key_uri_fails_before_the_handshake(void** state)
+{
+  (void)state;
+  az_iot_paho_key_custody s;
+  memset(&s, 0, sizeof(s));
+  az_iot_mqtt_tls_options tls;
+  memset(&tls, 0, sizeof(tls));
+  tls.client_key_uri = "file:/nonexistent/az-iot-ut/no-such-key.pem";
+  tls.crypto_engine_id = "default";
+
+  const char* path = NULL;
+  assert_int_equal(az_iot_paho_key_custody_prepare(&s, &tls, &path), AZ_IOT_ERR_TLS);
+  az_iot_paho_key_custody_release(&s);
+}
+
+/* A URI that resolves to an ordinary, exportable private key must be refused.
+ * Writing it to the reference file would put private key material on disk from
+ * the one code path whose entire purpose is that it never does. */
+static void an_extractable_key_is_refused(void** state)
+{
+  (void)state;
+  az_iot_paho_key_custody s;
+  memset(&s, 0, sizeof(s));
+  az_iot_mqtt_tls_options tls;
+  memset(&tls, 0, sizeof(tls));
+  tls.client_key_uri = g_key_uri;
+  tls.crypto_engine_id = "default";
+
+  const char* path = NULL;
+  assert_int_equal(az_iot_paho_key_custody_prepare(&s, &tls, &path), AZ_IOT_ERR_TLS);
+  /* Nothing was left behind. */
+  assert_null(s.key_ref_path);
+  az_iot_paho_key_custody_release(&s);
+}
+
+/* release() is idempotent and re-preparable: the adapter calls it at the top of
+ * every connect so a reconnect does not accumulate reference files. */
+static void release_is_idempotent(void** state)
+{
+  (void)state;
+  az_iot_paho_key_custody s;
+  memset(&s, 0, sizeof(s));
+  az_iot_mqtt_tls_options tls;
+  memset(&tls, 0, sizeof(tls));
+  tls.client_key_uri = g_key_uri;
+  tls.crypto_engine_id = "default";
+
+  const char* path = NULL;
+  assert_int_equal(az_iot_paho_key_custody_prepare(&s, &tls, &path), AZ_IOT_ERR_TLS);
+  az_iot_paho_key_custody_release(&s);
+  az_iot_paho_key_custody_release(&s);
+  assert_null(s.key_ref_path);
+}
+
+#else /* !AZ_IOT_PAHO_KEY_CUSTODY */
+
+/* Built without custody support, a key reference must be refused rather than
+ * quietly ignored -- ignoring it connects with no client key. */
+static void custody_without_support_is_refused(void** state)
+{
+  (void)state;
+  az_iot_paho_key_custody s;
+  memset(&s, 0, sizeof(s));
+  az_iot_mqtt_tls_options tls;
+  memset(&tls, 0, sizeof(tls));
+  tls.client_key_uri = "pkcs11:object=device-key;type=private";
+  tls.crypto_engine_id = "pkcs11";
+
+  const char* path = NULL;
+  assert_int_equal(az_iot_paho_key_custody_prepare(&s, &tls, &path), AZ_IOT_ERR_NOT_SUPPORTED);
+  az_iot_paho_key_custody_release(&s);
+}
+
+#endif /* AZ_IOT_PAHO_KEY_CUSTODY */
+
+/* ------------------------------------------------------------------------- */
+/* the adapter refuses the connect rather than proceeding without a key      */
+/* ------------------------------------------------------------------------- */
+
+static void connect_with_an_unusable_key_reference_fails(void** state)
+{
+  (void)state;
+  az_iot_mqtt_factory* f = az_iot_paho_factory_create_v3_1_1();
+  assert_non_null(f);
+  az_iot_mqtt_client* c = f->create(f->factory_ctx);
+  assert_non_null(c);
+
+  az_iot_mqtt_connect_options opts;
+  memset(&opts, 0, sizeof(opts));
+  opts.host = "broker.invalid";
+  opts.port = 8883;
+  opts.client_id = "ut-device";
+  opts.tls.client_cert_path = "/dev/null/device.pem";
+  opts.tls.client_key_uri = "pkcs11:object=device-key;type=private";
+  opts.tls.crypto_engine_id = "no-such-provider-exists";
+
+  assert_int_equal(c->iface->connect(c, &opts), AZ_IOT_ERR_NOT_SUPPORTED);
+
+  c->iface->destroy(c);
+  az_iot_paho_factory_destroy(f);
+}
+
+int main(void)
+{
+  const struct CMUnitTest tests[] = {
+    cmocka_unit_test(a_key_reference_counts_as_tls_material),
+    cmocka_unit_test(null_arguments_are_rejected),
+    cmocka_unit_test(an_ordinary_key_path_passes_through),
+#if defined(AZ_IOT_PAHO_KEY_CUSTODY)
+    cmocka_unit_test(a_sign_hook_without_a_key_uri_is_not_supported),
+    cmocka_unit_test(a_key_uri_without_an_engine_id_is_not_supported),
+    cmocka_unit_test(an_unknown_engine_id_is_not_supported),
+    cmocka_unit_test(an_unresolvable_key_uri_fails_before_the_handshake),
+    cmocka_unit_test(an_extractable_key_is_refused),
+    cmocka_unit_test(release_is_idempotent),
+#else
+    cmocka_unit_test(custody_without_support_is_refused),
+#endif
+    cmocka_unit_test(connect_with_an_unusable_key_reference_fails),
+  };
+  return cmocka_run_group_tests(tests, group_setup, group_teardown);
+}

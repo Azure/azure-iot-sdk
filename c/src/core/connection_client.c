@@ -264,6 +264,103 @@ static az_iot_result replace_owned_string(
     const char** opts_slot,
     const char* s);
 
+/* ------------------------------------------------------------------------- */
+/* certificate material -> TLS options                                       */
+/* ------------------------------------------------------------------------- */
+
+/* Adapts the provider's sign() slot (D8) to the plain callback shape the MQTT
+ * interface carries, so az_iot_mqtt_iface.h never has to know the certificate
+ * provider ABI. `ctx` is the provider itself. */
+static az_iot_result provider_sign_adapter(
+    void* ctx,
+    const uint8_t* digest,
+    size_t digest_len,
+    uint8_t* out_sig,
+    size_t out_sig_cap,
+    size_t* out_sig_len)
+{
+  az_iot_certificate_provider* p = (az_iot_certificate_provider*)ctx;
+  if (!p)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  return p->vtable->sign(p, digest, digest_len, out_sig, out_sig_cap, out_sig_len);
+}
+
+/* True when the provider exposes a usable sign() hook. The v2 slot only exists
+ * from vtable version 2, so the version is checked before the pointer -- the
+ * same gating start_csr()/open() apply to get_csr. */
+static bool provider_has_sign(const az_iot_certificate_provider* p)
+{
+  return p != NULL && p->vtable->version >= 2u && p->vtable->sign != NULL;
+}
+
+/* Can this credential set possibly complete a TLS handshake? A client
+ * certificate with no private key in ANY form cannot, and saying so here is the
+ * difference between a named error and an unexplained handshake failure.
+ *
+ * Material carrying no client certificate at all is left alone: that is a
+ * server-authentication-only connection, which is legitimate. */
+static az_iot_result validate_certificate_material(
+    const az_iot_certificate_material* mat,
+    bool has_sign)
+{
+  bool has_cert = mat->client_cert_pem != NULL || mat->client_cert_path != NULL;
+  if (!has_cert)
+  {
+    return AZ_IOT_OK;
+  }
+  bool has_key = mat->client_key_pem != NULL || mat->client_key_path != NULL
+      || mat->client_key_uri != NULL || has_sign;
+  if (!has_key)
+  {
+    AZ_IOT_LOG_ERROR("connection: certificate material carries a client certificate but no private "
+                     "key (no PEM, no file, no key URI, no sign() hook)");
+    return AZ_IOT_ERR_CREDENTIAL_INCOMPLETE;
+  }
+  /* A key URI without an engine/provider id names a key nothing can resolve:
+   * the URI scheme alone does not say which ENGINE or OpenSSL provider owns
+   * it. Adapters would have to guess, so it is rejected here instead. */
+  if (mat->client_key_uri != NULL && mat->crypto_engine_id == NULL && !has_sign)
+  {
+    AZ_IOT_LOG_ERROR("connection: certificate material sets client_key_uri without "
+                     "crypto_engine_id and provides no sign() hook");
+    return AZ_IOT_ERR_CREDENTIAL_INCOMPLETE;
+  }
+  return AZ_IOT_OK;
+}
+
+/* Single copy site for credential material -> adapter connect options, shared
+ * by the DPS/bootstrap path and the operational/reconnect path. It is one
+ * function precisely because there are two callers: a field added to only one
+ * of them breaks custody silently after the first certificate rotation. */
+static az_iot_result apply_certificate_material(
+    az_iot_mqtt_connect_options* copts,
+    const az_iot_certificate_material* mat,
+    az_iot_certificate_provider* prov)
+{
+  bool has_sign = provider_has_sign(prov);
+  az_iot_result vr = validate_certificate_material(mat, has_sign);
+  if (vr != AZ_IOT_OK)
+  {
+    return vr;
+  }
+
+  copts->tls.trusted_ca_path = mat->trusted_ca_path;
+  copts->tls.client_cert_path = mat->client_cert_path;
+  copts->tls.client_key_path = mat->client_key_path;
+  copts->tls.client_key_password = mat->client_key_password;
+  copts->tls.trusted_ca_pem = mat->trusted_ca_pem;
+  copts->tls.client_cert_pem = mat->client_cert_pem;
+  copts->tls.client_key_pem = mat->client_key_pem;
+  copts->tls.client_key_uri = mat->client_key_uri;
+  copts->tls.crypto_engine_id = mat->crypto_engine_id;
+  copts->tls.sign = has_sign ? provider_sign_adapter : NULL;
+  copts->tls.sign_ctx = has_sign ? (void*)prov : NULL;
+  copts->tls.verify_server = true;
+  return AZ_IOT_OK;
+}
+
 static void schedule_reconnect(az_iot_connection_client* c, az_iot_result reason)
 {
   teardown_active(c);
@@ -934,20 +1031,20 @@ static az_iot_result dps_start(az_iot_connection_client* c)
             c->opts.certificate_provider, AZ_IOT_CRED_BOOTSTRAP, &mat)
         == AZ_IOT_OK)
     {
-      copts.tls.trusted_ca_path = mat.trusted_ca_path;
-      copts.tls.client_cert_path = mat.client_cert_path;
-      copts.tls.client_key_path = mat.client_key_path;
-      copts.tls.client_key_password = mat.client_key_password;
-      copts.tls.trusted_ca_pem = mat.trusted_ca_pem;
-      copts.tls.client_cert_pem = mat.client_cert_pem;
-      copts.tls.client_key_pem = mat.client_key_pem;
-      copts.tls.verify_server = true;
+      az_iot_result cr = apply_certificate_material(&copts, &mat, c->opts.certificate_provider);
       AZ_IOT_LOG_DEBUGF(
-          "dps: bootstrap TLS ca=%s cert=%s key=%s",
+          "dps: bootstrap TLS ca=%s cert=%s key=%s key_uri=%s engine=%s",
           mat.trusted_ca_path ? mat.trusted_ca_path : "(none)",
           mat.client_cert_path ? mat.client_cert_path : "(none)",
-          mat.client_key_path ? mat.client_key_path : "(none)");
+          mat.client_key_path ? mat.client_key_path : "(none)",
+          mat.client_key_uri ? mat.client_key_uri : "(none)",
+          mat.crypto_engine_id ? mat.crypto_engine_id : "(none)");
       c->opts.certificate_provider->vtable->release(c->opts.certificate_provider, &mat);
+      if (cr != AZ_IOT_OK)
+      {
+        mc->iface->destroy(mc);
+        return cr;
+      }
     }
     else
     {
@@ -1565,15 +1662,13 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
     }
     if (lr == AZ_IOT_OK)
     {
-      copts.tls.trusted_ca_path = mat.trusted_ca_path;
-      copts.tls.client_cert_path = mat.client_cert_path;
-      copts.tls.client_key_path = mat.client_key_path;
-      copts.tls.client_key_password = mat.client_key_password;
-      copts.tls.trusted_ca_pem = mat.trusted_ca_pem;
-      copts.tls.client_cert_pem = mat.client_cert_pem;
-      copts.tls.client_key_pem = mat.client_key_pem;
-      copts.tls.verify_server = true;
+      az_iot_result cr = apply_certificate_material(&copts, &mat, prov);
       prov->vtable->release(prov, &mat);
+      if (cr != AZ_IOT_OK)
+      {
+        mc->iface->destroy(mc);
+        return cr;
+      }
     }
   }
 
@@ -1990,6 +2085,42 @@ az_iot_result az_iot_connection_client_open(az_iot_connection_client* client)
       AZ_IOT_LOG_ERROR("connection_client_open: request_operational_certificate requires "
                        "opts.csr_payload_buffer");
       return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+    }
+  }
+
+  /* Pre-flight the credential shape (D8). A client certificate with no private
+   * key in any form cannot complete a handshake, and finding that out here --
+   * before any socket exists -- is the difference between
+   * AZ_IOT_ERR_CREDENTIAL_INCOMPLETE and an opaque TLS failure several seconds
+   * later. The material is whatever the provider would actually hand the
+   * adapter: the operational identity when it holds one, the bootstrap identity
+   * otherwise. A provider that can supply neither yet is not rejected -- it may
+   * become able to by the time the connect attempt runs. */
+  if (client->opts.certificate_provider)
+  {
+    az_iot_certificate_provider* p = client->opts.certificate_provider;
+    if (p->vtable->load == NULL)
+    {
+      /* load() is the one hook every vtable version requires. Without it the
+       * connect paths have nothing to ask for credentials, so the client would
+       * dereference NULL a few frames later. */
+      AZ_IOT_LOG_ERROR("connection_client_open: certificate provider vtable has no load()");
+      return AZ_IOT_ERR_NOT_SUPPORTED;
+    }
+    az_iot_certificate_material mat = { 0 };
+    az_iot_result lr = p->vtable->load(p, AZ_IOT_CRED_OPERATIONAL, &mat);
+    if (lr != AZ_IOT_OK)
+    {
+      lr = p->vtable->load(p, AZ_IOT_CRED_BOOTSTRAP, &mat);
+    }
+    if (lr == AZ_IOT_OK)
+    {
+      az_iot_result vr = validate_certificate_material(&mat, provider_has_sign(p));
+      p->vtable->release(p, &mat);
+      if (vr != AZ_IOT_OK)
+      {
+        return vr;
+      }
     }
   }
 

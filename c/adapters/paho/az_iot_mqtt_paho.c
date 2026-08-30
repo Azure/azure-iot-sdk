@@ -27,6 +27,8 @@
 #include "azure/iot/az_iot_result.h"
 #include "azure/iot/az_iot_mqtt_iface.h"
 
+#include "az_iot_paho_key_custody.h"
+
 #include <MQTTAsync.h>
 
 #include <stdbool.h>
@@ -97,6 +99,11 @@ typedef struct paho_client
   paho_mutex q_mutex;
   queued_event* q_head;
   queued_event* q_tail;
+
+  /* Non-extractable key custody (D8): engine/provider handles and the key
+   * reference file handed to Paho, held for as long as the connection that
+   * uses them. */
+  az_iot_paho_key_custody key_custody;
 } paho_client;
 
 static paho_client* paho_self(az_iot_mqtt_client* c) { return (paho_client*)c; }
@@ -795,11 +802,27 @@ static az_iot_result paho_iface_connect(
 
   /* Use TLS when any TLS material or server verification is requested: a
    * client identity (cert), a server trust anchor (CA), their in-memory PEM
-   * variants, or an explicit verify_server. Keying off client_cert_path alone
-   * would wrongly fall back to plaintext for server-auth-only connections. */
+   * variants, an explicit verify_server, or a non-extractable key reference.
+   * Keying off client_cert_path alone would wrongly fall back to plaintext for
+   * server-auth-only connections, and omitting the key reference would let a
+   * URI-only credential connect with no client key at all. */
   bool use_ssl = opts->tls.client_cert_path != NULL || opts->tls.client_cert_pem != NULL
       || opts->tls.trusted_ca_path != NULL || opts->tls.trusted_ca_pem != NULL
-      || opts->tls.verify_server;
+      || opts->tls.verify_server || az_iot_paho_key_custody_requested(&opts->tls);
+
+  /* Resolve the client private key before anything else is built. A credential
+   * that cannot possibly sign -- an unreachable HSM key, an engine that is not
+   * installed -- fails here with a result that names the cause, instead of
+   * dying inside the TLS handshake where the only evidence is an OpenSSL
+   * alert. */
+  az_iot_paho_key_custody_release(&m->key_custody);
+  const char* private_key_path = NULL;
+  az_iot_result key_rc
+      = az_iot_paho_key_custody_prepare(&m->key_custody, &opts->tls, &private_key_path);
+  if (key_rc != AZ_IOT_OK)
+  {
+    return key_rc;
+  }
 
   /* (Re)build the underlying Paho handle. */
   if (m->paho)
@@ -855,7 +878,7 @@ static az_iot_result paho_iface_connect(
   {
     ssl_opts.trustStore = opts->tls.trusted_ca_path;
     ssl_opts.keyStore = opts->tls.client_cert_path;
-    ssl_opts.privateKey = opts->tls.client_key_path;
+    ssl_opts.privateKey = private_key_path;
     ssl_opts.privateKeyPassword = opts->tls.client_key_password;
     ssl_opts.enableServerCertAuth = opts->tls.verify_server ? 1 : 0;
     /* Verify the server hostname against the certificate too, not just the
@@ -869,13 +892,15 @@ static az_iot_result paho_iface_connect(
       ssl_opts.ssl_error_cb = paho_ssl_error_callback;
     }
     AZ_IOT_LOG_DEBUGF(
-        "paho: SSL trustStore=%s keyStore=%s privateKey=%s verboseErrors=%s",
+        "paho: SSL trustStore=%s keyStore=%s privateKey=%s verboseErrors=%s keyCustody=%s",
         ssl_opts.trustStore ? ssl_opts.trustStore : "(none)",
         ssl_opts.keyStore ? ssl_opts.keyStore : "(none)",
         ssl_opts.privateKey ? ssl_opts.privateKey : "(none)",
-        ssl_opts.ssl_error_cb ? "on" : "off");
+        ssl_opts.ssl_error_cb ? "on" : "off",
+        az_iot_paho_key_custody_requested(&opts->tls) ? "on" : "off");
   }
 #else
+  (void)private_key_path;
   if (use_ssl)
   {
     AZ_IOT_LOG_ERROR("paho: TLS requested but the adapter was built without SSL support");
@@ -1235,6 +1260,7 @@ static void paho_iface_destroy(az_iot_mqtt_client* self)
     MQTTAsync_destroy(&m->paho);
     m->paho = NULL;
   }
+  az_iot_paho_key_custody_release(&m->key_custody);
   q_drain_all(m);
   paho_mutex_destroy(&m->q_mutex);
   free(m->server_uri);

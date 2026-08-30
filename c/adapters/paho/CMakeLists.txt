@@ -114,6 +114,7 @@ endif()
 
 add_library(az_iot_adapter_paho STATIC
     az_iot_mqtt_paho.c
+    az_iot_paho_key_custody.c
 )
 add_library(azure::iot::adapter_paho ALIAS az_iot_adapter_paho)
 
@@ -130,6 +131,18 @@ target_link_libraries(az_iot_adapter_paho
 if(_PAHO_SSL)
     target_compile_definitions(az_iot_adapter_paho PRIVATE AZ_IOT_PAHO_SSL=1)
     target_link_libraries(az_iot_adapter_paho PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+endif()
+
+# Non-extractable key custody (D8): resolving a "pkcs11:"/"tpm2:" key reference
+# through an OpenSSL ENGINE or provider needs the OSSL_STORE/OSSL_ENCODER APIs,
+# which are OpenSSL 3.0+. Older OpenSSL (or no OpenSSL) still builds -- the
+# adapter then refuses a key reference at connect time with
+# AZ_IOT_ERR_NOT_SUPPORTED rather than silently connecting without a key.
+if(AZ_IOT_PAHO_KEY_CUSTODY AND _PAHO_SSL AND OPENSSL_VERSION VERSION_GREATER_EQUAL 3.0)
+    message(STATUS "Paho adapter: non-extractable key custody enabled (OpenSSL ${OPENSSL_VERSION})")
+    target_compile_definitions(az_iot_adapter_paho PRIVATE AZ_IOT_PAHO_KEY_CUSTODY=1)
+elseif(AZ_IOT_PAHO_KEY_CUSTODY)
+    message(STATUS "Paho adapter: non-extractable key custody disabled (needs OpenSSL 3.0+)")
 endif()
 az_iot_apply_warnings(az_iot_adapter_paho)
 az_iot_apply_coverage(az_iot_adapter_paho)
