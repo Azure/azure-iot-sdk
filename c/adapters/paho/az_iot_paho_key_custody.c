@@ -337,6 +337,32 @@ static char* create_private_temp_file(void)
 #endif
 }
 
+/* Can OpenSSL turn these reference bytes back into a usable private key?
+ *
+ * This is the exact operation Paho performs on the file
+ * (SSL_CTX_use_PrivateKey_file -> PEM_read_bio_PrivateKey_ex), and it is not a
+ * given: a provider registers the DECODER for its own reference form
+ * separately from anything else, and older builds ship without one. Checking
+ * here turns "the file is unreadable" into a named error at connect time
+ * instead of a PEM failure inside the handshake -- which is the failure mode
+ * this whole path exists to remove. */
+static bool reference_round_trips(const char* pem, long len)
+{
+  BIO* in = BIO_new_mem_buf(pem, (int)len);
+  if (!in)
+  {
+    return false;
+  }
+  EVP_PKEY* decoded = PEM_read_bio_PrivateKey_ex(in, NULL, NULL, NULL, NULL, NULL);
+  BIO_free(in);
+  if (!decoded)
+  {
+    return false;
+  }
+  EVP_PKEY_free(decoded);
+  return true;
+}
+
 /* Write `pem` (`len` bytes) to a fresh private temporary file and record the
  * path on `state`. */
 static az_iot_result store_reference_pem(az_iot_paho_key_custody* state, const char* pem, long len)
@@ -401,6 +427,20 @@ static az_iot_result write_key_reference(
         "paho: '%s' resolved to an EXTRACTABLE private key; refusing to write private key material "
         "to disk. Point client_key_path at the key instead, or use a key the token keeps "
         "non-extractable",
+        safe_uri);
+    return AZ_IOT_ERR_TLS;
+  }
+
+  if (!reference_round_trips(pem, pem_len))
+  {
+    log_openssl_errors("the key reference cannot be decoded back");
+    BIO_free(mem);
+    char safe_uri[AZ_IOT_KEY_URI_LOG_MAX];
+    redact_key_uri(uri, safe_uri, sizeof(safe_uri));
+    AZ_IOT_LOG_ERRORF(
+        "paho: the reference built for '%s' cannot be decoded by this OpenSSL installation, so the "
+        "TLS stack could not load it either. The provider must register a DECODER for its own "
+        "reference form -- pkcs11-provider 0.5 or later, or tpm2-openssl",
         safe_uri);
     return AZ_IOT_ERR_TLS;
   }
