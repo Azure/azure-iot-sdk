@@ -40,20 +40,40 @@ static const char k_software_key_pem[]
 static char g_key_path[512];
 static char g_key_uri[600];
 
+/* The temporary directory, spelled the way each platform spells it. */
+static const char* temp_dir(void)
+{
+  static const char* const names[] = { "TMPDIR", "TEMP", "TMP" };
+  for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); ++i)
+  {
+    const char* v = getenv(names[i]);
+    if (v && v[0] != '\0')
+    {
+      return v;
+    }
+  }
+  return ".";
+}
+
 static int group_setup(void** state)
 {
   (void)state;
-  const char* dir = getenv("TMPDIR");
-  if (!dir || dir[0] == '\0')
-  {
-    dir = "/tmp";
-  }
-  snprintf(g_key_path, sizeof(g_key_path), "%s/az-iot-ut-softkey.pem", dir);
+  snprintf(g_key_path, sizeof(g_key_path), "%s/az-iot-ut-softkey.pem", temp_dir());
   FILE* f = fopen(g_key_path, "w");
   assert_non_null(f);
   assert_true(fwrite(k_software_key_pem, 1, sizeof(k_software_key_pem) - 1, f) > 0);
   fclose(f);
+
+  /* OpenSSL's file store wants a URI, and a URI has forward slashes -- a
+   * Windows path with backslashes is not one. */
   snprintf(g_key_uri, sizeof(g_key_uri), "file:%s", g_key_path);
+  for (char* p = g_key_uri; *p; ++p)
+  {
+    if (*p == '\\')
+    {
+      *p = '/';
+    }
+  }
   return 0;
 }
 
