@@ -627,13 +627,6 @@ response. The blob PUT itself is the application's job and is deliberately out o
 > inventories what exists today — including the `Pending` rows already known — and is not
 > being extended with newly identified gaps the way the other areas are. Revisit once the
 > feature settles.
->
-> **ADUv1 is cut and ADUv2 is the target** ([eng/adu-client-plan.md](eng/adu-client-plan.md#what-aduv1-is-cut-means)),
-> so this table has a known expiry: the rows that assert **engine** behaviour (workflow ordering,
-> rollback, hash mismatch, cancel, resume, crypto) are re-pointed at `adu_core` driven by a fake
-> channel, while the rows that assert **twin wire shapes** (desired-property deployment, reported
-> agent state, the accept/reject acknowledgement, `retryTimestamp` redelivery) are deleted and
-> replaced by ADUv2-shaped equivalents.
 
 Covers `az_iot_adu_client`: the deployment workflow driven off desired properties, the
 agent state reported back through the twin, and the manifest crypto (SHA-256 file hashes,
