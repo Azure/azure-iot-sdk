@@ -84,7 +84,7 @@ becomes the structured `lastInstallResult` carried by `ReportDeviceUpdateStatus`
 properties become `agentInfo` (`agentSdkVersion`, `agentProfile`, 1–5 `compatibilityProperties`).
 
 Delivery is via an **`az_iot_adu_channel`** vtable so `adu_core` never names a transport; the
-ADUv2/DPS channel is the only implementation that ships (plus an in-test fake).
+ADUv2/DPS channel is the only implementation that will ship (plus an in-test fake).
 
 **Legend.** Support: ✅ Implemented (in core) · 🟡 Partial (built but simplified /
 sample-only / not factored) · 🔜 Coming soon (planned / designed, not yet built) ·

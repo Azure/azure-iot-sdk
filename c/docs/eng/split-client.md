@@ -388,8 +388,9 @@ sequenceDiagram
 **Consideration.** Two codebases (or two build targets maintained by different
 people) drift: twin, direct methods, C2D, telemetry, and especially **ADU** can
 diverge in behavior, error mapping, or API shape. ADU keeps this bounded by having
-**one** channel: the twin channel (ADUv1) is cut and only the ADUv2 pull protocol,
-fronted by the DPS gateway, ships — see
+**one** channel: the twin channel (ADUv1) is cut, and the ADUv2 pull protocol,
+fronted by the DPS gateway, is the only channel that will ship — it is the
+implementation target, not yet built. See
 [adu-client-plan.md](adu-client-plan.md). Drift would therefore be drift in the
 shared engine, which is exactly what the conformance suite has to catch.
 

@@ -95,7 +95,7 @@ them. Skipping anchor validation would be a remote-code-execution backdoor.
 **Where the URL comes from:** ADUv1 carried it as the top-level twin property
 `rootKeyPackageUrl`. That channel is cut; under ADUv2 it arrives as
 `serviceConfiguration.rootKeyDownloadUrl` in the update-check response
-(see `docs/eng/aduv2-spec.md`). Either way it is unsigned input.
+(see [eng/aduv2-spec.md](eng/aduv2-spec.md)). Either way it is unsigned input.
 
 Work items:
 - [ ] Surface `serviceConfiguration.rootKeyDownloadUrl` from the update-check response to the app.
