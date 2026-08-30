@@ -328,8 +328,28 @@ jobs:
       - name: Install toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build libssl-dev mosquitto-clients
+          sudo apt-get install -y ninja-build libssl-dev mosquitto-clients \
+                                  softhsm2 opensc pkcs11-provider
           python3 -m pip install --upgrade 'gcovr==7.2' 'diff-cover==9.2.0'
+
+      # The non-extractable-key custody suite drives a REAL PKCS#11 token. It is
+      # built only when one is going to be supplied and fails when it is not, so
+      # the token is provisioned here rather than left to a self-skip. Its
+      # coverage is not optional either: the success path of
+      # adapters/paho/az_iot_paho_key_custody.c exists only when a token is
+      # present.
+      - name: Provision a PKCS#11 token
+        run: |
+          openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 \
+                          -out "$RUNNER_TEMP/custody-key.pem"
+          c/eng/setup-softhsm.sh "$RUNNER_TEMP/custody-key.pem" > "$RUNNER_TEMP/softhsm-env.sh"
+          # "export NAME='value'" -> the NAME=value lines GITHUB_ENV takes.
+          sed -E "s/^export ([A-Za-z0-9_]+)='(.*)'\$/\1=\2/" \
+              "$RUNNER_TEMP/softhsm-env.sh" >> "$GITHUB_ENV"
+          . "$RUNNER_TEMP/softhsm-env.sh"
+          # Fail here, not thirty lines into a test log, if the OpenSSL pkcs11
+          # provider is not installed: without it the token cannot sign.
+          openssl list -providers -provider pkcs11 > /dev/null
 
       - name: Verify MQTT broker is reachable
         # The conformance suites are where nearly all Paho adapter coverage
@@ -340,7 +360,7 @@ jobs:
         run: mosquitto_pub -h localhost -p 1883 -t az-iot/coverage/probe -m ok
 
       - name: Configure
-        run: cmake --preset linux-gcc-coverage
+        run: cmake --preset linux-gcc-coverage -DAZ_IOT_BUILD_PKCS11_TESTS=ON
 
       - name: Build
         run: cmake --build --preset linux-gcc-coverage
