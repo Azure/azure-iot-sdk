@@ -84,13 +84,8 @@ typedef struct
 
 static custody_fixture g_fixture;
 
-static char* env_dup(const char* name)
+static char* str_dup(const char* value)
 {
-  const char* value = getenv(name);
-  if (value == NULL || value[0] == '\0')
-  {
-    return NULL;
-  }
   size_t n = strlen(value) + 1;
   char* copy = (char*)malloc(n);
   if (copy != NULL)
@@ -98,6 +93,16 @@ static char* env_dup(const char* name)
     memcpy(copy, value, n);
   }
   return copy;
+}
+
+static char* env_dup(const char* name)
+{
+  const char* value = getenv(name);
+  if (value == NULL || value[0] == '\0')
+  {
+    return NULL;
+  }
+  return str_dup(value);
 }
 
 static az_iot_result custody_load(
@@ -156,9 +161,7 @@ static int config_load(custody_config* c)
   c->global_endpoint = env_dup("AZ_IOT_DPS_GLOBAL_ENDPOINT");
   if (c->engine_id == NULL)
   {
-    /* Static, and deliberately not freed with the rest of the config. */
-    static char default_engine[] = "pkcs11";
-    c->engine_id = default_engine;
+    c->engine_id = str_dup("pkcs11");
   }
 
   if (c->id_scope == NULL || c->reg_id == NULL || c->cert == NULL || c->ca == NULL
@@ -256,6 +259,7 @@ static void device_disconnect(custody_fixture* fx)
   free(fx->config.cert);
   free(fx->config.ca);
   free(fx->config.key_uri);
+  free(fx->config.engine_id);
   free(fx->config.global_endpoint);
   memset(&fx->config, 0, sizeof(fx->config));
 }
@@ -334,7 +338,9 @@ static void telemetry_flows_over_the_token_authenticated_connection(void** state
 
   char payload[192];
   int payload_len = snprintf(payload, sizeof(payload), "{\"marker\":\"%s\"}", needle);
-  assert_true(payload_len > 0);
+  /* snprintf reports what it WOULD have written, so a truncated result would
+   * send a length past the end of the buffer. */
+  assert_true(payload_len > 0 && (size_t)payload_len < sizeof(payload));
 
   az_iot_telemetry_message msg = { 0 };
   msg.payload = (const uint8_t*)payload;

@@ -24,10 +24,14 @@
 #   AZ_IOT_CRYPTO_ENGINE_ID   "pkcs11"
 #   AZ_IOT_TEST_PKCS11_KEY_URI  same URI, for the unit-level custody suite
 #
-# Requirements: softhsm2-util, pkcs11-tool (opensc), openssl 3.x and an OpenSSL
-# pkcs11 provider (the `pkcs11-provider` package). Each is checked, and a
-# missing one is a hard error -- a token that silently is not there would turn
-# the custody tests into tests of nothing.
+# Requirements: softhsm2-util, pkcs11-tool (opensc) and openssl, each checked
+# below -- a missing one is a hard error, because a token that silently is not
+# there would turn the custody tests into tests of nothing.
+#
+# The OpenSSL pkcs11 PROVIDER is a separate requirement and deliberately not
+# checked here: this script only fills a token, and nothing it does needs the
+# provider. Build one with setup-pkcs11-provider.sh and verify it with
+# `openssl list -providers -provider pkcs11`, which is what CI does.
 
 set -euo pipefail
 

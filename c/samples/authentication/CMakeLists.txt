@@ -74,11 +74,10 @@ if(AZ_IOT_WITH_PAHO)
     endif()
 endif()
 
-# D8 non-extractable key custody. Both need the Paho adapter to link, and the
-# key-reference one additionally needs OpenSSL 3.0+ at RUN time (the provider
-# that owns the token) -- which is a deployment property, not a build one, so
-# it builds wherever Paho does and reports a clear error when the provider is
-# absent.
+# D8 non-extractable key custody, key-reference route. Needs the Paho adapter to
+# link, and OpenSSL 3.0+ at RUN time (the provider that owns the token) -- which
+# is a deployment property, not a build one, so it builds wherever Paho does and
+# reports a clear error when the provider is absent.
 if(AZ_IOT_WITH_PAHO)
     add_executable(az_iot_sample_auth_hsm_pkcs11
         hsm_pkcs11/main.c ${_auth_common}/sample_utils.c)
