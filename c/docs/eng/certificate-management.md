@@ -541,6 +541,12 @@ HSM/TPM/secure-element (PKCS#11) · remote/cloud key** — pushes four items fro
    TLS credential handling to add them to. A BYO adapter gets both through
    `az_iot_mqtt_tls_options` with no dependency on the certificate-provider ABI.
 
+   The provider must also register a DECODER for its own key-reference PEM, since that is
+   what `SSL_CTX_use_PrivateKey_file` resolves the file with. The adapter performs that
+   decode itself before writing the file, so an installation without one is refused at
+   connect time with a message naming the requirement rather than failing inside the
+   handshake.
+
    Legacy OpenSSL `ENGINE`s are deliberately not attempted: they are deprecated in
    OpenSSL 3.0, and a key an ENGINE returns is a legacy object with no reference form, so
    it cannot be expressed as the PEM file that is the only thing Paho can be handed. An
@@ -673,8 +679,12 @@ already provides most of the scaffolding:
 - **Done:** SoftHSM2 for the PKCS#11 custody tests. The e2e legs run on GitHub-hosted
   runners rather than a Docker image, so it is provisioned per job:
   [`eng/setup-softhsm.sh`](../../eng/setup-softhsm.sh) initializes a token, imports the
-  device key CI already generates, **deletes the on-disk copy**, and prints the URI. The
-  Linux e2e leg and the coverage job both use it.
+  device key CI already generates, **deletes the on-disk copy**, and prints the URI.
+  [`eng/setup-pkcs11-provider.sh`](../../eng/setup-pkcs11-provider.sh) builds the OpenSSL
+  provider the handshake signs through — from source, and pinned, because the provider has
+  to register a DECODER for its own key-reference PEM and distributions lag (Ubuntu 24.04
+  packages 0.3, which does not; 0.5 is the floor). The Linux e2e leg and the coverage job
+  both use the pair.
 
 Scenario coverage (mirrors `csr-scenarions.md` where applicable):
 

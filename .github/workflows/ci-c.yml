@@ -329,7 +329,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y ninja-build libssl-dev mosquitto-clients \
-                                  softhsm2 opensc pkcs11-provider
+                                  softhsm2 opensc meson pkg-config
           python3 -m pip install --upgrade 'gcovr==7.2' 'diff-cover==9.2.0'
 
       # The non-extractable-key custody suite drives a REAL PKCS#11 token. It is
@@ -340,6 +340,8 @@ jobs:
       # present.
       - name: Provision a PKCS#11 token
         run: |
+          eval "$(eng/setup-pkcs11-provider.sh)"
+          echo "OPENSSL_MODULES=$OPENSSL_MODULES" >> "$GITHUB_ENV"
           openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 \
                           -out "$RUNNER_TEMP/custody-key.pem"
           eng/setup-softhsm.sh "$RUNNER_TEMP/custody-key.pem" > "$RUNNER_TEMP/softhsm-env.sh"

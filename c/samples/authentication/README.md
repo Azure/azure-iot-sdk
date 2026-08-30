@@ -84,9 +84,16 @@ a certificate is public. Requires the Paho adapter, OpenSSL 3.0+, and an
 OpenSSL 3.x provider for the token (`pkcs11-provider` for PKCS#11,
 `tpm2-openssl` for TPM 2.0) that OpenSSL can find.
 
+The provider must register a **decoder for its own key-reference PEM**, because
+that is what OpenSSL — and therefore Paho — uses to resolve the file back to the
+key inside the token. `pkcs11-provider` does so from **0.5**; older builds
+(Ubuntu 24.04 packages 0.3) are detected at connect time and refused with a
+message saying so, rather than failing inside the handshake.
+
+`c/eng/setup-pkcs11-provider.sh` builds a suitable provider and
 `c/eng/setup-softhsm.sh` provisions a SoftHSM2 token from an existing device key
-and prints the environment this sample expects, which is also how CI runs the
-custody tests.
+and prints the environment this sample expects. Together they are how CI runs
+the custody tests.
 
 ### `hsm_sign_callback`
 The `sign()` hook (D8) for a stack with no engine or provider abstraction.

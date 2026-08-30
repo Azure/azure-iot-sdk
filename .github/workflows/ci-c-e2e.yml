@@ -158,12 +158,14 @@ jobs:
         # the sample with a stub hook that cannot perform the Classic control-plane
         # calls, and the sample run below would prove nothing.
         #
-        # softhsm2 + opensc + pkcs11-provider back the non-extractable-key custody
-        # suite: a token to hold the device key, the tool that writes it there,
-        # and the OpenSSL provider the TLS handshake signs through.
+        # softhsm2 + opensc back the non-extractable-key custody suite: a token
+        # to hold the device key and the tool that writes it there. The OpenSSL
+        # pkcs11 provider the handshake signs through is built from source (see
+        # eng/setup-pkcs11-provider.sh for why the packaged one will not do),
+        # which is what meson and pkg-config are for.
         run: |
           sudo apt-get update && sudo apt-get install -y ninja-build libcurl4-openssl-dev \
-                                                          softhsm2 opensc pkcs11-provider
+                                                          softhsm2 opensc meson pkg-config
           python3 -m pip install --upgrade 'gcovr==7.2'
 
       - name: Build e2e tests
@@ -285,6 +287,7 @@ jobs:
         # and the leg's device is torn down with the resource group anyway.
         run: |
           set -euo pipefail
+          eval "$(c/eng/setup-pkcs11-provider.sh)"
           eval "$(c/eng/setup-softhsm.sh "$AZ_IOT_CLIENT_KEY" --keep-key-file)"
           openssl list -providers -provider pkcs11 > /dev/null
           ctest --test-dir c/build/${{ matrix.preset }} -R e2e_custody \
