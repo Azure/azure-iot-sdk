@@ -342,7 +342,7 @@ jobs:
         run: |
           openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 \
                           -out "$RUNNER_TEMP/custody-key.pem"
-          c/eng/setup-softhsm.sh "$RUNNER_TEMP/custody-key.pem" > "$RUNNER_TEMP/softhsm-env.sh"
+          eng/setup-softhsm.sh "$RUNNER_TEMP/custody-key.pem" > "$RUNNER_TEMP/softhsm-env.sh"
           # "export NAME='value'" -> the NAME=value lines GITHUB_ENV takes.
           sed -E "s/^export ([A-Za-z0-9_]+)='(.*)'\$/\1=\2/" \
               "$RUNNER_TEMP/softhsm-env.sh" >> "$GITHUB_ENV"
