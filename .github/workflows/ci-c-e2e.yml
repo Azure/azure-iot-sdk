@@ -306,6 +306,11 @@ jobs:
           & openssl list -providers -provider pkcs11 > $null
           if ($LASTEXITCODE -ne 0) { throw "the OpenSSL pkcs11 provider did not load" }
 
+          # Verbose OpenSSL handshake errors. A custody failure otherwise
+          # surfaces as Paho's "TCP/TLS connect failure", which says nothing
+          # about which half of the credential the stack rejected.
+          $env:AZ_IOT_PAHO_TRACE = 'error'
+
           ctest --test-dir c/build/${{ matrix.preset }} -R e2e_custody `
             --verbose --no-tests=error --timeout 900 `
             --output-junit ./test_config/results/e2e-custody-${{ matrix.os }}.xml

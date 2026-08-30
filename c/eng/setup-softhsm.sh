@@ -95,6 +95,17 @@ pkcs11-tool --module "${module}" --token-label "${TOKEN_LABEL}" \
     --type privkey --label "${KEY_LABEL}" --id 01 >&2
 rm -f "${der}"
 
+# The public half goes in too, under the same id. A TLS stack has to match the
+# key against the certificate it is offering, and it does that through the
+# public key the provider exposes for the object -- which a token cannot always
+# reconstruct from the private half alone.
+pub_der="${work_dir}/device-pub.der"
+openssl pkey -in "${key_file}" -pubout -outform DER -out "${pub_der}"
+pkcs11-tool --module "${module}" --token-label "${TOKEN_LABEL}" \
+    --login --pin "${PIN}" --write-object "${pub_der}" \
+    --type pubkey --label "${KEY_LABEL}" --id 01 >&2
+rm -f "${pub_der}"
+
 # Prove the key is really in the token before anything depends on it.
 pkcs11-tool --module "${module}" --token-label "${TOKEN_LABEL}" \
     --login --pin "${PIN}" --list-objects >&2
