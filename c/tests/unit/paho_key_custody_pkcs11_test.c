@@ -31,7 +31,9 @@
 
 #include <cmocka.h>
 
+#include <openssl/bio.h>
 #include <openssl/err.h>
+#include <openssl/pem.h>
 #include <openssl/ssl.h>
 
 #include "azure/iot/az_iot_mqtt_iface.h"
@@ -208,56 +210,133 @@ static void a_key_with_no_expressible_reference_is_refused(void** state)
   remove(copy_path);
 }
 
-/* A URI carrying the token PIN must never end up in the reference file. This is
- * the fallback branch -- the one that embeds the URI itself -- so a PIN in the
- * query would otherwise be persisted to disk for the life of the connection,
- * in the code path whose entire purpose is that the credential never lands
- * there.
+/* Does the reference file contain `needle` anywhere in the bytes it actually
+ * encodes?
  *
- * Refusal is the expected outcome, not a stripped URI: a reference with the PIN
+ * Searching the file text is not enough and is the trap this replaced: a PEM
+ * body is base64, so a URI embedded in the DER never appears literally and a
+ * plain strstr() reports "clean" for a file that does carry the secret. The
+ * body is decoded first, so the answer holds whichever branch produced the
+ * reference. */
+static bool reference_bytes_contain(const char* path, const char* needle)
+{
+  size_t len = 0;
+  char* pem = read_file(path, &len);
+
+  BIO* bio = BIO_new_mem_buf(pem, (int)len);
+  assert_non_null(bio);
+
+  char* name = NULL;
+  char* header = NULL;
+  unsigned char* der = NULL;
+  long der_len = 0;
+  bool found = false;
+
+  if (PEM_read_bio(bio, &name, &header, &der, &der_len) == 1)
+  {
+    size_t nlen = strlen(needle);
+    for (long off = 0; der_len >= (long)nlen && off + (long)nlen <= der_len; ++off)
+    {
+      if (memcmp(der + off, needle, nlen) == 0)
+      {
+        found = true;
+        break;
+      }
+    }
+  }
+  else
+  {
+    /* Not PEM at all: fall back to the raw bytes rather than silently passing. */
+    found = strstr(pem, needle) != NULL;
+  }
+
+  OPENSSL_free(name);
+  OPENSSL_free(header);
+  OPENSSL_free(der);
+  BIO_free(bio);
+  free(pem);
+  return found;
+}
+
+/* The PIN itself must never end up in the reference file, but naming where the
+ * PIN lives must still work -- otherwise a PIN-protected token could not be
+ * expressed as a reference at all.
+ *
+ * This matters on the fallback branch, the one that embeds the URI verbatim.
+ * `pin-value` puts the secret in a file that outlives the call, which is the
+ * outcome this module exists to prevent, so it is refused. `pin-source` only
+ * names a file the provider reads, and the reference has to stay independently
+ * loadable -- OpenSSL logs in to the token when it later resolves the file --
+ * so it is allowed.
+ *
+ * Refusal rather than silently stripping pin-value: a reference with the PIN
  * removed would fail to log in later anyway, so failing here names the reason
- * while it is still known. A provider that emits its own reference form is
- * unaffected and takes the branch above.
- *
- * Both spellings RFC 7512 defines are covered. */
-static void a_uri_carrying_the_pin_is_refused(void** state)
+ * while it is still known. */
+static void a_uri_with_an_inline_pin_is_refused(void** state)
 {
   (void)state;
-  static const char* const k_pin_uris[] = { "?pin-value=1234", "?pin-source=file:/tmp/az-iot-pin" };
-
-  for (size_t i = 0; i < sizeof(k_pin_uris) / sizeof(k_pin_uris[0]); ++i)
+  /* A clean base, so appending a query cannot produce a second '?'. */
+  char base[1024];
+  snprintf(base, sizeof(base), "%s", g_key_uri);
+  char* q = strchr(base, '?');
+  if (q)
   {
-    char uri[1024];
-    snprintf(uri, sizeof(uri), "%s%s", g_key_uri, k_pin_uris[i]);
-
-    az_iot_paho_key_custody s;
-    memset(&s, 0, sizeof(s));
-    az_iot_mqtt_tls_options tls;
-    tls_options_for_token(&tls);
-    tls.client_key_uri = uri;
-
-    const char* path = NULL;
-    az_iot_result r = az_iot_paho_key_custody_prepare(&s, &tls, &path);
-
-    /* A provider that encodes its own reference never embeds the URI, so it is
-     * allowed to succeed -- but then the PIN must not be in the file it wrote. */
-    if (r == AZ_IOT_OK)
-    {
-      assert_non_null(s.key_ref_path);
-      size_t len = 0;
-      char* pem = read_file(s.key_ref_path, &len);
-      assert_null(strstr(pem, "pin-value"));
-      assert_null(strstr(pem, "pin-source"));
-      assert_null(strstr(pem, "1234"));
-      free(pem);
-    }
-    else
-    {
-      assert_int_equal(r, AZ_IOT_ERR_TLS);
-      assert_null(s.key_ref_path);
-    }
-    az_iot_paho_key_custody_release(&s);
+    *q = '\0';
   }
+
+  char uri[1200];
+  snprintf(uri, sizeof(uri), "%s?pin-value=1234", base);
+
+  az_iot_paho_key_custody s;
+  memset(&s, 0, sizeof(s));
+  az_iot_mqtt_tls_options tls;
+  tls_options_for_token(&tls);
+  tls.client_key_uri = uri;
+
+  const char* path = NULL;
+  az_iot_result r = az_iot_paho_key_custody_prepare(&s, &tls, &path);
+
+  /* A provider that encodes its own reference never embeds the URI, so it is
+   * allowed to succeed -- but then the PIN must not be in what it wrote. */
+  if (r == AZ_IOT_OK)
+  {
+    assert_non_null(s.key_ref_path);
+    assert_false(reference_bytes_contain(s.key_ref_path, "pin-value"));
+    assert_false(reference_bytes_contain(s.key_ref_path, "1234"));
+  }
+  else
+  {
+    assert_int_equal(r, AZ_IOT_ERR_TLS);
+    assert_null(s.key_ref_path);
+  }
+  az_iot_paho_key_custody_release(&s);
+}
+
+/* The other half: a token whose PIN is named by pin-source resolves, and the
+ * reference written for it carries the pin-source pointer but no PIN. This is
+ * how the provisioning script spells the URI, so a regression that refused
+ * pin-source too would make every PIN-protected token unusable. */
+static void a_uri_naming_a_pin_source_is_accepted(void** state)
+{
+  (void)state;
+  if (strstr(g_key_uri, "pin-source") == NULL)
+  {
+    /* The token was supplied without a pin-source; nothing to assert. */
+    return;
+  }
+
+  az_iot_paho_key_custody s;
+  memset(&s, 0, sizeof(s));
+  az_iot_mqtt_tls_options tls;
+  tls_options_for_token(&tls);
+
+  const char* path = NULL;
+  assert_int_equal(az_iot_paho_key_custody_prepare(&s, &tls, &path), AZ_IOT_OK);
+  assert_non_null(s.key_ref_path);
+
+  assert_false(reference_bytes_contain(s.key_ref_path, "pin-value"));
+
+  az_iot_paho_key_custody_release(&s);
 }
 
 int main(void)
@@ -267,7 +346,8 @@ int main(void)
     cmocka_unit_test(use_the_reference_the_way_paho_does),
     cmocka_unit_test(re_preparing_replaces_the_reference),
     cmocka_unit_test(a_key_with_no_expressible_reference_is_refused),
-    cmocka_unit_test(a_uri_carrying_the_pin_is_refused),
+    cmocka_unit_test(a_uri_with_an_inline_pin_is_refused),
+    cmocka_unit_test(a_uri_naming_a_pin_source_is_accepted),
   };
   return cmocka_run_group_tests(tests, group_setup, NULL);
 }

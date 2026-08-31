@@ -20,7 +20,8 @@
 # Exports:
 #   SOFTHSM2_CONF             the generated token configuration
 #   PKCS11_PROVIDER_MODULE    the SoftHSM2 PKCS#11 module
-#   AZ_IOT_CLIENT_KEY_URI     RFC 7512 URI of the imported key
+#   AZ_IOT_CLIENT_KEY_URI     RFC 7512 URI of the imported key (the PIN is named by
+#                             pin-source, never inlined as pin-value)
 #   AZ_IOT_CRYPTO_ENGINE_ID   "pkcs11"
 #   AZ_IOT_TEST_PKCS11_KEY_URI  same URI, for the unit-level custody suite
 #
@@ -120,7 +121,17 @@ if [ "${keep_key_file}" != "--keep-key-file" ]; then
     echo "setup-softhsm: removed the on-disk copy of the key" >&2
 fi
 
-uri="pkcs11:token=${TOKEN_LABEL};object=${KEY_LABEL};type=private?pin-value=${PIN}"
+# The PIN goes in a file the provider reads, named by pin-source -- NOT inline
+# as pin-value. The adapter embeds this URI in the key-reference file it hands
+# the TLS stack, so an inline PIN would be written to disk by the very code path
+# whose purpose is that the credential never lands there; the adapter refuses
+# such a URI outright. pin-source names where the PIN lives instead, which keeps
+# the reference independently loadable (OpenSSL must log in to the token when it
+# resolves the file) without putting the secret in it.
+pin_file="${work_dir}/token-pin"
+printf '%s' "${PIN}" > "${pin_file}"
+chmod 600 "${pin_file}"
+uri="pkcs11:token=${TOKEN_LABEL};object=${KEY_LABEL};type=private?pin-source=file:${pin_file}"
 
 cat <<EOF
 export SOFTHSM2_CONF='${conf}'

@@ -155,11 +155,21 @@ static bool contains_ci(const char* haystack, const char* needle)
   return false;
 }
 
-/* Does the URI's query component carry the token PIN? RFC 7512 puts it there as
- * pin-value (the PIN itself) or pin-source (where to read it from). Both are
- * credentials, and neither may be written into a file that outlives this call.
- * Anything else in the query -- module-path and friends -- is configuration the
- * decoder legitimately needs, so only these two are treated as secret. */
+/* Does the URI's query component carry the token PIN ITSELF?
+ *
+ * RFC 7512 spells two things there. pin-value is the PIN in plain text, and
+ * writing that into a file that outlives this call puts the credential on disk
+ * -- the one outcome this module exists to avoid. pin-source only NAMES where
+ * the PIN lives, so it carries no secret and the file it points at keeps its
+ * own permissions.
+ *
+ * The distinction is not academic: the reference file has to stay loadable on
+ * its own, because SSL_CTX_use_PrivateKey_file resolves it later and the
+ * provider must log in to the token to do so. Refusing pin-source as well would
+ * leave a PIN-protected token with no way to express itself as a reference at
+ * all, which is why only pin-value is treated as secret here. Everything else
+ * in the query -- module-path and friends -- is configuration the decoder
+ * legitimately needs. */
 static bool uri_query_carries_pin(const char* uri)
 {
   const char* query = strchr(uri, '?');
@@ -167,7 +177,7 @@ static bool uri_query_carries_pin(const char* uri)
   {
     return false;
   }
-  return contains_ci(query, "pin-value") || contains_ci(query, "pin-source");
+  return contains_ci(query, "pin-value");
 }
 
 /* Enough for a realistic PKCS#11 or TPM object URI; longer ones are truncated,
@@ -492,10 +502,10 @@ static az_iot_result write_key_reference(
       char safe_uri[AZ_IOT_KEY_URI_LOG_MAX];
       redact_key_uri(uri, safe_uri, sizeof(safe_uri));
       AZ_IOT_LOG_ERRORF(
-          "paho: '%s' carries the token PIN in its query, and the only reference this provider "
-          "can express is the URI itself -- writing it would persist the PIN to disk. Supply the "
-          "PIN out of band (provider configuration / pin-source read by the provider) or use a "
-          "provider that encodes its own key reference",
+          "paho: '%s' carries the token PIN in its query (pin-value), and the only reference this "
+          "provider can express is the URI itself -- writing it would persist the PIN to disk. Use "
+          "pin-source to name a file the provider reads the PIN from, or a provider that encodes "
+          "its own key reference",
           safe_uri);
       return AZ_IOT_ERR_TLS;
     }

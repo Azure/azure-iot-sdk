@@ -139,6 +139,20 @@ Shared (all DPS-based connecting samples):
 | `AZ_IOT_CLIENT_KEY_URI` | Key reference, e.g. `pkcs11:token=aziot;object=device-key;type=private` |
 | `AZ_IOT_CRYPTO_ENGINE_ID` | OpenSSL provider id: `pkcs11`, `tpm2` |
 
+**If the token needs a PIN**, name a file the provider reads it from rather than
+putting the PIN in the URI:
+
+```
+AZ_IOT_CLIENT_KEY_URI='pkcs11:token=aziot;object=device-key;type=private?pin-source=file:/etc/az-iot/token-pin'
+```
+
+Paho takes the private key as a file path, so for a provider that does not encode
+its own key reference the adapter has to write the URI into a reference file for
+OpenSSL to resolve later. An inline `?pin-value=<PIN>` would therefore be copied
+to disk by the one code path whose purpose is that the key never lands there, so
+the adapter refuses it. `pin-source` names where the PIN lives instead, which
+keeps the reference loadable without putting the secret in it.
+
 Managed-provider samples additionally use (optional, with defaults):
 
 | Variable | Default | Meaning |
