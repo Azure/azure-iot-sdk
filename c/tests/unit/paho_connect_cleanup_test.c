@@ -125,7 +125,7 @@ static void custody_connect_options(az_iot_mqtt_connect_options* opts)
   opts->tls.client_cert_path = "/dev/null/device.pem";
   opts->tls.client_key_uri = "pkcs11:object=device-key;type=private";
   opts->tls.crypto_engine_id = "pkcs11";
-  opts->tls.verify_server = true;
+  opts->tls.use_tls = true;
 }
 
 /* Drive connect() once with a custody credential and hand back what it
@@ -284,7 +284,7 @@ static void a_plain_credential_takes_no_custody(void** state)
   opts.client_id = "ut-device";
   opts.tls.client_cert_path = "/dev/null/device.pem";
   opts.tls.client_key_path = "/dev/null/device.key";
-  opts.tls.verify_server = true;
+  opts.tls.use_tls = true;
 
   assert_int_equal(fx->client->iface->connect(fx->client, &opts), AZ_IOT_OK);
   assert_int_equal(fake_custody_prepare_calls(), 1);
@@ -295,14 +295,16 @@ static void a_plain_credential_takes_no_custody(void** state)
 /* server certificate validation                                              */
 /* ------------------------------------------------------------------------- */
 
-/* Validation is a property of the client, not a caller policy. A caller that
- * asks for TLS and explicitly asks NOT to verify the server must still get a
- * verified session: chain (enableServerCertAuth) AND hostname (verify).
+/* Validation is a property of the client, not a caller policy. There is no
+ * field that can ask for an unverified session any more, so the case to pin is
+ * the one that used to produce one: TLS selected purely by credential material,
+ * with every byte of tls left at its zero default. The session must still be
+ * verified -- chain (enableServerCertAuth) AND hostname (verify).
  *
- * This is the case that matters, because tls.verify_server is false in a
- * zero-initialized az_iot_mqtt_connect_options -- so "forgot to set it" and
- * "asked for it to be off" are the same bytes, and neither may produce an
- * unverified connection. */
+ * This is the case that mattered, because the slot now called use_tls used to
+ * be verify_server, and false is what a zero-initialized
+ * az_iot_mqtt_connect_options holds -- so "forgot to set it" and "asked for it
+ * to be off" were the same bytes, and both yielded an unverified connection. */
 static void server_validation_cannot_be_switched_off(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -314,7 +316,8 @@ static void server_validation_cannot_be_switched_off(void** state)
   opts.client_id = "ut-device";
   opts.tls.client_cert_path = "/dev/null/device.pem";
   opts.tls.client_key_path = "/dev/null/device.key";
-  opts.tls.verify_server = false; /* explicitly asked for no verification */
+  /* use_tls deliberately left false: the certificate selects TLS, and nothing
+   * here consents to validation. */
 
   assert_int_equal(fx->client->iface->connect(fx->client, &opts), AZ_IOT_OK);
 
@@ -352,7 +355,7 @@ static void a_key_reference_alone_selects_tls(void** state)
   opts.client_id = "ut-device";
   opts.tls.client_key_uri = "pkcs11:object=device-key;type=private";
   opts.tls.crypto_engine_id = "pkcs11";
-  /* No certificate, no CA, no verify_server: the key reference is the only
+  /* No certificate, no CA, no use_tls: the key reference is the only
    * thing asking for TLS. */
 
   assert_int_equal(fx->client->iface->connect(fx->client, &opts), AZ_IOT_OK);

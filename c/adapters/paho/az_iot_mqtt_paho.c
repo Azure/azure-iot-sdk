@@ -802,13 +802,16 @@ static az_iot_result paho_iface_connect(
 
   /* Use TLS when any TLS material or server verification is requested: a
    * client identity (cert), a server trust anchor (CA), their in-memory PEM
-   * variants, an explicit verify_server, or a non-extractable key reference.
+   * variants, an explicit use_tls, or a non-extractable key reference.
    * Keying off client_cert_path alone would wrongly fall back to plaintext for
    * server-auth-only connections, and omitting the key reference would let a
-   * URI-only credential connect with no client key at all. */
+   * URI-only credential connect with no client key at all.
+   *
+   * Whether the session is TLS is the only choice here. Whether the server is
+   * VALIDATED is not a choice: see the ssl_opts assignments below. */
   bool use_ssl = opts->tls.client_cert_path != NULL || opts->tls.client_cert_pem != NULL
-      || opts->tls.trusted_ca_path != NULL || opts->tls.trusted_ca_pem != NULL
-      || opts->tls.verify_server || az_iot_paho_key_custody_requested(&opts->tls);
+      || opts->tls.trusted_ca_path != NULL || opts->tls.trusted_ca_pem != NULL || opts->tls.use_tls
+      || az_iot_paho_key_custody_requested(&opts->tls);
 
   /* Resolve the client private key before anything else is built. A credential
    * that cannot possibly sign -- an unreachable HSM key, an engine that is not
@@ -884,12 +887,10 @@ static az_iot_result paho_iface_connect(
     ssl_opts.keyStore = opts->tls.client_cert_path;
     ssl_opts.privateKey = private_key_path;
     ssl_opts.privateKeyPassword = opts->tls.client_key_password;
-    /* Unconditional, NOT opts->tls.verify_server. Server certificate validation
-     * is a requirement of this client, not a policy the caller chooses: an
-     * unverified TLS session authenticates nothing, and a field that is false
-     * when the struct is zero-initialized is the wrong way to hold a security
-     * default. verify_server survives only as one of the triggers that selects
-     * TLS above -- it can no longer switch verification off. */
+    /* Unconditional, and there is no option that could make it otherwise: the
+     * TLS options carry no "don't verify" flag. An unverified TLS session
+     * authenticates nothing, and this SDK connects to Azure endpoints. The
+     * slot that used to hold verify_server now only selects TLS (use_tls). */
     ssl_opts.enableServerCertAuth = 1;
     /* Verify the server hostname against the certificate too, not just the
      * chain: a chain-valid certificate issued for the wrong host must be

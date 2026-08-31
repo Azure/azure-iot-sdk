@@ -305,7 +305,18 @@ static az_iot_result provider_sign_adapter(
         (p && p->vtable && p->vtable->sign) ? "set" : "NULL");
     return AZ_IOT_ERR_INVALID_ARG;
   }
-  return p->vtable->sign(p, digest, digest_len, out_sig, out_sig_cap, out_sig_len);
+
+  /* az_iot_mqtt_sign_callback promises that *out_sig_len is untouched on
+   * failure. The provider vtable makes no such promise, and this trampoline is
+   * the boundary where the MQTT-side contract is made, so it is enforced here
+   * rather than assumed of every provider. */
+  size_t saved_len = out_sig_len ? *out_sig_len : 0u;
+  az_iot_result r = p->vtable->sign(p, digest, digest_len, out_sig, out_sig_cap, out_sig_len);
+  if (r != AZ_IOT_OK && out_sig_len)
+  {
+    *out_sig_len = saved_len;
+  }
+  return r;
 }
 
 /* True when the provider exposes a usable sign() hook. The v2 slot only exists
@@ -378,7 +389,7 @@ static az_iot_result apply_certificate_material(
   copts->tls.crypto_engine_id = mat->crypto_engine_id;
   copts->tls.sign = has_sign ? provider_sign_adapter : NULL;
   copts->tls.sign_ctx = has_sign ? (void*)prov : NULL;
-  copts->tls.verify_server = true;
+  copts->tls.use_tls = true; /* this SDK always connects over TLS */
   return AZ_IOT_OK;
 }
 

@@ -96,16 +96,20 @@ extern "C"
     const char* client_cert_path; /* PEM */
     const char* client_key_path; /* PEM */
     const char* client_key_password; /* may be NULL */
-    /* Selects TLS. It does NOT disable server certificate validation: that is
-     * unconditional (chain AND hostname) whenever an adapter establishes a TLS
-     * session, so this field cannot weaken it.
+    /* Selects TLS.
      *
-     * It reads as a policy switch and is not one. The name is kept because this
-     * struct's fields are never removed or reordered (see the note above), and
-     * because false here has never meant "connect without verifying" -- the SDK
-     * itself has always set it true. Setting it selects TLS for a connection
-     * that carries no other TLS material, such as server-authentication-only. */
-    bool verify_server;
+     * There is deliberately NO option to disable server certificate
+     * validation. Whenever an adapter establishes a TLS session it validates
+     * the chain AND the hostname, unconditionally; this SDK connects to Azure
+     * endpoints, and an unverified session authenticates nothing.
+     *
+     * This slot previously held `verify_server`, which could switch validation
+     * off and, being false in a zero-initialized struct, did so for any caller
+     * who simply forgot it. It now only selects TLS, which is what the SDK ever
+     * used it for. Set it for a connection that carries no other TLS material,
+     * such as server-authentication-only; connections carrying a certificate,
+     * a CA or a key reference select TLS on that alone. */
+    bool use_tls;
     /* In-memory PEM material. Adapters that load credentials from memory rather
      * than from disk (e.g. esp-mqtt on a device with no filesystem) use these;
      * file-path adapters (Paho + OpenSSL) ignore them. Any field may be NULL. */

@@ -218,17 +218,29 @@ typedef struct az_iot_pk11_uri
 DECLARE_ASN1_ITEM(az_iot_pk11_uri)
 DECLARE_ASN1_ALLOC_FUNCTIONS(az_iot_pk11_uri)
 
-ASN1_SEQUENCE(az_iot_pk11_uri)
-    = { ASN1_SIMPLE(az_iot_pk11_uri, description, ASN1_VISIBLESTRING),
-        ASN1_SIMPLE(az_iot_pk11_uri, uri, ASN1_UTF8STRING) } ASN1_SEQUENCE_END(az_iot_pk11_uri)
+/* clang-format off */
+/* These are OpenSSL's ASN.1 template macros, not declarations clang-format can
+ * parse: they expand to a static table plus function definitions, and none of
+ * them ends in a semicolon. Left to itself the formatter reflows the block into
+ * something that compiles but cannot be read -- it folds the following
+ * function's return type into the macro.
+ *
+ * The re-enable sits inside the next function body rather than after the
+ * macros: clang-format does not recover its parse state at the `on` marker
+ * while the unterminated macro expression is still open, so an earlier marker
+ * gets re-indented itself and the file stops matching the gate. */
+ASN1_SEQUENCE(az_iot_pk11_uri) = {
+    ASN1_SIMPLE(az_iot_pk11_uri, description, ASN1_VISIBLESTRING),
+    ASN1_SIMPLE(az_iot_pk11_uri, uri, ASN1_UTF8STRING)
+} ASN1_SEQUENCE_END(az_iot_pk11_uri)
 
-          IMPLEMENT_ASN1_ALLOC_FUNCTIONS(az_iot_pk11_uri)
+IMPLEMENT_ASN1_ALLOC_FUNCTIONS(az_iot_pk11_uri)
 
-    /* Encode `uri` as the reference above, PEM-wrapped, into a memory BIO (caller
-     * frees). NULL if it could not be built. */
-    static BIO
-    * encode_pk11_uri_reference(const char* uri)
+/* Encode `uri` as the reference above, PEM-wrapped, into a memory BIO (caller
+ * frees). NULL if it could not be built. */
+static BIO* encode_pk11_uri_reference(const char* uri)
 {
+  /* clang-format on */
   az_iot_pk11_uri* obj = az_iot_pk11_uri_new();
   if (!obj)
   {

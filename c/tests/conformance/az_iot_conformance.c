@@ -508,7 +508,7 @@ static void tls_handshake_succeeds_with_trusted_valid_cert(void** state)
   copts.keep_alive_seconds = 30;
   copts.connect_timeout_seconds = k_step_timeout_seconds;
   copts.tls.trusted_ca_path = ca_path;
-  copts.tls.verify_server = true;
+  copts.tls.use_tls = true;
 
   assert_int_equal(c->iface->connect(c, &copts), AZ_IOT_OK);
   assert_true(wait_until(c, &rec, saw_connected_ok, k_step_timeout_ms));
@@ -519,12 +519,16 @@ static void tls_handshake_succeeds_with_trusted_valid_cert(void** state)
   remove(ca_path);
 }
 
-/* Server-side certificate validation is mandatory: with verify_server = true and
- * a leaf the client's trust anchor does NOT sign, the TLS handshake must be
+/* Server-side certificate validation is mandatory and unconditional: against a
+ * leaf the client's trust anchor does NOT sign, the TLS handshake must be
  * rejected and the client must never reach CONNECTED. The proxy terminates TLS
  * with a leaf signed by an UNTRUSTED CA while the client is handed the
  * (different) trusted CA. If validation were disabled the handshake would
- * succeed and a CONNACK would arrive, failing this test. */
+ * succeed and a CONNACK would arrive, failing this test.
+ *
+ * Nothing here asks for validation -- the TLS options carry no flag that could
+ * request or refuse it. That is the point: the adapter must validate because it
+ * always validates, not because this test opted in. */
 static void server_cert_validation_rejects_untrusted(void** state)
 {
   (void)state;
@@ -558,7 +562,9 @@ static void server_cert_validation_rejects_untrusted(void** state)
   copts.keep_alive_seconds = 30;
   copts.connect_timeout_seconds = k_step_timeout_seconds;
   copts.tls.trusted_ca_path = ca_path; /* trusts the exported CA, not the leaf's signer */
-  copts.tls.verify_server = true; /* must validate the server certificate */
+  /* Nothing asks for validation: the CA alone selects TLS, and no field can
+   * request or refuse verification. Rejection below is therefore proof that the
+   * adapter validates unconditionally. */
 
   az_iot_result r = c->iface->connect(c, &copts);
   if (r == AZ_IOT_OK)
@@ -578,8 +584,8 @@ static void server_cert_validation_rejects_untrusted(void** state)
 
 /* An EXPIRED certificate must be rejected even though it chains to the trusted
  * CA: the proxy presents a leaf the trusted CA signed, whose validity window is
- * entirely in the past. verify_server = true enables chain *and* validity
- * checking, so an adapter that only checks the chain fails here. */
+ * entirely in the past. Validation covers chain *and* validity, so an adapter
+ * that only checks the chain fails here. */
 static void server_cert_validation_rejects_expired(void** state)
 {
   (void)state;
@@ -614,7 +620,7 @@ static void server_cert_validation_rejects_expired(void** state)
   copts.keep_alive_seconds = 30;
   copts.connect_timeout_seconds = k_step_timeout_seconds;
   copts.tls.trusted_ca_path = ca_path;
-  copts.tls.verify_server = true;
+  /* No flag opts in to verification; see the untrusted-cert case above. */
 
   az_iot_result r = c->iface->connect(c, &copts);
   if (r == AZ_IOT_OK)
@@ -669,7 +675,7 @@ static void server_cert_validation_rejects_hostname_mismatch(void** state)
   copts.keep_alive_seconds = 30;
   copts.connect_timeout_seconds = k_step_timeout_seconds;
   copts.tls.trusted_ca_path = ca_path;
-  copts.tls.verify_server = true;
+  /* No flag opts in to verification; see the untrusted-cert case above. */
 
   az_iot_result r = c->iface->connect(c, &copts);
   if (r == AZ_IOT_OK)
@@ -1595,7 +1601,7 @@ static void mutual_tls_succeeds_with_a_valid_client_cert(void** state)
   copts.tls.trusted_ca_path = ca_path;
   copts.tls.client_cert_path = cert_path;
   copts.tls.client_key_path = key_path;
-  copts.tls.verify_server = true;
+  copts.tls.use_tls = true;
 
   assert_int_equal(c->iface->connect(c, &copts), AZ_IOT_OK);
   assert_true(wait_until(c, &rec, saw_connected_ok, k_step_timeout_ms));
@@ -1649,7 +1655,7 @@ static void expired_client_cert_is_rejected(void** state)
   copts.tls.trusted_ca_path = ca_path;
   copts.tls.client_cert_path = cert_path;
   copts.tls.client_key_path = key_path;
-  copts.tls.verify_server = true;
+  copts.tls.use_tls = true;
 
   az_iot_result r = c->iface->connect(c, &copts);
   if (r == AZ_IOT_OK)
@@ -1691,7 +1697,7 @@ static void a_missing_client_cert_is_rejected(void** state)
   copts.keep_alive_seconds = 30;
   copts.connect_timeout_seconds = k_step_timeout_seconds;
   copts.tls.trusted_ca_path = ca_path;
-  copts.tls.verify_server = true; /* no client certificate offered */
+  copts.tls.use_tls = true; /* no client certificate offered */
 
   az_iot_result r = c->iface->connect(c, &copts);
   if (r == AZ_IOT_OK)

@@ -49,6 +49,10 @@ typedef struct custody_provider
   /* Strip the key fields from every load() past this many calls, so a case can
    * separate what open() pre-flights from what the connect attempt copies. */
   int degrade_after_calls;
+  /* Write *out_sig_len before returning a failure. A provider vtable is not
+   * forbidden from doing this; az_iot_mqtt_sign_callback is, which is what the
+   * trampoline has to enforce. */
+  bool scribbles_out_len_on_failure;
 } custody_provider;
 
 static az_iot_result custody_load(
@@ -95,6 +99,10 @@ static az_iot_result custody_sign(
   p->last_digest_len = digest_len;
   if (out_sig_cap < digest_len)
   {
+    if (p->scribbles_out_len_on_failure && out_sig_len)
+    {
+      *out_sig_len = (size_t)0xDEAD;
+    }
     return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
   }
   /* A stand-in signature: the digest reversed, so a test can tell the bytes
@@ -315,6 +323,47 @@ static void the_forwarded_sign_hook_calls_the_provider(void** state)
       AZ_IOT_ERR_INVALID_ARG);
 }
 
+/* az_iot_mqtt_sign_callback promises *out_sig_len is untouched on failure. The
+ * provider vtable makes no such promise, so the trampoline -- which is where
+ * the MQTT-side contract is made -- has to enforce it rather than assume it of
+ * every provider. An adapter that sized a buffer from a value written during a
+ * failed sign would read a length no signature ever had.
+ *
+ * The refusal the trampoline raises itself must honour the same rule. */
+static void the_forwarded_sign_hook_preserves_out_len_on_failure(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  fx->provider.scribbles_out_len_on_failure = true;
+  init_client(fx, false);
+  assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_OK);
+
+  const az_iot_mock_call* c = last_connect(fx);
+  assert_non_null(c);
+  assert_non_null(c->connect.sign);
+
+  const uint8_t digest[4] = { 1, 2, 3, 4 };
+  uint8_t too_small[2] = { 0 };
+  size_t sig_len = 1234u;
+
+  /* The provider fails AND writes out_sig_len; the trampoline must put it back. */
+  assert_int_equal(
+      c->connect.sign(c->connect.sign_ctx, digest, sizeof(digest), too_small, 2, &sig_len),
+      AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  assert_int_equal(sig_len, 1234u);
+
+  /* The trampoline's own refusal, before any provider call. */
+  sig_len = 4321u;
+  assert_int_equal(
+      c->connect.sign(NULL, digest, sizeof(digest), too_small, sizeof(too_small), &sig_len),
+      AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(sig_len, 4321u);
+
+  /* A NULL out_sig_len is not a crash. */
+  assert_int_equal(
+      c->connect.sign(c->connect.sign_ctx, digest, sizeof(digest), too_small, 2, NULL),
+      AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+}
+
 /* The trampoline re-checks the provider it is handed rather than trusting it.
  * It runs inside an adapter's TLS callback, where the context came back through
  * a third-party library, so a wrong or stale pointer has to produce a failed
@@ -457,7 +506,7 @@ static void material_without_a_client_certificate_is_not_rejected(void** state)
   assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_OK);
   const az_iot_mock_call* c = last_connect(fx);
   assert_non_null(c);
-  assert_true(c->connect.verify_server);
+  assert_true(c->connect.use_tls);
 }
 
 /* An ordinary PEM credential still works exactly as before -- the custody
@@ -550,6 +599,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(hub_connect_forwards_the_key_reference, setup, teardown),
     cmocka_unit_test_setup_teardown(hub_connect_falls_back_to_bootstrap_material, setup, teardown),
     cmocka_unit_test_setup_teardown(the_forwarded_sign_hook_calls_the_provider, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        the_forwarded_sign_hook_preserves_out_len_on_failure, setup, teardown),
     cmocka_unit_test_setup_teardown(
         the_forwarded_sign_hook_rejects_an_unusable_provider, setup, teardown),
     cmocka_unit_test_setup_teardown(a_v2_provider_without_sign_forwards_no_hook, setup, teardown),

@@ -89,7 +89,7 @@ extern "C"
       uint16_t keep_alive_seconds;
       uint32_t connect_timeout_seconds;
       bool clean_start;
-      bool verify_server;
+      bool use_tls;
       char trusted_ca_path[256];
       char client_cert_path[256];
       char client_key_path[256];
