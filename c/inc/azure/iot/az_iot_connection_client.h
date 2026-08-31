@@ -132,6 +132,23 @@ extern "C"
      * struct reads on one scale. Sub-second connect timeouts are not useful
      * over TLS on a cellular or satellite link. */
     uint32_t connect_timeout_seconds;
+
+    /* How long CONNECTED may be withheld waiting for the SUBACKs of the
+     * persistent filters issued on connect, in seconds. 0 selects
+     * AZ_IOT_DEFAULT_SUBSCRIPTION_ACK_TIMEOUT_SECONDS.
+     *
+     * Nothing else bounds that wait: connect_timeout_seconds covers the CONNACK,
+     * the presence handshake has its own timeout, and keep-alive cannot help
+     * because the link is alive -- a broker that accepts the connection and then
+     * never answers the SUBSCRIBE would otherwise hold the client in CONNECTING
+     * indefinitely.
+     *
+     * The clock starts when the last SUBSCRIBE of the batch reaches the adapter
+     * and is never extended by an arriving SUBACK: a per-ack reset would let a
+     * broker answering one filter just inside each window hold CONNECTED open
+     * forever, which is the failure this bounds. Expiry is treated as transient
+     * -- silence is not a refusal -- so it reconnects under the policy. */
+    uint32_t subscription_ack_timeout_seconds;
     const char* client_id; /* device id */
     az_iot_connection_profile connection_profile; /* direct-connect generation (host set,
                                                    * no DPS): CLASSIC (v3.1.1, default) or
@@ -226,6 +243,30 @@ extern "C"
   typedef void (
       *az_iot_operational_cert_callback)(const az_iot_issued_certificate* issued, void* user_ctx);
 
+  /* What a refused persistent subscription costs. Both values name a FAILURE:
+   * the difference is blast radius, not whether the subscription mattered.
+   * See docs/eng/client-separation.md section 9. */
+  typedef enum az_iot_subscription_failure_scope
+  {
+    /* The registering client cannot work without this filter, so a refusal ends
+     * the connection. Every feature client's own filter is registered this way. */
+    AZ_IOT_SUBSCRIPTION_FAILS_SESSION = 0,
+    /* A refusal is reported to the owner and the entry dropped; the connection
+     * survives. For application-supplied topics, where one declined filter must
+     * not take telemetry and every other feature down with it. */
+    AZ_IOT_SUBSCRIPTION_FAILS_SELF
+  } az_iot_subscription_failure_scope;
+
+  /* Reports that a FAILS_SELF subscription did not come up. The entry is already
+   * out of the registry when this runs, so the callback may re-register.
+   * `protocol_code` is the verbatim wire code, 0 when there was none.
+   * `topic_filter` is valid only for the duration of the call. */
+  typedef void (*az_iot_subscription_failed_callback)(
+      const char* topic_filter,
+      az_iot_result reason,
+      int32_t protocol_code,
+      const void* owner);
+
   /* ------------------------------------------------------------------------- */
   /* Internal struct constants                                                 */
   /*                                                                           */
@@ -262,6 +303,12 @@ extern "C"
 #endif
 #ifndef AZ_IOT_DEFAULT_CONNECT_TIMEOUT_SECONDS
 #define AZ_IOT_DEFAULT_CONNECT_TIMEOUT_SECONDS 30
+#endif
+/* Matches the presence birth-ack timeout: both bound "the broker accepted the
+ * connection and then went quiet", and having two different windows for that on
+ * one connect path would be arbitrary. */
+#ifndef AZ_IOT_DEFAULT_SUBSCRIPTION_ACK_TIMEOUT_SECONDS
+#define AZ_IOT_DEFAULT_SUBSCRIPTION_ACK_TIMEOUT_SECONDS 60
 #endif
 #ifndef AZ_IOT_PERSISTENT_SUB_TOPIC_MAX
 #define AZ_IOT_PERSISTENT_SUB_TOPIC_MAX 128
@@ -393,6 +440,11 @@ extern "C"
        * different profile drops it instead of re-issuing a filter the new hub
        * will not recognise -- see docs/eng/client-separation.md section 9. */
       az_iot_connection_profile profile;
+      /* Whether a refusal ends the session or only this subscription. */
+      az_iot_subscription_failure_scope failure_scope;
+      /* Told when a FAILS_SELF filter fails. NULL on a FAILS_SESSION entry,
+       * which reports through the connection state instead. */
+      az_iot_subscription_failed_callback on_failed;
       bool in_use;
     } persistent_subs[AZ_IOT_MAX_PERSISTENT_SUBS];
 
@@ -445,6 +497,27 @@ extern "C"
       void* user_ctx;
       uint64_t deadline_ms; /* abandon the op if no terminal response by here */
     } csr_op;
+
+    /* SUBACKs still outstanding for the persistent filters issued on this
+     * session. CONNECTED is announced once every FAILS_SESSION filter has been
+     * granted, so a feature client rebuilt from that callback never publishes a
+     * request before the subscription carrying its response exists. FAILS_SELF
+     * filters ride the same batch but never hold the transition: their outcome
+     * cannot change whether the session is honest about being live. An empty
+     * gated set announces immediately. */
+    struct
+    {
+      struct
+      {
+        uint16_t packet_id;
+        uint8_t sub_index; /* into persistent_subs[] */
+        bool gated;
+      } pending[AZ_IOT_MAX_PERSISTENT_SUBS];
+      size_t pending_count;
+      size_t gated_outstanding;
+      uint64_t deadline_ms;
+      bool active;
+    } subscription_gate;
 
     /* AEG/Hub-Next presence (birth) handshake. After CONNACK on a HUB_NEXT (v5)
      * session the client SUBSCRIBEs to ih/{deviceId}/dev/#, PUBLISHes a birth
