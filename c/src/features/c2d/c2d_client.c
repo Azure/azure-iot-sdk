@@ -300,7 +300,7 @@ az_iot_result az_iot_c2d_client_init(az_iot_c2d_client* client, az_iot_connectio
 
     /* Subscribe to the same topic (no wildcard needed for Next) */
     r = az_iot_connection_client__add_subscription_on_connect(
-        conn, prefix, AZ_IOT_MQTT_QOS_1, client);
+        conn, prefix, AZ_IOT_MQTT_QOS_1, client, AZ_IOT_SUBSCRIPTION_FAILS_SESSION, NULL);
     if (r != AZ_IOT_OK)
     {
       (void)az_iot_connection_client__remove_subscriptions_for(conn, client);
@@ -357,7 +357,7 @@ az_iot_result az_iot_c2d_client_init(az_iot_c2d_client* client, az_iot_connectio
     }
 
     r = az_iot_connection_client__add_subscription_on_connect(
-        conn, filter, AZ_IOT_MQTT_QOS_1, client);
+        conn, filter, AZ_IOT_MQTT_QOS_1, client, AZ_IOT_SUBSCRIPTION_FAILS_SESSION, NULL);
     if (r != AZ_IOT_OK)
     {
       (void)az_iot_connection_client__remove_subscriptions_for(conn, client);

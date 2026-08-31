@@ -28,6 +28,7 @@
 #include "internal/reconnect.h"
 
 #include "support/mock_mqtt_iface.h"
+#include "support/subscription_ack.h"
 
 /* Transitions observed through the state callback. */
 #define AZ_IOT_TEST_MAX_STATES 32

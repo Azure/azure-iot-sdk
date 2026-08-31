@@ -550,7 +550,7 @@ az_iot_result az_iot_twin_client_init(az_iot_twin_client* client, az_iot_connect
     }
 
     r = az_iot_connection_client__add_subscription_on_connect(
-        conn, prefix, AZ_IOT_MQTT_QOS_1, client);
+        conn, prefix, AZ_IOT_MQTT_QOS_1, client, AZ_IOT_SUBSCRIPTION_FAILS_SESSION, NULL);
     if (r != AZ_IOT_OK)
     {
       (void)az_iot_connection_client__remove_subscriptions_for(conn, client);
@@ -579,7 +579,7 @@ az_iot_result az_iot_twin_client_init(az_iot_twin_client* client, az_iot_connect
       return r;
     }
     r = az_iot_connection_client__add_subscription_on_connect(
-        conn, prefix, AZ_IOT_MQTT_QOS_1, client);
+        conn, prefix, AZ_IOT_MQTT_QOS_1, client, AZ_IOT_SUBSCRIPTION_FAILS_SESSION, NULL);
     if (r != AZ_IOT_OK)
     {
       (void)az_iot_connection_client__remove_subscriptions_for(conn, client);
@@ -608,7 +608,7 @@ az_iot_result az_iot_twin_client_init(az_iot_twin_client* client, az_iot_connect
       return r;
     }
     r = az_iot_connection_client__add_subscription_on_connect(
-        conn, filter, AZ_IOT_MQTT_QOS_1, client);
+        conn, filter, AZ_IOT_MQTT_QOS_1, client, AZ_IOT_SUBSCRIPTION_FAILS_SESSION, NULL);
     if (r != AZ_IOT_OK)
     {
       (void)az_iot_connection_client__remove_subscriptions_for(conn, client);
@@ -656,7 +656,7 @@ az_iot_result az_iot_twin_client_init(az_iot_twin_client* client, az_iot_connect
       return AZ_IOT_ERR_INTERNAL;
     }
     r = az_iot_connection_client__add_subscription_on_connect(
-        conn, filter, AZ_IOT_MQTT_QOS_0, client);
+        conn, filter, AZ_IOT_MQTT_QOS_0, client, AZ_IOT_SUBSCRIPTION_FAILS_SESSION, NULL);
     if (r != AZ_IOT_OK)
     {
       (void)az_iot_connection_client__remove_subscriptions_for(conn, client);
@@ -675,7 +675,7 @@ az_iot_result az_iot_twin_client_init(az_iot_twin_client* client, az_iot_connect
       return AZ_IOT_ERR_INTERNAL;
     }
     r = az_iot_connection_client__add_subscription_on_connect(
-        conn, filter, AZ_IOT_MQTT_QOS_0, client);
+        conn, filter, AZ_IOT_MQTT_QOS_0, client, AZ_IOT_SUBSCRIPTION_FAILS_SESSION, NULL);
     if (r != AZ_IOT_OK)
     {
       (void)az_iot_connection_client__remove_subscriptions_for(conn, client);
