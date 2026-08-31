@@ -98,6 +98,20 @@ typedef struct mymqtt_client_tag {
 } mymqtt_client_t;
 ```
 
+### TLS: what the adapter must do
+
+Two obligations, and only one of them is a choice.
+
+**Server certificate validation is not optional.** Whenever your adapter establishes a TLS session it must validate the server's certificate chain **and** its hostname. `az_iot_mqtt_tls_options` carries no flag that asks for an unverified session, and adding one to your own adapter would defeat the point: an unverified session authenticates nothing.
+
+**`tls.use_tls` only SELECTS TLS.** Turn TLS on when any TLS material is present — `client_cert_path`, `client_cert_pem`, `trusted_ca_path`, `trusted_ca_pem`, a key reference — **or** when `use_tls` is set. `use_tls` exists for the connection that carries none of the others, such as server-authentication-only. Keying off the certificate alone silently downgrades those to plaintext.
+
+> **Migration note.** This slot was previously `bool verify_server`, which could switch validation off, and was `false` in a zero-initialized struct — so a caller who simply forgot it got an unverified connection. It is now `bool use_tls` at the same offset and type (no ABI change), and validation is unconditional.
+>
+> An adapter still reading `opts.tls.verify_server` **will not compile**, and that is deliberate: a source alias would let such an adapter keep gating verification on a field that no longer means verification, so a caller who set only a certificate would get an *unverified* TLS session. The compile error puts the decision in front of you. The fix is to verify unconditionally and use `use_tls` solely as one of the TLS triggers.
+
+**Non-extractable keys.** If `tls.client_key_uri` or `tls.sign` is set, the caller is asking you to authenticate with a private key that cannot be read. Honour it, or fail the connect with `AZ_IOT_ERR_NOT_SUPPORTED`. What you must never do is connect *without* the credential you were asked to use — the conformance suite checks this whether or not you claim the feature. See 4.4.
+
 ## Step 2 — Implement the factory
 
 A factory is just a struct + a `create` function:
@@ -220,6 +234,29 @@ Today the suites cover the iface contract end-to-end:
 
 More tests will be added as the SDK grows (reconnect semantics, large payloads, retained messages, MQTTv5 properties, malformed-input handling, etc.). Re-running the suite after each SDK upgrade is the recommended way to catch regressions in your adapter.
 
+The suite also holds every adapter to the safety half of the optional features, whatever it declares:
+
+- **`a_key_reference_is_never_silently_ignored`** — given a key URI naming a provider that cannot exist, your `connect` must fail. If you have not declared key custody it must fail with `AZ_IOT_ERR_NOT_SUPPORTED`, so the caller can tell "I cannot do this" from "I tried and it failed".
+- **`a_sign_hook_is_never_silently_ignored`** — the same for `tls.sign`.
+
+### 4.5 — Declaring optional capabilities
+
+If your adapter implements an optional feature, say so, or the suite can only check that you refuse it cleanly:
+
+```c
+az_iot_conformance_options opts = { 0 };
+opts.capabilities |= (uint32_t)AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY;
+/* Needed to prove the feature end-to-end: a key your adapter can reach and a
+   certificate carrying its public key. */
+opts.key_uri          = "pkcs11:object=device-key;type=private";
+opts.crypto_engine_id = "pkcs11";
+opts.client_cert_path = "/path/to/device-cert.pem";
+
+return az_iot_conformance_run_with_options(AZ_IOT_CONFORMANCE_SUITE_V3_1_1, f, &opts);
+```
+
+With the key supplied, `key_custody_completes_a_tls_handshake` makes you complete a real TLS handshake signed with a key you cannot read. Declare the capability without supplying a key and the suite says on stderr that the handshake was **not** exercised rather than passing quietly. Supplying only some of the three fields, or supplying material without declaring the capability, fails the run.
+
 ## Step 5 — Use your adapter at runtime
 
 Once the conformance suite is green, plug the factory into the connection client:
@@ -238,6 +275,8 @@ The connection client picks the right factory at session-open time based on the 
 - **Returning success synchronously when the operation has not actually completed.** `connect`, `subscribe`, `publish` all return immediately; success/failure of the broker round-trip arrives later through the inbound callback. Returning `az_iot_OK` from `connect` only means "I accepted your CONNECT request and started working on it".
 - **Forgetting to populate every vtable slot.** The conformance suite asserts every slot is non-NULL.
 - **Reusing a single underlying client across DPS → Hub transitions.** Each session asks the factory for a fresh client; do not cache.
+- **Gating server certificate validation on a caller flag.** There is no such flag, and `use_tls` is not one — it only selects TLS. Validate the chain and the hostname every time.
+- **Ignoring a key reference you cannot honour.** Connecting anyway means the session carries none of the credential the caller asked to authenticate with. Fail with `AZ_IOT_ERR_NOT_SUPPORTED` instead.
 - **Wrong version.** Registering only a v3.1.1 factory when you need Hub-Next (which requires v5) will fail at connection time with `AZ_IOT_ERR_NOT_SUPPORTED`.
 
 ## Feature clients and what they need from the adapter

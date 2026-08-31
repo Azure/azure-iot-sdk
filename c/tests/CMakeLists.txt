@@ -171,11 +171,88 @@ az_iot_add_cmocka_test(az_iot_tests_file_upload unit/file_upload_client_test.c)
 
 az_iot_add_cmocka_test(az_iot_tests_certificate_provider_pem unit/certificate_provider_pem_test.c)
 
+# Non-extractable key custody (D8) through the connection client: the
+# key-reference fields and the sign() hook reaching the adapter on BOTH connect
+# paths, the v2 gating, and the open-time credential validation.
+az_iot_add_cmocka_test(az_iot_tests_connection_key_custody unit/connection_key_custody_test.c)
+target_link_libraries(az_iot_tests_connection_key_custody PRIVATE az_iot_test_support)
+
 
 
 if(AZ_IOT_WITH_PAHO)
     az_iot_add_cmocka_test(az_iot_tests_paho_adapter unit/paho_adapter_smoke_test.c)
     target_link_libraries(az_iot_tests_paho_adapter PRIVATE az_iot_adapter_paho)
+
+    # The Paho adapter's non-extractable key custody (D8). It reaches into the
+    # adapter's private header, so it needs the adapter's source directory on
+    # the include path, and it needs the same AZ_IOT_PAHO_KEY_CUSTODY definition
+    # the adapter was compiled with so the cases match the built behaviour.
+    az_iot_add_cmocka_test(az_iot_tests_paho_key_custody unit/paho_key_custody_test.c)
+    target_link_libraries(az_iot_tests_paho_key_custody PRIVATE az_iot_adapter_paho)
+    target_include_directories(az_iot_tests_paho_key_custody PRIVATE
+        ${CMAKE_SOURCE_DIR}/adapters/paho)
+    get_target_property(_paho_defs az_iot_adapter_paho COMPILE_DEFINITIONS)
+    if(_paho_defs)
+        target_compile_definitions(az_iot_tests_paho_key_custody PRIVATE ${_paho_defs})
+    endif()
+
+    # The same custody code against a REAL PKCS#11 token. Built only when a
+    # token is going to be supplied (AZ_IOT_TEST_PKCS11_KEY_URI); it fails
+    # loudly rather than skipping when the environment is missing.
+    if(AZ_IOT_BUILD_PKCS11_TESTS)
+        find_package(OpenSSL 3.0 REQUIRED)
+        az_iot_add_cmocka_test(az_iot_tests_paho_key_custody_pkcs11
+            unit/paho_key_custody_pkcs11_test.c)
+        target_link_libraries(az_iot_tests_paho_key_custody_pkcs11 PRIVATE
+            az_iot_adapter_paho OpenSSL::SSL OpenSSL::Crypto)
+        target_include_directories(az_iot_tests_paho_key_custody_pkcs11 PRIVATE
+            ${CMAKE_SOURCE_DIR}/adapters/paho)
+        if(_paho_defs)
+            target_compile_definitions(az_iot_tests_paho_key_custody_pkcs11 PRIVATE ${_paho_defs})
+        endif()
+    endif()
+
+    # What connect() does with a key it has already taken custody of when a
+    # later step fails. Unlike every other Paho suite this one does NOT link
+    # az_iot_adapter_paho: it compiles az_iot_mqtt_paho.c against a mock
+    # MQTTAsync and a fake custody module, because the failures it asserts on
+    # (a Paho call rejecting the request, an allocation failing) cannot be
+    # produced through the real library, and a successful custody prepare()
+    # needs a PKCS#11 token. See tests/support/mock_paho_async.h.
+    az_iot_add_cmocka_test(az_iot_tests_paho_connect_cleanup
+        unit/paho_connect_cleanup_test.c
+        support/mock_paho_async.c
+        support/fake_paho_key_custody.c
+        ${CMAKE_SOURCE_DIR}/adapters/paho/az_iot_mqtt_paho.c)
+    target_include_directories(az_iot_tests_paho_connect_cleanup PRIVATE
+        ${CMAKE_SOURCE_DIR}/adapters/paho
+        ${CMAKE_CURRENT_SOURCE_DIR}/support)
+    if(AZ_IOT_PAHO_INCLUDE_DIRS)
+        target_include_directories(az_iot_tests_paho_connect_cleanup SYSTEM PRIVATE
+            ${AZ_IOT_PAHO_INCLUDE_DIRS})
+    endif()
+    if(_paho_defs)
+        target_compile_definitions(az_iot_tests_paho_connect_cleanup PRIVATE ${_paho_defs})
+    endif()
+    if(WIN32)
+        target_link_libraries(az_iot_tests_paho_connect_cleanup PRIVATE ws2_32 crypt32)
+    endif()
+    if(UNIX)
+        target_link_libraries(az_iot_tests_paho_connect_cleanup PRIVATE pthread)
+    endif()
+    # --wrap is a GNU ld / lld feature. Without it the allocation-failure case
+    # is simply not registered; every other case still runs.
+    if(UNIX AND NOT APPLE)
+        target_link_options(az_iot_tests_paho_connect_cleanup PRIVATE -Wl,--wrap=malloc)
+        target_compile_definitions(az_iot_tests_paho_connect_cleanup PRIVATE
+            AZ_IOT_TEST_WRAP_MALLOC=1)
+    endif()
+    # Deliberately instrumented, unlike every other test target: the source
+    # being measured here is a SHIPPED one (adapters/paho/az_iot_mqtt_paho.c),
+    # and these are the only tests that reach its cleanup paths. gcovr excludes
+    # tests/, so the doubles compiled alongside it stay out of the report, and
+    # gcov merges this object's counters with the library's.
+    az_iot_apply_coverage(az_iot_tests_paho_connect_cleanup)
 endif()
 
 if(AZ_IOT_WITH_RUST_MQTT)
@@ -318,11 +395,20 @@ if(AZ_IOT_WITH_PAHO)
     target_link_libraries(az_iot_conformance_paho_v3 PRIVATE
         az_iot_conformance az_iot_adapter_paho)
     az_iot_apply_warnings(az_iot_conformance_paho_v3)
+    # The harness declares AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY only in a build
+    # where the adapter actually honours a key reference, so it needs the same
+    # AZ_IOT_PAHO_KEY_CUSTODY definition the adapter was compiled with.
+    if(_paho_defs)
+        target_compile_definitions(az_iot_conformance_paho_v3 PRIVATE ${_paho_defs})
+    endif()
 
     add_executable(az_iot_conformance_paho_v5 conformance/paho_v5_main.c)
     target_link_libraries(az_iot_conformance_paho_v5 PRIVATE
         az_iot_conformance az_iot_adapter_paho)
     az_iot_apply_warnings(az_iot_conformance_paho_v5)
+    if(_paho_defs)
+        target_compile_definitions(az_iot_conformance_paho_v5 PRIVATE ${_paho_defs})
+    endif()
 
     if(AZ_IOT_BUILD_CONFORMANCE_TESTS)
         add_test(NAME az_iot_conformance_paho_v3 COMMAND az_iot_conformance_paho_v3)

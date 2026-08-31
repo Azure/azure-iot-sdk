@@ -296,6 +296,19 @@ extern "C"
      * fixture work can produce a rejection: a peer that never asks cannot
      * refuse. */
     int require_client_cert;
+
+    /* Ask the client for a certificate but accept whatever it presents, without
+     * checking the issuer.
+     *
+     * For proving a client holds a private key, the chain is the wrong thing to
+     * look at: what proves possession is the CertificateVerify signature, which
+     * TLS requires the client to produce with that key. A key that lives inside
+     * a token cannot be handed to this proxy's CA to be certified, so requiring
+     * the proxy's own issuer would make such a key untestable for the one
+     * property that matters. The handshake completing IS the proof.
+     *
+     * Ignored when require_client_cert is set. */
+    int accept_any_client_cert;
   } az_iot_test_proxy_tls_options;
 
   az_iot_test_proxy_tls_options az_iot_test_proxy_tls_options_default(void);
