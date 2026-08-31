@@ -40,6 +40,8 @@
 
 #include "azure/iot/az_iot_mqtt_iface.h"
 
+#include <stdint.h>
+
 #ifdef __cplusplus
 extern "C"
 {
@@ -53,14 +55,69 @@ extern "C"
     AZ_IOT_CONFORMANCE_SUITE_V5 = 1
   } az_iot_conformance_suite;
 
+  /* Optional adapter capabilities (D8 and later).
+   *
+   * The suite's baseline applies to EVERY adapter and is not negotiable. A
+   * capability declares that the adapter implements an OPTIONAL feature, which
+   * makes the suite hold it to that feature's contract as well.
+   *
+   * Declaring nothing is therefore never a way to be tested less on safety:
+   * the baseline includes what an adapter must do when asked for a feature it
+   * does NOT implement -- refuse the connect rather than proceed without the
+   * credential it was asked to use. */
+  typedef enum az_iot_conformance_capability
+  {
+    AZ_IOT_CONFORMANCE_CAP_NONE = 0,
+
+    /* The adapter honours a non-extractable private key: az_iot_mqtt_tls_options
+     * client_key_uri + crypto_engine_id, and/or the sign() hook. An adapter
+     * that declares this must complete a TLS handshake using a key it cannot
+     * read; see az_iot_conformance_options::key_uri for the end-to-end case. */
+    AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY = 1u << 0
+  } az_iot_conformance_capability;
+
+  typedef struct az_iot_conformance_options
+  {
+    /* Bitwise OR of az_iot_conformance_capability. */
+    uint32_t capabilities;
+
+    /* End-to-end key custody material, used only when
+     * AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY is declared. Supply all three to have
+     * the suite prove the adapter can actually sign a TLS handshake with a key
+     * it cannot read:
+     *
+     *   key_uri          a key reference the adapter can resolve
+     *                    ("pkcs11:object=...;type=private", "tpm2:...")
+     *   crypto_engine_id the provider/engine that owns it ("pkcs11", "tpm2")
+     *   client_cert_path a certificate whose PUBLIC key is that key's
+     *
+     * Leave key_uri NULL when no token is available: the suite then runs the
+     * custody cases that need no hardware and says on stderr what it did not
+     * run, rather than passing silently as though it had. */
+    const char* key_uri;
+    const char* crypto_engine_id;
+    const char* client_cert_path;
+  } az_iot_conformance_options;
+
   /* Run the conformance suite for `suite_kind` against the given factory.
    * Returns:
    *   0  on success (all tests passed)
    *   77 if the suite was skipped (no broker configured)
    *   1  on failure (one or more tests failed)
    *
-   * Suitable to use directly as the return value of main() in a harness exe. */
+   * Suitable to use directly as the return value of main() in a harness exe.
+   *
+   * Equivalent to az_iot_conformance_run_with_options() with no capabilities
+   * declared. An adapter that implements an optional feature should call that
+   * instead, or the suite cannot hold it to the feature's contract. */
   int az_iot_conformance_run(az_iot_conformance_suite suite_kind, az_iot_mqtt_factory* factory);
+
+  /* As above, plus the adapter's declared capabilities. `options` may be NULL,
+   * which means the same as declaring nothing. */
+  int az_iot_conformance_run_with_options(
+      az_iot_conformance_suite suite_kind,
+      az_iot_mqtt_factory* factory,
+      const az_iot_conformance_options* options);
 
 #ifdef __cplusplus
 }

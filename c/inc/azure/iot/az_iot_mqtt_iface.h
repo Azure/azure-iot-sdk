@@ -59,19 +59,82 @@ extern "C"
     size_t correlation_data_len;
   } az_iot_mqtt_message;
 
+  /* Signs one digest with a private key the caller never sees (D8). This is the
+   * escape hatch for stacks that have no engine/provider abstraction: the key
+   * lives in an HSM / TPM / secure element and the only operation exposed is
+   * "sign these bytes".
+   *
+   * `ctx` is the opaque context supplied alongside the callback on
+   * az_iot_mqtt_tls_options. `digest`/`digest_len` are the bytes to sign;
+   * the signature is written to `out_sig` (at most `out_sig_cap` bytes) and its
+   * length reported through `out_sig_len`. Returns AZ_IOT_ERR_NOT_ENOUGH_SPACE
+   * when the buffer is too small, and leaves *out_sig_len untouched on failure.
+   *
+   * Deliberately a plain function pointer rather than the certificate-provider
+   * type: this header is the standalone BYO-MQTT-client seam (see
+   * docs/how_to_byo_mqtt_client.md) and must not depend on the certificate
+   * provider ABI. */
+  typedef az_iot_result (*az_iot_mqtt_sign_callback)(
+      void* ctx,
+      const uint8_t* digest,
+      size_t digest_len,
+      uint8_t* out_sig,
+      size_t out_sig_cap,
+      size_t* out_sig_len);
+
+  /* TLS credentials handed to an adapter on connect.
+   *
+   * Fields are only ever APPENDED, never reordered or removed: the struct is
+   * populated by the SDK and read by the adapter, so an adapter compiled
+   * against an older copy of this header simply never reads the tail. New
+   * fields must therefore mean "not requested" when zero, which is what
+   * az_iot_mqtt_connect_options zero-initialization already yields (see
+   * docs/struct_versioning.md). */
   typedef struct az_iot_mqtt_tls_options
   {
     const char* trusted_ca_path; /* file or NULL for system store */
     const char* client_cert_path; /* PEM */
     const char* client_key_path; /* PEM */
     const char* client_key_password; /* may be NULL */
-    bool verify_server; /* default true */
+    /* Selects TLS.
+     *
+     * There is deliberately NO option to disable server certificate
+     * validation. Whenever an adapter establishes a TLS session it validates
+     * the chain AND the hostname, unconditionally; this SDK connects to Azure
+     * endpoints, and an unverified session authenticates nothing.
+     *
+     * This slot previously held `verify_server`, which could switch validation
+     * off and, being false in a zero-initialized struct, did so for any caller
+     * who simply forgot it. It now only selects TLS, which is what the SDK ever
+     * used it for. Set it for a connection that carries no other TLS material,
+     * such as server-authentication-only; connections carrying a certificate,
+     * a CA or a key reference select TLS on that alone. */
+    bool use_tls;
     /* In-memory PEM material. Adapters that load credentials from memory rather
      * than from disk (e.g. esp-mqtt on a device with no filesystem) use these;
      * file-path adapters (Paho + OpenSSL) ignore them. Any field may be NULL. */
     const char* trusted_ca_pem; /* CA chain PEM, or NULL */
     const char* client_cert_pem; /* client certificate PEM, or NULL */
     const char* client_key_pem; /* client private key PEM, or NULL */
+    /* Non-extractable key custody (D8). Set when the private key cannot be read
+     * -- it stays inside an HSM, TPM or secure element -- so the adapter has to
+     * sign THROUGH it instead of loading it.
+     *
+     * Two mutually independent routes; an adapter may support either, both, or
+     * neither, and must fail the connect with AZ_IOT_ERR_NOT_SUPPORTED rather
+     * than connect without a client key when asked for one it cannot honour:
+     *
+     *  - client_key_uri + crypto_engine_id: the stack has an engine/provider
+     *    abstraction (OpenSSL ENGINE or OpenSSL 3.x provider). The adapter
+     *    loads the named engine/provider and resolves the URI through it.
+     *  - sign + sign_ctx: no such abstraction exists; the adapter drives the
+     *    handshake signature through the callback.
+     *
+     * All four are NULL when the key is an ordinary PEM or file. */
+    const char* client_key_uri; /* e.g. "pkcs11:token=...;object=..." */
+    const char* crypto_engine_id; /* OpenSSL ENGINE/provider id: "pkcs11", "tpm2" */
+    az_iot_mqtt_sign_callback sign; /* may be NULL */
+    void* sign_ctx; /* opaque, passed back to sign() */
   } az_iot_mqtt_tls_options;
 
   typedef struct az_iot_mqtt_connect_options
