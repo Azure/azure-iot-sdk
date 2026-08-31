@@ -62,6 +62,13 @@
 #define DPS_PHASE_POLLING AZ_IOT_DPS_PHASE_POLLING
 #define DPS_PHASE_DONE AZ_IOT_DPS_PHASE_DONE
 
+/* The certificate provider vtable ABI version that introduced the v2 hooks
+ * (sign, get_csr). Every gate on those hooks compares against this, NOT against
+ * AZ_IOT_CERTIFICATE_PROVIDER_VTABLE_VERSION: that macro tracks the CURRENT
+ * version, so the moment it becomes 3 it would start rejecting the v2 providers
+ * these hooks were added for. */
+#define CERT_PROVIDER_VTABLE_V2 2u
+
 /* ------------------------------------------------------------------------- */
 /* CSR / issued-certificate wire constants. azure-sdk-for-c does not surface   */
 /* these DPS/Hub fields, so the JSON field names, the register body and the    */
@@ -284,8 +291,18 @@ static az_iot_result provider_sign_adapter(
    * adapter's TLS callback, where the context came back through a third-party
    * library: a wrong or stale pointer must produce a failed handshake, not a
    * crash in the middle of one. */
-  if (!p || !p->vtable || p->vtable->version < 2u || !p->vtable->sign)
+  if (!p || !p->vtable || p->vtable->version < CERT_PROVIDER_VTABLE_V2 || !p->vtable->sign)
   {
+    /* The only evidence the caller gets is a failed handshake several frames
+     * away inside a third-party TLS stack, so say which link of the chain was
+     * missing while it is still known. */
+    AZ_IOT_LOG_ERRORF(
+        "connection: TLS asked the certificate provider to sign, but the provider is unusable "
+        "(provider=%s vtable=%s version=%u sign=%s)",
+        p ? "set" : "NULL",
+        (p && p->vtable) ? "set" : "NULL",
+        (p && p->vtable) ? (unsigned)p->vtable->version : 0u,
+        (p && p->vtable && p->vtable->sign) ? "set" : "NULL");
     return AZ_IOT_ERR_INVALID_ARG;
   }
   return p->vtable->sign(p, digest, digest_len, out_sig, out_sig_cap, out_sig_len);
@@ -296,7 +313,7 @@ static az_iot_result provider_sign_adapter(
  * same gating start_csr()/open() apply to get_csr. */
 static bool provider_has_sign(const az_iot_certificate_provider* p)
 {
-  return p != NULL && p->vtable->version >= 2u && p->vtable->sign != NULL;
+  return p != NULL && p->vtable->version >= CERT_PROVIDER_VTABLE_V2 && p->vtable->sign != NULL;
 }
 
 /* Can this credential set possibly complete a TLS handshake? A client
@@ -2078,7 +2095,7 @@ az_iot_result az_iot_connection_client_open(az_iot_connection_client* client)
   if (client->opts.dps.request_operational_certificate)
   {
     az_iot_certificate_provider* p = client->opts.certificate_provider;
-    if (!p || p->vtable->version < 2u || p->vtable->get_csr == NULL)
+    if (!p || p->vtable->version < CERT_PROVIDER_VTABLE_V2 || p->vtable->get_csr == NULL)
     {
       AZ_IOT_LOG_ERROR("connection_client_open: request_operational_certificate set but provider "
                        "does not support CSR enrollment");

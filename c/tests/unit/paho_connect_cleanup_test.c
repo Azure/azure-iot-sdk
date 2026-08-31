@@ -297,19 +297,13 @@ int main(void)
     cmocka_unit_test_setup_teardown(a_refused_key_reference_fails_the_connect, setup, teardown),
     cmocka_unit_test_setup_teardown(a_create_failure_releases_the_key_reference, setup, teardown),
     cmocka_unit_test_setup_teardown(
-        a_set_callbacks_failure_releases_the_key_reference,
-        setup,
-        teardown),
+        a_set_callbacks_failure_releases_the_key_reference, setup, teardown),
     cmocka_unit_test_setup_teardown(
-        a_set_disconnected_failure_releases_the_key_reference,
-        setup,
-        teardown),
+        a_set_disconnected_failure_releases_the_key_reference, setup, teardown),
     cmocka_unit_test_setup_teardown(a_connect_failure_releases_the_key_reference, setup, teardown),
 #if defined(AZ_IOT_TEST_WRAP_MALLOC)
     cmocka_unit_test_setup_teardown(
-        an_allocation_failure_releases_the_key_reference,
-        setup,
-        teardown),
+        an_allocation_failure_releases_the_key_reference, setup, teardown),
 #endif
     cmocka_unit_test_setup_teardown(an_accepted_connect_keeps_the_key_reference, setup, teardown),
     cmocka_unit_test_setup_teardown(reconnecting_replaces_the_key_reference, setup, teardown),
