@@ -930,24 +930,21 @@ static void inject_next_invocation(
   assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
 }
 
-static void next_init_subscribes_the_device_scoped_methods_filter(void** state)
+static void next_init_does_not_subscribe_a_redundant_methods_filter(void** state)
 {
   fixture* fx = (fixture*)*state;
   open_next(fx);
 
-  /* CONNACK alone buys only the presence filter: the feature filters wait for
-   * the birth handshake, so a device that never births never subscribes. */
+  /* CONNACK alone buys only the presence filter. */
   assert_non_null(find_call(fx->mock, AZ_IOT_MOCK_CALL_SUBSCRIBE, "ih/ut-device/dev/#"));
   assert_null(find_call(fx->mock, AZ_IOT_MOCK_CALL_SUBSCRIBE, "ih/ut-device/dev/methods/+"));
 
   finish_birth_next(fx);
 
-  /* Device-scoped on Next, so a device only ever receives its own
-   * invocations -- unlike the Classic filter, which is a bare wildcard. */
-  const az_iot_mock_call* sub
-      = find_call(fx->mock, AZ_IOT_MOCK_CALL_SUBSCRIBE, "ih/ut-device/dev/methods/+");
-  assert_non_null(sub);
-  assert_int_equal(sub->qos, AZ_IOT_MQTT_QOS_1);
+  /* And still nothing afterwards: ih/ut-device/dev/# already covers
+   * ih/ut-device/dev/methods/+, so a second filter would be redundant.
+   * Invocations still arrive -- see next_invocation_is_dispatched_to_the_handler. */
+  assert_null(find_call(fx->mock, AZ_IOT_MOCK_CALL_SUBSCRIBE, "ih/ut-device/dev/methods/+"));
 }
 
 static void next_invocation_is_dispatched_to_the_handler(void** state)
@@ -1223,7 +1220,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         respond_while_disconnected_reports_not_connected, setup, teardown),
     cmocka_unit_test_setup_teardown(
-        next_init_subscribes_the_device_scoped_methods_filter, setup_next, teardown),
+        next_init_does_not_subscribe_a_redundant_methods_filter, setup_next, teardown),
     cmocka_unit_test_setup_teardown(
         next_invocation_is_dispatched_to_the_handler, setup_next, teardown),
     cmocka_unit_test_setup_teardown(

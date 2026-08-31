@@ -799,28 +799,28 @@ Tracked as **[AB#39350066](https://dev.azure.com/msazure/One/_workitems/edit/393
 > and nothing in the library ever calls `UnsubscribeAsync` — the capability
 > exists on its MQTT interface and is unused.
 >
-> **Until then, gen2 removal must still unsubscribe.** Today gen2 feature clients
-> do register per-feature filters (see the related defect below), so they are real
-> subscriptions and leaving them live until the session ends is the same slot leak
-> in a different place. The device-wide wildcard is never at risk from this: the
-> presence handshake issues it directly rather than through the
-> persistent-subscription registry, so it has no owner and a per-owner removal can
-> never select it. Withdrawing a filter underneath it does not disturb it either —
-> the wildcard keeps matching. So removal unsubscribes on both generations, and
-> becomes a no-op on gen2 for free once those filters are gone.
+> **Removal unsubscribes on both generations.** The device-wide wildcard is never
+> at risk from this: the presence handshake issues it directly rather than through
+> the persistent-subscription registry, so it has no owner and a per-owner removal
+> can never select it. Withdrawing a filter underneath it does not disturb it
+> either — the wildcard keeps matching. On gen2 this is now a registry removal in
+> practice, since no feature client registers a filter there any more; it still
+> issues the UNSUBSCRIBE for anything that is registered, which is what an
+> application custom topic will be.
 >
 > (An earlier revision justified this by saying AEG does not support UNSUBSCRIBE.
 > That is **not** supported by the AEG RFCs — `unsubscribe` does not appear
 > anywhere in them — so the claim is withdrawn. The reason above does not depend
 > on it and is checkable.)
 >
-> **Related defect, same fix.** gen2 feature clients today *also* register their
+> **Related defect, same fix — done.** gen2 feature clients also registered their
 > own filters on top of that wildcard — `dev/twin/get/response`,
 > `dev/twin/reported/response`, `dev/twin/desired`, `dev/c2d`, `dev/methods/+` —
-> every one a strict subset of `ih/{device_id}/dev/#`. So gen2 issues six
-> subscriptions where one suffices, re-issues all six on every reconnect, and
-> spends registry slots it never needed. Dropping them shrinks the removal
-> problem rather than growing it.
+> every one a strict subset of `ih/{device_id}/dev/#`. gen2 issued six
+> subscriptions where one sufficed, re-issued all six on every reconnect, and
+> spent registry slots it never needed. All five are gone; the dispatch handlers
+> that route the messages stay, because it was never the filters that did the
+> routing.
 >
 > **The wildcard genuinely covers everything, including features not yet
 > designed.** The AEG topic RFC (`gateway/rfcs/aeg/topics.md`) defines the
