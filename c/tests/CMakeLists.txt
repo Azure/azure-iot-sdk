@@ -348,7 +348,7 @@ if(AZ_IOT_WITH_PAHO)
     target_include_directories(az_iot_reconnect_integration PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/conformance)
     target_link_libraries(az_iot_reconnect_integration PRIVATE
-        az_iot_adapter_paho az_iot_test_proxy)
+        az_iot_adapter_paho az_iot_test_proxy az_iot_test_mqtt_server)
     if(UNIX)
         target_compile_definitions(az_iot_reconnect_integration PRIVATE
             _POSIX_C_SOURCE=200809L _DEFAULT_SOURCE)

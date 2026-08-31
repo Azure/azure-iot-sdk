@@ -132,6 +132,23 @@ extern "C"
      * struct reads on one scale. Sub-second connect timeouts are not useful
      * over TLS on a cellular or satellite link. */
     uint32_t connect_timeout_seconds;
+
+    /* How long CONNECTED may be withheld waiting for the SUBACKs of the
+     * persistent filters issued on connect, in seconds. 0 selects
+     * AZ_IOT_DEFAULT_SUBSCRIPTION_ACK_TIMEOUT_SECONDS.
+     *
+     * Nothing else bounds that wait: connect_timeout_seconds covers the CONNACK,
+     * the presence handshake has its own timeout, and keep-alive cannot help
+     * because the link is alive -- a broker that accepts the connection and then
+     * never answers the SUBSCRIBE would otherwise hold the client in CONNECTING
+     * indefinitely.
+     *
+     * The clock starts when the last SUBSCRIBE of the batch reaches the adapter
+     * and is never extended by an arriving SUBACK: a per-ack reset would let a
+     * broker answering one filter just inside each window hold CONNECTED open
+     * forever, which is the failure this bounds. Expiry is treated as transient
+     * -- silence is not a refusal -- so it reconnects under the policy. */
+    uint32_t subscription_ack_timeout_seconds;
     const char* client_id; /* device id */
     az_iot_connection_profile connection_profile; /* direct-connect generation (host set,
                                                    * no DPS): CLASSIC (v3.1.1, default) or
@@ -287,6 +304,12 @@ extern "C"
 #ifndef AZ_IOT_DEFAULT_CONNECT_TIMEOUT_SECONDS
 #define AZ_IOT_DEFAULT_CONNECT_TIMEOUT_SECONDS 30
 #endif
+/* Matches the presence birth-ack timeout: both bound "the broker accepted the
+ * connection and then went quiet", and having two different windows for that on
+ * one connect path would be arbitrary. */
+#ifndef AZ_IOT_DEFAULT_SUBSCRIPTION_ACK_TIMEOUT_SECONDS
+#define AZ_IOT_DEFAULT_SUBSCRIPTION_ACK_TIMEOUT_SECONDS 60
+#endif
 #ifndef AZ_IOT_PERSISTENT_SUB_TOPIC_MAX
 #define AZ_IOT_PERSISTENT_SUB_TOPIC_MAX 128
 #endif
@@ -322,18 +345,6 @@ extern "C"
  * 60s defensive birth-ack timeout). */
 #ifndef AZ_IOT_PRESENCE_BIRTH_ACK_TIMEOUT_MS
 #define AZ_IOT_PRESENCE_BIRTH_ACK_TIMEOUT_MS 60000u
-#endif
-/* How long CONNECTED may be withheld waiting for the SUBACKs of the persistent
- * filters issued on connect. Nothing else bounds that wait: the adapter's
- * connect timeout covers the CONNACK, the birth-ack timeout covers the AEG
- * presence handshake, and keep-alive cannot help because the link is alive. The
- * clock starts when the last SUBSCRIBE of the batch reaches the adapter and is
- * never extended by an arriving SUBACK -- a per-ack reset would let a broker
- * that answers one filter just inside each window hold CONNECTED open forever,
- * which is the exact failure this bounds. Matches the presence timeout because
- * it bounds the same kind of wait. */
-#ifndef AZ_IOT_SUBSCRIPTION_ACK_TIMEOUT_MS
-#define AZ_IOT_SUBSCRIPTION_ACK_TIMEOUT_MS 60000u
 #endif
 
   /* ------------------------------------------------------------------------- */

@@ -69,6 +69,20 @@ static int setup_with_policy(void** state, uint32_t max_attempts)
 static int setup_infinite(void** state) { return setup_with_policy(state, 0); }
 static int setup_two_attempts(void** state) { return setup_with_policy(state, 2); }
 
+/* As setup_two_attempts, but with the shortest gate deadline the seconds-scaled
+ * option can express, so the never-acked path can be exercised on the wall clock
+ * instead of only through the test seam. */
+static int setup_short_gate_deadline(void** state)
+{
+  int rc = setup_with_policy(state, 2);
+  if (rc == 0)
+  {
+    az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+    fx->client->opts.subscription_ack_timeout_seconds = 1;
+  }
+  return rc;
+}
+
 static int setup_no_reconnect(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)calloc(1, sizeof(*fx));
@@ -1026,6 +1040,30 @@ static void a_gate_deadline_does_not_fault_a_closing_client(void** state)
   assert_int_not_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_RECONNECTING);
 }
 
+/* The seam-driven test above proves the branch; this one proves the clock is
+ * actually consulted. Nothing forces the deadline here -- it is configured to a
+ * second and then allowed to pass. The intermediate assertion matters as much as
+ * the final one: a deadline that fired immediately would satisfy the second
+ * check on its own. */
+static void a_gate_deadline_expires_on_the_clock(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  (void)open_to_pending_gate(fx, "restored/#");
+  assert_false(az_iot_connection_client__is_connected(fx->client));
+
+  az_iot_test_wait_ms(250u);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_CONNECTING);
+
+  az_iot_test_wait_ms(900u);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  assert_false(az_iot_connection_client__is_connected(fx->client));
+  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_RECONNECTING);
+  assert_int_equal(
+      az_iot_test_reason_for(&fx->log, AZ_IOT_CONN_STATE_RECONNECTING), AZ_IOT_ERR_TIMEOUT);
+}
+
 /* The gate belongs to the session. When that session dies its packet ids die
  * with it, so a deadline left armed could reconnect -- or fault -- a client on
  * behalf of acks that can never arrive. */
@@ -1279,6 +1317,8 @@ int main(void)
         a_dropped_session_clears_the_gate, setup_two_attempts, teardown),
     cmocka_unit_test_setup_teardown(
         a_gate_deadline_does_not_fault_a_closing_client, setup_two_attempts, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_gate_deadline_expires_on_the_clock, setup_short_gate_deadline, teardown),
     /* QoS-1 acknowledgements */
     cmocka_unit_test_setup_teardown(
         matching_puback_invokes_the_callback, setup_two_attempts, teardown),

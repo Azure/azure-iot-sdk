@@ -1231,6 +1231,15 @@ static void report_and_drop_subscription(
   }
 }
 
+/* Deadline for the SUBACKs of the filters just handed to the adapter. */
+static uint64_t subscription_ack_deadline(const az_iot_connection_client* c)
+{
+  uint32_t secs = c->opts.subscription_ack_timeout_seconds
+      ? c->opts.subscription_ack_timeout_seconds
+      : AZ_IOT_DEFAULT_SUBSCRIPTION_ACK_TIMEOUT_SECONDS;
+  return az_iot_time_mono_ms() + (uint64_t)secs * 1000u;
+}
+
 /* Record a SUBSCRIBE that is waiting for its ack. Gated entries hold CONNECTED;
  * the rest are tracked only so a later refusal still reaches its owner. */
 static void subscription_gate_track(
@@ -1329,7 +1338,7 @@ static void begin_feature_subscriptions(az_iot_connection_client* c)
    * refusal reaches its owner, but they never hold CONNECTED. */
   if (c->subscription_gate.pending_count > 0)
   {
-    c->subscription_gate.deadline_ms = az_iot_time_mono_ms() + AZ_IOT_SUBSCRIPTION_ACK_TIMEOUT_MS;
+    c->subscription_gate.deadline_ms = subscription_ack_deadline(c);
   }
 }
 
@@ -2865,8 +2874,7 @@ az_iot_result az_iot_connection_client__add_subscription_on_connect(
     subscription_gate_track(client, pid, slot, failure_scope == AZ_IOT_SUBSCRIPTION_FAILS_SESSION);
     if (client->subscription_gate.deadline_ms == 0)
     {
-      client->subscription_gate.deadline_ms
-          = az_iot_time_mono_ms() + AZ_IOT_SUBSCRIPTION_ACK_TIMEOUT_MS;
+      client->subscription_gate.deadline_ms = subscription_ack_deadline(client);
     }
   }
   return AZ_IOT_OK;

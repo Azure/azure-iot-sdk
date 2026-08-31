@@ -54,7 +54,7 @@ extern "C"
 
   /* Test seam: force a pending subscription gate to expire on the next
    * do_work(). No-op when no gate is armed. Lets unit tests exercise the
-   * never-acked path without waiting AZ_IOT_SUBSCRIPTION_ACK_TIMEOUT_MS. */
+   * never-acked path without waiting out the configured timeout. */
   void az_iot_connection_client__subscription_gate_force_timeout(az_iot_connection_client* client);
 
   /* Return the protocol profile selected by the current session_role. May be
