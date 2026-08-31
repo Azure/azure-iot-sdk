@@ -28,9 +28,10 @@ hardware. The `sign()` hook is carried to the adapter but has no Paho
 implementation: Paho takes its client key as a file path and exposes no
 `SSL_CTX` and no key callback, so it refuses a `sign()`-only credential rather
 than connecting without a client key. That route is for BYO adapters. The
-`rust_mqtt` adapter has no TLS credential handling at all and is not covered. Realizes the "cert management" open
-question in `docs/design.md` (§4.3) and the flow in `docs/dps-integration.md`
-("REGISTER + CMS" → "RESULT (… Issued Cert)").
+`rust_mqtt` adapter has no TLS credential handling at all and is not covered.
+
+Realizes the "cert management" open question in `docs/design.md` (§4.3) and the
+flow in `docs/dps-integration.md` ("REGISTER + CMS" → "RESULT (… Issued Cert)").
 
 ## Abstract
 
@@ -719,4 +720,4 @@ dedicated e2e test app), driven by the in-process all-C e2e suite (`tests/e2e`).
   handshake signs inside a PKCS#11 / TPM token. Added `samples/authentication/hsm_pkcs11`
   and `hsm_sign_callback`, the SoftHSM2 provisioning script, and unit + e2e custody
   suites. Corrected **Status**, the storage-methods gap, **D8**, **Samples** and
-  **E2E tests** to match. By Copilot.
+  **E2E tests** to match. By ewertons.

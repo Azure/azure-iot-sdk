@@ -155,7 +155,8 @@ static void re_preparing_replaces_the_reference(void** state)
   const char* first = NULL;
   assert_int_equal(az_iot_paho_key_custody_prepare(&s, &tls, &first), AZ_IOT_OK);
   char kept[512];
-  snprintf(kept, sizeof(kept), "%s", first);
+  int kept_len = snprintf(kept, sizeof(kept), "%s", first);
+  assert_true(kept_len > 0 && (size_t)kept_len < sizeof(kept));
 
   az_iot_paho_key_custody_release(&s);
   const char* second = NULL;
@@ -193,7 +194,8 @@ static void a_key_with_no_expressible_reference_is_refused(void** state)
   {
     dir = "/tmp";
   }
-  snprintf(copy_path, sizeof(copy_path), "%s/az-iot-ut-keyref-copy.pem", dir);
+  int copy_len = snprintf(copy_path, sizeof(copy_path), "%s/az-iot-ut-keyref-copy.pem", dir);
+  assert_true(copy_len > 0 && (size_t)copy_len < sizeof(copy_path));
   FILE* f = fopen(copy_path, "w");
   assert_non_null(f);
   assert_int_equal(fwrite(pem, 1, len, f), len);
@@ -201,7 +203,8 @@ static void a_key_with_no_expressible_reference_is_refused(void** state)
   free(pem);
 
   char file_uri[600];
-  snprintf(file_uri, sizeof(file_uri), "file:%s", copy_path);
+  int file_uri_len = snprintf(file_uri, sizeof(file_uri), "file:%s", copy_path);
+  assert_true(file_uri_len > 0 && (size_t)file_uri_len < sizeof(file_uri));
   tls.client_key_uri = file_uri;
 
   const char* unused = NULL;
@@ -275,9 +278,14 @@ static bool reference_bytes_contain(const char* path, const char* needle)
 static void a_uri_with_an_inline_pin_is_refused(void** state)
 {
   (void)state;
-  /* A clean base, so appending a query cannot produce a second '?'. */
+  /* A clean base, so appending a query cannot produce a second '?'.
+   *
+   * Truncation is checked rather than assumed: a silently shortened URI names a
+   * different object, so the case would still pass or fail while asserting
+   * something other than what it says. */
   char base[1024];
-  snprintf(base, sizeof(base), "%s", g_key_uri);
+  int base_len = snprintf(base, sizeof(base), "%s", g_key_uri);
+  assert_true(base_len > 0 && (size_t)base_len < sizeof(base));
   char* q = strchr(base, '?');
   if (q)
   {
@@ -285,7 +293,8 @@ static void a_uri_with_an_inline_pin_is_refused(void** state)
   }
 
   char uri[1200];
-  snprintf(uri, sizeof(uri), "%s?pin-value=1234", base);
+  int uri_len = snprintf(uri, sizeof(uri), "%s?pin-value=1234", base);
+  assert_true(uri_len > 0 && (size_t)uri_len < sizeof(uri));
 
   az_iot_paho_key_custody s;
   memset(&s, 0, sizeof(s));
