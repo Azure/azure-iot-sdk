@@ -336,6 +336,42 @@ static void release_is_idempotent(void** state)
   assert_null(s.key_ref_path);
 }
 
+/* release() unlinks the file, it does not merely forget the path. Reaching a
+ * state that HAS a path needs a token, so the state is built by hand here --
+ * which is all release() looks at. Without this, the only cases that reach
+ * release() are ones whose prepare() failed before creating anything, so the
+ * unlink never runs and a release() that leaked the file on disk would still
+ * pass every test in this file. */
+static void release_removes_the_reference_file(void** state)
+{
+  (void)state;
+  char path[512];
+  snprintf(path, sizeof(path), "%s/az-iot-ut-keyref-release.pem", temp_dir());
+  FILE* f = fopen(path, "w");
+  assert_non_null(f);
+  fputs("-----BEGIN PKCS#11 PROVIDER URI-----\n", f);
+  fclose(f);
+
+  size_t n = strlen(path);
+  az_iot_paho_key_custody s;
+  memset(&s, 0, sizeof(s));
+  /* Freed by release(), so it has to come from the same allocator. */
+  s.key_ref_path = (char*)malloc(n + 1);
+  assert_non_null(s.key_ref_path);
+  memcpy(s.key_ref_path, path, n + 1);
+
+  az_iot_paho_key_custody_release(&s);
+
+  assert_null(s.key_ref_path);
+  FILE* gone = fopen(path, "rb");
+  if (gone)
+  {
+    fclose(gone);
+    remove(path);
+    fail_msg("release() left the key reference file behind: %s", path);
+  }
+}
+
 #else /* !AZ_IOT_PAHO_KEY_CUSTODY */
 
 /* Built without custody support, a key reference must be refused rather than
@@ -398,6 +434,7 @@ int main(void)
     cmocka_unit_test(an_extractable_key_is_refused),
     cmocka_unit_test(an_over_long_key_uri_is_handled),
     cmocka_unit_test(release_is_idempotent),
+    cmocka_unit_test(release_removes_the_reference_file),
 #else
     cmocka_unit_test(custody_without_support_is_refused),
 #endif

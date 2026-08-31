@@ -154,3 +154,8 @@ endif()
 if(UNIX)
     target_link_libraries(az_iot_adapter_paho PRIVATE pthread)
 endif()
+
+# Published to the parent scope for the connect-cleanup unit test, which
+# compiles az_iot_mqtt_paho.c against a mock MQTTAsync: it needs Paho's headers
+# for the types, and must not link the real library.
+set(AZ_IOT_PAHO_INCLUDE_DIRS "${_paho_inc}" PARENT_SCOPE)

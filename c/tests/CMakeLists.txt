@@ -211,6 +211,48 @@ if(AZ_IOT_WITH_PAHO)
             target_compile_definitions(az_iot_tests_paho_key_custody_pkcs11 PRIVATE ${_paho_defs})
         endif()
     endif()
+
+    # What connect() does with a key it has already taken custody of when a
+    # later step fails. Unlike every other Paho suite this one does NOT link
+    # az_iot_adapter_paho: it compiles az_iot_mqtt_paho.c against a mock
+    # MQTTAsync and a fake custody module, because the failures it asserts on
+    # (a Paho call rejecting the request, an allocation failing) cannot be
+    # produced through the real library, and a successful custody prepare()
+    # needs a PKCS#11 token. See tests/support/mock_paho_async.h.
+    az_iot_add_cmocka_test(az_iot_tests_paho_connect_cleanup
+        unit/paho_connect_cleanup_test.c
+        support/mock_paho_async.c
+        support/fake_paho_key_custody.c
+        ${CMAKE_SOURCE_DIR}/adapters/paho/az_iot_mqtt_paho.c)
+    target_include_directories(az_iot_tests_paho_connect_cleanup PRIVATE
+        ${CMAKE_SOURCE_DIR}/adapters/paho
+        ${CMAKE_CURRENT_SOURCE_DIR}/support)
+    if(AZ_IOT_PAHO_INCLUDE_DIRS)
+        target_include_directories(az_iot_tests_paho_connect_cleanup SYSTEM PRIVATE
+            ${AZ_IOT_PAHO_INCLUDE_DIRS})
+    endif()
+    if(_paho_defs)
+        target_compile_definitions(az_iot_tests_paho_connect_cleanup PRIVATE ${_paho_defs})
+    endif()
+    if(WIN32)
+        target_link_libraries(az_iot_tests_paho_connect_cleanup PRIVATE ws2_32 crypt32)
+    endif()
+    if(UNIX)
+        target_link_libraries(az_iot_tests_paho_connect_cleanup PRIVATE pthread)
+    endif()
+    # --wrap is a GNU ld / lld feature. Without it the allocation-failure case
+    # is simply not registered; every other case still runs.
+    if(UNIX AND NOT APPLE)
+        target_link_options(az_iot_tests_paho_connect_cleanup PRIVATE -Wl,--wrap=malloc)
+        target_compile_definitions(az_iot_tests_paho_connect_cleanup PRIVATE
+            AZ_IOT_TEST_WRAP_MALLOC=1)
+    endif()
+    # Deliberately instrumented, unlike every other test target: the source
+    # being measured here is a SHIPPED one (adapters/paho/az_iot_mqtt_paho.c),
+    # and these are the only tests that reach its cleanup paths. gcovr excludes
+    # tests/, so the doubles compiled alongside it stay out of the report, and
+    # gcov merges this object's counters with the library's.
+    az_iot_apply_coverage(az_iot_tests_paho_connect_cleanup)
 endif()
 
 if(AZ_IOT_WITH_RUST_MQTT)
