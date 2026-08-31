@@ -13,6 +13,7 @@
 #include "az_iot_paho_key_custody.h"
 #include "azure/iot/az_iot_log.h"
 
+#include <ctype.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -104,6 +105,46 @@ static void redact_key_uri(const char* uri, char* out, size_t out_cap)
   memcpy(out, uri, keep);
   memcpy(out + keep, suffix, suffix_len);
   out[keep + suffix_len] = '\0';
+}
+
+/* Case-insensitive search, for URI attribute names. strcasestr is not portable
+ * and MSVC has no equivalent. */
+static bool contains_ci(const char* haystack, const char* needle)
+{
+  size_t nlen = strlen(needle);
+  if (nlen == 0)
+  {
+    return true;
+  }
+  for (const char* p = haystack; *p != '\0'; ++p)
+  {
+    size_t i = 0;
+    while (i < nlen && p[i] != '\0'
+           && tolower((unsigned char)p[i]) == tolower((unsigned char)needle[i]))
+    {
+      ++i;
+    }
+    if (i == nlen)
+    {
+      return true;
+    }
+  }
+  return false;
+}
+
+/* Does the URI's query component carry the token PIN? RFC 7512 puts it there as
+ * pin-value (the PIN itself) or pin-source (where to read it from). Both are
+ * credentials, and neither may be written into a file that outlives this call.
+ * Anything else in the query -- module-path and friends -- is configuration the
+ * decoder legitimately needs, so only these two are treated as secret. */
+static bool uri_query_carries_pin(const char* uri)
+{
+  const char* query = strchr(uri, '?');
+  if (!query)
+  {
+    return false;
+  }
+  return contains_ci(query, "pin-value") || contains_ci(query, "pin-source");
 }
 
 /* Enough for a realistic PKCS#11 or TPM object URI; longer ones are truncated,
@@ -385,7 +426,10 @@ static az_iot_result store_reference_pem(az_iot_paho_key_custody* state, const c
     AZ_IOT_LOG_ERROR("paho: could not create a temporary file for the key reference");
     return AZ_IOT_ERR_OUT_OF_MEMORY;
   }
-  BIO* out = BIO_new_file(path, "w");
+  /* Binary mode: the bytes must land exactly as produced. On Windows "w" would
+   * translate newlines, which is a difference this file has no reason to
+   * carry. */
+  BIO* out = BIO_new_file(path, "wb");
   int written = out != NULL && BIO_write(out, pem, (int)len) == (int)len;
   BIO_free(out);
   if (!written)
@@ -411,6 +455,27 @@ static az_iot_result write_key_reference(
   BIO* mem = encode_key_through_provider(pkey);
   if (!mem && strncmp(uri, "pkcs11:", 7) == 0)
   {
+    /* The fallback embeds the URI itself in the file. A URI carrying the token
+     * PIN would therefore persist that PIN to disk for as long as the
+     * connection lives -- in a path whose whole purpose is that the credential
+     * never becomes bytes on disk. Refuse instead, exactly as an extractable
+     * key is refused below.
+     *
+     * Only this branch is affected. A provider that emits its own reference
+     * form never embeds the URI, so a PIN in the URI is harmless there: it is
+     * used to open the token in memory and goes no further. */
+    if (uri_query_carries_pin(uri))
+    {
+      char safe_uri[AZ_IOT_KEY_URI_LOG_MAX];
+      redact_key_uri(uri, safe_uri, sizeof(safe_uri));
+      AZ_IOT_LOG_ERRORF(
+          "paho: '%s' carries the token PIN in its query, and the only reference this provider "
+          "can express is the URI itself -- writing it would persist the PIN to disk. Supply the "
+          "PIN out of band (provider configuration / pin-source read by the provider) or use a "
+          "provider that encodes its own key reference",
+          safe_uri);
+      return AZ_IOT_ERR_TLS;
+    }
     mem = encode_pk11_uri_reference(uri);
   }
   if (!mem)

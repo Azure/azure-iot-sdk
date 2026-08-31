@@ -324,7 +324,8 @@ static az_iot_result provider_sign_adapter(
  * same gating start_csr()/open() apply to get_csr. */
 static bool provider_has_sign(const az_iot_certificate_provider* p)
 {
-  return p != NULL && p->vtable->version >= CERT_PROVIDER_VTABLE_V2 && p->vtable->sign != NULL;
+  return p != NULL && p->vtable != NULL && p->vtable->version >= CERT_PROVIDER_VTABLE_V2
+      && p->vtable->sign != NULL;
 }
 
 /* Can this credential set possibly complete a TLS handshake? A client
@@ -746,7 +747,7 @@ static az_iot_result dps_store_issued_cert(az_iot_connection_client* c, az_span 
   /* Persist via the provider (if capable) and/or notify the app (D4). The
    * issued chain must be handled by at least one of the two. */
   bool handled = false;
-  if (p && p->vtable->store_issued_certificate)
+  if (p && p->vtable && p->vtable->store_issued_certificate)
   {
     rc = p->vtable->store_issued_certificate(p, &issued);
     handled = (rc == AZ_IOT_OK);
@@ -2106,7 +2107,8 @@ az_iot_result az_iot_connection_client_open(az_iot_connection_client* client)
   if (client->opts.dps.request_operational_certificate)
   {
     az_iot_certificate_provider* p = client->opts.certificate_provider;
-    if (!p || p->vtable->version < CERT_PROVIDER_VTABLE_V2 || p->vtable->get_csr == NULL)
+    if (!p || !p->vtable || p->vtable->version < CERT_PROVIDER_VTABLE_V2
+        || p->vtable->get_csr == NULL)
     {
       AZ_IOT_LOG_ERROR("connection_client_open: request_operational_certificate set but provider "
                        "does not support CSR enrollment");
@@ -2131,7 +2133,7 @@ az_iot_result az_iot_connection_client_open(az_iot_connection_client* client)
   if (client->opts.certificate_provider)
   {
     az_iot_certificate_provider* p = client->opts.certificate_provider;
-    if (p->vtable->load == NULL)
+    if (p->vtable == NULL || p->vtable->load == NULL)
     {
       /* load() is the one hook every vtable version requires. Without it the
        * connect paths have nothing to ask for credentials, so the client would

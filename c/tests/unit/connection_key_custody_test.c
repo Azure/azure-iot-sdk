@@ -547,6 +547,43 @@ static void a_provider_with_no_material_yet_is_not_refused(void** state)
 /* load() is required at every vtable version. A provider without one is a
  * configuration error open() names, not a NULL dereference several frames
  * later inside the connect attempt. */
+/* A provider whose vtable pointer is NULL is a caller bug, and the client's job
+ * is to say so rather than dereference it. open() reaches the provider through
+ * several gates -- the CSR check, the load() check, and the sign() probe used
+ * to build the TLS options -- and every one of them used to read through the
+ * vtable after checking only the provider itself.
+ *
+ * The credential pre-flight is the first thing open() does with the provider,
+ * so this crashes rather than fails if any of those gates regresses. */
+static void a_provider_with_a_null_vtable_is_rejected(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  fx->provider.base.vtable = NULL;
+  init_client(fx, false);
+  assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_ERR_NOT_SUPPORTED);
+}
+
+/* The same provider on the CSR path, which gates on the v2 ABI before looking
+ * for get_csr and so reads the vtable earlier still. */
+static void a_null_vtable_is_rejected_on_the_csr_path(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  fx->provider.base.vtable = NULL;
+
+  az_iot_connection_client_options opts = { 0 };
+  opts.client_id = "ut-device";
+  opts.certificate_provider = &fx->provider.base;
+  opts.dps.id_scope = "0ne00000000";
+  opts.dps.registration_id = "ut-device";
+  opts.dps.request_operational_certificate = true;
+  assert_int_equal(az_iot_connection_client_init(&fx->client, &opts), AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(&fx->client, fx->factory), AZ_IOT_OK);
+  fx->factory_registered = true;
+
+  assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_ERR_NOT_SUPPORTED);
+}
+
 static void a_provider_without_load_is_rejected(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -618,6 +655,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         a_provider_with_no_material_yet_is_not_refused, setup, teardown),
     cmocka_unit_test_setup_teardown(a_provider_without_load_is_rejected, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_provider_with_a_null_vtable_is_rejected, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_null_vtable_is_rejected_on_the_csr_path, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_credential_that_degrades_after_open_fails_the_connect, setup, teardown),
     cmocka_unit_test_setup_teardown(

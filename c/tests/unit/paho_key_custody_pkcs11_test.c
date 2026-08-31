@@ -208,6 +208,58 @@ static void a_key_with_no_expressible_reference_is_refused(void** state)
   remove(copy_path);
 }
 
+/* A URI carrying the token PIN must never end up in the reference file. This is
+ * the fallback branch -- the one that embeds the URI itself -- so a PIN in the
+ * query would otherwise be persisted to disk for the life of the connection,
+ * in the code path whose entire purpose is that the credential never lands
+ * there.
+ *
+ * Refusal is the expected outcome, not a stripped URI: a reference with the PIN
+ * removed would fail to log in later anyway, so failing here names the reason
+ * while it is still known. A provider that emits its own reference form is
+ * unaffected and takes the branch above.
+ *
+ * Both spellings RFC 7512 defines are covered. */
+static void a_uri_carrying_the_pin_is_refused(void** state)
+{
+  (void)state;
+  static const char* const k_pin_uris[] = { "?pin-value=1234", "?pin-source=file:/tmp/az-iot-pin" };
+
+  for (size_t i = 0; i < sizeof(k_pin_uris) / sizeof(k_pin_uris[0]); ++i)
+  {
+    char uri[1024];
+    snprintf(uri, sizeof(uri), "%s%s", g_key_uri, k_pin_uris[i]);
+
+    az_iot_paho_key_custody s;
+    memset(&s, 0, sizeof(s));
+    az_iot_mqtt_tls_options tls;
+    tls_options_for_token(&tls);
+    tls.client_key_uri = uri;
+
+    const char* path = NULL;
+    az_iot_result r = az_iot_paho_key_custody_prepare(&s, &tls, &path);
+
+    /* A provider that encodes its own reference never embeds the URI, so it is
+     * allowed to succeed -- but then the PIN must not be in the file it wrote. */
+    if (r == AZ_IOT_OK)
+    {
+      assert_non_null(s.key_ref_path);
+      size_t len = 0;
+      char* pem = read_file(s.key_ref_path, &len);
+      assert_null(strstr(pem, "pin-value"));
+      assert_null(strstr(pem, "pin-source"));
+      assert_null(strstr(pem, "1234"));
+      free(pem);
+    }
+    else
+    {
+      assert_int_equal(r, AZ_IOT_ERR_TLS);
+      assert_null(s.key_ref_path);
+    }
+    az_iot_paho_key_custody_release(&s);
+  }
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -215,6 +267,7 @@ int main(void)
     cmocka_unit_test(use_the_reference_the_way_paho_does),
     cmocka_unit_test(re_preparing_replaces_the_reference),
     cmocka_unit_test(a_key_with_no_expressible_reference_is_refused),
+    cmocka_unit_test(a_uri_carrying_the_pin_is_refused),
   };
   return cmocka_run_group_tests(tests, group_setup, NULL);
 }
