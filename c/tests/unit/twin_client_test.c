@@ -24,6 +24,7 @@
 #include "internal/twin_client_internal.h"
 
 #include "support/mock_mqtt_iface.h"
+#include "support/subscription_ack.h"
 
 /* ------------------------------------------------------------------------- */
 /* fixtures                                                                  */
@@ -146,6 +147,7 @@ static void open_to_connected(fixture* fx)
   assert_non_null(fx->mock);
   assert_true(az_iot_mock_mqtt_client_inject_connected(fx->mock, AZ_IOT_OK));
   assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+  az_iot_test_ack_subscriptions(&fx->conn, fx->mock);
   az_iot_mock_mqtt_client_clear_calls(fx->mock);
 }
 
@@ -160,6 +162,7 @@ static void reopen_to_connected(fixture* fx)
   assert_non_null(fx->mock);
   assert_true(az_iot_mock_mqtt_client_inject_connected(fx->mock, AZ_IOT_OK));
   assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+  az_iot_test_ack_subscriptions(&fx->conn, fx->mock);
   az_iot_mock_mqtt_client_clear_calls(fx->mock);
 }
 
@@ -208,6 +211,7 @@ static void create_subscribes_response_and_desired(void** state)
   assert_non_null(fx->mock);
   assert_true(az_iot_mock_mqtt_client_inject_connected(fx->mock, AZ_IOT_OK));
   assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+  az_iot_test_ack_subscriptions(&fx->conn, fx->mock);
 
   assert_true(history_has_subscribe(fx->mock, "$iothub/twin/res/#"));
   assert_true(history_has_subscribe(fx->mock, "$iothub/twin/PATCH/properties/desired/#"));
@@ -732,6 +736,7 @@ static void open_to_connected_keeping_history(fixture* fx)
   assert_non_null(fx->mock);
   assert_true(az_iot_mock_mqtt_client_inject_connected(fx->mock, AZ_IOT_OK));
   assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+  az_iot_test_ack_subscriptions(&fx->conn, fx->mock);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -1436,6 +1441,10 @@ static void open_to_connected_next(fixture* fx)
   ack.message = &ack_msg;
   assert_true(az_iot_mock_mqtt_client_inject_event(fx->mock, &ack));
   assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+
+  /* The birth-ack is what releases the feature subscriptions; they still have
+   * to be acked before CONNECTED. */
+  az_iot_test_ack_subscriptions(&fx->conn, fx->mock);
 }
 
 /* Deliver an inbound Next message carrying Correlation Data. */

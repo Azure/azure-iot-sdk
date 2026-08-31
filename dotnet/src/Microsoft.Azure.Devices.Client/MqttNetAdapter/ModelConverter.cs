@@ -295,12 +295,6 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
 
         internal static MqttUnsubscribeAck ToGeneric(MqttClientUnsubscribeResult unsuback)
         {
-            if (unsuback.Items.Count != 1)
-            {
-                throw new Exception("TODO");
-            }
-
-
             return new()
             {
                 ReasonString = unsuback.ReasonString,

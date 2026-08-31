@@ -27,6 +27,8 @@
 #include "azure/iot/az_iot_result.h"
 #include "azure/iot/az_iot_mqtt_iface.h"
 
+#include "az_iot_paho_key_custody.h"
+
 #include <MQTTAsync.h>
 
 #include <stdbool.h>
@@ -97,6 +99,11 @@ typedef struct paho_client
   paho_mutex q_mutex;
   queued_event* q_head;
   queued_event* q_tail;
+
+  /* Non-extractable key custody (D8): engine/provider handles and the key
+   * reference file handed to Paho, held for as long as the connection that
+   * uses them. */
+  az_iot_paho_key_custody key_custody;
 } paho_client;
 
 static paho_client* paho_self(az_iot_mqtt_client* c) { return (paho_client*)c; }
@@ -179,12 +186,14 @@ static void q_drain_all(paho_client* m)
   }
 }
 
-/* Allocate + enqueue a simple status event (no message payload). */
-static void enqueue_status(
+/* Allocate + enqueue a simple status event (no message payload), carrying the
+ * code that came off the wire. */
+static void enqueue_status_code(
     paho_client* m,
     az_iot_mqtt_event_kind kind,
     az_iot_result status,
-    uint16_t packet_id)
+    uint16_t packet_id,
+    int32_t protocol_code)
 {
   queued_event* n = (queued_event*)calloc(1, sizeof(*n));
   if (!n)
@@ -194,7 +203,18 @@ static void enqueue_status(
   n->evt.kind = kind;
   n->evt.status = status;
   n->evt.packet_id = packet_id;
+  n->evt.protocol_code = protocol_code;
   q_push(m, n);
+}
+
+/* Allocate + enqueue a simple status event (no message payload). */
+static void enqueue_status(
+    paho_client* m,
+    az_iot_mqtt_event_kind kind,
+    az_iot_result status,
+    uint16_t packet_id)
+{
+  enqueue_status_code(m, kind, status, packet_id, 0);
 }
 
 /* Allocate + enqueue an inbound MESSAGE event. Topic + payload are deep-copied
@@ -491,6 +511,10 @@ static void paho_maybe_enable_trace(void)
   MQTTAsync_setTraceLevel((enum MQTTASYNC_TRACE_LEVELS)level);
 }
 
+/* Only a code that actually came off the wire is reportable as one. Paho's own
+ * failures are negative, and 0 is this field's "not applicable". */
+static int32_t paho_wire_code(int code) { return (code > 0) ? (int32_t)code : 0; }
+
 /* Paho reports a broker-side CONNACK rejection through nextOrClose(), which
  * fills failureData::code with the CONNACK return code and sets the message to
  * "CONNACK return code". Every other connect failure it reports here is one of
@@ -513,6 +537,15 @@ static az_iot_result paho_connect_failure_result(
  * (MQTTREASONCODE_SUCCESS), while failures raised elsewhere do populate
  * `reasonCode`. Prefer `reasonCode` only when it actually holds a refusal
  * (>= 0x80), otherwise trust `code`. */
+static int paho_connect_failure5_code(const MQTTAsync_failureData5* response)
+{
+  if (!response)
+  {
+    return 0;
+  }
+  return ((int)response->reasonCode >= 0x80) ? (int)response->reasonCode : response->code;
+}
+
 static az_iot_result paho_connect_failure5_result(
     const paho_client* m,
     const MQTTAsync_failureData5* response)
@@ -521,8 +554,7 @@ static az_iot_result paho_connect_failure5_result(
   {
     return AZ_IOT_ERR_MQTT;
   }
-  int code = ((int)response->reasonCode >= 0x80) ? (int)response->reasonCode : response->code;
-  return az_iot_mqtt_connack_result(m->version, code);
+  return az_iot_mqtt_connack_result(m->version, paho_connect_failure5_code(response));
 }
 
 static void paho_connect_success(void* context, MQTTAsync_successData* response)
@@ -551,7 +583,12 @@ static void paho_connect_failure(void* context, MQTTAsync_failureData* response)
   }
   if (m)
   {
-    enqueue_status(m, AZ_IOT_MQTT_EVT_CONNECTED, paho_connect_failure_result(m, response), 0);
+    enqueue_status_code(
+        m,
+        AZ_IOT_MQTT_EVT_CONNECTED,
+        paho_connect_failure_result(m, response),
+        0,
+        paho_wire_code(response ? response->code : 0));
   }
 }
 
@@ -561,7 +598,17 @@ static void paho_subscribe_success(void* context, MQTTAsync_successData* respons
   uint16_t pid = response ? (uint16_t)response->token : 0;
   if (m)
   {
-    enqueue_status(m, AZ_IOT_MQTT_EVT_SUBSCRIBE_ACK, AZ_IOT_OK, pid);
+    /* alt.qos is the granted QoS the server returned. 0x80 Failure is the only
+     * refusal MQTT 3.1.1 can express, and it arrives here rather than on the
+     * failure callback, so a SUBACK that denied the filter would otherwise be
+     * reported to the core as a successful subscription. */
+    int code = response ? response->alt.qos : 0;
+    enqueue_status_code(
+        m,
+        AZ_IOT_MQTT_EVT_SUBSCRIBE_ACK,
+        az_iot_mqtt_suback_result(m->version, code),
+        pid,
+        paho_wire_code(code));
   }
 }
 
@@ -571,7 +618,13 @@ static void paho_subscribe_failure(void* context, MQTTAsync_failureData* respons
   uint16_t pid = response ? (uint16_t)response->token : 0;
   if (m)
   {
-    enqueue_status(m, AZ_IOT_MQTT_EVT_SUBSCRIBE_ACK, AZ_IOT_ERR_MQTT, pid);
+    int code = response ? response->code : -1;
+    enqueue_status_code(
+        m,
+        AZ_IOT_MQTT_EVT_SUBSCRIBE_ACK,
+        az_iot_mqtt_suback_result(m->version, code),
+        pid,
+        paho_wire_code(code));
   }
 }
 
@@ -634,7 +687,12 @@ static void paho_connect_failure5(void* context, MQTTAsync_failureData5* respons
   }
   if (m)
   {
-    enqueue_status(m, AZ_IOT_MQTT_EVT_CONNECTED, paho_connect_failure5_result(m, response), 0);
+    enqueue_status_code(
+        m,
+        AZ_IOT_MQTT_EVT_CONNECTED,
+        paho_connect_failure5_result(m, response),
+        0,
+        paho_wire_code(paho_connect_failure5_code(response)));
   }
 }
 
@@ -646,18 +704,15 @@ static void paho_subscribe_success5(void* context, MQTTAsync_successData5* respo
     return;
   }
   uint16_t pid = response ? (uint16_t)response->token : 0;
-  /* Honor the MQTT5 SUBACK reason code. A granted subscription returns the
-   * granted QoS (0..2); a value >= 0x80 (e.g. 0x87 Not authorized, 0x8F Topic
-   * filter invalid) is a refusal. Paho invokes onSuccess5 whenever a SUBACK
-   * arrives regardless of the code, so without this check a denied
-   * subscription would be reported to the core as a successful one. */
-  az_iot_result status = AZ_IOT_OK;
-  if (response && (int)response->reasonCode >= 0x80)
+  /* Paho invokes onSuccess5 whenever a SUBACK arrives, whatever it says, so the
+   * reason code is the only thing separating a grant from a refusal here. */
+  int code = response ? (int)response->reasonCode : 0;
+  az_iot_result status = az_iot_mqtt_suback_result(m->version, code);
+  if (status != AZ_IOT_OK)
   {
-    AZ_IOT_LOG_WARNF("paho: SUBACK refused: reason_code=%d", (int)response->reasonCode);
-    status = AZ_IOT_ERR_MQTT;
+    AZ_IOT_LOG_WARNF("paho: SUBACK refused: reason_code=%d", code);
   }
-  enqueue_status(m, AZ_IOT_MQTT_EVT_SUBSCRIBE_ACK, status, pid);
+  enqueue_status_code(m, AZ_IOT_MQTT_EVT_SUBSCRIBE_ACK, status, pid, paho_wire_code(code));
 }
 
 static void paho_subscribe_failure5(void* context, MQTTAsync_failureData5* response)
@@ -666,7 +721,15 @@ static void paho_subscribe_failure5(void* context, MQTTAsync_failureData5* respo
   uint16_t pid = response ? (uint16_t)response->token : 0;
   if (m)
   {
-    enqueue_status(m, AZ_IOT_MQTT_EVT_SUBSCRIBE_ACK, AZ_IOT_ERR_MQTT, pid);
+    int code = response
+        ? (((int)response->reasonCode >= 0x80) ? (int)response->reasonCode : response->code)
+        : -1;
+    enqueue_status_code(
+        m,
+        AZ_IOT_MQTT_EVT_SUBSCRIBE_ACK,
+        az_iot_mqtt_suback_result(m->version, code),
+        pid,
+        paho_wire_code(code));
   }
 }
 
@@ -739,11 +802,30 @@ static az_iot_result paho_iface_connect(
 
   /* Use TLS when any TLS material or server verification is requested: a
    * client identity (cert), a server trust anchor (CA), their in-memory PEM
-   * variants, or an explicit verify_server. Keying off client_cert_path alone
-   * would wrongly fall back to plaintext for server-auth-only connections. */
+   * variants, an explicit use_tls, or a non-extractable key reference.
+   * Keying off client_cert_path alone would wrongly fall back to plaintext for
+   * server-auth-only connections, and omitting the key reference would let a
+   * URI-only credential connect with no client key at all.
+   *
+   * Whether the session is TLS is the only choice here. Whether the server is
+   * VALIDATED is not a choice: see the ssl_opts assignments below. */
   bool use_ssl = opts->tls.client_cert_path != NULL || opts->tls.client_cert_pem != NULL
-      || opts->tls.trusted_ca_path != NULL || opts->tls.trusted_ca_pem != NULL
-      || opts->tls.verify_server;
+      || opts->tls.trusted_ca_path != NULL || opts->tls.trusted_ca_pem != NULL || opts->tls.use_tls
+      || az_iot_paho_key_custody_requested(&opts->tls);
+
+  /* Resolve the client private key before anything else is built. A credential
+   * that cannot possibly sign -- an unreachable HSM key, an engine that is not
+   * installed -- fails here with a result that names the cause, instead of
+   * dying inside the TLS handshake where the only evidence is an OpenSSL
+   * alert. */
+  az_iot_paho_key_custody_release(&m->key_custody);
+  const char* private_key_path = NULL;
+  az_iot_result key_rc
+      = az_iot_paho_key_custody_prepare(&m->key_custody, &opts->tls, &private_key_path);
+  if (key_rc != AZ_IOT_OK)
+  {
+    return key_rc;
+  }
 
   /* (Re)build the underlying Paho handle. */
   if (m->paho)
@@ -760,6 +842,7 @@ static az_iot_result paho_iface_connect(
   m->client_id = dup_str(opts->client_id);
   if (!m->server_uri || !m->client_id)
   {
+    az_iot_paho_key_custody_release(&m->key_custody);
     return AZ_IOT_ERR_OUT_OF_MEMORY;
   }
 
@@ -776,12 +859,14 @@ static az_iot_result paho_iface_connect(
       &m->paho, m->server_uri, m->client_id, MQTTCLIENT_PERSISTENCE_NONE, NULL, &create_opts);
   if (rc != MQTTASYNC_SUCCESS)
   {
+    az_iot_paho_key_custody_release(&m->key_custody);
     return AZ_IOT_ERR_MQTT;
   }
 
   rc = MQTTAsync_setCallbacks(m->paho, m, paho_connection_lost, paho_msg_arrived, NULL);
   if (rc != MQTTASYNC_SUCCESS)
   {
+    az_iot_paho_key_custody_release(&m->key_custody);
     return AZ_IOT_ERR_MQTT;
   }
 
@@ -790,6 +875,7 @@ static az_iot_result paho_iface_connect(
   rc = MQTTAsync_setDisconnected(m->paho, m, paho_disconnected);
   if (rc != MQTTASYNC_SUCCESS)
   {
+    az_iot_paho_key_custody_release(&m->key_custody);
     return AZ_IOT_ERR_MQTT;
   }
 
@@ -799,30 +885,37 @@ static az_iot_result paho_iface_connect(
   {
     ssl_opts.trustStore = opts->tls.trusted_ca_path;
     ssl_opts.keyStore = opts->tls.client_cert_path;
-    ssl_opts.privateKey = opts->tls.client_key_path;
+    ssl_opts.privateKey = private_key_path;
     ssl_opts.privateKeyPassword = opts->tls.client_key_password;
-    ssl_opts.enableServerCertAuth = opts->tls.verify_server ? 1 : 0;
+    /* Unconditional, and there is no option that could make it otherwise: the
+     * TLS options carry no "don't verify" flag. An unverified TLS session
+     * authenticates nothing, and this SDK connects to Azure endpoints. The
+     * slot that used to hold verify_server now only selects TLS (use_tls). */
+    ssl_opts.enableServerCertAuth = 1;
     /* Verify the server hostname against the certificate too, not just the
      * chain: a chain-valid certificate issued for the wrong host must be
      * rejected. Paho checks X509_check_host and falls back to
      * X509_check_ip_asc for IP-literal peers. */
-    ssl_opts.verify = opts->tls.verify_server ? 1 : 0;
+    ssl_opts.verify = 1;
     /* AZ_IOT_PAHO_TRACE also enables detailed OpenSSL handshake error output. */
     if (paho_trace_level_from_env() >= 0)
     {
       ssl_opts.ssl_error_cb = paho_ssl_error_callback;
     }
     AZ_IOT_LOG_DEBUGF(
-        "paho: SSL trustStore=%s keyStore=%s privateKey=%s verboseErrors=%s",
+        "paho: SSL trustStore=%s keyStore=%s privateKey=%s verboseErrors=%s keyCustody=%s",
         ssl_opts.trustStore ? ssl_opts.trustStore : "(none)",
         ssl_opts.keyStore ? ssl_opts.keyStore : "(none)",
         ssl_opts.privateKey ? ssl_opts.privateKey : "(none)",
-        ssl_opts.ssl_error_cb ? "on" : "off");
+        ssl_opts.ssl_error_cb ? "on" : "off",
+        az_iot_paho_key_custody_requested(&opts->tls) ? "on" : "off");
   }
 #else
+  (void)private_key_path;
   if (use_ssl)
   {
     AZ_IOT_LOG_ERROR("paho: TLS requested but the adapter was built without SSL support");
+    az_iot_paho_key_custody_release(&m->key_custody);
     return AZ_IOT_ERR_NOT_SUPPORTED;
   }
 #endif
@@ -936,7 +1029,17 @@ static az_iot_result paho_iface_connect(
 #endif
     rc = MQTTAsync_connect(m->paho, &conn);
   }
-  return (rc == MQTTASYNC_SUCCESS) ? AZ_IOT_OK : AZ_IOT_ERR_MQTT;
+
+  if (rc != MQTTASYNC_SUCCESS)
+  {
+    /* Only on failure. A connect that was accepted has NOT read the key yet:
+     * MQTTAsync_connect is asynchronous and Paho opens the TLS session on its
+     * own thread, so the reference file has to outlive this call. It is
+     * released at the next connect and at destroy. */
+    az_iot_paho_key_custody_release(&m->key_custody);
+    return AZ_IOT_ERR_MQTT;
+  }
+  return AZ_IOT_OK;
 }
 
 static az_iot_result paho_iface_disconnect(az_iot_mqtt_client* self)
@@ -1179,6 +1282,7 @@ static void paho_iface_destroy(az_iot_mqtt_client* self)
     MQTTAsync_destroy(&m->paho);
     m->paho = NULL;
   }
+  az_iot_paho_key_custody_release(&m->key_custody);
   q_drain_all(m);
   paho_mutex_destroy(&m->q_mutex);
   free(m->server_uri);

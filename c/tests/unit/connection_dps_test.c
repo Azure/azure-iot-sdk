@@ -1114,7 +1114,12 @@ static void reassignment_to_another_generation_drops_the_old_filters(void** stat
    * classic -- exactly what a gen1 feature client would have left behind. */
   assert_int_equal(
       az_iot_connection_client__add_subscription_on_connect(
-          &pf.c, "$iothub/twin/res/#", AZ_IOT_MQTT_QOS_1, &owner),
+          &pf.c,
+          "$iothub/twin/res/#",
+          AZ_IOT_MQTT_QOS_1,
+          &owner,
+          AZ_IOT_SUBSCRIPTION_FAILS_SESSION,
+          NULL),
       AZ_IOT_OK);
 
   profile_assign(&pf, k_assigned_mqtt_v5);
@@ -1172,7 +1177,12 @@ static void removal_on_gen2_unsubscribes_only_the_owners_filter(void** state)
    * underneath the presence wildcard. */
   assert_int_equal(
       az_iot_connection_client__add_subscription_on_connect(
-          &pf.c, "ih/assigned-device/dev/twin/desired", AZ_IOT_MQTT_QOS_1, &owner),
+          &pf.c,
+          "ih/assigned-device/dev/twin/desired",
+          AZ_IOT_MQTT_QOS_1,
+          &owner,
+          AZ_IOT_SUBSCRIPTION_FAILS_SESSION,
+          NULL),
       AZ_IOT_OK);
 
   assert_int_equal(az_iot_connection_client__remove_subscriptions_for(&pf.c, &owner), 1);

@@ -109,6 +109,7 @@ static void result_to_string_covers_every_code(void** state)
     { AZ_IOT_ERR_NOT_FOUND, "AZ_IOT_ERR_NOT_FOUND" },
     { AZ_IOT_ERR_IDENTITY_REJECTED, "AZ_IOT_ERR_IDENTITY_REJECTED" },
     { AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED, "AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED" },
+    { AZ_IOT_ERR_SUBSCRIPTION_REFUSED, "AZ_IOT_ERR_SUBSCRIPTION_REFUSED" },
   };
   const size_t n = sizeof(all) / sizeof(all[0]);
   const char* got[sizeof(all) / sizeof(all[0])];
@@ -118,7 +119,7 @@ static void result_to_string_covers_every_code(void** state)
    * appended to, so "last enumerator + 1" is how many codes exist -- appending
    * one without extending this table now fails here, instead of silently
    * falling back to AZ_IOT_ERR_UNKNOWN at runtime. */
-  assert_int_equal(n, (size_t)AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED + 1);
+  assert_int_equal(n, (size_t)AZ_IOT_ERR_SUBSCRIPTION_REFUSED + 1);
 
   for (size_t i = 0; i < n; ++i)
   {

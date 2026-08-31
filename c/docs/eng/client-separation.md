@@ -634,6 +634,126 @@ Tracked as **[AB#39350066](https://dev.azure.com/msazure/One/_workitems/edit/393
 > its own SUBACK before publishing birth — it simply is not applied to feature
 > subscriptions.
 >
+> **What a refusal means, and what the gate does about it.** A refused SUBACK is a
+> legitimate, spec-defined answer rather than a malfunction: MQTT lets a broker
+> decline a filter, and on gen2 that is the topic-space grant
+> `ih/${client.authenticationName}/dev/#` doing its job. What the refusal *by
+> itself* cannot tell you is whether the cause is permanent or a passing
+> service-side fault; only the reason code separates those, and they need opposite
+> responses. It says nothing about the client certificate either — X.509 is
+> validated at CONNECT, so a revoked or unvalidatable cert fails the CONNACK as
+> `AZ_IOT_ERR_IDENTITY_REJECTED` long before any SUBACK. A refusal means an
+> already-authenticated identity asked for a filter outside what it may have.
+>
+> That leaves two causes with opposite correct responses, so the gate has to tell
+> them apart rather than pick one:
+>
+> - **Deterministic** — not authorized, topic filter invalid. Re-issuing the same
+>   filter cannot succeed, so retrying is a loop with no exit. The session fails
+>   with a terminal result; recovering needs new configuration or a device
+>   update, not another attempt.
+> - **Retryable** — quota exceeded, or an unspecified/implementation-specific
+>   error, which is how a genuine service-side fault presents. These reconnect
+>   under the existing policy and clear when the service does.
+>
+> **A refusal is a failure either way — what differs is the blast radius.** Custom
+> topics ship on gen2 ([test-coverage.md](../test-coverage.md), D-6), which makes a
+> topic filter application-supplied runtime data rather than an SDK constant, and
+> a refusal an ordinary configuration error rather than a bug. Taking a whole
+> device offline, telemetry included, because one custom subscription was declined
+> is the wrong trade. So each registry entry records the scope of its failure:
+>
+> ```c
+> typedef enum az_iot_subscription_failure_scope
+> {
+>   AZ_IOT_SUBSCRIPTION_FAILS_SESSION = 0, /* refusal ends the connection      */
+>   AZ_IOT_SUBSCRIPTION_FAILS_SELF,        /* refusal is reported to the owner */
+> } az_iot_subscription_failure_scope;
+> ```
+>
+> Both values name a *failure*, deliberately. `FAILS_SELF` does not mean the
+> subscription was optional or that the refusal is tolerated: that subscription is
+> dead, its owner is told, and the entry is dropped from the registry so a
+> reconnect cannot silently re-issue it. The only thing it does not do is take the
+> rest of the device down with it. Calling it "optional" would invite precisely the
+> reading this gate exists to prevent — that a filter can be quietly absent while
+> the session still claims to be live.
+>
+> A feature client's own filter is `FAILS_SESSION`, because that client cannot work
+> without it. The public API for registering custom topics is not part of this
+> phase — the distinction is built now because retrofitting it after the gate ships
+> would mean changing the gate's contract.
+>
+> **Scope decides the blast radius; the reason decides only what happens inside
+> it.** These are not independent axes to be combined case by case — leaving the
+> intersection unstated is how two implementations end up disagreeing about what a
+> quota-exceeded custom topic should do:
+>
+> | | `FAILS_SESSION` | `FAILS_SELF` |
+> |---|---|---|
+> | **Deterministic** (not authorized, filter invalid) | session fails terminally, no retry | reported to the owner with the reason and the raw code, entry dropped, `CONNECTED` proceeds |
+> | **Retryable** (quota exceeded, unspecified) | reconnect under the existing policy | identical to the cell above |
+>
+> A `FAILS_SELF` entry never reconnects the session, whatever the reason. Doing so
+> would contradict the scope declared for it — a filter whose failure is defined as
+> contained cannot be allowed to restart the transport — and a SUBSCRIBE is
+> one-shot, so there is no in-session retry to fall back on either. The owner is
+> told *why*, transient or not, and re-registering is its decision, through the
+> same path it used to register in the first place. That costs no new mechanism.
+>
+> **Only `FAILS_SESSION` entries gate `CONNECTED`.** `FAILS_SELF` filters are
+> issued in the same batch but are not waited on: their outcome cannot change
+> whether the session is honest about being live, so holding the transition for
+> them would only delay it. Their SUBACK is reported to the owner whenever it
+> arrives, grant or refusal.
+>
+> **The reason code must survive the adapter.** None of the above is expressible
+> unless the adapter stops flattening SUBACK codes to `AZ_IOT_ERR_MQTT`, which is
+> what both Paho paths do today. That is the same mistake
+> [how_to_byo_mqtt_client.md](../how_to_byo_mqtt_client.md) already warns about
+> for CONNACK — *"An adapter that flattens the two leaves a device unable to
+> follow a DPS hub reassignment"* — so the fix is the mechanism that already
+> exists there: a shared `az_iot_mqtt_suback_result(version, code)` beside
+> `az_iot_mqtt_connack_result()`, keeping version-specific code knowledge in the
+> SDK so every adapter, in-tree or BYO, reports one vocabulary.
+>
+> Classification alone is still lossy, so the verbatim wire code travels with it,
+> exactly as `connection_profile_raw` accompanies the parsed profile in
+> [§2](#shape): a code this SDK has never seen is handled conservatively *and*
+> still reaches a log. Granted-QoS values (`0x00`–`0x02`) map to success, which
+> settles a non-question — neither hub downgrades a grant, and this SDK never
+> requests QoS 2 — but pins it so no future adapter reads a downgrade as a
+> refusal. MQTT 3.1.1 carries no reason at all (`0x80` is its only failure code);
+> Classic's topic set is closed at compile time, so a refusal there is treated as
+> deterministic rather than retried blindly.
+>
+> **A SUBACK that never arrives.** The gate needs a deadline, because nothing else
+> bounds it: the adapter's connect timeout covers the CONNACK, the birth-ack
+> timeout covers the gen2 presence handshake, and keep-alive cannot help because
+> the link is alive. A broker that accepts the connection and simply never answers
+> the SUBSCRIBE would otherwise leave the client in `CONNECTING` indefinitely.
+>
+> The contract, stated so two implementations cannot choose differently:
+>
+> - **Duration** — `AZ_IOT_SUBSCRIPTION_ACK_TIMEOUT_MS`, default 60000, overridable
+>   at compile time like the other footprint and timeout knobs in
+>   [`az_iot_connection_client.h`](../../inc/azure/iot/az_iot_connection_client.h).
+>   It matches `AZ_IOT_PRESENCE_BIRTH_ACK_TIMEOUT_MS` because it bounds the same
+>   kind of wait, and having two different "the broker went quiet" windows on one
+>   connect path would be arbitrary.
+> - **Start** — when the gate is armed, that is, once the last SUBSCRIBE of the
+>   batch has been handed to the adapter. Not per filter: they are issued together.
+> - **Reset** — never. One deadline covers the whole batch, and an arriving SUBACK
+>   does not extend it. A per-SUBACK reset would let a broker that acks one filter
+>   just inside each window hold `CONNECTED` open indefinitely, which is the exact
+>   failure the deadline exists to bound.
+> - **Expiry** — retryable: reconnect under the policy, or fault when reconnect is
+>   disabled, the same as any other transient connect failure. It is not
+>   `AZ_IOT_ERR_SUBSCRIPTION_REFUSED`, because silence is not a refusal and the
+>   broker may well grant the filter on the next attempt.
+> - **Scope** — it covers the gated (`FAILS_SESSION`) set only, since that is all
+>   the gate waits on.
+>
 > **2. Persistent subscriptions cannot be removed.**
 > `__add_subscription_on_connect()` has no remove counterpart, and every feature
 > client's `destroy()` leaves its filter registered. Destroying the gen1 set and
@@ -816,7 +936,7 @@ plus the conformance suites.
 | P0b | This document + doc reconciliation | — | |
 | P1a | Add the `azure-sdk-for-c` patch mechanism and raise the DPS api-version to `2026-11-02-preview`, for **both** consumers of that source: the FetchContent tree (`PATCH_COMMAND`) and the `c/deps/azure-sdk-for-c` submodule the ESP-IDF sample builds from | — | **Blocked on the service.** `2026-11-02-preview` is not deployed ([azure-rest-api-specs#45041](https://github.com/Azure/azure-rest-api-specs/pull/45041) is still open), and requesting it makes the DPS CONNECT fail with CONNACK rc=5. Parked until it ships. |
 | P1b | `az_iot_hub_profile` + `get_hub_profile()` + `az_iot_connection_profile` + `AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED`; parse `connectionProfile` in the existing ASSIGNED-payload walk | — | Additive, and deliberately **not** blocked on P1a: with the stock api-version `connectionProfile` never arrives, absent resolves to `classic`, and the result is exactly the hardcoded behaviour it replaces. Lands inert, activates when P1a ships. `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH` is not here — it lands in P2, with the first client that can reject a mismatch. |
-| P1c | Gate `CONNECTED` on subscriptions being SUBACKed ([AB#39366084](https://dev.azure.com/msazure/One/_workitems/edit/39366084)); tag each persistent-subscription entry with its generation and drop non-matching entries on reconnect *before* re-subscribing; add a remove path wired into every feature client's `destroy()` and into its partial-init unwind, UNSUBSCRIBE on both generations (a no-op on gen2 once its redundant filters are gone); drop the five gen2 filters already covered by `ih/{device_id}/dev/#` ([AB#39366086](https://dev.azure.com/msazure/One/_workitems/edit/39366086)) | — | Pre-existing defects, independent of the split. **P2 depends on both**: §9's rebuild pattern is unsafe without the first and impossible without the second. The generation tagging is not optional — without it the two fixes deadlock each other on a profile change. Own PR, own review. |
+| P1c | Gate `CONNECTED` on subscriptions being SUBACKed ([AB#39366084](https://dev.azure.com/msazure/One/_workitems/edit/39366084)); tag each persistent-subscription entry with its generation and drop non-matching entries on reconnect *before* re-subscribing; add a remove path wired into every feature client's `destroy()` and into its partial-init unwind, UNSUBSCRIBE on both generations (a no-op on gen2 once its redundant filters are gone); drop the five gen2 filters already covered by `ih/{device_id}/dev/#` ([AB#39366086](https://dev.azure.com/msazure/One/_workitems/edit/39366086)); preserve SUBACK reason codes through the adapters behind a shared `az_iot_mqtt_suback_result()`, and tag each entry with its failure scope (`AZ_IOT_SUBSCRIPTION_FAILS_SESSION` / `_FAILS_SELF`) so a refusal ends the connection only for a feature client's own filter — terminally when the reason is deterministic — while a refused custom topic is reported to its owner and dropped ([§9](#the-profile-can-change-while-the-device-is-running)); bound the gate with a deadline | — | Pre-existing defects, independent of the split. **P2 depends on both**: §9's rebuild pattern is unsafe without the first and impossible without the second. The generation tagging is not optional — without it the two fixes deadlock each other on a profile change. Sequenced as three PRs: removal + generation tagging (done, #116), then the adapter reason-code contract on its own (no core behaviour change, so it is reviewable against the existing gateless core), then the gate itself with the failure-scope policy, the deadline and the redundant-filter removal. |
 | P1d | Turn the connection-state callback into the extensible `az_iot_connection_state_event` struct, carrying the resolved profile on `CONNECTED` ([§9](#the-profile-can-change-while-the-device-is-running)) | — | Breaking change to a public callback signature, so it is its own PR rather than a rider on the first feature-client split. P2's rebuild pattern reads the profile from this event. 30 registration sites across 11 samples, the unit/integration suites and the e2e agent move with it — build with `AZ_IOT_BUILD_E2E=ON`, since the agent is not compiled by default and this is the exact class of change that has broken it before. |
 | P2 | Split the feature clients, one PR each: telemetry → c2d → direct methods → twin | P1a, P1b, **P1c**, P1d | Mutually parallel. Mismatch check per client, at `_init()` only. The twin PR also repoints `az_iot_adu_client_initialize()` at `az_iot_gen1_twin_client` ([§8](#8-device-update)) — a public header break, no ADU re-layer. |
 | P3 | File upload redesign — HTTP transport becomes gen1-only | P1 | Larger than the others; own PR. |
@@ -881,6 +1001,21 @@ baseline.
 - **ADU is repointed at `az_iot_gen1_twin_client` in P2, and re-layered in P5**
   ([§8](#8-device-update)). A public header break in the twin PR, rather than
   keeping a cross-generation twin client alive for one consumer.
+- **A refused subscription always fails; its *scope* decides whether the
+  connection dies with it**
+  ([§9](#the-profile-can-change-while-the-device-is-running)). Entries are tagged
+  `AZ_IOT_SUBSCRIPTION_FAILS_SESSION` or `_FAILS_SELF`; both report the failure,
+  and neither treats a subscription as optional. Custom topics make refusal an
+  ordinary application error on gen2, so one declined custom filter must not take
+  a device offline — while a feature client's own filter is fatal to the session,
+  because that client cannot work without it.
+- **No layer swallows a result code an upper layer needs to act on.** Adapters
+  report SUBACK codes through `az_iot_mqtt_suback_result()` and CONNACK codes
+  through the existing `az_iot_mqtt_connack_result()`, and both carry the verbatim
+  wire code alongside the classification, for the same reason
+  `connection_profile_raw` exists. The classification is a decision; the raw code
+  is the evidence for it, and discarding it leaves the SDK unable to say anything
+  useful about a value it does not yet know.
 
 ## 14. Open questions
 
@@ -906,3 +1041,6 @@ baseline.
 - 08/25/2026: Record three decisions taken in review: the connection-state event
   struct (new phase P1d), init-only profile checking, and ADU repointed at the
   gen1 twin client in P2.
+- 08/26/2026: Scope the rest of P1c — per-entry failure scope, SUBACK and CONNACK
+  reason codes preserved through the adapters, deterministic refusals terminal,
+  and a deadline on the gate.

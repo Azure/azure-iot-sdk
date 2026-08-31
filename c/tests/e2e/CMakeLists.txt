@@ -105,3 +105,22 @@ endif()
 az_iot_add_cmocka_test(az_iot_tests_e2e_fileupload ${_e2e_fileupload_ctest}
     tests/e2e_fileupload_test.c tests/e2e_device.c)
 target_link_libraries(az_iot_tests_e2e_fileupload PRIVATE az_iot_e2e_service az_iot_adapter_paho)
+
+# ---------------------------------------------------------------------------
+# az_iot_tests_e2e_custody
+#
+# The "Storage / custody" group of docs/eng/certificate-management.md: DPS
+# issuance and hub traffic performed by a device whose private key is inside a
+# PKCS#11 token and cannot be read by the process. Nothing is stubbed -- if the
+# token were not signing the TLS handshake the hub would refuse the connection,
+# so reaching CONNECTED is itself the assertion.
+#
+# The token is provisioned by eng/setup-softhsm.sh (SoftHSM2 in CI) and named
+# through AZ_IOT_CLIENT_KEY_URI. Built only when that is going to be supplied;
+# it fails rather than skipping when it is not.
+# ---------------------------------------------------------------------------
+if(AZ_IOT_BUILD_E2E_PKCS11)
+    az_iot_add_cmocka_test(az_iot_tests_e2e_custody tests/e2e_custody_test.c)
+    target_link_libraries(az_iot_tests_e2e_custody PRIVATE
+        az_iot_e2e_service az_iot_adapter_paho)
+endif()

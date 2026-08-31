@@ -49,6 +49,10 @@ const char* az_iot_result_to_string(az_iot_result r)
       return "AZ_IOT_ERR_IDENTITY_REJECTED";
     case AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED:
       return "AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED";
+    case AZ_IOT_ERR_SUBSCRIPTION_REFUSED:
+      return "AZ_IOT_ERR_SUBSCRIPTION_REFUSED";
+    case AZ_IOT_ERR_CREDENTIAL_INCOMPLETE:
+      return "AZ_IOT_ERR_CREDENTIAL_INCOMPLETE";
     default:
       return "AZ_IOT_ERR_UNKNOWN";
   }

@@ -30,8 +30,7 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Connection
 
         public event Func<MqttPublishReceivedEventArgs, Task>? PublishReceivedAsync;
 
-        //TODO add to interface? Would feature clients care about this?
-        public event Func<DevicePresenceFlowCompletedArgs, Task>? DevicePresenceFlowCompletedAsync;
+        internal event Func<DevicePresenceFlowCompletedArgs, Task>? DevicePresenceFlowCompletedAsync;
 
         private ConnectionContext? CurrentConnectionContext { get; set; }
 
@@ -49,28 +48,19 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Connection
         {
             options ??= new ConnectionClientOptions();
 
-            MqttSessionClientOptions sessionClientOptions = new()
-            {
-                ConnectionRetryPolicy = options.ConnectionRetryPolicy,
-                EnableMqttLogging = options.EnableMqttLogging,
-            };
+            // This is the basic MQTT client that has no reconnection/retry logic
+            var unmanagedMqttClient = options.MqttClient ?? new MqttNetClient(enableMqttLogs: options.EnableMqttLogging);
 
-            _managedMqttConnection = new(options.MqttClient ?? new MqttNetClient(), sessionClientOptions);
+            // This is the wrapper that manages reconnection
+            _managedMqttConnection = new(unmanagedMqttClient, options.ConnectionAttemptTimeout, options.ConnectionRetryPolicy);
             _managedMqttConnection.PublishReceivedAsync += DelegatePublishAsync; // relay all publishes from the underlying MQTT client to users of this connection client
-
-            _managedMqttConnection.DisconnectedAsync += HandleDisconnectionAsync;
-        }
-
-        private async Task HandleDisconnectionAsync(MqttClientDisconnectedEventArgs args)
-        {
-            //TODO to delete?
         }
 
         private async Task HandleConnectedToHubAsync(MqttClientConnectedEventArgs args)
         {
             //TODO do we need any sort of cancellation handling here if the connect call's cancellation token triggers?
 
-            //TODO we definitely need some cancellation token to pass in to all these publishes/subscribes
+            //TODO we definitely need some cancellation token to pass in to all these publishes/subscribes. Doesn't hub doc have some recommended defensive timeout here?
 
             var connack = args.ConnectAck;
 

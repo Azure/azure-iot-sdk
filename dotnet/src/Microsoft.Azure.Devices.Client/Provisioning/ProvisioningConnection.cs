@@ -36,6 +36,7 @@ namespace Microsoft.Azure.Devices.Client.Provisioning
             string globalDeviceEndpoint,
             CancellationToken cancellationToken)
         {
+            //TODO move this code so that it responds to a connection to DPS like the hub flows do
             cancellationToken.ThrowIfCancellationRequested();
 
             MqttConnect connect = CreateMqttConnectPacket(authentication, idScope, globalDeviceEndpoint);
