@@ -209,6 +209,9 @@ static void teardown_active(az_iot_connection_client* c)
   /* Abandon any in-flight AEG presence (birth) handshake: it belonged to the
    * now-destroyed session and must restart from CONNACK on the next connect. */
   c->presence.phase = PRESENCE_PHASE_NONE;
+  /* Same for the subscription gate. Its packet ids died with the session and
+   * will never be acked, so nothing is left for a deadline to wait on. */
+  memset(&c->subscription_gate, 0, sizeof(c->subscription_gate));
   /* Complete any pending PUBACK correlation entries with an error. The
    * packet_ids belonged to the now-destroyed session and will never be
    * acknowledged, so silently dropping the callbacks would leave the caller
@@ -1191,7 +1194,7 @@ static void announce_connected(az_iot_connection_client* c)
  * SDK stops and tells it. Anything else is transient and reconnects. */
 static void fail_subscription_restore(az_iot_connection_client* c, az_iot_result reason)
 {
-  memset(&c->sub_gate, 0, sizeof(c->sub_gate));
+  memset(&c->subscription_gate, 0, sizeof(c->subscription_gate));
   c->deferred
       = (reason != AZ_IOT_ERR_SUBSCRIPTION_REFUSED && reconnect_enabled(c) && !c->user_close)
       ? DEFER_RECONNECT
@@ -1202,7 +1205,10 @@ static void fail_subscription_restore(az_iot_connection_client* c, az_iot_result
 /* A FAILS_SELF filter did not come up. Its owner is told -- that subscription
  * is dead, not optional -- and the entry is dropped so a reconnect cannot
  * silently re-issue it. The entry is released before the callback runs, so a
- * callback that re-registers immediately can claim the slot. */
+ * callback that re-registers immediately can claim the slot and, because
+ * registration issues the SUBSCRIBE whenever a session is up or a batch is
+ * still in flight, that replacement is live in this session rather than
+ * waiting for the next one. */
 static void report_and_drop_subscription(
     az_iot_connection_client* c,
     size_t index,
@@ -1225,13 +1231,61 @@ static void report_and_drop_subscription(
   }
 }
 
+/* Record a SUBSCRIBE that is waiting for its ack. Gated entries hold CONNECTED;
+ * the rest are tracked only so a later refusal still reaches its owner. */
+static void subscription_gate_track(
+    az_iot_connection_client* c,
+    uint16_t packet_id,
+    size_t sub_index,
+    bool gated)
+{
+  if (c->subscription_gate.pending_count >= AZ_IOT_MAX_PERSISTENT_SUBS)
+  {
+    return;
+  }
+  size_t p = c->subscription_gate.pending_count++;
+  c->subscription_gate.pending[p].packet_id = packet_id;
+  c->subscription_gate.pending[p].sub_index = (uint8_t)sub_index;
+  c->subscription_gate.pending[p].gated = gated;
+  if (gated)
+  {
+    c->subscription_gate.gated_outstanding++;
+  }
+  c->subscription_gate.active = true;
+}
+
+/* Forget an ack still pending for a registry slot that has just been cleared.
+ * A pending record holds an INDEX, and a withdrawn slot is immediately reusable,
+ * so without this a late ack would be applied to whatever took that slot's
+ * place -- faulting the session for a filter nobody needs any more, or
+ * reporting one owner's failure to another. A withdrawn filter also stops
+ * holding CONNECTED, since nothing is waiting on it. */
+static void subscription_gate_forget(az_iot_connection_client* c, size_t sub_index)
+{
+  for (size_t i = 0; i < c->subscription_gate.pending_count; ++i)
+  {
+    if (c->subscription_gate.pending[i].sub_index != sub_index)
+    {
+      continue;
+    }
+    if (c->subscription_gate.pending[i].gated && c->subscription_gate.gated_outstanding > 0)
+    {
+      c->subscription_gate.gated_outstanding--;
+    }
+    c->subscription_gate.pending[i]
+        = c->subscription_gate.pending[c->subscription_gate.pending_count - 1];
+    c->subscription_gate.pending_count--;
+    return;
+  }
+}
+
 /* (Re)issue every persistent subscription and gate CONNECTED on the SUBACKs of
  * those that the session depends on. Announces immediately when nothing gated
  * is registered, which is the common case for a connection whose feature
  * clients are built after open(). */
 static void begin_feature_subscriptions(az_iot_connection_client* c)
 {
-  memset(&c->sub_gate, 0, sizeof(c->sub_gate));
+  memset(&c->subscription_gate, 0, sizeof(c->subscription_gate));
 
   if (!c->active_client || !c->active_client->iface)
   {
@@ -1263,51 +1317,45 @@ static void begin_feature_subscriptions(az_iot_connection_client* c)
       fail_subscription_restore(c, r);
       return;
     }
-    size_t p = c->sub_gate.pending_count++;
-    c->sub_gate.pending[p].packet_id = pid;
-    c->sub_gate.pending[p].sub_index = (uint8_t)i;
-    c->sub_gate.pending[p].gated = gated;
-    if (gated)
-    {
-      c->sub_gate.gated_outstanding++;
-    }
+    subscription_gate_track(c, pid, i, gated);
   }
 
-  if (c->sub_gate.gated_outstanding == 0)
+  if (c->subscription_gate.gated_outstanding == 0)
   {
     announce_connected(c);
   }
-  /* Stay armed for any FAILS_SELF acks still in flight, which are tracked past
-   * the transition so their owners are told either way. */
-  if (c->sub_gate.pending_count > 0)
+  /* One deadline for the whole batch, started once the last SUBSCRIBE has been
+   * handed over. Ungated acks are still tracked past the transition so a later
+   * refusal reaches its owner, but they never hold CONNECTED. */
+  if (c->subscription_gate.pending_count > 0)
   {
-    c->sub_gate.active = true;
-    c->sub_gate.deadline_ms = az_iot_time_mono_ms() + AZ_IOT_SUBSCRIPTION_ACK_TIMEOUT_MS;
+    c->subscription_gate.deadline_ms = az_iot_time_mono_ms() + AZ_IOT_SUBSCRIPTION_ACK_TIMEOUT_MS;
   }
 }
 
 /* Returns true when `packet_id` was one this gate was waiting on. */
-static bool sub_gate_settle(
+static bool subscription_gate_settle(
     az_iot_connection_client* c,
     uint16_t packet_id,
     az_iot_result status,
     int32_t protocol_code)
 {
-  if (!c->sub_gate.active)
+  if (!c->subscription_gate.active)
   {
     return false;
   }
-  for (size_t i = 0; i < c->sub_gate.pending_count; ++i)
+  for (size_t i = 0; i < c->subscription_gate.pending_count; ++i)
   {
-    if (c->sub_gate.pending[i].packet_id != packet_id)
+    if (c->subscription_gate.pending[i].packet_id != packet_id)
     {
       continue;
     }
-    const bool gated = c->sub_gate.pending[i].gated;
-    const size_t sub_index = c->sub_gate.pending[i].sub_index;
+    const bool gated = c->subscription_gate.pending[i].gated;
+    const size_t sub_index = c->subscription_gate.pending[i].sub_index;
 
-    c->sub_gate.pending[i] = c->sub_gate.pending[c->sub_gate.pending_count - 1];
-    c->sub_gate.pending_count--;
+    c->subscription_gate.pending[i]
+        = c->subscription_gate.pending[c->subscription_gate.pending_count - 1];
+    c->subscription_gate.pending_count--;
 
     if (status != AZ_IOT_OK)
     {
@@ -1324,13 +1372,14 @@ static bool sub_gate_settle(
       return true;
     }
 
-    if (gated && c->sub_gate.gated_outstanding > 0 && --c->sub_gate.gated_outstanding == 0)
+    if (gated && c->subscription_gate.gated_outstanding > 0
+        && --c->subscription_gate.gated_outstanding == 0)
     {
       announce_connected(c);
     }
-    if (c->sub_gate.pending_count == 0)
+    if (c->subscription_gate.pending_count == 0)
     {
-      c->sub_gate.active = false;
+      c->subscription_gate.active = false;
     }
     return true;
   }
@@ -1628,7 +1677,15 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
         }
         break;
       }
-      (void)sub_gate_settle(c, evt->packet_id, evt->status, evt->protocol_code);
+      if (!subscription_gate_settle(c, evt->packet_id, evt->status, evt->protocol_code))
+      {
+        /* Not one this connection correlated: an ack for a SUBSCRIBE it never
+         * issued, or one left over from a session that has already gone. There
+         * is no owner to tell and nothing to release, so record it and move on
+         * rather than letting it look like a lost subscription later. */
+        AZ_IOT_LOG_DEBUGF(
+            "connection: SUBACK for an untracked packet id %u; ignoring", (unsigned)evt->packet_id);
+      }
       break;
 
     /* UNSUBSCRIBE_ACK gets correlation handlers in later Phase 3 slices when
@@ -2317,15 +2374,33 @@ az_iot_result az_iot_connection_client_do_work(
     }
   }
 
+  /* A gated filter withdrawn while its ack was still outstanding stops holding
+   * the transition -- but the ack that would have announced CONNECTED is never
+   * coming, so the release has to be noticed here. */
+  if (client->subscription_gate.active && client->subscription_gate.gated_outstanding == 0
+      && client->state == AZ_IOT_CONN_STATE_CONNECTING)
+  {
+    announce_connected(client);
+  }
+
   /* Fail a gate whose SUBACKs never arrived, so a broker that accepts the
    * connection and then goes quiet cannot wedge the client in CONNECTING --
    * keep-alive cannot notice, because the link is alive. Silence is not a
    * refusal and the filter may well be granted next time, so this is retryable
-   * rather than terminal. Only the gated set is waited on. */
-  if (client->sub_gate.active && client->sub_gate.gated_outstanding > 0
-      && az_iot_time_mono_ms() >= client->sub_gate.deadline_ms)
+   * rather than terminal. Only the gated set is waited on.
+   *
+   * Restricted to a session that is coming up or up, and to a client the
+   * application has not closed. close() transitions to DISCONNECTING but tears
+   * down only when the peer's DISCONNECT arrives, so the gate outlives it for a
+   * moment; without this the deadline could fault a connection that was
+   * shutting down cleanly. */
+  if (client->subscription_gate.active && client->subscription_gate.gated_outstanding > 0
+      && !client->user_close
+      && (client->state == AZ_IOT_CONN_STATE_CONNECTING
+          || client->state == AZ_IOT_CONN_STATE_CONNECTED)
+      && az_iot_time_mono_ms() >= client->subscription_gate.deadline_ms)
   {
-    memset(&client->sub_gate, 0, sizeof(client->sub_gate));
+    memset(&client->subscription_gate, 0, sizeof(client->subscription_gate));
     if (reconnect_enabled(client) && !client->user_close)
     {
       schedule_reconnect(client, AZ_IOT_ERR_TIMEOUT);
@@ -2467,11 +2542,11 @@ void az_iot_connection_client__presence_force_timeout(az_iot_connection_client* 
   }
 }
 
-void az_iot_connection_client__sub_gate_force_timeout(az_iot_connection_client* client)
+void az_iot_connection_client__subscription_gate_force_timeout(az_iot_connection_client* client)
 {
-  if (client && client->sub_gate.active)
+  if (client && client->subscription_gate.active)
   {
-    client->sub_gate.deadline_ms = 0;
+    client->subscription_gate.deadline_ms = 0;
   }
 }
 
@@ -2767,12 +2842,32 @@ az_iot_result az_iot_connection_client__add_subscription_on_connect(
   client->persistent_subs[slot].on_failed = on_failed;
   client->persistent_subs[slot].in_use = true;
 
-  /* If already CONNECTED, issue the SUBSCRIBE now so callers that register
-   * after open() don't have to wait for the next reconnect. */
-  if (client->active_client && client->state == AZ_IOT_CONN_STATE_CONNECTED)
+  /* Issue the SUBSCRIBE now when there is a session to carry it: either the
+   * connection is up, or a connect batch is still in flight and this filter can
+   * join it. Feature clients rebuilt from the CONNECTED callback take this
+   * path, so the ack is correlated like any other -- otherwise a refusal would
+   * leave the session reporting CONNECTED with a filter that is dead. */
+  if (client->active_client && client->active_client->iface
+      && (client->state == AZ_IOT_CONN_STATE_CONNECTED || client->subscription_gate.active))
   {
     uint16_t pid = 0;
-    (void)client->active_client->iface->subscribe(client->active_client, topic_filter, qos, &pid);
+    az_iot_result sr
+        = client->active_client->iface->subscribe(client->active_client, topic_filter, qos, &pid);
+    if (sr != AZ_IOT_OK)
+    {
+      /* Nothing reached the wire, so roll the registration back and let the
+       * caller unwind. Keeping an entry that was never issued would report a
+       * subscription the device does not have. */
+      memset(&client->persistent_subs[slot], 0, sizeof(client->persistent_subs[slot]));
+      AZ_IOT_LOG_ERRORF("connection: could not subscribe '%s'", topic_filter);
+      return sr;
+    }
+    subscription_gate_track(client, pid, slot, failure_scope == AZ_IOT_SUBSCRIPTION_FAILS_SESSION);
+    if (client->subscription_gate.deadline_ms == 0)
+    {
+      client->subscription_gate.deadline_ms
+          = az_iot_time_mono_ms() + AZ_IOT_SUBSCRIPTION_ACK_TIMEOUT_MS;
+    }
   }
   return AZ_IOT_OK;
 }
@@ -2807,6 +2902,7 @@ size_t az_iot_connection_client__remove_subscriptions_for(
       (void)client->active_client->iface->unsubscribe(
           client->active_client, client->persistent_subs[i].topic_filter, &pid);
     }
+    subscription_gate_forget(client, i);
     memset(&client->persistent_subs[i], 0, sizeof(client->persistent_subs[i]));
     ++removed;
   }
@@ -2831,6 +2927,7 @@ static void drop_subscriptions_from_other_generations(az_iot_connection_client* 
         "connection: dropping '%s' -- registered for a different hub generation than the one now "
         "assigned",
         c->persistent_subs[i].topic_filter);
+    subscription_gate_forget(c, i);
     memset(&c->persistent_subs[i], 0, sizeof(c->persistent_subs[i]));
   }
 }

@@ -506,7 +506,7 @@ extern "C"
       size_t gated_outstanding;
       uint64_t deadline_ms;
       bool active;
-    } sub_gate;
+    } subscription_gate;
 
     /* AEG/Hub-Next presence (birth) handshake. After CONNACK on a HUB_NEXT (v5)
      * session the client SUBSCRIBEs to ih/{deviceId}/dev/#, PUBLISHes a birth
