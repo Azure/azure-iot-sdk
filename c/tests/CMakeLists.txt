@@ -395,11 +395,20 @@ if(AZ_IOT_WITH_PAHO)
     target_link_libraries(az_iot_conformance_paho_v3 PRIVATE
         az_iot_conformance az_iot_adapter_paho)
     az_iot_apply_warnings(az_iot_conformance_paho_v3)
+    # The harness declares AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY only in a build
+    # where the adapter actually honours a key reference, so it needs the same
+    # AZ_IOT_PAHO_KEY_CUSTODY definition the adapter was compiled with.
+    if(_paho_defs)
+        target_compile_definitions(az_iot_conformance_paho_v3 PRIVATE ${_paho_defs})
+    endif()
 
     add_executable(az_iot_conformance_paho_v5 conformance/paho_v5_main.c)
     target_link_libraries(az_iot_conformance_paho_v5 PRIVATE
         az_iot_conformance az_iot_adapter_paho)
     az_iot_apply_warnings(az_iot_conformance_paho_v5)
+    if(_paho_defs)
+        target_compile_definitions(az_iot_conformance_paho_v5 PRIVATE ${_paho_defs})
+    endif()
 
     if(AZ_IOT_BUILD_CONFORMANCE_TESTS)
         add_test(NAME az_iot_conformance_paho_v3 COMMAND az_iot_conformance_paho_v3)

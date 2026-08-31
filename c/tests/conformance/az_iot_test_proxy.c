@@ -1621,6 +1621,17 @@ int az_iot_test_proxy_tls_supported(void)
 #endif
 }
 
+#if defined(AZ_IOT_TEST_PROXY_TLS)
+/* Verify callback for accept_any_client_cert: report success regardless of what
+ * OpenSSL made of the chain. See the option's note in the header. */
+static int proxy_accept_any_cert_cb(int preverify_ok, X509_STORE_CTX* ctx)
+{
+  (void)preverify_ok;
+  (void)ctx;
+  return 1;
+}
+#endif
+
 int az_iot_test_proxy_enable_tls(az_iot_test_proxy* m, const az_iot_test_proxy_tls_options* tls_in)
 {
 #if !defined(AZ_IOT_TEST_PROXY_TLS)
@@ -1769,6 +1780,14 @@ int az_iot_test_proxy_enable_tls(az_iot_test_proxy* m, const az_iot_test_proxy_t
       goto done;
     }
     SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT, NULL);
+  }
+  else if (tls.accept_any_client_cert)
+  {
+    /* Request a certificate and let every one through. The point is to make the
+     * client sign the CertificateVerify with its private key; who issued the
+     * certificate is deliberately not examined. See the header. */
+    SSL_CTX_set_verify(
+        ctx, SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT, proxy_accept_any_cert_cb);
   }
 
   if (SSL_CTX_use_PrivateKey(ctx, leaf_key) != 1)
