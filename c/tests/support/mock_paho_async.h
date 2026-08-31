@@ -21,6 +21,8 @@
 
 #include <MQTTAsync.h>
 
+#include <stdbool.h>
+
 /* Back to "every call succeeds", counters zeroed. */
 void mock_paho_reset(void);
 
@@ -34,5 +36,22 @@ void mock_paho_set_connect_rc(int rc);
 int mock_paho_create_calls(void);
 int mock_paho_connect_calls(void);
 int mock_paho_destroy_calls(void);
+
+/* What the adapter asked for on the last MQTTAsync_connect. Valid once
+ * mock_paho_connect_calls() is non-zero. */
+
+/* The serverURI the adapter built, so a test can tell ssl:// from tcp://. */
+const char* mock_paho_last_server_uri(void);
+
+/* Were SSL options attached to the connect at all? */
+bool mock_paho_last_connect_had_ssl(void);
+
+/* MQTTAsync_SSLOptions::enableServerCertAuth (chain) and ::verify (hostname)
+ * as the adapter set them. -1 when no SSL options were attached. */
+int mock_paho_last_enable_server_cert_auth(void);
+int mock_paho_last_verify(void);
+
+/* MQTTAsync_SSLOptions::privateKey, i.e. the path handed to the TLS stack. */
+const char* mock_paho_last_private_key(void);
 
 #endif /* AZ_IOT_TEST_MOCK_PAHO_ASYNC_H */

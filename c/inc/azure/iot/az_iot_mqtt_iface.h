@@ -96,7 +96,16 @@ extern "C"
     const char* client_cert_path; /* PEM */
     const char* client_key_path; /* PEM */
     const char* client_key_password; /* may be NULL */
-    bool verify_server; /* default true */
+    /* Selects TLS. It does NOT disable server certificate validation: that is
+     * unconditional (chain AND hostname) whenever an adapter establishes a TLS
+     * session, so this field cannot weaken it.
+     *
+     * It reads as a policy switch and is not one. The name is kept because this
+     * struct's fields are never removed or reordered (see the note above), and
+     * because false here has never meant "connect without verifying" -- the SDK
+     * itself has always set it true. Setting it selects TLS for a connection
+     * that carries no other TLS material, such as server-authentication-only. */
+    bool verify_server;
     /* In-memory PEM material. Adapters that load credentials from memory rather
      * than from disk (e.g. esp-mqtt on a device with no filesystem) use these;
      * file-path adapters (Paho + OpenSSL) ignore them. Any field may be NULL. */

@@ -9,7 +9,9 @@
 
 #include <MQTTProperties.h>
 
+#include <stdbool.h>
 #include <stddef.h>
+#include <stdio.h>
 
 /* The adapter only ever stores the handle and hands it back to us, so any
  * non-NULL address will do. */
@@ -24,6 +26,13 @@ static int s_create_calls;
 static int s_connect_calls;
 static int s_destroy_calls;
 
+static char s_last_server_uri[256];
+static bool s_last_had_ssl;
+static int s_last_enable_server_cert_auth;
+static int s_last_verify;
+static char s_last_private_key[512];
+static bool s_last_had_private_key;
+
 void mock_paho_reset(void)
 {
   s_create_rc = MQTTASYNC_SUCCESS;
@@ -33,6 +42,12 @@ void mock_paho_reset(void)
   s_create_calls = 0;
   s_connect_calls = 0;
   s_destroy_calls = 0;
+  s_last_server_uri[0] = '\0';
+  s_last_had_ssl = false;
+  s_last_enable_server_cert_auth = -1;
+  s_last_verify = -1;
+  s_last_private_key[0] = '\0';
+  s_last_had_private_key = false;
 }
 
 void mock_paho_set_create_rc(int rc) { s_create_rc = rc; }
@@ -43,6 +58,20 @@ void mock_paho_set_connect_rc(int rc) { s_connect_rc = rc; }
 int mock_paho_create_calls(void) { return s_create_calls; }
 int mock_paho_connect_calls(void) { return s_connect_calls; }
 int mock_paho_destroy_calls(void) { return s_destroy_calls; }
+
+const char* mock_paho_last_server_uri(void)
+{
+  return s_last_server_uri[0] != '\0' ? s_last_server_uri : NULL;
+}
+
+bool mock_paho_last_connect_had_ssl(void) { return s_last_had_ssl; }
+int mock_paho_last_enable_server_cert_auth(void) { return s_last_enable_server_cert_auth; }
+int mock_paho_last_verify(void) { return s_last_verify; }
+
+const char* mock_paho_last_private_key(void)
+{
+  return s_last_had_private_key ? s_last_private_key : NULL;
+}
 
 /* ------------------------------------------------------------------------- */
 /* MQTTAsync                                                                 */
@@ -62,6 +91,10 @@ int MQTTAsync_createWithOptions(
   (void)persistence_context;
   (void)options;
   ++s_create_calls;
+  if (serverURI)
+  {
+    snprintf(s_last_server_uri, sizeof(s_last_server_uri), "%s", serverURI);
+  }
   if (s_create_rc != MQTTASYNC_SUCCESS)
   {
     return s_create_rc;
@@ -99,8 +132,24 @@ int MQTTAsync_setDisconnected(MQTTAsync handle, void* context, MQTTAsync_disconn
 int MQTTAsync_connect(MQTTAsync handle, const MQTTAsync_connectOptions* options)
 {
   (void)handle;
-  (void)options;
   ++s_connect_calls;
+  s_last_had_ssl = options != NULL && options->ssl != NULL;
+  if (s_last_had_ssl)
+  {
+    s_last_enable_server_cert_auth = options->ssl->enableServerCertAuth;
+    s_last_verify = options->ssl->verify;
+    s_last_had_private_key = options->ssl->privateKey != NULL;
+    if (s_last_had_private_key)
+    {
+      snprintf(s_last_private_key, sizeof(s_last_private_key), "%s", options->ssl->privateKey);
+    }
+  }
+  else
+  {
+    s_last_enable_server_cert_auth = -1;
+    s_last_verify = -1;
+    s_last_had_private_key = false;
+  }
   return s_connect_rc;
 }
 

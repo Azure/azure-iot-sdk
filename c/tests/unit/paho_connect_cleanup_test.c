@@ -291,6 +291,107 @@ static void a_plain_credential_takes_no_custody(void** state)
   assert_null(fake_custody_reference_path());
 }
 
+/* ------------------------------------------------------------------------- */
+/* server certificate validation                                              */
+/* ------------------------------------------------------------------------- */
+
+/* Validation is a property of the client, not a caller policy. A caller that
+ * asks for TLS and explicitly asks NOT to verify the server must still get a
+ * verified session: chain (enableServerCertAuth) AND hostname (verify).
+ *
+ * This is the case that matters, because tls.verify_server is false in a
+ * zero-initialized az_iot_mqtt_connect_options -- so "forgot to set it" and
+ * "asked for it to be off" are the same bytes, and neither may produce an
+ * unverified connection. */
+static void server_validation_cannot_be_switched_off(void** state)
+{
+  fixture* fx = (fixture*)*state;
+
+  az_iot_mqtt_connect_options opts;
+  memset(&opts, 0, sizeof(opts));
+  opts.host = "broker.invalid";
+  opts.port = 8883;
+  opts.client_id = "ut-device";
+  opts.tls.client_cert_path = "/dev/null/device.pem";
+  opts.tls.client_key_path = "/dev/null/device.key";
+  opts.tls.verify_server = false; /* explicitly asked for no verification */
+
+  assert_int_equal(fx->client->iface->connect(fx->client, &opts), AZ_IOT_OK);
+
+  assert_true(mock_paho_last_connect_had_ssl());
+  assert_int_equal(mock_paho_last_enable_server_cert_auth(), 1);
+  assert_int_equal(mock_paho_last_verify(), 1);
+}
+
+/* The same for a custody credential, which is the connect shape this change
+ * introduced: it reaches the TLS branch through the key reference rather than
+ * through a certificate path. */
+static void a_custody_connect_verifies_the_server(void** state)
+{
+  fixture* fx = (fixture*)*state;
+
+  assert_int_equal(connect_with_custody(fx), AZ_IOT_OK);
+
+  assert_true(mock_paho_last_connect_had_ssl());
+  assert_int_equal(mock_paho_last_enable_server_cert_auth(), 1);
+  assert_int_equal(mock_paho_last_verify(), 1);
+}
+
+/* A key reference alone must select TLS. Without it the adapter would build a
+ * tcp:// URI and connect in the clear with the very credential that exists
+ * because the key must never be exposed -- and the key reference would be
+ * handed to a session that never uses it. */
+static void a_key_reference_alone_selects_tls(void** state)
+{
+  fixture* fx = (fixture*)*state;
+
+  az_iot_mqtt_connect_options opts;
+  memset(&opts, 0, sizeof(opts));
+  opts.host = "broker.invalid";
+  opts.port = 8883;
+  opts.client_id = "ut-device";
+  opts.tls.client_key_uri = "pkcs11:object=device-key;type=private";
+  opts.tls.crypto_engine_id = "pkcs11";
+  /* No certificate, no CA, no verify_server: the key reference is the only
+   * thing asking for TLS. */
+
+  assert_int_equal(fx->client->iface->connect(fx->client, &opts), AZ_IOT_OK);
+
+  const char* uri = mock_paho_last_server_uri();
+  assert_non_null(uri);
+  assert_int_equal(strncmp(uri, "ssl://", 6), 0);
+  assert_true(mock_paho_last_connect_had_ssl());
+  assert_int_equal(mock_paho_last_enable_server_cert_auth(), 1);
+  assert_int_equal(mock_paho_last_verify(), 1);
+
+  /* ...and the reference file, not the caller's NULL client_key_path, is what
+   * the TLS stack was pointed at. */
+  const char* key = mock_paho_last_private_key();
+  assert_non_null(key);
+  assert_string_equal(key, fake_custody_reference_path());
+}
+
+/* A connection with no TLS material at all stays plaintext, and carries no SSL
+ * options to verify anything with. The verification rule above must not have
+ * turned every connect into a TLS connect. */
+static void a_plaintext_connect_stays_plaintext(void** state)
+{
+  fixture* fx = (fixture*)*state;
+
+  az_iot_mqtt_connect_options opts;
+  memset(&opts, 0, sizeof(opts));
+  opts.host = "broker.invalid";
+  opts.port = 1883;
+  opts.client_id = "ut-device";
+
+  assert_int_equal(fx->client->iface->connect(fx->client, &opts), AZ_IOT_OK);
+
+  const char* uri = mock_paho_last_server_uri();
+  assert_non_null(uri);
+  assert_int_equal(strncmp(uri, "tcp://", 6), 0);
+  assert_false(mock_paho_last_connect_had_ssl());
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -309,6 +410,10 @@ int main(void)
     cmocka_unit_test_setup_teardown(reconnecting_replaces_the_key_reference, setup, teardown),
     cmocka_unit_test_setup_teardown(destroy_releases_the_key_reference, setup, teardown),
     cmocka_unit_test_setup_teardown(a_plain_credential_takes_no_custody, setup, teardown),
+    cmocka_unit_test_setup_teardown(server_validation_cannot_be_switched_off, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_custody_connect_verifies_the_server, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_key_reference_alone_selects_tls, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_plaintext_connect_stays_plaintext, setup, teardown),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

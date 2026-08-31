@@ -884,12 +884,18 @@ static az_iot_result paho_iface_connect(
     ssl_opts.keyStore = opts->tls.client_cert_path;
     ssl_opts.privateKey = private_key_path;
     ssl_opts.privateKeyPassword = opts->tls.client_key_password;
-    ssl_opts.enableServerCertAuth = opts->tls.verify_server ? 1 : 0;
+    /* Unconditional, NOT opts->tls.verify_server. Server certificate validation
+     * is a requirement of this client, not a policy the caller chooses: an
+     * unverified TLS session authenticates nothing, and a field that is false
+     * when the struct is zero-initialized is the wrong way to hold a security
+     * default. verify_server survives only as one of the triggers that selects
+     * TLS above -- it can no longer switch verification off. */
+    ssl_opts.enableServerCertAuth = 1;
     /* Verify the server hostname against the certificate too, not just the
      * chain: a chain-valid certificate issued for the wrong host must be
      * rejected. Paho checks X509_check_host and falls back to
      * X509_check_ip_asc for IP-literal peers. */
-    ssl_opts.verify = opts->tls.verify_server ? 1 : 0;
+    ssl_opts.verify = 1;
     /* AZ_IOT_PAHO_TRACE also enables detailed OpenSSL handshake error output. */
     if (paho_trace_level_from_env() >= 0)
     {
