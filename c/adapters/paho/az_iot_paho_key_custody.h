@@ -35,6 +35,7 @@
 #define AZ_IOT_PAHO_KEY_CUSTODY_H
 
 #include <stdbool.h>
+#include <stddef.h>
 
 #include "azure/iot/az_iot_mqtt_iface.h"
 #include "azure/iot/az_iot_result.h"
@@ -80,6 +81,17 @@ extern "C"
    * process-wide and stays loaded (see the .c). Safe on a zeroed or
    * already-released state. */
   void az_iot_paho_key_custody_release(az_iot_paho_key_custody* state);
+
+#if defined(AZ_IOT_PAHO_KEY_CUSTODY)
+  /* Does this buffer contain an extractable private key in PEM form, anywhere?
+   *
+   * The gate that stops prepare() writing real key material to disk. Exposed
+   * here -- on an adapter-private header that is not installed -- only so the
+   * unit tests can drive buffer shapes an OpenSSL encoder will not produce on
+   * demand, such as a BEGIN line that is not at offset 0. `pem` need not be
+   * NUL-terminated; `len` bounds it. */
+  bool az_iot_paho_key_custody_pem_carries_private_key(const char* pem, size_t len);
+#endif
 
 #ifdef __cplusplus
 }

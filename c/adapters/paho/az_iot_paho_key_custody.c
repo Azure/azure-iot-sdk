@@ -75,14 +75,37 @@ static const char* const s_extractable_banners[] = {
   "-----BEGIN DSA PRIVATE KEY-----",
 };
 
-static bool pem_carries_private_key(const char* pem, size_t len)
+bool az_iot_paho_key_custody_pem_carries_private_key(const char* pem, size_t len)
 {
+  if (!pem)
+  {
+    return false;
+  }
+  /* Search the WHOLE buffer, not just its start. Nothing guarantees the encoder
+   * put the BEGIN line at offset 0 -- leading newlines, or a textual preamble
+   * ahead of the block, would hide a real private key from a check anchored at
+   * the start, and this check is the only thing standing between an extractable
+   * key and a file on disk. A false negative here is the failure this module
+   * exists to prevent, so it errs toward looking everywhere.
+   *
+   * The banners are matched in full rather than by a looser rule such as
+   * "contains PRIVATE KEY": the tpm2 reference block is labelled
+   * "TSS2 PRIVATE KEY", so a substring rule would reject the very references
+   * this path is meant to accept. */
   for (size_t i = 0; i < sizeof(s_extractable_banners) / sizeof(s_extractable_banners[0]); ++i)
   {
-    size_t blen = strlen(s_extractable_banners[i]);
-    if (len >= blen && memcmp(pem, s_extractable_banners[i], blen) == 0)
+    const char* banner = s_extractable_banners[i];
+    size_t blen = strlen(banner);
+    if (len < blen)
     {
-      return true;
+      continue;
+    }
+    for (size_t off = 0; off + blen <= len; ++off)
+    {
+      if (memcmp(pem + off, banner, blen) == 0)
+      {
+        return true;
+      }
     }
   }
   return false;
@@ -492,7 +515,7 @@ static az_iot_result write_key_reference(
 
   char* pem = NULL;
   long pem_len = BIO_get_mem_data(mem, &pem);
-  if (pem_carries_private_key(pem, (size_t)pem_len))
+  if (az_iot_paho_key_custody_pem_carries_private_key(pem, (size_t)pem_len))
   {
     /* The whole point of the key-reference path is that the key never becomes
      * bytes. Writing it out here would do exactly that, silently. */

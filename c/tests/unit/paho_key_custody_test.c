@@ -317,6 +317,52 @@ static void an_over_long_key_uri_is_handled(void** state)
   az_iot_paho_key_custody_release(&s);
 }
 
+/* The extractability gate is what stops a real private key being written to
+ * disk, so it must find the banner wherever it sits -- not only at offset 0.
+ * Nothing guarantees an encoder puts the BEGIN line first: a leading newline or
+ * a textual preamble ahead of the block would hide a genuine key from a check
+ * anchored at the start, and the result is the file this module exists to never
+ * write.
+ *
+ * Driven directly because no provider emits these shapes on request. */
+static void an_extractable_key_is_detected_anywhere_in_the_buffer(void** state)
+{
+  (void)state;
+  static const char* const k_hiding_places[] = {
+    "\n-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----\n",
+    "\r\n\r\n-----BEGIN RSA PRIVATE KEY-----\nAAAA\n",
+    "Bag Attributes: friendlyName=x\n-----BEGIN EC PRIVATE KEY-----\nAAAA\n",
+    "   -----BEGIN ENCRYPTED PRIVATE KEY-----\nAAAA\n",
+    "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n"
+    "-----BEGIN DSA PRIVATE KEY-----\nAAAA\n",
+  };
+  for (size_t i = 0; i < sizeof(k_hiding_places) / sizeof(k_hiding_places[0]); ++i)
+  {
+    assert_true(az_iot_paho_key_custody_pem_carries_private_key(
+        k_hiding_places[i], strlen(k_hiding_places[i])));
+  }
+
+  /* And the references this path exists to ACCEPT are not mistaken for keys.
+   * "TSS2 PRIVATE KEY" is the tpm2 reference label and contains the words
+   * "PRIVATE KEY", so a looser rule than full-banner matching would reject it
+   * and break the feature. */
+  static const char* const k_references[] = {
+    "-----BEGIN PKCS#11 PROVIDER URI-----\nAAAA\n-----END PKCS#11 PROVIDER URI-----\n",
+    "-----BEGIN TSS2 PRIVATE KEY-----\nAAAA\n-----END TSS2 PRIVATE KEY-----\n",
+    "",
+  };
+  for (size_t i = 0; i < sizeof(k_references) / sizeof(k_references[0]); ++i)
+  {
+    assert_false(
+        az_iot_paho_key_custody_pem_carries_private_key(k_references[i], strlen(k_references[i])));
+  }
+
+  /* Bounded by len, not by a NUL: a banner past the end must not be read. */
+  static const char k_past_end[] = "-----BEGIN PRIVATE KEY-----";
+  assert_false(az_iot_paho_key_custody_pem_carries_private_key(k_past_end, 10));
+  assert_false(az_iot_paho_key_custody_pem_carries_private_key(NULL, 0));
+}
+
 /* release() is idempotent and re-preparable: the adapter calls it at the top of
  * every connect so a reconnect does not accumulate reference files. */
 static void release_is_idempotent(void** state)
@@ -432,6 +478,7 @@ int main(void)
     cmocka_unit_test(an_unknown_engine_id_is_not_supported),
     cmocka_unit_test(an_unresolvable_key_uri_fails_before_the_handshake),
     cmocka_unit_test(an_extractable_key_is_refused),
+    cmocka_unit_test(an_extractable_key_is_detected_anywhere_in_the_buffer),
     cmocka_unit_test(an_over_long_key_uri_is_handled),
     cmocka_unit_test(release_is_idempotent),
     cmocka_unit_test(release_removes_the_reference_file),
