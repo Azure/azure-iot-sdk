@@ -333,8 +333,11 @@ static void an_extractable_key_is_detected_anywhere_in_the_buffer(void** state)
     "\r\n\r\n-----BEGIN RSA PRIVATE KEY-----\nAAAA\n",
     "Bag Attributes: friendlyName=x\n-----BEGIN EC PRIVATE KEY-----\nAAAA\n",
     "   -----BEGIN ENCRYPTED PRIVATE KEY-----\nAAAA\n",
-    "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n"
-    "-----BEGIN DSA PRIVATE KEY-----\nAAAA\n",
+    /* Parenthesised: the concatenation is deliberate (one buffer holding a
+       certificate block followed by a key), and clang warns on an unparenthesised
+       adjacent pair inside an array initialiser. */
+    ("-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n"
+     "-----BEGIN DSA PRIVATE KEY-----\nAAAA\n"),
   };
   for (size_t i = 0; i < sizeof(k_hiding_places) / sizeof(k_hiding_places[0]); ++i)
   {
