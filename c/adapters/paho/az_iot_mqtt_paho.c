@@ -33,6 +33,7 @@
 
 #include <stdbool.h>
 #include <stdlib.h>
+#include <limits.h>
 #include <string.h>
 #include <stdio.h>
 
@@ -424,11 +425,33 @@ static void paho_trace_callback(enum MQTTASYNC_TRACE_LEVELS level, char* message
 #ifdef AZ_IOT_PAHO_SSL
 static int paho_ssl_error_callback(const char* str, size_t len, void* u)
 {
-  (void)len;
   (void)u;
-  /* OpenSSL hands these over one line at a time, already newline-terminated;
-   * the sink adds its own framing, so trim the trailing newline. */
-  AZ_IOT_LOG_TRACEF("paho ssl: %.*s", str ? (int)strcspn(str, "\n") : 0, str ? str : "");
+  /* ERROR, not TRACE. Paho calls this only from SSLSocket_error(), i.e. only
+   * when a TLS operation has already failed, and these lines are the sole
+   * explanation of WHY -- the caller otherwise sees Paho's "TCP/TLS connect
+   * failure", which names nothing. Emitting them below the failure they explain
+   * meant they were dropped by any sink not set to TRACE, so the diagnostic
+   * existed but never reached a log. The callback is installed only when
+   * AZ_IOT_PAHO_TRACE is set, so this cannot add noise to a default build.
+   *
+   * OpenSSL hands these over one line at a time, already newline-terminated;
+   * the sink adds its own framing, so trim the trailing newline.
+   *
+   * Bounded by `len` rather than by a NUL. OpenSSL's own ERR_print_errors_cb
+   * does terminate the buffer it passes, but that is its choice and not part of
+   * the callback contract -- `len` is what the contract gives us, so a producer
+   * that passes an unterminated slice cannot walk us off the end. */
+  if (!str || len == 0)
+  {
+    return 1;
+  }
+  const char* nl = (const char*)memchr(str, '\n', len);
+  size_t n = nl ? (size_t)(nl - str) : len;
+  if (n > (size_t)INT_MAX)
+  {
+    n = (size_t)INT_MAX;
+  }
+  AZ_IOT_LOG_ERRORF("paho ssl: %.*s", (int)n, str);
   return 1; /* keep draining the remaining OpenSSL error-queue lines */
 }
 #endif
