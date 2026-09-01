@@ -169,6 +169,11 @@ namespace Microsoft.Azure.Devices.Client.Unified.Connection
                 AuthenticationProvider = authentication,
             };
 
+            if (string.IsNullOrEmpty(CurrentConnectionContext.IotHubHostName))
+            {
+                throw new Exception("Huh?");
+            }
+
             _managedMqttConnection.ConnectedAsync += HandleConnectedToHubAsync;
 
 
