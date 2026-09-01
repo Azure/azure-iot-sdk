@@ -426,9 +426,17 @@ static int paho_ssl_error_callback(const char* str, size_t len, void* u)
 {
   (void)len;
   (void)u;
-  /* OpenSSL hands these over one line at a time, already newline-terminated;
+  /* ERROR, not TRACE. Paho calls this only from SSLSocket_error(), i.e. only
+   * when a TLS operation has already failed, and these lines are the sole
+   * explanation of WHY -- the caller otherwise sees Paho's "TCP/TLS connect
+   * failure", which names nothing. Emitting them below the failure they explain
+   * meant they were dropped by any sink not set to TRACE, so the diagnostic
+   * existed but never reached a log. The callback is installed only when
+   * AZ_IOT_PAHO_TRACE is set, so this cannot add noise to a default build.
+   *
+   * OpenSSL hands these over one line at a time, already newline-terminated;
    * the sink adds its own framing, so trim the trailing newline. */
-  AZ_IOT_LOG_TRACEF("paho ssl: %.*s", str ? (int)strcspn(str, "\n") : 0, str ? str : "");
+  AZ_IOT_LOG_ERRORF("paho ssl: %.*s", str ? (int)strcspn(str, "\n") : 0, str ? str : "");
   return 1; /* keep draining the remaining OpenSSL error-queue lines */
 }
 #endif
