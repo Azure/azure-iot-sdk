@@ -29,6 +29,7 @@
 #include "azure/iot/az_iot_result.h"
 
 #include "support/mock_mqtt_iface.h"
+#include "support/subscription_ack.h"
 
 /* ------------------------------------------------------------------------- */
 /* fixtures                                                                  */
@@ -137,6 +138,7 @@ static void open_to_connected(fixture* fx)
   assert_non_null(fx->mock);
   assert_true(az_iot_mock_mqtt_client_inject_connected(fx->mock, AZ_IOT_OK));
   assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+  az_iot_test_ack_subscriptions(&fx->conn, fx->mock);
 }
 
 /* Deliver one inbound message and pump it through dispatch. */
@@ -688,6 +690,7 @@ static void the_subscription_is_reissued_after_a_reconnect(void** state)
   az_iot_mock_mqtt_client_clear_calls(fx->mock);
   assert_true(az_iot_mock_mqtt_client_inject_connected(fx->mock, AZ_IOT_OK));
   assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+  az_iot_test_ack_subscriptions(&fx->conn, fx->mock);
 
   assert_non_null(find_subscribe(fx->mock, C2D_FILTER));
 
@@ -777,8 +780,7 @@ static const az_iot_mock_call* find_publish_topic(az_iot_mock_mqtt_client* m, co
 }
 
 /* Drive a Hub-Next session to CONNECTED. Classic announces CONNECTED on
- * CONNACK; Next has to complete the presence birth handshake first, and only
- * then are the feature filters subscribed. */
+ * CONNACK; Next first SUBACKs the presence wildcard and completes birth. */
 static void open_to_connected_next(fixture* fx)
 {
   assert_int_equal(
@@ -864,15 +866,18 @@ static void inject_next(
   assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
 }
 
-static void next_init_subscribes_the_device_scoped_c2d_topic(void** state)
+static void next_init_does_not_subscribe_a_redundant_c2d_filter(void** state)
 {
   fixture* fx = (fixture*)*state;
   open_to_connected_next(fx);
 
-  /* An exact topic, not a wildcard: on Next there is no property-bag suffix to
-   * match, so the filter does not need to end in '#'. */
-  const az_iot_mock_call* sub = find_subscribe(fx->mock, "ih/ut-device/dev/c2d");
-  assert_non_null(sub);
+  /* ih/ut-device/dev/# from the presence handshake already covers dev/c2d, so
+   * registering it again would spend a registry slot and re-issue a redundant
+   * filter on every reconnect. Delivery is unaffected: the dispatch prefix
+   * routes the message, not this filter -- see
+   * next_a_message_is_delivered_to_the_handler. */
+  assert_non_null(find_subscribe(fx->mock, "ih/ut-device/dev/#"));
+  assert_null(find_subscribe(fx->mock, "ih/ut-device/dev/c2d"));
 }
 
 static void next_a_message_is_delivered_to_the_handler(void** state)
@@ -1051,7 +1056,7 @@ int main(void)
     cmocka_unit_test(destroy_tolerates_null),
     cmocka_unit_test_setup_teardown(destroy_is_idempotent, setup, teardown),
     cmocka_unit_test_setup_teardown(
-        next_init_subscribes_the_device_scoped_c2d_topic, setup_next, teardown),
+        next_init_does_not_subscribe_a_redundant_c2d_filter, setup_next, teardown),
     cmocka_unit_test_setup_teardown(
         next_a_message_is_delivered_to_the_handler, setup_next, teardown),
     cmocka_unit_test_setup_teardown(

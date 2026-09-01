@@ -1114,7 +1114,12 @@ static void reassignment_to_another_generation_drops_the_old_filters(void** stat
    * classic -- exactly what a gen1 feature client would have left behind. */
   assert_int_equal(
       az_iot_connection_client__add_subscription_on_connect(
-          &pf.c, "$iothub/twin/res/#", AZ_IOT_MQTT_QOS_1, &owner),
+          &pf.c,
+          "$iothub/twin/res/#",
+          AZ_IOT_MQTT_QOS_1,
+          &owner,
+          AZ_IOT_SUBSCRIPTION_FAILS_SESSION,
+          NULL),
       AZ_IOT_OK);
 
   profile_assign(&pf, k_assigned_mqtt_v5);
@@ -1168,11 +1173,18 @@ static void removal_on_gen2_unsubscribes_only_the_owners_filter(void** state)
   az_iot_mock_mqtt_client* hub = az_iot_mock_mqtt_factory_last_client(pf.v5);
   assert_non_null(hub);
 
-  /* A per-feature filter of the shape gen2 feature clients register today,
-   * underneath the presence wildcard. */
+  /* A filter registered underneath the presence wildcard. No gen2 feature
+   * client does this any more -- the wildcard covers them -- but an application
+   * custom topic will, and the property being pinned is about the registry, not
+   * about which caller filled it. */
   assert_int_equal(
       az_iot_connection_client__add_subscription_on_connect(
-          &pf.c, "ih/assigned-device/dev/twin/desired", AZ_IOT_MQTT_QOS_1, &owner),
+          &pf.c,
+          "ih/assigned-device/dev/twin/desired",
+          AZ_IOT_MQTT_QOS_1,
+          &owner,
+          AZ_IOT_SUBSCRIPTION_FAILS_SESSION,
+          NULL),
       AZ_IOT_OK);
 
   assert_int_equal(az_iot_connection_client__remove_subscriptions_for(&pf.c, &owner), 1);

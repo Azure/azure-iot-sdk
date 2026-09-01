@@ -12,7 +12,7 @@
  *   Inbound    "devices/{device_id}/messages/devicebound/{properties}"
  *
  * Next:
- *   Subscribe  "ih/{device_id}/dev/c2d"
+ *   Covered by "ih/{device_id}/dev/#" from the presence handshake
  *   Inbound    "ih/{device_id}/dev/c2d"
  */
 #include <stdbool.h>
@@ -272,7 +272,7 @@ az_iot_result az_iot_c2d_client_init(az_iot_c2d_client* client, az_iot_connectio
 
   if (profile->flavor == AZ_IOT_HUB_FLAVOR_NEXT)
   {
-    /* Hub-Next: subscribe to "ih/{device_id}/dev/c2d" */
+    /* Hub-Next delivery comes through the presence handshake's device-wide wildcard. */
     const char* device_id = az_iot_connection_client__device_id(conn);
     if (!device_id)
     {
@@ -297,17 +297,9 @@ az_iot_result az_iot_c2d_client_init(az_iot_c2d_client* client, az_iot_connectio
       memset(client, 0, sizeof(*client));
       return r;
     }
-
-    /* Subscribe to the same topic (no wildcard needed for Next) */
-    r = az_iot_connection_client__add_subscription_on_connect(
-        conn, prefix, AZ_IOT_MQTT_QOS_1, client);
-    if (r != AZ_IOT_OK)
-    {
-      (void)az_iot_connection_client__remove_subscriptions_for(conn, client);
-      (void)az_iot_connection_client__unregister_inbound_handlers(conn, client);
-      memset(client, 0, sizeof(*client));
-      return r;
-    }
+    /* No SUBSCRIBE here. The presence handshake already holds
+     * ih/{device_id}/dev/#, which covers this topic, so registering it would
+     * spend a registry slot and re-issue a redundant filter every reconnect. */
   }
   else
   {
@@ -357,7 +349,7 @@ az_iot_result az_iot_c2d_client_init(az_iot_c2d_client* client, az_iot_connectio
     }
 
     r = az_iot_connection_client__add_subscription_on_connect(
-        conn, filter, AZ_IOT_MQTT_QOS_1, client);
+        conn, filter, AZ_IOT_MQTT_QOS_1, client, AZ_IOT_SUBSCRIPTION_FAILS_SESSION, NULL);
     if (r != AZ_IOT_OK)
     {
       (void)az_iot_connection_client__remove_subscriptions_for(conn, client);
