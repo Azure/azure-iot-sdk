@@ -44,8 +44,8 @@ namespace Microsoft.Azure.Devices.Client.Models.CertificateManagement
         /// A task that completes when IoT Hub accepts the certificate signing request (202 Accepted).
         /// The result contains the correlation ID and operation expiration time.
         /// </summary>
-        /// <exception cref="CertificateSigningRequestException">
-        /// Thrown when the CSR is rejected by IoT Hub. Inspect <see cref="CertificateSigningRequestException.ErrorCode"/>
+        /// <exception cref="CertificateSigningRequestFailedException">
+        /// Thrown when the CSR is rejected by IoT Hub. Inspect <see cref="CertificateSigningRequestFailedException.ErrorCode"/>
         /// for the specific failure reason (e.g., 400040 for CSR decode failure, 409005 for an active conflicting operation,
         /// 429002/429003 for throttling).
         /// </exception>
@@ -55,7 +55,7 @@ namespace Microsoft.Azure.Devices.Client.Models.CertificateManagement
         /// A task that completes when IoT Hub delivers the issued certificate (200 OK).
         /// The result contains the certificate chain and correlation ID.
         /// </summary>
-        /// <exception cref="CertificateSigningRequestException">
+        /// <exception cref="CertificateSigningRequestFailedException">
         /// Thrown when the certificate issuance fails after acceptance. This can also be thrown if the initial
         /// request was rejected, since a failure at any phase propagates to both <see cref="Accepted"/> and
         /// <see cref="Completed"/> tasks.

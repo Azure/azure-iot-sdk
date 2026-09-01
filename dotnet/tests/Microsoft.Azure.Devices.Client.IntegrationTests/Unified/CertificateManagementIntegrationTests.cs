@@ -35,9 +35,23 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Unified
             X509AuthenticationProvider x509AuthenticationProvider = new(deviceCertificate);
 
             // Create initial CSR to be processed by DPS
-            var (csrBase64, privateKey) = GenerateCsr(registrationId, CsrAlgorithm.RSA);
+            var (csrBase64, privateKey) = CertificateUtilities.GenerateCsrAndPrivateKey(registrationId, CertificateUtilities.CsrAlgorithm.RSA);
 
-            ConnectionClient connectionClient = new();
+            ConnectionClient connectionClient = new()
+            {
+                HandleCertificateSigningCompleteAsync = (IssuedCertificates) =>
+                {
+                    // Convert to PEM and save
+                    string pemChain = CertificateUtilities.ConvertToPem(IssuedCertificates);
+
+                    using X509Certificate2 deviceCertTemp = CertificateUtilities.CreateCertificateWithPrivateKey(IssuedCertificates, privateKey);
+
+                    // Export and reimport with Exportable flag
+                    byte[] pfxBytes = deviceCertTemp.Export(X509ContentType.Pfx);
+                    return Task.FromResult(new X509AuthenticationProvider(X509CertificateLoader.LoadPkcs12(pfxBytes, (string?)null, X509KeyStorageFlags.Exportable)));
+                }
+            };
+
             ProvisioningSettings provisioningSettings = new(DpsIdScope)
             {
                 CertificateSigningRequest = new(privateKey, csrBase64),
@@ -50,8 +64,9 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Unified
             Assert.NotNull(connectionContext.IssuedClientCertificates);
             Assert.NotEmpty(connectionContext.IssuedClientCertificates);
 
-            var (secondCsrBase64, secondPrivateKey) = Setup.GenerateCsr(connectionContext.DeviceId, Setup.CsrAlgorithm.RSA);
+            var secondCsrBase64 = CertificateUtilities.GenerateCsrWithPrivateKey(connectionContext.DeviceId, privateKey);
             var certificateSigningRequest = new CertificateSigningRequest(connectionContext.DeviceId, secondCsrBase64, null, "*");
+
             CertificateSigningOperation pendingCsr = await connectionClient.SendCertificateSigningRequestAsync(certificateSigningRequest, cts.Token);
 
             try
@@ -82,7 +97,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Unified
             // Convert to PEM and save
             string pemChain = CertificateUtilities.ConvertToPem(hubCsrResponse.Certificates);
 
-            using X509Certificate2 deviceCertTemp = CertificateUtilities.CreateCertificateWithPrivateKey(hubCsrResponse.Certificates, secondPrivateKey);
+            using X509Certificate2 deviceCertTemp = CertificateUtilities.CreateCertificateWithPrivateKey(hubCsrResponse.Certificates, privateKey);
 
             // Export and reimport with Exportable flag
             byte[] pfxBytes = deviceCertTemp.Export(X509ContentType.Pfx);
@@ -108,36 +123,5 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Unified
 
             return Encoding.UTF8.GetString(Convert.FromBase64String(encodedValue));
         }
-
-        private static string CertificateListToPem(IReadOnlyList<string> certList)
-        {
-            const string beginHeader = "-----BEGIN CERTIFICATE-----\r\n";
-            const string endFooter = "\r\n-----END CERTIFICATE-----";
-            string separator = endFooter + "\r\n" + beginHeader;
-            return beginHeader + string.Join(separator, certList) + endFooter;
-        }
-
-        private static AsymmetricAlgorithm LoadPrivateKeyFromPem(string keyPem)
-        {
-            // Try ECC first, then RSA
-            if (keyPem.Contains("EC PRIVATE KEY") || keyPem.Contains("PRIVATE KEY"))
-            {
-                try
-                {
-                    var ecdsa = ECDsa.Create();
-                    ecdsa.ImportFromPem(keyPem);
-                    return ecdsa;
-                }
-                catch (CryptographicException)
-                {
-                    // Not an ECC key, try RSA
-                }
-            }
-
-            var rsa = RSA.Create();
-            rsa.ImportFromPem(keyPem);
-            return rsa;
-        }
-
     }
 }

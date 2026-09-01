@@ -2,12 +2,12 @@
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 
-namespace Microsoft.Azure.Devices.Client
+namespace Microsoft.Azure.Devices.Client.IntegrationTests
 {
     /// <summary>
     /// Provides helper methods for working with certificates issued by IoT Hub or DPS.
     /// </summary>
-    internal static class CertificateUtilities
+    public static class CertificateUtilities
     {
         private const string BeginCertificate = "-----BEGIN CERTIFICATE-----";
         private const string EndCertificate = "-----END CERTIFICATE-----";
@@ -99,29 +99,6 @@ namespace Microsoft.Azure.Devices.Client
             return leafCert.CopyWithPrivateKey(privateKey);
         }
 
-        /// <summary>
-        /// Creates an X509Certificate2Collection from the issued certificate chain.
-        /// </summary>
-        /// <param name="certificateChain">Issued certificate chain.</param>
-        /// <returns>X509Certificate2Collection containing all certificates in the chain.</returns>
-        /// <exception cref="ArgumentNullException">Thrown when <paramref name="certificateChain"/> is null.</exception>
-        public static X509Certificate2Collection CreateCertificateCollection(IReadOnlyList<string> certificateChain)
-        {
-            if (certificateChain == null)
-            {
-                throw new ArgumentNullException(nameof(certificateChain));
-            }
-
-            var collection = new X509Certificate2Collection();
-            foreach (string certBase64 in certificateChain)
-            {
-                byte[] certBytes = Convert.FromBase64String(certBase64);
-                collection.Add(X509CertificateLoader.LoadCertificate(certBytes));
-            }
-
-            return collection;
-        }
-
         public static X509Certificate2 CreateCertificateWithPrivateKey(
             System.Collections.Generic.IReadOnlyList<string> certificateChain,
             AsymmetricAlgorithm privateKey)
@@ -132,6 +109,68 @@ namespace Microsoft.Azure.Devices.Client
                 RSA rsa => CreateCertificateWithPrivateKey(certificateChain, rsa),
                 _ => throw new NotSupportedException($"Unsupported key type: {privateKey.GetType()}")
             };
+        }
+
+        public static (string csrBase64, AsymmetricAlgorithm privateKey) GenerateCsrAndPrivateKey(string registrationId, CsrAlgorithm csrAlgorithm)
+        {
+            if (csrAlgorithm == CsrAlgorithm.ECC)
+            {
+                var ecdsa = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+                var request = new CertificateRequest(
+                    $"CN={registrationId}",
+                    ecdsa,
+                    HashAlgorithmName.SHA256);
+
+                byte[] csrDer = request.CreateSigningRequest();
+                return (Convert.ToBase64String(csrDer), ecdsa);
+            }
+            else
+            {
+                var rsa = RSA.Create(2048);
+                var request = new CertificateRequest(
+                    $"CN={registrationId}",
+                    rsa,
+                    HashAlgorithmName.SHA256,
+                    RSASignaturePadding.Pkcs1);
+
+                byte[] csrDer = request.CreateSigningRequest();
+                return (Convert.ToBase64String(csrDer), rsa);
+            }
+        }
+
+        public static string GenerateCsrWithPrivateKey(string registrationId, AsymmetricAlgorithm privateKey)
+        {
+            if (privateKey is ECDsa eccPrivateKey)
+            {
+                var request = new CertificateRequest(
+                    $"CN={registrationId}",
+                    eccPrivateKey,
+                    HashAlgorithmName.SHA256);
+
+                byte[] csrDer = request.CreateSigningRequest();
+                return Convert.ToBase64String(csrDer);
+            }
+            else if (privateKey is RSA rsaPrivateKey)
+            {
+                var request = new CertificateRequest(
+                    $"CN={registrationId}",
+                    rsaPrivateKey,
+                    HashAlgorithmName.SHA256,
+                    RSASignaturePadding.Pkcs1);
+
+                byte[] csrDer = request.CreateSigningRequest();
+                return Convert.ToBase64String(csrDer);
+            }
+            else
+            {
+                throw new NotSupportedException("Unrecognized private key");
+            }
+        }
+
+        public enum CsrAlgorithm
+        {
+            ECC,
+            RSA,
         }
     }
 }
