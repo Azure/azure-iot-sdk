@@ -169,7 +169,7 @@ namespace Microsoft.Azure.Devices.Client.Unified.Connection
             _managedMqttConnection.ConnectedAsync += HandleConnectedToHubAsync;
 
 
-            // If CSR was a part of the provisioning request, then connect to IoT hub using the issued client certificates rather than the same certs used to connect to DPS.
+            // If CSR was a part of the provisioning request, then connect to IoT hub using the operational certificates (the ones signed by DPS) rather than the boot certificates (the ones used to authenticate with DPS).
             if (provisioningResult.IssuedClientCertificateChain != null && provisioningResult.IssuedClientCertificateChain.Count > 0)
             {
                 //TODO any security concerns around owning this step in the SDK?
@@ -180,7 +180,7 @@ namespace Microsoft.Azure.Devices.Client.Unified.Connection
 
                 // Export and reimport with Exportable flag
                 byte[] pfxBytes = deviceCertTemp.Export(X509ContentType.Pfx);
-                CurrentConnectionContext.AuthenticationProvider = new(new X509Certificate2(pfxBytes, (string?)null, X509KeyStorageFlags.Exportable));
+                CurrentConnectionContext.AuthenticationProvider = new(X509CertificateLoader.LoadPkcs12(pfxBytes, (string?)null, X509KeyStorageFlags.Exportable));
             }
             else
             {

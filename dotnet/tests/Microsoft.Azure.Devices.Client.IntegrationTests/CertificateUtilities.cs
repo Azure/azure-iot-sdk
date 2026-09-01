@@ -63,7 +63,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
             }
 
             byte[] leafCertBytes = Convert.FromBase64String(certificateChain[0]);
-            using var leafCert = new X509Certificate2(leafCertBytes);
+            using var leafCert = X509CertificateLoader.LoadCertificate(leafCertBytes);
             return leafCert.CopyWithPrivateKey(privateKey);
         }
 
@@ -95,7 +95,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
             }
 
             byte[] leafCertBytes = Convert.FromBase64String(certificateChain[0]);
-            using var leafCert = new X509Certificate2(leafCertBytes);
+            using var leafCert = X509CertificateLoader.LoadCertificate(leafCertBytes);
             return leafCert.CopyWithPrivateKey(privateKey);
         }
 
@@ -116,7 +116,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
             foreach (string certBase64 in certificateChain)
             {
                 byte[] certBytes = Convert.FromBase64String(certBase64);
-                collection.Add(new X509Certificate2(certBytes));
+                collection.Add(X509CertificateLoader.LoadCertificate(certBytes));
             }
 
             return collection;

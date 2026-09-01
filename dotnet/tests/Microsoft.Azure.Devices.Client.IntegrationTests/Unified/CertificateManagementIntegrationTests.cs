@@ -86,7 +86,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Unified
 
             // Export and reimport with Exportable flag
             byte[] pfxBytes = deviceCertTemp.Export(X509ContentType.Pfx);
-            connectionContext.AuthenticationProvider = new(new X509Certificate2(pfxBytes, (string?)null, X509KeyStorageFlags.Exportable));
+            connectionContext.AuthenticationProvider = new(X509CertificateLoader.LoadPkcs12(pfxBytes, (string?)null, X509KeyStorageFlags.Exportable));
 
             await connectionClient.ConnectAsync(connectionContext, cancellationToken: cts.Token);
 
