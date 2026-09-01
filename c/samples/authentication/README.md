@@ -15,6 +15,8 @@ for the full design.
 | App-notified issuance (D4) | managed (OpenSSL) | `dps_csr_managed` | Uses `set_operational_cert_callback` to observe the issued chain. |
 | Runtime Hub renewal (D7) | managed (OpenSSL) | `hub_renew` | `send_csr()` two-phase renewal on a connected Classic hub. |
 | DPS CSR enrollment with an APP-OWNED provider | `sample_cert_provider` (samples/common) | `custom_certificate_provider` | Same flow as `dps_csr_managed`, but the provider - incl. real PKCS#10 issuance - lives in the samples tree so you can copy it. |
+| Non-extractable key, engine/provider stack (D8) | your own (10 lines) | `hsm_pkcs11` | Key stays in a PKCS#11 token / TPM; the provider returns a `pkcs11:` URI + provider id and the **Paho adapter signs the TLS handshake through it**. Needs OpenSSL 3.0+ and a provider for the token. |
+| Non-extractable key, no engine abstraction (D8) | your own | `hsm_sign_callback` | Only "sign these bytes" is available, so the provider implements the `sign()` hook and a BYO adapter drives the handshake through it. **Not a Paho path** — see below. |
 | BYO provider (TPM / HSM / secure element / OS keystore) | your own | `custom_provider_template` | Minimal template implementing the full vtable, incl. the `sign()` hook (D8) for non-extractable keys. |
 
 The reusable app-owned provider `sample_cert_provider` (in `samples/common`)
@@ -22,10 +24,30 @@ issues CSRs with **platform-native crypto** - OpenSSL 3.0+ on Linux
 (`sample_csr_openssl.c`) and CNG/NCrypt on Windows (`sample_csr_cng.c`) - and is
 the recommended starting point for your own integration.
 
-The HSM / PKCS#11 / non-extractable-key scenarios are deployment-specific.
-Start from `custom_provider_template` and fill in the marked bodies
-(`get_csr()`, `sign()`, `store_issued_certificate()`), using `sample_cert_provider`
-as a complete, working reference.
+### Which non-extractable path applies
+
+Both D8 routes are implemented end to end, but they land on different adapters,
+so pick by what the platform's crypto stack offers:
+
+- **The key can be named** (a PKCS#11 URI, a TPM 2.0 object) and an OpenSSL 3.x
+  provider for it is installed: use `client_key_uri` + `crypto_engine_id`, i.e.
+  `hsm_pkcs11`. The shipping **Paho adapter honours this**: it resolves the URI
+  through the provider and the handshake signs inside the hardware. A URI it
+  cannot resolve fails the connect with `AZ_IOT_ERR_TLS` and a message naming
+  it, rather than dying inside the handshake.
+- **The key cannot be named** — a bare secure element, a vendor TLS stack, a
+  bare-metal port: implement the vtable's `sign()` hook, i.e.
+  `hsm_sign_callback`. The SDK carries the hook to the adapter, but **Paho
+  cannot use it**: Paho takes its client key as a file path and exposes neither
+  the `SSL_CTX` nor a key callback (upstream has none either), so it refuses a
+  `sign()`-only credential with `AZ_IOT_ERR_NOT_SUPPORTED` instead of
+  connecting without a client key. This route needs a BYO adapter; see
+  [how_to_byo_mqtt_client.md](../../docs/how_to_byo_mqtt_client.md).
+
+The CSR side of an HSM integration is still deployment-specific: start from
+`custom_provider_template` and fill in the marked bodies (`get_csr()`,
+`store_issued_certificate()`), using `sample_cert_provider` as a complete,
+working reference.
 
 ## Samples
 
@@ -53,6 +75,32 @@ adapter.
 Runtime operational-certificate renewal against a connected Classic hub: builds
 a fresh CSR from the managed provider, calls `az_iot_connection_client_send_csr()`,
 and persists the renewed chain. Requires the managed provider and Paho.
+
+### `hsm_pkcs11`
+Provisions through DPS and connects with a device key that never leaves a
+PKCS#11 token (D8). The provider returns `client_key_uri` + `crypto_engine_id`
+and no key material at all; the certificate stays an ordinary PEM file, because
+a certificate is public. Requires the Paho adapter, OpenSSL 3.0+, and an
+OpenSSL 3.x provider for the token (`pkcs11-provider` for PKCS#11,
+`tpm2-openssl` for TPM 2.0) that OpenSSL can find.
+
+The provider must register a **decoder for its own key-reference PEM**, because
+that is what OpenSSL — and therefore Paho — uses to resolve the file back to the
+key inside the token. `pkcs11-provider` does so from **0.5**; older builds
+(Ubuntu 24.04 packages 0.3) are detected at connect time and refused with a
+message saying so, rather than failing inside the handshake.
+
+`c/eng/setup-pkcs11-provider.sh` builds a suitable provider and
+`c/eng/setup-softhsm.sh` provisions a SoftHSM2 token from an existing device key
+and prints the environment this sample expects. Together they are how CI runs
+the custody tests.
+
+### `hsm_sign_callback`
+The `sign()` hook (D8) for a stack with no engine or provider abstraction.
+Self-contained: it brings a stand-in adapter so it runs anywhere with no
+hardware, no broker and no network, and shows the exact line an integrator
+writes in their own adapter to consume `tls.sign` / `tls.sign_ctx`. Replace two
+things to make it real: the hook body, and the stand-in adapter.
 
 ### `custom_certificate_provider`
 The COMPLETE app-owned path: a full `az_iot_certificate_provider`
@@ -84,6 +132,27 @@ Shared (all DPS-based connecting samples):
 | `AZ_IOT_CLIENT_KEY` | Bootstrap X.509 private key path |
 | `AZ_IOT_TRUSTED_CA` | Trusted CA path |
 
+`hsm_pkcs11` replaces `AZ_IOT_CLIENT_KEY` with the key reference:
+
+| Variable | Meaning |
+|----------|---------|
+| `AZ_IOT_CLIENT_KEY_URI` | Key reference, e.g. `pkcs11:token=aziot;object=device-key;type=private` |
+| `AZ_IOT_CRYPTO_ENGINE_ID` | OpenSSL provider id: `pkcs11`, `tpm2` |
+
+**If the token needs a PIN**, name a file the provider reads it from rather than
+putting the PIN in the URI:
+
+```
+AZ_IOT_CLIENT_KEY_URI='pkcs11:token=aziot;object=device-key;type=private?pin-source=file:/etc/az-iot/token-pin'
+```
+
+Paho takes the private key as a file path, so for a provider that does not encode
+its own key reference the adapter has to write the URI into a reference file for
+OpenSSL to resolve later. An inline `?pin-value=<PIN>` would therefore be copied
+to disk by the one code path whose purpose is that the key never lands there, so
+the adapter refuses it. `pin-source` names where the PIN lives instead, which
+keeps the reference loadable without putting the secret in it.
+
 Managed-provider samples additionally use (optional, with defaults):
 
 | Variable | Default | Meaning |
@@ -96,4 +165,6 @@ Managed-provider samples additionally use (optional, with defaults):
 The samples build with the rest of the tree when `AZ_IOT_BUILD_SAMPLES=ON`
 (default). The two connecting samples appear only when OpenSSL 3.0+ is available
 (`AZ_IOT_WITH_CERT_PROVIDER_MANAGED`) and the Paho adapter is enabled
-(`AZ_IOT_WITH_PAHO`). The template always builds.
+(`AZ_IOT_WITH_PAHO`). `hsm_pkcs11` needs only the Paho adapter to build; the
+provider it drives is a run-time requirement. The template and
+`hsm_sign_callback` always build.

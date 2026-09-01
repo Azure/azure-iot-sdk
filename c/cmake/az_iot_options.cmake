@@ -53,6 +53,11 @@ option(AZ_IOT_BUILD_E2E_CSR    "Build the CSR enrollment e2e test (needs a CA-li
 # built when it is going to be run, not built-and-skipped. The token URI comes
 # from AZ_IOT_TEST_PKCS11_KEY_URI at run time and the suite fails if it is unset.
 option(AZ_IOT_BUILD_PKCS11_TESTS "Register the Paho key-custody tests that need a PKCS#11 token" OFF)
+# The custody e2e suite runs DPS issuance and hub traffic with a device key that
+# lives inside a PKCS#11 token. It needs BOTH a provisioned token and the
+# standard e2e Azure resources, which only the e2e workflow has, so it follows
+# the same build-it-when-it-will-run rule as AZ_IOT_BUILD_E2E_CSR.
+option(AZ_IOT_BUILD_E2E_PKCS11 "Build the PKCS#11 custody e2e test (needs a token + e2e resources)" OFF)
 option(AZ_IOT_USE_SYSTEM_DEPS  "Prefer find_package() over fetched deps"       OFF)
 option(AZ_IOT_USE_CPM          "Use CPM.cmake to fetch deps from source"       OFF)
 option(AZ_IOT_WARNINGS_AS_ERRORS "Treat compiler warnings as errors"           ON)
