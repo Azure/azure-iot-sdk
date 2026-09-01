@@ -518,7 +518,7 @@ az_iot_result az_iot_twin_client_init(az_iot_twin_client* client, az_iot_connect
 
   if (profile->flavor == AZ_IOT_HUB_FLAVOR_NEXT)
   {
-    /* Hub-Next: subscribe to:
+    /* Hub-Next dispatches these topics from the presence handshake's dev/# wildcard:
      *   ih/{device_id}/dev/twin/get/response
      *   ih/{device_id}/dev/twin/reported/response
      *   ih/{device_id}/dev/twin/desired
@@ -549,22 +549,11 @@ az_iot_result az_iot_twin_client_init(az_iot_twin_client* client, az_iot_connect
       return r;
     }
 
-    r = az_iot_connection_client__add_subscription_on_connect(
-        conn, prefix, AZ_IOT_MQTT_QOS_1, client, AZ_IOT_SUBSCRIPTION_FAILS_SESSION, NULL);
-    if (r != AZ_IOT_OK)
-    {
-      (void)az_iot_connection_client__remove_subscriptions_for(conn, client);
-      (void)az_iot_connection_client__unregister_inbound_handlers(conn, client);
-      memset(client, 0, sizeof(*client));
-      return r;
-    }
-
     /* Register handler for twin/reported/response */
     const char* reported_parts[] = { "ih/", device_id, "/dev/twin/reported/response" };
     if (az_iot_span_writer_build_str(AZ_SPAN_FROM_BUFFER(prefix), NULL, reported_parts, 3)
         != AZ_IOT_OK)
     {
-      (void)az_iot_connection_client__remove_subscriptions_for(conn, client);
       (void)az_iot_connection_client__unregister_inbound_handlers(conn, client);
       memset(client, 0, sizeof(*client));
       return AZ_IOT_ERR_INTERNAL;
@@ -573,16 +562,6 @@ az_iot_result az_iot_twin_client_init(az_iot_twin_client* client, az_iot_connect
         conn, prefix, on_twin_reported_response_next, client);
     if (r != AZ_IOT_OK)
     {
-      (void)az_iot_connection_client__remove_subscriptions_for(conn, client);
-      (void)az_iot_connection_client__unregister_inbound_handlers(conn, client);
-      memset(client, 0, sizeof(*client));
-      return r;
-    }
-    r = az_iot_connection_client__add_subscription_on_connect(
-        conn, prefix, AZ_IOT_MQTT_QOS_1, client, AZ_IOT_SUBSCRIPTION_FAILS_SESSION, NULL);
-    if (r != AZ_IOT_OK)
-    {
-      (void)az_iot_connection_client__remove_subscriptions_for(conn, client);
       (void)az_iot_connection_client__unregister_inbound_handlers(conn, client);
       memset(client, 0, sizeof(*client));
       return r;
@@ -593,7 +572,6 @@ az_iot_result az_iot_twin_client_init(az_iot_twin_client* client, az_iot_connect
     if (az_iot_span_writer_build_str(AZ_SPAN_FROM_BUFFER(filter), NULL, desired_parts, 3)
         != AZ_IOT_OK)
     {
-      (void)az_iot_connection_client__remove_subscriptions_for(conn, client);
       (void)az_iot_connection_client__unregister_inbound_handlers(conn, client);
       memset(client, 0, sizeof(*client));
       return AZ_IOT_ERR_INTERNAL;
@@ -602,20 +580,12 @@ az_iot_result az_iot_twin_client_init(az_iot_twin_client* client, az_iot_connect
         conn, filter, on_twin_desired_next, client);
     if (r != AZ_IOT_OK)
     {
-      (void)az_iot_connection_client__remove_subscriptions_for(conn, client);
       (void)az_iot_connection_client__unregister_inbound_handlers(conn, client);
       memset(client, 0, sizeof(*client));
       return r;
     }
-    r = az_iot_connection_client__add_subscription_on_connect(
-        conn, filter, AZ_IOT_MQTT_QOS_1, client, AZ_IOT_SUBSCRIPTION_FAILS_SESSION, NULL);
-    if (r != AZ_IOT_OK)
-    {
-      (void)az_iot_connection_client__remove_subscriptions_for(conn, client);
-      (void)az_iot_connection_client__unregister_inbound_handlers(conn, client);
-      memset(client, 0, sizeof(*client));
-      return r;
-    }
+    /* No SUBSCRIBEs on this path: the presence handshake already holds
+     * ih/{device_id}/dev/#, which covers all three of these topics. */
   }
   else
   {
