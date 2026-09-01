@@ -780,8 +780,7 @@ static const az_iot_mock_call* find_publish_topic(az_iot_mock_mqtt_client* m, co
 }
 
 /* Drive a Hub-Next session to CONNECTED. Classic announces CONNECTED on
- * CONNACK; Next has to complete the presence birth handshake first, and only
- * then are the feature filters subscribed. */
+ * CONNACK; Next first SUBACKs the presence wildcard and completes birth. */
 static void open_to_connected_next(fixture* fx)
 {
   assert_int_equal(

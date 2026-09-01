@@ -12,7 +12,7 @@
  *   Inbound    "devices/{device_id}/messages/devicebound/{properties}"
  *
  * Next:
- *   Subscribe  "ih/{device_id}/dev/c2d"
+ *   Covered by "ih/{device_id}/dev/#" from the presence handshake
  *   Inbound    "ih/{device_id}/dev/c2d"
  */
 #include <stdbool.h>
@@ -272,7 +272,7 @@ az_iot_result az_iot_c2d_client_init(az_iot_c2d_client* client, az_iot_connectio
 
   if (profile->flavor == AZ_IOT_HUB_FLAVOR_NEXT)
   {
-    /* Hub-Next: subscribe to "ih/{device_id}/dev/c2d" */
+    /* Hub-Next delivery comes through the presence handshake's device-wide wildcard. */
     const char* device_id = az_iot_connection_client__device_id(conn);
     if (!device_id)
     {

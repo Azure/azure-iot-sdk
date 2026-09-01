@@ -900,8 +900,8 @@ static void open_to_connected_next(fixture* fx)
 {
   open_next(fx);
   finish_birth_next(fx);
-  /* The birth-ack is what releases the feature subscriptions; they still have
-   * to be acked before CONNECTED. */
+  /* gen2 feature delivery uses the presence wildcard; there are no later
+   * per-feature SUBACKs to wait for. */
   az_iot_test_ack_subscriptions(&fx->conn, fx->mock);
 }
 

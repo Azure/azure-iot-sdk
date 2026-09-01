@@ -3056,9 +3056,10 @@ size_t az_iot_connection_client__remove_subscriptions_for(
   /* Withdraw each entry from the broker too, on both generations. This cannot
    * touch AEG's device-wide ih/{device_id}/dev/# subscription: the presence
    * handshake issues that one directly, not through this registry, so it has no
-   * owner and never appears in the loop below. Only the feature client's own
-   * per-feature filters are withdrawn, and doing so leaves the wildcard -- and
-   * therefore every other feature's delivery -- untouched. */
+   * owner and never appears in the loop below. On AEG, entries in this registry
+   * are application custom topics; feature delivery uses the wildcard instead.
+   * Withdrawing a custom filter leaves the wildcard -- and therefore every
+   * feature's delivery -- untouched. */
   const bool unsubscribe_on_the_wire = client->active_client && client->active_client->iface
       && client->active_client->iface->unsubscribe && client->state == AZ_IOT_CONN_STATE_CONNECTED;
 

@@ -1377,8 +1377,7 @@ static const az_iot_mock_call* find_publish(az_iot_mock_mqtt_client* m, const ch
 }
 
 /* Drive a Hub-Next session to CONNECTED. Unlike Classic, CONNACK alone does not
- * announce CONNECTED: the presence birth handshake has to complete first, and
- * the feature filters are only subscribed once it does. */
+ * announce CONNECTED: the presence wildcard and birth handshake complete first. */
 static void open_to_connected_next(fixture* fx)
 {
   assert_int_equal(
@@ -1442,8 +1441,8 @@ static void open_to_connected_next(fixture* fx)
   assert_true(az_iot_mock_mqtt_client_inject_event(fx->mock, &ack));
   assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
 
-  /* The birth-ack is what releases the feature subscriptions; they still have
-   * to be acked before CONNECTED. */
+  /* gen2 feature delivery uses the presence wildcard; there are no later
+   * per-feature SUBACKs to wait for. */
   az_iot_test_ack_subscriptions(&fx->conn, fx->mock);
 }
 

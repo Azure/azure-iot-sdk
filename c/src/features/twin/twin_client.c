@@ -518,7 +518,7 @@ az_iot_result az_iot_twin_client_init(az_iot_twin_client* client, az_iot_connect
 
   if (profile->flavor == AZ_IOT_HUB_FLAVOR_NEXT)
   {
-    /* Hub-Next: subscribe to:
+    /* Hub-Next dispatches these topics from the presence handshake's dev/# wildcard:
      *   ih/{device_id}/dev/twin/get/response
      *   ih/{device_id}/dev/twin/reported/response
      *   ih/{device_id}/dev/twin/desired
