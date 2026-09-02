@@ -38,9 +38,9 @@
 } sample_state_t;
 
 <span style="color: #6a9955;">// ─── Callbacks (simple, typed) ───────────────────────────────</span>
-<span style="color: #0000ff;">static void</span> <span style="color: #795e26;">on_conn_state</span>(az_iot_connection_state s, az_iot_result reason, <span style="color: #0000ff;">void</span>* ctx)
+<span style="color: #0000ff;">static void</span> <span style="color: #795e26;">on_conn_state</span>(<span style="color: #0000ff;">const</span> az_iot_connection_state_event* event, <span style="color: #0000ff;">void</span>* ctx)
 {   <span style="color: #6a9955;">// Just store the new state — 3 lines total</span>
-    ((user_context_t*)ctx)-&gt;conn_state = s;
+    ((user_context_t*)ctx)-&gt;conn_state = event-&gt;state;
 }
 
 <span style="color: #0000ff;">static void</span> <span style="color: #795e26;">on_send_done</span>(az_iot_result status, <span style="color: #0000ff;">void</span>* ctx)
