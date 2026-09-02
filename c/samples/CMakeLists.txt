@@ -9,7 +9,7 @@ if(AZ_IOT_WITH_PAHO)
     add_executable(az_iot_sample_telemetry telemetry/main.c common/sample_utils.c)
     target_include_directories(az_iot_sample_telemetry PRIVATE common)
     target_link_libraries(az_iot_sample_telemetry
-        PRIVATE az_iot_core az_iot_adapter_paho)
+        PRIVATE az_iot_gen1 az_iot_gen2 az_iot_adapter_paho)
     az_iot_apply_warnings(az_iot_sample_telemetry)
 
     add_executable(az_iot_sample_twin_get_patch

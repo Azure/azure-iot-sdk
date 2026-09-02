@@ -164,7 +164,8 @@ int main(void)
   user_context user_ctx = { 0 };
   az_iot_certificate_provider_pem certs = { 0 };
   az_iot_connection_client connection_client = { 0 };
-  az_iot_telemetry_client telemetry_client = { 0 };
+  az_iot_gen1_telemetry_client gen1_telemetry = { 0 };
+  az_iot_gen2_telemetry_client gen2_telemetry = { 0 };
 
   /* Certificate provider: device X.509 identity supplied as PEM files. */
   az_iot_certificate_provider_pem_options pem = az_iot_certificate_provider_pem_options_default();
@@ -208,11 +209,6 @@ int main(void)
     goto cleanup;
   }
 
-  if (az_iot_telemetry_client_init(&telemetry_client, &connection_client) != AZ_IOT_OK)
-  {
-    goto cleanup;
-  }
-
   if (az_iot_connection_client_open(&connection_client) != AZ_IOT_OK)
   {
     goto cleanup;
@@ -229,6 +225,9 @@ int main(void)
 
   if (user_ctx.conn_state == AZ_IOT_CONN_STATE_CONNECTED)
   {
+    az_iot_result telemetry_result = connection_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5
+        ? az_iot_gen2_telemetry_client_init(&gen2_telemetry, &connection_client)
+        : az_iot_gen1_telemetry_client_init(&gen1_telemetry, &connection_client);
     fprintf(stderr, "[direct-hub] connected; sending telemetry\n");
 
     static const uint8_t payload[] = "{\"temp\":23}";
@@ -241,7 +240,11 @@ int main(void)
     msg.properties = props;
     msg.properties_count = sizeof(props) / sizeof(props[0]);
 
-    if (az_iot_telemetry_client_send(&telemetry_client, &msg, on_send_done, &user_ctx) == AZ_IOT_OK)
+    if (telemetry_result == AZ_IOT_OK
+        && (connection_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5
+                ? az_iot_gen2_telemetry_client_send(&gen2_telemetry, &msg, on_send_done, &user_ctx)
+                : az_iot_gen1_telemetry_client_send(&gen1_telemetry, &msg, on_send_done, &user_ctx))
+            == AZ_IOT_OK)
     {
       for (int i = 0; i < 600 && !user_ctx.send_done; ++i)
       {
@@ -271,7 +274,8 @@ int main(void)
   }
 
 cleanup:
-  az_iot_telemetry_client_destroy(&telemetry_client);
+  az_iot_gen1_telemetry_client_destroy(&gen1_telemetry);
+  az_iot_gen2_telemetry_client_destroy(&gen2_telemetry);
   az_iot_connection_client_destroy(&connection_client);
   az_iot_certificate_provider_pem_destroy(&certs);
   direct_config_release(&config);
