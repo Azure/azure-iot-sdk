@@ -13,7 +13,7 @@ namespace Microsoft.Azure.Devices.Client.Mqtt
         ///     Gets or sets the result code.
         ///     <remarks>MQTT 5.0.0+ feature.</remarks>
         /// </summary>
-        public required MqttClientUnsubscribeResultCode ResultCode { get; set;  }
+        public required MqttClientUnsubscribeReasonCode ReasonCode { get; set;  }
 
         /// <summary>
         ///     Gets or sets the topic filter.
