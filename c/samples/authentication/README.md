@@ -196,8 +196,12 @@ activate = 1
 `activate = 1` is load-bearing: these settings apply only to a provider the
 configuration itself brings up, not to one loaded later by name.
 
-`c/eng/setup-softhsm.sh` generates exactly this file and exports `OPENSSL_CONF`,
-so the repo's own SoftHSM2 setup needs nothing further.
+`c/eng/setup-softhsm.sh` generates a configuration of this shape and exports
+`OPENSSL_CONF`, so the repo's own SoftHSM2 setup needs nothing further. What it
+writes differs in the paths, which it fills in rather than hard-codes: the
+`pkcs11-module-path` it detected, and a `module = <dir>/pkcs11.so` line only
+when `OPENSSL_MODULES` names a directory that actually holds one. Compare
+yours for the two `pkcs11-module-*` settings and `activate`, not line for line.
 
 Managed-provider samples additionally use (optional, with defaults):
 

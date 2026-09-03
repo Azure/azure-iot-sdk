@@ -133,7 +133,17 @@ fi
 # Where setup-pkcs11-provider.sh put pkcs11.so, if it ran. Naming the module
 # explicitly keeps the configuration independent of the ambient module search
 # path; when it is unset the provider is found the usual way.
+#
+# Checked rather than trusted: OPENSSL_MODULES may point at an unrelated modules
+# directory, and writing "module = <dir>/pkcs11.so" for a file that is not there
+# produces a configuration OpenSSL fails to load -- a worse outcome than simply
+# letting the provider be found the usual way.
 modules_dir="${OPENSSL_MODULES:-}"
+if [ -n "${modules_dir}" ] && [ ! -f "${modules_dir}/pkcs11.so" ]; then
+    echo "setup-softhsm: OPENSSL_MODULES='${modules_dir}' holds no pkcs11.so;" \
+         "leaving the provider to be located the usual way" >&2
+    modules_dir=""
+fi
 
 pin_file="${work_dir}/token-pin"
 printf '%s' "${PIN}" > "${pin_file}"
