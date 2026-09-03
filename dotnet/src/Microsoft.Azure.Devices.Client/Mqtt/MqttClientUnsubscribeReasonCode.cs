@@ -4,7 +4,7 @@ using System.Text;
 
 namespace Microsoft.Azure.Devices.Client.Mqtt
 {
-    public enum MqttClientUnsubscribeResultCode
+    public enum MqttClientUnsubscribeReasonCode
     {
         Success = 0,
         NoSubscriptionExisted = 17,
