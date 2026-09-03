@@ -153,6 +153,52 @@ to disk by the one code path whose purpose is that the key never lands there, so
 the adapter refuses it. `pin-source` names where the PIN lives instead, which
 keeps the reference loadable without putting the secret in it.
 
+**Configure the provider to leave hashing to OpenSSL.** This is not optional on
+most tokens -- without it a TLS 1.2 handshake fails outright:
+
+```
+error:40800054:pkcs11:p11prov_GetOperationState:...:Error returned by C_GetOperationState
+```
+
+An OpenSSL 3.x PKCS#11 provider offers digest implementations as well as key
+operations, so once loaded it can end up servicing the TLS handshake transcript
+hash. TLS 1.2 duplicates that digest context, the provider implements the
+duplication with `C_GetOperationState`, and most tokens do not support that on a
+digest session. TLS 1.3 does not duplicate the context, so the same credential
+can work against one endpoint and fail against another purely on negotiated
+version -- which is what makes this worth stating plainly.
+
+Your token never needed to hash anything: only the private key lives there.
+Point `OPENSSL_CONF` at a configuration that blocks the operation, and hashing
+goes back to OpenSSL's default provider while signing stays in the token:
+
+```ini
+openssl_conf = az_iot_init
+
+[az_iot_init]
+providers = az_iot_providers
+
+[az_iot_providers]
+default = az_iot_default_sect
+pkcs11 = az_iot_pkcs11_sect
+
+[az_iot_default_sect]
+activate = 1
+
+[az_iot_pkcs11_sect]
+pkcs11-module-path = /usr/lib/softhsm/libsofthsm2.so   # your PKCS#11 module
+pkcs11-module-block-operations = digest
+# Some modules crash when OpenSSL tears the provider down at exit.
+pkcs11-module-quirks = no-deinit
+activate = 1
+```
+
+`activate = 1` is load-bearing: these settings apply only to a provider the
+configuration itself brings up, not to one loaded later by name.
+
+`c/eng/setup-softhsm.sh` generates exactly this file and exports `OPENSSL_CONF`,
+so the repo's own SoftHSM2 setup needs nothing further.
+
 Managed-provider samples additionally use (optional, with defaults):
 
 | Variable | Default | Meaning |

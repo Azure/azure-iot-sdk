@@ -22,6 +22,8 @@
 #   PKCS11_PROVIDER_MODULE    the SoftHSM2 PKCS#11 module
 #   AZ_IOT_CLIENT_KEY_URI     RFC 7512 URI of the imported key (the PIN is named by
 #                             pin-source, never inlined as pin-value)
+#   OPENSSL_CONF              an OpenSSL config that loads the pkcs11 provider
+#                             with digests disabled (see the note further down)
 #   AZ_IOT_CRYPTO_ENGINE_ID   "pkcs11"
 #   AZ_IOT_TEST_PKCS11_KEY_URI  same URI, for the unit-level custody suite
 #
@@ -128,14 +130,66 @@ fi
 # such a URI outright. pin-source names where the PIN lives instead, which keeps
 # the reference independently loadable (OpenSSL must log in to the token when it
 # resolves the file) without putting the secret in it.
+# Where setup-pkcs11-provider.sh put pkcs11.so, if it ran. Naming the module
+# explicitly keeps the configuration independent of the ambient module search
+# path; when it is unset the provider is found the usual way.
+modules_dir="${OPENSSL_MODULES:-}"
+
 pin_file="${work_dir}/token-pin"
 printf '%s' "${PIN}" > "${pin_file}"
 chmod 600 "${pin_file}"
 uri="pkcs11:token=${TOKEN_LABEL};object=${KEY_LABEL};type=private?pin-source=file:${pin_file}"
 
+# An OpenSSL configuration that loads the pkcs11 provider with DIGESTS DISABLED.
+#
+# Without this, a TLS 1.2 client-authentication handshake fails outright:
+#
+#   error:40800054:pkcs11:p11prov_GetOperationState:...:Error returned by
+#   C_GetOperationState
+#
+# The provider offers digest implementations as well as key operations, so once
+# it is loaded it can end up servicing the TLS handshake transcript hash. TLS
+# 1.2 duplicates that digest context, the provider implements duplication with
+# C_GetOperationState, and SoftHSM2 -- like most tokens, by the provider's own
+# note in digests.c -- does not support it on a digest session. TLS 1.3 does not
+# duplicate the context, which is why only the 1.2 path breaks.
+#
+# The token never needed to hash anything: only the private key lives there.
+# Blocking the digest operation routes hashing back to OpenSSL's default
+# provider and leaves signing in the token, which is the whole point.
+openssl_cnf="${work_dir}/openssl-pkcs11.cnf"
+cat > "${openssl_cnf}" <<CNF
+openssl_conf = az_iot_init
+
+[az_iot_init]
+providers = az_iot_providers
+
+[az_iot_providers]
+default = az_iot_default_sect
+pkcs11 = az_iot_pkcs11_sect
+
+[az_iot_default_sect]
+activate = 1
+
+[az_iot_pkcs11_sect]
+${modules_dir:+module = ${modules_dir}/pkcs11.so}
+pkcs11-module-path = ${module}
+pkcs11-module-block-operations = digest
+# Do not tear the module down when OpenSSL unloads the provider. SoftHSM2
+# crashes during that teardown once the provider has been activated from
+# configuration, which turns a passing test run into a SEGFAULT at exit. The
+# provider documents this quirk for exactly that situation; the cost is memory
+# the process was about to release anyway.
+pkcs11-module-quirks = no-deinit
+# Activation must be here, not left to the adapter's own OSSL_PROVIDER_try_load:
+# the settings above apply only to a provider the configuration brings up.
+activate = 1
+CNF
+
 cat <<EOF
 export SOFTHSM2_CONF='${conf}'
 export PKCS11_PROVIDER_MODULE='${module}'
+export OPENSSL_CONF='${openssl_cnf}'
 export AZ_IOT_CLIENT_KEY_URI='${uri}'
 export AZ_IOT_CRYPTO_ENGINE_ID='pkcs11'
 export AZ_IOT_TEST_PKCS11_KEY_URI='${uri}'
