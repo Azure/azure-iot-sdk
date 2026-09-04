@@ -140,8 +140,9 @@ flowchart LR
 
 - **Connection state + error propagation (✅, Phase 0).** Shared observer registry
   (public + internal registration, two-pass dispatch, compile-time capacity),
-  `az_iot_conn_status` / `az_iot_conn_reason` / `az_iot_error_source`, lifecycle
-  guards (`DEINITIALIZING`, re-init poison guard, `AZ_IOT_ERR_DETACHED`). Detail:
+  rich `az_iot_connection_state_event` fields (`az_iot_conn_reason` /
+  `az_iot_error_source`), lifecycle guards (`DEINITIALIZING`, re-init poison
+  guard, `AZ_IOT_ERR_DETACHED`). Detail:
   [connection-state-and-error-propagation.md](connection-state-and-error-propagation.md).
 - **Twin multi-subscriber + core state machine (✅, Phase 1).** `az_iot_twin_client`
   desired-property subscriber registry; `az_iot_adu_client_t` init/destroy/`do_work`;

@@ -92,8 +92,10 @@ typedef struct
   size_t issued_count;
 } csr_ctx;
 
-static void on_conn_state(az_iot_connection_state s, az_iot_result reason, void* user_ctx)
+static void on_conn_state(const az_iot_connection_state_event* event, void* user_ctx)
 {
+  az_iot_connection_state s = event->state;
+  az_iot_result reason = event->reason;
   csr_ctx* c = (csr_ctx*)user_ctx;
   c->conn_state = s;
   c->last_reason = reason;

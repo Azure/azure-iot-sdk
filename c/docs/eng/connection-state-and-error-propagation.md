@@ -36,15 +36,14 @@ This design replaces the single callback with a **shared observer registry**,
 adds a **lifecycle/reuse contract** with a teardown notification, and introduces
 a **rich status struct**.
 
-> **Not implemented, and it now shares a boundary with the client split.**
-> Nothing in this document is in the tree. The client-separation work changes the
-> same callback in its phase P1d — `az_iot_connection_state_callback` starts
-> taking one size-stamped `az_iot_connection_state_event` struct carrying the
-> resolved connection profile
+> **The event argument is implemented; the registry and rich status fields are
+> not.** Client-separation phase P1d changed
+> `az_iot_connection_state_callback` to take one SDK-produced, size-stamped
+> `az_iot_connection_state_event` carrying the resolved connection profile
 > ([client-separation.md §9](client-separation.md#the-profile-can-change-while-the-device-is-running)).
-> The two must converge rather than fork: the status argument below is the same
-> parameter, so it should grow into that event struct, and a registry built later
-> registers callbacks of that signature.
+> The remaining work must extend that event rather than introduce a second
+> status parameter, and a registry built later registers callbacks of its
+> existing signature.
 
 ---
 
@@ -63,9 +62,8 @@ is set by the registration helper, never passed by the caller.
 
 ```c
 typedef void (*az_iot_connection_state_observer_callback)(
-    az_iot_connection_state   state,
-    const az_iot_conn_status* status,   /* never NULL; see §4 */
-    void*                       user_ctx);
+  const az_iot_connection_state_event* event,  /* never NULL; see §4 */
+  void* user_ctx);
 
 /* Public — application */
 az_iot_result az_iot_connection_client_add_state_observer(
@@ -176,48 +174,62 @@ with a terminal lifecycle value:
 
 ### 4.2 Observer signature
 
-The bare `az_iot_result reason` is replaced by a status struct passed by const
-pointer (never NULL). The struct and any string it references are **valid only
-for the duration of the callback**; observers **MUST** copy anything they need to
-retain.
+P1d replaced the loose `(state, reason)` arguments with one const event pointer
+(never NULL). The event, its `profile`, and any future string it references are
+**valid only for the duration of the callback**; observers **MUST** copy anything
+they need to retain.
 
-### 4.3 Status struct
+### 4.3 Event and future status fields
+
+The first four fields are implemented. Rich classification and raw diagnostics
+append to the same size-stamped event; they do not introduce another callback
+parameter or a nested status object:
 
 ```c
-typedef struct
+typedef struct az_iot_connection_state_event
 {
+  uint32_t                    _internal_size;
+  az_iot_connection_state    state;
+
     /* SDK-level result of the operation that produced this status. This is the
      * normalized azure-iot-sdk return code (AZ_IOT_OK on success, or an
      * AZ_IOT_ERR_* value). Always populated. */
-    az_iot_result       result;
+  az_iot_result               reason;
+
+  /* Non-NULL exactly for CONNECTED; implemented by P1d. */
+  const az_iot_hub_profile*   profile;
 
     /* WHY the transition/fault happened, as a stable high-level category
      * (see §4.4 taxonomy). Drives application decisions without requiring it to
-     * decode raw protocol/transport codes. Always populated. */
-    az_iot_conn_reason  reason;
+   * decode raw protocol/transport codes. Future field. */
+  az_iot_conn_reason          connection_reason;
 
     /* Client-computed hint: will the SDK keep trying on its own (true) or has it
      * given up / is this terminal (false)? Convenience derived from `reason`. */
-    bool                  is_retriable;
+    bool                         is_retriable;
 
     /* Which layer the fault originated in (CLIENT / TRANSPORT / TLS / SOCKET /
      * OTHER / NONE). Tells the application where to look; NONE on success. */
-    az_iot_error_source source;
+    az_iot_error_source          source;
 
     /* Raw messaging-protocol reason code, verbatim from the transport protocol
      * (e.g. an MQTT CONNACK or DISCONNECT reason code). 0 when not applicable.
      * For diagnostics/telemetry only — prefer `reason`/`is_retriable` for logic. */
-    int32_t               protocol_code;
+    int32_t                      protocol_code;
 
     /* Raw lower-transport code from the TLS/socket layer (e.g. a TLS alert or a
      * socket errno). 0 when not applicable. For diagnostics/telemetry only. */
-    int32_t               transport_code;
+    int32_t                      transport_code;
 
     /* Optional human-readable detail string. May be NULL. VALID ONLY for the
      * duration of the callback — copy it if you need to retain it. */
-    const char*           message;
-} az_iot_conn_status;
+    const char*                  message;
+  } az_iot_connection_state_event;
 ```
+
+  `connection_reason` is deliberately not named `reason`: P1d already shipped
+  `reason` as the normalized `az_iot_result`. Renaming or repurposing that field
+  would break the event prefix older callbacks compiled against.
 
 - **`is_retriable`** — included. Derivable from `reason`, but it directly answers
   "is the SDK going to keep trying?" without forcing the app to memorize the
@@ -283,7 +295,7 @@ single field, and can stop as soon as it has what it needs:
 | "Am I connected now?" | `state` | `CONNECTED` = usable session; everything else is not-ready. |
 | "Is this about connection at all, or lifecycle?" | `state` | `DEINITIALIZING` is the only non-connection value. |
 | "Is this terminal or will the SDK recover?" | `is_retriable` | No taxonomy knowledge needed. |
-| "Do I need to act / surface an error?" | `reason` + `source` | `reason==USER_CLOSE` ⇒ expected; `source` tells which layer. |
+| "Do I need to act / surface an error?" | `connection_reason` + `source` | `connection_reason==USER_CLOSE` ⇒ expected; `source` tells which layer. |
 | "I want the raw code for logs/telemetry" | `protocol_code` / `transport_code` / `message` | All optional; `0`/NULL when n/a. |
 
 An app that only cares about "connected or not" reads `state` and ignores the
@@ -293,22 +305,19 @@ SDK collapsing them.
 ### Example 1 — minimal app: only cares about session availability
 
 ```c
-static void on_conn(az_iot_connection_state state,
-                    const az_iot_conn_status* status, void* ctx)
+static void on_conn(const az_iot_connection_state_event* event, void* ctx)
 {
-    (void)status;
-    ((app_t*)ctx)->online = (state == AZ_IOT_CONN_STATE_CONNECTED);
+  ((app_t*)ctx)->online = (event->state == AZ_IOT_CONN_STATE_CONNECTED);
 }
 ```
 
 ### Example 2 — reconnection-aware app: re-report on fresh session, log drops
 
 ```c
-static void on_conn(az_iot_connection_state state,
-                    const az_iot_conn_status* status, void* ctx)
+static void on_conn(const az_iot_connection_state_event* event, void* ctx)
 {
     app_t* app = ctx;
-    switch (state)
+  switch (event->state)
     {
         case AZ_IOT_CONN_STATE_CONNECTED:
             app->online = true;
@@ -319,7 +328,7 @@ static void on_conn(az_iot_connection_state state,
             app->online = false;
             /* is_retriable is implied here, but reason/message tell the user WHY. */
             AZ_IOT_LOG_INFOF("link dropped: %s (retrying)",
-                             status->message ? status->message : "network");
+                             event->message ? event->message : "network");
             break;
 
         default:
@@ -332,28 +341,27 @@ static void on_conn(az_iot_connection_state state,
 ### Example 3 — diagnostics-heavy app: decide whether to alert vs. wait
 
 ```c
-static void on_conn(az_iot_connection_state state,
-                    const az_iot_conn_status* status, void* ctx)
+static void on_conn(const az_iot_connection_state_event* event, void* ctx)
 {
     app_t* app = ctx;
-    if (state == AZ_IOT_CONN_STATE_CONNECTED) { app->online = true; return; }
+  if (event->state == AZ_IOT_CONN_STATE_CONNECTED) { app->online = true; return; }
 
     app->online = false;
 
     /* Expected, app-initiated close — not an error. */
-    if (status->reason == AZ_IOT_CONN_REASON_USER_CLOSE) return;
+    if (event->connection_reason == AZ_IOT_CONN_REASON_USER_CLOSE) return;
 
-    if (status->is_retriable)
+    if (event->is_retriable)
     {
         /* SDK will keep trying; just record for telemetry. */
         AZ_IOT_LOG_WARNF("transient (%s): proto=%d transport=%d",
-                         az_iot_error_source_to_string(status->source),
-                         status->protocol_code, status->transport_code);
+                         az_iot_error_source_to_string(event->source),
+                         event->protocol_code, event->transport_code);
     }
     else
     {
         /* Terminal — SDK gave up. App must act (re-provision, rotate creds, alert). */
-        switch (status->source)
+        switch (event->source)
         {
             case AZ_IOT_ERROR_SOURCE_TLS:       raise_cert_alert(app);        break; /* bad/expired cert */
             case AZ_IOT_ERROR_SOURCE_TRANSPORT: raise_auth_alert(app);        break; /* CONNACK refused  */
@@ -366,11 +374,9 @@ static void on_conn(az_iot_connection_state state,
 ### Example 4 — teardown: only poison local state; never call back in
 
 ```c
-static void on_conn(az_iot_connection_state state,
-                    const az_iot_conn_status* status, void* ctx)
+static void on_conn(const az_iot_connection_state_event* event, void* ctx)
 {
-    (void)status;
-    if (state == AZ_IOT_CONN_STATE_DEINITIALIZING)
+  if (event->state == AZ_IOT_CONN_STATE_DEINITIALIZING)
         ((app_t*)ctx)->conn_alive = false;   /* feature clients self-detach; see §3.3 */
 }
 ```

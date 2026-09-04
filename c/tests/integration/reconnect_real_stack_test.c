@@ -66,8 +66,10 @@ typedef struct state_log
   az_iot_connection_state states[STATE_LOG_MAX];
 } state_log;
 
-static void on_state(az_iot_connection_state state, az_iot_result reason, void* ctx)
+static void on_state(const az_iot_connection_state_event* event, void* ctx)
 {
+  az_iot_connection_state state = event->state;
+  az_iot_result reason = event->reason;
   (void)reason;
   state_log* s = (state_log*)ctx;
   if (s->count < STATE_LOG_MAX)

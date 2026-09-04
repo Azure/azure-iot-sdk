@@ -89,10 +89,10 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Connection
                         new ConnectBirthException($"Received malformed SUBACK on devicebound SUBSCRIBE.");
                     }
 
-                    if (subackFirstItem.ResultCode != MqttClientSubscribeResultCode.GrantedQoS1)
+                    if (subackFirstItem.ReasonCode != MqttClientSubscribeReasonCode.GrantedQoS1)
                     {
                         await _managedMqttConnection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttClientDisconnectOptionsReason.NormalDisconnection });
-                        new ConnectBirthException($"Received SUBACK on devicebound SUBSCRIBE with unsuccessful result code: {subackFirstItem.ResultCode}.");
+                        new ConnectBirthException($"Received SUBACK on devicebound SUBSCRIBE with unsuccessful result code: {subackFirstItem.ReasonCode}.");
                     }
                 }
                 catch (Exception e)

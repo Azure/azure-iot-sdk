@@ -137,8 +137,10 @@ static const az_iot_certificate_provider_vtable k_custody_vtable = {
   .deinit = custody_deinit,
 };
 
-static void on_conn_state(az_iot_connection_state s, az_iot_result reason, void* user_ctx)
+static void on_conn_state(const az_iot_connection_state_event* event, void* user_ctx)
 {
+  az_iot_connection_state s = event->state;
+  az_iot_result reason = event->reason;
   (void)reason;
   ((custody_fixture*)user_ctx)->conn_state = s;
 }

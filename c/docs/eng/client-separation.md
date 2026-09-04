@@ -246,6 +246,33 @@ raw ASSIGNED payload with `az_json_reader` to extract `issuedCertificateChain`
 the upstream client does not surface it. `connectionProfile` is read in the same
 walk.
 
+### Development bridge while P1a is parked
+
+P1a blocks **automatic production selection after DPS**, not implementation of
+the split. While the deployed DPS api-version omits `connectionProfile`, set:
+
+```text
+AZ_IOT_DPS_CONNECTION_PROFILE_OVERRIDE=mqttV5
+```
+
+The override is applied at the ASSIGNED-payload parser boundary and only when
+the property is absent or null. The DPS-assigned host and device id are still
+used; only the contract default (`classic`) is replaced, so the connection picks
+the MQTT v5 factory and runs the normal AEG presence handshake. Exact values are
+`classic` and `mqttV5`; anything else fails the assignment loudly.
+
+An explicit wire string always wins, even when the environment contains an
+invalid value. This makes the bridge self-disabling when the service rollout
+arrives instead of masking it. The reported `connection_profile_raw` is the
+effective profile text in the absent/null case — the contract default or the
+exact override — and remains verbatim wire text whenever DPS supplied one.
+
+This is a **development bridge, not a deployment contract**. Production devices
+must not rely on process environment to select their wire protocol, and test
+environments must remove the variable when P1a ships. It exists so P1d and
+P2–P6 can be implemented, tested against AEG, and merged while the service
+api-version remains parked.
+
 ---
 
 ## 3. Mismatch is an error, not a surprise
@@ -553,7 +580,7 @@ caller-readable event struct instead:
 ```c
 typedef struct
 {
-  uint32_t _internal_size;            /* stamped by AZ_IOT_CONNECTION_STATE_EVENT_INIT */
+  uint32_t _internal_size;            /* stamped by the SDK producer */
   az_iot_connection_state state;
   az_iot_result reason;
   const az_iot_hub_profile* profile;  /* NULL unless state == CONNECTED */
@@ -564,6 +591,11 @@ typedef void (*az_iot_connection_state_callback)(
     const az_iot_connection_state_event* ev,
     void* user_ctx);
 ```
+
+Unlike `az_iot_hub_profile`, this struct is not caller-allocated and has no
+initializer macro. The SDK constructs it, stamps `_internal_size`, and keeps the
+event and `profile` alive only until the synchronous callback returns. Callers
+copy values they need to retain.
 
 Three things follow, and they are the reason this shape was chosen over adding a
 distinct state, a distinct reason code, or a second callback:
@@ -582,23 +614,21 @@ distinct state, a distinct reason code, or a second callback:
   signature again. Taking the break once, before there are shipped callers of
   the split API, is the point.
 
-This is a **breaking change to a public callback signature**, so it is its own
-phase ahead of P2 ([§12](#12-phases)) rather than a side effect of a feature-client
-PR. The e2e agent registers this callback, which is exactly the class of change
-that has broken `AZ_IOT_BUILD_E2E=ON` twice before; see
+This was a **breaking change to a public callback signature**, so it landed as
+its own phase ahead of P2 ([§12](#12-phases)) rather than as a side effect of a
+feature-client PR. The e2e agent registers this callback, which is exactly the
+class of change that has broken `AZ_IOT_BUILD_E2E=ON` twice before; see
 [Verification per phase](#verification-per-phase).
 
 **This overlaps a second, unimplemented design and must not fork from it.**
 [connection-state-and-error-propagation.md](connection-state-and-error-propagation.md)
-proposes replacing `set_state_callback` with a shared observer registry whose
-callback takes `(state, const az_iot_conn_status*, user_ctx)`. None of it exists
-in the tree today. P1d changes the same callback, so the two must converge:
-`az_iot_connection_state_event` is the struct that design's status argument
-should grow into — one size-stamped, extensible parameter — and the registry, if
-it is built, registers callbacks of the P1d signature. What P1d does **not** do
-is build the registry, the teardown notification or the raw-error fields; it
-takes only the argument shape, which is the part that has to be settled before
-feature clients depend on it.
+proposes replacing `set_state_callback` with a shared observer registry and rich
+failure diagnostics. P1d settled their shared boundary: one size-stamped
+`az_iot_connection_state_event` parameter. The registry, when built, registers
+callbacks of this signature, and future status fields append to this event
+rather than adding a second parameter. P1d does **not** build the registry,
+teardown notification or raw-error fields; it takes only the argument shape,
+which is the part feature clients depend on.
 
 What remains undecided is narrower: whether a call on a now-stale feature client
 fails with a distinct result or is simply undefined. Init-time
@@ -938,8 +968,8 @@ plus the conformance suites.
 | P1a | Add the `azure-sdk-for-c` patch mechanism and raise the DPS api-version to `2026-11-02-preview`, for **both** consumers of that source: the FetchContent tree (`PATCH_COMMAND`) and the `c/deps/azure-sdk-for-c` submodule the ESP-IDF sample builds from | — | **Blocked on the service.** `2026-11-02-preview` is not deployed ([azure-rest-api-specs#45041](https://github.com/Azure/azure-rest-api-specs/pull/45041) is still open), and requesting it makes the DPS CONNECT fail with CONNACK rc=5. Parked until it ships. |
 | P1b | `az_iot_hub_profile` + `get_hub_profile()` + `az_iot_connection_profile` + `AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED`; parse `connectionProfile` in the existing ASSIGNED-payload walk | — | Additive, and deliberately **not** blocked on P1a: with the stock api-version `connectionProfile` never arrives, absent resolves to `classic`, and the result is exactly the hardcoded behaviour it replaces. Lands inert, activates when P1a ships. `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH` is not here — it lands in P2, with the first client that can reject a mismatch. |
 | P1c | Gate `CONNECTED` on subscriptions being SUBACKed ([AB#39366084](https://dev.azure.com/msazure/One/_workitems/edit/39366084)); tag each persistent-subscription entry with its generation and drop non-matching entries on reconnect *before* re-subscribing; add a remove path wired into every feature client's `destroy()` and into its partial-init unwind, UNSUBSCRIBE on both generations (a no-op on gen2 once its redundant filters are gone); drop the five gen2 filters already covered by `ih/{device_id}/dev/#` ([AB#39366086](https://dev.azure.com/msazure/One/_workitems/edit/39366086)); preserve SUBACK reason codes through the adapters behind a shared `az_iot_mqtt_suback_result()`, and tag each entry with its failure scope (`AZ_IOT_SUBSCRIPTION_FAILS_SESSION` / `_FAILS_SELF`) so a refusal ends the connection only for a feature client's own filter — terminally when the reason is deterministic — while a refused custom topic is reported to its owner and dropped ([§9](#the-profile-can-change-while-the-device-is-running)); bound the gate with a deadline | — | **Done across four PRs:** removal + generation tagging (#116), adapter reason-code preservation (#123), the gate + failure-scope policy + deadline (#124), and redundant gen2 filter removal (#128). **P2 depends on all four parts**: §9's rebuild pattern is unsafe without the gate and impossible without removal. The generation tagging is not optional — without it the first two fixes deadlock each other on a profile change. |
-| P1d | Turn the connection-state callback into the extensible `az_iot_connection_state_event` struct, carrying the resolved profile on `CONNECTED` ([§9](#the-profile-can-change-while-the-device-is-running)) | — | Breaking change to a public callback signature, so it is its own PR rather than a rider on the first feature-client split. P2's rebuild pattern reads the profile from this event. 30 registration sites across 11 samples, the unit/integration suites and the e2e agent move with it — build with `AZ_IOT_BUILD_E2E=ON`, since the agent is not compiled by default and this is the exact class of change that has broken it before. |
-| P2 | Split the feature clients, one PR each: telemetry → c2d → direct methods → twin | P1a, P1b, **P1c**, P1d | Mutually parallel. Mismatch check per client, at `_init()` only. The twin PR also repoints `az_iot_adu_client_initialize()` at `az_iot_gen1_twin_client` ([§8](#8-device-update)) — a public header break, no ADU re-layer. |
+| P1d | Turn the connection-state callback into the extensible `az_iot_connection_state_event` struct, carrying the resolved profile on `CONNECTED` ([§9](#the-profile-can-change-while-the-device-is-running)) | — | **Implemented.** The SDK produces and size-stamps the callback-lifetime event; `profile` is non-NULL only on `CONNECTED`. All samples, unit/integration suites and e2e agents use the new signature. |
+| P2 | Split the feature clients, one PR each: telemetry → c2d → direct methods → twin | P1b, **P1c**, P1d | Mutually parallel. P1a gates automatic production selection after DPS, not implementation: the absent/null development bridge above supplies `mqttV5` for AEG testing until the api-version ships. Mismatch check per client, at `_init()` only. The twin PR also repoints `az_iot_adu_client_initialize()` at `az_iot_gen1_twin_client` ([§8](#8-device-update)) — a public header break, no ADU re-layer. |
 | P3 | File upload redesign — HTTP transport becomes gen1-only | P1 | Larger than the others; own PR. |
 | P4 | Delete `protocol_profile.c`'s flavor tables and the last `profile->flavor` branches | P2, P3 | |
 | P5 | Re-layer ADU onto `adu_core` + channel vtable | P4 | ADUv2 declared only. P2 already repointed ADU at the gen1 twin client; this phase is the internal re-layer, not the retyping. |
@@ -1002,6 +1032,10 @@ baseline.
 - **ADU is repointed at `az_iot_gen1_twin_client` in P2, and re-layered in P5**
   ([§8](#8-device-update)). A public header break in the twin PR, rather than
   keeping a cross-generation twin client alive for one consumer.
+- **P1a gates automatic production selection after DPS, not implementation of
+  P1d or P2–P6.** While its service api-version is parked, an absent/null
+  assignment can be supplied by the development-only
+  `AZ_IOT_DPS_CONNECTION_PROFILE_OVERRIDE`; explicit wire data always wins.
 - **A refused subscription always fails; its *scope* decides whether the
   connection dies with it**
   ([§9](#the-profile-can-change-while-the-device-is-running)). Entries are tagged
@@ -1045,3 +1079,5 @@ baseline.
 - 08/26/2026: Scope the rest of P1c — per-entry failure scope, SUBACK and CONNACK
   reason codes preserved through the adapters, deterministic refusals terminal,
   and a deadline on the gate.
+- 09/02/2026: Add the absent/null development profile bridge so P1a remains a
+  production activation gate without blocking P1d and P2–P6 implementation.

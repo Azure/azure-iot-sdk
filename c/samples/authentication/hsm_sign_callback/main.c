@@ -259,8 +259,10 @@ static az_iot_mqtt_client* standin_create(void* factory_ctx)
 
 /* ------------------------------------------------------------------------- */
 
-static void on_conn_state(az_iot_connection_state s, az_iot_result reason, void* user_ctx)
+static void on_conn_state(const az_iot_connection_state_event* event, void* user_ctx)
 {
+  az_iot_connection_state s = event->state;
+  az_iot_result reason = event->reason;
   (void)user_ctx;
   fprintf(
       stderr,
