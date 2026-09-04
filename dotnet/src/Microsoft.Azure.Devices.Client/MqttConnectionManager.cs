@@ -102,8 +102,6 @@ namespace Microsoft.Azure.Devices.Client
             _isClosing = false;
             MqttConnectAck? connectResult = await MaintainConnectionAsync(connect, null, cancellationToken);
 
-            //TODO handle the case where IoT hub CONNACK rejects device identity and the expected device response is to reprovision?
-
             // By design, MaintainConnectionAsync should only return null when called during reconnection.
             // When called by this method, MaintainConnectionAsync should return a non-null value or throw.
             Debug.Assert(connectResult != null);
@@ -169,9 +167,10 @@ namespace Microsoft.Azure.Devices.Client
                         return;
                     }
 
-                    if (IsFatal(args.Reason))
+                    DeviceException? disconnectException = IsFatal(args.Reason);
+                    if (disconnectException is { Retryability: not ErrorRetryability.Retryable })
                     {
-                        var retryException = new RetryExpiredException("A fatal error was encountered while trying to re-establish the session, so this request cannot be completed.", args.Exception);
+                        var retryException = new RetryExpiredException("A fatal error was encountered while trying to re-establish the session, so this request cannot be completed.", disconnectException);
                         await EndConnectionMaintanceAsync(retryException, args, CancellationToken.None);
                         return;
                     }
@@ -221,12 +220,21 @@ namespace Microsoft.Azure.Devices.Client
                     throw lastException;
                 }
 
-                if (IsFatal(lastException!, _reconnectionCancellationToken?.Token.IsCancellationRequested ?? cancellationToken.IsCancellationRequested))
+                DeviceException? deviceException = IsFatal(
+                    lastException,
+                    _reconnectionCancellationToken?.Token.IsCancellationRequested ?? cancellationToken.IsCancellationRequested);
+
+                if (deviceException != null)
                 {
-                    Trace.TraceError("Encountered a fatal exception while maintaining connection {0}", lastException);
+                    lastException = deviceException;
+                }
+
+                if (deviceException is { Retryability: not ErrorRetryability.Retryable })
+                {
+                    Trace.TraceError("Encountered a fatal exception while maintaining connection {0}", deviceException);
                     if (isReconnection)
                     {
-                        var retryException = new RetryExpiredException("A fatal error was encountered while trying to re-establish the session, so this request cannot be completed.", lastException!);
+                        var retryException = new RetryExpiredException("A fatal error was encountered while trying to re-establish the session, so this request cannot be completed.", deviceException);
 
                         // This function was called to reconnect after an unexpected disconnect. Since the error is fatal,
                         // notify the user via callback that the client has crashed, but don't throw the exception since
@@ -237,7 +245,7 @@ namespace Microsoft.Azure.Devices.Client
                     else
                     {
                         // This function was called directly by the user via ConnectAsync, so just throw the exception.
-                        throw lastException!;
+                        throw deviceException;
                     }
                 }
 
@@ -323,7 +331,7 @@ namespace Microsoft.Azure.Devices.Client
 
             MqttConnectAck? connectResult = await _underlyingMqttClient.ConnectAsync(options, cancellationToken).ConfigureAwait(false);
 
-            if (connectResult.ResultCode != MqttConnectResultCode.Success)
+            if (connectResult.ResultCode != MqttConnectReasonCode.Success)
             {
                 throw new MqttConnectingFailedException($"Client tried to connect but server denied connection with reason '{connectResult.ResultCode}'.", connectResult);
             }
@@ -336,91 +344,133 @@ namespace Microsoft.Azure.Devices.Client
             _isDesiredConnected = false; //TODO need to actually notify ConnectionClient that a fatal disconnect happened so it can notify the user
         }
 
-        // These reason codes are fatal if the broker sends a DISCONNECT packet with this reason.
-        private static bool IsFatal(MqttDisconnectReason code)
+        /// <summary>
+        /// Classify a server DISCONNECT reason code per connection.md section 9.3.7.
+        /// </summary>
+        /// <param name="code">The reason code carried by the server's DISCONNECT packet.</param>
+        /// <returns>Null if the code is benign, otherwise an exception whose retryability describes the code.</returns>
+        private static DeviceException? IsFatal(MqttDisconnectReason code)
         {
+            ErrorRetryability retryability;
+
             switch (code)
             {
+                // Benign: an orderly close. Reconnect under the usual policy.
+                case MqttDisconnectReason.NormalDisconnection:
+                case MqttDisconnectReason.DisconnectWithWillMessage:
+                    return null;
+
+                case MqttDisconnectReason.UnspecifiedError:
+                case MqttDisconnectReason.ImplementationSpecificError:
+                case MqttDisconnectReason.ServerBusy:
+                case MqttDisconnectReason.ServerShuttingDown:
+                case MqttDisconnectReason.KeepAliveTimeout:
+                case MqttDisconnectReason.MessageRateTooHigh:
+                case MqttDisconnectReason.QuotaExceeded:
+                case MqttDisconnectReason.ConnectionRateExceeded:
+                case MqttDisconnectReason.MaximumConnectTime:
+                    retryability = ErrorRetryability.Retryable;
+                    break;
+
+                // Authorization was revoked mid-session, or what the device presented is no longer acceptable.
+                case MqttDisconnectReason.NotAuthorized:
+                case MqttDisconnectReason.BadAuthenticationMethod:
+                    retryability = ErrorRetryability.IdentityTerminal;
+                    break;
+
                 case MqttDisconnectReason.MalformedPacket:
                 case MqttDisconnectReason.ProtocolError:
-                case MqttDisconnectReason.NotAuthorized:
                 case MqttDisconnectReason.SessionTakenOver:
                 case MqttDisconnectReason.TopicFilterInvalid:
                 case MqttDisconnectReason.TopicNameInvalid:
+                case MqttDisconnectReason.ReceiveMaximumExceeded:
                 case MqttDisconnectReason.TopicAliasInvalid:
                 case MqttDisconnectReason.PacketTooLarge:
+                case MqttDisconnectReason.AdministrativeAction:
                 case MqttDisconnectReason.PayloadFormatInvalid:
                 case MqttDisconnectReason.RetainNotSupported:
                 case MqttDisconnectReason.QosNotSupported:
-                case MqttDisconnectReason.ServerMoved:
                 case MqttDisconnectReason.SharedSubscriptionsNotSupported:
                 case MqttDisconnectReason.SubscriptionIdentifiersNotSupported:
                 case MqttDisconnectReason.WildcardSubscriptionsNotSupported:
-                    return true;
+                // "Terminal at this endpoint" has no distinct retryability value, so it is reported as terminal
+                // rather than being softened into a retry that would repeat the redirection forever.
+                case MqttDisconnectReason.UseAnotherServer:
+                case MqttDisconnectReason.ServerMoved:
+                    retryability = ErrorRetryability.Terminal;
+                    break;
+
+                // Unrecognised. Preserve the value and take the conservative branch.
+                default:
+                    retryability = ErrorRetryability.Retryable;
+                    break;
             }
 
-            return false;
+            return new DeviceException($"The server closed the connection with reason '{code}'.")
+            {
+                Retryability = retryability,
+                IsContained = false,
+            };
         }
 
-        private static bool IsFatal(Exception e, bool userCancellationRequested = false)
+        /// <summary>
+        /// Classify a CONNACK reason code per connection.md section 9.3.3.
+        /// </summary>
+        /// <param name="code">The reason code carried by the server's CONNACK packet.</param>
+        /// <returns>Null if the code is benign, otherwise an exception whose retryability describes the code.</returns>
+        private static DeviceException? IsFatal(MqttConnectReasonCode code)
         {
-            if (e is MqttConnectingFailedException)
-            {
-                MqttConnectResultCode code = ((MqttConnectingFailedException)e).ResultCode;
+            ErrorRetryability retryability;
 
-                switch (code)
-                {
-                    case MqttConnectResultCode.MalformedPacket:
-                    case MqttConnectResultCode.ProtocolError:
-                    case MqttConnectResultCode.UnsupportedProtocolVersion:
-                    case MqttConnectResultCode.ClientIdentifierNotValid:
-                    case MqttConnectResultCode.BadUserNameOrPassword:
-                    case MqttConnectResultCode.Banned:
-                    case MqttConnectResultCode.BadAuthenticationMethod:
-                    case MqttConnectResultCode.TopicNameInvalid:
-                    case MqttConnectResultCode.PacketTooLarge:
-                    case MqttConnectResultCode.PayloadFormatInvalid:
-                    case MqttConnectResultCode.RetainNotSupported:
-                    case MqttConnectResultCode.QoSNotSupported:
-                    case MqttConnectResultCode.ServerMoved:
-                    case MqttConnectResultCode.ImplementationSpecificError:
-                    case MqttConnectResultCode.UseAnotherServer:
-                    case MqttConnectResultCode.NotAuthorized:
-                        return true;
-                }
+            switch (code)
+            {
+                case MqttConnectReasonCode.Success:
+                    return null;
+
+                case MqttConnectReasonCode.UnspecifiedError:
+                case MqttConnectReasonCode.ImplementationSpecificError:
+                case MqttConnectReasonCode.ServerUnavailable:
+                case MqttConnectReasonCode.ServerBusy:
+                case MqttConnectReasonCode.QuotaExceeded:
+                case MqttConnectReasonCode.ConnectionRateExceeded:
+                    retryability = ErrorRetryability.Retryable;
+                    break;
+
+                // What the device presented is not acceptable. A DPS-provisioned device re-provisions from here.
+                case MqttConnectReasonCode.ClientIdentifierNotValid:
+                case MqttConnectReasonCode.BadUserNameOrPassword:
+                case MqttConnectReasonCode.NotAuthorized:
+                case MqttConnectReasonCode.BadAuthenticationMethod:
+                    retryability = ErrorRetryability.IdentityTerminal;
+                    break;
+
+                case MqttConnectReasonCode.MalformedPacket:
+                case MqttConnectReasonCode.ProtocolError:
+                case MqttConnectReasonCode.UnsupportedProtocolVersion:
+                case MqttConnectReasonCode.Banned:
+                case MqttConnectReasonCode.TopicNameInvalid:
+                case MqttConnectReasonCode.PacketTooLarge:
+                case MqttConnectReasonCode.PayloadFormatInvalid:
+                case MqttConnectReasonCode.RetainNotSupported:
+                case MqttConnectReasonCode.QoSNotSupported:
+                // "Terminal at this endpoint" has no distinct retryability value, so it is reported as terminal
+                // rather than being softened into a retry that would repeat the redirection forever.
+                case MqttConnectReasonCode.UseAnotherServer:
+                case MqttConnectReasonCode.ServerMoved:
+                    retryability = ErrorRetryability.Terminal;
+                    break;
+
+                // Unrecognised. Preserve the value and take the conservative branch.
+                default:
+                    retryability = ErrorRetryability.Retryable;
+                    break;
             }
 
-            if (e is SocketException)
+            return new DeviceException($"The server refused the connection with reason '{code}'.")
             {
-                //TODO there is room for a lot more nuance here. Some socket exceptions are more retryable than others so it may
-                // be inappropriate to label them all as fatal.
-                return true;
-            }
-
-            if (e is MQTTnet.Exceptions.MqttProtocolViolationException)
-            {
-                return true;
-            }
-
-            if (e is ArgumentException
-                || e is ArgumentNullException
-                || e is NotSupportedException)
-            {
-                return true;
-            }
-
-            // MQTTnet may throw an OperationCanceledException/TaskCanceledException even if
-            // neither the user nor the session client provides a cancellation token. Because
-            // of that, this exception is only fatal if the cancellation token this layer
-            // is aware of actually requested cancellation. Other cases signify that MQTTnet
-            // gave up on the operation, but the user still wants to retry.
-            if ((e is OperationCanceledException || e is TaskCanceledException)
-                && userCancellationRequested)
-            {
-                return true;
-            }
-
-            return false;
+                Retryability = retryability,
+                IsContained = false,
+            };
         }
 
         public async Task<MqttPublishAck> PublishAsync(MqttPublish publish, CancellationToken cancellationToken = default)
