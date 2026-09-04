@@ -13,7 +13,23 @@
         "line": 65,
         "branch": 50,
         "function": 85,
-        "comment": "Feature clients: telemetry, twin, direct method, c2d, file upload, adu. Measured 68.6/54.6/87.7 on unit+conformance."
+        "comment": "Feature clients not yet split: twin, direct method, c2d, file upload, adu. Measured 68.6/54.6/87.7 on unit+conformance before telemetry moved to generation libraries."
+    },
+    {
+        "name": "gen1",
+        "prefix": "src/gen1/",
+        "line": 75,
+        "branch": 55,
+        "function": 100,
+        "comment": "IoT Hub Classic generation clients. The telemetry suite covers topic encoding, lifecycle, profile mismatch and publish completion."
+    },
+    {
+        "name": "gen2",
+        "prefix": "src/gen2/",
+        "line": 70,
+        "branch": 55,
+        "function": 100,
+        "comment": "MQTT v5 generation clients. The telemetry suite covers the flat topic, native content type, user properties, lifecycle and profile mismatch."
     },
     {
         "name": "adapter-paho",
