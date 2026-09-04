@@ -13,7 +13,7 @@
  *   Respond    "$iothub/methods/res/{status}/?$rid={rid}"
  *
  * Next:
- *   Subscribe  "ih/{device_id}/dev/methods/+"
+ *   Covered by "ih/{device_id}/dev/#" from the presence handshake
  *   Inbound    "ih/{device_id}/dev/methods/{methodName}" + correlation_data
  *   Respond    "ih/{device_id}/srv/methods/{methodName}/response" + correlation_data
  */
@@ -240,7 +240,7 @@ az_iot_result az_iot_direct_method_client_init(
 
   if (profile->flavor == AZ_IOT_HUB_FLAVOR_NEXT)
   {
-    /* Hub-Next: subscribe to "ih/{device_id}/dev/methods/+" */
+    /* Hub-Next delivery comes through the presence handshake's device-wide wildcard. */
     const char* device_id = az_iot_connection_client__device_id(conn);
     if (!device_id)
     {
@@ -265,27 +265,8 @@ az_iot_result az_iot_direct_method_client_init(
       memset(client, 0, sizeof(*client));
       return r;
     }
-
-    /* Build wildcard subscription: "ih/{device_id}/dev/methods/+" */
-    char filter[AZ_IOT_DM_RESP_TOPIC_MAX];
-    const char* filter_parts[] = { "ih/", device_id, "/dev/methods/+" };
-    if (az_iot_span_writer_build_str(AZ_SPAN_FROM_BUFFER(filter), NULL, filter_parts, 3)
-        != AZ_IOT_OK)
-    {
-      (void)az_iot_connection_client__remove_subscriptions_for(conn, client);
-      (void)az_iot_connection_client__unregister_inbound_handlers(conn, client);
-      memset(client, 0, sizeof(*client));
-      return AZ_IOT_ERR_INTERNAL;
-    }
-    r = az_iot_connection_client__add_subscription_on_connect(
-        conn, filter, AZ_IOT_MQTT_QOS_1, client, AZ_IOT_SUBSCRIPTION_FAILS_SESSION, NULL);
-    if (r != AZ_IOT_OK)
-    {
-      (void)az_iot_connection_client__remove_subscriptions_for(conn, client);
-      (void)az_iot_connection_client__unregister_inbound_handlers(conn, client);
-      memset(client, 0, sizeof(*client));
-      return r;
-    }
+    /* No SUBSCRIBE here: ih/{device_id}/dev/# from the presence handshake
+     * already covers ih/{device_id}/dev/methods/+. */
   }
   else
   {

@@ -4,7 +4,7 @@ using System.Text;
 
 namespace Microsoft.Azure.Devices.Client.Mqtt
 {
-    public enum MqttClientSubscribeResultCode
+    public enum MqttClientSubscribeReasonCode
     {
         GrantedQoS0 = 0x00,
         GrantedQoS1 = 0x01,

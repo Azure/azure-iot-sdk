@@ -97,6 +97,7 @@
 #define DPS_JSON_CONNECTION_PROFILE "connectionProfile"
 #define CONNECTION_PROFILE_CLASSIC_STR "classic"
 #define CONNECTION_PROFILE_MQTT_V5_STR "mqttV5"
+#define DPS_CONNECTION_PROFILE_OVERRIDE_ENV "AZ_IOT_DPS_CONNECTION_PROFILE_OVERRIDE"
 
 /* Max certs in an issued chain (leaf + a few intermediates). The chain is
  * delivered as zero-copy spans into the payload. */
@@ -168,7 +169,21 @@ static void transition(
   c->state = next;
   if (c->state_cb)
   {
-    c->state_cb(next, reason, c->state_cb_ctx);
+    az_iot_hub_profile profile = AZ_IOT_HUB_PROFILE_INIT;
+    az_iot_connection_state_event event = {
+      ._internal_size = sizeof(az_iot_connection_state_event),
+      .state = next,
+      .reason = reason,
+      .profile = NULL,
+    };
+    if (next == AZ_IOT_CONN_STATE_CONNECTED)
+    {
+      profile.connection_profile = c->connection_profile;
+      profile.connection_profile_raw = c->connection_profile_raw;
+      profile.connection_profile_raw_truncated = c->connection_profile_raw_truncated;
+      event.profile = &profile;
+    }
+    c->state_cb(&event, c->state_cb_ctx);
   }
 }
 
@@ -635,6 +650,73 @@ static void connection_profile_set(az_iot_connection_client* c, az_span raw)
   }
 }
 
+/* Development bridge while the DPS api-version that carries connectionProfile
+ * is not deployed. It applies only when the property is absent/null; an actual
+ * wire value always wins, so enabling this cannot mask service rollout. */
+static az_iot_result dps_apply_connection_profile_override(az_iot_connection_client* c)
+{
+  char value[AZ_IOT_CONNECTION_PROFILE_RAW_BUF] = { 0 };
+
+#ifdef _WIN32
+  size_t needed = 0;
+  errno_t env_result = getenv_s(&needed, NULL, 0, DPS_CONNECTION_PROFILE_OVERRIDE_ENV);
+  if (env_result != 0)
+  {
+    AZ_IOT_LOG_ERROR("dps: could not read " DPS_CONNECTION_PROFILE_OVERRIDE_ENV);
+    return AZ_IOT_ERR_INTERNAL;
+  }
+  if (needed == 0)
+  {
+    return AZ_IOT_OK;
+  }
+  if (needed > sizeof(value))
+  {
+    AZ_IOT_LOG_ERROR("dps: " DPS_CONNECTION_PROFILE_OVERRIDE_ENV " is too long");
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  env_result = getenv_s(&needed, value, sizeof(value), DPS_CONNECTION_PROFILE_OVERRIDE_ENV);
+  if (env_result != 0)
+  {
+    AZ_IOT_LOG_ERROR("dps: could not read " DPS_CONNECTION_PROFILE_OVERRIDE_ENV);
+    return AZ_IOT_ERR_INTERNAL;
+  }
+  if (value[0] == '\0')
+  {
+    return AZ_IOT_OK;
+  }
+#else
+  const char* configured = getenv(DPS_CONNECTION_PROFILE_OVERRIDE_ENV);
+  if (!is_nonempty_cstr(configured))
+  {
+    return AZ_IOT_OK;
+  }
+  size_t needed = strlen(configured) + 1u;
+  if (needed > sizeof(value))
+  {
+    AZ_IOT_LOG_ERROR("dps: " DPS_CONNECTION_PROFILE_OVERRIDE_ENV " is too long");
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  memcpy(value, configured, needed);
+#endif
+
+  if (strcmp(value, CONNECTION_PROFILE_CLASSIC_STR) != 0
+      && strcmp(value, CONNECTION_PROFILE_MQTT_V5_STR) != 0)
+  {
+    AZ_IOT_LOG_ERRORF(
+        "dps: %s must be \"classic\" or \"mqttV5\", not \"%s\"",
+        DPS_CONNECTION_PROFILE_OVERRIDE_ENV,
+        value);
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+
+  AZ_IOT_LOG_WARNF(
+      "dps: connectionProfile was absent/null; applying development override %s=%s",
+      DPS_CONNECTION_PROFILE_OVERRIDE_ENV,
+      value);
+  connection_profile_set(c, az_span_create_from_str(value));
+  return AZ_IOT_OK;
+}
+
 /* Read registrationState.connectionProfile from the DPS ASSIGNED payload.
  *
  * Absent or null is NOT an error -- the service contract documents it as
@@ -648,8 +730,9 @@ static az_iot_result dps_read_connection_profile(az_iot_connection_client* c, az
   az_iot_result r = dps_enter_registration_state(&jr, payload);
   if (r != AZ_IOT_OK)
   {
-    /* No registrationState at all: nothing to read, keep the default. */
-    return (r == AZ_IOT_ERR_NOT_FOUND) ? AZ_IOT_OK : r;
+    /* No registrationState at all: nothing to read, keep the default unless a
+     * development override was requested. */
+    return (r == AZ_IOT_ERR_NOT_FOUND) ? dps_apply_connection_profile_override(c) : r;
   }
 
   while (az_result_succeeded(az_json_reader_next_token(&jr))
@@ -669,9 +752,11 @@ static az_iot_result dps_read_connection_profile(az_iot_connection_client* c, az
       if (jr.token.kind == AZ_JSON_TOKEN_STRING)
       {
         connection_profile_set(c, jr.token.slice);
+        return AZ_IOT_OK;
       }
-      /* null (or any non-string) resolves to the classic default. */
-      return AZ_IOT_OK;
+      /* null (or any non-string) resolves to the classic default unless the
+       * development bridge explicitly supplies the profile. */
+      return dps_apply_connection_profile_override(c);
     }
     if (jr.token.kind == AZ_JSON_TOKEN_BEGIN_OBJECT || jr.token.kind == AZ_JSON_TOKEN_BEGIN_ARRAY)
     {
@@ -681,7 +766,7 @@ static az_iot_result dps_read_connection_profile(az_iot_connection_client* c, az
       }
     }
   }
-  return AZ_IOT_OK;
+  return dps_apply_connection_profile_override(c);
 }
 
 /* Parse registrationState.issuedCertificateChain (an array of base64 DER certs)
@@ -3056,9 +3141,10 @@ size_t az_iot_connection_client__remove_subscriptions_for(
   /* Withdraw each entry from the broker too, on both generations. This cannot
    * touch AEG's device-wide ih/{device_id}/dev/# subscription: the presence
    * handshake issues that one directly, not through this registry, so it has no
-   * owner and never appears in the loop below. Only the feature client's own
-   * per-feature filters are withdrawn, and doing so leaves the wildcard -- and
-   * therefore every other feature's delivery -- untouched. */
+   * owner and never appears in the loop below. On AEG, entries in this registry
+   * are application custom topics; feature delivery uses the wildcard instead.
+   * Withdrawing a custom filter leaves the wildcard -- and therefore every
+   * feature's delivery -- untouched. */
   const bool unsubscribe_on_the_wire = client->active_client && client->active_client->iface
       && client->active_client->iface->unsubscribe && client->state == AZ_IOT_CONN_STATE_CONNECTED;
 

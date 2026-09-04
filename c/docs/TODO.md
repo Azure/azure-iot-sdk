@@ -44,13 +44,13 @@ Canonical pending-work tracker for IoT Hub Next (AEG) integration.
 - [x] Test telemetry against mock hub (E2E verified)
 
 ### Direct Method
-- [x] Flavor-aware init: subscribes to `ih/{id}/dev/methods/+` (Next) or `$iothub/methods/POST/#` (Classic)
+- [x] Flavor-aware init: Next dispatches methods from the presence wildcard; Classic subscribes to `$iothub/methods/POST/#`
 - [x] Flavor-aware respond: publishes with correlation_data (Next) or topic-encoded `$rid` (Classic)
 - [x] E2E verified against mock Hub-Next (auto-trigger loops 4 methods continuously)
 - [ ] Add nanopb (protobuf) dependency via FetchContent (future: probe/exec/result)
 
 ### Twin
-- [x] Flavor-aware subscriptions (Next: `ih/{id}/dev/twin/+/response`, `ih/{id}/dev/twin/desired`)
+- [x] Flavor-aware delivery (Next: presence wildcard + twin dispatch handlers; Classic: twin response/desired subscriptions)
 - [x] GET and PATCH reported use correlation_data for Next path
 - [x] Desired push handler for Next path
 - [x] E2E verified against mock Hub-Next
@@ -58,7 +58,7 @@ Canonical pending-work tracker for IoT Hub Next (AEG) integration.
 ### C2D
 - [x] `az_iot_c2d_client` feature client (header + implementation)
 - [x] Classic: `devices/{reg_id}/messages/devicebound/#` subscription with prefix-based dispatch
-- [x] Next: `ih/{device_id}/dev/c2d` subscription
+- [x] Next: C2D delivery through the `ih/{device_id}/dev/#` presence wildcard
 - [x] `c2d_receiver` sample using the feature client API
 - [x] E2E verified against mock Hub-Next (auto-trigger fires rotating payloads every 5s)
 - [ ] E2E verified against Classic IoT Hub

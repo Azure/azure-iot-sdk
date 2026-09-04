@@ -28,6 +28,9 @@ extern "C"
    * version and topic shapes it uses. One type serves both directions:
    *   - DPS connect (host == NULL): LEARNED, from the `connectionProfile`
    *     property of the ASSIGNED payload. opts.connection_profile is ignored.
+   *     Until that DPS api-version ships, local development can synthesize an
+   *     absent/null value with AZ_IOT_DPS_CONNECTION_PROFILE_OVERRIDE; an
+   *     explicit service value always wins.
    *   - Direct connect (host set, no DPS): DECLARED by the caller through
    *     opts.connection_profile, because there is nobody to ask. Defaults to
    *     CLASSIC (MQTT v3.1.1); set MQTT_V5 for an IoT Hub Next / Event Grid
@@ -56,11 +59,12 @@ extern "C"
   {
     uint32_t _internal_size;
     az_iot_connection_profile connection_profile;
-    /* The wire string, never NULL. This is what keeps the extensible union from
-     * becoming lossy at the C boundary: a profile this SDK has never heard of
-     * still reports UNKNOWN *and* the text the service sent, so it can be logged
-     * or acted on. Points into the connection client and stays valid until
-     * destroy().
+    /* The effective profile text, never NULL. When DPS supplies a string it is
+     * verbatim, which keeps the extensible union from becoming lossy at the C
+     * boundary: a profile this SDK has never heard of still reports UNKNOWN
+     * *and* the text the service sent. For absent/null it is the resolved
+     * contract default ("classic"), or the exact development override value.
+     * Points into the connection client and stays valid until destroy().
      *
      * Bounded by AZ_IOT_CONNECTION_PROFILE_RAW_BUF, so it is the value verbatim
      * only when connection_profile_raw_truncated is false. Callers that report
@@ -198,9 +202,24 @@ extern "C"
     AZ_IOT_CONN_STATE_FAULTED
   } az_iot_connection_state;
 
+  /* SDK-produced, callback-lifetime view of a connection-state transition.
+   * The SDK stamps _internal_size; callers never initialize this struct. Future
+   * SDKs may append fields, so callbacks must check _internal_size before
+   * reading a field added after the version they were compiled against.
+   *
+   * profile is non-NULL exactly when state == AZ_IOT_CONN_STATE_CONNECTED. It
+   * and the event itself remain valid only until the callback returns; copy any
+   * value that must be retained. */
+  typedef struct az_iot_connection_state_event
+  {
+    uint32_t _internal_size;
+    az_iot_connection_state state;
+    az_iot_result reason;
+    const az_iot_hub_profile* profile;
+  } az_iot_connection_state_event;
+
   typedef void (*az_iot_connection_state_callback)(
-      az_iot_connection_state state,
-      az_iot_result reason,
+      const az_iot_connection_state_event* event,
       void* user_ctx);
 
   typedef void (*az_iot_publish_ack_callback)(az_iot_result status, void* user_ctx);
@@ -568,7 +587,8 @@ extern "C"
       const az_iot_mqtt_factory* factory);
 
   /* Not AZ_NODISCARD: configuration setters that fail only on invalid arguments
-   * (a programming error), so callers routinely fire-and-forget them. */
+   * (a programming error), so callers routinely fire-and-forget them. The state
+   * callback receives an SDK-owned event valid only for the duration of the call. */
   az_iot_result az_iot_connection_client_set_state_callback(
       az_iot_connection_client* client,
       az_iot_connection_state_callback cb,

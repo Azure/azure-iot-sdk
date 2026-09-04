@@ -343,8 +343,10 @@ static const char* conn_state_name(az_iot_connection_state s)
       return "?";
   }
 }
-static void on_conn_state(az_iot_connection_state st, az_iot_result reason, void* user_ctx)
+static void on_conn_state(const az_iot_connection_state_event* event, void* user_ctx)
 {
+  az_iot_connection_state st = event->state;
+  az_iot_result reason = event->reason;
   (void)user_ctx;
   if (st != g_conn_state)
   {

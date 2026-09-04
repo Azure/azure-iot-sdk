@@ -155,14 +155,13 @@ extern "C"
    * generations. AEG's device-wide `ih/{device_id}/dev/#` subscription is not
    * at risk from this: the presence handshake takes it out directly rather than
    * through the persistent-subscription registry, so it has no owner and this
-   * function can never select it. What AEG feature clients do register are their
-   * own per-feature filters underneath that wildcard, and those are exactly what
-   * should be withdrawn when the client that registered them goes away.
-   * Withdrawing one does not disturb the wildcard, which keeps matching.
+   * function can never select it. Withdrawing an entry underneath it does not
+   * disturb it either -- the wildcard keeps matching.
    *
-   * (Those per-feature AEG filters are redundant with the wildcard and are due
-   * to be dropped entirely; until they are, they are real subscriptions and are
-   * released here rather than left live until the session ends.)
+   * On AEG this is now a registry removal in practice, because no feature
+   * client registers a filter there any more: the wildcard covers them all. It
+   * still issues the UNSUBSCRIBE for anything that is registered, which is what
+   * an application custom topic will be.
    *
    * Safe to call when disconnected: the entries are dropped either way, so a
    * later reconnect does not resurrect them. */
