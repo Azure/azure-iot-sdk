@@ -22,7 +22,7 @@ namespace Microsoft.Azure.Devices.Client.Exceptions
 
         public static void ThrowIfUnsuccessfulConnack(MqttConnectAck connack, string errorMessage)
         {
-            if (connack.ResultCode != MqttConnectResultCode.Success)
+            if (connack.ResultCode != MqttConnectReasonCode.Success)
             {
                 throw new ConnectRejectedException(errorMessage + $" Result code: {connack.ResultCode}")
                 {
@@ -35,7 +35,7 @@ namespace Microsoft.Azure.Devices.Client.Exceptions
         /// <summary>
         /// The MQTT-level reason code for why this connect failed.
         /// </summary>
-        public MqttConnectResultCode ReasonCode { get; internal set; }
+        public MqttConnectReasonCode ReasonCode { get; internal set; }
 
         /// <summary>
         /// The human-readable reason for why this connect failed if one was provided.

@@ -83,7 +83,7 @@ namespace Microsoft.Azure.Devices.Client.UnitTests
 
             var defaultConnack = new MqttConnectAck()
             {
-                ResultCode = MqttConnectResultCode.Success
+                ResultCode = MqttConnectReasonCode.Success
             };
 
             if (ConnectedAsync != null)

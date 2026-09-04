@@ -42,7 +42,7 @@ namespace Microsoft.Azure.Devices.Client.UnitTests.Unified
             int retryCount = 0;
             mockMqttClient.OnConnectAttempt += async (connect) =>
             {
-                return new MqttConnectAck() { IsSessionPresent = isSessionResumed, ResultCode = MqttConnectResultCode.Success };
+                return new MqttConnectAck() { IsSessionPresent = isSessionResumed, ResultCode = MqttConnectReasonCode.Success };
             };
             mockMqttClient.OnPublishAttempt += async (publish) =>
             {
@@ -118,7 +118,7 @@ namespace Microsoft.Azure.Devices.Client.UnitTests.Unified
             int retryCount = 0;
             mockMqttClient.OnConnectAttempt += async (connect) =>
             {
-                return new MqttConnectAck() { IsSessionPresent = isSessionResumed, ResultCode = MqttConnectResultCode.Success };
+                return new MqttConnectAck() { IsSessionPresent = isSessionResumed, ResultCode = MqttConnectReasonCode.Success };
             };
 
             string expectedTopicString = Guid.NewGuid().ToString();
@@ -192,7 +192,7 @@ namespace Microsoft.Azure.Devices.Client.UnitTests.Unified
             int retryCount = 0;
             mockMqttClient.OnConnectAttempt += async (connect) =>
             {
-                return new MqttConnectAck() { IsSessionPresent = isSessionResumed, ResultCode = MqttConnectResultCode.Success };
+                return new MqttConnectAck() { IsSessionPresent = isSessionResumed, ResultCode = MqttConnectReasonCode.Success };
             };
 
             string expectedTopicString = Guid.NewGuid().ToString();
