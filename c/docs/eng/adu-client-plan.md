@@ -332,10 +332,13 @@ stateDiagram-v2
 
 **This is the only ADU channel the SDK will ship.** ADUv2 has no dedicated device-facing ADU
 endpoint. The device calls **three device-update operations on DPS** —
-`GetOnboardingDeviceUpdate`, `GetDeviceUpdate`, `ReportDeviceUpdateStatus` — over its **existing
-DPS connection and auth**; DPS is an authenticated **pass-through** to **ADR → ADU** (the device
-never talks to ADU). The manifest content and the verify → download → install → report engine are
-**unchanged** from ADUv1. Full digest: **[aduv2-spec.md](aduv2-spec.md)**; lifecycle placement:
+`requestOnboardingUpdates`, `requestSoftwareUpdates`, `reportUpdateStatus` (spec working names:
+`GetOnboardingDeviceUpdate`, `GetDeviceUpdate`, `ReportDeviceUpdateStatus`) — under its own
+registration on the **existing DPS endpoint, reusing its DPS credential**; DPS is an authenticated
+**pass-through** to **ADR → ADU** (the device never talks to ADU). The manifest content and the
+verify → download → install → report engine are **unchanged** from ADUv1. Full digest, including
+the exact URL shape and which parts are measured vs. drafted:
+**[aduv2-spec.md](aduv2-spec.md)**; lifecycle placement:
 [connection.md §7](../connection.md#7-aduv2-onboarding-and-renewal-planned).
 
 ```mermaid
@@ -510,14 +513,19 @@ Not code — things I (or the team) must do out-of-band:
 - **Announce the ADUv1 removal.** The twin-based ADU API is going away without a deprecation
   window; confirm no consumer is depending on it, and land the removal in a release whose notes
   call the header break out explicitly.
-- **Track the DPS device-update contract** (`GetDeviceUpdate` / `GetOnboardingDeviceUpdate` /
-  `ReportDeviceUpdateStatus`, api-version `2026-11-02-preview`) — final op naming, per-transport payload
-  caps, throttle/`Retry-After` values, and the agent-info / service-config ETag + resend semantics are
-  still settling (DRAFT). See [aduv2-spec.md](aduv2-spec.md).
-- **Confirm auth/transport phasing** — Ignite is **X.509 over HTTP/MQTT**; symmetric-key, TPM, and AMQP
-  follow; identity headers are DPS-gateway-populated (the client sets none).
-- **Stand up a dev DPS + ADR + ADU environment** and X.509 device certs to run the SDK PoC.
-  *(Internal setup steps are kept in local notes, not in this repo.)*
+- **Track the DPS device-update contract** (api-version `2026-11-02-preview`, **confirmed deployed**)
+  — the on-the-wire operation names and the request/response shapes are now measured against a live
+  environment, but per-transport payload caps, throttle/`Retry-After` values and the agent-info /
+  service-config ETag resend semantics are still settling (DRAFT). See
+  [aduv2-spec.md](aduv2-spec.md), which separates what is measured from what is drafted.
+- **Confirm auth/transport phasing** — the design phases X.509 first, then symmetric key, TPM and AMQP.
+  Measured today: **SAS from the DPS enrollment-group symmetric key over HTTPS** works on this path;
+  X.509 on it is not yet confirmed, and no MQTT binding for the three operations has been observed.
+  Identity headers stay DPS-gateway-populated (the client sets none).
+- **Use the reference ADR → ADU cloud demo to stand up DPS + ADR + ADU** rather than building an
+  environment by hand. Point its config at your own resource group, namespace and update instance; it
+  provisions a working environment to test against. *(Location and access details are kept in local
+  notes, not in this repo.)*
 - **`accountId`-in-signature binding (manifest-sig-v2) is deferred for Ignite** — base manifest signature
   validation stays required; plan the account binding post-Ignite.
 - **Get visibility into upcoming manifest schema changes** to validate forward-compatibility.
