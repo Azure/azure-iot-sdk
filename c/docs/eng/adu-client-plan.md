@@ -156,7 +156,7 @@ sample-only / not factored) · 🔜 Coming soon (planned / designed, not yet bui
 | Testing and conformance | 🟡 | **Crypto vector tests** — known-good/bad RS256 + SHA-256 vectors. [→](#k-testing-and-conformance) |
 | Testing and conformance | 🔜 | **Adapter integration tests** — mock HTTP server + test manifest per adapter. [→](#k-testing-and-conformance) |
 | Testing and conformance | 🔜 | **ADU conformance suite** — host-only `az_iot_adu_conformance`, all states + multi-step. [→](#k-testing-and-conformance) |
-| Testing and conformance | 🔜 | **E2E vs real ADU service** — gated behind `AZ_IOT_ADU_E2E` (off the PR path). [→](#k-testing-and-conformance) |
+| Testing and conformance | ✅→🔜 | **E2E vs real ADU service** — five twin-driven scenarios exist in a slow-lane workflow (off the PR path); they retire with the cut and need ADUv2 equivalents. [→](#k-testing-and-conformance) |
 | Advanced update model | 🔜 | **Reference steps** — `type: reference` + detached child manifest: fetch, verify, recurse. [→](#l-advanced-update-model) |
 | Advanced update model | 🔜 | **Proxy / nested updates** — parent agent orchestrates leaf/component updates (gateway→leaf). [→](#l-advanced-update-model) |
 | Advanced update model | 🔜 | **Component-level targeting** — component enumerator hook + `selectedComponents` matching. [→](#l-advanced-update-model) |
@@ -465,10 +465,11 @@ crypto vectors in Phase 2, adapter integration in Phases 3–4, persistence in P
 - **Adapter integration tests (🔜)** — mock HTTP server + test manifest per adapter.
 - **Conformance suite (🔜)** — reusable host-only `az_iot_adu_conformance` over all
   protocol states + single/multi-step manifests, written against the **ADUv2** contract.
-- **E2E (🔜)** — against the real service, gated behind `AZ_IOT_ADU_E2E` so it
-  never runs on the fast PR path. The device-side scenario is still a placeholder
-  ([end-to-end-tests.md](end-to-end-tests.md)) — it should be written for ADUv2 directly rather
-  than for the channel being removed.
+- **E2E (✅→🔜 re-target)** — `az_iot_tests_e2e_adu` runs five real scenarios against a live
+  Hub + Device Update instance in a slow-lane workflow, off the fast PR path
+  ([end-to-end-tests.md](end-to-end-tests.md)). They are **twin-driven, so they retire with
+  the cut** and must be rewritten against the ADUv2 operations; the device fixture and the
+  mocked crypto/payload hooks carry over.
 
 ## L. Advanced update model
 
