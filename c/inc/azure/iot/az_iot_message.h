@@ -6,6 +6,11 @@
 #ifndef AZ_IOT_MESSAGE_H
 #define AZ_IOT_MESSAGE_H
 
+#include <stddef.h>
+#include <stdint.h>
+
+#include "az_iot_result.h"
+
 #ifdef __cplusplus
 extern "C"
 {
@@ -36,6 +41,25 @@ extern "C"
 #define AZ_IOT_MSG_PROP_USER_ID "$.uid"
 #define AZ_IOT_MSG_PROP_CREATION_TIME "$.ctime"
 #define AZ_IOT_MSG_PROP_COMPONENT_NAME "$.sub"
+
+  /* Shared by the gen1 and gen2 telemetry clients. Callers always pass plain
+   * text: gen1 percent-encodes properties into the topic, while gen2 carries
+   * them as MQTT v5 User Properties. */
+  typedef struct az_iot_telemetry_property
+  {
+    const char* key;
+    const char* value;
+  } az_iot_telemetry_property;
+
+  typedef struct az_iot_telemetry_message
+  {
+    const uint8_t* payload;
+    size_t payload_len;
+    const az_iot_telemetry_property* properties;
+    size_t properties_count;
+  } az_iot_telemetry_message;
+
+  typedef void (*az_iot_telemetry_send_callback)(az_iot_result status, void* user_ctx);
 
 #ifdef __cplusplus
 }

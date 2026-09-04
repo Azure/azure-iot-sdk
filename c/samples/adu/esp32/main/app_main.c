@@ -52,8 +52,10 @@ extern const char trusted_ca_pem_start[] asm("_binary_trusted_ca_pem_start");
 
 static az_iot_connection_state g_conn_state = AZ_IOT_CONN_STATE_IDLE;
 
-static void on_conn_state(az_iot_connection_state st, az_iot_result reason, void* ctx)
+static void on_conn_state(const az_iot_connection_state_event* event, void* ctx)
 {
+  az_iot_connection_state st = event->state;
+  az_iot_result reason = event->reason;
   (void)ctx;
   if (st != g_conn_state)
   {

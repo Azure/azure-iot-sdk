@@ -167,15 +167,24 @@ typedef struct
 {
   az_iot_connection_state conn_state;
   az_iot_result conn_reason;
+  az_iot_connection_profile connection_profile;
+  int profile_valid;
   int send_done;
   az_iot_result send_status;
 } user_context;
 
-static void on_conn_state(az_iot_connection_state s, az_iot_result reason, void* user_ctx)
+static void on_conn_state(const az_iot_connection_state_event* event, void* user_ctx)
 {
+  az_iot_connection_state s = event->state;
+  az_iot_result reason = event->reason;
   user_context* ctx = (user_context*)user_ctx;
   ctx->conn_state = s;
   ctx->conn_reason = reason;
+  if (s == AZ_IOT_CONN_STATE_CONNECTED && event->profile)
+  {
+    ctx->connection_profile = event->profile->connection_profile;
+    ctx->profile_valid = 1;
+  }
 }
 
 static void on_send_done(az_iot_result status, void* user_ctx)
@@ -209,7 +218,8 @@ int main(void)
   user_context user_ctx = { 0 };
   hsm_provider provider = { .base = { .vtable = &k_hsm_vtable }, .config = &config };
   az_iot_connection_client connection_client = { 0 };
-  az_iot_telemetry_client telemetry_client = { 0 };
+  az_iot_gen1_telemetry_client gen1_telemetry = { 0 };
+  az_iot_gen2_telemetry_client gen2_telemetry = { 0 };
 
   az_iot_connection_client_options copts = az_iot_connection_client_options_default();
   copts.client_id = config.reg_id;
@@ -235,11 +245,6 @@ int main(void)
   {
     goto cleanup;
   }
-  if (az_iot_telemetry_client_init(&telemetry_client, &connection_client) != AZ_IOT_OK)
-  {
-    goto cleanup;
-  }
-
   az_iot_result open_rc = az_iot_connection_client_open(&connection_client);
   if (open_rc != AZ_IOT_OK)
   {
@@ -260,6 +265,11 @@ int main(void)
 
   if (user_ctx.conn_state == AZ_IOT_CONN_STATE_CONNECTED)
   {
+    az_iot_result telemetry_result = !user_ctx.profile_valid
+        ? AZ_IOT_ERR_INTERNAL
+        : (user_ctx.connection_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5
+               ? az_iot_gen2_telemetry_client_init(&gen2_telemetry, &connection_client)
+               : az_iot_gen1_telemetry_client_init(&gen1_telemetry, &connection_client));
     fprintf(stderr, "[hsm_pkcs11] connected; the handshake signed inside the token\n");
 
     static const uint8_t payload[] = "{\"custody\":\"hardware\"}";
@@ -267,7 +277,11 @@ int main(void)
     msg.payload = payload;
     msg.payload_len = sizeof(payload) - 1;
 
-    if (az_iot_telemetry_client_send(&telemetry_client, &msg, on_send_done, &user_ctx) == AZ_IOT_OK)
+    if (telemetry_result == AZ_IOT_OK
+        && (user_ctx.connection_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5
+                ? az_iot_gen2_telemetry_client_send(&gen2_telemetry, &msg, on_send_done, &user_ctx)
+                : az_iot_gen1_telemetry_client_send(&gen1_telemetry, &msg, on_send_done, &user_ctx))
+            == AZ_IOT_OK)
     {
       for (int i = 0; i < 600 && !user_ctx.send_done; ++i)
       {
@@ -296,7 +310,8 @@ int main(void)
   }
 
 cleanup:
-  az_iot_telemetry_client_destroy(&telemetry_client);
+  az_iot_gen1_telemetry_client_destroy(&gen1_telemetry);
+  az_iot_gen2_telemetry_client_destroy(&gen2_telemetry);
   az_iot_connection_client_destroy(&connection_client);
   hsm_config_release(&config);
   return rc;

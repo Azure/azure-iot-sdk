@@ -14,7 +14,7 @@ namespace Microsoft.Azure.Devices.Client.UnitTests
             {
                 subackItems.Add(new MqttSubscribeAckItem()
                 {
-                    ResultCode = subscribeItem.QualityOfServiceLevel == MqttQualityOfServiceLevel.ExactlyOnce ? MqttClientSubscribeResultCode.GrantedQoS2 : subscribeItem.QualityOfServiceLevel == MqttQualityOfServiceLevel.AtLeastOnce ? MqttClientSubscribeResultCode.GrantedQoS1 : MqttClientSubscribeResultCode.GrantedQoS0,
+                    ReasonCode = subscribeItem.QualityOfServiceLevel == MqttQualityOfServiceLevel.ExactlyOnce ? MqttClientSubscribeReasonCode.GrantedQoS2 : subscribeItem.QualityOfServiceLevel == MqttQualityOfServiceLevel.AtLeastOnce ? MqttClientSubscribeReasonCode.GrantedQoS1 : MqttClientSubscribeReasonCode.GrantedQoS0,
                     TopicFilter = new(subscribeItem.Topic, subscribeItem.QualityOfServiceLevel)
                 });
             }
@@ -32,7 +32,7 @@ namespace Microsoft.Azure.Devices.Client.UnitTests
             {
                 unsubackItems.Add(new MqttUnsubscribeAckItem()
                 {
-                    ResultCode = MqttClientUnsubscribeResultCode.Success,
+                    ReasonCode = MqttClientUnsubscribeReasonCode.Success,
                     TopicFilter = unsubscribeItem,
                 });
             }

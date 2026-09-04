@@ -37,19 +37,39 @@ typedef struct az_iot_test_state_log
 {
   az_iot_connection_state states[AZ_IOT_TEST_MAX_STATES];
   az_iot_result reasons[AZ_IOT_TEST_MAX_STATES];
+  uint32_t event_sizes[AZ_IOT_TEST_MAX_STATES];
+  bool profile_present[AZ_IOT_TEST_MAX_STATES];
+  uint32_t profile_sizes[AZ_IOT_TEST_MAX_STATES];
+  az_iot_connection_profile profiles[AZ_IOT_TEST_MAX_STATES];
+  char profile_raw[AZ_IOT_TEST_MAX_STATES][AZ_IOT_CONNECTION_PROFILE_RAW_BUF];
   size_t count;
 } az_iot_test_state_log;
 
-static inline void az_iot_test_on_state(
-    az_iot_connection_state state,
-    az_iot_result reason,
-    void* user_ctx)
+static inline void az_iot_test_on_state(const az_iot_connection_state_event* event, void* user_ctx)
 {
   az_iot_test_state_log* log = (az_iot_test_state_log*)user_ctx;
   if (log->count < AZ_IOT_TEST_MAX_STATES)
   {
-    log->states[log->count] = state;
-    log->reasons[log->count] = reason;
+    size_t index = log->count;
+    log->states[index] = event->state;
+    log->reasons[index] = event->reason;
+    log->event_sizes[index] = event->_internal_size;
+    log->profile_present[index] = event->profile != NULL;
+    if (event->profile)
+    {
+      log->profile_sizes[index] = event->profile->_internal_size;
+      log->profiles[index] = event->profile->connection_profile;
+      if (event->profile->connection_profile_raw)
+      {
+        size_t raw_len = strlen(event->profile->connection_profile_raw);
+        if (raw_len >= sizeof(log->profile_raw[index]))
+        {
+          raw_len = sizeof(log->profile_raw[index]) - 1u;
+        }
+        memcpy(log->profile_raw[index], event->profile->connection_profile_raw, raw_len);
+        log->profile_raw[index][raw_len] = '\0';
+      }
+    }
     log->count++;
   }
 }

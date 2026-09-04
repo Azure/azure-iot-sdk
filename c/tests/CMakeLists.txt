@@ -132,6 +132,9 @@ az_iot_add_cmocka_test(az_iot_tests_connection_dps unit/connection_dps_test.c)
 target_link_libraries(az_iot_tests_connection_dps PRIVATE az_iot_test_support)
 target_include_directories(az_iot_tests_connection_dps PRIVATE
     ${CMAKE_SOURCE_DIR}/src/core)
+if(UNIX)
+    target_compile_definitions(az_iot_tests_connection_dps PRIVATE _POSIX_C_SOURCE=200809L)
+endif()
 az_iot_add_cmocka_test(az_iot_tests_reconnect_policy unit/reconnect_policy_test.c)
 target_include_directories(az_iot_tests_reconnect_policy PRIVATE
     ${CMAKE_SOURCE_DIR}/src/core)
@@ -149,8 +152,14 @@ target_include_directories(az_iot_tests_diagnostics PRIVATE
 az_iot_add_cmocka_test(az_iot_tests_protocol_profile_dispatch unit/protocol_profile_dispatch_test.c)
 target_include_directories(az_iot_tests_protocol_profile_dispatch PRIVATE
     ${CMAKE_SOURCE_DIR}/src/core)
-az_iot_add_cmocka_test(az_iot_tests_telemetry_client unit/telemetry_client_test.c)
-target_link_libraries(az_iot_tests_telemetry_client PRIVATE az_iot_test_support)
+az_iot_add_cmocka_test(
+    az_iot_tests_gen1_telemetry_client unit/gen1_telemetry_client_test.c)
+target_link_libraries(
+    az_iot_tests_gen1_telemetry_client PRIVATE az_iot_test_support az_iot_gen1)
+az_iot_add_cmocka_test(
+    az_iot_tests_gen2_telemetry_client unit/gen2_telemetry_client_test.c)
+target_link_libraries(
+    az_iot_tests_gen2_telemetry_client PRIVATE az_iot_test_support az_iot_gen2)
 az_iot_add_cmocka_test(az_iot_tests_c2d_client unit/c2d_client_test.c)
 target_link_libraries(az_iot_tests_c2d_client PRIVATE az_iot_test_support)
 az_iot_add_cmocka_test(az_iot_tests_direct_method_client unit/direct_method_client_test.c)
