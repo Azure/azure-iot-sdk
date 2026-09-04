@@ -55,7 +55,7 @@ ADR → ADU. The device never talks to ADU directly and holds no ADU-specific cr
 | | **ADUv1 — cut** | **ADUv2 — the target** ([spec](aduv2-spec.md)) |
 |---|---|---|
 | Channel | IoT Hub **device twin** (MQTT) | **Updating operations on the DPS gateway** (HTTP/MQTT), reusing the device's existing connection |
-| Model | **Push** (service writes desired props) | **Pull** (device calls `GetDeviceUpdate` / `GetOnboardingDeviceUpdate`) |
+| Model | **Push** (service writes desired props) | **Pull** (device calls `requestSoftwareUpdates` / `requestOnboardingUpdates`) |
 | Auth | Carried by the Hub connection (SAS / X.509) | **Reuse DPS device auth** (X.509 Phase 1; SAS / TPM later) — no ADU creds |
 | Device data store | Twin reported properties | **ADR → ADU**, proxied by the gateway |
 | Coupling | Requires IoT Hub | **Provisioning-time** (update *before* `Register`); Hub fronts operational post-Ignite |
@@ -80,7 +80,7 @@ ADR → ADU. The device never talks to ADU directly and holds no ADU-specific cr
 **Re-shaped, not deleted:** the concepts that had a twin-specific expression get a
 transport-independent one — `workflow.id` + `retryTimestamp` become `workflowId` correlation with
 idempotent reporting; accept/reject collapses into "install or report skipped"; agent state
-becomes the structured `lastInstallResult` carried by `ReportDeviceUpdateStatus`; device
+becomes the structured `installResult` carried by `reportUpdateStatus`; device
 properties become `agentInfo` (`agentSdkVersion`, `agentProfile`, 1–5 `compatibilityProperties`).
 
 Delivery is via an **`az_iot_adu_channel`** vtable so `adu_core` never names a transport; the
@@ -106,7 +106,7 @@ sample-only / not factored) · 🔜 Coming soon (planned / designed, not yet bui
 | Foundation | ❌ | **ADU as a twin desired-property subscriber** — ADUv1-only wiring; removed with the twin channel. The twin client's subscriber registry itself stays (it serves the twin feature). [→](#a-foundation) |
 | Foundation | 🔜 | **`adu_core` extraction + `az_iot_adu_channel` vtable** — engine takes a manifest string, returns a structured report; delivery/reporting behind the vtable. Prerequisite for every ADUv2 row. [→](#g-aduv2-transport-via-the-dps-gateway) |
 | Core update workflow | ✅ | **Manifest v5 parsing** — delegated to `azure-sdk-for-c`; only v5 targeted. [→](#b-core-update-workflow) |
-| Core update workflow | ❌→🔜 | **Agent state reporting** — twin `0/6/255` reported properties are cut; re-expressed as the structured `lastInstallResult` on `ReportDeviceUpdateStatus`. [→](#b-core-update-workflow) |
+| Core update workflow | ❌→🔜 | **Agent state reporting** — twin `0/6/255` reported properties are cut; re-expressed as the structured `installResult` on `reportUpdateStatus`. [→](#b-core-update-workflow) |
 | Core update workflow | ❌→🔜 | **Device properties reporting** — twin `deviceProperties` cut; re-expressed as `agentInfo` (`agentSdkVersion`, `agentProfile`, compat KVPs) on each fetch. [→](#b-core-update-workflow) |
 | Core update workflow | ❌ | **Startup + reconnect re-reporting / initial twin GET** — no subscription and no unsolicited offer in ADUv2; the device polls instead. [→](#b-core-update-workflow) |
 | Core update workflow | ❌→🔜 | **Accept / reject acknowledgement** — twin 200/406 ack is cut; already-installed becomes a `SKIPPED` outcome in the report. [→](#b-core-update-workflow) |
@@ -135,13 +135,13 @@ sample-only / not factored) · 🔜 Coming soon (planned / designed, not yet bui
 | Platform and crypto adapters | 🔜 | **Linux platform adapter** — libcurl download / install cmd / file persist; factor from sample. [→](#f-platform-and-crypto-adapters) |
 | Platform and crypto adapters | 🟡 | **ESP32 platform adapter** — real OTA sample exists; factor into `adapters/adu/esp32/`. [→](#f-platform-and-crypto-adapters) |
 | ADUv2 transport | ❌ | **Twin (ADUv1) delivery + reporting** — the twin channel is removed, not kept behind a flag. [→](#what-aduv1-is-cut-means) |
-| ADUv2 transport | 🔜 | **DPS update-check binding** — `GetDeviceUpdate` / `GetOnboardingDeviceUpdate` over the device's DPS transport; send `agentInfo` + `installedUpdateId`; parse `serviceConfiguration` + `updateMetadata`. [→](#g-aduv2-transport-via-the-dps-gateway) |
-| ADUv2 transport | 🔜 | **`ReportDeviceUpdateStatus`** — `workflowId` + install result; idempotent, durable retry. [→](#g-aduv2-transport-via-the-dps-gateway) |
+| ADUv2 transport | 🔜 | **DPS update-check binding** — `requestSoftwareUpdates` / `requestOnboardingUpdates` over the device's DPS transport; send `agentInfo` + `installedUpdateId`; parse `serviceConfiguration` + `updateMetadata`. [→](#g-aduv2-transport-via-the-dps-gateway) |
+| ADUv2 transport | 🔜 | **`reportUpdateStatus`** — `workflowId` + install result; idempotent, durable retry. [→](#g-aduv2-transport-via-the-dps-gateway) |
 | ADUv2 transport | 🔜 | **Reuse DPS device auth** — X.509 (P1) over the existing DPS connection; no ADU endpoint/creds/mTLS; identity headers are gateway-populated. [→](#g-aduv2-transport-via-the-dps-gateway) |
 | ADUv2 transport | 🔜 | **Bootstrap orchestration** — update-before-`Register`: onboarding fetch → install → report → re-check loop → `Register` (advisory, never blocks). [→](#g-aduv2-transport-via-the-dps-gateway) |
 | ADUv2 transport | 🔜 | **Operational polling loop** — post-`CONNECTED` poll cadence owned by the agent; pending report flushed first. [→](#g-aduv2-transport-via-the-dps-gateway) |
 | ADUv2 transport | 🔜 | **Root key package download** — fetch/cache from `rootKeyDownloadUrl`, verify as usual. [→](#g-aduv2-transport-via-the-dps-gateway) |
-| ADUv2 transport | 🔜 | **ETag + api-version + agent-info resend** — `agentInfoETag`/`serviceConfigETag`; resend full `agentInfo` on `OUTDATED_`/`UNKNOWN_AGENT_INFO`; re-sync on `OUTDATED_SERVICE_CONFIG`. [→](#g-aduv2-transport-via-the-dps-gateway) |
+| ADUv2 transport | 🔜 | **ETag + api-version + agent-info resend** — `agentInfoEtag`/`serviceConfigEtag`; resend full `agentInfo` on `OUTDATED_`/`UNKNOWN_AGENT_INFO`; re-sync on `OUTDATED_SERVICE_CONFIG`. [→](#g-aduv2-transport-via-the-dps-gateway) |
 | ADUv2 transport | 🔜 | **Advisory + load contracts** — drive on `error.code`; 429/`Retry-After`; 503 ⇒ proceed to `Register`; device is sole retrier. [→](#g-aduv2-transport-via-the-dps-gateway) |
 | Day0 recovery | 🔜 | **Unauthenticated recovery transport** — plain-HTTP recovery endpoint (protocol not yet defined). [→](#h-day0-recovery) |
 | Day0 recovery | 🔜 | **Account-ID binding** — validate signed manifest's ADU account ID (replay protection). [→](#h-day0-recovery) |
@@ -239,8 +239,8 @@ stateDiagram-v2
 - **Agent state / device properties / re-reporting (❌→🔜 re-shaped)** — the twin `0/6/255`
   agent state, the `deviceProperties` object, the startup/reconnect re-report and the initial
   twin GET are all **cut**. ADUv2 has no subscription and no unsolicited offer: the device sends
-  `agentInfo` + `installedUpdateId` on every fetch and a structured `lastInstallResult` on
-  `ReportDeviceUpdateStatus`. The device-properties cache survives as the `agentInfo` cache.
+  `agentInfo` + `installedUpdateId` on every fetch and a structured `installResult` on
+  `reportUpdateStatus`. The device-properties cache survives as the `agentInfo` cache.
 - **Accept / reject (❌→🔜 re-shaped)** — the twin 200/406 acknowledgement is cut. The
   `is_installed_fn` decision stays in `adu_core`; an already-installed or non-applicable update
   becomes a `SKIPPED` outcome in the report rather than a wire-level rejection. *Caveat:* still
@@ -303,8 +303,8 @@ stateDiagram-v2
   install-requested reboot; post-reboot rollback assumes the platform retained per-step
   backups across the reboot.
 - **Persistence must grow for ADUv2 (🔜).** ADUv2 makes reporting a **durable write**, so the
-  blob gains a **blob v3**: the unsent `ReportDeviceUpdateStatus` payload (keyed by
-  `workflowId`), `installedUpdateId`, and the `agentInfoETag` / `serviceConfigETag` pair, so a
+  blob gains a **blob v3**: the unsent `reportUpdateStatus` payload (keyed by
+  `workflowId`), `installedUpdateId`, and the `agentInfoEtag` / `serviceConfigEtag` pair, so a
   device that reboots mid-install still reports its result afterwards and does not resend a full
   `agentInfo` needlessly. `retryTimestamp` leaves the blob with the twin channel.
 - **Health-check / auto-rollback after reboot (🟡 → core).** Today only the ESP32
@@ -347,13 +347,13 @@ sequenceDiagram
     participant DPS as DPS
     participant ADU as ADR to ADU
     loop until "no update"
-      Dev->>DPS: GetOnboardingDeviceUpdate (agentInfo, installedUpdateId)
+      Dev->>DPS: requestOnboardingUpdates (agentInfo, installedUpdateId)
       DPS->>ADU: proxy (externalDeviceId)
       ADU-->>DPS: serviceConfiguration [+ updateMetadata]
       DPS-->>Dev: 200 (no updateMetadata = no update)
       alt update available
         Dev->>Dev: verify sig, download fileUrls, install (shared engine)
-        Dev->>DPS: ReportDeviceUpdateStatus (workflowId, result)
+        Dev->>DPS: reportUpdateStatus (workflowId, result)
         DPS-->>Dev: 200
       end
     end
@@ -371,7 +371,7 @@ fake channel), not to keep two generations alive.
 ```mermaid
 flowchart TB
     ENG["adu_core<br/>verify → download → install → apply → resume<br/>step results · persistence"]
-    DP["ADUv2 channel<br/>Get(Onboarding)DeviceUpdate / ReportDeviceUpdateStatus<br/>over the device's DPS connection"] --> ENG
+    DP["ADUv2 channel<br/>request(Onboarding|Software)Updates / reportUpdateStatus<br/>over the device's DPS connection"] --> ENG
     FK["test fake channel"] --> ENG
     TW["v1 twin wrapper — cut"]:::cut -.->|removed| ENG
     ENG --> CR["crypto hooks<br/>RS256 · SHA-256"]

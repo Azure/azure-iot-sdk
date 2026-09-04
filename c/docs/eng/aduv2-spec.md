@@ -98,13 +98,13 @@ sequenceDiagram
     participant DPS as DPS
     participant ADU as ADR to ADU
     loop until "no update"
-      Dev->>DPS: GetOnboardingDeviceUpdate (agentInfo, installedUpdateId)
+      Dev->>DPS: requestOnboardingUpdates (agentInfo, installedUpdateId)
       DPS->>ADU: proxy (externalDeviceId)
       ADU-->>DPS: serviceConfiguration [+ updateMetadata]
       DPS-->>Dev: 200 (no updateMetadata = no update)
       alt update available
         Dev->>Dev: verify signature, download fileUrls, install
-        Dev->>DPS: ReportDeviceUpdateStatus (workflowId, result)
+        Dev->>DPS: reportUpdateStatus (workflowId, result)
         DPS->>ADU: proxy report
         DPS-->>Dev: 200
       end
@@ -118,7 +118,7 @@ The device **re-checks after each successful install** and only proceeds to `Reg
 
 ### Operational (interim)
 
-An already-provisioned device polls `GetDeviceUpdate` on the same shape. This DPS-fronted operational path is a
+An already-provisioned device polls `requestSoftwareUpdates` on the same shape. This DPS-fronted operational path is a
 **time-boxed interim**; post-Ignite it moves to **IoT Hub's** own updating API (no device-contract change —
 same request/response, different gateway).
 
@@ -197,7 +197,7 @@ Drive behavior from the machine-readable **`error.code`** (`x-ms-error-code` hea
 | No update | 200, `updateMetadata` omitted | Nothing to apply; proceed to `Register`. **Not an error.** |
 | ADU not linked | 409 `UPDATE_ACCOUNT_NOT_LINKED` | Treat as "no update service configured" (distinct from *no update*); proceed. Don't retry. |
 | Agent-info stale/unknown | 400 `OUTDATED_AGENT_INFO` / `UNKNOWN_AGENT_INFO_VERSION` | **Resend the full `agentInfo`** and retry (handle **both** codes). |
-| Service-config stale | 400 `OUTDATED_SERVICE_CONFIG` | Re-check **without** the stale `serviceConfigETag`; response returns fresh config. |
+| Service-config stale | 400 `OUTDATED_SERVICE_CONFIG` | Re-check **without** the stale `serviceConfigEtag`; response returns fresh config. |
 | Throttled | 429 + `Retry-After` | Wait `Retry-After`, then retry. |
 | Transient upstream | 503 `UPSTREAM_UNAVAILABLE` / `INTERNAL_SERVER_ERROR` | **Get:** proceed to `Register` (advisory), retry later. **Report:** retry (must not be lost). |
 | Bad request / auth / disabled | 400 / 401 / 403 | Fix request or credentials; don't retry unchanged. |
