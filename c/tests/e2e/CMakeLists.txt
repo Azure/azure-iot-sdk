@@ -29,7 +29,7 @@ add_subdirectory(service)
 # built when AZ_IOT_BUILD_E2E and AZ_IOT_WITH_PAHO are enabled.
 # ---------------------------------------------------------------------------
 az_iot_add_cmocka_test(az_iot_tests_e2e tests/e2e_scenarios_test.c tests/e2e_device.c)
-target_link_libraries(az_iot_tests_e2e PRIVATE az_iot_e2e_service az_iot_adapter_paho)
+target_link_libraries(az_iot_tests_e2e PRIVATE az_iot_e2e_service az_iot_gen1 az_iot_adapter_paho)
 
 # ---------------------------------------------------------------------------
 # az_iot_tests_e2e_adu
@@ -122,5 +122,5 @@ target_link_libraries(az_iot_tests_e2e_fileupload PRIVATE az_iot_e2e_service az_
 if(AZ_IOT_BUILD_E2E_PKCS11)
     az_iot_add_cmocka_test(az_iot_tests_e2e_custody tests/e2e_custody_test.c)
     target_link_libraries(az_iot_tests_e2e_custody PRIVATE
-        az_iot_e2e_service az_iot_adapter_paho)
+        az_iot_e2e_service az_iot_gen1 az_iot_adapter_paho)
 endif()

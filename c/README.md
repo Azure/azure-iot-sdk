@@ -98,6 +98,8 @@ so ignoring one is a compile warning (an error under this project's default
 typedef struct
 {
   az_iot_connection_state conn_state;
+  az_iot_connection_profile connection_profile;
+  bool profile_valid;
   bool send_done;
   az_iot_result send_status;
 } app_ctx;
@@ -105,7 +107,13 @@ typedef struct
 static void on_conn_state(const az_iot_connection_state_event* event, void* user_ctx)
 {
   (void)event->reason;
-  ((app_ctx*)user_ctx)->conn_state = event->state;
+  app_ctx* ctx = (app_ctx*)user_ctx;
+  ctx->conn_state = event->state;
+  if (event->state == AZ_IOT_CONN_STATE_CONNECTED && event->profile != NULL)
+  {
+    ctx->connection_profile = event->profile->connection_profile;
+    ctx->profile_valid = true;
+  }
 }
 
 static void on_send_done(az_iot_result status, void* user_ctx)
@@ -138,15 +146,15 @@ int main(void)
   copts.certificate_provider = &certs.base;
 
   az_iot_connection_client conn;
-  az_iot_telemetry_client tel;
+  az_iot_gen1_telemetry_client gen1_tel = { 0 };
+  az_iot_gen2_telemetry_client gen2_tel = { 0 };
   if (az_iot_connection_client_init(&conn, &copts) != AZ_IOT_OK
       /* Register both MQTT versions: v3.1.1 for DPS + Classic, v5 for Next. */
       || az_iot_connection_client_register_mqtt_factory(
              &conn, az_iot_paho_factory_create_v3_1_1())
           != AZ_IOT_OK
       || az_iot_connection_client_register_mqtt_factory(&conn, az_iot_paho_factory_create_v5())
-          != AZ_IOT_OK
-      || az_iot_telemetry_client_init(&tel, &conn) != AZ_IOT_OK)
+          != AZ_IOT_OK)
   {
     return 1;
   }
@@ -170,14 +178,24 @@ int main(void)
   }
 
   int rc = 1;
-  if (ctx.conn_state == AZ_IOT_CONN_STATE_CONNECTED)
+  if (ctx.conn_state == AZ_IOT_CONN_STATE_CONNECTED && ctx.profile_valid)
   {
+    az_iot_result init_result = ctx.connection_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5
+        ? az_iot_gen2_telemetry_client_init(&gen2_tel, &conn)
+        : az_iot_gen1_telemetry_client_init(&gen1_tel, &conn);
     static const uint8_t body[] = "{\"hello\":\"world\"}";
     az_iot_telemetry_message msg = { 0 };
     msg.payload = body;
     msg.payload_len = sizeof(body) - 1;
 
-    if (az_iot_telemetry_client_send(&tel, &msg, on_send_done, &ctx) == AZ_IOT_OK)
+    az_iot_result send_result = init_result;
+    if (init_result == AZ_IOT_OK)
+    {
+      send_result = ctx.connection_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5
+        ? az_iot_gen2_telemetry_client_send(&gen2_tel, &msg, on_send_done, &ctx)
+        : az_iot_gen1_telemetry_client_send(&gen1_tel, &msg, on_send_done, &ctx);
+    }
+    if (init_result == AZ_IOT_OK && send_result == AZ_IOT_OK)
     {
       for (int i = 0; i < 600 && !ctx.send_done; ++i)
       {
@@ -188,7 +206,8 @@ int main(void)
   }
 
   az_iot_connection_client_close(&conn);
-  az_iot_telemetry_client_destroy(&tel);
+  az_iot_gen1_telemetry_client_destroy(&gen1_tel);
+  az_iot_gen2_telemetry_client_destroy(&gen2_tel);
   az_iot_connection_client_destroy(&conn);
   az_iot_certificate_provider_pem_destroy(&certs);
   return rc;

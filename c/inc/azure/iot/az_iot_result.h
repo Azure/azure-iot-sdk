@@ -61,7 +61,10 @@ extern "C"
      * declining a key form it cannot use. This one never reaches the network:
      * it is caught at open, because the alternative is a NULL private key
      * failing deep inside the TLS stack with nothing that names the cause. */
-    AZ_IOT_ERR_CREDENTIAL_INCOMPLETE
+    AZ_IOT_ERR_CREDENTIAL_INCOMPLETE,
+    /* A generation-specific feature client was initialized against a
+     * connection resolved to the other profile. */
+    AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH
   } az_iot_result;
 
   const char* az_iot_result_to_string(az_iot_result r);

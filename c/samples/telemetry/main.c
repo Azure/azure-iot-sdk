@@ -21,12 +21,73 @@ typedef struct
   sample_config config;
   az_iot_certificate_provider_pem certs;
   az_iot_connection_client connection_client;
-  az_iot_telemetry_client telemetry_client;
+  az_iot_gen1_telemetry_client gen1_telemetry;
+  az_iot_gen2_telemetry_client gen2_telemetry;
+  az_iot_connection_profile telemetry_profile;
+  int telemetry_initialized;
 } sample_state;
+
+static void telemetry_destroy(sample_state* state)
+{
+  if (!state->telemetry_initialized)
+  {
+    return;
+  }
+  if (state->telemetry_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
+  {
+    az_iot_gen2_telemetry_client_destroy(&state->gen2_telemetry);
+  }
+  else
+  {
+    az_iot_gen1_telemetry_client_destroy(&state->gen1_telemetry);
+  }
+  state->telemetry_initialized = 0;
+}
+
+static az_iot_result telemetry_rebuild(sample_state* state, az_iot_connection_profile profile)
+{
+  telemetry_destroy(state);
+
+  az_iot_result result;
+  if (profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
+  {
+    result = az_iot_gen2_telemetry_client_init(&state->gen2_telemetry, &state->connection_client);
+  }
+  else if (profile == AZ_IOT_CONNECTION_PROFILE_CLASSIC)
+  {
+    result = az_iot_gen1_telemetry_client_init(&state->gen1_telemetry, &state->connection_client);
+  }
+  else
+  {
+    return AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED;
+  }
+
+  if (result == AZ_IOT_OK)
+  {
+    state->telemetry_profile = profile;
+    state->telemetry_initialized = 1;
+  }
+  return result;
+}
+
+static az_iot_result telemetry_send(
+    sample_state* state,
+    const az_iot_telemetry_message* message,
+    az_iot_telemetry_send_callback callback,
+    void* user_ctx)
+{
+  if (!state->telemetry_initialized)
+  {
+    return AZ_IOT_ERR_NOT_INITIALIZED;
+  }
+  return state->telemetry_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5
+      ? az_iot_gen2_telemetry_client_send(&state->gen2_telemetry, message, callback, user_ctx)
+      : az_iot_gen1_telemetry_client_send(&state->gen1_telemetry, message, callback, user_ctx);
+}
 
 static void sample_state_destroy(sample_state* state)
 {
-  az_iot_telemetry_client_destroy(&state->telemetry_client);
+  telemetry_destroy(state);
   az_iot_connection_client_destroy(&state->connection_client);
   az_iot_certificate_provider_pem_destroy(&state->certs);
   sample_config_release(&state->config);
@@ -34,18 +95,23 @@ static void sample_state_destroy(sample_state* state)
 
 typedef struct
 {
+  sample_state* state;
   az_iot_connection_state conn_state;
+  az_iot_result telemetry_status;
   int send_done;
   az_iot_result send_status;
 } user_context;
 
 static void on_conn_state(const az_iot_connection_state_event* event, void* user_ctx)
 {
-  az_iot_connection_state s = event->state;
-  az_iot_result reason = event->reason;
-  (void)s;
-  (void)reason;
-  ((user_context*)user_ctx)->conn_state = s;
+  user_context* ctx = (user_context*)user_ctx;
+  ctx->conn_state = event->state;
+  if (event->state == AZ_IOT_CONN_STATE_CONNECTED)
+  {
+    ctx->telemetry_status = event->profile
+        ? telemetry_rebuild(ctx->state, event->profile->connection_profile)
+        : AZ_IOT_ERR_INTERNAL;
+  }
 }
 
 static void on_send_done(az_iot_result status, void* user_ctx)
@@ -67,7 +133,7 @@ int main(void)
   }
 
   int rc = 1;
-  user_context user_ctx = { 0 };
+  user_context user_ctx = { .state = &state, .telemetry_status = AZ_IOT_ERR_NOT_INITIALIZED };
 
   /* Certificate provider */
   az_iot_certificate_provider_pem_options pem = az_iot_certificate_provider_pem_options_default();
@@ -112,13 +178,6 @@ int main(void)
     return 1;
   }
 
-  /* Telemetry client */
-  if (az_iot_telemetry_client_init(&state.telemetry_client, &state.connection_client) != AZ_IOT_OK)
-  {
-    sample_state_destroy(&state);
-    return 1;
-  }
-
   /* Open (internally provisions via DPS then connects to assigned hub) */
   if (az_iot_connection_client_open(&state.connection_client) != AZ_IOT_OK)
   {
@@ -135,7 +194,7 @@ int main(void)
     }
   }
 
-  if (user_ctx.conn_state == AZ_IOT_CONN_STATE_CONNECTED)
+  if (user_ctx.conn_state == AZ_IOT_CONN_STATE_CONNECTED && user_ctx.telemetry_status == AZ_IOT_OK)
   {
     /* Send one telemetry message */
     static const uint8_t payload[] = "{\"temp\":23}";
@@ -148,8 +207,7 @@ int main(void)
     msg.properties = props;
     msg.properties_count = sizeof(props) / sizeof(props[0]);
 
-    if (az_iot_telemetry_client_send(&state.telemetry_client, &msg, on_send_done, &user_ctx)
-        == AZ_IOT_OK)
+    if (telemetry_send(&state, &msg, on_send_done, &user_ctx) == AZ_IOT_OK)
     {
       for (int i = 0; i < 600 && !user_ctx.send_done; ++i)
       {
