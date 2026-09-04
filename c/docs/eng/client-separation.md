@@ -84,7 +84,7 @@ is to report the generation accurately and to refuse the wrong API loudly.
 | MQTT abstraction, adapters, certificate provider, logging, results, dispatch | **single, shared** |
 | Message types (`az_iot_telemetry_message`, `az_iot_c2d_message`, …) and callback typedefs | **single, shared** — see [§5](#5-what-stays-shared) |
 | Telemetry, C2D, twin, direct methods, file upload **clients** | **split** `gen1` / `gen2` |
-| ADU | split by *channel*, see [§8](#8-device-update) |
+| ADU | **not split** — one engine (`adu_core`) behind a channel vtable; the twin channel is cut, see [§8](#8-device-update) |
 
 ---
 
@@ -450,8 +450,8 @@ carrying delivery and reporting.
 
 | Channel | Generation | Status |
 |---|---|---|
-| Twin-based (ADUv1) | gen1 | Works today; **deprecated** on arrival |
-| DPS-fronted RPC (ADUv2) | gen2 | **Declared, not implemented** |
+| Twin-based (ADUv1) | gen1 | **Cut** — the channel and its public API are being removed, not kept behind a flag |
+| DPS-fronted RPC (ADUv2) | gen2 | **The only channel that will ship** — declared, not yet implemented |
 
 > **ADUv2 is specified elsewhere; this section only states where the seam is.**
 > See [aduv2-spec.md](aduv2-spec.md) for the wire contract and
@@ -469,30 +469,28 @@ provisioning path, and for the bootstrap case it runs **before the device is
 provisioned at all**. A channel vtable that assumed "there is a connected hub
 session underneath me" would be the wrong shape.
 
-ADUv1 keeps working through the split. Dropping it is a separate decision with
-its own deprecation window, not a side effect of re-layering.
+ADUv1 is **cut** (decision of record: [connection.md §7](../connection.md#7-aduv2-onboarding-and-renewal-planned)):
+the twin channel and its public API are removed rather than carried through the split behind a
+deprecation window. That changes what the split owes ADU — the re-layer stops being a way to keep
+two channels alive and becomes the mechanism that lets the twin channel be deleted without taking
+the engine with it.
 
-**Decided: ADU is repointed in P2 and re-layered in P5.** When P2 splits the twin
-client, `az_iot_adu_client_initialize()` changes its parameter from
-`az_iot_twin_client*` to `az_iot_gen1_twin_client*`, and the five call sites
-follow. That is all P2 does to ADU: no `adu_core`, no channel vtable.
+**Ordering (was: repoint in P2, re-layer in P5).** The P2 step was to change
+`az_iot_adu_client_initialize()`'s parameter from `az_iot_twin_client*` to
+`az_iot_gen1_twin_client*` and follow the five call sites. That step is only needed if the twin
+split lands **before** the ADU cut; if the cut lands first there is no twin pointer left to
+repoint and P2 does nothing to ADU. Either way ADU must not hold a cross-generation
+`az_iot_twin_client`: that is precisely the construct
+[§4](#4-no-cross-generation-constructs-on-the-public-surface) forbids. Pick the order deliberately
+and land whichever break happens with the PR that causes it.
 
-This is a **public header break** and it is taken deliberately rather than
-avoided:
+The full re-layer onto `adu_core` + the channel vtable, followed by the deletion of the twin
+channel, stays at **P5** unless the ADU work pulls it earlier; it is a refactor of ADU's internals
+and not a rider on the twin split. It is a **public header break**, taken deliberately:
 
-- The alternative — keeping a cross-generation `az_iot_twin_client` alive purely
-  so ADU can hold it — is exactly the construct
-  [§4](#4-no-cross-generation-constructs-on-the-public-surface) exists to
-  forbid, and it would keep the old type on the public surface through P3 and P4
-  for one consumer.
-- ADUv1 *is* gen1. The twin-based channel is the only one that exists, and
-  naming the type it actually requires makes the constraint visible at compile
-  time instead of at run time.
-- The break is mechanical and lands with the twin PR that causes it, so it is
-  reviewed once, in context, rather than twice.
-
-The full re-layer onto `adu_core` + the channel vtable stays at **P5**, where it
-is a refactor of ADU's internals and not a rider on the twin split.
+- ADU's only shipping channel becomes ADUv2, which hangs off the provisioning path, so keeping a
+  twin-shaped ADU API alive would preserve a surface no shipping channel uses.
+- The break is mechanical and lands with the PR that causes it, so it is reviewed once, in context.
 
 ---
 

@@ -5,6 +5,17 @@
 manual-action queue**, and (c) a **feature manual** with the
 design detail and caveats for each capability.
 
+> **Direction (current): ADUv2 is the implementation target. ADUv1 is cut.**
+> The twin-based ADUv1 delivery channel and its public API are being **removed**,
+> not deprecated-and-kept: there is no ADUv1 deployment path in the shipping SDK,
+> no twin subscription for updates, and no reported-property status. Everything in
+> ADUv1 that is *not* transport — manifest parsing, JWS/SJWK verification, root
+> keys, SHA-256, the download/backup/install/apply state machine, reboot/resume
+> persistence — is **harvested into a transport-independent `adu_core`** and reused
+> verbatim by ADUv2. See [What "ADUv1 is cut" means](#what-aduv1-is-cut-means).
+> Decision of record: [connection.md §7](../connection.md#7-aduv2-onboarding-and-renewal-planned);
+> seam: [client-separation.md §8](client-separation.md#8-device-update).
+
 > **Supersedes `adu-feature-support.md`.** This doc replaces the old
 > feature-coverage matrix and folds in the ADUv2 client action plan.
 > Deep internal architecture (public API surface, hook/crypto model, source
@@ -29,24 +40,61 @@ platforms too.
   implemented, so a non-embedded integrator has a complete reference.
 - **Prioritization still applies:** the embedded-critical core ships first; the broader
   reference-completeness features follow (they are 🔜, not dropped).
+- **Completeness is scoped to ADUv2.** "Every ADU protocol feature" means every feature of the
+  **ADUv2** device protocol. ADUv1's twin delivery is not a feature gap — it is a **removed
+  channel** (below).
 
-**Two generations, one core.** Both reuse the same `az_iot_adu_client` manifest
-parse/format module (from `azure-sdk-for-c`) and the same crypto core; only *how a
-manifest reaches the device* and *how status is reported* differ.
+## What "ADUv1 is cut" means
 
-| | **ADUv1** (today) | **ADUv2** (in design — [details](aduv2-spec.md)) |
+ADUv1 delivered updates over the IoT Hub **device twin** (service pushes desired properties,
+device reports status back through reported properties). That channel is **removed**. ADUv2 is a
+**device-initiated pull** protocol over an updating operation on a gateway the device already
+talks to (DPS for Ignite '26, IoT Hub for the operational path afterwards), which proxies to
+ADR → ADU. The device never talks to ADU directly and holds no ADU-specific credential.
+
+| | **ADUv1 — cut** | **ADUv2 — the target** ([spec](aduv2-spec.md)) |
 |---|---|---|
-| Channel | IoT Hub **device twin** (MQTT) | **DPS** device-update APIs (HTTP/MQTT), reusing the device's DPS connection |
-| Model | **Push** (service writes desired props) | **Pull** (device calls DPS `GetDeviceUpdate` / `GetOnboardingDeviceUpdate`) |
+| Channel | IoT Hub **device twin** (MQTT) | **Updating operations on the DPS gateway** (HTTP/MQTT), reusing the device's existing connection |
+| Model | **Push** (service writes desired props) | **Pull** (device calls `GetDeviceUpdate` / `GetOnboardingDeviceUpdate`) |
 | Auth | Carried by the Hub connection (SAS / X.509) | **Reuse DPS device auth** (X.509 Phase 1; SAS / TPM later) — no ADU creds |
-| Device data store | Twin reported properties | **ADR → ADU**, proxied by DPS (device never calls ADU directly) |
+| Device data store | Twin reported properties | **ADR → ADU**, proxied by the gateway |
 | Coupling | Requires IoT Hub | **Provisioning-time** (update *before* `Register`); Hub fronts operational post-Ignite |
-| Manifest + signing / install | v5, JWS/RS256, SHA-256, multi-step, reboot/resume | **Same** (shared core) |
+| Manifest + signing / install | v5, JWS/RS256, SHA-256, multi-step, reboot/resume | **Same code**, harvested into `adu_core` |
+
+**Removed** (public API break, no deprecation window):
+
+- `az_iot_adu_client_initialize()`'s mandatory `az_iot_twin_client*` and the five twin call sites.
+- Desired-property deployment parsing/dispatch, twin accept/reject acknowledgement (200/406),
+  reported-property agent state (`0/6/255`) and device-properties reporting, the initial twin GET,
+  and twin re-subscription on reconnect for ADU.
+- The ADUv1-shaped samples and the twin-driven unit tests that assert those wire shapes.
+
+**Kept** (moves into `adu_core`, transport-independent):
+
+- Manifest v5 parse/format (delegated to `azure-sdk-for-c`), JWS/SJWK two-level trust chain,
+  RS256-only enforcement, root-key store + revocation, SHA-256 payload integrity.
+- The download → backup → install → apply → restore state machine, multi-step sequencing, per-step
+  results, cancellation, retry/replacement/duplicate detection, reboot/resume persistence.
+- The platform + crypto hook model and the existing adapters.
+
+**Re-shaped, not deleted:** the concepts that had a twin-specific expression get a
+transport-independent one — `workflow.id` + `retryTimestamp` become `workflowId` correlation with
+idempotent reporting; accept/reject collapses into "install or report skipped"; agent state
+becomes the structured `lastInstallResult` carried by `ReportDeviceUpdateStatus`; device
+properties become `agentInfo` (`agentSdkVersion`, `agentProfile`, 1–5 `compatibilityProperties`).
+
+Delivery is via an **`az_iot_adu_channel`** vtable so `adu_core` never names a transport; the
+ADUv2/DPS channel is the only implementation that will ship (plus an in-test fake).
 
 **Legend.** Support: ✅ Implemented (in core) · 🟡 Partial (built but simplified /
 sample-only / not factored) · 🔜 Coming soon (planned / designed, not yet built) ·
-⚙️ Architectural capability (enabled by hooks, no core code). *(There is no "not planned"
-state — see [Scope and philosophy](#scope-and-philosophy-the-adu-reference-implementation).)*
+⚙️ Architectural capability (enabled by hooks, no core code) · ❌ Cut (ADUv1-only, being removed).
+*(Outside the cut channel there is no "not planned" state — see
+[Scope and philosophy](#scope-and-philosophy-the-adu-reference-implementation).)*
+
+> ✅ on an engine row means **the code exists and was audited**; under the cut it also means
+> **it must survive the move into `adu_core` unchanged**. It does *not* mean the feature is
+> reachable end-to-end today, because the only channel that will ship (ADUv2) is not built yet.
 
 ---
 
@@ -55,16 +103,16 @@ state — see [Scope and philosophy](#scope-and-philosophy-the-adu-reference-imp
 | Category | Support | Details |
 |---|:--:|---|
 | Foundation | ✅ | **Connection state + error propagation** — observer registry, status/reason/source codes, lifecycle guards (Phase 0). [→](#a-foundation) |
-| Foundation | ✅ | **Twin multi-subscriber + core state machine** — desired-prop subscriber registry, ADU client struct/`do_work` (Phase 1). [→](#a-foundation) |
+| Foundation | ❌ | **ADU as a twin desired-property subscriber** — ADUv1-only wiring; removed with the twin channel. The twin client's subscriber registry itself stays (it serves the twin feature). [→](#a-foundation) |
+| Foundation | 🔜 | **`adu_core` extraction + `az_iot_adu_channel` vtable** — engine takes a manifest string, returns a structured report; delivery/reporting behind the vtable. Prerequisite for every ADUv2 row. [→](#g-aduv2-transport-via-the-dps-gateway) |
 | Core update workflow | ✅ | **Manifest v5 parsing** — delegated to `azure-sdk-for-c`; only v5 targeted. [→](#b-core-update-workflow) |
-| Core update workflow | ✅ | **Agent state reporting** — internal states → protocol `0/6/255`. [→](#b-core-update-workflow) |
-| Core update workflow | ✅ | **Device properties reporting** — manufacturer/model/aduVer/compat/installedUpdateId, cached at init. [→](#b-core-update-workflow) |
-| Core update workflow | ✅ | **Startup + reconnect re-reporting** — first `do_work` + initial twin GET + reconnect observer. [→](#b-core-update-workflow) |
-| Core update workflow | ✅ | **Accept / reject acknowledgement** — accept→download, reject/already-installed→406. [→](#b-core-update-workflow) |
+| Core update workflow | ❌→🔜 | **Agent state reporting** — twin `0/6/255` reported properties are cut; re-expressed as the structured `lastInstallResult` on `ReportDeviceUpdateStatus`. [→](#b-core-update-workflow) |
+| Core update workflow | ❌→🔜 | **Device properties reporting** — twin `deviceProperties` cut; re-expressed as `agentInfo` (`agentSdkVersion`, `agentProfile`, compat KVPs) on each fetch. [→](#b-core-update-workflow) |
+| Core update workflow | ❌ | **Startup + reconnect re-reporting / initial twin GET** — no subscription and no unsolicited offer in ADUv2; the device polls instead. [→](#b-core-update-workflow) |
+| Core update workflow | ❌→🔜 | **Accept / reject acknowledgement** — twin 200/406 ack is cut; already-installed becomes a `SKIPPED` outcome in the report. [→](#b-core-update-workflow) |
 | Core update workflow | ✅ | **Multi-step (composite) updates** — per-step Download→Backup→Install→Apply loop. [→](#b-core-update-workflow) |
 | Core update workflow | ✅ | **Per-step result reporting** — `resultCode`/`extendedResultCode`/`stepResults`. [→](#b-core-update-workflow) |
-| Core update workflow | ✅ | **Retry detection** — same `workflow.id` + newer `retryTimestamp` restarts; redelivery ignored. [→](#b-core-update-workflow) |
-| Core update workflow | ✅ | **Replacement detection** — different `workflow.id` supersedes in-flight; manifest CRC fingerprint. [→](#b-core-update-workflow) |
+| Core update workflow | ✅→🔜 | **Retry / replacement / duplicate detection** — engine logic kept; re-keyed from `workflow.id` + `retryTimestamp` onto `workflowId`, which is the sole correlation key in ADUv2. [→](#b-core-update-workflow) |
 | Core update workflow | ✅ | **Cancellation** — cooperative flag honored at phase boundaries. [→](#b-core-update-workflow) |
 | Download and integrity | ✅ | **File download from manifest URLs** — resolves `fileUrls`, drives `download_fn`. [→](#c-download-and-integrity) |
 | Download and integrity | ✅ | **Chunked / streaming download** — `download_fn` may return `IN_PROGRESS`. [→](#c-download-and-integrity) |
@@ -76,24 +124,25 @@ state — see [Scope and philosophy](#scope-and-philosophy-the-adu-reference-imp
 | Security and trust | ✅ | **Root key store** (compiled-in Microsoft + runtime-loadable). [→](#d-security-and-trust) |
 | Security and trust | ✅ | **Root key revocation** — `disabled` roots rejected by `kid`. [→](#d-security-and-trust) |
 | Security and trust | ⚙️ | **HSM / PKCS#11 backend** — possible via `verify_rs256_fn`; no adapter ships. [→](#d-security-and-trust) |
-| Security and trust | 🔜 | **Root Key Package runtime rotation** — out-of-band fetch+verify+apply, threshold continuity (deferred; firmware-delivered today). [→](#d-security-and-trust) |
+| Security and trust | 🔜 | **Root Key Package runtime rotation** — fetch+verify+apply with threshold continuity; the package URL now arrives as `serviceConfiguration.rootKeyDownloadUrl` (not a twin property). [→](#d-security-and-trust) |
 | Install, apply, recovery | ✅ | **Install / Apply execution (core)** — chunkable `install_fn`/`apply_fn`, may request reboot. [→](#e-install-apply-recovery) |
 | Install, apply, recovery | ✅ | **Backup / Restore (rollback)** — optional `backup_fn`; reverse-order best-effort restore. [→](#e-install-apply-recovery) |
 | Install, apply, recovery | ✅ | **Partial-failure rollback (multi-step)** — mid-sequence failure rolls back applied steps. [→](#e-install-apply-recovery) |
-| Install, apply, recovery | ✅ | **Reboot coordination + resume** — persist-before-reboot + `resume()`; v2 blob (CRC, step results). [→](#e-install-apply-recovery) |
+| Install, apply, recovery | ✅→🔜 | **Reboot coordination + resume** — persist-before-reboot + `resume()`; blob must additionally carry the unsent ADUv2 report + ETags. [→](#e-install-apply-recovery) |
 | Install, apply, recovery | 🟡 | **Health-check / auto-rollback after reboot (core)** — sample-only today; promote to core. [→](#e-install-apply-recovery) |
 | Platform and crypto adapters | ✅ | **`crypto_openssl` adapter** — RS256 + SHA-256, factored in `adapters/adu/`. [→](#f-platform-and-crypto-adapters) |
 | Platform and crypto adapters | 🟡 | **`crypto_mbedtls` adapter** — inline in ESP32 sample; factor into `adapters/`. [→](#f-platform-and-crypto-adapters) |
 | Platform and crypto adapters | 🔜 | **Linux platform adapter** — libcurl download / install cmd / file persist; factor from sample. [→](#f-platform-and-crypto-adapters) |
 | Platform and crypto adapters | 🟡 | **ESP32 platform adapter** — real OTA sample exists; factor into `adapters/adu/esp32/`. [→](#f-platform-and-crypto-adapters) |
-| ADUv2 transport | 🔜 | **Shared ADU engine extraction (Approach 3)** — decouple engine from twin; manifest-in / structured-report-out (transport-agnostic). [→](#g-aduv2-transport-via-dps) |
-| ADUv2 transport | 🔜 | **DPS update-check binding** — `GetDeviceUpdate` / `GetOnboardingDeviceUpdate` over the device's DPS transport; send `agentInfo` + `installedUpdateId`; parse `serviceConfiguration` + `updateMetadata`. [→](#g-aduv2-transport-via-dps) |
-| ADUv2 transport | 🔜 | **`ReportDeviceUpdateStatus` via DPS** — `workflowId` + install result; idempotent, durable retry. [→](#g-aduv2-transport-via-dps) |
-| ADUv2 transport | 🔜 | **Reuse DPS device auth** — X.509 (P1) over the existing DPS connection; no ADU endpoint/creds/mTLS; identity headers are gateway-populated. [→](#g-aduv2-transport-via-dps) |
-| ADUv2 transport | 🔜 | **Bootstrap orchestration** — update-before-`Register`: onboarding fetch → install → report → re-check loop → `Register` (advisory, never blocks). [→](#g-aduv2-transport-via-dps) |
-| ADUv2 transport | 🔜 | **Root key package download** — fetch/cache from `rootKeyDownloadUrl`, verify as usual. [→](#g-aduv2-transport-via-dps) |
-| ADUv2 transport | 🔜 | **ETag + api-version + agent-info resend** — `agentInfoETag`/`serviceConfigETag`; resend full `agentInfo` on `OUTDATED_`/`UNKNOWN_AGENT_INFO`; re-sync on `OUTDATED_SERVICE_CONFIG`. [→](#g-aduv2-transport-via-dps) |
-| ADUv2 transport | 🔜 | **Advisory + load contracts** — drive on `error.code`; 429/`Retry-After`; 503 ⇒ proceed to `Register`; device is sole retrier. [→](#g-aduv2-transport-via-dps) |
+| ADUv2 transport | ❌ | **Twin (ADUv1) delivery + reporting** — the twin channel is removed, not kept behind a flag. [→](#what-aduv1-is-cut-means) |
+| ADUv2 transport | 🔜 | **DPS update-check binding** — `GetDeviceUpdate` / `GetOnboardingDeviceUpdate` over the device's DPS transport; send `agentInfo` + `installedUpdateId`; parse `serviceConfiguration` + `updateMetadata`. [→](#g-aduv2-transport-via-the-dps-gateway) |
+| ADUv2 transport | 🔜 | **`ReportDeviceUpdateStatus`** — `workflowId` + install result; idempotent, durable retry. [→](#g-aduv2-transport-via-the-dps-gateway) |
+| ADUv2 transport | 🔜 | **Reuse DPS device auth** — X.509 (P1) over the existing DPS connection; no ADU endpoint/creds/mTLS; identity headers are gateway-populated. [→](#g-aduv2-transport-via-the-dps-gateway) |
+| ADUv2 transport | 🔜 | **Bootstrap orchestration** — update-before-`Register`: onboarding fetch → install → report → re-check loop → `Register` (advisory, never blocks). [→](#g-aduv2-transport-via-the-dps-gateway) |
+| ADUv2 transport | 🔜 | **Operational polling loop** — post-`CONNECTED` poll cadence owned by the agent; pending report flushed first. [→](#g-aduv2-transport-via-the-dps-gateway) |
+| ADUv2 transport | 🔜 | **Root key package download** — fetch/cache from `rootKeyDownloadUrl`, verify as usual. [→](#g-aduv2-transport-via-the-dps-gateway) |
+| ADUv2 transport | 🔜 | **ETag + api-version + agent-info resend** — `agentInfoETag`/`serviceConfigETag`; resend full `agentInfo` on `OUTDATED_`/`UNKNOWN_AGENT_INFO`; re-sync on `OUTDATED_SERVICE_CONFIG`. [→](#g-aduv2-transport-via-the-dps-gateway) |
+| ADUv2 transport | 🔜 | **Advisory + load contracts** — drive on `error.code`; 429/`Retry-After`; 503 ⇒ proceed to `Register`; device is sole retrier. [→](#g-aduv2-transport-via-the-dps-gateway) |
 | Day0 recovery | 🔜 | **Unauthenticated recovery transport** — plain-HTTP recovery endpoint (protocol not yet defined). [→](#h-day0-recovery) |
 | Day0 recovery | 🔜 | **Account-ID binding** — validate signed manifest's ADU account ID (replay protection). [→](#h-day0-recovery) |
 | Day0 recovery | 🔜 | **Compatibility-property validation** — device checks compat before applying a replayed response. [→](#h-day0-recovery) |
@@ -107,7 +156,7 @@ state — see [Scope and philosophy](#scope-and-philosophy-the-adu-reference-imp
 | Testing and conformance | 🟡 | **Crypto vector tests** — known-good/bad RS256 + SHA-256 vectors. [→](#k-testing-and-conformance) |
 | Testing and conformance | 🔜 | **Adapter integration tests** — mock HTTP server + test manifest per adapter. [→](#k-testing-and-conformance) |
 | Testing and conformance | 🔜 | **ADU conformance suite** — host-only `az_iot_adu_conformance`, all states + multi-step. [→](#k-testing-and-conformance) |
-| Testing and conformance | 🔜 | **E2E vs real ADU service** — gated behind `AZ_IOT_ADU_E2E` (off the PR path). [→](#k-testing-and-conformance) |
+| Testing and conformance | ✅→🔜 | **E2E vs real ADU service** — five twin-driven scenarios exist in a slow-lane workflow (off the PR path); they retire with the cut and need ADUv2 equivalents. [→](#k-testing-and-conformance) |
 | Advanced update model | 🔜 | **Reference steps** — `type: reference` + detached child manifest: fetch, verify, recurse. [→](#l-advanced-update-model) |
 | Advanced update model | 🔜 | **Proxy / nested updates** — parent agent orchestrates leaf/component updates (gateway→leaf). [→](#l-advanced-update-model) |
 | Advanced update model | 🔜 | **Component-level targeting** — component enumerator hook + `selectedComponents` matching. [→](#l-advanced-update-model) |
@@ -119,18 +168,27 @@ state — see [Scope and philosophy](#scope-and-philosophy-the-adu-reference-imp
 
 Everything is committed (per [Scope and philosophy](#scope-and-philosophy-the-adu-reference-implementation)); the tiers below are about **ordering**, not scope.
 
-- **Tier 1 — embedded-critical core (ship first):** adapters (E/F), ADUv2 transport (G), Day0 (H), library mode (J), testing (K).
+- **Tier 0 — the cut (blocks everything):** extract `adu_core` + the `az_iot_adu_channel` vtable and
+  delete the twin channel, its public API and its wire-shape tests.
+- **Tier 1 — embedded-critical core (ship first):** ADUv2 transport (G), adapters (E/F), Day0 (H),
+  library mode (J), testing (K).
 - **Tier 2 — reference-completeness (coming soon):** delta + handler registry (I), per-handler-type handlers, dynamic loading, Delivery Optimization, reference steps, proxy/nested, component targeting, `mimeType`, diagnostics/log-upload, `adu-shell`, Root Key Package rotation (D).
 
 ```mermaid
 flowchart LR
-    A[v1 core ✅] --> B[Finish adapters + health-check]
-    B --> C[Extract shared engine]
-    C --> D[ADUv2 transport]
-    D --> E[Day0 + library mode]
-    E --> F[Conformance + E2E]
-    F --> G[Tier 2: reference-completeness]
+    A["Engine code from v1 ✅<br/>(audited, transport-welded)"] --> B["Extract adu_core<br/>+ az_iot_adu_channel"]
+    B --> C["Delete the twin channel<br/>(ADUv1 cut)"]
+    C --> D["ADUv2 DPS channel<br/>fetch · report · ETags · auth"]
+    D --> E["Bootstrap + operational orchestration"]
+    E --> F["Adapters + health-check"]
+    F --> G["Day0 + library mode"]
+    G --> H["Conformance + E2E"]
+    H --> I["Tier 2: reference-completeness"]
 ```
+
+> **Deleting the twin channel is not a rider on the ADUv2 work.** `adu_core` must be extractable
+> and testable against a fake channel *before* the DPS channel exists, so Tier 0 lands on its own
+> and the ADU unit suite keeps passing across the break.
 
 ---
 
@@ -144,29 +202,32 @@ flowchart LR
   `az_iot_error_source`), lifecycle guards (`DEINITIALIZING`, re-init poison
   guard, `AZ_IOT_ERR_DETACHED`). Detail:
   [connection-state-and-error-propagation.md](connection-state-and-error-propagation.md).
-- **Twin multi-subscriber + core state machine (✅, Phase 1).** `az_iot_twin_client`
-  desired-property subscriber registry; `az_iot_adu_client_t` init/destroy/`do_work`;
-  device-properties cache. This is what makes the ADU client a twin subscriber today.
+- **Twin multi-subscriber (Phase 1).** The `az_iot_twin_client` desired-property subscriber
+  registry stays — it is a twin-client feature with other consumers. **ADU stops being one of
+  its subscribers** when the twin channel is cut. What survives on the ADU side is the client
+  struct / `do_work()` pump and the device-properties cache, which move into `adu_core` (the
+  cache being re-shaped as `agentInfo`).
 
 ## B. Core update workflow
 
 All ✅ and audited against `c/src/features/adu/`. The engine advances one phase per
-`do_work()`:
+`do_work()`. The phases are transport-independent and survive the cut; only how a manifest
+**arrives** and how a result **leaves** changes (twin properties → channel vtable).
 
 ```mermaid
 stateDiagram-v2
     [*] --> Idle
-    Idle --> ManifestReceived: deployment (desired props)
+    Idle --> ManifestReceived: updateMetadata in a fetch response
     ManifestReceived --> VerifyingManifest
-    VerifyingManifest --> Idle: reject / already-installed (406)
-    VerifyingManifest --> DownloadStarted: accept (200)
+    VerifyingManifest --> Idle: already installed / not applicable (report SKIPPED)
+    VerifyingManifest --> DownloadStarted: applicable
     DownloadStarted --> DownloadComplete
     DownloadComplete --> BackupStarted
     BackupStarted --> BackupComplete
     BackupComplete --> InstallStarted
     InstallStarted --> InstallComplete
     InstallComplete --> ApplyStarted: reboot? persist + resume()
-    ApplyStarted --> Idle: next step / done
+    ApplyStarted --> Idle: next step / done (report outcome)
     DownloadStarted --> RestoreStarted: failure
     InstallStarted --> RestoreStarted: failure
     ApplyStarted --> RestoreStarted: failure
@@ -175,19 +236,26 @@ stateDiagram-v2
 
 - **Manifest v5 parsing** — v5 is what the service emits today; older versions can be added
   here if a deployment ever needs them (not refused on scope grounds).
-- **Agent state / device properties / re-reporting** — states map to `0/6/255`;
-  device props deep-copied into a client-owned cache; re-report on startup + reconnect
-  and an initial twin GET catches an offline-created deployment.
-- **Accept / reject** — decided in core; driven by `is_installed_fn` (already-installed
-  ⇒ 406). *Caveat:* no app-level `accept_deployment_fn` veto hook yet (e.g. battery /
-  critical-op deferral) — a candidate add.
+- **Agent state / device properties / re-reporting (❌→🔜 re-shaped)** — the twin `0/6/255`
+  agent state, the `deviceProperties` object, the startup/reconnect re-report and the initial
+  twin GET are all **cut**. ADUv2 has no subscription and no unsolicited offer: the device sends
+  `agentInfo` + `installedUpdateId` on every fetch and a structured `lastInstallResult` on
+  `ReportDeviceUpdateStatus`. The device-properties cache survives as the `agentInfo` cache.
+- **Accept / reject (❌→🔜 re-shaped)** — the twin 200/406 acknowledgement is cut. The
+  `is_installed_fn` decision stays in `adu_core`; an already-installed or non-applicable update
+  becomes a `SKIPPED` outcome in the report rather than a wire-level rejection. *Caveat:* still
+  no app-level `accept_deployment_fn` veto hook (e.g. battery / critical-op deferral) — a
+  candidate add, now more useful because the device controls the poll.
 - **Multi-step / per-step results** — sequential per-step loop; `step_results[]` with a
-  4-bit facility + raw-code `extendedResultCode` for field debugging.
-- **Retry vs. replacement vs. duplicate** — `set_active_workflow` tracks `workflow.id`
-  + `retryTimestamp` + a CRC-32 fingerprint of `updateManifest`; same-id+newer-retry
-  restarts, different-id supersedes, same-id+same-retry is an ignored redelivery.
-- **Cancellation** — `action: Cancel` (or a replacement) sets a cooperative flag honored
-  at phase boundaries; hooks poll `az_iot_adu_is_cancelled()`. Core never force-interrupts a hook.
+  4-bit facility + raw-code `extendedResultCode` for field debugging. ADUv2 carries these as the
+  `stepResults` map plus a comma-separated hex `extendedResultCodes` list.
+- **Retry vs. replacement vs. duplicate** — `set_active_workflow` tracks the workflow id
+  + a CRC-32 fingerprint of `updateManifest`. Under ADUv2 the correlation key is **`workflowId`
+  alone** and reporting is idempotent on it, so the `retryTimestamp` input disappears; the
+  supersede / ignore-duplicate logic itself is kept and re-keyed.
+- **Cancellation** — the cooperative flag and `az_iot_adu_is_cancelled()` stay. The ADUv1
+  `action: Cancel` desired property is cut; a cancel now originates locally or from a
+  superseding workflow, and terminates with a `CANCELED` outcome. Core never force-interrupts a hook.
 
 ## C. Download and integrity
 
@@ -210,14 +278,20 @@ stateDiagram-v2
 - **JWS / two-level chain / RS256 / revocation (✅)** — `verify_manifest()` runs the full
   root-key → SJWK → manifest chain, enforces `alg == RS256` on both headers, binds
   SHA-256(manifest) to the deployment, and rejects `disabled` roots by `kid`. Failure ⇒
-  `Failed` with facility `0x1`. This is the crown-jewel code and is already v2-ready
-  (the shared engine keeps it verbatim).
+  `Failed` with facility `0x1`. This is the crown-jewel code, it is **transport-free already**,
+  and the cut must move it into `adu_core` **verbatim** — no rewrite, no behavioural change.
 - **HSM / PKCS#11 (⚙️)** — verification uses only public keys via `verify_rs256_fn`, so an
   HSM backend is a drop-in hook; none ships.
-- **Root Key Package runtime rotation (🔜).** Out-of-band package (fetch,
-  persistence, threshold-signature continuity) to rotate roots without a firmware update.
-  *Caveat:* needs its own design pass; **not** the Day0 mechanism (Day0 keeps roots fixed).
-  Today roots rotate via firmware.
+- **Root Key Package runtime rotation (🔜).** Fetch, persist and apply a root-key package with
+  N-of-M threshold-signature continuity, to rotate roots without a firmware update. Under
+  ADUv2 the package URL is **`serviceConfiguration.rootKeyDownloadUrl`**, returned inline by the
+  same fetch that carries the update — the ADUv1 unsigned twin property `rootKeyPackageUrl`
+  is cut. Keys from the package are **never** trusted directly; only the compiled-in anchors
+  vouch for them. *Caveat:* needs its own design pass; **not** the Day0 mechanism (Day0 keeps
+  roots fixed). Today roots rotate via firmware. Work items: [TODO.md](../TODO.md).
+- **Account scoping (🔜, deferred).** `accountId`-in-signature binding (manifest-signature-v2)
+  is deferred past Ignite '26 — the device verifies provenance-from-ADU but not account scoping.
+  Base signature validation stays **required** on every path.
 
 ## E. Install, apply, recovery
 
@@ -228,6 +302,11 @@ stateDiagram-v2
   (`INSTALL_COMPLETE` → Apply). *Caveats:* the only persist point today is the
   install-requested reboot; post-reboot rollback assumes the platform retained per-step
   backups across the reboot.
+- **Persistence must grow for ADUv2 (🔜).** ADUv2 makes reporting a **durable write**, so the
+  blob gains a **blob v3**: the unsent `ReportDeviceUpdateStatus` payload (keyed by
+  `workflowId`), `installedUpdateId`, and the `agentInfoETag` / `serviceConfigETag` pair, so a
+  device that reboots mid-install still reports its result afterwards and does not resend a full
+  `agentInfo` needlessly. `retryTimestamp` leaves the blob with the twin channel.
 - **Health-check / auto-rollback after reboot (🟡 → core).** Today only the ESP32
   A/B sample confirms/marks-valid the new image; core does not re-run `is_installed_fn` on
   resume. **To do:** add an optional post-reboot confirm step in core with an auto-rollback
@@ -235,22 +314,29 @@ stateDiagram-v2
 
 ## F. Platform and crypto adapters
 
-- **`crypto_openssl` (✅)** is the only fully factored adapter in `adapters/adu/`.
+- **`crypto_openssl` (✅)** is the only fully factored adapter in `adapters/adu/`. Crypto adapters
+  are transport-free and are **unaffected by the cut**.
 - **To do:** factor **`crypto_mbedtls`** (🟡 — currently inline in the ESP32 sample),
   the **Linux** adapter (🔜 — libcurl chunked/streaming-hash download, configurable
   install command, file-based persistence), and the **ESP32** adapter (🟡 —
   `esp_http_client` + `esp_ota` + NVS resume; the real-OTA sample already proves it, it
   just isn't under `adapters/adu/esp32/`). *Caveat:* install/apply/download real adapters
   currently live in **samples**, not `adapters/`.
+- **The two ADU samples are ADUv1-shaped** (`samples/adu/pc`, `samples/adu/esp32`): they connect
+  to a Hub and drive the workflow off desired properties. Their platform-hook halves are exactly
+  what has to be salvaged into `adapters/`; their twin halves go with the cut and are replaced by
+  an ADUv2 bootstrap/operational sample. Do the salvage **before** deleting the twin channel, or
+  the only working install/apply reference on real hardware is lost.
 
-## G. ADUv2 transport (via DPS)
+## G. ADUv2 transport (via the DPS gateway)
 
-**Design changed:** ADUv2 no longer has a dedicated device-facing ADU endpoint. The device calls
-**three new DPS device-update APIs** — `GetOnboardingDeviceUpdate`, `GetDeviceUpdate`,
-`ReportDeviceUpdateStatus` — over its **existing DPS connection and auth**; DPS is an authenticated
-**pass-through** to **ADR → ADU** (the device never talks to ADU). The manifest content and the
-verify → download → install → report engine are **unchanged**. Full digest:
-**[aduv2-spec.md](aduv2-spec.md)**.
+**This is the only ADU channel the SDK will ship.** ADUv2 has no dedicated device-facing ADU
+endpoint. The device calls **three device-update operations on DPS** —
+`GetOnboardingDeviceUpdate`, `GetDeviceUpdate`, `ReportDeviceUpdateStatus` — over its **existing
+DPS connection and auth**; DPS is an authenticated **pass-through** to **ADR → ADU** (the device
+never talks to ADU). The manifest content and the verify → download → install → report engine are
+**unchanged** from ADUv1. Full digest: **[aduv2-spec.md](aduv2-spec.md)**; lifecycle placement:
+[connection.md §7](../connection.md#7-aduv2-onboarding-and-renewal-planned).
 
 ```mermaid
 sequenceDiagram
@@ -272,26 +358,29 @@ sequenceDiagram
     DPS-->>Dev: IoT Hub assignment
 ```
 
-**Chosen architecture — Approach 3 (shared engine + thin wrappers):** extract the
-protocol-free engine (verify/download/install/apply/backup/restore + resume + step
-results) and let a v1 twin wrapper and a v2 **DPS-update** wrapper drive it. The engine takes a
-manifest **string** and returns a **structured** report; each wrapper serializes it to its
-own wire shape.
+**Chosen architecture — `adu_core` + one channel:** extract the protocol-free engine
+(verify/download/install/apply/backup/restore + resume + step results) and drive it through an
+`az_iot_adu_channel` vtable. The engine takes a manifest **string** and returns a **structured**
+report; the channel serializes it to the wire. The **twin wrapper is not built — it is deleted**;
+the vtable exists so `adu_core` never names a transport (and so the engine is testable against a
+fake channel), not to keep two generations alive.
 
 ```mermaid
 flowchart TB
-    ENG["Shared ADU engine<br/>verify → download → install → apply → resume<br/>step results · persistence"]
-    TW["v1 twin wrapper<br/>desired/reported props"] --> ENG
-    DP["v2 DPS wrapper<br/>GetUpdate / ReportStatus over DPS"] --> ENG
+    ENG["adu_core<br/>verify → download → install → apply → resume<br/>step results · persistence"]
+    DP["ADUv2 channel<br/>Get(Onboarding)DeviceUpdate / ReportDeviceUpdateStatus<br/>over the device's DPS connection"] --> ENG
+    FK["test fake channel"] --> ENG
+    TW["v1 twin wrapper — cut"]:::cut -.->|removed| ENG
     ENG --> CR["crypto hooks<br/>RS256 · SHA-256"]
     ENG --> PL["platform hooks<br/>download/install/apply/backup/restore/persist"]
+    classDef cut stroke-dasharray: 4 4,color:#888;
 ```
 
-Work items (all 🔜): **engine extraction** → **DPS update-check binding** (`GetDeviceUpdate` /
-`GetOnboardingDeviceUpdate`) → **`ReportDeviceUpdateStatus`** → **reuse DPS device auth**
-(X.509) → **bootstrap orchestration** (update-before-`Register` + re-check loop) →
-**root key package download** → **ETag/api-version + agent-info resend** → **advisory +
-load contracts**.
+Work items (all 🔜): **`adu_core` + channel extraction and twin-channel deletion** → **DPS
+update-check binding** (`GetDeviceUpdate` / `GetOnboardingDeviceUpdate`) →
+**`ReportDeviceUpdateStatus`** → **reuse DPS device auth** (X.509) → **bootstrap orchestration**
+(update-before-`Register` + re-check loop) → **operational polling loop** → **root key package
+download** → **ETag/api-version + agent-info resend** → **advisory + load contracts**.
 
 *Key points / caveats:*
 - **Reuse DPS auth & transport** (X.509 over HTTP/MQTT for Ignite) — no ADU endpoint, no mTLS to ADU,
@@ -300,10 +389,15 @@ load contracts**.
 - **Device selects onboarding vs regular** by which endpoint it calls (DPS doesn't infer/validate).
 - **Advisory:** a failed update check MUST NOT block `Register`; the **device is the sole retrier** and
   honors `Retry-After`. `ReportDeviceUpdateStatus` is a durable write (idempotent on `workflowId`).
+- **The agent owns the cadence.** There is no subscription and no offer to lose, so a reconnect
+  replays no ADU state — that is precisely what the twin channel required and what the cut removes.
+- **The gateway is a channel parameter, not a constant.** DPS fronts bootstrap **and** the interim
+  operational path for Ignite '26; the operational path moves to IoT Hub afterwards with **no
+  device-contract change**. The channel must not hard-code DPS in its request shapes.
 - **Config is inline** in the fetch response (`serviceConfiguration` + ETags) — there is **no separate
   `syncConfiguration` call** anymore.
 - **Report shape** matches Gen1's structured result (`outcome`/`failureOrigin`, hex `extendedResultCodes`,
-  `stepResults` map) — the engine emits structured data and each wrapper serializes it.
+  `stepResults` map) — the engine emits structured data and the channel serializes it.
 - **Contract is DRAFT** (api-version `2026-11-02-preview`); DPS re-syncs on ADU revs — see
   [Manual / external actions](#manual--external-actions).
 
@@ -360,14 +454,22 @@ full agent on. Provide a way to **validate + parse a manifest**, then let the co
 Per the phase plan, **L1 unit tests land with each feature** (state machine in Phase 1,
 crypto vectors in Phase 2, adapter integration in Phases 3–4, persistence in Phase 5).
 
-- **Unit tests (✅)** — cmocka state-machine coverage in `tests/unit/adu_client_test.c`.
+- **Unit tests (✅, partly ❌)** — cmocka state-machine coverage in `tests/unit/adu_client_test.c`.
+  The cases that assert **engine behaviour** (multi-step ordering, rollback, hash mismatch,
+  cancel-during-download, resume) are kept and re-pointed at `adu_core` + a **fake channel**;
+  the cases that assert **twin wire shapes** (desired-property deployment, reported agent state,
+  the 200/406 acknowledgement, `retryTimestamp` redelivery) go with the cut and are replaced by
+  ADUv2-shaped equivalents. Migrating this suite is part of Tier 0, not follow-up work.
 - **Crypto vector tests (🟡)** — known-good/bad RS256 + SHA-256 vectors; prove hooks
-  are primitive-only.
+  are primitive-only. Unaffected by the cut.
 - **Adapter integration tests (🔜)** — mock HTTP server + test manifest per adapter.
 - **Conformance suite (🔜)** — reusable host-only `az_iot_adu_conformance` over all
-  protocol states + single/multi-step manifests.
-- **E2E (🔜)** — against the real ADU service, gated behind `AZ_IOT_ADU_E2E` so it
-  never runs on the fast PR path.
+  protocol states + single/multi-step manifests, written against the **ADUv2** contract.
+- **E2E (✅→🔜 re-target)** — `az_iot_tests_e2e_adu` runs five real scenarios against a live
+  Hub + Device Update instance in a slow-lane workflow, off the fast PR path
+  ([end-to-end-tests.md](end-to-end-tests.md)). They are **twin-driven, so they retire with
+  the cut** and must be rewritten against the ADUv2 operations; the device fixture and the
+  mocked crypto/payload hooks carry over.
 
 ## L. Advanced update model
 
@@ -405,6 +507,9 @@ Agent-level services from the reference agent, provided so the reference is comp
 
 Not code — things I (or the team) must do out-of-band:
 
+- **Announce the ADUv1 removal.** The twin-based ADU API is going away without a deprecation
+  window; confirm no consumer is depending on it, and land the removal in a release whose notes
+  call the header break out explicitly.
 - **Track the DPS device-update contract** (`GetDeviceUpdate` / `GetOnboardingDeviceUpdate` /
   `ReportDeviceUpdateStatus`, api-version `2026-11-02-preview`) — final op naming, per-transport payload
   caps, throttle/`Retry-After` values, and the agent-info / service-config ETag + resend semantics are
@@ -419,18 +524,27 @@ Not code — things I (or the team) must do out-of-band:
 
 ## Assumptions
 
-- `✅` items are **audited against `c/src/features/adu/`**, not just intent.
+- `✅` items are **audited against `c/src/features/adu/`**, not just intent — but they are audited
+  as *engine* code; none of them is reachable end-to-end until the ADUv2 channel exists.
+- The cut assumes **no external consumer of the twin-based ADU API** needs a migration window.
 - ADUv2 items assume the **DPS device-update contract** (api-version `2026-11-02-preview`, **DRAFT**) stays
   stable on the points this SDK depends on; DPS re-syncs on ADU revs and open items are tracked under
   *Manual actions*. See [aduv2-spec.md](aduv2-spec.md).
 
 ## References
 
-- [aduv2-spec.md](aduv2-spec.md) — **ADUv2 (via DPS) design summary** + diagrams (the current ADUv2 model).
+- [aduv2-spec.md](aduv2-spec.md) — **ADUv2 device contract** + diagrams (request/response shapes,
+  error codes, trust model).
+- [connection.md §7](../connection.md#7-aduv2-onboarding-and-renewal-planned) — decision of record
+  for the cut, and where the bootstrap/operational checks sit in the connection lifecycle.
+- [client-separation.md §8](client-separation.md#8-device-update) — where the `adu_core` /
+  `az_iot_adu_channel` seam lands relative to the client split.
 - [adu-client-design.md](adu-client-design.md) — deep architecture: public API, hook/crypto
-  model, state machine, source layout, phase plan, library mode (§5.3), test strategy.
+  model, state machine, source layout, phase plan, library mode (§5.3), test strategy. Its
+  twin-delivery sections are **historical** (see its banner).
 - [connection-state-and-error-propagation.md](connection-state-and-error-propagation.md) —
   the Phase-0 foundation.
 - [split-client.md](split-client.md) — packaging / client-split considerations.
+- [TODO.md](../TODO.md) — root-key-package rotation work items.
 - Superseded: `adu-feature-support.md` (folded into this doc).
 - [ADUv2/DPS Specs](https://dev.azure.com/msazure/One/_git/Azure-IoT-Hub-DeviceRegistrationService?path=/specs/002-adu-first-time-update)
