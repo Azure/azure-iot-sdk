@@ -4,8 +4,8 @@
 
 /* SPDX-License-Identifier: MIT */
 /* Internal declarations shared between the ADU core state machine
- * (adu_client.c) and the state reporter (adu_state_reporter.c). NOT part of the
- * public API. */
+ * (adu_client.c) and the structured reporting module (adu_report.c). NOT part
+ * of the public API. */
 #ifndef AZ_IOT_ADU_INTERNAL_H
 #define AZ_IOT_ADU_INTERNAL_H
 
@@ -23,11 +23,11 @@ extern "C"
    * (0=Idle, 6=DeploymentInProgress, 255=Failed). */
   az_iot_adu_client_agent_state az_iot_adu__agent_state(az_iot_adu_state state);
 
-  /* Format and publish the current agent state to the twin reported properties.
-   * Uses az_iot_adu_client_get_agent_state_payload() to build the JSON and
-   * az_iot_twin_client_patch_reported() to publish. workflow may be NULL when no
-   * deployment is in progress; install_result may be NULL when no result yet.
-   * Returns AZ_IOT_OK on a successful publish enqueue. */
+  /* Assemble the current engine state into a structured az_iot_adu_report and
+   * hand it to the bound channel. Reporting is keyed on the active workflow id
+   * and is idempotent on it; with no active workflow this is a no-op success,
+   * because there is nothing for the service to attribute a report to.
+   * Returns AZ_IOT_OK when the channel accepted the report. */
   az_iot_result az_iot_adu__report_state(az_iot_adu_client_t* client);
 
   /* Deep-copy the caller's device properties into the client-owned cache buffer.

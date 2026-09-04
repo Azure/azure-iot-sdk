@@ -3,8 +3,8 @@
 // information.
 
 /* SPDX-License-Identifier: MIT */
-/* ADU state reporter: formats the agent state into a twin reported-property
- * payload (via azure-sdk-for-c) and publishes it through the twin client. The
+/* ADU reporting: turns the engine state into the STRUCTURED result handed to
+ * a channel, plus the standalone report builder used in library mode. The
  * upstream az_iot_adu_client_device_properties type never escapes to the
  * application; it is built here, on demand, from the client-owned cache. */
 #include <string.h>
@@ -14,7 +14,6 @@
 #include <azure/core/az_span.h>
 
 #include "azure/iot/az_iot_adu.h"
-#include "azure/iot/az_iot_twin_client.h"
 
 #include "internal/adu_internal.h"
 #include "internal/span_writer.h"
@@ -24,6 +23,44 @@
 #ifndef AZ_IOT_ADU_REPORT_BUFFER_SIZE
 #define AZ_IOT_ADU_REPORT_BUFFER_SIZE 1024
 #endif
+
+/* Bound on the free-form result detail carried in a structured report. */
+#ifndef AZ_IOT_ADU_RESULT_DETAILS_SIZE
+#define AZ_IOT_ADU_RESULT_DETAILS_SIZE 256
+#endif
+
+/* Agent result codes the contract defines. */
+#define AZ_IOT_ADU_RESULT_CODE_IN_PROGRESS 1
+#define AZ_IOT_ADU_RESULT_CODE_SUCCESS 700
+#define AZ_IOT_ADU_RESULT_CODE_FAILURE (-1)
+
+/* Render an extended result code as the contract's hex form: bare zeros when
+ * there is nothing to report, 0x-prefixed otherwise. */
+static void format_extended_result_code(char* out, size_t out_size, int32_t code)
+{
+  static const char hex[] = "0123456789ABCDEF";
+  if (out_size < 11)
+  {
+    if (out_size > 0)
+    {
+      out[0] = '\0';
+    }
+    return;
+  }
+  if (code == 0)
+  {
+    memcpy(out, "00000000", 9);
+    return;
+  }
+  uint32_t v = (uint32_t)code;
+  out[0] = '0';
+  out[1] = 'x';
+  for (int i = 0; i < 8; ++i)
+  {
+    out[2 + i] = hex[(v >> ((7 - i) * 4)) & 0xFu];
+  }
+  out[10] = '\0';
+}
 
 az_iot_adu_client_agent_state az_iot_adu__agent_state(az_iot_adu_state state)
 {
@@ -104,6 +141,9 @@ az_iot_adu_client_device_properties az_iot_adu__device_properties_view(
   return props;
 }
 
+/* Assemble the structured result and hand it to the channel. The engine emits
+ * no wire format: how this becomes a request body is the channel's business
+ * alone. Reporting is per-workflow and idempotent on the workflow id. */
 az_iot_result az_iot_adu__report_state(az_iot_adu_client_t* client)
 {
   if (client == NULL)
@@ -114,46 +154,117 @@ az_iot_result az_iot_adu__report_state(az_iot_adu_client_t* client)
   {
     return AZ_IOT_ERR_DETACHED;
   }
-
-  uint8_t buffer[AZ_IOT_ADU_REPORT_BUFFER_SIZE];
-  az_json_writer jw;
-  if (az_result_failed(az_json_writer_init(&jw, az_span_create(buffer, sizeof(buffer)), NULL)))
+  if (ADU_I(client).channel.vtable == NULL || ADU_I(client).channel.vtable->report == NULL)
   {
-    return AZ_IOT_ERR_INTERNAL;
+    return AZ_IOT_ERR_INVALID_ARG;
   }
 
-  az_iot_adu_client_device_properties props = az_iot_adu__device_properties_view(client);
-
-  /* Provide the workflow only when a deployment is in progress. */
-  az_iot_adu_client_workflow* workflow = NULL;
-  if (ADU_I(client).have_request)
+  /* With no active workflow there is no correlation key, and therefore nothing
+   * the service could attribute a report to. Not an error: a day-0 device that
+   * has never been offered an update simply has nothing to say. */
+  if (!ADU_I(client).active_workflow_valid || ADU_I(client).active_workflow_id_len == 0)
   {
-    workflow = &ADU_I(client).current_request.workflow;
+    return AZ_IOT_OK;
   }
 
-  /* Provide the accumulated install result once we have steps tracked. */
-  az_iot_adu_client_install_result* result = NULL;
-  if (ADU_I(client).install_result.step_results_count > 0)
+  char workflow_id[AZ_IOT_ADU_WORKFLOW_ID_SIZE + 1];
+  size_t wlen = ADU_I(client).active_workflow_id_len;
+  if (wlen > AZ_IOT_ADU_WORKFLOW_ID_SIZE)
   {
-    result = &ADU_I(client).install_result;
+    wlen = AZ_IOT_ADU_WORKFLOW_ID_SIZE;
+  }
+  memcpy(workflow_id, ADU_I(client).active_workflow_id, wlen);
+  workflow_id[wlen] = '\0';
+
+  az_iot_adu_outcome outcome;
+  if (ADU_I(client).state == AZ_IOT_ADU_STATE_FAILED)
+  {
+    outcome = AZ_IOT_ADU_OUTCOME_FAILED;
+  }
+  else if (ADU_I(client).state == AZ_IOT_ADU_STATE_IDLE)
+  {
+    outcome = ADU_I(client).pending_outcome;
+  }
+  else
+  {
+    outcome = AZ_IOT_ADU_OUTCOME_IN_PROGRESS;
   }
 
-  az_result ar = az_iot_adu_client_get_agent_state_payload(
-      &ADU_I(client).az,
-      &props,
-      az_iot_adu__agent_state(ADU_I(client).state),
-      workflow,
-      result,
-      &jw);
-  if (az_result_failed(ar))
+  const az_iot_adu_client_install_result* r = &ADU_I(client).install_result;
+
+  int32_t result_code;
+  switch (outcome)
   {
-    return AZ_IOT_ERR_INTERNAL;
+    case AZ_IOT_ADU_OUTCOME_IN_PROGRESS:
+      result_code = AZ_IOT_ADU_RESULT_CODE_IN_PROGRESS;
+      break;
+    case AZ_IOT_ADU_OUTCOME_SUCCEEDED:
+      result_code = AZ_IOT_ADU_RESULT_CODE_SUCCESS;
+      break;
+    case AZ_IOT_ADU_OUTCOME_FAILED:
+    case AZ_IOT_ADU_OUTCOME_CANCELED:
+    case AZ_IOT_ADU_OUTCOME_SKIPPED:
+    default:
+      /* Carry the engine's own code when it set one, so a specific failure is
+       * not flattened into the generic one. */
+      result_code = (r->result_code != 0) ? r->result_code : AZ_IOT_ADU_RESULT_CODE_FAILURE;
+      break;
   }
 
-  az_span payload = az_json_writer_get_bytes_used_in_destination(&jw);
+  /* Fixed-width hex, matching the contract's comma-separated hex form. A
+   * single code is the only shape the engine produces today. */
+  char extended[16];
+  format_extended_result_code(extended, sizeof(extended), r->extended_result_code);
 
-  return az_iot_twin_client_patch_reported(
-      ADU_I(client).twin, az_span_ptr(payload), (size_t)az_span_size(payload), NULL, NULL);
+  char details[AZ_IOT_ADU_RESULT_DETAILS_SIZE];
+  details[0] = '\0';
+  int32_t dlen = az_span_size(r->result_details);
+  if (dlen > 0)
+  {
+    if (dlen > (int32_t)sizeof(details) - 1)
+    {
+      dlen = (int32_t)sizeof(details) - 1;
+    }
+    memcpy(details, az_span_ptr(r->result_details), (size_t)dlen);
+    details[dlen] = '\0';
+  }
+
+  /* installedUpdateId is what is installed on the device NOW. Once a workflow
+   * has succeeded that is the update it applied; until then, and on any
+   * non-success outcome, it is whatever was installed before. */
+  az_iot_adu_report_update_id installed;
+  const az_iot_adu_report_update_id* installed_ptr = NULL;
+  if (outcome == AZ_IOT_ADU_OUTCOME_SUCCEEDED && ADU_I(client).applied_update_id_valid)
+  {
+    installed_ptr = &ADU_I(client).applied_update_id;
+  }
+  else if (ADU_I(client).device_props_buffer != NULL)
+  {
+    const az_iot_adu_device_properties* cached
+        = (const az_iot_adu_device_properties*)(const void*)ADU_I(client).device_props_buffer;
+    if (cached->installed_update_id.provider != NULL && cached->installed_update_id.name != NULL
+        && cached->installed_update_id.version != NULL)
+    {
+      installed.provider = cached->installed_update_id.provider;
+      installed.name = cached->installed_update_id.name;
+      installed.version = cached->installed_update_id.version;
+      installed_ptr = &installed;
+    }
+  }
+
+  az_iot_adu_report report;
+  memset(&report, 0, sizeof(report));
+  report.workflow_id = workflow_id;
+  report.installed_update_id = installed_ptr;
+  report.outcome = outcome;
+  report.failure_origin = (outcome == AZ_IOT_ADU_OUTCOME_FAILED)
+      ? AZ_IOT_ADU_FAILURE_ORIGIN_AGENT_CORE
+      : AZ_IOT_ADU_FAILURE_ORIGIN_NOT_APPLICABLE;
+  report.result_code = result_code;
+  report.extended_result_codes = extended;
+  report.result_details = (details[0] != '\0') ? details : NULL;
+
+  return ADU_I(client).channel.vtable->report(ADU_I(client).channel.ctx, &report);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -174,7 +285,7 @@ az_iot_result az_iot_adu_build_report(
     return AZ_IOT_ERR_INVALID_ARG;
   }
 
-  /* Stateless upstream formatter handle (no twin / state machine). */
+  /* Stateless upstream formatter handle (no channel / state machine). */
   az_iot_adu_client az;
   if (az_result_failed(az_iot_adu_client_init(&az, NULL)))
   {

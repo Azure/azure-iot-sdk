@@ -19,7 +19,7 @@ add_library(az_iot_core
     features/file_upload/file_upload_client.c
     features/adu/adu_client.c
     features/adu/adu_root_keys_microsoft.c
-    features/adu/adu_state_reporter.c
+    features/adu/adu_report.c
 )
 
 add_library(azure::iot::core ALIAS az_iot_core)

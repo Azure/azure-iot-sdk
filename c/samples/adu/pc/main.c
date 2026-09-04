@@ -304,10 +304,81 @@ static void on_sigint(int signo)
 
 typedef struct
 {
+  az_iot_adu_channel_update_cb cb;
+  void* engine_ctx;
+  bool delivered;
+} sim_channel;
+
+static const char* adu_outcome_name(az_iot_adu_outcome o)
+{
+  switch (o)
+  {
+    case AZ_IOT_ADU_OUTCOME_IN_PROGRESS:
+      return "IN_PROGRESS";
+    case AZ_IOT_ADU_OUTCOME_SUCCEEDED:
+      return "SUCCEEDED";
+    case AZ_IOT_ADU_OUTCOME_FAILED:
+      return "FAILED";
+    case AZ_IOT_ADU_OUTCOME_CANCELED:
+      return "CANCELED";
+    case AZ_IOT_ADU_OUTCOME_SKIPPED:
+      return "SKIPPED";
+    default:
+      return "UNKNOWN";
+  }
+}
+
+static az_iot_result sim_channel_open(
+    void* ctx,
+    az_iot_adu_channel_update_cb cb,
+    void* engine_ctx)
+{
+  sim_channel* c = (sim_channel*)ctx;
+  c->cb = cb;
+  c->engine_ctx = engine_ctx;
+  return AZ_IOT_OK;
+}
+
+static void sim_channel_close(void* ctx) { (void)ctx; }
+
+/* No service behind this sample, so an update check simply finds nothing --
+ * which is a success, not an error. */
+static az_iot_result sim_channel_request_update(void* ctx)
+{
+  (void)ctx;
+  return AZ_IOT_OK;
+}
+
+static az_iot_result sim_channel_report(void* ctx, const az_iot_adu_report* report)
+{
+  (void)ctx;
+  printf(
+      "  [adu] report workflowId=%s outcome=%s resultCode=%d extended=%s%s%s\n",
+      report->workflow_id ? report->workflow_id : "(none)",
+      adu_outcome_name(report->outcome),
+      (int)report->result_code,
+      report->extended_result_codes ? report->extended_result_codes : "",
+      report->result_details ? " details=" : "",
+      report->result_details ? report->result_details : "");
+  fflush(stdout);
+  return AZ_IOT_OK;
+}
+
+static const az_iot_adu_channel_vtable k_sim_channel_vtable = {
+  .open = sim_channel_open,
+  .close = sim_channel_close,
+  .request_update = sim_channel_request_update,
+  .report = sim_channel_report,
+  .do_work = NULL,
+};
+
+typedef struct
+{
   sample_config config;
   az_iot_certificate_provider_pem certs;
   az_iot_connection_client connection_client;
-  az_iot_twin_client twin_client;
+  az_iot_adu_channel adu_channel;
+  sim_channel adu_channel_ctx;
   az_iot_adu_client_t adu_client;
   sim_ctx sim;
   uint8_t dp_buffer[512];
@@ -316,7 +387,7 @@ typedef struct
 static void sample_state_destroy(sample_state* s)
 {
   az_iot_adu_client_destroy(&s->adu_client);
-  az_iot_twin_client_destroy(&s->twin_client);
+
   az_iot_connection_client_destroy(&s->connection_client);
   az_iot_certificate_provider_pem_destroy(&s->certs);
   sample_config_release(&s->config);
@@ -435,12 +506,12 @@ int main(void)
     return 1;
   }
 
-  /* Twin client (ADU registers as a desired-property subscriber on it). */
-  if (az_iot_twin_client_init(&st.twin_client, &st.connection_client) != AZ_IOT_OK)
-  {
-    sample_state_destroy(&st);
-    return 1;
-  }
+  /* Simulated ADU channel. The engine names no transport; this sample carries
+   * nothing over the wire, so the channel simply reports outcomes to stdout.
+   * A real ADUv2 channel replaces this without touching the engine. */
+  st.adu_channel_ctx.delivered = false;
+  st.adu_channel.vtable = &k_sim_channel_vtable;
+  st.adu_channel.ctx = &st.adu_channel_ctx;
 
   /* ADU client. */
   az_iot_adu_platform_hooks hooks = { 0 };
@@ -482,7 +553,7 @@ int main(void)
   adu_opts.device_props = &dp;
   adu_opts.device_props_buffer = st.dp_buffer;
   adu_opts.device_props_buffer_size = sizeof(st.dp_buffer);
-  if (az_iot_adu_client_initialize(&st.adu_client, &st.twin_client, &adu_opts) != AZ_IOT_OK)
+  if (az_iot_adu_client_initialize(&st.adu_client, &st.adu_channel, &adu_opts) != AZ_IOT_OK)
   {
     fprintf(stderr, "az_iot_adu_client_initialize failed\n");
     sample_state_destroy(&st);

@@ -6,11 +6,13 @@ idf_component_register(
         "app_main.c"
         "wifi_connect.c"
         "az_iot_mqtt_esp.c"
-        "az_iot_adu_crypto_mbedtls.c"
+        "${CMAKE_CURRENT_LIST_DIR}/../../../../adapters/adu/crypto_mbedtls/az_iot_adu_crypto_mbedtls.c"
         "az_iot_cert_embedded.c"
-        "adu_esp32_ota.c"
+        "${CMAKE_CURRENT_LIST_DIR}/../../../../adapters/adu/esp32/adu_esp32_ota.c"
     INCLUDE_DIRS
         "."
+        "${CMAKE_CURRENT_LIST_DIR}/../../../../adapters/adu/crypto_mbedtls"
+        "${CMAKE_CURRENT_LIST_DIR}/../../../../adapters/adu/esp32"
     EMBED_TXTFILES
         "certs/device_cert.pem"
         "certs/device_key.pem"
