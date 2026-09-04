@@ -219,9 +219,8 @@ namespace Microsoft.Azure.Devices.Client.Unified.Connection
                     Payload = JsonSerializer.SerializeToUtf8Bytes(request),
                 };
 
+                // Puback is checked for non-success cases under this layer, so no need to check it here as well
                 MqttPublishAck puback = await _managedMqttConnection.PublishAsync(certificateSigningRequestPublish, cancellationToken: cancellationToken);
-
-                PublishRejectedException.ThrowIfUnsuccessfulPuback(puback, "Failed to send the certificate signing request because the MQTT broker rejected the publish.");
             }
 
             return operation;
@@ -437,6 +436,13 @@ namespace Microsoft.Azure.Devices.Client.Unified.Connection
             }
         }
 
+        /// <summary>
+        /// 
+        /// </summary>
+        /// <param name="publish"></param>
+        /// <param name="cancellationToken"></param>
+        /// <exception cref="DeviceException">TODO document how this is passed back to the feature clients</exception>
+        /// <returns></returns>
         public async Task<MqttPublishAck> PublishAsync(MqttPublish publish, CancellationToken cancellationToken = default)
         {
             Func<CancellationToken, Task<MqttPublishAck>> funcToRetry = async (args) =>

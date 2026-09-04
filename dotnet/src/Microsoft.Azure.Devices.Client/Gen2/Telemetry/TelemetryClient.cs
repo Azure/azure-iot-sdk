@@ -110,9 +110,8 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Telemetry
                 mqttMessage.UserProperties.Add(new MqttUserProperty(customUserPropertyKey, message.UserProperties[customUserPropertyKey]));
             }
 
+            // Puback is checked for non-success cases under this layer, so no need to check it here as well
             MqttPublishAck aegPuback = await _connection.PublishAsync(mqttMessage, cancellationToken);
-
-            PublishRejectedException.ThrowIfUnsuccessfulPuback(aegPuback, "Failed to publish this telemetry because the MQTT broker rejected it.");
         }
 
         private async Task HandleReceivedMqttPublish(MqttPublishReceivedEventArgs args)

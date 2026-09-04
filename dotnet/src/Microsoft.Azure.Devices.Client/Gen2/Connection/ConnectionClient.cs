@@ -171,7 +171,7 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Connection
             {
                 birthMessagePuback = await _managedMqttConnection.PublishAsync(birthMessage);
             }
-            catch (Exception e)
+            catch (DeviceException e)
             {
                 await _managedMqttConnection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttClientDisconnectOptionsReason.NormalDisconnection });
                 new ConnectBirthException("Exception thrown while publishing birth message", e);

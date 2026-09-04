@@ -1,6 +1,7 @@
 ﻿// Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+using Microsoft.Azure.Devices.Client.Exceptions;
 using Microsoft.Azure.Devices.Client.Mqtt;
 using Microsoft.Azure.Devices.Client.Retry;
 using System.Diagnostics;
@@ -422,19 +423,154 @@ namespace Microsoft.Azure.Devices.Client
             return false;
         }
 
-        public Task<MqttPublishAck> PublishAsync(MqttPublish publish, CancellationToken cancellationToken = default)
+        public async Task<MqttPublishAck> PublishAsync(MqttPublish publish, CancellationToken cancellationToken = default)
         {
-            return _underlyingMqttClient.PublishAsync(publish, cancellationToken);
+            try
+            {
+                var puback = await _underlyingMqttClient.PublishAsync(publish, cancellationToken);
+                ThrowIfPubackHasErrorCode(puback);
+                return puback;
+            }
+            catch (Exception e)
+            {
+                throw new DeviceException("TODO", e)
+                {
+                    Retryability = ErrorRetryability.Retryable,
+                    IsContained = true,
+                };
+            }
         }
 
-        public Task<MqttSubscribeAck> SubscribeAsync(MqttSubscribe subscribe, CancellationToken cancellationToken = default)
+        public async Task<MqttSubscribeAck> SubscribeAsync(MqttSubscribe subscribe, CancellationToken cancellationToken = default)
         {
-            return _underlyingMqttClient.SubscribeAsync(subscribe, cancellationToken);
+            try
+            {
+                var suback = await _underlyingMqttClient.SubscribeAsync(subscribe, cancellationToken);
+                ThrowIfSubackHasErrorCode(suback);
+                return suback;
+            }
+            catch (Exception e)
+            {
+                throw new DeviceException("TODO", e)
+                {
+                    Retryability = ErrorRetryability.Retryable,
+                    IsContained = true,
+                };
+            }
         }
 
-        public Task<MqttUnsubscribeAck> UnsubscribeAsync(MqttUnsubscribe unsubscribe, CancellationToken cancellationToken = default)
+        public async Task<MqttUnsubscribeAck> UnsubscribeAsync(MqttUnsubscribe unsubscribe, CancellationToken cancellationToken = default)
         {
-            return _underlyingMqttClient.UnsubscribeAsync(unsubscribe, cancellationToken);
+            try
+            {
+                var unsuback = await _underlyingMqttClient.UnsubscribeAsync(unsubscribe, cancellationToken);
+                ThrowIfUnsubackHasErrorCode(unsuback);
+                return unsuback;
+            }
+            catch (Exception e)
+            {
+                throw new DeviceException("TODO", e)
+                {
+                    Retryability = ErrorRetryability.Retryable,
+                    IsContained = true,
+                };
+            }
+        }
+
+        public void ThrowIfPubackHasErrorCode(MqttPublishAck puback)
+        {
+            switch (puback.ReasonCode)
+            {
+                case MqttPublishAckReasonCode.UnspecifiedError:
+                case MqttPublishAckReasonCode.ImplementationSpecificError:
+                case MqttPublishAckReasonCode.QuotaExceeded:
+                    throw new DeviceException($"Received MQTT puback code {puback.ReasonCode}")
+                    {
+                        Retryability = ErrorRetryability.Retryable,
+                        IsContained = true,
+                    };
+
+                case MqttPublishAckReasonCode.NotAuthorized:
+                case MqttPublishAckReasonCode.PacketIdentifierInUse:
+                case MqttPublishAckReasonCode.TopicNameInvalid:
+                case MqttPublishAckReasonCode.PayloadFormatInvalid:
+                    throw new DeviceException($"Received MQTT puback code {puback.ReasonCode}")
+                    {
+                        Retryability = ErrorRetryability.Terminal,
+                        IsContained = true,
+                    };
+
+                default:
+                    return; // benign case, do not throw any exception
+            }
+        }
+
+        public void ThrowIfSubackHasErrorCode(MqttSubscribeAck suback)
+        {
+            foreach (var subackItem in suback.Items)
+            {
+                switch (subackItem.ReasonCode)
+                {
+                    case MqttClientSubscribeReasonCode.UnspecifiedError:
+                    case MqttClientSubscribeReasonCode.ImplementationSpecificError:
+                    case MqttClientSubscribeReasonCode.QuotaExceeded:
+                        throw new DeviceException($"Received MQTT suback code {subackItem.ReasonCode} when subscribing to topic {subackItem.TopicFilter}")
+                        {
+                            Retryability = ErrorRetryability.Retryable,
+                            IsContained = true,
+                        };
+
+                    case MqttClientSubscribeReasonCode.NotAuthorized:
+                    case MqttClientSubscribeReasonCode.TopicFilterInvalid:
+                    case MqttClientSubscribeReasonCode.SharedSubscriptionsNotSupported:
+                    case MqttClientSubscribeReasonCode.WildcardSubscriptionsNotSupported:
+                        throw new DeviceException($"Received MQTT suback code {subackItem.ReasonCode} when subscribing to topic {subackItem.TopicFilter}")
+                        {
+                            Retryability = ErrorRetryability.Terminal,
+                            IsContained = true,
+                        };
+
+                    case MqttClientSubscribeReasonCode.PacketIdentifierInUse:
+                    case MqttClientSubscribeReasonCode.SubscriptionIdentifiersNotSupported:
+                        throw new DeviceException($"Received MQTT suback code {subackItem.ReasonCode} when subscribing to topic {subackItem.TopicFilter}")
+                        {
+                            Retryability = ErrorRetryability.Terminal,
+                            IsContained = false,
+                        };
+
+                    default:
+                        return; // benign case, do not throw any exception
+                }
+            }
+        }
+
+        public void ThrowIfUnsubackHasErrorCode(MqttUnsubscribeAck unsuback)
+        {
+            foreach (var unsubackItem in unsuback.Items)
+            {
+                switch (unsubackItem.ReasonCode)
+                {
+                    case MqttClientUnsubscribeReasonCode.UnspecifiedError:
+                    case MqttClientUnsubscribeReasonCode.ImplementationSpecificError:
+                        throw new DeviceException($"Received MQTT unsuback code {unsubackItem.ReasonCode} when subscribing to topic {unsubackItem.TopicFilter}")
+                        {
+                            Retryability = ErrorRetryability.Retryable,
+                            IsContained = true,
+                        };
+
+                    case MqttClientUnsubscribeReasonCode.NotAuthorized:
+                    case MqttClientUnsubscribeReasonCode.TopicFilterInvalid:
+                    case MqttClientUnsubscribeReasonCode.PacketIdentifierInUse:
+                        throw new DeviceException($"Received MQTT unsuback code {unsubackItem.ReasonCode} when subscribing to topic {unsubackItem.TopicFilter}")
+                        {
+                            Retryability = ErrorRetryability.Terminal,
+                            IsContained = true,
+                        };
+
+                    default:
+                        return; // benign case, do not throw any exception
+                }
+            }
         }
     }
 }

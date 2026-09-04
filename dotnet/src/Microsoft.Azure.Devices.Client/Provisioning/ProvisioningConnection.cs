@@ -154,9 +154,8 @@ namespace Microsoft.Azure.Devices.Client.Provisioning
 
             Trace.TraceInformation("Publishing to DPS on topic {0}", registrationTopic);
 
+            // Puback is checked for non-success cases under this layer, so no need to check it here as well
             MqttPublishAck puback = await mqttClient.PublishAsync(publish, cancellationToken).ConfigureAwait(false);
-
-            PublishRejectedException.ThrowIfUnsuccessfulPuback(puback, "MQTT publish rejected during provisioning");
 
             Trace.TraceInformation("Successfully published registration request to DPS with request Id {0}", _requestId);
 
@@ -188,8 +187,9 @@ namespace Microsoft.Azure.Devices.Client.Provisioning
                 _checkRegistrationOperationStatusSource = new TaskCompletionSource<RegistrationOperationStatus>(TaskCreationOptions.RunContinuationsAsynchronously);
 
                 Trace.TraceInformation("Publishing to DPS on topic {0}", topic);
+
+                // Puback is checked for non-success cases under this layer, so no need to check it here as well
                 MqttPublishAck puback = await mqttClient.PublishAsync(message, cancellationToken).ConfigureAwait(false);
-                PublishRejectedException.ThrowIfUnsuccessfulPuback(puback, "MQTT publish rejected while polling for the registration status");
 
                 RegistrationOperationStatus currentStatus;
                 try
