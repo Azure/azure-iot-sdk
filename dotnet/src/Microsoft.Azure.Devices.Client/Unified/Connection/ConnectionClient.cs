@@ -5,7 +5,6 @@ using Microsoft.Azure.Devices.Client.Models.CertificateManagement;
 using Microsoft.Azure.Devices.Client.Mqtt;
 using Microsoft.Azure.Devices.Client.MQTTnetAdapter;
 using Microsoft.Azure.Devices.Client.Provisioning;
-using Microsoft.Azure.Devices.Client.Provisioning.Models;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Reflection;
@@ -291,8 +290,8 @@ namespace Microsoft.Azure.Devices.Client.Unified.Connection
                 }
             };
 
+            // Connack is checked for non-success cases within MqttConnectionManager, so no need to check it here as well
             var connack = await _managedMqttConnection.ConnectAsync(connectPacket, cancellationToken);
-            ConnectRejectedException.ThrowIfUnsuccessfulConnack(connack, "Connection to IoT Hub was rejected.");
 
             await OnSubscribedTcs.Task.WaitAsync(cancellationToken);
         }

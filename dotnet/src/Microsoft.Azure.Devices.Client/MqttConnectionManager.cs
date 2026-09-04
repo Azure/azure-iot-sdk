@@ -1,4 +1,4 @@
-﻿// Copyright (c) Microsoft Corporation.
+// Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
 using Microsoft.Azure.Devices.Client.Exceptions;
@@ -6,10 +6,31 @@ using Microsoft.Azure.Devices.Client.Mqtt;
 using Microsoft.Azure.Devices.Client.Retry;
 using System.Diagnostics;
 using System.Net.Sockets;
+using System.Security.Authentication;
 
 namespace Microsoft.Azure.Devices.Client
 {
-    internal class MqttConnectionManager //TODO need some logging at this level for the higher-order concepts around going from maintaining connection -> stopping and so on.
+    /// <summary>
+    /// Wraps a plain MQTT client with connection maintenance: it establishes the session, keeps it established
+    /// across unexpected disconnects, and applies the caller-supplied retry policy between attempts.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Every connection-level error is classified per <c>connection.md</c> section 9.3 into a
+    /// <see cref="DeviceException"/> carrying an <see cref="ErrorRetryability"/>.
+    /// </para>
+    /// <para>
+    /// Retryable errors never leave this layer: they are logged, delayed per <see cref="IRetryPolicy"/>, and retried
+    /// indefinitely. Terminal and identity-terminal errors end connection maintenance and are reported to the owning
+    /// connection client through <see cref="ConnectionFaultedAsync"/> — and, when the error happened inside the
+    /// caller's own <see cref="ConnectAsync"/> call, thrown to that caller as well.
+    /// </para>
+    /// <para>
+    /// Per-operation (contained) errors from PUBLISH, SUBSCRIBE and UNSUBSCRIBE are not connection-level errors and
+    /// are thrown to the caller of those methods rather than being retried or reported here.
+    /// </para>
+    /// </remarks>
+    internal class MqttConnectionManager : IDisposable
     {
         public event Func<MqttPublishReceivedEventArgs, Task>? PublishReceivedAsync;
 
@@ -17,22 +38,34 @@ namespace Microsoft.Azure.Devices.Client
 
         public event Func<MqttConnect, Task<MqttConnect>>? ConnectingAsync;
 
+        /// <summary>
+        /// Raised anytime this layer detects a disconnection.
+        /// </summary>
         public event Func<MqttClientDisconnectedEventArgs, Task>? DisconnectedAsync;
+
+        /// <summary>
+        /// Raised when this layer stops maintaining the connection because it hit a terminal or identity-terminal
+        /// connection-level error. Retryable errors are handled internally and never raise this event.
+        /// </summary>
+        public event Func<MqttConnectionFaultedEventArgs, Task>? ConnectionFaultedAsync;
 
         private readonly IRetryPolicy _connectionRetryPolicy;
 
         private readonly TimeSpan _connectionAttemptTimeout;
 
         private MqttConnect? _mostRecentConnect;
-        private readonly bool _isDisposed = false;
+        private bool _isDisposed;
 
         private bool _isDesiredConnected;
         private bool _isClosing;
+
+        // Cancels whatever connection maintenance is currently in flight, whether that is the initial connect's retry
+        // loop or a reconnection's. DisconnectAsync(desireReconnection: false) cancels this to abandon retrying.
         private CancellationTokenSource? _reconnectionCancellationToken;
 
         private readonly SemaphoreSlim _disconnectedEventLock = new(1);
 
-        private IMqttClient _underlyingMqttClient;
+        private readonly IMqttClient _underlyingMqttClient;
 
         public MqttConnectionManager(IMqttClient underlyingMqttClient, TimeSpan connectionAttemptTimeout, IRetryPolicy retryPolicy)
         {
@@ -46,23 +79,26 @@ namespace Microsoft.Azure.Devices.Client
             _underlyingMqttClient.ConnectingAsync += DelegateConnectingAsync;
             _underlyingMqttClient.ConnectedAsync += DelegateConnectedAsync;
             _underlyingMqttClient.PublishReceivedAsync += DelegatePublishReceivedAsync;
-
         }
 
-        private async Task DelegatePublishReceivedAsync(MqttPublishReceivedEventArgs args)
+        private Task DelegatePublishReceivedAsync(MqttPublishReceivedEventArgs args)
         {
             if (PublishReceivedAsync != null)
             {
                 _ = PublishReceivedAsync.Invoke(args);
             }
+
+            return Task.CompletedTask;
         }
 
-        private async Task DelegateConnectedAsync(MqttClientConnectedEventArgs args)
+        private Task DelegateConnectedAsync(MqttClientConnectedEventArgs args)
         {
             if (ConnectedAsync != null)
             {
                 _ = ConnectedAsync.Invoke(args);
             }
+
+            return Task.CompletedTask;
         }
 
         private async Task<MqttConnect> DelegateConnectingAsync(MqttConnect connect)
@@ -75,14 +111,24 @@ namespace Microsoft.Azure.Devices.Client
             return connect;
         }
 
-        private async Task DelegateDisconnectedAsync(MqttClientDisconnectedEventArgs args)
+        private Task DelegateDisconnectedAsync(MqttClientDisconnectedEventArgs args)
         {
             if (DisconnectedAsync != null)
             {
                 _ = DisconnectedAsync.Invoke(args);
             }
+
+            return Task.CompletedTask;
         }
 
+        /// <summary>
+        /// Establish the session and begin maintaining it.
+        /// </summary>
+        /// <remarks>
+        /// Retryable failures are absorbed here and retried under the retry policy, so this call only returns once the
+        /// session is established. It throws only when the failure is terminal, identity-terminal, the retry policy is
+        /// exhausted, or the caller cancels.
+        /// </remarks>
         public async Task<MqttConnectAck> ConnectAsync(MqttConnect connect, CancellationToken cancellationToken = default)
         {
             ObjectDisposedException.ThrowIf(_isDisposed, this);
@@ -98,9 +144,16 @@ namespace Microsoft.Azure.Devices.Client
             ArgumentNullException.ThrowIfNull(connect);
 
             _mostRecentConnect = connect;
-
             _isClosing = false;
-            MqttConnectAck? connectResult = await MaintainConnectionAsync(connect, null, cancellationToken);
+
+            // Link the caller's token with this layer's own token so that DisconnectAsync(desireReconnection: false)
+            // can abandon the initial connect's retry loop just as it abandons a reconnection's.
+            _reconnectionCancellationToken?.Dispose();
+            _reconnectionCancellationToken = new CancellationTokenSource();
+            using CancellationTokenSource linkedCancellationToken =
+                CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _reconnectionCancellationToken.Token);
+
+            MqttConnectAck? connectResult = await MaintainConnectionAsync(connect, null, linkedCancellationToken.Token);
 
             // By design, MaintainConnectionAsync should only return null when called during reconnection.
             // When called by this method, MaintainConnectionAsync should return a non-null value or throw.
@@ -110,6 +163,14 @@ namespace Microsoft.Azure.Devices.Client
             return connectResult;
         }
 
+        /// <summary>
+        /// Send a DISCONNECT to the server.
+        /// </summary>
+        /// <param name="desireReconnection">
+        /// When true, this is a deliberate session reset: the connection is torn down but this layer keeps maintaining
+        /// it and will reconnect. When false, the caller is closing for good: any in-progress retry loop is cancelled
+        /// and this layer stops maintaining the connection.
+        /// </param>
         public async Task DisconnectAsync(bool desireReconnection, MqttDisconnect? options = null, CancellationToken cancellationToken = default)
         {
             ObjectDisposedException.ThrowIf(_isDisposed, this);
@@ -118,32 +179,37 @@ namespace Microsoft.Azure.Devices.Client
             options ??= new MqttDisconnect();
             options.SessionExpiryInterval = 0;
 
-            _isClosing = true;
-            _reconnectionCancellationToken?.Cancel();
-            await _underlyingMqttClient.DisconnectAsync(options, cancellationToken);
-
             if (!desireReconnection)
             {
-                var disconnectedArgs = new MqttClientDisconnectedEventArgs()
-                {
-                    Reason = MqttDisconnectReason.NormalDisconnection,
-                    ReasonString = "User closed the connection manually"
-                };
-
-                await EndConnectionMaintanceAsync(new OperationCanceledException("This operation was canceled because the MQTT client was closed."), disconnectedArgs, cancellationToken);
+                // Record the close intent before touching the transport so that the reconnection loop and the
+                // "Disconnected" callback both observe it and stand down rather than racing this call.
+                _isClosing = true;
+                _isDesiredConnected = false;
+                _reconnectionCancellationToken?.Cancel();
             }
+
+            await _underlyingMqttClient.DisconnectAsync(options, cancellationToken);
         }
 
         public void Dispose()
         {
-            if (!_isDisposed)
+            if (_isDisposed)
             {
-                _underlyingMqttClient.DisconnectedAsync -= InternalDisconnectedAsync;
-
-                _reconnectionCancellationToken?.Dispose();
-                _disconnectedEventLock.Dispose();
+                return;
             }
 
+            _isDisposed = true;
+            _isClosing = true;
+            _isDesiredConnected = false;
+
+            _underlyingMqttClient.DisconnectedAsync -= InternalDisconnectedAsync;
+            _underlyingMqttClient.DisconnectedAsync -= DelegateDisconnectedAsync;
+            _underlyingMqttClient.ConnectingAsync -= DelegateConnectingAsync;
+            _underlyingMqttClient.ConnectedAsync -= DelegateConnectedAsync;
+            _underlyingMqttClient.PublishReceivedAsync -= DelegatePublishReceivedAsync;
+
+            _reconnectionCancellationToken?.Cancel();
+            _reconnectionCancellationToken?.Dispose();
             _disconnectedEventLock.Dispose();
 
             // The underlying client has an MQTT client as a managed resource that no other client has access to, so always dispose it
@@ -160,32 +226,41 @@ namespace Microsoft.Azure.Devices.Client
 
             try
             {
-                if (_isDesiredConnected)
+                if (!_isDesiredConnected || _isClosing)
                 {
-                    if (_underlyingMqttClient.IsConnected())
-                    {
-                        return;
-                    }
-
-                    DeviceException? disconnectException = IsFatal(args.Reason);
-                    if (disconnectException is { Retryability: not ErrorRetryability.Retryable })
-                    {
-                        var retryException = new RetryExpiredException("A fatal error was encountered while trying to re-establish the session, so this request cannot be completed.", disconnectException);
-                        await EndConnectionMaintanceAsync(retryException, args, CancellationToken.None);
-                        return;
-                    }
-
-                    Trace.TraceInformation("Disconnect detected, starting reconnection. Disconnect reason: {0}", args.Reason);
-
-                    _reconnectionCancellationToken?.Dispose();
-                    _reconnectionCancellationToken = new();
-
-                    // The most recent connect cache should be set since at least one connect must happen before this "Disconnected" callback is triggered
-                    Debug.Assert(_mostRecentConnect != null);
-
-                    // start reconnection if the user didn't initiate this disconnect
-                    await MaintainConnectionAsync(_mostRecentConnect, args, _reconnectionCancellationToken.Token);
+                    // Either the user closed the connection deliberately or this layer has already faulted. Either way,
+                    // reconnecting is not wanted.
+                    return;
                 }
+
+                if (_underlyingMqttClient.IsConnected())
+                {
+                    return;
+                }
+
+                DeviceException? disconnectException = Classify(args.Reason);
+                if (disconnectException is { Retryability: not ErrorRetryability.Retryable })
+                {
+                    // The server told us why it hung up, and the reason says that coming back is the wrong move.
+                    await EndConnectionMaintenanceAsync(disconnectException, args);
+                    return;
+                }
+
+                Trace.TraceInformation("Disconnect detected, starting reconnection. Disconnect reason: {0}", args.Reason);
+
+                _reconnectionCancellationToken?.Dispose();
+                _reconnectionCancellationToken = new CancellationTokenSource();
+
+                // The most recent connect cache should be set since at least one connect must happen before this "Disconnected" callback is triggered
+                Debug.Assert(_mostRecentConnect != null);
+
+                // start reconnection if the user didn't initiate this disconnect
+                await MaintainConnectionAsync(_mostRecentConnect!, args, _reconnectionCancellationToken.Token);
+            }
+            catch (Exception e)
+            {
+                // This task is unmonitored, so nothing above may escape it.
+                Trace.TraceError("Unexpected exception escaped connection maintenance. {0}", e);
             }
             finally
             {
@@ -193,6 +268,17 @@ namespace Microsoft.Azure.Devices.Client
             }
         }
 
+        /// <summary>
+        /// Attempt to establish the session, retrying indefinitely for as long as the failures are retryable and the
+        /// retry policy allows.
+        /// </summary>
+        /// <param name="options">The CONNECT to send.</param>
+        /// <param name="lastDisconnect">
+        /// The disconnect that triggered a reconnection, or null when this is the caller's initial connect. This is
+        /// what decides whether a terminal failure is thrown to a caller or only reported through the fault event.
+        /// </param>
+        /// <param name="cancellationToken">Cancels the retry loop.</param>
+        /// <returns>The CONNACK, or null when reconnection was abandoned.</returns>
         private async Task<MqttConnectAck?> MaintainConnectionAsync(MqttConnect options, MqttClientDisconnectedEventArgs? lastDisconnect, CancellationToken cancellationToken)
         {
             // This function is either called when initially connecting the client or when reconnecting it. The behavior
@@ -201,28 +287,28 @@ namespace Microsoft.Azure.Devices.Client
             // unhandled and may crash the client.
             bool isReconnection = lastDisconnect != null;
             uint attemptCount = 1;
-            MqttConnectAck? mostRecentConnectResult = null;
             Exception? lastException = lastDisconnect?.Exception;
             TimeSpan retryDelay = TimeSpan.Zero;
 
             while (true)
             {
-                // This flag signals that the user is trying to close the connection. If this happens when the client is reconnection,
-                // simply abandon reconnecting and end this task.
-                if (_isClosing && isReconnection)
+                // This flag signals that the user is trying to close the connection.
+                if (_isClosing)
                 {
-                    return null;
-                }
-                else if (_isClosing && lastException != null)
-                {
+                    if (isReconnection)
+                    {
+                        // Abandon reconnecting and let this unmonitored task end quietly.
+                        Trace.TraceInformation("MQTT reconnection cancelled because the client is being closed.");
+                        return null;
+                    }
+
                     // If the user disconnects the client while they were trying to connect it,
                     // stop trying to connect it and just report the most recent error.
-                    throw lastException;
+                    throw lastException
+                        ?? new OperationCanceledException("This operation was canceled because the MQTT client was closed.");
                 }
 
-                DeviceException? deviceException = IsFatal(
-                    lastException,
-                    _reconnectionCancellationToken?.Token.IsCancellationRequested ?? cancellationToken.IsCancellationRequested);
+                DeviceException? deviceException = Classify(lastException, cancellationToken.IsCancellationRequested);
 
                 if (deviceException != null)
                 {
@@ -232,53 +318,44 @@ namespace Microsoft.Azure.Devices.Client
                 if (deviceException is { Retryability: not ErrorRetryability.Retryable })
                 {
                     Trace.TraceError("Encountered a fatal exception while maintaining connection {0}", deviceException);
+                    await EndConnectionMaintenanceAsync(deviceException, lastDisconnect);
+
                     if (isReconnection)
                     {
-                        var retryException = new RetryExpiredException("A fatal error was encountered while trying to re-establish the session, so this request cannot be completed.", deviceException);
-
                         // This function was called to reconnect after an unexpected disconnect. Since the error is fatal,
-                        // notify the user via callback that the client has crashed, but don't throw the exception since
+                        // the owning client has been notified via callback; don't throw the exception since
                         // this task is unmonitored.
-                        await EndConnectionMaintanceAsync(retryException, lastDisconnect!, cancellationToken);
                         return null;
                     }
-                    else
-                    {
-                        // This function was called directly by the user via ConnectAsync, so just throw the exception.
-                        throw deviceException;
-                    }
+
+                    // This function was called directly by the user via ConnectAsync, so also throw the exception.
+                    throw deviceException;
                 }
 
                 // Always consult the retry policy when reconnecting, but only consult it on attempt > 1 when
                 // initially connecting
                 if ((isReconnection || attemptCount > 1)
-                    && !_connectionRetryPolicy.ShouldRetry(attemptCount, lastException!, out retryDelay))
+                    && !_connectionRetryPolicy.ShouldRetry(attemptCount, lastException, out retryDelay))
                 {
-                    // Should not occur as it's indefinite retry
+                    // Should not occur with the default policy as it's indefinite retry
                     Trace.TraceError("Retry policy was exhausted while trying to maintain a connection {0}", lastException);
                     var retryException = new RetryExpiredException("Retry policy has been exhausted. See inner exception for the latest exception encountered while retrying.", lastException!);
 
-                    if (lastDisconnect != null)
+                    // An exhausted policy is terminal by construction: there are no attempts left to make.
+                    var exhaustedException = new DeviceException("Retry policy has been exhausted while maintaining the connection.", retryException)
                     {
-                        // This function was called to reconnect after an unexpected disconnect. Since the error is fatal,
-                        // notify the user via callback that the client has crashed, but don't throw the exception since
-                        // this task is unmonitored.
-                        var disconnectedEventArgs = new MqttClientDisconnectedEventArgs()
-                        {
-                            Exception = retryException,
-                            Reason = lastDisconnect.Reason,
-                            ReasonString = lastDisconnect.ReasonString,
-                            UserProperties = lastDisconnect.UserProperties,
-                        };
+                        Retryability = ErrorRetryability.Terminal,
+                        IsContained = false,
+                    };
 
-                        await EndConnectionMaintanceAsync(retryException, disconnectedEventArgs, cancellationToken);
+                    await EndConnectionMaintenanceAsync(exhaustedException, lastDisconnect);
+
+                    if (isReconnection)
+                    {
                         return null;
                     }
-                    else
-                    {
-                        // This function was called directly by the user via ConnectAsync, so just throw the exception.
-                        throw retryException;
-                    }
+
+                    throw exhaustedException;
                 }
 
                 // With all the above conditions checked, the client should attempt to connect again after a delay
@@ -291,12 +368,12 @@ namespace Microsoft.Azure.Devices.Client
                     }
 
                     cancellationToken.ThrowIfCancellationRequested();
-                    Trace.TraceInformation($"Trying to connect. Attempt number {attemptCount}");
+                    Trace.TraceInformation("Trying to connect. Attempt number {0}", attemptCount);
 
                     using CancellationTokenSource reconnectionTimeoutCancellationToken = new();
                     reconnectionTimeoutCancellationToken.CancelAfter(_connectionAttemptTimeout);
                     using CancellationTokenSource linkedCancellationToken = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, reconnectionTimeoutCancellationToken.Token);
-                    mostRecentConnectResult = await TryEstablishConnectionAsync(options, linkedCancellationToken.Token).ConfigureAwait(false);
+                    MqttConnectAck? mostRecentConnectResult = await TryEstablishConnectionAsync(options, linkedCancellationToken.Token).ConfigureAwait(false);
 
                     if (isReconnection)
                     {
@@ -314,8 +391,10 @@ namespace Microsoft.Azure.Devices.Client
                 }
                 catch (Exception e)
                 {
+                    // Every failed attempt lands here. The loop re-classifies it at the top: retryable failures are
+                    // absorbed and retried, everything else ends maintenance.
                     lastException = e;
-                    Trace.TraceWarning($"Encountered an exception while connecting. May attempt to reconnect. {e}");
+                    Trace.TraceWarning("Encountered an exception while connecting. May attempt to reconnect. {0}", e);
                 }
 
                 attemptCount++;
@@ -329,7 +408,7 @@ namespace Microsoft.Azure.Devices.Client
                 return null;
             }
 
-            MqttConnectAck? connectResult = await _underlyingMqttClient.ConnectAsync(options, cancellationToken).ConfigureAwait(false);
+            MqttConnectAck connectResult = await _underlyingMqttClient.ConnectAsync(options, cancellationToken).ConfigureAwait(false);
 
             if (connectResult.ResultCode != MqttConnectReasonCode.Success)
             {
@@ -339,9 +418,132 @@ namespace Microsoft.Azure.Devices.Client
             return connectResult;
         }
 
-        private async Task EndConnectionMaintanceAsync(Exception queuedItemException, MqttClientDisconnectedEventArgs disconnectedEventArgs, CancellationToken cancellationToken)
+        /// <summary>
+        /// Stop maintaining the connection and tell the owning connection client why.
+        /// </summary>
+        /// <remarks>
+        /// Only ever called with a terminal or identity-terminal error: retryable errors are absorbed by the retry loop
+        /// and never reach here.
+        /// </remarks>
+        private async Task EndConnectionMaintenanceAsync(DeviceException fault, MqttClientDisconnectedEventArgs? lastDisconnect)
         {
-            _isDesiredConnected = false; //TODO need to actually notify ConnectionClient that a fatal disconnect happened so it can notify the user
+            Debug.Assert(fault.Retryability != ErrorRetryability.Retryable);
+
+            _isDesiredConnected = false;
+
+            Func<MqttConnectionFaultedEventArgs, Task>? handler = ConnectionFaultedAsync;
+            if (handler == null)
+            {
+                Trace.TraceError("Connection maintenance ended with no fault handler attached. {0}", fault);
+                return;
+            }
+
+            var args = new MqttConnectionFaultedEventArgs()
+            {
+                Exception = fault,
+                LastDisconnect = lastDisconnect,
+            };
+
+            try
+            {
+                await handler.Invoke(args);
+            }
+            catch (Exception e)
+            {
+                // This may run on an unmonitored reconnection task, so a misbehaving handler must not crash the process.
+                Trace.TraceError("The connection fault handler threw while being notified of a fatal error. {0}", e);
+            }
+        }
+
+        /// <summary>
+        /// Classify an exception raised while connecting or while the session was up.
+        /// </summary>
+        /// <param name="e">The exception to classify, if any.</param>
+        /// <param name="userCancellationRequested">
+        /// Whether the cancellation token this layer is aware of actually requested cancellation.
+        /// </param>
+        /// <returns>Null if there is nothing to classify, otherwise an exception carrying the retryability.</returns>
+        private static DeviceException? Classify(Exception? e, bool userCancellationRequested)
+        {
+            switch (e)
+            {
+                case null:
+                    return null;
+
+                // Already classified; don't re-wrap and lose the classification.
+                case DeviceException deviceException:
+                    return deviceException;
+
+                // The server answered the CONNECT with a refusal, so the CONNACK code is the authority.
+                case MqttConnectingFailedException connectingFailed:
+                    {
+                        DeviceException? connackException = Classify(connectingFailed.ResultCode);
+                        if (connackException == null)
+                        {
+                            return null;
+                        }
+
+                        return new DeviceException(connackException.Message, connectingFailed)
+                        {
+                            Retryability = connackException.Retryability,
+                            IsContained = false,
+                        };
+                    }
+
+                // connection.md section 9.4.1: name resolution, address selection, socket connect and connection reset
+                // are all retryable, and none of them say anything about the device's identity.
+                case SocketException:
+                    return Retryable(e, "A network-level error was encountered while connecting.");
+
+                // connection.md section 9.4.2: all but the least specific handshake failure are terminal, and this
+                // exception cannot be told apart from those, so it takes the terminal branch rather than retrying
+                // forever against a trust-store or certificate problem that no retry can fix.
+                case AuthenticationException:
+                    return new DeviceException("The TLS handshake failed.", e)
+                    {
+                        Retryability = ErrorRetryability.Terminal,
+                        IsContained = false,
+                    };
+
+                // connection.md section 9.4.8: programming and configuration errors are deterministic, so retrying
+                // them just reproduces them.
+                case MQTTnet.Exceptions.MqttProtocolViolationException:
+                case ArgumentException:
+                case NotSupportedException:
+                case ObjectDisposedException:
+                    return new DeviceException("A non-recoverable error was encountered while connecting.", e)
+                    {
+                        Retryability = ErrorRetryability.Terminal,
+                        IsContained = false,
+                    };
+
+                case OperationCanceledException:
+                    // MQTTnet may throw an OperationCanceledException/TaskCanceledException even if
+                    // neither the user nor the session client provides a cancellation token. Because
+                    // of that, this exception is only fatal if the cancellation token this layer
+                    // is aware of actually requested cancellation. Other cases signify that MQTTnet
+                    // gave up on the operation, but the user still wants to retry.
+                    if (userCancellationRequested)
+                    {
+                        return new DeviceException("The connection attempt was canceled.", e)
+                        {
+                            Retryability = ErrorRetryability.Terminal,
+                            IsContained = false,
+                        };
+                    }
+
+                    return Retryable(e, "The connection attempt did not complete in time.");
+
+                default:
+                    // Unrecognised. Preserve the value and take the conservative branch.
+                    return Retryable(e, "A recoverable error was encountered while connecting.");
+            }
+
+            static DeviceException Retryable(Exception inner, string message) => new(message, inner)
+            {
+                Retryability = ErrorRetryability.Retryable,
+                IsContained = false,
+            };
         }
 
         /// <summary>
@@ -349,7 +551,7 @@ namespace Microsoft.Azure.Devices.Client
         /// </summary>
         /// <param name="code">The reason code carried by the server's DISCONNECT packet.</param>
         /// <returns>Null if the code is benign, otherwise an exception whose retryability describes the code.</returns>
-        private static DeviceException? IsFatal(MqttDisconnectReason code)
+        private static DeviceException? Classify(MqttDisconnectReason code)
         {
             ErrorRetryability retryability;
 
@@ -418,7 +620,7 @@ namespace Microsoft.Azure.Devices.Client
         /// </summary>
         /// <param name="code">The reason code carried by the server's CONNACK packet.</param>
         /// <returns>Null if the code is benign, otherwise an exception whose retryability describes the code.</returns>
-        private static DeviceException? IsFatal(MqttConnectReasonCode code)
+        private static DeviceException? Classify(MqttConnectReasonCode code)
         {
             ErrorRetryability retryability;
 
@@ -473,6 +675,15 @@ namespace Microsoft.Azure.Devices.Client
             };
         }
 
+        /// <summary>
+        /// Send a PUBLISH and settle it.
+        /// </summary>
+        /// <remarks>
+        /// Failures here are contained to the one operation, so they are thrown to the caller rather than being
+        /// retried or reported as connection faults. Already-classified <see cref="DeviceException"/>s are rethrown
+        /// unchanged so their retryability survives, and <see cref="MqttClientNotConnectedException"/> is left alone
+        /// because it reports connection state rather than an operation failure, and the layer above acts on it.
+        /// </remarks>
         public async Task<MqttPublishAck> PublishAsync(MqttPublish publish, CancellationToken cancellationToken = default)
         {
             try
@@ -481,7 +692,7 @@ namespace Microsoft.Azure.Devices.Client
                 ThrowIfPubackHasErrorCode(puback);
                 return puback;
             }
-            catch (Exception e)
+            catch (Exception e) when (e is not DeviceException and not MqttClientNotConnectedException)
             {
                 throw new DeviceException("TODO", e)
                 {
@@ -491,6 +702,7 @@ namespace Microsoft.Azure.Devices.Client
             }
         }
 
+        /// <inheritdoc cref="PublishAsync"/>
         public async Task<MqttSubscribeAck> SubscribeAsync(MqttSubscribe subscribe, CancellationToken cancellationToken = default)
         {
             try
@@ -499,7 +711,7 @@ namespace Microsoft.Azure.Devices.Client
                 ThrowIfSubackHasErrorCode(suback);
                 return suback;
             }
-            catch (Exception e)
+            catch (Exception e) when (e is not DeviceException and not MqttClientNotConnectedException)
             {
                 throw new DeviceException("TODO", e)
                 {
@@ -509,6 +721,7 @@ namespace Microsoft.Azure.Devices.Client
             }
         }
 
+        /// <inheritdoc cref="PublishAsync"/>
         public async Task<MqttUnsubscribeAck> UnsubscribeAsync(MqttUnsubscribe unsubscribe, CancellationToken cancellationToken = default)
         {
             try
@@ -517,7 +730,7 @@ namespace Microsoft.Azure.Devices.Client
                 ThrowIfUnsubackHasErrorCode(unsuback);
                 return unsuback;
             }
-            catch (Exception e)
+            catch (Exception e) when (e is not DeviceException and not MqttClientNotConnectedException)
             {
                 throw new DeviceException("TODO", e)
                 {

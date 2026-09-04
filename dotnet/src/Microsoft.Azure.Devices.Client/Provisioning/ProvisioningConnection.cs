@@ -1,7 +1,6 @@
 ﻿// Copyright (c) Microsoft. All rights reserved.
 // Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
-using Microsoft.Azure.Devices.Client.Exceptions;
 using Microsoft.Azure.Devices.Client.Mqtt;
 using Microsoft.Azure.Devices.Client.Provisioning.Models;
 using System.Diagnostics;
@@ -67,9 +66,8 @@ namespace Microsoft.Azure.Devices.Client.Provisioning
 
                 try
                 {
+                    // MQTT connection manager already checks connack for non-success cases, so no need to check it here as well
                     MqttConnectAck connack = await mqttClient.ConnectAsync(connect, cancellationToken).ConfigureAwait(false);
-
-                    ConnectRejectedException.ThrowIfUnsuccessfulConnack(connack, "Connection to DPS was rejected.");
 
                     await SubscribeToRegistrationResponseMessagesAsync(mqttClient, linkedCancellationToken.Token).ConfigureAwait(false);
 
