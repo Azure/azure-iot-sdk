@@ -288,11 +288,11 @@ namespace Microsoft.Azure.Devices.Client.UnitTests
             List<MqttSubscribeAckItem> genericItems = generic.Items.ToList();
             Assert.Equal(2, genericItems.Count);
 
-            Assert.Equal(MqttClientSubscribeResultCode.GrantedQoS1, genericItems[0].ResultCode);
+            Assert.Equal(MqttClientSubscribeReasonCode.GrantedQoS1, genericItems[0].ReasonCode);
             Assert.Equal("topic/one", genericItems[0].TopicFilter.Topic);
             Assert.Equal(MqttQualityOfServiceLevel.AtLeastOnce, genericItems[0].TopicFilter.QualityOfServiceLevel);
 
-            Assert.Equal(MqttClientSubscribeResultCode.NotAuthorized, genericItems[1].ResultCode);
+            Assert.Equal(MqttClientSubscribeReasonCode.NotAuthorized, genericItems[1].ReasonCode);
             Assert.Equal("topic/two", genericItems[1].TopicFilter.Topic);
             Assert.Equal(MqttQualityOfServiceLevel.AtMostOnce, genericItems[1].TopicFilter.QualityOfServiceLevel);
         }
@@ -346,19 +346,19 @@ namespace Microsoft.Azure.Devices.Client.UnitTests
             List<MqttSubscribeAckItem> genericItems = generic.Items.ToList();
             Assert.Equal(items.Count, genericItems.Count);
 
-            (string Topic, MqttQualityOfServiceLevel Qos, MqttClientSubscribeResultCode ResultCode)[] expected =
+            (string Topic, MqttQualityOfServiceLevel Qos, MqttClientSubscribeReasonCode ResultCode)[] expected =
             [
-                ("devices/dev1/messages/#", MqttQualityOfServiceLevel.AtMostOnce, MqttClientSubscribeResultCode.GrantedQoS0),
-                ("devices/dev1/methods/+", MqttQualityOfServiceLevel.AtLeastOnce, MqttClientSubscribeResultCode.GrantedQoS1),
-                ("devices/dev1/twin/res", MqttQualityOfServiceLevel.ExactlyOnce, MqttClientSubscribeResultCode.GrantedQoS2),
-                ("devices/dev1/denied", MqttQualityOfServiceLevel.AtLeastOnce, MqttClientSubscribeResultCode.NotAuthorized),
+                ("devices/dev1/messages/#", MqttQualityOfServiceLevel.AtMostOnce, MqttClientSubscribeReasonCode.GrantedQoS0),
+                ("devices/dev1/methods/+", MqttQualityOfServiceLevel.AtLeastOnce, MqttClientSubscribeReasonCode.GrantedQoS1),
+                ("devices/dev1/twin/res", MqttQualityOfServiceLevel.ExactlyOnce, MqttClientSubscribeReasonCode.GrantedQoS2),
+                ("devices/dev1/denied", MqttQualityOfServiceLevel.AtLeastOnce, MqttClientSubscribeReasonCode.NotAuthorized),
             ];
 
             for (int i = 0; i < expected.Length; i++)
             {
                 Assert.Equal(expected[i].Topic, genericItems[i].TopicFilter.Topic);
                 Assert.Equal(expected[i].Qos, genericItems[i].TopicFilter.QualityOfServiceLevel);
-                Assert.Equal(expected[i].ResultCode, genericItems[i].ResultCode);
+                Assert.Equal(expected[i].ResultCode, genericItems[i].ReasonCode);
             }
         }
 
@@ -391,8 +391,8 @@ namespace Microsoft.Azure.Devices.Client.UnitTests
 
             Assert.Equal(2, genericItems.Count);
             Assert.All(genericItems, item => Assert.Equal("same/topic", item.TopicFilter.Topic));
-            Assert.Equal(MqttClientSubscribeResultCode.GrantedQoS1, genericItems[0].ResultCode);
-            Assert.Equal(MqttClientSubscribeResultCode.QuotaExceeded, genericItems[1].ResultCode);
+            Assert.Equal(MqttClientSubscribeReasonCode.GrantedQoS1, genericItems[0].ReasonCode);
+            Assert.Equal(MqttClientSubscribeReasonCode.QuotaExceeded, genericItems[1].ReasonCode);
             Assert.NotSame(genericItems[0].TopicFilter, genericItems[1].TopicFilter);
         }
 
@@ -420,8 +420,8 @@ namespace Microsoft.Azure.Devices.Client.UnitTests
             {
                 Assert.Equal($"topic/{i}", genericItems[i].TopicFilter.Topic);
                 Assert.Equal(
-                    ExpectedByName<MQTTnet.MqttClientSubscribeResultCode, MqttClientSubscribeResultCode>(resultCodes[i]),
-                    genericItems[i].ResultCode);
+                    ExpectedByName<MQTTnet.MqttClientSubscribeResultCode, MqttClientSubscribeReasonCode>(resultCodes[i]),
+                    genericItems[i].ReasonCode);
             }
         }
 
@@ -448,10 +448,10 @@ namespace Microsoft.Azure.Devices.Client.UnitTests
                     null,
                     []);
 
-                MqttClientSubscribeResultCode expected =
-                    ExpectedByName<MQTTnet.MqttClientSubscribeResultCode, MqttClientSubscribeResultCode>(resultCode);
+                MqttClientSubscribeReasonCode expected =
+                    ExpectedByName<MQTTnet.MqttClientSubscribeResultCode, MqttClientSubscribeReasonCode>(resultCode);
 
-                Assert.Equal(expected, Assert.Single(ModelConverter.ToGeneric(suback).Items).ResultCode);
+                Assert.Equal(expected, Assert.Single(ModelConverter.ToGeneric(suback).Items).ReasonCode);
             }
         }
 
@@ -465,8 +465,8 @@ namespace Microsoft.Azure.Devices.Client.UnitTests
                 []);
 
             Assert.Equal(
-                MqttClientSubscribeResultCode.WildcardSubscriptionsNotSupported,
-                Assert.Single(ModelConverter.ToGeneric(suback).Items).ResultCode);
+                MqttClientSubscribeReasonCode.WildcardSubscriptionsNotSupported,
+                Assert.Single(ModelConverter.ToGeneric(suback).Items).ReasonCode);
         }
 
         #endregion MqttClientSubscribeResult -> MqttSubscribeAck
@@ -488,7 +488,7 @@ namespace Microsoft.Azure.Devices.Client.UnitTests
             AssertUserPropertiesMatch(generic.UserProperties, ("unsubKey", "unsubValue"));
 
             MqttUnsubscribeAckItem item = Assert.Single(generic.Items);
-            Assert.Equal(MqttClientUnsubscribeResultCode.Success, item.ResultCode);
+            Assert.Equal(MqttClientUnsubscribeReasonCode.Success, item.ReasonCode);
             Assert.Equal("topic/one", item.TopicFilter);
         }
 
@@ -503,10 +503,10 @@ namespace Microsoft.Azure.Devices.Client.UnitTests
                     null,
                     []);
 
-                MqttClientUnsubscribeResultCode expected =
-                    ExpectedByName<MQTTnet.MqttClientUnsubscribeResultCode, MqttClientUnsubscribeResultCode>(resultCode);
+                MqttClientUnsubscribeReasonCode expected =
+                    ExpectedByName<MQTTnet.MqttClientUnsubscribeResultCode, MqttClientUnsubscribeReasonCode>(resultCode);
 
-                Assert.Equal(expected, Assert.Single(ModelConverter.ToGeneric(unsuback).Items).ResultCode);
+                Assert.Equal(expected, Assert.Single(ModelConverter.ToGeneric(unsuback).Items).ReasonCode);
             }
         }
 
@@ -520,8 +520,8 @@ namespace Microsoft.Azure.Devices.Client.UnitTests
                 []);
 
             Assert.Equal(
-                MqttClientUnsubscribeResultCode.PacketIdentifierInUse,
-                Assert.Single(ModelConverter.ToGeneric(unsuback).Items).ResultCode);
+                MqttClientUnsubscribeReasonCode.PacketIdentifierInUse,
+                Assert.Single(ModelConverter.ToGeneric(unsuback).Items).ReasonCode);
         }
 
         [Fact]
@@ -565,7 +565,7 @@ namespace Microsoft.Azure.Devices.Client.UnitTests
             for (int i = 0; i < topicFilterCount; i++)
             {
                 Assert.Equal($"topic/{i}", genericItems[i].TopicFilter);
-                Assert.Equal(MqttClientUnsubscribeResultCode.Success, genericItems[i].ResultCode);
+                Assert.Equal(MqttClientUnsubscribeReasonCode.Success, genericItems[i].ReasonCode);
             }
         }
 
@@ -585,19 +585,19 @@ namespace Microsoft.Azure.Devices.Client.UnitTests
 
             List<MqttUnsubscribeAckItem> genericItems = ModelConverter.ToGeneric(unsuback).Items.ToList();
 
-            (string Topic, MqttClientUnsubscribeResultCode ResultCode)[] expected =
+            (string Topic, MqttClientUnsubscribeReasonCode ResultCode)[] expected =
             [
-                ("topic/one", MqttClientUnsubscribeResultCode.Success),
-                ("topic/two", MqttClientUnsubscribeResultCode.NoSubscriptionExisted),
-                ("topic/three", MqttClientUnsubscribeResultCode.NotAuthorized),
-                ("topic/four", MqttClientUnsubscribeResultCode.TopicFilterInvalid),
+                ("topic/one", MqttClientUnsubscribeReasonCode.Success),
+                ("topic/two", MqttClientUnsubscribeReasonCode.NoSubscriptionExisted),
+                ("topic/three", MqttClientUnsubscribeReasonCode.NotAuthorized),
+                ("topic/four", MqttClientUnsubscribeReasonCode.TopicFilterInvalid),
             ];
 
             Assert.Equal(expected.Length, genericItems.Count);
             for (int i = 0; i < expected.Length; i++)
             {
                 Assert.Equal(expected[i].Topic, genericItems[i].TopicFilter);
-                Assert.Equal(expected[i].ResultCode, genericItems[i].ResultCode);
+                Assert.Equal(expected[i].ResultCode, genericItems[i].ReasonCode);
             }
         }
 
@@ -619,8 +619,8 @@ namespace Microsoft.Azure.Devices.Client.UnitTests
             {
                 Assert.Equal($"topic/{i}", genericItems[i].TopicFilter);
                 Assert.Equal(
-                    ExpectedByName<MQTTnet.MqttClientUnsubscribeResultCode, MqttClientUnsubscribeResultCode>(resultCodes[i]),
-                    genericItems[i].ResultCode);
+                    ExpectedByName<MQTTnet.MqttClientUnsubscribeResultCode, MqttClientUnsubscribeReasonCode>(resultCodes[i]),
+                    genericItems[i].ReasonCode);
             }
         }
 
@@ -640,8 +640,8 @@ namespace Microsoft.Azure.Devices.Client.UnitTests
 
             Assert.Equal(2, genericItems.Count);
             Assert.All(genericItems, item => Assert.Equal("same/topic", item.TopicFilter));
-            Assert.Equal(MqttClientUnsubscribeResultCode.Success, genericItems[0].ResultCode);
-            Assert.Equal(MqttClientUnsubscribeResultCode.NoSubscriptionExisted, genericItems[1].ResultCode);
+            Assert.Equal(MqttClientUnsubscribeReasonCode.Success, genericItems[0].ReasonCode);
+            Assert.Equal(MqttClientUnsubscribeReasonCode.NoSubscriptionExisted, genericItems[1].ReasonCode);
         }
 
         #endregion MqttClientUnsubscribeResult -> MqttUnsubscribeAck

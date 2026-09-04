@@ -119,7 +119,7 @@ namespace Microsoft.Azure.Devices.Client.Unified.Connection
             bool anySubscribeFailed = false;
             foreach (var topicSuback in suback.Items)
             {
-                anySubscribeFailed |= (topicSuback.ResultCode != MqttClientSubscribeResultCode.GrantedQoS0);
+                anySubscribeFailed |= (topicSuback.ReasonCode != MqttClientSubscribeReasonCode.GrantedQoS0);
             }
 
             if (anySubscribeFailed)
