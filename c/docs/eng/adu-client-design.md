@@ -473,7 +473,7 @@ returned to its pre-deployment state:
 
 ### State reporting to cloud
 
-> **[ADUv1 wire shape — cut]** ADUv2 reports a structured `lastInstallResult` through `ReportDeviceUpdateStatus`; see [aduv2-spec.md](aduv2-spec.md).
+> **[ADUv1 wire shape — cut]** ADUv2 reports a structured `installResult` through `reportUpdateStatus`; see [aduv2-spec.md](aduv2-spec.md).
 
 Each state transition MUST produce a twin reported-property update (formatted using `az_iot_adu_client_get_agent_state_payload()` from azure-sdk-for-c):
 
@@ -1741,7 +1741,7 @@ deprecation window** — see [adu-client-plan.md](adu-client-plan.md#what-aduv1-
 - The three device-update operations over the device's existing DPS connection and auth
   (X.509 first): `GetOnboardingDeviceUpdate`, `GetDeviceUpdate`, `ReportDeviceUpdateStatus`.
 - `agentInfo` + `installedUpdateId` on every fetch; `serviceConfiguration` + `updateMetadata`
-  parsing; `agentInfoETag` / `serviceConfigETag` handling incl. the resend codes.
+  parsing; `agentInfoEtag` / `serviceConfigEtag` handling incl. the resend codes.
 - Root-key-package fetch from `serviceConfiguration.rootKeyDownloadUrl`, verified by the existing
   chain.
 - Bootstrap orchestration (update → report → re-check loop, then `Register`; advisory, never
