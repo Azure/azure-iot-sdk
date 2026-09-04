@@ -169,7 +169,21 @@ static void transition(
   c->state = next;
   if (c->state_cb)
   {
-    c->state_cb(next, reason, c->state_cb_ctx);
+    az_iot_hub_profile profile = AZ_IOT_HUB_PROFILE_INIT;
+    az_iot_connection_state_event event = {
+      ._internal_size = sizeof(az_iot_connection_state_event),
+      .state = next,
+      .reason = reason,
+      .profile = NULL,
+    };
+    if (next == AZ_IOT_CONN_STATE_CONNECTED)
+    {
+      profile.connection_profile = c->connection_profile;
+      profile.connection_profile_raw = c->connection_profile_raw;
+      profile.connection_profile_raw_truncated = c->connection_profile_raw_truncated;
+      event.profile = &profile;
+    }
+    c->state_cb(&event, c->state_cb_ctx);
   }
 }
 

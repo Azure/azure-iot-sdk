@@ -171,8 +171,10 @@ typedef struct
   az_iot_result send_status;
 } user_context;
 
-static void on_conn_state(az_iot_connection_state s, az_iot_result reason, void* user_ctx)
+static void on_conn_state(const az_iot_connection_state_event* event, void* user_ctx)
 {
+  az_iot_connection_state s = event->state;
+  az_iot_result reason = event->reason;
   user_context* ctx = (user_context*)user_ctx;
   ctx->conn_state = s;
   ctx->conn_reason = reason;

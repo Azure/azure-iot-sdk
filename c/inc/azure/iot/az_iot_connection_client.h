@@ -202,9 +202,24 @@ extern "C"
     AZ_IOT_CONN_STATE_FAULTED
   } az_iot_connection_state;
 
+  /* SDK-produced, callback-lifetime view of a connection-state transition.
+   * The SDK stamps _internal_size; callers never initialize this struct. Future
+   * SDKs may append fields, so callbacks must check _internal_size before
+   * reading a field added after the version they were compiled against.
+   *
+   * profile is non-NULL exactly when state == AZ_IOT_CONN_STATE_CONNECTED. It
+   * and the event itself remain valid only until the callback returns; copy any
+   * value that must be retained. */
+  typedef struct az_iot_connection_state_event
+  {
+    uint32_t _internal_size;
+    az_iot_connection_state state;
+    az_iot_result reason;
+    const az_iot_hub_profile* profile;
+  } az_iot_connection_state_event;
+
   typedef void (*az_iot_connection_state_callback)(
-      az_iot_connection_state state,
-      az_iot_result reason,
+      const az_iot_connection_state_event* event,
       void* user_ctx);
 
   typedef void (*az_iot_publish_ack_callback)(az_iot_result status, void* user_ctx);
@@ -572,7 +587,8 @@ extern "C"
       const az_iot_mqtt_factory* factory);
 
   /* Not AZ_NODISCARD: configuration setters that fail only on invalid arguments
-   * (a programming error), so callers routinely fire-and-forget them. */
+   * (a programming error), so callers routinely fire-and-forget them. The state
+   * callback receives an SDK-owned event valid only for the duration of the call. */
   az_iot_result az_iot_connection_client_set_state_callback(
       az_iot_connection_client* client,
       az_iot_connection_state_callback cb,

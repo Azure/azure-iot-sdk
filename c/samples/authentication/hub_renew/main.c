@@ -40,8 +40,10 @@ typedef struct
   az_iot_result csr_status;
 } user_context;
 
-static void on_conn_state(az_iot_connection_state s, az_iot_result reason, void* user_ctx)
+static void on_conn_state(const az_iot_connection_state_event* event, void* user_ctx)
 {
+  az_iot_connection_state s = event->state;
+  az_iot_result reason = event->reason;
   (void)reason;
   ((user_context*)user_ctx)->conn_state = s;
 }

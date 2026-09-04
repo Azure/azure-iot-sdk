@@ -942,6 +942,57 @@ static void dps_classic_profile_connects_the_hub_over_v3_1_1(void** state)
   profile_fixture_close(&pf);
 }
 
+static void assert_state_event_contract(
+    const az_iot_test_state_log* log,
+    az_iot_connection_profile expected_profile,
+    const char* expected_raw)
+{
+  bool saw_connected = false;
+  for (size_t i = 0; i < log->count; ++i)
+  {
+    assert_int_equal(log->event_sizes[i], sizeof(az_iot_connection_state_event));
+    if (log->states[i] == AZ_IOT_CONN_STATE_CONNECTED)
+    {
+      saw_connected = true;
+      assert_true(log->profile_present[i]);
+      assert_int_equal(log->profile_sizes[i], sizeof(az_iot_hub_profile));
+      assert_int_equal(log->profiles[i], expected_profile);
+      assert_string_equal(log->profile_raw[i], expected_raw);
+    }
+    else
+    {
+      assert_false(log->profile_present[i]);
+    }
+  }
+  assert_true(saw_connected);
+}
+
+static void classic_state_events_are_stamped_and_profile_only_on_connected(void** state)
+{
+  (void)state;
+  profile_fixture pf = { 0 };
+  profile_fixture_open(&pf);
+  profile_assign(&pf, k_assigned_classic);
+  profile_finish_hub_leg(&pf, false);
+
+  assert_state_event_contract(&pf.log, AZ_IOT_CONNECTION_PROFILE_CLASSIC, "classic");
+
+  profile_fixture_close(&pf);
+}
+
+static void mqtt_v5_state_events_are_stamped_and_profile_only_on_connected(void** state)
+{
+  (void)state;
+  profile_fixture pf = { 0 };
+  profile_fixture_open(&pf);
+  profile_assign(&pf, k_assigned_mqtt_v5);
+  profile_finish_hub_leg(&pf, true);
+
+  assert_state_event_contract(&pf.log, AZ_IOT_CONNECTION_PROFILE_MQTT_V5, "mqttV5");
+
+  profile_fixture_close(&pf);
+}
+
 /* Absent is not an error. The service contract documents it as meaning
  * "classic", which is also what every hub predating the field will send. */
 static void dps_absent_profile_defaults_to_classic(void** state)
@@ -1385,6 +1436,8 @@ int main(void)
     /* connection profile */
     cmocka_unit_test(dps_mqtt_v5_profile_connects_the_hub_over_v5),
     cmocka_unit_test(dps_classic_profile_connects_the_hub_over_v3_1_1),
+    cmocka_unit_test(classic_state_events_are_stamped_and_profile_only_on_connected),
+    cmocka_unit_test(mqtt_v5_state_events_are_stamped_and_profile_only_on_connected),
     cmocka_unit_test(dps_absent_profile_defaults_to_classic),
     cmocka_unit_test(dps_null_profile_defaults_to_classic),
     cmocka_unit_test(dps_absent_profile_can_be_overridden_to_mqtt_v5),
