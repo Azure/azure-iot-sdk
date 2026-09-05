@@ -150,23 +150,25 @@ printf '%s' "${PIN}" > "${pin_file}"
 chmod 600 "${pin_file}"
 uri="pkcs11:token=${TOKEN_LABEL};object=${KEY_LABEL};type=private?pin-source=file:${pin_file}"
 
-# An OpenSSL configuration that loads the pkcs11 provider with DIGESTS DISABLED.
+# An OpenSSL configuration that ACTIVATES the pkcs11 provider.
 #
-# Without this, a TLS 1.2 client-authentication handshake fails outright:
+# Without it, a TLS 1.2 client-authentication handshake fails outright:
 #
 #   error:40800054:pkcs11:p11prov_GetOperationState:...:Error returned by
 #   C_GetOperationState
 #
-# The provider offers digest implementations as well as key operations, so once
-# it is loaded it can end up servicing the TLS handshake transcript hash. TLS
-# 1.2 duplicates that digest context, the provider implements duplication with
-# C_GetOperationState, and SoftHSM2 -- like most tokens, by the provider's own
-# note in digests.c -- does not support it on a digest session. TLS 1.3 does not
-# duplicate the context, which is why only the 1.2 path breaks.
+# The provider offers digest implementations as well as key operations, so a
+# provider the adapter loads at run time through OSSL_PROVIDER_try_load() can
+# end up servicing the TLS handshake transcript hash. TLS 1.2 duplicates that
+# digest context, the provider implements duplication with C_GetOperationState,
+# and SoftHSM2 -- like most tokens, by the provider's own note in digests.c --
+# does not support it on a digest session. TLS 1.3 does not duplicate the
+# context, which is why only the 1.2 path breaks.
 #
-# The token never needed to hash anything: only the private key lives there.
-# Blocking the digest operation routes hashing back to OpenSSL's default
-# provider and leaves signing in the token, which is the whole point.
+# Bringing the provider up from configuration, with the default provider
+# activated alongside it, avoids that: measured against a live IoT Hub over
+# TLS 1.2 with a SoftHSM2-held key, a run-time try_load() fails with the error
+# above and a configuration-activated provider reaches CONNECTED, 3 runs each.
 openssl_cnf="${work_dir}/openssl-pkcs11.cnf"
 cat > "${openssl_cnf}" <<CNF
 openssl_conf = az_iot_init
@@ -184,15 +186,23 @@ activate = 1
 [az_iot_pkcs11_sect]
 ${modules_dir:+module = ${modules_dir}/pkcs11.so}
 pkcs11-module-path = ${module}
+# Precautionary, and inert on SoftHSM2: it advertises no digests, and removing
+# this line changes nothing measurable here. It is kept for tokens that DO
+# advertise digests, where it forces hashing back to the default provider and
+# leaves only signing in the token. It is NOT what fixes the handshake -- the
+# activation below is.
 pkcs11-module-block-operations = digest
-# Do not tear the module down when OpenSSL unloads the provider. SoftHSM2
-# crashes during that teardown once the provider has been activated from
-# configuration, which turns a passing test run into a SEGFAULT at exit. The
-# provider documents this quirk for exactly that situation; the cost is memory
-# the process was about to release anyway.
+# Do not tear the module down when OpenSSL unloads the provider. Once the
+# provider is activated from configuration SoftHSM2 crashes during that
+# teardown, AFTER a successful connect -- measured: without this line the run
+# reaches CONNECTED and then dies with SIGSEGV, 3 runs out of 3. The provider
+# documents this quirk for exactly that situation; the cost is memory the
+# process was about to release anyway.
 pkcs11-module-quirks = no-deinit
-# Activation must be here, not left to the adapter's own OSSL_PROVIDER_try_load:
-# the settings above apply only to a provider the configuration brings up.
+# The operative line. Activation must happen here, not be left to the adapter's
+# own OSSL_PROVIDER_try_load: a provider brought up from configuration completes
+# the TLS 1.2 handshake, one loaded at run time fails it, and the settings above
+# apply only to the former.
 activate = 1
 CNF
 
