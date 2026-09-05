@@ -1028,13 +1028,16 @@ static void custom_device_properties_are_accepted_and_serialized(void** state)
   assert_int_equal(az_iot_adu_client_update_device_properties(&fx->adu, &dp), AZ_IOT_OK);
   assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
 
+  /* The builder reports bytes used, not a C string, so reserve a byte for the
+   * terminator rather than writing at json[json_len] on a full buffer. */
   uint8_t json[1024];
   size_t json_len = 0;
   assert_int_equal(
       az_iot_adu_build_report(
-          &dp, NULL, NULL, AZ_IOT_ADU_STATE_IDLE, json, sizeof(json), &json_len),
+          &dp, NULL, NULL, AZ_IOT_ADU_STATE_IDLE, json, sizeof(json) - 1, &json_len),
       AZ_IOT_OK);
   assert_true(json_len > 0);
+  assert_true(json_len < sizeof(json));
 
   char* text = (char*)json;
   text[json_len] = '\0';
