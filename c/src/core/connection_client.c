@@ -280,6 +280,8 @@ static void teardown_active(az_iot_connection_client* c)
 
 /* Forward decl — used in on_mqtt_event via the deferred-action queue. */
 static az_iot_result start_connect_attempt(az_iot_connection_client* c);
+static bool dps_configured(const az_iot_connection_client* c);
+static az_iot_result run_feature_binds(az_iot_connection_client* c);
 static void drop_subscriptions_from_other_generations(az_iot_connection_client* c);
 
 /* Forward decl — used in dps_apply_deferred(). */
@@ -416,6 +418,17 @@ static void schedule_reconnect(az_iot_connection_client* c, az_iot_result reason
 {
   teardown_active(c);
   c->reconnect_attempt++;
+
+  /* A hub vacated service-side may stop answering rather than rejecting the
+   * identity, in which case nothing else would ever send us back to DPS. */
+  if (!c->reprovision_pending && dps_configured(c) && !c->user_close
+      && c->opts.dps.max_connect_attempts_before_reprovision > 0
+      && c->reconnect_attempt >= c->opts.dps.max_connect_attempts_before_reprovision)
+  {
+    AZ_IOT_LOG_WARN("connection: hub unreachable for the configured number of attempts; "
+                    "re-provisioning through DPS");
+    c->reprovision_pending = true;
+  }
 
   if (c->opts.reconnection_policy.max_attempts > 0
       && c->reconnect_attempt > c->opts.reconnection_policy.max_attempts)
@@ -1271,6 +1284,19 @@ static void dps_apply_deferred(az_iot_connection_client* c)
   }
   /* The assignment may have moved the device to a different generation than the
    * one its registered filters were built for. */
+  c->connection_profile_resolved = true;
+  if (c->required_profile_refs > 0 && c->required_profile != c->connection_profile)
+  {
+    /* Terminal on purpose: re-provisioning would return this same profile, so a
+     * retry cannot succeed. The application owns the recovery -- destroy the
+     * feature clients and rebuild them for the profile this event carries. */
+    AZ_IOT_LOG_ERRORF(
+        "dps: assigned connectionProfile \"%s\", but the attached feature clients require the "
+        "other hub generation; destroy them and rebuild for the assigned profile",
+        c->connection_profile_raw);
+    transition(c, AZ_IOT_CONN_STATE_FAULTED, AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH);
+    return;
+  }
   drop_subscriptions_from_other_generations(c);
   c->dps_phase = DPS_PHASE_NONE;
 
@@ -1922,6 +1948,12 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
 
 static az_iot_result start_connect_attempt(az_iot_connection_client* c)
 {
+  az_iot_result br = run_feature_binds(c);
+  if (br != AZ_IOT_OK)
+  {
+    return br;
+  }
+
   az_iot_mqtt_version version = az_iot_mqtt_required_version_for_role(c->session_role);
   const az_iot_mqtt_factory* f = find_factory(c, version);
   if (!f)
@@ -2200,6 +2232,8 @@ az_iot_connection_client_options az_iot_connection_client_options_default(void)
 {
   az_iot_connection_client_options opts = { 0 };
   opts.port = 8883;
+  opts.dps.max_connect_attempts_before_reprovision
+      = AZ_IOT_DEFAULT_MAX_CONNECT_ATTEMPTS_BEFORE_REPROVISION;
   return opts;
 }
 
@@ -2277,6 +2311,8 @@ az_iot_result az_iot_connection_client_init(
       client->session_role == AZ_IOT_MQTT_ROLE_HUB_NEXT
           ? AZ_SPAN_FROM_STR(CONNECTION_PROFILE_MQTT_V5_STR)
           : AZ_SPAN_FROM_STR(CONNECTION_PROFILE_CLASSIC_STR));
+  /* A direct connect has no service to ask, so the seed above is the answer. */
+  client->connection_profile_resolved = !dps_configured(client);
   /* Seed jitter PRNG; tests can overwrite via the internal seed entry point
    * if they need determinism. */
   client->rng_state = az_iot_time_mono_ms() ^ 0xA5A5C3C3DEADBEEFull;
@@ -2971,6 +3007,121 @@ az_iot_result az_iot_connection_client_get_hub_profile(
           + sizeof(out_profile->connection_profile_raw_truncated))
   {
     out_profile->connection_profile_raw_truncated = client->connection_profile_raw_truncated;
+  }
+  return AZ_IOT_OK;
+}
+
+az_iot_result az_iot_connection_client__require_profile(
+    az_iot_connection_client* client,
+    az_iot_connection_profile profile)
+{
+  if (!client)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if (client->required_profile_refs > 0 && client->required_profile != profile)
+  {
+    AZ_IOT_LOG_ERROR("connection: a feature client for the other hub generation is already "
+                     "attached to this connection");
+    return AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH;
+  }
+  if (client->connection_profile_resolved && client->connection_profile != profile)
+  {
+    return AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH;
+  }
+  client->required_profile = profile;
+  client->required_profile_refs++;
+  return AZ_IOT_OK;
+}
+
+void az_iot_connection_client__release_profile(az_iot_connection_client* client)
+{
+  if (client && client->required_profile_refs > 0)
+  {
+    client->required_profile_refs--;
+  }
+}
+
+az_iot_result az_iot_connection_client__register_feature_bind(
+    az_iot_connection_client* client,
+    void* owner,
+    az_iot_feature_bind_callback on_bind)
+{
+  if (!client || !owner || !on_bind)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  size_t free_slot = AZ_IOT_MAX_FEATURE_BINDS;
+  for (size_t i = 0; i < AZ_IOT_MAX_FEATURE_BINDS; ++i)
+  {
+    if (client->feature_binds[i].owner == owner)
+    {
+      client->feature_binds[i].on_bind = (void*)on_bind;
+      return AZ_IOT_OK;
+    }
+    if (!client->feature_binds[i].owner && free_slot == AZ_IOT_MAX_FEATURE_BINDS)
+    {
+      free_slot = i;
+    }
+  }
+  if (free_slot == AZ_IOT_MAX_FEATURE_BINDS)
+  {
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  }
+  client->feature_binds[free_slot].owner = owner;
+  client->feature_binds[free_slot].on_bind = (void*)on_bind;
+  /* Already connected means the identity is settled and this session's binds
+   * have run, so this one has to catch up or it would sit idle until the next
+   * connect. Mirrors __add_subscription_on_connect subscribing immediately. */
+  if (client->state == AZ_IOT_CONN_STATE_CONNECTED)
+  {
+    return on_bind(owner, client);
+  }
+  return AZ_IOT_OK;
+}
+
+void az_iot_connection_client__unregister_feature_bind(
+    az_iot_connection_client* client,
+    const void* owner)
+{
+  if (!client)
+  {
+    return;
+  }
+  for (size_t i = 0; i < AZ_IOT_MAX_FEATURE_BINDS; ++i)
+  {
+    if (client->feature_binds[i].owner == owner)
+    {
+      client->feature_binds[i].owner = NULL;
+      client->feature_binds[i].on_bind = NULL;
+    }
+  }
+}
+
+/* Rebuild every attached feature client's topics against the identity this
+ * attempt will actually use. Their previous registrations are withdrawn first,
+ * so a device id or generation that changed during re-provisioning cannot leave
+ * a filter behind that the new hub would refuse. */
+static az_iot_result run_feature_binds(az_iot_connection_client* c)
+{
+  for (size_t i = 0; i < AZ_IOT_MAX_FEATURE_BINDS; ++i)
+  {
+    void* owner = c->feature_binds[i].owner;
+    if (!owner || !c->feature_binds[i].on_bind)
+    {
+      continue;
+    }
+    (void)az_iot_connection_client__remove_subscriptions_for(c, owner);
+    (void)az_iot_connection_client__unregister_inbound_handlers(c, owner);
+
+    az_iot_feature_bind_callback on_bind
+        = (az_iot_feature_bind_callback)c->feature_binds[i].on_bind;
+    az_iot_result r = on_bind(owner, c);
+    if (r != AZ_IOT_OK)
+    {
+      AZ_IOT_LOG_ERROR("connection: a feature client could not bind its topics for this session");
+      return r;
+    }
   }
   return AZ_IOT_OK;
 }

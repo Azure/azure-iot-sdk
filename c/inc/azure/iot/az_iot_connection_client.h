@@ -189,6 +189,24 @@ extern "C"
                                              * hub with the issued operational cert.
                                              * Requires a provider whose vtable exposes
                                              * get_csr (version >= 2). */
+
+      /* Consecutive failed hub connect attempts after which the assignment is
+       * treated as stale and re-provisioning is forced. Defaults to
+       * AZ_IOT_DEFAULT_MAX_CONNECT_ATTEMPTS_BEFORE_REPROVISION; 0 disables it.
+       *
+       * Re-provisioning is otherwise only triggered by a CONNACK that rejects
+       * the identity. A hub that has been vacated service-side may simply stop
+       * answering instead, and the cached assignment would then be retried until
+       * the reconnection policy gives up -- never asking DPS where the device
+       * actually lives now. This bounds that.
+       *
+       * Under the default policy (1s initial, 30s cap, +/-20% jitter) the delays
+       * run 1, 2, 4, 8, 16 then 30s, so attempt N >= 6 falls at roughly
+       * 31 + 30*(N-5) seconds: the default 50 is about 23 minutes. Long enough
+       * that an ordinary network outage does not send a whole fleet to DPS at
+       * once, short enough that a device left behind by a migration recovers
+       * without an operator. */
+      uint32_t max_connect_attempts_before_reprovision;
     } dps;
   } az_iot_connection_client_options;
 
@@ -351,6 +369,15 @@ extern "C"
 #ifndef AZ_IOT_CONNECTION_PROFILE_RAW_BUF
 #define AZ_IOT_CONNECTION_PROFILE_RAW_BUF 64
 #endif
+/* See opts.dps.max_connect_attempts_before_reprovision. */
+#ifndef AZ_IOT_DEFAULT_MAX_CONNECT_ATTEMPTS_BEFORE_REPROVISION
+#define AZ_IOT_DEFAULT_MAX_CONNECT_ATTEMPTS_BEFORE_REPROVISION 50u
+#endif
+/* Feature clients that ask to build their topics at connect time. One per
+ * attached feature client, so this tracks the persistent-subscription bound. */
+#ifndef AZ_IOT_MAX_FEATURE_BINDS
+#define AZ_IOT_MAX_FEATURE_BINDS 8
+#endif
 #ifndef AZ_IOT_MQTT_USERNAME_BUF
 #define AZ_IOT_MQTT_USERNAME_BUF 256
 #endif
@@ -501,6 +528,25 @@ extern "C"
     az_iot_connection_profile connection_profile;
     char connection_profile_raw[AZ_IOT_CONNECTION_PROFILE_RAW_BUF];
     bool connection_profile_raw_truncated;
+    /* False on a DPS connection until ASSIGNED lands, because until then
+     * connection_profile still holds the seeded guess rather than an answer. */
+    bool connection_profile_resolved;
+
+    /* The generation the attached feature clients require, refcounted by them.
+     * Checked against connection_profile the moment that becomes authoritative,
+     * so a reassignment to the other generation fails the connection instead of
+     * coming up underneath clients built for the old one. */
+    az_iot_connection_profile required_profile;
+    uint32_t required_profile_refs;
+
+    /* Feature clients whose topics can only be built once the device id is
+     * settled; re-run before every connect attempt. Typed as void(*)(void) here
+     * because the callback signature is SDK-internal. */
+    struct
+    {
+      void* owner;
+      void* on_bind;
+    } feature_binds[AZ_IOT_MAX_FEATURE_BINDS];
 
     az_iot_hub_client hub_client;
     bool hub_client_initialized;

@@ -169,6 +169,53 @@ extern "C"
       az_iot_connection_client* client,
       const void* owner);
 
+  /* Build the topics a feature client needs, once the connection knows the
+   * device id and generation it will actually use.
+   *
+   * A feature client cannot build `devices/{device_id}/...` or
+   * `ih/{device_id}/...` at _init(): on a DPS connection the assigned device id
+   * is not authoritative until ASSIGNED, and an enrollment may hand back a
+   * device id that differs from the registration id. The connection therefore
+   * calls this back before each connect attempt, after provisioning has settled.
+   *
+   * The connection withdraws the owner's previous subscriptions and inbound
+   * handlers immediately before the call, so an implementation registers from
+   * scratch every time and needs no idempotence of its own. Returning anything
+   * other than AZ_IOT_OK fails the connect attempt. */
+  typedef az_iot_result (
+      *az_iot_feature_bind_callback)(void* owner, az_iot_connection_client* client);
+
+  /* Attach a bind callback for `owner`, replacing any previous one. Feature
+   * clients call this from _init(); __release_profile drops it. */
+  az_iot_result az_iot_connection_client__register_feature_bind(
+      az_iot_connection_client* client,
+      void* owner,
+      az_iot_feature_bind_callback on_bind);
+
+  /* Detach `owner`'s bind callback. Does not withdraw anything the callback
+   * registered; feature clients withdraw those in their own _destroy(). */
+  void az_iot_connection_client__unregister_feature_bind(
+      az_iot_connection_client* client,
+      const void* owner);
+
+  /* Declare the hub generation a feature client needs, refcounted per client.
+   *
+   * Records the requirement rather than reading the connection, so a feature
+   * client can be constructed before open(); the connection verifies it when the
+   * profile becomes authoritative. When it already is -- a direct connect, or a
+   * DPS connection past ASSIGNED -- the answer is given here instead.
+   *
+   * Returns AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH if the connection already
+   * carries a requirement for the other generation, or is already known to be
+   * the other generation. */
+  az_iot_result az_iot_connection_client__require_profile(
+      az_iot_connection_client* client,
+      az_iot_connection_profile profile);
+
+  /* Drop one requirement taken by __require_profile. Feature clients call this
+   * from _destroy(); the pin clears when the last one goes. */
+  void az_iot_connection_client__release_profile(az_iot_connection_client* client);
+
   /* Map session role to required MQTT version (SDK-internal knowledge). */
   static inline az_iot_mqtt_version az_iot_mqtt_required_version_for_role(az_iot_mqtt_role role)
   {

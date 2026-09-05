@@ -23,12 +23,32 @@ typedef struct
   sample_config config;
   az_iot_certificate_provider_pem certs;
   az_iot_connection_client connection_client;
-  az_iot_c2d_client c2d_client;
+  az_iot_gen1_c2d_client gen1_c2d;
+  az_iot_gen2_c2d_client gen2_c2d;
+  az_iot_connection_profile c2d_profile;
+  int c2d_initialized;
 } sample_state;
+
+static void c2d_destroy(sample_state* s)
+{
+  if (!s->c2d_initialized)
+  {
+    return;
+  }
+  if (s->c2d_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
+  {
+    az_iot_gen2_c2d_client_destroy(&s->gen2_c2d);
+  }
+  else
+  {
+    az_iot_gen1_c2d_client_destroy(&s->gen1_c2d);
+  }
+  s->c2d_initialized = 0;
+}
 
 static void sample_state_destroy(sample_state* s)
 {
-  az_iot_c2d_client_destroy(&s->c2d_client);
+  c2d_destroy(s);
   az_iot_connection_client_destroy(&s->connection_client);
   az_iot_certificate_provider_pem_destroy(&s->certs);
   sample_config_release(&s->config);
@@ -36,16 +56,64 @@ static void sample_state_destroy(sample_state* s)
 
 typedef struct
 {
+  sample_state* state;
   az_iot_connection_state conn_state;
+  az_iot_result c2d_status;
   int messages_received;
 } user_context;
 
+static void on_c2d(const az_iot_c2d_message* msg, void* user_ctx);
+
+/* The generation is only known once CONNECTED reports the resolved profile,
+ * and a reconnect can land on the other one -- so the client is rebuilt from
+ * every transition rather than constructed once up front. */
+static az_iot_result c2d_rebuild(
+    sample_state* s,
+    az_iot_connection_profile profile,
+    void* handler_ctx)
+{
+  c2d_destroy(s);
+
+  az_iot_result result;
+  if (profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
+  {
+    result = az_iot_gen2_c2d_client_init(&s->gen2_c2d, &s->connection_client);
+    if (result == AZ_IOT_OK)
+    {
+      result = az_iot_gen2_c2d_client_set_handler(&s->gen2_c2d, on_c2d, handler_ctx);
+    }
+  }
+  else if (profile == AZ_IOT_CONNECTION_PROFILE_CLASSIC)
+  {
+    result = az_iot_gen1_c2d_client_init(&s->gen1_c2d, &s->connection_client);
+    if (result == AZ_IOT_OK)
+    {
+      result = az_iot_gen1_c2d_client_set_handler(&s->gen1_c2d, on_c2d, handler_ctx);
+    }
+  }
+  else
+  {
+    return AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED;
+  }
+
+  if (result == AZ_IOT_OK)
+  {
+    s->c2d_profile = profile;
+    s->c2d_initialized = 1;
+  }
+  return result;
+}
+
 static void on_conn_state(const az_iot_connection_state_event* event, void* user_ctx)
 {
-  az_iot_connection_state s = event->state;
-  az_iot_result reason = event->reason;
-  (void)reason;
-  ((user_context*)user_ctx)->conn_state = s;
+  user_context* ctx = (user_context*)user_ctx;
+  ctx->conn_state = event->state;
+  if (event->state == AZ_IOT_CONN_STATE_CONNECTED)
+  {
+    ctx->c2d_status = event->profile
+        ? c2d_rebuild(ctx->state, event->profile->connection_profile, ctx)
+        : AZ_IOT_ERR_INTERNAL;
+  }
 }
 
 static void on_c2d(const az_iot_c2d_message* msg, void* user_ctx)
@@ -86,7 +154,7 @@ int main(void)
   }
 
   int rc = 1;
-  user_context user_ctx = { 0 };
+  user_context user_ctx = { .state = &state, .c2d_status = AZ_IOT_ERR_NOT_INITIALIZED };
 
   /* Certificate provider */
   az_iot_certificate_provider_pem_options pem = az_iot_certificate_provider_pem_options_default();
@@ -129,15 +197,8 @@ int main(void)
     return 1;
   }
 
-  /* C2D client */
-  if (az_iot_c2d_client_init(&state.c2d_client, &state.connection_client) != AZ_IOT_OK)
-  {
-    sample_state_destroy(&state);
-    return 1;
-  }
-  az_iot_c2d_client_set_handler(&state.c2d_client, on_c2d, &user_ctx);
-
-  /* Open (internally provisions via DPS then connects to assigned hub) */
+  /* Open (internally provisions via DPS then connects to assigned hub). The
+   * C2D client is created from the state callback, once the profile is known. */
   if (az_iot_connection_client_open(&state.connection_client) != AZ_IOT_OK)
   {
     sample_state_destroy(&state);
@@ -153,7 +214,7 @@ int main(void)
     }
   }
 
-  if (user_ctx.conn_state == AZ_IOT_CONN_STATE_CONNECTED)
+  if (user_ctx.conn_state == AZ_IOT_CONN_STATE_CONNECTED && user_ctx.c2d_status == AZ_IOT_OK)
   {
     printf("Connected. Listening for C2D messages (~60s)...\n");
 
