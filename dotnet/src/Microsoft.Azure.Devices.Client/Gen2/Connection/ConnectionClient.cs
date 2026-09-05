@@ -8,12 +8,14 @@ using Microsoft.Azure.Devices.Client.Mqtt;
 using Microsoft.Azure.Devices.Client.MQTTnetAdapter;
 using Microsoft.Azure.Devices.Client.Provisioning;
 using Microsoft.Azure.Devices.Client.Provisioning.Models;
+using Microsoft.Azure.Devices.Client.Retry;
 using System.Diagnostics;
 using System.Reflection;
 using System.Text;
 
 namespace Microsoft.Azure.Devices.Client.Gen2.Connection
 {
+    //TODO Does my setup already allow for user to publish via feature clients even when this client is connected to DPS during identity terminal exception handling? It does, right?
 
     //gen 2 client connect flow actually requires the session client to send a different looking connect packet each time due to connect nonce. Need
     // a way to inject that connect nonce from this client for both manual connects and for reocnnection cases. Probably just a "OnConnect" override callback thingy
@@ -24,11 +26,40 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Connection
 
         private MqttConnectionManager _managedMqttConnection;
 
+        private readonly IRetryPolicy _connectionRetryPolicy;
+
+        // Captured by ProvisionAndConnectAsync so that a later identity fault can re-provision without the
+        // application having to call in again. Null when this device was connected directly rather than through DPS,
+        // in which case re-provisioning is not an option this client can take on its own.
+        private ProvisioningSettings? _provisioningSettings;
+        private X509AuthenticationProvider? _provisioningAuthentication;
+        private TwinPushOptions? _provisioningTwinPushOptions;
+
+        // Set for the duration of a user-initiated connect. Faults raised in that window are surfaced to the caller
+        // of ConnectAsync instead, so the background handler must not act on them as well.
+        private volatile bool _isConnectInFlight;
+
+        // 0 when no background recovery is running, 1 when one is. Guards against a burst of faults each starting
+        // their own competing re-provisioning attempt.
+        private int _isRecovering;
+
+        private readonly CancellationTokenSource _backgroundRecoveryCts = new();
+
         internal const string ClassicHubApiVersion = "2025-08-01-preview";
 
         private static TimeSpan birthAckReceivedDefensiveTimeout = TimeSpan.FromSeconds(60); //TODO value is magic number
 
         public event Func<MqttPublishReceivedEventArgs, Task>? PublishReceivedAsync;
+
+        /// <summary>
+        /// Raised when this client has permanently stopped maintaining its connection to IoT hub and no further
+        /// automatic recovery will be attempted.
+        /// </summary>
+        /// <remarks>
+        /// Retryable errors are retried internally and identity errors on a DPS-provisioned device are recovered by
+        /// re-provisioning, so neither raises this event. It fires only once recovery is impossible or exhausted.
+        /// </remarks>
+        public event Func<ConnectionFaultedEventArgs, Task>? ConnectionFaultedAsync;
 
         internal event Func<DevicePresenceFlowCompletedArgs, Task>? DevicePresenceFlowCompletedAsync;
 
@@ -54,6 +85,11 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Connection
             // This is the wrapper that manages reconnection
             _managedMqttConnection = new(unmanagedMqttClient, options.ConnectionAttemptTimeout, options.ConnectionRetryPolicy);
             _managedMqttConnection.PublishReceivedAsync += DelegatePublishAsync; // relay all publishes from the underlying MQTT client to users of this connection client
+            _managedMqttConnection.ConnectionFaultedAsync += HandleConnectionFaultedAsync; // recover from, or report, connection errors the layer below gave up on
+
+            // The connection layer applies this to its own reconnect attempts. This client applies it separately to
+            // re-provisioning attempts, which the connection layer cannot perform on its own behalf.
+            _connectionRetryPolicy = options.ConnectionRetryPolicy;
         }
 
         private async Task HandleConnectedToHubAsync(MqttClientConnectedEventArgs args)
@@ -236,24 +272,185 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Connection
         {
             ObjectDisposedException.ThrowIf(_isDisposed, this);
 
-            // Remove any IoT Hub-specific handling of connect attempts when provisioning.
-            _managedMqttConnection.ConnectingAsync -= ConstructConnectPatcketAsync;
-            _managedMqttConnection.ConnectedAsync -= HandleConnectedToHubAsync; 
+            // Remembered so that an identity fault arriving later, once no caller is waiting on a connect, can still
+            // be recovered from by re-provisioning.
+            _provisioningSettings = provisioningSettings;
+            _provisioningAuthentication = authentication;
+            _provisioningTwinPushOptions = twinOptions;
 
-            var provisioningResult = await ProvisionAsync(provisioningSettings, authentication, cancellationToken);
+            return await ProvisionThenConnectAsync(provisioningSettings, authentication, twinOptions, cancellationToken);
+        }
 
-            CurrentConnectionContext = new ConnectionContext()
+        /// <summary>
+        /// Provision this device, then connect it to its assigned hub, re-provisioning for as long as the retry
+        /// policy allows whenever the connection is refused for a reason attributable to the device's identity.
+        /// </summary>
+        private async Task<ConnectionContext> ProvisionThenConnectAsync(ProvisioningSettings provisioningSettings, X509AuthenticationProvider authentication, TwinPushOptions? twinOptions, CancellationToken cancellationToken)
+        {
+            uint reprovisioningAttempt = 0;
+
+            while (true)
             {
-                DeviceId = provisioningResult.DeviceId!,
-                IotHubHostName = provisioningResult.AssignedHub!,
-                IssuedClientCertificates = provisioningResult.IssuedClientCertificateChain,
-                AuthenticationProvider = authentication,
-                IsGen2Hub = true,
-            };
+                cancellationToken.ThrowIfCancellationRequested();
 
-            await ConnectAsync(CurrentConnectionContext, twinOptions, cancellationToken);
+                // Remove any IoT Hub-specific handling of connect attempts when provisioning.
+                _managedMqttConnection.ConnectingAsync -= ConstructConnectPatcketAsync;
+                _managedMqttConnection.ConnectedAsync -= HandleConnectedToHubAsync;
 
-            return CurrentConnectionContext;
+                var provisioningResult = await ProvisionAsync(provisioningSettings, authentication, cancellationToken);
+
+                CurrentConnectionContext = new ConnectionContext()
+                {
+                    DeviceId = provisioningResult.DeviceId!,
+                    IotHubHostName = provisioningResult.AssignedHub!,
+                    IssuedClientCertificates = provisioningResult.IssuedClientCertificateChain,
+                    AuthenticationProvider = authentication,
+                    IsGen2Hub = true,
+                };
+
+                try
+                {
+                    await ConnectAsync(CurrentConnectionContext, twinOptions, cancellationToken);
+
+                    return CurrentConnectionContext;
+                }
+                catch (DeviceException e) when (e.Retryability == ErrorRetryability.IdentityTerminal)
+                {
+                    // The credential or the hub assignment this device was provisioned with is no longer valid, so
+                    // reconnecting with it can never succeed. Provisioning again is the only way forward, since it is
+                    // what issues a fresh credential and re-evaluates the hub assignment. The connection layer cannot
+                    // do this itself, which is why it surfaced the error rather than retrying it.
+                    CurrentConnectionContext = null;
+
+                    if (!_connectionRetryPolicy.ShouldRetry(++reprovisioningAttempt, e, out TimeSpan retryDelay))
+                    {
+                        Trace.TraceError("Retry policy declined further re-provisioning attempts after an identity error. {0}", e);
+
+                        throw new DeviceException("Failed to provision and connect the device. The retry policy was exhausted while re-provisioning after an identity error. See inner exception for details.", e)
+                        {
+                            Retryability = ErrorRetryability.IdentityTerminal,
+                            IsContained = false,
+                        };
+                    }
+
+                    Trace.TraceWarning("Encountered an identity error while connecting. Re-provisioning in {0}. {1}", retryDelay, e);
+
+                    await Task.Delay(retryDelay, cancellationToken);
+
+                    // Provisioning reuses this same MQTT connection against the DPS endpoint, so any lingering
+                    // connection to the previously assigned hub has to be torn down first. Reconnection is explicitly
+                    // not desired here: the credential that reconnection would use is the one that just failed.
+                    await _managedMqttConnection.DisconnectAsync(desireReconnection: false, cancellationToken: cancellationToken);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Handles a connection error that the connection layer has given up on, either by recovering from it or by
+        /// reporting it to the application.
+        /// </summary>
+        /// <remarks>
+        /// The connection layer raises this from inside its own disconnect handling, so this method must return
+        /// promptly. Any recovery that needs to reconnect is therefore moved onto a background task rather than
+        /// being awaited here.
+        /// </remarks>
+        private Task HandleConnectionFaultedAsync(MqttConnectionFaultedEventArgs args)
+        {
+            // A connect the application is still waiting on reports its own failure through that call, and
+            // ProvisionAndConnectAsync already re-provisions inline. Acting here too would duplicate that work.
+            if (_isConnectInFlight)
+            {
+                return Task.CompletedTask;
+            }
+
+            if (_isDisposed || _backgroundRecoveryCts.IsCancellationRequested)
+            {
+                return Task.CompletedTask;
+            }
+
+            bool canReprovision = args.IsIdentityFault
+                && _provisioningSettings != null //TODO only a relevant check while we expose a direct ConnectAsync func and skip provisioning. Remove this later
+                && _provisioningAuthentication != null;
+
+            if (!canReprovision)
+            {
+                // Either the error has nothing to do with this device's identity, or the device was connected
+                // directly rather than through DPS and so has no provisioning settings to fall back on.
+                return NotifyConnectionFaultedAsync(args.Exception);
+            }
+
+            if (Interlocked.CompareExchange(ref _isRecovering, 1, 0) != 0)
+            {
+                // Recovery is already underway. A second one would race the first for the same connection.
+                Trace.TraceInformation("Ignoring an identity fault because re-provisioning is already in progress.");
+                return Task.CompletedTask;
+            }
+
+            Trace.TraceWarning("Connection faulted for a reason attributable to this device's identity. Re-provisioning. {0}", args.Exception);
+
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await ProvisionThenConnectAsync(
+                        _provisioningSettings!,
+                        _provisioningAuthentication!,
+                        _provisioningTwinPushOptions,
+                        _backgroundRecoveryCts.Token);
+
+                    Trace.TraceInformation("Re-provisioned and reconnected successfully after an identity fault.");
+                }
+                catch (OperationCanceledException) when (_backgroundRecoveryCts.IsCancellationRequested)
+                {
+                    // This client is shutting down, so there is no one left to report to.
+                }
+                catch (DeviceException e)
+                {
+                    await NotifyConnectionFaultedAsync(e);
+                }
+                catch (Exception e)
+                {
+                    await NotifyConnectionFaultedAsync(new DeviceException("Failed to re-provision this device after an identity error. See inner exception for details.", e)
+                    {
+                        Retryability = ErrorRetryability.IdentityTerminal,
+                        IsContained = false,
+                    });
+                }
+                finally
+                {
+                    Interlocked.Exchange(ref _isRecovering, 0);
+                }
+            });
+
+            return Task.CompletedTask;
+        }
+
+        /// <summary>
+        /// Report to the application that this client will not recover this connection on its own.
+        /// </summary>
+        private async Task NotifyConnectionFaultedAsync(DeviceException exception)
+        {
+            CurrentConnectionContext = null;
+
+            Trace.TraceError("Connection permanently faulted. {0}", exception);
+
+            Func<ConnectionFaultedEventArgs, Task>? handler = ConnectionFaultedAsync;
+
+            if (handler == null)
+            {
+                return;
+            }
+
+            try
+            {
+                await handler.Invoke(new ConnectionFaultedEventArgs { Exception = exception });
+            }
+            catch (Exception e)
+            {
+                // This may run on an unmonitored background task, so a misbehaving application handler must not be
+                // allowed to escape and go unobserved.
+                Trace.TraceError("A ConnectionFaultedAsync handler threw. {0}", e);
+            }
         }
 
         private Task<MqttConnect> ConstructConnectPatcketAsync(MqttConnect connectPacketToEdit)
@@ -330,8 +527,22 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Connection
                 return Task.CompletedTask;
             };
 
+            // The MqttConnectionManager layer absorbs and retries every retryable connection-level error, so it only raises this
+            // when it has given up for good. Without this handler, a fault that lands after the CONNACK — while the
+            // birth flow is still in flight, or during a reconnection that ends terminally — would leave the wait on
+            // devicePresenceFlowResult below hanging until the caller's own cancellation token fires.
+            Func<MqttConnectionFaultedEventArgs, Task> HandleConnectionFaulted = (args) =>
+            {
+                Trace.TraceError("Connection to IoT Hub encountered an unrecoverable connection error. {1}.", args.Exception);
+
+                devicePresenceFlowResult.TrySetResult(new DevicePresenceFlowCompletedArgs(args.Exception));
+                return Task.CompletedTask;
+            };
+
             // Setup callbacks BEFORE sending CONNECT so that CONNACK can be handled regardless of how quickly it arrives
             DevicePresenceFlowCompletedAsync += HandleDevicePresenceFlowCompleted;
+            _managedMqttConnection.ConnectionFaultedAsync += HandleConnectionFaulted;
+            _isConnectInFlight = true;
 
             try
             {
@@ -359,9 +570,18 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Connection
                     throw devicePresenceFlowCompletedArgs.Exception;
                 }
             }
+            catch (DeviceException)
+            {
+                // A fatal connection-level error thrown by the connection layer itself. It has already stopped
+                // maintaining the connection, so this client is no longer connected to anything.
+                CurrentConnectionContext = null;
+                throw;
+            }
             finally
             {
+                _isConnectInFlight = false;
                 DevicePresenceFlowCompletedAsync -= HandleDevicePresenceFlowCompleted;
+                _managedMqttConnection.ConnectionFaultedAsync -= HandleConnectionFaulted;
             }
         }
 
@@ -379,9 +599,12 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Connection
         /// <param name="disposing">true to release both managed and unmanaged resources; false to releases only unmanaged resources.</param>
         public void Dispose(bool disposing)
         {
+            _backgroundRecoveryCts.Cancel();
+
             _managedMqttConnection.ConnectingAsync -= ConstructConnectPatcketAsync;
             _managedMqttConnection.PublishReceivedAsync -= DelegatePublishAsync;
             _managedMqttConnection.ConnectedAsync -= HandleConnectedToHubAsync;
+            _managedMqttConnection.ConnectionFaultedAsync -= HandleConnectionFaultedAsync;
 
             if (disposing)
             {
@@ -392,6 +615,8 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Connection
                 _managedMqttConnection.Dispose();
             }
 
+            _backgroundRecoveryCts.Dispose();
+
             _isDisposed = true;
         }
 
@@ -400,11 +625,16 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Connection
         /// </summary>
         public void Dispose()
         {
+            _backgroundRecoveryCts.Cancel();
+
             _managedMqttConnection.ConnectingAsync -= ConstructConnectPatcketAsync;
             _managedMqttConnection.PublishReceivedAsync -= DelegatePublishAsync;
             _managedMqttConnection.ConnectedAsync -= HandleConnectedToHubAsync;
+            _managedMqttConnection.ConnectionFaultedAsync -= HandleConnectionFaultedAsync;
 
             _managedMqttConnection.Dispose();
+
+            _backgroundRecoveryCts.Dispose();
 
             _isDisposed = true;
         }
