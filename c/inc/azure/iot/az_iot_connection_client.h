@@ -225,7 +225,10 @@ extern "C"
    * SDKs may append fields, so callbacks must check _internal_size before
    * reading a field added after the version they were compiled against.
    *
-   * profile is non-NULL exactly when state == AZ_IOT_CONN_STATE_CONNECTED. It
+   * profile is non-NULL when state == AZ_IOT_CONN_STATE_CONNECTED, and also on
+   * a failure whose reason is AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH or
+   * AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED -- an application needs the
+   * assigned generation there in order to rebuild its feature clients. It
    * and the event itself remain valid only until the callback returns; copy any
    * value that must be retained. */
   typedef struct az_iot_connection_state_event
@@ -540,13 +543,16 @@ extern "C"
     uint32_t required_profile_refs;
 
     /* Feature clients whose topics can only be built once the device id is
-     * settled; re-run before every connect attempt. Typed as void(*)(void) here
-     * because the callback signature is SDK-internal. */
+     * settled; re-run before every connect attempt. */
     struct
     {
       void* owner;
-      void* on_bind;
+      az_iot_result (*on_bind)(void* owner, struct az_iot_connection_client* client);
     } feature_binds[AZ_IOT_MAX_FEATURE_BINDS];
+
+    /* Failed HUB connect attempts since the last success. DPS attempts are not
+     * counted: they are what this threshold escalates TO. */
+    uint32_t consecutive_hub_failures;
 
     az_iot_hub_client hub_client;
     bool hub_client_initialized;

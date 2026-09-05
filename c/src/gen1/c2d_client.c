@@ -162,23 +162,6 @@ static void on_c2d(void* user_ctx, const az_iot_mqtt_message* msg)
   CI(c2d).handler(&out, CI(c2d).handler_ctx);
 }
 
-static az_iot_result validate_profile(az_iot_connection_client* conn)
-{
-  if (!az_iot_connection_client__is_connected(conn))
-  {
-    return AZ_IOT_ERR_NOT_CONNECTED;
-  }
-  az_iot_hub_profile profile = AZ_IOT_HUB_PROFILE_INIT;
-  az_iot_result result = az_iot_connection_client_get_hub_profile(conn, &profile);
-  if (result != AZ_IOT_OK)
-  {
-    return result;
-  }
-  return profile.connection_profile == AZ_IOT_CONNECTION_PROFILE_CLASSIC
-      ? AZ_IOT_OK
-      : AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH;
-}
-
 static az_iot_result bind_topics(void* owner, az_iot_connection_client* conn)
 {
   az_iot_gen1_c2d_client* client = (az_iot_gen1_c2d_client*)owner;

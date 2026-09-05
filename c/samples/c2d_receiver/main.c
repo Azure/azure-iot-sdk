@@ -59,6 +59,7 @@ typedef struct
   sample_state* state;
   az_iot_connection_state conn_state;
   az_iot_result c2d_status;
+  int rebuild_pending;
   int messages_received;
 } user_context;
 
@@ -113,6 +114,16 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
     ctx->c2d_status = event->profile
         ? c2d_rebuild(ctx->state, event->profile->connection_profile, ctx)
         : AZ_IOT_ERR_INTERNAL;
+  }
+  else if (event->reason == AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH && event->profile)
+  {
+    /* Re-provisioning moved the device to the other generation, so the pinned
+     * client can never connect again. Rebuilding for the assigned profile
+     * releases the old pin and takes the new one; the reopen is driven from
+     * the main loop rather than from inside this callback. */
+    printf("Reassigned to the other hub generation; rebuilding the C2D client.\n");
+    ctx->c2d_status = c2d_rebuild(ctx->state, event->profile->connection_profile, ctx);
+    ctx->rebuild_pending = (ctx->c2d_status == AZ_IOT_OK);
   }
 }
 
@@ -208,6 +219,15 @@ int main(void)
   for (int i = 0; i < 1200 && user_ctx.conn_state != AZ_IOT_CONN_STATE_CONNECTED; ++i)
   {
     (void)az_iot_connection_client_do_work(&state.connection_client, 50);
+    if (user_ctx.rebuild_pending)
+    {
+      user_ctx.rebuild_pending = 0;
+      if (az_iot_connection_client_open(&state.connection_client) != AZ_IOT_OK)
+      {
+        break;
+      }
+      continue;
+    }
     if (user_ctx.conn_state == AZ_IOT_CONN_STATE_FAULTED)
     {
       break;

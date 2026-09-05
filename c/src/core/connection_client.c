@@ -176,12 +176,17 @@ static void transition(
       .reason = reason,
       .profile = NULL,
     };
-    if (next == AZ_IOT_CONN_STATE_CONNECTED)
+    if (next == AZ_IOT_CONN_STATE_CONNECTED || reason == AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH
+        || reason == AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED)
     {
       profile.connection_profile = c->connection_profile;
       profile.connection_profile_raw = c->connection_profile_raw;
       profile.connection_profile_raw_truncated = c->connection_profile_raw_truncated;
       event.profile = &profile;
+    }
+    if (next == AZ_IOT_CONN_STATE_CONNECTED)
+    {
+      c->consecutive_hub_failures = 0;
     }
     c->state_cb(&event, c->state_cb_ctx);
   }
@@ -420,13 +425,20 @@ static void schedule_reconnect(az_iot_connection_client* c, az_iot_result reason
   c->reconnect_attempt++;
 
   /* A hub vacated service-side may stop answering rather than rejecting the
-   * identity, in which case nothing else would ever send us back to DPS. */
+   * identity, in which case nothing else would ever send us back to DPS. Only
+   * hub attempts count -- a failing dps_start() must fall back to an ordinary
+   * retry rather than re-arming this and pinning every attempt to DPS. */
+  if (c->session_role != AZ_IOT_MQTT_ROLE_DPS)
+  {
+    c->consecutive_hub_failures++;
+  }
   if (!c->reprovision_pending && dps_configured(c) && !c->user_close
       && c->opts.dps.max_connect_attempts_before_reprovision > 0
-      && c->reconnect_attempt >= c->opts.dps.max_connect_attempts_before_reprovision)
+      && c->consecutive_hub_failures >= c->opts.dps.max_connect_attempts_before_reprovision)
   {
     AZ_IOT_LOG_WARN("connection: hub unreachable for the configured number of attempts; "
                     "re-provisioning through DPS");
+    c->consecutive_hub_failures = 0;
     c->reprovision_pending = true;
   }
 
@@ -3056,7 +3068,7 @@ az_iot_result az_iot_connection_client__register_feature_bind(
   {
     if (client->feature_binds[i].owner == owner)
     {
-      client->feature_binds[i].on_bind = (void*)on_bind;
+      client->feature_binds[i].on_bind = on_bind;
       return AZ_IOT_OK;
     }
     if (!client->feature_binds[i].owner && free_slot == AZ_IOT_MAX_FEATURE_BINDS)
@@ -3069,7 +3081,7 @@ az_iot_result az_iot_connection_client__register_feature_bind(
     return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
   }
   client->feature_binds[free_slot].owner = owner;
-  client->feature_binds[free_slot].on_bind = (void*)on_bind;
+  client->feature_binds[free_slot].on_bind = on_bind;
   /* Already connected means the identity is settled and this session's binds
    * have run, so this one has to catch up or it would sit idle until the next
    * connect. Mirrors __add_subscription_on_connect subscribing immediately. */
@@ -3107,16 +3119,16 @@ static az_iot_result run_feature_binds(az_iot_connection_client* c)
   for (size_t i = 0; i < AZ_IOT_MAX_FEATURE_BINDS; ++i)
   {
     void* owner = c->feature_binds[i].owner;
-    if (!owner || !c->feature_binds[i].on_bind)
+    az_iot_result (*on_bind)(void*, az_iot_connection_client*) = c->feature_binds[i].on_bind;
+    az_iot_result r;
+    if (!owner || !on_bind)
     {
       continue;
     }
     (void)az_iot_connection_client__remove_subscriptions_for(c, owner);
     (void)az_iot_connection_client__unregister_inbound_handlers(c, owner);
 
-    az_iot_feature_bind_callback on_bind
-        = (az_iot_feature_bind_callback)c->feature_binds[i].on_bind;
-    az_iot_result r = on_bind(owner, c);
+    r = on_bind(owner, c);
     if (r != AZ_IOT_OK)
     {
       AZ_IOT_LOG_ERROR("connection: a feature client could not bind its topics for this session");

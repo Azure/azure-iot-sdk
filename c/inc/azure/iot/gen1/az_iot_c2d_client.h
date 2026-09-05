@@ -31,9 +31,13 @@ extern "C"
    * Subscribes `devices/{device_id}/messages/devicebound/#` and decodes the
    * topic property bag on each delivery.
    *
-   * The connection must already be CONNECTED and resolved to the Classic
-   * profile, otherwise this returns AZ_IOT_ERR_NOT_CONNECTED or
-   * AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH.
+   * The connection need not be open: this records that it must resolve to the
+   * Classic profile, and the topics are built when it connects and the assigned
+   * device id is known. A connection already known to be MQTT_V5 -- a direct
+   * connection, or a DPS one past assignment -- is rejected here with
+   * AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH; otherwise a conflict surfaces when
+   * the connection resolves, which fails it before it reports CONNECTED. The
+   * same error is returned when a gen2 client is already attached.
    */
   AZ_NODISCARD az_iot_result
   az_iot_gen1_c2d_client_init(az_iot_gen1_c2d_client* client, az_iot_connection_client* conn);
