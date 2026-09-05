@@ -328,10 +328,7 @@ static const char* adu_outcome_name(az_iot_adu_outcome o)
   }
 }
 
-static az_iot_result sim_channel_open(
-    void* ctx,
-    az_iot_adu_channel_update_cb cb,
-    void* engine_ctx)
+static az_iot_result sim_channel_open(void* ctx, az_iot_adu_channel_update_cb cb, void* engine_ctx)
 {
   sim_channel* c = (sim_channel*)ctx;
   c->cb = cb;

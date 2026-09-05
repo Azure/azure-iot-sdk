@@ -447,10 +447,7 @@ typedef struct
   char last_installed_version[64];
 } fake_channel;
 
-static az_iot_result fake_channel_open(
-    void* ctx,
-    az_iot_adu_channel_update_cb cb,
-    void* engine_ctx)
+static az_iot_result fake_channel_open(void* ctx, az_iot_adu_channel_update_cb cb, void* engine_ctx)
 {
   fake_channel* fc = (fake_channel*)ctx;
   fc->cb = cb;
@@ -1088,7 +1085,6 @@ static void device_props_too_small_is_rejected(void** state)
   assert_int_equal(
       az_iot_adu_client_initialize(&adu, &channel, &adu_opts), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
 
-
   az_iot_connection_client_destroy(&conn);
 }
 
@@ -1152,7 +1148,6 @@ static void device_props_buffer_size_matches_need(void** state)
   o.device_props_buffer_size = need - 1;
   assert_int_equal(
       az_iot_adu_client_initialize(&adu_short, &channel, &o), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
-
 
   az_iot_connection_client_destroy(&conn);
 }
@@ -1421,8 +1416,7 @@ static void download_failure_is_reported_and_does_not_install(void** state)
    * the agent core, not an agent-state integer. */
   assert_true(fx->chan.report_count > 0);
   assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_ADU_OUTCOME_FAILED);
-  assert_int_equal(
-      fx->chan.last_report.failure_origin, AZ_IOT_ADU_FAILURE_ORIGIN_AGENT_CORE);
+  assert_int_equal(fx->chan.last_report.failure_origin, AZ_IOT_ADU_FAILURE_ORIGIN_AGENT_CORE);
   assert_true(fx->chan.last_report.result_code != 700);
   assert_true(fx->chan.last_workflow_id[0] != '\0');
 }

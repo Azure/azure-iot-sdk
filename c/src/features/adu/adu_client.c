@@ -1203,8 +1203,7 @@ static void on_channel_update(
  * caller can leave the pending flag set and retry on a later do_work tick. */
 static az_iot_result channel_request_update(az_iot_adu_client_t* client)
 {
-  if (ADU_I(client).channel.vtable == NULL
-      || ADU_I(client).channel.vtable->request_update == NULL)
+  if (ADU_I(client).channel.vtable == NULL || ADU_I(client).channel.vtable->request_update == NULL)
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
