@@ -169,6 +169,27 @@ uri="pkcs11:token=${TOKEN_LABEL};object=${KEY_LABEL};type=private?pin-source=fil
 # activated alongside it, avoids that: measured against a live IoT Hub over
 # TLS 1.2 with a SoftHSM2-held key, a run-time try_load() fails with the error
 # above and a configuration-activated provider reaches CONNECTED, 3 runs each.
+#
+# What each setting in the generated file is for -- kept here rather than in the
+# file, so what OpenSSL parses stays minimal:
+#
+#   activate = 1 (in the pkcs11 section)
+#       The operative line. A provider brought up from configuration completes
+#       the TLS 1.2 handshake; one the adapter loads at run time through
+#       OSSL_PROVIDER_try_load() does not, and the two settings below apply only
+#       to the former.
+#   pkcs11-module-quirks = no-deinit
+#       Required. Once the provider is activated from configuration, SoftHSM2
+#       crashes when OpenSSL tears it down -- AFTER a successful connect, which
+#       is what makes it easy to miss. Measured: without this the run reaches
+#       CONNECTED and then dies with SIGSEGV, 3 runs out of 3. The provider
+#       documents the quirk for exactly this; the cost is memory the process was
+#       about to release anyway.
+#   pkcs11-module-block-operations = digest
+#       Precautionary, and inert on SoftHSM2: it advertises no digests, and
+#       removing it changes nothing measurable here. Kept for tokens that DO
+#       advertise them, where it forces hashing back to the default provider and
+#       leaves only signing in the token. It is NOT what fixes the handshake.
 openssl_cnf="${work_dir}/openssl-pkcs11.cnf"
 cat > "${openssl_cnf}" <<CNF
 openssl_conf = az_iot_init
@@ -186,23 +207,8 @@ activate = 1
 [az_iot_pkcs11_sect]
 ${modules_dir:+module = ${modules_dir}/pkcs11.so}
 pkcs11-module-path = ${module}
-# Precautionary, and inert on SoftHSM2: it advertises no digests, and removing
-# this line changes nothing measurable here. It is kept for tokens that DO
-# advertise digests, where it forces hashing back to the default provider and
-# leaves only signing in the token. It is NOT what fixes the handshake -- the
-# activation below is.
 pkcs11-module-block-operations = digest
-# Do not tear the module down when OpenSSL unloads the provider. Once the
-# provider is activated from configuration SoftHSM2 crashes during that
-# teardown, AFTER a successful connect -- measured: without this line the run
-# reaches CONNECTED and then dies with SIGSEGV, 3 runs out of 3. The provider
-# documents this quirk for exactly that situation; the cost is memory the
-# process was about to release anyway.
 pkcs11-module-quirks = no-deinit
-# The operative line. Activation must happen here, not be left to the adapter's
-# own OSSL_PROVIDER_try_load: a provider brought up from configuration completes
-# the TLS 1.2 handshake, one loaded at run time fails it, and the settings above
-# apply only to the former.
 activate = 1
 CNF
 
