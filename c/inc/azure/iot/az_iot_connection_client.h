@@ -533,8 +533,10 @@ extern "C"
     az_iot_connection_profile connection_profile;
     char connection_profile_raw[AZ_IOT_CONNECTION_PROFILE_RAW_BUF];
     bool connection_profile_raw_truncated;
-    /* False on a DPS connection until ASSIGNED lands, because until then
-     * connection_profile still holds the seeded guess rather than an answer. */
+    /* True once connection_profile is authoritative rather than the value
+     * seeded at init: immediately for a direct connect, where opts declares it,
+     * and when ASSIGNED is applied on the DPS path -- including an ASSIGNED that
+     * carries no connectionProfile, since absent resolves to classic. */
     bool connection_profile_resolved;
 
     /* The generation the attached feature clients require, refcounted by them.
