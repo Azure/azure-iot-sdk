@@ -24,12 +24,32 @@ typedef struct
   sample_config config;
   az_iot_certificate_provider_pem certs;
   az_iot_connection_client connection_client;
-  az_iot_direct_method_client method_client;
+  az_iot_gen1_direct_method_client gen1_methods;
+  az_iot_gen2_direct_method_client gen2_methods;
+  az_iot_connection_profile methods_profile;
+  int methods_initialized;
 } sample_state;
+
+static void methods_destroy(sample_state* s)
+{
+  if (!s->methods_initialized)
+  {
+    return;
+  }
+  if (s->methods_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
+  {
+    az_iot_gen2_direct_method_client_destroy(&s->gen2_methods);
+  }
+  else
+  {
+    az_iot_gen1_direct_method_client_destroy(&s->gen1_methods);
+  }
+  s->methods_initialized = 0;
+}
 
 static void sample_state_destroy(sample_state* s)
 {
-  az_iot_direct_method_client_destroy(&s->method_client);
+  methods_destroy(s);
   az_iot_connection_client_destroy(&s->connection_client);
   az_iot_certificate_provider_pem_destroy(&s->certs);
   sample_config_release(&s->config);
@@ -37,15 +57,80 @@ static void sample_state_destroy(sample_state* s)
 
 typedef struct
 {
+  sample_state* state;
   az_iot_connection_state conn_state;
+  az_iot_result methods_status;
+  int rebuild_pending;
 } user_context;
+
+static void on_method(
+    az_iot_direct_method_request* request,
+    const char* method_name,
+    const uint8_t* payload,
+    size_t payload_len,
+    void* user_ctx);
+
+/* The generation is only known once the connection resolves it, and a
+ * re-provision can move the device to the other one -- so the client is built
+ * from the profile the event carries rather than constructed once up front. */
+static az_iot_result methods_rebuild(
+    sample_state* s,
+    az_iot_connection_profile profile,
+    void* handler_ctx)
+{
+  methods_destroy(s);
+
+  az_iot_result result;
+  if (profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
+  {
+    result = az_iot_gen2_direct_method_client_init(&s->gen2_methods, &s->connection_client);
+    if (result == AZ_IOT_OK)
+    {
+      result
+          = az_iot_gen2_direct_method_client_set_handler(&s->gen2_methods, on_method, handler_ctx);
+    }
+  }
+  else if (profile == AZ_IOT_CONNECTION_PROFILE_CLASSIC)
+  {
+    result = az_iot_gen1_direct_method_client_init(&s->gen1_methods, &s->connection_client);
+    if (result == AZ_IOT_OK)
+    {
+      result
+          = az_iot_gen1_direct_method_client_set_handler(&s->gen1_methods, on_method, handler_ctx);
+    }
+  }
+  else
+  {
+    return AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED;
+  }
+
+  if (result == AZ_IOT_OK)
+  {
+    s->methods_profile = profile;
+    s->methods_initialized = 1;
+  }
+  return result;
+}
 
 static void on_conn_state(const az_iot_connection_state_event* event, void* user_ctx)
 {
-  az_iot_connection_state s = event->state;
-  az_iot_result reason = event->reason;
-  (void)reason;
-  ((user_context*)user_ctx)->conn_state = s;
+  user_context* ctx = (user_context*)user_ctx;
+  ctx->conn_state = event->state;
+  if (event->state == AZ_IOT_CONN_STATE_CONNECTED)
+  {
+    ctx->methods_status = event->profile
+        ? methods_rebuild(ctx->state, event->profile->connection_profile, ctx)
+        : AZ_IOT_ERR_INTERNAL;
+  }
+  else if (event->reason == AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH && event->profile)
+  {
+    /* Re-provisioning moved the device to the other generation, so the pinned
+     * client can never connect again. Rebuilding releases the old pin and takes
+     * the new one; the reopen is driven from the main loop. */
+    printf("Reassigned to the other hub generation; rebuilding the method client.\n");
+    ctx->methods_status = methods_rebuild(ctx->state, event->profile->connection_profile, ctx);
+    ctx->rebuild_pending = (ctx->methods_status == AZ_IOT_OK);
+  }
 }
 
 static void on_method(
@@ -55,11 +140,19 @@ static void on_method(
     size_t payload_len,
     void* user_ctx)
 {
-  (void)user_ctx;
+  user_context* ctx = (user_context*)user_ctx;
   printf(
       "method '%s' invoked, %zu byte payload\n", method_name ? method_name : "(null)", payload_len);
-  /* Echo the request payload back to the caller. */
-  az_iot_direct_method_respond(request, 200, payload, payload_len);
+  /* Echo the request payload back to the caller, on whichever generation
+   * delivered it. */
+  if (ctx->state->methods_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
+  {
+    (void)az_iot_gen2_direct_method_respond(request, 200, payload, payload_len);
+  }
+  else
+  {
+    (void)az_iot_gen1_direct_method_respond(request, 200, payload, payload_len);
+  }
 }
 
 int main(void)
@@ -74,7 +167,7 @@ int main(void)
   }
 
   int rc = 1;
-  user_context user_ctx = { 0 };
+  user_context user_ctx = { .state = &state, .methods_status = AZ_IOT_ERR_NOT_INITIALIZED };
 
   /* Certificate provider */
   az_iot_certificate_provider_pem_options pem = az_iot_certificate_provider_pem_options_default();
@@ -119,15 +212,9 @@ int main(void)
     return 1;
   }
 
-  /* Direct method client */
-  if (az_iot_direct_method_client_init(&state.method_client, &state.connection_client) != AZ_IOT_OK)
-  {
-    sample_state_destroy(&state);
-    return 1;
-  }
-  az_iot_direct_method_client_set_handler(&state.method_client, on_method, &user_ctx);
-
-  /* Open (internally provisions via DPS then connects to assigned hub) */
+  /* Open (internally provisions via DPS then connects to assigned hub). The
+   * method client is created from the state callback, once the profile is
+   * known. */
   if (az_iot_connection_client_open(&state.connection_client) != AZ_IOT_OK)
   {
     sample_state_destroy(&state);
@@ -137,6 +224,15 @@ int main(void)
   for (int i = 0; i < 1200 && user_ctx.conn_state != AZ_IOT_CONN_STATE_CONNECTED; ++i)
   {
     (void)az_iot_connection_client_do_work(&state.connection_client, 50);
+    if (user_ctx.rebuild_pending)
+    {
+      user_ctx.rebuild_pending = 0;
+      if (az_iot_connection_client_open(&state.connection_client) != AZ_IOT_OK)
+      {
+        break;
+      }
+      continue;
+    }
     if (user_ctx.conn_state == AZ_IOT_CONN_STATE_FAULTED)
     {
       break;
