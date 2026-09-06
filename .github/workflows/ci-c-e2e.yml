@@ -309,13 +309,19 @@ jobs:
         run: |
           . ./test_config/set_test_env_vars.ps1
 
-          # eval the provider script, do not merely run it: setup-softhsm.sh reads
-          # OPENSSL_MODULES to write an explicit "module = .../pkcs11.so" into the
-          # OpenSSL configuration it generates. Without that the configuration
-          # names the provider only by section, leaving it to be resolved from the
-          # ambient module path. The coverage job in ci-c.yml has always eval'd it;
-          # this job did not, so the two ran different configurations. Re-emit the
-          # variable so it also reaches this process for the run itself.
+          # eval the provider script rather than merely running it, so
+          # setup-softhsm.sh sees OPENSSL_MODULES and writes an explicit
+          # "module = .../pkcs11.so" into the configuration it generates. The
+          # coverage job in ci-c.yml has always eval'd it; this one did not.
+          #
+          # This is hygiene, NOT the cause of the nightly failure. Without the
+          # eval the configuration names the provider by section only, but
+          # OPENSSL_MODULES still reaches the test process -- the loop below
+          # parses the provider script's own export line -- so the provider
+          # resolves either way. Measured: a configuration generated with
+          # OPENSSL_MODULES unset still activates pkcs11 when the variable is set
+          # at run time. Naming the module makes the configuration independent of
+          # that variable instead of relying on it.
           $exports = & bash -c 'set -e; mods="$(c/eng/setup-pkcs11-provider.sh)"; eval "$mods"; echo "$mods"; c/eng/setup-softhsm.sh "$AZ_IOT_CLIENT_KEY" --keep-key-file'
           if ($LASTEXITCODE -ne 0) { throw "PKCS#11 token provisioning failed ($LASTEXITCODE)" }
           foreach ($line in $exports) {
