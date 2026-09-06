@@ -337,7 +337,14 @@ jobs:
           # provider at run time regardless and that path is the one that fails.
           $providers = & openssl list -providers 2>&1 | Out-String
           Write-Host "--- providers active from configuration:`n$providers"
-          if ($providers -notmatch 'pkcs11') {
+          if ($LASTEXITCODE -ne 0) {
+            throw "openssl list -providers failed ($LASTEXITCODE)"
+          }
+          # Match the provider's own entry in the list -- a line holding just its
+          # name -- not the substring anywhere in the output. $providers carries
+          # stderr too, so a load error that merely mentions pkcs11 must not read
+          # as success.
+          if ($providers -notmatch '(?m)^\s+pkcs11\s*$') {
             throw "the pkcs11 provider is not active from OPENSSL_CONF; the custody path would fall back to a run-time load"
           }
 
