@@ -11,6 +11,8 @@
 
 #include "azure/iot/az_iot_adu.h"
 
+#include "adu_channel_internal.h"
+
 #ifdef __cplusplus
 extern "C"
 {
@@ -44,6 +46,13 @@ extern "C"
   az_iot_adu_client_device_properties az_iot_adu__device_properties_view(
       const az_iot_adu_client_t* client);
 
+  /* Internal entry point: bind the engine to an explicit channel. The public
+   * az_iot_adu_client_initialize() builds the shipping channel and calls this.
+   * Kept internal so the engine can be exercised against a fake channel. */
+  az_iot_result az_iot_adu_client__initialize_with_channel(
+      az_iot_adu_client_t* client,
+      const az_iot_adu_channel* channel,
+      const az_iot_adu_client_config_options* options);
 #ifdef __cplusplus
 }
 #endif

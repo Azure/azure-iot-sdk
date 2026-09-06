@@ -39,6 +39,16 @@
 #include "internal/log_internal.h"
 #include "internal/span_writer.h"
 
+/* The public header reserves opaque storage for the SDK-built channel so the
+ * client struct stays caller-allocated with no hidden allocation. If the
+ * channel ever outgrows that reservation this fails the build rather than
+ * silently corrupting the struct. */
+typedef char az_iot_adu_channel_storage_is_large_enough
+    [(sizeof(((az_iot_adu_client_t*)0)->_internal.channel_storage)
+      >= sizeof(az_iot_adu_channel_dps))
+         ? 1
+         : -1];
+
 /* ------------------------------------------------------------------------- */
 /* device-properties cache                                                   */
 /* ------------------------------------------------------------------------- */
@@ -1220,7 +1230,7 @@ az_iot_adu_client_config_options az_iot_adu_client_config_options_default(void)
   return opts;
 }
 
-az_iot_result az_iot_adu_client_initialize(
+az_iot_result az_iot_adu_client__initialize_with_channel(
     az_iot_adu_client_t* client,
     const az_iot_adu_channel* channel,
     const az_iot_adu_client_config_options* options)
@@ -1243,7 +1253,8 @@ az_iot_result az_iot_adu_client_initialize(
   }
 
   memset(client, 0, sizeof(*client));
-  ADU_I(client).channel = *channel;
+  ADU_I(client).channel.vtable = channel->vtable;
+  ADU_I(client).channel.ctx = channel->ctx;
   ADU_I(client).hooks = *options->hooks;
   ADU_I(client).crypto = *options->crypto;
   ADU_I(client).device_props_buffer = options->device_props_buffer;
@@ -1285,6 +1296,36 @@ az_iot_result az_iot_adu_client_initialize(
    * available while we were offline is still picked up. */
   ADU_I(client).initial_get_pending = true;
   return AZ_IOT_OK;
+}
+
+az_iot_result az_iot_adu_client_initialize(
+    az_iot_adu_client_t* client,
+    az_iot_connection_client* connection,
+    const az_iot_adu_client_config_options* options)
+{
+  if (client == NULL || connection == NULL || options == NULL)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if (options->http_transport == NULL || options->http_transport->send == NULL)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+
+  /* The application hands us a connection, not a transport implementation: the
+   * SDK owns the device-update protocol. Build the shipping channel here. */
+  az_iot_adu_channel channel;
+  az_iot_adu_channel_dps* channel_state
+      = (az_iot_adu_channel_dps*)(void*)&ADU_I(client).channel_storage;
+
+  az_iot_result r
+      = az_iot_adu_channel_dps_init(channel_state, connection, options->http_transport, &channel);
+  if (r != AZ_IOT_OK)
+  {
+    return r;
+  }
+
+  return az_iot_adu_client__initialize_with_channel(client, &channel, options);
 }
 
 void az_iot_adu_client_destroy(az_iot_adu_client_t* client)

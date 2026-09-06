@@ -24,7 +24,8 @@
 #include <azure/core/az_span.h>
 
 #include "azure/iot/az_iot_connection_client.h"
-#include "azure/iot/az_iot_adu_channel.h"
+#include "../../src/features/adu/internal/adu_channel_internal.h"
+#include "../../src/features/adu/internal/adu_internal.h"
 #include "azure/iot/az_iot_mqtt_iface.h"
 #include "azure/iot/az_iot_result.h"
 #include "azure/iot/az_iot_adu.h"
@@ -624,7 +625,8 @@ static int setup(void** state)
   adu_opts.device_props = &dp;
   adu_opts.device_props_buffer = fx->dp_buf;
   adu_opts.device_props_buffer_size = sizeof(fx->dp_buf);
-  assert_int_equal(az_iot_adu_client_initialize(&fx->adu, &fx->channel, &adu_opts), AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_adu_client__initialize_with_channel(&fx->adu, &fx->channel, &adu_opts), AZ_IOT_OK);
 
   *state = fx;
   return 0;
@@ -1047,6 +1049,94 @@ static void custom_device_properties_are_accepted_and_serialized(void** state)
   assert_non_null(strstr(text, "gold"));
 }
 
+/* The public entry point takes a CONNECTION, not a transport implementation:
+ * the SDK builds the device-update channel itself. An application supplies one
+ * HTTPS primitive and never implements the protocol. */
+static az_iot_result ut_http_send(
+    const char* method,
+    const char* url,
+    const az_iot_adu_http_header* headers,
+    size_t header_count,
+    const uint8_t* body,
+    size_t body_len,
+    az_iot_adu_http_response* response,
+    void* user_ctx)
+{
+  (void)method;
+  (void)url;
+  (void)headers;
+  (void)header_count;
+  (void)body;
+  (void)body_len;
+  (void)response;
+  if (user_ctx != NULL)
+  {
+    (*(int*)user_ctx)++;
+  }
+  return AZ_IOT_OK;
+}
+
+static void public_initialize_takes_a_connection_and_builds_its_own_channel(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  (void)fx;
+
+  az_iot_connection_client conn;
+  az_iot_connection_client_options copts = { 0 };
+  copts.host = "broker.example";
+  copts.port = 8883;
+  copts.client_id = "ut-adu-public";
+  assert_int_equal(az_iot_connection_client_init(&conn, &copts), AZ_IOT_OK);
+
+  hook_log log = { 0 };
+  az_iot_adu_platform_hooks hooks = { 0 };
+  az_iot_adu_crypto_hooks crypto = { 0 };
+  hooks.install_fn = mock_install;
+  hooks.apply_fn = mock_apply;
+  hooks.user_ctx = &log;
+  crypto.verify_rs256_fn = mock_verify_rs256;
+  crypto.user_ctx = &log;
+
+  az_iot_adu_device_properties dp = { 0 };
+  dp.manufacturer = "Contoso";
+  dp.model = "Foobar";
+  dp.installed_update_id.provider = "Contoso";
+  dp.installed_update_id.name = "Foobar";
+  dp.installed_update_id.version = "1.0";
+
+  int send_calls = 0;
+  az_iot_adu_http_transport transport = { ut_http_send, &send_calls };
+
+  uint8_t buf[256];
+  az_iot_adu_client_config_options o = az_iot_adu_client_config_options_default();
+  o.hooks = &hooks;
+  o.crypto = &crypto;
+  o.device_props = &dp;
+  o.device_props_buffer = buf;
+  o.device_props_buffer_size = sizeof(buf);
+  o.http_transport = &transport;
+
+  /* The connection is NOT open: the bootstrap update check runs before the
+   * device registers, so initialize must not require a live session. */
+  az_iot_adu_client_t adu;
+  assert_int_equal(az_iot_adu_client_initialize(&adu, &conn, &o), AZ_IOT_OK);
+  assert_int_equal(az_iot_adu_client_get_state(&adu), AZ_IOT_ADU_STATE_IDLE);
+  az_iot_adu_client_destroy(&adu);
+
+  /* An HTTPS transport is mandatory -- without it the SDK cannot carry the
+   * protocol it owns. */
+  az_iot_adu_client_t adu_no_transport;
+  o.http_transport = NULL;
+  assert_int_equal(
+      az_iot_adu_client_initialize(&adu_no_transport, &conn, &o), AZ_IOT_ERR_INVALID_ARG);
+
+  az_iot_adu_client_t adu_no_conn;
+  o.http_transport = &transport;
+  assert_int_equal(az_iot_adu_client_initialize(&adu_no_conn, NULL, &o), AZ_IOT_ERR_INVALID_ARG);
+
+  az_iot_connection_client_destroy(&conn);
+}
+
 static void device_props_too_small_is_rejected(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -1086,7 +1176,8 @@ static void device_props_too_small_is_rejected(void** state)
   adu_opts.device_props_buffer = tiny;
   adu_opts.device_props_buffer_size = sizeof(tiny);
   assert_int_equal(
-      az_iot_adu_client_initialize(&adu, &channel, &adu_opts), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+      az_iot_adu_client__initialize_with_channel(&adu, &channel, &adu_opts),
+      AZ_IOT_ERR_NOT_ENOUGH_SPACE);
 
   az_iot_connection_client_destroy(&conn);
 }
@@ -1144,13 +1235,14 @@ static void device_props_buffer_size_matches_need(void** state)
   /* Exactly `need` bytes must succeed; one byte short must be rejected. */
   az_iot_adu_client_t adu_ok;
   o.device_props_buffer_size = need;
-  assert_int_equal(az_iot_adu_client_initialize(&adu_ok, &channel, &o), AZ_IOT_OK);
+  assert_int_equal(az_iot_adu_client__initialize_with_channel(&adu_ok, &channel, &o), AZ_IOT_OK);
   az_iot_adu_client_destroy(&adu_ok);
 
   az_iot_adu_client_t adu_short;
   o.device_props_buffer_size = need - 1;
   assert_int_equal(
-      az_iot_adu_client_initialize(&adu_short, &channel, &o), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+      az_iot_adu_client__initialize_with_channel(&adu_short, &channel, &o),
+      AZ_IOT_ERR_NOT_ENOUGH_SPACE);
 
   az_iot_connection_client_destroy(&conn);
 }
@@ -1685,6 +1777,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(report_carries_the_active_workflow_id, setup, teardown),
     cmocka_unit_test_setup_teardown(
         custom_device_properties_are_accepted_and_serialized, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        public_initialize_takes_a_connection_and_builds_its_own_channel, setup, teardown),
     cmocka_unit_test_setup_teardown(device_props_too_small_is_rejected, setup, teardown),
     cmocka_unit_test_setup_teardown(device_props_buffer_size_matches_need, setup, teardown),
     cmocka_unit_test_setup_teardown(duplicate_redelivery_is_ignored, setup, teardown),
