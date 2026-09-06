@@ -1230,7 +1230,10 @@ az_iot_adu_client_config_options az_iot_adu_client_config_options_default(void)
   return opts;
 }
 
-az_iot_result az_iot_adu_client__initialize_with_channel(
+/* Core initialization. Assumes the caller has ALREADY zeroed the client: the
+ * public path builds its channel into storage inside that client, so a memset
+ * here would wipe it. */
+static az_iot_result adu_client_init_core(
     az_iot_adu_client_t* client,
     const az_iot_adu_channel* channel,
     const az_iot_adu_client_config_options* options)
@@ -1252,7 +1255,6 @@ az_iot_result az_iot_adu_client__initialize_with_channel(
     return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
   }
 
-  memset(client, 0, sizeof(*client));
   ADU_I(client).channel.vtable = channel->vtable;
   ADU_I(client).channel.ctx = channel->ctx;
   ADU_I(client).hooks = *options->hooks;
@@ -1298,6 +1300,19 @@ az_iot_result az_iot_adu_client__initialize_with_channel(
   return AZ_IOT_OK;
 }
 
+az_iot_result az_iot_adu_client__initialize_with_channel(
+    az_iot_adu_client_t* client,
+    const az_iot_adu_channel* channel,
+    const az_iot_adu_client_config_options* options)
+{
+  if (client == NULL)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  memset(client, 0, sizeof(*client));
+  return adu_client_init_core(client, channel, options);
+}
+
 az_iot_result az_iot_adu_client_initialize(
     az_iot_adu_client_t* client,
     az_iot_connection_client* connection,
@@ -1313,7 +1328,12 @@ az_iot_result az_iot_adu_client_initialize(
   }
 
   /* The application hands us a connection, not a transport implementation: the
-   * SDK owns the device-update protocol. Build the shipping channel here. */
+   * SDK owns the device-update protocol. Build the shipping channel here.
+   *
+   * Order matters: the channel state lives INSIDE the client, so the client is
+   * zeroed first and the core initializer must not zero it again. */
+  memset(client, 0, sizeof(*client));
+
   az_iot_adu_channel channel;
   az_iot_adu_channel_dps* channel_state
       = (az_iot_adu_channel_dps*)(void*)&ADU_I(client).channel_storage;
@@ -1322,10 +1342,16 @@ az_iot_result az_iot_adu_client_initialize(
       = az_iot_adu_channel_dps_init(channel_state, connection, options->http_transport, &channel);
   if (r != AZ_IOT_OK)
   {
+    memset(client, 0, sizeof(*client));
     return r;
   }
 
-  return az_iot_adu_client__initialize_with_channel(client, &channel, options);
+  r = adu_client_init_core(client, &channel, options);
+  if (r != AZ_IOT_OK)
+  {
+    memset(client, 0, sizeof(*client));
+  }
+  return r;
 }
 
 void az_iot_adu_client_destroy(az_iot_adu_client_t* client)
@@ -1733,8 +1759,15 @@ az_iot_result az_iot_adu_client_do_work(az_iot_adu_client_t* client)
   /* A pending device-properties / startup report takes priority. */
   if (ADU_I(client).device_props_report_pending)
   {
-    ADU_I(client).device_props_report_pending = false;
-    (void)az_iot_adu__report_state(client);
+    /* Clear the flag only once the report is actually accepted. Clearing it up
+     * front drops the report on a transient channel failure with no retry,
+     * which matters because a status report is the only record the service
+     * gets of what this device did. Same retry-on-success rule as the update
+     * check below. */
+    if (az_iot_adu__report_state(client) == AZ_IOT_OK)
+    {
+      ADU_I(client).device_props_report_pending = false;
+    }
     /* Piggyback the initial update check on the same startup tick so a
      * deployment already waiting is consumed without needing a fresh
      * delivery. Clear the flag only once the request is actually issued (the

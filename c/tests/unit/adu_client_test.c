@@ -1123,6 +1123,21 @@ static void public_initialize_takes_a_connection_and_builds_its_own_channel(void
   assert_int_equal(az_iot_adu_client_get_state(&adu), AZ_IOT_ADU_STATE_IDLE);
   az_iot_adu_client_destroy(&adu);
 
+  /* The channel state lives INSIDE the client. Initialization must not zero the
+   * client after building it there, or the channel would be left bound to a
+   * wiped state struct -- with a NULL connection and a NULL transport -- and
+   * would fail only later, on the first operation. Reaching the transport
+   * through the client proves it survived initialization. */
+  az_iot_adu_client_t adu_state;
+  assert_int_equal(az_iot_adu_client_initialize(&adu_state, &conn, &o), AZ_IOT_OK);
+  const az_iot_adu_channel_dps* bound
+      = (const az_iot_adu_channel_dps*)(const void*)&adu_state._internal.channel_storage;
+  assert_ptr_equal(bound->connection, &conn);
+  assert_ptr_equal((void*)(uintptr_t)bound->http.send, (void*)(uintptr_t)ut_http_send);
+  assert_ptr_equal(bound->http.user_ctx, &send_calls);
+  assert_ptr_equal(adu_state._internal.channel.ctx, bound);
+  az_iot_adu_client_destroy(&adu_state);
+
   /* An HTTPS transport is mandatory -- without it the SDK cannot carry the
    * protocol it owns. */
   az_iot_adu_client_t adu_no_transport;
