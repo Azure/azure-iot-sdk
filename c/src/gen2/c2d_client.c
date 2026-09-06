@@ -111,12 +111,12 @@ az_iot_result az_iot_gen2_c2d_client_init(
   memset(client, 0, sizeof(*client));
   CI(client).conn = conn;
 
-  result = az_iot_connection_client__register_feature_bind(conn, client, bind_topics);
+  result = az_iot_connection_client__register_feature_client_bind(conn, client, bind_topics);
   if (result != AZ_IOT_OK)
   {
     az_iot_connection_client__release_profile(conn);
     (void)az_iot_connection_client__unregister_inbound_handlers(conn, client);
-    az_iot_connection_client__unregister_feature_bind(conn, client);
+    az_iot_connection_client__unregister_feature_client_bind(conn, client);
     memset(client, 0, sizeof(*client));
     return result;
   }
@@ -130,7 +130,7 @@ void az_iot_gen2_c2d_client_destroy(az_iot_gen2_c2d_client* client)
   {
     return;
   }
-  az_iot_connection_client__unregister_feature_bind(CI(client).conn, client);
+  az_iot_connection_client__unregister_feature_client_bind(CI(client).conn, client);
   az_iot_connection_client__release_profile(CI(client).conn);
   (void)az_iot_connection_client__remove_subscriptions_for(CI(client).conn, client);
   (void)az_iot_connection_client__unregister_inbound_handlers(CI(client).conn, client);

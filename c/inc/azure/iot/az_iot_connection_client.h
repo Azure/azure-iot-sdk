@@ -192,7 +192,8 @@ extern "C"
 
       /* Consecutive failed hub connect attempts after which the assignment is
        * treated as stale and re-provisioning is forced. Defaults to
-       * AZ_IOT_DEFAULT_MAX_CONNECT_ATTEMPTS_BEFORE_REPROVISION; 0 disables it.
+       * AZ_IOT_DEFAULT_MAX_HUB_CONNECT_ATTEMPTS_BEFORE_REPROVISION; 0 disables
+       * it.
        *
        * Re-provisioning is otherwise only triggered by a CONNACK that rejects
        * the identity. A hub that has been vacated service-side may simply stop
@@ -206,7 +207,7 @@ extern "C"
        * that an ordinary network outage does not send a whole fleet to DPS at
        * once, short enough that a device left behind by a migration recovers
        * without an operator. */
-      uint32_t max_connect_attempts_before_reprovision;
+      uint32_t max_hub_connect_attempts_before_reprovision;
     } dps;
   } az_iot_connection_client_options;
 
@@ -372,14 +373,14 @@ extern "C"
 #ifndef AZ_IOT_CONNECTION_PROFILE_RAW_BUF
 #define AZ_IOT_CONNECTION_PROFILE_RAW_BUF 64
 #endif
-/* See opts.dps.max_connect_attempts_before_reprovision. */
-#ifndef AZ_IOT_DEFAULT_MAX_CONNECT_ATTEMPTS_BEFORE_REPROVISION
-#define AZ_IOT_DEFAULT_MAX_CONNECT_ATTEMPTS_BEFORE_REPROVISION 50u
+/* See opts.dps.max_hub_connect_attempts_before_reprovision. */
+#ifndef AZ_IOT_DEFAULT_MAX_HUB_CONNECT_ATTEMPTS_BEFORE_REPROVISION
+#define AZ_IOT_DEFAULT_MAX_HUB_CONNECT_ATTEMPTS_BEFORE_REPROVISION 50u
 #endif
 /* Feature clients that ask to build their topics at connect time. One per
  * attached feature client, so this tracks the persistent-subscription bound. */
-#ifndef AZ_IOT_MAX_FEATURE_BINDS
-#define AZ_IOT_MAX_FEATURE_BINDS 8
+#ifndef AZ_IOT_MAX_FEATURE_CLIENT_BINDS
+#define AZ_IOT_MAX_FEATURE_CLIENT_BINDS 8
 #endif
 #ifndef AZ_IOT_MQTT_USERNAME_BUF
 #define AZ_IOT_MQTT_USERNAME_BUF 256
@@ -455,11 +456,12 @@ extern "C"
 
     bool user_close;
 
-    /* Set when the hub refused this identity and the device provisions through
-     * DPS: the next reconnect attempt re-provisions instead of reconnecting to
-     * the rejected credential. Kept beside user_close so it lands in the
-     * padding that already precedes `deferred` rather than adding its own. */
-    bool reprovision_pending;
+    /* Set when the next reconnect attempt must re-provision through DPS rather
+     * than reconnect to the cached assignment -- because the hub refused this
+     * identity, or because hub attempts crossed the configured threshold. Kept
+     * beside user_close so it lands in the padding that already precedes
+     * `deferred` rather than adding its own. */
+    bool needs_reprovision;
 
     int deferred;
     az_iot_result deferred_reason;
@@ -548,11 +550,11 @@ extern "C"
     {
       void* owner;
       az_iot_result (*on_bind)(void* owner, struct az_iot_connection_client* client);
-    } feature_binds[AZ_IOT_MAX_FEATURE_BINDS];
+    } feature_client_binds[AZ_IOT_MAX_FEATURE_CLIENT_BINDS];
 
     /* Failed HUB connect attempts since the last success. DPS attempts are not
      * counted: they are what this threshold escalates TO. */
-    uint32_t consecutive_hub_failures;
+    uint32_t consecutive_hub_connect_failures;
 
     az_iot_hub_client hub_client;
     bool hub_client_initialized;

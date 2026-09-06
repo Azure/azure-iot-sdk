@@ -273,7 +273,7 @@ static int setup_with_reprovision_threshold(void** state)
   opts.reconnection_policy.max_delay_ms = REPROVISION_DELAY_MS;
   opts.reconnection_policy.max_attempts = 0; /* the threshold is what is under test */
   opts.reconnection_policy.jitter_pct = 0;
-  opts.dps.max_connect_attempts_before_reprovision = REPROVISION_THRESHOLD;
+  opts.dps.max_hub_connect_attempts_before_reprovision = REPROVISION_THRESHOLD;
   assert_int_equal(az_iot_connection_client_init(&fx->client_storage, &opts), AZ_IOT_OK);
   fx->client = &fx->client_storage;
   assert_int_equal(
@@ -327,7 +327,7 @@ static void hub_unreachable_past_the_threshold_reprovisions(void** state)
 static void a_zero_threshold_never_reprovisions(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
-  fx->client->opts.dps.max_connect_attempts_before_reprovision = 0;
+  fx->client->opts.dps.max_hub_connect_attempts_before_reprovision = 0;
 
   az_iot_mock_mqtt_client* m = provision_to_hub_connecting(fx);
   for (int i = 0; i < 4; ++i)

@@ -186,7 +186,7 @@ static void transition(
     }
     if (next == AZ_IOT_CONN_STATE_CONNECTED)
     {
-      c->consecutive_hub_failures = 0;
+      c->consecutive_hub_connect_failures = 0;
     }
     c->state_cb(&event, c->state_cb_ctx);
   }
@@ -286,7 +286,7 @@ static void teardown_active(az_iot_connection_client* c)
 /* Forward decl — used in on_mqtt_event via the deferred-action queue. */
 static az_iot_result start_connect_attempt(az_iot_connection_client* c);
 static bool dps_configured(const az_iot_connection_client* c);
-static az_iot_result run_feature_binds(az_iot_connection_client* c);
+static az_iot_result run_feature_client_binds(az_iot_connection_client* c);
 static void drop_subscriptions_from_other_generations(az_iot_connection_client* c);
 
 /* Forward decl — used in dps_apply_deferred(). */
@@ -430,16 +430,17 @@ static void schedule_reconnect(az_iot_connection_client* c, az_iot_result reason
    * retry rather than re-arming this and pinning every attempt to DPS. */
   if (c->session_role != AZ_IOT_MQTT_ROLE_DPS)
   {
-    c->consecutive_hub_failures++;
+    c->consecutive_hub_connect_failures++;
   }
-  if (!c->reprovision_pending && dps_configured(c) && !c->user_close
-      && c->opts.dps.max_connect_attempts_before_reprovision > 0
-      && c->consecutive_hub_failures >= c->opts.dps.max_connect_attempts_before_reprovision)
+  if (!c->needs_reprovision && dps_configured(c) && !c->user_close
+      && c->opts.dps.max_hub_connect_attempts_before_reprovision > 0
+      && c->consecutive_hub_connect_failures
+          >= c->opts.dps.max_hub_connect_attempts_before_reprovision)
   {
     AZ_IOT_LOG_WARN("connection: hub unreachable for the configured number of attempts; "
                     "re-provisioning through DPS");
-    c->consecutive_hub_failures = 0;
-    c->reprovision_pending = true;
+    c->consecutive_hub_connect_failures = 0;
+    c->needs_reprovision = true;
   }
 
   if (c->opts.reconnection_policy.max_attempts > 0
@@ -1843,7 +1844,7 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
             && reconnect_enabled(c))
         {
           AZ_IOT_LOG_WARN("connack: identity rejected; re-provisioning through DPS");
-          c->reprovision_pending = true;
+          c->needs_reprovision = true;
         }
         c->deferred = (reconnect_enabled(c) && !c->user_close) ? DEFER_RECONNECT : DEFER_FAULT;
         c->deferred_reason = evt->status;
@@ -1960,7 +1961,7 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
 
 static az_iot_result start_connect_attempt(az_iot_connection_client* c)
 {
-  az_iot_result br = run_feature_binds(c);
+  az_iot_result br = run_feature_client_binds(c);
   if (br != AZ_IOT_OK)
   {
     return br;
@@ -2244,8 +2245,8 @@ az_iot_connection_client_options az_iot_connection_client_options_default(void)
 {
   az_iot_connection_client_options opts = { 0 };
   opts.port = 8883;
-  opts.dps.max_connect_attempts_before_reprovision
-      = AZ_IOT_DEFAULT_MAX_CONNECT_ATTEMPTS_BEFORE_REPROVISION;
+  opts.dps.max_hub_connect_attempts_before_reprovision
+      = AZ_IOT_DEFAULT_MAX_HUB_CONNECT_ATTEMPTS_BEFORE_REPROVISION;
   return opts;
 }
 
@@ -2518,7 +2519,7 @@ az_iot_result az_iot_connection_client_open(az_iot_connection_client* client)
   client->user_close = false;
   client->reconnect_attempt = 0;
   client->reconnect_due_ms = 0;
-  client->reprovision_pending = false;
+  client->needs_reprovision = false;
 
   /* --- Mock-Next bypass: when AZ_IOT_HUB_NEXT_MOCK_ENDPOINT is set,
    * skip DPS and connect directly to the mock Hub-Next (MQTT v5). --- */
@@ -2724,13 +2725,13 @@ az_iot_result az_iot_connection_client_do_work(
       && az_iot_time_mono_ms() >= client->reconnect_due_ms)
   {
     az_iot_result cr;
-    if (client->reprovision_pending)
+    if (client->needs_reprovision)
     {
       /* The hub refused this identity; go back to DPS for a new assignment
        * rather than reconnecting to the same rejected credential. Cleared
        * before the attempt so a failure here falls back to a normal retry
        * instead of looping through provisioning forever. */
-      client->reprovision_pending = false;
+      client->needs_reprovision = false;
       client->dps_phase = DPS_PHASE_NONE;
       client->session_role = AZ_IOT_MQTT_ROLE_DPS;
       cr = dps_start(client);
@@ -3054,34 +3055,34 @@ void az_iot_connection_client__release_profile(az_iot_connection_client* client)
   }
 }
 
-az_iot_result az_iot_connection_client__register_feature_bind(
+az_iot_result az_iot_connection_client__register_feature_client_bind(
     az_iot_connection_client* client,
     void* owner,
-    az_iot_feature_bind_callback on_bind)
+    az_iot_feature_client_bind_callback on_bind)
 {
   if (!client || !owner || !on_bind)
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
-  size_t free_slot = AZ_IOT_MAX_FEATURE_BINDS;
-  for (size_t i = 0; i < AZ_IOT_MAX_FEATURE_BINDS; ++i)
+  size_t free_slot = AZ_IOT_MAX_FEATURE_CLIENT_BINDS;
+  for (size_t i = 0; i < AZ_IOT_MAX_FEATURE_CLIENT_BINDS; ++i)
   {
-    if (client->feature_binds[i].owner == owner)
+    if (client->feature_client_binds[i].owner == owner)
     {
-      client->feature_binds[i].on_bind = on_bind;
+      client->feature_client_binds[i].on_bind = on_bind;
       return AZ_IOT_OK;
     }
-    if (!client->feature_binds[i].owner && free_slot == AZ_IOT_MAX_FEATURE_BINDS)
+    if (!client->feature_client_binds[i].owner && free_slot == AZ_IOT_MAX_FEATURE_CLIENT_BINDS)
     {
       free_slot = i;
     }
   }
-  if (free_slot == AZ_IOT_MAX_FEATURE_BINDS)
+  if (free_slot == AZ_IOT_MAX_FEATURE_CLIENT_BINDS)
   {
     return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
   }
-  client->feature_binds[free_slot].owner = owner;
-  client->feature_binds[free_slot].on_bind = on_bind;
+  client->feature_client_binds[free_slot].owner = owner;
+  client->feature_client_binds[free_slot].on_bind = on_bind;
   /* Already connected means the identity is settled and this session's binds
    * have run, so this one has to catch up or it would sit idle until the next
    * connect. Mirrors __add_subscription_on_connect subscribing immediately. */
@@ -3092,7 +3093,7 @@ az_iot_result az_iot_connection_client__register_feature_bind(
   return AZ_IOT_OK;
 }
 
-void az_iot_connection_client__unregister_feature_bind(
+void az_iot_connection_client__unregister_feature_client_bind(
     az_iot_connection_client* client,
     const void* owner)
 {
@@ -3100,12 +3101,12 @@ void az_iot_connection_client__unregister_feature_bind(
   {
     return;
   }
-  for (size_t i = 0; i < AZ_IOT_MAX_FEATURE_BINDS; ++i)
+  for (size_t i = 0; i < AZ_IOT_MAX_FEATURE_CLIENT_BINDS; ++i)
   {
-    if (client->feature_binds[i].owner == owner)
+    if (client->feature_client_binds[i].owner == owner)
     {
-      client->feature_binds[i].owner = NULL;
-      client->feature_binds[i].on_bind = NULL;
+      client->feature_client_binds[i].owner = NULL;
+      client->feature_client_binds[i].on_bind = NULL;
     }
   }
 }
@@ -3114,12 +3115,12 @@ void az_iot_connection_client__unregister_feature_bind(
  * attempt will actually use. Their previous registrations are withdrawn first,
  * so a device id or generation that changed during re-provisioning cannot leave
  * a filter behind that the new hub would refuse. */
-static az_iot_result run_feature_binds(az_iot_connection_client* c)
+static az_iot_result run_feature_client_binds(az_iot_connection_client* c)
 {
-  for (size_t i = 0; i < AZ_IOT_MAX_FEATURE_BINDS; ++i)
+  for (size_t i = 0; i < AZ_IOT_MAX_FEATURE_CLIENT_BINDS; ++i)
   {
-    void* owner = c->feature_binds[i].owner;
-    az_iot_result (*on_bind)(void*, az_iot_connection_client*) = c->feature_binds[i].on_bind;
+    void* owner = c->feature_client_binds[i].owner;
+    az_iot_result (*on_bind)(void*, az_iot_connection_client*) = c->feature_client_binds[i].on_bind;
     az_iot_result r;
     if (!owner || !on_bind)
     {

@@ -183,18 +183,18 @@ extern "C"
    * scratch every time and needs no idempotence of its own. Returning anything
    * other than AZ_IOT_OK fails the connect attempt. */
   typedef az_iot_result (
-      *az_iot_feature_bind_callback)(void* owner, az_iot_connection_client* client);
+      *az_iot_feature_client_bind_callback)(void* owner, az_iot_connection_client* client);
 
   /* Attach a bind callback for `owner`, replacing any previous one. Feature
    * clients call this from _init(); __release_profile drops it. */
-  az_iot_result az_iot_connection_client__register_feature_bind(
+  az_iot_result az_iot_connection_client__register_feature_client_bind(
       az_iot_connection_client* client,
       void* owner,
-      az_iot_feature_bind_callback on_bind);
+      az_iot_feature_client_bind_callback on_bind);
 
   /* Detach `owner`'s bind callback. Does not withdraw anything the callback
    * registered; feature clients withdraw those in their own _destroy(). */
-  void az_iot_connection_client__unregister_feature_bind(
+  void az_iot_connection_client__unregister_feature_client_bind(
       az_iot_connection_client* client,
       const void* owner);
 
