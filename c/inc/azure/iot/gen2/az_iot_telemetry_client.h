@@ -23,7 +23,11 @@ extern "C"
     } _internal;
   } az_iot_gen2_telemetry_client;
 
-  /* The connection must be CONNECTED and resolved to the MQTT v5 profile. */
+  /* Records that the connection must resolve to the MQTT v5 profile; it need
+   * not be open yet. A connection already known to be Classic, or one a gen1
+   * client is already attached to, is rejected with
+   * AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH. Otherwise a conflict fails the
+   * connection when the profile resolves, before it reports CONNECTED. */
   AZ_NODISCARD az_iot_result az_iot_gen2_telemetry_client_init(
       az_iot_gen2_telemetry_client* client,
       az_iot_connection_client* conn);

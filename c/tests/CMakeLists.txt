@@ -160,8 +160,10 @@ az_iot_add_cmocka_test(
     az_iot_tests_gen2_telemetry_client unit/gen2_telemetry_client_test.c)
 target_link_libraries(
     az_iot_tests_gen2_telemetry_client PRIVATE az_iot_test_support az_iot_gen2)
-az_iot_add_cmocka_test(az_iot_tests_c2d_client unit/c2d_client_test.c)
-target_link_libraries(az_iot_tests_c2d_client PRIVATE az_iot_test_support)
+az_iot_add_cmocka_test(az_iot_tests_gen1_c2d_client unit/gen1_c2d_client_test.c)
+target_link_libraries(az_iot_tests_gen1_c2d_client PRIVATE az_iot_test_support az_iot_gen1)
+az_iot_add_cmocka_test(az_iot_tests_gen2_c2d_client unit/gen2_c2d_client_test.c)
+target_link_libraries(az_iot_tests_gen2_c2d_client PRIVATE az_iot_test_support az_iot_gen2)
 az_iot_add_cmocka_test(az_iot_tests_direct_method_client unit/direct_method_client_test.c)
 target_link_libraries(az_iot_tests_direct_method_client PRIVATE az_iot_test_support)
 az_iot_add_cmocka_test(az_iot_tests_twin_client unit/twin_client_test.c)
@@ -443,7 +445,7 @@ if(AZ_IOT_WITH_PAHO)
     target_include_directories(az_iot_reconnect_integration PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/conformance)
     target_link_libraries(az_iot_reconnect_integration PRIVATE
-        az_iot_adapter_paho az_iot_test_proxy az_iot_test_mqtt_server)
+        az_iot_gen1 az_iot_adapter_paho az_iot_test_proxy az_iot_test_mqtt_server)
     if(UNIX)
         target_compile_definitions(az_iot_reconnect_integration PRIVATE
             _POSIX_C_SOURCE=200809L _DEFAULT_SOURCE)
