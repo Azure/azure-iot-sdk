@@ -32,9 +32,6 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Connection
         {
             ObjectDisposedException.ThrowIf(_isDisposed, this);
 
-            // Remove any IoT Hub-specific handling of connect attempts when provisioning.
-            ClearHubCallbacks();
-
             var provisioningResult = await ProvisionAsync(provisioningSettings, authentication, cancellationToken);
 
             CurrentConnectionContext = new ConnectionContext()
