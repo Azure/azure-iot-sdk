@@ -27,6 +27,21 @@ namespace Microsoft.Azure.Devices.Client.Provisioning
         private TaskCompletionSource<RegistrationOperationStatus>? _checkRegistrationOperationStatusSource;
         private int _requestId;
 
+        private MqttConnectionManager? _mqttClient;
+        private RegistrationRequestPayload? _payload;
+
+        /// <summary>
+        /// Cancels everything the in-progress provisioning flow is waiting on. Because DPS cannot persist sessions,
+        /// a flow is only valid for the connection it was started on, so this is cancelled whenever that connection ends.
+        /// </summary>
+        private CancellationTokenSource? _currentProvisioningFlowCancellation;
+
+        /// <summary>
+        /// Raised once the provisioning flow that runs upon connecting to DPS has either produced a registration
+        /// result or failed. This is the provisioning analog of the device presence flow's completion event.
+        /// </summary>
+        private event Func<ProvisioningFlowCompletedArgs, Task>? ProvisioningFlowCompletedAsync;
+
         internal async Task<DeviceRegistrationResult> RegisterAsync(
             MqttConnectionManager mqttClient,
             RegistrationRequestPayload payload,
@@ -35,85 +50,172 @@ namespace Microsoft.Azure.Devices.Client.Provisioning
             string globalDeviceEndpoint,
             CancellationToken cancellationToken)
         {
-            //TODO move this code so that it responds to a connection to DPS like the hub flows do
             cancellationToken.ThrowIfCancellationRequested();
+
+            _mqttClient = mqttClient;
+            _payload = payload;
 
             MqttConnect connect = CreateMqttConnectPacket(authentication, idScope, globalDeviceEndpoint);
 
-            // Attempt provisioning until user cancels or a fatal error is thrown by the underlying MQTT client
-            while (true)
+            TaskCompletionSource<ProvisioningFlowCompletedArgs> provisioningFlowResult = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            Task HandleProvisioningFlowCompletedAsync(ProvisioningFlowCompletedArgs args)
             {
-                mqttClient.PublishReceivedAsync += HandleReceivedPublishAsync;
+                provisioningFlowResult.TrySetResult(args);
+                return Task.CompletedTask;
+            }
 
-                using var connectionLostCancellationToken = new CancellationTokenSource();
+            Task HandleConnectionFaultedAsync(MqttConnectionFaultedEventArgs faultedEventArgs)
+            {
+                // The connection layer has stopped maintaining the connection, so no further connection will arrive to
+                // start the provisioning flow again.
+                provisioningFlowResult.TrySetException(faultedEventArgs.Exception);
+                return Task.CompletedTask;
+            }
 
-                // Link the user-supplied cancellation token with a cancellation token that is cancelled
-                // when the connection is lost so that all operations stop when either the user
-                // cancels the token or when the connection is lost.
-                using var linkedCancellationToken = CancellationTokenSource.CreateLinkedTokenSource(
-                    cancellationToken,
-                    connectionLostCancellationToken.Token);
+            // Setup callbacks BEFORE sending CONNECT so that the CONNACK can be handled regardless of how quickly it arrives
+            ProvisioningFlowCompletedAsync += HandleProvisioningFlowCompletedAsync;
+            mqttClient.PublishReceivedAsync += HandleReceivedPublishAsync;
+            mqttClient.DisconnectedAsync += HandleDisconnectedFromDpsAsync;
+            mqttClient.ConnectionFaultedAsync += HandleConnectionFaultedAsync;
+            mqttClient.ConnectedAsync += HandleConnectedToDpsAsync;
 
-                Task HandleDisconnectionAsync(MqttClientDisconnectedEventArgs disconnectedEventArgs)
+            try
+            {
+                // MQTT connection manager already checks connack for non-success cases, so no need to check it here as well.
+                // That layer also owns reconnection, and because DPS cannot persist sessions, every connection it establishes
+                // starts the provisioning flow over from the beginning in HandleConnectedToDpsAsync.
+                MqttConnectAck connack = await mqttClient.ConnectAsync(connect, cancellationToken).ConfigureAwait(false);
+
+                ProvisioningFlowCompletedArgs provisioningFlowCompletedArgs = await provisioningFlowResult.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+
+                if (provisioningFlowCompletedArgs.Exception != null)
                 {
-                    // Because DPS cannot persist sessions, any connection loss should be treated as a session loss. Restart provisioning from the start to re-build the session.
-                    connectionLostCancellationToken.Cancel();
-
-                    return Task.CompletedTask;
+                    throw provisioningFlowCompletedArgs.Exception;
                 }
-                
-                mqttClient.DisconnectedAsync += HandleDisconnectionAsync;
+
+                Debug.Assert(provisioningFlowCompletedArgs.RegistrationResult != null);
+
+                return provisioningFlowCompletedArgs.RegistrationResult;
+            }
+            finally
+            {
+                ProvisioningFlowCompletedAsync -= HandleProvisioningFlowCompletedAsync;
+                mqttClient.ConnectedAsync -= HandleConnectedToDpsAsync;
+                mqttClient.ConnectionFaultedAsync -= HandleConnectionFaultedAsync;
+                mqttClient.DisconnectedAsync -= HandleDisconnectedFromDpsAsync;
+                mqttClient.PublishReceivedAsync -= HandleReceivedPublishAsync;
+
+                // Stop any provisioning flow that is still waiting on a DPS response now that no one is listening for its result.
+                CancelCurrentProvisioningFlow();
+
+                // Always close the MQTT connection once provisioning has finished so that the connection can be
+                // re-established against the assigned IoT hub.
+                var disconnect = new MqttDisconnect() { Reason = MqttClientDisconnectOptionsReason.NormalDisconnection };
 
                 try
                 {
-                    // MQTT connection manager already checks connack for non-success cases, so no need to check it here as well
-                    MqttConnectAck connack = await mqttClient.ConnectAsync(connect, cancellationToken).ConfigureAwait(false);
-
-                    await SubscribeToRegistrationResponseMessagesAsync(mqttClient, linkedCancellationToken.Token).ConfigureAwait(false);
-
-                    RegistrationOperationStatus registrationStatus = await PublishRegistrationRequestAsync(
-                            mqttClient,
-                            payload,
-                            linkedCancellationToken.Token)
-                        .ConfigureAwait(false);
-
-                    DeviceRegistrationResult registrationResult = await PollUntilProvisionigFinishesAsync(
-                            mqttClient,
-                            registrationStatus.OperationId,
-                            linkedCancellationToken.Token)
-                        .ConfigureAwait(false);
-
-                    return registrationResult;
+                    await mqttClient.DisconnectAsync(false, disconnect, CancellationToken.None).ConfigureAwait(false);
                 }
-                catch (OperationCanceledException)
+                catch (Exception)
                 {
-                    // This will be thrown either because the user requested cancellation or because the underlying MQTT client lost the MQTT session.
-                    // In the case of the former, immediately abandon provisioning and throw.
-                    // In the case of the latter, just restart provisioning from the beginnging
-                    if (cancellationToken.IsCancellationRequested)
-                    {
-                        throw;
-                    }
+                    // Deliberately not rethrowing the exception because this is a "best effort" close.
+                    // The service may not have acknowledged that the client closed the connection, but
+                    // all local resources have been closed. The service will eventually realize the
+                    // connection is closed in cases like these.
                 }
-                finally
-                {
-                    // Always close MQTT connection between provisioning attempts and after a successful provisioning
-                    mqttClient.PublishReceivedAsync -= HandleReceivedPublishAsync;
-                    mqttClient.DisconnectedAsync -= HandleDisconnectionAsync;
-                    var disconnect = new MqttDisconnect() { Reason = MqttClientDisconnectOptionsReason.NormalDisconnection };
+            }
+        }
 
-                    try
-                    {
-                        await mqttClient.DisconnectAsync(false, disconnect, cancellationToken); // Reconnection will be handled in this layer instead. TODO is that even right? Feels a bit odd. Maybe hook up that it should always provision upon connect, and then expose an event for when provisioning finishes akin to device presence flow for Hub?
-                    }
-                    catch (Exception)
-                    {
-                        // Deliberately not rethrowing the exception because this is a "best effort" close.
-                        // The service may not have acknowledged that the client closed the connection, but
-                        // all local resources have been closed. The service will eventually realize the
-                        // connection is closed in cases like these.
-                    }
-                }
+        /// <summary>
+        /// Run the provisioning flow upon connecting to DPS, in the same way that the connection clients run the device
+        /// presence flow upon connecting to IoT hub.
+        /// </summary>
+        /// <remarks>
+        /// DPS cannot persist sessions, so the CONNACK's session present flag is deliberately ignored: every connection
+        /// starts a brand new registration.
+        /// </remarks>
+        private async Task HandleConnectedToDpsAsync(MqttClientConnectedEventArgs args)
+        {
+            Debug.Assert(_mqttClient != null);
+            MqttConnectionManager mqttClient = _mqttClient;
+
+            // Any flow left over from a previous connection belongs to a session that no longer exists, so abandon it.
+            CancelCurrentProvisioningFlow();
+
+            var provisioningFlowCancellation = new CancellationTokenSource();
+            _currentProvisioningFlowCancellation = provisioningFlowCancellation;
+
+            // Responses to the previous connection's requests are no longer expected.
+            _startProvisioningRequestStatusSource = null;
+            _checkRegistrationOperationStatusSource = null;
+
+            try
+            {
+                await SubscribeToRegistrationResponseMessagesAsync(mqttClient, provisioningFlowCancellation.Token).ConfigureAwait(false);
+
+                RegistrationOperationStatus registrationStatus = await PublishRegistrationRequestAsync(
+                        mqttClient,
+                        _payload!,
+                        provisioningFlowCancellation.Token)
+                    .ConfigureAwait(false);
+
+                DeviceRegistrationResult registrationResult = await PollUntilProvisioningFinishesAsync(
+                        mqttClient,
+                        registrationStatus.OperationId,
+                        provisioningFlowCancellation.Token)
+                    .ConfigureAwait(false);
+
+                await RaiseProvisioningFlowCompletedAsync(new ProvisioningFlowCompletedArgs(registrationResult)).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                // The connection this flow was running on ended, or provisioning was abandoned altogether. If the
+                // connection layer re-establishes the connection, this callback starts the flow over from the beginning.
+                Trace.TraceWarning("Provisioning flow was abandoned because the connection to DPS ended.");
+            }
+            catch (Exception e)
+            {
+                Trace.TraceError("Exception thrown while running the provisioning flow. {0}", e);
+                await RaiseProvisioningFlowCompletedAsync(new ProvisioningFlowCompletedArgs(e)).ConfigureAwait(false);
+            }
+            finally
+            {
+                // Clear the field only if this flow is still the current one, so that a newer flow's cancellation source is left intact.
+                Interlocked.CompareExchange(ref _currentProvisioningFlowCancellation, null, provisioningFlowCancellation);
+                provisioningFlowCancellation.Dispose();
+            }
+        }
+
+        private Task HandleDisconnectedFromDpsAsync(MqttClientDisconnectedEventArgs args)
+        {
+            // Because DPS cannot persist sessions, any connection loss should be treated as a session loss. Abandon the
+            // in-progress flow so that it can be restarted from the beginning once the connection is re-established.
+            CancelCurrentProvisioningFlow();
+
+            return Task.CompletedTask;
+        }
+
+        private void CancelCurrentProvisioningFlow()
+        {
+            CancellationTokenSource? provisioningFlowCancellation = Interlocked.Exchange(ref _currentProvisioningFlowCancellation, null);
+
+            try
+            {
+                provisioningFlowCancellation?.Cancel();
+            }
+            catch (ObjectDisposedException)
+            {
+                // The flow already ended and disposed its own cancellation source, so there is nothing left to cancel.
+            }
+        }
+
+        private async Task RaiseProvisioningFlowCompletedAsync(ProvisioningFlowCompletedArgs args)
+        {
+            Func<ProvisioningFlowCompletedArgs, Task>? handler = ProvisioningFlowCompletedAsync;
+
+            if (handler != null)
+            {
+                await handler.Invoke(args).ConfigureAwait(false);
             }
         }
 
@@ -171,7 +273,7 @@ namespace Microsoft.Azure.Devices.Client.Provisioning
             }
         }
 
-        private async Task<DeviceRegistrationResult> PollUntilProvisionigFinishesAsync(MqttConnectionManager mqttClient, string operationId, CancellationToken cancellationToken)
+        private async Task<DeviceRegistrationResult> PollUntilProvisioningFinishesAsync(MqttConnectionManager mqttClient, string operationId, CancellationToken cancellationToken)
         {
             while (true)
             {
@@ -251,36 +353,40 @@ namespace Microsoft.Azure.Devices.Client.Provisioning
         {
             string topic = receivedEventArgs.Publish.Topic;
 
-            if (_startProvisioningRequestStatusSource == null)
+            TaskCompletionSource<RegistrationOperationStatus>? startProvisioningRequestStatusSource = _startProvisioningRequestStatusSource;
+
+            if (startProvisioningRequestStatusSource == null)
             {
-                // TODO This seems to happen around reconnect scenarios? Not sure how though since we always connect with clean session
+                // No registration request is outstanding on the current connection, so this publish belongs to a
+                // provisioning flow that was abandoned when its connection ended.
                 return Task.CompletedTask;
             }
 
             Trace.TraceInformation("Received MQTT publish from DPS on topic {0}", receivedEventArgs.Publish.Topic);
 
-            if (!_startProvisioningRequestStatusSource.Task.IsCompleted)
+            if (!startProvisioningRequestStatusSource.Task.IsCompleted)
             {
                 // The initial provisioning request's response topic is shaped like "$dps/registrations/res/202/?$rid=1&retry-after=3"
                 string jsonString = Encoding.UTF8.GetString(receivedEventArgs.Publish.Payload);
                 RegistrationOperationStatus operation = JsonSerializer.Deserialize<RegistrationOperationStatus>(jsonString, JsonSerializationSettings.Options)!;
-                _startProvisioningRequestStatusSource.TrySetResult(operation);
+                startProvisioningRequestStatusSource.TrySetResult(operation);
             }
             else
             {
+                TaskCompletionSource<RegistrationOperationStatus>? checkRegistrationOperationStatusSource = _checkRegistrationOperationStatusSource;
+
+                if (checkRegistrationOperationStatusSource == null)
+                {
+                    // No polling request is outstanding, so there is nothing waiting on this response.
+                    return Task.CompletedTask;
+                }
+
                 // All status polling requests' response topics are shaped like "$dps/registrations/res/200/?$rid=2"
                 string jsonString = Encoding.UTF8.GetString(receivedEventArgs.Publish.Payload);
-                try
-                {
-                    RegistrationOperationStatus operation = JsonSerializer.Deserialize<RegistrationOperationStatus>(jsonString, JsonSerializationSettings.Options)!;
-                    operation.RetryAfter = GetRetryAfterFromTopic(topic, s_defaultOperationPollingInterval);
+                RegistrationOperationStatus operation = JsonSerializer.Deserialize<RegistrationOperationStatus>(jsonString, JsonSerializationSettings.Options)!;
+                operation.RetryAfter = GetRetryAfterFromTopic(topic, s_defaultOperationPollingInterval);
 
-                    _checkRegistrationOperationStatusSource!.TrySetResult(operation);
-                }
-                catch (Exception e)
-                {
-                    throw e;
-                }
+                checkRegistrationOperationStatusSource.TrySetResult(operation);
             }
 
             return Task.CompletedTask;
