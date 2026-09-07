@@ -15,7 +15,8 @@ Related documents:
 - [dps-integration.md](dps-integration.md), [devnotes.md](devnotes.md) — DPS contract and the running requirements log.
 - **ADUv2** — [eng/aduv2-spec.md](eng/aduv2-spec.md) is the device contract and the source for §7
   below; it owns the request/response shapes, error codes and trust model, which are deliberately not
-  restated here. Background: *Azure Device Update v2 — Public Preview (Ignite 2026)*, Leo Lie /
+  restated here. [eng/adu-client-plan.md](eng/adu-client-plan.md) carries the SDK status and the
+  work queue for the ADUv1 cut. Background: *Azure Device Update v2 — Public Preview (Ignite 2026)*, Leo Lie /
   Joe Heiniger / Darko Aleksic, 7/6/2026
   ([SharePoint](https://microsoft.sharepoint.com/:w:/r/teams/DigitalOperations/_layouts/15/Doc.aspx?sourcedoc=%7B0f2203ff-bda7-4f97-b2a5-468fcb95f7f0%7D&action=default&share=cQr_AyIPp72XT7KlRo_LlffwEgUCJRfZ3zpZHPh4PbcI-NloUw)).
   [eng/adu-client-design.md](eng/adu-client-design.md) covers the shared verify/download/install
@@ -368,11 +369,15 @@ reusing the credential it already has; the gateway is an authenticated pass-thro
 ADU. The device never talks to ADU directly, needs no ADU-specific credential, and there is no twin,
 no subscription and no unsolicited offer.
 
-| Phase | Gateway | Operation (working name) | ADU route |
+| Phase | Gateway | Operation (on the wire) | Spec working name |
 | --- | --- | --- | --- |
-| First-time / bootstrap (**before** provisioning) | DPS | `GetOnboardingDeviceUpdate` | `POST /devices/requestOnboardingUpdates` |
-| Regular / operational (**after** provisioning) | DPS *(Ignite '26 interim)*, IoT Hub *(post-Ignite)* | `GetDeviceUpdate` | `POST /devices/requestUpdates` |
-| Reporting, either phase | same gateway as the fetch | `ReportDeviceUpdateStatus` | `POST /devices/reportStatus` |
+| First-time / bootstrap (**before** provisioning) | DPS | `requestOnboardingUpdates` | `GetOnboardingDeviceUpdate` |
+| Regular / operational (**after** provisioning) | DPS *(Ignite '26 interim)*, IoT Hub *(post-Ignite)* | `requestSoftwareUpdates` | `GetDeviceUpdate` |
+| Reporting, either phase | same gateway as the fetch | `reportUpdateStatus` | `ReportDeviceUpdateStatus` |
+
+All three are POSTs under the device's own registration on the gateway's device endpoint; see
+[eng/aduv2-spec.md](eng/aduv2-spec.md) for the exact URL, headers and payloads, and for which parts
+of the contract are measured rather than drafted.
 
 The device selects onboarding vs regular **by which operation it calls**; the gateway does not infer
 or validate the choice.
@@ -400,11 +405,11 @@ sequenceDiagram
     participant Hub
 
     loop until "no update" or an advisory failure
-        ADU->>DPS: GetOnboardingDeviceUpdate (agentInfo, installedUpdateId, ETags)
+        ADU->>DPS: requestOnboardingUpdates (agentInfo, installedUpdateId, ETags)
         alt update available
             DPS-->>ADU: serviceConfiguration + updateMetadata (workflowId, manifest, signature, fileUrls)
             ADU->>ADU: verify signature, download fileUrls, install (reboot if required)
-            ADU->>DPS: ReportDeviceUpdateStatus (workflowId, installedUpdateId, lastInstallResult)
+            ADU->>DPS: reportUpdateStatus (workflowId, installedUpdateId, installResult)
         else no update
             DPS-->>ADU: 200 with updateMetadata omitted
         end
@@ -443,17 +448,17 @@ sequenceDiagram
     ADU->>Store: load_state()
     Store-->>ADU: installedUpdateId, ETags, unsent report
     opt report pending from a previous session
-        ADU->>GW: ReportDeviceUpdateStatus (workflowId, lastInstallResult)
+        ADU->>GW: reportUpdateStatus (workflowId, installResult)
     end
 
     loop poll at the agent's own cadence
-        ADU->>GW: GetDeviceUpdate (agentInfo, installedUpdateId, ETags)
+        ADU->>GW: requestSoftwareUpdates (agentInfo, installedUpdateId, ETags)
         Note over GW: ADU derives the device class from agentProfile + compatibilityProperties
         alt update available
             GW-->>ADU: serviceConfiguration + updateMetadata (workflowId, manifest, signature, fileUrls)
             ADU->>ADU: verify, download, backup, install, apply
             ADU->>Store: persist_state()
-            ADU->>GW: ReportDeviceUpdateStatus (workflowId, installedUpdateId, lastInstallResult)
+            ADU->>GW: reportUpdateStatus (workflowId, installedUpdateId, installResult)
         else no update
             GW-->>ADU: 200 with updateMetadata omitted
         end
@@ -465,7 +470,7 @@ sequenceDiagram
     ADU->>GW: retry the report until acked, then resume polling
 ```
 
-`lastInstallResult` carries the terminal outcome, its failure origin, the hex `extendedResultCodes`
+`installResult` carries the terminal outcome, its failure origin, the hex `extendedResultCodes`
 list and a per-step `stepResults` map — see [eng/aduv2-spec.md](eng/aduv2-spec.md) for the field-level
 shape.
 
@@ -477,10 +482,10 @@ shape.
   report. Reporting is **idempotent on `workflowId` alone**; a conflicting terminal result for the
   same id is rejected as a conflict.
 - **The device is the sole retrier.** The gateway fails fast with one attempt per hop. The agent
-  honours `Retry-After` on throttling and retries `ReportDeviceUpdateStatus` until it is acked — a
+  honours `Retry-After` on throttling and retries `reportUpdateStatus` until it is acked — a
   report is a durable write and must not be lost.
 - **Drive behaviour from the machine-readable error code, never the HTTP status.** A stale
-  `agentInfoETag` means resend the full `agentInfo`; a stale `serviceConfigETag` means re-ask without
+  `agentInfoEtag` means resend the full `agentInfo`; a stale `serviceConfigEtag` means re-ask without
   it; an unlinked update account means "no update service configured", which is not a failure.
 - **"No update" is a success.** It is a 200 with the update metadata omitted, not an error.
 - **ADU never drives the connection.** It does not open, close, or force a reconnect. It does
@@ -504,7 +509,7 @@ deferred effects — they do not happen inline.
 
 ```mermaid
 flowchart TB
-    BOOT["Agent boot"] --> BCHK["ADUv2 bootstrap check<br/>GetOnboardingDeviceUpdate via DPS"]
+    BOOT["Agent boot"] --> BCHK["ADUv2 bootstrap check<br/>requestOnboardingUpdates via DPS"]
     BCHK -->|"update available"| BINST["Verify, download, install,<br/>report, re-check"]
     BINST --> BCHK
     BCHK -->|"no update, or advisory failure"| IDLE["IDLE"]
@@ -528,7 +533,7 @@ flowchart TB
 
     CONNECTED --> CRENEW["Cert renewal:<br/>send_csr, 202 then 200"]
     CRENEW -.->|"new chain used on<br/>the next connect"| CRED
-    CONNECTED --> ARENEW["ADUv2 operational check:<br/>poll GetDeviceUpdate,<br/>ReportDeviceUpdateStatus"]
+    CONNECTED --> ARENEW["ADUv2 operational check:<br/>poll requestSoftwareUpdates,<br/>reportUpdateStatus"]
 
     CONNECTED -->|"close()"| DISC["DISCONNECTING"] --> IDLE
     CONNECTED --> DROP{"drop or error"}
@@ -544,7 +549,7 @@ Reading it as four overlapping concerns:
 | Concern | Onboarding (DPS gateway, onboarding auth) | Renewal (post-`CONNECTED`, operational auth) |
 | --- | --- | --- |
 | **Certificates** | CSR in the registration, issued chain in the assignment | `send_csr` over the hub; new chain applies on the next connect |
-| **ADUv2** | `GetOnboardingDeviceUpdate` loop **before** registration, advisory | Polled `GetDeviceUpdate` / `ReportDeviceUpdateStatus` (DPS in preview, Hub afterwards) |
+| **ADUv2** | `requestOnboardingUpdates` loop **before** registration, advisory | Polled `requestSoftwareUpdates` / `reportUpdateStatus` (DPS in preview, Hub afterwards) |
 | **Connection profile** | Declared in the assignment; selects MQTT version and generation | Re-resolved on every reconnect that goes through DPS |
 | **Connection** | DPS phases inside `CONNECTING` | Backoff-driven reconnect replays the whole path |
 

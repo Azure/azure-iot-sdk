@@ -180,8 +180,8 @@ static void test_telemetry(void** state)
   }
   assert_true(watching);
 
-  az_iot_telemetry_client telemetry_client;
-  assert_int_equal(az_iot_telemetry_client_init(&telemetry_client, &fx->dev.conn), AZ_IOT_OK);
+  az_iot_gen1_telemetry_client telemetry_client;
+  assert_int_equal(az_iot_gen1_telemetry_client_init(&telemetry_client, &fx->dev.conn), AZ_IOT_OK);
 
   az_iot_telemetry_property props[] = {
     { AZ_IOT_MSG_PROP_CONTENT_TYPE, "application/json" },
@@ -194,7 +194,7 @@ static void test_telemetry(void** state)
 
   send_ctx sc = { 0 };
   assert_int_equal(
-      az_iot_telemetry_client_send(&telemetry_client, &msg, on_send_done, &sc), AZ_IOT_OK);
+      az_iot_gen1_telemetry_client_send(&telemetry_client, &msg, on_send_done, &sc), AZ_IOT_OK);
 
   bool seen = false;
   time_t start = time(NULL);
@@ -217,7 +217,7 @@ static void test_telemetry(void** state)
     device_do_work(fx, E2E_PUMP_MS);
   }
 
-  az_iot_telemetry_client_destroy(&telemetry_client);
+  az_iot_gen1_telemetry_client_destroy(&telemetry_client);
   /* Release the AMQP/TLS connection before the next scenario (the Windows
    * reference transport allows only one TLS connection at a time). */
   az_iot_e2e_service_telemetry_watch_end(fx->service);
@@ -260,9 +260,9 @@ static void test_c2d(void** state)
   c2d_ctx cctx = { 0 };
   make_marker(cctx.expected, sizeof(cctx.expected), "c2d");
 
-  az_iot_c2d_client c2d;
-  assert_int_equal(az_iot_c2d_client_init(&c2d, &fx->dev.conn), AZ_IOT_OK);
-  assert_int_equal(az_iot_c2d_client_set_handler(&c2d, on_c2d, &cctx), AZ_IOT_OK);
+  az_iot_gen1_c2d_client c2d;
+  assert_int_equal(az_iot_gen1_c2d_client_init(&c2d, &fx->dev.conn), AZ_IOT_OK);
+  assert_int_equal(az_iot_gen1_c2d_client_set_handler(&c2d, on_c2d, &cctx), AZ_IOT_OK);
 
   /* Give the subscription a few work slices to settle before the cloud sends. */
   for (int i = 0; i < 20; ++i)
@@ -299,7 +299,7 @@ static void test_c2d(void** state)
     device_do_work(fx, E2E_PUMP_MS);
   }
 
-  az_iot_c2d_client_destroy(&c2d);
+  az_iot_gen1_c2d_client_destroy(&c2d);
 
   assert_true(cctx.received);
   assert_true(cctx.matched);

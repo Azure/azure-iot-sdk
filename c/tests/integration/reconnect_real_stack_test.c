@@ -34,7 +34,7 @@
 #include "az_iot_test_mqtt_server.h"
 #include "az_iot_test_proxy.h"
 #include "azure/iot/adapters/az_iot_adapter_paho.h"
-#include "azure/iot/az_iot_c2d_client.h"
+#include "azure/iot/gen1/az_iot_c2d_client.h"
 #include "azure/iot/az_iot_connection_client.h"
 
 #if defined(_WIN32)
@@ -66,8 +66,10 @@ typedef struct state_log
   az_iot_connection_state states[STATE_LOG_MAX];
 } state_log;
 
-static void on_state(az_iot_connection_state state, az_iot_result reason, void* ctx)
+static void on_state(const az_iot_connection_state_event* event, void* ctx)
 {
+  az_iot_connection_state state = event->state;
+  az_iot_result reason = event->reason;
   (void)reason;
   state_log* s = (state_log*)ctx;
   if (s->count < STATE_LOG_MAX)
@@ -208,7 +210,7 @@ static az_iot_connection_client* start_client_with_c2d(
     uint16_t proxy_port,
     const char* client_id,
     uint32_t subscription_ack_timeout_seconds,
-    az_iot_c2d_client* c2d,
+    az_iot_gen1_c2d_client* c2d,
     state_log* log)
 {
   az_iot_connection_client* client = (az_iot_connection_client*)calloc(1, sizeof(*client));
@@ -230,8 +232,8 @@ static az_iot_connection_client* start_client_with_c2d(
   assert_non_null(factory);
   assert_int_equal(az_iot_connection_client_register_mqtt_factory(client, factory), AZ_IOT_OK);
 
-  assert_int_equal(az_iot_c2d_client_init(c2d, client), AZ_IOT_OK);
-  assert_int_equal(az_iot_c2d_client_set_handler(c2d, on_c2d, NULL), AZ_IOT_OK);
+  assert_int_equal(az_iot_gen1_c2d_client_init(c2d, client), AZ_IOT_OK);
+  assert_int_equal(az_iot_gen1_c2d_client_set_handler(c2d, on_c2d, NULL), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_open(client), AZ_IOT_OK);
   return client;
 }
@@ -261,7 +263,7 @@ static void refused_subscription_faults_the_real_stack(void** state)
   assert_true(az_iot_test_proxy_add_rule(proxy, &refuse) >= 0);
 
   state_log log = { 0 };
-  az_iot_c2d_client c2d;
+  az_iot_gen1_c2d_client c2d;
   memset(&c2d, 0, sizeof(c2d));
   az_iot_connection_client* client
       = start_client_with_c2d(proxy_port, "az-iot-subrefuse-it", 0, &c2d, &log);
@@ -274,7 +276,7 @@ static void refused_subscription_faults_the_real_stack(void** state)
    * policy's five attempts also ends in FAULTED. */
   assert_int_equal(count_state(&log, AZ_IOT_CONN_STATE_RECONNECTING), 0);
 
-  az_iot_c2d_client_destroy(&c2d);
+  az_iot_gen1_c2d_client_destroy(&c2d);
   az_iot_connection_client_destroy(client);
   free(client);
   az_iot_test_proxy_stop(proxy);
@@ -298,7 +300,7 @@ static void an_unanswered_subscribe_times_out_the_real_stack(void** state)
   suppress_subscribes(proxy);
 
   state_log log = { 0 };
-  az_iot_c2d_client c2d;
+  az_iot_gen1_c2d_client c2d;
   memset(&c2d, 0, sizeof(c2d));
   az_iot_connection_client* client
       = start_client_with_c2d(proxy_port, "az-iot-subtimeout-it", 1, &c2d, &log);
@@ -308,7 +310,7 @@ static void an_unanswered_subscribe_times_out_the_real_stack(void** state)
   assert_int_equal(count_state(&log, AZ_IOT_CONN_STATE_CONNECTED), 0);
 
   (void)az_iot_connection_client_close(client);
-  az_iot_c2d_client_destroy(&c2d);
+  az_iot_gen1_c2d_client_destroy(&c2d);
   az_iot_connection_client_destroy(client);
   free(client);
   az_iot_test_proxy_stop(proxy);

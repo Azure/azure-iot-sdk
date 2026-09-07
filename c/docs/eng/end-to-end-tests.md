@@ -207,9 +207,11 @@ are never leaked.
 > ([`ci-c-e2e-adu.yml`](../../../.github/workflows/ci-c-e2e-adu.yml)) because the
 > Device Update account/instance takes ~25 min to provision. It uses the same
 > in-process model (no dotnet) and the same provision/teardown actions, on a
-> nightly / dispatch / ADU-paths cadence. The device-side ADU *scenario* is not
-> implemented yet: `az_iot_tests_e2e_adu` is a placeholder that gates on the
-> provisioned environment and reports a CTest skip (see *Future work*).
+> nightly / dispatch / ADU-paths cadence. `az_iot_tests_e2e_adu` now carries five
+> real scenarios (agent-state report, deployment, install-failure rollback,
+> verify-rejects, already-installed no-op) driven by a twin desired-property
+> PATCH, with crypto and payload operations mocked. **They are twin-driven, so
+> they retire with the ADUv1 cut** — see *Future work*.
 
 ---
 
@@ -252,7 +254,9 @@ are never leaked.
 
 ### Future work
 
-- Implement the device-side ADU update scenario (currently `az_iot_tests_e2e_adu`
-  is a placeholder that only gates on provisioning). It should connect a device
-  (reuse the ci-c-e2e.yml device-material step) and drive/verify the update via
-  `az iot du` in the ADU workflow's test job.
+- Re-target the device-side ADU e2e scenarios at **ADUv2**. The five existing
+  `az_iot_tests_e2e_adu` scenarios drive a twin desired-property PATCH; ADUv1 is cut, so
+  they retire with it (see [adu-client-plan.md](adu-client-plan.md#what-aduv1-is-cut-means)).
+  The replacement drives the update check, install and report through the DPS-fronted
+  operations, with the service side verified in the ADU workflow's test job. The device
+  fixture and the mocked crypto/payload hooks carry over unchanged.

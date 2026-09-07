@@ -153,6 +153,62 @@ to disk by the one code path whose purpose is that the key never lands there, so
 the adapter refuses it. `pin-source` names where the PIN lives instead, which
 keeps the reference loadable without putting the secret in it.
 
+**Activate the provider from OpenSSL configuration.** This is not optional --
+without it a TLS 1.2 client-authentication handshake fails outright:
+
+```
+error:40800054:pkcs11:p11prov_GetOperationState:...:Error returned by C_GetOperationState
+```
+
+An OpenSSL 3.x PKCS#11 provider offers digest implementations as well as key
+operations, so a provider loaded at run time can end up servicing the TLS
+handshake transcript hash. TLS 1.2 duplicates that digest context, the provider
+implements the duplication with `C_GetOperationState`, and most tokens do not
+support that on a digest session. TLS 1.3 does not duplicate the context, so the
+same credential can work against one endpoint and fail against another purely on
+negotiated version -- which is what makes this worth stating plainly.
+
+Point `OPENSSL_CONF` at a configuration that brings the provider up alongside
+the default one. Measured against a live IoT Hub over TLS 1.2 with a token-held
+key: without this the connect fails with the error above, with it the client
+reaches CONNECTED.
+
+```ini
+openssl_conf = az_iot_init
+
+[az_iot_init]
+providers = az_iot_providers
+
+[az_iot_providers]
+default = az_iot_default_sect
+pkcs11 = az_iot_pkcs11_sect
+
+[az_iot_default_sect]
+activate = 1
+
+[az_iot_pkcs11_sect]
+pkcs11-module-path = /usr/lib/softhsm/libsofthsm2.so   # your PKCS#11 module
+# Precautionary. Inert on a token that advertises no digests (SoftHSM2 does
+# not); it matters on tokens that do, where it keeps hashing in the default
+# provider and leaves only signing in the token.
+pkcs11-module-block-operations = digest
+# Required with SoftHSM2: without it the process reaches CONNECTED and then
+# crashes when OpenSSL tears the provider down.
+pkcs11-module-quirks = no-deinit
+activate = 1
+```
+
+`activate = 1` is the load-bearing line: a provider brought up from
+configuration completes the handshake, one the application loads later by name
+does not, and the settings above apply only to the former.
+
+`c/eng/setup-softhsm.sh` generates a configuration of this shape and exports
+`OPENSSL_CONF`, so the repo's own SoftHSM2 setup needs nothing further. What it
+writes differs in the paths, which it fills in rather than hard-codes: the
+`pkcs11-module-path` it detected, and a `module = <dir>/pkcs11.so` line only
+when `OPENSSL_MODULES` names a directory that actually holds one. Compare
+yours for the two `pkcs11-module-*` settings and `activate`, not line for line.
+
 Managed-provider samples additionally use (optional, with defaults):
 
 | Variable | Default | Meaning |

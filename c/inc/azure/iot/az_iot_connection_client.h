@@ -28,6 +28,9 @@ extern "C"
    * version and topic shapes it uses. One type serves both directions:
    *   - DPS connect (host == NULL): LEARNED, from the `connectionProfile`
    *     property of the ASSIGNED payload. opts.connection_profile is ignored.
+   *     Until that DPS api-version ships, local development can synthesize an
+   *     absent/null value with AZ_IOT_DPS_CONNECTION_PROFILE_OVERRIDE; an
+   *     explicit service value always wins.
    *   - Direct connect (host set, no DPS): DECLARED by the caller through
    *     opts.connection_profile, because there is nobody to ask. Defaults to
    *     CLASSIC (MQTT v3.1.1); set MQTT_V5 for an IoT Hub Next / Event Grid
@@ -56,11 +59,12 @@ extern "C"
   {
     uint32_t _internal_size;
     az_iot_connection_profile connection_profile;
-    /* The wire string, never NULL. This is what keeps the extensible union from
-     * becoming lossy at the C boundary: a profile this SDK has never heard of
-     * still reports UNKNOWN *and* the text the service sent, so it can be logged
-     * or acted on. Points into the connection client and stays valid until
-     * destroy().
+    /* The effective profile text, never NULL. When DPS supplies a string it is
+     * verbatim, which keeps the extensible union from becoming lossy at the C
+     * boundary: a profile this SDK has never heard of still reports UNKNOWN
+     * *and* the text the service sent. For absent/null it is the resolved
+     * contract default ("classic"), or the exact development override value.
+     * Points into the connection client and stays valid until destroy().
      *
      * Bounded by AZ_IOT_CONNECTION_PROFILE_RAW_BUF, so it is the value verbatim
      * only when connection_profile_raw_truncated is false. Callers that report
@@ -185,6 +189,25 @@ extern "C"
                                              * hub with the issued operational cert.
                                              * Requires a provider whose vtable exposes
                                              * get_csr (version >= 2). */
+
+      /* Consecutive failed hub connect attempts after which the assignment is
+       * treated as stale and re-provisioning is forced. Defaults to
+       * AZ_IOT_DEFAULT_MAX_HUB_CONNECT_ATTEMPTS_BEFORE_REPROVISION; 0 disables
+       * it.
+       *
+       * Re-provisioning is otherwise only triggered by a CONNACK that rejects
+       * the identity. A hub that has been vacated service-side may simply stop
+       * answering instead, and the cached assignment would then be retried until
+       * the reconnection policy gives up -- never asking DPS where the device
+       * actually lives now. This bounds that.
+       *
+       * Under the default policy (1s initial, 30s cap, +/-20% jitter) the delays
+       * run 1, 2, 4, 8, 16 then 30s, so attempt N >= 6 falls at roughly
+       * 31 + 30*(N-5) seconds: the default 50 is about 23 minutes. Long enough
+       * that an ordinary network outage does not send a whole fleet to DPS at
+       * once, short enough that a device left behind by a migration recovers
+       * without an operator. */
+      uint32_t max_hub_connect_attempts_before_reprovision;
     } dps;
   } az_iot_connection_client_options;
 
@@ -198,9 +221,27 @@ extern "C"
     AZ_IOT_CONN_STATE_FAULTED
   } az_iot_connection_state;
 
+  /* SDK-produced, callback-lifetime view of a connection-state transition.
+   * The SDK stamps _internal_size; callers never initialize this struct. Future
+   * SDKs may append fields, so callbacks must check _internal_size before
+   * reading a field added after the version they were compiled against.
+   *
+   * profile is non-NULL when state == AZ_IOT_CONN_STATE_CONNECTED, and also on
+   * a failure whose reason is AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH or
+   * AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED -- an application needs the
+   * assigned generation there in order to rebuild its feature clients. It
+   * and the event itself remain valid only until the callback returns; copy any
+   * value that must be retained. */
+  typedef struct az_iot_connection_state_event
+  {
+    uint32_t _internal_size;
+    az_iot_connection_state state;
+    az_iot_result reason;
+    const az_iot_hub_profile* profile;
+  } az_iot_connection_state_event;
+
   typedef void (*az_iot_connection_state_callback)(
-      az_iot_connection_state state,
-      az_iot_result reason,
+      const az_iot_connection_state_event* event,
       void* user_ctx);
 
   typedef void (*az_iot_publish_ack_callback)(az_iot_result status, void* user_ctx);
@@ -332,6 +373,15 @@ extern "C"
 #ifndef AZ_IOT_CONNECTION_PROFILE_RAW_BUF
 #define AZ_IOT_CONNECTION_PROFILE_RAW_BUF 64
 #endif
+/* See opts.dps.max_hub_connect_attempts_before_reprovision. */
+#ifndef AZ_IOT_DEFAULT_MAX_HUB_CONNECT_ATTEMPTS_BEFORE_REPROVISION
+#define AZ_IOT_DEFAULT_MAX_HUB_CONNECT_ATTEMPTS_BEFORE_REPROVISION 50u
+#endif
+/* Feature clients that ask to build their topics at connect time. One per
+ * attached feature client, so this tracks the persistent-subscription bound. */
+#ifndef AZ_IOT_MAX_FEATURE_CLIENT_BINDS
+#define AZ_IOT_MAX_FEATURE_CLIENT_BINDS 8
+#endif
 #ifndef AZ_IOT_MQTT_USERNAME_BUF
 #define AZ_IOT_MQTT_USERNAME_BUF 256
 #endif
@@ -406,11 +456,12 @@ extern "C"
 
     bool user_close;
 
-    /* Set when the hub refused this identity and the device provisions through
-     * DPS: the next reconnect attempt re-provisions instead of reconnecting to
-     * the rejected credential. Kept beside user_close so it lands in the
-     * padding that already precedes `deferred` rather than adding its own. */
-    bool reprovision_pending;
+    /* Set when the next reconnect attempt must re-provision through DPS rather
+     * than reconnect to the cached assignment -- because the hub refused this
+     * identity, or because hub attempts crossed the configured threshold. Kept
+     * beside user_close so it lands in the padding that already precedes
+     * `deferred` rather than adding its own. */
+    bool needs_reprovision;
 
     int deferred;
     az_iot_result deferred_reason;
@@ -482,6 +533,30 @@ extern "C"
     az_iot_connection_profile connection_profile;
     char connection_profile_raw[AZ_IOT_CONNECTION_PROFILE_RAW_BUF];
     bool connection_profile_raw_truncated;
+    /* True once connection_profile is authoritative rather than the value
+     * seeded at init: immediately for a direct connect, where opts declares it,
+     * and when ASSIGNED is applied on the DPS path -- including an ASSIGNED that
+     * carries no connectionProfile, since absent resolves to classic. */
+    bool connection_profile_resolved;
+
+    /* The generation the attached feature clients require, refcounted by them.
+     * Checked against connection_profile the moment that becomes authoritative,
+     * so a reassignment to the other generation fails the connection instead of
+     * coming up underneath clients built for the old one. */
+    az_iot_connection_profile required_profile;
+    uint32_t required_profile_refs;
+
+    /* Feature clients whose topics can only be built once the device id is
+     * settled; re-run before every connect attempt. */
+    struct
+    {
+      void* owner;
+      az_iot_result (*on_bind)(void* owner, struct az_iot_connection_client* client);
+    } feature_client_binds[AZ_IOT_MAX_FEATURE_CLIENT_BINDS];
+
+    /* Failed HUB connect attempts since the last success. DPS attempts are not
+     * counted: they are what this threshold escalates TO. */
+    uint32_t consecutive_hub_connect_failures;
 
     az_iot_hub_client hub_client;
     bool hub_client_initialized;
@@ -568,7 +643,8 @@ extern "C"
       const az_iot_mqtt_factory* factory);
 
   /* Not AZ_NODISCARD: configuration setters that fail only on invalid arguments
-   * (a programming error), so callers routinely fire-and-forget them. */
+   * (a programming error), so callers routinely fire-and-forget them. The state
+   * callback receives an SDK-owned event valid only for the duration of the call. */
   az_iot_result az_iot_connection_client_set_state_callback(
       az_iot_connection_client* client,
       az_iot_connection_state_callback cb,

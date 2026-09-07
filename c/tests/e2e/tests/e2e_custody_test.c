@@ -76,7 +76,7 @@ typedef struct
   az_iot_connection_state conn_state;
   bool conn_ok;
   az_iot_e2e_service* service;
-  az_iot_telemetry_client telemetry;
+  az_iot_gen1_telemetry_client telemetry;
   bool telemetry_ok;
   int send_done;
   az_iot_result send_status;
@@ -137,8 +137,10 @@ static const az_iot_certificate_provider_vtable k_custody_vtable = {
   .deinit = custody_deinit,
 };
 
-static void on_conn_state(az_iot_connection_state s, az_iot_result reason, void* user_ctx)
+static void on_conn_state(const az_iot_connection_state_event* event, void* user_ctx)
 {
+  az_iot_connection_state s = event->state;
+  az_iot_result reason = event->reason;
   (void)reason;
   ((custody_fixture*)user_ctx)->conn_state = s;
 }
@@ -241,7 +243,7 @@ static void device_disconnect(custody_fixture* fx)
 {
   if (fx->telemetry_ok)
   {
-    az_iot_telemetry_client_destroy(&fx->telemetry);
+    az_iot_gen1_telemetry_client_destroy(&fx->telemetry);
     fx->telemetry_ok = false;
   }
   if (fx->conn_ok)
@@ -293,7 +295,7 @@ static int group_setup(void** state)
   {
     return 1;
   }
-  if (az_iot_telemetry_client_init(&g_fixture.telemetry, &g_fixture.conn) != AZ_IOT_OK)
+  if (az_iot_gen1_telemetry_client_init(&g_fixture.telemetry, &g_fixture.conn) != AZ_IOT_OK)
   {
     fprintf(stderr, "[e2e-custody] telemetry client init failed\n");
     return 1;
@@ -348,7 +350,7 @@ static void telemetry_flows_over_the_token_authenticated_connection(void** state
 
   g_fixture.send_done = 0;
   assert_int_equal(
-      az_iot_telemetry_client_send(&g_fixture.telemetry, &msg, on_send_done, &g_fixture),
+      az_iot_gen1_telemetry_client_send(&g_fixture.telemetry, &msg, on_send_done, &g_fixture),
       AZ_IOT_OK);
 
   time_t start = time(NULL);

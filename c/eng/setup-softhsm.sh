@@ -22,6 +22,8 @@
 #   PKCS11_PROVIDER_MODULE    the SoftHSM2 PKCS#11 module
 #   AZ_IOT_CLIENT_KEY_URI     RFC 7512 URI of the imported key (the PIN is named by
 #                             pin-source, never inlined as pin-value)
+#   OPENSSL_CONF              an OpenSSL config that loads the pkcs11 provider
+#                             with digests disabled (see the note further down)
 #   AZ_IOT_CRYPTO_ENGINE_ID   "pkcs11"
 #   AZ_IOT_TEST_PKCS11_KEY_URI  same URI, for the unit-level custody suite
 #
@@ -128,14 +130,92 @@ fi
 # such a URI outright. pin-source names where the PIN lives instead, which keeps
 # the reference independently loadable (OpenSSL must log in to the token when it
 # resolves the file) without putting the secret in it.
+# Where setup-pkcs11-provider.sh put pkcs11.so, if it ran. Naming the module
+# explicitly keeps the configuration independent of the ambient module search
+# path; when it is unset the provider is found the usual way.
+#
+# Checked rather than trusted: OPENSSL_MODULES may point at an unrelated modules
+# directory, and writing "module = <dir>/pkcs11.so" for a file that is not there
+# produces a configuration OpenSSL fails to load -- a worse outcome than simply
+# letting the provider be found the usual way.
+modules_dir="${OPENSSL_MODULES:-}"
+if [ -n "${modules_dir}" ] && [ ! -f "${modules_dir}/pkcs11.so" ]; then
+    echo "setup-softhsm: OPENSSL_MODULES='${modules_dir}' holds no pkcs11.so;" \
+         "leaving the provider to be located the usual way" >&2
+    modules_dir=""
+fi
+
 pin_file="${work_dir}/token-pin"
 printf '%s' "${PIN}" > "${pin_file}"
 chmod 600 "${pin_file}"
 uri="pkcs11:token=${TOKEN_LABEL};object=${KEY_LABEL};type=private?pin-source=file:${pin_file}"
 
+# An OpenSSL configuration that ACTIVATES the pkcs11 provider.
+#
+# Without it, a TLS 1.2 client-authentication handshake fails outright:
+#
+#   error:40800054:pkcs11:p11prov_GetOperationState:...:Error returned by
+#   C_GetOperationState
+#
+# The provider offers digest implementations as well as key operations, so a
+# provider the adapter loads at run time through OSSL_PROVIDER_try_load() can
+# end up servicing the TLS handshake transcript hash. TLS 1.2 duplicates that
+# digest context, the provider implements duplication with C_GetOperationState,
+# and SoftHSM2 -- like most tokens, by the provider's own note in digests.c --
+# does not support it on a digest session. TLS 1.3 does not duplicate the
+# context, which is why only the 1.2 path breaks.
+#
+# Bringing the provider up from configuration, with the default provider
+# activated alongside it, avoids that: measured against a live IoT Hub over
+# TLS 1.2 with a SoftHSM2-held key, a run-time try_load() fails with the error
+# above and a configuration-activated provider reaches CONNECTED, 3 runs each.
+#
+# What each setting in the generated file is for -- kept here rather than in the
+# file, so what OpenSSL parses stays minimal:
+#
+#   activate = 1 (in the pkcs11 section)
+#       The operative line. A provider brought up from configuration completes
+#       the TLS 1.2 handshake; one the adapter loads at run time through
+#       OSSL_PROVIDER_try_load() does not, and the two settings below apply only
+#       to the former.
+#   pkcs11-module-quirks = no-deinit
+#       Required. Once the provider is activated from configuration, SoftHSM2
+#       crashes when OpenSSL tears it down -- AFTER a successful connect, which
+#       is what makes it easy to miss. Measured: without this the run reaches
+#       CONNECTED and then dies with SIGSEGV, 3 runs out of 3. The provider
+#       documents the quirk for exactly this; the cost is memory the process was
+#       about to release anyway.
+#   pkcs11-module-block-operations = digest
+#       Precautionary, and inert on SoftHSM2: it advertises no digests, and
+#       removing it changes nothing measurable here. Kept for tokens that DO
+#       advertise them, where it forces hashing back to the default provider and
+#       leaves only signing in the token. It is NOT what fixes the handshake.
+openssl_cnf="${work_dir}/openssl-pkcs11.cnf"
+cat > "${openssl_cnf}" <<CNF
+openssl_conf = az_iot_init
+
+[az_iot_init]
+providers = az_iot_providers
+
+[az_iot_providers]
+default = az_iot_default_sect
+pkcs11 = az_iot_pkcs11_sect
+
+[az_iot_default_sect]
+activate = 1
+
+[az_iot_pkcs11_sect]
+${modules_dir:+module = ${modules_dir}/pkcs11.so}
+pkcs11-module-path = ${module}
+pkcs11-module-block-operations = digest
+pkcs11-module-quirks = no-deinit
+activate = 1
+CNF
+
 cat <<EOF
 export SOFTHSM2_CONF='${conf}'
 export PKCS11_PROVIDER_MODULE='${module}'
+export OPENSSL_CONF='${openssl_cnf}'
 export AZ_IOT_CLIENT_KEY_URI='${uri}'
 export AZ_IOT_CRYPTO_ENGINE_ID='pkcs11'
 export AZ_IOT_TEST_PKCS11_KEY_URI='${uri}'
