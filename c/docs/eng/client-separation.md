@@ -502,13 +502,13 @@ obvious reading of those two facts is that feature clients must be created
 wrong — it cost more than it bought.
 
 **Decided: `_init()` pins the generation; the connection checks it at connect.**
-`_init()` records the generation the client requires and reads nothing, so it
-needs no live connection and a feature client can once again be a long-lived
+`_init()` records the generation the client requires and does not query the service,
+so it needs no live connection and a feature client can once again be a long-lived
 member constructed alongside the connection at start-up. The connection verifies
 every pin at the one moment the profile becomes authoritative — at connect, after
 DPS assignment, before the broker CONNECT and before `CONNECTED` is announced.
 When the profile is *already* authoritative (a direct connect, or a DPS
-connection past assignment) `_init()` answers immediately instead of deferring,
+connection past assignment) `_init()` validates immediately instead of deferring,
 so initializing after `CONNECTED` still works and still fails fast.
 
 The reasons the earlier decision gave for checking at init still hold, and the
