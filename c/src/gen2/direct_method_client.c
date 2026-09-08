@@ -210,8 +210,7 @@ az_iot_result az_iot_gen2_direct_method_respond(
   }
   if (!request->_internal.in_use || request->_internal.owner == NULL)
   {
-    AZ_IOT_LOG_ERROR(
-        "gen2_direct_method: respond() called on a request that was already answered");
+    AZ_IOT_LOG_ERROR("gen2_direct_method: respond() called on a request that was already answered");
     return AZ_IOT_ERR_INVALID_ARG;
   }
   if (request->_internal.profile != AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
@@ -223,9 +222,16 @@ az_iot_result az_iot_gen2_direct_method_respond(
   az_iot_gen2_direct_method_client* dm
       = (az_iot_gen2_direct_method_client*)request->_internal.owner;
 
-  /* A connection that never got a client id yields a NULL device id, and the
-   * writer reports that instead of dereferencing it. */
+  /* Same answer bind_topics gives: a connection that never got a device id has
+   * nothing to build a topic from, and saying NOT_SUPPORTED would point at the
+   * topic writer rather than at the connection. */
   const char* device_id = az_iot_connection_client__device_id(DI(dm).conn);
+  if (!device_id)
+  {
+    request->_internal.in_use = false;
+    return AZ_IOT_ERR_NOT_INITIALIZED;
+  }
+
   char topic[AZ_IOT_GEN2_DM_TOPIC_MAX];
   const char* topic_parts[]
       = { "ih/", device_id, "/srv/methods/", request->_internal.method_name, "/response" };

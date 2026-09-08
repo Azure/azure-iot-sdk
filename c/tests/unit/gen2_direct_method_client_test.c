@@ -241,8 +241,7 @@ static void inject_invocation(
 static void init_rejects_a_null_client(void** state)
 {
   fixture* fx = (fixture*)*state;
-  assert_int_equal(
-      az_iot_gen2_direct_method_client_init(NULL, &fx->conn), AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(az_iot_gen2_direct_method_client_init(NULL, &fx->conn), AZ_IOT_ERR_INVALID_ARG);
 }
 
 static void init_rejects_a_null_connection(void** state)

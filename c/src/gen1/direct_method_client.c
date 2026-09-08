@@ -215,8 +215,7 @@ az_iot_result az_iot_gen1_direct_method_respond(
    * an error. Catch it here rather than on the wire. */
   if (!request->_internal.in_use || request->_internal.owner == NULL)
   {
-    AZ_IOT_LOG_ERROR(
-        "gen1_direct_method: respond() called on a request that was already answered");
+    AZ_IOT_LOG_ERROR("gen1_direct_method: respond() called on a request that was already answered");
     return AZ_IOT_ERR_INVALID_ARG;
   }
   if (request->_internal.profile != AZ_IOT_CONNECTION_PROFILE_CLASSIC)
