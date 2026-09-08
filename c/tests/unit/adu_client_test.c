@@ -446,6 +446,8 @@ typedef struct
   char last_installed_provider[64];
   char last_installed_name[64];
   char last_installed_version[64];
+  az_iot_adu_client_step_result last_step_results[_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS];
+  uint8_t last_step_details[_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS][256];
 } fake_channel;
 
 static az_iot_result fake_channel_open(void* ctx, az_iot_adu_channel_update_cb cb, void* engine_ctx)
@@ -487,6 +489,29 @@ static az_iot_result fake_channel_report(void* ctx, const az_iot_adu_report* rep
   fake_channel* fc = (fake_channel*)ctx;
   fc->report_count++;
   fc->last_report = *report;
+  assert_true(report->step_results_count >= 0);
+  assert_true(report->step_results_count <= _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS);
+  if (report->step_results_count == 0)
+  {
+    assert_null(report->step_results);
+  }
+  else
+  {
+    assert_non_null(report->step_results);
+  }
+  for (int32_t i = 0; i < report->step_results_count; ++i)
+  {
+    fc->last_step_results[i] = report->step_results[i];
+    az_span details = report->step_results[i].result_details;
+    int32_t len = az_span_size(details);
+    assert_true(len >= 0 && (size_t)len <= sizeof(fc->last_step_details[i]));
+    if (len > 0)
+    {
+      memcpy(fc->last_step_details[i], az_span_ptr(details), (size_t)len);
+      fc->last_step_results[i].result_details = az_span_create(fc->last_step_details[i], len);
+    }
+  }
+  fc->last_report.step_results = (report->step_results_count > 0) ? fc->last_step_results : NULL;
   copy_str(fc->last_workflow_id, sizeof(fc->last_workflow_id), report->workflow_id);
   copy_str(fc->last_extended, sizeof(fc->last_extended), report->extended_result_codes);
   copy_str(fc->last_details, sizeof(fc->last_details), report->result_details);
@@ -746,6 +771,11 @@ static void deployment_drives_full_workflow_single_step(void** state)
   {
     assert_int_not_equal(fx->log.ops[i], OP_RESTORE);
   }
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_ADU_OUTCOME_SUCCEEDED);
+  assert_int_equal(fx->chan.last_report.step_results_count, 1);
+  assert_int_equal(
+      fx->chan.last_report.step_results[0].result_code, AZ_IOT_ADU_AGENT_RESULT_CODE_SUCCESS);
+  assert_int_equal(fx->chan.last_report.step_results[0].extended_result_code, 0);
 }
 
 static void verify_failure_blocks_download_and_fails(void** state)
@@ -1002,6 +1032,57 @@ static void report_carries_the_active_workflow_id(void** state)
 
   assert_true(fx->chan.report_count > 0);
   assert_string_equal(fx->chan.last_workflow_id, "51552a54-765e-419f-892a-c822549b6f38");
+}
+
+static void report_before_manifest_parse_has_no_step_results(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  inject_patch(fx, signed_patch());
+
+  assert_int_equal(az_iot_adu__report_state(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(fx->chan.report_count, 1);
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_ADU_OUTCOME_IN_PROGRESS);
+  assert_int_equal(fx->chan.last_report.step_results_count, 0);
+  assert_null(fx->chan.last_report.step_results);
+}
+
+static void report_preserves_step_results_at_capacity(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  inject_patch(fx, signed_patch());
+
+  az_iot_adu_client_install_result* result = &fx->adu._internal.install_result;
+  result->step_results_count = _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS;
+  uint8_t details[] = { 'a', '\0', 'b' };
+  for (int32_t i = 0; i < result->step_results_count; ++i)
+  {
+    result->step_results[i].result_code = 100 + i;
+    result->step_results[i].extended_result_code
+        = AZ_IOT_ADU_EXTENDED_RESULT(AZ_IOT_ADU_FACILITY_INTERNAL, (uint32_t)i);
+    result->step_results[i].result_details = AZ_SPAN_FROM_BUFFER(details);
+  }
+
+  assert_int_equal(az_iot_adu__report_state(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(fx->chan.report_count, 1);
+  assert_int_equal(
+      fx->chan.last_report.step_results_count, _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS);
+
+  /* A retaining channel copies the array and span bytes before the engine
+   * reuses its storage for another workflow. */
+  memset(result, 0, sizeof(*result));
+  memset(details, 0, sizeof(details));
+  static const uint8_t expected_details[] = { 'a', '\0', 'b' };
+  for (int32_t i = 0; i < fx->chan.last_report.step_results_count; ++i)
+  {
+    const az_iot_adu_client_step_result* step = &fx->chan.last_report.step_results[i];
+    assert_int_equal(step->result_code, 100 + i);
+    assert_int_equal(
+        step->extended_result_code,
+        AZ_IOT_ADU_EXTENDED_RESULT(AZ_IOT_ADU_FACILITY_INTERNAL, (uint32_t)i));
+    assert_int_equal(az_span_size(step->result_details), sizeof(expected_details));
+    assert_memory_equal(
+        az_span_ptr(step->result_details), expected_details, sizeof(expected_details));
+  }
 }
 
 /* Custom (compatibility) properties are cached by the engine and, under ADUv2,
@@ -1488,6 +1569,71 @@ static void multi_step_update_runs_every_step_in_order(void** state)
   assert_true(install0 < apply0);
   assert_true(apply0 < install1);
   assert_true(install1 < apply1);
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_ADU_OUTCOME_SUCCEEDED);
+  assert_int_equal(fx->chan.last_report.step_results_count, 2);
+  for (int32_t i = 0; i < fx->chan.last_report.step_results_count; ++i)
+  {
+    assert_int_equal(
+        fx->chan.last_report.step_results[i].result_code, AZ_IOT_ADU_AGENT_RESULT_CODE_SUCCESS);
+    assert_int_equal(fx->chan.last_report.step_results[i].extended_result_code, 0);
+  }
+}
+
+static void multi_step_report_preserves_progress_and_failure(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  inject_patch(fx, two_step_patch());
+  for (int i = 0; i < 40 && fx->adu._internal.current_step == 0; ++i)
+  {
+    assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  }
+  assert_int_equal(fx->adu._internal.current_step, 1);
+  assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_DOWNLOAD_STARTED);
+
+  const az_iot_adu_report* report = &fx->chan.last_report;
+  assert_int_equal(report->outcome, AZ_IOT_ADU_OUTCOME_IN_PROGRESS);
+  assert_int_equal(report->step_results_count, 2);
+  assert_int_equal(report->step_results[0].result_code, AZ_IOT_ADU_AGENT_RESULT_CODE_SUCCESS);
+  assert_int_equal(report->step_results[0].extended_result_code, 0);
+  assert_int_equal(report->step_results[1].result_code, 0);
+  assert_int_equal(report->step_results[1].extended_result_code, 0);
+
+  fx->log.install_result = AZ_IOT_ADU_RESULT_FAILURE;
+  fx->log.restore_result = AZ_IOT_ADU_RESULT_FAILURE;
+  pump(fx, 40);
+
+  assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
+  assert_int_equal(report->outcome, AZ_IOT_ADU_OUTCOME_FAILED);
+  assert_int_equal(report->step_results_count, 2);
+  assert_int_equal(report->step_results[0].result_code, AZ_IOT_ADU_AGENT_RESULT_CODE_SUCCESS);
+  assert_int_equal(report->step_results[0].extended_result_code, 0);
+  assert_int_equal(report->step_results[1].result_code, 700 - AZ_IOT_ADU_FACILITY_INSTALL);
+  assert_int_equal(
+      report->step_results[1].extended_result_code,
+      AZ_IOT_ADU_EXTENDED_RESULT(AZ_IOT_ADU_FACILITY_INSTALL, (uint32_t)AZ_IOT_ADU_RESULT_FAILURE));
+  assert_int_equal(
+      fx->adu._internal.install_result.extended_result_code,
+      AZ_IOT_ADU_EXTENDED_RESULT(AZ_IOT_ADU_FACILITY_RESTORE, (uint32_t)AZ_IOT_ADU_RESULT_FAILURE));
+}
+
+static void multi_step_failure_preserves_unexecuted_step_results(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  fx->log.download_result = AZ_IOT_ADU_RESULT_FAILURE;
+  inject_patch(fx, two_step_patch());
+  pump(fx, 40);
+
+  const az_iot_adu_report* report = &fx->chan.last_report;
+  assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
+  assert_int_equal(report->outcome, AZ_IOT_ADU_OUTCOME_FAILED);
+  assert_int_equal(report->step_results_count, 2);
+  assert_int_equal(report->step_results[0].result_code, 700 - AZ_IOT_ADU_FACILITY_DOWNLOAD);
+  assert_int_equal(
+      report->step_results[0].extended_result_code,
+      AZ_IOT_ADU_EXTENDED_RESULT(
+          AZ_IOT_ADU_FACILITY_DOWNLOAD, (uint32_t)AZ_IOT_ADU_RESULT_FAILURE));
+  assert_int_equal(report->step_results[1].result_code, 0);
+  assert_int_equal(report->step_results[1].extended_result_code, 0);
 }
 
 static void download_failure_is_reported_and_does_not_install(void** state)
@@ -1791,6 +1937,9 @@ int main(void)
         update_device_properties_is_accepted_without_reporting, setup, teardown),
     cmocka_unit_test_setup_teardown(report_carries_the_active_workflow_id, setup, teardown),
     cmocka_unit_test_setup_teardown(
+        report_before_manifest_parse_has_no_step_results, setup, teardown),
+    cmocka_unit_test_setup_teardown(report_preserves_step_results_at_capacity, setup, teardown),
+    cmocka_unit_test_setup_teardown(
         custom_device_properties_are_accepted_and_serialized, setup, teardown),
     cmocka_unit_test_setup_teardown(
         public_initialize_takes_a_connection_and_builds_its_own_channel, setup, teardown),
@@ -1803,6 +1952,10 @@ int main(void)
     cmocka_unit_test_setup_teardown(same_id_changed_manifest_restarts, setup, teardown),
     cmocka_unit_test(microsoft_root_keys_are_embedded),
     cmocka_unit_test_setup_teardown(multi_step_update_runs_every_step_in_order, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        multi_step_report_preserves_progress_and_failure, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        multi_step_failure_preserves_unexecuted_step_results, setup, teardown),
     cmocka_unit_test_setup_teardown(
         download_failure_is_reported_and_does_not_install, setup, teardown),
     cmocka_unit_test_setup_teardown(cancel_during_download_aborts_the_transfer, setup, teardown),

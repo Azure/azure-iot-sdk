@@ -422,6 +422,10 @@ extern "C"
 
     /* Free-form human-readable detail. May be NULL. */
     const char* result_details;
+
+    /* Array and detail spans are borrowed for the report call; NULL when count is zero. */
+    const az_iot_adu_client_step_result* step_results;
+    int32_t step_results_count;
   } az_iot_adu_report;
 
   /* Opaque forward declaration. The delivery/reporting channel is an INTERNAL
