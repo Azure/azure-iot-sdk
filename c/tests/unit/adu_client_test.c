@@ -24,7 +24,8 @@
 #include <azure/core/az_span.h>
 
 #include "azure/iot/az_iot_connection_client.h"
-#include "azure/iot/az_iot_twin_client.h"
+#include "../../src/features/adu/internal/adu_channel_internal.h"
+#include "../../src/features/adu/internal/adu_internal.h"
 #include "azure/iot/az_iot_mqtt_iface.h"
 #include "azure/iot/az_iot_result.h"
 #include "azure/iot/az_iot_adu.h"
@@ -422,13 +423,109 @@ static int32_t mock_load(uint8_t* blob, size_t cap, size_t* out_len, void* ctx)
 }
 
 /* ------------------------------------------------------------------------- */
+/* fake channel                                                              */
+/* ------------------------------------------------------------------------- */
+/* The engine names no transport, so the suite drives it through a channel that
+ * carries nothing: deliveries are injected by the test and reports are captured
+ * for inspection. No MQTT, no HTTP, no service. */
+
+typedef struct
+{
+  az_iot_adu_channel_update_cb cb;
+  void* engine_ctx;
+  bool opened;
+  int request_update_count;
+  az_iot_result request_update_result;
+
+  int report_count;
+  az_iot_adu_report last_report;
+  char last_workflow_id[128];
+  char last_extended[32];
+  char last_details[256];
+  bool last_had_installed_update_id;
+  char last_installed_provider[64];
+  char last_installed_name[64];
+  char last_installed_version[64];
+} fake_channel;
+
+static az_iot_result fake_channel_open(void* ctx, az_iot_adu_channel_update_cb cb, void* engine_ctx)
+{
+  fake_channel* fc = (fake_channel*)ctx;
+  fc->cb = cb;
+  fc->engine_ctx = engine_ctx;
+  fc->opened = true;
+  return AZ_IOT_OK;
+}
+
+static void fake_channel_close(void* ctx) { ((fake_channel*)ctx)->opened = false; }
+
+static az_iot_result fake_channel_request_update(void* ctx)
+{
+  fake_channel* fc = (fake_channel*)ctx;
+  fc->request_update_count++;
+  return fc->request_update_result;
+}
+
+static void copy_str(char* dst, size_t cap, const char* src)
+{
+  if (src == NULL)
+  {
+    dst[0] = '\0';
+    return;
+  }
+  size_t n = strlen(src);
+  if (n > cap - 1)
+  {
+    n = cap - 1;
+  }
+  memcpy(dst, src, n);
+  dst[n] = '\0';
+}
+
+static az_iot_result fake_channel_report(void* ctx, const az_iot_adu_report* report)
+{
+  fake_channel* fc = (fake_channel*)ctx;
+  fc->report_count++;
+  fc->last_report = *report;
+  copy_str(fc->last_workflow_id, sizeof(fc->last_workflow_id), report->workflow_id);
+  copy_str(fc->last_extended, sizeof(fc->last_extended), report->extended_result_codes);
+  copy_str(fc->last_details, sizeof(fc->last_details), report->result_details);
+  fc->last_had_installed_update_id = (report->installed_update_id != NULL);
+  if (report->installed_update_id != NULL)
+  {
+    copy_str(
+        fc->last_installed_provider,
+        sizeof(fc->last_installed_provider),
+        report->installed_update_id->provider);
+    copy_str(
+        fc->last_installed_name,
+        sizeof(fc->last_installed_name),
+        report->installed_update_id->name);
+    copy_str(
+        fc->last_installed_version,
+        sizeof(fc->last_installed_version),
+        report->installed_update_id->version);
+  }
+  return AZ_IOT_OK;
+}
+
+static const az_iot_adu_channel_vtable k_fake_channel_vtable = {
+  .open = fake_channel_open,
+  .close = fake_channel_close,
+  .request_update = fake_channel_request_update,
+  .report = fake_channel_report,
+  .do_work = NULL,
+};
+
+/* ------------------------------------------------------------------------- */
 /* fixture                                                                   */
 /* ------------------------------------------------------------------------- */
 
 typedef struct
 {
   az_iot_connection_client conn;
-  az_iot_twin_client twin;
+  fake_channel chan;
+  az_iot_adu_channel channel;
   az_iot_adu_client_t adu;
   az_iot_mqtt_factory* factory;
   az_iot_mock_mqtt_client* mock;
@@ -505,7 +602,9 @@ static int setup(void** state)
   fx->factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
   assert_non_null(fx->factory);
 
-  assert_int_equal(az_iot_twin_client_init(&fx->twin, &fx->conn), AZ_IOT_OK);
+  memset(&fx->chan, 0, sizeof(fx->chan));
+  fx->channel.vtable = &k_fake_channel_vtable;
+  fx->channel.ctx = &fx->chan;
 
   az_iot_adu_platform_hooks hooks;
   az_iot_adu_crypto_hooks crypto;
@@ -526,7 +625,8 @@ static int setup(void** state)
   adu_opts.device_props = &dp;
   adu_opts.device_props_buffer = fx->dp_buf;
   adu_opts.device_props_buffer_size = sizeof(fx->dp_buf);
-  assert_int_equal(az_iot_adu_client_initialize(&fx->adu, &fx->twin, &adu_opts), AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_adu_client__initialize_with_channel(&fx->adu, &fx->channel, &adu_opts), AZ_IOT_OK);
 
   *state = fx;
   return 0;
@@ -543,7 +643,7 @@ static int teardown(void** state)
      * here. Check before deinit() clears factory_count. */
     bool factory_adopted = (fx->conn.factory_count > 0);
     az_iot_adu_client_destroy(&fx->adu);
-    az_iot_twin_client_destroy(&fx->twin);
+
     az_iot_connection_client_destroy(&fx->conn);
     if (!factory_adopted)
     {
@@ -567,12 +667,14 @@ static void open_to_connected(fixture* fx)
   az_iot_mock_mqtt_client_clear_calls(fx->mock);
 }
 
+/* Deliver an update payload through the channel. Under ADUv1 this arrived as an
+ * MQTT twin desired-property PATCH; the engine no longer knows or cares what
+ * carried it, so the test hands the payload straight to the channel callback. */
 static void inject_patch(fixture* fx, const char* body)
 {
-  char topic[] = "$iothub/twin/PATCH/properties/desired/?$version=7";
-  assert_true(az_iot_mock_mqtt_client_inject_message(
-      fx->mock, topic, (const uint8_t*)body, strlen(body), AZ_IOT_MQTT_QOS_0));
-  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+  assert_true(fx->chan.opened);
+  assert_non_null(fx->chan.cb);
+  fx->chan.cb((const uint8_t*)body, strlen(body), fx->chan.engine_ctx);
 }
 
 /* Pump the ADU state machine until Idle or a max iteration cap. */
@@ -861,13 +963,18 @@ static void cancel_action_sets_cancelled_flag(void** state)
   assert_false(az_iot_adu_is_cancelled(&fx->adu));
 }
 
-static void update_device_properties_sets_report_pending(void** state)
+/* Reporting is keyed on workflowId and is therefore per-workflow: a device with
+ * no workflow in flight has nothing the service could attribute a report to.
+ * Refreshing device properties must be accepted and must NOT manufacture a
+ * report. Under ADUv1 this same call produced an unsolicited reported-property
+ * PATCH; that channel, and the concept, are gone. */
+static void update_device_properties_is_accepted_without_reporting(void** state)
 {
   fixture* fx = (fixture*)*state;
   open_to_connected(fx);
-  /* drain the startup report */
+  /* drain the startup tick */
   assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
-  az_iot_mock_mqtt_client_clear_calls(fx->mock);
+  fx->chan.report_count = 0;
 
   az_iot_adu_device_properties dp = { 0 };
   dp.manufacturer = "Contoso";
@@ -877,48 +984,36 @@ static void update_device_properties_sets_report_pending(void** state)
   dp.installed_update_id.version = "2.0";
   assert_int_equal(az_iot_adu_client_update_device_properties(&fx->adu, &dp), AZ_IOT_OK);
 
-  /* Next do_work publishes a reported-property PATCH. */
   assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
-
-  size_t n = az_iot_mock_mqtt_client_call_count(fx->mock);
-  bool saw_reported_publish = false;
-  for (size_t i = 0; i < n; ++i)
-  {
-    const az_iot_mock_call* c = az_iot_mock_mqtt_client_call_at(fx->mock, i);
-    if (c->kind == AZ_IOT_MOCK_CALL_PUBLISH && c->topic[0] != '\0'
-        && strstr(c->topic, "twin/PATCH/properties/reported") != NULL)
-    {
-      saw_reported_publish = true;
-    }
-  }
-  assert_true(saw_reported_publish);
+  assert_int_equal(fx->chan.report_count, 0);
 }
 
-/* Search a recorded PUBLISH payload for a literal needle. */
-static bool payload_contains(const az_iot_mock_call* c, const char* needle)
-{
-  size_t nlen = strlen(needle);
-  if (c->payload_len < nlen)
-  {
-    return false;
-  }
-  for (size_t i = 0; i + nlen <= c->payload_len; ++i)
-  {
-    if (memcmp(c->payload + i, needle, nlen) == 0)
-    {
-      return true;
-    }
-  }
-  return false;
-}
-
-static void custom_device_properties_are_reported(void** state)
+/* With a workflow in flight the same tick DOES report, and the report carries
+ * the workflow id the deployment was delivered with. */
+static void report_carries_the_active_workflow_id(void** state)
 {
   fixture* fx = (fixture*)*state;
   open_to_connected(fx);
-  /* drain the startup report */
   assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
-  az_iot_mock_mqtt_client_clear_calls(fx->mock);
+  fx->chan.report_count = 0;
+
+  inject_patch(fx, signed_patch());
+  pump(fx, 40);
+
+  assert_true(fx->chan.report_count > 0);
+  assert_string_equal(fx->chan.last_workflow_id, "51552a54-765e-419f-892a-c822549b6f38");
+}
+
+/* Custom (compatibility) properties are cached by the engine and, under ADUv2,
+ * are carried in agentInfo on the fetch — which is the channel's business, not
+ * the engine's. What remains engine-side is that they are accepted and that the
+ * standalone builder serializes them; the old assertion on a twin
+ * reported-property PATCH tested the deleted channel and is gone. */
+static void custom_device_properties_are_accepted_and_serialized(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
 
   static const az_iot_adu_custom_property customs[] = {
     { "location", "building42" },
@@ -933,24 +1028,128 @@ static void custom_device_properties_are_reported(void** state)
   dp.custom_properties = customs;
   dp.custom_properties_count = sizeof(customs) / sizeof(customs[0]);
   assert_int_equal(az_iot_adu_client_update_device_properties(&fx->adu, &dp), AZ_IOT_OK);
-
-  /* Next do_work publishes the reported-property PATCH carrying the customs. */
   assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
 
-  size_t n = az_iot_mock_mqtt_client_call_count(fx->mock);
-  bool saw_customs = false;
-  for (size_t i = 0; i < n; ++i)
+  /* The builder reports bytes used, not a C string, so reserve a byte for the
+   * terminator rather than writing at json[json_len] on a full buffer. */
+  uint8_t json[1024];
+  size_t json_len = 0;
+  assert_int_equal(
+      az_iot_adu_build_report(
+          &dp, NULL, NULL, AZ_IOT_ADU_STATE_IDLE, json, sizeof(json) - 1, &json_len),
+      AZ_IOT_OK);
+  assert_true(json_len > 0);
+  assert_true(json_len < sizeof(json));
+
+  char* text = (char*)json;
+  text[json_len] = '\0';
+  assert_non_null(strstr(text, "location"));
+  assert_non_null(strstr(text, "building42"));
+  assert_non_null(strstr(text, "tier"));
+  assert_non_null(strstr(text, "gold"));
+}
+
+/* The public entry point takes a CONNECTION, not a transport implementation:
+ * the SDK builds the device-update channel itself. An application supplies one
+ * HTTPS primitive and never implements the protocol. */
+static az_iot_result ut_http_send(
+    const char* method,
+    const char* url,
+    const az_iot_adu_http_header* headers,
+    size_t header_count,
+    const uint8_t* body,
+    size_t body_len,
+    az_iot_adu_http_response* response,
+    void* user_ctx)
+{
+  (void)method;
+  (void)url;
+  (void)headers;
+  (void)header_count;
+  (void)body;
+  (void)body_len;
+  (void)response;
+  if (user_ctx != NULL)
   {
-    const az_iot_mock_call* c = az_iot_mock_mqtt_client_call_at(fx->mock, i);
-    if (c->kind == AZ_IOT_MOCK_CALL_PUBLISH
-        && strstr(c->topic, "twin/PATCH/properties/reported") != NULL
-        && payload_contains(c, "location") && payload_contains(c, "building42")
-        && payload_contains(c, "tier") && payload_contains(c, "gold"))
-    {
-      saw_customs = true;
-    }
+    (*(int*)user_ctx)++;
   }
-  assert_true(saw_customs);
+  return AZ_IOT_OK;
+}
+
+static void public_initialize_takes_a_connection_and_builds_its_own_channel(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  (void)fx;
+
+  az_iot_connection_client conn;
+  az_iot_connection_client_options copts = { 0 };
+  copts.host = "broker.example";
+  copts.port = 8883;
+  copts.client_id = "ut-adu-public";
+  assert_int_equal(az_iot_connection_client_init(&conn, &copts), AZ_IOT_OK);
+
+  hook_log log = { 0 };
+  az_iot_adu_platform_hooks hooks = { 0 };
+  az_iot_adu_crypto_hooks crypto = { 0 };
+  hooks.install_fn = mock_install;
+  hooks.apply_fn = mock_apply;
+  hooks.user_ctx = &log;
+  crypto.verify_rs256_fn = mock_verify_rs256;
+  crypto.user_ctx = &log;
+
+  az_iot_adu_device_properties dp = { 0 };
+  dp.manufacturer = "Contoso";
+  dp.model = "Foobar";
+  dp.installed_update_id.provider = "Contoso";
+  dp.installed_update_id.name = "Foobar";
+  dp.installed_update_id.version = "1.0";
+
+  int send_calls = 0;
+  az_iot_adu_http_transport transport = { ut_http_send, &send_calls };
+
+  uint8_t buf[256];
+  az_iot_adu_client_config_options o = az_iot_adu_client_config_options_default();
+  o.hooks = &hooks;
+  o.crypto = &crypto;
+  o.device_props = &dp;
+  o.device_props_buffer = buf;
+  o.device_props_buffer_size = sizeof(buf);
+  o.http_transport = &transport;
+
+  /* The connection is NOT open: the bootstrap update check runs before the
+   * device registers, so initialize must not require a live session. */
+  az_iot_adu_client_t adu;
+  assert_int_equal(az_iot_adu_client_initialize(&adu, &conn, &o), AZ_IOT_OK);
+  assert_int_equal(az_iot_adu_client_get_state(&adu), AZ_IOT_ADU_STATE_IDLE);
+  az_iot_adu_client_destroy(&adu);
+
+  /* The channel state lives INSIDE the client. Initialization must not zero the
+   * client after building it there, or the channel would be left bound to a
+   * wiped state struct -- with a NULL connection and a NULL transport -- and
+   * would fail only later, on the first operation. Reaching the transport
+   * through the client proves it survived initialization. */
+  az_iot_adu_client_t adu_state;
+  assert_int_equal(az_iot_adu_client_initialize(&adu_state, &conn, &o), AZ_IOT_OK);
+  const az_iot_adu_channel_dps* bound
+      = (const az_iot_adu_channel_dps*)(const void*)&adu_state._internal.channel_storage;
+  assert_ptr_equal(bound->connection, &conn);
+  assert_ptr_equal((void*)(uintptr_t)bound->http.send, (void*)(uintptr_t)ut_http_send);
+  assert_ptr_equal(bound->http.user_ctx, &send_calls);
+  assert_ptr_equal(adu_state._internal.channel.ctx, bound);
+  az_iot_adu_client_destroy(&adu_state);
+
+  /* An HTTPS transport is mandatory -- without it the SDK cannot carry the
+   * protocol it owns. */
+  az_iot_adu_client_t adu_no_transport;
+  o.http_transport = NULL;
+  assert_int_equal(
+      az_iot_adu_client_initialize(&adu_no_transport, &conn, &o), AZ_IOT_ERR_INVALID_ARG);
+
+  az_iot_adu_client_t adu_no_conn;
+  o.http_transport = &transport;
+  assert_int_equal(az_iot_adu_client_initialize(&adu_no_conn, NULL, &o), AZ_IOT_ERR_INVALID_ARG);
+
+  az_iot_connection_client_destroy(&conn);
 }
 
 static void device_props_too_small_is_rejected(void** state)
@@ -959,14 +1158,17 @@ static void device_props_too_small_is_rejected(void** state)
   (void)fx;
 
   az_iot_connection_client conn;
-  az_iot_twin_client twin;
+  fake_channel fc;
+  az_iot_adu_channel channel;
   az_iot_adu_client_t adu;
   az_iot_connection_client_options opts = { 0 };
   opts.host = "broker.example";
   opts.port = 8883;
   opts.client_id = "ut-device2";
   assert_int_equal(az_iot_connection_client_init(&conn, &opts), AZ_IOT_OK);
-  assert_int_equal(az_iot_twin_client_init(&twin, &conn), AZ_IOT_OK);
+  memset(&fc, 0, sizeof(fc));
+  channel.vtable = &k_fake_channel_vtable;
+  channel.ctx = &fc;
 
   hook_log log = { 0 };
   az_iot_adu_platform_hooks hooks = { 0 };
@@ -989,9 +1191,9 @@ static void device_props_too_small_is_rejected(void** state)
   adu_opts.device_props_buffer = tiny;
   adu_opts.device_props_buffer_size = sizeof(tiny);
   assert_int_equal(
-      az_iot_adu_client_initialize(&adu, &twin, &adu_opts), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+      az_iot_adu_client__initialize_with_channel(&adu, &channel, &adu_opts),
+      AZ_IOT_ERR_NOT_ENOUGH_SPACE);
 
-  az_iot_twin_client_destroy(&twin);
   az_iot_connection_client_destroy(&conn);
 }
 
@@ -1003,13 +1205,16 @@ static void device_props_buffer_size_matches_need(void** state)
   assert_int_equal(az_iot_adu_device_props_buffer_size(NULL), 0);
 
   az_iot_connection_client conn;
-  az_iot_twin_client twin;
+  fake_channel fc;
+  az_iot_adu_channel channel;
   az_iot_connection_client_options opts = { 0 };
   opts.host = "broker.example";
   opts.port = 8883;
   opts.client_id = "ut-device3";
   assert_int_equal(az_iot_connection_client_init(&conn, &opts), AZ_IOT_OK);
-  assert_int_equal(az_iot_twin_client_init(&twin, &conn), AZ_IOT_OK);
+  memset(&fc, 0, sizeof(fc));
+  channel.vtable = &k_fake_channel_vtable;
+  channel.ctx = &fc;
 
   hook_log log = { 0 };
   az_iot_adu_platform_hooks hooks = { 0 };
@@ -1045,15 +1250,15 @@ static void device_props_buffer_size_matches_need(void** state)
   /* Exactly `need` bytes must succeed; one byte short must be rejected. */
   az_iot_adu_client_t adu_ok;
   o.device_props_buffer_size = need;
-  assert_int_equal(az_iot_adu_client_initialize(&adu_ok, &twin, &o), AZ_IOT_OK);
+  assert_int_equal(az_iot_adu_client__initialize_with_channel(&adu_ok, &channel, &o), AZ_IOT_OK);
   az_iot_adu_client_destroy(&adu_ok);
 
   az_iot_adu_client_t adu_short;
   o.device_props_buffer_size = need - 1;
   assert_int_equal(
-      az_iot_adu_client_initialize(&adu_short, &twin, &o), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+      az_iot_adu_client__initialize_with_channel(&adu_short, &channel, &o),
+      AZ_IOT_ERR_NOT_ENOUGH_SPACE);
 
-  az_iot_twin_client_destroy(&twin);
   az_iot_connection_client_destroy(&conn);
 }
 
@@ -1316,21 +1521,14 @@ static void download_failure_is_reported_and_does_not_install(void** state)
   assert_false(saw_apply);
   assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
 
-  /* The outcome reaches the service rather than the agent going quiet.
-   * The agent-state protocol spells Failed as 255 (0 = Idle,
-   * 6 = DeploymentInProgress); matching on a shorter prefix would also accept
-   * an in-progress report. */
-  bool reported_failed = false;
-  size_t n = az_iot_mock_mqtt_client_call_count(fx->mock);
-  for (size_t i = 0; i < n; ++i)
-  {
-    const az_iot_mock_call* c = az_iot_mock_mqtt_client_call_at(fx->mock, i);
-    if (c->kind == AZ_IOT_MOCK_CALL_PUBLISH && payload_contains(c, "\"state\":255"))
-    {
-      reported_failed = true;
-    }
-  }
-  assert_true(reported_failed);
+  /* The outcome reaches the service rather than the agent going quiet. Under
+   * the structured contract this is an explicit FAILED outcome attributed to
+   * the agent core, not an agent-state integer. */
+  assert_true(fx->chan.report_count > 0);
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_ADU_OUTCOME_FAILED);
+  assert_int_equal(fx->chan.last_report.failure_origin, AZ_IOT_ADU_FAILURE_ORIGIN_AGENT_CORE);
+  assert_true(fx->chan.last_report.result_code != 700);
+  assert_true(fx->chan.last_workflow_id[0] != '\0');
 }
 
 static void cancel_during_download_aborts_the_transfer(void** state)
@@ -1589,8 +1787,13 @@ int main(void)
     cmocka_unit_test_setup_teardown(reboot_required_persists_and_resumes, setup, teardown),
     cmocka_unit_test_setup_teardown(resume_with_no_persisted_state_stays_idle, setup, teardown),
     cmocka_unit_test_setup_teardown(cancel_action_sets_cancelled_flag, setup, teardown),
-    cmocka_unit_test_setup_teardown(update_device_properties_sets_report_pending, setup, teardown),
-    cmocka_unit_test_setup_teardown(custom_device_properties_are_reported, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        update_device_properties_is_accepted_without_reporting, setup, teardown),
+    cmocka_unit_test_setup_teardown(report_carries_the_active_workflow_id, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        custom_device_properties_are_accepted_and_serialized, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        public_initialize_takes_a_connection_and_builds_its_own_channel, setup, teardown),
     cmocka_unit_test_setup_teardown(device_props_too_small_is_rejected, setup, teardown),
     cmocka_unit_test_setup_teardown(device_props_buffer_size_matches_need, setup, teardown),
     cmocka_unit_test_setup_teardown(duplicate_redelivery_is_ignored, setup, teardown),

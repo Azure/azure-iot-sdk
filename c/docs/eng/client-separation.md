@@ -476,20 +476,26 @@ the engine with it.
 
 **Ordering (was: repoint in P2, re-layer in P5).** The P2 step was to change
 `az_iot_adu_client_initialize()`'s parameter from `az_iot_twin_client*` to
-`az_iot_gen1_twin_client*` and follow the five call sites. That step is only needed if the twin
-split lands **before** the ADU cut; if the cut lands first there is no twin pointer left to
-repoint and P2 does nothing to ADU. Either way ADU must not hold a cross-generation
-`az_iot_twin_client`: that is precisely the construct
-[§4](#4-no-cross-generation-constructs-on-the-public-surface) forbids. Pick the order deliberately
-and land whichever break happens with the PR that causes it.
+`az_iot_gen1_twin_client*` and follow the five call sites. **That step is now moot: the ADU cut
+landed first, so there is no twin pointer left to repoint and P2 does nothing to ADU.** ADU must
+not hold a cross-generation `az_iot_twin_client`: that is precisely the construct
+[§4](#4-no-cross-generation-constructs-on-the-public-surface) forbids, and it no longer does.
 
-The full re-layer onto `adu_core` + the channel vtable, followed by the deletion of the twin
-channel, stays at **P5** unless the ADU work pulls it earlier; it is a refactor of ADU's internals
-and not a rider on the twin split. It is a **public header break**, taken deliberately:
+**The re-layer had no real dependency on P4.** `src/features/adu/` referenced no
+`connection_client`, no `profile` and neither generation — its whole coupling to the split was the
+twin client. So the re-layer was schedulable at any point, and was taken early precisely to
+*remove* work from the twin PR rather than add to it. The full re-layer onto `adu_core` + the
+channel vtable, and the deletion of the twin channel, are **done**; what remains under ADU is the
+ADUv2 channel itself, which is not a rider on the twin split either. It was a **public header
+break**, taken deliberately:
 
 - ADU's only shipping channel becomes ADUv2, which hangs off the provisioning path, so keeping a
   twin-shaped ADU API alive would preserve a surface no shipping channel uses.
 - The break is mechanical and lands with the PR that causes it, so it is reviewed once, in context.
+
+**Consequence for the twin split:** ADU was the only consumer of the twin desired-property
+subscriber registry in `src/`. After the cut its only callers are tests. The registry still stays —
+it is a twin-client feature — but the twin split no longer has a feature client depending on it.
 
 ---
 
@@ -1015,10 +1021,10 @@ plus the conformance suites.
 | P1b | `az_iot_hub_profile` + `get_hub_profile()` + `az_iot_connection_profile` + `AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED`; parse `connectionProfile` in the existing ASSIGNED-payload walk | — | Additive, and deliberately **not** blocked on P1a: with the stock api-version `connectionProfile` never arrives, absent resolves to `classic`, and the result is exactly the hardcoded behaviour it replaces. Lands inert, activates when P1a ships. `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH` is not here — it lands in P2, with the first client that can reject a mismatch. |
 | P1c | Gate `CONNECTED` on subscriptions being SUBACKed ([AB#39366084](https://dev.azure.com/msazure/One/_workitems/edit/39366084)); tag each persistent-subscription entry with its generation and drop non-matching entries on reconnect *before* re-subscribing; add a remove path wired into every feature client's `destroy()` and into its partial-init unwind, UNSUBSCRIBE on both generations (a no-op on gen2 once its redundant filters are gone); drop the five gen2 filters already covered by `ih/{device_id}/dev/#` ([AB#39366086](https://dev.azure.com/msazure/One/_workitems/edit/39366086)); preserve SUBACK reason codes through the adapters behind a shared `az_iot_mqtt_suback_result()`, and tag each entry with its failure scope (`AZ_IOT_SUBSCRIPTION_FAILS_SESSION` / `_FAILS_SELF`) so a refusal ends the connection only for a feature client's own filter — terminally when the reason is deterministic — while a refused custom topic is reported to its owner and dropped ([§9](#the-profile-can-change-while-the-device-is-running)); bound the gate with a deadline | — | **Done across four PRs:** removal + generation tagging (#116), adapter reason-code preservation (#123), the gate + failure-scope policy + deadline (#124), and redundant gen2 filter removal (#128). **P2 depends on all four parts**: §9's rebuild pattern is unsafe without the gate and impossible without removal. The generation tagging is not optional — without it the first two fixes deadlock each other on a profile change. |
 | P1d | Turn the connection-state callback into the extensible `az_iot_connection_state_event` struct, carrying the resolved profile on `CONNECTED` ([§9](#the-profile-can-change-while-the-device-is-running)) | — | **Implemented.** The SDK produces and size-stamps the callback-lifetime event. `profile` is set on `CONNECTED`, and also on a profile-driven failure so the application can rebuild for the newly assigned generation. All samples, unit/integration suites and e2e agents use the new signature. |
-| P2 | Split the feature clients, one PR each: telemetry → c2d → direct methods → twin | P1b, **P1c**, P1d | **Telemetry and C2D implemented.** P1a gates automatic production selection after DPS, not implementation: the absent/null development bridge above supplies `mqttV5` for AEG testing until the api-version ships. Each client pins its generation at `_init()` and the connection checks the pin at connect ([§9](#9-pinning-the-generation-at-init)); topics are built through the connect-time bind callback. The twin PR also repoints `az_iot_adu_client_initialize()` at `az_iot_gen1_twin_client` ([§8](#8-device-update)) — a public header break, no ADU re-layer. |
+| P2 | Split the feature clients, one PR each: telemetry → c2d → direct methods → twin | P1b, **P1c**, P1d | **Telemetry and C2D implemented.** P1a gates automatic production selection after DPS, not implementation: the absent/null development bridge above supplies `mqttV5` for AEG testing until the api-version ships. Each client pins its generation at `_init()` and the connection checks the pin at connect ([§9](#9-pinning-the-generation-at-init)); topics are built through the connect-time bind callback. **The twin PR now carries no ADU change at all:** the ADU cut landed first, so there is no `az_iot_adu_client_initialize()` to repoint and ADU no longer consumes the twin desired-property registry ([§8](#8-device-update)). |
 | P3 | File upload redesign — HTTP transport becomes gen1-only | P1 | Larger than the others; own PR. |
 | P4 | Delete `protocol_profile.c`'s flavor tables and the last `profile->flavor` branches | P2, P3 | |
-| P5 | Re-layer ADU onto `adu_core` + channel vtable | P4 | ADUv2 declared only. P2 already repointed ADU at the gen1 twin client; this phase is the internal re-layer, not the retyping. |
+| P5 | Re-layer ADU onto `adu_core` + channel vtable | — | **Done, ahead of P4.** ADU referenced neither generation nor the connection client, so the stated P4 dependency was not real; taking it early removed the ADU work from the P2 twin PR. The ADUv2 channel itself is the remaining ADU work. |
 | P6 | Dual samples per feature, `check-layering.sh`, coverage floors for `gen1`/`gen2` | P2–P4 | |
 
 The connection client is **not** restructured. That is the main saving versus the

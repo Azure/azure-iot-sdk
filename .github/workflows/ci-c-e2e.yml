@@ -15,13 +15,12 @@
 #
 # Scope
 # -----
-# This workflow runs the fast scenarios (telemetry/c2d/method/twin) AND the
-# mocked Device Update (ADU) e2e suite (az_iot_tests_e2e_adu), which drives a
-# signed deployment through the device twin with the crypto/platform ops mocked
-# -- no Device Update account is required, so it is fast. A separate workflow
-# (ci-c-e2e-adu.yml) is reserved for the future real-ADU suite (which provisions
-# an actual Device Update account and triggers updates THROUGH the ADU service);
-# until that lands it runs this same mocked suite nightly as a placeholder.
+# This workflow runs the fast scenarios (telemetry/c2d/method/twin) and the file
+# upload suite. It previously also ran a mocked Device Update (ADU) suite
+# (az_iot_tests_e2e_adu) that drove a signed deployment through the device twin.
+# That suite retired with the removal of ADU's twin delivery channel and is
+# awaiting a rewrite against the new channel, so it is not built or run here.
+# The separate ci-c-e2e-adu.yml workflow is parked for the same reason.
 #
 # Stages
 # ------
@@ -175,7 +174,7 @@ jobs:
         # Windows runner image does not carry.
         run: |
           cmake --preset ${{ matrix.preset }} -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_WITH_PAHO=ON ${{ runner.os == 'Linux' && '-DAZ_IOT_BUILD_E2E_PKCS11=ON' || '' }}
-          cmake --build --preset ${{ matrix.preset }} ${{ runner.os == 'Windows' && '--config Debug' || '' }} --target az_iot_tests_e2e az_iot_tests_e2e_adu az_iot_tests_e2e_fileupload
+          cmake --build --preset ${{ matrix.preset }} ${{ runner.os == 'Windows' && '--config Debug' || '' }} --target az_iot_tests_e2e az_iot_tests_e2e_fileupload
           ${{ runner.os == 'Linux' && format('cmake --build --preset {0} --target az_iot_tests_e2e_custody', matrix.preset) || '' }}
 
       - name: Build the file upload sample (Linux)
@@ -263,8 +262,9 @@ jobs:
 
           New-Item -ItemType Directory -Path ./test_config/results -Force | Out-Null
           $cfg = if ($IsWindows) { @('-C', 'Debug') } else { @() }
-          # `-R e2e` runs the fast suite (az_iot_tests_e2e) and the mocked ADU
-          # suite (az_iot_tests_e2e_adu). The CSR enrollment test is not built
+          # `-R e2e` runs the fast suite (az_iot_tests_e2e) and the file upload
+          # suite. The mocked ADU suite retired with ADU's twin delivery channel
+          # and is not built. The CSR enrollment test is not built
           # here -- it needs a DPS enrollment linked to a signing CA, which only
           # ci-c-e2e-csr provisions, so it lives behind AZ_IOT_BUILD_E2E_CSR.
           # The adu_crypto_openssl unit test is not matched by the e2e name

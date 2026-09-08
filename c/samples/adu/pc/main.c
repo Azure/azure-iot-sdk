@@ -302,12 +302,49 @@ static void on_sigint(int signo)
   g_stop = 1;
 }
 
+/* HTTPS transport for the device-update operations.
+ *
+ * This is the ONLY transport code an application writes: the SDK builds every
+ * URL, header and body of the device-update protocol on top of it. This sample
+ * has no HTTP stack linked, so the hook reports that it cannot perform the
+ * request rather than pretending to. Wire it to libcurl (or any client) to run
+ * against the real service; nothing else in this file changes. */
+static az_iot_result sample_http_send(
+    const char* method,
+    const char* url,
+    const az_iot_adu_http_header* headers,
+    size_t header_count,
+    const uint8_t* body,
+    size_t body_len,
+    az_iot_adu_http_response* response,
+    void* user_ctx)
+{
+  (void)body;
+  (void)response;
+  (void)user_ctx;
+
+  printf("  [http] %s %s (%zu header(s), %zu body byte(s))\n", method, url, header_count, body_len);
+  for (size_t i = 0; i < header_count; ++i)
+  {
+    /* Authorization carries a credential: report its presence, never its value. */
+    if (strcmp(headers[i].name, "Authorization") == 0)
+    {
+      printf("    %s: <redacted>\n", headers[i].name);
+    }
+    else
+    {
+      printf("    %s: %s\n", headers[i].name, headers[i].value);
+    }
+  }
+  fprintf(stderr, "  [http] no HTTP client is linked into this sample.\n");
+  return AZ_IOT_ERR_NOT_SUPPORTED;
+}
+
 typedef struct
 {
   sample_config config;
   az_iot_certificate_provider_pem certs;
   az_iot_connection_client connection_client;
-  az_iot_twin_client twin_client;
   az_iot_adu_client_t adu_client;
   sim_ctx sim;
   uint8_t dp_buffer[512];
@@ -316,7 +353,7 @@ typedef struct
 static void sample_state_destroy(sample_state* s)
 {
   az_iot_adu_client_destroy(&s->adu_client);
-  az_iot_twin_client_destroy(&s->twin_client);
+
   az_iot_connection_client_destroy(&s->connection_client);
   az_iot_certificate_provider_pem_destroy(&s->certs);
   sample_config_release(&s->config);
@@ -435,13 +472,6 @@ int main(void)
     return 1;
   }
 
-  /* Twin client (ADU registers as a desired-property subscriber on it). */
-  if (az_iot_twin_client_init(&st.twin_client, &st.connection_client) != AZ_IOT_OK)
-  {
-    sample_state_destroy(&st);
-    return 1;
-  }
-
   /* ADU client. */
   az_iot_adu_platform_hooks hooks = { 0 };
   hooks.download_fn = sim_download;
@@ -482,7 +512,10 @@ int main(void)
   adu_opts.device_props = &dp;
   adu_opts.device_props_buffer = st.dp_buffer;
   adu_opts.device_props_buffer_size = sizeof(st.dp_buffer);
-  if (az_iot_adu_client_initialize(&st.adu_client, &st.twin_client, &adu_opts) != AZ_IOT_OK)
+  /* The application supplies the HTTPS primitive; the SDK owns the protocol. */
+  static const az_iot_adu_http_transport http_transport = { sample_http_send, NULL };
+  adu_opts.http_transport = &http_transport;
+  if (az_iot_adu_client_initialize(&st.adu_client, &st.connection_client, &adu_opts) != AZ_IOT_OK)
   {
     fprintf(stderr, "az_iot_adu_client_initialize failed\n");
     sample_state_destroy(&st);
