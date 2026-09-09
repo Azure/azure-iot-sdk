@@ -122,7 +122,6 @@ extern "C"
   typedef struct az_iot_adu_channel_dps
   {
     az_iot_connection_client* connection;
-    az_iot_adu_http_transport http;
     az_iot_adu_channel_update_cb update_cb;
     void* engine_ctx;
   } az_iot_adu_channel_dps;
@@ -132,7 +131,6 @@ extern "C"
   az_iot_result az_iot_adu_channel_dps_init(
       az_iot_adu_channel_dps* channel_state,
       az_iot_connection_client* connection,
-      const az_iot_adu_http_transport* http_transport,
       az_iot_adu_channel* out_channel);
 
 #ifdef __cplusplus

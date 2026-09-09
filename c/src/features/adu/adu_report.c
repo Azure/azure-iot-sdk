@@ -34,12 +34,16 @@
 #define AZ_IOT_ADU_RESULT_CODE_SUCCESS 700
 #define AZ_IOT_ADU_RESULT_CODE_FAILURE (-1)
 
-/* Render an extended result code as the contract's hex form: bare zeros when
- * there is nothing to report, 0x-prefixed otherwise. */
+/* Render extendedResultCodes.
+ *
+ * Contract: comma-separated UNSIGNED hex int32, NO "0x" prefix, no fixed width,
+ * case-insensitive. The engine produces a single code today; the comma-separated
+ * form is what the field accepts, so a future multi-code producer changes only
+ * this function. Zero is rendered "0" -- a bare value, not a padded one. */
 static void format_extended_result_code(char* out, size_t out_size, int32_t code)
 {
-  static const char hex[] = "0123456789ABCDEF";
-  if (out_size < 11)
+  static const char hex[] = "0123456789abcdef";
+  if (out_size < 9)
   {
     if (out_size > 0)
     {
@@ -47,19 +51,21 @@ static void format_extended_result_code(char* out, size_t out_size, int32_t code
     }
     return;
   }
-  if (code == 0)
-  {
-    memcpy(out, "00000000", 9);
-    return;
-  }
+
   uint32_t v = (uint32_t)code;
-  out[0] = '0';
-  out[1] = 'x';
-  for (int i = 0; i < 8; ++i)
+  char tmp[8];
+  size_t n = 0;
+  do
   {
-    out[2 + i] = hex[(v >> ((7 - i) * 4)) & 0xFu];
+    tmp[n++] = hex[v & 0xFu];
+    v >>= 4;
+  } while (v != 0);
+
+  for (size_t i = 0; i < n; ++i)
+  {
+    out[i] = tmp[n - 1 - i];
   }
-  out[10] = '\0';
+  out[n] = '\0';
 }
 
 az_iot_adu_client_agent_state az_iot_adu__agent_state(az_iot_adu_state state)

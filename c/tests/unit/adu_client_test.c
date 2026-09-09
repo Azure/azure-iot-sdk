@@ -1049,32 +1049,8 @@ static void custom_device_properties_are_accepted_and_serialized(void** state)
   assert_non_null(strstr(text, "gold"));
 }
 
-/* The public entry point takes a CONNECTION, not a transport implementation:
- * the SDK builds the device-update channel itself. An application supplies one
- * HTTPS primitive and never implements the protocol. */
-static az_iot_result ut_http_send(
-    const char* method,
-    const char* url,
-    const az_iot_adu_http_header* headers,
-    size_t header_count,
-    const uint8_t* body,
-    size_t body_len,
-    az_iot_adu_http_response* response,
-    void* user_ctx)
-{
-  (void)method;
-  (void)url;
-  (void)headers;
-  (void)header_count;
-  (void)body;
-  (void)body_len;
-  (void)response;
-  if (user_ctx != NULL)
-  {
-    (*(int*)user_ctx)++;
-  }
-  return AZ_IOT_OK;
-}
+/* The public entry point takes a CONNECTION and nothing else: the SDK owns the
+ * device-update protocol end to end. */
 
 static void public_initialize_takes_a_connection_and_builds_its_own_channel(void** state)
 {
@@ -1104,9 +1080,6 @@ static void public_initialize_takes_a_connection_and_builds_its_own_channel(void
   dp.installed_update_id.name = "Foobar";
   dp.installed_update_id.version = "1.0";
 
-  int send_calls = 0;
-  az_iot_adu_http_transport transport = { ut_http_send, &send_calls };
-
   uint8_t buf[256];
   az_iot_adu_client_config_options o = az_iot_adu_client_config_options_default();
   o.hooks = &hooks;
@@ -1114,7 +1087,6 @@ static void public_initialize_takes_a_connection_and_builds_its_own_channel(void
   o.device_props = &dp;
   o.device_props_buffer = buf;
   o.device_props_buffer_size = sizeof(buf);
-  o.http_transport = &transport;
 
   /* The connection is NOT open: the bootstrap update check runs before the
    * device registers, so initialize must not require a live session. */
@@ -1125,31 +1097,51 @@ static void public_initialize_takes_a_connection_and_builds_its_own_channel(void
 
   /* The channel state lives INSIDE the client. Initialization must not zero the
    * client after building it there, or the channel would be left bound to a
-   * wiped state struct -- with a NULL connection and a NULL transport -- and
-   * would fail only later, on the first operation. Reaching the transport
-   * through the client proves it survived initialization. */
+   * wiped state struct -- with a NULL connection -- and would fail only later,
+   * on the first operation. Reaching the connection through the client proves
+   * it survived initialization. */
   az_iot_adu_client_t adu_state;
   assert_int_equal(az_iot_adu_client_initialize(&adu_state, &conn, &o), AZ_IOT_OK);
   const az_iot_adu_channel_dps* bound
       = (const az_iot_adu_channel_dps*)(const void*)&adu_state._internal.channel_storage;
   assert_ptr_equal(bound->connection, &conn);
-  assert_ptr_equal((void*)(uintptr_t)bound->http.send, (void*)(uintptr_t)ut_http_send);
-  assert_ptr_equal(bound->http.user_ctx, &send_calls);
   assert_ptr_equal(adu_state._internal.channel.ctx, bound);
   az_iot_adu_client_destroy(&adu_state);
 
-  /* An HTTPS transport is mandatory -- without it the SDK cannot carry the
-   * protocol it owns. */
-  az_iot_adu_client_t adu_no_transport;
-  o.http_transport = NULL;
-  assert_int_equal(
-      az_iot_adu_client_initialize(&adu_no_transport, &conn, &o), AZ_IOT_ERR_INVALID_ARG);
-
   az_iot_adu_client_t adu_no_conn;
-  o.http_transport = &transport;
   assert_int_equal(az_iot_adu_client_initialize(&adu_no_conn, NULL, &o), AZ_IOT_ERR_INVALID_ARG);
 
   az_iot_connection_client_destroy(&conn);
+}
+
+/* extendedResultCodes is contract-shaped: comma-separated UNSIGNED hex int32,
+ * NO "0x" prefix, no fixed width, case-insensitive. Pinned here because nothing
+ * else asserts the wire form, and a prefixed or zero-padded value is accepted by
+ * the compiler while being wrong on the wire. */
+static void extended_result_codes_are_bare_hex(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  fx->chan.report_count = 0;
+
+  fx->log.download_result = AZ_IOT_ADU_RESULT_FAILURE;
+  inject_patch(fx, signed_patch());
+  pump(fx, 40);
+
+  assert_true(fx->chan.report_count > 0);
+  const char* ext = fx->chan.last_extended;
+  assert_non_null(ext);
+  assert_true(ext[0] != '\0');
+  /* no 0x/0X prefix */
+  assert_false(ext[0] == '0' && (ext[1] == 'x' || ext[1] == 'X'));
+  /* every character is a hex digit or a separating comma */
+  for (const char* c = ext; *c != '\0'; ++c)
+  {
+    assert_true(
+        (*c >= '0' && *c <= '9') || (*c >= 'a' && *c <= 'f') || (*c >= 'A' && *c <= 'F')
+        || *c == ',');
+  }
 }
 
 static void device_props_too_small_is_rejected(void** state)
@@ -1794,6 +1786,7 @@ int main(void)
         custom_device_properties_are_accepted_and_serialized, setup, teardown),
     cmocka_unit_test_setup_teardown(
         public_initialize_takes_a_connection_and_builds_its_own_channel, setup, teardown),
+    cmocka_unit_test_setup_teardown(extended_result_codes_are_bare_hex, setup, teardown),
     cmocka_unit_test_setup_teardown(device_props_too_small_is_rejected, setup, teardown),
     cmocka_unit_test_setup_teardown(device_props_buffer_size_matches_need, setup, teardown),
     cmocka_unit_test_setup_teardown(duplicate_redelivery_is_ignored, setup, teardown),
