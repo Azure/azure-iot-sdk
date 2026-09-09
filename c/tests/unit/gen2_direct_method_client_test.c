@@ -234,6 +234,24 @@ static void inject_invocation(
   assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
 }
 
+/* Deliver one invocation carrying a `type` user property. */
+static void inject_typed_invocation(fixture* fx, const char* topic, const char* type_value)
+{
+  az_iot_mqtt_user_property type_prop = { "type", type_value };
+  az_iot_mqtt_message msg;
+  memset(&msg, 0, sizeof(msg));
+  msg.topic = topic;
+  msg.qos = AZ_IOT_MQTT_QOS_1;
+  msg.user_properties = &type_prop;
+  msg.user_properties_count = 1;
+  az_iot_mqtt_event evt;
+  memset(&evt, 0, sizeof(evt));
+  evt.kind = AZ_IOT_MQTT_EVT_MESSAGE;
+  evt.message = &msg;
+  assert_true(az_iot_mock_mqtt_client_inject_event(fx->mock, &evt));
+  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+}
+
 /* ------------------------------------------------------------------------- */
 /* init and profile pinning                                                  */
 /* ------------------------------------------------------------------------- */
@@ -560,6 +578,64 @@ static void responding_twice_is_rejected(void** state)
       az_iot_gen2_direct_method_respond(rec.request, 200, NULL, 0), AZ_IOT_ERR_INVALID_ARG);
 }
 
+/* ------------------------------------------------------------------------- */
+/* protocol phase                                                            */
+/* ------------------------------------------------------------------------- */
+
+static void a_probe_is_not_answered_as_an_invocation(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  invocation_record rec = { 0 };
+  assert_int_equal(
+      az_iot_gen2_direct_method_client_set_handler(&fx->dm, on_method, &rec), AZ_IOT_OK);
+
+  /* A probe asks whether this device can run the method; it carries no
+   * arguments and expects a probe-ack, not a result. Delivering it as an
+   * invocation would hand the application protobuf bytes as method arguments
+   * and then publish a response to a call that never happened. */
+  az_iot_mock_mqtt_client_clear_calls(fx->mock);
+  inject_typed_invocation(fx, "ih/ut-device/dev/methods/reboot", "probe:1");
+
+  assert_false(rec.fired);
+  const az_iot_mock_call* response
+      = find_call(fx->mock, AZ_IOT_MOCK_CALL_PUBLISH, "ih/ut-device/srv/methods/reboot/response");
+  assert_null(response);
+}
+
+static void an_unknown_protocol_phase_is_ignored(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  invocation_record rec = { 0 };
+  assert_int_equal(
+      az_iot_gen2_direct_method_client_set_handler(&fx->dm, on_method, &rec), AZ_IOT_OK);
+
+  /* Fail closed on anything this client does not implement, including a future
+   * version of exec, rather than guessing at its shape. */
+  inject_typed_invocation(fx, "ih/ut-device/dev/methods/reboot", "abandon:1");
+  assert_false(rec.fired);
+  inject_typed_invocation(fx, "ih/ut-device/dev/methods/reboot", "exec:2");
+  assert_false(rec.fired);
+}
+
+static void an_exec_typed_message_is_delivered(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  invocation_record rec = { 0 };
+  assert_int_equal(
+      az_iot_gen2_direct_method_client_set_handler(&fx->dm, on_method, &rec), AZ_IOT_OK);
+
+  inject_typed_invocation(fx, "ih/ut-device/dev/methods/reboot", "exec:1");
+
+  assert_true(rec.fired);
+  assert_string_equal(rec.method_name, "reboot");
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -583,6 +659,9 @@ int main(void)
     cmocka_unit_test_setup_teardown(invocation_with_no_handler_is_dropped, setup, teardown),
     cmocka_unit_test_setup_teardown(pool_exhaustion_drops_the_extra_invocation, setup, teardown),
     cmocka_unit_test_setup_teardown(responding_twice_is_rejected, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_probe_is_not_answered_as_an_invocation, setup, teardown),
+    cmocka_unit_test_setup_teardown(an_unknown_protocol_phase_is_ignored, setup, teardown),
+    cmocka_unit_test_setup_teardown(an_exec_typed_message_is_delivered, setup, teardown),
   };
   return cmocka_run_group_tests_name("gen2_direct_method_client", tests, NULL, NULL);
 }

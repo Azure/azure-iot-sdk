@@ -48,6 +48,9 @@ Canonical pending-work tracker for IoT Hub Next (AEG) integration.
 - [x] Flavor-aware respond: publishes with correlation_data (Next) or topic-encoded `$rid` (Classic)
 - [x] E2E verified against mock Hub-Next (auto-trigger loops 4 methods continuously)
 - [ ] Add nanopb (protobuf) dependency via FetchContent (future: probe/exec/result)
+- [ ] gen2: implement the AEG probe / exec / abandon phases (`common/Protos/directmethods.proto`).
+      Until then the gen2 client dispatches only `exec:1` and untyped messages, and ignores any
+      other `type` rather than answering a probe as if it were an invocation.
 
 ### Twin
 - [x] Flavor-aware delivery (Next: presence wildcard + twin dispatch handlers; Classic: twin response/desired subscriptions)

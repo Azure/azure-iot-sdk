@@ -77,11 +77,39 @@ static bool parse_method_topic(const char* topic, char* out_method, size_t metho
   return true;
 }
 
+/* The AEG method protocol discriminates on a `type` user property -- probe:1,
+ * exec:1, abandon:1 -- and only the exec phase is implemented here. A message
+ * carrying any other type is left alone rather than treated as an invocation:
+ * answering a probe would reply to a question about whether this device can run
+ * a method, with a result for a call that never happened. A message with no
+ * type at all is the pre-protocol shape, which is dispatched as before. */
+static bool is_unimplemented_message_type(const az_iot_mqtt_message* msg)
+{
+  for (size_t i = 0; i < msg->user_properties_count; ++i)
+  {
+    if (msg->user_properties[i].key && strcmp(msg->user_properties[i].key, "type") == 0)
+    {
+      const char* value = msg->user_properties[i].value;
+      return !(value && strcmp(value, "exec:1") == 0);
+    }
+  }
+  return false;
+}
+
 static void on_method_invocation(void* user_ctx, const az_iot_mqtt_message* msg)
 {
   az_iot_gen2_direct_method_client* dm = (az_iot_gen2_direct_method_client*)user_ctx;
   if (!dm || !msg || !msg->topic || !DI(dm).handler)
   {
+    return;
+  }
+
+  if (is_unimplemented_message_type(msg))
+  {
+    AZ_IOT_LOG_WARNF(
+        "gen2_direct_method: ignoring a method message on %s whose protocol phase this client does "
+        "not implement yet (probe/exec/abandon)",
+        msg->topic);
     return;
   }
 
