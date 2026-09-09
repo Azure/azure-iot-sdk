@@ -81,6 +81,21 @@ namespace Microsoft.Azure.Devices.Client
         // The registration request to send on every connection to Device Provisioning Service. Only set while provisioning.
         private RegistrationRequestPayload? _provisioningRequestPayload;
 
+        // The inputs of the most recent provisioning run, kept for the lifetime of this client so that a connection
+        // that faults on this device's identity can be recovered from by provisioning again with the same credentials.
+        private ProvisioningSettings? _lastProvisioningSettings;
+        private X509AuthenticationProvider? _lastProvisioningAuthentication;
+
+        // Set while a re-provisioning attempt started by an identity fault is in flight. Only one such attempt may run
+        // at a time because each one takes over this client's single connection.
+        private int _isReprovisioning;
+
+        /// <summary>
+        /// Cancels the re-provisioning attempt that an identity fault started, if one is in flight. Because that attempt
+        /// runs on its own, it is only abandoned when this client is deliberately disconnected or disposed.
+        /// </summary>
+        private CancellationTokenSource? _currentReprovisioningCancellation;
+
         // The DPS responses that the in-progress provisioning flow is waiting on. Both are reset for each new connection
         // to DPS since a registration only lives as long as the connection it was started on.
         private TaskCompletionSource<RegistrationOperationStatus>? _startProvisioningRequestStatusSource;
@@ -137,6 +152,11 @@ namespace Microsoft.Azure.Devices.Client
         /// <summary>
         /// Provision this device with the provided credentials using Device Provisioning Service, then connect this device to the IoT hub it was provisioned to.
         /// </summary>
+        /// <remarks>
+        /// If the connection to the assigned IoT hub later faults because of this device's identity, this client
+        /// provisions again with these same credentials and reconnects to whichever hub it is assigned, without the
+        /// application having to do anything.
+        /// </remarks>
         /// <param name="provisioningSettings">The mandatory and optional provisioning-specific fields</param>
         /// <param name="authentication">The x509 authentication to use when connecting to both Device Provisioning Service and IoT hub.</param>
         /// <param name="twinOptions">The optional flags to control twin updates to this device from IoT hub.</param>
@@ -220,6 +240,103 @@ namespace Microsoft.Azure.Devices.Client
                 {
                     await ProvisioningFlowCompletedAsync.Invoke(new ProvisioningFlowCompletedArgs(args.Exception));
                 }
+
+                return;
+            }
+
+            if (args.IsIdentityFault)
+            {
+                // The connection ended because of this device's identity rather than because of anything the connection
+                // layer could retry. A device that was provisioned through DPS recovers from that on its own by
+                // registering again and connecting to whichever hub it is assigned this time.
+                StartReprovisioning(args);
+            }
+        }
+
+        /// <summary>
+        /// Start provisioning this device again in response to a connection that faulted on this device's identity, and
+        /// connect to the hub it gets assigned.
+        /// </summary>
+        /// <remarks>
+        /// This is started rather than awaited because the fault is reported from within the connection layer's own
+        /// maintenance, which must not be blocked while this client establishes a new connection to DPS.
+        /// </remarks>
+        /// <param name="args">The fault that this recovery is responding to.</param>
+        private void StartReprovisioning(MqttConnectionFaultedEventArgs args)
+        {
+            if (args.LastDisconnect == null)
+            {
+                // The fault ended a connect attempt that a caller is waiting on, so that caller is told about it and
+                // decides what to do. Recovering here as well would have both this client and that caller trying to
+                // establish the same connection.
+                Trace.TraceWarning("Not re-provisioning after an identity fault because the fault is reported to the caller that requested the connection.");
+                return;
+            }
+
+            ProvisioningSettings? provisioningSettings = _lastProvisioningSettings;
+            X509AuthenticationProvider? provisioningAuthentication = _lastProvisioningAuthentication;
+
+            if (provisioningSettings == null || provisioningAuthentication == null)
+            {
+                // This device was connected with credentials that the application supplied directly, so there is no
+                // registration for this client to renew. Only the application can recover from here.
+                Trace.TraceError("The connection faulted on this device's identity, but this device was not provisioned through Device Provisioning Service so it cannot re-provision. {0}", args.Exception);
+                return;
+            }
+
+            if (Interlocked.CompareExchange(ref _isReprovisioning, 1, 0) != 0)
+            {
+                // An earlier fault already started this recovery, and a second one would fight it over this client's connection.
+                Trace.TraceInformation("Ignoring an identity fault because this device is already re-provisioning.");
+                return;
+            }
+
+            var reprovisioningCancellation = new CancellationTokenSource();
+            _currentReprovisioningCancellation = reprovisioningCancellation;
+
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    Trace.TraceInformation("Re-provisioning this device because the connection faulted on its identity. {0}", args.Exception);
+
+                    await ProvisionAndConnectAsync(provisioningSettings, provisioningAuthentication, reprovisioningCancellation.Token);
+
+                    Trace.TraceInformation("Finished re-provisioning this device and connected it to the IoT hub it was assigned.");
+                }
+                catch (OperationCanceledException)
+                {
+                    Trace.TraceWarning("Re-provisioning was abandoned because this client was disconnected or disposed.");
+                }
+                catch (Exception e)
+                {
+                    // This task is unmonitored, so nothing may escape it.
+                    Trace.TraceError("Failed to re-provision this device after the connection faulted on its identity. {0}", e);
+                }
+                finally
+                {
+                    // Clear the field only if this attempt is still the current one, so that a newer attempt's cancellation source is left intact.
+                    Interlocked.CompareExchange(ref _currentReprovisioningCancellation, null, reprovisioningCancellation);
+                    reprovisioningCancellation.Dispose();
+                    Volatile.Write(ref _isReprovisioning, 0);
+                }
+            });
+        }
+
+        /// <summary>
+        /// Abandon the re-provisioning attempt that an identity fault started, if one is in flight.
+        /// </summary>
+        private void CancelCurrentReprovisioning()
+        {
+            CancellationTokenSource? reprovisioningCancellation = Interlocked.Exchange(ref _currentReprovisioningCancellation, null);
+
+            try
+            {
+                reprovisioningCancellation?.Cancel();
+            }
+            catch (ObjectDisposedException)
+            {
+                // The attempt already ended and disposed its own cancellation source, so there is nothing left to cancel.
             }
         }
 
@@ -230,6 +347,10 @@ namespace Microsoft.Azure.Devices.Client
         public async Task DisconnectAsync(CancellationToken cancellationToken = default)
         {
             ObjectDisposedException.ThrowIf(_isDisposed, this);
+
+            // The application is closing this connection deliberately, so any recovery that an earlier identity fault
+            // started is no longer wanted.
+            CancelCurrentReprovisioning();
 
             await ManagedMqttConnection.DisconnectAsync(false, new MqttDisconnect() { Reason = MqttClientDisconnectOptionsReason.NormalDisconnection }, cancellationToken);
             CurrentConnectionContext = null;
@@ -319,6 +440,11 @@ namespace Microsoft.Azure.Devices.Client
                 ClientCertificateSigningRequest = null,
                 Payload = provisioningSettings.ProvisioningPayload,
             };
+
+            // Remember what this device provisioned with so that a connection that later faults on this device's
+            // identity can be recovered from by provisioning again.
+            _lastProvisioningSettings = provisioningSettings;
+            _lastProvisioningAuthentication = authentication;
 
             // From here on, every connection this client establishes targets DPS, so every connection (including the ones
             // the connection layer re-establishes on its own) runs the provisioning flow.
@@ -709,6 +835,7 @@ namespace Microsoft.Azure.Devices.Client
             ManagedMqttConnection.PublishReceivedAsync -= DelegatePublishAsync;
 
             CancelCurrentProvisioningFlow();
+            CancelCurrentReprovisioning();
             CurrentEndpoint = ConnectionEndpoint.None;
         }
 
