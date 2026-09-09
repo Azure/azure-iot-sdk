@@ -122,7 +122,7 @@ namespace Microsoft.Azure.Devices.Client
             // These handlers stay attached for the lifetime of this client and dispatch on the endpoint that the current
             // connection targets, so that a connection to DPS runs the provisioning flow and a connection to IoT hub runs
             // the device presence flow.
-            ManagedMqttConnection.ConnectingAsync += ConstructConnectPacketAsync;
+            ManagedMqttConnection.ConnectingAsync += PatchConnectPacketAsync;
             ManagedMqttConnection.ConnectedAsync += HandleConnectedAsync;
             ManagedMqttConnection.DisconnectedAsync += HandleDisconnectedAsync;
             ManagedMqttConnection.ConnectionFaultedAsync += HandleConnectionFaultedAsync;
@@ -157,7 +157,7 @@ namespace Microsoft.Azure.Devices.Client
                 IotHubHostName = provisioningResult.AssignedHub!,
                 IssuedClientCertificates = provisioningResult.IssuedClientCertificateChain,
                 AuthenticationProvider = authentication,
-                IsGen2Hub = true,
+                IsGen2Hub = provisioningResult.IsAzureEventGridHub,
             };
 
             await ConnectAsync(CurrentConnectionContext, null, cancellationToken);
@@ -168,15 +168,16 @@ namespace Microsoft.Azure.Devices.Client
         /// <summary>
         /// Patch the CONNECT packet that is about to be sent, including on every reconnect attempt.
         /// </summary>
-        private Task<MqttConnect> ConstructConnectPacketAsync(MqttConnect connectPacketToEdit)
+        private Task<MqttConnect> PatchConnectPacketAsync(MqttConnect connectPacketToEdit)
         {
             if (CurrentEndpoint == ConnectionEndpoint.DeviceProvisioningService)
             {
                 // The CONNECT sent to DPS is fully formed before the first connect attempt and nothing about it changes
-                // between attempts, so there is nothing to inject here.
+                // between attempts or between the generation of Hub that the inheriting class uses, so there is nothing to inject here.
                 return Task.FromResult(connectPacketToEdit);
             }
 
+            // Gen 1 hub clients and gen 2 hub clients can insert their specific username/password/protocol version/etc before each connect attempt
             return Task.FromResult(MqttConnectOverride(connectPacketToEdit));
         }
 
@@ -237,14 +238,6 @@ namespace Microsoft.Azure.Devices.Client
 
 
 
-        /// <summary>
-        /// Connect directly to IoT Hub
-        /// </summary>
-        /// <param name="connectionContext">The details about which IoT hub host to connect to, and which device Id to connect as.</param>
-        /// <param name="authentication">The authentication to use when connecting.</param>
-        /// <param name="twinPushOptions">The options around receiving a twin push upon connecting.</param>
-        /// <param name="cancellationToken">Cancellation token.</param>
-        /// <returns>The initial twin of the device if a twin push was configured via <see cref="TwinPushOptions"/></returns>
         internal async Task ConnectAsync(ConnectionContext connectionContext, TwinPushOptions? twinPushOptions = default, CancellationToken cancellationToken = default)
         {
             ObjectDisposedException.ThrowIf(_isDisposed, this);
@@ -274,18 +267,16 @@ namespace Microsoft.Azure.Devices.Client
 
             try
             {
-                // This is the common shape of all connect packets for this device to this hub. There is an override per-connect attempt elsewhere that
-                // sets the connect nonce on the username field here. This is done so that a new connect nonce can be injected even during reconnection attempts
+                // These are the connect packet fields that are invariable between connect attempts to any kind of IoT Hub. There is an MQTT connect packet override
+                // step triggered by the "ConnectingAsync" callback each time a connect is attempted. This allows for the gen 2 client to insert a new connect nonce
+                // per connect attempt. It also allows the inheriting ConnectionClient to insert the appropriate username/password/websocket port for that hub type
                 MqttConnect connectPacket = new MqttConnect()
                 {
                     HostName = hostname,
                     TcpPort = 8883,
                     WebsocketPort = 443,
-                    WebsocketUri = $"wss://{hostname}/$iothub/websocket",
                     ClientCertificate = CurrentConnectionContext.AuthenticationProvider.ClientCertificate,
                     CleanSession = true, // TODO user configurable? Less applicable in gen 2 hub connection
-                    Password = Array.Empty<byte>(),
-                    ProtocolVersion = MqttProtocolVersion.V500,
                     ClientId = deviceId,
                 };
 
@@ -714,7 +705,7 @@ namespace Microsoft.Azure.Devices.Client
 
         private void DetachConnectionCallbacks()
         {
-            ManagedMqttConnection.ConnectingAsync -= ConstructConnectPacketAsync;
+            ManagedMqttConnection.ConnectingAsync -= PatchConnectPacketAsync;
             ManagedMqttConnection.ConnectedAsync -= HandleConnectedAsync;
             ManagedMqttConnection.DisconnectedAsync -= HandleDisconnectedAsync;
             ManagedMqttConnection.ConnectionFaultedAsync -= HandleConnectionFaultedAsync;

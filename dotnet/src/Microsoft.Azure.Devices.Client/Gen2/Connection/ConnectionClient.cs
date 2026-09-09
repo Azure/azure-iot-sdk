@@ -34,6 +34,11 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Connection
 
             var provisioningResult = await ProvisionAsync(provisioningSettings, authentication, cancellationToken);
 
+            if (!provisioningResult.IsAzureEventGridHub)
+            {
+                throw new InvalidOperationException("This device was provisioned to a Gen 1 IoT Hub, but this connection client can only be used with a Gen 2 IoT Hub");
+            }
+
             CurrentConnectionContext = new ConnectionContext()
             {
                 DeviceId = provisioningResult.DeviceId!,
@@ -205,6 +210,8 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Connection
             string username = $"correlationId={Uri.EscapeDataString(hexEncodedConnectNonce)}&clientVersion={Uri.EscapeDataString($"csharp/{GetPackageVersion()}")}";
 
             connect.Username = username;
+            connect.Password = Array.Empty<byte>();
+            connect.ProtocolVersion = MqttProtocolVersion.V500;
 
             return connect;
         }

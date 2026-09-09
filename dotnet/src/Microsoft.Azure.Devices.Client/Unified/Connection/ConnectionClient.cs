@@ -58,6 +58,12 @@ namespace Microsoft.Azure.Devices.Client.Unified.Connection
                 return _gen2ConnectionClient.MqttConnectOverride(connect);
             }
 
+            connect.WebsocketUri = $"wss://{connect.HostName}/$iothub/websocket";
+            connect.ProtocolVersion = CurrentConnectionContext.IsGen2Hub ? MqttProtocolVersion.V500 : MqttProtocolVersion.V311;
+            connect.Username = $"{connect.HostName}/{connect.ClientId}/?api-version={ClassicHubApiVersion}&DeviceClientType={Uri.EscapeDataString(GetUserAgentString())}";
+            connect.Password = Array.Empty<byte>();
+
+
             // gen1 flow does not need to insert anything unique per connect attempt
             return connect;
         }
