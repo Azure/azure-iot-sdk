@@ -72,21 +72,25 @@ namespace Microsoft.Azure.Devices.Client.Unified.Connection
         {
             // Note that this callback handler is only set after provisioning has completed. It is only to respond to IoT Hub connection events, not DPS connection events.
 
-            // Upon an MQTT connection being established, immediately re-subscribe to all twin/telemetry/direct methods topics if there is no session present.
-            if (args.ConnectAck.IsSessionPresent)
-            {
-                Debug.Assert(CurrentConnectionContext != null); // The context should be set even before the first connect attempt, so this should never fail
-                if (!CurrentConnectionContext.IsGen2Hub)
-                {
-                    // Only signal device is ready here for gen 1 client case. Gen 2 client still needs to re-announce birth before it is ready to resume normal traffic
-                    await RaiseDevicePresenceFlowCompletedAsync(new DevicePresenceFlowCompletedArgs() { IsSuccess = true });
-                }
+            // This callback should only be reached after provisioning, so their should always be a connection context to use
+            Debug.Assert(CurrentConnectionContext != null);
 
+            if (CurrentConnectionContext.IsGen2Hub)
+            {
+                // A gen 2 hub connection re-announces this device's birth instead of re-subscribing to the classic topics.
+                // The gen 2 client owns that flow, but it must run on this client's connection. It signals that the device
+                // is ready by raising its own device presence flow completed event, which this client relays.
+                await _gen2ConnectionClient.AnnounceDevicePresenceAsync(ManagedMqttConnection, CurrentConnectionContext.DeviceId, args);
                 return;
             }
 
-            // This callback should only be reached after provisioning, so their should always be a connection context to use
-            Debug.Assert(CurrentConnectionContext != null);
+            // Upon an MQTT connection being established, immediately re-subscribe to all twin/telemetry/direct methods topics if there is no session present.
+            if (args.ConnectAck.IsSessionPresent)
+            {
+                await RaiseDevicePresenceFlowCompletedAsync(new DevicePresenceFlowCompletedArgs() { IsSuccess = true });
+
+                return;
+            }
 
             //TODO check for previous connack isSessionPresent flag before firing off all these subscriptions?
             MqttSubscribe mqttSubscribe = new();

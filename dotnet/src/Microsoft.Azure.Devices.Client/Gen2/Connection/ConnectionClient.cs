@@ -53,7 +53,23 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Connection
             return CurrentConnectionContext;
         }
 
-        public override async Task HandleConnectedToHubAsync(MqttClientConnectedEventArgs args)
+        public override Task HandleConnectedToHubAsync(MqttClientConnectedEventArgs args)
+        {
+            Debug.Assert(CurrentConnectionContext != null);
+
+            return AnnounceDevicePresenceAsync(ManagedMqttConnection, CurrentConnectionContext.DeviceId, args);
+        }
+
+        /// <summary>
+        /// Run the gen 2 device presence flow (subscribe to the device topic if needed, announce this device's birth
+        /// and wait for the birth ack) on the provided connection, then raise <see cref="AbstractConnectionClient.DevicePresenceFlowCompletedAsync"/>.
+        /// </summary>
+        /// <remarks>
+        /// The connection and device id are supplied by the caller rather than read from this client's own state so
+        /// that the unified connection client can run this same flow on the connection that it owns when it is
+        /// connected to a gen 2 hub.
+        /// </remarks>
+        internal async Task AnnounceDevicePresenceAsync(MqttConnectionManager connection, string deviceId, MqttClientConnectedEventArgs args)
         {
             //TODO do we need any sort of cancellation handling here if the connect call's cancellation token triggers?
 
@@ -61,9 +77,7 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Connection
 
             var connack = args.ConnectAck;
 
-            Debug.Assert(CurrentConnectionContext != null);
             Debug.Assert(CurrentConnectionNonce != null);
-            string deviceId = CurrentConnectionContext.DeviceId;
             Guid connectNonce = CurrentConnectionNonce!.Value;
 
             // Only send the subscribe if it hasn't been sent in this MQTT session yet
@@ -72,30 +86,30 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Connection
                 try
                 {
                     // TODO this feels a bit optimistic since there is a chance that the session was established -> connection lost happened on the previous connection prior to this subscribe happening
-                    var suback = await ManagedMqttConnection.SubscribeAsync(new(string.Format("ih/{0}/dev/#", deviceId), MqttQualityOfServiceLevel.AtLeastOnce));
+                    var suback = await connection.SubscribeAsync(new(string.Format("ih/{0}/dev/#", deviceId), MqttQualityOfServiceLevel.AtLeastOnce));
                     var subackFirstItem = suback.Items.FirstOrDefault();
                     if (subackFirstItem == null)
                     {
                         Trace.TraceWarning("Received malformed SUBACK. Attempting connection again...");
-                        await ManagedMqttConnection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttClientDisconnectOptionsReason.NormalDisconnection });
+                        await connection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttClientDisconnectOptionsReason.NormalDisconnection });
                     }
 
                     if (subackFirstItem == null)
                     {
                         Trace.TraceWarning($"Received malformed SUBACK on devicebound SUBSCRIBE.");
-                        await ManagedMqttConnection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttClientDisconnectOptionsReason.NormalDisconnection });
+                        await connection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttClientDisconnectOptionsReason.NormalDisconnection });
                     }
 
                     if (subackFirstItem.ReasonCode != MqttClientSubscribeReasonCode.GrantedQoS1)
                     {
                         Trace.TraceWarning("Received SUBACK on devicebound SUBSCRIBE with unsuccessful result code: {0}.", subackFirstItem.ReasonCode);
-                        await ManagedMqttConnection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttClientDisconnectOptionsReason.NormalDisconnection });
+                        await connection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttClientDisconnectOptionsReason.NormalDisconnection });
                     }
                 }
                 catch (Exception e)
                 {
                     Trace.TraceWarning("Exception thrown while subscribing to devicebound topic. Attempting connection again...", e);
-                    await ManagedMqttConnection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttClientDisconnectOptionsReason.NormalDisconnection });
+                    await connection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttClientDisconnectOptionsReason.NormalDisconnection });
                 }
             }
 
@@ -161,23 +175,24 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Connection
 
             TaskCompletionSource<TwinPush> twinPushReceivedTaskCompletionSource = new();
 
-            ManagedMqttConnection.PublishReceivedAsync += HandleReceivedBirthAck;
+            connection.PublishReceivedAsync += HandleReceivedBirthAck;
 
             MqttPublishAck birthMessagePuback;
             try
             {
-                birthMessagePuback = await ManagedMqttConnection.PublishAsync(birthMessage);
+                birthMessagePuback = await connection.PublishAsync(birthMessage);
             }
             catch (Exception e)
             {
                 Trace.TraceWarning("Exception thrown while publishing birth message", e);
-                await ManagedMqttConnection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttClientDisconnectOptionsReason.NormalDisconnection });
+                connection.PublishReceivedAsync -= HandleReceivedBirthAck;
+                await connection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttClientDisconnectOptionsReason.NormalDisconnection });
                 return;
             }
 
             if (birthMessagePuback.ReasonCode != MqttPublishAckReasonCode.Success)
             {
-                await ManagedMqttConnection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttClientDisconnectOptionsReason.NormalDisconnection });
+                await connection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttClientDisconnectOptionsReason.NormalDisconnection });
                 Trace.TraceWarning("Received unsuccessful PUBACK when publishing birth message with reason code: {0}.", birthMessagePuback.ReasonCode);
             }
 
@@ -189,12 +204,12 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Connection
             catch (TimeoutException)
             {
                 // Did not receive mqtt birth ack message in timely manner (and user has not canceled this function yet)
-                await ManagedMqttConnection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttClientDisconnectOptionsReason.NormalDisconnection }); //TODO what about if this throws?
+                await connection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttClientDisconnectOptionsReason.NormalDisconnection }); //TODO what about if this throws?
                 Trace.TraceWarning("Timed out waiting for birth ack message");
             }
 
             // Birth ack was received, so stop listening for birth acks.
-            ManagedMqttConnection.PublishReceivedAsync -= HandleReceivedBirthAck;
+            connection.PublishReceivedAsync -= HandleReceivedBirthAck;
 
             await RaiseDevicePresenceFlowCompletedAsync(new());
         }
