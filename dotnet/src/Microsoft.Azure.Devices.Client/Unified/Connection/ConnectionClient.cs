@@ -13,7 +13,7 @@ using System.Text.Json;
 
 namespace Microsoft.Azure.Devices.Client.Unified.Connection
 {
-    public class ConnectionClient : GenericConnectionClient, IConnectionClient
+    public class ConnectionClient : AbstractConnectionClient, IConnectionClient
     {
         private const string CertificateSigningRequestTopic = "$iothub/credentials/POST/issueCertificate/?$rid=";
         private const string CertificateSigningResponseTopicFilter = "$iothub/credentials/res/#";

@@ -17,7 +17,7 @@ namespace Microsoft.Azure.Devices.Client
 {
     //TODO Does my setup already allow for user to publish via feature clients even when this client is connected to DPS during identity terminal exception handling? It does, right?
 
-    public abstract class GenericConnectionClient
+    public abstract class AbstractConnectionClient
     {
         private const string ProvisioningUsernameFormat = "{0}/registrations/{1}/api-version={2}&ClientVersion={3}";
         private const string ProvisioningApiVersion = "2019-03-31";
@@ -54,9 +54,6 @@ namespace Microsoft.Azure.Devices.Client
         /// <see cref="DevicePresenceFlowCompletedAsync"/>.
         /// </summary>
         private event Func<ProvisioningFlowCompletedArgs, Task>? ProvisioningFlowCompletedAsync;
-
-
-
 
         internal bool _isDisposed = false;
         private bool _isUserSuppliedMqttClient = false;
@@ -108,7 +105,7 @@ namespace Microsoft.Azure.Devices.Client
         /// <param name="options">
         /// The optional configurations that this client will use
         /// </param>
-        public GenericConnectionClient(ConnectionClientOptions? options = null)
+        public AbstractConnectionClient(ConnectionClientOptions? options = null)
         {
             options ??= new ConnectionClientOptions();
 
@@ -219,7 +216,10 @@ namespace Microsoft.Azure.Devices.Client
                 // The connection layer has stopped maintaining the connection to DPS, so no further connection will
                 // arrive to start the provisioning flow again.
                 CancelCurrentProvisioningFlow();
-                await RaiseProvisioningFlowCompletedAsync(new ProvisioningFlowCompletedArgs(args.Exception));
+                if (ProvisioningFlowCompletedAsync != null)
+                {
+                    await ProvisioningFlowCompletedAsync.Invoke(new ProvisioningFlowCompletedArgs(args.Exception));
+                }
             }
         }
 
@@ -411,7 +411,10 @@ namespace Microsoft.Azure.Devices.Client
                     registrationStatus.OperationId,
                     provisioningFlowCancellation.Token);
 
-                await RaiseProvisioningFlowCompletedAsync(new ProvisioningFlowCompletedArgs(registrationResult));
+                if (ProvisioningFlowCompletedAsync != null)
+                {
+                    await ProvisioningFlowCompletedAsync.Invoke(new ProvisioningFlowCompletedArgs(registrationResult));
+                }
             }
             catch (OperationCanceledException)
             {
@@ -422,7 +425,10 @@ namespace Microsoft.Azure.Devices.Client
             catch (Exception e)
             {
                 Trace.TraceError("Exception thrown while running the provisioning flow. {0}", e);
-                await RaiseProvisioningFlowCompletedAsync(new ProvisioningFlowCompletedArgs(e));
+                if (ProvisioningFlowCompletedAsync != null)
+                {
+                    await ProvisioningFlowCompletedAsync.Invoke(new ProvisioningFlowCompletedArgs(e));
+                }
             }
             finally
             {
@@ -443,16 +449,6 @@ namespace Microsoft.Azure.Devices.Client
             catch (ObjectDisposedException)
             {
                 // The flow already ended and disposed its own cancellation source, so there is nothing left to cancel.
-            }
-        }
-
-        private async Task RaiseProvisioningFlowCompletedAsync(ProvisioningFlowCompletedArgs args)
-        {
-            Func<ProvisioningFlowCompletedArgs, Task>? handler = ProvisioningFlowCompletedAsync;
-
-            if (handler != null)
-            {
-                await handler.Invoke(args);
             }
         }
 
@@ -661,7 +657,7 @@ namespace Microsoft.Azure.Devices.Client
         {
             const string name = "Microsoft.Azure.Devices.Provisioning.Client";
 
-            string version = typeof(GenericConnectionClient).GetTypeInfo().Assembly.GetName().Version!.ToString(3);
+            string version = typeof(AbstractConnectionClient).GetTypeInfo().Assembly.GetName().Version!.ToString(3);
             string runtime = RuntimeInformation.FrameworkDescription.Trim();
             string operatingSystem = RuntimeInformation.OSDescription.Trim();
             string processorArchitecture = RuntimeInformation.ProcessArchitecture.ToString().Trim();

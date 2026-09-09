@@ -10,7 +10,7 @@ using System.Text;
 
 namespace Microsoft.Azure.Devices.Client.Gen2.Connection
 {
-    public class ConnectionClient : GenericConnectionClient, IConnectionClient
+    public class ConnectionClient : AbstractConnectionClient, IConnectionClient
     {
         private static TimeSpan birthAckReceivedDefensiveTimeout = TimeSpan.FromSeconds(60); //TODO value is magic number
 
