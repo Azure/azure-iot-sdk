@@ -16,23 +16,6 @@
 
 #define AZ_IOT_GEN1_TELEMETRY_TOPIC_MAX 512
 
-static az_iot_result validate_profile(az_iot_connection_client* conn)
-{
-  if (!az_iot_connection_client__is_connected(conn))
-  {
-    return AZ_IOT_ERR_NOT_CONNECTED;
-  }
-  az_iot_hub_profile profile = AZ_IOT_HUB_PROFILE_INIT;
-  az_iot_result result = az_iot_connection_client_get_hub_profile(conn, &profile);
-  if (result != AZ_IOT_OK)
-  {
-    return result;
-  }
-  return profile.connection_profile == AZ_IOT_CONNECTION_PROFILE_CLASSIC
-      ? AZ_IOT_OK
-      : AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH;
-}
-
 az_iot_result az_iot_gen1_telemetry_client_init(
     az_iot_gen1_telemetry_client* client,
     az_iot_connection_client* conn)
@@ -43,7 +26,8 @@ az_iot_result az_iot_gen1_telemetry_client_init(
     return AZ_IOT_ERR_INVALID_ARG;
   }
 
-  az_iot_result result = validate_profile(conn);
+  az_iot_result result
+      = az_iot_connection_client__require_profile(conn, AZ_IOT_CONNECTION_PROFILE_CLASSIC);
   if (result != AZ_IOT_OK)
   {
     memset(client, 0, sizeof(*client));
@@ -59,6 +43,7 @@ void az_iot_gen1_telemetry_client_destroy(az_iot_gen1_telemetry_client* client)
 {
   if (client)
   {
+    az_iot_connection_client__release_profile(client->_internal.conn);
     memset(client, 0, sizeof(*client));
   }
 }

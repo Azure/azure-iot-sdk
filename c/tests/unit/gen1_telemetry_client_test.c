@@ -189,10 +189,12 @@ static void init_contract(void** state)
   az_iot_gen1_telemetry_client_destroy(NULL);
 
   memset(&test->telemetry, 0xEE, sizeof(test->telemetry));
+  /* Init records the generation this client needs rather than reading a live
+   * connection, so it succeeds before open(). */
   assert_int_equal(
-      az_iot_gen1_telemetry_client_init(&test->telemetry, &test->connection),
-      AZ_IOT_ERR_NOT_CONNECTED);
-  assert_null(test->telemetry._internal.conn);
+      az_iot_gen1_telemetry_client_init(&test->telemetry, &test->connection), AZ_IOT_OK);
+  assert_ptr_equal(test->telemetry._internal.conn, &test->connection);
+  az_iot_gen1_telemetry_client_destroy(&test->telemetry);
 }
 
 static void init_rejects_v5_profile(void** state)
