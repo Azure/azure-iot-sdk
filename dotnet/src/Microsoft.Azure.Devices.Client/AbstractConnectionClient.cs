@@ -1,4 +1,5 @@
-﻿using Microsoft.Azure.Devices.Client.Gen2.Connection;
+﻿using Microsoft.Azure.Devices.Client.Exceptions;
+using Microsoft.Azure.Devices.Client.Gen2.Connection;
 using Microsoft.Azure.Devices.Client.Gen2.Twin;
 using Microsoft.Azure.Devices.Client.Models;
 using Microsoft.Azure.Devices.Client.Models.CertificateManagement;
@@ -95,6 +96,18 @@ namespace Microsoft.Azure.Devices.Client
         /// runs on its own, it is only abandoned when this client is deliberately disconnected or disposed.
         /// </summary>
         private CancellationTokenSource? _currentReprovisioningCancellation;
+
+        /// <summary>
+        /// The fault that ended connection maintenance without anything left to bring the connection back, if this
+        /// client has hit one. Cleared as soon as this client starts establishing a connection again.
+        /// </summary>
+        private DeviceException? _unrecoverableFault;
+
+        /// <summary>
+        /// Raised when <see cref="_unrecoverableFault"/> is set, so that operations waiting for the connection to come
+        /// back stop waiting for something that will never happen.
+        /// </summary>
+        private event Action? UnrecoverablyFaulted;
 
         // The DPS responses that the in-progress provisioning flow is waiting on. Both are reset for each new connection
         // to DPS since a registration only lives as long as the connection it was started on.
@@ -244,13 +257,15 @@ namespace Microsoft.Azure.Devices.Client
                 return;
             }
 
-            if (args.IsIdentityFault)
+            if (args.IsIdentityFault && TryStartReprovisioning(args))
             {
-                // The connection ended because of this device's identity rather than because of anything the connection
-                // layer could retry. A device that was provisioned through DPS recovers from that on its own by
-                // registering again and connecting to whichever hub it is assigned this time.
-                StartReprovisioning(args);
+                // This client is recovering from the fault on its own, so anything waiting for the connection should
+                // keep waiting for that recovery to re-establish it.
+                return;
             }
+
+            // Nothing is going to bring this connection back, so stop anything that is waiting for it.
+            MarkUnrecoverablyFaulted(args.Exception);
         }
 
         /// <summary>
@@ -262,7 +277,8 @@ namespace Microsoft.Azure.Devices.Client
         /// maintenance, which must not be blocked while this client establishes a new connection to DPS.
         /// </remarks>
         /// <param name="args">The fault that this recovery is responding to.</param>
-        private void StartReprovisioning(MqttConnectionFaultedEventArgs args)
+        /// <returns>True if this call started a recovery attempt, false if this client will not recover on its own.</returns>
+        private bool TryStartReprovisioning(MqttConnectionFaultedEventArgs args)
         {
             if (args.LastDisconnect == null)
             {
@@ -270,7 +286,7 @@ namespace Microsoft.Azure.Devices.Client
                 // decides what to do. Recovering here as well would have both this client and that caller trying to
                 // establish the same connection.
                 Trace.TraceWarning("Not re-provisioning after an identity fault because the fault is reported to the caller that requested the connection.");
-                return;
+                return false;
             }
 
             ProvisioningSettings? provisioningSettings = _lastProvisioningSettings;
@@ -281,14 +297,14 @@ namespace Microsoft.Azure.Devices.Client
                 // This device was connected with credentials that the application supplied directly, so there is no
                 // registration for this client to renew. Only the application can recover from here.
                 Trace.TraceError("The connection faulted on this device's identity, but this device was not provisioned through Device Provisioning Service so it cannot re-provision. {0}", args.Exception);
-                return;
+                return false;
             }
 
             if (Interlocked.CompareExchange(ref _isReprovisioning, 1, 0) != 0)
             {
                 // An earlier fault already started this recovery, and a second one would fight it over this client's connection.
                 Trace.TraceInformation("Ignoring an identity fault because this device is already re-provisioning.");
-                return;
+                return true;
             }
 
             var reprovisioningCancellation = new CancellationTokenSource();
@@ -312,6 +328,10 @@ namespace Microsoft.Azure.Devices.Client
                 {
                     // This task is unmonitored, so nothing may escape it.
                     Trace.TraceError("Failed to re-provision this device after the connection faulted on its identity. {0}", e);
+
+                    // This recovery was the only thing left that could have re-established the connection, so anything
+                    // waiting for it is waiting for something that will never happen.
+                    MarkUnrecoverablyFaulted(AsUnrecoverableFault(e));
                 }
                 finally
                 {
@@ -321,6 +341,59 @@ namespace Microsoft.Azure.Devices.Client
                     Volatile.Write(ref _isReprovisioning, 0);
                 }
             });
+
+            return true;
+        }
+
+        /// <summary>
+        /// Record that this client has stopped maintaining its connection for a reason that neither the connection
+        /// layer nor this client will recover from, and release everything that is waiting for the connection.
+        /// </summary>
+        private void MarkUnrecoverablyFaulted(DeviceException fault)
+        {
+            _unrecoverableFault = fault;
+
+            UnrecoverablyFaulted?.Invoke();
+        }
+
+        /// <summary>
+        /// Forget any earlier fault because this client is establishing a connection again.
+        /// </summary>
+        private void ClearUnrecoverableFault()
+        {
+            _unrecoverableFault = null;
+        }
+
+        /// <summary>
+        /// Throw if this client has hit a fault that it will not recover from, so that an operation waiting for the
+        /// connection to come back does not wait forever.
+        /// </summary>
+        private void ThrowIfUnrecoverablyFaulted()
+        {
+            DeviceException? fault = _unrecoverableFault;
+
+            if (fault != null)
+            {
+                throw new OperationCanceledException("Operation canceled because this client hit a fault that it cannot recover from. See the inner exception for that fault.", fault);
+            }
+        }
+
+        /// <summary>
+        /// Present a failed recovery attempt as the classified fault that ended it, keeping the classification when the
+        /// attempt already failed with one.
+        /// </summary>
+        private static DeviceException AsUnrecoverableFault(Exception exception)
+        {
+            if (exception is DeviceException deviceException)
+            {
+                return deviceException;
+            }
+
+            return new DeviceException("Failed to re-provision this device after the connection faulted on its identity.", exception)
+            {
+                Retryability = ErrorRetryability.Terminal,
+                IsContained = false,
+            };
         }
 
         /// <summary>
@@ -366,6 +439,9 @@ namespace Microsoft.Azure.Devices.Client
             // From here on, every connection this client establishes targets IoT hub, so every connection (including the
             // ones the connection layer re-establishes on its own) runs the device presence flow.
             CurrentEndpoint = ConnectionEndpoint.IotHub;
+
+            // This client is establishing a connection again, so any earlier fault no longer describes its state.
+            ClearUnrecoverableFault();
 
             CurrentConnectionContext = connectionContext;
 
@@ -449,6 +525,9 @@ namespace Microsoft.Azure.Devices.Client
             // From here on, every connection this client establishes targets DPS, so every connection (including the ones
             // the connection layer re-establishes on its own) runs the provisioning flow.
             CurrentEndpoint = ConnectionEndpoint.DeviceProvisioningService;
+
+            // This client is establishing a connection again, so any earlier fault no longer describes its state.
+            ClearUnrecoverableFault();
 
             MqttConnect connect = CreateProvisioningConnectPacket(authentication, provisioningSettings.IdScope, provisioningSettings.GlobalEndpointAddress);
 
@@ -847,10 +926,12 @@ namespace Microsoft.Azure.Devices.Client
             Func<DevicePresenceFlowCompletedArgs, Task> HandleDevicePresenceFlowCompleted = (args) =>
             {
                 latch.Set();
-                return Task.CompletedTask;
+                return Task.CompletedTask; // Not covered? It should be, right?
             };
 
             DevicePresenceFlowCompletedAsync += HandleDevicePresenceFlowCompleted;
+            Action HandleUnrecoverableFault = () => latch.Set(); // Stop waiting for a connection that is never coming back
+            UnrecoverablyFaulted += HandleUnrecoverableFault;
             try
             {
                 while (true) // Retry sending publish until user cancels as long as the failure is just that the underlying mqtt client was disconnected.
@@ -863,6 +944,10 @@ namespace Microsoft.Azure.Devices.Client
                     {
                         latch.Reset(); // No-op if the HandleDisconnection already reset this latch. Only here because there is a chance that this method was called while MQTT client was disconnected
 
+                        // A fault that this client will not recover from must not be waited out, whether it happened
+                        // before this operation started or while this operation was waiting.
+                        ThrowIfUnrecoverablyFaulted();
+
                         try
                         {
                             latch.Wait(cancellationToken); // Wait for device birth flow to finish before resuming this feature client-level traffic
@@ -871,12 +956,15 @@ namespace Microsoft.Azure.Devices.Client
                         {
                             throw new OperationCanceledException("Operation canceled while waiting for reconnection to finish");
                         }
+
+                        ThrowIfUnrecoverablyFaulted();
                     }
                 }
             }
             finally
             {
                 DevicePresenceFlowCompletedAsync -= HandleDevicePresenceFlowCompleted;
+                UnrecoverablyFaulted -= HandleUnrecoverableFault;
             }
         }
 

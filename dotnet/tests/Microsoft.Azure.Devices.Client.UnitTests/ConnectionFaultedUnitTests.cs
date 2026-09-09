@@ -24,6 +24,9 @@ namespace Microsoft.Azure.Devices.Client.UnitTests
         private const string FirstAssignedHub = "first-hub.azure-devices.net";
         private const string SecondAssignedHub = "second-hub.azure-devices.net";
 
+        // The prefix of every topic that the Device Provisioning Service registration flow uses.
+        private const string ProvisioningTopicPrefix = "$dps/";
+
         private static readonly TimeSpan s_testTimeout = TimeSpan.FromSeconds(30);
 
         // How long to wait before concluding that this client did not start doing something it should not do.
@@ -171,7 +174,7 @@ namespace Microsoft.Azure.Devices.Client.UnitTests
         }
 
         [Fact]
-        public async Task IdentityFaultReportedToTheCallerDoesNotReprovision()
+        public async Task IdentityFaultReportedToTheCallerDoesNotReprovision() //TODO huh?
         {
             using MockConnectionMqttClient mockMqttClient = new();
             MockDeviceProvisioningService mockDps = new(mockMqttClient, _ => FirstAssignedHub);
@@ -197,6 +200,238 @@ namespace Microsoft.Azure.Devices.Client.UnitTests
             await Task.Delay(s_negativeTestTimeout, TestContext.Current.CancellationToken);
 
             // The caller was told about the fault and decides what to do, so this client must not also be recovering from it.
+            Assert.Equal(1, mockDps.RegistrationCount);
+        }
+
+        [Fact]
+        public Task TerminalFaultWhileReprovisioningCancelsPendingPublish()
+        {
+            return AssertPendingOperationIsCanceledByTerminalReprovisioningFaultAsync(
+                (mockMqttClient, operationAttempted) =>
+                {
+                    // The registration flow's publishes must keep working, but a feature client's publish finds the
+                    // connection gone, which is what makes it wait for this client to re-establish the connection.
+                    Func<MqttPublish, Task<MqttPublishAck>> handleProvisioningPublishAsync = mockMqttClient.OnPublish!;
+                    mockMqttClient.OnPublish = publish =>
+                    {
+                        if (publish.Topic.StartsWith(ProvisioningTopicPrefix))
+                        {
+                            return handleProvisioningPublishAsync.Invoke(publish);
+                        }
+
+                        operationAttempted.TrySetResult();
+                        throw new MqttClientNotConnectedException("mock client not connected exception");
+                    };
+                },
+                (connectionClient, cancellationToken) => connectionClient.PublishAsync(
+                    new MqttPublish() { Topic = $"devices/{DeviceId}/messages/events/" },
+                    cancellationToken));
+        }
+
+        [Fact]
+        public Task TerminalFaultWhileReprovisioningCancelsPendingSubscribe()
+        {
+            return AssertPendingOperationIsCanceledByTerminalReprovisioningFaultAsync(
+                (mockMqttClient, operationAttempted) =>
+                {
+                    // The registration flow's subscribe must keep working, but a feature client's subscribe finds the
+                    // connection gone, which is what makes it wait for this client to re-establish the connection.
+                    mockMqttClient.OnSubscribe = subscribe =>
+                    {
+                        if (subscribe.TopicFilters.Any(topicFilter => topicFilter.Topic.StartsWith(ProvisioningTopicPrefix)))
+                        {
+                            return Task.FromResult(MqttObjectHelpers.CreateSuccessfulSuback(subscribe));
+                        }
+
+                        operationAttempted.TrySetResult();
+                        throw new MqttClientNotConnectedException("mock client not connected exception");
+                    };
+                },
+                (connectionClient, cancellationToken) => connectionClient.SubscribeAsync(
+                    new MqttSubscribe($"devices/{DeviceId}/messages/devicebound/#", MqttQualityOfServiceLevel.AtLeastOnce),
+                    cancellationToken));
+        }
+
+        [Fact]
+        public Task TerminalFaultWhileReprovisioningCancelsPendingUnsubscribe()
+        {
+            return AssertPendingOperationIsCanceledByTerminalReprovisioningFaultAsync(
+                (mockMqttClient, operationAttempted) =>
+                {
+                    // Nothing but the operation under test unsubscribes, so every unsubscribe finds the connection gone,
+                    // which is what makes it wait for this client to re-establish the connection.
+                    mockMqttClient.OnUnsubscribe = unsubscribe =>
+                    {
+                        operationAttempted.TrySetResult();
+                        throw new MqttClientNotConnectedException("mock client not connected exception");
+                    };
+                },
+                (connectionClient, cancellationToken) => connectionClient.UnsubscribeAsync(
+                    new MqttUnsubscribe($"devices/{DeviceId}/messages/devicebound/#"),
+                    cancellationToken));
+        }
+
+        [Fact]
+        public async Task IdentityFaultSendsAPendingPublishOnceTheDeviceIsProvisionedAndConnectedAgain()
+        {
+            using MockConnectionMqttClient mockMqttClient = new();
+            MockDeviceProvisioningService mockDps = new(mockMqttClient, registrationCount => registrationCount == 1 ? FirstAssignedHub : SecondAssignedHub);
+
+            string? currentHubHostName = null;
+            mockMqttClient.OnConnect = connect =>
+            {
+                currentHubHostName = connect.HostName;
+
+                return Task.FromResult(new MqttConnectAck() { ResultCode = MqttConnectReasonCode.Success });
+            };
+
+            // The registration flow's publishes must keep working. A feature client's first publish finds the connection
+            // gone, which is what makes it wait for this client to re-establish the connection, and every publish after
+            // that is sent normally.
+            Func<MqttPublish, Task<MqttPublishAck>> handleProvisioningPublishAsync = mockMqttClient.OnPublish!;
+            TaskCompletionSource publishAttempted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            int publishAttempts = 0;
+            string? hubThePublishWasSentTo = null;
+            MqttPublish? sentPublish = null;
+
+            // How many device presence flows had completed by the time the publish was actually sent. This is captured
+            // where the publish reaches the wire rather than where the publish call returns, so that it cannot observe a
+            // presence flow that completed after this publish was already on its way.
+            int devicePresenceFlowsCompleted = 0;
+            int devicePresenceFlowsCompletedWhenPublishWasSent = -1;
+            mockMqttClient.OnPublish = publish =>
+            {
+                if (publish.Topic.StartsWith(ProvisioningTopicPrefix))
+                {
+                    return handleProvisioningPublishAsync.Invoke(publish);
+                }
+
+                if (Interlocked.Increment(ref publishAttempts) == 1)
+                {
+                    publishAttempted.TrySetResult();
+                    throw new MqttClientNotConnectedException("mock client not connected exception");
+                }
+
+                hubThePublishWasSentTo = currentHubHostName;
+                sentPublish = publish;
+                devicePresenceFlowsCompletedWhenPublishWasSent = Volatile.Read(ref devicePresenceFlowsCompleted);
+
+                return Task.FromResult(new MqttPublishAck() { ReasonCode = MqttPublishAckReasonCode.Success });
+            };
+
+            using TestConnectionClient connectionClient = new(new() { MqttClient = mockMqttClient });
+
+            await connectionClient.ProvisionAndConnectAsync(
+                CreateProvisioningSettings(),
+                CreateAuthenticationProvider(),
+                TestContext.Current.CancellationToken);
+
+            // Watch the device presence flow that the reconnection runs. This is attached before the publish is started,
+            // so it is invoked before the handler that releases the waiting publish is.
+            connectionClient.DevicePresenceFlowCompletedAsync += args =>
+            {
+                Interlocked.Increment(ref devicePresenceFlowsCompleted);
+                return Task.CompletedTask;
+            };
+
+            // A feature client, such as the telemetry client, publishes while the connection is gone, so this operation
+            // is left waiting for this client to make the device present again. It runs on its own thread because that
+            // wait blocks whichever thread the publish was started on.
+            var publish = new MqttPublish() { Topic = $"devices/{DeviceId}/messages/events/" };
+            Task<MqttPublishAck> pendingPublish = Task.Run(
+                () => connectionClient.PublishAsync(publish, TestContext.Current.CancellationToken),
+                TestContext.Current.CancellationToken);
+
+            await publishAttempted.Task.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+
+            // The hub rejects this device's identity, so this client registers again and connects to the hub it is
+            // assigned this time, all while that publish waits.
+            await mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.NotAuthorized);
+
+            // The publish was only waiting for this device to be present again, so it must be sent now that it is.
+            MqttPublishAck puback = await pendingPublish.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+
+            Assert.Equal(MqttPublishAckReasonCode.Success, puback.ReasonCode);
+            Assert.Equal(2, publishAttempts);
+            Assert.Same(publish, sentPublish);
+
+            // The publish was only released by the device presence flow that the reconnection ran, so that flow must
+            // have completed before this publish call finished.
+            Assert.Equal(1, Volatile.Read(ref devicePresenceFlowsCompleted));
+            Assert.Equal(1, devicePresenceFlowsCompletedWhenPublishWasSent);
+
+            // The one attempt that was actually sent went out over the connection to the newly assigned hub.
+            Assert.Equal(SecondAssignedHub, hubThePublishWasSentTo);
+            Assert.Equal(2, mockDps.RegistrationCount);
+            Assert.Equal(SecondAssignedHub, connectionClient.GetCurrentConnectionContext()!.IotHubHostName);
+        }
+
+        /// <summary>
+        /// Provision and connect a device, start an operation that finds the connection gone and waits for it to come
+        /// back, then fault that connection on this device's identity and refuse the re-provisioning that follows for a
+        /// terminal reason. The waiting operation must be canceled with that fault rather than wait forever.
+        /// </summary>
+        /// <param name="failOperationWhileDisconnected">
+        /// Makes the mock report the operation under test as attempted while this client is not connected. It is given
+        /// the source to signal once that attempt has been made.
+        /// </param>
+        /// <param name="startPendingOperation">Starts the operation under test on the connection client.</param>
+        private static async Task AssertPendingOperationIsCanceledByTerminalReprovisioningFaultAsync(
+            Action<MockConnectionMqttClient, TaskCompletionSource> failOperationWhileDisconnected,
+            Func<TestConnectionClient, CancellationToken, Task> startPendingOperation)
+        {
+            using MockConnectionMqttClient mockMqttClient = new();
+            MockDeviceProvisioningService mockDps = new(mockMqttClient, _ => FirstAssignedHub);
+
+            int dpsConnectAttempts = 0;
+            mockMqttClient.OnConnect = connect =>
+            {
+                if (connect.HostName != GlobalDeviceEndpoint)
+                {
+                    return Task.FromResult(new MqttConnectAck() { ResultCode = MqttConnectReasonCode.Success });
+                }
+
+                // The first registration succeeds so that this device gets connected to a hub. The re-provisioning that
+                // the identity fault starts is refused for a reason that no amount of retrying or re-provisioning fixes.
+                return Task.FromResult(new MqttConnectAck()
+                {
+                    ResultCode = Interlocked.Increment(ref dpsConnectAttempts) == 1
+                        ? MqttConnectReasonCode.Success
+                        : MqttConnectReasonCode.Banned,
+                });
+            };
+
+            TaskCompletionSource operationAttempted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            failOperationWhileDisconnected(mockMqttClient, operationAttempted);
+
+            using TestConnectionClient connectionClient = new(new() { MqttClient = mockMqttClient });
+
+            await connectionClient.ProvisionAndConnectAsync(
+                CreateProvisioningSettings(),
+                CreateAuthenticationProvider(),
+                TestContext.Current.CancellationToken);
+
+            // A feature client, such as the telemetry client, sends this while the connection is gone, so the operation
+            // is left waiting for this client to make the device present again. It runs on its own thread because that
+            // wait blocks whichever thread the operation was started on.
+            Task pendingOperation = Task.Run(
+                () => startPendingOperation(connectionClient, TestContext.Current.CancellationToken),
+                TestContext.Current.CancellationToken);
+
+            await operationAttempted.Task.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+
+            // The hub rejects this device's identity, so this client starts re-provisioning while that operation waits.
+            await mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.NotAuthorized);
+
+            // That re-provisioning attempt is the only thing that could have re-established the connection, and it hit a
+            // terminal error, so the waiting operation must be canceled rather than left waiting forever.
+            OperationCanceledException exception = await Assert.ThrowsAsync<OperationCanceledException>(
+                () => pendingOperation.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken));
+
+            DeviceException fault = Assert.IsType<DeviceException>(exception.InnerException);
+            Assert.Equal(ErrorRetryability.Terminal, fault.Retryability);
+
+            Assert.Equal(2, dpsConnectAttempts);
             Assert.Equal(1, mockDps.RegistrationCount);
         }
 
