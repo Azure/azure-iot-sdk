@@ -1216,13 +1216,34 @@ static void extended_result_codes_are_bare_hex(void** state)
   assert_true(ext[0] != '\0');
   /* no 0x/0X prefix */
   assert_false(ext[0] == '0' && (ext[1] == 'x' || ext[1] == 'X'));
-  /* every character is a hex digit or a separating comma */
-  for (const char* c = ext; *c != '\0'; ++c)
+  /* Walk the comma-separated list explicitly: every segment must be non-empty
+   * and hex-only. Checking the character set alone would accept a leading or
+   * trailing comma and empty segments such as "1,,2", none of which are valid
+   * values of this field. */
+  const char* c = ext;
+  size_t segments = 0;
+  while (*c != '\0')
   {
-    assert_true(
-        (*c >= '0' && *c <= '9') || (*c >= 'a' && *c <= 'f') || (*c >= 'A' && *c <= 'F')
-        || *c == ',');
+    size_t digits = 0;
+    while (*c != '\0' && *c != ',')
+    {
+      assert_true((*c >= '0' && *c <= '9') || (*c >= 'a' && *c <= 'f') || (*c >= 'A' && *c <= 'F'));
+      ++digits;
+      ++c;
+    }
+    /* Rejects "", a leading comma, a trailing comma, and ",,". */
+    assert_true(digits > 0);
+    /* Unsigned int32, so at most 8 hex digits. */
+    assert_true(digits <= 8);
+    ++segments;
+
+    if (*c == ',')
+    {
+      ++c; /* a separator must be followed by another segment */
+      assert_true(*c != '\0');
+    }
   }
+  assert_true(segments > 0);
 }
 
 static void device_props_too_small_is_rejected(void** state)
