@@ -235,20 +235,30 @@ static void a_short_request_buffer_is_rejected(void** state)
 /* report request                                                            */
 /* ------------------------------------------------------------------------- */
 
+static void init_report_result(az_iot_adu_install_result* result)
+{
+  memset(result, 0, sizeof(*result));
+  result->outcome = AZ_IOT_ADU_OUTCOME_SUCCEEDED;
+  result->failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_NOT_APPLICABLE;
+  result->result_code = 700;
+  result->extended_result_codes[0] = '0';
+  result->extended_result_codes_length = 1;
+}
+
 static void report_carries_workflow_id_and_install_result(void** state)
 {
   (void)state;
   uint8_t buf[512];
   size_t len = 0;
   az_iot_adu_report_update_id installed = { "Contoso", "Tractor", "2.0" };
+  az_iot_adu_install_result result;
+  init_report_result(&result);
   az_iot_adu_report report = { 0 };
   report.workflow_id = "wf-1";
   report.installed_update_id = &installed;
-  report.outcome = AZ_IOT_ADU_OUTCOME_SUCCEEDED;
-  report.failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_NOT_APPLICABLE;
-  report.result_code = 700;
-  report.extended_result_codes = "0";
-  report.result_details = "done";
+  report.install_result = &result;
+  memcpy(result.result_details, "done", 4);
+  result.result_details_length = 4;
 
   assert_int_equal(az_iot_adu__build_report_request(&report, buf, sizeof(buf), &len), AZ_IOT_OK);
   buf[len] = '\0';
@@ -270,13 +280,14 @@ static void report_drops_installed_update_id_when_absent(void** state)
   (void)state;
   uint8_t buf[512];
   size_t len = 0;
+  az_iot_adu_install_result result;
+  init_report_result(&result);
   az_iot_adu_report report = { 0 };
   report.workflow_id = "wf-1";
   report.installed_update_id = NULL;
-  report.outcome = AZ_IOT_ADU_OUTCOME_IN_PROGRESS;
-  report.failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_NOT_APPLICABLE;
-  report.result_code = 1;
-  report.extended_result_codes = "0";
+  report.install_result = &result;
+  result.outcome = AZ_IOT_ADU_OUTCOME_IN_PROGRESS;
+  result.result_code = 1;
 
   assert_int_equal(az_iot_adu__build_report_request(&report, buf, sizeof(buf), &len), AZ_IOT_OK);
   buf[len] = '\0';
@@ -295,26 +306,30 @@ static void outcome_and_failure_origin_must_agree(void** state)
 {
   (void)state;
   uint8_t buf[512];
+  az_iot_adu_install_result result;
+  init_report_result(&result);
   az_iot_adu_report report = { 0 };
   report.workflow_id = "wf-1";
-  report.result_code = -1;
-  report.extended_result_codes = "80000001";
+  report.install_result = &result;
+  result.result_code = -1;
+  memcpy(result.extended_result_codes, "80000001", 8);
+  result.extended_result_codes_length = 8;
 
   /* FAILED with NOT_APPLICABLE is invalid. */
-  report.outcome = AZ_IOT_ADU_OUTCOME_FAILED;
-  report.failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_NOT_APPLICABLE;
+  result.outcome = AZ_IOT_ADU_OUTCOME_FAILED;
+  result.failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_NOT_APPLICABLE;
   assert_int_equal(
       az_iot_adu__build_report_request(&report, buf, sizeof(buf), NULL), AZ_IOT_ERR_INVALID_ARG);
 
   /* A non-failure outcome with a failure origin is equally invalid. */
-  report.outcome = AZ_IOT_ADU_OUTCOME_SUCCEEDED;
-  report.failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_AGENT_CORE;
+  result.outcome = AZ_IOT_ADU_OUTCOME_SUCCEEDED;
+  result.failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_AGENT_CORE;
   assert_int_equal(
       az_iot_adu__build_report_request(&report, buf, sizeof(buf), NULL), AZ_IOT_ERR_INVALID_ARG);
 
   /* FAILED with a real origin is accepted. */
-  report.outcome = AZ_IOT_ADU_OUTCOME_FAILED;
-  report.failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_AGENT_CORE;
+  result.outcome = AZ_IOT_ADU_OUTCOME_FAILED;
+  result.failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_AGENT_CORE;
   assert_int_equal(az_iot_adu__build_report_request(&report, buf, sizeof(buf), NULL), AZ_IOT_OK);
 }
 
@@ -322,13 +337,56 @@ static void report_without_a_workflow_id_is_rejected(void** state)
 {
   (void)state;
   uint8_t buf[512];
+  az_iot_adu_install_result result;
+  init_report_result(&result);
   az_iot_adu_report report = { 0 };
   report.workflow_id = "";
-  report.outcome = AZ_IOT_ADU_OUTCOME_SUCCEEDED;
-  report.failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_NOT_APPLICABLE;
-  report.extended_result_codes = "0";
+  report.install_result = &result;
   assert_int_equal(
       az_iot_adu__build_report_request(&report, buf, sizeof(buf), NULL), AZ_IOT_ERR_INVALID_ARG);
+}
+
+static void report_protocol_uses_canonical_serializer(void** state)
+{
+  (void)state;
+  az_iot_adu_install_result result;
+  init_report_result(&result);
+  result.result_code = INT64_MAX;
+  result.step_results_count = 1;
+  result.step_results[0].outcome = AZ_IOT_ADU_OUTCOME_FAILED;
+  result.step_results[0].failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_DEVICE;
+  result.step_results[0].result_code = INT64_MIN;
+  memcpy(result.step_results[0].extended_result_codes, "FFFFFFFF,0", 10);
+  result.step_results[0].extended_result_codes_length = 10;
+  az_iot_adu_report report = { 0 };
+  report.workflow_id = "canonical";
+  report.install_result = &result;
+  uint8_t protocol[2048];
+  uint8_t canonical[2048];
+  size_t protocol_length = 0;
+  size_t canonical_length = 0;
+  assert_int_equal(
+      az_iot_adu__build_report_request(&report, protocol, sizeof(protocol), &protocol_length),
+      AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_adu_build_report(&report, canonical, sizeof(canonical), &canonical_length), AZ_IOT_OK);
+  assert_int_equal(protocol_length, canonical_length);
+  assert_memory_equal(protocol, canonical, canonical_length);
+  assert_true(protocol_length < sizeof(protocol));
+  protocol[protocol_length] = '\0';
+  assert_non_null(strstr((const char*)protocol, "\"stepResults\":{\"step_0\":"));
+  assert_non_null(strstr((const char*)protocol, "\"resultCode\":-9223372036854775808"));
+
+  assert_int_equal(
+      az_iot_adu__build_report_request(&report, protocol, 1, &protocol_length),
+      AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  assert_int_equal(protocol_length, 0);
+  assert_int_equal(protocol[0], 0);
+  result.step_results[0].failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_NOT_APPLICABLE;
+  assert_int_equal(
+      az_iot_adu__build_report_request(&report, protocol, sizeof(protocol), &protocol_length),
+      AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(protocol_length, 0);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -416,13 +474,12 @@ static void a_report_with_a_partial_installed_update_id_is_rejected(void** state
   (void)state;
   uint8_t buf[512];
   az_iot_adu_report_update_id partial = { "Contoso", NULL, "2.0" };
+  az_iot_adu_install_result result;
+  init_report_result(&result);
   az_iot_adu_report report = { 0 };
   report.workflow_id = "wf-1";
   report.installed_update_id = &partial;
-  report.outcome = AZ_IOT_ADU_OUTCOME_SUCCEEDED;
-  report.failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_NOT_APPLICABLE;
-  report.result_code = 700;
-  report.extended_result_codes = "0";
+  report.install_result = &result;
 
   assert_int_equal(
       az_iot_adu__build_report_request(&report, buf, sizeof(buf), NULL), AZ_IOT_ERR_INVALID_ARG);
@@ -901,6 +958,7 @@ int main(void)
     cmocka_unit_test(report_drops_installed_update_id_when_absent),
     cmocka_unit_test(outcome_and_failure_origin_must_agree),
     cmocka_unit_test(report_without_a_workflow_id_is_rejected),
+    cmocka_unit_test(report_protocol_uses_canonical_serializer),
     cmocka_unit_test(an_offered_update_is_captured_verbatim),
     cmocka_unit_test(no_update_is_success_whether_absent_or_null),
     cmocka_unit_test(the_root_key_url_is_read_from_service_configuration),

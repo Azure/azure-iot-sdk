@@ -282,257 +282,13 @@ az_iot_result az_iot_adu__build_fetch_request(
   return AZ_IOT_OK;
 }
 
-static const char* outcome_name(az_iot_adu_outcome outcome)
-{
-  switch (outcome)
-  {
-    case AZ_IOT_ADU_OUTCOME_IN_PROGRESS:
-      return "IN_PROGRESS";
-    case AZ_IOT_ADU_OUTCOME_SUCCEEDED:
-      return "SUCCEEDED";
-    case AZ_IOT_ADU_OUTCOME_FAILED:
-      return "FAILED";
-    case AZ_IOT_ADU_OUTCOME_CANCELED:
-      return "CANCELED";
-    case AZ_IOT_ADU_OUTCOME_SKIPPED:
-      return "SKIPPED";
-    default:
-      return NULL;
-  }
-}
-
-static const char* failure_origin_name(az_iot_adu_failure_origin origin)
-{
-  switch (origin)
-  {
-    case AZ_IOT_ADU_FAILURE_ORIGIN_NOT_APPLICABLE:
-      return "NOT_APPLICABLE";
-    case AZ_IOT_ADU_FAILURE_ORIGIN_ADU_CLOUD_SERVICE:
-      return "ADU_CLOUD_SERVICE";
-    case AZ_IOT_ADU_FAILURE_ORIGIN_ADU_MANAGED_RESOURCE:
-      return "ADU_MANAGED_RESOURCE";
-    case AZ_IOT_ADU_FAILURE_ORIGIN_AGENT_CORE:
-      return "AGENT_CORE";
-    case AZ_IOT_ADU_FAILURE_ORIGIN_AGENT_EXTENSION:
-      return "AGENT_EXTENSION";
-    case AZ_IOT_ADU_FAILURE_ORIGIN_AGENT_DEPENDENCY:
-      return "AGENT_DEPENDENCY";
-    case AZ_IOT_ADU_FAILURE_ORIGIN_DEVICE:
-      return "DEVICE";
-    case AZ_IOT_ADU_FAILURE_ORIGIN_OTHER:
-      return "OTHER";
-    default:
-      return NULL;
-  }
-}
-
-/* Render extendedResultCodes.
- *
- * Contract: comma-separated UNSIGNED hex int32, NO "0x" prefix, no fixed width,
- * case-insensitive. The engine produces a single code today; the comma-separated
- * form is what the field accepts, so a future multi-code producer changes only
- * this function. Zero is rendered "0" -- a bare value, not a padded one. */
-void az_iot_adu__format_extended_result_code(char* out, size_t out_size, int32_t code)
-{
-  static const char hex[] = "0123456789abcdef";
-  if (out_size < 9)
-  {
-    if (out_size > 0)
-    {
-      out[0] = '\0';
-    }
-    return;
-  }
-
-  uint32_t v = (uint32_t)code;
-  char tmp[8];
-  size_t n = 0;
-  do
-  {
-    tmp[n++] = hex[v & 0xFu];
-    v >>= 4;
-  } while (v != 0);
-
-  for (size_t i = 0; i < n; ++i)
-  {
-    out[i] = tmp[n - 1 - i];
-  }
-  out[n] = '\0';
-}
-
 az_iot_result az_iot_adu__build_report_request(
     const az_iot_adu_report* report,
     uint8_t* out,
     size_t out_size,
     size_t* out_len)
 {
-  if (report == NULL || report->workflow_id == NULL || report->workflow_id[0] == '\0' || out == NULL
-      || out_size == 0)
-  {
-    return AZ_IOT_ERR_INVALID_ARG;
-  }
-
-  const char* outcome = outcome_name(report->outcome);
-  const char* origin = failure_origin_name(report->failure_origin);
-  if (outcome == NULL || origin == NULL || report->extended_result_codes == NULL)
-  {
-    return AZ_IOT_ERR_INVALID_ARG;
-  }
-  /* A triple must be complete or absent. Passing a NULL member through to the
-   * writer would trip an upstream precondition rather than returning an error
-   * to the caller. */
-  if (report->installed_update_id != NULL
-      && (report->installed_update_id->provider == NULL || report->installed_update_id->name == NULL
-          || report->installed_update_id->version == NULL))
-  {
-    return AZ_IOT_ERR_INVALID_ARG;
-  }
-  /* The contract ties these together: NOT_APPLICABLE unless the outcome is a
-   * failure, and a real origin when it is. Catching it here keeps an invalid
-   * pair off the wire rather than having the service reject it. */
-  if ((report->outcome == AZ_IOT_ADU_OUTCOME_FAILED)
-      == (report->failure_origin == AZ_IOT_ADU_FAILURE_ORIGIN_NOT_APPLICABLE))
-  {
-    return AZ_IOT_ERR_INVALID_ARG;
-  }
-
-  az_json_writer jw;
-  if (az_result_failed(az_json_writer_init(&jw, az_span_create(out, (int32_t)out_size), NULL)))
-  {
-    return AZ_IOT_ERR_INTERNAL;
-  }
-
-  az_result r = az_json_writer_append_begin_object(&jw);
-  if (az_result_succeeded(r))
-  {
-    r = write_string_property(&jw, "workflowId", report->workflow_id);
-  }
-
-  /* Dropped rather than serialized as null when the device has nothing
-   * installed. */
-  if (az_result_succeeded(r) && report->installed_update_id != NULL)
-  {
-    r = write_update_id(&jw, "installedUpdateId", report->installed_update_id);
-  }
-
-  if (az_result_succeeded(r))
-  {
-    r = az_json_writer_append_property_name(&jw, AZ_SPAN_FROM_STR("installResult"));
-  }
-  if (az_result_succeeded(r))
-  {
-    r = az_json_writer_append_begin_object(&jw);
-  }
-  if (az_result_succeeded(r))
-  {
-    r = write_string_property(&jw, "outcome", outcome);
-  }
-  if (az_result_succeeded(r))
-  {
-    r = write_string_property(&jw, "failureOrigin", origin);
-  }
-  if (az_result_succeeded(r))
-  {
-    r = az_json_writer_append_property_name(&jw, AZ_SPAN_FROM_STR("resultCode"));
-  }
-  if (az_result_succeeded(r))
-  {
-    r = az_json_writer_append_int32(&jw, report->result_code);
-  }
-  if (az_result_succeeded(r))
-  {
-    r = write_string_property(&jw, "extendedResultCodes", report->extended_result_codes);
-  }
-  if (az_result_succeeded(r) && report->result_details != NULL)
-  {
-    r = write_string_property(&jw, "resultDetails", report->result_details);
-  }
-
-  /* Per-step results are a MAP keyed step_0, step_1, ... -- not an array. The
-   * index carries the step identity, so ordering is the only thing that ties a
-   * result back to its step. Omitted entirely when there are none. */
-  if (az_result_succeeded(r) && report->step_results != NULL && report->step_results_count > 0)
-  {
-    r = az_json_writer_append_property_name(&jw, AZ_SPAN_FROM_STR("stepResults"));
-    if (az_result_succeeded(r))
-    {
-      r = az_json_writer_append_begin_object(&jw);
-    }
-    for (int32_t i = 0; az_result_succeeded(r) && i < report->step_results_count; ++i)
-    {
-      const az_iot_adu_client_step_result* step = &report->step_results[i];
-
-      char key[16];
-      az_iot_span_writer kw;
-      az_iot_span_writer_init(&kw, AZ_SPAN_FROM_BUFFER(key));
-      az_iot_span_writer_append_str(&kw, "step_");
-      az_iot_span_writer_append_u32(&kw, (uint32_t)i);
-      if (az_iot_span_writer_end_str(&kw, NULL) != AZ_IOT_OK)
-      {
-        return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
-      }
-
-      r = az_json_writer_append_property_name(&jw, az_span_create_from_str(key));
-      if (az_result_succeeded(r))
-      {
-        r = az_json_writer_append_begin_object(&jw);
-      }
-      if (az_result_succeeded(r))
-      {
-        r = az_json_writer_append_property_name(&jw, AZ_SPAN_FROM_STR("resultCode"));
-      }
-      if (az_result_succeeded(r))
-      {
-        r = az_json_writer_append_int32(&jw, step->result_code);
-      }
-      if (az_result_succeeded(r))
-      {
-        r = az_json_writer_append_property_name(&jw, AZ_SPAN_FROM_STR("extendedResultCodes"));
-      }
-      if (az_result_succeeded(r))
-      {
-        char step_ext[16];
-        az_iot_adu__format_extended_result_code(
-            step_ext, sizeof(step_ext), step->extended_result_code);
-        r = az_json_writer_append_string(&jw, az_span_create_from_str(step_ext));
-      }
-      if (az_result_succeeded(r) && az_span_size(step->result_details) > 0)
-      {
-        r = az_json_writer_append_property_name(&jw, AZ_SPAN_FROM_STR("resultDetails"));
-        if (az_result_succeeded(r))
-        {
-          r = az_json_writer_append_string(&jw, step->result_details);
-        }
-      }
-      if (az_result_succeeded(r))
-      {
-        r = az_json_writer_append_end_object(&jw);
-      }
-    }
-    if (az_result_succeeded(r))
-    {
-      r = az_json_writer_append_end_object(&jw); /* stepResults */
-    }
-  }
-
-  if (az_result_succeeded(r))
-  {
-    r = az_json_writer_append_end_object(&jw); /* installResult */
-  }
-  if (az_result_succeeded(r))
-  {
-    r = az_json_writer_append_end_object(&jw);
-  }
-  if (az_result_failed(r))
-  {
-    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
-  }
-
-  if (out_len != NULL)
-  {
-    *out_len = (size_t)az_span_size(az_json_writer_get_bytes_used_in_destination(&jw));
-  }
-  return AZ_IOT_OK;
+  return az_iot_adu_build_report(report, out, out_size, out_len);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -677,18 +433,13 @@ az_iot_result az_iot_adu__parse_error_code(
     const uint8_t* payload,
     size_t payload_len,
     char* out_code,
-    size_t out_code_size,
-    int32_t* out_numeric_code)
+    size_t out_code_size)
 {
   if (out_code == NULL || out_code_size == 0)
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
   out_code[0] = '\0';
-  if (out_numeric_code != NULL)
-  {
-    *out_numeric_code = 0;
-  }
 
   if (payload == NULL || payload_len == 0)
   {
@@ -704,147 +455,72 @@ az_iot_result az_iot_adu__parse_error_code(
     return AZ_IOT_ERR_NOT_FOUND;
   }
 
-  bool found_string_code = false;
-  bool found_message = false;
-  bool found_numeric_code = false;
-  bool closed = false;
-
   while (az_result_succeeded(az_json_reader_next_token(&jr)))
   {
     if (jr.token.kind == AZ_JSON_TOKEN_END_OBJECT)
     {
-      closed = true;
       break;
     }
     if (jr.token.kind != AZ_JSON_TOKEN_PROPERTY_NAME)
     {
       return AZ_IOT_ERR_NOT_FOUND;
     }
-
-    bool is_numeric = az_json_token_is_text_equal(&jr.token, AZ_SPAN_FROM_STR("errorCode"));
-    bool is_info = az_json_token_is_text_equal(&jr.token, AZ_SPAN_FROM_STR("info"));
-    bool is_message = az_json_token_is_text_equal(&jr.token, AZ_SPAN_FROM_STR("message"));
-
+    bool is_error = az_json_token_is_text_equal(&jr.token, AZ_SPAN_FROM_STR("error"));
     if (az_result_failed(az_json_reader_next_token(&jr)))
     {
-      break;
+      return AZ_IOT_ERR_NOT_FOUND;
     }
-
-    if (is_numeric && jr.token.kind == AZ_JSON_TOKEN_NUMBER)
+    if (!is_error || jr.token.kind != AZ_JSON_TOKEN_BEGIN_OBJECT)
     {
-      /* Parse regardless of whether the caller wants the value: detection must
-       * not depend on an optional output parameter. */
-      int32_t v = 0;
-      if (az_result_succeeded(az_json_token_get_int32(&jr.token, &v)))
-      {
-        found_numeric_code = true;
-        if (out_numeric_code != NULL)
-        {
-          *out_numeric_code = v;
-        }
-      }
-      continue;
-    }
-
-    /* Measured against the live service: the device-facing error body carries
-     * the originating code in "message" and has no "info" object at all. So
-     * this -- not info.aduErrorCode -- is the field that actually discriminates
-     * the shared numeric buckets (400000 is INVALID_REQUEST *and*
-     * UNKNOWN_WORKFLOW_ID).
-     *
-     * "message" is not always a code: it is sometimes free text
-     * ("Deserialization error."). That is safe because an unrecognized string
-     * falls through to the numeric ladder rather than being judged on its own.
-     * Text too long for the buffer is dropped for the same reason -- a truncated
-     * token must not be compared, and the numeric code still classifies. */
-    if (is_message && jr.token.kind == AZ_JSON_TOKEN_STRING && !found_string_code)
-    {
-      int32_t n = az_span_size(jr.token.slice);
-      if (n >= 0 && (size_t)n + 1 <= out_code_size)
-      {
-        memcpy(out_code, az_span_ptr(jr.token.slice), (size_t)n);
-        out_code[n] = '\0';
-        found_message = true;
-      }
-      continue;
-    }
-
-    /* The originating string code travels here when the service does surface
-     * the documented envelope. Preferred over "message" because it is always a
-     * code, never prose. */
-    if (is_info && jr.token.kind == AZ_JSON_TOKEN_BEGIN_OBJECT)
-    {
-      bool info_closed = false;
-      while (az_result_succeeded(az_json_reader_next_token(&jr)))
-      {
-        if (jr.token.kind == AZ_JSON_TOKEN_END_OBJECT)
-        {
-          info_closed = true;
-          break;
-        }
-        if (jr.token.kind != AZ_JSON_TOKEN_PROPERTY_NAME)
-        {
-          return AZ_IOT_ERR_NOT_FOUND;
-        }
-        bool is_adu_code = az_json_token_is_text_equal(&jr.token, AZ_SPAN_FROM_STR("aduErrorCode"));
-        if (az_result_failed(az_json_reader_next_token(&jr)))
-        {
-          break;
-        }
-        if (is_adu_code && jr.token.kind == AZ_JSON_TOKEN_STRING)
-        {
-          int32_t n = az_span_size(jr.token.slice);
-          if (n < 0 || (size_t)n + 1 > out_code_size)
-          {
-            return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
-          }
-          memcpy(out_code, az_span_ptr(jr.token.slice), (size_t)n);
-          out_code[n] = '\0';
-          found_string_code = true;
-          continue;
-        }
-        if (az_result_failed(az_json_reader_skip_children(&jr)))
-        {
-          return AZ_IOT_ERR_NOT_FOUND;
-        }
-      }
-      if (!info_closed)
+      if (az_result_failed(az_json_reader_skip_children(&jr)))
       {
         return AZ_IOT_ERR_NOT_FOUND;
       }
       continue;
     }
 
-    if (az_result_failed(az_json_reader_skip_children(&jr)))
+    while (az_result_succeeded(az_json_reader_next_token(&jr)))
     {
-      return AZ_IOT_ERR_NOT_FOUND;
+      if (jr.token.kind == AZ_JSON_TOKEN_END_OBJECT)
+      {
+        break;
+      }
+      if (jr.token.kind != AZ_JSON_TOKEN_PROPERTY_NAME)
+      {
+        return AZ_IOT_ERR_NOT_FOUND;
+      }
+      bool is_code = az_json_token_is_text_equal(&jr.token, AZ_SPAN_FROM_STR("code"));
+      if (az_result_failed(az_json_reader_next_token(&jr)))
+      {
+        return AZ_IOT_ERR_NOT_FOUND;
+      }
+      if (is_code && jr.token.kind == AZ_JSON_TOKEN_STRING)
+      {
+        int32_t n = az_span_size(jr.token.slice);
+        if (n < 0 || (size_t)n + 1 > out_code_size)
+        {
+          return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+        }
+        memcpy(out_code, az_span_ptr(jr.token.slice), (size_t)n);
+        out_code[n] = '\0';
+        return AZ_IOT_OK;
+      }
+      if (az_result_failed(az_json_reader_skip_children(&jr)))
+      {
+        return AZ_IOT_ERR_NOT_FOUND;
+      }
     }
   }
 
-  /* A body that never closed is truncated: acting on a partially read failure
-   * could drive a resend or retry from incomplete JSON. */
-  if (!closed)
-  {
-    return AZ_IOT_ERR_NOT_FOUND;
-  }
-
-  /* Either signal alone is enough to classify: the numeric code carries the
-   * class even when the string code is absent. */
-  if (found_string_code || found_message || found_numeric_code)
-  {
-    return AZ_IOT_OK;
-  }
   return AZ_IOT_ERR_NOT_FOUND;
 }
 
-az_iot_adu_error_action az_iot_adu__classify_error(
-    const char* error_code,
-    int32_t numeric_code,
-    az_iot_adu_operation operation)
+az_iot_adu_error_action az_iot_adu__classify_error(const char* error_code, int32_t status)
 {
-  /* The originating string code is the most precise signal when present. */
   if (error_code != NULL && error_code[0] != '\0')
   {
+    /* The code is authoritative: the same status carries conditions that need
+     * opposite handling, so it is never the primary signal. */
     if (strcmp(error_code, "UPDATE_ACCOUNT_NOT_LINKED") == 0)
     {
       return AZ_IOT_ADU_ERROR_ACTION_PROCEED;
@@ -871,55 +547,27 @@ az_iot_adu_error_action az_iot_adu__classify_error(
     {
       return AZ_IOT_ADU_ERROR_ACTION_RETRY_AFTER;
     }
-    /* Both sides of the 400000 bucket. Neither can be fixed by resending the
-     * same request: the device is not onboarded, or the workflow no longer
-     * exists. Not reported as ALREADY_REPORTED -- that would claim a delivery
-     * that never happened. */
-    if (strcmp(error_code, "INVALID_REQUEST") == 0
-        || strcmp(error_code, "UNKNOWN_WORKFLOW_ID") == 0)
-    {
-      return AZ_IOT_ADU_ERROR_ACTION_FATAL;
-    }
-    /* Unrecognized: fall through to the numeric ladder rather than judging the
-     * string alone. The field this usually arrives in ("message") is free text
-     * as often as it is a code, and treating prose as an unknown code would
-     * turn a retryable 5xx into a fatal one. The numeric ladder still defaults
-     * 4xx to FATAL, so nothing becomes more optimistic than before. */
+    /* An unrecognized code is NOT assumed retryable: repeating a request the
+     * service has already rejected is the worse failure mode. */
+    return AZ_IOT_ADU_ERROR_ACTION_FATAL;
   }
 
-  /* No string code: the numeric code carries the class. This path matters --
-   * surfacing the string code is a SHOULD, not a MUST. */
-  switch (numeric_code)
+  /* No code in the body: fall back to the status, coarsely and conservatively. */
+  if (status >= 200 && status < 300)
   {
-    case AZ_IOT_ADU_ERR_AGENT_INFO_RESEND_REQUIRED:
-      /* The whole resend/re-sync family shares this code. Resending the full
-       * agentInfo also drops the stale service-config ETag, so one action
-       * covers every member. */
-      return AZ_IOT_ADU_ERROR_ACTION_RESEND_AGENT_INFO;
-
-    case AZ_IOT_ADU_ERR_GENERIC_CONFLICT:
-      /* Shared by two conditions needing OPPOSITE handling: a fetch means the
-       * account is not linked (proceed, do not retry); a report means a
-       * terminal result is already recorded (treat as delivered). Without the
-       * string code, the operation in flight is what disambiguates them. */
-      return (operation == AZ_IOT_ADU_OP_REPORT_STATUS) ? AZ_IOT_ADU_ERROR_ACTION_ALREADY_REPORTED
-                                                        : AZ_IOT_ADU_ERROR_ACTION_PROCEED;
-
-    case AZ_IOT_ADU_ERR_THROTTLED:
-    case AZ_IOT_ADU_ERR_QUOTA_EXCEEDED:
-      return AZ_IOT_ADU_ERROR_ACTION_RETRY_AFTER;
-
-    case AZ_IOT_ADU_ERR_SERVER_ERROR:
-    case AZ_IOT_ADU_ERR_SERVICE_UNAVAILABLE:
-      return AZ_IOT_ADU_ERROR_ACTION_RETRY;
-
-    case 0:
-      /* No code at all: nothing to classify. */
-      return AZ_IOT_ADU_ERROR_ACTION_FATAL;
-
-    default:
-      /* Every other documented code is a request or credential fault: fix the
-       * request, do not repeat it unchanged. */
-      return AZ_IOT_ADU_ERROR_ACTION_FATAL;
+    return AZ_IOT_ADU_ERROR_ACTION_NONE;
   }
+  if (status == 429)
+  {
+    return AZ_IOT_ADU_ERROR_ACTION_RETRY_AFTER;
+  }
+  if (status == 409)
+  {
+    return AZ_IOT_ADU_ERROR_ACTION_ALREADY_REPORTED;
+  }
+  if (status >= 500)
+  {
+    return AZ_IOT_ADU_ERROR_ACTION_RETRY;
+  }
+  return AZ_IOT_ADU_ERROR_ACTION_FATAL;
 }
