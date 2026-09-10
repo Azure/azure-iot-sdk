@@ -317,7 +317,7 @@ static void on_method(
   (void)method_name;
   (void)user_ctx;
   /* Echo the request payload back with a 200. */
-  az_iot_result rc = az_iot_direct_method_respond(request, 200, payload, payload_len);
+  az_iot_result rc = az_iot_gen1_direct_method_respond(request, 200, payload, payload_len);
   (void)rc;
 }
 
@@ -325,9 +325,9 @@ static void test_direct_method(void** state)
 {
   e2e_fixture* fx = (e2e_fixture*)*state;
 
-  az_iot_direct_method_client dm;
-  assert_int_equal(az_iot_direct_method_client_init(&dm, &fx->dev.conn), AZ_IOT_OK);
-  assert_int_equal(az_iot_direct_method_client_set_handler(&dm, on_method, NULL), AZ_IOT_OK);
+  az_iot_gen1_direct_method_client dm;
+  assert_int_equal(az_iot_gen1_direct_method_client_init(&dm, &fx->dev.conn), AZ_IOT_OK);
+  assert_int_equal(az_iot_gen1_direct_method_client_set_handler(&dm, on_method, NULL), AZ_IOT_OK);
 
   for (int i = 0; i < 20; ++i)
   {
@@ -351,7 +351,7 @@ static void test_direct_method(void** state)
     }
   }
 
-  az_iot_direct_method_client_destroy(&dm);
+  az_iot_gen1_direct_method_client_destroy(&dm);
 
   if (rc != 1)
   {
