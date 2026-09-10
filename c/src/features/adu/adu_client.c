@@ -1851,6 +1851,7 @@ static az_iot_result adu_persist(az_iot_adu_client_t* client)
 
 static az_iot_result complete_checkpoint(az_iot_adu_client_t* client)
 {
+  /* TODO: Separate permanent request validation errors from retryable storage-write failures. */
   az_iot_result status = adu_persist(client);
   if (status == AZ_IOT_OK)
   {

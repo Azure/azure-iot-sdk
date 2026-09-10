@@ -328,6 +328,12 @@ stateDiagram-v2
   only the checkpoint, not Install; cancellation or a replacement clears the pending checkpoint.
   A missing persistence hook returns `AZ_IOT_ERR_NOT_SUPPORTED` and also blocks Apply.
   No network-report retry/outbox or change to application-controlled reboot timing is introduced.
+  **Follow-up (not implemented):** distinguish permanent request-validation errors from
+  retryable storage-write failures. A missing remaining-step URL currently returns
+  `AZ_IOT_ERR_INVALID_ARG` on every checkpoint attempt, leaving the workflow pending until
+  cancellation or replacement. Reject malformed requests before execution or fail the workflow
+  explicitly instead of retrying unchanged invalid data; retain retries for recoverable storage
+  failures. Add a regression test covering this distinction.
 - **Health-check / auto-rollback after reboot (🟡 → core).** Today only the ESP32
   A/B sample confirms/marks-valid the new image; core does not re-run `is_installed_fn` on
   resume. **To do:** add an optional post-reboot confirm step in core with an auto-rollback
