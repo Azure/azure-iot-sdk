@@ -390,25 +390,24 @@ The internal fine-grained states (`az_iot_adu_state`) MUST be mapped to the prot
 
 ### Result-Code Mapping
 
-The state mapping above tells the service *what phase* the agent is in; the
-**result codes** tell it *how the last action ended*. Every report carries an
-`az_iot_adu_client_install_result` (and per-step `step_results[]`), each with a
-`result_code` (high-level) and `extended_result_code` (diagnostic). The client
-MUST populate them as follows.
-
-**`result_code`.** Follows ADU agent convention: the success value reported by
-the agent is **`700`** (the value used throughout azure-sdk-for-c examples). The
-client MUST report:
+ADUv2 uses explicit `outcome` fields in the SDK-owned `az_iot_adu_install_result`
+and `az_iot_adu_step_result` types. `result_code` is a signed 64-bit diagnostic,
+not the source of the outcome; `extended_result_codes` is owned hex text.
+The following table records current engine conventions, not a resolved service
+mapping. Diagnostic-code conventions still require confirmation.
 
 | Outcome | `result_code` |
 |---|---|
 | Step/overall success | `700` |
-| Cancelled (replacement/Cancel during a phase) | `0` |
-| Any failure | A non-success ADU code (`< 700`) indicating the failing phase |
+| Overall in progress | `1` |
+| Unfinished step | `0` |
+| Overall canceled/skipped | `-1` |
+| Canceled/skipped unfinished step | `0` |
+| Phase failure | `700 - facility`, retained for diagnostics |
 
-**`extended_result_code`.** A 32-bit diagnostic value the client MUST compose so
-the failing layer and raw cause are recoverable from the cloud report. The SDK
-defines a structured layout:
+**Extended diagnostics.** The engine composes a 32-bit value using the layout below,
+then formats it into `extended_result_codes` as unsigned hex without `0x`.
+There is no numeric `extended_result_code` member in the canonical result types.
 
 ```
  bits 31..28 : facility  (which phase/layer failed)
@@ -442,7 +441,7 @@ The update manifest v5 `instructions.steps[]` array MAY contain multiple steps, 
 1. For step N: the client MUST Download all files → Backup → Install → Apply.
 2. If Apply succeeds and more steps remain: the client MUST advance to step N+1 and loop back to Download.
 3. If any step fails: the client MUST Restore (rolling back from step N backward to step 0).
-4. Per-step results MUST be reported via `az_iot_adu_client_step_result` (from azure-sdk-for-c).
+4. Per-step results MUST be reported via the SDK-owned `az_iot_adu_step_result` array.
 
 #### Per-Step Result Accumulation
 

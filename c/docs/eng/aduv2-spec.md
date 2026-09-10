@@ -158,8 +158,9 @@ Steps have no `updateId`.
 Both text fields are `@maxLength(1024)`. That limit is expressed in Unicode characters, not
 bytes: JSON is UTF-8 on the wire, so a conforming value may reach 4096 bytes. `resultDetails`
 is free-form text and is therefore sized at 4096 bytes; `extendedResultCodes` is ASCII by
-construction, so 1024 bytes is exact. Byte-vs-character enforcement is unconfirmed with the ADU
-team; truncate on a character boundary so an over-long value never emits malformed UTF-8.
+construction, so 1024 bytes is exact. Service-side byte-vs-character enforcement still needs
+confirmation. The SDK validates Unicode character limits and rejects over-limit or malformed
+text with `AZ_IOT_ERR_INVALID_ARG`; it does not truncate.
 Extended codes are comma-separated unsigned hex int32 values: no `0x`, case-insensitive, no
 fixed width. Ordering is not semantic and the service may inspect only the first code.
 Outcomes use the five v2 values above. Failure origins

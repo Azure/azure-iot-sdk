@@ -74,10 +74,10 @@ extern "C"
 #define AZ_IOT_ADU_REQUEST_BUFFER_SIZE 4096
 #endif
 
-/* Snapshot scratch holds the request plus all owned result text. v2 remains readable. */
+/* Snapshot scratch holds the request, owned result text and download URL metadata. */
 #ifndef AZ_IOT_ADU_PERSIST_OVERHEAD
 #define AZ_IOT_ADU_PERSIST_OVERHEAD                  \
-  (64                                                \
+  (68 + _az_IOT_ADU_CLIENT_MAX_TOTAL_FILE_COUNT * 16 \
    + (_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS + 1) \
        * (24 + AZ_IOT_ADU_RESULT_TEXT_MAX_LENGTH + AZ_IOT_ADU_RESULT_DETAILS_MAX_SIZE))
 #endif
@@ -357,7 +357,7 @@ extern "C"
    *
    * These are the values the service accepts on the status-report operation.
    * `SKIPPED` replaces the ADUv1 accept/reject acknowledgement: an engine that
-   * declines a deployment reports it rather than answering a protocol-level``
+   * declines a deployment reports it rather than answering a protocol-level
    * "reject".
    */
   typedef enum az_iot_adu_outcome
@@ -490,6 +490,7 @@ extern "C"
       uint32_t current_step;
       uint32_t current_file;
       bool cancel_requested;
+      bool checkpoint_pending;
 
       /* Identity of the deployment currently being processed (or the last one
        * started). Copied out of the request so it survives request_buffer

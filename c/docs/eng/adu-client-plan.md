@@ -302,7 +302,7 @@ stateDiagram-v2
 ## E. Install, apply, recovery
 
 - **Install/Apply, Backup/Restore, partial rollback, reboot/resume (✅).** Persist-before-
-  reboot uses a versioned, CRC-checked, little-endian blob (`ADU1`, blob **v3**) carrying
+  reboot uses a versioned, CRC-checked, little-endian blob (`ADU1`, blob **v4**) carrying
   `retryTimestamp`, a manifest CRC, and the accumulated `install_result` incl.
   `step_results[]`; `resume()` re-enters at the persisted phase boundary
   (`INSTALL_COMPLETE` → Apply). *Caveats:* the only persist point today is the
@@ -313,15 +313,21 @@ stateDiagram-v2
   `workflowId`), `installedUpdateId`, and the `agentInfoEtag` / `serviceConfigEtag` pair, so a
   device that reboots mid-install still reports its result afterwards and does not resend a full
   `agentInfo` needlessly. `retryTimestamp` leaves the blob with the twin channel.
-  The current **blob v3** upgrades only the existing install-reboot checkpoint to canonical
-  results (outcomes, origins, 64-bit diagnostics and text); v2 checkpoints remain readable.
+  Blob v3 introduced canonical results (outcomes, origins, 64-bit diagnostics and text).
+  The current **blob v4** also carries validated ID/URL offset mappings into the saved request,
+  so remaining steps can download after resume without reparsing in-place-unescaped JSON.
+  Legacy v2/v3 checkpoints remain supported when no further downloads are needed; otherwise
+  resume returns `AZ_IOT_ERR_NOT_SUPPORTED` because their URL metadata is unavailable.
   It is not an unsent-report queue. Resumed text is copied into result-owned buffers, so
   later incoming payloads cannot overwrite it. The default snapshot storage covers maximum
   result text; invalid lengths and corrupt snapshots are errors, not truncated results.
   Resume validates the entire snapshot before committing to client-owned result storage,
   avoiding a large stack-local result. Rejected snapshots leave the existing result and
   workflow intact; only snapshot scratch is overwritten by the load hook.
-  Persistence failures are returned to the caller; no automatic retry is introduced.
+  Persistence failures are returned to the caller and block Apply. Subsequent work ticks retry
+  only the checkpoint, not Install; cancellation or a replacement clears the pending checkpoint.
+  A missing persistence hook returns `AZ_IOT_ERR_NOT_SUPPORTED` and also blocks Apply.
+  No network-report retry/outbox or change to application-controlled reboot timing is introduced.
 - **Health-check / auto-rollback after reboot (🟡 → core).** Today only the ESP32
   A/B sample confirms/marks-valid the new image; core does not re-run `is_installed_fn` on
   resume. **To do:** add an optional post-reboot confirm step in core with an auto-rollback

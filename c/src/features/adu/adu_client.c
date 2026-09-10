@@ -907,6 +907,7 @@ static void reset_to_idle(az_iot_adu_client_t* client)
   ADU_I(client).current_step = 0;
   ADU_I(client).current_file = 0;
   ADU_I(client).cancel_requested = false;
+  ADU_I(client).checkpoint_pending = false;
   memset(&ADU_I(client).current_request, 0, sizeof(ADU_I(client).current_request));
   memset(&ADU_I(client).current_manifest, 0, sizeof(ADU_I(client).current_manifest));
   ADU_I(client).request_len = 0;
@@ -1225,6 +1226,7 @@ static void process_desired_patch(
   ADU_I(client).current_request = req;
   ADU_I(client).have_request = true;
   ADU_I(client).cancel_requested = false;
+  ADU_I(client).checkpoint_pending = false;
   ADU_I(client).current_step = 0;
   ADU_I(client).current_file = 0;
   ADU_I(client).state = AZ_IOT_ADU_STATE_MANIFEST_RECEIVED;
@@ -1497,12 +1499,13 @@ void az_iot_adu_client_destroy(az_iot_adu_client_t* client)
  * v3 trailer: retry offset/length, manifest CRC, step count (four u32s),
  * followed by overall + step records: outcome(u32), origin(u32), code(i64),
  * extended/detail byte lengths(u32 each), then both text buffers; finally CRC32.
+ * v4 adds a URL count and {id offset/length, URL offset/length} u32 records before CRC32.
  * Resumed results own their text independently of request and snapshot buffers. */
 #define AZ_IOT_ADU_PERSIST_MAGIC0 'A'
 #define AZ_IOT_ADU_PERSIST_MAGIC1 'D'
 #define AZ_IOT_ADU_PERSIST_MAGIC2 'U'
 #define AZ_IOT_ADU_PERSIST_MAGIC3 '1'
-#define AZ_IOT_ADU_PERSIST_VERSION 3u
+#define AZ_IOT_ADU_PERSIST_VERSION 4u
 #define AZ_IOT_ADU_PERSIST_HEADER_SIZE 40u
 #define AZ_IOT_ADU_PERSIST_V2_TRAILER_FIXED 24u
 #define AZ_IOT_ADU_PERSIST_TRAILER_FIXED 16u
@@ -1517,7 +1520,7 @@ typedef char az_iot_adu_persist_blob_fits
           + (_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS + 1)
               * (AZ_IOT_ADU_PERSIST_RESULT_FIXED + AZ_IOT_ADU_RESULT_TEXT_MAX_LENGTH
                  + AZ_IOT_ADU_RESULT_DETAILS_MAX_SIZE)
-          + 4u
+          + 4u + _az_IOT_ADU_CLIENT_MAX_TOTAL_FILE_COUNT * 16u + 4u
       <= AZ_IOT_ADU_PERSIST_BLOB_SIZE)
          ? 1
          : -1];
@@ -1665,13 +1668,61 @@ static uint32_t request_offset(const az_iot_adu_client_t* client, az_span s)
   return (uint32_t)(p - base);
 }
 
+static bool valid_request_span(const az_iot_adu_client_t* client, az_span value)
+{
+  int32_t length = az_span_size(value);
+  uintptr_t base = (uintptr_t)ADU_I(client).request_buffer;
+  uintptr_t pointer = (uintptr_t)az_span_ptr(value);
+  return length > 0 && pointer >= base && pointer - base <= ADU_I(client).request_len
+      && (size_t)length <= ADU_I(client).request_len - (pointer - base);
+}
+
+static bool has_remaining_file_urls(
+    const az_iot_adu_client_update_manifest* manifest,
+    uint32_t next_step,
+    const az_iot_adu_client_file_url* urls,
+    uint32_t url_count)
+{
+  if (manifest->instructions.steps_count > _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS
+      || url_count > _az_IOT_ADU_CLIENT_MAX_TOTAL_FILE_COUNT)
+  {
+    return false;
+  }
+  for (uint32_t i = next_step; i < manifest->instructions.steps_count; ++i)
+  {
+    const az_iot_adu_client_update_manifest_instructions_step* step
+        = &manifest->instructions.steps[i];
+    if (step->files_count > _az_IOT_ADU_CLIENT_MAX_FILE_COUNT_PER_STEP)
+    {
+      return false;
+    }
+    for (uint32_t j = 0; j < step->files_count; ++j)
+    {
+      bool found = false;
+      for (uint32_t k = 0; k < url_count; ++k)
+      {
+        if (az_span_is_content_equal(step->files[j], urls[k].id))
+        {
+          found = true;
+          break;
+        }
+      }
+      if (!found)
+      {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
 /* Serialize the current workflow position and hand it to persist_state_fn. */
 static az_iot_result adu_persist(az_iot_adu_client_t* client)
 {
   az_iot_adu_platform_hooks* h = &ADU_I(client).hooks;
   if (h->persist_state_fn == NULL)
   {
-    return AZ_IOT_OK;
+    return AZ_IOT_ERR_NOT_SUPPORTED;
   }
 
   uint32_t request_len = (uint32_t)ADU_I(client).request_len;
@@ -1686,7 +1737,29 @@ static az_iot_result adu_persist(az_iot_adu_client_t* client)
   {
     return valid;
   }
+  uint32_t url_count = ADU_I(client).current_request.file_urls_count;
+  if (url_count > _az_IOT_ADU_CLIENT_MAX_TOTAL_FILE_COUNT)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  for (uint32_t i = 0; i < url_count; ++i)
+  {
+    if (!valid_request_span(client, ADU_I(client).current_request.file_urls[i].id)
+        || !valid_request_span(client, ADU_I(client).current_request.file_urls[i].url))
+    {
+      return AZ_IOT_ERR_INVALID_ARG;
+    }
+  }
+  if (!has_remaining_file_urls(
+          &ADU_I(client).current_manifest,
+          ADU_I(client).current_step + 1,
+          ADU_I(client).current_request.file_urls,
+          url_count))
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
   size_t size = AZ_IOT_ADU_PERSIST_HEADER_SIZE + request_len + AZ_IOT_ADU_PERSIST_TRAILER_FIXED + 4;
+  size += 4 + url_count * 16u;
   size += AZ_IOT_ADU_PERSIST_RESULT_FIXED + (size_t)r->extended_result_codes_length
       + (size_t)r->result_details_length;
   for (int32_t i = 0; i < r->step_results_count; ++i)
@@ -1761,8 +1834,30 @@ static az_iot_result adu_persist(az_iot_adu_client_t* client)
             (uint8_t*)(uintptr_t)step_result->result_details, step_result->result_details_length));
   }
 
+  wr_u32le(blob + p, url_count);
+  p += 4;
+  for (uint32_t i = 0; i < url_count; ++i)
+  {
+    const az_iot_adu_client_file_url* url = &ADU_I(client).current_request.file_urls[i];
+    wr_u32le(blob + p, request_offset(client, url->id));
+    wr_u32le(blob + p + 4, (uint32_t)az_span_size(url->id));
+    wr_u32le(blob + p + 8, request_offset(client, url->url));
+    wr_u32le(blob + p + 12, (uint32_t)az_span_size(url->url));
+    p += 16;
+  }
   wr_u32le(&blob[p], adu_crc32(blob, p));
   return h->persist_state_fn(blob, p + 4, h->user_ctx) == 0 ? AZ_IOT_OK : AZ_IOT_ERR_INTERNAL;
+}
+
+static az_iot_result complete_checkpoint(az_iot_adu_client_t* client)
+{
+  az_iot_result status = adu_persist(client);
+  if (status == AZ_IOT_OK)
+  {
+    ADU_I(client).checkpoint_pending = false;
+    (void)az_iot_adu__report_state(client);
+  }
+  return status;
 }
 
 /* Bound the steps before invoking the upstream fixed-array manifest parser. */
@@ -1950,7 +2045,7 @@ az_iot_result az_iot_adu_client_resume(az_iot_adu_client_t* client)
     return AZ_IOT_ERR_INVALID_ARG;
   }
   uint16_t version = rd_u16le(&blob[4]);
-  if (version != 2 && version != AZ_IOT_ADU_PERSIST_VERSION)
+  if (version != 2 && version != 3 && version != AZ_IOT_ADU_PERSIST_VERSION)
   {
     return AZ_IOT_ERR_NOT_SUPPORTED;
   }
@@ -2022,6 +2117,37 @@ az_iot_result az_iot_adu_client_resume(az_iot_adu_client_t* client)
       }
     }
   }
+  az_iot_adu_client_file_url urls[_az_IOT_ADU_CLIENT_MAX_TOTAL_FILE_COUNT] = { 0 };
+  uint32_t url_count = 0;
+  if (version == 4)
+  {
+    if (pos > blen - 4 || blen - 4 - pos < 4)
+    {
+      return AZ_IOT_ERR_INVALID_ARG;
+    }
+    url_count = rd_u32le(blob + pos);
+    pos += 4;
+    if (url_count > _az_IOT_ADU_CLIENT_MAX_TOTAL_FILE_COUNT || url_count > (blen - 4 - pos) / 16)
+    {
+      return AZ_IOT_ERR_INVALID_ARG;
+    }
+    for (uint32_t i = 0; i < url_count; ++i)
+    {
+      uint32_t id_off = rd_u32le(blob + pos);
+      uint32_t id_len = rd_u32le(blob + pos + 4);
+      uint32_t url_off = rd_u32le(blob + pos + 8);
+      uint32_t url_len = rd_u32le(blob + pos + 12);
+      if (id_len == 0 || url_len == 0 || id_off > request_len || id_len > request_len - id_off
+          || url_off > request_len || url_len > request_len - url_off)
+      {
+        return AZ_IOT_ERR_INVALID_ARG;
+      }
+      urls[i].id = az_span_create(blob + AZ_IOT_ADU_PERSIST_HEADER_SIZE + id_off, (int32_t)id_len);
+      urls[i].url
+          = az_span_create(blob + AZ_IOT_ADU_PERSIST_HEADER_SIZE + url_off, (int32_t)url_len);
+      pos += 16;
+    }
+  }
   if (pos + 4 != blen)
   {
     return AZ_IOT_ERR_INVALID_ARG;
@@ -2046,6 +2172,10 @@ az_iot_result az_iot_adu_client_resume(az_iot_adu_client_t* client)
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
+  if (!has_remaining_file_urls(&manifest, step + 1, urls, url_count))
+  {
+    return version < 4 ? AZ_IOT_ERR_NOT_SUPPORTED : AZ_IOT_ERR_INVALID_ARG;
+  }
 
   /* Commit only after all checks, without a second owned result on the stack. */
   memcpy(ADU_I(client).request_buffer, blob + AZ_IOT_ADU_PERSIST_HEADER_SIZE, request_len);
@@ -2055,6 +2185,14 @@ az_iot_result az_iot_adu_client_resume(az_iot_adu_client_t* client)
   ADU_I(client).manifest_text
       = az_span_create(ADU_I(client).request_buffer + mf_off, (int32_t)mf_len);
   memset(&ADU_I(client).current_request, 0, sizeof(ADU_I(client).current_request));
+  ADU_I(client).current_request.file_urls_count = url_count;
+  for (uint32_t i = 0; i < url_count; ++i)
+  {
+    ADU_I(client).current_request.file_urls[i].id = rebase_manifest_span(
+        urls[i].id, blob + AZ_IOT_ADU_PERSIST_HEADER_SIZE, ADU_I(client).request_buffer);
+    ADU_I(client).current_request.file_urls[i].url = rebase_manifest_span(
+        urls[i].url, blob + AZ_IOT_ADU_PERSIST_HEADER_SIZE, ADU_I(client).request_buffer);
+  }
   az_iot_adu_install_result* restored = &ADU_I(client).install_result;
   memset(restored, 0, sizeof(*restored));
   restored->step_results_count = (int32_t)count;
@@ -2122,6 +2260,7 @@ az_iot_result az_iot_adu_client_resume(az_iot_adu_client_t* client)
   ADU_I(client).current_file = file;
   ADU_I(client).cancel_requested = (flags & 0x1u) != 0;
   ADU_I(client).have_request = (flags & 0x2u) != 0;
+  ADU_I(client).checkpoint_pending = false;
 
   /* Re-establish the active deployment identity so a redelivery of the same
    * deployment after the reboot is recognized as a duplicate and does NOT
@@ -2392,13 +2531,8 @@ az_iot_result az_iot_adu_client_do_work(az_iot_adu_client_t* client)
          * on the next boot, report, and advance (a real device reboots
          * here; the loop simply continues if it does not). */
         ADU_I(client).state = AZ_IOT_ADU_STATE_INSTALL_COMPLETE;
-        az_iot_result persist_status = adu_persist(client);
-        if (persist_status != AZ_IOT_OK)
-        {
-          return persist_status;
-        }
-        (void)az_iot_adu__report_state(client);
-        break;
+        ADU_I(client).checkpoint_pending = true;
+        return complete_checkpoint(client);
       }
       if (ir != AZ_IOT_ADU_RESULT_SUCCESS)
       {
@@ -2412,6 +2546,10 @@ az_iot_result az_iot_adu_client_do_work(az_iot_adu_client_t* client)
     }
 
     case AZ_IOT_ADU_STATE_INSTALL_COMPLETE:
+      if (ADU_I(client).checkpoint_pending)
+      {
+        return complete_checkpoint(client);
+      }
       ADU_I(client).state = AZ_IOT_ADU_STATE_APPLY_STARTED;
       break;
 
