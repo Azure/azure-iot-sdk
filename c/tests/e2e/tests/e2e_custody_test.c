@@ -361,6 +361,16 @@ static void telemetry_flows_over_the_token_authenticated_connection(void** state
     (void)az_iot_e2e_service_do_work(g_fixture.service, E2E_PUMP_MS);
     seen = az_iot_e2e_service_telemetry_seen(g_fixture.service, needle);
   }
+
+  /* The Event Hub can observe the message before the device's own send
+   * acknowledgement (PUBACK) has been pumped in, so breaking on `seen` alone
+   * races the send. Drain the device briefly until the send completes, the
+   * same way e2e_scenarios_test.c does. */
+  for (time_t ack = time(NULL); !g_fixture.send_done && (time(NULL) - ack) < 5;)
+  {
+    (void)az_iot_connection_client_do_work(&g_fixture.conn, E2E_PUMP_MS);
+  }
+
   az_iot_e2e_service_telemetry_watch_end(g_fixture.service);
 
   assert_true(g_fixture.send_done);
