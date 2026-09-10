@@ -395,6 +395,136 @@ static void a_plaintext_connect_stays_plaintext(void** state)
   assert_false(mock_paho_last_connect_had_ssl());
 }
 
+/* ------------------------------------------------------------------------- */
+/* client-initiated disconnect completion                                     */
+/*                                                                            */
+/* Paho reports a disconnect the PEER caused through connectionLost() and the  */
+/* v5 disconnected() callback, but reports the one the application asked for   */
+/* only through the completion callbacks passed to MQTTAsync_disconnect. With  */
+/* none supplied the event never arrived and a caller waiting for the session  */
+/* to settle waited forever.                                                   */
+/* ------------------------------------------------------------------------- */
+
+/* Collects the events the adapter raises. */
+typedef struct
+{
+  int disconnected;
+  az_iot_result last_status;
+} evt_sink;
+
+static void on_evt(const az_iot_mqtt_event* e, void* ctx)
+{
+  evt_sink* s = (evt_sink*)ctx;
+  if (e->kind == AZ_IOT_MQTT_EVT_DISCONNECTED)
+  {
+    s->disconnected++;
+    s->last_status = e->status;
+  }
+}
+
+/* Connect, disconnect, and drain whatever the adapter queued. */
+static void connect_then_disconnect(fixture* fx, evt_sink* sink, az_iot_result* disc_rc)
+{
+  fx->client->iface->set_inbound_cb(fx->client, on_evt, sink);
+
+  az_iot_mqtt_connect_options opts;
+  memset(&opts, 0, sizeof(opts));
+  opts.host = "broker.invalid";
+  opts.port = 8883;
+  opts.client_id = "ut-device";
+  opts.tls.client_cert_path = "/dev/null/device.pem";
+  opts.tls.client_key_path = "/dev/null/device.key";
+  assert_int_equal(fx->client->iface->connect(fx->client, &opts), AZ_IOT_OK);
+
+  *disc_rc = fx->client->iface->disconnect(fx->client);
+  for (int i = 0; i < 20 && sink->disconnected == 0; ++i)
+  {
+    (void)fx->client->iface->process_loop(fx->client, 1);
+  }
+}
+
+/* The completion of a disconnect the application asked for is reported. */
+static void a_client_initiated_disconnect_reports_disconnected(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  evt_sink sink = { 0 };
+  az_iot_result rc = AZ_IOT_OK;
+
+  connect_then_disconnect(fx, &sink, &rc);
+
+  assert_int_equal(rc, AZ_IOT_OK);
+  assert_int_equal(mock_paho_disconnect_calls(), 1);
+  /* Without callbacks and a context the real client reports this to nobody. */
+  assert_true(mock_paho_disconnect_had_callbacks());
+  assert_int_equal(sink.disconnected, 1);
+  assert_int_equal(sink.last_status, AZ_IOT_OK);
+}
+
+/* Same on MQTT v5. Only the v3 completion callbacks are set, which is correct:
+ * for a DISCONNECT command Paho calls onSuccess when it is set and falls back
+ * to onSuccess5 only when it is not, so one pair serves both versions. This
+ * pins that, because setting the wrong pair fails silently -- the disconnect
+ * still succeeds and the event simply never arrives. */
+static void a_v5_client_initiated_disconnect_reports_disconnected(void** state)
+{
+  (void)state;
+  mock_paho_reset();
+  fake_custody_reset();
+
+  az_iot_mqtt_factory* f = az_iot_paho_factory_create_v5();
+  assert_non_null(f);
+  fixture local;
+  memset(&local, 0, sizeof(local));
+  local.factory = f;
+  local.client = f->create(f->factory_ctx);
+  assert_non_null(local.client);
+
+  evt_sink sink = { 0 };
+  az_iot_result rc = AZ_IOT_OK;
+  connect_then_disconnect(&local, &sink, &rc);
+
+  assert_int_equal(rc, AZ_IOT_OK);
+  assert_true(mock_paho_disconnect_had_callbacks());
+  assert_int_equal(sink.disconnected, 1);
+
+  local.client->iface->destroy(local.client);
+  az_iot_paho_factory_destroy(f);
+}
+
+/* A disconnect that completes with a FAILURE still ends the session, so it is
+ * still DISCONNECTED -- but it carries the error. The core surfaces
+ * evt->status as the reason the connection ended, so reporting AZ_IOT_OK here
+ * would tell the application the opposite of what happened. */
+static void a_failed_disconnect_completion_carries_the_error(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  mock_paho_set_disconnect_completion(false);
+
+  evt_sink sink = { 0 };
+  az_iot_result rc = AZ_IOT_OK;
+  connect_then_disconnect(fx, &sink, &rc);
+
+  assert_int_equal(sink.disconnected, 1);
+  assert_int_equal(sink.last_status, AZ_IOT_ERR_MQTT);
+}
+
+/* A refused MQTTAsync_disconnect runs no completion callback at all, so the
+ * adapter has to raise the event itself -- otherwise this is the one path that
+ * still hangs. */
+static void a_refused_disconnect_still_reports_disconnected(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  mock_paho_set_disconnect_rc(MQTTASYNC_FAILURE);
+
+  evt_sink sink = { 0 };
+  az_iot_result rc = AZ_IOT_OK;
+  connect_then_disconnect(fx, &sink, &rc);
+
+  assert_int_equal(rc, AZ_IOT_ERR_MQTT);
+  assert_int_equal(sink.disconnected, 1);
+  assert_int_equal(sink.last_status, AZ_IOT_ERR_MQTT);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -417,6 +547,14 @@ int main(void)
     cmocka_unit_test_setup_teardown(a_custody_connect_verifies_the_server, setup, teardown),
     cmocka_unit_test_setup_teardown(a_key_reference_alone_selects_tls, setup, teardown),
     cmocka_unit_test_setup_teardown(a_plaintext_connect_stays_plaintext, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_client_initiated_disconnect_reports_disconnected, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_v5_client_initiated_disconnect_reports_disconnected, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_failed_disconnect_completion_carries_the_error, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_refused_disconnect_still_reports_disconnected, setup, teardown),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }
