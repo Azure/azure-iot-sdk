@@ -90,18 +90,15 @@ static const az_iot_adu_channel_vtable k_channel_vtable = {
 az_iot_result az_iot_adu_channel_dps_init(
     az_iot_adu_channel_dps* channel_state,
     az_iot_connection_client* connection,
-    const az_iot_adu_http_transport* http_transport,
     az_iot_adu_channel* out_channel)
 {
-  if (channel_state == NULL || connection == NULL || http_transport == NULL
-      || http_transport->send == NULL || out_channel == NULL)
+  if (channel_state == NULL || connection == NULL || out_channel == NULL)
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
 
   memset(channel_state, 0, sizeof(*channel_state));
   channel_state->connection = connection;
-  channel_state->http = *http_transport;
 
   out_channel->vtable = &k_channel_vtable;
   out_channel->ctx = channel_state;
