@@ -11,6 +11,9 @@
 #include <stdint.h>
 
 #include "az_iot_result.h"
+/* For az_iot_connection_profile, which tags a method request with the
+ * generation that built it. */
+#include "az_iot_connection_client.h"
 
 #ifdef __cplusplus
 extern "C"
@@ -118,6 +121,61 @@ extern "C"
    *         @p msg->properties directly to tell the two apart.
    */
   const char* az_iot_c2d_message_property(const az_iot_c2d_message* msg, const char* key);
+
+/* Storage bounds for the request handle below. Compile-time footprint knobs:
+ * #define before including to tune. */
+#ifndef AZ_IOT_DM_METHOD_NAME_MAX
+#define AZ_IOT_DM_METHOD_NAME_MAX 96
+#endif
+/* Longest gen1 request id ($rid) carried on an invocation. */
+#ifndef AZ_IOT_DM_RID_MAX
+#define AZ_IOT_DM_RID_MAX 32
+#endif
+/* Longest gen2 correlation data echoed back on a response. */
+#ifndef AZ_IOT_DM_CORR_DATA_MAX
+#define AZ_IOT_DM_CORR_DATA_MAX 64
+#endif
+/* Max concurrent in-flight invocations one client can hold. Requests may
+ * outlive the handler (the application can respond asynchronously), so they
+ * live in a bounded pool inside the caller-allocated client struct rather than
+ * on the heap. */
+#ifndef AZ_IOT_DM_MAX_INFLIGHT
+#define AZ_IOT_DM_MAX_INFLIGHT 4
+#endif
+
+  /**
+   * @brief A method invocation awaiting a response.
+   *
+   * Delivered to the handler and passed back to the owning generation's
+   * respond call. Opaque to callers -- do NOT read _internal.
+   *
+   * The correlation fields are generation-specific storage: gen1 answers on a
+   * `$rid`, gen2 echoes MQTT v5 correlation data. Both live here because the
+   * handle is the one piece of this feature both generations hand to the
+   * application, which is what lets the handler callback be shared.
+   */
+  typedef struct az_iot_direct_method_request
+  {
+    struct
+    {
+      void* owner; /* the generation's client that acquired this slot */
+      /* Which generation built it, so a respond call from the other one is
+       * refused rather than reading the wrong half of this struct. */
+      az_iot_connection_profile profile;
+      char method_name[AZ_IOT_DM_METHOD_NAME_MAX];
+      char rid[AZ_IOT_DM_RID_MAX];
+      uint8_t correlation_data[AZ_IOT_DM_CORR_DATA_MAX];
+      size_t correlation_data_len;
+      bool in_use; /* pool slot occupied: acquired -> responded */
+    } _internal;
+  } az_iot_direct_method_request;
+
+  typedef void (*az_iot_direct_method_handler_callback)(
+      az_iot_direct_method_request* request,
+      const char* method_name,
+      const uint8_t* payload,
+      size_t payload_len,
+      void* user_ctx);
 
 #ifdef __cplusplus
 }
