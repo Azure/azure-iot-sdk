@@ -324,7 +324,7 @@ jobs:
       # actually had -- coverage computed over fewer tests than anyone thought.
       # Now that no suite decides at run time whether to participate, the count
       # is deterministic, so assert it exactly. Bump this when adding a suite.
-      EXPECTED_TESTS: '41'
+      EXPECTED_TESTS: '42'
     services:
       mosquitto:
         image: eclipse-mosquitto:2
@@ -538,4 +538,3 @@ jobs:
           fi
           echo "::error::coverage gate failed (coverage-c: $coverage_result)"
           exit 1
-

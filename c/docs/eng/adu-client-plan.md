@@ -248,13 +248,13 @@ stateDiagram-v2
   candidate add, now more useful because the device controls the poll.
 - **Multi-step / per-step results** — sequential per-step loop; `step_results[]` with a
   4-bit facility + raw-code `extendedResultCode` for field debugging. The engine exposes the
-  accumulated entries through `az_iot_adu_report.step_results` and `step_results_count`, in
-  manifest-step order, including on completion or failure. These are borrowed views valid only
-  during the internal channel's report call; a retaining channel must copy the entries and
-  their `result_details` span contents. Existing per-step codes are preserved without conversion.
-  ADUv2 serialization/delivery remains pending: the contract describes a `stepResults` map plus
-  a comma-separated hex `extendedResultCodes` list, with the full step wire shape still
-  unconfirmed in [aduv2-spec.md](aduv2-spec.md#verified-vs-drafted).
+  accumulated entries in one SDK-owned `az_iot_adu_install_result`: direct overall fields plus
+  an array of `az_iot_adu_step_result` entries, each with outcome/origin, int64 diagnostic code and owned
+  text buffers with byte lengths. The report envelope points to that same result. `az_iot_adu_build_report` uses
+  upstream JSON primitives to serialize ADUv2 `step_<index>` map entries, not a JSON array.
+  Diagnostic codes are preserved, not interpreted as outcomes; their service-side conventions
+  remain to be agreed. Schema validation covers enums, failure-origin consistency, unsigned
+  hex lists and text limits. Network delivery/retry remains pending.
 - **Retry vs. replacement vs. duplicate** — `set_active_workflow` tracks the workflow id
   + a CRC-32 fingerprint of `updateManifest`. Under ADUv2 the correlation key is **`workflowId`
   alone** and reporting is idempotent on it, so the `retryTimestamp` input disappears; the
@@ -302,17 +302,26 @@ stateDiagram-v2
 ## E. Install, apply, recovery
 
 - **Install/Apply, Backup/Restore, partial rollback, reboot/resume (✅).** Persist-before-
-  reboot uses a versioned, CRC-checked, little-endian blob (`ADU1`, blob **v2**) carrying
+  reboot uses a versioned, CRC-checked, little-endian blob (`ADU1`, blob **v3**) carrying
   `retryTimestamp`, a manifest CRC, and the accumulated `install_result` incl.
   `step_results[]`; `resume()` re-enters at the persisted phase boundary
   (`INSTALL_COMPLETE` → Apply). *Caveats:* the only persist point today is the
   install-requested reboot; post-reboot rollback assumes the platform retained per-step
   backups across the reboot.
 - **Persistence must grow for ADUv2 (🔜).** ADUv2 makes reporting a **durable write**, so the
-  blob gains a **blob v3**: the unsent `reportUpdateStatus` payload (keyed by
+  blob must additionally carry the unsent `reportUpdateStatus` payload (keyed by
   `workflowId`), `installedUpdateId`, and the `agentInfoEtag` / `serviceConfigEtag` pair, so a
   device that reboots mid-install still reports its result afterwards and does not resend a full
   `agentInfo` needlessly. `retryTimestamp` leaves the blob with the twin channel.
+  The current **blob v3** upgrades only the existing install-reboot checkpoint to canonical
+  results (outcomes, origins, 64-bit diagnostics and text); v2 checkpoints remain readable.
+  It is not an unsent-report queue. Resumed text is copied into result-owned buffers, so
+  later incoming payloads cannot overwrite it. The default snapshot storage covers maximum
+  result text; invalid lengths and corrupt snapshots are errors, not truncated results.
+  Resume validates the entire snapshot before committing to client-owned result storage,
+  avoiding a large stack-local result. Rejected snapshots leave the existing result and
+  workflow intact; only snapshot scratch is overwritten by the load hook.
+  Persistence failures are returned to the caller; no automatic retry is introduced.
 - **Health-check / auto-rollback after reboot (🟡 → core).** Today only the ESP32
   A/B sample confirms/marks-valid the new image; core does not re-run `is_installed_fn` on
   resume. **To do:** add an optional post-reboot confirm step in core with an auto-rollback

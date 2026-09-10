@@ -21,9 +21,17 @@ extern "C"
 /* Internal accessor shorthand. */
 #define ADU_I(c) ((c)->_internal)
 
-  /* Map an internal fine-grained state to the protocol-defined agent state
-   * (0=Idle, 6=DeploymentInProgress, 255=Failed). */
-  az_iot_adu_client_agent_state az_iot_adu__agent_state(az_iot_adu_state state);
+  az_iot_result az_iot_adu__validate_install_result(const az_iot_adu_install_result* result);
+
+  bool az_iot_adu__valid_result_fields(
+      az_iot_adu_outcome outcome,
+      az_iot_adu_failure_origin origin,
+      const uint8_t* extended,
+      int32_t extended_length,
+      const uint8_t* details,
+      int32_t details_length);
+
+  void az_iot_adu__set_extended_result(az_span destination, int32_t* length, uint32_t code);
 
   /* Assemble the current engine state into a structured az_iot_adu_report and
    * hand it to the bound channel. Reporting is keyed on the active workflow id
@@ -39,12 +47,6 @@ extern "C"
   az_iot_result az_iot_adu__cache_device_properties(
       az_iot_adu_client_t* client,
       const az_iot_adu_device_properties* device_props);
-
-  /* Build an az_iot_adu_client_device_properties (az_span view over the cache)
-   * from the client's cached device properties, for handing to the upstream
-   * formatter. The returned spans point into device_props_buffer. */
-  az_iot_adu_client_device_properties az_iot_adu__device_properties_view(
-      const az_iot_adu_client_t* client);
 
   /* Internal entry point: bind the engine to an explicit channel. The public
    * az_iot_adu_client_initialize() builds the shipping channel and calls this.

@@ -234,6 +234,9 @@ target_link_libraries(az_iot_tests_gen2_twin_client PRIVATE az_iot_test_support 
 az_iot_add_cmocka_test(az_iot_tests_adu_client unit/adu_client_test.c)
 az_iot_add_cmocka_test(az_iot_tests_adu_protocol unit/adu_protocol_test.c)
 target_link_libraries(az_iot_tests_adu_client PRIVATE az_iot_test_support)
+az_iot_add_cmocka_test(az_iot_tests_adu_report unit/adu_report_test.c)
+target_include_directories(az_iot_tests_adu_report PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/features/adu)
 
 # The channel over a real connection client: what reaches the broker, how a
 # response is correlated back, and the paths that can fault provisioning.

@@ -231,7 +231,7 @@ az_iot_result az_iot_adu__cache_device_properties(
 
 static void result_init_steps(az_iot_adu_client_t* client, int32_t step_count)
 {
-  az_iot_adu_client_install_result* r = &ADU_I(client).install_result;
+  az_iot_adu_install_result* r = &ADU_I(client).install_result;
   memset(r, 0, sizeof(*r));
   if (step_count < 0)
   {
@@ -242,15 +242,47 @@ static void result_init_steps(az_iot_adu_client_t* client, int32_t step_count)
     step_count = _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS;
   }
   r->step_results_count = step_count;
+  r->outcome = AZ_IOT_ADU_OUTCOME_IN_PROGRESS;
+  r->result_code = 1;
+  az_iot_adu__set_extended_result(
+      AZ_SPAN_FROM_BUFFER(r->extended_result_codes), &r->extended_result_codes_length, 0);
+  for (int32_t i = 0; i < step_count; ++i)
+  {
+    r->step_results[i].outcome = AZ_IOT_ADU_OUTCOME_IN_PROGRESS;
+    az_iot_adu__set_extended_result(
+        AZ_SPAN_FROM_BUFFER(r->step_results[i].extended_result_codes),
+        &r->step_results[i].extended_result_codes_length,
+        0);
+  }
 }
 
 static void result_step_success(az_iot_adu_client_t* client, uint32_t step)
 {
-  az_iot_adu_client_install_result* r = &ADU_I(client).install_result;
+  az_iot_adu_install_result* r = &ADU_I(client).install_result;
   if ((int32_t)step < r->step_results_count)
   {
     r->step_results[step].result_code = AZ_IOT_ADU_AGENT_RESULT_CODE_SUCCESS;
-    r->step_results[step].extended_result_code = 0;
+    r->step_results[step].outcome = AZ_IOT_ADU_OUTCOME_SUCCEEDED;
+    r->step_results[step].failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_NOT_APPLICABLE;
+    az_iot_adu__set_extended_result(
+        AZ_SPAN_FROM_BUFFER(r->step_results[step].extended_result_codes),
+        &r->step_results[step].extended_result_codes_length,
+        0);
+  }
+}
+
+static void result_finish_steps(az_iot_adu_client_t* client, az_iot_adu_outcome outcome)
+{
+  az_iot_adu_install_result* r = &ADU_I(client).install_result;
+  for (int32_t i = 0; i < r->step_results_count; ++i)
+  {
+    if (r->step_results[i].outcome == AZ_IOT_ADU_OUTCOME_IN_PROGRESS)
+    {
+      r->step_results[i].outcome
+          = (outcome == AZ_IOT_ADU_OUTCOME_CANCELED && (uint32_t)i == ADU_I(client).current_step)
+          ? AZ_IOT_ADU_OUTCOME_CANCELED
+          : AZ_IOT_ADU_OUTCOME_SKIPPED;
+    }
   }
 }
 
@@ -263,31 +295,44 @@ static void result_step_failure(
     uint32_t facility,
     int32_t sub_code)
 {
-  az_iot_adu_client_install_result* r = &ADU_I(client).install_result;
+  az_iot_adu_install_result* r = &ADU_I(client).install_result;
   int32_t extended = AZ_IOT_ADU_EXTENDED_RESULT(facility, (uint32_t)sub_code);
   int32_t code = (int32_t)(700 - facility); /* a non-success ADU code (< 700) */
 
   if ((int32_t)step < r->step_results_count)
   {
     r->step_results[step].result_code = code;
-    r->step_results[step].extended_result_code = extended;
+    r->step_results[step].outcome = AZ_IOT_ADU_OUTCOME_FAILED;
+    r->step_results[step].failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_AGENT_CORE;
+    az_iot_adu__set_extended_result(
+        AZ_SPAN_FROM_BUFFER(r->step_results[step].extended_result_codes),
+        &r->step_results[step].extended_result_codes_length,
+        (uint32_t)extended);
   }
-  if (r->result_code == 0 || r->result_code == AZ_IOT_ADU_AGENT_RESULT_CODE_SUCCESS)
+  result_finish_steps(client, AZ_IOT_ADU_OUTCOME_FAILED);
+  if (r->outcome != AZ_IOT_ADU_OUTCOME_FAILED)
   {
+    r->outcome = AZ_IOT_ADU_OUTCOME_FAILED;
+    r->failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_AGENT_CORE;
     r->result_code = code;
-    r->extended_result_code = extended;
+    az_iot_adu__set_extended_result(
+        AZ_SPAN_FROM_BUFFER(r->extended_result_codes),
+        &r->extended_result_codes_length,
+        (uint32_t)extended);
   }
 }
 
 static void result_overall_success(az_iot_adu_client_t* client)
 {
-  az_iot_adu_client_install_result* r = &ADU_I(client).install_result;
+  az_iot_adu_install_result* r = &ADU_I(client).install_result;
   r->result_code = AZ_IOT_ADU_AGENT_RESULT_CODE_SUCCESS;
-  r->extended_result_code = 0;
+  az_iot_adu__set_extended_result(
+      AZ_SPAN_FROM_BUFFER(r->extended_result_codes), &r->extended_result_codes_length, 0);
+  r->outcome = AZ_IOT_ADU_OUTCOME_SUCCEEDED;
+  r->failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_NOT_APPLICABLE;
 
   /* Latch the outcome and the applied update id while the manifest is still
    * live: reset_to_idle() clears it before the report is emitted. */
-  ADU_I(client).pending_outcome = AZ_IOT_ADU_OUTCOME_SUCCEEDED;
   ADU_I(client).applied_update_id_valid = false;
 
   az_span parts[3] = { ADU_I(client).current_manifest.update_id.provider,
@@ -1176,6 +1221,7 @@ static void process_desired_patch(
   }
 
   /* Retry (same id, newer retryTimestamp) or replacement (new id): (re)start. */
+  result_init_steps(client, 0);
   ADU_I(client).current_request = req;
   ADU_I(client).have_request = true;
   ADU_I(client).cancel_requested = false;
@@ -1438,7 +1484,7 @@ void az_iot_adu_client_destroy(az_iot_adu_client_t* client)
  *   [32] u32 manifest_len
  *   [36] u32 request_len
  *   [40] request_buffer[request_len]
- *   --- v2 trailer (immediately after request_buffer) ---
+ *   --- legacy v2 trailer (still readable) ---
  *   [T+0]  u32 retry_off          (offset into request_buffer; 0/0 if absent)
  *   [T+4]  u32 retry_len
  *   [T+8]  u32 manifest_crc       (fingerprint of the active raw updateManifest)
@@ -1448,32 +1494,30 @@ void az_iot_adu_client_destroy(az_iot_adu_client_t* client)
  *   [T+24] step_results_count * { i32 result_code, i32 extended_result_code }
  *   [end] u32 crc32 (over bytes [0 .. end))
  *
- * Persisting retryTimestamp + manifest fingerprint keeps duplicate / retry /
- * replacement detection correct across a reboot; persisting install_result keeps
- * already-completed step results from a multi-step deployment from being lost
- * when a mid-deployment reboot resumes.  */
+ * v3 trailer: retry offset/length, manifest CRC, step count (four u32s),
+ * followed by overall + step records: outcome(u32), origin(u32), code(i64),
+ * extended/detail byte lengths(u32 each), then both text buffers; finally CRC32.
+ * Resumed results own their text independently of request and snapshot buffers. */
 #define AZ_IOT_ADU_PERSIST_MAGIC0 'A'
 #define AZ_IOT_ADU_PERSIST_MAGIC1 'D'
 #define AZ_IOT_ADU_PERSIST_MAGIC2 'U'
 #define AZ_IOT_ADU_PERSIST_MAGIC3 '1'
-#define AZ_IOT_ADU_PERSIST_VERSION 2u
+#define AZ_IOT_ADU_PERSIST_VERSION 3u
 #define AZ_IOT_ADU_PERSIST_HEADER_SIZE 40u
-/* Fixed part of the v2 trailer (retry off/len + manifest crc + 3 result ints),
- * excluding the variable per-step pairs and the trailing crc32. */
-#define AZ_IOT_ADU_PERSIST_TRAILER_FIXED 24u
-/* Upper bound on the whole v2 trailer + crc, used to size the persist scratch. */
-#define AZ_IOT_ADU_PERSIST_TRAILER_MAX                                                             \
-  (AZ_IOT_ADU_PERSIST_TRAILER_FIXED + ((uint32_t)(_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS) * 8u) \
-   + 4u)
+#define AZ_IOT_ADU_PERSIST_V2_TRAILER_FIXED 24u
+#define AZ_IOT_ADU_PERSIST_TRAILER_FIXED 16u
+#define AZ_IOT_ADU_PERSIST_RESULT_FIXED 24u
 
 /* The per-instance persist_scratch (AZ_IOT_ADU_PERSIST_BLOB_SIZE, in the client
  * struct) must hold the largest serialized blob: header + full request buffer +
- * the maximum v2 trailer. C99-portable compile-time check (negative array size
- * on failure) so bumping the step count without growing the overhead is caught
- * at build time rather than overflowing at run time. */
+ * all result records at their maximum text lengths. */
 typedef char az_iot_adu_persist_blob_fits
     [(AZ_IOT_ADU_PERSIST_HEADER_SIZE + AZ_IOT_ADU_REQUEST_BUFFER_SIZE
-          + AZ_IOT_ADU_PERSIST_TRAILER_MAX
+          + AZ_IOT_ADU_PERSIST_TRAILER_FIXED
+          + (_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS + 1)
+              * (AZ_IOT_ADU_PERSIST_RESULT_FIXED + AZ_IOT_ADU_RESULT_TEXT_MAX_LENGTH
+                 + AZ_IOT_ADU_RESULT_DETAILS_MAX_SIZE)
+          + 4u
       <= AZ_IOT_ADU_PERSIST_BLOB_SIZE)
          ? 1
          : -1];
@@ -1500,6 +1544,97 @@ static uint16_t rd_u16le(const uint8_t* p)
 static uint32_t rd_u32le(const uint8_t* p)
 {
   return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+static void persist_result(
+    uint8_t* blob,
+    size_t* offset,
+    az_iot_adu_outcome outcome,
+    az_iot_adu_failure_origin origin,
+    int64_t result_code,
+    az_span extended,
+    az_span details)
+{
+  uint8_t* p = blob + *offset;
+  wr_u32le(p, (uint32_t)outcome);
+  wr_u32le(p + 4, (uint32_t)origin);
+  uint64_t code = (uint64_t)result_code;
+  wr_u32le(p + 8, (uint32_t)code);
+  wr_u32le(p + 12, (uint32_t)(code >> 32));
+  uint32_t ext_len = (uint32_t)az_span_size(extended);
+  uint32_t detail_len = (uint32_t)az_span_size(details);
+  wr_u32le(p + 16, ext_len);
+  wr_u32le(p + 20, detail_len);
+  memcpy(p + AZ_IOT_ADU_PERSIST_RESULT_FIXED, az_span_ptr(extended), ext_len);
+  if (detail_len > 0)
+  {
+    memcpy(p + AZ_IOT_ADU_PERSIST_RESULT_FIXED + ext_len, az_span_ptr(details), detail_len);
+  }
+  *offset += AZ_IOT_ADU_PERSIST_RESULT_FIXED + ext_len + detail_len;
+}
+
+static az_iot_result validate_snapshot_result(const uint8_t* blob, size_t length, size_t* offset)
+{
+  if (*offset > length || length - *offset < AZ_IOT_ADU_PERSIST_RESULT_FIXED)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  const uint8_t* p = blob + *offset;
+  uint32_t ext_len = rd_u32le(p + 16);
+  uint32_t detail_len = rd_u32le(p + 20);
+  size_t remaining = length - *offset - AZ_IOT_ADU_PERSIST_RESULT_FIXED;
+  if (ext_len > remaining || detail_len > remaining - ext_len
+      || ext_len > AZ_IOT_ADU_RESULT_TEXT_MAX_LENGTH
+      || detail_len > AZ_IOT_ADU_RESULT_DETAILS_MAX_SIZE)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  uint32_t outcome = rd_u32le(p);
+  uint32_t origin = rd_u32le(p + 4);
+  if (outcome > AZ_IOT_ADU_OUTCOME_SKIPPED || origin > AZ_IOT_ADU_FAILURE_ORIGIN_OTHER)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if (!az_iot_adu__valid_result_fields(
+          (az_iot_adu_outcome)outcome,
+          (az_iot_adu_failure_origin)origin,
+          p + AZ_IOT_ADU_PERSIST_RESULT_FIXED,
+          (int32_t)ext_len,
+          p + AZ_IOT_ADU_PERSIST_RESULT_FIXED + ext_len,
+          (int32_t)detail_len))
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  *offset += AZ_IOT_ADU_PERSIST_RESULT_FIXED + ext_len + detail_len;
+  return AZ_IOT_OK;
+}
+
+/* Only called after the entire immutable, client-owned snapshot is validated. */
+static void restore_snapshot_result(
+    const uint8_t* blob,
+    size_t* offset,
+    az_iot_adu_outcome* result_outcome,
+    az_iot_adu_failure_origin* result_origin,
+    int64_t* result_code,
+    uint8_t* extended,
+    int32_t* extended_length,
+    uint8_t* details,
+    int32_t* details_length)
+{
+  const uint8_t* p = blob + *offset;
+  uint32_t ext_len = rd_u32le(p + 16);
+  uint32_t detail_len = rd_u32le(p + 20);
+  uint32_t outcome = rd_u32le(p);
+  uint32_t origin = rd_u32le(p + 4);
+  *result_outcome = (az_iot_adu_outcome)outcome;
+  *result_origin = (az_iot_adu_failure_origin)origin;
+  uint64_t code = rd_u32le(p + 8) | ((uint64_t)rd_u32le(p + 12) << 32);
+  *result_code = (code <= INT64_MAX) ? (int64_t)code : -1 - (int64_t)(UINT64_MAX - code);
+  memcpy(extended, p + AZ_IOT_ADU_PERSIST_RESULT_FIXED, ext_len);
+  *extended_length = (int32_t)ext_len;
+  memcpy(details, p + AZ_IOT_ADU_PERSIST_RESULT_FIXED + ext_len, detail_len);
+  *details_length = (int32_t)detail_len;
+  *offset += AZ_IOT_ADU_PERSIST_RESULT_FIXED + ext_len + detail_len;
 }
 
 /* CRC-32 (IEEE 802.3, reflected, poly 0xEDB88320), computed bytewise. */
@@ -1531,18 +1666,38 @@ static uint32_t request_offset(const az_iot_adu_client_t* client, az_span s)
 }
 
 /* Serialize the current workflow position and hand it to persist_state_fn. */
-static void adu_persist(az_iot_adu_client_t* client)
+static az_iot_result adu_persist(az_iot_adu_client_t* client)
 {
   az_iot_adu_platform_hooks* h = &ADU_I(client).hooks;
   if (h->persist_state_fn == NULL)
   {
-    return;
+    return AZ_IOT_OK;
   }
 
   uint32_t request_len = (uint32_t)ADU_I(client).request_len;
   if (request_len > AZ_IOT_ADU_REQUEST_BUFFER_SIZE)
   {
-    return;
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  }
+
+  const az_iot_adu_install_result* r = &ADU_I(client).install_result;
+  az_iot_result valid = az_iot_adu__validate_install_result(r);
+  if (valid != AZ_IOT_OK)
+  {
+    return valid;
+  }
+  size_t size = AZ_IOT_ADU_PERSIST_HEADER_SIZE + request_len + AZ_IOT_ADU_PERSIST_TRAILER_FIXED + 4;
+  size += AZ_IOT_ADU_PERSIST_RESULT_FIXED + (size_t)r->extended_result_codes_length
+      + (size_t)r->result_details_length;
+  for (int32_t i = 0; i < r->step_results_count; ++i)
+  {
+    const az_iot_adu_step_result* item = &r->step_results[i];
+    size_t texts = (size_t)item->extended_result_codes_length + (size_t)item->result_details_length;
+    size += AZ_IOT_ADU_PERSIST_RESULT_FIXED + texts;
+  }
+  if (size > sizeof(ADU_I(client).persist_scratch))
+  {
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
   }
 
   uint8_t* blob = ADU_I(client).persist_scratch;
@@ -1572,38 +1727,194 @@ static void adu_persist(az_iot_adu_client_t* client)
   wr_u32le(&blob[36], request_len);
   memcpy(&blob[AZ_IOT_ADU_PERSIST_HEADER_SIZE], ADU_I(client).request_buffer, request_len);
 
-  /* v2 trailer: retryTimestamp position + manifest fingerprint + install_result. */
+  /* Persist the same canonical values the channel reads. */
   uint32_t t = AZ_IOT_ADU_PERSIST_HEADER_SIZE + request_len;
   az_span retry = ADU_I(client).current_request.workflow.retry_timestamp;
   wr_u32le(&blob[t + 0], request_offset(client, retry));
   wr_u32le(&blob[t + 4], (uint32_t)az_span_size(retry));
   wr_u32le(&blob[t + 8], ADU_I(client).active_manifest_crc);
 
-  const az_iot_adu_client_install_result* r = &ADU_I(client).install_result;
-  int32_t step_count = r->step_results_count;
-  if (step_count < 0)
+  wr_u32le(&blob[t + 12], (uint32_t)r->step_results_count);
+  size_t p = t + AZ_IOT_ADU_PERSIST_TRAILER_FIXED;
+  persist_result(
+      blob,
+      &p,
+      r->outcome,
+      r->failure_origin,
+      r->result_code,
+      az_span_create(
+          (uint8_t*)(uintptr_t)r->extended_result_codes, r->extended_result_codes_length),
+      az_span_create((uint8_t*)(uintptr_t)r->result_details, r->result_details_length));
+  for (int32_t i = 0; i < r->step_results_count; ++i)
   {
-    step_count = 0;
-  }
-  if (step_count > _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS)
-  {
-    step_count = _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS;
-  }
-  wr_u32le(&blob[t + 12], (uint32_t)r->result_code);
-  wr_u32le(&blob[t + 16], (uint32_t)r->extended_result_code);
-  wr_u32le(&blob[t + 20], (uint32_t)step_count);
-  uint32_t p = t + AZ_IOT_ADU_PERSIST_TRAILER_FIXED;
-  for (int32_t i = 0; i < step_count; ++i)
-  {
-    wr_u32le(&blob[p], (uint32_t)r->step_results[i].result_code);
-    wr_u32le(&blob[p + 4], (uint32_t)r->step_results[i].extended_result_code);
-    p += 8u;
+    const az_iot_adu_step_result* step_result = &r->step_results[i];
+    persist_result(
+        blob,
+        &p,
+        step_result->outcome,
+        step_result->failure_origin,
+        step_result->result_code,
+        az_span_create(
+            (uint8_t*)(uintptr_t)step_result->extended_result_codes,
+            step_result->extended_result_codes_length),
+        az_span_create(
+            (uint8_t*)(uintptr_t)step_result->result_details, step_result->result_details_length));
   }
 
-  uint32_t crc_region = p;
-  wr_u32le(&blob[crc_region], adu_crc32(blob, crc_region));
+  wr_u32le(&blob[p], adu_crc32(blob, p));
+  return h->persist_state_fn(blob, p + 4, h->user_ctx) == 0 ? AZ_IOT_OK : AZ_IOT_ERR_INTERNAL;
+}
 
-  (void)h->persist_state_fn(blob, (size_t)crc_region + 4u, h->user_ctx);
+/* Bound the steps before invoking the upstream fixed-array manifest parser. */
+static bool snapshot_manifest_steps_match(az_span text, uint32_t expected)
+{
+  az_json_reader reader;
+  if (az_result_failed(az_json_reader_init(&reader, text, NULL))
+      || az_result_failed(az_json_reader_next_token(&reader))
+      || reader.token.kind != AZ_JSON_TOKEN_BEGIN_OBJECT)
+  {
+    return false;
+  }
+  bool instructions_seen = false;
+  bool steps_seen = false;
+  uint32_t count = 0;
+  for (;;)
+  {
+    if (az_result_failed(az_json_reader_next_token(&reader)))
+    {
+      return false;
+    }
+    if (reader.token.kind == AZ_JSON_TOKEN_END_OBJECT)
+    {
+      break;
+    }
+    if (reader.token.kind != AZ_JSON_TOKEN_PROPERTY_NAME)
+    {
+      return false;
+    }
+    bool instructions
+        = az_json_token_is_text_equal(&reader.token, AZ_SPAN_FROM_STR("instructions"));
+    if (az_result_failed(az_json_reader_next_token(&reader)))
+    {
+      return false;
+    }
+    if (!instructions)
+    {
+      if (az_result_failed(az_json_reader_skip_children(&reader)))
+      {
+        return false;
+      }
+      continue;
+    }
+    if (instructions_seen || reader.token.kind != AZ_JSON_TOKEN_BEGIN_OBJECT)
+    {
+      return false;
+    }
+    instructions_seen = true;
+    for (;;)
+    {
+      if (az_result_failed(az_json_reader_next_token(&reader)))
+      {
+        return false;
+      }
+      if (reader.token.kind == AZ_JSON_TOKEN_END_OBJECT)
+      {
+        break;
+      }
+      if (reader.token.kind != AZ_JSON_TOKEN_PROPERTY_NAME)
+      {
+        return false;
+      }
+      bool steps = az_json_token_is_text_equal(&reader.token, AZ_SPAN_FROM_STR("steps"));
+      if (az_result_failed(az_json_reader_next_token(&reader)))
+      {
+        return false;
+      }
+      if (!steps)
+      {
+        if (az_result_failed(az_json_reader_skip_children(&reader)))
+        {
+          return false;
+        }
+        continue;
+      }
+      if (steps_seen || reader.token.kind != AZ_JSON_TOKEN_BEGIN_ARRAY)
+      {
+        return false;
+      }
+      steps_seen = true;
+      for (;;)
+      {
+        if (az_result_failed(az_json_reader_next_token(&reader)))
+        {
+          return false;
+        }
+        if (reader.token.kind == AZ_JSON_TOKEN_END_ARRAY)
+        {
+          break;
+        }
+        if (reader.token.kind != AZ_JSON_TOKEN_BEGIN_OBJECT || count == expected)
+        {
+          return false;
+        }
+        ++count;
+        if (az_result_failed(az_json_reader_skip_children(&reader)))
+        {
+          return false;
+        }
+      }
+    }
+  }
+  return steps_seen && count == expected
+      && az_json_reader_next_token(&reader) == AZ_ERROR_JSON_READER_DONE;
+}
+
+static az_span rebase_manifest_span(az_span value, const uint8_t* source, uint8_t* destination)
+{
+  return az_span_size(value) == 0
+      ? AZ_SPAN_EMPTY
+      : az_span_create(destination + (az_span_ptr(value) - source), az_span_size(value));
+}
+
+/* Rebase parser views after copying the already-validated manifest bytes. */
+static void rebase_manifest(
+    az_iot_adu_client_update_manifest* manifest,
+    const uint8_t* source,
+    uint8_t* destination)
+{
+  manifest->manifest_version
+      = rebase_manifest_span(manifest->manifest_version, source, destination);
+  manifest->update_id.provider
+      = rebase_manifest_span(manifest->update_id.provider, source, destination);
+  manifest->update_id.name = rebase_manifest_span(manifest->update_id.name, source, destination);
+  manifest->update_id.version
+      = rebase_manifest_span(manifest->update_id.version, source, destination);
+  manifest->create_date_time
+      = rebase_manifest_span(manifest->create_date_time, source, destination);
+  for (uint32_t i = 0; i < manifest->instructions.steps_count; ++i)
+  {
+    az_iot_adu_client_update_manifest_instructions_step* step = &manifest->instructions.steps[i];
+    step->handler = rebase_manifest_span(step->handler, source, destination);
+    step->handler_properties.installed_criteria
+        = rebase_manifest_span(step->handler_properties.installed_criteria, source, destination);
+    for (uint32_t j = 0; j < step->files_count; ++j)
+    {
+      step->files[j] = rebase_manifest_span(step->files[j], source, destination);
+    }
+  }
+  for (uint32_t i = 0; i < manifest->files_count; ++i)
+  {
+    az_iot_adu_client_update_manifest_file* file = &manifest->files[i];
+    file->id = rebase_manifest_span(file->id, source, destination);
+    file->file_name = rebase_manifest_span(file->file_name, source, destination);
+    for (uint32_t j = 0; j < file->hashes_count; ++j)
+    {
+      file->hashes[j].hash_type
+          = rebase_manifest_span(file->hashes[j].hash_type, source, destination);
+      file->hashes[j].hash_value
+          = rebase_manifest_span(file->hashes[j].hash_value, source, destination);
+    }
+  }
 }
 
 az_iot_result az_iot_adu_client_resume(az_iot_adu_client_t* client)
@@ -1629,50 +1940,41 @@ az_iot_result az_iot_adu_client_resume(az_iot_adu_client_t* client)
   {
     return AZ_IOT_OK; /* nothing persisted */
   }
-  if (blen < AZ_IOT_ADU_PERSIST_HEADER_SIZE + 4u)
+  if (blen > sizeof(ADU_I(client).persist_scratch) || blen < AZ_IOT_ADU_PERSIST_HEADER_SIZE + 4u)
   {
-    return AZ_IOT_OK; /* too small */
+    return AZ_IOT_ERR_INVALID_ARG;
   }
   if (blob[0] != AZ_IOT_ADU_PERSIST_MAGIC0 || blob[1] != AZ_IOT_ADU_PERSIST_MAGIC1
       || blob[2] != AZ_IOT_ADU_PERSIST_MAGIC2 || blob[3] != AZ_IOT_ADU_PERSIST_MAGIC3)
   {
-    return AZ_IOT_OK; /* not our blob */
+    return AZ_IOT_ERR_INVALID_ARG;
   }
-  if (rd_u16le(&blob[4]) != AZ_IOT_ADU_PERSIST_VERSION)
+  uint16_t version = rd_u16le(&blob[4]);
+  if (version != 2 && version != AZ_IOT_ADU_PERSIST_VERSION)
   {
-    return AZ_IOT_OK;
+    return AZ_IOT_ERR_NOT_SUPPORTED;
   }
 
   uint32_t request_len = rd_u32le(&blob[36]);
   if (request_len > AZ_IOT_ADU_REQUEST_BUFFER_SIZE)
   {
-    return AZ_IOT_OK;
+    return AZ_IOT_ERR_INVALID_ARG;
   }
 
-  /* Locate and bounds-check the v2 trailer (retryTimestamp + install_result). */
   uint32_t t = AZ_IOT_ADU_PERSIST_HEADER_SIZE + request_len;
-  if ((size_t)t + AZ_IOT_ADU_PERSIST_TRAILER_FIXED > blen)
+  size_t trailer_fixed
+      = version == 2 ? AZ_IOT_ADU_PERSIST_V2_TRAILER_FIXED : AZ_IOT_ADU_PERSIST_TRAILER_FIXED;
+  if ((size_t)t + trailer_fixed + 4 > blen)
   {
-    return AZ_IOT_OK;
+    return AZ_IOT_ERR_INVALID_ARG;
   }
   uint32_t retry_off = rd_u32le(&blob[t + 0]);
   uint32_t retry_len = rd_u32le(&blob[t + 4]);
   uint32_t manifest_crc = rd_u32le(&blob[t + 8]);
-  int32_t res_code = (int32_t)rd_u32le(&blob[t + 12]);
-  int32_t res_ext = (int32_t)rd_u32le(&blob[t + 16]);
-  int32_t step_count = (int32_t)rd_u32le(&blob[t + 20]);
-  if (step_count < 0 || step_count > _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS)
+  uint32_t count = rd_u32le(&blob[t + (version == 2 ? 20 : 12)]);
+  if (count > _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS)
   {
-    return AZ_IOT_OK;
-  }
-  uint32_t crc_region = t + AZ_IOT_ADU_PERSIST_TRAILER_FIXED + (uint32_t)step_count * 8u;
-  if ((size_t)crc_region + 4u > blen)
-  {
-    return AZ_IOT_OK;
-  }
-  if (adu_crc32(blob, crc_region) != rd_u32le(&blob[crc_region]))
-  {
-    return AZ_IOT_OK; /* corrupt */
+    return AZ_IOT_ERR_INVALID_ARG;
   }
 
   uint16_t flags = rd_u16le(&blob[6]);
@@ -1683,32 +1985,128 @@ az_iot_result az_iot_adu_client_resume(az_iot_adu_client_t* client)
   uint32_t wf_len = rd_u32le(&blob[24]);
   uint32_t mf_off = rd_u32le(&blob[28]);
   uint32_t mf_len = rd_u32le(&blob[32]);
-  if (mf_off + mf_len > request_len || wf_off + wf_len > request_len)
+  if (mf_off > request_len || mf_len > request_len - mf_off || wf_off > request_len
+      || wf_len > request_len - wf_off || mf_len == 0 || wf_len == 0
+      || wf_len > AZ_IOT_ADU_WORKFLOW_ID_SIZE || state != AZ_IOT_ADU_STATE_INSTALL_COMPLETE
+      || step >= count)
   {
-    return AZ_IOT_OK;
+    return AZ_IOT_ERR_INVALID_ARG;
   }
-  if (retry_len != 0 && retry_off + retry_len > request_len)
+  if (retry_len != 0 && (retry_off > request_len || retry_len > request_len - retry_off))
   {
-    return AZ_IOT_OK;
+    return AZ_IOT_ERR_INVALID_ARG;
   }
 
-  /* Restore the request payload and re-derive the manifest from it. */
-  memset(&ADU_I(client).current_request, 0, sizeof(ADU_I(client).current_request));
-  memset(&ADU_I(client).current_manifest, 0, sizeof(ADU_I(client).current_manifest));
-  memcpy(ADU_I(client).request_buffer, &blob[AZ_IOT_ADU_PERSIST_HEADER_SIZE], request_len);
-  ADU_I(client).request_len = request_len;
+  if (adu_crc32(blob, blen - 4) != rd_u32le(blob + blen - 4))
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
 
-  az_span manifest_text = az_span_create(ADU_I(client).request_buffer + mf_off, (int32_t)mf_len);
-  ADU_I(client).manifest_text = manifest_text;
+  size_t pos = t + trailer_fixed;
+  if (version == 2)
+  {
+    if (count * 8u > blen - pos - 4)
+    {
+      return AZ_IOT_ERR_INVALID_ARG;
+    }
+    pos += count * 8u;
+  }
+  else
+  {
+    for (uint32_t i = 0; i <= count; ++i)
+    {
+      az_iot_result valid = validate_snapshot_result(blob, blen - 4, &pos);
+      if (valid != AZ_IOT_OK)
+      {
+        return valid;
+      }
+    }
+  }
+  if (pos + 4 != blen)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
 
+  az_span manifest_text
+      = az_span_create(blob + AZ_IOT_ADU_PERSIST_HEADER_SIZE + mf_off, (int32_t)mf_len);
+  if (!snapshot_manifest_steps_match(manifest_text, count))
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  az_iot_adu_client_update_manifest manifest;
+  memset(&manifest, 0, sizeof(manifest));
   az_json_reader jr;
   if (az_result_failed(az_json_reader_init(&jr, manifest_text, NULL))
-      || az_result_failed(az_iot_adu_client_parse_update_manifest(
-          &ADU_I(client).az, &jr, &ADU_I(client).current_manifest)))
+      || az_result_failed(
+          az_iot_adu_client_parse_update_manifest(&ADU_I(client).az, &jr, &manifest)))
   {
-    /* Corrupt manifest text: discard the snapshot and stay Idle. */
-    ADU_I(client).request_len = 0;
-    return AZ_IOT_OK;
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if (count != manifest.instructions.steps_count)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+
+  /* Commit only after all checks, without a second owned result on the stack. */
+  memcpy(ADU_I(client).request_buffer, blob + AZ_IOT_ADU_PERSIST_HEADER_SIZE, request_len);
+  ADU_I(client).request_len = request_len;
+  rebase_manifest(&manifest, blob + AZ_IOT_ADU_PERSIST_HEADER_SIZE, ADU_I(client).request_buffer);
+  ADU_I(client).current_manifest = manifest;
+  ADU_I(client).manifest_text
+      = az_span_create(ADU_I(client).request_buffer + mf_off, (int32_t)mf_len);
+  memset(&ADU_I(client).current_request, 0, sizeof(ADU_I(client).current_request));
+  az_iot_adu_install_result* restored = &ADU_I(client).install_result;
+  memset(restored, 0, sizeof(*restored));
+  restored->step_results_count = (int32_t)count;
+  pos = t + trailer_fixed;
+  if (version == 2)
+  {
+    restored->outcome = AZ_IOT_ADU_OUTCOME_IN_PROGRESS;
+    restored->result_code = 1;
+    az_iot_adu__set_extended_result(
+        AZ_SPAN_FROM_BUFFER(restored->extended_result_codes),
+        &restored->extended_result_codes_length,
+        rd_u32le(blob + t + 16));
+    for (uint32_t i = 0; i < count; ++i)
+    {
+      az_iot_adu_step_result* item = &restored->step_results[i];
+      /* v2 was saved before Apply; preceding steps have completed. */
+      item->outcome = i < step ? AZ_IOT_ADU_OUTCOME_SUCCEEDED : AZ_IOT_ADU_OUTCOME_IN_PROGRESS;
+      uint32_t code = rd_u32le(blob + pos);
+      item->result_code = code <= INT32_MAX ? (int64_t)code : (int64_t)code - INT64_C(4294967296);
+      az_iot_adu__set_extended_result(
+          AZ_SPAN_FROM_BUFFER(item->extended_result_codes),
+          &item->extended_result_codes_length,
+          rd_u32le(blob + pos + 4));
+      pos += 8;
+    }
+  }
+  else
+  {
+    restore_snapshot_result(
+        blob,
+        &pos,
+        &restored->outcome,
+        &restored->failure_origin,
+        &restored->result_code,
+        restored->extended_result_codes,
+        &restored->extended_result_codes_length,
+        restored->result_details,
+        &restored->result_details_length);
+    for (uint32_t i = 0; i < count; ++i)
+    {
+      az_iot_adu_step_result* item = &restored->step_results[i];
+      restore_snapshot_result(
+          blob,
+          &pos,
+          &item->outcome,
+          &item->failure_origin,
+          &item->result_code,
+          item->extended_result_codes,
+          &item->extended_result_codes_length,
+          item->result_details,
+          &item->result_details_length);
+    }
   }
 
   ADU_I(client).current_request.workflow.id
@@ -1724,23 +2122,6 @@ az_iot_result az_iot_adu_client_resume(az_iot_adu_client_t* client)
   ADU_I(client).current_file = file;
   ADU_I(client).cancel_requested = (flags & 0x1u) != 0;
   ADU_I(client).have_request = (flags & 0x2u) != 0;
-
-  /* Restore accumulated install_result so already-completed step results of a
-   * multi-step deployment survive a mid-deployment reboot. */
-  memset(&ADU_I(client).install_result, 0, sizeof(ADU_I(client).install_result));
-  ADU_I(client).install_result.result_code = res_code;
-  ADU_I(client).install_result.extended_result_code = res_ext;
-  ADU_I(client).install_result.step_results_count = step_count;
-  {
-    uint32_t sp = t + AZ_IOT_ADU_PERSIST_TRAILER_FIXED;
-    for (int32_t i = 0; i < step_count; ++i)
-    {
-      ADU_I(client).install_result.step_results[i].result_code = (int32_t)rd_u32le(&blob[sp]);
-      ADU_I(client).install_result.step_results[i].extended_result_code
-          = (int32_t)rd_u32le(&blob[sp + 4]);
-      sp += 8u;
-    }
-  }
 
   /* Re-establish the active deployment identity so a redelivery of the same
    * deployment after the reboot is recognized as a duplicate and does NOT
@@ -1784,9 +2165,10 @@ static void begin_rollback(az_iot_adu_client_t* client, uint32_t restore_count)
       if (rr != AZ_IOT_ADU_RESULT_SUCCESS)
       {
         /* Record restore failure but continue restoring earlier steps. */
-        az_iot_adu_client_install_result* r = &ADU_I(client).install_result;
-        r->extended_result_code
-            = AZ_IOT_ADU_EXTENDED_RESULT(AZ_IOT_ADU_FACILITY_RESTORE, (uint32_t)rr);
+        az_iot_adu__set_extended_result(
+            AZ_SPAN_FROM_BUFFER(ADU_I(client).install_result.extended_result_codes),
+            &ADU_I(client).install_result.extended_result_codes_length,
+            (uint32_t)AZ_IOT_ADU_EXTENDED_RESULT(AZ_IOT_ADU_FACILITY_RESTORE, (uint32_t)rr));
       }
     }
   }
@@ -1846,7 +2228,10 @@ az_iot_result az_iot_adu_client_do_work(az_iot_adu_client_t* client)
   /* Cancellation at a phase boundary returns immediately to Idle. */
   if (ADU_I(client).cancel_requested && ADU_I(client).state != AZ_IOT_ADU_STATE_IDLE)
   {
-    ADU_I(client).pending_outcome = AZ_IOT_ADU_OUTCOME_CANCELED;
+    result_finish_steps(client, AZ_IOT_ADU_OUTCOME_CANCELED);
+    ADU_I(client).install_result.outcome = AZ_IOT_ADU_OUTCOME_CANCELED;
+    ADU_I(client).install_result.failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_NOT_APPLICABLE;
+    ADU_I(client).install_result.result_code = -1;
     reset_to_idle(client);
     (void)az_iot_adu__report_state(client);
     return AZ_IOT_OK;
@@ -1893,7 +2278,9 @@ az_iot_result az_iot_adu_client_do_work(az_iot_adu_client_t* client)
           : AZ_IOT_ADU_RESULT_SUCCESS;
       if (inst == AZ_IOT_ADU_RESULT_ALREADY_INSTALLED)
       {
-        ADU_I(client).pending_outcome = AZ_IOT_ADU_OUTCOME_SKIPPED;
+        result_finish_steps(client, AZ_IOT_ADU_OUTCOME_SKIPPED);
+        ADU_I(client).install_result.outcome = AZ_IOT_ADU_OUTCOME_SKIPPED;
+        ADU_I(client).install_result.result_code = -1;
         reset_to_idle(client);
         (void)az_iot_adu__report_state(client);
         break;
@@ -2005,7 +2392,11 @@ az_iot_result az_iot_adu_client_do_work(az_iot_adu_client_t* client)
          * on the next boot, report, and advance (a real device reboots
          * here; the loop simply continues if it does not). */
         ADU_I(client).state = AZ_IOT_ADU_STATE_INSTALL_COMPLETE;
-        adu_persist(client);
+        az_iot_result persist_status = adu_persist(client);
+        if (persist_status != AZ_IOT_OK)
+        {
+          return persist_status;
+        }
         (void)az_iot_adu__report_state(client);
         break;
       }

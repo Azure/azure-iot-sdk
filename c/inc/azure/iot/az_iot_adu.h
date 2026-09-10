@@ -52,7 +52,10 @@ extern "C"
 #define AZ_IOT_ADU_EXTENDED_RESULT(facility, code) \
   (int32_t)((((uint32_t)(facility) & 0xFu) << 28) | ((uint32_t)(code) & 0x0FFFFFFFu))
 
-/* --- Compile-time capacities --------------------------------------------- */
+  /* --- Compile-time capacities --------------------------------------------- */
+
+#define AZ_IOT_ADU_RESULT_TEXT_MAX_LENGTH 1024
+#define AZ_IOT_ADU_RESULT_DETAILS_MAX_SIZE (4 * AZ_IOT_ADU_RESULT_TEXT_MAX_LENGTH)
 
 /* Maximum number of RSA root public keys the core trust store holds. */
 #ifndef AZ_IOT_ADU_MAX_ROOT_KEYS
@@ -71,15 +74,12 @@ extern "C"
 #define AZ_IOT_ADU_REQUEST_BUFFER_SIZE 4096
 #endif
 
-/* In-struct scratch used to (de)serialize the persisted workflow state passed to
- * persist_state_fn / load_state_fn. Sized as the request buffer plus a fixed
- * overhead for the persistence header and v2 trailer (retry offset/len, manifest
- * CRC, install-result ints, per-step result pairs and a trailing CRC-32). The
- * overhead is generous; a compile-time assertion in adu_client.c guarantees the
- * exact serialized size always fits. This lives in the caller-allocated client
- * struct (one per instance) so no file-scope static or heap buffer is needed. */
+/* Snapshot scratch holds the request plus all owned result text. v2 remains readable. */
 #ifndef AZ_IOT_ADU_PERSIST_OVERHEAD
-#define AZ_IOT_ADU_PERSIST_OVERHEAD 256
+#define AZ_IOT_ADU_PERSIST_OVERHEAD                  \
+  (64                                                \
+   + (_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS + 1) \
+       * (24 + AZ_IOT_ADU_RESULT_TEXT_MAX_LENGTH + AZ_IOT_ADU_RESULT_DETAILS_MAX_SIZE))
 #endif
 #define AZ_IOT_ADU_PERSIST_BLOB_SIZE (AZ_IOT_ADU_REQUEST_BUFFER_SIZE + AZ_IOT_ADU_PERSIST_OVERHEAD)
 
@@ -357,7 +357,7 @@ extern "C"
    *
    * These are the values the service accepts on the status-report operation.
    * `SKIPPED` replaces the ADUv1 accept/reject acknowledgement: an engine that
-   * declines a deployment reports it rather than answering a protocol-level
+   * declines a deployment reports it rather than answering a protocol-level``
    * "reject".
    */
   typedef enum az_iot_adu_outcome
@@ -393,6 +393,34 @@ extern "C"
     const char* version;
   } az_iot_adu_report_update_id;
 
+  /** @brief Canonical ADUv2 result; outcome is authoritative, codes are diagnostic. */
+  typedef struct az_iot_adu_step_result
+  {
+    az_iot_adu_outcome outcome;
+    az_iot_adu_failure_origin failure_origin;
+    int64_t result_code;
+    /* Own text for simple lifetimes; optimize the memory footprint later if needed. */
+    /* Lengths count bytes; buffers are not NUL-terminated. */
+    uint8_t extended_result_codes[AZ_IOT_ADU_RESULT_TEXT_MAX_LENGTH];
+    int32_t extended_result_codes_length;
+    uint8_t result_details[AZ_IOT_ADU_RESULT_DETAILS_MAX_SIZE];
+    int32_t result_details_length;
+  } az_iot_adu_step_result;
+
+  /** @brief Overall result and manifest-indexed steps, shared by engine and reporting. */
+  typedef struct az_iot_adu_install_result
+  {
+    az_iot_adu_outcome outcome;
+    az_iot_adu_failure_origin failure_origin;
+    int64_t result_code;
+    uint8_t extended_result_codes[AZ_IOT_ADU_RESULT_TEXT_MAX_LENGTH];
+    int32_t extended_result_codes_length;
+    uint8_t result_details[AZ_IOT_ADU_RESULT_DETAILS_MAX_SIZE];
+    int32_t result_details_length;
+    int32_t step_results_count;
+    az_iot_adu_step_result step_results[_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS];
+  } az_iot_adu_install_result;
+
   /**
    * @brief The structured result the engine hands a channel.
    *
@@ -414,22 +442,8 @@ extern "C"
     /* NULL when the device has nothing installed. */
     const az_iot_adu_report_update_id* installed_update_id;
 
-    az_iot_adu_outcome outcome;
-    az_iot_adu_failure_origin failure_origin;
-
-    /* Agent result code. The engine emits the values the contract defines:
-     * 1 while in progress, 700 on success, negative on failure. */
-    int32_t result_code;
-
-    /* Comma-separated hex codes, e.g. "00000000" or "0x80000001". Never NULL. */
-    const char* extended_result_codes;
-
-    /* Free-form human-readable detail. May be NULL. */
-    const char* result_details;
-
-    /* Array and detail spans are borrowed for the report call; NULL when count is zero. */
-    const az_iot_adu_client_step_result* step_results;
-    int32_t step_results_count;
+    /* Borrowed for the report call; a struct copy owns all result text. */
+    const az_iot_adu_install_result* install_result;
   } az_iot_adu_report;
 
   /* Opaque forward declaration. The delivery/reporting channel is an INTERNAL
@@ -438,6 +452,7 @@ extern "C"
    * the client struct is caller-allocated and therefore needs its size. */
   struct az_iot_adu_channel_vtable;
 
+  /* Large owned buffers: use static/application-managed storage on small-stack targets. */
   typedef struct az_iot_adu_client_t
   {
     struct
@@ -508,7 +523,7 @@ extern "C"
       az_span manifest_text;
 
       /* Accumulated result reported to the service. */
-      az_iot_adu_client_install_result install_result;
+      az_iot_adu_install_result install_result;
 
       /* Client-owned device-properties cache (deep copy of caller's struct). */
       uint8_t* device_props_buffer;
@@ -529,12 +544,6 @@ extern "C"
        * initialize time from the caller's update id. */
       char update_id_json[128];
       size_t update_id_json_len;
-
-      /* Terminal outcome for the active workflow, latched at the transition
-       * that ends it. Reporting is keyed on workflowId, so the engine must be
-       * able to distinguish SUCCEEDED / CANCELED / SKIPPED after the workflow
-       * state itself has returned to Idle. */
-      az_iot_adu_outcome pending_outcome;
 
       /* The update id that was actually applied, captured BEFORE the return to
        * Idle clears the manifest. A successful report carries this, because
@@ -733,28 +742,16 @@ extern "C"
       void* read_ctx);
 
   /**
-   * Build the agent-state report payload from a caller's own outcome data,
-   * WITHOUT the state machine or a channel. Emits the same reported-property JSON the
-   * managed client publishes, into the caller-provided @p out_json buffer.
-   *
-   *   device_props: the device's identity/version (manufacturer, model, installed
-   *     update id, custom properties). Caller-owned; only read during the call.
-   *   result: the accumulated install result (overall + per-step), or NULL when
-   *     no result is available yet.
-   *   request: the in-progress deployment request (for the reported workflow id),
-   *     or NULL when idle.
-   *   state: the agent state to report (mapped to Idle / InProgress / Failed).
-   *   out_json / out_size: caller-owned destination buffer; out_len receives the
-   *     number of bytes written (MAY be NULL).
+   * Serialize a canonical report as ADUv2 JSON without network I/O.
+   * The report and its install_result are borrowed for this call.
+   * step_results indices become step_<index> object keys, never a JSON array.
+   * out_len receives bytes written (zero on error) and may be NULL.
    *
    * Returns AZ_IOT_OK on success, AZ_IOT_ERR_INVALID_ARG on bad arguments, or
    * AZ_IOT_ERR_NOT_ENOUGH_SPACE if the payload does not fit @p out_json.
    */
   AZ_NODISCARD az_iot_result az_iot_adu_build_report(
-      const az_iot_adu_device_properties* device_props,
-      const az_iot_adu_client_install_result* result,
-      const az_iot_adu_client_update_request* request,
-      az_iot_adu_state state,
+      const az_iot_adu_report* report,
       uint8_t* out_json,
       size_t out_size,
       size_t* out_len);

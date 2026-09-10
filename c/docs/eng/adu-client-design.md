@@ -66,14 +66,22 @@ The `azure-sdk-for-c` dependency (already fetched via CMake FetchContent) includ
 
 ### Strategy: Reuse, Don't Reimplement
 
-Our `adu_client` MUST **delegate** manifest parsing and reported-property formatting to `azure-sdk-for-c`'s `az_iot_adu_client` module. We MUST NOT reimplement JSON parsing already provided by the upstream dependency. We own:
+Our `adu_client` MUST **delegate** manifest parsing to `azure-sdk-for-c`'s `az_iot_adu_client`
+module. We MUST NOT reimplement JSON parsing already provided by the dependency.
+The upstream reported-property formatter describes the removed ADUv1 channel, not ADUv2.
+ADUv2 reporting uses the existing `az_json_writer` primitives with SDK-owned canonical result
+types: the engine and serializer share `az_iot_adu_install_result` / `az_iot_adu_step_result`.
+This avoids both a parallel report-result hierarchy and a dependency patch changing legacy
+types consumed by the upstream twin formatter. Manifest parsing, spans and JSON primitives
+remain reused; no dependency fork or patch is introduced. We own:
 
 1. **State machine** — orchestrating the Download → Backup → Install → Apply → (Restore) lifecycle.
 2. **JWS verification** — via customer-provided crypto hooks.
 3. **Channel integration** — carrying an update manifest in and a structured report out. ADUv1 did this through `az_iot_twin_client` desired/reported properties; that wiring is **cut** and replaced by the `az_iot_adu_channel` vtable with a single ADUv2 implementation.
 4. **Platform hooks** — the vtable for download, install, apply, etc.
 
-This avoids duplicating the well-tested JSON parsing logic and keeps us aligned with the protocol schema as it evolves in the upstream dependency.
+This preserves the well-tested parsing logic while allowing the ADUv2 result schema to evolve
+independently of the archived dependency's ADUv1 formatter.
 
 ---
 
@@ -438,21 +446,37 @@ The update manifest v5 `instructions.steps[]` array MAY contain multiple steps, 
 
 #### Per-Step Result Accumulation
 
-The client MUST maintain an `az_iot_adu_client_install_result` whose
+The client MUST maintain an `az_iot_adu_install_result` whose
 `step_results[]` array has **one entry per manifest step**, indexed by step
 number. As the machine progresses:
 
-- On entering a step, its `step_results[N]` MUST be initialized to a pending/zero
-  state.
+- On initialization, unfinished steps have outcome `IN_PROGRESS` and zero diagnostics.
 - On a step completing successfully (Apply done), `step_results[N].result_code`
   MUST be set to `700`.
 - On a step failing, `step_results[N]` MUST be set to the failing phase's
-  `result_code` + composed `extended_result_code` (see Result-Code Mapping), and
+  `FAILED` outcome, diagnostic code and unsigned hex diagnostics, and
   no further steps MUST be started.
-- The **overall** `result_code`/`extended_result_code` MUST mirror the *first*
-  failing step (the root cause), not a later rollback outcome.
-- `step_results_count` MUST equal the number of manifest steps so azure-sdk-for-c
-  can format a well-formed payload.
+- The overall install result retains the first failure's diagnostic code; rollback failure
+  may replace its extended diagnostics without changing the failing step's result.
+- `step_results_count` matches the number of manifest steps; serialization uses
+  `step_<index>` map keys. Outcomes are not inferred from diagnostic-code signs.
+- On cancellation the unfinished current step is `CANCELED`; other unfinished steps
+  become `SKIPPED` on termination. Completed/failed steps keep their outcomes.
+
+Results own their text buffers and explicit byte lengths: 1024 bytes for ASCII hex diagnostics
+and 4096 bytes for up to 1024 UTF-8 characters of details. A result struct copy therefore owns
+all its text, independent of incoming payloads and snapshot scratch. This deliberately favors
+simple lifetimes over memory usage; optimize the footprint later if needed. The report
+envelope still borrows the same canonical install result rather than translating to a second
+model. The default snapshot buffer accommodates the maximum text in every result.
+Install results declare their overall fields directly, matching the service schema; they do
+not embed a step result. The separate step-result type is used only for entries in `step_results`.
+
+Embedded applications should keep the client out of small task stacks; the ESP32 sample uses
+static client storage. Resume first validates the snapshot records and manifest without changing
+the active client (except load scratch), then restores directly into the client-owned result.
+It keeps only a small parsed-manifest view on the stack, not a second owned install result.
+Whole-application stack and RAM usage still require validation on the target device.
 
 #### Partial-Failure Rollback
 
@@ -1120,16 +1144,11 @@ az_iot_result az_iot_adu_verify_file_hash(
     void* read_ctx);
 
 /**
- * Build the report payload from the consumer's own outcome data, without the
- * state machine. Emits the structured result; the generation-specific serializer
- * turns it into the twin reported-properties (ADUv1) or the reportStatus body
- * (ADUv2, see adu-client-plan.md — ADUv2 transport).
+ * Serialize the canonical report as ADUv2 JSON using az_json_writer.
+ * No state machine, network I/O, or diagnostic-code remapping.
  */
 az_iot_result az_iot_adu_build_report(
-    const az_iot_adu_device_properties* device_props,
-    const az_iot_adu_client_install_result* result,
-    const az_iot_adu_client_update_request* request,
-    az_iot_adu_state state,
+    const az_iot_adu_report* report,
     uint8_t* out_json,
     size_t out_size,
     size_t* out_len);
