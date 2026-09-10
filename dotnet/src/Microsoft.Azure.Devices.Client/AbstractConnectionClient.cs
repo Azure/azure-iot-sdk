@@ -121,12 +121,6 @@ namespace Microsoft.Azure.Devices.Client
         /// </summary>
         private CancellationTokenSource? _currentProvisioningFlowCancellation;
 
-
-
-
-
-
-
         /// <summary>
         /// Construct a new <see cref="ConnectionClient"/>
         /// </summary>
@@ -193,6 +187,146 @@ namespace Microsoft.Azure.Devices.Client
             await ConnectAsync(CurrentConnectionContext, cancellationToken);
 
             return CurrentConnectionContext;
+        }
+
+        public async Task<MqttPublishAck> PublishAsync(MqttPublish publish, CancellationToken cancellationToken = default)
+        {
+            Func<CancellationToken, Task<MqttPublishAck>> funcToRetry = async (args) =>
+            {
+                return await ManagedMqttConnection.PublishAsync(publish, cancellationToken);
+            };
+
+            return await PerformWhileRespectingConnectionState(funcToRetry, cancellationToken);
+        }
+
+        public async Task<MqttSubscribeAck> SubscribeAsync(MqttSubscribe subscribe, CancellationToken cancellationToken = default)
+        {
+            Func<CancellationToken, Task<MqttSubscribeAck>> funcToRetry = async (args) =>
+            {
+                return await ManagedMqttConnection.SubscribeAsync(subscribe, cancellationToken);
+            };
+
+            return await PerformWhileRespectingConnectionState(funcToRetry, cancellationToken);
+        }
+
+        public async Task<MqttUnsubscribeAck> UnsubscribeAsync(MqttUnsubscribe unsubscribe, CancellationToken cancellationToken = default)
+        {
+            Func<CancellationToken, Task<MqttUnsubscribeAck>> funcToRetry = async (args) =>
+            {
+                return await ManagedMqttConnection.UnsubscribeAsync(unsubscribe, cancellationToken);
+            };
+
+            return await PerformWhileRespectingConnectionState(funcToRetry, cancellationToken);
+        }
+
+        /// <summary>
+        /// Disconnect this device from IoT hub.
+        /// </summary>
+        /// <param name="cancellationToken">The cancellation token.</param>
+        public async Task DisconnectAsync(CancellationToken cancellationToken = default)
+        {
+            ObjectDisposedException.ThrowIf(_isDisposed, this);
+
+            // The application is closing this connection deliberately, so any recovery that an earlier identity fault
+            // started is no longer wanted.
+            CancelCurrentReprovisioning();
+
+            await ManagedMqttConnection.DisconnectAsync(false, new MqttDisconnect() { Reason = MqttClientDisconnectOptionsReason.NormalDisconnection }, cancellationToken);
+            CurrentConnectionContext = null;
+            CurrentEndpoint = ConnectionEndpoint.None;
+        }
+
+        /// <summary>
+        /// Releases the unmanaged resources used by this client and optionally disposes of the managed resources.
+        /// </summary>
+        /// <param name="disposing">true to release both managed and unmanaged resources; false to releases only unmanaged resources.</param>
+        public virtual void Dispose(bool disposing)
+        {
+            DetachConnectionCallbacks();
+
+            if (disposing)
+            {
+                ManagedMqttConnection.Dispose();
+            }
+            else if (!_isUserSuppliedMqttClient)
+            {
+                ManagedMqttConnection.Dispose();
+            }
+
+            _isDisposed = true;
+        }
+
+        /// <summary>
+        /// Releases the unmanaged resources and disposes of the managed resources used by this client 
+        /// </summary>
+        public virtual void Dispose()
+        {
+            DetachConnectionCallbacks();
+
+            ManagedMqttConnection.Dispose();
+
+            _isDisposed = true;
+        }
+
+        internal async Task ConnectAsync(ConnectionContext connectionContext, CancellationToken cancellationToken = default)
+        {
+            ObjectDisposedException.ThrowIf(_isDisposed, this);
+
+            // From here on, every connection this client establishes targets IoT hub, so every connection (including the
+            // ones the connection layer re-establishes on its own) runs the device presence flow.
+            CurrentEndpoint = ConnectionEndpoint.IotHub;
+
+            // This client is establishing a connection again, so any earlier fault no longer describes its state.
+            ClearUnrecoverableFault();
+
+            CurrentConnectionContext = connectionContext;
+
+            string deviceId = CurrentConnectionContext.DeviceId;
+            string hostname = CurrentConnectionContext.IotHubHostName;
+
+            cancellationToken.ThrowIfCancellationRequested();
+
+            Trace.TraceInformation("Attempting to establish connection and presence for device {0} with IoT Hub {1}", deviceId, hostname);
+
+            TaskCompletionSource<DevicePresenceFlowCompletedArgs> devicePresenceFlowResult = new();
+            Func<DevicePresenceFlowCompletedArgs, Task> HandleDevicePresenceFlowCompleted = (args) =>
+            {
+                devicePresenceFlowResult.TrySetResult(args);
+                return Task.CompletedTask;
+            };
+
+            // Setup callbacks BEFORE sending CONNECT so that CONNACK can be handled regardless of how quickly it arrives
+            DevicePresenceFlowCompletedAsync += HandleDevicePresenceFlowCompleted;
+
+            try
+            {
+                // These are the connect packet fields that are invariable between connect attempts to any kind of IoT Hub. There is an MQTT connect packet override
+                // step triggered by the "ConnectingAsync" callback each time a connect is attempted. This allows for the gen 2 client to insert a new connect nonce
+                // per connect attempt. It also allows the inheriting ConnectionClient to insert the appropriate username/password/websocket port for that hub type
+                MqttConnect connectPacket = new MqttConnect()
+                {
+                    HostName = hostname,
+                    TcpPort = 8883,
+                    WebsocketPort = 443,
+                    ClientCertificate = CurrentConnectionContext.AuthenticationProvider.ClientCertificate,
+                    CleanSession = true, // TODO user configurable? Less applicable in gen 2 hub connection
+                    ClientId = deviceId,
+                };
+
+                MqttConnectAck connack = await ManagedMqttConnection.ConnectAsync(connectPacket, cancellationToken);
+
+                var devicePresenceFlowCompletedArgs = await devicePresenceFlowResult.Task.WaitAsync(cancellationToken);
+
+                //TODO retry? Feels a bit odd to retry a connect call, but Hub folks do have a prescribed pattern for connect attempts. Maybe offer one connect with retry, one connect w/o
+                if (devicePresenceFlowCompletedArgs.Exception != null)
+                {
+                    throw devicePresenceFlowCompletedArgs.Exception;
+                }
+            }
+            finally
+            {
+                DevicePresenceFlowCompletedAsync -= HandleDevicePresenceFlowCompleted;
+            }
         }
 
         /// <summary>
@@ -410,84 +544,6 @@ namespace Microsoft.Azure.Devices.Client
             catch (ObjectDisposedException)
             {
                 // The attempt already ended and disposed its own cancellation source, so there is nothing left to cancel.
-            }
-        }
-
-        /// <summary>
-        /// Disconnect this device from IoT hub.
-        /// </summary>
-        /// <param name="cancellationToken">The cancellation token.</param>
-        public async Task DisconnectAsync(CancellationToken cancellationToken = default)
-        {
-            ObjectDisposedException.ThrowIf(_isDisposed, this);
-
-            // The application is closing this connection deliberately, so any recovery that an earlier identity fault
-            // started is no longer wanted.
-            CancelCurrentReprovisioning();
-
-            await ManagedMqttConnection.DisconnectAsync(false, new MqttDisconnect() { Reason = MqttClientDisconnectOptionsReason.NormalDisconnection }, cancellationToken);
-            CurrentConnectionContext = null;
-            CurrentEndpoint = ConnectionEndpoint.None;
-        }
-
-        internal async Task ConnectAsync(ConnectionContext connectionContext, CancellationToken cancellationToken = default)
-        {
-            ObjectDisposedException.ThrowIf(_isDisposed, this);
-
-            // From here on, every connection this client establishes targets IoT hub, so every connection (including the
-            // ones the connection layer re-establishes on its own) runs the device presence flow.
-            CurrentEndpoint = ConnectionEndpoint.IotHub;
-
-            // This client is establishing a connection again, so any earlier fault no longer describes its state.
-            ClearUnrecoverableFault();
-
-            CurrentConnectionContext = connectionContext;
-
-            string deviceId = CurrentConnectionContext.DeviceId;
-            string hostname = CurrentConnectionContext.IotHubHostName;
-
-            cancellationToken.ThrowIfCancellationRequested();
-
-            Trace.TraceInformation("Attempting to establish connection and presence for device {0} with IoT Hub {1}", deviceId, hostname);
-
-            TaskCompletionSource<DevicePresenceFlowCompletedArgs> devicePresenceFlowResult = new();
-            Func<DevicePresenceFlowCompletedArgs, Task> HandleDevicePresenceFlowCompleted = (args) =>
-            {
-                devicePresenceFlowResult.TrySetResult(args);
-                return Task.CompletedTask;
-            };
-
-            // Setup callbacks BEFORE sending CONNECT so that CONNACK can be handled regardless of how quickly it arrives
-            DevicePresenceFlowCompletedAsync += HandleDevicePresenceFlowCompleted;
-
-            try
-            {
-                // These are the connect packet fields that are invariable between connect attempts to any kind of IoT Hub. There is an MQTT connect packet override
-                // step triggered by the "ConnectingAsync" callback each time a connect is attempted. This allows for the gen 2 client to insert a new connect nonce
-                // per connect attempt. It also allows the inheriting ConnectionClient to insert the appropriate username/password/websocket port for that hub type
-                MqttConnect connectPacket = new MqttConnect()
-                {
-                    HostName = hostname,
-                    TcpPort = 8883,
-                    WebsocketPort = 443,
-                    ClientCertificate = CurrentConnectionContext.AuthenticationProvider.ClientCertificate,
-                    CleanSession = true, // TODO user configurable? Less applicable in gen 2 hub connection
-                    ClientId = deviceId,
-                };
-
-                MqttConnectAck connack = await ManagedMqttConnection.ConnectAsync(connectPacket, cancellationToken);
-
-                var devicePresenceFlowCompletedArgs = await devicePresenceFlowResult.Task.WaitAsync(cancellationToken);
-
-                //TODO retry? Feels a bit odd to retry a connect call, but Hub folks do have a prescribed pattern for connect attempts. Maybe offer one connect with retry, one connect w/o
-                if (devicePresenceFlowCompletedArgs.Exception != null)
-                {
-                    throw devicePresenceFlowCompletedArgs.Exception;
-                }
-            }
-            finally
-            {
-                DevicePresenceFlowCompletedAsync -= HandleDevicePresenceFlowCompleted;
             }
         }
 
@@ -870,38 +926,6 @@ namespace Microsoft.Azure.Devices.Client
             return userAgent;
         }
 
-        /// <summary>
-        /// Releases the unmanaged resources used by this client and optionally disposes of the managed resources.
-        /// </summary>
-        /// <param name="disposing">true to release both managed and unmanaged resources; false to releases only unmanaged resources.</param>
-        public virtual void Dispose(bool disposing)
-        {
-            DetachConnectionCallbacks();
-
-            if (disposing)
-            {
-                ManagedMqttConnection.Dispose();
-            }
-            else if (!_isUserSuppliedMqttClient)
-            {
-                ManagedMqttConnection.Dispose();
-            }
-
-            _isDisposed = true;
-        }
-
-        /// <summary>
-        /// Releases the unmanaged resources and disposes of the managed resources used by this client 
-        /// </summary>
-        public virtual void Dispose()
-        {
-            DetachConnectionCallbacks();
-
-            ManagedMqttConnection.Dispose();
-
-            _isDisposed = true;
-        }
-
         private void DetachConnectionCallbacks()
         {
             ManagedMqttConnection.ConnectingAsync -= PatchConnectPacketAsync;
@@ -964,36 +988,6 @@ namespace Microsoft.Azure.Devices.Client
                 DevicePresenceFlowCompletedAsync -= HandleDevicePresenceFlowCompleted;
                 UnrecoverablyFaulted -= HandleUnrecoverableFault;
             }
-        }
-
-        public async Task<MqttPublishAck> PublishAsync(MqttPublish publish, CancellationToken cancellationToken = default)
-        {
-            Func<CancellationToken, Task<MqttPublishAck>> funcToRetry = async (args) =>
-            {
-                return await ManagedMqttConnection.PublishAsync(publish, cancellationToken);
-            };
-
-            return await PerformWhileRespectingConnectionState(funcToRetry, cancellationToken);
-        }
-
-        public async Task<MqttSubscribeAck> SubscribeAsync(MqttSubscribe subscribe, CancellationToken cancellationToken = default)
-        {
-            Func<CancellationToken, Task<MqttSubscribeAck>> funcToRetry = async (args) =>
-            {
-                return await ManagedMqttConnection.SubscribeAsync(subscribe, cancellationToken);
-            };
-
-            return await PerformWhileRespectingConnectionState(funcToRetry, cancellationToken);
-        }
-
-        public async Task<MqttUnsubscribeAck> UnsubscribeAsync(MqttUnsubscribe unsubscribe, CancellationToken cancellationToken = default)
-        {
-            Func<CancellationToken, Task<MqttUnsubscribeAck>> funcToRetry = async (args) =>
-            {
-                return await ManagedMqttConnection.UnsubscribeAsync(unsubscribe, cancellationToken);
-            };
-
-            return await PerformWhileRespectingConnectionState(funcToRetry, cancellationToken);
         }
     }
 }
