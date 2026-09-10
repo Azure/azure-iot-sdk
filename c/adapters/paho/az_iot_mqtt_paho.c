@@ -588,9 +588,15 @@ static az_iot_result paho_connect_failure5_result(
  * completion callbacks. Without them the caller is told nothing, and a caller
  * that waits for the session to settle waits for an event that never arrives.
  *
- * Both outcomes end the session, so both report DISCONNECTED: a failed
- * MQTTAsync_disconnect leaves nothing usable either, and reporting the failure
- * as a live session would be worse than reporting the end of one. */
+ * Both outcomes end the session, so both report DISCONNECTED -- the failure
+ * carrying AZ_IOT_ERR_MQTT rather than AZ_IOT_OK, because the core surfaces
+ * evt->status as the reason the connection ended.
+ *
+ * Only the v3 callbacks are set, and that is deliberate rather than an
+ * oversight: for a DISCONNECT command Paho calls onSuccess when it is set and
+ * falls back to onSuccess5 only when it is not (MQTTAsync_checkDisconnect in
+ * MQTTAsyncUtils.c), so these fire for a v5 client too. Covered both ways by
+ * the adapter unit tests. */
 static void paho_disconnect_success(void* context, MQTTAsync_successData* response)
 {
   (void)response;
@@ -610,7 +616,11 @@ static void paho_disconnect_failure(void* context, MQTTAsync_failureData* respon
       (response && response->message) ? response->message : "(none)");
   if (m)
   {
-    enqueue_status(m, AZ_IOT_MQTT_EVT_DISCONNECTED, AZ_IOT_OK, 0);
+    /* The session is over either way, so this is still DISCONNECTED -- but it
+     * carries an error, not AZ_IOT_OK. The core reports evt->status as the
+     * reason the connection ended, and calling a failed teardown a clean one
+     * would tell the application the opposite of what happened. */
+    enqueue_status(m, AZ_IOT_MQTT_EVT_DISCONNECTED, AZ_IOT_ERR_MQTT, 0);
   }
 }
 
@@ -1125,8 +1135,8 @@ static az_iot_result paho_iface_disconnect(az_iot_mqtt_client* self)
   {
     /* The call was refused, so neither callback will run. Report the end of the
      * session here instead, or the caller is left waiting on an event that can
-     * no longer arrive. */
-    enqueue_status(m, AZ_IOT_MQTT_EVT_DISCONNECTED, AZ_IOT_OK, 0);
+     * no longer arrive -- with the error, for the reason above. */
+    enqueue_status(m, AZ_IOT_MQTT_EVT_DISCONNECTED, AZ_IOT_ERR_MQTT, 0);
     return AZ_IOT_ERR_MQTT;
   }
   return AZ_IOT_OK;

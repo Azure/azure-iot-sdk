@@ -403,6 +403,33 @@ static void connect_disconnect_roundtrip(void** state)
   destroy_client(c);
 }
 
+/* A disconnect the APPLICATION asked for is reported, like one the peer
+ * caused.
+ *
+ * The suite asserted DISCONNECTED only for peer-initiated teardowns -- a
+ * dropped link, a server DISCONNECT -- and the roundtrip case above
+ * deliberately does not fail when nothing arrives. That left the
+ * client-initiated path unasserted, and an adapter could pass the whole suite
+ * while never reporting it: the disconnect call itself still returns OK.
+ *
+ * It matters because the connection client moves to DISCONNECTING on close()
+ * and waits for this event to settle the session to IDLE. Without it, any
+ * caller that waits for a close to finish waits forever. */
+static void a_client_initiated_disconnect_is_reported(void** state)
+{
+  (void)state;
+  char cid[64];
+  unique_client_id(cid, sizeof(cid), "az-iot-conf-discrep");
+  conf_recorder rec = { 0 };
+  az_iot_mqtt_client* c = make_client();
+  connect_client(c, &rec, cid);
+
+  assert_int_equal(c->iface->disconnect(c), AZ_IOT_OK);
+  assert_true(wait_until(c, &rec, saw_disconnected, k_step_timeout_ms));
+
+  destroy_client(c);
+}
+
 static void publish_subscribe_roundtrip(void** state)
 {
   (void)state;
@@ -1955,6 +1982,7 @@ static void key_custody_completes_a_tls_handshake(void** state)
 
 #define AZ_IOT_CONFORMANCE_COMMON_TESTS                                                          \
   cmocka_unit_test(connect_disconnect_roundtrip), cmocka_unit_test(publish_subscribe_roundtrip), \
+      cmocka_unit_test(a_client_initiated_disconnect_is_reported),                               \
       cmocka_unit_test(disconnect_without_connect_is_rejected),                                  \
       cmocka_unit_test(connect_after_disconnect_reuses_the_client),                              \
       cmocka_unit_test(connect_to_a_closed_port_is_rejected),                                    \

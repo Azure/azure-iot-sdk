@@ -33,6 +33,24 @@ void mock_paho_set_set_callbacks_rc(int rc);
 void mock_paho_set_set_disconnected_rc(int rc);
 void mock_paho_set_connect_rc(int rc);
 
+/* Result of MQTTAsync_disconnect, and what it does with the completion
+ * callbacks the adapter supplies.
+ *
+ * MQTTASYNC_SUCCESS (the reset default) accepts the call and invokes
+ * onSuccess, which is what the real client does for a disconnect it completes.
+ * mock_paho_set_disconnect_completion(false) accepts the call but invokes
+ * onFailure instead. A non-success rc from mock_paho_set_disconnect_rc()
+ * refuses the call outright and invokes neither, which is the one case the
+ * adapter has to report for itself. */
+void mock_paho_set_disconnect_rc(int rc);
+void mock_paho_set_disconnect_completion(bool success);
+
+int mock_paho_disconnect_calls(void);
+
+/* Did the adapter supply completion callbacks and a context at all? Without
+ * them the real client reports a client-initiated disconnect to nobody. */
+bool mock_paho_disconnect_had_callbacks(void);
+
 int mock_paho_create_calls(void);
 int mock_paho_connect_calls(void);
 int mock_paho_destroy_calls(void);
