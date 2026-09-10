@@ -178,13 +178,26 @@ uri="pkcs11:token=${TOKEN_LABEL};object=${KEY_LABEL};type=private?pin-source=fil
 #       the TLS 1.2 handshake; one the adapter loads at run time through
 #       OSSL_PROVIDER_try_load() does not, and the two settings below apply only
 #       to the former.
-#   pkcs11-module-quirks = no-deinit
-#       Required. Once the provider is activated from configuration, SoftHSM2
-#       crashes when OpenSSL tears it down -- AFTER a successful connect, which
-#       is what makes it easy to miss. Measured: without this the run reaches
-#       CONNECTED and then dies with SIGSEGV, 3 runs out of 3. The provider
-#       documents the quirk for exactly this; the cost is memory the process was
-#       about to release anyway.
+#   pkcs11-module-quirks = no-deinit no-operation-state
+#       no-operation-state is THE fix for the CI failure. OpenSSL duplicates the
+#       TLS 1.2 handshake digest context; the provider implements duplication
+#       with C_GetOperationState, and SoftHSM2 does not support that on a digest
+#       session, so the handshake dies with
+#           error:40800054:pkcs11:p11prov_GetOperationState
+#       The quirk stops the provider attempting the duplication at all.
+#
+#       It is version-dependent, which is why this took so long to place:
+#       reproduced against a live IoT Hub over TLS 1.2 with an RSA-4096
+#       SoftHSM2-held key on OpenSSL 3.0.13 -- the version CI runs -- where
+#       without the quirk the connect fails and with it CONNECTED, 2 runs each.
+#       The same test on OpenSSL 3.0.20 connects either way, which is why every
+#       earlier local run passed and every CI run failed.
+#
+#       no-deinit is separately required. Once the provider is activated from
+#       configuration, SoftHSM2 crashes when OpenSSL tears it down -- AFTER a
+#       successful connect, which is what makes it easy to miss. Measured:
+#       without it the run reaches CONNECTED and then dies with SIGSEGV, 3 runs
+#       out of 3. The cost is memory the process was about to release anyway.
 #   pkcs11-module-block-operations = digest
 #       Precautionary, and inert on SoftHSM2: it advertises no digests, and
 #       removing it changes nothing measurable here. Kept for tokens that DO
@@ -208,7 +221,7 @@ activate = 1
 ${modules_dir:+module = ${modules_dir}/pkcs11.so}
 pkcs11-module-path = ${module}
 pkcs11-module-block-operations = digest
-pkcs11-module-quirks = no-deinit
+pkcs11-module-quirks = no-deinit no-operation-state
 activate = 1
 CNF
 
