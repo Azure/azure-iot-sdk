@@ -408,6 +408,47 @@ static void a_malformed_response_body_is_rejected(void** state)
 /* errors                                                                    */
 /* ------------------------------------------------------------------------- */
 
+/* A partial installed-update triple must be rejected rather than passed to the
+ * writer, where a NULL member would trip an upstream precondition instead of
+ * returning an error. */
+static void a_report_with_a_partial_installed_update_id_is_rejected(void** state)
+{
+  (void)state;
+  uint8_t buf[512];
+  az_iot_adu_report_update_id partial = { "Contoso", NULL, "2.0" };
+  az_iot_adu_report report = { 0 };
+  report.workflow_id = "wf-1";
+  report.installed_update_id = &partial;
+  report.outcome = AZ_IOT_ADU_OUTCOME_SUCCEEDED;
+  report.failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_NOT_APPLICABLE;
+  report.result_code = 700;
+  report.extended_result_codes = "0";
+
+  assert_int_equal(
+      az_iot_adu__build_report_request(&report, buf, sizeof(buf), NULL), AZ_IOT_ERR_INVALID_ARG);
+}
+
+/* Truncated JSON must not read as a successful parse carrying partial data: the
+ * caller would act on a half-read response as though the service had answered
+ * it. */
+static void a_truncated_response_body_is_rejected(void** state)
+{
+  (void)state;
+  az_iot_adu_fetch_response resp;
+
+  const char* cut_mid_object = "{\"agentInfoEtag\":\"a1\",\"updateMetadata\":{\"workflowId\":\"wf";
+  assert_int_equal(
+      az_iot_adu__parse_fetch_response(
+          (const uint8_t*)cut_mid_object, strlen(cut_mid_object), &resp),
+      AZ_IOT_ERR_PROTOCOL);
+
+  const char* cut_after_value = "{\"agentInfoEtag\":\"a1\"";
+  assert_int_equal(
+      az_iot_adu__parse_fetch_response(
+          (const uint8_t*)cut_after_value, strlen(cut_after_value), &resp),
+      AZ_IOT_ERR_PROTOCOL);
+}
+
 static void the_error_code_is_read_from_the_body(void** state)
 {
   (void)state;
@@ -494,6 +535,8 @@ int main(void)
     cmocka_unit_test(no_update_is_success_whether_absent_or_null),
     cmocka_unit_test(the_root_key_url_is_read_from_service_configuration),
     cmocka_unit_test(a_malformed_response_body_is_rejected),
+    cmocka_unit_test(a_report_with_a_partial_installed_update_id_is_rejected),
+    cmocka_unit_test(a_truncated_response_body_is_rejected),
     cmocka_unit_test(the_error_code_is_read_from_the_body),
     cmocka_unit_test(error_codes_map_to_the_specified_actions),
     cmocka_unit_test(an_unknown_error_code_is_not_retried),

@@ -366,6 +366,15 @@ az_iot_result az_iot_adu__build_report_request(
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
+  /* A triple must be complete or absent. Passing a NULL member through to the
+   * writer would trip an upstream precondition rather than returning an error
+   * to the caller. */
+  if (report->installed_update_id != NULL
+      && (report->installed_update_id->provider == NULL || report->installed_update_id->name == NULL
+          || report->installed_update_id->version == NULL))
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
   /* The contract ties these together: NOT_APPLICABLE unless the outcome is a
    * failure, and a real origin when it is. Catching it here keeps an invalid
    * pair off the wire rather than having the service reject it. */
@@ -487,10 +496,12 @@ az_iot_result az_iot_adu__parse_fetch_response(
     return AZ_IOT_ERR_PROTOCOL;
   }
 
+  bool closed = false;
   while (az_result_succeeded(az_json_reader_next_token(&jr)))
   {
     if (jr.token.kind == AZ_JSON_TOKEN_END_OBJECT)
     {
+      closed = true;
       break;
     }
     if (jr.token.kind != AZ_JSON_TOKEN_PROPERTY_NAME)
@@ -565,6 +576,14 @@ az_iot_result az_iot_adu__parse_fetch_response(
     {
       return AZ_IOT_ERR_PROTOCOL;
     }
+  }
+
+  /* The loop also ends when the reader itself fails -- truncated JSON, for
+   * instance. Without this a partial document would be reported as a successful
+   * parse carrying whatever was read before the failure. */
+  if (!closed)
+  {
+    return AZ_IOT_ERR_PROTOCOL;
   }
 
   return AZ_IOT_OK;
