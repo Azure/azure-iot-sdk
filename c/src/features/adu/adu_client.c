@@ -1322,11 +1322,6 @@ az_iot_result az_iot_adu_client_initialize(
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
-  if (options->http_transport == NULL || options->http_transport->send == NULL)
-  {
-    return AZ_IOT_ERR_INVALID_ARG;
-  }
-
   /* The application hands us a connection, not a transport implementation: the
    * SDK owns the device-update protocol. Build the shipping channel here.
    *
@@ -1338,8 +1333,7 @@ az_iot_result az_iot_adu_client_initialize(
   az_iot_adu_channel_dps* channel_state
       = (az_iot_adu_channel_dps*)(void*)&ADU_I(client).channel_storage;
 
-  az_iot_result r
-      = az_iot_adu_channel_dps_init(channel_state, connection, options->http_transport, &channel);
+  az_iot_result r = az_iot_adu_channel_dps_init(channel_state, connection, &channel);
   if (r != AZ_IOT_OK)
   {
     memset(client, 0, sizeof(*client));
