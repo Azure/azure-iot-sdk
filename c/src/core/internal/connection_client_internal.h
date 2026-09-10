@@ -52,6 +52,11 @@ extern "C"
    * AZ_IOT_PRESENCE_BIRTH_ACK_TIMEOUT_MS. */
   void az_iot_connection_client__presence_force_timeout(az_iot_connection_client* client);
 
+  /* Test seam: force a pending subscription gate to expire on the next
+   * do_work(). No-op when no gate is armed. Lets unit tests exercise the
+   * never-acked path without waiting out the configured timeout. */
+  void az_iot_connection_client__subscription_gate_force_timeout(az_iot_connection_client* client);
+
   /* Return the protocol profile selected by the current session_role. May be
    * NULL when the role has no profile yet (e.g. HUB_NEXT in Phase 2.3). */
   const az_iot_protocol_profile* az_iot_connection_client__profile(
@@ -127,12 +132,21 @@ extern "C"
    * SUBSCRIBE is also issued immediately.
    *
    * `owner` identifies the registering feature client so it can withdraw its
-   * own entries later; pass the same pointer used for the inbound handlers. */
+   * own entries later; pass the same pointer used for the inbound handlers.
+   *
+   * `failure_scope` says what a refusal costs. A feature client's own filter is
+   * AZ_IOT_SUBSCRIPTION_FAILS_SESSION: it cannot work without it, so the
+   * connection fails rather than coming up with a dead feature. An
+   * application-supplied topic is AZ_IOT_SUBSCRIPTION_FAILS_SELF, and
+   * `on_failed` is how its owner is told; pass NULL for a gated filter, which
+   * reports through the connection state instead. */
   az_iot_result az_iot_connection_client__add_subscription_on_connect(
       az_iot_connection_client* client,
       const char* topic_filter,
       az_iot_mqtt_qos qos,
-      const void* owner);
+      const void* owner,
+      az_iot_subscription_failure_scope failure_scope,
+      az_iot_subscription_failed_callback on_failed);
 
   /* Withdraw every persistent subscription registered by `owner`. Returns the
    * number removed.
@@ -141,20 +155,66 @@ extern "C"
    * generations. AEG's device-wide `ih/{device_id}/dev/#` subscription is not
    * at risk from this: the presence handshake takes it out directly rather than
    * through the persistent-subscription registry, so it has no owner and this
-   * function can never select it. What AEG feature clients do register are their
-   * own per-feature filters underneath that wildcard, and those are exactly what
-   * should be withdrawn when the client that registered them goes away.
-   * Withdrawing one does not disturb the wildcard, which keeps matching.
+   * function can never select it. Withdrawing an entry underneath it does not
+   * disturb it either -- the wildcard keeps matching.
    *
-   * (Those per-feature AEG filters are redundant with the wildcard and are due
-   * to be dropped entirely; until they are, they are real subscriptions and are
-   * released here rather than left live until the session ends.)
+   * On AEG this is now a registry removal in practice, because no feature
+   * client registers a filter there any more: the wildcard covers them all. It
+   * still issues the UNSUBSCRIBE for anything that is registered, which is what
+   * an application custom topic will be.
    *
    * Safe to call when disconnected: the entries are dropped either way, so a
    * later reconnect does not resurrect them. */
   size_t az_iot_connection_client__remove_subscriptions_for(
       az_iot_connection_client* client,
       const void* owner);
+
+  /* Build the topics a feature client needs, once the connection knows the
+   * device id and generation it will actually use.
+   *
+   * A feature client cannot build `devices/{device_id}/...` or
+   * `ih/{device_id}/...` at _init(): on a DPS connection the assigned device id
+   * is not authoritative until ASSIGNED, and an enrollment may hand back a
+   * device id that differs from the registration id. The connection therefore
+   * calls this back before each connect attempt, after provisioning has settled.
+   *
+   * The connection withdraws the owner's previous subscriptions and inbound
+   * handlers immediately before the call, so an implementation registers from
+   * scratch every time and needs no idempotence of its own. Returning anything
+   * other than AZ_IOT_OK fails the connect attempt. */
+  typedef az_iot_result (
+      *az_iot_feature_client_bind_callback)(void* owner, az_iot_connection_client* client);
+
+  /* Attach a bind callback for `owner`, replacing any previous one. Feature
+   * clients call this from _init(); __release_profile drops it. */
+  az_iot_result az_iot_connection_client__register_feature_client_bind(
+      az_iot_connection_client* client,
+      void* owner,
+      az_iot_feature_client_bind_callback on_bind);
+
+  /* Detach `owner`'s bind callback. Does not withdraw anything the callback
+   * registered; feature clients withdraw those in their own _destroy(). */
+  void az_iot_connection_client__unregister_feature_client_bind(
+      az_iot_connection_client* client,
+      const void* owner);
+
+  /* Declare the hub generation a feature client needs, refcounted per client.
+   *
+   * Records the requirement rather than reading the connection, so a feature
+   * client can be constructed before open(); the connection verifies it when the
+   * profile becomes authoritative. When it already is -- a direct connect, or a
+   * DPS connection past ASSIGNED -- the answer is given here instead.
+   *
+   * Returns AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH if the connection already
+   * carries a requirement for the other generation, or is already known to be
+   * the other generation. */
+  az_iot_result az_iot_connection_client__require_profile(
+      az_iot_connection_client* client,
+      az_iot_connection_profile profile);
+
+  /* Drop one requirement taken by __require_profile. Feature clients call this
+   * from _destroy(); the pin clears when the last one goes. */
+  void az_iot_connection_client__release_profile(az_iot_connection_client* client);
 
   /* Map session role to required MQTT version (SDK-internal knowledge). */
   static inline az_iot_mqtt_version az_iot_mqtt_required_version_for_role(az_iot_mqtt_role role)

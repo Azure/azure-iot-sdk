@@ -22,7 +22,7 @@ if(AZ_IOT_WITH_PAHO)
         direct-hub/main.c ${_auth_common}/sample_utils.c)
     target_include_directories(az_iot_sample_auth_direct_hub PRIVATE ${_auth_common})
     target_link_libraries(az_iot_sample_auth_direct_hub
-        PRIVATE az_iot_core az_iot_adapter_paho)
+        PRIVATE az_iot_gen1 az_iot_gen2 az_iot_adapter_paho)
     az_iot_apply_warnings(az_iot_sample_auth_direct_hub)
 endif()
 
@@ -73,3 +73,24 @@ if(AZ_IOT_WITH_PAHO)
         az_iot_apply_warnings(az_iot_sample_auth_custom_certificate_provider)
     endif()
 endif()
+
+# D8 non-extractable key custody, key-reference route. Needs the Paho adapter to
+# link, and OpenSSL 3.0+ at RUN time (the provider that owns the token) -- which
+# is a deployment property, not a build one, so it builds wherever Paho does and
+# reports a clear error when the provider is absent.
+if(AZ_IOT_WITH_PAHO)
+    add_executable(az_iot_sample_auth_hsm_pkcs11
+        hsm_pkcs11/main.c ${_auth_common}/sample_utils.c)
+    target_include_directories(az_iot_sample_auth_hsm_pkcs11 PRIVATE ${_auth_common})
+    target_link_libraries(az_iot_sample_auth_hsm_pkcs11
+        PRIVATE az_iot_gen1 az_iot_gen2 az_iot_adapter_paho)
+    az_iot_apply_warnings(az_iot_sample_auth_hsm_pkcs11)
+endif()
+
+# The sign() hook sample brings its own stand-in adapter, so it needs neither
+# Paho nor OpenSSL and is always built -- which also keeps the hook's signature
+# compiling everywhere.
+add_executable(az_iot_sample_auth_hsm_sign_callback
+    hsm_sign_callback/main.c)
+target_link_libraries(az_iot_sample_auth_hsm_sign_callback PRIVATE az_iot_core)
+az_iot_apply_warnings(az_iot_sample_auth_hsm_sign_callback)

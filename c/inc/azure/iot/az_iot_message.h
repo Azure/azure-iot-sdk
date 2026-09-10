@@ -6,6 +6,15 @@
 #ifndef AZ_IOT_MESSAGE_H
 #define AZ_IOT_MESSAGE_H
 
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+
+#include "az_iot_result.h"
+/* For az_iot_connection_profile, which tags a method request with the
+ * generation that built it. */
+#include "az_iot_connection_client.h"
+
 #ifdef __cplusplus
 extern "C"
 {
@@ -36,6 +45,137 @@ extern "C"
 #define AZ_IOT_MSG_PROP_USER_ID "$.uid"
 #define AZ_IOT_MSG_PROP_CREATION_TIME "$.ctime"
 #define AZ_IOT_MSG_PROP_COMPONENT_NAME "$.sub"
+
+  /* Shared by the gen1 and gen2 telemetry clients. Callers always pass plain
+   * text: gen1 percent-encodes properties into the topic, while gen2 carries
+   * them as MQTT v5 User Properties. */
+  typedef struct az_iot_telemetry_property
+  {
+    const char* key;
+    const char* value;
+  } az_iot_telemetry_property;
+
+  typedef struct az_iot_telemetry_message
+  {
+    const uint8_t* payload;
+    size_t payload_len;
+    const az_iot_telemetry_property* properties;
+    size_t properties_count;
+  } az_iot_telemetry_message;
+
+  typedef void (*az_iot_telemetry_send_callback)(az_iot_result status, void* user_ctx);
+
+/* Maximum number of properties surfaced on one received C2D message. A message
+ * carrying more is still delivered; the properties past this bound are dropped
+ * and a warning is logged. */
+#ifndef AZ_IOT_C2D_MAX_PROPERTIES
+#define AZ_IOT_C2D_MAX_PROPERTIES 8
+#endif
+/* Bytes available to hold the decoded property names and values of one
+ * message. Only gen1 decodes -- gen2 user properties arrive already decoded --
+ * and decoding never grows the text, so this only has to cover the
+ * property-bag portion of a gen1 topic. */
+#ifndef AZ_IOT_C2D_PROPERTY_BUFFER
+#define AZ_IOT_C2D_PROPERTY_BUFFER 256
+#endif
+
+  /**
+   * @brief One property carried by a cloud-to-device message.
+   *
+   * Plain text, already decoded: gen1 reverses the percent-encoding IoT Hub
+   * applies to the topic property bag, so a value sent as `application%2Fjson`
+   * arrives as `application/json` and a system property key arrives as `$.ct`
+   * rather than `%24.ct`. Same shape az_iot_telemetry_property uses on the way
+   * out, so a property survives a round trip unchanged.
+   */
+  typedef struct az_iot_c2d_property
+  {
+    const char* key;
+    const char* value; /**< NULL when the property was sent with no value. */
+  } az_iot_c2d_property;
+
+  /**
+   * @brief A received cloud-to-device message.
+   *
+   * Every pointer is owned by the SDK and valid only for the duration of the
+   * handler callback. Copy anything the application needs to keep.
+   */
+  typedef struct az_iot_c2d_message
+  {
+    const uint8_t* payload; /**< May be NULL when @p payload_len is 0. */
+    size_t payload_len;
+    /** Convenience view of the `$.ct` property (gen1) or the MQTT v5
+     * content-type (gen2). NULL when the message carries none. */
+    const char* content_type;
+    const az_iot_c2d_property* properties;
+    size_t properties_count;
+  } az_iot_c2d_message;
+
+  typedef void (*az_iot_c2d_handler_callback)(const az_iot_c2d_message* msg, void* user_ctx);
+
+  /**
+   * @brief Look up one property by name.
+   *
+   * @return The property value, or NULL when the message carries no such
+   *         property. A property sent with no value also yields NULL; walk
+   *         @p msg->properties directly to tell the two apart.
+   */
+  const char* az_iot_c2d_message_property(const az_iot_c2d_message* msg, const char* key);
+
+/* Storage bounds for the request handle below. Compile-time footprint knobs:
+ * #define before including to tune. */
+#ifndef AZ_IOT_DM_METHOD_NAME_MAX
+#define AZ_IOT_DM_METHOD_NAME_MAX 96
+#endif
+/* Longest gen1 request id ($rid) carried on an invocation. */
+#ifndef AZ_IOT_DM_RID_MAX
+#define AZ_IOT_DM_RID_MAX 32
+#endif
+/* Longest gen2 correlation data echoed back on a response. */
+#ifndef AZ_IOT_DM_CORR_DATA_MAX
+#define AZ_IOT_DM_CORR_DATA_MAX 64
+#endif
+/* Max concurrent in-flight invocations one client can hold. Requests may
+ * outlive the handler (the application can respond asynchronously), so they
+ * live in a bounded pool inside the caller-allocated client struct rather than
+ * on the heap. */
+#ifndef AZ_IOT_DM_MAX_INFLIGHT
+#define AZ_IOT_DM_MAX_INFLIGHT 4
+#endif
+
+  /**
+   * @brief A method invocation awaiting a response.
+   *
+   * Delivered to the handler and passed back to the owning generation's
+   * respond call. Opaque to callers -- do NOT read _internal.
+   *
+   * The correlation fields are generation-specific storage: gen1 answers on a
+   * `$rid`, gen2 echoes MQTT v5 correlation data. Both live here because the
+   * handle is the one piece of this feature both generations hand to the
+   * application, which is what lets the handler callback be shared.
+   */
+  typedef struct az_iot_direct_method_request
+  {
+    struct
+    {
+      void* owner; /* the generation's client that acquired this slot */
+      /* Which generation built it, so a respond call from the other one is
+       * refused rather than reading the wrong half of this struct. */
+      az_iot_connection_profile profile;
+      char method_name[AZ_IOT_DM_METHOD_NAME_MAX];
+      char rid[AZ_IOT_DM_RID_MAX];
+      uint8_t correlation_data[AZ_IOT_DM_CORR_DATA_MAX];
+      size_t correlation_data_len;
+      bool in_use; /* pool slot occupied: acquired -> responded */
+    } _internal;
+  } az_iot_direct_method_request;
+
+  typedef void (*az_iot_direct_method_handler_callback)(
+      az_iot_direct_method_request* request,
+      const char* method_name,
+      const uint8_t* payload,
+      size_t payload_len,
+      void* user_ctx);
 
 #ifdef __cplusplus
 }

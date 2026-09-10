@@ -44,13 +44,16 @@ Canonical pending-work tracker for IoT Hub Next (AEG) integration.
 - [x] Test telemetry against mock hub (E2E verified)
 
 ### Direct Method
-- [x] Flavor-aware init: subscribes to `ih/{id}/dev/methods/+` (Next) or `$iothub/methods/POST/#` (Classic)
+- [x] Flavor-aware init: Next dispatches methods from the presence wildcard; Classic subscribes to `$iothub/methods/POST/#`
 - [x] Flavor-aware respond: publishes with correlation_data (Next) or topic-encoded `$rid` (Classic)
 - [x] E2E verified against mock Hub-Next (auto-trigger loops 4 methods continuously)
 - [ ] Add nanopb (protobuf) dependency via FetchContent (future: probe/exec/result)
+- [ ] gen2: implement the AEG probe / exec / abandon phases (`common/Protos/directmethods.proto`).
+      Until then the gen2 client dispatches only `exec:1` and untyped messages, and ignores any
+      other `type` rather than answering a probe as if it were an invocation.
 
 ### Twin
-- [x] Flavor-aware subscriptions (Next: `ih/{id}/dev/twin/+/response`, `ih/{id}/dev/twin/desired`)
+- [x] Flavor-aware delivery (Next: presence wildcard + twin dispatch handlers; Classic: twin response/desired subscriptions)
 - [x] GET and PATCH reported use correlation_data for Next path
 - [x] Desired push handler for Next path
 - [x] E2E verified against mock Hub-Next
@@ -58,7 +61,7 @@ Canonical pending-work tracker for IoT Hub Next (AEG) integration.
 ### C2D
 - [x] `az_iot_c2d_client` feature client (header + implementation)
 - [x] Classic: `devices/{reg_id}/messages/devicebound/#` subscription with prefix-based dispatch
-- [x] Next: `ih/{device_id}/dev/c2d` subscription
+- [x] Next: C2D delivery through the `ih/{device_id}/dev/#` presence wildcard
 - [x] `c2d_receiver` sample using the feature client API
 - [x] E2E verified against mock Hub-Next (auto-trigger fires rotating payloads every 5s)
 - [ ] E2E verified against Classic IoT Hub
@@ -88,13 +91,17 @@ ships now and anchors trust for every Microsoft-signed update manifest out of th
 Option B adds *rotation* on top of those immutable anchors. The hardcoded keys are
 the permanent trust anchor; the Root Key Package fetched at runtime is the rotation
 mechanism, and is itself signed (N-of-M threshold) by the hardcoded keys. The
-package is referenced by `rootKeyPackageUrl`, an **unprotected (unsigned) top-level
-twin property** — keys from it must NEVER be trusted directly; they are only trusted
-because the compiled-in anchor keys vouch for them. Skipping anchor validation would
-be a remote-code-execution backdoor.
+package is referenced by an **unprotected (unsigned)** URL — keys from it must NEVER be
+trusted directly; they are only trusted because the compiled-in anchor keys vouch for
+them. Skipping anchor validation would be a remote-code-execution backdoor.
+
+**Where the URL comes from:** ADUv1 carried it as the top-level twin property
+`rootKeyPackageUrl`. That channel is cut; under ADUv2 it arrives as
+`serviceConfiguration.rootKeyDownloadUrl` in the update-check response
+(see [eng/aduv2-spec.md](eng/aduv2-spec.md)). Either way it is unsigned input.
 
 Work items:
-- [ ] Surface `rootKeyPackageUrl` from the device-twin desired payload to the app.
+- [ ] Surface `serviceConfiguration.rootKeyDownloadUrl` from the update-check response to the app.
 - [ ] Add a platform hook (mirroring the existing `download_fn` shape) for the app to
       fetch the root key package bytes — the SDK ships no HTTP client by design.
 - [ ] Parse the root key package (kid list, key blobs, package signatures, isKeyTampered/
@@ -110,7 +117,8 @@ Work items:
 - [ ] Update `docs/eng/adu-client-plan.md` (§ "Root Key Package runtime rotation",
       currently 🔜 Deferred) once implemented.
 
-**Dependencies:** Option A anchor keys (done). Distinct from ADUv2 Day-0 recovery.
+**Dependencies:** Option A anchor keys (done). Needs the ADUv2 channel for the package URL.
+Distinct from ADUv2 Day-0 recovery.
 
 ---
 

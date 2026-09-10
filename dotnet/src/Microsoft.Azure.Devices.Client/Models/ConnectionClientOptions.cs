@@ -16,6 +16,16 @@ namespace Microsoft.Azure.Devices.Client.Models
         public IRetryPolicy ConnectionRetryPolicy { get; set; } = new ExponentialBackoffRetryPolicy(uint.MaxValue, TimeSpan.FromSeconds(60));
 
         /// <summary>
+        /// How long to wait for a single connection attempt to finish before abandoning it.
+        /// </summary>
+        /// <remarks>
+        /// This value allows for you to configure the connection attempt timeout for both initial
+        /// connection and reconnection scenarios. Note that this value is ignored for the initial 
+        /// connect attempt if <see cref="RetryOnFirstConnect"/> is false.
+        /// </remarks>
+        public TimeSpan ConnectionAttemptTimeout { get; set; } = TimeSpan.FromSeconds(10);
+
+        /// <summary>
         /// True if you want to enable MQTT-level logs. False if you do not want these logs.
         /// </summary>
         public bool EnableMqttLogging { get; set; }

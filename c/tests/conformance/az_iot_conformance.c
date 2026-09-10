@@ -56,6 +56,17 @@ static unsigned long conf_now_ms(void)
 static az_iot_mqtt_factory* g_factory = NULL;
 static const char* g_host = "localhost";
 static uint16_t g_port = 1883;
+/* Adapter capabilities and end-to-end custody material, from
+ * az_iot_conformance_run_with_options(). */
+static uint32_t g_capabilities = 0;
+static const char* g_key_uri = NULL;
+static const char* g_key_engine = NULL;
+static const char* g_client_cert_path = NULL;
+
+static bool adapter_claims_key_custody(void)
+{
+  return (g_capabilities & (uint32_t)AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY) != 0u;
+}
 static const unsigned k_step_timeout_ms = 5000;
 /* Same budget as k_step_timeout_ms, on the scale the connect option uses. */
 static const unsigned k_step_timeout_seconds = 5;
@@ -73,6 +84,7 @@ typedef struct conf_recorder
   size_t count;
   az_iot_mqtt_event_kind kinds[CONF_EVENTS_MAX];
   az_iot_result statuses[CONF_EVENTS_MAX];
+  int32_t protocol_codes[CONF_EVENTS_MAX];
   uint16_t packet_ids[CONF_EVENTS_MAX];
   char topics[CONF_EVENTS_MAX][CONF_TOPIC_MAX];
   uint8_t payloads[CONF_EVENTS_MAX][CONF_PAYLOAD_MAX];
@@ -89,6 +101,7 @@ static void on_event(const az_iot_mqtt_event* evt, void* ctx)
   size_t i = r->count++;
   r->kinds[i] = evt->kind;
   r->statuses[i] = evt->status;
+  r->protocol_codes[i] = evt->protocol_code;
   r->packet_ids[i] = evt->packet_id;
   if (evt->message)
   {
@@ -390,6 +403,33 @@ static void connect_disconnect_roundtrip(void** state)
   destroy_client(c);
 }
 
+/* A disconnect the APPLICATION asked for is reported, like one the peer
+ * caused.
+ *
+ * The suite asserted DISCONNECTED only for peer-initiated teardowns -- a
+ * dropped link, a server DISCONNECT -- and the roundtrip case above
+ * deliberately does not fail when nothing arrives. That left the
+ * client-initiated path unasserted, and an adapter could pass the whole suite
+ * while never reporting it: the disconnect call itself still returns OK.
+ *
+ * It matters because the connection client moves to DISCONNECTING on close()
+ * and waits for this event to settle the session to IDLE. Without it, any
+ * caller that waits for a close to finish waits forever. */
+static void a_client_initiated_disconnect_is_reported(void** state)
+{
+  (void)state;
+  char cid[64];
+  unique_client_id(cid, sizeof(cid), "az-iot-conf-discrep");
+  conf_recorder rec = { 0 };
+  az_iot_mqtt_client* c = make_client();
+  connect_client(c, &rec, cid);
+
+  assert_int_equal(c->iface->disconnect(c), AZ_IOT_OK);
+  assert_true(wait_until(c, &rec, saw_disconnected, k_step_timeout_ms));
+
+  destroy_client(c);
+}
+
 static void publish_subscribe_roundtrip(void** state)
 {
   (void)state;
@@ -506,7 +546,7 @@ static void tls_handshake_succeeds_with_trusted_valid_cert(void** state)
   copts.keep_alive_seconds = 30;
   copts.connect_timeout_seconds = k_step_timeout_seconds;
   copts.tls.trusted_ca_path = ca_path;
-  copts.tls.verify_server = true;
+  copts.tls.use_tls = true;
 
   assert_int_equal(c->iface->connect(c, &copts), AZ_IOT_OK);
   assert_true(wait_until(c, &rec, saw_connected_ok, k_step_timeout_ms));
@@ -517,12 +557,16 @@ static void tls_handshake_succeeds_with_trusted_valid_cert(void** state)
   remove(ca_path);
 }
 
-/* Server-side certificate validation is mandatory: with verify_server = true and
- * a leaf the client's trust anchor does NOT sign, the TLS handshake must be
+/* Server-side certificate validation is mandatory and unconditional: against a
+ * leaf the client's trust anchor does NOT sign, the TLS handshake must be
  * rejected and the client must never reach CONNECTED. The proxy terminates TLS
  * with a leaf signed by an UNTRUSTED CA while the client is handed the
  * (different) trusted CA. If validation were disabled the handshake would
- * succeed and a CONNACK would arrive, failing this test. */
+ * succeed and a CONNACK would arrive, failing this test.
+ *
+ * Nothing here asks for validation -- the TLS options carry no flag that could
+ * request or refuse it. That is the point: the adapter must validate because it
+ * always validates, not because this test opted in. */
 static void server_cert_validation_rejects_untrusted(void** state)
 {
   (void)state;
@@ -556,7 +600,9 @@ static void server_cert_validation_rejects_untrusted(void** state)
   copts.keep_alive_seconds = 30;
   copts.connect_timeout_seconds = k_step_timeout_seconds;
   copts.tls.trusted_ca_path = ca_path; /* trusts the exported CA, not the leaf's signer */
-  copts.tls.verify_server = true; /* must validate the server certificate */
+  /* Nothing asks for validation: the CA alone selects TLS, and no field can
+   * request or refuse verification. Rejection below is therefore proof that the
+   * adapter validates unconditionally. */
 
   az_iot_result r = c->iface->connect(c, &copts);
   if (r == AZ_IOT_OK)
@@ -576,8 +622,8 @@ static void server_cert_validation_rejects_untrusted(void** state)
 
 /* An EXPIRED certificate must be rejected even though it chains to the trusted
  * CA: the proxy presents a leaf the trusted CA signed, whose validity window is
- * entirely in the past. verify_server = true enables chain *and* validity
- * checking, so an adapter that only checks the chain fails here. */
+ * entirely in the past. Validation covers chain *and* validity, so an adapter
+ * that only checks the chain fails here. */
 static void server_cert_validation_rejects_expired(void** state)
 {
   (void)state;
@@ -612,7 +658,7 @@ static void server_cert_validation_rejects_expired(void** state)
   copts.keep_alive_seconds = 30;
   copts.connect_timeout_seconds = k_step_timeout_seconds;
   copts.tls.trusted_ca_path = ca_path;
-  copts.tls.verify_server = true;
+  /* No flag opts in to verification; see the untrusted-cert case above. */
 
   az_iot_result r = c->iface->connect(c, &copts);
   if (r == AZ_IOT_OK)
@@ -667,7 +713,7 @@ static void server_cert_validation_rejects_hostname_mismatch(void** state)
   copts.keep_alive_seconds = 30;
   copts.connect_timeout_seconds = k_step_timeout_seconds;
   copts.tls.trusted_ca_path = ca_path;
-  copts.tls.verify_server = true;
+  /* No flag opts in to verification; see the untrusted-cert case above. */
 
   az_iot_result r = c->iface->connect(c, &copts);
   if (r == AZ_IOT_OK)
@@ -962,6 +1008,22 @@ static void connect_connack_error_is_reported(void** state)
   /* The reason code must reach the app as a failed CONNECTED, never a success. */
   assert_true(saw_connack_error(&rec));
   assert_false(saw_connected_ok(&rec));
+
+  /* And the code that produced that status must still be readable. CONNACK and
+   * SUBACK share the rule, so covering only one leaves the other free to start
+   * flattening again without any suite noticing. */
+  int ack = -1;
+  for (size_t i = 0; i < rec.count; ++i)
+  {
+    if (rec.kinds[i] == AZ_IOT_MQTT_EVT_CONNECTED && rec.statuses[i] != AZ_IOT_OK)
+    {
+      ack = (int)i;
+      break;
+    }
+  }
+  assert_true(ack >= 0);
+  assert_int_equal(
+      rec.protocol_codes[ack], (g_factory->version == AZ_IOT_MQTT_VERSION_5) ? 0x87 : 0x05);
 
   (void)c->iface->disconnect(c);
   destroy_client(c);
@@ -1369,6 +1431,25 @@ static void a_refused_subscribe_is_reported(void** state)
    * successful one. */
   assert_true(wait_until(c, &rec, saw_subscribe_ack_error, k_step_timeout_ms));
   assert_false(saw_subscribe_ack_ok(&rec));
+
+  /* And not merely "an error": the broker will refuse this filter every time it
+   * is asked, so the status has to say so, and the code that justified it has to
+   * still be readable. An adapter that reports a blanket AZ_IOT_ERR_MQTT here
+   * leaves the core reconnecting forever against a filter that can never be
+   * granted, which is precisely what this assertion exists to catch. */
+  int ack = -1;
+  for (size_t i = 0; i < rec.count; ++i)
+  {
+    if (rec.kinds[i] == AZ_IOT_MQTT_EVT_SUBSCRIBE_ACK)
+    {
+      ack = (int)i;
+      break;
+    }
+  }
+  assert_true(ack >= 0);
+  assert_int_equal(rec.statuses[ack], AZ_IOT_ERR_SUBSCRIPTION_REFUSED);
+  assert_int_equal(
+      rec.protocol_codes[ack], (g_factory->version == AZ_IOT_MQTT_VERSION_5) ? 0x87 : 0x80);
   assert_int_equal(az_iot_test_proxy_rule_hits(proxy, (size_t)refuse_id), 1);
 
   (void)c->iface->disconnect(c);
@@ -1558,7 +1639,7 @@ static void mutual_tls_succeeds_with_a_valid_client_cert(void** state)
   copts.tls.trusted_ca_path = ca_path;
   copts.tls.client_cert_path = cert_path;
   copts.tls.client_key_path = key_path;
-  copts.tls.verify_server = true;
+  copts.tls.use_tls = true;
 
   assert_int_equal(c->iface->connect(c, &copts), AZ_IOT_OK);
   assert_true(wait_until(c, &rec, saw_connected_ok, k_step_timeout_ms));
@@ -1612,7 +1693,7 @@ static void expired_client_cert_is_rejected(void** state)
   copts.tls.trusted_ca_path = ca_path;
   copts.tls.client_cert_path = cert_path;
   copts.tls.client_key_path = key_path;
-  copts.tls.verify_server = true;
+  copts.tls.use_tls = true;
 
   az_iot_result r = c->iface->connect(c, &copts);
   if (r == AZ_IOT_OK)
@@ -1654,7 +1735,7 @@ static void a_missing_client_cert_is_rejected(void** state)
   copts.keep_alive_seconds = 30;
   copts.connect_timeout_seconds = k_step_timeout_seconds;
   copts.tls.trusted_ca_path = ca_path;
-  copts.tls.verify_server = true; /* no client certificate offered */
+  copts.tls.use_tls = true; /* no client certificate offered */
 
   az_iot_result r = c->iface->connect(c, &copts);
   if (r == AZ_IOT_OK)
@@ -1738,8 +1819,170 @@ static void a_refused_publish_is_reported(void** state)
  * are the cases appended to the v5 list below, each of which depends on
  * something MQTT 3.1.1 does not have: a server-sent DISCONNECT packet, and a
  * reason code in a PUBACK. */
+/* ------------------------------------------------------------------------- */
+/* non-extractable key custody (D8)                                          */
+/*                                                                           */
+/* The first two cases are BASELINE: they run against every adapter, whatever */
+/* it declares. An adapter that does not implement custody is not asked to    */
+/* implement it -- it is asked to say so, because the alternative is a client */
+/* that connects with no client key at all while the caller believes a token  */
+/* is protecting it. Silence is the failure mode being ruled out here.        */
+/* ------------------------------------------------------------------------- */
+
+/* A key reference the adapter cannot possibly resolve: the engine names no
+ * installed provider. The connect must fail. It must NEVER succeed, because
+ * succeeding means the session was established without the key the caller
+ * asked to authenticate with.
+ *
+ * An adapter that does not implement custody has a stronger obligation still:
+ * az_iot_mqtt_tls_options documents AZ_IOT_ERR_NOT_SUPPORTED as the answer,
+ * so the caller can tell "I cannot do this" from "I tried and it failed". */
+static void a_key_reference_is_never_silently_ignored(void** state)
+{
+  (void)state;
+  char cid[64];
+  unique_client_id(cid, sizeof(cid), "az-iot-conf-custody-uri");
+  conf_recorder rec = { 0 };
+  az_iot_mqtt_client* c = make_client();
+  c->iface->set_inbound_cb(c, on_event, &rec);
+
+  az_iot_mqtt_connect_options copts = { 0 };
+  copts.host = g_host;
+  copts.port = g_port;
+  copts.client_id = cid;
+  copts.keep_alive_seconds = 30;
+  copts.connect_timeout_seconds = k_step_timeout_seconds;
+  copts.tls.client_key_uri = "pkcs11:object=az-iot-conformance-absent;type=private";
+  copts.tls.crypto_engine_id = "az-iot-conformance-no-such-provider";
+
+  az_iot_result r = c->iface->connect(c, &copts);
+  if (r == AZ_IOT_OK)
+  {
+    (void)wait_until(c, &rec, saw_connect_failure, k_step_timeout_ms);
+  }
+  assert_int_not_equal(r, AZ_IOT_OK);
+  assert_false(saw_connected_ok(&rec));
+
+  if (!adapter_claims_key_custody())
+  {
+    assert_int_equal(r, AZ_IOT_ERR_NOT_SUPPORTED);
+  }
+
+  (void)c->iface->disconnect(c);
+  destroy_client(c);
+}
+
+/* The other half of the same contract, for the sign() hook. An adapter with no
+ * way to route a signature through a caller-supplied callback -- Paho has no
+ * TLS key callback, so it is one -- must refuse rather than connect without a
+ * client key. */
+static az_iot_result conformance_sign_stub(
+    void* ctx,
+    const uint8_t* digest,
+    size_t digest_len,
+    uint8_t* out_sig,
+    size_t out_sig_cap,
+    size_t* out_sig_len)
+{
+  (void)ctx;
+  (void)digest;
+  (void)digest_len;
+  (void)out_sig;
+  (void)out_sig_cap;
+  (void)out_sig_len;
+  /* Never reached on an adapter that refuses the credential, which is the
+   * point: reaching it would mean the hook was accepted. */
+  return AZ_IOT_ERR_NOT_SUPPORTED;
+}
+
+static void a_sign_hook_is_never_silently_ignored(void** state)
+{
+  (void)state;
+  char cid[64];
+  unique_client_id(cid, sizeof(cid), "az-iot-conf-custody-sign");
+  conf_recorder rec = { 0 };
+  az_iot_mqtt_client* c = make_client();
+  c->iface->set_inbound_cb(c, on_event, &rec);
+
+  az_iot_mqtt_connect_options copts = { 0 };
+  copts.host = g_host;
+  copts.port = g_port;
+  copts.client_id = cid;
+  copts.keep_alive_seconds = 30;
+  copts.connect_timeout_seconds = k_step_timeout_seconds;
+  copts.tls.client_cert_path = NULL;
+  copts.tls.sign = conformance_sign_stub;
+  copts.tls.sign_ctx = NULL;
+
+  az_iot_result r = c->iface->connect(c, &copts);
+  if (r == AZ_IOT_OK)
+  {
+    (void)wait_until(c, &rec, saw_connect_failure, k_step_timeout_ms);
+  }
+  assert_int_not_equal(r, AZ_IOT_OK);
+  assert_false(saw_connected_ok(&rec));
+
+  (void)c->iface->disconnect(c);
+  destroy_client(c);
+}
+
+#ifdef AZ_IOT_CONFORMANCE_WITH_TLS
+/* The end-to-end case, and the only one that proves the feature actually works:
+ * complete a real TLS handshake using a private key the adapter cannot read.
+ *
+ * The proxy asks for a client certificate and accepts whichever one arrives.
+ * That is deliberate -- a key sealed in a token cannot be handed to the proxy's
+ * CA to be certified, so requiring its issuer would make the property
+ * untestable. What proves possession is the CertificateVerify signature, which
+ * TLS makes the client produce with the private key. If the adapter cannot sign
+ * through the token, the handshake does not complete and this fails.
+ *
+ * Runs only when the harness supplied a key; see az_iot_conformance_options. */
+static void key_custody_completes_a_tls_handshake(void** state)
+{
+  (void)state;
+  uint16_t proxy_port = 0;
+  az_iot_test_proxy* proxy = start_proxy(&proxy_port);
+
+  az_iot_test_proxy_tls_options tls = az_iot_test_proxy_tls_options_default();
+  tls.accept_any_client_cert = 1;
+  assert_int_equal(az_iot_test_proxy_enable_tls(proxy, &tls), 0);
+
+  char ca_pem[4096];
+  char ca_path[128];
+  assert_true(az_iot_test_proxy_ca_pem(proxy, ca_pem, sizeof(ca_pem)) > 0);
+  assert_true(write_temp_pem(ca_pem, ca_path, sizeof(ca_path)));
+
+  char cid[64];
+  unique_client_id(cid, sizeof(cid), "az-iot-conf-custody-e2e");
+  conf_recorder rec = { 0 };
+  az_iot_mqtt_client* c = make_client();
+  c->iface->set_inbound_cb(c, on_event, &rec);
+
+  az_iot_mqtt_connect_options copts = { 0 };
+  copts.host = "127.0.0.1";
+  copts.port = proxy_port;
+  copts.client_id = cid;
+  copts.keep_alive_seconds = 30;
+  copts.connect_timeout_seconds = k_step_timeout_seconds;
+  copts.tls.trusted_ca_path = ca_path;
+  copts.tls.client_cert_path = g_client_cert_path;
+  copts.tls.client_key_uri = g_key_uri;
+  copts.tls.crypto_engine_id = g_key_engine;
+
+  assert_int_equal(c->iface->connect(c, &copts), AZ_IOT_OK);
+  assert_true(wait_until(c, &rec, saw_connected_ok, k_step_timeout_ms));
+
+  (void)c->iface->disconnect(c);
+  destroy_client(c);
+  az_iot_test_proxy_stop(proxy);
+  remove(ca_path);
+}
+#endif /* AZ_IOT_CONFORMANCE_WITH_TLS */
+
 #define AZ_IOT_CONFORMANCE_COMMON_TESTS                                                          \
   cmocka_unit_test(connect_disconnect_roundtrip), cmocka_unit_test(publish_subscribe_roundtrip), \
+      cmocka_unit_test(a_client_initiated_disconnect_is_reported),                               \
       cmocka_unit_test(disconnect_without_connect_is_rejected),                                  \
       cmocka_unit_test(connect_after_disconnect_reuses_the_client),                              \
       cmocka_unit_test(connect_to_a_closed_port_is_rejected),                                    \
@@ -1755,7 +1998,9 @@ static void a_refused_publish_is_reported(void** state)
       cmocka_unit_test(a_stalled_link_resumes_without_losing_the_session),                       \
       cmocka_unit_test(a_refused_subscribe_is_reported),                                         \
       cmocka_unit_test(a_truncated_publish_is_never_surfaced_as_a_message),                      \
-      cmocka_unit_test(an_acknowledgement_for_an_unknown_packet_id_is_ignored)
+      cmocka_unit_test(an_acknowledgement_for_an_unknown_packet_id_is_ignored),                  \
+      cmocka_unit_test(a_key_reference_is_never_silently_ignored),                               \
+      cmocka_unit_test(a_sign_hook_is_never_silently_ignored)
 
 /* Expands to nothing when the certificate cases were compiled out, so the two
  * lists above stay a single expression either way. */
@@ -1774,8 +2019,40 @@ static void a_refused_publish_is_reported(void** state)
 
 int az_iot_conformance_run(az_iot_conformance_suite suite_kind, az_iot_mqtt_factory* factory)
 {
+  return az_iot_conformance_run_with_options(suite_kind, factory, NULL);
+}
+
+int az_iot_conformance_run_with_options(
+    az_iot_conformance_suite suite_kind,
+    az_iot_mqtt_factory* factory,
+    const az_iot_conformance_options* options)
+{
   if (!factory)
   {
+    return 1;
+  }
+
+  g_capabilities = options ? options->capabilities : 0u;
+  g_key_uri = options ? options->key_uri : NULL;
+  g_key_engine = options ? options->crypto_engine_id : NULL;
+  g_client_cert_path = options ? options->client_cert_path : NULL;
+
+  /* A half-configured token is a mistake, not an opt-out: the end-to-end case
+   * would be dropped and the run would still say PASS. */
+  if (g_key_uri && (!g_key_engine || !g_client_cert_path))
+  {
+    fprintf(
+        stderr,
+        "conformance: key_uri was supplied without crypto_engine_id and/or client_cert_path; all "
+        "three are required for the end-to-end key custody case\n");
+    return 1;
+  }
+  if (g_key_uri && !adapter_claims_key_custody())
+  {
+    fprintf(
+        stderr,
+        "conformance: key custody material was supplied but "
+        "AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY was not declared\n");
     return 1;
   }
 
@@ -1842,5 +2119,38 @@ int az_iot_conformance_run(az_iot_conformance_suite suite_kind, az_iot_mqtt_fact
     const struct CMUnitTest v3_tests[] = { AZ_IOT_CONFORMANCE_COMMON_TESTS };
     failed = cmocka_run_group_tests(v3_tests, NULL, NULL);
   }
+
+  /* The end-to-end key custody case is a separate group because whether it runs
+   * is a run-time fact -- it needs a real key -- and a cmocka test list is a
+   * fixed array. */
+  if (adapter_claims_key_custody())
+  {
+#ifdef AZ_IOT_CONFORMANCE_WITH_TLS
+    if (g_key_uri)
+    {
+      const struct CMUnitTest custody_tests[]
+          = { cmocka_unit_test(key_custody_completes_a_tls_handshake) };
+      failed += cmocka_run_group_tests(custody_tests, NULL, NULL);
+    }
+    else
+    {
+      /* Said out loud rather than passed over. The adapter claims it can sign
+       * with a key it cannot read, and nothing here has made it prove that. */
+      fprintf(
+          stderr,
+          "conformance: AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY is declared but no key was supplied, so "
+          "the end-to-end custody handshake was NOT exercised. Set az_iot_conformance_options "
+          "key_uri + crypto_engine_id + client_cert_path to a key this adapter can reach and a "
+          "certificate carrying its public key.\n");
+    }
+#else
+    fprintf(
+        stderr,
+        "conformance: AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY is declared but this build has no TLS "
+        "support (AZ_IOT_BUILD_CONFORMANCE_TESTS_TLS), so the end-to-end custody handshake was NOT "
+        "exercised.\n");
+#endif
+  }
+
   return (failed == 0) ? 0 : 1;
 }

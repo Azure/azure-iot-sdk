@@ -24,6 +24,7 @@
 #include "internal/twin_client_internal.h"
 
 #include "support/mock_mqtt_iface.h"
+#include "support/subscription_ack.h"
 
 /* ------------------------------------------------------------------------- */
 /* fixtures                                                                  */
@@ -146,6 +147,7 @@ static void open_to_connected(fixture* fx)
   assert_non_null(fx->mock);
   assert_true(az_iot_mock_mqtt_client_inject_connected(fx->mock, AZ_IOT_OK));
   assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+  az_iot_test_ack_subscriptions(&fx->conn, fx->mock);
   az_iot_mock_mqtt_client_clear_calls(fx->mock);
 }
 
@@ -160,6 +162,7 @@ static void reopen_to_connected(fixture* fx)
   assert_non_null(fx->mock);
   assert_true(az_iot_mock_mqtt_client_inject_connected(fx->mock, AZ_IOT_OK));
   assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+  az_iot_test_ack_subscriptions(&fx->conn, fx->mock);
   az_iot_mock_mqtt_client_clear_calls(fx->mock);
 }
 
@@ -208,6 +211,7 @@ static void create_subscribes_response_and_desired(void** state)
   assert_non_null(fx->mock);
   assert_true(az_iot_mock_mqtt_client_inject_connected(fx->mock, AZ_IOT_OK));
   assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+  az_iot_test_ack_subscriptions(&fx->conn, fx->mock);
 
   assert_true(history_has_subscribe(fx->mock, "$iothub/twin/res/#"));
   assert_true(history_has_subscribe(fx->mock, "$iothub/twin/PATCH/properties/desired/#"));
@@ -732,6 +736,7 @@ static void open_to_connected_keeping_history(fixture* fx)
   assert_non_null(fx->mock);
   assert_true(az_iot_mock_mqtt_client_inject_connected(fx->mock, AZ_IOT_OK));
   assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+  az_iot_test_ack_subscriptions(&fx->conn, fx->mock);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -1372,8 +1377,7 @@ static const az_iot_mock_call* find_publish(az_iot_mock_mqtt_client* m, const ch
 }
 
 /* Drive a Hub-Next session to CONNECTED. Unlike Classic, CONNACK alone does not
- * announce CONNECTED: the presence birth handshake has to complete first, and
- * the feature filters are only subscribed once it does. */
+ * announce CONNECTED: the presence wildcard and birth handshake complete first. */
 static void open_to_connected_next(fixture* fx)
 {
   assert_int_equal(
@@ -1436,6 +1440,10 @@ static void open_to_connected_next(fixture* fx)
   ack.message = &ack_msg;
   assert_true(az_iot_mock_mqtt_client_inject_event(fx->mock, &ack));
   assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+
+  /* gen2 feature delivery uses the presence wildcard; there are no later
+   * per-feature SUBACKs to wait for. */
+  az_iot_test_ack_subscriptions(&fx->conn, fx->mock);
 }
 
 /* Deliver an inbound Next message carrying Correlation Data. */
@@ -1463,16 +1471,18 @@ static void inject_next_message(
   assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
 }
 
-static void next_init_subscribes_the_three_twin_filters(void** state)
+static void next_init_subscribes_no_per_feature_twin_filters(void** state)
 {
   fixture* fx = (fixture*)*state;
   open_to_connected_next(fx);
 
-  /* Next splits what Classic does with two wildcards into three exact,
-   * device-scoped topics. */
-  assert_non_null(find_subscribe(fx->mock, "ih/ut-device/dev/twin/get/response"));
-  assert_non_null(find_subscribe(fx->mock, "ih/ut-device/dev/twin/reported/response"));
-  assert_non_null(find_subscribe(fx->mock, "ih/ut-device/dev/twin/desired"));
+  /* All three twin topics are strict subsets of ih/ut-device/dev/#, which the
+   * presence handshake already holds, so Next registers none of them. Responses
+   * still route by dispatch prefix -- see the get/patch tests below. */
+  assert_non_null(find_subscribe(fx->mock, "ih/ut-device/dev/#"));
+  assert_null(find_subscribe(fx->mock, "ih/ut-device/dev/twin/get/response"));
+  assert_null(find_subscribe(fx->mock, "ih/ut-device/dev/twin/reported/response"));
+  assert_null(find_subscribe(fx->mock, "ih/ut-device/dev/twin/desired"));
 }
 
 static void next_get_publishes_to_the_service_topic_with_correlation_data(void** state)
@@ -1750,7 +1760,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         the_dispatch_guard_is_cleared_after_a_dispatch, setup, teardown),
     cmocka_unit_test_setup_teardown(
-        next_init_subscribes_the_three_twin_filters, setup_next, teardown),
+        next_init_subscribes_no_per_feature_twin_filters, setup_next, teardown),
     cmocka_unit_test_setup_teardown(
         next_get_publishes_to_the_service_topic_with_correlation_data, setup_next, teardown),
     cmocka_unit_test_setup_teardown(next_get_response_fires_the_callback, setup_next, teardown),

@@ -3,10 +3,10 @@
 // information.
 
 /* SPDX-License-Identifier: MIT */
-/* C2DClient unit tests, driven through the public API and the in-memory
- * mock_mqtt_iface.
+/* Gen1 (IoT Hub Classic, MQTT v3.1.1) C2D client unit tests, driven through the
+ * public API and the in-memory mock_mqtt_iface.
  *
- * IoT Hub Classic delivers cloud-to-device messages on
+ * Classic delivers cloud-to-device messages on
  * "devices/{device-id}/messages/devicebound/" plus an optional url-encoded
  * property bag, and the device subscribes with the "#" wildcard so those
  * sub-topics still route. See
@@ -23,12 +23,13 @@
 
 #include <cmocka.h>
 
-#include "azure/iot/az_iot_c2d_client.h"
 #include "azure/iot/az_iot_connection_client.h"
 #include "azure/iot/az_iot_mqtt_iface.h"
 #include "azure/iot/az_iot_result.h"
+#include "azure/iot/gen1/az_iot_c2d_client.h"
 
 #include "support/mock_mqtt_iface.h"
+#include "support/subscription_ack.h"
 
 /* ------------------------------------------------------------------------- */
 /* fixtures                                                                  */
@@ -84,7 +85,7 @@ static void on_c2d(const az_iot_c2d_message* msg, void* user_ctx)
 typedef struct fixture
 {
   az_iot_connection_client conn;
-  az_iot_c2d_client c2d;
+  az_iot_gen1_c2d_client c2d;
   az_iot_mqtt_factory* factory;
   az_iot_mock_mqtt_client* mock;
 } fixture;
@@ -103,7 +104,7 @@ static int setup(void** state)
   fx->factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
   assert_non_null(fx->factory);
 
-  assert_int_equal(az_iot_c2d_client_init(&fx->c2d, &fx->conn), AZ_IOT_OK);
+  assert_int_equal(az_iot_gen1_c2d_client_init(&fx->c2d, &fx->conn), AZ_IOT_OK);
 
   *state = fx;
   return 0;
@@ -114,7 +115,7 @@ static int teardown(void** state)
   fixture* fx = (fixture*)*state;
   if (fx)
   {
-    az_iot_c2d_client_destroy(&fx->c2d);
+    az_iot_gen1_c2d_client_destroy(&fx->c2d);
     /* A registered factory is adopted by the client and freed from destroy();
      * an unregistered one is still ours. */
     bool adopted = (fx->conn.factory_count > 0);
@@ -137,6 +138,7 @@ static void open_to_connected(fixture* fx)
   assert_non_null(fx->mock);
   assert_true(az_iot_mock_mqtt_client_inject_connected(fx->mock, AZ_IOT_OK));
   assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+  az_iot_test_ack_subscriptions(&fx->conn, fx->mock);
 }
 
 /* Deliver one inbound message and pump it through dispatch. */
@@ -165,23 +167,47 @@ static const az_iot_mock_call* find_subscribe(az_iot_mock_mqtt_client* m, const 
 #define C2D_TOPIC "devices/ut-device/messages/devicebound/"
 
 /* ------------------------------------------------------------------------- */
-/* init                                                                      */
+/* init and profile pinning                                                  */
 /* ------------------------------------------------------------------------- */
 
 static void init_rejects_a_null_client(void** state)
 {
   fixture* fx = (fixture*)*state;
-  assert_int_equal(az_iot_c2d_client_init(NULL, &fx->conn), AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(az_iot_gen1_c2d_client_init(NULL, &fx->conn), AZ_IOT_ERR_INVALID_ARG);
 }
 
 static void init_rejects_a_null_connection(void** state)
 {
   (void)state;
-  az_iot_c2d_client c;
-  assert_int_equal(az_iot_c2d_client_init(&c, NULL), AZ_IOT_ERR_INVALID_ARG);
+  az_iot_gen1_c2d_client c;
+  assert_int_equal(az_iot_gen1_c2d_client_init(&c, NULL), AZ_IOT_ERR_INVALID_ARG);
 }
 
-static void init_subscribes_the_devicebound_filter(void** state)
+static void init_against_an_mqtt_v5_connection_is_rejected(void** state)
+{
+  (void)state;
+
+  /* A direct connection declares its generation up front, so the pin can be
+   * answered at init rather than deferred to connect. */
+  az_iot_connection_client_options opts = { 0 };
+  opts.host = "broker.example";
+  opts.client_id = "ut-device";
+  opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
+  az_iot_connection_client conn;
+  assert_int_equal(az_iot_connection_client_init(&conn, &opts), AZ_IOT_OK);
+
+  az_iot_gen1_c2d_client c2d;
+  assert_int_equal(
+      az_iot_gen1_c2d_client_init(&c2d, &conn), AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH);
+
+  az_iot_connection_client_destroy(&conn);
+}
+
+/* ------------------------------------------------------------------------- */
+/* subscriptions                                                             */
+/* ------------------------------------------------------------------------- */
+
+static void the_devicebound_filter_is_subscribed_on_connect(void** state)
 {
   fixture* fx = (fixture*)*state;
   open_to_connected(fx);
@@ -201,7 +227,7 @@ static void the_subscription_uses_qos_1(void** state)
   assert_int_equal(c->qos, AZ_IOT_MQTT_QOS_1);
 }
 
-static void init_falls_back_to_the_client_id(void** state)
+static void the_topic_is_built_from_the_client_id(void** state)
 {
   (void)state;
   /* No DPS registration id configured, so the topic is built from client_id. */
@@ -211,8 +237,8 @@ static void init_falls_back_to_the_client_id(void** state)
   az_iot_connection_client conn;
   assert_int_equal(az_iot_connection_client_init(&conn, &opts), AZ_IOT_OK);
 
-  az_iot_c2d_client c2d;
-  assert_int_equal(az_iot_c2d_client_init(&c2d, &conn), AZ_IOT_OK);
+  az_iot_gen1_c2d_client c2d;
+  assert_int_equal(az_iot_gen1_c2d_client_init(&c2d, &conn), AZ_IOT_OK);
 
   az_iot_mqtt_factory* f = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
   assert_non_null(f);
@@ -225,57 +251,34 @@ static void init_falls_back_to_the_client_id(void** state)
 
   assert_non_null(find_subscribe(m, "devices/fallback-device/messages/devicebound/#"));
 
-  az_iot_c2d_client_destroy(&c2d);
+  az_iot_gen1_c2d_client_destroy(&c2d);
   az_iot_connection_client_destroy(&conn);
 }
 
-static void init_prefers_the_dps_registration_id(void** state)
+static void without_any_device_id_the_connect_attempt_fails(void** state)
 {
   (void)state;
-  /* On a DPS flow the registration id is the identity the hub knows, so it is
-   * what the device-bound topic has to be built from. */
   az_iot_connection_client_options opts = { 0 };
   opts.host = "broker.example";
-  opts.client_id = "client-id-device";
-  opts.dps.id_scope = "0ne00000000";
-  opts.dps.registration_id = "registration-device";
+  /* Neither client_id nor a DPS registration id: there is no topic to build.
+   * Init only records the requirement, so this now surfaces when the
+   * connection tries to bind rather than at init. */
   az_iot_connection_client conn;
   assert_int_equal(az_iot_connection_client_init(&conn, &opts), AZ_IOT_OK);
 
-  az_iot_c2d_client c2d;
-  assert_int_equal(az_iot_c2d_client_init(&c2d, &conn), AZ_IOT_OK);
+  az_iot_gen1_c2d_client c2d;
+  assert_int_equal(az_iot_gen1_c2d_client_init(&c2d, &conn), AZ_IOT_OK);
 
   az_iot_mqtt_factory* f = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
   assert_non_null(f);
   assert_int_equal(az_iot_connection_client_register_mqtt_factory(&conn, f), AZ_IOT_OK);
-  assert_int_equal(az_iot_connection_client_open(&conn), AZ_IOT_OK);
-  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(f);
-  assert_non_null(m);
-  assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
-  assert_int_equal(az_iot_connection_client_do_work(&conn, 0), AZ_IOT_OK);
+  assert_int_not_equal(az_iot_connection_client_open(&conn), AZ_IOT_OK);
 
-  assert_non_null(find_subscribe(m, "devices/registration-device/messages/devicebound/#"));
-
-  az_iot_c2d_client_destroy(&c2d);
+  az_iot_gen1_c2d_client_destroy(&c2d);
   az_iot_connection_client_destroy(&conn);
 }
 
-static void init_without_any_device_id_is_rejected(void** state)
-{
-  (void)state;
-  az_iot_connection_client_options opts = { 0 };
-  opts.host = "broker.example";
-  /* Neither client_id nor a DPS registration id: there is no topic to build. */
-  az_iot_connection_client conn;
-  assert_int_equal(az_iot_connection_client_init(&conn, &opts), AZ_IOT_OK);
-
-  az_iot_c2d_client c2d;
-  assert_int_equal(az_iot_c2d_client_init(&c2d, &conn), AZ_IOT_ERR_NOT_INITIALIZED);
-
-  az_iot_connection_client_destroy(&conn);
-}
-
-static void init_with_a_device_id_that_overflows_the_topic_is_rejected(void** state)
+static void a_device_id_that_overflows_the_topic_fails_the_connect_attempt(void** state)
 {
   (void)state;
   /* AZ_IOT_C2D_TOPIC_MAX bounds the built topic. A device id past it must be
@@ -290,31 +293,15 @@ static void init_with_a_device_id_that_overflows_the_topic_is_rejected(void** st
   az_iot_connection_client conn;
   assert_int_equal(az_iot_connection_client_init(&conn, &opts), AZ_IOT_OK);
 
-  az_iot_c2d_client c2d;
-  assert_int_equal(az_iot_c2d_client_init(&c2d, &conn), AZ_IOT_ERR_INTERNAL);
+  az_iot_gen1_c2d_client c2d;
+  assert_int_equal(az_iot_gen1_c2d_client_init(&c2d, &conn), AZ_IOT_OK);
 
-  az_iot_connection_client_destroy(&conn);
-}
+  az_iot_mqtt_factory* f = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
+  assert_non_null(f);
+  assert_int_equal(az_iot_connection_client_register_mqtt_factory(&conn, f), AZ_IOT_OK);
+  assert_int_not_equal(az_iot_connection_client_open(&conn), AZ_IOT_OK);
 
-static void a_failed_init_leaves_no_handler_registered(void** state)
-{
-  (void)state;
-  static char huge[512];
-  memset(huge, 'd', sizeof(huge) - 1);
-  huge[sizeof(huge) - 1] = '\0';
-
-  az_iot_connection_client_options opts = { 0 };
-  opts.host = "broker.example";
-  opts.client_id = huge;
-  az_iot_connection_client conn;
-  assert_int_equal(az_iot_connection_client_init(&conn, &opts), AZ_IOT_OK);
-
-  az_iot_c2d_client c2d;
-  assert_int_not_equal(az_iot_c2d_client_init(&c2d, &conn), AZ_IOT_OK);
-
-  /* A half-built client must not be reachable from dispatch, and must not
-   * carry a connection pointer that later calls would follow. */
-  assert_int_equal(az_iot_c2d_client_set_handler(&c2d, on_c2d, NULL), AZ_IOT_OK);
+  az_iot_gen1_c2d_client_destroy(&c2d);
   az_iot_connection_client_destroy(&conn);
 }
 
@@ -325,7 +312,7 @@ static void a_failed_init_leaves_no_handler_registered(void** state)
 static void set_handler_rejects_a_null_client(void** state)
 {
   (void)state;
-  assert_int_equal(az_iot_c2d_client_set_handler(NULL, on_c2d, NULL), AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(az_iot_gen1_c2d_client_set_handler(NULL, on_c2d, NULL), AZ_IOT_ERR_INVALID_ARG);
 }
 
 static void a_message_before_any_handler_is_set_is_dropped(void** state)
@@ -344,8 +331,8 @@ static void a_later_handler_replaces_the_earlier_one(void** state)
 
   message_record first = { 0 };
   message_record second = { 0 };
-  assert_int_equal(az_iot_c2d_client_set_handler(&fx->c2d, on_c2d, &first), AZ_IOT_OK);
-  assert_int_equal(az_iot_c2d_client_set_handler(&fx->c2d, on_c2d, &second), AZ_IOT_OK);
+  assert_int_equal(az_iot_gen1_c2d_client_set_handler(&fx->c2d, on_c2d, &first), AZ_IOT_OK);
+  assert_int_equal(az_iot_gen1_c2d_client_set_handler(&fx->c2d, on_c2d, &second), AZ_IOT_OK);
 
   inject(fx, C2D_TOPIC, "hello");
 
@@ -359,17 +346,17 @@ static void clearing_the_handler_stops_delivery(void** state)
   open_to_connected(fx);
 
   message_record rec = { 0 };
-  assert_int_equal(az_iot_c2d_client_set_handler(&fx->c2d, on_c2d, &rec), AZ_IOT_OK);
+  assert_int_equal(az_iot_gen1_c2d_client_set_handler(&fx->c2d, on_c2d, &rec), AZ_IOT_OK);
   inject(fx, C2D_TOPIC, "one");
   assert_int_equal(rec.count, 1);
 
   /* A NULL callback stops delivery without tearing the subscription down, so
    * the application can pause processing and resume later. */
-  assert_int_equal(az_iot_c2d_client_set_handler(&fx->c2d, NULL, NULL), AZ_IOT_OK);
+  assert_int_equal(az_iot_gen1_c2d_client_set_handler(&fx->c2d, NULL, NULL), AZ_IOT_OK);
   inject(fx, C2D_TOPIC, "two");
   assert_int_equal(rec.count, 1);
 
-  assert_int_equal(az_iot_c2d_client_set_handler(&fx->c2d, on_c2d, &rec), AZ_IOT_OK);
+  assert_int_equal(az_iot_gen1_c2d_client_set_handler(&fx->c2d, on_c2d, &rec), AZ_IOT_OK);
   inject(fx, C2D_TOPIC, "three");
   assert_int_equal(rec.count, 2);
 }
@@ -384,7 +371,7 @@ static void the_payload_reaches_the_handler_unchanged(void** state)
   open_to_connected(fx);
 
   message_record rec = { 0 };
-  assert_int_equal(az_iot_c2d_client_set_handler(&fx->c2d, on_c2d, &rec), AZ_IOT_OK);
+  assert_int_equal(az_iot_gen1_c2d_client_set_handler(&fx->c2d, on_c2d, &rec), AZ_IOT_OK);
 
   inject(fx, C2D_TOPIC, "{\"cmd\":\"open\"}");
 
@@ -399,7 +386,7 @@ static void an_empty_payload_is_delivered(void** state)
   open_to_connected(fx);
 
   message_record rec = { 0 };
-  assert_int_equal(az_iot_c2d_client_set_handler(&fx->c2d, on_c2d, &rec), AZ_IOT_OK);
+  assert_int_equal(az_iot_gen1_c2d_client_set_handler(&fx->c2d, on_c2d, &rec), AZ_IOT_OK);
 
   /* A message whose whole content is in its properties is still a message. */
   assert_true(
@@ -416,7 +403,7 @@ static void a_message_on_a_property_bag_sub_topic_is_delivered(void** state)
   open_to_connected(fx);
 
   message_record rec = { 0 };
-  assert_int_equal(az_iot_c2d_client_set_handler(&fx->c2d, on_c2d, &rec), AZ_IOT_OK);
+  assert_int_equal(az_iot_gen1_c2d_client_set_handler(&fx->c2d, on_c2d, &rec), AZ_IOT_OK);
 
   /* Dispatch is a prefix match, so the encoded property bag the service
    * appends must not stop the message routing. */
@@ -432,7 +419,7 @@ static void a_message_addressed_to_another_device_is_not_delivered(void** state)
   open_to_connected(fx);
 
   message_record rec = { 0 };
-  assert_int_equal(az_iot_c2d_client_set_handler(&fx->c2d, on_c2d, &rec), AZ_IOT_OK);
+  assert_int_equal(az_iot_gen1_c2d_client_set_handler(&fx->c2d, on_c2d, &rec), AZ_IOT_OK);
 
   inject(fx, "devices/other-device/messages/devicebound/", "not mine");
 
@@ -449,7 +436,7 @@ static void the_content_type_is_decoded_from_the_property_bag(void** state)
   open_to_connected(fx);
 
   message_record rec = { 0 };
-  assert_int_equal(az_iot_c2d_client_set_handler(&fx->c2d, on_c2d, &rec), AZ_IOT_OK);
+  assert_int_equal(az_iot_gen1_c2d_client_set_handler(&fx->c2d, on_c2d, &rec), AZ_IOT_OK);
 
   inject(fx, C2D_TOPIC "%24.ct=application%2Fjson", "{}");
 
@@ -464,7 +451,7 @@ static void property_keys_and_values_arrive_as_plain_text(void** state)
   open_to_connected(fx);
 
   message_record rec = { 0 };
-  assert_int_equal(az_iot_c2d_client_set_handler(&fx->c2d, on_c2d, &rec), AZ_IOT_OK);
+  assert_int_equal(az_iot_gen1_c2d_client_set_handler(&fx->c2d, on_c2d, &rec), AZ_IOT_OK);
 
   /* The same spelling the sender passed to az_iot_telemetry_property: a system
    * key as "$.mid" rather than "%24.mid", and reserved characters restored. */
@@ -484,7 +471,7 @@ static void the_three_property_bag_value_forms_are_distinguished(void** state)
   open_to_connected(fx);
 
   message_record rec = { 0 };
-  assert_int_equal(az_iot_c2d_client_set_handler(&fx->c2d, on_c2d, &rec), AZ_IOT_OK);
+  assert_int_equal(az_iot_gen1_c2d_client_set_handler(&fx->c2d, on_c2d, &rec), AZ_IOT_OK);
 
   /* IoT Hub encodes a null value as a bare key, an empty value as a trailing
    * '=', and anything else as "key=value". Collapsing the first two would lose
@@ -511,7 +498,7 @@ static void a_message_with_no_property_bag_has_no_properties(void** state)
   open_to_connected(fx);
 
   message_record rec = { 0 };
-  assert_int_equal(az_iot_c2d_client_set_handler(&fx->c2d, on_c2d, &rec), AZ_IOT_OK);
+  assert_int_equal(az_iot_gen1_c2d_client_set_handler(&fx->c2d, on_c2d, &rec), AZ_IOT_OK);
 
   inject(fx, C2D_TOPIC, "plain");
 
@@ -526,7 +513,7 @@ static void a_malformed_escape_drops_the_properties_but_keeps_the_message(void**
   open_to_connected(fx);
 
   message_record rec = { 0 };
-  assert_int_equal(az_iot_c2d_client_set_handler(&fx->c2d, on_c2d, &rec), AZ_IOT_OK);
+  assert_int_equal(az_iot_gen1_c2d_client_set_handler(&fx->c2d, on_c2d, &rec), AZ_IOT_OK);
 
   /* "%zz" is not a valid escape. Guessing at it would hand the application
    * bytes the service never sent, but losing the payload over an unreadable
@@ -544,7 +531,7 @@ static void properties_past_the_bound_are_dropped_and_the_message_survives(void*
   open_to_connected(fx);
 
   message_record rec = { 0 };
-  assert_int_equal(az_iot_c2d_client_set_handler(&fx->c2d, on_c2d, &rec), AZ_IOT_OK);
+  assert_int_equal(az_iot_gen1_c2d_client_set_handler(&fx->c2d, on_c2d, &rec), AZ_IOT_OK);
 
   char topic[512];
   int n = snprintf(topic, sizeof(topic), "%s", C2D_TOPIC);
@@ -565,7 +552,7 @@ static void a_property_can_be_looked_up_by_name(void** state)
   open_to_connected(fx);
 
   message_record rec = { 0 };
-  assert_int_equal(az_iot_c2d_client_set_handler(&fx->c2d, on_c2d, &rec), AZ_IOT_OK);
+  assert_int_equal(az_iot_gen1_c2d_client_set_handler(&fx->c2d, on_c2d, &rec), AZ_IOT_OK);
   inject(fx, C2D_TOPIC "%24.ct=text%2Fplain&colour=blue", "body");
   assert_int_equal(rec.count, 1);
 
@@ -594,23 +581,24 @@ static void a_property_can_be_looked_up_by_name(void** state)
 /* multiple clients and reconnects                                           */
 /* ------------------------------------------------------------------------- */
 
-static void a_second_client_for_the_same_identity_is_rejected(void** state)
+static void a_second_client_for_the_same_identity_fails_the_connect_attempt(void** state)
 {
   fixture* fx = (fixture*)*state;
 
   /* There is one device-bound stream per identity, so a second C2D client
    * could never receive anything. Dispatch is longest-prefix-wins with no
-   * tie-break, so before this was refused the loser simply went quiet for the
-   * life of the connection with nothing to show for it. */
-  az_iot_c2d_client second;
-  assert_int_equal(az_iot_c2d_client_init(&second, &fx->conn), AZ_IOT_ERR_ALREADY_INITIALIZED);
+   * tie-break, so the loser would simply go quiet for the life of the
+   * connection with nothing to show for it. Both clients now register their
+   * topics when the connection binds, so the clash is refused there -- and it
+   * takes the connect attempt with it rather than coming up half-working. */
+  az_iot_gen1_c2d_client second;
+  assert_int_equal(az_iot_gen1_c2d_client_init(&second, &fx->conn), AZ_IOT_OK);
 
-  /* The rejection must not disturb the client that already holds the stream. */
-  open_to_connected(fx);
-  message_record rec = { 0 };
-  assert_int_equal(az_iot_c2d_client_set_handler(&fx->c2d, on_c2d, &rec), AZ_IOT_OK);
-  inject(fx, C2D_TOPIC, "still mine");
-  assert_int_equal(rec.count, 1);
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(&fx->conn, fx->factory), AZ_IOT_OK);
+  assert_int_not_equal(az_iot_connection_client_open(&fx->conn), AZ_IOT_OK);
+
+  az_iot_gen1_c2d_client_destroy(&second);
 }
 
 static void a_client_for_a_different_identity_registers_alongside(void** state)
@@ -632,19 +620,19 @@ static void a_client_for_a_different_identity_registers_alongside(void** state)
   az_iot_connection_client other_conn;
   assert_int_equal(az_iot_connection_client_init(&other_conn, &opts), AZ_IOT_OK);
 
-  az_iot_c2d_client other;
-  assert_int_equal(az_iot_c2d_client_init(&other, &other_conn), AZ_IOT_OK);
+  az_iot_gen1_c2d_client other;
+  assert_int_equal(az_iot_gen1_c2d_client_init(&other, &other_conn), AZ_IOT_OK);
 
-  az_iot_c2d_client_destroy(&other);
+  az_iot_gen1_c2d_client_destroy(&other);
   az_iot_connection_client_destroy(&other_conn);
 
   /* And on this connection, the slot frees up once its holder goes away. */
-  az_iot_c2d_client_destroy(&fx->c2d);
-  az_iot_c2d_client replacement;
-  assert_int_equal(az_iot_c2d_client_init(&replacement, &fx->conn), AZ_IOT_OK);
-  az_iot_c2d_client_destroy(&replacement);
+  az_iot_gen1_c2d_client_destroy(&fx->c2d);
+  az_iot_gen1_c2d_client replacement;
+  assert_int_equal(az_iot_gen1_c2d_client_init(&replacement, &fx->conn), AZ_IOT_OK);
+  az_iot_gen1_c2d_client_destroy(&replacement);
 
-  assert_int_equal(az_iot_c2d_client_init(&fx->c2d, &fx->conn), AZ_IOT_OK);
+  assert_int_equal(az_iot_gen1_c2d_client_init(&fx->c2d, &fx->conn), AZ_IOT_OK);
 }
 
 static void a_replacement_client_takes_over_delivery(void** state)
@@ -653,17 +641,17 @@ static void a_replacement_client_takes_over_delivery(void** state)
   open_to_connected(fx);
 
   message_record first = { 0 };
-  assert_int_equal(az_iot_c2d_client_set_handler(&fx->c2d, on_c2d, &first), AZ_IOT_OK);
+  assert_int_equal(az_iot_gen1_c2d_client_set_handler(&fx->c2d, on_c2d, &first), AZ_IOT_OK);
   inject(fx, C2D_TOPIC, "to the first");
   assert_int_equal(first.count, 1);
 
   /* Tearing a client down and standing another one up in its place is the
    * supported way to re-point delivery, now that two cannot coexist. */
-  az_iot_c2d_client_destroy(&fx->c2d);
-  assert_int_equal(az_iot_c2d_client_init(&fx->c2d, &fx->conn), AZ_IOT_OK);
+  az_iot_gen1_c2d_client_destroy(&fx->c2d);
+  assert_int_equal(az_iot_gen1_c2d_client_init(&fx->c2d, &fx->conn), AZ_IOT_OK);
 
   message_record second = { 0 };
-  assert_int_equal(az_iot_c2d_client_set_handler(&fx->c2d, on_c2d, &second), AZ_IOT_OK);
+  assert_int_equal(az_iot_gen1_c2d_client_set_handler(&fx->c2d, on_c2d, &second), AZ_IOT_OK);
   inject(fx, C2D_TOPIC, "to the second");
 
   assert_int_equal(first.count, 1);
@@ -688,11 +676,12 @@ static void the_subscription_is_reissued_after_a_reconnect(void** state)
   az_iot_mock_mqtt_client_clear_calls(fx->mock);
   assert_true(az_iot_mock_mqtt_client_inject_connected(fx->mock, AZ_IOT_OK));
   assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+  az_iot_test_ack_subscriptions(&fx->conn, fx->mock);
 
   assert_non_null(find_subscribe(fx->mock, C2D_FILTER));
 
   message_record rec = { 0 };
-  assert_int_equal(az_iot_c2d_client_set_handler(&fx->c2d, on_c2d, &rec), AZ_IOT_OK);
+  assert_int_equal(az_iot_gen1_c2d_client_set_handler(&fx->c2d, on_c2d, &rec), AZ_IOT_OK);
   inject(fx, C2D_TOPIC, "after reconnect");
   assert_int_equal(rec.count, 1);
 }
@@ -707,20 +696,20 @@ static void a_message_after_destroy_reaches_nobody(void** state)
   open_to_connected(fx);
 
   message_record rec = { 0 };
-  assert_int_equal(az_iot_c2d_client_set_handler(&fx->c2d, on_c2d, &rec), AZ_IOT_OK);
+  assert_int_equal(az_iot_gen1_c2d_client_set_handler(&fx->c2d, on_c2d, &rec), AZ_IOT_OK);
 
-  az_iot_c2d_client_destroy(&fx->c2d);
+  az_iot_gen1_c2d_client_destroy(&fx->c2d);
   inject(fx, C2D_TOPIC, "too late");
   assert_int_equal(rec.count, 0);
 
   /* Re-init so the shared teardown has a live client to destroy. */
-  assert_int_equal(az_iot_c2d_client_init(&fx->c2d, &fx->conn), AZ_IOT_OK);
+  assert_int_equal(az_iot_gen1_c2d_client_init(&fx->c2d, &fx->conn), AZ_IOT_OK);
 }
 
 static void destroy_tolerates_null(void** state)
 {
   (void)state;
-  az_iot_c2d_client_destroy(NULL);
+  az_iot_gen1_c2d_client_destroy(NULL);
 }
 
 static void destroy_is_idempotent(void** state)
@@ -728,281 +717,10 @@ static void destroy_is_idempotent(void** state)
   fixture* fx = (fixture*)*state;
   open_to_connected(fx);
 
-  az_iot_c2d_client_destroy(&fx->c2d);
-  az_iot_c2d_client_destroy(&fx->c2d);
+  az_iot_gen1_c2d_client_destroy(&fx->c2d);
+  az_iot_gen1_c2d_client_destroy(&fx->c2d);
 
-  assert_int_equal(az_iot_c2d_client_init(&fx->c2d, &fx->conn), AZ_IOT_OK);
-}
-
-/* ------------------------------------------------------------------------- */
-/* Hub-Next (AEG, MQTT v5) flavor                                            */
-/* ------------------------------------------------------------------------- */
-
-/* Fixture variant: a direct HUB_NEXT connection. C2D then takes the Next path,
- * where properties arrive as MQTT v5 User Properties already decoded by the
- * adapter instead of percent-encoded in the topic's property bag. */
-static int setup_next(void** state)
-{
-  fixture* fx = (fixture*)calloc(1, sizeof(*fx));
-  assert_non_null(fx);
-
-  az_iot_connection_client_options opts = { 0 };
-  opts.host = "broker.example";
-  opts.port = 8883;
-  opts.client_id = "ut-device";
-  opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
-  assert_int_equal(az_iot_connection_client_init(&fx->conn, &opts), AZ_IOT_OK);
-
-  fx->factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_5);
-  assert_non_null(fx->factory);
-
-  assert_int_equal(az_iot_c2d_client_init(&fx->c2d, &fx->conn), AZ_IOT_OK);
-
-  *state = fx;
-  return 0;
-}
-
-static const az_iot_mock_call* find_publish_topic(az_iot_mock_mqtt_client* m, const char* topic)
-{
-  size_t n = az_iot_mock_mqtt_client_call_count(m);
-  for (size_t i = n; i > 0; --i)
-  {
-    const az_iot_mock_call* c = az_iot_mock_mqtt_client_call_at(m, i - 1);
-    if (c->kind == AZ_IOT_MOCK_CALL_PUBLISH && strcmp(c->topic, topic) == 0)
-    {
-      return c;
-    }
-  }
-  return NULL;
-}
-
-/* Drive a Hub-Next session to CONNECTED. Classic announces CONNECTED on
- * CONNACK; Next has to complete the presence birth handshake first, and only
- * then are the feature filters subscribed. */
-static void open_to_connected_next(fixture* fx)
-{
-  assert_int_equal(
-      az_iot_connection_client_register_mqtt_factory(&fx->conn, fx->factory), AZ_IOT_OK);
-  assert_int_equal(az_iot_connection_client_open(&fx->conn), AZ_IOT_OK);
-  fx->mock = az_iot_mock_mqtt_factory_last_client(fx->factory);
-  assert_non_null(fx->mock);
-
-  az_iot_mqtt_event connack;
-  memset(&connack, 0, sizeof(connack));
-  connack.kind = AZ_IOT_MQTT_EVT_CONNECTED;
-  connack.status = AZ_IOT_OK;
-  assert_true(az_iot_mock_mqtt_client_inject_event(fx->mock, &connack));
-  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
-
-  uint16_t ids[16];
-  size_t id_count = 0;
-  size_t n = az_iot_mock_mqtt_client_call_count(fx->mock);
-  for (size_t i = 0; i < n && id_count < (sizeof(ids) / sizeof(ids[0])); ++i)
-  {
-    const az_iot_mock_call* c = az_iot_mock_mqtt_client_call_at(fx->mock, i);
-    if (c->kind == AZ_IOT_MOCK_CALL_SUBSCRIBE)
-    {
-      ids[id_count++] = c->packet_id;
-    }
-  }
-  assert_true(id_count > 0);
-  for (size_t i = 0; i < id_count; ++i)
-  {
-    az_iot_mqtt_event suback;
-    memset(&suback, 0, sizeof(suback));
-    suback.kind = AZ_IOT_MQTT_EVT_SUBSCRIBE_ACK;
-    suback.status = AZ_IOT_OK;
-    suback.packet_id = ids[i];
-    assert_true(az_iot_mock_mqtt_client_inject_event(fx->mock, &suback));
-    assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
-  }
-
-  const az_iot_mock_call* birth = find_publish_topic(fx->mock, "ih/ut-device/srv/presence");
-  assert_non_null(birth);
-  assert_int_equal(birth->correlation_data_len, 16);
-
-  uint8_t nonce[16];
-  memcpy(nonce, birth->correlation_data, sizeof(nonce));
-  az_iot_mqtt_user_property ack_type = { "type", "birth-ack:1" };
-  az_iot_mqtt_message ack_msg;
-  memset(&ack_msg, 0, sizeof(ack_msg));
-  ack_msg.topic = "ih/ut-device/dev/presence";
-  ack_msg.correlation_data = nonce;
-  ack_msg.correlation_data_len = sizeof(nonce);
-  ack_msg.user_properties = &ack_type;
-  ack_msg.user_properties_count = 1;
-  az_iot_mqtt_event ack;
-  memset(&ack, 0, sizeof(ack));
-  ack.kind = AZ_IOT_MQTT_EVT_MESSAGE;
-  ack.message = &ack_msg;
-  assert_true(az_iot_mock_mqtt_client_inject_event(fx->mock, &ack));
-  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
-}
-
-/* Deliver an inbound Next C2D message with v5 properties and content type. */
-static void inject_next(
-    fixture* fx,
-    const char* body,
-    const char* content_type,
-    const az_iot_mqtt_user_property* props,
-    size_t props_count)
-{
-  az_iot_mqtt_message msg;
-  memset(&msg, 0, sizeof(msg));
-  msg.topic = "ih/ut-device/dev/c2d";
-  msg.payload = (const uint8_t*)body;
-  msg.payload_len = body ? strlen(body) : 0;
-  msg.content_type = content_type;
-  msg.user_properties = props;
-  msg.user_properties_count = props_count;
-  msg.qos = AZ_IOT_MQTT_QOS_1;
-  az_iot_mqtt_event evt;
-  memset(&evt, 0, sizeof(evt));
-  evt.kind = AZ_IOT_MQTT_EVT_MESSAGE;
-  evt.message = &msg;
-  assert_true(az_iot_mock_mqtt_client_inject_event(fx->mock, &evt));
-  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
-}
-
-static void next_init_subscribes_the_device_scoped_c2d_topic(void** state)
-{
-  fixture* fx = (fixture*)*state;
-  open_to_connected_next(fx);
-
-  /* An exact topic, not a wildcard: on Next there is no property-bag suffix to
-   * match, so the filter does not need to end in '#'. */
-  const az_iot_mock_call* sub = find_subscribe(fx->mock, "ih/ut-device/dev/c2d");
-  assert_non_null(sub);
-}
-
-static void next_a_message_is_delivered_to_the_handler(void** state)
-{
-  fixture* fx = (fixture*)*state;
-  open_to_connected_next(fx);
-
-  message_record rec = { 0 };
-  assert_int_equal(az_iot_c2d_client_set_handler(&fx->c2d, on_c2d, &rec), AZ_IOT_OK);
-
-  inject_next(fx, "hello-next", NULL, NULL, 0);
-
-  assert_int_equal(rec.count, 1);
-  assert_string_equal(rec.payload, "hello-next");
-}
-
-static void next_user_properties_arrive_as_plain_text(void** state)
-{
-  fixture* fx = (fixture*)*state;
-  open_to_connected_next(fx);
-
-  message_record rec = { 0 };
-  assert_int_equal(az_iot_c2d_client_set_handler(&fx->c2d, on_c2d, &rec), AZ_IOT_OK);
-
-  /* Already decoded by the adapter, so the handler sees exactly what the
-   * sender wrote -- the same shape the Classic path produces after undoing
-   * its percent-encoding, which is what makes a round trip lossless. */
-  const az_iot_mqtt_user_property props[] = {
-    { "$.mid", "m-1" },
-    { "site", "plant 3" },
-  };
-  inject_next(fx, "body", NULL, props, 2);
-
-  assert_int_equal(rec.count, 1);
-  assert_int_equal(rec.properties_count, 2);
-  assert_string_equal(rec.keys[0], "$.mid");
-  assert_string_equal(rec.values[0], "m-1");
-  assert_string_equal(rec.keys[1], "site");
-  assert_string_equal(rec.values[1], "plant 3");
-}
-
-static void next_the_content_type_comes_from_its_own_field(void** state)
-{
-  fixture* fx = (fixture*)*state;
-  open_to_connected_next(fx);
-
-  message_record rec = { 0 };
-  assert_int_equal(az_iot_c2d_client_set_handler(&fx->c2d, on_c2d, &rec), AZ_IOT_OK);
-
-  /* MQTT v5 has a Content Type field, so it does not ride the property bag as
-   * `%24.ct` the way it must on Classic. */
-  inject_next(fx, "{}", "application/json", NULL, 0);
-
-  assert_int_equal(rec.count, 1);
-  assert_string_equal(rec.content_type, "application/json");
-}
-
-static void next_a_property_with_no_key_is_skipped(void** state)
-{
-  fixture* fx = (fixture*)*state;
-  open_to_connected_next(fx);
-
-  message_record rec = { 0 };
-  assert_int_equal(az_iot_c2d_client_set_handler(&fx->c2d, on_c2d, &rec), AZ_IOT_OK);
-
-  /* A keyless pair cannot be looked up, so it is dropped rather than handed to
-   * the application as a property with a NULL name. */
-  const az_iot_mqtt_user_property props[] = {
-    { NULL, "orphan" },
-    { "kept", "yes" },
-  };
-  inject_next(fx, "body", NULL, props, 2);
-
-  assert_int_equal(rec.count, 1);
-  assert_int_equal(rec.properties_count, 1);
-  assert_string_equal(rec.keys[0], "kept");
-}
-
-static void next_properties_past_the_bound_are_dropped_and_the_message_survives(void** state)
-{
-  fixture* fx = (fixture*)*state;
-  open_to_connected_next(fx);
-
-  message_record rec = { 0 };
-  assert_int_equal(az_iot_c2d_client_set_handler(&fx->c2d, on_c2d, &rec), AZ_IOT_OK);
-
-  /* Same contract as the Classic path: losing the payload over an excess of
-   * properties would be the worse trade. */
-  char keys[AZ_IOT_C2D_MAX_PROPERTIES + 3][8];
-  az_iot_mqtt_user_property props[AZ_IOT_C2D_MAX_PROPERTIES + 3];
-  for (size_t i = 0; i < (size_t)AZ_IOT_C2D_MAX_PROPERTIES + 3; ++i)
-  {
-    snprintf(keys[i], sizeof(keys[i]), "k%u", (unsigned)i);
-    props[i].key = keys[i];
-    props[i].value = "v";
-  }
-  inject_next(fx, "body", NULL, props, AZ_IOT_C2D_MAX_PROPERTIES + 3);
-
-  assert_int_equal(rec.count, 1);
-  assert_string_equal(rec.payload, "body");
-  assert_int_equal(rec.properties_count, AZ_IOT_C2D_MAX_PROPERTIES);
-}
-
-static void next_a_message_before_any_handler_is_set_is_dropped(void** state)
-{
-  fixture* fx = (fixture*)*state;
-  open_to_connected_next(fx);
-
-  /* No handler yet: the message is discarded rather than buffered, and the
-   * client must not dereference a NULL callback. */
-  inject_next(fx, "body", NULL, NULL, 0);
-
-  message_record rec = { 0 };
-  assert_int_equal(az_iot_c2d_client_set_handler(&fx->c2d, on_c2d, &rec), AZ_IOT_OK);
-  assert_int_equal(rec.count, 0);
-}
-
-static void next_a_message_after_destroy_reaches_nobody(void** state)
-{
-  fixture* fx = (fixture*)*state;
-  open_to_connected_next(fx);
-
-  message_record rec = { 0 };
-  assert_int_equal(az_iot_c2d_client_set_handler(&fx->c2d, on_c2d, &rec), AZ_IOT_OK);
-
-  az_iot_c2d_client_destroy(&fx->c2d);
-  inject_next(fx, "body", NULL, NULL, 0);
-  assert_int_equal(rec.count, 0);
-
-  assert_int_equal(az_iot_c2d_client_init(&fx->c2d, &fx->conn), AZ_IOT_OK);
+  assert_int_equal(az_iot_gen1_c2d_client_init(&fx->c2d, &fx->conn), AZ_IOT_OK);
 }
 
 int main(void)
@@ -1010,13 +728,13 @@ int main(void)
   const struct CMUnitTest tests[] = {
     cmocka_unit_test_setup_teardown(init_rejects_a_null_client, setup, teardown),
     cmocka_unit_test(init_rejects_a_null_connection),
-    cmocka_unit_test_setup_teardown(init_subscribes_the_devicebound_filter, setup, teardown),
+    cmocka_unit_test(init_against_an_mqtt_v5_connection_is_rejected),
+    cmocka_unit_test_setup_teardown(
+        the_devicebound_filter_is_subscribed_on_connect, setup, teardown),
     cmocka_unit_test_setup_teardown(the_subscription_uses_qos_1, setup, teardown),
-    cmocka_unit_test(init_falls_back_to_the_client_id),
-    cmocka_unit_test(init_prefers_the_dps_registration_id),
-    cmocka_unit_test(init_without_any_device_id_is_rejected),
-    cmocka_unit_test(init_with_a_device_id_that_overflows_the_topic_is_rejected),
-    cmocka_unit_test(a_failed_init_leaves_no_handler_registered),
+    cmocka_unit_test(the_topic_is_built_from_the_client_id),
+    cmocka_unit_test(without_any_device_id_the_connect_attempt_fails),
+    cmocka_unit_test(a_device_id_that_overflows_the_topic_fails_the_connect_attempt),
     cmocka_unit_test(set_handler_rejects_a_null_client),
     cmocka_unit_test_setup_teardown(
         a_message_before_any_handler_is_set_is_dropped, setup, teardown),
@@ -1041,7 +759,7 @@ int main(void)
         properties_past_the_bound_are_dropped_and_the_message_survives, setup, teardown),
     cmocka_unit_test_setup_teardown(a_property_can_be_looked_up_by_name, setup, teardown),
     cmocka_unit_test_setup_teardown(
-        a_second_client_for_the_same_identity_is_rejected, setup, teardown),
+        a_second_client_for_the_same_identity_fails_the_connect_attempt, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_client_for_a_different_identity_registers_alongside, setup, teardown),
     cmocka_unit_test_setup_teardown(a_replacement_client_takes_over_delivery, setup, teardown),
@@ -1050,21 +768,6 @@ int main(void)
     cmocka_unit_test_setup_teardown(a_message_after_destroy_reaches_nobody, setup, teardown),
     cmocka_unit_test(destroy_tolerates_null),
     cmocka_unit_test_setup_teardown(destroy_is_idempotent, setup, teardown),
-    cmocka_unit_test_setup_teardown(
-        next_init_subscribes_the_device_scoped_c2d_topic, setup_next, teardown),
-    cmocka_unit_test_setup_teardown(
-        next_a_message_is_delivered_to_the_handler, setup_next, teardown),
-    cmocka_unit_test_setup_teardown(
-        next_user_properties_arrive_as_plain_text, setup_next, teardown),
-    cmocka_unit_test_setup_teardown(
-        next_the_content_type_comes_from_its_own_field, setup_next, teardown),
-    cmocka_unit_test_setup_teardown(next_a_property_with_no_key_is_skipped, setup_next, teardown),
-    cmocka_unit_test_setup_teardown(
-        next_properties_past_the_bound_are_dropped_and_the_message_survives, setup_next, teardown),
-    cmocka_unit_test_setup_teardown(
-        next_a_message_before_any_handler_is_set_is_dropped, setup_next, teardown),
-    cmocka_unit_test_setup_teardown(
-        next_a_message_after_destroy_reaches_nobody, setup_next, teardown),
   };
-  return cmocka_run_group_tests_name("c2d_client", tests, NULL, NULL);
+  return cmocka_run_group_tests_name("gen1_c2d_client", tests, NULL, NULL);
 }

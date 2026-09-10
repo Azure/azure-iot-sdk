@@ -307,7 +307,6 @@ typedef struct
   sample_config config;
   az_iot_certificate_provider_pem certs;
   az_iot_connection_client connection_client;
-  az_iot_twin_client twin_client;
   az_iot_adu_client_t adu_client;
   sim_ctx sim;
   uint8_t dp_buffer[512];
@@ -316,7 +315,7 @@ typedef struct
 static void sample_state_destroy(sample_state* s)
 {
   az_iot_adu_client_destroy(&s->adu_client);
-  az_iot_twin_client_destroy(&s->twin_client);
+
   az_iot_connection_client_destroy(&s->connection_client);
   az_iot_certificate_provider_pem_destroy(&s->certs);
   sample_config_release(&s->config);
@@ -343,8 +342,10 @@ static const char* conn_state_name(az_iot_connection_state s)
       return "?";
   }
 }
-static void on_conn_state(az_iot_connection_state st, az_iot_result reason, void* user_ctx)
+static void on_conn_state(const az_iot_connection_state_event* event, void* user_ctx)
 {
+  az_iot_connection_state st = event->state;
+  az_iot_result reason = event->reason;
   (void)user_ctx;
   if (st != g_conn_state)
   {
@@ -433,13 +434,6 @@ int main(void)
     return 1;
   }
 
-  /* Twin client (ADU registers as a desired-property subscriber on it). */
-  if (az_iot_twin_client_init(&st.twin_client, &st.connection_client) != AZ_IOT_OK)
-  {
-    sample_state_destroy(&st);
-    return 1;
-  }
-
   /* ADU client. */
   az_iot_adu_platform_hooks hooks = { 0 };
   hooks.download_fn = sim_download;
@@ -480,7 +474,7 @@ int main(void)
   adu_opts.device_props = &dp;
   adu_opts.device_props_buffer = st.dp_buffer;
   adu_opts.device_props_buffer_size = sizeof(st.dp_buffer);
-  if (az_iot_adu_client_initialize(&st.adu_client, &st.twin_client, &adu_opts) != AZ_IOT_OK)
+  if (az_iot_adu_client_initialize(&st.adu_client, &st.connection_client, &adu_opts) != AZ_IOT_OK)
   {
     fprintf(stderr, "az_iot_adu_client_initialize failed\n");
     sample_state_destroy(&st);

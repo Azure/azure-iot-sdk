@@ -69,8 +69,10 @@ static int device_config_load(e2e_device* dev)
   return 0;
 }
 
-static void on_conn_state(az_iot_connection_state s, az_iot_result reason, void* user_ctx)
+static void on_conn_state(const az_iot_connection_state_event* event, void* user_ctx)
 {
+  az_iot_connection_state s = event->state;
+  az_iot_result reason = event->reason;
   (void)reason;
   ((e2e_device*)user_ctx)->conn_state = s;
 }

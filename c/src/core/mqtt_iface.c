@@ -89,3 +89,66 @@ az_iot_result az_iot_mqtt_connack_result(az_iot_mqtt_version version, int connac
    * untrusted here rather than an internal invariant. */
   return AZ_IOT_ERR_MQTT;
 }
+
+/* MQTT 3.1.1 SUBACK return codes (spec 3.9.3). 0x00..0x02 grant the filter at
+ * that QoS; 0x80 is the entire failure vocabulary the version has, so a refusal
+ * there carries no reason to read. */
+#define SUBACK_V3_FAILURE 0x80
+
+/* MQTT 5 SUBACK reason codes (spec 3.9.3) that a retry cannot change: the
+ * filter is not permitted, or is not one this broker will ever accept. Quota
+ * exceeded (0x97), unspecified (0x80) and implementation specific (0x83) are
+ * deliberately absent -- those are how a transient service-side fault presents,
+ * and re-subscribing is the right response to them. */
+#define SUBACK_V5_NOT_AUTHORIZED 0x87
+#define SUBACK_V5_TOPIC_FILTER_INVALID 0x8F
+#define SUBACK_V5_SHARED_SUBS_NOT_SUPPORTED 0x9E
+#define SUBACK_V5_SUB_IDS_NOT_SUPPORTED 0xA1
+#define SUBACK_V5_WILDCARD_SUBS_NOT_SUPPORTED 0xA2
+
+az_iot_result az_iot_mqtt_suback_result(az_iot_mqtt_version version, int suback_code)
+{
+  /* A granted QoS, including one below what was requested. That is still a
+   * grant: the subscription exists, and delivery is min(publish QoS, granted
+   * QoS). Reading it as a refusal would fail a session no broker objected to. */
+  if (suback_code >= 0 && suback_code <= 2)
+  {
+    return AZ_IOT_OK;
+  }
+
+  /* Adapters report their own failures (socket, TLS, client library) with
+   * negative codes. Those never reached a broker, so they carry no verdict
+   * about the filter and must stay retryable. */
+  if (suback_code < 0)
+  {
+    return AZ_IOT_ERR_MQTT;
+  }
+
+  if (version == AZ_IOT_MQTT_VERSION_5)
+  {
+    switch (suback_code)
+    {
+      case SUBACK_V5_NOT_AUTHORIZED:
+      case SUBACK_V5_TOPIC_FILTER_INVALID:
+      case SUBACK_V5_SHARED_SUBS_NOT_SUPPORTED:
+      case SUBACK_V5_SUB_IDS_NOT_SUPPORTED:
+      case SUBACK_V5_WILDCARD_SUBS_NOT_SUPPORTED:
+        return AZ_IOT_ERR_SUBSCRIPTION_REFUSED;
+      default:
+        return AZ_IOT_ERR_MQTT;
+    }
+  }
+
+  if (version == AZ_IOT_MQTT_VERSION_3_1_1)
+  {
+    /* No reason code exists to consult, so the classification comes from what a
+     * Classic device can subscribe to: a topic set fixed at compile time. That
+     * makes a refusal a property of the filter rather than of the moment. */
+    return (suback_code == SUBACK_V3_FAILURE) ? AZ_IOT_ERR_SUBSCRIPTION_REFUSED : AZ_IOT_ERR_MQTT;
+  }
+
+  /* Same reasoning as the CONNACK mapper: the schemes overlap numerically, so
+   * an unknown version cannot be interpreted, and retrying is the conservative
+   * half of the split. */
+  return AZ_IOT_ERR_MQTT;
+}

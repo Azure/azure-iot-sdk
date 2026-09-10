@@ -38,6 +38,7 @@ namespace Microsoft.Azure.Devices.Client.Provisioning
             string globalDeviceEndpoint,
             CancellationToken cancellationToken)
         {
+            //TODO move this code so that it responds to a connection to DPS like the hub flows do
             cancellationToken.ThrowIfCancellationRequested();
 
             MqttConnect connect = CreateMqttConnectPacket(authentication, idScope, globalDeviceEndpoint);
@@ -125,7 +126,7 @@ namespace Microsoft.Azure.Devices.Client.Provisioning
             Trace.TraceInformation("Subscribing to DPS response topic {0}", SubscribeFilter);
             MqttSubscribeAck subscribeResults = await mqttClient.SubscribeAsync(new(SubscribeFilter, MqttQualityOfServiceLevel.AtLeastOnce), cancellationToken).ConfigureAwait(false);
 
-            if (subscribeResults.Items.FirstOrDefault()!.ResultCode != MqttClientSubscribeResultCode.GrantedQoS1)
+            if (subscribeResults.Items.FirstOrDefault()!.ReasonCode != MqttClientSubscribeReasonCode.GrantedQoS1)
             {
                 throw new Exception("todo");
             }

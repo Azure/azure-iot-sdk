@@ -7,9 +7,9 @@ C99 client SDK for IoTHub-Next (AEG), with selectable Classic-vs-Next protocol b
 
 The public surface is a single low-level, single-threaded, callback-based API with a `do_work()` pump. Embedded-friendly, no internal threads, no hidden allocations on the hot path.
 
-> **In flight: the feature clients are being split by hub generation.** This
-> document describes the *current* feature clients, which branch internally on a
-> runtime Classic-vs-Next switch.
+> **In flight: the feature clients are being split by hub generation.**
+> Telemetry is already split; the remaining feature clients still branch
+> internally on a runtime Classic-vs-Next switch.
 > [eng/client-separation.md](eng/client-separation.md) specifies the target:
 > per-generation feature clients (`az_iot_gen1_*` / `az_iot_gen2_*`) over the
 > **same single connection client**, which keeps DPS internal and reports the
@@ -32,7 +32,7 @@ flowchart TB
     APP["User application"]
 
     subgraph PUB["Public API"]
-        APIA["az_iot_connection_client<br/>az_iot_twin_client<br/>az_iot_direct_method_client<br/>az_iot_telemetry_client"]
+        APIA["az_iot_connection_client<br/>az_iot_twin_client<br/>az_iot_direct_method_client<br/>az_iot_gen1_telemetry_client<br/>az_iot_gen2_telemetry_client"]
     end
 
     subgraph CORE["Core infrastructure"]

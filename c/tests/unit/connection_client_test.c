@@ -36,8 +36,10 @@ typedef struct state_record
   size_t count;
 } state_record;
 
-static void on_state(az_iot_connection_state state, az_iot_result reason, void* user_ctx)
+static void on_state(const az_iot_connection_state_event* event, void* user_ctx)
 {
+  az_iot_connection_state state = event->state;
+  az_iot_result reason = event->reason;
   state_record* r = (state_record*)user_ctx;
   if (r->count < (sizeof(r->states) / sizeof(r->states[0])))
   {
