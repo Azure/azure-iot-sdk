@@ -16,7 +16,7 @@
 name: cd-dotnet
 
 on:
-  # Manual publish, including a dry run for validating the package before it is pushed anywhere.
+  # Manual publish, for a version that no push or release produces on its own.
   workflow_dispatch:
     inputs:
       version:
@@ -24,18 +24,15 @@ on:
         required: false
         type: string
       version-suffix:
-        description: 'Prerelease suffix appended to the csproj VersionPrefix. Ignored when an exact version is given. Defaults to preview.<run number>.'
+        description: 'Prerelease suffix appended to the csproj VersionPrefix. Ignored when an exact version is given. Defaults to today''s UTC date, dd-MM-yyyy.'
         required: false
         type: string
-      dry-run:
-        description: 'Build, test and pack, but do not push to the feed.'
-        required: false
-        default: false
-        type: boolean
 
-  # Every change that lands publishes a prerelease so that consumers can pick up main without
-  # waiting for a release. The run number keeps each of these versions unique, since the registry
-  # rejects a version that has already been published.
+  # Every change that lands publishes a prerelease of the version the csproj declares, dated so that
+  # it is clear how old a given build is. Only the first publish of a day gets that day's version:
+  # the registry does not allow a version to be republished, so later pushes on the same day are
+  # skipped. Publish a release, or dispatch this workflow with an explicit version, to publish a
+  # second build of the same day.
   push:
     branches: [ main ]
     paths:
@@ -83,7 +80,6 @@ jobs:
           RELEASE_TAG: ${{ github.event.release.tag_name }}
           INPUT_VERSION: ${{ inputs.version }}
           INPUT_SUFFIX: ${{ inputs.version-suffix }}
-          RUN_NUMBER: ${{ github.run_number }}
         run: |
           set -euo pipefail
 
@@ -103,7 +99,10 @@ jobs:
             fi
             echo "pack-args=-p:Version=$version" >> "$GITHUB_OUTPUT"
           else
-            suffix="${INPUT_SUFFIX:-preview.$RUN_NUMBER}"
+            # Nothing was asked for, so keep the VersionPrefix the csproj declares and mark the
+            # build with the day it was produced. The separator is a hyphen rather than an
+            # underscore because NuGet rejects a version containing an underscore.
+            suffix="${INPUT_SUFFIX:-$(date --utc +'%d-%m-%Y')}"
             if ! [[ "$suffix" =~ ^[0-9A-Za-z.-]+$ ]]; then
               echo "::error::'$suffix' is not a valid prerelease suffix."
               exit 1
@@ -122,10 +121,8 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      # `inputs` is empty for the push and release triggers, so this only skips a manual dry run.
       - name: Publish to GitHub Packages
         id: publish
-        if: ${{ !inputs.dry-run }}
         shell: bash
         env:
           # The registry is scoped to the owner, not to this single repository, so packages from
@@ -163,9 +160,8 @@ jobs:
               echo 'No packages were produced.'
             fi
             echo ''
-            case "${PUBLISH_OUTCOME:-skipped}" in
+            case "${PUBLISH_OUTCOME:-}" in
               success) echo "Published to $FEED" ;;
-              skipped) echo 'Dry run: nothing was published.' ;;
               *)       echo "Publishing to $FEED did not succeed." ;;
             esac
           } >> "$GITHUB_STEP_SUMMARY"
