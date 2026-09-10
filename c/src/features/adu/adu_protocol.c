@@ -16,6 +16,7 @@
 #include <azure/core/az_span.h>
 
 #include "internal/adu_protocol_internal.h"
+#include "internal/span_writer.h"
 
 /* Local, so this file does not reach into azure-sdk-for-c internal headers. */
 #define ADU_RETURN_IF_FAILED(exp) \
@@ -65,36 +66,13 @@ az_iot_result az_iot_adu__build_topic(
     return AZ_IOT_ERR_INVALID_ARG;
   }
 
-  const size_t prefix_len = sizeof(ADU_TOPIC_PREFIX) - 1;
-  const size_t method_len = 5; /* "POST/" */
-  const size_t op_len = strlen(op);
-  const size_t rid_sep_len = sizeof(ADU_TOPIC_RID) - 1;
-  const size_t rid_len = strlen(request_id);
-  const size_t total = prefix_len + method_len + op_len + rid_sep_len + rid_len;
-
-  if (total + 1 > out_size)
-  {
-    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
-  }
-
-  size_t n = 0;
-  memcpy(out + n, ADU_TOPIC_PREFIX, prefix_len);
-  n += prefix_len;
-  memcpy(out + n, "POST/", method_len);
-  n += method_len;
-  memcpy(out + n, op, op_len);
-  n += op_len;
-  memcpy(out + n, ADU_TOPIC_RID, rid_sep_len);
-  n += rid_sep_len;
-  memcpy(out + n, request_id, rid_len);
-  n += rid_len;
-  out[n] = '\0';
-
-  if (out_len != NULL)
-  {
-    *out_len = n;
-  }
-  return AZ_IOT_OK;
+  az_iot_span_writer writer;
+  az_iot_span_writer_init(&writer, az_span_create((uint8_t*)out, (int32_t)out_size));
+  az_iot_span_writer_append_str(&writer, ADU_TOPIC_PREFIX "POST/");
+  az_iot_span_writer_append_str(&writer, op);
+  az_iot_span_writer_append_str(&writer, ADU_TOPIC_RID);
+  az_iot_span_writer_append_str(&writer, request_id);
+  return az_iot_span_writer_end_str(&writer, out_len);
 }
 
 az_iot_result az_iot_adu__parse_response_topic(
