@@ -190,7 +190,7 @@ namespace Microsoft.Azure.Devices.Client
                 IsGen2Hub = provisioningResult.IsAzureEventGridHub,
             };
 
-            await ConnectAsync(CurrentConnectionContext, null, cancellationToken);
+            await ConnectAsync(CurrentConnectionContext, cancellationToken);
 
             return CurrentConnectionContext;
         }
@@ -430,9 +430,7 @@ namespace Microsoft.Azure.Devices.Client
             CurrentEndpoint = ConnectionEndpoint.None;
         }
 
-
-
-        internal async Task ConnectAsync(ConnectionContext connectionContext, TwinPushOptions? twinPushOptions = default, CancellationToken cancellationToken = default)
+        internal async Task ConnectAsync(ConnectionContext connectionContext, CancellationToken cancellationToken = default)
         {
             ObjectDisposedException.ThrowIf(_isDisposed, this);
 

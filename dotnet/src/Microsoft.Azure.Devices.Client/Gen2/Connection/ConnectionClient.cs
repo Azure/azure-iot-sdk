@@ -14,43 +14,13 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Connection
     {
         private static TimeSpan birthAckReceivedDefensiveTimeout = TimeSpan.FromSeconds(60); //TODO value is magic number
 
+        private readonly TwinPushOptions _twinPushOptions;
+
         private Guid? CurrentConnectionNonce { get; set; }
 
-        public ConnectionClient(ConnectionClientOptions? options = null) : base(options)
+        public ConnectionClient(ConnectionClientOptions? options = null, TwinPushOptions? twinPushOptions = null) : base(options)
         {
-        }
-
-        /// <summary>
-        /// Provision this device with the provided credentials using Device Provisioning Service, then connect this device to the IoT hub it was provisioned to.
-        /// </summary>
-        /// <param name="provisioningSettings">The mandatory and optional provisioning-specific fields</param>
-        /// <param name="authentication">The x509 authentication to use when connecting to both Device Provisioning Service and IoT hub.</param>
-        /// <param name="twinOptions">The optional flags to control twin updates to this device from IoT hub.</param>
-        /// <param name="cancellationToken">The cancellation token.</param>
-        /// <returns>The received twin push upon connecting to IoT hub if any part of the twin was configured to be pushed in <see cref="TwinPushOptions"/>.</returns>
-        public async Task<ConnectionContext> ProvisionAndConnectAsync(ProvisioningSettings provisioningSettings, X509AuthenticationProvider authentication, TwinPushOptions? twinOptions = default, CancellationToken cancellationToken = default)
-        {
-            ObjectDisposedException.ThrowIf(_isDisposed, this);
-
-            var provisioningResult = await ProvisionAsync(provisioningSettings, authentication, cancellationToken);
-
-            if (!provisioningResult.IsAzureEventGridHub)
-            {
-                throw new InvalidOperationException("This device was provisioned to a Gen 1 IoT Hub, but this connection client can only be used with a Gen 2 IoT Hub");
-            }
-
-            CurrentConnectionContext = new ConnectionContext()
-            {
-                DeviceId = provisioningResult.DeviceId!,
-                IotHubHostName = provisioningResult.AssignedHub!,
-                IssuedClientCertificates = provisioningResult.IssuedClientCertificateChain,
-                AuthenticationProvider = authentication,
-                IsGen2Hub = true,
-            };
-
-            await ConnectAsync(CurrentConnectionContext, twinOptions, cancellationToken);
-
-            return CurrentConnectionContext;
+            _twinPushOptions = twinPushOptions ?? new TwinPushOptions();
         }
 
         public override Task HandleConnectedToHubAsync(MqttClientConnectedEventArgs args)
@@ -118,8 +88,8 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Connection
             uint deviceReportedPropertyVersion = 0;
 
             // TODO user configurable
-            bool pushDesired = true;
-            bool pushReported = true;
+            bool pushDesired = _twinPushOptions.ReceiveDesiredPropertyUpdates;
+            bool pushReported = _twinPushOptions.ReceiveReportedPropertiesUponConnect;
 
             Birth birth = new()
             {
