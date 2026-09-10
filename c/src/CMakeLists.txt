@@ -20,6 +20,7 @@ add_library(az_iot_core
     features/adu/adu_root_keys_microsoft.c
     features/adu/adu_report.c
     features/adu/adu_channel_dps.c
+    features/adu/adu_protocol.c
 )
 
 add_library(azure::iot::core ALIAS az_iot_core)

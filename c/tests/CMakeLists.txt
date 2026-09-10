@@ -176,6 +176,7 @@ target_include_directories(az_iot_tests_twin_client PRIVATE
     ${CMAKE_SOURCE_DIR}/src/core)
 
 az_iot_add_cmocka_test(az_iot_tests_adu_client unit/adu_client_test.c)
+az_iot_add_cmocka_test(az_iot_tests_adu_protocol unit/adu_protocol_test.c)
 target_link_libraries(az_iot_tests_adu_client PRIVATE az_iot_test_support)
 
 # File upload is HTTPS-only (stateless request-build/response-parse helpers), so
