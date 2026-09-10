@@ -1805,7 +1805,7 @@ at `init` (compiled-in Microsoft defaults or caller-supplied keys).
 | 2 | Root key provisioning | **Both compiled-in and runtime-loadable, core-owned.** Core ships Microsoft defaults (`az_iot_adu_microsoft_root_keys()`), callers MAY override at `init`. Runtime Root Key Package rotation is tracked as future/pending (not in v1). |
 | 3 | Manifest algorithm | **RS256 only (v1).** Core MUST reject any JWS with `alg != RS256`; adapters MUST implement `verify_rs256_fn`. |
 | 4 | Manifest version | **v5 only.** The client MUST support manifest v5. Earlier versions MUST NOT be supported. |
-| 5 | Multi-file handling | **Per-file.** `download_fn` MUST be called once per file per do_work, with `file_index`/`file_count` for progress awareness. Operations MUST NOT be long-blocking. |
+| 5 | Multi-file handling | **Per-file.** `download_fn` MUST be called once per file per do_work, with `file_index`/`file_count` for progress awareness. Operations MUST NOT be long-blocking. `file_index` is the slot within *that step's* `files[]` list; because `instructions.steps[].files[]` holds file **ids** rather than indices into `updateManifest.files`, the client MUST resolve each id against the manifest file map (the two lists are ordered independently) and MUST fail the step when an id is not described by the manifest. |
 | 6 | Thread safety | **Single-threaded.** The ADU client MUST NOT use internal locks or threads. Applications that need concurrency MUST wrap externally. |
 
 ---

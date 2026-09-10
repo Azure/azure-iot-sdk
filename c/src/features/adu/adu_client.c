@@ -2286,6 +2286,31 @@ static uint32_t step_file_count(const az_iot_adu_client_t* client, uint32_t step
   return m->instructions.steps[step].files_count;
 }
 
+/* Resolve a step-local file slot to its manifest file entry.
+ * instructions.steps[step].files[] holds file *ids*, not indices into
+ * manifest.files[]; the two lists are ordered independently, so the id must be
+ * matched explicitly. Returns NULL when the manifest does not describe the id. */
+static const az_iot_adu_client_update_manifest_file* step_file_entry(
+    const az_iot_adu_client_t* client,
+    uint32_t step,
+    uint32_t file_slot)
+{
+  const az_iot_adu_client_update_manifest* m = &ADU_I(client).current_manifest;
+  if (step >= m->instructions.steps_count || file_slot >= m->instructions.steps[step].files_count)
+  {
+    return NULL;
+  }
+  az_span id = m->instructions.steps[step].files[file_slot];
+  for (uint32_t i = 0; i < m->files_count; ++i)
+  {
+    if (az_span_is_content_equal(m->files[i].id, id))
+    {
+      return &m->files[i];
+    }
+  }
+  return NULL;
+}
+
 /* Begin a best-effort reverse-order rollback and finish in Failed/Idle.
  * restore_count is the number of leading steps that have a backup to undo;
  * steps [restore_count-1 .. 0] are restored in reverse order. A failure during
@@ -2442,9 +2467,16 @@ az_iot_result az_iot_adu_client_do_work(az_iot_adu_client_t* client)
         break;
       }
       /* Resolve the file + its download url, then drive download_fn. */
-      const az_iot_adu_client_update_manifest* m = &ADU_I(client).current_manifest;
       uint32_t fidx = ADU_I(client).current_file;
-      const az_iot_adu_client_update_manifest_file* file = &m->files[fidx];
+      const az_iot_adu_client_update_manifest_file* file = step_file_entry(client, step, fidx);
+      if (file == NULL)
+      {
+        /* The step references a file id the manifest does not describe. */
+        result_step_failure(client, step, AZ_IOT_ADU_FACILITY_DOWNLOAD, AZ_IOT_ADU_RESULT_FAILURE);
+        begin_rollback(client, step);
+        (void)az_iot_adu__report_state(client);
+        break;
+      }
       az_span url = AZ_SPAN_EMPTY;
       for (uint32_t i = 0; i < ADU_I(client).current_request.file_urls_count; ++i)
       {
