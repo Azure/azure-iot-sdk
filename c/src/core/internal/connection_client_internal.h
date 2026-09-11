@@ -186,7 +186,10 @@ extern "C"
       *az_iot_feature_client_bind_callback)(void* owner, az_iot_connection_client* client);
 
   /* Attach a bind callback for `owner`, replacing any previous one. Feature
-   * clients call this from _init(); __release_profile drops it. */
+   * clients call this from _init() and withdraw it in _destroy() --
+   * __release_profile only drops the generation refcount and leaves the bind
+   * in place, so a client that skips the withdrawal leaves the connection
+   * holding a callback into freed storage. */
   az_iot_result az_iot_connection_client__register_feature_client_bind(
       az_iot_connection_client* client,
       void* owner,

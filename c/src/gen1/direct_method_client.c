@@ -147,8 +147,8 @@ az_iot_result az_iot_gen1_direct_method_client_init(
   memset(client, 0, sizeof(*client));
   DI(client).conn = conn;
 
-  /* No connect-time bind: unlike C2D and twin, these topics carry no device id,
-   * so they are known before the connection resolves. */
+  /* No connect-time bind: unlike C2D, these topics carry no device id, so they
+   * are known before the connection resolves. */
   result = az_iot_connection_client__register_inbound_handler(
       conn, METHODS_REQUEST_PREFIX, on_method_invocation, client);
   if (result == AZ_IOT_OK)

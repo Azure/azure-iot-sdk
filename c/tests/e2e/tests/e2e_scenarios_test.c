@@ -428,13 +428,14 @@ static void test_twin(void** state)
 {
   e2e_fixture* fx = (e2e_fixture*)*state;
 
-  az_iot_twin_client twin;
-  assert_int_equal(az_iot_twin_client_init(&twin, &fx->dev.conn), AZ_IOT_OK);
+  az_iot_gen1_twin_client twin;
+  assert_int_equal(az_iot_gen1_twin_client_init(&twin, &fx->dev.conn), AZ_IOT_OK);
 
   /* --- desired: cloud patches, device observes ------------------------- */
   desired_ctx dctx = { 0 };
   make_marker(dctx.expected, sizeof(dctx.expected), "desired");
-  assert_int_equal(az_iot_twin_client_subscribe_desired(&twin, on_desired, &dctx), AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_gen1_twin_client_set_desired_handler(&twin, on_desired, &dctx), AZ_IOT_OK);
 
   for (int i = 0; i < 20; ++i)
   {
@@ -480,7 +481,7 @@ static void test_twin(void** state)
 
   patch_ack_ctx pack = { 0 };
   assert_int_equal(
-      az_iot_twin_client_patch_reported(
+      az_iot_gen1_twin_client_patch_reported(
           &twin, (const uint8_t*)reported_json, strlen(reported_json), on_patch_ack, &pack),
       AZ_IOT_OK);
 
@@ -527,7 +528,7 @@ static void test_twin(void** state)
   }
   assert_true(reported_seen);
 
-  az_iot_twin_client_destroy(&twin);
+  az_iot_gen1_twin_client_destroy(&twin);
 }
 
 int main(void)
