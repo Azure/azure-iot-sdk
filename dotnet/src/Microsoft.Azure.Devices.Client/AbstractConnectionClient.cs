@@ -20,6 +20,19 @@ namespace Microsoft.Azure.Devices.Client
 
     public abstract class AbstractConnectionClient
     {
+        public event Func<MqttPublishReceivedEventArgs, Task>? PublishReceivedAsync;
+
+        public event Func<ConnectionFaultedEventArgs, Task>? ConnectionFaultedAsync;
+        
+        internal event Func<DevicePresenceFlowCompletedArgs, Task>? DevicePresenceFlowCompletedAsync;
+        
+        /// <summary>
+        /// Raised once the provisioning flow that runs upon connecting to Device Provisioning Service has either
+        /// produced a registration result or failed. This is the provisioning counterpart of
+        /// <see cref="DevicePresenceFlowCompletedAsync"/>.
+        /// </summary>
+        private event Func<ProvisioningFlowCompletedArgs, Task>? ProvisioningFlowCompletedAsync;
+
         private const string ProvisioningUsernameFormat = "{0}/registrations/{1}/api-version={2}&ClientVersion={3}";
         private const string ProvisioningApiVersion = "2019-03-31";
         private const string ProvisioningSubscribeFilter = "$dps/registrations/res/#";
@@ -36,8 +49,6 @@ namespace Microsoft.Azure.Devices.Client
         // In both cases, this method should trigger the "OnDevicePresenceFlowCompleted" callback
         public abstract Task HandleConnectedToHubAsync(MqttClientConnectedEventArgs args);
 
-        internal event Func<DevicePresenceFlowCompletedArgs, Task>? DevicePresenceFlowCompletedAsync;
-
         // Workaround so that inheriting classes can invoke the "DevicePresenceFlowCompletedAsync" event.
         protected Task RaiseDevicePresenceFlowCompletedAsync(DevicePresenceFlowCompletedArgs args)
         {
@@ -49,21 +60,10 @@ namespace Microsoft.Azure.Devices.Client
             return Task.CompletedTask;
         }
 
-        /// <summary>
-        /// Raised once the provisioning flow that runs upon connecting to Device Provisioning Service has either
-        /// produced a registration result or failed. This is the provisioning counterpart of
-        /// <see cref="DevicePresenceFlowCompletedAsync"/>.
-        /// </summary>
-        private event Func<ProvisioningFlowCompletedArgs, Task>? ProvisioningFlowCompletedAsync;
-
         internal bool _isDisposed = false;
         private bool _isUserSuppliedMqttClient = false;
 
         internal MqttConnectionManager ManagedMqttConnection;
-
-        public event Func<MqttPublishReceivedEventArgs, Task>? PublishReceivedAsync;
-
-        public event Func<ConnectionFaultedEventArgs, Task>? ConnectionFaultedAsync;
 
         internal ConnectionContext? CurrentConnectionContext { get; set; }
 
@@ -233,6 +233,8 @@ namespace Microsoft.Azure.Devices.Client
 
             await ManagedMqttConnection.DisconnectAsync(false, new MqttDisconnect() { Reason = MqttClientDisconnectOptionsReason.NormalDisconnection }, cancellationToken);
             CurrentConnectionContext = null;
+
+            Trace.TraceInformation("ConnectionClient's current endpoint is now neither IoT Hub or DPS");
             CurrentEndpoint = ConnectionEndpoint.None;
         }
 
@@ -274,6 +276,7 @@ namespace Microsoft.Azure.Devices.Client
 
             // From here on, every connection this client establishes targets IoT hub, so every connection (including the
             // ones the connection layer re-establishes on its own) runs the device presence flow.
+            Trace.TraceInformation("ConnectionClient's current endpoint is now IoT Hub");
             CurrentEndpoint = ConnectionEndpoint.IotHub;
 
             // This client is establishing a connection again, so any earlier fault no longer describes its state.
@@ -380,6 +383,7 @@ namespace Microsoft.Azure.Devices.Client
         {
             if (CurrentEndpoint == ConnectionEndpoint.DeviceProvisioningService)
             {
+                Trace.TraceError("ConnectionClient encountered an unrecoverable error during provisioning.", args.Exception);
                 // The connection layer has stopped maintaining the connection to DPS, so no further connection will
                 // arrive to start the provisioning flow again.
                 CancelCurrentProvisioningFlow();
@@ -485,6 +489,7 @@ namespace Microsoft.Azure.Devices.Client
         /// </summary>
         private void MarkUnrecoverablyFaulted(DeviceException fault)
         {
+            Trace.TraceError("ConnectionClient encountered an unrecoverable exception", fault);
             _unrecoverableFault = fault;
 
             UnrecoverablyFaulted?.Invoke();
@@ -578,6 +583,7 @@ namespace Microsoft.Azure.Devices.Client
 
             // From here on, every connection this client establishes targets DPS, so every connection (including the ones
             // the connection layer re-establishes on its own) runs the provisioning flow.
+            Trace.TraceInformation("ConnectionClient's current endpoint is now DPS");
             CurrentEndpoint = ConnectionEndpoint.DeviceProvisioningService;
 
             // This client is establishing a connection again, so any earlier fault no longer describes its state.
@@ -619,6 +625,7 @@ namespace Microsoft.Azure.Devices.Client
                 // Stop any provisioning flow that is still waiting on a DPS response now that no one is listening for its result.
                 CancelCurrentProvisioningFlow();
                 _provisioningRequestPayload = null;
+                Trace.TraceInformation("ConnectionClient's current endpoint is now neither Hub or DPS");
                 CurrentEndpoint = ConnectionEndpoint.None;
 
                 // Always close the MQTT connection once provisioning has finished so that the connection can be
@@ -937,6 +944,7 @@ namespace Microsoft.Azure.Devices.Client
 
             CancelCurrentProvisioningFlow();
             CancelCurrentReprovisioning();
+            Trace.TraceInformation("ConnectionClient's current endpoint is now neither Hub or DPS");
             CurrentEndpoint = ConnectionEndpoint.None;
         }
 

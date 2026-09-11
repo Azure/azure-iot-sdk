@@ -17,7 +17,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Unified
         [InlineData(false, false)]
         public async Task TestFileUpload(bool testAgainstClassicHub, bool withProvidedHttpClient)
         {
-            UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientAsync(testAgainstClassicHub, TestContext.Current.CancellationToken);
+            UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientAsync(testAgainstClassicHub, null, TestContext.Current.CancellationToken);
 
             FileUploadClient fileUploadClient;
             if (testAgainstClassicHub)
@@ -70,7 +70,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Unified
         [InlineData(false)]
         public async Task TestFileUpload_BadFormat(bool testAgainstClassicHub)
         {
-            UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientAsync(testAgainstClassicHub, TestContext.Current.CancellationToken);
+            UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientAsync(testAgainstClassicHub, null, TestContext.Current.CancellationToken);
 
             FileUploadClient fileUploadClient;
             fileUploadClient = new FileUploadClient(testDeviceContext.ConnectionClient);

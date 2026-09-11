@@ -14,7 +14,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
         [Fact(Timeout = Setup.TestTimeoutMilliseconds)]
         public async Task TestDeviceToCloudTelemetry()
         {
-            Gen2DeviceTestContext testDeviceContext = await Setup.CreateConnectedGen2ConnectionClientAsync(null, TestContext.Current.CancellationToken);
+            Gen2DeviceTestContext testDeviceContext = await Setup.CreateConnectedGen2ConnectionClientAsync(null, null, TestContext.Current.CancellationToken);
 
             using TelemetryClient telemetryClient = new TelemetryClient(testDeviceContext.ConnectionClient);
 
@@ -31,7 +31,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
         [Fact(Timeout = Setup.TestTimeoutMilliseconds)]
         public async Task TestDeviceToCloudTelemetryWithAllUserProperties()
         {
-            Gen2DeviceTestContext testDeviceContext = await Setup.CreateConnectedGen2ConnectionClientAsync(null, TestContext.Current.CancellationToken);
+            Gen2DeviceTestContext testDeviceContext = await Setup.CreateConnectedGen2ConnectionClientAsync(null, null, TestContext.Current.CancellationToken);
 
             using TelemetryClient telemetryClient = new TelemetryClient(testDeviceContext.ConnectionClient);
 
@@ -54,7 +54,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
         [Fact(Timeout = Setup.TestTimeoutMilliseconds)]
         public async Task TestCloudToDeviceMessages()
         {
-            Gen2DeviceTestContext testDeviceContext = await Setup.CreateConnectedGen2ConnectionClientAsync(null, TestContext.Current.CancellationToken);
+            Gen2DeviceTestContext testDeviceContext = await Setup.CreateConnectedGen2ConnectionClientAsync(null, null, TestContext.Current.CancellationToken);
             ConnectionClient connectionClient = testDeviceContext.ConnectionClient;
 
             ServiceClient serviceClient = Setup.GetGen1IotHubServiceClient();

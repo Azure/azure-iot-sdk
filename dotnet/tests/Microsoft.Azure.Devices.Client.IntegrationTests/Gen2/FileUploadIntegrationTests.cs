@@ -13,7 +13,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Gen2
         [Fact(Timeout = Setup.TestTimeoutMilliseconds, Skip = "TODO Test infrastructure has issues. See CI pipeline yaml")]
         public async Task TestFileUpload()
         {
-            Gen2DeviceTestContext testDeviceContext = await Setup.CreateConnectedGen2ConnectionClientAsync(null, TestContext.Current.CancellationToken);
+            Gen2DeviceTestContext testDeviceContext = await Setup.CreateConnectedGen2ConnectionClientAsync(null, null, TestContext.Current.CancellationToken);
             using FileUploadClient fileUploadClient = new(testDeviceContext.ConnectionClient);
             //TODO
 
@@ -23,7 +23,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Gen2
         [Fact(Timeout = Setup.TestTimeoutMilliseconds, Skip = "TODO Test infrastructure has issues. See CI pipeline yaml")]
         public async Task TestFileUpload_BadFormat()
         {
-            Gen2DeviceTestContext testDeviceContext = await Setup.CreateConnectedGen2ConnectionClientAsync(null, TestContext.Current.CancellationToken);
+            Gen2DeviceTestContext testDeviceContext = await Setup.CreateConnectedGen2ConnectionClientAsync(null, null, TestContext.Current.CancellationToken);
             using FileUploadClient fileUploadClient = new(testDeviceContext.ConnectionClient);
             //TODO
 

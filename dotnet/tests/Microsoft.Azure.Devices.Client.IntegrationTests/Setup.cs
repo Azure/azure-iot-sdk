@@ -2,6 +2,7 @@
 using Microsoft.Azure.Devices.Client.IntegrationTests.Unified;
 using Microsoft.Azure.Devices.Client.Models;
 using Microsoft.Azure.Devices.Client.Models.Twin;
+using Microsoft.Azure.Devices.Client.Mqtt;
 using Microsoft.Azure.Devices.Client.Unified.Connection;
 using Microsoft.Azure.Devices.Provisioning.Service;
 using Microsoft.Azure.Devices.Shared;
@@ -68,7 +69,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
 
         public const int TestTimeoutMilliseconds = 60 * 1000;
 
-        public static async Task<Gen2DeviceTestContext> CreateProvisionableGen2DeviceAsync(DeviceTwin? initialTwin, CancellationToken cancellationToken = default)
+        public static async Task<Gen2DeviceTestContext> CreateProvisionableGen2DeviceAsync(DeviceTwin? initialTwin, ConnectionClientOptions? options = null, CancellationToken cancellationToken = default)
         {
             Assert.Skip("No test infrastructure setup for Gen2 client testing yet.");
             
@@ -96,7 +97,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
 
             X509AuthenticationProvider x509AuthenticationProvider = new(pfx);
 
-            Client.Gen2.Connection.ConnectionClient connectionClient = new();
+            Client.Gen2.Connection.ConnectionClient connectionClient = new(options);
 
             return new Gen2DeviceTestContext()
             { 
@@ -113,7 +114,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
         }
 
         // Skip DPS registration + provisioning. Just create a device identity on the IoT hub
-        public static async Task<Gen2DeviceTestContext> CreateGen2DeviceOnDirectlyOnHubAsync(CancellationToken cancellationToken = default)
+        public static async Task<Gen2DeviceTestContext> CreateGen2DeviceOnDirectlyOnHubAsync(ConnectionClientOptions? options = null, CancellationToken cancellationToken = default)
         {
             Assert.Skip("No test infrastructure setup for Gen2 client testing yet.");
 
@@ -142,7 +143,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
 
             X509AuthenticationProvider x509AuthenticationProvider = new(pfx);
 
-            Client.Gen2.Connection.ConnectionClient connectionClient = new();
+            Client.Gen2.Connection.ConnectionClient connectionClient = new(options);
             ProvisioningSettings provisioningSettings = new(DpsIdScope);
 
             return new Gen2DeviceTestContext()
@@ -159,7 +160,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
             };
         }
 
-        public static async Task<Gen2DeviceTestContext> CreateConnectedGen2ConnectionClientAsync(DeviceTwin? initialTwin, CancellationToken cancellationToken = default)
+        public static async Task<Gen2DeviceTestContext> CreateConnectedGen2ConnectionClientAsync(DeviceTwin? initialTwin, ConnectionClientOptions? options = null, CancellationToken cancellationToken = default)
         {
             Assert.Skip("No test infrastructure setup for Gen2 client testing yet.");
 
@@ -182,7 +183,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
 
             X509AuthenticationProvider x509AuthenticationProvider = new(pfx);
 
-            Client.Gen2.Connection.ConnectionClient connectionClient = new();
+            Client.Gen2.Connection.ConnectionClient connectionClient = new(options);
             ProvisioningSettings provisioningSettings = new(DpsIdScope);
 
             ConnectionContext connectionContext = await RetryAroundAuthorizationAsync<ConnectionContext>(
@@ -197,7 +198,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
             };
         }
 
-        public static async Task<UnifiedDeviceTestContext> CreateConnectedUnifiedConnectionClientAsync(bool testAgainstClassicHub, CancellationToken cancellationToken = default)
+        public static async Task<UnifiedDeviceTestContext> CreateConnectedUnifiedConnectionClientAsync(bool testAgainstClassicHub, ConnectionClientOptions? options = null, CancellationToken cancellationToken = default)
         {
             if (!testAgainstClassicHub)
             {
@@ -223,7 +224,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
 
             X509AuthenticationProvider x509AuthenticationProvider = new(pfx);
 
-            ConnectionClient connectionClient = new();
+            ConnectionClient connectionClient = new(options);
             ProvisioningSettings provisioningSettings = new(DpsIdScope);
 
             ConnectionContext connectionContext = await RetryAroundAuthorizationAsync<ConnectionContext>(
@@ -238,7 +239,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
             };
         }
 
-        public static async Task<UnifiedDeviceTestContext> CreateConnectedUnifiedConnectionClientWithCertificateSigningAsync(bool testAgainstClassicHub, CancellationToken cancellationToken = default)
+        public static async Task<UnifiedDeviceTestContext> CreateConnectedUnifiedConnectionClientWithCertificateSigningAsync(bool testAgainstClassicHub, ConnectionClientOptions? options = null, CancellationToken cancellationToken = default)
         {
             if (!testAgainstClassicHub)
             {
@@ -270,7 +271,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
 
             var (csrBase64, privateKey) = GenerateCsr(registrationId, CsrAlgorithm.RSA);
 
-            ConnectionClient connectionClient = new();
+            ConnectionClient connectionClient = new(options);
             ProvisioningSettings provisioningSettings = new(DpsIdScope)
             {
                 ProvisioningCertificateSigningRequest = csrBase64,

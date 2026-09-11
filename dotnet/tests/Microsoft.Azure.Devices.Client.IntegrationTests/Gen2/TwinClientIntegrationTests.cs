@@ -24,7 +24,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
             initialTwin.Desired[expectedInitialDesiredPropertyKey] = expectedInitialDesiredPropertyValue;
 
             // Want to defer connecting until TwinClient is set up to consume TwinPush
-            Gen2DeviceTestContext testDeviceContext = await Setup.CreateProvisionableGen2DeviceAsync(initialTwin, TestContext.Current.CancellationToken);
+            Gen2DeviceTestContext testDeviceContext = await Setup.CreateProvisionableGen2DeviceAsync(initialTwin, null, TestContext.Current.CancellationToken);
 
             string deviceId = testDeviceContext.ConnectionContext.DeviceId;
 
