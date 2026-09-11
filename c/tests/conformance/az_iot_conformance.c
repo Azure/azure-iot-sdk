@@ -82,6 +82,43 @@ static bool adapter_claims_key_custody(void)
  * accident of the environment, and it is never the default.
  *
  * Returns the number of failures to add to the run's total. */
+/* Read an environment variable without tripping MSVC's C4996 on getenv.
+ *
+ * Returns `buf` when the variable is set, NULL when it is not. A value that
+ * does not fit is reported as the empty string rather than truncated: this
+ * feeds the opt-out comparison below, and a truncation that happened to leave
+ * "1" would opt out on the strength of a value nobody wrote. Erring towards
+ * "not set" can only make the suite stricter. */
+static const char* read_env(const char* name, char* buf, size_t cap)
+{
+  if (cap == 0)
+  {
+    return NULL;
+  }
+  buf[0] = '\0';
+#ifdef _WIN32
+  size_t needed = 0;
+  if (getenv_s(&needed, buf, cap, name) != 0)
+  {
+    /* Set but too long for `buf`; anything but a faithful copy must not match. */
+    return (needed > 0) ? "" : NULL;
+  }
+  return (needed == 0) ? NULL : buf;
+#else
+  const char* value = getenv(name);
+  if (value == NULL)
+  {
+    return NULL;
+  }
+  if (strlen(value) >= cap)
+  {
+    return "";
+  }
+  memcpy(buf, value, strlen(value) + 1);
+  return buf;
+#endif
+}
+
 int az_iot_conformance_report_unproven_capability(
     const char* capability,
     const char* why,
@@ -2196,10 +2233,11 @@ int az_iot_conformance_run_with_options(
 
     if (unproven != NULL)
     {
+      char allow[16];
       failed += az_iot_conformance_report_unproven_capability(
           "AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY",
           unproven,
-          getenv("AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN"));
+          read_env("AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN", allow, sizeof(allow)));
     }
   }
 
