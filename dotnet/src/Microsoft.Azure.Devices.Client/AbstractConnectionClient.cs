@@ -80,7 +80,7 @@ namespace Microsoft.Azure.Devices.Client
         /// starts the provisioning flow, while connecting to an IoT hub starts the device presence flow. The connection
         /// layer owns reconnection for both endpoints, so this also decides which flow a reconnection restarts.
         /// </remarks>
-        public ConnectionEndpoint CurrentEndpoint { get; private set; } = ConnectionEndpoint.None;
+        internal ConnectionEndpoint CurrentEndpoint { get; private set; } = ConnectionEndpoint.None;
 
         // The registration request to send on every connection to Device Provisioning Service. Only set while provisioning.
         private RegistrationRequestPayload? _provisioningRequestPayload;

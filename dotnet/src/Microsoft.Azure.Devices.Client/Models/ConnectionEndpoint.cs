@@ -11,7 +11,7 @@ namespace Microsoft.Azure.Devices.Client.Models
     /// Each endpoint has its own flow to run upon connecting, so the client tracks which endpoint the current connection
     /// targets in order to run the right one.
     /// </remarks>
-    public enum ConnectionEndpoint
+    internal enum ConnectionEndpoint
     {
         /// <summary>
         /// The client is not connecting to, or connected to, any endpoint.
