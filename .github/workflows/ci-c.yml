@@ -360,6 +360,20 @@ jobs:
           echo "OPENSSL_MODULES=$OPENSSL_MODULES" >> "$GITHUB_ENV"
           openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 \
                           -out "$RUNNER_TEMP/custody-key.pem"
+
+          # Issue the certificate BEFORE the key goes into the token: the
+          # conformance custody case presents it to a TLS server while the
+          # private half stays in the token, so the two must be the same key
+          # pair -- and setup-softhsm.sh deletes the PEM once it has imported
+          # it, which is the point of the exercise. The test proxy terminates
+          # the handshake and accepts any client certificate, so self-signed is
+          # enough and its trust chain is irrelevant.
+          openssl req -new -x509 -key "$RUNNER_TEMP/custody-key.pem" \
+                      -out "$RUNNER_TEMP/custody-cert.pem" -days 2 \
+                      -subj "/CN=az-iot-conformance-custody" \
+                      -addext "basicConstraints=critical,CA:FALSE" \
+                      -addext "extendedKeyUsage=clientAuth"
+
           eng/setup-softhsm.sh "$RUNNER_TEMP/custody-key.pem" > "$RUNNER_TEMP/softhsm-env.sh"
           # "export NAME='value'" -> the NAME=value lines GITHUB_ENV takes.
           sed -E "s/^export ([A-Za-z0-9_]+)='(.*)'\$/\1=\2/" \
@@ -369,16 +383,6 @@ jobs:
           # provider is not installed: without it the token cannot sign.
           openssl list -providers -provider pkcs11 > /dev/null
 
-          # A certificate carrying the token key's PUBLIC key. The conformance
-          # custody case presents this to a TLS server while the private half
-          # stays in the token, so the two must be the same key pair. The test
-          # proxy terminates the handshake and accepts any client certificate,
-          # so self-signed is enough and its trust chain is irrelevant.
-          openssl req -new -x509 -key "$RUNNER_TEMP/custody-key.pem" \
-                      -out "$RUNNER_TEMP/custody-cert.pem" -days 2 \
-                      -subj "/CN=az-iot-conformance-custody" \
-                      -addext "basicConstraints=critical,CA:FALSE" \
-                      -addext "extendedKeyUsage=clientAuth"
           {
             echo "AZ_IOT_CONFORMANCE_KEY_URI=$AZ_IOT_CLIENT_KEY_URI"
             echo "AZ_IOT_CONFORMANCE_KEY_ENGINE=$AZ_IOT_CRYPTO_ENGINE_ID"
