@@ -447,7 +447,7 @@ if(AZ_IOT_WITH_PAHO)
     target_link_libraries(az_iot_conformance_paho_v3 PRIVATE
         az_iot_conformance az_iot_adapter_paho)
     az_iot_apply_warnings(az_iot_conformance_paho_v3)
-    # The harness declares AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY only in a build
+    # The harness declares AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY_URI only in a build
     # where the adapter actually honours a key reference, so it needs the same
     # AZ_IOT_PAHO_KEY_CUSTODY definition the adapter was compiled with.
     if(_paho_defs)
