@@ -6,94 +6,62 @@ using SetupSampleDevice;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
+using static Microsoft.Azure.Devices.Client.IntegrationTests.CertificateUtilities;
 
 internal class Program //TODO distinguish naming on operational vs boot certificates
 {
-    public const string PrivateKeyPath = "./PrivateKey.pem";
-    public const string InitialSignedCertificatesPath = "./PublicCertificateChain.pem"; // The certificates signed by DPS during the initial device provisioning
-    public const string RenewedSignedCertificatesPath = "./RenewedPublicCertificateChain.pem"; // The certificates signed by IoT Hub at some point after the device has been provisioned. Usually done when the current certificates are soon to expire
-
     public static async Task Main(string[] args)
     {
-        //Fixed in a different PR
-    }
+        string deviceId = SampleConstants.LoadDeviceId();
+        string registrationId = deviceId; //TODO this isn't correct, right?
+        string idScope = SampleConstants.LoadIdScope();
+        X509AuthenticationProvider authentication = SampleConstants.LoadAuthenticationProvider();
 
-    private static string ConvertToPem(IReadOnlyList<string> issuedClientCertificates)
-    {
-        StringBuilder pemBuilder = new StringBuilder();
-        foreach (string issuedClientCertificate in issuedClientCertificates)
+        // Create initial certificate signing request for DPS to fulfill while provisioning
+        var (csrBase64, privateKey) = GenerateCsrAndPrivateKey(registrationId, CsrAlgorithm.RSA);
+
+        using ConnectionClient connectionClient = new()
         {
-            pemBuilder.Append("-----BEGIN CERTIFICATE-----\r\n");
-            pemBuilder.Append(issuedClientCertificate);
-            pemBuilder.Append("\r\n");
-            pemBuilder.Append("-----END CERTIFICATE-----\r\n");
-        }
+            // Setup callback to handle constructing X509AuthenticationProvider each time a CSR completes
+            HandleCertificateSigningCompleteAsync = (IssuedCertificates) =>
+            {
+                // Convert to PEM and save
+                string pemChain = ConvertToPem(IssuedCertificates);
 
-        return pemBuilder.ToString();
-    }
+                using X509Certificate2 deviceCertTemp = CreateCertificateWithPrivateKey(IssuedCertificates, privateKey);
 
-    private static X509Certificate2 CreateX509CertificateFromKeyAndCert(string certPath, string keyPath)
-    {
-        // Load certificate and key
-        string certPem = File.ReadAllText(certPath);
-        string keyPem = File.ReadAllText(keyPath);
-
-        // Create X509Certificate2 from PEM
-        using var cert = X509Certificate2.CreateFromPem(certPem, keyPem);
-
-        // Note: On Windows, we need to export and reimport to allow ephemeral key use
-        using var exportedCert = X509CertificateLoader.LoadCertificate(cert.Export(X509ContentType.Pfx));
-
-        return exportedCert;
-    }
-
-    public static (string csrBase64, AsymmetricAlgorithm privateKey) GenerateCsr(string registrationId, CsrAlgorithm csrAlgorithm)
-    {
-        if (csrAlgorithm == CsrAlgorithm.ECC)
-        {
-            var ecdsa = ECDsa.Create(ECCurve.NamedCurves.nistP256);
-            var request = new CertificateRequest(
-                $"CN={registrationId}",
-                ecdsa,
-                HashAlgorithmName.SHA256);
-
-            byte[] csrDer = request.CreateSigningRequest();
-            return (Convert.ToBase64String(csrDer), ecdsa);
-        }
-        else
-        {
-            var rsa = RSA.Create(2048);
-            var request = new CertificateRequest(
-                $"CN={registrationId}",
-                rsa,
-                HashAlgorithmName.SHA256,
-                RSASignaturePadding.Pkcs1);
-
-            byte[] csrDer = request.CreateSigningRequest();
-            return (Convert.ToBase64String(csrDer), rsa);
-        }
-    }
-
-    public enum CsrAlgorithm
-    {
-        ECC,
-        RSA,
-    }
-
-    private static void SavePrivateKey(AsymmetricAlgorithm privateKey, string path)
-    {
-        byte[] privateKeyBytes = privateKey switch
-        {
-            ECDsa ecdsa => ecdsa.ExportPkcs8PrivateKey(),
-            RSA rsa => rsa.ExportPkcs8PrivateKey(),
-            _ => throw new NotSupportedException($"Unsupported key type: {privateKey.GetType()}")
+                // Export and reimport with Exportable flag
+                byte[] pfxBytes = deviceCertTemp.Export(X509ContentType.Pfx);
+                return Task.FromResult(new X509AuthenticationProvider(X509CertificateLoader.LoadPkcs12(pfxBytes, (string?)null, X509KeyStorageFlags.Exportable)));
+            }
         };
 
-        var sb = new StringBuilder();
-        sb.AppendLine("-----BEGIN PRIVATE KEY-----");
-        sb.AppendLine(Convert.ToBase64String(privateKeyBytes, Base64FormattingOptions.InsertLineBreaks));
-        sb.AppendLine("-----END PRIVATE KEY-----");
+        // Provision and connect to IoT hub using the certificates signed by DPS. Save those certificates signed by DPS locally
+        ProvisioningSettings provisioningSettings = new(idScope)
+        {
+            CertificateSigningRequest = new(privateKey, csrBase64),
+        };
 
-        File.WriteAllText(path, sb.ToString());
+        // Provision the device using the boot certificates. Once provisioned, the device will connect to IoT hub using the operational certificates
+        ConnectionContext connectionContext = await connectionClient.ProvisionAndConnectAsync(provisioningSettings, authentication);
+
+        // Create a new certificate signing request to send to IoT Hub this time
+        csrBase64 = GenerateCsrWithPrivateKey(registrationId, privateKey);
+        var certificateSigningRequest = new CertificateSigningRequest(registrationId, csrBase64, null, "*");
+        CertificateSigningOperation pendingCsr = await connectionClient.SendCertificateSigningRequestAsync(certificateSigningRequest);
+
+        try
+        {
+            await pendingCsr.Accepted;
+            CertificateSigningResponse certificateSigningResponse = await pendingCsr.Completed;
+        }
+        catch (CertificateSigningRequestFailedException ex)
+        {
+            Console.WriteLine($"Certificate signing request failed: {ex.Error.Message}");
+        }
+
+        // At this point, the certificate signing request has completed and the connection client has already swapped the underlying authentication provider to use
+        // the newly signed certificates. The next time that the connection client needs to reconnect to IoT hub, it will use these new certificates. No further action
+        // is needed from the application layer for this to take effect.
     }
 }

@@ -9,6 +9,7 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
 
 namespace Microsoft.Azure.Devices.Client.Unified.Connection
@@ -189,6 +190,16 @@ namespace Microsoft.Azure.Devices.Client.Unified.Connection
                 else if (status.Equals("200"))
                 {
                     CertificateSigningResponse response = JsonSerializer.Deserialize<CertificateSigningResponse>(args.Publish.Payload)!;
+                    if (HandleCertificateSigningCompleteAsync != null)
+                    {
+                        //TODO need a fault-injection like unit test that ensures that the client uses this new authentication provider upon reconnect since our API won't allow users to disconnect then reconnect to hub at will
+                        Debug.Assert(CurrentConnectionContext != null);
+                        CurrentConnectionContext.AuthenticationProvider = await HandleCertificateSigningCompleteAsync(response.Certificates);
+                    }
+                    else
+                    {
+                        Trace.TraceError("Certificate signing response could not update authentication provider because user never set \"HandleCertificateSigningCompleteAsync\" callback");
+                    }
                     pendingCertificateSigningOperation.SetCompleted(response);
                     //TODO qos? Ack needed?
                     return;

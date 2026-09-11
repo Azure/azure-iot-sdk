@@ -269,12 +269,12 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
 
             X509AuthenticationProvider x509AuthenticationProvider = new(pfx);
 
-            var (csrBase64, privateKey) = GenerateCsr(registrationId, CsrAlgorithm.RSA);
+            var (csrBase64, privateKey) = CertificateUtilities.GenerateCsrAndPrivateKey(registrationId, CertificateUtilities.CsrAlgorithm.RSA);
 
             ConnectionClient connectionClient = new(options);
             ProvisioningSettings provisioningSettings = new(DpsIdScope)
             {
-                ProvisioningCertificateSigningRequest = csrBase64,
+                CertificateSigningRequest = new(privateKey, csrBase64)
             };
 
             ConnectionContext connectionContext = await RetryAroundAuthorizationAsync<ConnectionContext>(
@@ -305,12 +305,6 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
                 "-----BEGIN CERTIFICATE-----\r\n"
                 + Convert.ToBase64String(cert.Export(X509ContentType.Cert), Base64FormattingOptions.InsertLineBreaks)
                 + "\r\n-----END CERTIFICATE-----");
-        }
-
-        public enum CsrAlgorithm
-        { 
-            ECC,
-            RSA,
         }
 
         // This basic retry logic covers the issue where a device is created on the Hub side, but it still 
@@ -363,55 +357,6 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
                     }
                 }
             }
-        }
-
-        public static (string csrBase64, AsymmetricAlgorithm privateKey) GenerateCsr(string registrationId, CsrAlgorithm csrAlgorithm)
-        {
-            if (csrAlgorithm == CsrAlgorithm.ECC)
-            {
-                var ecdsa = ECDsa.Create(ECCurve.NamedCurves.nistP256);
-                var request = new CertificateRequest(
-                    $"CN={registrationId}",
-                    ecdsa,
-                    HashAlgorithmName.SHA256);
-
-                byte[] csrDer = request.CreateSigningRequest();
-                return (Convert.ToBase64String(csrDer), ecdsa);
-            }
-            else
-            {
-                var rsa = RSA.Create(2048);
-                var request = new CertificateRequest(
-                    $"CN={registrationId}",
-                    rsa,
-                    HashAlgorithmName.SHA256,
-                    RSASignaturePadding.Pkcs1);
-
-                byte[] csrDer = request.CreateSigningRequest();
-                return (Convert.ToBase64String(csrDer), rsa);
-            }
-        }
-
-        private static AsymmetricAlgorithm LoadPrivateKeyFromPem(string keyPem)
-        {
-            // Try ECC first, then RSA
-            if (keyPem.Contains("EC PRIVATE KEY") || keyPem.Contains("PRIVATE KEY"))
-            {
-                try
-                {
-                    var ecdsa = ECDsa.Create();
-                    ecdsa.ImportFromPem(keyPem);
-                    return ecdsa;
-                }
-                catch (CryptographicException)
-                {
-                    // Not an ECC key, try RSA
-                }
-            }
-
-            var rsa = RSA.Create();
-            rsa.ImportFromPem(keyPem);
-            return rsa;
         }
     }
 }
