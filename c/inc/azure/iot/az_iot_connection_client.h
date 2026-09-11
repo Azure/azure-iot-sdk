@@ -79,11 +79,12 @@ extern "C"
     bool connection_profile_raw_truncated;
   } az_iot_hub_profile;
 
-#define AZ_IOT_HUB_PROFILE_INIT                                                              \
-  {                                                                                          \
-    ._internal_size = sizeof(az_iot_hub_profile),                                            \
-    .connection_profile = AZ_IOT_CONNECTION_PROFILE_CLASSIC, .connection_profile_raw = NULL, \
-    .connection_profile_raw_truncated = false,                                               \
+#define AZ_IOT_HUB_PROFILE_INIT                              \
+  {                                                          \
+    ._internal_size = sizeof(az_iot_hub_profile),            \
+    .connection_profile = AZ_IOT_CONNECTION_PROFILE_CLASSIC, \
+    .connection_profile_raw = NULL,                          \
+    .connection_profile_raw_truncated = false,               \
   }
 
   typedef struct az_iot_reconnection_policy
@@ -515,6 +516,14 @@ extern "C"
     int dps_phase;
     az_iot_provisioning_client dps_prov;
     az_iot_mqtt_client* dps_mqtt;
+
+    /* Observer for provisioning-session messages the provisioning flow itself
+     * does not claim -- the device-update operations share this session. Typed
+     * as void* here so the public header does not have to name an internal
+     * callback type. */
+    void* dps_message_observer;
+    void* dps_message_observer_ctx;
+
     char dps_operation_id[AZ_IOT_DPS_OPERATION_ID_MAX];
     size_t dps_operation_id_len;
     uint64_t dps_poll_due_ms;

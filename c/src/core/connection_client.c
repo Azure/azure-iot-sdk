@@ -935,6 +935,23 @@ static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
       {
         break;
       }
+      /* Offer the message to the device-update observer first: it shares this
+       * session and its responses arrive on the same subscribed filter, but the
+       * provisioning parser below would reject them as malformed registration
+       * responses and fault the attempt. */
+      if (c->dps_message_observer != NULL)
+      {
+        az_iot_dps_message_observer obs
+            = (az_iot_dps_message_observer)(uintptr_t)c->dps_message_observer;
+        if (obs(evt->message->topic,
+                evt->message->payload,
+                evt->message->payload_len,
+                c->dps_message_observer_ctx))
+        {
+          break;
+        }
+      }
+
       if (c->dps_phase != DPS_PHASE_REGISTERING && c->dps_phase != DPS_PHASE_POLLING)
       {
         break;
@@ -3126,6 +3143,54 @@ static az_iot_result run_feature_client_binds(az_iot_connection_client* c)
     }
   }
   return AZ_IOT_OK;
+}
+
+/* --- provisioning-session seam ------------------------------------------- */
+
+bool az_iot_connection_client__dps_session_ready(const az_iot_connection_client* client)
+{
+  if (client == NULL || client->dps_mqtt == NULL)
+  {
+    return false;
+  }
+  /* Before SUBSCRIBING there is no response route, and once the phase reaches
+   * DONE the session has been torn down. */
+  return client->dps_phase == DPS_PHASE_SUBSCRIBING || client->dps_phase == DPS_PHASE_REGISTERING
+      || client->dps_phase == DPS_PHASE_POLLING;
+}
+
+az_iot_result az_iot_connection_client__dps_publish(
+    az_iot_connection_client* client,
+    const az_iot_mqtt_message* msg)
+{
+  if (client == NULL || msg == NULL)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if (!az_iot_connection_client__dps_session_ready(client))
+  {
+    return AZ_IOT_ERR_NOT_CONNECTED;
+  }
+  if (client->dps_mqtt->iface == NULL || client->dps_mqtt->iface->publish == NULL)
+  {
+    return AZ_IOT_ERR_NOT_SUPPORTED;
+  }
+
+  uint16_t pid = 0;
+  return client->dps_mqtt->iface->publish(client->dps_mqtt, msg, &pid);
+}
+
+void az_iot_connection_client__set_dps_message_observer(
+    az_iot_connection_client* client,
+    az_iot_dps_message_observer observer,
+    void* user_ctx)
+{
+  if (client == NULL)
+  {
+    return;
+  }
+  client->dps_message_observer = (void*)(uintptr_t)observer;
+  client->dps_message_observer_ctx = user_ctx;
 }
 
 az_iot_result az_iot_connection_client__publish(

@@ -449,17 +449,16 @@ extern "C"
       } channel;
 
       /* Storage for the SDK-built channel. Opaque here: sized so the client
-       * stays caller-allocated with no hidden allocation. */
+       * stays caller-allocated with no hidden allocation. The channel keeps the
+       * request body and the ETags it echoes back, so this is dominated by
+       * those buffers rather than by pointers. A compile-time assert in
+       * adu_client.c fails the build if the channel ever outgrows it, so this
+       * number cannot drift out of date silently. */
       struct
       {
-        void* reserved[2];
-        struct
-        {
-          void* fn;
-          void* ctx;
-        } transport;
-        void* cb;
-        void* cb_ctx;
+        void* pointers[6];
+        uint8_t bytes[2560];
+        uint64_t alignment[4];
       } channel_storage;
       az_iot_adu_platform_hooks hooks;
       az_iot_adu_crypto_hooks crypto;

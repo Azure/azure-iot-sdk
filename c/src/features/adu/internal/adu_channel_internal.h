@@ -32,6 +32,8 @@
 #include <stdint.h>
 
 #include "azure/iot/az_iot_adu.h"
+
+#include "adu_protocol_internal.h"
 #include "azure/iot/az_iot_result.h"
 
 #ifdef __cplusplus
@@ -119,11 +121,41 @@ extern "C"
    * connection client. Lives inside az_iot_adu_client_t, so it is caller
    * allocated and needs no heap.
    */
+  /* Bound on a request/response body. A compliant update-check response fits
+   * every transport the service offers; this is sized for that. */
+#ifndef AZ_IOT_ADU_CHANNEL_BODY_MAX
+#define AZ_IOT_ADU_CHANNEL_BODY_MAX 2048
+#endif
+
   typedef struct az_iot_adu_channel_dps
   {
     az_iot_connection_client* connection;
     az_iot_adu_channel_update_cb update_cb;
     void* engine_ctx;
+
+    /* Correlation for the one request that may be outstanding. The device
+     * drives one operation at a time, so a single slot is enough and makes an
+     * unsolicited or late response obvious rather than ambiguous. */
+    char pending_rid[24];
+    az_iot_adu_operation pending_operation;
+    bool request_pending;
+    uint32_t next_rid;
+
+    /* Caller-allocated so the channel performs no allocation of its own. */
+    uint8_t body[AZ_IOT_ADU_CHANNEL_BODY_MAX];
+
+    /* What the device reports about itself on a fetch. Borrowed from the
+     * engine's cached device properties at request time. */
+    char agent_sdk_version[32];
+    int32_t agent_profile;
+
+    /* ETags from the last successful fetch, echoed on the next one. Empty
+     * means "not held yet". */
+    char agent_info_etag[128];
+    char service_config_etag[128];
+
+    /* Outcome of the last operation, for the engine to act on. */
+    az_iot_adu_error_action last_action;
   } az_iot_adu_channel_dps;
 
   /* Bind the channel to a connection and an HTTPS transport and emit the vtable
