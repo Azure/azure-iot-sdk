@@ -72,7 +72,10 @@ extern "C"
     /* The adapter honours a non-extractable private key: az_iot_mqtt_tls_options
      * client_key_uri + crypto_engine_id, and/or the sign() hook. An adapter
      * that declares this must complete a TLS handshake using a key it cannot
-     * read; see az_iot_conformance_options::key_uri for the end-to-end case. */
+     * read; see az_iot_conformance_options::key_uri for the end-to-end case.
+     *
+     * Declaring it without supplying that key, or in a build without TLS
+     * support, fails the run rather than warning. */
     AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY = 1u << 0
   } az_iot_conformance_capability;
 
@@ -91,9 +94,11 @@ extern "C"
      *   crypto_engine_id the provider/engine that owns it ("pkcs11", "tpm2")
      *   client_cert_path a certificate whose PUBLIC key is that key's
      *
-     * Leave key_uri NULL when no token is available: the suite then runs the
-     * custody cases that need no hardware and says on stderr what it did not
-     * run, rather than passing silently as though it had. */
+     * A declared capability that is never exercised FAILS the run: a pass has
+     * to mean the claim was checked. When no token is available, either do not
+     * declare the capability or set AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN=1 in the
+     * environment, which downgrades it to a notice -- such a run proves
+     * nothing about custody and must not be reported as conformant for it. */
     const char* key_uri;
     const char* crypto_engine_id;
     const char* client_cert_path;
@@ -101,9 +106,16 @@ extern "C"
 
   /* Run the conformance suite for `suite_kind` against the given factory.
    * Returns:
-   *   0  on success (all tests passed)
-   *   77 if the suite was skipped (no broker configured)
-   *   1  on failure (one or more tests failed)
+   *   0  on success: all tests passed and every declared capability was
+   *      exercised -- UNLESS AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN=1 was set in
+   *      the environment, which lets an unexercised capability through as a
+   *      notice on stderr. A 0 from such a run says nothing about that
+   *      capability and must not be reported as conformant for it.
+   *   1  on failure: a test failed, a declared capability was never exercised
+   *      (without that opt-out), or no broker was configured. There is no skip
+   *      code -- whether the suite runs is decided at build time by
+   *      AZ_IOT_BUILD_CONFORMANCE_TESTS, so a run that cannot test what it was
+   *      asked to test is a failure.
    *
    * Suitable to use directly as the return value of main() in a harness exe.
    *
@@ -111,6 +123,38 @@ extern "C"
    * declared. An adapter that implements an optional feature should call that
    * instead, or the suite cannot hold it to the feature's contract. */
   int az_iot_conformance_run(az_iot_conformance_suite suite_kind, az_iot_mqtt_factory* factory);
+
+  /* Result of az_iot_conformance_custody_material_state(). */
+  enum
+  {
+    AZ_IOT_CONFORMANCE_CUSTODY_NONE = 0,
+    AZ_IOT_CONFORMANCE_CUSTODY_COMPLETE = 1,
+    AZ_IOT_CONFORMANCE_CUSTODY_PARTIAL = 2
+  };
+
+  /* Internal, exposed for the suite's own tests.
+   *
+   * Classifies the three end-to-end custody fields as none, complete, or
+   * partial, counting an empty string as missing. Partial is rejected before
+   * the opt-out is considered, so misconfigured material cannot be downgraded
+   * to a notice. */
+  int az_iot_conformance_custody_material_state(
+      const char* key_uri,
+      const char* crypto_engine_id,
+      const char* client_cert_path);
+
+  /* Internal, exposed for the suite's own tests.
+   *
+   * Reports a declared capability whose contract was never exercised and
+   * returns what it contributes to the run's failure count: 1, unless
+   * `allow_value` -- the value of AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN, NULL when
+   * unset -- is exactly "1", in which case it reports a notice and returns 0.
+   * This is the whole of the opt-out policy, kept callable so a regression in
+   * it cannot pass unnoticed. */
+  int az_iot_conformance_report_unproven_capability(
+      const char* capability,
+      const char* why,
+      const char* allow_value);
 
   /* As above, plus the adapter's declared capabilities. `options` may be NULL,
    * which means the same as declaring nothing. */

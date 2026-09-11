@@ -120,7 +120,6 @@ namespace Microsoft.Azure.Devices.Client.Unified.Connection
             }
         }
 
-
         /// <summary>
         /// Send a certificate signing request to IoT hub
         /// </summary>

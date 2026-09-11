@@ -119,6 +119,15 @@ jobs:
           # there is nothing that wants a broker and nothing to point at one.
           AZ_IOT_MQTT_BROKER_HOST: ${{ runner.os == 'Linux' && 'localhost' || '' }}
           AZ_IOT_MQTT_BROKER_PORT: ${{ runner.os == 'Linux' && '1883' || '' }}
+          # The Paho harness declares AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY, and an
+          # unproven capability now FAILS the suite rather than warning. The
+          # Linux legs DO build the TLS conformance cases (linux-base sets
+          # AZ_IOT_BUILD_CONFORMANCE_TESTS_TLS); what they lack is a PKCS#11
+          # token and a certificate, so they cannot exercise that contract.
+          # Accepting that here is a deliberate choice, not an accident: the
+          # coverage job below provisions a real token and proves it on every
+          # push.
+          AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN: '1'
         run: ctest --preset ${{ matrix.preset }} ${{ runner.os == 'Windows' && format('-C {0}', matrix.build_type) || '' }} --output-on-failure
 
   conventions:
@@ -181,6 +190,13 @@ jobs:
         env:
           AZ_IOT_MQTT_BROKER_HOST: localhost
           AZ_IOT_MQTT_BROKER_PORT: '1883'
+          # The Paho harness declares AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY, and an
+          # unproven capability now FAILS the suite rather than warning. This
+          # build configures without AZ_IOT_BUILD_CONFORMANCE_TESTS_TLS and has
+          # no PKCS#11 token, so it cannot exercise that contract. Accepting
+          # that here is a deliberate choice, not an accident: the coverage job
+          # below provisions a real token and proves it on every push.
+          AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN: '1'
         run: ctest --test-dir build/c99-strict --output-on-failure
 
   # ---------------------------------------------------------------------------
@@ -308,7 +324,7 @@ jobs:
       # actually had -- coverage computed over fewer tests than anyone thought.
       # Now that no suite decides at run time whether to participate, the count
       # is deterministic, so assert it exactly. Bump this when adding a suite.
-      EXPECTED_TESTS: '31'
+      EXPECTED_TESTS: '37'
     services:
       mosquitto:
         image: eclipse-mosquitto:2
@@ -346,6 +362,20 @@ jobs:
           echo "OPENSSL_MODULES=$OPENSSL_MODULES" >> "$GITHUB_ENV"
           openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 \
                           -out "$RUNNER_TEMP/custody-key.pem"
+
+          # Issue the certificate BEFORE the key goes into the token: the
+          # conformance custody case presents it to a TLS server while the
+          # private half stays in the token, so the two must be the same key
+          # pair -- and setup-softhsm.sh deletes the PEM once it has imported
+          # it, which is the point of the exercise. The test proxy terminates
+          # the handshake and accepts any client certificate, so self-signed is
+          # enough and its trust chain is irrelevant.
+          openssl req -new -x509 -key "$RUNNER_TEMP/custody-key.pem" \
+                      -out "$RUNNER_TEMP/custody-cert.pem" -days 2 \
+                      -subj "/CN=az-iot-conformance-custody" \
+                      -addext "basicConstraints=critical,CA:FALSE" \
+                      -addext "extendedKeyUsage=clientAuth"
+
           eng/setup-softhsm.sh "$RUNNER_TEMP/custody-key.pem" > "$RUNNER_TEMP/softhsm-env.sh"
           # "export NAME='value'" -> the NAME=value lines GITHUB_ENV takes.
           sed -E "s/^export ([A-Za-z0-9_]+)='(.*)'\$/\1=\2/" \
@@ -354,6 +384,12 @@ jobs:
           # Fail here, not thirty lines into a test log, if the OpenSSL pkcs11
           # provider is not installed: without it the token cannot sign.
           openssl list -providers -provider pkcs11 > /dev/null
+
+          {
+            echo "AZ_IOT_CONFORMANCE_KEY_URI=$AZ_IOT_CLIENT_KEY_URI"
+            echo "AZ_IOT_CONFORMANCE_KEY_ENGINE=$AZ_IOT_CRYPTO_ENGINE_ID"
+            echo "AZ_IOT_CONFORMANCE_CLIENT_CERT=$RUNNER_TEMP/custody-cert.pem"
+          } >> "$GITHUB_ENV"
 
       - name: Verify MQTT broker is reachable
         # The conformance suites are where nearly all Paho adapter coverage
@@ -364,6 +400,11 @@ jobs:
         run: mosquitto_pub -h localhost -p 1883 -t az-iot/coverage/probe -m ok
 
       - name: Configure
+        # The TLS conformance cases are already on here (linux-base sets
+        # AZ_IOT_BUILD_CONFORMANCE_TESTS_TLS), so what this job adds is the
+        # token material exported above. The harness declares
+        # AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY and a declared capability that is
+        # never exercised fails the run, so this is the job that proves it.
         run: cmake --preset linux-gcc-coverage -DAZ_IOT_BUILD_PKCS11_TESTS=ON
 
       - name: Build

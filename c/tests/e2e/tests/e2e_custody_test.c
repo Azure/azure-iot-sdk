@@ -336,7 +336,29 @@ static void telemetry_flows_over_the_token_authenticated_connection(void** state
   char needle[128];
   snprintf(needle, sizeof(needle), "custody-%ld", (long)time(NULL));
 
-  assert_true(az_iot_e2e_service_telemetry_watch_begin(g_fixture.service));
+  /* The cold AMQP handshake to the Event Hub-compatible endpoint (TLS ->
+   * connection -> CBS SAS -> per-partition receivers) can fail transiently
+   * against a freshly provisioned hub, so retry with a short backoff and pump
+   * the device in between to keep its MQTT connection warm. A single attempt
+   * whose reason was discarded is what this test did before, and a transient
+   * open failure was indistinguishable from a custody fault. Mirrors
+   * e2e_scenarios_test.c. */
+  bool watching = az_iot_e2e_service_telemetry_watch_begin(g_fixture.service);
+  for (time_t connect_start = time(NULL);
+       !watching && (time(NULL) - connect_start) < E2E_CONNECT_TIMEOUT_S;)
+  {
+    for (int i = 0; i < 50; i++) /* ~1s backoff, device kept alive */
+    {
+      (void)az_iot_connection_client_do_work(&g_fixture.conn, E2E_PUMP_MS);
+    }
+    watching = az_iot_e2e_service_telemetry_watch_begin(g_fixture.service);
+  }
+  if (!watching)
+  {
+    const char* err = az_iot_e2e_service_last_error(g_fixture.service);
+    fprintf(stderr, "[e2e] telemetry watch begin failed: %s\n", (err != NULL) ? err : "unknown");
+  }
+  assert_true(watching);
 
   char payload[192];
   int payload_len = snprintf(payload, sizeof(payload), "{\"marker\":\"%s\"}", needle);
@@ -361,6 +383,16 @@ static void telemetry_flows_over_the_token_authenticated_connection(void** state
     (void)az_iot_e2e_service_do_work(g_fixture.service, E2E_PUMP_MS);
     seen = az_iot_e2e_service_telemetry_seen(g_fixture.service, needle);
   }
+
+  /* The Event Hub can observe the message before the device's own send
+   * acknowledgement (PUBACK) has been pumped in, so breaking on `seen` alone
+   * races the send. Drain the device briefly until the send completes, the
+   * same way e2e_scenarios_test.c does. */
+  for (time_t ack = time(NULL); !g_fixture.send_done && (time(NULL) - ack) < 5;)
+  {
+    (void)az_iot_connection_client_do_work(&g_fixture.conn, E2E_PUMP_MS);
+  }
+
   az_iot_e2e_service_telemetry_watch_end(g_fixture.service);
 
   assert_true(g_fixture.send_done);

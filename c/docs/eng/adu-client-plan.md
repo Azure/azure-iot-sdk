@@ -247,8 +247,14 @@ stateDiagram-v2
   no app-level `accept_deployment_fn` veto hook (e.g. battery / critical-op deferral) — a
   candidate add, now more useful because the device controls the poll.
 - **Multi-step / per-step results** — sequential per-step loop; `step_results[]` with a
-  4-bit facility + raw-code `extendedResultCode` for field debugging. ADUv2 carries these as the
-  `stepResults` map plus a comma-separated hex `extendedResultCodes` list.
+  4-bit facility + raw-code `extendedResultCode` for field debugging. The engine exposes the
+  accumulated entries through `az_iot_adu_report.step_results` and `step_results_count`, in
+  manifest-step order, including on completion or failure. These are borrowed views valid only
+  during the internal channel's report call; a retaining channel must copy the entries and
+  their `result_details` span contents. Existing per-step codes are preserved without conversion.
+  ADUv2 serialization/delivery remains pending: the contract describes a `stepResults` map plus
+  a comma-separated hex `extendedResultCodes` list, with the full step wire shape still
+  unconfirmed in [aduv2-spec.md](aduv2-spec.md#verified-vs-drafted).
 - **Retry vs. replacement vs. duplicate** — `set_active_workflow` tracks the workflow id
   + a CRC-32 fingerprint of `updateManifest`. Under ADUv2 the correlation key is **`workflowId`
   alone** and reporting is idempotent on it, so the `retryTimestamp` input disappears; the
