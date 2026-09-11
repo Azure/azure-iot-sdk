@@ -34,7 +34,7 @@ namespace Microsoft.Azure.Devices.Client
         private event Func<ProvisioningFlowCompletedArgs, Task>? ProvisioningFlowCompletedAsync;
 
         private const string ProvisioningUsernameFormat = "{0}/registrations/{1}/api-version={2}&ClientVersion={3}";
-        private const string ProvisioningApiVersion = "2019-03-31";
+        private const string ProvisioningApiVersion = "2026-11-02-preview";
         private const string ProvisioningSubscribeFilter = "$dps/registrations/res/#";
         private const string ProvisioningRegisterTopic = "$dps/registrations/PUT/iotdps-register/?$rid={0}";
         private const string ProvisioningGetOperationsTopic = "$dps/registrations/GET/iotdps-get-operationstatus/?$rid={0}&operationId={1}";
@@ -181,7 +181,7 @@ namespace Microsoft.Azure.Devices.Client
                 IotHubHostName = provisioningResult.AssignedHub!,
                 IssuedClientCertificates = provisioningResult.IssuedClientCertificateChain,
                 AuthenticationProvider = authentication,
-                IsGen2Hub = provisioningResult.IsAzureEventGridHub,
+                IsGen2Hub = provisioningResult.ConnectionProfile == ConnectionProfile.MqttV5,
             };
 
             await ConnectAsync(CurrentConnectionContext, cancellationToken);
