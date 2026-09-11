@@ -243,6 +243,8 @@ The suite also holds every adapter to the safety half of the optional features, 
 
 If your adapter implements an optional feature, say so, or the suite can only check that you refuse it cleanly.
 
+> **Renamed:** `AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY` is now `AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY_URI` (same bit, same proof). There is no alias: change the name to the route you implement. If you implement the callback route, that build error is the point — you want `_SIGN`, which the old single capability could never prove.
+
 Non-extractable key custody has **two independent routes**, and `az_iot_mqtt_tls_options` says you may implement either, both or neither. They are separate capabilities, so declare only what you implement:
 
 | capability | route | material to supply |

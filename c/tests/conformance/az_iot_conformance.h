@@ -81,6 +81,19 @@ extern "C"
      * needs, or in a build without TLS support, fails the run rather than
      * warning. */
 
+    /* RENAME, deliberately not aliased: AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY
+     * became _URI (same bit, 1u << 0, and the same proof it always had).
+     * A harness declaring the old name gets a compile error; change it to the
+     * route you implement.
+     *
+     * An alias would compile, and for a URI-route adapter would behave
+     * identically -- but it would also let the adapter this split exists for
+     * keep compiling: a sign-hook-only adapter would carry on declaring a name
+     * that reads as "custody" while being held to the URI route it cannot
+     * satisfy, and would keep failing without ever meeting _SIGN. The build
+     * error is what sends it to the right bit. The old name also cannot say
+     * which route is meant, which is the ambiguity being removed. */
+
     /* client_key_uri + crypto_engine_id: the stack has an engine/provider
      * abstraction and resolves the key reference through it. Proved with
      * az_iot_conformance_options key_uri + crypto_engine_id + client_cert_path. */
