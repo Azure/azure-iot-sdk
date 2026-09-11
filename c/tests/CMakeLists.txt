@@ -497,6 +497,14 @@ if(AZ_IOT_WITH_PAHO)
         target_link_libraries(az_iot_conformance_paho_sign_negative PRIVATE
             az_iot_conformance az_iot_adapter_paho OpenSSL::SSL OpenSSL::Crypto)
         az_iot_apply_warnings(az_iot_conformance_paho_sign_negative)
+        if(UNIX)
+            # dup/dup2/fileno/getpid are POSIX: under -std=c99 they are not
+            # declared without this, and an implicit declaration is an error
+            # here. Same macros az_iot_conformance itself is built with.
+            target_compile_definitions(az_iot_conformance_paho_sign_negative PRIVATE
+                _POSIX_C_SOURCE=200809L
+                _DEFAULT_SOURCE)
+        endif()
         if(_paho_defs)
             target_compile_definitions(az_iot_conformance_paho_sign_negative PRIVATE ${_paho_defs})
         endif()
