@@ -135,8 +135,9 @@ extern "C"
   /* Internal, exposed for the suite's own tests.
    *
    * Classifies the three end-to-end custody fields as none, complete, or
-   * partial. Partial is rejected before the opt-out is considered, so
-   * misconfigured material cannot be downgraded to a notice. */
+   * partial, counting an empty string as missing. Partial is rejected before
+   * the opt-out is considered, so misconfigured material cannot be downgraded
+   * to a notice. */
   int az_iot_conformance_custody_material_state(
       const char* key_uri,
       const char* crypto_engine_id,

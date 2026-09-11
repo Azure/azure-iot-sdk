@@ -88,6 +88,20 @@ static void custody_material_is_all_or_none(void** state)
   assert_int_equal(
       az_iot_conformance_custody_material_state(NULL, NULL, c), AZ_IOT_CONFORMANCE_CUSTODY_PARTIAL);
 
+  /* An empty string is missing, not supplied. The harnesses already map an
+   * empty environment variable to NULL, and "" as a key URI would otherwise
+   * pass the completeness gate and reach the TLS case. */
+  assert_int_equal(
+      az_iot_conformance_custody_material_state("", e, c), AZ_IOT_CONFORMANCE_CUSTODY_PARTIAL);
+  assert_int_equal(
+      az_iot_conformance_custody_material_state(u, "", c), AZ_IOT_CONFORMANCE_CUSTODY_PARTIAL);
+  assert_int_equal(
+      az_iot_conformance_custody_material_state(u, e, ""), AZ_IOT_CONFORMANCE_CUSTODY_PARTIAL);
+  assert_int_equal(
+      az_iot_conformance_custody_material_state("", "", ""), AZ_IOT_CONFORMANCE_CUSTODY_NONE);
+  assert_int_equal(
+      az_iot_conformance_custody_material_state("", NULL, NULL), AZ_IOT_CONFORMANCE_CUSTODY_NONE);
+
   /* Two of three. */
   assert_int_equal(
       az_iot_conformance_custody_material_state(u, e, NULL), AZ_IOT_CONFORMANCE_CUSTODY_PARTIAL);

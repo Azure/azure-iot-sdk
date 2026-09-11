@@ -67,21 +67,6 @@ static bool adapter_claims_key_custody(void)
 {
   return (g_capabilities & (uint32_t)AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY) != 0u;
 }
-/* A declared capability that was never exercised.
- *
- * The suite exists so that a third party can bring their own MQTT layer and
- * have a pass mean something. A capability is the adapter's own claim to
- * implement an optional feature, so a run that prints a warning and still
- * exits 0 is the one outcome that must not happen: the claim ends up published
- * as "conformant" having never been checked.
- *
- * So this FAILS the run. An environment that genuinely cannot exercise it --
- * no token on the machine, a build without TLS -- must say so deliberately by
- * setting AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN=1, which downgrades it to a
- * notice. That keeps "could not run it here" a decision someone made, not an
- * accident of the environment, and it is never the default.
- *
- * Returns the number of failures to add to the run's total. */
 /* Whether the three end-to-end custody fields form a usable set.
  *
  * Judged on ALL THREE, never on key_uri alone. An earlier version tested only
@@ -94,8 +79,16 @@ int az_iot_conformance_custody_material_state(
     const char* crypto_engine_id,
     const char* client_cert_path)
 {
-  const bool any = (key_uri != NULL) || (crypto_engine_id != NULL) || (client_cert_path != NULL);
-  const bool all = (key_uri != NULL) && (crypto_engine_id != NULL) && (client_cert_path != NULL);
+  /* An empty string is missing, not supplied. The bundled harnesses already
+   * map an empty environment variable to NULL, so accepting "" here would hold
+   * a direct caller of this API to a weaker rule than the harnesses that ship
+   * with it -- and "" as a key URI reaches the TLS case as a complete set. */
+  const bool has_uri = (key_uri != NULL) && (key_uri[0] != '\0');
+  const bool has_engine = (crypto_engine_id != NULL) && (crypto_engine_id[0] != '\0');
+  const bool has_cert = (client_cert_path != NULL) && (client_cert_path[0] != '\0');
+
+  const bool any = has_uri || has_engine || has_cert;
+  const bool all = has_uri && has_engine && has_cert;
 
   if (!any)
   {
@@ -141,6 +134,21 @@ static const char* read_env(const char* name, char* buf, size_t cap)
 #endif
 }
 
+/* A declared capability that was never exercised.
+ *
+ * The suite exists so that a third party can bring their own MQTT layer and
+ * have a pass mean something. A capability is the adapter's own claim to
+ * implement an optional feature, so a run that prints a warning and still
+ * exits 0 is the one outcome that must not happen: the claim ends up published
+ * as "conformant" having never been checked.
+ *
+ * So this FAILS the run. An environment that genuinely cannot exercise it --
+ * no token on the machine, a build without TLS -- must say so deliberately by
+ * setting AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN=1, which downgrades it to a
+ * notice. That keeps "could not run it here" a decision someone made, not an
+ * accident of the environment, and it is never the default.
+ *
+ * Returns the number of failures to add to the run's total. */
 int az_iot_conformance_report_unproven_capability(
     const char* capability,
     const char* why,
