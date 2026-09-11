@@ -60,55 +60,92 @@ static void only_the_exact_value_one_opts_out(void** state)
   }
 }
 
-/* The three end-to-end custody fields are all-or-none, judged on all three.
+/* Custody material is all-or-none PER ROUTE, and judged on every field of the
+ * route rather than on key_uri alone.
  *
- * An earlier version tested key_uri alone, so engine and certificate supplied
- * without it were ignored in silence -- and since the run then reported "no key
- * was supplied", the opt-out above downgraded it to a notice. A regression that
- * restores the key_uri-only test brings that back, so every combination is
- * pinned here. */
-static void custody_material_is_all_or_none(void** state)
+ * Two regressions are pinned here. Testing key_uri alone let engine and
+ * certificate supplied without it be ignored in silence -- and since the run
+ * then reported "no key was supplied", the opt-out above downgraded it to a
+ * notice. Treating the two routes as one capability held a sign-hook-only
+ * adapter to the URI route, which it never claimed and cannot satisfy. */
+static void custody_material_is_all_or_none_per_route(void** state)
 {
   (void)state;
   const char* const u = "pkcs11:object=k;type=private";
   const char* const e = "pkcs11";
   const char* const c = "/tmp/cert.pem";
+  const bool sign = true;
+  const bool no_sign = false;
 
   assert_int_equal(
-      az_iot_conformance_custody_material_state(NULL, NULL, NULL), AZ_IOT_CONFORMANCE_CUSTODY_NONE);
-  assert_int_equal(
-      az_iot_conformance_custody_material_state(u, e, c), AZ_IOT_CONFORMANCE_CUSTODY_COMPLETE);
+      az_iot_conformance_custody_material_state(NULL, NULL, NULL, no_sign),
+      AZ_IOT_CONFORMANCE_CUSTODY_NONE);
 
-  /* One of three. The engine-only and certificate-only cases are the ones the
-   * key_uri-only test used to wave through. */
+  /* Each route complete on its own, and both together sharing one certificate. */
   assert_int_equal(
-      az_iot_conformance_custody_material_state(u, NULL, NULL), AZ_IOT_CONFORMANCE_CUSTODY_PARTIAL);
+      az_iot_conformance_custody_material_state(u, e, c, no_sign), AZ_IOT_CONFORMANCE_CUSTODY_URI);
   assert_int_equal(
-      az_iot_conformance_custody_material_state(NULL, e, NULL), AZ_IOT_CONFORMANCE_CUSTODY_PARTIAL);
+      az_iot_conformance_custody_material_state(NULL, NULL, c, sign),
+      AZ_IOT_CONFORMANCE_CUSTODY_SIGN);
   assert_int_equal(
-      az_iot_conformance_custody_material_state(NULL, NULL, c), AZ_IOT_CONFORMANCE_CUSTODY_PARTIAL);
+      az_iot_conformance_custody_material_state(u, e, c, sign),
+      AZ_IOT_CONFORMANCE_CUSTODY_URI | AZ_IOT_CONFORMANCE_CUSTODY_SIGN);
+
+  /* URI route, one or two of three. The engine-only and certificate-only cases
+   * are the ones the key_uri-only test used to wave through. */
+  assert_int_equal(
+      az_iot_conformance_custody_material_state(u, NULL, NULL, no_sign),
+      AZ_IOT_CONFORMANCE_CUSTODY_PARTIAL);
+  assert_int_equal(
+      az_iot_conformance_custody_material_state(NULL, e, NULL, no_sign),
+      AZ_IOT_CONFORMANCE_CUSTODY_PARTIAL);
+  assert_int_equal(
+      az_iot_conformance_custody_material_state(NULL, NULL, c, no_sign),
+      AZ_IOT_CONFORMANCE_CUSTODY_PARTIAL);
+  assert_int_equal(
+      az_iot_conformance_custody_material_state(u, e, NULL, no_sign),
+      AZ_IOT_CONFORMANCE_CUSTODY_PARTIAL);
+  assert_int_equal(
+      az_iot_conformance_custody_material_state(u, NULL, c, no_sign),
+      AZ_IOT_CONFORMANCE_CUSTODY_PARTIAL);
+  assert_int_equal(
+      az_iot_conformance_custody_material_state(NULL, e, c, no_sign),
+      AZ_IOT_CONFORMANCE_CUSTODY_PARTIAL);
+
+  /* Sign route without the certificate it must present. */
+  assert_int_equal(
+      az_iot_conformance_custody_material_state(NULL, NULL, NULL, sign),
+      AZ_IOT_CONFORMANCE_CUSTODY_PARTIAL);
+
+  /* A complete sign route does not excuse a half-built URI route beside it. */
+  assert_int_equal(
+      az_iot_conformance_custody_material_state(u, NULL, c, sign),
+      AZ_IOT_CONFORMANCE_CUSTODY_PARTIAL);
+  assert_int_equal(
+      az_iot_conformance_custody_material_state(NULL, e, c, sign),
+      AZ_IOT_CONFORMANCE_CUSTODY_PARTIAL);
 
   /* An empty string is missing, not supplied. The harnesses already map an
    * empty environment variable to NULL, and "" as a key URI would otherwise
    * pass the completeness gate and reach the TLS case. */
   assert_int_equal(
-      az_iot_conformance_custody_material_state("", e, c), AZ_IOT_CONFORMANCE_CUSTODY_PARTIAL);
+      az_iot_conformance_custody_material_state("", e, c, no_sign),
+      AZ_IOT_CONFORMANCE_CUSTODY_PARTIAL);
   assert_int_equal(
-      az_iot_conformance_custody_material_state(u, "", c), AZ_IOT_CONFORMANCE_CUSTODY_PARTIAL);
+      az_iot_conformance_custody_material_state(u, "", c, no_sign),
+      AZ_IOT_CONFORMANCE_CUSTODY_PARTIAL);
   assert_int_equal(
-      az_iot_conformance_custody_material_state(u, e, ""), AZ_IOT_CONFORMANCE_CUSTODY_PARTIAL);
+      az_iot_conformance_custody_material_state(u, e, "", no_sign),
+      AZ_IOT_CONFORMANCE_CUSTODY_PARTIAL);
   assert_int_equal(
-      az_iot_conformance_custody_material_state("", "", ""), AZ_IOT_CONFORMANCE_CUSTODY_NONE);
+      az_iot_conformance_custody_material_state(NULL, NULL, "", sign),
+      AZ_IOT_CONFORMANCE_CUSTODY_PARTIAL);
   assert_int_equal(
-      az_iot_conformance_custody_material_state("", NULL, NULL), AZ_IOT_CONFORMANCE_CUSTODY_NONE);
-
-  /* Two of three. */
+      az_iot_conformance_custody_material_state("", "", "", no_sign),
+      AZ_IOT_CONFORMANCE_CUSTODY_NONE);
   assert_int_equal(
-      az_iot_conformance_custody_material_state(u, e, NULL), AZ_IOT_CONFORMANCE_CUSTODY_PARTIAL);
-  assert_int_equal(
-      az_iot_conformance_custody_material_state(u, NULL, c), AZ_IOT_CONFORMANCE_CUSTODY_PARTIAL);
-  assert_int_equal(
-      az_iot_conformance_custody_material_state(NULL, e, c), AZ_IOT_CONFORMANCE_CUSTODY_PARTIAL);
+      az_iot_conformance_custody_material_state("", NULL, NULL, no_sign),
+      AZ_IOT_CONFORMANCE_CUSTODY_NONE);
 }
 
 int main(void)
@@ -117,7 +154,7 @@ int main(void)
     cmocka_unit_test(an_unexercised_capability_fails_by_default),
     cmocka_unit_test(the_exact_value_one_downgrades_it_to_a_notice),
     cmocka_unit_test(only_the_exact_value_one_opts_out),
-    cmocka_unit_test(custody_material_is_all_or_none),
+    cmocka_unit_test(custody_material_is_all_or_none_per_route),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }
