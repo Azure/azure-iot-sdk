@@ -575,13 +575,18 @@ az_iot_result az_iot_adu__parse_error_code(
     const uint8_t* payload,
     size_t payload_len,
     char* out_code,
-    size_t out_code_size)
+    size_t out_code_size,
+    int32_t* out_numeric_code)
 {
   if (out_code == NULL || out_code_size == 0)
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
   out_code[0] = '\0';
+  if (out_numeric_code != NULL)
+  {
+    *out_numeric_code = 0;
+  }
 
   if (payload == NULL || payload_len == 0)
   {
@@ -597,72 +602,121 @@ az_iot_result az_iot_adu__parse_error_code(
     return AZ_IOT_ERR_NOT_FOUND;
   }
 
+  bool found_string_code = false;
+  bool found_numeric_code = false;
+  bool closed = false;
+
   while (az_result_succeeded(az_json_reader_next_token(&jr)))
   {
     if (jr.token.kind == AZ_JSON_TOKEN_END_OBJECT)
     {
+      closed = true;
       break;
     }
     if (jr.token.kind != AZ_JSON_TOKEN_PROPERTY_NAME)
     {
       return AZ_IOT_ERR_NOT_FOUND;
     }
-    bool is_error = az_json_token_is_text_equal(&jr.token, AZ_SPAN_FROM_STR("error"));
+
+    bool is_numeric = az_json_token_is_text_equal(&jr.token, AZ_SPAN_FROM_STR("errorCode"));
+    bool is_info = az_json_token_is_text_equal(&jr.token, AZ_SPAN_FROM_STR("info"));
+
     if (az_result_failed(az_json_reader_next_token(&jr)))
     {
-      return AZ_IOT_ERR_NOT_FOUND;
+      break;
     }
-    if (!is_error || jr.token.kind != AZ_JSON_TOKEN_BEGIN_OBJECT)
+
+    if (is_numeric && jr.token.kind == AZ_JSON_TOKEN_NUMBER)
     {
-      if (az_result_failed(az_json_reader_skip_children(&jr)))
+      /* Parse regardless of whether the caller wants the value: detection must
+       * not depend on an optional output parameter. */
+      int32_t v = 0;
+      if (az_result_succeeded(az_json_token_get_int32(&jr.token, &v)))
+      {
+        found_numeric_code = true;
+        if (out_numeric_code != NULL)
+        {
+          *out_numeric_code = v;
+        }
+      }
+      continue;
+    }
+
+    /* The originating string code travels here. The service SHOULD surface it,
+     * so its absence is normal and the numeric code carries the class. */
+    if (is_info && jr.token.kind == AZ_JSON_TOKEN_BEGIN_OBJECT)
+    {
+      bool info_closed = false;
+      while (az_result_succeeded(az_json_reader_next_token(&jr)))
+      {
+        if (jr.token.kind == AZ_JSON_TOKEN_END_OBJECT)
+        {
+          info_closed = true;
+          break;
+        }
+        if (jr.token.kind != AZ_JSON_TOKEN_PROPERTY_NAME)
+        {
+          return AZ_IOT_ERR_NOT_FOUND;
+        }
+        bool is_adu_code = az_json_token_is_text_equal(&jr.token, AZ_SPAN_FROM_STR("aduErrorCode"));
+        if (az_result_failed(az_json_reader_next_token(&jr)))
+        {
+          break;
+        }
+        if (is_adu_code && jr.token.kind == AZ_JSON_TOKEN_STRING)
+        {
+          int32_t n = az_span_size(jr.token.slice);
+          if (n < 0 || (size_t)n + 1 > out_code_size)
+          {
+            return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+          }
+          memcpy(out_code, az_span_ptr(jr.token.slice), (size_t)n);
+          out_code[n] = '\0';
+          found_string_code = true;
+          continue;
+        }
+        if (az_result_failed(az_json_reader_skip_children(&jr)))
+        {
+          return AZ_IOT_ERR_NOT_FOUND;
+        }
+      }
+      if (!info_closed)
       {
         return AZ_IOT_ERR_NOT_FOUND;
       }
       continue;
     }
 
-    while (az_result_succeeded(az_json_reader_next_token(&jr)))
+    if (az_result_failed(az_json_reader_skip_children(&jr)))
     {
-      if (jr.token.kind == AZ_JSON_TOKEN_END_OBJECT)
-      {
-        break;
-      }
-      if (jr.token.kind != AZ_JSON_TOKEN_PROPERTY_NAME)
-      {
-        return AZ_IOT_ERR_NOT_FOUND;
-      }
-      bool is_code = az_json_token_is_text_equal(&jr.token, AZ_SPAN_FROM_STR("code"));
-      if (az_result_failed(az_json_reader_next_token(&jr)))
-      {
-        return AZ_IOT_ERR_NOT_FOUND;
-      }
-      if (is_code && jr.token.kind == AZ_JSON_TOKEN_STRING)
-      {
-        int32_t n = az_span_size(jr.token.slice);
-        if (n < 0 || (size_t)n + 1 > out_code_size)
-        {
-          return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
-        }
-        memcpy(out_code, az_span_ptr(jr.token.slice), (size_t)n);
-        out_code[n] = '\0';
-        return AZ_IOT_OK;
-      }
-      if (az_result_failed(az_json_reader_skip_children(&jr)))
-      {
-        return AZ_IOT_ERR_NOT_FOUND;
-      }
+      return AZ_IOT_ERR_NOT_FOUND;
     }
   }
 
+  /* A body that never closed is truncated: acting on a partially read failure
+   * could drive a resend or retry from incomplete JSON. */
+  if (!closed)
+  {
+    return AZ_IOT_ERR_NOT_FOUND;
+  }
+
+  /* Either signal alone is enough to classify: the numeric code carries the
+   * class even when the string code is absent. */
+  if (found_string_code || found_numeric_code)
+  {
+    return AZ_IOT_OK;
+  }
   return AZ_IOT_ERR_NOT_FOUND;
 }
 
-az_iot_adu_error_action az_iot_adu__classify_error(const char* error_code, int32_t status)
+az_iot_adu_error_action az_iot_adu__classify_error(
+    const char* error_code,
+    int32_t numeric_code,
+    az_iot_adu_operation operation)
 {
+  /* The originating string code is the most precise signal when present. */
   if (error_code != NULL && error_code[0] != '\0')
   {
-    /* The code is authoritative: the same status carries conditions that need
-     * opposite handling, so it is never the primary signal. */
     if (strcmp(error_code, "UPDATE_ACCOUNT_NOT_LINKED") == 0)
     {
       return AZ_IOT_ADU_ERROR_ACTION_PROCEED;
@@ -689,27 +743,44 @@ az_iot_adu_error_action az_iot_adu__classify_error(const char* error_code, int32
     {
       return AZ_IOT_ADU_ERROR_ACTION_RETRY_AFTER;
     }
-    /* An unrecognized code is NOT assumed retryable: repeating a request the
-     * service has already rejected is the worse failure mode. */
+    /* An unrecognized string code is NOT assumed retryable: repeating a request
+     * the service has already rejected is the worse failure mode. */
     return AZ_IOT_ADU_ERROR_ACTION_FATAL;
   }
 
-  /* No code in the body: fall back to the status, coarsely and conservatively. */
-  if (status >= 200 && status < 300)
+  /* No string code: the numeric code carries the class. This path matters --
+   * surfacing the string code is a SHOULD, not a MUST. */
+  switch (numeric_code)
   {
-    return AZ_IOT_ADU_ERROR_ACTION_NONE;
+    case AZ_IOT_ADU_ERR_AGENT_INFO_RESEND_REQUIRED:
+      /* The whole resend/re-sync family shares this code. Resending the full
+       * agentInfo also drops the stale service-config ETag, so one action
+       * covers every member. */
+      return AZ_IOT_ADU_ERROR_ACTION_RESEND_AGENT_INFO;
+
+    case AZ_IOT_ADU_ERR_GENERIC_CONFLICT:
+      /* Shared by two conditions needing OPPOSITE handling: a fetch means the
+       * account is not linked (proceed, do not retry); a report means a
+       * terminal result is already recorded (treat as delivered). Without the
+       * string code, the operation in flight is what disambiguates them. */
+      return (operation == AZ_IOT_ADU_OP_REPORT_STATUS) ? AZ_IOT_ADU_ERROR_ACTION_ALREADY_REPORTED
+                                                        : AZ_IOT_ADU_ERROR_ACTION_PROCEED;
+
+    case AZ_IOT_ADU_ERR_THROTTLED:
+    case AZ_IOT_ADU_ERR_QUOTA_EXCEEDED:
+      return AZ_IOT_ADU_ERROR_ACTION_RETRY_AFTER;
+
+    case AZ_IOT_ADU_ERR_SERVER_ERROR:
+    case AZ_IOT_ADU_ERR_SERVICE_UNAVAILABLE:
+      return AZ_IOT_ADU_ERROR_ACTION_RETRY;
+
+    case 0:
+      /* No code at all: nothing to classify. */
+      return AZ_IOT_ADU_ERROR_ACTION_FATAL;
+
+    default:
+      /* Every other documented code is a request or credential fault: fix the
+       * request, do not repeat it unchanged. */
+      return AZ_IOT_ADU_ERROR_ACTION_FATAL;
   }
-  if (status == 429)
-  {
-    return AZ_IOT_ADU_ERROR_ACTION_RETRY_AFTER;
-  }
-  if (status == 409)
-  {
-    return AZ_IOT_ADU_ERROR_ACTION_ALREADY_REPORTED;
-  }
-  if (status >= 500)
-  {
-    return AZ_IOT_ADU_ERROR_ACTION_RETRY;
-  }
-  return AZ_IOT_ADU_ERROR_ACTION_FATAL;
 }

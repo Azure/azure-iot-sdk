@@ -9,6 +9,13 @@
  * echo request payloads back as responses with status 200. Runs for ~60 seconds
  * then exits. DPS is handled internally by the connection client when
  * host == NULL and dps.id_scope is set.
+ *
+ * On gen2 (AEG) the service asks before it calls: a probe names the method and
+ * the caller's response timeout, and only a device that accepts is sent the
+ * arguments. The probe handler below shows the useful shape of that answer --
+ * turning down a name this sample does not implement, so the caller gets a
+ * reason instead of a timeout. gen1 has no probe phase, so it goes straight to
+ * on_method.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -70,6 +77,10 @@ static void on_method(
     size_t payload_len,
     void* user_ctx);
 
+static az_iot_gen2_direct_method_probe_result on_probe(
+    const az_iot_gen2_direct_method_probe* probe,
+    void* user_ctx);
+
 /* The generation is only known once the connection resolves it, and a
  * re-provision can move the device to the other one -- so the client is built
  * from the profile the event carries rather than constructed once up front. */
@@ -86,8 +97,17 @@ static az_iot_result methods_rebuild(
     result = az_iot_gen2_direct_method_client_init(&s->gen2_methods, &s->connection_client);
     if (result == AZ_IOT_OK)
     {
-      result
-          = az_iot_gen2_direct_method_client_set_handler(&s->gen2_methods, on_method, handler_ctx);
+      /* Name, handler and declared run time together: probes are answered from
+       * this list, so an undeclared name is turned away before its arguments
+       * are ever sent. 0 = no minimum run time. */
+      result = az_iot_gen2_direct_method_client_register_method(
+          &s->gen2_methods, "echo", 0, on_method, handler_ctx);
+    }
+    if (result == AZ_IOT_OK)
+    {
+      /* Optional: only for conditions the SDK cannot know about. */
+      result = az_iot_gen2_direct_method_client_set_probe_handler(
+          &s->gen2_methods, on_probe, handler_ctx);
     }
   }
   else if (profile == AZ_IOT_CONNECTION_PROFILE_CLASSIC)
@@ -131,6 +151,23 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
     ctx->methods_status = methods_rebuild(ctx->state, event->profile->connection_profile, ctx);
     ctx->rebuild_pending = (ctx->methods_status == AZ_IOT_OK);
   }
+}
+
+static az_iot_gen2_direct_method_probe_result on_probe(
+    const az_iot_gen2_direct_method_probe* probe,
+    void* user_ctx)
+{
+  (void)user_ctx;
+  printf(
+      "probe for method '%s', caller waits %u second(s) for a result\n",
+      probe->method_name,
+      (unsigned)probe->response_timeout_seconds);
+
+  /* The name and the timing were already checked against the declared methods,
+   * so this only has to answer whether now is a good moment. A real device
+   * would decline here while low on battery or mid-update, with
+   * AZ_IOT_GEN2_DM_PROBE_REJECT_DEVICE_BUSY. */
+  return AZ_IOT_GEN2_DM_PROBE_ACCEPT;
 }
 
 static void on_method(

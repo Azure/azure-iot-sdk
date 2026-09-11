@@ -23,7 +23,7 @@ extern "C"
  * The control plane (request a blob SAS URI, then notify the hub of completion)
  * uses a different transport depending on the hub the connection resolved to,
  * but the API below is identical for both (the client dispatches internally on
- * the connection's protocol profile, like az_iot_twin_client):
+ * the connection's protocol profile, unlike the split gen1/gen2 clients):
  *
  *   - IoT Hub Classic: the two operations are HTTPS REST calls to the hub. This
  *     SDK ships no HTTP client by design, so the application provides one via an

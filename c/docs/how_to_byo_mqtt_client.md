@@ -255,7 +255,22 @@ opts.client_cert_path = "/path/to/device-cert.pem";
 return az_iot_conformance_run_with_options(AZ_IOT_CONFORMANCE_SUITE_V3_1_1, f, &opts);
 ```
 
-With the key supplied, `key_custody_completes_a_tls_handshake` makes you complete a real TLS handshake signed with a key you cannot read. Declare the capability without supplying a key and the suite says on stderr that the handshake was **not** exercised rather than passing quietly. Supplying only some of the three fields, or supplying material without declaring the capability, fails the run.
+With the key supplied, `key_custody_completes_a_tls_handshake` makes you complete a real TLS handshake signed with a key you cannot read.
+
+**A capability you declare but never exercise fails the run**, unless you opt out explicitly (option 3 below). A declaration is your claim, and a green suite has to mean the claim was checked — so by default the suite will not pass a run that skipped it. You will see:
+
+```
+conformance: FAILED: AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY is declared but its contract
+was NOT exercised: no key was supplied. ...
+```
+
+Three ways out, in order of preference:
+
+1. Supply `key_uri` + `crypto_engine_id` + `client_cert_path`, and build with `-DAZ_IOT_BUILD_CONFORMANCE_TESTS_TLS=ON`. The contract gets checked.
+2. Do not declare the capability in a build that cannot check it. You are then held to the baseline, which still requires you to refuse a custody request cleanly rather than connect without the credential you were asked to use.
+3. Set `AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN=1` when no token exists on the machine. This downgrades the failure to a notice. Only the exact value `1` does so, it must be set deliberately per run, and such a run proves nothing about that capability — do not report it as conformant for the feature.
+
+Supplying only some of the three fields, or supplying material without declaring the capability, fails the run.
 
 ## Step 5 — Use your adapter at runtime
 

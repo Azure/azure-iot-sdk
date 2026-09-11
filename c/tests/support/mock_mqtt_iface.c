@@ -267,6 +267,7 @@ static az_iot_result mock_publish(
         msg->correlation_data_len,
         &c->correlation_data_len);
     copy_str(c->content_type, sizeof(c->content_type), msg->content_type);
+    c->message_expiry_seconds = msg->message_expiry_seconds;
     for (size_t i = 0; i < msg->user_properties_count; ++i)
     {
       const az_iot_mqtt_user_property* up = &msg->user_properties[i];

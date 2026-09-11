@@ -67,6 +67,123 @@ static bool adapter_claims_key_custody(void)
 {
   return (g_capabilities & (uint32_t)AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY) != 0u;
 }
+/* Whether the three end-to-end custody fields form a usable set.
+ *
+ * Judged on ALL THREE, never on key_uri alone. An earlier version tested only
+ * key_uri, so material supplied without it was ignored in silence -- and the
+ * run then reported "no key was supplied", which the opt-out downgrades to a
+ * notice. Material that was supplied and ignored is a misconfiguration, and it
+ * must not be able to look like a machine that deliberately has no token. */
+int az_iot_conformance_custody_material_state(
+    const char* key_uri,
+    const char* crypto_engine_id,
+    const char* client_cert_path)
+{
+  /* An empty string is missing, not supplied. The bundled harnesses already
+   * map an empty environment variable to NULL, so accepting "" here would hold
+   * a direct caller of this API to a weaker rule than the harnesses that ship
+   * with it -- and "" as a key URI reaches the TLS case as a complete set. */
+  const bool has_uri = (key_uri != NULL) && (key_uri[0] != '\0');
+  const bool has_engine = (crypto_engine_id != NULL) && (crypto_engine_id[0] != '\0');
+  const bool has_cert = (client_cert_path != NULL) && (client_cert_path[0] != '\0');
+
+  const bool any = has_uri || has_engine || has_cert;
+  const bool all = has_uri && has_engine && has_cert;
+
+  if (!any)
+  {
+    return AZ_IOT_CONFORMANCE_CUSTODY_NONE;
+  }
+  return all ? AZ_IOT_CONFORMANCE_CUSTODY_COMPLETE : AZ_IOT_CONFORMANCE_CUSTODY_PARTIAL;
+}
+
+/* Read an environment variable without tripping MSVC's C4996 on getenv.
+ *
+ * Returns `buf` when the variable is set, NULL when it is not. A value that
+ * does not fit is reported as the empty string rather than truncated: this
+ * feeds the opt-out comparison below, and a truncation that happened to leave
+ * "1" would opt out on the strength of a value nobody wrote. Erring towards
+ * "not set" can only make the suite stricter. */
+static const char* read_env(const char* name, char* buf, size_t cap)
+{
+  if (cap == 0)
+  {
+    return NULL;
+  }
+  buf[0] = '\0';
+#ifdef _WIN32
+  size_t needed = 0;
+  if (getenv_s(&needed, buf, cap, name) != 0)
+  {
+    /* Set but too long for `buf`; anything but a faithful copy must not match. */
+    return (needed > 0) ? "" : NULL;
+  }
+  return (needed == 0) ? NULL : buf;
+#else
+  const char* value = getenv(name);
+  if (value == NULL)
+  {
+    return NULL;
+  }
+  if (strlen(value) >= cap)
+  {
+    return "";
+  }
+  memcpy(buf, value, strlen(value) + 1);
+  return buf;
+#endif
+}
+
+/* A declared capability that was never exercised.
+ *
+ * The suite exists so that a third party can bring their own MQTT layer and
+ * have a pass mean something. A capability is the adapter's own claim to
+ * implement an optional feature, so a run that prints a warning and still
+ * exits 0 is the one outcome that must not happen: the claim ends up published
+ * as "conformant" having never been checked.
+ *
+ * So this FAILS the run. An environment that genuinely cannot exercise it --
+ * no token on the machine, a build without TLS -- must say so deliberately by
+ * setting AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN=1, which downgrades it to a
+ * notice. That keeps "could not run it here" a decision someone made, not an
+ * accident of the environment, and it is never the default.
+ *
+ * Returns the number of failures to add to the run's total. */
+int az_iot_conformance_report_unproven_capability(
+    const char* capability,
+    const char* why,
+    const char* allow_value)
+{
+  /* Taken as an argument rather than read here so the policy is testable
+   * without touching the environment: setenv() is POSIX and absent on MSVC,
+   * and this contract has to be checked on every leg, not just the ones with a
+   * POSIX libc. */
+  const bool allowed = (allow_value != NULL) && (allow_value[0] == '1') && (allow_value[1] == '\0');
+
+  fprintf(
+      stderr,
+      "conformance: %s: %s is declared but its contract was NOT exercised: %s\n",
+      allowed ? "NOTICE" : "FAILED",
+      capability,
+      why);
+
+  if (allowed)
+  {
+    fprintf(
+        stderr,
+        "conformance: allowed by AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN=1. This run does NOT"
+        " demonstrate %s and must not be reported as conformant for it.\n",
+        capability);
+    return 0;
+  }
+
+  fprintf(
+      stderr,
+      "conformance: declare the capability only in a run that can prove it, or set"
+      " AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN=1 to accept an unproven run.\n");
+  return 1;
+}
+
 static const unsigned k_step_timeout_ms = 5000;
 /* Same budget as k_step_timeout_ms, on the scale the connect option uses. */
 static const unsigned k_step_timeout_seconds = 5;
@@ -2037,17 +2154,32 @@ int az_iot_conformance_run_with_options(
   g_key_engine = options ? options->crypto_engine_id : NULL;
   g_client_cert_path = options ? options->client_cert_path : NULL;
 
-  /* A half-configured token is a mistake, not an opt-out: the end-to-end case
-   * would be dropped and the run would still say PASS. */
-  if (g_key_uri && (!g_key_engine || !g_client_cert_path))
+  /* The three custody fields are all-or-none. A half-configured token is a
+   * mistake, not an opt-out: the end-to-end case would be dropped and the run
+   * would still say PASS.
+   *
+   * Checked on ANY of the three, not just key_uri. Judging by key_uri alone
+   * let the commonest misconfiguration through -- a typo in the variable that
+   * carries the URI, with the engine and certificate set correctly -- and that
+   * run would report "no key was supplied", which AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN
+   * then downgrades to a notice. Material that was supplied and ignored would
+   * have looked exactly like a machine that deliberately has no token. */
+  const int custody_material
+      = az_iot_conformance_custody_material_state(g_key_uri, g_key_engine, g_client_cert_path);
+  const bool any_custody_material = (custody_material != AZ_IOT_CONFORMANCE_CUSTODY_NONE);
+
+  if (custody_material == AZ_IOT_CONFORMANCE_CUSTODY_PARTIAL)
   {
     fprintf(
         stderr,
-        "conformance: key_uri was supplied without crypto_engine_id and/or client_cert_path; all "
-        "three are required for the end-to-end key custody case\n");
+        "conformance: key custody material is incomplete (key_uri=%s, crypto_engine_id=%s, "
+        "client_cert_path=%s); all three are required for the end-to-end case\n",
+        (g_key_uri != NULL && g_key_uri[0] != '\0') ? "set" : "MISSING",
+        (g_key_engine != NULL && g_key_engine[0] != '\0') ? "set" : "MISSING",
+        (g_client_cert_path != NULL && g_client_cert_path[0] != '\0') ? "set" : "MISSING");
     return 1;
   }
-  if (g_key_uri && !adapter_claims_key_custody())
+  if (any_custody_material && !adapter_claims_key_custody())
   {
     fprintf(
         stderr,
@@ -2125,8 +2257,12 @@ int az_iot_conformance_run_with_options(
    * fixed array. */
   if (adapter_claims_key_custody())
   {
+    const char* unproven = NULL;
 #ifdef AZ_IOT_CONFORMANCE_WITH_TLS
-    if (g_key_uri)
+    /* Gated on the classification, not on g_key_uri: an empty URI counts as
+     * missing there, and testing the pointer here would send "" into the
+     * handshake as though a key had been supplied. */
+    if (custody_material == AZ_IOT_CONFORMANCE_CUSTODY_COMPLETE)
     {
       const struct CMUnitTest custody_tests[]
           = { cmocka_unit_test(key_custody_completes_a_tls_handshake) };
@@ -2134,22 +2270,23 @@ int az_iot_conformance_run_with_options(
     }
     else
     {
-      /* Said out loud rather than passed over. The adapter claims it can sign
-       * with a key it cannot read, and nothing here has made it prove that. */
-      fprintf(
-          stderr,
-          "conformance: AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY is declared but no key was supplied, so "
-          "the end-to-end custody handshake was NOT exercised. Set az_iot_conformance_options "
-          "key_uri + crypto_engine_id + client_cert_path to a key this adapter can reach and a "
-          "certificate carrying its public key.\n");
+      unproven = "no key was supplied. Set az_iot_conformance_options key_uri + crypto_engine_id +"
+                 " client_cert_path to a key this adapter can reach and a certificate carrying its"
+                 " public key.";
     }
 #else
-    fprintf(
-        stderr,
-        "conformance: AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY is declared but this build has no TLS "
-        "support (AZ_IOT_BUILD_CONFORMANCE_TESTS_TLS), so the end-to-end custody handshake was NOT "
-        "exercised.\n");
+    unproven = "this build has no TLS support. Configure with"
+               " -DAZ_IOT_BUILD_CONFORMANCE_TESTS_TLS=ON.";
 #endif
+
+    if (unproven != NULL)
+    {
+      char allow[16];
+      failed += az_iot_conformance_report_unproven_capability(
+          "AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY",
+          unproven,
+          read_env("AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN", allow, sizeof(allow)));
+    }
   }
 
   return (failed == 0) ? 0 : 1;
