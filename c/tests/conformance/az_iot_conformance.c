@@ -2174,9 +2174,9 @@ int az_iot_conformance_run_with_options(
         stderr,
         "conformance: key custody material is incomplete (key_uri=%s, crypto_engine_id=%s, "
         "client_cert_path=%s); all three are required for the end-to-end case\n",
-        g_key_uri ? "set" : "MISSING",
-        g_key_engine ? "set" : "MISSING",
-        g_client_cert_path ? "set" : "MISSING");
+        (g_key_uri != NULL && g_key_uri[0] != '\0') ? "set" : "MISSING",
+        (g_key_engine != NULL && g_key_engine[0] != '\0') ? "set" : "MISSING",
+        (g_client_cert_path != NULL && g_client_cert_path[0] != '\0') ? "set" : "MISSING");
     return 1;
   }
   if (any_custody_material && !adapter_claims_key_custody())
@@ -2259,7 +2259,10 @@ int az_iot_conformance_run_with_options(
   {
     const char* unproven = NULL;
 #ifdef AZ_IOT_CONFORMANCE_WITH_TLS
-    if (g_key_uri)
+    /* Gated on the classification, not on g_key_uri: an empty URI counts as
+     * missing there, and testing the pointer here would send "" into the
+     * handshake as though a key had been supplied. */
+    if (custody_material == AZ_IOT_CONFORMANCE_CUSTODY_COMPLETE)
     {
       const struct CMUnitTest custody_tests[]
           = { cmocka_unit_test(key_custody_completes_a_tls_handshake) };
