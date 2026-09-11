@@ -8,12 +8,12 @@ using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using static Microsoft.Azure.Devices.Client.IntegrationTests.CertificateUtilities;
 
-internal class Program //TODO distinguish naming on operational vs boot certificates
+internal class Program
 {
     public static async Task Main(string[] args)
     {
         string deviceId = SampleConstants.LoadDeviceId();
-        string registrationId = deviceId; //TODO this isn't correct, right?
+        string registrationId = deviceId;
         string idScope = SampleConstants.LoadIdScope();
         X509AuthenticationProvider authentication = SampleConstants.LoadAuthenticationProvider();
 

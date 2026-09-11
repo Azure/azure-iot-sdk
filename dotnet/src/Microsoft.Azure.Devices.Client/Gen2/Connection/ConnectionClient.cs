@@ -55,25 +55,27 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Connection
             {
                 try
                 {
-                    // TODO this feels a bit optimistic since there is a chance that the session was established -> connection lost happened on the previous connection prior to this subscribe happening
                     var suback = await connection.SubscribeAsync(new(string.Format("ih/{0}/dev/#", deviceId), MqttQualityOfServiceLevel.AtLeastOnce));
                     var subackFirstItem = suback.Items.FirstOrDefault();
                     if (subackFirstItem == null)
                     {
                         Trace.TraceWarning("Received malformed SUBACK. Attempting connection again...");
                         await connection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttClientDisconnectOptionsReason.NormalDisconnection });
+                        return;
                     }
 
                     if (subackFirstItem == null)
                     {
                         Trace.TraceWarning($"Received malformed SUBACK on devicebound SUBSCRIBE.");
                         await connection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttClientDisconnectOptionsReason.NormalDisconnection });
+                        return;
                     }
 
                     if (subackFirstItem.ReasonCode != MqttClientSubscribeReasonCode.GrantedQoS1)
                     {
                         Trace.TraceWarning("Received SUBACK on devicebound SUBSCRIBE with unsuccessful result code: {0}.", subackFirstItem.ReasonCode);
                         await connection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttClientDisconnectOptionsReason.NormalDisconnection });
+                        return;
                     }
                 }
                 catch (Exception e)
@@ -87,7 +89,6 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Connection
             uint deviceDesiredPropertyVersion = 0;
             uint deviceReportedPropertyVersion = 0;
 
-            // TODO user configurable
             bool pushDesired = _twinPushOptions.ReceiveDesiredPropertyUpdates;
             bool pushReported = _twinPushOptions.ReceiveReportedPropertiesUponConnect;
 
@@ -174,7 +175,7 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Connection
             catch (TimeoutException)
             {
                 // Did not receive mqtt birth ack message in timely manner (and user has not canceled this function yet)
-                await connection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttClientDisconnectOptionsReason.NormalDisconnection }); //TODO what about if this throws?
+                await connection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttClientDisconnectOptionsReason.NormalDisconnection });
                 Trace.TraceWarning("Timed out waiting for birth ack message");
             }
 

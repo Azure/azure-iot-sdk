@@ -36,8 +36,7 @@ namespace Microsoft.Azure.Devices.Client
 
         private const string ProvisioningUsernameFormat = "{0}/registrations/{1}/api-version={2}&ClientVersion={3}";
 
-        //TODO This API version is sufficient to do cert management, but not gen1 vs gen2 connection profile. Update when possible.
-        private const string ProvisioningApiVersion = "2021-10-01"; // TODO 2026-11-02-preview is required for connection profile fields, but is not available yet.
+        private const string ProvisioningApiVersion = "2021-10-01"; // TODO 2026-11-02-preview is required for connection profile fields, but is not available yet. Current version is sufficient for cert management
         private const string ProvisioningSubscribeFilter = "$dps/registrations/res/#";
         private const string ProvisioningRegisterTopic = "$dps/registrations/PUT/iotdps-register/?$rid={0}";
         private const string ProvisioningGetOperationsTopic = "$dps/registrations/GET/iotdps-get-operationstatus/?$rid={0}&operationId={1}";
@@ -331,8 +330,16 @@ namespace Microsoft.Azure.Devices.Client
                     TcpPort = 8883,
                     WebsocketPort = 443,
                     ClientCertificate = CurrentConnectionContext.AuthenticationProvider.ClientCertificate,
-                    CleanSession = true, // TODO user configurable? Less applicable in gen 2 hub connection
                     ClientId = deviceId,
+
+                    // It can save some SUBSCRIBE calls to attempt to resume sessions, but there is a race condition
+                    // wherein a device attempts to reconnect w/ clean session=false, server sends back CONNACK w/ "session not resumed"
+                    // and starts a new session with no subscriptions, but that CONNACK is lost. The device will likely reconnect then.
+                    // If the device connects with cleanSession=false at that time, the broker may send back CONNACK with "session resumed", but
+                    // it isn't the same session that the device initially wanted to resume, and so subscriptions are unknowingly lost.
+                    //
+                    // Because of the above, it is simpler to just start clean sessions each time.
+                    CleanSession = true,
                 };
 
                 MqttConnectAck connack = await ManagedMqttConnection.ConnectAsync(connectPacket, cancellationToken);
