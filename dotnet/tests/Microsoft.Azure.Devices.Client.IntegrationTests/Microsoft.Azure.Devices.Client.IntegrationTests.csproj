@@ -14,6 +14,11 @@
     <PackageReference Include="Microsoft.Azure.Devices.Provisioning.Service" Version="1.18.4" />
     <PackageReference Include="Microsoft.Azure.Devices.Shared" Version="1.30.4" />
     
+    <!--Used by the stub IoT hub service under StubService/, which mimics a real IoT hub over MQTT.-->
+    <PackageReference Include="Google.Protobuf" Version="3.34.1" />
+    <PackageReference Include="MQTTnet" Version="5.1.0.1559" />
+    <PackageReference Include="MQTTnet.Server" Version="5.1.0.1559" />
+
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.9.0" />
     <PackageReference Include="xunit.v3" Version="3.2.2" />
     <PackageReference Include="xunit.v3.assert" Version="3.2.2" />
