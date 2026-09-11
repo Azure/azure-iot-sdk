@@ -1168,3 +1168,10 @@ baseline.
   gen2 client moves its topic construction into the connect-time bind callback,
   fixing a latent defect where the unified client read the assigned device id
   inside `init()` — before DPS could have supplied one.
+- 09/11/2026: Naming, taken in review on the twin PR and intended to spread to
+  the other clients: the teardown entry point is `_deinit()`, not `_destroy()`,
+  because it releases registrations on a caller-allocated struct rather than
+  freeing an SDK-allocated object. The reported-properties callback is
+  `az_iot_twin_patch_complete_callback`, not `..._ack_callback`: it reports
+  failures too, and on MQTT v5 "ack" would collide with the QoS 1 PUBACK, which
+  is a different event arriving at a different time.

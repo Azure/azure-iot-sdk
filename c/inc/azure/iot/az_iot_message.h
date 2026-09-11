@@ -201,7 +201,11 @@ extern "C"
       void* user_ctx);
 
   /**
-   * @brief Delivers the result of a reported-properties patch.
+   * @brief Delivers the outcome of a reported-properties patch.
+   *
+   * Named for completion rather than acknowledgement because it reports
+   * failures too, and because on MQTT v5 an "ack" would be ambiguous with the
+   * QoS 1 PUBACK -- this fires on the service's answer, not on the transport's.
    *
    * @param status   AZ_IOT_OK when the service accepted the patch.
    * @param version  The new version of the reported-properties section. An
@@ -211,7 +215,7 @@ extern "C"
    * @param user_ctx Context passed to the patch call.
    */
   typedef void (
-      *az_iot_twin_patch_ack_callback)(az_iot_result status, uint64_t version, void* user_ctx);
+      *az_iot_twin_patch_complete_callback)(az_iot_result status, uint64_t version, void* user_ctx);
 
   /**
    * @brief Delivers a desired-properties patch pushed by the service.

@@ -29,7 +29,7 @@ typedef struct
   int twin_initialized;
 } sample_state;
 
-static void twin_destroy(sample_state* s)
+static void twin_deinit(sample_state* s)
 {
   if (!s->twin_initialized)
   {
@@ -37,18 +37,18 @@ static void twin_destroy(sample_state* s)
   }
   if (s->twin_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
   {
-    az_iot_gen2_twin_client_destroy(&s->gen2_twin);
+    az_iot_gen2_twin_client_deinit(&s->gen2_twin);
   }
   else
   {
-    az_iot_gen1_twin_client_destroy(&s->gen1_twin);
+    az_iot_gen1_twin_client_deinit(&s->gen1_twin);
   }
   s->twin_initialized = 0;
 }
 
 static void sample_state_destroy(sample_state* s)
 {
-  twin_destroy(s);
+  twin_deinit(s);
   az_iot_connection_client_destroy(&s->connection_client);
   az_iot_certificate_provider_pem_destroy(&s->certs);
   sample_config_release(&s->config);
@@ -59,28 +59,43 @@ typedef struct
   sample_state* state;
   az_iot_connection_state conn_state;
   az_iot_result twin_status;
+  int rebuild_pending;
   int get_done;
   int patch_done;
+  int desired_count;
   az_iot_result get_status;
   az_iot_result patch_status;
   uint64_t patch_version;
 } user_context;
 
+static void on_desired(const uint8_t* patch, size_t patch_len, uint64_t version, void* user_ctx);
+
 /* The generation is only known once CONNECTED reports the resolved profile,
  * and a reconnect can land on the other one -- so the client is built from the
  * transition rather than constructed once up front. */
-static az_iot_result twin_rebuild(sample_state* s, az_iot_connection_profile profile)
+static az_iot_result twin_rebuild(
+    sample_state* s,
+    az_iot_connection_profile profile,
+    void* handler_ctx)
 {
-  twin_destroy(s);
+  twin_deinit(s);
 
   az_iot_result result;
   if (profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
   {
     result = az_iot_gen2_twin_client_init(&s->gen2_twin, &s->connection_client);
+    if (result == AZ_IOT_OK)
+    {
+      result = az_iot_gen2_twin_client_set_desired_handler(&s->gen2_twin, on_desired, handler_ctx);
+    }
   }
   else if (profile == AZ_IOT_CONNECTION_PROFILE_CLASSIC)
   {
     result = az_iot_gen1_twin_client_init(&s->gen1_twin, &s->connection_client);
+    if (result == AZ_IOT_OK)
+    {
+      result = az_iot_gen1_twin_client_set_desired_handler(&s->gen1_twin, on_desired, handler_ctx);
+    }
   }
   else
   {
@@ -101,9 +116,31 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
   ctx->conn_state = event->state;
   if (event->state == AZ_IOT_CONN_STATE_CONNECTED)
   {
-    ctx->twin_status = event->profile ? twin_rebuild(ctx->state, event->profile->connection_profile)
-                                      : AZ_IOT_ERR_INTERNAL;
+    ctx->twin_status = event->profile
+        ? twin_rebuild(ctx->state, event->profile->connection_profile, ctx)
+        : AZ_IOT_ERR_INTERNAL;
   }
+  else if (event->reason == AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH && event->profile)
+  {
+    /* Re-provisioning moved the device to the other generation, so the pinned
+     * client can never connect again. Rebuilding for the assigned profile
+     * releases the old pin and takes the new one; the reopen is driven from
+     * the main loop rather than from inside this callback. */
+    printf("Reassigned to the other hub generation; rebuilding the twin client.\n");
+    ctx->twin_status = twin_rebuild(ctx->state, event->profile->connection_profile, ctx);
+    ctx->rebuild_pending = (ctx->twin_status == AZ_IOT_OK);
+  }
+}
+
+static void on_desired(const uint8_t* patch, size_t patch_len, uint64_t version, void* user_ctx)
+{
+  user_context* ctx = (user_context*)user_ctx;
+  ctx->desired_count++;
+  printf(
+      "twin desired (version %llu): %.*s\n",
+      (unsigned long long)version,
+      (int)patch_len,
+      (const char*)patch);
 }
 
 static void on_get(az_iot_result status, const uint8_t* body, size_t len, void* user_ctx)
@@ -196,6 +233,15 @@ int main(void)
   for (int i = 0; i < 1200 && user_ctx.conn_state != AZ_IOT_CONN_STATE_CONNECTED; ++i)
   {
     (void)az_iot_connection_client_do_work(&state.connection_client, 50);
+    if (user_ctx.rebuild_pending)
+    {
+      user_ctx.rebuild_pending = 0;
+      if (az_iot_connection_client_open(&state.connection_client) != AZ_IOT_OK)
+      {
+        break;
+      }
+      continue;
+    }
     if (user_ctx.conn_state == AZ_IOT_CONN_STATE_FAULTED)
     {
       break;

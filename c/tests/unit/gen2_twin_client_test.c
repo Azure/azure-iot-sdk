@@ -143,7 +143,7 @@ static int teardown(void** state)
   fixture* fx = (fixture*)*state;
   if (fx)
   {
-    az_iot_gen2_twin_client_destroy(&fx->twin);
+    az_iot_gen2_twin_client_deinit(&fx->twin);
     az_iot_connection_client_destroy(&fx->conn);
     if (!fx->factory_registered)
     {
@@ -425,7 +425,7 @@ static void get_before_the_device_id_is_assigned_is_refused(void** state)
       AZ_IOT_ERR_NOT_CONNECTED);
   assert_false(prec.fired);
 
-  az_iot_gen2_twin_client_destroy(&twin);
+  az_iot_gen2_twin_client_deinit(&twin);
   az_iot_connection_client_destroy(&conn);
 }
 
@@ -643,6 +643,13 @@ static void a_get_response_does_not_satisfy_a_patch_slot(void** state)
   inject_message(
       fx, "ih/ut-device/dev/twin/get/response", corr, sizeof(corr) - 1, body, sizeof(body) - 1);
   assert_false(rec.fired);
+
+  /* ...and the mismatched message must not consume the slot either. Releasing
+   * it here would drop the real acknowledgement below and leave the caller
+   * waiting for a callback that can never arrive. */
+  inject_message(fx, "ih/ut-device/dev/twin/reported/response", corr, sizeof(corr) - 1, NULL, 0);
+  assert_true(rec.fired);
+  assert_int_equal(rec.status, AZ_IOT_OK);
 }
 
 static void a_reported_response_does_not_satisfy_a_get_slot(void** state)
@@ -655,6 +662,94 @@ static void a_reported_response_does_not_satisfy_a_get_slot(void** state)
 
   static const uint8_t corr[] = "1";
   inject_message(fx, "ih/ut-device/dev/twin/reported/response", corr, sizeof(corr) - 1, NULL, 0);
+  assert_false(rec.fired);
+
+  /* Symmetric: the GET must still be completable by its own response. */
+  static const uint8_t body[] = "{\"desired\":{}}";
+  inject_message(
+      fx, "ih/ut-device/dev/twin/get/response", corr, sizeof(corr) - 1, body, sizeof(body) - 1);
+  assert_true(rec.fired);
+  assert_int_equal(rec.status, AZ_IOT_OK);
+  assert_string_equal(rec.payload, "{\"desired\":{}}");
+}
+
+static void a_response_on_a_longer_topic_is_dropped(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  get_record rec = { 0 };
+  assert_int_equal(az_iot_gen2_twin_client_get(&fx->twin, on_get, &rec), AZ_IOT_OK);
+
+  /* Inbound handlers are registered by prefix and dispatch takes the longest
+   * match, so a message published one level below the response topic still
+   * reaches this handler. The protocol has no such topic, and honouring it
+   * would let anything able to publish under dev/# complete a live request. */
+  static const uint8_t corr[] = "1";
+  static const uint8_t body[] = "{\"spoofed\":true}";
+  inject_message(
+      fx,
+      "ih/ut-device/dev/twin/get/response/extra",
+      corr,
+      sizeof(corr) - 1,
+      body,
+      sizeof(body) - 1);
+  assert_false(rec.fired);
+
+  /* The real response still completes it. */
+  inject_message(
+      fx, "ih/ut-device/dev/twin/get/response", corr, sizeof(corr) - 1, body, sizeof(body) - 1);
+  assert_true(rec.fired);
+}
+
+static void a_desired_push_on_a_longer_topic_is_dropped(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  desired_record rec = { 0 };
+  assert_int_equal(
+      az_iot_gen2_twin_client_set_desired_handler(&fx->twin, on_desired, &rec), AZ_IOT_OK);
+
+  static const uint8_t body[] = "{\"x\":1}";
+  inject_message(fx, "ih/ut-device/dev/twin/desired/extra", NULL, 0, body, sizeof(body) - 1);
+  assert_false(rec.fired);
+
+  inject_message(fx, "ih/ut-device/dev/twin/desired", NULL, 0, body, sizeof(body) - 1);
+  assert_true(rec.fired);
+}
+
+static void correlation_data_with_trailing_characters_is_dropped(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  get_record rec = { 0 };
+  assert_int_equal(az_iot_gen2_twin_client_get(&fx->twin, on_get, &rec), AZ_IOT_OK);
+
+  /* A prefix-tolerant parse would read "1x" as request id 1 and complete this
+   * live request from malformed correlation data. */
+  static const uint8_t corr[] = "1x";
+  static const uint8_t body[] = "{\"x\":1}";
+  inject_message(
+      fx, "ih/ut-device/dev/twin/get/response", corr, sizeof(corr) - 1, body, sizeof(body) - 1);
+  assert_false(rec.fired);
+}
+
+static void correlation_data_past_32_bits_is_dropped(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  get_record rec = { 0 };
+  assert_int_equal(az_iot_gen2_twin_client_get(&fx->twin, on_get, &rec), AZ_IOT_OK);
+
+  /* 4294967297 truncates to 1 in 32 bits, which is the live request id here --
+   * exactly the collision a width-unchecked parse would allow. */
+  static const uint8_t corr[] = "4294967297";
+  static const uint8_t body[] = "{\"x\":1}";
+  inject_message(
+      fx, "ih/ut-device/dev/twin/get/response", corr, sizeof(corr) - 1, body, sizeof(body) - 1);
   assert_false(rec.fired);
 }
 
@@ -846,14 +941,14 @@ static void init_against_a_classic_connection_is_rejected(void** state)
 static void destroy_tolerates_null(void** state)
 {
   (void)state;
-  az_iot_gen2_twin_client_destroy(NULL);
+  az_iot_gen2_twin_client_deinit(NULL);
 }
 
 static void destroy_zeroes_the_client(void** state)
 {
   fixture* fx = (fixture*)*state;
 
-  az_iot_gen2_twin_client_destroy(&fx->twin);
+  az_iot_gen2_twin_client_deinit(&fx->twin);
 
   /* Zeroed rather than merely flagged: a stale connection pointer left behind
    * is what a later get() would publish through. */
@@ -870,10 +965,10 @@ static void destroy_is_idempotent(void** state)
 {
   fixture* fx = (fixture*)*state;
 
-  az_iot_gen2_twin_client_destroy(&fx->twin);
+  az_iot_gen2_twin_client_deinit(&fx->twin);
   /* The second call runs against a zeroed struct and must not follow the
    * now-NULL connection pointer into unregister. */
-  az_iot_gen2_twin_client_destroy(&fx->twin);
+  az_iot_gen2_twin_client_deinit(&fx->twin);
 
   assert_int_equal(az_iot_gen2_twin_client_init(&fx->twin, &fx->conn), AZ_IOT_OK);
 }
@@ -889,7 +984,7 @@ static void destroy_unregisters_every_handler(void** state)
       az_iot_gen2_twin_client_set_desired_handler(&fx->twin, on_desired, &des), AZ_IOT_OK);
   assert_int_equal(az_iot_gen2_twin_client_get(&fx->twin, on_get, &get), AZ_IOT_OK);
 
-  az_iot_gen2_twin_client_destroy(&fx->twin);
+  az_iot_gen2_twin_client_deinit(&fx->twin);
 
   /* All three inbound handlers must be gone: any one left behind would
    * dispatch into a zeroed client. */
@@ -922,7 +1017,7 @@ static void destroy_frees_the_connect_time_bind_slot(void** state)
   for (size_t i = 0; i < sizeof(twins) / sizeof(twins[0]); ++i)
   {
     assert_int_equal(az_iot_gen2_twin_client_init(&twins[i], &conn), AZ_IOT_OK);
-    az_iot_gen2_twin_client_destroy(&twins[i]);
+    az_iot_gen2_twin_client_deinit(&twins[i]);
   }
 
   az_iot_connection_client_destroy(&conn);
@@ -939,7 +1034,7 @@ static void a_destroyed_twin_client_is_not_called_on_a_later_session_end(void** 
   /* destroy() must unhook the session-end handler too. If it did not, the
    * connection would call into a zeroed client -- and, worse, into whatever the
    * application had already freed behind the user context. */
-  az_iot_gen2_twin_client_destroy(&fx->twin);
+  az_iot_gen2_twin_client_deinit(&fx->twin);
   assert_true(az_iot_mock_mqtt_client_inject_disconnected(fx->mock));
   assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
 
@@ -977,6 +1072,11 @@ int main(void)
     cmocka_unit_test_setup_teardown(a_get_response_does_not_satisfy_a_patch_slot, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_reported_response_does_not_satisfy_a_get_slot, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_response_on_a_longer_topic_is_dropped, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_desired_push_on_a_longer_topic_is_dropped, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        correlation_data_with_trailing_characters_is_dropped, setup, teardown),
+    cmocka_unit_test_setup_teardown(correlation_data_past_32_bits_is_dropped, setup, teardown),
     cmocka_unit_test_setup_teardown(
         concurrent_get_and_patch_correlate_independently, setup, teardown),
     cmocka_unit_test_setup_teardown(

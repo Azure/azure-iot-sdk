@@ -35,7 +35,7 @@ extern "C"
         union
         {
           az_iot_twin_get_callback get_cb;
-          az_iot_twin_patch_ack_callback patch_cb;
+          az_iot_twin_patch_complete_callback patch_cb;
         } cb;
         void* user_ctx;
       } pending[AZ_IOT_TWIN_MAX_PENDING];
@@ -61,7 +61,7 @@ extern "C"
   AZ_NODISCARD az_iot_result
   az_iot_gen1_twin_client_init(az_iot_gen1_twin_client* client, az_iot_connection_client* conn);
 
-  void az_iot_gen1_twin_client_destroy(az_iot_gen1_twin_client* client);
+  void az_iot_gen1_twin_client_deinit(az_iot_gen1_twin_client* client);
 
   /**
    * @brief Request the full twin document.
@@ -80,7 +80,7 @@ extern "C"
       az_iot_gen1_twin_client* twin,
       const uint8_t* patch,
       size_t patch_len,
-      az_iot_twin_patch_ack_callback cb,
+      az_iot_twin_patch_complete_callback cb,
       void* user_ctx);
 
   /**

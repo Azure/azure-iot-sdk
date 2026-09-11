@@ -528,7 +528,7 @@ static void test_twin(void** state)
   }
   assert_true(reported_seen);
 
-  az_iot_gen1_twin_client_destroy(&twin);
+  az_iot_gen1_twin_client_deinit(&twin);
 }
 
 int main(void)

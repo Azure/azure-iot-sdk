@@ -27,6 +27,10 @@ extern "C"
       az_iot_twin_desired_callback desired_handler;
       void* desired_handler_ctx;
       uint32_t next_rid;
+      /* Length of "ih/{device_id}/dev/twin/", resolved when the connection
+       * binds. Lets each handler confirm a delivered topic is the exact leaf it
+       * was registered for, since dispatch matches by prefix. */
+      size_t inbound_prefix_len;
       struct
       {
         bool in_use;
@@ -35,7 +39,7 @@ extern "C"
         union
         {
           az_iot_twin_get_callback get_cb;
-          az_iot_twin_patch_ack_callback patch_cb;
+          az_iot_twin_patch_complete_callback patch_cb;
         } cb;
         void* user_ctx;
       } pending[AZ_IOT_TWIN_MAX_PENDING];
@@ -63,7 +67,7 @@ extern "C"
   AZ_NODISCARD az_iot_result
   az_iot_gen2_twin_client_init(az_iot_gen2_twin_client* client, az_iot_connection_client* conn);
 
-  void az_iot_gen2_twin_client_destroy(az_iot_gen2_twin_client* client);
+  void az_iot_gen2_twin_client_deinit(az_iot_gen2_twin_client* client);
 
   /**
    * @brief Request the full twin document.
@@ -86,7 +90,7 @@ extern "C"
       az_iot_gen2_twin_client* twin,
       const uint8_t* patch,
       size_t patch_len,
-      az_iot_twin_patch_ack_callback cb,
+      az_iot_twin_patch_complete_callback cb,
       void* user_ctx);
 
   /**
