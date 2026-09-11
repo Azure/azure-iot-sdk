@@ -72,9 +72,15 @@ add_library(az_iot_gen2
     gen2/telemetry_client.c
     gen2/c2d_client.c
     gen2/direct_method_client.c
+    gen2/direct_method_codec.c
 )
 add_library(azure::iot::gen2 ALIAS az_iot_gen2)
-target_include_directories(az_iot_gen2 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/core)
+# gen2's own internal headers live under gen2/internal/; core's are reached
+# through the core entry, exactly as gen1 does.
+target_include_directories(az_iot_gen2 PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/core
+    ${CMAKE_CURRENT_SOURCE_DIR}/gen2
+)
 target_link_libraries(az_iot_gen2 PUBLIC az_iot_core)
 az_iot_apply_warnings(az_iot_gen2)
 az_iot_apply_coverage(az_iot_gen2)

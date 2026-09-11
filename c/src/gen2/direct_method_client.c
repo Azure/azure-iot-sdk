@@ -5,9 +5,23 @@
 /* SPDX-License-Identifier: MIT */
 /* IoT Hub Next / Event Grid direct methods (MQTT v5).
  *
- *   Inbound    "ih/{device_id}/dev/methods/{methodName}" + correlation data
- *   Respond    "ih/{device_id}/srv/methods/{methodName}/response",
- *              status as a user property, correlation data echoed back
+ * A three-phase handshake over two flat topics, per the AEG direct-methods
+ * design and common/Protos/directmethods.proto:
+ *
+ *   probe:1      service -> device   ih/{device_id}/dev/methods
+ *   probe-ack:1  device -> service   ih/{device_id}/srv/methods
+ *   exec:1       service -> device   ih/{device_id}/dev/methods
+ *   abandon:1    device -> service   ih/{device_id}/srv/methods
+ *   result:1     device -> service   ih/{device_id}/srv/methods
+ *
+ * The service asks first and sends the arguments only to a device that said
+ * yes. The acceptance carries a ready id and the service quotes it back on the
+ * exec, so (request id, ready id) is a single-use execution token -- which is
+ * what lets every message be QoS 1 without a redelivery running the method
+ * twice.
+ *
+ * Neither topic carries a method name, so the name from the probe payload is
+ * held in a ready slot until the matching exec arrives.
  */
 #include <stdbool.h>
 #include <stddef.h>
@@ -17,20 +31,180 @@
 #include "azure/iot/gen2/az_iot_direct_method_client.h"
 
 #include "internal/connection_client_internal.h"
+#include "internal/direct_method_codec.h"
 #include "internal/log_internal.h"
+#include "internal/reconnect.h"
 #include "internal/span_writer.h"
 
-#define AZ_IOT_GEN2_DM_TOPIC_MAX 192
-
 #define DI(d) ((d)->_internal)
+#define RI(r) ((r)->_internal)
+
+#define DM_CONTENT_TYPE "application/protobuf"
+
+/* Only version 1 of each phase exists. The version is part of the dispatch key:
+ * a later "exec:2" may carry a different payload, so treating it as an exec
+ * would decode the wrong shape. */
+#define DM_TYPE_VERSION "1"
+
+/* The service starts a timer and waits; a probe-ack or result with under a
+ * second of budget left has already missed that window, so it is dropped rather
+ * than published into a request the service has given up on. */
+#define DM_MIN_USEFUL_BUDGET_SECONDS 1u
+
+/* Budgets travel in whole seconds; the monotonic clock counts milliseconds. */
+#define DM_MS_PER_SECOND 1000u
+
+/* Safety margin covering the network transit a broker-adjusted message expiry
+ * cannot measure: a tenth of the response timeout, held within these bounds so
+ * a very short timeout still reserves something and a very long one does not
+ * reserve minutes. */
+#define DM_SAFETY_MARGIN_DIVISOR 10u
+#define DM_SAFETY_MARGIN_MIN_SECONDS 1u
+#define DM_SAFETY_MARGIN_MAX_SECONDS 10u
+
+/* Multiplier and increment of the 64-bit linear congruential generator that
+ * advances the ready-id state. */
+#define DM_READY_ID_LCG_MULTIPLIER 6364136223846793005ull
+#define DM_READY_ID_LCG_INCREMENT 1442695040888963407ull
+/* One draw from that generator supplies this many bytes of the ready id. */
+#define DM_READY_ID_BYTES_PER_DRAW 8u
+/* Bits to shift a draw by to reach its Nth byte. */
+#define DM_BITS_PER_BYTE 8u
+
+/* Both method topics are built from three parts: the "ih/" root, the device id
+ * and the direction-specific tail. */
+#define DM_TOPIC_PART_COUNT 3
+
+/* The public header has to size the result buffer without being able to see the
+ * codec's internal header, so it carries its own copy of the framing overhead.
+ * This is the only place both are in scope; a mismatch would silently undersize
+ * the buffer, so fail the build instead. */
+typedef char az_iot_dm_result_overhead_agrees
+    [(AZ_IOT_GEN2_DM_RESULT_FRAME_OVERHEAD == AZ_IOT_DM_PROTO_RESULT_OVERHEAD) ? 1 : -1];
+
+/* The concurrency limit is meant to be tuned down for small devices, but a
+ * limit of zero refuses every probe and makes the client inert. */
+typedef char az_iot_dm_concurrency_is_usable[(AZ_IOT_GEN2_DM_MAX_CONCURRENT >= 1) ? 1 : -1];
+
+/* ------------------------------------------------------------------------- */
+/* budgets                                                                   */
+/* ------------------------------------------------------------------------- */
+
+/* Compensates for the network transit that a broker-adjusted message expiry
+ * cannot account for. */
+static uint32_t safety_margin_seconds(uint32_t response_timeout_seconds)
+{
+  uint32_t margin = response_timeout_seconds / DM_SAFETY_MARGIN_DIVISOR;
+  if (margin < DM_SAFETY_MARGIN_MIN_SECONDS)
+  {
+    margin = DM_SAFETY_MARGIN_MIN_SECONDS;
+  }
+  if (margin > DM_SAFETY_MARGIN_MAX_SECONDS)
+  {
+    margin = DM_SAFETY_MARGIN_MAX_SECONDS;
+  }
+  return margin;
+}
+
+/* What is left of a budget of `budget_seconds` that started at `start_ms`.
+ *
+ * A budget of 0 means the message carried no expiry at all, which is not the
+ * same as an exhausted one; it is reported back unchanged so callers can tell
+ * "unbounded" from "out of time". */
+static uint32_t remaining_budget_seconds(uint32_t budget_seconds, uint64_t start_ms)
+{
+  if (budget_seconds == 0u)
+  {
+    return 0u;
+  }
+  uint64_t now = az_iot_time_mono_ms();
+  uint64_t elapsed_ms = (now > start_ms) ? (now - start_ms) : 0u;
+  uint64_t elapsed = elapsed_ms / DM_MS_PER_SECOND;
+  return (elapsed >= budget_seconds) ? 0u : (budget_seconds - (uint32_t)elapsed);
+}
+
+/* ------------------------------------------------------------------------- */
+/* declared methods                                                          */
+/* ------------------------------------------------------------------------- */
+
+static az_iot_gen2_direct_method_registration* method_find(
+    az_iot_gen2_direct_method_client* dm,
+    const char* method_name)
+{
+  for (size_t i = 0; i < AZ_IOT_GEN2_DM_MAX_METHODS; ++i)
+  {
+    az_iot_gen2_direct_method_registration* entry = &DI(dm).methods[i];
+    if (RI(entry).in_use && strcmp(RI(entry).name, method_name) == 0)
+    {
+      return entry;
+    }
+  }
+  return NULL;
+}
+
+/* ------------------------------------------------------------------------- */
+/* ready slots                                                               */
+/* ------------------------------------------------------------------------- */
+
+/* Fill `out` with a ready id. Uniqueness is the whole requirement: the token is
+ * single-use, good for one exec, and the service only knows it because this
+ * device just published it. Same generator the presence nonce uses. */
+static void generate_ready_id(
+    az_iot_gen2_direct_method_client* dm,
+    uint8_t out[AZ_IOT_GEN2_DM_READY_ID_LEN])
+{
+  for (size_t i = 0; i < AZ_IOT_GEN2_DM_READY_ID_LEN; i += DM_READY_ID_BYTES_PER_DRAW)
+  {
+    uint64_t x = az_iot_time_mono_ms()
+        ^ (DI(dm).rng_state * DM_READY_ID_LCG_MULTIPLIER + DM_READY_ID_LCG_INCREMENT);
+    DI(dm).rng_state = x;
+    for (size_t b = 0; b < DM_READY_ID_BYTES_PER_DRAW; ++b)
+    {
+      out[i + b] = (uint8_t)(x >> (b * DM_BITS_PER_BYTE));
+    }
+  }
+}
+
+static az_iot_gen2_direct_method_ready_slot* ready_find(
+    az_iot_gen2_direct_method_client* dm,
+    const uint8_t* request_id)
+{
+  for (size_t i = 0; i < AZ_IOT_GEN2_DM_MAX_CONCURRENT; ++i)
+  {
+    az_iot_gen2_direct_method_ready_slot* slot = &DI(dm).ready_pool[i];
+    if (RI(slot).in_use
+        && memcmp(RI(slot).request_id, request_id, AZ_IOT_GEN2_DM_REQUEST_ID_LEN) == 0)
+    {
+      return slot;
+    }
+  }
+  return NULL;
+}
+
+static az_iot_gen2_direct_method_ready_slot* ready_acquire(az_iot_gen2_direct_method_client* dm)
+{
+  for (size_t i = 0; i < AZ_IOT_GEN2_DM_MAX_CONCURRENT; ++i)
+  {
+    az_iot_gen2_direct_method_ready_slot* slot = &DI(dm).ready_pool[i];
+    if (!RI(slot).in_use)
+    {
+      memset(slot, 0, sizeof(*slot));
+      RI(slot).in_use = true;
+      return slot;
+    }
+  }
+  return NULL;
+}
 
 /* Acquire a free slot from the bounded pool (NULL if full). A slot is returned
  * only by az_iot_gen2_direct_method_respond(); a handler that returns without
  * responding leaks one, and once all of them have leaked every further
  * invocation is dropped -- say so rather than going quiet. */
-static az_iot_direct_method_request* request_acquire(az_iot_gen2_direct_method_client* dm)
+static az_iot_direct_method_request* request_acquire(
+    az_iot_gen2_direct_method_client* dm,
+    size_t* out_index)
 {
-  for (size_t i = 0; i < AZ_IOT_DM_MAX_INFLIGHT; ++i)
+  for (size_t i = 0; i < AZ_IOT_GEN2_DM_MAX_CONCURRENT; ++i)
   {
     az_iot_direct_method_request* r = &DI(dm).req_pool[i];
     if (!r->_internal.in_use)
@@ -39,109 +213,531 @@ static az_iot_direct_method_request* request_acquire(az_iot_gen2_direct_method_c
       r->_internal.in_use = true;
       r->_internal.owner = dm;
       r->_internal.profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
+      *out_index = i;
       return r;
     }
   }
   AZ_IOT_LOG_WARNF(
-      "gen2_direct_method: dropping an invocation, all %d in-flight slots are taken. A slot is "
+      "gen2_direct_method: dropping an invocation, all %d concurrent slots are taken. A slot is "
       "released by az_iot_gen2_direct_method_respond(); a handler that returns without responding "
-      "leaks one.",
-      (int)AZ_IOT_DM_MAX_INFLIGHT);
+      "leaks one. Raise AZ_IOT_GEN2_DM_MAX_CONCURRENT to hold more at once.",
+      (int)AZ_IOT_GEN2_DM_MAX_CONCURRENT);
   return NULL;
 }
 
-/* Parse "ih/{device_id}/dev/methods/{methodName}". */
-static bool parse_method_topic(const char* topic, char* out_method, size_t method_cap)
+/* Locate `request` in this client's pool.
+ *
+ * Compares pointers rather than subtracting them. az_iot_direct_method_request
+ * is a public type, so a handle reaching respond() need not have come from this
+ * pool at all; subtracting would produce an index that then reads past the
+ * parallel budget arrays. Equality is well defined for any two pointers, so an
+ * unrecognised handle is simply rejected. */
+static bool request_pool_index(
+    const az_iot_gen2_direct_method_client* dm,
+    const az_iot_direct_method_request* request,
+    size_t* out_index)
 {
-  if (strncmp(topic, "ih/", 3) != 0)
+  for (size_t i = 0; i < AZ_IOT_GEN2_DM_MAX_CONCURRENT; ++i)
   {
-    return false;
-  }
-  const char* dev_methods = strstr(topic + 3, "/dev/methods/");
-  if (!dev_methods)
-  {
-    return false;
-  }
-  const char* name = dev_methods + (sizeof("/dev/methods/") - 1);
-  size_t name_len = strlen(name);
-  while (name_len > 0 && name[name_len - 1] == '/')
-  {
-    name_len--;
-  }
-  if (name_len == 0 || name_len + 1 > method_cap)
-  {
-    return false;
-  }
-  memcpy(out_method, name, name_len);
-  out_method[name_len] = '\0';
-  return true;
-}
-
-/* The AEG method protocol discriminates on a `type` user property -- probe:1,
- * exec:1, abandon:1 -- and only the exec phase is implemented here. A message
- * carrying any other type is left alone rather than treated as an invocation:
- * answering a probe would reply to a question about whether this device can run
- * a method, with a result for a call that never happened. A message with no
- * type at all is the pre-protocol shape, which is dispatched as before. */
-static bool is_unimplemented_message_type(const az_iot_mqtt_message* msg)
-{
-  for (size_t i = 0; i < msg->user_properties_count; ++i)
-  {
-    if (msg->user_properties[i].key && strcmp(msg->user_properties[i].key, "type") == 0)
+    if (&DI(dm).req_pool[i] == request)
     {
-      const char* value = msg->user_properties[i].value;
-      return !(value && strcmp(value, "exec:1") == 0);
+      *out_index = i;
+      return true;
     }
   }
   return false;
 }
 
-static void on_method_invocation(void* user_ctx, const az_iot_mqtt_message* msg)
+/* True when the device can take on one more invocation.
+ *
+ * Ready tokens and in-flight invocations draw on one budget, because a ready
+ * token is a promise to execute and executing needs a req_pool slot that an
+ * earlier invocation may still be holding -- those are released by respond(),
+ * which the application may call long after its handler returned. Admitting on
+ * free ready slots alone would let the device accept work it has no room to
+ * run, and the caller would find out only when the exec was abandoned, after
+ * its parameters had already been shipped to the device. Deciding it here is
+ * what the probe phase is for. */
+static bool has_execution_capacity(const az_iot_gen2_direct_method_client* dm)
 {
-  az_iot_gen2_direct_method_client* dm = (az_iot_gen2_direct_method_client*)user_ctx;
-  if (!dm || !msg || !msg->topic || !DI(dm).handler)
+  size_t committed = 0;
+  for (size_t i = 0; i < AZ_IOT_GEN2_DM_MAX_CONCURRENT; ++i)
   {
-    return;
+    if (DI(dm).ready_pool[i]._internal.in_use)
+    {
+      committed++;
+    }
+    if (DI(dm).req_pool[i]._internal.in_use)
+    {
+      committed++;
+    }
+  }
+  return committed < AZ_IOT_GEN2_DM_MAX_CONCURRENT;
+}
+
+/* ------------------------------------------------------------------------- */
+/* publishing                                                                */
+/* ------------------------------------------------------------------------- */
+
+/* A QoS 1 PUBACK arrives later, from do_work(), so a publish call reporting
+ * success only means the adapter accepted the message. Without this, a broker
+ * that refuses one is invisible here and the caller simply times out.
+ *
+ * user_ctx is the phase's `type` string literal and never the client: this can
+ * fire after the feature client has been destroyed, and a literal outlives
+ * everything. */
+static void on_publish_ack(az_iot_result status, void* user_ctx)
+{
+  if (status != AZ_IOT_OK)
+  {
+    AZ_IOT_LOG_ERRORF(
+        "gen2_direct_method: the broker rejected a '%s' message (%s); the service will not see it",
+        (const char*)user_ctx,
+        az_iot_result_to_string(status));
+  }
+}
+
+/* Publish one device-to-service message. Every phase shares this envelope; only
+ * the `type`, the payload and the expiry differ. */
+static az_iot_result publish_typed(
+    az_iot_gen2_direct_method_client* dm,
+    const char* type_value,
+    const uint8_t* payload,
+    size_t payload_len,
+    const uint8_t* request_id,
+    uint32_t expiry_seconds)
+{
+  if (DI(dm).outbound_topic[0] == '\0')
+  {
+    return AZ_IOT_ERR_NOT_INITIALIZED;
   }
 
-  if (is_unimplemented_message_type(msg))
+  az_iot_mqtt_user_property type_prop;
+  type_prop.key = "type";
+  type_prop.value = type_value;
+
+  az_iot_mqtt_message out = { 0 };
+  out.topic = DI(dm).outbound_topic;
+  out.payload = payload;
+  out.payload_len = payload_len;
+  out.qos = AZ_IOT_MQTT_QOS_1;
+  out.retain = false;
+  out.user_properties = &type_prop;
+  out.user_properties_count = 1;
+  out.correlation_data = request_id;
+  out.correlation_data_len = AZ_IOT_GEN2_DM_REQUEST_ID_LEN;
+  out.content_type = DM_CONTENT_TYPE;
+  out.message_expiry_seconds = expiry_seconds;
+
+  az_iot_result result
+      = az_iot_connection_client__publish(DI(dm).conn, &out, on_publish_ack, (void*)type_value);
+  if (result == AZ_IOT_ERR_NOT_SUPPORTED)
+  {
+    /* The message went out; only the pending-ack table was full, so the PUBACK
+     * will be absorbed silently. Losing that observability is not a send
+     * failure, and reporting one would have the caller treat a delivered
+     * result as lost. */
+    AZ_IOT_LOG_WARNF(
+        "gen2_direct_method: sent '%s' without ack tracking, the pending-ack table is full",
+        type_value);
+    return AZ_IOT_OK;
+  }
+  if (result != AZ_IOT_OK)
   {
     AZ_IOT_LOG_WARNF(
-        "gen2_direct_method: ignoring a method message on %s whose protocol phase this client does "
-        "not implement yet (probe/exec/abandon)",
-        msg->topic);
+        "gen2_direct_method: could not publish a '%s' message (%s)",
+        type_value,
+        az_iot_result_to_string(result));
+  }
+  return result;
+}
+
+/* Best-effort advisory that a ready token ended before execution began. The
+ * service uses it to fail the caller early instead of waiting out the response
+ * timeout, so losing one costs latency, not correctness. */
+static void publish_abandon(
+    az_iot_gen2_direct_method_client* dm,
+    const az_iot_gen2_direct_method_ready_slot* slot,
+    az_iot_dm_proto_abandon_reason reason)
+{
+  uint8_t frame[AZ_IOT_DM_PROTO_ABANDON_MAX];
+  size_t frame_len = 0;
+  az_iot_result encoded = az_iot_dm_proto_encode_abandon(
+      frame, sizeof(frame), RI(slot).ready_id, AZ_IOT_GEN2_DM_READY_ID_LEN, reason, &frame_len);
+  if (encoded != AZ_IOT_OK)
+  {
+    AZ_IOT_LOG_ERRORF(
+        "gen2_direct_method: could not encode the abandon for '%s' (%s); the service will wait out "
+        "its response timeout instead",
+        RI(slot).method_name,
+        az_iot_result_to_string(encoded));
     return;
   }
+  (void)publish_typed(
+      dm,
+      "abandon:" DM_TYPE_VERSION,
+      frame,
+      frame_len,
+      RI(slot).request_id,
+      RI(slot).response_timeout_seconds);
+}
+
+/* Release every ready token whose wait has run out.
+ *
+ * Feature clients get no periodic tick, so this runs whenever a method message
+ * arrives -- which is exactly when the capacity it frees is about to be needed.
+ * A device that is never probed again keeps its stale slots, at the cost of
+ * memory it had already reserved.
+ */
+static void ready_expire_stale(az_iot_gen2_direct_method_client* dm)
+{
+  uint64_t now = az_iot_time_mono_ms();
+  for (size_t i = 0; i < AZ_IOT_GEN2_DM_MAX_CONCURRENT; ++i)
+  {
+    az_iot_gen2_direct_method_ready_slot* slot = &DI(dm).ready_pool[i];
+    if (!RI(slot).in_use || now < RI(slot).expires_at_ms)
+    {
+      continue;
+    }
+    AZ_IOT_LOG_WARNF(
+        "gen2_direct_method: no exec arrived for '%s' within its ready wait; abandoning the token",
+        RI(slot).method_name);
+    /* Committed out of the ready state before the advisory goes out, so the
+     * message can never claim a token that might still run. */
+    az_iot_gen2_direct_method_ready_slot expired = *slot;
+    RI(slot).in_use = false;
+    publish_abandon(dm, &expired, AZ_IOT_DM_PROTO_ABANDON_READY_WAIT_TIMEOUT);
+  }
+}
+
+/* ------------------------------------------------------------------------- */
+/* inbound dispatch                                                          */
+/* ------------------------------------------------------------------------- */
+
+/* Value of the `type` user property, or NULL when the message carries none. */
+static const char* message_type(const az_iot_mqtt_message* msg)
+{
+  for (size_t i = 0; i < msg->user_properties_count; ++i)
+  {
+    if (msg->user_properties[i].key && strcmp(msg->user_properties[i].key, "type") == 0)
+    {
+      return msg->user_properties[i].value;
+    }
+  }
+  return NULL;
+}
+
+/* True when `type_value` is exactly "{step}:1". */
+static bool dm_msg_type_is(const char* type_value, const char* step)
+{
+  size_t step_len = strlen(step);
+  return strncmp(type_value, step, step_len) == 0 && type_value[step_len] == ':'
+      && strcmp(type_value + step_len + 1, DM_TYPE_VERSION) == 0;
+}
+
+static void handle_probe(
+    az_iot_gen2_direct_method_client* dm,
+    const az_iot_mqtt_message* msg,
+    const uint8_t* request_id)
+{
+  /* A probe redelivered while its token is still live needs no second answer:
+   * the original probe-ack has its own QoS 1 delivery lifecycle. */
+  if (ready_find(dm, request_id) != NULL)
+  {
+    return;
+  }
+
+  az_iot_dm_proto_probe probe;
+  if (az_iot_dm_proto_decode_probe(msg->payload, msg->payload_len, &probe) != AZ_IOT_OK)
+  {
+    AZ_IOT_LOG_WARN("gen2_direct_method: dropping a probe whose payload is not a Probe message");
+    return;
+  }
+
+  /* The budget the service is holding open for the caller's connect timeout,
+   * already reduced by the broker for the time the probe sat queued. */
+  uint32_t connect_budget = msg->message_expiry_seconds;
+  uint64_t received_at_ms = az_iot_time_mono_ms();
 
   char method_name[AZ_IOT_DM_METHOD_NAME_MAX];
-  if (!parse_method_topic(msg->topic, method_name, sizeof(method_name)))
-  {
-    AZ_IOT_LOG_WARNF("gen2_direct_method: dropping an unparsable request topic: %s", msg->topic);
-    return;
-  }
+  az_iot_gen2_direct_method_probe_result answer = AZ_IOT_GEN2_DM_PROBE_ACCEPT;
+  uint32_t minimum_execution_seconds = 0;
+  az_iot_direct_method_handler_callback handler = NULL;
+  void* handler_ctx = NULL;
 
-  az_iot_direct_method_request* req = request_acquire(dm);
-  if (!req)
+  if (probe.method_name_len == 0u || probe.method_name_len >= sizeof(method_name)
+      || memchr(probe.method_name, '\0', probe.method_name_len) != NULL)
   {
-    return;
+    /* A name this client cannot store, or cannot hand over as a C string
+     * without losing part of it, is one it certainly cannot dispatch. An
+     * embedded NUL matters beyond tidiness: the application would compare a
+     * prefix and could run a different method from the one authorized. Saying
+     * so beats leaving the caller to time out. */
+    answer = AZ_IOT_GEN2_DM_PROBE_REJECT_METHOD_NOT_FOUND;
+    method_name[0] = '\0';
   }
-  memcpy(req->_internal.method_name, method_name, strlen(method_name) + 1);
-
-  /* The response has to carry this back verbatim or the service cannot pair it
-   * with the invocation. */
-  if (msg->correlation_data && msg->correlation_data_len > 0)
+  else
   {
-    size_t copy_len = msg->correlation_data_len;
-    if (copy_len > AZ_IOT_DM_CORR_DATA_MAX)
+    memcpy(method_name, probe.method_name, probe.method_name_len);
+    method_name[probe.method_name_len] = '\0';
+
+    const az_iot_gen2_direct_method_registration* entry = method_find(dm, method_name);
+    if (entry == NULL)
     {
-      copy_len = AZ_IOT_DM_CORR_DATA_MAX;
+      /* Undeclared. Answering now costs the caller one round trip and this
+       * device nothing: no arguments cross the wire and no capacity is
+       * reserved. */
+      answer = AZ_IOT_GEN2_DM_PROBE_REJECT_METHOD_NOT_FOUND;
     }
-    memcpy(req->_internal.correlation_data, msg->correlation_data, copy_len);
-    req->_internal.correlation_data_len = copy_len;
+    else
+    {
+      minimum_execution_seconds = RI(entry).minimum_execution_seconds;
+      handler = RI(entry).handler;
+      handler_ctx = RI(entry).handler_ctx;
+      /* The best case at exec time is the whole response timeout less the
+       * margin. If that cannot cover the method's declared floor, the caller
+       * asked for something this device was never going to finish. */
+      if (probe.response_timeout_seconds > 0u
+          && (uint64_t)probe.response_timeout_seconds <= (uint64_t)minimum_execution_seconds
+                  + safety_margin_seconds(probe.response_timeout_seconds))
+      {
+        answer = AZ_IOT_GEN2_DM_PROBE_REJECT_INSUFFICIENT_TIME;
+      }
+      else if (DI(dm).probe_handler != NULL)
+      {
+        az_iot_gen2_direct_method_probe view;
+        view.method_name = method_name;
+        view.response_timeout_seconds = probe.response_timeout_seconds;
+        answer = DI(dm).probe_handler(&view, DI(dm).probe_handler_ctx);
+      }
+    }
   }
 
-  DI(dm).handler(req, method_name, msg->payload, msg->payload_len, DI(dm).handler_ctx);
+  az_iot_gen2_direct_method_ready_slot* slot = NULL;
+  if (answer == AZ_IOT_GEN2_DM_PROBE_ACCEPT)
+  {
+    if (has_execution_capacity(dm))
+    {
+      slot = ready_acquire(dm);
+    }
+    if (slot == NULL)
+    {
+      answer = AZ_IOT_GEN2_DM_PROBE_REJECT_DEVICE_BUSY;
+    }
+  }
+
+  /* Whatever the application spent deciding comes out of the same budget the
+   * service is counting down. */
+  uint32_t remaining = remaining_budget_seconds(connect_budget, received_at_ms);
+  if (connect_budget > 0u && remaining < DM_MIN_USEFUL_BUDGET_SECONDS)
+  {
+    AZ_IOT_LOG_WARNF(
+        "gen2_direct_method: the connect budget for '%s' ran out while the probe was being "
+        "answered; sending no probe-ack",
+        method_name);
+    if (slot != NULL)
+    {
+      RI(slot).in_use = false;
+    }
+    return;
+  }
+
+  uint8_t frame[AZ_IOT_DM_PROTO_PROBE_ACK_MAX];
+  size_t frame_len = 0;
+  az_iot_result encoded;
+
+  if (slot != NULL)
+  {
+    generate_ready_id(dm, RI(slot).ready_id);
+    memcpy(RI(slot).request_id, request_id, AZ_IOT_GEN2_DM_REQUEST_ID_LEN);
+    memcpy(RI(slot).method_name, method_name, probe.method_name_len + 1u);
+    RI(slot).response_timeout_seconds = probe.response_timeout_seconds;
+    RI(slot).minimum_execution_seconds = minimum_execution_seconds;
+    RI(slot).handler = handler;
+    RI(slot).handler_ctx = handler_ctx;
+    /* Hold the token long enough to survive the two delays that follow: the
+     * probe-ack still reaching the service, and the exec coming back. */
+    RI(slot).expires_at_ms = az_iot_time_mono_ms()
+        + ((uint64_t)remaining + probe.response_timeout_seconds
+           + safety_margin_seconds(probe.response_timeout_seconds))
+            * DM_MS_PER_SECOND;
+
+    encoded = az_iot_dm_proto_encode_probe_ack_ready(
+        frame, sizeof(frame), RI(slot).ready_id, AZ_IOT_GEN2_DM_READY_ID_LEN, &frame_len);
+  }
+  else
+  {
+    encoded = az_iot_dm_proto_encode_probe_ack_rejected(
+        frame, sizeof(frame), (az_iot_dm_proto_rejected_reason)answer, &frame_len);
+  }
+
+  if (encoded != AZ_IOT_OK)
+  {
+    AZ_IOT_LOG_ERRORF(
+        "gen2_direct_method: could not encode the probe-ack for '%s' (%s); the caller will wait "
+        "out its connect timeout instead",
+        method_name,
+        az_iot_result_to_string(encoded));
+    if (slot != NULL)
+    {
+      RI(slot).in_use = false;
+    }
+    return;
+  }
+
+  az_iot_result sent
+      = publish_typed(dm, "probe-ack:" DM_TYPE_VERSION, frame, frame_len, request_id, remaining);
+  if (sent != AZ_IOT_OK && slot != NULL)
+  {
+    /* Nothing reached the service, so no token was ever promised, and holding
+     * one would only consume capacity until its wait ran out. */
+    RI(slot).in_use = false;
+  }
 }
+
+static void handle_exec(
+    az_iot_gen2_direct_method_client* dm,
+    const az_iot_mqtt_message* msg,
+    const uint8_t* request_id)
+{
+  az_iot_gen2_direct_method_ready_slot* slot = ready_find(dm, request_id);
+  if (slot == NULL)
+  {
+    AZ_IOT_LOG_WARN(
+        "gen2_direct_method: ignoring an exec with no matching ready token -- it was never "
+        "accepted, it already ran, or its ready wait ran out");
+    return;
+  }
+
+  az_iot_dm_proto_exec exec;
+  if (az_iot_dm_proto_decode_exec(msg->payload, msg->payload_len, &exec) != AZ_IOT_OK)
+  {
+    /* The token stays live: a redelivery of the same exec may still decode. */
+    AZ_IOT_LOG_WARN("gen2_direct_method: dropping an exec whose payload is not an Exec message");
+    return;
+  }
+
+  if (exec.ready_id_len != AZ_IOT_GEN2_DM_READY_ID_LEN
+      || memcmp(exec.ready_id, RI(slot).ready_id, AZ_IOT_GEN2_DM_READY_ID_LEN) != 0)
+  {
+    AZ_IOT_LOG_WARN(
+        "gen2_direct_method: ignoring an exec whose ready id does not match the current token");
+    return;
+  }
+
+  uint64_t received_at_ms = az_iot_time_mono_ms();
+  uint32_t exec_budget = msg->message_expiry_seconds;
+  uint32_t margin = safety_margin_seconds(RI(slot).response_timeout_seconds);
+  /* The admission floor: the margin covers transit the broker cannot measure,
+   * and the declared minimum is what the method itself needs once started. */
+  uint64_t admission_floor = (uint64_t)margin + RI(slot).minimum_execution_seconds;
+
+  /* Starting work that cannot finish in time burns the device's cycles and
+   * still leaves the caller waiting; abandoning says so now. */
+  if (exec_budget > 0u && (uint64_t)exec_budget <= admission_floor)
+  {
+    az_iot_gen2_direct_method_ready_slot abandoned = *slot;
+    RI(slot).in_use = false;
+    AZ_IOT_LOG_WARNF(
+        "gen2_direct_method: only %u second(s) of budget left for '%s', at or under the %u second "
+        "admission floor; not starting it",
+        (unsigned)exec_budget,
+        RI(&abandoned).method_name,
+        (unsigned)admission_floor);
+    publish_abandon(dm, &abandoned, AZ_IOT_DM_PROTO_ABANDON_INSUFFICIENT_TIME);
+    return;
+  }
+
+  size_t index = 0;
+  az_iot_direct_method_request* req = request_acquire(dm, &index);
+  if (req == NULL)
+  {
+    /* Unreachable while probe admission reserves capacity for every token it
+     * issues. Kept because dropping the exec silently would strand the caller
+     * for its whole response timeout; no reason code fits, and the service only
+     * needs to learn that execution did not begin. */
+    az_iot_gen2_direct_method_ready_slot abandoned = *slot;
+    RI(slot).in_use = false;
+    publish_abandon(dm, &abandoned, AZ_IOT_DM_PROTO_ABANDON_UNSPECIFIED);
+    return;
+  }
+
+  memcpy(RI(req).method_name, RI(slot).method_name, strlen(RI(slot).method_name) + 1u);
+  memcpy(RI(req).correlation_data, request_id, AZ_IOT_GEN2_DM_REQUEST_ID_LEN);
+  RI(req).correlation_data_len = AZ_IOT_GEN2_DM_REQUEST_ID_LEN;
+  DI(dm).exec_budget_seconds[index] = exec_budget;
+  DI(dm).exec_received_at_ms[index] = received_at_ms;
+
+  /* The token is single-use: consumed here, so a redelivered exec cannot run
+   * the method a second time. Its handler is read out first -- the slot is
+   * free for the next probe the moment it is released. */
+  az_iot_direct_method_handler_callback handler = RI(slot).handler;
+  void* handler_ctx = RI(slot).handler_ctx;
+  RI(slot).in_use = false;
+
+  handler(req, RI(req).method_name, exec.params, exec.params_len, handler_ctx);
+}
+
+static void on_method_message(void* user_ctx, const az_iot_mqtt_message* msg)
+{
+  az_iot_gen2_direct_method_client* dm = (az_iot_gen2_direct_method_client*)user_ctx;
+  if (!dm || !msg || !msg->topic)
+  {
+    return;
+  }
+
+  /* Handlers are registered by prefix, so a message on a longer topic under
+   * the same root reaches this one too. The protocol has exactly one inbound
+   * topic; anything below it is not part of it. */
+  if (strcmp(msg->topic, DI(dm).inbound_topic) != 0)
+  {
+    return;
+  }
+
+  ready_expire_stale(dm);
+
+  const char* type_value = message_type(msg);
+  if (type_value == NULL)
+  {
+    AZ_IOT_LOG_WARN(
+        "gen2_direct_method: dropping a method message with no `type` property -- the phase is "
+        "what says whether it is a probe or an authorization to run, and neither is a safe guess");
+    return;
+  }
+
+  bool is_probe = dm_msg_type_is(type_value, "probe");
+  if (!is_probe && !dm_msg_type_is(type_value, "exec"))
+  {
+    AZ_IOT_LOG_WARNF(
+        "gen2_direct_method: ignoring a method message of type '%s', which this client does not "
+        "implement",
+        type_value);
+    return;
+  }
+
+  if (msg->correlation_data == NULL || msg->correlation_data_len != AZ_IOT_GEN2_DM_REQUEST_ID_LEN)
+  {
+    AZ_IOT_LOG_WARNF(
+        "gen2_direct_method: dropping a '%s' message whose correlation data is not a %u-byte "
+        "request id",
+        type_value,
+        (unsigned)AZ_IOT_GEN2_DM_REQUEST_ID_LEN);
+    return;
+  }
+
+  if (is_probe)
+  {
+    handle_probe(dm, msg, msg->correlation_data);
+  }
+  else
+  {
+    handle_exec(dm, msg, msg->correlation_data);
+  }
+}
+
+/* ------------------------------------------------------------------------- */
+/* lifecycle                                                                 */
+/* ------------------------------------------------------------------------- */
 
 static az_iot_result bind_topics(void* owner, az_iot_connection_client* conn)
 {
@@ -150,20 +746,37 @@ static az_iot_result bind_topics(void* owner, az_iot_connection_client* conn)
   const char* device_id = az_iot_connection_client__device_id(conn);
   if (!device_id)
   {
+    AZ_IOT_LOG_ERROR(
+        "gen2_direct_method: the connection has no device id to build the method topics from");
     return AZ_IOT_ERR_NOT_INITIALIZED;
   }
 
-  char prefix[AZ_IOT_GEN2_DM_TOPIC_MAX];
-  const char* prefix_parts[] = { "ih/", device_id, "/dev/methods/" };
-  if (az_iot_span_writer_build_str(AZ_SPAN_FROM_BUFFER(prefix), NULL, prefix_parts, 3) != AZ_IOT_OK)
+  const char* inbound_parts[] = { "ih/", device_id, "/dev/methods" };
+  const char* outbound_parts[] = { "ih/", device_id, "/srv/methods" };
+  if (az_iot_span_writer_build_str(
+          AZ_SPAN_FROM_BUFFER(DI(client).inbound_topic), NULL, inbound_parts, DM_TOPIC_PART_COUNT)
+          != AZ_IOT_OK
+      || az_iot_span_writer_build_str(
+             AZ_SPAN_FROM_BUFFER(DI(client).outbound_topic),
+             NULL,
+             outbound_parts,
+             DM_TOPIC_PART_COUNT)
+          != AZ_IOT_OK)
   {
+    AZ_IOT_LOG_ERRORF(
+        "gen2_direct_method: device id '%s' does not fit the %u byte method topic buffers; raise "
+        "AZ_IOT_GEN2_DM_TOPIC_MAX",
+        device_id,
+        (unsigned)AZ_IOT_GEN2_DM_TOPIC_MAX);
+    DI(client).inbound_topic[0] = '\0';
+    DI(client).outbound_topic[0] = '\0';
     return AZ_IOT_ERR_INTERNAL;
   }
 
   /* No SUBSCRIBE: ih/{device_id}/dev/# from the presence handshake already
    * covers this. */
   return az_iot_connection_client__register_inbound_handler(
-      conn, prefix, on_method_invocation, client);
+      conn, DI(client).inbound_topic, on_method_message, client);
 }
 
 az_iot_result az_iot_gen2_direct_method_client_init(
@@ -185,6 +798,7 @@ az_iot_result az_iot_gen2_direct_method_client_init(
 
   memset(client, 0, sizeof(*client));
   DI(client).conn = conn;
+  DI(client).rng_state = az_iot_time_mono_ms();
 
   result = az_iot_connection_client__register_feature_client_bind(conn, client, bind_topics);
   if (result != AZ_IOT_OK)
@@ -212,17 +826,87 @@ void az_iot_gen2_direct_method_client_destroy(az_iot_gen2_direct_method_client* 
   memset(client, 0, sizeof(*client));
 }
 
-az_iot_result az_iot_gen2_direct_method_client_set_handler(
+az_iot_result az_iot_gen2_direct_method_client_set_probe_handler(
     az_iot_gen2_direct_method_client* client,
-    az_iot_direct_method_handler_callback cb,
+    az_iot_gen2_direct_method_probe_callback cb,
     void* user_ctx)
 {
   if (client == NULL)
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
-  DI(client).handler = cb;
-  DI(client).handler_ctx = user_ctx;
+  DI(client).probe_handler = cb;
+  DI(client).probe_handler_ctx = user_ctx;
+  return AZ_IOT_OK;
+}
+
+AZ_NODISCARD az_iot_result az_iot_gen2_direct_method_client_register_method(
+    az_iot_gen2_direct_method_client* client,
+    const char* method_name,
+    uint32_t minimum_execution_seconds,
+    az_iot_direct_method_handler_callback handler,
+    void* user_ctx)
+{
+  if (client == NULL || method_name == NULL || method_name[0] == '\0' || handler == NULL)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+
+  size_t name_len = strlen(method_name);
+  if (name_len >= AZ_IOT_DM_METHOD_NAME_MAX)
+  {
+    AZ_IOT_LOG_ERRORF(
+        "gen2_direct_method: method name '%s' does not fit %u bytes; a probe could never match it "
+        "anyway",
+        method_name,
+        (unsigned)AZ_IOT_DM_METHOD_NAME_MAX);
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+
+  az_iot_gen2_direct_method_registration* entry = method_find(client, method_name);
+  if (entry == NULL)
+  {
+    for (size_t i = 0; i < AZ_IOT_GEN2_DM_MAX_METHODS; ++i)
+    {
+      if (!DI(client).methods[i]._internal.in_use)
+      {
+        entry = &DI(client).methods[i];
+        break;
+      }
+    }
+  }
+  if (entry == NULL)
+  {
+    AZ_IOT_LOG_ERRORF(
+        "gen2_direct_method: cannot declare '%s', all %d method slots are taken; raise "
+        "AZ_IOT_GEN2_DM_MAX_METHODS",
+        method_name,
+        (int)AZ_IOT_GEN2_DM_MAX_METHODS);
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  }
+
+  RI(entry).in_use = true;
+  memcpy(RI(entry).name, method_name, name_len + 1u);
+  RI(entry).minimum_execution_seconds = minimum_execution_seconds;
+  RI(entry).handler = handler;
+  RI(entry).handler_ctx = user_ctx;
+  return AZ_IOT_OK;
+}
+
+az_iot_result az_iot_gen2_direct_method_client_unregister_method(
+    az_iot_gen2_direct_method_client* client,
+    const char* method_name)
+{
+  if (client == NULL || method_name == NULL)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  az_iot_gen2_direct_method_registration* entry = method_find(client, method_name);
+  if (entry == NULL)
+  {
+    return AZ_IOT_ERR_NOT_FOUND;
+  }
+  memset(entry, 0, sizeof(*entry));
   return AZ_IOT_OK;
 }
 
@@ -234,67 +918,84 @@ az_iot_result az_iot_gen2_direct_method_respond(
 {
   if (request == NULL || (payload_len > 0 && payload == NULL))
   {
+    AZ_IOT_LOG_ERROR(
+        "gen2_direct_method: respond() needs the request handle it was given, and a payload "
+        "whenever payload_len is not zero");
     return AZ_IOT_ERR_INVALID_ARG;
   }
-  if (!request->_internal.in_use || request->_internal.owner == NULL)
+  if (!RI(request).in_use || RI(request).owner == NULL)
   {
     AZ_IOT_LOG_ERROR("gen2_direct_method: respond() called on a request that was already answered");
     return AZ_IOT_ERR_INVALID_ARG;
   }
-  if (request->_internal.profile != AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
+  if (RI(request).profile != AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
   {
     AZ_IOT_LOG_ERROR("gen2_direct_method: this request was delivered by the gen1 client");
     return AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH;
   }
 
-  az_iot_gen2_direct_method_client* dm
-      = (az_iot_gen2_direct_method_client*)request->_internal.owner;
-
-  /* Same answer bind_topics gives: a connection that never got a device id has
-   * nothing to build a topic from, and saying NOT_SUPPORTED would point at the
-   * topic writer rather than at the connection. */
-  const char* device_id = az_iot_connection_client__device_id(DI(dm).conn);
-  if (!device_id)
+  az_iot_gen2_direct_method_client* dm = (az_iot_gen2_direct_method_client*)RI(request).owner;
+  size_t index = 0;
+  if (!request_pool_index(dm, request, &index))
   {
-    request->_internal.in_use = false;
-    return AZ_IOT_ERR_NOT_INITIALIZED;
+    AZ_IOT_LOG_ERROR(
+        "gen2_direct_method: respond() called with a request this client never handed out");
+    return AZ_IOT_ERR_INVALID_ARG;
   }
 
-  char topic[AZ_IOT_GEN2_DM_TOPIC_MAX];
-  const char* topic_parts[]
-      = { "ih/", device_id, "/srv/methods/", request->_internal.method_name, "/response" };
-  if (az_iot_span_writer_build_str(AZ_SPAN_FROM_BUFFER(topic), NULL, topic_parts, 5) != AZ_IOT_OK)
+  if (payload_len > AZ_IOT_GEN2_DM_RESULT_BODY_MAX)
   {
-    request->_internal.in_use = false;
-    return AZ_IOT_ERR_NOT_SUPPORTED;
+    AZ_IOT_LOG_ERRORF(
+        "gen2_direct_method: a %u byte result body does not fit the framing buffer; send a shorter "
+        "one, or raise AZ_IOT_GEN2_DM_RESULT_BODY_MAX past %u",
+        (unsigned)payload_len,
+        (unsigned)AZ_IOT_GEN2_DM_RESULT_BODY_MAX);
+    /* The slot stays held. Nothing was sent and nothing consumed the request,
+     * so the obvious recovery -- answer again with a body that fits -- has to
+     * still be open. */
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
   }
 
-  char status_str[12];
-  az_iot_span_writer status_writer;
-  az_iot_span_writer_init(&status_writer, AZ_SPAN_FROM_BUFFER(status_str));
-  az_iot_span_writer_append_i32(&status_writer, (int32_t)status_code);
-  if (az_iot_span_writer_end_str(&status_writer, NULL) != AZ_IOT_OK)
+  /* The caller's response timer has been running since the service published
+   * the exec, and a result that lands after it fires is discarded -- so send
+   * only while a window to arrive in is left. */
+  uint32_t remaining = remaining_budget_seconds(
+      DI(dm).exec_budget_seconds[index], DI(dm).exec_received_at_ms[index]);
+  if (DI(dm).exec_budget_seconds[index] > 0u && remaining < DM_MIN_USEFUL_BUDGET_SECONDS)
   {
-    request->_internal.in_use = false;
-    return AZ_IOT_ERR_NOT_SUPPORTED;
+    AZ_IOT_LOG_WARNF(
+        "gen2_direct_method: '%s' finished after its response timeout had elapsed; sending no "
+        "result",
+        RI(request).method_name);
+    RI(request).in_use = false;
+    return AZ_IOT_ERR_TIMEOUT;
   }
 
-  az_iot_mqtt_user_property user_props[1];
-  user_props[0].key = "status";
-  user_props[0].value = status_str;
+  size_t frame_len = 0;
+  az_iot_result result = az_iot_dm_proto_encode_result(
+      DI(dm).result_frame,
+      sizeof(DI(dm).result_frame),
+      (int32_t)status_code,
+      payload,
+      payload_len,
+      &frame_len);
+  if (result != AZ_IOT_OK)
+  {
+    AZ_IOT_LOG_ERRORF(
+        "gen2_direct_method: could not encode the result for '%s' (%s)",
+        RI(request).method_name,
+        az_iot_result_to_string(result));
+    RI(request).in_use = false;
+    return result;
+  }
 
-  az_iot_mqtt_message out = { 0 };
-  out.topic = topic;
-  out.payload = payload;
-  out.payload_len = payload_len;
-  out.qos = AZ_IOT_MQTT_QOS_1;
-  out.retain = false;
-  out.user_properties = user_props;
-  out.user_properties_count = 1;
-  out.correlation_data = request->_internal.correlation_data;
-  out.correlation_data_len = request->_internal.correlation_data_len;
-
-  az_iot_result r = az_iot_connection_client__publish(DI(dm).conn, &out, NULL, NULL);
-  request->_internal.in_use = false;
-  return r;
+  result = publish_typed(
+      dm,
+      "result:" DM_TYPE_VERSION,
+      DI(dm).result_frame,
+      frame_len,
+      RI(request).correlation_data,
+      remaining);
+  RI(request).in_use = false;
+  return result;
 }
