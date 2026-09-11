@@ -16,7 +16,6 @@ using System.Text.Json;
 
 namespace Microsoft.Azure.Devices.Client
 {
-    //TODO Does my setup already allow for user to publish via feature clients even when this client is connected to DPS during identity terminal exception handling? It does, right?
 
     public abstract class AbstractConnectionClient
     {
@@ -36,7 +35,9 @@ namespace Microsoft.Azure.Devices.Client
         private event Func<ProvisioningFlowCompletedArgs, Task>? ProvisioningFlowCompletedAsync;
 
         private const string ProvisioningUsernameFormat = "{0}/registrations/{1}/api-version={2}&ClientVersion={3}";
-        private const string ProvisioningApiVersion = "2026-11-02-preview";
+
+        //TODO This API version is sufficient to do cert management, but not gen1 vs gen2 connection profile. Update when possible.
+        private const string ProvisioningApiVersion = "2021-10-01"; // TODO 2026-11-02-preview is required for connection profile fields, but is not available yet.
         private const string ProvisioningSubscribeFilter = "$dps/registrations/res/#";
         private const string ProvisioningRegisterTopic = "$dps/registrations/PUT/iotdps-register/?$rid={0}";
         private const string ProvisioningGetOperationsTopic = "$dps/registrations/GET/iotdps-get-operationstatus/?$rid={0}&operationId={1}";
