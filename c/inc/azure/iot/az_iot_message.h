@@ -177,6 +177,62 @@ extern "C"
       size_t payload_len,
       void* user_ctx);
 
+/* Max concurrent in-flight twin requests (GET + reported patch) one client can
+ * hold. Each awaits a service response, so the slots live in a bounded pool
+ * inside the caller-allocated client struct rather than on the heap. */
+#ifndef AZ_IOT_TWIN_MAX_PENDING
+#define AZ_IOT_TWIN_MAX_PENDING 8
+#endif
+
+  /**
+   * @brief Delivers the result of a twin GET.
+   *
+   * @param status           AZ_IOT_OK when the service returned the document.
+   * @param twin_payload     The twin document. Owned by the SDK and valid only
+   *                         for the duration of this call; copy what you keep.
+   *                         NULL on failure.
+   * @param twin_payload_len Length of @p twin_payload.
+   * @param user_ctx         Context passed to the get() call.
+   */
+  typedef void (*az_iot_twin_get_callback)(
+      az_iot_result status,
+      const uint8_t* twin_payload,
+      size_t twin_payload_len,
+      void* user_ctx);
+
+  /**
+   * @brief Delivers the outcome of a reported-properties patch.
+   *
+   * Named for completion rather than acknowledgement because it reports
+   * failures too, and because on MQTT v5 an "ack" would be ambiguous with the
+   * QoS 1 PUBACK -- this fires on the service's answer, not on the transport's.
+   *
+   * @param status   AZ_IOT_OK when the service accepted the patch.
+   * @param version  The new version of the reported-properties section. An
+   *                 application that tracks this can tell a lost update from an
+   *                 applied one. 0 when the service did not send a version,
+   *                 which includes every failure.
+   * @param user_ctx Context passed to the patch call.
+   */
+  typedef void (
+      *az_iot_twin_patch_complete_callback)(az_iot_result status, uint64_t version, void* user_ctx);
+
+  /**
+   * @brief Delivers a desired-properties patch pushed by the service.
+   *
+   * @param desired_patch     The patch. Owned by the SDK and valid only for the
+   *                          duration of this call; copy what you keep.
+   * @param desired_patch_len Length of @p desired_patch.
+   * @param version           Version of the desired section this patch produced,
+   *                          or 0 when the service did not send one.
+   * @param user_ctx          Context passed to the set-handler call.
+   */
+  typedef void (*az_iot_twin_desired_callback)(
+      const uint8_t* desired_patch,
+      size_t desired_patch_len,
+      uint64_t version,
+      void* user_ctx);
+
 #ifdef __cplusplus
 }
 #endif

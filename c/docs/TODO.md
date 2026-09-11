@@ -68,6 +68,13 @@ Canonical pending-work tracker for IoT Hub Next (AEG) integration.
 - [x] GET and PATCH reported use correlation_data for Next path
 - [x] Desired push handler for Next path
 - [x] E2E verified against mock Hub-Next
+- [x] Split into `az_iot_gen1_twin_client` / `az_iot_gen2_twin_client`; gen2 binds its inbound
+      topics at connect instead of resolving the device id inside `init()`
+- [x] Desired-property subscriber registry collapsed to a single `set_desired_handler()`; its only
+      consumer (ADU) was re-layered off the twin channel
+- [ ] gen2: carry a desired-properties version. The service does not send one on
+      `ih/{device_id}/dev/twin/desired` yet, so the handler always reports 0 and an application
+      cannot tell a replay from a fresh patch the way it can on Classic's `$version`.
 
 ### C2D
 - [x] `az_iot_c2d_client` feature client (header + implementation)
