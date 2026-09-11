@@ -67,6 +67,50 @@ static bool adapter_claims_key_custody(void)
 {
   return (g_capabilities & (uint32_t)AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY) != 0u;
 }
+/* A declared capability that was never exercised.
+ *
+ * The suite exists so that a third party can bring their own MQTT layer and
+ * have a pass mean something. A capability is the adapter's own claim to
+ * implement an optional feature, so a run that prints a warning and still
+ * exits 0 is the one outcome that must not happen: the claim ends up published
+ * as "conformant" having never been checked.
+ *
+ * So this FAILS the run. An environment that genuinely cannot exercise it --
+ * no token on the machine, a build without TLS -- must say so deliberately by
+ * setting AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN=1, which downgrades it to a
+ * notice. That keeps "could not run it here" a decision someone made, not an
+ * accident of the environment, and it is never the default.
+ *
+ * Returns the number of failures to add to the run's total. */
+static int report_unproven_capability(const char* capability, const char* why)
+{
+  const char* allow = getenv("AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN");
+  const bool allowed = (allow != NULL) && (allow[0] == '1') && (allow[1] == '\0');
+
+  fprintf(
+      stderr,
+      "conformance: %s: %s is declared but its contract was NOT exercised: %s\n",
+      allowed ? "NOTICE" : "FAILED",
+      capability,
+      why);
+
+  if (allowed)
+  {
+    fprintf(
+        stderr,
+        "conformance: allowed by AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN=1. This run does NOT"
+        " demonstrate %s and must not be reported as conformant for it.\n",
+        capability);
+    return 0;
+  }
+
+  fprintf(
+      stderr,
+      "conformance: declare the capability only in a run that can prove it, or set"
+      " AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN=1 to accept an unproven run.\n");
+  return 1;
+}
+
 static const unsigned k_step_timeout_ms = 5000;
 /* Same budget as k_step_timeout_ms, on the scale the connect option uses. */
 static const unsigned k_step_timeout_seconds = 5;
@@ -2125,6 +2169,7 @@ int az_iot_conformance_run_with_options(
    * fixed array. */
   if (adapter_claims_key_custody())
   {
+    const char* unproven = NULL;
 #ifdef AZ_IOT_CONFORMANCE_WITH_TLS
     if (g_key_uri)
     {
@@ -2134,22 +2179,19 @@ int az_iot_conformance_run_with_options(
     }
     else
     {
-      /* Said out loud rather than passed over. The adapter claims it can sign
-       * with a key it cannot read, and nothing here has made it prove that. */
-      fprintf(
-          stderr,
-          "conformance: AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY is declared but no key was supplied, so "
-          "the end-to-end custody handshake was NOT exercised. Set az_iot_conformance_options "
-          "key_uri + crypto_engine_id + client_cert_path to a key this adapter can reach and a "
-          "certificate carrying its public key.\n");
+      unproven = "no key was supplied. Set az_iot_conformance_options key_uri + crypto_engine_id +"
+                 " client_cert_path to a key this adapter can reach and a certificate carrying its"
+                 " public key.";
     }
 #else
-    fprintf(
-        stderr,
-        "conformance: AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY is declared but this build has no TLS "
-        "support (AZ_IOT_BUILD_CONFORMANCE_TESTS_TLS), so the end-to-end custody handshake was NOT "
-        "exercised.\n");
+    unproven = "this build has no TLS support. Configure with"
+               " -DAZ_IOT_BUILD_CONFORMANCE_TESTS_TLS=ON.";
 #endif
+
+    if (unproven != NULL)
+    {
+      failed += report_unproven_capability("AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY", unproven);
+    }
   }
 
   return (failed == 0) ? 0 : 1;
