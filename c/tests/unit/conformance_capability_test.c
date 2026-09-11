@@ -60,12 +60,50 @@ static void only_the_exact_value_one_opts_out(void** state)
   }
 }
 
+/* The three end-to-end custody fields are all-or-none, judged on all three.
+ *
+ * An earlier version tested key_uri alone, so engine and certificate supplied
+ * without it were ignored in silence -- and since the run then reported "no key
+ * was supplied", the opt-out above downgraded it to a notice. A regression that
+ * restores the key_uri-only test brings that back, so every combination is
+ * pinned here. */
+static void custody_material_is_all_or_none(void** state)
+{
+  (void)state;
+  const char* const u = "pkcs11:object=k;type=private";
+  const char* const e = "pkcs11";
+  const char* const c = "/tmp/cert.pem";
+
+  assert_int_equal(
+      az_iot_conformance_custody_material_state(NULL, NULL, NULL), AZ_IOT_CONFORMANCE_CUSTODY_NONE);
+  assert_int_equal(
+      az_iot_conformance_custody_material_state(u, e, c), AZ_IOT_CONFORMANCE_CUSTODY_COMPLETE);
+
+  /* One of three. The engine-only and certificate-only cases are the ones the
+   * key_uri-only test used to wave through. */
+  assert_int_equal(
+      az_iot_conformance_custody_material_state(u, NULL, NULL), AZ_IOT_CONFORMANCE_CUSTODY_PARTIAL);
+  assert_int_equal(
+      az_iot_conformance_custody_material_state(NULL, e, NULL), AZ_IOT_CONFORMANCE_CUSTODY_PARTIAL);
+  assert_int_equal(
+      az_iot_conformance_custody_material_state(NULL, NULL, c), AZ_IOT_CONFORMANCE_CUSTODY_PARTIAL);
+
+  /* Two of three. */
+  assert_int_equal(
+      az_iot_conformance_custody_material_state(u, e, NULL), AZ_IOT_CONFORMANCE_CUSTODY_PARTIAL);
+  assert_int_equal(
+      az_iot_conformance_custody_material_state(u, NULL, c), AZ_IOT_CONFORMANCE_CUSTODY_PARTIAL);
+  assert_int_equal(
+      az_iot_conformance_custody_material_state(NULL, e, c), AZ_IOT_CONFORMANCE_CUSTODY_PARTIAL);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
     cmocka_unit_test(an_unexercised_capability_fails_by_default),
     cmocka_unit_test(the_exact_value_one_downgrades_it_to_a_notice),
     cmocka_unit_test(only_the_exact_value_one_opts_out),
+    cmocka_unit_test(custody_material_is_all_or_none),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

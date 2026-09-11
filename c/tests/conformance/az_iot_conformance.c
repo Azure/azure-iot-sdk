@@ -82,6 +82,28 @@ static bool adapter_claims_key_custody(void)
  * accident of the environment, and it is never the default.
  *
  * Returns the number of failures to add to the run's total. */
+/* Whether the three end-to-end custody fields form a usable set.
+ *
+ * Judged on ALL THREE, never on key_uri alone. An earlier version tested only
+ * key_uri, so material supplied without it was ignored in silence -- and the
+ * run then reported "no key was supplied", which the opt-out downgrades to a
+ * notice. Material that was supplied and ignored is a misconfiguration, and it
+ * must not be able to look like a machine that deliberately has no token. */
+int az_iot_conformance_custody_material_state(
+    const char* key_uri,
+    const char* crypto_engine_id,
+    const char* client_cert_path)
+{
+  const bool any = (key_uri != NULL) || (crypto_engine_id != NULL) || (client_cert_path != NULL);
+  const bool all = (key_uri != NULL) && (crypto_engine_id != NULL) && (client_cert_path != NULL);
+
+  if (!any)
+  {
+    return AZ_IOT_CONFORMANCE_CUSTODY_NONE;
+  }
+  return all ? AZ_IOT_CONFORMANCE_CUSTODY_COMPLETE : AZ_IOT_CONFORMANCE_CUSTODY_PARTIAL;
+}
+
 /* Read an environment variable without tripping MSVC's C4996 on getenv.
  *
  * Returns `buf` when the variable is set, NULL when it is not. A value that
@@ -2134,12 +2156,11 @@ int az_iot_conformance_run_with_options(
    * run would report "no key was supplied", which AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN
    * then downgrades to a notice. Material that was supplied and ignored would
    * have looked exactly like a machine that deliberately has no token. */
-  const bool any_custody_material
-      = (g_key_uri != NULL) || (g_key_engine != NULL) || (g_client_cert_path != NULL);
-  const bool all_custody_material
-      = (g_key_uri != NULL) && (g_key_engine != NULL) && (g_client_cert_path != NULL);
+  const int custody_material
+      = az_iot_conformance_custody_material_state(g_key_uri, g_key_engine, g_client_cert_path);
+  const bool any_custody_material = (custody_material != AZ_IOT_CONFORMANCE_CUSTODY_NONE);
 
-  if (any_custody_material && !all_custody_material)
+  if (custody_material == AZ_IOT_CONFORMANCE_CUSTODY_PARTIAL)
   {
     fprintf(
         stderr,

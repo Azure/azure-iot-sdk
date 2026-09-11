@@ -124,6 +124,24 @@ extern "C"
    * instead, or the suite cannot hold it to the feature's contract. */
   int az_iot_conformance_run(az_iot_conformance_suite suite_kind, az_iot_mqtt_factory* factory);
 
+  /* Result of az_iot_conformance_custody_material_state(). */
+  enum
+  {
+    AZ_IOT_CONFORMANCE_CUSTODY_NONE = 0,
+    AZ_IOT_CONFORMANCE_CUSTODY_COMPLETE = 1,
+    AZ_IOT_CONFORMANCE_CUSTODY_PARTIAL = 2
+  };
+
+  /* Internal, exposed for the suite's own tests.
+   *
+   * Classifies the three end-to-end custody fields as none, complete, or
+   * partial. Partial is rejected before the opt-out is considered, so
+   * misconfigured material cannot be downgraded to a notice. */
+  int az_iot_conformance_custody_material_state(
+      const char* key_uri,
+      const char* crypto_engine_id,
+      const char* client_cert_path);
+
   /* Internal, exposed for the suite's own tests.
    *
    * Reports a declared capability whose contract was never exercised and
