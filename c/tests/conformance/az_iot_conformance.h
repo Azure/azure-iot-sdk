@@ -176,7 +176,8 @@ extern "C"
       const char* key_uri,
       const char* crypto_engine_id,
       const char* client_cert_path,
-      bool has_sign);
+      bool has_sign,
+      bool has_sign_ctx);
 
   /* Internal, exposed for the suite's own tests.
    *

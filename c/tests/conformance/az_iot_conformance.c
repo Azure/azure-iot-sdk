@@ -87,7 +87,8 @@ int az_iot_conformance_custody_material_state(
     const char* key_uri,
     const char* crypto_engine_id,
     const char* client_cert_path,
-    bool has_sign)
+    bool has_sign,
+    bool has_sign_ctx)
 {
   /* An empty string is missing, not supplied. The bundled harnesses already
    * map an empty environment variable to NULL, so accepting "" here would hold
@@ -101,7 +102,9 @@ int az_iot_conformance_custody_material_state(
    * counterpart is reported rather than treated as "route not requested". */
   const bool uri_requested = has_uri || has_engine;
 
-  if (!uri_requested && !has_sign && !has_cert)
+  /* has_sign_ctx counts here too: without it a lone sign_ctx would be reported
+   * as "nothing supplied" and the check below could never be reached. */
+  if (!uri_requested && !has_sign && !has_sign_ctx && !has_cert)
   {
     return AZ_IOT_CONFORMANCE_CUSTODY_NONE;
   }
@@ -113,9 +116,16 @@ int az_iot_conformance_custody_material_state(
   {
     return AZ_IOT_CONFORMANCE_CUSTODY_PARTIAL;
   }
+  /* A context with no callback to hand it to. sign_ctx is legitimately NULL
+   * WITH a callback -- it is opaque and many adapters need none -- so it is
+   * only ever evidence of intent in this direction. */
+  if (has_sign_ctx && !has_sign)
+  {
+    return AZ_IOT_CONFORMANCE_CUSTODY_PARTIAL;
+  }
   if (!uri_requested && !has_sign)
   {
-    /* A certificate on its own: nothing will ever present it. */
+    /* A certificate and/or a sign context, with no route to use either. */
     return AZ_IOT_CONFORMANCE_CUSTODY_PARTIAL;
   }
 
@@ -2241,29 +2251,38 @@ int az_iot_conformance_run_with_options(
   g_sign = options ? options->sign : NULL;
   g_sign_ctx = options ? options->sign_ctx : NULL;
 
-  /* The three custody fields are all-or-none. A half-configured token is a
+  /* Custody material is all-or-none PER ROUTE. A half-configured token is a
    * mistake, not an opt-out: the end-to-end case would be dropped and the run
    * would still say PASS.
    *
-   * Checked on ANY of the three, not just key_uri. Judging by key_uri alone
+   *   URI route   key_uri + crypto_engine_id + client_cert_path
+   *   sign route  sign (+ sign_ctx) + client_cert_path
+   *
+   * client_cert_path is shared, so one certificate serves both routes.
+   *
+   * Judged on EVERY field of a route, not on key_uri alone. Judging by key_uri
    * let the commonest misconfiguration through -- a typo in the variable that
    * carries the URI, with the engine and certificate set correctly -- and that
    * run would report "no key was supplied", which AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN
    * then downgrades to a notice. Material that was supplied and ignored would
-   * have looked exactly like a machine that deliberately has no token. */
+   * have looked exactly like a machine that deliberately has no token. Do not
+   * collapse this back to an aggregate test: a route's material must not be
+   * able to hide behind the other route being complete. */
   const int custody_material = az_iot_conformance_custody_material_state(
-      g_key_uri, g_key_engine, g_client_cert_path, g_sign != NULL);
+      g_key_uri, g_key_engine, g_client_cert_path, g_sign != NULL, g_sign_ctx != NULL);
 
   if (custody_material == AZ_IOT_CONFORMANCE_CUSTODY_PARTIAL)
   {
     fprintf(
         stderr,
         "conformance: key custody material is incomplete (key_uri=%s, crypto_engine_id=%s, "
-        "sign=%s, client_cert_path=%s). The URI route needs key_uri + crypto_engine_id + "
-        "client_cert_path; the sign route needs sign + client_cert_path\n",
+        "sign=%s, sign_ctx=%s, client_cert_path=%s). The URI route needs key_uri + "
+        "crypto_engine_id + client_cert_path; the sign route needs sign + client_cert_path, "
+        "and sign_ctx is meaningful only alongside sign\n",
         (g_key_uri != NULL && g_key_uri[0] != '\0') ? "set" : "MISSING",
         (g_key_engine != NULL && g_key_engine[0] != '\0') ? "set" : "MISSING",
         (g_sign != NULL) ? "set" : "MISSING",
+        (g_sign_ctx != NULL) ? "set" : "MISSING",
         (g_client_cert_path != NULL && g_client_cert_path[0] != '\0') ? "set" : "MISSING");
     return 1;
   }
