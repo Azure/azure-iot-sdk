@@ -449,68 +449,165 @@ static void a_truncated_response_body_is_rejected(void** state)
       AZ_IOT_ERR_PROTOCOL);
 }
 
-static void the_error_code_is_read_from_the_body(void** state)
+/* The device-facing failure body is FLAT: a numeric errorCode plus, when the
+ * service surfaces it, info.aduErrorCode. It is NOT the nested
+ * {"error":{"code":...}} envelope -- that one is internal to the service chain
+ * and never reaches a device. */
+static void both_error_signals_are_read_from_the_body(void** state)
 {
   (void)state;
   char code[64];
-  const char* body = "{\"error\":{\"code\":\"OUTDATED_AGENT_INFO\",\"message\":\"stale\"}}";
+  int32_t numeric = 0;
+
+  const char* full
+      = "{\"errorCode\":400004,\"trackingId\":\"abc-guid\","
+        "\"message\":\"Agent info resend required.\","
+        "\"info\":{\"aduErrorCode\":\"OUTDATED_AGENT_INFO\",\"aduErrorTarget\":\"agentInfo\"},"
+        "\"timestampUtc\":\"2026-07-09T18:22:31Z\"}";
   assert_int_equal(
-      az_iot_adu__parse_error_code((const uint8_t*)body, strlen(body), code, sizeof(code)),
+      az_iot_adu__parse_error_code(
+          (const uint8_t*)full, strlen(full), code, sizeof(code), &numeric),
       AZ_IOT_OK);
   assert_string_equal(code, "OUTDATED_AGENT_INFO");
+  assert_int_equal(numeric, 400004);
+}
 
-  const char* none = "{\"message\":\"no code here\"}";
+/* Surfacing info.aduErrorCode is a SHOULD, not a MUST, so the numeric-only body
+ * is a normal case and must still classify. */
+static void a_numeric_only_body_is_still_usable(void** state)
+{
+  (void)state;
+  char code[64];
+  int32_t numeric = 0;
+
+  const char* numeric_only
+      = "{\"errorCode\":409000,\"trackingId\":\"g\",\"message\":\"Conflict.\"}";
   assert_int_equal(
-      az_iot_adu__parse_error_code((const uint8_t*)none, strlen(none), code, sizeof(code)),
+      az_iot_adu__parse_error_code(
+          (const uint8_t*)numeric_only, strlen(numeric_only), code, sizeof(code), &numeric),
+      AZ_IOT_OK);
+  assert_string_equal(code, "");
+  assert_int_equal(numeric, 409000);
+
+  /* Neither signal present. */
+  const char* neither = "{\"message\":\"no codes here\"}";
+  assert_int_equal(
+      az_iot_adu__parse_error_code(
+          (const uint8_t*)neither, strlen(neither), code, sizeof(code), &numeric),
+      AZ_IOT_ERR_NOT_FOUND);
+  assert_int_equal(numeric, 0);
+}
+
+/* The nested service-to-service envelope must NOT be mistaken for the
+ * device-facing body. Parsing it as one is the bug this replaced. */
+static void the_internal_envelope_is_not_the_device_body(void** state)
+{
+  (void)state;
+  char code[64];
+  int32_t numeric = 0;
+
+  const char* internal = "{\"error\":{\"code\":\"UPDATE_ACCOUNT_NOT_LINKED\",\"message\":\"m\"}}";
+  assert_int_equal(
+      az_iot_adu__parse_error_code(
+          (const uint8_t*)internal, strlen(internal), code, sizeof(code), &numeric),
       AZ_IOT_ERR_NOT_FOUND);
 }
 
-/* The code drives behaviour, not the status: 400 covers both "resend your agent
- * info and retry" and "your request is wrong, do not retry", which need opposite
- * handling. */
-static void error_codes_map_to_the_specified_actions(void** state)
+static void string_codes_map_to_the_specified_actions(void** state)
 {
   (void)state;
   assert_int_equal(
-      az_iot_adu__classify_error("UPDATE_ACCOUNT_NOT_LINKED", 409),
+      az_iot_adu__classify_error("UPDATE_ACCOUNT_NOT_LINKED", 409000, AZ_IOT_ADU_OP_GET_UPDATE),
       AZ_IOT_ADU_ERROR_ACTION_PROCEED);
   assert_int_equal(
-      az_iot_adu__classify_error("OUTDATED_AGENT_INFO", 400),
+      az_iot_adu__classify_error("OUTDATED_AGENT_INFO", 400004, AZ_IOT_ADU_OP_GET_UPDATE),
       AZ_IOT_ADU_ERROR_ACTION_RESEND_AGENT_INFO);
   assert_int_equal(
-      az_iot_adu__classify_error("UNKNOWN_AGENT_INFO_VERSION", 400),
+      az_iot_adu__classify_error("UNKNOWN_AGENT_INFO_VERSION", 400004, AZ_IOT_ADU_OP_GET_UPDATE),
       AZ_IOT_ADU_ERROR_ACTION_RESEND_AGENT_INFO);
   assert_int_equal(
-      az_iot_adu__classify_error("OUTDATED_SERVICE_CONFIG", 400),
+      az_iot_adu__classify_error("OUTDATED_SERVICE_CONFIG", 400004, AZ_IOT_ADU_OP_GET_UPDATE),
       AZ_IOT_ADU_ERROR_ACTION_DROP_SERVICE_CONFIG_ETAG);
   assert_int_equal(
-      az_iot_adu__classify_error("UPSTREAM_UNAVAILABLE", 503), AZ_IOT_ADU_ERROR_ACTION_RETRY);
+      az_iot_adu__classify_error("REPORT_CONFLICT", 409000, AZ_IOT_ADU_OP_REPORT_STATUS),
+      AZ_IOT_ADU_ERROR_ACTION_ALREADY_REPORTED);
+}
+
+/* The recoverable case has its own numeric code, so it survives the string code
+ * being absent. Getting this wrong means giving up on a request the service
+ * explicitly invited us to retry. */
+static void the_resend_family_is_recoverable_from_the_numeric_code_alone(void** state)
+{
+  (void)state;
   assert_int_equal(
-      az_iot_adu__classify_error("REPORT_CONFLICT", 409), AZ_IOT_ADU_ERROR_ACTION_ALREADY_REPORTED);
+      az_iot_adu__classify_error(NULL, 400004, AZ_IOT_ADU_OP_GET_UPDATE),
+      AZ_IOT_ADU_ERROR_ACTION_RESEND_AGENT_INFO);
+  assert_int_equal(
+      az_iot_adu__classify_error("", 400004, AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE),
+      AZ_IOT_ADU_ERROR_ACTION_RESEND_AGENT_INFO);
 
-  /* Same status, opposite handling -- which is the whole reason the code wins. */
-  assert_int_not_equal(
-      az_iot_adu__classify_error("OUTDATED_AGENT_INFO", 400),
-      az_iot_adu__classify_error("BAD_REQUEST", 400));
+  /* Other 400s are NOT recoverable -- only 400004 is. */
+  assert_int_equal(
+      az_iot_adu__classify_error(NULL, 400002, AZ_IOT_ADU_OP_GET_UPDATE),
+      AZ_IOT_ADU_ERROR_ACTION_FATAL);
+  assert_int_equal(
+      az_iot_adu__classify_error(NULL, 400000, AZ_IOT_ADU_OP_GET_UPDATE),
+      AZ_IOT_ADU_ERROR_ACTION_FATAL);
 }
 
-/* An unrecognized code must not be assumed retryable: repeating a request the
- * service has already rejected is the worse failure. */
-static void an_unknown_error_code_is_not_retried(void** state)
+/* 409000 covers two conditions needing OPPOSITE handling. Without a string code
+ * the operation in flight is the only thing that separates them. */
+static void the_shared_conflict_code_is_split_by_operation(void** state)
 {
   (void)state;
-  assert_int_equal(az_iot_adu__classify_error("SOMETHING_NEW", 400), AZ_IOT_ADU_ERROR_ACTION_FATAL);
+  /* On a fetch: the account is not linked -- proceed, do not retry. */
+  assert_int_equal(
+      az_iot_adu__classify_error(NULL, 409000, AZ_IOT_ADU_OP_GET_UPDATE),
+      AZ_IOT_ADU_ERROR_ACTION_PROCEED);
+  assert_int_equal(
+      az_iot_adu__classify_error(NULL, 409000, AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE),
+      AZ_IOT_ADU_ERROR_ACTION_PROCEED);
+
+  /* On a report: a terminal result is already recorded -- treat as delivered. */
+  assert_int_equal(
+      az_iot_adu__classify_error(NULL, 409000, AZ_IOT_ADU_OP_REPORT_STATUS),
+      AZ_IOT_ADU_ERROR_ACTION_ALREADY_REPORTED);
 }
 
-static void a_missing_error_code_falls_back_to_the_status(void** state)
+static void transient_numeric_codes_are_retried(void** state)
 {
   (void)state;
-  assert_int_equal(az_iot_adu__classify_error(NULL, 200), AZ_IOT_ADU_ERROR_ACTION_NONE);
-  assert_int_equal(az_iot_adu__classify_error(NULL, 429), AZ_IOT_ADU_ERROR_ACTION_RETRY_AFTER);
-  assert_int_equal(az_iot_adu__classify_error(NULL, 409), AZ_IOT_ADU_ERROR_ACTION_ALREADY_REPORTED);
-  assert_int_equal(az_iot_adu__classify_error(NULL, 503), AZ_IOT_ADU_ERROR_ACTION_RETRY);
-  assert_int_equal(az_iot_adu__classify_error(NULL, 401), AZ_IOT_ADU_ERROR_ACTION_FATAL);
-  assert_int_equal(az_iot_adu__classify_error("", 403), AZ_IOT_ADU_ERROR_ACTION_FATAL);
+  assert_int_equal(
+      az_iot_adu__classify_error(NULL, 503000, AZ_IOT_ADU_OP_GET_UPDATE),
+      AZ_IOT_ADU_ERROR_ACTION_RETRY);
+  assert_int_equal(
+      az_iot_adu__classify_error(NULL, 500000, AZ_IOT_ADU_OP_REPORT_STATUS),
+      AZ_IOT_ADU_ERROR_ACTION_RETRY);
+  assert_int_equal(
+      az_iot_adu__classify_error(NULL, 429000, AZ_IOT_ADU_OP_GET_UPDATE),
+      AZ_IOT_ADU_ERROR_ACTION_RETRY_AFTER);
+  assert_int_equal(
+      az_iot_adu__classify_error(NULL, 429001, AZ_IOT_ADU_OP_GET_UPDATE),
+      AZ_IOT_ADU_ERROR_ACTION_RETRY_AFTER);
+}
+
+/* An unrecognized signal is never assumed retryable: repeating a request the
+ * service already rejected is the worse failure mode. */
+static void unknown_and_absent_signals_are_fatal(void** state)
+{
+  (void)state;
+  assert_int_equal(
+      az_iot_adu__classify_error("SOMETHING_NEW", 400002, AZ_IOT_ADU_OP_GET_UPDATE),
+      AZ_IOT_ADU_ERROR_ACTION_FATAL);
+  assert_int_equal(
+      az_iot_adu__classify_error(NULL, 401000, AZ_IOT_ADU_OP_GET_UPDATE),
+      AZ_IOT_ADU_ERROR_ACTION_FATAL);
+  assert_int_equal(
+      az_iot_adu__classify_error(NULL, 403001, AZ_IOT_ADU_OP_GET_UPDATE),
+      AZ_IOT_ADU_ERROR_ACTION_FATAL);
+  /* No signal at all. */
+  assert_int_equal(
+      az_iot_adu__classify_error(NULL, 0, AZ_IOT_ADU_OP_GET_UPDATE), AZ_IOT_ADU_ERROR_ACTION_FATAL);
 }
 
 int main(void)
@@ -537,10 +634,14 @@ int main(void)
     cmocka_unit_test(a_malformed_response_body_is_rejected),
     cmocka_unit_test(a_report_with_a_partial_installed_update_id_is_rejected),
     cmocka_unit_test(a_truncated_response_body_is_rejected),
-    cmocka_unit_test(the_error_code_is_read_from_the_body),
-    cmocka_unit_test(error_codes_map_to_the_specified_actions),
-    cmocka_unit_test(an_unknown_error_code_is_not_retried),
-    cmocka_unit_test(a_missing_error_code_falls_back_to_the_status),
+    cmocka_unit_test(both_error_signals_are_read_from_the_body),
+    cmocka_unit_test(a_numeric_only_body_is_still_usable),
+    cmocka_unit_test(the_internal_envelope_is_not_the_device_body),
+    cmocka_unit_test(string_codes_map_to_the_specified_actions),
+    cmocka_unit_test(the_resend_family_is_recoverable_from_the_numeric_code_alone),
+    cmocka_unit_test(the_shared_conflict_code_is_split_by_operation),
+    cmocka_unit_test(transient_numeric_codes_are_retried),
+    cmocka_unit_test(unknown_and_absent_signals_are_fatal),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }
