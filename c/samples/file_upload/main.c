@@ -6,9 +6,9 @@
 /* file_upload - sample.
  *
  * File upload uses ONE seamless SDK API regardless of hub flavor:
- *   1. az_iot_file_upload_client_get_sas_uri()   -> SAS URI + correlation id
+ *   1. az_iot_gen1_file_upload_client_get_sas_uri()   -> SAS URI + correlation id
  *   2. the app PUTs the file to that SAS URI on Azure Storage (HTTPS)
- *   3. az_iot_file_upload_client_notify_complete()
+ *   3. az_iot_gen1_file_upload_client_notify_complete()
  *
  * The control-plane transport is chosen by the SDK from the connection's hub
  * flavor: on IoT Hub Classic it is HTTPS to the hub, performed through the
@@ -47,12 +47,12 @@ typedef struct
   sample_config config;
   az_iot_certificate_provider_pem certs;
   az_iot_connection_client connection_client;
-  az_iot_file_upload_client file_upload_client;
+  az_iot_gen1_file_upload_client file_upload_client;
 } sample_state;
 
 static void sample_state_destroy(sample_state* s)
 {
-  az_iot_file_upload_client_destroy(&s->file_upload_client);
+  az_iot_gen1_file_upload_client_deinit(&s->file_upload_client);
   az_iot_connection_client_destroy(&s->connection_client);
   az_iot_certificate_provider_pem_destroy(&s->certs);
   sample_config_release(&s->config);
@@ -282,13 +282,13 @@ static void on_notify(az_iot_result status, void* user_ctx)
  * fully successful upload. */
 static int run_file_upload(sample_state* state)
 {
-  az_iot_file_upload_client* fu = &state->file_upload_client;
+  az_iot_gen1_file_upload_client* fu = &state->file_upload_client;
   upload_ctx u;
   memset(&u, 0, sizeof(u));
 
   /* Step 1: request a SAS URI. On Classic, on_sas fires synchronously here. */
   printf("Requesting SAS URI for '%s'...\n", k_blob_name);
-  az_iot_result gr = az_iot_file_upload_client_get_sas_uri(fu, k_blob_name, on_sas, &u);
+  az_iot_result gr = az_iot_gen1_file_upload_client_get_sas_uri(fu, k_blob_name, on_sas, &u);
   if (gr == AZ_IOT_ERR_NOT_SUPPORTED)
   {
     printf("File upload is not yet available on this hub "
@@ -337,7 +337,7 @@ static int run_file_upload(sample_state* state)
   /* Step 3: notify IoT Hub of the outcome (always, success or failure). */
   printf("Notifying IoT Hub of completion...\n");
   az_iot_result nr
-      = az_iot_file_upload_client_notify_complete(fu, u.correlation_id, put_ok, on_notify, &u);
+      = az_iot_gen1_file_upload_client_notify_complete(fu, u.correlation_id, put_ok, on_notify, &u);
   if (nr != AZ_IOT_OK)
   {
     printf("Failed to send the completion notification: %s\n", az_iot_result_to_string(nr));
@@ -434,7 +434,8 @@ int main(void)
     hub_http_ctx http_ctx = { state.config.cert, state.config.key };
     az_iot_file_upload_http_transport http = { curl_http_send, &http_ctx };
 
-    if (az_iot_file_upload_client_init(&state.file_upload_client, &state.connection_client, &http)
+    if (az_iot_gen1_file_upload_client_init(
+            &state.file_upload_client, &state.connection_client, &http)
         != AZ_IOT_OK)
     {
       printf("Failed to initialize the file upload client.\n");

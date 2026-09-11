@@ -3,18 +3,16 @@
 // information.
 
 /* SPDX-License-Identifier: MIT */
-/* FileUploadClient — one seamless API, transport chosen by hub flavor.
+/* IoT Hub Classic file upload.
  *
- * The public API (get_sas_uri + notify_complete + callbacks) is identical for
- * both hub flavors; the transport is selected internally from the connection's
- * protocol profile (like twin_client):
- *   - Classic: HTTPS REST to the hub, performed by the application's HTTP
- *     transport hook (this SDK ships no HTTP client). The SDK builds the request
- *     and parses the response here.
- *   - Next (AEG): the control plane travels over the MQTT connection
- *     (ih/{deviceId}/srv|dev/files). Not yet implemented — pending the AEG Files
- *     message schema — so the API returns AZ_IOT_ERR_NOT_SUPPORTED on Next.
- * The blob bytes always go to Azure Storage via an app HTTPS PUT to the SAS URI.
+ * The control plane is two HTTPS REST calls to the hub, performed by the
+ * application's HTTP transport hook -- this SDK ships no HTTP client. The SDK
+ * builds the request and parses the response here. The blob bytes always go to
+ * Azure Storage via an app HTTPS PUT to the SAS URI.
+ *
+ * There is no gen2 counterpart: file upload is not carried on the MQTT v5 hub
+ * for now. This client pins the Classic profile, so an MQTT v5 connection is
+ * refused at init() rather than at the first upload.
  */
 #include <stdbool.h>
 #include <stdint.h>
@@ -24,16 +22,26 @@
 #include <azure/core/az_result.h>
 #include <azure/core/az_span.h>
 
-#include "azure/iot/az_iot_file_upload_client.h"
+#include "azure/iot/gen1/az_iot_file_upload_client.h"
 
 #include "internal/connection_client_internal.h"
-#include "internal/protocol_profile.h"
+#include "internal/log_internal.h"
 #include "internal/span_writer.h"
 
-/* IoT Hub device REST API version for the Classic file-upload endpoints. */
+/* IoT Hub device REST API version for the file-upload endpoints. */
 #define AZ_IOT_FILEUPLOAD_API_VERSION "2021-04-12"
 
-/* HTTP status-code boundaries used to map Classic REST responses
+/* Request shape. Declared here so the URL that is built and the one documented
+ * cannot drift apart. */
+#define AZ_IOT_FILEUPLOAD_SCHEME "https://"
+#define AZ_IOT_FILEUPLOAD_DEVICES_PATH "/devices/"
+#define AZ_IOT_FILEUPLOAD_FILES_PATH "/files?api-version=" AZ_IOT_FILEUPLOAD_API_VERSION
+#define AZ_IOT_FILEUPLOAD_NOTIFY_PATH \
+  "/files/notifications?api-version=" AZ_IOT_FILEUPLOAD_API_VERSION
+#define AZ_IOT_FILEUPLOAD_METHOD_POST "POST"
+#define AZ_IOT_FILEUPLOAD_CONTENT_TYPE_JSON "application/json"
+
+/* HTTP status-code boundaries used to map REST responses
  * (see http_status_to_result). */
 #define AZ_IOT_FILEUPLOAD_HTTP_SUCCESS_MIN 200
 #define AZ_IOT_FILEUPLOAD_HTTP_SUCCESS_MAX 300
@@ -127,7 +135,7 @@ static bool assemble_sas_uri(az_span json, char* out, size_t out_cap)
     return false;
   }
 
-  const char* parts[] = { "https://", host, "/", container, "/", blob, sas };
+  const char* parts[] = { AZ_IOT_FILEUPLOAD_SCHEME, host, "/", container, "/", blob, sas };
   return az_iot_span_writer_build_str(
              az_span_create((uint8_t*)out, (int32_t)out_cap), NULL, parts, 7)
       == AZ_IOT_OK;
@@ -189,7 +197,7 @@ static az_iot_result build_notification_body(
   return AZ_IOT_OK;
 }
 
-/* Map a Classic HTTP status code to an az_iot_result. */
+/* Map an HTTP status code to an az_iot_result. */
 static az_iot_result http_status_to_result(int status)
 {
   if (status >= AZ_IOT_FILEUPLOAD_HTTP_SUCCESS_MIN && status < AZ_IOT_FILEUPLOAD_HTTP_SUCCESS_MAX)
@@ -227,7 +235,7 @@ static az_iot_result http_status_to_result(int status)
  * connection, invokes a callback, or otherwise lets the connection re-point
  * them. Storing them WOULD be unsafe, which is precisely why we do not. */
 static az_iot_result fileupload_resolve_endpoint(
-    az_iot_file_upload_client* client,
+    az_iot_gen1_file_upload_client* client,
     const char** out_host,
     const char** out_device_id)
 {
@@ -250,12 +258,30 @@ static az_iot_result fileupload_resolve_endpoint(
   return AZ_IOT_OK;
 }
 
+/* Build one of the two request URLs: scheme + host + /devices/ + id + suffix. */
+static az_iot_result build_request_url(
+    const char* host,
+    const char* device_id,
+    const char* suffix,
+    char (*url)[AZ_IOT_FILE_UPLOAD_URL_MAX])
+{
+  const char* parts[]
+      = { AZ_IOT_FILEUPLOAD_SCHEME, host, AZ_IOT_FILEUPLOAD_DEVICES_PATH, device_id, suffix };
+  if (az_iot_span_writer_build_str(AZ_SPAN_FROM_BUFFER(*url), NULL, parts, 5) != AZ_IOT_OK)
+  {
+    AZ_IOT_LOG_ERROR(
+        "gen1_file_upload: the request URL did not fit AZ_IOT_FILE_UPLOAD_URL_MAX bytes");
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  }
+  return AZ_IOT_OK;
+}
+
 /* ------------------------------------------------------------------------- */
 /* public API                                                                */
 /* ------------------------------------------------------------------------- */
 
-az_iot_result az_iot_file_upload_client_init(
-    az_iot_file_upload_client* client,
+az_iot_result az_iot_gen1_file_upload_client_init(
+    az_iot_gen1_file_upload_client* client,
     az_iot_connection_client* conn,
     const az_iot_file_upload_http_transport* http_transport)
 {
@@ -264,27 +290,27 @@ az_iot_result az_iot_file_upload_client_init(
     return AZ_IOT_ERR_INVALID_ARG;
   }
 
-  const az_iot_protocol_profile* profile = az_iot_connection_client__profile(conn);
-  if (!profile)
+  /* The SDK ships no HTTP client, so without a hook this client can never
+   * perform either operation. Refuse at init rather than at the first upload. */
+  if (!http_transport || !http_transport->send)
   {
-    return AZ_IOT_ERR_NOT_SUPPORTED;
+    AZ_IOT_LOG_ERROR("gen1_file_upload: init requires an HTTP transport hook");
+    memset(client, 0, sizeof(*client));
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+
+  az_iot_result result
+      = az_iot_connection_client__require_profile(conn, AZ_IOT_CONNECTION_PROFILE_CLASSIC);
+  if (result != AZ_IOT_OK)
+  {
+    memset(client, 0, sizeof(*client));
+    return result;
   }
 
   memset(client, 0, sizeof(*client));
   FI(client).conn = conn;
-  if (http_transport)
-  {
-    FI(client).http_send = http_transport->send;
-    FI(client).http_ctx = http_transport->ctx;
-  }
-
-  /* Classic has no in-SDK transport: the application must supply an HTTP hook.
-   * Next carries the control plane over the existing MQTT connection. */
-  if (profile->flavor != AZ_IOT_HUB_FLAVOR_NEXT && !FI(client).http_send)
-  {
-    memset(client, 0, sizeof(*client));
-    return AZ_IOT_ERR_INVALID_ARG;
-  }
+  FI(client).http_send = http_transport->send;
+  FI(client).http_ctx = http_transport->ctx;
 
   /* Fail a connection that cannot name a hub here rather than at the first
    * upload. This checks PRESENCE only -- whether the endpoint fits a request
@@ -292,33 +318,29 @@ az_iot_result az_iot_file_upload_client_init(
    * the one an operation later addresses. */
   const char* host = NULL;
   const char* device_id = NULL;
-  az_iot_result r = fileupload_resolve_endpoint(client, &host, &device_id);
-  if (r != AZ_IOT_OK)
+  result = fileupload_resolve_endpoint(client, &host, &device_id);
+  if (result != AZ_IOT_OK)
   {
+    az_iot_connection_client__release_profile(conn);
     memset(client, 0, sizeof(*client));
-    return r;
+    return result;
   }
 
   return AZ_IOT_OK;
 }
 
-void az_iot_file_upload_client_destroy(az_iot_file_upload_client* client)
+void az_iot_gen1_file_upload_client_deinit(az_iot_gen1_file_upload_client* client)
 {
-  if (!client)
+  if (!client || !FI(client).conn)
   {
     return;
   }
-  /* Harmless today (no handlers are registered yet); keeps teardown correct
-   * once the Next/MQTT path registers response handlers. */
-  if (FI(client).conn)
-  {
-    (void)az_iot_connection_client__unregister_inbound_handlers(FI(client).conn, client);
-  }
+  az_iot_connection_client__release_profile(FI(client).conn);
   memset(client, 0, sizeof(*client));
 }
 
-az_iot_result az_iot_file_upload_client_get_sas_uri(
-    az_iot_file_upload_client* client,
+az_iot_result az_iot_gen1_file_upload_client_get_sas_uri(
+    az_iot_gen1_file_upload_client* client,
     const char* blob_name,
     az_iot_file_upload_sas_callback cb,
     void* user_ctx)
@@ -327,19 +349,6 @@ az_iot_result az_iot_file_upload_client_get_sas_uri(
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
-
-  const az_iot_protocol_profile* profile = az_iot_connection_client__profile(FI(client).conn);
-  if (profile && profile->flavor == AZ_IOT_HUB_FLAVOR_NEXT)
-  {
-    /* TODO(AEG): file upload over the MQTT connection. Publish to
-     * "ih/{device_id}/srv/files", response on "ih/{device_id}/dev/files",
-     * correlated via MQTT5 Correlation Data with a `type` property and a
-     * protobuf body (AEG RFC implementation.md 3.5). Blocked on the AEG
-     * Files message schema. */
-    return AZ_IOT_ERR_NOT_SUPPORTED;
-  }
-
-  /* Classic: synchronous HTTPS request via the application's transport hook. */
   if (!FI(client).http_send)
   {
     return AZ_IOT_ERR_NOT_INITIALIZED;
@@ -354,12 +363,10 @@ az_iot_result az_iot_file_upload_client_get_sas_uri(
   }
 
   char url[AZ_IOT_FILE_UPLOAD_URL_MAX];
-  const char* url_parts[] = {
-    "https://", host, "/devices/", device_id, "/files?api-version=" AZ_IOT_FILEUPLOAD_API_VERSION
-  };
-  if (az_iot_span_writer_build_str(AZ_SPAN_FROM_BUFFER(url), NULL, url_parts, 5) != AZ_IOT_OK)
+  er = build_request_url(host, device_id, AZ_IOT_FILEUPLOAD_FILES_PATH, &url);
+  if (er != AZ_IOT_OK)
   {
-    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+    return er;
   }
 
   char body[AZ_IOT_FILE_UPLOAD_BODY_MAX];
@@ -367,6 +374,7 @@ az_iot_result az_iot_file_upload_client_get_sas_uri(
   az_iot_result br = build_sas_request_body(body, sizeof(body), blob_name, &body_len);
   if (br != AZ_IOT_OK)
   {
+    AZ_IOT_LOG_WARN("gen1_file_upload: the blob name does not fit AZ_IOT_FILE_UPLOAD_BODY_MAX");
     return br;
   }
 
@@ -377,16 +385,19 @@ az_iot_result az_iot_file_upload_client_get_sas_uri(
   resp.body_capacity = sizeof(rbuf);
 
   az_iot_result tr = FI(client).http_send(
-      "POST",
+      AZ_IOT_FILEUPLOAD_METHOD_POST,
       url,
       "",
-      "application/json",
+      AZ_IOT_FILEUPLOAD_CONTENT_TYPE_JSON,
       (const uint8_t*)body,
       body_len,
       &resp,
       FI(client).http_ctx);
   if (tr != AZ_IOT_OK)
   {
+    AZ_IOT_LOG_WARNF(
+        "gen1_file_upload: the SAS-URI request failed in the transport hook (%s)",
+        az_iot_result_to_string(tr));
     cb(tr, NULL, NULL, user_ctx);
     return AZ_IOT_OK;
   }
@@ -406,6 +417,7 @@ az_iot_result az_iot_file_upload_client_get_sas_uri(
     size_t json_len = (resp.body_len > sizeof(rbuf)) ? sizeof(rbuf) : resp.body_len;
     if (resp.body != rbuf || json_len == 0)
     {
+      AZ_IOT_LOG_WARN("gen1_file_upload: the hook returned success with no readable body");
       cb(AZ_IOT_ERR_PROTOCOL, NULL, NULL, user_ctx);
       return AZ_IOT_OK;
     }
@@ -421,18 +433,21 @@ az_iot_result az_iot_file_upload_client_get_sas_uri(
     }
     else
     {
+      AZ_IOT_LOG_WARN("gen1_file_upload: the SAS-URI response did not carry the expected fields");
       cb(AZ_IOT_ERR_PROTOCOL, NULL, NULL, user_ctx);
     }
   }
   else
   {
+    AZ_IOT_LOG_WARNF(
+        "gen1_file_upload: the hub refused the SAS-URI request (HTTP %d)", resp.status_code);
     cb(r, NULL, NULL, user_ctx);
   }
   return AZ_IOT_OK;
 }
 
-az_iot_result az_iot_file_upload_client_notify_complete(
-    az_iot_file_upload_client* client,
+az_iot_result az_iot_gen1_file_upload_client_notify_complete(
+    az_iot_gen1_file_upload_client* client,
     const char* correlation_id,
     bool is_success,
     az_iot_file_upload_complete_callback cb,
@@ -442,13 +457,6 @@ az_iot_result az_iot_file_upload_client_notify_complete(
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
-
-  const az_iot_protocol_profile* profile = az_iot_connection_client__profile(FI(client).conn);
-  if (profile && profile->flavor == AZ_IOT_HUB_FLAVOR_NEXT)
-  {
-    return AZ_IOT_ERR_NOT_SUPPORTED; /* TODO(AEG): notify over MQTT (see get_sas_uri). */
-  }
-
   if (!FI(client).http_send)
   {
     return AZ_IOT_ERR_NOT_INITIALIZED;
@@ -463,14 +471,10 @@ az_iot_result az_iot_file_upload_client_notify_complete(
   }
 
   char url[AZ_IOT_FILE_UPLOAD_URL_MAX];
-  const char* url_parts[] = { "https://",
-                              host,
-                              "/devices/",
-                              device_id,
-                              "/files/notifications?api-version=" AZ_IOT_FILEUPLOAD_API_VERSION };
-  if (az_iot_span_writer_build_str(AZ_SPAN_FROM_BUFFER(url), NULL, url_parts, 5) != AZ_IOT_OK)
+  er = build_request_url(host, device_id, AZ_IOT_FILEUPLOAD_NOTIFY_PATH, &url);
+  if (er != AZ_IOT_OK)
   {
-    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+    return er;
   }
 
   char body[AZ_IOT_FILE_UPLOAD_BODY_MAX];
@@ -479,6 +483,8 @@ az_iot_result az_iot_file_upload_client_notify_complete(
       = build_notification_body(body, sizeof(body), correlation_id, is_success, &body_len);
   if (br != AZ_IOT_OK)
   {
+    AZ_IOT_LOG_WARN(
+        "gen1_file_upload: the correlation id does not fit AZ_IOT_FILE_UPLOAD_BODY_MAX");
     return br;
   }
 
@@ -486,16 +492,19 @@ az_iot_result az_iot_file_upload_client_notify_complete(
   memset(&resp, 0, sizeof(resp));
 
   az_iot_result tr = FI(client).http_send(
-      "POST",
+      AZ_IOT_FILEUPLOAD_METHOD_POST,
       url,
       "",
-      "application/json",
+      AZ_IOT_FILEUPLOAD_CONTENT_TYPE_JSON,
       (const uint8_t*)body,
       body_len,
       &resp,
       FI(client).http_ctx);
   if (tr != AZ_IOT_OK)
   {
+    AZ_IOT_LOG_WARNF(
+        "gen1_file_upload: the completion notification failed in the transport hook (%s)",
+        az_iot_result_to_string(tr));
     cb(tr, user_ctx);
     return AZ_IOT_OK;
   }

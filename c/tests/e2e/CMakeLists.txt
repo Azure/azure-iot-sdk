@@ -128,7 +128,7 @@ if(WIN32)
 endif()
 az_iot_add_cmocka_test(az_iot_tests_e2e_fileupload ${_e2e_fileupload_ctest}
     tests/e2e_fileupload_test.c tests/e2e_device.c)
-target_link_libraries(az_iot_tests_e2e_fileupload PRIVATE az_iot_e2e_service az_iot_adapter_paho)
+target_link_libraries(az_iot_tests_e2e_fileupload PRIVATE az_iot_e2e_service az_iot_gen1 az_iot_adapter_paho)
 
 # ---------------------------------------------------------------------------
 # az_iot_tests_e2e_custody

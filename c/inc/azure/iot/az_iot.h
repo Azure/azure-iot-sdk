@@ -20,6 +20,6 @@
 #include "gen2/az_iot_direct_method_client.h"
 #include "gen1/az_iot_twin_client.h"
 #include "gen2/az_iot_twin_client.h"
-#include "az_iot_file_upload_client.h"
+#include "gen1/az_iot_file_upload_client.h"
 
 #endif /* AZ_IOT_H */

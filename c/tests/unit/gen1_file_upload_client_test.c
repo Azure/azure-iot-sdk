@@ -3,15 +3,13 @@
 // information.
 
 /* SPDX-License-Identifier: MIT */
-/* FileUploadClient unit tests. The public API is one seamless async client; the
- * Classic path performs HTTPS through an application transport hook. These tests
- * drive the Classic path offline via a mock hook + an unopened direct-host
- * (Classic) connection client — no live hub, no MQTT.
+/* IoT Hub Classic file upload unit tests. The client performs HTTPS through an
+ * application transport hook, so these tests drive it offline via a mock hook +
+ * an unopened direct-host (Classic) connection client -- no live hub, no MQTT.
  *
- * The Next/AEG dispatch is covered offline too: a direct-host connection with
- * connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5 resolves to the Next profile at init()
- * without ever opening a session, so the flavor switch inside the file upload
- * client can be asserted without a broker. */
+ * There is no gen2 counterpart to exercise: file upload is not carried on the
+ * MQTT v5 hub, and this client pins Classic. What used to be the Next-dispatch
+ * section is now a single test that the pin refuses an MQTT v5 connection. */
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -24,8 +22,8 @@
 #include <cmocka.h>
 
 #include "azure/iot/az_iot_connection_client.h"
-#include "azure/iot/az_iot_file_upload_client.h"
 #include "azure/iot/az_iot_result.h"
+#include "azure/iot/gen1/az_iot_file_upload_client.h"
 
 #define TEST_HUB "myhub.azure-devices.net"
 #define TEST_DEVICE "dev1"
@@ -193,7 +191,7 @@ static void on_notify(az_iot_result status, void* ctx)
 typedef struct
 {
   az_iot_connection_client conn;
-  az_iot_file_upload_client fu;
+  az_iot_gen1_file_upload_client fu;
 } fixture;
 
 static int setup(void** state)
@@ -210,7 +208,7 @@ static int setup(void** state)
   memset(&g_http, 0, sizeof(g_http));
 
   az_iot_file_upload_http_transport http = { mock_send, NULL };
-  assert_int_equal(az_iot_file_upload_client_init(&fx->fu, &fx->conn, &http), AZ_IOT_OK);
+  assert_int_equal(az_iot_gen1_file_upload_client_init(&fx->fu, &fx->conn, &http), AZ_IOT_OK);
 
   *state = fx;
   return 0;
@@ -221,39 +219,10 @@ static int teardown(void** state)
   fixture* fx = (fixture*)*state;
   if (fx)
   {
-    az_iot_file_upload_client_destroy(&fx->fu);
+    az_iot_gen1_file_upload_client_deinit(&fx->fu);
     az_iot_connection_client_destroy(&fx->conn);
     free(fx);
   }
-  return 0;
-}
-
-/* ------------------------------------------------------------------------- */
-/* fixture: unopened direct-host (Next/AEG) connection + file upload client   */
-/* ------------------------------------------------------------------------- */
-
-/* A direct host plus connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5 makes
- * connection_client_init resolve the Next session role immediately, so the file
- * upload client sees the Next profile during its own init() — no open(), no
- * MQTT v5 broker. */
-static int setup_next(void** state)
-{
-  fixture* fx = (fixture*)calloc(1, sizeof(*fx));
-  assert_non_null(fx);
-
-  az_iot_connection_client_options opts = { 0 };
-  opts.host = TEST_HUB;
-  opts.port = 8883;
-  opts.client_id = TEST_DEVICE;
-  opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
-  assert_int_equal(az_iot_connection_client_init(&fx->conn, &opts), AZ_IOT_OK);
-
-  memset(&g_http, 0, sizeof(g_http));
-
-  /* Next carries the control plane over the MQTT connection: no HTTP hook. */
-  assert_int_equal(az_iot_file_upload_client_init(&fx->fu, &fx->conn, NULL), AZ_IOT_OK);
-
-  *state = fx;
   return 0;
 }
 
@@ -264,17 +233,18 @@ static int setup_next(void** state)
 static void init_rejects_null(void** state)
 {
   (void)state;
-  az_iot_file_upload_client fu2;
-  assert_int_equal(az_iot_file_upload_client_init(&fu2, NULL, NULL), AZ_IOT_ERR_INVALID_ARG);
-  assert_int_equal(az_iot_file_upload_client_init(NULL, NULL, NULL), AZ_IOT_ERR_INVALID_ARG);
+  az_iot_gen1_file_upload_client fu2;
+  assert_int_equal(az_iot_gen1_file_upload_client_init(&fu2, NULL, NULL), AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(az_iot_gen1_file_upload_client_init(NULL, NULL, NULL), AZ_IOT_ERR_INVALID_ARG);
 }
 
 static void classic_init_requires_http_hook(void** state)
 {
   fixture* fx = (fixture*)*state;
-  az_iot_file_upload_client fu2;
+  az_iot_gen1_file_upload_client fu2;
   /* A Classic connection with no HTTP transport is rejected. */
-  assert_int_equal(az_iot_file_upload_client_init(&fu2, &fx->conn, NULL), AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(
+      az_iot_gen1_file_upload_client_init(&fu2, &fx->conn, NULL), AZ_IOT_ERR_INVALID_ARG);
 }
 
 /* The request half of the exchange: method, URL and body handed to the hook. */
@@ -287,7 +257,7 @@ static void get_sas_uri_builds_the_request(void** state)
   rec r;
   memset(&r, 0, sizeof(r));
   assert_int_equal(
-      az_iot_file_upload_client_get_sas_uri(&fx->fu, "sample-data/test.txt", on_sas, &r),
+      az_iot_gen1_file_upload_client_get_sas_uri(&fx->fu, "sample-data/test.txt", on_sas, &r),
       AZ_IOT_OK);
 
   assert_int_equal(g_http.call_count, 1);
@@ -310,7 +280,7 @@ static void get_sas_uri_delivers_the_sas_uri_and_correlation_id(void** state)
   rec r;
   memset(&r, 0, sizeof(r));
   assert_int_equal(
-      az_iot_file_upload_client_get_sas_uri(&fx->fu, "sample-data/test.txt", on_sas, &r),
+      az_iot_gen1_file_upload_client_get_sas_uri(&fx->fu, "sample-data/test.txt", on_sas, &r),
       AZ_IOT_OK);
 
   /* Delivered synchronously via the callback (Classic). */
@@ -330,7 +300,7 @@ static void get_sas_uri_http_error_delivers_error(void** state)
 
   rec r;
   memset(&r, 0, sizeof(r));
-  assert_int_equal(az_iot_file_upload_client_get_sas_uri(&fx->fu, "b", on_sas, &r), AZ_IOT_OK);
+  assert_int_equal(az_iot_gen1_file_upload_client_get_sas_uri(&fx->fu, "b", on_sas, &r), AZ_IOT_OK);
   assert_true(r.sas_done);
   assert_int_not_equal(r.sas_status, AZ_IOT_OK);
 }
@@ -342,7 +312,7 @@ static void get_sas_uri_transport_failure_delivers_error(void** state)
 
   rec r;
   memset(&r, 0, sizeof(r));
-  assert_int_equal(az_iot_file_upload_client_get_sas_uri(&fx->fu, "b", on_sas, &r), AZ_IOT_OK);
+  assert_int_equal(az_iot_gen1_file_upload_client_get_sas_uri(&fx->fu, "b", on_sas, &r), AZ_IOT_OK);
   assert_true(r.sas_done);
   assert_int_equal(r.sas_status, AZ_IOT_ERR_MQTT);
 }
@@ -351,11 +321,13 @@ static void get_sas_uri_rejects_bad_args(void** state)
 {
   fixture* fx = (fixture*)*state;
   assert_int_equal(
-      az_iot_file_upload_client_get_sas_uri(&fx->fu, NULL, on_sas, NULL), AZ_IOT_ERR_INVALID_ARG);
+      az_iot_gen1_file_upload_client_get_sas_uri(&fx->fu, NULL, on_sas, NULL),
+      AZ_IOT_ERR_INVALID_ARG);
   assert_int_equal(
-      az_iot_file_upload_client_get_sas_uri(&fx->fu, "", on_sas, NULL), AZ_IOT_ERR_INVALID_ARG);
+      az_iot_gen1_file_upload_client_get_sas_uri(&fx->fu, "", on_sas, NULL),
+      AZ_IOT_ERR_INVALID_ARG);
   assert_int_equal(
-      az_iot_file_upload_client_get_sas_uri(&fx->fu, "b", NULL, NULL), AZ_IOT_ERR_INVALID_ARG);
+      az_iot_gen1_file_upload_client_get_sas_uri(&fx->fu, "b", NULL, NULL), AZ_IOT_ERR_INVALID_ARG);
 }
 
 static void notify_complete_builds_the_request(void** state)
@@ -366,7 +338,8 @@ static void notify_complete_builds_the_request(void** state)
   rec r;
   memset(&r, 0, sizeof(r));
   assert_int_equal(
-      az_iot_file_upload_client_notify_complete(&fx->fu, "corr-9", true, on_notify, &r), AZ_IOT_OK);
+      az_iot_gen1_file_upload_client_notify_complete(&fx->fu, "corr-9", true, on_notify, &r),
+      AZ_IOT_OK);
 
   assert_int_equal(g_http.call_count, 1);
   assert_string_equal(g_http.last_method, "POST");
@@ -390,7 +363,8 @@ static void notify_complete_delivers_the_ack(void** state)
   rec r;
   memset(&r, 0, sizeof(r));
   assert_int_equal(
-      az_iot_file_upload_client_notify_complete(&fx->fu, "corr-9", true, on_notify, &r), AZ_IOT_OK);
+      az_iot_gen1_file_upload_client_notify_complete(&fx->fu, "corr-9", true, on_notify, &r),
+      AZ_IOT_OK);
 
   assert_true(r.notify_done);
   assert_int_equal(r.notify_status, AZ_IOT_OK);
@@ -404,7 +378,7 @@ static void notify_complete_failure_body(void** state)
   rec r;
   memset(&r, 0, sizeof(r));
   assert_int_equal(
-      az_iot_file_upload_client_notify_complete(&fx->fu, "corr-9", false, on_notify, &r),
+      az_iot_gen1_file_upload_client_notify_complete(&fx->fu, "corr-9", false, on_notify, &r),
       AZ_IOT_OK);
   assert_string_equal(
       g_http.last_body,
@@ -416,16 +390,16 @@ static void notify_complete_rejects_bad_args(void** state)
 {
   fixture* fx = (fixture*)*state;
   assert_int_equal(
-      az_iot_file_upload_client_notify_complete(NULL, "corr-9", true, on_notify, NULL),
+      az_iot_gen1_file_upload_client_notify_complete(NULL, "corr-9", true, on_notify, NULL),
       AZ_IOT_ERR_INVALID_ARG);
   assert_int_equal(
-      az_iot_file_upload_client_notify_complete(&fx->fu, NULL, true, on_notify, NULL),
+      az_iot_gen1_file_upload_client_notify_complete(&fx->fu, NULL, true, on_notify, NULL),
       AZ_IOT_ERR_INVALID_ARG);
   assert_int_equal(
-      az_iot_file_upload_client_notify_complete(&fx->fu, "", true, on_notify, NULL),
+      az_iot_gen1_file_upload_client_notify_complete(&fx->fu, "", true, on_notify, NULL),
       AZ_IOT_ERR_INVALID_ARG);
   assert_int_equal(
-      az_iot_file_upload_client_notify_complete(&fx->fu, "corr-9", true, NULL, NULL),
+      az_iot_gen1_file_upload_client_notify_complete(&fx->fu, "corr-9", true, NULL, NULL),
       AZ_IOT_ERR_INVALID_ARG);
   /* None of the rejected calls may reach the transport. */
   assert_int_equal(g_http.call_count, 0);
@@ -437,7 +411,7 @@ static void get_sas_uri_rejects_null_client(void** state)
   rec r;
   memset(&r, 0, sizeof(r));
   assert_int_equal(
-      az_iot_file_upload_client_get_sas_uri(NULL, "b", on_sas, &r), AZ_IOT_ERR_INVALID_ARG);
+      az_iot_gen1_file_upload_client_get_sas_uri(NULL, "b", on_sas, &r), AZ_IOT_ERR_INVALID_ARG);
   assert_false(r.sas_done);
 }
 
@@ -449,9 +423,10 @@ static void get_sas_uri_rejects_null_client(void** state)
 static void classic_init_rejects_transport_with_null_send(void** state)
 {
   fixture* fx = (fixture*)*state;
-  az_iot_file_upload_client fu2;
+  az_iot_gen1_file_upload_client fu2;
   az_iot_file_upload_http_transport http = { NULL, NULL };
-  assert_int_equal(az_iot_file_upload_client_init(&fu2, &fx->conn, &http), AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(
+      az_iot_gen1_file_upload_client_init(&fu2, &fx->conn, &http), AZ_IOT_ERR_INVALID_ARG);
 }
 
 /* A DPS-only connection that has not provisioned yet has no hub address. That is
@@ -466,9 +441,10 @@ static void init_rejects_unresolved_hub_address(void** state)
   assert_int_equal(az_iot_connection_client_init(&conn, &opts), AZ_IOT_OK);
   assert_null(az_iot_connection_client_get_iothub_address(&conn));
 
-  az_iot_file_upload_client fu2;
+  az_iot_gen1_file_upload_client fu2;
   az_iot_file_upload_http_transport http = { mock_send, NULL };
-  assert_int_equal(az_iot_file_upload_client_init(&fu2, &conn, &http), AZ_IOT_ERR_NOT_CONNECTED);
+  assert_int_equal(
+      az_iot_gen1_file_upload_client_init(&fu2, &conn, &http), AZ_IOT_ERR_NOT_CONNECTED);
 
   az_iot_connection_client_destroy(&conn);
 }
@@ -483,9 +459,10 @@ static void init_rejects_missing_device_id(void** state)
   /* client_id deliberately left NULL. */
   assert_int_equal(az_iot_connection_client_init(&conn, &opts), AZ_IOT_OK);
 
-  az_iot_file_upload_client fu2;
+  az_iot_gen1_file_upload_client fu2;
   az_iot_file_upload_http_transport http = { mock_send, NULL };
-  assert_int_equal(az_iot_file_upload_client_init(&fu2, &conn, &http), AZ_IOT_ERR_NOT_CONNECTED);
+  assert_int_equal(
+      az_iot_gen1_file_upload_client_init(&fu2, &conn, &http), AZ_IOT_ERR_NOT_CONNECTED);
 
   az_iot_connection_client_destroy(&conn);
 }
@@ -513,23 +490,24 @@ static void oversized_hub_address_is_rejected_at_the_operation(void** state)
   opts.client_id = TEST_DEVICE;
   assert_int_equal(az_iot_connection_client_init(&conn, &opts), AZ_IOT_OK);
 
-  az_iot_file_upload_client fu2;
+  az_iot_gen1_file_upload_client fu2;
   az_iot_file_upload_http_transport http = { mock_send, NULL };
-  assert_int_equal(az_iot_file_upload_client_init(&fu2, &conn, &http), AZ_IOT_OK);
+  assert_int_equal(az_iot_gen1_file_upload_client_init(&fu2, &conn, &http), AZ_IOT_OK);
 
   memset(&g_http, 0, sizeof(g_http));
   rec r;
   memset(&r, 0, sizeof(r));
   assert_int_equal(
-      az_iot_file_upload_client_get_sas_uri(&fu2, "b", on_sas, &r), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+      az_iot_gen1_file_upload_client_get_sas_uri(&fu2, "b", on_sas, &r),
+      AZ_IOT_ERR_NOT_ENOUGH_SPACE);
   assert_int_equal(
-      az_iot_file_upload_client_notify_complete(&fu2, "c", true, on_notify, &r),
+      az_iot_gen1_file_upload_client_notify_complete(&fu2, "c", true, on_notify, &r),
       AZ_IOT_ERR_NOT_ENOUGH_SPACE);
 
   /* Refused locally: no truncated URL reached the transport. */
   assert_int_equal(g_http.call_count, 0);
 
-  az_iot_file_upload_client_destroy(&fu2);
+  az_iot_gen1_file_upload_client_deinit(&fu2);
   az_iot_connection_client_destroy(&conn);
 }
 
@@ -547,22 +525,23 @@ static void oversized_device_id_is_rejected_at_the_operation(void** state)
   opts.client_id = long_id;
   assert_int_equal(az_iot_connection_client_init(&conn, &opts), AZ_IOT_OK);
 
-  az_iot_file_upload_client fu2;
+  az_iot_gen1_file_upload_client fu2;
   az_iot_file_upload_http_transport http = { mock_send, NULL };
-  assert_int_equal(az_iot_file_upload_client_init(&fu2, &conn, &http), AZ_IOT_OK);
+  assert_int_equal(az_iot_gen1_file_upload_client_init(&fu2, &conn, &http), AZ_IOT_OK);
 
   memset(&g_http, 0, sizeof(g_http));
   rec r;
   memset(&r, 0, sizeof(r));
   assert_int_equal(
-      az_iot_file_upload_client_get_sas_uri(&fu2, "b", on_sas, &r), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+      az_iot_gen1_file_upload_client_get_sas_uri(&fu2, "b", on_sas, &r),
+      AZ_IOT_ERR_NOT_ENOUGH_SPACE);
   assert_int_equal(
-      az_iot_file_upload_client_notify_complete(&fu2, "c", true, on_notify, &r),
+      az_iot_gen1_file_upload_client_notify_complete(&fu2, "c", true, on_notify, &r),
       AZ_IOT_ERR_NOT_ENOUGH_SPACE);
 
   assert_int_equal(g_http.call_count, 0);
 
-  az_iot_file_upload_client_destroy(&fu2);
+  az_iot_gen1_file_upload_client_deinit(&fu2);
   az_iot_connection_client_destroy(&conn);
 }
 
@@ -577,16 +556,18 @@ static void failed_init_leaves_client_unusable(void** state)
   opts.port = 8883;
   assert_int_equal(az_iot_connection_client_init(&conn, &opts), AZ_IOT_OK);
 
-  az_iot_file_upload_client fu2;
+  az_iot_gen1_file_upload_client fu2;
   az_iot_file_upload_http_transport http = { mock_send, NULL };
-  assert_int_equal(az_iot_file_upload_client_init(&fu2, &conn, &http), AZ_IOT_ERR_NOT_CONNECTED);
+  assert_int_equal(
+      az_iot_gen1_file_upload_client_init(&fu2, &conn, &http), AZ_IOT_ERR_NOT_CONNECTED);
 
   rec r;
   memset(&r, 0, sizeof(r));
   assert_int_equal(
-      az_iot_file_upload_client_get_sas_uri(&fu2, "b", on_sas, &r), AZ_IOT_ERR_NOT_INITIALIZED);
+      az_iot_gen1_file_upload_client_get_sas_uri(&fu2, "b", on_sas, &r),
+      AZ_IOT_ERR_NOT_INITIALIZED);
   assert_int_equal(
-      az_iot_file_upload_client_notify_complete(&fu2, "c", true, on_notify, &r),
+      az_iot_gen1_file_upload_client_notify_complete(&fu2, "c", true, on_notify, &r),
       AZ_IOT_ERR_NOT_INITIALIZED);
   assert_int_equal(g_http.call_count, 0);
 
@@ -600,14 +581,15 @@ static void failed_init_leaves_client_unusable(void** state)
 static void calls_after_destroy_are_rejected(void** state)
 {
   fixture* fx = (fixture*)*state;
-  az_iot_file_upload_client_destroy(&fx->fu);
+  az_iot_gen1_file_upload_client_deinit(&fx->fu);
 
   rec r;
   memset(&r, 0, sizeof(r));
   assert_int_equal(
-      az_iot_file_upload_client_get_sas_uri(&fx->fu, "b", on_sas, &r), AZ_IOT_ERR_NOT_INITIALIZED);
+      az_iot_gen1_file_upload_client_get_sas_uri(&fx->fu, "b", on_sas, &r),
+      AZ_IOT_ERR_NOT_INITIALIZED);
   assert_int_equal(
-      az_iot_file_upload_client_notify_complete(&fx->fu, "c", true, on_notify, &r),
+      az_iot_gen1_file_upload_client_notify_complete(&fx->fu, "c", true, on_notify, &r),
       AZ_IOT_ERR_NOT_INITIALIZED);
   assert_int_equal(g_http.call_count, 0);
 
@@ -617,7 +599,7 @@ static void calls_after_destroy_are_rejected(void** state)
 static void destroy_is_null_safe(void** state)
 {
   (void)state;
-  az_iot_file_upload_client_destroy(NULL);
+  az_iot_gen1_file_upload_client_deinit(NULL);
 }
 
 /* Destroying twice must be harmless: the second call meets an already-scrubbed
@@ -625,8 +607,8 @@ static void destroy_is_null_safe(void** state)
 static void destroy_is_idempotent(void** state)
 {
   fixture* fx = (fixture*)*state;
-  az_iot_file_upload_client_destroy(&fx->fu);
-  az_iot_file_upload_client_destroy(&fx->fu);
+  az_iot_gen1_file_upload_client_deinit(&fx->fu);
+  az_iot_gen1_file_upload_client_deinit(&fx->fu);
 }
 
 /* Re-initializing over a live instance rebinds it and leaves it usable. */
@@ -634,13 +616,13 @@ static void reinit_over_live_client_succeeds(void** state)
 {
   fixture* fx = (fixture*)*state;
   az_iot_file_upload_http_transport http = { mock_send, NULL };
-  assert_int_equal(az_iot_file_upload_client_init(&fx->fu, &fx->conn, &http), AZ_IOT_OK);
+  assert_int_equal(az_iot_gen1_file_upload_client_init(&fx->fu, &fx->conn, &http), AZ_IOT_OK);
 
   g_http.resp_status = 200;
   g_http.resp_body = k_sas_json;
   rec r;
   memset(&r, 0, sizeof(r));
-  assert_int_equal(az_iot_file_upload_client_get_sas_uri(&fx->fu, "b", on_sas, &r), AZ_IOT_OK);
+  assert_int_equal(az_iot_gen1_file_upload_client_get_sas_uri(&fx->fu, "b", on_sas, &r), AZ_IOT_OK);
   assert_int_equal(r.sas_status, AZ_IOT_OK);
 }
 
@@ -648,9 +630,9 @@ static void reinit_over_live_client_succeeds(void** state)
 static void two_clients_share_one_connection(void** state)
 {
   fixture* fx = (fixture*)*state;
-  az_iot_file_upload_client fu2;
+  az_iot_gen1_file_upload_client fu2;
   az_iot_file_upload_http_transport http = { mock_send, NULL };
-  assert_int_equal(az_iot_file_upload_client_init(&fu2, &fx->conn, &http), AZ_IOT_OK);
+  assert_int_equal(az_iot_gen1_file_upload_client_init(&fu2, &fx->conn, &http), AZ_IOT_OK);
 
   g_http.resp_status = 200;
   g_http.resp_body = k_sas_json;
@@ -660,13 +642,14 @@ static void two_clients_share_one_connection(void** state)
   memset(&r1, 0, sizeof(r1));
   memset(&r2, 0, sizeof(r2));
   assert_int_equal(
-      az_iot_file_upload_client_get_sas_uri(&fx->fu, "one.txt", on_sas, &r1), AZ_IOT_OK);
-  assert_int_equal(az_iot_file_upload_client_get_sas_uri(&fu2, "two.txt", on_sas, &r2), AZ_IOT_OK);
+      az_iot_gen1_file_upload_client_get_sas_uri(&fx->fu, "one.txt", on_sas, &r1), AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_gen1_file_upload_client_get_sas_uri(&fu2, "two.txt", on_sas, &r2), AZ_IOT_OK);
   assert_int_equal(r1.sas_status, AZ_IOT_OK);
   assert_int_equal(r2.sas_status, AZ_IOT_OK);
   assert_int_equal(g_http.call_count, 2);
 
-  az_iot_file_upload_client_destroy(&fu2);
+  az_iot_gen1_file_upload_client_deinit(&fu2);
 }
 
 /* Destroying one client must not disturb another sharing the same connection.
@@ -675,18 +658,18 @@ static void two_clients_share_one_connection(void** state)
 static void destroying_one_client_leaves_the_other_working(void** state)
 {
   fixture* fx = (fixture*)*state;
-  az_iot_file_upload_client fu2;
+  az_iot_gen1_file_upload_client fu2;
   az_iot_file_upload_http_transport http = { mock_send, NULL };
-  assert_int_equal(az_iot_file_upload_client_init(&fu2, &fx->conn, &http), AZ_IOT_OK);
+  assert_int_equal(az_iot_gen1_file_upload_client_init(&fu2, &fx->conn, &http), AZ_IOT_OK);
 
-  az_iot_file_upload_client_destroy(&fu2);
+  az_iot_gen1_file_upload_client_deinit(&fu2);
 
   g_http.resp_status = 200;
   g_http.resp_body = k_sas_json;
   rec r;
   memset(&r, 0, sizeof(r));
   assert_int_equal(
-      az_iot_file_upload_client_get_sas_uri(&fx->fu, "three.txt", on_sas, &r), AZ_IOT_OK);
+      az_iot_gen1_file_upload_client_get_sas_uri(&fx->fu, "three.txt", on_sas, &r), AZ_IOT_OK);
   assert_int_equal(r.sas_status, AZ_IOT_OK);
 }
 
@@ -705,7 +688,7 @@ static void sas_uri_requests_follow_a_hub_reassignment(void** state)
 
   rec r;
   memset(&r, 0, sizeof(r));
-  assert_int_equal(az_iot_file_upload_client_get_sas_uri(&fx->fu, "b", on_sas, &r), AZ_IOT_OK);
+  assert_int_equal(az_iot_gen1_file_upload_client_get_sas_uri(&fx->fu, "b", on_sas, &r), AZ_IOT_OK);
   assert_string_equal(
       g_http.last_url, "https://" TEST_HUB "/devices/" TEST_DEVICE "/files?api-version=2021-04-12");
 
@@ -713,7 +696,7 @@ static void sas_uri_requests_follow_a_hub_reassignment(void** state)
   fx->conn.opts.client_id = "dev2";
 
   memset(&r, 0, sizeof(r));
-  assert_int_equal(az_iot_file_upload_client_get_sas_uri(&fx->fu, "b", on_sas, &r), AZ_IOT_OK);
+  assert_int_equal(az_iot_gen1_file_upload_client_get_sas_uri(&fx->fu, "b", on_sas, &r), AZ_IOT_OK);
   assert_int_equal(r.sas_status, AZ_IOT_OK);
   assert_string_equal(
       g_http.last_url,
@@ -728,7 +711,7 @@ static void notifications_follow_a_hub_reassignment(void** state)
   rec r;
   memset(&r, 0, sizeof(r));
   assert_int_equal(
-      az_iot_file_upload_client_notify_complete(&fx->fu, "c", true, on_notify, &r), AZ_IOT_OK);
+      az_iot_gen1_file_upload_client_notify_complete(&fx->fu, "c", true, on_notify, &r), AZ_IOT_OK);
   assert_string_equal(
       g_http.last_url,
       "https://" TEST_HUB "/devices/" TEST_DEVICE "/files/notifications?api-version=2021-04-12");
@@ -738,7 +721,7 @@ static void notifications_follow_a_hub_reassignment(void** state)
 
   memset(&r, 0, sizeof(r));
   assert_int_equal(
-      az_iot_file_upload_client_notify_complete(&fx->fu, "c", true, on_notify, &r), AZ_IOT_OK);
+      az_iot_gen1_file_upload_client_notify_complete(&fx->fu, "c", true, on_notify, &r), AZ_IOT_OK);
   assert_int_equal(r.notify_status, AZ_IOT_OK);
   assert_string_equal(
       g_http.last_url,
@@ -767,9 +750,10 @@ static void requests_fail_while_the_hub_address_is_unavailable(void** state)
   rec r;
   memset(&r, 0, sizeof(r));
   assert_int_equal(
-      az_iot_file_upload_client_get_sas_uri(&fx->fu, "b", on_sas, &r), AZ_IOT_ERR_NOT_CONNECTED);
+      az_iot_gen1_file_upload_client_get_sas_uri(&fx->fu, "b", on_sas, &r),
+      AZ_IOT_ERR_NOT_CONNECTED);
   assert_int_equal(
-      az_iot_file_upload_client_notify_complete(&fx->fu, "c", true, on_notify, &r),
+      az_iot_gen1_file_upload_client_notify_complete(&fx->fu, "c", true, on_notify, &r),
       AZ_IOT_ERR_NOT_CONNECTED);
 
   /* Refused locally: no callback fired and nothing reached the network. */
@@ -792,7 +776,8 @@ static void requests_fail_while_the_hub_address_is_empty(void** state)
   rec r;
   memset(&r, 0, sizeof(r));
   assert_int_equal(
-      az_iot_file_upload_client_get_sas_uri(&fx->fu, "b", on_sas, &r), AZ_IOT_ERR_NOT_CONNECTED);
+      az_iot_gen1_file_upload_client_get_sas_uri(&fx->fu, "b", on_sas, &r),
+      AZ_IOT_ERR_NOT_CONNECTED);
   assert_false(r.sas_done);
   assert_int_equal(g_http.call_count, 0);
 }
@@ -808,9 +793,10 @@ static void requests_fail_while_the_device_id_is_unavailable(void** state)
   rec r;
   memset(&r, 0, sizeof(r));
   assert_int_equal(
-      az_iot_file_upload_client_get_sas_uri(&fx->fu, "b", on_sas, &r), AZ_IOT_ERR_NOT_CONNECTED);
+      az_iot_gen1_file_upload_client_get_sas_uri(&fx->fu, "b", on_sas, &r),
+      AZ_IOT_ERR_NOT_CONNECTED);
   assert_int_equal(
-      az_iot_file_upload_client_notify_complete(&fx->fu, "c", true, on_notify, &r),
+      az_iot_gen1_file_upload_client_notify_complete(&fx->fu, "c", true, on_notify, &r),
       AZ_IOT_ERR_NOT_CONNECTED);
 
   assert_false(r.sas_done);
@@ -829,7 +815,8 @@ static void requests_fail_while_the_device_id_is_empty(void** state)
   rec r;
   memset(&r, 0, sizeof(r));
   assert_int_equal(
-      az_iot_file_upload_client_get_sas_uri(&fx->fu, "b", on_sas, &r), AZ_IOT_ERR_NOT_CONNECTED);
+      az_iot_gen1_file_upload_client_get_sas_uri(&fx->fu, "b", on_sas, &r),
+      AZ_IOT_ERR_NOT_CONNECTED);
   assert_false(r.sas_done);
   assert_int_equal(g_http.call_count, 0);
 }
@@ -848,13 +835,14 @@ static void requests_resume_when_the_endpoint_returns(void** state)
   rec r;
   memset(&r, 0, sizeof(r));
   assert_int_equal(
-      az_iot_file_upload_client_get_sas_uri(&fx->fu, "b", on_sas, &r), AZ_IOT_ERR_NOT_CONNECTED);
+      az_iot_gen1_file_upload_client_get_sas_uri(&fx->fu, "b", on_sas, &r),
+      AZ_IOT_ERR_NOT_CONNECTED);
 
   fx->conn.opts.host = "otherhub.azure-devices.net";
   fx->conn.opts.client_id = "dev2";
 
   memset(&r, 0, sizeof(r));
-  assert_int_equal(az_iot_file_upload_client_get_sas_uri(&fx->fu, "b", on_sas, &r), AZ_IOT_OK);
+  assert_int_equal(az_iot_gen1_file_upload_client_get_sas_uri(&fx->fu, "b", on_sas, &r), AZ_IOT_OK);
   assert_int_equal(r.sas_status, AZ_IOT_OK);
   assert_string_equal(
       g_http.last_url,
@@ -866,7 +854,7 @@ static void requests_resume_when_the_endpoint_returns(void** state)
  * Next/MQTT path will hold per-request state and must preserve the behaviour. */
 typedef struct
 {
-  az_iot_file_upload_client* fu;
+  az_iot_gen1_file_upload_client* fu;
   int depth;
   az_iot_result nested_dispatch;
   bool nested_done;
@@ -881,7 +869,7 @@ static void on_sas_reentrant(az_iot_result status, const char* uri, const char* 
   if (rc->depth++ == 0)
   {
     rc->nested_dispatch
-        = az_iot_file_upload_client_get_sas_uri(rc->fu, "nested.txt", on_sas_reentrant, rc);
+        = az_iot_gen1_file_upload_client_get_sas_uri(rc->fu, "nested.txt", on_sas_reentrant, rc);
   }
   else
   {
@@ -900,7 +888,7 @@ static void get_sas_uri_is_reentrant_from_callback(void** state)
   rc.fu = &fx->fu;
 
   assert_int_equal(
-      az_iot_file_upload_client_get_sas_uri(&fx->fu, "outer.txt", on_sas_reentrant, &rc),
+      az_iot_gen1_file_upload_client_get_sas_uri(&fx->fu, "outer.txt", on_sas_reentrant, &rc),
       AZ_IOT_OK);
   assert_int_equal(rc.depth, 2);
   assert_int_equal(rc.nested_dispatch, AZ_IOT_OK);
@@ -910,92 +898,68 @@ static void get_sas_uri_is_reentrant_from_callback(void** state)
 }
 
 /* ------------------------------------------------------------------------- */
-/* Next / AEG dispatch                                                       */
+/* generation pinning                                                        */
 /* ------------------------------------------------------------------------- */
 
-/* setup_next proves init() succeeds with NO transport on Next; assert here that
- * the resulting client really is bound to the Next flavor. */
-static void next_init_without_http_hook_succeeds(void** state)
+/* File upload is not carried on the MQTT v5 hub, so this client pins Classic.
+ * A direct connection declares its generation up front, which is what lets the
+ * pin be answered at init() rather than deferred to connect. */
+static void init_against_an_mqtt_v5_connection_is_rejected(void** state)
 {
-  fixture* fx = (fixture*)*state;
-  rec r;
-  memset(&r, 0, sizeof(r));
-  assert_int_equal(
-      az_iot_file_upload_client_get_sas_uri(&fx->fu, "b", on_sas, &r), AZ_IOT_ERR_NOT_SUPPORTED);
-}
+  (void)state;
 
-static void next_get_sas_uri_returns_not_supported(void** state)
-{
-  fixture* fx = (fixture*)*state;
-  rec r;
-  memset(&r, 0, sizeof(r));
-  assert_int_equal(
-      az_iot_file_upload_client_get_sas_uri(&fx->fu, "sample-data/test.txt", on_sas, &r),
-      AZ_IOT_ERR_NOT_SUPPORTED);
-  /* An unsupported operation reports through the return code only: no callback
-   * fires and nothing is dispatched. */
-  assert_false(r.sas_done);
-  assert_int_equal(g_http.call_count, 0);
-}
+  az_iot_connection_client conn;
+  az_iot_connection_client_options opts = { 0 };
+  opts.host = TEST_HUB;
+  opts.port = 8883;
+  opts.client_id = TEST_DEVICE;
+  opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
+  assert_int_equal(az_iot_connection_client_init(&conn, &opts), AZ_IOT_OK);
 
-static void next_notify_complete_returns_not_supported(void** state)
-{
-  fixture* fx = (fixture*)*state;
-  rec r;
-  memset(&r, 0, sizeof(r));
-  assert_int_equal(
-      az_iot_file_upload_client_notify_complete(&fx->fu, "corr-9", true, on_notify, &r),
-      AZ_IOT_ERR_NOT_SUPPORTED);
-  assert_false(r.notify_done);
-  assert_int_equal(g_http.call_count, 0);
-}
-
-/* Argument validation runs before the flavor switch on Next too. */
-static void next_still_rejects_bad_args(void** state)
-{
-  fixture* fx = (fixture*)*state;
-  assert_int_equal(
-      az_iot_file_upload_client_get_sas_uri(&fx->fu, "", on_sas, NULL), AZ_IOT_ERR_INVALID_ARG);
-  assert_int_equal(
-      az_iot_file_upload_client_notify_complete(&fx->fu, "", true, on_notify, NULL),
-      AZ_IOT_ERR_INVALID_ARG);
-}
-
-/* A hook supplied on Next is accepted: the hub flavor decides the transport, not
- * the presence of a hook. */
-static void next_init_accepts_an_http_hook(void** state)
-{
-  fixture* fx = (fixture*)*state;
-  az_iot_file_upload_client fu2;
+  az_iot_gen1_file_upload_client fu2;
   az_iot_file_upload_http_transport http = { mock_send, NULL };
-  assert_int_equal(az_iot_file_upload_client_init(&fu2, &fx->conn, &http), AZ_IOT_OK);
-  az_iot_file_upload_client_destroy(&fu2);
+  assert_int_equal(
+      az_iot_gen1_file_upload_client_init(&fu2, &conn, &http),
+      AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH);
+
+  az_iot_connection_client_destroy(&conn);
 }
 
-/* ...and is then ignored. The Next control plane goes over MQTT, so an
- * application hook must never be called, however the operations end. Accepting
- * the hook and never using it are separate promises; a client that called it
- * would still pass the test above. */
-static void next_never_calls_the_http_hook(void** state)
+/* Refused up front rather than at the first upload: without an HTTP client the
+ * SDK can never perform either operation, and a client that accepted the init
+ * would fail every call with a less specific error much later. */
+static void init_without_an_http_hook_is_rejected(void** state)
 {
   fixture* fx = (fixture*)*state;
-  az_iot_file_upload_client fu2;
+
+  az_iot_gen1_file_upload_client fu2;
+  assert_int_equal(
+      az_iot_gen1_file_upload_client_init(&fu2, &fx->conn, NULL), AZ_IOT_ERR_INVALID_ARG);
+
+  az_iot_file_upload_http_transport empty = { NULL, NULL };
+  assert_int_equal(
+      az_iot_gen1_file_upload_client_init(&fu2, &fx->conn, &empty), AZ_IOT_ERR_INVALID_ARG);
+}
+
+/* A refused init must not leave the connection's Classic pin taken, or a later
+ * gen2 client on the same connection would be refused for a client that does
+ * not exist. */
+static void a_refused_init_does_not_hold_the_profile_pin(void** state)
+{
+  fixture* fx = (fixture*)*state;
+
+  az_iot_gen1_file_upload_client fu2;
+  for (int i = 0; i < 4; ++i)
+  {
+    assert_int_equal(
+        az_iot_gen1_file_upload_client_init(&fu2, &fx->conn, NULL), AZ_IOT_ERR_INVALID_ARG);
+  }
+
+  /* The fixture's own client still holds one legitimate pin; a fresh Classic
+   * client must still be admitted alongside it. */
   az_iot_file_upload_http_transport http = { mock_send, NULL };
-  assert_int_equal(az_iot_file_upload_client_init(&fu2, &fx->conn, &http), AZ_IOT_OK);
-
-  g_http.resp_status = 200;
-  g_http.resp_body = k_sas_json;
-
-  rec r;
-  memset(&r, 0, sizeof(r));
-  assert_int_equal(
-      az_iot_file_upload_client_get_sas_uri(&fu2, "b", on_sas, &r), AZ_IOT_ERR_NOT_SUPPORTED);
-  assert_int_equal(
-      az_iot_file_upload_client_notify_complete(&fu2, "c", true, on_notify, &r),
-      AZ_IOT_ERR_NOT_SUPPORTED);
-  assert_int_equal(g_http.call_count, 0);
-
-  az_iot_file_upload_client_destroy(&fu2);
+  assert_int_equal(az_iot_gen1_file_upload_client_init(&fu2, &fx->conn, &http), AZ_IOT_OK);
+  az_iot_gen1_file_upload_client_deinit(&fu2);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -1031,7 +995,8 @@ static void get_sas_uri_maps_failure_status(void** state)
 
     rec r;
     memset(&r, 0, sizeof(r));
-    assert_int_equal(az_iot_file_upload_client_get_sas_uri(&fx->fu, "b", on_sas, &r), AZ_IOT_OK);
+    assert_int_equal(
+        az_iot_gen1_file_upload_client_get_sas_uri(&fx->fu, "b", on_sas, &r), AZ_IOT_OK);
     assert_true(r.sas_done);
     if (r.sas_status != k_failure_status_cases[i].expected)
     {
@@ -1056,7 +1021,8 @@ static void notify_complete_maps_failure_status(void** state)
     rec r;
     memset(&r, 0, sizeof(r));
     assert_int_equal(
-        az_iot_file_upload_client_notify_complete(&fx->fu, "c", true, on_notify, &r), AZ_IOT_OK);
+        az_iot_gen1_file_upload_client_notify_complete(&fx->fu, "c", true, on_notify, &r),
+        AZ_IOT_OK);
     assert_true(r.notify_done);
     if (r.notify_status != k_failure_status_cases[i].expected)
     {
@@ -1081,7 +1047,8 @@ static void get_sas_uri_accepts_any_2xx(void** state)
 
     rec r;
     memset(&r, 0, sizeof(r));
-    assert_int_equal(az_iot_file_upload_client_get_sas_uri(&fx->fu, "b", on_sas, &r), AZ_IOT_OK);
+    assert_int_equal(
+        az_iot_gen1_file_upload_client_get_sas_uri(&fx->fu, "b", on_sas, &r), AZ_IOT_OK);
     assert_int_equal(r.sas_status, AZ_IOT_OK);
     assert_string_equal(r.correlation_id, "corr-123");
   }
@@ -1099,7 +1066,8 @@ static void notify_complete_accepts_any_2xx(void** state)
     rec r;
     memset(&r, 0, sizeof(r));
     assert_int_equal(
-        az_iot_file_upload_client_notify_complete(&fx->fu, "c", true, on_notify, &r), AZ_IOT_OK);
+        az_iot_gen1_file_upload_client_notify_complete(&fx->fu, "c", true, on_notify, &r),
+        AZ_IOT_OK);
     assert_int_equal(r.notify_status, AZ_IOT_OK);
   }
 }
@@ -1112,7 +1080,7 @@ static void notify_complete_transport_failure_delivers_error(void** state)
   rec r;
   memset(&r, 0, sizeof(r));
   assert_int_equal(
-      az_iot_file_upload_client_notify_complete(&fx->fu, "c", true, on_notify, &r), AZ_IOT_OK);
+      az_iot_gen1_file_upload_client_notify_complete(&fx->fu, "c", true, on_notify, &r), AZ_IOT_OK);
   assert_true(r.notify_done);
   assert_int_equal(r.notify_status, AZ_IOT_ERR_MQTT);
 }
@@ -1130,7 +1098,7 @@ static az_iot_result sas_result_for_body(fixture* fx, const char* body)
 
   rec r;
   memset(&r, 0, sizeof(r));
-  assert_int_equal(az_iot_file_upload_client_get_sas_uri(&fx->fu, "b", on_sas, &r), AZ_IOT_OK);
+  assert_int_equal(az_iot_gen1_file_upload_client_get_sas_uri(&fx->fu, "b", on_sas, &r), AZ_IOT_OK);
   assert_true(r.sas_done);
   return r.sas_status;
 }
@@ -1168,7 +1136,7 @@ static void get_sas_uri_empty_response_reports_protocol(void** state)
 
   rec r;
   memset(&r, 0, sizeof(r));
-  assert_int_equal(az_iot_file_upload_client_get_sas_uri(&fx->fu, "b", on_sas, &r), AZ_IOT_OK);
+  assert_int_equal(az_iot_gen1_file_upload_client_get_sas_uri(&fx->fu, "b", on_sas, &r), AZ_IOT_OK);
   assert_true(r.sas_done);
   assert_int_equal(r.sas_status, AZ_IOT_ERR_PROTOCOL);
 }
@@ -1185,7 +1153,7 @@ static void get_sas_uri_clamps_overreported_body_len(void** state)
 
   rec r;
   memset(&r, 0, sizeof(r));
-  assert_int_equal(az_iot_file_upload_client_get_sas_uri(&fx->fu, "b", on_sas, &r), AZ_IOT_OK);
+  assert_int_equal(az_iot_gen1_file_upload_client_get_sas_uri(&fx->fu, "b", on_sas, &r), AZ_IOT_OK);
   assert_true(r.sas_done);
   assert_int_equal(r.sas_status, AZ_IOT_OK);
   assert_string_equal(r.correlation_id, "corr-123");
@@ -1264,7 +1232,7 @@ static void get_sas_uri_skips_unknown_nested_members(void** state)
 
   rec r;
   memset(&r, 0, sizeof(r));
-  assert_int_equal(az_iot_file_upload_client_get_sas_uri(&fx->fu, "b", on_sas, &r), AZ_IOT_OK);
+  assert_int_equal(az_iot_gen1_file_upload_client_get_sas_uri(&fx->fu, "b", on_sas, &r), AZ_IOT_OK);
   assert_int_equal(r.sas_status, AZ_IOT_OK);
   assert_string_equal(r.correlation_id, "corr-real");
   assert_string_equal(r.sas_uri, "https://acct.blob.core.windows.net/uploads/real.txt?sig=abc");
@@ -1286,7 +1254,7 @@ static void get_sas_uri_unescapes_json_strings(void** state)
 
   rec r;
   memset(&r, 0, sizeof(r));
-  assert_int_equal(az_iot_file_upload_client_get_sas_uri(&fx->fu, "b", on_sas, &r), AZ_IOT_OK);
+  assert_int_equal(az_iot_gen1_file_upload_client_get_sas_uri(&fx->fu, "b", on_sas, &r), AZ_IOT_OK);
   assert_int_equal(r.sas_status, AZ_IOT_OK);
   assert_string_equal(r.correlation_id, "corr/1");
   assert_string_equal(r.sas_uri, "https://acct.blob.core.windows.net/uploads/dir/a\"b.txt?sig=x/y");
@@ -1323,7 +1291,7 @@ static void get_sas_uri_duplicate_property_uses_first(void** state)
 
   rec r;
   memset(&r, 0, sizeof(r));
-  assert_int_equal(az_iot_file_upload_client_get_sas_uri(&fx->fu, "b", on_sas, &r), AZ_IOT_OK);
+  assert_int_equal(az_iot_gen1_file_upload_client_get_sas_uri(&fx->fu, "b", on_sas, &r), AZ_IOT_OK);
   assert_int_equal(r.sas_status, AZ_IOT_OK);
   assert_string_equal(r.sas_uri, "https://first.blob.core.windows.net/uploads/b.txt?sig=abc");
 }
@@ -1425,7 +1393,7 @@ static void get_sas_uri_accepts_large_fields(void** state)
 
   rec r;
   memset(&r, 0, sizeof(r));
-  assert_int_equal(az_iot_file_upload_client_get_sas_uri(&fx->fu, "b", on_sas, &r), AZ_IOT_OK);
+  assert_int_equal(az_iot_gen1_file_upload_client_get_sas_uri(&fx->fu, "b", on_sas, &r), AZ_IOT_OK);
   assert_int_equal(r.sas_status, AZ_IOT_OK);
   assert_string_equal(r.correlation_id, "corr-big");
   /* https:// + host + / + container + / + blob + ?sas */
@@ -1443,7 +1411,7 @@ static void get_sas_uri_rejects_a_redirected_response_buffer(void** state)
 
   rec r;
   memset(&r, 0, sizeof(r));
-  assert_int_equal(az_iot_file_upload_client_get_sas_uri(&fx->fu, "b", on_sas, &r), AZ_IOT_OK);
+  assert_int_equal(az_iot_gen1_file_upload_client_get_sas_uri(&fx->fu, "b", on_sas, &r), AZ_IOT_OK);
   assert_true(r.sas_done);
   assert_int_equal(r.sas_status, AZ_IOT_ERR_PROTOCOL);
 }
@@ -1463,7 +1431,7 @@ static void sas_uri_request_carries_empty_auth_and_json_content_type(void** stat
 
   rec r;
   memset(&r, 0, sizeof(r));
-  assert_int_equal(az_iot_file_upload_client_get_sas_uri(&fx->fu, "b", on_sas, &r), AZ_IOT_OK);
+  assert_int_equal(az_iot_gen1_file_upload_client_get_sas_uri(&fx->fu, "b", on_sas, &r), AZ_IOT_OK);
   assert_string_equal(g_http.last_authorization, "");
   assert_string_equal(g_http.last_content_type, "application/json");
 }
@@ -1476,7 +1444,7 @@ static void notification_request_carries_empty_auth_and_json_content_type(void**
   rec r;
   memset(&r, 0, sizeof(r));
   assert_int_equal(
-      az_iot_file_upload_client_notify_complete(&fx->fu, "c", true, on_notify, &r), AZ_IOT_OK);
+      az_iot_gen1_file_upload_client_notify_complete(&fx->fu, "c", true, on_notify, &r), AZ_IOT_OK);
   assert_string_equal(g_http.last_authorization, "");
   assert_string_equal(g_http.last_content_type, "application/json");
 }
@@ -1490,7 +1458,7 @@ static void sas_uri_request_supplies_a_response_buffer(void** state)
 
   rec r;
   memset(&r, 0, sizeof(r));
-  assert_int_equal(az_iot_file_upload_client_get_sas_uri(&fx->fu, "b", on_sas, &r), AZ_IOT_OK);
+  assert_int_equal(az_iot_gen1_file_upload_client_get_sas_uri(&fx->fu, "b", on_sas, &r), AZ_IOT_OK);
   assert_false(g_http.last_resp_body_null);
   assert_int_equal((int)g_http.last_resp_body_capacity, AZ_IOT_FILE_UPLOAD_SAS_URI_MAX);
 }
@@ -1506,7 +1474,7 @@ static void notification_request_supplies_no_response_buffer(void** state)
   rec r;
   memset(&r, 0, sizeof(r));
   assert_int_equal(
-      az_iot_file_upload_client_notify_complete(&fx->fu, "c", true, on_notify, &r), AZ_IOT_OK);
+      az_iot_gen1_file_upload_client_notify_complete(&fx->fu, "c", true, on_notify, &r), AZ_IOT_OK);
   assert_true(g_http.last_resp_body_null);
   assert_int_equal((int)g_http.last_resp_body_capacity, 0);
 }
@@ -1522,13 +1490,15 @@ static void get_sas_uri_escapes_blob_name(void** state)
   rec r;
   memset(&r, 0, sizeof(r));
   assert_int_equal(
-      az_iot_file_upload_client_get_sas_uri(&fx->fu, "dir/a\"b\\c.txt", on_sas, &r), AZ_IOT_OK);
+      az_iot_gen1_file_upload_client_get_sas_uri(&fx->fu, "dir/a\"b\\c.txt", on_sas, &r),
+      AZ_IOT_OK);
   assert_string_equal(g_http.last_body, "{\"blobName\":\"dir/a\\\"b\\\\c.txt\"}");
 
   /* An injection attempt stays a single string value. */
   memset(&r, 0, sizeof(r));
   assert_int_equal(
-      az_iot_file_upload_client_get_sas_uri(&fx->fu, "x\",\"evil\":\"y", on_sas, &r), AZ_IOT_OK);
+      az_iot_gen1_file_upload_client_get_sas_uri(&fx->fu, "x\",\"evil\":\"y", on_sas, &r),
+      AZ_IOT_OK);
   assert_string_equal(g_http.last_body, "{\"blobName\":\"x\\\",\\\"evil\\\":\\\"y\"}");
 }
 
@@ -1543,7 +1513,7 @@ static void get_sas_uri_oversized_blob_name_is_refused(void** state)
   rec r;
   memset(&r, 0, sizeof(r));
   assert_int_equal(
-      az_iot_file_upload_client_get_sas_uri(&fx->fu, blob, on_sas, &r),
+      az_iot_gen1_file_upload_client_get_sas_uri(&fx->fu, blob, on_sas, &r),
       AZ_IOT_ERR_NOT_ENOUGH_SPACE);
   assert_false(r.sas_done);
   assert_int_equal(g_http.call_count, 0);
@@ -1558,7 +1528,7 @@ static void notify_complete_oversized_correlation_id_is_refused(void** state)
   rec r;
   memset(&r, 0, sizeof(r));
   assert_int_equal(
-      az_iot_file_upload_client_notify_complete(&fx->fu, corr, true, on_notify, &r),
+      az_iot_gen1_file_upload_client_notify_complete(&fx->fu, corr, true, on_notify, &r),
       AZ_IOT_ERR_NOT_ENOUGH_SPACE);
   assert_false(r.notify_done);
   assert_int_equal(g_http.call_count, 0);
@@ -1584,9 +1554,9 @@ static void max_length_endpoint_still_builds_a_url(void** state)
   assert_int_equal(az_iot_connection_client_init(&conn, &opts), AZ_IOT_OK);
 
   memset(&g_http, 0, sizeof(g_http));
-  az_iot_file_upload_client fu2;
+  az_iot_gen1_file_upload_client fu2;
   az_iot_file_upload_http_transport http = { mock_send, NULL };
-  assert_int_equal(az_iot_file_upload_client_init(&fu2, &conn, &http), AZ_IOT_OK);
+  assert_int_equal(az_iot_gen1_file_upload_client_init(&fu2, &conn, &http), AZ_IOT_OK);
 
   /* The longest hub host and device id the connection client can hold still fit
    * AZ_IOT_FILE_UPLOAD_URL_MAX, so both URLs must build. */
@@ -1594,18 +1564,18 @@ static void max_length_endpoint_still_builds_a_url(void** state)
   g_http.resp_body = k_sas_json;
   rec r;
   memset(&r, 0, sizeof(r));
-  assert_int_equal(az_iot_file_upload_client_get_sas_uri(&fu2, "b", on_sas, &r), AZ_IOT_OK);
+  assert_int_equal(az_iot_gen1_file_upload_client_get_sas_uri(&fu2, "b", on_sas, &r), AZ_IOT_OK);
   assert_int_equal(r.sas_status, AZ_IOT_OK);
   assert_true(strlen(g_http.last_url) < AZ_IOT_FILE_UPLOAD_URL_MAX);
 
   g_http.resp_status = 204;
   memset(&r, 0, sizeof(r));
   assert_int_equal(
-      az_iot_file_upload_client_notify_complete(&fu2, "c", true, on_notify, &r), AZ_IOT_OK);
+      az_iot_gen1_file_upload_client_notify_complete(&fu2, "c", true, on_notify, &r), AZ_IOT_OK);
   assert_int_equal(r.notify_status, AZ_IOT_OK);
   assert_true(strlen(g_http.last_url) < AZ_IOT_FILE_UPLOAD_URL_MAX);
 
-  az_iot_file_upload_client_destroy(&fu2);
+  az_iot_gen1_file_upload_client_deinit(&fu2);
   az_iot_connection_client_destroy(&conn);
 }
 
@@ -1633,7 +1603,7 @@ static void a_sas_response_with_nested_members_still_finds_the_fields(void** sta
   rec r;
   memset(&r, 0, sizeof(r));
   assert_int_equal(
-      az_iot_file_upload_client_get_sas_uri(&fx->fu, "sample-data/test.txt", on_sas, &r),
+      az_iot_gen1_file_upload_client_get_sas_uri(&fx->fu, "sample-data/test.txt", on_sas, &r),
       AZ_IOT_OK);
 
   assert_true(r.sas_done);
@@ -1656,7 +1626,7 @@ static void a_sas_response_that_is_not_an_object_is_refused(void** state)
   rec r;
   memset(&r, 0, sizeof(r));
   assert_int_equal(
-      az_iot_file_upload_client_get_sas_uri(&fx->fu, "sample-data/test.txt", on_sas, &r),
+      az_iot_gen1_file_upload_client_get_sas_uri(&fx->fu, "sample-data/test.txt", on_sas, &r),
       AZ_IOT_OK);
 
   assert_true(r.sas_done);
@@ -1749,14 +1719,11 @@ int main(void)
         notify_complete_oversized_correlation_id_is_refused, setup, teardown),
     cmocka_unit_test(max_length_endpoint_still_builds_a_url),
 
-    /* Next / AEG dispatch */
-    cmocka_unit_test_setup_teardown(next_init_without_http_hook_succeeds, setup_next, teardown),
-    cmocka_unit_test_setup_teardown(next_get_sas_uri_returns_not_supported, setup_next, teardown),
+    /* generation pinning */
     cmocka_unit_test_setup_teardown(
-        next_notify_complete_returns_not_supported, setup_next, teardown),
-    cmocka_unit_test_setup_teardown(next_still_rejects_bad_args, setup_next, teardown),
-    cmocka_unit_test_setup_teardown(next_init_accepts_an_http_hook, setup_next, teardown),
-    cmocka_unit_test_setup_teardown(next_never_calls_the_http_hook, setup_next, teardown),
+        init_against_an_mqtt_v5_connection_is_rejected, setup, teardown),
+    cmocka_unit_test_setup_teardown(init_without_an_http_hook_is_rejected, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_refused_init_does_not_hold_the_profile_pin, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_sas_response_with_nested_members_still_finds_the_fields, setup, teardown),
     cmocka_unit_test_setup_teardown(

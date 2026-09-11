@@ -37,7 +37,7 @@ if(AZ_IOT_WITH_PAHO)
         file_upload/main.c common/sample_utils.c)
     target_include_directories(az_iot_sample_file_upload PRIVATE common)
     target_link_libraries(az_iot_sample_file_upload
-        PRIVATE az_iot_core az_iot_adapter_paho)
+        PRIVATE az_iot_gen1 az_iot_adapter_paho)
     # File upload is HTTPS-only and the SDK ships no HTTP client, so the sample
     # uses libcurl (when available) to perform the SAS-URI request, the blob PUT
     # to Azure Storage, and the completion notification. Optional: without curl
