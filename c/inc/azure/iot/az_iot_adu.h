@@ -210,12 +210,26 @@ extern "C"
      * Persist workflow state for reboot survival. OPTIONAL — REQUIRED only if a
      * reboot is possible mid-update (i.e. install/apply may return
      * REBOOT_REQUIRED). Consumed by Phase 5 resume logic.
+     *
+     * A call with @p state_blob_len == 0 is an **invalidation**, not a write:
+     * the implementation MUST empty the stored record so that a later boot does
+     * not resume a workflow that has already finished, been rolled back,
+     * cancelled, or superseded. The client issues this once a checkpoint is
+     * consumed or abandoned. Implementations MAY erase the underlying key or
+     * file outright; storing a zero-length record is equally acceptable, since
+     * load_state_fn is permitted to report it as a successful zero-length read.
+     *
+     * Return 0 on success; non-zero leaves the record in place and the client
+     * retries the invalidation at the next terminal transition.
      */
     int32_t (*persist_state_fn)(const uint8_t* state_blob, size_t state_blob_len, void* user_ctx);
 
     /**
      * Load previously-persisted workflow state. Return 0 and fill
      * state_blob/len on success; non-zero if no state persisted.
+     *
+     * Reporting an invalidated record as success with @p state_blob_len == 0 is
+     * valid and is treated as "nothing to resume".
      */
     int32_t (*load_state_fn)(
         uint8_t* state_blob,
@@ -491,6 +505,13 @@ extern "C"
       uint32_t current_file;
       bool cancel_requested;
       bool checkpoint_pending;
+
+      /* True while non-volatile storage is believed to hold a checkpoint this
+       * client wrote or resumed from. Tracked so the client only issues the
+       * zero-length invalidation write when there is something to retire,
+       * rather than on every workflow end (NVS and flash have finite write
+       * endurance). */
+      bool checkpoint_stored;
 
       /* Identity of the deployment currently being processed (or the last one
        * started). Copied out of the request so it survives request_buffer

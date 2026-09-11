@@ -899,9 +899,43 @@ static int32_t verify_file_hash(
   return verify_file_hash_core(&ADU_I(client).crypto, file, adu_read_file_adapter, &a);
 }
 
-/* Reset the workflow back to Idle, clearing the parsed request. */
+/* Retire the checkpoint held in non-volatile storage.
+ *
+ * The storage contract (design doc, "Resume semantics") expresses invalidation
+ * as a zero-length persist_state_fn write rather than a separate erase hook, so
+ * platforms clear the record with the same primitive they wrote it with. Called
+ * whenever a checkpoint is consumed or abandoned -- completion, rollback,
+ * cancellation, and supersession -- because the shipped loaders are repeatable:
+ * without this, every later boot would reload the finished workflow, re-apply
+ * it and re-report an obsolete workflow id.
+ *
+ * checkpoint_stored stays set when the write fails, so the next terminal
+ * transition retries instead of silently leaving a replayable record behind. */
+static void clear_checkpoint(az_iot_adu_client_t* client)
+{
+  az_iot_adu_platform_hooks* h = &ADU_I(client).hooks;
+  if (!ADU_I(client).checkpoint_stored || h->persist_state_fn == NULL)
+  {
+    return;
+  }
+  if (h->persist_state_fn(ADU_I(client).persist_scratch, 0, h->user_ctx) == 0)
+  {
+    ADU_I(client).checkpoint_stored = false;
+  }
+  else
+  {
+    AZ_IOT_LOG_ERROR("adu: failed to clear persisted checkpoint; will retry");
+  }
+}
+
+/* Reset the workflow back to Idle, clearing the parsed request.
+ *
+ * Every terminal transition funnels through here, so this is also where the
+ * durable checkpoint is retired -- keeping the in-memory reset and the storage
+ * reset from drifting apart. */
 static void reset_to_idle(az_iot_adu_client_t* client)
 {
+  clear_checkpoint(client);
   ADU_I(client).state = AZ_IOT_ADU_STATE_IDLE;
   ADU_I(client).have_request = false;
   ADU_I(client).current_step = 0;
@@ -1221,7 +1255,10 @@ static void process_desired_patch(
     return;
   }
 
-  /* Retry (same id, newer retryTimestamp) or replacement (new id): (re)start. */
+  /* Retry (same id, newer retryTimestamp) or replacement (new id): (re)start.
+   * The stored checkpoint belongs to the superseded workflow, so retire it
+   * before the new one starts producing its own. */
+  clear_checkpoint(client);
   result_init_steps(client, 0);
   ADU_I(client).current_request = req;
   ADU_I(client).have_request = true;
@@ -1846,7 +1883,12 @@ static az_iot_result adu_persist(az_iot_adu_client_t* client)
     p += 16;
   }
   wr_u32le(&blob[p], adu_crc32(blob, p));
-  return h->persist_state_fn(blob, p + 4, h->user_ctx) == 0 ? AZ_IOT_OK : AZ_IOT_ERR_INTERNAL;
+  if (h->persist_state_fn(blob, p + 4, h->user_ctx) != 0)
+  {
+    return AZ_IOT_ERR_INTERNAL;
+  }
+  ADU_I(client).checkpoint_stored = true;
+  return AZ_IOT_OK;
 }
 
 static az_iot_result complete_checkpoint(az_iot_adu_client_t* client)
@@ -2035,6 +2077,13 @@ az_iot_result az_iot_adu_client_resume(az_iot_adu_client_t* client)
       != 0)
   {
     return AZ_IOT_OK; /* nothing persisted */
+  }
+  if (blen == 0)
+  {
+    /* An invalidated checkpoint. The shipped loaders report the emptied record
+     * as a successful zero-length read rather than "absent", so this is the
+     * normal steady state after a workflow finishes -- not a corrupt blob. */
+    return AZ_IOT_OK;
   }
   if (blen > sizeof(ADU_I(client).persist_scratch) || blen < AZ_IOT_ADU_PERSIST_HEADER_SIZE + 4u)
   {
@@ -2262,6 +2311,10 @@ az_iot_result az_iot_adu_client_resume(az_iot_adu_client_t* client)
   ADU_I(client).cancel_requested = (flags & 0x1u) != 0;
   ADU_I(client).have_request = (flags & 0x2u) != 0;
   ADU_I(client).checkpoint_pending = false;
+  /* Storage still holds the record we just restored from; retiring it is this
+   * client's responsibility once the resumed workflow reaches a terminal
+   * state. */
+  ADU_I(client).checkpoint_stored = true;
 
   /* Re-establish the active deployment identity so a redelivery of the same
    * deployment after the reboot is recognized as a duplicate and does NOT

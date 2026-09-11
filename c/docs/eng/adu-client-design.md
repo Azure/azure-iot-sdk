@@ -627,6 +627,19 @@ power cycle, so it lives in the blob rather than only in RAM.
    persisted blob (a zero-length `persist_state_fn` write) so a later boot does
    not replay a finished workflow.
 
+   This applies to **every** way a checkpoint stops being current — completion,
+   rollback, cancellation, and supersession by a newer deployment — because the
+   platform loaders are repeatable: `load_state_fn` keeps returning the same
+   record until something overwrites it. Core tracks whether storage is believed
+   to hold a record and only issues the invalidation when there is one, so a
+   device that never checkpoints never pays a flash write. If the invalidation
+   write fails, core keeps the record marked live and retries at the next
+   terminal transition rather than leaving a replayable checkpoint behind.
+
+   `resume()` treats a zero-length load as "nothing persisted" and returns
+   success, since a cleared record is the normal steady state rather than
+   corruption.
+
 > Persisting after **every** phase is OPTIONAL; the only MUST is to persist before
 > a reboot the agent itself requested (`REBOOT_REQUIRED`). Persisting at more
 > boundaries only widens how much progress survives an *unexpected* power loss.

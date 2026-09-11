@@ -327,6 +327,10 @@ stateDiagram-v2
   Persistence failures are returned to the caller and block Apply. Subsequent work ticks retry
   only the checkpoint, not Install; cancellation or a replacement clears the pending checkpoint.
   A missing persistence hook returns `AZ_IOT_ERR_NOT_SUPPORTED` and also blocks Apply.
+  Checkpoints are retired once consumed or abandoned — completion, rollback, cancellation and
+  supersession all issue the zero-length `persist_state_fn` invalidation — because the platform
+  loaders are repeatable and would otherwise replay a finished workflow on every later boot.
+  A failed invalidation keeps the record marked live and retries at the next terminal transition.
   No network-report retry/outbox or change to application-controlled reboot timing is introduced.
   **Follow-up (not implemented):** distinguish permanent request-validation errors from
   retryable storage-write failures. A missing remaining-step URL currently returns
