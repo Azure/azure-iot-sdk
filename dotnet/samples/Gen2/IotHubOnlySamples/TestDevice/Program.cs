@@ -21,48 +21,6 @@ internal class Program
     // This sample skips DPS entirely and connects directly to IoT hub.
     private static async Task Main(string[] args)
     {
-        using CancellationTokenSource cts = new CancellationTokenSource();
-        cts.CancelAfter(TimeSpan.FromHours(1));
-
-        if (!File.Exists("../../../../deviceId.txt"))
-        {
-            throw new Exception("Run the SetupDevice sample first to generate a test device + credentials");
-        }
-
-        string deviceId = File.ReadAllText("../../../../deviceId.txt");
-        string hostName = File.ReadAllText("../../../../hostname.txt");
-
-        X509AuthenticationProvider authentication = new(X509CertificateLoader.LoadPkcs12FromFile(Pcks12CertificatePath, Pcks12CertificatePassword));
-
-        // Remove this to eliminate all SDK + MQTT level logs
-        Trace.Listeners.Add(new ConsoleTraceListener());
-
-        ConnectionClientOptions options = new()
-        {
-            EnableMqttLogging = EnableMqttLogs,
-        };
-        ConnectionClient connectionClient = new ConnectionClient(options);
-
-        ConnectionContext connectionContext = new()
-        {
-            DeviceId = deviceId,
-            IotHubHostName = hostName,
-            AuthenticationProvider = authentication,
-            IsGen2Hub = true,
-        };
-
-        TwinClient twinClient = new(connectionClient);
-        twinClient.DesiredPatchReceived += DesiredPatchReceived;
-        twinClient.TwinPushReceived += TwinPushReceived;
-
-        DirectMethodClient directMethodClient = new(connectionClient);
-        directMethodClient.DirectMethodProbeReceivedAsync += DirectMethodProbeReceivedAsync;
-        directMethodClient.DirectMethodInvokedAsync += DirectMethodInvokedAsync;
-
-        await connectionClient.ConnectAsync(connectionContext, null, cancellationToken: cts.Token);
-
-        Console.WriteLine($"Connected to IoT hub as device with Id {deviceId}. Now listening for twin/direct method messages");
-        await Task.Delay(-1, cts.Token);
     }
 
     private static Task<DirectMethodResponse> DirectMethodInvokedAsync(DirectMethodRequestReceivedEventArgs arg)

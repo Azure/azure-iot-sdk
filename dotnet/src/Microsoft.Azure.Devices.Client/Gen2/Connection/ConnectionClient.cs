@@ -293,7 +293,7 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Connection
         /// <param name="twinPushOptions">The options around receiving a twin push upon connecting.</param>
         /// <param name="cancellationToken">Cancellation token.</param>
         /// <returns>The initial twin of the device if a twin push was configured via <see cref="TwinPushOptions"/></returns>
-        public async Task ConnectAsync(ConnectionContext connectionContext, TwinPushOptions? twinPushOptions = default, CancellationToken cancellationToken = default)
+        internal async Task ConnectAsync(ConnectionContext connectionContext, TwinPushOptions? twinPushOptions = default, CancellationToken cancellationToken = default)
         {
             ObjectDisposedException.ThrowIf(_isDisposed, this);
 

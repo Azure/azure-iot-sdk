@@ -43,15 +43,6 @@ internal class Program //TODO distinguish naming on operational vs boot certific
         CertificateSigningOperation pendingCsr = await connectionClient.SendCertificateSigningRequestAsync(certificateSigningRequest);
         await pendingCsr.Accepted;
         CertificateSigningResponse certificateSigningResponse = await pendingCsr.Completed;
-
-        // Save the newly signed certificates locally
-        File.WriteAllText(RenewedSignedCertificatesPath, ConvertToPem(certificateSigningResponse.Certificates)); // Save the IoT hub-renewed issued certificate locally
-
-        // Upon getting the newly signed certificate, disconnect from IoT Hub and then reconnect with that new certificate
-        await connectionClient.DisconnectAsync();
-        X509AuthenticationProvider newX509AuthenticationProvider = new(CreateX509CertificateFromKeyAndCert(RenewedSignedCertificatesPath, PrivateKeyPath));
-        connectionContext.AuthenticationProvider = newX509AuthenticationProvider;
-        await connectionClient.ConnectAsync(connectionContext);
     }
 
     private static string ConvertToPem(IReadOnlyList<string> issuedClientCertificates)

@@ -232,7 +232,7 @@ namespace Microsoft.Azure.Devices.Client.Unified.Connection
         /// </summary>
         /// <param name="connectionContext">The details about which IoT hub host to connect to, and which device Id to connect as.</param>
         /// <param name="cancellationToken">Cancellation token.</param>
-        public async Task ConnectAsync(ConnectionContext connectionContext, CancellationToken cancellationToken = default)
+        internal async Task ConnectAsync(ConnectionContext connectionContext, CancellationToken cancellationToken = default)
         {
             ObjectDisposedException.ThrowIf(_isDisposed, this);
 

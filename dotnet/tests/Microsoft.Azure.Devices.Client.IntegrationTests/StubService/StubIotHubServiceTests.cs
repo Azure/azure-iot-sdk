@@ -365,7 +365,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.StubService
         [Fact(Timeout = Setup.TestTimeoutMilliseconds)]
         public async Task Provisioning_AssignsTheDeviceToTheGen2Hub()
         {
-            await using var harness = await StubServiceTestHarness.StartAsync(IotHubGeneration.Gen2, withProvisioningService: true);
+            await using var harness = await StubServiceTestHarness.StartAsync(IotHubGeneration.Gen2);
 
             (UnifiedConnectionClient client, ConnectionContext context) = await harness.ProvisionAndConnectDeviceAsync();
 
@@ -398,7 +398,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.StubService
         [Fact(Timeout = Setup.TestTimeoutMilliseconds)]
         public async Task Provisioning_AssignsTheDeviceToTheGen1Hub()
         {
-            await using var harness = await StubServiceTestHarness.StartAsync(IotHubGeneration.Gen1, withProvisioningService: true);
+            await using var harness = await StubServiceTestHarness.StartAsync(IotHubGeneration.Gen1);
 
             (UnifiedConnectionClient client, ConnectionContext context) = await harness.ProvisionAndConnectDeviceAsync();
 
@@ -419,7 +419,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.StubService
         [Fact(Timeout = Setup.TestTimeoutMilliseconds)]
         public async Task Provisioning_RaisesDeviceProvisioned()
         {
-            await using var harness = await StubServiceTestHarness.StartAsync(IotHubGeneration.Gen2, withProvisioningService: true);
+            await using var harness = await StubServiceTestHarness.StartAsync(IotHubGeneration.Gen2);
 
             TaskCompletionSource<StubDeviceProvisionedEventArgs> provisioned = new();
             harness.Dps.DeviceProvisioned += (_, args) => provisioned.TrySetResult(args);
@@ -481,6 +481,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.StubService
         {
             private readonly List<IDisposable> _disposables = new();
             private InProcessMqttBroker _broker = null!;
+            private X509Certificate2 _certificate = null!;
 
             public string DeviceId { get; } = "stub-device-" + Guid.NewGuid().ToString("N")[..8];
 
@@ -493,12 +494,12 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.StubService
 
             public static async Task<StubServiceTestHarness> StartAsync(
                 IotHubGeneration generation,
-                bool withProvisioningService = false,
                 Action<StubDeviceProvisioningServiceOptions>? configureProvisioningService = null)
             {
                 var harness = new StubServiceTestHarness();
 
                 harness._broker = await InProcessMqttBroker.StartAsync(TestContext.Current.CancellationToken);
+                harness._certificate = CreateSelfSignedCertificate(harness.DeviceId);
 
                 harness.Stub = new StubIotHubService(new StubIotHubServiceOptions
                 {
@@ -513,42 +514,48 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.StubService
 
                 await harness.Stub.StartAsync(TestContext.Current.CancellationToken);
 
-                if (withProvisioningService || configureProvisioningService != null)
+                // Devices only ever reach the hub by being provisioned onto it, so the DPS is always part of the harness.
+                harness.Dps = StubDeviceProvisioningService.ForHub(harness.Stub, options =>
                 {
-                    harness.Dps = StubDeviceProvisioningService.ForHub(harness.Stub, options =>
-                    {
-                        options.DeviceId = harness.DeviceId;
-                        configureProvisioningService?.Invoke(options);
-                    });
+                    options.DeviceId = harness.DeviceId;
+                    configureProvisioningService?.Invoke(options);
+                });
 
-                    await harness.Dps.StartAsync(TestContext.Current.CancellationToken);
-                }
+                await harness.Dps.StartAsync(TestContext.Current.CancellationToken);
 
                 return harness;
             }
 
+            /// <summary>
+            /// Provisions the device through the stub DPS and connects it to the gen2 hub it is assigned.
+            /// </summary>
             public async Task<Gen2ConnectionClient> ConnectGen2DeviceAsync()
             {
                 var connectionClient = new Gen2ConnectionClient(BuildClientOptions());
                 _disposables.Add(connectionClient);
 
-                await connectionClient.ConnectAsync(BuildConnectionContext(isGen2Hub: true), null, TestContext.Current.CancellationToken);
-
-                return connectionClient;
-            }
-
-            public async Task<UnifiedConnectionClient> ConnectGen1DeviceAsync()
-            {
-                var connectionClient = new UnifiedConnectionClient(BuildClientOptions());
-                _disposables.Add(connectionClient);
-
-                await connectionClient.ConnectAsync(BuildConnectionContext(isGen2Hub: false), TestContext.Current.CancellationToken);
+                await connectionClient.ProvisionAndConnectAsync(
+                    new ProvisioningSettings(IdScope),
+                    new X509AuthenticationProvider(_certificate),
+                    twinOptions: null,
+                    TestContext.Current.CancellationToken);
 
                 return connectionClient;
             }
 
             /// <summary>
-            /// Runs the SDK's full provisioning flow: register with the stub DPS, then connect to whichever hub it assigned.
+            /// Provisions the device through the stub DPS and connects it to the gen1 hub it is assigned.
+            /// </summary>
+            public async Task<UnifiedConnectionClient> ConnectGen1DeviceAsync()
+            {
+                (UnifiedConnectionClient client, _) = await ProvisionAndConnectDeviceAsync();
+
+                return client;
+            }
+
+            /// <summary>
+            /// Runs the SDK's full provisioning flow on the unified client: register with the stub DPS, then connect to
+            /// whichever hub, and whichever generation of hub, it assigned.
             /// </summary>
             public async Task<(UnifiedConnectionClient Client, ConnectionContext Context)> ProvisionAndConnectDeviceAsync()
             {
@@ -557,7 +564,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.StubService
 
                 ConnectionContext context = await connectionClient.ProvisionAndConnectAsync(
                     new ProvisioningSettings(IdScope),
-                    new X509AuthenticationProvider(CreateSelfSignedCertificate(DeviceId)),
+                    new X509AuthenticationProvider(_certificate),
                     TestContext.Current.CancellationToken);
 
                 return (connectionClient, context);
@@ -591,6 +598,8 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.StubService
                 {
                     await _broker.DisposeAsync();
                 }
+
+                _certificate?.Dispose();
             }
 
             private ConnectionClientOptions BuildClientOptions()
@@ -604,20 +613,10 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.StubService
                 };
             }
 
-            private ConnectionContext BuildConnectionContext(bool isGen2Hub)
-            {
-                return new ConnectionContext
-                {
-                    DeviceId = DeviceId,
-                    IotHubHostName = StubHostName,
-                    IsGen2Hub = isGen2Hub,
-                    AuthenticationProvider = new X509AuthenticationProvider(CreateSelfSignedCertificate(DeviceId)),
-                };
-            }
-
             /// <summary>
-            /// The SDK requires a client certificate to build its CONNECT packet, but
-            /// <see cref="LocalBrokerMqttClient"/> strips it before connecting to the plaintext local broker.
+            /// The SDK requires a client certificate to build its CONNECT packet, and derives the DPS registration id
+            /// from its common name, but <see cref="LocalBrokerMqttClient"/> strips it before connecting to the
+            /// plaintext local broker.
             /// </summary>
             private static X509Certificate2 CreateSelfSignedCertificate(string deviceId)
             {

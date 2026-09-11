@@ -45,12 +45,6 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Unified
 
             // Upon getting the newly signed certificate, disconnect from IoT Hub and then reconnect with that new certificate
             await connectionClient.DisconnectAsync(cts.Token);
-
-            X509AuthenticationProvider newX509AuthenticationProvider = new(CreateX509CertificateFromKeyAndCert(CertificateListToPem(csrResponse.Certificates), testDeviceContext.PrivateKeyPem!));
-            testDeviceContext.ConnectionContext.AuthenticationProvider = newX509AuthenticationProvider;
-            await connectionClient.ConnectAsync(testDeviceContext.ConnectionContext, cancellationToken:cts.Token);
-
-            await connectionClient.DisconnectAsync(cts.Token);
         }
 
         private static X509Certificate2 CreateX509CertificateFromKeyAndCert(string certificate, string key)

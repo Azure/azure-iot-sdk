@@ -49,7 +49,8 @@ hub.GetDeviceState(deviceId).ReplaceDesiredProperties(new JsonObject { ["fanSpee
 
 await hub.StartAsync();
 
-// ... connect the device under test to the same broker ...
+// ... provision the device under test onto this hub with the stub DPS below, which is the only way
+// the SDK's connection clients expose connecting - ConnectAsync is internal ...
 
 await hub.WaitForDeviceBirthAsync(deviceId);                                   // gen2 only
 await hub.UpdateDesiredPropertiesAsync(deviceId, new JsonObject { ["fanSpeed"] = 43 });
@@ -97,6 +98,10 @@ ConnectionContext context = await connectionClient.ProvisionAndConnectAsync(
 running the `configure` callback, so the two stubs cannot disagree about which protocol the device should
 end up speaking. Construct `StubDeviceProvisioningService` directly if you want them to disagree - for
 instance to test a device that is assigned to a gen2 hub that is not actually there.
+
+Provisioning is not optional in these tests. `ConnectionClient.ConnectAsync` is internal, so
+`ProvisionAndConnectAsync` is the only way a test can get a device onto the stub hub, and every test in
+this folder goes through the stub DPS to get there.
 
 ## The registration flow
 
