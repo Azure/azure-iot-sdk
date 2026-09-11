@@ -84,7 +84,7 @@ namespace Microsoft.Azure.Devices.Client.Provisioning.Models
         public X509RegistrationResult? X509 { get; set; }
 
         [JsonPropertyName("issuedCertificateChain")]
-        public IReadOnlyList<string>? IssuedClientCertificateChain { get; private set; }
+        public IReadOnlyList<string>? IssuedClientCertificateChain { get; set; }
 
         /// <summary>
         /// The connection profile capability of the assigned IoT Hub, forwarded verbatim from the hub. Indicates the MQTT protocol version the device should use to connect. An absent or null value resolves to 'classic'.

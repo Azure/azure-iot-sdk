@@ -54,16 +54,11 @@ jobs:
         uses: ./.github/actions/provision-e2e-resources
         with:
           rg-name: ${{ env.E2E_RESOURCE_GROUP }}
-          # Two DPS enrollments so the parallel Linux/Windows test legs can each
-          # claim their own device (see the per-leg device-index selection below)
-          # and never share a device twin.
-          dps-x509-individual-enrollments: '2'
-          # Provision an Azure Storage account associated with the hub so the
-          # always-run file-upload e2e (az_iot_tests_e2e_fileupload) can obtain a
-          # SAS URI and upload a blob.
-          enable-file-upload: 'false' #TODO to revert
+          azure-location: eastus
           enable-certificate-management: 'true'
-          config-cmdlet: 'New-AzIotNetSDKE2ETestConfig'
+          dps-x509-group-enrollment-devices: '2'
+          dps-x509-individual-enrollments: '2'
+
       - name: Upload test config
         uses: actions/upload-artifact@v4
         with:
@@ -124,6 +119,14 @@ jobs:
           }
           Write-Host "e2e device (index $idx): $regId"
 
+          $groupRegId   = $env:IOT_DPS_GROUP_X509_REGISTRATION_ID
+          $groupCertB64 = $env:IOT_DPS_GROUP_X509_CERTIFICATE
+          $groupKeyB64  = $env:IOT_DPS_GROUP_X509_KEY
+          if (-not $groupRegId -or -not $groupCertB64 -or -not $groupKeyB64) {
+            throw "IOT_DPS_GROUP_X509_* not found in the provisioning config; the environment was not provisioned with an X.509 enrollment group."
+          }
+          Write-Host "CSR bootstrap device: $groupRegId"
+
           # Materialize the device X.509 material to files. The in-process test
           # reads cert/key/CA by PATH, so CI decodes the base64 PEMs and builds a
           # CA trust bundle here (no network download).
@@ -167,6 +170,9 @@ jobs:
             --environment IOTHUB_CONNECTION_STRING=$env:IOTHUB_CONNECTION_STRING `
             --environment IOT_DPS_CONNECTION_STRING=$env:IOT_DPS_CONNECTION_STRING `
             --environment IOT_DPS_ID_SCOPE=$env:IOT_DPS_ID_SCOPE `
+            --environment IOT_DPS_GROUP_X509_REGISTRATION_ID=$groupRegId `
+            --environment IOT_DPS_GROUP_X509_CERTIFICATE=$groupCertB64 `
+            --environment IOT_DPS_GROUP_X509_KEY=$groupKeyB64 `
             --results-directory ./coverage `
             -- xunit.parallelizeAssembly=true
 
@@ -241,4 +247,3 @@ jobs:
         uses: ./.github/actions/destroy-e2e-resources
         with:
           resource-group: ${{ env.E2E_RESOURCE_GROUP }}
-
