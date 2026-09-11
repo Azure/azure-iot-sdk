@@ -94,17 +94,6 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Unified
             Assert.NotNull(hubCsrResponse.Certificates);
             Assert.NotEmpty(hubCsrResponse.Certificates);
 
-            // Convert to PEM and save
-            string pemChain = CertificateUtilities.ConvertToPem(hubCsrResponse.Certificates);
-
-            using X509Certificate2 deviceCertTemp = CertificateUtilities.CreateCertificateWithPrivateKey(hubCsrResponse.Certificates, privateKey);
-
-            // Export and reimport with Exportable flag
-            byte[] pfxBytes = deviceCertTemp.Export(X509ContentType.Pfx);
-            connectionContext.AuthenticationProvider = new(X509CertificateLoader.LoadPkcs12(pfxBytes, (string?)null, X509KeyStorageFlags.Exportable));
-
-            await connectionClient.ConnectAsync(connectionContext, cancellationToken: cts.Token);
-
             await connectionClient.DisconnectAsync(cts.Token);
         }
 

@@ -23,7 +23,9 @@ namespace Microsoft.Azure.Devices.Client
         public event Func<MqttPublishReceivedEventArgs, Task>? PublishReceivedAsync;
 
         public event Func<ConnectionFaultedEventArgs, Task>? ConnectionFaultedAsync;
-        
+
+        public Func<IReadOnlyList<string>, Task<X509AuthenticationProvider>>? HandleCertificateSigningCompleteAsync;
+
         internal event Func<DevicePresenceFlowCompletedArgs, Task>? DevicePresenceFlowCompletedAsync;
         
         /// <summary>
@@ -184,6 +186,22 @@ namespace Microsoft.Azure.Devices.Client
                 IsGen2Hub = provisioningResult.ConnectionProfile == ConnectionProfile.MqttV5,
             };
 
+            // If CSR was a part of the provisioning request, then connect to IoT hub using the operational certificates (the ones signed by DPS) rather than the boot certificates (the ones used to authenticate with DPS).
+            if (provisioningResult.IssuedClientCertificateChain != null && provisioningResult.IssuedClientCertificateChain.Count > 0)
+            {
+                if (HandleCertificateSigningCompleteAsync == null)
+                {
+                    throw new Exception("Must set \"HandleCertificateSigningCompleteAsync\" callback before doing any certificate signing operations");
+                }
+
+                CurrentConnectionContext.AuthenticationProvider = await HandleCertificateSigningCompleteAsync(provisioningResult.IssuedClientCertificateChain);
+            }
+            else
+            {
+                // Otherwise use the same certs when connecting to IoT hub that were used to connect to DPS
+                CurrentConnectionContext.AuthenticationProvider = authentication;
+            }
+
             await ConnectAsync(CurrentConnectionContext, cancellationToken);
 
             return CurrentConnectionContext;
@@ -320,7 +338,6 @@ namespace Microsoft.Azure.Devices.Client
 
                 var devicePresenceFlowCompletedArgs = await devicePresenceFlowResult.Task.WaitAsync(cancellationToken);
 
-                //TODO retry? Feels a bit odd to retry a connect call, but Hub folks do have a prescribed pattern for connect attempts. Maybe offer one connect with retry, one connect w/o
                 if (devicePresenceFlowCompletedArgs.Exception != null)
                 {
                     throw devicePresenceFlowCompletedArgs.Exception;
