@@ -603,16 +603,19 @@ az_iot_result az_iot_adu__parse_error_code(
   }
 
   bool found_string_code = false;
+  bool found_numeric_code = false;
+  bool closed = false;
 
   while (az_result_succeeded(az_json_reader_next_token(&jr)))
   {
     if (jr.token.kind == AZ_JSON_TOKEN_END_OBJECT)
     {
+      closed = true;
       break;
     }
     if (jr.token.kind != AZ_JSON_TOKEN_PROPERTY_NAME)
     {
-      break;
+      return AZ_IOT_ERR_NOT_FOUND;
     }
 
     bool is_numeric = az_json_token_is_text_equal(&jr.token, AZ_SPAN_FROM_STR("errorCode"));
@@ -625,10 +628,16 @@ az_iot_result az_iot_adu__parse_error_code(
 
     if (is_numeric && jr.token.kind == AZ_JSON_TOKEN_NUMBER)
     {
+      /* Parse regardless of whether the caller wants the value: detection must
+       * not depend on an optional output parameter. */
       int32_t v = 0;
-      if (out_numeric_code != NULL && az_result_succeeded(az_json_token_get_int32(&jr.token, &v)))
+      if (az_result_succeeded(az_json_token_get_int32(&jr.token, &v)))
       {
-        *out_numeric_code = v;
+        found_numeric_code = true;
+        if (out_numeric_code != NULL)
+        {
+          *out_numeric_code = v;
+        }
       }
       continue;
     }
@@ -637,15 +646,17 @@ az_iot_result az_iot_adu__parse_error_code(
      * so its absence is normal and the numeric code carries the class. */
     if (is_info && jr.token.kind == AZ_JSON_TOKEN_BEGIN_OBJECT)
     {
+      bool info_closed = false;
       while (az_result_succeeded(az_json_reader_next_token(&jr)))
       {
         if (jr.token.kind == AZ_JSON_TOKEN_END_OBJECT)
         {
+          info_closed = true;
           break;
         }
         if (jr.token.kind != AZ_JSON_TOKEN_PROPERTY_NAME)
         {
-          break;
+          return AZ_IOT_ERR_NOT_FOUND;
         }
         bool is_adu_code = az_json_token_is_text_equal(&jr.token, AZ_SPAN_FROM_STR("aduErrorCode"));
         if (az_result_failed(az_json_reader_next_token(&jr)))
@@ -666,21 +677,32 @@ az_iot_result az_iot_adu__parse_error_code(
         }
         if (az_result_failed(az_json_reader_skip_children(&jr)))
         {
-          break;
+          return AZ_IOT_ERR_NOT_FOUND;
         }
+      }
+      if (!info_closed)
+      {
+        return AZ_IOT_ERR_NOT_FOUND;
       }
       continue;
     }
 
     if (az_result_failed(az_json_reader_skip_children(&jr)))
     {
-      break;
+      return AZ_IOT_ERR_NOT_FOUND;
     }
+  }
+
+  /* A body that never closed is truncated: acting on a partially read failure
+   * could drive a resend or retry from incomplete JSON. */
+  if (!closed)
+  {
+    return AZ_IOT_ERR_NOT_FOUND;
   }
 
   /* Either signal alone is enough to classify: the numeric code carries the
    * class even when the string code is absent. */
-  if (found_string_code || (out_numeric_code != NULL && *out_numeric_code != 0))
+  if (found_string_code || found_numeric_code)
   {
     return AZ_IOT_OK;
   }

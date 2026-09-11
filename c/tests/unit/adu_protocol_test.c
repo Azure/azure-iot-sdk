@@ -513,6 +513,47 @@ static void the_internal_envelope_is_not_the_device_body(void** state)
       AZ_IOT_ERR_NOT_FOUND);
 }
 
+/* Detection must not depend on an optional output parameter: a caller that only
+ * wants the string code still needs a numeric-only body reported as found. */
+static void a_numeric_only_body_is_found_without_the_out_parameter(void** state)
+{
+  (void)state;
+  char code[64];
+  const char* numeric_only = "{\"errorCode\":400004,\"message\":\"resend\"}";
+
+  assert_int_equal(
+      az_iot_adu__parse_error_code(
+          (const uint8_t*)numeric_only, strlen(numeric_only), code, sizeof(code), NULL),
+      AZ_IOT_OK);
+  assert_string_equal(code, "");
+}
+
+/* A truncated failure body must not classify: acting on a partially read error
+ * could drive a resend or a retry from incomplete JSON. */
+static void a_truncated_error_body_is_rejected(void** state)
+{
+  (void)state;
+  char code[64];
+  int32_t numeric = 0;
+
+  /* Cut after a COMPLETE, delimited value, so the signal really was read and the
+   * only defect is that the object never closed. (Truncating mid-number instead
+   * would prove nothing: an unterminated number never yields a token, so the
+   * body would be rejected for having no signal at all.) */
+  const char* cut_after_value = "{\"errorCode\":400004,\"message\":\"x\"";
+  assert_int_equal(
+      az_iot_adu__parse_error_code(
+          (const uint8_t*)cut_after_value, strlen(cut_after_value), code, sizeof(code), &numeric),
+      AZ_IOT_ERR_NOT_FOUND);
+
+  /* Cut inside the nested info object, after a complete string code. */
+  const char* cut_in_info = "{\"errorCode\":409000,\"info\":{\"aduErrorCode\":\"REPORT_CONFLICT\"";
+  assert_int_equal(
+      az_iot_adu__parse_error_code(
+          (const uint8_t*)cut_in_info, strlen(cut_in_info), code, sizeof(code), &numeric),
+      AZ_IOT_ERR_NOT_FOUND);
+}
+
 static void string_codes_map_to_the_specified_actions(void** state)
 {
   (void)state;
@@ -637,6 +678,8 @@ int main(void)
     cmocka_unit_test(both_error_signals_are_read_from_the_body),
     cmocka_unit_test(a_numeric_only_body_is_still_usable),
     cmocka_unit_test(the_internal_envelope_is_not_the_device_body),
+    cmocka_unit_test(a_numeric_only_body_is_found_without_the_out_parameter),
+    cmocka_unit_test(a_truncated_error_body_is_rejected),
     cmocka_unit_test(string_codes_map_to_the_specified_actions),
     cmocka_unit_test(the_resend_family_is_recoverable_from_the_numeric_code_alone),
     cmocka_unit_test(the_shared_conflict_code_is_split_by_operation),
