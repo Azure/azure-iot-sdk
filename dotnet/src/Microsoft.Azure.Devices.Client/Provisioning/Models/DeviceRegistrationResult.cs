@@ -86,6 +86,10 @@ namespace Microsoft.Azure.Devices.Client.Provisioning.Models
         [JsonPropertyName("issuedCertificateChain")]
         public IReadOnlyList<string>? IssuedClientCertificateChain { get; set; }
 
-        public bool IsAzureEventGridHub { get; set; } = false; //TODO manually added field, but I think this is where DPS service folks will add it
+        /// <summary>
+        /// The connection profile capability of the assigned IoT Hub, forwarded verbatim from the hub. Indicates the MQTT protocol version the device should use to connect. An absent or null value resolves to 'classic'.
+        /// </summary>
+        [JsonPropertyName("connectionProfile")]
+        public ConnectionProfile ConnectionProfile { get; set; } = ConnectionProfile.Classic;
     }
 }

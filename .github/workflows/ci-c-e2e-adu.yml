@@ -3,59 +3,44 @@
 
 # End-to-end Device Update (ADU) tests for the C SDK.
 #
-# PLACEHOLDER / INTERIM STATE
-# ---------------------------
-# This workflow is reserved for the REAL-ADU e2e suite: one that provisions an
-# actual Azure Device Update account/instance and triggers an update THROUGH the
-# ADU service (no twin mocking). That suite and its provisioning do not exist
-# yet. Until they land, this workflow runs the SAME mocked ADU suite that
-# ci-c-e2e.yml already runs on every PR (az_iot_tests_e2e_adu) -- here on a
-# nightly / dispatch / ADU-paths cadence -- so the slot and its wiring stay
-# exercised. It therefore currently adds no device-side coverage beyond
-# ci-c-e2e.yml.
+# PARKED -- AWAITING THE ADUv2 e2e SUITE
+# --------------------------------------
+# The suite this workflow ran (az_iot_tests_e2e_adu) drove a deployment through a
+# twin desired-property PATCH. That delivery channel has been removed: ADU is now
+# driven through an az_iot_adu_channel, so the target no longer builds and the
+# trigger it depended on has no equivalent until the new channel lands.
 #
-# Architecture
-# ------------
-# Fully in-process: the ADU scenario runs as the native `az_iot_tests_e2e_adu`
-# CTest. The cloud side (az_iot_e2e_service) PATCHes a signed manifest into the
-# device's desired properties and the device-side ADU client runs the full
-# download -> install -> apply workflow and reports the outcome back. The mocked
-# deployment needs neither a Device Update account nor 'az iot du' -- a twin
-# desired-property PATCH is the entire trigger. Crypto and the platform payload
-# operations are mocked; signature/hash correctness is covered by the unit tests
-# (adu_client_test.c and the adu_crypto_openssl unit tests).
+# The workflow is PARKED rather than deleted, so that the coverage gap between
+# the removal and the rewrite stays visible instead of quietly disappearing from
+# the pipeline list. Automatic triggers (pull_request paths, nightly schedule)
+# are removed so it does not fail on every ADU change; workflow_dispatch is kept
+# so the wiring can still be exercised by hand once the suite is restored.
 #
-# TODO (real-ADU suite): teach the shared provisioning script to create a real
-# Device Update account/instance on `enable-adu`, then add an e2e test that reads
-# a deployment triggered through the ADU service and point this workflow at it.
+# To restore: rewrite the scenarios against the new channel operations, re-enable
+# the CMake target (-DAZ_IOT_BUILD_E2E_ADU_V2=ON, see c/tests/e2e/CMakeLists.txt),
+# and put the pull_request/schedule triggers back.
+#
+# The device fixture and the mocked crypto/payload hooks in the existing test
+# file carry over unchanged -- they are the expensive part and are deliberately
+# kept.
+#
+# Architecture (unchanged, for whoever restores this)
+# ---------------------------------------------------
+# Fully in-process: the ADU scenario runs as a native CTest. Crypto and the
+# platform payload operations are mocked; signature/hash correctness is covered
+# by the unit tests (adu_client_test.c and the adu_crypto_openssl unit tests).
 #
 # Stages
 # ------
 # Resources are provisioned EXACTLY ONCE by the setup job and shared by both
-# test legs; teardown always() deletes them. (Once the real-ADU suite lands, a
-# Device Update account/instance will be provisioned here too.) The provision/
-# destroy steps live in .github/actions/{provision,destroy}-e2e-resources so
-# other pipelines (e.g. ci-dotnet) can reuse them.
+# test legs; teardown always() deletes them. The provision/destroy steps live in
+# .github/actions/{provision,destroy}-e2e-resources so other pipelines (e.g.
+# ci-dotnet) can reuse them.
 
 name: ci-c-e2e-adu
 
 on:
   workflow_dispatch:
-  pull_request:
-    paths:
-      - 'c/src/features/adu/**'
-      - 'c/adapters/adu/**'
-      - 'c/inc/azure/iot/az_iot_adu.h'
-      - 'c/samples/adu/**'
-      # The e2e harness (shared device fixture + ADU test + service facade), this
-      # workflow itself, and the provisioning wiring it depends on: changes here
-      # must be validated against real Azure.
-      - 'c/tests/e2e/**'
-      - '.github/workflows/ci-c-e2e-adu.yml'
-      - '.github/actions/provision-e2e-resources/**'
-      - '.github/actions/destroy-e2e-resources/**'
-  schedule:
-    - cron: '30 11 * * *'  # Nightly at 4:30am PST (offset from the fast workflow)
 
 # Cancel superseded runs on the same ref to avoid leaking parallel resource groups.
 concurrency:

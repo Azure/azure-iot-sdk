@@ -69,11 +69,43 @@ extern "C"
   {
     AZ_IOT_CONFORMANCE_CAP_NONE = 0,
 
-    /* The adapter honours a non-extractable private key: az_iot_mqtt_tls_options
-     * client_key_uri + crypto_engine_id, and/or the sign() hook. An adapter
-     * that declares this must complete a TLS handshake using a key it cannot
-     * read; see az_iot_conformance_options::key_uri for the end-to-end case. */
-    AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY = 1u << 0
+    /* Non-extractable key custody (D8) has TWO independent routes, and
+     * az_iot_mqtt_tls_options says an adapter may implement either, both or
+     * neither. They are therefore separate capabilities: one bit covering both
+     * would hold an adapter to a contract it never claimed, and -- because an
+     * unexercised claim fails the run -- would leave an adapter that implements
+     * only one route unable to obtain a conformant result at all.
+     *
+     * Declare only the routes you implement. Each is proved by its own
+     * end-to-end handshake, and declaring one without supplying the material it
+     * needs, or in a build without TLS support, fails the run rather than
+     * warning. */
+
+    /* RENAME, deliberately not aliased: AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY
+     * became _URI (same bit, 1u << 0, and the same proof it always had).
+     * A harness declaring the old name gets a compile error; change it to the
+     * route you implement.
+     *
+     * An alias would compile, and for a URI-route adapter would behave
+     * identically -- but it would also let the adapter this split exists for
+     * keep compiling: a sign-hook-only adapter would carry on declaring a name
+     * that reads as "custody" while being held to the URI route it cannot
+     * satisfy, and would keep failing without ever meeting _SIGN. The build
+     * error is what sends it to the right bit. The old name also cannot say
+     * which route is meant, which is the ambiguity being removed. */
+
+    /* client_key_uri + crypto_engine_id: the stack has an engine/provider
+     * abstraction and resolves the key reference through it. Proved with
+     * az_iot_conformance_options key_uri + crypto_engine_id + client_cert_path. */
+    AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY_URI = 1u << 0,
+
+    /* sign + sign_ctx: no engine/provider abstraction exists, so the adapter
+     * drives the handshake signature through the caller's callback. Proved with
+     * az_iot_conformance_options sign (+ sign_ctx) + client_cert_path.
+     *
+     * The bundled Paho adapter does NOT implement this route -- Paho exposes no
+     * TLS key callback -- so its harnesses declare only the URI route. */
+    AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY_SIGN = 1u << 1
   } az_iot_conformance_capability;
 
   typedef struct az_iot_conformance_options
@@ -81,29 +113,52 @@ extern "C"
     /* Bitwise OR of az_iot_conformance_capability. */
     uint32_t capabilities;
 
-    /* End-to-end key custody material, used only when
-     * AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY is declared. Supply all three to have
-     * the suite prove the adapter can actually sign a TLS handshake with a key
-     * it cannot read:
+    /* End-to-end key custody material. Supply the set matching each capability
+     * declared above, and the suite proves the adapter can actually sign a TLS
+     * handshake with a key it cannot read.
      *
+     * AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY_URI needs all three of:
      *   key_uri          a key reference the adapter can resolve
      *                    ("pkcs11:object=...;type=private", "tpm2:...")
      *   crypto_engine_id the provider/engine that owns it ("pkcs11", "tpm2")
      *   client_cert_path a certificate whose PUBLIC key is that key's
      *
-     * Leave key_uri NULL when no token is available: the suite then runs the
-     * custody cases that need no hardware and says on stderr what it did not
-     * run, rather than passing silently as though it had. */
+     * AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY_SIGN needs:
+     *   sign             a callback that signs one digest with that key
+     *   sign_ctx         opaque, handed back to sign(); NULL is legitimate
+     *   client_cert_path as above
+     *
+     * client_cert_path is shared: declare both capabilities and one certificate
+     * serves both, provided its public key is the one behind each route.
+     *
+     * Material for a route is all-or-none, and material supplied for a route
+     * that was not declared fails the run -- being ignored in silence is
+     * indistinguishable from a machine that has no token at all.
+     *
+     * A declared capability that is never exercised FAILS the run: a pass has
+     * to mean the claim was checked. When no token is available, either do not
+     * declare the capability or set AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN=1 in the
+     * environment, which downgrades it to a notice -- such a run proves
+     * nothing about custody and must not be reported as conformant for it. */
     const char* key_uri;
     const char* crypto_engine_id;
     const char* client_cert_path;
+    az_iot_mqtt_sign_callback sign;
+    void* sign_ctx;
   } az_iot_conformance_options;
 
   /* Run the conformance suite for `suite_kind` against the given factory.
    * Returns:
-   *   0  on success (all tests passed)
-   *   77 if the suite was skipped (no broker configured)
-   *   1  on failure (one or more tests failed)
+   *   0  on success: all tests passed and every declared capability was
+   *      exercised -- UNLESS AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN=1 was set in
+   *      the environment, which lets an unexercised capability through as a
+   *      notice on stderr. A 0 from such a run says nothing about that
+   *      capability and must not be reported as conformant for it.
+   *   1  on failure: a test failed, a declared capability was never exercised
+   *      (without that opt-out), or no broker was configured. There is no skip
+   *      code -- whether the suite runs is decided at build time by
+   *      AZ_IOT_BUILD_CONFORMANCE_TESTS, so a run that cannot test what it was
+   *      asked to test is a failure.
    *
    * Suitable to use directly as the return value of main() in a harness exe.
    *
@@ -111,6 +166,44 @@ extern "C"
    * declared. An adapter that implements an optional feature should call that
    * instead, or the suite cannot hold it to the feature's contract. */
   int az_iot_conformance_run(az_iot_conformance_suite suite_kind, az_iot_mqtt_factory* factory);
+
+  /* Result of az_iot_conformance_custody_material_state(): either NONE,
+   * or PARTIAL, or the OR of the route bits whose material is complete. */
+  enum
+  {
+    AZ_IOT_CONFORMANCE_CUSTODY_NONE = 0,
+    AZ_IOT_CONFORMANCE_CUSTODY_PARTIAL = 1u << 0,
+    AZ_IOT_CONFORMANCE_CUSTODY_URI = 1u << 1,
+    AZ_IOT_CONFORMANCE_CUSTODY_SIGN = 1u << 2
+  };
+
+  /* Internal, exposed for the suite's own tests.
+   *
+   * Classifies the end-to-end custody material, counting an empty string as
+   * missing. Each route is all-or-none, and a certificate with no route to use
+   * it is partial too -- material that is silently ignored must not be able to
+   * look like a machine that deliberately has no token. PARTIAL is rejected
+   * before the opt-out is considered, so misconfigured material cannot be
+   * downgraded to a notice. */
+  int az_iot_conformance_custody_material_state(
+      const char* key_uri,
+      const char* crypto_engine_id,
+      const char* client_cert_path,
+      bool has_sign,
+      bool has_sign_ctx);
+
+  /* Internal, exposed for the suite's own tests.
+   *
+   * Reports a declared capability whose contract was never exercised and
+   * returns what it contributes to the run's failure count: 1, unless
+   * `allow_value` -- the value of AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN, NULL when
+   * unset -- is exactly "1", in which case it reports a notice and returns 0.
+   * This is the whole of the opt-out policy, kept callable so a regression in
+   * it cannot pass unnoticed. */
+  int az_iot_conformance_report_unproven_capability(
+      const char* capability,
+      const char* why,
+      const char* allow_value);
 
   /* As above, plus the adapter's declared capabilities. `options` may be NULL,
    * which means the same as declaring nothing. */

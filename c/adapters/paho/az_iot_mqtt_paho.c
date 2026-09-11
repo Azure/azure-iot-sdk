@@ -580,6 +580,50 @@ static az_iot_result paho_connect_failure5_result(
   return az_iot_mqtt_connack_result(m->version, paho_connect_failure5_code(response));
 }
 
+/* Completion of a CLIENT-initiated disconnect.
+ *
+ * Paho reports a disconnect the peer caused -- a dropped link through
+ * connectionLost(), an MQTT 5 server DISCONNECT through the disconnected()
+ * callback -- but it reports the one WE asked for only through these
+ * completion callbacks. Without them the caller is told nothing, and a caller
+ * that waits for the session to settle waits for an event that never arrives.
+ *
+ * Both outcomes end the session, so both report DISCONNECTED -- the failure
+ * carrying AZ_IOT_ERR_MQTT rather than AZ_IOT_OK, because the core surfaces
+ * evt->status as the reason the connection ended.
+ *
+ * Only the v3 callbacks are set, and that is deliberate rather than an
+ * oversight: for a DISCONNECT command Paho calls onSuccess when it is set and
+ * falls back to onSuccess5 only when it is not (MQTTAsync_checkDisconnect in
+ * MQTTAsyncUtils.c), so these fire for a v5 client too. Covered both ways by
+ * the adapter unit tests. */
+static void paho_disconnect_success(void* context, MQTTAsync_successData* response)
+{
+  (void)response;
+  paho_client* m = (paho_client*)context;
+  if (m)
+  {
+    enqueue_status(m, AZ_IOT_MQTT_EVT_DISCONNECTED, AZ_IOT_OK, 0);
+  }
+}
+
+static void paho_disconnect_failure(void* context, MQTTAsync_failureData* response)
+{
+  paho_client* m = (paho_client*)context;
+  AZ_IOT_LOG_WARNF(
+      "paho: disconnect failed: rc=%d msg=%s",
+      response ? response->code : 0,
+      (response && response->message) ? response->message : "(none)");
+  if (m)
+  {
+    /* The session is over either way, so this is still DISCONNECTED -- but it
+     * carries an error, not AZ_IOT_OK. The core reports evt->status as the
+     * reason the connection ended, and calling a failed teardown a clean one
+     * would tell the application the opposite of what happened. */
+    enqueue_status(m, AZ_IOT_MQTT_EVT_DISCONNECTED, AZ_IOT_ERR_MQTT, 0);
+  }
+}
+
 static void paho_connect_success(void* context, MQTTAsync_successData* response)
 {
   (void)response;
@@ -1079,8 +1123,23 @@ static az_iot_result paho_iface_disconnect(az_iot_mqtt_client* self)
 
   MQTTAsync_disconnectOptions opts = MQTTAsync_disconnectOptions_initializer;
   opts.timeout = 1000;
+  /* Without these the disconnect completes silently: Paho raises
+   * connectionLost() and disconnected() only for a disconnect the PEER caused,
+   * so a client-initiated one produced no event at all and a caller waiting for
+   * the session to settle waited forever. */
+  opts.context = m;
+  opts.onSuccess = paho_disconnect_success;
+  opts.onFailure = paho_disconnect_failure;
   int rc = MQTTAsync_disconnect(m->paho, &opts);
-  return (rc == MQTTASYNC_SUCCESS) ? AZ_IOT_OK : AZ_IOT_ERR_MQTT;
+  if (rc != MQTTASYNC_SUCCESS)
+  {
+    /* The call was refused, so neither callback will run. Report the end of the
+     * session here instead, or the caller is left waiting on an event that can
+     * no longer arrive -- with the error, for the reason above. */
+    enqueue_status(m, AZ_IOT_MQTT_EVT_DISCONNECTED, AZ_IOT_ERR_MQTT, 0);
+    return AZ_IOT_ERR_MQTT;
+  }
+  return AZ_IOT_OK;
 }
 
 static az_iot_result paho_iface_subscribe(

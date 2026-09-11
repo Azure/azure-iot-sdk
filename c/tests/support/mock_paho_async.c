@@ -12,6 +12,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>
+#include <string.h>
 
 /* The adapter only ever stores the handle and hands it back to us, so any
  * non-NULL address will do. */
@@ -21,6 +22,11 @@ static int s_create_rc;
 static int s_set_callbacks_rc;
 static int s_set_disconnected_rc;
 static int s_connect_rc;
+
+static int s_disconnect_rc;
+static bool s_disconnect_completion_success;
+static int s_disconnect_calls;
+static bool s_disconnect_had_callbacks;
 
 static int s_create_calls;
 static int s_connect_calls;
@@ -39,6 +45,10 @@ void mock_paho_reset(void)
   s_set_callbacks_rc = MQTTASYNC_SUCCESS;
   s_set_disconnected_rc = MQTTASYNC_SUCCESS;
   s_connect_rc = MQTTASYNC_SUCCESS;
+  s_disconnect_rc = MQTTASYNC_SUCCESS;
+  s_disconnect_completion_success = true;
+  s_disconnect_calls = 0;
+  s_disconnect_had_callbacks = false;
   s_create_calls = 0;
   s_connect_calls = 0;
   s_destroy_calls = 0;
@@ -54,6 +64,14 @@ void mock_paho_set_create_rc(int rc) { s_create_rc = rc; }
 void mock_paho_set_set_callbacks_rc(int rc) { s_set_callbacks_rc = rc; }
 void mock_paho_set_set_disconnected_rc(int rc) { s_set_disconnected_rc = rc; }
 void mock_paho_set_connect_rc(int rc) { s_connect_rc = rc; }
+
+void mock_paho_set_disconnect_rc(int rc) { s_disconnect_rc = rc; }
+void mock_paho_set_disconnect_completion(bool success)
+{
+  s_disconnect_completion_success = success;
+}
+int mock_paho_disconnect_calls(void) { return s_disconnect_calls; }
+bool mock_paho_disconnect_had_callbacks(void) { return s_disconnect_had_callbacks; }
 
 int mock_paho_create_calls(void) { return s_create_calls; }
 int mock_paho_connect_calls(void) { return s_connect_calls; }
@@ -156,7 +174,32 @@ int MQTTAsync_connect(MQTTAsync handle, const MQTTAsync_connectOptions* options)
 int MQTTAsync_disconnect(MQTTAsync handle, const MQTTAsync_disconnectOptions* options)
 {
   (void)handle;
-  (void)options;
+  ++s_disconnect_calls;
+  s_disconnect_had_callbacks = options != NULL && options->onSuccess != NULL
+      && options->onFailure != NULL && options->context != NULL;
+
+  if (s_disconnect_rc != MQTTASYNC_SUCCESS)
+  {
+    /* Refused: the real client runs no completion callback in this case. */
+    return s_disconnect_rc;
+  }
+  if (options != NULL)
+  {
+    if (s_disconnect_completion_success && options->onSuccess)
+    {
+      MQTTAsync_successData data;
+      memset(&data, 0, sizeof(data));
+      options->onSuccess(options->context, &data);
+    }
+    else if (!s_disconnect_completion_success && options->onFailure)
+    {
+      MQTTAsync_failureData data;
+      memset(&data, 0, sizeof(data));
+      data.code = MQTTASYNC_FAILURE;
+      data.message = "mock disconnect failure";
+      options->onFailure(options->context, &data);
+    }
+  }
   return MQTTASYNC_SUCCESS;
 }
 

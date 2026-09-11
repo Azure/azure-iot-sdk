@@ -90,11 +90,17 @@ int main(void)
   /* The adapter honours a non-extractable key reference in this build, so the
    * suite is told to hold it to that contract. Without the declaration the
    * baseline would only check that it REFUSES custody cleanly, which is the
-   * wrong bar for an adapter that implements it. */
-  opts.capabilities |= (uint32_t)AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY;
+   * wrong bar for an adapter that implements it.
+   *
+   * The URI route ONLY. Paho exposes no TLS key callback, so this adapter
+   * cannot honour tls.sign and must not claim _SIGN: the baseline already
+   * requires it to refuse that route cleanly, which it does. */
+  opts.capabilities |= (uint32_t)AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY_URI;
   /* The end-to-end handshake needs a key this machine can actually reach.
-   * Absent these the suite runs the custody cases that need no token and says
-   * on stderr that the handshake was not exercised. */
+   * Absent these the capability is declared but never exercised, which FAILS
+   * the run: a pass has to mean the claim was checked. A machine with no token
+   * must say so deliberately with AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN=1, which
+   * downgrades it to a notice and proves nothing about custody. */
   if (env_or_null("AZ_IOT_CONFORMANCE_KEY_URI", key_uri, sizeof(key_uri), &opts.key_uri) != 0
       || env_or_null(
              "AZ_IOT_CONFORMANCE_KEY_ENGINE",

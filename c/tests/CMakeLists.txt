@@ -164,16 +164,50 @@ az_iot_add_cmocka_test(az_iot_tests_gen1_c2d_client unit/gen1_c2d_client_test.c)
 target_link_libraries(az_iot_tests_gen1_c2d_client PRIVATE az_iot_test_support az_iot_gen1)
 az_iot_add_cmocka_test(az_iot_tests_gen2_c2d_client unit/gen2_c2d_client_test.c)
 target_link_libraries(az_iot_tests_gen2_c2d_client PRIVATE az_iot_test_support az_iot_gen2)
-az_iot_add_cmocka_test(az_iot_tests_direct_method_client unit/direct_method_client_test.c)
-target_link_libraries(az_iot_tests_direct_method_client PRIVATE az_iot_test_support)
-az_iot_add_cmocka_test(az_iot_tests_twin_client unit/twin_client_test.c)
-target_link_libraries(az_iot_tests_twin_client PRIVATE az_iot_test_support)
-# twin_client_test pulls the internal header to exercise feature-client
-# desired-subscriber registration (dispatched before application subscribers).
-target_include_directories(az_iot_tests_twin_client PRIVATE
-    ${CMAKE_SOURCE_DIR}/src/core)
+az_iot_add_cmocka_test(az_iot_tests_gen1_direct_method_client unit/gen1_direct_method_client_test.c)
+target_link_libraries(az_iot_tests_gen1_direct_method_client PRIVATE az_iot_test_support az_iot_gen1)
+az_iot_add_cmocka_test(az_iot_tests_gen2_direct_method_client unit/gen2_direct_method_client_test.c)
+target_link_libraries(az_iot_tests_gen2_direct_method_client PRIVATE az_iot_test_support az_iot_gen2)
+if(UNIX)
+    # Two AEG direct-method budgets are only observable once a real second has
+    # passed, so the suite calls nanosleep().
+    target_compile_definitions(az_iot_tests_gen2_direct_method_client PRIVATE
+        _POSIX_C_SOURCE=200809L)
+endif()
+# The AEG design requires the concurrency limit to be configurable. It sizes a
+# public struct, so the library and the application must be built against the
+# same value -- hence the gen2 sources are compiled into this target rather than
+# linked from az_iot_gen2, which carries the default. Running the whole suite
+# against an overridden limit proves the knob reaches every pool, loop and
+# admission check, and catches anyone reintroducing a hardcoded bound.
+az_iot_add_cmocka_test(az_iot_tests_gen2_direct_method_client_tuned
+    unit/gen2_direct_method_client_test.c
+    ${CMAKE_SOURCE_DIR}/src/gen2/direct_method_client.c
+    ${CMAKE_SOURCE_DIR}/src/gen2/direct_method_codec.c)
+target_link_libraries(az_iot_tests_gen2_direct_method_client_tuned PRIVATE az_iot_test_support)
+target_include_directories(az_iot_tests_gen2_direct_method_client_tuned PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/core
+    ${CMAKE_SOURCE_DIR}/src/gen2)
+target_compile_definitions(az_iot_tests_gen2_direct_method_client_tuned PRIVATE
+    AZ_IOT_GEN2_DM_MAX_CONCURRENT=2)
+if(UNIX)
+    target_compile_definitions(az_iot_tests_gen2_direct_method_client_tuned PRIVATE
+        _POSIX_C_SOURCE=200809L)
+endif()
+# The AEG direct-method protobuf codec is hand-rolled, so its wire format is
+# pinned here against bytes taken from the .proto rather than from itself.
+az_iot_add_cmocka_test(
+    az_iot_tests_gen2_direct_method_codec unit/gen2_direct_method_codec_test.c)
+target_link_libraries(az_iot_tests_gen2_direct_method_codec PRIVATE az_iot_test_support az_iot_gen2)
+target_include_directories(az_iot_tests_gen2_direct_method_codec PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/gen2)
+az_iot_add_cmocka_test(az_iot_tests_gen1_twin_client unit/gen1_twin_client_test.c)
+target_link_libraries(az_iot_tests_gen1_twin_client PRIVATE az_iot_test_support az_iot_gen1)
+az_iot_add_cmocka_test(az_iot_tests_gen2_twin_client unit/gen2_twin_client_test.c)
+target_link_libraries(az_iot_tests_gen2_twin_client PRIVATE az_iot_test_support az_iot_gen2)
 
 az_iot_add_cmocka_test(az_iot_tests_adu_client unit/adu_client_test.c)
+az_iot_add_cmocka_test(az_iot_tests_adu_protocol unit/adu_protocol_test.c)
 target_link_libraries(az_iot_tests_adu_client PRIVATE az_iot_test_support)
 
 # File upload is HTTPS-only (stateless request-build/response-parse helpers), so
@@ -337,6 +371,13 @@ if(UNIX)
 endif()
 az_iot_apply_warnings(az_iot_conformance)
 
+# The suite's own exit-code contract: a declared capability that was never
+# exercised must fail the run. No pipeline can catch a regression in it, since
+# every job either supplies a token or sets the opt-out, so it is tested here.
+az_iot_add_cmocka_test(
+    az_iot_tests_conformance_capability unit/conformance_capability_test.c)
+target_link_libraries(az_iot_tests_conformance_capability PRIVATE az_iot_conformance)
+
 # ---------------------------------------------------------------------------
 # For-testing TCP passthrough proxy.
 #
@@ -406,7 +447,7 @@ if(AZ_IOT_WITH_PAHO)
     target_link_libraries(az_iot_conformance_paho_v3 PRIVATE
         az_iot_conformance az_iot_adapter_paho)
     az_iot_apply_warnings(az_iot_conformance_paho_v3)
-    # The harness declares AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY only in a build
+    # The harness declares AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY_URI only in a build
     # where the adapter actually honours a key reference, so it needs the same
     # AZ_IOT_PAHO_KEY_CUSTODY definition the adapter was compiled with.
     if(_paho_defs)

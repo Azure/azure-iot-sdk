@@ -32,7 +32,7 @@ az_iot_add_cmocka_test(az_iot_tests_e2e tests/e2e_scenarios_test.c tests/e2e_dev
 target_link_libraries(az_iot_tests_e2e PRIVATE az_iot_e2e_service az_iot_gen1 az_iot_adapter_paho)
 
 # ---------------------------------------------------------------------------
-# az_iot_tests_e2e_adu
+# (historical description of the retired twin-driven suite)
 #
 # Device Update (ADU) e2e suite. It drives a signed deployment end-to-end
 # through the device twin: the cloud PATCHes a signed manifest into desired
@@ -50,8 +50,32 @@ target_link_libraries(az_iot_tests_e2e PRIVATE az_iot_e2e_service az_iot_gen1 az
 # account and triggers updates through the ADU service -- lands. The `e2e` name
 # filters never match the adu_crypto_openssl unit test.
 # ---------------------------------------------------------------------------
-az_iot_add_cmocka_test(az_iot_tests_e2e_adu tests/e2e_adu_test.c tests/e2e_device.c)
-target_link_libraries(az_iot_tests_e2e_adu PRIVATE az_iot_e2e_service az_iot_adapter_paho)
+# ---------------------------------------------------------------------------
+# az_iot_tests_e2e_adu -- RETIRED WITH THE ADUv1 CUT, AWAITING THE ADUv2 REWRITE
+#
+# All five scenarios in tests/e2e_adu_test.c drove a deployment through a twin
+# desired-property PATCH. That channel no longer exists: ADU is now driven
+# through an az_iot_adu_channel, so the suite cannot compile and its trigger has
+# no equivalent until the ADUv2 channel lands.
+#
+# The file is deliberately KEPT rather than deleted: its device fixture and its
+# mocked crypto/payload hooks carry over to the rewritten suite unchanged, and
+# they are the expensive part. Only the trigger and the assertions change.
+#
+# The ci-c-e2e-adu workflow is likewise kept rather than removed, so that the
+# coverage gap between the cut and the rewrite stays visible instead of quietly
+# disappearing from the pipeline.
+#
+# Re-enable this target as part of the ADUv2 channel work.
+# ---------------------------------------------------------------------------
+if(AZ_IOT_BUILD_E2E_ADU_V2)
+    az_iot_add_cmocka_test(az_iot_tests_e2e_adu tests/e2e_adu_test.c tests/e2e_device.c)
+    target_link_libraries(az_iot_tests_e2e_adu PRIVATE az_iot_e2e_service az_iot_adapter_paho)
+else()
+    message(STATUS
+        "ADU e2e suite disabled: the twin-driven scenarios retired with the ADUv1 cut "
+        "and are awaiting the ADUv2 rewrite.")
+endif()
 
 # ---------------------------------------------------------------------------
 # az_iot_tests_e2e_csr

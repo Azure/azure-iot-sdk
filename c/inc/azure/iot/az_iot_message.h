@@ -11,6 +11,9 @@
 #include <stdint.h>
 
 #include "az_iot_result.h"
+/* For az_iot_connection_profile, which tags a method request with the
+ * generation that built it. */
+#include "az_iot_connection_client.h"
 
 #ifdef __cplusplus
 extern "C"
@@ -118,6 +121,117 @@ extern "C"
    *         @p msg->properties directly to tell the two apart.
    */
   const char* az_iot_c2d_message_property(const az_iot_c2d_message* msg, const char* key);
+
+/* Storage bounds for the request handle below. Compile-time footprint knobs:
+ * #define before including to tune. */
+#ifndef AZ_IOT_DM_METHOD_NAME_MAX
+#define AZ_IOT_DM_METHOD_NAME_MAX 96
+#endif
+/* Longest gen1 request id ($rid) carried on an invocation. */
+#ifndef AZ_IOT_DM_RID_MAX
+#define AZ_IOT_DM_RID_MAX 32
+#endif
+/* Longest gen2 correlation data echoed back on a response. */
+#ifndef AZ_IOT_DM_CORR_DATA_MAX
+#define AZ_IOT_DM_CORR_DATA_MAX 64
+#endif
+/* Max concurrent in-flight invocations one client can hold. Requests may
+ * outlive the handler (the application can respond asynchronously), so they
+ * live in a bounded pool inside the caller-allocated client struct rather than
+ * on the heap. */
+#ifndef AZ_IOT_DM_MAX_INFLIGHT
+#define AZ_IOT_DM_MAX_INFLIGHT 4
+#endif
+
+  /**
+   * @brief A method invocation awaiting a response.
+   *
+   * Delivered to the handler and passed back to the owning generation's
+   * respond call. Opaque to callers -- do NOT read _internal.
+   *
+   * The correlation fields are generation-specific storage: gen1 answers on a
+   * `$rid`, gen2 echoes MQTT v5 correlation data. Both live here because the
+   * handle is the one piece of this feature both generations hand to the
+   * application, which is what lets the handler callback be shared.
+   */
+  typedef struct az_iot_direct_method_request
+  {
+    struct
+    {
+      void* owner; /* the generation's client that acquired this slot */
+      /* Which generation built it, so a respond call from the other one is
+       * refused rather than reading the wrong half of this struct. */
+      az_iot_connection_profile profile;
+      char method_name[AZ_IOT_DM_METHOD_NAME_MAX];
+      char rid[AZ_IOT_DM_RID_MAX];
+      uint8_t correlation_data[AZ_IOT_DM_CORR_DATA_MAX];
+      size_t correlation_data_len;
+      bool in_use; /* pool slot occupied: acquired -> responded */
+    } _internal;
+  } az_iot_direct_method_request;
+
+  typedef void (*az_iot_direct_method_handler_callback)(
+      az_iot_direct_method_request* request,
+      const char* method_name,
+      const uint8_t* payload,
+      size_t payload_len,
+      void* user_ctx);
+
+/* Max concurrent in-flight twin requests (GET + reported patch) one client can
+ * hold. Each awaits a service response, so the slots live in a bounded pool
+ * inside the caller-allocated client struct rather than on the heap. */
+#ifndef AZ_IOT_TWIN_MAX_PENDING
+#define AZ_IOT_TWIN_MAX_PENDING 8
+#endif
+
+  /**
+   * @brief Delivers the result of a twin GET.
+   *
+   * @param status           AZ_IOT_OK when the service returned the document.
+   * @param twin_payload     The twin document. Owned by the SDK and valid only
+   *                         for the duration of this call; copy what you keep.
+   *                         NULL on failure.
+   * @param twin_payload_len Length of @p twin_payload.
+   * @param user_ctx         Context passed to the get() call.
+   */
+  typedef void (*az_iot_twin_get_callback)(
+      az_iot_result status,
+      const uint8_t* twin_payload,
+      size_t twin_payload_len,
+      void* user_ctx);
+
+  /**
+   * @brief Delivers the outcome of a reported-properties patch.
+   *
+   * Named for completion rather than acknowledgement because it reports
+   * failures too, and because on MQTT v5 an "ack" would be ambiguous with the
+   * QoS 1 PUBACK -- this fires on the service's answer, not on the transport's.
+   *
+   * @param status   AZ_IOT_OK when the service accepted the patch.
+   * @param version  The new version of the reported-properties section. An
+   *                 application that tracks this can tell a lost update from an
+   *                 applied one. 0 when the service did not send a version,
+   *                 which includes every failure.
+   * @param user_ctx Context passed to the patch call.
+   */
+  typedef void (
+      *az_iot_twin_patch_complete_callback)(az_iot_result status, uint64_t version, void* user_ctx);
+
+  /**
+   * @brief Delivers a desired-properties patch pushed by the service.
+   *
+   * @param desired_patch     The patch. Owned by the SDK and valid only for the
+   *                          duration of this call; copy what you keep.
+   * @param desired_patch_len Length of @p desired_patch.
+   * @param version           Version of the desired section this patch produced,
+   *                          or 0 when the service did not send one.
+   * @param user_ctx          Context passed to the set-handler call.
+   */
+  typedef void (*az_iot_twin_desired_callback)(
+      const uint8_t* desired_patch,
+      size_t desired_patch_len,
+      uint64_t version,
+      void* user_ctx);
 
 #ifdef __cplusplus
 }
