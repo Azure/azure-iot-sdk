@@ -124,6 +124,15 @@ extern "C"
    * instead, or the suite cannot hold it to the feature's contract. */
   int az_iot_conformance_run(az_iot_conformance_suite suite_kind, az_iot_mqtt_factory* factory);
 
+  /* Internal, exposed for the suite's own tests.
+   *
+   * Reports a declared capability whose contract was never exercised and
+   * returns what it contributes to the run's failure count: 1, unless
+   * AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN is set to exactly "1", in which case it
+   * reports a notice and returns 0. This is the whole of the opt-out policy,
+   * kept callable so a regression in it cannot pass unnoticed. */
+  int az_iot_conformance_report_unproven_capability(const char* capability, const char* why);
+
   /* As above, plus the adapter's declared capabilities. `options` may be NULL,
    * which means the same as declaring nothing. */
   int az_iot_conformance_run_with_options(

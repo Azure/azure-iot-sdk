@@ -82,7 +82,7 @@ static bool adapter_claims_key_custody(void)
  * accident of the environment, and it is never the default.
  *
  * Returns the number of failures to add to the run's total. */
-static int report_unproven_capability(const char* capability, const char* why)
+int az_iot_conformance_report_unproven_capability(const char* capability, const char* why)
 {
   const char* allow = getenv("AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN");
   const bool allowed = (allow != NULL) && (allow[0] == '1') && (allow[1] == '\0');
@@ -2190,7 +2190,8 @@ int az_iot_conformance_run_with_options(
 
     if (unproven != NULL)
     {
-      failed += report_unproven_capability("AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY", unproven);
+      failed += az_iot_conformance_report_unproven_capability(
+          "AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY", unproven);
     }
   }
 
