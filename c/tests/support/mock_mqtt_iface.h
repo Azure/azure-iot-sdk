@@ -78,6 +78,7 @@ extern "C"
     } user_properties[AZ_IOT_MOCK_MAX_USER_PROPS];
     size_t user_properties_count;
     char content_type[64]; /* PUBLISH Content Type, "" if none */
+    uint32_t message_expiry_seconds; /* PUBLISH Message Expiry Interval, 0 if none */
     char username[256]; /* CONNECT username, "" if none */
     /* CONNECT options, captured so tests can assert which endpoint/identity the
      * core targeted. `topic` also carries the host for backwards compatibility. */
