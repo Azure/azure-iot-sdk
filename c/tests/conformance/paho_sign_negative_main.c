@@ -28,8 +28,15 @@
  *   - nothing else broke (any other failing case fails this control too, rather
  *     than being mistaken for the expected one).
  *
+ * Runs both suite kinds, and in both adapter build modes: without
+ * AZ_IOT_PAHO_KEY_CUSTODY the adapter still refuses a sign hook with the same
+ * result, so there is no configuration in which this exits green without having
+ * dispatched the case.
+ *
  * Needs no PKCS#11 token: the certificate is generated here and the hook is a
- * stub, because the adapter refuses the route before either is used.
+ * stub, because the adapter refuses the route before either is used. It runs in
+ * a directory of its own, because a case that fails never reaches its own
+ * teardown.
  *
  * WHEN AN ADAPTER GAINS SIGN SUPPORT this control must be deleted, not
  * adjusted: its premise is that the bundled adapter cannot honour the route.
@@ -52,9 +59,18 @@
 #define az_iot_dup2 _dup2
 #define az_iot_fileno _fileno
 #define az_iot_close _close
+#include <direct.h>
+#define az_iot_mkdir(p) _mkdir(p)
+#define az_iot_rmdir _rmdir
+#define az_iot_chdir _chdir
 #else
+#include <dirent.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #define az_iot_getpid getpid
+#define az_iot_mkdir(p) mkdir((p), 0700)
+#define az_iot_rmdir rmdir
+#define az_iot_chdir chdir
 #define az_iot_dup dup
 #define az_iot_dup2 dup2
 #define az_iot_fileno fileno
@@ -64,6 +80,52 @@
 #include <openssl/evp.h>
 #include <openssl/pem.h>
 #include <openssl/x509.h>
+
+/* The temporary directory, spelled the way each platform spells it. Windows
+ * sets TEMP/TMP and not TMPDIR, and this harness builds there. */
+static const char* temp_dir(void)
+{
+  static const char* const names[] = { "TMPDIR", "TEMP", "TMP" };
+  for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); ++i)
+  {
+    const char* v = getenv(names[i]);
+    if (v != NULL && v[0] != '\0')
+    {
+      return v;
+    }
+  }
+#if defined(_WIN32)
+  return ".";
+#else
+  return "/tmp";
+#endif
+}
+
+/* Delete the certificates the suite leaves behind in the working directory.
+ *
+ * The case this control expects to fail aborts at its first assertion, so the
+ * teardown after it -- which removes the CA it wrote -- never runs. That is
+ * true of any failing case for any adapter, and not something to fix from
+ * here, so the control runs inside a directory of its own and clears it. */
+static void sweep_working_directory(void)
+{
+#ifndef _WIN32
+  DIR* d = opendir(".");
+  if (d == NULL)
+  {
+    return;
+  }
+  const struct dirent* e;
+  while ((e = readdir(d)) != NULL)
+  {
+    if (strncmp(e->d_name, "az_iot_conf_pem_", strlen("az_iot_conf_pem_")) == 0)
+    {
+      remove(e->d_name);
+    }
+  }
+  closedir(d);
+#endif
+}
 
 #define EXPECTED_FAILING_CASE "key_custody_sign_hook_completes_a_tls_handshake"
 
@@ -188,39 +250,30 @@ static int scan_output(
   return 0;
 }
 
-int main(void)
+/* One controlled run of `suite_kind`. Returns 0 when the sign case behaved as
+ * this control requires. */
+static int run_control(
+    az_iot_conformance_suite suite_kind,
+    const char* cert_path,
+    const char* label)
 {
-#if !defined(AZ_IOT_PAHO_KEY_CUSTODY)
-  fprintf(
-      stderr,
-      "sign-negative: built without AZ_IOT_PAHO_KEY_CUSTODY, so the adapter has no custody"
-      " path to refuse. Nothing to control for.\n");
-  return 0;
-#else
-  char cert_path[512];
-  char log_path[512];
-  const char* tmp = getenv("TMPDIR");
-  if (tmp == NULL || tmp[0] == '\0')
+  az_iot_mqtt_factory* f = (suite_kind == AZ_IOT_CONFORMANCE_SUITE_V5)
+      ? az_iot_paho_factory_create_v5()
+      : az_iot_paho_factory_create_v3_1_1();
+  if (f == NULL)
   {
-    tmp = "/tmp";
-  }
-  snprintf(
-      cert_path, sizeof(cert_path), "%s/az-iot-sign-negative-%ld.pem", tmp, (long)az_iot_getpid());
-  snprintf(
-      log_path, sizeof(log_path), "%s/az-iot-sign-negative-%ld.log", tmp, (long)az_iot_getpid());
-
-  if (write_self_signed_cert(cert_path) != 0)
-  {
-    fprintf(stderr, "sign-negative: could not generate the client certificate\n");
+    fprintf(stderr, "sign-negative[%s]: could not create the factory\n", label);
     return 1;
   }
 
-  az_iot_mqtt_factory* f = az_iot_paho_factory_create_v3_1_1();
   az_iot_conformance_options opts = { 0 };
   opts.capabilities |= (uint32_t)AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY_SIGN;
   opts.sign = negative_sign_stub;
   opts.sign_ctx = NULL;
   opts.client_cert_path = cert_path;
+
+  char log_path[64];
+  snprintf(log_path, sizeof(log_path), "suite-%s.log", label);
 
   /* The suite's own output is the evidence, so it is captured rather than shown.
    * BOTH streams: cmocka prints the case list to stdout and the failed
@@ -233,13 +286,12 @@ int main(void)
   if (log == NULL || saved_out < 0 || saved_err < 0 || az_iot_dup2(az_iot_fileno(log), 1) < 0
       || az_iot_dup2(az_iot_fileno(log), 2) < 0)
   {
-    fprintf(stderr, "sign-negative: could not capture the suite's output\n");
+    fprintf(stderr, "sign-negative[%s]: could not capture the suite's output\n", label);
     az_iot_paho_factory_destroy(f);
-    remove(cert_path);
     return 1;
   }
 
-  int suite_rc = az_iot_conformance_run_with_options(AZ_IOT_CONFORMANCE_SUITE_V3_1_1, f, &opts);
+  int suite_rc = az_iot_conformance_run_with_options(suite_kind, f, &opts);
 
   fflush(stdout);
   fflush(stderr);
@@ -258,54 +310,111 @@ int main(void)
   int rc = 0;
   if (scan_rc != 0)
   {
-    fprintf(stderr, "sign-negative: could not read the captured output\n");
+    fprintf(stderr, "sign-negative[%s]: could not read the captured output\n", label);
     rc = 1;
   }
   else if (suite_rc == 0)
   {
     fprintf(
         stderr,
-        "sign-negative: the suite PASSED while declaring AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY_SIGN"
-        " against an adapter that cannot honour tls.sign. The sign case is not being run, or no"
-        " longer drives the route.\n");
+        "sign-negative[%s]: the suite PASSED while declaring"
+        " AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY_SIGN against an adapter that cannot honour tls.sign."
+        " The sign case is not being run, or no longer drives the route.\n",
+        label);
     rc = 1;
   }
   else if (!saw_expected)
   {
     fprintf(
         stderr,
-        "sign-negative: the suite failed, but not on " EXPECTED_FAILING_CASE ". The sign case was"
-        " not dispatched.\n");
+        "sign-negative[%s]: the suite failed, but not on " EXPECTED_FAILING_CASE ". The sign case"
+        " was not dispatched.\n",
+        label);
     rc = 1;
   }
   else if (!saw_refusal)
   {
     fprintf(
         stderr,
-        "sign-negative: " EXPECTED_FAILING_CASE " failed, but not by the adapter refusing the"
-        " route -- connect() did not return AZ_IOT_ERR_NOT_SUPPORTED. The case is failing for"
-        " some other reason, so it is no longer evidence that it drives tls.sign.\n");
+        "sign-negative[%s]: " EXPECTED_FAILING_CASE " failed, but not by the adapter refusing the"
+        " route -- connect() did not return AZ_IOT_ERR_NOT_SUPPORTED. The case is failing for some"
+        " other reason, so it is no longer evidence that it drives tls.sign.\n",
+        label);
     rc = 1;
   }
   else if (other_failures)
   {
     fprintf(
         stderr,
-        "sign-negative: " EXPECTED_FAILING_CASE " failed as required, but so did other cases, so"
-        " this run is not evidence about the sign route. Fix those first.\n");
+        "sign-negative[%s]: " EXPECTED_FAILING_CASE " failed as required, but so did other cases,"
+        " so this run is not evidence about the sign route. Fix those first.\n",
+        label);
     rc = 1;
   }
   else
   {
     fprintf(
         stderr,
-        "sign-negative: OK -- " EXPECTED_FAILING_CASE " ran and failed with"
+        "sign-negative[%s]: OK -- " EXPECTED_FAILING_CASE " ran and failed with"
         " AZ_IOT_ERR_NOT_SUPPORTED, and nothing else failed, so the sign case is dispatched and"
-        " does drive tls.sign.\n");
+        " does drive tls.sign.\n",
+        label);
+  }
+
+  remove(log_path);
+  return rc;
+}
+
+int main(void)
+{
+  /* Both suite kinds. The dispatch is shared, but only a run proves that: a
+   * change that filtered the case out of the v5 list alone would leave
+   * az_iot_conformance_paho_v5 green, since that harness declares the URI route
+   * only. */
+  static const struct
+  {
+    az_iot_conformance_suite kind;
+    const char* label;
+  } suites[] = { { AZ_IOT_CONFORMANCE_SUITE_V3_1_1, "v3" }, { AZ_IOT_CONFORMANCE_SUITE_V5, "v5" } };
+
+  char work_dir[512];
+  snprintf(
+      work_dir, sizeof(work_dir), "%s/az-iot-sign-negative-%ld", temp_dir(), (long)az_iot_getpid());
+  if (az_iot_mkdir(work_dir) != 0)
+  {
+    fprintf(stderr, "sign-negative: could not create the working directory %s\n", work_dir);
+    return 1;
+  }
+  if (az_iot_chdir(work_dir) != 0)
+  {
+    fprintf(stderr, "sign-negative: could not enter the working directory %s\n", work_dir);
+    az_iot_rmdir(work_dir);
+    return 1;
+  }
+
+  int rc = 0;
+  const char* cert_path = "client.pem";
+  if (write_self_signed_cert(cert_path) != 0)
+  {
+    fprintf(stderr, "sign-negative: could not generate the client certificate\n");
+    rc = 1;
+  }
+  else
+  {
+    for (size_t i = 0; i < sizeof(suites) / sizeof(suites[0]); ++i)
+    {
+      rc |= run_control(suites[i].kind, cert_path, suites[i].label);
+    }
   }
 
   remove(cert_path);
-  remove(log_path);
+  sweep_working_directory();
+  if (az_iot_chdir("..") != 0)
+  {
+    /* Only cleanup is lost, so the verdict still stands. */
+    fprintf(stderr, "sign-negative: could not leave %s; it will need removing by hand\n", work_dir);
+    return rc;
+  }
+  az_iot_rmdir(work_dir);
   return rc;
-#endif
 }

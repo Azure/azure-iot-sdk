@@ -493,7 +493,7 @@ if(AZ_IOT_WITH_PAHO)
     if(AZ_IOT_BUILD_CONFORMANCE_TESTS_TLS)
         find_package(OpenSSL 3.0 REQUIRED)
         add_executable(az_iot_conformance_paho_sign_negative
-            conformance/paho_v3_sign_negative_main.c)
+            conformance/paho_sign_negative_main.c)
         target_link_libraries(az_iot_conformance_paho_sign_negative PRIVATE
             az_iot_conformance az_iot_adapter_paho OpenSSL::SSL OpenSSL::Crypto)
         az_iot_apply_warnings(az_iot_conformance_paho_sign_negative)
