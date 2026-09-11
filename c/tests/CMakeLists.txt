@@ -340,6 +340,13 @@ if(UNIX)
 endif()
 az_iot_apply_warnings(az_iot_conformance)
 
+# The suite's own exit-code contract: a declared capability that was never
+# exercised must fail the run. No pipeline can catch a regression in it, since
+# every job either supplies a token or sets the opt-out, so it is tested here.
+az_iot_add_cmocka_test(
+    az_iot_tests_conformance_capability unit/conformance_capability_test.c)
+target_link_libraries(az_iot_tests_conformance_capability PRIVATE az_iot_conformance)
+
 # ---------------------------------------------------------------------------
 # For-testing TCP passthrough proxy.
 #
