@@ -245,6 +245,8 @@ extern "C"
    * @param cb              Callback delivering the acknowledgement status.
    * @param user_ctx        Context forwarded to @p cb.
    * @return AZ_IOT_OK if dispatched (the result then arrives via @p cb);
+   *         AZ_IOT_ERR_NOT_ENOUGH_SPACE for a correlation id that does not fit
+   *         AZ_IOT_FILE_UPLOAD_BODY_MAX once JSON-escaped;
    *         AZ_IOT_ERR_NOT_CONNECTED while the connection has no hub address and
    *         device id to address the request to (retry once it is connected). No
    *         callback fires when this returns anything but AZ_IOT_OK.

@@ -531,9 +531,11 @@ version the service returns is handed to the ack callback.
 
 ## File upload
 
-Covers `az_iot_file_upload_client`: on Classic, building the two HTTPS control-plane
+Covers `az_iot_gen1_file_upload_client`: building the two HTTPS control-plane
 requests, driving them through the application's transport hook, and parsing the SAS-URI
 response. The blob PUT itself is the application's job and is deliberately out of scope.
+There is no gen2 client -- file upload is cut from AEG -- so the generation-pinning rows
+below stand in for what would otherwise be a second flavor section.
 
 | Group | Test | Scenario | Type | Status | Code Location |
 | --- | --- | --- | --- | --- | --- |
@@ -605,7 +607,7 @@ response. The blob PUT itself is the application's job and is deliberately out o
 | | Notify with an unknown correlation id is rejected | — | e2e | Done | [test_notify_with_unknown_correlation_id_is_rejected](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/e2e/tests/e2e_fileupload_test.c#L569) |
 | | Client rejects invalid arguments | — | e2e | Done | [test_client_rejects_invalid_arguments](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/e2e/tests/e2e_fileupload_test.c#L586) |
 | | Sequential uploads reuse the client | — | e2e | Done | [test_sequential_uploads_reuse_the_client](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/e2e/tests/e2e_fileupload_test.c#L610) |
-| | A slow hook does not wedge the MQTT pump | The hook is called synchronously on the `do_work()` thread; the header documents the risk but nothing measures it. | unit | Pending | *file_upload_client_test.c* |
+| | A slow hook does not wedge the MQTT pump | The hook is called synchronously on the `do_work()` thread; the header documents the risk but nothing measures it. | unit | Pending | *gen1_file_upload_client_test.c* |
 
 ## Device update (ADU)
 
