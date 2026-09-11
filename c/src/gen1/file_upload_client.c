@@ -509,6 +509,13 @@ az_iot_result az_iot_gen1_file_upload_client_notify_complete(
     return AZ_IOT_OK;
   }
 
-  cb(http_status_to_result(resp.status_code), user_ctx);
+  az_iot_result r = http_status_to_result(resp.status_code);
+  if (r != AZ_IOT_OK)
+  {
+    AZ_IOT_LOG_WARNF(
+        "gen1_file_upload: the hub refused the completion notification (HTTP %d)",
+        resp.status_code);
+  }
+  cb(r, user_ctx);
   return AZ_IOT_OK;
 }

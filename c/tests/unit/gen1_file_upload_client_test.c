@@ -24,6 +24,8 @@
 #include "azure/iot/az_iot_connection_client.h"
 #include "azure/iot/az_iot_result.h"
 #include "azure/iot/gen1/az_iot_file_upload_client.h"
+/* Only to prove a released Classic pin admits the other generation. */
+#include "azure/iot/gen2/az_iot_telemetry_client.h"
 
 #define TEST_HUB "myhub.azure-devices.net"
 #define TEST_DEVICE "dev1"
@@ -611,11 +613,19 @@ static void destroy_is_idempotent(void** state)
   az_iot_gen1_file_upload_client_deinit(&fx->fu);
 }
 
-/* Re-initializing over a live instance rebinds it and leaves it usable. */
-static void reinit_over_live_client_succeeds(void** state)
+/* Re-initializing after deinit() rebinds the instance and leaves it usable.
+ *
+ * Deliberately NOT a double-init: init() takes a generation reference on the
+ * connection, and initializing over a live instance would strand the one the
+ * live instance still holds. The struct is caller-allocated, so the client
+ * cannot tell a live instance from an uninitialized one and cannot refuse it --
+ * which is why the header makes deinit-before-reinit the contract. */
+static void reinit_after_deinit_succeeds(void** state)
 {
   fixture* fx = (fixture*)*state;
   az_iot_file_upload_http_transport http = { mock_send, NULL };
+
+  az_iot_gen1_file_upload_client_deinit(&fx->fu);
   assert_int_equal(az_iot_gen1_file_upload_client_init(&fx->fu, &fx->conn, &http), AZ_IOT_OK);
 
   g_http.resp_status = 200;
@@ -941,25 +951,71 @@ static void init_without_an_http_hook_is_rejected(void** state)
       az_iot_gen1_file_upload_client_init(&fu2, &fx->conn, &empty), AZ_IOT_ERR_INVALID_ARG);
 }
 
-/* A refused init must not leave the connection's Classic pin taken, or a later
- * gen2 client on the same connection would be refused for a client that does
- * not exist. */
-static void a_refused_init_does_not_hold_the_profile_pin(void** state)
+/* A failure AFTER the Classic pin is taken must release it.
+ *
+ * The endpoint check is the only failure that happens post-pin: the NULL and
+ * missing-hook checks both run before __require_profile(), so they can never
+ * exercise this. A DPS connection with no assigned hub fails there.
+ *
+ * Proved by admitting a gen2 client afterwards: a leaked Classic reference
+ * would make that return AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH, and the
+ * connection would be stuck refusing a generation on behalf of a client that
+ * does not exist. */
+static void a_post_pin_init_failure_releases_the_profile_pin(void** state)
 {
-  fixture* fx = (fixture*)*state;
+  (void)state;
+
+  az_iot_connection_client conn;
+  az_iot_connection_client_options opts = { 0 };
+  opts.dps.id_scope = "0ne00000000";
+  opts.dps.registration_id = "reg-1";
+  assert_int_equal(az_iot_connection_client_init(&conn, &opts), AZ_IOT_OK);
+
+  az_iot_gen1_file_upload_client fu2;
+  az_iot_file_upload_http_transport http = { mock_send, NULL };
+  for (int i = 0; i < 4; ++i)
+  {
+    assert_int_equal(
+        az_iot_gen1_file_upload_client_init(&fu2, &conn, &http), AZ_IOT_ERR_NOT_CONNECTED);
+  }
+
+  az_iot_gen2_telemetry_client t;
+  assert_int_equal(az_iot_gen2_telemetry_client_init(&t, &conn), AZ_IOT_OK);
+  az_iot_gen2_telemetry_client_destroy(&t);
+
+  az_iot_connection_client_destroy(&conn);
+}
+
+/* The pre-pin refusals take no reference to release, so they cannot strand one.
+ *
+ * Uses its own DPS connection, not the fixture's: the fixture holds a live
+ * Classic client, and its legitimate pin would refuse the gen2 client below for
+ * an honest reason, hiding a leak. An unresolved connection with no live client
+ * is the only state where "was a pin taken?" is observable. */
+static void init_without_an_http_hook_takes_no_profile_pin(void** state)
+{
+  (void)state;
+
+  az_iot_connection_client conn;
+  az_iot_connection_client_options opts = { 0 };
+  opts.dps.id_scope = "0ne00000000";
+  opts.dps.registration_id = "reg-1";
+  assert_int_equal(az_iot_connection_client_init(&conn, &opts), AZ_IOT_OK);
 
   az_iot_gen1_file_upload_client fu2;
   for (int i = 0; i < 4; ++i)
   {
     assert_int_equal(
-        az_iot_gen1_file_upload_client_init(&fu2, &fx->conn, NULL), AZ_IOT_ERR_INVALID_ARG);
+        az_iot_gen1_file_upload_client_init(&fu2, &conn, NULL), AZ_IOT_ERR_INVALID_ARG);
   }
 
-  /* The fixture's own client still holds one legitimate pin; a fresh Classic
-   * client must still be admitted alongside it. */
-  az_iot_file_upload_http_transport http = { mock_send, NULL };
-  assert_int_equal(az_iot_gen1_file_upload_client_init(&fu2, &fx->conn, &http), AZ_IOT_OK);
-  az_iot_gen1_file_upload_client_deinit(&fu2);
+  /* Asserted through the OTHER generation: a leaked Classic reference is
+   * invisible to another Classic client, which is admitted either way. */
+  az_iot_gen2_telemetry_client t;
+  assert_int_equal(az_iot_gen2_telemetry_client_init(&t, &conn), AZ_IOT_OK);
+  az_iot_gen2_telemetry_client_destroy(&t);
+
+  az_iot_connection_client_destroy(&conn);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -1662,7 +1718,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(calls_after_destroy_are_rejected, setup, teardown),
     cmocka_unit_test(destroy_is_null_safe),
     cmocka_unit_test_setup_teardown(destroy_is_idempotent, setup, teardown),
-    cmocka_unit_test_setup_teardown(reinit_over_live_client_succeeds, setup, teardown),
+    cmocka_unit_test_setup_teardown(reinit_after_deinit_succeeds, setup, teardown),
     cmocka_unit_test_setup_teardown(two_clients_share_one_connection, setup, teardown),
     cmocka_unit_test_setup_teardown(
         destroying_one_client_leaves_the_other_working, setup, teardown),
@@ -1723,7 +1779,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         init_against_an_mqtt_v5_connection_is_rejected, setup, teardown),
     cmocka_unit_test_setup_teardown(init_without_an_http_hook_is_rejected, setup, teardown),
-    cmocka_unit_test_setup_teardown(a_refused_init_does_not_hold_the_profile_pin, setup, teardown),
+    cmocka_unit_test(a_post_pin_init_failure_releases_the_profile_pin),
+    cmocka_unit_test(init_without_an_http_hook_takes_no_profile_pin),
     cmocka_unit_test_setup_teardown(
         a_sas_response_with_nested_members_still_finds_the_fields, setup, teardown),
     cmocka_unit_test_setup_teardown(

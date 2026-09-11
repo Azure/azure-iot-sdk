@@ -177,11 +177,17 @@ extern "C"
    * stays the single source of truth and a later hub assignment is picked up
    * without re-initializing this client.
    *
+   * @p client must be a fresh instance or one that has been passed to
+   * az_iot_gen1_file_upload_client_deinit(). Initializing over a live instance
+   * cannot be detected -- the struct is caller-allocated, so an uninitialized one
+   * is indistinguishable from a live one -- and would strand the generation
+   * reference the live instance holds on @p conn.
+   *
    * Pins the connection to the Classic profile. A connection already known to be
    * MQTT v5 -- a direct connection, or a DPS one past assignment -- is rejected
    * here with AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH; otherwise a conflict
    * surfaces when the connection resolves, which fails it before it reports
-   * CONNECTED.
+   * CONNECTED. A failed init releases the pin it took.
    *
    * @param client          Instance to initialize.
    * @param conn            The (connected) connection client. Must outlive
