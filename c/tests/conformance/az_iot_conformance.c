@@ -82,10 +82,16 @@ static bool adapter_claims_key_custody(void)
  * accident of the environment, and it is never the default.
  *
  * Returns the number of failures to add to the run's total. */
-int az_iot_conformance_report_unproven_capability(const char* capability, const char* why)
+int az_iot_conformance_report_unproven_capability(
+    const char* capability,
+    const char* why,
+    const char* allow_value)
 {
-  const char* allow = getenv("AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN");
-  const bool allowed = (allow != NULL) && (allow[0] == '1') && (allow[1] == '\0');
+  /* Taken as an argument rather than read here so the policy is testable
+   * without touching the environment: setenv() is POSIX and absent on MSVC,
+   * and this contract has to be checked on every leg, not just the ones with a
+   * POSIX libc. */
+  const bool allowed = (allow_value != NULL) && (allow_value[0] == '1') && (allow_value[1] == '\0');
 
   fprintf(
       stderr,
@@ -2191,7 +2197,9 @@ int az_iot_conformance_run_with_options(
     if (unproven != NULL)
     {
       failed += az_iot_conformance_report_unproven_capability(
-          "AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY", unproven);
+          "AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY",
+          unproven,
+          getenv("AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN"));
     }
   }
 

@@ -16,27 +16,19 @@
 #include <stdarg.h>
 #include <stddef.h>
 #include <setjmp.h>
-#include <stdlib.h>
 
 #include <cmocka.h>
 
 #include "az_iot_conformance.h"
 
-static int report(void)
+/* `allow_value` is the value of AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN, NULL when
+ * unset. Passing it in rather than setting the environment keeps this runnable
+ * on every leg: setenv() is POSIX and does not exist on MSVC, and a contract
+ * this central should not be checked on some platforms only. */
+static int report(const char* allow_value)
 {
-  return az_iot_conformance_report_unproven_capability("AZ_IOT_CONFORMANCE_CAP_TEST", "under test");
-}
-
-static void set_allow(const char* value)
-{
-  if (value == NULL)
-  {
-    assert_int_equal(unsetenv("AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN"), 0);
-  }
-  else
-  {
-    assert_int_equal(setenv("AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN", value, 1), 0);
-  }
+  return az_iot_conformance_report_unproven_capability(
+      "AZ_IOT_CONFORMANCE_CAP_TEST", "under test", allow_value);
 }
 
 /* The default. An unexercised claim is a failure, so a pass always means the
@@ -44,21 +36,18 @@ static void set_allow(const char* value)
 static void an_unexercised_capability_fails_by_default(void** state)
 {
   (void)state;
-  set_allow(NULL);
-  assert_int_equal(report(), 1);
+  assert_int_equal(report(NULL), 1);
 }
 
 static void the_exact_value_one_downgrades_it_to_a_notice(void** state)
 {
   (void)state;
-  set_allow("1");
-  assert_int_equal(report(), 0);
-  set_allow(NULL);
+  assert_int_equal(report("1"), 0);
 }
 
-/* Anything other than "1" is not an opt-out. Values that look affirmative are
- * the dangerous ones: a job that sets "true" or "yes" and is quietly let
- * through would believe it had opted out while proving nothing. */
+/* Anything other than "1" is not an opt-out. The affirmative-looking values are
+ * the dangerous ones: a job that sets "true" and is quietly let through would
+ * believe it had opted out while proving nothing. */
 static void only_the_exact_value_one_opts_out(void** state)
 {
   (void)state;
@@ -67,10 +56,8 @@ static void only_the_exact_value_one_opts_out(void** state)
 
   for (size_t i = 0; i < sizeof(not_an_opt_out) / sizeof(not_an_opt_out[0]); ++i)
   {
-    set_allow(not_an_opt_out[i]);
-    assert_int_equal(report(), 1);
+    assert_int_equal(report(not_an_opt_out[i]), 1);
   }
-  set_allow(NULL);
 }
 
 int main(void)

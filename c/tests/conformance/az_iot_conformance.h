@@ -128,10 +128,14 @@ extern "C"
    *
    * Reports a declared capability whose contract was never exercised and
    * returns what it contributes to the run's failure count: 1, unless
-   * AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN is set to exactly "1", in which case it
-   * reports a notice and returns 0. This is the whole of the opt-out policy,
-   * kept callable so a regression in it cannot pass unnoticed. */
-  int az_iot_conformance_report_unproven_capability(const char* capability, const char* why);
+   * `allow_value` -- the value of AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN, NULL when
+   * unset -- is exactly "1", in which case it reports a notice and returns 0.
+   * This is the whole of the opt-out policy, kept callable so a regression in
+   * it cannot pass unnoticed. */
+  int az_iot_conformance_report_unproven_capability(
+      const char* capability,
+      const char* why,
+      const char* allow_value);
 
   /* As above, plus the adapter's declared capabilities. `options` may be NULL,
    * which means the same as declaring nothing. */
