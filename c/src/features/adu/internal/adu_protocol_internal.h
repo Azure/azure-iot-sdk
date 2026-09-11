@@ -187,28 +187,67 @@ extern "C"
     AZ_IOT_ADU_ERROR_ACTION_FATAL,
   } az_iot_adu_error_action;
 
-  /**
-   * Map a service error code to the action the device should take.
-   *
-   * @param error_code  The machine-readable code, e.g. "OUTDATED_AGENT_INFO".
-   *                    May be NULL when the response carried none, in which case
-   *                    the status is used as a coarse fallback.
-   * @param status      Transport status, used only as that fallback.
+  /* --- Service numeric error codes ----------------------------------------- */
+  /*
+   * The device-facing error body carries a numeric code that conveys the error
+   * CLASS, and -- when the service chooses to surface it -- the originating
+   * string code under info.aduErrorCode. Surfacing the string is a SHOULD, so
+   * the numeric code is the signal that is always present.
    */
-  az_iot_adu_error_action az_iot_adu__classify_error(const char* error_code, int32_t status);
+#define AZ_IOT_ADU_ERR_GENERIC_BAD_REQUEST 400000
+#define AZ_IOT_ADU_ERR_INVALID_API_VERSION 400001
+#define AZ_IOT_ADU_ERR_ARGUMENT_INVALID 400002
+#define AZ_IOT_ADU_ERR_DESERIALIZATION 400003
+/* The whole resend / re-sync family -- the only recoverable 400. */
+#define AZ_IOT_ADU_ERR_AGENT_INFO_RESEND_REQUIRED 400004
+#define AZ_IOT_ADU_ERR_UNAUTHORIZED 401000
+#define AZ_IOT_ADU_ERR_FORBIDDEN 403000
+#define AZ_IOT_ADU_ERR_FORBIDDEN_DEVICE_DISABLED 403001
+/* Shared by "account not linked" (fetch) and "report conflict" (report). */
+#define AZ_IOT_ADU_ERR_GENERIC_CONFLICT 409000
+#define AZ_IOT_ADU_ERR_ENTITY_TOO_LARGE 413000
+#define AZ_IOT_ADU_ERR_THROTTLED 429000
+#define AZ_IOT_ADU_ERR_QUOTA_EXCEEDED 429001
+#define AZ_IOT_ADU_ERR_SERVER_ERROR 500000
+#define AZ_IOT_ADU_ERR_SERVICE_UNAVAILABLE 503000
 
   /**
-   * Extract the machine-readable error code from a failure body.
+   * Map a service error to the action the device should take.
    *
-   * Looks for {"error":{"code":"..."}}. Returns AZ_IOT_ERR_NOT_FOUND when the
-   * body carries no code, which is itself informative: the caller then falls back
-   * to the transport status.
+   * @param error_code    The originating string code from info.aduErrorCode, or
+   *                      NULL/empty when the service did not surface one. Most
+   *                      precise when present.
+   * @param numeric_code  The numeric errorCode from the body. Used when no
+   *                      string code is available; 0 means none was found.
+   * @param operation     The operation that failed. Required because one
+   *                      numeric code covers two conditions needing opposite
+   *                      handling, and only the operation separates them when
+   *                      the string code is absent.
+   */
+  az_iot_adu_error_action az_iot_adu__classify_error(
+      const char* error_code,
+      int32_t numeric_code,
+      az_iot_adu_operation operation);
+
+  /**
+   * Extract the error signals from a device-facing failure body.
+   *
+   * The body is flat: a numeric `errorCode`, and optionally `info.aduErrorCode`
+   * carrying the originating string code. (This is NOT the nested
+   * {"error":{"code":...}} envelope, which is internal to the service chain and
+   * never reaches a device.)
+   *
+   * @param out_code          Receives info.aduErrorCode, or "" when absent.
+   * @param out_numeric_code  Receives errorCode, or 0 when absent. May be NULL.
+   * @return AZ_IOT_OK when EITHER signal was found; AZ_IOT_ERR_NOT_FOUND when
+   *         the body carried neither.
    */
   az_iot_result az_iot_adu__parse_error_code(
       const uint8_t* payload,
       size_t payload_len,
       char* out_code,
-      size_t out_code_size);
+      size_t out_code_size,
+      int32_t* out_numeric_code);
 
 #ifdef __cplusplus
 }

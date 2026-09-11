@@ -1094,7 +1094,7 @@ static bool same_retry_timestamp(az_iot_adu_client_t* client, az_span retry)
       retry, az_span_create(ADU_I(client).active_retry_timestamp, (int32_t)have));
 }
 
-/* Twin desired-property subscriber callback (feature-client pool).
+/* Desired-property patch handler, fed by the ADU channel.
  *
  * The patch buffer is only valid for the duration of this call, but the
  * workflow is processed asynchronously over many do_work() iterations and the
