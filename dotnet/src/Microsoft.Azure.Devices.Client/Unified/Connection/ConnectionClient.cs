@@ -160,7 +160,7 @@ namespace Microsoft.Azure.Devices.Client.Unified.Connection
             {
                 DeviceId = provisioningResult.DeviceId!,
                 IotHubHostName = provisioningResult.AssignedHub!,
-                IsGen2Hub = provisioningResult.IsAzureEventGridHub,
+                IsGen2Hub = provisioningResult.ConnectionProfile == ConnectionProfile.MqttV5,
                 IssuedClientCertificates = provisioningResult.IssuedClientCertificateChain,
                 AuthenticationProvider = authentication,
             };
