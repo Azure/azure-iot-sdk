@@ -241,36 +241,52 @@ The suite also holds every adapter to the safety half of the optional features, 
 
 ### 4.5 — Declaring optional capabilities
 
-If your adapter implements an optional feature, say so, or the suite can only check that you refuse it cleanly:
+If your adapter implements an optional feature, say so, or the suite can only check that you refuse it cleanly.
+
+> **Renamed:** `AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY` is now `AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY_URI` (same bit, same proof). There is no alias: change the name to the route you implement. If you implement the callback route, that build error is the point — you want `_SIGN`, which the old single capability could never prove.
+
+Non-extractable key custody has **two independent routes**, and `az_iot_mqtt_tls_options` says you may implement either, both or neither. They are separate capabilities, so declare only what you implement:
+
+| capability | route | material to supply |
+|---|---|---|
+| `AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY_URI` | `client_key_uri` + `crypto_engine_id` — your stack has an engine/provider abstraction | `key_uri`, `crypto_engine_id`, `client_cert_path` |
+| `AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY_SIGN` | `sign` + `sign_ctx` — no such abstraction; you drive the handshake signature through a callback | `sign`, `sign_ctx` (may be NULL), `client_cert_path` |
 
 ```c
 az_iot_conformance_options opts = { 0 };
-opts.capabilities |= (uint32_t)AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY;
-/* Needed to prove the feature end-to-end: a key your adapter can reach and a
-   certificate carrying its public key. */
+
+/* Engine/provider route. */
+opts.capabilities |= (uint32_t)AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY_URI;
 opts.key_uri          = "pkcs11:object=device-key;type=private";
 opts.crypto_engine_id = "pkcs11";
+
+/* Callback route, for a stack with no engine/provider abstraction. */
+opts.capabilities |= (uint32_t)AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY_SIGN;
+opts.sign     = my_sign_with_hsm;
+opts.sign_ctx = my_hsm_handle;
+
+/* Shared: a certificate carrying the PUBLIC key behind each route. */
 opts.client_cert_path = "/path/to/device-cert.pem";
 
 return az_iot_conformance_run_with_options(AZ_IOT_CONFORMANCE_SUITE_V3_1_1, f, &opts);
 ```
 
-With the key supplied, `key_custody_completes_a_tls_handshake` makes you complete a real TLS handshake signed with a key you cannot read.
+Each declared route is proved by its own real TLS handshake, signed with a key you cannot read: `key_custody_completes_a_tls_handshake` for the URI route, `key_custody_sign_hook_completes_a_tls_handshake` for the callback route. Declaring one route does not oblige you to the other — the bundled Paho adapter declares only `_URI`, because Paho exposes no TLS key callback.
 
 **A capability you declare but never exercise fails the run**, unless you opt out explicitly (option 3 below). A declaration is your claim, and a green suite has to mean the claim was checked — so by default the suite will not pass a run that skipped it. You will see:
 
 ```
-conformance: FAILED: AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY is declared but its contract
+conformance: FAILED: AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY_URI is declared but its contract
 was NOT exercised: no key was supplied. ...
 ```
 
 Three ways out, in order of preference:
 
-1. Supply `key_uri` + `crypto_engine_id` + `client_cert_path`, and build with `-DAZ_IOT_BUILD_CONFORMANCE_TESTS_TLS=ON`. The contract gets checked.
-2. Do not declare the capability in a build that cannot check it. You are then held to the baseline, which still requires you to refuse a custody request cleanly rather than connect without the credential you were asked to use.
+1. Supply that route's material, and build with `-DAZ_IOT_BUILD_CONFORMANCE_TESTS_TLS=ON`. The contract gets checked.
+2. Do not declare the capability in a build that cannot check it. You are then held to the baseline, which still requires you to refuse a custody request cleanly rather than connect without the credential you were asked to use — separately for each route.
 3. Set `AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN=1` when no token exists on the machine. This downgrades the failure to a notice. Only the exact value `1` does so, it must be set deliberately per run, and such a run proves nothing about that capability — do not report it as conformant for the feature.
 
-Supplying only some of the three fields, or supplying material without declaring the capability, fails the run.
+Material is all-or-none per route, and material supplied for a route you did not declare fails the run: being ignored in silence is indistinguishable from a machine with no token at all.
 
 ## Step 5 — Use your adapter at runtime
 

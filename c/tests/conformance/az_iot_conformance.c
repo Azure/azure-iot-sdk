@@ -62,22 +62,33 @@ static uint32_t g_capabilities = 0;
 static const char* g_key_uri = NULL;
 static const char* g_key_engine = NULL;
 static const char* g_client_cert_path = NULL;
+static az_iot_mqtt_sign_callback g_sign = NULL;
+static void* g_sign_ctx = NULL;
 
-static bool adapter_claims_key_custody(void)
+static bool adapter_claims_key_custody_uri(void)
 {
-  return (g_capabilities & (uint32_t)AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY) != 0u;
+  return (g_capabilities & (uint32_t)AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY_URI) != 0u;
 }
-/* Whether the three end-to-end custody fields form a usable set.
+
+static bool adapter_claims_key_custody_sign(void)
+{
+  return (g_capabilities & (uint32_t)AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY_SIGN) != 0u;
+}
+/* Which custody routes have complete material.
  *
- * Judged on ALL THREE, never on key_uri alone. An earlier version tested only
- * key_uri, so material supplied without it was ignored in silence -- and the
- * run then reported "no key was supplied", which the opt-out downgrades to a
- * notice. Material that was supplied and ignored is a misconfiguration, and it
- * must not be able to look like a machine that deliberately has no token. */
+ * Judged per route and on ALL of a route's fields, never on key_uri alone. An
+ * earlier version tested only key_uri, so material supplied without it was
+ * ignored in silence -- and the run then reported "no key was supplied", which
+ * the opt-out downgrades to a notice. Material that was supplied and ignored is
+ * a misconfiguration, and it must not be able to look like a machine that
+ * deliberately has no token. That is also why a certificate with no route to
+ * use it is PARTIAL rather than NONE. */
 int az_iot_conformance_custody_material_state(
     const char* key_uri,
     const char* crypto_engine_id,
-    const char* client_cert_path)
+    const char* client_cert_path,
+    bool has_sign,
+    bool has_sign_ctx)
 {
   /* An empty string is missing, not supplied. The bundled harnesses already
    * map an empty environment variable to NULL, so accepting "" here would hold
@@ -87,14 +98,39 @@ int az_iot_conformance_custody_material_state(
   const bool has_engine = (crypto_engine_id != NULL) && (crypto_engine_id[0] != '\0');
   const bool has_cert = (client_cert_path != NULL) && (client_cert_path[0] != '\0');
 
-  const bool any = has_uri || has_engine || has_cert;
-  const bool all = has_uri && has_engine && has_cert;
+  /* Either half of the pair means the URI route was intended, so a missing
+   * counterpart is reported rather than treated as "route not requested". */
+  const bool uri_requested = has_uri || has_engine;
 
-  if (!any)
+  /* has_sign_ctx counts here too: without it a lone sign_ctx would be reported
+   * as "nothing supplied" and the check below could never be reached. */
+  if (!uri_requested && !has_sign && !has_sign_ctx && !has_cert)
   {
     return AZ_IOT_CONFORMANCE_CUSTODY_NONE;
   }
-  return all ? AZ_IOT_CONFORMANCE_CUSTODY_COMPLETE : AZ_IOT_CONFORMANCE_CUSTODY_PARTIAL;
+  if (uri_requested && !(has_uri && has_engine && has_cert))
+  {
+    return AZ_IOT_CONFORMANCE_CUSTODY_PARTIAL;
+  }
+  if (has_sign && !has_cert)
+  {
+    return AZ_IOT_CONFORMANCE_CUSTODY_PARTIAL;
+  }
+  /* A context with no callback to hand it to. sign_ctx is legitimately NULL
+   * WITH a callback -- it is opaque and many adapters need none -- so it is
+   * only ever evidence of intent in this direction. */
+  if (has_sign_ctx && !has_sign)
+  {
+    return AZ_IOT_CONFORMANCE_CUSTODY_PARTIAL;
+  }
+  if (!uri_requested && !has_sign)
+  {
+    /* A certificate and/or a sign context, with no route to use either. */
+    return AZ_IOT_CONFORMANCE_CUSTODY_PARTIAL;
+  }
+
+  return (uri_requested ? AZ_IOT_CONFORMANCE_CUSTODY_URI : 0)
+      | (has_sign ? AZ_IOT_CONFORMANCE_CUSTODY_SIGN : 0);
 }
 
 /* Read an environment variable without tripping MSVC's C4996 on getenv.
@@ -1980,7 +2016,7 @@ static void a_key_reference_is_never_silently_ignored(void** state)
   assert_int_not_equal(r, AZ_IOT_OK);
   assert_false(saw_connected_ok(&rec));
 
-  if (!adapter_claims_key_custody())
+  if (!adapter_claims_key_custody_uri())
   {
     assert_int_equal(r, AZ_IOT_ERR_NOT_SUPPORTED);
   }
@@ -2039,6 +2075,11 @@ static void a_sign_hook_is_never_silently_ignored(void** state)
   assert_int_not_equal(r, AZ_IOT_OK);
   assert_false(saw_connected_ok(&rec));
 
+  if (!adapter_claims_key_custody_sign())
+  {
+    assert_int_equal(r, AZ_IOT_ERR_NOT_SUPPORTED);
+  }
+
   (void)c->iface->disconnect(c);
   destroy_client(c);
 }
@@ -2086,6 +2127,60 @@ static void key_custody_completes_a_tls_handshake(void** state)
   copts.tls.client_cert_path = g_client_cert_path;
   copts.tls.client_key_uri = g_key_uri;
   copts.tls.crypto_engine_id = g_key_engine;
+
+  assert_int_equal(c->iface->connect(c, &copts), AZ_IOT_OK);
+  assert_true(wait_until(c, &rec, saw_connected_ok, k_step_timeout_ms));
+
+  (void)c->iface->disconnect(c);
+  destroy_client(c);
+  az_iot_test_proxy_stop(proxy);
+  remove(ca_path);
+}
+
+/* The same proof for the OTHER custody route: the adapter has no engine or
+ * provider abstraction and drives the CertificateVerify signature through the
+ * caller's callback instead.
+ *
+ * A separate case because the two routes are separate capabilities. Holding a
+ * sign-hook-only adapter to the URI route would fail it for a feature it never
+ * claimed, and -- since an unexercised claim fails the run -- one shared
+ * capability left such an adapter unable to obtain a conformant result at all.
+ *
+ * Runs only when the harness supplied a sign hook; see
+ * az_iot_conformance_options. */
+static void key_custody_sign_hook_completes_a_tls_handshake(void** state)
+{
+  (void)state;
+  uint16_t proxy_port = 0;
+  az_iot_test_proxy* proxy = start_proxy(&proxy_port);
+
+  az_iot_test_proxy_tls_options tls = az_iot_test_proxy_tls_options_default();
+  tls.accept_any_client_cert = 1;
+  assert_int_equal(az_iot_test_proxy_enable_tls(proxy, &tls), 0);
+
+  char ca_pem[4096];
+  char ca_path[128];
+  assert_true(az_iot_test_proxy_ca_pem(proxy, ca_pem, sizeof(ca_pem)) > 0);
+  assert_true(write_temp_pem(ca_pem, ca_path, sizeof(ca_path)));
+
+  char cid[64];
+  unique_client_id(cid, sizeof(cid), "az-iot-conf-custody-sign-e2e");
+  conf_recorder rec = { 0 };
+  az_iot_mqtt_client* c = make_client();
+  c->iface->set_inbound_cb(c, on_event, &rec);
+
+  az_iot_mqtt_connect_options copts = { 0 };
+  copts.host = "127.0.0.1";
+  copts.port = proxy_port;
+  copts.client_id = cid;
+  copts.keep_alive_seconds = 30;
+  copts.connect_timeout_seconds = k_step_timeout_seconds;
+  copts.tls.trusted_ca_path = ca_path;
+  copts.tls.client_cert_path = g_client_cert_path;
+  /* No key URI or engine: this route exists precisely for the stacks that have
+   * neither, so supplying them would prove the wrong thing. */
+  copts.tls.sign = g_sign;
+  copts.tls.sign_ctx = g_sign_ctx;
 
   assert_int_equal(c->iface->connect(c, &copts), AZ_IOT_OK);
   assert_true(wait_until(c, &rec, saw_connected_ok, k_step_timeout_ms));
@@ -2153,38 +2248,63 @@ int az_iot_conformance_run_with_options(
   g_key_uri = options ? options->key_uri : NULL;
   g_key_engine = options ? options->crypto_engine_id : NULL;
   g_client_cert_path = options ? options->client_cert_path : NULL;
+  g_sign = options ? options->sign : NULL;
+  g_sign_ctx = options ? options->sign_ctx : NULL;
 
-  /* The three custody fields are all-or-none. A half-configured token is a
+  /* Custody material is all-or-none PER ROUTE. A half-configured token is a
    * mistake, not an opt-out: the end-to-end case would be dropped and the run
    * would still say PASS.
    *
-   * Checked on ANY of the three, not just key_uri. Judging by key_uri alone
+   *   URI route   key_uri + crypto_engine_id + client_cert_path
+   *   sign route  sign (+ sign_ctx) + client_cert_path
+   *
+   * client_cert_path is shared, so one certificate serves both routes.
+   *
+   * Judged on EVERY field of a route, not on key_uri alone. Judging by key_uri
    * let the commonest misconfiguration through -- a typo in the variable that
    * carries the URI, with the engine and certificate set correctly -- and that
    * run would report "no key was supplied", which AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN
    * then downgrades to a notice. Material that was supplied and ignored would
-   * have looked exactly like a machine that deliberately has no token. */
-  const int custody_material
-      = az_iot_conformance_custody_material_state(g_key_uri, g_key_engine, g_client_cert_path);
-  const bool any_custody_material = (custody_material != AZ_IOT_CONFORMANCE_CUSTODY_NONE);
+   * have looked exactly like a machine that deliberately has no token. Do not
+   * collapse this back to an aggregate test: a route's material must not be
+   * able to hide behind the other route being complete. */
+  const int custody_material = az_iot_conformance_custody_material_state(
+      g_key_uri, g_key_engine, g_client_cert_path, g_sign != NULL, g_sign_ctx != NULL);
 
   if (custody_material == AZ_IOT_CONFORMANCE_CUSTODY_PARTIAL)
   {
     fprintf(
         stderr,
         "conformance: key custody material is incomplete (key_uri=%s, crypto_engine_id=%s, "
-        "client_cert_path=%s); all three are required for the end-to-end case\n",
+        "sign=%s, sign_ctx=%s, client_cert_path=%s). The URI route needs key_uri + "
+        "crypto_engine_id + client_cert_path; the sign route needs sign + client_cert_path, "
+        "and sign_ctx is meaningful only alongside sign\n",
         (g_key_uri != NULL && g_key_uri[0] != '\0') ? "set" : "MISSING",
         (g_key_engine != NULL && g_key_engine[0] != '\0') ? "set" : "MISSING",
+        (g_sign != NULL) ? "set" : "MISSING",
+        (g_sign_ctx != NULL) ? "set" : "MISSING",
         (g_client_cert_path != NULL && g_client_cert_path[0] != '\0') ? "set" : "MISSING");
     return 1;
   }
-  if (any_custody_material && !adapter_claims_key_custody())
+
+  /* Material for a route that was not declared is rejected per route, not in
+   * aggregate: declaring one route and supplying the other's material would
+   * otherwise pass this check and leave that material silently unused. */
+  if ((custody_material & AZ_IOT_CONFORMANCE_CUSTODY_URI) != 0 && !adapter_claims_key_custody_uri())
   {
     fprintf(
         stderr,
-        "conformance: key custody material was supplied but "
-        "AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY was not declared\n");
+        "conformance: key URI custody material was supplied but "
+        "AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY_URI was not declared\n");
+    return 1;
+  }
+  if ((custody_material & AZ_IOT_CONFORMANCE_CUSTODY_SIGN) != 0
+      && !adapter_claims_key_custody_sign())
+  {
+    fprintf(
+        stderr,
+        "conformance: a sign hook was supplied but "
+        "AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY_SIGN was not declared\n");
     return 1;
   }
 
@@ -2255,14 +2375,17 @@ int az_iot_conformance_run_with_options(
   /* The end-to-end key custody case is a separate group because whether it runs
    * is a run-time fact -- it needs a real key -- and a cmocka test list is a
    * fixed array. */
-  if (adapter_claims_key_custody())
+  /* Each declared route is proved on its own. A shared capability would hold an
+   * adapter to a route it never claimed, and -- because an unexercised claim
+   * fails -- would leave a one-route adapter no way to be conformant at all. */
+  if (adapter_claims_key_custody_uri())
   {
     const char* unproven = NULL;
 #ifdef AZ_IOT_CONFORMANCE_WITH_TLS
     /* Gated on the classification, not on g_key_uri: an empty URI counts as
      * missing there, and testing the pointer here would send "" into the
      * handshake as though a key had been supplied. */
-    if (custody_material == AZ_IOT_CONFORMANCE_CUSTODY_COMPLETE)
+    if ((custody_material & AZ_IOT_CONFORMANCE_CUSTODY_URI) != 0)
     {
       const struct CMUnitTest custody_tests[]
           = { cmocka_unit_test(key_custody_completes_a_tls_handshake) };
@@ -2283,7 +2406,38 @@ int az_iot_conformance_run_with_options(
     {
       char allow[16];
       failed += az_iot_conformance_report_unproven_capability(
-          "AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY",
+          "AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY_URI",
+          unproven,
+          read_env("AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN", allow, sizeof(allow)));
+    }
+  }
+
+  if (adapter_claims_key_custody_sign())
+  {
+    const char* unproven = NULL;
+#ifdef AZ_IOT_CONFORMANCE_WITH_TLS
+    if ((custody_material & AZ_IOT_CONFORMANCE_CUSTODY_SIGN) != 0)
+    {
+      const struct CMUnitTest sign_tests[]
+          = { cmocka_unit_test(key_custody_sign_hook_completes_a_tls_handshake) };
+      failed += cmocka_run_group_tests(sign_tests, NULL, NULL);
+    }
+    else
+    {
+      unproven = "no sign hook was supplied. Set az_iot_conformance_options sign (+ sign_ctx) and"
+                 " client_cert_path to a callback that signs with the key and a certificate"
+                 " carrying its public key.";
+    }
+#else
+    unproven = "this build has no TLS support. Configure with"
+               " -DAZ_IOT_BUILD_CONFORMANCE_TESTS_TLS=ON.";
+#endif
+
+    if (unproven != NULL)
+    {
+      char allow[16];
+      failed += az_iot_conformance_report_unproven_capability(
+          "AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY_SIGN",
           unproven,
           read_env("AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN", allow, sizeof(allow)));
     }
