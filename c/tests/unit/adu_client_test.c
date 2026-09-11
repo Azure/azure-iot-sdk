@@ -1111,6 +1111,39 @@ static void resume_with_no_persisted_state_stays_idle(void** state)
   assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
 }
 
+/* A cancel that lands on the single tick the workflow spends in FAILED must not
+ * displace the terminal failure. Reports are idempotent by workflow id, so
+ * emitting CANCELED afterwards would publish two conflicting terminal outcomes
+ * for the same deployment -- and contradict the step results, which stay
+ * FAILED. */
+static void late_cancel_does_not_overwrite_a_reported_failure(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  fx->log.install_result = AZ_IOT_ADU_RESULT_FAILURE;
+  inject_patch(fx, signed_patch());
+  for (int i = 0; i < 40 && az_iot_adu_client_get_state(&fx->adu) != AZ_IOT_ADU_STATE_FAILED; ++i)
+  {
+    assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  }
+  assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_FAILED);
+  assert_int_equal(fx->chan.last_install_result.outcome, AZ_IOT_ADU_OUTCOME_FAILED);
+  int reports_after_failure = fx->chan.report_count;
+
+  /* The service cancels just as the failure is being reported. */
+  inject_patch(fx, k_patch_cancel);
+  assert_true(az_iot_adu_is_cancelled(&fx->adu));
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+
+  /* The failure stands, no second terminal report is emitted, and the workflow
+   * still returns to Idle ready for the next deployment. */
+  assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
+  assert_int_equal(fx->chan.last_install_result.outcome, AZ_IOT_ADU_OUTCOME_FAILED);
+  assert_int_equal(fx->chan.report_count, reports_after_failure);
+  assert_false(az_iot_adu_is_cancelled(&fx->adu));
+}
+
 static void cancel_action_sets_cancelled_flag(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -3031,6 +3064,8 @@ int main(void)
         replacement_deployment_retires_the_stored_checkpoint, setup, teardown),
     cmocka_unit_test_setup_teardown(resume_with_no_persisted_state_stays_idle, setup, teardown),
     cmocka_unit_test_setup_teardown(cancel_action_sets_cancelled_flag, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        late_cancel_does_not_overwrite_a_reported_failure, setup, teardown),
     cmocka_unit_test_setup_teardown(
         update_device_properties_is_accepted_without_reporting, setup, teardown),
     cmocka_unit_test_setup_teardown(report_carries_the_active_workflow_id, setup, teardown),

@@ -2443,8 +2443,15 @@ az_iot_result az_iot_adu_client_do_work(az_iot_adu_client_t* client)
     ADU_I(client).initial_get_pending = false;
   }
 
-  /* Cancellation at a phase boundary returns immediately to Idle. */
-  if (ADU_I(client).cancel_requested && ADU_I(client).state != AZ_IOT_ADU_STATE_IDLE)
+  /* Cancellation at a phase boundary returns immediately to Idle.
+   *
+   * FAILED is excluded: that state means a terminal failure was already
+   * reported, and reports are idempotent by workflow id. Letting a late cancel
+   * through would emit a second, conflicting terminal outcome for the same
+   * workflow (and contradict the step results, which stay FAILED). The FAILED
+   * case below preserves the failure and resets to Idle instead. */
+  if (ADU_I(client).cancel_requested && ADU_I(client).state != AZ_IOT_ADU_STATE_IDLE
+      && ADU_I(client).state != AZ_IOT_ADU_STATE_FAILED)
   {
     result_finish_steps(client, AZ_IOT_ADU_OUTCOME_CANCELED);
     ADU_I(client).install_result.outcome = AZ_IOT_ADU_OUTCOME_CANCELED;
