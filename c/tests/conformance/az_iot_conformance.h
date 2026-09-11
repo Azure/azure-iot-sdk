@@ -106,12 +106,16 @@ extern "C"
 
   /* Run the conformance suite for `suite_kind` against the given factory.
    * Returns:
-   *   0  on success (all tests passed, and every declared capability was
-   *      exercised)
-   *   1  on failure: a test failed, a declared capability was never exercised,
-   *      or no broker was configured. There is no skip code -- whether the
-   *      suite runs is decided at build time by AZ_IOT_BUILD_CONFORMANCE_TESTS,
-   *      so a run that cannot test what it was asked to test is a failure.
+   *   0  on success: all tests passed and every declared capability was
+   *      exercised -- UNLESS AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN=1 was set in
+   *      the environment, which lets an unexercised capability through as a
+   *      notice on stderr. A 0 from such a run says nothing about that
+   *      capability and must not be reported as conformant for it.
+   *   1  on failure: a test failed, a declared capability was never exercised
+   *      (without that opt-out), or no broker was configured. There is no skip
+   *      code -- whether the suite runs is decided at build time by
+   *      AZ_IOT_BUILD_CONFORMANCE_TESTS, so a run that cannot test what it was
+   *      asked to test is a failure.
    *
    * Suitable to use directly as the return value of main() in a harness exe.
    *

@@ -120,11 +120,13 @@ jobs:
           AZ_IOT_MQTT_BROKER_HOST: ${{ runner.os == 'Linux' && 'localhost' || '' }}
           AZ_IOT_MQTT_BROKER_PORT: ${{ runner.os == 'Linux' && '1883' || '' }}
           # The Paho harness declares AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY, and an
-          # unproven capability now FAILS the suite rather than warning. This
-          # leg has no PKCS#11 token and is not built with the TLS conformance
-          # cases, so it cannot exercise that contract. Accepting that here is a
-          # deliberate choice, not an accident: the coverage job below
-          # provisions a real token and proves it on every push.
+          # unproven capability now FAILS the suite rather than warning. The
+          # Linux legs DO build the TLS conformance cases (linux-base sets
+          # AZ_IOT_BUILD_CONFORMANCE_TESTS_TLS); what they lack is a PKCS#11
+          # token and a certificate, so they cannot exercise that contract.
+          # Accepting that here is a deliberate choice, not an accident: the
+          # coverage job below provisions a real token and proves it on every
+          # push.
           AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN: '1'
         run: ctest --preset ${{ matrix.preset }} ${{ runner.os == 'Windows' && format('-C {0}', matrix.build_type) || '' }} --output-on-failure
 
@@ -190,10 +192,10 @@ jobs:
           AZ_IOT_MQTT_BROKER_PORT: '1883'
           # The Paho harness declares AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY, and an
           # unproven capability now FAILS the suite rather than warning. This
-          # leg has no PKCS#11 token and is not built with the TLS conformance
-          # cases, so it cannot exercise that contract. Accepting that here is a
-          # deliberate choice, not an accident: the coverage job below
-          # provisions a real token and proves it on every push.
+          # build configures without AZ_IOT_BUILD_CONFORMANCE_TESTS_TLS and has
+          # no PKCS#11 token, so it cannot exercise that contract. Accepting
+          # that here is a deliberate choice, not an accident: the coverage job
+          # below provisions a real token and proves it on every push.
           AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN: '1'
         run: ctest --test-dir build/c99-strict --output-on-failure
 
@@ -398,15 +400,12 @@ jobs:
         run: mosquitto_pub -h localhost -p 1883 -t az-iot/coverage/probe -m ok
 
       - name: Configure
-        # AZ_IOT_BUILD_CONFORMANCE_TESTS_TLS is what puts the end-to-end custody
-        # case in the suite. The harness declares
-        # AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY, and a declared capability that is
-        # never exercised fails the run, so this is the job that proves it: the
-        # token above supplies the key and this flag supplies the handshake.
-        run: >
-          cmake --preset linux-gcc-coverage
-          -DAZ_IOT_BUILD_PKCS11_TESTS=ON
-          -DAZ_IOT_BUILD_CONFORMANCE_TESTS_TLS=ON
+        # The TLS conformance cases are already on here (linux-base sets
+        # AZ_IOT_BUILD_CONFORMANCE_TESTS_TLS), so what this job adds is the
+        # token material exported above. The harness declares
+        # AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY and a declared capability that is
+        # never exercised fails the run, so this is the job that proves it.
+        run: cmake --preset linux-gcc-coverage -DAZ_IOT_BUILD_PKCS11_TESTS=ON
 
       - name: Build
         run: cmake --build --preset linux-gcc-coverage
