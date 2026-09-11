@@ -2124,17 +2124,33 @@ int az_iot_conformance_run_with_options(
   g_key_engine = options ? options->crypto_engine_id : NULL;
   g_client_cert_path = options ? options->client_cert_path : NULL;
 
-  /* A half-configured token is a mistake, not an opt-out: the end-to-end case
-   * would be dropped and the run would still say PASS. */
-  if (g_key_uri && (!g_key_engine || !g_client_cert_path))
+  /* The three custody fields are all-or-none. A half-configured token is a
+   * mistake, not an opt-out: the end-to-end case would be dropped and the run
+   * would still say PASS.
+   *
+   * Checked on ANY of the three, not just key_uri. Judging by key_uri alone
+   * let the commonest misconfiguration through -- a typo in the variable that
+   * carries the URI, with the engine and certificate set correctly -- and that
+   * run would report "no key was supplied", which AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN
+   * then downgrades to a notice. Material that was supplied and ignored would
+   * have looked exactly like a machine that deliberately has no token. */
+  const bool any_custody_material
+      = (g_key_uri != NULL) || (g_key_engine != NULL) || (g_client_cert_path != NULL);
+  const bool all_custody_material
+      = (g_key_uri != NULL) && (g_key_engine != NULL) && (g_client_cert_path != NULL);
+
+  if (any_custody_material && !all_custody_material)
   {
     fprintf(
         stderr,
-        "conformance: key_uri was supplied without crypto_engine_id and/or client_cert_path; all "
-        "three are required for the end-to-end key custody case\n");
+        "conformance: key custody material is incomplete (key_uri=%s, crypto_engine_id=%s, "
+        "client_cert_path=%s); all three are required for the end-to-end case\n",
+        g_key_uri ? "set" : "MISSING",
+        g_key_engine ? "set" : "MISSING",
+        g_client_cert_path ? "set" : "MISSING");
     return 1;
   }
-  if (g_key_uri && !adapter_claims_key_custody())
+  if (any_custody_material && !adapter_claims_key_custody())
   {
     fprintf(
         stderr,
