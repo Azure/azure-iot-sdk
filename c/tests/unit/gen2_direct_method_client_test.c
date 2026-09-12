@@ -1918,6 +1918,87 @@ static void respond_rejects_a_request_naming_a_slot_out_of_range(void** state)
       az_iot_gen2_direct_method_respond(&fx->dm, forged, 200, NULL, 0), AZ_IOT_ERR_INVALID_ARG);
 }
 
+/* A request built by the gen1 client must not be answerable here: gen1 answers
+ * on a $rid, gen2 on MQTT v5 correlation data, so this one addresses nothing. */
+static void respond_rejects_a_request_from_the_other_generation(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  invocation_record rec = { 0 };
+  fx->rec = &rec;
+  run_one_invocation(fx, &rec, 0xF1);
+
+  az_iot_direct_method_request foreign = rec.request;
+  foreign._internal.profile = AZ_IOT_CONNECTION_PROFILE_CLASSIC;
+
+  az_iot_mock_mqtt_client_clear_calls(fx->mock);
+  assert_int_equal(
+      az_iot_gen2_direct_method_respond(&fx->dm, foreign, 200, NULL, 0),
+      AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH);
+  assert_null(find_phase(fx->mock, "result:1"));
+
+  /* The refusal must not have consumed the invocation. */
+  assert_int_equal(
+      az_iot_gen2_direct_method_respond(&fx->dm, rec.request, 200, NULL, 0), AZ_IOT_OK);
+}
+
+/* The sequence counter must never hand out 0, because a zeroed request has to
+ * stay un-matchable. Driven by winding the counter to its wrap point. */
+static void the_sequence_counter_skips_zero_on_wrap(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  invocation_record rec = { 0 };
+  fx->rec = &rec;
+
+  fx->dm._internal.next_seq = 0xFFFFFFFFu;
+  run_one_invocation(fx, &rec, 0xF2);
+
+  assert_int_not_equal(rec.request._internal.seq, 0u);
+  assert_int_equal(fx->dm._internal.next_seq, 1u);
+  assert_int_equal(
+      az_iot_gen2_direct_method_respond(&fx->dm, rec.request, 200, NULL, 0), AZ_IOT_OK);
+
+  /* AZ_IOT_CONNECTION_PROFILE_CLASSIC is 0 -- "also the absent/null default" --
+   * so a zeroed request reads as a gen1 one and is refused on the profile
+   * before the sequence is ever consulted. Refused either way, and nothing
+   * reaches the wire; on gen1, where the profile does match, the sequence is
+   * what catches it. */
+  az_iot_mock_mqtt_client_clear_calls(fx->mock);
+  az_iot_direct_method_request zeroed;
+  memset(&zeroed, 0, sizeof(zeroed));
+  assert_int_equal(
+      az_iot_gen2_direct_method_respond(&fx->dm, zeroed, 200, NULL, 0),
+      AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH);
+  assert_null(find_phase(fx->mock, "result:1"));
+}
+
+static void destroy_tolerates_null(void** state)
+{
+  (void)state;
+  az_iot_gen2_direct_method_client_destroy(NULL);
+}
+
+static void set_probe_handler_rejects_a_null_client(void** state)
+{
+  (void)state;
+  assert_int_equal(
+      az_iot_gen2_direct_method_client_set_probe_handler(NULL, NULL, NULL), AZ_IOT_ERR_INVALID_ARG);
+}
+
+static void unregister_method_validates_its_arguments(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  assert_int_equal(
+      az_iot_gen2_direct_method_client_unregister_method(NULL, "reboot"), AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(
+      az_iot_gen2_direct_method_client_unregister_method(&fx->dm, NULL), AZ_IOT_ERR_INVALID_ARG);
+}
+
 static void responding_twice_is_rejected(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -2308,6 +2389,12 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         respond_after_the_response_timeout_sends_nothing, setup, teardown),
     cmocka_unit_test_setup_teardown(responding_twice_is_rejected, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        respond_rejects_a_request_from_the_other_generation, setup, teardown),
+    cmocka_unit_test_setup_teardown(the_sequence_counter_skips_zero_on_wrap, setup, teardown),
+    cmocka_unit_test(destroy_tolerates_null),
+    cmocka_unit_test(set_probe_handler_rejects_a_null_client),
+    cmocka_unit_test_setup_teardown(unregister_method_validates_its_arguments, setup, teardown),
     cmocka_unit_test_setup_teardown(
         answering_after_the_slot_was_reused_is_refused, setup, teardown),
     cmocka_unit_test_setup_teardown(
