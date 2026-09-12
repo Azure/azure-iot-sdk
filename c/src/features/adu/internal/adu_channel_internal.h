@@ -207,6 +207,10 @@ extern "C"
      * means "not held yet". */
     char agent_info_etag[128];
     char service_config_etag[128];
+
+    /* True while this channel holds registration back for its pre-registration
+     * exchange. Tracked so the release is idempotent and exactly matched. */
+    bool holds_registration;
   } az_iot_adu_channel_dps;
 
   /* Bind the channel to a connection and an HTTPS transport and emit the vtable

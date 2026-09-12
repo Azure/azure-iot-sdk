@@ -60,6 +60,7 @@
 #define DPS_PHASE_REGISTERING AZ_IOT_DPS_PHASE_REGISTERING
 #define DPS_PHASE_POLLING AZ_IOT_DPS_PHASE_POLLING
 #define DPS_PHASE_DONE AZ_IOT_DPS_PHASE_DONE
+#define DPS_PHASE_HOLD AZ_IOT_DPS_PHASE_HOLD
 
 /* The certificate provider vtable ABI version that introduced the v2 hooks
  * (sign, get_csr). Every gate on those hooks compares against this, NOT against
@@ -467,6 +468,11 @@ static bool dps_configured(const az_iot_connection_client* c)
 static void dps_teardown_mqtt(az_iot_connection_client* c)
 {
   c->dps_subscription_confirmed = false;
+  /* The live hold belongs to the session. The holder count is the feature
+   * client's standing interest and deliberately survives, so a reprovision
+   * holds again rather than racing past. */
+  c->dps_hold_active = false;
+  c->dps_hold_deadline_ms = 0;
   if (c->dps_mqtt && c->dps_mqtt->iface && c->dps_mqtt->iface->destroy)
   {
     c->dps_mqtt->iface->destroy(c->dps_mqtt);
@@ -483,6 +489,13 @@ static void dps_finalize(az_iot_connection_client* c, az_iot_result status, bool
   c->dps_pending_finalize = true;
   c->dps_pending_status = status;
   c->dps_pending_have_assignment = have_assignment;
+}
+
+/* Bound on the pre-registration hold. */
+static uint64_t dps_hold_timeout_ms(const az_iot_connection_client* c)
+{
+  return c->opts.dps_hold_timeout_ms ? (uint64_t)c->opts.dps_hold_timeout_ms
+                                     : (uint64_t)AZ_IOT_DPS_HOLD_TIMEOUT_MS;
 }
 
 static az_iot_result dps_do_register_publish(az_iot_connection_client* c)
@@ -921,6 +934,18 @@ static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
         return;
       }
       c->dps_subscription_confirmed = true;
+      /* A holder wants the session before the device registers. Registration is
+       * issued here normally, and the registration response tears the session
+       * down, so without this stop there is no point at which a feature client
+       * can use it. */
+      if (c->dps_hold_count > 0)
+      {
+        c->dps_phase = DPS_PHASE_HOLD;
+        c->dps_hold_active = true;
+        c->dps_hold_deadline_ms = az_iot_time_mono_ms() + dps_hold_timeout_ms(c);
+        AZ_IOT_LOG_DEBUG("dps: holding registration for a pre-registration exchange");
+        break;
+      }
       {
         az_iot_result r = dps_do_register_publish(c);
         if (r != AZ_IOT_OK)
@@ -2632,6 +2657,27 @@ az_iot_result az_iot_connection_client_do_work(
   /* --- DPS provisioning pump --- */
   if (client->dps_phase != DPS_PHASE_NONE && client->dps_phase != DPS_PHASE_DONE)
   {
+    /* Leave the pre-registration hold once every holder has released, or once
+     * the deadline expires. Expiry is not a failure: the hold is advisory, and
+     * a feature client must never be able to stop a device provisioning. */
+    if (client->dps_phase == DPS_PHASE_HOLD)
+    {
+      bool expired = az_iot_time_mono_ms() >= client->dps_hold_deadline_ms;
+      if (client->dps_hold_count == 0 || expired)
+      {
+        if (expired && client->dps_hold_count > 0)
+        {
+          AZ_IOT_LOG_ERROR("dps: pre-registration hold timed out; registering anyway");
+        }
+        client->dps_hold_active = false;
+        az_iot_result hr = dps_do_register_publish(client);
+        if (hr != AZ_IOT_OK)
+        {
+          dps_finalize(client, hr, false);
+        }
+      }
+    }
+
     /* If polling deadline reached, issue query. */
     if (client->dps_phase == DPS_PHASE_POLLING && az_iot_time_mono_ms() >= client->dps_poll_due_ms)
     {
@@ -3147,6 +3193,44 @@ static az_iot_result run_feature_client_binds(az_iot_connection_client* c)
 }
 
 /* --- provisioning-session seam ------------------------------------------- */
+
+az_iot_result az_iot_connection_client__dps_hold_acquire(az_iot_connection_client* client)
+{
+  if (client == NULL)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  /* Past the point where a hold could take effect: the registration is already
+   * in flight or done, so say so rather than appear to hold something. */
+  if (client->dps_phase == DPS_PHASE_REGISTERING || client->dps_phase == DPS_PHASE_POLLING
+      || client->dps_phase == DPS_PHASE_DONE)
+  {
+    return AZ_IOT_ERR_NOT_SUPPORTED;
+  }
+  if (client->dps_hold_count == UINT8_MAX)
+  {
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  }
+  client->dps_hold_count++;
+  return AZ_IOT_OK;
+}
+
+void az_iot_connection_client__dps_hold_release(az_iot_connection_client* client)
+{
+  if (client == NULL || client->dps_hold_count == 0)
+  {
+    return;
+  }
+  client->dps_hold_count--;
+  /* Registration is issued from the do_work pump, not here: releasing may
+   * happen inside a message callback, and publishing from there would reenter
+   * the adapter while it is dispatching. */
+}
+
+bool az_iot_connection_client__dps_hold_is_active(const az_iot_connection_client* client)
+{
+  return client != NULL && client->dps_hold_active;
+}
 
 bool az_iot_connection_client__dps_session_ready(const az_iot_connection_client* client)
 {

@@ -97,6 +97,8 @@ static int setup(void** state)
   opts.client_id = "ut-device";
   opts.dps.id_scope = "0ne00000000";
   opts.dps.registration_id = "ut-device";
+  /* Short so the advisory-expiry case is testable without a long wait. */
+  opts.dps_hold_timeout_ms = 50;
   assert_int_equal(az_iot_connection_client_init(&fx->client, &opts), AZ_IOT_OK);
 
   assert_int_equal(
@@ -405,6 +407,121 @@ static void a_request_before_the_session_is_ready_is_refused(void** state)
   assert_int_equal(fx->channel.vtable->request_update(fx->channel.ctx), AZ_IOT_ERR_NOT_CONNECTED);
 }
 
+/* ------------------------------------------------------------------------- */
+/* the pre-registration hold                                                 */
+/* ------------------------------------------------------------------------- */
+
+/* Registration is issued from the SUBACK handler and the session is torn down
+ * on its response, so without a hold the first update check never has a
+ * session to run on. */
+static void the_channel_holds_registration_so_bootstrap_can_run(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(fx->channel.vtable->open(fx->channel.ctx, on_update, on_result, fx), AZ_IOT_OK);
+
+  az_iot_mock_mqtt_client* m = open_to_registering(fx);
+
+  /* Held at the SUBACK: no registration went out. */
+  assert_true(az_iot_connection_client__dps_hold_is_active(&fx->client));
+  assert_int_equal(fx->client.dps_phase, AZ_IOT_DPS_PHASE_HOLD);
+  assert_null(az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PUBLISH));
+
+  /* And the session is usable, which is the whole point of holding it. */
+  assert_int_equal(fx->channel.vtable->request_update(fx->channel.ctx), AZ_IOT_OK);
+  const az_iot_mock_call* pub = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PUBLISH);
+  assert_non_null(pub);
+  assert_non_null(strstr(pub->topic, "deviceupdate"));
+}
+
+/* Finishing the exchange lets provisioning continue. */
+static void finishing_the_check_releases_the_hold_and_registration_follows(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(fx->channel.vtable->open(fx->channel.ctx, on_update, on_result, fx), AZ_IOT_OK);
+  az_iot_mock_mqtt_client* m = open_to_registering(fx);
+
+  assert_int_equal(fx->channel.vtable->request_update(fx->channel.ctx), AZ_IOT_OK);
+  char rid[64];
+  last_rid(m, rid, sizeof(rid));
+  char topic[256];
+  snprintf(topic, sizeof(topic), "$dps/registrations/res/200/?$rid=%s", rid);
+  assert_true(inject(fx, m, topic, "{\"updateMetadata\":null}"));
+
+  /* The holder let go; the phase still says held until the next tick, because
+   * registration is published from the pump rather than from inside a message
+   * callback. */
+  assert_true(az_iot_connection_client__dps_hold_is_active(&fx->client));
+
+  (void)az_iot_connection_client_do_work(&fx->client, 0);
+  assert_false(az_iot_connection_client__dps_hold_is_active(&fx->client));
+  assert_int_equal(fx->client.dps_phase, AZ_IOT_DPS_PHASE_REGISTERING);
+
+  const az_iot_mock_call* pub = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PUBLISH);
+  assert_non_null(pub);
+  assert_non_null(strstr(pub->topic, "$dps/registrations/PUT/iotdps-register"));
+}
+
+/* The load-bearing rule: a stalled or unavailable device-update service must
+ * never stop a device from provisioning. */
+static void the_hold_expires_and_registration_proceeds_anyway(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(fx->channel.vtable->open(fx->channel.ctx, on_update, on_result, fx), AZ_IOT_OK);
+  az_iot_mock_mqtt_client* m = open_to_registering(fx);
+
+  /* Never answered: the hold is still held. */
+  assert_int_equal(fx->channel.vtable->request_update(fx->channel.ctx), AZ_IOT_OK);
+  assert_true(az_iot_connection_client__dps_hold_is_active(&fx->client));
+
+  az_iot_test_wait_ms(60); /* opts.dps_hold_timeout_ms is 50 */
+  (void)az_iot_connection_client_do_work(&fx->client, 0);
+
+  assert_int_equal(fx->client.dps_phase, AZ_IOT_DPS_PHASE_REGISTERING);
+  const az_iot_mock_call* pub = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PUBLISH);
+  assert_non_null(pub);
+  assert_non_null(strstr(pub->topic, "$dps/registrations/PUT/iotdps-register"));
+}
+
+/* A client with no device update behaves exactly as before. */
+static void without_a_holder_registration_is_not_delayed(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  /* Channel never opened, so no hold is taken. */
+  az_iot_mock_mqtt_client* m = open_to_registering(fx);
+
+  assert_false(az_iot_connection_client__dps_hold_is_active(&fx->client));
+  assert_int_equal(fx->client.dps_phase, AZ_IOT_DPS_PHASE_REGISTERING);
+  const az_iot_mock_call* pub = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PUBLISH);
+  assert_non_null(pub);
+  assert_non_null(strstr(pub->topic, "$dps/registrations/PUT/iotdps-register"));
+}
+
+/* Closing releases the hold, so destroying the ADU client cannot strand a
+ * device short of registration. */
+static void closing_the_channel_releases_the_hold(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(fx->channel.vtable->open(fx->channel.ctx, on_update, on_result, fx), AZ_IOT_OK);
+  (void)open_to_registering(fx);
+  assert_true(az_iot_connection_client__dps_hold_is_active(&fx->client));
+
+  fx->channel.vtable->close(fx->channel.ctx);
+  (void)az_iot_connection_client_do_work(&fx->client, 0);
+
+  assert_int_equal(fx->client.dps_phase, AZ_IOT_DPS_PHASE_REGISTERING);
+}
+
+/* Asking for a hold once registration is under way is refused rather than
+ * silently doing nothing. */
+static void a_hold_taken_too_late_is_refused(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  (void)open_to_registering(fx); /* no holder: goes straight to REGISTERING */
+
+  assert_int_equal(
+      az_iot_connection_client__dps_hold_acquire(&fx->client), AZ_IOT_ERR_NOT_SUPPORTED);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -423,6 +540,15 @@ int main(void)
     cmocka_unit_test_setup_teardown(updated_device_properties_change_what_is_sent, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_request_before_the_session_is_ready_is_refused, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        the_channel_holds_registration_so_bootstrap_can_run, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        finishing_the_check_releases_the_hold_and_registration_follows, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        the_hold_expires_and_registration_proceeds_anyway, setup, teardown),
+    cmocka_unit_test_setup_teardown(without_a_holder_registration_is_not_delayed, setup, teardown),
+    cmocka_unit_test_setup_teardown(closing_the_channel_releases_the_hold, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_hold_taken_too_late_is_refused, setup, teardown),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

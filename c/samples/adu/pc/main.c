@@ -496,9 +496,15 @@ int main(void)
     sample_state_destroy(&st);
     return 1;
   }
+  /* The device-update client is pumped here too, not only after CONNECTED: its
+   * first update check runs on the provisioning session, before the device
+   * registers. Pumping only the connection client would leave that check
+   * unissued, and the connection would simply wait out the hold and register
+   * without it. */
   for (int i = 0; i < 1200 && g_conn_state != AZ_IOT_CONN_STATE_CONNECTED && !g_stop; ++i)
   {
     (void)az_iot_connection_client_do_work(&st.connection_client, 50);
+    (void)az_iot_adu_client_do_work(&st.adu_client);
     if (g_conn_state == AZ_IOT_CONN_STATE_FAULTED)
     {
       break;
