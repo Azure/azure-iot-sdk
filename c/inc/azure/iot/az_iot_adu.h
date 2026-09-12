@@ -449,11 +449,7 @@ extern "C"
       } channel;
 
       /* Storage for the SDK-built channel. Opaque here: sized so the client
-       * stays caller-allocated with no hidden allocation. The channel keeps the
-       * request body and the ETags it echoes back, so this is dominated by
-       * those buffers rather than by pointers. A compile-time assert in
-       * adu_client.c fails the build if the channel ever outgrows it, so this
-       * number cannot drift out of date silently. */
+       * stays caller-allocated with no hidden allocation. */
       struct
       {
         void* pointers[24];
