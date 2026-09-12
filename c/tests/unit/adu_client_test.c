@@ -432,6 +432,7 @@ static int32_t mock_load(uint8_t* blob, size_t cap, size_t* out_len, void* ctx)
 typedef struct
 {
   az_iot_adu_channel_update_cb cb;
+  az_iot_adu_channel_result_cb result_cb;
   void* engine_ctx;
   bool opened;
   int request_update_count;
@@ -450,10 +451,15 @@ typedef struct
   uint8_t last_step_details[_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS][256];
 } fake_channel;
 
-static az_iot_result fake_channel_open(void* ctx, az_iot_adu_channel_update_cb cb, void* engine_ctx)
+static az_iot_result fake_channel_open(
+    void* ctx,
+    az_iot_adu_channel_update_cb cb,
+    az_iot_adu_channel_result_cb result_cb,
+    void* engine_ctx)
 {
   fake_channel* fc = (fake_channel*)ctx;
   fc->cb = cb;
+  fc->result_cb = result_cb;
   fc->engine_ctx = engine_ctx;
   fc->opened = true;
   return AZ_IOT_OK;
@@ -539,6 +545,7 @@ static const az_iot_adu_channel_vtable k_fake_channel_vtable = {
   .close = fake_channel_close,
   .request_update = fake_channel_request_update,
   .report = fake_channel_report,
+  .set_device_properties = NULL,
   .do_work = NULL,
 };
 

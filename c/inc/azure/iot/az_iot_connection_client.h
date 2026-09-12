@@ -438,6 +438,16 @@ extern "C"
     AZ_IOT_MQTT_ROLE_HUB_NEXT = 2 /* requires MQTT v5     */
   } az_iot_mqtt_role;
 
+  /* Inbound provisioning-session messages that the provisioning flow does not
+   * claim are offered to this observer. Returning true means it consumed the
+   * message. Declared here because the client struct stores one; it is set
+   * through an internal entry point and is not application-facing. */
+  typedef bool (*az_iot_dps_message_observer)(
+      const char* topic,
+      const uint8_t* payload,
+      size_t payload_len,
+      void* user_ctx);
+
   struct az_iot_connection_client
   {
     az_iot_connection_client_options opts;
@@ -515,6 +525,19 @@ extern "C"
     int dps_phase;
     az_iot_provisioning_client dps_prov;
     az_iot_mqtt_client* dps_mqtt;
+
+    /* Observer for provisioning-session messages the provisioning flow itself
+     * does not claim -- the device-update operations share this session. Stored
+     * as a function pointer, not erased through void*: ISO C does not guarantee
+     * that function and object pointers share a representation. */
+    az_iot_dps_message_observer dps_message_observer;
+    void* dps_message_observer_ctx;
+
+    /* Set when the provisioning subscription is SUBACKed. The phase alone is
+     * not enough: SUBSCRIBING is entered when the SUBSCRIBE is sent, so a
+     * publish made on the phase could race ahead of the response route. */
+    bool dps_subscription_confirmed;
+
     char dps_operation_id[AZ_IOT_DPS_OPERATION_ID_MAX];
     size_t dps_operation_id_len;
     uint64_t dps_poll_due_ms;

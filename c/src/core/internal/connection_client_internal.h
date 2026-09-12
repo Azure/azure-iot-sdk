@@ -98,6 +98,37 @@ extern "C"
    * is effectively never NULL for a live client). */
   const char* az_iot_connection_client__device_id(const az_iot_connection_client* client);
 
+  /* --- Provisioning-session seam ------------------------------------------- */
+  /*
+   * The device-update operations ride the device's PROVISIONING session, not the
+   * hub session, and the bootstrap check runs BEFORE the device is registered --
+   * so az_iot_connection_client__publish() cannot serve them: it publishes on
+   * the active hub client and requires CONNECTED.
+   *
+   * These expose the provisioning session directly, for the one feature that
+   * legitimately needs it. Not for general use.
+   */
+
+  /* True when a provisioning session exists and is far enough along to carry a
+   * publish -- that is, its subscription is established and the registration
+   * outcome has not yet torn the session down. */
+  bool az_iot_connection_client__dps_session_ready(const az_iot_connection_client* client);
+
+  /* Publish on the provisioning session. Returns ERR_NOT_CONNECTED when no such
+   * session is ready. */
+  az_iot_result az_iot_connection_client__dps_publish(
+      az_iot_connection_client* client,
+      const az_iot_mqtt_message* msg);
+
+  /* Register the observer for inbound provisioning-session messages the
+   * provisioning flow does not claim. At most one: registering a second observer over a live one is
+   * refused, so clear it (NULL) before registering a different one. The callback type is declared
+   * with the client struct that stores it. */
+  void az_iot_connection_client__set_dps_message_observer(
+      az_iot_connection_client* client,
+      az_iot_dps_message_observer observer,
+      void* user_ctx);
+
   /* Publish through the active adapter. Returns ERR_NOT_CONNECTED when not in
    * CONNECTED state. For QoS 1, callers may pass a non-NULL ack_cb; it is
    * invoked synchronously from inside do_work() when the matching PUBLISH_ACK

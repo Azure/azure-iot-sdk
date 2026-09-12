@@ -453,6 +453,68 @@ static void a_truncated_response_body_is_rejected(void** state)
  * service surfaces it, info.aduErrorCode. It is NOT the nested
  * {"error":{"code":...}} envelope -- that one is internal to the service chain
  * and never reaches a device. */
+
+/* Per-step results are a MAP keyed step_0, step_1, ... -- NOT a JSON array. The
+ * index is the only thing carrying step identity, so emitting an array would
+ * lose it. */
+static void step_results_serialize_as_an_indexed_map(void** state)
+{
+  (void)state;
+  uint8_t buf[1024];
+  size_t len = 0;
+
+  az_iot_adu_client_step_result steps[2];
+  memset(steps, 0, sizeof(steps));
+  steps[0].result_code = 700;
+  steps[0].extended_result_code = 0;
+  steps[1].result_code = -1;
+  steps[1].extended_result_code = (int32_t)0x80000001;
+  steps[1].result_details = AZ_SPAN_FROM_STR("step two failed");
+
+  az_iot_adu_report report = { 0 };
+  report.workflow_id = "wf-1";
+  report.outcome = AZ_IOT_ADU_OUTCOME_FAILED;
+  report.failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_AGENT_CORE;
+  report.result_code = -1;
+  report.extended_result_codes = "80000001";
+  report.step_results = steps;
+  report.step_results_count = 2;
+
+  assert_int_equal(az_iot_adu__build_report_request(&report, buf, sizeof(buf), &len), AZ_IOT_OK);
+  buf[len] = '\0';
+  const char* json = (const char*)buf;
+
+  assert_non_null(strstr(json, "\"stepResults\""));
+  assert_non_null(strstr(json, "\"step_0\""));
+  assert_non_null(strstr(json, "\"step_1\""));
+  /* A map, not an array. */
+  assert_null(strstr(json, "\"stepResults\":["));
+  assert_non_null(strstr(json, "\"resultCode\":700"));
+  assert_non_null(strstr(json, "\"step two failed\""));
+  /* Per-step codes use the same bare-hex form as the aggregate. */
+  assert_non_null(strstr(json, "\"extendedResultCodes\":\"80000001\""));
+  assert_null(strstr(json, "0x80000001"));
+}
+
+/* Omitted entirely when there are none -- an empty map is a different statement
+ * from having no per-step results. */
+static void no_step_results_means_no_key(void** state)
+{
+  (void)state;
+  uint8_t buf[512];
+  size_t len = 0;
+  az_iot_adu_report report = { 0 };
+  report.workflow_id = "wf-1";
+  report.outcome = AZ_IOT_ADU_OUTCOME_SUCCEEDED;
+  report.failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_NOT_APPLICABLE;
+  report.result_code = 700;
+  report.extended_result_codes = "0";
+
+  assert_int_equal(az_iot_adu__build_report_request(&report, buf, sizeof(buf), &len), AZ_IOT_OK);
+  buf[len] = '\0';
+  assert_null(strstr((const char*)buf, "stepResults"));
+}
+
 static void both_error_signals_are_read_from_the_body(void** state)
 {
   (void)state;
@@ -675,6 +737,8 @@ int main(void)
     cmocka_unit_test(a_malformed_response_body_is_rejected),
     cmocka_unit_test(a_report_with_a_partial_installed_update_id_is_rejected),
     cmocka_unit_test(a_truncated_response_body_is_rejected),
+    cmocka_unit_test(step_results_serialize_as_an_indexed_map),
+    cmocka_unit_test(no_step_results_means_no_key),
     cmocka_unit_test(both_error_signals_are_read_from_the_body),
     cmocka_unit_test(a_numeric_only_body_is_still_usable),
     cmocka_unit_test(the_internal_envelope_is_not_the_device_body),
