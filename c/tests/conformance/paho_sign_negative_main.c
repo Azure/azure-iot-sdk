@@ -568,8 +568,15 @@ int main(void)
   }
 
   char work_dir[512];
-  snprintf(
+  int work_len = snprintf(
       work_dir, sizeof(work_dir), "%s/az-iot-sign-negative-%ld", temp_dir(), (long)az_iot_getpid());
+  if (work_len < 0 || (size_t)work_len >= sizeof(work_dir))
+  {
+    /* A truncated path names a different directory, so creating it, entering it
+     * and removing it would each act on something nobody asked for. */
+    fprintf(stderr, "sign-negative: the temporary directory path is too long\n");
+    return 1;
+  }
   if (az_iot_mkdir(work_dir) != 0)
   {
     fprintf(stderr, "sign-negative: could not create the working directory %s\n", work_dir);
