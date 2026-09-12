@@ -52,7 +52,7 @@
 #define DM_MIN_USEFUL_BUDGET_SECONDS 1u
 
 /* Budgets travel in whole seconds; the monotonic clock counts milliseconds. */
-#define DM_MS_PER_SECOND 1000u
+#define MS_PER_SECOND 1000u
 
 /* Safety margin covering the network transit a broker-adjusted message expiry
  * cannot measure: a tenth of the response timeout, held within these bounds so
@@ -119,7 +119,7 @@ static uint32_t remaining_budget_seconds(uint32_t budget_seconds, uint64_t start
   }
   uint64_t now = az_iot_time_mono_ms();
   uint64_t elapsed_ms = (now > start_ms) ? (now - start_ms) : 0u;
-  uint64_t elapsed = elapsed_ms / DM_MS_PER_SECOND;
+  uint64_t elapsed = elapsed_ms / MS_PER_SECOND;
   return (elapsed >= budget_seconds) ? 0u : (budget_seconds - (uint32_t)elapsed);
 }
 
@@ -197,15 +197,16 @@ static az_iot_gen2_direct_method_ready_slot* ready_acquire(az_iot_gen2_direct_me
 }
 
 /* Acquire a free slot from the bounded pool (NULL if full). A slot is returned
- * only by az_iot_gen2_direct_method_respond(); a handler that returns without
- * responding leaks one, and once all of them have leaked every further
- * invocation is dropped -- say so rather than going quiet. */
+ * by az_iot_gen2_direct_method_respond(), or reclaimed by
+ * requests_expire_stale() once its response window has closed. Running out
+ * means this many invocations are genuinely still in flight. */
 static az_iot_direct_method_request* request_acquire(
     az_iot_gen2_direct_method_client* dm,
     size_t* out_index)
 {
-  for (size_t i = 0; i < AZ_IOT_GEN2_DM_MAX_CONCURRENT; ++i)
+  for (size_t n = 0; n < AZ_IOT_GEN2_DM_MAX_CONCURRENT; ++n)
   {
+    size_t i = (DI(dm).next_slot + n) % AZ_IOT_GEN2_DM_MAX_CONCURRENT;
     az_iot_direct_method_request* r = &DI(dm).req_pool[i];
     if (!r->_internal.in_use)
     {
@@ -214,13 +215,14 @@ static az_iot_direct_method_request* request_acquire(
       r->_internal.owner = dm;
       r->_internal.profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
       *out_index = i;
+      DI(dm).next_slot = (i + 1u) % AZ_IOT_GEN2_DM_MAX_CONCURRENT;
       return r;
     }
   }
   AZ_IOT_LOG_WARNF(
-      "gen2_direct_method: dropping an invocation, all %d concurrent slots are taken. A slot is "
-      "released by az_iot_gen2_direct_method_respond(); a handler that returns without responding "
-      "leaks one. Raise AZ_IOT_GEN2_DM_MAX_CONCURRENT to hold more at once.",
+      "gen2_direct_method: dropping an invocation, all %d concurrent slots are taken by requests "
+      "still inside their response budget. Raise AZ_IOT_GEN2_DM_MAX_CONCURRENT to hold more at "
+      "once.",
       (int)AZ_IOT_GEN2_DM_MAX_CONCURRENT);
   return NULL;
 }
@@ -410,6 +412,47 @@ static void ready_expire_stale(az_iot_gen2_direct_method_client* dm)
   }
 }
 
+/* True once a result for this slot could no longer reach the caller in time.
+ *
+ * Shared with respond() so the sweep below and the send path cannot disagree
+ * about when an invocation stopped being answerable. A budget of 0 means the
+ * exec carried no expiry at all, which is not an exhausted one. */
+static bool exec_budget_is_spent(const az_iot_gen2_direct_method_client* dm, size_t index)
+{
+  return DI(dm).exec_budget_seconds[index] > 0u
+      && remaining_budget_seconds(
+             DI(dm).exec_budget_seconds[index], DI(dm).exec_received_at_ms[index])
+      < DM_MIN_USEFUL_BUDGET_SECONDS;
+}
+
+/* Release every in-flight slot whose response window has closed.
+ *
+ * respond() already frees the slot when an answer arrives too late; this covers
+ * the invocation that is never answered at all, which would otherwise hold its
+ * slot for the life of the client and eventually leave no capacity to accept a
+ * probe. Swept on message arrival for the same reason as ready_expire_stale().
+ *
+ * Nothing goes on the wire. Abandon is defined only for a ready token that is
+ * terminated before execution begins, and it is keyed on that token's ready id;
+ * an exec slot has moved past it. The service's own response timeout has
+ * already fired by here, so it has stopped waiting. */
+static void requests_expire_stale(az_iot_gen2_direct_method_client* dm)
+{
+  for (size_t i = 0; i < AZ_IOT_GEN2_DM_MAX_CONCURRENT; ++i)
+  {
+    az_iot_direct_method_request* r = &DI(dm).req_pool[i];
+    if (!RI(r).in_use || !exec_budget_is_spent(dm, i))
+    {
+      continue;
+    }
+    AZ_IOT_LOG_WARNF(
+        "gen2_direct_method: '%s' was never answered and its response budget has run out; "
+        "reclaiming its slot",
+        RI(r).method_name);
+    RI(r).in_use = false;
+  }
+}
+
 /* ------------------------------------------------------------------------- */
 /* inbound dispatch                                                          */
 /* ------------------------------------------------------------------------- */
@@ -560,7 +603,7 @@ static void handle_probe(
     RI(slot).expires_at_ms = az_iot_time_mono_ms()
         + ((uint64_t)remaining + probe.response_timeout_seconds
            + safety_margin_seconds(probe.response_timeout_seconds))
-            * DM_MS_PER_SECOND;
+            * MS_PER_SECOND;
 
     encoded = az_iot_dm_proto_encode_probe_ack_ready(
         frame, sizeof(frame), RI(slot).ready_id, AZ_IOT_GEN2_DM_READY_ID_LEN, &frame_len);
@@ -695,6 +738,7 @@ static void on_method_message(void* user_ctx, const az_iot_mqtt_message* msg)
   }
 
   ready_expire_stale(dm);
+  requests_expire_stale(dm);
 
   const char* type_value = message_type(msg);
   if (type_value == NULL)
@@ -961,7 +1005,7 @@ az_iot_result az_iot_gen2_direct_method_respond(
    * only while a window to arrive in is left. */
   uint32_t remaining = remaining_budget_seconds(
       DI(dm).exec_budget_seconds[index], DI(dm).exec_received_at_ms[index]);
-  if (DI(dm).exec_budget_seconds[index] > 0u && remaining < DM_MIN_USEFUL_BUDGET_SECONDS)
+  if (exec_budget_is_spent(dm, index))
   {
     AZ_IOT_LOG_WARNF(
         "gen2_direct_method: '%s' finished after its response timeout had elapsed; sending no "

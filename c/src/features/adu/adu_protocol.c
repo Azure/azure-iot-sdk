@@ -705,6 +705,7 @@ az_iot_result az_iot_adu__parse_error_code(
   }
 
   bool found_string_code = false;
+  bool found_message = false;
   bool found_numeric_code = false;
   bool closed = false;
 
@@ -722,6 +723,7 @@ az_iot_result az_iot_adu__parse_error_code(
 
     bool is_numeric = az_json_token_is_text_equal(&jr.token, AZ_SPAN_FROM_STR("errorCode"));
     bool is_info = az_json_token_is_text_equal(&jr.token, AZ_SPAN_FROM_STR("info"));
+    bool is_message = az_json_token_is_text_equal(&jr.token, AZ_SPAN_FROM_STR("message"));
 
     if (az_result_failed(az_json_reader_next_token(&jr)))
     {
@@ -744,8 +746,32 @@ az_iot_result az_iot_adu__parse_error_code(
       continue;
     }
 
-    /* The originating string code travels here. The service SHOULD surface it,
-     * so its absence is normal and the numeric code carries the class. */
+    /* Measured against the live service: the device-facing error body carries
+     * the originating code in "message" and has no "info" object at all. So
+     * this -- not info.aduErrorCode -- is the field that actually discriminates
+     * the shared numeric buckets (400000 is INVALID_REQUEST *and*
+     * UNKNOWN_WORKFLOW_ID).
+     *
+     * "message" is not always a code: it is sometimes free text
+     * ("Deserialization error."). That is safe because an unrecognized string
+     * falls through to the numeric ladder rather than being judged on its own.
+     * Text too long for the buffer is dropped for the same reason -- a truncated
+     * token must not be compared, and the numeric code still classifies. */
+    if (is_message && jr.token.kind == AZ_JSON_TOKEN_STRING && !found_string_code)
+    {
+      int32_t n = az_span_size(jr.token.slice);
+      if (n >= 0 && (size_t)n + 1 <= out_code_size)
+      {
+        memcpy(out_code, az_span_ptr(jr.token.slice), (size_t)n);
+        out_code[n] = '\0';
+        found_message = true;
+      }
+      continue;
+    }
+
+    /* The originating string code travels here when the service does surface
+     * the documented envelope. Preferred over "message" because it is always a
+     * code, never prose. */
     if (is_info && jr.token.kind == AZ_JSON_TOKEN_BEGIN_OBJECT)
     {
       bool info_closed = false;
@@ -804,7 +830,7 @@ az_iot_result az_iot_adu__parse_error_code(
 
   /* Either signal alone is enough to classify: the numeric code carries the
    * class even when the string code is absent. */
-  if (found_string_code || found_numeric_code)
+  if (found_string_code || found_message || found_numeric_code)
   {
     return AZ_IOT_OK;
   }
@@ -845,9 +871,20 @@ az_iot_adu_error_action az_iot_adu__classify_error(
     {
       return AZ_IOT_ADU_ERROR_ACTION_RETRY_AFTER;
     }
-    /* An unrecognized string code is NOT assumed retryable: repeating a request
-     * the service has already rejected is the worse failure mode. */
-    return AZ_IOT_ADU_ERROR_ACTION_FATAL;
+    /* Both sides of the 400000 bucket. Neither can be fixed by resending the
+     * same request: the device is not onboarded, or the workflow no longer
+     * exists. Not reported as ALREADY_REPORTED -- that would claim a delivery
+     * that never happened. */
+    if (strcmp(error_code, "INVALID_REQUEST") == 0
+        || strcmp(error_code, "UNKNOWN_WORKFLOW_ID") == 0)
+    {
+      return AZ_IOT_ADU_ERROR_ACTION_FATAL;
+    }
+    /* Unrecognized: fall through to the numeric ladder rather than judging the
+     * string alone. The field this usually arrives in ("message") is free text
+     * as often as it is a code, and treating prose as an unknown code would
+     * turn a retryable 5xx into a fatal one. The numeric ladder still defaults
+     * 4xx to FATAL, so nothing becomes more optimistic than before. */
   }
 
   /* No string code: the numeric code carries the class. This path matters --
