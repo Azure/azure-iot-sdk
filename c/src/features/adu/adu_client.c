@@ -1333,7 +1333,8 @@ az_iot_result az_iot_adu_client_initialize(
   az_iot_adu_channel_dps* channel_state
       = (az_iot_adu_channel_dps*)(void*)&ADU_I(client).channel_storage;
 
-  az_iot_result r = az_iot_adu_channel_dps_init(channel_state, connection, &channel);
+  az_iot_result r
+      = az_iot_adu_channel_dps_init(channel_state, connection, options->device_props, &channel);
   if (r != AZ_IOT_OK)
   {
     memset(client, 0, sizeof(*client));

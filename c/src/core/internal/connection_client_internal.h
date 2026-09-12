@@ -120,15 +120,10 @@ extern "C"
       az_iot_connection_client* client,
       const az_iot_mqtt_message* msg);
 
-  /* Inbound provisioning-session messages that the provisioning flow does not
-   * claim are offered here. Returning true means the observer consumed it.
-   * At most one observer; registering NULL clears it. */
-  typedef bool (*az_iot_dps_message_observer)(
-      const char* topic,
-      const uint8_t* payload,
-      size_t payload_len,
-      void* user_ctx);
-
+  /* Register the observer for inbound provisioning-session messages the
+   * provisioning flow does not claim. At most one: registering a second observer over a live one is
+   * refused, so clear it (NULL) before registering a different one. The callback type is declared
+   * with the client struct that stores it. */
   void az_iot_connection_client__set_dps_message_observer(
       az_iot_connection_client* client,
       az_iot_dps_message_observer observer,

@@ -466,6 +466,7 @@ static bool dps_configured(const az_iot_connection_client* c)
 
 static void dps_teardown_mqtt(az_iot_connection_client* c)
 {
+  c->dps_subscription_confirmed = false;
   if (c->dps_mqtt && c->dps_mqtt->iface && c->dps_mqtt->iface->destroy)
   {
     c->dps_mqtt->iface->destroy(c->dps_mqtt);
@@ -919,6 +920,7 @@ static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
         dps_finalize(c, evt->status, false);
         return;
       }
+      c->dps_subscription_confirmed = true;
       {
         az_iot_result r = dps_do_register_publish(c);
         if (r != AZ_IOT_OK)
@@ -941,9 +943,8 @@ static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
        * responses and fault the attempt. */
       if (c->dps_message_observer != NULL)
       {
-        az_iot_dps_message_observer obs
-            = (az_iot_dps_message_observer)(uintptr_t)c->dps_message_observer;
-        if (obs(evt->message->topic,
+        if (c->dps_message_observer(
+                evt->message->topic,
                 evt->message->payload,
                 evt->message->payload_len,
                 c->dps_message_observer_ctx))
@@ -3153,10 +3154,11 @@ bool az_iot_connection_client__dps_session_ready(const az_iot_connection_client*
   {
     return false;
   }
-  /* Before SUBSCRIBING there is no response route, and once the phase reaches
-   * DONE the session has been torn down. */
-  return client->dps_phase == DPS_PHASE_SUBSCRIBING || client->dps_phase == DPS_PHASE_REGISTERING
-      || client->dps_phase == DPS_PHASE_POLLING;
+  /* The SUBACK, not the phase, is what proves a response can come back:
+   * SUBSCRIBING is entered when the SUBSCRIBE is sent, so publishing on the
+   * phase alone could outrun the route the reply needs. The flag is cleared
+   * when the session is torn down. */
+  return client->dps_subscription_confirmed;
 }
 
 az_iot_result az_iot_connection_client__dps_publish(
@@ -3189,7 +3191,18 @@ void az_iot_connection_client__set_dps_message_observer(
   {
     return;
   }
-  client->dps_message_observer = (void*)(uintptr_t)observer;
+  /* Last writer wins, and there is exactly one slot. Calling this twice with
+   * two different observers would silently leave the first one never called,
+   * so a second registration over a live one is refused rather than honoured:
+   * only the owner may clear its own registration (observer == NULL) before a
+   * different one takes over. */
+  if (observer != NULL && client->dps_message_observer != NULL
+      && client->dps_message_observer != observer)
+  {
+    AZ_IOT_LOG_ERROR("a provisioning-session message observer is already registered");
+    return;
+  }
+  client->dps_message_observer = observer;
   client->dps_message_observer_ctx = user_ctx;
 }
 

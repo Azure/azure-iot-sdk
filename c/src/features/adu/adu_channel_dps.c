@@ -41,13 +41,15 @@
 /* Requests are correlated by a per-request id echoed back on the response
  * topic. Monotonic and per-channel: it only has to distinguish this device's
  * own outstanding request from a stale or unsolicited one. */
+#define ADU_RID_PREFIX "adu"
+
 static az_iot_result next_request_id(az_iot_adu_channel_dps* c, char* out, size_t out_size)
 {
   c->next_rid++;
 
   az_iot_span_writer writer;
   az_iot_span_writer_init(&writer, az_span_create((uint8_t*)out, (int32_t)out_size));
-  az_iot_span_writer_append_str(&writer, "adu");
+  az_iot_span_writer_append_str(&writer, ADU_RID_PREFIX);
   az_iot_span_writer_append_u32(&writer, c->next_rid);
   return az_iot_span_writer_end_str(&writer, NULL);
 }
@@ -55,6 +57,13 @@ static az_iot_result next_request_id(az_iot_adu_channel_dps* c, char* out, size_
 static bool rid_matches(const az_iot_adu_channel_dps* c, const char* rid)
 {
   return c->request_pending && rid != NULL && strcmp(c->pending_rid, rid) == 0;
+}
+
+/* Our request ids carry a prefix the provisioning flow never uses, so a response
+ * can be attributed without depending on what is currently outstanding. */
+static bool rid_is_ours(const char* rid)
+{
+  return rid != NULL && strncmp(rid, ADU_RID_PREFIX, sizeof(ADU_RID_PREFIX) - 1) == 0;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -182,12 +191,19 @@ static bool on_dps_message(
     return false;
   }
 
-  /* A response whose id we are not waiting for is not ours: it belongs to the
-   * provisioning flow, or it is a late reply to a request we already gave up
-   * on. Claiming it either way would be wrong. */
-  if (!rid_matches(c, rid))
+  /* The request id tells us whether this is the response we are waiting for.
+   * Either way the message is OURS: it carries a device-update request id, and
+   * handing it back would send it to the provisioning parser, which would judge
+   * it a malformed registration response and fault the whole provisioning
+   * attempt. So a late or unmatched response is consumed and dropped. */
+  if (!rid_is_ours(rid))
   {
     return false;
+  }
+  if (!rid_matches(c, rid))
+  {
+    AZ_IOT_LOG_DEBUG("adu: dropping a response we are no longer waiting for");
+    return true;
   }
 
   az_iot_adu_operation operation = c->pending_operation;
@@ -236,6 +252,19 @@ static bool on_dps_message(
   return true;
 }
 
+/* A request can only be answered on the session it was sent on. Once that
+ * session is gone the reply can never arrive, so the slot is released and the
+ * engine is free to ask again. */
+static void channel_forget_pending_if_session_gone(az_iot_adu_channel_dps* c)
+{
+  if (c->request_pending && !az_iot_connection_client__dps_session_ready(c->connection))
+  {
+    AZ_IOT_LOG_DEBUG("adu: provisioning session ended with a request outstanding");
+    c->request_pending = false;
+    c->last_action = AZ_IOT_ADU_ERROR_ACTION_RETRY;
+  }
+}
+
 /* ------------------------------------------------------------------------- */
 /* vtable                                                                    */
 /* ------------------------------------------------------------------------- */
@@ -276,6 +305,12 @@ static az_iot_result channel_request_update(void* ctx)
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
+  /* A request outstanding on a session that no longer exists can never be
+   * answered. Clearing it here is what stops a lost response -- or one lost to
+   * the session being torn down at registration -- from wedging the channel in
+   * BUSY for the life of the client. */
+  channel_forget_pending_if_session_gone(c);
+
   if (c->request_pending)
   {
     /* One operation at a time. The caller retries on the next tick. */
@@ -290,6 +325,8 @@ static az_iot_result channel_request_update(void* ctx)
   agent.agent_sdk_version
       = (c->agent_sdk_version[0] != '\0') ? c->agent_sdk_version : AZ_IOT_ADU_CLIENT_AGENT_VERSION;
   agent.agent_profile = c->agent_profile;
+  agent.compatibility_properties = (c->compat_count > 0) ? c->compat : NULL;
+  agent.compatibility_properties_count = c->compat_count;
 
   /* The device picks the route from its own provisioning state rather than
    * probing: the service reports "not onboarded yet" with a code that also
@@ -297,10 +334,18 @@ static az_iot_result channel_request_update(void* ctx)
    * malformed requests too. */
   az_iot_adu_operation operation = AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE;
 
+  /* The onboarding route omits installedUpdateId by contract: a day-0 device
+   * has nothing installed. The operational route sends it, which is how the
+   * service knows what to offer next. */
+  const az_iot_adu_report_update_id* installed
+      = (operation == AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE || !c->has_installed_update_id)
+      ? NULL
+      : &c->installed_update_id;
+
   size_t body_len = 0;
   az_iot_result r = az_iot_adu__build_fetch_request(
       &agent,
-      NULL,
+      installed,
       (c->agent_info_etag[0] != '\0') ? c->agent_info_etag : NULL,
       (c->service_config_etag[0] != '\0') ? c->service_config_etag : NULL,
       c->body,
@@ -348,9 +393,30 @@ static const az_iot_adu_channel_vtable k_channel_vtable = {
   .do_work = NULL,
 };
 
+/* Pack a NUL-terminated copy into storage and return it, or NULL when it does
+ * not fit. Copied because the caller's struct may be freed once initialize
+ * returns, and the channel outlives that call. */
+static const char* pack_str(char* storage, size_t storage_size, size_t* used, const char* value)
+{
+  if (value == NULL)
+  {
+    return NULL;
+  }
+  size_t n = strlen(value);
+  if (n + 1 > storage_size - *used)
+  {
+    return NULL;
+  }
+  char* dst = storage + *used;
+  (void)memcpy(dst, value, n + 1);
+  *used += n + 1;
+  return dst;
+}
+
 az_iot_result az_iot_adu_channel_dps_init(
     az_iot_adu_channel_dps* channel_state,
     az_iot_connection_client* connection,
+    const az_iot_adu_device_properties* device_props,
     az_iot_adu_channel* out_channel)
 {
   if (channel_state == NULL || connection == NULL || out_channel == NULL)
@@ -362,6 +428,85 @@ az_iot_result az_iot_adu_channel_dps_init(
   channel_state->connection = connection;
   /* The profile the device reports for compatibility matching. */
   channel_state->agent_profile = 1;
+
+  if (device_props != NULL)
+  {
+    /* Manufacturer and model are the compatibility properties the service
+     * matches on; without them it cannot pick the right update. */
+    size_t used = 0;
+    const char* manufacturer = pack_str(
+        channel_state->compat_storage,
+        sizeof(channel_state->compat_storage),
+        &used,
+        device_props->manufacturer);
+    const char* model = pack_str(
+        channel_state->compat_storage,
+        sizeof(channel_state->compat_storage),
+        &used,
+        device_props->model);
+
+    if (manufacturer != NULL)
+    {
+      channel_state->compat[channel_state->compat_count].name = "manufacturer";
+      channel_state->compat[channel_state->compat_count].value = manufacturer;
+      channel_state->compat_count++;
+    }
+    if (model != NULL)
+    {
+      channel_state->compat[channel_state->compat_count].name = "model";
+      channel_state->compat[channel_state->compat_count].value = model;
+      channel_state->compat_count++;
+    }
+
+    for (size_t i = 0; i < device_props->custom_properties_count
+         && channel_state->compat_count < AZ_IOT_ADU_CHANNEL_MAX_COMPAT;
+         ++i)
+    {
+      const char* name = pack_str(
+          channel_state->compat_storage,
+          sizeof(channel_state->compat_storage),
+          &used,
+          device_props->custom_properties[i].name);
+      const char* value = pack_str(
+          channel_state->compat_storage,
+          sizeof(channel_state->compat_storage),
+          &used,
+          device_props->custom_properties[i].value);
+      if (name == NULL || value == NULL)
+      {
+        break;
+      }
+      channel_state->compat[channel_state->compat_count].name = name;
+      channel_state->compat[channel_state->compat_count].value = value;
+      channel_state->compat_count++;
+    }
+
+    /* What is installed now. A complete triple or nothing: a partial one would
+     * be rejected when the request is built. */
+    size_t iused = 0;
+    const char* provider = pack_str(
+        channel_state->installed_storage,
+        sizeof(channel_state->installed_storage),
+        &iused,
+        device_props->installed_update_id.provider);
+    const char* name = pack_str(
+        channel_state->installed_storage,
+        sizeof(channel_state->installed_storage),
+        &iused,
+        device_props->installed_update_id.name);
+    const char* version = pack_str(
+        channel_state->installed_storage,
+        sizeof(channel_state->installed_storage),
+        &iused,
+        device_props->installed_update_id.version);
+    if (provider != NULL && name != NULL && version != NULL)
+    {
+      channel_state->installed_update_id.provider = provider;
+      channel_state->installed_update_id.name = name;
+      channel_state->installed_update_id.version = version;
+      channel_state->has_installed_update_id = true;
+    }
+  }
 
   out_channel->vtable = &k_channel_vtable;
   out_channel->ctx = channel_state;

@@ -123,8 +123,13 @@ extern "C"
    */
   /* Bound on a request/response body. A compliant update-check response fits
    * every transport the service offers; this is sized for that. */
-#ifndef AZ_IOT_ADU_CHANNEL_BODY_MAX
-#define AZ_IOT_ADU_CHANNEL_BODY_MAX 2048
+#ifndef AZ_IOT_ADU_CHANNEL_BODY_MAX_SIZE
+#define AZ_IOT_ADU_CHANNEL_BODY_MAX_SIZE 2048
+#endif
+
+/* The service accepts a bounded number of compatibility properties. */
+#ifndef AZ_IOT_ADU_CHANNEL_MAX_COMPAT
+#define AZ_IOT_ADU_CHANNEL_MAX_COMPAT 5
 #endif
 
   typedef struct az_iot_adu_channel_dps
@@ -142,12 +147,22 @@ extern "C"
     uint32_t next_rid;
 
     /* Caller-allocated so the channel performs no allocation of its own. */
-    uint8_t body[AZ_IOT_ADU_CHANNEL_BODY_MAX];
+    uint8_t body[AZ_IOT_ADU_CHANNEL_BODY_MAX_SIZE];
 
-    /* What the device reports about itself on a fetch. Borrowed from the
-     * engine's cached device properties at request time. */
+    /* What the device reports about itself on a fetch. Copied at init: the
+     * caller's device-properties struct may be freed once initialize returns. */
     char agent_sdk_version[32];
     int32_t agent_profile;
+
+    /* Compatibility properties, and what is installed now. Both are required on
+     * a fetch: they are how the service picks the right update. */
+    az_iot_adu_custom_property compat[AZ_IOT_ADU_CHANNEL_MAX_COMPAT];
+    size_t compat_count;
+    char compat_storage[256];
+
+    az_iot_adu_report_update_id installed_update_id;
+    bool has_installed_update_id;
+    char installed_storage[192];
 
     /* ETags from the last successful fetch, echoed on the next one. Empty
      * means "not held yet". */
@@ -163,6 +178,7 @@ extern "C"
   az_iot_result az_iot_adu_channel_dps_init(
       az_iot_adu_channel_dps* channel_state,
       az_iot_connection_client* connection,
+      const az_iot_adu_device_properties* device_props,
       az_iot_adu_channel* out_channel);
 
 #ifdef __cplusplus

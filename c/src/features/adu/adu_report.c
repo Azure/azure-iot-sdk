@@ -16,6 +16,7 @@
 #include "azure/iot/az_iot_adu.h"
 
 #include "internal/adu_internal.h"
+#include "internal/adu_protocol_internal.h"
 #include "internal/span_writer.h"
 
 /* Reported-property payload buffer. v5 manifests with the upper-bounded step
@@ -33,40 +34,6 @@
 #define AZ_IOT_ADU_RESULT_CODE_IN_PROGRESS 1
 #define AZ_IOT_ADU_RESULT_CODE_SUCCESS 700
 #define AZ_IOT_ADU_RESULT_CODE_FAILURE (-1)
-
-/* Render extendedResultCodes.
- *
- * Contract: comma-separated UNSIGNED hex int32, NO "0x" prefix, no fixed width,
- * case-insensitive. The engine produces a single code today; the comma-separated
- * form is what the field accepts, so a future multi-code producer changes only
- * this function. Zero is rendered "0" -- a bare value, not a padded one. */
-static void format_extended_result_code(char* out, size_t out_size, int32_t code)
-{
-  static const char hex[] = "0123456789abcdef";
-  if (out_size < 9)
-  {
-    if (out_size > 0)
-    {
-      out[0] = '\0';
-    }
-    return;
-  }
-
-  uint32_t v = (uint32_t)code;
-  char tmp[8];
-  size_t n = 0;
-  do
-  {
-    tmp[n++] = hex[v & 0xFu];
-    v >>= 4;
-  } while (v != 0);
-
-  for (size_t i = 0; i < n; ++i)
-  {
-    out[i] = tmp[n - 1 - i];
-  }
-  out[n] = '\0';
-}
 
 az_iot_adu_client_agent_state az_iot_adu__agent_state(az_iot_adu_state state)
 {
@@ -220,7 +187,7 @@ az_iot_result az_iot_adu__report_state(az_iot_adu_client_t* client)
   /* Fixed-width hex, matching the contract's comma-separated hex form. A
    * single code is the only shape the engine produces today. */
   char extended[16];
-  format_extended_result_code(extended, sizeof(extended), r->extended_result_code);
+  az_iot_adu__format_extended_result_code(extended, sizeof(extended), r->extended_result_code);
 
   char details[AZ_IOT_ADU_RESULT_DETAILS_SIZE];
   details[0] = '\0';

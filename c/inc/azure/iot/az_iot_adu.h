@@ -456,8 +456,8 @@ extern "C"
        * number cannot drift out of date silently. */
       struct
       {
-        void* pointers[6];
-        uint8_t bytes[2560];
+        void* pointers[24];
+        uint8_t bytes[3328];
         uint64_t alignment[4];
       } channel_storage;
       az_iot_adu_platform_hooks hooks;
