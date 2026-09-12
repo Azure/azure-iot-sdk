@@ -26,7 +26,9 @@
  *     wired case fails at the connect assertion, the stripped one at the
  *     subsequent wait. Only the first is evidence about the sign route,
  *   - nothing else broke (any other failing case fails this control too, rather
- *     than being mistaken for the expected one).
+ *     than being mistaken for the expected one),
+ *   - the hook was never actually called: if it were, the route was accepted,
+ *     not refused, and this control's premise no longer holds.
  *
  * Runs both suite kinds, and in both adapter build modes: without
  * AZ_IOT_PAHO_KEY_CUSTODY the adapter still refuses a sign hook with the same
@@ -52,6 +54,8 @@
 #include <string.h>
 
 #ifdef _WIN32
+#include <windows.h>
+
 #include <io.h>
 #include <process.h>
 #define az_iot_getpid _getpid
@@ -109,7 +113,19 @@ static const char* temp_dir(void)
  * here, so the control runs inside a directory of its own and clears it. */
 static void sweep_working_directory(void)
 {
-#ifndef _WIN32
+#ifdef _WIN32
+  WIN32_FIND_DATAA found;
+  HANDLE h = FindFirstFileA("az_iot_conf_pem_*", &found);
+  if (h == INVALID_HANDLE_VALUE)
+  {
+    return;
+  }
+  do
+  {
+    remove(found.cFileName);
+  } while (FindNextFileA(h, &found));
+  FindClose(h);
+#else
   DIR* d = opendir(".");
   if (d == NULL)
   {
@@ -129,9 +145,18 @@ static void sweep_working_directory(void)
 
 #define EXPECTED_FAILING_CASE "key_custody_sign_hook_completes_a_tls_handshake"
 
-/* Never called: the adapter refuses the route before any signing happens.
- * Returning a failure keeps that true -- if it ever IS called, the handshake
- * fails rather than proceeding with a bogus signature. */
+/* Set if the adapter ever calls the hook. It must not: this control's whole
+ * claim is that the route is refused, so a run where the hook was invoked
+ * proves the opposite and is rejected below. */
+static int g_sign_called = 0;
+
+/* Never called, and deliberately NOT returning AZ_IOT_ERR_NOT_SUPPORTED.
+ *
+ * That is the code this control turns on, so returning it here would make the
+ * evidence ambiguous: an adapter that started calling the hook and propagated
+ * its result would produce exactly the refusal the control is looking for and
+ * be certified as refusing the route it had in fact accepted. The distinct code
+ * plus the flag above remove that reading entirely. */
 static az_iot_result negative_sign_stub(
     void* ctx,
     const uint8_t* digest,
@@ -146,7 +171,8 @@ static az_iot_result negative_sign_stub(
   (void)out_sig;
   (void)out_sig_cap;
   (void)out_sig_len;
-  return AZ_IOT_ERR_NOT_SUPPORTED;
+  g_sign_called = 1;
+  return AZ_IOT_ERR_INTERNAL;
 }
 
 /* A throwaway self-signed certificate, so the run carries real material rather
@@ -234,7 +260,18 @@ static int scan_output(
       continue;
     }
     marker += strlen("[  FAILED  ] ");
-    if (strstr(marker, EXPECTED_FAILING_CASE) != NULL)
+
+    /* The whole name, not a substring: a different case whose name merely
+     * contains this one would otherwise read as the required dispatch. */
+    size_t name_len = 0;
+    while (marker[name_len] != '\0' && marker[name_len] != '\n' && marker[name_len] != '\r'
+           && marker[name_len] != ' ' && marker[name_len] != '\t')
+    {
+      ++name_len;
+    }
+
+    if (name_len == strlen(EXPECTED_FAILING_CASE)
+        && strncmp(marker, EXPECTED_FAILING_CASE, name_len) == 0)
     {
       *out_saw_expected = 1;
     }
@@ -275,6 +312,8 @@ static int run_control(
   char log_path[64];
   snprintf(log_path, sizeof(log_path), "suite-%s.log", label);
 
+  g_sign_called = 0;
+
   /* The suite's own output is the evidence, so it is captured rather than shown.
    * BOTH streams: cmocka prints the case list to stdout and the failed
    * assertion -- which carries the result code this control turns on -- to
@@ -308,7 +347,17 @@ static int run_control(
   int scan_rc = scan_output(log_path, &saw_expected, &other_failures, &saw_refusal);
 
   int rc = 0;
-  if (scan_rc != 0)
+  if (g_sign_called)
+  {
+    fprintf(
+        stderr,
+        "sign-negative[%s]: the adapter CALLED the sign hook. It is no longer refusing the route,"
+        " so this control is asserting something that is no longer true: delete it and let the"
+        " positive case prove the route instead.\n",
+        label);
+    rc = 1;
+  }
+  else if (scan_rc != 0)
   {
     fprintf(stderr, "sign-negative[%s]: could not read the captured output\n", label);
     rc = 1;
