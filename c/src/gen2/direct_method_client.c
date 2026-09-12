@@ -52,7 +52,7 @@
 #define DM_MIN_USEFUL_BUDGET_SECONDS 1u
 
 /* Budgets travel in whole seconds; the monotonic clock counts milliseconds. */
-#define DM_MS_PER_SECOND 1000u
+#define MS_PER_SECOND 1000u
 
 /* Safety margin covering the network transit a broker-adjusted message expiry
  * cannot measure: a tenth of the response timeout, held within these bounds so
@@ -119,7 +119,7 @@ static uint32_t remaining_budget_seconds(uint32_t budget_seconds, uint64_t start
   }
   uint64_t now = az_iot_time_mono_ms();
   uint64_t elapsed_ms = (now > start_ms) ? (now - start_ms) : 0u;
-  uint64_t elapsed = elapsed_ms / DM_MS_PER_SECOND;
+  uint64_t elapsed = elapsed_ms / MS_PER_SECOND;
   return (elapsed >= budget_seconds) ? 0u : (budget_seconds - (uint32_t)elapsed);
 }
 
@@ -603,7 +603,7 @@ static void handle_probe(
     RI(slot).expires_at_ms = az_iot_time_mono_ms()
         + ((uint64_t)remaining + probe.response_timeout_seconds
            + safety_margin_seconds(probe.response_timeout_seconds))
-            * DM_MS_PER_SECOND;
+            * MS_PER_SECOND;
 
     encoded = az_iot_dm_proto_encode_probe_ack_ready(
         frame, sizeof(frame), RI(slot).ready_id, AZ_IOT_GEN2_DM_READY_ID_LEN, &frame_len);

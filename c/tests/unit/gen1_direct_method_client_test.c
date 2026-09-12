@@ -37,8 +37,8 @@
 #include "support/mock_mqtt_iface.h"
 #include "support/subscription_ack.h"
 
-/* The reclaim deadline is whole seconds off a monotonic clock with no test seam
- * behind it, so the shortest observable deadline is one second. Anything under
+/* The reclaim timeout is whole seconds off a monotonic clock with no test seam
+ * behind it, so the shortest observable timeout is one second. Anything under
  * it would be measuring timer granularity instead of the behaviour. */
 static void sleep_past_one_second(void)
 {
@@ -49,7 +49,7 @@ static void sleep_past_one_second(void)
   remaining.tv_sec = 1;
   remaining.tv_nsec = 200000000L;
   /* nanosleep() returns early when a signal arrives, which would leave the
-   * deadline unexpired and fail the assertion for the wrong reason. */
+   * timeout unexpired and fail the assertion for the wrong reason. */
   while (nanosleep(&remaining, &remaining) == -1 && errno == EINTR)
   {
   }
@@ -445,7 +445,7 @@ static void a_dropped_invocation_says_why(void** state)
 /* An application that never answers used to hold its slot for the life of the
  * client; once AZ_IOT_DM_MAX_INFLIGHT had leaked the device stopped accepting
  * direct methods entirely, and the only clue was a warning. */
-static void an_unanswered_invocation_frees_its_slot_after_the_deadline(void** state)
+static void an_unanswered_invocation_frees_its_slot_after_the_timeout(void** state)
 {
   fixture* fx = (fixture*)*state;
   open_to_connected(fx);
@@ -453,7 +453,7 @@ static void an_unanswered_invocation_frees_its_slot_after_the_deadline(void** st
   invocation_record rec = { 0 };
   assert_int_equal(
       az_iot_gen1_direct_method_client_set_handler(&fx->dm, on_method, &rec), AZ_IOT_OK);
-  assert_int_equal(az_iot_gen1_direct_method_client_set_response_deadline(&fx->dm, 1), AZ_IOT_OK);
+  assert_int_equal(az_iot_gen1_direct_method_client_set_response_timeout(&fx->dm, 1), AZ_IOT_OK);
 
   /* Fill every slot and answer none of them. */
   for (int i = 0; i < AZ_IOT_DM_MAX_INFLIGHT; ++i)
@@ -475,7 +475,7 @@ static void an_unanswered_invocation_frees_its_slot_after_the_deadline(void** st
 
 /* The negative control for the test above: without it, a reclaim that fired
  * immediately would pass that test just as well. */
-static void an_invocation_inside_its_deadline_keeps_its_slot(void** state)
+static void an_invocation_inside_its_timeout_keeps_its_slot(void** state)
 {
   fixture* fx = (fixture*)*state;
   open_to_connected(fx);
@@ -483,7 +483,7 @@ static void an_invocation_inside_its_deadline_keeps_its_slot(void** state)
   invocation_record rec = { 0 };
   assert_int_equal(
       az_iot_gen1_direct_method_client_set_handler(&fx->dm, on_method, &rec), AZ_IOT_OK);
-  assert_int_equal(az_iot_gen1_direct_method_client_set_response_deadline(&fx->dm, 600), AZ_IOT_OK);
+  assert_int_equal(az_iot_gen1_direct_method_client_set_response_timeout(&fx->dm, 600), AZ_IOT_OK);
 
   for (int i = 0; i < AZ_IOT_DM_MAX_INFLIGHT; ++i)
   {
@@ -502,7 +502,7 @@ static void a_reclaimed_slot_names_the_method(void** state)
   invocation_record rec = { 0 };
   assert_int_equal(
       az_iot_gen1_direct_method_client_set_handler(&fx->dm, on_method, &rec), AZ_IOT_OK);
-  assert_int_equal(az_iot_gen1_direct_method_client_set_response_deadline(&fx->dm, 1), AZ_IOT_OK);
+  assert_int_equal(az_iot_gen1_direct_method_client_set_response_timeout(&fx->dm, 1), AZ_IOT_OK);
   inject_invocation(fx, 0);
 
   sleep_past_one_second();
@@ -522,7 +522,7 @@ static void a_reclaimed_slot_names_the_method(void** state)
 /* A slot reclaimed out from under the application must not let a late answer
  * publish on it -- the rid it holds may since have been handed to another
  * invocation. */
-static void answering_after_the_deadline_is_refused(void** state)
+static void answering_after_the_timeout_is_refused(void** state)
 {
   fixture* fx = (fixture*)*state;
   open_to_connected(fx);
@@ -530,7 +530,7 @@ static void answering_after_the_deadline_is_refused(void** state)
   invocation_record rec = { 0 };
   assert_int_equal(
       az_iot_gen1_direct_method_client_set_handler(&fx->dm, on_method, &rec), AZ_IOT_OK);
-  assert_int_equal(az_iot_gen1_direct_method_client_set_response_deadline(&fx->dm, 1), AZ_IOT_OK);
+  assert_int_equal(az_iot_gen1_direct_method_client_set_response_timeout(&fx->dm, 1), AZ_IOT_OK);
   inject_invocation(fx, 0);
   az_iot_direct_method_request* stale = rec.request;
   assert_non_null(stale);
@@ -541,16 +541,41 @@ static void answering_after_the_deadline_is_refused(void** state)
   assert_int_equal(az_iot_gen1_direct_method_respond(stale, 200, NULL, 0), AZ_IOT_ERR_INVALID_ARG);
 }
 
-static void the_response_deadline_setter_validates_its_arguments(void** state)
+/* The sweep only runs when a method message arrives. On a device that is not
+ * being invoked, the slot is still marked in use when the timeout passes, so
+ * respond() has to enforce the timeout itself or the refusal is only true for
+ * a busy device. */
+static void answering_after_the_timeout_on_an_idle_device_is_refused(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  invocation_record rec = { 0 };
+  assert_int_equal(
+      az_iot_gen1_direct_method_client_set_handler(&fx->dm, on_method, &rec), AZ_IOT_OK);
+  assert_int_equal(az_iot_gen1_direct_method_client_set_response_timeout(&fx->dm, 1), AZ_IOT_OK);
+  inject_invocation(fx, 0);
+  assert_non_null(rec.request);
+
+  sleep_past_one_second();
+
+  /* No further invocation: nothing has swept the pool. */
+  az_iot_mock_mqtt_client_clear_calls(fx->mock);
+  assert_int_equal(
+      az_iot_gen1_direct_method_respond(rec.request, 200, NULL, 0), AZ_IOT_ERR_TIMEOUT);
+  assert_null(az_iot_mock_mqtt_client_last_of(fx->mock, AZ_IOT_MOCK_CALL_PUBLISH));
+}
+
+static void the_response_timeout_setter_validates_its_arguments(void** state)
 {
   fixture* fx = (fixture*)*state;
   open_to_connected(fx);
 
   assert_int_equal(
-      az_iot_gen1_direct_method_client_set_response_deadline(NULL, 30), AZ_IOT_ERR_INVALID_ARG);
-  assert_int_equal(az_iot_gen1_direct_method_client_set_response_deadline(&fx->dm, 30), AZ_IOT_OK);
+      az_iot_gen1_direct_method_client_set_response_timeout(NULL, 30), AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(az_iot_gen1_direct_method_client_set_response_timeout(&fx->dm, 30), AZ_IOT_OK);
   /* 0 restores the default rather than reclaiming every slot immediately. */
-  assert_int_equal(az_iot_gen1_direct_method_client_set_response_deadline(&fx->dm, 0), AZ_IOT_OK);
+  assert_int_equal(az_iot_gen1_direct_method_client_set_response_timeout(&fx->dm, 0), AZ_IOT_OK);
 
   invocation_record rec = { 0 };
   assert_int_equal(
@@ -989,13 +1014,15 @@ int main(void)
     cmocka_unit_test_setup_teardown(respond_rejects_a_null_payload_with_a_length, setup, teardown),
     cmocka_unit_test_setup_teardown(a_dropped_invocation_says_why, setup, teardown),
     cmocka_unit_test_setup_teardown(
-        an_unanswered_invocation_frees_its_slot_after_the_deadline, setup, teardown),
+        an_unanswered_invocation_frees_its_slot_after_the_timeout, setup, teardown),
     cmocka_unit_test_setup_teardown(
-        an_invocation_inside_its_deadline_keeps_its_slot, setup, teardown),
+        an_invocation_inside_its_timeout_keeps_its_slot, setup, teardown),
     cmocka_unit_test_setup_teardown(a_reclaimed_slot_names_the_method, setup, teardown),
-    cmocka_unit_test_setup_teardown(answering_after_the_deadline_is_refused, setup, teardown),
+    cmocka_unit_test_setup_teardown(answering_after_the_timeout_is_refused, setup, teardown),
     cmocka_unit_test_setup_teardown(
-        the_response_deadline_setter_validates_its_arguments, setup, teardown),
+        answering_after_the_timeout_on_an_idle_device_is_refused, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        the_response_timeout_setter_validates_its_arguments, setup, teardown),
     cmocka_unit_test_setup_teardown(an_unparsable_topic_says_why, setup, teardown),
     cmocka_unit_test_setup_teardown(init_rejects_a_null_client, setup, teardown),
     cmocka_unit_test(init_rejects_a_null_connection),

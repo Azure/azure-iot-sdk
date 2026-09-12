@@ -23,11 +23,11 @@
 
 #define AZ_IOT_GEN1_DM_TOPIC_MAX 192
 #define METHODS_REQUEST_PREFIX "$iothub/methods/POST/"
-#define DM_MS_PER_SECOND 1000u
+#define MS_PER_SECOND 1000u
 
 #define DI(d) ((d)->_internal)
 
-/* Release every in-flight slot whose response deadline has passed.
+/* Release every in-flight slot whose response timeout has passed.
  *
  * Without this an application that drops a request -- a handler that returns
  * without responding, including on its own error paths -- would hold that slot
@@ -44,16 +44,38 @@ static void requests_expire_stale(az_iot_gen1_direct_method_client* dm)
   for (size_t i = 0; i < AZ_IOT_DM_MAX_INFLIGHT; ++i)
   {
     az_iot_direct_method_request* r = &DI(dm).req_pool[i];
-    if (!r->_internal.in_use || now < DI(dm).req_deadline_ms[i])
+    if (!r->_internal.in_use || now < DI(dm).req_expires_at_ms[i])
     {
       continue;
     }
     AZ_IOT_LOG_WARNF(
-        "gen1_direct_method: '%s' was never answered within %u seconds; reclaiming its slot",
-        r->_internal.method_name,
-        (unsigned)DI(dm).response_deadline_seconds);
+        "gen1_direct_method: '%s' was never answered within its response timeout; reclaiming its "
+        "slot",
+        r->_internal.method_name);
     r->_internal.in_use = false;
   }
+}
+
+/* Locate `request` in this client's pool.
+ *
+ * Compares pointers rather than subtracting them: az_iot_direct_method_request
+ * is a public type, so a handle reaching respond() need not have come from this
+ * pool, and subtracting would produce an index that then reads past the
+ * parallel expiry array. */
+static bool request_pool_index(
+    const az_iot_gen1_direct_method_client* dm,
+    const az_iot_direct_method_request* request,
+    size_t* out_index)
+{
+  for (size_t i = 0; i < AZ_IOT_DM_MAX_INFLIGHT; ++i)
+  {
+    if (&DI(dm).req_pool[i] == request)
+    {
+      *out_index = i;
+      return true;
+    }
+  }
+  return false;
 }
 
 /* Acquire a free slot from the bounded pool (NULL if full).
@@ -74,18 +96,17 @@ static az_iot_direct_method_request* request_acquire(az_iot_gen1_direct_method_c
       r->_internal.in_use = true;
       r->_internal.owner = dm;
       r->_internal.profile = AZ_IOT_CONNECTION_PROFILE_CLASSIC;
-      DI(dm).req_deadline_ms[i]
-          = az_iot_time_mono_ms() + ((uint64_t)DI(dm).response_deadline_seconds * DM_MS_PER_SECOND);
+      DI(dm).req_expires_at_ms[i]
+          = az_iot_time_mono_ms() + ((uint64_t)DI(dm).response_timeout_seconds * MS_PER_SECOND);
       DI(dm).next_slot = (i + 1u) % AZ_IOT_DM_MAX_INFLIGHT;
       return r;
     }
   }
   AZ_IOT_LOG_WARNF(
-      "gen1_direct_method: dropping an invocation, all %d in-flight slots are taken by requests "
-      "still inside their %u second response deadline. Answer them with "
+      "gen1_direct_method: dropping an invocation, all %d in-flight slots are held by requests "
+      "that have not been answered and have not yet timed out. Answer them with "
       "az_iot_gen1_direct_method_respond(), or raise AZ_IOT_DM_MAX_INFLIGHT.",
-      (int)AZ_IOT_DM_MAX_INFLIGHT,
-      (unsigned)DI(dm).response_deadline_seconds);
+      (int)AZ_IOT_DM_MAX_INFLIGHT);
   return NULL;
 }
 
@@ -182,7 +203,7 @@ az_iot_result az_iot_gen1_direct_method_client_init(
 
   memset(client, 0, sizeof(*client));
   DI(client).conn = conn;
-  DI(client).response_deadline_seconds = AZ_IOT_GEN1_DM_RESPONSE_DEADLINE_SECONDS;
+  DI(client).response_timeout_seconds = AZ_IOT_GEN1_DM_RESPONSE_TIMEOUT_SECONDS;
 
   /* No connect-time bind: unlike C2D, these topics carry no device id, so they
    * are known before the connection resolves. */
@@ -236,7 +257,7 @@ az_iot_result az_iot_gen1_direct_method_client_set_handler(
   return AZ_IOT_OK;
 }
 
-az_iot_result az_iot_gen1_direct_method_client_set_response_deadline(
+az_iot_result az_iot_gen1_direct_method_client_set_response_timeout(
     az_iot_gen1_direct_method_client* client,
     uint32_t seconds)
 {
@@ -244,8 +265,8 @@ az_iot_result az_iot_gen1_direct_method_client_set_response_deadline(
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
-  DI(client).response_deadline_seconds
-      = (seconds == 0u) ? AZ_IOT_GEN1_DM_RESPONSE_DEADLINE_SECONDS : seconds;
+  DI(client).response_timeout_seconds
+      = (seconds == 0u) ? AZ_IOT_GEN1_DM_RESPONSE_TIMEOUT_SECONDS : seconds;
   return AZ_IOT_OK;
 }
 
@@ -276,6 +297,24 @@ az_iot_result az_iot_gen1_direct_method_respond(
 
   az_iot_gen1_direct_method_client* dm
       = (az_iot_gen1_direct_method_client*)request->_internal.owner;
+
+  size_t index = 0;
+  if (!request_pool_index(dm, request, &index))
+  {
+    AZ_IOT_LOG_ERROR(
+        "gen1_direct_method: respond() called with a request this client never handed out");
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  /* The sweep only runs when a method message arrives, so checking the slot's
+   * own expiry here is what makes the refusal hold on an otherwise idle device. */
+  if (az_iot_time_mono_ms() >= DI(dm).req_expires_at_ms[index])
+  {
+    AZ_IOT_LOG_WARNF(
+        "gen1_direct_method: '%s' was answered after its response timeout; sending nothing",
+        request->_internal.method_name);
+    request->_internal.in_use = false;
+    return AZ_IOT_ERR_TIMEOUT;
+  }
 
   char topic[AZ_IOT_GEN1_DM_TOPIC_MAX];
   az_iot_span_writer writer;

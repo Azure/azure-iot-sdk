@@ -203,8 +203,9 @@ extern "C"
       az_iot_direct_method_request req_pool[AZ_IOT_GEN2_DM_MAX_CONCURRENT];
       /* Parallel to req_pool: the execution budget each in-flight invocation
        * was admitted with, and when it was admitted. Held here rather than on
-       * az_iot_direct_method_request so gen1, which shares that type, does not
-       * carry storage for a deadline model it has no messages for. */
+       * az_iot_direct_method_request because the two generations time out on
+       * different inputs -- gen2 on the budget the service declared, gen1 on a
+       * locally configured one -- so neither belongs on the shared type. */
       uint32_t exec_budget_seconds[AZ_IOT_GEN2_DM_MAX_CONCURRENT];
       uint64_t exec_received_at_ms[AZ_IOT_GEN2_DM_MAX_CONCURRENT];
       /* Next req_pool index to try. Allocation cycles rather than always taking
