@@ -149,8 +149,8 @@ az_iot_add_cmocka_test(az_iot_tests_log unit/log_test.c)
 az_iot_add_cmocka_test(az_iot_tests_diagnostics unit/diagnostics_test.c)
 target_include_directories(az_iot_tests_diagnostics PRIVATE
     ${CMAKE_SOURCE_DIR}/src/core)
-az_iot_add_cmocka_test(az_iot_tests_protocol_profile_dispatch unit/protocol_profile_dispatch_test.c)
-target_include_directories(az_iot_tests_protocol_profile_dispatch PRIVATE
+az_iot_add_cmocka_test(az_iot_tests_dispatch unit/dispatch_test.c)
+target_include_directories(az_iot_tests_dispatch PRIVATE
     ${CMAKE_SOURCE_DIR}/src/core)
 az_iot_add_cmocka_test(
     az_iot_tests_gen1_telemetry_client unit/gen1_telemetry_client_test.c)

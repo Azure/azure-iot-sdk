@@ -12,7 +12,6 @@
 #include "azure/iot/az_iot_mqtt_iface.h"
 
 #include "internal/dispatch.h"
-#include "internal/protocol_profile.h"
 
 #ifdef __cplusplus
 extern "C"
@@ -56,11 +55,6 @@ extern "C"
    * do_work(). No-op when no gate is armed. Lets unit tests exercise the
    * never-acked path without waiting out the configured timeout. */
   void az_iot_connection_client__subscription_gate_force_timeout(az_iot_connection_client* client);
-
-  /* Return the protocol profile selected by the current session_role. May be
-   * NULL when the role has no profile yet (e.g. HUB_NEXT in Phase 2.3). */
-  const az_iot_protocol_profile* az_iot_connection_client__profile(
-      const az_iot_connection_client* client);
 
   /* Register an inbound MESSAGE handler. ConnectionClient lazily allocates a
    * dispatch table on the first call. Each registered handler is invoked

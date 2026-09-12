@@ -7,8 +7,7 @@
 
 At the start of this work one set of feature clients served both hub generations,
 with 13 `profile->flavor` comparisons across five feature clients resolved
-through two static tables in
-[`protocol_profile.c`](../../src/core/protocol_profile.c). The result is that
+through two static tables in `protocol_profile.c`. The result is that
 every public feature API is the union of what both generations can do, and the
 parts that only one generation supports are discoverable only at run time.
 
@@ -992,9 +991,10 @@ touches one place.
 
 The internal `az_iot_hub_protocol` enum is gone — collapsed into
 `az_iot_connection_profile`, which is now both the public profile type and the
-internal selector. `az_iot_hub_flavor` deliberately **stays** for now: it is
-internal to `protocol_profile.c` and [P4](#12-phases) deletes it along with the
-flavor tables. `az_iot_mqtt_role` keeps its DPS member.
+internal selector. `az_iot_hub_flavor` is gone too, deleted in [P4](#12-phases)
+along with the rest of `protocol_profile`. `az_iot_mqtt_role` keeps its DPS
+member, and is now the only generation selector left inside the connection
+client.
 
 ---
 
@@ -1044,7 +1044,7 @@ plus the conformance suites.
 | P1d | Turn the connection-state callback into the extensible `az_iot_connection_state_event` struct, carrying the resolved profile on `CONNECTED` ([§9](#the-profile-can-change-while-the-device-is-running)) | — | **Implemented.** The SDK produces and size-stamps the callback-lifetime event. `profile` is set on `CONNECTED`, and also on a profile-driven failure so the application can rebuild for the newly assigned generation. All samples, unit/integration suites and e2e agents use the new signature. |
 | P2 | Split the feature clients, one PR each: telemetry → c2d → direct methods → twin | P1b, **P1c**, P1d | **Done — all four clients split.** P1a gates automatic production selection after DPS, not implementation: the absent/null development bridge above supplies `mqttV5` for AEG testing until the api-version ships. Each client pins its generation at `_init()` and the connection checks the pin at connect ([§9](#9-pinning-the-generation-at-init)); topics are built through the connect-time bind callback. The direct-method split shipped the gen2 client as a carry-over of the pre-split behaviour and a guard against mistaking a probe for an invocation; the AEG probe / exec / abandon handshake that [§4](#4-no-cross-generation-constructs-on-the-public-surface) assigns to gen2 landed after it, and is the first place the two generations differ in protocol rather than only in topic shape. **The twin PR carried no ADU change at all:** the ADU cut landed first, so there was no `az_iot_adu_client_initialize()` to repoint and ADU no longer consumes the twin desired-property registry ([§8](#8-device-update)) — which the twin split therefore deleted. Twin is also where the gen2 bind callback stopped being cosmetic: the unified client resolved the device id inside `init()`, which cannot work for a DPS connection before assignment; gen2 now binds its three `dev/twin/...` handlers at connect like every other gen2 client. |
 | P3 | File upload redesign — HTTP transport becomes gen1-only | P1 | **Done.** Shipped smaller than planned: file upload was **cut from AEG**, so there is no gen2 client and none is manufactured. `az_iot_gen1_file_upload_client` owns the HTTPS control plane, the transport hook is now required at `init()`, and the client pins Classic — see [§4](#file-upload-is-gen1-only). This removed the last three `profile->flavor` branches in `c/src`, which is what P4 was waiting on. |
-| P4 | Delete `protocol_profile.c`'s flavor tables and the last `profile->flavor` branches | P2, P3 | |
+| P4 | Delete `protocol_profile.c`'s flavor tables and the last `profile->flavor` branches | P2, P3 | **Done, and larger than scoped.** Once P2 and P3 moved every topic into the feature clients, nothing in `c/src` read *any* profile field — not just the flavor tables. `az_iot_connection_client__profile()` had no production caller left, and `mqtt_version` merely duplicated `az_iot_mqtt_required_version_for_role()`. So the whole module went rather than only the flavor half: `protocol_profile.{c,h}`, the accessor, and the `az_iot_hub_flavor` enum. The `protocol_profile_dispatch_test` suite was testing a dead table alongside live dispatch routing; it is now `dispatch_test`. |
 | P5 | Re-layer ADU onto `adu_core` + channel vtable | — | **Done, ahead of P4.** ADU referenced neither generation nor the connection client, so the stated P4 dependency was not real; taking it early removed the ADU work from the P2 twin PR. The ADUv2 channel itself is the remaining ADU work. |
 | P6 | Dual samples per feature, `check-layering.sh`, coverage floors for `gen1`/`gen2` | P2–P4 | |
 

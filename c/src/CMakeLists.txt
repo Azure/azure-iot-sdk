@@ -10,7 +10,6 @@ add_library(az_iot_core
     core/cert_util.c
     core/reconnect.c
     core/dispatch.c
-    core/protocol_profile.c
     core/span_writer.c
     core/message.c
     core/certificate_provider_pem.c

@@ -40,7 +40,6 @@
 #include "internal/connection_client_internal.h"
 #include "internal/dispatch.h"
 #include "internal/log_internal.h"
-#include "internal/protocol_profile.h"
 #include "internal/reconnect.h"
 #include "internal/span_writer.h"
 
@@ -2856,16 +2855,6 @@ void az_iot_connection_client__subscription_gate_force_timeout(az_iot_connection
   {
     client->subscription_gate.deadline_ms = 0;
   }
-}
-
-const az_iot_protocol_profile* az_iot_connection_client__profile(
-    const az_iot_connection_client* client)
-{
-  if (!client)
-  {
-    return NULL;
-  }
-  return az_iot_protocol_profile_for_role(client->session_role);
 }
 
 az_iot_result az_iot_connection_client__register_inbound_handler(

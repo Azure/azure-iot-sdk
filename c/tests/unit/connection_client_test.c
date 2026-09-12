@@ -505,16 +505,12 @@ static void inbound_message_routes_through_dispatch(void** state)
   assert_int_equal(
       az_iot_connection_client_register_mqtt_factory(fx->client, fx->factory), AZ_IOT_OK);
 
-  /* Profile-driven prefix: feature clients in Phase 3 will get this from
-   * the active profile. Here we drive the same code path by hand. */
-  const az_iot_protocol_profile* p = az_iot_connection_client__profile(fx->client);
-  assert_non_null(p);
-  assert_int_equal(p->flavor, AZ_IOT_HUB_FLAVOR_CLASSIC);
-
+  /* The twin response prefix is the Classic wire contract, stated literally so
+   * this test pins the routing rather than mirroring a table. */
   inbound_record twin_rec = { 0 };
   assert_int_equal(
       az_iot_connection_client__register_inbound_handler(
-          fx->client, p->twin_response_topic_prefix, inbound_record_cb, &twin_rec),
+          fx->client, "$iothub/twin/res/", inbound_record_cb, &twin_rec),
       AZ_IOT_OK);
 
   assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
