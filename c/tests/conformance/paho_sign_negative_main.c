@@ -363,9 +363,36 @@ static int run_control(
   FILE* log = fopen(log_path, "w+");
   int saved_out = (log != NULL) ? az_iot_dup(1) : -1;
   int saved_err = (log != NULL) ? az_iot_dup(2) : -1;
-  if (log == NULL || saved_out < 0 || saved_err < 0 || az_iot_dup2(az_iot_fileno(log), 1) < 0
-      || az_iot_dup2(az_iot_fileno(log), 2) < 0)
+  int redirected_out = 0;
+  int redirected_err = 0;
+
+  if (log != NULL && saved_out >= 0 && saved_err >= 0)
   {
+    redirected_out = (az_iot_dup2(az_iot_fileno(log), 1) >= 0);
+    redirected_err = redirected_out && (az_iot_dup2(az_iot_fileno(log), 2) >= 0);
+  }
+
+  if (!redirected_err)
+  {
+    /* Unwind whatever did take effect. Leaving stdout pointed at the log would
+     * swallow the message below and hand the next run a redirected stream. */
+    if (redirected_out)
+    {
+      az_iot_dup2(saved_out, 1);
+    }
+    if (saved_out >= 0)
+    {
+      az_iot_close(saved_out);
+    }
+    if (saved_err >= 0)
+    {
+      az_iot_close(saved_err);
+    }
+    if (log != NULL)
+    {
+      fclose(log);
+      remove(log_path);
+    }
     fprintf(stderr, "sign-negative[%s]: could not capture the suite's output\n", label);
     az_iot_paho_factory_destroy(f);
     return 1;
