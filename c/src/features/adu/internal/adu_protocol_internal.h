@@ -226,7 +226,11 @@ extern "C"
    *
    * @param error_code    The originating string code from info.aduErrorCode, or
    *                      NULL/empty when the service did not surface one. Most
-   *                      precise when present.
+   *                      precise when recognized. May be prose rather than a
+   *                      code (it is often the body's `message`); an
+   *                      unrecognized value is NOT treated as fatal on its own
+   *                      and defers to @p numeric_code, so prose on a transient
+   *                      5xx cannot turn a retryable failure permanent.
    * @param numeric_code  The numeric errorCode from the body. Used when no
    *                      string code is available; 0 means none was found.
    * @param operation     The operation that failed. Required because one
@@ -242,15 +246,33 @@ extern "C"
   /**
    * Extract the error signals from a device-facing failure body.
    *
-   * The body is flat: a numeric `errorCode`, and optionally `info.aduErrorCode`
-   * carrying the originating string code. (This is NOT the nested
-   * {"error":{"code":...}} envelope, which is internal to the service chain and
-   * never reaches a device.)
+   * The body is flat: a numeric `errorCode`, a `message`, and optionally
+   * `info.aduErrorCode`. (This is NOT the nested {"error":{"code":...}}
+   * envelope, which is internal to the service chain and never reaches a
+   * device.)
    *
-   * @param out_code          Receives info.aduErrorCode, or "" when absent.
+   * Measured against a live endpoint, the body carries no `info` object at all
+   * and the originating code arrives in `message`:
+   *
+   *   {"errorCode":400000,"trackingId":"...","message":"INVALID_REQUEST",...}
+   *
+   * So both are read, in this precedence:
+   *   1. `info.aduErrorCode` when present -- always a code, never prose.
+   *   2. `message` otherwise.
+   *
+   * `message` is prose as often as it is a code ("Deserialization error."), so
+   * a caller must not treat out_code as authoritative on its own; see
+   * az_iot_adu__classify_error, which falls back to the numeric code for any
+   * string it does not recognize.
+   *
+   * @param out_code          Receives info.aduErrorCode, else `message`, else
+   *                          "". A value too long for out_code_size is dropped
+   *                          rather than truncated -- a truncated token must
+   *                          never be compared -- leaving "" with the numeric
+   *                          code still reported.
    * @param out_numeric_code  Receives errorCode, or 0 when absent. May be NULL.
-   * @return AZ_IOT_OK when EITHER signal was found; AZ_IOT_ERR_NOT_FOUND when
-   *         the body carried neither.
+   * @return AZ_IOT_OK when ANY signal was found; AZ_IOT_ERR_NOT_FOUND when the
+   *         body carried none.
    */
   az_iot_result az_iot_adu__parse_error_code(
       const uint8_t* payload,
