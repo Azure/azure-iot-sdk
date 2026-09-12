@@ -72,14 +72,17 @@
 #define az_iot_mkdir(p) _mkdir(p)
 #define az_iot_rmdir _rmdir
 #define az_iot_chdir _chdir
+#define az_iot_getcwd _getcwd
 #else
 #include <dirent.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #define az_iot_getpid getpid
 #define az_iot_mkdir(p) mkdir((p), 0700)
 #define az_iot_rmdir rmdir
 #define az_iot_chdir chdir
+#define az_iot_getcwd getcwd
 #define az_iot_dup dup
 #define az_iot_dup2 dup2
 #define az_iot_fileno fileno
@@ -203,8 +206,8 @@ static int write_self_signed_cert(const char* path)
     goto done;
   }
   if (!ASN1_INTEGER_set(X509_get_serialNumber(x509), 1) || !X509_set_version(x509, 2)
-      || X509_gmtime_adj(X509_get_notBefore(x509), 0) == NULL
-      || X509_gmtime_adj(X509_get_notAfter(x509), 3600) == NULL || !X509_set_pubkey(x509, pkey))
+      || X509_gmtime_adj(X509_getm_notBefore(x509), 0) == NULL
+      || X509_gmtime_adj(X509_getm_notAfter(x509), 3600) == NULL || !X509_set_pubkey(x509, pkey))
   {
     goto done;
   }
@@ -493,6 +496,49 @@ static int run_control(
   return rc;
 }
 
+/* Each suite in its own process where the platform allows it.
+ *
+ * The case this control expects to fail aborts at its first assertion, so the
+ * suite never reaches the teardown that stops the test proxy and destroys the
+ * client. Running both suites in one process would carry the first run's proxy
+ * thread and TLS state through the second. That is cmocka aborting a case, not
+ * something to fix from here, so the runs are separated instead and the kernel
+ * reclaims each one.
+ *
+ * Windows has no fork, so there the runs remain sequential: the retention lasts
+ * until exit and affects nothing else. If fork fails, running in-process is
+ * better than not running at all -- the verdict is unaffected either way. */
+static int run_control_isolated(
+    az_iot_conformance_suite suite_kind,
+    const char* cert_path,
+    const char* label)
+{
+#ifndef _WIN32
+  pid_t pid = fork();
+  if (pid == 0)
+  {
+    _exit((run_control(suite_kind, cert_path, label) == 0) ? 0 : 1);
+  }
+  if (pid > 0)
+  {
+    int status = 0;
+    if (waitpid(pid, &status, 0) < 0)
+    {
+      fprintf(stderr, "sign-negative[%s]: could not wait for the isolated run\n", label);
+      return 1;
+    }
+    if (!WIFEXITED(status))
+    {
+      fprintf(stderr, "sign-negative[%s]: the isolated run did not exit normally\n", label);
+      return 1;
+    }
+    return (WEXITSTATUS(status) == 0) ? 0 : 1;
+  }
+  fprintf(stderr, "sign-negative[%s]: could not fork; running in this process instead\n", label);
+#endif
+  return run_control(suite_kind, cert_path, label);
+}
+
 int main(void)
 {
   /* Both suite kinds. The dispatch is shared, but only a run proves that: a
@@ -504,6 +550,13 @@ int main(void)
     az_iot_conformance_suite kind;
     const char* label;
   } suites[] = { { AZ_IOT_CONFORMANCE_SUITE_V3_1_1, "v3" }, { AZ_IOT_CONFORMANCE_SUITE_V5, "v5" } };
+
+  char origin[1024];
+  if (az_iot_getcwd(origin, sizeof(origin)) == NULL)
+  {
+    fprintf(stderr, "sign-negative: could not read the working directory\n");
+    return 1;
+  }
 
   char work_dir[512];
   snprintf(
@@ -531,16 +584,24 @@ int main(void)
   {
     for (size_t i = 0; i < sizeof(suites) / sizeof(suites[0]); ++i)
     {
-      rc |= run_control(suites[i].kind, cert_path, suites[i].label);
+      rc |= run_control_isolated(suites[i].kind, cert_path, suites[i].label);
     }
   }
 
   remove(cert_path);
   sweep_working_directory();
-  if (az_iot_chdir("..") != 0)
+
+  /* Back to where we started, by absolute path. "chdir(\"..\")" would be wrong
+   * whenever TMPDIR is relative: it would land inside TMPDIR rather than here,
+   * and the removal below would then name a directory that does not exist. */
+  if (az_iot_chdir(origin) != 0)
   {
     /* Only cleanup is lost, so the verdict still stands. */
-    fprintf(stderr, "sign-negative: could not leave %s; it will need removing by hand\n", work_dir);
+    fprintf(
+        stderr,
+        "sign-negative: could not return to %s; %s needs removing by hand\n",
+        origin,
+        work_dir);
     return rc;
   }
   az_iot_rmdir(work_dir);
