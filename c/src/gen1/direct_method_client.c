@@ -18,25 +18,55 @@
 
 #include "internal/connection_client_internal.h"
 #include "internal/log_internal.h"
+#include "internal/reconnect.h"
 #include "internal/span_writer.h"
 
 #define AZ_IOT_GEN1_DM_TOPIC_MAX 192
 #define METHODS_REQUEST_PREFIX "$iothub/methods/POST/"
+#define DM_MS_PER_SECOND 1000u
 
 #define DI(d) ((d)->_internal)
 
-/* Acquire a free slot from the bounded pool (NULL if full).
+/* Release every in-flight slot whose response deadline has passed.
  *
- * A slot is returned only by az_iot_gen1_direct_method_respond(). An
- * application that drops a request -- a handler that returns without
- * responding, including on its own error paths -- keeps the slot forever, and
- * once AZ_IOT_DM_MAX_INFLIGHT have leaked every further invocation is dropped.
- * That used to happen in complete silence, which made it look like the service
- * had stopped delivering; say so instead. */
-static az_iot_direct_method_request* request_acquire(az_iot_gen1_direct_method_client* dm)
+ * Without this an application that drops a request -- a handler that returns
+ * without responding, including on its own error paths -- would hold that slot
+ * for the life of the client, and once AZ_IOT_DM_MAX_INFLIGHT had leaked every
+ * further invocation would be dropped.
+ *
+ * Feature clients get no periodic tick, so this runs whenever a method message
+ * arrives, which is exactly when the capacity it frees is about to be needed.
+ * Nothing goes on the wire: Classic has no abandon message, and by here the
+ * service has stopped waiting for an answer anyway. */
+static void requests_expire_stale(az_iot_gen1_direct_method_client* dm)
 {
+  uint64_t now = az_iot_time_mono_ms();
   for (size_t i = 0; i < AZ_IOT_DM_MAX_INFLIGHT; ++i)
   {
+    az_iot_direct_method_request* r = &DI(dm).req_pool[i];
+    if (!r->_internal.in_use || now < DI(dm).req_deadline_ms[i])
+    {
+      continue;
+    }
+    AZ_IOT_LOG_WARNF(
+        "gen1_direct_method: '%s' was never answered within %u seconds; reclaiming its slot",
+        r->_internal.method_name,
+        (unsigned)DI(dm).response_deadline_seconds);
+    r->_internal.in_use = false;
+  }
+}
+
+/* Acquire a free slot from the bounded pool (NULL if full).
+ *
+ * A slot is returned by az_iot_gen1_direct_method_respond(), or reclaimed by
+ * requests_expire_stale() once the invocation can no longer be answered
+ * usefully. Running out means this many invocations arrived while earlier ones
+ * were still legitimately in flight. */
+static az_iot_direct_method_request* request_acquire(az_iot_gen1_direct_method_client* dm)
+{
+  for (size_t n = 0; n < AZ_IOT_DM_MAX_INFLIGHT; ++n)
+  {
+    size_t i = (DI(dm).next_slot + n) % AZ_IOT_DM_MAX_INFLIGHT;
     az_iot_direct_method_request* r = &DI(dm).req_pool[i];
     if (!r->_internal.in_use)
     {
@@ -44,14 +74,18 @@ static az_iot_direct_method_request* request_acquire(az_iot_gen1_direct_method_c
       r->_internal.in_use = true;
       r->_internal.owner = dm;
       r->_internal.profile = AZ_IOT_CONNECTION_PROFILE_CLASSIC;
+      DI(dm).req_deadline_ms[i]
+          = az_iot_time_mono_ms() + ((uint64_t)DI(dm).response_deadline_seconds * DM_MS_PER_SECOND);
+      DI(dm).next_slot = (i + 1u) % AZ_IOT_DM_MAX_INFLIGHT;
       return r;
     }
   }
   AZ_IOT_LOG_WARNF(
-      "gen1_direct_method: dropping an invocation, all %d in-flight slots are taken. A slot is "
-      "released by az_iot_gen1_direct_method_respond(); a handler that returns without responding "
-      "leaks one.",
-      (int)AZ_IOT_DM_MAX_INFLIGHT);
+      "gen1_direct_method: dropping an invocation, all %d in-flight slots are taken by requests "
+      "still inside their %u second response deadline. Answer them with "
+      "az_iot_gen1_direct_method_respond(), or raise AZ_IOT_DM_MAX_INFLIGHT.",
+      (int)AZ_IOT_DM_MAX_INFLIGHT,
+      (unsigned)DI(dm).response_deadline_seconds);
   return NULL;
 }
 
@@ -108,6 +142,8 @@ static void on_method_invocation(void* user_ctx, const az_iot_mqtt_message* msg)
     return;
   }
 
+  requests_expire_stale(dm);
+
   char method_name[AZ_IOT_DM_METHOD_NAME_MAX];
   char rid[AZ_IOT_DM_RID_MAX];
   if (!parse_method_topic(msg->topic, method_name, sizeof(method_name), rid, sizeof(rid)))
@@ -146,6 +182,7 @@ az_iot_result az_iot_gen1_direct_method_client_init(
 
   memset(client, 0, sizeof(*client));
   DI(client).conn = conn;
+  DI(client).response_deadline_seconds = AZ_IOT_GEN1_DM_RESPONSE_DEADLINE_SECONDS;
 
   /* No connect-time bind: unlike C2D, these topics carry no device id, so they
    * are known before the connection resolves. */
@@ -196,6 +233,19 @@ az_iot_result az_iot_gen1_direct_method_client_set_handler(
   }
   DI(client).handler = cb;
   DI(client).handler_ctx = user_ctx;
+  return AZ_IOT_OK;
+}
+
+az_iot_result az_iot_gen1_direct_method_client_set_response_deadline(
+    az_iot_gen1_direct_method_client* client,
+    uint32_t seconds)
+{
+  if (client == NULL)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  DI(client).response_deadline_seconds
+      = (seconds == 0u) ? AZ_IOT_GEN1_DM_RESPONSE_DEADLINE_SECONDS : seconds;
   return AZ_IOT_OK;
 }
 

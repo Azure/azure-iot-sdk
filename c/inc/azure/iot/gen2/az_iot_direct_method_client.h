@@ -207,6 +207,10 @@ extern "C"
        * carry storage for a deadline model it has no messages for. */
       uint32_t exec_budget_seconds[AZ_IOT_GEN2_DM_MAX_CONCURRENT];
       uint64_t exec_received_at_ms[AZ_IOT_GEN2_DM_MAX_CONCURRENT];
+      /* Next req_pool index to try. Allocation cycles rather than always taking
+       * the lowest free slot, so a slot just reclaimed from an application that
+       * never answered is the last one reused, not the first. */
+      size_t next_slot;
       /* Ready tokens and in-flight invocations draw on the one
        * AZ_IOT_GEN2_DM_MAX_CONCURRENT budget, so a probe is only accepted when
        * a request slot will be free to run it. */
