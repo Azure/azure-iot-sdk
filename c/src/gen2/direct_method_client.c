@@ -196,27 +196,43 @@ static az_iot_gen2_direct_method_ready_slot* ready_acquire(az_iot_gen2_direct_me
   return NULL;
 }
 
-/* Acquire a free slot from the bounded pool (NULL if full). A slot is returned
- * by az_iot_gen2_direct_method_respond(), or reclaimed by
- * requests_expire_stale() once its response window has closed. Running out
- * means this many invocations are genuinely still in flight. */
-static az_iot_direct_method_request* request_acquire(
+/* Acquire a free slot from the bounded pool. A slot is returned by
+ * az_iot_gen2_direct_method_respond(), or reclaimed by requests_expire_stale()
+ * once its response window has closed. Running out means this many invocations
+ * are genuinely still in flight.
+ *
+ * Returns false when the pool is full; otherwise fills @p out_request with the
+ * value the application hands back to respond(). */
+static bool request_acquire(
     az_iot_gen2_direct_method_client* dm,
+    az_iot_direct_method_request* out_request,
+    az_iot_direct_method_slot** out_slot,
     size_t* out_index)
 {
   for (size_t n = 0; n < AZ_IOT_GEN2_DM_MAX_CONCURRENT; ++n)
   {
     size_t i = (DI(dm).next_slot + n) % AZ_IOT_GEN2_DM_MAX_CONCURRENT;
-    az_iot_direct_method_request* r = &DI(dm).req_pool[i];
-    if (!r->_internal.in_use)
+    az_iot_direct_method_slot* s = &DI(dm).req_pool[i];
+    if (!s->_internal.in_use)
     {
-      memset(r, 0, sizeof(*r));
-      r->_internal.in_use = true;
-      r->_internal.owner = dm;
-      r->_internal.profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
+      memset(s, 0, sizeof(*s));
+      /* Skips 0 on wrap, so a zeroed request can never match a live slot. */
+      DI(dm).next_seq++;
+      if (DI(dm).next_seq == 0u)
+      {
+        DI(dm).next_seq = 1u;
+      }
+      s->_internal.seq = DI(dm).next_seq;
+      s->_internal.in_use = true;
       *out_index = i;
       DI(dm).next_slot = (i + 1u) % AZ_IOT_GEN2_DM_MAX_CONCURRENT;
-      return r;
+
+      memset(out_request, 0, sizeof(*out_request));
+      out_request->_internal.slot = (uint32_t)i;
+      out_request->_internal.seq = s->_internal.seq;
+      out_request->_internal.profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
+      *out_slot = s;
+      return true;
     }
   }
   AZ_IOT_LOG_WARNF(
@@ -224,30 +240,32 @@ static az_iot_direct_method_request* request_acquire(
       "still inside their response budget. Raise AZ_IOT_GEN2_DM_MAX_CONCURRENT to hold more at "
       "once.",
       (int)AZ_IOT_GEN2_DM_MAX_CONCURRENT);
-  return NULL;
+  return false;
 }
 
-/* Locate `request` in this client's pool.
+/* Resolve a request to the slot it names, or NULL when it no longer refers to a
+ * live invocation of this client.
  *
- * Compares pointers rather than subtracting them. az_iot_direct_method_request
- * is a public type, so a handle reaching respond() need not have come from this
- * pool at all; subtracting would produce an index that then reads past the
- * parallel budget arrays. Equality is well defined for any two pointers, so an
- * unrecognised handle is simply rejected. */
-static bool request_pool_index(
-    const az_iot_gen2_direct_method_client* dm,
-    const az_iot_direct_method_request* request,
+ * The sequence check is what makes a reused slot detectable: the request is a
+ * value the pool cannot reach, so a slot reclaimed and handed to another
+ * invocation carries a newer seq and the stale request stops matching. */
+static az_iot_direct_method_slot* request_resolve(
+    az_iot_gen2_direct_method_client* dm,
+    az_iot_direct_method_request request,
     size_t* out_index)
 {
-  for (size_t i = 0; i < AZ_IOT_GEN2_DM_MAX_CONCURRENT; ++i)
+  size_t i = (size_t)request._internal.slot;
+  if (i >= AZ_IOT_GEN2_DM_MAX_CONCURRENT || request._internal.seq == 0u)
   {
-    if (&DI(dm).req_pool[i] == request)
-    {
-      *out_index = i;
-      return true;
-    }
+    return NULL;
   }
-  return false;
+  az_iot_direct_method_slot* s = &DI(dm).req_pool[i];
+  if (!s->_internal.in_use || s->_internal.seq != request._internal.seq)
+  {
+    return NULL;
+  }
+  *out_index = i;
+  return s;
 }
 
 /* True when the device can take on one more invocation.
@@ -440,16 +458,16 @@ static void requests_expire_stale(az_iot_gen2_direct_method_client* dm)
 {
   for (size_t i = 0; i < AZ_IOT_GEN2_DM_MAX_CONCURRENT; ++i)
   {
-    az_iot_direct_method_request* r = &DI(dm).req_pool[i];
-    if (!RI(r).in_use || !exec_budget_is_spent(dm, i))
+    az_iot_direct_method_slot* s = &DI(dm).req_pool[i];
+    if (!RI(s).in_use || !exec_budget_is_spent(dm, i))
     {
       continue;
     }
     AZ_IOT_LOG_WARNF(
         "gen2_direct_method: '%s' was never answered and its response budget has run out; "
         "reclaiming its slot",
-        RI(r).method_name);
-    RI(r).in_use = false;
+        RI(s).method_name);
+    RI(s).in_use = false;
   }
 }
 
@@ -692,8 +710,9 @@ static void handle_exec(
   }
 
   size_t index = 0;
-  az_iot_direct_method_request* req = request_acquire(dm, &index);
-  if (req == NULL)
+  az_iot_direct_method_request req;
+  az_iot_direct_method_slot* req_slot = NULL;
+  if (!request_acquire(dm, &req, &req_slot, &index))
   {
     /* Unreachable while probe admission reserves capacity for every token it
      * issues. Kept because dropping the exec silently would strand the caller
@@ -705,9 +724,9 @@ static void handle_exec(
     return;
   }
 
-  memcpy(RI(req).method_name, RI(slot).method_name, strlen(RI(slot).method_name) + 1u);
-  memcpy(RI(req).correlation_data, request_id, AZ_IOT_GEN2_DM_REQUEST_ID_LEN);
-  RI(req).correlation_data_len = AZ_IOT_GEN2_DM_REQUEST_ID_LEN;
+  memcpy(RI(req_slot).method_name, RI(slot).method_name, strlen(RI(slot).method_name) + 1u);
+  memcpy(RI(req_slot).correlation_data, request_id, AZ_IOT_GEN2_DM_REQUEST_ID_LEN);
+  RI(req_slot).correlation_data_len = AZ_IOT_GEN2_DM_REQUEST_ID_LEN;
   DI(dm).exec_budget_seconds[index] = exec_budget;
   DI(dm).exec_received_at_ms[index] = received_at_ms;
 
@@ -718,7 +737,7 @@ static void handle_exec(
   void* handler_ctx = RI(slot).handler_ctx;
   RI(slot).in_use = false;
 
-  handler(req, RI(req).method_name, exec.params, exec.params_len, handler_ctx);
+  handler(req, RI(req_slot).method_name, exec.params, exec.params_len, handler_ctx);
 }
 
 static void on_method_message(void* user_ctx, const az_iot_mqtt_message* msg)
@@ -955,35 +974,37 @@ az_iot_result az_iot_gen2_direct_method_client_unregister_method(
 }
 
 az_iot_result az_iot_gen2_direct_method_respond(
-    az_iot_direct_method_request* request,
+    az_iot_gen2_direct_method_client* client,
+    az_iot_direct_method_request request,
     int status_code,
     const uint8_t* payload,
     size_t payload_len)
 {
-  if (request == NULL || (payload_len > 0 && payload == NULL))
+  if (client == NULL || (payload_len > 0 && payload == NULL))
   {
     AZ_IOT_LOG_ERROR(
-        "gen2_direct_method: respond() needs the request handle it was given, and a payload "
-        "whenever payload_len is not zero");
+        "gen2_direct_method: respond() needs the client that delivered the invocation, and a "
+        "payload whenever payload_len is not zero");
     return AZ_IOT_ERR_INVALID_ARG;
   }
-  if (!RI(request).in_use || RI(request).owner == NULL)
-  {
-    AZ_IOT_LOG_ERROR("gen2_direct_method: respond() called on a request that was already answered");
-    return AZ_IOT_ERR_INVALID_ARG;
-  }
-  if (RI(request).profile != AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
+  if (RI(&request).profile != AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
   {
     AZ_IOT_LOG_ERROR("gen2_direct_method: this request was delivered by the gen1 client");
     return AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH;
   }
 
-  az_iot_gen2_direct_method_client* dm = (az_iot_gen2_direct_method_client*)RI(request).owner;
+  az_iot_gen2_direct_method_client* dm = client;
+  /* Covers three cases at once, none of which may reach the wire: already
+   * answered, reclaimed when the budget ran out, and reclaimed then handed to
+   * another invocation -- the last would otherwise publish under that call's
+   * correlation id. */
   size_t index = 0;
-  if (!request_pool_index(dm, request, &index))
+  az_iot_direct_method_slot* slot = request_resolve(dm, request, &index);
+  if (slot == NULL)
   {
-    AZ_IOT_LOG_ERROR(
-        "gen2_direct_method: respond() called with a request this client never handed out");
+    AZ_IOT_LOG_ERROR("gen2_direct_method: respond() called on a request that is no longer live -- "
+                     "it was already "
+                     "answered, or its slot was reclaimed when the response budget ran out");
     return AZ_IOT_ERR_INVALID_ARG;
   }
 
@@ -1010,8 +1031,8 @@ az_iot_result az_iot_gen2_direct_method_respond(
     AZ_IOT_LOG_WARNF(
         "gen2_direct_method: '%s' finished after its response timeout had elapsed; sending no "
         "result",
-        RI(request).method_name);
-    RI(request).in_use = false;
+        RI(slot).method_name);
+    RI(slot).in_use = false;
     return AZ_IOT_ERR_TIMEOUT;
   }
 
@@ -1027,9 +1048,9 @@ az_iot_result az_iot_gen2_direct_method_respond(
   {
     AZ_IOT_LOG_ERRORF(
         "gen2_direct_method: could not encode the result for '%s' (%s)",
-        RI(request).method_name,
+        RI(slot).method_name,
         az_iot_result_to_string(result));
-    RI(request).in_use = false;
+    RI(slot).in_use = false;
     return result;
   }
 
@@ -1038,8 +1059,8 @@ az_iot_result az_iot_gen2_direct_method_respond(
       "result:" DM_TYPE_VERSION,
       DI(dm).result_frame,
       frame_len,
-      RI(request).correlation_data,
+      RI(slot).correlation_data,
       remaining);
-  RI(request).in_use = false;
+  RI(slot).in_use = false;
   return result;
 }

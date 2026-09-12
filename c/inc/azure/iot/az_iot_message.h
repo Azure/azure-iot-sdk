@@ -144,34 +144,55 @@ extern "C"
 #endif
 
   /**
-   * @brief A method invocation awaiting a response.
+   * @brief Storage for one in-flight invocation.
    *
-   * Delivered to the handler and passed back to the owning generation's
-   * respond call. Opaque to callers -- do NOT read _internal.
+   * Lives in a bounded pool inside the caller-allocated client. Opaque to
+   * applications -- they never hold one; they hold an
+   * az_iot_direct_method_request naming it.
    *
-   * The correlation fields are generation-specific storage: gen1 answers on a
-   * `$rid`, gen2 echoes MQTT v5 correlation data. Both live here because the
-   * handle is the one piece of this feature both generations hand to the
-   * application, which is what lets the handler callback be shared.
+   * The correlation fields are generation-specific: gen1 answers on a `$rid`,
+   * gen2 echoes MQTT v5 correlation data. Both live here because the pool is
+   * the one piece of this feature the two generations share.
+   */
+  typedef struct az_iot_direct_method_slot
+  {
+    struct
+    {
+      char method_name[AZ_IOT_DM_METHOD_NAME_MAX];
+      char rid[AZ_IOT_DM_RID_MAX];
+      uint8_t correlation_data[AZ_IOT_DM_CORR_DATA_MAX];
+      size_t correlation_data_len;
+      /* Bumped every time this slot is handed out. A request naming an older
+       * value is stale, which is what makes a reused slot detectable. Never 0
+       * once issued, so a zeroed request cannot match a live slot. */
+      uint32_t seq;
+      bool in_use; /* acquired -> responded, or reclaimed on timeout */
+    } _internal;
+  } az_iot_direct_method_slot;
+
+  /**
+   * @brief Identifies one method invocation awaiting a response.
+   *
+   * Passed to the handler and back to the owning generation's respond call
+   * **by value**, so it names a slot rather than pointing at one. A slot that
+   * has since been reclaimed and handed to another invocation no longer
+   * matches, and the stale response is refused instead of answering the wrong
+   * call. Opaque to callers -- do NOT read _internal.
    */
   typedef struct az_iot_direct_method_request
   {
     struct
     {
-      void* owner; /* the generation's client that acquired this slot */
-      /* Which generation built it, so a respond call from the other one is
-       * refused rather than reading the wrong half of this struct. */
+      uint32_t slot;
+      uint32_t seq;
+      /* Which generation issued it, so a respond call from the other one is
+       * refused rather than matching a slot index by coincidence. */
       az_iot_connection_profile profile;
-      char method_name[AZ_IOT_DM_METHOD_NAME_MAX];
-      char rid[AZ_IOT_DM_RID_MAX];
-      uint8_t correlation_data[AZ_IOT_DM_CORR_DATA_MAX];
-      size_t correlation_data_len;
-      bool in_use; /* pool slot occupied: acquired -> responded */
     } _internal;
   } az_iot_direct_method_request;
 
   typedef void (*az_iot_direct_method_handler_callback)(
-      az_iot_direct_method_request* request,
+      az_iot_direct_method_request request,
       const char* method_name,
       const uint8_t* payload,
       size_t payload_len,

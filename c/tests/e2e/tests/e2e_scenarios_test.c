@@ -308,16 +308,16 @@ static void test_c2d(void** state)
 /* ---- direct method -------------------------------------------------------- */
 
 static void on_method(
-    az_iot_direct_method_request* request,
+    az_iot_direct_method_request request,
     const char* method_name,
     const uint8_t* payload,
     size_t payload_len,
     void* user_ctx)
 {
   (void)method_name;
-  (void)user_ctx;
   /* Echo the request payload back with a 200. */
-  az_iot_result rc = az_iot_gen1_direct_method_respond(request, 200, payload, payload_len);
+  az_iot_result rc = az_iot_gen1_direct_method_respond(
+      (az_iot_gen1_direct_method_client*)user_ctx, request, 200, payload, payload_len);
   (void)rc;
 }
 
@@ -327,7 +327,7 @@ static void test_direct_method(void** state)
 
   az_iot_gen1_direct_method_client dm;
   assert_int_equal(az_iot_gen1_direct_method_client_init(&dm, &fx->dev.conn), AZ_IOT_OK);
-  assert_int_equal(az_iot_gen1_direct_method_client_set_handler(&dm, on_method, NULL), AZ_IOT_OK);
+  assert_int_equal(az_iot_gen1_direct_method_client_set_handler(&dm, on_method, &dm), AZ_IOT_OK);
 
   for (int i = 0; i < 20; ++i)
   {

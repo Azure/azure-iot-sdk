@@ -66,11 +66,13 @@ typedef struct invocation_record
   char method_name[64];
   char payload[64];
   size_t payload_len;
-  az_iot_direct_method_request* request; /* owned by user; we'll respond to it */
+  /* By value: still meaningful after the pool reuses the slot, which is the
+   * whole point of the handle change. */
+  az_iot_direct_method_request request;
 } invocation_record;
 
 static void on_method(
-    az_iot_direct_method_request* request,
+    az_iot_direct_method_request request,
     const char* method_name,
     const uint8_t* payload,
     size_t payload_len,
@@ -204,13 +206,14 @@ static void inbound_invocation_dispatched_to_handler(void** state)
   assert_string_equal(rec.method_name, "reboot");
   assert_int_equal(rec.payload_len, sizeof(payload) - 1);
   assert_string_equal(rec.payload, "{\"x\":1}");
-  assert_non_null(rec.request);
+  assert_true(rec.fired);
 
   /* Respond. The publish must land on the response topic with the same rid. */
   az_iot_mock_mqtt_client_clear_calls(fx->mock);
   static const uint8_t resp[] = "{\"ok\":true}";
   assert_int_equal(
-      az_iot_gen1_direct_method_respond(rec.request, 200, resp, sizeof(resp) - 1), AZ_IOT_OK);
+      az_iot_gen1_direct_method_respond(&fx->dm, rec.request, 200, resp, sizeof(resp) - 1),
+      AZ_IOT_OK);
 
   assert_int_equal(az_iot_mock_mqtt_client_call_count(fx->mock), 1);
   const az_iot_mock_call* c = az_iot_mock_mqtt_client_call_at(fx->mock, 0);
@@ -237,10 +240,13 @@ static void malformed_topic_dropped(void** state)
   assert_false(rec.fired);
 }
 
-static void respond_rejects_null_request(void** state)
+static void respond_rejects_a_null_client(void** state)
 {
   (void)state;
-  assert_int_equal(az_iot_gen1_direct_method_respond(NULL, 200, NULL, 0), AZ_IOT_ERR_INVALID_ARG);
+  az_iot_direct_method_request request;
+  memset(&request, 0, sizeof(request));
+  assert_int_equal(
+      az_iot_gen1_direct_method_respond(NULL, request, 200, NULL, 0), AZ_IOT_ERR_INVALID_ARG);
 }
 
 /* ---- in-flight request pool ---------------------------------------------- */
@@ -252,6 +258,25 @@ static void inject_invocation(fixture* fx, int n)
   snprintf(topic, sizeof(topic), "$iothub/methods/POST/m%d/?$rid=%d", n, n);
   assert_true(az_iot_mock_mqtt_client_inject_message(fx->mock, topic, NULL, 0, AZ_IOT_MQTT_QOS_0));
   assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+}
+
+/* A zeroed request names slot 0 with sequence 0. Sequence numbers start at 1
+ * precisely so this cannot resolve to a live invocation. */
+static void respond_rejects_a_zeroed_request(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  invocation_record rec = { 0 };
+  assert_int_equal(
+      az_iot_gen1_direct_method_client_set_handler(&fx->dm, on_method, &rec), AZ_IOT_OK);
+  inject_invocation(fx, 0);
+  assert_true(rec.fired);
+
+  az_iot_direct_method_request zeroed;
+  memset(&zeroed, 0, sizeof(zeroed));
+  assert_int_equal(
+      az_iot_gen1_direct_method_respond(&fx->dm, zeroed, 200, NULL, 0), AZ_IOT_ERR_INVALID_ARG);
 }
 
 static void the_pool_holds_the_documented_number_of_concurrent_requests(void** state)
@@ -308,8 +333,9 @@ static void responding_frees_the_slot_for_the_next_invocation(void** state)
   {
     inject_invocation(fx, i);
   }
-  assert_non_null(rec.request);
-  assert_int_equal(az_iot_gen1_direct_method_respond(rec.request, 200, NULL, 0), AZ_IOT_OK);
+  assert_true(rec.fired);
+  assert_int_equal(
+      az_iot_gen1_direct_method_respond(&fx->dm, rec.request, 200, NULL, 0), AZ_IOT_OK);
 
   rec.fired = false;
   inject_invocation(fx, 99);
@@ -326,18 +352,92 @@ static void responding_twice_is_rejected(void** state)
       az_iot_gen1_direct_method_client_set_handler(&fx->dm, on_method, &rec), AZ_IOT_OK);
   inject_invocation(fx, 7);
   assert_true(rec.fired);
-  assert_non_null(rec.request);
 
   az_iot_mock_mqtt_client_clear_calls(fx->mock);
-  assert_int_equal(az_iot_gen1_direct_method_respond(rec.request, 200, NULL, 0), AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_gen1_direct_method_respond(&fx->dm, rec.request, 200, NULL, 0), AZ_IOT_OK);
   assert_int_equal(az_iot_mock_mqtt_client_call_count(fx->mock), 1);
 
   /* The slot is back in the pool and may already belong to another
    * invocation, so a second answer would carry that invocation's rid and
    * reply to the wrong call. */
   assert_int_equal(
-      az_iot_gen1_direct_method_respond(rec.request, 200, NULL, 0), AZ_IOT_ERR_INVALID_ARG);
+      az_iot_gen1_direct_method_respond(&fx->dm, rec.request, 200, NULL, 0),
+      AZ_IOT_ERR_INVALID_ARG);
   assert_int_equal(az_iot_mock_mqtt_client_call_count(fx->mock), 1);
+}
+
+/* The alias this handle shape exists to close, and the reason a request is a
+ * value rather than a pointer into the pool.
+ *
+ * Answer an invocation, then keep injecting until the pool cycles all the way
+ * back and another invocation is living in that same slot. With a pointer
+ * handle the second answer found in_use set and a live owner, and published
+ * under the *newer* invocation's rid -- answering a call the application had
+ * never seen. The sequence number in the request is what now tells them apart.
+ */
+static void answering_after_the_slot_was_reused_is_refused(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  invocation_record rec = { 0 };
+  assert_int_equal(
+      az_iot_gen1_direct_method_client_set_handler(&fx->dm, on_method, &rec), AZ_IOT_OK);
+
+  inject_invocation(fx, 0);
+  assert_true(rec.fired);
+  az_iot_direct_method_request first = rec.request;
+  assert_int_equal(az_iot_gen1_direct_method_respond(&fx->dm, first, 200, NULL, 0), AZ_IOT_OK);
+
+  /* Cycle the pool right back around to the slot `first` named. */
+  for (int i = 1; i <= AZ_IOT_DM_MAX_INFLIGHT; ++i)
+  {
+    rec.fired = false;
+    inject_invocation(fx, i);
+    assert_true(rec.fired);
+  }
+  az_iot_direct_method_request occupant = rec.request;
+
+  az_iot_mock_mqtt_client_clear_calls(fx->mock);
+  assert_int_equal(
+      az_iot_gen1_direct_method_respond(&fx->dm, first, 200, NULL, 0), AZ_IOT_ERR_INVALID_ARG);
+  assert_null(az_iot_mock_mqtt_client_last_of(fx->mock, AZ_IOT_MOCK_CALL_PUBLISH));
+
+  /* And the invocation that legitimately holds that slot is still answerable:
+   * the refusal must not have consumed someone else's request. */
+  assert_int_equal(az_iot_gen1_direct_method_respond(&fx->dm, occupant, 200, NULL, 0), AZ_IOT_OK);
+}
+
+/* A reclaimed-then-reused slot is the same alias reached the other way: no
+ * answer at all, the timeout frees the slot, and a later invocation takes it. */
+static void answering_after_a_reclaimed_slot_was_reused_is_refused(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  invocation_record rec = { 0 };
+  assert_int_equal(
+      az_iot_gen1_direct_method_client_set_handler(&fx->dm, on_method, &rec), AZ_IOT_OK);
+  assert_int_equal(az_iot_gen1_direct_method_client_set_response_timeout(&fx->dm, 1), AZ_IOT_OK);
+
+  inject_invocation(fx, 0);
+  assert_true(rec.fired);
+  az_iot_direct_method_request abandoned = rec.request;
+
+  sleep_past_one_second();
+
+  for (int i = 1; i <= AZ_IOT_DM_MAX_INFLIGHT; ++i)
+  {
+    rec.fired = false;
+    inject_invocation(fx, i);
+    assert_true(rec.fired);
+  }
+
+  az_iot_mock_mqtt_client_clear_calls(fx->mock);
+  assert_int_equal(
+      az_iot_gen1_direct_method_respond(&fx->dm, abandoned, 200, NULL, 0), AZ_IOT_ERR_INVALID_ARG);
+  assert_null(az_iot_mock_mqtt_client_last_of(fx->mock, AZ_IOT_MOCK_CALL_PUBLISH));
 }
 
 static void respond_carries_a_non_success_status(void** state)
@@ -349,10 +449,11 @@ static void respond_carries_a_non_success_status(void** state)
   assert_int_equal(
       az_iot_gen1_direct_method_client_set_handler(&fx->dm, on_method, &rec), AZ_IOT_OK);
   inject_invocation(fx, 5);
-  assert_non_null(rec.request);
+  assert_true(rec.fired);
 
   az_iot_mock_mqtt_client_clear_calls(fx->mock);
-  assert_int_equal(az_iot_gen1_direct_method_respond(rec.request, 501, NULL, 0), AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_gen1_direct_method_respond(&fx->dm, rec.request, 501, NULL, 0), AZ_IOT_OK);
 
   const az_iot_mock_call* c = az_iot_mock_mqtt_client_call_at(fx->mock, 0);
   assert_int_equal(c->kind, AZ_IOT_MOCK_CALL_PUBLISH);
@@ -369,13 +470,15 @@ static void respond_rejects_a_null_payload_with_a_length(void** state)
   assert_int_equal(
       az_iot_gen1_direct_method_client_set_handler(&fx->dm, on_method, &rec), AZ_IOT_OK);
   inject_invocation(fx, 3);
-  assert_non_null(rec.request);
+  assert_true(rec.fired);
 
   assert_int_equal(
-      az_iot_gen1_direct_method_respond(rec.request, 200, NULL, 4), AZ_IOT_ERR_INVALID_ARG);
+      az_iot_gen1_direct_method_respond(&fx->dm, rec.request, 200, NULL, 4),
+      AZ_IOT_ERR_INVALID_ARG);
   /* Rejecting the arguments must not consume the request: the application can
    * still answer it properly. */
-  assert_int_equal(az_iot_gen1_direct_method_respond(rec.request, 200, NULL, 0), AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_gen1_direct_method_respond(&fx->dm, rec.request, 200, NULL, 0), AZ_IOT_OK);
 }
 
 /* ---- diagnostics ---------------------------------------------------------- */
@@ -469,8 +572,8 @@ static void an_unanswered_invocation_frees_its_slot_after_the_timeout(void** sta
   rec.fired = false;
   inject_invocation(fx, AZ_IOT_DM_MAX_INFLIGHT + 1);
   assert_true(rec.fired);
-  assert_non_null(rec.request);
-  assert_int_equal(az_iot_gen1_direct_method_respond(rec.request, 200, NULL, 0), AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_gen1_direct_method_respond(&fx->dm, rec.request, 200, NULL, 0), AZ_IOT_OK);
 }
 
 /* The negative control for the test above: without it, a reclaim that fired
@@ -532,13 +635,13 @@ static void answering_after_the_timeout_is_refused(void** state)
       az_iot_gen1_direct_method_client_set_handler(&fx->dm, on_method, &rec), AZ_IOT_OK);
   assert_int_equal(az_iot_gen1_direct_method_client_set_response_timeout(&fx->dm, 1), AZ_IOT_OK);
   inject_invocation(fx, 0);
-  az_iot_direct_method_request* stale = rec.request;
-  assert_non_null(stale);
+  az_iot_direct_method_request stale = rec.request;
 
   sleep_past_one_second();
   inject_invocation(fx, 1); /* drives the sweep, reclaiming the slot above */
 
-  assert_int_equal(az_iot_gen1_direct_method_respond(stale, 200, NULL, 0), AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(
+      az_iot_gen1_direct_method_respond(&fx->dm, stale, 200, NULL, 0), AZ_IOT_ERR_INVALID_ARG);
 }
 
 /* The sweep only runs when a method message arrives. On a device that is not
@@ -555,14 +658,14 @@ static void answering_after_the_timeout_on_an_idle_device_is_refused(void** stat
       az_iot_gen1_direct_method_client_set_handler(&fx->dm, on_method, &rec), AZ_IOT_OK);
   assert_int_equal(az_iot_gen1_direct_method_client_set_response_timeout(&fx->dm, 1), AZ_IOT_OK);
   inject_invocation(fx, 0);
-  assert_non_null(rec.request);
+  assert_true(rec.fired);
 
   sleep_past_one_second();
 
   /* No further invocation: nothing has swept the pool. */
   az_iot_mock_mqtt_client_clear_calls(fx->mock);
   assert_int_equal(
-      az_iot_gen1_direct_method_respond(rec.request, 200, NULL, 0), AZ_IOT_ERR_TIMEOUT);
+      az_iot_gen1_direct_method_respond(&fx->dm, rec.request, 200, NULL, 0), AZ_IOT_ERR_TIMEOUT);
   assert_null(az_iot_mock_mqtt_client_last_of(fx->mock, AZ_IOT_MOCK_CALL_PUBLISH));
 }
 
@@ -890,7 +993,8 @@ static void a_non_numeric_rid_is_accepted(void** state)
   assert_true(rec.fired);
 
   az_iot_mock_mqtt_client_clear_calls(fx->mock);
-  assert_int_equal(az_iot_gen1_direct_method_respond(rec.request, 200, NULL, 0), AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_gen1_direct_method_respond(&fx->dm, rec.request, 200, NULL, 0), AZ_IOT_OK);
   const az_iot_mock_call* c = az_iot_mock_mqtt_client_last_of(fx->mock, AZ_IOT_MOCK_CALL_PUBLISH);
   assert_non_null(c);
   assert_string_equal(c->topic, "$iothub/methods/res/200/?$rid=abc-123");
@@ -934,7 +1038,8 @@ static void respond_with_an_empty_payload_publishes_an_empty_body(void** state)
   assert_true(rec.fired);
 
   az_iot_mock_mqtt_client_clear_calls(fx->mock);
-  assert_int_equal(az_iot_gen1_direct_method_respond(rec.request, 204, NULL, 0), AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_gen1_direct_method_respond(&fx->dm, rec.request, 204, NULL, 0), AZ_IOT_OK);
 
   const az_iot_mock_call* c = az_iot_mock_mqtt_client_last_of(fx->mock, AZ_IOT_MOCK_CALL_PUBLISH);
   assert_non_null(c);
@@ -967,7 +1072,8 @@ static void respond_after_the_handler_returned_still_publishes(void** state)
   az_iot_mock_mqtt_client_clear_calls(fx->mock);
   static const uint8_t body[] = "{\"done\":true}";
   assert_int_equal(
-      az_iot_gen1_direct_method_respond(rec.request, 200, body, sizeof(body) - 1), AZ_IOT_OK);
+      az_iot_gen1_direct_method_respond(&fx->dm, rec.request, 200, body, sizeof(body) - 1),
+      AZ_IOT_OK);
   const az_iot_mock_call* c = az_iot_mock_mqtt_client_last_of(fx->mock, AZ_IOT_MOCK_CALL_PUBLISH);
   assert_non_null(c);
   assert_string_equal(c->topic, "$iothub/methods/res/200/?$rid=11");
@@ -993,7 +1099,8 @@ static void respond_while_disconnected_reports_not_connected(void** state)
   assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
 
   assert_int_equal(
-      az_iot_gen1_direct_method_respond(rec.request, 200, NULL, 0), AZ_IOT_ERR_NOT_CONNECTED);
+      az_iot_gen1_direct_method_respond(&fx->dm, rec.request, 200, NULL, 0),
+      AZ_IOT_ERR_NOT_CONNECTED);
 }
 
 int main(void)
@@ -1002,7 +1109,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(create_subscribes_methods_topic_on_connect, setup, teardown),
     cmocka_unit_test_setup_teardown(inbound_invocation_dispatched_to_handler, setup, teardown),
     cmocka_unit_test_setup_teardown(malformed_topic_dropped, setup, teardown),
-    cmocka_unit_test(respond_rejects_null_request),
+    cmocka_unit_test(respond_rejects_a_null_client),
+    cmocka_unit_test_setup_teardown(respond_rejects_a_zeroed_request, setup, teardown),
     cmocka_unit_test_setup_teardown(
         the_pool_holds_the_documented_number_of_concurrent_requests, setup, teardown),
     cmocka_unit_test_setup_teardown(
@@ -1010,6 +1118,10 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         responding_frees_the_slot_for_the_next_invocation, setup, teardown),
     cmocka_unit_test_setup_teardown(responding_twice_is_rejected, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        answering_after_the_slot_was_reused_is_refused, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        answering_after_a_reclaimed_slot_was_reused_is_refused, setup, teardown),
     cmocka_unit_test_setup_teardown(respond_carries_a_non_success_status, setup, teardown),
     cmocka_unit_test_setup_teardown(respond_rejects_a_null_payload_with_a_length, setup, teardown),
     cmocka_unit_test_setup_teardown(a_dropped_invocation_says_why, setup, teardown),
