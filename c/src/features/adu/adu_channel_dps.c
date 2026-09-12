@@ -316,6 +316,11 @@ static az_iot_result channel_request_update(void* ctx)
     /* One operation at a time. The caller retries on the next tick. */
     return AZ_IOT_ERR_BUSY;
   }
+  /* This keeps a publish off a torn-down session; it does NOT sequence bootstrap
+   * ahead of registration. The connection client publishes the registration from
+   * the same SUBACK handler that confirms the subscription, so a caller-driven
+   * loop never observes the session open. Ordering needs the ADU_HOLD lifecycle
+   * phase (deferred registration + session refcount), not a readiness test. */
   if (!az_iot_connection_client__dps_session_ready(c->connection))
   {
     return AZ_IOT_ERR_NOT_CONNECTED;
