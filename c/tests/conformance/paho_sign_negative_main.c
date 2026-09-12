@@ -335,8 +335,12 @@ static int scan_output(
     }
   }
 
+  /* fgets also stops on a read error, and a partially read log could hold the
+   * expected failure while hiding a later one. This control exists to fail
+   * closed, so unreadable evidence is a failure, not a pass. */
+  const int had_error = ferror(f);
   fclose(f);
-  return 0;
+  return had_error ? -1 : 0;
 }
 
 /* One controlled run of `suite_kind`. Returns 0 when the sign case behaved as
