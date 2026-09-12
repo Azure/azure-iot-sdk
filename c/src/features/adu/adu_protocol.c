@@ -326,6 +326,40 @@ static const char* failure_origin_name(az_iot_adu_failure_origin origin)
   }
 }
 
+/* Render extendedResultCodes.
+ *
+ * Contract: comma-separated UNSIGNED hex int32, NO "0x" prefix, no fixed width,
+ * case-insensitive. The engine produces a single code today; the comma-separated
+ * form is what the field accepts, so a future multi-code producer changes only
+ * this function. Zero is rendered "0" -- a bare value, not a padded one. */
+void az_iot_adu__format_extended_result_code(char* out, size_t out_size, int32_t code)
+{
+  static const char hex[] = "0123456789abcdef";
+  if (out_size < 9)
+  {
+    if (out_size > 0)
+    {
+      out[0] = '\0';
+    }
+    return;
+  }
+
+  uint32_t v = (uint32_t)code;
+  char tmp[8];
+  size_t n = 0;
+  do
+  {
+    tmp[n++] = hex[v & 0xFu];
+    v >>= 4;
+  } while (v != 0);
+
+  for (size_t i = 0; i < n; ++i)
+  {
+    out[i] = tmp[n - 1 - i];
+  }
+  out[n] = '\0';
+}
+
 az_iot_result az_iot_adu__build_report_request(
     const az_iot_adu_report* report,
     uint8_t* out,
@@ -413,6 +447,74 @@ az_iot_result az_iot_adu__build_report_request(
   {
     r = write_string_property(&jw, "resultDetails", report->result_details);
   }
+
+  /* Per-step results are a MAP keyed step_0, step_1, ... -- not an array. The
+   * index carries the step identity, so ordering is the only thing that ties a
+   * result back to its step. Omitted entirely when there are none. */
+  if (az_result_succeeded(r) && report->step_results != NULL && report->step_results_count > 0)
+  {
+    r = az_json_writer_append_property_name(&jw, AZ_SPAN_FROM_STR("stepResults"));
+    if (az_result_succeeded(r))
+    {
+      r = az_json_writer_append_begin_object(&jw);
+    }
+    for (int32_t i = 0; az_result_succeeded(r) && i < report->step_results_count; ++i)
+    {
+      const az_iot_adu_client_step_result* step = &report->step_results[i];
+
+      char key[16];
+      az_iot_span_writer kw;
+      az_iot_span_writer_init(&kw, AZ_SPAN_FROM_BUFFER(key));
+      az_iot_span_writer_append_str(&kw, "step_");
+      az_iot_span_writer_append_u32(&kw, (uint32_t)i);
+      if (az_iot_span_writer_end_str(&kw, NULL) != AZ_IOT_OK)
+      {
+        return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+      }
+
+      r = az_json_writer_append_property_name(&jw, az_span_create_from_str(key));
+      if (az_result_succeeded(r))
+      {
+        r = az_json_writer_append_begin_object(&jw);
+      }
+      if (az_result_succeeded(r))
+      {
+        r = az_json_writer_append_property_name(&jw, AZ_SPAN_FROM_STR("resultCode"));
+      }
+      if (az_result_succeeded(r))
+      {
+        r = az_json_writer_append_int32(&jw, step->result_code);
+      }
+      if (az_result_succeeded(r))
+      {
+        r = az_json_writer_append_property_name(&jw, AZ_SPAN_FROM_STR("extendedResultCodes"));
+      }
+      if (az_result_succeeded(r))
+      {
+        char step_ext[16];
+        az_iot_adu__format_extended_result_code(
+            step_ext, sizeof(step_ext), step->extended_result_code);
+        r = az_json_writer_append_string(&jw, az_span_create_from_str(step_ext));
+      }
+      if (az_result_succeeded(r) && az_span_size(step->result_details) > 0)
+      {
+        r = az_json_writer_append_property_name(&jw, AZ_SPAN_FROM_STR("resultDetails"));
+        if (az_result_succeeded(r))
+        {
+          r = az_json_writer_append_string(&jw, step->result_details);
+        }
+      }
+      if (az_result_succeeded(r))
+      {
+        r = az_json_writer_append_end_object(&jw);
+      }
+    }
+    if (az_result_succeeded(r))
+    {
+      r = az_json_writer_append_end_object(&jw); /* stepResults */
+    }
+  }
+
   if (az_result_succeeded(r))
   {
     r = az_json_writer_append_end_object(&jw); /* installResult */
