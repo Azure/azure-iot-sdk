@@ -205,6 +205,9 @@ extern "C"
 #define AZ_IOT_ADU_ERR_INVALID_API_VERSION 400001
 #define AZ_IOT_ADU_ERR_ARGUMENT_INVALID 400002
 #define AZ_IOT_ADU_ERR_DESERIALIZATION 400003
+/* Measured: a body that fails to deserialize (e.g. extendedResultCodes sent as
+ * an array rather than a string) answers 400012, not 400003. */
+#define AZ_IOT_ADU_ERR_DESERIALIZATION_FAILED 400012
 /* The whole resend / re-sync family -- the only recoverable 400. */
 #define AZ_IOT_ADU_ERR_AGENT_INFO_RESEND_REQUIRED 400004
 #define AZ_IOT_ADU_ERR_UNAUTHORIZED 401000

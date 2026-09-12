@@ -534,8 +534,12 @@ static void both_error_signals_are_read_from_the_body(void** state)
   assert_int_equal(numeric, 400004);
 }
 
-/* Surfacing info.aduErrorCode is a SHOULD, not a MUST, so the numeric-only body
- * is a normal case and must still classify. */
+/* Surfacing info.aduErrorCode is a SHOULD, not a MUST, so a body without it is
+ * a normal case and must still classify.
+ *
+ * "message" is picked up as a code candidate, but it is prose as often as it is
+ * a code -- so what matters here is that prose does NOT decide the outcome: the
+ * numeric code still does. */
 static void a_numeric_only_body_is_still_usable(void** state)
 {
   (void)state;
@@ -548,11 +552,20 @@ static void a_numeric_only_body_is_still_usable(void** state)
       az_iot_adu__parse_error_code(
           (const uint8_t*)numeric_only, strlen(numeric_only), code, sizeof(code), &numeric),
       AZ_IOT_OK);
-  assert_string_equal(code, "");
+  assert_string_equal(code, "Conflict.");
   assert_int_equal(numeric, 409000);
 
-  /* Neither signal present. */
-  const char* neither = "{\"message\":\"no codes here\"}";
+  /* Unrecognized prose falls through to the numeric ladder, which is still what
+   * splits 409000 by operation. */
+  assert_int_equal(
+      az_iot_adu__classify_error(code, numeric, AZ_IOT_ADU_OP_REPORT_STATUS),
+      AZ_IOT_ADU_ERROR_ACTION_ALREADY_REPORTED);
+  assert_int_equal(
+      az_iot_adu__classify_error(code, numeric, AZ_IOT_ADU_OP_GET_UPDATE),
+      AZ_IOT_ADU_ERROR_ACTION_PROCEED);
+
+  /* No signal at all: not even a message. */
+  const char* neither = "{\"trackingId\":\"g\"}";
   assert_int_equal(
       az_iot_adu__parse_error_code(
           (const uint8_t*)neither, strlen(neither), code, sizeof(code), &numeric),
@@ -587,7 +600,9 @@ static void a_numeric_only_body_is_found_without_the_out_parameter(void** state)
       az_iot_adu__parse_error_code(
           (const uint8_t*)numeric_only, strlen(numeric_only), code, sizeof(code), NULL),
       AZ_IOT_OK);
-  assert_string_equal(code, "");
+  /* The message is still captured; what this pins is that detection does not
+   * depend on the caller wanting the numeric value. */
+  assert_string_equal(code, "resend");
 }
 
 /* A truncated failure body must not classify: acting on a partially read error
@@ -713,6 +728,161 @@ static void unknown_and_absent_signals_are_fatal(void** state)
       az_iot_adu__classify_error(NULL, 0, AZ_IOT_ADU_OP_GET_UPDATE), AZ_IOT_ADU_ERROR_ACTION_FATAL);
 }
 
+/* ------------------------------------------------------------------------- */
+/* bodies captured from the live service                                     */
+/* ------------------------------------------------------------------------- */
+/*
+ * Everything below is a verbatim response recorded from a real DPS/ADU
+ * endpoint over MQTT, not a body derived from reading the spec. They are kept
+ * byte-for-byte so a future change that breaks against the real service fails
+ * here first.
+ */
+
+/* Both fetch routes answer this when there is nothing to install. Note the
+ * ETag spelling: lowercase 't'. The service only ever emits "Etag", so a
+ * case-sensitive parser looking for "ETag" silently loses both values. */
+static void live_no_update_response_parses(void** state)
+{
+  (void)state;
+  const char* live = "{\"serviceConfiguration\":{\"rootKeyDownloadUrl\":\"http://defaultv3--adu-"
+                     "ewertons09092100.b.nlu.dl.adu.microsoft.com/westus2/rootkeypackages/"
+                     "rootkeypackage-2.json\"},\"serviceConfigEtag\":\"0532baf1108f1cd8\","
+                     "\"agentInfoEtag\":\"b8aef25be073c748\"}";
+
+  az_iot_adu_fetch_response resp;
+  memset(&resp, 0, sizeof(resp));
+  assert_int_equal(
+      az_iot_adu__parse_fetch_response((const uint8_t*)live, strlen(live), &resp), AZ_IOT_OK);
+
+  /* No updateMetadata is SUCCESS, not a truncated payload. */
+  assert_false(resp.has_update);
+  assert_true(az_span_is_content_equal(resp.agent_info_etag, AZ_SPAN_FROM_STR("b8aef25be073c748")));
+  assert_true(
+      az_span_is_content_equal(resp.service_config_etag, AZ_SPAN_FROM_STR("0532baf1108f1cd8")));
+}
+
+/* Echoing matching ETags gets a much smaller reply with serviceConfiguration
+ * omitted -- 75 bytes against 235. The omission means "nothing changed"; it
+ * must not be read as a malformed response. */
+static void live_steady_state_response_parses(void** state)
+{
+  (void)state;
+  const char* live
+      = "{\"serviceConfigEtag\":\"0532baf1108f1cd8\",\"agentInfoEtag\":\"b8aef25be073c748\"}";
+
+  az_iot_adu_fetch_response resp;
+  memset(&resp, 0, sizeof(resp));
+  assert_int_equal(
+      az_iot_adu__parse_fetch_response((const uint8_t*)live, strlen(live), &resp), AZ_IOT_OK);
+  assert_false(resp.has_update);
+  assert_true(az_span_is_content_equal(resp.agent_info_etag, AZ_SPAN_FROM_STR("b8aef25be073c748")));
+  assert_true(
+      az_span_is_content_equal(resp.service_config_etag, AZ_SPAN_FROM_STR("0532baf1108f1cd8")));
+}
+
+/* The real device-facing error body has no "info" object at all: the
+ * originating code arrives in "message". 400000 is a shared bucket, so that
+ * field is the only thing that tells these two apart. */
+static void live_error_bodies_carry_the_code_in_message(void** state)
+{
+  (void)state;
+  char code[64];
+  int32_t numeric = 0;
+
+  /* Operational fetch for a device the registry does not know. */
+  const char* not_onboarded
+      = "{\"errorCode\":400000,\"trackingId\":\"4465e486-8449-4f3d-ab38-f4053ab65f0b\","
+        "\"message\":\"INVALID_REQUEST\",\"timestampUtc\":\"2026-09-12T19:44:21.9191084Z\"}";
+  assert_int_equal(
+      az_iot_adu__parse_error_code(
+          (const uint8_t*)not_onboarded, strlen(not_onboarded), code, sizeof(code), &numeric),
+      AZ_IOT_OK);
+  assert_int_equal(numeric, 400000);
+  assert_string_equal(code, "INVALID_REQUEST");
+  assert_int_equal(
+      az_iot_adu__classify_error(code, numeric, AZ_IOT_ADU_OP_GET_UPDATE),
+      AZ_IOT_ADU_ERROR_ACTION_FATAL);
+
+  /* Reporting against a workflow the service has no record of -- same numeric
+   * code, different meaning. */
+  const char* unknown_workflow
+      = "{\"errorCode\":400000,\"trackingId\":\"887f0758-64cb-40ca-8b99-5dda46b9c6ac\","
+        "\"message\":\"UNKNOWN_WORKFLOW_ID\",\"timestampUtc\":\"2026-09-12T19:44:34.8946783Z\"}";
+  assert_int_equal(
+      az_iot_adu__parse_error_code(
+          (const uint8_t*)unknown_workflow, strlen(unknown_workflow), code, sizeof(code), &numeric),
+      AZ_IOT_OK);
+  assert_int_equal(numeric, 400000);
+  assert_string_equal(code, "UNKNOWN_WORKFLOW_ID");
+  /* Not ALREADY_REPORTED: nothing was delivered, and resending cannot help. */
+  assert_int_equal(
+      az_iot_adu__classify_error(code, numeric, AZ_IOT_ADU_OP_REPORT_STATUS),
+      AZ_IOT_ADU_ERROR_ACTION_FATAL);
+}
+
+/* Sending extendedResultCodes as an array rather than a string is answered
+ * 400012 -- and "message" here is prose, not a code. */
+static void live_deserialization_error_parses(void** state)
+{
+  (void)state;
+  char code[64];
+  int32_t numeric = 0;
+
+  const char* live
+      = "{\"errorCode\":400012,\"trackingId\":\"a7908009-2e20-4adb-a35c-cd2100d9eefc\","
+        "\"message\":\"Deserialization error.\",\"timestampUtc\":\"2026-09-12T19:44:35.5480356Z\"}";
+  assert_int_equal(
+      az_iot_adu__parse_error_code(
+          (const uint8_t*)live, strlen(live), code, sizeof(code), &numeric),
+      AZ_IOT_OK);
+  assert_int_equal(numeric, AZ_IOT_ADU_ERR_DESERIALIZATION_FAILED);
+  assert_string_equal(code, "Deserialization error.");
+  assert_int_equal(
+      az_iot_adu__classify_error(code, numeric, AZ_IOT_ADU_OP_REPORT_STATUS),
+      AZ_IOT_ADU_ERROR_ACTION_FATAL);
+}
+
+/* The reason prose in "message" must not be classified on its own: a transient
+ * server error carries prose too, and judging the string alone would turn a
+ * retryable failure into a permanent one. */
+static void prose_in_message_does_not_make_a_retryable_error_fatal(void** state)
+{
+  (void)state;
+  char code[64];
+  int32_t numeric = 0;
+
+  const char* server_error
+      = "{\"errorCode\":500000,\"trackingId\":\"g\",\"message\":\"Internal server error\"}";
+  assert_int_equal(
+      az_iot_adu__parse_error_code(
+          (const uint8_t*)server_error, strlen(server_error), code, sizeof(code), &numeric),
+      AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_adu__classify_error(code, numeric, AZ_IOT_ADU_OP_GET_UPDATE),
+      AZ_IOT_ADU_ERROR_ACTION_RETRY);
+}
+
+/* A message too long for the caller's buffer is dropped rather than truncated:
+ * a truncated token could compare equal to nothing useful, and the numeric code
+ * still classifies. */
+static void an_oversized_message_is_dropped_not_truncated(void** state)
+{
+  (void)state;
+  char code[8];
+  int32_t numeric = 0;
+
+  const char* live = "{\"errorCode\":500000,\"message\":\"a message far longer than the buffer\"}";
+  assert_int_equal(
+      az_iot_adu__parse_error_code(
+          (const uint8_t*)live, strlen(live), code, sizeof(code), &numeric),
+      AZ_IOT_OK);
+  assert_string_equal(code, "");
+  assert_int_equal(numeric, 500000);
+  assert_int_equal(
+      az_iot_adu__classify_error(code, numeric, AZ_IOT_ADU_OP_GET_UPDATE),
+      AZ_IOT_ADU_ERROR_ACTION_RETRY);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -741,6 +911,12 @@ int main(void)
     cmocka_unit_test(no_step_results_means_no_key),
     cmocka_unit_test(both_error_signals_are_read_from_the_body),
     cmocka_unit_test(a_numeric_only_body_is_still_usable),
+    cmocka_unit_test(live_no_update_response_parses),
+    cmocka_unit_test(live_steady_state_response_parses),
+    cmocka_unit_test(live_error_bodies_carry_the_code_in_message),
+    cmocka_unit_test(live_deserialization_error_parses),
+    cmocka_unit_test(prose_in_message_does_not_make_a_retryable_error_fatal),
+    cmocka_unit_test(an_oversized_message_is_dropped_not_truncated),
     cmocka_unit_test(the_internal_envelope_is_not_the_device_body),
     cmocka_unit_test(a_numeric_only_body_is_found_without_the_out_parameter),
     cmocka_unit_test(a_truncated_error_body_is_rejected),
