@@ -61,6 +61,29 @@ extern "C"
       void* engine_ctx);
 
   /**
+   * @brief Invoked by a channel when an operation reaches a verdict.
+   *
+   * `request_update()` and `report()` returning AZ_IOT_OK on an asynchronous
+   * channel means "sent", not "accepted". Without this the engine would retire
+   * a pending fetch or report on publish and never learn it failed, silently
+   * losing the only record the service gets of what the device did.
+   *
+   * Called exactly once per accepted operation. A synchronous channel may call
+   * it from inside request_update()/report().
+   *
+   * @param operation  Which operation this verdict is for.
+   * @param result     AZ_IOT_OK when the service accepted it.
+   * @param action     How to proceed when @p result is not AZ_IOT_OK;
+   *                   AZ_IOT_ADU_ERROR_ACTION_NONE on success.
+   * @param engine_ctx The context the engine passed to `open()`.
+   */
+  typedef void (*az_iot_adu_channel_result_cb)(
+      az_iot_adu_operation operation,
+      az_iot_result result,
+      az_iot_adu_error_action action,
+      void* engine_ctx);
+
+  /**
    * @brief The delivery + reporting vtable.
    *
    * Every function takes the channel's own @p ctx. All are REQUIRED except
@@ -75,7 +98,11 @@ extern "C"
      * pull channel it need only record the callback. Called once, from
      * az_iot_adu_client_initialize().
      */
-    az_iot_result (*open)(void* ctx, az_iot_adu_channel_update_cb cb, void* engine_ctx);
+    az_iot_result (*open)(
+        void* ctx,
+        az_iot_adu_channel_update_cb cb,
+        az_iot_adu_channel_result_cb result_cb,
+        void* engine_ctx);
 
     /**
      * @brief Unbind. Best-effort; the engine ignores the result during
@@ -100,6 +127,17 @@ extern "C"
      * and everything it points at are valid only for the duration of the call.
      */
     az_iot_result (*report)(void* ctx, const az_iot_adu_report* report);
+
+    /**
+     * @brief OPTIONAL. The device properties changed; refresh anything the
+     *        channel copied at initialization. May be NULL for a channel that
+     *        holds no copy.
+     *
+     * Without this a channel that snapshots compatibility properties and the
+     * installed update id at init keeps sending stale device identity after
+     * az_iot_adu_client_update_device_properties().
+     */
+    az_iot_result (*set_device_properties)(void* ctx, const az_iot_adu_device_properties* props);
 
     /**
      * @brief OPTIONAL. Driven from the engine's do_work() tick so a channel
@@ -136,6 +174,7 @@ extern "C"
   {
     az_iot_connection_client* connection;
     az_iot_adu_channel_update_cb update_cb;
+    az_iot_adu_channel_result_cb result_cb;
     void* engine_ctx;
 
     /* Correlation for the one request that may be outstanding. The device
@@ -168,9 +207,6 @@ extern "C"
      * means "not held yet". */
     char agent_info_etag[128];
     char service_config_etag[128];
-
-    /* Outcome of the last operation, for the engine to act on. */
-    az_iot_adu_error_action last_action;
   } az_iot_adu_channel_dps;
 
   /* Bind the channel to a connection and an HTTPS transport and emit the vtable

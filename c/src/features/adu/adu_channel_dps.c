@@ -167,6 +167,21 @@ static void store_etag(char* dst, size_t dst_size, az_span value)
   dst[n] = '\0';
 }
 
+/* One verdict per accepted operation. Without this the engine retires a pending
+ * fetch or report when it is published and never learns the service rejected
+ * it. */
+static void emit_result(
+    az_iot_adu_channel_dps* c,
+    az_iot_adu_operation operation,
+    az_iot_result result,
+    az_iot_adu_error_action action)
+{
+  if (c->result_cb != NULL)
+  {
+    c->result_cb(operation, result, action, c->engine_ctx);
+  }
+}
+
 /* Provisioning-session messages the provisioning flow did not claim are offered
  * here. Returning true means this channel consumed the message. */
 static bool on_dps_message(
@@ -208,18 +223,19 @@ static bool on_dps_message(
 
   az_iot_adu_operation operation = c->pending_operation;
   c->request_pending = false;
-  c->last_action = AZ_IOT_ADU_ERROR_ACTION_NONE;
 
   if (status < 200 || status >= 300)
   {
-    c->last_action = handle_failure(c, operation, payload, payload_len);
+    az_iot_adu_error_action action = handle_failure(c, operation, payload, payload_len);
     AZ_IOT_LOG_ERRORF("adu: operation failed with status %d", (int)status);
+    emit_result(c, operation, AZ_IOT_ERR_DPS, action);
     return true;
   }
 
   if (operation == AZ_IOT_ADU_OP_REPORT_STATUS)
   {
     /* Nothing to parse: the report was accepted. */
+    emit_result(c, operation, AZ_IOT_OK, AZ_IOT_ADU_ERROR_ACTION_NONE);
     return true;
   }
 
@@ -227,7 +243,7 @@ static bool on_dps_message(
   if (az_iot_adu__parse_fetch_response(payload, payload_len, &resp) != AZ_IOT_OK)
   {
     AZ_IOT_LOG_ERROR("adu: could not parse the update-check response");
-    c->last_action = AZ_IOT_ADU_ERROR_ACTION_FATAL;
+    emit_result(c, operation, AZ_IOT_ERR_PROTOCOL, AZ_IOT_ADU_ERROR_ACTION_FATAL);
     return true;
   }
 
@@ -239,6 +255,7 @@ static bool on_dps_message(
   if (!resp.has_update)
   {
     AZ_IOT_LOG_DEBUG("adu: no update available");
+    emit_result(c, operation, AZ_IOT_OK, AZ_IOT_ADU_ERROR_ACTION_NONE);
     return true;
   }
 
@@ -249,6 +266,7 @@ static bool on_dps_message(
         (size_t)az_span_size(resp.update_metadata),
         c->engine_ctx);
   }
+  emit_result(c, operation, AZ_IOT_OK, AZ_IOT_ADU_ERROR_ACTION_NONE);
   return true;
 }
 
@@ -260,8 +278,9 @@ static void channel_forget_pending_if_session_gone(az_iot_adu_channel_dps* c)
   if (c->request_pending && !az_iot_connection_client__dps_session_ready(c->connection))
   {
     AZ_IOT_LOG_DEBUG("adu: provisioning session ended with a request outstanding");
+    az_iot_adu_operation operation = c->pending_operation;
     c->request_pending = false;
-    c->last_action = AZ_IOT_ADU_ERROR_ACTION_RETRY;
+    emit_result(c, operation, AZ_IOT_ERR_NOT_CONNECTED, AZ_IOT_ADU_ERROR_ACTION_RETRY);
   }
 }
 
@@ -269,7 +288,11 @@ static void channel_forget_pending_if_session_gone(az_iot_adu_channel_dps* c)
 /* vtable                                                                    */
 /* ------------------------------------------------------------------------- */
 
-static az_iot_result channel_open(void* ctx, az_iot_adu_channel_update_cb cb, void* engine_ctx)
+static az_iot_result channel_open(
+    void* ctx,
+    az_iot_adu_channel_update_cb cb,
+    az_iot_adu_channel_result_cb result_cb,
+    void* engine_ctx)
 {
   az_iot_adu_channel_dps* c = (az_iot_adu_channel_dps*)ctx;
   if (c == NULL || cb == NULL)
@@ -277,6 +300,7 @@ static az_iot_result channel_open(void* ctx, az_iot_adu_channel_update_cb cb, vo
     return AZ_IOT_ERR_INVALID_ARG;
   }
   c->update_cb = cb;
+  c->result_cb = result_cb;
   c->engine_ctx = engine_ctx;
 
   /* Responses arrive on the subscription the connection client already
@@ -294,6 +318,7 @@ static void channel_close(void* ctx)
   }
   az_iot_connection_client__set_dps_message_observer(c->connection, NULL, NULL);
   c->update_cb = NULL;
+  c->result_cb = NULL;
   c->engine_ctx = NULL;
   c->request_pending = false;
 }
@@ -390,11 +415,114 @@ static az_iot_result channel_report(void* ctx, const az_iot_adu_report* report)
   return publish_operation(c, AZ_IOT_ADU_OP_REPORT_STATUS, c->body, body_len);
 }
 
+static const char* pack_str(char* storage, size_t storage_size, size_t* used, const char* value);
+
+/* Copy what the device reports about itself. Shared by init and the refresh
+ * hook so a later az_iot_adu_client_update_device_properties() does not leave
+ * the channel sending the identity and installed version it saw at startup. */
+static void channel_copy_device_properties(
+    az_iot_adu_channel_dps* c,
+    const az_iot_adu_device_properties* device_props)
+{
+  c->compat_count = 0;
+  c->has_installed_update_id = false;
+  memset(c->compat_storage, 0, sizeof(c->compat_storage));
+  memset(c->installed_storage, 0, sizeof(c->installed_storage));
+  memset(&c->installed_update_id, 0, sizeof(c->installed_update_id));
+  if (device_props == NULL)
+  {
+    return;
+  }
+  /* Manufacturer and model are the compatibility properties the service
+   * matches on; without them it cannot pick the right update. */
+  size_t used = 0;
+  const char* manufacturer
+      = pack_str(c->compat_storage, sizeof(c->compat_storage), &used, device_props->manufacturer);
+  const char* model
+      = pack_str(c->compat_storage, sizeof(c->compat_storage), &used, device_props->model);
+
+  if (manufacturer != NULL)
+  {
+    c->compat[c->compat_count].name = "manufacturer";
+    c->compat[c->compat_count].value = manufacturer;
+    c->compat_count++;
+  }
+  if (model != NULL)
+  {
+    c->compat[c->compat_count].name = "model";
+    c->compat[c->compat_count].value = model;
+    c->compat_count++;
+  }
+
+  for (size_t i = 0;
+       i < device_props->custom_properties_count && c->compat_count < AZ_IOT_ADU_CHANNEL_MAX_COMPAT;
+       ++i)
+  {
+    const char* name = pack_str(
+        c->compat_storage,
+        sizeof(c->compat_storage),
+        &used,
+        device_props->custom_properties[i].name);
+    const char* value = pack_str(
+        c->compat_storage,
+        sizeof(c->compat_storage),
+        &used,
+        device_props->custom_properties[i].value);
+    if (name == NULL || value == NULL)
+    {
+      break;
+    }
+    c->compat[c->compat_count].name = name;
+    c->compat[c->compat_count].value = value;
+    c->compat_count++;
+  }
+
+  /* What is installed now. A complete triple or nothing: a partial one would
+   * be rejected when the request is built. */
+  size_t iused = 0;
+  const char* provider = pack_str(
+      c->installed_storage,
+      sizeof(c->installed_storage),
+      &iused,
+      device_props->installed_update_id.provider);
+  const char* name = pack_str(
+      c->installed_storage,
+      sizeof(c->installed_storage),
+      &iused,
+      device_props->installed_update_id.name);
+  const char* version = pack_str(
+      c->installed_storage,
+      sizeof(c->installed_storage),
+      &iused,
+      device_props->installed_update_id.version);
+  if (provider != NULL && name != NULL && version != NULL)
+  {
+    c->installed_update_id.provider = provider;
+    c->installed_update_id.name = name;
+    c->installed_update_id.version = version;
+    c->has_installed_update_id = true;
+  }
+}
+
+static az_iot_result channel_set_device_properties(
+    void* ctx,
+    const az_iot_adu_device_properties* props)
+{
+  az_iot_adu_channel_dps* c = (az_iot_adu_channel_dps*)ctx;
+  if (c == NULL || props == NULL)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  channel_copy_device_properties(c, props);
+  return AZ_IOT_OK;
+}
+
 static const az_iot_adu_channel_vtable k_channel_vtable = {
   .open = channel_open,
   .close = channel_close,
   .request_update = channel_request_update,
   .report = channel_report,
+  .set_device_properties = channel_set_device_properties,
   .do_work = NULL,
 };
 
@@ -434,84 +562,7 @@ az_iot_result az_iot_adu_channel_dps_init(
   /* The profile the device reports for compatibility matching. */
   channel_state->agent_profile = 1;
 
-  if (device_props != NULL)
-  {
-    /* Manufacturer and model are the compatibility properties the service
-     * matches on; without them it cannot pick the right update. */
-    size_t used = 0;
-    const char* manufacturer = pack_str(
-        channel_state->compat_storage,
-        sizeof(channel_state->compat_storage),
-        &used,
-        device_props->manufacturer);
-    const char* model = pack_str(
-        channel_state->compat_storage,
-        sizeof(channel_state->compat_storage),
-        &used,
-        device_props->model);
-
-    if (manufacturer != NULL)
-    {
-      channel_state->compat[channel_state->compat_count].name = "manufacturer";
-      channel_state->compat[channel_state->compat_count].value = manufacturer;
-      channel_state->compat_count++;
-    }
-    if (model != NULL)
-    {
-      channel_state->compat[channel_state->compat_count].name = "model";
-      channel_state->compat[channel_state->compat_count].value = model;
-      channel_state->compat_count++;
-    }
-
-    for (size_t i = 0; i < device_props->custom_properties_count
-         && channel_state->compat_count < AZ_IOT_ADU_CHANNEL_MAX_COMPAT;
-         ++i)
-    {
-      const char* name = pack_str(
-          channel_state->compat_storage,
-          sizeof(channel_state->compat_storage),
-          &used,
-          device_props->custom_properties[i].name);
-      const char* value = pack_str(
-          channel_state->compat_storage,
-          sizeof(channel_state->compat_storage),
-          &used,
-          device_props->custom_properties[i].value);
-      if (name == NULL || value == NULL)
-      {
-        break;
-      }
-      channel_state->compat[channel_state->compat_count].name = name;
-      channel_state->compat[channel_state->compat_count].value = value;
-      channel_state->compat_count++;
-    }
-
-    /* What is installed now. A complete triple or nothing: a partial one would
-     * be rejected when the request is built. */
-    size_t iused = 0;
-    const char* provider = pack_str(
-        channel_state->installed_storage,
-        sizeof(channel_state->installed_storage),
-        &iused,
-        device_props->installed_update_id.provider);
-    const char* name = pack_str(
-        channel_state->installed_storage,
-        sizeof(channel_state->installed_storage),
-        &iused,
-        device_props->installed_update_id.name);
-    const char* version = pack_str(
-        channel_state->installed_storage,
-        sizeof(channel_state->installed_storage),
-        &iused,
-        device_props->installed_update_id.version);
-    if (provider != NULL && name != NULL && version != NULL)
-    {
-      channel_state->installed_update_id.provider = provider;
-      channel_state->installed_update_id.name = name;
-      channel_state->installed_update_id.version = version;
-      channel_state->has_installed_update_id = true;
-    }
-  }
+  channel_copy_device_properties(channel_state, device_props);
 
   out_channel->vtable = &k_channel_vtable;
   out_channel->ctx = channel_state;

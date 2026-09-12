@@ -1,0 +1,428 @@
+// Copyright (c) Microsoft. All rights reserved.
+// Licensed under the MIT license. See LICENSE file in the project root for full license
+// information.
+
+/* SPDX-License-Identifier: MIT */
+/* Device-update channel over the provisioning session, at the MQTT level.
+ *
+ * adu_protocol_test.c pins the wire format as pure functions. This suite pins
+ * the part that can only go wrong once a real connection client is underneath:
+ * what actually reaches the broker, how a response is correlated back, and the
+ * paths that can fault provisioning or silently lose a report --
+ *
+ *   - the publish and its topic/request id, and the one-at-a-time pending slot
+ *   - the observer running BEFORE the provisioning parser, and a response for
+ *     the channel never reaching that parser
+ *   - a late or unmatched request id being consumed rather than handed on
+ *   - the session going away with a request outstanding
+ *   - an error response producing a verdict the engine can act on
+ */
+#include <stdarg.h>
+#include <stddef.h>
+#include <setjmp.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include <cmocka.h>
+
+#include "azure/iot/az_iot_connection_client.h"
+#include "azure/iot/az_iot_mqtt_iface.h"
+#include "azure/iot/az_iot_result.h"
+
+#include "internal/connection_client_internal.h"
+
+#include "adu_channel_internal.h"
+
+#include "support/connection_test_harness.h"
+#include "support/mock_mqtt_iface.h"
+
+/* A registration response the provisioning parser accepts, used to prove the
+ * channel's observer does not disturb the provisioning flow. */
+static const char k_assigned_body[]
+    = "{\"operationId\":\"op-1\",\"status\":\"assigned\","
+      "\"registrationState\":{\"registrationId\":\"ut-device\","
+      "\"assignedHub\":\"myhub.azure-devices.net\",\"deviceId\":\"assigned-device\"}}";
+
+typedef struct
+{
+  az_iot_connection_client client;
+  az_iot_mqtt_factory* factory;
+  az_iot_test_state_log log;
+
+  az_iot_adu_channel_dps channel_state;
+  az_iot_adu_channel channel;
+
+  /* What the engine would have been told. */
+  size_t update_count;
+  char last_update[512];
+
+  size_t result_count;
+  az_iot_adu_operation last_op;
+  az_iot_result last_result;
+  az_iot_adu_error_action last_action;
+} fixture;
+
+static void on_update(const uint8_t* payload, size_t payload_len, void* engine_ctx)
+{
+  fixture* fx = (fixture*)engine_ctx;
+  fx->update_count++;
+  size_t n = payload_len < sizeof(fx->last_update) - 1 ? payload_len : sizeof(fx->last_update) - 1;
+  memcpy(fx->last_update, payload, n);
+  fx->last_update[n] = '\0';
+}
+
+static void on_result(
+    az_iot_adu_operation operation,
+    az_iot_result result,
+    az_iot_adu_error_action action,
+    void* engine_ctx)
+{
+  fixture* fx = (fixture*)engine_ctx;
+  fx->result_count++;
+  fx->last_op = operation;
+  fx->last_result = result;
+  fx->last_action = action;
+}
+
+static int setup(void** state)
+{
+  fixture* fx = (fixture*)calloc(1, sizeof(*fx));
+  assert_non_null(fx);
+
+  az_iot_connection_client_options opts = { 0 };
+  opts.host = NULL; /* DPS mode */
+  opts.client_id = "ut-device";
+  opts.dps.id_scope = "0ne00000000";
+  opts.dps.registration_id = "ut-device";
+  assert_int_equal(az_iot_connection_client_init(&fx->client, &opts), AZ_IOT_OK);
+
+  assert_int_equal(
+      az_iot_connection_client_set_state_callback(&fx->client, az_iot_test_on_state, &fx->log),
+      AZ_IOT_OK);
+
+  fx->factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
+  assert_non_null(fx->factory);
+
+  az_iot_adu_device_properties dp = { 0 };
+  dp.manufacturer = "Contoso";
+  dp.model = "Foobar";
+  dp.installed_update_id.provider = "Contoso";
+  dp.installed_update_id.name = "Foobar";
+  dp.installed_update_id.version = "1.0";
+  assert_int_equal(
+      az_iot_adu_channel_dps_init(&fx->channel_state, &fx->client, &dp, &fx->channel), AZ_IOT_OK);
+
+  *state = fx;
+  return 0;
+}
+
+static int teardown(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  if (fx)
+  {
+    fx->channel.vtable->close(fx->channel.ctx);
+    bool adopted = (fx->client.factory_count > 0);
+    az_iot_connection_client_destroy(&fx->client);
+    if (!adopted)
+    {
+      az_iot_mock_mqtt_factory_destroy(fx->factory);
+    }
+    free(fx);
+  }
+  return 0;
+}
+
+/* CONNACK -> SUBACK, which is what makes the provisioning session usable. */
+static az_iot_mock_mqtt_client* open_to_registering(fixture* fx)
+{
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(&fx->client, fx->factory), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_OK);
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  assert_non_null(m);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(&fx->client, 0);
+
+  const az_iot_mock_call* sub = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_SUBSCRIBE);
+  assert_non_null(sub);
+  assert_true(az_iot_mock_mqtt_client_inject_suback(m, sub->packet_id, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(&fx->client, 0);
+  return m;
+}
+
+static az_iot_mock_mqtt_client* open_and_bind(fixture* fx)
+{
+  az_iot_mock_mqtt_client* m = open_to_registering(fx);
+  assert_int_equal(fx->channel.vtable->open(fx->channel.ctx, on_update, on_result, fx), AZ_IOT_OK);
+  return m;
+}
+
+static bool inject_raw(az_iot_mock_mqtt_client* m, const char* topic, const char* body)
+{
+  return az_iot_mock_mqtt_client_inject_message(
+      m, topic, (const uint8_t*)body, strlen(body), AZ_IOT_MQTT_QOS_1);
+}
+
+/* Inject and pump: an injected message is only dispatched on the next tick. */
+static bool inject(fixture* fx, az_iot_mock_mqtt_client* m, const char* topic, const char* body)
+{
+  bool ok = inject_raw(m, topic, body);
+  (void)az_iot_connection_client_do_work(&fx->client, 0);
+  return ok;
+}
+
+/* The request id the channel just used, read off the PUBLISH it issued. */
+static void last_rid(az_iot_mock_mqtt_client* m, char* out, size_t out_size)
+{
+  const az_iot_mock_call* pub = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PUBLISH);
+  assert_non_null(pub);
+  const char* p = strstr(pub->topic, "$rid=");
+  assert_non_null(p);
+  p += 5;
+  size_t n = strlen(p);
+  assert_true(n < out_size);
+  memcpy(out, p, n + 1);
+}
+
+/* ------------------------------------------------------------------------- */
+
+/* The fetch goes out on the provisioning topic, carrying a request id. */
+static void request_update_publishes_on_the_dps_topic(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_mock_mqtt_client* m = open_and_bind(fx);
+
+  assert_int_equal(fx->channel.vtable->request_update(fx->channel.ctx), AZ_IOT_OK);
+
+  const az_iot_mock_call* pub = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PUBLISH);
+  assert_non_null(pub);
+  assert_non_null(strstr(pub->topic, "$dps/registrations/POST/"));
+  assert_non_null(strstr(pub->topic, "deviceupdate"));
+  assert_non_null(strstr(pub->topic, "$rid="));
+  /* The compatibility properties are what the service matches on. */
+  assert_non_null(strstr((const char*)pub->payload, "Contoso"));
+}
+
+/* One operation at a time: the slot is held until the response arrives. */
+static void a_second_request_is_refused_while_one_is_outstanding(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_mock_mqtt_client* m = open_and_bind(fx);
+
+  assert_int_equal(fx->channel.vtable->request_update(fx->channel.ctx), AZ_IOT_OK);
+  assert_int_equal(fx->channel.vtable->request_update(fx->channel.ctx), AZ_IOT_ERR_BUSY);
+
+  char rid[64];
+  last_rid(m, rid, sizeof(rid));
+  char topic[256];
+  snprintf(topic, sizeof(topic), "$dps/registrations/res/200/?$rid=%s", rid);
+  assert_true(inject(fx, m, topic, "{\"updateAvailable\":false}"));
+
+  /* Released by the response, so the next tick may ask again. */
+  assert_int_equal(fx->channel.vtable->request_update(fx->channel.ctx), AZ_IOT_OK);
+}
+
+/* A response addressed to the channel must not reach the provisioning parser,
+ * which would read it as a malformed registration response and fault the whole
+ * attempt. */
+static void a_channel_response_does_not_disturb_provisioning(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_mock_mqtt_client* m = open_and_bind(fx);
+
+  assert_int_equal(fx->channel.vtable->request_update(fx->channel.ctx), AZ_IOT_OK);
+  char rid[64];
+  last_rid(m, rid, sizeof(rid));
+  char topic[256];
+  snprintf(topic, sizeof(topic), "$dps/registrations/res/200/?$rid=%s", rid);
+  assert_true(inject(fx, m, topic, "{\"updateAvailable\":false}"));
+
+  /* Provisioning is still live: the registration response is still accepted. */
+  assert_true(inject(fx, m, "$dps/registrations/res/200/?$rid=1", k_assigned_body));
+  (void)az_iot_connection_client_do_work(&fx->client, 0);
+  assert_false(az_iot_test_saw_state(&fx->log, AZ_IOT_CONN_STATE_FAULTED));
+}
+
+/* A reply we are no longer waiting for is consumed and dropped, not delivered
+ * and not handed to the provisioning parser. */
+static void a_late_response_is_consumed_and_dropped(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_mock_mqtt_client* m = open_and_bind(fx);
+
+  assert_int_equal(fx->channel.vtable->request_update(fx->channel.ctx), AZ_IOT_OK);
+  char rid[64];
+  last_rid(m, rid, sizeof(rid));
+  char topic[256];
+  snprintf(topic, sizeof(topic), "$dps/registrations/res/200/?$rid=%s", rid);
+
+  assert_true(inject(fx, m, topic, "{\"updateAvailable\":false}"));
+  size_t results_after_first = fx->result_count;
+
+  /* The same reply again: already retired, so it yields nothing. */
+  assert_true(inject(fx, m, topic, "{\"updateAvailable\":false}"));
+  assert_int_equal(fx->result_count, results_after_first);
+  assert_int_equal(fx->update_count, 0);
+
+  (void)az_iot_connection_client_do_work(&fx->client, 0);
+  assert_false(az_iot_test_saw_state(&fx->log, AZ_IOT_CONN_STATE_FAULTED));
+}
+
+/* An update document reaches the engine, and the operation is reported OK. */
+static void an_available_update_is_delivered_to_the_engine(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_mock_mqtt_client* m = open_and_bind(fx);
+
+  assert_int_equal(fx->channel.vtable->request_update(fx->channel.ctx), AZ_IOT_OK);
+  char rid[64];
+  last_rid(m, rid, sizeof(rid));
+  char topic[256];
+  snprintf(topic, sizeof(topic), "$dps/registrations/res/200/?$rid=%s", rid);
+
+  assert_true(inject(fx, m, topic, "{\"updateMetadata\":{\"manifestVersion\":\"5\"}}"));
+
+  assert_int_equal(fx->update_count, 1);
+  assert_int_equal(fx->result_count, 1);
+  assert_int_equal(fx->last_result, AZ_IOT_OK);
+  assert_int_equal(fx->last_action, AZ_IOT_ADU_ERROR_ACTION_NONE);
+}
+
+/* An error response produces a verdict, so the engine can retry rather than
+ * treating a rejected operation as delivered. */
+static void an_error_response_reports_an_action(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_mock_mqtt_client* m = open_and_bind(fx);
+
+  assert_int_equal(fx->channel.vtable->request_update(fx->channel.ctx), AZ_IOT_OK);
+  char rid[64];
+  last_rid(m, rid, sizeof(rid));
+  char topic[256];
+  snprintf(topic, sizeof(topic), "$dps/registrations/res/500/?$rid=%s", rid);
+
+  assert_true(inject(fx, m, topic, "{\"errorCode\":500000,\"message\":\"server error\"}"));
+
+  assert_int_equal(fx->result_count, 1);
+  assert_int_not_equal(fx->last_result, AZ_IOT_OK);
+  assert_int_equal(fx->last_action, AZ_IOT_ADU_ERROR_ACTION_RETRY);
+  assert_int_equal(fx->update_count, 0);
+
+  /* The slot was released, so the retry can actually be issued. */
+  assert_int_equal(fx->channel.vtable->request_update(fx->channel.ctx), AZ_IOT_OK);
+}
+
+/* A report is published and, once accepted, reported as delivered. */
+static void a_report_is_published_and_acknowledged(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_mock_mqtt_client* m = open_and_bind(fx);
+
+  az_iot_adu_report report = { 0 };
+  report.workflow_id = "wf-1";
+  report.extended_result_codes = "00000000";
+  assert_int_equal(fx->channel.vtable->report(fx->channel.ctx, &report), AZ_IOT_OK);
+
+  const az_iot_mock_call* pub = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PUBLISH);
+  assert_non_null(pub);
+  assert_non_null(strstr(pub->topic, "deviceupdatestatus"));
+
+  char rid[64];
+  last_rid(m, rid, sizeof(rid));
+  char topic[256];
+  snprintf(topic, sizeof(topic), "$dps/registrations/res/200/?$rid=%s", rid);
+  assert_true(inject(fx, m, topic, "{}"));
+
+  assert_int_equal(fx->result_count, 1);
+  assert_int_equal(fx->last_op, AZ_IOT_ADU_OP_REPORT_STATUS);
+  assert_int_equal(fx->last_result, AZ_IOT_OK);
+}
+
+/* The reply can only come back on the session the request went out on. When
+ * that session ends the slot must be released, with a retry verdict, or the
+ * channel would wait forever for an answer that can never arrive. */
+static void losing_the_session_releases_the_pending_request(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_mock_mqtt_client* m = open_and_bind(fx);
+
+  assert_int_equal(fx->channel.vtable->request_update(fx->channel.ctx), AZ_IOT_OK);
+  assert_int_equal(fx->channel.vtable->request_update(fx->channel.ctx), AZ_IOT_ERR_BUSY);
+
+  /* Provisioning completes, which tears the DPS session down. */
+  assert_true(inject(fx, m, "$dps/registrations/res/200/?$rid=1", k_assigned_body));
+  (void)az_iot_connection_client_do_work(&fx->client, 0);
+
+  /* Not BUSY: the dead request was abandoned rather than held forever. The
+   * session is gone, so the answer is "no session", and the engine was told to
+   * retry rather than left believing the operation was delivered. */
+  assert_int_equal(fx->channel.vtable->request_update(fx->channel.ctx), AZ_IOT_ERR_NOT_CONNECTED);
+  assert_int_equal(fx->result_count, 1);
+  assert_int_equal(fx->last_action, AZ_IOT_ADU_ERROR_ACTION_RETRY);
+  assert_int_not_equal(fx->last_result, AZ_IOT_OK);
+}
+
+/* Refreshing device properties must reach the channel: otherwise every later
+ * fetch still carries the identity captured at startup. */
+static void updated_device_properties_change_what_is_sent(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_mock_mqtt_client* m = open_and_bind(fx);
+
+  assert_non_null(fx->channel.vtable->set_device_properties);
+
+  az_iot_adu_device_properties dp = { 0 };
+  dp.manufacturer = "Fabrikam";
+  dp.model = "Gizmo";
+  dp.installed_update_id.provider = "Fabrikam";
+  dp.installed_update_id.name = "Gizmo";
+  dp.installed_update_id.version = "2.0";
+  assert_int_equal(fx->channel.vtable->set_device_properties(fx->channel.ctx, &dp), AZ_IOT_OK);
+
+  assert_int_equal(fx->channel.vtable->request_update(fx->channel.ctx), AZ_IOT_OK);
+
+  const az_iot_mock_call* pub = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PUBLISH);
+  assert_non_null(pub);
+  /* The onboarding request carries the compatibility properties (the installed
+   * update id rides the later get-update request), so that is what proves the
+   * refresh reached the channel. */
+  assert_non_null(strstr((const char*)pub->payload, "Fabrikam"));
+  assert_non_null(strstr((const char*)pub->payload, "Gizmo"));
+  /* The startup identity is gone, not merely appended to. */
+  assert_null(strstr((const char*)pub->payload, "Contoso"));
+}
+
+/* Without a usable provisioning session there is nothing to publish onto. */
+static void a_request_before_the_session_is_ready_is_refused(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(fx->channel.vtable->open(fx->channel.ctx, on_update, on_result, fx), AZ_IOT_OK);
+
+  assert_int_equal(fx->channel.vtable->request_update(fx->channel.ctx), AZ_IOT_ERR_NOT_CONNECTED);
+}
+
+int main(void)
+{
+  const struct CMUnitTest tests[] = {
+    cmocka_unit_test_setup_teardown(request_update_publishes_on_the_dps_topic, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_second_request_is_refused_while_one_is_outstanding, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_channel_response_does_not_disturb_provisioning, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_late_response_is_consumed_and_dropped, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_available_update_is_delivered_to_the_engine, setup, teardown),
+    cmocka_unit_test_setup_teardown(an_error_response_reports_an_action, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_report_is_published_and_acknowledged, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        losing_the_session_releases_the_pending_request, setup, teardown),
+    cmocka_unit_test_setup_teardown(updated_device_properties_change_what_is_sent, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_request_before_the_session_is_ready_is_refused, setup, teardown),
+  };
+  return cmocka_run_group_tests(tests, NULL, NULL);
+}

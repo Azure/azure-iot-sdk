@@ -1209,6 +1209,45 @@ static void on_channel_update(
   process_desired_patch(client, update_payload, update_payload_len);
 }
 
+/* The channel's verdict on an operation it accepted earlier.
+ *
+ * An asynchronous channel returns AZ_IOT_OK from request_update()/report() to
+ * mean "sent". The pending flag is cleared at that point, so without this the
+ * engine would never learn the service rejected it and the fetch or report
+ * would be lost. Re-arming the flag puts it back in the do_work queue.
+ *
+ * FATAL is not re-armed: the request is malformed or the device is not
+ * entitled, so resending it every tick would spin against the service. */
+static void on_channel_result(
+    az_iot_adu_operation operation,
+    az_iot_result result,
+    az_iot_adu_error_action action,
+    void* engine_ctx)
+{
+  az_iot_adu_client_t* client = (az_iot_adu_client_t*)engine_ctx;
+  if (client == NULL || ADU_I(client).detached)
+  {
+    return;
+  }
+  if (result == AZ_IOT_OK || action == AZ_IOT_ADU_ERROR_ACTION_FATAL
+      || action == AZ_IOT_ADU_ERROR_ACTION_NONE)
+  {
+    return;
+  }
+
+  switch (operation)
+  {
+    case AZ_IOT_ADU_OP_REPORT_STATUS:
+      ADU_I(client).device_props_report_pending = true;
+      break;
+    case AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE:
+    case AZ_IOT_ADU_OP_GET_UPDATE:
+      /* Both update-check operations are re-driven by the same flag. */
+      ADU_I(client).initial_get_pending = true;
+      break;
+  }
+}
+
 /* Ask the channel to check for an update. Returns the channel's result so the
  * caller can leave the pending flag set and retry on a later do_work tick. */
 static az_iot_result channel_request_update(az_iot_adu_client_t* client)
@@ -1285,7 +1324,7 @@ static az_iot_result adu_client_init_core(
     return r;
   }
 
-  r = channel->vtable->open(channel->ctx, on_channel_update, client);
+  r = channel->vtable->open(channel->ctx, on_channel_update, on_channel_result, client);
   if (r != AZ_IOT_OK)
   {
     memset(client, 0, sizeof(*client));
@@ -2049,6 +2088,19 @@ az_iot_result az_iot_adu_client_update_device_properties(
   if (r != AZ_IOT_OK)
   {
     return r;
+  }
+
+  /* The channel may hold its own copy (compatibility properties, installed
+   * update id). Refresh it, or fetches keep carrying the startup identity. */
+  if (ADU_I(client).channel.vtable != NULL
+      && ADU_I(client).channel.vtable->set_device_properties != NULL)
+  {
+    r = ADU_I(client).channel.vtable->set_device_properties(
+        ADU_I(client).channel.ctx, device_props);
+    if (r != AZ_IOT_OK)
+    {
+      return r;
+    }
   }
 
   ADU_I(client).device_props_report_pending = true;
