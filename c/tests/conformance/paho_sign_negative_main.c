@@ -72,7 +72,7 @@
 #define az_iot_mkdir(p) _mkdir(p)
 #define az_iot_rmdir _rmdir
 #define az_iot_chdir _chdir
-#define az_iot_getcwd _getcwd
+#define az_iot_getcwd(b, n) _getcwd((b), (int)(n))
 #else
 #include <dirent.h>
 #include <sys/stat.h>
@@ -82,7 +82,7 @@
 #define az_iot_mkdir(p) mkdir((p), 0700)
 #define az_iot_rmdir rmdir
 #define az_iot_chdir chdir
-#define az_iot_getcwd getcwd
+#define az_iot_getcwd(b, n) getcwd((b), (n))
 #define az_iot_dup dup
 #define az_iot_dup2 dup2
 #define az_iot_fileno fileno
@@ -294,13 +294,22 @@ static int scan_output(
     {
       *out_saw_expected = 1;
     }
-    else if (strstr(marker, "test(s), listed below") != NULL)
+    else if (strstr(marker, "test(s)") != NULL)
     {
-      /* cmocka's per-group summary: "<group>: N test(s), listed below:". Its N
-       * is the count, and the count is what "exactly one failing case" means --
-       * the names alone cannot say it, because the same case registered twice
-       * reports the expected name twice and would read as one. */
+      /* cmocka bookkeeping, not a case: the per-group summary
+       * "<group>: N test(s), listed below:", and any trailing aggregate a
+       * different cmocka might print. N is the count, and the count is what
+       * "exactly one failing case" means -- the names alone cannot say it,
+       * because the same case registered twice reports the expected name twice
+       * and would read as one.
+       *
+       * Only the "listed below" form contributes: an aggregate counted as well
+       * would double every total. */
       const char* p = strstr(marker, "test(s), listed below");
+      if (p == NULL)
+      {
+        continue;
+      }
       while (p > marker && (p[-1] == ' ' || p[-1] == '\t'))
       {
         --p;
