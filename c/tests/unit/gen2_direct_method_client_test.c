@@ -1757,6 +1757,105 @@ static void respond_after_the_response_timeout_sends_nothing(void** state)
   assert_null(find_phase(fx->mock, "result:1"));
 }
 
+/* Occupy every request slot with an invocation the application never answers.
+ * A 5 second response timeout puts the safety margin at its 1 second floor, so
+ * a 2 second exec budget is admissible. */
+static void fill_pool_with_unanswered(fixture* fx, invocation_record* rec, uint32_t exec_budget)
+{
+  for (int i = 0; i < AZ_IOT_GEN2_DM_MAX_CONCURRENT; ++i)
+  {
+    uint8_t request_id[16];
+    make_request_id(request_id, (uint8_t)(0xC0 + i));
+    uint8_t ready_id[16];
+    probe_and_accept(fx, request_id, "dump", 5, ready_id);
+    uint8_t exec[64];
+    size_t exec_len = build_exec(exec, ready_id, 16, NULL, 0);
+    rec->fired = false;
+    inject_dm(fx, DEV_TOPIC, "exec:1", request_id, 16, exec, exec_len, exec_budget);
+    assert_true(rec->fired);
+  }
+}
+
+/* Probe once more and report how the client answered: -1 when it accepted. */
+static int probe_again(fixture* fx, uint8_t seed)
+{
+  az_iot_mock_mqtt_client_clear_calls(fx->mock);
+  uint8_t request_id[16];
+  make_request_id(request_id, seed);
+  uint8_t frame[128];
+  size_t frame_len = build_probe(frame, "dump", 5);
+  inject_dm(fx, DEV_TOPIC, "probe:1", request_id, 16, frame, frame_len, 0);
+  const az_iot_mock_call* ack = find_phase(fx->mock, "probe-ack:1");
+  assert_non_null(ack);
+  return (ack->payload_len == 20) ? -1 : probe_ack_rejected_reason(ack);
+}
+
+/* The gen2 half of D-2. Without the sweep these four slots are held for the
+ * life of the client and the device never accepts another method. */
+static void an_unanswered_exec_slot_is_reclaimed_by_a_later_message(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  invocation_record rec = { 0 };
+  fx->rec = &rec;
+
+  fill_pool_with_unanswered(fx, &rec, 2);
+  assert_int_equal(probe_again(fx, 0x01), AZ_IOT_GEN2_DM_PROBE_REJECT_DEVICE_BUSY);
+
+  sleep_past_one_second();
+  sleep_past_one_second();
+
+  /* The sweep runs on message arrival, so this probe both frees the capacity
+   * and then uses it. */
+  assert_int_equal(probe_again(fx, 0x02), -1);
+}
+
+/* Negative control: a sweep that fired regardless of the budget would satisfy
+ * the test above just as well. */
+static void an_exec_slot_inside_its_budget_is_not_reclaimed(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  invocation_record rec = { 0 };
+  fx->rec = &rec;
+
+  fill_pool_with_unanswered(fx, &rec, 300);
+  sleep_past_one_second();
+
+  assert_int_equal(probe_again(fx, 0x03), AZ_IOT_GEN2_DM_PROBE_REJECT_DEVICE_BUSY);
+}
+
+static void a_reclaimed_exec_slot_names_the_method(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  invocation_record rec = { 0 };
+  fx->rec = &rec;
+
+  uint8_t request_id[16];
+  make_request_id(request_id, 0xD1);
+  uint8_t ready_id[16];
+  probe_and_accept(fx, request_id, "dump", 5, ready_id);
+  uint8_t exec[64];
+  size_t exec_len = build_exec(exec, ready_id, 16, NULL, 0);
+  inject_dm(fx, DEV_TOPIC, "exec:1", request_id, 16, exec, exec_len, 2);
+  assert_true(rec.fired);
+
+  sleep_past_one_second();
+  sleep_past_one_second();
+
+  log_capture cap;
+  install_capture(&cap, AZ_IOT_LOG_LEVEL_WARN);
+  (void)probe_again(fx, 0x04);
+  az_iot_log_set_global_sink(NULL);
+
+  assert_non_null(strstr(cap.all, "reclaiming"));
+  assert_non_null(strstr(cap.all, "'dump'"));
+}
+
 static void respond_rejects_a_request_this_client_never_handed_out(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -2137,6 +2236,11 @@ int main(void)
     cmocka_unit_test_setup_teardown(responding_twice_is_rejected, setup, teardown),
     cmocka_unit_test_setup_teardown(
         respond_rejects_a_request_this_client_never_handed_out, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_unanswered_exec_slot_is_reclaimed_by_a_later_message, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_exec_slot_inside_its_budget_is_not_reclaimed, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_reclaimed_exec_slot_names_the_method, setup, teardown),
     cmocka_unit_test_setup_teardown(
         in_flight_invocations_use_up_the_probe_capacity, setup, teardown),
     cmocka_unit_test_setup_teardown(

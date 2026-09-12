@@ -166,6 +166,12 @@ az_iot_add_cmocka_test(az_iot_tests_gen2_c2d_client unit/gen2_c2d_client_test.c)
 target_link_libraries(az_iot_tests_gen2_c2d_client PRIVATE az_iot_test_support az_iot_gen2)
 az_iot_add_cmocka_test(az_iot_tests_gen1_direct_method_client unit/gen1_direct_method_client_test.c)
 target_link_libraries(az_iot_tests_gen1_direct_method_client PRIVATE az_iot_test_support az_iot_gen1)
+if(UNIX)
+    # The slot-reclaim deadline is only observable once a real second has
+    # passed, so the suite calls nanosleep().
+    target_compile_definitions(az_iot_tests_gen1_direct_method_client PRIVATE
+        _POSIX_C_SOURCE=200809L)
+endif()
 az_iot_add_cmocka_test(az_iot_tests_gen2_direct_method_client unit/gen2_direct_method_client_test.c)
 target_link_libraries(az_iot_tests_gen2_direct_method_client PRIVATE az_iot_test_support az_iot_gen2)
 if(UNIX)
