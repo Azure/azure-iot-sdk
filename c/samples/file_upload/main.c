@@ -5,25 +5,28 @@
 /* SPDX-License-Identifier: MIT */
 /* file_upload - sample.
  *
- * File upload uses ONE seamless SDK API regardless of hub flavor:
- *   1. az_iot_file_upload_client_get_sas_uri()   -> SAS URI + correlation id
+ * File upload is an IoT Hub Classic feature:
+ *   1. az_iot_gen1_file_upload_client_get_sas_uri()   -> SAS URI + correlation id
  *   2. the app PUTs the file to that SAS URI on Azure Storage (HTTPS)
- *   3. az_iot_file_upload_client_notify_complete()
+ *   3. az_iot_gen1_file_upload_client_notify_complete()
  *
- * The control-plane transport is chosen by the SDK from the connection's hub
- * flavor: on IoT Hub Classic it is HTTPS to the hub, performed through the
- * application HTTP hook this sample registers (the SDK ships no HTTP client); on
- * IoT Hub Next (AEG) it travels over the MQTT connection (handled by the SDK).
- * The blob PUT to Azure Storage is always the application's own HTTPS call.
+ * The control plane is HTTPS to the hub, performed through the application HTTP
+ * hook this sample registers -- the SDK ships no HTTP client, so the hook is
+ * required at init(). The blob PUT to Azure Storage is always the application's
+ * own HTTPS call.
+ *
+ * There is no MQTT v5 counterpart: file upload is not carried on that hub, and
+ * this client pins Classic, so a connection that resolves to MQTT v5 is refused
+ * at init() with AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH.
  *
  * This sample uses libcurl (compiled in when CMake's find_package(CURL) succeeds
  * and defines AZ_IOT_SAMPLE_WITH_CURL) both as the HTTP hook and for the Storage
  * PUT. Without libcurl it still provisions and connects, but the HTTPS calls are
  * unavailable and the sample explains how to enable them.
  *
- * Authentication: the Classic hub REST calls use the X.509 device certificate
- * (mutual TLS) -- the same cert/key used for MQTT. The Storage PUT is
- * authenticated by the SAS token embedded in the blob URI.
+ * Authentication: the hub REST calls use the X.509 device certificate (mutual
+ * TLS) -- the same cert/key used for MQTT. The Storage PUT is authenticated by
+ * the SAS token embedded in the blob URI.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -47,12 +50,12 @@ typedef struct
   sample_config config;
   az_iot_certificate_provider_pem certs;
   az_iot_connection_client connection_client;
-  az_iot_file_upload_client file_upload_client;
+  az_iot_gen1_file_upload_client file_upload_client;
 } sample_state;
 
 static void sample_state_destroy(sample_state* s)
 {
-  az_iot_file_upload_client_destroy(&s->file_upload_client);
+  az_iot_gen1_file_upload_client_deinit(&s->file_upload_client);
   az_iot_connection_client_destroy(&s->connection_client);
   az_iot_certificate_provider_pem_destroy(&s->certs);
   sample_config_release(&s->config);
@@ -278,23 +281,17 @@ static void on_notify(az_iot_result status, void* user_ctx)
   u->notify_status = status;
 }
 
-/* Drive the three-step upload through the seamless SDK API. Returns 0 on a
- * fully successful upload. */
+/* Drive the three-step upload. Returns 0 on a fully successful upload. */
 static int run_file_upload(sample_state* state)
 {
-  az_iot_file_upload_client* fu = &state->file_upload_client;
+  az_iot_gen1_file_upload_client* fu = &state->file_upload_client;
   upload_ctx u;
   memset(&u, 0, sizeof(u));
 
-  /* Step 1: request a SAS URI. On Classic, on_sas fires synchronously here. */
+  /* Step 1: request a SAS URI. on_sas fires synchronously here -- the HTTP hook
+   * is synchronous. */
   printf("Requesting SAS URI for '%s'...\n", k_blob_name);
-  az_iot_result gr = az_iot_file_upload_client_get_sas_uri(fu, k_blob_name, on_sas, &u);
-  if (gr == AZ_IOT_ERR_NOT_SUPPORTED)
-  {
-    printf("File upload is not yet available on this hub "
-           "(AEG/Next: pending the Files message schema).\n");
-    return 1;
-  }
+  az_iot_result gr = az_iot_gen1_file_upload_client_get_sas_uri(fu, k_blob_name, on_sas, &u);
   if (gr != AZ_IOT_OK)
   {
     printf("Failed to start the SAS URI request: %s\n", az_iot_result_to_string(gr));
@@ -337,7 +334,7 @@ static int run_file_upload(sample_state* state)
   /* Step 3: notify IoT Hub of the outcome (always, success or failure). */
   printf("Notifying IoT Hub of completion...\n");
   az_iot_result nr
-      = az_iot_file_upload_client_notify_complete(fu, u.correlation_id, put_ok, on_notify, &u);
+      = az_iot_gen1_file_upload_client_notify_complete(fu, u.correlation_id, put_ok, on_notify, &u);
   if (nr != AZ_IOT_OK)
   {
     printf("Failed to send the completion notification: %s\n", az_iot_result_to_string(nr));
@@ -429,12 +426,13 @@ int main(void)
         "Connected. IoT Hub: %s\n",
         az_iot_connection_client_get_iothub_address(&state.connection_client));
 
-    /* The Classic control plane needs an app HTTP transport (mTLS with the
-     * device cert). On Next the SDK uses MQTT and ignores this hook. */
+    /* The control plane needs an app HTTP transport (mTLS with the device
+     * cert); the SDK ships no HTTP client, so init() requires it. */
     hub_http_ctx http_ctx = { state.config.cert, state.config.key };
     az_iot_file_upload_http_transport http = { curl_http_send, &http_ctx };
 
-    if (az_iot_file_upload_client_init(&state.file_upload_client, &state.connection_client, &http)
+    if (az_iot_gen1_file_upload_client_init(
+            &state.file_upload_client, &state.connection_client, &http)
         != AZ_IOT_OK)
     {
       printf("Failed to initialize the file upload client.\n");

@@ -26,7 +26,7 @@ idf_component_register(
         "${AZ_IOT_ROOT}/src/gen1/telemetry_client.c"
         "${AZ_IOT_ROOT}/src/gen2/telemetry_client.c"
         "${AZ_IOT_ROOT}/src/features/c2d/c2d_client.c"
-        "${AZ_IOT_ROOT}/src/features/file_upload/file_upload_client.c"
+        "${AZ_IOT_ROOT}/src/gen1/file_upload_client.c"
         "${AZ_IOT_ROOT}/src/features/adu/adu_client.c"
         "${AZ_IOT_ROOT}/src/features/adu/adu_root_keys_microsoft.c"
         "${AZ_IOT_ROOT}/src/features/adu/adu_state_reporter.c"

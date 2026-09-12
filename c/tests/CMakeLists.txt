@@ -211,8 +211,11 @@ az_iot_add_cmocka_test(az_iot_tests_adu_protocol unit/adu_protocol_test.c)
 target_link_libraries(az_iot_tests_adu_client PRIVATE az_iot_test_support)
 
 # File upload is HTTPS-only (stateless request-build/response-parse helpers), so
-# these tests need neither the mqtt mock nor internal headers.
-az_iot_add_cmocka_test(az_iot_tests_file_upload unit/file_upload_client_test.c)
+# these tests need neither the mqtt mock nor internal headers. gen2 is linked
+# only so the profile-pin test can show a released pin admits the other
+# generation.
+az_iot_add_cmocka_test(az_iot_tests_gen1_file_upload unit/gen1_file_upload_client_test.c)
+target_link_libraries(az_iot_tests_gen1_file_upload PRIVATE az_iot_gen1 az_iot_gen2)
 
 az_iot_add_cmocka_test(az_iot_tests_certificate_provider_pem unit/certificate_provider_pem_test.c)
 
