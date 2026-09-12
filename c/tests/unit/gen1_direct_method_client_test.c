@@ -920,6 +920,26 @@ static void assert_topic_dropped(fixture* fx, const char* topic)
   assert_false(rec.fired);
 }
 
+/* "Not delivered" has two very different causes -- the dispatch never routed it,
+ * or the client parsed it and refused -- and they are indistinguishable from the
+ * handler alone. Only the second logs, so the log is what separates them.
+ * Returns true when the client itself rejected the topic. */
+static bool topic_reached_the_parser(fixture* fx, const char* topic)
+{
+  invocation_record rec = { 0 };
+  assert_int_equal(
+      az_iot_gen1_direct_method_client_set_handler(&fx->dm, on_method, &rec), AZ_IOT_OK);
+
+  log_capture cap;
+  install_warning_capture(&cap);
+  assert_true(az_iot_mock_mqtt_client_inject_message(fx->mock, topic, NULL, 0, AZ_IOT_MQTT_QOS_0));
+  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+  az_iot_log_set_global_sink(NULL);
+
+  assert_false(rec.fired);
+  return cap.warn_count > 0 && strstr(cap.last_warning, "unparsable request topic") != NULL;
+}
+
 static void a_topic_with_an_empty_rid_is_dropped(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -936,11 +956,83 @@ static void a_topic_with_an_empty_method_name_is_dropped(void** state)
   assert_topic_dropped(fx, "$iothub/methods/POST//?$rid=1");
 }
 
-static void a_topic_with_the_wrong_prefix_is_dropped(void** state)
+/* The dispatch table is what rejects this: it routes on the registered
+ * "$iothub/methods/POST/" prefix, so a topic under a different segment never
+ * reaches the client at all. The client therefore logs nothing -- which is the
+ * assertion, because the parser's own prefix check is unreachable from the
+ * public path for exactly this reason. */
+static void a_topic_with_the_wrong_prefix_is_never_routed(void** state)
 {
   fixture* fx = (fixture*)*state;
   open_to_connected(fx);
-  assert_topic_dropped(fx, "$iothub/methods/RES/reboot/?$rid=1");
+  assert_false(topic_reached_the_parser(fx, "$iothub/methods/RES/reboot/?$rid=1"));
+}
+
+/* A topic that IS routed but that the parser refuses: dispatch is
+ * longest-prefix, so anything under the registered prefix reaches the client
+ * and has to be rejected here rather than by routing. */
+static void a_routed_topic_the_parser_refuses_is_dropped(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  assert_true(topic_reached_the_parser(fx, "$iothub/methods/POST/reboot"));
+}
+
+/* A request built by the gen2 client must not be answerable here: the two
+ * generations answer on different correlation schemes, so publishing this one
+ * on a $rid topic would address nothing. */
+static void respond_rejects_a_request_from_the_other_generation(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  invocation_record rec = { 0 };
+  assert_int_equal(
+      az_iot_gen1_direct_method_client_set_handler(&fx->dm, on_method, &rec), AZ_IOT_OK);
+  inject_invocation(fx, 0);
+  assert_true(rec.fired);
+
+  az_iot_direct_method_request foreign = rec.request;
+  foreign._internal.profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
+
+  az_iot_mock_mqtt_client_clear_calls(fx->mock);
+  assert_int_equal(
+      az_iot_gen1_direct_method_respond(&fx->dm, foreign, 200, NULL, 0),
+      AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH);
+  assert_null(az_iot_mock_mqtt_client_last_of(fx->mock, AZ_IOT_MOCK_CALL_PUBLISH));
+
+  /* The refusal must not have consumed the invocation. */
+  assert_int_equal(
+      az_iot_gen1_direct_method_respond(&fx->dm, rec.request, 200, NULL, 0), AZ_IOT_OK);
+}
+
+/* The sequence counter must never hand out 0, because a zeroed request has to
+ * stay un-matchable. Driven by winding the counter to its wrap point. */
+static void the_sequence_counter_skips_zero_on_wrap(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  invocation_record rec = { 0 };
+  assert_int_equal(
+      az_iot_gen1_direct_method_client_set_handler(&fx->dm, on_method, &rec), AZ_IOT_OK);
+
+  fx->dm._internal.next_seq = 0xFFFFFFFFu;
+  inject_invocation(fx, 0);
+  assert_true(rec.fired);
+
+  assert_int_not_equal(rec.request._internal.seq, 0u);
+  assert_int_equal(fx->dm._internal.next_seq, 1u);
+
+  /* And the request it produced still works. */
+  assert_int_equal(
+      az_iot_gen1_direct_method_respond(&fx->dm, rec.request, 200, NULL, 0), AZ_IOT_OK);
+
+  /* A zeroed request is still refused after the wrap. */
+  az_iot_direct_method_request zeroed;
+  memset(&zeroed, 0, sizeof(zeroed));
+  assert_int_equal(
+      az_iot_gen1_direct_method_respond(&fx->dm, zeroed, 200, NULL, 0), AZ_IOT_ERR_INVALID_ARG);
 }
 
 static void a_method_name_past_the_bound_is_dropped(void** state)
@@ -1151,7 +1243,11 @@ int main(void)
     cmocka_unit_test_setup_teardown(an_invocation_with_no_handler_is_dropped, setup, teardown),
     cmocka_unit_test_setup_teardown(a_topic_with_an_empty_rid_is_dropped, setup, teardown),
     cmocka_unit_test_setup_teardown(a_topic_with_an_empty_method_name_is_dropped, setup, teardown),
-    cmocka_unit_test_setup_teardown(a_topic_with_the_wrong_prefix_is_dropped, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_topic_with_the_wrong_prefix_is_never_routed, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_routed_topic_the_parser_refuses_is_dropped, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        respond_rejects_a_request_from_the_other_generation, setup, teardown),
+    cmocka_unit_test_setup_teardown(the_sequence_counter_skips_zero_on_wrap, setup, teardown),
     cmocka_unit_test_setup_teardown(a_method_name_past_the_bound_is_dropped, setup, teardown),
     cmocka_unit_test_setup_teardown(a_rid_past_the_bound_is_dropped, setup, teardown),
     cmocka_unit_test_setup_teardown(a_non_numeric_rid_is_accepted, setup, teardown),
