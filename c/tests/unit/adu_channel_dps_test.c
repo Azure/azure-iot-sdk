@@ -522,6 +522,95 @@ static void a_hold_taken_too_late_is_refused(void** state)
       az_iot_connection_client__dps_hold_acquire(&fx->client), AZ_IOT_ERR_NOT_SUPPORTED);
 }
 
+/* A request outstanding when the session goes away can never be answered. The
+ * engine cleared its pending flag when the request was accepted, so nothing
+ * would ever retire it and every later automatic check would be suppressed.
+ * The channel's tick is what reports the loss. */
+static void a_request_lost_to_teardown_is_reported_on_the_next_tick(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(fx->channel.vtable->open(fx->channel.ctx, on_update, on_result, fx), AZ_IOT_OK);
+  az_iot_mock_mqtt_client* m = open_to_registering(fx);
+
+  /* Held, and a check goes out that the service never answers. */
+  assert_int_equal(fx->channel.vtable->request_update(fx->channel.ctx), AZ_IOT_OK);
+  size_t results_before = fx->result_count;
+
+  /* The hold expires, the device registers, and the response tears the
+   * provisioning session down underneath the outstanding request. */
+  az_iot_test_wait_ms(60);
+  (void)az_iot_connection_client_do_work(&fx->client, 0);
+  assert_true(inject(fx, m, "$dps/registrations/res/200/?$rid=1", k_assigned_body));
+
+  /* Nothing has told the engine yet. */
+  assert_int_equal(fx->result_count, results_before);
+
+  assert_non_null(fx->channel.vtable->do_work);
+  assert_int_equal(fx->channel.vtable->do_work(fx->channel.ctx), AZ_IOT_OK);
+
+  assert_int_equal(fx->result_count, results_before + 1);
+  assert_int_equal(fx->last_action, AZ_IOT_ADU_ERROR_ACTION_RETRY);
+  assert_int_not_equal(fx->last_result, AZ_IOT_OK);
+}
+
+/* Binding after registration has started cannot take a hold, but the interest
+ * must survive so the next session stops for the check rather than racing it. */
+static void a_late_bind_still_holds_the_next_session(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  (void)open_to_registering(fx); /* registration already in flight */
+
+  assert_int_equal(fx->channel.vtable->open(fx->channel.ctx, on_update, on_result, fx), AZ_IOT_OK);
+  assert_false(az_iot_connection_client__dps_hold_is_active(&fx->client));
+
+  /* A later session -- a reprovision -- is early enough, and the tick takes the
+   * hold that could not be taken at bind time. */
+  fx->client.dps_phase = AZ_IOT_DPS_PHASE_CONNECTING;
+  assert_int_equal(fx->channel.vtable->do_work(fx->channel.ctx), AZ_IOT_OK);
+  assert_int_equal(fx->client.dps_hold_count, 1);
+}
+
+/* Releasing on a retryable failure would race registration, so it must not. */
+static void a_retryable_failure_keeps_the_hold(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(fx->channel.vtable->open(fx->channel.ctx, on_update, on_result, fx), AZ_IOT_OK);
+  az_iot_mock_mqtt_client* m = open_to_registering(fx);
+
+  assert_int_equal(fx->channel.vtable->request_update(fx->channel.ctx), AZ_IOT_OK);
+  char rid[64];
+  last_rid(m, rid, sizeof(rid));
+  char topic[256];
+  snprintf(topic, sizeof(topic), "$dps/registrations/res/500/?$rid=%s", rid);
+  assert_true(inject(fx, m, topic, "{\"errorCode\":500000,\"message\":\"server error\"}"));
+
+  assert_int_equal(fx->last_action, AZ_IOT_ADU_ERROR_ACTION_RETRY);
+  /* Still held: the retry is meant to happen on this session. */
+  assert_int_equal(fx->client.dps_hold_count, 1);
+  assert_true(az_iot_connection_client__dps_hold_is_active(&fx->client));
+
+  /* A success then releases it and registration follows. */
+  assert_int_equal(fx->channel.vtable->request_update(fx->channel.ctx), AZ_IOT_OK);
+  last_rid(m, rid, sizeof(rid));
+  snprintf(topic, sizeof(topic), "$dps/registrations/res/200/?$rid=%s", rid);
+  assert_true(inject(fx, m, topic, "{\"updateMetadata\":null}"));
+  assert_int_equal(fx->client.dps_hold_count, 0);
+}
+
+/* The holder count is a uint8_t; refuse rather than wrap. */
+static void the_hold_count_refuses_to_overflow(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  fx->client.dps_phase = AZ_IOT_DPS_PHASE_CONNECTING;
+  fx->client.dps_hold_count = UINT8_MAX;
+
+  assert_int_equal(
+      az_iot_connection_client__dps_hold_acquire(&fx->client), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  assert_int_equal(fx->client.dps_hold_count, UINT8_MAX);
+
+  fx->client.dps_hold_count = 0; /* so teardown is not left holding */
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -549,6 +638,11 @@ int main(void)
     cmocka_unit_test_setup_teardown(without_a_holder_registration_is_not_delayed, setup, teardown),
     cmocka_unit_test_setup_teardown(closing_the_channel_releases_the_hold, setup, teardown),
     cmocka_unit_test_setup_teardown(a_hold_taken_too_late_is_refused, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_request_lost_to_teardown_is_reported_on_the_next_tick, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_late_bind_still_holds_the_next_session, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_retryable_failure_keeps_the_hold, setup, teardown),
+    cmocka_unit_test_setup_teardown(the_hold_count_refuses_to_overflow, setup, teardown),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

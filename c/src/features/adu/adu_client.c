@@ -1790,6 +1790,14 @@ az_iot_result az_iot_adu_client_do_work(az_iot_adu_client_t* client)
     return AZ_IOT_ERR_DETACHED;
   }
 
+  /* Give the channel its tick first. A channel with asynchronous work of its
+   * own reports lost operations here, and the engine's own pending flags are
+   * re-armed from that, so this has to run before they are read below. */
+  if (ADU_I(client).channel.vtable != NULL && ADU_I(client).channel.vtable->do_work != NULL)
+  {
+    (void)ADU_I(client).channel.vtable->do_work(ADU_I(client).channel.ctx);
+  }
+
   /* A pending device-properties / startup report takes priority. */
   if (ADU_I(client).device_props_report_pending)
   {

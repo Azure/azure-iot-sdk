@@ -211,6 +211,12 @@ extern "C"
     /* True while this channel holds registration back for its pre-registration
      * exchange. Tracked so the release is idempotent and exactly matched. */
     bool holds_registration;
+
+    /* Standing interest in holding registration, kept separate from the hold
+     * actually taken. Binding to a session that is already registering cannot
+     * take a hold; this is what makes the NEXT session (a reprovision) hold
+     * instead of racing the check against registration again. */
+    bool wants_hold;
   } az_iot_adu_channel_dps;
 
   /* Bind the channel to a connection and an HTTPS transport and emit the vtable

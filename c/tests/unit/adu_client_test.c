@@ -449,6 +449,7 @@ typedef struct
   char last_installed_version[64];
   az_iot_adu_client_step_result last_step_results[_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS];
   uint8_t last_step_details[_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS][256];
+  size_t do_work_count;
 } fake_channel;
 
 static az_iot_result fake_channel_open(
@@ -466,6 +467,12 @@ static az_iot_result fake_channel_open(
 }
 
 static void fake_channel_close(void* ctx) { ((fake_channel*)ctx)->opened = false; }
+
+static az_iot_result fake_channel_do_work(void* ctx)
+{
+  ((fake_channel*)ctx)->do_work_count++;
+  return AZ_IOT_OK;
+}
 
 static az_iot_result fake_channel_request_update(void* ctx)
 {
@@ -546,7 +553,7 @@ static const az_iot_adu_channel_vtable k_fake_channel_vtable = {
   .request_update = fake_channel_request_update,
   .report = fake_channel_report,
   .set_device_properties = NULL,
-  .do_work = NULL,
+  .do_work = fake_channel_do_work,
 };
 
 /* ------------------------------------------------------------------------- */
@@ -1939,6 +1946,21 @@ static void verify_file_hash_rejects_an_unsupported_algorithm(void** state)
       AZ_IOT_ERR_AUTH);
 }
 
+/* The vtable advertises an optional do_work hook for a channel with
+ * asynchronous work of its own. A channel that reports lost operations there
+ * depends on actually being ticked, so pin that the engine drives it. */
+static void do_work_drives_the_channel(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  size_t before = fx->chan.do_work_count;
+
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(fx->chan.do_work_count, before + 1);
+
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(fx->chan.do_work_count, before + 2);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -1987,6 +2009,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(malformed_manifest_json_is_rejected, setup, teardown),
     cmocka_unit_test_setup_teardown(
         verify_file_hash_rejects_an_unsupported_algorithm, setup, teardown),
+    cmocka_unit_test_setup_teardown(do_work_drives_the_channel, setup, teardown),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

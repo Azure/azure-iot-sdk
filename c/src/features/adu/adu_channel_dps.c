@@ -327,6 +327,7 @@ static az_iot_result channel_open(
    * NOT_SUPPORTED means the connection is already registering or past it; that
    * is not an error here -- the channel simply missed this session and its
    * operations wait for the next one. */
+  c->wants_hold = true;
   az_iot_result hr = az_iot_connection_client__dps_hold_acquire(c->connection);
   if (hr == AZ_IOT_OK)
   {
@@ -334,9 +335,12 @@ static az_iot_result channel_open(
   }
   else if (hr != AZ_IOT_ERR_NOT_SUPPORTED)
   {
+    c->wants_hold = false;
     az_iot_connection_client__set_dps_message_observer(c->connection, NULL, NULL);
     return hr;
   }
+  /* NOT_SUPPORTED leaves wants_hold set on purpose: this session is already
+   * registering, so the interest carries to the next one. */
   return AZ_IOT_OK;
 }
 
@@ -346,6 +350,7 @@ static az_iot_result channel_open(
  * is unavailable. */
 static void channel_release_hold(az_iot_adu_channel_dps* c)
 {
+  c->wants_hold = false;
   if (c->holds_registration)
   {
     c->holds_registration = false;
@@ -562,13 +567,43 @@ static az_iot_result channel_set_device_properties(
   return AZ_IOT_OK;
 }
 
+/* Driven from the engine's tick.
+ *
+ * Two things can only be noticed here. A request outstanding when the session
+ * went away can never be answered, and nothing else would ever retire it: the
+ * engine cleared its pending flag when the request was accepted, so it will not
+ * call request_update() again on its own. Reporting the loss re-arms it.
+ *
+ * And a hold that could not be taken at bind time (or was dropped with the
+ * session) is taken now, so the next provisioning session stops for the check
+ * instead of racing it. */
+static az_iot_result channel_do_work(void* ctx)
+{
+  az_iot_adu_channel_dps* c = (az_iot_adu_channel_dps*)ctx;
+  if (c == NULL)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+
+  channel_forget_pending_if_session_gone(c);
+
+  if (c->wants_hold && !c->holds_registration)
+  {
+    if (az_iot_connection_client__dps_hold_acquire(c->connection) == AZ_IOT_OK)
+    {
+      c->holds_registration = true;
+    }
+  }
+  return AZ_IOT_OK;
+}
+
 static const az_iot_adu_channel_vtable k_channel_vtable = {
   .open = channel_open,
   .close = channel_close,
   .request_update = channel_request_update,
   .report = channel_report,
   .set_device_properties = channel_set_device_properties,
-  .do_work = NULL,
+  .do_work = channel_do_work,
 };
 
 /* Pack a NUL-terminated copy into storage and return it, or NULL when it does
