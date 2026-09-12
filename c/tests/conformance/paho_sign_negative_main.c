@@ -25,8 +25,9 @@
  *     the handshake, for having a certificate and no key at all. Measured: the
  *     wired case fails at the connect assertion, the stripped one at the
  *     subsequent wait. Only the first is evidence about the sign route,
- *   - nothing else broke (any other failing case fails this control too, rather
- *     than being mistaken for the expected one),
+ *   - nothing else broke: EXACTLY ONE case failed, counted from cmocka's own
+ *     group summary rather than from the names, since the same case registered
+ *     twice would report the expected name twice and read as one,
  *   - the hook was never actually called: if it were, the route was accepted,
  *     not refused, and this control's premise no longer holds.
  *
@@ -44,6 +45,10 @@
  * adjusted: its premise is that the bundled adapter cannot honour the route.
  * The positive case then runs for real and proves more than this ever could.
  */
+#ifndef _CRT_SECURE_NO_WARNINGS
+#define _CRT_SECURE_NO_WARNINGS /* this harness uses getenv and fopen */
+#endif
+
 #include "../conformance/az_iot_conformance.h"
 #include "azure/iot/adapters/az_iot_adapter_paho.h"
 
@@ -143,6 +148,8 @@ static void sweep_working_directory(void)
 #endif
 }
 
+#define SIGN_CALLED_MARKER "sign-hook-was-called"
+
 #define EXPECTED_FAILING_CASE "key_custody_sign_hook_completes_a_tls_handshake"
 
 /* Set if the adapter ever calls the hook. It must not: this control's whole
@@ -172,6 +179,13 @@ static az_iot_result negative_sign_stub(
   (void)out_sig_cap;
   (void)out_sig_len;
   g_sign_called = 1;
+  /* Also on disk: a cmocka that runs cases in a child process would leave the
+   * flag above set only there, and the check in the parent would see nothing. */
+  FILE* marker = fopen(SIGN_CALLED_MARKER, "wb");
+  if (marker != NULL)
+  {
+    fclose(marker);
+  }
   return AZ_IOT_ERR_INTERNAL;
 }
 
@@ -228,7 +242,8 @@ static int scan_output(
     const char* path,
     int* out_saw_expected,
     int* out_other_failures,
-    int* out_saw_refusal)
+    int* out_saw_refusal,
+    int* out_failing_total)
 {
   char line[512];
   char refusal[64];
@@ -246,6 +261,7 @@ static int scan_output(
   *out_saw_expected = 0;
   *out_other_failures = 0;
   *out_saw_refusal = 0;
+  *out_failing_total = 0;
 
   while (fgets(line, (int)sizeof(line), f) != NULL)
   {
@@ -275,7 +291,31 @@ static int scan_output(
     {
       *out_saw_expected = 1;
     }
-    else if (strstr(marker, "test(s), listed below") == NULL)
+    else if (strstr(marker, "test(s), listed below") != NULL)
+    {
+      /* cmocka's per-group summary: "<group>: N test(s), listed below:". Its N
+       * is the count, and the count is what "exactly one failing case" means --
+       * the names alone cannot say it, because the same case registered twice
+       * reports the expected name twice and would read as one. */
+      const char* p = strstr(marker, "test(s), listed below");
+      while (p > marker && (p[-1] == ' ' || p[-1] == '\t'))
+      {
+        --p;
+      }
+      int n = 0;
+      int digits = 0;
+      while (p > marker && p[-1] >= '0' && p[-1] <= '9')
+      {
+        --p;
+        ++digits;
+      }
+      for (int i = 0; i < digits; ++i)
+      {
+        n = n * 10 + (p[i] - '0');
+      }
+      *out_failing_total += (digits > 0) ? n : 1;
+    }
+    else
     {
       /* The group summary line ("N test(s), listed below") is not a case. */
       *out_other_failures = 1;
@@ -313,6 +353,7 @@ static int run_control(
   snprintf(log_path, sizeof(log_path), "suite-%s.log", label);
 
   g_sign_called = 0;
+  remove(SIGN_CALLED_MARKER);
 
   /* The suite's own output is the evidence, so it is captured rather than shown.
    * BOTH streams: cmocka prints the case list to stdout and the failed
@@ -344,7 +385,16 @@ static int run_control(
   int saw_expected = 0;
   int other_failures = 0;
   int saw_refusal = 0;
-  int scan_rc = scan_output(log_path, &saw_expected, &other_failures, &saw_refusal);
+  int failing_total = 0;
+  int scan_rc = scan_output(log_path, &saw_expected, &other_failures, &saw_refusal, &failing_total);
+
+  FILE* marker = fopen(SIGN_CALLED_MARKER, "rb");
+  if (marker != NULL)
+  {
+    fclose(marker);
+    remove(SIGN_CALLED_MARKER);
+    g_sign_called = 1;
+  }
 
   int rc = 0;
   if (g_sign_called)
@@ -391,13 +441,15 @@ static int run_control(
         label);
     rc = 1;
   }
-  else if (other_failures)
+  else if (other_failures || failing_total != 1)
   {
     fprintf(
         stderr,
-        "sign-negative[%s]: " EXPECTED_FAILING_CASE " failed as required, but so did other cases,"
-        " so this run is not evidence about the sign route. Fix those first.\n",
-        label);
+        "sign-negative[%s]: " EXPECTED_FAILING_CASE " failed as required, but the run reports %d"
+        " failing case(s), not exactly one, so it is not evidence about the sign route. Fix those"
+        " first.\n",
+        label,
+        failing_total);
     rc = 1;
   }
   else
