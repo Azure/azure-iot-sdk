@@ -221,11 +221,17 @@ void app_main(void)
    * device registers, so pumping only the connection client would leave that
    * check unissued and the hold would simply expire.
    *
-   * The bound must exceed AZ_IOT_DPS_HOLD_TIMEOUT_MS: at 50 ms a tick, 1200
-   * iterations was exactly the hold timeout, so a stalled check would have
-   * ended this loop on the same tick the hold expired and the device would
-   * have looked unreachable instead of registering anyway. */
-  for (int i = 0; i < 2400 && g_conn_state != AZ_IOT_CONN_STATE_CONNECTED; ++i)
+   * The bound must exceed AZ_IOT_DPS_HOLD_TIMEOUT_MS: a fixed 1200 iterations
+   * at 50 ms was exactly the hold timeout, so a stalled check would have ended
+   * this loop on the same tick the hold expired and the device would have
+   * looked unreachable instead of registering anyway. */
+  /* Derived from the hold timeout rather than hard-coded: a build that raises
+   * AZ_IOT_DPS_HOLD_TIMEOUT_MS must not have this loop give up while the
+   * connection is still legitimately holding. Twice the hold leaves room for
+   * the registration that follows it. */
+  const unsigned tick_ms = 50u;
+  const unsigned max_ticks = (2u * (unsigned)AZ_IOT_DPS_HOLD_TIMEOUT_MS) / tick_ms;
+  for (unsigned i = 0; i < max_ticks && g_conn_state != AZ_IOT_CONN_STATE_CONNECTED; ++i)
   {
     (void)az_iot_connection_client_do_work(&conn, 50);
     (void)az_iot_adu_client_do_work(&adu);

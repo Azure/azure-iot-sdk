@@ -1219,6 +1219,11 @@ static void on_channel_update(
  * FATAL is not re-armed: the request is malformed or the device is not
  * entitled, so resending it every tick would spin against the service.
  *
+ * ALREADY_REPORTED is not re-armed: a terminal result is already recorded for
+ * this workflow, so the report HAS been delivered and reporting is idempotent
+ * on workflowId. Re-arming it would retry forever, and during the held
+ * bootstrap session that starves the update check until the hold expires.
+ *
  * PROCEED is not re-armed either. It is a terminal answer, not a failure: the
  * service is telling the device there is no update service configured for it,
  * and the classifier defines it as "carry on, do not retry". Re-arming it would
@@ -1237,7 +1242,9 @@ static void on_channel_result(
     return;
   }
   if (result == AZ_IOT_OK || action == AZ_IOT_ADU_ERROR_ACTION_FATAL
-      || action == AZ_IOT_ADU_ERROR_ACTION_PROCEED || action == AZ_IOT_ADU_ERROR_ACTION_NONE)
+      || action == AZ_IOT_ADU_ERROR_ACTION_PROCEED
+      || action == AZ_IOT_ADU_ERROR_ACTION_ALREADY_REPORTED
+      || action == AZ_IOT_ADU_ERROR_ACTION_NONE)
   {
     return;
   }
