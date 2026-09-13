@@ -447,11 +447,20 @@ static int run_control(
   /* The log IS the evidence, so a write that failed means the evidence is
    * incomplete -- and an incomplete log can hold the expected failure while
    * hiding a later one. Checked rather than assumed. */
-  /* Separate statements, not one expression: both streams must be flushed, and
-   * || would skip the second whenever the first failed. */
+  /* Separate statements, not one expression: both streams must be flushed and
+   * both must be interrogated, and || would skip the second whenever the first
+   * failed.
+   *
+   * ferror as well as fflush: stderr is normally unbuffered, so a write that
+   * failed earlier sets the stream's error indicator while a later flush has
+   * nothing left to drain and reports success. Checking only fflush would let
+   * that partial log through. */
   const int out_flush_failed = (fflush(stdout) != 0);
   const int err_flush_failed = (fflush(stderr) != 0);
-  const int flush_failed = out_flush_failed || err_flush_failed;
+  const int out_write_failed = (ferror(stdout) != 0);
+  const int err_write_failed = (ferror(stderr) != 0);
+  const int flush_failed
+      = out_flush_failed || err_flush_failed || out_write_failed || err_write_failed;
   az_iot_dup2(saved_out, 1);
   az_iot_dup2(saved_err, 2);
   az_iot_close(saved_out);
