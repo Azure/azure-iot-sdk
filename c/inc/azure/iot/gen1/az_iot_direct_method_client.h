@@ -114,7 +114,16 @@ extern "C"
    * since been reclaimed and handed to another invocation no longer matches and
    * the late answer is refused instead of being published against that other
    * call. Holding a request indefinitely is therefore safe; it simply stops
-   * being answerable.
+   * being answerable. A request is also scoped to the client that issued it, so
+   * handing one to a different client is refused rather than resolved against
+   * whatever occupies the same slot there.
+   *
+   * One case is not detectable: a request held across destroy() *and* a fresh
+   * init() of the same client. Teardown zeroes the pool, so the sequence starts
+   * over and the new lifetime can reissue the pair the old request names.
+   * Detecting it would need identity that outlives the caller's storage, which
+   * this SDK does not keep. Do not hold a request across the teardown of the
+   * client that issued it.
    *
    * @return AZ_IOT_ERR_TIMEOUT if @p request has passed its response timeout --
    *         nothing is sent and the slot is released;

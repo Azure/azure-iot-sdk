@@ -279,6 +279,120 @@ static void respond_rejects_a_zeroed_request(void** state)
       az_iot_gen1_direct_method_respond(&fx->dm, zeroed, 200, NULL, 0), AZ_IOT_ERR_INVALID_ARG);
 }
 
+/* A request names a slot in one client's pool. Two clients on separate
+ * connections both allocate slot 0 first, and both seed their sequence from the
+ * same millisecond clock, so the first request either issues can carry an
+ * identical {slot, seq}. The sequences are pinned equal here so the collision is
+ * the test rather than a coincidence: only the owner distinguishes them, and
+ * without it client A's request resolves B's live slot and publishes under B's
+ * rid. */
+static void a_request_from_another_client_is_refused(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  /* A second client with its own connection, factory and mock. */
+  az_iot_connection_client conn2;
+  az_iot_connection_client_options opts = { 0 };
+  opts.host = "broker.example";
+  opts.port = 8883;
+  opts.client_id = "ut-device-2";
+  assert_int_equal(az_iot_connection_client_init(&conn2, &opts), AZ_IOT_OK);
+
+  az_iot_mqtt_factory* factory2 = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
+  assert_non_null(factory2);
+  az_iot_gen1_direct_method_client dm2;
+  assert_int_equal(az_iot_gen1_direct_method_client_init(&dm2, &conn2), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_register_mqtt_factory(&conn2, factory2), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_open(&conn2), AZ_IOT_OK);
+  az_iot_mock_mqtt_client* mock2 = az_iot_mock_mqtt_factory_last_client(factory2);
+  assert_non_null(mock2);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(mock2, AZ_IOT_OK));
+  assert_int_equal(az_iot_connection_client_do_work(&conn2, 0), AZ_IOT_OK);
+  az_iot_test_ack_subscriptions(&conn2, mock2);
+
+  /* Same starting sequence on both, so the two requests are identical apart
+   * from their owner. */
+  fx->dm._internal.next_seq = 1000u;
+  dm2._internal.next_seq = 1000u;
+
+  invocation_record rec1 = { 0 };
+  assert_int_equal(
+      az_iot_gen1_direct_method_client_set_handler(&fx->dm, on_method, &rec1), AZ_IOT_OK);
+  inject_invocation(fx, 0);
+  assert_true(rec1.fired);
+
+  invocation_record rec2 = { 0 };
+  assert_int_equal(az_iot_gen1_direct_method_client_set_handler(&dm2, on_method, &rec2), AZ_IOT_OK);
+  assert_true(az_iot_mock_mqtt_client_inject_message(
+      mock2, "$iothub/methods/POST/m9/?$rid=9", NULL, 0, AZ_IOT_MQTT_QOS_0));
+  assert_int_equal(az_iot_connection_client_do_work(&conn2, 0), AZ_IOT_OK);
+  assert_true(rec2.fired);
+
+  /* The collision the owner check exists to catch. */
+  assert_int_equal(rec1.request._internal.slot, rec2.request._internal.slot);
+  assert_int_equal(rec1.request._internal.seq, rec2.request._internal.seq);
+
+  az_iot_mock_mqtt_client_clear_calls(mock2);
+  assert_int_equal(
+      az_iot_gen1_direct_method_respond(&dm2, rec1.request, 200, NULL, 0), AZ_IOT_ERR_INVALID_ARG);
+  assert_null(az_iot_mock_mqtt_client_last_of(mock2, AZ_IOT_MOCK_CALL_PUBLISH));
+
+  /* Each client can still answer its own. */
+  assert_int_equal(az_iot_gen1_direct_method_respond(&dm2, rec2.request, 200, NULL, 0), AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_gen1_direct_method_respond(&fx->dm, rec1.request, 200, NULL, 0), AZ_IOT_OK);
+
+  az_iot_gen1_direct_method_client_destroy(&dm2);
+  az_iot_connection_client_destroy(&conn2);
+}
+
+/* A request outliving its client's teardown finds the pool zeroed, so the slot
+ * it names is not in use and the answer is refused. This is the guarantee that
+ * holds; see the header for the destroy-then-reinit case, which does not. */
+static void a_request_that_outlived_destroy_is_refused(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  invocation_record rec = { 0 };
+  assert_int_equal(
+      az_iot_gen1_direct_method_client_set_handler(&fx->dm, on_method, &rec), AZ_IOT_OK);
+  inject_invocation(fx, 0);
+  assert_true(rec.fired);
+  az_iot_direct_method_request before = rec.request;
+
+  az_iot_mock_mqtt_client_clear_calls(fx->mock);
+  az_iot_gen1_direct_method_client_destroy(&fx->dm);
+
+  assert_int_equal(
+      az_iot_gen1_direct_method_respond(&fx->dm, before, 200, NULL, 0), AZ_IOT_ERR_INVALID_ARG);
+  assert_null(az_iot_mock_mqtt_client_last_of(fx->mock, AZ_IOT_MOCK_CALL_PUBLISH));
+
+  /* Re-init so teardown has a consistent client to tear down. */
+  assert_int_equal(az_iot_gen1_direct_method_client_init(&fx->dm, &fx->conn), AZ_IOT_OK);
+}
+
+/* The slot index subscripts req_pool and the parallel expiry array, so it has
+ * to be bounds-checked before either. */
+static void respond_rejects_a_request_naming_a_slot_out_of_range(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  invocation_record rec = { 0 };
+  assert_int_equal(
+      az_iot_gen1_direct_method_client_set_handler(&fx->dm, on_method, &rec), AZ_IOT_OK);
+  inject_invocation(fx, 0);
+  assert_true(rec.fired);
+
+  az_iot_direct_method_request forged = rec.request;
+  forged._internal.slot = AZ_IOT_DM_MAX_INFLIGHT + 7u;
+
+  assert_int_equal(
+      az_iot_gen1_direct_method_respond(&fx->dm, forged, 200, NULL, 0), AZ_IOT_ERR_INVALID_ARG);
+}
+
 static void the_pool_holds_the_documented_number_of_concurrent_requests(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -1239,6 +1353,10 @@ int main(void)
     cmocka_unit_test_setup_teardown(malformed_topic_dropped, setup, teardown),
     cmocka_unit_test(respond_rejects_a_null_client),
     cmocka_unit_test_setup_teardown(respond_rejects_a_zeroed_request, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_request_from_another_client_is_refused, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_request_that_outlived_destroy_is_refused, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        respond_rejects_a_request_naming_a_slot_out_of_range, setup, teardown),
     cmocka_unit_test_setup_teardown(
         the_pool_holds_the_documented_number_of_concurrent_requests, setup, teardown),
     cmocka_unit_test_setup_teardown(

@@ -183,6 +183,12 @@ extern "C"
   {
     struct
     {
+      /* Which client issued it. Compared, never dereferenced -- it says which
+       * pool the slot belongs to, so a request cannot resolve against a
+       * different client that happens to have the same slot live. This is not
+       * the pointer-as-storage the value handle replaced: that one *was* the
+       * invocation, this one only names the pool it came from. */
+      const void* owner;
       uint32_t slot;
       uint32_t seq;
       /* Which generation issued it, so a respond call from the other one is

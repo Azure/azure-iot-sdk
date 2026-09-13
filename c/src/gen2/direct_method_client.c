@@ -228,6 +228,7 @@ static bool request_acquire(
       DI(dm).next_slot = (i + 1u) % AZ_IOT_GEN2_DM_MAX_CONCURRENT;
 
       memset(out_request, 0, sizeof(*out_request));
+      out_request->_internal.owner = dm;
       out_request->_internal.slot = (uint32_t)i;
       out_request->_internal.seq = s->_internal.seq;
       out_request->_internal.profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
@@ -254,6 +255,10 @@ static az_iot_direct_method_slot* request_resolve(
     az_iot_direct_method_request request,
     size_t* out_index)
 {
+  if (request._internal.owner != dm)
+  {
+    return NULL;
+  }
   size_t i = (size_t)request._internal.slot;
   if (i >= AZ_IOT_GEN2_DM_MAX_CONCURRENT || request._internal.seq == 0u)
   {
@@ -862,6 +867,10 @@ az_iot_result az_iot_gen2_direct_method_client_init(
   memset(client, 0, sizeof(*client));
   DI(client).conn = conn;
   DI(client).rng_state = az_iot_time_mono_ms();
+  /* Seeded rather than started from zero: destroy() zeroes the client, so a
+   * fresh init would otherwise reissue the same {slot, seq} a request from the
+   * previous lifetime still names. */
+  DI(client).next_seq = (uint32_t)az_iot_time_mono_ms();
 
   result = az_iot_connection_client__register_feature_client_bind(conn, client, bind_topics);
   if (result != AZ_IOT_OK)

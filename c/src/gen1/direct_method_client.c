@@ -32,8 +32,8 @@
  * rid near the top of a raised bound was accepted, ran its handler, and then
  * could not be answered at all -- while shorter rids on the same build answered
  * normally. Deriving the size keeps "accepted" and "answerable" the same set.
- * The two sizeof()s each carry a NUL, which covers the terminator with a byte
- * to spare. */
+ * Capacity works out at 40 + AZ_IOT_DM_RID_MAX against a worst case of 38,
+ * terminator included, so it holds at every bound with two bytes spare. */
 #define AZ_IOT_GEN1_DM_TOPIC_MAX                               \
   (sizeof(METHODS_RESPONSE_PREFIX) + AZ_IOT_GEN1_DM_STATUS_MAX \
    + sizeof(METHODS_RESPONSE_RID_MARKER) + AZ_IOT_DM_RID_MAX)
@@ -83,6 +83,10 @@ static az_iot_direct_method_slot* request_resolve(
     az_iot_direct_method_request request,
     size_t* out_index)
 {
+  if (request._internal.owner != dm)
+  {
+    return NULL;
+  }
   size_t i = (size_t)request._internal.slot;
   if (i >= AZ_IOT_DM_MAX_INFLIGHT || request._internal.seq == 0u)
   {
@@ -131,6 +135,7 @@ static bool request_acquire(
       DI(dm).next_slot = (i + 1u) % AZ_IOT_DM_MAX_INFLIGHT;
 
       memset(out_request, 0, sizeof(*out_request));
+      out_request->_internal.owner = dm;
       out_request->_internal.slot = (uint32_t)i;
       out_request->_internal.seq = s->_internal.seq;
       out_request->_internal.profile = AZ_IOT_CONNECTION_PROFILE_CLASSIC;
@@ -245,6 +250,10 @@ az_iot_result az_iot_gen1_direct_method_client_init(
   memset(client, 0, sizeof(*client));
   DI(client).conn = conn;
   DI(client).response_timeout_seconds = AZ_IOT_GEN1_DM_RESPONSE_TIMEOUT_SECONDS;
+  /* Seeded rather than started from zero: destroy() zeroes the client, so a
+   * fresh init would otherwise reissue the same {slot, seq} a request from the
+   * previous lifetime still names. */
+  DI(client).next_seq = (uint32_t)az_iot_time_mono_ms();
 
   /* No connect-time bind: unlike C2D, these topics carry no device id, so they
    * are known before the connection resolves. */
