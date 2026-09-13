@@ -21,7 +21,23 @@
 #include "internal/reconnect.h"
 #include "internal/span_writer.h"
 
-#define AZ_IOT_GEN1_DM_TOPIC_MAX 192
+#define METHODS_RESPONSE_PREFIX "$iothub/methods/res/"
+#define METHODS_RESPONSE_RID_MARKER "/?$rid="
+/* Longest decimal an int32 status can print, INT32_MIN included. */
+#define AZ_IOT_GEN1_DM_STATUS_MAX 11
+
+/* Derived from the parts the topic is built out of rather than fixed, because
+ * AZ_IOT_DM_RID_MAX is a documented knob and it widens what the parser accepts.
+ * At a fixed size the buffer did not widen with it, so an invocation carrying a
+ * rid near the top of a raised bound was accepted, ran its handler, and then
+ * could not be answered at all -- while shorter rids on the same build answered
+ * normally. Deriving the size keeps "accepted" and "answerable" the same set.
+ * The two sizeof()s each carry a NUL, which covers the terminator with a byte
+ * to spare. */
+#define AZ_IOT_GEN1_DM_TOPIC_MAX                               \
+  (sizeof(METHODS_RESPONSE_PREFIX) + AZ_IOT_GEN1_DM_STATUS_MAX \
+   + sizeof(METHODS_RESPONSE_RID_MARKER) + AZ_IOT_DM_RID_MAX)
+
 #define METHODS_REQUEST_PREFIX "$iothub/methods/POST/"
 #define MS_PER_SECOND 1000u
 
@@ -130,7 +146,11 @@ static bool request_acquire(
   return false;
 }
 
-/* Parse "$iothub/methods/POST/<methodName>/?$rid=<rid>". */
+/* Parse "$iothub/methods/POST/<methodName>/?$rid=<rid>".
+ *
+ * The prefix check below is unreachable through the public path -- every caller
+ * arrives via a dispatch entry registered on METHODS_REQUEST_PREFIX itself --
+ * and is kept as the guard on that contract rather than on the input. */
 static bool parse_method_topic(
     const char* topic,
     char* out_method,
@@ -336,10 +356,13 @@ az_iot_result az_iot_gen1_direct_method_respond(
   char topic[AZ_IOT_GEN1_DM_TOPIC_MAX];
   az_iot_span_writer writer;
   az_iot_span_writer_init(&writer, AZ_SPAN_FROM_BUFFER(topic));
-  az_iot_span_writer_append_str(&writer, "$iothub/methods/res/");
+  az_iot_span_writer_append_str(&writer, METHODS_RESPONSE_PREFIX);
   az_iot_span_writer_append_i32(&writer, (int32_t)status_code);
-  az_iot_span_writer_append_str(&writer, "/?$rid=");
+  az_iot_span_writer_append_str(&writer, METHODS_RESPONSE_RID_MARKER);
   az_iot_span_writer_append_str(&writer, slot->_internal.rid);
+  /* Unreachable by construction: the buffer is sized from these same parts.
+   * Kept because that is a property of two macros agreeing, not something the
+   * writer itself enforces. */
   if (az_iot_span_writer_end_str(&writer, NULL) != AZ_IOT_OK)
   {
     slot->_internal.in_use = false;
