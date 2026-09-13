@@ -27,10 +27,13 @@
 #define AZ_IOT_GEN1_DM_STATUS_MAX 11
 
 /* Derived from the parts the topic is built out of rather than fixed, because
- * AZ_IOT_DM_RID_MAX is a documented knob: at a fixed size, raising it far
- * enough produced a client that accepted invocations and could never answer
- * one. The two sizeof()s each carry a NUL, which covers the terminator with a
- * byte to spare. */
+ * AZ_IOT_DM_RID_MAX is a documented knob and it widens what the parser accepts.
+ * At a fixed size the buffer did not widen with it, so an invocation carrying a
+ * rid near the top of a raised bound was accepted, ran its handler, and then
+ * could not be answered at all -- while shorter rids on the same build answered
+ * normally. Deriving the size keeps "accepted" and "answerable" the same set.
+ * The two sizeof()s each carry a NUL, which covers the terminator with a byte
+ * to spare. */
 #define AZ_IOT_GEN1_DM_TOPIC_MAX                               \
   (sizeof(METHODS_RESPONSE_PREFIX) + AZ_IOT_GEN1_DM_STATUS_MAX \
    + sizeof(METHODS_RESPONSE_RID_MARKER) + AZ_IOT_DM_RID_MAX)

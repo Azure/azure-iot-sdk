@@ -1035,11 +1035,12 @@ static void the_sequence_counter_skips_zero_on_wrap(void** state)
       az_iot_gen1_direct_method_respond(&fx->dm, zeroed, 200, NULL, 0), AZ_IOT_ERR_INVALID_ARG);
 }
 
-/* AZ_IOT_DM_RID_MAX is a documented knob, and the response topic is built from
- * the rid it bounds. A rid at that bound has to survive the round trip, or
- * raising the knob produces a client that accepts invocations and can never
- * answer them. Sized from the macro so the same test means something in both
- * the default and the tuned build. */
+/* AZ_IOT_DM_RID_MAX bounds the rid the parser will accept, and the response
+ * topic is built from that rid. A rid at the bound is the worst case, so it is
+ * the one that has to survive the round trip: if the response buffer does not
+ * track the knob, exactly these invocations are accepted and then cannot be
+ * answered, while shorter rids on the same build are fine. Sized from the macro
+ * so the same test is the worst case in both the default and the tuned build. */
 static void a_rid_at_the_configured_bound_still_answers(void** state)
 {
   fixture* fx = (fixture*)*state;
