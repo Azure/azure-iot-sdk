@@ -7,13 +7,14 @@
  * Device Update (ADUv2) end-to-end suite: the shipping SDK against a real
  * DPS/Device Update endpoint.
  *
- * What is real here: the connection client, its DPS flow and the
- * pre-registration hold, the device-update channel, and the request/response
- * codecs. The scenarios drive the channel vtable directly rather than going
- * through az_iot_adu_client, so the engine's workflow state machine is NOT
- * exercised -- only the transport-facing half is. The only test-owned piece is the MQTT transport
- * (e2e_mqtt_transport.c), which exists so the suite can run where the route out
- * is a proxy and the device is enrolled with a symmetric key.
+ * Everything beneath the test is the shipping SDK: the connection client, its
+ * DPS flow and the pre-registration hold, the device-update channel, the
+ * codecs, the Paho MQTT adapter, and X.509 authentication. Nothing here
+ * implements a transport or a credential of its own.
+ *
+ * The scenarios drive the channel vtable directly rather than going through
+ * az_iot_adu_client, so the engine's workflow state machine is NOT exercised --
+ * only the transport-facing half is.
  *
  * Scope note. These scenarios deliberately cover only what a device can reach
  * WITHOUT an update being offered to it:
@@ -38,7 +39,8 @@
  * written in e2e_adu_test.c and carries over unchanged.
  *
  * Every scenario skips (passes, loudly) when the environment is not configured,
- * so the suite is safe to run anywhere.
+ * so the suite is safe to run anywhere. It needs an X.509 enrollment in the
+ * target DPS: AZ_IOT_E2E_ADU_CERT and _KEY are the device certificate and key.
  */
 #include <stdarg.h>
 #include <stddef.h>
@@ -52,9 +54,6 @@
 
 #include <cmocka.h>
 
-#include <openssl/evp.h>
-#include <openssl/hmac.h>
-
 #include "azure/iot/az_iot_adu.h"
 #include "azure/iot/az_iot_connection_client.h"
 #include "azure/iot/az_iot_result.h"
@@ -64,7 +63,8 @@
 #include "adu_channel_internal.h"
 #include "adu_protocol_internal.h"
 
-#include "e2e_mqtt_transport.h"
+#include "azure/iot/adapters/az_iot_adapter_paho.h"
+#include "azure/iot/az_iot_certificate_provider_pem.h"
 
 /* --- environment --------------------------------------------------------- */
 
@@ -72,9 +72,9 @@ typedef struct
 {
   const char* dps_host;
   const char* id_scope;
-  const char* group_key_b64;
+  const char* cert_path; /* PEM, X.509 client certificate */
+  const char* key_path; /* PEM, its private key */
   const char* registry_device; /* a registrationId known to the registry */
-  const char* proxy; /* optional */
   bool present;
 } e2e_env;
 
@@ -90,10 +90,11 @@ static void env_load(void)
 {
   g_env.dps_host = env_or_null("AZ_IOT_E2E_ADU_DPS_HOST");
   g_env.id_scope = env_or_null("AZ_IOT_E2E_ADU_ID_SCOPE");
-  g_env.group_key_b64 = env_or_null("AZ_IOT_E2E_ADU_GROUP_KEY");
+  g_env.cert_path = env_or_null("AZ_IOT_E2E_ADU_CERT");
+  g_env.key_path = env_or_null("AZ_IOT_E2E_ADU_KEY");
   g_env.registry_device = env_or_null("AZ_IOT_E2E_ADU_REGISTRY_DEVICE");
-  g_env.proxy = env_or_null("AZ_IOT_E2E_ADU_PROXY");
-  g_env.present = g_env.dps_host != NULL && g_env.id_scope != NULL && g_env.group_key_b64 != NULL;
+  g_env.present = g_env.dps_host != NULL && g_env.id_scope != NULL && g_env.cert_path != NULL
+      && g_env.key_path != NULL;
 }
 
 /* cmocka has no first-class skip, and failing on an unconfigured machine would
@@ -103,163 +104,17 @@ static void env_load(void)
   {                                                                                          \
     if (!g_env.present)                                                                      \
     {                                                                                        \
-      printf("[  SKIPPED ] set AZ_IOT_E2E_ADU_DPS_HOST/_ID_SCOPE/_GROUP_KEY to run this\n"); \
+      printf("[  SKIPPED ] set AZ_IOT_E2E_ADU_DPS_HOST/_ID_SCOPE/_CERT/_KEY to run this\n"); \
       return;                                                                                \
     }                                                                                        \
   } while (0)
-
-/* --- SAS ----------------------------------------------------------------- */
-
-static void url_encode(const char* in, char* out, size_t out_size)
-{
-  static const char* hex = "0123456789ABCDEF";
-  size_t o = 0;
-  for (size_t i = 0; in[i] != '\0' && o + 4 < out_size; ++i)
-  {
-    unsigned char ch = (unsigned char)in[i];
-    bool unreserved = (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z')
-        || (ch >= '0' && ch <= '9') || ch == '-' || ch == '_' || ch == '.' || ch == '~';
-    if (unreserved)
-    {
-      out[o++] = (char)ch;
-    }
-    else
-    {
-      out[o++] = '%';
-      out[o++] = hex[ch >> 4];
-      out[o++] = hex[ch & 0x0f];
-    }
-  }
-  out[o] = '\0';
-}
-
-static int b64_decode(const char* in, unsigned char* out, int out_size)
-{
-  /* Checked BEFORE decoding: EVP_DecodeBlock writes 3 bytes for every 4 of
-   * input and only then returns the length, so validating afterwards would
-   * already have overflowed `out` on an oversized or malformed value. */
-  size_t len = strlen(in);
-  if (len == 0 || (len % 4) != 0)
-  {
-    return -1;
-  }
-  if (len / 4 > (size_t)(out_size / 3))
-  {
-    return -1;
-  }
-
-  int n = EVP_DecodeBlock(out, (const unsigned char*)in, (int)len);
-  if (n < 0 || n > out_size)
-  {
-    return -1;
-  }
-  /* EVP_DecodeBlock pads to a multiple of 3; drop what '=' accounted for. */
-  if (len >= 1 && in[len - 1] == '=')
-  {
-    n--;
-  }
-  if (len >= 2 && in[len - 2] == '=')
-  {
-    n--;
-  }
-  return n;
-}
-
-static int b64_encode(const unsigned char* in, int in_len, char* out, int out_size)
-{
-  if (((in_len + 2) / 3) * 4 + 1 > out_size)
-  {
-    return -1;
-  }
-  return EVP_EncodeBlock((unsigned char*)out, in, in_len);
-}
-
-/* The device key is derived from the enrollment-group key, so any registrationId
- * is instantly valid -- which is what makes a fresh identity per run free. */
-/* The same callback serves every CONNECT the connection client makes, and they
- * do not all want the same token. A provisioning CONNECT signs
- * "<idScope>/registrations/<registrationId>" with skn=registration; an assigned
- * hub CONNECT wants "<hub>/devices/<deviceId>" and no skn. Signing the DPS
- * audience for a hub CONNECT would simply be rejected.
- *
- * The username tells them apart: the provisioning one carries
- * "/registrations/". Anything else is a hub CONNECT, which this suite does not
- * reach today -- its scenarios all finish on the provisioning session -- so
- * rather than emit a token that cannot work, nothing is written and the
- * adapter connects without a password, which fails visibly. */
-static void sas_password(const char* username, char* out, size_t out_size, void* ctx)
-{
-  const char* registration_id = (const char*)ctx;
-
-  if (username == NULL || strstr(username, "/registrations/") == NULL)
-  {
-    out[0] = '\0';
-    return;
-  }
-
-  unsigned char group_key[128];
-  int group_key_len = b64_decode(g_env.group_key_b64, group_key, (int)sizeof(group_key));
-  if (group_key_len <= 0)
-  {
-    out[0] = '\0';
-    return;
-  }
-
-  unsigned char device_key[EVP_MAX_MD_SIZE];
-  unsigned int device_key_len = 0;
-  HMAC(
-      EVP_sha256(),
-      group_key,
-      group_key_len,
-      (const unsigned char*)registration_id,
-      strlen(registration_id),
-      device_key,
-      &device_key_len);
-
-  char resource[256];
-  snprintf(resource, sizeof(resource), "%s/registrations/%s", g_env.id_scope, registration_id);
-  char encoded[512];
-  url_encode(resource, encoded, sizeof(encoded));
-
-  long expiry = (long)time(NULL) + 3600;
-  char to_sign[640];
-  snprintf(to_sign, sizeof(to_sign), "%s\n%ld", encoded, expiry);
-
-  unsigned char sig[EVP_MAX_MD_SIZE];
-  unsigned int sig_len = 0;
-  HMAC(
-      EVP_sha256(),
-      device_key,
-      (int)device_key_len,
-      (const unsigned char*)to_sign,
-      strlen(to_sign),
-      sig,
-      &sig_len);
-
-  char sig_b64[128];
-  if (b64_encode(sig, (int)sig_len, sig_b64, (int)sizeof(sig_b64)) <= 0)
-  {
-    out[0] = '\0';
-    return;
-  }
-  char sig_enc[256];
-  url_encode(sig_b64, sig_enc, sizeof(sig_enc));
-
-  snprintf(
-      out,
-      out_size,
-      "SharedAccessSignature sr=%s&sig=%s&se=%ld&skn=registration",
-      encoded,
-      sig_enc,
-      expiry);
-}
 
 /* --- fixture ------------------------------------------------------------- */
 
 typedef struct
 {
   az_iot_connection_client conn;
-  az_iot_mqtt_factory* factory;
+  az_iot_certificate_provider_pem certs;
   char registration_id[96];
 
   az_iot_adu_channel_dps channel_state;
@@ -308,11 +163,20 @@ static void on_result(
   fx->last_action = action;
 }
 
-/* A fresh registrationId per run doubles as a clean state reset for the
- * onboarding route, which keys its state per device. */
-static void make_registration_id(char* out, size_t out_size, const char* prefix)
+/* With X.509 the registrationId is not free to choose: it is the identity bound
+ * to the certificate -- the leaf subject for an individual enrollment, and a
+ * name the signing CA vouches for in a group. So every scenario uses the one
+ * the credential actually carries rather than minting a fresh one per run.
+ *
+ * The consequence is deliberate and worth stating: runs share a device, so the
+ * service keeps device-update state between them. The scenarios below assert
+ * only on things that hold either way (an answer arrives, ETags are issued and
+ * stored, an unknown workflow is rejected) and not on anything that would
+ * depend on a device having no history. */
+static const char* e2e_registration_id(void)
 {
-  snprintf(out, out_size, "%s-%ld", prefix, (long)time(NULL));
+  const char* id = env_or_null("AZ_IOT_E2E_ADU_REG_ID");
+  return id != NULL ? id : "x509-e2e-device";
 }
 
 static void fixture_open(e2e_fixture* fx, const char* registration_id)
@@ -320,23 +184,21 @@ static void fixture_open(e2e_fixture* fx, const char* registration_id)
   memset(fx, 0, sizeof(*fx));
   snprintf(fx->registration_id, sizeof(fx->registration_id), "%s", registration_id);
 
-  az_iot_connection_client_options opts = { 0 };
+  az_iot_certificate_provider_pem_options pem = az_iot_certificate_provider_pem_options_default();
+  pem.client_cert_pem_path = g_env.cert_path;
+  pem.client_key_pem_path = g_env.key_path;
+  assert_int_equal(az_iot_certificate_provider_pem_init(&fx->certs, &pem), AZ_IOT_OK);
+
+  az_iot_connection_client_options opts = az_iot_connection_client_options_default();
   opts.host = NULL; /* DPS mode */
   opts.client_id = fx->registration_id;
   opts.dps.id_scope = g_env.id_scope;
   opts.dps.registration_id = fx->registration_id;
   opts.dps.global_endpoint = g_env.dps_host;
+  opts.certificate_provider = &fx->certs.base;
   assert_int_equal(az_iot_connection_client_init(&fx->conn, &opts), AZ_IOT_OK);
   assert_int_equal(
       az_iot_connection_client_set_state_callback(&fx->conn, on_conn_state, fx), AZ_IOT_OK);
-
-  az_iot_e2e_mqtt_config mcfg;
-  memset(&mcfg, 0, sizeof(mcfg));
-  mcfg.proxy = g_env.proxy;
-  mcfg.password_cb = sas_password;
-  mcfg.password_ctx = fx->registration_id;
-  fx->factory = az_iot_e2e_mqtt_factory_create(&mcfg);
-  assert_non_null(fx->factory);
 
   az_iot_adu_device_properties dp = { 0 };
   dp.manufacturer = "contoso";
@@ -348,8 +210,11 @@ static void fixture_open(e2e_fixture* fx, const char* registration_id)
       az_iot_adu_channel_dps_init(&fx->channel_state, &fx->conn, &dp, &fx->channel), AZ_IOT_OK);
   assert_int_equal(fx->channel.vtable->open(fx->channel.ctx, on_update, on_result, fx), AZ_IOT_OK);
 
+  /* The shipping Paho adapter. DPS is v3.1.1 only, so one factory is enough. */
   assert_int_equal(
-      az_iot_connection_client_register_mqtt_factory(&fx->conn, fx->factory), AZ_IOT_OK);
+      az_iot_connection_client_register_mqtt_factory(
+          &fx->conn, az_iot_paho_factory_create_v3_1_1()),
+      AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_open(&fx->conn), AZ_IOT_OK);
 }
 
@@ -360,6 +225,7 @@ static void fixture_close(e2e_fixture* fx)
     fx->channel.vtable->close(fx->channel.ctx);
   }
   az_iot_connection_client_destroy(&fx->conn);
+  az_iot_certificate_provider_pem_destroy(&fx->certs);
 }
 
 /* Pump until the predicate holds or the budget runs out. Wall-clock bounded
@@ -411,9 +277,7 @@ static void onboarding_check_runs_before_registration(void** state)
   SKIP_WITHOUT_ENV();
 
   e2e_fixture fx;
-  char id[96];
-  make_registration_id(id, sizeof(id), "e2e-onboard");
-  fixture_open(&fx, id);
+  fixture_open(&fx, e2e_registration_id());
 
   wait_for_hold(&fx);
   assert_int_equal(fx.conn.dps_phase, AZ_IOT_DPS_PHASE_HOLD);
@@ -454,9 +318,7 @@ static void the_hold_is_released_and_registration_is_answered(void** state)
   SKIP_WITHOUT_ENV();
 
   e2e_fixture fx;
-  char id[96];
-  make_registration_id(id, sizeof(id), "e2e-provision");
-  fixture_open(&fx, id);
+  fixture_open(&fx, e2e_registration_id());
 
   wait_for_hold(&fx);
   assert_int_equal(fx.channel.vtable->request_update(fx.channel.ctx), AZ_IOT_OK);
@@ -518,9 +380,7 @@ static void etags_are_issued_stored_and_survive_the_session(void** state)
   SKIP_WITHOUT_ENV();
 
   e2e_fixture fx;
-  char id[96];
-  make_registration_id(id, sizeof(id), "e2e-etag");
-  fixture_open(&fx, id);
+  fixture_open(&fx, e2e_registration_id());
 
   wait_for_hold(&fx);
   assert_int_equal(fx.channel.vtable->request_update(fx.channel.ctx), AZ_IOT_OK);
@@ -575,9 +435,7 @@ static void an_unknown_workflow_report_is_not_treated_as_delivered(void** state)
   SKIP_WITHOUT_ENV();
 
   e2e_fixture fx;
-  char id[96];
-  make_registration_id(id, sizeof(id), "e2e-report");
-  fixture_open(&fx, id);
+  fixture_open(&fx, e2e_registration_id());
 
   wait_for_hold(&fx);
 

@@ -571,15 +571,12 @@ endif()
 # cloud (az_iot_e2e_service facade) halves. It needs a real MQTT adapter, so it
 # also requires AZ_IOT_WITH_PAHO.
 # ---------------------------------------------------------------------------
-# The ADUv2 suite is the exception: it brings its own MQTT transport, so it
-# needs no Paho and can run where Paho cannot reach the service.
 if(AZ_IOT_BUILD_E2E)
-    if(AZ_IOT_WITH_PAHO OR AZ_IOT_BUILD_E2E_ADU_V2)
+    if(AZ_IOT_WITH_PAHO)
         add_subdirectory(e2e)
     else()
         message(WARNING
             "AZ_IOT_BUILD_E2E=ON but AZ_IOT_WITH_PAHO=OFF; skipping e2e tests "
-            "(they require the Paho MQTT adapter). Set AZ_IOT_BUILD_E2E_ADU_V2=ON "
-            "to build the ADUv2 suite, which does not.")
+            "(they require the Paho MQTT adapter).")
     endif()
 endif()
