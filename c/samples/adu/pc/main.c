@@ -501,7 +501,12 @@ int main(void)
    * registers. Pumping only the connection client would leave that check
    * unissued, and the connection would simply wait out the hold and register
    * without it. */
-  for (int i = 0; i < 1200 && g_conn_state != AZ_IOT_CONN_STATE_CONNECTED && !g_stop; ++i)
+  /* The bound must EXCEED the hold timeout. At 50 ms a tick, the old 1200
+   * iterations were exactly AZ_IOT_DPS_HOLD_TIMEOUT_MS, so a stalled update
+   * check would have ended this loop on the same tick the hold expired -- and
+   * the sample would have reported a connection failure instead of showing the
+   * device registering anyway, which is the behaviour being demonstrated. */
+  for (int i = 0; i < 2400 && g_conn_state != AZ_IOT_CONN_STATE_CONNECTED && !g_stop; ++i)
   {
     (void)az_iot_connection_client_do_work(&st.connection_client, 50);
     (void)az_iot_adu_client_do_work(&st.adu_client);

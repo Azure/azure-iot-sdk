@@ -76,6 +76,19 @@ static az_iot_result publish_operation(
     const uint8_t* body,
     size_t body_len)
 {
+  /* A hold is owed but not held: this session was already registering when the
+   * channel bound to it. It still reports ready, so publishing here would put
+   * the request onto a registration already in flight, and that registration's
+   * response tears the session down before any reply could arrive. Wait for the
+   * next session, which do_work() holds.
+   *
+   * Checked here rather than in each caller so a new operation cannot forget
+   * it. */
+  if (c->wants_hold && !c->holds_registration && !c->exchange_done)
+  {
+    return AZ_IOT_ERR_NOT_CONNECTED;
+  }
+
   char topic[AZ_IOT_ADU_TOPIC_MAX_SIZE];
   char rid[sizeof(c->pending_rid)];
 
@@ -328,6 +341,7 @@ static az_iot_result channel_open(
    * is not an error here -- the channel simply missed this session and its
    * operations wait for the next one. */
   c->wants_hold = true;
+  c->exchange_done = false;
   az_iot_result hr = az_iot_connection_client__dps_hold_acquire(c->connection);
   if (hr == AZ_IOT_OK)
   {
@@ -350,7 +364,10 @@ static az_iot_result channel_open(
  * is unavailable. */
 static void channel_release_hold(az_iot_adu_channel_dps* c)
 {
-  c->wants_hold = false;
+  /* Marks the exchange done for THIS session only. wants_hold deliberately
+   * survives: it is the standing interest, and a reprovision opens a new
+   * session that must be held for its own check. */
+  c->exchange_done = true;
   if (c->holds_registration)
   {
     c->holds_registration = false;
@@ -366,6 +383,9 @@ static void channel_close(void* ctx)
     return;
   }
   az_iot_connection_client__set_dps_message_observer(c->connection, NULL, NULL);
+  /* The standing interest ends with the binding, so a closed channel cannot
+   * hold a later session hostage. */
+  c->wants_hold = false;
   channel_release_hold(c);
   c->update_cb = NULL;
   c->result_cb = NULL;
@@ -391,11 +411,6 @@ static az_iot_result channel_request_update(void* ctx)
     /* One operation at a time. The caller retries on the next tick. */
     return AZ_IOT_ERR_BUSY;
   }
-  /* This keeps a publish off a torn-down session; it does NOT sequence bootstrap
-   * ahead of registration. The connection client publishes the registration from
-   * the same SUBACK handler that confirms the subscription, so a caller-driven
-   * loop never observes the session open. Ordering needs the ADU_HOLD lifecycle
-   * phase (deferred registration + session refcount), not a readiness test. */
   if (!az_iot_connection_client__dps_session_ready(c->connection))
   {
     return AZ_IOT_ERR_NOT_CONNECTED;
@@ -587,7 +602,14 @@ static az_iot_result channel_do_work(void* ctx)
 
   channel_forget_pending_if_session_gone(c);
 
-  if (c->wants_hold && !c->holds_registration)
+  /* A session that is gone takes its exchange with it: the next one is a fresh
+   * provisioning attempt and needs its own check, held again. */
+  if (!az_iot_connection_client__dps_session_ready(c->connection))
+  {
+    c->exchange_done = false;
+  }
+
+  if (c->wants_hold && !c->holds_registration && !c->exchange_done)
   {
     if (az_iot_connection_client__dps_hold_acquire(c->connection) == AZ_IOT_OK)
     {
