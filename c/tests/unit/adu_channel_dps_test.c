@@ -686,6 +686,116 @@ static void closing_ends_the_standing_interest(void** state)
   assert_int_equal(fx->client.dps_hold_count, 0);
 }
 
+/* The hold is advisory, so it can expire while the channel still believes it
+ * holds one. The connection registers, and until that registration is answered
+ * the session still reports ready -- so a late operation would publish onto a
+ * session about to be torn down and lose its reply. */
+static void an_operation_after_hold_expiry_is_refused(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_mock_mqtt_client* m = open_and_bind(fx);
+  assert_true(az_iot_connection_client__dps_hold_is_active(&fx->client));
+
+  /* Nothing answers, so the hold times out and the device registers anyway. */
+  az_iot_test_wait_ms(60); /* opts.dps_hold_timeout_ms is 50 */
+  (void)az_iot_connection_client_do_work(&fx->client, 0);
+  assert_int_equal(fx->client.dps_phase, AZ_IOT_DPS_PHASE_REGISTERING);
+
+  /* The channel still thinks it holds one, and the session still reports
+   * ready -- neither on its own is enough to make publishing safe. */
+  assert_true(fx->channel_state.holds_registration);
+  assert_true(az_iot_connection_client__dps_session_ready(&fx->client));
+  assert_false(az_iot_connection_client__dps_hold_is_active(&fx->client));
+
+  assert_int_equal(fx->channel.vtable->request_update(fx->channel.ctx), AZ_IOT_ERR_NOT_CONNECTED);
+
+  /* And nothing of ours reached the wire after the registration. */
+  const az_iot_mock_call* pub = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PUBLISH);
+  assert_non_null(pub);
+  assert_null(strstr(pub->topic, "deviceupdate"));
+}
+
+/* "No update service is configured for this device" is a terminal answer, not a
+ * failure: the hold must be released so the device registers, and no retry may
+ * be scheduled -- a retry would fire onto the registration session. */
+static void a_not_linked_response_releases_the_hold_without_retrying(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_mock_mqtt_client* m = open_and_bind(fx);
+
+  assert_int_equal(fx->channel.vtable->request_update(fx->channel.ctx), AZ_IOT_OK);
+  char rid[64];
+  last_rid(m, rid, sizeof(rid));
+  char topic[256];
+  snprintf(topic, sizeof(topic), "$dps/registrations/res/409/?$rid=%s", rid);
+  assert_true(inject(fx, m, topic, "{\"errorCode\":409000,\"message\":\"not linked\"}"));
+
+  assert_int_equal(fx->last_action, AZ_IOT_ADU_ERROR_ACTION_PROCEED);
+  /* Released, so registration is free to proceed. */
+  assert_int_equal(fx->client.dps_hold_count, 0);
+  assert_false(fx->channel_state.holds_registration);
+
+  (void)az_iot_connection_client_do_work(&fx->client, 0);
+  assert_int_equal(fx->client.dps_phase, AZ_IOT_DPS_PHASE_REGISTERING);
+}
+
+/* A zero timeout selects the compiled-in default. Asserted by showing the hold
+ * is still held well past the 50 ms the other tests use, without waiting out
+ * the full default. */
+static void a_zero_hold_timeout_selects_the_default(void** state)
+{
+  (void)state;
+  fixture* fx = (fixture*)calloc(1, sizeof(*fx));
+  assert_non_null(fx);
+
+  az_iot_connection_client_options opts = { 0 };
+  opts.host = NULL;
+  opts.client_id = "ut-device";
+  opts.dps.id_scope = "0ne00000000";
+  opts.dps.registration_id = "ut-device";
+  opts.dps_hold_timeout_ms = 0; /* -> AZ_IOT_DPS_HOLD_TIMEOUT_MS */
+  assert_int_equal(az_iot_connection_client_init(&fx->client, &opts), AZ_IOT_OK);
+
+  fx->factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
+  assert_non_null(fx->factory);
+
+  az_iot_adu_device_properties dp = { 0 };
+  dp.manufacturer = "Contoso";
+  dp.model = "Foobar";
+  assert_int_equal(
+      az_iot_adu_channel_dps_init(&fx->channel_state, &fx->client, &dp, &fx->channel), AZ_IOT_OK);
+  assert_int_equal(fx->channel.vtable->open(fx->channel.ctx, on_update, on_result, fx), AZ_IOT_OK);
+  (void)open_to_registering(fx);
+
+  assert_true(az_iot_connection_client__dps_hold_is_active(&fx->client));
+  /* Far past the 50 ms the other tests configure, and nowhere near the default. */
+  az_iot_test_wait_ms(120);
+  (void)az_iot_connection_client_do_work(&fx->client, 0);
+  assert_true(az_iot_connection_client__dps_hold_is_active(&fx->client));
+  assert_int_equal(fx->client.dps_phase, AZ_IOT_DPS_PHASE_HOLD);
+
+  fx->channel.vtable->close(fx->channel.ctx);
+  az_iot_connection_client_destroy(&fx->client);
+  free(fx);
+}
+
+/* The deadline is only a real bound if the pump cannot sleep past it. A caller
+ * asking for a long wait must not be able to defer registration: the DPS pump
+ * caps what it hands the adapter at the time remaining. */
+static void the_dps_pump_caps_its_wait_at_the_hold_deadline(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_mock_mqtt_client* m = open_and_bind(fx);
+  assert_true(az_iot_connection_client__dps_hold_is_active(&fx->client));
+
+  /* opts.dps_hold_timeout_ms is 50, so a 10s request must be cut down. */
+  (void)az_iot_connection_client_do_work(&fx->client, 10000);
+
+  const az_iot_mock_call* loop = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PROCESS_LOOP);
+  assert_non_null(loop);
+  assert_true(loop->timeout_ms <= 50);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -723,6 +833,12 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         a_reprovision_is_held_again_after_a_completed_check, setup, teardown),
     cmocka_unit_test_setup_teardown(closing_ends_the_standing_interest, setup, teardown),
+    cmocka_unit_test_setup_teardown(an_operation_after_hold_expiry_is_refused, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_not_linked_response_releases_the_hold_without_retrying, setup, teardown),
+    cmocka_unit_test(a_zero_hold_timeout_selects_the_default),
+    cmocka_unit_test_setup_teardown(
+        the_dps_pump_caps_its_wait_at_the_hold_deadline, setup, teardown),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }
