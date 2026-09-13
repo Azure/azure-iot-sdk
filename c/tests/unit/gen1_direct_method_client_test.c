@@ -1035,6 +1035,41 @@ static void the_sequence_counter_skips_zero_on_wrap(void** state)
       az_iot_gen1_direct_method_respond(&fx->dm, zeroed, 200, NULL, 0), AZ_IOT_ERR_INVALID_ARG);
 }
 
+/* AZ_IOT_DM_RID_MAX is a documented knob, and the response topic is built from
+ * the rid it bounds. A rid at that bound has to survive the round trip, or
+ * raising the knob produces a client that accepts invocations and can never
+ * answer them. Sized from the macro so the same test means something in both
+ * the default and the tuned build. */
+static void a_rid_at_the_configured_bound_still_answers(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  invocation_record rec = { 0 };
+  assert_int_equal(
+      az_iot_gen1_direct_method_client_set_handler(&fx->dm, on_method, &rec), AZ_IOT_OK);
+
+  char rid[AZ_IOT_DM_RID_MAX];
+  memset(rid, 'r', sizeof(rid) - 1);
+  rid[sizeof(rid) - 1] = '\0';
+
+  char topic[64 + AZ_IOT_DM_RID_MAX];
+  snprintf(topic, sizeof(topic), "$iothub/methods/POST/reboot/?$rid=%s", rid);
+  assert_true(az_iot_mock_mqtt_client_inject_message(fx->mock, topic, NULL, 0, AZ_IOT_MQTT_QOS_0));
+  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+  assert_true(rec.fired);
+
+  az_iot_mock_mqtt_client_clear_calls(fx->mock);
+  assert_int_equal(
+      az_iot_gen1_direct_method_respond(&fx->dm, rec.request, 200, NULL, 0), AZ_IOT_OK);
+
+  const az_iot_mock_call* pub = az_iot_mock_mqtt_client_last_of(fx->mock, AZ_IOT_MOCK_CALL_PUBLISH);
+  assert_non_null(pub);
+  char expected[64 + AZ_IOT_DM_RID_MAX];
+  snprintf(expected, sizeof(expected), "$iothub/methods/res/200/?$rid=%s", rid);
+  assert_string_equal(pub->topic, expected);
+}
+
 static void a_method_name_past_the_bound_is_dropped(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -1248,6 +1283,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         respond_rejects_a_request_from_the_other_generation, setup, teardown),
     cmocka_unit_test_setup_teardown(the_sequence_counter_skips_zero_on_wrap, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_rid_at_the_configured_bound_still_answers, setup, teardown),
     cmocka_unit_test_setup_teardown(a_method_name_past_the_bound_is_dropped, setup, teardown),
     cmocka_unit_test_setup_teardown(a_rid_past_the_bound_is_dropped, setup, teardown),
     cmocka_unit_test_setup_teardown(a_non_numeric_rid_is_accepted, setup, teardown),
