@@ -89,7 +89,8 @@ typedef struct paho_client
   az_iot_mqtt_version version;
 
   MQTTAsync paho; /* Paho async handle, NULL until connect() */
-  char* server_uri; /* "tcp://host:port" */
+  char* server_uri; /* "ssl://host:port", or "wss://host:port/path" */
+  char* proxy_uri; /* "[user[:pass]@]host:port", or NULL for a direct connect */
   char* client_id;
 
   az_iot_mqtt_event_callback inbound_cb;
@@ -839,22 +840,94 @@ static char* dup_str(const char* s)
   return p;
 }
 
-static char* build_server_uri(const char* host, uint16_t port, bool use_ssl)
+static char* build_server_uri(
+    const char* host,
+    uint16_t port,
+    bool use_ssl,
+    az_iot_mqtt_transport transport,
+    const char* websocket_path)
 {
   if (!host)
   {
     return NULL;
   }
-  const char* scheme = use_ssl ? "ssl://" : "tcp://";
-  /* "ssl://" or "tcp://" + host + ":" + 5-digit port + NUL */
-  size_t n = strlen(scheme) + strlen(host) + 1 + 5 + 1;
+  bool ws = (transport == AZ_IOT_MQTT_TRANSPORT_WEBSOCKET);
+  const char* scheme = ws ? (use_ssl ? "wss://" : "ws://") : (use_ssl ? "ssl://" : "tcp://");
+  const char* path = "";
+  if (ws)
+  {
+    path = is_nonempty_cstr(websocket_path) ? websocket_path : AZ_IOT_MQTT_DEFAULT_WEBSOCKET_PATH;
+  }
+  if (!port)
+  {
+    port = ws ? (use_ssl ? 443u : 80u) : (use_ssl ? 8883u : 1883u);
+  }
+  /* scheme + host + ":" + 5-digit port + path + NUL */
+  size_t n = strlen(scheme) + strlen(host) + 1 + 5 + strlen(path) + 1;
   char* uri = (char*)malloc(n);
   if (!uri)
   {
     return NULL;
   }
-  snprintf(uri, n, "%s%s:%u", scheme, host, (unsigned)(port ? port : (use_ssl ? 8883u : 1883u)));
+  snprintf(uri, n, "%s%s:%u%s", scheme, host, (unsigned)port, path);
   return uri;
+}
+
+/* Render the proxy as the "[user[:password]@]host:port" string Paho expects.
+ * Returns NULL when no proxy is configured, or on allocation failure (which the
+ * caller distinguishes by checking proxy.host itself). */
+static char* build_proxy_uri(const az_iot_mqtt_proxy_options* proxy)
+{
+  if (!proxy || !is_nonempty_cstr(proxy->host))
+  {
+    return NULL;
+  }
+  const char* user = is_nonempty_cstr(proxy->username) ? proxy->username : NULL;
+  const char* pass = (user && proxy->password) ? proxy->password : NULL;
+  size_t n = strlen(proxy->host) + 1 + 5 + 1;
+  if (user)
+  {
+    n += strlen(user) + 1; /* user + '@' */
+  }
+  if (pass)
+  {
+    n += strlen(pass) + 1; /* ':' + password */
+  }
+  char* uri = (char*)malloc(n);
+  if (!uri)
+  {
+    return NULL;
+  }
+  unsigned port = proxy->port ? (unsigned)proxy->port : 8080u;
+  if (user && pass)
+  {
+    snprintf(uri, n, "%s:%s@%s:%u", user, pass, proxy->host, port);
+  }
+  else if (user)
+  {
+    snprintf(uri, n, "%s@%s:%u", user, proxy->host, port);
+  }
+  else
+  {
+    snprintf(uri, n, "%s:%u", proxy->host, port);
+  }
+  return uri;
+}
+
+/* Point one set of Paho connect options at the proxy, on both the plaintext and
+ * the TLS slot.
+ *
+ * Both, because Paho picks the slot by scheme -- httpProxy for tcp:// and ws://,
+ * httpsProxy for ssl:// and wss:// -- while this SDK has a single proxy for the
+ * connection, whatever the scheme ends up being. */
+static void paho_apply_proxy(MQTTAsync_connectOptions* conn, const char* proxy_uri)
+{
+  if (!proxy_uri)
+  {
+    return;
+  }
+  conn->httpProxy = proxy_uri;
+  conn->httpsProxy = proxy_uri;
 }
 
 static az_iot_result paho_iface_connect(
@@ -902,10 +975,13 @@ static az_iot_result paho_iface_connect(
   }
   free(m->server_uri);
   m->server_uri = NULL;
+  free(m->proxy_uri);
+  m->proxy_uri = NULL;
   free(m->client_id);
   m->client_id = NULL;
 
-  m->server_uri = build_server_uri(opts->host, opts->port, use_ssl);
+  m->server_uri
+      = build_server_uri(opts->host, opts->port, use_ssl, opts->transport, opts->websocket_path);
   m->client_id = dup_str(opts->client_id);
   if (!m->server_uri || !m->client_id)
   {
@@ -913,7 +989,28 @@ static az_iot_result paho_iface_connect(
     return AZ_IOT_ERR_OUT_OF_MEMORY;
   }
 
-  AZ_IOT_LOG_INFOF("paho: connecting to %s as '%s'", m->server_uri, m->client_id);
+  /* HTTP CONNECT proxy. Paho tunnels every scheme through it, not only
+   * WebSockets, so this covers plain MQTT over TCP too.
+   *
+   * Owned by the client for the same reason server_uri is: it is rebuilt on
+   * every connect and released on destroy, so no failure path in between has to
+   * remember to free it.
+   *
+   * Fail closed: if a proxy was asked for and the string cannot be built, the
+   * connect must not proceed, because Paho would then reach the broker
+   * directly -- exactly what the caller ruled out. */
+  m->proxy_uri = build_proxy_uri(&opts->proxy);
+  if (is_nonempty_cstr(opts->proxy.host) && !m->proxy_uri)
+  {
+    az_iot_paho_key_custody_release(&m->key_custody);
+    return AZ_IOT_ERR_OUT_OF_MEMORY;
+  }
+
+  AZ_IOT_LOG_INFOF(
+      "paho: connecting to %s as '%s' (proxy=%s)",
+      m->server_uri,
+      m->client_id,
+      is_nonempty_cstr(opts->proxy.host) ? opts->proxy.host : "none");
 
   paho_maybe_enable_trace();
 
@@ -993,6 +1090,7 @@ static az_iot_result paho_iface_connect(
     conn.context = m;
     conn.onSuccess5 = paho_connect_success5;
     conn.onFailure5 = paho_connect_failure5;
+    paho_apply_proxy(&conn, m->proxy_uri);
     conn.keepAliveInterval = opts->keep_alive_seconds ? opts->keep_alive_seconds : 60;
     conn.cleansession = 0;
     conn.cleanstart = opts->clean_start ? 1 : 0;
@@ -1057,6 +1155,7 @@ static az_iot_result paho_iface_connect(
     conn.context = m;
     conn.onSuccess = paho_connect_success;
     conn.onFailure = paho_connect_failure;
+    paho_apply_proxy(&conn, m->proxy_uri);
     conn.keepAliveInterval = opts->keep_alive_seconds ? opts->keep_alive_seconds : 60;
     /* v3.1.1 has no separate Clean Start: the caller's clean_start maps onto
      * the Clean Session flag. This used to be hardcoded to 1, which quietly
@@ -1368,6 +1467,7 @@ static void paho_iface_destroy(az_iot_mqtt_client* self)
   q_drain_all(m);
   paho_mutex_destroy(&m->q_mutex);
   free(m->server_uri);
+  free(m->proxy_uri);
   free(m->client_id);
   free(m);
 }

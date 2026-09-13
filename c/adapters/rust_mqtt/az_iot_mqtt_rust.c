@@ -56,6 +56,18 @@ static az_iot_result rust_iface_connect(
     const az_iot_mqtt_connect_options* opts)
 {
   rust_client* c = (rust_client*)self;
+  /* Refuse what this adapter cannot carry, rather than passing it to a Rust
+   * runtime that predates these fields and would silently ignore them: a
+   * connect that quietly bypasses the caller's proxy, or falls back to 8883
+   * when WebSockets were required, is worse than a refused connect. The FFI
+   * table carries no capability flag to negotiate this, so the refusal is
+   * unconditional until one is added together with runtime support. */
+  if (opts != NULL
+      && (opts->transport != AZ_IOT_MQTT_TRANSPORT_TCP
+          || (opts->proxy.host != NULL && opts->proxy.host[0] != '\0')))
+  {
+    return AZ_IOT_ERR_NOT_SUPPORTED;
+  }
   return g_ffi.connect(c->handle, opts);
 }
 

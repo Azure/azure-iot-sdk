@@ -334,6 +334,33 @@ if(AZ_IOT_WITH_PAHO)
     # tests/, so the doubles compiled alongside it stay out of the report, and
     # gcov merges this object's counters with the library's.
     az_iot_apply_coverage(az_iot_tests_paho_connect_cleanup)
+
+    # Transport selection (TCP vs WebSockets) and the HTTP proxy, asserted on
+    # the MQTTAsync options the adapter builds. Same construction as the
+    # cleanup suite above and for the same reason: the real library would only
+    # answer these questions by opening a socket to the broker.
+    az_iot_add_cmocka_test(az_iot_tests_paho_transport_proxy
+        unit/paho_transport_proxy_test.c
+        support/mock_paho_async.c
+        support/fake_paho_key_custody.c
+        ${CMAKE_SOURCE_DIR}/adapters/paho/az_iot_mqtt_paho.c)
+    target_include_directories(az_iot_tests_paho_transport_proxy PRIVATE
+        ${CMAKE_SOURCE_DIR}/adapters/paho
+        ${CMAKE_CURRENT_SOURCE_DIR}/support)
+    if(AZ_IOT_PAHO_INCLUDE_DIRS)
+        target_include_directories(az_iot_tests_paho_transport_proxy SYSTEM PRIVATE
+            ${AZ_IOT_PAHO_INCLUDE_DIRS})
+    endif()
+    if(_paho_defs)
+        target_compile_definitions(az_iot_tests_paho_transport_proxy PRIVATE ${_paho_defs})
+    endif()
+    if(WIN32)
+        target_link_libraries(az_iot_tests_paho_transport_proxy PRIVATE ws2_32 crypt32)
+    endif()
+    if(UNIX)
+        target_link_libraries(az_iot_tests_paho_transport_proxy PRIVATE pthread)
+    endif()
+    az_iot_apply_coverage(az_iot_tests_paho_transport_proxy)
 endif()
 
 if(AZ_IOT_WITH_RUST_MQTT)

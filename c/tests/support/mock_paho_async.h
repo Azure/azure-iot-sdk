@@ -72,4 +72,15 @@ int mock_paho_last_verify(void);
 /* MQTTAsync_SSLOptions::privateKey, i.e. the path handed to the TLS stack. */
 const char* mock_paho_last_private_key(void);
 
+/* MQTTAsync_connectOptions::httpProxy / ::httpsProxy as the adapter set them,
+ * NULL when it set neither. Paho picks between them by scheme, so a proxied
+ * connect must carry both. */
+const char* mock_paho_last_http_proxy(void);
+const char* mock_paho_last_https_proxy(void);
+
+/* MQTTAsync_connectOptions::struct_version on the last connect. Paho ignores
+ * the proxy fields below version 8, so setting them is only meaningful if the
+ * options the adapter passes declare at least that. */
+int mock_paho_last_connect_struct_version(void);
+
 #endif /* AZ_IOT_TEST_MOCK_PAHO_ASYNC_H */

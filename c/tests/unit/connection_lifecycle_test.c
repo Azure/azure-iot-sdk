@@ -265,6 +265,90 @@ static void connect_timeout_is_configurable(void** state)
 }
 
 /* ------------------------------------------------------------------------- */
+/* transport and proxy                                                       */
+/* ------------------------------------------------------------------------- */
+
+/* Nothing selected: the behaviour that predates the transport and proxy
+ * options, so an application that never heard of them is unaffected. */
+static void transport_defaults_to_tcp_on_8883_with_no_proxy(void** state)
+{
+  (void)state;
+  az_iot_connection_client_options opts = az_iot_test_classic_options();
+  opts.port = 0; /* derive */
+  az_iot_mock_call c;
+  connect_call_for(&opts, &c);
+  assert_int_equal(c.connect.transport, AZ_IOT_MQTT_TRANSPORT_TCP);
+  assert_int_equal(c.connect.port, 8883);
+  assert_string_equal(c.connect.proxy_host, "");
+}
+
+/* Selecting WebSockets has to move the port too. 8883 is not served over
+ * WebSockets, and a device selects this transport precisely because the
+ * network it is on will not pass 8883 at all. */
+static void websockets_derive_port_443(void** state)
+{
+  (void)state;
+  az_iot_connection_client_options opts = az_iot_test_classic_options();
+  opts.port = 0;
+  opts.transport = AZ_IOT_MQTT_TRANSPORT_WEBSOCKET;
+  az_iot_mock_call c;
+  connect_call_for(&opts, &c);
+  assert_int_equal(c.connect.transport, AZ_IOT_MQTT_TRANSPORT_WEBSOCKET);
+  assert_int_equal(c.connect.port, 443);
+}
+
+static void an_explicit_port_survives_the_transport_default(void** state)
+{
+  (void)state;
+  az_iot_connection_client_options opts = az_iot_test_classic_options();
+  opts.transport = AZ_IOT_MQTT_TRANSPORT_WEBSOCKET;
+  opts.port = 8443;
+  az_iot_mock_call c;
+  connect_call_for(&opts, &c);
+  assert_int_equal(c.connect.port, 8443);
+}
+
+static void the_proxy_reaches_the_adapter_whole(void** state)
+{
+  (void)state;
+  az_iot_connection_client_options opts = az_iot_test_classic_options();
+  opts.proxy.host = "proxy.corp.example";
+  opts.proxy.port = 3128;
+  opts.proxy.username = "device";
+  opts.proxy.password = "s3cret";
+  az_iot_mock_call c;
+  connect_call_for(&opts, &c);
+  assert_string_equal(c.connect.proxy_host, "proxy.corp.example");
+  assert_int_equal(c.connect.proxy_port, 3128);
+  assert_string_equal(c.connect.proxy_username, "device");
+  assert_string_equal(c.connect.proxy_password, "s3cret");
+  /* The proxy does not change which broker the session targets. */
+  assert_string_equal(c.connect.host, "broker.example");
+}
+
+static void the_websocket_path_reaches_the_adapter(void** state)
+{
+  (void)state;
+  az_iot_connection_client_options opts = az_iot_test_classic_options();
+  opts.transport = AZ_IOT_MQTT_TRANSPORT_WEBSOCKET;
+  opts.websocket_path = "/mqtt";
+  az_iot_mock_call c;
+  connect_call_for(&opts, &c);
+  assert_string_equal(c.connect.websocket_path, "/mqtt");
+}
+
+/* The default options must not pin a port, or selecting WebSockets on top of
+ * them would connect to 443's scheme on 8883's port. */
+static void the_default_options_leave_the_port_to_the_transport(void** state)
+{
+  (void)state;
+  az_iot_connection_client_options opts = az_iot_connection_client_options_default();
+  assert_int_equal(opts.port, 0);
+  assert_int_equal(opts.transport, AZ_IOT_MQTT_TRANSPORT_TCP);
+  assert_null(opts.proxy.host);
+}
+
+/* ------------------------------------------------------------------------- */
 /* Classic CONNECT packet shape                                              */
 /*                                                                           */
 /* These pin what IoT Hub actually requires of the CONNECT. They all passed  */
@@ -776,6 +860,13 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         identity_rejection_faults_when_reconnect_is_disabled, setup, teardown),
     cmocka_unit_test_setup_teardown(connack_rejection_tears_the_adapter_down, setup, teardown),
+    /* transport + proxy */
+    cmocka_unit_test(transport_defaults_to_tcp_on_8883_with_no_proxy),
+    cmocka_unit_test(websockets_derive_port_443),
+    cmocka_unit_test(an_explicit_port_survives_the_transport_default),
+    cmocka_unit_test(the_proxy_reaches_the_adapter_whole),
+    cmocka_unit_test(the_websocket_path_reaches_the_adapter),
+    cmocka_unit_test(the_default_options_leave_the_port_to_the_transport),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

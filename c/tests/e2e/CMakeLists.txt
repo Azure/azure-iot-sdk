@@ -163,6 +163,26 @@ az_iot_add_cmocka_test(az_iot_tests_e2e_fileupload ${_e2e_fileupload_ctest}
 target_link_libraries(az_iot_tests_e2e_fileupload PRIVATE az_iot_e2e_service az_iot_gen1 az_iot_adapter_paho)
 
 # ---------------------------------------------------------------------------
+# az_iot_tests_e2e_transport
+#
+# The egress transports: MQTT over WebSockets, and MQTT tunnelled through an
+# HTTP CONNECT proxy. Each scenario connects a device with one transport
+# configuration and round-trips a uniquely marked telemetry message to the
+# hub's Event Hub-compatible endpoint, so a tunnel that connects but carries
+# nothing fails. It also asserts that an unreachable proxy leaves the device
+# disconnected instead of silently connecting around it.
+#
+# The proxy scenarios skip themselves when AZ_IOT_PROXY_HOST is unset, so the
+# suite is useful on a CI leg with no proxy (the WebSocket scenario still runs)
+# and complete on one that provisions a proxy. The `e2e` name matches the fast
+# job's `ctest -R e2e` filter.
+# ---------------------------------------------------------------------------
+az_iot_add_cmocka_test(az_iot_tests_e2e_transport
+    tests/e2e_transport_test.c tests/e2e_device.c)
+target_link_libraries(az_iot_tests_e2e_transport PRIVATE
+    az_iot_e2e_service az_iot_gen1 az_iot_adapter_paho)
+
+# ---------------------------------------------------------------------------
 # az_iot_tests_e2e_custody
 #
 # The "Storage / custody" group of docs/eng/certificate-management.md: DPS

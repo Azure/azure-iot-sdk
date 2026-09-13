@@ -114,7 +114,39 @@ extern "C"
   typedef struct az_iot_connection_client_options
   {
     const char* host; /* hub host (or NULL when using DPS) */
-    uint16_t port; /* default 8883 */
+    /* Broker port. 0 selects the default for `transport`: 8883 for MQTT over
+     * TCP, 443 for MQTT over WebSockets. */
+    uint16_t port;
+
+    /* Transport that carries every MQTT session this client opens -- the DPS
+     * bootstrap connect as well as the hub connect.
+     *
+     * AZ_IOT_MQTT_TRANSPORT_WEBSOCKET tunnels MQTT inside WebSockets over 443,
+     * for devices on networks that only allow HTTP(S) ports. */
+    az_iot_mqtt_transport transport;
+
+    /* WebSocket resource path; used only when transport is WEBSOCKET. NULL
+     * selects AZ_IOT_MQTT_DEFAULT_WEBSOCKET_PATH ("/$iothub/websocket"), which
+     * is what IoT Hub and DPS expect; set it only for a gateway that terminates
+     * WebSockets elsewhere. */
+    const char* websocket_path;
+
+    /* HTTP proxy for every MQTT session this client opens, via HTTP CONNECT.
+     * Leave zeroed for a direct connection. Works with both transports, since a
+     * filtered network usually requires the tunnel for plain MQTT too.
+     *
+     * TLS remains end-to-end with the broker: it is negotiated inside the
+     * tunnel, so the proxy carries only ciphertext and certificate and hostname
+     * validation are unaffected.
+     *
+     * Adapters that cannot honour it fail the connect with
+     * AZ_IOT_ERR_NOT_SUPPORTED rather than connecting around the proxy.
+     *
+     * Note for the Paho adapter: when this is left unset, Paho itself still
+     * falls back to the lowercase `http_proxy` / `https_proxy` environment
+     * variables (the uppercase spellings are ignored). Set the proxy here to be
+     * explicit and independent of the environment. */
+    az_iot_mqtt_proxy_options proxy;
 
     /* MQTT keep-alive, in seconds. 0 selects AZ_IOT_DEFAULT_KEEP_ALIVE_SECONDS.
      *
@@ -673,7 +705,8 @@ extern "C"
 
   const char* az_iot_connection_state_to_string(az_iot_connection_state s);
 
-  /* Returns an options struct with optional fields defaulted (port=8883, no
+  /* Returns an options struct with optional fields defaulted (port derived from
+   * the transport -- 8883 for TCP, 443 for WebSockets -- no proxy, no
    * reconnect, no log sink). Set the required fields for your auth/provisioning
    * mode on the returned struct before az_iot_connection_client_init():
    *   - DPS + X.509 (host==NULL): dps.id_scope, dps.registration_id,
