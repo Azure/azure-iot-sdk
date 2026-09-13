@@ -318,14 +318,22 @@ static void fixture_close(e2e_fixture* fx)
 
 /* Pump until the predicate holds or the budget runs out. Wall-clock bounded
  * because every wait here is on a real service. */
-#define PUMP_UNTIL(fx, cond, seconds)                           \
-  do                                                            \
-  {                                                             \
-    time_t deadline_ = time(NULL) + (seconds);                  \
-    while (!(cond) && time(NULL) < deadline_)                   \
-    {                                                           \
-      (void)az_iot_connection_client_do_work(&(fx)->conn, 200); \
-    }                                                           \
+#define PUMP_UNTIL(fx, cond, seconds)                                            \
+  do                                                                             \
+  {                                                                              \
+    time_t deadline_ = time(NULL) + (seconds);                                   \
+    while (!(cond) && time(NULL) < deadline_)                                    \
+    {                                                                            \
+      (void)az_iot_connection_client_do_work(&(fx)->conn, 200);                  \
+      /* The channel has its own tick, and an application drives                 \
+       * it through the ADU client. It is what re-arms the hold on               \
+       * a new session and retires a request whose session went                  \
+       * away, so pumping only the connection would stall here. */               \
+      if ((fx)->channel.vtable != NULL && (fx)->channel.vtable->do_work != NULL) \
+      {                                                                          \
+        (void)(fx)->channel.vtable->do_work((fx)->channel.ctx);                  \
+      }                                                                          \
+    }                                                                            \
   } while (0)
 
 /* Drive the connection to the point where the provisioning session is up and
@@ -398,10 +406,21 @@ static void provisioning_completes_after_the_check(void** state)
   fixture_close(&fx);
 }
 
-/* The ETag round trip. Echoing what the service last sent gets a smaller
- * response with serviceConfiguration omitted -- "nothing changed", which must
- * read as success rather than a truncated body. */
-static void etags_round_trip_to_a_steady_state_poll(void** state)
+/* The ETags the service issues, and what the channel does with them.
+ *
+ * Deliberately only one exchange. A provisioning session carries exactly one
+ * pre-registration check: answering it releases the hold and registration
+ * follows, so the session can no longer carry a reply and further operations
+ * are refused. Asserted here, because it is the contract -- publishing into that
+ * window would be accepted by the service and the reply lost.
+ *
+ * So the SMALLER steady-state response (serviceConfiguration omitted when the
+ * ETags match) is NOT exercised here: it needs a second check, which needs a
+ * second session, which in turn needs the operational path that does not exist
+ * yet. That response shape is pinned instead in adu_protocol_test.c against the
+ * real 75-byte body captured from the service. What this proves end to end is
+ * that the ETags arrive, are stored, and survive the session being spent. */
+static void etags_are_issued_stored_and_survive_the_session(void** state)
 {
   (void)state;
   SKIP_WITHOUT_ENV();
@@ -422,14 +441,20 @@ static void etags_round_trip_to_a_steady_state_poll(void** state)
   snprintf(
       first_config_etag, sizeof(first_config_etag), "%s", fx.channel_state.service_config_etag);
   assert_true(first_agent_etag[0] != '\0');
+  assert_true(first_config_etag[0] != '\0');
 
-  /* Second check: the channel now holds the ETags and sends them. */
-  assert_int_equal(fx.channel.vtable->request_update(fx.channel.ctx), AZ_IOT_OK);
-  wait_for_result(&fx, 2);
+  /* Both are hex-ish opaque tokens, not JSON fragments or an error string. */
+  assert_true(strlen(first_agent_etag) >= 8);
+  assert_true(strchr(first_agent_etag, '{') == NULL);
 
-  assert_int_equal(fx.last_result, AZ_IOT_OK);
-  assert_int_equal(fx.update_count, 0);
-  /* Unchanged, so the service re-states the same ETags. */
+  /* That answer ended the pre-registration exchange, so this session is spent:
+   * it is about to carry the registration and could not answer us again. The
+   * refusal is the contract -- publishing here would be accepted by the service
+   * and the reply lost. */
+  assert_int_equal(fx.channel.vtable->request_update(fx.channel.ctx), AZ_IOT_ERR_NOT_CONNECTED);
+
+  /* The stored ETags survive the session being spent, which is what a later
+   * session would send. */
   assert_string_equal(fx.channel_state.agent_info_etag, first_agent_etag);
   assert_string_equal(fx.channel_state.service_config_etag, first_config_etag);
 
@@ -491,7 +516,7 @@ int main(void)
   const struct CMUnitTest tests[] = {
     cmocka_unit_test(onboarding_check_runs_before_registration),
     cmocka_unit_test(provisioning_completes_after_the_check),
-    cmocka_unit_test(etags_round_trip_to_a_steady_state_poll),
+    cmocka_unit_test(etags_are_issued_stored_and_survive_the_session),
     cmocka_unit_test(an_unknown_workflow_report_is_not_treated_as_delivered),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
