@@ -215,8 +215,17 @@ extern "C"
     /* Standing interest in holding registration, kept separate from the hold
      * actually taken. Binding to a session that is already registering cannot
      * take a hold; this is what makes the NEXT session (a reprovision) hold
-     * instead of racing the check against registration again. */
+     * instead of racing the check against registration again.
+     *
+     * Set for the lifetime of the binding, cleared only at close: a device that
+     * reprovisions needs its check held on that session too. */
     bool wants_hold;
+
+    /* Whether the pre-registration exchange has already run on the CURRENT
+     * session. Distinct from wants_hold: it stops the same session being held
+     * twice, while leaving the standing interest intact for the next one. Reset
+     * when the session goes away. */
+    bool exchange_done;
   } az_iot_adu_channel_dps;
 
   /* Bind the channel to a connection and an HTTPS transport and emit the vtable

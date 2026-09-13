@@ -2691,7 +2691,24 @@ az_iot_result az_iot_connection_client_do_work(
     az_iot_result r = AZ_IOT_OK;
     if (client->dps_mqtt && client->dps_mqtt->iface && client->dps_mqtt->iface->process_loop)
     {
-      r = client->dps_mqtt->iface->process_loop(client->dps_mqtt, timeout_ms);
+      /* The hold deadline is only tested on the way into this pump, so an
+       * adapter that sleeps for the whole timeout when idle would hold past it:
+       * a caller passing a timeout longer than the hold would defer
+       * registration until that sleep returned. Cap the wait at the time
+       * remaining so the deadline is a real bound rather than a check that
+       * happens to run often enough. */
+      uint32_t wait_ms = timeout_ms;
+      if (client->dps_phase == DPS_PHASE_HOLD)
+      {
+        uint64_t now = az_iot_time_mono_ms();
+        uint64_t remaining
+            = (client->dps_hold_deadline_ms > now) ? client->dps_hold_deadline_ms - now : 0;
+        if ((uint64_t)wait_ms > remaining)
+        {
+          wait_ms = (uint32_t)remaining;
+        }
+      }
+      r = client->dps_mqtt->iface->process_loop(client->dps_mqtt, wait_ms);
     }
 
     dps_apply_deferred(client);
@@ -3200,10 +3217,16 @@ az_iot_result az_iot_connection_client__dps_hold_acquire(az_iot_connection_clien
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
-  /* Past the point where a hold could take effect: the registration is already
-   * in flight or done, so say so rather than appear to hold something. */
-  if (client->dps_phase == DPS_PHASE_REGISTERING || client->dps_phase == DPS_PHASE_POLLING
-      || client->dps_phase == DPS_PHASE_DONE)
+  /* A registration already in flight cannot be held: the request is on the wire
+   * and its response will tear the session down. Say so rather than appear to
+   * hold something.
+   *
+   * DONE is allowed, and that distinction matters. It is not "too late", it is
+   * "this session is finished" -- and it is the state a provisioned client sits
+   * in until it reprovisions. Refusing here would leave a holder unable to
+   * reserve the NEXT session, so a reprovision would run from SUBACK straight
+   * into registration with no hold. */
+  if (client->dps_phase == DPS_PHASE_REGISTERING || client->dps_phase == DPS_PHASE_POLLING)
   {
     return AZ_IOT_ERR_NOT_SUPPORTED;
   }

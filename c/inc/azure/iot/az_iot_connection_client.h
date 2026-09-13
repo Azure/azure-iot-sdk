@@ -216,6 +216,17 @@ extern "C"
        * without an operator. */
       uint32_t max_hub_connect_attempts_before_reprovision;
     } dps;
+
+    /* How long registration may be held for a pre-registration exchange on the
+     * provisioning session, in milliseconds. 0 selects
+     * AZ_IOT_DPS_HOLD_TIMEOUT_MS. The hold is advisory and this is its bound:
+     * when it expires the device registers regardless, so a feature client can
+     * delay provisioning but never prevent it.
+     *
+     * Appended deliberately: this struct is filled by callers, and inserting a
+     * member would shift every one after it for positional aggregate
+     * initializers. New options go at the end. */
+    uint32_t dps_hold_timeout_ms;
   } az_iot_connection_client_options;
 
   typedef enum az_iot_connection_state

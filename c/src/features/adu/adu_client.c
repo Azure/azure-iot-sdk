@@ -1217,7 +1217,19 @@ static void on_channel_update(
  * would be lost. Re-arming the flag puts it back in the do_work queue.
  *
  * FATAL is not re-armed: the request is malformed or the device is not
- * entitled, so resending it every tick would spin against the service. */
+ * entitled, so resending it every tick would spin against the service.
+ *
+ * ALREADY_REPORTED is not re-armed: a terminal result is already recorded for
+ * this workflow, so the report HAS been delivered and reporting is idempotent
+ * on workflowId. Re-arming it would retry forever, and during the held
+ * bootstrap session that starves the update check until the hold expires.
+ *
+ * PROCEED is not re-armed either. It is a terminal answer, not a failure: the
+ * service is telling the device there is no update service configured for it,
+ * and the classifier defines it as "carry on, do not retry". Re-arming it would
+ * also fire a fresh check just as the hold is released and registration goes
+ * out -- onto a session that is about to be torn down -- which is the race the
+ * hold exists to prevent. */
 static void on_channel_result(
     az_iot_adu_operation operation,
     az_iot_result result,
@@ -1230,6 +1242,8 @@ static void on_channel_result(
     return;
   }
   if (result == AZ_IOT_OK || action == AZ_IOT_ADU_ERROR_ACTION_FATAL
+      || action == AZ_IOT_ADU_ERROR_ACTION_PROCEED
+      || action == AZ_IOT_ADU_ERROR_ACTION_ALREADY_REPORTED
       || action == AZ_IOT_ADU_ERROR_ACTION_NONE)
   {
     return;
