@@ -216,10 +216,25 @@ void app_main(void)
     esp_restart();
   }
 
-  /* Pump until connected (or faulted). */
-  for (int i = 0; i < 1200 && g_conn_state != AZ_IOT_CONN_STATE_CONNECTED; ++i)
+  /* Pump until connected (or faulted). The device-update client is ticked here
+   * too: its first update check runs on the provisioning session, BEFORE the
+   * device registers, so pumping only the connection client would leave that
+   * check unissued and the hold would simply expire.
+   *
+   * The bound must exceed AZ_IOT_DPS_HOLD_TIMEOUT_MS: a fixed 1200 iterations
+   * at 50 ms was exactly the hold timeout, so a stalled check would have ended
+   * this loop on the same tick the hold expired and the device would have
+   * looked unreachable instead of registering anyway. */
+  /* Derived from the hold timeout rather than hard-coded: a build that raises
+   * AZ_IOT_DPS_HOLD_TIMEOUT_MS must not have this loop give up while the
+   * connection is still legitimately holding. Twice the hold leaves room for
+   * the registration that follows it. */
+  const unsigned tick_ms = 50u;
+  const unsigned max_ticks = (2u * (unsigned)AZ_IOT_DPS_HOLD_TIMEOUT_MS) / tick_ms;
+  for (unsigned i = 0; i < max_ticks && g_conn_state != AZ_IOT_CONN_STATE_CONNECTED; ++i)
   {
     (void)az_iot_connection_client_do_work(&conn, 50);
+    (void)az_iot_adu_client_do_work(&adu);
     if (g_conn_state == AZ_IOT_CONN_STATE_FAULTED)
     {
       break;

@@ -449,6 +449,7 @@ typedef struct
   char last_installed_version[64];
   az_iot_adu_client_step_result last_step_results[_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS];
   uint8_t last_step_details[_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS][256];
+  size_t do_work_count;
 } fake_channel;
 
 static az_iot_result fake_channel_open(
@@ -466,6 +467,12 @@ static az_iot_result fake_channel_open(
 }
 
 static void fake_channel_close(void* ctx) { ((fake_channel*)ctx)->opened = false; }
+
+static az_iot_result fake_channel_do_work(void* ctx)
+{
+  ((fake_channel*)ctx)->do_work_count++;
+  return AZ_IOT_OK;
+}
 
 static az_iot_result fake_channel_request_update(void* ctx)
 {
@@ -546,7 +553,7 @@ static const az_iot_adu_channel_vtable k_fake_channel_vtable = {
   .request_update = fake_channel_request_update,
   .report = fake_channel_report,
   .set_device_properties = NULL,
-  .do_work = NULL,
+  .do_work = fake_channel_do_work,
 };
 
 /* ------------------------------------------------------------------------- */
@@ -1939,6 +1946,62 @@ static void verify_file_hash_rejects_an_unsupported_algorithm(void** state)
       AZ_IOT_ERR_AUTH);
 }
 
+/* The vtable advertises an optional do_work hook for a channel with
+ * asynchronous work of its own. A channel that reports lost operations there
+ * depends on actually being ticked, so pin that the engine drives it. */
+static void do_work_drives_the_channel(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  size_t before = fx->chan.do_work_count;
+
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(fx->chan.do_work_count, before + 1);
+
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(fx->chan.do_work_count, before + 2);
+}
+
+/* A verdict the engine must NOT retry. ALREADY_REPORTED means a terminal result
+ * is already recorded for this workflow, so the report HAS been delivered --
+ * reporting is idempotent on workflowId. Re-arming it would retry forever, and
+ * during a held bootstrap session that starves the update check until the hold
+ * expires.
+ *
+ * Asserted on the pending flag rather than a report count: an advancing
+ * workflow emits progress reports of its own, which would mask the difference.
+ */
+static void a_terminal_verdict_does_not_re_arm_the_report(void** state)
+{
+  fixture* fx = (fixture*)*state;
+
+  fx->adu._internal.device_props_report_pending = false;
+
+  assert_non_null(fx->chan.result_cb);
+  fx->chan.result_cb(
+      AZ_IOT_ADU_OP_REPORT_STATUS,
+      AZ_IOT_ERR_DPS,
+      AZ_IOT_ADU_ERROR_ACTION_ALREADY_REPORTED,
+      fx->chan.engine_ctx);
+  assert_false(fx->adu._internal.device_props_report_pending);
+
+  /* Same for the other terminal verdicts. */
+  fx->chan.result_cb(
+      AZ_IOT_ADU_OP_REPORT_STATUS,
+      AZ_IOT_ERR_DPS,
+      AZ_IOT_ADU_ERROR_ACTION_FATAL,
+      fx->chan.engine_ctx);
+  assert_false(fx->adu._internal.device_props_report_pending);
+
+  /* A retryable verdict IS re-armed -- otherwise the assertions above would
+   * pass for a callback that simply did nothing. */
+  fx->chan.result_cb(
+      AZ_IOT_ADU_OP_REPORT_STATUS,
+      AZ_IOT_ERR_DPS,
+      AZ_IOT_ADU_ERROR_ACTION_RETRY,
+      fx->chan.engine_ctx);
+  assert_true(fx->adu._internal.device_props_report_pending);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -1987,6 +2050,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(malformed_manifest_json_is_rejected, setup, teardown),
     cmocka_unit_test_setup_teardown(
         verify_file_hash_rejects_an_unsupported_algorithm, setup, teardown),
+    cmocka_unit_test_setup_teardown(do_work_drives_the_channel, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_terminal_verdict_does_not_re_arm_the_report, setup, teardown),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }
