@@ -17,11 +17,10 @@
  * WITHOUT an update being offered to it:
  *
  *   - onboarding check (pre-registration, needs no registry entry)
- *   - operational check for an enrolled device
- *   - the ETag round trip and its smaller steady-state response
+ *   - the ETags the service issues, and that the channel stores them
  *   - the error surface reachable today: an unknown workflow on the report
  *     route
- *   - that provisioning still completes once device update has had its turn
+ *   - that registration still proceeds once device update has had its turn
  *
  * Not covered for a different reason: the operational (software-update) route.
  * The channel only ever issues the onboarding operation today -- the operational
@@ -134,13 +133,25 @@ static void url_encode(const char* in, char* out, size_t out_size)
 
 static int b64_decode(const char* in, unsigned char* out, int out_size)
 {
-  int n = EVP_DecodeBlock(out, (const unsigned char*)in, (int)strlen(in));
+  /* Checked BEFORE decoding: EVP_DecodeBlock writes 3 bytes for every 4 of
+   * input and only then returns the length, so validating afterwards would
+   * already have overflowed `out` on an oversized or malformed value. */
+  size_t len = strlen(in);
+  if (len == 0 || (len % 4) != 0)
+  {
+    return -1;
+  }
+  if (len / 4 > (size_t)(out_size / 3))
+  {
+    return -1;
+  }
+
+  int n = EVP_DecodeBlock(out, (const unsigned char*)in, (int)len);
   if (n < 0 || n > out_size)
   {
     return -1;
   }
   /* EVP_DecodeBlock pads to a multiple of 3; drop what '=' accounted for. */
-  size_t len = strlen(in);
   if (len >= 1 && in[len - 1] == '=')
   {
     n--;
@@ -163,10 +174,26 @@ static int b64_encode(const unsigned char* in, int in_len, char* out, int out_si
 
 /* The device key is derived from the enrollment-group key, so any registrationId
  * is instantly valid -- which is what makes a fresh identity per run free. */
+/* The same callback serves every CONNECT the connection client makes, and they
+ * do not all want the same token. A provisioning CONNECT signs
+ * "<idScope>/registrations/<registrationId>" with skn=registration; an assigned
+ * hub CONNECT wants "<hub>/devices/<deviceId>" and no skn. Signing the DPS
+ * audience for a hub CONNECT would simply be rejected.
+ *
+ * The username tells them apart: the provisioning one carries
+ * "/registrations/". Anything else is a hub CONNECT, which this suite does not
+ * reach today -- its scenarios all finish on the provisioning session -- so
+ * rather than emit a token that cannot work, nothing is written and the
+ * adapter connects without a password, which fails visibly. */
 static void sas_password(const char* username, char* out, size_t out_size, void* ctx)
 {
-  (void)username;
   const char* registration_id = (const char*)ctx;
+
+  if (username == NULL || strstr(username, "/registrations/") == NULL)
+  {
+    out[0] = '\0';
+    return;
+  }
 
   unsigned char group_key[128];
   int group_key_len = b64_decode(g_env.group_key_b64, group_key, (int)sizeof(group_key));
@@ -242,7 +269,19 @@ typedef struct
   az_iot_adu_operation last_op;
   az_iot_result last_result;
   az_iot_adu_error_action last_action;
+
+  bool faulted;
 } e2e_fixture;
+
+/* A faulted connection has to end a wait: otherwise a scenario that can no
+ * longer make progress just burns its whole budget before failing. */
+static void on_conn_state(const az_iot_connection_state_event* event, void* ctx)
+{
+  if (event != NULL && event->state == AZ_IOT_CONN_STATE_FAULTED)
+  {
+    ((e2e_fixture*)ctx)->faulted = true;
+  }
+}
 
 static void on_update(const uint8_t* payload, size_t payload_len, void* ctx)
 {
@@ -283,6 +322,8 @@ static void fixture_open(e2e_fixture* fx, const char* registration_id)
   opts.dps.registration_id = fx->registration_id;
   opts.dps.global_endpoint = g_env.dps_host;
   assert_int_equal(az_iot_connection_client_init(&fx->conn, &opts), AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_connection_client_set_state_callback(&fx->conn, on_conn_state, fx), AZ_IOT_OK);
 
   az_iot_e2e_mqtt_config mcfg;
   memset(&mcfg, 0, sizeof(mcfg));
@@ -340,13 +381,18 @@ static void fixture_close(e2e_fixture* fx)
  * registration is being held for the update check. */
 static void wait_for_hold(e2e_fixture* fx)
 {
-  PUMP_UNTIL(fx, az_iot_connection_client__dps_hold_is_active(&fx->conn), 30);
+  /* A faulted connection ends the wait: it can make no further progress, so
+   * burning the whole budget would only delay the same failure and report it
+   * as a timeout rather than as the fault it is. */
+  PUMP_UNTIL(fx, az_iot_connection_client__dps_hold_is_active(&fx->conn) || fx->faulted, 30);
+  assert_false(fx->faulted);
   assert_true(az_iot_connection_client__dps_hold_is_active(&fx->conn));
 }
 
 static void wait_for_result(e2e_fixture* fx, size_t target)
 {
-  PUMP_UNTIL(fx, fx->result_count >= target, 30);
+  PUMP_UNTIL(fx, fx->result_count >= target || fx->faulted, 30);
+  assert_false(fx->faulted);
   assert_true(fx->result_count >= target);
 }
 
@@ -382,8 +428,13 @@ static void onboarding_check_runs_before_registration(void** state)
   fixture_close(&fx);
 }
 
-/* Holding registration must not prevent it: once the check is done the device
- * goes on to register, and the connection makes progress. */
+/* Holding registration must not prevent it. The device registers for real once
+ * the check is done -- the service assigns it a hub, which is what DONE means.
+ *
+ * Stops at the end of provisioning, not at a connected hub: this suite runs a
+ * symmetric-key device and only mints provisioning tokens, so the hub CONNECT
+ * that follows is out of scope. DONE is the assignment actually arriving, which
+ * is the claim being made. */
 static void provisioning_completes_after_the_check(void** state)
 {
   (void)state;
@@ -398,10 +449,22 @@ static void provisioning_completes_after_the_check(void** state)
   assert_int_equal(fx.channel.vtable->request_update(fx.channel.ctx), AZ_IOT_OK);
   wait_for_result(&fx, 1);
 
-  /* The hold is released by the verdict; the pump then registers. */
-  PUMP_UNTIL(&fx, fx.conn.dps_phase != AZ_IOT_DPS_PHASE_HOLD, 30);
-  assert_int_not_equal(fx.conn.dps_phase, AZ_IOT_DPS_PHASE_HOLD);
+  /* The hold is released by the verdict, the pump publishes the registration,
+   * and the service answers with an assignment: that is what DONE means.
+   *
+   * Waiting only for "no longer HOLD" would have passed the instant the
+   * registration was PUBLISHED, which proves nothing about the outcome -- a
+   * rejected registration would have looked identical. */
+  PUMP_UNTIL(&fx, fx.conn.dps_phase == AZ_IOT_DPS_PHASE_DONE, 60);
+  assert_int_equal(fx.conn.dps_phase, AZ_IOT_DPS_PHASE_DONE);
   assert_false(az_iot_connection_client__dps_hold_is_active(&fx.conn));
+
+  /* What happens next is deliberately NOT asserted. The connection client goes
+   * on to connect to the assigned hub, and this suite mints provisioning
+   * tokens only, so that CONNECT is refused and the connection faults. Measured
+   * here, not assumed: the device reaches DONE and then faults. The hub leg
+   * needs a hub-scoped credential, which belongs with the operational-session
+   * work rather than this suite. */
 
   fixture_close(&fx);
 }

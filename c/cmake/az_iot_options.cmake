@@ -18,6 +18,10 @@ option(AZ_IOT_BUILD_TESTS      "Build unit tests"                               
 # default (they require provisioned cloud resources + the Paho adapter). The
 # e2e GitHub Actions workflow enables this alongside AZ_IOT_BUILD_TESTS.
 option(AZ_IOT_BUILD_E2E        "Build the end-to-end test device agent"         OFF)
+# The ADUv2 device-update e2e suite. Separate from AZ_IOT_BUILD_E2E because it
+# needs a Device Update environment and a symmetric-key enrollment, and because
+# it is the one e2e target that does not use the Paho adapter.
+option(AZ_IOT_BUILD_E2E_ADU_V2 "Build the ADUv2 device-update end-to-end suite"  OFF)
 # The conformance suites drive a REAL MQTT broker over the network. The harness
 # executables always build when the Paho adapter is on -- customers link the
 # conformance library to validate their own adapter -- but they are registered

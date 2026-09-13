@@ -9,6 +9,50 @@
 # Everything from here to the ADUv2 suite needs the Paho adapter and the AMQP
 # service facade. The ADUv2 suite needs neither, so it must remain buildable
 # when they are absent.
+# The ADUv2 suite comes first and stays OUTSIDE the Paho guard: it brings its
+# own MQTT transport, so it is the one target here that builds without Paho
+# and without the AMQP service facade.
+# The transport is POSIX sockets (getaddrinfo/select/read/write). There is no
+# Winsock implementation, so the suite is not built on Windows rather than
+# failing there: a test transport that only runs where it is used is a smaller
+# cost than a second socket backend nobody exercises.
+if(AZ_IOT_BUILD_E2E_ADU_V2 AND WIN32)
+    message(STATUS
+        "ADUv2 e2e suite skipped on Windows: its MQTT transport is POSIX-only.")
+endif()
+
+if(AZ_IOT_BUILD_E2E_ADU_V2 AND NOT WIN32)
+    # The ADUv2 suite. It does NOT use the Paho adapter or the service facade:
+    # the device half is driven through its own MQTT transport (below) so it can
+    # run where the only route out is a proxy and the device is enrolled with a
+    # symmetric key, and the cloud half is the Device Update service itself
+    # rather than something the test stands up.
+    #
+    # tests/e2e_adu_test.c -- the retired ADUv1 file -- is deliberately NOT built
+    # and NOT deleted: its manifest/JWS machinery is what the update-offer
+    # scenarios will need once a deployment can be produced.
+    find_package(OpenSSL REQUIRED)
+    az_iot_add_cmocka_test(az_iot_tests_e2e_adu
+        tests/e2e_adu_v2_test.c
+        tests/e2e_mqtt_transport.c)
+    target_link_libraries(az_iot_tests_e2e_adu PRIVATE
+        az_iot_core OpenSSL::SSL OpenSSL::Crypto)
+    # The suite asserts on the channel and the codecs, which are internal.
+    target_include_directories(az_iot_tests_e2e_adu PRIVATE
+        ${CMAKE_SOURCE_DIR}/src/core
+        ${CMAKE_SOURCE_DIR}/src/features/adu/internal)
+    # getaddrinfo/select are POSIX, not C99.
+    target_compile_definitions(az_iot_tests_e2e_adu PRIVATE _POSIX_C_SOURCE=200809L)
+else()
+    message(STATUS
+        "ADU e2e suite disabled: the twin-driven scenarios retired with the ADUv1 cut "
+        "and are awaiting the ADUv2 rewrite.")
+endif()
+
+# Everything below needs the Paho adapter and the az_iot_e2e_service facade.
+# All of it has to sit inside this guard -- a target left outside fails to
+# build with AZ_IOT_WITH_PAHO=OFF, which is exactly the configuration the
+# ADUv2 suite is meant to support.
 if(AZ_IOT_WITH_PAHO)
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../deps/amqp
                  ${CMAKE_CURRENT_BINARY_DIR}/deps/amqp)
@@ -72,37 +116,6 @@ target_link_libraries(az_iot_tests_e2e PRIVATE az_iot_e2e_service az_iot_gen1 az
 #
 # Re-enable this target as part of the ADUv2 channel work.
 # ---------------------------------------------------------------------------
-endif() # AZ_IOT_WITH_PAHO
-
-if(AZ_IOT_BUILD_E2E_ADU_V2)
-    # The ADUv2 suite. It does NOT use the Paho adapter or the service facade:
-    # the device half is driven through its own MQTT transport (below) so it can
-    # run where the only route out is a proxy and the device is enrolled with a
-    # symmetric key, and the cloud half is the Device Update service itself
-    # rather than something the test stands up.
-    #
-    # tests/e2e_adu_test.c -- the retired ADUv1 file -- is deliberately NOT built
-    # and NOT deleted: its manifest/JWS machinery is what the update-offer
-    # scenarios will need once a deployment can be produced.
-    find_package(OpenSSL REQUIRED)
-    az_iot_add_cmocka_test(az_iot_tests_e2e_adu
-        tests/e2e_adu_v2_test.c
-        tests/e2e_mqtt_transport.c)
-    target_link_libraries(az_iot_tests_e2e_adu PRIVATE
-        az_iot_core OpenSSL::SSL OpenSSL::Crypto)
-    # The suite asserts on the channel and the codecs, which are internal.
-    target_include_directories(az_iot_tests_e2e_adu PRIVATE
-        ${CMAKE_SOURCE_DIR}/src/core
-        ${CMAKE_SOURCE_DIR}/src/features/adu/internal)
-    # The transport uses getaddrinfo/select, which are POSIX, not C99.
-    if(NOT WIN32)
-        target_compile_definitions(az_iot_tests_e2e_adu PRIVATE _POSIX_C_SOURCE=200809L)
-    endif()
-else()
-    message(STATUS
-        "ADU e2e suite disabled: the twin-driven scenarios retired with the ADUv1 cut "
-        "and are awaiting the ADUv2 rewrite.")
-endif()
 
 # ---------------------------------------------------------------------------
 # az_iot_tests_e2e_csr
@@ -175,3 +188,6 @@ if(AZ_IOT_BUILD_E2E_PKCS11)
     target_link_libraries(az_iot_tests_e2e_custody PRIVATE
         az_iot_e2e_service az_iot_gen1 az_iot_adapter_paho)
 endif()
+
+
+endif() # AZ_IOT_WITH_PAHO

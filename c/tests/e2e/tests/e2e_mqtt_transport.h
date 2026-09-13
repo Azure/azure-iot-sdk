@@ -55,9 +55,16 @@ extern "C"
     void* password_ctx;
   } az_iot_e2e_mqtt_config;
 
-  /* Create a factory the connection client can be handed. The config is copied;
-   * the strings it points at must outlive the factory. Returns NULL on failure.
-   */
+  /* Create a factory the connection client can be handed.
+   *
+   * The config struct is copied, but only shallowly: every client the factory
+   * creates copies those same pointers. So the strings must outlive every
+   * connection client and session built from this factory, not merely the
+   * factory object -- pointing them at storage that goes out of scope leaves a
+   * live client dereferencing it. String literals or process-lifetime buffers
+   * are the intended use.
+   *
+   * Returns NULL on failure. */
   az_iot_mqtt_factory* az_iot_e2e_mqtt_factory_create(const az_iot_e2e_mqtt_config* config);
 
   /* Destroy a factory that was never adopted by a connection client. */

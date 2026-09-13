@@ -47,6 +47,7 @@ typedef struct
   size_t rx_len;
 
   bool connected;
+  bool disconnect_reported;
 } e2e_mqtt_client;
 
 typedef struct
@@ -100,6 +101,17 @@ static void w_str(wbuf* w, const char* s)
 }
 
 /* --- transport ----------------------------------------------------------- */
+
+/* Bound on the blocking connect path, so a black-holed endpoint cannot hang the
+ * caller past the timeout it asked for. */
+static void set_socket_timeouts(int fd, uint32_t seconds)
+{
+  struct timeval tv;
+  tv.tv_sec = (time_t)(seconds ? seconds : 30u);
+  tv.tv_usec = 0;
+  (void)setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+  (void)setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+}
 
 static int tcp_connect(const char* host, const char* port)
 {
@@ -193,7 +205,10 @@ static int proxy_connect(const char* proxy, const char* host, uint16_t port)
   return fd;
 }
 
-static az_iot_result tls_start(e2e_mqtt_client* c, const char* host)
+static az_iot_result tls_start(
+    e2e_mqtt_client* c,
+    const char* host,
+    const az_iot_mqtt_tls_options* tls)
 {
   c->ssl_ctx = SSL_CTX_new(TLS_client_method());
   if (c->ssl_ctx == NULL)
@@ -214,6 +229,36 @@ static az_iot_result tls_start(e2e_mqtt_client* c, const char* host)
     return AZ_IOT_ERR_TLS;
   }
   SSL_CTX_set_verify(c->ssl_ctx, SSL_VERIFY_PEER, NULL);
+
+  /* Client credentials. The connection client fills these for X.509, and
+   * silently ignoring them would leave a caller believing it had mutual TLS
+   * when the handshake was in fact anonymous. PEM files are supported; the
+   * in-memory and non-extractable-key forms are not, and are refused rather
+   * than dropped. */
+  if (tls != NULL)
+  {
+    if (tls->client_cert_path != NULL && tls->client_key_path != NULL)
+    {
+      if (SSL_CTX_use_certificate_chain_file(c->ssl_ctx, tls->client_cert_path) != 1
+          || SSL_CTX_use_PrivateKey_file(c->ssl_ctx, tls->client_key_path, SSL_FILETYPE_PEM) != 1)
+      {
+        AZ_IOT_LOG_ERROR("e2e-mqtt: could not load the client certificate or key");
+        return AZ_IOT_ERR_TLS;
+      }
+    }
+    else if (
+        tls->client_cert_pem != NULL || tls->client_key_pem != NULL || tls->client_key_uri != NULL
+        || tls->sign != NULL)
+    {
+      AZ_IOT_LOG_ERROR("e2e-mqtt: only PEM FILE credentials are supported by this test transport");
+      return AZ_IOT_ERR_NOT_SUPPORTED;
+    }
+    if (tls->trusted_ca_path != NULL
+        && SSL_CTX_load_verify_locations(c->ssl_ctx, tls->trusted_ca_path, NULL) != 1)
+    {
+      return AZ_IOT_ERR_TLS;
+    }
+  }
 
   c->ssl = SSL_new(c->ssl_ctx);
   if (c->ssl == NULL)
@@ -320,7 +365,13 @@ static az_iot_result e2e_connect(az_iot_mqtt_client* self, const az_iot_mqtt_con
     return AZ_IOT_ERR_NOT_CONNECTED;
   }
 
-  az_iot_result r = tls_start(c, opts->host);
+  /* connect() here is blocking, unlike the adapter contract, which expects I/O
+   * in process_loop(). That is a deliberate simplification for a test
+   * transport, and it is bounded rather than unbounded: without these the whole
+   * pump could hang on a dead endpoint instead of failing. */
+  set_socket_timeouts(c->fd, opts->connect_timeout_seconds);
+
+  az_iot_result r = tls_start(c, opts->host, &opts->tls);
   if (r != AZ_IOT_OK)
   {
     return r;
@@ -344,7 +395,10 @@ static az_iot_result e2e_connect(az_iot_mqtt_client* self, const az_iot_mqtt_con
   wbuf w = { body, sizeof(body), 0, false };
   w_str(&w, "MQTT");
   w_byte(&w, 4); /* protocol level 3.1.1 */
-  uint8_t flags = 0x02; /* clean session */
+  /* Bit 1 is Clean Session; the iface exposes it as clean_start, so honour it
+   * rather than forcing a clean session and silently discarding v3.1.1 session
+   * semantics the caller asked for. */
+  uint8_t flags = (uint8_t)(opts->clean_start ? 0x02 : 0x00);
   if (opts->username != NULL)
   {
     flags |= 0x80;
@@ -684,12 +738,17 @@ static az_iot_result e2e_process_loop(az_iot_mqtt_client* self, uint32_t timeout
     {
       return AZ_IOT_OK;
     }
-    if (c->connected)
+    /* Reported whether or not CONNACK ever arrived. A peer that closes during
+     * the handshake would otherwise leave the connection client waiting in
+     * CONNECTING forever, and a close would never settle to IDLE. `reported`
+     * keeps it to one event. */
+    if (!c->disconnect_reported)
     {
       az_iot_mqtt_event evt;
       memset(&evt, 0, sizeof(evt));
       evt.kind = AZ_IOT_MQTT_EVT_DISCONNECTED;
       evt.status = AZ_IOT_ERR_NOT_CONNECTED;
+      c->disconnect_reported = true;
       c->connected = false;
       emit(c, &evt);
     }
