@@ -153,13 +153,6 @@ extern "C"
      * forever, which is the failure this bounds. Expiry is treated as transient
      * -- silence is not a refusal -- so it reconnects under the policy. */
     uint32_t subscription_ack_timeout_seconds;
-
-    /* How long registration may be held for a pre-registration exchange on the
-     * provisioning session, in milliseconds. 0 selects
-     * AZ_IOT_DPS_HOLD_TIMEOUT_MS. The hold is advisory and this is its bound:
-     * when it expires the device registers regardless, so a feature client can
-     * delay provisioning but never prevent it. */
-    uint32_t dps_hold_timeout_ms;
     const char* client_id; /* device id */
     az_iot_connection_profile connection_profile; /* direct-connect generation (host set,
                                                    * no DPS): CLASSIC (v3.1.1, default) or
