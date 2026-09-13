@@ -71,7 +71,7 @@ typedef struct
 } user_context;
 
 static void on_method(
-    az_iot_direct_method_request* request,
+    az_iot_direct_method_request request,
     const char* method_name,
     const uint8_t* payload,
     size_t payload_len,
@@ -171,7 +171,7 @@ static az_iot_gen2_direct_method_probe_result on_probe(
 }
 
 static void on_method(
-    az_iot_direct_method_request* request,
+    az_iot_direct_method_request request,
     const char* method_name,
     const uint8_t* payload,
     size_t payload_len,
@@ -184,11 +184,13 @@ static void on_method(
    * delivered it. */
   if (ctx->state->methods_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
   {
-    (void)az_iot_gen2_direct_method_respond(request, 200, payload, payload_len);
+    (void)az_iot_gen2_direct_method_respond(
+        &ctx->state->gen2_methods, request, 200, payload, payload_len);
   }
   else
   {
-    (void)az_iot_gen1_direct_method_respond(request, 200, payload, payload_len);
+    (void)az_iot_gen1_direct_method_respond(
+        &ctx->state->gen1_methods, request, 200, payload, payload_len);
   }
 }
 

@@ -42,13 +42,16 @@ extern "C"
       az_iot_connection_client* conn;
       az_iot_direct_method_handler_callback handler;
       void* handler_ctx;
-      az_iot_direct_method_request req_pool[AZ_IOT_DM_MAX_INFLIGHT];
+      az_iot_direct_method_slot req_pool[AZ_IOT_DM_MAX_INFLIGHT];
       /* Parallel to req_pool: when each in-flight invocation stops being worth
-       * answering. Held here rather than on az_iot_direct_method_request so
-       * gen2, which shares that type, does not carry storage for a timeout it
-       * derives from the exec budget instead. */
+       * answering. Held here rather than on az_iot_direct_method_slot so gen2,
+       * which shares that type, does not carry storage for a timeout it derives
+       * from the exec budget instead. */
       uint64_t req_expires_at_ms[AZ_IOT_DM_MAX_INFLIGHT];
       uint32_t response_timeout_seconds;
+      /* Bumped on every acquire and copied into the request handed out, so a
+       * request naming a slot that has since been reused no longer matches. */
+      uint32_t next_seq;
       /* Next pool index to try. Allocation cycles rather than always taking the
        * lowest free slot, so a slot just reclaimed from an application that
        * never answered is the last one reused, not the first. */
@@ -107,24 +110,31 @@ extern "C"
    * client's capacity to receive methods. Answering after that is refused: the
    * service stopped waiting long before.
    *
-   * The refusal holds only while the reclaimed slot is still free. @p request
-   * is a pointer into a reusable pool, so once the slot has been handed to a
-   * new invocation an answer on the old handle cannot be told apart from an
-   * answer on the new one and will be published against it. Allocation cycles
-   * through the pool to make that unlikely, but it is no protection when every
-   * slot times out at once -- the pool is then entirely recycled. Keep a handle
-   * only until you answer it, and set a response timeout above the longest
-   * method this device services.
+   * @p request names a slot rather than pointing at one, so a slot that has
+   * since been reclaimed and handed to another invocation no longer matches and
+   * the late answer is refused instead of being published against that other
+   * call. Holding a request indefinitely is therefore safe; it simply stops
+   * being answerable. A request is also scoped to the client that issued it, so
+   * handing one to a different client is refused rather than resolved against
+   * whatever occupies the same slot there.
+   *
+   * One case is not detectable: a request held across destroy() *and* a fresh
+   * init() of the same client. Teardown zeroes the pool, so the sequence starts
+   * over and the new lifetime can reissue the pair the old request names.
+   * Detecting it would need identity that outlives the caller's storage, which
+   * this SDK does not keep. Do not hold a request across the teardown of the
+   * client that issued it.
    *
    * @return AZ_IOT_ERR_TIMEOUT if @p request has passed its response timeout --
    *         nothing is sent and the slot is released;
    *         AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH if @p request came from a
    *         gen2 client; AZ_IOT_ERR_INVALID_ARG if it was already answered, if
-   *         its slot was already reclaimed, or if it did not come from this
-   *         client's pool.
+   *         its slot was reclaimed and reused, or if it never came from this
+   *         client.
    */
   az_iot_result az_iot_gen1_direct_method_respond(
-      az_iot_direct_method_request* request,
+      az_iot_gen1_direct_method_client* client,
+      az_iot_direct_method_request request,
       int status_code,
       const uint8_t* payload,
       size_t payload_len);

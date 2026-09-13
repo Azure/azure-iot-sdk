@@ -153,6 +153,10 @@ static void sweep_working_directory(void)
 
 #define SIGN_CALLED_MARKER "sign-hook-was-called"
 
+/* Distinctive enough not to collide with anything cmocka or the suite prints. */
+#define SIGN_CALLED_TOKEN "az-iot-sign-negative: SIGN-HOOK-WAS-INVOKED"
+#define SIGN_MARKER_FAILED_TOKEN "az-iot-sign-negative: SIGN-MARKER-COULD-NOT-BE-WRITTEN"
+
 #define EXPECTED_FAILING_CASE "key_custody_sign_hook_completes_a_tls_handshake"
 
 /* Set if the adapter ever calls the hook. It must not: this control's whole
@@ -182,12 +186,22 @@ static az_iot_result negative_sign_stub(
   (void)out_sig_cap;
   (void)out_sig_len;
   g_sign_called = 1;
-  /* Also on disk: a cmocka that runs cases in a child process would leave the
-   * flag above set only there, and the check in the parent would see nothing. */
+
+  /* Three channels, because the flag alone is process-local and the cases may
+   * run in a child: the flag, a marker file, and a token on stderr, which is
+   * captured into the log this control already scans and already rejects when
+   * it cannot be read. The token is what makes a failed marker write harmless
+   * -- without it, a hook that ran but could not be recorded would look exactly
+   * like a hook that never ran, which is the false pass this control exists to
+   * prevent. */
+  fprintf(stderr, "\n%s\n", SIGN_CALLED_TOKEN);
+  fflush(stderr);
+
   FILE* marker = fopen(SIGN_CALLED_MARKER, "wb");
-  if (marker != NULL)
+  if (marker == NULL || fclose(marker) != 0)
   {
-    fclose(marker);
+    fprintf(stderr, "%s\n", SIGN_MARKER_FAILED_TOKEN);
+    fflush(stderr);
   }
   return AZ_IOT_ERR_INTERNAL;
 }
@@ -246,7 +260,9 @@ static int scan_output(
     int* out_saw_expected,
     int* out_other_failures,
     int* out_saw_refusal,
-    int* out_failing_total)
+    int* out_failing_total,
+    int* out_sign_called,
+    int* out_count_unreadable)
 {
   char line[512];
   char refusal[64];
@@ -265,12 +281,20 @@ static int scan_output(
   *out_other_failures = 0;
   *out_saw_refusal = 0;
   *out_failing_total = 0;
+  *out_sign_called = 0;
+  *out_count_unreadable = 0;
 
   while (fgets(line, (int)sizeof(line), f) != NULL)
   {
     if (strstr(line, refusal) != NULL)
     {
       *out_saw_refusal = 1;
+    }
+    /* Either token means the hook ran: the second says the marker file could
+     * not be written, which is itself a reason to distrust the run. */
+    if (strstr(line, SIGN_CALLED_TOKEN) != NULL || strstr(line, SIGN_MARKER_FAILED_TOKEN) != NULL)
+    {
+      *out_sign_called = 1;
     }
 
     const char* marker = strstr(line, "[  FAILED  ] ");
@@ -305,27 +329,43 @@ static int scan_output(
        *
        * Only the "listed below" form contributes: an aggregate counted as well
        * would double every total. */
-      const char* p = strstr(marker, "test(s), listed below");
-      if (p == NULL)
+      const char* tail = strstr(marker, "test(s), listed below");
+      if (tail == NULL)
       {
         continue;
       }
-      while (p > marker && (p[-1] == ' ' || p[-1] == '\t'))
+
+      /* Walk back over the space to the last digit, then to the first, and read
+       * the number forwards from there. Reading it backwards is what the
+       * earlier version did, and it was twice mistaken for a bug on review
+       * because the index it tested was one before the cursor. */
+      const char* digits = tail;
+      while (digits > marker && (digits[-1] == ' ' || digits[-1] == '\t'))
       {
-        --p;
+        --digits;
       }
+      const char* end = digits;
+      while (digits > marker && digits[-1] >= '0' && digits[-1] <= '9')
+      {
+        --digits;
+      }
+
+      if (digits == end)
+      {
+        /* The summary is there but carries no number this can read, so the
+         * count is unknown. Assuming one would satisfy the exactly-one check on
+         * a format nobody has verified, which is how a control stops meaning
+         * anything. Reported as unparseable instead. */
+        *out_count_unreadable = 1;
+        continue;
+      }
+
       int n = 0;
-      int digits = 0;
-      while (p > marker && p[-1] >= '0' && p[-1] <= '9')
+      for (const char* q = digits; q < end; ++q)
       {
-        --p;
-        ++digits;
+        n = n * 10 + (*q - '0');
       }
-      for (int i = 0; i < digits; ++i)
-      {
-        n = n * 10 + (p[i] - '0');
-      }
-      *out_failing_total += (digits > 0) ? n : 1;
+      *out_failing_total += n;
     }
     else
     {
@@ -416,26 +456,65 @@ static int run_control(
 
   int suite_rc = az_iot_conformance_run_with_options(suite_kind, f, &opts);
 
-  fflush(stdout);
-  fflush(stderr);
+  /* The log IS the evidence, so a write that failed means the evidence is
+   * incomplete -- and an incomplete log can hold the expected failure while
+   * hiding a later one. Checked rather than assumed. */
+  /* Separate statements, not one expression: both streams must be flushed and
+   * both must be interrogated, and || would skip the second whenever the first
+   * failed.
+   *
+   * ferror as well as fflush: stderr is normally unbuffered, so a write that
+   * failed earlier sets the stream's error indicator while a later flush has
+   * nothing left to drain and reports success. Checking only fflush would let
+   * that partial log through. */
+  const int out_flush_failed = (fflush(stdout) != 0);
+  const int err_flush_failed = (fflush(stderr) != 0);
+  const int out_write_failed = (ferror(stdout) != 0);
+  const int err_write_failed = (ferror(stderr) != 0);
+  const int flush_failed
+      = out_flush_failed || err_flush_failed || out_write_failed || err_write_failed;
   az_iot_dup2(saved_out, 1);
   az_iot_dup2(saved_err, 2);
   az_iot_close(saved_out);
   az_iot_close(saved_err);
-  fclose(log);
+  const int close_failed = (fclose(log) != 0);
   az_iot_paho_factory_destroy(f);
+
+  if (flush_failed || close_failed)
+  {
+    fprintf(
+        stderr,
+        "sign-negative[%s]: the suite's output could not be written in full, so this run is not"
+        " evidence about the sign route.\n",
+        label);
+    remove(log_path);
+    return 1;
+  }
 
   int saw_expected = 0;
   int other_failures = 0;
   int saw_refusal = 0;
   int failing_total = 0;
-  int scan_rc = scan_output(log_path, &saw_expected, &other_failures, &saw_refusal, &failing_total);
+  int scanned_sign_called = 0;
+  int count_unreadable = 0;
+  int scan_rc = scan_output(
+      log_path,
+      &saw_expected,
+      &other_failures,
+      &saw_refusal,
+      &failing_total,
+      &scanned_sign_called,
+      &count_unreadable);
 
   FILE* marker = fopen(SIGN_CALLED_MARKER, "rb");
   if (marker != NULL)
   {
     fclose(marker);
     remove(SIGN_CALLED_MARKER);
+    g_sign_called = 1;
+  }
+  if (scanned_sign_called)
+  {
     g_sign_called = 1;
   }
 
@@ -481,6 +560,16 @@ static int run_control(
         "sign-negative[%s]: " EXPECTED_FAILING_CASE " failed, but not by the adapter refusing the"
         " route -- connect() did not return AZ_IOT_ERR_NOT_SUPPORTED. The case is failing for some"
         " other reason, so it is no longer evidence that it drives tls.sign.\n",
+        label);
+    rc = 1;
+  }
+  else if (count_unreadable)
+  {
+    fprintf(
+        stderr,
+        "sign-negative[%s]: the failing-case count could not be read from the suite's output, so"
+        " this run cannot show that only " EXPECTED_FAILING_CASE " failed. The output format has"
+        " probably changed; this control parses it and must be updated with it.\n",
         label);
     rc = 1;
   }

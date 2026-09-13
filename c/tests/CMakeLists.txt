@@ -172,6 +172,25 @@ if(UNIX)
     target_compile_definitions(az_iot_tests_gen1_direct_method_client PRIVATE
         _POSIX_C_SOURCE=200809L)
 endif()
+# AZ_IOT_DM_RID_MAX is a documented compile-time knob, and it sizes both a
+# public struct and the response topic the client builds from it -- so the
+# library and the application have to be built against the same value, hence
+# compiling the gen1 source into this target rather than linking az_iot_gen1,
+# which carries the default. Running the whole suite against a raised rid bound
+# is what proves the knob reaches every buffer derived from it.
+az_iot_add_cmocka_test(az_iot_tests_gen1_direct_method_client_tuned
+    unit/gen1_direct_method_client_test.c
+    ${CMAKE_SOURCE_DIR}/src/gen1/direct_method_client.c)
+target_link_libraries(az_iot_tests_gen1_direct_method_client_tuned PRIVATE az_iot_test_support)
+target_include_directories(az_iot_tests_gen1_direct_method_client_tuned PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/core
+    ${CMAKE_SOURCE_DIR}/src/gen1)
+target_compile_definitions(az_iot_tests_gen1_direct_method_client_tuned PRIVATE
+    AZ_IOT_DM_RID_MAX=200)
+if(UNIX)
+    target_compile_definitions(az_iot_tests_gen1_direct_method_client_tuned PRIVATE
+        _POSIX_C_SOURCE=200809L)
+endif()
 az_iot_add_cmocka_test(az_iot_tests_gen2_direct_method_client unit/gen2_direct_method_client_test.c)
 target_link_libraries(az_iot_tests_gen2_direct_method_client PRIVATE az_iot_test_support az_iot_gen2)
 if(UNIX)

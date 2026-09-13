@@ -200,14 +200,17 @@ extern "C"
       az_iot_connection_client* conn;
       az_iot_gen2_direct_method_probe_callback probe_handler;
       void* probe_handler_ctx;
-      az_iot_direct_method_request req_pool[AZ_IOT_GEN2_DM_MAX_CONCURRENT];
+      az_iot_direct_method_slot req_pool[AZ_IOT_GEN2_DM_MAX_CONCURRENT];
       /* Parallel to req_pool: the execution budget each in-flight invocation
        * was admitted with, and when it was admitted. Held here rather than on
-       * az_iot_direct_method_request because the two generations time out on
+       * az_iot_direct_method_slot because the two generations time out on
        * different inputs -- gen2 on the budget the service declared, gen1 on a
        * locally configured one -- so neither belongs on the shared type. */
       uint32_t exec_budget_seconds[AZ_IOT_GEN2_DM_MAX_CONCURRENT];
       uint64_t exec_received_at_ms[AZ_IOT_GEN2_DM_MAX_CONCURRENT];
+      /* Bumped on every acquire and copied into the request handed out, so a
+       * request naming a slot that has since been reused no longer matches. */
+      uint32_t next_seq;
       /* Next req_pool index to try. Allocation cycles rather than always taking
        * the lowest free slot, so a slot just reclaimed from an application that
        * never answered is the last one reused, not the first. */
@@ -344,16 +347,23 @@ extern "C"
    * timed out, which is the truthful outcome -- the handler may already have
    * run, so this SDK must not claim otherwise.
    *
+   * @p request names a slot rather than pointing at one, so a slot that has
+   * since been reclaimed and handed to another invocation no longer matches and
+   * the late answer is refused instead of being published under that other
+   * call's correlation id.
+   *
    * @return AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH if @p request came from a
-   *         gen1 client, AZ_IOT_ERR_INVALID_ARG if it was already answered or
-   *         did not come from this client, AZ_IOT_ERR_NOT_ENOUGH_SPACE if
+   *         gen1 client, AZ_IOT_ERR_INVALID_ARG if it was already answered, if
+   *         its slot was reclaimed and reused, or if it never came from this
+   *         client, AZ_IOT_ERR_NOT_ENOUGH_SPACE if
    *         @p payload_len exceeds AZ_IOT_GEN2_DM_RESULT_BODY_MAX,
    *         AZ_IOT_ERR_TIMEOUT if the caller's response timeout ran out while
    *         the handler worked -- nothing is sent in that case, because the
    *         service has already given up.
    */
   az_iot_result az_iot_gen2_direct_method_respond(
-      az_iot_direct_method_request* request,
+      az_iot_gen2_direct_method_client* client,
+      az_iot_direct_method_request request,
       int status_code,
       const uint8_t* payload,
       size_t payload_len);
