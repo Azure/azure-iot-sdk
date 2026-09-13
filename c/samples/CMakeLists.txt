@@ -26,6 +26,13 @@ if(AZ_IOT_WITH_PAHO)
         PRIVATE az_iot_gen1 az_iot_gen2 az_iot_adapter_paho)
     az_iot_apply_warnings(az_iot_sample_direct_method_responder)
 
+    add_executable(az_iot_sample_direct_method_slow_responder
+        direct_method_slow_responder/main.c common/sample_utils.c)
+    target_include_directories(az_iot_sample_direct_method_slow_responder PRIVATE common)
+    target_link_libraries(az_iot_sample_direct_method_slow_responder
+        PRIVATE az_iot_gen1 az_iot_gen2 az_iot_adapter_paho)
+    az_iot_apply_warnings(az_iot_sample_direct_method_slow_responder)
+
     add_executable(az_iot_sample_c2d_receiver
         c2d_receiver/main.c common/sample_utils.c)
     target_include_directories(az_iot_sample_c2d_receiver PRIVATE common)

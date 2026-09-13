@@ -1,8 +1,22 @@
+/* Must precede every system header: glibc gates clock_gettime and
+ * CLOCK_MONOTONIC on it, and the first header included fixes the choice. */
+#ifndef _WIN32
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200112L
+#endif
+#endif
+
 #include "sample_utils.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <time.h>
+#endif
 
 // Returns a heap copy of `s` (NUL-terminated), or NULL when `s` is NULL or on
 // allocation failure. Caller frees with free().
@@ -129,5 +143,21 @@ char* sample_env_dup(const char* name, const char* fallback)
     return dup_cstr(v);
   }
   return dup_cstr(fallback);
+#endif
+}
+
+uint64_t sample_now_ms(void)
+{
+#ifdef _WIN32
+  return (uint64_t)GetTickCount64();
+#else
+  struct timespec ts;
+  /* CLOCK_MONOTONIC rather than time(): a step from NTP must not shorten or
+   * extend a deadline measured against it. */
+  if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0)
+  {
+    return 0;
+  }
+  return (uint64_t)ts.tv_sec * 1000u + (uint64_t)(ts.tv_nsec / 1000000L);
 #endif
 }
