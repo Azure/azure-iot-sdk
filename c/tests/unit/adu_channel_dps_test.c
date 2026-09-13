@@ -796,6 +796,29 @@ static void the_dps_pump_caps_its_wait_at_the_hold_deadline(void** state)
   assert_true(loop->timeout_ms <= 50);
 }
 
+/* DONE is where a provisioned client waits until it reprovisions, so a holder
+ * must be able to reserve the next session from there. Refusing would leave the
+ * reprovision running from SUBACK straight into registration, unheld. */
+static void a_hold_can_be_reserved_once_provisioning_is_done(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  fx->client.dps_phase = AZ_IOT_DPS_PHASE_DONE;
+  fx->client.dps_hold_count = 0;
+
+  assert_int_equal(az_iot_connection_client__dps_hold_acquire(&fx->client), AZ_IOT_OK);
+  assert_int_equal(fx->client.dps_hold_count, 1);
+
+  /* Still refused where registration is actually in flight. */
+  fx->client.dps_hold_count = 0;
+  fx->client.dps_phase = AZ_IOT_DPS_PHASE_REGISTERING;
+  assert_int_equal(
+      az_iot_connection_client__dps_hold_acquire(&fx->client), AZ_IOT_ERR_NOT_SUPPORTED);
+  fx->client.dps_phase = AZ_IOT_DPS_PHASE_POLLING;
+  assert_int_equal(
+      az_iot_connection_client__dps_hold_acquire(&fx->client), AZ_IOT_ERR_NOT_SUPPORTED);
+  fx->client.dps_phase = AZ_IOT_DPS_PHASE_NONE;
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -837,6 +860,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         a_not_linked_response_releases_the_hold_without_retrying, setup, teardown),
     cmocka_unit_test(a_zero_hold_timeout_selects_the_default),
+    cmocka_unit_test_setup_teardown(
+        a_hold_can_be_reserved_once_provisioning_is_done, setup, teardown),
     cmocka_unit_test_setup_teardown(
         the_dps_pump_caps_its_wait_at_the_hold_deadline, setup, teardown),
   };

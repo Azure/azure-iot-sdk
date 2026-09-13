@@ -3217,10 +3217,16 @@ az_iot_result az_iot_connection_client__dps_hold_acquire(az_iot_connection_clien
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
-  /* Past the point where a hold could take effect: the registration is already
-   * in flight or done, so say so rather than appear to hold something. */
-  if (client->dps_phase == DPS_PHASE_REGISTERING || client->dps_phase == DPS_PHASE_POLLING
-      || client->dps_phase == DPS_PHASE_DONE)
+  /* A registration already in flight cannot be held: the request is on the wire
+   * and its response will tear the session down. Say so rather than appear to
+   * hold something.
+   *
+   * DONE is allowed, and that distinction matters. It is not "too late", it is
+   * "this session is finished" -- and it is the state a provisioned client sits
+   * in until it reprovisions. Refusing here would leave a holder unable to
+   * reserve the NEXT session, so a reprovision would run from SUBACK straight
+   * into registration with no hold. */
+  if (client->dps_phase == DPS_PHASE_REGISTERING || client->dps_phase == DPS_PHASE_POLLING)
   {
     return AZ_IOT_ERR_NOT_SUPPORTED;
   }
