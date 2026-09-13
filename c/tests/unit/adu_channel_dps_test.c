@@ -228,8 +228,12 @@ static void a_second_request_is_refused_while_one_is_outstanding(void** state)
   snprintf(topic, sizeof(topic), "$dps/registrations/res/200/?$rid=%s", rid);
   assert_true(inject(fx, m, topic, "{\"updateAvailable\":false}"));
 
-  /* Released by the response, so the next tick may ask again. */
-  assert_int_equal(fx->channel.vtable->request_update(fx->channel.ctx), AZ_IOT_OK);
+  /* The slot is free again -- the answer retired it, so this is no longer BUSY.
+   * It is refused for the other reason: that response also ended the exchange
+   * and released the hold, so registration is about to go out and this session
+   * can no longer carry a reply. */
+  assert_false(fx->channel_state.request_pending);
+  assert_int_equal(fx->channel.vtable->request_update(fx->channel.ctx), AZ_IOT_ERR_NOT_CONNECTED);
 }
 
 /* A response addressed to the channel must not reach the provisioning parser,
@@ -819,6 +823,39 @@ static void a_hold_can_be_reserved_once_provisioning_is_done(void** state)
   fx->client.dps_phase = AZ_IOT_DPS_PHASE_NONE;
 }
 
+/* Releasing the hold does not make the session usable again. Registration goes
+ * out on the next pump, so an operation issued in between -- the engine
+ * reporting its state on the following tick, typically -- would be accepted onto
+ * a session about to be torn down and never hear back. */
+static void a_report_after_the_exchange_is_refused_not_lost(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_mock_mqtt_client* m = open_and_bind(fx);
+
+  assert_int_equal(fx->channel.vtable->request_update(fx->channel.ctx), AZ_IOT_OK);
+  char rid[64];
+  last_rid(m, rid, sizeof(rid));
+  char topic[256];
+  snprintf(topic, sizeof(topic), "$dps/registrations/res/200/?$rid=%s", rid);
+  assert_true(inject(fx, m, topic, "{\"updateMetadata\":null}"));
+
+  /* Hold released, but registration has not been published yet, so the session
+   * still looks usable. */
+  assert_int_equal(fx->client.dps_hold_count, 0);
+  assert_true(az_iot_connection_client__dps_session_ready(&fx->client));
+
+  az_iot_adu_report report;
+  memset(&report, 0, sizeof(report));
+  report.workflow_id = "wf-1";
+  report.extended_result_codes = "00000000";
+  assert_int_equal(fx->channel.vtable->report(fx->channel.ctx, &report), AZ_IOT_ERR_NOT_CONNECTED);
+
+  /* Nothing was put on the wire, so there is no accepted operation to lose. */
+  const az_iot_mock_call* pub = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PUBLISH);
+  assert_non_null(pub);
+  assert_null(strstr(pub->topic, "deviceupdatestatus"));
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -857,6 +894,8 @@ int main(void)
         a_reprovision_is_held_again_after_a_completed_check, setup, teardown),
     cmocka_unit_test_setup_teardown(closing_ends_the_standing_interest, setup, teardown),
     cmocka_unit_test_setup_teardown(an_operation_after_hold_expiry_is_refused, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_report_after_the_exchange_is_refused_not_lost, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_not_linked_response_releases_the_hold_without_retrying, setup, teardown),
     cmocka_unit_test(a_zero_hold_timeout_selects_the_default),

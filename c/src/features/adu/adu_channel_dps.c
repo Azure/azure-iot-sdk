@@ -77,21 +77,27 @@ static az_iot_result publish_operation(
     size_t body_len)
 {
   /* Until the pre-registration exchange is done, publishing is only safe while
-   * registration is actually being held. Two ways it is not:
+   * registration is actually being held. Three ways it is not, all of
+   * which leave the session still reporting ready because the registration
+   * response has not arrived yet:
    *
    *   - the channel never got a hold, because it bound to a session that was
    *     already registering;
-   *   - the channel holds one, but the deadline expired and the connection
-   *     registered anyway. The hold is advisory, so this is normal.
+   *   - the channel held one, but the deadline expired and the connection
+   *     registered anyway. The hold is advisory, so this is normal;
+   *   - the exchange finished and the channel released the hold. Registration
+   *     goes out on the next pump, so anything published in between -- a status
+   *     report on the engine's next tick, say -- rides a session about to be
+   *     torn down.
    *
-   * In both cases the session still reports ready, because the registration
-   * response has not arrived yet. Publishing into that window puts the request
-   * on a session that is about to be torn down, and the reply is lost. Wait for
-   * the next session instead; do_work() holds it.
+   * In every case the request would be accepted and its reply lost. Refusing
+   * leaves the operation pending in the engine, which retries it, and avoids
+   * the worse outcome: a report the service acts on while the device never
+   * learns it was delivered.
    *
    * Checked here rather than in each caller so a new operation cannot forget
    * it. */
-  if (c->wants_hold && !c->exchange_done
+  if (c->wants_hold
       && (!c->holds_registration || !az_iot_connection_client__dps_hold_is_active(c->connection)))
   {
     return AZ_IOT_ERR_NOT_CONNECTED;
