@@ -305,27 +305,33 @@ static int scan_output(
        *
        * Only the "listed below" form contributes: an aggregate counted as well
        * would double every total. */
-      const char* p = strstr(marker, "test(s), listed below");
-      if (p == NULL)
+      const char* tail = strstr(marker, "test(s), listed below");
+      if (tail == NULL)
       {
         continue;
       }
-      while (p > marker && (p[-1] == ' ' || p[-1] == '\t'))
+
+      /* Walk back over the space to the last digit, then to the first, and read
+       * the number forwards from there. Reading it backwards is what the
+       * earlier version did, and it was twice mistaken for a bug on review
+       * because the index it tested was one before the cursor. */
+      const char* digits = tail;
+      while (digits > marker && (digits[-1] == ' ' || digits[-1] == '\t'))
       {
-        --p;
+        --digits;
       }
+      const char* end = digits;
+      while (digits > marker && digits[-1] >= '0' && digits[-1] <= '9')
+      {
+        --digits;
+      }
+
       int n = 0;
-      int digits = 0;
-      while (p > marker && p[-1] >= '0' && p[-1] <= '9')
+      for (const char* q = digits; q < end; ++q)
       {
-        --p;
-        ++digits;
+        n = n * 10 + (*q - '0');
       }
-      for (int i = 0; i < digits; ++i)
-      {
-        n = n * 10 + (p[i] - '0');
-      }
-      *out_failing_total += (digits > 0) ? n : 1;
+      *out_failing_total += (digits < end) ? n : 1;
     }
     else
     {
@@ -416,14 +422,27 @@ static int run_control(
 
   int suite_rc = az_iot_conformance_run_with_options(suite_kind, f, &opts);
 
-  fflush(stdout);
-  fflush(stderr);
+  /* The log IS the evidence, so a write that failed means the evidence is
+   * incomplete -- and an incomplete log can hold the expected failure while
+   * hiding a later one. Checked rather than assumed. */
+  const int flush_failed = (fflush(stdout) != 0) | (fflush(stderr) != 0);
   az_iot_dup2(saved_out, 1);
   az_iot_dup2(saved_err, 2);
   az_iot_close(saved_out);
   az_iot_close(saved_err);
-  fclose(log);
+  const int close_failed = (fclose(log) != 0);
   az_iot_paho_factory_destroy(f);
+
+  if (flush_failed || close_failed)
+  {
+    fprintf(
+        stderr,
+        "sign-negative[%s]: the suite's output could not be written in full, so this run is not"
+        " evidence about the sign route.\n",
+        label);
+    remove(log_path);
+    return 1;
+  }
 
   int saw_expected = 0;
   int other_failures = 0;
