@@ -104,6 +104,8 @@ static void w_str(wbuf* w, const char* s)
 
 /* Bound on the blocking connect path, so a black-holed endpoint cannot hang the
  * caller past the timeout it asked for. */
+static uint32_t g_connect_timeout_seconds = 30u;
+
 static void set_socket_timeouts(int fd, uint32_t seconds)
 {
   struct timeval tv;
@@ -133,6 +135,10 @@ static int tcp_connect(const char* host, const char* port)
     {
       continue;
     }
+    /* Set before connect(), not after: the connect itself and the proxy
+     * handshake are the operations most likely to block on a black-holed
+     * endpoint, so bounding them afterwards would bound nothing. */
+    set_socket_timeouts(fd, g_connect_timeout_seconds);
     if (connect(fd, ai->ai_addr, ai->ai_addrlen) == 0)
     {
       break;
@@ -239,6 +245,13 @@ static az_iot_result tls_start(
   {
     if (tls->client_cert_path != NULL && tls->client_key_path != NULL)
     {
+      if (tls->client_key_password != NULL)
+      {
+        /* Without this OpenSSL prompts on the terminal for an encrypted key,
+         * which would hang a test run rather than fail it. */
+        SSL_CTX_set_default_passwd_cb_userdata(
+            c->ssl_ctx, (void*)(uintptr_t)tls->client_key_password);
+      }
       if (SSL_CTX_use_certificate_chain_file(c->ssl_ctx, tls->client_cert_path) != 1
           || SSL_CTX_use_PrivateKey_file(c->ssl_ctx, tls->client_key_path, SSL_FILETYPE_PEM) != 1)
       {
@@ -348,6 +361,12 @@ static az_iot_result e2e_connect(az_iot_mqtt_client* self, const az_iot_mqtt_con
     return AZ_IOT_ERR_INVALID_ARG;
   }
 
+  /* connect() here is blocking, unlike the adapter contract, which expects I/O
+   * in process_loop(). A deliberate simplification for a test transport, but a
+   * bounded one: the socket timeouts below are installed before any blocking
+   * call so a dead endpoint fails instead of hanging the pump. */
+  g_connect_timeout_seconds = opts->connect_timeout_seconds ? opts->connect_timeout_seconds : 30u;
+
   uint16_t port = opts->port ? opts->port : 8883;
   if (c->cfg.proxy != NULL)
   {
@@ -364,12 +383,6 @@ static az_iot_result e2e_connect(az_iot_mqtt_client* self, const az_iot_mqtt_con
     AZ_IOT_LOG_ERRORF("e2e-mqtt: could not reach %s:%u", opts->host, (unsigned)port);
     return AZ_IOT_ERR_NOT_CONNECTED;
   }
-
-  /* connect() here is blocking, unlike the adapter contract, which expects I/O
-   * in process_loop(). That is a deliberate simplification for a test
-   * transport, and it is bounded rather than unbounded: without these the whole
-   * pump could hang on a dead endpoint instead of failing. */
-  set_socket_timeouts(c->fd, opts->connect_timeout_seconds);
 
   az_iot_result r = tls_start(c, opts->host, &opts->tls);
   if (r != AZ_IOT_OK)
@@ -447,12 +460,18 @@ static az_iot_result e2e_subscribe(
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
+  /* Refused rather than quietly downgraded: a caller told its subscription was
+   * established at QoS 2 would be wrong about the delivery guarantee. */
+  if (qos > AZ_IOT_MQTT_QOS_1)
+  {
+    return AZ_IOT_ERR_NOT_SUPPORTED;
+  }
   uint16_t pid = next_id(c);
   uint8_t body[512];
   wbuf w = { body, sizeof(body), 0, false };
   w_u16(&w, pid);
   w_str(&w, topic_filter);
-  w_byte(&w, (uint8_t)(qos > AZ_IOT_MQTT_QOS_1 ? AZ_IOT_MQTT_QOS_1 : qos));
+  w_byte(&w, (uint8_t)qos);
   if (w.overflow)
   {
     return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
@@ -501,6 +520,10 @@ static az_iot_result e2e_publish(
   if (msg == NULL || msg->topic == NULL)
   {
     return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if (msg->qos > AZ_IOT_MQTT_QOS_1)
+  {
+    return AZ_IOT_ERR_NOT_SUPPORTED;
   }
   bool qos1 = msg->qos >= AZ_IOT_MQTT_QOS_1;
   uint16_t pid = qos1 ? next_id(c) : 0;
@@ -632,6 +655,7 @@ static void dispatch_buffered(e2e_mqtt_client* c)
         inbound.payload = p + body_off;
         inbound.payload_len = len - body_off;
         inbound.qos = qos1 ? AZ_IOT_MQTT_QOS_1 : AZ_IOT_MQTT_QOS_0;
+        inbound.retain = (flags & 0x01) != 0;
 
         evt.kind = AZ_IOT_MQTT_EVT_MESSAGE;
         evt.status = AZ_IOT_OK;

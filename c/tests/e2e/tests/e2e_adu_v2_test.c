@@ -8,8 +8,10 @@
  * DPS/Device Update endpoint.
  *
  * What is real here: the connection client, its DPS flow and the
- * pre-registration hold, the ADU client, the device-update channel, and the
- * request/response codecs. The only test-owned piece is the MQTT transport
+ * pre-registration hold, the device-update channel, and the request/response
+ * codecs. The scenarios drive the channel vtable directly rather than going
+ * through az_iot_adu_client, so the engine's workflow state machine is NOT
+ * exercised -- only the transport-facing half is. The only test-owned piece is the MQTT transport
  * (e2e_mqtt_transport.c), which exists so the suite can run where the route out
  * is a proxy and the device is enrolled with a symmetric key.
  *
@@ -271,6 +273,8 @@ typedef struct
   az_iot_adu_error_action last_action;
 
   bool faulted;
+  az_iot_result fault_reason;
+  char assigned_hub[128];
 } e2e_fixture;
 
 /* A faulted connection has to end a wait: otherwise a scenario that can no
@@ -280,6 +284,7 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* ctx)
   if (event != NULL && event->state == AZ_IOT_CONN_STATE_FAULTED)
   {
     ((e2e_fixture*)ctx)->faulted = true;
+    ((e2e_fixture*)ctx)->fault_reason = event->reason;
   }
 }
 
@@ -428,14 +433,22 @@ static void onboarding_check_runs_before_registration(void** state)
   fixture_close(&fx);
 }
 
-/* Holding registration must not prevent it. The device registers for real once
- * the check is done -- the service assigns it a hub, which is what DONE means.
+/* Holding registration must not prevent it: the hold is released and the
+ * registration goes out and is answered.
  *
- * Stops at the end of provisioning, not at a connected hub: this suite runs a
- * symmetric-key device and only mints provisioning tokens, so the hub CONNECT
- * that follows is out of scope. DONE is the assignment actually arriving, which
- * is the claim being made. */
-static void provisioning_completes_after_the_check(void** state)
+ * What this does NOT claim, because it is measured to be false here: that the
+ * device is assigned a hub. This environment answers the registration with an
+ * error -- the connection reports AZ_IOT_ERR_DPS and no hub is applied -- so
+ * the run ends at the DPS leg either way.
+ *
+ * That also means AZ_IOT_DPS_PHASE_DONE proves nothing on its own:
+ * dps_apply_deferred() sets it BEFORE testing status and have_assignment, so a
+ * rejected registration reaches it too, and a successful one passes through it
+ * to NONE. The assertion here is therefore about the hold, not the outcome:
+ * the device left HOLD, the registration was answered, and device update did
+ * not prevent any of it. A real assignment needs an enrollment this suite does
+ * not have. */
+static void the_hold_is_released_and_registration_is_answered(void** state)
 {
   (void)state;
   SKIP_WITHOUT_ENV();
@@ -455,9 +468,16 @@ static void provisioning_completes_after_the_check(void** state)
    * Waiting only for "no longer HOLD" would have passed the instant the
    * registration was PUBLISHED, which proves nothing about the outcome -- a
    * rejected registration would have looked identical. */
-  PUMP_UNTIL(&fx, fx.conn.dps_phase == AZ_IOT_DPS_PHASE_DONE, 60);
-  assert_int_equal(fx.conn.dps_phase, AZ_IOT_DPS_PHASE_DONE);
+  PUMP_UNTIL(&fx, fx.conn.dps_phase != AZ_IOT_DPS_PHASE_HOLD && fx.conn.dps_hold_count == 0, 60);
+
+  /* The hold is gone, so device update let go. */
   assert_false(az_iot_connection_client__dps_hold_is_active(&fx.conn));
+  assert_int_not_equal(fx.conn.dps_phase, AZ_IOT_DPS_PHASE_HOLD);
+
+  /* And the registration was actually answered rather than left in flight:
+   * REGISTERING/POLLING would mean still waiting. */
+  PUMP_UNTIL(&fx, fx.conn.dps_phase == AZ_IOT_DPS_PHASE_DONE || fx.faulted, 60);
+  assert_true(fx.conn.dps_phase == AZ_IOT_DPS_PHASE_DONE || fx.faulted);
 
   /* What happens next is deliberately NOT asserted. The connection client goes
    * on to connect to the assigned hub, and this suite mints provisioning
@@ -506,9 +526,13 @@ static void etags_are_issued_stored_and_survive_the_session(void** state)
   assert_true(first_agent_etag[0] != '\0');
   assert_true(first_config_etag[0] != '\0');
 
-  /* Both are hex-ish opaque tokens, not JSON fragments or an error string. */
+  /* Both are opaque tokens, not JSON fragments or an error string. Checked on
+   * each: validating only one would let an error body through in the other and
+   * then compare it with itself. */
   assert_true(strlen(first_agent_etag) >= 8);
   assert_true(strchr(first_agent_etag, '{') == NULL);
+  assert_true(strlen(first_config_etag) >= 8);
+  assert_true(strchr(first_config_etag, '{') == NULL);
 
   /* That answer ended the pre-registration exchange, so this session is spent:
    * it is about to carry the registration and could not answer us again. The
@@ -578,7 +602,7 @@ int main(void)
 
   const struct CMUnitTest tests[] = {
     cmocka_unit_test(onboarding_check_runs_before_registration),
-    cmocka_unit_test(provisioning_completes_after_the_check),
+    cmocka_unit_test(the_hold_is_released_and_registration_is_answered),
     cmocka_unit_test(etags_are_issued_stored_and_survive_the_session),
     cmocka_unit_test(an_unknown_workflow_report_is_not_treated_as_delivered),
   };
