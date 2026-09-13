@@ -111,6 +111,29 @@ extern "C"
  *   copts.csr_payload_buffer = az_span_create(csr_buf, sizeof(csr_buf)); */
 #define AZ_IOT_CSR_PAYLOAD_STORAGE(name) uint8_t name[AZ_IOT_CSR_PAYLOAD_BUFFER_MIN]
 
+  /* Signs one string with a symmetric key the SDK never sees. See the `sas`
+   * member of az_iot_connection_client_options for why this is a callback. */
+  typedef az_iot_result (*az_iot_sas_sign_callback)(
+      const uint8_t* string_to_sign,
+      size_t string_to_sign_len,
+      uint8_t* out_signature,
+      size_t out_signature_size,
+      size_t* out_signature_len,
+      void* user_ctx);
+
+  /* Default SAS token lifetime. An hour matches what the service accepts and
+   * what the reference implementations use. */
+#ifndef AZ_IOT_DEFAULT_SAS_TTL_SECONDS
+#define AZ_IOT_DEFAULT_SAS_TTL_SECONDS 3600u
+#endif
+
+/* Upper bound on an assembled SAS token. The resource is the longest variable
+ * part; a 256-byte resource percent-escapes to at most 768, plus a base64
+ * HMAC-SHA256 and the fixed keys. */
+#ifndef AZ_IOT_SAS_TOKEN_BUF
+#define AZ_IOT_SAS_TOKEN_BUF 1024
+#endif
+
   typedef struct az_iot_connection_client_options
   {
     const char* host; /* hub host (or NULL when using DPS) */
@@ -220,6 +243,51 @@ extern "C"
      * member would shift every one after it for positional aggregate
      * initializers. New options go at the end. */
     uint32_t dps_hold_timeout_ms;
+
+    /* --- Shared access signature (symmetric key) auth ---------------------- */
+    /*
+     * An alternative to `certificate_provider` for the DPS leg: the device
+     * proves its identity with a token signed by a symmetric key instead of a
+     * client certificate.
+     *
+     * The two are not alternatives at the same place. A certificate is per-leg
+     * (see az_iot_cert_role: BOOTSTRAP authenticates to DPS, OPERATIONAL to the
+     * hub), and so is this. A device may legitimately authenticate to DPS with
+     * a SAS token and to the assigned hub with a certificate -- and if that hub
+     * requires X.509, that combination is the supported shape: set
+     * dps.request_operational_certificate so DPS issues one during
+     * registration.
+     *
+     * Selection is implicit and needs no mode flag: a leg with certificate
+     * material uses it; a leg with none uses this, when `sign` is set.
+     */
+    struct
+    {
+      /* Signs the string the SDK assembled for a SAS token.
+       *
+       * A callback rather than a finished token, for three reasons:
+       *   - the SDK owns expiry, so it can re-mint before a reconnect without
+       *     waking the application;
+       *   - the key may live in a TPM or secure element that only exposes
+       *     "sign these bytes", and a finished-token API would force it into
+       *     process memory;
+       *   - the audience and string-to-sign differ between DPS and a hub, and
+       *     getting them wrong fails silently -- the service simply rejects the
+       *     token -- so that format belongs in one place.
+       *
+       * @param string_to_sign      The bytes to HMAC-SHA256. Not NUL-terminated.
+       * @param out_signature       Receives the raw (not base64) MAC.
+       * @param out_signature_len   Receives the MAC length; untouched on failure.
+       * @return AZ_IOT_ERR_NOT_ENOUGH_SPACE when out_signature is too small.
+       *
+       * NULL disables SAS, which is the default and leaves X.509 callers
+       * byte-identical. */
+      az_iot_sas_sign_callback sign;
+      void* sign_ctx;
+
+      /* Token lifetime in seconds. 0 selects AZ_IOT_DEFAULT_SAS_TTL_SECONDS. */
+      uint32_t token_ttl_seconds;
+    } sas;
   } az_iot_connection_client_options;
 
   typedef enum az_iot_connection_state

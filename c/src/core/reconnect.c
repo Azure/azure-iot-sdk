@@ -11,6 +11,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 uint64_t az_iot_time_mono_ms(void) { return (uint64_t)GetTickCount64(); }
+uint64_t az_iot_time_unix_s(void) { return (uint64_t)_time64(NULL); }
 #else
 #include <time.h>
 uint64_t az_iot_time_mono_ms(void)
@@ -19,6 +20,8 @@ uint64_t az_iot_time_mono_ms(void)
   clock_gettime(CLOCK_MONOTONIC, &ts);
   return (uint64_t)ts.tv_sec * 1000ull + (uint64_t)(ts.tv_nsec / 1000000);
 }
+
+uint64_t az_iot_time_unix_s(void) { return (uint64_t)time(NULL); }
 #endif
 
 static uint64_t xorshift64(uint64_t* s)

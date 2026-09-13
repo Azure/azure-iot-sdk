@@ -24,6 +24,12 @@ extern "C"
   /* Monotonic millisecond clock. Wraps after 2^64 ms (~5.8e8 years) — fine. */
   uint64_t az_iot_time_mono_ms(void);
 
+  /* Wall-clock seconds since the Unix epoch. Distinct from the monotonic clock
+   * above and NOT interchangeable with it: a SAS token expiry is a point in
+   * time the service also has to agree on, so it cannot come from a clock that
+   * only measures elapsed time. */
+  uint64_t az_iot_time_unix_s(void);
+
   /* Compute the delay before the (1-based) attempt N when reconnecting under the
    * given policy. The function is pure (no I/O, no global state apart from the
    * caller-provided rng_state for jitter). Returns 0 ms when reconnect is

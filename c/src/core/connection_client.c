@@ -41,6 +41,7 @@
 #include "internal/dispatch.h"
 #include "internal/log_internal.h"
 #include "internal/reconnect.h"
+#include "internal/sas_token.h"
 #include "internal/span_writer.h"
 
 #include <azure/az_core.h>
@@ -1210,6 +1211,37 @@ static az_iot_result dps_start(az_iot_connection_client* c)
   }
   copts.username = dps_username;
   AZ_IOT_LOG_DEBUGF("dps: connecting with username %s", dps_username);
+
+  /* SAS (symmetric key) authentication for this leg. Independent of the
+   * certificate below: a certificate authenticates a leg that has one, this
+   * authenticates a leg that does not. A device may legitimately present a SAS
+   * token to DPS and a certificate to the assigned hub.
+   *
+   * Minted per CONNECT rather than cached, so a reconnect after a long outage
+   * does not present a token that expired while the device was away. */
+  char dps_sas_token[AZ_IOT_SAS_TOKEN_BUF];
+  if (c->opts.sas.sign != NULL)
+  {
+    uint32_t ttl = c->opts.sas.token_ttl_seconds ? c->opts.sas.token_ttl_seconds
+                                                 : AZ_IOT_DEFAULT_SAS_TTL_SECONDS;
+    az_iot_result sr = az_iot_sas__mint(
+        AZ_IOT_SAS_AUDIENCE_PROVISIONING,
+        c->opts.dps.id_scope,
+        c->opts.dps.registration_id,
+        az_iot_time_unix_s() + (uint64_t)ttl,
+        c->opts.sas.sign,
+        c->opts.sas.sign_ctx,
+        dps_sas_token,
+        sizeof(dps_sas_token),
+        NULL);
+    if (sr != AZ_IOT_OK)
+    {
+      AZ_IOT_LOG_ERROR("dps: could not build the shared access signature");
+      mc->iface->destroy(mc);
+      return sr;
+    }
+    copts.password = dps_sas_token;
+  }
 
   /* Populate TLS from certificate_provider if available. DPS uses the bootstrap
    * identity; the operational cert (if any) is issued during this exchange. */
