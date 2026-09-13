@@ -261,7 +261,8 @@ static int scan_output(
     int* out_other_failures,
     int* out_saw_refusal,
     int* out_failing_total,
-    int* out_sign_called)
+    int* out_sign_called,
+    int* out_count_unreadable)
 {
   char line[512];
   char refusal[64];
@@ -281,6 +282,7 @@ static int scan_output(
   *out_saw_refusal = 0;
   *out_failing_total = 0;
   *out_sign_called = 0;
+  *out_count_unreadable = 0;
 
   while (fgets(line, (int)sizeof(line), f) != NULL)
   {
@@ -348,12 +350,22 @@ static int scan_output(
         --digits;
       }
 
+      if (digits == end)
+      {
+        /* The summary is there but carries no number this can read, so the
+         * count is unknown. Assuming one would satisfy the exactly-one check on
+         * a format nobody has verified, which is how a control stops meaning
+         * anything. Reported as unparseable instead. */
+        *out_count_unreadable = 1;
+        continue;
+      }
+
       int n = 0;
       for (const char* q = digits; q < end; ++q)
       {
         n = n * 10 + (*q - '0');
       }
-      *out_failing_total += (digits < end) ? n : 1;
+      *out_failing_total += n;
     }
     else
     {
@@ -484,8 +496,15 @@ static int run_control(
   int saw_refusal = 0;
   int failing_total = 0;
   int scanned_sign_called = 0;
+  int count_unreadable = 0;
   int scan_rc = scan_output(
-      log_path, &saw_expected, &other_failures, &saw_refusal, &failing_total, &scanned_sign_called);
+      log_path,
+      &saw_expected,
+      &other_failures,
+      &saw_refusal,
+      &failing_total,
+      &scanned_sign_called,
+      &count_unreadable);
 
   FILE* marker = fopen(SIGN_CALLED_MARKER, "rb");
   if (marker != NULL)
@@ -541,6 +560,16 @@ static int run_control(
         "sign-negative[%s]: " EXPECTED_FAILING_CASE " failed, but not by the adapter refusing the"
         " route -- connect() did not return AZ_IOT_ERR_NOT_SUPPORTED. The case is failing for some"
         " other reason, so it is no longer evidence that it drives tls.sign.\n",
+        label);
+    rc = 1;
+  }
+  else if (count_unreadable)
+  {
+    fprintf(
+        stderr,
+        "sign-negative[%s]: the failing-case count could not be read from the suite's output, so"
+        " this run cannot show that only " EXPECTED_FAILING_CASE " failed. The output format has"
+        " probably changed; this control parses it and must be updated with it.\n",
         label);
     rc = 1;
   }
