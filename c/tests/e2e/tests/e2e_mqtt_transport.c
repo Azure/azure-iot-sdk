@@ -48,6 +48,12 @@ typedef struct
 
   bool connected;
   bool disconnect_reported;
+
+  /* A keep-alive is advertised on CONNECT, so it has to be honoured: a broker
+   * disconnects a client that goes quiet for 1.5x this, which on a slow live
+   * operation would look like an unexplained drop. */
+  uint32_t keep_alive_seconds;
+  uint64_t last_activity_ms;
 } e2e_mqtt_client;
 
 typedef struct
@@ -243,6 +249,14 @@ static az_iot_result tls_start(
    * than dropped. */
   if (tls != NULL)
   {
+    /* A half-specified pair must not fall through to an anonymous handshake:
+     * the caller asked for a client identity and would not be told it was
+     * dropped. */
+    if ((tls->client_cert_path == NULL) != (tls->client_key_path == NULL))
+    {
+      AZ_IOT_LOG_ERROR("e2e-mqtt: client certificate and key must be given together");
+      return AZ_IOT_ERR_CREDENTIAL_INCOMPLETE;
+    }
     if (tls->client_cert_path != NULL && tls->client_key_path != NULL)
     {
       if (tls->client_key_password != NULL)
@@ -309,6 +323,13 @@ static az_iot_result ssl_write_all(e2e_mqtt_client* c, const uint8_t* p, size_t 
   return AZ_IOT_OK;
 }
 
+static uint64_t now_ms(void)
+{
+  struct timeval tv;
+  gettimeofday(&tv, NULL);
+  return (uint64_t)tv.tv_sec * 1000u + (uint64_t)(tv.tv_usec / 1000);
+}
+
 /* --- MQTT framing -------------------------------------------------------- */
 
 static void w_remaining_length(wbuf* w, size_t n)
@@ -336,6 +357,7 @@ static az_iot_result send_packet(e2e_mqtt_client* c, uint8_t header, const uint8
   {
     return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
   }
+  c->last_activity_ms = now_ms();
   az_iot_result r = ssl_write_all(c, hdr, w.len);
   if (r != AZ_IOT_OK)
   {
@@ -421,7 +443,9 @@ static az_iot_result e2e_connect(az_iot_mqtt_client* self, const az_iot_mqtt_con
     flags |= 0x40;
   }
   w_byte(&w, flags);
-  w_u16(&w, opts->keep_alive_seconds ? opts->keep_alive_seconds : 60);
+  c->keep_alive_seconds = opts->keep_alive_seconds ? opts->keep_alive_seconds : 60u;
+  c->last_activity_ms = now_ms();
+  w_u16(&w, (uint16_t)c->keep_alive_seconds);
   w_str(&w, opts->client_id);
   if (opts->username != NULL)
   {
@@ -575,6 +599,7 @@ static void dispatch_buffered(e2e_mqtt_client* c)
     size_t i = off + 1;
     size_t len = 0;
     size_t mult = 1;
+    int length_bytes = 0;
     uint8_t digit;
     do
     {
@@ -585,6 +610,16 @@ static void dispatch_buffered(e2e_mqtt_client* c)
       digit = c->rx[i++];
       len += (size_t)(digit & 127) * mult;
       mult *= 128;
+      /* MQTT 3.1.1 caps Remaining Length at four bytes. Without this an
+       * arbitrary continuation sequence keeps multiplying until size_t wraps,
+       * and `i + len` can then wrap past the completeness check below and leave
+       * the body pointer outside the buffer. */
+      if (++length_bytes > 4)
+      {
+        AZ_IOT_LOG_ERROR("e2e-mqtt: malformed remaining length; dropping the buffer");
+        c->rx_len = 0;
+        return;
+      }
     } while ((digit & 0x80) != 0);
 
     if (i + len > c->rx_len)
@@ -752,6 +787,14 @@ static az_iot_result e2e_process_loop(az_iot_mqtt_client* self, uint32_t timeout
   {
     AZ_IOT_LOG_ERROR("e2e-mqtt: receive buffer full");
     return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  }
+
+  /* Send PINGREQ at half the interval. Any write counts as activity, so a busy
+   * connection never pings. */
+  if (c->connected && c->keep_alive_seconds > 0
+      && now_ms() - c->last_activity_ms >= (uint64_t)c->keep_alive_seconds * 500u)
+  {
+    (void)send_packet(c, 0xc0, NULL, 0);
   }
 
   int n = SSL_read(c->ssl, c->rx + c->rx_len, (int)(sizeof(c->rx) - c->rx_len));

@@ -474,10 +474,19 @@ static void the_hold_is_released_and_registration_is_answered(void** state)
   assert_false(az_iot_connection_client__dps_hold_is_active(&fx.conn));
   assert_int_not_equal(fx.conn.dps_phase, AZ_IOT_DPS_PHASE_HOLD);
 
-  /* And the registration was actually answered rather than left in flight:
-   * REGISTERING/POLLING would mean still waiting. */
-  PUMP_UNTIL(&fx, fx.conn.dps_phase == AZ_IOT_DPS_PHASE_DONE || fx.faulted, 60);
-  assert_true(fx.conn.dps_phase == AZ_IOT_DPS_PHASE_DONE || fx.faulted);
+  /* And the registration was answered rather than left in flight. "Any fault"
+   * would be too weak: a socket drop or a publish failure sets that too, and
+   * would let this pass without the service having answered at all.
+   *
+   * This environment answers with a rejection, so the specific outcome is
+   * pinned: the DPS leg finished (DONE) and the failure came from DPS itself.
+   * If the environment is ever changed to assign a hub, this assertion is meant
+   * to fail and be updated -- the point is that it tracks one known answer
+   * rather than accepting any ending. */
+  PUMP_UNTIL(&fx, fx.conn.dps_phase == AZ_IOT_DPS_PHASE_DONE && fx.faulted, 60);
+  assert_int_equal(fx.conn.dps_phase, AZ_IOT_DPS_PHASE_DONE);
+  assert_true(fx.faulted);
+  assert_int_equal(fx.fault_reason, AZ_IOT_ERR_DPS);
 
   /* What happens next is deliberately NOT asserted. The connection client goes
    * on to connect to the assigned hub, and this suite mints provisioning
