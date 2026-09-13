@@ -9,22 +9,24 @@
 # Everything from here to the ADUv2 suite needs the Paho adapter and the AMQP
 # service facade. The ADUv2 suite needs neither, so it must remain buildable
 # when they are absent.
-# The ADUv2 suite comes first and stays OUTSIDE the Paho guard: it brings its
-# own MQTT transport, so it is the one target here that builds without Paho
-# and without the AMQP service facade.
-# Everything below needs the Paho adapter and the az_iot_e2e_service facade.
-# All of it has to sit inside this guard -- a target left outside fails to
-# build with AZ_IOT_WITH_PAHO=OFF, which is exactly the configuration the
-# ADUv2 suite is meant to support.
+# Everything here needs the Paho adapter, and the legacy suites additionally
+# need the AMQP service facade. A target left outside this guard fails to build
+# with AZ_IOT_WITH_PAHO=OFF.
 if(AZ_IOT_WITH_PAHO)
 
 # The ADUv2 device-update suite. Uses the shipping Paho adapter and X.509, so it
 # needs no transport or credential of its own -- it exercises the SDK's real
 # auth and transport path rather than a test substitute.
+#
+# Requires AZ_IOT_BUILD_E2E and AZ_IOT_WITH_PAHO as well; this option only
+# selects the suite once the e2e directory is being built at all.
+#
+# The PEM certificate provider it uses is part of az_iot_core, so the managed
+# (OpenSSL) provider is deliberately NOT linked: doing so would make the suite
+# fail to build wherever that provider is off.
 if(AZ_IOT_BUILD_E2E_ADU_V2)
     az_iot_add_cmocka_test(az_iot_tests_e2e_adu tests/e2e_adu_v2_test.c)
-    target_link_libraries(az_iot_tests_e2e_adu PRIVATE
-        az_iot_core az_iot_adapter_paho az_iot_certificate_provider_managed)
+    target_link_libraries(az_iot_tests_e2e_adu PRIVATE az_iot_core az_iot_adapter_paho)
     # The suite asserts on the channel and the codecs, which are internal.
     target_include_directories(az_iot_tests_e2e_adu PRIVATE
         ${CMAKE_SOURCE_DIR}/src/core

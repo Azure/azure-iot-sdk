@@ -297,21 +297,24 @@ static void onboarding_check_runs_before_registration(void** state)
   fixture_close(&fx);
 }
 
-/* Holding registration must not prevent it: the hold is released and the
- * registration goes out and is answered.
+/* Holding registration must not prevent it: the hold is released, the
+ * registration goes out, and the service answers.
  *
- * What this does NOT claim, because it is measured to be false here: that the
- * device is assigned a hub. This environment answers the registration with an
- * error -- the connection reports AZ_IOT_ERR_DPS and no hub is applied -- so
- * the run ends at the DPS leg either way.
+ * It does NOT claim the device is assigned a hub, and cannot: this environment
+ * has no IoT Hub linked to the provisioning service (the enrollment carries no
+ * allocationPolicy and no iotHubs), so registration is refused with
+ * AZ_IOT_ERR_DPS no matter which credential is used. Device update is what this
+ * environment exists for; a hub is not part of it.
  *
- * That also means AZ_IOT_DPS_PHASE_DONE proves nothing on its own:
- * dps_apply_deferred() sets it BEFORE testing status and have_assignment, so a
- * rejected registration reaches it too, and a successful one passes through it
- * to NONE. The assertion here is therefore about the hold, not the outcome:
- * the device left HOLD, the registration was answered, and device update did
- * not prevent any of it. A real assignment needs an enrollment this suite does
- * not have. */
+ * AZ_IOT_DPS_PHASE_DONE also proves nothing on its own: dps_apply_deferred()
+ * sets it BEFORE testing status and have_assignment, so a rejected registration
+ * reaches it too, and a successful one passes straight through it to NONE. So
+ * the claim here is about the hold -- device update let go, and the service
+ * answered -- and the refusal is pinned by its specific reason rather than
+ * accepted as "some ending".
+ *
+ * If a hub is ever linked, the AZ_IOT_ERR_DPS assertion is MEANT to fail and be
+ * rewritten around a real assignment. */
 static void the_hold_is_released_and_registration_is_answered(void** state)
 {
   (void)state;
@@ -324,12 +327,8 @@ static void the_hold_is_released_and_registration_is_answered(void** state)
   assert_int_equal(fx.channel.vtable->request_update(fx.channel.ctx), AZ_IOT_OK);
   wait_for_result(&fx, 1);
 
-  /* The hold is released by the verdict, the pump publishes the registration,
-   * and the service answers with an assignment: that is what DONE means.
-   *
-   * Waiting only for "no longer HOLD" would have passed the instant the
-   * registration was PUBLISHED, which proves nothing about the outcome -- a
-   * rejected registration would have looked identical. */
+  /* The hold is released by the verdict and the pump publishes the
+   * registration. */
   PUMP_UNTIL(&fx, fx.conn.dps_phase != AZ_IOT_DPS_PHASE_HOLD && fx.conn.dps_hold_count == 0, 60);
 
   /* The hold is gone, so device update let go. */
@@ -349,13 +348,6 @@ static void the_hold_is_released_and_registration_is_answered(void** state)
   assert_int_equal(fx.conn.dps_phase, AZ_IOT_DPS_PHASE_DONE);
   assert_true(fx.faulted);
   assert_int_equal(fx.fault_reason, AZ_IOT_ERR_DPS);
-
-  /* What happens next is deliberately NOT asserted. The connection client goes
-   * on to connect to the assigned hub, and this suite mints provisioning
-   * tokens only, so that CONNECT is refused and the connection faults. Measured
-   * here, not assumed: the device reaches DONE and then faults. The hub leg
-   * needs a hub-scoped credential, which belongs with the operational-session
-   * work rather than this suite. */
 
   fixture_close(&fx);
 }
