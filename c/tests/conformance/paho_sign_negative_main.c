@@ -153,6 +153,10 @@ static void sweep_working_directory(void)
 
 #define SIGN_CALLED_MARKER "sign-hook-was-called"
 
+/* Distinctive enough not to collide with anything cmocka or the suite prints. */
+#define SIGN_CALLED_TOKEN "az-iot-sign-negative: SIGN-HOOK-WAS-INVOKED"
+#define SIGN_MARKER_FAILED_TOKEN "az-iot-sign-negative: SIGN-MARKER-COULD-NOT-BE-WRITTEN"
+
 #define EXPECTED_FAILING_CASE "key_custody_sign_hook_completes_a_tls_handshake"
 
 /* Set if the adapter ever calls the hook. It must not: this control's whole
@@ -182,12 +186,22 @@ static az_iot_result negative_sign_stub(
   (void)out_sig_cap;
   (void)out_sig_len;
   g_sign_called = 1;
-  /* Also on disk: a cmocka that runs cases in a child process would leave the
-   * flag above set only there, and the check in the parent would see nothing. */
+
+  /* Three channels, because the flag alone is process-local and the cases may
+   * run in a child: the flag, a marker file, and a token on stderr, which is
+   * captured into the log this control already scans and already rejects when
+   * it cannot be read. The token is what makes a failed marker write harmless
+   * -- without it, a hook that ran but could not be recorded would look exactly
+   * like a hook that never ran, which is the false pass this control exists to
+   * prevent. */
+  fprintf(stderr, "\n%s\n", SIGN_CALLED_TOKEN);
+  fflush(stderr);
+
   FILE* marker = fopen(SIGN_CALLED_MARKER, "wb");
-  if (marker != NULL)
+  if (marker == NULL || fclose(marker) != 0)
   {
-    fclose(marker);
+    fprintf(stderr, "%s\n", SIGN_MARKER_FAILED_TOKEN);
+    fflush(stderr);
   }
   return AZ_IOT_ERR_INTERNAL;
 }
@@ -246,7 +260,8 @@ static int scan_output(
     int* out_saw_expected,
     int* out_other_failures,
     int* out_saw_refusal,
-    int* out_failing_total)
+    int* out_failing_total,
+    int* out_sign_called)
 {
   char line[512];
   char refusal[64];
@@ -265,12 +280,19 @@ static int scan_output(
   *out_other_failures = 0;
   *out_saw_refusal = 0;
   *out_failing_total = 0;
+  *out_sign_called = 0;
 
   while (fgets(line, (int)sizeof(line), f) != NULL)
   {
     if (strstr(line, refusal) != NULL)
     {
       *out_saw_refusal = 1;
+    }
+    /* Either token means the hook ran: the second says the marker file could
+     * not be written, which is itself a reason to distrust the run. */
+    if (strstr(line, SIGN_CALLED_TOKEN) != NULL || strstr(line, SIGN_MARKER_FAILED_TOKEN) != NULL)
+    {
+      *out_sign_called = 1;
     }
 
     const char* marker = strstr(line, "[  FAILED  ] ");
@@ -452,13 +474,19 @@ static int run_control(
   int other_failures = 0;
   int saw_refusal = 0;
   int failing_total = 0;
-  int scan_rc = scan_output(log_path, &saw_expected, &other_failures, &saw_refusal, &failing_total);
+  int scanned_sign_called = 0;
+  int scan_rc = scan_output(
+      log_path, &saw_expected, &other_failures, &saw_refusal, &failing_total, &scanned_sign_called);
 
   FILE* marker = fopen(SIGN_CALLED_MARKER, "rb");
   if (marker != NULL)
   {
     fclose(marker);
     remove(SIGN_CALLED_MARKER);
+    g_sign_called = 1;
+  }
+  if (scanned_sign_called)
+  {
     g_sign_called = 1;
   }
 
