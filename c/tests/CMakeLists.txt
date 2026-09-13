@@ -502,6 +502,36 @@ if(AZ_IOT_WITH_PAHO)
         add_test(NAME az_iot_conformance_paho_v3 COMMAND az_iot_conformance_paho_v3)
         add_test(NAME az_iot_conformance_paho_v5 COMMAND az_iot_conformance_paho_v5)
     endif()
+
+    # Negative control for the sign-route custody case. No adapter here
+    # implements that route, so the positive case never runs in CI and could be
+    # neutered without any pipeline noticing. This declares the capability
+    # against an adapter that must refuse it and requires the suite to fail on
+    # that case and no other. Needs the TLS cases (the custody case lives there)
+    # and OpenSSL, for the throwaway certificate it generates.
+    if(AZ_IOT_BUILD_CONFORMANCE_TESTS_TLS)
+        find_package(OpenSSL 3.0 REQUIRED)
+        add_executable(az_iot_conformance_paho_sign_negative
+            conformance/paho_sign_negative_main.c)
+        target_link_libraries(az_iot_conformance_paho_sign_negative PRIVATE
+            az_iot_conformance az_iot_adapter_paho OpenSSL::SSL OpenSSL::Crypto)
+        az_iot_apply_warnings(az_iot_conformance_paho_sign_negative)
+        if(UNIX)
+            # dup/dup2/fileno/getpid are POSIX: under -std=c99 they are not
+            # declared without this, and an implicit declaration is an error
+            # here. Same macros az_iot_conformance itself is built with.
+            target_compile_definitions(az_iot_conformance_paho_sign_negative PRIVATE
+                _POSIX_C_SOURCE=200809L
+                _DEFAULT_SOURCE)
+        endif()
+        if(_paho_defs)
+            target_compile_definitions(az_iot_conformance_paho_sign_negative PRIVATE ${_paho_defs})
+        endif()
+        if(AZ_IOT_BUILD_CONFORMANCE_TESTS)
+            add_test(NAME az_iot_conformance_paho_sign_negative
+                COMMAND az_iot_conformance_paho_sign_negative)
+        endif()
+    endif()
 endif()
 
 # ---------------------------------------------------------------------------

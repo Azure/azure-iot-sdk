@@ -496,9 +496,26 @@ int main(void)
     sample_state_destroy(&st);
     return 1;
   }
-  for (int i = 0; i < 1200 && g_conn_state != AZ_IOT_CONN_STATE_CONNECTED && !g_stop; ++i)
+  /* The device-update client is pumped here too, not only after CONNECTED: its
+   * first update check runs on the provisioning session, before the device
+   * registers. Pumping only the connection client would leave that check
+   * unissued, and the connection would simply wait out the hold and register
+   * without it. */
+  /* The bound must EXCEED the hold timeout. A fixed 1200 iterations at 50 ms was
+   * exactly AZ_IOT_DPS_HOLD_TIMEOUT_MS, so a stalled update check would have
+   * ended this loop on the same tick the hold expired -- and the sample would
+   * have reported a connection failure instead of showing the device
+   * registering anyway, which is the behaviour being demonstrated. */
+  /* Derived from the hold timeout rather than hard-coded: a build that raises
+   * AZ_IOT_DPS_HOLD_TIMEOUT_MS must not have this loop give up while the
+   * connection is still legitimately holding. Twice the hold leaves room for
+   * the registration that follows it. */
+  const unsigned tick_ms = 50u;
+  const unsigned max_ticks = (2u * (unsigned)AZ_IOT_DPS_HOLD_TIMEOUT_MS) / tick_ms;
+  for (unsigned i = 0; i < max_ticks && g_conn_state != AZ_IOT_CONN_STATE_CONNECTED && !g_stop; ++i)
   {
     (void)az_iot_connection_client_do_work(&st.connection_client, 50);
+    (void)az_iot_adu_client_do_work(&st.adu_client);
     if (g_conn_state == AZ_IOT_CONN_STATE_FAULTED)
     {
       break;

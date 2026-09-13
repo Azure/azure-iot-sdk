@@ -209,6 +209,17 @@ extern "C"
        * without an operator. */
       uint32_t max_hub_connect_attempts_before_reprovision;
     } dps;
+
+    /* How long registration may be held for a pre-registration exchange on the
+     * provisioning session, in milliseconds. 0 selects
+     * AZ_IOT_DPS_HOLD_TIMEOUT_MS. The hold is advisory and this is its bound:
+     * when it expires the device registers regardless, so a feature client can
+     * delay provisioning but never prevent it.
+     *
+     * Appended deliberately: this struct is filled by callers, and inserting a
+     * member would shift every one after it for positional aggregate
+     * initializers. New options go at the end. */
+    uint32_t dps_hold_timeout_ms;
   } az_iot_connection_client_options;
 
   typedef enum az_iot_connection_state
@@ -397,6 +408,14 @@ extern "C"
 #define AZ_IOT_PRESENCE_BIRTH_ACK_TIMEOUT_MS 60000u
 #endif
 
+/* How long registration may be held for a pre-registration exchange on the
+ * provisioning session before it proceeds anyway. The hold is advisory: a
+ * feature client that stalls, or one whose service call never answers, must
+ * not leave the device unable to provision. */
+#ifndef AZ_IOT_DPS_HOLD_TIMEOUT_MS
+#define AZ_IOT_DPS_HOLD_TIMEOUT_MS 60000u
+#endif
+
   /* ------------------------------------------------------------------------- */
   /* struct az_iot_connection_client (caller-owned, init/deinit lifecycle)    */
   /* Fields below are INTERNAL — do not access directly from user code.        */
@@ -416,7 +435,12 @@ extern "C"
     AZ_IOT_DPS_PHASE_SUBSCRIBING,
     AZ_IOT_DPS_PHASE_REGISTERING,
     AZ_IOT_DPS_PHASE_POLLING,
-    AZ_IOT_DPS_PHASE_DONE
+    AZ_IOT_DPS_PHASE_DONE,
+    /* Between SUBSCRIBING and REGISTERING: the session is usable and
+     * registration is deliberately held so a feature client can run a
+     * pre-registration exchange on it. Appended rather than inserted in flow
+     * order so the existing phase values do not shift. */
+    AZ_IOT_DPS_PHASE_HOLD
   };
   /* AEG/Hub-Next presence (birth) handshake phases. Classic/DPS sessions never
    * leave AZ_IOT_PRESENCE_PHASE_NONE. */
@@ -537,6 +561,14 @@ extern "C"
      * not enough: SUBSCRIBING is entered when the SUBSCRIBE is sent, so a
      * publish made on the phase could race ahead of the response route. */
     bool dps_subscription_confirmed;
+
+    /* Pre-registration hold. While a holder is registered, registration waits
+     * at AZ_IOT_DPS_PHASE_HOLD so a feature client can use the provisioning
+     * session first. The deadline is what guarantees a feature client can
+     * never stop the device from provisioning. */
+    uint8_t dps_hold_count;
+    bool dps_hold_active;
+    uint64_t dps_hold_deadline_ms;
 
     char dps_operation_id[AZ_IOT_DPS_OPERATION_ID_MAX];
     size_t dps_operation_id_len;
