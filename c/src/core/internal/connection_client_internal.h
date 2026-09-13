@@ -120,6 +120,30 @@ extern "C"
       az_iot_connection_client* client,
       const az_iot_mqtt_message* msg);
 
+  /* Hold registration at AZ_IOT_DPS_PHASE_HOLD so a feature client can run a
+   * pre-registration exchange on the provisioning session.
+   *
+   * This exists because the provisioning session is otherwise unusable by a
+   * feature client: the registration PUBLISH is issued from the SUBACK handler
+   * and the session is torn down on the response, so a caller-driven loop never
+   * observes an open session.
+   *
+   * Must be acquired BEFORE the session reaches its SUBACK (in practice, before
+   * az_iot_connection_client_open()); acquiring later has no effect on a
+   * registration already in flight, and the call reports that.
+   *
+   * The hold is ADVISORY: it expires after a deadline and registration then
+   * proceeds regardless. A feature client can delay provisioning, never prevent
+   * it. Every acquire must be matched by a release; the release is what lets
+   * registration continue without waiting out the deadline.
+   */
+  az_iot_result az_iot_connection_client__dps_hold_acquire(az_iot_connection_client* client);
+  void az_iot_connection_client__dps_hold_release(az_iot_connection_client* client);
+
+  /* True while registration is actually being held, i.e. the session is up and
+   * waiting on a holder. */
+  bool az_iot_connection_client__dps_hold_is_active(const az_iot_connection_client* client);
+
   /* Register the observer for inbound provisioning-session messages the
    * provisioning flow does not claim. At most one: registering a second observer over a live one is
    * refused, so clear it (NULL) before registering a different one. The callback type is declared

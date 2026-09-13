@@ -76,6 +76,33 @@ static az_iot_result publish_operation(
     const uint8_t* body,
     size_t body_len)
 {
+  /* Until the pre-registration exchange is done, publishing is only safe while
+   * registration is actually being held. Three ways it is not, all of
+   * which leave the session still reporting ready because the registration
+   * response has not arrived yet:
+   *
+   *   - the channel never got a hold, because it bound to a session that was
+   *     already registering;
+   *   - the channel held one, but the deadline expired and the connection
+   *     registered anyway. The hold is advisory, so this is normal;
+   *   - the exchange finished and the channel released the hold. Registration
+   *     goes out on the next pump, so anything published in between -- a status
+   *     report on the engine's next tick, say -- rides a session about to be
+   *     torn down.
+   *
+   * In every case the request would be accepted and its reply lost. Refusing
+   * leaves the operation pending in the engine, which retries it, and avoids
+   * the worse outcome: a report the service acts on while the device never
+   * learns it was delivered.
+   *
+   * Checked here rather than in each caller so a new operation cannot forget
+   * it. */
+  if (c->wants_hold
+      && (!c->holds_registration || !az_iot_connection_client__dps_hold_is_active(c->connection)))
+  {
+    return AZ_IOT_ERR_NOT_CONNECTED;
+  }
+
   char topic[AZ_IOT_ADU_TOPIC_MAX_SIZE];
   char rid[sizeof(c->pending_rid)];
 
@@ -170,12 +197,25 @@ static void store_etag(char* dst, size_t dst_size, az_span value)
 /* One verdict per accepted operation. Without this the engine retires a pending
  * fetch or report when it is published and never learns the service rejected
  * it. */
+static void channel_release_hold(az_iot_adu_channel_dps* c);
+
 static void emit_result(
     az_iot_adu_channel_dps* c,
     az_iot_adu_operation operation,
     az_iot_result result,
     az_iot_adu_error_action action)
 {
+  /* The pre-registration exchange is over once an update check reaches a
+   * verdict it will not immediately repeat: either it succeeded, or it failed
+   * in a way retrying cannot fix. A retryable failure keeps the hold, and the
+   * connection client's deadline is what bounds that. */
+  if (operation != AZ_IOT_ADU_OP_REPORT_STATUS
+      && (result == AZ_IOT_OK || action == AZ_IOT_ADU_ERROR_ACTION_FATAL
+          || action == AZ_IOT_ADU_ERROR_ACTION_PROCEED))
+  {
+    channel_release_hold(c);
+  }
+
   if (c->result_cb != NULL)
   {
     c->result_cb(operation, result, action, c->engine_ctx);
@@ -306,7 +346,47 @@ static az_iot_result channel_open(
   /* Responses arrive on the subscription the connection client already
    * establishes for provisioning, so this only has to ask to see them. */
   az_iot_connection_client__set_dps_message_observer(c->connection, on_dps_message, c);
+
+  /* Hold registration so the first update check actually has a session to run
+   * on. Without this the connection client registers straight from the SUBACK
+   * and tears the session down on the response, and the check never happens.
+   *
+   * NOT_SUPPORTED means the connection is already registering or past it; that
+   * is not an error here -- the channel simply missed this session and its
+   * operations wait for the next one. */
+  c->wants_hold = true;
+  c->exchange_done = false;
+  az_iot_result hr = az_iot_connection_client__dps_hold_acquire(c->connection);
+  if (hr == AZ_IOT_OK)
+  {
+    c->holds_registration = true;
+  }
+  else if (hr != AZ_IOT_ERR_NOT_SUPPORTED)
+  {
+    c->wants_hold = false;
+    az_iot_connection_client__set_dps_message_observer(c->connection, NULL, NULL);
+    return hr;
+  }
+  /* NOT_SUPPORTED leaves wants_hold set on purpose: this session is already
+   * registering, so the interest carries to the next one. */
   return AZ_IOT_OK;
+}
+
+/* Let registration proceed. Idempotent: the hold is released exactly once, on
+ * whichever comes first -- the pre-registration exchange finishing, or close.
+ * Never held past that, because a device must still provision if device update
+ * is unavailable. */
+static void channel_release_hold(az_iot_adu_channel_dps* c)
+{
+  /* Marks the exchange done for THIS session only. wants_hold deliberately
+   * survives: it is the standing interest, and a reprovision opens a new
+   * session that must be held for its own check. */
+  c->exchange_done = true;
+  if (c->holds_registration)
+  {
+    c->holds_registration = false;
+    az_iot_connection_client__dps_hold_release(c->connection);
+  }
 }
 
 static void channel_close(void* ctx)
@@ -317,6 +397,10 @@ static void channel_close(void* ctx)
     return;
   }
   az_iot_connection_client__set_dps_message_observer(c->connection, NULL, NULL);
+  /* The standing interest ends with the binding, so a closed channel cannot
+   * hold a later session hostage. */
+  c->wants_hold = false;
+  channel_release_hold(c);
   c->update_cb = NULL;
   c->result_cb = NULL;
   c->engine_ctx = NULL;
@@ -341,11 +425,6 @@ static az_iot_result channel_request_update(void* ctx)
     /* One operation at a time. The caller retries on the next tick. */
     return AZ_IOT_ERR_BUSY;
   }
-  /* This keeps a publish off a torn-down session; it does NOT sequence bootstrap
-   * ahead of registration. The connection client publishes the registration from
-   * the same SUBACK handler that confirms the subscription, so a caller-driven
-   * loop never observes the session open. Ordering needs the ADU_HOLD lifecycle
-   * phase (deferred registration + session refcount), not a readiness test. */
   if (!az_iot_connection_client__dps_session_ready(c->connection))
   {
     return AZ_IOT_ERR_NOT_CONNECTED;
@@ -517,13 +596,50 @@ static az_iot_result channel_set_device_properties(
   return AZ_IOT_OK;
 }
 
+/* Driven from the engine's tick.
+ *
+ * Two things can only be noticed here. A request outstanding when the session
+ * went away can never be answered, and nothing else would ever retire it: the
+ * engine cleared its pending flag when the request was accepted, so it will not
+ * call request_update() again on its own. Reporting the loss re-arms it.
+ *
+ * And a hold that could not be taken at bind time (or was dropped with the
+ * session) is taken now, so the next provisioning session stops for the check
+ * instead of racing it. */
+static az_iot_result channel_do_work(void* ctx)
+{
+  az_iot_adu_channel_dps* c = (az_iot_adu_channel_dps*)ctx;
+  if (c == NULL)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+
+  channel_forget_pending_if_session_gone(c);
+
+  /* A session that is gone takes its exchange with it: the next one is a fresh
+   * provisioning attempt and needs its own check, held again. */
+  if (!az_iot_connection_client__dps_session_ready(c->connection))
+  {
+    c->exchange_done = false;
+  }
+
+  if (c->wants_hold && !c->holds_registration && !c->exchange_done)
+  {
+    if (az_iot_connection_client__dps_hold_acquire(c->connection) == AZ_IOT_OK)
+    {
+      c->holds_registration = true;
+    }
+  }
+  return AZ_IOT_OK;
+}
+
 static const az_iot_adu_channel_vtable k_channel_vtable = {
   .open = channel_open,
   .close = channel_close,
   .request_update = channel_request_update,
   .report = channel_report,
   .set_device_properties = channel_set_device_properties,
-  .do_work = NULL,
+  .do_work = channel_do_work,
 };
 
 /* Pack a NUL-terminated copy into storage and return it, or NULL when it does
