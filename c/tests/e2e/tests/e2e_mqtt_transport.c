@@ -751,6 +751,21 @@ done:
   }
 }
 
+/* Send PINGREQ once half the negotiated interval has passed with no write. Any
+ * write updates last_activity_ms, so a busy connection never pings. */
+static az_iot_result keep_alive_tick(e2e_mqtt_client* c)
+{
+  if (!c->connected || c->keep_alive_seconds == 0)
+  {
+    return AZ_IOT_OK;
+  }
+  if (now_ms() - c->last_activity_ms < (uint64_t)c->keep_alive_seconds * 500u)
+  {
+    return AZ_IOT_OK;
+  }
+  return send_packet(c, 0xc0, NULL, 0);
+}
+
 static az_iot_result e2e_process_loop(az_iot_mqtt_client* self, uint32_t timeout_ms)
 {
   e2e_mqtt_client* c = (e2e_mqtt_client*)self;
@@ -768,6 +783,17 @@ static az_iot_result e2e_process_loop(az_iot_mqtt_client* self, uint32_t timeout
   fd_set rd;
   FD_ZERO(&rd);
   FD_SET(c->fd, &rd);
+
+  /* PINGREQ has to be serviced on the IDLE path, which is the only path where
+   * it matters: an idle connection is exactly the one a broker drops, and
+   * select() times out rather than reporting data. Sending it after the timeout
+   * return would mean the keep-alive only ever fired when traffic happened to
+   * arrive -- that is, never when it was needed. */
+  az_iot_result ping = keep_alive_tick(c);
+  if (ping != AZ_IOT_OK)
+  {
+    return ping;
+  }
 
   /* Bytes already decrypted inside OpenSSL would not make the fd readable. */
   if (SSL_pending(c->ssl) == 0)
@@ -787,14 +813,6 @@ static az_iot_result e2e_process_loop(az_iot_mqtt_client* self, uint32_t timeout
   {
     AZ_IOT_LOG_ERROR("e2e-mqtt: receive buffer full");
     return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
-  }
-
-  /* Send PINGREQ at half the interval. Any write counts as activity, so a busy
-   * connection never pings. */
-  if (c->connected && c->keep_alive_seconds > 0
-      && now_ms() - c->last_activity_ms >= (uint64_t)c->keep_alive_seconds * 500u)
-  {
-    (void)send_packet(c, 0xc0, NULL, 0);
   }
 
   int n = SSL_read(c->ssl, c->rx + c->rx_len, (int)(sizeof(c->rx) - c->rx_len));
