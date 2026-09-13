@@ -8,12 +8,14 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include <cmocka.h>
 
 #include "azure/iot/az_iot_connection_client.h"
+#include "azure/iot/az_iot_log.h"
 #include "azure/iot/az_iot_message.h"
 #include "azure/iot/az_iot_mqtt_iface.h"
 #include "azure/iot/gen2/az_iot_telemetry_client.h"
@@ -21,6 +23,42 @@
 #include "support/mock_mqtt_iface.h"
 
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
+
+typedef struct log_capture
+{
+  int count;
+  az_iot_log_level last_level;
+  char last[AZ_IOT_LOG_MESSAGE_MAX];
+} log_capture;
+
+static void capture_log(
+    void* user_ctx,
+    az_iot_log_level level,
+    const char* file,
+    int line,
+    const char* msg)
+{
+  log_capture* c = (log_capture*)user_ctx;
+  (void)file;
+  (void)line;
+  if (msg == NULL)
+  {
+    return;
+  }
+  c->count++;
+  c->last_level = level;
+  snprintf(c->last, sizeof(c->last), "%s", msg);
+}
+
+static void install_capture(log_capture* c, az_iot_log_level min_level)
+{
+  memset(c, 0, sizeof(*c));
+  az_iot_log_sink sink;
+  sink.sink = capture_log;
+  sink.user_ctx = c;
+  sink.min_level = min_level;
+  az_iot_log_set_global_sink(&sink);
+}
 
 typedef struct fixture
 {
@@ -304,9 +342,95 @@ static void metadata_uses_native_v5_fields(void** state)
   assert_string_equal(az_iot_mock_call_user_property(publish, "site"), "plant-3");
   assert_string_equal(az_iot_mock_call_user_property(publish, "unit"), "celsius");
   assert_string_equal(az_iot_mock_call_user_property(publish, "flag"), "");
+  /* Content type is the one system property with a native v5 field, so it does
+   * not also travel under its own name. */
   assert_null(az_iot_mock_call_user_property(publish, AZ_IOT_MSG_PROP_CONTENT_TYPE));
-  assert_null(az_iot_mock_call_user_property(publish, AZ_IOT_MSG_PROP_MESSAGE_ID));
-  assert_int_equal(publish->user_properties_count, 5);
+  /* Every other one has no v5 equivalent and must survive the trip: dropping it
+   * would lose the caller's data with nothing said. */
+  assert_string_equal(az_iot_mock_call_user_property(publish, AZ_IOT_MSG_PROP_MESSAGE_ID), "m-1");
+  assert_int_equal(publish->user_properties_count, 6);
+}
+
+/* The header promises these reach the service on both generations. gen1 encodes
+ * them into the topic; nothing but this test stops gen2 quietly discarding
+ * them, which is how they were lost between the split and now. */
+static void every_system_property_reaches_the_wire(void** state)
+{
+  fixture* test = (fixture*)*state;
+  connect_and_init(test);
+
+  const az_iot_telemetry_property properties[] = {
+    { AZ_IOT_MSG_PROP_CONTENT_ENCODING, "utf-8" },
+    { AZ_IOT_MSG_PROP_MESSAGE_ID, "m-7" },
+    { AZ_IOT_MSG_PROP_CORRELATION_ID, "c-7" },
+    { AZ_IOT_MSG_PROP_USER_ID, "u-7" },
+    { AZ_IOT_MSG_PROP_CREATION_TIME, "2026-09-13T00:00:00Z" },
+    { AZ_IOT_MSG_PROP_COMPONENT_NAME, "thermostat" },
+  };
+  az_iot_telemetry_message message = {
+    .properties = properties,
+    .properties_count = ARRAY_SIZE(properties),
+  };
+  assert_int_equal(
+      az_iot_gen2_telemetry_client_send(&test->telemetry, &message, NULL, NULL), AZ_IOT_OK);
+
+  const az_iot_mock_call* publish = az_iot_mock_mqtt_client_call_at(test->mock, 0);
+  assert_string_equal(
+      az_iot_mock_call_user_property(publish, AZ_IOT_MSG_PROP_CONTENT_ENCODING), "utf-8");
+  assert_string_equal(az_iot_mock_call_user_property(publish, AZ_IOT_MSG_PROP_MESSAGE_ID), "m-7");
+  assert_string_equal(
+      az_iot_mock_call_user_property(publish, AZ_IOT_MSG_PROP_CORRELATION_ID), "c-7");
+  assert_string_equal(az_iot_mock_call_user_property(publish, AZ_IOT_MSG_PROP_USER_ID), "u-7");
+  assert_string_equal(
+      az_iot_mock_call_user_property(publish, AZ_IOT_MSG_PROP_CREATION_TIME),
+      "2026-09-13T00:00:00Z");
+  assert_string_equal(
+      az_iot_mock_call_user_property(publish, AZ_IOT_MSG_PROP_COMPONENT_NAME), "thermostat");
+  /* The six above plus the type and content-type the client adds. */
+  assert_int_equal(publish->user_properties_count, 8);
+}
+
+/* Overflow still drops, because the array is fixed -- but it must say so, and
+ * name what went missing. A silent drop here is the same defect this file just
+ * fixed, one cause further along. */
+static void properties_past_the_cap_are_dropped_with_a_warning(void** state)
+{
+  fixture* test = (fixture*)*state;
+  connect_and_init(test);
+
+  /* Two slots are already spent on type and content-type, so the last two of
+   * these sixteen cannot fit. */
+  char keys[16][8];
+  az_iot_telemetry_property properties[16];
+  for (int i = 0; i < 16; ++i)
+  {
+    snprintf(keys[i], sizeof(keys[i]), "k%d", i);
+    properties[i].key = keys[i];
+    properties[i].value = "v";
+  }
+  az_iot_telemetry_message message = {
+    .properties = properties,
+    .properties_count = ARRAY_SIZE(properties),
+  };
+
+  log_capture log;
+  install_capture(&log, AZ_IOT_LOG_LEVEL_WARN);
+  az_iot_result result = az_iot_gen2_telemetry_client_send(&test->telemetry, &message, NULL, NULL);
+  az_iot_log_set_global_sink(NULL);
+
+  assert_int_equal(result, AZ_IOT_OK);
+
+  const az_iot_mock_call* publish = az_iot_mock_mqtt_client_call_at(test->mock, 0);
+  assert_int_equal(publish->user_properties_count, 16);
+  assert_string_equal(az_iot_mock_call_user_property(publish, "k13"), "v");
+  assert_null(az_iot_mock_call_user_property(publish, "k14"));
+  assert_null(az_iot_mock_call_user_property(publish, "k15"));
+
+  /* Naming the first casualty is what makes the warning actionable, and warning
+   * once rather than per property is what keeps it readable. */
+  assert_int_equal(log.count, 1);
+  assert_int_equal(log.last_level, AZ_IOT_LOG_LEVEL_WARN);
+  assert_non_null(strstr(log.last, "k14"));
 }
 
 static void content_type_defaults_to_json(void** state)
@@ -392,6 +516,9 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         send_uses_the_v5_wire_shape_and_waits_for_puback, setup, teardown),
     cmocka_unit_test_setup_teardown(metadata_uses_native_v5_fields, setup, teardown),
+    cmocka_unit_test_setup_teardown(every_system_property_reaches_the_wire, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        properties_past_the_cap_are_dropped_with_a_warning, setup, teardown),
     cmocka_unit_test_setup_teardown(content_type_defaults_to_json, setup, teardown),
     cmocka_unit_test_setup_teardown(
         empty_payload_is_valid_and_publish_failures_are_returned, setup, teardown),
