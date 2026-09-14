@@ -156,7 +156,7 @@ _Captured from conversation as the C99 client repo was being scaffolded. Each bu
 - Single-threaded contract: every state transition and the user state-callback fires from inside `az_iot_connection_client_do_work()`. `on_mqtt_event()` is called from the adapter's `process_loop()` (which `do_work()` drives), and any state change requiring teardown of the active adapter is *deferred* out of the callback to avoid destroying the adapter while it is still on the call stack.
 - Adapter registry validates the MQTT version on registration: each factory must declare a valid `az_iot_mqtt_version`. The SDK internally maps services to required versions (DPS/Classic → v3.1.1, Hub-Next → v5) and selects the matching registered factory at connection time.
 - Without DPS, direct-host opens default to `HUB_CLASSIC` (v3.1.1). DPS overrides this via the **internal-only** `az_iot_connection_client__set_session_role()` (header `src/core/internal/connection_client_internal.h`, NOT part of the public ABI) before driving the post-provisioning open.
-- Reconnect (backoff + jitter), certificate_provider / X.509 plumbing, and the `protocol_profile` dispatch table for feature clients are deferred to Phase 2.2 / 2.3.
+- Reconnect (backoff + jitter), certificate_provider / X.509 plumbing, and the inbound dispatch table for feature clients are deferred to Phase 2.2 / 2.3.
 
 ### Reconnect (Phase 2.2)
 - Reconnect is **opt-in**: enabled when `opts.reconnection_policy.initial_delay_ms > 0`. Zero-policy means a peer drop or CONNACK failure terminates the session (`IDLE` for clean disconnect, `FAULTED` for failure).
@@ -171,11 +171,10 @@ _Captured from conversation as the C99 client repo was being scaffolded. Each bu
   - `ConnectionClient` records inbound events as a deferred action (FAULT / RECONNECT / IDLE) inside `on_mqtt_event`, then `apply_deferred()` in `do_work()` performs the destructive transition (teardown + state change). This keeps adapter destruction off the inbound-callback stack.
   - The jitter PRNG seed is auto-initialised from the monotonic clock; tests use the internal `az_iot_connection_client__seed_rng()` to make timing deterministic.
 
-### Protocol profile + inbound dispatch (Phase 2.3)
-- `src/core/internal/protocol_profile.h` exposes `az_iot_protocol_profile`: hub flavor, MQTT version, topic prefixes (twin response / twin desired / methods request / D2C template), default request/response timeout. The Classic profile (Phase 2.3) is implemented; the Next profile is intentionally NULL until Phase 3 lands its feature-client implementations. DPS sessions reuse the Classic profile so its mqtt_version/timeout defaults are still consultable.
+### Inbound dispatch (Phase 2.3)
+- `src/core/internal/protocol_profile.h` used to expose `az_iot_protocol_profile` (hub flavor, MQTT version, topic prefixes, default request/response timeout). **It was deleted in P4**: once the feature clients were split by generation each one owned its own topics, so no production code read a profile field. MQTT version selection lives in `az_iot_mqtt_required_version_for_role()`.
 - `src/core/internal/dispatch.h` is a small (`az_iot_MAX_INBOUND_HANDLERS` = 8) topic-prefix → handler registry with longest-prefix-wins routing and `unregister_by_ctx` for clean feature-client teardown. The table is heap-allocated (lazy on first registration) so sessions that never register a handler pay nothing.
 - `ConnectionClient` owns one dispatch table and routes every `EVT_MESSAGE` through it (unmatched topics drop silently, matching MQTT-broker behaviour for unsubscribed wildcards). `*_ACK` events stay absorbed pending the Phase 3 correlation table.
 - New internal entry points (`internal/connection_client_internal.h`):
-  - `__profile()` returns the active profile pointer for the current session role.
-  - `__register_inbound_handler()` / `__unregister_inbound_handlers()` — feature clients use these together with the prefixes from `__profile()` to subscribe + route.
+  - `__register_inbound_handler()` / `__unregister_inbound_handlers()` — feature clients use these to subscribe + route, passing prefixes they build themselves.
 - Build hygiene: GCC's quoted-include resolution is strict (relative to the including file's directory). Internal headers refer to siblings as `"internal/foo.h"`, so the core target now exposes `src/core` on its PRIVATE include path. Without this, headers inside `src/core/internal/` couldn't include sibling headers when consumed from a different translation unit.

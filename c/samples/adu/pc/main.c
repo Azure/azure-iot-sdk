@@ -302,44 +302,6 @@ static void on_sigint(int signo)
   g_stop = 1;
 }
 
-/* HTTPS transport for the device-update operations.
- *
- * This is the ONLY transport code an application writes: the SDK builds every
- * URL, header and body of the device-update protocol on top of it. This sample
- * has no HTTP stack linked, so the hook reports that it cannot perform the
- * request rather than pretending to. Wire it to libcurl (or any client) to run
- * against the real service; nothing else in this file changes. */
-static az_iot_result sample_http_send(
-    const char* method,
-    const char* url,
-    const az_iot_adu_http_header* headers,
-    size_t header_count,
-    const uint8_t* body,
-    size_t body_len,
-    az_iot_adu_http_response* response,
-    void* user_ctx)
-{
-  (void)body;
-  (void)response;
-  (void)user_ctx;
-
-  printf("  [http] %s %s (%zu header(s), %zu body byte(s))\n", method, url, header_count, body_len);
-  for (size_t i = 0; i < header_count; ++i)
-  {
-    /* Authorization carries a credential: report its presence, never its value. */
-    if (strcmp(headers[i].name, "Authorization") == 0)
-    {
-      printf("    %s: <redacted>\n", headers[i].name);
-    }
-    else
-    {
-      printf("    %s: %s\n", headers[i].name, headers[i].value);
-    }
-  }
-  fprintf(stderr, "  [http] no HTTP client is linked into this sample.\n");
-  return AZ_IOT_ERR_NOT_SUPPORTED;
-}
-
 typedef struct
 {
   sample_config config;
@@ -512,9 +474,6 @@ int main(void)
   adu_opts.device_props = &dp;
   adu_opts.device_props_buffer = st.dp_buffer;
   adu_opts.device_props_buffer_size = sizeof(st.dp_buffer);
-  /* The application supplies the HTTPS primitive; the SDK owns the protocol. */
-  static const az_iot_adu_http_transport http_transport = { sample_http_send, NULL };
-  adu_opts.http_transport = &http_transport;
   if (az_iot_adu_client_initialize(&st.adu_client, &st.connection_client, &adu_opts) != AZ_IOT_OK)
   {
     fprintf(stderr, "az_iot_adu_client_initialize failed\n");
@@ -537,9 +496,26 @@ int main(void)
     sample_state_destroy(&st);
     return 1;
   }
-  for (int i = 0; i < 1200 && g_conn_state != AZ_IOT_CONN_STATE_CONNECTED && !g_stop; ++i)
+  /* The device-update client is pumped here too, not only after CONNECTED: its
+   * first update check runs on the provisioning session, before the device
+   * registers. Pumping only the connection client would leave that check
+   * unissued, and the connection would simply wait out the hold and register
+   * without it. */
+  /* The bound must EXCEED the hold timeout. A fixed 1200 iterations at 50 ms was
+   * exactly AZ_IOT_DPS_HOLD_TIMEOUT_MS, so a stalled update check would have
+   * ended this loop on the same tick the hold expired -- and the sample would
+   * have reported a connection failure instead of showing the device
+   * registering anyway, which is the behaviour being demonstrated. */
+  /* Derived from the hold timeout rather than hard-coded: a build that raises
+   * AZ_IOT_DPS_HOLD_TIMEOUT_MS must not have this loop give up while the
+   * connection is still legitimately holding. Twice the hold leaves room for
+   * the registration that follows it. */
+  const unsigned tick_ms = 50u;
+  const unsigned max_ticks = (2u * (unsigned)AZ_IOT_DPS_HOLD_TIMEOUT_MS) / tick_ms;
+  for (unsigned i = 0; i < max_ticks && g_conn_state != AZ_IOT_CONN_STATE_CONNECTED && !g_stop; ++i)
   {
     (void)az_iot_connection_client_do_work(&st.connection_client, 50);
+    (void)az_iot_adu_client_do_work(&st.adu_client);
     if (g_conn_state == AZ_IOT_CONN_STATE_FAULTED)
     {
       break;

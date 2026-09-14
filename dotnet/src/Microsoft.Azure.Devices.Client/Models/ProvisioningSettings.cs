@@ -1,4 +1,5 @@
-﻿using System.Text.Json.Nodes;
+﻿using Microsoft.Azure.Devices.Client.Provisioning.Models;
+using System.Text.Json.Nodes;
 
 namespace Microsoft.Azure.Devices.Client.Models
 {
@@ -17,6 +18,6 @@ namespace Microsoft.Azure.Devices.Client.Models
 
         public JsonNode? ProvisioningPayload { get; set; }
 
-        public string? ProvisioningCertificateSigningRequest { get; set; }
+        public ProvisioningCertificateSigningRequest? CertificateSigningRequest { get; set; }
     }
 }

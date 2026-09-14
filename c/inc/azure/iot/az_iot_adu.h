@@ -376,9 +376,13 @@ extern "C"
   typedef enum az_iot_adu_failure_origin
   {
     AZ_IOT_ADU_FAILURE_ORIGIN_NOT_APPLICABLE = 0,
+    AZ_IOT_ADU_FAILURE_ORIGIN_ADU_CLOUD_SERVICE,
+    AZ_IOT_ADU_FAILURE_ORIGIN_ADU_MANAGED_RESOURCE,
     AZ_IOT_ADU_FAILURE_ORIGIN_AGENT_CORE,
     AZ_IOT_ADU_FAILURE_ORIGIN_AGENT_EXTENSION,
-    AZ_IOT_ADU_FAILURE_ORIGIN_SERVICE,
+    AZ_IOT_ADU_FAILURE_ORIGIN_AGENT_DEPENDENCY,
+    AZ_IOT_ADU_FAILURE_ORIGIN_DEVICE,
+    AZ_IOT_ADU_FAILURE_ORIGIN_OTHER,
   } az_iot_adu_failure_origin;
 
   /** @brief An update identity triple. Spans are NOT owned by this struct. */
@@ -448,14 +452,9 @@ extern "C"
        * stays caller-allocated with no hidden allocation. */
       struct
       {
-        void* reserved[2];
-        struct
-        {
-          void* fn;
-          void* ctx;
-        } transport;
-        void* cb;
-        void* cb_ctx;
+        void* pointers[24];
+        uint8_t bytes[3328];
+        uint64_t alignment[4];
       } channel_storage;
       az_iot_adu_platform_hooks hooks;
       az_iot_adu_crypto_hooks crypto;
@@ -563,77 +562,6 @@ extern "C"
    * The `config_` qualifier keeps our configuration struct distinct without a
    * bare `_t` tag.
    */
-  /* --- HTTPS transport ------------------------------------------------------ */
-  /*
-   * The device-update operations are HTTPS requests on the device's existing
-   * provisioning endpoint. This SDK vendors no HTTP stack, so the application
-   * provides the transport primitive and the SDK owns everything above it: URL
-   * construction, authentication, request bodies, response parsing, retry and
-   * error classification.
-   *
-   * OPEN DESIGN POINT. The shape below is deliberate on one axis: the service
-   * reports failures through a machine-readable header (and a throttle hint in
-   * another), so a transport that surrendered only a status code and a body
-   * could not implement the specified behaviour. Hence the response header
-   * lookup. This is the part still worth an explicit decision -- notably whether
-   * the SDK should instead own a small HTTP client for the few request shapes it
-   * needs, which would remove this hook entirely at the cost of vendoring a
-   * stack.
-   */
-
-  typedef struct az_iot_adu_http_header
-  {
-    const char* name;
-    const char* value;
-  } az_iot_adu_http_header;
-
-  /**
-   * Response handed back by the transport.
-   *
-   * get_header lets the SDK read a named response header without the transport
-   * having to materialize all of them. It MAY be NULL only if the transport
-   * genuinely cannot supply headers, in which case the SDK falls back to status
-   * codes alone and loses the ability to distinguish some service conditions.
-   */
-  typedef struct az_iot_adu_http_response
-  {
-    int32_t status_code;
-    uint8_t* body; /* SDK-provided buffer; may be NULL when no body is wanted. */
-    size_t body_capacity;
-    size_t body_len; /* set by the transport */
-
-    /* Returns the header value, or NULL when absent. Valid for the duration of
-     * the send call only. */
-    const char* (*get_header)(const char* name, void* header_ctx);
-    void* header_ctx;
-  } az_iot_adu_http_response;
-
-  /**
-   * Perform one HTTPS request and return its response.
-   *
-   * The transport owns TLS and server-certificate validation. It MUST send the
-   * supplied headers verbatim -- they carry authentication and correlation.
-   *
-   * Returns AZ_IOT_OK if the request was performed at all, INCLUDING for a
-   * non-2xx status (reported through response->status_code, which the SDK
-   * interprets); an error result only on a transport-level failure.
-   */
-  typedef az_iot_result (*az_iot_adu_http_send_fn)(
-      const char* method,
-      const char* url,
-      const az_iot_adu_http_header* headers,
-      size_t header_count,
-      const uint8_t* body,
-      size_t body_len,
-      az_iot_adu_http_response* response,
-      void* user_ctx);
-
-  typedef struct az_iot_adu_http_transport
-  {
-    az_iot_adu_http_send_fn send;
-    void* user_ctx;
-  } az_iot_adu_http_transport;
-
   typedef struct az_iot_adu_client_config_options
   {
     /* Platform operations (download/install/apply/...). MUST be non-NULL. */
@@ -655,18 +583,6 @@ extern "C"
     uint8_t* device_props_buffer;
     size_t device_props_buffer_size;
 
-    /* HTTPS transport for the device-update operations. REQUIRED.
-     *
-     * The device-update operations are HTTPS requests on the device's existing
-     * provisioning endpoint. This SDK vendors no HTTP stack, so the application
-     * supplies the request/response primitive and the SDK builds every URL,
-     * header and body on top of it -- the same arrangement ADU already uses for
-     * download_fn. The application implements ONE function; it does not
-     * implement the protocol.
-     *
-     * If a broker binding for these operations becomes available this stops
-     * being required. See az_iot_adu_http_transport. */
-    const az_iot_adu_http_transport* http_transport;
   } az_iot_adu_client_config_options;
 
   /* Returns an options struct with all fields zero-initialized. Set hooks, crypto,

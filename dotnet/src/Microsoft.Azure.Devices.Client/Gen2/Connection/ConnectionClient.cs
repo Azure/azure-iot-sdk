@@ -359,7 +359,7 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Connection
         internal async Task<DeviceRegistrationResult> ProvisionAsync(ProvisioningSettings provisioningSettings, X509AuthenticationProvider authentication, CancellationToken cancellationToken = default)
         {
             ProvisioningConnection provisioningConnection = new();
-            return await provisioningConnection.RegisterAsync(_managedMqttConnection, new() { ClientCertificateSigningRequest = null, Payload = provisioningSettings.ProvisioningPayload }, authentication, provisioningSettings.IdScope, provisioningSettings.GlobalEndpointAddress, cancellationToken);
+            return await provisioningConnection.RegisterAsync(_managedMqttConnection, new() { ClientCertificateSigningRequest = provisioningSettings.CertificateSigningRequest?.Base64CertificateSigningRequest, Payload = provisioningSettings.ProvisioningPayload }, authentication, provisioningSettings.IdScope, provisioningSettings.GlobalEndpointAddress, cancellationToken);
 
             //TODO do we care about initial twin as returned by DPS?
         }

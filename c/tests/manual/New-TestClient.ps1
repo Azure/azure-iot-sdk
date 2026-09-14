@@ -22,7 +22,7 @@
 .EXAMPLE
     .\New-TestClient.ps1
     . .\.client-env.ps1
-    .\..\..\build\samples\Debug\az_iot_sample_telemetry.exe
+    .\..\..\build\samples\Debug\az_iot_sample_telemetry_gen1.exe
 #>
 [CmdletBinding()]
 param(
@@ -71,13 +71,13 @@ if ($BuildPreset) {
 if ($LASTEXITCODE -ne 0) { throw "CMake configure failed." }
 
 Write-Host "[build] Building telemetry sample..."
-cmake --build $BuildDir --config Debug --target az_iot_sample_telemetry
+cmake --build $BuildDir --config Debug --target az_iot_sample_telemetry_gen1
 if ($LASTEXITCODE -ne 0) { throw "Build failed." }
 
-$TelemetrySampleExe = Join-Path $BuildDir "samples\Debug\az_iot_sample_telemetry.exe"
+$TelemetrySampleExe = Join-Path $BuildDir "samples\Debug\az_iot_sample_telemetry_gen1.exe"
 if (-not (Test-Path $TelemetrySampleExe)) {
     # Try non-multi-config generator path
-    $TelemetrySampleExe = Join-Path $BuildDir "samples\az_iot_sample_telemetry.exe"
+    $TelemetrySampleExe = Join-Path $BuildDir "samples\az_iot_sample_telemetry_gen1.exe"
 }
 
 Write-Host "[build] Building direct methods sample..."

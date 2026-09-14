@@ -410,6 +410,15 @@ static az_iot_result esp_connect(az_iot_mqtt_client* self, const az_iot_mqtt_con
     return AZ_IOT_ERR_ALREADY_INITIALIZED;
   }
 
+  /* This sample adapter wires neither WebSockets nor an HTTP proxy. Refuse the
+   * request instead of connecting straight out on 8883, which would defeat the
+   * egress restriction the caller selected. */
+  if (opts->transport != AZ_IOT_MQTT_TRANSPORT_TCP
+      || (opts->proxy.host != NULL && opts->proxy.host[0] != '\0'))
+  {
+    return AZ_IOT_ERR_NOT_SUPPORTED;
+  }
+
   esp_mqtt_client_config_t cfg = { 0 };
   cfg.broker.address.hostname = opts->host;
   cfg.broker.address.port = opts->port ? opts->port : 8883;

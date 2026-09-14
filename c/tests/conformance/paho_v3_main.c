@@ -92,11 +92,17 @@ int main(void)
   /* The adapter honours a non-extractable key reference in this build, so the
    * suite is told to hold it to that contract. Without the declaration the
    * baseline would only check that it REFUSES custody cleanly, which is the
-   * wrong bar for an adapter that implements it. */
-  opts.capabilities |= (uint32_t)AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY;
+   * wrong bar for an adapter that implements it.
+   *
+   * The URI route ONLY. Paho exposes no TLS key callback, so this adapter
+   * cannot honour tls.sign and must not claim _SIGN: the baseline already
+   * requires it to refuse that route cleanly, which it does. */
+  opts.capabilities |= (uint32_t)AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY_URI;
   /* The end-to-end handshake needs a key this machine can actually reach.
-   * Absent these the suite runs the custody cases that need no token and says
-   * on stderr that the handshake was not exercised. */
+   * Absent these the capability is declared but never exercised, which FAILS
+   * the run: a pass has to mean the claim was checked. A machine with no token
+   * must say so deliberately with AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN=1, which
+   * downgrades it to a notice and proves nothing about custody. */
   if (env_or_null("AZ_IOT_CONFORMANCE_KEY_URI", key_uri, sizeof(key_uri), &opts.key_uri) != 0
       || env_or_null(
              "AZ_IOT_CONFORMANCE_KEY_ENGINE",
@@ -115,6 +121,57 @@ int main(void)
     return 1;
   }
 #endif
+
+  /* The adapter implements MQTT over WebSockets and the HTTP CONNECT proxy, so
+   * the suite is told to hold it to both contracts rather than only to the
+   * baseline (which checks it does not bypass either setting).
+   *
+   * Each capability is declared only when this machine can supply the endpoint
+   * that PROVES it, because a declared-but-unexercised claim fails the run and a
+   * leg with no proxy or no WebSocket listener is an ordinary environment, not
+   * an error. Nothing is skipped by leaving them undeclared: the baseline cases
+   * run for every adapter on every leg and are what pin the rule that matters --
+   * neither setting may be bypassed into a plain TCP session to the broker. */
+  char ws_port_buf[16];
+  char ws_path_buf[256];
+  const char* ws_port_str = NULL;
+  if (env_or_null("AZ_IOT_CONFORMANCE_WS_PORT", ws_port_buf, sizeof(ws_port_buf), &ws_port_str) == 0
+      && ws_port_str != NULL)
+  {
+    unsigned long p = strtoul(ws_port_str, NULL, 10);
+    if (p > 0 && p <= 65535)
+    {
+      opts.capabilities |= (uint32_t)AZ_IOT_CONFORMANCE_CAP_WEBSOCKETS;
+      opts.websocket_port = (uint16_t)p;
+      (void)env_or_null(
+          "AZ_IOT_CONFORMANCE_WS_PATH", ws_path_buf, sizeof(ws_path_buf), &opts.websocket_path);
+    }
+  }
+
+  char proxy_host_buf[256];
+  char proxy_port_buf[16];
+  const char* proxy_host = NULL;
+  const char* proxy_port_str = NULL;
+  if (env_or_null(
+          "AZ_IOT_CONFORMANCE_PROXY_HOST", proxy_host_buf, sizeof(proxy_host_buf), &proxy_host)
+          == 0
+      && proxy_host != NULL
+      && env_or_null(
+             "AZ_IOT_CONFORMANCE_PROXY_PORT",
+             proxy_port_buf,
+             sizeof(proxy_port_buf),
+             &proxy_port_str)
+          == 0
+      && proxy_port_str != NULL)
+  {
+    unsigned long p = strtoul(proxy_port_str, NULL, 10);
+    if (p > 0 && p <= 65535)
+    {
+      opts.capabilities |= (uint32_t)AZ_IOT_CONFORMANCE_CAP_PROXY;
+      opts.proxy_host = proxy_host;
+      opts.proxy_port = (uint16_t)p;
+    }
+  }
 
   int rc = az_iot_conformance_run_with_options(AZ_IOT_CONFORMANCE_SUITE_V3_1_1, f, &opts);
   az_iot_paho_factory_destroy(f);

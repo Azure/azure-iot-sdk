@@ -184,6 +184,12 @@ static az_iot_result mock_connect(az_iot_mqtt_client* self, const az_iot_mqtt_co
     c->connect.has_sign = (opts->tls.sign != NULL);
     c->connect.sign = opts->tls.sign;
     c->connect.sign_ctx = opts->tls.sign_ctx;
+    c->connect.transport = opts->transport;
+    copy_str(c->connect.websocket_path, sizeof(c->connect.websocket_path), opts->websocket_path);
+    copy_str(c->connect.proxy_host, sizeof(c->connect.proxy_host), opts->proxy.host);
+    c->connect.proxy_port = opts->proxy.port;
+    copy_str(c->connect.proxy_username, sizeof(c->connect.proxy_username), opts->proxy.username);
+    copy_str(c->connect.proxy_password, sizeof(c->connect.proxy_password), opts->proxy.password);
   }
   return take_override(m, AZ_IOT_MOCK_CALL_CONNECT);
 }
@@ -267,6 +273,7 @@ static az_iot_result mock_publish(
         msg->correlation_data_len,
         &c->correlation_data_len);
     copy_str(c->content_type, sizeof(c->content_type), msg->content_type);
+    c->message_expiry_seconds = msg->message_expiry_seconds;
     for (size_t i = 0; i < msg->user_properties_count; ++i)
     {
       const az_iot_mqtt_user_property* up = &msg->user_properties[i];

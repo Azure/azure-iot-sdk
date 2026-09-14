@@ -432,6 +432,7 @@ static int32_t mock_load(uint8_t* blob, size_t cap, size_t* out_len, void* ctx)
 typedef struct
 {
   az_iot_adu_channel_update_cb cb;
+  az_iot_adu_channel_result_cb result_cb;
   void* engine_ctx;
   bool opened;
   int request_update_count;
@@ -449,18 +450,30 @@ typedef struct
   char last_installed_version[64];
   az_iot_adu_client_step_result last_step_results[_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS];
   uint8_t last_step_details[_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS][256];
+  size_t do_work_count;
 } fake_channel;
 
-static az_iot_result fake_channel_open(void* ctx, az_iot_adu_channel_update_cb cb, void* engine_ctx)
+static az_iot_result fake_channel_open(
+    void* ctx,
+    az_iot_adu_channel_update_cb cb,
+    az_iot_adu_channel_result_cb result_cb,
+    void* engine_ctx)
 {
   fake_channel* fc = (fake_channel*)ctx;
   fc->cb = cb;
+  fc->result_cb = result_cb;
   fc->engine_ctx = engine_ctx;
   fc->opened = true;
   return AZ_IOT_OK;
 }
 
 static void fake_channel_close(void* ctx) { ((fake_channel*)ctx)->opened = false; }
+
+static az_iot_result fake_channel_do_work(void* ctx)
+{
+  ((fake_channel*)ctx)->do_work_count++;
+  return AZ_IOT_OK;
+}
 
 static az_iot_result fake_channel_request_update(void* ctx)
 {
@@ -540,7 +553,8 @@ static const az_iot_adu_channel_vtable k_fake_channel_vtable = {
   .close = fake_channel_close,
   .request_update = fake_channel_request_update,
   .report = fake_channel_report,
-  .do_work = NULL,
+  .set_device_properties = NULL,
+  .do_work = fake_channel_do_work,
 };
 
 /* ------------------------------------------------------------------------- */
@@ -1200,32 +1214,8 @@ static void custom_device_properties_are_accepted_and_serialized(void** state)
   assert_non_null(strstr(text, "gold"));
 }
 
-/* The public entry point takes a CONNECTION, not a transport implementation:
- * the SDK builds the device-update channel itself. An application supplies one
- * HTTPS primitive and never implements the protocol. */
-static az_iot_result ut_http_send(
-    const char* method,
-    const char* url,
-    const az_iot_adu_http_header* headers,
-    size_t header_count,
-    const uint8_t* body,
-    size_t body_len,
-    az_iot_adu_http_response* response,
-    void* user_ctx)
-{
-  (void)method;
-  (void)url;
-  (void)headers;
-  (void)header_count;
-  (void)body;
-  (void)body_len;
-  (void)response;
-  if (user_ctx != NULL)
-  {
-    (*(int*)user_ctx)++;
-  }
-  return AZ_IOT_OK;
-}
+/* The public entry point takes a CONNECTION and nothing else: the SDK owns the
+ * device-update protocol end to end. */
 
 static void public_initialize_takes_a_connection_and_builds_its_own_channel(void** state)
 {
@@ -1255,9 +1245,6 @@ static void public_initialize_takes_a_connection_and_builds_its_own_channel(void
   dp.installed_update_id.name = "Foobar";
   dp.installed_update_id.version = "1.0";
 
-  int send_calls = 0;
-  az_iot_adu_http_transport transport = { ut_http_send, &send_calls };
-
   uint8_t buf[256];
   az_iot_adu_client_config_options o = az_iot_adu_client_config_options_default();
   o.hooks = &hooks;
@@ -1265,7 +1252,6 @@ static void public_initialize_takes_a_connection_and_builds_its_own_channel(void
   o.device_props = &dp;
   o.device_props_buffer = buf;
   o.device_props_buffer_size = sizeof(buf);
-  o.http_transport = &transport;
 
   /* The connection is NOT open: the bootstrap update check runs before the
    * device registers, so initialize must not require a live session. */
@@ -1276,31 +1262,72 @@ static void public_initialize_takes_a_connection_and_builds_its_own_channel(void
 
   /* The channel state lives INSIDE the client. Initialization must not zero the
    * client after building it there, or the channel would be left bound to a
-   * wiped state struct -- with a NULL connection and a NULL transport -- and
-   * would fail only later, on the first operation. Reaching the transport
-   * through the client proves it survived initialization. */
+   * wiped state struct -- with a NULL connection -- and would fail only later,
+   * on the first operation. Reaching the connection through the client proves
+   * it survived initialization. */
   az_iot_adu_client_t adu_state;
   assert_int_equal(az_iot_adu_client_initialize(&adu_state, &conn, &o), AZ_IOT_OK);
   const az_iot_adu_channel_dps* bound
       = (const az_iot_adu_channel_dps*)(const void*)&adu_state._internal.channel_storage;
   assert_ptr_equal(bound->connection, &conn);
-  assert_ptr_equal((void*)(uintptr_t)bound->http.send, (void*)(uintptr_t)ut_http_send);
-  assert_ptr_equal(bound->http.user_ctx, &send_calls);
   assert_ptr_equal(adu_state._internal.channel.ctx, bound);
   az_iot_adu_client_destroy(&adu_state);
 
-  /* An HTTPS transport is mandatory -- without it the SDK cannot carry the
-   * protocol it owns. */
-  az_iot_adu_client_t adu_no_transport;
-  o.http_transport = NULL;
-  assert_int_equal(
-      az_iot_adu_client_initialize(&adu_no_transport, &conn, &o), AZ_IOT_ERR_INVALID_ARG);
-
   az_iot_adu_client_t adu_no_conn;
-  o.http_transport = &transport;
   assert_int_equal(az_iot_adu_client_initialize(&adu_no_conn, NULL, &o), AZ_IOT_ERR_INVALID_ARG);
 
   az_iot_connection_client_destroy(&conn);
+}
+
+/* extendedResultCodes is contract-shaped: comma-separated UNSIGNED hex int32,
+ * NO "0x" prefix, no fixed width, case-insensitive. Pinned here because nothing
+ * else asserts the wire form, and a prefixed or zero-padded value is accepted by
+ * the compiler while being wrong on the wire. */
+static void extended_result_codes_are_bare_hex(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  fx->chan.report_count = 0;
+
+  fx->log.download_result = AZ_IOT_ADU_RESULT_FAILURE;
+  inject_patch(fx, signed_patch());
+  pump(fx, 40);
+
+  assert_true(fx->chan.report_count > 0);
+  const char* ext = fx->chan.last_extended;
+  assert_non_null(ext);
+  assert_true(ext[0] != '\0');
+  /* no 0x/0X prefix */
+  assert_false(ext[0] == '0' && (ext[1] == 'x' || ext[1] == 'X'));
+  /* Walk the comma-separated list explicitly: every segment must be non-empty
+   * and hex-only. Checking the character set alone would accept a leading or
+   * trailing comma and empty segments such as "1,,2", none of which are valid
+   * values of this field. */
+  const char* c = ext;
+  size_t segments = 0;
+  while (*c != '\0')
+  {
+    size_t digits = 0;
+    while (*c != '\0' && *c != ',')
+    {
+      assert_true((*c >= '0' && *c <= '9') || (*c >= 'a' && *c <= 'f') || (*c >= 'A' && *c <= 'F'));
+      ++digits;
+      ++c;
+    }
+    /* Rejects "", a leading comma, a trailing comma, and ",,". */
+    assert_true(digits > 0);
+    /* Unsigned int32, so at most 8 hex digits. */
+    assert_true(digits <= 8);
+    ++segments;
+
+    if (*c == ',')
+    {
+      ++c; /* a separator must be followed by another segment */
+      assert_true(*c != '\0');
+    }
+  }
+  assert_true(segments > 0);
 }
 
 static void device_props_too_small_is_rejected(void** state)
@@ -1991,6 +2018,62 @@ static void verify_file_hash_rejects_an_unsupported_algorithm(void** state)
       AZ_IOT_ERR_AUTH);
 }
 
+/* The vtable advertises an optional do_work hook for a channel with
+ * asynchronous work of its own. A channel that reports lost operations there
+ * depends on actually being ticked, so pin that the engine drives it. */
+static void do_work_drives_the_channel(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  size_t before = fx->chan.do_work_count;
+
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(fx->chan.do_work_count, before + 1);
+
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(fx->chan.do_work_count, before + 2);
+}
+
+/* A verdict the engine must NOT retry. ALREADY_REPORTED means a terminal result
+ * is already recorded for this workflow, so the report HAS been delivered --
+ * reporting is idempotent on workflowId. Re-arming it would retry forever, and
+ * during a held bootstrap session that starves the update check until the hold
+ * expires.
+ *
+ * Asserted on the pending flag rather than a report count: an advancing
+ * workflow emits progress reports of its own, which would mask the difference.
+ */
+static void a_terminal_verdict_does_not_re_arm_the_report(void** state)
+{
+  fixture* fx = (fixture*)*state;
+
+  fx->adu._internal.device_props_report_pending = false;
+
+  assert_non_null(fx->chan.result_cb);
+  fx->chan.result_cb(
+      AZ_IOT_ADU_OP_REPORT_STATUS,
+      AZ_IOT_ERR_DPS,
+      AZ_IOT_ADU_ERROR_ACTION_ALREADY_REPORTED,
+      fx->chan.engine_ctx);
+  assert_false(fx->adu._internal.device_props_report_pending);
+
+  /* Same for the other terminal verdicts. */
+  fx->chan.result_cb(
+      AZ_IOT_ADU_OP_REPORT_STATUS,
+      AZ_IOT_ERR_DPS,
+      AZ_IOT_ADU_ERROR_ACTION_FATAL,
+      fx->chan.engine_ctx);
+  assert_false(fx->adu._internal.device_props_report_pending);
+
+  /* A retryable verdict IS re-armed -- otherwise the assertions above would
+   * pass for a callback that simply did nothing. */
+  fx->chan.result_cb(
+      AZ_IOT_ADU_OP_REPORT_STATUS,
+      AZ_IOT_ERR_DPS,
+      AZ_IOT_ADU_ERROR_ACTION_RETRY,
+      fx->chan.engine_ctx);
+  assert_true(fx->adu._internal.device_props_report_pending);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -2018,6 +2101,7 @@ int main(void)
         custom_device_properties_are_accepted_and_serialized, setup, teardown),
     cmocka_unit_test_setup_teardown(
         public_initialize_takes_a_connection_and_builds_its_own_channel, setup, teardown),
+    cmocka_unit_test_setup_teardown(extended_result_codes_are_bare_hex, setup, teardown),
     cmocka_unit_test_setup_teardown(device_props_too_small_is_rejected, setup, teardown),
     cmocka_unit_test_setup_teardown(device_props_buffer_size_matches_need, setup, teardown),
     cmocka_unit_test_setup_teardown(duplicate_redelivery_is_ignored, setup, teardown),
@@ -2041,6 +2125,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(malformed_manifest_json_is_rejected, setup, teardown),
     cmocka_unit_test_setup_teardown(
         verify_file_hash_rejects_an_unsupported_algorithm, setup, teardown),
+    cmocka_unit_test_setup_teardown(do_work_drives_the_channel, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_terminal_verdict_does_not_re_arm_the_report, setup, teardown),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

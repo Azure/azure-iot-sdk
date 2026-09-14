@@ -10,6 +10,7 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
 
 namespace Microsoft.Azure.Devices.Client.Unified.Connection
@@ -31,6 +32,11 @@ namespace Microsoft.Azure.Devices.Client.Unified.Connection
         private event Func<DevicePresenceFlowCompletedArgs, Task>? DevicePresenceFlowCompletedAsync;
 
         public event Func<MqttPublishReceivedEventArgs, Task>? PublishReceivedAsync;
+
+        /// <summary>
+        /// The function that defines how to create an authentication provider when given the results of a completed certificate signing operation. This must be set prior to doing any certificate signing operations.
+        /// </summary>
+        public Func<IReadOnlyList<string>, Task<X509AuthenticationProvider>>? HandleCertificateSigningCompleteAsync;
 
         private const string CertificateSigningRequestTopic = "$iothub/credentials/POST/issueCertificate/?$rid=";
         private const string CertificateSigningResponseTopicFilter = "$iothub/credentials/res/#";
@@ -152,22 +158,41 @@ namespace Microsoft.Azure.Devices.Client.Unified.Connection
             _managedMqttConnection.ConnectedAsync -= HandleConnectedToHubAsync; // Don't respond to connection attempts to DPS with IoT hub connection handling
 
             ProvisioningConnection provisioningConnection = new();
-            var provisioningResult = await provisioningConnection.RegisterAsync(_managedMqttConnection, new() { ClientCertificateSigningRequest = null, Payload = provisioningSettings.ProvisioningPayload }, authentication, provisioningSettings.IdScope, provisioningSettings.GlobalEndpointAddress, cancellationToken);
-
-            //TODO several mqtt client options should not be provided by the user (ie, host name). Add checks here that validate all of them
+            var provisioningResult = await provisioningConnection.RegisterAsync(_managedMqttConnection, new() { ClientCertificateSigningRequest = provisioningSettings.CertificateSigningRequest?.Base64CertificateSigningRequest, Payload = provisioningSettings.ProvisioningPayload }, authentication, provisioningSettings.IdScope, provisioningSettings.GlobalEndpointAddress, cancellationToken);
 
             CurrentConnectionContext = new ConnectionContext()
             {
                 DeviceId = provisioningResult.DeviceId!,
                 IotHubHostName = provisioningResult.AssignedHub!,
-                IsGen2Hub = provisioningResult.IsAzureEventGridHub,
+                IsGen2Hub = provisioningResult.ConnectionProfile == ConnectionProfile.MqttV5,
                 IssuedClientCertificates = provisioningResult.IssuedClientCertificateChain,
                 AuthenticationProvider = authentication,
             };
 
+            if (string.IsNullOrEmpty(CurrentConnectionContext.IotHubHostName))
+            {
+                throw new Exception("Huh?");
+            }
+
             _managedMqttConnection.ConnectedAsync += HandleConnectedToHubAsync;
 
-            //TODO use issued client certs if CSR was done during provisioning
+
+            // If CSR was a part of the provisioning request, then connect to IoT hub using the operational certificates (the ones signed by DPS) rather than the boot certificates (the ones used to authenticate with DPS).
+            if (provisioningResult.IssuedClientCertificateChain != null && provisioningResult.IssuedClientCertificateChain.Count > 0)
+            {
+                if (HandleCertificateSigningCompleteAsync == null)
+                { 
+                    throw new Exception("Must set \"HandleCertificateSigningCompleteAsync\" callback before doing any certificate signing operations");
+                }
+
+                CurrentConnectionContext.AuthenticationProvider = await HandleCertificateSigningCompleteAsync(provisioningResult.IssuedClientCertificateChain);
+            }
+            else
+            {
+                // Otherwise use the same certs when connecting to IoT hub that were used to connect to DPS
+                CurrentConnectionContext.AuthenticationProvider = authentication;
+            }
+
             await ConnectAsync(CurrentConnectionContext, cancellationToken);
 
             return CurrentConnectionContext;
@@ -326,6 +351,16 @@ namespace Microsoft.Azure.Devices.Client.Unified.Connection
                 else if (status.Equals("200"))
                 {
                     CertificateSigningResponse response = JsonSerializer.Deserialize<CertificateSigningResponse>(args.Publish.Payload)!;
+                    if (HandleCertificateSigningCompleteAsync != null)
+                    {
+                        //TODO need a fault-injection like unit test that ensures that the client uses this new authentication provider upon reconnect since our API won't allow users to disconnect then reconnect to hub at will
+                        Debug.Assert(CurrentConnectionContext != null);
+                        CurrentConnectionContext.AuthenticationProvider = await HandleCertificateSigningCompleteAsync(response.Certificates);
+                    }
+                    else
+                    {
+                        Trace.TraceError("Certificate signing response could not update authentication provider because user never set \"HandleCertificateSigningCompleteAsync\" callback");
+                    }
                     pendingCertificateSigningOperation.SetCompleted(response);
                     //TODO qos? Ack needed?
                     return;

@@ -1,6 +1,8 @@
 #ifndef SAMPLE_UTILS_H
 #define SAMPLE_UTILS_H
 
+#include <stdint.h>
+
 typedef struct sample_config
 {
   char* id_scope;
@@ -23,5 +25,10 @@ void sample_config_release(sample_config* config);
 // `fallback` when the variable is unset/empty (fallback may be NULL). Caller
 // frees with free(). Avoids getenv()/strdup() to stay clean under MSVC /WX.
 char* sample_env_dup(const char* name, const char* fallback);
+
+// Milliseconds from an unspecified origin, never moving backwards. Only
+// differences are meaningful. The SDK keeps its clock internal, so a sample
+// that has to measure elapsed time brings its own.
+uint64_t sample_now_ms(void);
 
 #endif // SAMPLE_UTILS_H

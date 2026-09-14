@@ -32,6 +32,8 @@
 #include <stdint.h>
 
 #include "azure/iot/az_iot_adu.h"
+
+#include "adu_protocol_internal.h"
 #include "azure/iot/az_iot_result.h"
 
 #ifdef __cplusplus
@@ -59,6 +61,29 @@ extern "C"
       void* engine_ctx);
 
   /**
+   * @brief Invoked by a channel when an operation reaches a verdict.
+   *
+   * `request_update()` and `report()` returning AZ_IOT_OK on an asynchronous
+   * channel means "sent", not "accepted". Without this the engine would retire
+   * a pending fetch or report on publish and never learn it failed, silently
+   * losing the only record the service gets of what the device did.
+   *
+   * Called exactly once per accepted operation. A synchronous channel may call
+   * it from inside request_update()/report().
+   *
+   * @param operation  Which operation this verdict is for.
+   * @param result     AZ_IOT_OK when the service accepted it.
+   * @param action     How to proceed when @p result is not AZ_IOT_OK;
+   *                   AZ_IOT_ADU_ERROR_ACTION_NONE on success.
+   * @param engine_ctx The context the engine passed to `open()`.
+   */
+  typedef void (*az_iot_adu_channel_result_cb)(
+      az_iot_adu_operation operation,
+      az_iot_result result,
+      az_iot_adu_error_action action,
+      void* engine_ctx);
+
+  /**
    * @brief The delivery + reporting vtable.
    *
    * Every function takes the channel's own @p ctx. All are REQUIRED except
@@ -73,7 +98,11 @@ extern "C"
      * pull channel it need only record the callback. Called once, from
      * az_iot_adu_client_initialize().
      */
-    az_iot_result (*open)(void* ctx, az_iot_adu_channel_update_cb cb, void* engine_ctx);
+    az_iot_result (*open)(
+        void* ctx,
+        az_iot_adu_channel_update_cb cb,
+        az_iot_adu_channel_result_cb result_cb,
+        void* engine_ctx);
 
     /**
      * @brief Unbind. Best-effort; the engine ignores the result during
@@ -100,6 +129,17 @@ extern "C"
     az_iot_result (*report)(void* ctx, const az_iot_adu_report* report);
 
     /**
+     * @brief OPTIONAL. The device properties changed; refresh anything the
+     *        channel copied at initialization. May be NULL for a channel that
+     *        holds no copy.
+     *
+     * Without this a channel that snapshots compatibility properties and the
+     * installed update id at init keeps sending stale device identity after
+     * az_iot_adu_client_update_device_properties().
+     */
+    az_iot_result (*set_device_properties)(void* ctx, const az_iot_adu_device_properties* props);
+
+    /**
      * @brief OPTIONAL. Driven from the engine's do_work() tick so a channel
      *        with its own asynchronous work has somewhere to run. May be NULL.
      */
@@ -119,12 +159,73 @@ extern "C"
    * connection client. Lives inside az_iot_adu_client_t, so it is caller
    * allocated and needs no heap.
    */
+  /* Bound on a request/response body. A compliant update-check response fits
+   * every transport the service offers; this is sized for that. */
+#ifndef AZ_IOT_ADU_CHANNEL_BODY_MAX_SIZE
+#define AZ_IOT_ADU_CHANNEL_BODY_MAX_SIZE 2048
+#endif
+
+/* The service accepts a bounded number of compatibility properties. */
+#ifndef AZ_IOT_ADU_CHANNEL_MAX_COMPAT
+#define AZ_IOT_ADU_CHANNEL_MAX_COMPAT 5
+#endif
+
   typedef struct az_iot_adu_channel_dps
   {
     az_iot_connection_client* connection;
-    az_iot_adu_http_transport http;
     az_iot_adu_channel_update_cb update_cb;
+    az_iot_adu_channel_result_cb result_cb;
     void* engine_ctx;
+
+    /* Correlation for the one request that may be outstanding. The device
+     * drives one operation at a time, so a single slot is enough and makes an
+     * unsolicited or late response obvious rather than ambiguous. */
+    char pending_rid[24];
+    az_iot_adu_operation pending_operation;
+    bool request_pending;
+    uint32_t next_rid;
+
+    /* Caller-allocated so the channel performs no allocation of its own. */
+    uint8_t body[AZ_IOT_ADU_CHANNEL_BODY_MAX_SIZE];
+
+    /* What the device reports about itself on a fetch. Copied at init: the
+     * caller's device-properties struct may be freed once initialize returns. */
+    char agent_sdk_version[32];
+    int32_t agent_profile;
+
+    /* Compatibility properties, and what is installed now. Both are required on
+     * a fetch: they are how the service picks the right update. */
+    az_iot_adu_custom_property compat[AZ_IOT_ADU_CHANNEL_MAX_COMPAT];
+    size_t compat_count;
+    char compat_storage[256];
+
+    az_iot_adu_report_update_id installed_update_id;
+    bool has_installed_update_id;
+    char installed_storage[192];
+
+    /* ETags from the last successful fetch, echoed on the next one. Empty
+     * means "not held yet". */
+    char agent_info_etag[128];
+    char service_config_etag[128];
+
+    /* True while this channel holds registration back for its pre-registration
+     * exchange. Tracked so the release is idempotent and exactly matched. */
+    bool holds_registration;
+
+    /* Standing interest in holding registration, kept separate from the hold
+     * actually taken. Binding to a session that is already registering cannot
+     * take a hold; this is what makes the NEXT session (a reprovision) hold
+     * instead of racing the check against registration again.
+     *
+     * Set for the lifetime of the binding, cleared only at close: a device that
+     * reprovisions needs its check held on that session too. */
+    bool wants_hold;
+
+    /* Whether the pre-registration exchange has already run on the CURRENT
+     * session. Distinct from wants_hold: it stops the same session being held
+     * twice, while leaving the standing interest intact for the next one. Reset
+     * when the session goes away. */
+    bool exchange_done;
   } az_iot_adu_channel_dps;
 
   /* Bind the channel to a connection and an HTTPS transport and emit the vtable
@@ -132,7 +233,7 @@ extern "C"
   az_iot_result az_iot_adu_channel_dps_init(
       az_iot_adu_channel_dps* channel_state,
       az_iot_connection_client* connection,
-      const az_iot_adu_http_transport* http_transport,
+      const az_iot_adu_device_properties* device_props,
       az_iot_adu_channel* out_channel);
 
 #ifdef __cplusplus

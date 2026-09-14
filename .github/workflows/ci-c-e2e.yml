@@ -174,7 +174,7 @@ jobs:
         # Windows runner image does not carry.
         run: |
           cmake --preset ${{ matrix.preset }} -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_WITH_PAHO=ON ${{ runner.os == 'Linux' && '-DAZ_IOT_BUILD_E2E_PKCS11=ON' || '' }}
-          cmake --build --preset ${{ matrix.preset }} ${{ runner.os == 'Windows' && '--config Debug' || '' }} --target az_iot_tests_e2e az_iot_tests_e2e_fileupload
+          cmake --build --preset ${{ matrix.preset }} ${{ runner.os == 'Windows' && '--config Debug' || '' }} --target az_iot_tests_e2e az_iot_tests_e2e_fileupload az_iot_tests_e2e_transport
           ${{ runner.os == 'Linux' && format('cmake --build --preset {0} --target az_iot_tests_e2e_custody', matrix.preset) || '' }}
 
       - name: Build the file upload sample (Linux)
@@ -262,8 +262,11 @@ jobs:
 
           New-Item -ItemType Directory -Path ./test_config/results -Force | Out-Null
           $cfg = if ($IsWindows) { @('-C', 'Debug') } else { @() }
-          # `-R e2e` runs the fast suite (az_iot_tests_e2e) and the file upload
-          # suite. The mocked ADU suite retired with ADU's twin delivery channel
+          # `-R e2e` runs the fast suite (az_iot_tests_e2e), the file upload
+          # suite and the transport suite (WebSockets, and MQTT through an HTTP
+          # proxy; its proxy scenarios skip themselves when no proxy is
+          # configured for the leg).
+          # The mocked ADU suite retired with ADU's twin delivery channel
           # and is not built. The CSR enrollment test is not built
           # here -- it needs a DPS enrollment linked to a signing CA, which only
           # ci-c-e2e-csr provisions, so it lives behind AZ_IOT_BUILD_E2E_CSR.
@@ -309,17 +312,50 @@ jobs:
         run: |
           . ./test_config/set_test_env_vars.ps1
 
-          $exports = & bash -c 'set -e; c/eng/setup-pkcs11-provider.sh; c/eng/setup-softhsm.sh "$AZ_IOT_CLIENT_KEY" --keep-key-file'
+          # eval the provider script rather than merely running it, so
+          # setup-softhsm.sh sees OPENSSL_MODULES and writes an explicit
+          # "module = .../pkcs11.so" into the configuration it generates. The
+          # coverage job in ci-c.yml has always eval'd it; this one did not.
+          #
+          # This is hygiene, NOT the cause of the nightly failure. Without the
+          # eval the configuration names the provider by section only, but
+          # OPENSSL_MODULES still reaches the test process -- the loop below
+          # parses the provider script's own export line -- so the provider
+          # resolves either way. Measured: a configuration generated with
+          # OPENSSL_MODULES unset still activates pkcs11 when the variable is set
+          # at run time. Naming the module makes the configuration independent of
+          # that variable instead of relying on it.
+          $exports = & bash -c 'set -e; mods="$(c/eng/setup-pkcs11-provider.sh)"; eval "$mods"; echo "$mods"; c/eng/setup-softhsm.sh "$AZ_IOT_CLIENT_KEY" --keep-key-file'
           if ($LASTEXITCODE -ne 0) { throw "PKCS#11 token provisioning failed ($LASTEXITCODE)" }
           foreach ($line in $exports) {
             if ($line -match "^export ([A-Za-z0-9_]+)='(.*)'$") {
               [System.Environment]::SetEnvironmentVariable($Matches[1], $Matches[2])
             }
           }
-          # Fail here, not thirty lines into a test log, if the provider cannot
-          # be loaded: without it the token cannot sign.
-          & openssl list -providers -provider pkcs11 > $null
-          if ($LASTEXITCODE -ne 0) { throw "the OpenSSL pkcs11 provider did not load" }
+
+          # What the run will actually use. Printed rather than discarded: a
+          # custody failure is otherwise indistinguishable from a configuration
+          # that was never applied.
+          Write-Host "--- OPENSSL_CONF = $env:OPENSSL_CONF"
+          Get-Content $env:OPENSSL_CONF | Write-Host
+
+          # The provider must be active from the CONFIGURATION ALONE. The previous
+          # check passed "-provider pkcs11", which loads it explicitly and so could
+          # not tell a configuration that is in effect from one that is not -- the
+          # exact difference that matters here, because the adapter loads the
+          # provider at run time regardless and that path is the one that fails.
+          $providers = & openssl list -providers 2>&1 | Out-String
+          Write-Host "--- providers active from configuration:`n$providers"
+          if ($LASTEXITCODE -ne 0) {
+            throw "openssl list -providers failed ($LASTEXITCODE)"
+          }
+          # Match the provider's own entry in the list -- a line holding just its
+          # name -- not the substring anywhere in the output. $providers carries
+          # stderr too, so a load error that merely mentions pkcs11 must not read
+          # as success.
+          if ($providers -notmatch '(?m)^\s+pkcs11\s*$') {
+            throw "the pkcs11 provider is not active from OPENSSL_CONF; the custody path would fall back to a run-time load"
+          }
 
           # Verbose OpenSSL handshake errors. A custody failure otherwise
           # surfaces as Paho's "TCP/TLS connect failure", which says nothing
