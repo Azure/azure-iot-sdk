@@ -9,7 +9,7 @@ for the full design.
 
 | Scenario | Provider | Sample | Notes |
 |----------|----------|--------|-------|
-| X.509 from files (no CSR) | `az_iot_certificate_provider_pem` | [../telemetry](../telemetry/main.c) and the other feature samples | Baseline device auth (via DPS). |
+| X.509 from files (no CSR) | `az_iot_certificate_provider_pem` | [../telemetry_gen1](../telemetry_gen1/main.c), [../telemetry_gen2](../telemetry_gen2/main.c) and the other feature samples | Baseline device auth (via DPS). Identical on both generations -- the provider is generation-agnostic. |
 | Direct hub connect, no DPS (Classic or Next/AEG) | `az_iot_certificate_provider_pem` | `direct-hub` | Caller-supplied hub FQDN + device cert/key; selects the MQTT flavor via `opts.connection_profile`. |
 | DPS CSR enrollment (issued operational cert) | managed (OpenSSL) | `dps_csr_managed` | Bootstrap X.509 → CSR in DPS register → operational cert persisted. |
 | App-notified issuance (D4) | managed (OpenSSL) | `dps_csr_managed` | Uses `set_operational_cert_callback` to observe the issued chain. |
