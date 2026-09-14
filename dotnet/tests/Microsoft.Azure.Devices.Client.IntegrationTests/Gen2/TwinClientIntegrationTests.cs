@@ -6,7 +6,7 @@ using Microsoft.Azure.Devices.Client.Models.Twin;
 using System.Text.Json.Nodes;
 using Xunit;
 
-namespace Microsoft.Azure.Devices.Client.IntegrationTests
+namespace Microsoft.Azure.Devices.Client.IntegrationTests.Gen2
 {
     public class TwinClientIntegrationTests
     {

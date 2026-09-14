@@ -7,7 +7,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Xunit;
 
-namespace Microsoft.Azure.Devices.Client.IntegrationTests
+namespace Microsoft.Azure.Devices.Client.IntegrationTests.Gen2
 {
     public class TelemetryClientIntegrationTests
     {
