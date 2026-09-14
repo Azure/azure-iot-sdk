@@ -181,6 +181,12 @@ az_iot_add_cmocka_test(az_iot_tests_e2e_transport
     tests/e2e_transport_test.c tests/e2e_device.c)
 target_link_libraries(az_iot_tests_e2e_transport PRIVATE
     az_iot_e2e_service az_iot_gen1 az_iot_adapter_paho)
+if(UNIX)
+    # setenv()/unsetenv() are POSIX, not C99, and these targets build -std=c99:
+    # without this the calls are implicit declarations and the build fails rather
+    # than warning. Same reason as az_iot_tests_paho_transport_proxy.
+    target_compile_definitions(az_iot_tests_e2e_transport PRIVATE _POSIX_C_SOURCE=200809L)
+endif()
 
 # ---------------------------------------------------------------------------
 # az_iot_tests_e2e_custody
