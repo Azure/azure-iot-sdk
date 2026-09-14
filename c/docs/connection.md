@@ -177,6 +177,37 @@ Key ordering guarantees that both clients must honour:
 5. The DPS assignment is the single delivery point for everything the device learns about its
    placement: hub, device id, connection profile and issued certificate chain.
 
+### 3.1 Egress: transport and proxy **[implemented]**
+
+Both connects above — the DPS bootstrap connect and the hub connect — use the same egress
+configuration, because a device that needs a proxy or WebSockets to reach the hub needs them to
+reach DPS first.
+
+| Option | Effect |
+| --- | --- |
+| `transport` | `TCP` (default) or `WEBSOCKET`. WebSockets carries MQTT inside a WebSocket on 443, for a network that passes only HTTP(S) ports. |
+| `websocket_path` | Defaults to `/$iothub/websocket`, which is what IoT Hub and DPS expect. |
+| `proxy` | Host, port and optional Basic credentials of an HTTP proxy. The connection is made with HTTP `CONNECT`, for both transports. |
+| `port` | `0` derives the port from the transport: 8883 for TCP, 443 for WebSockets. An explicit value always wins. |
+
+Two rules:
+
+- **The proxy is a transport detail only.** TLS is negotiated with the broker *inside* the tunnel,
+  so the proxy sees ciphertext, and chain and hostname validation are unchanged. The MQTT session,
+  the identity and the reconnection policy are all unaffected.
+- **An adapter that cannot honour the request must refuse it** with `AZ_IOT_ERR_NOT_SUPPORTED`.
+  Connecting directly when a proxy was configured would bypass the egress control the caller
+  selected, and connecting over TCP when WebSockets were selected would be blocked by the firewall
+  the caller was working around; either would fail later and for the wrong reason.
+
+Note for the Paho adapter: when `proxy` is left unset, Paho still falls back to the lowercase
+`http_proxy` / `https_proxy` environment variables on its own (the uppercase spellings are ignored).
+Set `proxy` to be explicit and independent of the environment.
+
+Worked examples: [samples/websockets](../samples/websockets/main.c) and
+[samples/proxy](../samples/proxy/main.c). Each is the `telemetry_gen1` sample with
+one of these options set, so the diff against it is exactly the feature.
+
 ---
 
 ## 4. Connection profile selection **[planned]**

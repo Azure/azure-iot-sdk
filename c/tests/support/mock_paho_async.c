@@ -38,6 +38,9 @@ static int s_last_enable_server_cert_auth;
 static int s_last_verify;
 static char s_last_private_key[512];
 static bool s_last_had_private_key;
+static char s_last_http_proxy[256];
+static char s_last_https_proxy[256];
+static int s_last_struct_version;
 
 void mock_paho_reset(void)
 {
@@ -58,6 +61,9 @@ void mock_paho_reset(void)
   s_last_verify = -1;
   s_last_private_key[0] = '\0';
   s_last_had_private_key = false;
+  s_last_http_proxy[0] = '\0';
+  s_last_https_proxy[0] = '\0';
+  s_last_struct_version = -1;
 }
 
 void mock_paho_set_create_rc(int rc) { s_create_rc = rc; }
@@ -90,6 +96,18 @@ const char* mock_paho_last_private_key(void)
 {
   return s_last_had_private_key ? s_last_private_key : NULL;
 }
+
+const char* mock_paho_last_http_proxy(void)
+{
+  return s_last_http_proxy[0] != '\0' ? s_last_http_proxy : NULL;
+}
+
+const char* mock_paho_last_https_proxy(void)
+{
+  return s_last_https_proxy[0] != '\0' ? s_last_https_proxy : NULL;
+}
+
+int mock_paho_last_connect_struct_version(void) { return s_last_struct_version; }
 
 /* ------------------------------------------------------------------------- */
 /* MQTTAsync                                                                 */
@@ -167,6 +185,17 @@ int MQTTAsync_connect(MQTTAsync handle, const MQTTAsync_connectOptions* options)
     s_last_enable_server_cert_auth = -1;
     s_last_verify = -1;
     s_last_had_private_key = false;
+  }
+  s_last_struct_version = options != NULL ? options->struct_version : -1;
+  s_last_http_proxy[0] = '\0';
+  s_last_https_proxy[0] = '\0';
+  if (options != NULL && options->httpProxy != NULL)
+  {
+    snprintf(s_last_http_proxy, sizeof(s_last_http_proxy), "%s", options->httpProxy);
+  }
+  if (options != NULL && options->httpsProxy != NULL)
+  {
+    snprintf(s_last_https_proxy, sizeof(s_last_https_proxy), "%s", options->httpsProxy);
   }
   return s_connect_rc;
 }
@@ -260,7 +289,11 @@ void MQTTAsync_freeMessage(MQTTAsync_message** msg) { (void)msg; }
 
 void MQTTAsync_setTraceLevel(enum MQTTASYNC_TRACE_LEVELS level) { (void)level; }
 
-void MQTTAsync_setTraceCallback(MQTTAsync_traceCallback* callback) { (void)callback; }
+static MQTTAsync_traceCallback* s_trace_callback;
+
+void MQTTAsync_setTraceCallback(MQTTAsync_traceCallback* callback) { s_trace_callback = callback; }
+
+MQTTAsync_traceCallback* mock_paho_trace_callback(void) { return s_trace_callback; }
 
 /* ------------------------------------------------------------------------- */
 /* MQTTProperties. Reached only by the v5 branch of connect(); the adapter    */

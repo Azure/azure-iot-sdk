@@ -245,7 +245,7 @@ Not part of the public API; listed for implementation context.
 
 Only the cert-provider setup and one option line change; the entire
 connect / `do_work` / send flow stays identical (enrollment is transparent). Delta
-against `samples/telemetry/main.c`:
+against `samples/telemetry_gen1/main.c`:
 
 ```c
     /* --- BEFORE: static cert used for both DPS and Hub --- */

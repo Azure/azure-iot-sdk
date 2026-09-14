@@ -105,7 +105,28 @@ extern "C"
      *
      * The bundled Paho adapter does NOT implement this route -- Paho exposes no
      * TLS key callback -- so its harnesses declare only the URI route. */
-    AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY_SIGN = 1u << 1
+    AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY_SIGN = 1u << 1,
+
+    /* MQTT carried inside WebSockets (az_iot_mqtt_connect_options.transport =
+     * AZ_IOT_MQTT_TRANSPORT_WEBSOCKET), for devices whose network passes only
+     * HTTP(S) ports. Proved by an end-to-end session over a WebSocket listener;
+     * supply az_iot_conformance_options websocket_port (and websocket_path when
+     * the broker does not serve the Azure default).
+     *
+     * Not declaring it does NOT mean untested: the baseline requires an adapter
+     * asked for a transport it does not implement to REFUSE the connect with
+     * AZ_IOT_ERR_NOT_SUPPORTED, never to fall back to TCP. */
+    AZ_IOT_CONFORMANCE_CAP_WEBSOCKETS = 1u << 2,
+
+    /* Reaching the broker through an HTTP CONNECT proxy
+     * (az_iot_mqtt_connect_options.proxy). Proved by an end-to-end session
+     * through a real proxy; supply az_iot_conformance_options proxy_host +
+     * proxy_port.
+     *
+     * As above, the baseline holds every adapter -- declared or not -- to the
+     * rule that matters for an egress control: a proxy that cannot be reached
+     * must end as a failed connect, NEVER as a direct session to the broker. */
+    AZ_IOT_CONFORMANCE_CAP_PROXY = 1u << 3
   } az_iot_conformance_capability;
 
   typedef struct az_iot_conformance_options
@@ -145,6 +166,24 @@ extern "C"
     const char* client_cert_path;
     az_iot_mqtt_sign_callback sign;
     void* sign_ctx;
+
+    /* Material for the transport capabilities above. Each is needed only by the
+     * capability that names it, and supplying it without declaring that
+     * capability fails the run -- being ignored in silence is indistinguishable
+     * from an environment that has neither. */
+
+    /* AZ_IOT_CONFORMANCE_CAP_WEBSOCKETS: a WebSocket listener on the same
+     * broker host. 0 means "not available here". */
+    uint16_t websocket_port;
+    /* Resource path that listener serves. NULL selects the SDK default
+     * (AZ_IOT_MQTT_DEFAULT_WEBSOCKET_PATH); a plain MQTT broker usually wants
+     * "/mqtt" instead. */
+    const char* websocket_path;
+
+    /* AZ_IOT_CONFORMANCE_CAP_PROXY: an HTTP CONNECT proxy that can reach the
+     * broker. Both are required; proxy_port 0 means "not available here". */
+    const char* proxy_host;
+    uint16_t proxy_port;
   } az_iot_conformance_options;
 
   /* Run the conformance suite for `suite_kind` against the given factory.
