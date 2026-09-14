@@ -100,5 +100,26 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.StubService
         /// An optional sink for the stub's diagnostic messages.
         /// </summary>
         public Action<string>? Logger { get; set; }
+
+        /// <summary>
+        /// How the stub terminates a device's MQTT connection.
+        /// </summary>
+        /// <remarks>
+        /// The stub is an MQTT client, not a broker, so it cannot close another client's session by itself. Supplying a
+        /// dropper - <see cref="InProcessMqttBroker"/> is one - enables
+        /// <see cref="StubIotHubService.DropDeviceConnectionAsync"/> and the
+        /// <see cref="RandomConnectionDrops"/> loop. When null, any attempt to drop a connection throws.
+        /// </remarks>
+        public IStubDeviceConnectionDropper? ConnectionDropper { get; set; }
+
+        /// <summary>
+        /// How, and whether, the stub randomly drops the connections of the devices it serves, with randomly chosen MQTT
+        /// disconnect reason codes.
+        /// </summary>
+        /// <remarks>
+        /// Random drops are off until <see cref="StubConnectionDropOptions.Enabled"/> is set, and require
+        /// <see cref="ConnectionDropper"/> to be set as well.
+        /// </remarks>
+        public StubConnectionDropOptions RandomConnectionDrops { get; set; } = new();
     }
 }

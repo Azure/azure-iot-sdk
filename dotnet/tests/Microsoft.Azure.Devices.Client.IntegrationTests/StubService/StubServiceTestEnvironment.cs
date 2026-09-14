@@ -49,9 +49,28 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.StubService
         public StubDeviceProvisioningService ProvisioningService { get; private set; } = null!;
 
         /// <summary>
+        /// The broker the device, the hub, and the DPS all connect to. It is also what backs the hub's connection drops.
+        /// </summary>
+        public InProcessMqttBroker Broker => _broker;
+
+        /// <summary>
         /// Start a broker, a hub of the requested generation, and a DPS that assigns devices to that hub.
         /// </summary>
-        public static async Task<StubServiceTestEnvironment> StartAsync(IotHubGeneration generation, CancellationToken cancellationToken = default)
+        /// <param name="generation">Which generation of hub the device should be provisioned onto.</param>
+        /// <param name="configureHub">
+        /// An optional hook to adjust the hub's options before it is constructed, for instance to turn on
+        /// <see cref="StubIotHubServiceOptions.RandomConnectionDrops"/>.
+        /// </param>
+        /// <param name="configureProvisioningService">
+        /// An optional hook to adjust the DPS options before it is constructed, for instance to turn on
+        /// <see cref="StubDeviceProvisioningServiceOptions.RandomConnectionDrops"/>.
+        /// </param>
+        /// <param name="cancellationToken">The cancellation token.</param>
+        public static async Task<StubServiceTestEnvironment> StartAsync(
+            IotHubGeneration generation,
+            Action<StubIotHubServiceOptions>? configureHub = null,
+            Action<StubDeviceProvisioningServiceOptions>? configureProvisioningService = null,
+            CancellationToken cancellationToken = default)
         {
             var environment = new StubServiceTestEnvironment();
 
@@ -60,7 +79,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.StubService
                 environment._broker = await InProcessMqttBroker.StartAsync(cancellationToken);
                 environment._certificate = CreateSelfSignedCertificate(environment.DeviceId);
 
-                environment.Hub = new StubIotHubService(new StubIotHubServiceOptions
+                var hubOptions = new StubIotHubServiceOptions
                 {
                     Generation = generation,
                     HubHostName = HubHostName,
@@ -69,15 +88,26 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.StubService
 
                     // Classic hub topics carry no device id, so the stub has to be told which device it is serving.
                     DeviceIdFilter = generation == IotHubGeneration.Gen1 ? environment.DeviceId : null,
-                });
+
+                    // Only the broker can close a device's session, so it is what backs the hub's connection drops.
+                    ConnectionDropper = environment._broker,
+                };
+
+                configureHub?.Invoke(hubOptions);
+
+                environment.Hub = new StubIotHubService(hubOptions);
 
                 await environment.Hub.StartAsync(cancellationToken);
 
-                // ForHub copies the hub's generation, host name, and broker endpoint, so the device is guaranteed to
-                // be told to speak the protocol the hub is actually serving.
+                // ForHub copies the hub's generation, host name, broker endpoint, and connection dropper, so the device is
+                // guaranteed to be told to speak the protocol the hub is actually serving.
                 environment.ProvisioningService = StubDeviceProvisioningService.ForHub(
                     environment.Hub,
-                    options => options.DeviceId = environment.DeviceId);
+                    options =>
+                    {
+                        options.DeviceId = environment.DeviceId;
+                        configureProvisioningService?.Invoke(options);
+                    });
 
                 await environment.ProvisioningService.StartAsync(cancellationToken);
 

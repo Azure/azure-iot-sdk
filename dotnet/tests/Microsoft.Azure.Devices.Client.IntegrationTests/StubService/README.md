@@ -60,6 +60,62 @@ StubDirectMethodResult result = await hub.InvokeDirectMethodAsync(deviceId, "reb
 Device-initiated traffic is surfaced as events: `TelemetryReceived`, `ReportedPropertiesReceived`,
 `TwinGetReceived`, and `DeviceBirthReceived`. The stub's authoritative twin for a device is reachable
 at any time through `GetDeviceState(deviceId)`.
+
+## Dropping device connections
+
+A real service disconnects devices without warning, and MQTT 5 lets it say why. The stub does the same, so
+that a test can check how the SDK reacts to each disconnect reason code.
+
+The stub is a client, not a broker, so it cannot close another client's session by itself. It borrows that
+ability from `StubIotHubServiceOptions.ConnectionDropper`, an `IStubDeviceConnectionDropper`.
+`InProcessMqttBroker` implements that interface, and both `StubServiceTestEnvironment` and the test harness
+in `StubIotHubServiceTests` wire it up already. Without a dropper, every drop call throws.
+
+```csharp
+// A specific reason code.
+await hub.DropDeviceConnectionAsync(deviceId, MqttDisconnectReasonCode.ServerBusy);
+
+// A random reason code, for a specific device or for a randomly chosen connected one.
+MqttDisconnectReasonCode? code = await hub.DropDeviceConnectionWithRandomReasonCodeAsync(deviceId);
+StubDeviceConnectionDroppedEventArgs? drop = await hub.DropRandomDeviceConnectionAsync();
+```
+
+`StubIotHubServiceOptions.RandomConnectionDrops` turns the same thing into a background loop that runs for as
+long as the stub is started:
+
+```csharp
+await using var environment = await StubServiceTestEnvironment.StartAsync(
+    IotHubGeneration.Gen2,
+    configureHub: options => options.RandomConnectionDrops = new StubConnectionDropOptions
+    {
+        Enabled = true,
+        MinInterval = TimeSpan.FromSeconds(1),
+        MaxInterval = TimeSpan.FromSeconds(5),
+        Probability = 0.5,
+        ReasonCodes = StubDisconnectReasonCodes.All,
+        RandomSeed = 1234,   // replay a failing run
+        MaxDrops = 10,
+    });
+```
+
+Each pass waits a random interval in `[MinInterval, MaxInterval]`, rolls `Probability`, and on a hit drops one
+randomly chosen connected device with one randomly chosen code from `ReasonCodes`. Candidates are the devices
+the stub serves and already knows about, optionally narrowed further by `StubConnectionDropOptions.DeviceIds`;
+the stub never drops its own connection or the stub DPS's.
+
+`ReasonCodes` defaults to `StubDisconnectReasonCodes.ServerInitiated`, which is every code MQTT 5 section
+3.14.2.1 allows a server to send. `StubDisconnectReasonCodes.All` adds the client-only
+`DisconnectWithWillMessage`, for checking that a device survives a code it should never be sent;
+`StubDisconnectReasonCodes.ServerInitiatedErrors` drops `NormalDisconnection`.
+
+Every drop, explicit or random, raises `DeviceConnectionDropped` and is appended to `ConnectionDropHistory`,
+which is what a randomized test asserts against since neither the victim, the moment, nor the code is known up
+front. A gen2 device is marked not dispatch-ready again, because it has to redo the presence handshake.
+
+Note that the reason code reaching the device is an artifact of the in-process broker. MQTT 3.1.1 has no
+server-to-client DISCONNECT packet, so a real classic hub could only close the socket, whereas
+`InProcessMqttBroker` hands the code to a gen1 device too. Assert against `ConnectionDropHistory` rather than
+the device's disconnect arguments when the distinction matters.
 
 ## Limitations
 
@@ -123,6 +179,54 @@ On assignment the stub also pre-registers the device with the hub it is bound to
 attribute the device's subsequent topic traffic without `DeviceIdFilter` being set explicitly. The
 `DeviceProvisioned` event reports each assignment.
 
+## Dropping device connections
+
+The stub DPS drops connections the same way the stub hub does, and for the same reason: to see what the SDK
+does when a registration is cut off partway through. The API mirrors the hub's, backed by the same
+`StubConnectionDropEngine`.
+
+```csharp
+await using var environment = await StubServiceTestEnvironment.StartAsync(
+    IotHubGeneration.Gen2,
+    configureProvisioningService: options =>
+    {
+        options.AssigningPollResponses = 3;
+        options.RandomConnectionDrops = new StubConnectionDropOptions
+        {
+            Enabled = true,
+            MinInterval = TimeSpan.FromSeconds(1),
+            MaxInterval = TimeSpan.FromSeconds(2),
+            ReasonCodes = StubDisconnectReasonCodes.All,
+            MaxDrops = 1,
+            RandomSeed = 1234,
+        };
+    });
+
+// Or explicitly, at a moment of the test's choosing.
+await dps.DropDeviceConnectionAsync(deviceId, MqttDisconnectReasonCode.ServerBusy);
+await dps.DropDeviceConnectionWithRandomReasonCodeAsync(deviceId);
+await dps.DropRandomDeviceConnectionAsync();
+```
+
+`StubDeviceProvisioningServiceOptions.ConnectionDropper` supplies the ability, exactly as on the hub, and
+`ForHub` copies the hub's dropper along with everything else it copies, so a stub pair built that way needs
+no extra wiring. Drops raise `DeviceConnectionDropped` and land in `ConnectionDropHistory`.
+
+Two things differ from the hub:
+
+- **The only droppable device is the one being registered.** The SDK connects to DPS with the registration
+  id as its MQTT client id, so `StubDeviceProvisioningServiceOptions.DeviceId` or `RegistrationId` is the
+  only value the stub can match, and any other device id is rejected. This falls out of the same
+  single-device limitation as the rest of the stub DPS.
+- **Reason codes are a stub-side record.** Provisioning is MQTT 3.1.1 for both generations, so a real DPS
+  endpoint could only close the socket. `InProcessMqttBroker` does pass the code to the device anyway, but
+  `ConnectionDropHistory` is the dependable place to assert on.
+
+Timing matters more here than on the hub, because a registration is short. `AssigningPollResponses` is the
+lever: each extra poll costs at least the SDK's two second `retry-after` floor, which is what keeps the
+device on the DPS connection long enough for a drop to land mid registration. Note also that the random drop
+loop starts with `StartAsync`, which is before the device connects.
+
 ## Limitations
 
 - **The device id must be configured.** The DPS topics carry no registration id, and a stub sharing a
@@ -144,13 +248,18 @@ attribute the device's subsequent topic traffic without `DeviceIdFilter` being s
 | `StubIotHubService.cs` | Lifecycle, subscriptions, message routing, and the generation-agnostic public API |
 | `StubIotHubService.Gen1.cs` | Classic hub protocol |
 | `StubIotHubService.Gen2.cs` | Event Grid MQTT broker hub protocol |
+| `StubIotHubService.ConnectionDrops.cs` | Explicit and random device connection drops |
 | `StubIotHubServiceOptions.cs` | Configuration |
+| `StubConnectionDropOptions.cs` | Random connection drop configuration and the reason code sets |
+| `StubConnectionDropEngine.cs` | The drop machinery itself - history, the seeded random choices, and the background loop - shared by both stubs |
+| `IStubDeviceConnectionDropper.cs` | The ability to close a device's session, which the stubs borrow from the broker |
 | `StubDeviceProvisioningService.cs` | The stub DPS: registration, polling, and hub assignment |
+| `StubDeviceProvisioningService.ConnectionDrops.cs` | Explicit and random drops of the registering device's connection |
 | `StubDeviceProvisioningServiceOptions.cs` | Stub DPS configuration |
 | `StubDeviceState.cs` | Per-device authoritative twin, versioning, and JSON merge patch |
 | `StubServiceModels.cs` | Event args and result types |
 | `IotHubGeneration.cs` | The generation enum |
-| `InProcessMqttBroker.cs` | A plaintext MQTT broker on a loopback port, for tests that want no external dependencies |
+| `InProcessMqttBroker.cs` | A plaintext MQTT broker on a loopback port, for tests that want no external dependencies. Also backs both stubs' connection drops |
 | `LocalBrokerMqttClient.cs` | Retargets the SDK's CONNECT packet at a local plaintext broker |
 | `StubServiceTestEnvironment.cs` | A broker, a hub, and a DPS bound to it, for tests that just want a device to provision somewhere |
 | `StubIotHubServiceTests.cs` | End-to-end tests of a real device client against the stub |

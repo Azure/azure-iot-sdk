@@ -34,6 +34,13 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.StubService
     /// <para>
     /// The stub is not a broker. Point it and the devices under test at the same MQTT broker.
     /// </para>
+    /// <para>
+    /// Because it is not a broker, terminating a device's connection is something it has to borrow from one. Supply an
+    /// <see cref="StubIotHubServiceOptions.ConnectionDropper"/> - <see cref="InProcessMqttBroker"/> is one - and the stub
+    /// can drop a device with any MQTT disconnect reason code, either on demand through
+    /// <see cref="DropDeviceConnectionAsync"/> or at random through
+    /// <see cref="StubIotHubServiceOptions.RandomConnectionDrops"/>.
+    /// </para>
     /// </remarks>
     /// <example>
     /// <code>
@@ -100,6 +107,12 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.StubService
         /// Whether this stub is currently connected to the broker.
         /// </summary>
         public bool IsConnected => _mqttClient.IsConnected;
+
+        /// <summary>
+        /// What this stub uses to close a device's session, or null if it was not given one. See
+        /// <see cref="StubIotHubServiceOptions.ConnectionDropper"/>.
+        /// </summary>
+        public IStubDeviceConnectionDropper? ConnectionDropper => _options.ConnectionDropper;
 
         /// <summary>
         /// Raised when a device sends telemetry.
@@ -190,6 +203,8 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.StubService
 
             _isStarted = true;
             Log($"Stub {_options.Generation} IoT hub service is listening on {_options.BrokerHostName}:{_options.BrokerPort}.");
+
+            ConnectionDrops.StartRandomDrops();
         }
 
         /// <summary>
@@ -203,6 +218,8 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.StubService
             }
 
             _isStarted = false;
+
+            await ConnectionDrops.StopRandomDropsAsync();
 
             if (_mqttClient.IsConnected)
             {

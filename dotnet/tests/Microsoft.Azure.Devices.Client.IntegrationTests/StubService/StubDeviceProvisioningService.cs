@@ -32,6 +32,12 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.StubService
     /// <para>
     /// The stub is not a broker. Point it, the stub hub, and the devices under test at the same MQTT broker.
     /// </para>
+    /// <para>
+    /// Because it is not a broker, terminating the registering device's connection is something it has to borrow from one.
+    /// Supply a <see cref="StubDeviceProvisioningServiceOptions.ConnectionDropper"/> - <see cref="InProcessMqttBroker"/> is
+    /// one - and the stub can cut a registration short, either on demand through <see cref="DropDeviceConnectionAsync"/> or
+    /// at random through <see cref="StubDeviceProvisioningServiceOptions.RandomConnectionDrops"/>.
+    /// </para>
     /// </remarks>
     /// <example>
     /// <code>
@@ -45,7 +51,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.StubService
     /// await connectionClient.ProvisionAndConnectAsync(new ProvisioningSettings(idScope), authentication);
     /// </code>
     /// </example>
-    public sealed class StubDeviceProvisioningService : IAsyncDisposable
+    public sealed partial class StubDeviceProvisioningService : IAsyncDisposable
     {
         private const string RegisterTopicFilter = "$dps/registrations/PUT/iotdps-register/#";
         private const string OperationStatusTopicFilter = "$dps/registrations/GET/iotdps-get-operationstatus/#";
@@ -102,6 +108,9 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.StubService
                 BrokerHostName = hub.BrokerHostName,
                 BrokerPort = hub.BrokerPort,
                 AssignedHubHostName = hub.HubHostName,
+
+                // The hub and the DPS share a broker, so whatever closes sessions for one closes them for the other.
+                ConnectionDropper = hub.ConnectionDropper,
             };
 
             configure?.Invoke(options);
@@ -190,6 +199,8 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.StubService
             _isStarted = true;
             Log($"Stub DPS is listening on {_options.BrokerHostName}:{_options.BrokerPort} and will assign devices to the "
                 + $"{_options.Generation} hub '{_options.AssignedHubHostName}'.");
+
+            ConnectionDrops.StartRandomDrops();
         }
 
         /// <summary>
@@ -203,6 +214,8 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.StubService
             }
 
             _isStarted = false;
+
+            await ConnectionDrops.StopRandomDropsAsync();
 
             if (_mqttClient.IsConnected)
             {

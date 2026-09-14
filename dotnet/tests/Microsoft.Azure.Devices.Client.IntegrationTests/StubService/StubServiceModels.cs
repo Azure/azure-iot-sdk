@@ -140,6 +140,42 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.StubService
     }
 
     /// <summary>
+    /// Raised after the stub hub drops a device's MQTT connection.
+    /// </summary>
+    public sealed class StubDeviceConnectionDroppedEventArgs : EventArgs
+    {
+        /// <summary>
+        /// The device whose connection was dropped.
+        /// </summary>
+        public required string DeviceId { get; init; }
+
+        /// <summary>
+        /// The MQTT disconnect reason code the connection was dropped with.
+        /// </summary>
+        /// <remarks>
+        /// Only a device speaking MQTT 5 - a gen2 device - actually receives this code. MQTT 3.1.1 has no server-to-client
+        /// DISCONNECT packet, so a gen1 device only sees the connection close.
+        /// </remarks>
+        public required MQTTnet.Protocol.MqttDisconnectReasonCode ReasonCode { get; init; }
+
+        /// <summary>
+        /// The reason string that accompanied the reason code, if any.
+        /// </summary>
+        public string? ReasonString { get; init; }
+
+        /// <summary>
+        /// Whether this drop came from the random drop loop or an explicit
+        /// <see cref="StubIotHubService.DropDeviceConnectionAsync"/> call.
+        /// </summary>
+        public required bool WasRandom { get; init; }
+
+        /// <summary>
+        /// When the drop happened.
+        /// </summary>
+        public required DateTimeOffset DroppedOnUtc { get; init; }
+    }
+
+    /// <summary>
     /// How a direct method invocation issued by the stub hub ended.
     /// </summary>
     public enum StubDirectMethodOutcome

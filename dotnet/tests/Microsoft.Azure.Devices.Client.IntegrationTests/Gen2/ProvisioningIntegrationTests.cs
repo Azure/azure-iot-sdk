@@ -20,7 +20,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Gen2
             CancellationToken cancellationToken = TestContext.Current.CancellationToken;
 
             await using StubServiceTestEnvironment environment =
-                await StubServiceTestEnvironment.StartAsync(IotHubGeneration.Gen2, cancellationToken);
+                await StubServiceTestEnvironment.StartAsync(IotHubGeneration.Gen2, cancellationToken: cancellationToken);
 
             using ConnectionClient connectionClient = new(environment.CreateConnectionClientOptions());
 
@@ -46,7 +46,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Gen2
             CancellationToken cancellationToken = TestContext.Current.CancellationToken;
 
             await using StubServiceTestEnvironment environment =
-                await StubServiceTestEnvironment.StartAsync(IotHubGeneration.Gen2, cancellationToken);
+                await StubServiceTestEnvironment.StartAsync(IotHubGeneration.Gen2, cancellationToken: cancellationToken);
 
             using ConnectionClient connectionClient = new(environment.CreateConnectionClientOptions());
 

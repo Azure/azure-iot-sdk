@@ -110,5 +110,35 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.StubService
         /// An optional sink for the stub's diagnostic messages.
         /// </summary>
         public Action<string>? Logger { get; set; }
+
+        /// <summary>
+        /// How the stub terminates a device's MQTT connection.
+        /// </summary>
+        /// <remarks>
+        /// The stub is an MQTT client, not a broker, so it cannot close another client's session by itself. Supplying a
+        /// dropper - <see cref="InProcessMqttBroker"/> is one - enables
+        /// <see cref="StubDeviceProvisioningService.DropDeviceConnectionAsync"/> and the
+        /// <see cref="RandomConnectionDrops"/> loop. When null, any attempt to drop a connection throws.
+        /// </remarks>
+        public IStubDeviceConnectionDropper? ConnectionDropper { get; set; }
+
+        /// <summary>
+        /// How, and whether, the stub randomly drops the connection of the device it is registering, with randomly chosen
+        /// MQTT disconnect reason codes.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// This is how a test exercises the SDK's provisioning retry path: a device that loses its DPS connection mid
+        /// registration has to reconnect and start the flow over, because DPS cannot persist sessions.
+        /// </para>
+        /// <para>
+        /// Random drops are off until <see cref="StubConnectionDropOptions.Enabled"/> is set, and require
+        /// <see cref="ConnectionDropper"/> to be set as well. Whichever code is chosen is recorded in the stub's own
+        /// <see cref="StubDeviceProvisioningService.ConnectionDropHistory"/>, which is the dependable place to assert on:
+        /// DPS speaks MQTT 3.1.1, which has no server-to-client DISCONNECT packet, so a real endpoint could not report a
+        /// reason code at all even though <see cref="InProcessMqttBroker"/> does.
+        /// </para>
+        /// </remarks>
+        public StubConnectionDropOptions RandomConnectionDrops { get; set; } = new();
     }
 }

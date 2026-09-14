@@ -27,7 +27,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Unified
             CancellationToken cancellationToken = TestContext.Current.CancellationToken;
 
             await using StubServiceTestEnvironment environment =
-                await StubServiceTestEnvironment.StartAsync(generation, cancellationToken);
+                await StubServiceTestEnvironment.StartAsync(generation, cancellationToken: cancellationToken);
 
             using ConnectionClient connectionClient = new(environment.CreateConnectionClientOptions());
 
@@ -51,7 +51,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Unified
             CancellationToken cancellationToken = TestContext.Current.CancellationToken;
 
             await using StubServiceTestEnvironment environment =
-                await StubServiceTestEnvironment.StartAsync(generation, cancellationToken);
+                await StubServiceTestEnvironment.StartAsync(generation, cancellationToken: cancellationToken);
 
             using ConnectionClient connectionClient = new(environment.CreateConnectionClientOptions());
 
