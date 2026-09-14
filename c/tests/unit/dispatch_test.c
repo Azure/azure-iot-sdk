@@ -3,7 +3,7 @@
 // information.
 
 /* SPDX-License-Identifier: MIT */
-/* Phase 2.3 - protocol_profile + dispatch unit tests. */
+/* Inbound-topic dispatch table unit tests. */
 #include <stdarg.h>
 #include <stddef.h>
 #include <setjmp.h>
@@ -17,43 +17,6 @@
 #include "azure/iot/az_iot_result.h"
 
 #include "internal/dispatch.h"
-#include "internal/protocol_profile.h"
-
-/* ------------------------------------------------------------------------- */
-/* protocol_profile                                                          */
-/* ------------------------------------------------------------------------- */
-
-static void profile_for_classic_role_is_v3(void** state)
-{
-  (void)state;
-  const az_iot_protocol_profile* p = az_iot_protocol_profile_for_role(AZ_IOT_MQTT_ROLE_HUB_CLASSIC);
-  assert_non_null(p);
-  assert_int_equal(p->flavor, AZ_IOT_HUB_FLAVOR_CLASSIC);
-  assert_int_equal(p->mqtt_version, AZ_IOT_MQTT_VERSION_3_1_1);
-  assert_non_null(p->twin_response_topic_prefix);
-  assert_non_null(p->twin_desired_topic_prefix);
-  assert_non_null(p->methods_request_topic_prefix);
-  assert_non_null(p->d2c_publish_topic_template);
-  assert_true(p->default_request_response_timeout_ms > 0);
-}
-
-static void profile_for_dps_role_is_classic(void** state)
-{
-  (void)state;
-  const az_iot_protocol_profile* p = az_iot_protocol_profile_for_role(AZ_IOT_MQTT_ROLE_DPS);
-  assert_non_null(p);
-  assert_int_equal(p->flavor, AZ_IOT_HUB_FLAVOR_CLASSIC);
-}
-
-static void profile_for_next_role_is_stub_null(void** state)
-{
-  (void)state;
-  /* Next profile is now implemented. Validate it returns a valid v5 profile. */
-  const az_iot_protocol_profile* p = az_iot_protocol_profile_for_role(AZ_IOT_MQTT_ROLE_HUB_NEXT);
-  assert_non_null(p);
-  assert_int_equal(p->flavor, AZ_IOT_HUB_FLAVOR_NEXT);
-  assert_true(p->uses_mqtt5_properties);
-}
 
 /* ------------------------------------------------------------------------- */
 /* dispatch                                                                  */
@@ -275,9 +238,6 @@ static void dispatch_frees_a_prefix_when_its_owner_unregisters(void** state)
 int main(void)
 {
   const struct CMUnitTest tests[] = {
-    cmocka_unit_test(profile_for_classic_role_is_v3),
-    cmocka_unit_test(profile_for_dps_role_is_classic),
-    cmocka_unit_test(profile_for_next_role_is_stub_null),
     cmocka_unit_test(dispatch_route_returns_false_when_no_match),
     cmocka_unit_test(dispatch_routes_to_matching_prefix),
     cmocka_unit_test(dispatch_longest_prefix_wins),

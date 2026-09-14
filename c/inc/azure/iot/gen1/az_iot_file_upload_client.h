@@ -3,44 +3,45 @@
 // information.
 
 /* SPDX-License-Identifier: MIT */
-#ifndef AZ_IOT_FILE_UPLOAD_CLIENT_H
-#define AZ_IOT_FILE_UPLOAD_CLIENT_H
+#ifndef AZ_IOT_GEN1_FILE_UPLOAD_CLIENT_H
+#define AZ_IOT_GEN1_FILE_UPLOAD_CLIENT_H
 
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
-#include "az_iot_result.h"
-#include "az_iot_connection_client.h"
+#include "azure/iot/az_iot_connection_client.h"
+#include "azure/iot/az_iot_result.h"
 
 #ifdef __cplusplus
 extern "C"
 {
 #endif
 
-/* Azure IoT Hub file upload — one seamless API, transport chosen by hub flavor.
+/* IoT Hub Classic file upload.
  *
- * The control plane (request a blob SAS URI, then notify the hub of completion)
- * uses a different transport depending on the hub the connection resolved to,
- * but the API below is identical for both (the client dispatches internally on
- * the connection's protocol profile, unlike the split gen1/gen2 clients):
+ * The control plane -- request a blob SAS URI, then notify the hub of completion
+ * -- is two HTTPS REST calls to the hub. This SDK ships no HTTP client by
+ * design, so the application provides one via an
+ * az_iot_file_upload_http_transport hook registered at init(); the SDK builds
+ * the request and parses the response.
  *
- *   - IoT Hub Classic: the two operations are HTTPS REST calls to the hub. This
- *     SDK ships no HTTP client by design, so the application provides one via an
- *     az_iot_file_upload_http_transport hook registered at init(); the SDK
- *     builds the request and parses the response.
- *   - IoT Hub Next (AEG): the two operations travel over the existing MQTT
- *     connection (topics ih/{deviceId}/srv|dev/files). The SDK handles this
- *     internally; no HTTP hook is used for the control plane.
+ * The blob bytes themselves go to Azure Storage via an HTTPS PUT to the returned
+ * SAS URI. That is the application's job, not the SDK's -- it can reuse the same
+ * HTTP client it provides for the hook.
  *
- * The blob bytes themselves ALWAYS go to Azure Storage via an HTTPS PUT to the
- * returned SAS URI — the application's responsibility on both flavors (it can
- * reuse the same HTTP client it provides for the Classic hook).
- *
- * Usage (identical regardless of flavor):
+ * Usage:
  *   1. get_sas_uri(blob_name, cb)  -> cb delivers {blob_sas_uri, correlation_id}
  *   2. app PUTs the file to blob_sas_uri  (header "x-ms-blob-type: BlockBlob")
  *   3. notify_complete(correlation_id, is_success, cb)
+ *
+ * There is no gen2 counterpart. File upload is not carried on the MQTT v5 hub
+ * for now, so rather than publish an API that cannot work there, this client
+ * pins the Classic profile and a connection that resolves to MQTT v5 is refused
+ * with AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH. When the AEG Files message
+ * schema lands, a gen2 client is added beside this one -- the HTTP transport
+ * hook and the buffers below stay Classic-only either way, which is why they
+ * live in this header rather than a shared one.
  */
 
 /** @brief Maximum length of a built request URL (incl. NUL). */
@@ -93,8 +94,8 @@ extern "C"
   typedef void (*az_iot_file_upload_complete_callback)(az_iot_result status, void* user_ctx);
 
   /**
-   * @brief Response buffer the application fills when performing a Classic HTTP
-   *        request through the transport hook.
+   * @brief Response buffer the application fills when performing an HTTP request
+   *        through the transport hook.
    *
    * The SDK supplies @p body and @p body_capacity and the application sets
    * @p status_code and, when it wrote one, @p body_len.
@@ -118,7 +119,7 @@ extern "C"
   } az_iot_file_upload_http_response;
 
   /**
-   * @brief Application HTTP transport for the Classic control plane.
+   * @brief Application HTTP transport for the control plane.
    *
    * Called synchronously by the SDK to perform one HTTPS request to IoT Hub and
    * return its response. The hook owns authentication: this SDK authenticates
@@ -149,7 +150,7 @@ extern "C"
       void* hook_ctx);
 
   /**
-   * @brief HTTP transport hook: required on a Classic hub, ignored on Next.
+   * @brief HTTP transport hook. Required: the SDK ships no HTTP client.
    */
   typedef struct az_iot_file_upload_http_transport
   {
@@ -157,7 +158,7 @@ extern "C"
     void* ctx;
   } az_iot_file_upload_http_transport;
 
-  typedef struct az_iot_file_upload_client
+  typedef struct az_iot_gen1_file_upload_client
   {
     struct
     {
@@ -165,10 +166,10 @@ extern "C"
       az_iot_file_upload_http_send_fn http_send;
       void* http_ctx;
     } _internal;
-  } az_iot_file_upload_client;
+  } az_iot_gen1_file_upload_client;
 
   /**
-   * @brief Initialize the file upload client.
+   * @brief Initialize the IoT Hub Classic file upload client.
    *
    * Call after the connection has resolved its hub (for a DPS client, once it
    * reaches CONNECTED) so the hub address and device id are known. Neither is
@@ -176,32 +177,44 @@ extern "C"
    * stays the single source of truth and a later hub assignment is picked up
    * without re-initializing this client.
    *
+   * @p client must be a fresh instance or one that has been passed to
+   * az_iot_gen1_file_upload_client_deinit(). Initializing over a live instance
+   * cannot be detected -- the struct is caller-allocated, so an uninitialized one
+   * is indistinguishable from a live one -- and would strand the generation
+   * reference the live instance holds on @p conn.
+   *
+   * Pins the connection to the Classic profile. A connection already known to be
+   * MQTT v5 -- a direct connection, or a DPS one past assignment -- is rejected
+   * here with AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH; otherwise a conflict
+   * surfaces when the connection resolves, which fails it before it reports
+   * CONNECTED. A failed init releases the pin it took.
+   *
    * @param client          Instance to initialize.
    * @param conn            The (connected) connection client. Must outlive
    *                        @p client.
-   * @param http_transport  HTTP transport for the Classic control plane. REQUIRED
-   *                        on a Classic hub; may be NULL on Next.
+   * @param http_transport  HTTP transport for the control plane. Required.
    * @return AZ_IOT_OK on success;
-   *         AZ_IOT_ERR_INVALID_ARG for a caller mistake -- a NULL argument, or a
-   *         Classic connection with no HTTP transport;
+   *         AZ_IOT_ERR_INVALID_ARG for a caller mistake -- a NULL argument, or no
+   *         HTTP transport;
+   *         AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH on an MQTT v5 connection;
    *         AZ_IOT_ERR_NOT_CONNECTED if the connection cannot yet supply a hub
    *         address and device id, which is transient: retry once it is connected.
    */
-  AZ_NODISCARD az_iot_result az_iot_file_upload_client_init(
-      az_iot_file_upload_client* client,
+  AZ_NODISCARD az_iot_result az_iot_gen1_file_upload_client_init(
+      az_iot_gen1_file_upload_client* client,
       az_iot_connection_client* conn,
       const az_iot_file_upload_http_transport* http_transport);
 
   /**
    * @brief Deinitialize the file upload client.
    */
-  void az_iot_file_upload_client_destroy(az_iot_file_upload_client* client);
+  void az_iot_gen1_file_upload_client_deinit(az_iot_gen1_file_upload_client* client);
 
   /**
    * @brief Request a blob SAS URI (step 1).
    *
-   * Asynchronous: the result is delivered via @p cb — during this call on Classic
-   * (synchronous HTTP hook), or during a later do_work() on Next.
+   * The result is delivered via @p cb during this call: the HTTP hook is
+   * synchronous.
    *
    * @param client     File upload client instance.
    * @param blob_name  Name of the blob to upload (e.g. "mydata/sensor.csv"). Must
@@ -209,16 +222,15 @@ extern "C"
    * @param cb         Callback delivering the SAS URI + correlation id.
    * @param user_ctx   Context forwarded to @p cb.
    * @return AZ_IOT_OK if the request was dispatched (the result then arrives via
-   *         @p cb, including for HTTP and transport failures);
-   *         AZ_IOT_ERR_NOT_SUPPORTED on a Next/AEG hub until the AEG Files message
-   *         schema is implemented; another error if it could not be dispatched at
-   *         all -- AZ_IOT_ERR_NOT_ENOUGH_SPACE for a blob name that does not fit,
-   *         or AZ_IOT_ERR_NOT_CONNECTED while the connection has no hub address
-   *         and device id to address the request to (retry once it is connected).
-   *         No callback fires when this returns anything but AZ_IOT_OK.
+   *         @p cb, including for HTTP and transport failures); another error if it
+   *         could not be dispatched at all -- AZ_IOT_ERR_NOT_ENOUGH_SPACE for a
+   *         blob name that does not fit, or AZ_IOT_ERR_NOT_CONNECTED while the
+   *         connection has no hub address and device id to address the request to
+   *         (retry once it is connected). No callback fires when this returns
+   *         anything but AZ_IOT_OK.
    */
-  AZ_NODISCARD az_iot_result az_iot_file_upload_client_get_sas_uri(
-      az_iot_file_upload_client* client,
+  AZ_NODISCARD az_iot_result az_iot_gen1_file_upload_client_get_sas_uri(
+      az_iot_gen1_file_upload_client* client,
       const char* blob_name,
       az_iot_file_upload_sas_callback cb,
       void* user_ctx);
@@ -233,14 +245,14 @@ extern "C"
    * @param cb              Callback delivering the acknowledgement status.
    * @param user_ctx        Context forwarded to @p cb.
    * @return AZ_IOT_OK if dispatched (the result then arrives via @p cb);
-   *         AZ_IOT_ERR_NOT_SUPPORTED on Next until the AEG Files schema is
-   *         implemented; AZ_IOT_ERR_NOT_CONNECTED while the connection has no hub
-   *         address and device id to address the request to (retry once it is
-   *         connected). No callback fires when this returns anything but
-   *         AZ_IOT_OK.
+   *         AZ_IOT_ERR_NOT_ENOUGH_SPACE for a correlation id that does not fit
+   *         AZ_IOT_FILE_UPLOAD_BODY_MAX once JSON-escaped;
+   *         AZ_IOT_ERR_NOT_CONNECTED while the connection has no hub address and
+   *         device id to address the request to (retry once it is connected). No
+   *         callback fires when this returns anything but AZ_IOT_OK.
    */
-  AZ_NODISCARD az_iot_result az_iot_file_upload_client_notify_complete(
-      az_iot_file_upload_client* client,
+  AZ_NODISCARD az_iot_result az_iot_gen1_file_upload_client_notify_complete(
+      az_iot_gen1_file_upload_client* client,
       const char* correlation_id,
       bool is_success,
       az_iot_file_upload_complete_callback cb,
@@ -250,4 +262,4 @@ extern "C"
 }
 #endif
 
-#endif /* AZ_IOT_FILE_UPLOAD_CLIENT_H */
+#endif /* AZ_IOT_GEN1_FILE_UPLOAD_CLIENT_H */

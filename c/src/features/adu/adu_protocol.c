@@ -326,6 +326,40 @@ static const char* failure_origin_name(az_iot_adu_failure_origin origin)
   }
 }
 
+/* Render extendedResultCodes.
+ *
+ * Contract: comma-separated UNSIGNED hex int32, NO "0x" prefix, no fixed width,
+ * case-insensitive. The engine produces a single code today; the comma-separated
+ * form is what the field accepts, so a future multi-code producer changes only
+ * this function. Zero is rendered "0" -- a bare value, not a padded one. */
+void az_iot_adu__format_extended_result_code(char* out, size_t out_size, int32_t code)
+{
+  static const char hex[] = "0123456789abcdef";
+  if (out_size < 9)
+  {
+    if (out_size > 0)
+    {
+      out[0] = '\0';
+    }
+    return;
+  }
+
+  uint32_t v = (uint32_t)code;
+  char tmp[8];
+  size_t n = 0;
+  do
+  {
+    tmp[n++] = hex[v & 0xFu];
+    v >>= 4;
+  } while (v != 0);
+
+  for (size_t i = 0; i < n; ++i)
+  {
+    out[i] = tmp[n - 1 - i];
+  }
+  out[n] = '\0';
+}
+
 az_iot_result az_iot_adu__build_report_request(
     const az_iot_adu_report* report,
     uint8_t* out,
@@ -413,6 +447,74 @@ az_iot_result az_iot_adu__build_report_request(
   {
     r = write_string_property(&jw, "resultDetails", report->result_details);
   }
+
+  /* Per-step results are a MAP keyed step_0, step_1, ... -- not an array. The
+   * index carries the step identity, so ordering is the only thing that ties a
+   * result back to its step. Omitted entirely when there are none. */
+  if (az_result_succeeded(r) && report->step_results != NULL && report->step_results_count > 0)
+  {
+    r = az_json_writer_append_property_name(&jw, AZ_SPAN_FROM_STR("stepResults"));
+    if (az_result_succeeded(r))
+    {
+      r = az_json_writer_append_begin_object(&jw);
+    }
+    for (int32_t i = 0; az_result_succeeded(r) && i < report->step_results_count; ++i)
+    {
+      const az_iot_adu_client_step_result* step = &report->step_results[i];
+
+      char key[16];
+      az_iot_span_writer kw;
+      az_iot_span_writer_init(&kw, AZ_SPAN_FROM_BUFFER(key));
+      az_iot_span_writer_append_str(&kw, "step_");
+      az_iot_span_writer_append_u32(&kw, (uint32_t)i);
+      if (az_iot_span_writer_end_str(&kw, NULL) != AZ_IOT_OK)
+      {
+        return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+      }
+
+      r = az_json_writer_append_property_name(&jw, az_span_create_from_str(key));
+      if (az_result_succeeded(r))
+      {
+        r = az_json_writer_append_begin_object(&jw);
+      }
+      if (az_result_succeeded(r))
+      {
+        r = az_json_writer_append_property_name(&jw, AZ_SPAN_FROM_STR("resultCode"));
+      }
+      if (az_result_succeeded(r))
+      {
+        r = az_json_writer_append_int32(&jw, step->result_code);
+      }
+      if (az_result_succeeded(r))
+      {
+        r = az_json_writer_append_property_name(&jw, AZ_SPAN_FROM_STR("extendedResultCodes"));
+      }
+      if (az_result_succeeded(r))
+      {
+        char step_ext[16];
+        az_iot_adu__format_extended_result_code(
+            step_ext, sizeof(step_ext), step->extended_result_code);
+        r = az_json_writer_append_string(&jw, az_span_create_from_str(step_ext));
+      }
+      if (az_result_succeeded(r) && az_span_size(step->result_details) > 0)
+      {
+        r = az_json_writer_append_property_name(&jw, AZ_SPAN_FROM_STR("resultDetails"));
+        if (az_result_succeeded(r))
+        {
+          r = az_json_writer_append_string(&jw, step->result_details);
+        }
+      }
+      if (az_result_succeeded(r))
+      {
+        r = az_json_writer_append_end_object(&jw);
+      }
+    }
+    if (az_result_succeeded(r))
+    {
+      r = az_json_writer_append_end_object(&jw); /* stepResults */
+    }
+  }
+
   if (az_result_succeeded(r))
   {
     r = az_json_writer_append_end_object(&jw); /* installResult */
@@ -603,6 +705,7 @@ az_iot_result az_iot_adu__parse_error_code(
   }
 
   bool found_string_code = false;
+  bool found_message = false;
   bool found_numeric_code = false;
   bool closed = false;
 
@@ -620,6 +723,7 @@ az_iot_result az_iot_adu__parse_error_code(
 
     bool is_numeric = az_json_token_is_text_equal(&jr.token, AZ_SPAN_FROM_STR("errorCode"));
     bool is_info = az_json_token_is_text_equal(&jr.token, AZ_SPAN_FROM_STR("info"));
+    bool is_message = az_json_token_is_text_equal(&jr.token, AZ_SPAN_FROM_STR("message"));
 
     if (az_result_failed(az_json_reader_next_token(&jr)))
     {
@@ -642,8 +746,32 @@ az_iot_result az_iot_adu__parse_error_code(
       continue;
     }
 
-    /* The originating string code travels here. The service SHOULD surface it,
-     * so its absence is normal and the numeric code carries the class. */
+    /* Measured against the live service: the device-facing error body carries
+     * the originating code in "message" and has no "info" object at all. So
+     * this -- not info.aduErrorCode -- is the field that actually discriminates
+     * the shared numeric buckets (400000 is INVALID_REQUEST *and*
+     * UNKNOWN_WORKFLOW_ID).
+     *
+     * "message" is not always a code: it is sometimes free text
+     * ("Deserialization error."). That is safe because an unrecognized string
+     * falls through to the numeric ladder rather than being judged on its own.
+     * Text too long for the buffer is dropped for the same reason -- a truncated
+     * token must not be compared, and the numeric code still classifies. */
+    if (is_message && jr.token.kind == AZ_JSON_TOKEN_STRING && !found_string_code)
+    {
+      int32_t n = az_span_size(jr.token.slice);
+      if (n >= 0 && (size_t)n + 1 <= out_code_size)
+      {
+        memcpy(out_code, az_span_ptr(jr.token.slice), (size_t)n);
+        out_code[n] = '\0';
+        found_message = true;
+      }
+      continue;
+    }
+
+    /* The originating string code travels here when the service does surface
+     * the documented envelope. Preferred over "message" because it is always a
+     * code, never prose. */
     if (is_info && jr.token.kind == AZ_JSON_TOKEN_BEGIN_OBJECT)
     {
       bool info_closed = false;
@@ -702,7 +830,7 @@ az_iot_result az_iot_adu__parse_error_code(
 
   /* Either signal alone is enough to classify: the numeric code carries the
    * class even when the string code is absent. */
-  if (found_string_code || found_numeric_code)
+  if (found_string_code || found_message || found_numeric_code)
   {
     return AZ_IOT_OK;
   }
@@ -743,9 +871,20 @@ az_iot_adu_error_action az_iot_adu__classify_error(
     {
       return AZ_IOT_ADU_ERROR_ACTION_RETRY_AFTER;
     }
-    /* An unrecognized string code is NOT assumed retryable: repeating a request
-     * the service has already rejected is the worse failure mode. */
-    return AZ_IOT_ADU_ERROR_ACTION_FATAL;
+    /* Both sides of the 400000 bucket. Neither can be fixed by resending the
+     * same request: the device is not onboarded, or the workflow no longer
+     * exists. Not reported as ALREADY_REPORTED -- that would claim a delivery
+     * that never happened. */
+    if (strcmp(error_code, "INVALID_REQUEST") == 0
+        || strcmp(error_code, "UNKNOWN_WORKFLOW_ID") == 0)
+    {
+      return AZ_IOT_ADU_ERROR_ACTION_FATAL;
+    }
+    /* Unrecognized: fall through to the numeric ladder rather than judging the
+     * string alone. The field this usually arrives in ("message") is free text
+     * as often as it is a code, and treating prose as an unknown code would
+     * turn a retryable 5xx into a fatal one. The numeric ladder still defaults
+     * 4xx to FATAL, so nothing becomes more optimistic than before. */
   }
 
   /* No string code: the numeric code carries the class. This path matters --

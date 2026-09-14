@@ -7,8 +7,7 @@
 
 At the start of this work one set of feature clients served both hub generations,
 with 13 `profile->flavor` comparisons across five feature clients resolved
-through two static tables in
-[`protocol_profile.c`](../../src/core/protocol_profile.c). The result is that
+through two static tables in `protocol_profile.c`. The result is that
 every public feature API is the union of what both generations can do, and the
 parts that only one generation supports are discoverable only at run time.
 
@@ -41,7 +40,7 @@ az_iot_connection_client_register_mqtt_factory(&conn, az_iot_paho_factory_create
 az_iot_connection_client_open(&conn);             /* DPS runs internally       */
 
 /* open() is non-blocking, and it can end in FAULTED rather than CONNECTED.
- * Bound the wait and stop on a terminal state -- see samples/telemetry/main.c. */
+ * Bound the wait and stop on a terminal state -- see samples/telemetry_gen1/main.c. */
 for (int i = 0; i < 1200 && state != AZ_IOT_CONN_STATE_CONNECTED; ++i)
 {
   az_iot_connection_client_do_work(&conn, 50);
@@ -83,7 +82,8 @@ is to report the generation accurately and to refuse the wrong API loudly.
 | `az_iot_connection_client` + DPS + reconnect + adapter registry | **single, shared** |
 | MQTT abstraction, adapters, certificate provider, logging, results, dispatch | **single, shared** |
 | Message types (`az_iot_telemetry_message`, `az_iot_c2d_message`, …) and callback typedefs | **single, shared** — see [§5](#5-what-stays-shared) |
-| Telemetry, C2D, twin, direct methods, file upload **clients** | **split** `gen1` / `gen2` |
+| Telemetry, C2D, twin, direct methods **clients** | **split** `gen1` / `gen2` |
+| File upload **client** | **`gen1` only** — cut from AEG, see [§4](#file-upload-is-gen1-only) |
 | ADU | **not split** — one engine (`adu_core`) behind a channel vtable; the twin channel is cut, see [§8](#8-device-update) |
 
 ---
@@ -319,16 +319,15 @@ on the other's API, even as a stub that returns an error.
 | Correlation-data request/response matching | gen2 |
 | Twin push on connect | gen2 |
 | Direct-method probe / ready handshake | gen2 |
-| File upload control plane over MQTT | gen2 |
 | Topic property-bag encoding | gen1 |
 | `$rid` correlation | gen1 |
 | File upload over HTTPS + the application HTTP transport hook | gen1 |
 
-This is the concrete reason the split is worth doing: today
-[`az_iot_file_upload_client.h`](../../inc/azure/iot/az_iot_file_upload_client.h)
-opens by promising "one seamless API, transport chosen by hub flavor", and then
-`az_iot_file_upload_client_get_sas_uri()` returns `AZ_IOT_ERR_NOT_SUPPORTED` at
-run time on gen2. Both generations pay for a surface neither fully implements.
+This is the concrete reason the split is worth doing: before it, the shared
+`az_iot_file_upload_client.h` opened by promising "one seamless API, transport
+chosen by hub flavor", and then `az_iot_file_upload_client_get_sas_uri()`
+returned `AZ_IOT_ERR_NOT_SUPPORTED` at run time on gen2. Both generations paid
+for a surface neither fully implemented.
 
 ### One documented exception: runtime CSR renewal
 
@@ -344,18 +343,33 @@ would cost users an extra object to construct and wire up, for no gain in
 clarity. Naming the exception is more honest than quietly widening the rule until
 it accommodates it.
 
-### File upload is redesigned, not just renamed
+### File upload is gen1-only
+
+The plan of record was to split file upload like the other four, with
+`az_iot_gen2_file_upload_client` carrying the control plane over MQTT. That is
+**not what shipped**, because the feature was cut from AEG.
 
 - **`az_iot_gen1_file_upload_client`** owns the HTTPS control plane. The
   `az_iot_file_upload_http_transport` hook, the response buffer, and the URL/body
-  size macros move out of the shared header into the gen1 header. They are a
-  Classic implementation detail and have no meaning on gen2.
-- **`az_iot_gen2_file_upload_client`** carries the control plane over the
-  existing MQTT connection and takes **no HTTP transport at all**. Its init
-  signature is smaller, which is the visible payoff.
+  size macros moved out of the shared header into the gen1 header. They are a
+  Classic implementation detail and have no meaning on gen2. The hook is now
+  **required** at `init()` rather than optional: without it the client can never
+  perform either operation, so refusing up front beats failing every later call.
+- **There is no `az_iot_gen2_file_upload_client`.** File upload is not carried on
+  the MQTT v5 hub for now, and the AEG Files message schema does not exist --
+  `implementation.md` §3.5 gives the topics and a processing model, but no
+  message definitions, where `dm.md` gives seven. Publishing a gen2 client whose
+  every entry point returned `AZ_IOT_ERR_NOT_SUPPORTED` would reintroduce
+  exactly the surface-nobody-implements problem this split exists to remove.
+  The gen1 client pins Classic instead, so an MQTT v5 connection is refused at
+  `init()` with `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH` rather than at the first
+  upload.
+- When the schema lands, a gen2 client is added beside the gen1 one. Nothing in
+  the gen1 header has to move for that to happen, which is why the hook and the
+  buffers live there rather than in a shared header.
 
-Uploading the blob bytes to Azure Storage remains the application's job on both
-generations — that never was an SDK responsibility.
+Uploading the blob bytes to Azure Storage remains the application's job -- that
+never was an SDK responsibility.
 
 ---
 
@@ -385,7 +399,7 @@ generation's `_options` argument, not in a forked message type.
 flowchart TB
     APP["Customer application"]
     G1["az_iot_gen1 -- IoT Hub Classic feature clients<br/>telemetry . c2d . twin . methods<br/>file_upload (HTTPS + app transport hook)"]
-    G2["az_iot_gen2 -- IoT/AEG Hub feature clients<br/>telemetry . c2d . twin . methods<br/>file_upload (over MQTT)"]
+    G2["az_iot_gen2 -- IoT/AEG Hub feature clients<br/>telemetry . c2d . twin . methods"]
     CONN["az_iot_connection_client -- SINGLE<br/>DPS registration . reconnect . adapter registry<br/>resolves + reports az_iot_hub_profile"]
     CORE["az_iot_core<br/>result . log . version . mqtt_iface . dispatch<br/>reconnect . span_writer . certificate_provider<br/>shared message types + shared callback typedefs"]
     ADAPT["Adapters -- paho v3.1.1 + v5 . rust v5 . cert_openssl . adu/crypto_openssl"]
@@ -977,9 +991,10 @@ touches one place.
 
 The internal `az_iot_hub_protocol` enum is gone — collapsed into
 `az_iot_connection_profile`, which is now both the public profile type and the
-internal selector. `az_iot_hub_flavor` deliberately **stays** for now: it is
-internal to `protocol_profile.c` and [P4](#12-phases) deletes it along with the
-flavor tables. `az_iot_mqtt_role` keeps its DPS member.
+internal selector. `az_iot_hub_flavor` is gone too, deleted in [P4](#12-phases)
+along with the rest of `protocol_profile`. `az_iot_mqtt_role` keeps its DPS
+member, and is now the only generation selector left inside the connection
+client.
 
 ---
 
@@ -1006,7 +1021,8 @@ exist today:
 - `get_hub_profile` before `CONNECTED` returns `AZ_IOT_ERR_NOT_CONNECTED`
 - an older-header caller (smaller `_internal_size`) is defaulted, not misread
 - gen1 file upload with no HTTP transport supplied fails at init
-- gen2 file upload exposes no HTTP transport at all (compile-level)
+- file upload against an MQTT v5 connection fails at init with
+  `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH` (there is no gen2 file upload client)
 
 e2e needs provisioned resources for **both** generations. `iot-sdks-e2e-fx` cannot
 provision an AEG hub today — that arrives once gen2 is deployable through the
@@ -1027,8 +1043,8 @@ plus the conformance suites.
 | P1c | Gate `CONNECTED` on subscriptions being SUBACKed ([AB#39366084](https://dev.azure.com/msazure/One/_workitems/edit/39366084)); tag each persistent-subscription entry with its generation and drop non-matching entries on reconnect *before* re-subscribing; add a remove path wired into every feature client's `destroy()` and into its partial-init unwind, UNSUBSCRIBE on both generations (a no-op on gen2 once its redundant filters are gone); drop the five gen2 filters already covered by `ih/{device_id}/dev/#` ([AB#39366086](https://dev.azure.com/msazure/One/_workitems/edit/39366086)); preserve SUBACK reason codes through the adapters behind a shared `az_iot_mqtt_suback_result()`, and tag each entry with its failure scope (`AZ_IOT_SUBSCRIPTION_FAILS_SESSION` / `_FAILS_SELF`) so a refusal ends the connection only for a feature client's own filter — terminally when the reason is deterministic — while a refused custom topic is reported to its owner and dropped ([§9](#the-profile-can-change-while-the-device-is-running)); bound the gate with a deadline | — | **Done across four PRs:** removal + generation tagging (#116), adapter reason-code preservation (#123), the gate + failure-scope policy + deadline (#124), and redundant gen2 filter removal (#128). **P2 depends on all four parts**: §9's rebuild pattern is unsafe without the gate and impossible without removal. The generation tagging is not optional — without it the first two fixes deadlock each other on a profile change. |
 | P1d | Turn the connection-state callback into the extensible `az_iot_connection_state_event` struct, carrying the resolved profile on `CONNECTED` ([§9](#the-profile-can-change-while-the-device-is-running)) | — | **Implemented.** The SDK produces and size-stamps the callback-lifetime event. `profile` is set on `CONNECTED`, and also on a profile-driven failure so the application can rebuild for the newly assigned generation. All samples, unit/integration suites and e2e agents use the new signature. |
 | P2 | Split the feature clients, one PR each: telemetry → c2d → direct methods → twin | P1b, **P1c**, P1d | **Done — all four clients split.** P1a gates automatic production selection after DPS, not implementation: the absent/null development bridge above supplies `mqttV5` for AEG testing until the api-version ships. Each client pins its generation at `_init()` and the connection checks the pin at connect ([§9](#9-pinning-the-generation-at-init)); topics are built through the connect-time bind callback. The direct-method split shipped the gen2 client as a carry-over of the pre-split behaviour and a guard against mistaking a probe for an invocation; the AEG probe / exec / abandon handshake that [§4](#4-no-cross-generation-constructs-on-the-public-surface) assigns to gen2 landed after it, and is the first place the two generations differ in protocol rather than only in topic shape. **The twin PR carried no ADU change at all:** the ADU cut landed first, so there was no `az_iot_adu_client_initialize()` to repoint and ADU no longer consumes the twin desired-property registry ([§8](#8-device-update)) — which the twin split therefore deleted. Twin is also where the gen2 bind callback stopped being cosmetic: the unified client resolved the device id inside `init()`, which cannot work for a DPS connection before assignment; gen2 now binds its three `dev/twin/...` handlers at connect like every other gen2 client. |
-| P3 | File upload redesign — HTTP transport becomes gen1-only | P1 | Larger than the others; own PR. |
-| P4 | Delete `protocol_profile.c`'s flavor tables and the last `profile->flavor` branches | P2, P3 | |
+| P3 | File upload redesign — HTTP transport becomes gen1-only | P1 | **Done.** Shipped smaller than planned: file upload was **cut from AEG**, so there is no gen2 client and none is manufactured. `az_iot_gen1_file_upload_client` owns the HTTPS control plane, the transport hook is now required at `init()`, and the client pins Classic — see [§4](#file-upload-is-gen1-only). This removed the last three `profile->flavor` branches in `c/src`, which is what P4 was waiting on. |
+| P4 | Delete `protocol_profile.c`'s flavor tables and the last `profile->flavor` branches | P2, P3 | **Done, and larger than scoped.** Once P2 and P3 moved every topic into the feature clients, nothing in `c/src` read *any* profile field — not just the flavor tables. `az_iot_connection_client__profile()` had no production caller left, and `mqtt_version` merely duplicated `az_iot_mqtt_required_version_for_role()`. So the whole module went rather than only the flavor half: `protocol_profile.{c,h}`, the accessor, and the `az_iot_hub_flavor` enum. The `protocol_profile_dispatch_test` suite was testing a dead table alongside live dispatch routing; it is now `dispatch_test`. |
 | P5 | Re-layer ADU onto `adu_core` + channel vtable | — | **Done, ahead of P4.** ADU referenced neither generation nor the connection client, so the stated P4 dependency was not real; taking it early removed the ADU work from the P2 twin PR. The ADUv2 channel itself is the remaining ADU work. |
 | P6 | Dual samples per feature, `check-layering.sh`, coverage floors for `gen1`/`gen2` | P2–P4 | |
 
@@ -1175,3 +1191,9 @@ baseline.
   `az_iot_twin_patch_complete_callback`, not `..._ack_callback`: it reports
   failures too, and on MQTT v5 "ack" would collide with the QoS 1 PUBACK, which
   is a different event arriving at a different time.
+- 09/11/2026: **File upload is cut from AEG**, so P3 ships gen1-only and P4 is
+  unblocked. No `az_iot_gen2_file_upload_client` is manufactured: the AEG Files
+  message schema does not exist, and a client whose every entry point returned
+  `AZ_IOT_ERR_NOT_SUPPORTED` is the surface-nobody-implements problem this
+  separation exists to remove. The gen1 client pins Classic and now requires the
+  HTTP transport hook at `init()`.

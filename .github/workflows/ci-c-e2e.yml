@@ -174,7 +174,7 @@ jobs:
         # Windows runner image does not carry.
         run: |
           cmake --preset ${{ matrix.preset }} -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_WITH_PAHO=ON ${{ runner.os == 'Linux' && '-DAZ_IOT_BUILD_E2E_PKCS11=ON' || '' }}
-          cmake --build --preset ${{ matrix.preset }} ${{ runner.os == 'Windows' && '--config Debug' || '' }} --target az_iot_tests_e2e az_iot_tests_e2e_fileupload
+          cmake --build --preset ${{ matrix.preset }} ${{ runner.os == 'Windows' && '--config Debug' || '' }} --target az_iot_tests_e2e az_iot_tests_e2e_fileupload az_iot_tests_e2e_transport
           ${{ runner.os == 'Linux' && format('cmake --build --preset {0} --target az_iot_tests_e2e_custody', matrix.preset) || '' }}
 
       - name: Build the file upload sample (Linux)
@@ -262,8 +262,11 @@ jobs:
 
           New-Item -ItemType Directory -Path ./test_config/results -Force | Out-Null
           $cfg = if ($IsWindows) { @('-C', 'Debug') } else { @() }
-          # `-R e2e` runs the fast suite (az_iot_tests_e2e) and the file upload
-          # suite. The mocked ADU suite retired with ADU's twin delivery channel
+          # `-R e2e` runs the fast suite (az_iot_tests_e2e), the file upload
+          # suite and the transport suite (WebSockets, and MQTT through an HTTP
+          # proxy; its proxy scenarios skip themselves when no proxy is
+          # configured for the leg).
+          # The mocked ADU suite retired with ADU's twin delivery channel
           # and is not built. The CSR enrollment test is not built
           # here -- it needs a DPS enrollment linked to a signing CA, which only
           # ci-c-e2e-csr provisions, so it lives behind AZ_IOT_BUILD_E2E_CSR.

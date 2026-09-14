@@ -64,6 +64,20 @@ static const char* g_key_engine = NULL;
 static const char* g_client_cert_path = NULL;
 static az_iot_mqtt_sign_callback g_sign = NULL;
 static void* g_sign_ctx = NULL;
+static uint16_t g_websocket_port = 0;
+static const char* g_websocket_path = NULL;
+static const char* g_proxy_host = NULL;
+static uint16_t g_proxy_port = 0;
+
+static bool adapter_claims_websockets(void)
+{
+  return (g_capabilities & (uint32_t)AZ_IOT_CONFORMANCE_CAP_WEBSOCKETS) != 0u;
+}
+
+static bool adapter_claims_proxy(void)
+{
+  return (g_capabilities & (uint32_t)AZ_IOT_CONFORMANCE_CAP_PROXY) != 0u;
+}
 
 static bool adapter_claims_key_custody_uri(void)
 {
@@ -2192,6 +2206,196 @@ static void key_custody_sign_hook_completes_a_tls_handshake(void** state)
 }
 #endif /* AZ_IOT_CONFORMANCE_WITH_TLS */
 
+/* ------------------------------------------------------------------------- */
+/* transport: WebSockets and HTTP proxy                                       */
+/* ------------------------------------------------------------------------- */
+
+/* Baseline, every adapter: a transport the adapter does not implement must be
+ * REFUSED, never quietly downgraded to TCP.
+ *
+ * The caller that sets WEBSOCKET does it because a direct 8883 session is not
+ * available to it, so an adapter that ignores the field and dials TCP produces
+ * a connection the caller's network was supposed to prevent -- or, at best, a
+ * failure whose reported cause is wrong.
+ *
+ * Aimed at the ordinary broker port, which is not a WebSocket listener: a
+ * declaring adapter must fail the handshake there, and a non-declaring one must
+ * refuse before opening anything. Neither may report CONNECTED. */
+static void a_websocket_request_is_never_silently_downgraded(void** state)
+{
+  (void)state;
+  char cid[64];
+  unique_client_id(cid, sizeof(cid), "az-iot-conf-ws-refuse");
+  conf_recorder rec = { 0 };
+  az_iot_mqtt_client* c = make_client();
+  c->iface->set_inbound_cb(c, on_event, &rec);
+
+  az_iot_mqtt_connect_options copts = { 0 };
+  copts.host = g_host;
+  copts.port = g_port;
+  copts.client_id = cid;
+  copts.keep_alive_seconds = 30;
+  copts.connect_timeout_seconds = k_step_timeout_seconds;
+  copts.transport = AZ_IOT_MQTT_TRANSPORT_WEBSOCKET;
+
+  az_iot_result r = c->iface->connect(c, &copts);
+  if (r == AZ_IOT_OK)
+  {
+    (void)wait_until(c, &rec, saw_connect_failure, k_step_timeout_ms);
+  }
+  assert_false(saw_connected_ok(&rec));
+
+  /* Refusing is correct, and so is trying and failing -- what is not correct is
+   * a TCP session reported as success. An adapter that does refuse must do it
+   * with the code the interface documents, so the caller can tell "this stack
+   * cannot do WebSockets" from "the network refused". */
+  if (r != AZ_IOT_OK)
+  {
+    assert_int_equal(r, AZ_IOT_ERR_NOT_SUPPORTED);
+  }
+
+  (void)c->iface->disconnect(c);
+  destroy_client(c);
+}
+
+/* Baseline, every adapter: a configured proxy that cannot be reached must end
+ * as a FAILED connect, never as a direct session to the broker.
+ *
+ * This is the whole point of a proxy setting on a device: it is an egress
+ * control. An adapter that silently connects around it defeats the control
+ * while reporting success, which is strictly worse than refusing. The proxy
+ * here is a closed port, so the only way to reach CONNECTED is to have ignored
+ * it and dialed the broker directly -- exactly the bug being excluded. */
+static void an_unreachable_proxy_is_never_bypassed(void** state)
+{
+  (void)state;
+  char cid[64];
+  unique_client_id(cid, sizeof(cid), "az-iot-conf-proxy-refuse");
+  conf_recorder rec = { 0 };
+  az_iot_mqtt_client* c = make_client();
+  c->iface->set_inbound_cb(c, on_event, &rec);
+
+  az_iot_mqtt_connect_options copts = { 0 };
+  copts.host = g_host;
+  copts.port = g_port;
+  copts.client_id = cid;
+  copts.keep_alive_seconds = 30;
+  copts.connect_timeout_seconds = k_step_timeout_seconds;
+  /* Port 1 (tcpmux) is reserved and effectively never bound, as in
+   * connect_to_a_closed_port_is_rejected above. */
+  copts.proxy.host = g_host;
+  copts.proxy.port = 1;
+
+  az_iot_result r = c->iface->connect(c, &copts);
+  if (r == AZ_IOT_OK)
+  {
+    (void)wait_until(c, &rec, saw_connect_failure, k_step_timeout_ms);
+  }
+  assert_false(saw_connected_ok(&rec));
+
+  /* As above: refusing outright and failing the tunnel are both acceptable;
+   * reaching the broker is not, because the only route to it here bypasses the
+   * proxy that was configured. */
+  if (r != AZ_IOT_OK)
+  {
+    assert_int_equal(r, AZ_IOT_ERR_NOT_SUPPORTED);
+  }
+
+  (void)c->iface->disconnect(c);
+  destroy_client(c);
+}
+
+/* AZ_IOT_CONFORMANCE_CAP_WEBSOCKETS: a full session over a real WebSocket
+ * listener. Registered only when the capability is declared AND a listener was
+ * supplied; an undeclared capability is covered by the baseline above. */
+static void a_websocket_session_completes_a_roundtrip(void** state)
+{
+  (void)state;
+  char cid[64];
+  unique_client_id(cid, sizeof(cid), "az-iot-conf-ws");
+  char topic[128];
+  snprintf(topic, sizeof(topic), "az_iot/conformance/%s", cid);
+
+  conf_recorder rec = { 0 };
+  az_iot_mqtt_client* c = make_client();
+  c->iface->set_inbound_cb(c, on_event, &rec);
+
+  az_iot_mqtt_connect_options copts = { 0 };
+  copts.host = g_host;
+  copts.port = g_websocket_port;
+  copts.client_id = cid;
+  copts.keep_alive_seconds = 30;
+  copts.connect_timeout_seconds = k_step_timeout_seconds;
+  copts.transport = AZ_IOT_MQTT_TRANSPORT_WEBSOCKET;
+  copts.websocket_path = g_websocket_path;
+
+  assert_int_equal(c->iface->connect(c, &copts), AZ_IOT_OK);
+  assert_true(wait_until(c, &rec, saw_connected_ok, k_step_timeout_ms));
+
+  /* Carry traffic, not just a CONNACK: a WebSocket transport that framed only
+   * the handshake correctly would pass a connect-only check. */
+  uint16_t sub_pid = 0;
+  assert_int_equal(c->iface->subscribe(c, topic, AZ_IOT_MQTT_QOS_1, &sub_pid), AZ_IOT_OK);
+  assert_true(wait_until(c, &rec, saw_subscribe_ack_ok, k_step_timeout_ms));
+
+  static const uint8_t body[] = { 'w', 's' };
+  az_iot_mqtt_message msg = { 0 };
+  msg.topic = topic;
+  msg.payload = body;
+  msg.payload_len = sizeof(body);
+  msg.qos = AZ_IOT_MQTT_QOS_1;
+  uint16_t pub_pid = 0;
+  assert_int_equal(c->iface->publish(c, &msg, &pub_pid), AZ_IOT_OK);
+  assert_true(wait_until(c, &rec, saw_message, k_step_timeout_ms));
+
+  (void)c->iface->disconnect(c);
+  destroy_client(c);
+}
+
+/* AZ_IOT_CONFORMANCE_CAP_PROXY: a full session through a real HTTP CONNECT
+ * proxy, with traffic carried through the tunnel rather than only a CONNACK. */
+static void a_proxied_session_completes_a_roundtrip(void** state)
+{
+  (void)state;
+  char cid[64];
+  unique_client_id(cid, sizeof(cid), "az-iot-conf-proxy");
+  char topic[128];
+  snprintf(topic, sizeof(topic), "az_iot/conformance/%s", cid);
+
+  conf_recorder rec = { 0 };
+  az_iot_mqtt_client* c = make_client();
+  c->iface->set_inbound_cb(c, on_event, &rec);
+
+  az_iot_mqtt_connect_options copts = { 0 };
+  copts.host = g_host;
+  copts.port = g_port;
+  copts.client_id = cid;
+  copts.keep_alive_seconds = 30;
+  copts.connect_timeout_seconds = k_step_timeout_seconds;
+  copts.proxy.host = g_proxy_host;
+  copts.proxy.port = g_proxy_port;
+
+  assert_int_equal(c->iface->connect(c, &copts), AZ_IOT_OK);
+  assert_true(wait_until(c, &rec, saw_connected_ok, k_step_timeout_ms));
+
+  uint16_t sub_pid = 0;
+  assert_int_equal(c->iface->subscribe(c, topic, AZ_IOT_MQTT_QOS_1, &sub_pid), AZ_IOT_OK);
+  assert_true(wait_until(c, &rec, saw_subscribe_ack_ok, k_step_timeout_ms));
+
+  static const uint8_t body[] = { 'v', 'i', 'a' };
+  az_iot_mqtt_message msg = { 0 };
+  msg.topic = topic;
+  msg.payload = body;
+  msg.payload_len = sizeof(body);
+  msg.qos = AZ_IOT_MQTT_QOS_1;
+  uint16_t pub_pid = 0;
+  assert_int_equal(c->iface->publish(c, &msg, &pub_pid), AZ_IOT_OK);
+  assert_true(wait_until(c, &rec, saw_message, k_step_timeout_ms));
+
+  (void)c->iface->disconnect(c);
+  destroy_client(c);
+}
+
 #define AZ_IOT_CONFORMANCE_COMMON_TESTS                                                          \
   cmocka_unit_test(connect_disconnect_roundtrip), cmocka_unit_test(publish_subscribe_roundtrip), \
       cmocka_unit_test(a_client_initiated_disconnect_is_reported),                               \
@@ -2212,7 +2416,9 @@ static void key_custody_sign_hook_completes_a_tls_handshake(void** state)
       cmocka_unit_test(a_truncated_publish_is_never_surfaced_as_a_message),                      \
       cmocka_unit_test(an_acknowledgement_for_an_unknown_packet_id_is_ignored),                  \
       cmocka_unit_test(a_key_reference_is_never_silently_ignored),                               \
-      cmocka_unit_test(a_sign_hook_is_never_silently_ignored)
+      cmocka_unit_test(a_sign_hook_is_never_silently_ignored),                                   \
+      cmocka_unit_test(a_websocket_request_is_never_silently_downgraded),                        \
+      cmocka_unit_test(an_unreachable_proxy_is_never_bypassed)
 
 /* Expands to nothing when the certificate cases were compiled out, so the two
  * lists above stay a single expression either way. */
@@ -2250,6 +2456,31 @@ int az_iot_conformance_run_with_options(
   g_client_cert_path = options ? options->client_cert_path : NULL;
   g_sign = options ? options->sign : NULL;
   g_sign_ctx = options ? options->sign_ctx : NULL;
+  g_websocket_port = options ? options->websocket_port : 0;
+  g_websocket_path = options ? options->websocket_path : NULL;
+  g_proxy_host = options ? options->proxy_host : NULL;
+  g_proxy_port = options ? options->proxy_port : 0;
+
+  /* Transport material supplied for a capability that was NOT declared is a
+   * mistake, for the same reason it is on the custody routes: it would be
+   * ignored in silence, and a run that ignores the thing it was given is
+   * indistinguishable from one that never had it. */
+  if (!adapter_claims_websockets() && g_websocket_port != 0)
+  {
+    fprintf(
+        stderr,
+        "conformance: websocket_port is set but AZ_IOT_CONFORMANCE_CAP_WEBSOCKETS was not "
+        "declared\n");
+    return 1;
+  }
+  if (!adapter_claims_proxy() && (g_proxy_host != NULL || g_proxy_port != 0))
+  {
+    fprintf(
+        stderr,
+        "conformance: proxy_host/proxy_port are set but AZ_IOT_CONFORMANCE_CAP_PROXY was not "
+        "declared\n");
+    return 1;
+  }
 
   /* Custody material is all-or-none PER ROUTE. A half-configured token is a
    * mistake, not an opt-out: the end-to-end case would be dropped and the run
@@ -2439,6 +2670,49 @@ int az_iot_conformance_run_with_options(
       failed += az_iot_conformance_report_unproven_capability(
           "AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY_SIGN",
           unproven,
+          read_env("AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN", allow, sizeof(allow)));
+    }
+  }
+
+  /* The transport capabilities, on the same terms: each is proved by a real
+   * session over that transport, and a declaration the environment could not
+   * exercise fails the run unless it was deliberately allowed. The baseline
+   * refusal cases above ran for every adapter and do NOT count as proof -- they
+   * show the adapter does not bypass the setting, not that it implements it. */
+  if (adapter_claims_websockets())
+  {
+    if (g_websocket_port != 0)
+    {
+      const struct CMUnitTest ws_tests[]
+          = { cmocka_unit_test(a_websocket_session_completes_a_roundtrip) };
+      failed += cmocka_run_group_tests(ws_tests, NULL, NULL);
+    }
+    else
+    {
+      char allow[16];
+      failed += az_iot_conformance_report_unproven_capability(
+          "AZ_IOT_CONFORMANCE_CAP_WEBSOCKETS",
+          "no WebSocket listener was supplied. Set az_iot_conformance_options websocket_port"
+          " (and websocket_path when the broker does not serve the Azure default).",
+          read_env("AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN", allow, sizeof(allow)));
+    }
+  }
+
+  if (adapter_claims_proxy())
+  {
+    if (g_proxy_host != NULL && g_proxy_host[0] != '\0' && g_proxy_port != 0)
+    {
+      const struct CMUnitTest proxy_tests[]
+          = { cmocka_unit_test(a_proxied_session_completes_a_roundtrip) };
+      failed += cmocka_run_group_tests(proxy_tests, NULL, NULL);
+    }
+    else
+    {
+      char allow[16];
+      failed += az_iot_conformance_report_unproven_capability(
+          "AZ_IOT_CONFORMANCE_CAP_PROXY",
+          "no proxy was supplied. Set az_iot_conformance_options proxy_host + proxy_port to an"
+          " HTTP CONNECT proxy that can reach the broker.",
           read_env("AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN", allow, sizeof(allow)));
     }
   }

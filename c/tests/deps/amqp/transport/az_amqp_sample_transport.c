@@ -64,6 +64,7 @@ enum
 {
   _PHASE_NEED_CONNECT = 0,
   _PHASE_CONNECTING,
+  _PHASE_PROXY_CONNECT,
   _PHASE_TLS_HANDSHAKE,
   _PHASE_READY,
   _PHASE_CLOSED,
@@ -1177,6 +1178,166 @@ static void _sch_close(void)
 }
 #endif // _WIN32 && !AZ_AMQP_SAMPLE_USE_OPENSSL
 
+// ---- optional HTTP CONNECT tunnel ----
+//
+// Test-only, and deliberately environment-driven rather than an option on the
+// transport: it exists so the cloud half of the e2e suite can run from a
+// network whose only way out is an HTTP proxy -- the same situation the device
+// half's proxy support addresses. Unset variables mean "connect directly",
+// which is what every existing caller gets.
+//
+//   AZ_IOT_E2E_SERVICE_PROXY_HOST   proxy host name
+//   AZ_IOT_E2E_SERVICE_PROXY_PORT   proxy port (default 8080)
+//
+// Named separately from the device's AZ_IOT_PROXY_* so a scenario can proxy one
+// half and not the other.
+
+static const char* _proxy_host(void)
+{
+  const char* host = getenv("AZ_IOT_E2E_SERVICE_PROXY_HOST");
+  return (host != NULL && host[0] != '\0') ? host : NULL;
+}
+
+static unsigned _proxy_port(void)
+{
+  const char* port = getenv("AZ_IOT_E2E_SERVICE_PROXY_PORT");
+  if (port != NULL && port[0] != '\0')
+  {
+    unsigned long p = strtoul(port, NULL, 10);
+    if (p > 0 && p <= 65535)
+    {
+      return (unsigned)p;
+    }
+  }
+  return 8080;
+}
+
+// Build "CONNECT host:port HTTP/1.1" for the endpoint the caller asked for. The
+// TLS session is negotiated afterwards, end to end, so the proxy only ever sees
+// ciphertext.
+static void _proxy_build_request(
+    az_amqp_sample_transport* s,
+    const char* target_host,
+    unsigned target_port)
+{
+  int n = snprintf(
+      (char*)s->proxy_request,
+      sizeof(s->proxy_request),
+      "CONNECT %s:%u HTTP/1.1\r\nHost: %s:%u\r\nProxy-Connection: keep-alive\r\n\r\n",
+      target_host,
+      target_port,
+      target_host,
+      target_port);
+  s->proxy_request_len = (n > 0 && (size_t)n < sizeof(s->proxy_request)) ? (size_t)n : 0;
+  s->proxy_request_sent = 0;
+  s->proxy_response_len = 0;
+}
+
+// Drive the tunnel handshake on the raw socket. Returns OK once the proxy has
+// answered 2xx and the socket is a pipe to the target.
+static az_amqp_transport_status _proxy_process(az_amqp_sample_transport* s)
+{
+  _sock sock = (_sock)s->file_descriptor;
+
+  while (s->proxy_request_sent < s->proxy_request_len)
+  {
+    int sent = send(
+        sock,
+        (const char*)s->proxy_request + s->proxy_request_sent,
+        (int)(s->proxy_request_len - s->proxy_request_sent),
+        0);
+    if (sent > 0)
+    {
+      s->proxy_request_sent += (size_t)sent;
+      continue;
+    }
+    if (_sock_would_block())
+    {
+      return AZ_AMQP_TRANSPORT_STATUS_WANT_WRITE;
+    }
+    _set_error(s, _sock_last_error(), "proxy CONNECT send failed");
+    return AZ_AMQP_TRANSPORT_STATUS_ERROR;
+  }
+
+  // Read until the end of the headers. The proxy sends nothing else before the
+  // tunnel opens, so nothing of the peer's data can be consumed here.
+  /* Read the status line and headers, and NOT one byte more.
+   *
+   * One byte at a time, deliberately. A proxy may coalesce its response with
+   * whatever follows -- an error body, or the target's first TLS bytes once the
+   * tunnel is open -- and this transport hands the socket straight to OpenSSL,
+   * which reads the descriptor itself. Anything this loop consumed past the
+   * header would therefore be invisible to the TLS layer and lost. Stopping on
+   * the first "\r\n\r\n" leaves the remainder queued in the socket for its real
+   * reader, and also means an error response with a body is judged as soon as
+   * its header arrives instead of blocking for a body nobody reads.
+   *
+   * The cost is a handful of extra reads on a response of a few dozen bytes,
+   * once per connection. */
+  for (;;)
+  {
+    if (s->proxy_response_len >= 4
+        && memcmp(s->proxy_response + s->proxy_response_len - 4, "\r\n\r\n", 4) == 0)
+    {
+      break;
+    }
+    if (s->proxy_response_len >= sizeof(s->proxy_response))
+    {
+      _set_error(s, 0, "proxy CONNECT response headers too large");
+      return AZ_AMQP_TRANSPORT_STATUS_ERROR;
+    }
+    int got = recv(sock, (char*)s->proxy_response + s->proxy_response_len, 1, 0);
+    if (got > 0)
+    {
+      s->proxy_response_len += (size_t)got;
+      continue;
+    }
+    if (got == 0)
+    {
+      _set_error(s, 0, "proxy closed the connection during CONNECT");
+      return AZ_AMQP_TRANSPORT_STATUS_ERROR;
+    }
+    if (_sock_would_block())
+    {
+      return AZ_AMQP_TRANSPORT_STATUS_WANT_READ;
+    }
+    _set_error(s, _sock_last_error(), "proxy CONNECT receive failed");
+    return AZ_AMQP_TRANSPORT_STATUS_ERROR;
+  }
+
+  /* "HTTP/1.x NNN ..." -- only 2xx opens the tunnel. Anything else (407, 403)
+   * must fail rather than leave the caller talking HTTP to a proxy.
+   *
+   * The code is located by the first space rather than by a fixed offset, so a
+   * version token that is not exactly "HTTP/1.1" cannot shift it. */
+  const char* status = NULL;
+  for (size_t i = 0; i + 1 < s->proxy_response_len && i < 16; ++i)
+  {
+    if (s->proxy_response[i] == ' ')
+    {
+      status = (const char*)s->proxy_response + i + 1;
+      break;
+    }
+  }
+  if (memcmp(s->proxy_response, "HTTP/", 5) != 0 || status == NULL
+      || (size_t)(status - (const char*)s->proxy_response) + 3u > s->proxy_response_len
+      || status[0] != '2')
+  {
+    char code[4] = { 0 };
+    if (status != NULL
+        && (size_t)(status - (const char*)s->proxy_response) + 3u <= s->proxy_response_len)
+    {
+      memcpy(code, status, 3);
+    }
+    char message[96];
+    (void)snprintf(
+        message, sizeof(message), "proxy refused CONNECT (status %s)", code[0] ? code : "?");
+    _set_error(s, 0, message);
+    return AZ_AMQP_TRANSPORT_STATUS_ERROR;
+  }
+  return AZ_AMQP_TRANSPORT_STATUS_OK;
+}
+
 // ---- vtable ----
 
 static az_amqp_transport_status _open(az_amqp_transport* transport)
@@ -1193,12 +1354,33 @@ static az_amqp_transport_status _open(az_amqp_transport* transport)
   char port[8];
   (void)snprintf(port, sizeof(port), "%u", (unsigned)s->options.port);
 
+  // With a proxy configured the socket goes to the proxy; the endpoint the
+  // caller asked for is reached through the CONNECT tunnel instead.
+  const char* proxy_host = _proxy_host();
+  const char* connect_host = host;
+  char connect_port[8];
+  (void)snprintf(connect_port, sizeof(connect_port), "%s", port);
+  s->proxy_request_len = 0;
+  s->proxy_request_sent = 0;
+  s->proxy_response_len = 0;
+  if (proxy_host != NULL)
+  {
+    connect_host = proxy_host;
+    (void)snprintf(connect_port, sizeof(connect_port), "%u", _proxy_port());
+    _proxy_build_request(s, host, (unsigned)s->options.port);
+    if (s->proxy_request_len == 0)
+    {
+      _set_error(s, 0, "proxy CONNECT request does not fit");
+      return AZ_AMQP_TRANSPORT_STATUS_ERROR;
+    }
+  }
+
   struct addrinfo hints;
   memset(&hints, 0, sizeof(hints));
   hints.ai_family = AF_UNSPEC;
   hints.ai_socktype = SOCK_STREAM;
   struct addrinfo* result = NULL;
-  if (getaddrinfo(host, port, &hints, &result) != 0 || result == NULL)
+  if (getaddrinfo(connect_host, connect_port, &hints, &result) != 0 || result == NULL)
   {
     _set_error(s, _sock_last_error(), "DNS resolution failed");
     return AZ_AMQP_TRANSPORT_STATUS_ERROR;
@@ -1263,6 +1445,37 @@ static az_amqp_transport_status _process(az_amqp_transport* transport)
     {
       _set_error(s, so_error, "TCP connect failed");
       return AZ_AMQP_TRANSPORT_STATUS_ERROR;
+    }
+    if (s->proxy_request_len != 0)
+    {
+      s->phase = _PHASE_PROXY_CONNECT;
+    }
+    else if (!s->options.tls_enabled)
+    {
+      s->phase = _PHASE_READY;
+      return AZ_AMQP_TRANSPORT_STATUS_OK;
+    }
+    else if (!_tls_active(s))
+    {
+      _set_error(
+          s,
+          0,
+          "TLS requested but this build has no TLS backend; build with AZ_AMQP_SAMPLE_USE_OPENSSL "
+          "(Linux) to reach AMQPS endpoints such as Azure Service Bus");
+      return AZ_AMQP_TRANSPORT_STATUS_ERROR;
+    }
+    else
+    {
+      s->phase = _PHASE_TLS_HANDSHAKE;
+    }
+  }
+
+  if (s->phase == _PHASE_PROXY_CONNECT)
+  {
+    az_amqp_transport_status ts = _proxy_process(s);
+    if (ts != AZ_AMQP_TRANSPORT_STATUS_OK)
+    {
+      return ts;
     }
     if (!s->options.tls_enabled)
     {

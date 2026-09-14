@@ -89,7 +89,8 @@ typedef struct paho_client
   az_iot_mqtt_version version;
 
   MQTTAsync paho; /* Paho async handle, NULL until connect() */
-  char* server_uri; /* "tcp://host:port" */
+  char* server_uri; /* "ssl://host:port", or "wss://host:port/path" */
+  char* proxy_uri; /* "[user[:pass]@]host:port", or NULL for a direct connect */
   char* client_id;
 
   az_iot_mqtt_event_callback inbound_cb;
@@ -409,8 +410,27 @@ static void paho_disconnected(
   }
 }
 
+/* Paho's proxy-auth trace line, whose value is the credential.
+ *
+ * Paho logs "Setting http proxy auth to <base64>" (and the https variant) at
+ * TRACE_PROTOCOL, where <base64> is the Basic credential -- reversible, so
+ * forwarding it verbatim would write the proxy user name and password into the
+ * application log of anyone who set AZ_IOT_PAHO_TRACE=protocol to debug a
+ * connection. Match the text Paho uses and drop everything after it. */
+#define PAHO_TRACE_PROXY_AUTH_MARKER "proxy auth to "
+
 static void paho_trace_callback(enum MQTTASYNC_TRACE_LEVELS level, char* message)
 {
+  if (message != NULL)
+  {
+    const char* marker = strstr(message, PAHO_TRACE_PROXY_AUTH_MARKER);
+    if (marker != NULL)
+    {
+      size_t keep = (size_t)(marker - message) + sizeof(PAHO_TRACE_PROXY_AUTH_MARKER) - 1u;
+      AZ_IOT_LOG_TRACEF("paho: (%d) %.*s<redacted>", (int)level, (int)keep, message);
+      return;
+    }
+  }
   AZ_IOT_LOG_TRACEF("paho: (%d) %s", (int)level, message ? message : "");
 }
 
@@ -839,22 +859,185 @@ static char* dup_str(const char* s)
   return p;
 }
 
-static char* build_server_uri(const char* host, uint16_t port, bool use_ssl)
+/* Default broker port for a transport + TLS combination. */
+static uint16_t default_port_for(bool ws, bool use_ssl)
 {
+  if (ws)
+  {
+    return use_ssl ? (uint16_t)AZ_IOT_MQTT_DEFAULT_PORT_WEBSOCKET_TLS
+                   : (uint16_t)AZ_IOT_MQTT_DEFAULT_PORT_WEBSOCKET_PLAIN;
+  }
+  return use_ssl ? (uint16_t)AZ_IOT_MQTT_DEFAULT_PORT_TCP_TLS
+                 : (uint16_t)AZ_IOT_MQTT_DEFAULT_PORT_TCP_PLAIN;
+}
+
+/* Build the serverURI Paho connects to. Reports why it failed rather than
+ * collapsing every cause into NULL: a truncated URI and a failed allocation
+ * need different answers, and a silently truncated host would be a connection
+ * to the wrong endpoint. */
+static az_iot_result build_server_uri(
+    const char* host,
+    uint16_t port,
+    bool use_ssl,
+    az_iot_mqtt_transport transport,
+    const char* websocket_path,
+    char** out_uri)
+{
+  *out_uri = NULL;
   if (!host)
   {
-    return NULL;
+    return AZ_IOT_ERR_INVALID_ARG;
   }
-  const char* scheme = use_ssl ? "ssl://" : "tcp://";
-  /* "ssl://" or "tcp://" + host + ":" + 5-digit port + NUL */
-  size_t n = strlen(scheme) + strlen(host) + 1 + 5 + 1;
+  /* Compared against the one value that is not TCP rather than tested for
+   * inequality with TCP: an unknown enum value must not become a WebSocket URI
+   * either. The caller rejects it before reaching here; this stays defensive. */
+  bool ws = (transport == AZ_IOT_MQTT_TRANSPORT_WEBSOCKET);
+  const char* scheme = ws ? (use_ssl ? "wss://" : "ws://") : (use_ssl ? "ssl://" : "tcp://");
+  const char* path = "";
+  if (ws)
+  {
+    path = is_nonempty_cstr(websocket_path) ? websocket_path : AZ_IOT_MQTT_DEFAULT_WEBSOCKET_PATH;
+  }
+  if (!port)
+  {
+    port = default_port_for(ws, use_ssl);
+  }
+  /* scheme + host + ":" + 5-digit port + path + NUL */
+  size_t n = strlen(scheme) + strlen(host) + 1 + 5 + strlen(path) + 1;
   char* uri = (char*)malloc(n);
   if (!uri)
   {
-    return NULL;
+    return AZ_IOT_ERR_OUT_OF_MEMORY;
   }
-  snprintf(uri, n, "%s%s:%u", scheme, host, (unsigned)(port ? port : (use_ssl ? 8883u : 1883u)));
-  return uri;
+  int written = snprintf(uri, n, "%s%s:%u%s", scheme, host, (unsigned)port, path);
+  if (written < 0 || (size_t)written >= n)
+  {
+    free(uri);
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  }
+  *out_uri = uri;
+  return AZ_IOT_OK;
+}
+
+/* How many bytes `s` needs once the characters Paho's proxy-credential parser
+ * treats as syntax are percent-encoded. */
+static size_t proxy_cred_encoded_len(const char* s)
+{
+  size_t n = 0;
+  for (; *s != '\0'; ++s)
+  {
+    n += (*s == '%' || *s == '@') ? 3u : 1u;
+  }
+  return n;
+}
+
+/* Percent-encode '%' and '@' into `dst`, returning the end of what was written.
+ *
+ * Those two characters and no others, because those two are what Paho's parser
+ * acts on (MQTTProtocol_setHTTPProxy / MQTTProtocol_specialChars in 1.3.13):
+ * it splits the proxy string at the FIRST '@', so an '@' anywhere in a
+ * credential silently moves the host; and it decodes %XX back to a byte, so a
+ * literal '%' would be eaten or -- when the next two characters are not hex
+ * digits -- leave that decoder advancing over nothing, hanging the connect.
+ * Encoding both means Paho decodes exactly the credential that was configured. */
+static char* proxy_cred_encode(char* dst, const char* s)
+{
+  static const char hex[] = "0123456789ABCDEF";
+  for (; *s != '\0'; ++s)
+  {
+    unsigned char c = (unsigned char)*s;
+    if (c == '%' || c == '@')
+    {
+      *dst++ = '%';
+      *dst++ = hex[(c >> 4) & 0x0Fu];
+      *dst++ = hex[c & 0x0Fu];
+    }
+    else
+    {
+      *dst++ = (char)c;
+    }
+  }
+  return dst;
+}
+
+/* Render the proxy as the "[user:password@]host:port" string Paho expects.
+ *
+ * *out_uri is NULL when no proxy is configured, which is not an error. */
+static az_iot_result build_proxy_uri(const az_iot_mqtt_proxy_options* proxy, char** out_uri)
+{
+  *out_uri = NULL;
+  if (!proxy || !is_nonempty_cstr(proxy->host))
+  {
+    return AZ_IOT_OK;
+  }
+  const char* user = is_nonempty_cstr(proxy->username) ? proxy->username : NULL;
+  const char* pass = (user != NULL && proxy->password != NULL) ? proxy->password : NULL;
+
+  /* HTTP Basic splits the decoded credential at its first colon, so a colon in
+   * the username is not representable -- percent-encoding it would not help,
+   * because it is the DECODED byte the proxy splits on. Refuse it instead of
+   * authenticating as some silently shorter user name. */
+  if (user != NULL && strchr(user, ':') != NULL)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+
+  size_t n = strlen(proxy->host) + 1 + 5 + 1; /* host + ':' + port + NUL */
+  if (user != NULL)
+  {
+    /* user + ':' + password + '@'. The colon is unconditional: Basic auth with
+     * an empty password is "user:", and sending a bare "user" would make the
+     * proxy read the whole string as the user name with no password at all. */
+    n += proxy_cred_encoded_len(user) + 1 + 1;
+    if (pass != NULL)
+    {
+      n += proxy_cred_encoded_len(pass);
+    }
+  }
+
+  char* uri = (char*)malloc(n);
+  if (!uri)
+  {
+    return AZ_IOT_ERR_OUT_OF_MEMORY;
+  }
+
+  char* p = uri;
+  if (user != NULL)
+  {
+    p = proxy_cred_encode(p, user);
+    *p++ = ':';
+    if (pass != NULL)
+    {
+      p = proxy_cred_encode(p, pass);
+    }
+    *p++ = '@';
+  }
+  size_t used = (size_t)(p - uri);
+  unsigned port = proxy->port ? (unsigned)proxy->port : (unsigned)AZ_IOT_MQTT_DEFAULT_PROXY_PORT;
+  int written = snprintf(p, n - used, "%s:%u", proxy->host, port);
+  if (written < 0 || (size_t)written >= n - used)
+  {
+    free(uri);
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  }
+  *out_uri = uri;
+  return AZ_IOT_OK;
+}
+
+/* Point one set of Paho connect options at the proxy, on both the plaintext and
+ * the TLS slot.
+ *
+ * Both, because Paho picks the slot by scheme -- httpProxy for tcp:// and ws://,
+ * httpsProxy for ssl:// and wss:// -- while this SDK has a single proxy for the
+ * connection, whatever the scheme ends up being. */
+static void paho_apply_proxy(MQTTAsync_connectOptions* conn, const char* proxy_uri)
+{
+  if (!proxy_uri)
+  {
+    return;
+  }
+  conn->httpProxy = proxy_uri;
+  conn->httpsProxy = proxy_uri;
 }
 
 static az_iot_result paho_iface_connect(
@@ -864,6 +1047,18 @@ static az_iot_result paho_iface_connect(
   if (!self || !opts || !opts->host || !opts->client_id)
   {
     return AZ_IOT_ERR_INVALID_ARG;
+  }
+
+  /* Refuse a transport this adapter does not implement rather than falling back
+   * to TCP. An unknown value here is a caller built against a newer header that
+   * added a transport; connecting it straight out on 8883 would bypass whatever
+   * egress restriction made it ask for something else, which is the one outcome
+   * the fail-closed rule on az_iot_mqtt_connect_options exists to prevent. */
+  if (opts->transport != AZ_IOT_MQTT_TRANSPORT_TCP
+      && opts->transport != AZ_IOT_MQTT_TRANSPORT_WEBSOCKET)
+  {
+    AZ_IOT_LOG_ERRORF("paho: unsupported transport %d", (int)opts->transport);
+    return AZ_IOT_ERR_NOT_SUPPORTED;
   }
   paho_client* m = paho_self(self);
 
@@ -902,18 +1097,49 @@ static az_iot_result paho_iface_connect(
   }
   free(m->server_uri);
   m->server_uri = NULL;
+  free(m->proxy_uri);
+  m->proxy_uri = NULL;
   free(m->client_id);
   m->client_id = NULL;
 
-  m->server_uri = build_server_uri(opts->host, opts->port, use_ssl);
+  az_iot_result uri_rc = build_server_uri(
+      opts->host, opts->port, use_ssl, opts->transport, opts->websocket_path, &m->server_uri);
+  if (uri_rc != AZ_IOT_OK)
+  {
+    az_iot_paho_key_custody_release(&m->key_custody);
+    return uri_rc;
+  }
   m->client_id = dup_str(opts->client_id);
-  if (!m->server_uri || !m->client_id)
+  if (!m->client_id)
   {
     az_iot_paho_key_custody_release(&m->key_custody);
     return AZ_IOT_ERR_OUT_OF_MEMORY;
   }
 
-  AZ_IOT_LOG_INFOF("paho: connecting to %s as '%s'", m->server_uri, m->client_id);
+  /* HTTP CONNECT proxy. Paho tunnels every scheme through it, not only
+   * WebSockets, so this covers plain MQTT over TCP too.
+   *
+   * Owned by the client for the same reason server_uri is: it is rebuilt on
+   * every connect and released on destroy, so no failure path in between has to
+   * remember to free it.
+   *
+   * Fail closed: if a proxy was asked for and the string cannot be built, the
+   * connect must not proceed, because Paho would then reach the broker
+   * directly -- exactly what the caller ruled out. */
+  az_iot_result proxy_rc = build_proxy_uri(&opts->proxy, &m->proxy_uri);
+  if (proxy_rc != AZ_IOT_OK)
+  {
+    az_iot_paho_key_custody_release(&m->key_custody);
+    return proxy_rc;
+  }
+
+  AZ_IOT_LOG_INFOF(
+      /* proxy.host, never m->proxy_uri: the URI carries the Basic credential,
+       * and this line is emitted at INFO on every connect. */
+      "paho: connecting to %s as '%s' (proxy=%s)",
+      m->server_uri,
+      m->client_id,
+      is_nonempty_cstr(opts->proxy.host) ? opts->proxy.host : "none");
 
   paho_maybe_enable_trace();
 
@@ -993,6 +1219,7 @@ static az_iot_result paho_iface_connect(
     conn.context = m;
     conn.onSuccess5 = paho_connect_success5;
     conn.onFailure5 = paho_connect_failure5;
+    paho_apply_proxy(&conn, m->proxy_uri);
     conn.keepAliveInterval = opts->keep_alive_seconds ? opts->keep_alive_seconds : 60;
     conn.cleansession = 0;
     conn.cleanstart = opts->clean_start ? 1 : 0;
@@ -1057,6 +1284,7 @@ static az_iot_result paho_iface_connect(
     conn.context = m;
     conn.onSuccess = paho_connect_success;
     conn.onFailure = paho_connect_failure;
+    paho_apply_proxy(&conn, m->proxy_uri);
     conn.keepAliveInterval = opts->keep_alive_seconds ? opts->keep_alive_seconds : 60;
     /* v3.1.1 has no separate Clean Start: the caller's clean_start maps onto
      * the Clean Session flag. This used to be hardcoded to 1, which quietly
@@ -1368,6 +1596,7 @@ static void paho_iface_destroy(az_iot_mqtt_client* self)
   q_drain_all(m);
   paho_mutex_destroy(&m->q_mutex);
   free(m->server_uri);
+  free(m->proxy_uri);
   free(m->client_id);
   free(m);
 }

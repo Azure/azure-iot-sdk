@@ -40,7 +40,6 @@
 #include "internal/connection_client_internal.h"
 #include "internal/dispatch.h"
 #include "internal/log_internal.h"
-#include "internal/protocol_profile.h"
 #include "internal/reconnect.h"
 #include "internal/span_writer.h"
 
@@ -61,6 +60,7 @@
 #define DPS_PHASE_REGISTERING AZ_IOT_DPS_PHASE_REGISTERING
 #define DPS_PHASE_POLLING AZ_IOT_DPS_PHASE_POLLING
 #define DPS_PHASE_DONE AZ_IOT_DPS_PHASE_DONE
+#define DPS_PHASE_HOLD AZ_IOT_DPS_PHASE_HOLD
 
 /* The certificate provider vtable ABI version that introduced the v2 hooks
  * (sign, get_csr). Every gate on those hooks compares against this, NOT against
@@ -224,6 +224,34 @@ static void resolve_connect_timings(
   copts->connect_timeout_seconds = c->opts.connect_timeout_seconds
       ? c->opts.connect_timeout_seconds
       : AZ_IOT_DEFAULT_CONNECT_TIMEOUT_SECONDS;
+}
+
+/* Default broker port for a transport. Every Azure endpoint this client talks
+ * to is TLS, so only the TLS ports appear here: 8883 for MQTT over TCP, 443 for
+ * MQTT over WebSockets. */
+static uint16_t default_port_for_transport(az_iot_mqtt_transport transport)
+{
+  return transport == AZ_IOT_MQTT_TRANSPORT_WEBSOCKET
+      ? (uint16_t)AZ_IOT_MQTT_DEFAULT_PORT_WEBSOCKET_TLS
+      : (uint16_t)AZ_IOT_MQTT_DEFAULT_PORT_TCP_TLS;
+}
+
+/* Apply the caller's transport, WebSocket path and proxy to one connect, and
+ * resolve the port: an explicit @p port wins, 0 means "derive from transport".
+ *
+ * Shared by the DPS bootstrap connect and the hub connect on purpose. A device
+ * that needs a proxy or WebSockets to reach the hub needs them to reach DPS
+ * too, so applying this to only one of the two connects would leave the device
+ * unable to provision at all. */
+static void resolve_connect_transport(
+    const az_iot_connection_client* c,
+    az_iot_mqtt_connect_options* copts,
+    uint16_t port)
+{
+  copts->transport = c->opts.transport;
+  copts->websocket_path = c->opts.websocket_path;
+  copts->proxy = c->opts.proxy;
+  copts->port = port ? port : default_port_for_transport(c->opts.transport);
 }
 
 static void teardown_active(az_iot_connection_client* c)
@@ -467,6 +495,12 @@ static bool dps_configured(const az_iot_connection_client* c)
 
 static void dps_teardown_mqtt(az_iot_connection_client* c)
 {
+  c->dps_subscription_confirmed = false;
+  /* The live hold belongs to the session. The holder count is the feature
+   * client's standing interest and deliberately survives, so a reprovision
+   * holds again rather than racing past. */
+  c->dps_hold_active = false;
+  c->dps_hold_deadline_ms = 0;
   if (c->dps_mqtt && c->dps_mqtt->iface && c->dps_mqtt->iface->destroy)
   {
     c->dps_mqtt->iface->destroy(c->dps_mqtt);
@@ -483,6 +517,13 @@ static void dps_finalize(az_iot_connection_client* c, az_iot_result status, bool
   c->dps_pending_finalize = true;
   c->dps_pending_status = status;
   c->dps_pending_have_assignment = have_assignment;
+}
+
+/* Bound on the pre-registration hold. */
+static uint64_t dps_hold_timeout_ms(const az_iot_connection_client* c)
+{
+  return c->opts.dps_hold_timeout_ms ? (uint64_t)c->opts.dps_hold_timeout_ms
+                                     : (uint64_t)AZ_IOT_DPS_HOLD_TIMEOUT_MS;
 }
 
 static az_iot_result dps_do_register_publish(az_iot_connection_client* c)
@@ -920,6 +961,19 @@ static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
         dps_finalize(c, evt->status, false);
         return;
       }
+      c->dps_subscription_confirmed = true;
+      /* A holder wants the session before the device registers. Registration is
+       * issued here normally, and the registration response tears the session
+       * down, so without this stop there is no point at which a feature client
+       * can use it. */
+      if (c->dps_hold_count > 0)
+      {
+        c->dps_phase = DPS_PHASE_HOLD;
+        c->dps_hold_active = true;
+        c->dps_hold_deadline_ms = az_iot_time_mono_ms() + dps_hold_timeout_ms(c);
+        AZ_IOT_LOG_DEBUG("dps: holding registration for a pre-registration exchange");
+        break;
+      }
       {
         az_iot_result r = dps_do_register_publish(c);
         if (r != AZ_IOT_OK)
@@ -936,6 +990,22 @@ static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
       {
         break;
       }
+      /* Offer the message to the device-update observer first: it shares this
+       * session and its responses arrive on the same subscribed filter, but the
+       * provisioning parser below would reject them as malformed registration
+       * responses and fault the attempt. */
+      if (c->dps_message_observer != NULL)
+      {
+        if (c->dps_message_observer(
+                evt->message->topic,
+                evt->message->payload,
+                evt->message->payload_len,
+                c->dps_message_observer_ctx))
+        {
+          break;
+        }
+      }
+
       if (c->dps_phase != DPS_PHASE_REGISTERING && c->dps_phase != DPS_PHASE_POLLING)
       {
         break;
@@ -1135,9 +1205,9 @@ static az_iot_result dps_start(az_iot_connection_client* c)
 
   az_iot_mqtt_connect_options copts = { 0 };
   copts.host = endpoint;
-  copts.port = 8883;
   copts.client_id = c->opts.dps.registration_id;
   resolve_connect_timings(c, &copts);
+  resolve_connect_transport(c, &copts, 0);
 
   /* Build the DPS MQTT username. CSR-based operational-certificate issuance
    * (Azure Device Registration) requires a newer DPS API version than the
@@ -1984,9 +2054,9 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
 
   az_iot_mqtt_connect_options copts = { 0 };
   copts.host = c->opts.host;
-  copts.port = c->opts.port ? c->opts.port : (uint16_t)8883;
   copts.client_id = c->opts.client_id;
   resolve_connect_timings(c, &copts);
+  resolve_connect_transport(c, &copts, c->opts.port);
 
   /* Build hub MQTT username via azure-sdk-for-c (Classic only).
    * Hub-Next does not use the Classic username format. */
@@ -2138,10 +2208,12 @@ static bool mock_next_configured(void)
 }
 
 /* Parse "host:port" into host string and port. Writes host into out_host
- * (up to cap), returns port (default 8883 if not specified). */
+ * (up to cap), returns the port, or 0 when the endpoint carries none -- 0 means
+ * "derive from the transport" at connect time, so a DPS-assigned hub endpoint
+ * does not pin the connection to 8883 when WebSockets were selected. */
 static uint16_t parse_host_port(const char* endpoint, char* out_host, size_t cap)
 {
-  uint16_t port = 8883;
+  uint16_t port = 0;
   const char* colon = strrchr(endpoint, ':');
   size_t host_len;
   if (colon && colon != endpoint)
@@ -2227,7 +2299,10 @@ static az_iot_result apply_mock_next_bypass(az_iot_connection_client* c)
     /* Warn, not debug: provisioning was skipped entirely, so anyone reading
      * the log needs to know this session never talked to DPS. */
     AZ_IOT_LOG_WARNF(
-        "dps: mock-next bypass active; host=%s port=%u device=%s", host, (unsigned)port, device_id);
+        "dps: mock-next bypass active; host=%s port=%u device=%s",
+        host,
+        (unsigned)(port ? port : default_port_for_transport(c->opts.transport)),
+        device_id);
   }
 
 #ifdef _WIN32
@@ -2244,7 +2319,10 @@ static az_iot_result apply_mock_next_bypass(az_iot_connection_client* c)
 az_iot_connection_client_options az_iot_connection_client_options_default(void)
 {
   az_iot_connection_client_options opts = { 0 };
-  opts.port = 8883;
+  /* 0, not 8883: the port is derived from the transport at connect time, so a
+   * caller that selects WebSockets does not also have to remember to change a
+   * port that was defaulted for TCP. */
+  opts.port = 0;
   opts.dps.max_hub_connect_attempts_before_reprovision
       = AZ_IOT_DEFAULT_MAX_HUB_CONNECT_ATTEMPTS_BEFORE_REPROVISION;
   return opts;
@@ -2615,6 +2693,27 @@ az_iot_result az_iot_connection_client_do_work(
   /* --- DPS provisioning pump --- */
   if (client->dps_phase != DPS_PHASE_NONE && client->dps_phase != DPS_PHASE_DONE)
   {
+    /* Leave the pre-registration hold once every holder has released, or once
+     * the deadline expires. Expiry is not a failure: the hold is advisory, and
+     * a feature client must never be able to stop a device provisioning. */
+    if (client->dps_phase == DPS_PHASE_HOLD)
+    {
+      bool expired = az_iot_time_mono_ms() >= client->dps_hold_deadline_ms;
+      if (client->dps_hold_count == 0 || expired)
+      {
+        if (expired && client->dps_hold_count > 0)
+        {
+          AZ_IOT_LOG_ERROR("dps: pre-registration hold timed out; registering anyway");
+        }
+        client->dps_hold_active = false;
+        az_iot_result hr = dps_do_register_publish(client);
+        if (hr != AZ_IOT_OK)
+        {
+          dps_finalize(client, hr, false);
+        }
+      }
+    }
+
     /* If polling deadline reached, issue query. */
     if (client->dps_phase == DPS_PHASE_POLLING && az_iot_time_mono_ms() >= client->dps_poll_due_ms)
     {
@@ -2628,7 +2727,24 @@ az_iot_result az_iot_connection_client_do_work(
     az_iot_result r = AZ_IOT_OK;
     if (client->dps_mqtt && client->dps_mqtt->iface && client->dps_mqtt->iface->process_loop)
     {
-      r = client->dps_mqtt->iface->process_loop(client->dps_mqtt, timeout_ms);
+      /* The hold deadline is only tested on the way into this pump, so an
+       * adapter that sleeps for the whole timeout when idle would hold past it:
+       * a caller passing a timeout longer than the hold would defer
+       * registration until that sleep returned. Cap the wait at the time
+       * remaining so the deadline is a real bound rather than a check that
+       * happens to run often enough. */
+      uint32_t wait_ms = timeout_ms;
+      if (client->dps_phase == DPS_PHASE_HOLD)
+      {
+        uint64_t now = az_iot_time_mono_ms();
+        uint64_t remaining
+            = (client->dps_hold_deadline_ms > now) ? client->dps_hold_deadline_ms - now : 0;
+        if ((uint64_t)wait_ms > remaining)
+        {
+          wait_ms = (uint32_t)remaining;
+        }
+      }
+      r = client->dps_mqtt->iface->process_loop(client->dps_mqtt, wait_ms);
     }
 
     dps_apply_deferred(client);
@@ -2856,16 +2972,6 @@ void az_iot_connection_client__subscription_gate_force_timeout(az_iot_connection
   {
     client->subscription_gate.deadline_ms = 0;
   }
-}
-
-const az_iot_protocol_profile* az_iot_connection_client__profile(
-    const az_iot_connection_client* client)
-{
-  if (!client)
-  {
-    return NULL;
-  }
-  return az_iot_protocol_profile_for_role(client->session_role);
 }
 
 az_iot_result az_iot_connection_client__register_inbound_handler(
@@ -3137,6 +3243,110 @@ static az_iot_result run_feature_client_binds(az_iot_connection_client* c)
     }
   }
   return AZ_IOT_OK;
+}
+
+/* --- provisioning-session seam ------------------------------------------- */
+
+az_iot_result az_iot_connection_client__dps_hold_acquire(az_iot_connection_client* client)
+{
+  if (client == NULL)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  /* A registration already in flight cannot be held: the request is on the wire
+   * and its response will tear the session down. Say so rather than appear to
+   * hold something.
+   *
+   * DONE is allowed, and that distinction matters. It is not "too late", it is
+   * "this session is finished" -- and it is the state a provisioned client sits
+   * in until it reprovisions. Refusing here would leave a holder unable to
+   * reserve the NEXT session, so a reprovision would run from SUBACK straight
+   * into registration with no hold. */
+  if (client->dps_phase == DPS_PHASE_REGISTERING || client->dps_phase == DPS_PHASE_POLLING)
+  {
+    return AZ_IOT_ERR_NOT_SUPPORTED;
+  }
+  if (client->dps_hold_count == UINT8_MAX)
+  {
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  }
+  client->dps_hold_count++;
+  return AZ_IOT_OK;
+}
+
+void az_iot_connection_client__dps_hold_release(az_iot_connection_client* client)
+{
+  if (client == NULL || client->dps_hold_count == 0)
+  {
+    return;
+  }
+  client->dps_hold_count--;
+  /* Registration is issued from the do_work pump, not here: releasing may
+   * happen inside a message callback, and publishing from there would reenter
+   * the adapter while it is dispatching. */
+}
+
+bool az_iot_connection_client__dps_hold_is_active(const az_iot_connection_client* client)
+{
+  return client != NULL && client->dps_hold_active;
+}
+
+bool az_iot_connection_client__dps_session_ready(const az_iot_connection_client* client)
+{
+  if (client == NULL || client->dps_mqtt == NULL)
+  {
+    return false;
+  }
+  /* The SUBACK, not the phase, is what proves a response can come back:
+   * SUBSCRIBING is entered when the SUBSCRIBE is sent, so publishing on the
+   * phase alone could outrun the route the reply needs. The flag is cleared
+   * when the session is torn down. */
+  return client->dps_subscription_confirmed;
+}
+
+az_iot_result az_iot_connection_client__dps_publish(
+    az_iot_connection_client* client,
+    const az_iot_mqtt_message* msg)
+{
+  if (client == NULL || msg == NULL)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if (!az_iot_connection_client__dps_session_ready(client))
+  {
+    return AZ_IOT_ERR_NOT_CONNECTED;
+  }
+  if (client->dps_mqtt->iface == NULL || client->dps_mqtt->iface->publish == NULL)
+  {
+    return AZ_IOT_ERR_NOT_SUPPORTED;
+  }
+
+  uint16_t pid = 0;
+  return client->dps_mqtt->iface->publish(client->dps_mqtt, msg, &pid);
+}
+
+void az_iot_connection_client__set_dps_message_observer(
+    az_iot_connection_client* client,
+    az_iot_dps_message_observer observer,
+    void* user_ctx)
+{
+  if (client == NULL)
+  {
+    return;
+  }
+  /* Last writer wins, and there is exactly one slot. Calling this twice with
+   * two different observers would silently leave the first one never called,
+   * so a second registration over a live one is refused rather than honoured:
+   * only the owner may clear its own registration (observer == NULL) before a
+   * different one takes over. */
+  if (observer != NULL && client->dps_message_observer != NULL
+      && client->dps_message_observer != observer)
+  {
+    AZ_IOT_LOG_ERROR("a provisioning-session message observer is already registered");
+    return;
+  }
+  client->dps_message_observer = observer;
+  client->dps_message_observer_ctx = user_ctx;
 }
 
 az_iot_result az_iot_connection_client__publish(

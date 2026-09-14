@@ -12,7 +12,6 @@
 #include "azure/iot/az_iot_mqtt_iface.h"
 
 #include "internal/dispatch.h"
-#include "internal/protocol_profile.h"
 
 #ifdef __cplusplus
 extern "C"
@@ -57,11 +56,6 @@ extern "C"
    * never-acked path without waiting out the configured timeout. */
   void az_iot_connection_client__subscription_gate_force_timeout(az_iot_connection_client* client);
 
-  /* Return the protocol profile selected by the current session_role. May be
-   * NULL when the role has no profile yet (e.g. HUB_NEXT in Phase 2.3). */
-  const az_iot_protocol_profile* az_iot_connection_client__profile(
-      const az_iot_connection_client* client);
-
   /* Register an inbound MESSAGE handler. ConnectionClient lazily allocates a
    * dispatch table on the first call. Each registered handler is invoked
    * synchronously from inside do_work() when an inbound MESSAGE topic begins
@@ -103,6 +97,61 @@ extern "C"
    * client was created with a NULL client_id (rejected at create time, so this
    * is effectively never NULL for a live client). */
   const char* az_iot_connection_client__device_id(const az_iot_connection_client* client);
+
+  /* --- Provisioning-session seam ------------------------------------------- */
+  /*
+   * The device-update operations ride the device's PROVISIONING session, not the
+   * hub session, and the bootstrap check runs BEFORE the device is registered --
+   * so az_iot_connection_client__publish() cannot serve them: it publishes on
+   * the active hub client and requires CONNECTED.
+   *
+   * These expose the provisioning session directly, for the one feature that
+   * legitimately needs it. Not for general use.
+   */
+
+  /* True when a provisioning session exists and is far enough along to carry a
+   * publish -- that is, its subscription is established and the registration
+   * outcome has not yet torn the session down. */
+  bool az_iot_connection_client__dps_session_ready(const az_iot_connection_client* client);
+
+  /* Publish on the provisioning session. Returns ERR_NOT_CONNECTED when no such
+   * session is ready. */
+  az_iot_result az_iot_connection_client__dps_publish(
+      az_iot_connection_client* client,
+      const az_iot_mqtt_message* msg);
+
+  /* Hold registration at AZ_IOT_DPS_PHASE_HOLD so a feature client can run a
+   * pre-registration exchange on the provisioning session.
+   *
+   * This exists because the provisioning session is otherwise unusable by a
+   * feature client: the registration PUBLISH is issued from the SUBACK handler
+   * and the session is torn down on the response, so a caller-driven loop never
+   * observes an open session.
+   *
+   * Must be acquired BEFORE the session reaches its SUBACK (in practice, before
+   * az_iot_connection_client_open()); acquiring later has no effect on a
+   * registration already in flight, and the call reports that.
+   *
+   * The hold is ADVISORY: it expires after a deadline and registration then
+   * proceeds regardless. A feature client can delay provisioning, never prevent
+   * it. Every acquire must be matched by a release; the release is what lets
+   * registration continue without waiting out the deadline.
+   */
+  az_iot_result az_iot_connection_client__dps_hold_acquire(az_iot_connection_client* client);
+  void az_iot_connection_client__dps_hold_release(az_iot_connection_client* client);
+
+  /* True while registration is actually being held, i.e. the session is up and
+   * waiting on a holder. */
+  bool az_iot_connection_client__dps_hold_is_active(const az_iot_connection_client* client);
+
+  /* Register the observer for inbound provisioning-session messages the
+   * provisioning flow does not claim. At most one: registering a second observer over a live one is
+   * refused, so clear it (NULL) before registering a different one. The callback type is declared
+   * with the client struct that stores it. */
+  void az_iot_connection_client__set_dps_message_observer(
+      az_iot_connection_client* client,
+      az_iot_dps_message_observer observer,
+      void* user_ctx);
 
   /* Publish through the active adapter. Returns ERR_NOT_CONNECTED when not in
    * CONNECTED state. For QoS 1, callers may pass a non-NULL ack_cb; it is

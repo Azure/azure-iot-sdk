@@ -17,7 +17,9 @@ Canonical pending-work tracker for IoT Hub Next (AEG) integration.
 
 - [x] Extend `az_iot_protocol_profile` with Next-specific fields
 - [x] Implement `s_profile_next` in `protocol_profile.c`
-- [ ] Unit test: `profile_for_hub_next_role_is_next`
+- [x] ~~Unit test: `profile_for_hub_next_role_is_next`~~ — moot: the whole
+  `protocol_profile` module was deleted in P4 once each generation's feature
+  clients owned their own topics.
 
 ## Phase 3: MQTT v5 Properties in Adapter Interface
 

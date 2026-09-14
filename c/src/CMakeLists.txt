@@ -10,11 +10,9 @@ add_library(az_iot_core
     core/cert_util.c
     core/reconnect.c
     core/dispatch.c
-    core/protocol_profile.c
     core/span_writer.c
     core/message.c
     core/certificate_provider_pem.c
-    features/file_upload/file_upload_client.c
     features/adu/adu_client.c
     features/adu/adu_root_keys_microsoft.c
     features/adu/adu_report.c
@@ -61,6 +59,7 @@ add_library(az_iot_gen1
     gen1/c2d_client.c
     gen1/direct_method_client.c
     gen1/twin_client.c
+    gen1/file_upload_client.c
 )
 add_library(azure::iot::gen1 ALIAS az_iot_gen1)
 target_include_directories(az_iot_gen1 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/core)
