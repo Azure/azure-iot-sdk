@@ -433,6 +433,139 @@ static void properties_past_the_cap_are_dropped_with_a_warning(void** state)
   assert_non_null(strstr(log.last, "k14"));
 }
 
+/* The fix for D-11 narrowed a prefix test to an exact one. Anything that widens
+ * it back -- "$." again, or a startswith on "$" -- silently eats a property the
+ * caller set, so pin a name the client knows nothing about. */
+static void an_unknown_system_property_still_travels(void** state)
+{
+  fixture* test = (fixture*)*state;
+  connect_and_init(test);
+
+  const az_iot_telemetry_property properties[] = {
+    { "$.unknown", "keep-me" },
+    { "$notdot", "keep-me-too" },
+  };
+  az_iot_telemetry_message message = {
+    .properties = properties,
+    .properties_count = ARRAY_SIZE(properties),
+  };
+  assert_int_equal(
+      az_iot_gen2_telemetry_client_send(&test->telemetry, &message, NULL, NULL), AZ_IOT_OK);
+
+  const az_iot_mock_call* publish = az_iot_mock_mqtt_client_call_at(test->mock, 0);
+  assert_string_equal(az_iot_mock_call_user_property(publish, "$.unknown"), "keep-me");
+  assert_string_equal(az_iot_mock_call_user_property(publish, "$notdot"), "keep-me-too");
+}
+
+/* "$.CT" is not "$.ct". Matching it loosely would take a caller's ordinary
+ * property and quietly redirect it into the Content Type field. */
+static void content_type_is_matched_case_sensitively(void** state)
+{
+  fixture* test = (fixture*)*state;
+  connect_and_init(test);
+
+  const az_iot_telemetry_property properties[] = {
+    { "$.CT", "text/plain" },
+  };
+  az_iot_telemetry_message message = {
+    .properties = properties,
+    .properties_count = ARRAY_SIZE(properties),
+  };
+  assert_int_equal(
+      az_iot_gen2_telemetry_client_send(&test->telemetry, &message, NULL, NULL), AZ_IOT_OK);
+
+  const az_iot_mock_call* publish = az_iot_mock_mqtt_client_call_at(test->mock, 0);
+  assert_string_equal(publish->content_type, "application/json");
+  assert_string_equal(az_iot_mock_call_user_property(publish, "$.CT"), "text/plain");
+}
+
+/* Two content types is the caller contradicting themselves. Taking the first is
+ * a choice, not an accident, so it is worth pinning -- and neither may travel
+ * under its own name, or the service would see a third answer. */
+static void a_repeated_content_type_resolves_to_the_first(void** state)
+{
+  fixture* test = (fixture*)*state;
+  connect_and_init(test);
+
+  const az_iot_telemetry_property properties[] = {
+    { AZ_IOT_MSG_PROP_CONTENT_TYPE, "text/plain" },
+    { AZ_IOT_MSG_PROP_CONTENT_TYPE, "application/xml" },
+  };
+  az_iot_telemetry_message message = {
+    .properties = properties,
+    .properties_count = ARRAY_SIZE(properties),
+  };
+  assert_int_equal(
+      az_iot_gen2_telemetry_client_send(&test->telemetry, &message, NULL, NULL), AZ_IOT_OK);
+
+  const az_iot_mock_call* publish = az_iot_mock_mqtt_client_call_at(test->mock, 0);
+  assert_string_equal(publish->content_type, "text/plain");
+  assert_string_equal(az_iot_mock_call_user_property(publish, "content-type"), "text/plain");
+  assert_null(az_iot_mock_call_user_property(publish, AZ_IOT_MSG_PROP_CONTENT_TYPE));
+  assert_int_equal(publish->user_properties_count, 2);
+}
+
+/* The other side of the cap: a message that exactly fills it loses nothing and
+ * must not warn. An off-by-one in the bound shows up here and nowhere else. */
+static void filling_the_cap_exactly_carries_everything_and_says_nothing(void** state)
+{
+  fixture* test = (fixture*)*state;
+  connect_and_init(test);
+
+  /* Two of the sixteen slots are the type and content-type the client adds. */
+  char keys[14][8];
+  az_iot_telemetry_property properties[14];
+  for (int i = 0; i < 14; ++i)
+  {
+    snprintf(keys[i], sizeof(keys[i]), "k%d", i);
+    properties[i].key = keys[i];
+    properties[i].value = "v";
+  }
+  az_iot_telemetry_message message = {
+    .properties = properties,
+    .properties_count = ARRAY_SIZE(properties),
+  };
+
+  log_capture log;
+  install_capture(&log, AZ_IOT_LOG_LEVEL_WARN);
+  az_iot_result result = az_iot_gen2_telemetry_client_send(&test->telemetry, &message, NULL, NULL);
+  az_iot_log_set_global_sink(NULL);
+
+  assert_int_equal(result, AZ_IOT_OK);
+  const az_iot_mock_call* publish = az_iot_mock_mqtt_client_call_at(test->mock, 0);
+  assert_int_equal(publish->user_properties_count, 16);
+  assert_string_equal(az_iot_mock_call_user_property(publish, "k0"), "v");
+  assert_string_equal(az_iot_mock_call_user_property(publish, "k13"), "v");
+  assert_int_equal(log.count, 0);
+}
+
+/* The v5 path carries values as-is. Classic has to percent-encode the same
+ * bytes because they go in the topic; borrowing that encoder here would corrupt
+ * every value containing a reserved character. */
+static void values_are_not_encoded_on_the_v5_path(void** state)
+{
+  fixture* test = (fixture*)*state;
+  connect_and_init(test);
+
+  const az_iot_telemetry_property properties[] = {
+    { "reserved", "a&b=c d%e/f" },
+    { "wildcards", "a#b+c" },
+  };
+  az_iot_telemetry_message message = {
+    .properties = properties,
+    .properties_count = ARRAY_SIZE(properties),
+  };
+  assert_int_equal(
+      az_iot_gen2_telemetry_client_send(&test->telemetry, &message, NULL, NULL), AZ_IOT_OK);
+
+  const az_iot_mock_call* publish = az_iot_mock_mqtt_client_call_at(test->mock, 0);
+  assert_string_equal(az_iot_mock_call_user_property(publish, "reserved"), "a&b=c d%e/f");
+  assert_string_equal(az_iot_mock_call_user_property(publish, "wildcards"), "a#b+c");
+  /* The topic carries none of it, which is the whole reason no encoding is
+   * needed. */
+  assert_string_equal(publish->topic, "ih/ut-device/srv/telemetry");
+}
+
 static void content_type_defaults_to_json(void** state)
 {
   fixture* test = (fixture*)*state;
@@ -519,6 +652,12 @@ int main(void)
     cmocka_unit_test_setup_teardown(every_system_property_reaches_the_wire, setup, teardown),
     cmocka_unit_test_setup_teardown(
         properties_past_the_cap_are_dropped_with_a_warning, setup, teardown),
+    cmocka_unit_test_setup_teardown(an_unknown_system_property_still_travels, setup, teardown),
+    cmocka_unit_test_setup_teardown(content_type_is_matched_case_sensitively, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_repeated_content_type_resolves_to_the_first, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        filling_the_cap_exactly_carries_everything_and_says_nothing, setup, teardown),
+    cmocka_unit_test_setup_teardown(values_are_not_encoded_on_the_v5_path, setup, teardown),
     cmocka_unit_test_setup_teardown(content_type_defaults_to_json, setup, teardown),
     cmocka_unit_test_setup_teardown(
         empty_payload_is_valid_and_publish_failures_are_returned, setup, teardown),
