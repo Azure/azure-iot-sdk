@@ -359,6 +359,11 @@ if(AZ_IOT_WITH_PAHO)
     endif()
     if(UNIX)
         target_link_libraries(az_iot_tests_paho_transport_proxy PRIVATE pthread)
+        # setenv() is POSIX, not C99, and these targets build with -std=c99
+        # -Werror -- so without this the call is an implicit declaration and the
+        # build fails rather than warning. Same reason as az_iot_tests_connection_dps.
+        target_compile_definitions(az_iot_tests_paho_transport_proxy PRIVATE
+            _POSIX_C_SOURCE=200809L)
     endif()
     az_iot_apply_coverage(az_iot_tests_paho_transport_proxy)
 endif()
