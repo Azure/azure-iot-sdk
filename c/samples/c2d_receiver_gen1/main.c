@@ -89,10 +89,14 @@ static void on_c2d(const az_iot_c2d_message* msg, void* user_ctx)
 
   /* Plain text by the time it reaches here. On the wire these were percent-
    * encoded into the topic -- "%24.mid" for "$.mid", "a%20b" for "a b" -- and
-   * the client undid all of it. Both the count and the decoded text are
-   * bounded, by AZ_IOT_C2D_MAX_PROPERTIES and AZ_IOT_C2D_PROPERTY_BUFFER; past
-   * either the message is still delivered, with a warning, carrying the
-   * properties that fit. */
+   * the client undid all of it.
+   *
+   * The two bounds fail differently, which matters if you are sizing them. Past
+   * AZ_IOT_C2D_MAX_PROPERTIES the first few are kept and the rest dropped. But
+   * if the decoded text overruns AZ_IOT_C2D_PROPERTY_BUFFER, or any escape is
+   * malformed, the client surfaces NO properties at all rather than risk
+   * handing over a truncated key or value. Either way the message itself is
+   * still delivered, and either way there is a warning. */
   for (size_t i = 0; i < msg->properties_count; ++i)
   {
     printf(
