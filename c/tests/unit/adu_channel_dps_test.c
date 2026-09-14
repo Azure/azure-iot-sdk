@@ -1041,7 +1041,11 @@ static void the_hub_is_still_pumped_while_an_auxiliary_session_is_open(void** st
   size_t after = (size_t)az_iot_mock_mqtt_client_count_of(hub_mock, AZ_IOT_MOCK_CALL_PROCESS_LOOP);
   assert_true(after > before);
 
+  /* Destroyed explicitly. The mock factory frees only its LAST client, and the
+   * auxiliary session created one after this stand-in, so nothing else would
+   * ever free it -- confirmed by LeakSanitizer, which reports it otherwise. */
   fx->client.active_client = NULL;
+  hub->iface->destroy(hub);
   az_iot_connection_client__dps_user_release(&fx->client);
 }
 
