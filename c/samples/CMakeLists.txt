@@ -18,6 +18,26 @@ if(AZ_IOT_WITH_PAHO)
         PRIVATE az_iot_gen2 az_iot_adapter_paho)
     az_iot_apply_warnings(az_iot_sample_telemetry_gen2)
 
+    # The same telemetry flow over the two egress options, one sample each, so
+    # the difference from az_iot_sample_telemetry_gen1 is exactly the feature
+    # being shown: MQTT over WebSockets, and MQTT through an HTTP CONNECT proxy.
+    # Both link gen1 only, for the same reason that sample does: the transport
+    # and the proxy are independent of the hub generation, so serving one route
+    # keeps each sample about its own feature.
+    add_executable(az_iot_sample_websockets
+        websockets/main.c common/sample_utils.c)
+    target_include_directories(az_iot_sample_websockets PRIVATE common)
+    target_link_libraries(az_iot_sample_websockets
+        PRIVATE az_iot_gen1 az_iot_adapter_paho)
+    az_iot_apply_warnings(az_iot_sample_websockets)
+
+    add_executable(az_iot_sample_proxy
+        proxy/main.c common/sample_utils.c)
+    target_include_directories(az_iot_sample_proxy PRIVATE common)
+    target_link_libraries(az_iot_sample_proxy
+        PRIVATE az_iot_gen1 az_iot_adapter_paho)
+    az_iot_apply_warnings(az_iot_sample_proxy)
+
     add_executable(az_iot_sample_twin_get_patch
         twin_get_patch/main.c common/sample_utils.c)
     target_include_directories(az_iot_sample_twin_get_patch PRIVATE common)

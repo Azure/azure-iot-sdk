@@ -16,6 +16,39 @@
 /* DPS provision + MQTT connect can take a while on a cold hub. */
 #define E2E_DEVICE_CONNECT_TIMEOUT_S 90
 
+/* Read the egress configuration: which transport carries MQTT, and whether it
+ * goes through an HTTP proxy. All optional; unset means "TCP, no proxy", which
+ * is what every existing e2e leg gets. */
+static void egress_config_load(e2e_device* dev)
+{
+  char* transport = az_iot_test_env_dup("AZ_IOT_MQTT_TRANSPORT");
+  dev->transport = AZ_IOT_MQTT_TRANSPORT_TCP;
+  if (transport != NULL)
+  {
+    if (strcmp(transport, "websocket") == 0 || strcmp(transport, "websockets") == 0)
+    {
+      dev->transport = AZ_IOT_MQTT_TRANSPORT_WEBSOCKET;
+    }
+    free(transport);
+  }
+  dev->websocket_path = az_iot_test_env_dup("AZ_IOT_MQTT_WEBSOCKET_PATH");
+
+  dev->proxy_host = az_iot_test_env_dup("AZ_IOT_PROXY_HOST");
+  dev->proxy_username = az_iot_test_env_dup("AZ_IOT_PROXY_USERNAME");
+  dev->proxy_password = az_iot_test_env_dup("AZ_IOT_PROXY_PASSWORD");
+  dev->proxy_port = 0;
+  char* proxy_port = az_iot_test_env_dup("AZ_IOT_PROXY_PORT");
+  if (proxy_port != NULL)
+  {
+    unsigned long p = strtoul(proxy_port, NULL, 10);
+    if (p > 0 && p <= 65535)
+    {
+      dev->proxy_port = (uint16_t)p;
+    }
+    free(proxy_port);
+  }
+}
+
 static int device_config_load(e2e_device* dev)
 {
   dev->id_scope = az_iot_test_env_dup("AZ_IOT_DPS_ID_SCOPE");
@@ -24,15 +57,33 @@ static int device_config_load(e2e_device* dev)
   dev->key = az_iot_test_env_dup("AZ_IOT_CLIENT_KEY");
   dev->ca = az_iot_test_env_dup("AZ_IOT_TRUSTED_CA");
   dev->global_endpoint = az_iot_test_env_dup("AZ_IOT_DPS_GLOBAL_ENDPOINT");
+  dev->hub_hostname = az_iot_test_env_dup("AZ_IOT_HUB_HOSTNAME");
+  dev->hub_device_id = az_iot_test_env_dup("AZ_IOT_DEVICE_ID");
+  egress_config_load(dev);
 
-  if (dev->id_scope == NULL || dev->reg_id == NULL || dev->cert == NULL || dev->key == NULL
-      || dev->ca == NULL)
+  if (dev->cert == NULL || dev->key == NULL || dev->ca == NULL)
+  {
+    fprintf(
+        stderr,
+        "[e2e] missing required device env vars: AZ_IOT_CLIENT_CERT/"
+        "AZ_IOT_CLIENT_KEY/AZ_IOT_TRUSTED_CA\n");
+    return 1;
+  }
+
+  /* Direct-hub mode wins when it is fully configured; otherwise DPS, which is
+   * what every existing leg uses. */
+  if (dev->hub_hostname != NULL && dev->hub_device_id != NULL)
+  {
+    dev->device_id = dev->hub_device_id;
+    return 0;
+  }
+
+  if (dev->id_scope == NULL || dev->reg_id == NULL)
   {
     fprintf(
         stderr,
         "[e2e] missing required device env vars: AZ_IOT_DPS_ID_SCOPE/"
-        "AZ_IOT_DPS_REGISTRATION_ID/AZ_IOT_CLIENT_CERT/AZ_IOT_CLIENT_KEY/"
-        "AZ_IOT_TRUSTED_CA\n");
+        "AZ_IOT_DPS_REGISTRATION_ID (or AZ_IOT_HUB_HOSTNAME/AZ_IOT_DEVICE_ID)\n");
     return 1;
   }
   dev->device_id = dev->reg_id;
@@ -71,13 +122,27 @@ int e2e_device_connect(e2e_device* dev)
   dev->certs_ok = true;
 
   az_iot_connection_client_options copts = az_iot_connection_client_options_default();
-  copts.dps.id_scope = dev->id_scope;
-  copts.dps.registration_id = dev->reg_id;
-  copts.certificate_provider = &dev->certs.base;
-  if (dev->global_endpoint != NULL)
+  if (dev->hub_hostname != NULL && dev->hub_device_id != NULL)
   {
-    copts.dps.global_endpoint = dev->global_endpoint;
+    copts.host = dev->hub_hostname;
+    copts.client_id = dev->hub_device_id;
   }
+  else
+  {
+    copts.dps.id_scope = dev->id_scope;
+    copts.dps.registration_id = dev->reg_id;
+    if (dev->global_endpoint != NULL)
+    {
+      copts.dps.global_endpoint = dev->global_endpoint;
+    }
+  }
+  copts.certificate_provider = &dev->certs.base;
+  copts.transport = dev->transport;
+  copts.websocket_path = dev->websocket_path;
+  copts.proxy.host = dev->proxy_host;
+  copts.proxy.port = dev->proxy_port;
+  copts.proxy.username = dev->proxy_username;
+  copts.proxy.password = dev->proxy_password;
 
   if (az_iot_connection_client_init(&dev->conn, &copts) != AZ_IOT_OK)
   {
@@ -145,11 +210,23 @@ void e2e_device_disconnect(e2e_device* dev)
   free(dev->key);
   free(dev->ca);
   free(dev->global_endpoint);
+  free(dev->hub_hostname);
+  free(dev->hub_device_id);
+  free(dev->websocket_path);
+  free(dev->proxy_host);
+  free(dev->proxy_username);
+  free(dev->proxy_password);
   dev->id_scope = NULL;
   dev->reg_id = NULL;
   dev->cert = NULL;
   dev->key = NULL;
   dev->ca = NULL;
   dev->global_endpoint = NULL;
+  dev->hub_hostname = NULL;
+  dev->hub_device_id = NULL;
+  dev->websocket_path = NULL;
+  dev->proxy_host = NULL;
+  dev->proxy_username = NULL;
+  dev->proxy_password = NULL;
   dev->device_id = NULL;
 }

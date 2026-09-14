@@ -18,11 +18,24 @@
  *   AZ_IOT_DPS_ID_SCOPE, AZ_IOT_DPS_REGISTRATION_ID,
  *   AZ_IOT_CLIENT_CERT, AZ_IOT_CLIENT_KEY, AZ_IOT_TRUSTED_CA,
  *   AZ_IOT_DPS_GLOBAL_ENDPOINT (optional)
+ *
+ * Two provisioning modes, chosen by which variables are present:
+ *   - DPS (the default): AZ_IOT_DPS_ID_SCOPE + AZ_IOT_DPS_REGISTRATION_ID.
+ *   - Direct hub connect: AZ_IOT_HUB_HOSTNAME + AZ_IOT_DEVICE_ID, for an
+ *     environment whose DPS instance cannot hand out an assignment. The hub
+ *     half of every scenario is identical either way.
+ *
+ * Egress (optional, both modes, applied to the DPS and the hub connect alike):
+ *   AZ_IOT_MQTT_TRANSPORT   "tcp" (default) or "websocket"
+ *   AZ_IOT_MQTT_WEBSOCKET_PATH  overrides the Azure default path
+ *   AZ_IOT_PROXY_HOST, AZ_IOT_PROXY_PORT,
+ *   AZ_IOT_PROXY_USERNAME, AZ_IOT_PROXY_PASSWORD
  */
 #ifndef E2E_DEVICE_H
 #define E2E_DEVICE_H
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #include "azure/iot/az_iot.h"
 
@@ -42,6 +55,16 @@ extern "C"
     char* key;
     char* ca;
     char* global_endpoint; /* optional */
+    /* Direct-hub mode (no DPS). Both set, or both NULL. */
+    char* hub_hostname;
+    char* hub_device_id;
+    /* Egress configuration read from the environment. */
+    az_iot_mqtt_transport transport;
+    char* websocket_path; /* optional */
+    char* proxy_host; /* NULL = direct connection */
+    uint16_t proxy_port;
+    char* proxy_username;
+    char* proxy_password;
 
     /* Live device client. */
     az_iot_certificate_provider_pem certs;

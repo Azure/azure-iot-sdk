@@ -226,6 +226,34 @@ static void resolve_connect_timings(
       : AZ_IOT_DEFAULT_CONNECT_TIMEOUT_SECONDS;
 }
 
+/* Default broker port for a transport. Every Azure endpoint this client talks
+ * to is TLS, so only the TLS ports appear here: 8883 for MQTT over TCP, 443 for
+ * MQTT over WebSockets. */
+static uint16_t default_port_for_transport(az_iot_mqtt_transport transport)
+{
+  return transport == AZ_IOT_MQTT_TRANSPORT_WEBSOCKET
+      ? (uint16_t)AZ_IOT_MQTT_DEFAULT_PORT_WEBSOCKET_TLS
+      : (uint16_t)AZ_IOT_MQTT_DEFAULT_PORT_TCP_TLS;
+}
+
+/* Apply the caller's transport, WebSocket path and proxy to one connect, and
+ * resolve the port: an explicit @p port wins, 0 means "derive from transport".
+ *
+ * Shared by the DPS bootstrap connect and the hub connect on purpose. A device
+ * that needs a proxy or WebSockets to reach the hub needs them to reach DPS
+ * too, so applying this to only one of the two connects would leave the device
+ * unable to provision at all. */
+static void resolve_connect_transport(
+    const az_iot_connection_client* c,
+    az_iot_mqtt_connect_options* copts,
+    uint16_t port)
+{
+  copts->transport = c->opts.transport;
+  copts->websocket_path = c->opts.websocket_path;
+  copts->proxy = c->opts.proxy;
+  copts->port = port ? port : default_port_for_transport(c->opts.transport);
+}
+
 static void teardown_active(az_iot_connection_client* c)
 {
   if (c->active_client && c->active_client->iface && c->active_client->iface->destroy)
@@ -1177,9 +1205,9 @@ static az_iot_result dps_start(az_iot_connection_client* c)
 
   az_iot_mqtt_connect_options copts = { 0 };
   copts.host = endpoint;
-  copts.port = 8883;
   copts.client_id = c->opts.dps.registration_id;
   resolve_connect_timings(c, &copts);
+  resolve_connect_transport(c, &copts, 0);
 
   /* Build the DPS MQTT username. CSR-based operational-certificate issuance
    * (Azure Device Registration) requires a newer DPS API version than the
@@ -2026,9 +2054,9 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
 
   az_iot_mqtt_connect_options copts = { 0 };
   copts.host = c->opts.host;
-  copts.port = c->opts.port ? c->opts.port : (uint16_t)8883;
   copts.client_id = c->opts.client_id;
   resolve_connect_timings(c, &copts);
+  resolve_connect_transport(c, &copts, c->opts.port);
 
   /* Build hub MQTT username via azure-sdk-for-c (Classic only).
    * Hub-Next does not use the Classic username format. */
@@ -2180,10 +2208,12 @@ static bool mock_next_configured(void)
 }
 
 /* Parse "host:port" into host string and port. Writes host into out_host
- * (up to cap), returns port (default 8883 if not specified). */
+ * (up to cap), returns the port, or 0 when the endpoint carries none -- 0 means
+ * "derive from the transport" at connect time, so a DPS-assigned hub endpoint
+ * does not pin the connection to 8883 when WebSockets were selected. */
 static uint16_t parse_host_port(const char* endpoint, char* out_host, size_t cap)
 {
-  uint16_t port = 8883;
+  uint16_t port = 0;
   const char* colon = strrchr(endpoint, ':');
   size_t host_len;
   if (colon && colon != endpoint)
@@ -2269,7 +2299,10 @@ static az_iot_result apply_mock_next_bypass(az_iot_connection_client* c)
     /* Warn, not debug: provisioning was skipped entirely, so anyone reading
      * the log needs to know this session never talked to DPS. */
     AZ_IOT_LOG_WARNF(
-        "dps: mock-next bypass active; host=%s port=%u device=%s", host, (unsigned)port, device_id);
+        "dps: mock-next bypass active; host=%s port=%u device=%s",
+        host,
+        (unsigned)(port ? port : default_port_for_transport(c->opts.transport)),
+        device_id);
   }
 
 #ifdef _WIN32
@@ -2286,7 +2319,10 @@ static az_iot_result apply_mock_next_bypass(az_iot_connection_client* c)
 az_iot_connection_client_options az_iot_connection_client_options_default(void)
 {
   az_iot_connection_client_options opts = { 0 };
-  opts.port = 8883;
+  /* 0, not 8883: the port is derived from the transport at connect time, so a
+   * caller that selects WebSockets does not also have to remember to change a
+   * port that was defaulted for TCP. */
+  opts.port = 0;
   opts.dps.max_hub_connect_attempts_before_reprovision
       = AZ_IOT_DEFAULT_MAX_HUB_CONNECT_ATTEMPTS_BEFORE_REPROVISION;
   return opts;

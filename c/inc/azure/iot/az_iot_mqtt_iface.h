@@ -82,6 +82,56 @@ extern "C"
       size_t out_sig_cap,
       size_t* out_sig_len);
 
+  /* Which transport carries the MQTT session.
+   *
+   * Zero is TCP, so a zero-initialized connect options struct keeps the
+   * behaviour every caller had before this field existed. */
+  typedef enum az_iot_mqtt_transport
+  {
+    /* MQTT directly over TCP (over TLS when TLS is selected). Default port
+     * 8883 with TLS, 1883 without. */
+    AZ_IOT_MQTT_TRANSPORT_TCP = 0,
+    /* MQTT over WebSockets, for networks that only allow HTTP(S) ports.
+     * Default port 443 with TLS, 80 without. */
+    AZ_IOT_MQTT_TRANSPORT_WEBSOCKET = 1
+  } az_iot_mqtt_transport;
+
+  /* Default WebSocket resource path for Azure IoT Hub and DPS. Used when
+   * `websocket_path` is NULL. */
+#define AZ_IOT_MQTT_DEFAULT_WEBSOCKET_PATH "/$iothub/websocket"
+
+/* Default broker ports, by transport and by whether the session is TLS. Named
+ * rather than spelled out at each use: the same four numbers are needed by the
+ * core when it derives a port and by every adapter when it builds a URI, and a
+ * bare 8883 in one of those places is indistinguishable from a typo. */
+#define AZ_IOT_MQTT_DEFAULT_PORT_TCP_TLS 8883u
+#define AZ_IOT_MQTT_DEFAULT_PORT_TCP_PLAIN 1883u
+#define AZ_IOT_MQTT_DEFAULT_PORT_WEBSOCKET_TLS 443u
+#define AZ_IOT_MQTT_DEFAULT_PORT_WEBSOCKET_PLAIN 80u
+
+/* Default port of an HTTP proxy when az_iot_mqtt_proxy_options.port is 0. */
+#define AZ_IOT_MQTT_DEFAULT_PROXY_PORT 8080u
+
+  /* HTTP proxy to tunnel the MQTT connection through, via HTTP CONNECT.
+   *
+   * Applies to every transport, not only WebSockets: a device on a filtered
+   * network commonly has to tunnel plain MQTT over 8883 as well.
+   *
+   * The proxy is a transport detail only. The TLS session is end-to-end with
+   * the broker: it is established INSIDE the tunnel, so the proxy sees no
+   * plaintext and server-certificate and hostname validation are unchanged.
+   *
+   * `host` NULL means "no proxy". Credentials are optional; when `username` is
+   * set they are sent as HTTP Basic, which is why a proxy that requires
+   * authentication should itself be reached over a trusted network segment. */
+  typedef struct az_iot_mqtt_proxy_options
+  {
+    const char* host; /* proxy host name or IP; NULL = no proxy */
+    uint16_t port; /* 0 selects AZ_IOT_MQTT_DEFAULT_PROXY_PORT */
+    const char* username; /* may be NULL */
+    const char* password; /* may be NULL */
+  } az_iot_mqtt_proxy_options;
+
   /* TLS credentials handed to an adapter on connect.
    *
    * Fields are only ever APPENDED, never reordered or removed: the struct is
@@ -140,7 +190,9 @@ extern "C"
   typedef struct az_iot_mqtt_connect_options
   {
     const char* host;
-    uint16_t port; /* typically 8883 */
+    /* 0 selects the default for the transport and TLS selection: 8883/1883 for
+     * TCP, 443/80 for WebSockets. */
+    uint16_t port;
     const char* client_id;
     const char* username; /* may be NULL */
     const char* password; /* may be NULL */
@@ -162,6 +214,20 @@ extern "C"
       bool retain;
       uint32_t will_delay_seconds; /* v5 only; 0 = immediate */
     } lwt;
+    /* Transport selection and HTTP proxy. Appended, so zero means TCP with no
+     * proxy -- the behaviour that predates these fields.
+     *
+     * An adapter that cannot honour a non-default value here MUST fail the
+     * connect with AZ_IOT_ERR_NOT_SUPPORTED. Silently connecting directly when
+     * a proxy was asked for would bypass the very egress control the caller
+     * selected, and silently connecting over TCP when WebSockets were asked for
+     * would be blocked by the firewall the caller was working around. */
+    az_iot_mqtt_transport transport;
+    /* WebSocket resource path, used only when transport is WEBSOCKET. NULL
+     * selects AZ_IOT_MQTT_DEFAULT_WEBSOCKET_PATH, which is what Azure IoT Hub
+     * and DPS expect. Must start with '/'. */
+    const char* websocket_path;
+    az_iot_mqtt_proxy_options proxy;
   } az_iot_mqtt_connect_options;
 
   /* Inbound event types delivered through the single adapter callback. */
