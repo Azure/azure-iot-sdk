@@ -60,6 +60,8 @@
 
 #include "internal/connection_client_internal.h"
 
+#include "support/test_env.h"
+
 #include "adu_channel_internal.h"
 #include "adu_protocol_internal.h"
 
@@ -80,19 +82,13 @@ typedef struct
 
 static e2e_env g_env;
 
-static const char* env_or_null(const char* name)
-{
-  const char* v = getenv(name);
-  return (v != NULL && v[0] != '\0') ? v : NULL;
-}
-
 static void env_load(void)
 {
-  g_env.dps_host = env_or_null("AZ_IOT_E2E_ADU_DPS_HOST");
-  g_env.id_scope = env_or_null("AZ_IOT_E2E_ADU_ID_SCOPE");
-  g_env.cert_path = env_or_null("AZ_IOT_E2E_ADU_CERT");
-  g_env.key_path = env_or_null("AZ_IOT_E2E_ADU_KEY");
-  g_env.registry_device = env_or_null("AZ_IOT_E2E_ADU_REGISTRY_DEVICE");
+  g_env.dps_host = az_iot_test_env("AZ_IOT_E2E_ADU_DPS_HOST");
+  g_env.id_scope = az_iot_test_env("AZ_IOT_E2E_ADU_ID_SCOPE");
+  g_env.cert_path = az_iot_test_env("AZ_IOT_E2E_ADU_CERT");
+  g_env.key_path = az_iot_test_env("AZ_IOT_E2E_ADU_KEY");
+  g_env.registry_device = az_iot_test_env("AZ_IOT_E2E_ADU_REGISTRY_DEVICE");
   g_env.present = g_env.dps_host != NULL && g_env.id_scope != NULL && g_env.cert_path != NULL
       && g_env.key_path != NULL;
 }
@@ -175,7 +171,7 @@ static void on_result(
  * depend on a device having no history. */
 static const char* e2e_registration_id(void)
 {
-  const char* id = env_or_null("AZ_IOT_E2E_ADU_REG_ID");
+  const char* id = az_iot_test_env("AZ_IOT_E2E_ADU_REG_ID");
   return id != NULL ? id : "x509-e2e-device";
 }
 

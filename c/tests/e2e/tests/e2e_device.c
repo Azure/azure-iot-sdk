@@ -4,6 +4,7 @@
 
 /* SPDX-License-Identifier: MIT */
 #include "e2e_device.h"
+#include "support/test_env.h"
 
 #include "azure/iot/adapters/az_iot_adapter_paho.h"
 
@@ -15,45 +16,14 @@
 /* DPS provision + MQTT connect can take a while on a cold hub. */
 #define E2E_DEVICE_CONNECT_TIMEOUT_S 90
 
-/* Duplicate an environment variable into a heap buffer (portable). Returns NULL
- * when unset/empty. Caller frees. */
-static char* env_dup(const char* name)
-{
-#ifdef _WIN32
-  char* value = NULL;
-  size_t len = 0;
-  if (_dupenv_s(&value, &len, name) != 0 || value == NULL || value[0] == '\0')
-  {
-    free(value);
-    return NULL;
-  }
-  return value;
-#else
-  const char* value = getenv(name);
-  if (value == NULL || value[0] == '\0')
-  {
-    return NULL;
-  }
-  {
-    size_t n = strlen(value) + 1;
-    char* copy = (char*)malloc(n);
-    if (copy != NULL)
-    {
-      memcpy(copy, value, n);
-    }
-    return copy;
-  }
-#endif
-}
-
 static int device_config_load(e2e_device* dev)
 {
-  dev->id_scope = env_dup("AZ_IOT_DPS_ID_SCOPE");
-  dev->reg_id = env_dup("AZ_IOT_DPS_REGISTRATION_ID");
-  dev->cert = env_dup("AZ_IOT_CLIENT_CERT");
-  dev->key = env_dup("AZ_IOT_CLIENT_KEY");
-  dev->ca = env_dup("AZ_IOT_TRUSTED_CA");
-  dev->global_endpoint = env_dup("AZ_IOT_DPS_GLOBAL_ENDPOINT");
+  dev->id_scope = az_iot_test_env_dup("AZ_IOT_DPS_ID_SCOPE");
+  dev->reg_id = az_iot_test_env_dup("AZ_IOT_DPS_REGISTRATION_ID");
+  dev->cert = az_iot_test_env_dup("AZ_IOT_CLIENT_CERT");
+  dev->key = az_iot_test_env_dup("AZ_IOT_CLIENT_KEY");
+  dev->ca = az_iot_test_env_dup("AZ_IOT_TRUSTED_CA");
+  dev->global_endpoint = az_iot_test_env_dup("AZ_IOT_DPS_GLOBAL_ENDPOINT");
 
   if (dev->id_scope == NULL || dev->reg_id == NULL || dev->cert == NULL || dev->key == NULL
       || dev->ca == NULL)

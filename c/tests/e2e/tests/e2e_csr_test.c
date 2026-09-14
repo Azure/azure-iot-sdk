@@ -41,6 +41,7 @@
 #include <time.h>
 
 #include "azure/iot/az_iot.h"
+#include "support/test_env.h"
 #include "azure/iot/adapters/az_iot_adapter_paho.h"
 #include "az_iot_certificate_provider_managed.h"
 
@@ -64,23 +65,6 @@ static char* dup_cstr(const char* s)
   return out;
 }
 #endif
-
-static char* env_dup(const char* name)
-{
-#ifdef _WIN32
-  char* value = NULL;
-  size_t len = 0;
-  if (_dupenv_s(&value, &len, name) != 0 || value == NULL || value[0] == '\0')
-  {
-    free(value);
-    return NULL;
-  }
-  return value;
-#else
-  const char* v = getenv(name);
-  return (v && v[0]) ? dup_cstr(v) : NULL;
-#endif
-}
 
 /* ---- device callbacks ----------------------------------------------------- */
 
@@ -113,12 +97,12 @@ static void on_operational_cert(const az_iot_issued_certificate* issued, void* u
 
 static void run_csr_enrollment(az_iot_certificate_managed_key_type key_type, const char* label)
 {
-  char* id_scope = env_dup("AZ_IOT_DPS_ID_SCOPE");
-  char* reg_id = env_dup("AZ_IOT_DPS_REGISTRATION_ID");
-  char* cert = env_dup("AZ_IOT_CLIENT_CERT");
-  char* key = env_dup("AZ_IOT_CLIENT_KEY");
-  char* ca = env_dup("AZ_IOT_TRUSTED_CA");
-  char* global = env_dup("AZ_IOT_DPS_GLOBAL_ENDPOINT"); /* optional */
+  char* id_scope = az_iot_test_env_dup("AZ_IOT_DPS_ID_SCOPE");
+  char* reg_id = az_iot_test_env_dup("AZ_IOT_DPS_REGISTRATION_ID");
+  char* cert = az_iot_test_env_dup("AZ_IOT_CLIENT_CERT");
+  char* key = az_iot_test_env_dup("AZ_IOT_CLIENT_KEY");
+  char* ca = az_iot_test_env_dup("AZ_IOT_TRUSTED_CA");
+  char* global = az_iot_test_env_dup("AZ_IOT_DPS_GLOBAL_ENDPOINT"); /* optional */
 
   /* Per-key-type operational files so the EC and RSA legs never share state. */
   char op_key[128];
