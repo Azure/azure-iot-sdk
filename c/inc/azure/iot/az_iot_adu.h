@@ -520,6 +520,12 @@ extern "C"
        * also how a refreshed identity reaches the service. */
       bool initial_get_pending;
 
+      /* Whether the report currently awaiting acknowledgement was the terminal
+       * one for its workflow. Captured when the report is submitted, because
+       * acknowledgements arrive asynchronously and the workflow may have moved
+       * on by the time one does. */
+      bool pending_report_terminal;
+
       /* Upstream-shaped view of the cached custom properties (az_span arrays
        * over the packed strings in device_props_buffer), handed to the
        * agent-state formatter at report time. */

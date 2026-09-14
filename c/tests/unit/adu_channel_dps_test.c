@@ -453,7 +453,9 @@ static void compatibility_properties_at_the_bound_are_accepted(void** state)
 }
 
 /* The agent reports this SDK. Falling back to the vendored upstream's ADUv1
- * constant made every device claim to be "DU;agent/1.0.0" whatever was running. */
+ * constant made every device claim to be "DU;agent/1.0.0" whatever was running.
+ * Asserted as the whole property rather than the absence of that literal, which
+ * would become a false failure the day this SDK is itself version 1.0.0. */
 static void the_fetch_reports_this_sdk_version(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -463,8 +465,10 @@ static void the_fetch_reports_this_sdk_version(void** state)
 
   const az_iot_mock_call* pub = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PUBLISH);
   assert_non_null(pub);
-  assert_non_null(strstr((const char*)pub->payload, AZ_IOT_VERSION_STRING));
-  assert_null(strstr((const char*)pub->payload, "DU;agent/1.0.0"));
+  char expected[96];
+  snprintf(
+      expected, sizeof(expected), "\"agentSdkVersion\":\"DU;agent/%s\"", AZ_IOT_VERSION_STRING);
+  assert_non_null(strstr((const char*)pub->payload, expected));
 }
 
 /* A rejected refresh must leave the previous identity in place. Copying first

@@ -2039,12 +2039,14 @@ static void an_accepted_terminal_report_asks_again(void** state)
 {
   fixture* fx = (fixture*)*state;
   open_to_connected(fx);
-  for (int i = 0; i < 5; ++i)
-  {
-    assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
-  }
-  int before = fx->chan.request_update_count;
+
+  /* Run a workflow to completion. Its final report is submitted once the
+   * engine is back at Idle, which is what marks it terminal. */
+  inject_patch(fx, signed_patch());
+  pump(fx, 60);
   assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
+  assert_true(fx->adu._internal.pending_report_terminal);
+  int before = fx->chan.request_update_count;
 
   assert_non_null(fx->chan.result_cb);
   fx->chan.result_cb(
@@ -2052,6 +2054,68 @@ static void an_accepted_terminal_report_asks_again(void** state)
 
   assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
   assert_int_equal(fx->chan.request_update_count, before + 1);
+}
+
+/* A set can fit the channel and still overflow the client cache. The cache
+ * clears the old properties before it discovers that, so committing the channel
+ * first and letting the cache fail would destroy the identity in effect and
+ * leave the two copies disagreeing. Both are checked before either is written. */
+static void a_set_too_large_for_the_cache_changes_nothing(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  const az_iot_adu_device_properties* cached
+      = (const az_iot_adu_device_properties*)(const void*)fx->dp_buf;
+  char before_manufacturer[64];
+  snprintf(before_manufacturer, sizeof(before_manufacturer), "%s", cached->manufacturer);
+
+  /* Two slots and a small byte count, so the channel accepts it; far more bytes
+   * than the fixture's 256-byte cache can hold once the header is deducted. */
+  static char big_model[200];
+  memset(big_model, 'm', sizeof(big_model) - 1);
+  big_model[sizeof(big_model) - 1] = '\0';
+  az_iot_adu_device_properties dp = { 0 };
+  dp.manufacturer = "Fabrikam";
+  dp.model = big_model;
+
+  assert_int_equal(
+      az_iot_adu_client_update_device_properties(&fx->adu, &dp), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+
+  /* The cache still describes the device it did before, not a cleared header. */
+  assert_non_null(cached->manufacturer);
+  assert_string_equal(cached->manufacturer, before_manufacturer);
+}
+
+/* Acknowledgements are asynchronous, so a progress report submitted while the
+ * workflow was running can be accepted after it has finished. Reading the state
+ * at that point would call it terminal and start a check that nothing asked
+ * for; what the report was when it was sent is what counts. */
+static void a_progress_report_acknowledged_after_idle_does_not_ask_again(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  for (int i = 0; i < 5; ++i)
+  {
+    assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  }
+
+  /* Submit a report mid-workflow, which is what marks it non-terminal. */
+  fx->log.install_result = AZ_IOT_ADU_RESULT_REBOOT_REQUIRED;
+  inject_patch(fx, signed_patch());
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  assert_int_not_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
+  assert_false(fx->adu._internal.pending_report_terminal);
+
+  /* The workflow finishes before the acknowledgement lands. */
+  fx->adu._internal.state = AZ_IOT_ADU_STATE_IDLE;
+  int before = fx->chan.request_update_count;
+
+  fx->chan.result_cb(
+      AZ_IOT_ADU_OP_REPORT_STATUS, AZ_IOT_OK, AZ_IOT_ADU_ERROR_ACTION_NONE, fx->chan.engine_ctx);
+
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(fx->chan.request_update_count, before);
 }
 
 /* Progress reported mid-workflow ends nothing, so it must not trigger a check:
@@ -2130,6 +2194,9 @@ int main(void)
     cmocka_unit_test_setup_teardown(do_work_drives_the_channel, setup, teardown),
     cmocka_unit_test_setup_teardown(a_terminal_verdict_does_not_re_arm_the_report, setup, teardown),
     cmocka_unit_test_setup_teardown(an_accepted_terminal_report_asks_again, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_set_too_large_for_the_cache_changes_nothing, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_progress_report_acknowledged_after_idle_does_not_ask_again, setup, teardown),
     cmocka_unit_test_setup_teardown(
         an_accepted_progress_report_does_not_ask_again, setup, teardown),
   };

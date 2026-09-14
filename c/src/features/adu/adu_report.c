@@ -239,6 +239,13 @@ az_iot_result az_iot_adu__report_state(az_iot_adu_client_t* client)
   report.step_results = (r->step_results_count > 0) ? r->step_results : NULL;
   report.step_results_count = r->step_results_count;
 
+  /* Recorded at submit time, not read back at acknowledgement time: channel
+   * results are asynchronous, so a progress report can be accepted while the
+   * workflow is still running and acknowledged after it has finished. Reading
+   * the state in the callback would then mistake that progress acknowledgement
+   * for the terminal one and start a spurious re-check. */
+  ADU_I(client).pending_report_terminal = (ADU_I(client).state == AZ_IOT_ADU_STATE_IDLE);
+
   return ADU_I(client).channel.vtable->report(ADU_I(client).channel.ctx, &report);
 }
 

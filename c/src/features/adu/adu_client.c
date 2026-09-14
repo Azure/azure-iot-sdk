@@ -95,6 +95,32 @@ size_t az_iot_adu_device_props_buffer_size(const az_iot_adu_device_properties* d
   return n;
 }
 
+/* Whether a property set fits the client cache, checked before anything is
+ * mutated. cache_device_properties() clears the header before it discovers an
+ * overflow, so a failure there destroys the previous properties as well as
+ * rejecting the new ones -- and by then the channel has already committed. */
+static az_iot_result device_props_fit_cache(
+    const az_iot_adu_client_t* client,
+    const az_iot_adu_device_properties* device_props)
+{
+  if (ADU_I(client).device_props_buffer == NULL)
+  {
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  }
+  const size_t max_cp = sizeof(ADU_I(client).custom_props_view.names)
+      / sizeof(ADU_I(client).custom_props_view.names[0]);
+  if (device_props->custom_properties != NULL && device_props->custom_properties_count > max_cp)
+  {
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  }
+  size_t needed = az_iot_adu_device_props_buffer_size(device_props);
+  if (needed == 0 || needed > ADU_I(client).device_props_buffer_size)
+  {
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  }
+  return AZ_IOT_OK;
+}
+
 static az_iot_result cache_device_properties(
     az_iot_adu_client_t* client,
     const az_iot_adu_device_properties* src)
@@ -1253,10 +1279,11 @@ static void on_channel_result(
      * registration after the last report and nothing ever asks again, so the
      * device waits out the advisory timeout instead of finishing.
      *
-     * Idle is what distinguishes a terminal report from progress reported
-     * mid-workflow, which ends nothing and must not trigger a check. */
+     * Whether the report was terminal is recorded when it is submitted rather
+     * than inferred from the state here: acknowledgements are asynchronous, so
+     * the workflow may well have moved on by now. */
     if (operation == AZ_IOT_ADU_OP_REPORT_STATUS && result == AZ_IOT_OK
-        && ADU_I(client).state == AZ_IOT_ADU_STATE_IDLE)
+        && ADU_I(client).pending_report_terminal)
     {
       ADU_I(client).initial_get_pending = true;
     }
@@ -2120,22 +2147,30 @@ az_iot_result az_iot_adu_client_update_device_properties(
     return AZ_IOT_ERR_DETACHED;
   }
 
-  /* The channel validates the set before it applies any of it, so a rejected
-   * refresh leaves both copies as they were. Done before the client cache for
-   * that reason: the cache has no such guarantee, and an overflow there would
-   * otherwise leave the two describing different devices. */
+  /* Both destinations are checked before either is written. The channel is
+   * atomic on its own, but the cache is not -- it clears the old properties
+   * before discovering an overflow -- so committing the channel first and
+   * letting the cache fail would leave the two describing different devices
+   * and destroy the identity that was in effect. */
+  az_iot_result r = device_props_fit_cache(client, device_props);
+  if (r != AZ_IOT_OK)
+  {
+    return r;
+  }
+
   if (ADU_I(client).channel.vtable != NULL
       && ADU_I(client).channel.vtable->set_device_properties != NULL)
   {
-    az_iot_result cr = ADU_I(client).channel.vtable->set_device_properties(
+    r = ADU_I(client).channel.vtable->set_device_properties(
         ADU_I(client).channel.ctx, device_props);
-    if (cr != AZ_IOT_OK)
+    if (r != AZ_IOT_OK)
     {
-      return cr;
+      return r;
     }
   }
 
-  az_iot_result r = cache_device_properties(client, device_props);
+  /* Cannot fail: the preflight above proved it fits. */
+  r = cache_device_properties(client, device_props);
   if (r != AZ_IOT_OK)
   {
     return r;
