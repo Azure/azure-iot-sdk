@@ -31,6 +31,7 @@
 #include "azure/iot/az_iot_connection_client.h"
 #include "azure/iot/az_iot_mqtt_iface.h"
 #include "azure/iot/az_iot_result.h"
+#include "azure/iot/az_iot_version.h"
 
 #include "internal/connection_client_internal.h"
 
@@ -408,6 +409,62 @@ static void updated_device_properties_change_what_is_sent(void** state)
   assert_non_null(strstr((const char*)pub->payload, "Gizmo"));
   /* The startup identity is gone, not merely appended to. */
   assert_null(strstr((const char*)pub->payload, "Contoso"));
+}
+
+/* Compatibility properties are a bounded set that manufacturer and model
+ * already occupy two slots of, so a caller within the engine's own
+ * custom-property limit can still overflow the channel. Dropping the excess
+ * silently would change the device class the service computes, and the device
+ * never sees that class -- the only symptom would be updates quietly never
+ * arriving. */
+static void too_many_compatibility_properties_are_refused(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  (void)open_and_bind(fx);
+
+  static const az_iot_adu_custom_property customs[]
+      = { { "a", "1" }, { "b", "2" }, { "c", "3" }, { "d", "4" } };
+  az_iot_adu_device_properties dp = { 0 };
+  dp.manufacturer = "Contoso";
+  dp.model = "Tractor";
+  dp.custom_properties = customs;
+  dp.custom_properties_count = sizeof(customs) / sizeof(customs[0]);
+
+  /* manufacturer + model + 4 custom = 6, one past the bound. */
+  assert_int_equal(
+      fx->channel.vtable->set_device_properties(fx->channel.ctx, &dp), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+}
+
+/* Exactly at the bound is accepted: the refusal above must be the overflow,
+ * not an off-by-one that also rejects a legal set. */
+static void compatibility_properties_at_the_bound_are_accepted(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  (void)open_and_bind(fx);
+
+  static const az_iot_adu_custom_property customs[] = { { "a", "1" }, { "b", "2" }, { "c", "3" } };
+  az_iot_adu_device_properties dp = { 0 };
+  dp.manufacturer = "Contoso";
+  dp.model = "Tractor";
+  dp.custom_properties = customs;
+  dp.custom_properties_count = sizeof(customs) / sizeof(customs[0]);
+
+  assert_int_equal(fx->channel.vtable->set_device_properties(fx->channel.ctx, &dp), AZ_IOT_OK);
+}
+
+/* The agent reports this SDK. Falling back to the vendored upstream's ADUv1
+ * constant made every device claim to be "DU;agent/1.0.0" whatever was running. */
+static void the_fetch_reports_this_sdk_version(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_mock_mqtt_client* m = open_and_bind(fx);
+
+  assert_int_equal(fx->channel.vtable->request_update(fx->channel.ctx), AZ_IOT_OK);
+
+  const az_iot_mock_call* pub = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PUBLISH);
+  assert_non_null(pub);
+  assert_non_null(strstr((const char*)pub->payload, AZ_IOT_VERSION_STRING));
+  assert_null(strstr((const char*)pub->payload, "DU;agent/1.0.0"));
 }
 
 /* Without a usable provisioning session there is nothing to publish onto. */
@@ -872,6 +929,10 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         losing_the_session_releases_the_pending_request, setup, teardown),
     cmocka_unit_test_setup_teardown(updated_device_properties_change_what_is_sent, setup, teardown),
+    cmocka_unit_test_setup_teardown(too_many_compatibility_properties_are_refused, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        compatibility_properties_at_the_bound_are_accepted, setup, teardown),
+    cmocka_unit_test_setup_teardown(the_fetch_reports_this_sdk_version, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_request_before_the_session_is_ready_is_refused, setup, teardown),
     cmocka_unit_test_setup_teardown(

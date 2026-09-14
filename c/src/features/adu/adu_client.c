@@ -2126,6 +2126,12 @@ az_iot_result az_iot_adu_client_update_device_properties(
   }
 
   ADU_I(client).device_props_report_pending = true;
+  /* The refreshed identity only reaches the service on a fetch: ADUv2 has no
+   * device-properties message, agentInfo rides requestUpdates. Without asking
+   * for one, a change made while no workflow is in flight stays on the device --
+   * the report flag alone publishes nothing, because reporting is scoped to an
+   * active workflow. */
+  ADU_I(client).initial_get_pending = true;
   return AZ_IOT_OK;
 }
 

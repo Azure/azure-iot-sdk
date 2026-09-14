@@ -32,6 +32,7 @@
 #include <stdint.h>
 
 #include "azure/iot/az_iot_adu.h"
+#include "azure/iot/az_iot_version.h"
 
 #include "adu_protocol_internal.h"
 #include "azure/iot/az_iot_result.h"
@@ -165,9 +166,22 @@ extern "C"
 #define AZ_IOT_ADU_CHANNEL_BODY_MAX_SIZE 2048
 #endif
 
-/* The service accepts a bounded number of compatibility properties. */
+/* The service accepts a bounded number of compatibility properties.
+ *
+ * The 1-5 range comes from the ADUv2 contract summary in docs/eng/aduv2-spec.md,
+ * which lists payload caps among the points measured against a draft rather than
+ * a live service. Overridable for that reason. */
 #ifndef AZ_IOT_ADU_CHANNEL_MAX_COMPAT
 #define AZ_IOT_ADU_CHANNEL_MAX_COMPAT 5
+#endif
+
+/* What the agent reports as agentSdkVersion.
+ *
+ * The "DU;agent/" prefix is the shape the service has been receiving from the
+ * vendored upstream constant; the field's required format is not something this
+ * repo holds a contract for, so only the version is this SDK's own. */
+#ifndef AZ_IOT_ADU_AGENT_SDK_VERSION
+#define AZ_IOT_ADU_AGENT_SDK_VERSION "DU;agent/" AZ_IOT_VERSION_STRING
 #endif
 
   typedef struct az_iot_adu_channel_dps

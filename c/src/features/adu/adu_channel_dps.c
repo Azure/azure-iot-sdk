@@ -431,8 +431,14 @@ static az_iot_result channel_request_update(void* ctx)
   }
 
   az_iot_adu_agent_info agent = { 0 };
+  /* Report this SDK, not the vendored upstream's ADUv1 agent constant: falling
+   * back to AZ_IOT_ADU_CLIENT_AGENT_VERSION made every device claim to be
+   * "DU;agent/1.0.0" regardless of what is actually running. The "DU;agent/"
+   * shape is kept because it is what the service has been receiving and the
+   * field's required format is not something we hold a contract for; only the
+   * version is corrected. */
   agent.agent_sdk_version
-      = (c->agent_sdk_version[0] != '\0') ? c->agent_sdk_version : AZ_IOT_ADU_CLIENT_AGENT_VERSION;
+      = (c->agent_sdk_version[0] != '\0') ? c->agent_sdk_version : AZ_IOT_ADU_AGENT_SDK_VERSION;
   agent.agent_profile = c->agent_profile;
   agent.compatibility_properties = (c->compat_count > 0) ? c->compat : NULL;
   agent.compatibility_properties_count = c->compat_count;
@@ -498,8 +504,14 @@ static const char* pack_str(char* storage, size_t storage_size, size_t* used, co
 
 /* Copy what the device reports about itself. Shared by init and the refresh
  * hook so a later az_iot_adu_client_update_device_properties() does not leave
- * the channel sending the identity and installed version it saw at startup. */
-static void channel_copy_device_properties(
+ * the channel sending the identity and installed version it saw at startup.
+ *
+ * Compatibility properties that do not fit are an error, never a silent drop:
+ * the service derives the device class from exactly this set, the device never
+ * sees the class it was given, and a deployment that matches no class simply
+ * never arrives. A quiet truncation here would surface as "updates stopped
+ * working" with nothing to point at. */
+static az_iot_result channel_copy_device_properties(
     az_iot_adu_channel_dps* c,
     const az_iot_adu_device_properties* device_props)
 {
@@ -510,15 +522,24 @@ static void channel_copy_device_properties(
   memset(&c->installed_update_id, 0, sizeof(c->installed_update_id));
   if (device_props == NULL)
   {
-    return;
+    return AZ_IOT_OK;
   }
   /* Manufacturer and model are the compatibility properties the service
-   * matches on; without them it cannot pick the right update. */
+   * matches on; without them it cannot pick the right update. A value supplied
+   * but too large to store is a failure, not an omission. */
   size_t used = 0;
   const char* manufacturer
       = pack_str(c->compat_storage, sizeof(c->compat_storage), &used, device_props->manufacturer);
+  if (device_props->manufacturer != NULL && manufacturer == NULL)
+  {
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  }
   const char* model
       = pack_str(c->compat_storage, sizeof(c->compat_storage), &used, device_props->model);
+  if (device_props->model != NULL && model == NULL)
+  {
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  }
 
   if (manufacturer != NULL)
   {
@@ -533,10 +554,14 @@ static void channel_copy_device_properties(
     c->compat_count++;
   }
 
-  for (size_t i = 0;
-       i < device_props->custom_properties_count && c->compat_count < AZ_IOT_ADU_CHANNEL_MAX_COMPAT;
-       ++i)
+  /* Manufacturer and model occupy slots of the same bounded set, so a caller
+   * within the engine's own custom-property limit can still overflow here. */
+  for (size_t i = 0; i < device_props->custom_properties_count; ++i)
   {
+    if (c->compat_count >= AZ_IOT_ADU_CHANNEL_MAX_COMPAT)
+    {
+      return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+    }
     const char* name = pack_str(
         c->compat_storage,
         sizeof(c->compat_storage),
@@ -549,7 +574,7 @@ static void channel_copy_device_properties(
         device_props->custom_properties[i].value);
     if (name == NULL || value == NULL)
     {
-      break;
+      return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
     }
     c->compat[c->compat_count].name = name;
     c->compat[c->compat_count].value = value;
@@ -581,6 +606,7 @@ static void channel_copy_device_properties(
     c->installed_update_id.version = version;
     c->has_installed_update_id = true;
   }
+  return AZ_IOT_OK;
 }
 
 static az_iot_result channel_set_device_properties(
@@ -592,8 +618,7 @@ static az_iot_result channel_set_device_properties(
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
-  channel_copy_device_properties(c, props);
-  return AZ_IOT_OK;
+  return channel_copy_device_properties(c, props);
 }
 
 /* Driven from the engine's tick.
@@ -678,7 +703,11 @@ az_iot_result az_iot_adu_channel_dps_init(
   /* The profile the device reports for compatibility matching. */
   channel_state->agent_profile = 1;
 
-  channel_copy_device_properties(channel_state, device_props);
+  az_iot_result r = channel_copy_device_properties(channel_state, device_props);
+  if (r != AZ_IOT_OK)
+  {
+    return r;
+  }
 
   out_channel->vtable = &k_channel_vtable;
   out_channel->ctx = channel_state;

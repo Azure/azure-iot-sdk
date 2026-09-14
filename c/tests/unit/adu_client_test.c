@@ -1032,6 +1032,34 @@ static void update_device_properties_is_accepted_without_reporting(void** state)
   assert_int_equal(fx->chan.report_count, 0);
 }
 
+/* ADUv2 carries agentInfo on the fetch, so a refreshed identity only reaches
+ * the service if a fetch is actually requested. Setting the report flag alone
+ * published nothing whenever no workflow was in flight -- reporting is scoped
+ * to an active workflow -- and the flag was then cleared on that vacuous
+ * success, so the change stayed on the device permanently. */
+static void updated_device_properties_request_a_fetch(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  /* Drain the startup tick so the initial check is already spent. */
+  for (int i = 0; i < 5; ++i)
+  {
+    assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  }
+  int before = fx->chan.request_update_count;
+
+  az_iot_adu_device_properties dp = { 0 };
+  dp.manufacturer = "Fabrikam";
+  dp.model = "Gizmo";
+  dp.installed_update_id.provider = "Fabrikam";
+  dp.installed_update_id.name = "Gizmo";
+  dp.installed_update_id.version = "2.0";
+  assert_int_equal(az_iot_adu_client_update_device_properties(&fx->adu, &dp), AZ_IOT_OK);
+
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(fx->chan.request_update_count, before + 1);
+}
+
 /* With a workflow in flight the same tick DOES report, and the report carries
  * the workflow id the deployment was delivered with. */
 static void report_carries_the_active_workflow_id(void** state)
@@ -2018,6 +2046,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(cancel_action_sets_cancelled_flag, setup, teardown),
     cmocka_unit_test_setup_teardown(
         update_device_properties_is_accepted_without_reporting, setup, teardown),
+    cmocka_unit_test_setup_teardown(updated_device_properties_request_a_fetch, setup, teardown),
     cmocka_unit_test_setup_teardown(report_carries_the_active_workflow_id, setup, teardown),
     cmocka_unit_test_setup_teardown(
         report_before_manifest_parse_has_no_step_results, setup, teardown),

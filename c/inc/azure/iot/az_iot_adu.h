@@ -515,8 +515,9 @@ extern "C"
       size_t device_props_buffer_size;
       bool device_props_report_pending;
 
-      /* On startup, proactively ask the channel for an update so a deployment
-       * already waiting is consumed without needing a fresh delivery. */
+      /* Set at startup, and whenever the device properties change, to ask the
+       * channel for an update: the fetch is what carries agentInfo, so it is
+       * also how a refreshed identity reaches the service. */
       bool initial_get_pending;
 
       /* Upstream-shaped view of the cached custom properties (az_span arrays
@@ -644,11 +645,13 @@ extern "C"
   az_iot_adu_state az_iot_adu_client_get_state(const az_iot_adu_client_t* client);
 
   /**
-   * Update the cached device properties and request a report. Deep-copies
-   * device_props into the client cache and sets a pending flag; the NEXT
-   * do_work() publishes. Multiple calls coalesce into a single report. After this
-   * returns, the caller MAY mutate or free device_props. Returns
-   * AZ_IOT_ERR_NOT_ENOUGH_SPACE if the cache buffer is too small.
+   * Update the cached device properties. Deep-copies device_props into the
+   * client cache, refreshes the channel's copy, and asks for an update check so
+   * the new identity reaches the service: ADUv2 carries agentInfo on the fetch,
+   * not in a message of its own. The NEXT do_work() issues that check.
+   * Multiple calls coalesce. After this returns, the caller MAY mutate or free
+   * device_props. Returns AZ_IOT_ERR_NOT_ENOUGH_SPACE if the cache buffer or
+   * the channel's compatibility-property storage is too small.
    *
    * Single-threaded contract: MUST be called on the do_work thread or be
    * externally serialized with do_work().
