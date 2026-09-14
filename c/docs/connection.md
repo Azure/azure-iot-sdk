@@ -204,6 +204,10 @@ Note for the Paho adapter: when `proxy` is left unset, Paho still falls back to 
 `http_proxy` / `https_proxy` environment variables on its own (the uppercase spellings are ignored).
 Set `proxy` to be explicit and independent of the environment.
 
+Worked examples: [samples/telemetry_websockets](../samples/telemetry_websockets/main.c) and
+[samples/telemetry_proxy](../samples/telemetry_proxy/main.c). Each is the `telemetry` sample with
+one of these options set, so the diff against it is exactly the feature.
+
 ---
 
 ## 4. Connection profile selection **[planned]**
