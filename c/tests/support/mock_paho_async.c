@@ -289,7 +289,11 @@ void MQTTAsync_freeMessage(MQTTAsync_message** msg) { (void)msg; }
 
 void MQTTAsync_setTraceLevel(enum MQTTASYNC_TRACE_LEVELS level) { (void)level; }
 
-void MQTTAsync_setTraceCallback(MQTTAsync_traceCallback* callback) { (void)callback; }
+static MQTTAsync_traceCallback* s_trace_callback;
+
+void MQTTAsync_setTraceCallback(MQTTAsync_traceCallback* callback) { s_trace_callback = callback; }
+
+MQTTAsync_traceCallback* mock_paho_trace_callback(void) { return s_trace_callback; }
 
 /* ------------------------------------------------------------------------- */
 /* MQTTProperties. Reached only by the v5 branch of connect(); the adapter    */

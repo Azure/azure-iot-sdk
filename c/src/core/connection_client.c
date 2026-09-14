@@ -231,7 +231,9 @@ static void resolve_connect_timings(
  * MQTT over WebSockets. */
 static uint16_t default_port_for_transport(az_iot_mqtt_transport transport)
 {
-  return transport == AZ_IOT_MQTT_TRANSPORT_WEBSOCKET ? (uint16_t)443 : (uint16_t)8883;
+  return transport == AZ_IOT_MQTT_TRANSPORT_WEBSOCKET
+      ? (uint16_t)AZ_IOT_MQTT_DEFAULT_PORT_WEBSOCKET_TLS
+      : (uint16_t)AZ_IOT_MQTT_DEFAULT_PORT_TCP_TLS;
 }
 
 /* Apply the caller's transport, WebSocket path and proxy to one connect, and

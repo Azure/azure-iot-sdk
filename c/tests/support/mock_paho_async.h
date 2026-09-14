@@ -83,4 +83,8 @@ const char* mock_paho_last_https_proxy(void);
  * options the adapter passes declare at least that. */
 int mock_paho_last_connect_struct_version(void);
 
+/* The trace callback the adapter installed, so a test can drive it directly and
+ * assert on what it forwards. NULL until the adapter installs one. */
+MQTTAsync_traceCallback* mock_paho_trace_callback(void);
+
 #endif /* AZ_IOT_TEST_MOCK_PAHO_ASYNC_H */

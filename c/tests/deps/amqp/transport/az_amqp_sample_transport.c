@@ -1261,6 +1261,19 @@ static az_amqp_transport_status _proxy_process(az_amqp_sample_transport* s)
 
   // Read until the end of the headers. The proxy sends nothing else before the
   // tunnel opens, so nothing of the peer's data can be consumed here.
+  /* Read the status line and headers, and NOT one byte more.
+   *
+   * One byte at a time, deliberately. A proxy may coalesce its response with
+   * whatever follows -- an error body, or the target's first TLS bytes once the
+   * tunnel is open -- and this transport hands the socket straight to OpenSSL,
+   * which reads the descriptor itself. Anything this loop consumed past the
+   * header would therefore be invisible to the TLS layer and lost. Stopping on
+   * the first "\r\n\r\n" leaves the remainder queued in the socket for its real
+   * reader, and also means an error response with a body is judged as soon as
+   * its header arrives instead of blocking for a body nobody reads.
+   *
+   * The cost is a handful of extra reads on a response of a few dozen bytes,
+   * once per connection. */
   for (;;)
   {
     if (s->proxy_response_len >= 4
@@ -1270,14 +1283,10 @@ static az_amqp_transport_status _proxy_process(az_amqp_sample_transport* s)
     }
     if (s->proxy_response_len >= sizeof(s->proxy_response))
     {
-      _set_error(s, 0, "proxy CONNECT response too large");
+      _set_error(s, 0, "proxy CONNECT response headers too large");
       return AZ_AMQP_TRANSPORT_STATUS_ERROR;
     }
-    int got = recv(
-        sock,
-        (char*)s->proxy_response + s->proxy_response_len,
-        (int)(sizeof(s->proxy_response) - s->proxy_response_len),
-        0);
+    int got = recv(sock, (char*)s->proxy_response + s->proxy_response_len, 1, 0);
     if (got > 0)
     {
       s->proxy_response_len += (size_t)got;
@@ -1296,18 +1305,33 @@ static az_amqp_transport_status _proxy_process(az_amqp_sample_transport* s)
     return AZ_AMQP_TRANSPORT_STATUS_ERROR;
   }
 
-  // "HTTP/1.x NNN ..." -- only 2xx opens the tunnel. Anything else (407, 403)
-  // must fail rather than leave the caller talking HTTP to a proxy.
-  if (s->proxy_response_len < 12 || memcmp(s->proxy_response, "HTTP/", 5) != 0
-      || s->proxy_response[9] != '2')
+  /* "HTTP/1.x NNN ..." -- only 2xx opens the tunnel. Anything else (407, 403)
+   * must fail rather than leave the caller talking HTTP to a proxy.
+   *
+   * The code is located by the first space rather than by a fixed offset, so a
+   * version token that is not exactly "HTTP/1.1" cannot shift it. */
+  const char* status = NULL;
+  for (size_t i = 0; i + 1 < s->proxy_response_len && i < 16; ++i)
   {
-    char status[4] = { 0 };
-    if (s->proxy_response_len >= 12)
+    if (s->proxy_response[i] == ' ')
     {
-      memcpy(status, s->proxy_response + 9, 3);
+      status = (const char*)s->proxy_response + i + 1;
+      break;
+    }
+  }
+  if (memcmp(s->proxy_response, "HTTP/", 5) != 0 || status == NULL
+      || (size_t)(status - (const char*)s->proxy_response) + 3u > s->proxy_response_len
+      || status[0] != '2')
+  {
+    char code[4] = { 0 };
+    if (status != NULL
+        && (size_t)(status - (const char*)s->proxy_response) + 3u <= s->proxy_response_len)
+    {
+      memcpy(code, status, 3);
     }
     char message[96];
-    (void)snprintf(message, sizeof(message), "proxy refused CONNECT (status %s)", status);
+    (void)snprintf(
+        message, sizeof(message), "proxy refused CONNECT (status %s)", code[0] ? code : "?");
     _set_error(s, 0, message);
     return AZ_AMQP_TRANSPORT_STATUS_ERROR;
   }

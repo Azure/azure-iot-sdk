@@ -100,6 +100,18 @@ extern "C"
    * `websocket_path` is NULL. */
 #define AZ_IOT_MQTT_DEFAULT_WEBSOCKET_PATH "/$iothub/websocket"
 
+/* Default broker ports, by transport and by whether the session is TLS. Named
+ * rather than spelled out at each use: the same four numbers are needed by the
+ * core when it derives a port and by every adapter when it builds a URI, and a
+ * bare 8883 in one of those places is indistinguishable from a typo. */
+#define AZ_IOT_MQTT_DEFAULT_PORT_TCP_TLS 8883u
+#define AZ_IOT_MQTT_DEFAULT_PORT_TCP_PLAIN 1883u
+#define AZ_IOT_MQTT_DEFAULT_PORT_WEBSOCKET_TLS 443u
+#define AZ_IOT_MQTT_DEFAULT_PORT_WEBSOCKET_PLAIN 80u
+
+/* Default port of an HTTP proxy when az_iot_mqtt_proxy_options.port is 0. */
+#define AZ_IOT_MQTT_DEFAULT_PROXY_PORT 8080u
+
   /* HTTP proxy to tunnel the MQTT connection through, via HTTP CONNECT.
    *
    * Applies to every transport, not only WebSockets: a device on a filtered
@@ -115,7 +127,7 @@ extern "C"
   typedef struct az_iot_mqtt_proxy_options
   {
     const char* host; /* proxy host name or IP; NULL = no proxy */
-    uint16_t port; /* 0 selects 8080 */
+    uint16_t port; /* 0 selects AZ_IOT_MQTT_DEFAULT_PROXY_PORT */
     const char* username; /* may be NULL */
     const char* password; /* may be NULL */
   } az_iot_mqtt_proxy_options;

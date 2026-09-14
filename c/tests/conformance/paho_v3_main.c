@@ -122,6 +122,57 @@ int main(void)
   }
 #endif
 
+  /* The adapter implements MQTT over WebSockets and the HTTP CONNECT proxy, so
+   * the suite is told to hold it to both contracts rather than only to the
+   * baseline (which checks it does not bypass either setting).
+   *
+   * Each capability is declared only when this machine can supply the endpoint
+   * that PROVES it, because a declared-but-unexercised claim fails the run and a
+   * leg with no proxy or no WebSocket listener is an ordinary environment, not
+   * an error. Nothing is skipped by leaving them undeclared: the baseline cases
+   * run for every adapter on every leg and are what pin the rule that matters --
+   * neither setting may be bypassed into a plain TCP session to the broker. */
+  char ws_port_buf[16];
+  char ws_path_buf[256];
+  const char* ws_port_str = NULL;
+  if (env_or_null("AZ_IOT_CONFORMANCE_WS_PORT", ws_port_buf, sizeof(ws_port_buf), &ws_port_str) == 0
+      && ws_port_str != NULL)
+  {
+    unsigned long p = strtoul(ws_port_str, NULL, 10);
+    if (p > 0 && p <= 65535)
+    {
+      opts.capabilities |= (uint32_t)AZ_IOT_CONFORMANCE_CAP_WEBSOCKETS;
+      opts.websocket_port = (uint16_t)p;
+      (void)env_or_null(
+          "AZ_IOT_CONFORMANCE_WS_PATH", ws_path_buf, sizeof(ws_path_buf), &opts.websocket_path);
+    }
+  }
+
+  char proxy_host_buf[256];
+  char proxy_port_buf[16];
+  const char* proxy_host = NULL;
+  const char* proxy_port_str = NULL;
+  if (env_or_null(
+          "AZ_IOT_CONFORMANCE_PROXY_HOST", proxy_host_buf, sizeof(proxy_host_buf), &proxy_host)
+          == 0
+      && proxy_host != NULL
+      && env_or_null(
+             "AZ_IOT_CONFORMANCE_PROXY_PORT",
+             proxy_port_buf,
+             sizeof(proxy_port_buf),
+             &proxy_port_str)
+          == 0
+      && proxy_port_str != NULL)
+  {
+    unsigned long p = strtoul(proxy_port_str, NULL, 10);
+    if (p > 0 && p <= 65535)
+    {
+      opts.capabilities |= (uint32_t)AZ_IOT_CONFORMANCE_CAP_PROXY;
+      opts.proxy_host = proxy_host;
+      opts.proxy_port = (uint16_t)p;
+    }
+  }
+
   int rc = az_iot_conformance_run_with_options(AZ_IOT_CONFORMANCE_SUITE_V3_1_1, f, &opts);
   az_iot_paho_factory_destroy(f);
   return rc;
