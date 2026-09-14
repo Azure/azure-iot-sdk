@@ -530,6 +530,41 @@ static void finishing_the_check_releases_the_hold_and_registration_follows(void*
   assert_non_null(strstr(pub->topic, "$dps/registrations/PUT/iotdps-register"));
 }
 
+/* An OFFERED update does not finish the exchange. The bootstrap loop installs
+ * it, reports the outcome and checks again, registering only once the service
+ * answers "no update". Releasing on the offer let registration tear the session
+ * down first, and every later publish was then refused for want of a hold --
+ * so the device installed an update the service was never told about. */
+static void an_offered_update_keeps_the_hold_so_the_result_can_be_reported(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(fx->channel.vtable->open(fx->channel.ctx, on_update, on_result, fx), AZ_IOT_OK);
+  az_iot_mock_mqtt_client* m = open_to_registering(fx);
+
+  assert_int_equal(fx->channel.vtable->request_update(fx->channel.ctx), AZ_IOT_OK);
+  char rid[64];
+  last_rid(m, rid, sizeof(rid));
+  char topic[256];
+  snprintf(topic, sizeof(topic), "$dps/registrations/res/200/?$rid=%s", rid);
+  assert_true(inject(
+      fx,
+      m,
+      topic,
+      "{\"updateMetadata\":{\"workflowId\":\"wf-1\",\"updateManifest\":\"{}\","
+      "\"updateManifestSignature\":\"sig\",\"fileUrls\":{}}}"));
+
+  /* Still held, and it survives the pump that would otherwise register. */
+  (void)az_iot_connection_client_do_work(&fx->client, 0);
+  assert_true(az_iot_connection_client__dps_hold_is_active(&fx->client));
+  assert_int_not_equal(fx->client.dps_phase, AZ_IOT_DPS_PHASE_REGISTERING);
+
+  /* Which is the point: the install can now be reported. */
+  az_iot_adu_report report = { 0 };
+  report.workflow_id = "wf-1";
+  report.extended_result_codes = "00000000";
+  assert_int_equal(fx->channel.vtable->report(fx->channel.ctx, &report), AZ_IOT_OK);
+}
+
 /* The load-bearing rule: a stalled or unavailable device-update service must
  * never stop a device from provisioning. */
 static void the_hold_expires_and_registration_proceeds_anyway(void** state)
@@ -939,6 +974,8 @@ int main(void)
         the_channel_holds_registration_so_bootstrap_can_run, setup, teardown),
     cmocka_unit_test_setup_teardown(
         finishing_the_check_releases_the_hold_and_registration_follows, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_offered_update_keeps_the_hold_so_the_result_can_be_reported, setup, teardown),
     cmocka_unit_test_setup_teardown(
         the_hold_expires_and_registration_proceeds_anyway, setup, teardown),
     cmocka_unit_test_setup_teardown(without_a_holder_registration_is_not_delayed, setup, teardown),

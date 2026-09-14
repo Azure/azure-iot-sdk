@@ -203,13 +203,20 @@ static void emit_result(
     az_iot_adu_channel_dps* c,
     az_iot_adu_operation operation,
     az_iot_result result,
-    az_iot_adu_error_action action)
+    az_iot_adu_error_action action,
+    bool update_offered)
 {
   /* The pre-registration exchange is over once an update check reaches a
-   * verdict it will not immediately repeat: either it succeeded, or it failed
-   * in a way retrying cannot fix. A retryable failure keeps the hold, and the
-   * connection client's deadline is what bounds that. */
-  if (operation != AZ_IOT_ADU_OP_REPORT_STATUS
+   * verdict it will not immediately repeat: either it succeeded with nothing
+   * offered, or it failed in a way retrying cannot fix. A retryable failure
+   * keeps the hold, and the connection client's deadline is what bounds that.
+   *
+   * An offered update is NOT such a verdict. The bootstrap loop installs it,
+   * reports the result and checks again, only registering once the service
+   * answers "no update" -- so releasing here would strand the rest of that
+   * sequence: registration tears the session down, and every later publish is
+   * refused for want of a hold. The install would never be reported. */
+  if (operation != AZ_IOT_ADU_OP_REPORT_STATUS && !update_offered
       && (result == AZ_IOT_OK || action == AZ_IOT_ADU_ERROR_ACTION_FATAL
           || action == AZ_IOT_ADU_ERROR_ACTION_PROCEED))
   {
@@ -268,14 +275,14 @@ static bool on_dps_message(
   {
     az_iot_adu_error_action action = handle_failure(c, operation, payload, payload_len);
     AZ_IOT_LOG_ERRORF("adu: operation failed with status %d", (int)status);
-    emit_result(c, operation, AZ_IOT_ERR_DPS, action);
+    emit_result(c, operation, AZ_IOT_ERR_DPS, action, false);
     return true;
   }
 
   if (operation == AZ_IOT_ADU_OP_REPORT_STATUS)
   {
     /* Nothing to parse: the report was accepted. */
-    emit_result(c, operation, AZ_IOT_OK, AZ_IOT_ADU_ERROR_ACTION_NONE);
+    emit_result(c, operation, AZ_IOT_OK, AZ_IOT_ADU_ERROR_ACTION_NONE, false);
     return true;
   }
 
@@ -283,7 +290,7 @@ static bool on_dps_message(
   if (az_iot_adu__parse_fetch_response(payload, payload_len, &resp) != AZ_IOT_OK)
   {
     AZ_IOT_LOG_ERROR("adu: could not parse the update-check response");
-    emit_result(c, operation, AZ_IOT_ERR_PROTOCOL, AZ_IOT_ADU_ERROR_ACTION_FATAL);
+    emit_result(c, operation, AZ_IOT_ERR_PROTOCOL, AZ_IOT_ADU_ERROR_ACTION_FATAL, false);
     return true;
   }
 
@@ -295,7 +302,7 @@ static bool on_dps_message(
   if (!resp.has_update)
   {
     AZ_IOT_LOG_DEBUG("adu: no update available");
-    emit_result(c, operation, AZ_IOT_OK, AZ_IOT_ADU_ERROR_ACTION_NONE);
+    emit_result(c, operation, AZ_IOT_OK, AZ_IOT_ADU_ERROR_ACTION_NONE, false);
     return true;
   }
 
@@ -306,7 +313,10 @@ static bool on_dps_message(
         (size_t)az_span_size(resp.update_metadata),
         c->engine_ctx);
   }
-  emit_result(c, operation, AZ_IOT_OK, AZ_IOT_ADU_ERROR_ACTION_NONE);
+  /* An update was offered, so the bootstrap exchange continues: the engine
+   * installs it, reports the outcome and checks again. The hold must outlive
+   * all of that, or the report has no session to go out on. */
+  emit_result(c, operation, AZ_IOT_OK, AZ_IOT_ADU_ERROR_ACTION_NONE, true);
   return true;
 }
 
@@ -320,7 +330,7 @@ static void channel_forget_pending_if_session_gone(az_iot_adu_channel_dps* c)
     AZ_IOT_LOG_DEBUG("adu: provisioning session ended with a request outstanding");
     az_iot_adu_operation operation = c->pending_operation;
     c->request_pending = false;
-    emit_result(c, operation, AZ_IOT_ERR_NOT_CONNECTED, AZ_IOT_ADU_ERROR_ACTION_RETRY);
+    emit_result(c, operation, AZ_IOT_ERR_NOT_CONNECTED, AZ_IOT_ADU_ERROR_ACTION_RETRY, false);
   }
 }
 

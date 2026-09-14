@@ -317,6 +317,25 @@ stateDiagram-v2
   A/B sample confirms/marks-valid the new image; core does not re-run `is_installed_fn` on
   resume. **To do:** add an optional post-reboot confirm step in core with an auto-rollback
   path when confirmation fails.
+- **Service configuration is parsed and then dropped (🔜).** `az_iot_adu__parse_fetch_response`
+  extracts `serviceConfiguration.rootKeyDownloadUrl`, but nothing reads the field: the channel
+  caches only the ETags. Because `serviceConfigEtag` *is* cached and echoed, the service is
+  entitled to omit the configuration on every later fetch — so the URL the device never kept
+  cannot be recovered without dropping the ETag. Harmless while root-key-package fetch is
+  unimplemented, and a trap for whoever implements it. **To do:** retain the URL alongside its
+  ETag, or stop sending the ETag until the configuration is actually used.
+- **ETags are not unescaped on the way in (🔜).** The parser keeps `az_json_token.slice`, which
+  is the raw JSON text, and serialization escapes it again on the next fetch, so an ETag
+  containing an escape sequence does not round-trip (`"\u0061"` returns as `"\\u0061"`).
+  Observed ETags are plain hexadecimal, so nothing breaks today. **To do:** decode with
+  `az_json_token_get_string` when storing.
+- **Holding registration across a long install (🔜).** The hold is what keeps the bootstrap
+  session alive for the install → report → re-check loop, and it expires (default 60s). A
+  download slower than that deadline registers the device mid-workflow, and the report is then
+  refused for want of a hold. The advisory expiry is deliberate — a stalled update service must
+  never block provisioning — so the fix is not a longer timeout. **To do:** decide whether the
+  report survives on the operational path instead, which is the same session-lifetime work the
+  operational poll already needs.
 
 ## F. Platform and crypto adapters
 
