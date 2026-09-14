@@ -49,23 +49,6 @@
 
 #define E2E_CONNECT_TIMEOUT_S 120
 
-#ifndef _WIN32
-static char* dup_cstr(const char* s)
-{
-  if (!s)
-  {
-    return NULL;
-  }
-  size_t n = strlen(s) + 1;
-  char* out = malloc(n);
-  if (out)
-  {
-    memcpy(out, s, n);
-  }
-  return out;
-}
-#endif
-
 /* ---- device callbacks ----------------------------------------------------- */
 
 typedef struct

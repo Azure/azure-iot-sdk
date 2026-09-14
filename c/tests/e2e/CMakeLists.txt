@@ -26,7 +26,16 @@ if(AZ_IOT_WITH_PAHO)
 # The PEM certificate provider it uses is part of az_iot_core, so the managed
 # (OpenSSL) provider is deliberately NOT linked: doing so would make the suite
 # fail to build wherever that provider is off.
-if(AZ_IOT_BUILD_E2E_ADU_V2)
+# Not built on Windows: the suite reads its configuration with the borrowing
+# az_iot_test_env(), which cannot exist under MSVC (getenv is deprecated there
+# and these targets build with /WX). Excluded rather than converted to the
+# copying form, because nothing runs this suite on Windows today and the
+# copies would have to be tracked and freed for no gain.
+if(AZ_IOT_BUILD_E2E_ADU_V2 AND WIN32)
+    message(STATUS "ADUv2 e2e suite skipped on Windows.")
+endif()
+
+if(AZ_IOT_BUILD_E2E_ADU_V2 AND NOT WIN32)
     az_iot_add_cmocka_test(az_iot_tests_e2e_adu tests/e2e_adu_v2_test.c)
     target_link_libraries(az_iot_tests_e2e_adu PRIVATE az_iot_core az_iot_adapter_paho)
     # The suite asserts on the channel and the codecs, which are internal.
