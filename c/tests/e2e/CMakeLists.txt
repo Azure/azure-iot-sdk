@@ -6,9 +6,6 @@
 # the in-process service client below to receive device telemetry (Event
 # Hub-compatible endpoint) and send C2D over the IoT Hub AMQP service endpoint.
 # ---------------------------------------------------------------------------
-# Everything from here to the ADUv2 suite needs the Paho adapter and the AMQP
-# service facade. The ADUv2 suite needs neither, so it must remain buildable
-# when they are absent.
 # Everything here needs the Paho adapter, and the legacy suites additionally
 # need the AMQP service facade. A target left outside this guard fails to build
 # with AZ_IOT_WITH_PAHO=OFF.
