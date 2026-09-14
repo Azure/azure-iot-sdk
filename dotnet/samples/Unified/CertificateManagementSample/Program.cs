@@ -47,7 +47,7 @@ internal class Program
 
         // Create a new certificate signing request to send to IoT Hub this time
         csrBase64 = GenerateCsrWithPrivateKey(registrationId, privateKey);
-        var certificateSigningRequest = new CertificateSigningRequest(registrationId, csrBase64, null, "*");
+        var certificateSigningRequest = new IotHubCertificateSigningRequest(registrationId, csrBase64, null, "*");
         CertificateSigningOperation pendingCsr = await connectionClient.SendCertificateSigningRequestAsync(certificateSigningRequest);
 
         try

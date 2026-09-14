@@ -87,7 +87,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Gen2
                 }
             };
 
-            var directMethodResponse = await serviceClient.InvokeDeviceMethodAsync(testDeviceContext.ConnectionContext.DeviceId, directMethodInvocation, TestContext.Current.CancellationToken);
+            var directMethodResponse = await serviceClient.InvokeDeviceMethodAsync(testDeviceContext.DeviceId, directMethodInvocation, TestContext.Current.CancellationToken);
 
             // The direct method probe request received by the device is validated in the callback itself, so no assertions needed here other than that the TCS completed.
             // The direct method request received by the device is validated in the callback itself, so no assertions needed here other than that the TCS completed.
@@ -206,7 +206,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Gen2
 
             try
             {
-                var directMethod1Response = await serviceClient.InvokeDeviceMethodAsync(testDeviceContext.ConnectionContext.DeviceId, directMethod1Invocation, TestContext.Current.CancellationToken);
+                var directMethod1Response = await serviceClient.InvokeDeviceMethodAsync(testDeviceContext.DeviceId, directMethod1Invocation, TestContext.Current.CancellationToken);
                 Assert.Fail("Expected the first direct method invocation to fail since the device rejects that invocation's probe message");
             }
             catch (Exception)
@@ -214,7 +214,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Gen2
                 //TODO what kind of exception will the service client see when a probe message is rejected?
             }
             
-            var directMethod2Response = await serviceClient.InvokeDeviceMethodAsync(testDeviceContext.ConnectionContext.DeviceId, directMethod2Invocation, TestContext.Current.CancellationToken);
+            var directMethod2Response = await serviceClient.InvokeDeviceMethodAsync(testDeviceContext.DeviceId, directMethod2Invocation, TestContext.Current.CancellationToken);
 
             // The direct method probe request received by the device is validated in the callback itself, so no assertions needed here other than that the TCS completed.
             // The direct method request received by the device is validated in the callback itself, so no assertions needed here other than that the TCS completed.

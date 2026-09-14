@@ -61,8 +61,6 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Telemetry
 
             string deviceId = currentConnectionContext.DeviceId;
 
-            // TODO do we even need to pre-empt like this with AEG? Maybe AEG sends back a proper error code on the publish that we can translate to this exception.
-            // Needs manual testing once AEG hub is more available
             if (message.Payload != null && message.Payload.Length > 255000)
             {
                 throw new MessageTooLargeException("This telemetry message is too large to be accepted by IoT Hub. It will not be sent.");

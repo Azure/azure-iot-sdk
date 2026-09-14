@@ -81,7 +81,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
                 ContentEncoding = expectedContentEncoding
             };
 
-            await serviceClient.SendAsync(testDeviceContext.ConnectionContext.DeviceId, cloudToDeviceMessageToSend);
+            await serviceClient.SendAsync(testDeviceContext.DeviceId, cloudToDeviceMessageToSend);
 
             CloudToDeviceTelemetry receivedC2dMessage = await c2dMessageReceived.Task.WaitAsync(TestContext.Current.CancellationToken);
 

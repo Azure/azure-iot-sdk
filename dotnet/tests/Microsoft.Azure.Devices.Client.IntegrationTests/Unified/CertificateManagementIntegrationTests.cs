@@ -65,7 +65,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Unified
             Assert.NotEmpty(connectionContext.IssuedClientCertificates);
 
             var secondCsrBase64 = CertificateUtilities.GenerateCsrWithPrivateKey(connectionContext.DeviceId, privateKey);
-            var certificateSigningRequest = new CertificateSigningRequest(connectionContext.DeviceId, secondCsrBase64, null, "*");
+            var certificateSigningRequest = new IotHubCertificateSigningRequest(connectionContext.DeviceId, secondCsrBase64, null, "*");
 
             CertificateSigningOperation pendingCsr = await connectionClient.SendCertificateSigningRequestAsync(certificateSigningRequest, cts.Token);
 

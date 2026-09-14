@@ -1,7 +1,13 @@
 ﻿namespace Microsoft.Azure.Devices.Client.Models
 {
-    public class ConnectionContext //TODO split it up so that user who passes in connection context doesn't try to assign twin push and issued certs?
+    public class ConnectionContext
     {
+        // Users should not be constructing this object. It should only be returned to the user.
+        internal ConnectionContext()
+        { 
+        
+        }
+
         public required string DeviceId { get; init; }
 
         public required string IotHubHostName { get; init; }
