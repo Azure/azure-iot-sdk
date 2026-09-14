@@ -76,7 +76,7 @@ namespace Microsoft.Azure.Devices.Client.UnitTests
             Assert.Equal("some reason", connack.ReasonString);
             Assert.Equal((ushort?)12, connack.ReceiveMaximum);
             Assert.Equal("some response info", connack.ResponseInformation);
-            Assert.Equal(MqttConnectResultCode.Success, connack.ResultCode);
+            Assert.Equal(MqttConnectReasonCode.Success, connack.ResultCode);
             Assert.Equal((uint?)3600, connack.SessionExpiryInterval);
             AssertUserPropertiesMatch(connack.UserProperties, ("key1", "value1"), ("key2", "value2"));
         }
@@ -130,8 +130,8 @@ namespace Microsoft.Azure.Devices.Client.UnitTests
         {
             foreach (MQTTnet.MqttClientConnectResultCode resultCode in Enum.GetValues<MQTTnet.MqttClientConnectResultCode>())
             {
-                MqttConnectResultCode expected =
-                    ExpectedByName<MQTTnet.MqttClientConnectResultCode, MqttConnectResultCode>(resultCode);
+                MqttConnectReasonCode expected =
+                    ExpectedByName<MQTTnet.MqttClientConnectResultCode, MqttConnectReasonCode>(resultCode);
 
                 Assert.Equal(expected, ModelConverter.ToGeneric(resultCode));
             }
@@ -141,7 +141,7 @@ namespace Microsoft.Azure.Devices.Client.UnitTests
         public void ToGeneric_ConnectResultCode_UnrecognizedValue_DefaultsToConnectionRateExceeded()
         {
             Assert.Equal(
-                MqttConnectResultCode.ConnectionRateExceeded,
+                MqttConnectReasonCode.ConnectionRateExceeded,
                 ModelConverter.ToGeneric((MQTTnet.MqttClientConnectResultCode)250));
         }
 
