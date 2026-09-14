@@ -738,7 +738,14 @@ static az_iot_result capture_report(void* ctx, const az_iot_adu_report* report)
   return capture->returned_status;
 }
 
-static const az_iot_adu_channel_vtable report_channel = { NULL, NULL, NULL, capture_report, NULL };
+static const az_iot_adu_channel_vtable report_channel = {
+  .open = NULL,
+  .close = NULL,
+  .request_update = NULL,
+  .report = capture_report,
+  .set_device_properties = NULL,
+  .do_work = NULL,
+};
 
 static void test_report_state_preserves_canonical_result(void** state)
 {
