@@ -227,7 +227,8 @@ cloud resources stays green.
 | [twin_get_patch](samples/twin_get_patch/) | `twin_get` + `patch_reported`, and desired-property delivery. |
 | [direct_method_responder](samples/direct_method_responder/) | Subscribe for direct methods, echo the payload back via `az_iot_direct_method_respond`. |
 | [direct_method_slow_responder](samples/direct_method_slow_responder/) | Answer a direct method after its handler returned, for work that does not fit in a callback. |
-| [c2d_receiver](samples/c2d_receiver/) | Receive cloud-to-device messages and their properties. |
+| [c2d_receiver_gen1](samples/c2d_receiver_gen1/) | Receive cloud-to-device messages on a Classic hub, where properties are decoded out of the topic. |
+| [c2d_receiver_gen2](samples/c2d_receiver_gen2/) | The same on an AEG hub, where the presence handshake already carries the subscription and properties need no decoding. |
 | [file_upload](samples/file_upload/) | SAS-URI request, blob PUT via libcurl, completion notification. |
 | [authentication](samples/authentication/) | Certificate providers, CSR enrollment, operational certificates. |
 | [adu](samples/adu/) | Device Update agent: manifest verify, download, install, report. |
