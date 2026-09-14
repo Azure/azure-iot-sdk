@@ -399,10 +399,15 @@ static void properties_past_the_cap_are_dropped_with_a_warning(void** state)
   connect_and_init(test);
 
   /* Two slots are already spent on type and content-type, so the last two of
-   * these sixteen cannot fit. */
-  char keys[16][8];
-  az_iot_telemetry_property properties[16];
-  for (int i = 0; i < 16; ++i)
+   * these cannot fit whatever the cap is set to. */
+  enum
+  {
+    k_carried = AZ_IOT_GEN2_TELEMETRY_MAX_USER_PROPERTIES - 2,
+    k_offered = k_carried + 2,
+  };
+  char keys[k_offered][16];
+  az_iot_telemetry_property properties[k_offered];
+  for (int i = 0; i < k_offered; ++i)
   {
     snprintf(keys[i], sizeof(keys[i]), "k%d", i);
     properties[i].key = keys[i];
@@ -421,16 +426,20 @@ static void properties_past_the_cap_are_dropped_with_a_warning(void** state)
   assert_int_equal(result, AZ_IOT_OK);
 
   const az_iot_mock_call* publish = az_iot_mock_mqtt_client_call_at(test->mock, 0);
-  assert_int_equal(publish->user_properties_count, 16);
-  assert_string_equal(az_iot_mock_call_user_property(publish, "k13"), "v");
-  assert_null(az_iot_mock_call_user_property(publish, "k14"));
-  assert_null(az_iot_mock_call_user_property(publish, "k15"));
+  assert_int_equal(publish->user_properties_count, AZ_IOT_GEN2_TELEMETRY_MAX_USER_PROPERTIES);
+
+  char last_carried[16];
+  char first_dropped[16];
+  snprintf(last_carried, sizeof(last_carried), "k%d", k_carried - 1);
+  snprintf(first_dropped, sizeof(first_dropped), "k%d", k_carried);
+  assert_string_equal(az_iot_mock_call_user_property(publish, last_carried), "v");
+  assert_null(az_iot_mock_call_user_property(publish, first_dropped));
 
   /* Naming the first casualty is what makes the warning actionable, and warning
    * once rather than per property is what keeps it readable. */
   assert_int_equal(log.count, 1);
   assert_int_equal(log.last_level, AZ_IOT_LOG_LEVEL_WARN);
-  assert_non_null(strstr(log.last, "k14"));
+  assert_non_null(strstr(log.last, first_dropped));
 }
 
 /* The fix for D-11 narrowed a prefix test to an exact one. Anything that widens
@@ -512,10 +521,14 @@ static void filling_the_cap_exactly_carries_everything_and_says_nothing(void** s
   fixture* test = (fixture*)*state;
   connect_and_init(test);
 
-  /* Two of the sixteen slots are the type and content-type the client adds. */
-  char keys[14][8];
-  az_iot_telemetry_property properties[14];
-  for (int i = 0; i < 14; ++i)
+  /* Two of the slots are the type and content-type the client adds. */
+  enum
+  {
+    k_carried = AZ_IOT_GEN2_TELEMETRY_MAX_USER_PROPERTIES - 2
+  };
+  char keys[k_carried][16];
+  az_iot_telemetry_property properties[k_carried];
+  for (int i = 0; i < k_carried; ++i)
   {
     snprintf(keys[i], sizeof(keys[i]), "k%d", i);
     properties[i].key = keys[i];
@@ -533,9 +546,12 @@ static void filling_the_cap_exactly_carries_everything_and_says_nothing(void** s
 
   assert_int_equal(result, AZ_IOT_OK);
   const az_iot_mock_call* publish = az_iot_mock_mqtt_client_call_at(test->mock, 0);
-  assert_int_equal(publish->user_properties_count, 16);
+  assert_int_equal(publish->user_properties_count, AZ_IOT_GEN2_TELEMETRY_MAX_USER_PROPERTIES);
+
+  char last_carried[16];
+  snprintf(last_carried, sizeof(last_carried), "k%d", k_carried - 1);
   assert_string_equal(az_iot_mock_call_user_property(publish, "k0"), "v");
-  assert_string_equal(az_iot_mock_call_user_property(publish, "k13"), "v");
+  assert_string_equal(az_iot_mock_call_user_property(publish, last_carried), "v");
   assert_int_equal(log.count, 0);
 }
 

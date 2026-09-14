@@ -14,7 +14,6 @@
 #include "internal/span_writer.h"
 
 #define AZ_IOT_GEN2_TELEMETRY_TOPIC_MAX 512
-#define AZ_IOT_GEN2_TELEMETRY_MAX_USER_PROPERTIES 16
 
 az_iot_result az_iot_gen2_telemetry_client_init(
     az_iot_gen2_telemetry_client* client,
