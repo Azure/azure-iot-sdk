@@ -102,13 +102,8 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
             return new Gen2DeviceTestContext()
             { 
                 ConnectionClient = connectionClient,
-                ConnectionContext = new() // Not a full context because the device has not connected yet
-                { 
-                    DeviceId = deviceId,
-                    IotHubHostName = null,
-                    AuthenticationProvider = x509AuthenticationProvider,
-                    IsGen2Hub = true,
-                },
+                DeviceId = deviceId,
+                IsGen2Hub = true,
                 AuthenticationProvider = x509AuthenticationProvider,
             };
         }
@@ -149,13 +144,8 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
             return new Gen2DeviceTestContext()
             {
                 ConnectionClient = connectionClient,
-                ConnectionContext = new() // Not a full context because the device has not connected yet
-                {
-                    DeviceId = deviceId,
-                    IotHubHostName = null,
-                    AuthenticationProvider = x509AuthenticationProvider,
-                    IsGen2Hub = true,
-                },
+                DeviceId = deviceId,
+                IsGen2Hub = true,
                 AuthenticationProvider = x509AuthenticationProvider,
             };
         }
@@ -193,7 +183,8 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
             return new Gen2DeviceTestContext()
             {
                 ConnectionClient = connectionClient,
-                ConnectionContext = connectionContext!,
+                DeviceId = connectionContext!.DeviceId,
+                IsGen2Hub = connectionContext!.IsGen2Hub,
                 AuthenticationProvider = x509AuthenticationProvider,
             };
         }
