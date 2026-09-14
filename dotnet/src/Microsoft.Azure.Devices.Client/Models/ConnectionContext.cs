@@ -1,4 +1,6 @@
-﻿namespace Microsoft.Azure.Devices.Client.Models
+﻿using Microsoft.Azure.Devices.Client.Provisioning.Models;
+
+namespace Microsoft.Azure.Devices.Client.Models
 {
     public class ConnectionContext
     {
@@ -12,7 +14,7 @@
 
         public required string IotHubHostName { get; init; }
 
-        public required bool IsGen2Hub { get; init; }
+        public required ConnectionProfile ConnectionProfile { get; init; }
 
         public IReadOnlyList<string>? IssuedClientCertificates { get; init; }
 

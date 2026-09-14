@@ -1,5 +1,6 @@
 ﻿using Microsoft.Azure.Devices.Client.Gen2.Connection;
 using Microsoft.Azure.Devices.Client.Models;
+using Microsoft.Azure.Devices.Client.Provisioning.Models;
 
 namespace Microsoft.Azure.Devices.Client.IntegrationTests.Gen2
 {
@@ -9,7 +10,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Gen2
 
         public required string DeviceId { get; set; }
 
-        public required bool IsGen2Hub { get; set; }
+        public required ConnectionProfile ConnectionProfile { get; set; }
 
         public required X509AuthenticationProvider AuthenticationProvider { get; set; }
 

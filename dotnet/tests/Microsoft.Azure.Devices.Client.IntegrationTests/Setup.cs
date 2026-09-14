@@ -103,7 +103,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
             { 
                 ConnectionClient = connectionClient,
                 DeviceId = deviceId,
-                IsGen2Hub = true,
+                ConnectionProfile = Provisioning.Models.ConnectionProfile.MqttV5,
                 AuthenticationProvider = x509AuthenticationProvider,
             };
         }
@@ -145,7 +145,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
             {
                 ConnectionClient = connectionClient,
                 DeviceId = deviceId,
-                IsGen2Hub = true,
+                ConnectionProfile = Provisioning.Models.ConnectionProfile.MqttV5,
                 AuthenticationProvider = x509AuthenticationProvider,
             };
         }
@@ -184,7 +184,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests
             {
                 ConnectionClient = connectionClient,
                 DeviceId = connectionContext!.DeviceId,
-                IsGen2Hub = connectionContext!.IsGen2Hub,
+                ConnectionProfile = connectionContext!.ConnectionProfile,
                 AuthenticationProvider = x509AuthenticationProvider,
             };
         }

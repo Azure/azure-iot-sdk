@@ -99,7 +99,7 @@ namespace Microsoft.Azure.Devices.Client.Unified.Twin
 
             var currentConnectionContext = EnsureCorrectConnectionContext();
 
-            if (_connection.GetCurrentConnectionContext()!.IsGen2Hub)
+            if (_connection.GetCurrentConnectionContext()!.ConnectionProfile == Provisioning.Models.ConnectionProfile.MqttV5)
             {
                 // Unconditionally return the full twin since classic Hub cannot mimic any of the filtering that AEG Hub allows.
                 return await _aegHubTwinClient.GetTwinAsync(true, true, 0, 0, cancellationToken);
@@ -159,7 +159,7 @@ namespace Microsoft.Azure.Devices.Client.Unified.Twin
             var currentConnectionContext = EnsureCorrectConnectionContext();
 
             MqttPublish publish;
-            if (_connection.GetCurrentConnectionContext()!.IsGen2Hub)
+            if (_connection.GetCurrentConnectionContext()!.ConnectionProfile == Provisioning.Models.ConnectionProfile.MqttV5)
             {
                 ReportedPatchRequest aegRequest = new()
                 {
@@ -225,7 +225,7 @@ namespace Microsoft.Azure.Devices.Client.Unified.Twin
                 return;
             }
 
-            if (connectionContext.IsGen2Hub)
+            if (connectionContext.ConnectionProfile == Provisioning.Models.ConnectionProfile.MqttV5)
             {
                 // The other handler covers this scenario
                 return;

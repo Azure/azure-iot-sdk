@@ -101,7 +101,7 @@ namespace Microsoft.Azure.Devices.Client.Unified.FileUpload
                 throw new NotSupportedException("Must connect device prior to using this method");
             }
 
-            if (currentConnectionContext.IsGen2Hub)
+            if (currentConnectionContext.ConnectionProfile == Provisioning.Models.ConnectionProfile.MqttV5)
             {
                 return await _aegFileUploadClient.GetFileUploadSasUriAsync(request, cancellationToken);
             }
@@ -145,7 +145,7 @@ namespace Microsoft.Azure.Devices.Client.Unified.FileUpload
                 throw new NotSupportedException("Must connect device prior to using this method");
             }
 
-            if (currentConnectionContext.IsGen2Hub)
+            if (currentConnectionContext.ConnectionProfile == Provisioning.Models.ConnectionProfile.MqttV5)
             {
                 await _aegFileUploadClient.CompleteFileUploadSasUriAsync(completion, cancellationToken);
                 return;

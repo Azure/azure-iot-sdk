@@ -158,7 +158,7 @@ namespace Microsoft.Azure.Devices.Client.UnitTests
                     AuthenticationProvider = CreateAuthenticationProvider(),
                     DeviceId = DeviceId,
                     IotHubHostName = FirstAssignedHub,
-                    IsGen2Hub = false,
+                    ConnectionProfile = ConnectionProfile.Classic,
                 },
                 cancellationToken: TestContext.Current.CancellationToken);
 

@@ -183,7 +183,7 @@ namespace Microsoft.Azure.Devices.Client
                 IotHubHostName = provisioningResult.AssignedHub!,
                 IssuedClientCertificates = provisioningResult.IssuedClientCertificateChain,
                 AuthenticationProvider = authentication,
-                IsGen2Hub = provisioningResult.ConnectionProfile == ConnectionProfile.MqttV5,
+                ConnectionProfile = provisioningResult.ConnectionProfile,
             };
 
             // If CSR was a part of the provisioning request, then connect to IoT hub using the operational certificates (the ones signed by DPS) rather than the boot certificates (the ones used to authenticate with DPS).

@@ -72,7 +72,7 @@ namespace Microsoft.Azure.Devices.Client.Unified.Telemetry
 
             string deviceId = currentConnectionContext.DeviceId;
 
-            if (currentConnectionContext.IsGen2Hub)
+            if (currentConnectionContext.ConnectionProfile == Provisioning.Models.ConnectionProfile.MqttV5)
             {
                 await _aegTelemetryClient.SendTelemetryAsync(message, cancellationToken);
                 return;

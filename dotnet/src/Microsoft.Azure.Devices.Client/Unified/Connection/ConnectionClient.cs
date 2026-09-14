@@ -54,13 +54,13 @@ namespace Microsoft.Azure.Devices.Client.Unified.Connection
         {
             //Defer to gen 2 client
             Debug.Assert(CurrentConnectionContext != null);
-            if (CurrentConnectionContext.IsGen2Hub)
+            if (CurrentConnectionContext.ConnectionProfile == Provisioning.Models.ConnectionProfile.MqttV5)
             {
                 return _gen2ConnectionClient.MqttConnectOverride(connect);
             }
 
             connect.WebsocketUri = $"wss://{connect.HostName}/$iothub/websocket";
-            connect.ProtocolVersion = CurrentConnectionContext.IsGen2Hub ? MqttProtocolVersion.V500 : MqttProtocolVersion.V311;
+            connect.ProtocolVersion = CurrentConnectionContext.ConnectionProfile == Provisioning.Models.ConnectionProfile.MqttV5 ? MqttProtocolVersion.V500 : MqttProtocolVersion.V311;
             connect.Username = $"{connect.HostName}/{connect.ClientId}/?api-version={ClassicHubApiVersion}&DeviceClientType={Uri.EscapeDataString(GetUserAgentString())}";
             connect.Password = Array.Empty<byte>();
 
@@ -76,7 +76,7 @@ namespace Microsoft.Azure.Devices.Client.Unified.Connection
             // This callback should only be reached after provisioning, so their should always be a connection context to use
             Debug.Assert(CurrentConnectionContext != null);
 
-            if (CurrentConnectionContext.IsGen2Hub)
+            if (CurrentConnectionContext.ConnectionProfile == Provisioning.Models.ConnectionProfile.MqttV5)
             {
                 // A gen 2 hub connection re-announces this device's birth instead of re-subscribing to the classic topics.
                 // The gen 2 client owns that flow, but it must run on this client's connection. It signals that the device
@@ -139,7 +139,7 @@ namespace Microsoft.Azure.Devices.Client.Unified.Connection
             CertificateSigningOperation operation = new();
 
 
-            if (CurrentConnectionContext.IsGen2Hub)
+            if (CurrentConnectionContext.ConnectionProfile == Provisioning.Models.ConnectionProfile.MqttV5)
             {
                 return await _gen2ConnectionClient.SendCertificateSigningRequestAsync(request, cancellationToken);
             }
