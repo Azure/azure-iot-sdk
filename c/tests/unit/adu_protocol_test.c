@@ -520,22 +520,32 @@ static void step_results_serialize_as_an_indexed_map(void** state)
   uint8_t buf[1024];
   size_t len = 0;
 
-  az_iot_adu_client_step_result steps[2];
-  memset(steps, 0, sizeof(steps));
-  steps[0].result_code = 700;
-  steps[0].extended_result_code = 0;
-  steps[1].result_code = -1;
-  steps[1].extended_result_code = (int32_t)0x80000001;
-  steps[1].result_details = AZ_SPAN_FROM_STR("step two failed");
+  az_iot_adu_install_result result;
+  memset(&result, 0, sizeof(result));
+  result.outcome = AZ_IOT_ADU_OUTCOME_FAILED;
+  result.failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_AGENT_CORE;
+  result.result_code = -1;
+  memcpy(result.extended_result_codes, "80000001", 8);
+  result.extended_result_codes_length = 8;
+  result.step_results_count = 2;
+
+  result.step_results[0].outcome = AZ_IOT_ADU_OUTCOME_SUCCEEDED;
+  result.step_results[0].failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_NOT_APPLICABLE;
+  result.step_results[0].result_code = 700;
+  memcpy(result.step_results[0].extended_result_codes, "0", 1);
+  result.step_results[0].extended_result_codes_length = 1;
+
+  result.step_results[1].outcome = AZ_IOT_ADU_OUTCOME_FAILED;
+  result.step_results[1].failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_AGENT_CORE;
+  result.step_results[1].result_code = -1;
+  memcpy(result.step_results[1].extended_result_codes, "80000001", 8);
+  result.step_results[1].extended_result_codes_length = 8;
+  memcpy(result.step_results[1].result_details, "step two failed", 15);
+  result.step_results[1].result_details_length = 15;
 
   az_iot_adu_report report = { 0 };
   report.workflow_id = "wf-1";
-  report.outcome = AZ_IOT_ADU_OUTCOME_FAILED;
-  report.failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_AGENT_CORE;
-  report.result_code = -1;
-  report.extended_result_codes = "80000001";
-  report.step_results = steps;
-  report.step_results_count = 2;
+  report.install_result = &result;
 
   assert_int_equal(az_iot_adu__build_report_request(&report, buf, sizeof(buf), &len), AZ_IOT_OK);
   buf[len] = '\0';
@@ -560,12 +570,17 @@ static void no_step_results_means_no_key(void** state)
   (void)state;
   uint8_t buf[512];
   size_t len = 0;
+  az_iot_adu_install_result result;
+  memset(&result, 0, sizeof(result));
+  result.outcome = AZ_IOT_ADU_OUTCOME_SUCCEEDED;
+  result.failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_NOT_APPLICABLE;
+  result.result_code = 700;
+  memcpy(result.extended_result_codes, "0", 1);
+  result.extended_result_codes_length = 1;
+
   az_iot_adu_report report = { 0 };
   report.workflow_id = "wf-1";
-  report.outcome = AZ_IOT_ADU_OUTCOME_SUCCEEDED;
-  report.failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_NOT_APPLICABLE;
-  report.result_code = 700;
-  report.extended_result_codes = "0";
+  report.install_result = &result;
 
   assert_int_equal(az_iot_adu__build_report_request(&report, buf, sizeof(buf), &len), AZ_IOT_OK);
   buf[len] = '\0';

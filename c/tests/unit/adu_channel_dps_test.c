@@ -1,4 +1,4 @@
-// Copyright (c) Microsoft. All rights reserved.
+﻿// Copyright (c) Microsoft. All rights reserved.
 // Licensed under the MIT license. See LICENSE file in the project root for full license
 // information.
 
@@ -326,6 +326,19 @@ static void an_error_response_reports_an_action(void** state)
   assert_int_equal(fx->channel.vtable->request_update(fx->channel.ctx), AZ_IOT_OK);
 }
 
+/* Minimal valid install result for tests that only care about transport, not
+ * report content. The canonical model carries the diagnostics, so a report
+ * without one is rejected before it reaches the wire. */
+static void init_transport_result(az_iot_adu_install_result* result)
+{
+  memset(result, 0, sizeof(*result));
+  result->outcome = AZ_IOT_ADU_OUTCOME_SUCCEEDED;
+  result->failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_NOT_APPLICABLE;
+  result->result_code = 700;
+  memcpy(result->extended_result_codes, "00000000", 8);
+  result->extended_result_codes_length = 8;
+}
+
 /* A report is published and, once accepted, reported as delivered. */
 static void a_report_is_published_and_acknowledged(void** state)
 {
@@ -334,7 +347,9 @@ static void a_report_is_published_and_acknowledged(void** state)
 
   az_iot_adu_report report = { 0 };
   report.workflow_id = "wf-1";
-  report.extended_result_codes = "00000000";
+  az_iot_adu_install_result result;
+  init_transport_result(&result);
+  report.install_result = &result;
   assert_int_equal(fx->channel.vtable->report(fx->channel.ctx, &report), AZ_IOT_OK);
 
   const az_iot_mock_call* pub = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PUBLISH);
@@ -640,7 +655,9 @@ static void a_late_bind_defers_operations_to_the_next_session(void** state)
   az_iot_adu_report report;
   memset(&report, 0, sizeof(report));
   report.workflow_id = "wf-1";
-  report.extended_result_codes = "00000000";
+  az_iot_adu_install_result result;
+  init_transport_result(&result);
+  report.install_result = &result;
   assert_int_equal(fx->channel.vtable->report(fx->channel.ctx, &report), AZ_IOT_ERR_NOT_CONNECTED);
 
   /* Nothing of ours went onto the registration in flight. */
@@ -847,7 +864,9 @@ static void a_report_after_the_exchange_is_refused_not_lost(void** state)
   az_iot_adu_report report;
   memset(&report, 0, sizeof(report));
   report.workflow_id = "wf-1";
-  report.extended_result_codes = "00000000";
+  az_iot_adu_install_result result;
+  init_transport_result(&result);
+  report.install_result = &result;
   assert_int_equal(fx->channel.vtable->report(fx->channel.ctx, &report), AZ_IOT_ERR_NOT_CONNECTED);
 
   /* Nothing was put on the wire, so there is no accepted operation to lose. */
