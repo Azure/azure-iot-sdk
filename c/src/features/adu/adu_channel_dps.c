@@ -97,7 +97,11 @@ static az_iot_result publish_operation(
    *
    * Checked here rather than in each caller so a new operation cannot forget
    * it. */
-  if (c->wants_hold
+  /* The hold only governs the PRE-REGISTRATION exchange. An auxiliary session
+   * is opened after registration and deliberately has no hold -- there is no
+   * registration left to hold back -- so requiring one here would reject every
+   * operational publish on a session that is perfectly usable. */
+  if (c->wants_hold && !az_iot_connection_client__dps_session_is_auxiliary(c->connection)
       && (!c->holds_registration || !az_iot_connection_client__dps_hold_is_active(c->connection)))
   {
     return AZ_IOT_ERR_NOT_CONNECTED;
@@ -360,10 +364,17 @@ static az_iot_result channel_open(
   /* Standing interest in the provisioning session, so one can be opened on
    * demand after the device has provisioned. Without it every operation after
    * registration has nothing to publish on. Released at close. */
-  if (az_iot_connection_client__dps_user_acquire(c->connection) == AZ_IOT_OK)
+  az_iot_result ur = az_iot_connection_client__dps_user_acquire(c->connection);
+  if (ur != AZ_IOT_OK)
   {
-    c->holds_user = true;
+    /* Reported rather than swallowed: without the interest every operation
+     * after registration would fail with no indication why. */
+    AZ_IOT_LOG_ERROR("adu: could not register interest in the provisioning session");
+    az_iot_connection_client__set_dps_message_observer(c->connection, NULL, NULL);
+    return ur;
   }
+  c->holds_user = true;
+
   az_iot_result hr = az_iot_connection_client__dps_hold_acquire(c->connection);
   if (hr == AZ_IOT_OK)
   {
@@ -372,6 +383,8 @@ static az_iot_result channel_open(
   else if (hr != AZ_IOT_ERR_NOT_SUPPORTED)
   {
     c->wants_hold = false;
+    c->holds_user = false;
+    az_iot_connection_client__dps_user_release(c->connection);
     az_iot_connection_client__set_dps_message_observer(c->connection, NULL, NULL);
     return hr;
   }
@@ -440,6 +453,9 @@ static az_iot_result channel_request_update(void* ctx)
   }
   if (!az_iot_connection_client__dps_session_ready(c->connection))
   {
+    /* Remember the caller wanted one, so the next tick opens it. Without this
+     * nothing records the demand and the session is never reopened. */
+    c->wants_session = true;
     return AZ_IOT_ERR_NOT_CONNECTED;
   }
 
@@ -494,6 +510,9 @@ static az_iot_result channel_report(void* ctx, const az_iot_adu_report* report)
   }
   if (!az_iot_connection_client__dps_session_ready(c->connection))
   {
+    /* Remember the caller wanted one, so the next tick opens it. Without this
+     * nothing records the demand and the session is never reopened. */
+    c->wants_session = true;
     return AZ_IOT_ERR_NOT_CONNECTED;
   }
 
@@ -627,18 +646,25 @@ static az_iot_result channel_do_work(void* ctx)
     return AZ_IOT_ERR_INVALID_ARG;
   }
 
+  /* Recorded BEFORE the pending request is retired: that call clears
+   * request_pending precisely when the session is gone, so testing it
+   * afterwards could never be true and the session would never be reopened. */
+  bool had_work = c->request_pending || c->wants_session;
+
   channel_forget_pending_if_session_gone(c);
 
   /* Ask for a session when there is work and none is up. This is what makes an
    * operation possible after the device has provisioned: the ordinary flow tore
    * its session down at registration, and nothing else would open another.
    *
-   * Only when something is actually pending -- a session opened speculatively
-   * would linger and then close again on every tick. */
-  if (c->holds_user && c->request_pending
-      && !az_iot_connection_client__dps_session_ready(c->connection))
+   * Only when there is work -- a session opened speculatively would linger and
+   * close again on every tick, for nothing. */
+  if (c->holds_user && had_work && !az_iot_connection_client__dps_session_ready(c->connection))
   {
-    (void)az_iot_connection_client__dps_session_ensure(c->connection);
+    if (az_iot_connection_client__dps_session_ensure(c->connection) == AZ_IOT_OK)
+    {
+      c->wants_session = false;
+    }
   }
 
   /* A session that is gone takes its exchange with it: the next one is a fresh

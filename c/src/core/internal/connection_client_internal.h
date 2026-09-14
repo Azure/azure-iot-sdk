@@ -157,6 +157,11 @@ extern "C"
   az_iot_result az_iot_connection_client__dps_user_acquire(az_iot_connection_client* client);
   void az_iot_connection_client__dps_user_release(az_iot_connection_client* client);
 
+  /* True when the session currently up was opened for a feature client rather
+   * than by the ordinary provisioning flow. Such a session never registers, so
+   * the pre-registration hold does not apply to it. */
+  bool az_iot_connection_client__dps_session_is_auxiliary(const az_iot_connection_client* client);
+
   /* Ensure a provisioning session is up and usable, opening one if needed.
    *
    * Returns AZ_IOT_OK when a publish can be made now, AZ_IOT_ERR_BUSY while one

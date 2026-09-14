@@ -3331,6 +3331,11 @@ void az_iot_connection_client__dps_user_release(az_iot_connection_client* client
    * called from a callback; the do_work pump closes it at a safe point. */
 }
 
+bool az_iot_connection_client__dps_session_is_auxiliary(const az_iot_connection_client* client)
+{
+  return client != NULL && client->dps_session_auxiliary;
+}
+
 az_iot_result az_iot_connection_client__dps_session_ensure(az_iot_connection_client* client)
 {
   if (client == NULL)
