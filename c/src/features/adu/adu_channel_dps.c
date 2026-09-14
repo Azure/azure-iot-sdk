@@ -356,6 +356,14 @@ static az_iot_result channel_open(
    * operations wait for the next one. */
   c->wants_hold = true;
   c->exchange_done = false;
+
+  /* Standing interest in the provisioning session, so one can be opened on
+   * demand after the device has provisioned. Without it every operation after
+   * registration has nothing to publish on. Released at close. */
+  if (az_iot_connection_client__dps_user_acquire(c->connection) == AZ_IOT_OK)
+  {
+    c->holds_user = true;
+  }
   az_iot_result hr = az_iot_connection_client__dps_hold_acquire(c->connection);
   if (hr == AZ_IOT_OK)
   {
@@ -397,6 +405,11 @@ static void channel_close(void* ctx)
     return;
   }
   az_iot_connection_client__set_dps_message_observer(c->connection, NULL, NULL);
+  if (c->holds_user)
+  {
+    c->holds_user = false;
+    az_iot_connection_client__dps_user_release(c->connection);
+  }
   /* The standing interest ends with the binding, so a closed channel cannot
    * hold a later session hostage. */
   c->wants_hold = false;
@@ -615,6 +628,18 @@ static az_iot_result channel_do_work(void* ctx)
   }
 
   channel_forget_pending_if_session_gone(c);
+
+  /* Ask for a session when there is work and none is up. This is what makes an
+   * operation possible after the device has provisioned: the ordinary flow tore
+   * its session down at registration, and nothing else would open another.
+   *
+   * Only when something is actually pending -- a session opened speculatively
+   * would linger and then close again on every tick. */
+  if (c->holds_user && c->request_pending
+      && !az_iot_connection_client__dps_session_ready(c->connection))
+  {
+    (void)az_iot_connection_client__dps_session_ensure(c->connection);
+  }
 
   /* A session that is gone takes its exchange with it: the next one is a fresh
    * provisioning attempt and needs its own check, held again. */

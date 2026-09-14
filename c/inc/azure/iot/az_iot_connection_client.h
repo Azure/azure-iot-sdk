@@ -416,6 +416,14 @@ extern "C"
 #define AZ_IOT_DPS_HOLD_TIMEOUT_MS 60000u
 #endif
 
+/* How long an auxiliary provisioning session stays open after its last
+ * request. Long enough to collapse a fetch-then-report pair onto one session,
+ * short enough that nothing is held between polls. 0 is a valid setting and
+ * closes the session as soon as it falls idle. */
+#ifndef AZ_IOT_DPS_AUX_LINGER_MS
+#define AZ_IOT_DPS_AUX_LINGER_MS 5000u
+#endif
+
   /* ------------------------------------------------------------------------- */
   /* struct az_iot_connection_client (caller-owned, init/deinit lifecycle)    */
   /* Fields below are INTERNAL — do not access directly from user code.        */
@@ -569,6 +577,27 @@ extern "C"
     uint8_t dps_hold_count;
     bool dps_hold_active;
     uint64_t dps_hold_deadline_ms;
+
+    /* Standing interest in the provisioning session, held by feature clients
+     * that need to talk to it after the device has already provisioned.
+     * Non-zero means a session may be opened on demand; it does NOT mean one is
+     * open. Keeping a session open between polls would cost a connection for
+     * hours on devices chosen for being small. */
+    uint8_t dps_user_count;
+
+    /* An AUXILIARY provisioning session: opened after the device is already
+     * provisioned, purely so a feature client can exchange messages on it.
+     *
+     * It must never register. Registering would take the assignment path in
+     * dps_finalize(), which rewrites opts.host, opts.client_id and
+     * session_role and then reconnects -- tearing down the live hub connection
+     * this session is supposed to run alongside. */
+    bool dps_session_auxiliary;
+
+    /* When the auxiliary session may be torn down for being idle. 0 while a
+     * request is outstanding. A short linger collapses a fetch-then-report pair
+     * onto one session without holding it between polls. */
+    uint64_t dps_aux_idle_deadline_ms;
 
     char dps_operation_id[AZ_IOT_DPS_OPERATION_ID_MAX];
     size_t dps_operation_id_len;

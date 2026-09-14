@@ -891,6 +891,8 @@ static az_iot_result dps_store_issued_cert(az_iot_connection_client* c, az_span 
   return rc;
 }
 
+static void dps_aux_renew_linger(az_iot_connection_client* c);
+
 static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
 {
   az_iot_connection_client* c = (az_iot_connection_client*)user_ctx;
@@ -934,6 +936,16 @@ static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
         return;
       }
       c->dps_subscription_confirmed = true;
+      /* An auxiliary session exists only to carry a feature client's messages
+       * alongside the hub connection. It stops here permanently: registering
+       * would take the assignment path, which rewrites the host and role and
+       * reconnects, destroying the hub connection this session sits beside. */
+      if (c->dps_session_auxiliary)
+      {
+        AZ_IOT_LOG_DEBUG("dps: auxiliary session ready");
+        dps_aux_renew_linger(c);
+        break;
+      }
       /* A holder wants the session before the device registers. Registration is
        * issued here normally, and the registration response tears the session
        * down, so without this stop there is no point at which a feature client
@@ -2657,6 +2669,26 @@ az_iot_result az_iot_connection_client_do_work(
   /* --- DPS provisioning pump --- */
   if (client->dps_phase != DPS_PHASE_NONE && client->dps_phase != DPS_PHASE_DONE)
   {
+    /* An auxiliary session that has gone idle, or whose last user let go, is
+     * closed here rather than at release time: release can be called from
+     * inside a callback, and tearing the session down there would free the
+     * object the adapter is still dispatching on. */
+    if (client->dps_session_auxiliary
+        && (client->dps_user_count == 0
+            || az_iot_time_mono_ms() >= client->dps_aux_idle_deadline_ms))
+    {
+      AZ_IOT_LOG_DEBUG("dps: closing the auxiliary session");
+      if (client->dps_mqtt && client->dps_mqtt->iface && client->dps_mqtt->iface->disconnect)
+      {
+        (void)client->dps_mqtt->iface->disconnect(client->dps_mqtt);
+      }
+      dps_teardown_mqtt(client);
+      client->dps_session_auxiliary = false;
+      client->dps_aux_idle_deadline_ms = 0;
+      client->dps_phase = DPS_PHASE_DONE;
+      return AZ_IOT_OK;
+    }
+
     /* Leave the pre-registration hold once every holder has released, or once
      * the deadline expires. Expiry is not a failure: the hold is advisory, and
      * a feature client must never be able to stop a device provisioning. */
@@ -2712,7 +2744,24 @@ az_iot_result az_iot_connection_client_do_work(
     }
 
     dps_apply_deferred(client);
-    return r;
+
+    /* An ORDINARY provisioning run owns the client until it finishes, so it
+     * returns here. An AUXILIARY session does not: the hub connection is live
+     * and must keep being pumped, or a device that opened one would stop
+     * servicing its telemetry, twin and method traffic for as long as the
+     * session lasted. Fall through to the hub pump instead.
+     *
+     * The DPS wait above already consumed the caller's timeout, so the hub is
+     * polled without blocking again rather than doubling the tick. */
+    if (!client->dps_session_auxiliary)
+    {
+      return r;
+    }
+    if (r != AZ_IOT_OK)
+    {
+      return r;
+    }
+    timeout_ms = 0;
   }
 
   /* --- Normal hub session pump --- */
@@ -3210,6 +3259,88 @@ static az_iot_result run_feature_client_binds(az_iot_connection_client* c)
 }
 
 /* --- provisioning-session seam ------------------------------------------- */
+
+/* Push the idle deadline out. Called whenever the session is used, so an active
+ * caller keeps it and an idle one loses it shortly after. */
+static void dps_aux_renew_linger(az_iot_connection_client* c)
+{
+  if (c->dps_session_auxiliary)
+  {
+    c->dps_aux_idle_deadline_ms = az_iot_time_mono_ms() + (uint64_t)AZ_IOT_DPS_AUX_LINGER_MS;
+  }
+}
+
+az_iot_result az_iot_connection_client__dps_user_acquire(az_iot_connection_client* client)
+{
+  if (client == NULL)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if (client->dps_user_count == UINT8_MAX)
+  {
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  }
+  client->dps_user_count++;
+  return AZ_IOT_OK;
+}
+
+void az_iot_connection_client__dps_user_release(az_iot_connection_client* client)
+{
+  if (client == NULL || client->dps_user_count == 0)
+  {
+    return;
+  }
+  client->dps_user_count--;
+  /* The session is not torn down here. It may be mid-exchange, and this can be
+   * called from a callback; the do_work pump closes it at a safe point. */
+}
+
+az_iot_result az_iot_connection_client__dps_session_ensure(az_iot_connection_client* client)
+{
+  if (client == NULL)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if (client->dps_user_count == 0 || !dps_configured(client))
+  {
+    return AZ_IOT_ERR_NOT_SUPPORTED;
+  }
+
+  /* Already usable -- including a session still on its original provisioning
+   * run, which a caller may legitimately use before the device registers. */
+  if (az_iot_connection_client__dps_session_ready(client))
+  {
+    dps_aux_renew_linger(client);
+    return AZ_IOT_OK;
+  }
+
+  /* One is coming up. Renew the linger so it is not closed the moment it
+   * becomes ready. */
+  if (client->dps_mqtt != NULL)
+  {
+    dps_aux_renew_linger(client);
+    return AZ_IOT_ERR_BUSY;
+  }
+
+  /* Nothing open. Only start one once provisioning has finished: before that,
+   * the ordinary flow owns the session and is about to open one itself. */
+  if (client->dps_phase != DPS_PHASE_NONE && client->dps_phase != DPS_PHASE_DONE)
+  {
+    return AZ_IOT_ERR_BUSY;
+  }
+
+  client->dps_session_auxiliary = true;
+  client->dps_phase = DPS_PHASE_NONE;
+  az_iot_result r = dps_start(client);
+  if (r != AZ_IOT_OK)
+  {
+    client->dps_session_auxiliary = false;
+    AZ_IOT_LOG_ERRORF("dps: could not open an auxiliary session (%d)", (int)r);
+    return r;
+  }
+  dps_aux_renew_linger(client);
+  return AZ_IOT_ERR_BUSY;
+}
 
 az_iot_result az_iot_connection_client__dps_hold_acquire(az_iot_connection_client* client)
 {
