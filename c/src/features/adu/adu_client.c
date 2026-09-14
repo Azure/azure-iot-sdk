@@ -359,7 +359,7 @@ static bool jws_split(
   int32_t d2 = d1 + 1 + d2_rel;
 
   /* Need all three parts non-empty, and the signature must not itself contain a
-   * further '.' (a 4th segment ⇒ not a valid compact JWS). */
+   * further '.' (a 4th segment ÃƒÂ¢Ã¢â‚¬Â¡Ã¢â‚¬â„¢ not a valid compact JWS). */
   if (d2 <= d1 + 1 || d2 >= n - 1)
   {
     return false;
@@ -627,7 +627,7 @@ static int32_t verify_manifest_core(
     }
   }
 
-  /* 4. Parse the now-trusted SJWK payload as a JWK → signing key (n, e).
+  /* 4. Parse the now-trusted SJWK payload as a JWK ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ signing key (n, e).
    * Buffers are sized for up to 4096-bit RSA keys: the base64 modulus of a
    * 3072-bit key is already 512 chars, and az_json_token_get_string needs the
    * destination strictly larger than the string to fit its NUL terminator. */
@@ -871,8 +871,8 @@ static void reset_to_idle(az_iot_adu_client_t* client)
  * current_manifest. Returns AZ_IOT_OK on success. The unescape happens into the
  * tail of a caller-independent scratch buffer owned by the request span; since
  * the upstream manifest parser only stores spans pointing into the unescaped
- * text, that text MUST remain valid as long as current_manifest is used — so we
- * unescape in place within a client-owned scratch buffer. */
+ * text, that text MUST remain valid as long as current_manifest is used ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â so
+ * we unescape in place within a client-owned scratch buffer. */
 static az_iot_result parse_manifest(az_iot_adu_client_t* client)
 {
   az_span manifest = ADU_I(client).current_request.update_manifest;
@@ -907,8 +907,8 @@ static az_iot_result parse_manifest(az_iot_adu_client_t* client)
  * service properties into `out_req`. Client-independent so both the managed
  * subscriber and the public az_iot_adu_parse_update_request() share it.
  * Returns AZ_IOT_OK (out_req filled), AZ_IOT_ERR_NOT_FOUND (no
- * deviceUpdate/service object — ignore), or AZ_IOT_ERR_INVALID_ARG (malformed).
- * out_req spans point into `patch`, which MUST outlive out_req. */
+ * deviceUpdate/service object ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â ignore), or AZ_IOT_ERR_INVALID_ARG
+ * (malformed). out_req spans point into `patch`, which MUST outlive out_req. */
 static az_iot_result parse_service_request(
     az_iot_adu_client* az,
     az_span patch,
@@ -1077,7 +1077,8 @@ static bool same_manifest(az_iot_adu_client_t* client, uint32_t manifest_crc)
 }
 
 /* True if `retry` matches the active deployment's retryTimestamp (both empty
- * counts as a match — an unchanged/absent timestamp means "same deployment"). */
+ * counts as a match ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â an unchanged/absent timestamp means "same deployment").
+ */
 static bool same_retry_timestamp(az_iot_adu_client_t* client, az_span retry)
 {
   int32_t rt_len = az_span_size(retry);
@@ -1246,6 +1247,20 @@ static void on_channel_result(
       || action == AZ_IOT_ADU_ERROR_ACTION_ALREADY_REPORTED
       || action == AZ_IOT_ADU_ERROR_ACTION_NONE)
   {
+    /* An accepted report for a finished workflow closes one pass of the
+     * bootstrap loop: the service has the outcome, so the device asks again,
+     * and it is the "no update" answer that ends the loop and lets
+     * registration proceed. Without this the channel keeps holding
+     * registration after the last report and nothing ever asks again, so the
+     * device waits out the advisory timeout instead of finishing.
+     *
+     * Idle is what distinguishes a terminal report from progress reported
+     * mid-workflow, which ends nothing and must not trigger a check. */
+    if (operation == AZ_IOT_ADU_OP_REPORT_STATUS && result == AZ_IOT_OK
+        && ADU_I(client).state == AZ_IOT_ADU_STATE_IDLE)
+    {
+      ADU_I(client).initial_get_pending = true;
+    }
     return;
   }
 
@@ -1416,10 +1431,11 @@ void az_iot_adu_client_destroy(az_iot_adu_client_t* client)
   memset(client, 0, sizeof(*client));
 }
 
-/* az_iot_adu_microsoft_root_keys() — Microsoft's compiled-in ADU production
- * root public keys — is defined in adu_root_keys_microsoft.c (generated from the
- * official agent's hardcoded key list). Kept in a separate translation unit so
- * the large key blobs live apart from the state machine. */
+/* az_iot_adu_microsoft_root_keys() ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â Microsoft's compiled-in ADU
+ * production
+ * root public keys ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â is defined in adu_root_keys_microsoft.c (generated from
+ * the official agent's hardcoded key list). Kept in a separate translation unit so the large key
+ * blobs live apart from the state machine. */
 
 /* ------------------------------------------------------------------------- */
 /* persistence & resume (Phase 5)                                            */
@@ -2106,23 +2122,25 @@ az_iot_result az_iot_adu_client_update_device_properties(
     return AZ_IOT_ERR_DETACHED;
   }
 
+  /* The channel validates the set before it applies any of it, so a rejected
+   * refresh leaves both copies as they were. Done before the client cache for
+   * that reason: the cache has no such guarantee, and an overflow there would
+   * otherwise leave the two describing different devices. */
+  if (ADU_I(client).channel.vtable != NULL
+      && ADU_I(client).channel.vtable->set_device_properties != NULL)
+  {
+    az_iot_result cr = ADU_I(client).channel.vtable->set_device_properties(
+        ADU_I(client).channel.ctx, device_props);
+    if (cr != AZ_IOT_OK)
+    {
+      return cr;
+    }
+  }
+
   az_iot_result r = cache_device_properties(client, device_props);
   if (r != AZ_IOT_OK)
   {
     return r;
-  }
-
-  /* The channel may hold its own copy (compatibility properties, installed
-   * update id). Refresh it, or fetches keep carrying the startup identity. */
-  if (ADU_I(client).channel.vtable != NULL
-      && ADU_I(client).channel.vtable->set_device_properties != NULL)
-  {
-    r = ADU_I(client).channel.vtable->set_device_properties(
-        ADU_I(client).channel.ctx, device_props);
-    if (r != AZ_IOT_OK)
-    {
-      return r;
-    }
   }
 
   ADU_I(client).device_props_report_pending = true;

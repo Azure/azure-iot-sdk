@@ -2030,6 +2030,54 @@ static void a_terminal_verdict_does_not_re_arm_the_report(void** state)
   assert_true(fx->adu._internal.device_props_report_pending);
 }
 
+/* An accepted report for a finished workflow closes one pass of the bootstrap
+ * loop, so the device asks again -- it is the "no update" answer that ends the
+ * loop and lets registration proceed. Without this the channel goes on holding
+ * registration after the last report with nothing left to ask, and the device
+ * waits out the advisory timeout instead of finishing. */
+static void an_accepted_terminal_report_asks_again(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  for (int i = 0; i < 5; ++i)
+  {
+    assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  }
+  int before = fx->chan.request_update_count;
+  assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
+
+  assert_non_null(fx->chan.result_cb);
+  fx->chan.result_cb(
+      AZ_IOT_ADU_OP_REPORT_STATUS, AZ_IOT_OK, AZ_IOT_ADU_ERROR_ACTION_NONE, fx->chan.engine_ctx);
+
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(fx->chan.request_update_count, before + 1);
+}
+
+/* Progress reported mid-workflow ends nothing, so it must not trigger a check:
+ * every step of an install would otherwise start one. */
+static void an_accepted_progress_report_does_not_ask_again(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  for (int i = 0; i < 5; ++i)
+  {
+    assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  }
+  /* Put a workflow in flight so the client is not Idle. */
+  fx->log.install_result = AZ_IOT_ADU_RESULT_REBOOT_REQUIRED;
+  inject_patch(fx, signed_patch());
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  assert_int_not_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
+  int before = fx->chan.request_update_count;
+
+  fx->chan.result_cb(
+      AZ_IOT_ADU_OP_REPORT_STATUS, AZ_IOT_OK, AZ_IOT_ADU_ERROR_ACTION_NONE, fx->chan.engine_ctx);
+
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(fx->chan.request_update_count, before);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -2081,6 +2129,9 @@ int main(void)
         verify_file_hash_rejects_an_unsupported_algorithm, setup, teardown),
     cmocka_unit_test_setup_teardown(do_work_drives_the_channel, setup, teardown),
     cmocka_unit_test_setup_teardown(a_terminal_verdict_does_not_re_arm_the_report, setup, teardown),
+    cmocka_unit_test_setup_teardown(an_accepted_terminal_report_asks_again, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_accepted_progress_report_does_not_ask_again, setup, teardown),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

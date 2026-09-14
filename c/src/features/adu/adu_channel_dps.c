@@ -512,6 +512,46 @@ static az_iot_result channel_report(void* ctx, const az_iot_adu_report* report)
 
 static const char* pack_str(char* storage, size_t storage_size, size_t* used, const char* value);
 
+/* Whether a property set fits, checked before anything is mutated.
+ *
+ * Copying first and failing part-way would leave the channel advertising a
+ * truncated prefix of the new identity with the old one already gone -- the
+ * exact silent misdescription the bound exists to prevent, now reached through
+ * the error path. */
+static az_iot_result compat_properties_fit(
+    const az_iot_adu_channel_dps* c,
+    const az_iot_adu_device_properties* device_props)
+{
+  size_t slots = 0;
+  size_t bytes = 0;
+  if (device_props->manufacturer != NULL)
+  {
+    slots++;
+    bytes += strlen(device_props->manufacturer) + 1;
+  }
+  if (device_props->model != NULL)
+  {
+    slots++;
+    bytes += strlen(device_props->model) + 1;
+  }
+  for (size_t i = 0; i < device_props->custom_properties_count; ++i)
+  {
+    const char* name = device_props->custom_properties[i].name;
+    const char* value = device_props->custom_properties[i].value;
+    if (name == NULL || value == NULL)
+    {
+      return AZ_IOT_ERR_INVALID_ARG;
+    }
+    slots++;
+    bytes += strlen(name) + 1 + strlen(value) + 1;
+  }
+  if (slots > AZ_IOT_ADU_CHANNEL_MAX_COMPAT || bytes > sizeof(c->compat_storage))
+  {
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  }
+  return AZ_IOT_OK;
+}
+
 /* Copy what the device reports about itself. Shared by init and the refresh
  * hook so a later az_iot_adu_client_update_device_properties() does not leave
  * the channel sending the identity and installed version it saw at startup.
@@ -520,11 +560,21 @@ static const char* pack_str(char* storage, size_t storage_size, size_t* used, co
  * the service derives the device class from exactly this set, the device never
  * sees the class it was given, and a deployment that matches no class simply
  * never arrives. A quiet truncation here would surface as "updates stopped
- * working" with nothing to point at. */
+ * working" with nothing to point at. The set is validated before any of it is
+ * applied, so a rejected refresh leaves the previous identity intact. */
 static az_iot_result channel_copy_device_properties(
     az_iot_adu_channel_dps* c,
     const az_iot_adu_device_properties* device_props)
 {
+  if (device_props != NULL)
+  {
+    az_iot_result fits = compat_properties_fit(c, device_props);
+    if (fits != AZ_IOT_OK)
+    {
+      return fits;
+    }
+  }
+
   c->compat_count = 0;
   c->has_installed_update_id = false;
   memset(c->compat_storage, 0, sizeof(c->compat_storage));
@@ -535,21 +585,13 @@ static az_iot_result channel_copy_device_properties(
     return AZ_IOT_OK;
   }
   /* Manufacturer and model are the compatibility properties the service
-   * matches on; without them it cannot pick the right update. A value supplied
-   * but too large to store is a failure, not an omission. */
+   * matches on; without them it cannot pick the right update. Validation above
+   * already proved every value fits, so nothing here can fail. */
   size_t used = 0;
   const char* manufacturer
       = pack_str(c->compat_storage, sizeof(c->compat_storage), &used, device_props->manufacturer);
-  if (device_props->manufacturer != NULL && manufacturer == NULL)
-  {
-    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
-  }
   const char* model
       = pack_str(c->compat_storage, sizeof(c->compat_storage), &used, device_props->model);
-  if (device_props->model != NULL && model == NULL)
-  {
-    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
-  }
 
   if (manufacturer != NULL)
   {
@@ -564,14 +606,8 @@ static az_iot_result channel_copy_device_properties(
     c->compat_count++;
   }
 
-  /* Manufacturer and model occupy slots of the same bounded set, so a caller
-   * within the engine's own custom-property limit can still overflow here. */
   for (size_t i = 0; i < device_props->custom_properties_count; ++i)
   {
-    if (c->compat_count >= AZ_IOT_ADU_CHANNEL_MAX_COMPAT)
-    {
-      return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
-    }
     const char* name = pack_str(
         c->compat_storage,
         sizeof(c->compat_storage),
@@ -584,6 +620,8 @@ static az_iot_result channel_copy_device_properties(
         device_props->custom_properties[i].value);
     if (name == NULL || value == NULL)
     {
+      /* Unreachable: validation proved the whole set fits. Kept so a future
+       * change to either side fails loudly rather than storing NULL. */
       return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
     }
     c->compat[c->compat_count].name = name;

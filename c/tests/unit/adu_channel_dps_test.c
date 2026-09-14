@@ -467,6 +467,35 @@ static void the_fetch_reports_this_sdk_version(void** state)
   assert_null(strstr((const char*)pub->payload, "DU;agent/1.0.0"));
 }
 
+/* A rejected refresh must leave the previous identity in place. Copying first
+ * and failing part-way would advertise a truncated prefix of the new set --
+ * the same silent misdescription the bound exists to prevent, reached through
+ * the error path instead. */
+static void a_rejected_property_set_leaves_the_previous_identity(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_mock_mqtt_client* m = open_and_bind(fx);
+
+  static const az_iot_adu_custom_property too_many[]
+      = { { "a", "1" }, { "b", "2" }, { "c", "3" }, { "d", "4" } };
+  az_iot_adu_device_properties dp = { 0 };
+  dp.manufacturer = "Fabrikam";
+  dp.model = "Gizmo";
+  dp.custom_properties = too_many;
+  dp.custom_properties_count = sizeof(too_many) / sizeof(too_many[0]);
+
+  assert_int_equal(
+      fx->channel.vtable->set_device_properties(fx->channel.ctx, &dp), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+
+  assert_int_equal(fx->channel.vtable->request_update(fx->channel.ctx), AZ_IOT_OK);
+  const az_iot_mock_call* pub = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PUBLISH);
+  assert_non_null(pub);
+  /* The fixture's startup identity, not the rejected set's accepted prefix. */
+  assert_non_null(strstr((const char*)pub->payload, "Contoso"));
+  assert_null(strstr((const char*)pub->payload, "Fabrikam"));
+  assert_null(strstr((const char*)pub->payload, "Gizmo"));
+}
+
 /* Without a usable provisioning session there is nothing to publish onto. */
 static void a_request_before_the_session_is_ready_is_refused(void** state)
 {
@@ -968,6 +997,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         compatibility_properties_at_the_bound_are_accepted, setup, teardown),
     cmocka_unit_test_setup_teardown(the_fetch_reports_this_sdk_version, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_rejected_property_set_leaves_the_previous_identity, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_request_before_the_session_is_ready_is_refused, setup, teardown),
     cmocka_unit_test_setup_teardown(

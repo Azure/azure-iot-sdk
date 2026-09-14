@@ -646,12 +646,19 @@ extern "C"
 
   /**
    * Update the cached device properties. Deep-copies device_props into the
-   * client cache, refreshes the channel's copy, and asks for an update check so
+   * client cache, refreshes the channel's copy, and requests an update check so
    * the new identity reaches the service: ADUv2 carries agentInfo on the fetch,
-   * not in a message of its own. The NEXT do_work() issues that check.
-   * Multiple calls coalesce. After this returns, the caller MAY mutate or free
-   * device_props. Returns AZ_IOT_ERR_NOT_ENOUGH_SPACE if the cache buffer or
-   * the channel's compatibility-property storage is too small.
+   * not in a message of its own.
+   *
+   * The check is issued on the next do_work() that can reach the service. The
+   * shipping channel rides the provisioning session, so a change made after
+   * registration stays queued until an update-capable session exists; the
+   * request is retried rather than dropped. Multiple calls coalesce.
+   *
+   * After this returns, the caller MAY mutate or free device_props. Returns
+   * AZ_IOT_ERR_NOT_ENOUGH_SPACE if the cache buffer or the channel's
+   * compatibility-property storage is too small, in which case the previously
+   * cached properties remain in effect.
    *
    * Single-threaded contract: MUST be called on the do_work thread or be
    * externally serialized with do_work().
