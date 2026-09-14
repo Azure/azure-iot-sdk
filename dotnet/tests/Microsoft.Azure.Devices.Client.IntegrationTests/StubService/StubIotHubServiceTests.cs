@@ -1072,6 +1072,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.StubService
                 await connectionClient.ProvisionAndConnectAsync(
                     new ProvisioningSettings(IdScope),
                     new X509AuthenticationProvider(_certificate),
+                    null,
                     TestContext.Current.CancellationToken);
 
                 return connectionClient;
