@@ -40,7 +40,7 @@ az_iot_connection_client_register_mqtt_factory(&conn, az_iot_paho_factory_create
 az_iot_connection_client_open(&conn);             /* DPS runs internally       */
 
 /* open() is non-blocking, and it can end in FAULTED rather than CONNECTED.
- * Bound the wait and stop on a terminal state -- see samples/telemetry/main.c. */
+ * Bound the wait and stop on a terminal state -- see samples/telemetry_gen1/main.c. */
 for (int i = 0; i < 1200 && state != AZ_IOT_CONN_STATE_CONNECTED; ++i)
 {
   az_iot_connection_client_do_work(&conn, 50);
