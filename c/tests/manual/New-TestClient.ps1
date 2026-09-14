@@ -101,13 +101,13 @@ if (-not (Test-Path $TwinSampleExe)) {
 }
 
 Write-Host "[build] Building C2D receiver sample..."
-cmake --build $BuildDir --config Debug --target az_iot_sample_c2d_receiver
+cmake --build $BuildDir --config Debug --target az_iot_sample_c2d_receiver_gen1
 if ($LASTEXITCODE -ne 0) { throw "Build failed." }
 
-$C2dSampleExe = Join-Path $BuildDir "samples\Debug\az_iot_sample_c2d_receiver.exe"
+$C2dSampleExe = Join-Path $BuildDir "samples\Debug\az_iot_sample_c2d_receiver_gen1.exe"
 if (-not (Test-Path $C2dSampleExe)) {
     # Try non-multi-config generator path
-    $C2dSampleExe = Join-Path $BuildDir "samples\az_iot_sample_c2d_receiver.exe"
+    $C2dSampleExe = Join-Path $BuildDir "samples\az_iot_sample_c2d_receiver_gen1.exe"
 }
 
 # ─────────────────────────────────────────────────────────────────────────────

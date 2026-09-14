@@ -3,11 +3,28 @@
 // information.
 
 /* SPDX-License-Identifier: MIT */
-/* c2d_receiver - sample.
+/* c2d_receiver_gen2 - sample.
  *
- * Provision via DPS, open connection, subscribe for cloud-to-device messages,
- * print received payloads. Runs for ~60 seconds then exits. DPS is handled
- * internally by the connection client when host == NULL and dps.id_scope is set.
+ * Receive cloud-to-device messages from an AEG (Hub-Next) hub over MQTT v5. The
+ * Classic route is a separate sample, c2d_receiver_gen1.
+ *
+ * The difference worth knowing is that this client subscribes to nothing. AEG
+ * connections complete a presence handshake before the SDK reports CONNECTED,
+ * and that handshake already holds ih/<id>/dev/#, which covers the c2d topic.
+ * init() therefore only registers a handler for ih/<id>/dev/c2d. The Classic
+ * client has no such handshake, so it takes out its own subscription.
+ *
+ * Properties arrive as MQTT v5 user properties, already decoded by the adapter,
+ * and the content type has a native field of its own -- so nothing here is
+ * percent-decoded, which is most of what the Classic client spends its time on.
+ *
+ * Two adapters are registered even though only the hub is v5: the DPS leg is
+ * still v3.1.1, and registering only the v5 factory makes provisioning fail
+ * with AZ_IOT_ERR_NOT_SUPPORTED before the hub is ever reached.
+ *
+ * Provision via DPS, open, listen for ~60 seconds, close. DPS is handled
+ * internally by the connection client when host == NULL and dps.id_scope is
+ * set.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -23,32 +40,17 @@ typedef struct
   sample_config config;
   az_iot_certificate_provider_pem certs;
   az_iot_connection_client connection_client;
-  az_iot_gen1_c2d_client gen1_c2d;
-  az_iot_gen2_c2d_client gen2_c2d;
-  az_iot_connection_profile c2d_profile;
+  az_iot_gen2_c2d_client c2d;
   int c2d_initialized;
 } sample_state;
 
-static void c2d_destroy(sample_state* s)
-{
-  if (!s->c2d_initialized)
-  {
-    return;
-  }
-  if (s->c2d_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
-  {
-    az_iot_gen2_c2d_client_destroy(&s->gen2_c2d);
-  }
-  else
-  {
-    az_iot_gen1_c2d_client_destroy(&s->gen1_c2d);
-  }
-  s->c2d_initialized = 0;
-}
-
 static void sample_state_destroy(sample_state* s)
 {
-  c2d_destroy(s);
+  if (s->c2d_initialized)
+  {
+    az_iot_gen2_c2d_client_destroy(&s->c2d);
+    s->c2d_initialized = 0;
+  }
   az_iot_connection_client_destroy(&s->connection_client);
   az_iot_certificate_provider_pem_destroy(&s->certs);
   sample_config_release(&s->config);
@@ -56,74 +58,21 @@ static void sample_state_destroy(sample_state* s)
 
 typedef struct
 {
-  sample_state* state;
   az_iot_connection_state conn_state;
-  az_iot_result c2d_status;
-  int rebuild_pending;
   int messages_received;
 } user_context;
-
-static void on_c2d(const az_iot_c2d_message* msg, void* user_ctx);
-
-/* The generation is only known once CONNECTED reports the resolved profile,
- * and a reconnect can land on the other one -- so the client is rebuilt from
- * every transition rather than constructed once up front. */
-static az_iot_result c2d_rebuild(
-    sample_state* s,
-    az_iot_connection_profile profile,
-    void* handler_ctx)
-{
-  c2d_destroy(s);
-
-  az_iot_result result;
-  if (profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
-  {
-    result = az_iot_gen2_c2d_client_init(&s->gen2_c2d, &s->connection_client);
-    if (result == AZ_IOT_OK)
-    {
-      result = az_iot_gen2_c2d_client_set_handler(&s->gen2_c2d, on_c2d, handler_ctx);
-    }
-  }
-  else if (profile == AZ_IOT_CONNECTION_PROFILE_CLASSIC)
-  {
-    result = az_iot_gen1_c2d_client_init(&s->gen1_c2d, &s->connection_client);
-    if (result == AZ_IOT_OK)
-    {
-      result = az_iot_gen1_c2d_client_set_handler(&s->gen1_c2d, on_c2d, handler_ctx);
-    }
-  }
-  else
-  {
-    return AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED;
-  }
-
-  if (result == AZ_IOT_OK)
-  {
-    s->c2d_profile = profile;
-    s->c2d_initialized = 1;
-  }
-  return result;
-}
 
 static void on_conn_state(const az_iot_connection_state_event* event, void* user_ctx)
 {
   user_context* ctx = (user_context*)user_ctx;
   ctx->conn_state = event->state;
-  if (event->state == AZ_IOT_CONN_STATE_CONNECTED)
+
+  /* The device provisioned to a Classic hub, so this AEG client can never serve
+   * it. The connection faults before reporting CONNECTED rather than waiting
+   * for messages on a topic that hub does not publish. */
+  if (event->reason == AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH)
   {
-    ctx->c2d_status = event->profile
-        ? c2d_rebuild(ctx->state, event->profile->connection_profile, ctx)
-        : AZ_IOT_ERR_INTERNAL;
-  }
-  else if (event->reason == AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH && event->profile)
-  {
-    /* Re-provisioning moved the device to the other generation, so the pinned
-     * client can never connect again. Rebuilding for the assigned profile
-     * releases the old pin and takes the new one; the reopen is driven from
-     * the main loop rather than from inside this callback. */
-    printf("Reassigned to the other hub generation; rebuilding the C2D client.\n");
-    ctx->c2d_status = c2d_rebuild(ctx->state, event->profile->connection_profile, ctx);
-    ctx->rebuild_pending = (ctx->c2d_status == AZ_IOT_OK);
+    printf("This device is assigned to a Classic hub. Run the c2d_receiver_gen1 sample instead.\n");
   }
 }
 
@@ -135,11 +84,16 @@ static void on_c2d(const az_iot_c2d_message* msg, void* user_ctx)
   printf("C2D #%d: %zu bytes", ctx->messages_received, msg->payload_len);
   if (msg->content_type)
   {
+    /* The native MQTT v5 Content Type, not a property. On Classic the same
+     * field is filled in from "$.ct" out of the topic bag, so an application
+     * reads it the same way on either generation. */
     printf(" [%s]", msg->content_type);
   }
 
-  /* Properties arrive as plain text -- the same spelling the sender used, with
-   * the topic's percent-encoding already undone. */
+  /* The adapter decoded these; the client only copied the pointers across. The
+   * count is bounded by AZ_IOT_C2D_MAX_PROPERTIES and anything past it is
+   * dropped with a warning, but the message is still delivered -- there is no
+   * text buffer to overflow here, which is the one bound Classic also has. */
   for (size_t i = 0; i < msg->properties_count; ++i)
   {
     printf(
@@ -165,7 +119,7 @@ int main(void)
   }
 
   int rc = 1;
-  user_context user_ctx = { .state = &state, .c2d_status = AZ_IOT_ERR_NOT_INITIALIZED };
+  user_context user_ctx = { 0 };
 
   /* Certificate provider */
   az_iot_certificate_provider_pem_options pem = az_iot_certificate_provider_pem_options_default();
@@ -192,7 +146,8 @@ int main(void)
   }
   az_iot_connection_client_set_state_callback(&state.connection_client, on_conn_state, &user_ctx);
 
-  /* MQTT adapters: register both v3.1.1 (DPS + Classic) and v5 (Next). */
+  /* v3.1.1 for the DPS leg, v5 for the hub leg. Both are required even though
+   * only the hub is v5. */
   if (az_iot_connection_client_register_mqtt_factory(
           &state.connection_client, az_iot_paho_factory_create_v3_1_1())
       != AZ_IOT_OK)
@@ -208,47 +163,54 @@ int main(void)
     return 1;
   }
 
-  /* Open (internally provisions via DPS then connects to assigned hub). The
-   * C2D client is created from the state callback, once the profile is known. */
+  /* Before open, and before any profile is known: this declares which hub the
+   * application is built for, and the connection is failed if it resolves to
+   * the other one. No subscription is issued -- the presence handshake covers
+   * this topic -- so this only records where deliveries should be routed. */
+  if (az_iot_gen2_c2d_client_init(&state.c2d, &state.connection_client) != AZ_IOT_OK)
+  {
+    sample_state_destroy(&state);
+    return 1;
+  }
+  state.c2d_initialized = 1;
+
+  if (az_iot_gen2_c2d_client_set_handler(&state.c2d, on_c2d, &user_ctx) != AZ_IOT_OK)
+  {
+    sample_state_destroy(&state);
+    return 1;
+  }
+
   if (az_iot_connection_client_open(&state.connection_client) != AZ_IOT_OK)
   {
     sample_state_destroy(&state);
     return 1;
   }
 
+  /* CONNECTED is later here than on Classic: an AEG session is not up at
+   * CONNACK, it subscribes and then exchanges a birth message with the service
+   * first. Nothing to do about it but keep pumping. */
   for (int i = 0; i < 1200 && user_ctx.conn_state != AZ_IOT_CONN_STATE_CONNECTED; ++i)
   {
     (void)az_iot_connection_client_do_work(&state.connection_client, 50);
-    if (user_ctx.rebuild_pending)
-    {
-      user_ctx.rebuild_pending = 0;
-      if (az_iot_connection_client_open(&state.connection_client) != AZ_IOT_OK)
-      {
-        break;
-      }
-      continue;
-    }
     if (user_ctx.conn_state == AZ_IOT_CONN_STATE_FAULTED)
     {
       break;
     }
   }
 
-  if (user_ctx.conn_state == AZ_IOT_CONN_STATE_CONNECTED && user_ctx.c2d_status == AZ_IOT_OK)
+  if (user_ctx.conn_state == AZ_IOT_CONN_STATE_CONNECTED)
   {
-    printf("Connected. Listening for C2D messages (~60s)...\n");
+    printf("Connected. Listening for cloud-to-device messages (~60s)...\n");
 
-    /* Pump for ~60 seconds (600 * 100ms) */
     for (int i = 0; i < 600; ++i)
     {
       (void)az_iot_connection_client_do_work(&state.connection_client, 100);
     }
 
-    printf("Done. Received %d C2D message(s).\n", user_ctx.messages_received);
+    printf("Received %d message(s).\n", user_ctx.messages_received);
     rc = 0;
   }
 
-  /* Close connection */
   az_iot_connection_client_close(&state.connection_client);
 
   for (int i = 0; i < 100 && user_ctx.conn_state != AZ_IOT_CONN_STATE_IDLE; ++i)
@@ -257,5 +219,6 @@ int main(void)
   }
 
   sample_state_destroy(&state);
+
   return rc;
 }
