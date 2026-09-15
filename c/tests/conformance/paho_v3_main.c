@@ -126,11 +126,17 @@ int main(void)
    * the suite is told to hold it to both contracts rather than only to the
    * baseline (which checks it does not bypass either setting).
    *
-   * Each capability is declared only when this machine can supply the endpoint
-   * that PROVES it, because a declared-but-unexercised claim fails the run and a
-   * leg with no proxy or no WebSocket listener is an ordinary environment, not
-   * an error. Nothing is skipped by leaving them undeclared: the baseline cases
-   * run for every adapter on every leg and are what pin the rule that matters --
+   * They are declared on different terms, because only one of them needs
+   * anything from this machine:
+   *
+   *   WebSockets -- declared only when a listener is configured here, since a
+   *     declared-but-unexercised claim fails the run and a leg with no
+   *     WebSocket listener is an ordinary environment, not an error.
+   *   Proxy -- declared unconditionally; the suite runs its own in-process
+   *     CONNECT proxy, so the claim is always proved.
+   *
+   * Nothing is skipped by leaving WebSockets undeclared: the baseline cases run
+   * for every adapter on every leg and are what pin the rule that matters --
    * neither setting may be bypassed into a plain TCP session to the broker. */
   char ws_port_buf[16];
   char ws_path_buf[256];

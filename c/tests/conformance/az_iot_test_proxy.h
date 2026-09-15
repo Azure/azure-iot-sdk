@@ -105,6 +105,17 @@ extern "C"
 
   az_iot_test_proxy_options az_iot_test_proxy_options_default(void);
 
+  /* Initialize through az_iot_test_proxy_options_default() rather than by
+   * aggregate initialization: it zeroes the struct, and every field added here
+   * is APPENDED and means "not requested" when zero, so a caller written
+   * against an older revision keeps its behaviour (passthrough, no
+   * authentication) without being edited.
+   *
+   * There is no size/version guard because there is nothing to guard against:
+   * this is a test fixture, built as a static library from this tree and never
+   * installed or shipped, so its header and its objects cannot be mixed across
+   * revisions the way a distributed library's can. */
+
   /* Bind a listener on 127.0.0.1 (fixed; see the note above) on an ephemeral
    * port and start the pump thread. On success returns 0, writes the owning
    * handle to *out_proxy and the chosen port to *out_port (point a client at

@@ -448,16 +448,54 @@ static size_t proxy_b64_encode(const unsigned char* in, size_t len, char* out, s
 }
 
 /* Read the request head, up to and including the blank line that ends it.
- * One byte at a time: a CONNECT request is tens of bytes and this must not
- * consume the tunnelled payload that may follow the header in the same
- * segment -- those bytes belong to the TLS handshake. */
-static int proxy_read_http_head(proxy_sock s, char* buf, size_t cap, size_t* out_len)
+ *
+ * One byte at a time, so the tunnelled payload that may arrive in the same
+ * segment is left in the socket: those bytes belong to the client's TLS
+ * handshake with the real broker and must not be consumed here.
+ *
+ * Bounded, and it watches should_stop. An unbounded blocking recv would hang
+ * the pump thread on a client that connects and then says nothing -- and
+ * az_iot_test_proxy_stop() joins that thread, so the hang would take down the
+ * whole test process at teardown instead of failing inside the test's own
+ * timeout. `deadline_ms` bounds the head as a whole, not each byte, so a
+ * dribbling client cannot extend it indefinitely. */
+static int proxy_read_http_head(
+    struct az_iot_test_proxy* m,
+    proxy_sock s,
+    char* buf,
+    size_t cap,
+    size_t* out_len,
+    unsigned deadline_ms)
 {
   size_t n = 0;
+  unsigned waited_ms = 0;
   while (n + 1 < cap)
   {
+    proxy_lock(&m->lock);
+    int stop = m->should_stop;
+    proxy_unlock(&m->lock);
+    if (stop)
+    {
+      return -1;
+    }
+    if (waited_ms >= deadline_ms)
+    {
+      return -1;
+    }
+
+    int ready = proxy_wait_readable_one(s, 200);
+    if (ready < 0)
+    {
+      return -1;
+    }
+    if (ready == 0)
+    {
+      waited_ms += 200u;
+      continue;
+    }
+
     char c;
-    int r = (int)recv(s, &c, 1, 0);
+    long r = (long)recv(s, &c, 1, 0);
     if (r != 1)
     {
       return -1;
@@ -529,7 +567,9 @@ static proxy_sock proxy_http_connect_accept(struct az_iot_test_proxy* m, proxy_s
 {
   char head[2048];
   size_t head_len = 0;
-  if (proxy_read_http_head(client, head, sizeof(head), &head_len) != 0)
+  /* 10s is generous for a request a real client sends in one segment, and short
+   * enough that a stuck client fails well inside a test's own timeout. */
+  if (proxy_read_http_head(m, client, head, sizeof(head), &head_len, 10000u) != 0)
   {
     return PROXY_INVALID_SOCK;
   }
@@ -2352,19 +2392,25 @@ int az_iot_test_proxy_start(
     return -1;
   }
 
-  /* A password without a username is not a credential Basic can express. */
-  if (options->required_password != NULL && options->required_username == NULL)
+  /* Credential validation applies only to CONNECT mode, where these fields
+   * mean something. Rejecting them in passthrough mode would change that
+   * mode's existing contract, having documented them as ignored there. */
+  if (options->http_connect)
   {
-    return -1;
-  }
-  if (options->required_username != NULL
-      && (strlen(options->required_username)
-              >= sizeof(((struct az_iot_test_proxy*)0)->required_username)
-          || (options->required_password != NULL
-              && strlen(options->required_password)
-                  >= sizeof(((struct az_iot_test_proxy*)0)->required_password))))
-  {
-    return -1;
+    /* A password without a username is not a credential Basic can express. */
+    if (options->required_password != NULL && options->required_username == NULL)
+    {
+      return -1;
+    }
+    if (options->required_username != NULL
+        && (strlen(options->required_username)
+                >= sizeof(((struct az_iot_test_proxy*)0)->required_username)
+            || (options->required_password != NULL
+                && strlen(options->required_password)
+                    >= sizeof(((struct az_iot_test_proxy*)0)->required_password))))
+    {
+      return -1;
+    }
   }
 
   proxy_ensure_wsa();

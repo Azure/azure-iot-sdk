@@ -1902,10 +1902,13 @@ static void a_missing_client_cert_is_rejected(void** state)
   copts.tls.trusted_ca_path = ca_path;
   copts.tls.use_tls = true; /* no client certificate offered */
 
+  /* Either connect() refused it outright, or a failure event must actually have
+   * been observed. Discarding the wait would let a client that hangs pending
+   * forever pass once the timeout expired. */
   az_iot_result r = c->iface->connect(c, &copts);
   if (r == AZ_IOT_OK)
   {
-    (void)wait_until(c, &rec, saw_connect_failure, k_step_timeout_ms);
+    assert_true(wait_until(c, &rec, saw_connect_failure, k_step_timeout_ms));
   }
   assert_false(saw_connected_ok(&rec));
 
@@ -2236,10 +2239,13 @@ static void a_websocket_request_is_never_silently_downgraded(void** state)
   copts.connect_timeout_seconds = k_step_timeout_seconds;
   copts.transport = AZ_IOT_MQTT_TRANSPORT_WEBSOCKET;
 
+  /* Either connect() refused it outright, or a failure event must actually have
+   * been observed. Discarding the wait would let a client that hangs pending
+   * forever pass once the timeout expired. */
   az_iot_result r = c->iface->connect(c, &copts);
   if (r == AZ_IOT_OK)
   {
-    (void)wait_until(c, &rec, saw_connect_failure, k_step_timeout_ms);
+    assert_true(wait_until(c, &rec, saw_connect_failure, k_step_timeout_ms));
   }
   assert_false(saw_connected_ok(&rec));
 
@@ -2284,10 +2290,13 @@ static void an_unreachable_proxy_is_never_bypassed(void** state)
   copts.proxy.host = g_host;
   copts.proxy.port = 1;
 
+  /* Either connect() refused it outright, or a failure event must actually have
+   * been observed. Discarding the wait would let a client that hangs pending
+   * forever pass once the timeout expired. */
   az_iot_result r = c->iface->connect(c, &copts);
   if (r == AZ_IOT_OK)
   {
-    (void)wait_until(c, &rec, saw_connect_failure, k_step_timeout_ms);
+    assert_true(wait_until(c, &rec, saw_connect_failure, k_step_timeout_ms));
   }
   assert_false(saw_connected_ok(&rec));
 
@@ -2530,10 +2539,13 @@ static void a_proxy_rejects_wrong_credentials(void** state)
   copts.proxy.username = "device";
   copts.proxy.password = "wrong";
 
+  /* Either connect() refused it outright, or a failure event must actually have
+   * been observed. Discarding the wait would let a client that hangs pending
+   * forever pass once the timeout expired. */
   az_iot_result r = c->iface->connect(c, &copts);
   if (r == AZ_IOT_OK)
   {
-    (void)wait_until(c, &rec, saw_connect_failure, k_step_timeout_ms);
+    assert_true(wait_until(c, &rec, saw_connect_failure, k_step_timeout_ms));
   }
   assert_false(saw_connected_ok(&rec));
   assert_int_equal(az_iot_test_proxy_tunnels_opened(proxy), 0);
@@ -2564,10 +2576,13 @@ static void a_proxy_rejects_a_missing_credential(void** state)
   proxied_connect_options(&copts, cid, proxy_port);
   /* No proxy.username / proxy.password. */
 
+  /* Either connect() refused it outright, or a failure event must actually have
+   * been observed. Discarding the wait would let a client that hangs pending
+   * forever pass once the timeout expired. */
   az_iot_result r = c->iface->connect(c, &copts);
   if (r == AZ_IOT_OK)
   {
-    (void)wait_until(c, &rec, saw_connect_failure, k_step_timeout_ms);
+    assert_true(wait_until(c, &rec, saw_connect_failure, k_step_timeout_ms));
   }
   assert_false(saw_connected_ok(&rec));
   assert_int_equal(az_iot_test_proxy_tunnels_opened(proxy), 0);
@@ -2628,14 +2643,19 @@ static void a_proxy_that_refuses_the_tunnel_fails_the_connect(void** state)
 
   az_iot_mqtt_connect_options copts;
   proxied_connect_options(&copts, cid, proxy_port);
-  /* Port 1 (tcpmux) is reserved and effectively never bound, so the proxy's own
-   * upstream dial fails and it answers 502. */
-  copts.port = 1;
+  /* A name that can never resolve, so the proxy's own upstream dial fails and
+   * it answers 502. RFC 6761 reserves ".invalid" for exactly this, which makes
+   * the case deterministic -- unlike aiming at a port assumed to be closed,
+   * which depends on what happens to be listening on the machine. */
+  copts.host = "az-iot-conformance.invalid";
 
+  /* Either connect() refused it outright, or a failure event must actually have
+   * been observed. Discarding the wait would let a client that hangs pending
+   * forever pass once the timeout expired. */
   az_iot_result r = c->iface->connect(c, &copts);
   if (r == AZ_IOT_OK)
   {
-    (void)wait_until(c, &rec, saw_connect_failure, k_step_timeout_ms);
+    assert_true(wait_until(c, &rec, saw_connect_failure, k_step_timeout_ms));
   }
   assert_false(saw_connected_ok(&rec));
   assert_int_equal(az_iot_test_proxy_tunnels_opened(proxy), 0);
