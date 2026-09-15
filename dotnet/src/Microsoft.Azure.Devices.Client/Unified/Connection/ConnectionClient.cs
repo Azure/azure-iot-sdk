@@ -220,6 +220,8 @@ namespace Microsoft.Azure.Devices.Client.Unified.Connection
         public override void Dispose(bool disposing)
         {
             ManagedMqttConnection.PublishReceivedAsync -= HandleReceivedCertificateSigningPublish;
+            _gen2ConnectionClient.DevicePresenceFlowCompletedAsync -= HandleGen2ClientConnectionReady;
+            _gen2ConnectionClient.Dispose(disposing);
             base.Dispose(disposing);
         }
 
@@ -229,6 +231,8 @@ namespace Microsoft.Azure.Devices.Client.Unified.Connection
         public override void Dispose()
         {
             ManagedMqttConnection.PublishReceivedAsync -= HandleReceivedCertificateSigningPublish;
+            _gen2ConnectionClient.DevicePresenceFlowCompletedAsync -= HandleGen2ClientConnectionReady;
+            _gen2ConnectionClient.Dispose();
             base.Dispose();
         }
 
