@@ -19,5 +19,10 @@ namespace Microsoft.Azure.Devices.Client.MqttNetAdapter
         /// The HTTP proxy to connect through. Only used if <see cref="UseWebsocket"/> is set to true.
         /// </summary>
         public IWebProxy? Proxy { get; set; }
+
+        /// <summary>
+        /// The period at which to send keep alive pings on the MQTT connection.
+        /// </summary>
+        public TimeSpan KeepAlivePeriod { get; set; } = TimeSpan.FromSeconds(60);
     }
 }

@@ -17,10 +17,13 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
 
         private bool _useWebsocket;
         private IWebProxy? _proxy;
+        private TimeSpan _keepAlivePeriod;
 
         public MqttNetClient(MqttNetClientOptions? options = null)
         {
-            if (options != null && options.EnableMqttLogs)
+            options ??= new MqttNetClientOptions();
+
+            if (options.EnableMqttLogs)
             {
                 _underlyingClient = new MQTTnet.MqttClientFactory().CreateMqttClient(MqttNetTraceLogger.CreateTraceLogger());
             }
@@ -29,8 +32,9 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
                 _underlyingClient = new MQTTnet.MqttClientFactory().CreateMqttClient();
             }
 
-            _useWebsocket = options != null && options.UseWebsocket;
-            _proxy = options?.Proxy;
+            _useWebsocket = options.UseWebsocket;
+            _proxy = options.Proxy;
+            _keepAlivePeriod = options.KeepAlivePeriod;
 
             _underlyingClient.ApplicationMessageReceivedAsync += DelegateReceivedPublishAsync;
             _underlyingClient.ConnectedAsync += DelegateConnectedAsync;
@@ -68,7 +72,7 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
             optionsBuilder
                 .WithKeepAlivePeriod(connect.KeepAlivePeriod)
                 .WithClientId(connect.ClientId)
-                .WithKeepAlivePeriod(TimeSpan.FromSeconds(60))
+                .WithKeepAlivePeriod(_keepAlivePeriod)
                 .WithCredentials(connect.Username, connect.Password);
 
             if (!_useWebsocket)
