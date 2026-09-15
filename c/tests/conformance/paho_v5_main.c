@@ -146,30 +146,9 @@ int main(void)
     }
   }
 
-  char proxy_host_buf[256];
-  char proxy_port_buf[16];
-  const char* proxy_host = NULL;
-  const char* proxy_port_str = NULL;
-  if (env_or_null(
-          "AZ_IOT_CONFORMANCE_PROXY_HOST", proxy_host_buf, sizeof(proxy_host_buf), &proxy_host)
-          == 0
-      && proxy_host != NULL
-      && env_or_null(
-             "AZ_IOT_CONFORMANCE_PROXY_PORT",
-             proxy_port_buf,
-             sizeof(proxy_port_buf),
-             &proxy_port_str)
-          == 0
-      && proxy_port_str != NULL)
-  {
-    unsigned long p = strtoul(proxy_port_str, NULL, 10);
-    if (p > 0 && p <= 65535)
-    {
-      opts.capabilities |= (uint32_t)AZ_IOT_CONFORMANCE_CAP_PROXY;
-      opts.proxy_host = proxy_host;
-      opts.proxy_port = (uint16_t)p;
-    }
-  }
+  /* The proxy cases need no endpoint: the suite runs its own in-process
+   * CONNECT proxy, so this is declared unconditionally and is always proved. */
+  opts.capabilities |= (uint32_t)AZ_IOT_CONFORMANCE_CAP_PROXY;
 
   int rc = az_iot_conformance_run_with_options(AZ_IOT_CONFORMANCE_SUITE_V5, f, &opts);
   az_iot_paho_factory_destroy(f);

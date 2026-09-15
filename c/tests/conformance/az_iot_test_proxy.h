@@ -49,6 +49,7 @@
 #ifndef AZ_IOT_TEST_PROXY_H
 #define AZ_IOT_TEST_PROXY_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -62,9 +63,44 @@ extern "C"
 
   typedef struct az_iot_test_proxy_options
   {
-    /* Upstream (real) broker the proxy forwards to. Required. */
+    /* Upstream (real) broker the proxy forwards to. Required UNLESS
+     * http_connect is set, which makes the client name the upstream instead. */
     const char* upstream_host;
     uint16_t upstream_port;
+
+    /* Behave as an HTTP CONNECT proxy rather than a transparent passthrough.
+     *
+     * The proxy reads a "CONNECT host:port HTTP/1.1" request, answers
+     * "200 Connection established", and pumps bytes to the host the CLIENT
+     * named -- so upstream_host/upstream_port are ignored and one fixture can
+     * front DPS and a hub in the same test, which a passthrough cannot.
+     *
+     * Everything the passthrough offers still applies once the tunnel is open:
+     * the drop controls, the impairments and the counters all see the tunnelled
+     * bytes. TLS is NOT terminated here -- the client negotiates it end to end
+     * with the real broker inside the tunnel, which is the property that makes
+     * a proxied session worth testing at all.
+     *
+     * NOTE, and the reason the "cannot intercept" wording above is narrower in
+     * this mode: a CONNECT proxy dials whatever host the client asks for. It
+     * still only ever receives connections a test aimed at its loopback port,
+     * so it intercepts nothing; but it is no longer limited to one preset
+     * upstream. */
+    bool http_connect;
+
+    /* Require HTTP Basic proxy authentication, and refuse with 407 when the
+     * client's credentials are absent or wrong. NULL (the default) accepts any
+     * client, authenticated or not.
+     *
+     * These are the DECODED credentials the proxy expects, exactly as the
+     * caller configured them on az_iot_mqtt_proxy_options. Checking them here
+     * is what proves the SDK's own encoding round-trips: a client that mangles
+     * a credential containing a delimiter fails to authenticate against this,
+     * which no unit test on the generated string can demonstrate.
+     *
+     * Ignored unless http_connect is set. */
+    const char* required_username;
+    const char* required_password;
   } az_iot_test_proxy_options;
 
   az_iot_test_proxy_options az_iot_test_proxy_options_default(void);
@@ -273,6 +309,22 @@ extern "C"
   uint64_t az_iot_test_proxy_bytes_forwarded(az_iot_test_proxy* proxy);
   uint32_t az_iot_test_proxy_packets_seen(az_iot_test_proxy* proxy);
   uint32_t az_iot_test_proxy_connections(az_iot_test_proxy* proxy);
+
+  /* CONNECT-mode observability. All cumulative, all zero in passthrough mode.
+   *
+   * These are what let a test prove the session went THROUGH the tunnel rather
+   * than around it: a client that ignored the proxy and dialled the broker
+   * directly leaves tunnels_opened at 0 while still reaching CONNECTED. */
+
+  /* Tunnels the proxy answered with 2xx and then pumped. */
+  uint32_t az_iot_test_proxy_tunnels_opened(az_iot_test_proxy* proxy);
+  /* CONNECT requests refused with 407 (missing or wrong credentials). */
+  uint32_t az_iot_test_proxy_auth_failures(az_iot_test_proxy* proxy);
+  /* The authority from the last CONNECT request line ("host:port"), or NULL if
+   * none has been received. Lets a test assert WHICH endpoint was tunnelled --
+   * the DPS gateway first, then the assigned hub. Valid until the next
+   * CONNECT; copy it if it must outlive that. */
+  const char* az_iot_test_proxy_last_connect_target(az_iot_test_proxy* proxy);
 
   /* --- TLS termination (C2): present a runtime-generated leaf to the client so
    * certificate-rejection paths (untrusted chain, expiry, hostname) are drivable

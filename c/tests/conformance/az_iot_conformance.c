@@ -66,8 +66,6 @@ static az_iot_mqtt_sign_callback g_sign = NULL;
 static void* g_sign_ctx = NULL;
 static uint16_t g_websocket_port = 0;
 static const char* g_websocket_path = NULL;
-static const char* g_proxy_host = NULL;
-static uint16_t g_proxy_port = 0;
 
 static bool adapter_claims_websockets(void)
 {
@@ -2352,11 +2350,59 @@ static void a_websocket_session_completes_a_roundtrip(void** state)
   destroy_client(c);
 }
 
-/* AZ_IOT_CONFORMANCE_CAP_PROXY: a full session through a real HTTP CONNECT
- * proxy, with traffic carried through the tunnel rather than only a CONNACK. */
+/* ------------------------------------------------------------------------- */
+/* HTTP CONNECT proxy: positive and negative                                  */
+/*                                                                            */
+/* These use the in-process test proxy in CONNECT mode rather than an external */
+/* one, so they are self-contained: every leg that can reach the broker can    */
+/* run them, on Windows as well as Linux, with no service to provision. That   */
+/* also lets each case assert on the PROXY's own view -- how many tunnels were */
+/* opened, which authority was asked for, whether a credential was refused --  */
+/* which is the only way to tell "connected through the tunnel" apart from     */
+/* "connected despite it".                                                     */
+/* ------------------------------------------------------------------------- */
+
+static az_iot_test_proxy* start_connect_proxy(
+    uint16_t* port_out,
+    const char* required_username,
+    const char* required_password)
+{
+  az_iot_test_proxy_options popts = az_iot_test_proxy_options_default();
+  popts.http_connect = true;
+  popts.required_username = required_username;
+  popts.required_password = required_password;
+  az_iot_test_proxy* proxy = NULL;
+  assert_int_equal(az_iot_test_proxy_start(&popts, &proxy, port_out), 0);
+  assert_int_not_equal(*port_out, 0);
+  return proxy;
+}
+
+/* Fill a connect that reaches the broker THROUGH the proxy: the destination is
+ * the real broker, and only opts.proxy names the loopback fixture. */
+static void proxied_connect_options(
+    az_iot_mqtt_connect_options* copts,
+    const char* client_id,
+    uint16_t proxy_port)
+{
+  memset(copts, 0, sizeof(*copts));
+  copts->host = g_host;
+  copts->port = g_port;
+  copts->client_id = client_id;
+  copts->keep_alive_seconds = 30;
+  copts->connect_timeout_seconds = k_step_timeout_seconds;
+  copts->proxy.host = "127.0.0.1";
+  copts->proxy.port = proxy_port;
+}
+
+/* The positive case: a full session, with traffic carried through the tunnel
+ * rather than only a CONNACK. A transport that framed the handshake correctly
+ * and then mispumped would pass a connect-only check. */
 static void a_proxied_session_completes_a_roundtrip(void** state)
 {
   (void)state;
+  uint16_t proxy_port = 0;
+  az_iot_test_proxy* proxy = start_connect_proxy(&proxy_port, NULL, NULL);
+
   char cid[64];
   unique_client_id(cid, sizeof(cid), "az-iot-conf-proxy");
   char topic[128];
@@ -2366,14 +2412,8 @@ static void a_proxied_session_completes_a_roundtrip(void** state)
   az_iot_mqtt_client* c = make_client();
   c->iface->set_inbound_cb(c, on_event, &rec);
 
-  az_iot_mqtt_connect_options copts = { 0 };
-  copts.host = g_host;
-  copts.port = g_port;
-  copts.client_id = cid;
-  copts.keep_alive_seconds = 30;
-  copts.connect_timeout_seconds = k_step_timeout_seconds;
-  copts.proxy.host = g_proxy_host;
-  copts.proxy.port = g_proxy_port;
+  az_iot_mqtt_connect_options copts;
+  proxied_connect_options(&copts, cid, proxy_port);
 
   assert_int_equal(c->iface->connect(c, &copts), AZ_IOT_OK);
   assert_true(wait_until(c, &rec, saw_connected_ok, k_step_timeout_ms));
@@ -2392,8 +2432,217 @@ static void a_proxied_session_completes_a_roundtrip(void** state)
   assert_int_equal(c->iface->publish(c, &msg, &pub_pid), AZ_IOT_OK);
   assert_true(wait_until(c, &rec, saw_message, k_step_timeout_ms));
 
+  /* The session really went through the tunnel: the proxy opened exactly one,
+   * and the authority it was asked for is the broker -- not the proxy itself,
+   * which is the mistake a naive implementation makes. */
+  assert_int_equal(az_iot_test_proxy_tunnels_opened(proxy), 1);
+  assert_int_equal(az_iot_test_proxy_auth_failures(proxy), 0);
+  const char* target = az_iot_test_proxy_last_connect_target(proxy);
+  assert_non_null(target);
+  char expected[300];
+  snprintf(expected, sizeof(expected), "%s:%u", g_host, (unsigned)g_port);
+  assert_string_equal(target, expected);
+
   (void)c->iface->disconnect(c);
   destroy_client(c);
+  az_iot_test_proxy_stop(proxy);
+}
+
+/* Authenticated proxy, correct credentials. The proxy checks the DECODED
+ * user:password it was configured with, so this is what proves the adapter's
+ * credential encoding round-trips -- a unit test can only assert the string the
+ * adapter built, not that a proxy accepts it. */
+static void a_proxy_accepts_correct_credentials(void** state)
+{
+  (void)state;
+  uint16_t proxy_port = 0;
+  az_iot_test_proxy* proxy = start_connect_proxy(&proxy_port, "device", "s3cret");
+
+  char cid[64];
+  unique_client_id(cid, sizeof(cid), "az-iot-conf-proxy-auth");
+  conf_recorder rec = { 0 };
+  az_iot_mqtt_client* c = make_client();
+  c->iface->set_inbound_cb(c, on_event, &rec);
+
+  az_iot_mqtt_connect_options copts;
+  proxied_connect_options(&copts, cid, proxy_port);
+  copts.proxy.username = "device";
+  copts.proxy.password = "s3cret";
+
+  assert_int_equal(c->iface->connect(c, &copts), AZ_IOT_OK);
+  assert_true(wait_until(c, &rec, saw_connected_ok, k_step_timeout_ms));
+  assert_int_equal(az_iot_test_proxy_tunnels_opened(proxy), 1);
+  assert_int_equal(az_iot_test_proxy_auth_failures(proxy), 0);
+
+  (void)c->iface->disconnect(c);
+  destroy_client(c);
+  az_iot_test_proxy_stop(proxy);
+}
+
+/* Credentials containing the characters the proxy syntax itself uses. Paho
+ * splits its proxy string at the first '@' and percent-decodes what precedes
+ * it, so an unescaped '@' silently moves the host and a literal '%' is eaten.
+ * The proxy compares against the decoded credential, so anything that does not
+ * round-trip fails to authenticate here rather than passing quietly. */
+static void a_proxy_accepts_credentials_containing_delimiters(void** state)
+{
+  (void)state;
+  uint16_t proxy_port = 0;
+  az_iot_test_proxy* proxy = start_connect_proxy(&proxy_port, "dev@corp", "p@ss%77rd");
+
+  char cid[64];
+  unique_client_id(cid, sizeof(cid), "az-iot-conf-proxy-esc");
+  conf_recorder rec = { 0 };
+  az_iot_mqtt_client* c = make_client();
+  c->iface->set_inbound_cb(c, on_event, &rec);
+
+  az_iot_mqtt_connect_options copts;
+  proxied_connect_options(&copts, cid, proxy_port);
+  copts.proxy.username = "dev@corp";
+  copts.proxy.password = "p@ss%77rd";
+
+  assert_int_equal(c->iface->connect(c, &copts), AZ_IOT_OK);
+  assert_true(wait_until(c, &rec, saw_connected_ok, k_step_timeout_ms));
+  assert_int_equal(az_iot_test_proxy_tunnels_opened(proxy), 1);
+  assert_int_equal(az_iot_test_proxy_auth_failures(proxy), 0);
+
+  (void)c->iface->disconnect(c);
+  destroy_client(c);
+  az_iot_test_proxy_stop(proxy);
+}
+
+/* Wrong password: the proxy answers 407 and never opens a tunnel. The client
+ * must end disconnected -- NOT connected by some other route. */
+static void a_proxy_rejects_wrong_credentials(void** state)
+{
+  (void)state;
+  uint16_t proxy_port = 0;
+  az_iot_test_proxy* proxy = start_connect_proxy(&proxy_port, "device", "s3cret");
+
+  char cid[64];
+  unique_client_id(cid, sizeof(cid), "az-iot-conf-proxy-bad");
+  conf_recorder rec = { 0 };
+  az_iot_mqtt_client* c = make_client();
+  c->iface->set_inbound_cb(c, on_event, &rec);
+
+  az_iot_mqtt_connect_options copts;
+  proxied_connect_options(&copts, cid, proxy_port);
+  copts.proxy.username = "device";
+  copts.proxy.password = "wrong";
+
+  az_iot_result r = c->iface->connect(c, &copts);
+  if (r == AZ_IOT_OK)
+  {
+    (void)wait_until(c, &rec, saw_connect_failure, k_step_timeout_ms);
+  }
+  assert_false(saw_connected_ok(&rec));
+  assert_int_equal(az_iot_test_proxy_tunnels_opened(proxy), 0);
+  assert_true(az_iot_test_proxy_auth_failures(proxy) >= 1);
+
+  (void)c->iface->disconnect(c);
+  destroy_client(c);
+  az_iot_test_proxy_stop(proxy);
+}
+
+/* A proxy that demands authentication, and a client that offers none. Same
+ * outcome, different cause: this separates "sent the wrong credential" from
+ * "sent no credential at all", and an adapter that skipped the header entirely
+ * would pass the first test while failing real deployments. */
+static void a_proxy_rejects_a_missing_credential(void** state)
+{
+  (void)state;
+  uint16_t proxy_port = 0;
+  az_iot_test_proxy* proxy = start_connect_proxy(&proxy_port, "device", "s3cret");
+
+  char cid[64];
+  unique_client_id(cid, sizeof(cid), "az-iot-conf-proxy-anon");
+  conf_recorder rec = { 0 };
+  az_iot_mqtt_client* c = make_client();
+  c->iface->set_inbound_cb(c, on_event, &rec);
+
+  az_iot_mqtt_connect_options copts;
+  proxied_connect_options(&copts, cid, proxy_port);
+  /* No proxy.username / proxy.password. */
+
+  az_iot_result r = c->iface->connect(c, &copts);
+  if (r == AZ_IOT_OK)
+  {
+    (void)wait_until(c, &rec, saw_connect_failure, k_step_timeout_ms);
+  }
+  assert_false(saw_connected_ok(&rec));
+  assert_int_equal(az_iot_test_proxy_tunnels_opened(proxy), 0);
+  assert_true(az_iot_test_proxy_auth_failures(proxy) >= 1);
+
+  (void)c->iface->disconnect(c);
+  destroy_client(c);
+  az_iot_test_proxy_stop(proxy);
+}
+
+/* The proxy accepts the connection, opens the tunnel, then the link dies
+ * mid-session. A tunnelled session has to report that like any other transport
+ * failure; silently hanging is the failure mode worth excluding, since the
+ * proxy adds a hop that a client might not be watching. */
+static void a_tunnel_dropped_mid_session_is_reported(void** state)
+{
+  (void)state;
+  uint16_t proxy_port = 0;
+  az_iot_test_proxy* proxy = start_connect_proxy(&proxy_port, NULL, NULL);
+
+  char cid[64];
+  unique_client_id(cid, sizeof(cid), "az-iot-conf-proxy-drop");
+  conf_recorder rec = { 0 };
+  az_iot_mqtt_client* c = make_client();
+  c->iface->set_inbound_cb(c, on_event, &rec);
+
+  az_iot_mqtt_connect_options copts;
+  proxied_connect_options(&copts, cid, proxy_port);
+
+  assert_int_equal(c->iface->connect(c, &copts), AZ_IOT_OK);
+  assert_true(wait_until(c, &rec, saw_connected_ok, k_step_timeout_ms));
+  assert_int_equal(az_iot_test_proxy_tunnels_opened(proxy), 1);
+
+  az_iot_test_proxy_drop_now(proxy);
+  assert_true(wait_until(c, &rec, saw_disconnected, k_step_timeout_ms));
+
+  (void)c->iface->disconnect(c);
+  destroy_client(c);
+  az_iot_test_proxy_stop(proxy);
+}
+
+/* A proxy that accepts the TCP connection and then refuses the tunnel, which is
+ * what a filtering proxy does for a destination it does not allow. The client
+ * must fail rather than fall back, and must not mistake the refusal for a
+ * broker that answered. Driven by pointing the fixture's CONNECT at a port
+ * nothing listens on, so the proxy answers 502. */
+static void a_proxy_that_refuses_the_tunnel_fails_the_connect(void** state)
+{
+  (void)state;
+  uint16_t proxy_port = 0;
+  az_iot_test_proxy* proxy = start_connect_proxy(&proxy_port, NULL, NULL);
+
+  char cid[64];
+  unique_client_id(cid, sizeof(cid), "az-iot-conf-proxy-502");
+  conf_recorder rec = { 0 };
+  az_iot_mqtt_client* c = make_client();
+  c->iface->set_inbound_cb(c, on_event, &rec);
+
+  az_iot_mqtt_connect_options copts;
+  proxied_connect_options(&copts, cid, proxy_port);
+  /* Port 1 (tcpmux) is reserved and effectively never bound, so the proxy's own
+   * upstream dial fails and it answers 502. */
+  copts.port = 1;
+
+  az_iot_result r = c->iface->connect(c, &copts);
+  if (r == AZ_IOT_OK)
+  {
+    (void)wait_until(c, &rec, saw_connect_failure, k_step_timeout_ms);
+  }
+  assert_false(saw_connected_ok(&rec));
+  assert_int_equal(az_iot_test_proxy_tunnels_opened(proxy), 0);
+
+  (void)c->iface->disconnect(c);
+  destroy_client(c);
+  az_iot_test_proxy_stop(proxy);
 }
 
 #define AZ_IOT_CONFORMANCE_COMMON_TESTS                                                          \
@@ -2458,8 +2707,6 @@ int az_iot_conformance_run_with_options(
   g_sign_ctx = options ? options->sign_ctx : NULL;
   g_websocket_port = options ? options->websocket_port : 0;
   g_websocket_path = options ? options->websocket_path : NULL;
-  g_proxy_host = options ? options->proxy_host : NULL;
-  g_proxy_port = options ? options->proxy_port : 0;
 
   /* Transport material supplied for a capability that was NOT declared is a
    * mistake, for the same reason it is on the custody routes: it would be
@@ -2470,14 +2717,6 @@ int az_iot_conformance_run_with_options(
     fprintf(
         stderr,
         "conformance: websocket_port is set but AZ_IOT_CONFORMANCE_CAP_WEBSOCKETS was not "
-        "declared\n");
-    return 1;
-  }
-  if (!adapter_claims_proxy() && (g_proxy_host != NULL || g_proxy_port != 0))
-  {
-    fprintf(
-        stderr,
-        "conformance: proxy_host/proxy_port are set but AZ_IOT_CONFORMANCE_CAP_PROXY was not "
         "declared\n");
     return 1;
   }
@@ -2700,21 +2939,20 @@ int az_iot_conformance_run_with_options(
 
   if (adapter_claims_proxy())
   {
-    if (g_proxy_host != NULL && g_proxy_host[0] != '\0' && g_proxy_port != 0)
-    {
-      const struct CMUnitTest proxy_tests[]
-          = { cmocka_unit_test(a_proxied_session_completes_a_roundtrip) };
-      failed += cmocka_run_group_tests(proxy_tests, NULL, NULL);
-    }
-    else
-    {
-      char allow[16];
-      failed += az_iot_conformance_report_unproven_capability(
-          "AZ_IOT_CONFORMANCE_CAP_PROXY",
-          "no proxy was supplied. Set az_iot_conformance_options proxy_host + proxy_port to an"
-          " HTTP CONNECT proxy that can reach the broker.",
-          read_env("AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN", allow, sizeof(allow)));
-    }
+    /* No environment needed: the proxy is the in-process fixture, so a declared
+     * capability is always proved rather than sometimes reported unproven. The
+     * negative cases run here too -- they are only meaningful against an
+     * adapter that claims to implement the feature, since the baseline already
+     * covers what a non-implementing adapter must do. */
+    const struct CMUnitTest proxy_tests[]
+        = { cmocka_unit_test(a_proxied_session_completes_a_roundtrip),
+            cmocka_unit_test(a_proxy_accepts_correct_credentials),
+            cmocka_unit_test(a_proxy_accepts_credentials_containing_delimiters),
+            cmocka_unit_test(a_proxy_rejects_wrong_credentials),
+            cmocka_unit_test(a_proxy_rejects_a_missing_credential),
+            cmocka_unit_test(a_tunnel_dropped_mid_session_is_reported),
+            cmocka_unit_test(a_proxy_that_refuses_the_tunnel_fails_the_connect) };
+    failed += cmocka_run_group_tests(proxy_tests, NULL, NULL);
   }
 
   return (failed == 0) ? 0 : 1;
