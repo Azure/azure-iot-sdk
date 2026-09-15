@@ -16,7 +16,7 @@ namespace Microsoft.Azure.Devices.Client.UnitTests.Gen2
                 AuthenticationProvider = new X509AuthenticationProvider(new System.Security.Cryptography.X509Certificates.X509Certificate2()),
                 DeviceId = "someDeviceId",
                 IotHubHostName = "someHostName",
-                IsGen2Hub = true
+                ConnectionProfile = Provisioning.Models.ConnectionProfile.MqttV5
             };
 #pragma warning restore SYSLIB0026 // Type or member is obsolete
         }
@@ -40,7 +40,7 @@ namespace Microsoft.Azure.Devices.Client.UnitTests.Gen2
             int retryCount = 0;
             mockMqttClient.OnConnectAttempt += async (connect) =>
             {
-                return new MqttConnectAck() { IsSessionPresent = isSessionResumed, ResultCode = MqttConnectResultCode.Success };
+                return new MqttConnectAck() { IsSessionPresent = isSessionResumed, ResultCode = MqttConnectReasonCode.Success };
             };
             mockMqttClient.OnPublishAttempt += async (publish) =>
             {
@@ -91,7 +91,7 @@ namespace Microsoft.Azure.Devices.Client.UnitTests.Gen2
             int retryCount = 0;
             mockMqttClient.OnConnectAttempt += async (connect) =>
             {
-                return new MqttConnectAck() { IsSessionPresent = isSessionResumed, ResultCode = MqttConnectResultCode.Success };
+                return new MqttConnectAck() { IsSessionPresent = isSessionResumed, ResultCode = MqttConnectReasonCode.Success };
             };
 
             string expectedTopicString = Guid.NewGuid().ToString();
@@ -146,7 +146,7 @@ namespace Microsoft.Azure.Devices.Client.UnitTests.Gen2
             int retryCount = 0;
             mockMqttClient.OnConnectAttempt += async (connect) =>
             {
-                return new MqttConnectAck() { IsSessionPresent = isSessionResumed, ResultCode = MqttConnectResultCode.Success };
+                return new MqttConnectAck() { IsSessionPresent = isSessionResumed, ResultCode = MqttConnectReasonCode.Success };
             };
 
             string expectedTopicString = Guid.NewGuid().ToString();

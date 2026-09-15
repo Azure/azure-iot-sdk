@@ -7,13 +7,44 @@
     <VersionPrefix>2.0.0</VersionPrefix>
   </PropertyGroup>
 
+  <!-- NuGet package metadata. The repository URL is what links the published package to this
+       repository on GitHub Packages, so keep it pointed at the canonical repository. -->
+  <PropertyGroup>
+    <PackageId>Microsoft.Azure.Devices.Client</PackageId>
+    <Authors>Microsoft</Authors>
+    <Company>Microsoft</Company>
+    <Product>Microsoft Azure IoT Device Client SDK</Product>
+    <Description>Device client SDK for connecting devices to Azure IoT hub and the Azure Device Provisioning Service over MQTT.</Description>
+    <Copyright>© Microsoft Corporation. All rights reserved.</Copyright>
+    <PackageTags>Azure;IoT;IoTHub;DPS;Provisioning;MQTT;Device;SDK</PackageTags>
+    <PackageProjectUrl>https://github.com/Azure/azure-iot-sdk</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/Azure/azure-iot-sdk</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
+  </PropertyGroup>
+
+  <!-- Source Link. GitHub Packages does not accept .snupkg symbol packages, so the symbols and the
+       sources they point at are embedded in the assembly itself instead. -->
+  <PropertyGroup>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <DebugType>embedded</DebugType>
+    <IncludeSymbols>false</IncludeSymbols>
+    <ContinuousIntegrationBuild Condition="'$(GITHUB_ACTIONS)' == 'true'">true</ContinuousIntegrationBuild>
+  </PropertyGroup>
+
   <ItemGroup>
     <InternalsVisibleTo Include="Microsoft.Azure.Devices.Client.UnitTests" />
   </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Google.Protobuf" Version="3.34.1" />
-    <PackageReference Include="Google.Protobuf.Tools" Version="3.34.1" />
+    <!-- protoc and friends; needed to build, never at runtime, so it stays out of the package's dependencies. -->
+    <PackageReference Include="Google.Protobuf.Tools" Version="3.34.1">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
     <PackageReference Include="Grpc.Tools" Version="2.80.0">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>

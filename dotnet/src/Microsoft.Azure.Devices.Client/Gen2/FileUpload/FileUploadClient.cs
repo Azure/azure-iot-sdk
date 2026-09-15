@@ -3,7 +3,7 @@ using Microsoft.Azure.Devices.Client.Models.FileUpload;
 
 namespace Microsoft.Azure.Devices.Client.Gen2.FileUpload
 {
-    public class FileUploadClient : IDisposable
+    public class FileUploadClient
     {
         private readonly IConnectionClient _connectionClient;
 
@@ -32,11 +32,6 @@ namespace Microsoft.Azure.Devices.Client.Gen2.FileUpload
         public async Task CompleteFileUploadSasUriAsync(FileUploadCompletionNotification completion, CancellationToken cancellationToken = default)
         {
             throw new NotImplementedException("Not a supported feature on Gen2 Hub yet");
-        }
-
-        public void Dispose()
-        {
-            //TODO not needed?
         }
     }
 }
