@@ -1,0 +1,64 @@
+﻿using CaptureProxy;
+using Microsoft.Azure.Devices.Client.IntegrationTests.Unified;
+using Microsoft.Azure.Devices.Client.Models;
+using Microsoft.Azure.Devices.Client.MqttNetAdapter;
+using Microsoft.Azure.Devices.Client.MQTTnetAdapter;
+using System;
+using System.Collections.Generic;
+using System.Net;
+using System.Text;
+using Xunit;
+
+namespace Microsoft.Azure.Devices.Client.IntegrationTests.Gen2
+{
+    public class ConnectionClientIntegrationTests
+    {
+        [Fact(Timeout = Setup.TestTimeoutMilliseconds)]
+        public async Task CanConnectOverWebsocket()
+        {
+            MqttNetClientOptions mqttClientOptions = new()
+            {
+                UseWebsocket = true,
+            };
+
+            ConnectionClientOptions connectionClientOptions = new()
+            {
+                MqttClient = new MqttNetClient(mqttClientOptions)
+            };
+
+            Gen2DeviceTestContext testDeviceContext = await Setup.CreateConnectedGen2ConnectionClientAsync(null, connectionClientOptions, TestContext.Current.CancellationToken);
+
+            await testDeviceContext.DisposeAsync(); // Dispose this before any feature clients so that the test device identity can be cleaned up and the MQTT client disconnected gracefully
+        }
+
+        [Fact(Timeout = Setup.TestTimeoutMilliseconds)]
+        public async Task CanConnectOverWebsocketAndHttpProxy()
+        {
+            int proxyPort = 8879; // Use a port that won't collide with any other proxy test
+            var httpProxy = new HttpProxy(proxyPort);
+
+            // Start the proxy server
+            httpProxy.Start();
+
+
+            MqttNetClientOptions mqttClientOptions = new()
+            {
+                UseWebsocket = true,
+                Proxy = new WebProxy("localhost", proxyPort)
+            };
+
+            ConnectionClientOptions connectionClientOptions = new()
+            {
+                MqttClient = new MqttNetClient(mqttClientOptions)
+            };
+
+            Gen2DeviceTestContext testDeviceContext = await Setup.CreateConnectedGen2ConnectionClientAsync(null, connectionClientOptions, TestContext.Current.CancellationToken);
+
+            await testDeviceContext.DisposeAsync(); // Dispose this before any feature clients so that the test device identity can be cleaned up and the MQTT client disconnected gracefully
+
+            // Stop the proxy server
+            httpProxy.Stop();
+            httpProxy.Dispose();
+        }
+    }
+}

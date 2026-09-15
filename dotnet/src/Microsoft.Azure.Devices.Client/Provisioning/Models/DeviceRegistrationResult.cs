@@ -1,7 +1,6 @@
 ﻿// Copyright (c) Microsoft. All rights reserved.
 // Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
-using Microsoft.Azure.Devices.Client.Serialization;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -85,8 +84,12 @@ namespace Microsoft.Azure.Devices.Client.Provisioning.Models
         public X509RegistrationResult? X509 { get; set; }
 
         [JsonPropertyName("issuedCertificateChain")]
-        public IReadOnlyList<string>? IssuedClientCertificateChain { get; private set; }
+        public IReadOnlyList<string>? IssuedClientCertificateChain { get; set; }
 
-        public bool IsAzureEventGridHub { get; set; } = false; //TODO manually added field, but I think this is where DPS service folks will add it
+        /// <summary>
+        /// The connection profile capability of the assigned IoT Hub, forwarded verbatim from the hub. Indicates the MQTT protocol version the device should use to connect. An absent or null value resolves to 'classic'.
+        /// </summary>
+        [JsonPropertyName("connectionProfile")]
+        public ConnectionProfile ConnectionProfile { get; set; } = ConnectionProfile.Classic;
     }
 }

@@ -15,13 +15,12 @@
 #
 # Scope
 # -----
-# This workflow runs the fast scenarios (telemetry/c2d/method/twin) AND the
-# mocked Device Update (ADU) e2e suite (az_iot_tests_e2e_adu), which drives a
-# signed deployment through the device twin with the crypto/platform ops mocked
-# -- no Device Update account is required, so it is fast. A separate workflow
-# (ci-c-e2e-adu.yml) is reserved for the future real-ADU suite (which provisions
-# an actual Device Update account and triggers updates THROUGH the ADU service);
-# until that lands it runs this same mocked suite nightly as a placeholder.
+# This workflow runs the fast scenarios (telemetry/c2d/method/twin) and the file
+# upload suite. It previously also ran a mocked Device Update (ADU) suite
+# (az_iot_tests_e2e_adu) that drove a signed deployment through the device twin.
+# That suite retired with the removal of ADU's twin delivery channel and is
+# awaiting a rewrite against the new channel, so it is not built or run here.
+# The separate ci-c-e2e-adu.yml workflow is parked for the same reason.
 #
 # Stages
 # ------
@@ -48,11 +47,20 @@ on:
     paths:
       - 'c/**'
       - 'common/**'
+      # This workflow and the provisioning wiring it depends on: a change to any
+      # of them alters what the e2e legs actually do, so it has to be validated
+      # against real Azure rather than merged on the strength of the other jobs.
+      - '.github/workflows/ci-c-e2e.yml'
+      - '.github/actions/provision-e2e-resources/**'
+      - '.github/actions/destroy-e2e-resources/**'
   push:
     branches: [ main ]
     paths:
       - 'c/**'
       - 'common/**'
+      - '.github/workflows/ci-c-e2e.yml'
+      - '.github/actions/provision-e2e-resources/**'
+      - '.github/actions/destroy-e2e-resources/**'
   schedule:
     - cron: '0 11 * * *'  # Nightly at 4am PST
 
@@ -121,8 +129,15 @@ jobs:
       # on both), and it preserves Windows local-dev parity.
       matrix:
         include:
+          # The Linux leg builds instrumented (linux-gcc-e2e-coverage) so its run
+          # contributes to the coverage picture. e2e is where the feature clients
+          # are actually driven end to end, and unit tests alone cannot reach
+          # those paths. Running it twice -- once plain, once instrumented --
+          # would double the Azure resources this workflow consumes, so it runs
+          # once, instrumented. gcov overhead is CPU-only and this suite is
+          # network-bound, so it does not move the wall clock.
           - os: ubuntu-latest
-            preset: linux-gcc-debug
+            preset: linux-gcc-e2e-coverage
             device-index: 0
           - os: windows-latest
             preset: windows-msvc-debug
@@ -138,13 +153,34 @@ jobs:
 
       - name: Install ninja (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y ninja-build
+        # libcurl backs the file upload sample's HTTP hook; without it CMake builds
+        # the sample with a stub hook that cannot perform the Classic control-plane
+        # calls, and the sample run below would prove nothing.
+        #
+        # softhsm2 + opensc back the non-extractable-key custody suite: a token
+        # to hold the device key and the tool that writes it there. The OpenSSL
+        # pkcs11 provider the handshake signs through is built from source (see
+        # eng/setup-pkcs11-provider.sh for why the packaged one will not do),
+        # which is what meson and pkg-config are for.
+        run: |
+          sudo apt-get update && sudo apt-get install -y ninja-build libcurl4-openssl-dev \
+                                                          softhsm2 opensc meson pkg-config
+          python3 -m pip install --upgrade 'gcovr==7.2'
 
       - name: Build e2e tests
         working-directory: c
+        # The custody suite (a device key that lives inside a PKCS#11 token) is
+        # Linux-only for now: it needs an OpenSSL pkcs11 provider, which the
+        # Windows runner image does not carry.
         run: |
-          cmake --preset ${{ matrix.preset }} -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_WITH_PAHO=ON
-          cmake --build --preset ${{ matrix.preset }} ${{ runner.os == 'Windows' && '--config Debug' || '' }} --target az_iot_tests_e2e az_iot_tests_e2e_adu az_iot_tests_e2e_csr az_iot_tests_e2e_fileupload
+          cmake --preset ${{ matrix.preset }} -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_WITH_PAHO=ON ${{ runner.os == 'Linux' && '-DAZ_IOT_BUILD_E2E_PKCS11=ON' || '' }}
+          cmake --build --preset ${{ matrix.preset }} ${{ runner.os == 'Windows' && '--config Debug' || '' }} --target az_iot_tests_e2e az_iot_tests_e2e_fileupload az_iot_tests_e2e_transport
+          ${{ runner.os == 'Linux' && format('cmake --build --preset {0} --target az_iot_tests_e2e_custody', matrix.preset) || '' }}
+
+      - name: Build the file upload sample (Linux)
+        if: runner.os == 'Linux'
+        working-directory: c
+        run: cmake --build --preset ${{ matrix.preset }} --target az_iot_sample_file_upload
 
       - name: Download shared test config
         uses: actions/download-artifact@v4
@@ -214,16 +250,137 @@ jobs:
           $env:AZ_IOT_TRUSTED_CA          = $caPath
           if ($env:IOT_DPS_GLOBAL_ENDPOINT) { $env:AZ_IOT_DPS_GLOBAL_ENDPOINT = $env:IOT_DPS_GLOBAL_ENDPOINT }
 
+          # Republish the DEVICE-side configuration (an id scope, a registration id
+          # and three file paths -- no secrets) so the sample step below can reuse
+          # this leg's device without re-materializing the X.509 material.
+          foreach ($name in @('AZ_IOT_DPS_ID_SCOPE', 'AZ_IOT_DPS_REGISTRATION_ID',
+                              'AZ_IOT_CLIENT_CERT', 'AZ_IOT_CLIENT_KEY',
+                              'AZ_IOT_TRUSTED_CA', 'AZ_IOT_DPS_GLOBAL_ENDPOINT')) {
+            $value = (Get-Item "env:$name" -ErrorAction SilentlyContinue).Value
+            if ($value) { "$name=$value" | Out-File -FilePath $env:GITHUB_ENV -Append }
+          }
+
           New-Item -ItemType Directory -Path ./test_config/results -Force | Out-Null
           $cfg = if ($IsWindows) { @('-C', 'Debug') } else { @() }
-          # `-R e2e` runs the fast suite (az_iot_tests_e2e) and the mocked ADU
-          # suite (az_iot_tests_e2e_adu), plus the CSR enrollment test
-          # (az_iot_tests_e2e_csr), which self-skips (CTest exit 77) unless
-          # AZ_IOT_DPS_CSR_ENABLED is provisioned. The adu_crypto_openssl unit
-          # test is not matched by the e2e name filter, so it stays out of this job.
-          ctest --test-dir c/build/${{ matrix.preset }} @cfg -R e2e `
+          # `-R e2e` runs the fast suite (az_iot_tests_e2e), the file upload
+          # suite and the transport suite (WebSockets, and MQTT through an HTTP
+          # proxy; its proxy scenarios skip themselves when no proxy is
+          # configured for the leg).
+          # The mocked ADU suite retired with ADU's twin delivery channel
+          # and is not built. The CSR enrollment test is not built
+          # here -- it needs a DPS enrollment linked to a signing CA, which only
+          # ci-c-e2e-csr provisions, so it lives behind AZ_IOT_BUILD_E2E_CSR.
+          # The adu_crypto_openssl unit test is not matched by the e2e name
+          # filter, so it stays out of this job.
+          # The custody suite is excluded here and run by its own step below: it
+          # needs the device key moved into a PKCS#11 token first.
+          ctest --test-dir c/build/${{ matrix.preset }} @cfg -R e2e -E custody `
             --verbose --no-tests=error --timeout 900 `
             --output-junit ./test_config/results/e2e-${{ matrix.os }}.xml
+
+      - name: Run the PKCS#11 custody e2e (Linux)
+        # Runs on the nightly schedule and on demand, NOT on pull requests.
+        #
+        # The suite itself is finished and the mechanism is pinned by the
+        # unit-level custody suite, which drives the same adapter code against a
+        # real SoftHSM2 token and feeds the result to
+        # SSL_CTX_use_PrivateKey_file -- verbatim what Paho does. What is not
+        # settled is the handshake against a live hub with a token-held key: it
+        # currently ends in "TCP/TLS connect failure" with no OpenSSL reason
+        # reaching the log, and diagnosing that needs the provisioned hub in
+        # front of it rather than another blind push. Gating pull requests on an
+        # unfinished bring-up would only teach people to ignore a red check.
+        #
+        # This is the same phasing the coverage gate used: measure and publish
+        # first, block later. Move it back onto pull_request once a nightly run
+        # is green.
+        if: runner.os == 'Linux' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        shell: pwsh
+        # The "Storage / custody" scenario of docs/eng/certificate-management.md:
+        # the SAME device provisions through DPS and talks to the hub, but with
+        # its private key inside a SoftHSM2 token instead of on disk. Nothing is
+        # stubbed -- if the token were not signing the TLS handshake the hub
+        # would refuse the connection.
+        #
+        # It runs in pwsh, and re-sources the generated config, because the
+        # SERVICE-side connection strings live only in that script: the earlier
+        # step republishes the device-side values (paths and ids, no secrets) to
+        # GITHUB_ENV and deliberately not those.
+        #
+        # --keep-key-file: the earlier suites in this job read the key by path,
+        # and the leg's device is torn down with the resource group anyway.
+        run: |
+          . ./test_config/set_test_env_vars.ps1
+
+          # eval the provider script rather than merely running it, so
+          # setup-softhsm.sh sees OPENSSL_MODULES and writes an explicit
+          # "module = .../pkcs11.so" into the configuration it generates. The
+          # coverage job in ci-c.yml has always eval'd it; this one did not.
+          #
+          # This is hygiene, NOT the cause of the nightly failure. Without the
+          # eval the configuration names the provider by section only, but
+          # OPENSSL_MODULES still reaches the test process -- the loop below
+          # parses the provider script's own export line -- so the provider
+          # resolves either way. Measured: a configuration generated with
+          # OPENSSL_MODULES unset still activates pkcs11 when the variable is set
+          # at run time. Naming the module makes the configuration independent of
+          # that variable instead of relying on it.
+          $exports = & bash -c 'set -e; mods="$(c/eng/setup-pkcs11-provider.sh)"; eval "$mods"; echo "$mods"; c/eng/setup-softhsm.sh "$AZ_IOT_CLIENT_KEY" --keep-key-file'
+          if ($LASTEXITCODE -ne 0) { throw "PKCS#11 token provisioning failed ($LASTEXITCODE)" }
+          foreach ($line in $exports) {
+            if ($line -match "^export ([A-Za-z0-9_]+)='(.*)'$") {
+              [System.Environment]::SetEnvironmentVariable($Matches[1], $Matches[2])
+            }
+          }
+
+          # What the run will actually use. Printed rather than discarded: a
+          # custody failure is otherwise indistinguishable from a configuration
+          # that was never applied.
+          Write-Host "--- OPENSSL_CONF = $env:OPENSSL_CONF"
+          Get-Content $env:OPENSSL_CONF | Write-Host
+
+          # The provider must be active from the CONFIGURATION ALONE. The previous
+          # check passed "-provider pkcs11", which loads it explicitly and so could
+          # not tell a configuration that is in effect from one that is not -- the
+          # exact difference that matters here, because the adapter loads the
+          # provider at run time regardless and that path is the one that fails.
+          $providers = & openssl list -providers 2>&1 | Out-String
+          Write-Host "--- providers active from configuration:`n$providers"
+          if ($LASTEXITCODE -ne 0) {
+            throw "openssl list -providers failed ($LASTEXITCODE)"
+          }
+          # Match the provider's own entry in the list -- a line holding just its
+          # name -- not the substring anywhere in the output. $providers carries
+          # stderr too, so a load error that merely mentions pkcs11 must not read
+          # as success.
+          if ($providers -notmatch '(?m)^\s+pkcs11\s*$') {
+            throw "the pkcs11 provider is not active from OPENSSL_CONF; the custody path would fall back to a run-time load"
+          }
+
+          # Verbose OpenSSL handshake errors. A custody failure otherwise
+          # surfaces as Paho's "TCP/TLS connect failure", which says nothing
+          # about which half of the credential the stack rejected.
+          $env:AZ_IOT_PAHO_TRACE = 'error'
+          $env:AZ_IOT_E2E_LOG_LEVEL = 'DEBUG'
+
+          ctest --test-dir c/build/${{ matrix.preset }} -R e2e_custody `
+            --verbose --no-tests=error --timeout 900 `
+            --output-junit ./test_config/results/e2e-custody-${{ matrix.os }}.xml
+          if ($LASTEXITCODE -ne 0) { throw "custody e2e failed ($LASTEXITCODE)" }
+
+      - name: Run the file upload sample (Linux)
+        if: runner.os == 'Linux'
+        shell: pwsh
+        # The sample is the reference integration of the application HTTP hook the
+        # Classic file-upload control plane requires (this SDK ships no HTTP
+        # client). Building it proves nothing about that hook, so run it against
+        # the real hub: it provisions, requests a SAS URI, PUTs the blob with
+        # libcurl and reports completion, exiting non-zero if any step fails.
+        run: |
+          $exe = "c/build/${{ matrix.preset }}/samples/az_iot_sample_file_upload"
+          if (-not (Test-Path $exe)) { throw "sample not built at $exe" }
+          & $exe
+          if ($LASTEXITCODE -ne 0) { throw "file upload sample failed ($LASTEXITCODE)" }
 
       - name: Upload test results
         if: always()
@@ -232,6 +389,22 @@ jobs:
           name: e2e-results-${{ matrix.os }}
           path: ./test_config/results/**/*.xml
           if-no-files-found: ignore
+
+      - name: Collect coverage (Linux)
+        # Deliberately not `if: always()`. A failed or timed-out e2e run leaves
+        # partial or absent .gcda, and feeding that into the combined report
+        # would understate coverage for a reason unrelated to the change.
+        if: runner.os == 'Linux' && success()
+        working-directory: c
+        run: bash eng/collect-coverage.sh build/linux-gcc-e2e-coverage coverage/e2e.json e2e-linux
+
+      - name: Upload coverage tracefile (Linux)
+        if: runner.os == 'Linux' && success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-trace-e2e
+          path: c/coverage/e2e.json
+          if-no-files-found: error
 
   teardown:
     name: teardown (delete resources)

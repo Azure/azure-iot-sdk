@@ -29,6 +29,7 @@
 #include <azure/core/az_span.h>
 
 #include <stdint.h>
+#include <stddef.h>
 
 /**
  * @brief Caller-allocated backing storage for the sample transport. Fields are adapter-managed.
@@ -46,6 +47,13 @@ typedef struct
   int phase; ///< Internal connect/handshake progress. Adapter-managed.
   int32_t last_error_status; ///< The most recent native error code. Adapter-managed.
   uint8_t last_error_message[128]; ///< Storage for the most recent native error text. Adapter-managed.
+  /// HTTP CONNECT tunnel state, used only when AZ_IOT_E2E_SERVICE_PROXY_HOST is
+  /// set in the environment. Adapter-managed.
+  uint8_t proxy_request[512]; ///< The CONNECT request being sent.
+  size_t proxy_request_len; ///< Its length, 0 when no proxy is in use.
+  size_t proxy_request_sent; ///< How much of it has gone out.
+  uint8_t proxy_response[512]; ///< The proxy's status line + headers, as they arrive.
+  size_t proxy_response_len; ///< How much of it has arrived.
 } az_amqp_sample_transport;
 
 /**

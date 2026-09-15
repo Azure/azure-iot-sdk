@@ -52,7 +52,7 @@ namespace Microsoft.Azure.Devices.Client.Provisioning.Models
         /// The certificate serial number.
         /// </summary>
         [JsonPropertyName("serialNumber")]
-        public string SerialNumber { get; set; }
+        public string? SerialNumber { get; set; }
 
         /// <summary>
         /// The certficiate version.

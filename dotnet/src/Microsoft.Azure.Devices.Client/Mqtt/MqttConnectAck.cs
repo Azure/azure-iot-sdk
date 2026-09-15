@@ -13,7 +13,7 @@
         ///     Gets the reason string.
         ///     MQTTv5 only.
         /// </summary>
-        public string ReasonString { get; set; }
+        public string? ReasonString { get; set; }
 
         public ushort? ReceiveMaximum { get; set; }
 
@@ -21,12 +21,12 @@
         ///     Gets the response information.
         ///     MQTTv5 only.
         /// </summary>
-        public string ResponseInformation { get; set; }
+        public string? ResponseInformation { get; set; }
 
         /// <summary>
         ///     Gets the result code.
         /// </summary>
-        public MqttConnectResultCode ResultCode { get; set; }
+        public MqttConnectReasonCode ResultCode { get; set; }
 
         /// <summary>
         ///     MQTTv5 only.
@@ -47,6 +47,6 @@
         ///     The feature is very similar to the HTTP header concept.
         ///     MQTTv5 only.
         /// </summary>
-        public List<MqttUserProperty> UserProperties { get; set; }
+        public List<MqttUserProperty> UserProperties { get; set; } = new();
     }
 }

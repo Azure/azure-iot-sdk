@@ -12,14 +12,26 @@ The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "S
 ## Status
 
 Implemented. The certificate-provider vtable is versioned to v2 with the
-role-aware `load()`, CSR hooks (`get_csr`/`release_csr`), issued-cert storage,
-and the non-extractable-key `sign()` hook; the connection client performs DPS
-CSR enrollment (opt-in via `dps.request_operational_certificate`) and Classic-hub
-runtime renewal (`az_iot_connection_client_send_csr`). An optional OpenSSL 3.0+
-"managed" provider (`az_iot_certificate_provider_managed`), unit + E2E tests, and
-`samples/authentication/` ship alongside. Realizes the "cert management" open
-question in `docs/design.md` (§4.3) and the flow in `docs/dps-integration.md`
-("REGISTER + CMS" → "RESULT (… Issued Cert)").
+role-aware `load()`, CSR hooks (`get_csr`/`release_csr`) and issued-cert storage;
+the connection client performs DPS CSR enrollment (opt-in via
+`dps.request_operational_certificate`) and Classic-hub runtime renewal
+(`az_iot_connection_client_send_csr`). An optional OpenSSL 3.0+ "managed"
+provider (`az_iot_certificate_provider_managed`), unit + E2E tests, and
+`samples/authentication/` ship alongside.
+
+Non-extractable key custody (D8) is implemented **for the Paho adapter via the
+key-reference route**: `az_iot_mqtt_tls_options` carries `client_key_uri`,
+`crypto_engine_id` and a `sign`/`sign_ctx` pair, the connection client
+propagates them on both connect paths, and the Paho adapter resolves the URI
+through the named OpenSSL 3.x provider so the TLS handshake signs inside the
+hardware. The `sign()` hook is carried to the adapter but has no Paho
+implementation: Paho takes its client key as a file path and exposes no
+`SSL_CTX` and no key callback, so it refuses a `sign()`-only credential rather
+than connecting without a client key. That route is for BYO adapters. The
+`rust_mqtt` adapter has no TLS credential handling at all and is not covered.
+
+Realizes the "cert management" open question in `docs/design.md` (§4.3) and the
+flow in `docs/dps-integration.md` ("REGISTER + CMS" → "RESULT (… Issued Cert)").
 
 ## Abstract
 
@@ -233,7 +245,7 @@ Not part of the public API; listed for implementation context.
 
 Only the cert-provider setup and one option line change; the entire
 connect / `do_work` / send flow stays identical (enrollment is transparent). Delta
-against `samples/telemetry/main.c`:
+against `samples/telemetry_gen1/main.c`:
 
 ```c
     /* --- BEFORE: static cert used for both DPS and Hub --- */
@@ -430,10 +442,11 @@ already covered; HSM/TPM needs one addition.
 | **HSM / TPM / secure element** — key non-extractable | ATECC608, TPM 2.0, PKCS#11 | Custom provider; `get_csr` signs *inside* the device so the key never leaves | **key reference (below)** |
 | **Remote/cloud key** — Key Vault, KMS | rare on-device | Only via a `sign()` callback model | callback (below) |
 
-**The gap:** `az_iot_certificate_material` today expresses the private key only as PEM
-or a file path. An HSM key is a *handle*, not a PEM — and the **TLS handshake** (not just
-the CSR) must sign with it. .NET hides this inside `X509Certificate2` (a CNG handle); C
-has no universal object, so the design needs an explicit key-reference escape hatch:
+**The gap (now closed for Paho):** `az_iot_certificate_material` used to express the
+private key only as PEM or a file path. An HSM key is a *handle*, not a PEM — and the
+**TLS handshake** (not just the CSR) must sign with it. .NET hides this inside
+`X509Certificate2` (a CNG handle); C has no universal object, so the design needs an
+explicit key-reference escape hatch:
 
 ```c
 typedef struct az_iot_certificate_material
@@ -447,14 +460,32 @@ typedef struct az_iot_certificate_material
 } az_iot_certificate_material;
 ```
 
-Two implications:
+Two implications, and where each stands:
 
-- The **MQTT/TLS adapter must honor it** — e.g. Paho + OpenSSL built with ENGINE/provider
-  support (`libp11`, `tpm2-openssl`). This is a joint `certificate_material` + adapter
-  change.
+- The **MQTT/TLS adapter must honor it**. Done for Paho. The joint
+  `certificate_material` + adapter change landed: `az_iot_mqtt_tls_options` carries
+  `client_key_uri` / `crypto_engine_id` / `sign` / `sign_ctx`,
+  `connection_client.c` fills them on both the DPS/bootstrap connect and the
+  operational/reconnect connect, and
+  [`az_iot_paho_key_custody.c`](../../adapters/paho/az_iot_paho_key_custody.c) loads the
+  named OpenSSL 3.x provider, resolves the URI through it, and hands Paho a key
+  *reference* (the provider's own PEM form, or the standard `PKCS#11 PROVIDER URI`
+  block) rather than key bytes — it refuses outright to write anything that turns out to
+  be extractable. `rust_mqtt` is **not** covered: it has no TLS credential handling.
 - Where no engine abstraction exists, the fallback is a **`sign()` callback** on the
-  provider vtable that the TLS layer invokes — heavier, but the only path to full custody
-  on such stacks.
+  provider vtable that the TLS layer invokes. The SDK carries it end to end and any BYO
+  adapter can consume it (`samples/authentication/hsm_sign_callback` shows exactly
+  where). **Paho cannot**: it accepts a client key only as a file path and exposes
+  neither the `SSL_CTX` nor a key hook (upstream Paho has none either), so it fails such
+  a credential with `AZ_IOT_ERR_NOT_SUPPORTED` instead of connecting without a key.
+
+Two guards were added with it, because the previous failure mode was a NULL private key
+dying inside the handshake with no useful diagnostic:
+
+- `AZ_IOT_ERR_CREDENTIAL_INCOMPLETE` at `open()` for a client certificate with no key in
+  any form, and for a key URI with nothing naming the provider that owns it.
+- The Paho adapter's TLS decision now counts a key reference as TLS material, so a
+  URI-only credential cannot fall through to a key-less connect.
 
 ---
 
@@ -503,6 +534,24 @@ HSM/TPM/secure-element (PKCS#11) · remote/cloud key** — pushes four items fro
    engine/provider abstraction (OpenSSL + PKCS#11 / tpm2), and (b) an optional provider
    `sign()` hook the TLS layer calls for stacks without one (BearSSL/custom). Reserve both
    in the versioned vtable now; implement per-adapter incrementally.
+
+   **Adapter status.** `paho`: (a) implemented — the URI is resolved through the OpenSSL
+   3.x provider named by `crypto_engine_id` and the handshake signs in hardware; (b) not
+   implementable on stock Paho, which exposes no `SSL_CTX` and no key callback, so it is
+   refused with a diagnostic rather than silently ignored. `rust_mqtt`: neither, and no
+   TLS credential handling to add them to. A BYO adapter gets both through
+   `az_iot_mqtt_tls_options` with no dependency on the certificate-provider ABI.
+
+   The provider must also register a DECODER for its own key-reference PEM, since that is
+   what `SSL_CTX_use_PrivateKey_file` resolves the file with. The adapter performs that
+   decode itself before writing the file, so an installation without one is refused at
+   connect time with a message naming the requirement rather than failing inside the
+   handshake.
+
+   Legacy OpenSSL `ENGINE`s are deliberately not attempted: they are deprecated in
+   OpenSSL 3.0, and a key an ENGINE returns is a legacy object with no reference form, so
+   it cannot be expressed as the PEM file that is the only thing Paho can be handed. An
+   ENGINE-only stack gets `AZ_IOT_ERR_NOT_SUPPORTED` naming the id.
 9. **Ownership — support both, layered.** Core primitive = **app-owned data-in/data-out**
    (`send_csr(csr_bytes)` → issued-cert callback; DPS accepts a caller CSR). The
    **provider-owns-crypto** hooks (`get_csr` / `store_issued_certificate`) are a thin
@@ -589,28 +638,33 @@ non-extractable-key custody, and CSR — the three axes this feature needs.
 
 All scenarios above get a dedicated, single-purpose sample under a new cross-cutting
 **`samples/authentication/`** group (auth is orthogonal to the feature clients like
-`telemetry`, `c2d_receiver`, ...). Each sample reuses `samples/common/sample_utils` and
+`telemetry_gen1`, `c2d_receiver_gen1`, ...). Each sample reuses `samples/common/sample_utils` and
 differs only in the credential-setup block, so they stay small and diff-able.
 
 ```
 samples/authentication/
   README.md                    scenario matrix: provider x flow x platform
-  x509_file/                   baseline: static cert from file (pinned CA)
-  x509_in_image/               static cert compiled-in as const PEM (no filesystem)
-  dps_csr_provider/            D9 provider-owned: `managed` provider, DPS issuance
-  dps_csr_app_owned/           D9 app-owned: app builds CSR, data-in/out
-  hub_renew_provider/          D7 provider-owned transparent renewal
-  hub_renew_app_owned/         D7 app-owned explicit disconnect/reconnect
-  hub_renew_recovery/          resubmit same request_id; 409005 -> replace="*"
-  hsm_pkcs11/                  D8 key-reference URI (non-extractable), CSR signed in-HW
-  hsm_sign_callback/           D8 provider sign() hook (stack without an engine)
-  os_keystore/                 optional, platform-gated (Windows cert store)
-  custom_provider_template/    fork-me stub (mirrors classic custom_hsm_example)
+  direct-hub/                  SHIPS - static cert/key from files, no DPS
+  dps_csr_managed/             SHIPS - D9 provider-owned: `managed` provider, DPS issuance
+  hub_renew/                   SHIPS - D7 provider-owned transparent renewal
+  custom_certificate_provider/ SHIPS - D9 app-owned: app builds the CSR, data-in/out
+  hsm_pkcs11/                  SHIPS - D8 key-reference URI (non-extractable), Paho
+  hsm_sign_callback/           SHIPS - D8 provider sign() hook (stack without an engine)
+  custom_provider_template/    SHIPS - fork-me stub (mirrors classic custom_hsm_example)
+
+  x509_file/                   planned - baseline covered today by direct-hub + the
+                               feature samples, so it has no folder of its own
+  x509_in_image/               planned - static cert compiled-in as const PEM
+  dps_csr_app_owned/           planned - narrower cut of custom_certificate_provider
+  hub_renew_app_owned/         planned - D7 app-owned explicit disconnect/reconnect
+  hub_renew_recovery/          planned - resubmit same request_id; 409005 -> replace="*"
+  os_keystore/                 planned - optional, platform-gated (Windows cert store)
 ```
 
 `README.md` carries a matrix mapping each folder to: credential source (file / image /
 HSM / app), flow (static / DPS-issue / hub-renew), ownership model (provider / app), and
-supported platforms. Every listed scenario MUST have a sample; CI builds all of them.
+supported platforms. CI builds every sample that exists; the `planned` rows above are the
+outstanding ones and none of them is a D8 scenario.
 
 ## E2E tests
 
@@ -622,8 +676,16 @@ already provides most of the scaffolding:
   with a signature generator), RSA/ECDSA key gen + PEM export, `DpsX509EnrollmentGroupInfo`,
   root-CA handling (`RootCaCertificates` / `AddRootCaCertificate`), `LinkedIotHubs`.
 - **Add (new):** enrollment-group config with a **linked CA enabled for operational-cert
-  issuance**; provision a **Gen2/P-SKU hub** with cert issuance on API `2025-08-01-preview`;
-  add **SoftHSM2** to the e2e Docker image for PKCS#11 custody tests.
+  issuance**; provision a **Gen2/P-SKU hub** with cert issuance on API `2025-08-01-preview`.
+- **Done:** SoftHSM2 for the PKCS#11 custody tests. The e2e legs run on GitHub-hosted
+  runners rather than a Docker image, so it is provisioned per job:
+  [`eng/setup-softhsm.sh`](../../eng/setup-softhsm.sh) initializes a token, imports the
+  device key CI already generates, **deletes the on-disk copy**, and prints the URI.
+  [`eng/setup-pkcs11-provider.sh`](../../eng/setup-pkcs11-provider.sh) builds the OpenSSL
+  provider the handshake signs through — from source, and pinned, because the provider has
+  to register a DECODER for its own key-reference PEM and distributions lag (Ubuntu 24.04
+  packages 0.3, which does not; 0.5 is the floor). The Linux e2e leg and the coverage job
+  both use the pair.
 
 Scenario coverage (mirrors `csr-scenarions.md` where applicable):
 
@@ -631,7 +693,7 @@ Scenario coverage (mirrors `csr-scenarions.md` where applicable):
 |---|---|
 | **DPS issuance** | happy path (CSR → `issuedCertificateChain` → connect w/ operational cert); CN ≠ registration id → reject; enrollment without CSR (chain null) |
 | **Hub renewal** | happy path `202`→`200` then reconnect; CSR validation (empty / >8KB / bad base64 / malformed PKCS#10); device-id mismatch; `replace=<rid>` / `replace="*"` / replace-not-found (`412001`); conflict `409005` then resolve; subscription persistence (unsub after 202, resubscribe, `clean_session`); reconnect mid-op → resubmit same `request_id`; throttling `429002/429003` transient retry |
-| **Storage / custody** | run DPS-issue + hub-renew with (a) file `managed` provider, (b) app-owned data-in/out, (c) *CI-gated* PKCS#11 via SoftHSM |
+| **Storage / custody** | run DPS-issue + hub-renew with (a) file `managed` provider, (b) app-owned data-in/out, (c) *CI-gated* PKCS#11 via SoftHSM — **(c) written, bring-up not finished**: [`e2e_custody_test.c`](../../tests/e2e/tests/e2e_custody_test.c) provisions through DPS, connects, sends telemetry the service side observes, and reconnects, all with a key that only exists inside the token. It runs on the nightly schedule and on demand, not on pull requests, until a nightly comes back green. The handshake used to end in Paho's `TCP/TLS connect failure` with no OpenSSL reason reaching the log; the reason is now logged, and it was `error:40800054:pkcs11:p11prov_GetOperationState:...:Error returned by C_GetOperationState`. The PKCS#11 provider offers digests as well as key operations, so it was servicing the TLS handshake transcript hash; TLS 1.2 duplicates that digest context, the provider duplicates it with `C_GetOperationState`, and SoftHSM2 does not support that on a digest session. TLS 1.3 does not duplicate the context, which is why the same credential worked against one endpoint and failed against another. `eng/setup-softhsm.sh` now emits an OpenSSL configuration that activates the provider alongside the default one, and exports `OPENSSL_CONF`. Verified against a **live IoT Hub** over TLS 1.2 with the device key held only in a SoftHSM2 token: a provider loaded at run time by the adapter fails with the error above, a configuration-activated provider reaches CONNECTED — 3 runs each, with a plain-PEM control connecting over the same path to show the rig itself was sound. `pkcs11-module-quirks = no-deinit` is required with it: without that line the client connects and then crashes when OpenSSL tears the provider down. Blocking the provider's digest operations is kept as a precaution for tokens that advertise digests, but is inert on SoftHSM2 and is not what fixes the handshake. The mechanism itself is pinned by the unit-level custody suite, which drives the same adapter code against a real SoftHSM2 token and feeds the result to `SSL_CTX_use_PrivateKey_file` — verbatim what Paho does. Hub-renewal with an in-token key is separately outstanding: it needs a CSR signed inside the token, which is the integrator's `get_csr()`. |
 
 The device side exercises each via the matching `samples/authentication/*` binary (or a
 dedicated e2e test app), driven by the in-process all-C e2e suite (`tests/e2e`).
@@ -652,3 +714,10 @@ dedicated e2e test app), driven by the in-process all-C e2e suite (`tests/e2e`).
 - 07/03/2026: Rebased the cert work onto `main` (independent of the drop-`_t` rename); doc
   and code use `main`'s `_t` naming. Foundation (versioned provider vtable) verified on
   MSVC. By ewertons.
+- 08/30/2026: Implemented D8 end to end for the Paho adapter: key-reference fields and the
+  `sign()` hook now reach the adapter on both connect paths,
+  `AZ_IOT_ERR_CREDENTIAL_INCOMPLETE` rejects a credential that cannot sign, and the
+  handshake signs inside a PKCS#11 / TPM token. Added `samples/authentication/hsm_pkcs11`
+  and `hsm_sign_callback`, the SoftHSM2 provisioning script, and unit + e2e custody
+  suites. Corrected **Status**, the storage-methods gap, **D8**, **Samples** and
+  **E2E tests** to match. By ewertons.

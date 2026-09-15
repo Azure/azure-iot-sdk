@@ -27,8 +27,6 @@ dotnet run --project SetupSampleDevice --property WarningLevel=0
 
 This sample can be run again to delete the previous credentials and create a new device and new credentials.
 
-Alternatively, you may run the [bug bash setup script](../../bugbash/INSTRUCTIONS.md) to generate all the device credentials needed to run the device samples
-
 ### How to run the device samples
 
 By running the above sample, you should see a set of credential files saved at the root of this samples directory like "deviceId.txt", "certificate.pfx", and more. Once you have those, all you need to do is run a command from this directory like:
@@ -36,3 +34,7 @@ By running the above sample, you should see a set of credential files saved at t
 ```bash
 dotnet run --project DirectMethodsSample  --property WarningLevel=0
 ```
+
+### Connecting to preview nuget feed
+
+In this folder, there is a nuget.config file that can be used to connect and authenticate with the nuget feed that this project pushes preview bits to. The only requirement is to have a github account and to create a PAT (classic) with "read:packages" permissions and then fill in the ```<packageSourceCredentials>``` section of the provided nuget.config file with those credentials

@@ -1,5 +1,6 @@
 // Copyright (c) Microsoft. All rights reserved.
-// Licensed under the MIT license. See LICENSE file in the project root for full license information.
+// Licensed under the MIT license. See LICENSE file in the project root for full license
+// information.
 
 /* SPDX-License-Identifier: MIT */
 /* OpenSSL-backed crypto primitives for the ADU client (Phase 2).
@@ -15,16 +16,17 @@
 #include "azure/iot/az_iot_adu.h"
 
 #ifdef __cplusplus
-extern "C" {
+extern "C"
+{
 #endif
 
-/**
- * Return an az_iot_adu_crypto_hooks wired to the OpenSSL (3.0+) backend.
- * The returned struct is by value; it references static function pointers and
- * carries no allocated state (user_ctx is NULL). Safe to pass directly to
- * az_iot_adu_client_initialize().
- */
-az_iot_adu_crypto_hooks az_iot_adu_crypto_openssl_hooks(void);
+  /**
+   * Return an az_iot_adu_crypto_hooks wired to the OpenSSL (3.0+) backend.
+   * The returned struct is by value; it references static function pointers and
+   * carries no allocated state (user_ctx is NULL). Safe to pass directly to
+   * az_iot_adu_client_initialize().
+   */
+  az_iot_adu_crypto_hooks az_iot_adu_crypto_openssl_hooks(void);
 
 #ifdef __cplusplus
 }

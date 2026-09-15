@@ -1,20 +1,15 @@
-﻿using Microsoft.Azure.Devices;
-using Microsoft.Azure.Devices.Client;
-using System;
-using System.Collections.Generic;
-using System.Runtime.ConstrainedExecution;
+﻿using Microsoft.Azure.Devices.Client;
 using System.Security.Cryptography.X509Certificates;
-using System.Text;
 
 namespace SetupSampleDevice
 {
     public class SampleConstants
     {
-        public const string CertificatePath = $"../../../../certificate.cer";
-        public const string PfxPath = $"../../../../certificate.pfx";
+        public const string CertificatePath = outputPath + $"certificate.cer";
+        public const string PfxPath = outputPath + $"certificate.pfx";
         public const string TestCertificatesPassword = "Some dummy certificate password";
 
-        private const string outputPath = "../../../../";
+        private const string outputPath = "../../../../../../";
 
         public static void ClearSavedCredentials()
         {
