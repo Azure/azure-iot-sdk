@@ -74,9 +74,8 @@ static void sample_state_destroy(sample_state* s)
 
 typedef struct
 {
-  sample_state* state;
   az_iot_connection_state conn_state;
-  az_iot_result build_status;
+  az_iot_result reason;
 } user_context;
 
 /* Build the client that matches what the connection actually reached. Called
@@ -109,14 +108,15 @@ static az_iot_result build_for_profile(sample_state* s, az_iot_connection_profil
   return result;
 }
 
-/* Report what the service actually sent, whether or not this SDK understood it.
+/* Read the profile and report what the service actually sent, whether or not
+ * this SDK understood it. *out_profile is set only on AZ_IOT_OK.
  *
- * The profile is readable in two places and they are not interchangeable: the
- * CONNECTED event carries it directly, and this query works any time after
- * CONNECTED. The query is what an application uses when the decision happens
- * somewhere other than the callback -- which, in a real application, it usually
- * does. */
-static void report_profile(const az_iot_connection_client* conn)
+ * The CONNECTED event carries the same answer, but only this query is available
+ * where the decision belongs: the callback runs nested inside do_work(), while
+ * the code that owns the feature clients is still waiting to get control back. */
+static az_iot_result report_profile(
+    const az_iot_connection_client* conn,
+    az_iot_connection_profile* out_profile)
 {
   /* Not `= {0}`: the SDK stamps a size into this struct so it can tell which
    * version of it the application was compiled against, and an unstamped one is
@@ -126,8 +126,8 @@ static void report_profile(const az_iot_connection_client* conn)
   az_iot_result result = az_iot_connection_client_get_hub_profile(conn, &profile);
   if (result != AZ_IOT_OK)
   {
-    printf("profile not available yet: %s\n", az_iot_result_to_string(result));
-    return;
+    printf("profile not available: %s\n", az_iot_result_to_string(result));
+    return result;
   }
 
   const char* name = profile.connection_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5
@@ -150,28 +150,17 @@ static void report_profile(const az_iot_connection_client* conn)
     printf(
         "This build predates that profile. Upgrade the SDK, or pin the device to one it knows.\n");
   }
+
+  *out_profile = profile.connection_profile;
+  return AZ_IOT_OK;
 }
 
+/* Records where the connection ended up. Nothing is decided here. */
 static void on_conn_state(const az_iot_connection_state_event* event, void* user_ctx)
 {
   user_context* ctx = (user_context*)user_ctx;
   ctx->conn_state = event->state;
-
-  if (event->state == AZ_IOT_CONN_STATE_CONNECTED)
-  {
-    report_profile(&ctx->state->connection_client);
-    ctx->build_status = event->profile
-        ? build_for_profile(ctx->state, event->profile->connection_profile)
-        : AZ_IOT_ERR_INTERNAL;
-  }
-  else if (event->reason == AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED)
-  {
-    /* The connection failed because the service named a generation this SDK
-     * does not implement. The profile stays readable precisely so this can be
-     * logged rather than guessed at. */
-    printf("Connection refused: unsupported hub generation.\n");
-    report_profile(&ctx->state->connection_client);
-  }
+  ctx->reason = event->reason;
 }
 
 static void on_send_done(az_iot_result status, void* user_ctx)
@@ -192,7 +181,7 @@ int main(void)
   }
 
   int rc = 1;
-  user_context user_ctx = { .state = &state, .build_status = AZ_IOT_ERR_NOT_INITIALIZED };
+  user_context user_ctx = { 0 };
 
   /* Certificate provider */
   az_iot_certificate_provider_pem_options pem = az_iot_certificate_provider_pem_options_default();
@@ -257,7 +246,28 @@ int main(void)
     }
   }
 
-  if (user_ctx.conn_state == AZ_IOT_CONN_STATE_CONNECTED && user_ctx.build_status == AZ_IOT_OK)
+  /* The point of the sample: the connection is up, nothing is bound to it yet,
+   * and only now does the application ask what it reached and build to match. */
+  az_iot_connection_profile profile = AZ_IOT_CONNECTION_PROFILE_UNKNOWN;
+  az_iot_result build_status = AZ_IOT_ERR_NOT_INITIALIZED;
+
+  if (user_ctx.conn_state == AZ_IOT_CONN_STATE_CONNECTED)
+  {
+    if (report_profile(&state.connection_client, &profile) == AZ_IOT_OK)
+    {
+      build_status = build_for_profile(&state, profile);
+    }
+  }
+  else if (user_ctx.reason == AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED)
+  {
+    /* The connection failed because the service named a generation this SDK
+     * does not implement. The profile stays readable precisely so this can be
+     * logged rather than guessed at. */
+    printf("Connection refused: unsupported hub generation.\n");
+    (void)report_profile(&state.connection_client, &profile);
+  }
+
+  if (build_status == AZ_IOT_OK)
   {
     static const uint8_t payload[] = "{\"temp\":23}";
     az_iot_telemetry_property props[] = {
