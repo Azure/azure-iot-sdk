@@ -225,8 +225,10 @@ cloud resources stays green.
 | [telemetry_gen1](samples/telemetry_gen1/) | DPS provisioning + `do_work()` pump + a telemetry send to a Classic hub. The starting point. |
 | [telemetry_gen2](samples/telemetry_gen2/) | The same send to an AEG hub over MQTT v5, where properties are user properties rather than topic segments. |
 | [twin_get_patch](samples/twin_get_patch/) | `twin_get` + `patch_reported`, and desired-property delivery. |
-| [direct_method_responder](samples/direct_method_responder/) | Subscribe for direct methods, echo the payload back via `az_iot_direct_method_respond`. |
-| [direct_method_slow_responder](samples/direct_method_slow_responder/) | Answer a direct method after its handler returned, for work that does not fit in a callback. |
+| [direct_method_responder_gen1](samples/direct_method_responder_gen1/) | Answer direct methods on a Classic hub, where one handler receives every name and must route and refuse them itself. |
+| [direct_method_responder_gen2](samples/direct_method_responder_gen2/) | The same on an AEG hub, where methods are declared up front and a probe lets the device decline with a reason before the arguments are sent. |
+| [direct_method_slow_responder_gen1](samples/direct_method_slow_responder_gen1/) | Answer a Classic direct method after its handler returned, against the device's own response timeout. |
+| [direct_method_slow_responder_gen2](samples/direct_method_slow_responder_gen2/) | The same on AEG, declaring the time the work needs so callers who cannot wait are turned away at the probe. |
 | [c2d_receiver_gen1](samples/c2d_receiver_gen1/) | Receive cloud-to-device messages on a Classic hub, where properties are decoded out of the topic. |
 | [c2d_receiver_gen2](samples/c2d_receiver_gen2/) | The same on an AEG hub, where the presence handshake already carries the subscription and properties need no decoding. |
 | [file_upload](samples/file_upload/) | SAS-URI request, blob PUT via libcurl, completion notification. |

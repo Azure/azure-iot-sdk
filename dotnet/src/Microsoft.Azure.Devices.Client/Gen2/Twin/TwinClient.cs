@@ -131,9 +131,9 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Twin
             try
             {
                 Trace.TraceInformation("Publishing 'GetTwin' request on topic " + publish.Topic);
-                MqttPublishAck puback = await _connection.PublishAsync(publish, cancellationToken);
 
-                PublishRejectedException.ThrowIfUnsuccessfulPuback(puback, "Failed to request the twin because the MQTT broker rejected the request.");
+                // Puback is checked for non-success cases under this layer, so no need to check it here as well
+                MqttPublishAck puback = await _connection.PublishAsync(publish, cancellationToken);
 
                 // Wait until IoT hub sends a message to this client with the response to this patch twin request.
                 var getTwinResponse = await pendingGetTwinRequest.TwinResponseTask.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -184,9 +184,9 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Twin
             try
             {
                 Trace.TraceInformation("Publishing 'PatchReported' request on topic " + publish.Topic);
-                MqttPublishAck puback = await _connection.PublishAsync(publish, cancellationToken);
 
-                PublishRejectedException.ThrowIfUnsuccessfulPuback(puback, "Failed to update the reported properties because the MQTT broker rejected the request.");
+                // Puback is checked for non-success cases under this layer, so no need to check it here as well
+                MqttPublishAck puback = await _connection.PublishAsync(publish, cancellationToken);
 
                 // Wait until IoT hub sends a message to this client with the response to this patch twin request.
                 var updateReportedPropertiesResponse = await pendingReportedPropertiesUpdateRequest.ReportedPropertyUpdateResponse.Task.WaitAsync(cancellationToken).ConfigureAwait(false);

@@ -101,7 +101,7 @@ namespace Microsoft.Azure.Devices.Client.Unified.DirectMethods
                 return;
             }
 
-            if (currentConnectionContext.IsGen2Hub)
+            if (currentConnectionContext.ConnectionProfile == Provisioning.Models.ConnectionProfile.MqttV5)
             {
                 // The underlying Gen2 DirectMethodClient handles this flow
                 return;

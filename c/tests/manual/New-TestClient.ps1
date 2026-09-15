@@ -81,13 +81,13 @@ if (-not (Test-Path $TelemetrySampleExe)) {
 }
 
 Write-Host "[build] Building direct methods sample..."
-cmake --build $BuildDir --config Debug --target az_iot_sample_direct_method_responder
+cmake --build $BuildDir --config Debug --target az_iot_sample_direct_method_responder_gen2
 if ($LASTEXITCODE -ne 0) { throw "Build failed." }
 
-$DirectMethodSampleExe = Join-Path $BuildDir "samples\Debug\az_iot_sample_direct_method_responder.exe"
+$DirectMethodSampleExe = Join-Path $BuildDir "samples\Debug\az_iot_sample_direct_method_responder_gen2.exe"
 if (-not (Test-Path $DirectMethodSampleExe)) {
     # Try non-multi-config generator path
-    $DirectMethodSampleExe = Join-Path $BuildDir "samples\az_iot_sample_direct_method_responder.exe"
+    $DirectMethodSampleExe = Join-Path $BuildDir "samples\az_iot_sample_direct_method_responder_gen2.exe"
 }
 
 Write-Host "[build] Building twin sample..."

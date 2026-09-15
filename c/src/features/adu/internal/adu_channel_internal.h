@@ -235,6 +235,16 @@ extern "C"
      * reprovisions needs its check held on that session too. */
     bool wants_hold;
 
+    /* Standing interest in the provisioning session itself, so one can be
+     * opened on demand after the device has provisioned. Distinct from
+     * wants_hold, which only delays a registration that is about to happen. */
+    bool holds_user;
+
+    /* An operation was refused because no session was up. The tick reads this
+     * to know a session is actually wanted -- opening one speculatively would
+     * just linger and close again. */
+    bool wants_session;
+
     /* Whether the pre-registration exchange has already run on the CURRENT
      * session. Distinct from wants_hold: it stops the same session being held
      * twice, while leaving the standing interest intact for the next one. Reset

@@ -144,6 +144,39 @@ extern "C"
    * waiting on a holder. */
   bool az_iot_connection_client__dps_hold_is_active(const az_iot_connection_client* client);
 
+  /* Standing interest in the provisioning session, for a feature client that
+   * needs it after the device has provisioned.
+   *
+   * Acquire at initialize, release at destroy. A non-zero count permits a
+   * session to be OPENED ON DEMAND -- it does not keep one open, and does not
+   * open one by itself. Between polls there is deliberately no session.
+   *
+   * Separate from the pre-registration hold: the hold delays a registration
+   * that is about to happen, this asks for a session once registration is long
+   * done. A feature client usually wants both. */
+  az_iot_result az_iot_connection_client__dps_user_acquire(az_iot_connection_client* client);
+  void az_iot_connection_client__dps_user_release(az_iot_connection_client* client);
+
+  /* True when the session currently up was opened for a feature client rather
+   * than by the ordinary provisioning flow. Such a session never registers, so
+   * the pre-registration hold does not apply to it. */
+  bool az_iot_connection_client__dps_session_is_auxiliary(const az_iot_connection_client* client);
+
+  /* Ensure a provisioning session is up and usable, opening one if needed.
+   *
+   * Returns AZ_IOT_OK when a publish can be made now, AZ_IOT_ERR_BUSY while one
+   * is still coming up (call again on a later tick), AZ_IOT_ERR_NOT_SUPPORTED
+   * when the caller holds no interest or DPS is not configured.
+   *
+   * A session opened this way is AUXILIARY: it runs alongside the hub
+   * connection and never registers. Registering would take the assignment path,
+   * which rewrites the host and role and reconnects -- destroying the very hub
+   * connection this is meant to sit beside.
+   *
+   * Each call also renews the idle linger, so a caller that is actively using
+   * the session keeps it, and one that stops loses it shortly after. */
+  az_iot_result az_iot_connection_client__dps_session_ensure(az_iot_connection_client* client);
+
   /* Register the observer for inbound provisioning-session messages the
    * provisioning flow does not claim. At most one: registering a second observer over a live one is
    * refused, so clear it (NULL) before registering a different one. The callback type is declared
