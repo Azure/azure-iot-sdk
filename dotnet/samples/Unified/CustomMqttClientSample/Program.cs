@@ -4,12 +4,9 @@ using Microsoft.Azure.Devices.Client.Mqtt;
 using Microsoft.Azure.Devices.Client.MQTTnetAdapter;
 using Microsoft.Azure.Devices.Client.Unified.Connection;
 using SetupSampleDevice;
-using System.Diagnostics;
 
 internal class Program
 {
-    private const bool EnableMqttLogs = true;
-
     private static async Task Main(string[] args)
     {
         string deviceId = SampleConstants.LoadDeviceId();
@@ -17,17 +14,8 @@ internal class Program
         X509AuthenticationProvider authentication = SampleConstants.LoadAuthenticationProvider();
 
         // This MQTT client interface allows users to bring their own MQTT client implementation
-        IMqttClient mqttClient;
-        if (EnableMqttLogs)
-        {
-            // This SDK includes a single implementation of the MQTT client interface using MQTTnet as the client library
-            mqttClient = new MqttNetClient(new MQTTnet.MqttClientFactory().CreateMqttClient(MqttNetTraceLogger.CreateTraceLogger()));
-            Trace.Listeners.Add(new ConsoleTraceListener());
-        }
-        else
-        {
-            mqttClient = new MqttNetClient(new MQTTnet.MqttClientFactory().CreateMqttClient());
-        }
+        // This SDK includes a single implementation of the MQTT client interface using MQTTnet as the client library
+        IMqttClient mqttClient = new MqttNetClient();
 
         ConnectionClientOptions connectionClientOptions = new()
         {

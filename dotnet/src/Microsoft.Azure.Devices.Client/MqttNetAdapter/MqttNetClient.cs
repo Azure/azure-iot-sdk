@@ -1,4 +1,5 @@
 ﻿using Microsoft.Azure.Devices.Client.Mqtt;
+using Microsoft.Azure.Devices.Client.MqttNetAdapter;
 using MQTTnet;
 using System.Net;
 using System.Security.Cryptography.X509Certificates;
@@ -9,7 +10,6 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
     public class MqttNetClient : Mqtt.IMqttClient 
     {
         private bool _isDisposed = false;
-        private bool _isUserSuppliedMqttClient = false;
 
         private MQTTnet.IMqttClient _underlyingClient;
 
@@ -18,12 +18,19 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
         private bool _useWebsocket;
         private IWebProxy? _proxy;
 
-        public MqttNetClient(MQTTnet.IMqttClient? underlyingClient = null, bool useWebsocket = false, bool enableMqttLogs = false, IWebProxy? proxy = null)
+        public MqttNetClient(MqttNetClientOptions? options = null)
         {
-            _isUserSuppliedMqttClient = underlyingClient != null;
-            _underlyingClient = underlyingClient ?? (enableMqttLogs ? new MQTTnet.MqttClientFactory().CreateMqttClient(MqttNetTraceLogger.CreateTraceLogger()) : new MQTTnet.MqttClientFactory().CreateMqttClient());
-            _useWebsocket = useWebsocket;
-            _proxy = proxy;
+            if (options != null && options.EnableMqttLogs)
+            {
+                _underlyingClient = new MQTTnet.MqttClientFactory().CreateMqttClient(MqttNetTraceLogger.CreateTraceLogger());
+            }
+            else
+            { 
+                _underlyingClient = new MQTTnet.MqttClientFactory().CreateMqttClient();
+            }
+
+            _useWebsocket = options != null && options.UseWebsocket;
+            _proxy = options?.Proxy;
 
             _underlyingClient.ApplicationMessageReceivedAsync += DelegateReceivedPublishAsync;
             _underlyingClient.ConnectedAsync += DelegateConnectedAsync;
@@ -249,28 +256,6 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
             {
                 throw new MqttClientNotConnectedException(e.Message, e);
             }
-        }
-
-        /// <summary>
-        /// Releases the unmanaged resources used by this client and optionally disposes of the managed resources.
-        /// </summary>
-        /// <param name="disposing">true to release both managed and unmanaged resources; false to releases only unmanaged resources.</param>
-        public void Dispose(bool disposing)
-        {
-            _underlyingClient.ApplicationMessageReceivedAsync -= DelegateReceivedPublishAsync;
-            _underlyingClient.ConnectedAsync -= DelegateConnectedAsync;
-            _underlyingClient.DisconnectedAsync -= DelegateDisconnectedAsync;
-
-            if (disposing)
-            {
-                _underlyingClient.Dispose();
-            }
-            else if (!_isUserSuppliedMqttClient)
-            {
-                _underlyingClient.Dispose();
-            }
-
-            _isDisposed = true;
         }
 
         /// <summary>

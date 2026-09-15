@@ -64,7 +64,6 @@ namespace Microsoft.Azure.Devices.Client.Unified.Connection
             connect.Username = $"{connect.HostName}/{connect.ClientId}/?api-version={ClassicHubApiVersion}&DeviceClientType={Uri.EscapeDataString(GetUserAgentString())}";
             connect.Password = Array.Empty<byte>();
 
-
             // gen1 flow does not need to insert anything unique per connect attempt
             return connect;
         }
