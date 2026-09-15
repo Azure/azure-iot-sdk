@@ -1,6 +1,7 @@
 ﻿using Microsoft.Azure.Devices.Client;
 using Microsoft.Azure.Devices.Client.Models;
 using Microsoft.Azure.Devices.Client.Mqtt;
+using Microsoft.Azure.Devices.Client.MqttNetAdapter;
 using Microsoft.Azure.Devices.Client.MQTTnetAdapter;
 using Microsoft.Azure.Devices.Client.Unified.Connection;
 using SetupSampleDevice;
@@ -15,7 +16,13 @@ internal class Program
 
         // This MQTT client interface allows users to bring their own MQTT client implementation
         // This SDK includes a single implementation of the MQTT client interface using MQTTnet as the client library
-        IMqttClient mqttClient = new MqttNetClient();
+        MqttNetClientOptions mqttNetClientOptions = new()
+        {
+            EnableMqttLogs = false,
+            UseWebsocket = false,
+            Proxy = null, // With a custom MQTT client, you can configure it to connect through websockets and through HTTP proxies
+        };
+        IMqttClient mqttClient = new MqttNetClient(mqttNetClientOptions);
 
         ConnectionClientOptions connectionClientOptions = new()
         {
