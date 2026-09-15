@@ -373,7 +373,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.StubService
 
             Assert.Equal(harness.DeviceId, context.DeviceId);
             Assert.Equal(harness.Stub.HubHostName, context.IotHubHostName);
-            Assert.Equal(ConnectionProfile.MqttV5, context.ConnectionProfile);
+            Assert.True(context.IsGen2Hub);
 
             // The device is not merely told it is on a gen2 hub - it completed the gen2 presence handshake, which
             // only exists on the Event Grid based hub, to get here.
@@ -406,7 +406,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.StubService
 
             Assert.Equal(harness.DeviceId, context.DeviceId);
             Assert.Equal(harness.Stub.HubHostName, context.IotHubHostName);
-            Assert.Equal(ConnectionProfile.Classic, context.ConnectionProfile);
+            Assert.False(context.IsGen2Hub);
 
             // A twin round trip proves the device is speaking the classic JSON protocol on the $iothub/... topics.
             harness.Stub.GetDeviceState(harness.DeviceId).ReplaceDesiredProperties(new JsonObject { ["targetTemperature"] = 72 });
@@ -446,7 +446,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.StubService
             (_, ConnectionContext context) = await harness.ProvisionAndConnectDeviceAsync();
 
             Assert.Equal(harness.DeviceId, context.DeviceId);
-            Assert.Equal(ConnectionProfile.MqttV5, context.ConnectionProfile);
+            Assert.True(context.IsGen2Hub);
         }
 
         [Fact]
@@ -856,7 +856,11 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.StubService
         public async Task Provisioning_ForHub_InheritsTheHubsConnectionDropper()
         {
             await using var broker = await InProcessMqttBroker.StartAsync(TestContext.Current.CancellationToken);
-            await using var hub = new StubIotHubService(new StubIotHubServiceOptions { ConnectionDropper = broker });
+            await using MqttFaultInjectionClient faultInjectionClient = await MqttFaultInjectionClient.ForBrokerAsync(
+                broker,
+                cancellationToken: TestContext.Current.CancellationToken);
+
+            await using var hub = new StubIotHubService(new StubIotHubServiceOptions { ConnectionDropper = faultInjectionClient });
 
             StubDeviceProvisioningServiceOptions? captured = null;
 
@@ -867,7 +871,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.StubService
             });
 
             Assert.NotNull(captured);
-            Assert.Same(broker, captured.ConnectionDropper);
+            Assert.Same(faultInjectionClient, captured.ConnectionDropper);
             Assert.True(dps.CanDropConnections);
         }
 

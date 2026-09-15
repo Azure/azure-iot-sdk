@@ -68,8 +68,9 @@ that a test can check how the SDK reacts to each disconnect reason code.
 
 The stub is a client, not a broker, so it cannot close another client's session by itself. It borrows that
 ability from `StubIotHubServiceOptions.ConnectionDropper`, an `IStubDeviceConnectionDropper`.
-`InProcessMqttBroker` implements that interface, and both `StubServiceTestEnvironment` and the test harness
-in `StubIotHubServiceTests` wire it up already. Without a dropper, every drop call throws.
+`MqttFaultInjectionClient` implements that interface by publishing a fault injection request to the broker -
+see [Fault injection over MQTT](#fault-injection-over-mqtt) - and both `StubServiceTestEnvironment` and the
+test harness in `StubIotHubServiceTests` wire it up already. Without a dropper, every drop call throws.
 
 ```csharp
 // A specific reason code.
@@ -112,10 +113,10 @@ Every drop, explicit or random, raises `DeviceConnectionDropped` and is appended
 which is what a randomized test asserts against since neither the victim, the moment, nor the code is known up
 front. A gen2 device is marked not dispatch-ready again, because it has to redo the presence handshake.
 
-Note that the reason code reaching the device is an artifact of the in-process broker. MQTT 3.1.1 has no
-server-to-client DISCONNECT packet, so a real classic hub could only close the socket, whereas
-`InProcessMqttBroker` hands the code to a gen1 device too. Assert against `ConnectionDropHistory` rather than
-the device's disconnect arguments when the distinction matters.
+Note that the reason code does **not** reach a gen1 device. MQTT 3.1.1 has no server-to-client DISCONNECT
+packet, so the broker can only close the socket, and the client reports `NormalDisconnection` however
+deliberate the drop was. Only a gen2 (MQTT 5) device sees the code that was asked for. Assert against
+`ConnectionDropHistory`, which records what was requested, rather than the device's disconnect arguments.
 
 ## Limitations
 
@@ -218,9 +219,9 @@ Two things differ from the hub:
   id as its MQTT client id, so `StubDeviceProvisioningServiceOptions.DeviceId` or `RegistrationId` is the
   only value the stub can match, and any other device id is rejected. This falls out of the same
   single-device limitation as the rest of the stub DPS.
-- **Reason codes are a stub-side record.** Provisioning is MQTT 3.1.1 for both generations, so a real DPS
-  endpoint could only close the socket. `InProcessMqttBroker` does pass the code to the device anyway, but
-  `ConnectionDropHistory` is the dependable place to assert on.
+- **Reason codes are a stub-side record only.** Provisioning is MQTT 3.1.1 for both generations, and 3.1.1
+  has no server-to-client DISCONNECT packet, so the registering device only ever sees its socket close. The
+  requested code is recorded in `ConnectionDropHistory`, which is the only dependable place to assert on it.
 
 Timing matters more here than on the hub, because a registration is short. `AssigningPollResponses` is the
 lever: each extra poll costs at least the SDK's two second `retry-after` floor, which is what keeps the
@@ -239,6 +240,101 @@ loop starts with `StartAsync`, which is before the device connects.
 - **No attestation.** Certificates, symmetric keys, and TPM are not validated; every registration succeeds.
 - **`retry-after` costs at least two seconds per poll**, because the SDK clamps it to a two second floor.
 
+# Fault injection over MQTT
+
+Every fault the in-process broker can inject is triggered by an ordinary MQTT PUBLISH, never by a .NET call on
+the broker object. `InProcessMqttBroker` exposes no fault-injecting method at all. The consequence is that a
+fault can be injected from outside the process that hosts the broker - by another process, by a test written in
+another language, or by hand.
+
+The whole structure of a fault travels in the **payload**, as JSON, rather than in MQTT 5 user properties.
+MQTT 3.1.1 has no user properties, and gen1 devices and all DPS traffic speak 3.1.1, so the same bytes have to
+work over either protocol version.
+
+## The control topics
+
+| Topic | Direction | Contents |
+|---|---|---|
+| `$fault/req` | caller -> broker | An `MqttFaultInjectionRequest` as JSON |
+| `$fault/res/{requestId}` | broker -> caller | An `MqttFaultInjectionResponse` as JSON |
+
+A request is never forwarded to subscribers, so control traffic cannot be mistaken for device or service
+traffic. A request carrying a `requestId` is answered on `$fault/res/{requestId}`, or on the request's own
+`responseTopic` when it names one; a request with neither is still executed, and the broker simply stays
+silent. Subscribe to `$fault/res/#` *before* publishing, since a fault can disconnect the caller itself.
+
+## The request
+
+```jsonc
+{
+  "requestId": "3f1c...",       // correlates the response; omit for fire and forget
+  "fault": "disconnect",        // "disconnect" or "listClients"
+  "clientId": "device-1",       // the victim; required by "disconnect"
+  "reasonCode": 137,            // numeric MQTT 5 DISCONNECT code, 137 = ServerBusy, default 0
+  "reasonString": "throttled",  // optional
+  "delayMilliseconds": 250,     // optional; the response follows the fault, not the request
+  "responseTopic": "..."        // optional override of $fault/res/{requestId}
+}
+```
+
+`reasonCode` is the number rather than a name so that a caller in another language need not know MQTTnet's
+enum. A code MQTT 5 does not define is rejected with an error response. Because the SDK connects a device using
+its device id as the MQTT client id, `clientId` and the device id are the same string for a device under test.
+
+| Fault | Effect |
+|---|---|
+| `disconnect` | Terminates `clientId`'s session with `reasonCode`, optionally after `delayMilliseconds` |
+| `listClients` | Reports the currently connected client ids. Not a fault - it is how an out-of-process caller picks a victim for one |
+
+## The response
+
+```jsonc
+{
+  "requestId": "3f1c...",
+  "fault": "disconnect",
+  "succeeded": true,        // the request was understood and carried out
+  "faultApplied": true,     // something was actually hit
+  "clientIds": ["..."],     // listClients only
+  "error": null             // why, when succeeded is false
+}
+```
+
+The two booleans differ: a well-formed disconnect request naming a client that is not connected *succeeds*
+without applying anything. A payload too malformed to parse cannot be correlated to a response either, so it is
+logged and ignored rather than answered.
+
+## Injecting a fault
+
+From outside the process, anything that can publish will do:
+
+```bash
+mosquitto_pub -h 127.0.0.1 -p 1883 -t '$fault/req' \
+    -m '{"fault":"disconnect","clientId":"device-1","reasonCode":137}'
+```
+
+From a test, `MqttFaultInjectionClient` wraps the same protocol and handles the response correlation. It is an
+`IStubDeviceConnectionDropper`, which is how both stubs drop connections:
+
+```csharp
+await using var faultInjection = await MqttFaultInjectionClient.ForBrokerAsync(broker, MqttProtocolVersion.V500);
+
+IReadOnlyList<string> clients = await faultInjection.GetConnectedClientIdsAsync();
+bool dropped = await faultInjection.DisconnectClientAsync("device-1", MqttDisconnectReasonCode.ServerBusy);
+
+// Or the raw contract, for anything the interface does not cover.
+MqttFaultInjectionResponse response = await faultInjection.SendAsync(new MqttFaultInjectionRequest
+{
+    Fault = MqttFaultInjection.Faults.Disconnect,
+    ClientId = "device-1",
+    ReasonCode = (int)MqttDisconnectReasonCode.ServerBusy,
+    DelayMilliseconds = 500,
+});
+```
+
+`StubServiceTestEnvironment` and the harness in `StubIotHubServiceTests` build one already and hand it to both
+stubs, deliberately on MQTT 3.1.1 for gen1 and MQTT 5 for gen2 so that both halves of the payload-only contract
+stay exercised.
+
 # Reference
 
 ## Files
@@ -252,17 +348,21 @@ loop starts with `StartAsync`, which is before the device connects.
 | `StubIotHubServiceOptions.cs` | Configuration |
 | `StubConnectionDropOptions.cs` | Random connection drop configuration and the reason code sets |
 | `StubConnectionDropEngine.cs` | The drop machinery itself - history, the seeded random choices, and the background loop - shared by both stubs |
-| `IStubDeviceConnectionDropper.cs` | The ability to close a device's session, which the stubs borrow from the broker |
+| `IStubDeviceConnectionDropper.cs` | The ability to close a device's session, which the stubs borrow from `MqttFaultInjectionClient` |
 | `StubDeviceProvisioningService.cs` | The stub DPS: registration, polling, and hub assignment |
 | `StubDeviceProvisioningService.ConnectionDrops.cs` | Explicit and random drops of the registering device's connection |
 | `StubDeviceProvisioningServiceOptions.cs` | Stub DPS configuration |
 | `StubDeviceState.cs` | Per-device authoritative twin, versioning, and JSON merge patch |
 | `StubServiceModels.cs` | Event args and result types |
 | `IotHubGeneration.cs` | The generation enum |
-| `InProcessMqttBroker.cs` | A plaintext MQTT broker on a loopback port, for tests that want no external dependencies. Also backs both stubs' connection drops |
+| `InProcessMqttBroker.cs` | A plaintext MQTT broker on a loopback port, for tests that want no external dependencies |
+| `InProcessMqttBroker.FaultInjection.cs` | The broker's `$fault/req` handler - the only place a fault is actually injected |
+| `MqttFaultInjection.cs` | The fault injection wire contract: topics, fault names, and the request and response payloads |
+| `MqttFaultInjectionClient.cs` | Injects faults by publishing them, and is the `IStubDeviceConnectionDropper` both stubs use |
 | `LocalBrokerMqttClient.cs` | Retargets the SDK's CONNECT packet at a local plaintext broker |
 | `StubServiceTestEnvironment.cs` | A broker, a hub, and a DPS bound to it, for tests that just want a device to provision somewhere |
 | `StubIotHubServiceTests.cs` | End-to-end tests of a real device client against the stub |
+| `MqttFaultInjectionTests.cs` | Tests of the fault injection protocol itself, over both MQTT 3.1.1 and MQTT 5 |
 
 The provisioning tests that use `StubServiceTestEnvironment` live with the client they exercise, in
 `Gen2/ProvisioningIntegrationTests.cs` and `Unified/ProvisioningIntegrationTests.cs`.

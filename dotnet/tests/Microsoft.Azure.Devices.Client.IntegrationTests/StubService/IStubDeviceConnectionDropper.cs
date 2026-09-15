@@ -13,9 +13,9 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.StubService
     /// interface through <see cref="StubIotHubServiceOptions.ConnectionDropper"/> gives the stub the same reach.
     /// </para>
     /// <para>
-    /// <see cref="InProcessMqttBroker"/> implements this, so a test that uses the in-process broker gets connection drops
-    /// for free. A test running against an external broker has to implement whatever that broker's administrative
-    /// disconnect looks like.
+    /// <see cref="MqttFaultInjectionClient"/> implements this by publishing a fault injection request to the broker, which
+    /// is how an <see cref="InProcessMqttBroker"/> is asked to drop a connection. A test running against an external
+    /// broker has to implement whatever that broker's administrative disconnect looks like.
     /// </para>
     /// </remarks>
     public interface IStubDeviceConnectionDropper

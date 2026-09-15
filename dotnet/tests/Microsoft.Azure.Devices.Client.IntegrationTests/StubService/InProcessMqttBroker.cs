@@ -1,5 +1,5 @@
-using MQTTnet.Protocol;
 using MQTTnet.Server;
+using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 
@@ -15,19 +15,22 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.StubService
     /// a device client and the stub service can be pointed at the same endpoint without any cloud resources.
     /// </para>
     /// <para>
-    /// It also implements <see cref="IStubDeviceConnectionDropper"/>, which is what lets a <see cref="StubIotHubService"/>
-    /// terminate a device's connection with a chosen MQTT disconnect reason code. Only the broker can do that, since a
-    /// second MQTT client has no way to close another client's session.
+    /// It is also where fault injection happens, since only the broker can terminate a client's session. Every fault it
+    /// can inject is triggered by a PUBLISH to <see cref="MqttFaultInjection.RequestTopic"/> - there is no .NET method
+    /// here that injects one - so a fault can be triggered from outside this process. <see cref="MqttFaultInjectionClient"/>
+    /// is the in-process way to send those publishes, and it is what backs both stubs' connection drops.
     /// </para>
     /// </remarks>
-    public sealed class InProcessMqttBroker : IAsyncDisposable, IStubDeviceConnectionDropper
+    public sealed partial class InProcessMqttBroker : IAsyncDisposable
     {
         private readonly MqttServer _server;
+        private readonly Action<string>? _logger;
 
-        private InProcessMqttBroker(MqttServer server, int port)
+        private InProcessMqttBroker(MqttServer server, int port, Action<string>? logger)
         {
             _server = server;
             Port = port;
+            _logger = logger;
         }
 
         /// <summary>
@@ -43,7 +46,9 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.StubService
         /// <summary>
         /// Start a broker on an unused loopback port.
         /// </summary>
-        public static async Task<InProcessMqttBroker> StartAsync(CancellationToken cancellationToken = default)
+        /// <param name="cancellationToken">The cancellation token.</param>
+        /// <param name="logger">An optional sink for the broker's diagnostic messages, such as the faults it injects.</param>
+        public static async Task<InProcessMqttBroker> StartAsync(CancellationToken cancellationToken = default, Action<string>? logger = null)
         {
             int port = GetFreeTcpPort();
 
@@ -63,17 +68,22 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.StubService
                 return Task.CompletedTask;
             };
 
+            var broker = new InProcessMqttBroker(server, port, logger);
+            broker.AttachFaultInjection();
+
             await server.StartAsync().WaitAsync(cancellationToken).ConfigureAwait(false);
 
-            return new InProcessMqttBroker(server, port);
+            return broker;
         }
 
         /// <summary>
         /// The client ids that currently have a live session on this broker.
         /// </summary>
         /// <remarks>
-        /// This includes every client, not just devices: the <see cref="StubIotHubService"/> and the
-        /// <see cref="StubDeviceProvisioningService"/> are clients of this broker too.
+        /// This includes every client, not just devices: the <see cref="StubIotHubService"/>, the
+        /// <see cref="StubDeviceProvisioningService"/> and any <see cref="MqttFaultInjectionClient"/> are clients of this
+        /// broker too. Callers outside this process reach the same list through the
+        /// <see cref="MqttFaultInjection.Faults.ListClients"/> request.
         /// </remarks>
         public async Task<IReadOnlyList<string>> GetConnectedClientIdsAsync(CancellationToken cancellationToken = default)
         {
@@ -82,73 +92,11 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.StubService
             return [.. clients.Select(client => client.Id)];
         }
 
-        /// <summary>
-        /// Terminate a client's connection with the given MQTT disconnect reason code.
-        /// </summary>
-        /// <remarks>
-        /// MQTT 3.1.1 has no server-to-client DISCONNECT packet, so a real classic hub or DPS endpoint can only close the
-        /// socket. MQTTnet's broker is more forthcoming and hands the reason code to 3.1.1 clients as well, which means a
-        /// gen1 or provisioning device sees a reason here that it would not see in the cloud. Tests that care about the
-        /// difference should assert against the stub's own drop history rather than the device's disconnect arguments.
-        /// </remarks>
-        /// <returns>True if a connection was found and dropped, false if no such client was connected.</returns>
-        public async Task<bool> DisconnectClientAsync(
-            string clientId,
-            MqttDisconnectReasonCode reasonCode,
-            string? reasonString = null,
-            CancellationToken cancellationToken = default)
-        {
-            ArgumentException.ThrowIfNullOrEmpty(clientId);
-
-            MqttServerClientDisconnectOptionsBuilder optionsBuilder = new MqttServerClientDisconnectOptionsBuilder()
-                .WithReasonCode(reasonCode);
-
-            if (reasonString != null)
-            {
-                optionsBuilder.WithReasonString(reasonString);
-            }
-
-            IReadOnlyList<string> connectedClientIds = await GetConnectedClientIdsAsync(cancellationToken).ConfigureAwait(false);
-            if (!connectedClientIds.Contains(clientId, StringComparer.Ordinal))
-            {
-                return false;
-            }
-
-            try
-            {
-                await _server.DisconnectClientAsync(clientId, optionsBuilder.Build()).WaitAsync(cancellationToken).ConfigureAwait(false);
-                return true;
-            }
-            catch (Exception e) when (e is ObjectDisposedException or InvalidOperationException or KeyNotFoundException)
-            {
-                // The client raced this call and disconnected on its own, or the broker is shutting down.
-                return false;
-            }
-        }
-
-        /// <summary>
-        /// The device-oriented view of <see cref="GetConnectedClientIdsAsync(CancellationToken)"/>. The SDK connects a device
-        /// with its device id as the MQTT client id, so the two are the same string.
-        /// </summary>
-        Task<IReadOnlyList<string>> IStubDeviceConnectionDropper.GetConnectedDeviceIdsAsync(CancellationToken cancellationToken)
-        {
-            return GetConnectedClientIdsAsync(cancellationToken);
-        }
-
-        /// <summary>
-        /// The device-oriented view of <see cref="DisconnectClientAsync(string, MqttDisconnectReasonCode, string, CancellationToken)"/>.
-        /// </summary>
-        Task<bool> IStubDeviceConnectionDropper.DropDeviceConnectionAsync(
-            string deviceId,
-            MqttDisconnectReasonCode reasonCode,
-            string? reasonString,
-            CancellationToken cancellationToken)
-        {
-            return DisconnectClientAsync(deviceId, reasonCode, reasonString, cancellationToken);
-        }
-
         public async ValueTask DisposeAsync()
         {
+            await _faultInjectionCancellation.CancelAsync();
+            DetachFaultInjection();
+
             try
             {
                 await _server.StopAsync().ConfigureAwait(false);
@@ -159,6 +107,13 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.StubService
             }
 
             _server.Dispose();
+            _faultInjectionCancellation.Dispose();
+        }
+
+        private void Log(string message)
+        {
+            _logger?.Invoke(message);
+            Trace.TraceInformation(message);
         }
 
         private static int GetFreeTcpPort()

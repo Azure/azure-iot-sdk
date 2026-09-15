@@ -36,7 +36,8 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.StubService
     /// </para>
     /// <para>
     /// Because it is not a broker, terminating a device's connection is something it has to borrow from one. Supply an
-    /// <see cref="StubIotHubServiceOptions.ConnectionDropper"/> - <see cref="InProcessMqttBroker"/> is one - and the stub
+    /// <see cref="StubIotHubServiceOptions.ConnectionDropper"/> - <see cref="MqttFaultInjectionClient"/> is one, and it
+    /// asks an <see cref="InProcessMqttBroker"/> for the drop with an ordinary MQTT publish - and the stub
     /// can drop a device with any MQTT disconnect reason code, either on demand through
     /// <see cref="DropDeviceConnectionAsync"/> or at random through
     /// <see cref="StubIotHubServiceOptions.RandomConnectionDrops"/>.

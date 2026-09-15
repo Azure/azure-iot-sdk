@@ -32,7 +32,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Gen2
 
             Assert.Equal(environment.DeviceId, connectionContext.DeviceId);
             Assert.Equal(StubServiceTestEnvironment.HubHostName, connectionContext.IotHubHostName);
-            Assert.Equal(ConnectionProfile.MqttV5, connectionContext.ConnectionProfile);
+            Assert.True(connectionContext.IsGen2Hub);
 
             // Completing the presence handshake proves the device connected with the protocol that only the Event Grid
             // based hub speaks.

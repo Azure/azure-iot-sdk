@@ -1,5 +1,6 @@
 using Microsoft.Azure.Devices.Client.Models;
 using Microsoft.Azure.Devices.Client.Retry;
+using MQTTnet.Formatter;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 
@@ -27,6 +28,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.StubService
         public const string IdScope = "0ne00000000";
 
         private InProcessMqttBroker _broker = null!;
+        private MqttFaultInjectionClient _faultInjectionClient = null!;
         private X509Certificate2 _certificate = null!;
 
         private StubServiceTestEnvironment()
@@ -49,9 +51,15 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.StubService
         public StubDeviceProvisioningService ProvisioningService { get; private set; } = null!;
 
         /// <summary>
-        /// The broker the device, the hub, and the DPS all connect to. It is also what backs the hub's connection drops.
+        /// The broker the device, the hub, and the DPS all connect to. It is also what injects the hub's connection drops.
         /// </summary>
         public InProcessMqttBroker Broker => _broker;
+
+        /// <summary>
+        /// The client that triggers the broker's faults, which is what backs both stubs' connection drops. A test can use
+        /// it directly to inject a fault of its own.
+        /// </summary>
+        public MqttFaultInjectionClient FaultInjectionClient => _faultInjectionClient;
 
         /// <summary>
         /// Start a broker, a hub of the requested generation, and a DPS that assigns devices to that hub.
@@ -77,6 +85,15 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.StubService
             try
             {
                 environment._broker = await InProcessMqttBroker.StartAsync(cancellationToken);
+
+                // The stubs are MQTT clients, so the only way they can close a device's session is by asking the broker
+                // to, which this client does with a publish to the broker's fault injection topic. The hub speaks the
+                // generation's own MQTT version here too, to keep the payload-only fault contract honest on 3.1.1.
+                environment._faultInjectionClient = await MqttFaultInjectionClient.ForBrokerAsync(
+                    environment._broker,
+                    generation == IotHubGeneration.Gen1 ? MqttProtocolVersion.V311 : MqttProtocolVersion.V500,
+                    cancellationToken: cancellationToken);
+
                 environment._certificate = CreateSelfSignedCertificate(environment.DeviceId);
 
                 var hubOptions = new StubIotHubServiceOptions
@@ -89,8 +106,8 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.StubService
                     // Classic hub topics carry no device id, so the stub has to be told which device it is serving.
                     DeviceIdFilter = generation == IotHubGeneration.Gen1 ? environment.DeviceId : null,
 
-                    // Only the broker can close a device's session, so it is what backs the hub's connection drops.
-                    ConnectionDropper = environment._broker,
+                    // Only the broker can close a device's session, and it only does so when asked over MQTT.
+                    ConnectionDropper = environment._faultInjectionClient,
                 };
 
                 configureHub?.Invoke(hubOptions);
@@ -165,6 +182,11 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.StubService
             if (Hub != null)
             {
                 await Hub.DisposeAsync();
+            }
+
+            if (_faultInjectionClient != null)
+            {
+                await _faultInjectionClient.DisposeAsync();
             }
 
             if (_broker != null)

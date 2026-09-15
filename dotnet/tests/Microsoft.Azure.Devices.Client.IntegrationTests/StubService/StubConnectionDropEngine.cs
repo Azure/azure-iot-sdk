@@ -191,7 +191,8 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.StubService
                 ?? throw new InvalidOperationException(
                     $"The {_ownerDescription} cannot drop a device's connection because no {_dropperOptionName} was configured. "
                     + $"The stub is an MQTT client rather than a broker, so it needs the broker's help to close another client's "
-                    + $"session. {nameof(InProcessMqttBroker)} implements {nameof(IStubDeviceConnectionDropper)}.");
+                    + $"session. {nameof(MqttFaultInjectionClient)} implements {nameof(IStubDeviceConnectionDropper)} by asking "
+                    + $"an {nameof(InProcessMqttBroker)} for the drop over MQTT.");
         }
 
         private async Task<IReadOnlyList<string>> GetCandidateDeviceIdsAsync(CancellationToken cancellationToken)

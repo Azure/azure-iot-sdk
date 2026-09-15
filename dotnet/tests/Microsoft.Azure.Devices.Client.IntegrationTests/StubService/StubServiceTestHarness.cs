@@ -1,4 +1,5 @@
 using Microsoft.Azure.Devices.Client.Models;
+using MQTTnet.Formatter;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using Xunit;
@@ -22,6 +23,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.StubService
 
         private readonly List<IDisposable> _disposables = new();
         private InProcessMqttBroker _broker = null!;
+        private MqttFaultInjectionClient _faultInjectionClient = null!;
         private X509Certificate2 _certificate = null!;
         private Action<ConnectionClientOptions>? _configureClientOptions;
 
@@ -35,9 +37,15 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.StubService
         public StubDeviceProvisioningService Dps { get; private set; } = null!;
 
         /// <summary>
-        /// The broker everything in this harness is attached to, and what backs the stub hub's connection drops.
+        /// The broker everything in this harness is attached to, and what injects the stub hub's connection drops.
         /// </summary>
         public InProcessMqttBroker Broker => _broker;
+
+        /// <summary>
+        /// The client that asks the broker for those drops, over MQTT. A test can use it directly to inject a fault of
+        /// its own, exactly as a process outside this one would.
+        /// </summary>
+        public MqttFaultInjectionClient FaultInjectionClient => _faultInjectionClient;
 
         /// <summary>
         /// The MQTT client the most recently built device client connects with. Tests that care about MQTT level
@@ -65,6 +73,15 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.StubService
             };
 
             harness._broker = await InProcessMqttBroker.StartAsync(TestContext.Current.CancellationToken);
+
+            // The stubs are MQTT clients, so the only way they can close a device's session is by asking the broker to,
+            // which this client does with a publish to the broker's fault injection topic. Gen1 asks over MQTT 3.1.1 and
+            // gen2 over MQTT 5, so both halves of the payload-only fault contract stay exercised.
+            harness._faultInjectionClient = await MqttFaultInjectionClient.ForBrokerAsync(
+                harness._broker,
+                generation == IotHubGeneration.Gen1 ? MqttProtocolVersion.V311 : MqttProtocolVersion.V500,
+                cancellationToken: TestContext.Current.CancellationToken);
+
             harness._certificate = CreateSelfSignedCertificate(harness.DeviceId);
 
             var hubOptions = new StubIotHubServiceOptions
@@ -77,8 +94,8 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.StubService
                 // Classic hub topics carry no device id, so the stub has to be told which device it is serving.
                 DeviceIdFilter = generation == IotHubGeneration.Gen1 ? harness.DeviceId : null,
 
-                // Only the broker can close a device's session, so it is what backs the hub's connection drops.
-                ConnectionDropper = harness._broker,
+                // Only the broker can close a device's session, and it only does so when asked over MQTT.
+                ConnectionDropper = harness._faultInjectionClient,
             };
 
             configureHub?.Invoke(hubOptions);
@@ -110,7 +127,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.StubService
             await connectionClient.ProvisionAndConnectAsync(
                 new ProvisioningSettings(IdScope),
                 new X509AuthenticationProvider(_certificate),
-                TestContext.Current.CancellationToken);
+                cancellationToken: TestContext.Current.CancellationToken);
 
             return connectionClient;
         }
@@ -164,6 +181,11 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.StubService
             if (Dps != null)
             {
                 await Dps.DisposeAsync();
+            }
+
+            if (_faultInjectionClient != null)
+            {
+                await _faultInjectionClient.DisposeAsync();
             }
 
             if (_broker != null)

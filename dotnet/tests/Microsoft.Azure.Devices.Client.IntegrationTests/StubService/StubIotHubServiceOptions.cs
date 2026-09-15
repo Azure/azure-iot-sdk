@@ -106,8 +106,8 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.StubService
         /// </summary>
         /// <remarks>
         /// The stub is an MQTT client, not a broker, so it cannot close another client's session by itself. Supplying a
-        /// dropper - <see cref="InProcessMqttBroker"/> is one - enables
-        /// <see cref="StubIotHubService.DropDeviceConnectionAsync"/> and the
+        /// dropper - <see cref="MqttFaultInjectionClient"/>, which asks an <see cref="InProcessMqttBroker"/> for the drop
+        /// over MQTT, is one - enables <see cref="StubIotHubService.DropDeviceConnectionAsync"/> and the
         /// <see cref="RandomConnectionDrops"/> loop. When null, any attempt to drop a connection throws.
         /// </remarks>
         public IStubDeviceConnectionDropper? ConnectionDropper { get; set; }

@@ -41,9 +41,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Unified
             Assert.Equal(StubServiceTestEnvironment.HubHostName, connectionContext.IotHubHostName);
 
             // The generation the device ends up speaking comes from the provisioning result, not from the caller.
-            Assert.Equal(
-                generation == IotHubGeneration.Gen2 ? ConnectionProfile.MqttV5 : ConnectionProfile.Classic,
-                connectionContext.ConnectionProfile);
+            Assert.Equal(generation == IotHubGeneration.Gen2, connectionContext.IsGen2Hub);
         }
 
         [Theory(Timeout = Setup.TestTimeoutMilliseconds)]
