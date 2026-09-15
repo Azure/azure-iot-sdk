@@ -181,6 +181,8 @@
 #define PROTO_VARINT_PAYLOAD_BITS 7u
 #define PROTO_VARINT_VALUE_BITS 64u
 #define PROTO_VARINT_MAX_SHIFT 63u
+/* Largest payload the tenth byte may carry: at shift 63 only bit 63 fits. */
+#define PROTO_VARINT_TOP_BIT_MAX 1u
 #define PROTO_VARINT_PAYLOAD(byte) ((byte) & PROTO_VARINT_PAYLOAD_MASK)
 #define PROTO_VARINT_HAS_CONTINUATION(byte) (((byte) & PROTO_VARINT_CONTINUATION_BIT) != 0u)
 
@@ -1580,7 +1582,12 @@ static size_t presence_encode_birth(
  * the tenth contributes bit 63 alone. So `shift` must still be accepted at
  * PROTO_VARINT_MAX_SHIFT and only rejected once it passes that, which is why
  * the bound below is checked after the shift advances rather than before the
- * byte is consumed. */
+ * byte is consumed.
+ *
+ * Because that tenth byte can carry only bit 63, its payload must be 0 or 1.
+ * A larger one sets bits the value cannot hold; the shift would drop them and
+ * the wrapped remainder would pass for a valid version. Reject it instead: a
+ * twin version that silently wraps is worse than a decode that stops. */
 static bool presence_read_varint(const uint8_t* buf, size_t len, size_t* pos, uint64_t* out)
 {
   uint64_t v = 0;
@@ -1588,6 +1595,10 @@ static bool presence_read_varint(const uint8_t* buf, size_t len, size_t* pos, ui
   while (*pos < len)
   {
     uint8_t b = buf[(*pos)++];
+    if (shift == PROTO_VARINT_MAX_SHIFT && PROTO_VARINT_PAYLOAD(b) > PROTO_VARINT_TOP_BIT_MAX)
+    {
+      return false;
+    }
     if (shift < PROTO_VARINT_VALUE_BITS)
     {
       v |= ((uint64_t)PROTO_VARINT_PAYLOAD(b)) << shift;

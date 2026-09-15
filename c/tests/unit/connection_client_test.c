@@ -1076,6 +1076,40 @@ static void hub_next_birth_ack_rejects_over_long_varint(void** state)
   assert_int_equal(reported, 0);
 }
 
+/* A ten-byte varint whose last byte carries more than bit 63 encodes a value
+ * uint64_t cannot hold. The surplus bits shift out, so accepting it would turn
+ * a corrupt version into a plausible wrapped one and the device would anchor
+ * its next reported patch on it. Stop the decode instead. */
+static void hub_next_birth_ack_rejects_tenth_byte_overflow(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  const uint8_t ack_body[] = {
+    0x50,
+    0x07, /* f10 desired_version = 7 */
+    /* f11, 10 bytes but the last carries 0x03: bit 63 plus a bit 64 that does
+     * not fit. Shifting drops the surplus and leaves a plausible 2^63, which
+     * is exactly the wrapped value that must not be accepted. */
+    0x58,
+    0x80,
+    0x80,
+    0x80,
+    0x80,
+    0x80,
+    0x80,
+    0x80,
+    0x80,
+    0x80,
+    0x03,
+  };
+  drive_to_connected_with_birth_ack(fx, ack_body, sizeof(ack_body));
+
+  uint64_t desired = 0, reported = 99;
+  assert_int_equal(
+      az_iot_connection_client__presence_twin_versions(fx->client, &desired, &reported), AZ_IOT_OK);
+  assert_int_equal(desired, 7);
+  assert_int_equal(reported, 0);
+}
+
 /* A truncated body (varint with the continuation bit set at the end) must stop
  * the decode without reading past the buffer. */
 static void hub_next_birth_ack_truncated_payload_is_safe(void** state)
@@ -1973,6 +2007,8 @@ int main(void)
         hub_next_birth_ack_decodes_ten_byte_versions, setup_next, teardown),
     cmocka_unit_test_setup_teardown(
         hub_next_birth_ack_rejects_over_long_varint, setup_next, teardown),
+    cmocka_unit_test_setup_teardown(
+        hub_next_birth_ack_rejects_tenth_byte_overflow, setup_next, teardown),
     cmocka_unit_test_setup_teardown(
         hub_next_birth_ack_truncated_payload_is_safe, setup_next, teardown),
     cmocka_unit_test_setup_teardown(hub_next_ignores_mismatched_birth_ack, setup_next, teardown),
