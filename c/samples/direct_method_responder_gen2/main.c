@@ -44,9 +44,10 @@
 
 #define ECHO_METHOD "echo"
 
-/* Direct-method status codes are chosen by the application; this mirrors the
- * HTTP meaning the service tooling already displays. */
+/* Direct-method status codes are chosen by the application; these mirror the
+ * HTTP meanings the service tooling already displays. */
 #define STATUS_OK 200
+#define STATUS_PAYLOAD_TOO_LARGE 413
 
 typedef struct
 {
@@ -121,12 +122,25 @@ static void on_echo(
   printf(
       "method '%s' invoked, %zu byte payload\n", method_name ? method_name : "(null)", payload_len);
 
-  /* A result body larger than AZ_IOT_GEN2_DM_RESULT_BODY_MAX is refused with
-   * AZ_IOT_ERR_NOT_ENOUGH_SPACE and the slot is kept, so answering again with
-   * something shorter is the intended recovery. Echoing cannot exceed it here
-   * only because the service bounds what it sent. */
-  (void)az_iot_gen2_direct_method_respond(
+  /* Echoing is not automatically safe: the arguments the caller sent are bounded
+   * by the message, not by AZ_IOT_GEN2_DM_RESULT_BODY_MAX, which is what bounds
+   * the reply. Sending one back that does not fit is refused with
+   * AZ_IOT_ERR_NOT_ENOUGH_SPACE and the slot is KEPT -- so ignoring that result
+   * would leave the caller with no answer at all until its budget ran out.
+   * Answering short is the recovery the SDK leaves open. */
+  if (payload_len > AZ_IOT_GEN2_DM_RESULT_BODY_MAX)
+  {
+    (void)az_iot_gen2_direct_method_respond(
+        &ctx->state->methods, request, STATUS_PAYLOAD_TOO_LARGE, NULL, 0);
+    return;
+  }
+
+  az_iot_result result = az_iot_gen2_direct_method_respond(
       &ctx->state->methods, request, STATUS_OK, payload, payload_len);
+  if (result != AZ_IOT_OK)
+  {
+    printf("response was not sent: %s\n", az_iot_result_to_string(result));
+  }
 }
 
 int main(void)

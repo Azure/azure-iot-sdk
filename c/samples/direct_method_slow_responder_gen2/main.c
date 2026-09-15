@@ -47,6 +47,7 @@
 /* Direct-method status codes are chosen by the application; these mirror the
  * HTTP meanings the service tooling already displays. */
 #define STATUS_OK 200
+#define STATUS_TRY_AGAIN_LATER 429
 #define STATUS_PAYLOAD_TOO_LARGE 413
 
 /* How long the pretend work takes, and the floor declared to the service so the
@@ -116,9 +117,14 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
   }
 }
 
-/* With one slot to hold an invocation in, saying so at the probe is strictly
- * better than accepting and answering 429: the caller learns immediately and
- * its arguments never cross the wire. */
+/* With one slot to hold an invocation in, saying so at the probe spares the
+ * caller a wasted argument transfer: it learns immediately instead of sending
+ * its parameters and being told 429.
+ *
+ * It does not make the busy check in the handler redundant. `pending` is only
+ * set once an execute arrives, so two probes racing ahead of either execute
+ * both see it clear and are both accepted. This narrows the window; it does not
+ * close it. */
 static az_iot_gen2_direct_method_probe_result on_probe(
     const az_iot_gen2_direct_method_probe* probe,
     void* user_ctx)
@@ -146,8 +152,18 @@ static void on_slow_echo(
       method_name ? method_name : "(null)",
       (unsigned)SLOW_ECHO_WORK_MS);
 
-  /* No busy branch here: the probe already declined while one was held, and
-   * the SDK would not have issued an execute token past the concurrency cap. */
+  /* The probe declines while one is held, but that is an optimisation rather
+   * than a guarantee: the SDK admits up to AZ_IOT_GEN2_DM_MAX_CONCURRENT ready
+   * tokens, and `pending` is only set here -- so two probes can both be
+   * accepted before either execute arrives. Without this branch the second
+   * execute would overwrite the first request, and that caller would never be
+   * answered. */
+  if (ctx->deferred.pending)
+  {
+    (void)az_iot_gen2_direct_method_respond(
+        &ctx->state->methods, request, STATUS_TRY_AGAIN_LATER, NULL, 0);
+    return;
+  }
   if (payload_len > sizeof(ctx->deferred.payload))
   {
     (void)az_iot_gen2_direct_method_respond(
