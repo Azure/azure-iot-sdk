@@ -8,10 +8,10 @@ namespace Microsoft.Azure.Devices.Client.Models.CertificateManagement
     /// <summary>
     /// Represents a certificate signing request to be sent to IoT Hub.
     /// </summary>
-    public class CertificateSigningRequest //TODO "IotHubCertificateSigningRequest"?
+    public class IotHubCertificateSigningRequest
     {
         /// <summary>
-        /// Initializes a new instance of the <see cref="CertificateSigningRequest"/> class.
+        /// Initializes a new instance of the <see cref="IotHubCertificateSigningRequest"/> class.
         /// </summary>
         /// <param name="deviceId">The device ID the certificate will be issued for. Must match the device ID of the currently authenticated device.</param>
         /// <param name="csrData">The Base64-encoded PKCS#10 CSR without PEM headers/footers or newlines.</param>
@@ -23,7 +23,7 @@ namespace Microsoft.Azure.Devices.Client.Models.CertificateManagement
         /// which should be done if the client loses connection at any point during the certificate signing process.</param>
         /// <param name="replace">Optional. The request ID to replace, or "*" to replace any active request.
         /// To not replace any pending certificate signing operation, this value should be null (the default).</param>
-        public CertificateSigningRequest(string deviceId, string csrData, string? requestId = null, string? replace = null)
+        public IotHubCertificateSigningRequest(string deviceId, string csrData, string? requestId = null, string? replace = null)
         {
             DeviceId = deviceId;
             CertificateSigningRequestData = csrData;
@@ -34,7 +34,7 @@ namespace Microsoft.Azure.Devices.Client.Models.CertificateManagement
         /// <summary>
         /// The request ID associated with this certificate signing request.
         /// Must be 4 to 36 characters, ASCII alphanumerics and dashes only, and must not begin or end with a dash.
-        /// Users may assign this value via <see cref="CertificateSigningRequest(string, string, string?, string?)"/>;
+        /// Users may assign this value via <see cref="IotHubCertificateSigningRequest(string, string, string?, string?)"/>;
         /// if not provided, a random GUID is generated.
         /// The use case for providing a specific value is for re-submitting a certificate signing request,
         /// which should be done if the client loses connection at any point during the certificate signing process.

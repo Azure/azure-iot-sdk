@@ -1,5 +1,6 @@
 ﻿using Microsoft.Azure.Devices.Client.Gen2.Connection;
 using Microsoft.Azure.Devices.Client.Models;
+using Microsoft.Azure.Devices.Client.Provisioning.Models;
 
 namespace Microsoft.Azure.Devices.Client.IntegrationTests.Gen2
 {
@@ -7,7 +8,9 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Gen2
     {
         public required ConnectionClient ConnectionClient { get; set; }
 
-        public required ConnectionContext ConnectionContext { get; set; }
+        public required string DeviceId { get; set; }
+
+        public required ConnectionProfile ConnectionProfile { get; set; }
 
         public required X509AuthenticationProvider AuthenticationProvider { get; set; }
 
@@ -15,10 +18,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Gen2
 
         public async ValueTask DisposeAsync()
         {
-            if (ConnectionContext.DeviceId != null)
-            {
-                await Setup.GetGen1IotHubRegistryManager().RemoveDeviceAsync(ConnectionContext.DeviceId);
-            }
+            await Setup.GetGen1IotHubRegistryManager().RemoveDeviceAsync(DeviceId);
 
             await ConnectionClient.DisconnectAsync();
 

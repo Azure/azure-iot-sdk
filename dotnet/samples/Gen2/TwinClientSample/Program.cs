@@ -26,7 +26,13 @@ internal class Program
         string idScope = SampleConstants.LoadIdScope();
         X509AuthenticationProvider authentication = SampleConstants.LoadAuthenticationProvider();
 
-        using ConnectionClient connectionClient = new ConnectionClient();
+        TwinPushOptions twinPushOptions = new()
+        {
+            ReceiveDesiredPropertyUpdates = true,
+            ReceiveReportedPropertiesUponConnect = true,
+        };
+
+        using ConnectionClient connectionClient = new ConnectionClient(null, twinPushOptions);
 
         using TwinClient twinClient = new TwinClient(connectionClient);
 
@@ -91,13 +97,7 @@ internal class Program
 
         ProvisioningSettings provisioningSettings = new(idScope);
 
-        TwinPushOptions twinPushOptions = new()
-        {
-            ReceiveDesiredPropertyUpdates = true,
-            ReceiveReportedPropertiesUponConnect = true,
-        };
-
-        var connectionContext = await connectionClient.ProvisionAndConnectAsync(provisioningSettings, authentication, twinPushOptions, cts.Token);
+        var connectionContext = await connectionClient.ProvisionAndConnectAsync(provisioningSettings, authentication, cts.Token);
         Console.WriteLine($"Device {deviceId} is now provisioned and connected to IoT Hub. Now listening for desired property patches");
 
         currentTwin = await twinClient.GetTwinAsync(true, true, 0, 0, cts.Token);
