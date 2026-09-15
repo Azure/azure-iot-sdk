@@ -13,8 +13,8 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Gen2
         [Fact(Timeout = Setup.TestTimeoutMilliseconds, Skip = "TODO Test infrastructure has issues. See CI pipeline yaml")]
         public async Task TestFileUpload()
         {
-            Gen2DeviceTestContext testDeviceContext = await Setup.CreateConnectedGen2ConnectionClientAsync(null, TestContext.Current.CancellationToken);
-            using FileUploadClient fileUploadClient = new(testDeviceContext.ConnectionClient);
+            Gen2DeviceTestContext testDeviceContext = await Setup.CreateConnectedGen2ConnectionClientAsync(null, null, TestContext.Current.CancellationToken);
+            FileUploadClient fileUploadClient = new(testDeviceContext.ConnectionClient);
             //TODO
 
             await testDeviceContext.DisposeAsync(); // Dispose this before any feature clients so that the test device identity can be cleaned up and the MQTT client disconnected gracefully
@@ -23,8 +23,8 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Gen2
         [Fact(Timeout = Setup.TestTimeoutMilliseconds, Skip = "TODO Test infrastructure has issues. See CI pipeline yaml")]
         public async Task TestFileUpload_BadFormat()
         {
-            Gen2DeviceTestContext testDeviceContext = await Setup.CreateConnectedGen2ConnectionClientAsync(null, TestContext.Current.CancellationToken);
-            using FileUploadClient fileUploadClient = new(testDeviceContext.ConnectionClient);
+            Gen2DeviceTestContext testDeviceContext = await Setup.CreateConnectedGen2ConnectionClientAsync(null, null, TestContext.Current.CancellationToken);
+            FileUploadClient fileUploadClient = new(testDeviceContext.ConnectionClient);
             //TODO
 
             await testDeviceContext.DisposeAsync(); // Dispose this before any feature clients so that the test device identity can be cleaned up and the MQTT client disconnected gracefully

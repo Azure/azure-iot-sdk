@@ -61,6 +61,7 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
             optionsBuilder
                 .WithKeepAlivePeriod(connect.KeepAlivePeriod)
                 .WithClientId(connect.ClientId)
+                .WithKeepAlivePeriod(TimeSpan.FromSeconds(60))
                 .WithCredentials(connect.Username, connect.Password);
 
             if (!_useWebsocket)

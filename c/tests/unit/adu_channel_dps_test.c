@@ -138,6 +138,24 @@ static int teardown(void** state)
   return 0;
 }
 
+/* Drive an ALREADY-CREATED session (one dps_session_ensure() started) up to
+ * usable. Distinct from open_to_registering(), which calls
+ * az_iot_connection_client_open() and so cannot be used when a session object
+ * already exists. */
+static az_iot_mock_mqtt_client* drive_existing_session(fixture* fx)
+{
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  assert_non_null(m);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(&fx->client, 0);
+
+  const az_iot_mock_call* sub = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_SUBSCRIBE);
+  assert_non_null(sub);
+  assert_true(az_iot_mock_mqtt_client_inject_suback(m, sub->packet_id, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(&fx->client, 0);
+  return m;
+}
+
 /* CONNACK -> SUBACK, which is what makes the provisioning session usable. */
 static az_iot_mock_mqtt_client* open_to_registering(fixture* fx)
 {
@@ -875,6 +893,213 @@ static void a_report_after_the_exchange_is_refused_not_lost(void** state)
   assert_null(strstr(pub->topic, "deviceupdatestatus"));
 }
 
+/* ------------------------------------------------------------------------- */
+/* the operational session                                                   */
+/* ------------------------------------------------------------------------- */
+
+/* After the device provisions, the ordinary flow has torn its session down, so
+ * an operation has nothing to publish on. The channel asks for one. */
+static void a_session_is_opened_on_demand_after_provisioning(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(fx->channel.vtable->open(fx->channel.ctx, on_update, on_result, fx), AZ_IOT_OK);
+
+  /* Standing interest is taken at bind. */
+  assert_int_equal(fx->client.dps_user_count, 1);
+
+  /* Provisioning is over and nothing is open. The factory has to be registered
+   * for a session to be creatable at all. */
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(&fx->client, fx->factory), AZ_IOT_OK);
+  fx->client.dps_phase = AZ_IOT_DPS_PHASE_DONE;
+  assert_false(az_iot_connection_client__dps_session_ready(&fx->client));
+
+  /* BUSY, not OK: the session has to come up first. */
+  assert_int_equal(az_iot_connection_client__dps_session_ensure(&fx->client), AZ_IOT_ERR_BUSY);
+  assert_true(fx->client.dps_session_auxiliary);
+}
+
+/* A caller with no standing interest must not be able to open one. */
+static void without_interest_no_session_is_opened(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  fx->client.dps_phase = AZ_IOT_DPS_PHASE_DONE;
+  assert_int_equal(fx->client.dps_user_count, 0);
+
+  assert_int_equal(
+      az_iot_connection_client__dps_session_ensure(&fx->client), AZ_IOT_ERR_NOT_SUPPORTED);
+  assert_false(fx->client.dps_session_auxiliary);
+}
+
+/* The whole point of the auxiliary session: it must not register. Registering
+ * would take the assignment path, which rewrites the host and role and
+ * reconnects -- destroying the hub connection it is meant to sit beside.
+ *
+ * No ADU channel here on purpose. The channel also holds registration back for
+ * its pre-registration check, and that hold would stop the session first --
+ * proving nothing about the auxiliary guard. This drives the connection client
+ * directly so the guard is the only thing that can prevent a register. */
+static void an_auxiliary_session_never_registers(void** state)
+{
+  fixture* fx = (fixture*)*state;
+
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(&fx->client, fx->factory), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client__dps_user_acquire(&fx->client), AZ_IOT_OK);
+  fx->client.dps_phase = AZ_IOT_DPS_PHASE_DONE;
+  assert_int_equal(az_iot_connection_client__dps_session_ensure(&fx->client), AZ_IOT_ERR_BUSY);
+  assert_true(fx->client.dps_session_auxiliary);
+  assert_int_equal(fx->client.dps_hold_count, 0); /* nothing else is holding it */
+
+  az_iot_mock_mqtt_client* m = drive_existing_session(fx);
+
+  /* Usable for our traffic ... */
+  assert_true(az_iot_connection_client__dps_session_ready(&fx->client));
+  /* ... and nothing was published. Asserted as "no publish at all": checking
+   * only for the register topic passes vacuously if nothing publishes. */
+  assert_null(az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PUBLISH));
+  assert_int_not_equal(fx->client.dps_phase, AZ_IOT_DPS_PHASE_REGISTERING);
+  assert_true(fx->client.dps_session_auxiliary);
+
+  az_iot_connection_client__dps_user_release(&fx->client);
+}
+
+/* Releasing the last interest closes the session -- from the pump, not from the
+ * release call, which may run inside a callback. */
+static void the_session_closes_when_the_last_user_lets_go(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(fx->channel.vtable->open(fx->channel.ctx, on_update, on_result, fx), AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(&fx->client, fx->factory), AZ_IOT_OK);
+  fx->client.dps_phase = AZ_IOT_DPS_PHASE_DONE;
+  (void)az_iot_connection_client__dps_session_ensure(&fx->client);
+  (void)drive_existing_session(fx);
+  assert_true(az_iot_connection_client__dps_session_ready(&fx->client));
+
+  /* Still open while the interest is held. */
+  (void)az_iot_connection_client_do_work(&fx->client, 0);
+  assert_true(fx->client.dps_session_auxiliary);
+
+  fx->channel.vtable->close(fx->channel.ctx);
+  assert_int_equal(fx->client.dps_user_count, 0);
+
+  (void)az_iot_connection_client_do_work(&fx->client, 0);
+  assert_false(fx->client.dps_session_auxiliary);
+  assert_false(az_iot_connection_client__dps_session_ready(&fx->client));
+}
+
+/* A session is not held between polls. Idle beyond the linger closes it. */
+static void an_idle_session_is_closed_after_the_linger(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(fx->channel.vtable->open(fx->channel.ctx, on_update, on_result, fx), AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(&fx->client, fx->factory), AZ_IOT_OK);
+  fx->client.dps_phase = AZ_IOT_DPS_PHASE_DONE;
+  (void)az_iot_connection_client__dps_session_ensure(&fx->client);
+  (void)drive_existing_session(fx);
+  assert_true(fx->client.dps_session_auxiliary);
+
+  /* Force the deadline into the past rather than waiting out the real linger. */
+  fx->client.dps_aux_idle_deadline_ms = 1;
+  (void)az_iot_connection_client_do_work(&fx->client, 0);
+
+  assert_false(fx->client.dps_session_auxiliary);
+  assert_int_equal(fx->client.dps_user_count, 1); /* interest survives the session */
+}
+
+/* The interest count is a uint8_t; refuse rather than wrap. */
+static void the_user_count_refuses_to_overflow(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  fx->client.dps_user_count = UINT8_MAX;
+
+  assert_int_equal(
+      az_iot_connection_client__dps_user_acquire(&fx->client), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  assert_int_equal(fx->client.dps_user_count, UINT8_MAX);
+
+  fx->client.dps_user_count = 0;
+}
+
+/* An auxiliary session runs ALONGSIDE the hub connection, so the hub must keep
+ * being serviced while it is open. If the DPS pump returned early -- as it
+ * rightly does for an ordinary provisioning run, which owns the client -- a
+ * device that opened one would stop servicing telemetry, twin and method
+ * traffic for as long as the session lasted. */
+static void the_hub_is_still_pumped_while_an_auxiliary_session_is_open(void** state)
+{
+  fixture* fx = (fixture*)*state;
+
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(&fx->client, fx->factory), AZ_IOT_OK);
+
+  /* Stand in for a live hub connection: the pump must reach this client. */
+  az_iot_mqtt_client* hub = fx->factory->create(fx->factory->factory_ctx);
+  assert_non_null(hub);
+  fx->client.active_client = hub;
+  az_iot_mock_mqtt_client* hub_mock = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  assert_non_null(hub_mock);
+
+  assert_int_equal(az_iot_connection_client__dps_user_acquire(&fx->client), AZ_IOT_OK);
+  fx->client.dps_phase = AZ_IOT_DPS_PHASE_DONE;
+  assert_int_equal(az_iot_connection_client__dps_session_ensure(&fx->client), AZ_IOT_ERR_BUSY);
+  assert_true(fx->client.dps_session_auxiliary);
+
+  size_t before = (size_t)az_iot_mock_mqtt_client_count_of(hub_mock, AZ_IOT_MOCK_CALL_PROCESS_LOOP);
+
+  (void)az_iot_connection_client_do_work(&fx->client, 0);
+
+  size_t after = (size_t)az_iot_mock_mqtt_client_count_of(hub_mock, AZ_IOT_MOCK_CALL_PROCESS_LOOP);
+  assert_true(after > before);
+
+  /* Destroyed explicitly. The mock factory frees only its LAST client, and the
+   * auxiliary session created one after this stand-in, so nothing else would
+   * ever free it -- confirmed by LeakSanitizer, which reports it otherwise. */
+  fx->client.active_client = NULL;
+  hub->iface->destroy(hub);
+  az_iot_connection_client__dps_user_release(&fx->client);
+}
+
+/* The path that makes an operation possible after the device has provisioned:
+ * a request is refused because no session is up, the tick notices and opens
+ * one, and the retry then publishes.
+ *
+ * This is what the first version got wrong. The tick tested request_pending,
+ * but the call immediately above it clears request_pending precisely when the
+ * session is gone -- so the condition could never be true and the session was
+ * never reopened. Every post-provisioning operation would have failed forever.
+ */
+static void a_refused_request_causes_a_session_to_be_opened(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(fx->channel.vtable->open(fx->channel.ctx, on_update, on_result, fx), AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(&fx->client, fx->factory), AZ_IOT_OK);
+
+  /* Provisioned, and the ordinary flow has taken its session away. */
+  fx->client.dps_phase = AZ_IOT_DPS_PHASE_DONE;
+  assert_false(az_iot_connection_client__dps_session_ready(&fx->client));
+
+  /* Refused -- and the demand is recorded. */
+  assert_int_equal(fx->channel.vtable->request_update(fx->channel.ctx), AZ_IOT_ERR_NOT_CONNECTED);
+  assert_true(fx->channel_state.wants_session);
+
+  /* The tick acts on it. */
+  assert_int_equal(fx->channel.vtable->do_work(fx->channel.ctx), AZ_IOT_OK);
+  assert_true(fx->client.dps_session_auxiliary);
+
+  az_iot_mock_mqtt_client* m = drive_existing_session(fx);
+  assert_true(az_iot_connection_client__dps_session_ready(&fx->client));
+
+  /* And the retry now reaches the wire -- the publish gate must not demand a
+   * hold on a session that never registers. */
+  assert_int_equal(fx->channel.vtable->request_update(fx->channel.ctx), AZ_IOT_OK);
+  const az_iot_mock_call* pub = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PUBLISH);
+  assert_non_null(pub);
+  assert_non_null(strstr(pub->topic, "deviceupdate"));
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -920,6 +1145,17 @@ int main(void)
     cmocka_unit_test(a_zero_hold_timeout_selects_the_default),
     cmocka_unit_test_setup_teardown(
         a_hold_can_be_reserved_once_provisioning_is_done, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_session_is_opened_on_demand_after_provisioning, setup, teardown),
+    cmocka_unit_test_setup_teardown(without_interest_no_session_is_opened, setup, teardown),
+    cmocka_unit_test_setup_teardown(an_auxiliary_session_never_registers, setup, teardown),
+    cmocka_unit_test_setup_teardown(the_session_closes_when_the_last_user_lets_go, setup, teardown),
+    cmocka_unit_test_setup_teardown(an_idle_session_is_closed_after_the_linger, setup, teardown),
+    cmocka_unit_test_setup_teardown(the_user_count_refuses_to_overflow, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_refused_request_causes_a_session_to_be_opened, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        the_hub_is_still_pumped_while_an_auxiliary_session_is_open, setup, teardown),
     cmocka_unit_test_setup_teardown(
         the_dps_pump_caps_its_wait_at_the_hold_deadline, setup, teardown),
   };

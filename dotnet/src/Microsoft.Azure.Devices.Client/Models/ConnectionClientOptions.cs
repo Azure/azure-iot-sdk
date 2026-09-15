@@ -1,4 +1,5 @@
 ﻿using Microsoft.Azure.Devices.Client.Mqtt;
+using Microsoft.Azure.Devices.Client.MQTTnetAdapter;
 using Microsoft.Azure.Devices.Client.Retry;
 using System;
 using System.Collections.Generic;
@@ -33,6 +34,10 @@ namespace Microsoft.Azure.Devices.Client.Models
         /// <summary>
         /// The MQTT client to use. If null, a default MQTT client will be created for you.
         /// </summary>
+        /// <remarks>
+        /// This MQTT client will be managed for you such that this package will re-connect as necessary. If no MQTT client is provided, an instance of
+        /// <see cref="MqttNetClient"/> will be created for you.
+        /// </remarks>
         public IMqttClient? MqttClient { get; set; }
     }
 }

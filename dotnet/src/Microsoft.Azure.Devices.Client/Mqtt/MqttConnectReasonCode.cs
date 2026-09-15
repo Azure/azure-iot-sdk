@@ -4,7 +4,7 @@ using System.Text;
 
 namespace Microsoft.Azure.Devices.Client.Mqtt
 {
-    public enum MqttConnectResultCode
+    public enum MqttConnectReasonCode
     {
         Success = 0,
         UnspecifiedError = 128,

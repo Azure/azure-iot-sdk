@@ -99,7 +99,7 @@ namespace Microsoft.Azure.Devices.Client.Unified.Twin
 
             var currentConnectionContext = EnsureCorrectConnectionContext();
 
-            if (_connection.GetCurrentConnectionContext()!.IsGen2Hub)
+            if (_connection.GetCurrentConnectionContext()!.ConnectionProfile == Provisioning.Models.ConnectionProfile.MqttV5)
             {
                 // Unconditionally return the full twin since classic Hub cannot mimic any of the filtering that AEG Hub allows.
                 return await _aegHubTwinClient.GetTwinAsync(true, true, 0, 0, cancellationToken);
@@ -128,9 +128,9 @@ namespace Microsoft.Azure.Devices.Client.Unified.Twin
                 try
                 {
                     Trace.TraceInformation("Publishing 'GetTwin' request on topic " + publish.Topic);
-                    MqttPublishAck puback = await _connection.PublishAsync(publish, cancellationToken);
 
-                    PublishRejectedException.ThrowIfUnsuccessfulPuback(puback, "Failed to request the twin because the MQTT broker rejected the request.");
+                    // Puback is checked for non-success cases under this layer, so no need to check it here as well
+                    MqttPublishAck puback = await _connection.PublishAsync(publish, cancellationToken);
 
                     // Wait until IoT hub sends a message to this client with the response to this patch twin request.
                     var getTwinResponse = await pendingGetTwinRequest.TwinResponseTask.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -159,7 +159,7 @@ namespace Microsoft.Azure.Devices.Client.Unified.Twin
             var currentConnectionContext = EnsureCorrectConnectionContext();
 
             MqttPublish publish;
-            if (_connection.GetCurrentConnectionContext()!.IsGen2Hub)
+            if (_connection.GetCurrentConnectionContext()!.ConnectionProfile == Provisioning.Models.ConnectionProfile.MqttV5)
             {
                 ReportedPatchRequest aegRequest = new()
                 {
@@ -189,9 +189,9 @@ namespace Microsoft.Azure.Devices.Client.Unified.Twin
                 try
                 {
                     Trace.TraceInformation("Publishing 'PatchReported' request on topic " + publish.Topic);
-                    MqttPublishAck puback = await _connection.PublishAsync(publish, cancellationToken);
 
-                    PublishRejectedException.ThrowIfUnsuccessfulPuback(puback, "Failed to update the reported properties because the MQTT broker rejected the request.");
+                    // Puback is checked for non-success cases under this layer, so no need to check it here as well
+                    MqttPublishAck puback = await _connection.PublishAsync(publish, cancellationToken);
 
                     // Wait until IoT hub sends a message to this client with the response to this patch twin request.
                     var updateReportedPropertiesResponse = await pendingReportedPropertiesUpdateRequest.ReportedPropertyUpdateResponse.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -225,7 +225,7 @@ namespace Microsoft.Azure.Devices.Client.Unified.Twin
                 return;
             }
 
-            if (connectionContext.IsGen2Hub)
+            if (connectionContext.ConnectionProfile == Provisioning.Models.ConnectionProfile.MqttV5)
             {
                 // The other handler covers this scenario
                 return;

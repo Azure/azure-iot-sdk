@@ -61,8 +61,6 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Telemetry
 
             string deviceId = currentConnectionContext.DeviceId;
 
-            // TODO do we even need to pre-empt like this with AEG? Maybe AEG sends back a proper error code on the publish that we can translate to this exception.
-            // Needs manual testing once AEG hub is more available
             if (message.Payload != null && message.Payload.Length > 255000)
             {
                 throw new MessageTooLargeException("This telemetry message is too large to be accepted by IoT Hub. It will not be sent.");
@@ -110,9 +108,8 @@ namespace Microsoft.Azure.Devices.Client.Gen2.Telemetry
                 mqttMessage.UserProperties.Add(new MqttUserProperty(customUserPropertyKey, message.UserProperties[customUserPropertyKey]));
             }
 
+            // Puback is checked for non-success cases under this layer, so no need to check it here as well
             MqttPublishAck aegPuback = await _connection.PublishAsync(mqttMessage, cancellationToken);
-
-            PublishRejectedException.ThrowIfUnsuccessfulPuback(aegPuback, "Failed to publish this telemetry because the MQTT broker rejected it.");
         }
 
         private async Task HandleReceivedMqttPublish(MqttPublishReceivedEventArgs args)
