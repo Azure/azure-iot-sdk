@@ -2359,6 +2359,180 @@ static void a_websocket_session_completes_a_roundtrip(void** state)
   destroy_client(c);
 }
 
+/* The same round trip with the broker's side delivered one byte per write.
+ *
+ * TCP-level fragmentation is already covered for plain MQTT, but WebSockets
+ * adds a second framing layer with its own reassembly: a frame header, a length
+ * that is 1, 3 or 9 bytes depending on the payload, and an optional mask. A
+ * client that reassembles MQTT correctly can still mishandle a WS header split
+ * across two reads, and nothing exercised that.
+ *
+ * The test proxy sits in front of the WebSocket listener as a byte-level
+ * passthrough, so it splits the frame stream without needing to understand it. */
+static void a_websocket_session_survives_fragmentation(void** state)
+{
+  (void)state;
+  az_iot_test_proxy_options popts = az_iot_test_proxy_options_default();
+  /* A CONNECT tunnel rather than a passthrough, for a reason specific to
+   * WebSockets: the handshake carries a Host header naming the endpoint the
+   * client believes it is talking to. Through a passthrough that header would
+   * name the fixture's own ephemeral port, which the broker can reject. A
+   * tunnel is transparent, so Host stays the real listener -- and it also makes
+   * this the realistic combination, since a device forced onto WebSockets is
+   * usually behind a proxy as well.
+   *
+   * opaque_stream because the tunnelled bytes are a WebSocket stream, not MQTT:
+   * the pump must shape them without trying to frame them. */
+  popts.http_connect = true;
+  popts.opaque_stream = true;
+  az_iot_test_proxy* proxy = NULL;
+  uint16_t proxy_port = 0;
+  assert_int_equal(az_iot_test_proxy_start(&popts, &proxy, &proxy_port), 0);
+
+  /* One byte per write, from the handshake response onwards. */
+  az_iot_test_proxy_impairment imp = az_iot_test_proxy_impairment_default();
+  imp.fragment_max = 1;
+  az_iot_test_proxy_set_impairment(proxy, AZ_IOT_TEST_PROXY_B2C, &imp);
+
+  char cid[64];
+  unique_client_id(cid, sizeof(cid), "az-iot-conf-ws-frag");
+  char topic[128];
+  snprintf(topic, sizeof(topic), "az_iot/conformance/%s", cid);
+
+  conf_recorder rec = { 0 };
+  az_iot_mqtt_client* c = make_client();
+  c->iface->set_inbound_cb(c, on_event, &rec);
+
+  az_iot_mqtt_connect_options copts = { 0 };
+  /* The destination is the real WebSocket listener; only proxy names the
+   * fixture, so the shaping applies to the tunnelled bytes. */
+  copts.host = g_host;
+  copts.port = g_websocket_port;
+  copts.client_id = cid;
+  copts.keep_alive_seconds = 30;
+  copts.connect_timeout_seconds = k_step_timeout_seconds;
+  copts.transport = AZ_IOT_MQTT_TRANSPORT_WEBSOCKET;
+  copts.websocket_path = g_websocket_path;
+  copts.proxy.host = "127.0.0.1";
+  copts.proxy.port = proxy_port;
+
+  assert_int_equal(c->iface->connect(c, &copts), AZ_IOT_OK);
+  assert_true(wait_until(c, &rec, saw_connected_ok, k_step_timeout_ms));
+
+  uint16_t sub_pid = 0;
+  assert_int_equal(c->iface->subscribe(c, topic, AZ_IOT_MQTT_QOS_1, &sub_pid), AZ_IOT_OK);
+  assert_true(wait_until(c, &rec, saw_subscribe_ack_ok, k_step_timeout_ms));
+
+  static const uint8_t body[] = { 'f', 'r', 'a', 'g' };
+  az_iot_mqtt_message msg = { 0 };
+  msg.topic = topic;
+  msg.payload = body;
+  msg.payload_len = sizeof(body);
+  msg.qos = AZ_IOT_MQTT_QOS_1;
+  uint16_t pub_pid = 0;
+  assert_int_equal(c->iface->publish(c, &msg, &pub_pid), AZ_IOT_OK);
+  assert_true(wait_until(c, &rec, saw_message, k_step_timeout_ms));
+  assert_true(found_message(&rec, topic, body, sizeof(body)));
+
+  /* The shaping was actually applied, not silently ignored: one write per byte
+   * means far more writes than packets. Without this the case would pass just
+   * as well against a proxy that forwarded whole buffers. */
+  assert_true(az_iot_test_proxy_writes(proxy, AZ_IOT_TEST_PROXY_B2C) > 10);
+
+  (void)c->iface->disconnect(c);
+  destroy_client(c);
+  az_iot_test_proxy_stop(proxy);
+}
+
+/* A payload past the point where a WebSocket frame stops encoding its length in
+ * the first header byte.
+ *
+ * Below 126 bytes the length is that byte; at 126 and above it moves to a
+ * 2-byte extended field, so a client that only ever saw short frames can have
+ * the wider header wrong. Combined with per-byte fragmentation this splits that
+ * extended header across reads, which is where an off-by-one in the header
+ * parser shows up as a corrupted or dropped message rather than a clean error. */
+static void a_websocket_session_carries_a_large_payload(void** state)
+{
+  (void)state;
+  az_iot_test_proxy_options popts = az_iot_test_proxy_options_default();
+  /* A CONNECT tunnel rather than a passthrough, for a reason specific to
+   * WebSockets: the handshake carries a Host header naming the endpoint the
+   * client believes it is talking to. Through a passthrough that header would
+   * name the fixture's own ephemeral port, which the broker can reject. A
+   * tunnel is transparent, so Host stays the real listener -- and it also makes
+   * this the realistic combination, since a device forced onto WebSockets is
+   * usually behind a proxy as well.
+   *
+   * opaque_stream because the tunnelled bytes are a WebSocket stream, not MQTT:
+   * the pump must shape them without trying to frame them. */
+  popts.http_connect = true;
+  popts.opaque_stream = true;
+  az_iot_test_proxy* proxy = NULL;
+  uint16_t proxy_port = 0;
+  assert_int_equal(az_iot_test_proxy_start(&popts, &proxy, &proxy_port), 0);
+
+  az_iot_test_proxy_impairment imp = az_iot_test_proxy_impairment_default();
+  imp.fragment_max = 1;
+  az_iot_test_proxy_set_impairment(proxy, AZ_IOT_TEST_PROXY_B2C, &imp);
+
+  char cid[64];
+  unique_client_id(cid, sizeof(cid), "az-iot-conf-ws-big");
+  char topic[128];
+  snprintf(topic, sizeof(topic), "az_iot/conformance/%s", cid);
+
+  conf_recorder rec = { 0 };
+  az_iot_mqtt_client* c = make_client();
+  c->iface->set_inbound_cb(c, on_event, &rec);
+
+  az_iot_mqtt_connect_options copts = { 0 };
+  /* The destination is the real WebSocket listener; only proxy names the
+   * fixture, so the shaping applies to the tunnelled bytes. */
+  copts.host = g_host;
+  copts.port = g_websocket_port;
+  copts.client_id = cid;
+  copts.keep_alive_seconds = 30;
+  copts.connect_timeout_seconds = k_step_timeout_seconds;
+  copts.transport = AZ_IOT_MQTT_TRANSPORT_WEBSOCKET;
+  copts.websocket_path = g_websocket_path;
+  copts.proxy.host = "127.0.0.1";
+  copts.proxy.port = proxy_port;
+
+  assert_int_equal(c->iface->connect(c, &copts), AZ_IOT_OK);
+  assert_true(wait_until(c, &rec, saw_connected_ok, k_step_timeout_ms));
+
+  uint16_t sub_pid = 0;
+  assert_int_equal(c->iface->subscribe(c, topic, AZ_IOT_MQTT_QOS_1, &sub_pid), AZ_IOT_OK);
+  assert_true(wait_until(c, &rec, saw_subscribe_ack_ok, k_step_timeout_ms));
+
+  /* 600 bytes: past the 126-byte boundary with room to spare, and inside the
+   * recorder's payload bound. Filled with a repeating non-constant pattern so a
+   * reassembly that duplicates or drops a chunk cannot happen to produce the
+   * same bytes. */
+  static uint8_t big[600];
+  for (size_t i = 0; i < sizeof(big); ++i)
+  {
+    big[i] = (uint8_t)('A' + (i % 23));
+  }
+
+  az_iot_mqtt_message msg = { 0 };
+  msg.topic = topic;
+  msg.payload = big;
+  msg.payload_len = sizeof(big);
+  msg.qos = AZ_IOT_MQTT_QOS_1;
+  uint16_t pub_pid = 0;
+  assert_int_equal(c->iface->publish(c, &msg, &pub_pid), AZ_IOT_OK);
+  assert_true(wait_until(c, &rec, saw_message, k_step_timeout_ms));
+
+  /* Byte for byte: the point is the payload that came back, not that something
+   * arrived. */
+  assert_true(found_message(&rec, topic, big, sizeof(big)));
+
+  (void)c->iface->disconnect(c);
+  destroy_client(c);
+  az_iot_test_proxy_stop(proxy);
+}
+
 /* ------------------------------------------------------------------------- */
 /* HTTP CONNECT proxy: positive and negative                                  */
 /*                                                                            */
@@ -2404,13 +2578,46 @@ static void proxied_connect_options(
 }
 
 /* The positive case: a full session, with traffic carried through the tunnel
- * rather than only a CONNACK. A transport that framed the handshake correctly
- * and then mispumped would pass a connect-only check. */
+ * rather than only a CONNACK.
+ *
+ * Runs against the in-process fixture by default, so every leg proves the
+ * feature with nothing to provision. When AZ_IOT_CONFORMANCE_PROXY_HOST and
+ * _PORT name an external proxy, it runs against THAT instead -- the same
+ * assertions, a real proxy implementation. The fixture is a faithful CONNECT
+ * peer but it is still our own code, and "does this work against a real proxy"
+ * is a question a self-written one cannot answer; validated against Squid.
+ *
+ * The tunnel counters only exist on the fixture, so they are asserted only
+ * there. Against an external proxy the round trip itself is the evidence:
+ * the broker is reachable from this process only through the proxy the options
+ * name, so traffic arriving at all means the tunnel carried it. */
 static void a_proxied_session_completes_a_roundtrip(void** state)
 {
   (void)state;
+  char ext_host_buf[256];
+  char ext_port_buf[16];
+  const char* ext_host = NULL;
+  const char* ext_port_str = NULL;
+  (void)read_env("AZ_IOT_CONFORMANCE_PROXY_HOST", ext_host_buf, sizeof(ext_host_buf));
+  (void)read_env("AZ_IOT_CONFORMANCE_PROXY_PORT", ext_port_buf, sizeof(ext_port_buf));
+  ext_host = (ext_host_buf[0] != '\0') ? ext_host_buf : NULL;
+  ext_port_str = (ext_port_buf[0] != '\0') ? ext_port_buf : NULL;
+
+  az_iot_test_proxy* proxy = NULL;
   uint16_t proxy_port = 0;
-  az_iot_test_proxy* proxy = start_connect_proxy(&proxy_port, NULL, NULL);
+  uint16_t ext_port = 0;
+  if (ext_host != NULL && ext_port_str != NULL)
+  {
+    unsigned long p = strtoul(ext_port_str, NULL, 10);
+    if (p > 0 && p <= 65535)
+    {
+      ext_port = (uint16_t)p;
+    }
+  }
+  if (ext_port == 0)
+  {
+    proxy = start_connect_proxy(&proxy_port, NULL, NULL);
+  }
 
   char cid[64];
   unique_client_id(cid, sizeof(cid), "az-iot-conf-proxy");
@@ -2422,7 +2629,16 @@ static void a_proxied_session_completes_a_roundtrip(void** state)
   c->iface->set_inbound_cb(c, on_event, &rec);
 
   az_iot_mqtt_connect_options copts;
-  proxied_connect_options(&copts, cid, proxy_port);
+  proxied_connect_options(&copts, cid, (proxy != NULL) ? proxy_port : ext_port);
+  if (proxy == NULL)
+  {
+    copts.proxy.host = ext_host;
+    fprintf(
+        stderr,
+        "conformance: proxy case using external proxy %s:%u\n",
+        ext_host,
+        (unsigned)ext_port);
+  }
 
   assert_int_equal(c->iface->connect(c, &copts), AZ_IOT_OK);
   assert_true(wait_until(c, &rec, saw_connected_ok, k_step_timeout_ms));
@@ -2443,18 +2659,27 @@ static void a_proxied_session_completes_a_roundtrip(void** state)
 
   /* The session really went through the tunnel: the proxy opened exactly one,
    * and the authority it was asked for is the broker -- not the proxy itself,
-   * which is the mistake a naive implementation makes. */
-  assert_int_equal(az_iot_test_proxy_tunnels_opened(proxy), 1);
-  assert_int_equal(az_iot_test_proxy_auth_failures(proxy), 0);
-  const char* target = az_iot_test_proxy_last_connect_target(proxy);
-  assert_non_null(target);
-  char expected[300];
-  snprintf(expected, sizeof(expected), "%s:%u", g_host, (unsigned)g_port);
-  assert_string_equal(target, expected);
+   * which is the mistake a naive implementation makes.
+   *
+   * Only the fixture reports these; an external proxy is evidenced by the round
+   * trip having completed at all. */
+  if (proxy != NULL)
+  {
+    assert_int_equal(az_iot_test_proxy_tunnels_opened(proxy), 1);
+    assert_int_equal(az_iot_test_proxy_auth_failures(proxy), 0);
+    const char* target = az_iot_test_proxy_last_connect_target(proxy);
+    assert_non_null(target);
+    char expected[300];
+    snprintf(expected, sizeof(expected), "%s:%u", g_host, (unsigned)g_port);
+    assert_string_equal(target, expected);
+  }
 
   (void)c->iface->disconnect(c);
   destroy_client(c);
-  az_iot_test_proxy_stop(proxy);
+  if (proxy != NULL)
+  {
+    az_iot_test_proxy_stop(proxy);
+  }
 }
 
 /* Authenticated proxy, correct credentials. The proxy checks the DECODED
@@ -2627,8 +2852,8 @@ static void a_tunnel_dropped_mid_session_is_reported(void** state)
 /* A proxy that accepts the TCP connection and then refuses the tunnel, which is
  * what a filtering proxy does for a destination it does not allow. The client
  * must fail rather than fall back, and must not mistake the refusal for a
- * broker that answered. Driven by pointing the fixture's CONNECT at a port
- * nothing listens on, so the proxy answers 502. */
+ * broker that answered. Driven by naming a host reserved by RFC 6761 as never
+ * resolvable, so the fixture's own upstream dial fails and it answers 502. */
 static void a_proxy_that_refuses_the_tunnel_fails_the_connect(void** state)
 {
   (void)state;
@@ -2943,7 +3168,9 @@ int az_iot_conformance_run_with_options(
     if (g_websocket_port != 0)
     {
       const struct CMUnitTest ws_tests[]
-          = { cmocka_unit_test(a_websocket_session_completes_a_roundtrip) };
+          = { cmocka_unit_test(a_websocket_session_completes_a_roundtrip),
+              cmocka_unit_test(a_websocket_session_survives_fragmentation),
+              cmocka_unit_test(a_websocket_session_carries_a_large_payload) };
       failed += cmocka_run_group_tests(ws_tests, NULL, NULL);
     }
     else

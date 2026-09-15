@@ -101,6 +101,28 @@ extern "C"
      * Ignored unless http_connect is set. */
     const char* required_username;
     const char* required_password;
+
+    /* Carry the stream as opaque bytes: shape and forward, without framing it
+     * as MQTT.
+     *
+     * The pump normally reassembles each MQTT packet before forwarding, which
+     * is what lets rules match on packet type and what makes the packet
+     * counters meaningful. That framing assumes the stream IS MQTT, so a
+     * WebSocket session -- an HTTP upgrade followed by WS frames carrying MQTT
+     * inside them -- stalls: the framer waits for a packet length it read out
+     * of bytes that were never an MQTT header, and forwards nothing.
+     *
+     * Set this to put a proxy in front of a WebSocket listener. The
+     * impairments still apply (they shape writes, which needs no protocol
+     * knowledge), so fragmentation, latency, bandwidth and stalls all work.
+     * What does NOT work in this mode, because it has no packets to act on:
+     * az_iot_test_proxy_add_rule(), reset_after_packets, and
+     * az_iot_test_proxy_packets_seen(), which stays 0.
+     *
+     * This is the narrow form of the protocol/transport split tracked in
+     * docs/design.md section 4.5; it separates the two for the cases that never
+     * needed the protocol, rather than introducing the full codec seam. */
+    bool opaque_stream;
   } az_iot_test_proxy_options;
 
   az_iot_test_proxy_options az_iot_test_proxy_options_default(void);

@@ -184,6 +184,7 @@ struct az_iot_test_proxy
   char upstream_host[256];
   char upstream_port[8];
   int http_connect;
+  int opaque_stream;
   char required_username[128];
   char required_password[128];
   int require_auth;
@@ -468,7 +469,10 @@ static int proxy_read_http_head(
     unsigned deadline_ms)
 {
   size_t n = 0;
-  unsigned waited_ms = 0;
+  /* One fixed end time, not an accumulator of idle waits: counting only the
+   * timed-out selects would leave a peer that dribbles a byte every 199ms
+   * inside its budget forever, bounded in practice only by the header cap. */
+  const uint64_t end_ms = proxy_now_ms() + (uint64_t)deadline_ms;
   while (n + 1 < cap)
   {
     proxy_lock(&m->lock);
@@ -478,7 +482,7 @@ static int proxy_read_http_head(
     {
       return -1;
     }
-    if (waited_ms >= deadline_ms)
+    if (proxy_now_ms() >= end_ms)
     {
       return -1;
     }
@@ -490,7 +494,6 @@ static int proxy_read_http_head(
     }
     if (ready == 0)
     {
-      waited_ms += 200u;
       continue;
     }
 
@@ -1265,6 +1268,16 @@ static void proxy_ingest(
 {
   const uint8_t* p = (const uint8_t*)data;
   size_t left = n;
+
+  /* Opaque mode: shape and forward, with no framing at all. The stream is not
+   * MQTT here (a WebSocket session, say), so anything the framer decided about
+   * packet boundaries would be read out of bytes that are not a fixed header --
+   * and it would stall waiting for a length that never arrives. */
+  if (m->opaque_stream)
+  {
+    (void)eg_push(&eg[dir], &imp[dir], data, n);
+    return;
+  }
 
   while (left > 0)
   {
@@ -2402,6 +2415,16 @@ int az_iot_test_proxy_start(
     {
       return -1;
     }
+    /* Nor can a user-id contain a colon: Basic splits the decoded credential at
+     * the first one, so "dev:ice" would authenticate as user "dev" with a
+     * different password than the caller configured -- and the fixture would
+     * quietly be testing something else. The Paho adapter refuses the same
+     * input; refuse it here too rather than accepting a credential neither
+     * side can represent. */
+    if (options->required_username != NULL && strchr(options->required_username, ':') != NULL)
+    {
+      return -1;
+    }
     if (options->required_username != NULL
         && (strlen(options->required_username)
                 >= sizeof(((struct az_iot_test_proxy*)0)->required_username)
@@ -2429,6 +2452,7 @@ int az_iot_test_proxy_start(
   (void)snprintf(
       m->upstream_port, sizeof(m->upstream_port), "%u", (unsigned)options->upstream_port);
   m->http_connect = options->http_connect ? 1 : 0;
+  m->opaque_stream = options->opaque_stream ? 1 : 0;
   if (m->http_connect && options->required_username != NULL)
   {
     m->require_auth = 1;
