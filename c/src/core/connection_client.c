@@ -3302,7 +3302,7 @@ static void dps_aux_renew_linger(az_iot_connection_client* c)
 {
   if (c->dps_session_auxiliary)
   {
-    c->dps_aux_idle_deadline_ms = az_iot_time_mono_ms() + (uint64_t)AZ_IOT_DPS_AUX_LINGER_MS;
+    c->dps_aux_idle_deadline_ms = az_iot_time_mono_ms() + (uint64_t)AZ_IOT_DPS_AUX_IDLE_TIMEOUT_MS;
   }
 }
 

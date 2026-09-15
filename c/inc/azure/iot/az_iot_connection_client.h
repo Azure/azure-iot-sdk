@@ -462,8 +462,8 @@ extern "C"
  * request. Long enough to collapse a fetch-then-report pair onto one session,
  * short enough that nothing is held between polls. 0 is a valid setting and
  * closes the session as soon as it falls idle. */
-#ifndef AZ_IOT_DPS_AUX_LINGER_MS
-#define AZ_IOT_DPS_AUX_LINGER_MS 5000u
+#ifndef AZ_IOT_DPS_AUX_IDLE_TIMEOUT_MS
+#define AZ_IOT_DPS_AUX_IDLE_TIMEOUT_MS 5000u
 #endif
 
   /* ------------------------------------------------------------------------- */
