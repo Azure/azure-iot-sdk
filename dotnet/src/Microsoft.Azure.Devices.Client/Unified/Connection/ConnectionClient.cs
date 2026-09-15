@@ -37,7 +37,18 @@ namespace Microsoft.Azure.Devices.Client.Unified.Connection
         {
             options ??= new ConnectionClientOptions();
 
-            _gen2ConnectionClient = new(options);
+            // The nested gen 2 client only lends this client its connect packet logic and its device presence flow, both of
+            // which it runs on the connection that this client owns. It never establishes a connection of its own, so it must
+            // not be handed the application-supplied MQTT client. Doing so would attach a second MqttConnectionManager to that
+            // same client, and that manager's "connecting" handler would rewrite every CONNECT this client sends (including the
+            // one sent to DPS) with gen 2 hub credentials and MQTT 5.
+            _gen2ConnectionClient = new(new ConnectionClientOptions()
+            {
+                ConnectionRetryPolicy = options.ConnectionRetryPolicy,
+                ConnectionAttemptTimeout = options.ConnectionAttemptTimeout,
+                EnableMqttLogging = options.EnableMqttLogging,
+                // MqttClient = options.MqttClient, //TODO See above for why this isn't passed to the gen2 client, but this design feels a bit off, but needs testing of websocket + proxy support when using unified client to connect to gen2 hub
+            });
 
             ManagedMqttConnection.PublishReceivedAsync += HandleReceivedCertificateSigningPublish;
 
