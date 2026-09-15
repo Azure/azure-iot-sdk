@@ -8,6 +8,8 @@
 
 #include "sample_utils.h"
 
+#include "azure/iot/az_iot.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -103,8 +105,16 @@ int sample_config_load(sample_config* config)
   config->key = read_env_var("AZ_IOT_CLIENT_KEY");
   config->ca = read_env_var("AZ_IOT_TRUSTED_CA");
 
+  /* Optional: a provisioning endpoint other than the global one. */
+  config->dps_global_endpoint = read_env_var_optional("AZ_IOT_DPS_GLOBAL_ENDPOINT");
+
   if (!config->id_scope || !config->reg_id || !config->cert || !config->key || !config->ca)
   {
+    /* Release what did load. Without this the strings already read leak on
+     * Windows, where read_env_var() allocates -- the callers all return
+     * immediately on failure rather than releasing a config they were told was
+     * unusable. */
+    sample_config_release(config);
     return 1;
   }
 
@@ -121,8 +131,26 @@ void sample_config_release(sample_config* config)
   free(config->ca);
   free(config->device_id);
   free(config->mock_endpoint);
+  free(config->dps_global_endpoint);
 #endif
   memset(config, 0, sizeof(*config));
+}
+
+void sample_apply_dps_options(
+    struct az_iot_connection_client_options* options,
+    const sample_config* config)
+{
+  if (options == NULL || config == NULL)
+  {
+    return;
+  }
+  options->dps.id_scope = config->id_scope;
+  options->dps.registration_id = config->reg_id;
+  /* Left NULL when unset, which is what selects the SDK's global endpoint. */
+  if (config->dps_global_endpoint != NULL)
+  {
+    options->dps.global_endpoint = config->dps_global_endpoint;
+  }
 }
 
 char* sample_env_dup(const char* name, const char* fallback)
