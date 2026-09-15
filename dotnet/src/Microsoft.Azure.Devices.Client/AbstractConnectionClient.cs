@@ -1,9 +1,11 @@
-﻿using Microsoft.Azure.Devices.Client.Exceptions;
+﻿using Google.Protobuf;
+using Microsoft.Azure.Devices.Client.Exceptions;
 using Microsoft.Azure.Devices.Client.Gen2.Connection;
 using Microsoft.Azure.Devices.Client.Gen2.Twin;
 using Microsoft.Azure.Devices.Client.Models;
 using Microsoft.Azure.Devices.Client.Models.CertificateManagement;
 using Microsoft.Azure.Devices.Client.Mqtt;
+using Microsoft.Azure.Devices.Client.MqttNetAdapter;
 using Microsoft.Azure.Devices.Client.MQTTnetAdapter;
 using Microsoft.Azure.Devices.Client.Provisioning;
 using Microsoft.Azure.Devices.Client.Provisioning.Models;
@@ -134,7 +136,11 @@ namespace Microsoft.Azure.Devices.Client
             options ??= new ConnectionClientOptions();
 
             // This is the basic MQTT client that has no reconnection/retry logic
-            var unmanagedMqttClient = options.MqttClient ?? new MqttNetClient(enableMqttLogs: options.EnableMqttLogging);
+            MqttNetClientOptions mqttNetClientOptions = new()
+            {
+                EnableMqttLogs = options.EnableMqttLogging,
+            };
+            var unmanagedMqttClient = options.MqttClient ?? new MqttNetClient(mqttNetClientOptions);
 
             // This is the wrapper that manages reconnection
             ManagedMqttConnection = new(unmanagedMqttClient, options.ConnectionAttemptTimeout, options.ConnectionRetryPolicy);
@@ -852,12 +858,14 @@ namespace Microsoft.Azure.Devices.Client
                 ProvisioningApiVersion,
                 Uri.EscapeDataString(GetProvisioningUserAgentString()));
 
+
+
             return new MqttConnect()
             {
                 HostName = hostName,
                 TcpPort = 8883,
                 WebsocketPort = 443,
-                WebsocketUri = $"wss://{hostName}",
+                WebsocketUri = $"wss://{hostName}:443",
                 ClientCertificate = authentication.ClientCertificate,
                 CleanSession = true, // The DPS MQTT broker does not support session persistence, so setting these clean start/clean session flags does nothing
                 CleanStart = true,
