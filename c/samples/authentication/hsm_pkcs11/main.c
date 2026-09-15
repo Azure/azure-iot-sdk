@@ -223,6 +223,8 @@ int main(void)
 
   az_iot_connection_client_options copts = az_iot_connection_client_options_default();
   copts.client_id = config.reg_id;
+  /* This sample carries its own config struct (PKCS#11 URI and engine id), not
+   * the shared sample_config, so it sets the DPS fields directly. */
   copts.dps.id_scope = config.id_scope;
   copts.dps.registration_id = config.reg_id;
   copts.certificate_provider = &provider.base;
