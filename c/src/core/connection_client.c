@@ -1497,8 +1497,10 @@ static void presence_gen_nonce(az_iot_connection_client* c, uint8_t out[PRESENCE
   /* Stamp the RFC 4122 version (4 = random) and variant (10xx) bits so the
    * nonce is a well-formed UUID, which is what the presence protocol
    * specifies and what the .NET client produces via Guid.NewGuid(). */
-  out[PRESENCE_UUID_VERSION_OCTET] = PRESENCE_UUID_STAMP_VERSION_4(out[PRESENCE_UUID_VERSION_OCTET]);
-  out[PRESENCE_UUID_VARIANT_OCTET] = PRESENCE_UUID_STAMP_VARIANT_RFC4122(out[PRESENCE_UUID_VARIANT_OCTET]);
+  out[PRESENCE_UUID_VERSION_OCTET]
+      = PRESENCE_UUID_STAMP_VERSION_4(out[PRESENCE_UUID_VERSION_OCTET]);
+  out[PRESENCE_UUID_VARIANT_OCTET]
+      = PRESENCE_UUID_STAMP_VARIANT_RFC4122(out[PRESENCE_UUID_VARIANT_OCTET]);
 }
 
 /* Build the Hub-Next (AEG) CONNECT username. The IoT Hub auth webhook denies a
@@ -1545,8 +1547,12 @@ static bool presence_build_username(const az_iot_connection_client* c, char* buf
  * dispatched on this connection (opts.twin_push); reported_version and
  * desired_version stay 0 (the device does not persist twin state yet) and are
  * omitted. Returns the encoded length. */
-static size_t presence_encode_birth(uint8_t* out, size_t cap, bool session_present,
-                                    bool push_desired, bool push_reported)
+static size_t presence_encode_birth(
+    uint8_t* out,
+    size_t cap,
+    bool session_present,
+    bool push_desired,
+    bool push_reported)
 {
   size_t n = 0;
   if (session_present && n + 2u <= cap)
@@ -1606,10 +1612,7 @@ static bool presence_read_varint(const uint8_t* buf, size_t len, size_t* pos, ui
  * admission; the device adopts them as its view for this connection. Fields the
  * service omits keep the proto3 default of 0, and unknown fields are skipped so
  * a service-side schema addition does not break the handshake. */
-static void presence_decode_birth_ack(
-    az_iot_connection_client* c,
-    const uint8_t* buf,
-    size_t len)
+static void presence_decode_birth_ack(az_iot_connection_client* c, const uint8_t* buf, size_t len)
 {
   c->presence.desired_version = 0;
   c->presence.reported_version = 0;

@@ -565,17 +565,11 @@ static int setup_next_ex(void** state, bool push_desired, bool push_reported)
   return 0;
 }
 
-static int setup_next(void** state)
-{
-    return setup_next_ex(state, false, false);
-}
+static int setup_next(void** state) { return setup_next_ex(state, false, false); }
 
 /* Fixture variant: HUB_NEXT with both twin push bits configured by the
  * application, to verify the birth advertises what was asked for. */
-static int setup_next_twin_push(void** state)
-{
-    return setup_next_ex(state, true, true);
-}
+static int setup_next_twin_push(void** state) { return setup_next_ex(state, true, true); }
 
 /* Most recent recorded call of `kind`, or NULL if none. */
 static const az_iot_mock_call* last_call_of_kind(
@@ -803,13 +797,13 @@ static void hub_next_birth_reports_session_present(void** state)
  * payload carries proto3 fields 12 and 13. */
 static void hub_next_birth_advertises_configured_twin_push(void** state)
 {
-    fixture* fx = (fixture*)*state;
-    az_iot_mock_mqtt_client* m = NULL;
-    const az_iot_mock_call* birth = drive_to_birth_published(fx, false, &m);
+  fixture* fx = (fixture*)*state;
+  az_iot_mock_mqtt_client* m = NULL;
+  const az_iot_mock_call* birth = drive_to_birth_published(fx, false, &m);
 
-    const uint8_t expect_body[] = { 0x60, 0x01, 0x68, 0x01 };
-    assert_int_equal(birth->payload_len, sizeof(expect_body));
-    assert_memory_equal(birth->payload, expect_body, sizeof(expect_body));
+  const uint8_t expect_body[] = { 0x60, 0x01, 0x68, 0x01 };
+  assert_int_equal(birth->payload_len, sizeof(expect_body));
+  assert_memory_equal(birth->payload, expect_body, sizeof(expect_body));
 }
 
 /* The connection nonce must be a well-formed RFC 4122 version 4 UUID: the
@@ -817,13 +811,13 @@ static void hub_next_birth_advertises_configured_twin_push(void** state)
  * Guid.NewGuid(). */
 static void hub_next_connect_nonce_is_uuid_v4(void** state)
 {
-    fixture* fx = (fixture*)*state;
-    az_iot_mock_mqtt_client* m = NULL;
-    const az_iot_mock_call* birth = drive_to_birth_published(fx, false, &m);
+  fixture* fx = (fixture*)*state;
+  az_iot_mock_mqtt_client* m = NULL;
+  const az_iot_mock_call* birth = drive_to_birth_published(fx, false, &m);
 
-    assert_int_equal(birth->correlation_data_len, 16);
-    assert_int_equal(birth->correlation_data[6] & 0xF0, 0x40); /* version 4   */
-    assert_int_equal(birth->correlation_data[8] & 0xC0, 0x80); /* variant 10xx */
+  assert_int_equal(birth->correlation_data_len, 16);
+  assert_int_equal(birth->correlation_data[6] & 0xF0, 0x40); /* version 4   */
+  assert_int_equal(birth->correlation_data[8] & 0xC0, 0x80); /* variant 10xx */
 }
 
 /* A dev/presence SUBACK that fails (e.g. the broker refused the subscription)
@@ -937,31 +931,33 @@ static void hub_next_birth_ack_timeout_faults(void** state)
 
 /* Drive the handshake to CONNECTED with `payload` as the birth-ack body. */
 static void drive_to_connected_with_birth_ack(
-    fixture* fx, const uint8_t* payload, size_t payload_len)
+    fixture* fx,
+    const uint8_t* payload,
+    size_t payload_len)
 {
-    az_iot_mock_mqtt_client* m = NULL;
-    const az_iot_mock_call* birth = drive_to_birth_published(fx, false, &m);
+  az_iot_mock_mqtt_client* m = NULL;
+  const az_iot_mock_call* birth = drive_to_birth_published(fx, false, &m);
 
-    uint8_t nonce[16];
-    memcpy(nonce, birth->correlation_data, sizeof(nonce));
-    az_iot_mqtt_user_property ack_type = { "type", "birth-ack:1" };
-    az_iot_mqtt_message ack_msg;
-    memset(&ack_msg, 0, sizeof(ack_msg));
-    ack_msg.topic = "ih/ut-device/dev/presence";
-    ack_msg.correlation_data = nonce;
-    ack_msg.correlation_data_len = sizeof(nonce);
-    ack_msg.user_properties = &ack_type;
-    ack_msg.user_properties_count = 1;
-    ack_msg.payload = payload;
-    ack_msg.payload_len = payload_len;
-    az_iot_mqtt_event ack;
-    memset(&ack, 0, sizeof(ack));
-    ack.kind = AZ_IOT_MQTT_EVT_MESSAGE;
-    ack.message = &ack_msg;
-    assert_true(az_iot_mock_mqtt_client_inject_event(m, &ack));
-    (void)az_iot_connection_client_do_work(fx->client, 0);
+  uint8_t nonce[16];
+  memcpy(nonce, birth->correlation_data, sizeof(nonce));
+  az_iot_mqtt_user_property ack_type = { "type", "birth-ack:1" };
+  az_iot_mqtt_message ack_msg;
+  memset(&ack_msg, 0, sizeof(ack_msg));
+  ack_msg.topic = "ih/ut-device/dev/presence";
+  ack_msg.correlation_data = nonce;
+  ack_msg.correlation_data_len = sizeof(nonce);
+  ack_msg.user_properties = &ack_type;
+  ack_msg.user_properties_count = 1;
+  ack_msg.payload = payload;
+  ack_msg.payload_len = payload_len;
+  az_iot_mqtt_event ack;
+  memset(&ack, 0, sizeof(ack));
+  ack.kind = AZ_IOT_MQTT_EVT_MESSAGE;
+  ack.message = &ack_msg;
+  assert_true(az_iot_mock_mqtt_client_inject_event(m, &ack));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
 
-    assert_int_equal(fx->rec.states[fx->rec.count - 1], AZ_IOT_CONN_STATE_CONNECTED);
+  assert_int_equal(fx->rec.states[fx->rec.count - 1], AZ_IOT_CONN_STATE_CONNECTED);
 }
 
 /* The birth-ack carries the authoritative twin versions as of birth admission.
@@ -969,32 +965,30 @@ static void drive_to_connected_with_birth_ack(
  * patch, so they must be decoded and retained, not discarded with the ack. */
 static void hub_next_birth_ack_records_twin_versions(void** state)
 {
-    fixture* fx = (fixture*)*state;
-    /* proto3 BirthAck: desired_version(10)=7, reported_version(11)=300. */
-    const uint8_t ack_body[] = { 0x50, 0x07, 0x58, 0xAC, 0x02 };
-    drive_to_connected_with_birth_ack(fx, ack_body, sizeof(ack_body));
+  fixture* fx = (fixture*)*state;
+  /* proto3 BirthAck: desired_version(10)=7, reported_version(11)=300. */
+  const uint8_t ack_body[] = { 0x50, 0x07, 0x58, 0xAC, 0x02 };
+  drive_to_connected_with_birth_ack(fx, ack_body, sizeof(ack_body));
 
-    uint64_t desired = 0, reported = 0;
-    assert_int_equal(
-        az_iot_connection_client__presence_twin_versions(fx->client, &desired, &reported),
-        AZ_IOT_OK);
-    assert_int_equal(desired, 7);
-    assert_int_equal(reported, 300);
+  uint64_t desired = 0, reported = 0;
+  assert_int_equal(
+      az_iot_connection_client__presence_twin_versions(fx->client, &desired, &reported), AZ_IOT_OK);
+  assert_int_equal(desired, 7);
+  assert_int_equal(reported, 300);
 }
 
 /* proto3 omits default-valued fields, so an empty birth-ack body is legal and
  * means both versions are 0. */
 static void hub_next_birth_ack_without_versions_yields_zero(void** state)
 {
-    fixture* fx = (fixture*)*state;
-    drive_to_connected_with_birth_ack(fx, NULL, 0);
+  fixture* fx = (fixture*)*state;
+  drive_to_connected_with_birth_ack(fx, NULL, 0);
 
-    uint64_t desired = 1, reported = 1;
-    assert_int_equal(
-        az_iot_connection_client__presence_twin_versions(fx->client, &desired, &reported),
-        AZ_IOT_OK);
-    assert_int_equal(desired, 0);
-    assert_int_equal(reported, 0);
+  uint64_t desired = 1, reported = 1;
+  assert_int_equal(
+      az_iot_connection_client__presence_twin_versions(fx->client, &desired, &reported), AZ_IOT_OK);
+  assert_int_equal(desired, 0);
+  assert_int_equal(reported, 0);
 }
 
 /* Fields the SDK does not know (a later schema revision adding per-feature
@@ -1002,22 +996,21 @@ static void hub_next_birth_ack_without_versions_yields_zero(void** state)
  * versions that follow them are still read. */
 static void hub_next_birth_ack_skips_unknown_fields(void** state)
 {
-    fixture* fx = (fixture*)*state;
-    const uint8_t ack_body[] = {
-        0x12, 0x03, 0x61, 0x62, 0x63,       /* f2  length-delimited "abc"  */
-        0x50, 0x07,                         /* f10 desired_version  = 7    */
-        0x2D, 0x01, 0x02, 0x03, 0x04,       /* f5  32-bit                  */
-        0x58, 0xAC, 0x02,                   /* f11 reported_version = 300  */
-        0x41, 0, 0, 0, 0, 0, 0, 0, 0,       /* f8  64-bit                  */
-    };
-    drive_to_connected_with_birth_ack(fx, ack_body, sizeof(ack_body));
+  fixture* fx = (fixture*)*state;
+  const uint8_t ack_body[] = {
+    0x12, 0x03, 0x61, 0x62, 0x63, /* f2  length-delimited "abc"  */
+    0x50, 0x07, /* f10 desired_version  = 7    */
+    0x2D, 0x01, 0x02, 0x03, 0x04, /* f5  32-bit                  */
+    0x58, 0xAC, 0x02, /* f11 reported_version = 300  */
+    0x41, 0,    0,    0,    0,    0, 0, 0, 0, /* f8  64-bit                  */
+  };
+  drive_to_connected_with_birth_ack(fx, ack_body, sizeof(ack_body));
 
-    uint64_t desired = 0, reported = 0;
-    assert_int_equal(
-        az_iot_connection_client__presence_twin_versions(fx->client, &desired, &reported),
-        AZ_IOT_OK);
-    assert_int_equal(desired, 7);
-    assert_int_equal(reported, 300);
+  uint64_t desired = 0, reported = 0;
+  assert_int_equal(
+      az_iot_connection_client__presence_twin_versions(fx->client, &desired, &reported), AZ_IOT_OK);
+  assert_int_equal(desired, 7);
+  assert_int_equal(reported, 300);
 }
 
 /* A twin version is a uint64, and proto3 spends 10 bytes on any value with bit
@@ -1028,57 +1021,74 @@ static void hub_next_birth_ack_skips_unknown_fields(void** state)
  * against a stale if_match. */
 static void hub_next_birth_ack_decodes_ten_byte_versions(void** state)
 {
-    fixture* fx = (fixture*)*state;
-    const uint8_t ack_body[] = {
-        /* f10 desired_version = UINT64_MAX */
-        0x50, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x01,
-        /* f11 reported_version = 2^63 */
-        0x58, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x01,
-    };
-    drive_to_connected_with_birth_ack(fx, ack_body, sizeof(ack_body));
+  fixture* fx = (fixture*)*state;
+  const uint8_t ack_body[] = {
+    /* f10 desired_version = UINT64_MAX */
+    0x50,
+    0xFF,
+    0xFF,
+    0xFF,
+    0xFF,
+    0xFF,
+    0xFF,
+    0xFF,
+    0xFF,
+    0xFF,
+    0x01,
+    /* f11 reported_version = 2^63 */
+    0x58,
+    0x80,
+    0x80,
+    0x80,
+    0x80,
+    0x80,
+    0x80,
+    0x80,
+    0x80,
+    0x80,
+    0x01,
+  };
+  drive_to_connected_with_birth_ack(fx, ack_body, sizeof(ack_body));
 
-    uint64_t desired = 0, reported = 0;
-    assert_int_equal(
-        az_iot_connection_client__presence_twin_versions(fx->client, &desired, &reported),
-        AZ_IOT_OK);
-    assert_true(desired == UINT64_MAX);
-    assert_true(reported == (uint64_t)1 << 63);
+  uint64_t desired = 0, reported = 0;
+  assert_int_equal(
+      az_iot_connection_client__presence_twin_versions(fx->client, &desired, &reported), AZ_IOT_OK);
+  assert_true(desired == UINT64_MAX);
+  assert_true(reported == (uint64_t)1 << 63);
 }
 
 /* Eleven bytes cannot encode a uint64, so the value is corrupt and everything
  * after it is unparseable. Stop rather than accept a truncated interpretation. */
 static void hub_next_birth_ack_rejects_over_long_varint(void** state)
 {
-    fixture* fx = (fixture*)*state;
-    const uint8_t ack_body[] = {
-        0x50, 0x07,                                     /* f10 desired_version = 7 */
-        0x58, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,             /* f11, 11-byte varint     */
-        0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x01,
-    };
-    drive_to_connected_with_birth_ack(fx, ack_body, sizeof(ack_body));
+  fixture* fx = (fixture*)*state;
+  const uint8_t ack_body[] = {
+    0x50, 0x07, /* f10 desired_version = 7 */
+    0x58, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, /* f11, 11-byte varint     */
+    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x01,
+  };
+  drive_to_connected_with_birth_ack(fx, ack_body, sizeof(ack_body));
 
-    uint64_t desired = 0, reported = 99;
-    assert_int_equal(
-        az_iot_connection_client__presence_twin_versions(fx->client, &desired, &reported),
-        AZ_IOT_OK);
-    assert_int_equal(desired, 7);
-    assert_int_equal(reported, 0);
+  uint64_t desired = 0, reported = 99;
+  assert_int_equal(
+      az_iot_connection_client__presence_twin_versions(fx->client, &desired, &reported), AZ_IOT_OK);
+  assert_int_equal(desired, 7);
+  assert_int_equal(reported, 0);
 }
 
 /* A truncated body (varint with the continuation bit set at the end) must stop
  * the decode without reading past the buffer. */
 static void hub_next_birth_ack_truncated_payload_is_safe(void** state)
 {
-    fixture* fx = (fixture*)*state;
-    const uint8_t ack_body[] = { 0x50, 0x07, 0x58, 0xAC };  /* f11 varint cut short */
-    drive_to_connected_with_birth_ack(fx, ack_body, sizeof(ack_body));
+  fixture* fx = (fixture*)*state;
+  const uint8_t ack_body[] = { 0x50, 0x07, 0x58, 0xAC }; /* f11 varint cut short */
+  drive_to_connected_with_birth_ack(fx, ack_body, sizeof(ack_body));
 
-    uint64_t desired = 0, reported = 99;
-    assert_int_equal(
-        az_iot_connection_client__presence_twin_versions(fx->client, &desired, &reported),
-        AZ_IOT_OK);
-    assert_int_equal(desired, 7);
-    assert_int_equal(reported, 0);
+  uint64_t desired = 0, reported = 99;
+  assert_int_equal(
+      az_iot_connection_client__presence_twin_versions(fx->client, &desired, &reported), AZ_IOT_OK);
+  assert_int_equal(desired, 7);
+  assert_int_equal(reported, 0);
 }
 
 /* D2: request_operational_certificate requires a certificate_provider whose
@@ -1955,12 +1965,10 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         hub_next_birth_advertises_configured_twin_push, setup_next_twin_push, teardown),
     cmocka_unit_test_setup_teardown(hub_next_connect_nonce_is_uuid_v4, setup_next, teardown),
-    cmocka_unit_test_setup_teardown(
-        hub_next_birth_ack_records_twin_versions, setup_next, teardown),
+    cmocka_unit_test_setup_teardown(hub_next_birth_ack_records_twin_versions, setup_next, teardown),
     cmocka_unit_test_setup_teardown(
         hub_next_birth_ack_without_versions_yields_zero, setup_next, teardown),
-    cmocka_unit_test_setup_teardown(
-        hub_next_birth_ack_skips_unknown_fields, setup_next, teardown),
+    cmocka_unit_test_setup_teardown(hub_next_birth_ack_skips_unknown_fields, setup_next, teardown),
     cmocka_unit_test_setup_teardown(
         hub_next_birth_ack_decodes_ten_byte_versions, setup_next, teardown),
     cmocka_unit_test_setup_teardown(
