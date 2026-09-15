@@ -68,6 +68,7 @@ typedef struct
   char* key_uri;
   char* engine_id;
   char* ca;
+  char* dps_global_endpoint; /* optional; NULL selects the SDK default */
 } hsm_config;
 
 static int is_set(const char* s) { return s != NULL && s[0] != '\0'; }
@@ -80,6 +81,7 @@ static void hsm_config_release(hsm_config* c)
   free(c->key_uri);
   free(c->engine_id);
   free(c->ca);
+  free(c->dps_global_endpoint);
   memset(c, 0, sizeof(*c));
 }
 
@@ -92,6 +94,7 @@ static int hsm_config_load(hsm_config* c)
   c->key_uri = sample_env_dup("AZ_IOT_CLIENT_KEY_URI", SAMPLE_CLIENT_KEY_URI);
   c->engine_id = sample_env_dup("AZ_IOT_CRYPTO_ENGINE_ID", SAMPLE_CRYPTO_ENGINE_ID);
   c->ca = sample_env_dup("AZ_IOT_TRUSTED_CA", SAMPLE_TRUSTED_CA);
+  c->dps_global_endpoint = sample_env_dup("AZ_IOT_DPS_GLOBAL_ENDPOINT", NULL);
 
   return (is_set(c->id_scope) && is_set(c->reg_id) && is_set(c->cert) && is_set(c->key_uri)
           && is_set(c->engine_id))
@@ -224,9 +227,15 @@ int main(void)
   az_iot_connection_client_options copts = az_iot_connection_client_options_default();
   copts.client_id = config.reg_id;
   /* This sample carries its own config struct (PKCS#11 URI and engine id), not
-   * the shared sample_config, so it sets the DPS fields directly. */
+   * the shared sample_config, so it sets the DPS fields directly -- including
+   * the optional endpoint, so it targets the same provisioning service as every
+   * other sample rather than always the global one. */
   copts.dps.id_scope = config.id_scope;
   copts.dps.registration_id = config.reg_id;
+  if (config.dps_global_endpoint != NULL)
+  {
+    copts.dps.global_endpoint = config.dps_global_endpoint;
+  }
   copts.certificate_provider = &provider.base;
 
   if (az_iot_connection_client_init(&connection_client, &copts) != AZ_IOT_OK)

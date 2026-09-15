@@ -110,6 +110,11 @@ int sample_config_load(sample_config* config)
 
   if (!config->id_scope || !config->reg_id || !config->cert || !config->key || !config->ca)
   {
+    /* Release what did load. Without this the strings already read leak on
+     * Windows, where read_env_var() allocates -- the callers all return
+     * immediately on failure rather than releasing a config they were told was
+     * unusable. */
+    sample_config_release(config);
     return 1;
   }
 
