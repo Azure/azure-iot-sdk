@@ -95,6 +95,33 @@ size_t az_iot_adu_device_props_buffer_size(const az_iot_adu_device_properties* d
   return n;
 }
 
+/* The installed-update-id JSON, as the parts the writer concatenates. Shared so
+ * the preflight that sizes this cannot drift from the code that builds it. */
+static void update_id_json_parts(const az_iot_adu_update_id_info* id, const char* parts[7])
+{
+  parts[0] = "{\"provider\":\"";
+  parts[1] = (id->provider != NULL) ? id->provider : "";
+  parts[2] = "\",\"name\":\"";
+  parts[3] = (id->name != NULL) ? id->name : "";
+  parts[4] = "\",\"version\":\"";
+  parts[5] = (id->version != NULL) ? id->version : "";
+  parts[6] = "\"}";
+}
+
+/* Bytes the writer needs for that JSON, terminator included: build_str writes a
+ * NUL and requires room for it beyond the content. */
+static size_t update_id_json_size(const az_iot_adu_update_id_info* id)
+{
+  const char* parts[7];
+  update_id_json_parts(id, parts);
+  size_t needed = 1;
+  for (size_t i = 0; i < 7; ++i)
+  {
+    needed += strlen(parts[i]);
+  }
+  return needed;
+}
+
 /* Whether a property set fits the client cache, checked before anything is
  * mutated. cache_device_properties() clears the header before it discovers an
  * overflow, so a failure there destroys the previous properties as well as
@@ -115,6 +142,14 @@ static az_iot_result device_props_fit_cache(
   }
   size_t needed = az_iot_adu_device_props_buffer_size(device_props);
   if (needed == 0 || needed > ADU_I(client).device_props_buffer_size)
+  {
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  }
+  /* The serialized installed-update-id has its own fixed buffer, and overflowing
+   * it is the last thing cache_device_properties() does -- after it has cleared
+   * the header. */
+  if (update_id_json_size(&device_props->installed_update_id)
+      > sizeof(ADU_I(client).update_id_json))
   {
     return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
   }
@@ -224,11 +259,8 @@ static az_iot_result cache_device_properties(
    * expects ({"provider":..,"name":..,"version":..}). Reported as the
    * device's installedUpdateId via the upstream agent-state payload. */
   {
-    const char* prov = src->installed_update_id.provider ? src->installed_update_id.provider : "";
-    const char* name = src->installed_update_id.name ? src->installed_update_id.name : "";
-    const char* ver = src->installed_update_id.version ? src->installed_update_id.version : "";
-    const char* update_id_parts[]
-        = { "{\"provider\":\"", prov, "\",\"name\":\"", name, "\",\"version\":\"", ver, "\"}" };
+    const char* update_id_parts[7];
+    update_id_json_parts(&src->installed_update_id, update_id_parts);
     if (az_iot_span_writer_build_str(
             AZ_SPAN_FROM_BUFFER(ADU_I(client).update_id_json),
             &ADU_I(client).update_id_json_len,
@@ -1281,9 +1313,14 @@ static void on_channel_result(
      *
      * Whether the report was terminal is recorded when it is submitted rather
      * than inferred from the state here: acknowledgements are asynchronous, so
-     * the workflow may well have moved on by now. */
-    if (operation == AZ_IOT_ADU_OP_REPORT_STATUS && result == AZ_IOT_OK
-        && ADU_I(client).pending_report_terminal)
+     * the workflow may well have moved on by now.
+     *
+     * ALREADY_REPORTED counts as delivered -- a terminal report the service
+     * already holds arrives as a conflict, not a success, and treating it as a
+     * failure would leave the loop waiting on a report that will never be
+     * accepted. */
+    if (operation == AZ_IOT_ADU_OP_REPORT_STATUS && ADU_I(client).pending_report_terminal
+        && (result == AZ_IOT_OK || action == AZ_IOT_ADU_ERROR_ACTION_ALREADY_REPORTED))
     {
       ADU_I(client).initial_get_pending = true;
     }

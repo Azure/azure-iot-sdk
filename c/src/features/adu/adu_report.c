@@ -239,14 +239,25 @@ az_iot_result az_iot_adu__report_state(az_iot_adu_client_t* client)
   report.step_results = (r->step_results_count > 0) ? r->step_results : NULL;
   report.step_results_count = r->step_results_count;
 
-  /* Recorded at submit time, not read back at acknowledgement time: channel
-   * results are asynchronous, so a progress report can be accepted while the
-   * workflow is still running and acknowledged after it has finished. Reading
-   * the state in the callback would then mistake that progress acknowledgement
-   * for the terminal one and start a spurious re-check. */
-  ADU_I(client).pending_report_terminal = (ADU_I(client).state == AZ_IOT_ADU_STATE_IDLE);
+  /* Terminality comes from the outcome, not from the state, and is committed
+   * only if the channel accepts the report.
+   *
+   * The outcome is what actually says whether this is the last word on the
+   * workflow: a failure is submitted while the state is still FAILED, so
+   * reading the state would mark the final report of a failed install as
+   * progress and leave the bootstrap loop waiting for a re-check that never
+   * comes. And a rejected submission must not disturb the marker belonging to a
+   * report still awaiting its acknowledgement. */
+  bool terminal = (outcome != AZ_IOT_ADU_OUTCOME_IN_PROGRESS);
+  bool previous_terminal = ADU_I(client).pending_report_terminal;
+  ADU_I(client).pending_report_terminal = terminal;
 
-  return ADU_I(client).channel.vtable->report(ADU_I(client).channel.ctx, &report);
+  az_iot_result sent = ADU_I(client).channel.vtable->report(ADU_I(client).channel.ctx, &report);
+  if (sent != AZ_IOT_OK)
+  {
+    ADU_I(client).pending_report_terminal = previous_terminal;
+  }
+  return sent;
 }
 
 /* ------------------------------------------------------------------------- */

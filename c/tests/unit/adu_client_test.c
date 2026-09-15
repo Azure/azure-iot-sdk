@@ -2087,6 +2087,80 @@ static void a_set_too_large_for_the_cache_changes_nothing(void** state)
   assert_string_equal(cached->manufacturer, before_manufacturer);
 }
 
+/* The installed-update-id has its own fixed buffer, overflowed last of all --
+ * after the cache header has been cleared. A provider long enough to blow the
+ * JSON while still fitting the cache and the channel must change nothing. */
+static void an_oversized_installed_update_id_changes_nothing(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  const az_iot_adu_device_properties* cached
+      = (const az_iot_adu_device_properties*)(const void*)fx->dp_buf;
+  char before_manufacturer[64];
+  snprintf(before_manufacturer, sizeof(before_manufacturer), "%s", cached->manufacturer);
+
+  /* 100 characters plus the JSON's own 38 exceeds the 128-byte buffer, while
+   * the strings themselves still fit the cache and the channel. */
+  static char long_provider[101];
+  memset(long_provider, 'p', sizeof(long_provider) - 1);
+  long_provider[sizeof(long_provider) - 1] = '\0';
+  az_iot_adu_device_properties dp = { 0 };
+  dp.manufacturer = "Fabrikam";
+  dp.model = "Gizmo";
+  dp.installed_update_id.provider = long_provider;
+  dp.installed_update_id.name = "n";
+  dp.installed_update_id.version = "v";
+
+  assert_int_equal(
+      az_iot_adu_client_update_device_properties(&fx->adu, &dp), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+
+  assert_non_null(cached->manufacturer);
+  assert_string_equal(cached->manufacturer, before_manufacturer);
+}
+
+/* A failed workflow's report is its last word, so it closes the loop just as a
+ * success does. Reading the state instead of the outcome marked it progress,
+ * because a failure is reported while the state is still FAILED. */
+static void a_failed_workflow_report_is_terminal(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  fx->log.install_result = AZ_IOT_ADU_RESULT_FAILURE;
+  inject_patch(fx, signed_patch());
+  for (int i = 0; i < 40 && az_iot_adu_client_get_state(&fx->adu) != AZ_IOT_ADU_STATE_FAILED; ++i)
+  {
+    assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  }
+  assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_FAILED);
+  assert_true(fx->adu._internal.pending_report_terminal);
+}
+
+/* A terminal report the service already holds comes back as a conflict, not a
+ * success. Treating it as a failure would leave the loop waiting on a report
+ * that will never be accepted, and the hold would run to its timeout. */
+static void an_already_reported_conflict_still_asks_again(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  inject_patch(fx, signed_patch());
+  pump(fx, 60);
+  assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
+  assert_true(fx->adu._internal.pending_report_terminal);
+  int before = fx->chan.request_update_count;
+
+  fx->chan.result_cb(
+      AZ_IOT_ADU_OP_REPORT_STATUS,
+      AZ_IOT_ERR_DPS,
+      AZ_IOT_ADU_ERROR_ACTION_ALREADY_REPORTED,
+      fx->chan.engine_ctx);
+
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(fx->chan.request_update_count, before + 1);
+}
+
 /* Acknowledgements are asynchronous, so a progress report submitted while the
  * workflow was running can be accepted after it has finished. Reading the state
  * at that point would call it terminal and start a check that nothing asked
@@ -2195,6 +2269,10 @@ int main(void)
     cmocka_unit_test_setup_teardown(a_terminal_verdict_does_not_re_arm_the_report, setup, teardown),
     cmocka_unit_test_setup_teardown(an_accepted_terminal_report_asks_again, setup, teardown),
     cmocka_unit_test_setup_teardown(a_set_too_large_for_the_cache_changes_nothing, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_oversized_installed_update_id_changes_nothing, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_failed_workflow_report_is_terminal, setup, teardown),
+    cmocka_unit_test_setup_teardown(an_already_reported_conflict_still_asks_again, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_progress_report_acknowledged_after_idle_does_not_ask_again, setup, teardown),
     cmocka_unit_test_setup_teardown(
