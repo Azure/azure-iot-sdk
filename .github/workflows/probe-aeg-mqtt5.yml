@@ -1,0 +1,170 @@
+# Copyright (c) Microsoft. All rights reserved.
+# Licensed under the MIT license. See LICENSE file in the project root for full license information.
+#
+# One-off investigation workflow: can this subscription create an AEG-backed
+# (MQTT v5) IoT Hub, and does DPS accept one?
+#
+# An MQTT5/AEG hub is NOT a SKU. It is an ordinary S1 hub carrying
+# `properties.connectionProfile = "mqttv5"`, which neither the portal nor
+# `az iot hub create` can set yet -- so the hub is created with a raw ARM PUT
+# (eng/aeg/hub-body.json). This workflow answers, against the CI subscription,
+# the questions that decide how a gen2 e2e leg gets provisioned:
+#
+#   - is `connectionProfile` accepted here, and what value comes back?
+#   - is the hub genuinely AEG-backed (the .device endpoint must resolve through
+#     an *.ts.eventgrid.azure.net alias -- the flag alone is not proof)?
+#   - will DPS link such a hub at all?
+#
+# MANUAL ONLY (`workflow_dispatch`). It creates billable Azure resources, so it
+# must never run on push, pull_request or a schedule.
+#
+# Delete this workflow once the answers are folded into the shared provisioning
+# action; it is a probe, not a gate.
+
+name: probe-aeg-mqtt5
+
+on:
+  workflow_dispatch:
+    inputs:
+      location:
+        description: 'Azure region. AEG/MQTT5 is canary-only today (eastus2euap).'
+        required: false
+        default: 'eastus2euap'
+      hub-api-version:
+        description: 'Control-plane api-version carrying connectionProfile.'
+        required: false
+        default: '2026-08-01-preview'
+      sku:
+        description: 'IoT Hub SKU. An MQTT5 hub is an ordinary S1 -- there is no "AEG SKU".'
+        required: false
+        default: 'S1'
+      skip-dps:
+        description: 'Skip the DPS link step (step 9).'
+        type: boolean
+        required: false
+        default: false
+      keep-resources:
+        description: 'Keep the resource group after the run (for hands-on SDK testing). Teardown is SKIPPED when true.'
+        type: boolean
+        required: false
+        default: false
+
+# Never let two runs share a resource group.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write   # required for azure/login OIDC
+
+# Derived from the RUN, not from a random name published as a job output: a
+# CANCELLED job does not propagate `outputs`, so a teardown reading
+# `needs.probe.outputs.rg` would receive an empty string and silently delete
+# nothing while the group stayed behind. Both jobs compute this independently.
+env:
+  PROBE_RESOURCE_GROUP: AegMqtt5Probe-${{ github.run_id }}-${{ github.run_attempt }}
+
+jobs:
+  probe:
+    name: probe (create mqttv5 hub)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60   # hub create alone is ~7-9 min; DPS and polling add more
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure Login via OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Run the probe
+        shell: pwsh
+        env:
+          # Passed via env, never interpolated into the script body, so the value
+          # is data and not code.
+          PROBE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          # -KeepResources always: the teardown job below owns deletion, so that a
+          # cancelled or failed run is still cleaned up. The probe's own teardown
+          # would never run in those cases.
+          ./eng/aeg/probe-aeg-mqtt5.ps1 `
+            -SubscriptionId $env:PROBE_SUBSCRIPTION_ID `
+            -Location '${{ inputs.location }}' `
+            -HubApiVersion '${{ inputs.hub-api-version }}' `
+            -Sku '${{ inputs.sku }}' `
+            -ResourceGroup $env:PROBE_RESOURCE_GROUP `
+            -HubBodyPath ./eng/aeg/hub-body.json `
+            -ReportPath ./aeg-probe-report.json `
+            -TranscriptPath ./aeg-probe-transcript.txt `
+            -KeepResources `
+            ${{ inputs.skip-dps && '-SkipDps' || '' }}
+
+      - name: Summarise the result
+        if: always()
+        shell: pwsh
+        run: |
+          if (-not (Test-Path ./aeg-probe-report.json)) {
+            "The probe wrote no report -- it failed before the summary." | Out-File -Append $env:GITHUB_STEP_SUMMARY
+            exit 0
+          }
+          $r = Get-Content -Raw ./aeg-probe-report.json | ConvertFrom-Json
+          $lines = @()
+          $lines += "## AEG / MQTT5 probe"
+          $lines += ""
+          $lines += "| field | value |"
+          $lines += "|---|---|"
+          $lines += "| region | $($r.location) |"
+          $lines += "| api-version | $($r.hubApiVersion) |"
+          $lines += "| hub | $($r.hubName) |"
+          $lines += "| connectionProfile echoed | ``$($r.facts.connectionProfileEchoed)`` |"
+          $lines += "| sku | $($r.facts.skuName) / $($r.facts.skuTier) |"
+          $lines += "| AEG alias found | $($r.facts.aegAliasFound) |"
+          $lines += "| create minutes | $($r.facts.createMinutes) |"
+          $lines += "| DPS link accepted | $($r.facts.dpsLinkAccepted) |"
+          $lines += ""
+          $lines += "| step | result | detail |"
+          $lines += "|---|---|---|"
+          foreach ($s in $r.steps) { $lines += "| $($s.Step) | $($s.Result) | $($s.Detail) |" }
+          $lines -join "`n" | Out-File -Append $env:GITHUB_STEP_SUMMARY
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: aeg-probe-report
+          path: |
+            aeg-probe-report.json
+            aeg-probe-transcript.txt
+          if-no-files-found: warn
+
+  teardown:
+    name: teardown (delete resources)
+    needs: [probe]
+    # `always()` also covers cancellation. The group name comes from the workflow
+    # `env`, not from `needs.probe.outputs`, so a cancelled probe is still torn
+    # down. Skipped only when the caller asked to keep the resources.
+    if: always() && inputs.keep-resources != true
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Azure Login via OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Delete the resource group
+        shell: pwsh
+        run: |
+          $rg = $env:PROBE_RESOURCE_GROUP
+          $exists = az group exists --name $rg
+          if ($exists -eq 'true') {
+            Write-Host "Deleting $rg"
+            az group delete --name $rg --yes --no-wait
+          } else {
+            Write-Host "$rg does not exist; nothing to delete."
+          }

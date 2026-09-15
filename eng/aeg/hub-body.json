@@ -1,0 +1,12 @@
+{
+  "location": "eastus2euap",
+  "sku": { "name": "S1", "capacity": 1 },
+  "properties": {
+    "routing": {
+      "routes": [
+        { "name": "device-messages-to-events", "source": "DeviceMessages", "condition": "true", "endpointNames": ["events"], "isEnabled": true }
+      ]
+    },
+    "connectionProfile": "mqttv5"
+  }
+}
