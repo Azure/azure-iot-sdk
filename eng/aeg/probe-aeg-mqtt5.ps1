@@ -25,14 +25,14 @@ param(
     [Parameter(Mandatory)]
     [string]$SubscriptionId,
 
-    # The bug bash is canary-only: eastus2euap.
+    # AEG/MQTT5 is canary-only: eastus2euap.
     [string]$Location       = "eastus2euap",
 
-    # GLOBAL ARM host. The bug bash explicitly warns that the REGIONAL host
+    # GLOBAL ARM host. The REGIONAL host is documented as unreliable:
     # (eastus2euap.management.azure.com) fails intermittently with SSL/EOF.
     [string]$ArmEndpoint    = "https://management.azure.com",
 
-    # The api-version the bug bash used on canary.
+    # The control-plane api-version carrying connectionProfile.
     [string]$HubApiVersion  = "2026-08-01-preview",
 
     [string]$ResourceGroup  = "aeg-mqtt5-probe-$([guid]::NewGuid().ToString('N').Substring(0,8))",
@@ -46,7 +46,7 @@ param(
     [switch]$KeepResources,
     [switch]$SkipDps,
 
-    # The bug bash's own create body. When this file is present it is used verbatim
+    # The documented create body. When this file is present it is used verbatim
     # (with location patched to -Location), so the probe sends exactly what the bug
     # bash sends rather than a reconstruction. The script also carries an inline
     # fallback that was verified byte-identical, so it works as a single file.
@@ -63,6 +63,7 @@ param(
 $ErrorActionPreference = 'Continue'
 $script:Results = [System.Collections.ArrayList]::new()
 $script:Aborted = $false
+$script:StepNote = $null
 # Observed facts, written to the JSON report. NEVER put a key or connection string here.
 $script:Facts = [ordered]@{}
 
@@ -77,7 +78,7 @@ function Invoke-ArmRest {
         [Parameter(Mandatory)][string]$Url,
         [string]$JsonBody
     )
-    # --resource is what the bug bash uses; it makes az acquire an ARM-audience token.
+    # --resource makes az acquire an ARM-audience token.
     $azArgs = @('rest','--method',$Method,'--url',$Url,'--resource','https://management.azure.com/','-o','json')
     $tmp = $null
     if ($PSBoundParameters.ContainsKey('JsonBody') -and $JsonBody) {
@@ -112,7 +113,16 @@ function Step {
         return $null
     }
     try {
+        $script:StepNote = $null
         $out = & $Body
+        if ($script:StepNote) {
+            # The step ran but could not answer its question. Distinct from PASS so
+            # an unanswered check is never mistaken for a satisfied one.
+            Write-Host "INCONCLUSIVE" -ForegroundColor Yellow
+            [void]$script:Results.Add([pscustomobject]@{ Step=$Name; Result='INCONCLUSIVE'; Detail=$script:StepNote })
+            $script:StepNote = $null
+            return $out
+        }
         Write-Host "PASS" -ForegroundColor Green
         [void]$script:Results.Add([pscustomobject]@{ Step=$Name; Result='PASS'; Detail='' })
         return $out
@@ -140,8 +150,8 @@ Step -Critical "1. Azure identity and subscription" {
     if ($acct.id -ne $SubscriptionId) { throw "Active subscription is $($acct.id), expected $SubscriptionId." }
 }
 
-# ------------------------------------- 2. is the bug bash api-version offered here
-Step "2. Microsoft.Devices provider + api-version $HubApiVersion" {
+# ------------------------------------- 2. is that api-version offered here
+Step -Critical "2. Microsoft.Devices provider + api-version $HubApiVersion" {
     $p = az provider show --namespace Microsoft.Devices -o json | ConvertFrom-Json
     Write-Host "  registrationState: $($p.registrationState)"
     if ($p.registrationState -ne 'Registered') {
@@ -162,7 +172,7 @@ Step "2. Microsoft.Devices provider + api-version $HubApiVersion" {
 }
 
 # ------------------------------------------------------------ 3. name availability
-Step "3. Hub name availability ($HubName)" {
+Step -Critical "3. Hub name availability ($HubName)" {
     $body = @{ name = "$HubName.azure-devices.net"; type = 'Microsoft.Devices/IotHubs' } | ConvertTo-Json -Compress
     $url  = "$ArmEndpoint/subscriptions/$SubscriptionId/providers/Microsoft.Devices/checkNameAvailability?api-version=$HubApiVersion"
     $r = Invoke-ArmRest -Method post -Url $url -JsonBody $body
@@ -178,9 +188,9 @@ $rgCreated = Step -Mutating -Critical "4. Create resource group $ResourceGroup i
 
 # -------------------------------- 5. THE question: does OUR sub get an mqttv5 hub?
 Step -Mutating -Critical "5. PUT IoT Hub with properties.connectionProfile = mqttv5" {
-    # Prefer the bug bash's own hub-body.json, patched only for location/sku.
+    # Prefer hub-body.json, patched only for location/sku.
     if (Test-Path $HubBodyPath) {
-        Write-Host "  using bug bash body: $HubBodyPath"
+        Write-Host "  using hub body: $HubBodyPath"
         $obj = Get-Content -Raw $HubBodyPath | ConvertFrom-Json
         $obj.location = $Location
         $obj.sku.name = $Sku
@@ -231,7 +241,7 @@ $hubFinal = Step -Mutating -Critical "6. Poll to Succeeded/Active and confirm co
     } while ($state -in @('Accepted','Creating','Updating') -and (Get-Date) -lt $deadline)
 
     if ($state -ne 'Succeeded') { throw "Hub did not reach Succeeded within $CreateTimeoutMinutes min (last: $state)." }
-    # The bug bash requires BOTH: provisioningState=Succeeded AND state=Active.
+    # Completion requires BOTH: provisioningState=Succeeded AND state=Active.
     if ($hub.properties.state -ne 'Active') { throw "provisioningState=Succeeded but state='$($hub.properties.state)', expected Active." }
 
     Write-Host "  connectionProfile = '$($hub.properties.connectionProfile)'"
@@ -266,7 +276,7 @@ $hubFinal = Step -Mutating -Critical "6. Poll to Succeeded/Active and confirm co
 #  Bug bash section 4: the .device endpoint must resolve through an
 #  'iothub-egns-<...>.ts.eventgrid.azure.net' alias. That alias is the only
 #  customer-visible proof the hub is AEG-backed rather than merely flagged.
-Step -Mutating "7. Resolve the .device endpoint and look for the AEG namespace alias" {
+Step -Mutating -Critical "7. Resolve the .device endpoint and look for the AEG namespace alias" {
     # Prefer the read-only deviceHostName the service reports; fall back to the
     # conventional <hub>.device.azure-devices.net form.
     $deviceFqdn = $null
@@ -280,15 +290,26 @@ Step -Mutating "7. Resolve the .device endpoint and look for the AEG namespace a
             $chain = (& $tool $deviceFqdn 2>&1 | Out-String); break
         }
     }
+    $script:Facts['deviceFqdnResolved'] = $deviceFqdn
     if (-not $chain) {
-        # Also the case on any host without a resolver available to this process.
-        throw "No DNS tool (nslookup/dig/host) available, or the name could not be resolved from here. Run this step from a host with name resolution."
+        # INCONCLUSIVE, not negative: no resolver tool here says nothing about the
+        # hub. Warn and carry on rather than aborting -- gating steps 8/9 on the
+        # probe's own blind spot would be wrong. The report records it as null so
+        # the AEG question is visibly unanswered rather than silently passed.
+        $script:Facts['aegAliasFound'] = $null
+        $script:Facts['dnsChain']      = $null
+        $script:StepNote = "no DNS tool on this host; the AEG alias was not verified"
+        Write-Host "  INCONCLUSIVE: no DNS tool (nslookup/dig/host) on this host, so the AEG alias was NOT verified." -ForegroundColor Yellow
+        Write-Host "  Re-check by hand: nslookup $deviceFqdn" -ForegroundColor Yellow
+        return
     }
     Write-Host $chain
-    $script:Facts['deviceFqdnResolved'] = $deviceFqdn
-    $script:Facts['dnsChain']           = $chain
-    $script:Facts['aegAliasFound']      = [bool]($chain -match 'ts\.eventgrid\.azure\.net')
+    $script:Facts['dnsChain']      = $chain
+    $script:Facts['aegAliasFound'] = [bool]($chain -match 'ts\.eventgrid\.azure\.net')
     if ($chain -notmatch 'ts\.eventgrid\.azure\.net') {
+        # Genuinely negative, and this step is -Critical: without the alias the
+        # hub is not AEG-backed, so registering a device (8) or linking DPS (9)
+        # against it would produce results that LOOK like AEG results and are not.
         throw "No '*.ts.eventgrid.azure.net' alias in the resolution chain -- the hub is NOT AEG-backed."
     }
     Write-Host "  AEG namespace alias found." -ForegroundColor Green
@@ -310,7 +331,7 @@ Step -Mutating "8. listkeys, build the .service connection string, register an X
     $deviceId = "probe-device-01"
     $dir = Join-Path ([System.IO.Path]::GetTempPath()) ("mqtt5probe-" + [guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $dir -Force | Out-Null
-    # CN MUST equal the device id (bug bash section 5).
+    # CN MUST equal the device id.
     & openssl req -x509 -newkey rsa:2048 -keyout "$dir/device-key.pem" -out "$dir/device-cert.pem" `
         -days 365 -nodes -subj "/CN=$deviceId" 2>$null
     if ($LASTEXITCODE -ne 0) { throw "openssl req failed." }
@@ -320,7 +341,7 @@ Step -Mutating "8. listkeys, build the .service connection string, register an X
     Write-Host "  cert material in $dir (device.pfx password 'probe')"
 
     # Registry is a data-plane call; do it with the azure-iot extension if present,
-    # otherwise leave it to the sample (bug bash Option A) and say so.
+    # otherwise leave it to the service-side sample and say so.
     $ext = az extension list -o json 2>$null | ConvertFrom-Json | Where-Object { $_.name -eq 'azure-iot' }
     $script:Facts['azureIotExtensionVersion'] = if ($ext) { $ext.version } else { $null }
     if ($ext) {
@@ -330,20 +351,20 @@ Step -Mutating "8. listkeys, build the .service connection string, register an X
         Write-Host "  device registered via az iot extension."
         $script:Facts['deviceRegistered'] = $true
     } else {
-        Write-Host "  azure-iot extension absent -- register with RegistryManager.AddDeviceAsync (bug bash Option A)." -ForegroundColor Yellow
+        Write-Host "  azure-iot extension absent -- register with RegistryManager.AddDeviceAsync from the service SDK." -ForegroundColor Yellow
         $script:Facts['deviceRegistered'] = $false
     }
     [pscustomobject]@{ DeviceId=$deviceId; Thumbprint=$thumb; CertDir=$dir }
 }
 
-# ----------------------------------------------------- 9. BEYOND the bug bash: DPS
-#  The bug bash connects the device straight to the hub and never uses DPS. Our .NET
+# ------------------------------------- 9. BEYOND the documented flow: DPS
+#  The documented flow connects the device straight to the hub, never using DPS. Our .NET
 #  client has no public direct-hub connect (ConnectAsync is internal), so for .NET
 #  e2e DPS must both accept an AEG hub and hand the profile back to the device.
 #  The C client does have a direct-hub path (samples/authentication/direct-hub), so
-#  C e2e could mirror the bug bash and skip all of this.
+#  C e2e could mirror that flow and skip all of this.
 if (-not $SkipDps) {
-    Step -Mutating "9. [beyond bug bash] Create DPS, link the mqttv5 hub" {
+    Step -Mutating "9. [beyond the documented flow] Create DPS, link the mqttv5 hub" {
         $dpsName = "mqtt5dps-$([guid]::NewGuid().ToString('N').Substring(0,12))"
         az iot dps create --name $dpsName --resource-group $ResourceGroup --location $Location -o none
         if ($LASTEXITCODE -ne 0) { throw "DPS create failed in $Location." }

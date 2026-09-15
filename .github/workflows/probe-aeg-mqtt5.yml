@@ -83,24 +83,33 @@ jobs:
       - name: Run the probe
         shell: pwsh
         env:
-          # Passed via env, never interpolated into the script body, so the value
-          # is data and not code.
+          # EVERY caller-supplied value travels through the environment. None is
+          # interpolated into the script body: a `${{ }}` expansion is textual
+          # substitution into the shell source, so an input containing a quote
+          # would break out of the argument and run as code on the runner, with
+          # the job's Azure credentials already logged in.
           PROBE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          PROBE_LOCATION: ${{ inputs.location }}
+          PROBE_HUB_API_VERSION: ${{ inputs.hub-api-version }}
+          PROBE_SKU: ${{ inputs.sku }}
+          PROBE_SKIP_DPS: ${{ inputs.skip-dps }}
         run: |
           # -KeepResources always: the teardown job below owns deletion, so that a
           # cancelled or failed run is still cleaned up. The probe's own teardown
           # would never run in those cases.
-          ./eng/aeg/probe-aeg-mqtt5.ps1 `
-            -SubscriptionId $env:PROBE_SUBSCRIPTION_ID `
-            -Location '${{ inputs.location }}' `
-            -HubApiVersion '${{ inputs.hub-api-version }}' `
-            -Sku '${{ inputs.sku }}' `
-            -ResourceGroup $env:PROBE_RESOURCE_GROUP `
-            -HubBodyPath ./eng/aeg/hub-body.json `
-            -ReportPath ./aeg-probe-report.json `
-            -TranscriptPath ./aeg-probe-transcript.txt `
-            -KeepResources `
-            ${{ inputs.skip-dps && '-SkipDps' || '' }}
+          $probeArgs = @{
+            SubscriptionId = $env:PROBE_SUBSCRIPTION_ID
+            Location       = $env:PROBE_LOCATION
+            HubApiVersion  = $env:PROBE_HUB_API_VERSION
+            Sku            = $env:PROBE_SKU
+            ResourceGroup  = $env:PROBE_RESOURCE_GROUP
+            HubBodyPath    = './eng/aeg/hub-body.json'
+            ReportPath     = './aeg-probe-report.json'
+            TranscriptPath = './aeg-probe-transcript.txt'
+            KeepResources  = $true
+            SkipDps        = ($env:PROBE_SKIP_DPS -eq 'true')
+          }
+          ./eng/aeg/probe-aeg-mqtt5.ps1 @probeArgs
 
       - name: Summarise the result
         if: always()
@@ -148,7 +157,7 @@ jobs:
     # down. Skipped only when the caller asked to keep the resources.
     if: always() && inputs.keep-resources != true
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60   # blocking delete: an IoT Hub can take several minutes to go
     steps:
       - name: Azure Login via OIDC
         uses: azure/login@v2
@@ -161,10 +170,17 @@ jobs:
         shell: pwsh
         run: |
           $rg = $env:PROBE_RESOURCE_GROUP
-          $exists = az group exists --name $rg
-          if ($exists -eq 'true') {
-            Write-Host "Deleting $rg"
-            az group delete --name $rg --yes --no-wait
-          } else {
+          if ((az group exists --name $rg) -ne 'true') {
             Write-Host "$rg does not exist; nothing to delete."
+            exit 0
           }
+          # Blocking delete, not --no-wait: --no-wait only confirms the request
+          # was accepted, and Azure can still fail the deletion afterwards. This
+          # resource group prefix is not covered by the shared cleanup janitor,
+          # so an async failure here would leave billable resources behind with
+          # nothing to catch it. Fail the job instead.
+          Write-Host "Deleting $rg (waiting for completion)"
+          az group delete --name $rg --yes
+          if ($LASTEXITCODE -ne 0) { throw "Deleting $rg FAILED. Delete it by hand: az group delete --name $rg --yes" }
+          if ((az group exists --name $rg) -eq 'true') { throw "$rg still exists after a successful delete call. Delete it by hand." }
+          Write-Host "$rg deleted."

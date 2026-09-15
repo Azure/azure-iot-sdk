@@ -63,8 +63,15 @@ Requires **Contributor** on the subscription. Writes `aeg-probe-report.json` (ma
 | 8 | `listkeys`, mint a cert, register an X.509 device | **yes** | can a device be registered? Is the pinned `azure-iot` extension usable against an AEG hub? |
 | 9 | Create DPS, link the hub | **yes** | will DPS accept an AEG hub? (`-SkipDps` to omit) |
 
-Steps 4-9 are gated: once a required step fails the rest report `SKIP` rather than each inventing a
-different downstream error.
+Steps are gated: once a **required** step fails (1, 2, 3, 4, 5, 6, 7) the rest report `SKIP` rather
+than each inventing a different downstream error. Step 7 is required on purpose — a device
+registered (8) or a DPS linked (9) against a hub that is *not* AEG-backed would produce results that
+look like AEG results and are not.
+
+A step that runs but cannot answer its question reports **`INCONCLUSIVE`**, never `PASS`. Step 7 does
+this when the host has no `nslookup`/`dig`/`host`: that says nothing about the hub, so it warns and
+lets the run continue, and the report carries `aegAliasFound: null` so the question is visibly
+unanswered.
 
 ## Known gaps this probe does not close
 
