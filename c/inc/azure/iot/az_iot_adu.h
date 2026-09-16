@@ -452,14 +452,9 @@ extern "C"
        * stays caller-allocated with no hidden allocation. */
       struct
       {
-        void* reserved[2];
-        struct
-        {
-          void* fn;
-          void* ctx;
-        } transport;
-        void* cb;
-        void* cb_ctx;
+        void* pointers[24];
+        uint8_t bytes[3328];
+        uint64_t alignment[4];
       } channel_storage;
       az_iot_adu_platform_hooks hooks;
       az_iot_adu_crypto_hooks crypto;

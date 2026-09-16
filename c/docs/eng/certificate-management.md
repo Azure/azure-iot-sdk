@@ -245,7 +245,7 @@ Not part of the public API; listed for implementation context.
 
 Only the cert-provider setup and one option line change; the entire
 connect / `do_work` / send flow stays identical (enrollment is transparent). Delta
-against `samples/telemetry/main.c`:
+against `samples/telemetry_gen1/main.c`:
 
 ```c
     /* --- BEFORE: static cert used for both DPS and Hub --- */
@@ -638,7 +638,7 @@ non-extractable-key custody, and CSR — the three axes this feature needs.
 
 All scenarios above get a dedicated, single-purpose sample under a new cross-cutting
 **`samples/authentication/`** group (auth is orthogonal to the feature clients like
-`telemetry`, `c2d_receiver`, ...). Each sample reuses `samples/common/sample_utils` and
+`telemetry_gen1`, `c2d_receiver_gen1`, ...). Each sample reuses `samples/common/sample_utils` and
 differs only in the credential-setup block, so they stay small and diff-able.
 
 ```

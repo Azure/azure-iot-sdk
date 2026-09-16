@@ -12,7 +12,6 @@
 #include "azure/iot/az_iot_mqtt_iface.h"
 
 #include "internal/dispatch.h"
-#include "internal/protocol_profile.h"
 
 #ifdef __cplusplus
 extern "C"
@@ -52,15 +51,21 @@ extern "C"
    * AZ_IOT_PRESENCE_BIRTH_ACK_TIMEOUT_MS. */
   void az_iot_connection_client__presence_force_timeout(az_iot_connection_client* client);
 
+  /* Authoritative twin versions the service reported on the most recent AEG
+   * birth-ack, as of birth admission on the current connection. The twin client
+   * uses `reported_version` as the if_match anchor for its next reported patch
+   * and `desired_version` as its view of the current desired version. Both are 0
+   * before the first birth-ack, on Classic/DPS sessions, and when the service
+   * omits the fields. Returns AZ_IOT_ERR_INVALID_ARG on NULL arguments. */
+  az_iot_result az_iot_connection_client__presence_twin_versions(
+      const az_iot_connection_client* client,
+      uint64_t* out_desired_version,
+      uint64_t* out_reported_version);
+
   /* Test seam: force a pending subscription gate to expire on the next
    * do_work(). No-op when no gate is armed. Lets unit tests exercise the
    * never-acked path without waiting out the configured timeout. */
   void az_iot_connection_client__subscription_gate_force_timeout(az_iot_connection_client* client);
-
-  /* Return the protocol profile selected by the current session_role. May be
-   * NULL when the role has no profile yet (e.g. HUB_NEXT in Phase 2.3). */
-  const az_iot_protocol_profile* az_iot_connection_client__profile(
-      const az_iot_connection_client* client);
 
   /* Register an inbound MESSAGE handler. ConnectionClient lazily allocates a
    * dispatch table on the first call. Each registered handler is invoked
@@ -103,6 +108,94 @@ extern "C"
    * client was created with a NULL client_id (rejected at create time, so this
    * is effectively never NULL for a live client). */
   const char* az_iot_connection_client__device_id(const az_iot_connection_client* client);
+
+  /* --- Provisioning-session seam ------------------------------------------- */
+  /*
+   * The device-update operations ride the device's PROVISIONING session, not the
+   * hub session, and the bootstrap check runs BEFORE the device is registered --
+   * so az_iot_connection_client__publish() cannot serve them: it publishes on
+   * the active hub client and requires CONNECTED.
+   *
+   * These expose the provisioning session directly, for the one feature that
+   * legitimately needs it. Not for general use.
+   */
+
+  /* True when a provisioning session exists and is far enough along to carry a
+   * publish -- that is, its subscription is established and the registration
+   * outcome has not yet torn the session down. */
+  bool az_iot_connection_client__dps_session_ready(const az_iot_connection_client* client);
+
+  /* Publish on the provisioning session. Returns ERR_NOT_CONNECTED when no such
+   * session is ready. */
+  az_iot_result az_iot_connection_client__dps_publish(
+      az_iot_connection_client* client,
+      const az_iot_mqtt_message* msg);
+
+  /* Hold registration at AZ_IOT_DPS_PHASE_HOLD so a feature client can run a
+   * pre-registration exchange on the provisioning session.
+   *
+   * This exists because the provisioning session is otherwise unusable by a
+   * feature client: the registration PUBLISH is issued from the SUBACK handler
+   * and the session is torn down on the response, so a caller-driven loop never
+   * observes an open session.
+   *
+   * Must be acquired BEFORE the session reaches its SUBACK (in practice, before
+   * az_iot_connection_client_open()); acquiring later has no effect on a
+   * registration already in flight, and the call reports that.
+   *
+   * The hold is ADVISORY: it expires after a deadline and registration then
+   * proceeds regardless. A feature client can delay provisioning, never prevent
+   * it. Every acquire must be matched by a release; the release is what lets
+   * registration continue without waiting out the deadline.
+   */
+  az_iot_result az_iot_connection_client__dps_hold_acquire(az_iot_connection_client* client);
+  void az_iot_connection_client__dps_hold_release(az_iot_connection_client* client);
+
+  /* True while registration is actually being held, i.e. the session is up and
+   * waiting on a holder. */
+  bool az_iot_connection_client__dps_hold_is_active(const az_iot_connection_client* client);
+
+  /* Standing interest in the provisioning session, for a feature client that
+   * needs it after the device has provisioned.
+   *
+   * Acquire at initialize, release at destroy. A non-zero count permits a
+   * session to be OPENED ON DEMAND -- it does not keep one open, and does not
+   * open one by itself. Between polls there is deliberately no session.
+   *
+   * Separate from the pre-registration hold: the hold delays a registration
+   * that is about to happen, this asks for a session once registration is long
+   * done. A feature client usually wants both. */
+  az_iot_result az_iot_connection_client__dps_user_acquire(az_iot_connection_client* client);
+  void az_iot_connection_client__dps_user_release(az_iot_connection_client* client);
+
+  /* True when the session currently up was opened for a feature client rather
+   * than by the ordinary provisioning flow. Such a session never registers, so
+   * the pre-registration hold does not apply to it. */
+  bool az_iot_connection_client__dps_session_is_auxiliary(const az_iot_connection_client* client);
+
+  /* Ensure a provisioning session is up and usable, opening one if needed.
+   *
+   * Returns AZ_IOT_OK when a publish can be made now, AZ_IOT_ERR_BUSY while one
+   * is still coming up (call again on a later tick), AZ_IOT_ERR_NOT_SUPPORTED
+   * when the caller holds no interest or DPS is not configured.
+   *
+   * A session opened this way is AUXILIARY: it runs alongside the hub
+   * connection and never registers. Registering would take the assignment path,
+   * which rewrites the host and role and reconnects -- destroying the very hub
+   * connection this is meant to sit beside.
+   *
+   * Each call also renews the idle linger, so a caller that is actively using
+   * the session keeps it, and one that stops loses it shortly after. */
+  az_iot_result az_iot_connection_client__dps_session_ensure(az_iot_connection_client* client);
+
+  /* Register the observer for inbound provisioning-session messages the
+   * provisioning flow does not claim. At most one: registering a second observer over a live one is
+   * refused, so clear it (NULL) before registering a different one. The callback type is declared
+   * with the client struct that stores it. */
+  void az_iot_connection_client__set_dps_message_observer(
+      az_iot_connection_client* client,
+      az_iot_dps_message_observer observer,
+      void* user_ctx);
 
   /* Publish through the active adapter. Returns ERR_NOT_CONNECTED when not in
    * CONNECTED state. For QoS 1, callers may pass a non-NULL ack_cb; it is

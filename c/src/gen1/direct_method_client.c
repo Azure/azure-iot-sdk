@@ -18,44 +18,144 @@
 
 #include "internal/connection_client_internal.h"
 #include "internal/log_internal.h"
+#include "internal/reconnect.h"
 #include "internal/span_writer.h"
 
-#define AZ_IOT_GEN1_DM_TOPIC_MAX 192
+#define METHODS_RESPONSE_PREFIX "$iothub/methods/res/"
+#define METHODS_RESPONSE_RID_MARKER "/?$rid="
+/* Longest decimal an int32 status can print, INT32_MIN included. */
+#define AZ_IOT_GEN1_DM_STATUS_MAX 11
+
+/* Derived from the parts the topic is built out of rather than fixed, because
+ * AZ_IOT_DM_RID_MAX is a documented knob and it widens what the parser accepts.
+ * At a fixed size the buffer did not widen with it, so an invocation carrying a
+ * rid near the top of a raised bound was accepted, ran its handler, and then
+ * could not be answered at all -- while shorter rids on the same build answered
+ * normally. Deriving the size keeps "accepted" and "answerable" the same set.
+ * Capacity works out at 40 + AZ_IOT_DM_RID_MAX against a worst case of 38,
+ * terminator included, so it holds at every bound with two bytes spare. */
+#define AZ_IOT_GEN1_DM_TOPIC_MAX                               \
+  (sizeof(METHODS_RESPONSE_PREFIX) + AZ_IOT_GEN1_DM_STATUS_MAX \
+   + sizeof(METHODS_RESPONSE_RID_MARKER) + AZ_IOT_DM_RID_MAX)
+
 #define METHODS_REQUEST_PREFIX "$iothub/methods/POST/"
+#define MS_PER_SECOND 1000u
 
 #define DI(d) ((d)->_internal)
 
-/* Acquire a free slot from the bounded pool (NULL if full).
+/* Release every in-flight slot whose response timeout has passed.
  *
- * A slot is returned only by az_iot_gen1_direct_method_respond(). An
- * application that drops a request -- a handler that returns without
- * responding, including on its own error paths -- keeps the slot forever, and
- * once AZ_IOT_DM_MAX_INFLIGHT have leaked every further invocation is dropped.
- * That used to happen in complete silence, which made it look like the service
- * had stopped delivering; say so instead. */
-static az_iot_direct_method_request* request_acquire(az_iot_gen1_direct_method_client* dm)
+ * Without this an application that drops a request -- a handler that returns
+ * without responding, including on its own error paths -- would hold that slot
+ * for the life of the client, and once AZ_IOT_DM_MAX_INFLIGHT had leaked every
+ * further invocation would be dropped.
+ *
+ * Feature clients get no periodic tick, so this runs whenever a method message
+ * arrives, which is exactly when the capacity it frees is about to be needed.
+ * Nothing goes on the wire: Classic has no abandon message, and by here the
+ * service has stopped waiting for an answer anyway. */
+static void requests_expire_stale(az_iot_gen1_direct_method_client* dm)
 {
+  uint64_t now = az_iot_time_mono_ms();
   for (size_t i = 0; i < AZ_IOT_DM_MAX_INFLIGHT; ++i)
   {
-    az_iot_direct_method_request* r = &DI(dm).req_pool[i];
-    if (!r->_internal.in_use)
+    az_iot_direct_method_slot* s = &DI(dm).req_pool[i];
+    if (!s->_internal.in_use || now < DI(dm).req_expires_at_ms[i])
     {
-      memset(r, 0, sizeof(*r));
-      r->_internal.in_use = true;
-      r->_internal.owner = dm;
-      r->_internal.profile = AZ_IOT_CONNECTION_PROFILE_CLASSIC;
-      return r;
+      continue;
+    }
+    AZ_IOT_LOG_WARNF(
+        "gen1_direct_method: '%s' was never answered within its response timeout; reclaiming its "
+        "slot",
+        s->_internal.method_name);
+    s->_internal.in_use = false;
+  }
+}
+
+/* Resolve a request to the slot it names, or NULL when it no longer refers to a
+ * live invocation of this client.
+ *
+ * The sequence check is what makes a reused slot detectable: the request is a
+ * value the pool cannot reach, so a slot reclaimed and handed to another
+ * invocation carries a newer seq and the stale request stops matching. */
+static az_iot_direct_method_slot* request_resolve(
+    az_iot_gen1_direct_method_client* dm,
+    az_iot_direct_method_request request,
+    size_t* out_index)
+{
+  if (request._internal.owner != dm)
+  {
+    return NULL;
+  }
+  size_t i = (size_t)request._internal.slot;
+  if (i >= AZ_IOT_DM_MAX_INFLIGHT || request._internal.seq == 0u)
+  {
+    return NULL;
+  }
+  az_iot_direct_method_slot* s = &DI(dm).req_pool[i];
+  if (!s->_internal.in_use || s->_internal.seq != request._internal.seq)
+  {
+    return NULL;
+  }
+  *out_index = i;
+  return s;
+}
+
+/* Acquire a free slot from the bounded pool.
+ *
+ * A slot is returned by az_iot_gen1_direct_method_respond(), or reclaimed by
+ * requests_expire_stale() once the invocation can no longer be answered
+ * usefully. Running out means this many invocations arrived while earlier ones
+ * were still legitimately in flight.
+ *
+ * Returns false when the pool is full; otherwise fills @p out_request with the
+ * value the application hands back to respond(). */
+static bool request_acquire(
+    az_iot_gen1_direct_method_client* dm,
+    az_iot_direct_method_request* out_request,
+    az_iot_direct_method_slot** out_slot)
+{
+  for (size_t n = 0; n < AZ_IOT_DM_MAX_INFLIGHT; ++n)
+  {
+    size_t i = (DI(dm).next_slot + n) % AZ_IOT_DM_MAX_INFLIGHT;
+    az_iot_direct_method_slot* s = &DI(dm).req_pool[i];
+    if (!s->_internal.in_use)
+    {
+      memset(s, 0, sizeof(*s));
+      /* Skips 0 on wrap, so a zeroed request can never match a live slot. */
+      DI(dm).next_seq++;
+      if (DI(dm).next_seq == 0u)
+      {
+        DI(dm).next_seq = 1u;
+      }
+      s->_internal.seq = DI(dm).next_seq;
+      s->_internal.in_use = true;
+      DI(dm).req_expires_at_ms[i]
+          = az_iot_time_mono_ms() + ((uint64_t)DI(dm).response_timeout_seconds * MS_PER_SECOND);
+      DI(dm).next_slot = (i + 1u) % AZ_IOT_DM_MAX_INFLIGHT;
+
+      memset(out_request, 0, sizeof(*out_request));
+      out_request->_internal.owner = dm;
+      out_request->_internal.slot = (uint32_t)i;
+      out_request->_internal.seq = s->_internal.seq;
+      out_request->_internal.profile = AZ_IOT_CONNECTION_PROFILE_CLASSIC;
+      *out_slot = s;
+      return true;
     }
   }
   AZ_IOT_LOG_WARNF(
-      "gen1_direct_method: dropping an invocation, all %d in-flight slots are taken. A slot is "
-      "released by az_iot_gen1_direct_method_respond(); a handler that returns without responding "
-      "leaks one.",
+      "gen1_direct_method: dropping an invocation, all %d in-flight slots are held by requests "
+      "that have not been answered and have not yet timed out. Answer them with "
+      "az_iot_gen1_direct_method_respond(), or raise AZ_IOT_DM_MAX_INFLIGHT.",
       (int)AZ_IOT_DM_MAX_INFLIGHT);
-  return NULL;
+  return false;
 }
 
-/* Parse "$iothub/methods/POST/<methodName>/?$rid=<rid>". */
+/* Parse "$iothub/methods/POST/<methodName>/?$rid=<rid>".
+ *
+ * The prefix check below is unreachable through the public path -- every caller
+ * arrives via a dispatch entry registered on METHODS_REQUEST_PREFIX itself --
+ * and is kept as the guard on that contract rather than on the input. */
 static bool parse_method_topic(
     const char* topic,
     char* out_method,
@@ -108,6 +208,8 @@ static void on_method_invocation(void* user_ctx, const az_iot_mqtt_message* msg)
     return;
   }
 
+  requests_expire_stale(dm);
+
   char method_name[AZ_IOT_DM_METHOD_NAME_MAX];
   char rid[AZ_IOT_DM_RID_MAX];
   if (!parse_method_topic(msg->topic, method_name, sizeof(method_name), rid, sizeof(rid)))
@@ -116,13 +218,14 @@ static void on_method_invocation(void* user_ctx, const az_iot_mqtt_message* msg)
     return;
   }
 
-  az_iot_direct_method_request* req = request_acquire(dm);
-  if (!req)
+  az_iot_direct_method_request req;
+  az_iot_direct_method_slot* slot = NULL;
+  if (!request_acquire(dm, &req, &slot))
   {
     return;
   }
-  memcpy(req->_internal.rid, rid, strlen(rid) + 1);
-  memcpy(req->_internal.method_name, method_name, strlen(method_name) + 1);
+  memcpy(slot->_internal.rid, rid, strlen(rid) + 1);
+  memcpy(slot->_internal.method_name, method_name, strlen(method_name) + 1);
 
   DI(dm).handler(req, method_name, msg->payload, msg->payload_len, DI(dm).handler_ctx);
 }
@@ -146,6 +249,11 @@ az_iot_result az_iot_gen1_direct_method_client_init(
 
   memset(client, 0, sizeof(*client));
   DI(client).conn = conn;
+  DI(client).response_timeout_seconds = AZ_IOT_GEN1_DM_RESPONSE_TIMEOUT_SECONDS;
+  /* Seeded rather than started from zero: destroy() zeroes the client, so a
+   * fresh init would otherwise reissue the same {slot, seq} a request from the
+   * previous lifetime still names. */
+  DI(client).next_seq = (uint32_t)az_iot_time_mono_ms();
 
   /* No connect-time bind: unlike C2D, these topics carry no device id, so they
    * are known before the connection resolves. */
@@ -199,44 +307,74 @@ az_iot_result az_iot_gen1_direct_method_client_set_handler(
   return AZ_IOT_OK;
 }
 
+az_iot_result az_iot_gen1_direct_method_client_set_response_timeout(
+    az_iot_gen1_direct_method_client* client,
+    uint32_t seconds)
+{
+  if (client == NULL)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  DI(client).response_timeout_seconds
+      = (seconds == 0u) ? AZ_IOT_GEN1_DM_RESPONSE_TIMEOUT_SECONDS : seconds;
+  return AZ_IOT_OK;
+}
+
 az_iot_result az_iot_gen1_direct_method_respond(
-    az_iot_direct_method_request* request,
+    az_iot_gen1_direct_method_client* client,
+    az_iot_direct_method_request request,
     int status_code,
     const uint8_t* payload,
     size_t payload_len)
 {
-  if (request == NULL || (payload_len > 0 && payload == NULL))
+  if (client == NULL || (payload_len > 0 && payload == NULL))
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
-  /* Responding twice used to publish a second answer on a slot that had already
-   * been handed to another invocation, so the reply carried that invocation's
-   * rid and answered the wrong call. The service also treats a duplicate rid as
-   * an error. Catch it here rather than on the wire. */
-  if (!request->_internal.in_use || request->_internal.owner == NULL)
-  {
-    AZ_IOT_LOG_ERROR("gen1_direct_method: respond() called on a request that was already answered");
-    return AZ_IOT_ERR_INVALID_ARG;
-  }
-  if (request->_internal.profile != AZ_IOT_CONNECTION_PROFILE_CLASSIC)
+  if (request._internal.profile != AZ_IOT_CONNECTION_PROFILE_CLASSIC)
   {
     AZ_IOT_LOG_ERROR("gen1_direct_method: this request was delivered by the gen2 client");
     return AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH;
   }
 
-  az_iot_gen1_direct_method_client* dm
-      = (az_iot_gen1_direct_method_client*)request->_internal.owner;
+  az_iot_gen1_direct_method_client* dm = client;
+
+  /* Covers three cases at once, none of which may reach the wire: already
+   * answered, reclaimed on timeout, and reclaimed then handed to another
+   * invocation -- the last would otherwise publish under that call's rid. */
+  size_t index = 0;
+  az_iot_direct_method_slot* slot = request_resolve(dm, request, &index);
+  if (slot == NULL)
+  {
+    AZ_IOT_LOG_ERROR("gen1_direct_method: respond() called on a request that is no longer live -- "
+                     "it was already "
+                     "answered, or its slot was reclaimed when the response timeout passed");
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  /* The sweep only runs when a method message arrives, so checking the slot's
+   * own expiry here is what makes the refusal hold on an otherwise idle device. */
+  if (az_iot_time_mono_ms() >= DI(dm).req_expires_at_ms[index])
+  {
+    AZ_IOT_LOG_WARNF(
+        "gen1_direct_method: '%s' was answered after its response timeout; sending nothing",
+        slot->_internal.method_name);
+    slot->_internal.in_use = false;
+    return AZ_IOT_ERR_TIMEOUT;
+  }
 
   char topic[AZ_IOT_GEN1_DM_TOPIC_MAX];
   az_iot_span_writer writer;
   az_iot_span_writer_init(&writer, AZ_SPAN_FROM_BUFFER(topic));
-  az_iot_span_writer_append_str(&writer, "$iothub/methods/res/");
+  az_iot_span_writer_append_str(&writer, METHODS_RESPONSE_PREFIX);
   az_iot_span_writer_append_i32(&writer, (int32_t)status_code);
-  az_iot_span_writer_append_str(&writer, "/?$rid=");
-  az_iot_span_writer_append_str(&writer, request->_internal.rid);
+  az_iot_span_writer_append_str(&writer, METHODS_RESPONSE_RID_MARKER);
+  az_iot_span_writer_append_str(&writer, slot->_internal.rid);
+  /* Unreachable by construction: the buffer is sized from these same parts.
+   * Kept because that is a property of two macros agreeing, not something the
+   * writer itself enforces. */
   if (az_iot_span_writer_end_str(&writer, NULL) != AZ_IOT_OK)
   {
-    request->_internal.in_use = false;
+    slot->_internal.in_use = false;
     return AZ_IOT_ERR_NOT_SUPPORTED;
   }
 
@@ -248,6 +386,6 @@ az_iot_result az_iot_gen1_direct_method_respond(
   out.retain = false;
 
   az_iot_result r = az_iot_connection_client__publish(DI(dm).conn, &out, NULL, NULL);
-  request->_internal.in_use = false;
+  slot->_internal.in_use = false;
   return r;
 }

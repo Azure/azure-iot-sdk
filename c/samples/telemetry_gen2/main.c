@@ -3,12 +3,27 @@
 // information.
 
 /* SPDX-License-Identifier: MIT */
-/* telemetry - sample.
+/* telemetry_gen2 - sample.
  *
- * Provision via DPS, open connection, send one telemetry message, close.
- * DPS is handled internally by the connection client when host == NULL and
- * dps.id_scope is set.
+ * Send one telemetry message to an AEG (Hub-Next) hub over MQTT v5. The Classic
+ * route is a separate sample, telemetry_gen1; an application that must serve
+ * either hub picks at runtime -- see connection_profile_fallback.
+ *
+ * The client is created before the connection opens, because
+ * az_iot_gen2_telemetry_client_init() records the generation it needs rather
+ * than reading one off a live connection. A sample that served both generations
+ * could not do that: it would have to wait for CONNECTED, read the resolved
+ * profile, and only then build the right client.
+ *
+ * Two adapters are registered, which the Classic sample does not need: the hub
+ * leg is MQTT v5, but the DPS leg is still v3.1.1. Registering only the v5
+ * factory makes provisioning fail with AZ_IOT_ERR_NOT_SUPPORTED before the hub
+ * is ever reached.
+ *
+ * Provision via DPS, open, send, close. DPS is handled internally by the
+ * connection client when host == NULL and dps.id_scope is set.
  */
+#include <stdio.h>
 #include <stdlib.h>
 
 #include "azure/iot/az_iot.h"
@@ -21,73 +36,17 @@ typedef struct
   sample_config config;
   az_iot_certificate_provider_pem certs;
   az_iot_connection_client connection_client;
-  az_iot_gen1_telemetry_client gen1_telemetry;
-  az_iot_gen2_telemetry_client gen2_telemetry;
-  az_iot_connection_profile telemetry_profile;
+  az_iot_gen2_telemetry_client telemetry;
   int telemetry_initialized;
 } sample_state;
 
-static void telemetry_destroy(sample_state* state)
-{
-  if (!state->telemetry_initialized)
-  {
-    return;
-  }
-  if (state->telemetry_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
-  {
-    az_iot_gen2_telemetry_client_destroy(&state->gen2_telemetry);
-  }
-  else
-  {
-    az_iot_gen1_telemetry_client_destroy(&state->gen1_telemetry);
-  }
-  state->telemetry_initialized = 0;
-}
-
-static az_iot_result telemetry_rebuild(sample_state* state, az_iot_connection_profile profile)
-{
-  telemetry_destroy(state);
-
-  az_iot_result result;
-  if (profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
-  {
-    result = az_iot_gen2_telemetry_client_init(&state->gen2_telemetry, &state->connection_client);
-  }
-  else if (profile == AZ_IOT_CONNECTION_PROFILE_CLASSIC)
-  {
-    result = az_iot_gen1_telemetry_client_init(&state->gen1_telemetry, &state->connection_client);
-  }
-  else
-  {
-    return AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED;
-  }
-
-  if (result == AZ_IOT_OK)
-  {
-    state->telemetry_profile = profile;
-    state->telemetry_initialized = 1;
-  }
-  return result;
-}
-
-static az_iot_result telemetry_send(
-    sample_state* state,
-    const az_iot_telemetry_message* message,
-    az_iot_telemetry_send_callback callback,
-    void* user_ctx)
-{
-  if (!state->telemetry_initialized)
-  {
-    return AZ_IOT_ERR_NOT_INITIALIZED;
-  }
-  return state->telemetry_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5
-      ? az_iot_gen2_telemetry_client_send(&state->gen2_telemetry, message, callback, user_ctx)
-      : az_iot_gen1_telemetry_client_send(&state->gen1_telemetry, message, callback, user_ctx);
-}
-
 static void sample_state_destroy(sample_state* state)
 {
-  telemetry_destroy(state);
+  if (state->telemetry_initialized)
+  {
+    az_iot_gen2_telemetry_client_destroy(&state->telemetry);
+    state->telemetry_initialized = 0;
+  }
   az_iot_connection_client_destroy(&state->connection_client);
   az_iot_certificate_provider_pem_destroy(&state->certs);
   sample_config_release(&state->config);
@@ -95,9 +54,8 @@ static void sample_state_destroy(sample_state* state)
 
 typedef struct
 {
-  sample_state* state;
   az_iot_connection_state conn_state;
-  az_iot_result telemetry_status;
+  az_iot_result conn_reason;
   int send_done;
   az_iot_result send_status;
 } user_context;
@@ -106,11 +64,14 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
 {
   user_context* ctx = (user_context*)user_ctx;
   ctx->conn_state = event->state;
-  if (event->state == AZ_IOT_CONN_STATE_CONNECTED)
+  ctx->conn_reason = event->reason;
+
+  /* The device provisioned to a Classic hub, so this AEG client can never serve
+   * it. The connection faults before reporting CONNECTED rather than letting a
+   * send fail later against the wrong topic shape. */
+  if (event->reason == AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH)
   {
-    ctx->telemetry_status = event->profile
-        ? telemetry_rebuild(ctx->state, event->profile->connection_profile)
-        : AZ_IOT_ERR_INTERNAL;
+    printf("This device is assigned to a Classic hub. Run the telemetry_gen1 sample instead.\n");
   }
 }
 
@@ -133,7 +94,7 @@ int main(void)
   }
 
   int rc = 1;
-  user_context user_ctx = { .state = &state, .telemetry_status = AZ_IOT_ERR_NOT_INITIALIZED };
+  user_context user_ctx = { 0 };
 
   /* Certificate provider */
   az_iot_certificate_provider_pem_options pem = az_iot_certificate_provider_pem_options_default();
@@ -149,8 +110,7 @@ int main(void)
 
   /* Connection client (DPS provisioning is internal when host==NULL) */
   az_iot_connection_client_options copts = az_iot_connection_client_options_default();
-  copts.dps.id_scope = state.config.id_scope;
-  copts.dps.registration_id = state.config.reg_id;
+  sample_apply_dps_options(&copts, &state.config);
   copts.certificate_provider = &state.certs.base;
 
   if (az_iot_connection_client_init(&state.connection_client, &copts) != AZ_IOT_OK)
@@ -160,9 +120,8 @@ int main(void)
   }
   az_iot_connection_client_set_state_callback(&state.connection_client, on_conn_state, &user_ctx);
 
-  /* MQTT adapters: register both v3.1.1 (DPS + Classic) and v5 (Next).
-   * The connection client selects the appropriate factory based on the
-   * session role. Both may be backed by different MQTT libraries. */
+  /* v3.1.1 for the DPS leg, v5 for the hub leg. Both are required even though
+   * only the hub is v5. */
   if (az_iot_connection_client_register_mqtt_factory(
           &state.connection_client, az_iot_paho_factory_create_v3_1_1())
       != AZ_IOT_OK)
@@ -178,7 +137,16 @@ int main(void)
     return 1;
   }
 
-  /* Open (internally provisions via DPS then connects to assigned hub) */
+  /* Before open, and before any profile is known: this declares which hub the
+   * application is built for, and the connection is failed if it resolves to
+   * the other one. */
+  if (az_iot_gen2_telemetry_client_init(&state.telemetry, &state.connection_client) != AZ_IOT_OK)
+  {
+    sample_state_destroy(&state);
+    return 1;
+  }
+  state.telemetry_initialized = 1;
+
   if (az_iot_connection_client_open(&state.connection_client) != AZ_IOT_OK)
   {
     sample_state_destroy(&state);
@@ -194,12 +162,29 @@ int main(void)
     }
   }
 
-  if (user_ctx.conn_state == AZ_IOT_CONN_STATE_CONNECTED && user_ctx.telemetry_status == AZ_IOT_OK)
+  if (user_ctx.conn_state == AZ_IOT_CONN_STATE_CONNECTED)
   {
-    /* Send one telemetry message */
+    /* AEG carries properties as MQTT v5 user properties, not in the topic, so
+     * the topic stays the fixed ih/<id>/srv/telemetry and nothing is
+     * URL-encoded -- the reserved characters Classic has to escape travel here
+     * byte for byte. Two properties are added for you: type=telemetry:1, and
+     * content-type, which takes $.ct when the message sets it and
+     * application/json when it does not.
+     *
+     * $.ct is the one system property with a native v5 field, so it does not
+     * also travel under its own name. Every other one -- $.ce, $.mid, $.cid,
+     * $.uid, $.ctime, $.sub -- is carried verbatim, the same names the Classic
+     * client percent-encodes into its topic, so a message means the same thing
+     * on either generation.
+     *
+     * The budget is AZ_IOT_GEN2_TELEMETRY_MAX_USER_PROPERTIES counting the two
+     * added above. Properties past it are dropped, because the buffer is fixed,
+     * but the send warns once naming the first one lost. */
     static const uint8_t payload[] = "{\"temp\":23}";
     az_iot_telemetry_property props[] = {
       { AZ_IOT_MSG_PROP_CONTENT_TYPE, "application/json" },
+      { AZ_IOT_MSG_PROP_MESSAGE_ID, "sample-1" },
+      { "unit", "deg C" },
     };
     az_iot_telemetry_message msg = { 0 };
     msg.payload = payload;
@@ -207,7 +192,8 @@ int main(void)
     msg.properties = props;
     msg.properties_count = sizeof(props) / sizeof(props[0]);
 
-    if (telemetry_send(&state, &msg, on_send_done, &user_ctx) == AZ_IOT_OK)
+    if (az_iot_gen2_telemetry_client_send(&state.telemetry, &msg, on_send_done, &user_ctx)
+        == AZ_IOT_OK)
     {
       for (int i = 0; i < 600 && !user_ctx.send_done; ++i)
       {
@@ -221,7 +207,6 @@ int main(void)
     }
   }
 
-  /* Close connection */
   az_iot_connection_client_close(&state.connection_client);
 
   for (int i = 0; i < 100 && user_ctx.conn_state != AZ_IOT_CONN_STATE_IDLE; ++i)

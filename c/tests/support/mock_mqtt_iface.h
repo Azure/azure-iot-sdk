@@ -105,6 +105,15 @@ extern "C"
       bool has_sign;
       void* sign_ctx;
       az_iot_mqtt_sign_callback sign;
+      /* Transport + proxy, captured so a test can assert the core forwarded the
+       * caller's egress configuration to the adapter on BOTH connects (DPS and
+       * hub) instead of quietly connecting direct. */
+      az_iot_mqtt_transport transport;
+      char websocket_path[128];
+      char proxy_host[256];
+      uint16_t proxy_port;
+      char proxy_username[128];
+      char proxy_password[128];
     } connect;
   } az_iot_mock_call;
 

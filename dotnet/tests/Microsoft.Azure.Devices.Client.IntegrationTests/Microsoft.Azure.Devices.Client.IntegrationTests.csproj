@@ -10,6 +10,7 @@
   <ItemGroup>
     <!---Use the older IoT hub service client packages for operations like sending direct method, sending c2d telemetry, etc.-->
     <PackageReference Include="Azure.Storage.Blobs" Version="12.29.1" />
+    <PackageReference Include="CaptureProxy" Version="1.2.4" />
     <PackageReference Include="Microsoft.Azure.Devices" Version="1.41.0" />
     <PackageReference Include="Microsoft.Azure.Devices.Provisioning.Service" Version="1.18.4" />
     <PackageReference Include="Microsoft.Azure.Devices.Shared" Version="1.30.4" />

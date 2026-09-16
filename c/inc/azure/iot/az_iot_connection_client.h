@@ -114,7 +114,15 @@ extern "C"
   typedef struct az_iot_connection_client_options
   {
     const char* host; /* hub host (or NULL when using DPS) */
-    uint16_t port; /* default 8883 */
+    /* Port for the HUB connect. 0 selects the default for `transport`: 8883 for
+     * MQTT over TCP, 443 for MQTT over WebSockets.
+     *
+     * The hub connect only, which is what this field has always meant: the DPS
+     * bootstrap connect takes the transport default instead (it used to be a
+     * hardcoded 8883). The provisioning gateway is a different host, so aiming
+     * a hub port at it would leave the device unable to provision at all, and
+     * there is no separate option for the DPS port. */
+    uint16_t port;
 
     /* MQTT keep-alive, in seconds. 0 selects AZ_IOT_DEFAULT_KEEP_ALIVE_SECONDS.
      *
@@ -209,6 +217,75 @@ extern "C"
        * without an operator. */
       uint32_t max_hub_connect_attempts_before_reprovision;
     } dps;
+
+    /* How long registration may be held for a pre-registration exchange on the
+     * provisioning session, in milliseconds. 0 selects
+     * AZ_IOT_DPS_HOLD_TIMEOUT_MS. The hold is advisory and this is its bound:
+     * when it expires the device registers regardless, so a feature client can
+     * delay provisioning but never prevent it.
+     *
+     * Appended deliberately: this struct is filled by callers, and inserting a
+     * member would shift every one after it for positional aggregate
+     * initializers. New options go at the end. */
+    uint32_t dps_hold_timeout_ms;
+
+    /* Transport that carries every MQTT session this client opens -- the DPS
+     * bootstrap connect as well as the hub connect.
+     *
+     * AZ_IOT_MQTT_TRANSPORT_WEBSOCKET tunnels MQTT inside WebSockets over 443,
+     * for devices on networks that only allow HTTP(S) ports.
+     *
+     * Appended, like dps_hold_timeout_ms above and for the same reason: this
+     * struct is filled by callers, so a member inserted anywhere else would
+     * shift every one after it for positional aggregate initializers. */
+    az_iot_mqtt_transport transport;
+
+    /* WebSocket resource path; used only when transport is WEBSOCKET. NULL
+     * selects AZ_IOT_MQTT_DEFAULT_WEBSOCKET_PATH ("/$iothub/websocket"), which
+     * is what IoT Hub and DPS expect; set it only for a gateway that terminates
+     * WebSockets elsewhere. */
+    const char* websocket_path;
+
+    /* HTTP proxy for every MQTT session this client opens, via HTTP CONNECT.
+     * Leave zeroed for a direct connection. Works with both transports, since a
+     * filtered network usually requires the tunnel for plain MQTT too.
+     *
+     * TLS remains end-to-end with the broker: it is negotiated inside the
+     * tunnel, so the proxy carries only ciphertext and certificate and hostname
+     * validation are unaffected.
+     *
+     * Adapters that cannot honour it fail the connect with
+     * AZ_IOT_ERR_NOT_SUPPORTED rather than connecting around the proxy.
+     *
+     * Note for the Paho adapter: when this is left unset, Paho itself still
+     * falls back to the lowercase `http_proxy` / `https_proxy` environment
+     * variables (the uppercase spellings are ignored). Set the proxy here to be
+     * explicit and independent of the environment. */
+    az_iot_mqtt_proxy_options proxy;
+
+    /* IoT Hub Next (AEG) twin push advertisement. These two bits ride the birth
+     * message on every connection and tell the service which twin traffic this
+     * device wants dispatched to it. They reflect the application's
+     * configuration at init and MUST stay constant for the lifetime of the
+     * client: changing push mode at runtime would desynchronize the device's
+     * expectation from the service's most recently recorded decision.
+     *
+     * Both default to false (pull-only), which is what this SDK can honor
+     * today: it does not yet consume the service's twin-push dispatch, so
+     * advertising a push would ask for messages the client would drop. Read the
+     * twin with az_iot_twin_client_get() instead. Ignored for Classic hubs and
+     * for DPS sessions.
+     *
+     * Appended, like the options above it and for the same reason: this struct
+     * is filled by callers, so a member inserted anywhere else would shift
+     * every one after it for positional aggregate initializers. */
+    struct
+    {
+      bool push_desired; /* request push of the desired payload on connect,
+                          * plus incremental desired patches while connected */
+      bool push_reported; /* request one-shot rehydration of the reported
+                           * payload on connect (for volatile devices) */
+    } twin_push;
   } az_iot_connection_client_options;
 
   typedef enum az_iot_connection_state
@@ -397,6 +474,22 @@ extern "C"
 #define AZ_IOT_PRESENCE_BIRTH_ACK_TIMEOUT_MS 60000u
 #endif
 
+/* How long registration may be held for a pre-registration exchange on the
+ * provisioning session before it proceeds anyway. The hold is advisory: a
+ * feature client that stalls, or one whose service call never answers, must
+ * not leave the device unable to provision. */
+#ifndef AZ_IOT_DPS_HOLD_TIMEOUT_MS
+#define AZ_IOT_DPS_HOLD_TIMEOUT_MS 60000u
+#endif
+
+/* How long an auxiliary provisioning session stays open after its last
+ * request. Long enough to collapse a fetch-then-report pair onto one session,
+ * short enough that nothing is held between polls. 0 is a valid setting and
+ * closes the session as soon as it falls idle. */
+#ifndef AZ_IOT_DPS_AUX_IDLE_TIMEOUT_MS
+#define AZ_IOT_DPS_AUX_IDLE_TIMEOUT_MS 5000u
+#endif
+
   /* ------------------------------------------------------------------------- */
   /* struct az_iot_connection_client (caller-owned, init/deinit lifecycle)    */
   /* Fields below are INTERNAL — do not access directly from user code.        */
@@ -416,7 +509,12 @@ extern "C"
     AZ_IOT_DPS_PHASE_SUBSCRIBING,
     AZ_IOT_DPS_PHASE_REGISTERING,
     AZ_IOT_DPS_PHASE_POLLING,
-    AZ_IOT_DPS_PHASE_DONE
+    AZ_IOT_DPS_PHASE_DONE,
+    /* Between SUBSCRIBING and REGISTERING: the session is usable and
+     * registration is deliberately held so a feature client can run a
+     * pre-registration exchange on it. Appended rather than inserted in flow
+     * order so the existing phase values do not shift. */
+    AZ_IOT_DPS_PHASE_HOLD
   };
   /* AEG/Hub-Next presence (birth) handshake phases. Classic/DPS sessions never
    * leave AZ_IOT_PRESENCE_PHASE_NONE. */
@@ -437,6 +535,16 @@ extern "C"
     AZ_IOT_MQTT_ROLE_HUB_CLASSIC = 1, /* requires MQTT v3.1.1 */
     AZ_IOT_MQTT_ROLE_HUB_NEXT = 2 /* requires MQTT v5     */
   } az_iot_mqtt_role;
+
+  /* Inbound provisioning-session messages that the provisioning flow does not
+   * claim are offered to this observer. Returning true means it consumed the
+   * message. Declared here because the client struct stores one; it is set
+   * through an internal entry point and is not application-facing. */
+  typedef bool (*az_iot_dps_message_observer)(
+      const char* topic,
+      const uint8_t* payload,
+      size_t payload_len,
+      void* user_ctx);
 
   struct az_iot_connection_client
   {
@@ -515,6 +623,48 @@ extern "C"
     int dps_phase;
     az_iot_provisioning_client dps_prov;
     az_iot_mqtt_client* dps_mqtt;
+
+    /* Observer for provisioning-session messages the provisioning flow itself
+     * does not claim -- the device-update operations share this session. Stored
+     * as a function pointer, not erased through void*: ISO C does not guarantee
+     * that function and object pointers share a representation. */
+    az_iot_dps_message_observer dps_message_observer;
+    void* dps_message_observer_ctx;
+
+    /* Set when the provisioning subscription is SUBACKed. The phase alone is
+     * not enough: SUBSCRIBING is entered when the SUBSCRIBE is sent, so a
+     * publish made on the phase could race ahead of the response route. */
+    bool dps_subscription_confirmed;
+
+    /* Pre-registration hold. While a holder is registered, registration waits
+     * at AZ_IOT_DPS_PHASE_HOLD so a feature client can use the provisioning
+     * session first. The deadline is what guarantees a feature client can
+     * never stop the device from provisioning. */
+    uint8_t dps_hold_count;
+    bool dps_hold_active;
+    uint64_t dps_hold_deadline_ms;
+
+    /* Standing interest in the provisioning session, held by feature clients
+     * that need to talk to it after the device has already provisioned.
+     * Non-zero means a session may be opened on demand; it does NOT mean one is
+     * open. Keeping a session open between polls would cost a connection for
+     * hours on devices chosen for being small. */
+    uint8_t dps_user_count;
+
+    /* An AUXILIARY provisioning session: opened after the device is already
+     * provisioned, purely so a feature client can exchange messages on it.
+     *
+     * It must never register. Registering would take the assignment path in
+     * dps_finalize(), which rewrites opts.host, opts.client_id and
+     * session_role and then reconnects -- tearing down the live hub connection
+     * this session is supposed to run alongside. */
+    bool dps_session_auxiliary;
+
+    /* When the auxiliary session may be torn down for being idle. 0 while a
+     * request is outstanding. A short linger collapses a fetch-then-report pair
+     * onto one session without holding it between polls. */
+    uint64_t dps_aux_idle_deadline_ms;
+
     char dps_operation_id[AZ_IOT_DPS_OPERATION_ID_MAX];
     size_t dps_operation_id_len;
     uint64_t dps_poll_due_ms;
@@ -607,6 +757,8 @@ extern "C"
       uint16_t sub_packet_id; /* SUBACK correlation for the dev/# sub */
       uint8_t nonce[16]; /* connection nonce echoed by birth-ack */
       uint64_t deadline_ms; /* handshake timeout (monotonic ms) */
+      uint64_t desired_version; /* authoritative twin versions carried by the */
+      uint64_t reported_version; /* last birth-ack (0 when the service omits them) */
     } presence;
   };
 
@@ -618,7 +770,8 @@ extern "C"
 
   const char* az_iot_connection_state_to_string(az_iot_connection_state s);
 
-  /* Returns an options struct with optional fields defaulted (port=8883, no
+  /* Returns an options struct with optional fields defaulted (port derived from
+   * the transport -- 8883 for TCP, 443 for WebSockets -- no proxy, no
    * reconnect, no log sink). Set the required fields for your auth/provisioning
    * mode on the returned struct before az_iot_connection_client_init():
    *   - DPS + X.509 (host==NULL): dps.id_scope, dps.registration_id,

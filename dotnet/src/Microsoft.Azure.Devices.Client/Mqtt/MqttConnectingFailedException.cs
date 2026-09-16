@@ -10,6 +10,6 @@
 
         public MqttConnectAck ConnectAck { get; }
 
-        public MqttConnectResultCode ResultCode => ConnectAck?.ResultCode ?? MqttConnectResultCode.UnspecifiedError;
+        public MqttConnectReasonCode ResultCode => ConnectAck?.ResultCode ?? MqttConnectReasonCode.UnspecifiedError;
     }
 }

@@ -6,6 +6,46 @@
 # the in-process service client below to receive device telemetry (Event
 # Hub-compatible endpoint) and send C2D over the IoT Hub AMQP service endpoint.
 # ---------------------------------------------------------------------------
+# Shared test helpers (support/) are included as "support/<name>.h" from every
+# suite here, so the tests root goes on the include path once for the directory
+# rather than per target.
+include_directories(${CMAKE_SOURCE_DIR}/tests)
+
+# Everything here needs the Paho adapter, and the legacy suites additionally
+# need the AMQP service facade. A target left outside this guard fails to build
+# with AZ_IOT_WITH_PAHO=OFF.
+if(AZ_IOT_WITH_PAHO)
+
+# The ADUv2 device-update suite. Uses the shipping Paho adapter and X.509, so it
+# needs no transport or credential of its own -- it exercises the SDK's real
+# auth and transport path rather than a test substitute.
+#
+# Requires AZ_IOT_BUILD_E2E and AZ_IOT_WITH_PAHO as well; this option only
+# selects the suite once the e2e directory is being built at all.
+#
+# The PEM certificate provider it uses is part of az_iot_core, so the managed
+# (OpenSSL) provider is deliberately NOT linked: doing so would make the suite
+# fail to build wherever that provider is off.
+# Not built on Windows: the suite reads its configuration with the borrowing
+# az_iot_test_env(), which cannot exist under MSVC (getenv is deprecated there
+# and these targets build with /WX). Excluded rather than converted to the
+# copying form, because nothing runs this suite on Windows today and the
+# copies would have to be tracked and freed for no gain.
+if(AZ_IOT_BUILD_E2E_ADU_V2 AND WIN32)
+    message(STATUS "ADUv2 e2e suite skipped on Windows.")
+endif()
+
+if(AZ_IOT_BUILD_E2E_ADU_V2 AND NOT WIN32)
+    az_iot_add_cmocka_test(az_iot_tests_e2e_adu tests/e2e_adu_v2_test.c)
+    target_link_libraries(az_iot_tests_e2e_adu PRIVATE az_iot_core az_iot_adapter_paho)
+    # The suite asserts on the channel and the codecs, which are internal.
+    target_include_directories(az_iot_tests_e2e_adu PRIVATE
+        ${CMAKE_SOURCE_DIR}/src/core
+        ${CMAKE_SOURCE_DIR}/src/features/adu/internal)
+else()
+    message(STATUS "ADUv2 e2e suite disabled (set AZ_IOT_BUILD_E2E_ADU_V2=ON).")
+endif()
+
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../deps/amqp
                  ${CMAKE_CURRENT_BINARY_DIR}/deps/amqp)
 
@@ -68,14 +108,6 @@ target_link_libraries(az_iot_tests_e2e PRIVATE az_iot_e2e_service az_iot_gen1 az
 #
 # Re-enable this target as part of the ADUv2 channel work.
 # ---------------------------------------------------------------------------
-if(AZ_IOT_BUILD_E2E_ADU_V2)
-    az_iot_add_cmocka_test(az_iot_tests_e2e_adu tests/e2e_adu_test.c tests/e2e_device.c)
-    target_link_libraries(az_iot_tests_e2e_adu PRIVATE az_iot_e2e_service az_iot_adapter_paho)
-else()
-    message(STATUS
-        "ADU e2e suite disabled: the twin-driven scenarios retired with the ADUv1 cut "
-        "and are awaiting the ADUv2 rewrite.")
-endif()
 
 # ---------------------------------------------------------------------------
 # az_iot_tests_e2e_csr
@@ -128,7 +160,33 @@ if(WIN32)
 endif()
 az_iot_add_cmocka_test(az_iot_tests_e2e_fileupload ${_e2e_fileupload_ctest}
     tests/e2e_fileupload_test.c tests/e2e_device.c)
-target_link_libraries(az_iot_tests_e2e_fileupload PRIVATE az_iot_e2e_service az_iot_adapter_paho)
+target_link_libraries(az_iot_tests_e2e_fileupload PRIVATE az_iot_e2e_service az_iot_gen1 az_iot_adapter_paho)
+
+# ---------------------------------------------------------------------------
+# az_iot_tests_e2e_transport
+#
+# The egress transports: MQTT over WebSockets, and MQTT tunnelled through an
+# HTTP CONNECT proxy. Each scenario connects a device with one transport
+# configuration and round-trips a uniquely marked telemetry message to the
+# hub's Event Hub-compatible endpoint, so a tunnel that connects but carries
+# nothing fails. It also asserts that an unreachable proxy leaves the device
+# disconnected instead of silently connecting around it.
+#
+# The proxy scenarios skip themselves when AZ_IOT_PROXY_HOST is unset, so the
+# suite is useful on a CI leg with no proxy (the WebSocket scenario still runs)
+# and complete on one that provisions a proxy. The `e2e` name matches the fast
+# job's `ctest -R e2e` filter.
+# ---------------------------------------------------------------------------
+az_iot_add_cmocka_test(az_iot_tests_e2e_transport
+    tests/e2e_transport_test.c tests/e2e_device.c)
+target_link_libraries(az_iot_tests_e2e_transport PRIVATE
+    az_iot_e2e_service az_iot_gen1 az_iot_adapter_paho)
+if(UNIX)
+    # setenv()/unsetenv() are POSIX, not C99, and these targets build -std=c99:
+    # without this the calls are implicit declarations and the build fails rather
+    # than warning. Same reason as az_iot_tests_paho_transport_proxy.
+    target_compile_definitions(az_iot_tests_e2e_transport PRIVATE _POSIX_C_SOURCE=200809L)
+endif()
 
 # ---------------------------------------------------------------------------
 # az_iot_tests_e2e_custody
@@ -148,3 +206,6 @@ if(AZ_IOT_BUILD_E2E_PKCS11)
     target_link_libraries(az_iot_tests_e2e_custody PRIVATE
         az_iot_e2e_service az_iot_gen1 az_iot_adapter_paho)
 endif()
+
+
+endif() # AZ_IOT_WITH_PAHO
