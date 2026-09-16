@@ -174,22 +174,25 @@ typedef struct fixture
   bool factory_registered;
 } fixture;
 
-static void init_connection(az_iot_connection_client* conn)
+static void init_connection_ex(az_iot_connection_client* conn, bool push_reported)
 {
   az_iot_connection_client_options opts = { 0 };
   opts.host = "broker.example";
   opts.port = 8883;
   opts.client_id = "ut-device";
   opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
+  opts.twin_push.push_reported = push_reported;
   assert_int_equal(az_iot_connection_client_init(conn, &opts), AZ_IOT_OK);
 }
 
-static int setup(void** state)
+static void init_connection(az_iot_connection_client* conn) { init_connection_ex(conn, false); }
+
+static int setup_ex(void** state, bool push_reported)
 {
   fixture* fx = (fixture*)calloc(1, sizeof(*fx));
   assert_non_null(fx);
 
-  init_connection(&fx->conn);
+  init_connection_ex(&fx->conn, push_reported);
 
   fx->factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_5);
   assert_non_null(fx->factory);
@@ -203,6 +206,12 @@ static int setup(void** state)
   *state = fx;
   return 0;
 }
+
+static int setup(void** state) { return setup_ex(state, false); }
+
+/* Fixture variant: the application advertised push_reported on the birth, so
+ * the client arms the expectation that a twin-push will arrive. */
+static int setup_push_expected(void** state) { return setup_ex(state, true); }
 
 static int teardown(void** state)
 {
@@ -356,6 +365,76 @@ static void open_to_connected_with_versions(fixture* fx, uint64_t desired, uint6
 }
 
 static void open_to_connected(fixture* fx) { open_to_connected_with_versions(fx, 0, 0); }
+
+/* Drop the session and bring a fresh one up, admitting the birth with @p
+ * desired and @p reported. The old mock client dies with the session, so
+ * fx->mock is replaced. */
+static void reconnect_with_versions(fixture* fx, uint8_t desired, uint8_t reported)
+{
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(fx->mock));
+  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_open(&fx->conn), AZ_IOT_OK);
+  fx->mock = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  assert_non_null(fx->mock);
+
+  az_iot_mqtt_event connack;
+  memset(&connack, 0, sizeof(connack));
+  connack.kind = AZ_IOT_MQTT_EVT_CONNECTED;
+  connack.status = AZ_IOT_OK;
+  assert_true(az_iot_mock_mqtt_client_inject_event(fx->mock, &connack));
+  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+
+  uint16_t ids[16];
+  size_t id_count = 0;
+  size_t n = az_iot_mock_mqtt_client_call_count(fx->mock);
+  for (size_t i = 0; i < n && id_count < (sizeof(ids) / sizeof(ids[0])); ++i)
+  {
+    const az_iot_mock_call* c = az_iot_mock_mqtt_client_call_at(fx->mock, i);
+    if (c->kind == AZ_IOT_MOCK_CALL_SUBSCRIBE)
+    {
+      ids[id_count++] = c->packet_id;
+    }
+  }
+  for (size_t i = 0; i < id_count; ++i)
+  {
+    az_iot_mqtt_event suback;
+    memset(&suback, 0, sizeof(suback));
+    suback.kind = AZ_IOT_MQTT_EVT_SUBSCRIBE_ACK;
+    suback.status = AZ_IOT_OK;
+    suback.packet_id = ids[i];
+    assert_true(az_iot_mock_mqtt_client_inject_event(fx->mock, &suback));
+    assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+  }
+
+  const az_iot_mock_call* birth = find_publish(fx->mock, "ih/ut-device/srv/presence");
+  assert_non_null(birth);
+  memcpy(fx->nonce, birth->correlation_data, sizeof(fx->nonce));
+
+  uint8_t ack_body[4];
+  size_t ack_len = 0;
+  ack_body[ack_len++] = 0x50;
+  ack_body[ack_len++] = desired;
+  ack_body[ack_len++] = 0x58;
+  ack_body[ack_len++] = reported;
+
+  az_iot_mqtt_user_property ack_type = { "type", "birth-ack:1" };
+  az_iot_mqtt_message ack_msg;
+  memset(&ack_msg, 0, sizeof(ack_msg));
+  ack_msg.topic = "ih/ut-device/dev/presence";
+  ack_msg.correlation_data = fx->nonce;
+  ack_msg.correlation_data_len = sizeof(fx->nonce);
+  ack_msg.user_properties = &ack_type;
+  ack_msg.user_properties_count = 1;
+  ack_msg.payload = ack_body;
+  ack_msg.payload_len = ack_len;
+  az_iot_mqtt_event ack;
+  memset(&ack, 0, sizeof(ack));
+  ack.kind = AZ_IOT_MQTT_EVT_MESSAGE;
+  ack.message = &ack_msg;
+  assert_true(az_iot_mock_mqtt_client_inject_event(fx->mock, &ack));
+  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+  az_iot_test_ack_subscriptions(&fx->conn, fx->mock);
+}
 
 /* Deliver an inbound twin message: @p type in the `type` user property, @p corr
  * as Correlation Data. */
@@ -1232,65 +1311,7 @@ static void a_reconnect_reseeds_the_versions_from_the_new_birth_ack(void** state
   const uint8_t push[] = { 0x12, 0x02, 0x08, 0x15 };
   inject_twin(fx, "twin-push:1", fx->nonce, push, sizeof(push));
 
-  /* A second connection admits the birth with a different reported version. */
-  assert_true(az_iot_mock_mqtt_client_inject_disconnected(fx->mock));
-  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
-  fx->factory_registered = true;
-  assert_int_equal(az_iot_connection_client_open(&fx->conn), AZ_IOT_OK);
-  fx->mock = az_iot_mock_mqtt_factory_last_client(fx->factory);
-  assert_non_null(fx->mock);
-
-  az_iot_mqtt_event connack;
-  memset(&connack, 0, sizeof(connack));
-  connack.kind = AZ_IOT_MQTT_EVT_CONNECTED;
-  connack.status = AZ_IOT_OK;
-  assert_true(az_iot_mock_mqtt_client_inject_event(fx->mock, &connack));
-  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
-
-  uint16_t ids[16];
-  size_t id_count = 0;
-  size_t n = az_iot_mock_mqtt_client_call_count(fx->mock);
-  for (size_t i = 0; i < n && id_count < (sizeof(ids) / sizeof(ids[0])); ++i)
-  {
-    const az_iot_mock_call* c = az_iot_mock_mqtt_client_call_at(fx->mock, i);
-    if (c->kind == AZ_IOT_MOCK_CALL_SUBSCRIBE)
-    {
-      ids[id_count++] = c->packet_id;
-    }
-  }
-  for (size_t i = 0; i < id_count; ++i)
-  {
-    az_iot_mqtt_event suback;
-    memset(&suback, 0, sizeof(suback));
-    suback.kind = AZ_IOT_MQTT_EVT_SUBSCRIBE_ACK;
-    suback.status = AZ_IOT_OK;
-    suback.packet_id = ids[i];
-    assert_true(az_iot_mock_mqtt_client_inject_event(fx->mock, &suback));
-    assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
-  }
-
-  const az_iot_mock_call* birth = find_publish(fx->mock, "ih/ut-device/srv/presence");
-  assert_non_null(birth);
-  memcpy(fx->nonce, birth->correlation_data, sizeof(fx->nonce));
-
-  const uint8_t ack_body[] = { 0x50, 0x02, 0x58, 0x03 }; /* desired=2, reported=3 */
-  az_iot_mqtt_user_property ack_type = { "type", "birth-ack:1" };
-  az_iot_mqtt_message ack_msg;
-  memset(&ack_msg, 0, sizeof(ack_msg));
-  ack_msg.topic = "ih/ut-device/dev/presence";
-  ack_msg.correlation_data = fx->nonce;
-  ack_msg.correlation_data_len = sizeof(fx->nonce);
-  ack_msg.user_properties = &ack_type;
-  ack_msg.user_properties_count = 1;
-  ack_msg.payload = ack_body;
-  ack_msg.payload_len = sizeof(ack_body);
-  az_iot_mqtt_event ack;
-  memset(&ack, 0, sizeof(ack));
-  ack.kind = AZ_IOT_MQTT_EVT_MESSAGE;
-  ack.message = &ack_msg;
-  assert_true(az_iot_mock_mqtt_client_inject_event(fx->mock, &ack));
-  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
-  az_iot_test_ack_subscriptions(&fx->conn, fx->mock);
+  reconnect_with_versions(fx, 2, 3);
 
   /* The patch must anchor on 3, the new connection's authoritative version --
    * not 21, which the previous session's push had established. */
@@ -1819,17 +1840,6 @@ static void a_missing_twin_push_reconnects(void** state)
 static void a_delivered_twin_push_does_not_reconnect(void** state)
 {
   fixture* fx = (fixture*)*state;
-
-  az_iot_connection_client_destroy(&fx->conn);
-  az_iot_connection_client_options opts = { 0 };
-  opts.host = "broker.example";
-  opts.port = 8883;
-  opts.client_id = "ut-device";
-  opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
-  opts.twin_push.push_reported = true;
-  assert_int_equal(az_iot_connection_client_init(&fx->conn, &opts), AZ_IOT_OK);
-  assert_int_equal(az_iot_gen2_twin_client_init(&fx->twin, &fx->conn), AZ_IOT_OK);
-
   open_to_connected_with_versions(fx, 7, 9);
   assert_int_equal(az_iot_gen2_twin_client_do_work(&fx->twin), AZ_IOT_OK);
 
@@ -1874,13 +1884,19 @@ static void a_session_end_abandons_the_resync(void** state)
   uint8_t corr[16];
   memcpy(corr, get->correlation_data, sizeof(corr));
 
-  assert_true(az_iot_mock_mqtt_client_inject_disconnected(fx->mock));
-  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+  reconnect_with_versions(fx, 3, 3);
 
-  /* A response for the abandoned resync GET replays nothing. */
+  /* A late response for the resync GET the old session issued replays nothing:
+   * its slot went with that session. */
   const uint8_t resp[] = { 0x08, 0x03, 0x1A, 0x02, '{', '}' };
   inject_twin(fx, "get-response:1", corr, resp, sizeof(resp));
   assert_false(rec.fired);
+
+  /* And the desired sequence starts over: version 1 is in order again, which it
+   * would not be if the applied version had survived the disconnect. */
+  inject_desired(fx, 1, "{\"a\":1}");
+  assert_int_equal(rec.count, 1);
+  assert_int_equal(rec.version, 1);
 }
 
 static void set_resync_buffer_rejects_a_null_client(void** state)
@@ -2115,8 +2131,9 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         an_unanswered_patch_is_re_framed_with_the_current_version, setup, teardown),
     cmocka_unit_test_setup_teardown(a_second_concurrent_patch_is_refused, setup, teardown),
-    cmocka_unit_test_setup_teardown(a_missing_twin_push_reconnects, setup, teardown),
-    cmocka_unit_test_setup_teardown(a_delivered_twin_push_does_not_reconnect, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_missing_twin_push_reconnects, setup_push_expected, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_delivered_twin_push_does_not_reconnect, setup_push_expected, teardown),
     cmocka_unit_test_setup_teardown(do_work_without_a_connection_is_a_no_op, setup, teardown),
     cmocka_unit_test_setup_teardown(a_session_end_abandons_the_resync, setup, teardown),
     cmocka_unit_test_setup_teardown(set_resync_buffer_rejects_a_null_client, setup, teardown),
