@@ -2079,6 +2079,39 @@ static void a_retryable_verdict_re_arms_the_same_route(void** state)
   assert_int_equal(fx->chan.last_request_operation, AZ_IOT_ADU_OP_GET_UPDATE);
 }
 
+/* A verdict belongs to a request the channel accepted earlier, so the
+ * application may have queued a different route in the meantime. Re-arming the
+ * old route over it would silently discard the newer request. */
+static void a_retryable_verdict_does_not_overwrite_a_newer_request(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  /* Regular is asked for and accepted; it is now in flight. */
+  assert_int_equal(az_iot_adu_client_request_update(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(fx->chan.request_update_count, 1);
+  assert_int_equal(fx->chan.last_request_operation, AZ_IOT_ADU_OP_GET_UPDATE);
+
+  /* The application changes its mind before the answer arrives. */
+  assert_int_equal(az_iot_adu_client_request_onboarding_update(&fx->adu), AZ_IOT_OK);
+
+  /* The in-flight regular request then fails retryably. */
+  assert_non_null(fx->chan.result_cb);
+  fx->chan.result_cb(
+      AZ_IOT_ADU_OP_GET_UPDATE, AZ_IOT_ERR_DPS, AZ_IOT_ADU_ERROR_ACTION_RETRY, fx->chan.engine_ctx);
+
+  /* The newer onboarding request must survive, not be replaced by a regular
+   * retry. */
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(fx->chan.request_update_count, 2);
+  assert_int_equal(fx->chan.last_request_operation, AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE);
+
+  /* And it is not issued twice. */
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(fx->chan.request_update_count, 2);
+}
+
 static void a_request_on_a_null_client_is_rejected(void** state)
 {
   (void)state;
@@ -2095,6 +2128,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         a_refused_request_is_retried_on_the_same_route, setup, teardown),
     cmocka_unit_test_setup_teardown(a_retryable_verdict_re_arms_the_same_route, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_retryable_verdict_does_not_overwrite_a_newer_request, setup, teardown),
     cmocka_unit_test(a_request_on_a_null_client_is_rejected),
     cmocka_unit_test_setup_teardown(deployment_drives_full_workflow_single_step, setup, teardown),
     cmocka_unit_test_setup_teardown(verify_failure_blocks_download_and_fails, setup, teardown),

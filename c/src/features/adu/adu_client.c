@@ -1255,12 +1255,22 @@ static void on_channel_result(
       ADU_I(client).device_props_report_pending = true;
       break;
     case AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE:
-      ADU_I(client).pending_fetch = ADU_FETCH_ONBOARDING;
-      break;
     case AZ_IOT_ADU_OP_GET_UPDATE:
       /* Re-arm the route that failed, not a default: the application asked for
-       * this one and a retry on the other would query the wrong thing. */
-      ADU_I(client).pending_fetch = ADU_FETCH_REGULAR;
+       * this one and a retry on the other would query the wrong thing.
+       *
+       * Unless it already asked for something newer. This verdict belongs to a
+       * request the channel accepted earlier, so the application has had time
+       * to queue another one in between; overwriting it here would silently
+       * discard the newer request and retry a route nobody currently wants.
+       * The newest request wins, which is what a second call to either request
+       * function does as well. */
+      if (ADU_I(client).pending_fetch == ADU_FETCH_NONE)
+      {
+        ADU_I(client).pending_fetch = (operation == AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE)
+            ? ADU_FETCH_ONBOARDING
+            : ADU_FETCH_REGULAR;
+      }
       break;
   }
 }
