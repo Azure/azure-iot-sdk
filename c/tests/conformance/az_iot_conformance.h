@@ -119,9 +119,11 @@ extern "C"
     AZ_IOT_CONFORMANCE_CAP_WEBSOCKETS = 1u << 2,
 
     /* Reaching the broker through an HTTP CONNECT proxy
-     * (az_iot_mqtt_connect_options.proxy). Proved by an end-to-end session
-     * through a real proxy; supply az_iot_conformance_options proxy_host +
-     * proxy_port.
+     * (az_iot_mqtt_connect_options.proxy). Needs no configuration: the suite
+     * runs its own in-process CONNECT proxy, so declaring this always proves
+     * it -- positively (a tunnelled session carrying real traffic, with and
+     * without Basic credentials) and negatively (wrong credential, missing
+     * credential, a refused tunnel, a tunnel dropped mid-session).
      *
      * As above, the baseline holds every adapter -- declared or not -- to the
      * rule that matters for an egress control: a proxy that cannot be reached
@@ -180,10 +182,8 @@ extern "C"
      * "/mqtt" instead. */
     const char* websocket_path;
 
-    /* AZ_IOT_CONFORMANCE_CAP_PROXY: an HTTP CONNECT proxy that can reach the
-     * broker. Both are required; proxy_port 0 means "not available here". */
-    const char* proxy_host;
-    uint16_t proxy_port;
+    /* AZ_IOT_CONFORMANCE_CAP_PROXY needs nothing here: the suite starts its own
+     * in-process CONNECT proxy, including for the authenticated cases. */
   } az_iot_conformance_options;
 
   /* Run the conformance suite for `suite_kind` against the given factory.

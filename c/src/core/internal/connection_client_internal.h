@@ -51,6 +51,17 @@ extern "C"
    * AZ_IOT_PRESENCE_BIRTH_ACK_TIMEOUT_MS. */
   void az_iot_connection_client__presence_force_timeout(az_iot_connection_client* client);
 
+  /* Authoritative twin versions the service reported on the most recent AEG
+   * birth-ack, as of birth admission on the current connection. The twin client
+   * uses `reported_version` as the if_match anchor for its next reported patch
+   * and `desired_version` as its view of the current desired version. Both are 0
+   * before the first birth-ack, on Classic/DPS sessions, and when the service
+   * omits the fields. Returns AZ_IOT_ERR_INVALID_ARG on NULL arguments. */
+  az_iot_result az_iot_connection_client__presence_twin_versions(
+      const az_iot_connection_client* client,
+      uint64_t* out_desired_version,
+      uint64_t* out_reported_version);
+
   /* Test seam: force a pending subscription gate to expire on the next
    * do_work(). No-op when no gate is armed. Lets unit tests exercise the
    * never-acked path without waiting out the configured timeout. */

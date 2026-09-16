@@ -224,6 +224,7 @@ cloud resources stays green.
 | --- | --- |
 | [telemetry_gen1](samples/telemetry_gen1/) | DPS provisioning + `do_work()` pump + a telemetry send to a Classic hub. The starting point. |
 | [telemetry_gen2](samples/telemetry_gen2/) | The same send to an AEG hub over MQTT v5, where properties are user properties rather than topic segments. |
+| [connection_profile_fallback](samples/connection_profile_fallback/) | Neither of the above, for one binary that must serve both: open first, ask `get_hub_profile()` what it reached, then build the matching client. Only when the generation cannot be known up front. |
 | [twin_get_patch](samples/twin_get_patch/) | `twin_get` + `patch_reported`, and desired-property delivery. |
 | [direct_method_responder_gen1](samples/direct_method_responder_gen1/) | Answer direct methods on a Classic hub, where one handler receives every name and must route and refuse them itself. |
 | [direct_method_responder_gen2](samples/direct_method_responder_gen2/) | The same on an AEG hub, where methods are declared up front and a probe lets the device decline with a reason before the arguments are sent. |
