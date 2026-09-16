@@ -82,6 +82,15 @@ extern "C"
       const az_iot_connection_client* client,
       uint8_t out[AZ_IOT_CORRELATION_UUID_LEN]);
 
+  /* The twin push advertisement the application configured (options.twin_push).
+   * The twin client uses it to decide whether a birth-triggered twin-push is
+   * expected on this connection, and therefore whether to arm a defensive
+   * timeout for one. Both outputs are false when `client` is NULL. */
+  void az_iot_connection_client__twin_push_flags(
+      const az_iot_connection_client* client,
+      bool* out_push_desired,
+      bool* out_push_reported);
+
   /* Test seam: force a pending subscription gate to expire on the next
    * do_work(). No-op when no gate is armed. Lets unit tests exercise the
    * never-acked path without waiting out the configured timeout. */

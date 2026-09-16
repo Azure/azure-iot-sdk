@@ -283,6 +283,11 @@ int main(void)
   for (int i = 0; i < 1200 && user_ctx.conn_state != AZ_IOT_CONN_STATE_CONNECTED; ++i)
   {
     (void)az_iot_connection_client_do_work(&state.connection_client, 50);
+    if (state.twin_initialized && state.twin_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
+    {
+      /* Twin runs at QoS 0, so its defensive timeouts need their own tick. */
+      (void)az_iot_gen2_twin_client_do_work(&state.gen2_twin);
+    }
     if (user_ctx.rebuild_pending)
     {
       user_ctx.rebuild_pending = 0;
@@ -325,6 +330,15 @@ int main(void)
     for (int i = 0; i < 600 && (!user_ctx.get_done || !user_ctx.patch_done); ++i)
     {
       (void)az_iot_connection_client_do_work(&state.connection_client, 50);
+      if (state.twin_initialized && state.twin_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
+      {
+        (void)az_iot_gen2_twin_client_do_work(&state.gen2_twin);
+      }
+      if (state.twin_initialized && state.twin_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
+      {
+        /* Twin runs at QoS 0, so its defensive timeouts need their own tick. */
+        (void)az_iot_gen2_twin_client_do_work(&state.gen2_twin);
+      }
     }
 
     if (user_ctx.get_done && user_ctx.get_status == AZ_IOT_OK && user_ctx.patch_done
@@ -350,6 +364,11 @@ int main(void)
   for (int i = 0; i < 100 && user_ctx.conn_state != AZ_IOT_CONN_STATE_IDLE; ++i)
   {
     (void)az_iot_connection_client_do_work(&state.connection_client, 50);
+    if (state.twin_initialized && state.twin_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
+    {
+      /* Twin runs at QoS 0, so its defensive timeouts need their own tick. */
+      (void)az_iot_gen2_twin_client_do_work(&state.gen2_twin);
+    }
   }
 
   sample_state_destroy(&state);

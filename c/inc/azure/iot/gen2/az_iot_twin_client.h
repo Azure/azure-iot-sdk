@@ -109,9 +109,39 @@ extern "C"
       *az_iot_gen2_twin_push_callback)(const az_iot_gen2_twin_state* twin, void* user_ctx);
 
 /* Bytes of protobuf framing the SDK wraps around a reported-properties patch:
- * the if_match field plus the payload's tag and length prefix. Size an encode
- * buffer to your largest patch plus this. */
+ * the if_match field plus the payload's tag and length prefix. The encode
+ * buffer also keeps a copy of the patch so a timed-out write can be re-framed
+ * with a newer if_match, so size it to twice your largest patch plus this. */
 #define AZ_IOT_GEN2_TWIN_ENCODE_OVERHEAD 24
+
+/* How many desired patches may be held while a resync is outstanding. Past
+ * this the buffer overflows, which is recovered from by re-issuing the snapshot
+ * GET rather than by losing an update. */
+#ifndef AZ_IOT_GEN2_TWIN_MAX_RESYNC_PATCHES
+#define AZ_IOT_GEN2_TWIN_MAX_RESYNC_PATCHES 8
+#endif
+
+  /* Which twin sections a GET should retrieve. */
+  typedef enum az_iot_gen2_twin_sections
+  {
+    AZ_IOT_GEN2_TWIN_SECTIONS_DESIRED = 1,
+    AZ_IOT_GEN2_TWIN_SECTIONS_REPORTED = 2,
+    AZ_IOT_GEN2_TWIN_SECTIONS_BOTH = 3
+  } az_iot_gen2_twin_sections;
+
+  typedef struct az_iot_gen2_twin_get_options
+  {
+    /* Sections to retrieve; 0 is treated as BOTH. */
+    az_iot_gen2_twin_sections sections;
+
+    /* Optional per-section "if not match" filter. When a requested section's
+     * authoritative version equals the value supplied here, the response
+     * carries that section's version but omits its payload -- useful when the
+     * device already holds the content and only wants to learn whether it is
+     * still current. 0 means no filter: the payload is always returned. */
+    uint64_t if_not_match_desired;
+    uint64_t if_not_match_reported;
+  } az_iot_gen2_twin_get_options;
 
   typedef struct az_iot_gen2_twin_client
   {
@@ -132,8 +162,14 @@ extern "C"
       /* The service's authoritative versions as the client currently
        * understands them: seeded from the birth-ack, then advanced by every
        * response and push. `reported_version` is what rides the next patch as
-       * if_match. */
-      uint64_t desired_version;
+       * if_match.
+       *
+       * The desired side keeps two numbers. `desired_auth` is what the service
+       * says the version is; `desired_local` is what the device has actually
+       * applied. They differ whenever an update is outstanding, and that gap is
+       * what makes a missing patch detectable. */
+      uint64_t desired_auth;
+      uint64_t desired_local;
       uint64_t reported_version;
 
       /* The birth nonce those versions were seeded from, so a reconnect is
@@ -141,10 +177,34 @@ extern "C"
       uint8_t nonce[16];
       bool nonce_valid;
 
+      /* A birth-triggered twin-push the service is expected to send, and the
+       * deadline by which it must arrive. */
+      bool push_expected;
+      uint64_t push_deadline_ms;
+      uint32_t push_attempt;
+
+      /* Desired resync: a gap in the patch sequence means the device cannot
+       * apply what arrived on top of what it holds, so it asks for a snapshot
+       * and buffers what keeps coming until that lands. */
+      bool resyncing;
+      uint8_t* resync_buffer;
+      size_t resync_buffer_len;
+      size_t resync_used;
+      size_t resync_count;
+      struct
+      {
+        uint64_t version;
+        size_t offset;
+        size_t len;
+      } resync_patches[AZ_IOT_GEN2_TWIN_MAX_RESYNC_PATCHES];
+
       /* Caller-owned scratch for framing a reported patch. The SDK does not
-       * allocate; without it a patch cannot be sent. */
+       * allocate; without it a patch cannot be sent. The caller's payload is
+       * copied to the front of it so a retry can re-frame with a newer
+       * if_match after the caller's own buffer is gone. */
       uint8_t* encode_buffer;
       size_t encode_buffer_len;
+      size_t saved_patch_len;
 
       struct
       {
@@ -158,6 +218,13 @@ extern "C"
           az_iot_gen2_twin_patch_ack_callback patch_cb;
         } cb;
         void* user_ctx;
+        /* Defensive timeout for this exchange. `attempt` drives the escalating
+         * schedule; `internal` marks a GET the SDK issued for its own resync
+         * rather than on behalf of the application. */
+        uint64_t deadline_ms;
+        uint32_t attempt;
+        bool internal;
+        az_iot_gen2_twin_get_options get_opts;
       } pending[AZ_IOT_TWIN_MAX_PENDING];
     } _internal;
   } az_iot_gen2_twin_client;
@@ -191,6 +258,23 @@ extern "C"
    */
   AZ_NODISCARD az_iot_result az_iot_gen2_twin_client_get(
       az_iot_gen2_twin_client* twin,
+      az_iot_gen2_twin_get_callback cb,
+      void* user_ctx);
+
+  /**
+   * @brief Request selected twin sections, optionally filtered by version.
+   *
+   * Lets a device ask whether the copy it already holds is still current
+   * without downloading it again: set the section's `if_not_match_*` to the
+   * version it has, and a matching section comes back with its version and no
+   * payload.
+   *
+   * @return AZ_IOT_ERR_NOT_SUPPORTED when AZ_IOT_TWIN_MAX_PENDING requests are
+   *         already in flight.
+   */
+  AZ_NODISCARD az_iot_result az_iot_gen2_twin_client_get_with_options(
+      az_iot_gen2_twin_client* twin,
+      const az_iot_gen2_twin_get_options* opts,
       az_iot_gen2_twin_get_callback cb,
       void* user_ctx);
 
@@ -251,6 +335,36 @@ extern "C"
       az_iot_gen2_twin_client* twin,
       uint8_t* buffer,
       size_t buffer_len);
+
+  /**
+   * @brief Provide the buffer that holds desired patches during a resync.
+   *
+   * Desired patches are incremental, so they may only be applied in order. When
+   * one goes missing the client asks for a snapshot and buffers what keeps
+   * arriving, replaying the newer ones once the snapshot lands.
+   *
+   * Optional: without it the gap is still detected and the snapshot still
+   * requested, but patches arriving during the resync are dropped rather than
+   * replayed. That is still correct -- the snapshot subsumes them -- just one
+   * round trip less fresh.
+   *
+   * The buffer is borrowed, not copied, and must outlive the client.
+   */
+  az_iot_result az_iot_gen2_twin_client_set_resync_buffer(
+      az_iot_gen2_twin_client* twin,
+      uint8_t* buffer,
+      size_t buffer_len);
+
+  /**
+   * @brief Drive the twin client's defensive timeouts.
+   *
+   * Twin runs at QoS 0, so nothing in the transport reports a request that went
+   * unanswered: without this, an exchange simply sits outstanding forever,
+   * holding its pending slot. Call it alongside
+   * az_iot_connection_client_do_work(). Without it the twin client still works;
+   * it just cannot notice a service that never answers.
+   */
+  az_iot_result az_iot_gen2_twin_client_do_work(az_iot_gen2_twin_client* twin);
 
 #ifdef __cplusplus
 }

@@ -31,7 +31,9 @@
 #include "internal/connection_client_internal.h"
 #include "internal/log_internal.h"
 #include "internal/proto3.h"
+#include "internal/reconnect.h"
 #include "internal/span_writer.h"
+#include "internal/twin_client_internal.h"
 
 #define AZ_IOT_TWIN_TOPIC_MAX 192
 
@@ -54,6 +56,8 @@
 
 /* twin.proto field numbers. */
 #define TWIN_F_GET_SECTIONS 1u
+#define TWIN_F_GET_IF_NOT_MATCH_DESIRED 2u
+#define TWIN_F_GET_IF_NOT_MATCH_REPORTED 3u
 #define TWIN_F_SECTION_VERSION 1u
 #define TWIN_F_SECTION_PAYLOAD 2u
 #define TWIN_F_PUSH_DESIRED 1u
@@ -72,8 +76,12 @@
 /* TwinGet.Sections: request both sections. */
 #define TWIN_SECTIONS_BOTH 3u
 
-/* Largest TwinGet body this client emits: one small varint field. */
-#define TWIN_GET_BODY_MAX 16
+/* Largest TwinGet body this client emits: the sections selector plus two
+ * optional if-not-match versions. */
+#define TWIN_GET_BODY_MAX 32
+
+/* Upper bound of the jitter added to every defensive timeout. */
+#define TWIN_TIMEOUT_JITTER_MS 300000u
 
 /* The pending slot kind values stored in _internal.pending[].kind */
 #define TWIN_PENDING_NONE 0
@@ -169,12 +177,53 @@ static bool matches_connection(az_iot_gen2_twin_client* t, const az_iot_mqtt_mes
       && memcmp(msg->correlation_data, nonce, AZ_IOT_CORRELATION_UUID_LEN) == 0;
 }
 
+/* Defensive timeout schedule, matching the presence handshake: the base grows
+ * 5, 6, 8 then 10 minutes, each with up to 5 minutes of jitter.
+ *
+ * Deliberately long. MQTT keep-alive is what proves the connection is healthy,
+ * so an exchange going unanswered on a healthy connection means degeneration
+ * somewhere the device cannot influence -- a slow backend, egress lag, a
+ * dispatch stall. Retrying quickly would only add load to something already
+ * struggling, and without jitter every affected device would retry in
+ * lockstep. */
+static uint64_t defensive_deadline(az_iot_gen2_twin_client* t, uint32_t attempt)
+{
+  static const uint64_t k_base_ms[] = { 300000u, 360000u, 480000u, 600000u };
+  uint64_t base = k_base_ms[attempt < 4u ? attempt : 3u];
+
+  /* Draw the jitter from the connection's PRNG. */
+  uint8_t r[AZ_IOT_CORRELATION_UUID_LEN];
+  az_iot_connection_client__gen_uuid(TI(t).conn, r);
+  uint64_t jitter = ((uint64_t)(((uint32_t)r[0] << 8) | r[1]) * TWIN_TIMEOUT_JITTER_MS) / 65535u;
+
+  return az_iot_time_mono_ms() + base + jitter;
+}
+
+/* Forget everything scoped to the resync in progress, if any. */
+static void resync_reset(az_iot_gen2_twin_client* t)
+{
+  TI(t).resyncing = false;
+  TI(t).resync_used = 0;
+  TI(t).resync_count = 0;
+}
+
 /* Adopt the authoritative versions the birth-ack carried, once per connection.
  *
  * The birth nonce identifies the connection those versions belong to, so a
  * reconnect is noticed here and the versions re-seeded: they are the service's
  * state as of the new birth admission, not the stale ones this client was
- * tracking against a session that has ended. */
+ * tracking against a session that has ended.
+ *
+ * `reported_version` is adopted directly -- it is only ever the if_match for
+ * the next write. `desired_local` is reset to 0 instead, because the device
+ * advertised version 0 in its birth (this SDK does not persist twin state) and
+ * holds no desired payload for this connection until a push or a GET delivers
+ * one. Treating the authoritative version as applied would make the next
+ * incremental patch look in-order and get merged onto state the device does
+ * not have.
+ *
+ * Also arms the twin-push expectation: one timer covers both sections, since a
+ * push is a single message. */
 static void sync_versions(az_iot_gen2_twin_client* t)
 {
   uint8_t nonce[AZ_IOT_CORRELATION_UUID_LEN];
@@ -190,14 +239,27 @@ static void sync_versions(az_iot_gen2_twin_client* t)
 
   uint64_t desired = 0;
   uint64_t reported = 0;
-  if (az_iot_connection_client__presence_twin_versions(TI(t).conn, &desired, &reported)
-      == AZ_IOT_OK)
-  {
-    TI(t).desired_version = desired;
-    TI(t).reported_version = reported;
-  }
+  (void)az_iot_connection_client__presence_twin_versions(TI(t).conn, &desired, &reported);
+
+  TI(t).desired_auth = desired;
+  TI(t).desired_local = 0;
+  TI(t).reported_version = reported;
   memcpy(TI(t).nonce, nonce, AZ_IOT_CORRELATION_UUID_LEN);
   TI(t).nonce_valid = true;
+
+  resync_reset(t);
+
+  bool push_desired = false;
+  bool push_reported = false;
+  az_iot_connection_client__twin_push_flags(TI(t).conn, &push_desired, &push_reported);
+
+  TI(t).push_expected = (push_desired && TI(t).desired_local != TI(t).desired_auth)
+      || (push_reported && reported != 0);
+  TI(t).push_attempt = 0;
+  if (TI(t).push_expected)
+  {
+    TI(t).push_deadline_ms = defensive_deadline(t, 0);
+  }
 }
 
 /* ------------------------------------------------------------------------- */
@@ -217,12 +279,18 @@ static void release_pending(
     const az_iot_gen2_twin_patch_result* result)
 {
   int kind = TI(t).pending[idx].kind;
+  bool internal = TI(t).pending[idx].internal;
   void* ctx = TI(t).pending[idx].user_ctx;
   az_iot_gen2_twin_get_callback get_cb = TI(t).pending[idx].cb.get_cb;
   az_iot_gen2_twin_patch_ack_callback patch_cb = TI(t).pending[idx].cb.patch_cb;
 
-  TI(t).pending[idx].in_use = false;
-  TI(t).pending[idx].kind = TWIN_PENDING_NONE;
+  memset(&TI(t).pending[idx], 0, sizeof(TI(t).pending[idx]));
+
+  /* The SDK issues its own resync GET; there is no caller to report to. */
+  if (internal)
+  {
+    return;
+  }
 
   if (kind == TWIN_PENDING_GET)
   {
@@ -261,6 +329,121 @@ static void twin_fail_pending(void* user_ctx)
       release_pending(t, i, AZ_IOT_ERR_NOT_CONNECTED, NULL, NULL);
     }
   }
+
+  /* The resync buffer holds patches from the ended connection's patch
+   * sequence; they mean nothing against a fresh one. */
+  resync_reset(t);
+  TI(t).push_expected = false;
+}
+
+/* ------------------------------------------------------------------------- */
+/* desired resync                                                            */
+/* ------------------------------------------------------------------------- */
+
+/* Forward declaration: the desired state machine issues its own GET. */
+static az_iot_result issue_get(
+    az_iot_gen2_twin_client* t,
+    const az_iot_gen2_twin_get_options* opts,
+    az_iot_gen2_twin_get_callback cb,
+    void* user_ctx,
+    bool internal);
+
+/* Hand a desired patch to the application, if it is listening. */
+static void dispatch_desired(
+    az_iot_gen2_twin_client* t,
+    const uint8_t* payload,
+    size_t len,
+    uint64_t version)
+{
+  if (TI(t).desired_handler)
+  {
+    TI(t).desired_handler(payload, len, version, TI(t).desired_handler_ctx);
+  }
+}
+
+/* Buffer a desired patch received while resyncing. Returns false when the
+ * arena or the index is full, which sends the caller down the overflow path. */
+static bool resync_buffer_patch(
+    az_iot_gen2_twin_client* t,
+    uint64_t version,
+    const uint8_t* payload,
+    size_t len)
+{
+  if (!TI(t).resync_buffer || TI(t).resync_count >= AZ_IOT_GEN2_TWIN_MAX_RESYNC_PATCHES
+      || len > TI(t).resync_buffer_len - TI(t).resync_used)
+  {
+    return false;
+  }
+
+  size_t idx = TI(t).resync_count;
+  TI(t).resync_patches[idx].version = version;
+  TI(t).resync_patches[idx].offset = TI(t).resync_used;
+  TI(t).resync_patches[idx].len = len;
+  if (len)
+  {
+    memcpy(TI(t).resync_buffer + TI(t).resync_used, payload, len);
+  }
+  TI(t).resync_used += len;
+  TI(t).resync_count++;
+  return true;
+}
+
+/* Cancel the SDK's own outstanding resync GET. A response that arrives for it
+ * afterwards matches no pending slot and is dropped. */
+static void resync_cancel_get(az_iot_gen2_twin_client* t)
+{
+  for (int i = 0; i < AZ_IOT_TWIN_MAX_PENDING; ++i)
+  {
+    if (TI(t).pending[i].in_use && TI(t).pending[i].internal)
+    {
+      memset(&TI(t).pending[i], 0, sizeof(TI(t).pending[i]));
+    }
+  }
+}
+
+/* Enter the resyncing state: the desired-patch sequence has a gap, so the
+ * device cannot apply what it just received on top of what it holds. Ask for a
+ * snapshot of the desired section and buffer whatever keeps arriving until it
+ * lands. */
+static void resync_begin(az_iot_gen2_twin_client* t)
+{
+  TI(t).resyncing = true;
+  TI(t).resync_used = 0;
+  TI(t).resync_count = 0;
+
+  az_iot_gen2_twin_get_options opts;
+  memset(&opts, 0, sizeof(opts));
+  opts.sections = AZ_IOT_GEN2_TWIN_SECTIONS_DESIRED;
+  (void)issue_get(t, &opts, NULL, NULL, true);
+}
+
+/* Leave the resyncing state by applying a snapshot at @p version, then
+ * replaying the buffered patches newer than it, in order. Patches at or below
+ * the snapshot version are already folded into it and are discarded. */
+static void resync_complete(
+    az_iot_gen2_twin_client* t,
+    uint64_t version,
+    const uint8_t* payload,
+    size_t payload_len)
+{
+  TI(t).desired_local = version;
+  dispatch_desired(t, payload, payload_len, version);
+
+  for (size_t i = 0; i < TI(t).resync_count; ++i)
+  {
+    if (TI(t).resync_patches[i].version <= version)
+    {
+      continue;
+    }
+    TI(t).desired_local = TI(t).resync_patches[i].version;
+    dispatch_desired(
+        t,
+        TI(t).resync_buffer + TI(t).resync_patches[i].offset,
+        TI(t).resync_patches[i].len,
+        TI(t).resync_patches[i].version);
+  }
+
+  resync_reset(t);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -342,11 +525,29 @@ static void on_twin_push(az_iot_gen2_twin_client* t, const az_iot_mqtt_message* 
    * the client sends back to the service. */
   if (twin.desired.version)
   {
-    TI(t).desired_version = twin.desired.version;
+    TI(t).desired_auth = twin.desired.version;
   }
   if (twin.reported.version)
   {
     TI(t).reported_version = twin.reported.version;
+  }
+
+  /* The push is what the birth-triggered expectation was waiting for. */
+  TI(t).push_expected = false;
+
+  /* A desired snapshot is exactly what a resync is chasing, so a push settles
+   * it and makes the outstanding GET redundant. */
+  if (twin.desired.version)
+  {
+    if (TI(t).resyncing)
+    {
+      resync_cancel_get(t);
+      resync_complete(t, twin.desired.version, twin.desired.payload, twin.desired.payload_len);
+    }
+    else
+    {
+      TI(t).desired_local = twin.desired.version;
+    }
   }
 
   if (TI(t).push_cb)
@@ -357,9 +558,13 @@ static void on_twin_push(az_iot_gen2_twin_client* t, const az_iot_mqtt_message* 
 
 /* desired-patch -- DesiredPatch { 1 uint64 version, 2 optional bytes payload }.
  *
- * An absent payload is a version probe: the service confirming which version
- * the device should be at. It advances nothing for the application, so it
- * updates the tracked version and is not dispatched to the handler. */
+ * Desired patches are incremental, so they may only be applied in order. A
+ * version beyond the next one means the device missed something, and merging
+ * this patch onto state it does not have would silently corrupt it: the client
+ * asks for a snapshot instead and buffers what keeps arriving.
+ *
+ * A patch with no payload is a version probe -- the service asking "are you
+ * current?" -- which never reaches the application. */
 static void on_desired_patch(az_iot_gen2_twin_client* t, const az_iot_mqtt_message* msg)
 {
   uint64_t version = 0;
@@ -400,14 +605,72 @@ static void on_desired_patch(az_iot_gen2_twin_client* t, const az_iot_mqtt_messa
     }
   }
 
-  if (version)
+  if (version > TI(t).desired_auth)
   {
-    TI(t).desired_version = version;
+    TI(t).desired_auth = version;
   }
-  if (has_payload && TI(t).desired_handler)
+
+  /* Anything at or behind the applied version is stale in every state,
+   * resyncing included. desired_local only advances through resync_complete()
+   * (which ends the resync) or the non-resyncing branch below, so it stays
+   * pinned at the last applied version for the whole resync -- and
+   * resync_complete() would skip such a patch on replay anyway, since the
+   * snapshot it applies is never older. Buffering one would only burn resync
+   * buffer space and a replay slot, and an overflow there costs a cancelled GET
+   * and a second round trip. */
+  if (version <= TI(t).desired_local)
   {
-    TI(t).desired_handler(patch, patch_len, version, TI(t).desired_handler_ctx);
+    return;
   }
+
+  if (TI(t).resyncing)
+  {
+    /* A probe carries nothing to replay, and the in-flight GET already
+     * resolves at a version no older than the probe's. */
+    if (!has_payload)
+    {
+      return;
+    }
+
+    /* With no buffer configured there is nowhere to replay from, so the patch
+     * is simply dropped: the snapshot already on its way subsumes it. Only a
+     * buffer that exists and filled up is an overflow worth re-GETting for --
+     * treating "no buffer" as overflow would cancel and re-issue the GET for
+     * every patch that arrived, and a steady stream of them would keep the
+     * resync from ever completing. */
+    if (!TI(t).resync_buffer)
+    {
+      return;
+    }
+
+    if (!resync_buffer_patch(t, version, patch, patch_len))
+    {
+      /* Overflow. Discard the buffer and re-GET: the fresh snapshot is at least
+       * as new as the highest patch that was buffered, so it subsumes
+       * everything dropped. */
+      resync_cancel_get(t);
+      resync_begin(t);
+    }
+    return;
+  }
+
+  if (!has_payload)
+  {
+    /* A probe ahead of the applied version reveals a patch that never arrived. */
+    resync_begin(t);
+    return;
+  }
+
+  if (version == TI(t).desired_local + 1u)
+  {
+    TI(t).desired_local = version;
+    dispatch_desired(t, patch, patch_len, version);
+    return;
+  }
+
+  /* A gap: seed the buffer with this patch, then resynchronize. */
+  resync_begin(t);
+  (void)resync_buffer_patch(t, version, patch, patch_len);
 }
 
 /* get-response -- TwinGetResponse { 1 desired_version, 2 reported_version,
@@ -463,11 +726,19 @@ static void on_get_response(az_iot_gen2_twin_client* t, int idx, const az_iot_mq
 
   if (twin.desired.version)
   {
-    TI(t).desired_version = twin.desired.version;
+    TI(t).desired_auth = twin.desired.version;
   }
   if (twin.reported.version)
   {
     TI(t).reported_version = twin.reported.version;
+  }
+
+  /* A desired snapshot ends a resync: apply it, then replay the patches that
+   * are newer than it. Done before the slot is released so the replay is not
+   * interleaved with whatever the application does in its callback. */
+  if (TI(t).resyncing && twin.desired.version)
+  {
+    resync_complete(t, twin.desired.version, twin.desired.payload, twin.desired.payload_len);
   }
 
   release_pending(t, idx, AZ_IOT_OK, &twin, NULL);
@@ -738,6 +1009,9 @@ static az_iot_result publish_request(
   az_iot_connection_client__gen_uuid(TI(twin).conn, TI(twin).pending[idx].corr);
   TI(twin).pending[idx].in_use = true;
   TI(twin).pending[idx].kind = kind;
+  /* Arm the defensive timeout: at QoS 0 nothing in the transport will ever
+   * report this request going unanswered. */
+  TI(twin).pending[idx].deadline_ms = defensive_deadline(twin, TI(twin).pending[idx].attempt);
 
   az_iot_mqtt_user_property type_prop = { TWIN_TYPE_KEY, type_value };
 
@@ -761,10 +1035,57 @@ static az_iot_result publish_request(
         "gen2_twin: the '%s' publish was refused (%s); releasing its pending slot",
         type_value,
         az_iot_result_to_string(r));
-    TI(twin).pending[idx].in_use = false;
-    TI(twin).pending[idx].kind = TWIN_PENDING_NONE;
+    memset(&TI(twin).pending[idx], 0, sizeof(TI(twin).pending[idx]));
   }
   return r;
+}
+
+/* Encode a TwinGet body from @p opts into @p body. */
+static bool encode_get_body(
+    const az_iot_gen2_twin_get_options* opts,
+    uint8_t* body,
+    size_t cap,
+    size_t* out_len)
+{
+  *out_len = 0;
+  uint64_t sections = opts->sections ? (uint64_t)opts->sections : TWIN_SECTIONS_BOTH;
+  return az_iot_proto3_write_varint_field(body, cap, out_len, TWIN_F_GET_SECTIONS, sections)
+      && (!opts->if_not_match_desired
+          || az_iot_proto3_write_varint_field(
+              body, cap, out_len, TWIN_F_GET_IF_NOT_MATCH_DESIRED, opts->if_not_match_desired))
+      && (!opts->if_not_match_reported
+          || az_iot_proto3_write_varint_field(
+              body, cap, out_len, TWIN_F_GET_IF_NOT_MATCH_REPORTED, opts->if_not_match_reported));
+}
+
+/* Issue a GET. @p internal marks the SDK's own resync request, which has no
+ * caller to report back to. */
+static az_iot_result issue_get(
+    az_iot_gen2_twin_client* t,
+    const az_iot_gen2_twin_get_options* opts,
+    az_iot_gen2_twin_get_callback cb,
+    void* user_ctx,
+    bool internal)
+{
+  int idx = alloc_pending(t);
+  if (idx < 0)
+  {
+    AZ_IOT_LOG_WARN("gen2_twin: refusing a GET -- AZ_IOT_TWIN_MAX_PENDING requests are in flight");
+    return AZ_IOT_ERR_NOT_SUPPORTED;
+  }
+
+  uint8_t body[TWIN_GET_BODY_MAX];
+  size_t body_len = 0;
+  if (!encode_get_body(opts, body, sizeof(body), &body_len))
+  {
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  }
+
+  TI(t).pending[idx].cb.get_cb = cb;
+  TI(t).pending[idx].user_ctx = user_ctx;
+  TI(t).pending[idx].internal = internal;
+  TI(t).pending[idx].get_opts = *opts;
+  return publish_request(t, idx, TWIN_PENDING_GET, TWIN_TYPE_GET, body, body_len);
 }
 
 az_iot_result az_iot_gen2_twin_client_get(
@@ -777,25 +1098,64 @@ az_iot_result az_iot_gen2_twin_client_get(
     return AZ_IOT_ERR_INVALID_ARG;
   }
 
-  int idx = alloc_pending(twin);
-  if (idx < 0)
-  {
-    AZ_IOT_LOG_WARN("gen2_twin: refusing a GET -- AZ_IOT_TWIN_MAX_PENDING requests are in flight");
-    return AZ_IOT_ERR_NOT_SUPPORTED;
-  }
+  az_iot_gen2_twin_get_options opts;
+  memset(&opts, 0, sizeof(opts));
+  opts.sections = AZ_IOT_GEN2_TWIN_SECTIONS_BOTH;
+  return issue_get(twin, &opts, cb, user_ctx, false);
+}
 
-  /* TwinGet { 1 Sections sections }: both sections, no if-not-match filter. */
-  uint8_t body[TWIN_GET_BODY_MAX];
-  size_t body_len = 0;
-  if (!az_iot_proto3_write_varint_field(
-          body, sizeof(body), &body_len, TWIN_F_GET_SECTIONS, TWIN_SECTIONS_BOTH))
+az_iot_result az_iot_gen2_twin_client_get_with_options(
+    az_iot_gen2_twin_client* twin,
+    const az_iot_gen2_twin_get_options* opts,
+    az_iot_gen2_twin_get_callback cb,
+    void* user_ctx)
+{
+  if (!twin || !opts)
   {
-    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+    return AZ_IOT_ERR_INVALID_ARG;
   }
+  return issue_get(twin, opts, cb, user_ctx, false);
+}
 
-  TI(twin).pending[idx].cb.get_cb = cb;
-  TI(twin).pending[idx].user_ctx = user_ctx;
-  return publish_request(twin, idx, TWIN_PENDING_GET, TWIN_TYPE_GET, body, body_len);
+/* Frame the saved reported patch into ReportedPatch { 1 if_match, 2 payload }
+ * with the current authoritative version.
+ *
+ * The encode buffer holds the caller's payload first and the framed message
+ * after it, so a retry can re-frame with a newer if_match once the caller's own
+ * buffer is gone. */
+static bool frame_patch(az_iot_gen2_twin_client* t, size_t* out_len)
+{
+  uint8_t* saved = TI(t).encode_buffer;
+  size_t saved_len = TI(t).saved_patch_len;
+  uint8_t* frame = saved + saved_len;
+  size_t frame_cap = TI(t).encode_buffer_len - saved_len;
+
+  size_t pos = 0;
+  if ((TI(t).reported_version
+       && !az_iot_proto3_write_varint_field(
+           frame, frame_cap, &pos, TWIN_F_REPORTED_IF_MATCH, TI(t).reported_version))
+      || !az_iot_proto3_write_bytes_field(
+          frame, frame_cap, &pos, TWIN_F_REPORTED_PAYLOAD, saved, saved_len))
+  {
+    return false;
+  }
+  *out_len = pos;
+  return true;
+}
+
+/* True when a reported patch is already awaiting its response. The saved
+ * payload frame_patch() re-frames from is single-slot, so only one patch may be
+ * outstanding at a time. */
+static bool patch_in_flight(const az_iot_gen2_twin_client* t)
+{
+  for (int i = 0; i < AZ_IOT_TWIN_MAX_PENDING; ++i)
+  {
+    if (TI(t).pending[i].in_use && TI(t).pending[i].kind == TWIN_PENDING_PATCH)
+    {
+      return true;
+    }
+  }
+  return false;
 }
 
 az_iot_result az_iot_gen2_twin_client_patch_reported(
@@ -813,11 +1173,19 @@ az_iot_result az_iot_gen2_twin_client_patch_reported(
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
-  if (!TI(twin).encode_buffer)
+  if (!TI(twin).encode_buffer || patch_len > TI(twin).encode_buffer_len)
   {
-    AZ_IOT_LOG_ERROR("gen2_twin: refusing a patch -- no encode buffer; call "
+    AZ_IOT_LOG_ERROR("gen2_twin: refusing a patch -- no encode buffer large enough; call "
                      "az_iot_gen2_twin_client_set_encode_buffer()");
     return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  }
+  /* One at a time: a retry re-frames from the single saved payload, so a second
+   * patch would overwrite the bytes the first one still needs and its retry
+   * would publish the wrong body under the first's correlation id. */
+  if (patch_in_flight(twin))
+  {
+    AZ_IOT_LOG_WARN("gen2_twin: refusing a patch -- another reported patch is still in flight");
+    return AZ_IOT_ERR_BUSY;
   }
 
   int idx = alloc_pending(twin);
@@ -828,36 +1196,36 @@ az_iot_result az_iot_gen2_twin_client_patch_reported(
     return AZ_IOT_ERR_NOT_SUPPORTED;
   }
 
-  /* ReportedPatch { 1 uint64 if_match, 2 bytes payload }. if_match is the
-   * device's view of the authoritative reported version; the service rejects
-   * the write with VERSION_MISMATCH if it has moved on. Version 0 means the
-   * device has no view yet, and proto3 omits it. */
+  /* if_match is the device's view of the authoritative reported version; the
+   * service rejects the write with VERSION_MISMATCH if it has moved on.
+   * Version 0 means the device has no view yet, and proto3 omits it. */
   sync_versions(twin);
 
-  size_t pos = 0;
-  if ((TI(twin).reported_version
-       && !az_iot_proto3_write_varint_field(
-           TI(twin).encode_buffer,
-           TI(twin).encode_buffer_len,
-           &pos,
-           TWIN_F_REPORTED_IF_MATCH,
-           TI(twin).reported_version))
-      || !az_iot_proto3_write_bytes_field(
-          TI(twin).encode_buffer,
-          TI(twin).encode_buffer_len,
-          &pos,
-          TWIN_F_REPORTED_PAYLOAD,
-          patch,
-          patch_len))
+  /* Keep the caller's payload: it is theirs to free the moment this returns,
+   * and a retry has to re-frame from it minutes later. */
+  if (patch_len)
+  {
+    memcpy(TI(twin).encode_buffer, patch, patch_len);
+  }
+  TI(twin).saved_patch_len = patch_len;
+
+  size_t body_len = 0;
+  if (!frame_patch(twin, &body_len))
   {
     AZ_IOT_LOG_ERROR("gen2_twin: the framed patch did not fit the encode buffer");
+    TI(twin).saved_patch_len = 0;
     return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
   }
 
   TI(twin).pending[idx].cb.patch_cb = cb;
   TI(twin).pending[idx].user_ctx = user_ctx;
   return publish_request(
-      twin, idx, TWIN_PENDING_PATCH, TWIN_TYPE_REPORTED_PATCH, TI(twin).encode_buffer, pos);
+      twin,
+      idx,
+      TWIN_PENDING_PATCH,
+      TWIN_TYPE_REPORTED_PATCH,
+      TI(twin).encode_buffer + TI(twin).saved_patch_len,
+      body_len);
 }
 
 az_iot_result az_iot_gen2_twin_client_set_desired_handler(
@@ -912,4 +1280,119 @@ az_iot_result az_iot_gen2_twin_client_set_encode_buffer(
   TI(twin).encode_buffer = buffer;
   TI(twin).encode_buffer_len = buffer ? buffer_len : 0;
   return AZ_IOT_OK;
+}
+
+az_iot_result az_iot_gen2_twin_client_set_resync_buffer(
+    az_iot_gen2_twin_client* twin,
+    uint8_t* buffer,
+    size_t buffer_len)
+{
+  if (!twin)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  TI(twin).resync_buffer = buffer;
+  TI(twin).resync_buffer_len = buffer ? buffer_len : 0;
+  /* Anything already buffered lives in the old arena. */
+  TI(twin).resync_used = 0;
+  TI(twin).resync_count = 0;
+  return AZ_IOT_OK;
+}
+
+/* Re-publish a timed-out exchange with a fresh correlation id and the next step
+ * of the escalating schedule. The identifier must change so a late response to
+ * the previous attempt is not mistaken for this one. */
+static void retry_pending(az_iot_gen2_twin_client* t, int idx)
+{
+  uint8_t body[TWIN_GET_BODY_MAX];
+  size_t body_len = 0;
+  const uint8_t* payload = body;
+  const char* type_value = TWIN_TYPE_GET;
+
+  if (TI(t).pending[idx].kind == TWIN_PENDING_GET)
+  {
+    if (!encode_get_body(&TI(t).pending[idx].get_opts, body, sizeof(body), &body_len))
+    {
+      return;
+    }
+  }
+  else
+  {
+    /* Re-frame with the current authoritative version: it may have advanced
+     * since the first attempt. */
+    type_value = TWIN_TYPE_REPORTED_PATCH;
+    if (!frame_patch(t, &body_len))
+    {
+      return;
+    }
+    payload = TI(t).encode_buffer + TI(t).saved_patch_len;
+  }
+
+  TI(t).pending[idx].attempt++;
+  AZ_IOT_LOG_WARNF(
+      "gen2_twin: a '%s' went unanswered; re-issuing it (attempt %u)",
+      type_value,
+      (unsigned)TI(t).pending[idx].attempt);
+  (void)publish_request(t, idx, TI(t).pending[idx].kind, type_value, payload, body_len);
+}
+
+az_iot_result az_iot_gen2_twin_client_do_work(az_iot_gen2_twin_client* twin)
+{
+  if (!twin || !TI(twin).conn)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+
+  /* Everything below is scoped to a live connection. Once it drops, the
+   * exchanges riding on it cannot be resumed (QoS 0) -- the session-end handler
+   * has already abandoned them and told their callers. */
+  uint8_t nonce[AZ_IOT_CORRELATION_UUID_LEN];
+  if (az_iot_connection_client__presence_nonce(TI(twin).conn, nonce) != AZ_IOT_OK)
+  {
+    return AZ_IOT_OK;
+  }
+
+  sync_versions(twin);
+
+  uint64_t now = az_iot_time_mono_ms();
+
+  /* A birth-triggered push that never arrived means the service believes it
+   * dispatched state the device never saw. Only a fresh connection re-runs that
+   * decision, so reconnect rather than paper over it with a GET. */
+  if (TI(twin).push_expected && now >= TI(twin).push_deadline_ms)
+  {
+    TI(twin).push_expected = false;
+    TI(twin).push_attempt++;
+    AZ_IOT_LOG_WARN(
+        "gen2_twin: the birth-triggered twin-push did not arrive; reconnecting to re-run the "
+        "service's push decision");
+    (void)az_iot_connection_client_close(TI(twin).conn);
+    return AZ_IOT_OK;
+  }
+
+  for (int i = 0; i < AZ_IOT_TWIN_MAX_PENDING; ++i)
+  {
+    if (TI(twin).pending[i].in_use && now >= TI(twin).pending[i].deadline_ms)
+    {
+      retry_pending(twin, i);
+    }
+  }
+
+  return AZ_IOT_OK;
+}
+
+void az_iot_gen2_twin_client__force_timeouts(az_iot_gen2_twin_client* twin)
+{
+  if (!twin)
+  {
+    return;
+  }
+  for (int i = 0; i < AZ_IOT_TWIN_MAX_PENDING; ++i)
+  {
+    TI(twin).pending[i].deadline_ms = 0;
+  }
+  if (TI(twin).push_expected)
+  {
+    TI(twin).push_deadline_ms = 0;
+  }
 }

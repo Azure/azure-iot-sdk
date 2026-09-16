@@ -33,6 +33,8 @@
 #include "support/mock_mqtt_iface.h"
 #include "support/subscription_ack.h"
 
+#include "gen2/internal/twin_client_internal.h"
+
 #define TWIN_SRV_TOPIC "ih/ut-device/srv/twin"
 #define TWIN_DEV_TOPIC "ih/ut-device/dev/twin"
 
@@ -1057,19 +1059,20 @@ static void a_desired_patch_reaches_the_handler_with_its_version(void** state)
   assert_int_equal(
       az_iot_gen2_twin_client_set_desired_handler(&fx->twin, on_desired, &rec), AZ_IOT_OK);
 
-  /* DesiredPatch { 1: version=4, 2: payload } */
-  const uint8_t body[] = { 0x08, 0x04, 0x12, 0x07, '{', '"', 'd', '"', ':', '1', '}' };
+  /* DesiredPatch { 1: version=1, 2: payload } -- the next one in sequence. */
+  const uint8_t body[] = { 0x08, 0x01, 0x12, 0x07, '{', '"', 'd', '"', ':', '1', '}' };
   inject_twin(fx, "desired-patch:1", fx->nonce, body, sizeof(body));
 
   assert_true(rec.fired);
-  assert_int_equal(rec.version, 4);
+  assert_int_equal(rec.version, 1);
   assert_string_equal(rec.payload, "{\"d\":1}");
 }
 
-/* A payload-less desired-patch is a version probe, not an update: it tells the
- * device which version it should be at. Waking the application for it would
- * hand it an empty patch to merge. */
-static void a_payload_less_desired_patch_is_not_dispatched(void** state)
+/* A payload-less desired-patch is a version probe, not an update: the service
+ * asking whether the device is current. One that matches the applied version is
+ * the answer "yes" -- it must be dropped without waking the application and
+ * without a round trip. */
+static void a_probe_at_the_applied_version_costs_nothing(void** state)
 {
   fixture* fx = (fixture*)*state;
   open_to_connected(fx);
@@ -1078,11 +1081,18 @@ static void a_payload_less_desired_patch_is_not_dispatched(void** state)
   assert_int_equal(
       az_iot_gen2_twin_client_set_desired_handler(&fx->twin, on_desired, &rec), AZ_IOT_OK);
 
-  /* DesiredPatch { 1: version=4 } */
-  const uint8_t body[] = { 0x08, 0x04 };
-  inject_twin(fx, "desired-patch:1", fx->nonce, body, sizeof(body));
+  /* Apply version 1 first, so the probe below matches it. */
+  const uint8_t patch[] = { 0x08, 0x01, 0x12, 0x02, '{', '}' };
+  inject_twin(fx, "desired-patch:1", fx->nonce, patch, sizeof(patch));
+  assert_true(rec.fired);
+  rec.fired = false;
+
+  size_t before = count_twin_publishes(fx->mock);
+  const uint8_t probe[] = { 0x08, 0x01 }; /* DesiredPatch { version = 1 } */
+  inject_twin(fx, "desired-patch:1", fx->nonce, probe, sizeof(probe));
 
   assert_false(rec.fired);
+  assert_int_equal(count_twin_publishes(fx->mock), before);
 }
 
 /* An explicitly-present but empty payload IS an update, and must reach the
@@ -1096,12 +1106,12 @@ static void an_empty_desired_payload_is_still_dispatched(void** state)
   assert_int_equal(
       az_iot_gen2_twin_client_set_desired_handler(&fx->twin, on_desired, &rec), AZ_IOT_OK);
 
-  /* DesiredPatch { 1: version=4, 2: payload = "" } */
-  const uint8_t body[] = { 0x08, 0x04, 0x12, 0x00 };
+  /* DesiredPatch { 1: version=1, 2: payload = "" } */
+  const uint8_t body[] = { 0x08, 0x01, 0x12, 0x00 };
   inject_twin(fx, "desired-patch:1", fx->nonce, body, sizeof(body));
 
   assert_true(rec.fired);
-  assert_int_equal(rec.version, 4);
+  assert_int_equal(rec.version, 1);
 }
 
 static void a_desired_patch_from_another_connection_is_dropped(void** state)
@@ -1115,7 +1125,7 @@ static void a_desired_patch_from_another_connection_is_dropped(void** state)
 
   uint8_t stale[16];
   memset(stale, 0x5A, sizeof(stale));
-  const uint8_t body[] = { 0x08, 0x04, 0x12, 0x02, '{', '}' };
+  const uint8_t body[] = { 0x08, 0x01, 0x12, 0x02, '{', '}' };
   inject_twin(fx, "desired-patch:1", stale, body, sizeof(body));
 
   assert_false(rec.fired);
@@ -1148,7 +1158,7 @@ static void a_null_desired_handler_pauses_delivery(void** state)
       az_iot_gen2_twin_client_set_desired_handler(&fx->twin, on_desired, &rec), AZ_IOT_OK);
   assert_int_equal(az_iot_gen2_twin_client_set_desired_handler(&fx->twin, NULL, NULL), AZ_IOT_OK);
 
-  const uint8_t body[] = { 0x08, 0x04, 0x12, 0x02, '{', '}' };
+  const uint8_t body[] = { 0x08, 0x01, 0x12, 0x02, '{', '}' };
   inject_twin(fx, "desired-patch:1", fx->nonce, body, sizeof(body));
 
   assert_false(rec.fired);
@@ -1166,7 +1176,7 @@ static void setting_a_desired_handler_replaces_the_previous_one(void** state)
   assert_int_equal(
       az_iot_gen2_twin_client_set_desired_handler(&fx->twin, on_desired_other, &second), AZ_IOT_OK);
 
-  const uint8_t body[] = { 0x08, 0x04, 0x12, 0x02, '{', '}' };
+  const uint8_t body[] = { 0x08, 0x01, 0x12, 0x02, '{', '}' };
   inject_twin(fx, "desired-patch:1", fx->nonce, body, sizeof(body));
 
   assert_false(first.fired);
@@ -1363,6 +1373,525 @@ static void a_pending_patch_is_failed_with_no_verdict(void** state)
 }
 
 /* ------------------------------------------------------------------------- */
+/* desired resync                                                            */
+/* ------------------------------------------------------------------------- */
+
+/* Return the last GET body published, so a test can assert what was asked for. */
+static const az_iot_mock_call* last_get_publish(fixture* fx)
+{
+  size_t n = az_iot_mock_mqtt_client_call_count(fx->mock);
+  for (size_t i = n; i > 0; --i)
+  {
+    const az_iot_mock_call* c = az_iot_mock_mqtt_client_call_at(fx->mock, i - 1);
+    if (c->kind == AZ_IOT_MOCK_CALL_PUBLISH && strcmp(c->topic, TWIN_SRV_TOPIC) == 0
+        && strcmp(c->user_type, "get:1") == 0)
+    {
+      return c;
+    }
+  }
+  return NULL;
+}
+
+/* True when the transport was told to disconnect. */
+static bool saw_disconnect(fixture* fx)
+{
+  size_t n = az_iot_mock_mqtt_client_call_count(fx->mock);
+  for (size_t i = 0; i < n; ++i)
+  {
+    if (az_iot_mock_mqtt_client_call_at(fx->mock, i)->kind == AZ_IOT_MOCK_CALL_DISCONNECT)
+    {
+      return true;
+    }
+  }
+  return false;
+}
+
+/* Deliver a desired-patch at @p version carrying @p payload. */
+static void inject_desired(fixture* fx, uint8_t version, const char* payload)
+{
+  uint8_t body[64];
+  size_t n = 0;
+  body[n++] = 0x08;
+  body[n++] = version;
+  if (payload)
+  {
+    size_t len = strlen(payload);
+    body[n++] = 0x12;
+    body[n++] = (uint8_t)len;
+    memcpy(body + n, payload, len);
+    n += len;
+  }
+  inject_twin(fx, "desired-patch:1", fx->nonce, body, n);
+}
+
+/* A patch beyond the next version means one went missing. Applying it would
+ * merge onto state the device does not have, so the client asks for a snapshot
+ * of the desired section instead. */
+static void a_gap_in_the_patch_sequence_triggers_a_resync_get(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  desired_record rec = { 0 };
+  assert_int_equal(
+      az_iot_gen2_twin_client_set_desired_handler(&fx->twin, on_desired, &rec), AZ_IOT_OK);
+
+  inject_desired(fx, 3, "{\"c\":3}"); /* 1 and 2 never arrived */
+
+  assert_false(rec.fired);
+  const az_iot_mock_call* get = last_get_publish(fx);
+  assert_non_null(get);
+  /* TwinGet { 1: sections = DESIRED } -- the reported section is not in doubt. */
+  const uint8_t expect[] = { 0x08, 0x01 };
+  assert_int_equal(get->payload_len, sizeof(expect));
+  assert_memory_equal(get->payload, expect, sizeof(expect));
+}
+
+/* The snapshot is applied first, then the patches buffered during the resync
+ * that are newer than it, in order. Ones the snapshot already contains are
+ * discarded rather than replayed on top of it. */
+static void the_snapshot_is_applied_then_the_newer_patches_replay_in_order(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  uint8_t resync_buf[128];
+  assert_int_equal(
+      az_iot_gen2_twin_client_set_resync_buffer(&fx->twin, resync_buf, sizeof(resync_buf)),
+      AZ_IOT_OK);
+
+  desired_record rec = { 0 };
+  assert_int_equal(
+      az_iot_gen2_twin_client_set_desired_handler(&fx->twin, on_desired, &rec), AZ_IOT_OK);
+
+  inject_desired(fx, 3, "{\"c\":3}"); /* gap -> resync starts, 3 is buffered */
+  const az_iot_mock_call* get = last_get_publish(fx);
+  assert_non_null(get);
+  uint8_t corr[16];
+  memcpy(corr, get->correlation_data, sizeof(corr));
+
+  inject_desired(fx, 4, "{\"d\":4}"); /* buffered */
+  assert_false(rec.fired);
+
+  /* The snapshot lands at version 3, so patch 3 is already in it and only 4
+   * replays. TwinGetResponse { 1: desired_version=3, 3: desired_payload }. */
+  const uint8_t resp[] = {
+    0x08, 0x03, 0x1A, 0x07, '{', '"', 's', '"', ':', '3', '}',
+  };
+  inject_twin(fx, "get-response:1", corr, resp, sizeof(resp));
+
+  /* Snapshot, then patch 4: two dispatches, the last one being 4. */
+  assert_int_equal(rec.count, 2);
+  assert_int_equal(rec.version, 4);
+  assert_string_equal(rec.payload, "{\"d\":4}");
+}
+
+/* A twin-push delivers the same snapshot the resync GET was chasing, so it
+ * settles the resync and makes that GET redundant: a response arriving for it
+ * afterwards must not replay anything a second time. */
+static void a_twin_push_resolves_an_outstanding_resync(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  uint8_t resync_buf[128];
+  assert_int_equal(
+      az_iot_gen2_twin_client_set_resync_buffer(&fx->twin, resync_buf, sizeof(resync_buf)),
+      AZ_IOT_OK);
+
+  desired_record rec = { 0 };
+  assert_int_equal(
+      az_iot_gen2_twin_client_set_desired_handler(&fx->twin, on_desired, &rec), AZ_IOT_OK);
+
+  inject_desired(fx, 3, "{\"c\":3}");
+  const az_iot_mock_call* get = last_get_publish(fx);
+  assert_non_null(get);
+  uint8_t corr[16];
+  memcpy(corr, get->correlation_data, sizeof(corr));
+
+  /* TwinPush { 1: Section{1: version=3, 2: payload} } */
+  const uint8_t push[] = {
+    0x0A, 0x0B, 0x08, 0x03, 0x12, 0x07, '{', '"', 's', '"', ':', '3', '}',
+  };
+  inject_twin(fx, "twin-push:1", fx->nonce, push, sizeof(push));
+  assert_int_equal(rec.count, 1);
+  assert_int_equal(rec.version, 3);
+
+  /* The now-redundant GET response correlates to nothing and changes nothing. */
+  const uint8_t resp[] = { 0x08, 0x03, 0x1A, 0x02, '{', '}' };
+  inject_twin(fx, "get-response:1", corr, resp, sizeof(resp));
+  assert_int_equal(rec.count, 1);
+}
+
+/* Overflowing the buffer is recoverable: discard it and ask again. The fresh
+ * snapshot is at least as new as the highest patch that was dropped, so it
+ * subsumes them -- no update is lost, it just costs another round trip. */
+static void overflowing_the_resync_buffer_re_gets(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  /* Room for one small patch, so the second overflows. */
+  uint8_t resync_buf[8];
+  assert_int_equal(
+      az_iot_gen2_twin_client_set_resync_buffer(&fx->twin, resync_buf, sizeof(resync_buf)),
+      AZ_IOT_OK);
+
+  desired_record rec = { 0 };
+  assert_int_equal(
+      az_iot_gen2_twin_client_set_desired_handler(&fx->twin, on_desired, &rec), AZ_IOT_OK);
+
+  inject_desired(fx, 3, "{\"c\":3}");
+  const az_iot_mock_call* first = last_get_publish(fx);
+  assert_non_null(first);
+  uint8_t first_corr[16];
+  memcpy(first_corr, first->correlation_data, sizeof(first_corr));
+
+  inject_desired(fx, 4, "{\"dddddddddd\":4}"); /* does not fit */
+
+  const az_iot_mock_call* second = last_get_publish(fx);
+  assert_non_null(second);
+  assert_memory_not_equal(second->correlation_data, first_corr, sizeof(first_corr));
+
+  /* The first GET was cancelled, so its response is ignored. */
+  const uint8_t resp[] = { 0x08, 0x03, 0x1A, 0x02, '{', '}' };
+  inject_twin(fx, "get-response:1", first_corr, resp, sizeof(resp));
+  assert_false(rec.fired);
+}
+
+/* Without a resync buffer the gap is still detected and the snapshot still
+ * requested; the patches arriving meanwhile are simply dropped, which the
+ * snapshot subsumes. */
+static void a_resync_without_a_buffer_still_recovers(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  desired_record rec = { 0 };
+  assert_int_equal(
+      az_iot_gen2_twin_client_set_desired_handler(&fx->twin, on_desired, &rec), AZ_IOT_OK);
+
+  inject_desired(fx, 3, "{\"c\":3}");
+  const az_iot_mock_call* get = last_get_publish(fx);
+  assert_non_null(get);
+  uint8_t corr[16];
+  memcpy(corr, get->correlation_data, sizeof(corr));
+  inject_desired(fx, 4, "{\"d\":4}");
+
+  const uint8_t resp[] = {
+    0x08, 0x04, 0x1A, 0x07, '{', '"', 's', '"', ':', '4', '}',
+  };
+  inject_twin(fx, "get-response:1", corr, resp, sizeof(resp));
+
+  assert_int_equal(rec.count, 1);
+  assert_int_equal(rec.version, 4);
+  assert_string_equal(rec.payload, "{\"s\":4}");
+}
+
+/* A probe ahead of the applied version reveals a patch that never arrived. */
+static void a_probe_ahead_of_the_applied_version_resyncs(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  desired_record rec = { 0 };
+  assert_int_equal(
+      az_iot_gen2_twin_client_set_desired_handler(&fx->twin, on_desired, &rec), AZ_IOT_OK);
+
+  inject_desired(fx, 5, NULL); /* probe, no payload */
+
+  assert_false(rec.fired);
+  assert_non_null(last_get_publish(fx));
+}
+
+/* A patch at or behind what has been applied is stale: it has already been
+ * merged, so replaying it would re-apply old values. */
+static void a_stale_desired_patch_is_dropped(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  desired_record rec = { 0 };
+  assert_int_equal(
+      az_iot_gen2_twin_client_set_desired_handler(&fx->twin, on_desired, &rec), AZ_IOT_OK);
+
+  inject_desired(fx, 1, "{\"a\":1}");
+  assert_int_equal(rec.count, 1);
+
+  inject_desired(fx, 1, "{\"a\":9}");
+  assert_int_equal(rec.count, 1);
+}
+
+/* ------------------------------------------------------------------------- */
+/* GET filters                                                               */
+/* ------------------------------------------------------------------------- */
+
+static void get_with_options_encodes_the_selector_and_filters(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  az_iot_gen2_twin_get_options opts;
+  memset(&opts, 0, sizeof(opts));
+  opts.sections = AZ_IOT_GEN2_TWIN_SECTIONS_BOTH;
+  opts.if_not_match_desired = 7;
+  opts.if_not_match_reported = 9;
+
+  get_record rec = { 0 };
+  assert_int_equal(
+      az_iot_gen2_twin_client_get_with_options(&fx->twin, &opts, on_get, &rec), AZ_IOT_OK);
+
+  const az_iot_mock_call* get = last_get_publish(fx);
+  assert_non_null(get);
+  /* TwinGet { 1: sections=3, 2: if_not_match_desired=7, 3: if_not_match_reported=9 } */
+  const uint8_t expect[] = { 0x08, 0x03, 0x10, 0x07, 0x18, 0x09 };
+  assert_int_equal(get->payload_len, sizeof(expect));
+  assert_memory_equal(get->payload, expect, sizeof(expect));
+}
+
+/* A zero selector means "both", so a caller that only wants the filters does
+ * not have to restate the default. */
+static void get_with_options_defaults_the_selector_to_both(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  az_iot_gen2_twin_get_options opts;
+  memset(&opts, 0, sizeof(opts));
+
+  get_record rec = { 0 };
+  assert_int_equal(
+      az_iot_gen2_twin_client_get_with_options(&fx->twin, &opts, on_get, &rec), AZ_IOT_OK);
+
+  const az_iot_mock_call* get = last_get_publish(fx);
+  assert_non_null(get);
+  const uint8_t expect[] = { 0x08, 0x03 };
+  assert_int_equal(get->payload_len, sizeof(expect));
+  assert_memory_equal(get->payload, expect, sizeof(expect));
+}
+
+static void get_with_options_rejects_null_arguments(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_gen2_twin_get_options opts;
+  memset(&opts, 0, sizeof(opts));
+  get_record rec = { 0 };
+  assert_int_equal(
+      az_iot_gen2_twin_client_get_with_options(NULL, &opts, on_get, &rec), AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(
+      az_iot_gen2_twin_client_get_with_options(&fx->twin, NULL, on_get, &rec),
+      AZ_IOT_ERR_INVALID_ARG);
+}
+
+/* ------------------------------------------------------------------------- */
+/* defensive timeouts                                                        */
+/* ------------------------------------------------------------------------- */
+
+/* Nothing in the transport reports a QoS 0 request going unanswered, so the
+ * client re-issues it -- under a NEW correlation id, so a late reply to the
+ * abandoned attempt is not mistaken for this one. The original caller is still
+ * the one who gets the answer. */
+static void an_unanswered_get_is_re_issued_with_a_fresh_correlation_id(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  get_record rec = { 0 };
+  uint8_t first_corr[16];
+  issue_get(fx, &rec, first_corr);
+
+  az_iot_gen2_twin_client__force_timeouts(&fx->twin);
+  assert_int_equal(az_iot_gen2_twin_client_do_work(&fx->twin), AZ_IOT_OK);
+
+  const az_iot_mock_call* second = last_get_publish(fx);
+  assert_non_null(second);
+  assert_memory_not_equal(second->correlation_data, first_corr, sizeof(first_corr));
+
+  /* The reply to the abandoned attempt no longer correlates. */
+  const uint8_t resp[] = { 0x08, 0x07, 0x10, 0x09 };
+  inject_twin(fx, "get-response:1", first_corr, resp, sizeof(resp));
+  assert_false(rec.fired);
+
+  /* The re-issued one still answers the original caller. */
+  uint8_t second_corr[16];
+  memcpy(second_corr, second->correlation_data, sizeof(second_corr));
+  inject_twin(fx, "get-response:1", second_corr, resp, sizeof(resp));
+  assert_true(rec.fired);
+  assert_int_equal(rec.status, AZ_IOT_OK);
+  assert_int_equal(rec.desired.version, 7);
+}
+
+/* A re-issued patch is re-framed with the current authoritative version: it may
+ * have moved since the first attempt, and sending the stale one would earn a
+ * VERSION_MISMATCH for no reason. */
+static void an_unanswered_patch_is_re_framed_with_the_current_version(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected_with_versions(fx, 7, 9);
+
+  patch_record rec = { 0 };
+  static const uint8_t patch[] = "{\"x\":1}";
+  assert_int_equal(
+      az_iot_gen2_twin_client_patch_reported(&fx->twin, patch, sizeof(patch) - 1, on_patch, &rec),
+      AZ_IOT_OK);
+
+  /* A push moves the authoritative reported version while the patch is out. */
+  const uint8_t push[] = { 0x12, 0x02, 0x08, 0x15 };
+  inject_twin(fx, "twin-push:1", fx->nonce, push, sizeof(push));
+
+  az_iot_gen2_twin_client__force_timeouts(&fx->twin);
+  assert_int_equal(az_iot_gen2_twin_client_do_work(&fx->twin), AZ_IOT_OK);
+
+  const az_iot_mock_call* pub = find_publish(fx->mock, TWIN_SRV_TOPIC);
+  assert_non_null(pub);
+  assert_string_equal(pub->user_type, "reported-patch:1");
+  /* if_match is now 21, and the caller's payload survived their buffer. */
+  const uint8_t expect[] = {
+    0x08, 0x15, 0x12, 0x07, '{', '"', 'x', '"', ':', '1', '}',
+  };
+  assert_int_equal(pub->payload_len, sizeof(expect));
+  assert_memory_equal(pub->payload, expect, sizeof(expect));
+}
+
+/* Only one reported patch may be outstanding: the saved payload a retry
+ * re-frames from is single-slot, so a second patch would overwrite the bytes
+ * the first still needs and its retry would publish the wrong body under the
+ * first's correlation id. */
+static void a_second_concurrent_patch_is_refused(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  patch_record first = { 0 };
+  patch_record second = { 0 };
+  static const uint8_t a[] = "{\"a\":1}";
+  static const uint8_t b[] = "{\"b\":2}";
+  assert_int_equal(
+      az_iot_gen2_twin_client_patch_reported(&fx->twin, a, sizeof(a) - 1, on_patch, &first),
+      AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_gen2_twin_client_patch_reported(&fx->twin, b, sizeof(b) - 1, on_patch, &second),
+      AZ_IOT_ERR_BUSY);
+
+  /* Once the first completes, the next one is accepted. */
+  const az_iot_mock_call* pub = find_publish(fx->mock, TWIN_SRV_TOPIC);
+  uint8_t corr[16];
+  memcpy(corr, pub->correlation_data, sizeof(corr));
+  const uint8_t resp[] = { 0x08, 0x01, 0x10, 0x0A };
+  inject_twin(fx, "reported-patch-response:1", corr, resp, sizeof(resp));
+  assert_true(first.fired);
+
+  assert_int_equal(
+      az_iot_gen2_twin_client_patch_reported(&fx->twin, b, sizeof(b) - 1, on_patch, &second),
+      AZ_IOT_OK);
+}
+
+/* A birth-triggered push that never arrives means the service believes it
+ * dispatched state the device never saw. Only a fresh birth re-runs that
+ * decision, so the client reconnects rather than papering over it with a GET. */
+static void a_missing_twin_push_reconnects(void** state)
+{
+  fixture* fx = (fixture*)*state;
+
+  /* The expectation is only armed when the application asked for a push. */
+  az_iot_connection_client_destroy(&fx->conn);
+  az_iot_connection_client_options opts = { 0 };
+  opts.host = "broker.example";
+  opts.port = 8883;
+  opts.client_id = "ut-device";
+  opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
+  opts.twin_push.push_reported = true;
+  assert_int_equal(az_iot_connection_client_init(&fx->conn, &opts), AZ_IOT_OK);
+  assert_int_equal(az_iot_gen2_twin_client_init(&fx->twin, &fx->conn), AZ_IOT_OK);
+
+  open_to_connected_with_versions(fx, 7, 9);
+  assert_int_equal(az_iot_gen2_twin_client_do_work(&fx->twin), AZ_IOT_OK);
+
+  az_iot_gen2_twin_client__force_timeouts(&fx->twin);
+  assert_int_equal(az_iot_gen2_twin_client_do_work(&fx->twin), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+
+  assert_true(saw_disconnect(fx));
+}
+
+/* A push that did arrive disarms the expectation, so do_work must not then
+ * tear down a perfectly good connection. */
+static void a_delivered_twin_push_does_not_reconnect(void** state)
+{
+  fixture* fx = (fixture*)*state;
+
+  az_iot_connection_client_destroy(&fx->conn);
+  az_iot_connection_client_options opts = { 0 };
+  opts.host = "broker.example";
+  opts.port = 8883;
+  opts.client_id = "ut-device";
+  opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
+  opts.twin_push.push_reported = true;
+  assert_int_equal(az_iot_connection_client_init(&fx->conn, &opts), AZ_IOT_OK);
+  assert_int_equal(az_iot_gen2_twin_client_init(&fx->twin, &fx->conn), AZ_IOT_OK);
+
+  open_to_connected_with_versions(fx, 7, 9);
+  assert_int_equal(az_iot_gen2_twin_client_do_work(&fx->twin), AZ_IOT_OK);
+
+  const uint8_t push[] = { 0x12, 0x02, 0x08, 0x15 };
+  inject_twin(fx, "twin-push:1", fx->nonce, push, sizeof(push));
+
+  az_iot_gen2_twin_client__force_timeouts(&fx->twin);
+  assert_int_equal(az_iot_gen2_twin_client_do_work(&fx->twin), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+
+  assert_false(saw_disconnect(fx));
+}
+
+/* do_work is scoped to a live connection: with none, there is nothing whose
+ * timeouts could still be meaningful. */
+static void do_work_without_a_connection_is_a_no_op(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(az_iot_gen2_twin_client_do_work(&fx->twin), AZ_IOT_OK);
+  assert_int_equal(az_iot_gen2_twin_client_do_work(NULL), AZ_IOT_ERR_INVALID_ARG);
+}
+
+/* The resync buffer belongs to the connection's patch sequence; on a new one it
+ * means nothing, so it is dropped along with the resync itself. */
+static void a_session_end_abandons_the_resync(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  uint8_t resync_buf[128];
+  assert_int_equal(
+      az_iot_gen2_twin_client_set_resync_buffer(&fx->twin, resync_buf, sizeof(resync_buf)),
+      AZ_IOT_OK);
+
+  desired_record rec = { 0 };
+  assert_int_equal(
+      az_iot_gen2_twin_client_set_desired_handler(&fx->twin, on_desired, &rec), AZ_IOT_OK);
+
+  inject_desired(fx, 3, "{\"c\":3}");
+  const az_iot_mock_call* get = last_get_publish(fx);
+  assert_non_null(get);
+  uint8_t corr[16];
+  memcpy(corr, get->correlation_data, sizeof(corr));
+
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(fx->mock));
+  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+
+  /* A response for the abandoned resync GET replays nothing. */
+  const uint8_t resp[] = { 0x08, 0x03, 0x1A, 0x02, '{', '}' };
+  inject_twin(fx, "get-response:1", corr, resp, sizeof(resp));
+  assert_false(rec.fired);
+}
+
+static void set_resync_buffer_rejects_a_null_client(void** state)
+{
+  (void)state;
+  uint8_t buf[32];
+  assert_int_equal(
+      az_iot_gen2_twin_client_set_resync_buffer(NULL, buf, sizeof(buf)), AZ_IOT_ERR_INVALID_ARG);
+}
+
+/* ------------------------------------------------------------------------- */
 /* argument rejection and lifecycle                                          */
 /* ------------------------------------------------------------------------- */
 
@@ -1450,7 +1979,7 @@ static void destroy_unregisters_the_inbound_handler(void** state)
 
   /* The handler must be gone: left behind, it would dispatch into a zeroed
    * client. */
-  const uint8_t body[] = { 0x08, 0x04, 0x12, 0x02, '{', '}' };
+  const uint8_t body[] = { 0x08, 0x01, 0x12, 0x02, '{', '}' };
   inject_twin(fx, "desired-patch:1", fx->nonce, body, sizeof(body));
   inject_twin(fx, "get-response:1", corr, body, sizeof(body));
   assert_false(des.fired);
@@ -1549,8 +2078,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(a_twin_push_advances_the_reported_version, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_desired_patch_reaches_the_handler_with_its_version, setup, teardown),
-    cmocka_unit_test_setup_teardown(
-        a_payload_less_desired_patch_is_not_dispatched, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_probe_at_the_applied_version_costs_nothing, setup, teardown),
     cmocka_unit_test_setup_teardown(an_empty_desired_payload_is_still_dispatched, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_desired_patch_from_another_connection_is_dropped, setup, teardown),
@@ -1568,6 +2096,30 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         every_pending_request_is_failed_not_just_the_first, setup, teardown),
     cmocka_unit_test_setup_teardown(a_pending_patch_is_failed_with_no_verdict, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_gap_in_the_patch_sequence_triggers_a_resync_get, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        the_snapshot_is_applied_then_the_newer_patches_replay_in_order, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_twin_push_resolves_an_outstanding_resync, setup, teardown),
+    cmocka_unit_test_setup_teardown(overflowing_the_resync_buffer_re_gets, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_resync_without_a_buffer_still_recovers, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_probe_ahead_of_the_applied_version_resyncs, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_stale_desired_patch_is_dropped, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        get_with_options_encodes_the_selector_and_filters, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        get_with_options_defaults_the_selector_to_both, setup, teardown),
+    cmocka_unit_test_setup_teardown(get_with_options_rejects_null_arguments, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_unanswered_get_is_re_issued_with_a_fresh_correlation_id, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_unanswered_patch_is_re_framed_with_the_current_version, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_second_concurrent_patch_is_refused, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_missing_twin_push_reconnects, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_delivered_twin_push_does_not_reconnect, setup, teardown),
+    cmocka_unit_test_setup_teardown(do_work_without_a_connection_is_a_no_op, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_session_end_abandons_the_resync, setup, teardown),
+    cmocka_unit_test_setup_teardown(set_resync_buffer_rejects_a_null_client, setup, teardown),
     cmocka_unit_test_setup_teardown(init_rejects_a_null_client, setup, teardown),
     cmocka_unit_test_setup_teardown(init_rejects_a_null_connection, setup, teardown),
     cmocka_unit_test_setup_teardown(init_against_a_classic_connection_is_rejected, setup, teardown),

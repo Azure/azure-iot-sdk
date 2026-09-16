@@ -3178,6 +3178,21 @@ az_iot_result az_iot_connection_client__presence_nonce(
   return AZ_IOT_OK;
 }
 
+void az_iot_connection_client__twin_push_flags(
+    const az_iot_connection_client* client,
+    bool* out_push_desired,
+    bool* out_push_reported)
+{
+  if (out_push_desired)
+  {
+    *out_push_desired = client && client->opts.twin_push.push_desired;
+  }
+  if (out_push_reported)
+  {
+    *out_push_reported = client && client->opts.twin_push.push_reported;
+  }
+}
+
 void az_iot_connection_client__subscription_gate_force_timeout(az_iot_connection_client* client)
 {
   if (client && client->subscription_gate.active)
