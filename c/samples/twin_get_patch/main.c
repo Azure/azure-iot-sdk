@@ -70,6 +70,10 @@ typedef struct
 
 static void on_desired(const uint8_t* patch, size_t patch_len, uint64_t version, void* user_ctx);
 
+/* A reported patch is framed into protobuf before it goes out, and the SDK does
+ * not allocate, so the application supplies the scratch for it. */
+static uint8_t s_twin_encode_buffer[256];
+
 /* The generation is only known once CONNECTED reports the resolved profile,
  * and a reconnect can land on the other one -- so the client is built from the
  * transition rather than constructed once up front. */
@@ -87,6 +91,11 @@ static az_iot_result twin_rebuild(
     if (result == AZ_IOT_OK)
     {
       result = az_iot_gen2_twin_client_set_desired_handler(&s->gen2_twin, on_desired, handler_ctx);
+    }
+    if (result == AZ_IOT_OK)
+    {
+      result = az_iot_gen2_twin_client_set_encode_buffer(
+          &s->gen2_twin, s_twin_encode_buffer, sizeof(s_twin_encode_buffer));
     }
   }
   else if (profile == AZ_IOT_CONNECTION_PROFILE_CLASSIC)
@@ -160,6 +169,48 @@ static void on_patch(az_iot_result status, uint64_t version, void* user_ctx)
   ctx->patch_status = status;
   ctx->patch_version = version;
   ctx->patch_done = 1;
+}
+
+/* gen2 returns the two twin sections separately, each with its own
+ * authoritative version, so it has its own callback shape. */
+static void on_gen2_get(az_iot_result status, const az_iot_gen2_twin_state* twin, void* user_ctx)
+{
+  user_context* ctx = (user_context*)user_ctx;
+  ctx->get_status = status;
+  ctx->get_done = 1;
+  if (status == AZ_IOT_OK && twin)
+  {
+    printf(
+        "twin GET desired (version %llu): %.*s\n",
+        (unsigned long long)twin->desired.version,
+        (int)twin->desired.payload_len,
+        twin->desired.payload ? (const char*)twin->desired.payload : "");
+    printf(
+        "twin GET reported (version %llu): %.*s\n",
+        (unsigned long long)twin->reported.version,
+        (int)twin->reported.payload_len,
+        twin->reported.payload ? (const char*)twin->reported.payload : "");
+  }
+}
+
+/* gen2 reports the service's verdict rather than just a version: a patch can
+ * complete yet be refused, when another writer moved the version first. */
+static void on_gen2_patch(
+    az_iot_result status,
+    const az_iot_gen2_twin_patch_result* result,
+    void* user_ctx)
+{
+  user_context* ctx = (user_context*)user_ctx;
+  ctx->patch_status = status;
+  ctx->patch_version = result ? result->version : 0;
+  ctx->patch_done = 1;
+  if (status == AZ_IOT_OK && result && result->status != AZ_IOT_GEN2_TWIN_PATCH_OK)
+  {
+    printf(
+        "twin patch refused (status %d, current version %llu)\n",
+        (int)result->status,
+        (unsigned long long)result->version);
+  }
 }
 
 int main(void)
@@ -257,9 +308,9 @@ int main(void)
 
     if (state.twin_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
     {
-      get_rc = az_iot_gen2_twin_client_get(&state.gen2_twin, on_get, &user_ctx);
+      get_rc = az_iot_gen2_twin_client_get(&state.gen2_twin, on_gen2_get, &user_ctx);
       patch_rc = az_iot_gen2_twin_client_patch_reported(
-          &state.gen2_twin, patch, sizeof(patch) - 1, on_patch, &user_ctx);
+          &state.gen2_twin, patch, sizeof(patch) - 1, on_gen2_patch, &user_ctx);
     }
     else
     {
