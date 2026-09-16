@@ -621,6 +621,26 @@ static void a_response_with_an_unusable_type_releases_the_slot(void** state)
   assert_false(rec.had_twin);
 }
 
+/* A `type` value shorter than the names it is compared against must not be
+ * read past its terminator. strncmp stops at the first difference, so the
+ * one-past check only runs when the whole prefix matched -- but the value comes
+ * from the broker, so the boundary is pinned here and the suite runs under
+ * ASan in CI. */
+static void a_short_type_value_is_handled(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  get_record rec = { 0 };
+  uint8_t corr[16];
+  issue_get(fx, &rec, corr);
+
+  inject_twin(fx, "g", corr, NULL, 0);
+
+  assert_true(rec.fired);
+  assert_int_equal(rec.status, AZ_IOT_ERR_PROTOCOL);
+}
+
 static void a_response_without_a_type_releases_the_slot(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -1520,6 +1540,7 @@ int main(void)
         correlation_data_of_the_wrong_length_is_dropped, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_response_with_an_unusable_type_releases_the_slot, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_short_type_value_is_handled, setup, teardown),
     cmocka_unit_test_setup_teardown(a_response_without_a_type_releases_the_slot, setup, teardown),
     cmocka_unit_test_setup_teardown(a_patch_response_does_not_satisfy_a_get_slot, setup, teardown),
     cmocka_unit_test_setup_teardown(a_message_on_a_longer_topic_is_dropped, setup, teardown),

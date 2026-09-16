@@ -45,7 +45,9 @@
 /* Read a base-128 varint. Rejects encodings longer than 10 bytes. */
 bool az_iot_proto3_read_varint(const uint8_t* buf, size_t len, size_t* pos, uint64_t* out_value);
 
-/* Read a field key and split it into field number and wire type. */
+/* Read a field key and split it into field number and wire type. Rejects field
+ * number 0, which protobuf does not define: a key carrying it means the frame
+ * is malformed, not that the field is one this SDK does not know. */
 bool az_iot_proto3_read_tag(
     const uint8_t* buf,
     size_t len,

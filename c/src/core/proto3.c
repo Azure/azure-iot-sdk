@@ -67,7 +67,16 @@ bool az_iot_proto3_read_tag(
     return false;
   }
 
-  *out_field = (uint32_t)(key >> 3);
+  uint32_t field = (uint32_t)(key >> 3);
+  /* Field number 0 does not exist in protobuf, so a key carrying it is a
+   * malformed frame rather than a field this SDK does not know. Skipping it as
+   * unknown would let a corrupt message parse as a partially valid one. */
+  if (field == 0u)
+  {
+    return false;
+  }
+
+  *out_field = field;
   *out_wire = (uint8_t)(key & 0x07u);
   return true;
 }
