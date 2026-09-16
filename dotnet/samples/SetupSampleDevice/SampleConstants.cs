@@ -9,7 +9,7 @@ namespace SetupSampleDevice
         public const string PfxPath = outputPath + $"certificate.pfx";
         public const string TestCertificatesPassword = "Some dummy certificate password";
 
-        private const string outputPath = "../../../../../";
+        private const string outputPath = "../../../../../../";
 
         public static void ClearSavedCredentials()
         {
