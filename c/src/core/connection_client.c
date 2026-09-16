@@ -133,6 +133,66 @@
  * echoed unchanged on the birth-ack. 16 bytes matches the .NET GUID nonce. */
 #define PRESENCE_NONCE_LEN 16u
 
+/* The nonce is a UUID, so two of its octets carry RFC 4122 metadata: octet 6
+ * holds the version in its high nibble and octet 8 the variant in its high
+ * bits. The rest of each octet stays random. */
+#define PRESENCE_UUID_VERSION_OCTET 6u
+#define PRESENCE_UUID_VARIANT_OCTET 8u
+#define PRESENCE_UUID_VERSION_KEEP_MASK 0x0Fu
+#define PRESENCE_UUID_VERSION_4 0x40u
+#define PRESENCE_UUID_VARIANT_KEEP_MASK 0x3Fu
+#define PRESENCE_UUID_VARIANT_RFC4122 0x80u
+#define PRESENCE_UUID_STAMP_VERSION_4(octet) \
+  ((uint8_t)(((octet) & PRESENCE_UUID_VERSION_KEEP_MASK) | PRESENCE_UUID_VERSION_4))
+#define PRESENCE_UUID_STAMP_VARIANT_RFC4122(octet) \
+  ((uint8_t)(((octet) & PRESENCE_UUID_VARIANT_KEEP_MASK) | PRESENCE_UUID_VARIANT_RFC4122))
+
+/* Nibble halves of a byte, for rendering the nonce as hex. */
+#define PRESENCE_NIBBLE_MASK 0x0Fu
+#define PRESENCE_NIBBLE_BITS 4u
+#define PRESENCE_HI_NIBBLE(byte) (((byte) >> PRESENCE_NIBBLE_BITS) & PRESENCE_NIBBLE_MASK)
+#define PRESENCE_LO_NIBBLE(byte) ((byte) & PRESENCE_NIBBLE_MASK)
+
+/* proto3 wire format, as much of it as the birth encoder and the birth-ack
+ * decoder need. A record is a varint key -- field number in the high bits, wire
+ * type in the low three -- followed by a payload whose shape the wire type
+ * gives. See https://protobuf.dev/programming-guides/encoding/. */
+#define PROTO_WIRE_TYPE_VARINT 0u
+#define PROTO_WIRE_TYPE_64BIT 1u
+#define PROTO_WIRE_TYPE_LEN_DELIM 2u
+#define PROTO_WIRE_TYPE_32BIT 5u
+#define PROTO_WIRE_TYPE_BITS 3u
+#define PROTO_WIRE_TYPE_MASK 0x07u
+#define PROTO_WIRE_32BIT_SIZE 4u
+#define PROTO_WIRE_64BIT_SIZE 8u
+#define PROTO_KEY_FIELD_NUMBER(key) ((key) >> PROTO_WIRE_TYPE_BITS)
+#define PROTO_KEY_WIRE_TYPE(key) ((uint8_t)((key) & PROTO_WIRE_TYPE_MASK))
+/* Single-byte key for a varint field. Valid for field numbers 1..15, which is
+ * every field this client encodes. */
+#define PROTO_KEY_VARINT(field) \
+  ((uint8_t)(((field) << PROTO_WIRE_TYPE_BITS) | PROTO_WIRE_TYPE_VARINT))
+#define PROTO_BOOL_TRUE 0x01u
+
+/* A varint carries seven payload bits per byte; the high bit says another byte
+ * follows. Bits 0..62 come from nine such groups and bit 63 from a tenth, so
+ * PROTO_VARINT_MAX_SHIFT is the last shift a legal uint64 can reach. */
+#define PROTO_VARINT_CONTINUATION_BIT 0x80u
+#define PROTO_VARINT_PAYLOAD_MASK 0x7Fu
+#define PROTO_VARINT_PAYLOAD_BITS 7u
+#define PROTO_VARINT_VALUE_BITS 64u
+#define PROTO_VARINT_MAX_SHIFT 63u
+/* Largest payload the tenth byte may carry: at shift 63 only bit 63 fits. */
+#define PROTO_VARINT_TOP_BIT_MAX 1u
+#define PROTO_VARINT_PAYLOAD(byte) ((byte) & PROTO_VARINT_PAYLOAD_MASK)
+#define PROTO_VARINT_HAS_CONTINUATION(byte) (((byte) & PROTO_VARINT_CONTINUATION_BIT) != 0u)
+
+/* Field numbers from presence.proto. */
+#define PRESENCE_BIRTH_FIELD_SESSION_PRESENT 1u
+#define PRESENCE_BIRTH_FIELD_PUSH_DESIRED 12u
+#define PRESENCE_BIRTH_FIELD_PUSH_REPORTED 13u
+#define PRESENCE_BIRTH_ACK_FIELD_DESIRED_VERSION 10u
+#define PRESENCE_BIRTH_ACK_FIELD_REPORTED_VERSION 11u
+
 /* ------------------------------------------------------------------------- */
 /* helpers                                                                   */
 /* ------------------------------------------------------------------------- */
@@ -1416,11 +1476,12 @@ static void dps_apply_deferred(az_iot_connection_client* c)
 /* A stalled handshake is timed out from do_work().                            */
 /* ------------------------------------------------------------------------- */
 
-/* Fill `out` with a per-connection nonce. Uniqueness (not cryptographic
- * strength) is what matters: it is echoed on the birth-ack so the SDK can
- * discard acks from a prior attempt. Uses the same LCG as the CSR request-id
- * generator, advanced through the client's rng_state and salted by the attempt
- * count so successive attempts never collide. */
+/* Fill `out` with the per-connection nonce: a fresh RFC 4122 version 4 UUID,
+ * regenerated on every CONNECT attempt (not per successful CONNACK). It is
+ * echoed on the birth-ack so the SDK can discard acks from a prior attempt.
+ * Uses the same LCG as the CSR request-id generator, advanced through the
+ * client's rng_state and salted by the attempt count so successive attempts
+ * never collide. */
 static void presence_gen_nonce(az_iot_connection_client* c, uint8_t out[PRESENCE_NONCE_LEN])
 {
   for (size_t i = 0; i < PRESENCE_NONCE_LEN; i += 8)
@@ -1434,25 +1495,33 @@ static void presence_gen_nonce(az_iot_connection_client* c, uint8_t out[PRESENCE
       out[i + b] = (uint8_t)(x >> (b * 8u));
     }
   }
+
+  /* Stamp the RFC 4122 version (4 = random) and variant (10xx) bits so the
+   * nonce is a well-formed UUID, which is what the presence protocol
+   * specifies and what the .NET client produces via Guid.NewGuid(). */
+  out[PRESENCE_UUID_VERSION_OCTET]
+      = PRESENCE_UUID_STAMP_VERSION_4(out[PRESENCE_UUID_VERSION_OCTET]);
+  out[PRESENCE_UUID_VARIANT_OCTET]
+      = PRESENCE_UUID_STAMP_VARIANT_RFC4122(out[PRESENCE_UUID_VARIANT_OCTET]);
 }
 
 /* Build the Hub-Next (AEG) CONNECT username. The IoT Hub auth webhook denies a
  * connect with an empty username (WebhookAuthUserNameMissing), so the SDK sends
  * "correlationId=<hex nonce>&clientVersion=c%2F<version>", mirroring the .NET
- * SDK. correlationId is the uppercase hex of the 16-byte connection nonce; the
- * SAME nonce bytes ride the birth message as raw Correlation Data so the
- * service can correlate the CONNECT with the birth.
+ * SDK. correlationId is the 32-character lowercase hex of the 16-byte
+ * connection nonce; the SAME nonce bytes ride the birth message as raw
+ * Correlation Data so the service can correlate the CONNECT with the birth.
  *
  * Returns false if `cap` (AZ_IOT_MQTT_USERNAME_BUF) cannot hold the whole
  * username; `buf` is left unusable and the caller must fail the attempt. */
 static bool presence_build_username(const az_iot_connection_client* c, char* buf, size_t cap)
 {
-  static const char hexdigits[] = "0123456789ABCDEF";
+  static const char hexdigits[] = "0123456789abcdef";
   char hex[PRESENCE_NONCE_LEN * 2u + 1u];
   for (size_t i = 0; i < PRESENCE_NONCE_LEN; ++i)
   {
-    hex[i * 2u] = hexdigits[(c->presence.nonce[i] >> 4) & 0x0Fu];
-    hex[i * 2u + 1u] = hexdigits[c->presence.nonce[i] & 0x0Fu];
+    hex[i * 2u] = hexdigits[PRESENCE_HI_NIBBLE(c->presence.nonce[i])];
+    hex[i * 2u + 1u] = hexdigits[PRESENCE_LO_NIBBLE(c->presence.nonce[i])];
   }
   hex[PRESENCE_NONCE_LEN * 2u] = '\0';
 
@@ -1475,28 +1544,155 @@ static bool presence_build_username(const az_iot_connection_client* c, char* buf
 
 /* Encode a proto3 Birth message (common/Protos/presence.proto) into `out`.
  * proto3 omits default-valued fields, matching Google.Protobuf on the .NET
- * side. We emit push_desired/push_reported (both true) and, when set,
- * session_present; reported_version/desired_version stay 0 (the device does not
- * persist twin state yet) and are omitted. Returns the encoded length. */
-static size_t presence_encode_birth(uint8_t* out, size_t cap, bool session_present)
+ * side, so a false push bit is simply absent from the payload.
+ * push_desired/push_reported advertise which twin traffic the application wants
+ * dispatched on this connection (opts.twin_push); reported_version and
+ * desired_version stay 0 (the device does not persist twin state yet) and are
+ * omitted. Returns the encoded length. */
+static size_t presence_encode_birth(
+    uint8_t* out,
+    size_t cap,
+    bool session_present,
+    bool push_desired,
+    bool push_reported)
 {
   size_t n = 0;
   if (session_present && n + 2u <= cap)
   {
-    out[n++] = 0x08;
-    out[n++] = 0x01;
-  } /* f1  session_present */
-  if (n + 2u <= cap)
+    out[n++] = PROTO_KEY_VARINT(PRESENCE_BIRTH_FIELD_SESSION_PRESENT);
+    out[n++] = PROTO_BOOL_TRUE;
+  }
+  if (push_desired && n + 2u <= cap)
   {
-    out[n++] = 0x60;
-    out[n++] = 0x01;
-  } /* f12 push_desired = true */
-  if (n + 2u <= cap)
+    out[n++] = PROTO_KEY_VARINT(PRESENCE_BIRTH_FIELD_PUSH_DESIRED);
+    out[n++] = PROTO_BOOL_TRUE;
+  }
+  if (push_reported && n + 2u <= cap)
   {
-    out[n++] = 0x68;
-    out[n++] = 0x01;
-  } /* f13 push_reported = true */
+    out[n++] = PROTO_KEY_VARINT(PRESENCE_BIRTH_FIELD_PUSH_REPORTED);
+    out[n++] = PROTO_BOOL_TRUE;
+  }
   return n;
+}
+
+/* Read a proto3 varint from buf[*pos]. Returns false on a truncated or
+ * over-long (> 10 byte) encoding, which ends parsing of the message.
+ *
+ * 10 bytes is the widest legal uint64: nine 7-bit groups cover bits 0..62 and
+ * the tenth contributes bit 63 alone. So `shift` must still be accepted at
+ * PROTO_VARINT_MAX_SHIFT and only rejected once it passes that, which is why
+ * the bound below is checked after the shift advances rather than before the
+ * byte is consumed.
+ *
+ * Because that tenth byte can carry only bit 63, its payload must be 0 or 1.
+ * A larger one sets bits the value cannot hold; the shift would drop them and
+ * the wrapped remainder would pass for a valid version. Reject it instead: a
+ * twin version that silently wraps is worse than a decode that stops. */
+static bool presence_read_varint(const uint8_t* buf, size_t len, size_t* pos, uint64_t* out)
+{
+  uint64_t v = 0;
+  unsigned shift = 0;
+  while (*pos < len)
+  {
+    uint8_t b = buf[(*pos)++];
+    if (shift == PROTO_VARINT_MAX_SHIFT && PROTO_VARINT_PAYLOAD(b) > PROTO_VARINT_TOP_BIT_MAX)
+    {
+      return false;
+    }
+    if (shift < PROTO_VARINT_VALUE_BITS)
+    {
+      v |= ((uint64_t)PROTO_VARINT_PAYLOAD(b)) << shift;
+    }
+    if (!PROTO_VARINT_HAS_CONTINUATION(b))
+    {
+      *out = v;
+      return true;
+    }
+    shift += PROTO_VARINT_PAYLOAD_BITS;
+    if (shift > PROTO_VARINT_MAX_SHIFT)
+    {
+      return false;
+    }
+  }
+  return false;
+}
+
+/* Decode the twin recovery state the service returns on the birth-ack
+ * (presence.proto BirthAck): desired_version (field 10) and reported_version
+ * (field 11), both varints. These are the authoritative versions as of birth
+ * admission; the device adopts them as its view for this connection. Fields the
+ * service omits keep the proto3 default of 0, and unknown fields are skipped so
+ * a service-side schema addition does not break the handshake. */
+static void presence_decode_birth_ack(az_iot_connection_client* c, const uint8_t* buf, size_t len)
+{
+  c->presence.desired_version = 0;
+  c->presence.reported_version = 0;
+  if (!buf)
+  {
+    return;
+  }
+
+  size_t pos = 0;
+  while (pos < len)
+  {
+    uint64_t key = 0;
+    if (!presence_read_varint(buf, len, &pos, &key))
+    {
+      return;
+    }
+    uint64_t field = PROTO_KEY_FIELD_NUMBER(key);
+    uint8_t wire = PROTO_KEY_WIRE_TYPE(key);
+
+    if (wire == PROTO_WIRE_TYPE_VARINT)
+    {
+      uint64_t v = 0;
+      if (!presence_read_varint(buf, len, &pos, &v))
+      {
+        return;
+      }
+      if (field == PRESENCE_BIRTH_ACK_FIELD_DESIRED_VERSION)
+      {
+        c->presence.desired_version = v;
+      }
+      else if (field == PRESENCE_BIRTH_ACK_FIELD_REPORTED_VERSION)
+      {
+        c->presence.reported_version = v;
+      }
+    }
+    else if (wire == PROTO_WIRE_TYPE_LEN_DELIM)
+    {
+      uint64_t n = 0;
+      if (!presence_read_varint(buf, len, &pos, &n))
+      {
+        return;
+      }
+      if (n > (uint64_t)(len - pos))
+      {
+        return;
+      }
+      pos += (size_t)n;
+    }
+    else if (wire == PROTO_WIRE_TYPE_32BIT)
+    {
+      if (len - pos < PROTO_WIRE_32BIT_SIZE)
+      {
+        return;
+      }
+      pos += PROTO_WIRE_32BIT_SIZE;
+    }
+    else if (wire == PROTO_WIRE_TYPE_64BIT)
+    {
+      if (len - pos < PROTO_WIRE_64BIT_SIZE)
+      {
+        return;
+      }
+      pos += PROTO_WIRE_64BIT_SIZE;
+    }
+    else
+    {
+      return; /* groups (3/4) and unknown wire types: stop */
+    }
+  }
 }
 
 /* Announce CONNECTED once the session's persistent subscriptions are live.
@@ -1789,7 +1985,12 @@ static az_iot_result presence_publish_birth(az_iot_connection_client* c)
   }
 
   uint8_t body[8];
-  size_t body_len = presence_encode_birth(body, sizeof(body), c->presence.session_present);
+  size_t body_len = presence_encode_birth(
+      body,
+      sizeof(body),
+      c->presence.session_present,
+      c->opts.twin_push.push_desired,
+      c->opts.twin_push.push_reported);
 
   az_iot_mqtt_user_property type_prop = { PRESENCE_TYPE_KEY, PRESENCE_TYPE_BIRTH };
 
@@ -1976,6 +2177,7 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
             AZ_IOT_LOG_DEBUG("birth-ack ignored: close already requested");
             break;
           }
+          presence_decode_birth_ack(c, evt->message->payload, evt->message->payload_len);
           c->presence.phase = PRESENCE_PHASE_DONE;
           begin_feature_subscriptions(c);
           break;
@@ -3013,6 +3215,21 @@ void az_iot_connection_client__presence_force_timeout(az_iot_connection_client* 
   {
     client->presence.deadline_ms = 0;
   }
+}
+
+az_iot_result az_iot_connection_client__presence_twin_versions(
+    const az_iot_connection_client* client,
+    uint64_t* out_desired_version,
+    uint64_t* out_reported_version)
+{
+  if (!client || !out_desired_version || !out_reported_version)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+
+  *out_desired_version = client->presence.desired_version;
+  *out_reported_version = client->presence.reported_version;
+  return AZ_IOT_OK;
 }
 
 void az_iot_connection_client__subscription_gate_force_timeout(az_iot_connection_client* client)
