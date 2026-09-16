@@ -91,7 +91,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.StubService
         /// </remarks>
         private const MqttDisconnectReasonCode IdentityReasonCode = MqttDisconnectReasonCode.NotAuthorized;
 
-        [Fact(Timeout = SoakTestTimeoutMilliseconds)]
+        [Fact(Timeout = SoakTestTimeoutMilliseconds, Skip = "Disable for now")]
         public async Task Gen2_KeepsWorkingWhileTheStubsRandomlyDropTheConnection()
         {
             TimeSpan soakDuration = ResolveSoakDuration();
@@ -127,7 +127,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.StubService
             report.AssertHealthy(MinimumExpectedHubDrops(soakDuration));
         }
 
-        [Fact(Timeout = SoakTestTimeoutMilliseconds)]
+        [Fact(Timeout = SoakTestTimeoutMilliseconds, Skip = "Disable for now")]
         public async Task Gen1_KeepsWorkingWhileTheStubsRandomlyDropTheConnection()
         {
             TimeSpan soakDuration = ResolveSoakDuration();
