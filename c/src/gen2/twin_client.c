@@ -528,7 +528,7 @@ static void on_twin_push(az_iot_gen2_twin_client* t, const az_iot_mqtt_message* 
       size_t sec_len = 0;
       ok = az_iot_proto3_read_bytes(buf, len, &pos, &sec, &sec_len)
           && decode_section(
-              sec, sec_len, (field == TWIN_F_PUSH_DESIRED) ? &twin.desired : &twin.reported);
+               sec, sec_len, (field == TWIN_F_PUSH_DESIRED) ? &twin.desired : &twin.reported);
     }
     else
     {
