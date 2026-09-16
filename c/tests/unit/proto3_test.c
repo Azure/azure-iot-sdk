@@ -250,23 +250,19 @@ static void skipping_each_wire_type_advances_correctly(void** state)
   size_t pos;
 
   pos = 0;
-  assert_true(
-      az_iot_proto3_skip_field(varint, sizeof(varint), &pos, AZ_IOT_PROTO3_WIRE_VARINT));
+  assert_true(az_iot_proto3_skip_field(varint, sizeof(varint), &pos, AZ_IOT_PROTO3_WIRE_VARINT));
   assert_int_equal(pos, 2);
 
   pos = 0;
-  assert_true(
-      az_iot_proto3_skip_field(len_delim, sizeof(len_delim), &pos, AZ_IOT_PROTO3_WIRE_LEN));
+  assert_true(az_iot_proto3_skip_field(len_delim, sizeof(len_delim), &pos, AZ_IOT_PROTO3_WIRE_LEN));
   assert_int_equal(pos, 3);
 
   pos = 0;
-  assert_true(
-      az_iot_proto3_skip_field(fixed32, sizeof(fixed32), &pos, AZ_IOT_PROTO3_WIRE_32BIT));
+  assert_true(az_iot_proto3_skip_field(fixed32, sizeof(fixed32), &pos, AZ_IOT_PROTO3_WIRE_32BIT));
   assert_int_equal(pos, 4);
 
   pos = 0;
-  assert_true(
-      az_iot_proto3_skip_field(fixed64, sizeof(fixed64), &pos, AZ_IOT_PROTO3_WIRE_64BIT));
+  assert_true(az_iot_proto3_skip_field(fixed64, sizeof(fixed64), &pos, AZ_IOT_PROTO3_WIRE_64BIT));
   assert_int_equal(pos, 8);
 }
 
