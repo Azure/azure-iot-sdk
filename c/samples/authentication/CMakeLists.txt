@@ -14,16 +14,24 @@ target_link_libraries(az_iot_sample_auth_custom_provider_template PRIVATE az_iot
 az_iot_apply_warnings(az_iot_sample_auth_custom_provider_template)
 
 # Direct hub connect (no DPS): caller supplies the hub FQDN + X.509 device
-# credentials and selects the hub flavor (Classic v3.1.1 or Next/AEG v5) via
-# opts.connection_profile. Needs the Paho adapter to connect; the PEM provider ships
-# in az_iot_core.
+# credentials. With no DPS step to learn the hub flavor, each sample states it
+# at compile time via opts.connection_profile -- Classic v3.1.1 in _gen1, AEG v5
+# in _gen2. Needs the Paho adapter to connect; the PEM provider ships in
+# az_iot_core.
 if(AZ_IOT_WITH_PAHO)
-    add_executable(az_iot_sample_auth_direct_hub
-        direct-hub/main.c ${_auth_common}/sample_utils.c)
-    target_include_directories(az_iot_sample_auth_direct_hub PRIVATE ${_auth_common})
-    target_link_libraries(az_iot_sample_auth_direct_hub
-        PRIVATE az_iot_gen1 az_iot_gen2 az_iot_adapter_paho)
-    az_iot_apply_warnings(az_iot_sample_auth_direct_hub)
+    add_executable(az_iot_sample_auth_direct_hub_gen1
+        direct_hub_gen1/main.c ${_auth_common}/sample_utils.c)
+    target_include_directories(az_iot_sample_auth_direct_hub_gen1 PRIVATE ${_auth_common})
+    target_link_libraries(az_iot_sample_auth_direct_hub_gen1
+        PRIVATE az_iot_gen1 az_iot_adapter_paho)
+    az_iot_apply_warnings(az_iot_sample_auth_direct_hub_gen1)
+
+    add_executable(az_iot_sample_auth_direct_hub_gen2
+        direct_hub_gen2/main.c ${_auth_common}/sample_utils.c)
+    target_include_directories(az_iot_sample_auth_direct_hub_gen2 PRIVATE ${_auth_common})
+    target_link_libraries(az_iot_sample_auth_direct_hub_gen2
+        PRIVATE az_iot_gen2 az_iot_adapter_paho)
+    az_iot_apply_warnings(az_iot_sample_auth_direct_hub_gen2)
 endif()
 
 # The DPS-CSR and hub-renewal samples need the Paho adapter to connect and the
@@ -77,14 +85,22 @@ endif()
 # D8 non-extractable key custody, key-reference route. Needs the Paho adapter to
 # link, and OpenSSL 3.0+ at RUN time (the provider that owns the token) -- which
 # is a deployment property, not a build one, so it builds wherever Paho does and
-# reports a clear error when the provider is absent.
+# reports a clear error when the provider is absent. The custody code is
+# identical in both; only the telemetry client and MQTT adapters differ.
 if(AZ_IOT_WITH_PAHO)
-    add_executable(az_iot_sample_auth_hsm_pkcs11
-        hsm_pkcs11/main.c ${_auth_common}/sample_utils.c)
-    target_include_directories(az_iot_sample_auth_hsm_pkcs11 PRIVATE ${_auth_common})
-    target_link_libraries(az_iot_sample_auth_hsm_pkcs11
-        PRIVATE az_iot_gen1 az_iot_gen2 az_iot_adapter_paho)
-    az_iot_apply_warnings(az_iot_sample_auth_hsm_pkcs11)
+    add_executable(az_iot_sample_auth_hsm_pkcs11_gen1
+        hsm_pkcs11_gen1/main.c ${_auth_common}/sample_utils.c)
+    target_include_directories(az_iot_sample_auth_hsm_pkcs11_gen1 PRIVATE ${_auth_common})
+    target_link_libraries(az_iot_sample_auth_hsm_pkcs11_gen1
+        PRIVATE az_iot_gen1 az_iot_adapter_paho)
+    az_iot_apply_warnings(az_iot_sample_auth_hsm_pkcs11_gen1)
+
+    add_executable(az_iot_sample_auth_hsm_pkcs11_gen2
+        hsm_pkcs11_gen2/main.c ${_auth_common}/sample_utils.c)
+    target_include_directories(az_iot_sample_auth_hsm_pkcs11_gen2 PRIVATE ${_auth_common})
+    target_link_libraries(az_iot_sample_auth_hsm_pkcs11_gen2
+        PRIVATE az_iot_gen2 az_iot_adapter_paho)
+    az_iot_apply_warnings(az_iot_sample_auth_hsm_pkcs11_gen2)
 endif()
 
 # The sign() hook sample brings its own stand-in adapter, so it needs neither
