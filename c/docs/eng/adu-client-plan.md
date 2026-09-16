@@ -107,7 +107,8 @@ sample-only / not factored) · 🔜 Coming soon (planned / designed, not yet bui
 | Foundation | ✅ | **`adu_core` extraction + `az_iot_adu_channel` vtable** — engine takes a manifest string, returns a structured report; delivery/reporting behind the vtable. Prerequisite for every ADUv2 row. [→](#g-aduv2-transport-via-the-dps-gateway) |
 | Core update workflow | ✅ | **Manifest v5 parsing** — delegated to `azure-sdk-for-c`; only v5 targeted. [→](#b-core-update-workflow) |
 | Core update workflow | ❌→✅ | **Agent state reporting** — twin `0/6/255` reported properties are cut; re-expressed as the structured `installResult` on `reportUpdateStatus`. [→](#b-core-update-workflow) |
-| Core update workflow | ❌→✅ | **Device properties reporting** — twin `deviceProperties` cut; re-expressed as `agentInfo` (`agentSdkVersion`, `agentProfile`, compat KVPs) on each fetch. [→](#b-core-update-workflow) |
+| Core update workflow | ✅ | **Device-properties payload reporting** — validated, owned `agentInfo` compatibility data on application-requested fetches; the regular route also carries the cached installed ID. This does not imply revision-safe freshness or automatic identity promotion. [→](#b-core-update-workflow) |
+| Core update workflow | 🟡 | **Property/workflow freshness** — property revisions and stale-response handling, terminal-report ordering, and promotion of the applied ID into later checks remain follow-up work. [→](#b-core-update-workflow) |
 | Core update workflow | ❌ | **Startup + reconnect re-reporting / initial twin GET** — no subscription and no unsolicited offer in ADUv2; the device polls instead. [→](#b-core-update-workflow) |
 | Core update workflow | ❌→✅ | **Accept / reject acknowledgement** — twin 200/406 ack is cut; already-installed becomes a `SKIPPED` outcome in the report. [→](#b-core-update-workflow) |
 | Core update workflow | ✅ | **Multi-step (composite) updates** — per-step Download→Backup→Install→Apply loop. [→](#b-core-update-workflow) |
@@ -243,6 +244,30 @@ stateDiagram-v2
   `agentInfo` on every fetch — plus `installedUpdateId` on the regular route only, since an
   onboarding device has nothing installed — and a structured `installResult` on
   `reportUpdateStatus`. The device-properties cache survives as the `agentInfo` cache.
+- **Device-properties validation and ownership** — the managed client and fetch codec
+  enforce the specified **1-5 compatibility KVPs**. Manufacturer/model each consume
+  a slot when supplied; custom keys are otherwise opaque. Keys must be nonempty and
+  unique, and values must be non-NULL (empty strings are allowed). `agentProfile`
+  is a separate field and does not consume a compatibility slot.
+  The installed ID is absent or a complete nonempty provider/name/version triple.
+  Replacement is atomic: invalid input, a short caller cache, or channel serialization
+  failure leaves the previous engine/channel properties and pending request untouched.
+  Caller storage holds only copied strings and needs no special alignment; typed
+  descriptors live in the client. `az_iot_adu_device_props_buffer_size()` gives the
+  exact string-storage requirement, or zero for invalid/unsupported properties.
+  Managed snapshots are bounded to 256 bytes of compatibility strings (custom names
+  and every terminator included) plus 192 bytes of installed-ID strings; the channel
+  separately checks the escaped request against its body capacity.
+  These inherited byte budgets are SDK capacities, not service limits. Configurable
+  or caller-sized capacity is deferred to a separate team design discussion.
+  The unused managed legacy serialized-ID cache is removed. The standalone report
+  builder retains its legacy wire/count contract but correctly escapes installed IDs.
+  Initialization/replacement uses transient stack scratch: the shipping channel's
+  2048-byte preflight body plus bounded property snapshots (several KiB in total,
+  ABI/compiler dependent). Include this in embedded task-stack sizing; it is not
+  hidden heap allocation.
+  **Scope:** this does not yet make a runtime setter schedule an update check, change
+  ETag freshness, select the operational route, or promote a newly installed identity.
 - **Accept / reject (❌→🔜 re-shaped)** — the twin 200/406 acknowledgement is cut. The
   `is_installed_fn` decision stays in `adu_core`; an already-installed or non-applicable update
   becomes a `SKIPPED` outcome in the report rather than a wire-level rejection. *Caveat:* still

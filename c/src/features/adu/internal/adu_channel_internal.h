@@ -34,6 +34,7 @@
 #include "azure/iot/az_iot_adu.h"
 
 #include "adu_protocol_internal.h"
+#include "adu_device_properties_internal.h"
 #include "azure/iot/az_iot_result.h"
 
 #ifdef __cplusplus
@@ -188,9 +189,7 @@ extern "C"
 #endif
 
 /* The service accepts a bounded number of compatibility properties. */
-#ifndef AZ_IOT_ADU_CHANNEL_MAX_COMPAT
-#define AZ_IOT_ADU_CHANNEL_MAX_COMPAT 5
-#endif
+#define AZ_IOT_ADU_CHANNEL_MAX_COMPAT AZ_IOT_ADU_MAX_COMPATIBILITY_PROPERTIES
 
 /* How many times an operation is RETRIED after losing the provisioning session
  * underneath it, before it is abandoned. N retries, so the operation is given
@@ -242,11 +241,10 @@ extern "C"
      * a fetch: they are how the service picks the right update. */
     az_iot_adu_custom_property compat[AZ_IOT_ADU_CHANNEL_MAX_COMPAT];
     size_t compat_count;
-    char compat_storage[256];
+    az_iot_adu_device_properties_snapshot device_properties;
 
     az_iot_adu_report_update_id installed_update_id;
     bool has_installed_update_id;
-    char installed_storage[192];
 
     /* ETags from the last successful fetch, echoed on the next one. Empty
      * means "not held yet". */

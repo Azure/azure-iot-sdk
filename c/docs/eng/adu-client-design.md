@@ -924,6 +924,17 @@ az_iot_result az_iot_adu_client_update_device_properties(
 
 ### 5.2 Device-Properties API
 
+> **Current managed ADUv2 cache:** strings are deep-copied into the caller's byte
+> buffer; typed property/custom-property descriptors live in the client, so the
+> buffer has no alignment requirement. Replacement validates the entire snapshot
+> and the channel's escaped request before committing either cache. Failure preserves
+> the previous accepted properties. The specified 1-5 compatibility KVP limit includes
+> supplied manufacturer/model keys, not `agentProfile`; an installed ID must be absent
+> or a complete nonempty triple. See the [current contract and limits](adu-client-plan.md#b-core-update-workflow).
+> The managed upstream-shaped view/serialized-ID cache described below has been removed;
+> the standalone legacy formatter is retained. The twin re-report/reconnect sequence
+> below is historical and is not proof of runtime ADUv2 fetch scheduling.
+
 Device properties are supplied as a **plain struct** that the client
 **deep-copies** into a caller-provided cache buffer. There is no callback and no
 shared ownership: once `init` (or `update_device_properties`) returns, the

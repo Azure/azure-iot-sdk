@@ -312,6 +312,8 @@ extern "C"
     const char* version;
   } az_iot_adu_update_id_info;
 
+#define AZ_IOT_ADU_MAX_COMPATIBILITY_PROPERTIES 5
+
   typedef struct az_iot_adu_custom_property
   {
     const char* name;
@@ -323,6 +325,18 @@ extern "C"
    * the client DEEP-COPIES them into its cache buffer at init() and on
    * update_device_properties(). After those calls return, the application MAY
    * mutate or free this struct and the arrays/strings it points to.
+   *
+   * Managed ADUv2 clients require 1-5 compatibility properties in total:
+   * non-NULL manufacturer/model each count as one, plus custom_properties_count.
+   * Names must be nonempty and unique across the emitted properties; values
+   * may be empty but not NULL. An installed update ID is either entirely NULL
+   * or a complete, nonempty provider/name/version triple.
+   *
+   * The managed snapshot supports 256 bytes of compatibility strings (including
+   * custom names and every NUL terminator) and 192 bytes of installed-ID strings.
+   * These are inherited SDK storage capacities, not protocol byte limits.
+   * The channel also checks the escaped request against its body capacity.
+   * The standalone report formatter retains its separate legacy contract.
    */
   typedef struct az_iot_adu_device_properties
   {
@@ -335,8 +349,9 @@ extern "C"
 
 /* Default size (bytes) for the caller-owned device-properties cache buffer set
  * in az_iot_adu_client_config_options. Override before including if your device
- * properties (manufacturer/model/update-id/custom props) are larger, or size a
- * buffer exactly with az_iot_adu_device_props_buffer_size(). */
+ * properties need more cache space, or size a buffer exactly with
+ * az_iot_adu_device_props_buffer_size(). This does not increase protocol or
+ * channel limits. The buffer stores strings only; no alignment is required. */
 #ifndef AZ_IOT_ADU_DEVICE_PROPS_BUFFER_SIZE
 #define AZ_IOT_ADU_DEVICE_PROPS_BUFFER_SIZE 512
 #endif
@@ -373,10 +388,11 @@ extern "C"
 #define AZ_IOT_ADU_DEVICE_PROPS_STORAGE(name) uint8_t name[AZ_IOT_ADU_DEVICE_PROPS_BUFFER_SIZE]
 
   /* Returns the exact number of bytes az_iot_adu_client_initialize() needs in
-   * device_props_buffer to cache `device_props` (a az_iot_adu_device_properties
-   * header plus the packed NUL-terminated strings). Use it to size the buffer
+   * device_props_buffer to cache `device_props` (packed NUL-terminated strings;
+   * descriptors live in the client). Use it to size the buffer
    * precisely instead of the AZ_IOT_ADU_DEVICE_PROPS_BUFFER_SIZE default. Returns
-   * 0 if device_props is NULL. */
+   * 0 if device_props is NULL, invalid, or exceeds the managed snapshot limits.
+   * The channel may additionally reject an oversized escaped request. */
   AZ_NODISCARD size_t
   az_iot_adu_device_props_buffer_size(const az_iot_adu_device_properties* device_props);
 
@@ -732,6 +748,8 @@ extern "C"
       /* Client-owned device-properties cache (deep copy of caller's struct). */
       uint8_t* device_props_buffer;
       size_t device_props_buffer_size;
+      az_iot_adu_device_properties device_props;
+      az_iot_adu_custom_property custom_props[AZ_IOT_ADU_MAX_COMPATIBILITY_PROPERTIES];
       bool device_props_report_pending;
 
       /* Which fetch the application asked for and the channel has not yet
@@ -762,17 +780,6 @@ extern "C"
        * client re-arms itself after a retryable verdict keeps the caller's
        * policy instead of silently acquiring a new one. */
       uint32_t pending_fetch_timeout_ms;
-
-      /* Upstream-shaped view of the cached custom properties (az_span arrays
-       * over the packed strings in device_props_buffer), handed to the
-       * agent-state formatter at report time. */
-      az_iot_adu_device_custom_properties custom_props_view;
-
-      /* Serialized installed-update-id, the JSON object the ADU service
-       * expects in the reported `installedUpdateId` field, built once at
-       * initialize time from the caller's update id. */
-      char update_id_json[128];
-      size_t update_id_json_len;
 
       /* The update id that was actually applied, captured BEFORE the return to
        * Idle clears the manifest. A successful report carries this, because
@@ -847,9 +854,11 @@ extern "C"
    *     (DPS id scope, registration id, credential) are set at init time.
    *   options: configuration (hooks, crypto, trust store, device properties and
    *     the caller-owned cache); see az_iot_adu_client_config_options. Returns
-   *     AZ_IOT_ERR_INVALID_ARG if any required field is NULL,
+   *     AZ_IOT_ERR_INVALID_ARG if any required field is NULL or device properties
+   *     are malformed (including zero compatibility properties),
    *     AZ_IOT_ERR_NOT_ENOUGH_SPACE if root_key_count exceeds
-   *     AZ_IOT_ADU_MAX_ROOT_KEYS or the buffer is too small for device_props.
+   *     AZ_IOT_ADU_MAX_ROOT_KEYS, properties exceed the managed count/storage
+   *     limits, or the cache/request buffer is too small.
    *
    * NOTE: named *_initialize (not *_init) to avoid colliding with
    * azure-sdk-for-c's az_iot_adu_client_init(), which is visible here because the
@@ -1022,7 +1031,9 @@ extern "C"
    * device_props into the client cache and sets a pending flag; the NEXT
    * do_work() publishes. Multiple calls coalesce into a single report. After this
    * returns, the caller MAY mutate or free device_props. Returns
-   * AZ_IOT_ERR_NOT_ENOUGH_SPACE if the cache buffer is too small.
+   * AZ_IOT_ERR_INVALID_ARG for malformed properties and AZ_IOT_ERR_NOT_ENOUGH_SPACE
+   * if the cache, managed snapshot, property count, or request capacity is exceeded.
+   * On failure the previous properties and pending work are unchanged.
    *
    * Single-threaded contract: MUST be called on the do_work thread or be
    * externally serialized with do_work().

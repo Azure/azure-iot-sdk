@@ -16,6 +16,7 @@ add_library(az_iot_core
     core/message.c
     core/certificate_provider_pem.c
     features/adu/adu_client.c
+    features/adu/adu_device_properties.c
     features/adu/adu_root_keys_microsoft.c
     features/adu/adu_report.c
     features/adu/adu_channel_dps.c
@@ -86,4 +87,3 @@ target_include_directories(az_iot_gen2 PRIVATE
 target_link_libraries(az_iot_gen2 PUBLIC az_iot_core)
 az_iot_apply_warnings(az_iot_gen2)
 az_iot_apply_coverage(az_iot_gen2)
-

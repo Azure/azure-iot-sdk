@@ -58,177 +58,41 @@ typedef char az_iot_adu_channel_storage_is_large_enough
 /* ------------------------------------------------------------------------- */
 /* device-properties cache                                                   */
 /* ------------------------------------------------------------------------- */
-/*
- * Layout inside the caller-provided device_props_buffer:
- *   [ az_iot_adu_device_properties header ][ packed NUL-terminated strings ]
- * The header's pointers are rebased to point into the packed-string region, so
- * the cache is fully self-contained and the caller's original struct/strings
- * can be freed after the copy.
- *
- * Caches manufacturer, model, installed_update_id, and any custom properties
- * (packed as NUL-terminated strings, with an upstream-shaped az_span view built
- * over them for the agent-state formatter).
- */
 size_t az_iot_adu_device_props_buffer_size(const az_iot_adu_device_properties* device_props)
 {
-  if (device_props == NULL)
-  {
-    return 0;
-  }
-  /* Mirrors cache_device_properties()'s packing: the header plus each
-   * non-NULL NUL-terminated string. Keep the two in sync. */
-  size_t n = sizeof(az_iot_adu_device_properties);
-#define ADU_DP_ADD(s)      \
-  do                       \
-  {                        \
-    if ((s) != NULL)       \
-      n += strlen(s) + 1u; \
-  } while (0)
-  ADU_DP_ADD(device_props->manufacturer);
-  ADU_DP_ADD(device_props->model);
-  ADU_DP_ADD(device_props->installed_update_id.provider);
-  ADU_DP_ADD(device_props->installed_update_id.name);
-  ADU_DP_ADD(device_props->installed_update_id.version);
-  if (device_props->custom_properties != NULL)
-  {
-    for (size_t i = 0; i < device_props->custom_properties_count; ++i)
-    {
-      ADU_DP_ADD(device_props->custom_properties[i].name);
-      ADU_DP_ADD(device_props->custom_properties[i].value);
-    }
-  }
-#undef ADU_DP_ADD
-  return n;
+  az_iot_adu_device_properties_snapshot snapshot;
+  return az_iot_adu__prepare_device_properties(device_props, &snapshot) == AZ_IOT_OK
+      ? snapshot.strings_size
+      : 0;
 }
 
-static az_iot_result cache_device_properties(
-    az_iot_adu_client_t* client,
-    const az_iot_adu_device_properties* src)
+static az_iot_result prepare_device_properties_cache(
+    const az_iot_adu_client_t* client,
+    const az_iot_adu_device_properties* src,
+    az_iot_adu_device_properties_snapshot* snapshot)
 {
-  if (src == NULL)
+  az_iot_result r = az_iot_adu__prepare_device_properties(src, snapshot);
+  if (r != AZ_IOT_OK)
   {
-    return AZ_IOT_ERR_INVALID_ARG;
+    return r;
   }
-
-  uint8_t* buf = ADU_I(client).device_props_buffer;
-  size_t cap = ADU_I(client).device_props_buffer_size;
-  if (buf == NULL || cap < sizeof(az_iot_adu_device_properties))
+  if (ADU_I(client).device_props_buffer == NULL
+      || ADU_I(client).device_props_buffer_size < snapshot->strings_size)
   {
     return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
   }
-
-  az_iot_adu_device_properties* hdr = (az_iot_adu_device_properties*)(void*)buf;
-  char* strings = (char*)(buf + sizeof(*hdr));
-  char* const strings_end = (char*)(buf + cap);
-
-  memset(hdr, 0, sizeof(*hdr));
-  hdr->custom_properties = NULL;
-  hdr->custom_properties_count = 0;
-  memset(&ADU_I(client).custom_props_view, 0, sizeof(ADU_I(client).custom_props_view));
-
-  /* Copy a NUL-terminated string into the packed region, advancing the
-   * cursor; returns the stored pointer (or NULL for a NULL source). */
-  struct pack_ctx
-  {
-    char* cur;
-    char* end;
-    bool ok;
-  } pc = { strings, strings_end, true };
-/* Inline helper via a small lambda-style macro to avoid a separate fn. */
-#define PACK_STR(dst, s)                  \
-  do                                      \
-  {                                       \
-    if ((s) == NULL)                      \
-    {                                     \
-      (dst) = NULL;                       \
-      break;                              \
-    }                                     \
-    size_t _len = strlen(s) + 1;          \
-    if ((size_t)(pc.end - pc.cur) < _len) \
-    {                                     \
-      pc.ok = false;                      \
-      break;                              \
-    }                                     \
-    memcpy(pc.cur, (s), _len);            \
-    (dst) = pc.cur;                       \
-    pc.cur += _len;                       \
-  } while (0)
-
-  PACK_STR(hdr->manufacturer, src->manufacturer);
-  PACK_STR(hdr->model, src->model);
-  PACK_STR(hdr->installed_update_id.provider, src->installed_update_id.provider);
-  PACK_STR(hdr->installed_update_id.name, src->installed_update_id.name);
-  PACK_STR(hdr->installed_update_id.version, src->installed_update_id.version);
-
-  /* Pack custom properties (clamped to the upstream array capacity) and build
-   * the az_span view the formatter consumes. */
-  if (pc.ok && src->custom_properties != NULL && src->custom_properties_count > 0)
-  {
-    const size_t max_cp = sizeof(ADU_I(client).custom_props_view.names)
-        / sizeof(ADU_I(client).custom_props_view.names[0]);
-    if (src->custom_properties_count > max_cp)
-    {
-      memset(hdr, 0, sizeof(*hdr));
-      return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
-    }
-    for (size_t i = 0; i < src->custom_properties_count && pc.ok; ++i)
-    {
-      char* nm = NULL;
-      char* vl = NULL;
-      PACK_STR(nm, src->custom_properties[i].name);
-      PACK_STR(vl, src->custom_properties[i].value);
-      if (!pc.ok || nm == NULL || vl == NULL)
-      {
-        pc.ok = false;
-        break;
-      }
-      ADU_I(client).custom_props_view.names[i] = az_span_create_from_str(nm);
-      ADU_I(client).custom_props_view.values[i] = az_span_create_from_str(vl);
-    }
-    if (pc.ok)
-    {
-      ADU_I(client).custom_props_view.count = (int32_t)src->custom_properties_count;
-    }
-  }
-
-#undef PACK_STR
-
-  if (!pc.ok)
-  {
-    memset(hdr, 0, sizeof(*hdr));
-    memset(&ADU_I(client).custom_props_view, 0, sizeof(ADU_I(client).custom_props_view));
-    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
-  }
-
-  /* Build the serialized installed-update-id JSON object the ADU service
-   * expects ({"provider":..,"name":..,"version":..}). Reported as the
-   * device's installedUpdateId via the upstream agent-state payload. */
-  {
-    const char* prov = src->installed_update_id.provider ? src->installed_update_id.provider : "";
-    const char* name = src->installed_update_id.name ? src->installed_update_id.name : "";
-    const char* ver = src->installed_update_id.version ? src->installed_update_id.version : "";
-    const char* update_id_parts[]
-        = { "{\"provider\":\"", prov, "\",\"name\":\"", name, "\",\"version\":\"", ver, "\"}" };
-    if (az_iot_span_writer_build_str(
-            AZ_SPAN_FROM_BUFFER(ADU_I(client).update_id_json),
-            &ADU_I(client).update_id_json_len,
-            update_id_parts,
-            7)
-        != AZ_IOT_OK)
-    {
-      memset(hdr, 0, sizeof(*hdr));
-      return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
-    }
-  }
-
   return AZ_IOT_OK;
 }
 
-az_iot_result az_iot_adu__cache_device_properties(
+static void commit_device_properties_cache(
     az_iot_adu_client_t* client,
-    const az_iot_adu_device_properties* device_props)
+    const az_iot_adu_device_properties_snapshot* snapshot)
 {
-  return cache_device_properties(client, device_props);
+  az_iot_adu__commit_device_properties(
+      snapshot,
+      &ADU_I(client).device_props,
+      ADU_I(client).custom_props,
+      (char*)ADU_I(client).device_props_buffer);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -1685,12 +1549,14 @@ static az_iot_result adu_client_init_core(
     return AZ_IOT_ERR_INTERNAL;
   }
 
-  az_iot_result r = cache_device_properties(client, options->device_props);
+  az_iot_adu_device_properties_snapshot snapshot;
+  az_iot_result r = prepare_device_properties_cache(client, options->device_props, &snapshot);
   if (r != AZ_IOT_OK)
   {
     memset(client, 0, sizeof(*client));
     return r;
   }
+  commit_device_properties_cache(client, &snapshot);
 
   r = channel->vtable->open(channel->ctx, on_channel_update, on_channel_result, client);
   if (r != AZ_IOT_OK)
@@ -3089,7 +2955,8 @@ az_iot_result az_iot_adu_client_update_device_properties(
     return AZ_IOT_ERR_DETACHED;
   }
 
-  az_iot_result r = cache_device_properties(client, device_props);
+  az_iot_adu_device_properties_snapshot snapshot;
+  az_iot_result r = prepare_device_properties_cache(client, device_props, &snapshot);
   if (r != AZ_IOT_OK)
   {
     return r;
@@ -3101,13 +2968,14 @@ az_iot_result az_iot_adu_client_update_device_properties(
       && ADU_I(client).channel.vtable->set_device_properties != NULL)
   {
     r = ADU_I(client).channel.vtable->set_device_properties(
-        ADU_I(client).channel.ctx, device_props);
+        ADU_I(client).channel.ctx, &snapshot.properties);
     if (r != AZ_IOT_OK)
     {
       return r;
     }
   }
 
+  commit_device_properties_cache(client, &snapshot);
   ADU_I(client).device_props_report_pending = true;
   return AZ_IOT_OK;
 }

@@ -819,11 +819,14 @@ static void test_report_state_preserves_canonical_result(void** state)
   client._internal.active_workflow_valid = true;
   memcpy(client._internal.active_workflow_id, "workflow", 8);
   client._internal.active_workflow_id_len = 8;
-  az_iot_adu_device_properties cached = { 0 };
-  cached.installed_update_id.provider = "old-provider";
-  cached.installed_update_id.name = "old-name";
-  cached.installed_update_id.version = "old-version";
-  client._internal.device_props_buffer = (uint8_t*)&cached;
+  /* The committed cache is _internal.device_props; device_props_buffer only
+   * holds its packed strings and just has to be present for the fallback. */
+  uint8_t cached_strings[1] = { 0 };
+  az_iot_adu_device_properties* cached = &client._internal.device_props;
+  cached->installed_update_id.provider = "old-provider";
+  cached->installed_update_id.name = "old-name";
+  cached->installed_update_id.version = "old-version";
+  client._internal.device_props_buffer = cached_strings;
   const az_iot_adu_report_update_id old = { "old-provider", "old-name", "old-version" };
   client._internal.applied_update_id.provider = "new-provider";
   client._internal.applied_update_id.name = "new-name";
@@ -859,8 +862,8 @@ static void test_report_state_preserves_canonical_result(void** state)
   client._internal.device_props_buffer = NULL;
   capture.expected_installed = NULL;
   assert_int_equal(az_iot_adu__report_state(&client), AZ_IOT_ERR_BUSY);
-  client._internal.device_props_buffer = (uint8_t*)&cached;
-  cached.installed_update_id.name = NULL;
+  client._internal.device_props_buffer = cached_strings;
+  cached->installed_update_id.name = NULL;
   assert_int_equal(az_iot_adu__report_state(&client), AZ_IOT_ERR_BUSY);
 }
 
