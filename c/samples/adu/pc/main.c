@@ -490,6 +490,16 @@ int main(void)
         adu_state_name(az_iot_adu_client_get_state(&st.adu_client)));
   }
 
+  /* Ask for a day-0 onboarding update. Nothing is fetched unless the
+   * application asks: only it knows whether it has a device record yet, and
+   * the onboarding route is the one that needs none. A device that had already
+   * provisioned would call az_iot_adu_client_request_update() instead. */
+  if (az_iot_adu_client_request_onboarding_update(&st.adu_client) != AZ_IOT_OK)
+  {
+    sample_state_destroy(&st);
+    return 1;
+  }
+
   /* Open (internally provisions via DPS then connects to the assigned hub). */
   if (az_iot_connection_client_open(&st.connection_client) != AZ_IOT_OK)
   {

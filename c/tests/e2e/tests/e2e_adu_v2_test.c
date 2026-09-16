@@ -278,7 +278,9 @@ static void onboarding_check_runs_before_registration(void** state)
   wait_for_hold(&fx);
   assert_int_equal(fx.conn.dps_phase, AZ_IOT_DPS_PHASE_HOLD);
 
-  assert_int_equal(fx.channel.vtable->request_update(fx.channel.ctx), AZ_IOT_OK);
+  assert_int_equal(
+      fx.channel.vtable->request_update(fx.channel.ctx, AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE),
+      AZ_IOT_OK);
   wait_for_result(&fx, 1);
 
   /* A device with nothing deployed to it is a success with no update. */
@@ -320,7 +322,9 @@ static void the_hold_is_released_and_registration_is_answered(void** state)
   fixture_open(&fx, e2e_registration_id());
 
   wait_for_hold(&fx);
-  assert_int_equal(fx.channel.vtable->request_update(fx.channel.ctx), AZ_IOT_OK);
+  assert_int_equal(
+      fx.channel.vtable->request_update(fx.channel.ctx, AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE),
+      AZ_IOT_OK);
   wait_for_result(&fx, 1);
 
   /* The hold is released by the verdict and the pump publishes the
@@ -379,7 +383,9 @@ static void etags_are_issued_stored_and_survive_the_session(void** state)
   fixture_open(&fx, e2e_registration_id());
 
   wait_for_hold(&fx);
-  assert_int_equal(fx.channel.vtable->request_update(fx.channel.ctx), AZ_IOT_OK);
+  assert_int_equal(
+      fx.channel.vtable->request_update(fx.channel.ctx, AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE),
+      AZ_IOT_OK);
   wait_for_result(&fx, 1);
   assert_int_equal(fx.last_result, AZ_IOT_OK);
 
@@ -403,7 +409,9 @@ static void etags_are_issued_stored_and_survive_the_session(void** state)
    * it is about to carry the registration and could not answer us again. The
    * refusal is the contract -- publishing here would be accepted by the service
    * and the reply lost. */
-  assert_int_equal(fx.channel.vtable->request_update(fx.channel.ctx), AZ_IOT_ERR_NOT_CONNECTED);
+  assert_int_equal(
+      fx.channel.vtable->request_update(fx.channel.ctx, AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE),
+      AZ_IOT_ERR_NOT_CONNECTED);
 
   /* The stored ETags survive the session being spent, which is what a later
    * session would send. */

@@ -1255,22 +1255,44 @@ static void on_channel_result(
       ADU_I(client).device_props_report_pending = true;
       break;
     case AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE:
+      ADU_I(client).pending_fetch = ADU_FETCH_ONBOARDING;
+      break;
     case AZ_IOT_ADU_OP_GET_UPDATE:
-      /* Both update-check operations are re-driven by the same flag. */
-      ADU_I(client).initial_get_pending = true;
+      /* Re-arm the route that failed, not a default: the application asked for
+       * this one and a retry on the other would query the wrong thing. */
+      ADU_I(client).pending_fetch = ADU_FETCH_REGULAR;
       break;
   }
 }
 
-/* Ask the channel to check for an update. Returns the channel's result so the
- * caller can leave the pending flag set and retry on a later do_work tick. */
-static az_iot_result channel_request_update(az_iot_adu_client_t* client)
+/* Ask the channel to check for an update on `operation`. Returns the channel's
+ * result so the caller can leave pending_fetch set and retry on a later tick. */
+static az_iot_result channel_request_update(
+    az_iot_adu_client_t* client,
+    az_iot_adu_operation operation)
 {
   if (ADU_I(client).channel.vtable == NULL || ADU_I(client).channel.vtable->request_update == NULL)
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
-  return ADU_I(client).channel.vtable->request_update(ADU_I(client).channel.ctx);
+  return ADU_I(client).channel.vtable->request_update(ADU_I(client).channel.ctx, operation);
+}
+
+/* Issue whatever fetch is pending, clearing it only once the channel accepts.
+ * No-op when nothing was requested. */
+static void drive_pending_fetch(az_iot_adu_client_t* client)
+{
+  if (ADU_I(client).pending_fetch == ADU_FETCH_NONE)
+  {
+    return;
+  }
+  az_iot_adu_operation operation = (ADU_I(client).pending_fetch == ADU_FETCH_ONBOARDING)
+      ? AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE
+      : AZ_IOT_ADU_OP_GET_UPDATE;
+  if (channel_request_update(client, operation) == AZ_IOT_OK)
+  {
+    ADU_I(client).pending_fetch = ADU_FETCH_NONE;
+  }
 }
 
 /* ------------------------------------------------------------------------- */
@@ -1347,9 +1369,11 @@ static az_iot_result adu_client_init_core(
 
   /* Report the initial Idle agent state + installed update id on startup. */
   ADU_I(client).device_props_report_pending = true;
-  /* And proactively ask the channel for an update so a deployment that became
-   * available while we were offline is still picked up. */
-  ADU_I(client).initial_get_pending = true;
+  /* No update check is issued here. Only the application knows which route it
+   * needs -- onboarding before it has a device record, regular after -- so it
+   * asks, with az_iot_adu_client_request_onboarding_update() or
+   * az_iot_adu_client_request_update(). */
+  ADU_I(client).pending_fetch = ADU_FETCH_NONE;
   return AZ_IOT_OK;
 }
 
@@ -1824,24 +1848,18 @@ az_iot_result az_iot_adu_client_do_work(az_iot_adu_client_t* client)
     {
       ADU_I(client).device_props_report_pending = false;
     }
-    /* Piggyback the initial update check on the same startup tick so a
+    /* Piggyback a requested update check on the same startup tick so a
      * deployment already waiting is consumed without needing a fresh
-     * delivery. Clear the flag only once the request is actually issued (the
-     * channel may not be ready yet). */
-    if (ADU_I(client).initial_get_pending && channel_request_update(client) == AZ_IOT_OK)
-    {
-      ADU_I(client).initial_get_pending = false;
-    }
+     * delivery. Cleared only once the request is actually issued (the channel
+     * may not be ready yet). */
+    drive_pending_fetch(client);
     return AZ_IOT_OK;
   }
 
-  /* Retry the initial update check if it could not be issued at startup (e.g.
-   * the channel was not ready). Self-heals across do_work iterations; does
-   * not preempt state-machine progress. */
-  if (ADU_I(client).initial_get_pending && channel_request_update(client) == AZ_IOT_OK)
-  {
-    ADU_I(client).initial_get_pending = false;
-  }
+  /* Retry a requested update check that could not be issued earlier (e.g. the
+   * channel was not ready, or the service rejected it retryably). Self-heals
+   * across do_work iterations; does not preempt state-machine progress. */
+  drive_pending_fetch(client);
 
   /* Cancellation at a phase boundary returns immediately to Idle. */
   if (ADU_I(client).cancel_requested && ADU_I(client).state != AZ_IOT_ADU_STATE_IDLE)
@@ -2091,6 +2109,26 @@ az_iot_adu_state az_iot_adu_client_get_state(const az_iot_adu_client_t* client)
     return AZ_IOT_ADU_STATE_IDLE;
   }
   return ADU_I(client).state;
+}
+
+az_iot_result az_iot_adu_client_request_onboarding_update(az_iot_adu_client_t* client)
+{
+  if (client == NULL)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  ADU_I(client).pending_fetch = ADU_FETCH_ONBOARDING;
+  return AZ_IOT_OK;
+}
+
+az_iot_result az_iot_adu_client_request_update(az_iot_adu_client_t* client)
+{
+  if (client == NULL)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  ADU_I(client).pending_fetch = ADU_FETCH_REGULAR;
+  return AZ_IOT_OK;
 }
 
 az_iot_result az_iot_adu_client_update_device_properties(
