@@ -323,10 +323,17 @@ extern "C"
    *
    * The SDK does not allocate, so a reported patch needs somewhere to be
    * wrapped in its protobuf envelope (the same pattern as
-   * `options.csr_payload_buffer`). Size it to your largest patch plus
-   * AZ_IOT_GEN2_TWIN_ENCODE_OVERHEAD. The buffer is borrowed, not copied: it
-   * must outlive the client, and its contents are only meaningful for the
-   * duration of a patch call.
+   * `options.csr_payload_buffer`).
+   *
+   * Size it to **twice** your largest patch plus
+   * AZ_IOT_GEN2_TWIN_ENCODE_OVERHEAD: the buffer holds a copy of your payload
+   * as well as the framed message, so a write that goes unanswered can be
+   * re-framed with a newer if_match long after your own buffer is gone.
+   *
+   * The buffer is borrowed, not copied. It must outlive the client, and the SDK
+   * owns its contents from the first patch until that patch completes -- which,
+   * with the retry schedule, can be minutes. Do not read or write it while a
+   * patch is outstanding.
    *
    * @return AZ_IOT_ERR_NOT_ENOUGH_SPACE when @p buffer_len is smaller than the
    *         framing alone requires.

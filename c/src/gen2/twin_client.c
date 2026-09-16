@@ -404,17 +404,30 @@ static void resync_cancel_get(az_iot_gen2_twin_client* t)
 /* Enter the resyncing state: the desired-patch sequence has a gap, so the
  * device cannot apply what it just received on top of what it holds. Ask for a
  * snapshot of the desired section and buffer whatever keeps arriving until it
- * lands. */
-static void resync_begin(az_iot_gen2_twin_client* t)
+ * lands.
+ *
+ * Returns false when the snapshot could not be requested -- every pending slot
+ * busy, or the publish refused. The resync state is NOT entered in that case:
+ * with no GET on its way nothing would ever complete it, and the client would
+ * buffer or drop desired patches forever. Staying out of it means the next
+ * patch tries again, and the gap is still there to be noticed. */
+static bool resync_begin(az_iot_gen2_twin_client* t)
 {
-  TI(t).resyncing = true;
-  TI(t).resync_used = 0;
-  TI(t).resync_count = 0;
-
   az_iot_gen2_twin_get_options opts;
   memset(&opts, 0, sizeof(opts));
   opts.sections = AZ_IOT_GEN2_TWIN_SECTIONS_DESIRED;
-  (void)issue_get(t, &opts, NULL, NULL, true);
+
+  resync_reset(t);
+  if (issue_get(t, &opts, NULL, NULL, true) != AZ_IOT_OK)
+  {
+    AZ_IOT_LOG_WARN(
+        "gen2_twin: could not request the desired snapshot; staying out of resync so the next "
+        "patch retries");
+    return false;
+  }
+
+  TI(t).resyncing = true;
+  return true;
 }
 
 /* Leave the resyncing state by applying a snapshot at @p version, then
@@ -450,8 +463,9 @@ static void resync_complete(
 /* decoding                                                                  */
 /* ------------------------------------------------------------------------- */
 
-/* Decode a Section: { 1 uint64 version, 2 bytes payload }. */
-static void decode_section(const uint8_t* buf, size_t len, az_iot_gen2_twin_section* out)
+/* Decode a Section: { 1 uint64 version, 2 bytes payload }. Returns false on a
+ * malformed or truncated encoding. */
+static bool decode_section(const uint8_t* buf, size_t len, az_iot_gen2_twin_section* out)
 {
   size_t pos = 0;
   while (buf && pos < len)
@@ -460,28 +474,29 @@ static void decode_section(const uint8_t* buf, size_t len, az_iot_gen2_twin_sect
     uint8_t wire = 0;
     if (!az_iot_proto3_read_tag(buf, len, &pos, &field, &wire))
     {
-      return;
+      return false;
     }
 
     if (field == TWIN_F_SECTION_VERSION && wire == AZ_IOT_PROTO3_WIRE_VARINT)
     {
       if (!az_iot_proto3_read_varint(buf, len, &pos, &out->version))
       {
-        return;
+        return false;
       }
     }
     else if (field == TWIN_F_SECTION_PAYLOAD && wire == AZ_IOT_PROTO3_WIRE_LEN)
     {
       if (!az_iot_proto3_read_bytes(buf, len, &pos, &out->payload, &out->payload_len))
       {
-        return;
+        return false;
       }
     }
     else if (!az_iot_proto3_skip_field(buf, len, &pos, wire))
     {
-      return;
+      return false;
     }
   }
+  return true;
 }
 
 /* twin-push -- TwinPush { 1 Section desired, 2 Section reported }. Either
@@ -495,12 +510,14 @@ static void on_twin_push(az_iot_gen2_twin_client* t, const az_iot_mqtt_message* 
   const uint8_t* buf = msg->payload;
   size_t len = msg->payload_len;
   size_t pos = 0;
-  while (buf && pos < len)
+  bool ok = true;
+  while (ok && buf && pos < len)
   {
     uint32_t field = 0;
     uint8_t wire = 0;
     if (!az_iot_proto3_read_tag(buf, len, &pos, &field, &wire))
     {
+      ok = false;
       break;
     }
 
@@ -509,16 +526,24 @@ static void on_twin_push(az_iot_gen2_twin_client* t, const az_iot_mqtt_message* 
     {
       const uint8_t* sec = NULL;
       size_t sec_len = 0;
-      if (!az_iot_proto3_read_bytes(buf, len, &pos, &sec, &sec_len))
-      {
-        break;
-      }
-      decode_section(sec, sec_len, (field == TWIN_F_PUSH_DESIRED) ? &twin.desired : &twin.reported);
+      ok = az_iot_proto3_read_bytes(buf, len, &pos, &sec, &sec_len)
+          && decode_section(
+              sec, sec_len, (field == TWIN_F_PUSH_DESIRED) ? &twin.desired : &twin.reported);
     }
-    else if (!az_iot_proto3_skip_field(buf, len, &pos, wire))
+    else
     {
-      break;
+      ok = az_iot_proto3_skip_field(buf, len, &pos, wire);
     }
+  }
+
+  /* A message that did not decode cleanly carries partial state, and this one
+   * is authoritative: adopting half of it would move the versions the device
+   * anchors on to something the service never said. Drop it and let the
+   * defensive timeout recover. */
+  if (!ok)
+  {
+    AZ_IOT_LOG_WARN("gen2_twin: dropping a malformed twin-push");
+    return;
   }
 
   /* A push carries the authoritative state, so it also advances the versions
@@ -575,34 +600,39 @@ static void on_desired_patch(az_iot_gen2_twin_client* t, const az_iot_mqtt_messa
   const uint8_t* buf = msg->payload;
   size_t len = msg->payload_len;
   size_t pos = 0;
-  while (buf && pos < len)
+  bool ok = true;
+  while (ok && buf && pos < len)
   {
     uint32_t field = 0;
     uint8_t wire = 0;
     if (!az_iot_proto3_read_tag(buf, len, &pos, &field, &wire))
     {
+      ok = false;
       break;
     }
 
     if (field == TWIN_F_PATCH_VERSION && wire == AZ_IOT_PROTO3_WIRE_VARINT)
     {
-      if (!az_iot_proto3_read_varint(buf, len, &pos, &version))
-      {
-        break;
-      }
+      ok = az_iot_proto3_read_varint(buf, len, &pos, &version);
     }
     else if (field == TWIN_F_PATCH_PAYLOAD && wire == AZ_IOT_PROTO3_WIRE_LEN)
     {
-      if (!az_iot_proto3_read_bytes(buf, len, &pos, &patch, &patch_len))
-      {
-        break;
-      }
-      has_payload = true;
+      ok = az_iot_proto3_read_bytes(buf, len, &pos, &patch, &patch_len);
+      has_payload = ok;
     }
-    else if (!az_iot_proto3_skip_field(buf, len, &pos, wire))
+    else
     {
-      break;
+      ok = az_iot_proto3_skip_field(buf, len, &pos, wire);
     }
+  }
+
+  /* A patch that did not decode cleanly cannot be applied or ordered: its
+   * version may be missing and its payload truncated. Dropping it leaves a gap,
+   * which the next in-sequence patch turns into a resync. */
+  if (!ok)
+  {
+    AZ_IOT_LOG_WARN("gen2_twin: dropping a malformed desired-patch");
+    return;
   }
 
   if (version > TI(t).desired_auth)
@@ -649,7 +679,7 @@ static void on_desired_patch(az_iot_gen2_twin_client* t, const az_iot_mqtt_messa
        * as new as the highest patch that was buffered, so it subsumes
        * everything dropped. */
       resync_cancel_get(t);
-      resync_begin(t);
+      (void)resync_begin(t);
     }
     return;
   }
@@ -657,7 +687,7 @@ static void on_desired_patch(az_iot_gen2_twin_client* t, const az_iot_mqtt_messa
   if (!has_payload)
   {
     /* A probe ahead of the applied version reveals a patch that never arrived. */
-    resync_begin(t);
+    (void)resync_begin(t);
     return;
   }
 
@@ -668,9 +698,14 @@ static void on_desired_patch(az_iot_gen2_twin_client* t, const az_iot_mqtt_messa
     return;
   }
 
-  /* A gap: seed the buffer with this patch, then resynchronize. */
-  resync_begin(t);
-  (void)resync_buffer_patch(t, version, patch, patch_len);
+  /* A gap: resynchronize, and seed the buffer with this patch so it replays
+   * after the snapshot. If the snapshot could not be requested there is no
+   * resync to buffer for, and the patch is dropped rather than applied out of
+   * order -- the gap remains, so the next patch tries again. */
+  if (resync_begin(t))
+  {
+    (void)resync_buffer_patch(t, version, patch, patch_len);
+  }
 }
 
 /* get-response -- TwinGetResponse { 1 desired_version, 2 reported_version,
@@ -685,16 +720,17 @@ static void on_get_response(az_iot_gen2_twin_client* t, int idx, const az_iot_mq
   const uint8_t* buf = msg->payload;
   size_t len = msg->payload_len;
   size_t pos = 0;
-  while (buf && pos < len)
+  bool ok = true;
+  while (ok && buf && pos < len)
   {
     uint32_t field = 0;
     uint8_t wire = 0;
     if (!az_iot_proto3_read_tag(buf, len, &pos, &field, &wire))
     {
+      ok = false;
       break;
     }
 
-    bool ok = true;
     if (field == TWIN_F_GET_RESP_DESIRED_VERSION && wire == AZ_IOT_PROTO3_WIRE_VARINT)
     {
       ok = az_iot_proto3_read_varint(buf, len, &pos, &twin.desired.version);
@@ -722,6 +758,16 @@ static void on_get_response(az_iot_gen2_twin_client* t, int idx, const az_iot_mq
     {
       break;
     }
+  }
+
+  /* A response that did not decode cleanly is not an answer: releasing the slot
+   * as a protocol error tells the caller so, instead of handing them half a
+   * twin and moving the tracked versions to match it. */
+  if (!ok)
+  {
+    AZ_IOT_LOG_WARN("gen2_twin: dropping a malformed get-response");
+    release_pending(t, idx, AZ_IOT_ERR_PROTOCOL, NULL, NULL);
+    return;
   }
 
   if (twin.desired.version)
@@ -756,35 +802,41 @@ static void on_patch_response(az_iot_gen2_twin_client* t, int idx, const az_iot_
   const uint8_t* buf = msg->payload;
   size_t len = msg->payload_len;
   size_t pos = 0;
-  while (buf && pos < len)
+  bool ok = true;
+  while (ok && buf && pos < len)
   {
     uint32_t field = 0;
     uint8_t wire = 0;
     if (!az_iot_proto3_read_tag(buf, len, &pos, &field, &wire))
     {
+      ok = false;
       break;
     }
 
     if (field == TWIN_F_PATCH_RESP_RESULT && wire == AZ_IOT_PROTO3_WIRE_VARINT)
     {
       uint64_t v = 0;
-      if (!az_iot_proto3_read_varint(buf, len, &pos, &v))
-      {
-        break;
-      }
+      ok = az_iot_proto3_read_varint(buf, len, &pos, &v);
       result.status = (az_iot_gen2_twin_patch_status)v;
     }
     else if (field == TWIN_F_PATCH_RESP_VERSION && wire == AZ_IOT_PROTO3_WIRE_VARINT)
     {
-      if (!az_iot_proto3_read_varint(buf, len, &pos, &result.version))
-      {
-        break;
-      }
+      ok = az_iot_proto3_read_varint(buf, len, &pos, &result.version);
     }
-    else if (!az_iot_proto3_skip_field(buf, len, &pos, wire))
+    else
     {
-      break;
+      ok = az_iot_proto3_skip_field(buf, len, &pos, wire);
     }
+  }
+
+  /* Half a verdict is not a verdict: the status may have been read and the
+   * version not, which would anchor the next write on a version the service
+   * never confirmed. */
+  if (!ok)
+  {
+    AZ_IOT_LOG_WARN("gen2_twin: dropping a malformed reported-patch-response");
+    release_pending(t, idx, AZ_IOT_ERR_PROTOCOL, NULL, NULL);
+    return;
   }
 
   if (result.version)

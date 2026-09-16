@@ -332,10 +332,6 @@ int main(void)
       (void)az_iot_connection_client_do_work(&state.connection_client, 50);
       if (state.twin_initialized && state.twin_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
       {
-        (void)az_iot_gen2_twin_client_do_work(&state.gen2_twin);
-      }
-      if (state.twin_initialized && state.twin_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
-      {
         /* Twin runs at QoS 0, so its defensive timeouts need their own tick. */
         (void)az_iot_gen2_twin_client_do_work(&state.gen2_twin);
       }
