@@ -10,7 +10,6 @@ for the full design.
 | Scenario | Provider | Sample | Notes |
 |----------|----------|--------|-------|
 | X.509 from files (no CSR) | `az_iot_certificate_provider_pem` | [../telemetry_gen1](../telemetry_gen1/main.c), [../telemetry_gen2](../telemetry_gen2/main.c) and the other feature samples | Baseline device auth (via DPS). Identical on both generations -- the provider is generation-agnostic. |
-| Direct hub connect, no DPS | `az_iot_certificate_provider_pem` | `direct_hub_gen1`, `direct_hub_gen2` | Caller-supplied hub FQDN + device cert/key. No DPS step means nothing announces the generation, so each states it at compile time via `opts.connection_profile`. |
 | DPS CSR enrollment (issued operational cert) | managed (OpenSSL) | `dps_csr_managed` | Bootstrap X.509 → CSR in DPS register → operational cert persisted. |
 | App-notified issuance (D4) | managed (OpenSSL) | `dps_csr_managed` | Uses `set_operational_cert_callback` to observe the issued chain. |
 | Runtime Hub renewal (D7) | managed (OpenSSL) | `hub_renew` | `send_csr()` two-phase renewal on a connected Classic hub. |
@@ -18,6 +17,10 @@ for the full design.
 | Non-extractable key, engine/provider stack (D8) | your own (10 lines) | `hsm_pkcs11_gen1`, `hsm_pkcs11_gen2` | Key stays in a PKCS#11 token / TPM; the provider returns a `pkcs11:` URI + provider id and the **Paho adapter signs the TLS handshake through it**. Needs OpenSSL 3.0+ and a provider for the token. The custody code is identical in both. |
 | Non-extractable key, no engine abstraction (D8) | your own | `hsm_sign_callback` | Only "sign these bytes" is available, so the provider implements the `sign()` hook and a BYO adapter drives the handshake through it. **Not a Paho path** — see below. |
 | BYO provider (TPM / HSM / secure element / OS keystore) | your own | `custom_provider_template` | Minimal template implementing the full vtable, incl. the `sign()` hook (D8) for non-extractable keys. |
+| Direct hub connect, no DPS | `az_iot_certificate_provider_pem` | `direct_hub_gen1`, `direct_hub_gen2` | **Bring-up aid, not a path to ship on.** Provisioning is how a device is meant to reach a hub; these exist for the case where you were handed an FQDN and a cert and want to test against it. |
+
+Devices are expected to reach their hub through **DPS**. Every scenario above
+uses it except the last, which is there for bring-up and diagnosis.
 
 The reusable app-owned provider `sample_cert_provider` (in `samples/common`)
 issues CSRs with **platform-native crypto** - OpenSSL 3.0+ on Linux
@@ -51,19 +54,6 @@ The CSR side of an HSM integration is still deployment-specific: start from
 working reference.
 
 ## Samples
-
-### `direct_hub_gen1` / `direct_hub_gen2`
-Direct (no DPS) connection to an IoT Hub given a hub FQDN and X.509 device
-credentials, then sends one telemetry message. Because there is no DPS step,
-nothing on the wire announces the hub generation, so each sample states it at
-compile time with `opts.connection_profile` — `AZ_IOT_CONNECTION_PROFILE_CLASSIC`
-(MQTT v3.1.1) in `_gen1`, `AZ_IOT_CONNECTION_PROFILE_MQTT_V5` for an IoT Hub Next /
-Event Grid (AEG) endpoint in `_gen2`. That is what a direct-connect deployment
-actually looks like: the hub it was handed does not change generation underneath
-it. When the generation genuinely is not known until runtime, that is DPS
-territory — see [../connection_profile_fallback](../connection_profile_fallback/main.c).
-Fill in the `SAMPLE_*` constants at the top of `main.c` or set the env vars
-below. Requires the Paho adapter.
 
 ### `custom_provider_template`
 Self-contained, no external dependencies, does not connect. A copy-paste
@@ -120,17 +110,24 @@ platform-native crypto (OpenSSL on Linux, CNG on Windows), persists the issued
 chain, and drives the same DPS CSR enrollment as `dps_csr_managed`. Copy this to
 integrate your own crypto. Requires Paho; on non-Windows also OpenSSL 3.0+.
 
+### `direct_hub_gen1` / `direct_hub_gen2`
+**Use DPS instead unless you have a specific reason not to.** A device is meant
+to learn its hub from provisioning; these two exist for bring-up and diagnosis,
+when someone has handed you a hub FQDN and a device cert and you want to check
+them in isolation. Nothing else in the tree depends on this path.
+
+Direct (no DPS) connection to an IoT Hub given a hub FQDN and X.509 device
+credentials, then sends one telemetry message. Because there is no DPS step,
+nothing on the wire announces the hub generation, so each sample states it at
+compile time with `opts.connection_profile` — `AZ_IOT_CONNECTION_PROFILE_CLASSIC`
+(MQTT v3.1.1) in `_gen1`, `AZ_IOT_CONNECTION_PROFILE_MQTT_V5` for an IoT Hub Next /
+Event Grid (AEG) endpoint in `_gen2`. A device that provisions does not need
+either constant: DPS reports the generation, and
+[../connection_profile_fallback](../connection_profile_fallback/main.c) shows how
+to read it. Fill in the `SAMPLE_*` constants at the top of `main.c` or set the
+env vars below. Requires the Paho adapter.
+
 ## Environment variables
-
-The `direct_hub_gen1` / `direct_hub_gen2` samples (no DPS) use:
-
-| Variable | Meaning |
-|----------|---------|
-| `AZ_IOT_HUB_HOSTNAME` | Direct hub FQDN |
-| `AZ_IOT_DEVICE_ID` | Device id / MQTT client id |
-| `AZ_IOT_CLIENT_CERT` | Device X.509 certificate path |
-| `AZ_IOT_CLIENT_KEY` | Device X.509 private key path |
-| `AZ_IOT_TRUSTED_CA` | Trusted CA path (optional; system store if unset) |
 
 Shared (all DPS-based connecting samples):
 
@@ -141,6 +138,17 @@ Shared (all DPS-based connecting samples):
 | `AZ_IOT_CLIENT_CERT` | Bootstrap X.509 certificate path |
 | `AZ_IOT_CLIENT_KEY` | Bootstrap X.509 private key path |
 | `AZ_IOT_TRUSTED_CA` | Trusted CA path |
+
+The `direct_hub_gen1` / `direct_hub_gen2` samples take a hub FQDN instead, and
+no DPS settings at all:
+
+| Variable | Meaning |
+|----------|---------|
+| `AZ_IOT_HUB_HOSTNAME` | Direct hub FQDN |
+| `AZ_IOT_DEVICE_ID` | Device id / MQTT client id |
+| `AZ_IOT_CLIENT_CERT` | Device X.509 certificate path |
+| `AZ_IOT_CLIENT_KEY` | Device X.509 private key path |
+| `AZ_IOT_TRUSTED_CA` | Trusted CA path (optional; system store if unset) |
 
 The `hsm_pkcs11_*` samples replace `AZ_IOT_CLIENT_KEY` with the key reference:
 

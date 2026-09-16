@@ -9,17 +9,18 @@
  * a caller-supplied hub FQDN and X.509 device credentials, then send one
  * telemetry message and close.
  *
- * This is the "I was handed a hub hostname + a device cert/key" bring-up path.
- * Unlike the DPS-based telemetry sample, no id_scope / registration_id is used:
- * the host and device id are provided directly.
+ * PREFER DPS. A device is meant to learn its hub from provisioning, and every
+ * other connecting sample does. This one is for bring-up and diagnosis: someone
+ * handed you a hub FQDN and a device cert and you want to check them in
+ * isolation. Nothing else in the tree depends on this path.
  *
  * Because there is no DPS step, nothing on the wire announces the hub
  * generation -- the application states it. Here that is
- * AZ_IOT_CONNECTION_PROFILE_MQTT_V5, fixed at compile time, which is what a
- * direct-connect deployment actually looks like: the hub it was handed does not
- * change generation underneath it. direct_hub_gen1 is the same sample against a
- * Classic hub. If the generation genuinely is not known until runtime, that is
- * DPS territory -- see samples/connection_profile_fallback.
+ * AZ_IOT_CONNECTION_PROFILE_MQTT_V5, fixed at compile time, because the
+ * hostname you were given already decided it. direct_hub_gen1 is the same
+ * sample against a Classic hub. A device that provisions needs neither
+ * constant: DPS reports the generation, and samples/connection_profile_fallback
+ * shows how to read it.
  *
  * Fill in the SAMPLE_* placeholders below, or set the matching environment
  * variables (env wins). When required values are missing the sample prints a
