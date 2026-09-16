@@ -3,25 +3,25 @@
 // information.
 
 /* SPDX-License-Identifier: MIT */
-/* c2d_receiver_gen1 - sample.
+/* direct_method_responder_gen1 - sample.
  *
- * Receive cloud-to-device messages from a Classic IoT Hub. The AEG route is a
- * separate sample, c2d_receiver_gen2.
+ * Answer direct methods on a Classic IoT Hub, from inside the handler. The AEG
+ * route is a separate sample, direct_method_responder_gen2, and it looks quite
+ * different: Classic and AEG disagree more about direct methods than about any
+ * other feature.
  *
- * Classic owns its own subscription: init() takes out
- * devices/<id>/messages/devicebound/# and every message arrives on a topic
- * built from that prefix. Properties ride in the topic, so the client has to
- * split the bag and percent-decode it before the handler sees anything -- the
- * work the gen2 client never does.
+ * Classic has no method registry and no probe. One handler receives EVERY
+ * invocation the service sends, whatever it is called, and the arguments are
+ * already on the wire by the time the device sees the name. So routing by name
+ * -- and turning down the names this device does not serve -- is the
+ * application's job, which is what on_method below is.
  *
- * The client is created before the connection opens, because
- * az_iot_gen1_c2d_client_init() records the generation it needs rather than
- * reading one off a live connection. Only the v3.1.1 factory is registered:
- * Classic speaks v3.1.1 and so does DPS, so one adapter covers both legs.
+ * It also has no idea how long the caller is willing to wait. IoT Hub never
+ * tells the device the caller's responseTimeoutInSeconds, so the SDK applies a
+ * local deadline instead; see the set_response_timeout() call in main().
  *
  * Provision via DPS, open, listen for ~60 seconds, close. DPS is handled
- * internally by the connection client when host == NULL and dps.id_scope is
- * set.
+ * internally by the connection client when host == NULL and dps.id_scope is set.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -32,21 +32,32 @@
 
 #include "sample_utils.h"
 
+#define ECHO_METHOD "echo"
+
+/* Direct-method status codes are chosen by the application; these mirror the
+ * HTTP meanings the service tooling already displays. */
+#define STATUS_OK 200
+#define STATUS_NOT_FOUND 404
+
+/* Longer than this device's slowest method, and well under the 300 s service
+ * maximum. */
+#define RESPONSE_TIMEOUT_SECONDS 60u
+
 typedef struct
 {
   sample_config config;
   az_iot_certificate_provider_pem certs;
   az_iot_connection_client connection_client;
-  az_iot_gen1_c2d_client c2d;
-  int c2d_initialized;
+  az_iot_gen1_direct_method_client methods;
+  int methods_initialized;
 } sample_state;
 
 static void sample_state_destroy(sample_state* s)
 {
-  if (s->c2d_initialized)
+  if (s->methods_initialized)
   {
-    az_iot_gen1_c2d_client_destroy(&s->c2d);
-    s->c2d_initialized = 0;
+    az_iot_gen1_direct_method_client_destroy(&s->methods);
+    s->methods_initialized = 0;
   }
   az_iot_connection_client_destroy(&s->connection_client);
   az_iot_certificate_provider_pem_destroy(&s->certs);
@@ -55,8 +66,8 @@ static void sample_state_destroy(sample_state* s)
 
 typedef struct
 {
+  sample_state* state;
   az_iot_connection_state conn_state;
-  int messages_received;
 } user_context;
 
 static void on_conn_state(const az_iot_connection_state_event* event, void* user_ctx)
@@ -65,49 +76,39 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
   ctx->conn_state = event->state;
 
   /* The device provisioned to an AEG hub, so this Classic client can never
-   * serve it. The connection faults before reporting CONNECTED rather than
-   * subscribing to a topic shape that hub does not publish. */
+   * serve it. The connection faults before reporting CONNECTED. */
   if (event->reason == AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH)
   {
-    printf("This device is assigned to an AEG hub. Run the c2d_receiver_gen2 sample instead.\n");
+    printf("This device is assigned to an AEG hub. Run the "
+           "direct_method_responder_gen2 sample instead.\n");
   }
 }
 
-static void on_c2d(const az_iot_c2d_message* msg, void* user_ctx)
+/* Every invocation lands here, including names this device has never heard of:
+ * Classic sends the arguments first and asks questions never. Answering 404 is
+ * the closest this generation gets to the METHOD_NOT_FOUND that AEG returns at
+ * probe time, and it arrives after the caller's arguments have already crossed
+ * the wire. */
+static void on_method(
+    az_iot_direct_method_request request,
+    const char* method_name,
+    const uint8_t* payload,
+    size_t payload_len,
+    void* user_ctx)
 {
   user_context* ctx = (user_context*)user_ctx;
-  ctx->messages_received++;
 
-  printf("C2D #%d: %zu bytes", ctx->messages_received, msg->payload_len);
-  if (msg->content_type)
+  if (method_name == NULL || strcmp(method_name, ECHO_METHOD) != 0)
   {
-    /* Classic has no native content type: this is the "$.ct" property, looked
-     * up out of the decoded bag and offered here so both generations read the
-     * same way. */
-    printf(" [%s]", msg->content_type);
+    printf("method '%s' is not implemented here\n", method_name ? method_name : "(null)");
+    (void)az_iot_gen1_direct_method_respond(
+        &ctx->state->methods, request, STATUS_NOT_FOUND, NULL, 0);
+    return;
   }
 
-  /* Plain text by the time it reaches here. On the wire these were percent-
-   * encoded into the topic -- "%24.mid" for "$.mid", "a%20b" for "a b" -- and
-   * the client undid all of it.
-   *
-   * The two bounds fail differently, which matters if you are sizing them. Past
-   * AZ_IOT_C2D_MAX_PROPERTIES the first few are kept and the rest dropped. But
-   * if the decoded text overruns AZ_IOT_C2D_PROPERTY_BUFFER, or any escape is
-   * malformed, the client surfaces NO properties at all rather than risk
-   * handing over a truncated key or value. Either way the message itself is
-   * still delivered, and either way there is a warning. */
-  for (size_t i = 0; i < msg->properties_count; ++i)
-  {
-    printf(
-        " %s=%s", msg->properties[i].key, msg->properties[i].value ? msg->properties[i].value : "");
-  }
-
-  if (msg->payload_len > 0 && msg->payload_len <= 256)
-  {
-    printf(" => %.*s", (int)msg->payload_len, (const char*)msg->payload);
-  }
-  printf("\n");
+  printf("method '%s' invoked, %zu byte payload\n", method_name, payload_len);
+  (void)az_iot_gen1_direct_method_respond(
+      &ctx->state->methods, request, STATUS_OK, payload, payload_len);
 }
 
 int main(void)
@@ -122,7 +123,7 @@ int main(void)
   }
 
   int rc = 1;
-  user_context user_ctx = { 0 };
+  user_context user_ctx = { .state = &state };
 
   /* Certificate provider */
   az_iot_certificate_provider_pem_options pem = az_iot_certificate_provider_pem_options_default();
@@ -160,16 +161,29 @@ int main(void)
 
   /* Before open, and before any profile is known: this declares which hub the
    * application is built for, and the connection is failed if it resolves to
-   * the other one. The subscription itself is taken out at connect time, once
-   * DPS has assigned the device id the topic is built from. */
-  if (az_iot_gen1_c2d_client_init(&state.c2d, &state.connection_client) != AZ_IOT_OK)
+   * the other one. */
+  if (az_iot_gen1_direct_method_client_init(&state.methods, &state.connection_client) != AZ_IOT_OK)
   {
     sample_state_destroy(&state);
     return 1;
   }
-  state.c2d_initialized = 1;
+  state.methods_initialized = 1;
 
-  if (az_iot_gen1_c2d_client_set_handler(&state.c2d, on_c2d, &user_ctx) != AZ_IOT_OK)
+  if (az_iot_gen1_direct_method_client_set_handler(&state.methods, on_method, &user_ctx)
+      != AZ_IOT_OK)
+  {
+    sample_state_destroy(&state);
+    return 1;
+  }
+
+  /* Purely local, and it has no equivalent on AEG. Classic never learns the
+   * caller's timeout, so this is how long a request stays answerable before the
+   * SDK reclaims its slot -- without it, handlers that return without answering
+   * would eventually consume all AZ_IOT_DM_MAX_INFLIGHT slots and the device
+   * would stop accepting methods. */
+  if (az_iot_gen1_direct_method_client_set_response_timeout(
+          &state.methods, RESPONSE_TIMEOUT_SECONDS)
+      != AZ_IOT_OK)
   {
     sample_state_destroy(&state);
     return 1;
@@ -192,14 +206,13 @@ int main(void)
 
   if (user_ctx.conn_state == AZ_IOT_CONN_STATE_CONNECTED)
   {
-    printf("Connected. Listening for cloud-to-device messages (~60s)...\n");
+    printf("Connected. Listening for '" ECHO_METHOD "' invocations (~60s)...\n");
 
     for (int i = 0; i < 600; ++i)
     {
       (void)az_iot_connection_client_do_work(&state.connection_client, 100);
     }
 
-    printf("Received %d message(s).\n", user_ctx.messages_received);
     rc = 0;
   }
 
