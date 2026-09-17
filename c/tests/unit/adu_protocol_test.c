@@ -714,6 +714,127 @@ static void string_codes_map_to_the_specified_actions(void** state)
       AZ_IOT_ADU_ERROR_ACTION_ALREADY_REPORTED);
 }
 
+/* The documented codes whose action follows from their status are no longer
+ * listed individually -- the status-class fallback handles them. Asserted here
+ * so that collapse cannot quietly change what a documented code does. */
+static void documented_codes_keep_their_actions_without_a_string_code(void** state)
+{
+  (void)state;
+
+  assert_int_equal(
+      az_iot_adu__classify_error(NULL, 429000, AZ_IOT_ADU_OP_GET_UPDATE),
+      AZ_IOT_ADU_ERROR_ACTION_RETRY_AFTER);
+  assert_int_equal(
+      az_iot_adu__classify_error(NULL, 429001, AZ_IOT_ADU_OP_GET_UPDATE),
+      AZ_IOT_ADU_ERROR_ACTION_RETRY_AFTER);
+  assert_int_equal(
+      az_iot_adu__classify_error(NULL, 500000, AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE),
+      AZ_IOT_ADU_ERROR_ACTION_RETRY);
+  assert_int_equal(
+      az_iot_adu__classify_error(NULL, 503000, AZ_IOT_ADU_OP_REPORT_STATUS),
+      AZ_IOT_ADU_ERROR_ACTION_RETRY);
+
+  /* The two that do NOT follow from their status, and so are still listed
+   * individually: a 400 that is recoverable, and a 409 that splits by
+   * operation. */
+  assert_int_equal(
+      az_iot_adu__classify_error(NULL, 400004, AZ_IOT_ADU_OP_GET_UPDATE),
+      AZ_IOT_ADU_ERROR_ACTION_RESEND_AGENT_INFO);
+  assert_int_equal(
+      az_iot_adu__classify_error(NULL, 409000, AZ_IOT_ADU_OP_REPORT_STATUS),
+      AZ_IOT_ADU_ERROR_ACTION_ALREADY_REPORTED);
+  assert_int_equal(
+      az_iot_adu__classify_error(NULL, 409000, AZ_IOT_ADU_OP_GET_UPDATE),
+      AZ_IOT_ADU_ERROR_ACTION_PROCEED);
+}
+
+/* An undocumented code is not an unclassifiable one. The codes are the HTTP
+ * status times 1000 plus a sub-code, so the status survives even when the
+ * sub-code is new. Measured: a real deployment answers with 500001, which is
+ * not in the documented list -- classifying it FATAL would have the device
+ * give up permanently on a server-side fault it should simply retry. */
+static void an_undocumented_code_is_classified_by_its_status_class(void** state)
+{
+  (void)state;
+
+  /* The measured one. */
+  assert_int_equal(
+      az_iot_adu__classify_error(NULL, 500001, AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE),
+      AZ_IOT_ADU_ERROR_ACTION_RETRY);
+  /* Every other status the fallback claims to retry, so dropping any one of
+   * them fails here rather than silently. */
+  assert_int_equal(
+      az_iot_adu__classify_error(NULL, 502003, AZ_IOT_ADU_OP_GET_UPDATE),
+      AZ_IOT_ADU_ERROR_ACTION_RETRY);
+  assert_int_equal(
+      az_iot_adu__classify_error(NULL, 503007, AZ_IOT_ADU_OP_GET_UPDATE),
+      AZ_IOT_ADU_ERROR_ACTION_RETRY);
+  assert_int_equal(
+      az_iot_adu__classify_error(NULL, 504000, AZ_IOT_ADU_OP_REPORT_STATUS),
+      AZ_IOT_ADU_ERROR_ACTION_RETRY);
+
+  /* An unknown throttle sub-code still means load shedding. */
+  assert_int_equal(
+      az_iot_adu__classify_error(NULL, 429007, AZ_IOT_ADU_OP_GET_UPDATE),
+      AZ_IOT_ADU_ERROR_ACTION_RETRY_AFTER);
+
+  /* An undocumented code inside a status that DOES have a special case must
+   * not inherit that case. 400004 is recoverable and 409000 splits by
+   * operation, but a neighbour sub-code means neither. */
+  assert_int_equal(
+      az_iot_adu__classify_error(NULL, 400012, AZ_IOT_ADU_OP_GET_UPDATE),
+      AZ_IOT_ADU_ERROR_ACTION_FATAL);
+  assert_int_equal(
+      az_iot_adu__classify_error(NULL, 409001, AZ_IOT_ADU_OP_GET_UPDATE),
+      AZ_IOT_ADU_ERROR_ACTION_FATAL);
+  assert_int_equal(
+      az_iot_adu__classify_error(NULL, 409001, AZ_IOT_ADU_OP_REPORT_STATUS),
+      AZ_IOT_ADU_ERROR_ACTION_FATAL);
+
+  /* 4xx stays fatal: the request was rejected on its merits, so repeating it
+   * unchanged cannot help. Without this the test above would pass for a
+   * classifier that simply retried everything. */
+  assert_int_equal(
+      az_iot_adu__classify_error(NULL, 400099, AZ_IOT_ADU_OP_GET_UPDATE),
+      AZ_IOT_ADU_ERROR_ACTION_FATAL);
+  assert_int_equal(
+      az_iot_adu__classify_error(NULL, 403009, AZ_IOT_ADU_OP_GET_UPDATE),
+      AZ_IOT_ADU_ERROR_ACTION_FATAL);
+
+  /* The code is taken off the wire as-is, so a bare status is possible even
+   * though the contract says it is always status-prefixed. It must classify
+   * the same as its prefixed form: dividing a 3-digit value would give 0 and
+   * send a transient fault to FATAL, which is what this fallback exists to
+   * prevent. */
+  assert_int_equal(
+      az_iot_adu__classify_error(NULL, 503, AZ_IOT_ADU_OP_GET_UPDATE),
+      AZ_IOT_ADU_ERROR_ACTION_RETRY);
+  assert_int_equal(
+      az_iot_adu__classify_error(NULL, 500, AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE),
+      AZ_IOT_ADU_ERROR_ACTION_RETRY);
+  assert_int_equal(
+      az_iot_adu__classify_error(NULL, 429, AZ_IOT_ADU_OP_GET_UPDATE),
+      AZ_IOT_ADU_ERROR_ACTION_RETRY_AFTER);
+  /* And a bare 4xx stays fatal, so the normalization did not just widen
+   * everything into a retry. */
+  assert_int_equal(
+      az_iot_adu__classify_error(NULL, 400, AZ_IOT_ADU_OP_GET_UPDATE),
+      AZ_IOT_ADU_ERROR_ACTION_FATAL);
+
+  /* Nonsense off the wire lands on the safe side rather than being divided
+   * into a class it does not belong to. */
+  assert_int_equal(
+      az_iot_adu__classify_error(NULL, -500000, AZ_IOT_ADU_OP_GET_UPDATE),
+      AZ_IOT_ADU_ERROR_ACTION_FATAL);
+  assert_int_equal(
+      az_iot_adu__classify_error(NULL, 2000000000, AZ_IOT_ADU_OP_GET_UPDATE),
+      AZ_IOT_ADU_ERROR_ACTION_FATAL);
+
+  /* No code at all is still fatal, not a retry. */
+  assert_int_equal(
+      az_iot_adu__classify_error(NULL, 0, AZ_IOT_ADU_OP_GET_UPDATE), AZ_IOT_ADU_ERROR_ACTION_FATAL);
+}
+
 /* The recoverable case has its own numeric code, so it survives the string code
  * being absent. Getting this wrong means giving up on a request the service
  * explicitly invited us to retry. */
@@ -986,6 +1107,8 @@ int main(void)
     cmocka_unit_test(a_numeric_only_body_is_found_without_the_out_parameter),
     cmocka_unit_test(a_truncated_error_body_is_rejected),
     cmocka_unit_test(string_codes_map_to_the_specified_actions),
+    cmocka_unit_test(documented_codes_keep_their_actions_without_a_string_code),
+    cmocka_unit_test(an_undocumented_code_is_classified_by_its_status_class),
     cmocka_unit_test(the_resend_family_is_recoverable_from_the_numeric_code_alone),
     cmocka_unit_test(the_shared_conflict_code_is_split_by_operation),
     cmocka_unit_test(transient_numeric_codes_are_retried),

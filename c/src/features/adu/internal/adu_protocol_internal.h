@@ -236,6 +236,18 @@ extern "C"
 #define AZ_IOT_ADU_ERR_SERVER_ERROR 500000
 #define AZ_IOT_ADU_ERR_SERVICE_UNAVAILABLE 503000
 
+/* The codes above are the HTTP status times this scale, plus a sub-code, which
+ * is what lets an undocumented sub-code still be classified by its status. */
+#define ADU_ERROR_CODE_STATUS_SCALE 1000
+
+#define ADU_ERROR_STATUS_BAD_REQUEST 400
+#define ADU_ERROR_STATUS_CONFLICT 409
+#define ADU_ERROR_STATUS_TOO_MANY_REQUESTS 429
+#define ADU_ERROR_STATUS_INTERNAL_SERVER_ERROR 500
+#define ADU_ERROR_STATUS_BAD_GATEWAY 502
+#define ADU_ERROR_STATUS_SERVICE_UNAVAILABLE 503
+#define ADU_ERROR_STATUS_GATEWAY_TIMEOUT 504
+
   /**
    * Map a service error to the action the device should take.
    *
