@@ -85,6 +85,7 @@ jobs:
         uses: ./.github/actions/provision-e2e-resources
         with:
           rg-name: ${{ env.E2E_RESOURCE_GROUP }}
+          azure-location: ${{ vars.E2E_AZURE_LOCATION }}
           enable-adu: Gen1
           # Two DPS enrollments so the parallel Linux/Windows test legs can each
           # claim their own device (see the per-leg device-index selection below)

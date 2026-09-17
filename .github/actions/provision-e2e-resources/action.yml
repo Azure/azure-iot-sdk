@@ -27,13 +27,11 @@ inputs:
     default: ''
   azure-location:
     description: >-
-      Azure region to provision in. ADU is only available in a subset (EastUS);
-      certificate management (ADR) is available in EastUS too. Avoid canary
-      regions (e.g. centraluseuap): Microsoft.DeviceRegistry there rejects
-      namespace creation from the CI service principal with
-      400 ResourceCreationValidateFailed.
+      Azure region to provision in. Defaults to centraluseuap. An empty value is
+      treated as unset, so a caller can pass a repository variable straight
+      through without having to guard against it being undefined.
     required: false
-    default: EastUS
+    default: centraluseuap
   enable-adu:
     description: New-AzIotTestEnvironment -EnableADU value (None|Gen1|Gen2).
     required: false
@@ -121,7 +119,15 @@ runs:
           # propagated when the job is CANCELLED, so this output alone is not a
           # reliable teardown handle -- prefer a deterministic 'rg-name'.
           "rg=$ResourceGroupName" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          $TestEnvInfo = New-AzIotTestEnvironment -AzureLocation "${{ inputs.azure-location }}" -ResourceGroup $ResourceGroupName `
+          # An undefined repository variable arrives as an empty string, which overrides the
+          # input default instead of falling back to it, so normalise it here and callers need
+          # no expression of their own.
+          $AzureLocation = "${{ inputs.azure-location }}"
+          if ([string]::IsNullOrWhiteSpace($AzureLocation)) {
+            $AzureLocation = "centraluseuap"
+          }
+          Write-Host "Provisioning in $AzureLocation."
+          $TestEnvInfo = New-AzIotTestEnvironment -AzureLocation "$AzureLocation" -ResourceGroup $ResourceGroupName `
             -IotHubX509ThumbprintDevices ${{ inputs.iothub-x509-thumbprint-devices }} `
             -DpsX509IndividualEnrollments ${{ inputs.dps-x509-individual-enrollments }} `
             -DpsX509GroupEnrollmentDevices ${{ inputs.dps-x509-group-enrollment-devices }} `
