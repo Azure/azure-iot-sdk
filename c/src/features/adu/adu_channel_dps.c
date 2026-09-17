@@ -266,7 +266,7 @@ static az_iot_result publish_operation(
   }
 
   char topic[AZ_IOT_ADU_TOPIC_MAX_SIZE];
-  char rid[sizeof(c->pending_rid)];
+  char rid[sizeof(c->pending_rid)] = { 0 };
 
   az_iot_result r = next_request_id(c, rid, sizeof(rid));
   if (r != AZ_IOT_OK)

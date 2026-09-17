@@ -249,6 +249,9 @@ static void request_update_publishes_on_the_dps_topic(void** state)
       fx->channel.vtable->request_update(fx->channel.ctx, AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE),
       AZ_IOT_OK);
 
+  const char expected_rid[sizeof(fx->channel_state.pending_rid)] = "adu1";
+  assert_memory_equal(fx->channel_state.pending_rid, expected_rid, sizeof(expected_rid));
+
   const az_iot_mock_call* pub = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PUBLISH);
   assert_non_null(pub);
   assert_non_null(strstr(pub->topic, "$dps/registrations/POST/"));
@@ -413,6 +416,9 @@ static void a_report_is_published_and_acknowledged(void** state)
   init_transport_result(&result);
   report.install_result = &result;
   assert_int_equal(fx->channel.vtable->report(fx->channel.ctx, &report), AZ_IOT_OK);
+
+  const char expected_rid[sizeof(fx->channel_state.pending_rid)] = "adu1";
+  assert_memory_equal(fx->channel_state.pending_rid, expected_rid, sizeof(expected_rid));
 
   const az_iot_mock_call* pub = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PUBLISH);
   assert_non_null(pub);
