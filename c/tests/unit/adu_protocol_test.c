@@ -778,6 +778,19 @@ static void an_undocumented_code_is_classified_by_its_status_class(void** state)
       az_iot_adu__classify_error(NULL, 429007, AZ_IOT_ADU_OP_GET_UPDATE),
       AZ_IOT_ADU_ERROR_ACTION_RETRY_AFTER);
 
+  /* An undocumented code inside a status that DOES have a special case must
+   * not inherit that case. 400004 is recoverable and 409000 splits by
+   * operation, but a neighbour sub-code means neither. */
+  assert_int_equal(
+      az_iot_adu__classify_error(NULL, 400012, AZ_IOT_ADU_OP_GET_UPDATE),
+      AZ_IOT_ADU_ERROR_ACTION_FATAL);
+  assert_int_equal(
+      az_iot_adu__classify_error(NULL, 409001, AZ_IOT_ADU_OP_GET_UPDATE),
+      AZ_IOT_ADU_ERROR_ACTION_FATAL);
+  assert_int_equal(
+      az_iot_adu__classify_error(NULL, 409001, AZ_IOT_ADU_OP_REPORT_STATUS),
+      AZ_IOT_ADU_ERROR_ACTION_FATAL);
+
   /* 4xx stays fatal: the request was rejected on its merits, so repeating it
    * unchanged cannot help. Without this the test above would pass for a
    * classifier that simply retried everything. */

@@ -956,43 +956,19 @@ az_iot_adu_error_action az_iot_adu__classify_error(
   /* No string code: the numeric code carries the class. This path matters --
    * surfacing the string code is a SHOULD, not a MUST.
    *
-   * Only the codes whose action does NOT follow from their status are listed
-   * individually. Everything else is classified by status class below, so a
-   * code such as 429001 or 500000 needs no entry: it already lands on the
-   * right action. */
-  switch (numeric_code)
-  {
-    case AZ_IOT_ADU_ERR_AGENT_INFO_RESEND_REQUIRED:
-      /* A 400 that IS recoverable, which its status does not say. The whole
-       * resend/re-sync family shares this code, and resending the full
-       * agentInfo also drops the stale service-config ETag, so one action
-       * covers every member. */
-      return AZ_IOT_ADU_ERROR_ACTION_RESEND_AGENT_INFO;
-
-    case AZ_IOT_ADU_ERR_GENERIC_CONFLICT:
-      /* Shared by two conditions needing OPPOSITE handling: a fetch means the
-       * account is not linked (proceed, do not retry); a report means a
-       * terminal result is already recorded (treat as delivered). Without the
-       * string code, the operation in flight is what disambiguates them. */
-      return (operation == AZ_IOT_ADU_OP_REPORT_STATUS) ? AZ_IOT_ADU_ERROR_ACTION_ALREADY_REPORTED
-                                                        : AZ_IOT_ADU_ERROR_ACTION_PROCEED;
-
-    default:
-      break;
-  }
-
-  /* Classify by status class. The codes are the HTTP status times 1000 plus a
-   * sub-code (400012, 429001, 503000), so the status is readable even when the
-   * exact sub-code is new to us -- and the status is the part the service
-   * cannot redefine.
+   * Classified by status, not by exact code. The codes are the HTTP status
+   * times 1000 plus a sub-code (400012, 429001, 503000), so the status is
+   * readable even when the exact sub-code is new to us -- and the status is
+   * the part the service cannot redefine.
    *
    * Matching only known values would call a server-side fault permanent the
    * first time the service added a sub-code. Measured: a real deployment
    * answers with 500001, which no list here contains, and treating that as
    * "never retry" makes a device abandon its update check over a transient
-   * fault. */
-  /* A code below the scale is already a bare status: dividing it would give 0
-   * and send a transient 503 to FATAL -- the exact failure this fallback
+   * fault.
+   *
+   * A code below the scale is already a bare status: dividing it would give 0
+   * and send a transient 503 to FATAL -- the exact failure this classification
    * exists to prevent. The contract says the code is always status-prefixed
    * and every value measured has been, so this is not a shape we expect; it is
    * here because the wire value is taken as-is and the two outcomes are not
@@ -1004,6 +980,28 @@ az_iot_adu_error_action az_iot_adu__classify_error(
 
   switch (status)
   {
+    case ADU_ERROR_STATUS_BAD_REQUEST:
+      /* One 400 IS recoverable, which its status does not say. The whole
+       * resend/re-sync family shares that code, and resending the full
+       * agentInfo also drops the stale service-config ETag, so one action
+       * covers every member. Every other 400 is a malformed request. */
+      return (numeric_code == AZ_IOT_ADU_ERR_AGENT_INFO_RESEND_REQUIRED)
+          ? AZ_IOT_ADU_ERROR_ACTION_RESEND_AGENT_INFO
+          : AZ_IOT_ADU_ERROR_ACTION_FATAL;
+
+    case ADU_ERROR_STATUS_CONFLICT:
+      /* The one documented 409 is shared by two conditions needing OPPOSITE
+       * handling: a fetch means the account is not linked (proceed, do not
+       * retry); a report means a terminal result is already recorded (treat as
+       * delivered). Without the string code, the operation in flight is what
+       * disambiguates them. An undocumented 409 is not assumed to mean either. */
+      if (numeric_code == AZ_IOT_ADU_ERR_GENERIC_CONFLICT)
+      {
+        return (operation == AZ_IOT_ADU_OP_REPORT_STATUS) ? AZ_IOT_ADU_ERROR_ACTION_ALREADY_REPORTED
+                                                          : AZ_IOT_ADU_ERROR_ACTION_PROCEED;
+      }
+      return AZ_IOT_ADU_ERROR_ACTION_FATAL;
+
     case ADU_ERROR_STATUS_TOO_MANY_REQUESTS:
       /* Load shedding, whatever the sub-code. The retry-after on the response
        * topic supplies the delay. */
@@ -1018,7 +1016,7 @@ az_iot_adu_error_action az_iot_adu__classify_error(
       return AZ_IOT_ADU_ERROR_ACTION_RETRY;
 
     default:
-      /* 4xx, no code at all (0), and anything unrecognized: a request or
+      /* Other 4xx, no code at all (0), and anything unrecognized: a request or
        * credential fault. Fix the request, do not repeat it unchanged. */
       return AZ_IOT_ADU_ERROR_ACTION_FATAL;
   }
