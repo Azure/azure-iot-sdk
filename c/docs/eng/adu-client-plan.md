@@ -136,7 +136,7 @@ sample-only / not factored) · 🔜 Coming soon (planned / designed, not yet bui
 | Platform and crypto adapters | 🔜 | **Linux platform adapter** — libcurl download / install cmd / file persist; factor from sample. [→](#f-platform-and-crypto-adapters) |
 | Platform and crypto adapters | ✅ | **ESP32 platform adapter** — factored into `adapters/adu/esp32/` (`esp_http_client` + `esp_ota` + NVS resume). [→](#f-platform-and-crypto-adapters) |
 | ADUv2 transport | ❌ | **Twin (ADUv1) delivery + reporting** — the twin channel is removed, not kept behind a flag. [→](#what-aduv1-is-cut-means) |
-| ADUv2 transport | ✅ | **DPS update-check binding** — `requestSoftwareUpdates` / `requestOnboardingUpdates` over the device's DPS transport; send `agentInfo` + `installedUpdateId`; parse `serviceConfiguration` + `updateMetadata`. [→](#g-aduv2-transport-via-the-dps-gateway) |
+| ADUv2 transport | ✅ | **DPS update-check binding** — `requestSoftwareUpdates` / `requestOnboardingUpdates` over the device's DPS transport; both send `agentInfo`, and only the regular route sends `installedUpdateId` (onboarding omits it by contract: a day-0 device has nothing installed); parse `serviceConfiguration` + `updateMetadata`. [→](#g-aduv2-transport-via-the-dps-gateway) |
 | ADUv2 transport | 🟡 | **`reportUpdateStatus`** — `workflowId` + install result, idempotent, retried while the client lives. NOT durable across a reboot: the persistence blob is still v2 and does not carry an unsent report, so a device that reboots mid-install loses it. [→](#g-aduv2-transport-via-the-dps-gateway) |
 | ADUv2 transport | ✅ | **Reuse DPS device auth** — X.509 (P1) over the existing DPS connection; no ADU endpoint/creds/mTLS; identity headers are gateway-populated. [→](#g-aduv2-transport-via-the-dps-gateway) |
 | ADUv2 transport | 🟡 | **Bootstrap orchestration** — the pre-registration hold, the onboarding fetch and the report are in place and the hold is advisory (registration proceeds when it expires). The re-check **loop** is not: the engine issues one fetch per request. [→](#g-aduv2-transport-via-the-dps-gateway) |
@@ -237,10 +237,11 @@ stateDiagram-v2
 
 - **Manifest v5 parsing** — v5 is what the service emits today; older versions can be added
   here if a deployment ever needs them (not refused on scope grounds).
-- **Agent state / device properties / re-reporting (❌→🔜 re-shaped)** — the twin `0/6/255`
+- **Agent state / device properties / re-reporting (❌→✅ re-shaped)** — the twin `0/6/255`
   agent state, the `deviceProperties` object, the startup/reconnect re-report and the initial
   twin GET are all **cut**. ADUv2 has no subscription and no unsolicited offer: the device sends
-  `agentInfo` + `installedUpdateId` on every fetch and a structured `installResult` on
+  `agentInfo` on every fetch — plus `installedUpdateId` on the regular route only, since an
+  onboarding device has nothing installed — and a structured `installResult` on
   `reportUpdateStatus`. The device-properties cache survives as the `agentInfo` cache.
 - **Accept / reject (❌→🔜 re-shaped)** — the twin 200/406 acknowledgement is cut. The
   `is_installed_fn` decision stays in `adu_core`; an already-installed or non-applicable update
@@ -356,7 +357,7 @@ sequenceDiagram
     participant ADU as ADR to ADU
     %% Planned. Today the application asks for each check; the SDK runs no loop.
     loop planned: until "no update"
-      Dev->>DPS: requestOnboardingUpdates (agentInfo, installedUpdateId)
+      Dev->>DPS: requestOnboardingUpdates (agentInfo; no installedUpdateId)
       DPS->>ADU: proxy (externalDeviceId)
       ADU-->>DPS: serviceConfiguration [+ updateMetadata]
       DPS-->>Dev: 200 (no updateMetadata = no update)
