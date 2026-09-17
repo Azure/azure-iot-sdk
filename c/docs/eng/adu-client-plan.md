@@ -132,11 +132,12 @@ sample-only / not factored) · 🔜 Coming soon (planned / designed, not yet bui
 | Install, apply, recovery | 🟡 | **Health-check / auto-rollback after reboot (core)** — sample-only today; promote to core. [→](#e-install-apply-recovery) |
 | Platform and crypto adapters | ✅ | **`crypto_openssl` adapter** — RS256 + SHA-256, factored in `adapters/adu/`. [→](#f-platform-and-crypto-adapters) |
 | Platform and crypto adapters | ✅ | **`crypto_mbedtls` adapter** — factored into `adapters/adu/crypto_mbedtls/`. [→](#f-platform-and-crypto-adapters) |
+| Platform and crypto adapters | ❌ | **ESP32 sample port** — `samples/adu/esp32` still passes a twin client to `az_iot_adu_client_initialize()` and does not compile against the current API; it is outside the CMake build (needs ESP-IDF), so nothing catches it. [→](#f-platform-and-crypto-adapters) |
 | Platform and crypto adapters | 🔜 | **Linux platform adapter** — libcurl download / install cmd / file persist; factor from sample. [→](#f-platform-and-crypto-adapters) |
 | Platform and crypto adapters | ✅ | **ESP32 platform adapter** — factored into `adapters/adu/esp32/` (`esp_http_client` + `esp_ota` + NVS resume). [→](#f-platform-and-crypto-adapters) |
 | ADUv2 transport | ❌ | **Twin (ADUv1) delivery + reporting** — the twin channel is removed, not kept behind a flag. [→](#what-aduv1-is-cut-means) |
 | ADUv2 transport | ✅ | **DPS update-check binding** — `requestSoftwareUpdates` / `requestOnboardingUpdates` over the device's DPS transport; send `agentInfo` + `installedUpdateId`; parse `serviceConfiguration` + `updateMetadata`. [→](#g-aduv2-transport-via-the-dps-gateway) |
-| ADUv2 transport | ✅ | **`reportUpdateStatus`** — `workflowId` + install result; idempotent, durable retry. [→](#g-aduv2-transport-via-the-dps-gateway) |
+| ADUv2 transport | 🟡 | **`reportUpdateStatus`** — `workflowId` + install result, idempotent, retried while the client lives. NOT durable across a reboot: the persistence blob is still v2 and does not carry an unsent report, so a device that reboots mid-install loses it. [→](#g-aduv2-transport-via-the-dps-gateway) |
 | ADUv2 transport | ✅ | **Reuse DPS device auth** — X.509 (P1) over the existing DPS connection; no ADU endpoint/creds/mTLS; identity headers are gateway-populated. [→](#g-aduv2-transport-via-the-dps-gateway) |
 | ADUv2 transport | 🟡 | **Bootstrap orchestration** — the pre-registration hold, the onboarding fetch and the report are in place and the hold is advisory (registration proceeds when it expires). The re-check **loop** is not: the engine issues one fetch per request. [→](#g-aduv2-transport-via-the-dps-gateway) |
 | ADUv2 transport | 🟡 | **Operational polling loop** — an on-demand provisioning session after registration exists, and the application picks the route with `az_iot_adu_client_request_update()`. No cadence is owned by the SDK: the application decides when to poll. [→](#g-aduv2-transport-via-the-dps-gateway) |
@@ -327,9 +328,13 @@ stateDiagram-v2
   install command, file-based persistence). *Caveat:* the PC sample's download/install hooks are
   still **simulated** and live in the sample, so there is no real Linux install/apply reference
   under `adapters/`.
-- **Both ADU samples are ADUv2-shaped** (`samples/adu/pc`, `samples/adu/esp32`): they provision
-  through DPS and drive the workflow off the device-update operations, asking for an onboarding
-  update explicitly. The salvage this section warned about is done.
+- **The PC sample is current** (`samples/adu/pc`): it provisions through DPS and drives the
+  workflow off the device-update operations, asking for an onboarding update explicitly.
+- **The ESP32 sample is NOT (❌).** `samples/adu/esp32` still builds a twin client and passes it
+  to `az_iot_adu_client_initialize()`, which no longer takes one, so it does not compile against
+  the current API. It is not part of the CMake build (it needs the ESP-IDF toolchain), which is
+  why nothing caught it. Its platform-hook half is already salvaged into
+  `adapters/adu/esp32/`; the sample itself still has to be ported.
 
 ## G. ADUv2 transport (via the DPS gateway)
 
@@ -349,7 +354,8 @@ sequenceDiagram
     participant Dev as Device (SDK)
     participant DPS as DPS
     participant ADU as ADR to ADU
-    loop until "no update"
+    %% Planned. Today the application asks for each check; the SDK runs no loop.
+    loop planned: until "no update"
       Dev->>DPS: requestOnboardingUpdates (agentInfo, installedUpdateId)
       DPS->>ADU: proxy (externalDeviceId)
       ADU-->>DPS: serviceConfiguration [+ updateMetadata]
@@ -382,19 +388,24 @@ flowchart TB
     classDef cut stroke-dasharray: 4 4,color:#888;
 ```
 
-Work items (all 🔜): **`adu_core` + channel extraction and twin-channel deletion** → **DPS
-update-check binding** (`GetDeviceUpdate` / `GetOnboardingDeviceUpdate`) →
-**`ReportDeviceUpdateStatus`** → **reuse DPS device auth** (X.509) → **bootstrap orchestration**
-(update-before-`Register` + re-check loop) → **operational polling loop** → **root key package
-download** → **ETag/api-version + agent-info resend** → **advisory + load contracts**.
+Work items, in the order they were taken. Shipped (✅): **`adu_core` + channel extraction and
+twin-channel deletion** → **DPS update-check binding** (`GetDeviceUpdate` /
+`GetOnboardingDeviceUpdate`) → **reuse DPS device auth** (X.509) → **ETag/api-version +
+agent-info resend**. Partial (🟡): **`ReportDeviceUpdateStatus`** (not durable across a reboot),
+**bootstrap orchestration** (no re-check loop), **operational polling loop** (no SDK-owned
+cadence), **advisory + load contracts** (`Retry-After` not surfaced). Not started (🔜): **root
+key package download**. The per-row detail is in the matrix above.
 
 *Key points / caveats:*
 - **Reuse DPS auth & transport** (X.509 over HTTP/MQTT for Ignite) — no ADU endpoint, no mTLS to ADU,
   no ADU credentials; identity headers (`x-ms-external-device-id`, `x-ms-device-id`) are
   **gateway-populated**, so the client sets none.
 - **Device selects onboarding vs regular** by which endpoint it calls (DPS doesn't infer/validate).
-- **Advisory:** a failed update check MUST NOT block `Register`; the **device is the sole retrier** and
-  honors `Retry-After`. `ReportDeviceUpdateStatus` is a durable write (idempotent on `workflowId`).
+- **Advisory:** a failed update check MUST NOT block `Register`, and the **device is the sole
+  retrier**. *Not yet honoured:* `Retry-After` arrives as a response-topic query parameter
+  (measured, e.g. `&retry-after=3`) and nothing parses it, so the device backs off on its own
+  schedule instead of the one the service asked for. `ReportDeviceUpdateStatus` is idempotent on
+  `workflowId`, but the SDK's retry is in-memory only — see the persistence note above.
 - **The agent owns the cadence.** There is no subscription and no offer to lose, so a reconnect
   replays no ADU state — that is precisely what the twin channel required and what the cut removes.
 - **The gateway is a channel parameter, not a constant.** DPS fronts bootstrap **and** the interim
