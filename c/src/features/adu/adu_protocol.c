@@ -984,7 +984,36 @@ az_iot_adu_error_action az_iot_adu__classify_error(
       return AZ_IOT_ADU_ERROR_ACTION_FATAL;
 
     default:
-      /* Every other documented code is a request or credential fault: fix the
+      break;
+  }
+
+  /* An UNDOCUMENTED code, which is not the same as an unclassifiable one. The
+   * codes are the HTTP status times 1000 plus a sub-code (400012, 429001,
+   * 503000), so the status is still there to be read even when the exact
+   * sub-code is new to us. Matching only the exact values would call a
+   * server-side fault permanent the first time the service added a sub-code --
+   * measured: a real deployment answers with 500001, which is not in the list
+   * above and would otherwise be treated as "never retry".
+   *
+   * So classify unknown codes by their status class, which is the part the
+   * service cannot redefine. */
+  switch (numeric_code / 1000)
+  {
+    case 429:
+      /* Load shedding, whatever the sub-code. The retry-after on the response
+       * topic supplies the delay. */
+      return AZ_IOT_ADU_ERROR_ACTION_RETRY_AFTER;
+
+    case 500:
+    case 502:
+    case 503:
+    case 504:
+      /* The request was not rejected on its merits; the service could not
+       * answer it. Repeating it unchanged is exactly right. */
+      return AZ_IOT_ADU_ERROR_ACTION_RETRY;
+
+    default:
+      /* 4xx and anything unrecognized: a request or credential fault. Fix the
        * request, do not repeat it unchanged. */
       return AZ_IOT_ADU_ERROR_ACTION_FATAL;
   }
