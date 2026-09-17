@@ -348,10 +348,12 @@ extern "C"
   } az_iot_adu_device_properties;
 
 /* Default size (bytes) for the caller-owned device-properties cache buffer set
- * in az_iot_adu_client_config_options. Override before including if your device
- * properties need more cache space, or size a buffer exactly with
- * az_iot_adu_device_props_buffer_size(). This does not increase protocol or
- * channel limits. The buffer stores strings only; no alignment is required. */
+ * in az_iot_adu_client_config_options. The 512-byte default covers the maximum
+ * 448 bytes of managed property strings, including NUL terminators. Override
+ * before including to reduce the allocation for smaller property sets, or use
+ * az_iot_adu_device_props_buffer_size() for exact sizing. Increasing this value
+ * does not increase supported property sizes or protocol/channel limits.
+ * The buffer stores strings only; no alignment is required. */
 #ifndef AZ_IOT_ADU_DEVICE_PROPS_BUFFER_SIZE
 #define AZ_IOT_ADU_DEVICE_PROPS_BUFFER_SIZE 512
 #endif
