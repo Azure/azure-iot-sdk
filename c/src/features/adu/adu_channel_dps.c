@@ -31,6 +31,7 @@
 #include "internal/adu_channel_internal.h"
 #include "internal/adu_protocol_internal.h"
 #include "internal/connection_client_internal.h"
+#include "internal/reconnect.h" /* az_iot_time_mono_ms */
 #include "internal/span_writer.h"
 #include "internal/log_internal.h"
 
@@ -105,6 +106,18 @@ static az_iot_result publish_operation(
       && (!c->holds_registration || !az_iot_connection_client__dps_hold_is_active(c->connection)))
   {
     return AZ_IOT_ERR_NOT_CONNECTED;
+  }
+
+  /* The service asked us to wait. Refusing here rather than in the callers
+   * covers every operation, and BUSY is the right answer: the engine keeps the
+   * request and re-offers it, so the delay costs a retry, not the operation. */
+  if (c->retry_not_before_ms != 0)
+  {
+    if (az_iot_time_mono_ms() < c->retry_not_before_ms)
+    {
+      return AZ_IOT_ERR_BUSY;
+    }
+    c->retry_not_before_ms = 0;
   }
 
   char topic[AZ_IOT_ADU_TOPIC_MAX_SIZE];
@@ -271,6 +284,15 @@ static bool on_dps_message(
   if (status < 200 || status >= 300)
   {
     az_iot_adu_error_action action = handle_failure(c, operation, payload, payload_len);
+    /* MQTT has no headers, so the delay rides the response topic. Taken from
+     * any failure that carries one, not only a throttle: the service attaches
+     * it to 5xx as well, and the point is to wait as long as it asked. */
+    uint32_t retry_after_s = az_iot_adu__parse_retry_after_seconds(topic, strlen(topic));
+    if (retry_after_s > 0)
+    {
+      c->retry_not_before_ms = az_iot_time_mono_ms() + ((uint64_t)retry_after_s * 1000ull);
+      AZ_IOT_LOG_DEBUGF("adu: service asked for a %u second delay", (unsigned)retry_after_s);
+    }
     AZ_IOT_LOG_ERRORF("adu: operation failed with status %d", (int)status);
     emit_result(c, operation, AZ_IOT_ERR_DPS, action);
     return true;
@@ -431,6 +453,9 @@ static void channel_close(void* ctx)
   c->result_cb = NULL;
   c->engine_ctx = NULL;
   c->request_pending = false;
+  /* The delay belongs to the binding that earned it. A fresh bind is a fresh
+   * start, not a continuation of someone else's backoff. */
+  c->retry_not_before_ms = 0;
 }
 
 static az_iot_result channel_request_update(void* ctx, az_iot_adu_operation operation)

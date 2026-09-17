@@ -240,6 +240,12 @@ extern "C"
      * just linger and close again. */
     bool wants_session;
 
+    /* Monotonic instant before which nothing may be published, set from the
+     * retry-after the service put on a response topic. 0 means no delay is in
+     * force. Honouring it is the difference between backing off on the
+     * schedule the service asked for and hammering it on our own. */
+    uint64_t retry_not_before_ms;
+
     /* Whether the pre-registration exchange has already run on the CURRENT
      * session. Distinct from wants_hold: it stops the same session being held
      * twice, while leaving the standing interest intact for the next one. Reset

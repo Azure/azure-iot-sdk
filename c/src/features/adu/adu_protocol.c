@@ -142,6 +142,58 @@ az_iot_result az_iot_adu__parse_response_topic(
   return AZ_IOT_ERR_INVALID_ARG;
 }
 
+/* Upper bound on a retry-after we will honour. The service asks for seconds,
+ * not hours; a value past this is treated as no value at all rather than
+ * parking the device for an implausible stretch on one malformed topic. */
+#define ADU_RETRY_AFTER_MAX_SECONDS 86400u
+
+uint32_t az_iot_adu__parse_retry_after_seconds(const char* topic, size_t topic_len)
+{
+  const char* k_key = "retry-after=";
+  const size_t key_len = strlen(k_key);
+
+  if (topic == NULL || topic_len < key_len)
+  {
+    return 0;
+  }
+
+  for (size_t i = 0; i + key_len <= topic_len; ++i)
+  {
+    if (memcmp(topic + i, k_key, key_len) != 0)
+    {
+      continue;
+    }
+    /* Only as a query parameter in its own right: without this, a key such as
+     * "no-retry-after=" would match on its tail. */
+    if (i > 0 && topic[i - 1] != '?' && topic[i - 1] != '&')
+    {
+      continue;
+    }
+
+    size_t v = i + key_len;
+    uint64_t value = 0;
+    size_t digits = 0;
+    while (v < topic_len && topic[v] >= '0' && topic[v] <= '9')
+    {
+      value = (value * 10u) + (uint64_t)(topic[v] - '0');
+      ++digits;
+      ++v;
+      if (value > ADU_RETRY_AFTER_MAX_SECONDS)
+      {
+        return 0;
+      }
+    }
+    /* Trailing junk ("3s", "3x") means we did not understand the value. */
+    if (digits == 0 || (v < topic_len && topic[v] != '&'))
+    {
+      return 0;
+    }
+    return (uint32_t)value;
+  }
+
+  return 0;
+}
+
 /* ------------------------------------------------------------------------- */
 /* requests                                                                  */
 /* ------------------------------------------------------------------------- */
