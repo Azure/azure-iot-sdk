@@ -991,7 +991,18 @@ az_iot_adu_error_action az_iot_adu__classify_error(
    * answers with 500001, which no list here contains, and treating that as
    * "never retry" makes a device abandon its update check over a transient
    * fault. */
-  switch (numeric_code / ADU_ERROR_CODE_STATUS_SCALE)
+  /* A code below the scale is already a bare status: dividing it would give 0
+   * and send a transient 503 to FATAL -- the exact failure this fallback
+   * exists to prevent. The contract says the code is always status-prefixed
+   * and every value measured has been, so this is not a shape we expect; it is
+   * here because the wire value is taken as-is and the two outcomes are not
+   * symmetric. A needless retry costs one request; a wrong FATAL makes the
+   * device abandon updates for good. */
+  int32_t status = (numeric_code >= ADU_ERROR_CODE_STATUS_SCALE)
+      ? (numeric_code / ADU_ERROR_CODE_STATUS_SCALE)
+      : numeric_code;
+
+  switch (status)
   {
     case ADU_ERROR_STATUS_TOO_MANY_REQUESTS:
       /* Load shedding, whatever the sub-code. The retry-after on the response

@@ -788,6 +788,35 @@ static void an_undocumented_code_is_classified_by_its_status_class(void** state)
       az_iot_adu__classify_error(NULL, 403009, AZ_IOT_ADU_OP_GET_UPDATE),
       AZ_IOT_ADU_ERROR_ACTION_FATAL);
 
+  /* The code is taken off the wire as-is, so a bare status is possible even
+   * though the contract says it is always status-prefixed. It must classify
+   * the same as its prefixed form: dividing a 3-digit value would give 0 and
+   * send a transient fault to FATAL, which is what this fallback exists to
+   * prevent. */
+  assert_int_equal(
+      az_iot_adu__classify_error(NULL, 503, AZ_IOT_ADU_OP_GET_UPDATE),
+      AZ_IOT_ADU_ERROR_ACTION_RETRY);
+  assert_int_equal(
+      az_iot_adu__classify_error(NULL, 500, AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE),
+      AZ_IOT_ADU_ERROR_ACTION_RETRY);
+  assert_int_equal(
+      az_iot_adu__classify_error(NULL, 429, AZ_IOT_ADU_OP_GET_UPDATE),
+      AZ_IOT_ADU_ERROR_ACTION_RETRY_AFTER);
+  /* And a bare 4xx stays fatal, so the normalization did not just widen
+   * everything into a retry. */
+  assert_int_equal(
+      az_iot_adu__classify_error(NULL, 400, AZ_IOT_ADU_OP_GET_UPDATE),
+      AZ_IOT_ADU_ERROR_ACTION_FATAL);
+
+  /* Nonsense off the wire lands on the safe side rather than being divided
+   * into a class it does not belong to. */
+  assert_int_equal(
+      az_iot_adu__classify_error(NULL, -500000, AZ_IOT_ADU_OP_GET_UPDATE),
+      AZ_IOT_ADU_ERROR_ACTION_FATAL);
+  assert_int_equal(
+      az_iot_adu__classify_error(NULL, 2000000000, AZ_IOT_ADU_OP_GET_UPDATE),
+      AZ_IOT_ADU_ERROR_ACTION_FATAL);
+
   /* No code at all is still fatal, not a retry. */
   assert_int_equal(
       az_iot_adu__classify_error(NULL, 0, AZ_IOT_ADU_OP_GET_UPDATE), AZ_IOT_ADU_ERROR_ACTION_FATAL);
