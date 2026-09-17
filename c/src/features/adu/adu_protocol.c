@@ -9,6 +9,7 @@
  * why that boundary matters.
  */
 
+#include <stdint.h>
 #include <string.h>
 
 #include <azure/core/az_json.h>
@@ -35,6 +36,15 @@
 
 #define ADU_TOPIC_PREFIX "$dps/registrations/"
 #define ADU_TOPIC_RID "/?$rid="
+
+/* MQTT carries no headers, so a retry-after rides the response topic's query
+ * string: "$dps/registrations/res/500/?$rid=adu1&retry-after=3". */
+#define ADU_TOPIC_RETRY_AFTER "retry-after="
+
+/* Upper bound on a retry-after we will honour. The service asks for seconds,
+ * not hours; a value past this is treated as no value at all rather than
+ * parking the device for an implausible stretch on one malformed topic. */
+#define ADU_RETRY_AFTER_MAX_SECONDS 86400u
 
 /* Operation names as they appear on the wire. The service lower-cases the
  * segment before matching, so these are emitted lower-case. */
@@ -140,6 +150,62 @@ az_iot_result az_iot_adu__parse_response_topic(
   }
 
   return AZ_IOT_ERR_INVALID_ARG;
+}
+
+uint32_t az_iot_adu__parse_retry_after_seconds(const char* topic, size_t topic_len)
+{
+  if (topic == NULL || topic_len == 0 || topic_len > (size_t)INT32_MAX)
+  {
+    return 0;
+  }
+
+  az_span full = az_span_create((uint8_t*)(uintptr_t)topic, (int32_t)topic_len);
+  az_span key = AZ_SPAN_FROM_STR(ADU_TOPIC_RETRY_AFTER);
+  int32_t from = 0;
+
+  while (from < az_span_size(full))
+  {
+    int32_t at = az_span_find(az_span_slice(full, from, az_span_size(full)), key);
+    if (at < 0)
+    {
+      return 0;
+    }
+    int32_t start = from + at;
+
+    /* Only as a query parameter in its own right: without this, a key such as
+     * "no-retry-after=" would match on its tail. */
+    if (start > 0 && az_span_ptr(full)[start - 1] != '?' && az_span_ptr(full)[start - 1] != '&')
+    {
+      from = start + 1;
+      continue;
+    }
+
+    az_span value = az_span_slice(full, start + az_span_size(key), az_span_size(full));
+    int32_t sep = az_span_find(value, AZ_SPAN_FROM_STR("&"));
+    if (sep >= 0)
+    {
+      value = az_span_slice(value, 0, sep);
+    }
+
+    /* az_span_atou32 rejects a non-digit and rejects overflow, so both are
+     * covered without a hand-rolled digit loop. Two things it does NOT do:
+     * an empty span trips a precondition rather than returning an error, and
+     * it accepts a leading '+'. The contract here is plain digits, so guard
+     * both before handing the span over. */
+    if (az_span_size(value) == 0 || az_span_ptr(value)[0] < '0' || az_span_ptr(value)[0] > '9')
+    {
+      return 0;
+    }
+
+    uint32_t seconds = 0;
+    if (az_result_failed(az_span_atou32(value, &seconds)) || seconds > ADU_RETRY_AFTER_MAX_SECONDS)
+    {
+      return 0;
+    }
+    return seconds;
+  }
+
+  return 0;
 }
 
 /* ------------------------------------------------------------------------- */

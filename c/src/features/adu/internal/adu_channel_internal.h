@@ -240,6 +240,14 @@ extern "C"
      * just linger and close again. */
     bool wants_session;
 
+    /* When the retry-after the service put on a response topic expires: a
+     * monotonic instant, not a duration, which is why it is named for the
+     * deadline and not for the seconds it was derived from (see
+     * dps_hold_deadline_ms for the same distinction). 0 means no delay is in
+     * force. Honouring it is the difference between backing off on the
+     * schedule the service asked for and hammering it on our own. */
+    uint64_t retry_after_deadline_ms;
+
     /* Whether the pre-registration exchange has already run on the CURRENT
      * session. Distinct from wants_hold: it stops the same session being held
      * twice, while leaving the standing interest intact for the next one. Reset

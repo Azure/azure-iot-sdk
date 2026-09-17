@@ -106,6 +106,69 @@ static void response_topics_yield_status_and_request_id(void** state)
   assert_string_equal(rid, "abc");
 }
 
+/* MQTT has no headers, so the service puts the delay in the topic's query
+ * string. Measured against the live service, which answers a failed fetch with
+ * "...&retry-after=3". */
+static void a_retry_after_is_read_off_the_response_topic(void** state)
+{
+  (void)state;
+
+  const char* t = "$dps/registrations/res/500/?$rid=adu1&retry-after=3";
+  assert_int_equal(az_iot_adu__parse_retry_after_seconds(t, strlen(t)), 3u);
+
+  /* Order does not matter, and a value at the end of the topic is fine. */
+  const char* first = "$dps/registrations/res/429/?retry-after=12&$rid=adu2";
+  assert_int_equal(az_iot_adu__parse_retry_after_seconds(first, strlen(first)), 12u);
+
+  /* The largest value we honour, asserted so the bound cannot drift. */
+  const char* cap = "$dps/registrations/res/429/?$rid=adu3&retry-after=86400";
+  assert_int_equal(az_iot_adu__parse_retry_after_seconds(cap, strlen(cap)), 86400u);
+}
+
+/* 0 means "no delay asked for", which is also the safe reading of a value we
+ * could not make sense of: the caller falls back on its own backoff rather
+ * than stalling on a number it did not understand. */
+static void an_absent_or_unusable_retry_after_reads_as_zero(void** state)
+{
+  (void)state;
+
+  const char* none = "$dps/registrations/res/200/?$rid=adu1";
+  assert_int_equal(az_iot_adu__parse_retry_after_seconds(none, strlen(none)), 0u);
+
+  const char* empty = "$dps/registrations/res/500/?$rid=adu1&retry-after=";
+  assert_int_equal(az_iot_adu__parse_retry_after_seconds(empty, strlen(empty)), 0u);
+
+  /* Trailing junk is not a number we understood. */
+  const char* units = "$dps/registrations/res/500/?$rid=adu1&retry-after=3s";
+  assert_int_equal(az_iot_adu__parse_retry_after_seconds(units, strlen(units)), 0u);
+
+  /* Beyond the bound, so we do not park the device for an implausible stretch
+   * on the strength of one topic. Both sides of the boundary are asserted so an
+   * off-by-one in the comparison cannot pass: 86400 is accepted, 86401 is not.
+   * The accepted case is checked in the positive test above. */
+  const char* over = "$dps/registrations/res/500/?$rid=adu1&retry-after=86401";
+  assert_int_equal(az_iot_adu__parse_retry_after_seconds(over, strlen(over)), 0u);
+
+  const char* huge = "$dps/registrations/res/500/?$rid=adu1&retry-after=999999999";
+  assert_int_equal(az_iot_adu__parse_retry_after_seconds(huge, strlen(huge)), 0u);
+
+  /* Long enough to overflow a uint64 if the bound were only checked after the
+   * whole value had been accumulated. */
+  const char* wrapping = "$dps/registrations/res/500/?$rid=adu1&retry-after=184467440737095516161";
+  assert_int_equal(az_iot_adu__parse_retry_after_seconds(wrapping, strlen(wrapping)), 0u);
+
+  /* Digits only. az_span_atou32 would take a leading sign; the contract here
+   * does not. */
+  const char* signed_value = "$dps/registrations/res/500/?$rid=adu1&retry-after=+3";
+  assert_int_equal(az_iot_adu__parse_retry_after_seconds(signed_value, strlen(signed_value)), 0u);
+
+  /* Must be a parameter in its own right, not the tail of another key. */
+  const char* suffix = "$dps/registrations/res/500/?$rid=adu1&no-retry-after=9";
+  assert_int_equal(az_iot_adu__parse_retry_after_seconds(suffix, strlen(suffix)), 0u);
+
+  assert_int_equal(az_iot_adu__parse_retry_after_seconds(NULL, 0), 0u);
+}
+
 static void malformed_response_topics_are_rejected(void** state)
 {
   (void)state;
@@ -891,6 +954,8 @@ int main(void)
     cmocka_unit_test(a_short_topic_buffer_is_rejected_not_truncated),
     cmocka_unit_test(an_empty_request_id_is_rejected),
     cmocka_unit_test(response_topics_yield_status_and_request_id),
+    cmocka_unit_test(a_retry_after_is_read_off_the_response_topic),
+    cmocka_unit_test(an_absent_or_unusable_retry_after_reads_as_zero),
     cmocka_unit_test(malformed_response_topics_are_rejected),
     cmocka_unit_test(onboarding_request_omits_the_installed_update_id),
     cmocka_unit_test(operational_request_carries_the_installed_update_id),

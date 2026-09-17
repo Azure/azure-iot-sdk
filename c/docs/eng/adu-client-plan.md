@@ -143,7 +143,7 @@ sample-only / not factored) · 🔜 Coming soon (planned / designed, not yet bui
 | ADUv2 transport | 🟡 | **Operational polling loop** — an on-demand provisioning session after registration exists, and the application picks the route with `az_iot_adu_client_request_update()`. No cadence is owned by the SDK: the application decides when to poll. [→](#g-aduv2-transport-via-the-dps-gateway) |
 | ADUv2 transport | 🔜 | **Root key package download** — fetch/cache from `rootKeyDownloadUrl`, verify as usual. [→](#g-aduv2-transport-via-the-dps-gateway) |
 | ADUv2 transport | ✅ | **ETag + api-version + agent-info resend** — `agentInfoEtag`/`serviceConfigEtag`; resend full `agentInfo` on `OUTDATED_`/`UNKNOWN_AGENT_INFO`; re-sync on `OUTDATED_SERVICE_CONFIG`. [→](#g-aduv2-transport-via-the-dps-gateway) |
-| ADUv2 transport | 🟡 | **Advisory + load contracts** — the error classifier drives on the code and the device is the sole retrier. `Retry-After` is **not** surfaced: it arrives as a response-topic parameter and nothing reads it, so a throttled device falls back on its own backoff. [→](#g-aduv2-transport-via-the-dps-gateway) |
+| ADUv2 transport | ✅ | **Advisory + load contracts** — the error classifier drives on the code, the device is the sole retrier, and `Retry-After` is honoured: it arrives as a response-topic query parameter, and the channel defers every publish until the delay elapses. [→](#g-aduv2-transport-via-the-dps-gateway) |
 | Day0 recovery | 🔜 | **Unauthenticated recovery transport** — plain-HTTP recovery endpoint (protocol not yet defined). [→](#h-day0-recovery) |
 | Day0 recovery | 🔜 | **Account-ID binding** — validate signed manifest's ADU account ID (replay protection). [→](#h-day0-recovery) |
 | Day0 recovery | 🔜 | **Compatibility-property validation** — device checks compat before applying a replayed response. [→](#h-day0-recovery) |
@@ -392,9 +392,9 @@ flowchart TB
 Work items, in the order they were taken. Shipped (✅): **`adu_core` + channel extraction and
 twin-channel deletion** → **DPS update-check binding** (`GetDeviceUpdate` /
 `GetOnboardingDeviceUpdate`) → **reuse DPS device auth** (X.509) → **ETag/api-version +
-agent-info resend**. Partial (🟡): **`ReportDeviceUpdateStatus`** (not durable across a reboot),
-**bootstrap orchestration** (no re-check loop), **operational polling loop** (no SDK-owned
-cadence), **advisory + load contracts** (`Retry-After` not surfaced). Not started (🔜): **root
+agent-info resend** → **advisory + load contracts**. Partial (🟡):
+**`ReportDeviceUpdateStatus`** (not durable across a reboot), **bootstrap orchestration** (no
+re-check loop), **operational polling loop** (no SDK-owned cadence). Not started (🔜): **root
 key package download**. The per-row detail is in the matrix above.
 
 *Key points / caveats:*
@@ -403,10 +403,10 @@ key package download**. The per-row detail is in the matrix above.
   **gateway-populated**, so the client sets none.
 - **Device selects onboarding vs regular** by which endpoint it calls (DPS doesn't infer/validate).
 - **Advisory:** a failed update check MUST NOT block `Register`, and the **device is the sole
-  retrier**. *Not yet honoured:* `Retry-After` arrives as a response-topic query parameter
-  (measured, e.g. `&retry-after=3`) and nothing parses it, so the device backs off on its own
-  schedule instead of the one the service asked for. `ReportDeviceUpdateStatus` is idempotent on
-  `workflowId`, but the SDK's retry is in-memory only — see the persistence note above.
+  retrier**. `Retry-After` arrives as a response-topic query parameter (measured, e.g.
+  `&retry-after=3`) — MQTT carries no headers — and the channel defers every publish until it
+  elapses. `ReportDeviceUpdateStatus` is idempotent on `workflowId`, but the SDK's retry is
+  in-memory only — see the persistence note above.
 - **The agent owns the cadence.** There is no subscription and no offer to lose, so a reconnect
   replays no ADU state — that is precisely what the twin channel required and what the cut removes.
 - **The gateway is a channel parameter, not a constant.** DPS fronts bootstrap **and** the interim

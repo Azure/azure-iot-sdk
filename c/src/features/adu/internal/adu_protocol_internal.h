@@ -91,6 +91,21 @@ extern "C"
       char* out_request_id,
       size_t request_id_size);
 
+  /**
+   * Read the retry-after delay, in seconds, out of a response topic.
+   *
+   * MQTT carries no HTTP headers, so the service puts the value in the query
+   * string instead:
+   *
+   *   $dps/registrations/res/500/?$rid={request_id}&retry-after=3
+   *
+   * Returns 0 when the parameter is absent, empty, non-numeric or absurdly
+   * large. 0 means "no delay asked for", which is also the safe reading of a
+   * value we could not make sense of: the caller falls back on its own backoff
+   * rather than stalling on a number it did not understand.
+   */
+  uint32_t az_iot_adu__parse_retry_after_seconds(const char* topic, size_t topic_len);
+
   /* --- Requests ------------------------------------------------------------ */
 
   /* What the device says about itself on a fetch. Spans are borrowed. */
