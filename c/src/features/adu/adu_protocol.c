@@ -954,11 +954,17 @@ az_iot_adu_error_action az_iot_adu__classify_error(
   }
 
   /* No string code: the numeric code carries the class. This path matters --
-   * surfacing the string code is a SHOULD, not a MUST. */
+   * surfacing the string code is a SHOULD, not a MUST.
+   *
+   * Only the codes whose action does NOT follow from their status are listed
+   * individually. Everything else is classified by status class below, so a
+   * code such as 429001 or 500000 needs no entry: it already lands on the
+   * right action. */
   switch (numeric_code)
   {
     case AZ_IOT_ADU_ERR_AGENT_INFO_RESEND_REQUIRED:
-      /* The whole resend/re-sync family shares this code. Resending the full
+      /* A 400 that IS recoverable, which its status does not say. The whole
+       * resend/re-sync family shares this code, and resending the full
        * agentInfo also drops the stale service-config ETag, so one action
        * covers every member. */
       return AZ_IOT_ADU_ERROR_ACTION_RESEND_AGENT_INFO;
@@ -971,50 +977,38 @@ az_iot_adu_error_action az_iot_adu__classify_error(
       return (operation == AZ_IOT_ADU_OP_REPORT_STATUS) ? AZ_IOT_ADU_ERROR_ACTION_ALREADY_REPORTED
                                                         : AZ_IOT_ADU_ERROR_ACTION_PROCEED;
 
-    case AZ_IOT_ADU_ERR_THROTTLED:
-    case AZ_IOT_ADU_ERR_QUOTA_EXCEEDED:
-      return AZ_IOT_ADU_ERROR_ACTION_RETRY_AFTER;
-
-    case AZ_IOT_ADU_ERR_SERVER_ERROR:
-    case AZ_IOT_ADU_ERR_SERVICE_UNAVAILABLE:
-      return AZ_IOT_ADU_ERROR_ACTION_RETRY;
-
-    case 0:
-      /* No code at all: nothing to classify. */
-      return AZ_IOT_ADU_ERROR_ACTION_FATAL;
-
     default:
       break;
   }
 
-  /* An UNDOCUMENTED code, which is not the same as an unclassifiable one. The
-   * codes are the HTTP status times 1000 plus a sub-code (400012, 429001,
-   * 503000), so the status is still there to be read even when the exact
-   * sub-code is new to us. Matching only the exact values would call a
-   * server-side fault permanent the first time the service added a sub-code --
-   * measured: a real deployment answers with 500001, which is not in the list
-   * above and would otherwise be treated as "never retry".
+  /* Classify by status class. The codes are the HTTP status times 1000 plus a
+   * sub-code (400012, 429001, 503000), so the status is readable even when the
+   * exact sub-code is new to us -- and the status is the part the service
+   * cannot redefine.
    *
-   * So classify unknown codes by their status class, which is the part the
-   * service cannot redefine. */
-  switch (numeric_code / 1000)
+   * Matching only known values would call a server-side fault permanent the
+   * first time the service added a sub-code. Measured: a real deployment
+   * answers with 500001, which no list here contains, and treating that as
+   * "never retry" makes a device abandon its update check over a transient
+   * fault. */
+  switch (numeric_code / ADU_ERROR_CODE_STATUS_SCALE)
   {
-    case 429:
+    case ADU_ERROR_STATUS_TOO_MANY_REQUESTS:
       /* Load shedding, whatever the sub-code. The retry-after on the response
        * topic supplies the delay. */
       return AZ_IOT_ADU_ERROR_ACTION_RETRY_AFTER;
 
-    case 500:
-    case 502:
-    case 503:
-    case 504:
+    case ADU_ERROR_STATUS_INTERNAL_SERVER_ERROR:
+    case ADU_ERROR_STATUS_BAD_GATEWAY:
+    case ADU_ERROR_STATUS_SERVICE_UNAVAILABLE:
+    case ADU_ERROR_STATUS_GATEWAY_TIMEOUT:
       /* The request was not rejected on its merits; the service could not
        * answer it. Repeating it unchanged is exactly right. */
       return AZ_IOT_ADU_ERROR_ACTION_RETRY;
 
     default:
-      /* 4xx and anything unrecognized: a request or credential fault. Fix the
-       * request, do not repeat it unchanged. */
+      /* 4xx, no code at all (0), and anything unrecognized: a request or
+       * credential fault. Fix the request, do not repeat it unchanged. */
       return AZ_IOT_ADU_ERROR_ACTION_FATAL;
   }
 }
