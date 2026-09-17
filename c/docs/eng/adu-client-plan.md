@@ -6,7 +6,7 @@ manual-action queue**, and (c) a **feature manual** with the
 design detail and caveats for each capability.
 
 > **Direction (current): ADUv2 is the implementation target. ADUv1 is cut.**
-> The twin-based ADUv1 delivery channel and its public API are being **removed**,
+> The twin-based ADUv1 delivery channel and its public API have been **removed**,
 > not deprecated-and-kept: there is no ADUv1 deployment path in the shipping SDK,
 > no twin subscription for updates, and no reported-property status. Everything in
 > ADUv1 that is *not* transport — manifest parsing, JWS/SJWK verification, root
@@ -104,12 +104,12 @@ sample-only / not factored) · 🔜 Coming soon (planned / designed, not yet bui
 |---|:--:|---|
 | Foundation | ✅ | **Connection state + error propagation** — observer registry, status/reason/source codes, lifecycle guards (Phase 0). [→](#a-foundation) |
 | Foundation | ❌ | **ADU as a twin desired-property subscriber** — ADUv1-only wiring; removed with the twin channel. The twin client's subscriber registry itself stays (it serves the twin feature). [→](#a-foundation) |
-| Foundation | 🔜 | **`adu_core` extraction + `az_iot_adu_channel` vtable** — engine takes a manifest string, returns a structured report; delivery/reporting behind the vtable. Prerequisite for every ADUv2 row. [→](#g-aduv2-transport-via-the-dps-gateway) |
+| Foundation | ✅ | **`adu_core` extraction + `az_iot_adu_channel` vtable** — engine takes a manifest string, returns a structured report; delivery/reporting behind the vtable. Prerequisite for every ADUv2 row. [→](#g-aduv2-transport-via-the-dps-gateway) |
 | Core update workflow | ✅ | **Manifest v5 parsing** — delegated to `azure-sdk-for-c`; only v5 targeted. [→](#b-core-update-workflow) |
-| Core update workflow | ❌→🔜 | **Agent state reporting** — twin `0/6/255` reported properties are cut; re-expressed as the structured `installResult` on `reportUpdateStatus`. [→](#b-core-update-workflow) |
-| Core update workflow | ❌→🔜 | **Device properties reporting** — twin `deviceProperties` cut; re-expressed as `agentInfo` (`agentSdkVersion`, `agentProfile`, compat KVPs) on each fetch. [→](#b-core-update-workflow) |
+| Core update workflow | ❌→✅ | **Agent state reporting** — twin `0/6/255` reported properties are cut; re-expressed as the structured `installResult` on `reportUpdateStatus`. [→](#b-core-update-workflow) |
+| Core update workflow | ❌→✅ | **Device properties reporting** — twin `deviceProperties` cut; re-expressed as `agentInfo` (`agentSdkVersion`, `agentProfile`, compat KVPs) on each fetch. [→](#b-core-update-workflow) |
 | Core update workflow | ❌ | **Startup + reconnect re-reporting / initial twin GET** — no subscription and no unsolicited offer in ADUv2; the device polls instead. [→](#b-core-update-workflow) |
-| Core update workflow | ❌→🔜 | **Accept / reject acknowledgement** — twin 200/406 ack is cut; already-installed becomes a `SKIPPED` outcome in the report. [→](#b-core-update-workflow) |
+| Core update workflow | ❌→✅ | **Accept / reject acknowledgement** — twin 200/406 ack is cut; already-installed becomes a `SKIPPED` outcome in the report. [→](#b-core-update-workflow) |
 | Core update workflow | ✅ | **Multi-step (composite) updates** — per-step Download→Backup→Install→Apply loop. [→](#b-core-update-workflow) |
 | Core update workflow | ✅ | **Per-step result reporting** — `resultCode`/`extendedResultCode`/`stepResults`. [→](#b-core-update-workflow) |
 | Core update workflow | ✅→🔜 | **Retry / replacement / duplicate detection** — engine logic kept; re-keyed from `workflow.id` + `retryTimestamp` onto `workflowId`, which is the sole correlation key in ADUv2. [→](#b-core-update-workflow) |
@@ -131,18 +131,18 @@ sample-only / not factored) · 🔜 Coming soon (planned / designed, not yet bui
 | Install, apply, recovery | ✅→🔜 | **Reboot coordination + resume** — persist-before-reboot + `resume()`; blob must additionally carry the unsent ADUv2 report + ETags. [→](#e-install-apply-recovery) |
 | Install, apply, recovery | 🟡 | **Health-check / auto-rollback after reboot (core)** — sample-only today; promote to core. [→](#e-install-apply-recovery) |
 | Platform and crypto adapters | ✅ | **`crypto_openssl` adapter** — RS256 + SHA-256, factored in `adapters/adu/`. [→](#f-platform-and-crypto-adapters) |
-| Platform and crypto adapters | 🟡 | **`crypto_mbedtls` adapter** — inline in ESP32 sample; factor into `adapters/`. [→](#f-platform-and-crypto-adapters) |
+| Platform and crypto adapters | ✅ | **`crypto_mbedtls` adapter** — factored into `adapters/adu/crypto_mbedtls/`. [→](#f-platform-and-crypto-adapters) |
 | Platform and crypto adapters | 🔜 | **Linux platform adapter** — libcurl download / install cmd / file persist; factor from sample. [→](#f-platform-and-crypto-adapters) |
-| Platform and crypto adapters | 🟡 | **ESP32 platform adapter** — real OTA sample exists; factor into `adapters/adu/esp32/`. [→](#f-platform-and-crypto-adapters) |
+| Platform and crypto adapters | ✅ | **ESP32 platform adapter** — factored into `adapters/adu/esp32/` (`esp_http_client` + `esp_ota` + NVS resume). [→](#f-platform-and-crypto-adapters) |
 | ADUv2 transport | ❌ | **Twin (ADUv1) delivery + reporting** — the twin channel is removed, not kept behind a flag. [→](#what-aduv1-is-cut-means) |
-| ADUv2 transport | 🔜 | **DPS update-check binding** — `requestSoftwareUpdates` / `requestOnboardingUpdates` over the device's DPS transport; send `agentInfo` + `installedUpdateId`; parse `serviceConfiguration` + `updateMetadata`. [→](#g-aduv2-transport-via-the-dps-gateway) |
-| ADUv2 transport | 🔜 | **`reportUpdateStatus`** — `workflowId` + install result; idempotent, durable retry. [→](#g-aduv2-transport-via-the-dps-gateway) |
-| ADUv2 transport | 🔜 | **Reuse DPS device auth** — X.509 (P1) over the existing DPS connection; no ADU endpoint/creds/mTLS; identity headers are gateway-populated. [→](#g-aduv2-transport-via-the-dps-gateway) |
-| ADUv2 transport | 🔜 | **Bootstrap orchestration** — update-before-`Register`: onboarding fetch → install → report → re-check loop → `Register` (advisory, never blocks). [→](#g-aduv2-transport-via-the-dps-gateway) |
-| ADUv2 transport | 🔜 | **Operational polling loop** — post-`CONNECTED` poll cadence owned by the agent; pending report flushed first. [→](#g-aduv2-transport-via-the-dps-gateway) |
+| ADUv2 transport | ✅ | **DPS update-check binding** — `requestSoftwareUpdates` / `requestOnboardingUpdates` over the device's DPS transport; send `agentInfo` + `installedUpdateId`; parse `serviceConfiguration` + `updateMetadata`. [→](#g-aduv2-transport-via-the-dps-gateway) |
+| ADUv2 transport | ✅ | **`reportUpdateStatus`** — `workflowId` + install result; idempotent, durable retry. [→](#g-aduv2-transport-via-the-dps-gateway) |
+| ADUv2 transport | ✅ | **Reuse DPS device auth** — X.509 (P1) over the existing DPS connection; no ADU endpoint/creds/mTLS; identity headers are gateway-populated. [→](#g-aduv2-transport-via-the-dps-gateway) |
+| ADUv2 transport | 🟡 | **Bootstrap orchestration** — the pre-registration hold, the onboarding fetch and the report are in place and the hold is advisory (registration proceeds when it expires). The re-check **loop** is not: the engine issues one fetch per request. [→](#g-aduv2-transport-via-the-dps-gateway) |
+| ADUv2 transport | 🟡 | **Operational polling loop** — an on-demand provisioning session after registration exists, and the application picks the route with `az_iot_adu_client_request_update()`. No cadence is owned by the SDK: the application decides when to poll. [→](#g-aduv2-transport-via-the-dps-gateway) |
 | ADUv2 transport | 🔜 | **Root key package download** — fetch/cache from `rootKeyDownloadUrl`, verify as usual. [→](#g-aduv2-transport-via-the-dps-gateway) |
-| ADUv2 transport | 🔜 | **ETag + api-version + agent-info resend** — `agentInfoEtag`/`serviceConfigEtag`; resend full `agentInfo` on `OUTDATED_`/`UNKNOWN_AGENT_INFO`; re-sync on `OUTDATED_SERVICE_CONFIG`. [→](#g-aduv2-transport-via-the-dps-gateway) |
-| ADUv2 transport | 🔜 | **Advisory + load contracts** — drive on `error.code`; 429/`Retry-After`; 503 ⇒ proceed to `Register`; device is sole retrier. [→](#g-aduv2-transport-via-the-dps-gateway) |
+| ADUv2 transport | ✅ | **ETag + api-version + agent-info resend** — `agentInfoEtag`/`serviceConfigEtag`; resend full `agentInfo` on `OUTDATED_`/`UNKNOWN_AGENT_INFO`; re-sync on `OUTDATED_SERVICE_CONFIG`. [→](#g-aduv2-transport-via-the-dps-gateway) |
+| ADUv2 transport | 🟡 | **Advisory + load contracts** — the error classifier drives on the code and the device is the sole retrier. `Retry-After` is **not** surfaced: it arrives as a response-topic parameter and nothing reads it, so a throttled device falls back on its own backoff. [→](#g-aduv2-transport-via-the-dps-gateway) |
 | Day0 recovery | 🔜 | **Unauthenticated recovery transport** — plain-HTTP recovery endpoint (protocol not yet defined). [→](#h-day0-recovery) |
 | Day0 recovery | 🔜 | **Account-ID binding** — validate signed manifest's ADU account ID (replay protection). [→](#h-day0-recovery) |
 | Day0 recovery | 🔜 | **Compatibility-property validation** — device checks compat before applying a replayed response. [→](#h-day0-recovery) |
@@ -320,19 +320,16 @@ stateDiagram-v2
 
 ## F. Platform and crypto adapters
 
-- **`crypto_openssl` (✅)** is the only fully factored adapter in `adapters/adu/`. Crypto adapters
-  are transport-free and are **unaffected by the cut**.
-- **To do:** factor **`crypto_mbedtls`** (🟡 — currently inline in the ESP32 sample),
-  the **Linux** adapter (🔜 — libcurl chunked/streaming-hash download, configurable
-  install command, file-based persistence), and the **ESP32** adapter (🟡 —
-  `esp_http_client` + `esp_ota` + NVS resume; the real-OTA sample already proves it, it
-  just isn't under `adapters/adu/esp32/`). *Caveat:* install/apply/download real adapters
-  currently live in **samples**, not `adapters/`.
-- **The two ADU samples are ADUv1-shaped** (`samples/adu/pc`, `samples/adu/esp32`): they connect
-  to a Hub and drive the workflow off desired properties. Their platform-hook halves are exactly
-  what has to be salvaged into `adapters/`; their twin halves go with the cut and are replaced by
-  an ADUv2 bootstrap/operational sample. Do the salvage **before** deleting the twin channel, or
-  the only working install/apply reference on real hardware is lost.
+- **`crypto_openssl` (✅)**, **`crypto_mbedtls` (✅)** and the **ESP32 platform adapter (✅)**
+  are factored under `adapters/adu/`. Crypto adapters are transport-free and were
+  **unaffected by the cut**.
+- **To do:** the **Linux** adapter (🔜 — libcurl chunked/streaming-hash download, configurable
+  install command, file-based persistence). *Caveat:* the PC sample's download/install hooks are
+  still **simulated** and live in the sample, so there is no real Linux install/apply reference
+  under `adapters/`.
+- **Both ADU samples are ADUv2-shaped** (`samples/adu/pc`, `samples/adu/esp32`): they provision
+  through DPS and drive the workflow off the device-update operations, asking for an onboarding
+  update explicitly. The salvage this section warned about is done.
 
 ## G. ADUv2 transport (via the DPS gateway)
 
