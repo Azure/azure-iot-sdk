@@ -111,14 +111,23 @@ extern "C"
     void (*close)(void* ctx);
 
     /**
-     * @brief Ask the channel to check for an update now.
+     * @brief Ask the channel to check for an update now, on a named route.
      *
      * A pull channel performs its fetch. A push channel may treat this as a
      * proactive get. The channel reports the outcome by invoking the update
      * callback; "no update available" is a success and simply means the
      * callback is not invoked.
+     *
+     * @param operation Which fetch route to use: AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE
+     *                  or AZ_IOT_ADU_OP_GET_UPDATE. The caller chooses; the
+     *                  channel does not infer it, because the only state that
+     *                  could distinguish the two lives in the application (it
+     *                  persists its provisioning result across boots) and the
+     *                  service cannot be probed for it -- a device with no
+     *                  device record and a malformed request are both rejected
+     *                  with the same error code.
      */
-    az_iot_result (*request_update)(void* ctx);
+    az_iot_result (*request_update)(void* ctx, az_iot_adu_operation operation);
 
     /**
      * @brief Deliver a structured status report.

@@ -433,10 +433,14 @@ static void channel_close(void* ctx)
   c->request_pending = false;
 }
 
-static az_iot_result channel_request_update(void* ctx)
+static az_iot_result channel_request_update(void* ctx, az_iot_adu_operation operation)
 {
   az_iot_adu_channel_dps* c = (az_iot_adu_channel_dps*)ctx;
   if (c == NULL)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if (operation != AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE && operation != AZ_IOT_ADU_OP_GET_UPDATE)
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
@@ -466,11 +470,10 @@ static az_iot_result channel_request_update(void* ctx)
   agent.compatibility_properties = (c->compat_count > 0) ? c->compat : NULL;
   agent.compatibility_properties_count = c->compat_count;
 
-  /* The device picks the route from its own provisioning state rather than
-   * probing: the service reports "not onboarded yet" with a code that also
-   * covers ordinary bad requests, so a probe-and-fall-back would fire on
-   * malformed requests too. */
-  az_iot_adu_operation operation = AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE;
+  /* The route is the caller's to choose: only the application knows whether it
+   * has a device record yet, and the service cannot be asked -- "no device
+   * record" and "malformed request" share one error code, so a probe-and-fall-
+   * back would fire on genuinely bad requests too. */
 
   /* The onboarding route omits installedUpdateId by contract: a day-0 device
    * has nothing installed. The operational route sends it, which is how the
