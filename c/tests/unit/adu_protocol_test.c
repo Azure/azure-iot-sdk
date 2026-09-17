@@ -119,6 +119,10 @@ static void a_retry_after_is_read_off_the_response_topic(void** state)
   /* Order does not matter, and a value at the end of the topic is fine. */
   const char* first = "$dps/registrations/res/429/?retry-after=12&$rid=adu2";
   assert_int_equal(az_iot_adu__parse_retry_after_seconds(first, strlen(first)), 12u);
+
+  /* The largest value we honour, asserted so the bound cannot drift. */
+  const char* cap = "$dps/registrations/res/429/?$rid=adu3&retry-after=86400";
+  assert_int_equal(az_iot_adu__parse_retry_after_seconds(cap, strlen(cap)), 86400u);
 }
 
 /* 0 means "no delay asked for", which is also the safe reading of a value we
@@ -139,9 +143,19 @@ static void an_absent_or_unusable_retry_after_reads_as_zero(void** state)
   assert_int_equal(az_iot_adu__parse_retry_after_seconds(units, strlen(units)), 0u);
 
   /* Beyond the bound, so we do not park the device for an implausible stretch
-   * on the strength of one topic. */
+   * on the strength of one topic. Both sides of the boundary are asserted so an
+   * off-by-one in the comparison cannot pass: 86400 is accepted, 86401 is not.
+   * The accepted case is checked in the positive test above. */
+  const char* over = "$dps/registrations/res/500/?$rid=adu1&retry-after=86401";
+  assert_int_equal(az_iot_adu__parse_retry_after_seconds(over, strlen(over)), 0u);
+
   const char* huge = "$dps/registrations/res/500/?$rid=adu1&retry-after=999999999";
   assert_int_equal(az_iot_adu__parse_retry_after_seconds(huge, strlen(huge)), 0u);
+
+  /* Long enough to overflow a uint64 if the bound were only checked after the
+   * whole value had been accumulated. */
+  const char* wrapping = "$dps/registrations/res/500/?$rid=adu1&retry-after=184467440737095516161";
+  assert_int_equal(az_iot_adu__parse_retry_after_seconds(wrapping, strlen(wrapping)), 0u);
 
   /* Must be a parameter in its own right, not the tail of another key. */
   const char* suffix = "$dps/registrations/res/500/?$rid=adu1&no-retry-after=9";
