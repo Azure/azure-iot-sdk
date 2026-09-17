@@ -33,16 +33,16 @@
  * Paho adapter carries the same copy for the same reason. */
 #define is_nonempty_cstr(s) ((s) != NULL && (s)[0] != '\0')
 
+/* What a PEM certificate starts with, used both to frame one and to tell an
+ * already-PEM payload from base64 DER after decoding. */
+#define PEM_CERT_PREFIX "-----BEGIN CERTIFICATE-----"
+
 /* PEM framing written around a certificate the service issues as base64 DER. */
-#define PEM_CERT_BEGIN "-----BEGIN CERTIFICATE-----\n"
+#define PEM_CERT_BEGIN PEM_CERT_PREFIX "\n"
 #define PEM_CERT_END "\n-----END CERTIFICATE-----\n"
 
 /* Longest base64 line a PEM body may contain (RFC 7468 recommends 64). */
 #define PEM_LINE_LEN 64
-
-/* What a PEM certificate starts with, used to tell an already-PEM payload from
- * base64 DER after decoding. */
-#define PEM_CERT_PREFIX "-----BEGIN CERTIFICATE-----"
 
 /* Encoded length (excluding NUL) of base64 over `binary_len` bytes. */
 #define BASE64_ENCODED_LEN(binary_len) ((((binary_len) + 2) / 3) * 4)
