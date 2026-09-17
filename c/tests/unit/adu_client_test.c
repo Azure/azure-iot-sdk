@@ -438,6 +438,10 @@ typedef struct
   int request_update_count;
   az_iot_result request_update_result;
   az_iot_adu_operation last_request_operation;
+  /* When true, the verdict is delivered from INSIDE request_update(), which the
+   * channel contract explicitly permits for a synchronous channel. */
+  bool result_is_synchronous;
+  az_iot_adu_error_action synchronous_action;
 
   int report_count;
   az_iot_adu_report last_report;
@@ -480,6 +484,10 @@ static az_iot_result fake_channel_request_update(void* ctx, az_iot_adu_operation
   fake_channel* fc = (fake_channel*)ctx;
   fc->request_update_count++;
   fc->last_request_operation = operation;
+  if (fc->result_is_synchronous && fc->result_cb != NULL)
+  {
+    fc->result_cb(operation, AZ_IOT_ERR_DPS, fc->synchronous_action, fc->engine_ctx);
+  }
   return fc->request_update_result;
 }
 
@@ -2112,6 +2120,64 @@ static void a_retryable_verdict_does_not_overwrite_a_newer_request(void** state)
   assert_int_equal(fx->chan.request_update_count, 2);
 }
 
+/* A synchronous channel delivers its verdict from inside request_update(), so
+ * the re-arm happens before that call returns. Clearing the slot after the call
+ * would wipe the retry the verdict just armed. */
+static void a_synchronous_retryable_verdict_is_not_lost(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  fx->chan.result_is_synchronous = true;
+  fx->chan.synchronous_action = AZ_IOT_ADU_ERROR_ACTION_RETRY;
+
+  assert_int_equal(az_iot_adu_client_request_update(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(fx->chan.request_update_count, 1);
+
+  /* The retry survived the accepted publish and goes out again, on the route
+   * that was asked for. */
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(fx->chan.request_update_count, 2);
+  assert_int_equal(fx->chan.last_request_operation, AZ_IOT_ADU_OP_GET_UPDATE);
+}
+
+/* The mirror case: a synchronous TERMINAL verdict must not be retried, or the
+ * test above would pass for an engine that simply never clears the slot. */
+static void a_synchronous_terminal_verdict_is_not_retried(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  fx->chan.result_is_synchronous = true;
+  fx->chan.synchronous_action = AZ_IOT_ADU_ERROR_ACTION_FATAL;
+
+  assert_int_equal(az_iot_adu_client_request_update(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(fx->chan.request_update_count, 1);
+
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(fx->chan.request_update_count, 1);
+}
+
+/* One pending slot, newest wins: two requests before a do_work() issue one
+ * fetch, not two. This is the documented public contract. */
+static void two_requests_before_do_work_issue_only_the_newest(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  assert_int_equal(az_iot_adu_client_request_update(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(az_iot_adu_client_request_onboarding_update(&fx->adu), AZ_IOT_OK);
+
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(fx->chan.request_update_count, 1);
+  assert_int_equal(fx->chan.last_request_operation, AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE);
+
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(fx->chan.request_update_count, 1);
+}
+
 static void a_request_on_a_null_client_is_rejected(void** state)
 {
   (void)state;
@@ -2130,6 +2196,10 @@ int main(void)
     cmocka_unit_test_setup_teardown(a_retryable_verdict_re_arms_the_same_route, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_retryable_verdict_does_not_overwrite_a_newer_request, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_synchronous_retryable_verdict_is_not_lost, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_synchronous_terminal_verdict_is_not_retried, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        two_requests_before_do_work_issue_only_the_newest, setup, teardown),
     cmocka_unit_test(a_request_on_a_null_client_is_rejected),
     cmocka_unit_test_setup_teardown(deployment_drives_full_workflow_single_step, setup, teardown),
     cmocka_unit_test_setup_teardown(verify_failure_blocks_download_and_fails, setup, teardown),

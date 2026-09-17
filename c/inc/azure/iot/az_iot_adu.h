@@ -662,6 +662,12 @@ extern "C"
    * result arrives through the engine, not this return value. Returns
    * AZ_IOT_ERR_INVALID_ARG if @p client is NULL.
    *
+   * There is ONE pending slot, and the newest request wins. Calling either
+   * request function twice before do_work() does NOT queue two fetches: the
+   * second replaces the first, and only the second is issued. A request made
+   * while an earlier one is still in flight likewise replaces whatever the
+   * engine would otherwise have retried.
+   *
    * Single-threaded contract: MUST be called on the do_work thread or be
    * externally serialized with do_work().
    */

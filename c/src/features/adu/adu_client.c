@@ -1288,20 +1288,35 @@ static az_iot_result channel_request_update(
   return ADU_I(client).channel.vtable->request_update(ADU_I(client).channel.ctx, operation);
 }
 
-/* Issue whatever fetch is pending, clearing it only once the channel accepts.
- * No-op when nothing was requested. */
+/* Issue whatever fetch is pending. No-op when nothing was requested.
+ *
+ * The slot is cleared BEFORE the channel is called, not after. A synchronous
+ * channel is allowed to deliver its verdict from inside request_update(), and
+ * that verdict re-arms the slot; clearing afterwards would wipe the re-armed
+ * retry. Clearing first also means the re-arm logic sees an empty slot, which
+ * is what tells it this is its own request rather than a newer one.
+ *
+ * On rejection the request is put back -- unless something already refilled the
+ * slot while the channel had control, because that value is newer. A channel
+ * that honours the contract cannot hit that case (the verdict callback fires
+ * only for an ACCEPTED operation), so the check is defensive: it keeps a
+ * misbehaving channel from turning a fresh request into a stale retry. */
 static void drive_pending_fetch(az_iot_adu_client_t* client)
 {
-  if (ADU_I(client).pending_fetch == ADU_FETCH_NONE)
+  uint8_t requested = ADU_I(client).pending_fetch;
+  if (requested == ADU_FETCH_NONE)
   {
     return;
   }
-  az_iot_adu_operation operation = (ADU_I(client).pending_fetch == ADU_FETCH_ONBOARDING)
+  az_iot_adu_operation operation = (requested == ADU_FETCH_ONBOARDING)
       ? AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE
       : AZ_IOT_ADU_OP_GET_UPDATE;
-  if (channel_request_update(client, operation) == AZ_IOT_OK)
+
+  ADU_I(client).pending_fetch = ADU_FETCH_NONE;
+  if (channel_request_update(client, operation) != AZ_IOT_OK
+      && ADU_I(client).pending_fetch == ADU_FETCH_NONE)
   {
-    ADU_I(client).pending_fetch = ADU_FETCH_NONE;
+    ADU_I(client).pending_fetch = requested;
   }
 }
 
