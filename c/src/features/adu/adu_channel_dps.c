@@ -71,6 +71,30 @@ static bool rid_is_ours(const char* rid)
 /* outbound                                                                  */
 /* ------------------------------------------------------------------------- */
 
+/* True while the service's retry-after is still running. Clears itself once it
+ * expires, so the caller never has to.
+ *
+ * Checked in two places, and both matter. publish_operation() is the gate every
+ * operation funnels through, so nothing can forget it. But the request entry
+ * points have to refuse BEFORE they ask for a provisioning session: otherwise a
+ * request during a long delay sets the standing interest, the tick opens an
+ * auxiliary session, the publish is refused, the session lingers idle and
+ * closes, and the cycle repeats for the whole backoff -- reconnecting over and
+ * over to say nothing. */
+static bool retry_after_in_force(az_iot_adu_channel_dps* c)
+{
+  if (c->retry_after_deadline_ms == 0)
+  {
+    return false;
+  }
+  if (az_iot_time_mono_ms() < c->retry_after_deadline_ms)
+  {
+    return true;
+  }
+  c->retry_after_deadline_ms = 0;
+  return false;
+}
+
 static az_iot_result publish_operation(
     az_iot_adu_channel_dps* c,
     az_iot_adu_operation operation,
@@ -108,16 +132,9 @@ static az_iot_result publish_operation(
     return AZ_IOT_ERR_NOT_CONNECTED;
   }
 
-  /* The service asked us to wait. Refusing here rather than in the callers
-   * covers every operation, and BUSY is the right answer: the engine keeps the
-   * request and re-offers it, so the delay costs a retry, not the operation. */
-  if (c->retry_not_before_ms != 0)
+  if (retry_after_in_force(c))
   {
-    if (az_iot_time_mono_ms() < c->retry_not_before_ms)
-    {
-      return AZ_IOT_ERR_BUSY;
-    }
-    c->retry_not_before_ms = 0;
+    return AZ_IOT_ERR_BUSY;
   }
 
   char topic[AZ_IOT_ADU_TOPIC_MAX_SIZE];
@@ -290,7 +307,7 @@ static bool on_dps_message(
     uint32_t retry_after_s = az_iot_adu__parse_retry_after_seconds(topic, strlen(topic));
     if (retry_after_s > 0)
     {
-      c->retry_not_before_ms = az_iot_time_mono_ms() + ((uint64_t)retry_after_s * 1000ull);
+      c->retry_after_deadline_ms = az_iot_time_mono_ms() + ((uint64_t)retry_after_s * 1000ull);
       AZ_IOT_LOG_DEBUGF("adu: service asked for a %u second delay", (unsigned)retry_after_s);
     }
     AZ_IOT_LOG_ERRORF("adu: operation failed with status %d", (int)status);
@@ -455,7 +472,7 @@ static void channel_close(void* ctx)
   c->request_pending = false;
   /* The delay belongs to the binding that earned it. A fresh bind is a fresh
    * start, not a continuation of someone else's backoff. */
-  c->retry_not_before_ms = 0;
+  c->retry_after_deadline_ms = 0;
 }
 
 static az_iot_result channel_request_update(void* ctx, az_iot_adu_operation operation)
@@ -468,6 +485,12 @@ static az_iot_result channel_request_update(void* ctx, az_iot_adu_operation oper
   if (operation != AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE && operation != AZ_IOT_ADU_OP_GET_UPDATE)
   {
     return AZ_IOT_ERR_INVALID_ARG;
+  }
+  /* Before the session check, not after: asking for a session we may not
+   * publish on is what turns one delay into a reconnect loop. */
+  if (retry_after_in_force(c))
+  {
+    return AZ_IOT_ERR_BUSY;
   }
   /* A request outstanding on a session that no longer exists can never be
    * answered. Clearing it here is what stops a lost response -- or one lost to
@@ -531,6 +554,10 @@ static az_iot_result channel_report(void* ctx, const az_iot_adu_report* report)
   if (c == NULL || report == NULL)
   {
     return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if (retry_after_in_force(c))
+  {
+    return AZ_IOT_ERR_BUSY;
   }
   if (c->request_pending)
   {

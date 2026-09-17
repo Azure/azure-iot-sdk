@@ -157,6 +157,11 @@ static void an_absent_or_unusable_retry_after_reads_as_zero(void** state)
   const char* wrapping = "$dps/registrations/res/500/?$rid=adu1&retry-after=184467440737095516161";
   assert_int_equal(az_iot_adu__parse_retry_after_seconds(wrapping, strlen(wrapping)), 0u);
 
+  /* Digits only. az_span_atou32 would take a leading sign; the contract here
+   * does not. */
+  const char* signed_value = "$dps/registrations/res/500/?$rid=adu1&retry-after=+3";
+  assert_int_equal(az_iot_adu__parse_retry_after_seconds(signed_value, strlen(signed_value)), 0u);
+
   /* Must be a parameter in its own right, not the tail of another key. */
   const char* suffix = "$dps/registrations/res/500/?$rid=adu1&no-retry-after=9";
   assert_int_equal(az_iot_adu__parse_retry_after_seconds(suffix, strlen(suffix)), 0u);

@@ -536,11 +536,49 @@ static void a_retry_after_on_the_topic_defers_the_next_request(void** state)
 
   /* Once it elapses the channel publishes again, and does not stay wedged. */
   az_iot_adu_channel_dps* c = (az_iot_adu_channel_dps*)fx->channel.ctx;
-  c->retry_not_before_ms = az_iot_time_mono_ms();
+  c->retry_after_deadline_ms = az_iot_time_mono_ms();
   assert_int_equal(
       fx->channel.vtable->request_update(fx->channel.ctx, AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE),
       AZ_IOT_OK);
-  assert_int_equal(c->retry_not_before_ms, 0);
+  assert_int_equal(c->retry_after_deadline_ms, 0);
+}
+
+/* During a delay a request must NOT ask for a provisioning session. If it did,
+ * the tick would open an auxiliary session, the publish would be refused, the
+ * session would linger idle and close, and the cycle would repeat for the whole
+ * backoff -- reconnecting over and over to say nothing. */
+static void a_request_during_a_delay_does_not_ask_for_a_session(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(fx->channel.vtable->open(fx->channel.ctx, on_update, on_result, fx), AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(&fx->client, fx->factory), AZ_IOT_OK);
+
+  /* Provisioned, and the ordinary flow has taken its session away -- the state
+   * in which a request would otherwise open an auxiliary one. */
+  fx->client.dps_phase = AZ_IOT_DPS_PHASE_DONE;
+  assert_false(az_iot_connection_client__dps_session_ready(&fx->client));
+
+  fx->channel_state.retry_after_deadline_ms = az_iot_time_mono_ms() + 60000u;
+
+  assert_int_equal(
+      fx->channel.vtable->request_update(fx->channel.ctx, AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE),
+      AZ_IOT_ERR_BUSY);
+  assert_false(fx->channel_state.wants_session);
+
+  /* So the tick opens nothing. */
+  assert_int_equal(fx->channel.vtable->do_work(fx->channel.ctx), AZ_IOT_OK);
+  assert_false(fx->client.dps_session_auxiliary);
+
+  /* Once it expires the demand is recorded again and the session is opened,
+   * so the delay defers the request rather than dropping it. */
+  fx->channel_state.retry_after_deadline_ms = az_iot_time_mono_ms();
+  assert_int_equal(
+      fx->channel.vtable->request_update(fx->channel.ctx, AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE),
+      AZ_IOT_ERR_NOT_CONNECTED);
+  assert_true(fx->channel_state.wants_session);
+  assert_int_equal(fx->channel.vtable->do_work(fx->channel.ctx), AZ_IOT_OK);
+  assert_true(fx->client.dps_session_auxiliary);
 }
 
 /* A failure WITHOUT the parameter must not invent a delay, or every ordinary
@@ -561,7 +599,7 @@ static void a_failure_without_a_retry_after_defers_nothing(void** state)
   assert_true(inject(fx, m, topic, "{\"errorCode\":500000,\"message\":\"server error\"}"));
 
   az_iot_adu_channel_dps* c = (az_iot_adu_channel_dps*)fx->channel.ctx;
-  assert_int_equal(c->retry_not_before_ms, 0);
+  assert_int_equal(c->retry_after_deadline_ms, 0);
   assert_int_equal(
       fx->channel.vtable->request_update(fx->channel.ctx, AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE),
       AZ_IOT_OK);
@@ -1276,6 +1314,8 @@ int main(void)
         a_retry_after_on_the_topic_defers_the_next_request, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_failure_without_a_retry_after_defers_nothing, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_request_during_a_delay_does_not_ask_for_a_session, setup, teardown),
     cmocka_unit_test_setup_teardown(
         the_channel_holds_registration_so_bootstrap_can_run, setup, teardown),
     cmocka_unit_test_setup_teardown(

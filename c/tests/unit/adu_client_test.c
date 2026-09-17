@@ -444,6 +444,8 @@ typedef struct
   az_iot_adu_error_action synchronous_action;
 
   int report_count;
+  /* AZ_IOT_OK unless a test wants to see a refusal handled. */
+  az_iot_result report_result;
   az_iot_adu_report last_report;
   char last_workflow_id[128];
   char last_extended[32];
@@ -554,7 +556,7 @@ static az_iot_result fake_channel_report(void* ctx, const az_iot_adu_report* rep
         sizeof(fc->last_installed_version),
         report->installed_update_id->version);
   }
-  return AZ_IOT_OK;
+  return fc->report_result;
 }
 
 static const az_iot_adu_channel_vtable k_fake_channel_vtable = {
@@ -652,6 +654,7 @@ static int setup(void** state)
   assert_non_null(fx->factory);
 
   memset(&fx->chan, 0, sizeof(fx->chan));
+  fx->chan.report_result = AZ_IOT_OK;
   fx->channel.vtable = &k_fake_channel_vtable;
   fx->channel.ctx = &fx->chan;
 
@@ -2178,6 +2181,33 @@ static void two_requests_before_do_work_issue_only_the_newest(void** state)
   assert_int_equal(fx->chan.request_update_count, 1);
 }
 
+/* A report the channel cannot take right now must not be lost. Most callers are
+ * state transitions that discard the result, so the engine has to re-arm it
+ * itself -- and a status report is the only record the service gets of what
+ * this device did. */
+static void a_refused_report_is_re_armed_and_resent(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  /* Drain the startup report so the next one is the interesting one. */
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  int before = fx->chan.report_count;
+
+  fx->chan.report_result = AZ_IOT_ERR_BUSY;
+  inject_patch(fx, signed_patch());
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  assert_true(fx->chan.report_count > before);
+  /* Refused, so the engine must be holding it for another go. */
+  assert_true(fx->adu._internal.device_props_report_pending);
+
+  fx->chan.report_result = AZ_IOT_OK;
+  int refused = fx->chan.report_count;
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  assert_true(fx->chan.report_count > refused);
+  assert_false(fx->adu._internal.device_props_report_pending);
+}
+
 static void a_request_on_a_null_client_is_rejected(void** state)
 {
   (void)state;
@@ -2200,6 +2230,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(a_synchronous_terminal_verdict_is_not_retried, setup, teardown),
     cmocka_unit_test_setup_teardown(
         two_requests_before_do_work_issue_only_the_newest, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_refused_report_is_re_armed_and_resent, setup, teardown),
     cmocka_unit_test(a_request_on_a_null_client_is_rejected),
     cmocka_unit_test_setup_teardown(deployment_drives_full_workflow_single_step, setup, teardown),
     cmocka_unit_test_setup_teardown(verify_failure_blocks_download_and_fails, setup, teardown),
