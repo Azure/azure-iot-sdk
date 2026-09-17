@@ -312,21 +312,33 @@ static bool write_issued_cert(BIO* b, const uint8_t* base64, int base64_len)
   }
 
   int decoded_len = EVP_DecodeBlock(decoded, base64, base64_len);
+  if (decoded_len <= 0)
+  {
+    /* Not decodable base64, so neither form can be recovered from it. Writing it
+     * anyway would persist a certificate file that cannot be parsed and would
+     * only be discovered later, as a connection failure. */
+    free(decoded);
+    return false;
+  }
+
   /* EVP_DecodeBlock rounds up to a multiple of three and counts the '=' padding
    * as data, so trim it back before the content is inspected or written. */
-  if (decoded_len > 0)
+  if (base64_len >= 2 && base64[base64_len - 1] == '=')
   {
-    if (base64_len >= 2 && base64[base64_len - 1] == '=')
+    decoded_len--;
+    if (base64[base64_len - 2] == '=')
     {
       decoded_len--;
-      if (base64[base64_len - 2] == '=')
-      {
-        decoded_len--;
-      }
     }
   }
 
-  if (decoded_len > 0 && (size_t)decoded_len >= strlen(PEM_CERT_PREFIX)
+  if (decoded_len <= 0)
+  {
+    free(decoded);
+    return false;
+  }
+
+  if ((size_t)decoded_len >= strlen(PEM_CERT_PREFIX)
       && memcmp(decoded, PEM_CERT_PREFIX, strlen(PEM_CERT_PREFIX)) == 0)
   {
     /* Already PEM: write it through unchanged, and guarantee the newline that
