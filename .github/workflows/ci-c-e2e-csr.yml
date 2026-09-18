@@ -45,8 +45,8 @@
 #                 name from the run id rather than reading a setup output, so it
 #                 also cleans up after a CANCELLED setup job (see `env` below).
 #
-# The provision/destroy steps live in .github/actions/{provision,destroy}-e2e-
-# resources so other pipelines can reuse them.
+# The provision/destroy steps are the shared composite actions
+# Azure/iot-sdks-e2e-fx/actions/{provision,destroy}-e2e-resources, pinned to a tag.
 
 name: ci-c-e2e-csr
 
@@ -61,12 +61,9 @@ on:
       - 'c/adapters/cert_openssl/**'
       - 'c/inc/azure/iot/az_iot_certificate_provider.h'
       - 'c/inc/azure/iot/az_iot_connection_client.h'
-      # The e2e harness (shared device fixture + CSR test + service facade) and
-      # the provisioning wiring this workflow depends on.
+      # The e2e harness (shared device fixture + CSR test + service facade).
       - 'c/tests/e2e/**'
       - '.github/workflows/ci-c-e2e-csr.yml'
-      - '.github/actions/provision-e2e-resources/**'
-      - '.github/actions/destroy-e2e-resources/**'
   push:
     branches: [ main ]
     paths:
@@ -78,8 +75,6 @@ on:
       - 'c/inc/azure/iot/az_iot_connection_client.h'
       - 'c/tests/e2e/**'
       - '.github/workflows/ci-c-e2e-csr.yml'
-      - '.github/actions/provision-e2e-resources/**'
-      - '.github/actions/destroy-e2e-resources/**'
   schedule:
     - cron: '0 12 * * *'  # Nightly at 5am PST (offset from the fast + ADU workflows)
 
@@ -120,10 +115,14 @@ jobs:
 
       - name: Provision cert-management resources
         id: provision
-        uses: ./.github/actions/provision-e2e-resources
+        uses: Azure/iot-sdks-e2e-fx/actions/provision-e2e-resources@v1
         with:
           rg-name: ${{ env.E2E_RESOURCE_GROUP }}
-          azure-location: ${{ vars.E2E_AZURE_LOCATION }}
+          # The shared action defaults to EastUS; these pipelines run in
+          # centraluseuap. An undefined repository variable arrives as an empty
+          # string, which would otherwise override that default, so the fallback
+          # is applied here.
+          azure-location: ${{ vars.E2E_AZURE_LOCATION || 'centraluseuap' }}
           # Provision the DPS with Azure Device Registration (ADR) integration so
           # the enrollment can issue an operational certificate for the device CSR.
           enable-certificate-management: 'true'
@@ -263,6 +262,6 @@ jobs:
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Delete Azure resources
-        uses: ./.github/actions/destroy-e2e-resources
+        uses: Azure/iot-sdks-e2e-fx/actions/destroy-e2e-resources@v1
         with:
           resource-group: ${{ env.E2E_RESOURCE_GROUP }}
