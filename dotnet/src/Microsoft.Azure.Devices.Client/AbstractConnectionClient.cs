@@ -38,7 +38,13 @@ namespace Microsoft.Azure.Devices.Client
 
         private const string ProvisioningUsernameFormat = "{0}/registrations/{1}/api-version={2}&ClientVersion={3}";
 
-        private const string ProvisioningApiVersion = "2021-10-01"; // TODO 2026-11-02-preview is required for connection profile fields, but is not available yet. Current version is sufficient for cert management
+        private const string ProvisioningApiVersion = "2021-10-01"; // TODO 2026-11-02-preview is required for connection profile fields, but is not available yet.
+
+        // Issuing an operational certificate from a certificate signing request is not part of the GA API version
+        // above: Device Provisioning Service rejects a registration request that carries a "csr" field unless the
+        // connection asked for a version that knows about it. Only used when the caller supplies a request, so a
+        // registration without one keeps the GA version.
+        private const string ProvisioningCertificateSigningRequestApiVersion = "2025-07-01-preview";
         private const string ProvisioningSubscribeFilter = "$dps/registrations/res/#";
         private const string ProvisioningRegisterTopic = "$dps/registrations/PUT/iotdps-register/?$rid={0}";
         private const string ProvisioningGetOperationsTopic = "$dps/registrations/GET/iotdps-get-operationstatus/?$rid={0}&operationId={1}";
@@ -115,7 +121,7 @@ namespace Microsoft.Azure.Devices.Client
 
         // The DPS responses that the in-progress provisioning flow is waiting on. Both are reset for each new connection
         // to DPS since a registration only lives as long as the connection it was started on.
-        private TaskCompletionSource<RegistrationOperationStatus>? _startProvisioningRequestStatusSource;
+        private TaskCompletionSource<ProvisioningServiceResponse>? _startProvisioningRequestStatusSource;
         private TaskCompletionSource<RegistrationOperationStatus>? _checkRegistrationOperationStatusSource;
         private int _provisioningRequestId;
 
@@ -620,7 +626,11 @@ namespace Microsoft.Azure.Devices.Client
             // This client is establishing a connection again, so any earlier fault no longer describes its state.
             ClearUnrecoverableFault();
 
-            MqttConnect connect = CreateProvisioningConnectPacket(authentication, provisioningSettings.IdScope, provisioningSettings.GlobalEndpointAddress);
+            MqttConnect connect = CreateProvisioningConnectPacket(
+                authentication,
+                provisioningSettings.IdScope,
+                provisioningSettings.GlobalEndpointAddress,
+                provisioningSettings.CertificateSigningRequest != null);
 
             TaskCompletionSource<ProvisioningFlowCompletedArgs> provisioningFlowResult = new(TaskCreationOptions.RunContinuationsAsynchronously);
             Task HandleProvisioningFlowCompletedAsync(ProvisioningFlowCompletedArgs args)
@@ -777,7 +787,7 @@ namespace Microsoft.Azure.Devices.Client
                 QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce
             };
 
-            _startProvisioningRequestStatusSource = new TaskCompletionSource<RegistrationOperationStatus>(TaskCreationOptions.RunContinuationsAsynchronously);
+            _startProvisioningRequestStatusSource = new TaskCompletionSource<ProvisioningServiceResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
 
             Trace.TraceInformation("Publishing to DPS on topic {0}", registrationTopic);
 
@@ -788,17 +798,33 @@ namespace Microsoft.Azure.Devices.Client
 
             try
             {
-                RegistrationOperationStatus registrationStatus = await _startProvisioningRequestStatusSource.Task.WaitAsync(cancellationToken);
+                ProvisioningServiceResponse response = await _startProvisioningRequestStatusSource.Task.WaitAsync(cancellationToken);
 
-                return registrationStatus.Status != ProvisioningRegistrationStatus.Assigning
-                    ? throw new Exception("TODO")
-                    : registrationStatus;
+                RegistrationOperationStatus? operation = response.Operation;
+
+                if (operation == null || operation.Status != ProvisioningRegistrationStatus.Assigning)
+                {
+                    // Anything else is the service refusing to start this registration, and its response says why:
+                    // the status code lives in the response topic and the reason in the body. Reporting both is the
+                    // only way the caller can tell, say, a malformed request from an enrollment that does not exist.
+                    throw new Exception(
+                        $"Device Provisioning Service did not start this registration. Response topic: '{response.Topic}'. Response body: '{response.Payload}'.");
+                }
+
+                return operation;
             }
             catch (OperationCanceledException e)
             {
                 throw new OperationCanceledException("Timed out waiting for DPS to send the initial provisioning response", e);
             }
         }
+
+        /// <summary>
+        /// A response that Device Provisioning Service sent to a registration request, kept with the topic it arrived
+        /// on and the body as it was received so that a response that is not a registration operation (an error, for
+        /// instance) can still be reported in full.
+        /// </summary>
+        private sealed record ProvisioningServiceResponse(string Topic, string Payload, RegistrationOperationStatus? Operation);
 
         private async Task<DeviceRegistrationResult> PollUntilProvisioningFinishesAsync(string operationId, CancellationToken cancellationToken)
         {
@@ -846,7 +872,7 @@ namespace Microsoft.Azure.Devices.Client
             }
         }
 
-        private MqttConnect CreateProvisioningConnectPacket(X509AuthenticationProvider authentication, string idScope, string globalDeviceEndpoint)
+        private MqttConnect CreateProvisioningConnectPacket(X509AuthenticationProvider authentication, string idScope, string globalDeviceEndpoint, bool isCertificateSigningRequest)
         {
             string hostName = globalDeviceEndpoint;
 
@@ -855,7 +881,7 @@ namespace Microsoft.Azure.Devices.Client
                 ProvisioningUsernameFormat,
                 idScope,
                 authentication.GetRegistrationId(),
-                ProvisioningApiVersion,
+                isCertificateSigningRequest ? ProvisioningCertificateSigningRequestApiVersion : ProvisioningApiVersion,
                 Uri.EscapeDataString(GetProvisioningUserAgentString()));
 
 
@@ -887,7 +913,7 @@ namespace Microsoft.Azure.Devices.Client
 
             string topic = receivedEventArgs.Publish.Topic;
 
-            TaskCompletionSource<RegistrationOperationStatus>? startProvisioningRequestStatusSource = _startProvisioningRequestStatusSource;
+            TaskCompletionSource<ProvisioningServiceResponse>? startProvisioningRequestStatusSource = _startProvisioningRequestStatusSource;
 
             if (startProvisioningRequestStatusSource == null)
             {
@@ -902,8 +928,18 @@ namespace Microsoft.Azure.Devices.Client
             {
                 // The initial provisioning request's response topic is shaped like "$dps/registrations/res/202/?$rid=1&retry-after=3"
                 string jsonString = Encoding.UTF8.GetString(receivedEventArgs.Publish.Payload);
-                RegistrationOperationStatus operation = JsonSerializer.Deserialize<RegistrationOperationStatus>(jsonString, JsonSerializationSettings.Options)!;
-                startProvisioningRequestStatusSource.TrySetResult(operation);
+                RegistrationOperationStatus? operation = null;
+                try
+                {
+                    operation = JsonSerializer.Deserialize<RegistrationOperationStatus>(jsonString, JsonSerializationSettings.Options);
+                }
+                catch (JsonException)
+                {
+                    // An error response does not have to be shaped like a registration operation, and its body is
+                    // reported as-is by the caller of this flow rather than hidden behind a deserialization failure.
+                }
+
+                startProvisioningRequestStatusSource.TrySetResult(new ProvisioningServiceResponse(topic, jsonString, operation));
             }
             else
             {

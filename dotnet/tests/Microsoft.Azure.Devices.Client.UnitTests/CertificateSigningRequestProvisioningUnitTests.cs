@@ -7,6 +7,7 @@ using Microsoft.Azure.Devices.Client.Provisioning;
 using Microsoft.Azure.Devices.Client.Provisioning.Models;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
+using System.Text;
 using System.Text.Json;
 using Xunit;
 
@@ -38,8 +39,13 @@ namespace Microsoft.Azure.Devices.Client.UnitTests
             using MockConnectionMqttClient mockMqttClient = new();
             MockCertificateIssuingProvisioningService mockDps = new(mockMqttClient, issuedChain);
 
+            MqttConnect? dpsConnect = null;
             mockMqttClient.OnConnect = connect =>
-                Task.FromResult(new MqttConnectAck() { ResultCode = MqttConnectReasonCode.Success });
+            {
+                dpsConnect ??= connect;
+
+                return Task.FromResult(new MqttConnectAck() { ResultCode = MqttConnectReasonCode.Success });
+            };
 
             using TestConnectionClient connectionClient = new(new() { MqttClient = mockMqttClient });
 
@@ -63,8 +69,47 @@ namespace Microsoft.Azure.Devices.Client.UnitTests
             Assert.NotNull(sentPayload);
             Assert.Equal(csrBase64, sentPayload.ClientCertificateSigningRequest);
 
+            // Issuing a certificate from a request is not part of the GA API version, and the service rejects a
+            // registration carrying one unless the connection asked for a version that knows about it.
+            Assert.NotNull(dpsConnect);
+            Assert.Contains("api-version=2025-07-01-preview", dpsConnect.Username);
+
             Assert.NotNull(connectionContext.IssuedClientCertificates);
             Assert.Equal(issuedChain, connectionContext.IssuedClientCertificates);
+        }
+
+        [Fact]
+        public async Task ProvisioningReportsWhatTheServiceSaidWhenItRefusesTheRegistration()
+        {
+            using RSA operationalKey = RSA.Create(2048);
+            string csrBase64 = CreateCertificateSigningRequest(operationalKey);
+
+            using MockConnectionMqttClient mockMqttClient = new();
+            const string errorTopic = "$dps/registrations/res/401/?$rid=1";
+            const string errorBody = "{\"errorCode\":401002,\"trackingId\":\"someTrackingId\",\"message\":\"Unauthorized\"}";
+            MockRefusingProvisioningService mockDps = new(mockMqttClient, errorTopic, errorBody);
+            Assert.NotNull(mockDps);
+
+            mockMqttClient.OnConnect = connect =>
+                Task.FromResult(new MqttConnectAck() { ResultCode = MqttConnectReasonCode.Success });
+
+            using TestConnectionClient connectionClient = new(new() { MqttClient = mockMqttClient });
+
+            ProvisioningSettings provisioningSettings = new(IdScope)
+            {
+                RegistrationId = RegistrationId,
+                GlobalEndpointAddress = GlobalDeviceEndpoint,
+                CertificateSigningRequest = new(operationalKey, csrBase64),
+            };
+
+            Exception exception = await Assert.ThrowsAnyAsync<Exception>(
+                async () => await connectionClient
+                    .ProvisionAndConnectAsync(provisioningSettings, CreateAuthenticationProvider(), TestContext.Current.CancellationToken)
+                    .WaitAsync(s_testTimeout, TestContext.Current.CancellationToken));
+
+            // The service's own answer, rather than a placeholder, is what says why the registration did not start.
+            Assert.Contains(errorTopic, exception.Message);
+            Assert.Contains(errorBody, exception.Message);
         }
 
         [Fact]
@@ -73,8 +118,13 @@ namespace Microsoft.Azure.Devices.Client.UnitTests
             using MockConnectionMqttClient mockMqttClient = new();
             MockCertificateIssuingProvisioningService mockDps = new(mockMqttClient, issuedCertificateChain: null);
 
+            MqttConnect? dpsConnect = null;
             mockMqttClient.OnConnect = connect =>
-                Task.FromResult(new MqttConnectAck() { ResultCode = MqttConnectReasonCode.Success });
+            {
+                dpsConnect ??= connect;
+
+                return Task.FromResult(new MqttConnectAck() { ResultCode = MqttConnectReasonCode.Success });
+            };
 
             using TestConnectionClient connectionClient = new(new() { MqttClient = mockMqttClient });
 
@@ -92,6 +142,10 @@ namespace Microsoft.Azure.Devices.Client.UnitTests
             Assert.NotNull(sentPayload);
             Assert.Null(sentPayload.ClientCertificateSigningRequest);
             Assert.Null(connectionContext.IssuedClientCertificates);
+
+            // A registration that asks for no certificate keeps the GA API version.
+            Assert.NotNull(dpsConnect);
+            Assert.Contains("api-version=2021-10-01", dpsConnect.Username);
         }
 
         private static string CreateCertificateSigningRequest(RSA key)
@@ -173,6 +227,42 @@ namespace Microsoft.Azure.Devices.Client.UnitTests
                     Topic = "$dps/registrations/res/200/?$rid=1",
                     Payload = JsonSerializer.SerializeToUtf8Bytes(status, JsonSerializationSettings.Options),
                 });
+            }
+        }
+
+        /// <summary>
+        /// A Device Provisioning Service that refuses the registration request, answering it the way the service
+        /// answers an error: a status code in the response topic and a reason in the body, neither of which is a
+        /// registration operation.
+        /// </summary>
+        private sealed class MockRefusingProvisioningService
+        {
+            private const string RegisterTopicPrefix = "$dps/registrations/PUT/";
+
+            private readonly MockConnectionMqttClient _mqttClient;
+            private readonly string _errorTopic;
+            private readonly string _errorBody;
+
+            public MockRefusingProvisioningService(MockConnectionMqttClient mqttClient, string errorTopic, string errorBody)
+            {
+                _mqttClient = mqttClient;
+                _errorTopic = errorTopic;
+                _errorBody = errorBody;
+                _mqttClient.OnPublish = HandlePublishAsync;
+            }
+
+            private async Task<MqttPublishAck> HandlePublishAsync(MqttPublish publish)
+            {
+                if (publish.Topic.StartsWith(RegisterTopicPrefix))
+                {
+                    await _mqttClient.SimulatePublishReceivedAsync(new MqttPublish()
+                    {
+                        Topic = _errorTopic,
+                        Payload = Encoding.UTF8.GetBytes(_errorBody),
+                    });
+                }
+
+                return new MqttPublishAck() { ReasonCode = MqttPublishAckReasonCode.Success };
             }
         }
     }
