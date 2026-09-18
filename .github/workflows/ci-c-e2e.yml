@@ -10,8 +10,8 @@
 #                 over the Paho MQTT adapter (DPS x509 individual enrollment);
 #                 the cloud side is the `az_iot_e2e_service` facade (vendored
 #                 AMQP for telemetry/c2d, HTTPS+SAS for method/twin).
-# * Resources   : provisioned per job via the shared iot-sdks-e2e-fx script
-#                 (same one ci-dotnet uses) and ALWAYS torn down.
+# * Resources   : provisioned per job via the shared iot-sdks-e2e-fx composite
+#                 actions (same ones ci-dotnet uses) and ALWAYS torn down.
 #
 # Scope
 # -----
@@ -36,8 +36,9 @@
 #                 the run id rather than reading a setup output, so it also cleans
 #                 up after a CANCELLED setup job (see the `env` block below).
 #
-# The provision/destroy steps live in .github/actions/{provision,destroy}-e2e-
-# resources so other pipelines (e.g. ci-dotnet) can reuse them.
+# The provision/destroy steps are the shared composite actions
+# Azure/iot-sdks-e2e-fx/actions/{provision,destroy}-e2e-resources, pinned to a
+# tag, so every language pipeline runs the same provisioning code.
 
 name: ci-c-e2e
 
@@ -47,20 +48,18 @@ on:
     paths:
       - 'c/**'
       - 'common/**'
-      # This workflow and the provisioning wiring it depends on: a change to any
-      # of them alters what the e2e legs actually do, so it has to be validated
-      # against real Azure rather than merged on the strength of the other jobs.
+      # This workflow: a change to it alters what the e2e legs actually do, so
+      # it has to be validated against real Azure rather than merged on the
+      # strength of the other jobs. The provisioning actions now live in
+      # Azure/iot-sdks-e2e-fx and are pinned to a tag, so a change there only
+      # reaches this repository when the pin below is moved.
       - '.github/workflows/ci-c-e2e.yml'
-      - '.github/actions/provision-e2e-resources/**'
-      - '.github/actions/destroy-e2e-resources/**'
   push:
     branches: [ main ]
     paths:
       - 'c/**'
       - 'common/**'
       - '.github/workflows/ci-c-e2e.yml'
-      - '.github/actions/provision-e2e-resources/**'
-      - '.github/actions/destroy-e2e-resources/**'
   schedule:
     - cron: '0 11 * * *'  # Nightly at 4am PST
 
@@ -98,9 +97,14 @@ jobs:
 
       - name: Provision resources
         id: provision
-        uses: ./.github/actions/provision-e2e-resources
+        uses: Azure/iot-sdks-e2e-fx/actions/provision-e2e-resources@v1
         with:
           rg-name: ${{ env.E2E_RESOURCE_GROUP }}
+          # The shared action defaults to EastUS; these pipelines run in
+          # centraluseuap. An undefined repository variable arrives as an empty
+          # string, which would otherwise override that default, so the fallback
+          # is applied here.
+          azure-location: ${{ vars.E2E_AZURE_LOCATION || 'centraluseuap' }}
           # Two DPS enrollments so the parallel Linux/Windows test legs can each
           # claim their own device (see the per-leg device-index selection below)
           # and never share a device twin.
@@ -199,8 +203,8 @@ jobs:
           # device-index) so they never share a device twin -- the mocked ADU
           # suite patches large desired properties, and a shared twin would bloat
           # the other leg's twin GET and flake test_twin. Fall back to the
-          # unsuffixed index-0 vars if an older (pre-indexing) provisioning script
-          # is fetched from iot-sdks-e2e-fx master.
+          # unsuffixed index-0 vars if the pinned provisioning action emits a
+          # pre-indexing test config.
           $idx = '${{ matrix.device-index }}'
           $regId   = (Get-Item "env:IOT_DPS_INDIVIDUAL_REGISTRATION_ID_$idx" -ErrorAction SilentlyContinue).Value
           $certB64 = (Get-Item "env:IOT_DPS_INDIVIDUAL_X509_CERTIFICATE_$idx" -ErrorAction SilentlyContinue).Value
@@ -426,7 +430,7 @@ jobs:
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Delete Azure resources
-        uses: ./.github/actions/destroy-e2e-resources
+        uses: Azure/iot-sdks-e2e-fx/actions/destroy-e2e-resources@v1
         with:
           resource-group: ${{ env.E2E_RESOURCE_GROUP }}
 

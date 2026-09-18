@@ -31,6 +31,7 @@
 #include "internal/adu_channel_internal.h"
 #include "internal/adu_protocol_internal.h"
 #include "internal/connection_client_internal.h"
+#include "internal/reconnect.h" /* az_iot_time_mono_ms */
 #include "internal/span_writer.h"
 #include "internal/log_internal.h"
 
@@ -70,6 +71,30 @@ static bool rid_is_ours(const char* rid)
 /* outbound                                                                  */
 /* ------------------------------------------------------------------------- */
 
+/* True while the service's retry-after is still running. Clears itself once it
+ * expires, so the caller never has to.
+ *
+ * Checked in two places, and both matter. publish_operation() is the gate every
+ * operation funnels through, so nothing can forget it. But the request entry
+ * points have to refuse BEFORE they ask for a provisioning session: otherwise a
+ * request during a long delay sets the standing interest, the tick opens an
+ * auxiliary session, the publish is refused, the session lingers idle and
+ * closes, and the cycle repeats for the whole backoff -- reconnecting over and
+ * over to say nothing. */
+static bool retry_after_in_force(az_iot_adu_channel_dps* c)
+{
+  if (c->retry_after_deadline_ms == 0)
+  {
+    return false;
+  }
+  if (az_iot_time_mono_ms() < c->retry_after_deadline_ms)
+  {
+    return true;
+  }
+  c->retry_after_deadline_ms = 0;
+  return false;
+}
+
 static az_iot_result publish_operation(
     az_iot_adu_channel_dps* c,
     az_iot_adu_operation operation,
@@ -105,6 +130,11 @@ static az_iot_result publish_operation(
       && (!c->holds_registration || !az_iot_connection_client__dps_hold_is_active(c->connection)))
   {
     return AZ_IOT_ERR_NOT_CONNECTED;
+  }
+
+  if (retry_after_in_force(c))
+  {
+    return AZ_IOT_ERR_BUSY;
   }
 
   char topic[AZ_IOT_ADU_TOPIC_MAX_SIZE];
@@ -271,6 +301,15 @@ static bool on_dps_message(
   if (status < 200 || status >= 300)
   {
     az_iot_adu_error_action action = handle_failure(c, operation, payload, payload_len);
+    /* MQTT has no headers, so the delay rides the response topic. Taken from
+     * any failure that carries one, not only a throttle: the service attaches
+     * it to 5xx as well, and the point is to wait as long as it asked. */
+    uint32_t retry_after_s = az_iot_adu__parse_retry_after_seconds(topic, strlen(topic));
+    if (retry_after_s > 0)
+    {
+      c->retry_after_deadline_ms = az_iot_time_mono_ms() + ((uint64_t)retry_after_s * 1000ull);
+      AZ_IOT_LOG_DEBUGF("adu: service asked for a %u second delay", (unsigned)retry_after_s);
+    }
     AZ_IOT_LOG_ERRORF("adu: operation failed with status %d", (int)status);
     emit_result(c, operation, AZ_IOT_ERR_DPS, action);
     return true;
@@ -431,14 +470,27 @@ static void channel_close(void* ctx)
   c->result_cb = NULL;
   c->engine_ctx = NULL;
   c->request_pending = false;
+  /* The delay belongs to the binding that earned it. A fresh bind is a fresh
+   * start, not a continuation of someone else's backoff. */
+  c->retry_after_deadline_ms = 0;
 }
 
-static az_iot_result channel_request_update(void* ctx)
+static az_iot_result channel_request_update(void* ctx, az_iot_adu_operation operation)
 {
   az_iot_adu_channel_dps* c = (az_iot_adu_channel_dps*)ctx;
   if (c == NULL)
   {
     return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if (operation != AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE && operation != AZ_IOT_ADU_OP_GET_UPDATE)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  /* Before the session check, not after: asking for a session we may not
+   * publish on is what turns one delay into a reconnect loop. */
+  if (retry_after_in_force(c))
+  {
+    return AZ_IOT_ERR_BUSY;
   }
   /* A request outstanding on a session that no longer exists can never be
    * answered. Clearing it here is what stops a lost response -- or one lost to
@@ -466,11 +518,10 @@ static az_iot_result channel_request_update(void* ctx)
   agent.compatibility_properties = (c->compat_count > 0) ? c->compat : NULL;
   agent.compatibility_properties_count = c->compat_count;
 
-  /* The device picks the route from its own provisioning state rather than
-   * probing: the service reports "not onboarded yet" with a code that also
-   * covers ordinary bad requests, so a probe-and-fall-back would fire on
-   * malformed requests too. */
-  az_iot_adu_operation operation = AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE;
+  /* The route is the caller's to choose: only the application knows whether it
+   * has a device record yet, and the service cannot be asked -- "no device
+   * record" and "malformed request" share one error code, so a probe-and-fall-
+   * back would fire on genuinely bad requests too. */
 
   /* The onboarding route omits installedUpdateId by contract: a day-0 device
    * has nothing installed. The operational route sends it, which is how the
@@ -503,6 +554,10 @@ static az_iot_result channel_report(void* ctx, const az_iot_adu_report* report)
   if (c == NULL || report == NULL)
   {
     return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if (retry_after_in_force(c))
+  {
+    return AZ_IOT_ERR_BUSY;
   }
   if (c->request_pending)
   {

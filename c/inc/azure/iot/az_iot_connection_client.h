@@ -167,10 +167,10 @@ extern "C"
                                                    * MQTT_V5 (AEG). Ignored when using DPS,
                                                    * where it is learned instead. */
     const char* model_id; /* IoT Plug and Play model id announced at
-                           * connection (NULL = none). Required for
-                           * Device Update (ADU) to discover the
-                           * device; e.g.
-                           * "dtmi:azure:iot:deviceUpdateContractModel;2". */
+                           * connection (NULL = none). Not used by device
+                           * update, which matches a device on the
+                           * compatibility properties it sends with each
+                           * update request. */
     az_iot_certificate_provider* certificate_provider; /* required for X.509 auth */
     az_iot_reconnection_policy reconnection_policy;
     az_iot_log_sink log;

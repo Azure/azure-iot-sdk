@@ -973,6 +973,27 @@ bool az_iot_adu_is_cancelled(const az_iot_adu_client_t* client);
 az_iot_adu_state az_iot_adu_client_get_state(const az_iot_adu_client_t* client);
 
 /**
+ * Ask for an ONBOARDING update -- the day-0/pre-registration route. Needs no
+ * device record and omits installedUpdateId.
+ *
+ * The application chooses the route: it is the only party that knows whether
+ * it has a device record, because it persists its provisioning result across
+ * boots. The service cannot be probed for it either -- "no device record" and
+ * "malformed request" share one error code.
+ *
+ * Asynchronous: records the request; the NEXT do_work() issues it, retrying on
+ * a later tick if the channel is not ready.
+ */
+az_iot_result az_iot_adu_client_request_onboarding_update(az_iot_adu_client_t* client);
+
+/**
+ * Ask for a REGULAR (software) update -- the operational route. Requires a
+ * provisioned device with a device record, and sends installedUpdateId, which
+ * is how the service knows what to offer next. Same asynchronous contract.
+ */
+az_iot_result az_iot_adu_client_request_update(az_iot_adu_client_t* client);
+
+/**
  * Update the cached device properties and request a report. Deep-copies
  * device_props into the client cache and sets a pending flag; the NEXT
  * do_work() publishes. Multiple calls coalesce into a single report. After
