@@ -603,7 +603,7 @@ namespace Microsoft.Azure.Devices.Client
 
             _provisioningRequestPayload = new RegistrationRequestPayload()
             {
-                ClientCertificateSigningRequest = null,
+                ClientCertificateSigningRequest = provisioningSettings.CertificateSigningRequest?.Base64CertificateSigningRequest,
                 Payload = provisioningSettings.ProvisioningPayload,
             };
 
