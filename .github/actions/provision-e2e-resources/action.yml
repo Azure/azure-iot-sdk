@@ -121,9 +121,11 @@ runs:
           "rg=$ResourceGroupName" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           # An undefined repository variable arrives as an empty string, which overrides the
           # input default instead of falling back to it, so normalise it here and callers need
-          # no expression of their own.
-          $AzureLocation = "${{ inputs.azure-location }}"
-          if ([string]::IsNullOrWhiteSpace($AzureLocation)) {
+          # no expression of their own. Trimmed as well: a variable set through the UI easily
+          # picks up surrounding whitespace, which would otherwise pass this check and then be
+          # rejected as an unknown region.
+          $AzureLocation = "${{ inputs.azure-location }}".Trim()
+          if ([string]::IsNullOrEmpty($AzureLocation)) {
             $AzureLocation = "centraluseuap"
           }
           Write-Host "Provisioning in $AzureLocation."
