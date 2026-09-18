@@ -306,7 +306,20 @@ az_iot_result az_iot_adu__report_state(az_iot_adu_client_t* client)
   report.workflow_id = workflow_id;
   report.installed_update_id = installed_ptr;
   report.install_result = &ADU_I(client).install_result;
-  return ADU_I(client).channel.vtable->report(ADU_I(client).channel.ctx, &report);
+
+  az_iot_result sent = ADU_I(client).channel.vtable->report(ADU_I(client).channel.ctx, &report);
+  if (sent != AZ_IOT_OK)
+  {
+    /* Re-arm so do_work re-offers it. Most callers discard this result -- they
+     * are state transitions, not report calls -- so without this a report the
+     * channel could not take right now (no session yet, or a retry-after still
+     * running) is lost, and a status report is the only record the service
+     * gets of what this device did. The re-offer rebuilds the report from the
+     * engine's state at that moment, so what eventually goes out is current
+     * rather than a stale snapshot. */
+    ADU_I(client).device_props_report_pending = true;
+  }
+  return sent;
 }
 
 #define ADU_JSON_TRY(expression) \

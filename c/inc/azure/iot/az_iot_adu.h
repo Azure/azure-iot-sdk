@@ -552,9 +552,10 @@ extern "C"
       size_t device_props_buffer_size;
       bool device_props_report_pending;
 
-      /* On startup, proactively ask the channel for an update so a deployment
-       * already waiting is consumed without needing a fresh delivery. */
-      bool initial_get_pending;
+      /* Which fetch the application asked for and the channel has not yet
+       * accepted: 0 none, 1 onboarding, 2 regular. Not a bool, because a retry
+       * must re-issue the route that was actually requested. */
+      uint8_t pending_fetch;
 
       /* Upstream-shaped view of the cached custom properties (az_span arrays
        * over the packed strings in device_props_buffer), handed to the
@@ -673,6 +674,51 @@ extern "C"
 
   /** Get the current ADU agent state. */
   az_iot_adu_state az_iot_adu_client_get_state(const az_iot_adu_client_t* client);
+
+  /**
+   * Ask for an ONBOARDING update — the day-0/pre-registration route.
+   *
+   * Use this while the device has no device record with the service yet. It is
+   * the permissive route: it needs no registry entry, and it does not send
+   * `installedUpdateId`.
+   *
+   * The application chooses the route because it is the only party that knows:
+   * it persists its provisioning result across boots, while the SDK sees only
+   * the current process. The service cannot be asked either — "no device
+   * record" and "malformed request" share one error code, so probing would
+   * mask real errors.
+   *
+   * Asynchronous. Records the request; the NEXT az_iot_adu_client_do_work()
+   * issues it, and retries on a later tick if the channel is not ready. The
+   * result arrives through the engine, not this return value. Returns
+   * AZ_IOT_ERR_INVALID_ARG if @p client is NULL.
+   *
+   * There is ONE pending slot, and the newest request wins. Calling either
+   * request function twice before do_work() does NOT queue two fetches: the
+   * second replaces the first, and only the second is issued. A request made
+   * while an earlier one is still in flight likewise replaces whatever the
+   * engine would otherwise have retried.
+   *
+   * Single-threaded contract: MUST be called on the do_work thread or be
+   * externally serialized with do_work().
+   */
+  AZ_NODISCARD az_iot_result
+  az_iot_adu_client_request_onboarding_update(az_iot_adu_client_t* client);
+
+  /**
+   * Ask for a REGULAR (software) update — the operational route.
+   *
+   * Use this once the device is provisioned and has a device record. It sends
+   * `installedUpdateId`, which is how the service knows what to offer next.
+   *
+   * Calling it on a device that has no device record yet is rejected by the
+   * service as an invalid request; use
+   * az_iot_adu_client_request_onboarding_update() until then.
+   *
+   * Asynchronous, with the same contract as
+   * az_iot_adu_client_request_onboarding_update().
+   */
+  AZ_NODISCARD az_iot_result az_iot_adu_client_request_update(az_iot_adu_client_t* client);
 
   /**
    * Update the cached device properties and request a report. Deep-copies

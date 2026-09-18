@@ -189,3 +189,40 @@ uint64_t sample_now_ms(void)
   return (uint64_t)ts.tv_sec * 1000u + (uint64_t)(ts.tv_nsec / 1000000L);
 #endif
 }
+
+void sample_sleep_ms(long ms)
+{
+  if (ms <= 0)
+  {
+    return;
+  }
+#if defined(_WIN32)
+  Sleep((DWORD)ms);
+#else
+  struct timespec ts;
+  ts.tv_sec = ms / 1000;
+  ts.tv_nsec = (ms % 1000) * 1000000L;
+  (void)nanosleep(&ts, NULL);
+#endif
+}
+
+const char* sample_connection_state_name(az_iot_connection_state state)
+{
+  switch (state)
+  {
+    case AZ_IOT_CONN_STATE_IDLE:
+      return "Idle";
+    case AZ_IOT_CONN_STATE_CONNECTING:
+      return "Connecting";
+    case AZ_IOT_CONN_STATE_CONNECTED:
+      return "Connected";
+    case AZ_IOT_CONN_STATE_RECONNECTING:
+      return "Reconnecting";
+    case AZ_IOT_CONN_STATE_DISCONNECTING:
+      return "Disconnecting";
+    case AZ_IOT_CONN_STATE_FAULTED:
+      return "Faulted";
+    default:
+      return "?";
+  }
+}

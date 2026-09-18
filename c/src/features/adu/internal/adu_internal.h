@@ -21,6 +21,12 @@ extern "C"
 /* Internal accessor shorthand. */
 #define ADU_I(c) ((c)->_internal)
 
+/* Values for _internal.pending_fetch: which fetch route the application asked
+ * for and the channel has not yet accepted. */
+#define ADU_FETCH_NONE 0u
+#define ADU_FETCH_ONBOARDING 1u
+#define ADU_FETCH_REGULAR 2u
+
   az_iot_result az_iot_adu__validate_install_result(const az_iot_adu_install_result* result);
 
   bool az_iot_adu__valid_result_fields(

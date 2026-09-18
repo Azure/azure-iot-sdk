@@ -132,12 +132,11 @@ void app_main(void)
   az_iot_cert_embedded_init(
       &certs, trusted_ca_pem_start, device_cert_pem_start, device_key_pem_start);
 
-  /* Connection client: DPS provisioning + X.509, announcing the ADU model id. */
+  /* Connection client: DPS provisioning + X.509. */
   az_iot_connection_client_options copts = az_iot_connection_client_options_default();
   copts.dps.id_scope = CONFIG_ADU_DPS_ID_SCOPE;
   copts.dps.registration_id = CONFIG_ADU_DPS_REGISTRATION_ID;
   copts.certificate_provider = &certs.base;
-  copts.model_id = "dtmi:azure:iot:deviceUpdateContractModel;2";
   copts.reconnection_policy.initial_delay_ms = 2000;
   copts.reconnection_policy.max_delay_ms = 60000;
   copts.reconnection_policy.max_attempts = 0; /* retry forever */
@@ -200,6 +199,16 @@ void app_main(void)
         TAG,
         "resumed persisted workflow at state: %s",
         adu_state_name(az_iot_adu_client_get_state(&adu)));
+  }
+
+  /* Nothing is fetched unless the application asks. This device provisions
+   * through DPS on this boot, so it uses the day-0 onboarding route; one that
+   * already has a device record would call az_iot_adu_client_request_update().
+   */
+  if (az_iot_adu_client_request_onboarding_update(&adu) != AZ_IOT_OK)
+  {
+    ESP_LOGE(TAG, "could not request an onboarding update");
+    esp_restart();
   }
 
   if (az_iot_connection_client_open(&conn) != AZ_IOT_OK)

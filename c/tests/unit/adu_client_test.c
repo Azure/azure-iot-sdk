@@ -495,8 +495,15 @@ typedef struct
   bool opened;
   int request_update_count;
   az_iot_result request_update_result;
+  az_iot_adu_operation last_request_operation;
+  /* When true, the verdict is delivered from INSIDE request_update(), which the
+   * channel contract explicitly permits for a synchronous channel. */
+  bool result_is_synchronous;
+  az_iot_adu_error_action synchronous_action;
 
   int report_count;
+  /* AZ_IOT_OK unless a test wants to see a refusal handled. */
+  az_iot_result report_result;
   az_iot_adu_report last_report;
   az_iot_adu_install_result last_install_result;
   const az_iot_adu_install_result* last_result_source;
@@ -532,10 +539,15 @@ static az_iot_result fake_channel_do_work(void* ctx)
   return AZ_IOT_OK;
 }
 
-static az_iot_result fake_channel_request_update(void* ctx)
+static az_iot_result fake_channel_request_update(void* ctx, az_iot_adu_operation operation)
 {
   fake_channel* fc = (fake_channel*)ctx;
   fc->request_update_count++;
+  fc->last_request_operation = operation;
+  if (fc->result_is_synchronous && fc->result_cb != NULL)
+  {
+    fc->result_cb(operation, AZ_IOT_ERR_DPS, fc->synchronous_action, fc->engine_ctx);
+  }
   return fc->request_update_result;
 }
 
@@ -591,7 +603,7 @@ static az_iot_result fake_channel_report(void* ctx, const az_iot_adu_report* rep
         sizeof(fc->last_installed_version),
         report->installed_update_id->version);
   }
-  return AZ_IOT_OK;
+  return fc->report_result;
 }
 
 static const az_iot_adu_channel_vtable k_fake_channel_vtable = {
@@ -695,6 +707,7 @@ static int setup(void** state)
   assert_non_null(fx->factory);
 
   memset(&fx->chan, 0, sizeof(fx->chan));
+  fx->chan.report_result = AZ_IOT_OK;
   fx->channel.vtable = &k_fake_channel_vtable;
   fx->channel.ctx = &fx->chan;
 
@@ -3046,10 +3059,223 @@ static void a_terminal_verdict_does_not_re_arm_the_report(void** state)
   assert_true(fx->adu._internal.device_props_report_pending);
 }
 
+/* --- explicit update requests -------------------------------------------- */
+
+/* The application chooses the route, so the SDK must not pick one for it. An
+ * unrequested fetch at init would query a route the SDK guessed, and on a
+ * device with no device record the regular route is an outright error. */
+static void no_update_is_fetched_until_one_is_requested(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(fx->chan.request_update_count, 0);
+}
+
+static void each_request_function_asks_for_its_own_route(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  assert_int_equal(az_iot_adu_client_request_onboarding_update(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(fx->chan.request_update_count, 1);
+  assert_int_equal(fx->chan.last_request_operation, AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE);
+
+  assert_int_equal(az_iot_adu_client_request_update(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(fx->chan.request_update_count, 2);
+  assert_int_equal(fx->chan.last_request_operation, AZ_IOT_ADU_OP_GET_UPDATE);
+
+  /* One request, one fetch: a further tick must not re-issue it. */
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(fx->chan.request_update_count, 2);
+}
+
+/* A channel that is not ready yet must not lose the request, and must not
+ * downgrade it to the other route on the retry. */
+static void a_refused_request_is_retried_on_the_same_route(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  fx->chan.request_update_result = AZ_IOT_ERR_NOT_CONNECTED;
+  assert_int_equal(az_iot_adu_client_request_update(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(fx->chan.request_update_count, 1);
+  assert_int_equal(fx->chan.last_request_operation, AZ_IOT_ADU_OP_GET_UPDATE);
+
+  fx->chan.request_update_result = AZ_IOT_OK;
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(fx->chan.request_update_count, 2);
+  assert_int_equal(fx->chan.last_request_operation, AZ_IOT_ADU_OP_GET_UPDATE);
+}
+
+/* The same rule for a service-side retryable rejection: the verdict arrives
+ * after the channel already accepted the publish, so the engine re-arms it --
+ * and must re-arm the route that was actually asked for. */
+static void a_retryable_verdict_re_arms_the_same_route(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  assert_int_equal(az_iot_adu_client_request_update(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(fx->chan.request_update_count, 1);
+
+  assert_non_null(fx->chan.result_cb);
+  fx->chan.result_cb(
+      AZ_IOT_ADU_OP_GET_UPDATE, AZ_IOT_ERR_DPS, AZ_IOT_ADU_ERROR_ACTION_RETRY, fx->chan.engine_ctx);
+
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(fx->chan.request_update_count, 2);
+  assert_int_equal(fx->chan.last_request_operation, AZ_IOT_ADU_OP_GET_UPDATE);
+}
+
+/* A verdict belongs to a request the channel accepted earlier, so the
+ * application may have queued a different route in the meantime. Re-arming the
+ * old route over it would silently discard the newer request. */
+static void a_retryable_verdict_does_not_overwrite_a_newer_request(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  /* Regular is asked for and accepted; it is now in flight. */
+  assert_int_equal(az_iot_adu_client_request_update(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(fx->chan.request_update_count, 1);
+  assert_int_equal(fx->chan.last_request_operation, AZ_IOT_ADU_OP_GET_UPDATE);
+
+  /* The application changes its mind before the answer arrives. */
+  assert_int_equal(az_iot_adu_client_request_onboarding_update(&fx->adu), AZ_IOT_OK);
+
+  /* The in-flight regular request then fails retryably. */
+  assert_non_null(fx->chan.result_cb);
+  fx->chan.result_cb(
+      AZ_IOT_ADU_OP_GET_UPDATE, AZ_IOT_ERR_DPS, AZ_IOT_ADU_ERROR_ACTION_RETRY, fx->chan.engine_ctx);
+
+  /* The newer onboarding request must survive, not be replaced by a regular
+   * retry. */
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(fx->chan.request_update_count, 2);
+  assert_int_equal(fx->chan.last_request_operation, AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE);
+
+  /* And it is not issued twice. */
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(fx->chan.request_update_count, 2);
+}
+
+/* A synchronous channel delivers its verdict from inside request_update(), so
+ * the re-arm happens before that call returns. Clearing the slot after the call
+ * would wipe the retry the verdict just armed. */
+static void a_synchronous_retryable_verdict_is_not_lost(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  fx->chan.result_is_synchronous = true;
+  fx->chan.synchronous_action = AZ_IOT_ADU_ERROR_ACTION_RETRY;
+
+  assert_int_equal(az_iot_adu_client_request_update(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(fx->chan.request_update_count, 1);
+
+  /* The retry survived the accepted publish and goes out again, on the route
+   * that was asked for. */
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(fx->chan.request_update_count, 2);
+  assert_int_equal(fx->chan.last_request_operation, AZ_IOT_ADU_OP_GET_UPDATE);
+}
+
+/* The mirror case: a synchronous TERMINAL verdict must not be retried, or the
+ * test above would pass for an engine that simply never clears the slot. */
+static void a_synchronous_terminal_verdict_is_not_retried(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  fx->chan.result_is_synchronous = true;
+  fx->chan.synchronous_action = AZ_IOT_ADU_ERROR_ACTION_FATAL;
+
+  assert_int_equal(az_iot_adu_client_request_update(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(fx->chan.request_update_count, 1);
+
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(fx->chan.request_update_count, 1);
+}
+
+/* One pending slot, newest wins: two requests before a do_work() issue one
+ * fetch, not two. This is the documented public contract. */
+static void two_requests_before_do_work_issue_only_the_newest(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  assert_int_equal(az_iot_adu_client_request_update(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(az_iot_adu_client_request_onboarding_update(&fx->adu), AZ_IOT_OK);
+
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(fx->chan.request_update_count, 1);
+  assert_int_equal(fx->chan.last_request_operation, AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE);
+
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(fx->chan.request_update_count, 1);
+}
+
+/* A report the channel cannot take right now must not be lost. Most callers are
+ * state transitions that discard the result, so the engine has to re-arm it
+ * itself -- and a status report is the only record the service gets of what
+ * this device did. */
+static void a_refused_report_is_re_armed_and_resent(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  /* Drain the startup report so the next one is the interesting one. */
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  int before = fx->chan.report_count;
+
+  fx->chan.report_result = AZ_IOT_ERR_BUSY;
+  inject_patch(fx, signed_patch());
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  assert_true(fx->chan.report_count > before);
+  /* Refused, so the engine must be holding it for another go. */
+  assert_true(fx->adu._internal.device_props_report_pending);
+
+  fx->chan.report_result = AZ_IOT_OK;
+  int refused = fx->chan.report_count;
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  assert_true(fx->chan.report_count > refused);
+  assert_false(fx->adu._internal.device_props_report_pending);
+}
+
+static void a_request_on_a_null_client_is_rejected(void** state)
+{
+  (void)state;
+  assert_int_equal(az_iot_adu_client_request_update(NULL), AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(az_iot_adu_client_request_onboarding_update(NULL), AZ_IOT_ERR_INVALID_ARG);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
     cmocka_unit_test_setup_teardown(init_starts_idle_and_pending_report, setup, teardown),
+    cmocka_unit_test_setup_teardown(no_update_is_fetched_until_one_is_requested, setup, teardown),
+    cmocka_unit_test_setup_teardown(each_request_function_asks_for_its_own_route, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_refused_request_is_retried_on_the_same_route, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_retryable_verdict_re_arms_the_same_route, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_retryable_verdict_does_not_overwrite_a_newer_request, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_synchronous_retryable_verdict_is_not_lost, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_synchronous_terminal_verdict_is_not_retried, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        two_requests_before_do_work_issue_only_the_newest, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_refused_report_is_re_armed_and_resent, setup, teardown),
+    cmocka_unit_test(a_request_on_a_null_client_is_rejected),
     cmocka_unit_test_setup_teardown(deployment_drives_full_workflow_single_step, setup, teardown),
     cmocka_unit_test_setup_teardown(verify_failure_blocks_download_and_fails, setup, teardown),
     cmocka_unit_test_setup_teardown(install_failure_triggers_rollback, setup, teardown),
