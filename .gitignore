@@ -35,6 +35,8 @@ ScaffoldingReadMe.txt
 *.nupkg
 # NuGet Symbol Packages
 *.snupkg
+# Local copy of dotnet/samples/nuget.config.sample: it holds a PAT once filled in.
+dotnet/samples/nuget.config
 
 # dotenv environment variables file
 .env

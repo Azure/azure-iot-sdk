@@ -12,10 +12,10 @@
   <packageSourceCredentials>
     <GithubAzure>
       <!--Set value to your github username-->
-      <add key="Username" value="<your github username here>" />
+      <add key="Username" value="YOUR_GITHUB_USERNAME" />
 
       <!--Set value to a Github PAT (classic) with permissions "read:packages". When creating PAT, ensure expiry length of 7 days and then configure SSO to allow "Azure"-->
-      <add key="ClearTextPassword" value="<your PAT here>" />
+      <add key="ClearTextPassword" value="YOUR_GITHUB_PAT" />
     </GithubAzure>
   </packageSourceCredentials>
 </configuration>
