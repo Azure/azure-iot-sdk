@@ -54,7 +54,7 @@ jobs:
         uses: ./.github/actions/provision-e2e-resources
         with:
           rg-name: ${{ env.E2E_RESOURCE_GROUP }}
-          azure-location: eastus
+          azure-location: ${{ vars.E2E_AZURE_LOCATION }}
           enable-certificate-management: 'true'
           dps-x509-group-enrollment-devices: '2'
           dps-x509-individual-enrollments: '2'

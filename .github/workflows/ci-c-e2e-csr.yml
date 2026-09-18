@@ -123,15 +123,7 @@ jobs:
         uses: ./.github/actions/provision-e2e-resources
         with:
           rg-name: ${{ env.E2E_RESOURCE_GROUP }}
-          # Azure Device Registration (ADR) started out canary-only, so this used
-          # to be `centraluseuap`. It has since rolled out to production regions,
-          # and the canary deployment now rejects `Microsoft.DeviceRegistry/
-          # namespaces` PUTs from this workflow's OIDC service principal with
-          # `400 ResourceCreationValidateFailed` ("The resource validation
-          # failed."), which broke every run of this workflow. EastUS serves the
-          # same namespace + credential + policy resources, and is where the
-          # other e2e pipelines already provision.
-          azure-location: eastus
+          azure-location: ${{ vars.E2E_AZURE_LOCATION }}
           # Provision the DPS with Azure Device Registration (ADR) integration so
           # the enrollment can issue an operational certificate for the device CSR.
           enable-certificate-management: 'true'
