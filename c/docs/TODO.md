@@ -26,9 +26,26 @@ Canonical pending-work tracker for IoT Hub Next (AEG) integration.
 - [x] Add `az_iot_mqtt_user_property` type to `az_iot_mqtt_iface.h`
 - [x] Extend `az_iot_mqtt_message` with typed user_properties array
 - [x] Extend inbound `az_iot_mqtt_event` (done — piggybacks on message)
-- [ ] Update Paho v5 adapter to set v5 User Properties on outbound PUBLISH
-- [ ] Update Paho v5 adapter to extract User Properties from inbound MESSAGE events
-- [ ] Wire `session_present` from CONNACK into `EVT_CONNECTED` event
+- [x] Update Paho v5 adapter to set v5 User Properties on outbound PUBLISH
+- [x] Update Paho v5 adapter to extract User Properties from inbound MESSAGE events
+- [x] Wire `session_present` from CONNACK into `EVT_CONNECTED` event (MQTT v5 only — the
+      v3.1.1 CONNACK bit is still not surfaced, and does not need to be: `session_present`
+      is consumed only by the Hub-Next presence/birth path, which is v5)
+- [x] Prove all three end to end. Conformance cases drive the real Paho v5 adapter against a
+      broker and against injected broker packets: `v5_message_properties_survive_a_roundtrip`,
+      `v5_properties_from_the_server_are_surfaced_intact`,
+      `v5_session_present_from_connack_is_reported`, plus
+      `v3_1_1_publish_ignores_the_v5_only_fields` to keep v5 bytes off a 3.1.1 session
+      (`c/tests/conformance/az_iot_conformance.c`)
+
+### Not carried by the Paho adapter yet
+
+- [ ] CONNECT User Properties. `az_iot_mqtt_connect_options.user_properties` is accepted by
+      the interface and is silently ignored by the Paho v5 adapter, which puts only Session
+      Expiry on the CONNECT. Nothing in the SDK sets it today; it is listed here rather than
+      ticked so that stays a known gap and not a discovery.
+- [ ] PUBLISH `response_topic` and `topic_alias`. Both exist on `az_iot_mqtt_message` and
+      neither is serialized. Same reasoning: unused today, not implemented, not ticked.
 
 ## Phase 4: Session Lifecycle
 
