@@ -422,6 +422,44 @@ static void open_rejects_a_payload_with_nowhere_to_build_the_body(void** state)
   fixture_destroy(fx);
 }
 
+/* The payload is copied INTO the body buffer, so sharing storage would have the
+ * build overwrite its own source. Rejected rather than silently corrupted. */
+static void open_rejects_a_payload_that_overlaps_the_body_buffer(void** state)
+{
+  (void)state;
+  payload_fixture* fx = fixture_create();
+  az_iot_connection_client_options opts = fixture_options(fx);
+
+  /* Park the payload inside the very buffer the body would be built in. */
+  memcpy(fx->body_buffer, k_payload_json, sizeof(k_payload_json) - 1u);
+  opts.dps_registration_payload
+      = az_span_create(fx->body_buffer, (int32_t)(sizeof(k_payload_json) - 1u));
+  opts.dps_registration_body_buffer = az_span_create(fx->body_buffer, sizeof(fx->body_buffer));
+  fixture_init(fx, &opts);
+
+  assert_int_equal(az_iot_connection_client_open(fx->conn.client), AZ_IOT_ERR_INVALID_ARG);
+
+  fixture_destroy(fx);
+}
+
+/* Same hazard through the csr_payload_buffer fallback. */
+static void open_rejects_a_payload_that_overlaps_the_csr_buffer_fallback(void** state)
+{
+  (void)state;
+  payload_fixture* fx = fixture_create();
+  az_iot_connection_client_options opts = fixture_options(fx);
+
+  memcpy(fx->csr_buffer, k_payload_json, sizeof(k_payload_json) - 1u);
+  opts.csr_payload_buffer = az_span_create(fx->csr_buffer, sizeof(fx->csr_buffer));
+  opts.dps_registration_payload
+      = az_span_create(fx->csr_buffer, (int32_t)(sizeof(k_payload_json) - 1u));
+  fixture_init(fx, &opts);
+
+  assert_int_equal(az_iot_connection_client_open(fx->conn.client), AZ_IOT_ERR_INVALID_ARG);
+
+  fixture_destroy(fx);
+}
+
 /* Every other dps option is ignored on a direct hub connect; this one is too,
  * rather than failing a connection that has no registration to carry it. */
 static void a_direct_connect_ignores_the_registration_payload(void** state)
@@ -543,6 +581,8 @@ int main(void)
     cmocka_unit_test(open_rejects_a_payload_that_is_not_an_object),
     cmocka_unit_test(open_rejects_trailing_content_after_the_payload),
     cmocka_unit_test(open_rejects_a_payload_with_nowhere_to_build_the_body),
+    cmocka_unit_test(open_rejects_a_payload_that_overlaps_the_body_buffer),
+    cmocka_unit_test(open_rejects_a_payload_that_overlaps_the_csr_buffer_fallback),
     cmocka_unit_test(a_direct_connect_ignores_the_registration_payload),
     /* response direction */
     cmocka_unit_test(an_assignment_payload_reaches_the_application),

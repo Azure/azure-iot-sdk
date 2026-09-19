@@ -332,7 +332,11 @@ extern "C"
      *
      * Zero-copy and never retained: the span must stay valid and unchanged from
      * az_iot_connection_client_open() until provisioning completes, since it is
-     * re-read on every registration attempt (including a re-provision).
+     * re-read on every registration attempt (including a re-provision). It is
+     * copied INTO the body build buffer, so it MUST NOT overlap
+     * dps_registration_body_buffer (nor csr_payload_buffer when that is the one
+     * being used); open() rejects an overlap with AZ_IOT_ERR_INVALID_ARG rather
+     * than letting the build overwrite its own source.
      *
      * The SDK validates it, in az_iot_connection_client_open(), as exactly one
      * well-formed JSON object and nothing else, and rejects anything else with

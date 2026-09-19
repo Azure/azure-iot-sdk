@@ -95,6 +95,9 @@ int main(void)
 
   char* op_key = sample_env_dup("AZ_IOT_OPERATIONAL_KEY", "operational_key.pem");
   char* op_cert = sample_env_dup("AZ_IOT_OPERATIONAL_CERT", "operational_cert.pem");
+  /* Declared with the other environment-derived strings, before the first
+   * `goto cleanup`, so cleanup never frees an uninitialized pointer. */
+  char* registration_payload = sample_env_dup("AZ_IOT_DPS_REGISTRATION_PAYLOAD", NULL);
 
   int rc = 1;
   user_context user_ctx = { 0 };
@@ -126,11 +129,10 @@ int main(void)
    * CSR, so the build buffer has to hold both -- which is what
    * AZ_IOT_DPS_REGISTRATION_BODY_STORAGE() sizes. */
   AZ_IOT_DPS_REGISTRATION_BODY_STORAGE(registration_body_buf, SAMPLE_REGISTRATION_PAYLOAD_MAX);
-  const char* registration_payload = getenv("AZ_IOT_DPS_REGISTRATION_PAYLOAD");
   if (registration_payload != NULL && registration_payload[0] != '\0')
   {
-    copts.dps_registration_payload = az_span_create(
-        (uint8_t*)(uintptr_t)registration_payload, (int32_t)strlen(registration_payload));
+    copts.dps_registration_payload
+        = az_span_create((uint8_t*)registration_payload, (int32_t)strlen(registration_payload));
     copts.dps_registration_body_buffer
         = az_span_create(registration_body_buf, sizeof(registration_body_buf));
   }
@@ -187,6 +189,7 @@ cleanup:
   az_iot_certificate_provider_managed_destroy(&provider);
   free(op_key);
   free(op_cert);
+  free(registration_payload);
   sample_config_release(&config);
   return rc;
 }

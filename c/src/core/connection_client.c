@@ -626,6 +626,17 @@ static az_span dps_register_body_buffer(const az_iot_connection_client* c)
  * or null there, so a scalar or array could not even round-trip. */
 static az_iot_result dps_validate_registration_payload(az_span payload)
 {
+  /* Guard the span before handing it to az_core. az_json_reader_init()
+   * precondition-checks it, and this project builds with preconditions on and
+   * installs no handler, so az_core's default handler would spin this thread
+   * forever on a span the caller got wrong (a NULL pointer with a nonzero size
+   * is the easy way to produce one). The same reason the registration response
+   * is length-checked before it reaches the provisioning parser. */
+  if (az_span_ptr(payload) == NULL || az_span_size(payload) <= 0)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+
   az_json_reader jr;
   if (az_result_failed(az_json_reader_init(&jr, payload, NULL))
       || az_result_failed(az_json_reader_next_token(&jr))
@@ -650,6 +661,24 @@ static az_iot_result dps_validate_registration_payload(az_span payload)
     }
   }
   return AZ_IOT_OK;
+}
+
+/* True when two spans share any byte. The registration payload is copied INTO
+ * the body build buffer, so a caller that points both at the same storage would
+ * have the writer overwrite the payload with the `{"payload":` prefix before
+ * reading it, and then memcpy overlapping regions -- undefined behaviour, and a
+ * malformed body if it survived. Cheap to detect, so it is rejected at open()
+ * instead. Plausible rather than theoretical on a no-allocation SDK, where a
+ * memory-constrained caller may try to reuse one buffer for both. */
+static bool spans_overlap(az_span a, az_span b)
+{
+  uint8_t* a0 = az_span_ptr(a);
+  uint8_t* b0 = az_span_ptr(b);
+  if (a0 == NULL || b0 == NULL || az_span_size(a) <= 0 || az_span_size(b) <= 0)
+  {
+    return false;
+  }
+  return (a0 < b0 + az_span_size(b)) && (b0 < a0 + az_span_size(a));
 }
 
 /* Build the registration body into @p destination. @p csr_base64 is NULL when
@@ -2934,6 +2963,12 @@ az_iot_result az_iot_connection_client_open(az_iot_connection_client* client)
                        "opts.dps_registration_body_buffer (or opts.csr_payload_buffer) to build "
                        "the registration body in");
       return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+    }
+    if (spans_overlap(client->opts.dps_registration_payload, body_buffer))
+    {
+      AZ_IOT_LOG_ERROR("connection_client_open: opts.dps_registration_payload overlaps the buffer "
+                       "the registration body is built in; they must be separate storage");
+      return AZ_IOT_ERR_INVALID_ARG;
     }
   }
 
