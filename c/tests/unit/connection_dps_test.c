@@ -844,6 +844,49 @@ static void dps_failed_status_still_honors_max_attempts(void** state)
   assert_int_equal(az_iot_test_count_state(&fx->log, AZ_IOT_CONN_STATE_RECONNECTING), 3);
 }
 
+/* dps_apply_deferred() also finalizes AUXILIARY sessions -- the ones a feature
+ * client opens for itself alongside a live hub connection. Those can only
+ * reach it by failing, and the retry added above must not apply to them:
+ * schedule_reconnect() calls teardown_active(), which would destroy a hub
+ * session that is up and healthy. */
+static void a_failing_auxiliary_session_does_not_tear_down_the_hub(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(fx->client, fx->factory), AZ_IOT_OK);
+
+  /* Stand in for a live hub connection. */
+  az_iot_mqtt_client* hub = fx->factory->create(fx->factory->factory_ctx);
+  assert_non_null(hub);
+  fx->client->active_client = hub;
+
+  assert_int_equal(az_iot_connection_client__dps_user_acquire(fx->client), AZ_IOT_OK);
+  fx->client->dps_phase = AZ_IOT_DPS_PHASE_DONE;
+  assert_int_equal(az_iot_connection_client__dps_session_ensure(fx->client), AZ_IOT_ERR_BUSY);
+  assert_true(fx->client->dps_session_auxiliary);
+
+  az_iot_mock_mqtt_client* aux = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  assert_non_null(aux);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(aux, AZ_IOT_ERR_MQTT));
+  for (int i = 0; i < 3; ++i)
+  {
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
+
+  /* The auxiliary session is gone; the hub is untouched and no retry was
+   * scheduled for the application's connection. */
+  assert_false(fx->client->dps_session_auxiliary);
+  assert_ptr_equal(fx->client->active_client, hub);
+  assert_false(az_iot_test_saw_state(&fx->log, AZ_IOT_CONN_STATE_RECONNECTING));
+  assert_false(az_iot_test_saw_state(&fx->log, AZ_IOT_CONN_STATE_FAULTED));
+
+  /* Destroyed explicitly: the mock factory frees only its LAST client, and the
+   * auxiliary session created one after this stand-in. */
+  fx->client->active_client = NULL;
+  hub->iface->destroy(hub);
+  az_iot_connection_client__dps_user_release(fx->client);
+}
+
 static void dps_connack_failure_faults(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
@@ -1897,6 +1940,8 @@ int main(void)
         dps_failed_status_retries_against_dps, setup_with_reconnect, teardown),
     cmocka_unit_test_setup_teardown(
         dps_failed_status_still_honors_max_attempts, setup_with_reconnect, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_failing_auxiliary_session_does_not_tear_down_the_hub, setup_with_reconnect, teardown),
     cmocka_unit_test_setup_teardown(dps_connack_failure_faults, setup, teardown),
     cmocka_unit_test_setup_teardown(dps_suback_failure_faults, setup, teardown),
     cmocka_unit_test_setup_teardown(dps_disconnect_midflow_faults, setup, teardown),

@@ -1547,9 +1547,6 @@ static az_iot_result dps_start(az_iot_connection_client* c)
   return r;
 }
 
-/* Process deferred DPS finalization. Called from _do_work() after process_loop.
- * On success, tears down DPS MQTT, sets host/client_id and starts hub connect.
- * On failure, transitions to FAULTED. */
 /* Fail an assignment this client cannot use, and make sure the NEXT open()
  * goes back to DPS instead of to whatever assignment is still cached.
  *
@@ -1569,6 +1566,19 @@ static void reject_assignment(az_iot_connection_client* c, az_iot_result reason)
   set_state_to(c, AZ_IOT_CONN_STATE_FAULTED, reason);
 }
 
+/* Process deferred DPS finalization. Called from _do_work() after process_loop.
+ *
+ * On success, tears down the DPS MQTT session, validates the assigned profile,
+ * adopts host/client_id and starts the hub connect.
+ *
+ * On failure, retries under the reconnection policy when one is configured and
+ * the application has not closed the client, and transitions to FAULTED
+ * otherwise. The profile failures (unsupported, or a mismatch with what the
+ * attached feature clients require) stay terminal either way: a retry would
+ * return the same answer, so they go through reject_assignment() instead.
+ *
+ * An AUXILIARY session ends here without touching the public connection state
+ * at all -- see the guard below. */
 static void dps_apply_deferred(az_iot_connection_client* c)
 {
   if (!c->dps_pending_finalize)
@@ -1588,6 +1598,25 @@ static void dps_apply_deferred(az_iot_connection_client* c)
   }
   dps_teardown_mqtt(c);
   c->dps_phase = DPS_PHASE_DONE;
+
+  /* An auxiliary session -- one a feature client opened for itself, alongside
+   * the hub connection -- never registers, so it only ever reaches here by
+   * failing: a refused CONNACK, a refused SUBACK, a mid-flow drop. It is that
+   * feature client's transport, not the application's connection, so the
+   * failure ends the session and nothing else. Scheduling a reconnect below
+   * would call teardown_active() and destroy a hub session that is up and
+   * healthy, and faulting would be just as wrong. The feature client asks for
+   * a session again through dps_session_ensure() when it next wants one. */
+  if (c->dps_session_auxiliary)
+  {
+    c->dps_session_auxiliary = false;
+    c->dps_aux_idle_deadline_ms = 0;
+    if (status != AZ_IOT_OK)
+    {
+      AZ_IOT_LOG_ERRORF("dps: the auxiliary session ended with an error (%d)", (int)status);
+    }
+    return;
+  }
 
   if (status != AZ_IOT_OK || !have_assignment)
   {
