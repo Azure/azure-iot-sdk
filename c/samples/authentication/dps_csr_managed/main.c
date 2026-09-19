@@ -17,6 +17,12 @@
  *      hub using the OPERATIONAL identity.
  *   4. The optional operational-cert callback (D4) is notified of the new chain.
  *
+ * It also shows the optional custom registration payload sharing that one
+ * register body with the CSR: set AZ_IOT_DPS_REGISTRATION_PAYLOAD to a JSON
+ * object (for example {"modelId":"dtmi:com:example:Thermostat;1"}) and the
+ * device sends {"csr":"...","payload":{...}}. Whatever the allocation policy
+ * returns comes back through the registration-payload callback.
+ *
  * Requires the managed provider (OpenSSL 3.0+).
  *
  * Environment:
@@ -24,9 +30,16 @@
  *   AZ_IOT_CLIENT_CERT, AZ_IOT_CLIENT_KEY, AZ_IOT_TRUSTED_CA  (bootstrap X.509)
  *   AZ_IOT_OPERATIONAL_KEY   (optional; default operational_key.pem)
  *   AZ_IOT_OPERATIONAL_CERT  (optional; default operational_cert.pem)
+ *   AZ_IOT_DPS_REGISTRATION_PAYLOAD (optional; a JSON object sent with the
+ *                                    registration request)
  */
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+
+/* Largest custom registration payload this sample accepts from the
+ * environment. The SDK never allocates, so the build buffer is sized here. */
+#define SAMPLE_REGISTRATION_PAYLOAD_MAX 512
 
 #include "azure/iot/az_iot.h"
 #include "azure/iot/adapters/az_iot_adapter_paho.h"
@@ -46,6 +59,18 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
   az_iot_result reason = event->reason;
   (void)reason;
   ((user_context*)user_ctx)->conn_state = s;
+}
+
+/* The assignment's custom payload. The span points into the inbound message and
+ * dies with this call, so anything worth keeping must be copied here. */
+static void on_registration_payload(az_span payload, void* user_ctx)
+{
+  (void)user_ctx;
+  fprintf(
+      stderr,
+      "[dps_csr] registration payload from the service: %.*s\n",
+      (int)az_span_size(payload),
+      (const char*)az_span_ptr(payload));
 }
 
 static void on_operational_cert(const az_iot_issued_certificate* issued, void* user_ctx)
@@ -97,6 +122,19 @@ int main(void)
   copts.csr_payload_buffer = az_span_create(csr_payload_buf, sizeof(csr_payload_buf));
   copts.dps.request_operational_certificate = true; /* opt in to CSR enrollment (D2) */
 
+  /* Optional custom registration payload. It shares the register body with the
+   * CSR, so the build buffer has to hold both -- which is what
+   * AZ_IOT_DPS_REGISTRATION_BODY_STORAGE() sizes. */
+  AZ_IOT_DPS_REGISTRATION_BODY_STORAGE(registration_body_buf, SAMPLE_REGISTRATION_PAYLOAD_MAX);
+  const char* registration_payload = getenv("AZ_IOT_DPS_REGISTRATION_PAYLOAD");
+  if (registration_payload != NULL && registration_payload[0] != '\0')
+  {
+    copts.dps_registration_payload = az_span_create(
+        (uint8_t*)(uintptr_t)registration_payload, (int32_t)strlen(registration_payload));
+    copts.dps_registration_body_buffer
+        = az_span_create(registration_body_buf, sizeof(registration_body_buf));
+  }
+
   if (az_iot_connection_client_init(&connection_client, &copts) != AZ_IOT_OK)
   {
     goto cleanup;
@@ -105,6 +143,8 @@ int main(void)
   az_iot_connection_client_set_state_callback(&connection_client, on_conn_state, &user_ctx);
   az_iot_connection_client_set_operational_cert_callback(
       &connection_client, on_operational_cert, &user_ctx);
+  az_iot_connection_client_set_registration_payload_callback(
+      &connection_client, on_registration_payload, &user_ctx);
 
   if (az_iot_connection_client_register_mqtt_factory(
           &connection_client, az_iot_paho_factory_create_v3_1_1())

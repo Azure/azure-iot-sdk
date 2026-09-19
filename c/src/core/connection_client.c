@@ -75,9 +75,26 @@
 /* PEM wrapping are defined here rather than inline.                          */
 /* ------------------------------------------------------------------------- */
 
-/* DPS registration body carrying the operational-cert CSR (base64 DER). */
-#define DPS_REGISTER_CSR_BODY_PREFIX "{\"csr\":\""
-#define DPS_REGISTER_CSR_BODY_SUFFIX "\"}"
+/* DPS registration body members. The body is ONE JSON object carrying only the
+ * members this registration actually needs:
+ *
+ *   {"csr":"<base64 DER>"}                          CSR enrollment only
+ *   {"payload":<caller JSON>}                       custom payload only
+ *   {"csr":"<base64 DER>","payload":<caller JSON>}  both
+ *
+ * `payload` is the member the DPS registration request uses for the custom
+ * allocation payload; azure-sdk-for-c writes the same member name in
+ * az_iot_provisioning_client_register_get_request_payload()
+ * (sdk/src/azure/iot/az_iot_provisioning_client.c, `prov_payload_label`). That
+ * helper is not used here because it always emits `registrationId` -- which
+ * this SDK carries in the DPS username and topic, not the body -- and has no
+ * `csr` member, so it could not produce the combined body at all. */
+#define DPS_REGISTER_BODY_OPEN "{"
+#define DPS_REGISTER_BODY_CLOSE "}"
+#define DPS_REGISTER_BODY_SEPARATOR ","
+#define DPS_REGISTER_CSR_MEMBER_PREFIX "\"csr\":\""
+#define DPS_REGISTER_CSR_MEMBER_SUFFIX "\""
+#define DPS_REGISTER_PAYLOAD_MEMBER_PREFIX "\"payload\":"
 
 /* CSR-based operational-certificate issuance (Azure Device Registration / ADR)
  * requires a newer DPS API version than the azure-sdk-for-c default GA version
@@ -586,6 +603,96 @@ static uint64_t dps_hold_timeout_ms(const az_iot_connection_client* c)
                                      : (uint64_t)AZ_IOT_DPS_HOLD_TIMEOUT_MS;
 }
 
+/* Where the registration body is built. The dedicated buffer when the caller
+ * supplied one, otherwise the CSR buffer -- so a device that already provides
+ * csr_payload_buffer only has to enlarge it to add a payload, and a CSR-only
+ * registration keeps building exactly where it always did. */
+static az_span dps_register_body_buffer(const az_iot_connection_client* c)
+{
+  return az_span_size(c->opts.dps_registration_body_buffer) > 0
+      ? c->opts.dps_registration_body_buffer
+      : c->opts.csr_payload_buffer;
+}
+
+/* Shallow but definitive validation of opts.dps_registration_payload: exactly
+ * one well-formed JSON object, with nothing after it.
+ *
+ * The SDK does not interpret the contents -- they belong to the allocation
+ * policy -- but it will not embed bytes that cannot be valid JSON either. A
+ * malformed payload would otherwise surface as an opaque DPS protocol failure
+ * on a device in the field rather than as a configuration error at open(). An
+ * OBJECT specifically, because that is what `payload` is on both directions of
+ * the DPS contract: azure-sdk-for-c's response parser accepts only an object
+ * or null there, so a scalar or array could not even round-trip. */
+static az_iot_result dps_validate_registration_payload(az_span payload)
+{
+  az_json_reader jr;
+  if (az_result_failed(az_json_reader_init(&jr, payload, NULL))
+      || az_result_failed(az_json_reader_next_token(&jr))
+      || jr.token.kind != AZ_JSON_TOKEN_BEGIN_OBJECT
+      || az_result_failed(az_json_reader_skip_children(&jr)))
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  /* Trailing content: a second value after the object would splice two JSON
+   * documents into one body. az_json_reader reports both "document ended" and
+   * "garbage follows" as a failed next_token, so the remainder is inspected
+   * directly instead -- only insignificant whitespace may follow. */
+  az_span end_token = jr.token.slice;
+  uint8_t* begin = az_span_ptr(payload);
+  int32_t consumed = (int32_t)(az_span_ptr(end_token) - begin) + az_span_size(end_token);
+  for (int32_t i = consumed; i < az_span_size(payload); ++i)
+  {
+    uint8_t ch = begin[i];
+    if (ch != ' ' && ch != '\t' && ch != '\r' && ch != '\n')
+    {
+      return AZ_IOT_ERR_INVALID_ARG;
+    }
+  }
+  return AZ_IOT_OK;
+}
+
+/* Build the registration body into @p destination. @p csr_base64 is NULL when
+ * this registration carries no CSR, @p payload empty when it carries no custom
+ * payload; the result is one JSON object holding whichever members are present.
+ * A destination too small latches inside the writer and is reported here, so a
+ * body is never published half-built. */
+static az_iot_result dps_build_register_body(
+    az_span destination,
+    const char* csr_base64,
+    az_span payload,
+    size_t* out_len)
+{
+  az_iot_span_writer writer;
+  az_iot_span_writer_init(&writer, destination);
+  az_iot_span_writer_append_str(&writer, DPS_REGISTER_BODY_OPEN);
+  if (csr_base64 != NULL)
+  {
+    az_iot_span_writer_append_str(&writer, DPS_REGISTER_CSR_MEMBER_PREFIX);
+    az_iot_span_writer_append_str(&writer, csr_base64);
+    az_iot_span_writer_append_str(&writer, DPS_REGISTER_CSR_MEMBER_SUFFIX);
+  }
+  if (az_span_size(payload) > 0)
+  {
+    if (csr_base64 != NULL)
+    {
+      az_iot_span_writer_append_str(&writer, DPS_REGISTER_BODY_SEPARATOR);
+    }
+    az_iot_span_writer_append_str(&writer, DPS_REGISTER_PAYLOAD_MEMBER_PREFIX);
+    az_iot_span_writer_append_span(&writer, payload);
+  }
+  az_iot_span_writer_append_str(&writer, DPS_REGISTER_BODY_CLOSE);
+
+  az_span written = AZ_SPAN_EMPTY;
+  az_iot_result result = az_iot_span_writer_end(&writer, &written);
+  if (result != AZ_IOT_OK)
+  {
+    return result;
+  }
+  *out_len = (size_t)az_span_size(written);
+  return AZ_IOT_OK;
+}
+
 static az_iot_result dps_do_register_publish(az_iot_connection_client* c)
 {
   char topic[AZ_IOT_DPS_TOPIC_BUF];
@@ -604,55 +711,66 @@ static az_iot_result dps_do_register_publish(az_iot_connection_client* c)
   msg.qos = AZ_IOT_MQTT_QOS_1;
   msg.retain = false;
 
-  /* CSR-based enrollment (D2): request an operational cert by sending the
-   * provider's CSR as the registration body {"csr":"<base64 DER>"}, built into
-   * the CALLER-PROVIDED payload buffer (opts.csr_payload_buffer) - the SDK
-   * declares no payload buffer of its own. The registration id travels in the
-   * DPS username/topic, not the body. */
-  if (c->dps_enrolling)
+  /* Body members (both optional, both may be present):
+   *   - CSR-based enrollment (D2): the provider's CSR, which asks DPS for an
+   *     operational certificate.
+   *   - the caller's custom registration payload, which DPS forwards to a
+   *     custom-allocation policy.
+   * Built into a CALLER-PROVIDED buffer - the SDK declares no payload buffer of
+   * its own. With neither configured the registration body stays empty, exactly
+   * as before. The registration id travels in the DPS username/topic, not the
+   * body. */
+  az_span custom_payload
+      = (az_span_size(c->opts.dps_registration_payload) > 0 ? c->opts.dps_registration_payload
+                                                            : AZ_SPAN_EMPTY);
+  if (c->dps_enrolling || az_span_size(custom_payload) > 0)
   {
-    az_iot_certificate_provider* provider = c->opts.certificate_provider;
-    if (provider == NULL || provider->vtable->get_csr == NULL)
+    az_span body_buffer = dps_register_body_buffer(c);
+    if (az_span_ptr(body_buffer) == NULL || az_span_size(body_buffer) <= 0)
     {
-      AZ_IOT_LOG_ERROR("dps register: request_operational_certificate is set but the certificate "
-                       "provider does not implement get_csr");
-      return AZ_IOT_ERR_NOT_SUPPORTED;
-    }
-
-    char* body = (char*)az_span_ptr(c->opts.csr_payload_buffer);
-    size_t body_cap = (size_t)az_span_size(c->opts.csr_payload_buffer);
-    if (body == NULL || body_cap == 0)
-    {
-      AZ_IOT_LOG_ERROR("dps register: opts.csr_payload_buffer is required for CSR enrollment");
+      AZ_IOT_LOG_ERROR("dps register: a registration body was configured but neither "
+                       "opts.dps_registration_body_buffer nor opts.csr_payload_buffer was "
+                       "provided to build it in");
       return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
     }
 
+    az_iot_certificate_provider* provider = NULL;
     az_iot_certificate_signing_request csr = { 0 };
-    az_iot_result csr_result
-        = provider->vtable->get_csr(provider, c->opts.dps.registration_id, &csr);
-    if (csr_result != AZ_IOT_OK || csr.csr_base64 == NULL)
+    if (c->dps_enrolling)
     {
-      AZ_IOT_LOG_ERROR("dps register: certificate provider get_csr failed");
-      return (csr_result != AZ_IOT_OK) ? csr_result : AZ_IOT_ERR_INTERNAL;
+      provider = c->opts.certificate_provider;
+      if (provider == NULL || provider->vtable->get_csr == NULL)
+      {
+        AZ_IOT_LOG_ERROR("dps register: request_operational_certificate is set but the certificate "
+                         "provider does not implement get_csr");
+        return AZ_IOT_ERR_NOT_SUPPORTED;
+      }
+
+      az_iot_result csr_result
+          = provider->vtable->get_csr(provider, c->opts.dps.registration_id, &csr);
+      if (csr_result != AZ_IOT_OK || csr.csr_base64 == NULL)
+      {
+        AZ_IOT_LOG_ERROR("dps register: certificate provider get_csr failed");
+        return (csr_result != AZ_IOT_OK) ? csr_result : AZ_IOT_ERR_INTERNAL;
+      }
     }
 
     size_t body_len = 0;
-    const char* body_parts[]
-        = { DPS_REGISTER_CSR_BODY_PREFIX, csr.csr_base64, DPS_REGISTER_CSR_BODY_SUFFIX };
-    az_iot_result body_result
-        = az_iot_span_writer_build_str(c->opts.csr_payload_buffer, &body_len, body_parts, 3);
+    az_iot_result body_result = dps_build_register_body(
+        body_buffer, c->dps_enrolling ? csr.csr_base64 : NULL, custom_payload, &body_len);
 
-    if (provider->vtable->release_csr != NULL)
+    if (provider != NULL && provider->vtable->release_csr != NULL)
     {
       provider->vtable->release_csr(provider, &csr);
     }
     if (body_result != AZ_IOT_OK)
     {
-      AZ_IOT_LOG_ERROR("dps register: opts.csr_payload_buffer is too small for the CSR body");
+      AZ_IOT_LOG_ERROR("dps register: the registration body build buffer is too small for the "
+                       "configured CSR and/or custom payload");
       return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
     }
 
-    msg.payload = (const uint8_t*)body;
+    msg.payload = az_span_ptr(body_buffer);
     msg.payload_len = body_len;
   }
 
@@ -1164,6 +1282,16 @@ static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
               return;
             }
             c->dps_have_issued_cert = true;
+          }
+          /* Surface the assignment's custom payload (registrationState.payload,
+           * already parsed by azure-sdk-for-c as a zero-copy span into the
+           * inbound message). Delivered only once the assignment is otherwise
+           * good, so an application never acts on an allocation result for a
+           * provisioning attempt that then fails. The span dies with this
+           * callback -- the message buffer is reused. */
+          if (c->reg_payload_cb && az_span_size(resp.registration_state.payload) > 0)
+          {
+            c->reg_payload_cb(resp.registration_state.payload, c->reg_payload_cb_ctx);
           }
           dps_finalize(c, AZ_IOT_OK, true);
           return;
@@ -2739,6 +2867,20 @@ az_iot_result az_iot_connection_client_set_operational_cert_callback(
   return AZ_IOT_OK;
 }
 
+az_iot_result az_iot_connection_client_set_registration_payload_callback(
+    az_iot_connection_client* client,
+    az_iot_registration_payload_callback cb,
+    void* user_ctx)
+{
+  if (!client)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  client->reg_payload_cb = cb;
+  client->reg_payload_cb_ctx = user_ctx;
+  return AZ_IOT_OK;
+}
+
 az_iot_result az_iot_connection_client_open(az_iot_connection_client* client)
 {
   if (!client)
@@ -2768,6 +2910,29 @@ az_iot_result az_iot_connection_client_open(az_iot_connection_client* client)
     {
       AZ_IOT_LOG_ERROR("connection_client_open: request_operational_certificate requires "
                        "opts.csr_payload_buffer");
+      return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+    }
+  }
+
+  /* A custom registration payload is caller-supplied JSON that goes on the wire
+   * verbatim. Check it once here, before any socket exists, rather than letting
+   * a malformed one become a DPS protocol failure during provisioning. Like
+   * every other dps option it is ignored on a direct hub connect, where there
+   * is no registration to carry it. */
+  if (dps_configured(client) && az_span_size(client->opts.dps_registration_payload) > 0)
+  {
+    if (dps_validate_registration_payload(client->opts.dps_registration_payload) != AZ_IOT_OK)
+    {
+      AZ_IOT_LOG_ERROR("connection_client_open: opts.dps_registration_payload must be a single "
+                       "well-formed JSON object");
+      return AZ_IOT_ERR_INVALID_ARG;
+    }
+    az_span body_buffer = dps_register_body_buffer(client);
+    if (az_span_ptr(body_buffer) == NULL || az_span_size(body_buffer) <= 0)
+    {
+      AZ_IOT_LOG_ERROR("connection_client_open: opts.dps_registration_payload requires "
+                       "opts.dps_registration_body_buffer (or opts.csr_payload_buffer) to build "
+                       "the registration body in");
       return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
     }
   }
