@@ -723,7 +723,7 @@ Tracked as **[AB#39350066](https://dev.azure.com/msazure/One/_workitems/edit/393
 > one: MQTT *does* preserve ordering here. A broker processes the control packets
 > of a single connection in the order it receives them, so a PUBLISH cannot
 > overtake a SUBSCRIBE that was already written to that connection. The defect is
-> that ours has not been written yet. `transition()` invokes the application
+> that ours has not been written yet. `set_state_to()` invokes the application
 > callback **synchronously**, before the re-subscribe loop runs, so a request
 > published from inside that callback reaches the wire *ahead of* its own
 > SUBSCRIBE. Ordering then works against us rather than for us.

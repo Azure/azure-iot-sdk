@@ -234,7 +234,7 @@ static bool reconnect_enabled(const az_iot_connection_client* c)
   return c->opts.reconnection_policy.initial_delay_ms > 0;
 }
 
-static void transition(
+static void set_state_to(
     az_iot_connection_client* c,
     az_iot_connection_state next,
     az_iot_result reason)
@@ -551,14 +551,14 @@ static void schedule_reconnect(az_iot_connection_client* c, az_iot_result reason
   if (c->opts.reconnection_policy.max_attempts > 0
       && c->reconnect_attempt > c->opts.reconnection_policy.max_attempts)
   {
-    transition(c, AZ_IOT_CONN_STATE_FAULTED, reason);
+    set_state_to(c, AZ_IOT_CONN_STATE_FAULTED, reason);
     return;
   }
 
   uint32_t delay = az_iot_reconnect_delay_ms(
       &c->opts.reconnection_policy, c->reconnect_attempt, &c->rng_state);
   c->reconnect_due_ms = az_iot_time_mono_ms() + delay;
-  transition(c, AZ_IOT_CONN_STATE_RECONNECTING, reason);
+  set_state_to(c, AZ_IOT_CONN_STATE_RECONNECTING, reason);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -1523,7 +1523,7 @@ static az_iot_result dps_start(az_iot_connection_client* c)
   c->dps_pending_status = AZ_IOT_OK;
   c->dps_enrolling = c->opts.dps.request_operational_certificate;
 
-  transition(c, AZ_IOT_CONN_STATE_CONNECTING, AZ_IOT_OK);
+  set_state_to(c, AZ_IOT_CONN_STATE_CONNECTING, AZ_IOT_OK);
 
   az_iot_result r = mc->iface->connect(mc, &copts);
   if (r != AZ_IOT_OK)
@@ -1559,7 +1559,7 @@ static void dps_apply_deferred(az_iot_connection_client* c)
 
   if (status != AZ_IOT_OK || !have_assignment)
   {
-    transition(c, AZ_IOT_CONN_STATE_FAULTED, status);
+    set_state_to(c, AZ_IOT_CONN_STATE_FAULTED, status);
     return;
   }
 
@@ -1595,7 +1595,7 @@ static void dps_apply_deferred(az_iot_connection_client* c)
           "dps: assigned an unsupported connectionProfile \"%s\"; this SDK does not know which "
           "protocol to speak",
           c->connection_profile_raw);
-      transition(c, AZ_IOT_CONN_STATE_FAULTED, AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED);
+      set_state_to(c, AZ_IOT_CONN_STATE_FAULTED, AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED);
       return;
   }
   /* The assignment may have moved the device to a different generation than the
@@ -1614,7 +1614,7 @@ static void dps_apply_deferred(az_iot_connection_client* c)
         "dps: assigned connectionProfile \"%s\", but the attached feature clients require the "
         "other hub generation; destroy them and rebuild for the assigned profile",
         c->connection_profile_raw);
-    transition(c, AZ_IOT_CONN_STATE_FAULTED, AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH);
+    set_state_to(c, AZ_IOT_CONN_STATE_FAULTED, AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH);
     return;
   }
 
@@ -1626,7 +1626,7 @@ static void dps_apply_deferred(az_iot_connection_client* c)
       c->dps_assigned_hub);
   if (r != AZ_IOT_OK)
   {
-    transition(c, AZ_IOT_CONN_STATE_FAULTED, r);
+    set_state_to(c, AZ_IOT_CONN_STATE_FAULTED, r);
     return;
   }
   r = replace_owned_string(
@@ -1636,7 +1636,7 @@ static void dps_apply_deferred(az_iot_connection_client* c)
       c->dps_assigned_device_id);
   if (r != AZ_IOT_OK)
   {
-    transition(c, AZ_IOT_CONN_STATE_FAULTED, r);
+    set_state_to(c, AZ_IOT_CONN_STATE_FAULTED, r);
     return;
   }
   drop_subscriptions_from_other_generations(c);
@@ -1645,7 +1645,7 @@ static void dps_apply_deferred(az_iot_connection_client* c)
   r = start_connect_attempt(c);
   if (r != AZ_IOT_OK)
   {
-    transition(c, AZ_IOT_CONN_STATE_FAULTED, r);
+    set_state_to(c, AZ_IOT_CONN_STATE_FAULTED, r);
   }
 }
 
@@ -1888,7 +1888,7 @@ static void presence_decode_birth_ack(az_iot_connection_client* c, const uint8_t
  * MQTT does preserve ordering: a broker processes one connection's control
  * packets in the order it receives them, so a PUBLISH cannot overtake a
  * SUBSCRIBE already written to that connection. The problem was that ours had
- * not been written yet -- transition() invokes the application callback
+ * not been written yet -- set_state_to() invokes the application callback
  * SYNCHRONOUSLY, so a request published from inside that callback reached the
  * wire ahead of its own SUBSCRIBE, and ordering worked against us.
  *
@@ -1897,7 +1897,7 @@ static void presence_decode_birth_ack(az_iot_connection_client* c, const uint8_t
  * would catch. See AB#39366084. */
 static void announce_connected(az_iot_connection_client* c)
 {
-  transition(c, AZ_IOT_CONN_STATE_CONNECTED, AZ_IOT_OK);
+  set_state_to(c, AZ_IOT_CONN_STATE_CONNECTED, AZ_IOT_OK);
 }
 
 /* Fail the session because a subscription it depends on could not be
@@ -2530,7 +2530,7 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
     }
   }
 
-  transition(c, AZ_IOT_CONN_STATE_CONNECTING, AZ_IOT_OK);
+  set_state_to(c, AZ_IOT_CONN_STATE_CONNECTING, AZ_IOT_OK);
   az_iot_result r = mc->iface->connect(mc, &copts);
   if (r != AZ_IOT_OK)
   {
@@ -2556,7 +2556,7 @@ static void apply_deferred(az_iot_connection_client* c)
   {
     case DEFER_FAULT:
       teardown_active(c);
-      transition(c, AZ_IOT_CONN_STATE_FAULTED, reason);
+      set_state_to(c, AZ_IOT_CONN_STATE_FAULTED, reason);
       break;
     case DEFER_RECONNECT:
       schedule_reconnect(c, reason);
@@ -2566,7 +2566,7 @@ static void apply_deferred(az_iot_connection_client* c)
       c->user_close = false;
       c->reconnect_attempt = 0;
       c->reconnect_due_ms = 0;
-      transition(c, AZ_IOT_CONN_STATE_IDLE, reason);
+      set_state_to(c, AZ_IOT_CONN_STATE_IDLE, reason);
       break;
     default:
       break;
@@ -3050,7 +3050,7 @@ az_iot_result az_iot_connection_client_open(az_iot_connection_client* client)
     az_iot_result r = apply_mock_next_bypass(client);
     if (r != AZ_IOT_OK)
     {
-      transition(client, AZ_IOT_CONN_STATE_IDLE, r);
+      set_state_to(client, AZ_IOT_CONN_STATE_IDLE, r);
       return r;
     }
     /* host + client_id are set, session_role = HUB_NEXT → fall through
@@ -3058,7 +3058,7 @@ az_iot_result az_iot_connection_client_open(az_iot_connection_client* client)
     r = start_connect_attempt(client);
     if (r != AZ_IOT_OK)
     {
-      transition(client, AZ_IOT_CONN_STATE_IDLE, r);
+      set_state_to(client, AZ_IOT_CONN_STATE_IDLE, r);
     }
     return r;
   }
@@ -3069,7 +3069,7 @@ az_iot_result az_iot_connection_client_open(az_iot_connection_client* client)
     az_iot_result r = dps_start(client);
     if (r != AZ_IOT_OK)
     {
-      transition(client, AZ_IOT_CONN_STATE_IDLE, r);
+      set_state_to(client, AZ_IOT_CONN_STATE_IDLE, r);
     }
     return r;
   }
@@ -3083,7 +3083,7 @@ az_iot_result az_iot_connection_client_open(az_iot_connection_client* client)
   az_iot_result r = start_connect_attempt(client);
   if (r != AZ_IOT_OK)
   {
-    transition(client, AZ_IOT_CONN_STATE_IDLE, r);
+    set_state_to(client, AZ_IOT_CONN_STATE_IDLE, r);
   }
   return r;
 }
@@ -3106,7 +3106,7 @@ az_iot_result az_iot_connection_client_close(az_iot_connection_client* client)
     client->reconnect_attempt = 0;
     client->reconnect_due_ms = 0;
     client->user_close = false;
-    transition(client, AZ_IOT_CONN_STATE_IDLE, AZ_IOT_OK);
+    set_state_to(client, AZ_IOT_CONN_STATE_IDLE, AZ_IOT_OK);
     return AZ_IOT_OK;
   }
 
@@ -3133,7 +3133,7 @@ az_iot_result az_iot_connection_client_close(az_iot_connection_client* client)
     /* Defensive: no fault path leaves one behind today, but close() must not
      * depend on that to reach IDLE. */
     teardown_active(client);
-    transition(client, AZ_IOT_CONN_STATE_IDLE, AZ_IOT_OK);
+    set_state_to(client, AZ_IOT_CONN_STATE_IDLE, AZ_IOT_OK);
     return AZ_IOT_OK;
   }
 
@@ -3164,14 +3164,14 @@ az_iot_result az_iot_connection_client_close(az_iot_connection_client* client)
       client->reconnect_due_ms = 0;
       client->needs_reprovision = false;
       client->user_close = false;
-      transition(client, AZ_IOT_CONN_STATE_IDLE, AZ_IOT_OK);
+      set_state_to(client, AZ_IOT_CONN_STATE_IDLE, AZ_IOT_OK);
       return AZ_IOT_OK;
     }
     return AZ_IOT_ERR_NOT_INITIALIZED;
   }
 
   client->user_close = true;
-  transition(client, AZ_IOT_CONN_STATE_DISCONNECTING, AZ_IOT_OK);
+  set_state_to(client, AZ_IOT_CONN_STATE_DISCONNECTING, AZ_IOT_OK);
   az_iot_result r = client->active_client->iface->disconnect(client->active_client);
   if (r != AZ_IOT_OK && r != AZ_IOT_ERR_NOT_CONNECTED)
   {
@@ -3330,7 +3330,7 @@ az_iot_result az_iot_connection_client_do_work(
     else
     {
       teardown_active(client);
-      transition(client, AZ_IOT_CONN_STATE_FAULTED, AZ_IOT_ERR_TIMEOUT);
+      set_state_to(client, AZ_IOT_CONN_STATE_FAULTED, AZ_IOT_ERR_TIMEOUT);
     }
   }
 
@@ -3368,7 +3368,7 @@ az_iot_result az_iot_connection_client_do_work(
     else
     {
       teardown_active(client);
-      transition(client, AZ_IOT_CONN_STATE_FAULTED, AZ_IOT_ERR_TIMEOUT);
+      set_state_to(client, AZ_IOT_CONN_STATE_FAULTED, AZ_IOT_ERR_TIMEOUT);
     }
   }
 

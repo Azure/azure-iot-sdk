@@ -55,7 +55,7 @@ This document describes the target lifecycle. Not all of it is coded yet, so eve
 
 States are defined in
 [az_iot_connection_client.h](../inc/azure/iot/az_iot_connection_client.h); transitions are all funneled
-through the internal `transition()` helper, which is also what raises the user state callback.
+through the internal `set_state_to()` helper, which is also what raises the user state callback.
 
 ```mermaid
 stateDiagram-v2
