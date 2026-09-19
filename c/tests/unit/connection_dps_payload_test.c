@@ -186,6 +186,13 @@ static void fixture_destroy(payload_fixture* fx)
 }
 
 /* Drive open -> CONNACK -> SUBACK, so the register PUBLISH has been attempted. */
+/* Drive open -> CONNACK -> SUBACK, so the register PUBLISH has been attempted.
+ *
+ * The returned mock is valid ONLY while the provisioning session survives that
+ * attempt. A register PUBLISH the SDK refuses to build (a body buffer too
+ * small) faults the client, which tears the DPS session down and FREES this
+ * mock -- so a failure-path test must not touch the returned pointer. Use
+ * drive_to_failed_register() there instead. */
 static az_iot_mock_mqtt_client* drive_to_register(payload_fixture* fx)
 {
   assert_int_equal(az_iot_connection_client_open(fx->conn.client), AZ_IOT_OK);
@@ -200,6 +207,26 @@ static az_iot_mock_mqtt_client* drive_to_register(payload_fixture* fx)
   assert_true(az_iot_mock_mqtt_client_inject_suback(m, sub->packet_id, AZ_IOT_OK));
   (void)az_iot_connection_client_do_work(fx->conn.client, 0);
   return m;
+}
+
+/* Same drive, for the case where building the body is expected to fail.
+ * Returns nothing: the provisioning session -- and with it the mock -- is gone
+ * by the time this returns. What the SDK owes the caller here is observable on
+ * the client, not on the adapter: it faulted with AZ_IOT_ERR_NOT_ENOUGH_SPACE
+ * and tore the session down, having returned before it ever set a payload on
+ * the message. That nothing truncated reaches the wire is asserted positively
+ * by the exact-bytes tests above. */
+static void drive_to_failed_register(payload_fixture* fx)
+{
+  (void)drive_to_register(fx);
+
+  assert_int_equal(az_iot_test_last_state(&fx->conn.log), AZ_IOT_CONN_STATE_FAULTED);
+  assert_int_equal(
+      az_iot_test_reason_for(&fx->conn.log, AZ_IOT_CONN_STATE_FAULTED),
+      AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  /* The session really is gone: the mock detaches itself from the factory when
+   * it is destroyed, so this also guards the use-after-free above. */
+  assert_null(az_iot_mock_mqtt_factory_last_client(fx->conn.factory));
 }
 
 /* Assert the register PUBLISH carried exactly `expected`. */
@@ -318,13 +345,7 @@ static void a_body_buffer_too_small_fails_instead_of_truncating(void** state)
   opts.dps_registration_body_buffer = az_span_create(fx->tiny_buffer, sizeof(fx->tiny_buffer));
   fixture_init(fx, &opts);
 
-  az_iot_mock_mqtt_client* m = drive_to_register(fx);
-
-  assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_PUBLISH), 0);
-  assert_int_equal(az_iot_test_last_state(&fx->conn.log), AZ_IOT_CONN_STATE_FAULTED);
-  assert_int_equal(
-      az_iot_test_reason_for(&fx->conn.log, AZ_IOT_CONN_STATE_FAULTED),
-      AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  drive_to_failed_register(fx);
 
   fixture_destroy(fx);
 }
@@ -344,13 +365,8 @@ static void a_csr_buffer_that_only_fits_the_csr_fails_when_a_payload_shares_it(v
   opts.dps_registration_payload = payload_span();
   fixture_init(fx, &opts);
 
-  az_iot_mock_mqtt_client* m = drive_to_register(fx);
+  drive_to_failed_register(fx);
 
-  assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_PUBLISH), 0);
-  assert_int_equal(az_iot_test_last_state(&fx->conn.log), AZ_IOT_CONN_STATE_FAULTED);
-  assert_int_equal(
-      az_iot_test_reason_for(&fx->conn.log, AZ_IOT_CONN_STATE_FAULTED),
-      AZ_IOT_ERR_NOT_ENOUGH_SPACE);
   /* The CSR was still released even though the body build failed. */
   assert_int_equal(fx->provider.get_csr_calls, 1);
   assert_int_equal(fx->provider.release_csr_calls, 1);
