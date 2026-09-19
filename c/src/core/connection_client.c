@@ -2467,7 +2467,15 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
          * adapter contract maps these CONNACK codes to a distinct result. The
          * retry is still scheduled through the reconnection policy, so backoff
          * and max_attempts continue to bound it (a device whose enrollment has
-         * been deleted must not hammer DPS either). */
+         * been deleted must not hammer DPS either).
+         *
+         * reconnect_enabled() is part of the condition deliberately, not as an
+         * oversight: needs_reprovision is only ever consumed by the
+         * RECONNECTING branch of do_work(), so with no policy there is no
+         * attempt to carry a re-provision and setting it would record an
+         * intention nothing acts on. The rejection faults instead, and the
+         * application decides. This is documented on
+         * opts.reconnection_policy. */
         if (evt->status == AZ_IOT_ERR_IDENTITY_REJECTED && dps_configured(c) && !c->user_close
             && reconnect_enabled(c))
         {
@@ -2884,6 +2892,18 @@ az_iot_connection_client_options az_iot_connection_client_options_default(void)
    * caller that selects WebSockets does not also have to remember to change a
    * port that was defaulted for TCP. */
   opts.port = 0;
+  /* Retry by default. A zeroed policy has initial_delay_ms == 0, which means
+   * reconnection is DISABLED -- every dropped link, every refused CONNACK and
+   * every failed registration is then terminal. That is a reasonable meaning
+   * for a struct the caller zeroed themselves, but it is the wrong default for
+   * the function whose job is to hand back sensible values: an unattended
+   * device that stops at the first transient failure is not the behaviour
+   * anyone asks for, and it is not what the other Azure IoT SDKs do.
+   *
+   * Callers who genuinely want a single attempt set
+   * reconnection_policy.initial_delay_ms = 0 on the returned struct, or build
+   * their options from { 0 } instead. */
+  opts.reconnection_policy = az_iot_reconnection_policy_default();
   opts.dps.max_hub_connect_attempts_before_reprovision
       = AZ_IOT_DEFAULT_MAX_HUB_CONNECT_ATTEMPTS_BEFORE_REPROVISION;
   return opts;
