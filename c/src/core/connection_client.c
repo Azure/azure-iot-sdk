@@ -1591,6 +1591,29 @@ static void dps_apply_deferred(az_iot_connection_client* c)
 
   if (status != AZ_IOT_OK || !have_assignment)
   {
+    /* A registration that failed, or that completed with no assignment, is the
+     * most transient failure a device meets: the enrollment may not have been
+     * created yet, the DPS may not have a linked IoT Hub yet, or the service
+     * may simply have been unavailable. Every other failure path -- hub CONNACK
+     * failures, unexpected drops, presence timeouts, subscription-gate timeouts
+     * -- consults the reconnection policy first, and this one used to be the
+     * single exception: it faulted unconditionally, so a device configured to
+     * retry forever still ended terminally on a first boot that ran slightly
+     * ahead of its enrollment.
+     *
+     * needs_reprovision is what makes the retry a re-registration. Without it
+     * the scheduled attempt would take the ordinary connect path, which has no
+     * host on a DPS client. */
+    if (reconnect_enabled(c) && !c->user_close)
+    {
+      c->needs_reprovision = true;
+      /* Registration attempts are not hub attempts, and naming the role keeps
+       * them out of the hub-failure counter that arms an automatic
+       * re-provision. */
+      c->session_role = AZ_IOT_MQTT_ROLE_DPS;
+      schedule_reconnect(c, status);
+      return;
+    }
     set_state_to(c, AZ_IOT_CONN_STATE_FAULTED, status);
     return;
   }
