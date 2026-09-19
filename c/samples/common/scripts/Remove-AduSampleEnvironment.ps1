@@ -38,6 +38,16 @@ param(
     [string]$UpdateVersion  = $env:AZ_IOT_ADU_UPDATE_VERSION
 )
 
+Write-Warning @'
+The -DeploymentOnly mode deletes a deployment and an imported update through
+'az iot du ...', i.e. the IoT-Hub-based Device Update model. The ADU samples in
+this repository implement the DPS-fronted model, whose deployments are Azure
+Device Registry jobs and runs; this script does not remove those. Deleting the
+resource group removes everything it contains either way.
+
+See samples/adu/pc/README.md.
+'@
+
 if ($DeploymentOnly) {
     Write-Host "==> Deleting deployment $DeploymentId"
     az iot du device deployment delete --account $AccountName --instance $InstanceName --group-id $GroupId --deployment-id $DeploymentId -y

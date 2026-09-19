@@ -60,6 +60,16 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+Write-Warning @'
+The import and deployment steps of this script target the IoT-Hub-based Device
+Update model (account + instance). The ADU samples in this repository implement
+the DPS-fronted model, which delivers updates as Azure Device Registry jobs and
+runs. An update deployed by this script will not be offered to those samples.
+The firmware image build is unaffected.
+
+See samples/adu/pc/README.md.
+'@
+
 # Locate the ESP32 project (../../adu/esp32 relative to this script).
 $projectDir   = (Resolve-Path (Join-Path $PSScriptRoot "..\..\adu\esp32")).Path
 $versionHdr   = Join-Path $projectDir "main\adu_version.h"
