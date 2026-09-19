@@ -603,13 +603,17 @@ static uint64_t dps_hold_timeout_ms(const az_iot_connection_client* c)
                                      : (uint64_t)AZ_IOT_DPS_HOLD_TIMEOUT_MS;
 }
 
-/* Where the registration body is built. The dedicated buffer when the caller
- * supplied one, otherwise the CSR buffer -- so a device that already provides
- * csr_payload_buffer only has to enlarge it to add a payload, and a CSR-only
- * registration keeps building exactly where it always did. */
+/* Where the registration body is built. The dedicated buffer applies only to a
+ * body that actually carries the custom payload, which is what its documented
+ * contract promises: a CSR-only registration keeps building in
+ * csr_payload_buffer exactly where it always did, even when the caller also
+ * supplied a registration_body_buffer sized for something else. Without a
+ * dedicated buffer the payload body falls back to csr_payload_buffer too, so a
+ * device that already provides one only has to enlarge it to add a payload. */
 static az_span dps_register_body_buffer(const az_iot_connection_client* c)
 {
-  return az_span_size(c->opts.dps.registration_body_buffer) > 0
+  bool have_payload = az_span_size(c->opts.dps.registration_payload) > 0;
+  return (have_payload && az_span_size(c->opts.dps.registration_body_buffer) > 0)
       ? c->opts.dps.registration_body_buffer
       : c->opts.csr_payload_buffer;
 }
@@ -669,16 +673,26 @@ static az_iot_result dps_validate_registration_payload(az_span payload)
  * reading it, and then memcpy overlapping regions -- undefined behaviour, and a
  * malformed body if it survived. Cheap to detect, so it is rejected at open()
  * instead. Plausible rather than theoretical on a no-allocation SDK, where a
- * memory-constrained caller may try to reuse one buffer for both. */
+ * memory-constrained caller may try to reuse one buffer for both.
+ *
+ * Compared as integers, and by DIFFERENCE rather than by computing an end
+ * address: relational comparison of pointers into different objects is
+ * undefined in C (6.5.8p5), and separate arrays are the normal, valid case
+ * here, so the check itself must not rely on it. Subtracting the smaller
+ * address from the larger cannot overflow either. */
 static bool spans_overlap(az_span a, az_span b)
 {
-  uint8_t* a0 = az_span_ptr(a);
-  uint8_t* b0 = az_span_ptr(b);
-  if (a0 == NULL || b0 == NULL || az_span_size(a) <= 0 || az_span_size(b) <= 0)
+  uint8_t* a_ptr = az_span_ptr(a);
+  uint8_t* b_ptr = az_span_ptr(b);
+  if (a_ptr == NULL || b_ptr == NULL || az_span_size(a) <= 0 || az_span_size(b) <= 0)
   {
     return false;
   }
-  return (a0 < b0 + az_span_size(b)) && (b0 < a0 + az_span_size(a));
+
+  uintptr_t a0 = (uintptr_t)a_ptr;
+  uintptr_t b0 = (uintptr_t)b_ptr;
+  return (a0 >= b0) ? ((a0 - b0) < (uintptr_t)az_span_size(b))
+                    : ((b0 - a0) < (uintptr_t)az_span_size(a));
 }
 
 /* Build the registration body into @p destination. @p csr_base64 is NULL when

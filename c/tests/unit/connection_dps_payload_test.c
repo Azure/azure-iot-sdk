@@ -185,7 +185,6 @@ static void fixture_destroy(payload_fixture* fx)
   free(fx);
 }
 
-/* Drive open -> CONNACK -> SUBACK, so the register PUBLISH has been attempted. */
 /* Drive open -> CONNACK -> SUBACK, so the register PUBLISH has been attempted.
  *
  * The returned mock is valid ONLY while the provisioning session survives that
@@ -370,6 +369,28 @@ static void a_csr_buffer_that_only_fits_the_csr_fails_when_a_payload_shares_it(v
   /* The CSR was still released even though the body build failed. */
   assert_int_equal(fx->provider.get_csr_calls, 1);
   assert_int_equal(fx->provider.release_csr_calls, 1);
+
+  fixture_destroy(fx);
+}
+
+/* The dedicated body buffer belongs to a body that carries the payload. A
+ * CSR-only registration must ignore it and keep building in csr_payload_buffer,
+ * which is what its documented contract promises -- otherwise a caller who sets
+ * a body buffer sized for some other purpose would fault a registration that
+ * has no payload in it at all. */
+static void a_csr_only_body_ignores_the_registration_body_buffer(void** state)
+{
+  (void)state;
+  payload_fixture* fx = fixture_create();
+  az_iot_connection_client_options opts = fixture_options(fx);
+  opts.dps.request_operational_certificate = true;
+  opts.csr_payload_buffer = az_span_create(fx->csr_buffer, sizeof(fx->csr_buffer));
+  /* No payload, and a dedicated buffer far too small for even the CSR body. */
+  opts.dps.registration_body_buffer = az_span_create(fx->tiny_buffer, sizeof(fx->tiny_buffer));
+  fixture_init(fx, &opts);
+
+  az_iot_mock_mqtt_client* m = drive_to_register(fx);
+  assert_register_body(m, "{\"csr\":\"" CSR_BASE64 "\"}");
 
   fixture_destroy(fx);
 }
@@ -591,6 +612,7 @@ int main(void)
     cmocka_unit_test(the_csr_buffer_builds_the_combined_body_when_no_body_buffer_is_set),
     cmocka_unit_test(a_body_buffer_too_small_fails_instead_of_truncating),
     cmocka_unit_test(a_csr_buffer_that_only_fits_the_csr_fails_when_a_payload_shares_it),
+    cmocka_unit_test(a_csr_only_body_ignores_the_registration_body_buffer),
     /* validation */
     cmocka_unit_test(open_accepts_a_well_formed_payload_object),
     cmocka_unit_test(open_rejects_a_malformed_payload),
