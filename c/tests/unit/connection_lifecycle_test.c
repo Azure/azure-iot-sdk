@@ -138,9 +138,10 @@ static void open_while_connected_is_rejected(void** state)
   assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_ERR_ALREADY_INITIALIZED);
 }
 
-/* FAULTED is terminal for this client instance: open() does not restart it.
- * Recovery requires destroy() + init(). Pinning this makes the limitation
- * visible rather than folklore. */
+/* open() is still IDLE-only: a fault has to be acknowledged with close()
+ * first, which is what returns the client to IDLE. See
+ * close_from_faulted_returns_to_idle() and
+ * open_after_close_from_faulted_starts_a_new_session(). */
 static void open_from_faulted_is_rejected(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
@@ -499,9 +500,10 @@ static void close_twice_is_idempotent(void** state)
   assert_int_equal(fx->log.count, transitions);
 }
 
-/* After a fault the adapter is already gone, so there is nothing to disconnect.
- * close() reports that rather than pretending it did something. */
-static void close_from_faulted_reports_not_initialized(void** state)
+/* After a fault the adapter is already gone, so there is nothing to
+ * disconnect -- which is exactly why close() has to reach IDLE by itself here
+ * rather than waiting for a transport event. */
+static void close_from_faulted_returns_to_idle(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
   az_iot_mock_mqtt_client* m = open_to_connecting(fx);
@@ -511,7 +513,48 @@ static void close_from_faulted_reports_not_initialized(void** state)
   (void)az_iot_connection_client_do_work(fx->client, 0);
   assert_true(az_iot_test_saw_state(&fx->log, AZ_IOT_CONN_STATE_FAULTED));
 
-  assert_int_equal(az_iot_connection_client_close(fx->client), AZ_IOT_ERR_NOT_INITIALIZED);
+  /* FAULTED is settled, not a trap: close() acknowledges it and the client is
+   * IDLE by the time the call returns -- there is no adapter left to wait for. */
+  assert_int_equal(az_iot_connection_client_close(fx->client), AZ_IOT_OK);
+  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_IDLE);
+}
+
+/* The recovery this makes possible: retry without destroying the client (and
+ * therefore without rebuilding every attached feature client). */
+static void open_after_close_from_faulted_starts_a_new_session(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_mock_mqtt_client* m = open_to_connecting(fx);
+
+  assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_ERR_MQTT));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_FAULTED);
+
+  assert_int_equal(az_iot_connection_client_close(fx->client), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
+
+  az_iot_mock_mqtt_client* second = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  assert_non_null(second);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(second, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_true(az_iot_connection_client__is_connected(fx->client));
+}
+
+/* Closing twice from a fault is as idempotent as closing twice from a session. */
+static void close_from_faulted_twice_is_idempotent(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_mock_mqtt_client* m = open_to_connecting(fx);
+
+  assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_ERR_MQTT));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_FAULTED);
+
+  assert_int_equal(az_iot_connection_client_close(fx->client), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_close(fx->client), AZ_IOT_OK);
+  assert_int_equal(az_iot_test_count_state(&fx->log, AZ_IOT_CONN_STATE_IDLE), 1);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -834,7 +877,10 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         a_connack_without_a_pending_close_still_connects, setup, teardown),
     cmocka_unit_test_setup_teardown(close_twice_is_idempotent, setup, teardown),
-    cmocka_unit_test_setup_teardown(close_from_faulted_reports_not_initialized, setup, teardown),
+    cmocka_unit_test_setup_teardown(close_from_faulted_returns_to_idle, setup, teardown),
+    cmocka_unit_test_setup_teardown(close_from_faulted_twice_is_idempotent, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        open_after_close_from_faulted_starts_a_new_session, setup, teardown),
     /* destroy() */
     cmocka_unit_test(destroy_while_connected_destroys_the_adapter),
     cmocka_unit_test(destroy_while_connecting_destroys_the_adapter),

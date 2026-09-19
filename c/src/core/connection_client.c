@@ -234,7 +234,7 @@ static bool reconnect_enabled(const az_iot_connection_client* c)
   return c->opts.reconnection_policy.initial_delay_ms > 0;
 }
 
-static void transition(
+static void set_state_to(
     az_iot_connection_client* c,
     az_iot_connection_state next,
     az_iot_result reason)
@@ -394,7 +394,8 @@ static bool dps_configured(const az_iot_connection_client* c);
 static az_iot_result run_feature_client_binds(az_iot_connection_client* c);
 static void drop_subscriptions_from_other_generations(az_iot_connection_client* c);
 
-/* Forward decl — used in dps_apply_deferred(). */
+/* Forward decls — used in dps_apply_deferred(). */
+static az_iot_result check_owned_string(size_t buf_cap, const char* s);
 static az_iot_result replace_owned_string(
     char* owned_buf,
     size_t buf_cap,
@@ -551,14 +552,14 @@ static void schedule_reconnect(az_iot_connection_client* c, az_iot_result reason
   if (c->opts.reconnection_policy.max_attempts > 0
       && c->reconnect_attempt > c->opts.reconnection_policy.max_attempts)
   {
-    transition(c, AZ_IOT_CONN_STATE_FAULTED, reason);
+    set_state_to(c, AZ_IOT_CONN_STATE_FAULTED, reason);
     return;
   }
 
   uint32_t delay = az_iot_reconnect_delay_ms(
       &c->opts.reconnection_policy, c->reconnect_attempt, &c->rng_state);
   c->reconnect_due_ms = az_iot_time_mono_ms() + delay;
-  transition(c, AZ_IOT_CONN_STATE_RECONNECTING, reason);
+  set_state_to(c, AZ_IOT_CONN_STATE_RECONNECTING, reason);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -1523,7 +1524,19 @@ static az_iot_result dps_start(az_iot_connection_client* c)
   c->dps_pending_status = AZ_IOT_OK;
   c->dps_enrolling = c->opts.dps.request_operational_certificate;
 
-  transition(c, AZ_IOT_CONN_STATE_CONNECTING, AZ_IOT_OK);
+  set_state_to(c, AZ_IOT_CONN_STATE_CONNECTING, AZ_IOT_OK);
+
+  /* That announcement ran the application's state callback synchronously, and
+   * close() is legal from inside it -- including the branch that cancels a
+   * provisioning session, which destroys `mc` and clears dps_mqtt. Touching
+   * `mc` afterwards would be a use-after-free, so detect the cancellation and
+   * leave: the session the caller asked for no longer exists, and the client
+   * is already back in IDLE. */
+  if (c->dps_mqtt != mc)
+  {
+    AZ_IOT_LOG_DEBUG("dps: the session was closed from the state callback; abandoning the start");
+    return AZ_IOT_ERR_NOT_CONNECTED;
+  }
 
   az_iot_result r = mc->iface->connect(mc, &copts);
   if (r != AZ_IOT_OK)
@@ -1537,6 +1550,25 @@ static az_iot_result dps_start(az_iot_connection_client* c)
 /* Process deferred DPS finalization. Called from _do_work() after process_loop.
  * On success, tears down DPS MQTT, sets host/client_id and starts hub connect.
  * On failure, transitions to FAULTED. */
+/* Fail an assignment this client cannot use, and make sure the NEXT open()
+ * goes back to DPS instead of to whatever assignment is still cached.
+ *
+ * Declining to adopt the new values is not enough on a re-provision: opts.host
+ * and opts.client_id still name the hub from the previous assignment, and
+ * open() skips DPS whenever a host is set. Without this the client would
+ * connect to the stale hub -- and for a profile mismatch it would do so with
+ * session_role already switched to the generation this very response was
+ * rejected for.
+ *
+ * The flag is raised BEFORE the transition because set_state_to() runs the
+ * application's state callback synchronously, and close() + open() from inside
+ * that callback must already see the demand to re-provision. */
+static void reject_assignment(az_iot_connection_client* c, az_iot_result reason)
+{
+  c->needs_reprovision = true;
+  set_state_to(c, AZ_IOT_CONN_STATE_FAULTED, reason);
+}
+
 static void dps_apply_deferred(az_iot_connection_client* c)
 {
   if (!c->dps_pending_finalize)
@@ -1559,38 +1591,25 @@ static void dps_apply_deferred(az_iot_connection_client* c)
 
   if (status != AZ_IOT_OK || !have_assignment)
   {
-    transition(c, AZ_IOT_CONN_STATE_FAULTED, status);
+    set_state_to(c, AZ_IOT_CONN_STATE_FAULTED, status);
     return;
   }
 
   /* Apply the assigned hub + device_id and connect to the hub. */
-  az_iot_result r;
-  r = replace_owned_string(
-      c->provisioned_iot_hub_hostname,
-      sizeof(c->provisioned_iot_hub_hostname),
-      &c->opts.host,
-      c->dps_assigned_hub);
-  if (r != AZ_IOT_OK)
-  {
-    transition(c, AZ_IOT_CONN_STATE_FAULTED, r);
-    return;
-  }
-  r = replace_owned_string(
-      c->provisioned_device_id,
-      sizeof(c->provisioned_device_id),
-      &c->opts.client_id,
-      c->dps_assigned_device_id);
-  if (r != AZ_IOT_OK)
-  {
-    transition(c, AZ_IOT_CONN_STATE_FAULTED, r);
-    return;
-  }
   /* The assigned profile picks the wire protocol for the hub session. An
    * unrecognised value fails the connection instead of guessing an MQTT version
    * -- a device that appears to connect and then misbehaves is far worse to
    * diagnose than one clear error here. The profile stays readable through
    * az_iot_connection_client_get_hub_profile() so the offending value can be
-   * logged or reported. */
+   * logged or reported.
+   *
+   * Checked BEFORE the assignment is applied to opts.host / opts.client_id,
+   * which is what keeps a rejected assignment from being adopted. Refusing to
+   * adopt it is only half of the job, though: on a RE-provision the previous
+   * assignment is still cached in opts.host, and open() skips DPS whenever a
+   * host is set. reject_assignment() therefore also demands that the next
+   * open() go back to DPS -- see its comment. */
+  az_iot_result r;
   switch (c->connection_profile)
   {
     case AZ_IOT_CONNECTION_PROFILE_CLASSIC:
@@ -1605,7 +1624,7 @@ static void dps_apply_deferred(az_iot_connection_client* c)
           "dps: assigned an unsupported connectionProfile \"%s\"; this SDK does not know which "
           "protocol to speak",
           c->connection_profile_raw);
-      transition(c, AZ_IOT_CONN_STATE_FAULTED, AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED);
+      reject_assignment(c, AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED);
       return;
   }
   /* The assignment may have moved the device to a different generation than the
@@ -1613,23 +1632,61 @@ static void dps_apply_deferred(az_iot_connection_client* c)
   c->connection_profile_resolved = true;
   if (c->required_profile_refs > 0 && c->required_profile != c->connection_profile)
   {
-    /* Terminal on purpose: re-provisioning would return this same profile, so a
-     * retry cannot succeed. The application owns the recovery -- destroy the
-     * feature clients and rebuild them for the profile this event carries. */
+    /* Terminal on purpose: re-provisioning would return this same profile while
+     * the feature clients still require the other one, so an immediate retry
+     * cannot succeed. The application owns the recovery -- destroy the feature
+     * clients and rebuild them for the profile this event carries, then close()
+     * this connection client (legal from FAULTED, and it returns it to IDLE)
+     * and open() it again. The connection client itself does not have to be
+     * destroyed.
+     *
+     * The switch above has already moved session_role to the assigned
+     * generation. That is harmless only because reject_assignment() forces the
+     * next open() through DPS, which settles the role again from whatever that
+     * run is assigned. */
     AZ_IOT_LOG_ERRORF(
         "dps: assigned connectionProfile \"%s\", but the attached feature clients require the "
         "other hub generation; destroy them and rebuild for the assigned profile",
         c->connection_profile_raw);
-    transition(c, AZ_IOT_CONN_STATE_FAULTED, AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH);
+    reject_assignment(c, AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH);
     return;
   }
+
+  /* Adopt the assignment. Both halves are checked before EITHER is written:
+   * they are only meaningful together, and the response parser accepts an
+   * empty device id (it rejects only a negative or oversized one), so
+   * committing the hub and then rejecting the device id would leave the client
+   * holding the newly assigned hub alongside the previous device id -- which,
+   * now that a fault is recoverable, a later open() would connect with. After
+   * these checks neither write below can fail. */
+  r = check_owned_string(sizeof(c->provisioned_iot_hub_hostname), c->dps_assigned_hub);
+  if (r == AZ_IOT_OK)
+  {
+    r = check_owned_string(sizeof(c->provisioned_device_id), c->dps_assigned_device_id);
+  }
+  if (r != AZ_IOT_OK)
+  {
+    AZ_IOT_LOG_ERROR("dps: the assignment did not carry a usable hub hostname and device id");
+    reject_assignment(c, r);
+    return;
+  }
+  (void)replace_owned_string(
+      c->provisioned_iot_hub_hostname,
+      sizeof(c->provisioned_iot_hub_hostname),
+      &c->opts.host,
+      c->dps_assigned_hub);
+  (void)replace_owned_string(
+      c->provisioned_device_id,
+      sizeof(c->provisioned_device_id),
+      &c->opts.client_id,
+      c->dps_assigned_device_id);
   drop_subscriptions_from_other_generations(c);
   c->dps_phase = DPS_PHASE_NONE;
 
   r = start_connect_attempt(c);
   if (r != AZ_IOT_OK)
   {
-    transition(c, AZ_IOT_CONN_STATE_FAULTED, r);
+    set_state_to(c, AZ_IOT_CONN_STATE_FAULTED, r);
   }
 }
 
@@ -1872,7 +1929,7 @@ static void presence_decode_birth_ack(az_iot_connection_client* c, const uint8_t
  * MQTT does preserve ordering: a broker processes one connection's control
  * packets in the order it receives them, so a PUBLISH cannot overtake a
  * SUBSCRIBE already written to that connection. The problem was that ours had
- * not been written yet -- transition() invokes the application callback
+ * not been written yet -- set_state_to() invokes the application callback
  * SYNCHRONOUSLY, so a request published from inside that callback reached the
  * wire ahead of its own SUBSCRIBE, and ordering worked against us.
  *
@@ -1881,7 +1938,7 @@ static void presence_decode_birth_ack(az_iot_connection_client* c, const uint8_t
  * would catch. See AB#39366084. */
 static void announce_connected(az_iot_connection_client* c)
 {
-  transition(c, AZ_IOT_CONN_STATE_CONNECTED, AZ_IOT_OK);
+  set_state_to(c, AZ_IOT_CONN_STATE_CONNECTED, AZ_IOT_OK);
 }
 
 /* Fail the session because a subscription it depends on could not be
@@ -2514,7 +2571,7 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
     }
   }
 
-  transition(c, AZ_IOT_CONN_STATE_CONNECTING, AZ_IOT_OK);
+  set_state_to(c, AZ_IOT_CONN_STATE_CONNECTING, AZ_IOT_OK);
   az_iot_result r = mc->iface->connect(mc, &copts);
   if (r != AZ_IOT_OK)
   {
@@ -2540,7 +2597,7 @@ static void apply_deferred(az_iot_connection_client* c)
   {
     case DEFER_FAULT:
       teardown_active(c);
-      transition(c, AZ_IOT_CONN_STATE_FAULTED, reason);
+      set_state_to(c, AZ_IOT_CONN_STATE_FAULTED, reason);
       break;
     case DEFER_RECONNECT:
       schedule_reconnect(c, reason);
@@ -2550,7 +2607,7 @@ static void apply_deferred(az_iot_connection_client* c)
       c->user_close = false;
       c->reconnect_attempt = 0;
       c->reconnect_due_ms = 0;
-      transition(c, AZ_IOT_CONN_STATE_IDLE, reason);
+      set_state_to(c, AZ_IOT_CONN_STATE_IDLE, reason);
       break;
     default:
       break;
@@ -3025,7 +3082,12 @@ az_iot_result az_iot_connection_client_open(az_iot_connection_client* client)
   client->user_close = false;
   client->reconnect_attempt = 0;
   client->reconnect_due_ms = 0;
-  client->needs_reprovision = false;
+  /* needs_reprovision is deliberately NOT cleared here. It is pending recovery
+   * intent -- "the cached assignment is no good, ask DPS again" -- set by an
+   * identity rejection, by the unreachable-hub threshold, or by an assignment
+   * this client refused. Clearing it would make close() + open() reconnect to
+   * exactly the hub that was rejected or unreachable, because the cached host
+   * is still set. It is consumed by the DPS route below. */
 
   /* --- Mock-Next bypass: when AZ_IOT_HUB_NEXT_MOCK_ENDPOINT is set,
    * skip DPS and connect directly to the mock Hub-Next (MQTT v5). --- */
@@ -3034,7 +3096,7 @@ az_iot_result az_iot_connection_client_open(az_iot_connection_client* client)
     az_iot_result r = apply_mock_next_bypass(client);
     if (r != AZ_IOT_OK)
     {
-      transition(client, AZ_IOT_CONN_STATE_IDLE, r);
+      set_state_to(client, AZ_IOT_CONN_STATE_IDLE, r);
       return r;
     }
     /* host + client_id are set, session_role = HUB_NEXT → fall through
@@ -3042,19 +3104,29 @@ az_iot_result az_iot_connection_client_open(az_iot_connection_client* client)
     r = start_connect_attempt(client);
     if (r != AZ_IOT_OK)
     {
-      transition(client, AZ_IOT_CONN_STATE_IDLE, r);
+      set_state_to(client, AZ_IOT_CONN_STATE_IDLE, r);
     }
     return r;
   }
 
-  /* When host is NULL but DPS is configured, provision first. */
-  if (!client->opts.host && dps_configured(client))
+  /* Provision first when there is no hub to connect to -- and also when a
+   * previous outcome demanded re-provisioning, even though a hub IS cached.
+   * That second case is what stops close() + open() from walking straight back
+   * into a hub whose identity was rejected, that has stopped answering, or
+   * whose assignment this client refused: without it the cached host would let
+   * open() skip DPS entirely. It mirrors what the automatic retry in do_work()
+   * already does for the same flag. */
+  if (dps_configured(client) && (!client->opts.host || client->needs_reprovision))
   {
     az_iot_result r = dps_start(client);
     if (r != AZ_IOT_OK)
     {
-      transition(client, AZ_IOT_CONN_STATE_IDLE, r);
+      set_state_to(client, AZ_IOT_CONN_STATE_IDLE, r);
+      return r;
     }
+    /* Consumed only once provisioning is really under way, so a dps_start()
+     * that failed still leaves the demand standing for the next open(). */
+    client->needs_reprovision = false;
     return r;
   }
 
@@ -3067,7 +3139,7 @@ az_iot_result az_iot_connection_client_open(az_iot_connection_client* client)
   az_iot_result r = start_connect_attempt(client);
   if (r != AZ_IOT_OK)
   {
-    transition(client, AZ_IOT_CONN_STATE_IDLE, r);
+    set_state_to(client, AZ_IOT_CONN_STATE_IDLE, r);
   }
   return r;
 }
@@ -3090,17 +3162,74 @@ az_iot_result az_iot_connection_client_close(az_iot_connection_client* client)
     client->reconnect_attempt = 0;
     client->reconnect_due_ms = 0;
     client->user_close = false;
-    transition(client, AZ_IOT_CONN_STATE_IDLE, AZ_IOT_OK);
+    set_state_to(client, AZ_IOT_CONN_STATE_IDLE, AZ_IOT_OK);
+    return AZ_IOT_OK;
+  }
+
+  /* Closing from FAULTED: acknowledge the fault and return the client to IDLE,
+   * which is what makes open() a supported retry.
+   *
+   * Every path into FAULTED has already torn the session down, so there is
+   * nothing to disconnect -- which is exactly why this has to be handled
+   * before the active_client check below, or close() would report
+   * NOT_INITIALIZED and leave the client in a state no API could leave. The
+   * only escape would then be destroy() plus a full re-init, which also forces
+   * the application to rebuild every attached feature client.
+   *
+   * Same shape as the RECONNECTING branch above: cancel the bookkeeping and
+   * transition. The configuration is untouched, so a DPS client re-provisions
+   * on the next open() and a client that had already been assigned a hub
+   * reconnects to it. */
+  if (client->state == AZ_IOT_CONN_STATE_FAULTED)
+  {
+    client->reconnect_attempt = 0;
+    client->reconnect_due_ms = 0;
+    client->user_close = false;
+    /* needs_reprovision survives on purpose: it says the cached assignment is
+     * no good, which a close() does not change. Clearing it here would let the
+     * following open() reconnect to the very hub that faulted. */
+    /* Defensive: no fault path leaves one behind today, but close() must not
+     * depend on that to reach IDLE. */
+    teardown_active(client);
+    set_state_to(client, AZ_IOT_CONN_STATE_IDLE, AZ_IOT_OK);
     return AZ_IOT_OK;
   }
 
   if (!client->active_client)
   {
+    /* Closing during provisioning. There is a DPS session but no hub adapter
+     * yet, so without this the check below would report NOT_INITIALIZED and
+     * leave the client in CONNECTING with no way out -- the same shape as the
+     * fault above. Cancel the exchange and go to IDLE.
+     *
+     * The pending finalize is dropped with it: it describes the outcome of a
+     * session that is being abandoned, and acting on it in the next do_work()
+     * would move a client the application has just closed. */
+    if (client->dps_mqtt)
+    {
+      if (client->dps_mqtt->iface && client->dps_mqtt->iface->disconnect)
+      {
+        (void)client->dps_mqtt->iface->disconnect(client->dps_mqtt);
+      }
+      dps_teardown_mqtt(client);
+      client->dps_session_auxiliary = false;
+      client->dps_aux_idle_deadline_ms = 0;
+      client->dps_phase = DPS_PHASE_NONE;
+      client->dps_pending_finalize = false;
+      client->dps_pending_have_assignment = false;
+      client->dps_pending_status = AZ_IOT_OK;
+      client->reconnect_attempt = 0;
+      client->reconnect_due_ms = 0;
+      /* needs_reprovision survives, as in the FAULTED branch above. */
+      client->user_close = false;
+      set_state_to(client, AZ_IOT_CONN_STATE_IDLE, AZ_IOT_OK);
+      return AZ_IOT_OK;
+    }
     return AZ_IOT_ERR_NOT_INITIALIZED;
   }
 
   client->user_close = true;
-  transition(client, AZ_IOT_CONN_STATE_DISCONNECTING, AZ_IOT_OK);
+  set_state_to(client, AZ_IOT_CONN_STATE_DISCONNECTING, AZ_IOT_OK);
   az_iot_result r = client->active_client->iface->disconnect(client->active_client);
   if (r != AZ_IOT_OK && r != AZ_IOT_ERR_NOT_CONNECTED)
   {
@@ -3259,7 +3388,7 @@ az_iot_result az_iot_connection_client_do_work(
     else
     {
       teardown_active(client);
-      transition(client, AZ_IOT_CONN_STATE_FAULTED, AZ_IOT_ERR_TIMEOUT);
+      set_state_to(client, AZ_IOT_CONN_STATE_FAULTED, AZ_IOT_ERR_TIMEOUT);
     }
   }
 
@@ -3297,7 +3426,7 @@ az_iot_result az_iot_connection_client_do_work(
     else
     {
       teardown_active(client);
-      transition(client, AZ_IOT_CONN_STATE_FAULTED, AZ_IOT_ERR_TIMEOUT);
+      set_state_to(client, AZ_IOT_CONN_STATE_FAULTED, AZ_IOT_ERR_TIMEOUT);
     }
   }
 
@@ -3353,21 +3482,37 @@ az_iot_result az_iot_connection_client__set_session_role(
 /* Internal helper used by both __set_host and __set_client_id. Copies `s` into
  * the in-struct fixed buffer `owned_buf` (bounded by `buf_cap`) and points
  * `*opts_slot` (the live pointer the rest of the code reads) at it. No heap. */
+/* Whether `s` could be adopted into a buffer of `buf_cap` bytes. Split out of
+ * replace_owned_string() so a caller adopting more than one string can check
+ * them all BEFORE mutating any of them: the two halves of a DPS assignment are
+ * only meaningful together, and committing one and then rejecting the other
+ * leaves the client holding a hub from the new assignment and a device id from
+ * the old one. */
+static az_iot_result check_owned_string(size_t buf_cap, const char* s)
+{
+  if (!is_nonempty_cstr(s))
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if (strlen(s) + 1 > buf_cap)
+  {
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  }
+  return AZ_IOT_OK;
+}
+
 static az_iot_result replace_owned_string(
     char* owned_buf,
     size_t buf_cap,
     const char** opts_slot,
     const char* s)
 {
-  if (!is_nonempty_cstr(s))
+  az_iot_result r = check_owned_string(buf_cap, s);
+  if (r != AZ_IOT_OK)
   {
-    return AZ_IOT_ERR_INVALID_ARG;
+    return r;
   }
   size_t n = strlen(s);
-  if (n + 1 > buf_cap)
-  {
-    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
-  }
   memcpy(owned_buf, s, n + 1);
   *opts_slot = owned_buf;
   return AZ_IOT_OK;
