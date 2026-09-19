@@ -319,7 +319,14 @@ jobs:
                  ./tests/az_iot_tests_paho_event_queue_race 2>&1 | tee "${tool}.log"; then
               :
             else
-              echo "::error::${tool} reported a threading defect"
+              # Put the report itself in the annotation, not just the verdict.
+              # The full log is an artifact, but a failure that can be read
+              # straight off the run summary is one that gets acted on -- and
+              # the first context is almost always the whole story. Newlines
+              # are escaped because an annotation is a single line.
+              detail=$(grep -E '^==[0-9]+==' "${tool}.log" | head -40 \
+                       | sed -e 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
+              echo "::error::${tool} reported a threading defect:%0A${detail}"
               status=1
             fi
             if ! grep -q "ERROR SUMMARY:" "${tool}.log"; then

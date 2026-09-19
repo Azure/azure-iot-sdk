@@ -48,6 +48,17 @@
  * mutex down -- so a test that drove them concurrently would be asserting a
  * guarantee the adapter never made, and would fail for a reason that is not a
  * defect. Producer/consumer concurrency is the part that IS promised.
+ *
+ * A NOTE ON THE HARNESS
+ *
+ * The fixture below shares nothing between threads that is not either fixed
+ * before the first thread starts or ordered by a join. That is not fastidious-
+ * ness: the first version of this file ended the run with a "producers are
+ * done" flag the main thread set after joining the producers, which orders the
+ * main thread against the PRODUCERS and says nothing about the consumer, still
+ * running and reading it. helgrind reported it, correctly, and DRD did not.
+ * A harness that contributes races of its own cannot be trusted to report the
+ * adapter's, and two detectors are run for exactly that reason.
  */
 
 #if !defined(_WIN32)
@@ -69,6 +80,7 @@
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -136,15 +148,23 @@ typedef struct race_fixture
   az_iot_mqtt_factory* factory;
   az_iot_mqtt_client* client;
   /* Consumer-thread state. Only the consumer thread touches these while the
-   * producers run; the main thread reads them after every join. */
+   * producers run; the main thread reads them after joining it, and the join
+   * is what makes that safe. */
   size_t messages_seen;
   size_t events_seen;
   size_t malformed;
-  /* Producers are done, so the consumer may stop once the queue is empty.
-   * Written by the main thread after joining every producer, and read by the
-   * consumer -- the join is the happens-before edge, so a plain bool is
-   * correct here and a detector will agree. */
-  bool producers_done;
+  /* How many events the producers will generate in total. Written before any
+   * thread is created and never again, so the consumer can decide for itself
+   * when it is finished.
+   *
+   * This used to be a "producers are done" flag the main thread set after
+   * joining them. That was itself a data race -- the join orders the main
+   * thread against the PRODUCERS, and says nothing about the consumer, which
+   * is still running and reading the flag. helgrind was right to report it.
+   * A total that is fixed before the first thread starts needs no
+   * synchronization at all, which is the only way to be sure the harness is
+   * not contributing the very thing these cases exist to detect. */
+  size_t expected_events;
 } race_fixture;
 
 /* The consumer's inbound callback. Runs on the consumer thread, inside
@@ -226,7 +246,11 @@ static void fixture_teardown(race_fixture* f)
   az_iot_paho_factory_destroy(f->factory);
 }
 
-/* Drain until the producers have stopped AND the queue has gone quiet. */
+/* Drain until every event the producers will send has been delivered.
+ *
+ * Bounded by a deadline so a lost event fails the counts in the test body
+ * rather than hanging the suite -- a race detector run that never terminates
+ * reports nothing at all. */
 #if defined(_WIN32)
 static DWORD WINAPI consumer_main(LPVOID arg)
 #else
@@ -234,14 +258,10 @@ static void* consumer_main(void* arg)
 #endif
 {
   race_fixture* f = (race_fixture*)arg;
-  for (;;)
+  time_t deadline = time(NULL) + 60;
+  while (f->events_seen < f->expected_events && time(NULL) < deadline)
   {
-    size_t before = f->events_seen;
     (void)f->client->iface->process_loop(f->client, 0);
-    if (f->producers_done && f->events_seen == before)
-    {
-      break;
-    }
     race_yield();
   }
 #if defined(_WIN32)
@@ -312,6 +332,7 @@ static void inbound_messages_do_not_race_with_process_loop(void** state)
   (void)state;
   race_fixture f;
   fixture_setup(&f);
+  f.expected_events = (size_t)(RACE_ITERATIONS * RACE_PRODUCERS);
 
   race_thread consumer;
   race_thread producers[RACE_PRODUCERS];
@@ -324,7 +345,6 @@ static void inbound_messages_do_not_race_with_process_loop(void** state)
   {
     race_thread_join(producers[i]);
   }
-  f.producers_done = true;
   race_thread_join(consumer);
 
   /* Nothing may be lost and nothing may arrive half-built. The counts are the
@@ -367,6 +387,7 @@ static void mixed_producers_do_not_race_with_process_loop(void** state)
   (void)state;
   race_fixture f;
   fixture_setup(&f);
+  f.expected_events = (size_t)(RACE_ITERATIONS * 2);
 
   race_thread consumer;
   race_thread message_producer;
@@ -376,7 +397,6 @@ static void mixed_producers_do_not_race_with_process_loop(void** state)
   race_thread_start(&status_producer, status_producer_main, &f);
   race_thread_join(message_producer);
   race_thread_join(status_producer);
-  f.producers_done = true;
   race_thread_join(consumer);
 
   assert_int_equal(f.messages_seen, (size_t)RACE_ITERATIONS);
