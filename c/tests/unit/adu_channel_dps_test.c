@@ -1286,6 +1286,83 @@ static void a_refused_request_causes_a_session_to_be_opened(void** state)
   assert_non_null(strstr(pub->topic, "deviceupdate"));
 }
 
+/* The demand for a session is cleared once one is up, and an idle channel
+ * therefore stops asking.
+ *
+ * Without this the flag latches on for the life of the client: it is only ever
+ * cleared on dps_session_ensure() answering AZ_IOT_OK, and that answer requires
+ * a session that is already ready -- which is exactly the case in which the
+ * call is not made. Every linger expiry then reopens an auxiliary session, so a
+ * single update check turns into continuous reconnect churn against the
+ * service. */
+static void a_satisfied_session_demand_stops_reopening_sessions(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(fx->channel.vtable->open(fx->channel.ctx, on_update, on_result, fx), AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(&fx->client, fx->factory), AZ_IOT_OK);
+
+  /* Provisioned, and the ordinary flow has taken its session away. */
+  fx->client.dps_phase = AZ_IOT_DPS_PHASE_DONE;
+  assert_int_equal(
+      fx->channel.vtable->request_update(fx->channel.ctx, AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE),
+      AZ_IOT_ERR_NOT_CONNECTED);
+  assert_true(fx->channel_state.wants_session);
+
+  /* The tick opens one, and it comes up. */
+  assert_int_equal(fx->channel.vtable->do_work(fx->channel.ctx), AZ_IOT_OK);
+  az_iot_mock_mqtt_client* m = drive_existing_session(fx);
+  assert_true(az_iot_connection_client__dps_session_ready(&fx->client));
+
+  /* The demand is satisfied: the caller can publish now. */
+  assert_int_equal(fx->channel.vtable->do_work(fx->channel.ctx), AZ_IOT_OK);
+  assert_false(fx->channel_state.wants_session);
+
+  /* Run the operation to completion so nothing is outstanding either. */
+  assert_int_equal(
+      fx->channel.vtable->request_update(fx->channel.ctx, AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE),
+      AZ_IOT_OK);
+  char rid[64];
+  last_rid(m, rid, sizeof(rid));
+  char topic[256];
+  snprintf(topic, sizeof(topic), "$dps/registrations/res/200/?$rid=%s", rid);
+  assert_true(inject(fx, m, topic, "{\"updateAvailable\":false}"));
+  assert_false(fx->channel_state.request_pending);
+
+  /* The idle session closes on its linger, as it is meant to. */
+  fx->client.dps_aux_idle_deadline_ms = 1;
+  (void)az_iot_connection_client_do_work(&fx->client, 0);
+  assert_false(fx->client.dps_session_auxiliary);
+
+  /* And with no work outstanding the channel does NOT reopen it. */
+  for (int i = 0; i < 3; ++i)
+  {
+    assert_int_equal(fx->channel.vtable->do_work(fx->channel.ctx), AZ_IOT_OK);
+    (void)az_iot_connection_client_do_work(&fx->client, 0);
+  }
+  assert_false(fx->client.dps_session_auxiliary);
+  assert_false(fx->channel_state.wants_session);
+}
+
+/* Closing the binding drops the demand with it: a channel bound afterwards must
+ * not inherit a request the previous binding made. */
+static void closing_the_channel_drops_the_session_demand(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(fx->channel.vtable->open(fx->channel.ctx, on_update, on_result, fx), AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(&fx->client, fx->factory), AZ_IOT_OK);
+  fx->client.dps_phase = AZ_IOT_DPS_PHASE_DONE;
+
+  assert_int_equal(
+      fx->channel.vtable->request_update(fx->channel.ctx, AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE),
+      AZ_IOT_ERR_NOT_CONNECTED);
+  assert_true(fx->channel_state.wants_session);
+
+  fx->channel.vtable->close(fx->channel.ctx);
+  assert_false(fx->channel_state.wants_session);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -1352,6 +1429,9 @@ int main(void)
     cmocka_unit_test_setup_teardown(the_user_count_refuses_to_overflow, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_refused_request_causes_a_session_to_be_opened, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_satisfied_session_demand_stops_reopening_sessions, setup, teardown),
+    cmocka_unit_test_setup_teardown(closing_the_channel_drops_the_session_demand, setup, teardown),
     cmocka_unit_test_setup_teardown(
         the_hub_is_still_pumped_while_an_auxiliary_session_is_open, setup, teardown),
     cmocka_unit_test_setup_teardown(
