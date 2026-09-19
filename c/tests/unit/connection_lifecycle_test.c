@@ -356,6 +356,58 @@ static void the_default_options_enable_reconnection(void** state)
   assert_int_equal(opts.reconnection_policy.jitter_pct, expected.jitter_pct);
 }
 
+/* The field values are only half of it: they matter because they reach the
+ * lifecycle. A client built from az_iot_connection_client_options_default()
+ * must actually survive a refused CONNACK, or a future regression in wiring
+ * the default policy through could still pass the comparison above. */
+static void the_default_options_retry_a_refused_connack(void** state)
+{
+  (void)state;
+  az_iot_connection_client_options opts = az_iot_connection_client_options_default();
+  opts.host = "broker.example";
+  opts.client_id = "ut-device";
+  /* initial_delay_ms is deliberately NOT overridden: it is the field that
+   * decides whether reconnection happens at all, so the test has to depend on
+   * the default supplying it. Only the cap is shortened, which bounds the
+   * computed delay (base = min(max_delay_ms, initial_delay_ms << n)) so the
+   * retry deadline is reachable without a one-second wait. */
+  opts.reconnection_policy.max_delay_ms = 20u;
+  opts.reconnection_policy.jitter_pct = 0;
+
+  az_iot_connection_client c;
+  assert_int_equal(az_iot_connection_client_init(&c, &opts), AZ_IOT_OK);
+  az_iot_test_state_log log;
+  memset(&log, 0, sizeof(log));
+  assert_int_equal(
+      az_iot_connection_client_set_state_callback(&c, az_iot_test_on_state, &log), AZ_IOT_OK);
+
+  az_iot_mqtt_factory* f = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
+  assert_non_null(f);
+  assert_int_equal(az_iot_connection_client_register_mqtt_factory(&c, f), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_open(&c), AZ_IOT_OK);
+
+  az_iot_mock_mqtt_client* first = az_iot_mock_mqtt_factory_last_client(f);
+  assert_non_null(first);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(first, AZ_IOT_ERR_MQTT));
+  (void)az_iot_connection_client_do_work(&c, 0);
+  (void)az_iot_connection_client_do_work(&c, 0);
+
+  /* Retrying, not terminal. */
+  assert_int_equal(az_iot_test_last_state(&log), AZ_IOT_CONN_STATE_RECONNECTING);
+  assert_false(az_iot_test_saw_state(&log, AZ_IOT_CONN_STATE_FAULTED));
+
+  /* And the retry is really issued once the backoff elapses. */
+  az_iot_test_wait_ms(25u);
+  (void)az_iot_connection_client_do_work(&c, 0);
+  az_iot_mock_mqtt_client* second = az_iot_mock_mqtt_factory_last_client(f);
+  assert_non_null(second);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(second, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(&c, 0);
+  assert_true(az_iot_connection_client__is_connected(&c));
+
+  az_iot_connection_client_destroy(&c);
+}
+
 /* Opting out stays possible, and a zeroed struct keeps meaning "no retry". */
 static void reconnection_can_still_be_disabled(void** state)
 {
@@ -964,6 +1016,7 @@ int main(void)
     cmocka_unit_test(the_websocket_path_reaches_the_adapter),
     cmocka_unit_test(the_default_options_leave_the_port_to_the_transport),
     cmocka_unit_test(the_default_options_enable_reconnection),
+    cmocka_unit_test(the_default_options_retry_a_refused_connack),
     cmocka_unit_test(reconnection_can_still_be_disabled),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
