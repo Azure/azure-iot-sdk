@@ -112,24 +112,33 @@ extern "C"
 #define AZ_IOT_CSR_PAYLOAD_STORAGE(name) uint8_t name[AZ_IOT_CSR_PAYLOAD_BUFFER_MIN]
 
 /* Bytes the DPS registration body adds around a custom registration payload
- * (opts.dps_registration_payload), on top of the payload itself. An upper bound
+ * (dps.registration_payload), on top of the payload itself. An upper bound
  * covering both shapes: the `{"payload":` + `}` wrapper (12) when the payload
  * is alone in the body, and the `,` + `"payload":` members (11) when it shares
  * the body with a CSR whose own braces AZ_IOT_CSR_PAYLOAD_BUFFER_MIN already
  * counts. */
 #define AZ_IOT_DPS_REGISTRATION_PAYLOAD_OVERHEAD 12
 
-/* Declares a registration-body build buffer for
- * opts.dps_registration_body_buffer sized to hold a CSR enrollment body AND a
- * custom registration payload of up to `payload_max` bytes:
- *   AZ_IOT_DPS_REGISTRATION_BODY_STORAGE(body_buf, 256);
- *   copts.dps_registration_body_buffer = az_span_create(body_buf, sizeof(body_buf));
- * A device that sends a payload but does NOT request an operational
- * certificate needs only payload_max + AZ_IOT_DPS_REGISTRATION_PAYLOAD_OVERHEAD
- * bytes and can size its own buffer accordingly. */
-#define AZ_IOT_DPS_REGISTRATION_BODY_STORAGE(name, payload_max) \
-  uint8_t name                                                  \
-      [AZ_IOT_CSR_PAYLOAD_BUFFER_MIN + AZ_IOT_DPS_REGISTRATION_PAYLOAD_OVERHEAD + (payload_max)]
+/* Largest custom registration payload AZ_IOT_DPS_REGISTRATION_BODY_STORAGE()
+ * leaves room for. Override before including if your allocation policy needs a
+ * bigger one, or size a buffer yourself: the option takes an az_span, so this
+ * constant binds only the convenience macro below. */
+#ifndef AZ_IOT_DPS_REGISTRATION_PAYLOAD_MAX
+#define AZ_IOT_DPS_REGISTRATION_PAYLOAD_MAX 512
+#endif
+
+/* Declares a registration-body build buffer named `name`, sized to hold a CSR
+ * enrollment body AND a custom registration payload of up to
+ * AZ_IOT_DPS_REGISTRATION_PAYLOAD_MAX bytes, for dps.registration_body_buffer:
+ *   AZ_IOT_DPS_REGISTRATION_BODY_STORAGE(body_buf);
+ *   copts.dps.registration_body_buffer = az_span_create(body_buf, sizeof(body_buf));
+ * A device that sends a payload but does NOT request an operational certificate
+ * needs only its payload plus AZ_IOT_DPS_REGISTRATION_PAYLOAD_OVERHEAD bytes
+ * and can declare a smaller buffer itself. */
+#define AZ_IOT_DPS_REGISTRATION_BODY_STORAGE(name)                              \
+  uint8_t name                                                                  \
+      [AZ_IOT_CSR_PAYLOAD_BUFFER_MIN + AZ_IOT_DPS_REGISTRATION_PAYLOAD_OVERHEAD \
+       + AZ_IOT_DPS_REGISTRATION_PAYLOAD_MAX]
 
   typedef struct az_iot_connection_client_options
   {
@@ -203,10 +212,10 @@ extern "C"
      * limit) when using either CSR feature. Leave AZ_SPAN_EMPTY otherwise.
      *
      * AZ_IOT_CSR_PAYLOAD_BUFFER_MIN covers the CSR body alone. When
-     * dps_registration_payload is ALSO set, the registration body carries both
+     * dps.registration_payload is ALSO set, the registration body carries both
      * members and needs a further
      * AZ_IOT_DPS_REGISTRATION_PAYLOAD_OVERHEAD + payload bytes; give that room
-     * either here or, preferably, in dps_registration_body_buffer. A body that
+     * either here or, preferably, in dps.registration_body_buffer. A body that
      * does not fit fails the registration with AZ_IOT_ERR_NOT_ENOUGH_SPACE and
      * is never truncated. */
     az_span csr_payload_buffer;
@@ -244,6 +253,57 @@ extern "C"
        * once, short enough that a device left behind by a migration recovers
        * without an operator. */
       uint32_t max_hub_connect_attempts_before_reprovision;
+
+      /* Custom registration payload: caller-supplied JSON sent with the
+       * registration request as the `payload` member of the registration body.
+       * DPS forwards it to a custom-allocation policy (webhook / Function), and
+       * it is also how a device declares an IoT Plug and Play model id at
+       * provisioning time:
+       *
+       *   static const char k_payload[] = "{\"modelId\":\"dtmi:com:example:Thermostat;1\"}";
+       *   copts.dps.registration_payload
+       *       = az_span_create((uint8_t*)k_payload, (int32_t)(sizeof(k_payload) - 1));
+       *
+       * Note that opts.model_id is NOT announced here: it feeds the Classic
+       * MQTT username only, and injecting it would have to merge with (or
+       * silently override) a `modelId` this payload already carries. Put the
+       * model id in this payload when provisioning should see it.
+       *
+       * Zero-copy and never retained: the span must stay valid and unchanged
+       * from az_iot_connection_client_open() until provisioning completes,
+       * since it is re-read on every registration attempt (including a
+       * re-provision). It is copied INTO the body build buffer, so it MUST NOT
+       * overlap registration_body_buffer (nor opts.csr_payload_buffer when that
+       * is the one being used); open() rejects an overlap with
+       * AZ_IOT_ERR_INVALID_ARG rather than letting the build overwrite its own
+       * source.
+       *
+       * The SDK validates it, in az_iot_connection_client_open(), as exactly
+       * one well-formed JSON object and nothing else, and rejects anything else
+       * with AZ_IOT_ERR_INVALID_ARG rather than emitting a body the service
+       * will refuse. The contents are otherwise opaque to the SDK.
+       *
+       * Leave AZ_SPAN_EMPTY to send no payload, which is what a
+       * zero-initialized options struct does. */
+      az_span registration_payload;
+
+      /* Caller-provided scratch buffer used to BUILD the registration body when
+       * registration_payload is set. The SDK declares no payload buffer of its
+       * own.
+       *
+       * Must hold the whole body: the payload plus
+       * AZ_IOT_DPS_REGISTRATION_PAYLOAD_OVERHEAD, plus the CSR body when
+       * request_operational_certificate is also set --
+       * AZ_IOT_DPS_REGISTRATION_BODY_STORAGE() sizes exactly that. A body that
+       * does not fit fails the registration with AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+       * the SDK never truncates one.
+       *
+       * Left AZ_SPAN_EMPTY, the SDK builds into opts.csr_payload_buffer
+       * instead, so a CSR-enrolling device that adds a small payload only has
+       * to enlarge the buffer it already provides. Unused when
+       * registration_payload is empty: the CSR-only body keeps using
+       * opts.csr_payload_buffer exactly as before. */
+      az_span registration_body_buffer;
     } dps;
 
     /* How long registration may be held for a pre-registration exchange on the
@@ -314,64 +374,6 @@ extern "C"
       bool push_reported; /* request one-shot rehydration of the reported
                            * payload on connect (for volatile devices) */
     } twin_push;
-
-    /* Custom DPS registration payload: caller-supplied JSON sent with the
-     * registration request as the `payload` member of the registration body.
-     * DPS forwards it to a custom-allocation policy (webhook / Function), and
-     * it is also how a device declares an IoT Plug and Play model id at
-     * provisioning time:
-     *
-     *   static const char k_payload[] = "{\"modelId\":\"dtmi:com:example:Thermostat;1\"}";
-     *   copts.dps_registration_payload
-     *       = az_span_create((uint8_t*)k_payload, (int32_t)(sizeof(k_payload) - 1));
-     *
-     * Note that opts.model_id is NOT announced here: it feeds the Classic MQTT
-     * username only, and injecting it would have to merge with (or silently
-     * override) a `modelId` this payload already carries. Put the model id in
-     * this payload when provisioning should see it.
-     *
-     * Zero-copy and never retained: the span must stay valid and unchanged from
-     * az_iot_connection_client_open() until provisioning completes, since it is
-     * re-read on every registration attempt (including a re-provision). It is
-     * copied INTO the body build buffer, so it MUST NOT overlap
-     * dps_registration_body_buffer (nor csr_payload_buffer when that is the one
-     * being used); open() rejects an overlap with AZ_IOT_ERR_INVALID_ARG rather
-     * than letting the build overwrite its own source.
-     *
-     * The SDK validates it, in az_iot_connection_client_open(), as exactly one
-     * well-formed JSON object and nothing else, and rejects anything else with
-     * AZ_IOT_ERR_INVALID_ARG rather than emitting a body the service will
-     * refuse. The contents are otherwise opaque to the SDK.
-     *
-     * Leave AZ_SPAN_EMPTY to send no payload, which is what a zero-initialized
-     * options struct does and is the behaviour of every earlier release.
-     * Ignored, like every other dps option, on a direct hub connect.
-     *
-     * Appended, like the options above it and for the same reason: this struct
-     * is filled by callers, so a member inserted anywhere else -- including
-     * inside the nested `dps` struct, which brace elision splices into the same
-     * positional sequence -- would shift every member after it. This is also
-     * why it lives here rather than in `dps`, exactly as dps_hold_timeout_ms
-     * does. */
-    az_span dps_registration_payload;
-
-    /* Caller-provided scratch buffer used to BUILD the DPS registration body
-     * when dps_registration_payload is set. The SDK declares no payload buffer
-     * of its own.
-     *
-     * Must hold the whole body: the payload plus
-     * AZ_IOT_DPS_REGISTRATION_PAYLOAD_OVERHEAD, plus the CSR body when
-     * dps.request_operational_certificate is also set --
-     * AZ_IOT_DPS_REGISTRATION_BODY_STORAGE() sizes exactly that. A body that
-     * does not fit fails the registration with AZ_IOT_ERR_NOT_ENOUGH_SPACE; the
-     * SDK never truncates one.
-     *
-     * Left AZ_SPAN_EMPTY, the SDK builds into csr_payload_buffer instead, so a
-     * CSR-enrolling device that adds a small payload only has to enlarge the
-     * buffer it already provides. Unused when dps_registration_payload is
-     * empty: the CSR-only body keeps using csr_payload_buffer exactly as
-     * before. */
-    az_span dps_registration_body_buffer;
   } az_iot_connection_client_options;
 
   typedef enum az_iot_connection_state
@@ -449,7 +451,7 @@ extern "C"
 
   /* Fired when a DPS registration completes and the assignment carries a custom
    * payload -- `registrationState.payload`, the counterpart of
-   * opts.dps_registration_payload and what a custom-allocation policy returns
+   * opts.dps.registration_payload and what a custom-allocation policy returns
    * to the device. Optional; not fired when the service sends no payload.
    *
    * `payload` is the verbatim JSON object, zero-copy: it points into the

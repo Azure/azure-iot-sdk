@@ -37,10 +37,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Largest custom registration payload this sample accepts from the
- * environment. The SDK never allocates, so the build buffer is sized here. */
-#define SAMPLE_REGISTRATION_PAYLOAD_MAX 512
-
 #include "azure/iot/az_iot.h"
 #include "azure/iot/adapters/az_iot_adapter_paho.h"
 #include "az_iot_certificate_provider_managed.h"
@@ -128,12 +124,12 @@ int main(void)
   /* Optional custom registration payload. It shares the register body with the
    * CSR, so the build buffer has to hold both -- which is what
    * AZ_IOT_DPS_REGISTRATION_BODY_STORAGE() sizes. */
-  AZ_IOT_DPS_REGISTRATION_BODY_STORAGE(registration_body_buf, SAMPLE_REGISTRATION_PAYLOAD_MAX);
+  AZ_IOT_DPS_REGISTRATION_BODY_STORAGE(registration_body_buf);
   if (registration_payload != NULL && registration_payload[0] != '\0')
   {
-    copts.dps_registration_payload
+    copts.dps.registration_payload
         = az_span_create((uint8_t*)registration_payload, (int32_t)strlen(registration_payload));
-    copts.dps_registration_body_buffer
+    copts.dps.registration_body_buffer
         = az_span_create(registration_body_buf, sizeof(registration_body_buf));
   }
 

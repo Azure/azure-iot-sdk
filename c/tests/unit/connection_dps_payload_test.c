@@ -4,7 +4,7 @@
 
 /* SPDX-License-Identifier: MIT */
 /* Custom DPS registration payload: the `payload` member the device sends with
- * its registration request (opts.dps_registration_payload), how it composes
+ * its registration request (opts.dps.registration_payload), how it composes
  * with CSR enrollment into ONE registration body, and the payload the service
  * returns in the assignment (registrationState.payload).
  *
@@ -125,7 +125,7 @@ typedef struct payload_fixture
   az_iot_test_conn conn;
   csr_provider provider;
   uint8_t csr_buffer[AZ_IOT_CSR_PAYLOAD_BUFFER_MIN];
-  AZ_IOT_DPS_REGISTRATION_BODY_STORAGE(body_buffer, 256);
+  AZ_IOT_DPS_REGISTRATION_BODY_STORAGE(body_buffer);
   uint8_t tiny_buffer[8];
 } payload_fixture;
 
@@ -264,8 +264,8 @@ static void a_payload_alone_is_wrapped_in_the_registration_body(void** state)
   (void)state;
   payload_fixture* fx = fixture_create();
   az_iot_connection_client_options opts = fixture_options(fx);
-  opts.dps_registration_payload = payload_span();
-  opts.dps_registration_body_buffer = az_span_create(fx->body_buffer, sizeof(fx->body_buffer));
+  opts.dps.registration_payload = payload_span();
+  opts.dps.registration_body_buffer = az_span_create(fx->body_buffer, sizeof(fx->body_buffer));
   fixture_init(fx, &opts);
 
   az_iot_mock_mqtt_client* m = drive_to_register(fx);
@@ -303,8 +303,8 @@ static void a_csr_and_a_payload_share_one_registration_body(void** state)
   az_iot_connection_client_options opts = fixture_options(fx);
   opts.dps.request_operational_certificate = true;
   opts.csr_payload_buffer = az_span_create(fx->csr_buffer, sizeof(fx->csr_buffer));
-  opts.dps_registration_payload = payload_span();
-  opts.dps_registration_body_buffer = az_span_create(fx->body_buffer, sizeof(fx->body_buffer));
+  opts.dps.registration_payload = payload_span();
+  opts.dps.registration_body_buffer = az_span_create(fx->body_buffer, sizeof(fx->body_buffer));
   fixture_init(fx, &opts);
 
   az_iot_mock_mqtt_client* m = drive_to_register(fx);
@@ -325,7 +325,7 @@ static void the_csr_buffer_builds_the_combined_body_when_no_body_buffer_is_set(v
   az_iot_connection_client_options opts = fixture_options(fx);
   opts.dps.request_operational_certificate = true;
   opts.csr_payload_buffer = az_span_create(fx->csr_buffer, sizeof(fx->csr_buffer));
-  opts.dps_registration_payload = payload_span();
+  opts.dps.registration_payload = payload_span();
   fixture_init(fx, &opts);
 
   az_iot_mock_mqtt_client* m = drive_to_register(fx);
@@ -341,8 +341,8 @@ static void a_body_buffer_too_small_fails_instead_of_truncating(void** state)
   (void)state;
   payload_fixture* fx = fixture_create();
   az_iot_connection_client_options opts = fixture_options(fx);
-  opts.dps_registration_payload = payload_span();
-  opts.dps_registration_body_buffer = az_span_create(fx->tiny_buffer, sizeof(fx->tiny_buffer));
+  opts.dps.registration_payload = payload_span();
+  opts.dps.registration_body_buffer = az_span_create(fx->tiny_buffer, sizeof(fx->tiny_buffer));
   fixture_init(fx, &opts);
 
   drive_to_failed_register(fx);
@@ -362,7 +362,7 @@ static void a_csr_buffer_that_only_fits_the_csr_fails_when_a_payload_shares_it(v
   /* Exactly {"csr":"TESTCSRBASE64=="} and not one byte more. */
   opts.csr_payload_buffer
       = az_span_create(fx->csr_buffer, (int32_t)(strlen("{\"csr\":\"" CSR_BASE64 "\"}")));
-  opts.dps_registration_payload = payload_span();
+  opts.dps.registration_payload = payload_span();
   fixture_init(fx, &opts);
 
   drive_to_failed_register(fx);
@@ -382,8 +382,8 @@ static void open_with_payload(const char* payload_text, az_iot_result expected)
 {
   payload_fixture* fx = fixture_create();
   az_iot_connection_client_options opts = fixture_options(fx);
-  opts.dps_registration_payload = span_from_literal(payload_text);
-  opts.dps_registration_body_buffer = az_span_create(fx->body_buffer, sizeof(fx->body_buffer));
+  opts.dps.registration_payload = span_from_literal(payload_text);
+  opts.dps.registration_body_buffer = az_span_create(fx->body_buffer, sizeof(fx->body_buffer));
   fixture_init(fx, &opts);
 
   assert_int_equal(az_iot_connection_client_open(fx->conn.client), expected);
@@ -430,7 +430,7 @@ static void open_rejects_a_payload_with_nowhere_to_build_the_body(void** state)
   (void)state;
   payload_fixture* fx = fixture_create();
   az_iot_connection_client_options opts = fixture_options(fx);
-  opts.dps_registration_payload = payload_span();
+  opts.dps.registration_payload = payload_span();
   fixture_init(fx, &opts);
 
   assert_int_equal(az_iot_connection_client_open(fx->conn.client), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
@@ -448,9 +448,9 @@ static void open_rejects_a_payload_that_overlaps_the_body_buffer(void** state)
 
   /* Park the payload inside the very buffer the body would be built in. */
   memcpy(fx->body_buffer, k_payload_json, sizeof(k_payload_json) - 1u);
-  opts.dps_registration_payload
+  opts.dps.registration_payload
       = az_span_create(fx->body_buffer, (int32_t)(sizeof(k_payload_json) - 1u));
-  opts.dps_registration_body_buffer = az_span_create(fx->body_buffer, sizeof(fx->body_buffer));
+  opts.dps.registration_body_buffer = az_span_create(fx->body_buffer, sizeof(fx->body_buffer));
   fixture_init(fx, &opts);
 
   assert_int_equal(az_iot_connection_client_open(fx->conn.client), AZ_IOT_ERR_INVALID_ARG);
@@ -467,7 +467,7 @@ static void open_rejects_a_payload_that_overlaps_the_csr_buffer_fallback(void** 
 
   memcpy(fx->csr_buffer, k_payload_json, sizeof(k_payload_json) - 1u);
   opts.csr_payload_buffer = az_span_create(fx->csr_buffer, sizeof(fx->csr_buffer));
-  opts.dps_registration_payload
+  opts.dps.registration_payload
       = az_span_create(fx->csr_buffer, (int32_t)(sizeof(k_payload_json) - 1u));
   fixture_init(fx, &opts);
 
@@ -487,7 +487,7 @@ static void a_direct_connect_ignores_the_registration_payload(void** state)
   opts.dps.id_scope = NULL;
   opts.dps.registration_id = NULL;
   /* Deliberately no body buffer: nothing will be built. */
-  opts.dps_registration_payload = payload_span();
+  opts.dps.registration_payload = payload_span();
   fixture_init(fx, &opts);
 
   assert_int_equal(az_iot_connection_client_open(fx->conn.client), AZ_IOT_OK);

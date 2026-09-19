@@ -609,12 +609,12 @@ static uint64_t dps_hold_timeout_ms(const az_iot_connection_client* c)
  * registration keeps building exactly where it always did. */
 static az_span dps_register_body_buffer(const az_iot_connection_client* c)
 {
-  return az_span_size(c->opts.dps_registration_body_buffer) > 0
-      ? c->opts.dps_registration_body_buffer
+  return az_span_size(c->opts.dps.registration_body_buffer) > 0
+      ? c->opts.dps.registration_body_buffer
       : c->opts.csr_payload_buffer;
 }
 
-/* Shallow but definitive validation of opts.dps_registration_payload: exactly
+/* Shallow but definitive validation of opts.dps.registration_payload: exactly
  * one well-formed JSON object, with nothing after it.
  *
  * The SDK does not interpret the contents -- they belong to the allocation
@@ -750,7 +750,7 @@ static az_iot_result dps_do_register_publish(az_iot_connection_client* c)
    * as before. The registration id travels in the DPS username/topic, not the
    * body. */
   az_span custom_payload
-      = (az_span_size(c->opts.dps_registration_payload) > 0 ? c->opts.dps_registration_payload
+      = (az_span_size(c->opts.dps.registration_payload) > 0 ? c->opts.dps.registration_payload
                                                             : AZ_SPAN_EMPTY);
   if (c->dps_enrolling || az_span_size(custom_payload) > 0)
   {
@@ -758,7 +758,7 @@ static az_iot_result dps_do_register_publish(az_iot_connection_client* c)
     if (az_span_ptr(body_buffer) == NULL || az_span_size(body_buffer) <= 0)
     {
       AZ_IOT_LOG_ERROR("dps register: a registration body was configured but neither "
-                       "opts.dps_registration_body_buffer nor opts.csr_payload_buffer was "
+                       "opts.dps.registration_body_buffer nor opts.csr_payload_buffer was "
                        "provided to build it in");
       return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
     }
@@ -2948,25 +2948,25 @@ az_iot_result az_iot_connection_client_open(az_iot_connection_client* client)
    * a malformed one become a DPS protocol failure during provisioning. Like
    * every other dps option it is ignored on a direct hub connect, where there
    * is no registration to carry it. */
-  if (dps_configured(client) && az_span_size(client->opts.dps_registration_payload) > 0)
+  if (dps_configured(client) && az_span_size(client->opts.dps.registration_payload) > 0)
   {
-    if (dps_validate_registration_payload(client->opts.dps_registration_payload) != AZ_IOT_OK)
+    if (dps_validate_registration_payload(client->opts.dps.registration_payload) != AZ_IOT_OK)
     {
-      AZ_IOT_LOG_ERROR("connection_client_open: opts.dps_registration_payload must be a single "
+      AZ_IOT_LOG_ERROR("connection_client_open: opts.dps.registration_payload must be a single "
                        "well-formed JSON object");
       return AZ_IOT_ERR_INVALID_ARG;
     }
     az_span body_buffer = dps_register_body_buffer(client);
     if (az_span_ptr(body_buffer) == NULL || az_span_size(body_buffer) <= 0)
     {
-      AZ_IOT_LOG_ERROR("connection_client_open: opts.dps_registration_payload requires "
-                       "opts.dps_registration_body_buffer (or opts.csr_payload_buffer) to build "
+      AZ_IOT_LOG_ERROR("connection_client_open: opts.dps.registration_payload requires "
+                       "opts.dps.registration_body_buffer (or opts.csr_payload_buffer) to build "
                        "the registration body in");
       return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
     }
-    if (spans_overlap(client->opts.dps_registration_payload, body_buffer))
+    if (spans_overlap(client->opts.dps.registration_payload, body_buffer))
     {
-      AZ_IOT_LOG_ERROR("connection_client_open: opts.dps_registration_payload overlaps the buffer "
+      AZ_IOT_LOG_ERROR("connection_client_open: opts.dps.registration_payload overlaps the buffer "
                        "the registration body is built in; they must be separate storage");
       return AZ_IOT_ERR_INVALID_ARG;
     }

@@ -72,25 +72,26 @@ time. The service may return a payload of its own in the registration result.
 
 ### Sending one
 
-Set `opts.dps_registration_payload` to the JSON, and give the SDK somewhere to
+Set `opts.dps.registration_payload` to the JSON, and give the SDK somewhere to
 build the request body — it never allocates and declares no payload buffer of
 its own:
 
 ```c
 static const char k_payload[] = "{\"modelId\":\"dtmi:com:example:Thermostat;1\"}";
-AZ_IOT_DPS_REGISTRATION_BODY_STORAGE(body_buf, 256);
+AZ_IOT_DPS_REGISTRATION_BODY_STORAGE(body_buf);
 
-copts.dps_registration_payload
+copts.dps.registration_payload
     = az_span_create((uint8_t*)k_payload, (int32_t)(sizeof(k_payload) - 1));
-copts.dps_registration_body_buffer = az_span_create(body_buf, sizeof(body_buf));
+copts.dps.registration_body_buffer = az_span_create(body_buf, sizeof(body_buf));
 ```
 
-Both options live at the END of `az_iot_connection_client_options`, not inside
-the nested `dps` struct, for the reason `dps_hold_timeout_ms` gives there:
-callers use positional aggregate initializers, and brace elision splices the
-nested struct into the same positional sequence, so a member added anywhere but
-the end would shift every member after it. See
-[struct_versioning.md](struct_versioning.md).
+Both options live in the nested `dps` struct, with the other provisioning
+options they belong with. `AZ_IOT_DPS_REGISTRATION_BODY_STORAGE()` follows the
+convention the rest of the library uses for caller-owned buffers
+(`AZ_IOT_CSR_PAYLOAD_STORAGE`, `AZ_IOT_ADU_DEVICE_PROPS_STORAGE`): a single
+`name` argument, sized by an `#ifndef`-overridable constant. The option itself
+takes an `az_span`, so a caller who wants a different size can declare the
+buffer directly and skip the macro.
 
 The payload is caller-supplied JSON and the SDK does not interpret it — but it
 does validate it, in `az_iot_connection_client_open()`, as exactly one
@@ -127,10 +128,10 @@ no `csr` member, so it cannot produce the combined body.
 `AZ_IOT_CSR_PAYLOAD_BUFFER_MIN` (8448) covers the CSR body **alone**. Once a
 payload shares the body it no longer does: the body needs a further
 `AZ_IOT_DPS_REGISTRATION_PAYLOAD_OVERHEAD` (12) plus the payload itself.
-`AZ_IOT_DPS_REGISTRATION_BODY_STORAGE(name, payload_max)` declares exactly that.
-A payload-only device needs only `payload_max + 12`.
+`AZ_IOT_DPS_REGISTRATION_BODY_STORAGE(name)` declares exactly that, leaving room for a payload of up to `AZ_IOT_DPS_REGISTRATION_PAYLOAD_MAX` (512, overridable before including).
+A payload-only device needs only its payload + 12 bytes and can declare a smaller buffer directly.
 
-If `dps_registration_body_buffer` is left empty the SDK builds into
+If `dps.registration_body_buffer` is left empty the SDK builds into
 `csr_payload_buffer` instead, so a CSR-enrolling device that adds a small
 payload only has to enlarge the buffer it already provides. Either way a body
 that does not fit fails the registration with `AZ_IOT_ERR_NOT_ENOUGH_SPACE`; it
