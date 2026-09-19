@@ -240,6 +240,15 @@ extern "C"
      * just linger and close again. */
     bool wants_session;
 
+    /* Set from the connection client's state observer when the connection
+     * settles into a fault. The channel's own signal, dps_session_ready(),
+     * cannot tell that from a session still coming up. */
+    bool connection_faulted;
+
+    /* Whether this binding holds a seat in the state-observer registry, so the
+     * seat is given back exactly once. */
+    bool observes_state;
+
     /* When the retry-after the service put on a response topic expires: a
      * monotonic instant, not a duration, which is why it is named for the
      * deadline and not for the seconds it was derived from (see

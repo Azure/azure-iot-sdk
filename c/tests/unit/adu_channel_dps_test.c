@@ -65,6 +65,20 @@ typedef struct
   az_iot_adu_error_action last_action;
 } fixture;
 
+/* Occupied seats in the feature-client half of the state-observer registry. */
+static size_t count_feature_observers(const az_iot_connection_client* client)
+{
+  size_t n = 0;
+  for (size_t i = 0; i < AZ_IOT_MAX_FEATURE_STATE_OBSERVERS; ++i)
+  {
+    if (client->feature_state_observers[i].cb != NULL)
+    {
+      n++;
+    }
+  }
+  return n;
+}
+
 static void on_update(const uint8_t* payload, size_t payload_len, void* engine_ctx)
 {
   fixture* fx = (fixture*)engine_ctx;
@@ -1422,6 +1436,182 @@ static void a_demand_queued_before_the_hold_expires_still_reopens_a_session(void
   assert_true(fx->client.dps_session_auxiliary);
 }
 
+/* A registration failure the provisioning parser turns into a fault. */
+static const char k_failed_body[]
+    = "{\"operationId\":\"op-1\",\"status\":\"failed\","
+      "\"registrationState\":{\"errorCode\":400207,\"errorMessage\":\"Custom allocation failed\"}}";
+
+/* A faulted connection is terminal for the channel too: the outstanding
+ * operation is reported as unretryable, no session is asked for, and the
+ * connection is left in AZ_IOT_CONN_STATE_FAULTED where the application can
+ * see it.
+ *
+ * Without this the channel's only signal is dps_session_ready(), which reads
+ * the same whether a session is coming up or the connection has given up. The
+ * lost request comes back as RETRY, the engine re-arms it, the next tick asks
+ * for a session, and the connection leaves FAULTED for CONNECTING -- so the
+ * application never observes a settled fault. */
+static void a_faulted_connection_ends_the_operation_instead_of_retrying(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_mock_mqtt_client* m = open_and_bind(fx);
+
+  assert_int_equal(
+      fx->channel.vtable->request_update(fx->channel.ctx, AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE),
+      AZ_IOT_OK);
+
+  /* The check is never answered, the hold expires, the device registers -- and
+   * registration fails. */
+  az_iot_test_wait_ms(60); /* opts.dps_hold_timeout_ms is 50 */
+  (void)az_iot_connection_client_do_work(&fx->client, 0);
+  assert_true(inject(fx, m, "$dps/registrations/res/200/?$rid=1", k_failed_body));
+  for (int i = 0; i < 3; ++i)
+  {
+    (void)az_iot_connection_client_do_work(&fx->client, 0);
+  }
+  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_FAULTED);
+
+  /* The operation is retired as unretryable, so the engine does not re-arm it. */
+  assert_int_equal(fx->channel.vtable->do_work(fx->channel.ctx), AZ_IOT_OK);
+  assert_int_equal(fx->result_count, 1);
+  assert_int_equal(fx->last_result, AZ_IOT_ERR_NOT_CONNECTED);
+  assert_int_equal(fx->last_action, AZ_IOT_ADU_ERROR_ACTION_FATAL);
+  assert_false(fx->channel_state.wants_session);
+
+  /* And the channel does not pull the connection back out of the fault. */
+  for (int i = 0; i < 3; ++i)
+  {
+    assert_int_equal(fx->channel.vtable->do_work(fx->channel.ctx), AZ_IOT_OK);
+    (void)az_iot_connection_client_do_work(&fx->client, 0);
+  }
+  assert_false(fx->client.dps_session_auxiliary);
+  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_FAULTED);
+}
+
+/* A request made while the connection is faulted is refused without recording
+ * a demand: honouring it would reopen a session and hide the fault. */
+static void a_request_on_a_faulted_connection_asks_for_no_session(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_mock_mqtt_client* m = open_and_bind(fx);
+
+  az_iot_test_wait_ms(60);
+  (void)az_iot_connection_client_do_work(&fx->client, 0);
+  assert_true(inject(fx, m, "$dps/registrations/res/200/?$rid=1", k_failed_body));
+  for (int i = 0; i < 3; ++i)
+  {
+    (void)az_iot_connection_client_do_work(&fx->client, 0);
+  }
+  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_FAULTED);
+
+  assert_int_equal(
+      fx->channel.vtable->request_update(fx->channel.ctx, AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE),
+      AZ_IOT_ERR_NOT_CONNECTED);
+  assert_false(fx->channel_state.wants_session);
+
+  assert_int_equal(fx->channel.vtable->do_work(fx->channel.ctx), AZ_IOT_OK);
+  (void)az_iot_connection_client_do_work(&fx->client, 0);
+  assert_false(fx->client.dps_session_auxiliary);
+  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_FAULTED);
+}
+
+/* The fault is learned from the connection's state observer, and the seat is
+ * given back when the binding ends.
+ *
+ * The seat matters twice over: the registry holds a pointer to the channel, so
+ * one left behind is a call into freed storage on the next transition; and a
+ * channel that never got a seat cannot tell a session coming up from a
+ * connection that has given up. */
+static void the_channel_takes_and_returns_a_state_observer_seat(void** state)
+{
+  fixture* fx = (fixture*)*state;
+
+  /* Binding takes a feature seat. The fixture's own observer is in the
+   * application pool, so it does not account for this one. */
+  assert_int_equal(fx->channel.vtable->open(fx->channel.ctx, on_update, on_result, fx), AZ_IOT_OK);
+  assert_true(fx->channel_state.observes_state);
+  assert_int_equal(count_feature_observers(&fx->client), 1);
+
+  /* The observer, not a poll of the connection, is what records the fault. */
+  assert_false(fx->channel_state.connection_faulted);
+  az_iot_connection_state_event ev = {
+    ._internal_size = sizeof(ev),
+    .state = AZ_IOT_CONN_STATE_FAULTED,
+    .reason = AZ_IOT_ERR_DPS,
+    .profile = NULL,
+  };
+  fx->client.feature_state_observers[0].cb(&ev, fx->client.feature_state_observers[0].user_ctx);
+  assert_true(fx->channel_state.connection_faulted);
+
+  /* And it is not a latch: close() is a legal exit from FAULTED, and the
+   * channel must follow the connection back out. */
+  ev.state = AZ_IOT_CONN_STATE_IDLE;
+  ev.reason = AZ_IOT_OK;
+  fx->client.feature_state_observers[0].cb(&ev, fx->client.feature_state_observers[0].user_ctx);
+  assert_false(fx->channel_state.connection_faulted);
+
+  /* Closing gives the seat back. */
+  fx->channel.vtable->close(fx->channel.ctx);
+  assert_false(fx->channel_state.observes_state);
+  assert_int_equal(count_feature_observers(&fx->client), 0);
+  assert_false(fx->channel_state.connection_faulted);
+}
+
+/* Binding and unbinding repeatedly must not leak seats: the feature pool is
+ * small and fixed, so a leak makes the next feature client unable to attach. */
+static void rebinding_does_not_leak_observer_seats(void** state)
+{
+  fixture* fx = (fixture*)*state;
+
+  for (int i = 0; i < AZ_IOT_MAX_FEATURE_STATE_OBSERVERS + 2; ++i)
+  {
+    assert_int_equal(
+        fx->channel.vtable->open(fx->channel.ctx, on_update, on_result, fx), AZ_IOT_OK);
+    assert_int_equal(count_feature_observers(&fx->client), 1);
+    fx->channel.vtable->close(fx->channel.ctx);
+    assert_int_equal(count_feature_observers(&fx->client), 0);
+  }
+}
+
+/* The case that makes removal-during-dispatch a correctness requirement: an
+ * application that tears the ADU client down from inside its own connection
+ * state observer. The channel's destroy path runs inside the dispatch, so the
+ * seat must come back there or the registry is left pointing at storage the
+ * client is about to zero. */
+static fixture* g_closing_fx;
+
+static void close_channel_on_state(const az_iot_connection_state_event* event, void* user_ctx)
+{
+  (void)event;
+  (void)user_ctx;
+  if (g_closing_fx != NULL && g_closing_fx->channel_state.observes_state)
+  {
+    g_closing_fx->channel.vtable->close(g_closing_fx->channel.ctx);
+  }
+}
+
+static void closing_the_channel_from_a_state_observer_returns_the_seat(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  g_closing_fx = fx;
+
+  assert_int_equal(fx->channel.vtable->open(fx->channel.ctx, on_update, on_result, fx), AZ_IOT_OK);
+  assert_int_equal(count_feature_observers(&fx->client), 1);
+  assert_int_equal(
+      az_iot_connection_client_add_state_observer(&fx->client, close_channel_on_state, NULL),
+      AZ_IOT_OK);
+
+  /* Drive a transition, which dispatches and closes the channel from inside. */
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(&fx->client, fx->factory), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_OK);
+
+  assert_false(fx->channel_state.observes_state);
+  assert_int_equal(count_feature_observers(&fx->client), 0);
+
+  g_closing_fx = NULL;
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -1493,6 +1683,15 @@ int main(void)
     cmocka_unit_test_setup_teardown(closing_the_channel_drops_the_session_demand, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_demand_queued_before_the_hold_expires_still_reopens_a_session, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_faulted_connection_ends_the_operation_instead_of_retrying, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_request_on_a_faulted_connection_asks_for_no_session, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        the_channel_takes_and_returns_a_state_observer_seat, setup, teardown),
+    cmocka_unit_test_setup_teardown(rebinding_does_not_leak_observer_seats, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        closing_the_channel_from_a_state_observer_returns_the_seat, setup, teardown),
     cmocka_unit_test_setup_teardown(
         the_hub_is_still_pumped_while_an_auxiliary_session_is_open, setup, teardown),
     cmocka_unit_test_setup_teardown(

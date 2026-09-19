@@ -68,6 +68,41 @@ static bool rid_is_ours(const char* rid)
 }
 
 /* ------------------------------------------------------------------------- */
+/* connection state                                                          */
+/* ------------------------------------------------------------------------- */
+
+/* Told by the connection client on every state transition.
+ *
+ * The channel's own signal, dps_session_ready(), is false both while a session
+ * is coming up and after the connection has given up. Treating the second as
+ * the first is what turns a terminal fault into a loop: the channel reports the
+ * lost request as retryable, the engine re-arms it, the next tick asks for a
+ * provisioning session, and the connection leaves AZ_IOT_CONN_STATE_FAULTED for
+ * AZ_IOT_CONN_STATE_CONNECTING again -- so the application never observes a
+ * settled fault it could act on.
+ *
+ * Only the fault is recorded. Everything else the channel needs it already has,
+ * and a feature client that mirrors the whole state machine acquires a second
+ * copy to keep correct.
+ *
+ * NOTE: the event carries no scope yet, so this is the connection's single
+ * state -- a HUB fault sets it too. That matches what a single state machine
+ * can express: FAULTED is terminal for the whole client, and only close()
+ * leaves it. When scoped states land, this narrows to the DPS scope. */
+static void on_connection_state(const az_iot_connection_state_event* event, void* user_ctx)
+{
+  az_iot_adu_channel_dps* c = (az_iot_adu_channel_dps*)user_ctx;
+  if (c == NULL || event == NULL)
+  {
+    return;
+  }
+  c->connection_faulted = (event->state == AZ_IOT_CONN_STATE_FAULTED);
+}
+
+/* True once the connection has settled into a fault. */
+static bool connection_is_faulted(const az_iot_adu_channel_dps* c) { return c->connection_faulted; }
+
+/* ------------------------------------------------------------------------- */
 /* outbound                                                                  */
 /* ------------------------------------------------------------------------- */
 
@@ -93,6 +128,18 @@ static bool retry_after_in_force(az_iot_adu_channel_dps* c)
   }
   c->retry_after_deadline_ms = 0;
   return false;
+}
+
+/* Refuse an operation because no provisioning session is up.
+ *
+ * The demand is recorded so the next tick opens one -- unless the connection
+ * has faulted. Asking for a session there drags the connection back to
+ * CONNECTING, so the application never sees the fault settle, and it cannot
+ * succeed anyway: what failed was the registration, not the session. */
+static az_iot_result refuse_for_no_session(az_iot_adu_channel_dps* c)
+{
+  c->wants_session = !connection_is_faulted(c);
+  return AZ_IOT_ERR_NOT_CONNECTED;
 }
 
 static az_iot_result publish_operation(
@@ -355,7 +402,8 @@ static bool on_dps_message(
 
 /* A request can only be answered on the session it was sent on. Once that
  * session is gone the reply can never arrive, so the slot is released and the
- * engine is free to ask again. */
+ * engine is free to ask again -- unless the connection has faulted, in which
+ * case asking again cannot help and saying so is what lets the fault settle. */
 static void channel_forget_pending_if_session_gone(az_iot_adu_channel_dps* c)
 {
   if (c->request_pending && !az_iot_connection_client__dps_session_ready(c->connection))
@@ -363,6 +411,13 @@ static void channel_forget_pending_if_session_gone(az_iot_adu_channel_dps* c)
     AZ_IOT_LOG_DEBUG("adu: provisioning session ended with a request outstanding");
     az_iot_adu_operation operation = c->pending_operation;
     c->request_pending = false;
+    if (connection_is_faulted(c))
+    {
+      AZ_IOT_LOG_ERROR("adu: the connection has faulted; the operation cannot be retried");
+      c->wants_session = false;
+      emit_result(c, operation, AZ_IOT_ERR_NOT_CONNECTED, AZ_IOT_ADU_ERROR_ACTION_FATAL);
+      return;
+    }
     emit_result(c, operation, AZ_IOT_ERR_NOT_CONNECTED, AZ_IOT_ADU_ERROR_ACTION_RETRY);
   }
 }
@@ -414,6 +469,28 @@ static az_iot_result channel_open(
   }
   c->holds_user = true;
 
+  /* Be told when the connection faults, instead of polling its state. The seat
+   * is in the feature-client pool, so an application that fills its own cannot
+   * leave the channel unable to attach.
+   *
+   * Withdrawn in close(): the entry holds a pointer to this channel, so one
+   * left behind is a call into freed storage on the next transition. */
+  c->connection_faulted = false;
+  az_iot_result sr
+      = az_iot_connection_client__add_state_observer(c->connection, on_connection_state, c);
+  if (sr != AZ_IOT_OK)
+  {
+    /* Reported rather than swallowed: without it the channel cannot tell a
+     * session that is coming up from a connection that has given up, which is
+     * what makes a terminal fault look retryable. */
+    AZ_IOT_LOG_ERROR("adu: could not observe the connection state");
+    c->holds_user = false;
+    az_iot_connection_client__dps_user_release(c->connection);
+    az_iot_connection_client__set_dps_message_observer(c->connection, NULL, NULL);
+    return sr;
+  }
+  c->observes_state = true;
+
   az_iot_result hr = az_iot_connection_client__dps_hold_acquire(c->connection);
   if (hr == AZ_IOT_OK)
   {
@@ -423,6 +500,8 @@ static az_iot_result channel_open(
   {
     c->wants_hold = false;
     c->holds_user = false;
+    c->observes_state = false;
+    (void)az_iot_connection_client__remove_state_observer(c->connection, on_connection_state, c);
     az_iot_connection_client__dps_user_release(c->connection);
     az_iot_connection_client__set_dps_message_observer(c->connection, NULL, NULL);
     return hr;
@@ -457,6 +536,27 @@ static void channel_close(void* ctx)
     return;
   }
   az_iot_connection_client__set_dps_message_observer(c->connection, NULL, NULL);
+  if (c->observes_state)
+  {
+    /* Withdrawn before anything else is torn down: the registry holds a pointer
+     * to this channel, and an entry left behind is a call into freed storage on
+     * the next transition.
+     *
+     * The seat is only marked released if it actually was. Removal is legal
+     * from inside a dispatch, which is the case that matters here -- an
+     * application may destroy the ADU client from its own state observer -- so
+     * this does not fail in practice; keeping the flag set if it ever did is
+     * what stops a second close() from reporting success it did not achieve. */
+    if (az_iot_connection_client__remove_state_observer(c->connection, on_connection_state, c)
+        == AZ_IOT_OK)
+    {
+      c->observes_state = false;
+    }
+    else
+    {
+      AZ_IOT_LOG_ERROR("adu: could not withdraw the connection-state observer");
+    }
+  }
   if (c->holds_user)
   {
     c->holds_user = false;
@@ -477,6 +577,8 @@ static void channel_close(void* ctx)
   /* The delay belongs to the binding that earned it. A fresh bind is a fresh
    * start, not a continuation of someone else's backoff. */
   c->retry_after_deadline_ms = 0;
+  /* The fault belonged to the connection this binding watched. */
+  c->connection_faulted = false;
 }
 
 static az_iot_result channel_request_update(void* ctx, az_iot_adu_operation operation)
@@ -509,10 +611,7 @@ static az_iot_result channel_request_update(void* ctx, az_iot_adu_operation oper
   }
   if (!az_iot_connection_client__dps_session_ready(c->connection))
   {
-    /* Remember the caller wanted one, so the next tick opens it. Without this
-     * nothing records the demand and the session is never reopened. */
-    c->wants_session = true;
-    return AZ_IOT_ERR_NOT_CONNECTED;
+    return refuse_for_no_session(c);
   }
 
   az_iot_adu_agent_info agent = { 0 };
@@ -569,10 +668,7 @@ static az_iot_result channel_report(void* ctx, const az_iot_adu_report* report)
   }
   if (!az_iot_connection_client__dps_session_ready(c->connection))
   {
-    /* Remember the caller wanted one, so the next tick opens it. Without this
-     * nothing records the demand and the session is never reopened. */
-    c->wants_session = true;
-    return AZ_IOT_ERR_NOT_CONNECTED;
+    return refuse_for_no_session(c);
   }
 
   size_t body_len = 0;
@@ -727,6 +823,14 @@ static az_iot_result channel_do_work(void* ctx)
    * client and every linger expiry would reopen a session nobody wants. */
   if (az_iot_connection_client__dps_session_ready(c->connection))
   {
+    c->wants_session = false;
+  }
+  else if (connection_is_faulted(c))
+  {
+    /* Nothing to ask for. Opening a session here is what pulls the connection
+     * out of AZ_IOT_CONN_STATE_FAULTED and back into CONNECTING, so the
+     * application's state callback never settles and it cannot tell that
+     * provisioning has actually failed. */
     c->wants_session = false;
   }
   else if (c->holds_user && had_work)
