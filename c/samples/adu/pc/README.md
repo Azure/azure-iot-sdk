@@ -33,6 +33,13 @@ ADU-specific credential. See
 > is *not* the model this sample talks to. Running them does not produce an
 > environment this sample can get an update from. Provision the resources below
 > instead.
+>
+> If you have already run them, what they produce is still usable except for the
+> update side: the resource group, the DPS, the device certificate and its X.509
+> enrollment, the storage account, and the `AZ_IOT_DPS_ID_SCOPE`,
+> `AZ_IOT_DPS_REGISTRATION_ID`, `AZ_IOT_CLIENT_CERT`, `AZ_IOT_CLIENT_KEY` and
+> `AZ_IOT_TRUSTED_CA` values the sample reads. The Device Update account,
+> instance and any deployment they create cannot be reused.
 
 ### Required resources
 
@@ -173,27 +180,64 @@ Create the DPS, give it a managed identity, and grant that identity
 **Azure Device Registry Contributor** on the namespace:
 
 ```bash
+DPSID="/subscriptions/$SUB/resourceGroups/$RG/providers/Microsoft.Devices/provisioningServices/<dps-name>"
+NSID="/subscriptions/$SUB/resourceGroups/$RG/providers/Microsoft.DeviceRegistry/namespaces/<ns-name>"
+
 az iot dps create --name <dps-name> --resource-group $RG --location $LOC
 az identity create --name <dps-name>-identity --resource-group $RG --location $LOC
-# assign the identity to the DPS, then:
+
+IDID=$(az identity show --name <dps-name>-identity --resource-group $RG --query id -o tsv)
+IDPRINC=$(az identity show --name <dps-name>-identity --resource-group $RG --query principalId -o tsv)
+
 az role assignment create \
-  --assignee-object-id <identity-principal-id> --assignee-principal-type ServicePrincipal \
-  --role "Azure Device Registry Contributor" \
-  --scope "/subscriptions/$SUB/resourceGroups/$RG/providers/Microsoft.DeviceRegistry/namespaces/<ns-name>"
+  --assignee-object-id "$IDPRINC" --assignee-principal-type ServicePrincipal \
+  --role "Azure Device Registry Contributor" --scope "$NSID"
 ```
 
-Then set the DPS's `properties.deviceRegistryNamespace` to the namespace resource
-id. This property exists **only at api-version `2026-03-01-preview`** — the stable
-api-version silently omits it, both on write and on read-back:
+The identity must then be **attached to the DPS**, and the DPS's
+`properties.deviceRegistryNamespace` set to the namespace resource id — a role
+assignment alone gives the DPS no principal to call the registry with. Both go in
+one PATCH. `deviceRegistryNamespace` exists **only at api-version
+`2026-03-01-preview`**; the stable api-version silently omits it, on write and on
+read-back:
 
 ```bash
-az rest --method get \
-  --url "$ARM/subscriptions/$SUB/resourceGroups/$RG/providers/Microsoft.Devices/provisioningServices/<dps-name>?api-version=$DPS_API" \
-  --query properties.deviceRegistryNamespace -o tsv
+az rest --method patch --url "$ARM$DPSID?api-version=$DPS_API" --body "{
+  \"identity\": {
+    \"type\": \"UserAssigned\",
+    \"userAssignedIdentities\": { \"$IDID\": {} }
+  },
+  \"properties\": { \"deviceRegistryNamespace\": \"$NSID\" }
+}"
 ```
 
-**5. Storage account + container** for update payloads, and **6. a DPS X.509
-individual enrollment** for the device certificate the sample presents.
+Verify both landed — reading at the stable api-version will not show the link:
+
+```bash
+az rest --method get --url "$ARM$DPSID?api-version=$DPS_API" \
+  --query "{identity:identity.type, ns:properties.deviceRegistryNamespace}"
+```
+
+**5. Storage account + container** for update payloads:
+
+```bash
+az storage account create --name <storage-name> --resource-group $RG \
+  --location $LOC --sku Standard_LRS
+az storage container create --account-name <storage-name> --name adu-imports \
+  --auth-mode login
+```
+
+**6. Device certificate + DPS enrollment.** The sample presents an X.509 client
+certificate, so create one and enroll it:
+
+```bash
+openssl req -new -x509 -days 365 -newkey rsa:2048 -nodes \
+  -subj "/CN=<registration-id>" -keyout device-key.pem -out device-cert.pem
+
+az iot dps enrollment create --dps-name <dps-name> --resource-group $RG \
+  --enrollment-id <registration-id> --attestation-type x509 \
+  --certificate-path device-cert.pem
+```
 
 > The ADUv2 design phases X.509 first on the update path, but X.509 there is not
 > yet confirmed by measurement; SAS (enrollment-group symmetric key) auth is.
@@ -220,9 +264,8 @@ The sample reads these environment variables (see
 | `AZ_IOT_CLIENT_CERT` | yes | Path to the device certificate PEM |
 | `AZ_IOT_CLIENT_KEY` | yes | Path to the device private key PEM |
 | `AZ_IOT_TRUSTED_CA` | yes | Trusted CA bundle, e.g. `/etc/ssl/certs/ca-certificates.crt` |
-| `AZ_IOT_DPS_GLOBAL_ENDPOINT` | no | Overrides the SDK's global DPS endpoint. A preview/canary environment is reached through `global-canary.azure-devices-provisioning.net`. |
-| `AZ_IOT_DEVICE_ID` | no | Device id override |
-| `AZ_IOT_HUB_NEXT_MOCK_ENDPOINT` | no | Bypass endpoint; provisioning is skipped when set |
+| `AZ_IOT_DPS_GLOBAL_ENDPOINT` | see note | Overrides the SDK's global DPS endpoint. Leave it unset to use the SDK default, `global.azure-devices-provisioning.net`. **A preview/canary environment is not reachable there** — set it to `global-canary.azure-devices-provisioning.net` for an environment provisioned as above. |
+| `AZ_IOT_DEVICE_ID`, `AZ_IOT_HUB_NEXT_MOCK_ENDPOINT` | no | Loaded by the shared sample config for the mock-endpoint bypass; this sample does not use them |
 
 ```bash
 export AZ_IOT_DPS_ID_SCOPE='<id-scope>'
@@ -230,6 +273,8 @@ export AZ_IOT_DPS_REGISTRATION_ID='<registration-id>'
 export AZ_IOT_CLIENT_CERT="$PWD/device-cert.pem"
 export AZ_IOT_CLIENT_KEY="$PWD/device-key.pem"
 export AZ_IOT_TRUSTED_CA='/etc/ssl/certs/ca-certificates.crt'
+# Preview/canary environment; omit for a production DPS.
+export AZ_IOT_DPS_GLOBAL_ENDPOINT='global-canary.azure-devices-provisioning.net'
 ```
 
 > Manifest signature verification works out of the box: the sample uses
