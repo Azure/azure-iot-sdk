@@ -788,6 +788,14 @@ extern "C"
     bool dps_pending_finalize;
     bool dps_pending_have_assignment;
     az_iot_result dps_pending_status;
+    /* retry-after the provisioning service put on a FAILED response, in
+     * seconds; 0 when it sent none. A throttle (429) or a server error carries
+     * it, and it is the service telling the device when to come back -- so it
+     * is a FLOOR on the next registration attempt, applied over the
+     * reconnection policy's own backoff. Ignoring it would let a device retry
+     * faster than the service asked, which is how a throttled fleet turns into
+     * a blocked one. */
+    uint32_t dps_pending_retry_after_s;
     bool dps_enrolling; /* CSR-based enrollment active for this DPS session */
     bool dps_have_issued_cert; /* an operational cert was issued by DPS/Hub and stored */
 

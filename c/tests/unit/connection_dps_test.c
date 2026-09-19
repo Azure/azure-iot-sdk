@@ -887,6 +887,44 @@ static void a_failing_auxiliary_session_does_not_tear_down_the_hub(void** state)
   az_iot_connection_client__dps_user_release(fx->client);
 }
 
+/* A throttle or a server error carries a retry-after, and that is the service
+ * telling the device when it may come back. It must win over the policy's own
+ * backoff, or routing this failure through the policy (which this change does)
+ * would let a throttled device retry sooner than it was asked to. */
+static void a_service_retry_after_outranks_the_policy_backoff(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_mock_mqtt_client* m = dps_open_to_registering(fx);
+
+  /* A request-level throttle: 4xx/5xx response topic with retry-after, and a
+   * body carrying errorCode/message and no operationId. The parser reports it
+   * as FAILED, the same branch an operation-level failure takes. */
+  static const char k_throttled_body[]
+      = "{\"errorCode\":429001,\"trackingId\":\"t-1\",\"message\":\"Too many requests.\"}";
+  assert_true(inject_dps_response(
+      m, "$dps/registrations/res/429/?$rid=1&retry-after=30", k_throttled_body));
+  for (int i = 0; i < 3; ++i)
+  {
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
+
+  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_RECONNECTING);
+
+  /* The policy in this fixture would have retried after REPROVISION_DELAY_MS
+   * (20ms). The service asked for 30s, so the deadline must be far beyond it. */
+  uint64_t now = az_iot_time_mono_ms();
+  assert_true(fx->client->reconnect_due_ms > now + 20000ull);
+
+  /* And no new provisioning session is opened when the policy's own delay
+   * elapses. The failed session was destroyed, which clears the mock's cached
+   * last client, so a non-NULL one here would mean a retry was issued. */
+  assert_null(az_iot_mock_mqtt_factory_last_client(fx->factory));
+  az_iot_test_wait_ms(REPROVISION_DELAY_MS + 5u);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_null(az_iot_mock_mqtt_factory_last_client(fx->factory));
+  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_RECONNECTING);
+}
+
 static void dps_connack_failure_faults(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
@@ -1940,6 +1978,8 @@ int main(void)
         dps_failed_status_retries_against_dps, setup_with_reconnect, teardown),
     cmocka_unit_test_setup_teardown(
         dps_failed_status_still_honors_max_attempts, setup_with_reconnect, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_service_retry_after_outranks_the_policy_backoff, setup_with_reconnect, teardown),
     cmocka_unit_test_setup_teardown(
         a_failing_auxiliary_session_does_not_tear_down_the_hub, setup_with_reconnect, teardown),
     cmocka_unit_test_setup_teardown(dps_connack_failure_faults, setup, teardown),
