@@ -1,9 +1,22 @@
 #Requires -Version 7.0
 <#
 .SYNOPSIS
-    Imports a simulated update and deploys it to the ADU sample's device group.
+    Imports a simulated update and deploys it through the IoT-Hub-based Device
+    Update model.
 
 .DESCRIPTION
+    IMPORTANT - which Device Update model this targets.
+
+    This script drives 'az iot du update ...' and 'az iot du device deployment
+    ...', which are scoped to a Device Update account + instance: the
+    IoT-Hub-based model. The ADU samples in this repository implement the
+    DPS-fronted model, which has no accounts and delivers updates as Azure Device
+    Registry jobs and runs on the registry namespace. This script cannot deliver
+    an update to those samples.
+
+    See samples/adu/pc/README.md for the job/run shape the samples are offered
+    updates through.
+
     Run this AFTER Initialize-AduSampleEnvironment.ps1 and AFTER the device sample
     is running and connected (the device must exist in the hub so its twin can be
     tagged). Resource names are read from the environment variables set by the
@@ -36,6 +49,16 @@ param(
     [string]$UpdateName     = "ADU-Sim",
     [string]$UpdateVersion  = ""
 )
+
+Write-Warning @'
+This script targets the IoT-Hub-based Device Update model (account + instance).
+The ADU samples in this repository implement the DPS-fronted model, which
+delivers updates as Azure Device Registry jobs and runs on the registry
+namespace. An update imported and deployed by this script will not be offered to
+those samples.
+
+See samples/adu/pc/README.md.
+'@
 
 $payloadPath  = Join-Path $PWD "adu-sim-payload.bin"
 $manifestPath = Join-Path $PWD "adu-sim-manifest.importmanifest.json"

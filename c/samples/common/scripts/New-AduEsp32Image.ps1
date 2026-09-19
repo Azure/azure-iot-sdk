@@ -4,6 +4,15 @@
     Builds an ESP32 firmware update image and deploys it as a real ADU update.
 
 .DESCRIPTION
+    IMPORTANT - which Device Update model this targets.
+
+    The import and deployment steps use 'az iot du ...', which is scoped to a
+    Device Update account + instance: the IoT-Hub-based model. The ADU samples in
+    this repository implement the DPS-fronted model, which has no accounts and
+    delivers updates as Azure Device Registry jobs and runs. An update deployed
+    by this script will not be offered to those samples. The image build steps
+    are unaffected. See samples/adu/pc/README.md.
+
     The ESP32 counterpart of New-AduSampleDeployment.ps1. Where that script ships
     a zero-filled simulated payload, this one BUILDS a genuine ESP32 app image
     (the sample firmware) with the new version baked in, then imports + deploys

@@ -1,10 +1,28 @@
 #Requires -Version 7.0
 <#
 .SYNOPSIS
-    Provisions (or reuses) the Azure resources the ADU Linux sample needs and sets
-    the environment variables it reads.
+    Provisions (or reuses) an IoT Hub / DPS / Device Update environment and sets
+    the environment variables the samples read.
 
 .DESCRIPTION
+    IMPORTANT - which Device Update model this creates.
+
+    The Device Update resources created here - 'az iot du account create' and
+    'az iot du instance create --iothub-ids' - belong to the IoT-Hub-based Device
+    Update model. The ADU samples in this repository implement the DPS-fronted
+    model, which has no Device Update accounts: it needs a
+    Microsoft.DeviceUpdate/updateInstances resource and a
+    Microsoft.DeviceRegistry/namespaces linked to it, with the DPS linked to that
+    namespace through a managed identity. This script does NOT create those, and
+    New-AduSampleDeployment.ps1 cannot deliver an update to those samples.
+
+    What this script produces that the samples do use: the resource group, the
+    DPS, the device certificate and its X.509 enrollment, the storage account,
+    and the AZ_IOT_* environment variables.
+
+    See samples/adu/pc/README.md for the resources the DPS-fronted model needs
+    and how to provision them.
+
     The resource group is the identity of an environment:
 
       * Pass -ResourceGroup to REUSE an existing environment. The script verifies
@@ -38,6 +56,20 @@ param(
     [string]$DeviceId = "adu-sim-device",
     [string]$GroupId = "adu-sim-devices"
 )
+
+Write-Warning @'
+This script provisions the IoT-Hub-based Device Update model (account + instance
+linked to a hub). The ADU samples in this repository implement the DPS-fronted
+model, which has no accounts: it needs a Microsoft.DeviceUpdate/updateInstances
+resource and a Microsoft.DeviceRegistry/namespaces linked to it, with the DPS
+linked to that namespace. Those are NOT created here, and the samples will not be
+offered an update by this environment.
+
+Still produced and usable: resource group, DPS, device certificate + X.509
+enrollment, storage, and the AZ_IOT_* environment variables.
+
+See samples/adu/pc/README.md for the resources the samples need.
+'@
 
 # The az CLI 'iot' commands live in the azure-iot extension. Make sure it is
 # installed before any of them run.
