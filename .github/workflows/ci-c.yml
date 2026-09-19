@@ -264,6 +264,79 @@ jobs:
           path: c/build/linux-gcc-debug/Testing/Temporary/MemoryChecker.*.log
           if-no-files-found: ignore
 
+  # ---------------------------------------------------------------------------
+  # Race detection. Separate from the valgrind job above because it answers a
+  # different question, with a different tool, on a different binary.
+  #
+  # memcheck and ASan look at WHICH memory is touched. Neither looks at which
+  # thread touched it or under which lock, so neither can see a data race at
+  # all: a race whose timing happens not to bite on the runner is simply
+  # invisible to them. That gap was not theoretical -- the adapter published a
+  # queued event to the consumer thread and then kept writing to it, and every
+  # job in this workflow passed straight through the window.
+  #
+  # The adapter's event queue is the only place in this SDK where two threads
+  # meet (Paho's callback threads produce, the application's process_loop()
+  # consumes), so it is the only thing this job runs: one hermetic binary with
+  # no broker and no sockets, whose sole content is that seam.
+  #
+  # Both tools run, and either one reporting an error fails the job. They agree
+  # on most races but not all -- they implement happens-before differently, and
+  # DRD additionally reports lock-order and mutex-misuse problems helgrind does
+  # not -- so running both is cheap coverage rather than duplication.
+  # ---------------------------------------------------------------------------
+  race-detector:
+    name: linux-gcc / helgrind + drd
+    needs: changes
+    if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install deps
+        run: sudo apt-get update && sudo apt-get install -y ninja-build valgrind
+      - name: Configure
+        # No broker and no conformance suites: this job builds and runs exactly
+        # one test binary, which needs neither.
+        run: >
+          cmake --preset linux-gcc-debug
+          -DAZ_IOT_WITH_PAHO=ON
+          -DAZ_IOT_BUILD_CONFORMANCE_TESTS=OFF
+          -DAZ_IOT_BUILD_CONFORMANCE_TESTS_TLS=OFF
+      - name: Build
+        run: cmake --build --preset linux-gcc-debug --target az_iot_tests_paho_event_queue_race
+      - name: Event queue under helgrind and drd
+        working-directory: c/build/linux-gcc-debug
+        run: |
+          set -o pipefail
+          status=0
+          for tool in helgrind drd; do
+            echo "::group::${tool}"
+            # --error-exitcode makes a reported race fail the step. It does NOT
+            # cover valgrind aborting on its own, so the ERROR SUMMARY line is
+            # checked as well: a run that produced no summary did not finish,
+            # and must not be read as a clean one.
+            if valgrind --tool="${tool}" --error-exitcode=42 \
+                 ./tests/az_iot_tests_paho_event_queue_race 2>&1 | tee "${tool}.log"; then
+              :
+            else
+              echo "::error::${tool} reported a threading defect"
+              status=1
+            fi
+            if ! grep -q "ERROR SUMMARY:" "${tool}.log"; then
+              echo "::error::${tool} did not run to completion"
+              status=1
+            fi
+            echo "::endgroup::"
+          done
+          exit "${status}"
+      - name: Upload race-detector logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: race-detector-logs
+          path: c/build/linux-gcc-debug/*.log
+          if-no-files-found: ignore
+
   asan-windows:
     name: windows-msvc / ASan
     needs: changes
