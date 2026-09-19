@@ -340,14 +340,21 @@ static void resolve_connect_transport(
  *    are re-issued on every connect either way (begin_feature_subscriptions),
  *    so resuming costs nothing and losing the queue costs delivery.
  *
- *  - HUB_NEXT (v5): a clean start, expiring at the end of the network
- *    connection. The AEG presence handshake is what recovers state on this
- *    generation: the device re-subscribes ih/{id}/dev/# and always publishes
- *    birth, and presence.proto states the backend MUST NOT consult
- *    session_present for any state decision (section 9.9) -- birth is QoS 0
- *    precisely so a prior session cannot redeliver a stale one. A resumed
- *    session therefore recovers nothing the birth does not, while keeping a
- *    dead session's queued messages alive to be delivered against the new one.
+ *  - HUB_NEXT (v5): a resumed session as well, with a Session Expiry Interval
+ *    so there is something left to resume. The presence design is explicit that
+ *    this is a TRANSPORT EFFICIENCY choice and not a correctness one: the
+ *    backend never reads clean_start or session_present, the device always
+ *    publishes birth, and every feature protocol is correct even if each
+ *    connect started a fresh session. What resuming buys is the broker's QoS 1
+ *    redelivery across a transient drop, and a re-subscribe saved. Both halves
+ *    are needed -- a session that expires the instant the connection closes is
+ *    gone before any reconnect could resume it -- which is why the expiry is
+ *    set here and not left at 0.
+ *
+ * Either hub role may be overridden by the caller through
+ * opts.session_continuity; DPS may not, because the provisioning service does
+ * not implement session persistence at all and honouring a request for it
+ * would be promising something the service does not do.
  *
  * The v5-only fields are set for the v5 role only. A v3.1.1 broker must never
  * be sent a Session Expiry Interval or a Will Delay Interval -- there is no
@@ -357,9 +364,28 @@ static void resolve_session_options(
     az_iot_mqtt_connect_options* copts,
     az_iot_mqtt_role role)
 {
-  copts->clean_start = (role != AZ_IOT_MQTT_ROLE_HUB_CLASSIC);
+  if (role == AZ_IOT_MQTT_ROLE_DPS)
+  {
+    copts->clean_start = true;
+  }
+  else
+  {
+    copts->clean_start
+        = (c->opts.session_continuity == AZ_IOT_SESSION_CONTINUITY_CLEAN) ? true : false;
+  }
   copts->session_expiry_seconds = 0;
   copts->disconnect_reason_code = (uint8_t)AZ_IOT_MQTT_DISCONNECT_NORMAL;
+
+  /* Session Expiry is an MQTT 5 property, so it exists only for the v5 hub.
+   * A session the caller asked to be clean still carries it: clean_start
+   * discards whatever was there at CONNECT, while the expiry governs what
+   * happens to THIS session after it ends, and those are independent. */
+  if (role == AZ_IOT_MQTT_ROLE_HUB_NEXT)
+  {
+    copts->session_expiry_seconds = c->opts.session_expiry_seconds
+        ? c->opts.session_expiry_seconds
+        : (uint32_t)AZ_IOT_DEFAULT_SESSION_EXPIRY_SECONDS;
+  }
 
   /* The Will belongs to the hub session. A DPS session is torn down in an
    * orderly way as soon as the assignment lands, so a Will on it would only

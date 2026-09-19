@@ -44,27 +44,28 @@ Canonical pending-work tracker for IoT Hub Next (AEG) integration.
   attempt; it rides the CONNECT username as `correlationId` and the birth PUBLISH as MQTT 5
   Correlation Data, which is the identifier the presence protocol actually defines. A second UUID
   would identify nothing the service looks at.
-- [x] Set LWT in CONNECT options for HUB_NEXT — plumbed: `az_iot_connection_client_options.lwt` is
-  applied to the hub roles (never to DPS), with the Will Delay Interval and a close that carries
-  DISCONNECT reason `0x04` on HUB_NEXT. **No default Will is set, and that part is still open:**
-  neither `common/Protos/presence.proto` nor the .NET client defines a departure/death message —
-  presence defines birth and birth-ack only, and `MqttConnect` there has no Will fields at all — so
-  there is no wire format for the SDK to fill one in with. An empty payload on
-  `ih/{deviceId}/srv/presence` would decode as a *valid* (all-default) Birth, which is worse than no
-  Will. Needs a protocol decision: topic, payload schema and the `type` User Property for a death
-  message.
-- [x] Publish session open on `session_present=0` — already satisfied by the AEG birth flow, which
-  is stronger: birth is published on EVERY connection, carrying the observed `session_present` as a
-  diagnostic field, because presence.proto section 9.9 states the backend must not consult that flag
-  for state decisions.
+- [x] Set LWT in CONNECT options for HUB_NEXT — **the platform sets no Will, by design.**
+  `az_iot_connection_client_options.lwt` exposes the Will to the application and is applied to the
+  hub roles (never to DPS), with the Will Delay Interval and a close that carries DISCONNECT reason
+  `0x04` when a Will is configured. The SDK sets no Will of its own: MQTT 5 allows exactly one Will
+  per CONNECT, device presence is derived from broker-emitted connection lifecycle events rather
+  than from a device-authored will message, and taking the slot would deny the application its own
+  "device went away" signal. The earlier LWT-based session-close protocol was superseded by the
+  presence design.
+- [x] Publish session open on `session_present=0` — satisfied by the birth flow, which is stronger:
+  birth is published on EVERY connection, carrying the observed `session_present` as a diagnostic
+  field, because the backend must not consult that flag for state decisions.
 - [x] Extend adapter vtable connect options: `clean_start`, `session_expiry_interval`, LWT fields —
   the fields already existed and the Paho adapter already honoured them; the gap was that the core
-  set none of them. It does now, per role (see `docs/connection.md` section 3.2).
+  set none of them. It does now, per role, with `session_continuity` and `session_expiry_seconds`
+  overridable by the application on the hub roles (see `docs/connection.md` section 3.2).
 - [x] Send DISCONNECT with reason code 0x04 on close (HUB_NEXT only) — expressed as an additive,
   zero-safe `disconnect_reason_code` on `az_iot_mqtt_connect_options` rather than a new parameter or
   vtable slot, so no bring-your-own adapter's ABI changes and a zero keeps today's normal close. The
   core sets it on HUB_NEXT only, and only when a Will is configured: 0x04 asks the broker to publish
-  the Will on an orderly close, which is meaningless when there is none.
+  the Will on an orderly close, which is meaningless when there is none. The reason code carries no
+  protocol meaning for the platform (presence does not depend on a will message), so this exists to
+  serve an application that configured its own Will.
 
 ## Phase 5: Feature Clients Dual-Mode
 

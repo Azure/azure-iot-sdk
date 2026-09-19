@@ -966,18 +966,59 @@ static void classic_connect_asks_to_resume_the_session(void** state)
   assert_string_equal(connect->connect.lwt_topic, "");
 }
 
-/* Hub-Next starts clean and lets the session end with the network connection:
- * the birth handshake is what recovers state on this generation. */
-static void hub_next_connect_starts_a_clean_session(void** state)
+/* Hub-Next resumes its session and asks for an expiry long enough that there is
+ * something left to resume. Both halves matter: a session that expires the
+ * instant the connection closes is gone before any reconnect could resume it.
+ * This is a transport-efficiency choice -- the presence handshake is what
+ * establishes readiness on this generation either way. */
+static void hub_next_connect_resumes_the_session_with_an_expiry(void** state)
 {
   fixture* fx = (fixture*)*state;
   const az_iot_mock_call* connect = connect_options_of_first_attempt(fx);
 
-  assert_true(connect->connect.clean_start);
-  assert_int_equal(connect->connect.session_expiry_seconds, 0);
+  assert_false(connect->connect.clean_start);
+  assert_int_equal(connect->connect.session_expiry_seconds, AZ_IOT_DEFAULT_SESSION_EXPIRY_SECONDS);
   /* No Will configured, so nothing to announce on an orderly close. */
   assert_int_equal(connect->connect.disconnect_reason_code, 0);
   assert_string_equal(connect->connect.lwt_topic, "");
+}
+
+/* The caller can override session continuity on a hub session, and asking for a
+ * clean one must actually reach the wire. The expiry still rides along: it
+ * governs what happens to THIS session once it ends, which is independent of
+ * whether the previous one was discarded at CONNECT. */
+static void hub_next_honors_a_caller_requested_clean_session(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  fx->client->opts.session_continuity = AZ_IOT_SESSION_CONTINUITY_CLEAN;
+  const az_iot_mock_call* connect = connect_options_of_first_attempt(fx);
+
+  assert_true(connect->connect.clean_start);
+  assert_int_equal(connect->connect.session_expiry_seconds, AZ_IOT_DEFAULT_SESSION_EXPIRY_SECONDS);
+}
+
+/* A caller-supplied expiry wins over the default. */
+static void hub_next_honors_a_caller_requested_session_expiry(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  fx->client->opts.session_expiry_seconds = 900;
+  const az_iot_mock_call* connect = connect_options_of_first_attempt(fx);
+
+  assert_int_equal(connect->connect.session_expiry_seconds, 900);
+  assert_false(connect->connect.clean_start);
+}
+
+/* Classic honours the same override, but Session Expiry is an MQTT 5 property
+ * and must never be sent to a v3.1.1 broker even when one was configured. */
+static void classic_honors_continuity_but_sends_no_expiry_property(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  fx->client->opts.session_continuity = AZ_IOT_SESSION_CONTINUITY_CLEAN;
+  fx->client->opts.session_expiry_seconds = 900;
+  const az_iot_mock_call* connect = connect_options_of_first_attempt(fx);
+
+  assert_true(connect->connect.clean_start);
+  assert_int_equal(connect->connect.session_expiry_seconds, 0);
 }
 
 /* A Will configured by the application rides the Classic CONNECT, but the
@@ -1013,11 +1054,26 @@ static void a_will_rides_the_hub_next_connect_with_delay_and_reason(void** state
   assert_int_equal(connect->connect.lwt_qos, AZ_IOT_MQTT_QOS_1);
   assert_true(connect->connect.lwt_retain);
   assert_int_equal(connect->connect.lwt_will_delay_seconds, 30);
-  /* MQTT 5 ends the will delay at whichever comes first, the delay or the
-   * session expiry; a session expiring at once would make the delay a no-op. */
-  assert_int_equal(connect->connect.session_expiry_seconds, 30);
+  /* The will delay is shorter than the session expiry, so the expiry is left
+   * where the role put it -- MQTT 5 ends the delay at whichever comes first,
+   * and the delay is already the earlier of the two. */
+  assert_int_equal(connect->connect.session_expiry_seconds, AZ_IOT_DEFAULT_SESSION_EXPIRY_SECONDS);
   assert_int_equal(connect->connect.disconnect_reason_code, 0x04);
-  assert_true(connect->connect.clean_start);
+  assert_false(connect->connect.clean_start);
+}
+
+/* A will delay longer than the session expiry would otherwise be silently
+ * truncated, because MQTT 5 ends the delay when the session ends. The expiry is
+ * raised to cover it rather than accepting the option and ignoring it. */
+static void a_will_delay_past_the_session_expiry_extends_it(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  fx->client->opts.session_expiry_seconds = 60;
+  fx->client->opts.lwt.will_delay_seconds = 300;
+  const az_iot_mock_call* connect = connect_options_of_first_attempt(fx);
+
+  assert_int_equal(connect->connect.lwt_will_delay_seconds, 300);
+  assert_int_equal(connect->connect.session_expiry_seconds, 300);
 }
 
 /* The session options are a property of the ROLE, not of what the broker
@@ -1030,8 +1086,8 @@ static void hub_next_session_options_do_not_depend_on_session_present(void** sta
 
   const az_iot_mock_call* connect = last_call_of_kind(m, AZ_IOT_MOCK_CALL_CONNECT);
   assert_non_null(connect);
-  assert_true(connect->connect.clean_start);
-  assert_int_equal(connect->connect.session_expiry_seconds, 0);
+  assert_false(connect->connect.clean_start);
+  assert_int_equal(connect->connect.session_expiry_seconds, AZ_IOT_DEFAULT_SESSION_EXPIRY_SECONDS);
 }
 
 /* With no reconnection policy, a birth-ack that never arrives faults the client
@@ -2150,7 +2206,16 @@ int main(void)
     cmocka_unit_test_setup_teardown(hub_next_birth_ack_timeout_faults, setup_next, teardown),
     cmocka_unit_test_setup_teardown(classic_connect_skips_birth_handshake, setup, teardown),
     cmocka_unit_test_setup_teardown(classic_connect_asks_to_resume_the_session, setup, teardown),
-    cmocka_unit_test_setup_teardown(hub_next_connect_starts_a_clean_session, setup_next, teardown),
+    cmocka_unit_test_setup_teardown(
+        hub_next_connect_resumes_the_session_with_an_expiry, setup_next, teardown),
+    cmocka_unit_test_setup_teardown(
+        hub_next_honors_a_caller_requested_clean_session, setup_next, teardown),
+    cmocka_unit_test_setup_teardown(
+        hub_next_honors_a_caller_requested_session_expiry, setup_next, teardown),
+    cmocka_unit_test_setup_teardown(
+        classic_honors_continuity_but_sends_no_expiry_property, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_will_delay_past_the_session_expiry_extends_it, setup_next_with_will, teardown),
     cmocka_unit_test_setup_teardown(
         a_will_rides_the_classic_connect_without_v5_fields, setup_classic_with_will, teardown),
     cmocka_unit_test_setup_teardown(

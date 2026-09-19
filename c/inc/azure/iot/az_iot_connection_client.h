@@ -51,6 +51,25 @@ extern "C"
     AZ_IOT_CONNECTION_PROFILE_UNKNOWN = -1
   } az_iot_connection_profile;
 
+  /* Whether the hub session asks the broker to resume the device's previous
+   * MQTT session, or to start a fresh one.
+   *
+   * Zero is DEFAULT so a zero-initialized options struct gets the SDK's
+   * per-role choice, which is what almost every caller wants. */
+  typedef enum az_iot_session_continuity
+  {
+    /* Resume where the role's default says to. Today that is: resume on both
+     * hub generations, and always clean for DPS (which does not support
+     * session persistence at all). */
+    AZ_IOT_SESSION_CONTINUITY_DEFAULT = 0,
+    /* Ask the broker to resume the previous session (clean_start = false, or
+     * Clean Session = 0 on MQTT 3.1.1). */
+    AZ_IOT_SESSION_CONTINUITY_RESUME = 1,
+    /* Discard any previous session and start a new one (clean_start = true).
+     * Everything the broker had queued for this device is dropped. */
+    AZ_IOT_SESSION_CONTINUITY_CLEAN = 2
+  } az_iot_session_continuity;
+
   /* Caller-allocated and expected to grow, so it carries a size stamp per
    * docs/struct_versioning.md: a caller compiled against an older header is
    * defaulted rather than misread. MUST be initialized with
@@ -324,6 +343,35 @@ extern "C"
       bool retain;
       uint32_t will_delay_seconds; /* MQTT 5 only; 0 = publish immediately */
     } lwt;
+
+    /* MQTT session continuity for the HUB session.
+     *
+     * The session is broker-side state -- the device's subscriptions, the QoS 1
+     * traffic queued for it while it was away, the in-flight quota -- and it is
+     * a TRANSPORT EFFICIENCY choice, never a correctness one. Every feature
+     * client in this SDK is correct if each connect started a fresh session;
+     * resuming one only saves a re-subscribe and preserves messages the broker
+     * would otherwise have to have redelivered from the service.
+     *
+     * Leave at the default unless there is a reason not to. A device on a flaky
+     * link benefits from resuming; a device that has been away long enough to
+     * accumulate a large queue may be better off starting clean than replaying
+     * a backlog. Ignored for DPS, which does not support session persistence
+     * and is always connected clean. */
+    az_iot_session_continuity session_continuity;
+
+    /* Session Expiry Interval requested on an MQTT v5 hub session, in seconds.
+     * 0 selects AZ_IOT_DEFAULT_SESSION_EXPIRY_SECONDS.
+     *
+     * How long the broker keeps the session after the connection drops. It is
+     * only meaningful alongside a resumed session: a session asked to expire
+     * immediately is gone before any reconnect can resume it.
+     *
+     * MQTT 5 only, so it has no effect on a Classic hub. The Event Grid
+     * namespace clamps this to its configured maximum (8 hours), and a
+     * disconnected session is also bounded by its queue (100 messages / 1 MB) --
+     * overflowing that destroys the session regardless of this value. */
+    uint32_t session_expiry_seconds;
   } az_iot_connection_client_options;
 
   typedef enum az_iot_connection_state
@@ -459,6 +507,22 @@ extern "C"
 #endif
 #ifndef AZ_IOT_DEFAULT_CONNECT_TIMEOUT_SECONDS
 #define AZ_IOT_DEFAULT_CONNECT_TIMEOUT_SECONDS 30
+#endif
+/* Session Expiry Interval requested on an MQTT v5 hub session, in seconds.
+ *
+ * The session is what carries a device's subscriptions and the QoS 1 traffic
+ * queued for it across a transient drop, and an expiry of 0 ends it the moment
+ * the network connection closes -- so a resumable session needs a non-zero
+ * value here as much as it needs clean_start = false.
+ *
+ * One hour matches the Event Grid namespace default. The namespace maximum is
+ * eight hours and the broker clamps anything larger, so this is always
+ * accepted. It is deliberately not longer: a disconnected session also has a
+ * bounded queue (100 messages / 1 MB), and a device that accumulates past that
+ * loses the whole session anyway, so a very long expiry buys little while
+ * holding broker state for every absent device. */
+#ifndef AZ_IOT_DEFAULT_SESSION_EXPIRY_SECONDS
+#define AZ_IOT_DEFAULT_SESSION_EXPIRY_SECONDS 3600
 #endif
 /* Matches the presence birth-ack timeout: both bound "the broker accepted the
  * connection and then went quiet", and having two different windows for that on

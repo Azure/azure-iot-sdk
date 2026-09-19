@@ -562,6 +562,11 @@ static void dps_connects_with_a_clean_session_and_no_will(void** state)
   opts.lwt.topic = "app/ut-device/gone";
   opts.lwt.qos = AZ_IOT_MQTT_QOS_1;
   opts.lwt.will_delay_seconds = 30;
+  /* Even asked for explicitly, session continuity must not reach DPS: the
+   * provisioning service does not implement session persistence, so honouring
+   * the request would promise something the service does not do. */
+  opts.session_continuity = AZ_IOT_SESSION_CONTINUITY_RESUME;
+  opts.session_expiry_seconds = 900;
 
   az_iot_connection_client c;
   assert_int_equal(az_iot_connection_client_init(&c, &opts), AZ_IOT_OK);
