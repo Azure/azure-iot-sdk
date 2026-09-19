@@ -135,6 +135,12 @@ target_include_directories(az_iot_tests_connection_dps PRIVATE
 if(UNIX)
     target_compile_definitions(az_iot_tests_connection_dps PRIVATE _POSIX_C_SOURCE=200809L)
 endif()
+# Custom DPS registration payload: the request body it produces (alone and
+# alongside a CSR) and the payload the assignment returns.
+az_iot_add_cmocka_test(az_iot_tests_connection_dps_payload unit/connection_dps_payload_test.c)
+target_link_libraries(az_iot_tests_connection_dps_payload PRIVATE az_iot_test_support)
+target_include_directories(az_iot_tests_connection_dps_payload PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/core)
 az_iot_add_cmocka_test(az_iot_tests_reconnect_policy unit/reconnect_policy_test.c)
 target_include_directories(az_iot_tests_reconnect_policy PRIVATE
     ${CMAKE_SOURCE_DIR}/src/core)
