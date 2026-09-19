@@ -1944,6 +1944,143 @@ static void closing_from_the_connecting_callback_abandons_the_session(void** sta
   assert_int_equal(fx->client->state, AZ_IOT_CONN_STATE_IDLE);
 }
 
+/* ------------------------------------------------------------------------- */
+/* the auxiliary provisioning session and the public state                   */
+/*                                                                           */
+/* Opened from the pump on a feature client's behalf, with no                */
+/* az_iot_connection_client_open() involved. It is that feature client's     */
+/* transport, not the application's connection, so it must leave the public  */
+/* connection state alone -- coming up and going away alike.                 */
+/* ------------------------------------------------------------------------- */
+
+/* Take a standing interest and open an auxiliary session, the way a feature
+ * client does. No open() anywhere. */
+static az_iot_mock_mqtt_client* aux_session_start(az_iot_test_conn* fx)
+{
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(fx->client, fx->factory), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client__dps_user_acquire(fx->client), AZ_IOT_OK);
+  fx->client->dps_phase = AZ_IOT_DPS_PHASE_DONE;
+
+  assert_int_equal(az_iot_connection_client__dps_session_ensure(fx->client), AZ_IOT_ERR_BUSY);
+  assert_true(fx->client->dps_session_auxiliary);
+
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  assert_non_null(m);
+  return m;
+}
+
+static void an_auxiliary_session_does_not_announce_a_connection(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_mock_mqtt_client* m = aux_session_start(fx);
+
+  /* Not CONNECTING: the application never asked for a connection. */
+  assert_int_equal(fx->log.count, 0);
+  assert_int_equal(fx->client->state, AZ_IOT_CONN_STATE_IDLE);
+
+  assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  const az_iot_mock_call* sub = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_SUBSCRIBE);
+  assert_non_null(sub);
+  assert_true(az_iot_mock_mqtt_client_inject_suback(m, sub->packet_id, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  /* Usable, and still silent. */
+  assert_true(az_iot_connection_client__dps_session_ready(fx->client));
+  assert_int_equal(fx->log.count, 0);
+  assert_int_equal(fx->client->state, AZ_IOT_CONN_STATE_IDLE);
+
+  az_iot_connection_client__dps_user_release(fx->client);
+}
+
+/* The measured consequence of the old behaviour: the client sat in CONNECTING
+ * with nothing able to take it out, so open() answered ALREADY_INITIALIZED
+ * permanently. */
+static void an_auxiliary_session_does_not_block_open(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  (void)aux_session_start(fx);
+
+  assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
+  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_CONNECTING);
+
+  az_iot_connection_client__dps_user_release(fx->client);
+}
+
+/* open() reclaims the auxiliary session rather than letting dps_start()
+ * overwrite dps_mqtt, and it drops any outcome that session had queued so the
+ * next tick cannot apply it to the application's connection. */
+static void open_reclaims_an_auxiliary_session_and_its_pending_outcome(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_mock_mqtt_client* m = aux_session_start(fx);
+
+  /* Queue a failure on the auxiliary session without pumping it. */
+  assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_ERR_MQTT));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
+  assert_false(fx->client->dps_session_auxiliary);
+  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_CONNECTING);
+
+  /* The provisioning run that open() started is untouched by the abandoned
+   * session's outcome. */
+  for (int i = 0; i < 3; ++i)
+  {
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
+  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_CONNECTING);
+  assert_false(az_iot_test_saw_state(&fx->log, AZ_IOT_CONN_STATE_FAULTED));
+  assert_false(az_iot_test_saw_state(&fx->log, AZ_IOT_CONN_STATE_RECONNECTING));
+
+  az_iot_connection_client__dps_user_release(fx->client);
+}
+
+/* Closing it is as silent as opening it: there is nothing to put back. */
+static void closing_an_auxiliary_session_does_not_announce_anything(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_mock_mqtt_client* m = aux_session_start(fx);
+
+  assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  /* Force the linger into the past rather than waiting it out. */
+  fx->client->dps_aux_idle_deadline_ms = 1;
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  assert_false(fx->client->dps_session_auxiliary);
+  assert_int_equal(fx->log.count, 0);
+  assert_int_equal(fx->client->state, AZ_IOT_CONN_STATE_IDLE);
+
+  az_iot_connection_client__dps_user_release(fx->client);
+}
+
+/* A failing one is silent too. The hub-survival half of this is covered by
+ * a_failing_auxiliary_session_does_not_tear_down_the_hub(); this pins that the
+ * public state is not moved either. */
+static void a_failing_auxiliary_session_announces_nothing(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_mock_mqtt_client* m = aux_session_start(fx);
+
+  assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_ERR_MQTT));
+  for (int i = 0; i < 3; ++i)
+  {
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
+
+  assert_false(fx->client->dps_session_auxiliary);
+  assert_int_equal(fx->log.count, 0);
+  assert_int_equal(fx->client->state, AZ_IOT_CONN_STATE_IDLE);
+
+  /* And the application can still open normally afterwards. */
+  assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
+
+  az_iot_connection_client__dps_user_release(fx->client);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -2050,6 +2187,15 @@ int main(void)
         the_reprovision_demand_survives_close_and_open, setup_with_reconnect, teardown),
     cmocka_unit_test_setup_teardown(
         closing_from_the_connecting_callback_abandons_the_session, setup, teardown),
+    /* the auxiliary provisioning session and the public state */
+    cmocka_unit_test_setup_teardown(
+        an_auxiliary_session_does_not_announce_a_connection, setup, teardown),
+    cmocka_unit_test_setup_teardown(an_auxiliary_session_does_not_block_open, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        open_reclaims_an_auxiliary_session_and_its_pending_outcome, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        closing_an_auxiliary_session_does_not_announce_anything, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_failing_auxiliary_session_announces_nothing, setup, teardown),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

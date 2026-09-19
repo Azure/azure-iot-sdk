@@ -1532,7 +1532,22 @@ static az_iot_result dps_start(az_iot_connection_client* c)
   c->dps_pending_retry_after_s = 0;
   c->dps_enrolling = c->opts.dps.request_operational_certificate;
 
-  set_state_to(c, AZ_IOT_CONN_STATE_CONNECTING, AZ_IOT_OK);
+  /* An AUXILIARY session is a feature client's transport, not the application's
+   * connection: it is opened from dps_session_ensure() on a pump tick, with no
+   * az_iot_connection_client_open() involved, and it runs either alongside a
+   * live hub session or on a device that has no hub at all. Moving the public
+   * state for it reported a lifecycle the application never asked for and then
+   * never left -- the auxiliary close path has nothing to restore it to, so the
+   * client sat in CONNECTING forever, where open() answers
+   * AZ_IOT_ERR_ALREADY_INITIALIZED. On a connected device it also announced
+   * CONNECTING while the hub link was up and fine.
+   *
+   * So the public state is left exactly as it was. An auxiliary session is
+   * observable through the feature client that asked for it. */
+  if (!c->dps_session_auxiliary)
+  {
+    set_state_to(c, AZ_IOT_CONN_STATE_CONNECTING, AZ_IOT_OK);
+  }
 
   /* That announcement ran the application's state callback synchronously, and
    * close() is legal from inside it -- including the branch that cancels a
@@ -3218,6 +3233,34 @@ az_iot_result az_iot_connection_client_open(az_iot_connection_client* client)
    * already does for the same flag. */
   if (dps_configured(client) && (!client->opts.host || client->needs_reprovision))
   {
+    /* Reclaim an auxiliary session first. A feature client may have opened one
+     * on the pump -- it does not need open() and does not move the public
+     * state -- and dps_start() would otherwise overwrite dps_mqtt and leak the
+     * adapter. The ordinary provisioning run owns the session from here; the
+     * feature client asks for one again through dps_session_ensure() when
+     * provisioning is over.
+     *
+     * The deferred-finalize bookkeeping is cleared with it. That session may
+     * already have queued an outcome -- a refused CONNACK or SUBACK sets it
+     * before the pump applies it -- and if dps_start() below then failed early,
+     * the next do_work() would apply that stale outcome to the application's
+     * connection. dps_start() clears these too, but only once it reaches the
+     * point of taking the session over. */
+    if (client->dps_session_auxiliary)
+    {
+      AZ_IOT_LOG_DEBUG("dps: reclaiming the auxiliary session for provisioning");
+      if (client->dps_mqtt && client->dps_mqtt->iface && client->dps_mqtt->iface->disconnect)
+      {
+        (void)client->dps_mqtt->iface->disconnect(client->dps_mqtt);
+      }
+      dps_teardown_mqtt(client);
+      client->dps_session_auxiliary = false;
+      client->dps_aux_idle_deadline_ms = 0;
+      client->dps_phase = DPS_PHASE_NONE;
+      client->dps_pending_finalize = false;
+      client->dps_pending_have_assignment = false;
+      client->dps_pending_status = AZ_IOT_OK;
+    }
     az_iot_result r = dps_start(client);
     if (r != AZ_IOT_OK)
     {
@@ -3367,6 +3410,9 @@ az_iot_result az_iot_connection_client_do_work(
       client->dps_session_auxiliary = false;
       client->dps_aux_idle_deadline_ms = 0;
       client->dps_phase = DPS_PHASE_DONE;
+      /* No state transition, deliberately: opening an auxiliary session does
+       * not move the public state either, so there is nothing here to put
+       * back. See dps_start(). */
       return AZ_IOT_OK;
     }
 

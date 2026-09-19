@@ -794,7 +794,13 @@ extern "C"
      * It must never register. Registering would take the assignment path in
      * dps_finalize(), which rewrites opts.host, opts.client_id and
      * session_role and then reconnects -- tearing down the live hub connection
-     * this session is supposed to run alongside. */
+     * this session is supposed to run alongside.
+     *
+     * It is also invisible to the public connection state. It is opened from
+     * the pump on a feature client's behalf, not from
+     * az_iot_connection_client_open(), so it neither announces CONNECTING when
+     * it comes up nor anything at all when it goes away -- the application's
+     * connection is whatever it was. */
     bool dps_session_auxiliary;
 
     /* When the auxiliary session may be torn down for being idle. 0 while a
