@@ -201,6 +201,28 @@ extern "C"
                            * compatibility properties it sends with each
                            * update request. */
     az_iot_certificate_provider* certificate_provider; /* required for X.509 auth */
+
+    /* How the client retries after a failure.
+     *
+     * initial_delay_ms == 0 DISABLES reconnection, and a zeroed options struct
+     * therefore has it disabled. With it disabled every unexpected drop, every
+     * refused CONNACK, every stalled handshake and every failed DPS
+     * registration is terminal: the client goes to AZ_IOT_CONN_STATE_FAULTED
+     * and stays there until the application calls
+     * az_iot_connection_client_close() and opens again.
+     *
+     * Two behaviours are gated on it beyond the retry itself, because both are
+     * carried out BY a retry and there is none to carry them when it is off:
+     *   - re-provisioning after a CONNACK that rejects the identity (a deleted
+     *     or rotated enrollment), and
+     *   - re-provisioning after dps.max_hub_connect_attempts_before_reprovision
+     *     consecutive unreachable-hub attempts.
+     * Both therefore fault instead of re-provisioning when reconnection is
+     * disabled.
+     *
+     * az_iot_connection_client_options_default() fills this with
+     * az_iot_reconnection_policy_default() (1s initial, 30s cap, retry
+     * forever, +/-20% jitter). Set initial_delay_ms = 0 to opt out. */
     az_iot_reconnection_policy reconnection_policy;
     az_iot_log_sink log;
 
@@ -894,8 +916,16 @@ extern "C"
   const char* az_iot_connection_state_to_string(az_iot_connection_state s);
 
   /* Returns an options struct with optional fields defaulted (port derived from
-   * the transport -- 8883 for TCP, 443 for WebSockets -- no proxy, no
-   * reconnect, no log sink). Set the required fields for your auth/provisioning
+   * the transport -- 8883 for TCP, 443 for WebSockets -- no proxy, no log sink,
+   * and the default reconnection policy from
+   * az_iot_reconnection_policy_default(): 1s initial delay, 30s cap, retry
+   * forever, +/-20% jitter). Set reconnection_policy.initial_delay_ms = 0 on
+   * the returned struct to make every failure terminal instead.
+   *
+   * Note that a zero-initialized options struct is NOT the same thing: it has
+   * reconnection disabled, since initial_delay_ms is then 0.
+   *
+   * Set the required fields for your auth/provisioning
    * mode on the returned struct before az_iot_connection_client_init():
    *   - DPS + X.509 (host==NULL): dps.id_scope, dps.registration_id,
    *     certificate_provider.

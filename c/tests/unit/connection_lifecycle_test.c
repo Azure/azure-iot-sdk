@@ -340,6 +340,56 @@ static void the_websocket_path_reaches_the_adapter(void** state)
 
 /* The default options must not pin a port, or selecting WebSockets on top of
  * them would connect to 443's scheme on 8883's port. */
+/* Stock options retry. A zeroed struct does not -- that is the caller's
+ * choice -- but the function whose job is to supply sensible defaults must not
+ * hand back a client for which every transient failure is terminal. */
+static void the_default_options_enable_reconnection(void** state)
+{
+  (void)state;
+  az_iot_connection_client_options opts = az_iot_connection_client_options_default();
+  az_iot_reconnection_policy expected = az_iot_reconnection_policy_default();
+
+  assert_true(opts.reconnection_policy.initial_delay_ms > 0);
+  assert_int_equal(opts.reconnection_policy.initial_delay_ms, expected.initial_delay_ms);
+  assert_int_equal(opts.reconnection_policy.max_delay_ms, expected.max_delay_ms);
+  assert_int_equal(opts.reconnection_policy.max_attempts, expected.max_attempts);
+  assert_int_equal(opts.reconnection_policy.jitter_pct, expected.jitter_pct);
+}
+
+/* Opting out stays possible, and a zeroed struct keeps meaning "no retry". */
+static void reconnection_can_still_be_disabled(void** state)
+{
+  (void)state;
+  az_iot_connection_client_options zeroed = { 0 };
+  assert_int_equal(zeroed.reconnection_policy.initial_delay_ms, 0);
+
+  az_iot_connection_client_options opts = az_iot_connection_client_options_default();
+  opts.reconnection_policy.initial_delay_ms = 0;
+  opts.host = "broker.example";
+  opts.client_id = "ut-device";
+
+  az_iot_connection_client c;
+  assert_int_equal(az_iot_connection_client_init(&c, &opts), AZ_IOT_OK);
+  az_iot_test_state_log log;
+  memset(&log, 0, sizeof(log));
+  assert_int_equal(
+      az_iot_connection_client_set_state_callback(&c, az_iot_test_on_state, &log), AZ_IOT_OK);
+
+  az_iot_mqtt_factory* f = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
+  assert_non_null(f);
+  assert_int_equal(az_iot_connection_client_register_mqtt_factory(&c, f), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_open(&c), AZ_IOT_OK);
+
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(f);
+  assert_non_null(m);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_ERR_MQTT));
+  (void)az_iot_connection_client_do_work(&c, 0);
+  (void)az_iot_connection_client_do_work(&c, 0);
+
+  assert_int_equal(az_iot_test_last_state(&log), AZ_IOT_CONN_STATE_FAULTED);
+  az_iot_connection_client_destroy(&c);
+}
+
 static void the_default_options_leave_the_port_to_the_transport(void** state)
 {
   (void)state;
@@ -913,6 +963,8 @@ int main(void)
     cmocka_unit_test(the_proxy_reaches_the_adapter_whole),
     cmocka_unit_test(the_websocket_path_reaches_the_adapter),
     cmocka_unit_test(the_default_options_leave_the_port_to_the_transport),
+    cmocka_unit_test(the_default_options_enable_reconnection),
+    cmocka_unit_test(reconnection_can_still_be_disabled),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }
