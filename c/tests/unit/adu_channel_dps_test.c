@@ -1363,6 +1363,65 @@ static void closing_the_channel_drops_the_session_demand(void** state)
   assert_false(fx->channel_state.wants_session);
 }
 
+/* A demand raised BEFORE the session was ready still reaches an auxiliary
+ * session, even when the hold expires and registration publishes underneath it.
+ *
+ * Clearing the demand on readiness is safe because the publish gate's refusal
+ * is not the end of the story: the engine reissues the operation on every tick,
+ * and the moment the session is actually torn down the refusal records the
+ * demand again. This pins that recovery so the clearing rule cannot be tightened
+ * into a stall. */
+static void a_demand_queued_before_the_hold_expires_still_reopens_a_session(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(fx->channel.vtable->open(fx->channel.ctx, on_update, on_result, fx), AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(&fx->client, fx->factory), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_OK);
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  assert_non_null(m);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(&fx->client, 0);
+
+  /* Queued while the subscription is still unconfirmed, so the session is not
+   * usable yet. */
+  assert_false(az_iot_connection_client__dps_session_ready(&fx->client));
+  assert_int_equal(
+      fx->channel.vtable->request_update(fx->channel.ctx, AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE),
+      AZ_IOT_ERR_NOT_CONNECTED);
+  assert_true(fx->channel_state.wants_session);
+
+  const az_iot_mock_call* sub = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_SUBSCRIBE);
+  assert_non_null(sub);
+  assert_true(az_iot_mock_mqtt_client_inject_suback(m, sub->packet_id, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(&fx->client, 0);
+  assert_true(az_iot_connection_client__dps_session_ready(&fx->client));
+
+  /* The hold expires and registration goes out, so the publish gate now
+   * refuses even though the session still reports ready. */
+  az_iot_test_wait_ms(60); /* opts.dps_hold_timeout_ms is 50 */
+  (void)az_iot_connection_client_do_work(&fx->client, 0);
+  assert_int_equal(fx->channel.vtable->do_work(fx->channel.ctx), AZ_IOT_OK);
+  assert_false(fx->channel_state.wants_session);
+  assert_int_equal(
+      fx->channel.vtable->request_update(fx->channel.ctx, AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE),
+      AZ_IOT_ERR_NOT_CONNECTED);
+
+  /* Registration completes and takes the session with it. */
+  assert_true(inject(fx, m, "$dps/registrations/res/200/?$rid=1", k_assigned_body));
+  (void)az_iot_connection_client_do_work(&fx->client, 0);
+  assert_false(az_iot_connection_client__dps_session_ready(&fx->client));
+
+  /* The engine's next attempt records the demand again, and the tick acts on
+   * it: an auxiliary session is opened rather than the operation stalling. */
+  assert_int_equal(
+      fx->channel.vtable->request_update(fx->channel.ctx, AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE),
+      AZ_IOT_ERR_NOT_CONNECTED);
+  assert_true(fx->channel_state.wants_session);
+  assert_int_equal(fx->channel.vtable->do_work(fx->channel.ctx), AZ_IOT_OK);
+  assert_true(fx->client.dps_session_auxiliary);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -1432,6 +1491,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         a_satisfied_session_demand_stops_reopening_sessions, setup, teardown),
     cmocka_unit_test_setup_teardown(closing_the_channel_drops_the_session_demand, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_demand_queued_before_the_hold_expires_still_reopens_a_session, setup, teardown),
     cmocka_unit_test_setup_teardown(
         the_hub_is_still_pumped_while_an_auxiliary_session_is_open, setup, teardown),
     cmocka_unit_test_setup_teardown(
