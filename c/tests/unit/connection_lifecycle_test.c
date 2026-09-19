@@ -138,11 +138,10 @@ static void open_while_connected_is_rejected(void** state)
   assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_ERR_ALREADY_INITIALIZED);
 }
 
-/* FAULTED is terminal for this client instance: open() does not restart it.
- * Recovery requires destroy() + init(). Pinning this makes the limitation
- * visible rather than folklore. */
 /* open() is still IDLE-only: a fault has to be acknowledged with close()
- * first. See close_from_faulted_returns_to_idle(). */
+ * first, which is what returns the client to IDLE. See
+ * close_from_faulted_returns_to_idle() and
+ * open_after_close_from_faulted_starts_a_new_session(). */
 static void open_from_faulted_is_rejected(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
@@ -501,8 +500,9 @@ static void close_twice_is_idempotent(void** state)
   assert_int_equal(fx->log.count, transitions);
 }
 
-/* After a fault the adapter is already gone, so there is nothing to disconnect.
- * close() reports that rather than pretending it did something. */
+/* After a fault the adapter is already gone, so there is nothing to
+ * disconnect -- which is exactly why close() has to reach IDLE by itself here
+ * rather than waiting for a transport event. */
 static void close_from_faulted_returns_to_idle(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;

@@ -1564,33 +1564,23 @@ static void dps_apply_deferred(az_iot_connection_client* c)
   }
 
   /* Apply the assigned hub + device_id and connect to the hub. */
-  az_iot_result r;
-  r = replace_owned_string(
-      c->provisioned_iot_hub_hostname,
-      sizeof(c->provisioned_iot_hub_hostname),
-      &c->opts.host,
-      c->dps_assigned_hub);
-  if (r != AZ_IOT_OK)
-  {
-    transition(c, AZ_IOT_CONN_STATE_FAULTED, r);
-    return;
-  }
-  r = replace_owned_string(
-      c->provisioned_device_id,
-      sizeof(c->provisioned_device_id),
-      &c->opts.client_id,
-      c->dps_assigned_device_id);
-  if (r != AZ_IOT_OK)
-  {
-    transition(c, AZ_IOT_CONN_STATE_FAULTED, r);
-    return;
-  }
   /* The assigned profile picks the wire protocol for the hub session. An
    * unrecognised value fails the connection instead of guessing an MQTT version
    * -- a device that appears to connect and then misbehaves is far worse to
    * diagnose than one clear error here. The profile stays readable through
    * az_iot_connection_client_get_hub_profile() so the offending value can be
-   * logged or reported. */
+   * logged or reported.
+   *
+   * Checked BEFORE the assignment is applied to opts.host / opts.client_id,
+   * which is what keeps a rejected assignment from being adopted anyway. With
+   * the host already rewritten, a later open() would see a non-NULL host, skip
+   * DPS entirely and connect to the assigned hub with the session role still
+   * at its pre-provisioning value -- speaking a protocol the service has just
+   * said is not the one this hub uses. Leaving opts.host alone means the
+   * device re-provisions instead, which is also what makes the documented
+   * recovery from a MISMATCH work: rebuild the feature clients for the
+   * assigned generation, then close() and open(). */
+  az_iot_result r;
   switch (c->connection_profile)
   {
     case AZ_IOT_CONNECTION_PROFILE_CLASSIC:
@@ -1613,17 +1603,40 @@ static void dps_apply_deferred(az_iot_connection_client* c)
   c->connection_profile_resolved = true;
   if (c->required_profile_refs > 0 && c->required_profile != c->connection_profile)
   {
-    /* Terminal on purpose: re-provisioning would return this same profile, so a
-     * retry cannot succeed. The application owns the recovery -- destroy the
-     * feature clients and rebuild them for the profile this event carries, then
-     * close() this connection client (legal from FAULTED, and it returns it to
-     * IDLE) and open() it again. The connection client itself does not have to
-     * be destroyed. */
+    /* Terminal on purpose: re-provisioning would return this same profile while
+     * the feature clients still require the other one, so an immediate retry
+     * cannot succeed. The application owns the recovery -- destroy the feature
+     * clients and rebuild them for the profile this event carries, then close()
+     * this connection client (legal from FAULTED, and it returns it to IDLE)
+     * and open() it again. The connection client itself does not have to be
+     * destroyed. */
     AZ_IOT_LOG_ERRORF(
         "dps: assigned connectionProfile \"%s\", but the attached feature clients require the "
         "other hub generation; destroy them and rebuild for the assigned profile",
         c->connection_profile_raw);
     transition(c, AZ_IOT_CONN_STATE_FAULTED, AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH);
+    return;
+  }
+
+  /* The assignment is usable: adopt the assigned hub and device id. */
+  r = replace_owned_string(
+      c->provisioned_iot_hub_hostname,
+      sizeof(c->provisioned_iot_hub_hostname),
+      &c->opts.host,
+      c->dps_assigned_hub);
+  if (r != AZ_IOT_OK)
+  {
+    transition(c, AZ_IOT_CONN_STATE_FAULTED, r);
+    return;
+  }
+  r = replace_owned_string(
+      c->provisioned_device_id,
+      sizeof(c->provisioned_device_id),
+      &c->opts.client_id,
+      c->dps_assigned_device_id);
+  if (r != AZ_IOT_OK)
+  {
+    transition(c, AZ_IOT_CONN_STATE_FAULTED, r);
     return;
   }
   drop_subscriptions_from_other_generations(c);
@@ -3126,6 +3139,34 @@ az_iot_result az_iot_connection_client_close(az_iot_connection_client* client)
 
   if (!client->active_client)
   {
+    /* Closing during provisioning. There is a DPS session but no hub adapter
+     * yet, so without this the check below would report NOT_INITIALIZED and
+     * leave the client in CONNECTING with no way out -- the same shape as the
+     * fault above. Cancel the exchange and go to IDLE.
+     *
+     * The pending finalize is dropped with it: it describes the outcome of a
+     * session that is being abandoned, and acting on it in the next do_work()
+     * would move a client the application has just closed. */
+    if (client->dps_mqtt)
+    {
+      if (client->dps_mqtt->iface && client->dps_mqtt->iface->disconnect)
+      {
+        (void)client->dps_mqtt->iface->disconnect(client->dps_mqtt);
+      }
+      dps_teardown_mqtt(client);
+      client->dps_session_auxiliary = false;
+      client->dps_aux_idle_deadline_ms = 0;
+      client->dps_phase = DPS_PHASE_NONE;
+      client->dps_pending_finalize = false;
+      client->dps_pending_have_assignment = false;
+      client->dps_pending_status = AZ_IOT_OK;
+      client->reconnect_attempt = 0;
+      client->reconnect_due_ms = 0;
+      client->needs_reprovision = false;
+      client->user_close = false;
+      transition(client, AZ_IOT_CONN_STATE_IDLE, AZ_IOT_OK);
+      return AZ_IOT_OK;
+    }
     return AZ_IOT_ERR_NOT_INITIALIZED;
   }
 

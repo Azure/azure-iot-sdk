@@ -945,11 +945,11 @@ extern "C"
   /* Close the session and return the client to AZ_IOT_CONN_STATE_IDLE.
    *
    * Legal from every state. It is idempotent from IDLE, cancels a pending retry
-   * from RECONNECTING, and acknowledges a fault from FAULTED -- in all three
-   * cases IDLE is reached before this call returns. From CONNECTING /
-   * CONNECTED / DISCONNECTING the disconnect is asynchronous: IDLE is announced
-   * on the state callback once the transport reports the session gone, so keep
-   * calling do_work().
+   * from RECONNECTING, cancels a provisioning exchange that has not reached a
+   * hub yet, and acknowledges a fault from FAULTED -- in all of those IDLE is
+   * reached before this call returns. From a state with a live hub session the
+   * disconnect is asynchronous: IDLE is announced on the state callback once
+   * the transport reports the session gone, so keep calling do_work().
    *
    * The client's configuration and its attached feature clients survive, so
    * close() + open() is the ordinary way to retry after a fault; destroy() is
