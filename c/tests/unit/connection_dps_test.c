@@ -727,6 +727,9 @@ static void dps_session_reaches_connected_after_assignment(void** state)
 /* failure paths                                                             */
 /* ------------------------------------------------------------------------- */
 
+/* With no reconnection policy there is no retry to carry a re-registration, so
+ * the failure is terminal. The retrying counterpart is
+ * dps_failed_status_retries_under_the_policy(). */
 static void dps_failed_status_faults_with_a_dps_error(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
@@ -755,6 +758,90 @@ static void dps_disabled_status_faults_with_a_dps_error(void** state)
 
   assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_FAULTED);
   assert_int_equal(az_iot_test_reason_for(&fx->log, AZ_IOT_CONN_STATE_FAULTED), AZ_IOT_ERR_DPS);
+}
+
+/* A registration failure is the most transient failure a device meets: the
+ * enrollment may not exist yet, or the DPS may have no linked hub yet. It must
+ * go through the reconnection policy like every other failure, not straight to
+ * a terminal fault -- a device configured to retry forever must retry. */
+static void dps_failed_status_retries_under_the_policy(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_mock_mqtt_client* m = dps_open_to_registering(fx);
+
+  assert_true(inject_dps_response(m, DPS_RESPONSE_TOPIC_ASSIGNED, k_failed_body));
+  for (int i = 0; i < 3; ++i)
+  {
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
+
+  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_RECONNECTING);
+  assert_int_equal(
+      az_iot_test_reason_for(&fx->log, AZ_IOT_CONN_STATE_RECONNECTING), AZ_IOT_ERR_DPS);
+  assert_false(az_iot_test_saw_state(&fx->log, AZ_IOT_CONN_STATE_FAULTED));
+}
+
+/* And the retry is a re-REGISTRATION, not a connect to a host the client was
+ * never assigned. */
+static void dps_failed_status_retries_against_dps(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_mock_mqtt_client* m = dps_open_to_registering(fx);
+
+  assert_true(inject_dps_response(m, DPS_RESPONSE_TOPIC_ASSIGNED, k_failed_body));
+  for (int i = 0; i < 3; ++i)
+  {
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
+  az_iot_test_wait_ms(REPROVISION_DELAY_MS + 5u);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  az_iot_mock_mqtt_client* second = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  assert_non_null(second);
+  const az_iot_mock_call* c = az_iot_mock_mqtt_client_last_of(second, AZ_IOT_MOCK_CALL_CONNECT);
+  assert_non_null(c);
+  assert_string_equal(c->connect.host, "global.azure-devices-provisioning.net");
+}
+
+/* max_attempts still bounds it, so an enrollment that really is absent stops
+ * instead of hammering the service. */
+static void dps_failed_status_still_honors_max_attempts(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_mock_mqtt_client* m = dps_open_to_registering(fx);
+
+  for (int i = 0; i < 6 && !az_iot_test_saw_state(&fx->log, AZ_IOT_CONN_STATE_FAULTED); ++i)
+  {
+    assert_true(inject_dps_response(m, DPS_RESPONSE_TOPIC_ASSIGNED, k_failed_body));
+    for (int j = 0; j < 3; ++j)
+    {
+      (void)az_iot_connection_client_do_work(fx->client, 0);
+    }
+    az_iot_test_wait_ms(REPROVISION_DELAY_MS + 5u);
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+
+    m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+    if (!m)
+    {
+      break;
+    }
+    assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+    const az_iot_mock_call* sub = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_SUBSCRIBE);
+    if (!sub)
+    {
+      break;
+    }
+    assert_true(az_iot_mock_mqtt_client_inject_suback(m, sub->packet_id, AZ_IOT_OK));
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
+
+  assert_true(az_iot_test_saw_state(&fx->log, AZ_IOT_CONN_STATE_FAULTED));
+  assert_int_equal(az_iot_test_reason_for(&fx->log, AZ_IOT_CONN_STATE_FAULTED), AZ_IOT_ERR_DPS);
+  /* It got there by exhausting the policy, not by faulting on the first
+   * failure. */
+  assert_true(az_iot_test_saw_state(&fx->log, AZ_IOT_CONN_STATE_RECONNECTING));
+  assert_int_equal(az_iot_test_count_state(&fx->log, AZ_IOT_CONN_STATE_RECONNECTING), 3);
 }
 
 static void dps_connack_failure_faults(void** state)
@@ -1804,6 +1891,12 @@ int main(void)
     /* failure paths */
     cmocka_unit_test_setup_teardown(dps_failed_status_faults_with_a_dps_error, setup, teardown),
     cmocka_unit_test_setup_teardown(dps_disabled_status_faults_with_a_dps_error, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        dps_failed_status_retries_under_the_policy, setup_with_reconnect, teardown),
+    cmocka_unit_test_setup_teardown(
+        dps_failed_status_retries_against_dps, setup_with_reconnect, teardown),
+    cmocka_unit_test_setup_teardown(
+        dps_failed_status_still_honors_max_attempts, setup_with_reconnect, teardown),
     cmocka_unit_test_setup_teardown(dps_connack_failure_faults, setup, teardown),
     cmocka_unit_test_setup_teardown(dps_suback_failure_faults, setup, teardown),
     cmocka_unit_test_setup_teardown(dps_disconnect_midflow_faults, setup, teardown),
