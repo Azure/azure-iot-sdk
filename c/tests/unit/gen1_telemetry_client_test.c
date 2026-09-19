@@ -189,10 +189,12 @@ static void init_contract(void** state)
   az_iot_gen1_telemetry_client_destroy(NULL);
 
   memset(&test->telemetry, 0xEE, sizeof(test->telemetry));
+  /* Init records the generation this client needs rather than reading a live
+   * connection, so it succeeds before open(). */
   assert_int_equal(
-      az_iot_gen1_telemetry_client_init(&test->telemetry, &test->connection),
-      AZ_IOT_ERR_NOT_CONNECTED);
-  assert_null(test->telemetry._internal.conn);
+      az_iot_gen1_telemetry_client_init(&test->telemetry, &test->connection), AZ_IOT_OK);
+  assert_ptr_equal(test->telemetry._internal.conn, &test->connection);
+  az_iot_gen1_telemetry_client_destroy(&test->telemetry);
 }
 
 static void init_rejects_v5_profile(void** state)
@@ -327,6 +329,116 @@ static void property_edges_do_not_corrupt_the_bag(void** state)
   assert_string_equal(publish->topic, "devices/ut-device/messages/events/flag&empty=");
 }
 
+/* `#` and `+` are MQTT wildcards, and this bag is part of the topic. A value
+ * carrying one unencoded would change what the topic matches, so the encoder's
+ * unreserved set must stay the RFC 3986 one -- widening it for readability is
+ * the plausible mistake this guards. */
+static void mqtt_wildcards_in_a_value_cannot_reach_the_topic(void** state)
+{
+  fixture* test = (fixture*)*state;
+  open_classic(test);
+
+  const az_iot_telemetry_property properties[] = {
+    { "w", "a#b+c/d?e" },
+  };
+  az_iot_telemetry_message message = {
+    .properties = properties,
+    .properties_count = ARRAY_SIZE(properties),
+  };
+  assert_int_equal(
+      az_iot_gen1_telemetry_client_send(&test->telemetry, &message, NULL, NULL), AZ_IOT_OK);
+
+  const az_iot_mock_call* publish = az_iot_mock_mqtt_client_call_at(test->mock, 0);
+  assert_string_equal(publish->topic, "devices/ut-device/messages/events/w=a%23b%2Bc%2Fd%3Fe");
+  assert_null(strchr(publish->topic + strlen("devices/ut-device/messages/events/"), '#'));
+  assert_null(strchr(publish->topic + strlen("devices/ut-device/messages/events/"), '+'));
+}
+
+/* Classic gives system properties no special treatment on the way out, so a
+ * name the SDK has never heard of encodes exactly like an application one. The
+ * gen2 client does discriminate, which is why this is worth stating on both. */
+static void an_unknown_system_property_is_encoded_like_any_other(void** state)
+{
+  fixture* test = (fixture*)*state;
+  open_classic(test);
+
+  const az_iot_telemetry_property properties[] = {
+    { "$.unknown", "keep-me" },
+    { "$notdot", "keep-me-too" },
+  };
+  az_iot_telemetry_message message = {
+    .properties = properties,
+    .properties_count = ARRAY_SIZE(properties),
+  };
+  assert_int_equal(
+      az_iot_gen1_telemetry_client_send(&test->telemetry, &message, NULL, NULL), AZ_IOT_OK);
+
+  const az_iot_mock_call* publish = az_iot_mock_mqtt_client_call_at(test->mock, 0);
+  assert_string_equal(
+      publish->topic,
+      "devices/ut-device/messages/events/%24.unknown=keep-me&%24notdot=keep-me-too");
+}
+
+/* The overflow test above proves a huge value is refused. This proves the edge
+ * is sharp: the largest topic that fits is still published, and one byte more
+ * publishes nothing. Searching for the boundary rather than hardcoding it keeps
+ * the test honest if AZ_IOT_GEN1_TELEMETRY_TOPIC_MAX changes. */
+static void the_topic_length_boundary_is_sharp(void** state)
+{
+  fixture* test = (fixture*)*state;
+  open_classic(test);
+
+  /* Must be able to overshoot the client's topic buffer, which is larger than
+   * the mock's record of it. */
+  char value[1024];
+  size_t first_failing = 0;
+  for (size_t n = 1; n < sizeof(value); ++n)
+  {
+    memset(value, 'a', n);
+    value[n] = '\0';
+    const az_iot_telemetry_property properties[] = { { "k", value } };
+    az_iot_telemetry_message message = {
+      .properties = properties,
+      .properties_count = ARRAY_SIZE(properties),
+    };
+    az_iot_mock_mqtt_client_clear_calls(test->mock);
+    if (az_iot_gen1_telemetry_client_send(&test->telemetry, &message, NULL, NULL) != AZ_IOT_OK)
+    {
+      first_failing = n;
+      break;
+    }
+  }
+  assert_true(first_failing > 1);
+
+  /* One under the edge: published, and the topic ends with the value intact. */
+  memset(value, 'a', first_failing - 1);
+  value[first_failing - 1] = '\0';
+  const az_iot_telemetry_property fits[] = { { "k", value } };
+  az_iot_telemetry_message fitting = {
+    .properties = fits,
+    .properties_count = ARRAY_SIZE(fits),
+  };
+  az_iot_mock_mqtt_client_clear_calls(test->mock);
+  assert_int_equal(
+      az_iot_gen1_telemetry_client_send(&test->telemetry, &fitting, NULL, NULL), AZ_IOT_OK);
+  assert_int_equal(az_iot_mock_mqtt_client_call_count(test->mock), 1);
+
+  /* At the edge: refused, and nothing reaches the adapter -- a truncated topic
+   * would publish to the wrong place. */
+  memset(value, 'a', first_failing);
+  value[first_failing] = '\0';
+  const az_iot_telemetry_property spills[] = { { "k", value } };
+  az_iot_telemetry_message spilling = {
+    .properties = spills,
+    .properties_count = ARRAY_SIZE(spills),
+  };
+  az_iot_mock_mqtt_client_clear_calls(test->mock);
+  assert_int_equal(
+      az_iot_gen1_telemetry_client_send(&test->telemetry, &spilling, NULL, NULL),
+      AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  assert_int_equal(az_iot_mock_mqtt_client_call_count(test->mock), 0);
+}
+
 static void topic_overflow_is_reported_without_publishing(void** state)
 {
   fixture* test = (fixture*)*state;
@@ -414,6 +526,11 @@ int main(void)
         send_uses_the_classic_wire_shape_and_waits_for_puback, setup, teardown),
     cmocka_unit_test_setup_teardown(properties_are_percent_encoded_in_order, setup, teardown),
     cmocka_unit_test_setup_teardown(property_edges_do_not_corrupt_the_bag, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        mqtt_wildcards_in_a_value_cannot_reach_the_topic, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_unknown_system_property_is_encoded_like_any_other, setup, teardown),
+    cmocka_unit_test_setup_teardown(the_topic_length_boundary_is_sharp, setup, teardown),
     cmocka_unit_test_setup_teardown(topic_overflow_is_reported_without_publishing, setup, teardown),
     cmocka_unit_test_setup_teardown(
         empty_payload_is_valid_and_publish_failures_are_returned, setup, teardown),

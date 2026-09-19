@@ -1,8 +1,11 @@
-﻿using Microsoft.Azure.Devices.Client.Models;
-using Microsoft.Azure.Devices.Client.Unified.Connection;
+﻿using CaptureProxy;
+using Microsoft.Azure.Devices.Client.Models;
+using Microsoft.Azure.Devices.Client.MqttNetAdapter;
+using Microsoft.Azure.Devices.Client.MQTTnetAdapter;
 using System;
 using System.Collections.Generic;
-using System.Security.Cryptography.X509Certificates;
+using System.Net;
+using System.Text;
 using Xunit;
 
 namespace Microsoft.Azure.Devices.Client.IntegrationTests.Unified
@@ -12,59 +15,54 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Unified
         [Theory(Timeout = Setup.TestTimeoutMilliseconds)]
         [InlineData(true)]
         [InlineData(false)]
-        public async Task CanConnectDirectlyToIotHub(bool testAgainstClassicHub)
+        public async Task CanConnectOverWebsocket(bool isClassicHub)
         {
-            if (!testAgainstClassicHub)
+            MqttNetClientOptions mqttClientOptions = new()
             {
-                Assert.Skip("No AEG hub to test against yet");
-            }
-
-            string deviceId = Guid.NewGuid().ToString();
-            string certId = Guid.NewGuid().ToString();
-            string certPath = $"./{certId}.cer";
-            string pfxPath = $"./{certId}.pfx";
-            Setup.CreateTestCertificates(pfxPath, certPath, deviceId);
-
-            X509Certificate2 certificate = X509CertificateLoader.LoadCertificateFromFile(certPath);
-            X509Certificate2 pfx = X509CertificateLoader.LoadPkcs12FromFile(pfxPath, Setup.TestCertificatesPassword);
-            var authenticationProvider = new X509AuthenticationProvider(pfx);
-
-            Device device = new(deviceId)
-            {
-                Authentication = new AuthenticationMechanism()
-                {
-                    X509Thumbprint = new()
-                    {
-                        PrimaryThumbprint = certificate.Thumbprint
-                    }
-                }
+                UseWebsocket = true,
             };
 
-            if (testAgainstClassicHub)
+            ConnectionClientOptions connectionClientOptions = new()
             {
-                await Setup.GetGen1IotHubRegistryManager().AddDeviceAsync(device, TestContext.Current.CancellationToken);
-            }
-            else
-            { 
-                await Setup.GetGen2IotHubRegistryManager().AddDeviceAsync(device, TestContext.Current.CancellationToken);
-            }
-
-            ConnectionContext connectionContext = new()
-            {
-                DeviceId = deviceId,
-                IsGen2Hub = !testAgainstClassicHub,
-                IotHubHostName = testAgainstClassicHub ? Setup.GetGen1IotHubHostName() : Setup.GetGen2IotHubHostName(),
-                AuthenticationProvider = authenticationProvider,
+                MqttClient = new MqttNetClient(mqttClientOptions)
             };
 
-            ConnectionClient connectionClient = new();
+            UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientAsync(isClassicHub, connectionClientOptions, TestContext.Current.CancellationToken);
 
-            // This basic retry logic covers the issue where a device is created on the Hub side, but it still 
-            // rejects the connection for authorization reasons. Usually, after a few seconds, the device is ready to 
-            // authorize the newly created device.
-             await Setup.RetryAroundAuthorizationAsync(
-                async () => await connectionClient.ConnectAsync(connectionContext, TestContext.Current.CancellationToken),
-                TestContext.Current.CancellationToken);
+            await testDeviceContext.DisposeAsync(); // Dispose this before any feature clients so that the test device identity can be cleaned up and the MQTT client disconnected gracefully
+        }
+
+        [Theory(Timeout = Setup.TestTimeoutMilliseconds)]
+        [InlineData(true)]
+        [InlineData(false)]
+        public async Task CanConnectOverWebsocketAndHttpProxy(bool isClassicHub)
+        {
+            int proxyPort = isClassicHub ? 8877 : 8878; // Use a different port per test so they don't collide if run in parallel
+            var httpProxy = new HttpProxy(proxyPort);
+
+            // Start the proxy server
+            httpProxy.Start();
+
+
+            MqttNetClientOptions mqttClientOptions = new()
+            {
+                UseWebsocket = true,
+                Proxy = new WebProxy("localhost", proxyPort)
+            };
+
+            ConnectionClientOptions connectionClientOptions = new()
+            {
+                MqttClient = new MqttNetClient(mqttClientOptions)
+            };
+
+            UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientAsync(isClassicHub, connectionClientOptions, TestContext.Current.CancellationToken);
+
+            await testDeviceContext.DisposeAsync(); // Dispose this before any feature clients so that the test device identity can be cleaned up and the MQTT client disconnected gracefully
+
+
+            // Stop the proxy server
+            httpProxy.Stop();
+            httpProxy.Dispose();
         }
     }
 }

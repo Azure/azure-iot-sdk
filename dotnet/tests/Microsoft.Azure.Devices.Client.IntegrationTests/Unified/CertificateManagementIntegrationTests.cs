@@ -1,13 +1,19 @@
-﻿using Microsoft.Azure.Devices.Client.Models.CertificateManagement;
+﻿using Microsoft.Azure.Devices.Client.Models;
+using Microsoft.Azure.Devices.Client.Models.CertificateManagement;
+using Microsoft.Azure.Devices.Client.Provisioning;
 using Microsoft.Azure.Devices.Client.Unified.Connection;
+using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
+using System.Text;
 using Xunit;
+using Xunit.Sdk;
+using static Microsoft.Azure.Devices.Client.IntegrationTests.Setup;
 
 namespace Microsoft.Azure.Devices.Client.IntegrationTests.Unified
 {
     public class CertificateManagementIntegrationTests
     {
-        [Theory(Timeout = Setup.TestTimeoutMilliseconds, Skip = "Test infrastructure not setup yet")]
+        [Theory(Timeout = Setup.TestTimeoutMilliseconds)]
         [InlineData(true)]
         [InlineData(false)]
         public async Task TestCertificateManagementWithDpsAndHub(bool testAgainstClassicHub)
@@ -15,11 +21,52 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Unified
             using CancellationTokenSource cts = new();
             cts.CancelAfter(Setup.TestTimeoutMilliseconds - 1000);
 
-            await using UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientWithCertificateSigningAsync(testAgainstClassicHub, cts.Token);
-            ConnectionClient connectionClient = testDeviceContext.ConnectionClient;
+            if (!testAgainstClassicHub)
+            {
+                Assert.Skip("No AEG hub to test against yet");
+            }
 
-            var (csrBase64, privateKey) = Setup.GenerateCsr(testDeviceContext.ConnectionContext.DeviceId, Setup.CsrAlgorithm.RSA);
-            var certificateSigningRequest = new CertificateSigningRequest(testDeviceContext.ConnectionContext.DeviceId, csrBase64, null, "*");
+            string registrationId = Environment.GetEnvironmentVariable("IOT_DPS_GROUP_X509_REGISTRATION_ID")
+                ?? throw new InvalidOperationException("Missing IOT_DPS_GROUP_X509_REGISTRATION_ID environment variable.");
+            string certificatePem = DecodeBase64EnvironmentVariable("IOT_DPS_GROUP_X509_CERTIFICATE");
+            string privateKeyPem = DecodeBase64EnvironmentVariable("IOT_DPS_GROUP_X509_KEY");
+
+            using X509Certificate2 deviceCertificate = CreateX509CertificateFromKeyAndCert(certificatePem, privateKeyPem);
+            X509AuthenticationProvider x509AuthenticationProvider = new(deviceCertificate);
+
+            // Create initial CSR to be processed by DPS
+            var (csrBase64, privateKey) = CertificateUtilities.GenerateCsrAndPrivateKey(registrationId, CertificateUtilities.CsrAlgorithm.RSA);
+
+            ConnectionClient connectionClient = new()
+            {
+                HandleCertificateSigningCompleteAsync = (IssuedCertificates) =>
+                {
+                    // Convert to PEM and save
+                    string pemChain = CertificateUtilities.ConvertToPem(IssuedCertificates);
+
+                    using X509Certificate2 deviceCertTemp = CertificateUtilities.CreateCertificateWithPrivateKey(IssuedCertificates, privateKey);
+
+                    // Export and reimport with Exportable flag
+                    byte[] pfxBytes = deviceCertTemp.Export(X509ContentType.Pfx);
+                    return Task.FromResult(new X509AuthenticationProvider(X509CertificateLoader.LoadPkcs12(pfxBytes, (string?)null, X509KeyStorageFlags.Exportable)));
+                }
+            };
+
+            ProvisioningSettings provisioningSettings = new(DpsIdScope)
+            {
+                CertificateSigningRequest = new(privateKey, csrBase64),
+            };
+
+            ConnectionContext connectionContext = await RetryAroundAuthorizationAsync<ConnectionContext>(
+                async () => await connectionClient.ProvisionAndConnectAsync(provisioningSettings, x509AuthenticationProvider, cancellationToken: TestContext.Current.CancellationToken),
+                TestContext.Current.CancellationToken);
+
+            Assert.NotNull(connectionContext.IssuedClientCertificates);
+            Assert.NotEmpty(connectionContext.IssuedClientCertificates);
+
+            var secondCsrBase64 = CertificateUtilities.GenerateCsrWithPrivateKey(connectionContext.DeviceId, privateKey);
+            var certificateSigningRequest = new IotHubCertificateSigningRequest(connectionContext.DeviceId, secondCsrBase64, null, "*");
+
             CertificateSigningOperation pendingCsr = await connectionClient.SendCertificateSigningRequestAsync(certificateSigningRequest, cts.Token);
 
             try
@@ -31,46 +78,39 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Unified
                 Assert.Fail(e.Error.Message);
             }
 
-            CertificateSigningResponse? csrResponse = null;
+            CertificateSigningResponse? hubCsrResponse = null;
             try
             {
-                csrResponse = await pendingCsr.Completed.WaitAsync(cts.Token);
+                hubCsrResponse = await pendingCsr.Completed.WaitAsync(cts.Token);
             }
             catch (CertificateSigningRequestFailedException e)
             {
                 Assert.Fail(e.Error.Message);
             }
-            
-            await connectionClient.DisconnectAsync(cts.Token);
 
             // Upon getting the newly signed certificate, disconnect from IoT Hub and then reconnect with that new certificate
             await connectionClient.DisconnectAsync(cts.Token);
 
-            X509AuthenticationProvider newX509AuthenticationProvider = new(CreateX509CertificateFromKeyAndCert(CertificateListToPem(csrResponse.Certificates), testDeviceContext.PrivateKeyPem!));
-            testDeviceContext.ConnectionContext.AuthenticationProvider = newX509AuthenticationProvider;
-            await connectionClient.ConnectAsync(testDeviceContext.ConnectionContext, cancellationToken:cts.Token);
+            Assert.NotNull(hubCsrResponse.Certificates);
+            Assert.NotEmpty(hubCsrResponse.Certificates);
 
             await connectionClient.DisconnectAsync(cts.Token);
         }
 
         private static X509Certificate2 CreateX509CertificateFromKeyAndCert(string certificate, string key)
         {
-            // Create X509Certificate2 from PEM
-            using var cert = X509Certificate2.CreateFromPem(certificate, key);
+            using X509Certificate2 cert = X509Certificate2.CreateFromPem(certificate, key);
 
-            // Note: On Windows, we need to export and reimport to allow ephemeral key use
             byte[] certificateBytes = cert.Export(X509ContentType.Pfx);
-            using var exportedCert = X509CertificateLoader.LoadCertificate(certificateBytes);
-
-            return exportedCert;
+            return X509CertificateLoader.LoadPkcs12(certificateBytes, null, X509KeyStorageFlags.Exportable);
         }
 
-        private static string CertificateListToPem(IReadOnlyList<string> certList)
+        private static string DecodeBase64EnvironmentVariable(string variableName)
         {
-            const string beginHeader = "-----BEGIN CERTIFICATE-----\r\n";
-            const string endFooter = "\r\n-----END CERTIFICATE-----";
-            string separator = endFooter + "\r\n" + beginHeader;
-            return beginHeader + string.Join(separator, certList) + endFooter;
+            string encodedValue = Environment.GetEnvironmentVariable(variableName)
+                ?? throw new InvalidOperationException($"Missing {variableName} environment variable.");
+
+            return Encoding.UTF8.GetString(Convert.FromBase64String(encodedValue));
         }
     }
 }

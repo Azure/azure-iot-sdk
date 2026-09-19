@@ -1,0 +1,167 @@
+# Copyright (c) Microsoft. All rights reserved.
+# Licensed under the MIT license. See LICENSE file in the project root for full license information.
+
+# Publishes the .NET NuGet package(s) to this repository owner's GitHub Packages NuGet feed
+# (https://nuget.pkg.github.com/<owner>/index.json).
+#
+# Authentication uses the workflow's GITHUB_TOKEN rather than a stored personal access token. The
+# `packages: write` permission below is what grants that token the ability to upload and publish a
+# package, which is the equivalent of a personal access token's `write:packages` scope. See
+# https://docs.github.com/en/packages/learn-github-packages/about-permissions-for-github-packages#about-scopes-and-permissions-for-package-registries
+#
+# The NuGet registry supports granular, user/organization-scoped permissions, so the published
+# package is scoped to the repository owner and, because the package metadata carries this
+# repository's URL, it is linked to this repository and inherits its visibility and permissions by
+# default. Consumers therefore need a token with at least `read:packages` to restore it.
+name: cd-dotnet
+
+on:
+  # Manual publish, for a version that no push or release produces on its own.
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Exact version to publish, e.g. 2.0.0 or 2.0.0-beta.1. Leave empty to use the csproj VersionPrefix plus the suffix below.'
+        required: false
+        type: string
+      version-suffix:
+        description: 'Prerelease suffix appended to the csproj VersionPrefix. Ignored when an exact version is given. Defaults to today''s UTC date, dd-MM-yyyy.'
+        required: false
+        type: string
+
+  # Every change that lands publishes a prerelease of the version the csproj declares, dated so that
+  # it is clear how old a given build is. Only the first publish of a day gets that day's version:
+  # the registry does not allow a version to be republished, so later pushes on the same day are
+  # skipped. Publish a release, or dispatch this workflow with an explicit version, to publish a
+  # second build of the same day.
+  push:
+    branches: [ main ]
+    paths:
+      - 'dotnet/**'
+      - 'common/**'
+      - '.github/workflows/cd-dotnet.yml'
+
+  # Publishing a GitHub release publishes the version named by its tag.
+  release:
+    types: [ published ]
+
+# Never let two publishes race. Cancelling one mid-push could leave only part of the packages
+# published, so queue instead.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write   # required to upload and publish to GitHub Packages
+
+env:
+  PACKAGE_PROJECT: dotnet/src/Microsoft.Azure.Devices.Client/Microsoft.Azure.Devices.Client.csproj
+
+jobs:
+  publish:
+    name: pack and publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      # Inputs and tag names are passed through the environment rather than interpolated into the
+      # script, so that a crafted value cannot become part of the command.
+      - name: Determine version
+        id: version
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_SUFFIX: ${{ inputs.version-suffix }}
+        run: |
+          set -euo pipefail
+
+          version=''
+          if [ "$EVENT_NAME" = 'release' ]; then
+            # Accepts plain (2.0.0), prefixed (v2.0.0) and language scoped (dotnet/v2.0.0) tags.
+            version="${RELEASE_TAG##*/}"
+            version="${version#v}"
+          elif [ -n "${INPUT_VERSION:-}" ]; then
+            version="${INPUT_VERSION#v}"
+          fi
+
+          if [ -n "$version" ]; then
+            if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?(-[0-9A-Za-z.-]+)?$ ]]; then
+              echo "::error::'$version' is not a version this workflow can publish."
+              exit 1
+            fi
+            echo "pack-args=-p:Version=$version" >> "$GITHUB_OUTPUT"
+          else
+            # Nothing was asked for, so keep the VersionPrefix the csproj declares and mark the
+            # build with the day it was produced. The separator is a hyphen rather than an
+            # underscore because NuGet rejects a version containing an underscore.
+            suffix="${INPUT_SUFFIX:-$(date --utc +'%d-%m-%Y')}"
+            if ! [[ "$suffix" =~ ^[0-9A-Za-z.-]+$ ]]; then
+              echo "::error::'$suffix' is not a valid prerelease suffix."
+              exit 1
+            fi
+            echo "pack-args=-p:VersionSuffix=$suffix" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Pack
+        run: dotnet pack "$PACKAGE_PROJECT" --configuration Release --output artifacts ${{ steps.version.outputs.pack-args }}
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nuget-packages
+          path: artifacts/*.nupkg
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish to GitHub Packages
+        id: publish
+        shell: bash
+        env:
+          # The registry is scoped to the owner, not to this single repository, so packages from
+          # every repository in the organization share one feed.
+          FEED: https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json
+          # GITHUB_TOKEN is the api key; it is scoped to this repository and expires with the run.
+          NUGET_API_KEY: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          # --skip-duplicate keeps a re-run from failing on a version the registry already has,
+          # since published versions cannot be overwritten.
+          dotnet nuget push 'artifacts/*.nupkg' \
+            --source "$FEED" \
+            --api-key "$NUGET_API_KEY" \
+            --skip-duplicate
+
+      - name: Summarize
+        if: always()
+        shell: bash
+        env:
+          PUBLISH_OUTCOME: ${{ steps.publish.outcome }}
+          FEED: https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json
+        run: |
+          set -euo pipefail
+
+          {
+            echo '### dotnet packages'
+            echo ''
+            if compgen -G 'artifacts/*.nupkg' > /dev/null; then
+              for package in artifacts/*.nupkg; do
+                echo "- \`$(basename "$package")\`"
+              done
+            else
+              echo 'No packages were produced.'
+            fi
+            echo ''
+            case "${PUBLISH_OUTCOME:-}" in
+              success) echo "Published to $FEED" ;;
+              *)       echo "Publishing to $FEED did not succeed." ;;
+            esac
+          } >> "$GITHUB_STEP_SUMMARY"

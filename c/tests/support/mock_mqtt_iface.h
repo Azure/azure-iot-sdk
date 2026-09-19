@@ -78,6 +78,7 @@ extern "C"
     } user_properties[AZ_IOT_MOCK_MAX_USER_PROPS];
     size_t user_properties_count;
     char content_type[64]; /* PUBLISH Content Type, "" if none */
+    uint32_t message_expiry_seconds; /* PUBLISH Message Expiry Interval, 0 if none */
     char username[256]; /* CONNECT username, "" if none */
     /* CONNECT options, captured so tests can assert which endpoint/identity the
      * core targeted. `topic` also carries the host for backwards compatibility. */
@@ -104,6 +105,15 @@ extern "C"
       bool has_sign;
       void* sign_ctx;
       az_iot_mqtt_sign_callback sign;
+      /* Transport + proxy, captured so a test can assert the core forwarded the
+       * caller's egress configuration to the adapter on BOTH connects (DPS and
+       * hub) instead of quietly connecting direct. */
+      az_iot_mqtt_transport transport;
+      char websocket_path[128];
+      char proxy_host[256];
+      uint16_t proxy_port;
+      char proxy_username[128];
+      char proxy_password[128];
     } connect;
   } az_iot_mock_call;
 

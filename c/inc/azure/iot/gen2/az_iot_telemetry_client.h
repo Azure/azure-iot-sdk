@@ -15,6 +15,20 @@ extern "C"
 {
 #endif
 
+/* How many MQTT v5 user properties one telemetry message can carry, counting
+ * the two the client adds itself: `type` and `content-type`. Properties past it
+ * are dropped, and the send warns once naming the first one lost.
+ *
+ * Override it at compile time (for example
+ * -DAZ_IOT_GEN2_TELEMETRY_MAX_USER_PROPERTIES=32) **on the whole build**. It
+ * sizes a buffer inside the send path rather than any struct the application
+ * declares, so setting it for the application alone changes nothing -- the SDK
+ * keeps the value it was compiled with, and the extra properties are still
+ * dropped. */
+#ifndef AZ_IOT_GEN2_TELEMETRY_MAX_USER_PROPERTIES
+#define AZ_IOT_GEN2_TELEMETRY_MAX_USER_PROPERTIES 16
+#endif
+
   typedef struct az_iot_gen2_telemetry_client
   {
     struct
@@ -23,7 +37,11 @@ extern "C"
     } _internal;
   } az_iot_gen2_telemetry_client;
 
-  /* The connection must be CONNECTED and resolved to the MQTT v5 profile. */
+  /* Records that the connection must resolve to the MQTT v5 profile; it need
+   * not be open yet. A connection already known to be Classic, or one a gen1
+   * client is already attached to, is rejected with
+   * AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH. Otherwise a conflict fails the
+   * connection when the profile resolves, before it reports CONNECTED. */
   AZ_NODISCARD az_iot_result az_iot_gen2_telemetry_client_init(
       az_iot_gen2_telemetry_client* client,
       az_iot_connection_client* conn);

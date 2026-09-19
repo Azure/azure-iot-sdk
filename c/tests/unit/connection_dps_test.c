@@ -258,6 +258,109 @@ static void hub_transport_error_reconnects_without_reprovisioning(void** state)
   assert_string_equal(c->connect.host, "myhub.azure-devices.net");
 }
 
+/* A hub that has been vacated service-side may simply stop answering rather
+ * than rejecting the identity, so a threshold on consecutive hub failures is
+ * the only thing that would ever send the device back to DPS. */
+#define REPROVISION_THRESHOLD 2u
+
+static int setup_with_reprovision_threshold(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)calloc(1, sizeof(*fx));
+  assert_non_null(fx);
+
+  az_iot_connection_client_options opts = dps_options();
+  opts.reconnection_policy.initial_delay_ms = REPROVISION_DELAY_MS;
+  opts.reconnection_policy.max_delay_ms = REPROVISION_DELAY_MS;
+  opts.reconnection_policy.max_attempts = 0; /* the threshold is what is under test */
+  opts.reconnection_policy.jitter_pct = 0;
+  opts.dps.max_hub_connect_attempts_before_reprovision = REPROVISION_THRESHOLD;
+  assert_int_equal(az_iot_connection_client_init(&fx->client_storage, &opts), AZ_IOT_OK);
+  fx->client = &fx->client_storage;
+  assert_int_equal(
+      az_iot_connection_client_set_state_callback(fx->client, az_iot_test_on_state, &fx->log),
+      AZ_IOT_OK);
+  az_iot_connection_client__seed_rng(fx->client, 0xC0FFEEFEEDFACEull);
+
+  fx->factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
+  assert_non_null(fx->factory);
+
+  *state = fx;
+  return 0;
+}
+
+static const char* last_connect_host(az_iot_mock_mqtt_client* m)
+{
+  const az_iot_mock_call* c = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_CONNECT);
+  assert_non_null(c);
+  return c->connect.host;
+}
+
+/* Fail the attempt `m` is carrying and pump through to the next one. */
+static az_iot_mock_mqtt_client* fail_hub_attempt(az_iot_test_conn* fx, az_iot_mock_mqtt_client* m)
+{
+  assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_ERR_MQTT));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  az_iot_test_wait_ms(REPROVISION_DELAY_MS + 5u);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  az_iot_mock_mqtt_client* next = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  assert_non_null(next);
+  return next;
+}
+
+static void hub_unreachable_past_the_threshold_reprovisions(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_mock_mqtt_client* hub = provision_to_hub_connecting(fx);
+
+  /* The first failure still trusts the cached assignment. */
+  az_iot_mock_mqtt_client* second = fail_hub_attempt(fx, hub);
+  assert_string_equal(last_connect_host(second), "myhub.azure-devices.net");
+
+  /* The second crosses the threshold, so the next attempt asks DPS where the
+   * device lives now instead of retrying a host that never answers. */
+  az_iot_mock_mqtt_client* third = fail_hub_attempt(fx, second);
+  assert_string_equal(last_connect_host(third), "global.azure-devices-provisioning.net");
+}
+
+static void a_zero_threshold_never_reprovisions(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  fx->client->opts.dps.max_hub_connect_attempts_before_reprovision = 0;
+
+  az_iot_mock_mqtt_client* m = provision_to_hub_connecting(fx);
+  for (int i = 0; i < 4; ++i)
+  {
+    m = fail_hub_attempt(fx, m);
+    assert_string_equal(last_connect_host(m), "myhub.azure-devices.net");
+  }
+}
+
+static void a_successful_hub_connection_resets_the_failure_count(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_mock_mqtt_client* hub = provision_to_hub_connecting(fx);
+
+  az_iot_mock_mqtt_client* second = fail_hub_attempt(fx, hub);
+  assert_string_equal(last_connect_host(second), "myhub.azure-devices.net");
+
+  assert_true(az_iot_mock_mqtt_client_inject_connected(second, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_CONNECTED);
+
+  /* Without the reset this drop would be failure number two and divert to DPS;
+   * an intermittent link must not accumulate its way into re-provisioning. */
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(second));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  az_iot_test_wait_ms(REPROVISION_DELAY_MS + 5u);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  az_iot_mock_mqtt_client* third = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  assert_non_null(third);
+  assert_string_equal(last_connect_host(third), "myhub.azure-devices.net");
+}
+
 /* Re-provisioning completes end to end: DPS answers with a new assignment and
  * the client connects to it. */
 static void reprovisioning_connects_to_the_new_assignment(void** state)
@@ -414,6 +517,35 @@ static void dps_defaults_the_timings_when_unset(void** state)
   assert_non_null(call);
   assert_int_equal(call->connect.keep_alive_seconds, AZ_IOT_DEFAULT_KEEP_ALIVE_SECONDS);
   assert_int_equal(call->connect.connect_timeout_seconds, AZ_IOT_DEFAULT_CONNECT_TIMEOUT_SECONDS);
+
+  az_iot_connection_client_destroy(&c);
+}
+
+/* The proxy and the transport apply to provisioning too. A device that can only
+ * reach the network through a proxy, or only over 443, cannot reach DPS either
+ * -- and DPS is the FIRST connect it makes, so getting this wrong means the
+ * device never provisions at all. */
+static void dps_carries_the_proxy_and_transport(void** state)
+{
+  (void)state;
+  az_iot_connection_client_options opts = dps_options();
+  opts.transport = AZ_IOT_MQTT_TRANSPORT_WEBSOCKET;
+  opts.proxy.host = "proxy.corp.example";
+  opts.proxy.port = 3128;
+
+  az_iot_connection_client c;
+  assert_int_equal(az_iot_connection_client_init(&c, &opts), AZ_IOT_OK);
+  az_iot_mqtt_factory* factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
+  assert_int_equal(az_iot_connection_client_register_mqtt_factory(&c, factory), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_open(&c), AZ_IOT_OK);
+
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(factory);
+  const az_iot_mock_call* call = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_CONNECT);
+  assert_non_null(call);
+  assert_int_equal(call->connect.transport, AZ_IOT_MQTT_TRANSPORT_WEBSOCKET);
+  assert_int_equal(call->connect.port, 443);
+  assert_string_equal(call->connect.proxy_host, "proxy.corp.example");
+  assert_int_equal(call->connect.proxy_port, 3128);
 
   az_iot_connection_client_destroy(&c);
 }
@@ -1393,6 +1525,7 @@ int main(void)
         dps_connects_to_the_global_endpoint_by_default, setup, teardown),
     cmocka_unit_test(dps_honors_the_configured_timings),
     cmocka_unit_test(dps_defaults_the_timings_when_unset),
+    cmocka_unit_test(dps_carries_the_proxy_and_transport),
     cmocka_unit_test(dps_honors_a_custom_global_endpoint),
     cmocka_unit_test(dps_uses_v3_1_1_even_when_the_hub_is_next),
     cmocka_unit_test(dps_without_a_v3_1_1_factory_is_not_supported),
@@ -1428,6 +1561,16 @@ int main(void)
         hub_identity_rejection_reprovisions_through_dps, setup_with_reconnect, teardown),
     cmocka_unit_test_setup_teardown(
         hub_transport_error_reconnects_without_reprovisioning, setup_with_reconnect, teardown),
+    cmocka_unit_test_setup_teardown(
+        hub_unreachable_past_the_threshold_reprovisions,
+        setup_with_reprovision_threshold,
+        teardown),
+    cmocka_unit_test_setup_teardown(
+        a_zero_threshold_never_reprovisions, setup_with_reprovision_threshold, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_successful_hub_connection_resets_the_failure_count,
+        setup_with_reprovision_threshold,
+        teardown),
     cmocka_unit_test_setup_teardown(
         reprovisioning_connects_to_the_new_assignment, setup_with_reconnect, teardown),
     cmocka_unit_test_setup_teardown(

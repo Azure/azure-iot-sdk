@@ -1,8 +1,24 @@
+/* Must precede every system header: glibc gates clock_gettime and
+ * CLOCK_MONOTONIC on it, and the first header included fixes the choice. */
+#ifndef _WIN32
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200112L
+#endif
+#endif
+
 #include "sample_utils.h"
+
+#include "azure/iot/az_iot.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <time.h>
+#endif
 
 // Returns a heap copy of `s` (NUL-terminated), or NULL when `s` is NULL or on
 // allocation failure. Caller frees with free().
@@ -89,8 +105,16 @@ int sample_config_load(sample_config* config)
   config->key = read_env_var("AZ_IOT_CLIENT_KEY");
   config->ca = read_env_var("AZ_IOT_TRUSTED_CA");
 
+  /* Optional: a provisioning endpoint other than the global one. */
+  config->dps_global_endpoint = read_env_var_optional("AZ_IOT_DPS_GLOBAL_ENDPOINT");
+
   if (!config->id_scope || !config->reg_id || !config->cert || !config->key || !config->ca)
   {
+    /* Release what did load. Without this the strings already read leak on
+     * Windows, where read_env_var() allocates -- the callers all return
+     * immediately on failure rather than releasing a config they were told was
+     * unusable. */
+    sample_config_release(config);
     return 1;
   }
 
@@ -107,8 +131,26 @@ void sample_config_release(sample_config* config)
   free(config->ca);
   free(config->device_id);
   free(config->mock_endpoint);
+  free(config->dps_global_endpoint);
 #endif
   memset(config, 0, sizeof(*config));
+}
+
+void sample_apply_dps_options(
+    struct az_iot_connection_client_options* options,
+    const sample_config* config)
+{
+  if (options == NULL || config == NULL)
+  {
+    return;
+  }
+  options->dps.id_scope = config->id_scope;
+  options->dps.registration_id = config->reg_id;
+  /* Left NULL when unset, which is what selects the SDK's global endpoint. */
+  if (config->dps_global_endpoint != NULL)
+  {
+    options->dps.global_endpoint = config->dps_global_endpoint;
+  }
 }
 
 char* sample_env_dup(const char* name, const char* fallback)
@@ -130,4 +172,57 @@ char* sample_env_dup(const char* name, const char* fallback)
   }
   return dup_cstr(fallback);
 #endif
+}
+
+uint64_t sample_now_ms(void)
+{
+#ifdef _WIN32
+  return (uint64_t)GetTickCount64();
+#else
+  struct timespec ts;
+  /* CLOCK_MONOTONIC rather than time(): a step from NTP must not shorten or
+   * extend a deadline measured against it. */
+  if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0)
+  {
+    return 0;
+  }
+  return (uint64_t)ts.tv_sec * 1000u + (uint64_t)(ts.tv_nsec / 1000000L);
+#endif
+}
+
+void sample_sleep_ms(long ms)
+{
+  if (ms <= 0)
+  {
+    return;
+  }
+#if defined(_WIN32)
+  Sleep((DWORD)ms);
+#else
+  struct timespec ts;
+  ts.tv_sec = ms / 1000;
+  ts.tv_nsec = (ms % 1000) * 1000000L;
+  (void)nanosleep(&ts, NULL);
+#endif
+}
+
+const char* sample_connection_state_name(az_iot_connection_state state)
+{
+  switch (state)
+  {
+    case AZ_IOT_CONN_STATE_IDLE:
+      return "Idle";
+    case AZ_IOT_CONN_STATE_CONNECTING:
+      return "Connecting";
+    case AZ_IOT_CONN_STATE_CONNECTED:
+      return "Connected";
+    case AZ_IOT_CONN_STATE_RECONNECTING:
+      return "Reconnecting";
+    case AZ_IOT_CONN_STATE_DISCONNECTING:
+      return "Disconnecting";
+    case AZ_IOT_CONN_STATE_FAULTED:
+      return "Faulted";
+    default:
+      return "?";
+  }
 }

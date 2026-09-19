@@ -41,7 +41,7 @@ ctest --preset windows-msvc-debug -C Debug
 Run a sample binary:
 
 ```sh
-./build/linux-gcc-debug/samples/az_iot_sample_telemetry
+./build/linux-gcc-debug/samples/az_iot_sample_telemetry_gen1
 ```
 
 ## Project layout
@@ -214,7 +214,7 @@ int main(void)
 }
 ```
 
-The full source is in [samples/telemetry/main.c](samples/telemetry/main.c). Each sample
+The full source is in [samples/telemetry_gen1/main.c](samples/telemetry_gen1/main.c). Each sample
 is a no-op when its required env vars are unset, so a default build matrix without
 cloud resources stays green.
 
@@ -222,10 +222,16 @@ cloud resources stays green.
 
 | Sample | What it shows |
 | --- | --- |
-| [telemetry](samples/telemetry/) | DPS provisioning + `do_work()` pump + a telemetry send. The starting point. |
+| [telemetry_gen1](samples/telemetry_gen1/) | DPS provisioning + `do_work()` pump + a telemetry send to a Classic hub. The starting point. |
+| [telemetry_gen2](samples/telemetry_gen2/) | The same send to an AEG hub over MQTT v5, where properties are user properties rather than topic segments. |
+| [connection_profile_fallback](samples/connection_profile_fallback/) | Neither of the above, for one binary that must serve both: open first, ask `get_hub_profile()` what it reached, then build the matching client. Only when the generation cannot be known up front. |
 | [twin_get_patch](samples/twin_get_patch/) | `twin_get` + `patch_reported`, and desired-property delivery. |
-| [direct_method_responder](samples/direct_method_responder/) | Subscribe for direct methods, echo the payload back via `az_iot_direct_method_respond`. |
-| [c2d_receiver](samples/c2d_receiver/) | Receive cloud-to-device messages and their properties. |
+| [direct_method_responder_gen1](samples/direct_method_responder_gen1/) | Answer direct methods on a Classic hub, where one handler receives every name and must route and refuse them itself. |
+| [direct_method_responder_gen2](samples/direct_method_responder_gen2/) | The same on an AEG hub, where methods are declared up front and a probe lets the device decline with a reason before the arguments are sent. |
+| [direct_method_slow_responder_gen1](samples/direct_method_slow_responder_gen1/) | Answer a Classic direct method after its handler returned, against the device's own response timeout. |
+| [direct_method_slow_responder_gen2](samples/direct_method_slow_responder_gen2/) | The same on AEG, declaring the time the work needs so callers who cannot wait are turned away at the probe. |
+| [c2d_receiver_gen1](samples/c2d_receiver_gen1/) | Receive cloud-to-device messages on a Classic hub, where properties are decoded out of the topic. |
+| [c2d_receiver_gen2](samples/c2d_receiver_gen2/) | The same on an AEG hub, where the presence handshake already carries the subscription and properties need no decoding. |
 | [file_upload](samples/file_upload/) | SAS-URI request, blob PUT via libcurl, completion notification. |
 | [authentication](samples/authentication/) | Certificate providers, CSR enrollment, operational certificates. |
 | [adu](samples/adu/) | Device Update agent: manifest verify, download, install, report. |

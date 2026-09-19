@@ -195,6 +195,84 @@ az_iot_test_mqtt_packet az_iot_test_mqtt_pingresp(void)
   return p;
 }
 
+/* Length of a length-delimited MQTT UTF-8 string, counting NULL as empty. */
+static size_t lenstr_len(const char* s) { return s ? strlen(s) : 0u; }
+
+/* Append a two-byte length followed by the bytes themselves. `pos` is advanced;
+ * the caller has already proved the result fits. */
+static void write_lenstr(uint8_t* buf, size_t* pos, const char* s)
+{
+  size_t n = lenstr_len(s);
+  buf[(*pos)++] = (uint8_t)(n >> 8);
+  buf[(*pos)++] = (uint8_t)(n & 0xFFu);
+  if (n)
+  {
+    memcpy(buf + *pos, s, n);
+    *pos += n;
+  }
+}
+
+az_iot_test_mqtt_packet az_iot_test_mqtt_publish_v5(
+    const char* topic,
+    const uint8_t* payload,
+    size_t payload_len,
+    const az_iot_test_mqtt_user_property* user_properties,
+    size_t user_properties_count,
+    const char* content_type)
+{
+  az_iot_test_mqtt_packet p = packet_empty();
+  size_t i;
+
+  if (topic == NULL || (payload_len > 0 && payload == NULL)
+      || (user_properties_count > 0 && user_properties == NULL))
+  {
+    return p;
+  }
+
+  /* Size it before writing any of it: a packet that does not fit must come back
+   * empty rather than truncated, because a truncated one still looks like a
+   * packet to whatever injects it. */
+  size_t props_len = 0;
+  if (content_type != NULL)
+  {
+    props_len += 1u + 2u + lenstr_len(content_type);
+  }
+  for (i = 0; i < user_properties_count; ++i)
+  {
+    props_len
+        += 1u + 2u + lenstr_len(user_properties[i].key) + 2u + lenstr_len(user_properties[i].value);
+  }
+  size_t remaining = 2u + strlen(topic) + 1u + props_len + payload_len;
+  if (props_len > 127u || remaining > 127u || remaining + 2u > sizeof(p.bytes))
+  {
+    return p;
+  }
+
+  size_t pos = 0;
+  p.bytes[pos++] = 0x30u; /* PUBLISH, QoS 0, no DUP, no RETAIN */
+  p.bytes[pos++] = (uint8_t)remaining;
+  write_lenstr(p.bytes, &pos, topic);
+  p.bytes[pos++] = (uint8_t)props_len;
+  if (content_type != NULL)
+  {
+    p.bytes[pos++] = 0x03u; /* Content Type */
+    write_lenstr(p.bytes, &pos, content_type);
+  }
+  for (i = 0; i < user_properties_count; ++i)
+  {
+    p.bytes[pos++] = 0x26u; /* User Property */
+    write_lenstr(p.bytes, &pos, user_properties[i].key);
+    write_lenstr(p.bytes, &pos, user_properties[i].value);
+  }
+  if (payload_len)
+  {
+    memcpy(p.bytes + pos, payload, payload_len);
+    pos += payload_len;
+  }
+  p.len = pos;
+  return p;
+}
+
 void az_iot_test_mqtt_set_packet_id(az_iot_test_mqtt_packet* packet, uint16_t packet_id)
 {
   /* Offset 0 means the packet carries no id. The bounds check matters because

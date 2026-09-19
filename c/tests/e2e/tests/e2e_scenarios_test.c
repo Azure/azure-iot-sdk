@@ -260,9 +260,9 @@ static void test_c2d(void** state)
   c2d_ctx cctx = { 0 };
   make_marker(cctx.expected, sizeof(cctx.expected), "c2d");
 
-  az_iot_c2d_client c2d;
-  assert_int_equal(az_iot_c2d_client_init(&c2d, &fx->dev.conn), AZ_IOT_OK);
-  assert_int_equal(az_iot_c2d_client_set_handler(&c2d, on_c2d, &cctx), AZ_IOT_OK);
+  az_iot_gen1_c2d_client c2d;
+  assert_int_equal(az_iot_gen1_c2d_client_init(&c2d, &fx->dev.conn), AZ_IOT_OK);
+  assert_int_equal(az_iot_gen1_c2d_client_set_handler(&c2d, on_c2d, &cctx), AZ_IOT_OK);
 
   /* Give the subscription a few work slices to settle before the cloud sends. */
   for (int i = 0; i < 20; ++i)
@@ -299,7 +299,7 @@ static void test_c2d(void** state)
     device_do_work(fx, E2E_PUMP_MS);
   }
 
-  az_iot_c2d_client_destroy(&c2d);
+  az_iot_gen1_c2d_client_destroy(&c2d);
 
   assert_true(cctx.received);
   assert_true(cctx.matched);
@@ -308,16 +308,16 @@ static void test_c2d(void** state)
 /* ---- direct method -------------------------------------------------------- */
 
 static void on_method(
-    az_iot_direct_method_request* request,
+    az_iot_direct_method_request request,
     const char* method_name,
     const uint8_t* payload,
     size_t payload_len,
     void* user_ctx)
 {
   (void)method_name;
-  (void)user_ctx;
   /* Echo the request payload back with a 200. */
-  az_iot_result rc = az_iot_direct_method_respond(request, 200, payload, payload_len);
+  az_iot_result rc = az_iot_gen1_direct_method_respond(
+      (az_iot_gen1_direct_method_client*)user_ctx, request, 200, payload, payload_len);
   (void)rc;
 }
 
@@ -325,9 +325,9 @@ static void test_direct_method(void** state)
 {
   e2e_fixture* fx = (e2e_fixture*)*state;
 
-  az_iot_direct_method_client dm;
-  assert_int_equal(az_iot_direct_method_client_init(&dm, &fx->dev.conn), AZ_IOT_OK);
-  assert_int_equal(az_iot_direct_method_client_set_handler(&dm, on_method, NULL), AZ_IOT_OK);
+  az_iot_gen1_direct_method_client dm;
+  assert_int_equal(az_iot_gen1_direct_method_client_init(&dm, &fx->dev.conn), AZ_IOT_OK);
+  assert_int_equal(az_iot_gen1_direct_method_client_set_handler(&dm, on_method, &dm), AZ_IOT_OK);
 
   for (int i = 0; i < 20; ++i)
   {
@@ -351,7 +351,7 @@ static void test_direct_method(void** state)
     }
   }
 
-  az_iot_direct_method_client_destroy(&dm);
+  az_iot_gen1_direct_method_client_destroy(&dm);
 
   if (rc != 1)
   {
@@ -428,13 +428,14 @@ static void test_twin(void** state)
 {
   e2e_fixture* fx = (e2e_fixture*)*state;
 
-  az_iot_twin_client twin;
-  assert_int_equal(az_iot_twin_client_init(&twin, &fx->dev.conn), AZ_IOT_OK);
+  az_iot_gen1_twin_client twin;
+  assert_int_equal(az_iot_gen1_twin_client_init(&twin, &fx->dev.conn), AZ_IOT_OK);
 
   /* --- desired: cloud patches, device observes ------------------------- */
   desired_ctx dctx = { 0 };
   make_marker(dctx.expected, sizeof(dctx.expected), "desired");
-  assert_int_equal(az_iot_twin_client_subscribe_desired(&twin, on_desired, &dctx), AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_gen1_twin_client_set_desired_handler(&twin, on_desired, &dctx), AZ_IOT_OK);
 
   for (int i = 0; i < 20; ++i)
   {
@@ -480,7 +481,7 @@ static void test_twin(void** state)
 
   patch_ack_ctx pack = { 0 };
   assert_int_equal(
-      az_iot_twin_client_patch_reported(
+      az_iot_gen1_twin_client_patch_reported(
           &twin, (const uint8_t*)reported_json, strlen(reported_json), on_patch_ack, &pack),
       AZ_IOT_OK);
 
@@ -527,7 +528,7 @@ static void test_twin(void** state)
   }
   assert_true(reported_seen);
 
-  az_iot_twin_client_destroy(&twin);
+  az_iot_gen1_twin_client_deinit(&twin);
 }
 
 int main(void)

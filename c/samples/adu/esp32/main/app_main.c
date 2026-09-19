@@ -132,12 +132,11 @@ void app_main(void)
   az_iot_cert_embedded_init(
       &certs, trusted_ca_pem_start, device_cert_pem_start, device_key_pem_start);
 
-  /* Connection client: DPS provisioning + X.509, announcing the ADU model id. */
+  /* Connection client: DPS provisioning + X.509. */
   az_iot_connection_client_options copts = az_iot_connection_client_options_default();
   copts.dps.id_scope = CONFIG_ADU_DPS_ID_SCOPE;
   copts.dps.registration_id = CONFIG_ADU_DPS_REGISTRATION_ID;
   copts.certificate_provider = &certs.base;
-  copts.model_id = "dtmi:azure:iot:deviceUpdateContractModel;2";
   copts.reconnection_policy.initial_delay_ms = 2000;
   copts.reconnection_policy.max_delay_ms = 60000;
   copts.reconnection_policy.max_attempts = 0; /* retry forever */
@@ -210,16 +209,41 @@ void app_main(void)
         adu_state_name(az_iot_adu_client_get_state(&adu)));
   }
 
+  /* Nothing is fetched unless the application asks. This device provisions
+   * through DPS on this boot, so it uses the day-0 onboarding route; one that
+   * already has a device record would call az_iot_adu_client_request_update().
+   */
+  if (az_iot_adu_client_request_onboarding_update(&adu) != AZ_IOT_OK)
+  {
+    ESP_LOGE(TAG, "could not request an onboarding update");
+    esp_restart();
+  }
+
   if (az_iot_connection_client_open(&conn) != AZ_IOT_OK)
   {
     ESP_LOGE(TAG, "connection open failed");
     esp_restart();
   }
 
-  /* Pump until connected (or faulted). */
-  for (int i = 0; i < 1200 && g_conn_state != AZ_IOT_CONN_STATE_CONNECTED; ++i)
+  /* Pump until connected (or faulted). The device-update client is ticked here
+   * too: its first update check runs on the provisioning session, BEFORE the
+   * device registers, so pumping only the connection client would leave that
+   * check unissued and the hold would simply expire.
+   *
+   * The bound must exceed AZ_IOT_DPS_HOLD_TIMEOUT_MS: a fixed 1200 iterations
+   * at 50 ms was exactly the hold timeout, so a stalled check would have ended
+   * this loop on the same tick the hold expired and the device would have
+   * looked unreachable instead of registering anyway. */
+  /* Derived from the hold timeout rather than hard-coded: a build that raises
+   * AZ_IOT_DPS_HOLD_TIMEOUT_MS must not have this loop give up while the
+   * connection is still legitimately holding. Twice the hold leaves room for
+   * the registration that follows it. */
+  const unsigned tick_ms = 50u;
+  const unsigned max_ticks = (2u * (unsigned)AZ_IOT_DPS_HOLD_TIMEOUT_MS) / tick_ms;
+  for (unsigned i = 0; i < max_ticks && g_conn_state != AZ_IOT_CONN_STATE_CONNECTED; ++i)
   {
     (void)az_iot_connection_client_do_work(&conn, 50);
+    (void)az_iot_adu_client_do_work(&adu);
     if (g_conn_state == AZ_IOT_CONN_STATE_FAULTED)
     {
       break;

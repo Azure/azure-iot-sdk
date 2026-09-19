@@ -14,24 +14,6 @@
 #include "internal/span_writer.h"
 
 #define AZ_IOT_GEN2_TELEMETRY_TOPIC_MAX 512
-#define AZ_IOT_GEN2_TELEMETRY_MAX_USER_PROPERTIES 16
-
-static az_iot_result validate_profile(az_iot_connection_client* conn)
-{
-  if (!az_iot_connection_client__is_connected(conn))
-  {
-    return AZ_IOT_ERR_NOT_CONNECTED;
-  }
-  az_iot_hub_profile profile = AZ_IOT_HUB_PROFILE_INIT;
-  az_iot_result result = az_iot_connection_client_get_hub_profile(conn, &profile);
-  if (result != AZ_IOT_OK)
-  {
-    return result;
-  }
-  return profile.connection_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5
-      ? AZ_IOT_OK
-      : AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH;
-}
 
 az_iot_result az_iot_gen2_telemetry_client_init(
     az_iot_gen2_telemetry_client* client,
@@ -43,7 +25,8 @@ az_iot_result az_iot_gen2_telemetry_client_init(
     return AZ_IOT_ERR_INVALID_ARG;
   }
 
-  az_iot_result result = validate_profile(conn);
+  az_iot_result result
+      = az_iot_connection_client__require_profile(conn, AZ_IOT_CONNECTION_PROFILE_MQTT_V5);
   if (result != AZ_IOT_OK)
   {
     memset(client, 0, sizeof(*client));
@@ -59,6 +42,7 @@ void az_iot_gen2_telemetry_client_destroy(az_iot_gen2_telemetry_client* client)
 {
   if (client)
   {
+    az_iot_connection_client__release_profile(client->_internal.conn);
     memset(client, 0, sizeof(*client));
   }
 }
@@ -121,14 +105,31 @@ az_iot_result az_iot_gen2_telemetry_client_send(
   user_properties[property_count++]
       = (az_iot_mqtt_user_property){ .key = "content-type", .value = content_type };
 
-  for (size_t i = 0;
-       i < message->properties_count && property_count < AZ_IOT_GEN2_TELEMETRY_MAX_USER_PROPERTIES;
-       ++i)
+  for (size_t i = 0; i < message->properties_count; ++i)
   {
     const az_iot_telemetry_property* property = &message->properties[i];
-    if (!is_nonempty_cstr(property->key) || (property->key[0] == '$' && property->key[1] == '.'))
+    if (!is_nonempty_cstr(property->key))
     {
       continue;
+    }
+    /* Already on the wire twice over as the native Content Type and the
+     * content-type user property; a third copy under its own name would say
+     * the same thing in a spelling the service does not read. Every other
+     * system property has no v5 equivalent, so it travels verbatim -- which is
+     * what az_iot_message.h promises and what gen2 c2d hands back unchanged. */
+    if (strcmp(property->key, AZ_IOT_MSG_PROP_CONTENT_TYPE) == 0)
+    {
+      continue;
+    }
+    if (property_count >= AZ_IOT_GEN2_TELEMETRY_MAX_USER_PROPERTIES)
+    {
+      AZ_IOT_LOG_WARNF(
+          "gen2_telemetry: '%s' and any properties after it were not sent; the message needs more "
+          "than the %d user properties this client can carry, two of which are the type and "
+          "content-type it adds. Send fewer, or raise AZ_IOT_GEN2_TELEMETRY_MAX_USER_PROPERTIES.",
+          property->key,
+          (int)AZ_IOT_GEN2_TELEMETRY_MAX_USER_PROPERTIES);
+      break;
     }
     user_properties[property_count++] = (az_iot_mqtt_user_property){
       .key = property->key,

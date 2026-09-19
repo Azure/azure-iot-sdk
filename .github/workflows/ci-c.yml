@@ -119,6 +119,15 @@ jobs:
           # there is nothing that wants a broker and nothing to point at one.
           AZ_IOT_MQTT_BROKER_HOST: ${{ runner.os == 'Linux' && 'localhost' || '' }}
           AZ_IOT_MQTT_BROKER_PORT: ${{ runner.os == 'Linux' && '1883' || '' }}
+          # The Paho harness declares AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY, and an
+          # unproven capability now FAILS the suite rather than warning. The
+          # Linux legs DO build the TLS conformance cases (linux-base sets
+          # AZ_IOT_BUILD_CONFORMANCE_TESTS_TLS); what they lack is a PKCS#11
+          # token and a certificate, so they cannot exercise that contract.
+          # Accepting that here is a deliberate choice, not an accident: the
+          # coverage job below provisions a real token and proves it on every
+          # push.
+          AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN: '1'
         run: ctest --preset ${{ matrix.preset }} ${{ runner.os == 'Windows' && format('-C {0}', matrix.build_type) || '' }} --output-on-failure
 
   conventions:
@@ -181,6 +190,13 @@ jobs:
         env:
           AZ_IOT_MQTT_BROKER_HOST: localhost
           AZ_IOT_MQTT_BROKER_PORT: '1883'
+          # The Paho harness declares AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY, and an
+          # unproven capability now FAILS the suite rather than warning. This
+          # build configures without AZ_IOT_BUILD_CONFORMANCE_TESTS_TLS and has
+          # no PKCS#11 token, so it cannot exercise that contract. Accepting
+          # that here is a deliberate choice, not an accident: the coverage job
+          # below provisions a real token and proves it on every push.
+          AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN: '1'
         run: ctest --test-dir build/c99-strict --output-on-failure
 
   # ---------------------------------------------------------------------------
@@ -248,6 +264,86 @@ jobs:
           path: c/build/linux-gcc-debug/Testing/Temporary/MemoryChecker.*.log
           if-no-files-found: ignore
 
+  # ---------------------------------------------------------------------------
+  # Race detection. Separate from the valgrind job above because it answers a
+  # different question, with a different tool, on a different binary.
+  #
+  # memcheck and ASan look at WHICH memory is touched. Neither looks at which
+  # thread touched it or under which lock, so neither can see a data race at
+  # all: a race whose timing happens not to bite on the runner is simply
+  # invisible to them. That gap was not theoretical -- the adapter published a
+  # queued event to the consumer thread and then kept writing to it, and every
+  # job in this workflow passed straight through the window.
+  #
+  # The adapter's event queue is the only place in this SDK where two threads
+  # meet (Paho's callback threads produce, the application's process_loop()
+  # consumes), so it is the only thing this job runs: one hermetic binary with
+  # no broker and no sockets, whose sole content is that seam.
+  #
+  # Both tools run, and either one reporting an error fails the job. They agree
+  # on most races but not all -- they implement happens-before differently, and
+  # DRD additionally reports lock-order and mutex-misuse problems helgrind does
+  # not -- so running both is cheap coverage rather than duplication.
+  # ---------------------------------------------------------------------------
+  race-detector:
+    name: linux-gcc / helgrind + drd
+    needs: changes
+    if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install deps
+        run: sudo apt-get update && sudo apt-get install -y ninja-build valgrind
+      - name: Configure
+        # No broker and no conformance suites: this job builds and runs exactly
+        # one test binary, which needs neither.
+        run: >
+          cmake --preset linux-gcc-debug
+          -DAZ_IOT_WITH_PAHO=ON
+          -DAZ_IOT_BUILD_CONFORMANCE_TESTS=OFF
+          -DAZ_IOT_BUILD_CONFORMANCE_TESTS_TLS=OFF
+      - name: Build
+        run: cmake --build --preset linux-gcc-debug --target az_iot_tests_paho_event_queue_race
+      - name: Event queue under helgrind and drd
+        working-directory: c/build/linux-gcc-debug
+        run: |
+          set -o pipefail
+          status=0
+          for tool in helgrind drd; do
+            echo "::group::${tool}"
+            # --error-exitcode makes a reported race fail the step. It does NOT
+            # cover valgrind aborting on its own, so the ERROR SUMMARY line is
+            # checked as well: a run that produced no summary did not finish,
+            # and must not be read as a clean one.
+            if valgrind --tool="${tool}" --error-exitcode=42 \
+                 ./tests/az_iot_tests_paho_event_queue_race 2>&1 | tee "${tool}.log"; then
+              :
+            else
+              # Put the report itself in the annotation, not just the verdict.
+              # The full log is an artifact, but a failure that can be read
+              # straight off the run summary is one that gets acted on -- and
+              # the first context is almost always the whole story. Newlines
+              # are escaped because an annotation is a single line.
+              detail=$(grep -E '^==[0-9]+==' "${tool}.log" | head -40 \
+                       | sed -e 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
+              echo "::error::${tool} reported a threading defect:%0A${detail}"
+              status=1
+            fi
+            if ! grep -q "ERROR SUMMARY:" "${tool}.log"; then
+              echo "::error::${tool} did not run to completion"
+              status=1
+            fi
+            echo "::endgroup::"
+          done
+          exit "${status}"
+      - name: Upload race-detector logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: race-detector-logs
+          path: c/build/linux-gcc-debug/*.log
+          if-no-files-found: ignore
+
   asan-windows:
     name: windows-msvc / ASan
     needs: changes
@@ -308,7 +404,7 @@ jobs:
       # actually had -- coverage computed over fewer tests than anyone thought.
       # Now that no suite decides at run time whether to participate, the count
       # is deterministic, so assert it exactly. Bump this when adding a suite.
-      EXPECTED_TESTS: '30'
+      EXPECTED_TESTS: '43'
     services:
       mosquitto:
         image: eclipse-mosquitto:2
@@ -346,6 +442,20 @@ jobs:
           echo "OPENSSL_MODULES=$OPENSSL_MODULES" >> "$GITHUB_ENV"
           openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 \
                           -out "$RUNNER_TEMP/custody-key.pem"
+
+          # Issue the certificate BEFORE the key goes into the token: the
+          # conformance custody case presents it to a TLS server while the
+          # private half stays in the token, so the two must be the same key
+          # pair -- and setup-softhsm.sh deletes the PEM once it has imported
+          # it, which is the point of the exercise. The test proxy terminates
+          # the handshake and accepts any client certificate, so self-signed is
+          # enough and its trust chain is irrelevant.
+          openssl req -new -x509 -key "$RUNNER_TEMP/custody-key.pem" \
+                      -out "$RUNNER_TEMP/custody-cert.pem" -days 2 \
+                      -subj "/CN=az-iot-conformance-custody" \
+                      -addext "basicConstraints=critical,CA:FALSE" \
+                      -addext "extendedKeyUsage=clientAuth"
+
           eng/setup-softhsm.sh "$RUNNER_TEMP/custody-key.pem" > "$RUNNER_TEMP/softhsm-env.sh"
           # "export NAME='value'" -> the NAME=value lines GITHUB_ENV takes.
           sed -E "s/^export ([A-Za-z0-9_]+)='(.*)'\$/\1=\2/" \
@@ -354,6 +464,12 @@ jobs:
           # Fail here, not thirty lines into a test log, if the OpenSSL pkcs11
           # provider is not installed: without it the token cannot sign.
           openssl list -providers -provider pkcs11 > /dev/null
+
+          {
+            echo "AZ_IOT_CONFORMANCE_KEY_URI=$AZ_IOT_CLIENT_KEY_URI"
+            echo "AZ_IOT_CONFORMANCE_KEY_ENGINE=$AZ_IOT_CRYPTO_ENGINE_ID"
+            echo "AZ_IOT_CONFORMANCE_CLIENT_CERT=$RUNNER_TEMP/custody-cert.pem"
+          } >> "$GITHUB_ENV"
 
       - name: Verify MQTT broker is reachable
         # The conformance suites are where nearly all Paho adapter coverage
@@ -364,6 +480,11 @@ jobs:
         run: mosquitto_pub -h localhost -p 1883 -t az-iot/coverage/probe -m ok
 
       - name: Configure
+        # The TLS conformance cases are already on here (linux-base sets
+        # AZ_IOT_BUILD_CONFORMANCE_TESTS_TLS), so what this job adds is the
+        # token material exported above. The harness declares
+        # AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY and a declared capability that is
+        # never exercised fails the run, so this is the job that proves it.
         run: cmake --preset linux-gcc-coverage -DAZ_IOT_BUILD_PKCS11_TESTS=ON
 
       - name: Build

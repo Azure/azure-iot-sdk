@@ -6,38 +6,99 @@
 # Each sample is a no-op when its required env vars are unset (see the source).
 
 if(AZ_IOT_WITH_PAHO)
-    add_executable(az_iot_sample_telemetry telemetry/main.c common/sample_utils.c)
-    target_include_directories(az_iot_sample_telemetry PRIVATE common)
-    target_link_libraries(az_iot_sample_telemetry
+    add_executable(az_iot_sample_connection_profile_fallback
+        connection_profile_fallback/main.c common/sample_utils.c)
+    target_include_directories(az_iot_sample_connection_profile_fallback PRIVATE common)
+    target_link_libraries(az_iot_sample_connection_profile_fallback
         PRIVATE az_iot_gen1 az_iot_gen2 az_iot_adapter_paho)
-    az_iot_apply_warnings(az_iot_sample_telemetry)
+    az_iot_apply_warnings(az_iot_sample_connection_profile_fallback)
+
+    add_executable(az_iot_sample_telemetry_gen1 telemetry_gen1/main.c common/sample_utils.c)
+    target_include_directories(az_iot_sample_telemetry_gen1 PRIVATE common)
+    target_link_libraries(az_iot_sample_telemetry_gen1
+        PRIVATE az_iot_gen1 az_iot_adapter_paho)
+    az_iot_apply_warnings(az_iot_sample_telemetry_gen1)
+
+    add_executable(az_iot_sample_telemetry_gen2 telemetry_gen2/main.c common/sample_utils.c)
+    target_include_directories(az_iot_sample_telemetry_gen2 PRIVATE common)
+    target_link_libraries(az_iot_sample_telemetry_gen2
+        PRIVATE az_iot_gen2 az_iot_adapter_paho)
+    az_iot_apply_warnings(az_iot_sample_telemetry_gen2)
+
+    # The same telemetry flow over the two egress options, one sample each, so
+    # the difference from az_iot_sample_telemetry_gen1 is exactly the feature
+    # being shown: MQTT over WebSockets, and MQTT through an HTTP CONNECT proxy.
+    # Both link gen1 only, for the same reason that sample does: the transport
+    # and the proxy are independent of the hub generation, so serving one route
+    # keeps each sample about its own feature.
+    add_executable(az_iot_sample_websockets
+        websockets/main.c common/sample_utils.c)
+    target_include_directories(az_iot_sample_websockets PRIVATE common)
+    target_link_libraries(az_iot_sample_websockets
+        PRIVATE az_iot_gen1 az_iot_adapter_paho)
+    az_iot_apply_warnings(az_iot_sample_websockets)
+
+    add_executable(az_iot_sample_proxy
+        proxy/main.c common/sample_utils.c)
+    target_include_directories(az_iot_sample_proxy PRIVATE common)
+    target_link_libraries(az_iot_sample_proxy
+        PRIVATE az_iot_gen1 az_iot_adapter_paho)
+    az_iot_apply_warnings(az_iot_sample_proxy)
 
     add_executable(az_iot_sample_twin_get_patch
         twin_get_patch/main.c common/sample_utils.c)
     target_include_directories(az_iot_sample_twin_get_patch PRIVATE common)
     target_link_libraries(az_iot_sample_twin_get_patch
-        PRIVATE az_iot_core az_iot_adapter_paho)
+        PRIVATE az_iot_gen1 az_iot_gen2 az_iot_adapter_paho)
     az_iot_apply_warnings(az_iot_sample_twin_get_patch)
 
-    add_executable(az_iot_sample_direct_method_responder
-        direct_method_responder/main.c common/sample_utils.c)
-    target_include_directories(az_iot_sample_direct_method_responder PRIVATE common)
-    target_link_libraries(az_iot_sample_direct_method_responder
-        PRIVATE az_iot_core az_iot_adapter_paho)
-    az_iot_apply_warnings(az_iot_sample_direct_method_responder)
+    add_executable(az_iot_sample_direct_method_responder_gen1
+        direct_method_responder_gen1/main.c common/sample_utils.c)
+    target_include_directories(az_iot_sample_direct_method_responder_gen1 PRIVATE common)
+    target_link_libraries(az_iot_sample_direct_method_responder_gen1
+        PRIVATE az_iot_gen1 az_iot_adapter_paho)
+    az_iot_apply_warnings(az_iot_sample_direct_method_responder_gen1)
 
-    add_executable(az_iot_sample_c2d_receiver
-        c2d_receiver/main.c common/sample_utils.c)
-    target_include_directories(az_iot_sample_c2d_receiver PRIVATE common)
-    target_link_libraries(az_iot_sample_c2d_receiver
-        PRIVATE az_iot_core az_iot_adapter_paho)
-    az_iot_apply_warnings(az_iot_sample_c2d_receiver)
+    add_executable(az_iot_sample_direct_method_responder_gen2
+        direct_method_responder_gen2/main.c common/sample_utils.c)
+    target_include_directories(az_iot_sample_direct_method_responder_gen2 PRIVATE common)
+    target_link_libraries(az_iot_sample_direct_method_responder_gen2
+        PRIVATE az_iot_gen2 az_iot_adapter_paho)
+    az_iot_apply_warnings(az_iot_sample_direct_method_responder_gen2)
+
+    add_executable(az_iot_sample_direct_method_slow_responder_gen1
+        direct_method_slow_responder_gen1/main.c common/sample_utils.c)
+    target_include_directories(az_iot_sample_direct_method_slow_responder_gen1 PRIVATE common)
+    target_link_libraries(az_iot_sample_direct_method_slow_responder_gen1
+        PRIVATE az_iot_gen1 az_iot_adapter_paho)
+    az_iot_apply_warnings(az_iot_sample_direct_method_slow_responder_gen1)
+
+    add_executable(az_iot_sample_direct_method_slow_responder_gen2
+        direct_method_slow_responder_gen2/main.c common/sample_utils.c)
+    target_include_directories(az_iot_sample_direct_method_slow_responder_gen2 PRIVATE common)
+    target_link_libraries(az_iot_sample_direct_method_slow_responder_gen2
+        PRIVATE az_iot_gen2 az_iot_adapter_paho)
+    az_iot_apply_warnings(az_iot_sample_direct_method_slow_responder_gen2)
+
+    add_executable(az_iot_sample_c2d_receiver_gen1
+        c2d_receiver_gen1/main.c common/sample_utils.c)
+    target_include_directories(az_iot_sample_c2d_receiver_gen1 PRIVATE common)
+    target_link_libraries(az_iot_sample_c2d_receiver_gen1
+        PRIVATE az_iot_gen1 az_iot_adapter_paho)
+    az_iot_apply_warnings(az_iot_sample_c2d_receiver_gen1)
+
+    add_executable(az_iot_sample_c2d_receiver_gen2
+        c2d_receiver_gen2/main.c common/sample_utils.c)
+    target_include_directories(az_iot_sample_c2d_receiver_gen2 PRIVATE common)
+    target_link_libraries(az_iot_sample_c2d_receiver_gen2
+        PRIVATE az_iot_gen2 az_iot_adapter_paho)
+    az_iot_apply_warnings(az_iot_sample_c2d_receiver_gen2)
 
     add_executable(az_iot_sample_file_upload
         file_upload/main.c common/sample_utils.c)
     target_include_directories(az_iot_sample_file_upload PRIVATE common)
     target_link_libraries(az_iot_sample_file_upload
-        PRIVATE az_iot_core az_iot_adapter_paho)
+        PRIVATE az_iot_gen1 az_iot_adapter_paho)
     # File upload is HTTPS-only and the SDK ships no HTTP client, so the sample
     # uses libcurl (when available) to perform the SAS-URI request, the blob PUT
     # to Azure Storage, and the completion notification. Optional: without curl

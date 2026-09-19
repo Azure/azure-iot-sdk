@@ -11,7 +11,9 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 
 /* The adapter only ever stores the handle and hands it back to us, so any
  * non-NULL address will do. */
@@ -21,6 +23,11 @@ static int s_create_rc;
 static int s_set_callbacks_rc;
 static int s_set_disconnected_rc;
 static int s_connect_rc;
+
+static int s_disconnect_rc;
+static bool s_disconnect_completion_success;
+static int s_disconnect_calls;
+static bool s_disconnect_had_callbacks;
 
 static int s_create_calls;
 static int s_connect_calls;
@@ -32,6 +39,21 @@ static int s_last_enable_server_cert_auth;
 static int s_last_verify;
 static char s_last_private_key[512];
 static bool s_last_had_private_key;
+static char s_last_http_proxy[256];
+static char s_last_https_proxy[256];
+static int s_last_struct_version;
+
+/* The inbound callbacks the adapter registered, and the context it expects
+ * back. Written once by connect(), read by the test's producer threads. */
+static void* s_callback_context;
+static MQTTAsync_messageArrived* s_message_arrived;
+static MQTTAsync_connectionLost* s_connection_lost;
+
+/* Scripted inbound v5 User Properties. Set up before any producer thread
+ * starts and only read after that, so the table is never itself contended. */
+#define MOCK_PAHO_MAX_USER_PROPERTIES 8
+static MQTTProperty s_user_properties[MOCK_PAHO_MAX_USER_PROPERTIES];
+static int s_user_property_count;
 
 void mock_paho_reset(void)
 {
@@ -39,6 +61,10 @@ void mock_paho_reset(void)
   s_set_callbacks_rc = MQTTASYNC_SUCCESS;
   s_set_disconnected_rc = MQTTASYNC_SUCCESS;
   s_connect_rc = MQTTASYNC_SUCCESS;
+  s_disconnect_rc = MQTTASYNC_SUCCESS;
+  s_disconnect_completion_success = true;
+  s_disconnect_calls = 0;
+  s_disconnect_had_callbacks = false;
   s_create_calls = 0;
   s_connect_calls = 0;
   s_destroy_calls = 0;
@@ -48,12 +74,27 @@ void mock_paho_reset(void)
   s_last_verify = -1;
   s_last_private_key[0] = '\0';
   s_last_had_private_key = false;
+  s_last_http_proxy[0] = '\0';
+  s_last_https_proxy[0] = '\0';
+  s_last_struct_version = -1;
+  s_callback_context = NULL;
+  s_message_arrived = NULL;
+  s_connection_lost = NULL;
+  s_user_property_count = 0;
 }
 
 void mock_paho_set_create_rc(int rc) { s_create_rc = rc; }
 void mock_paho_set_set_callbacks_rc(int rc) { s_set_callbacks_rc = rc; }
 void mock_paho_set_set_disconnected_rc(int rc) { s_set_disconnected_rc = rc; }
 void mock_paho_set_connect_rc(int rc) { s_connect_rc = rc; }
+
+void mock_paho_set_disconnect_rc(int rc) { s_disconnect_rc = rc; }
+void mock_paho_set_disconnect_completion(bool success)
+{
+  s_disconnect_completion_success = success;
+}
+int mock_paho_disconnect_calls(void) { return s_disconnect_calls; }
+bool mock_paho_disconnect_had_callbacks(void) { return s_disconnect_had_callbacks; }
 
 int mock_paho_create_calls(void) { return s_create_calls; }
 int mock_paho_connect_calls(void) { return s_connect_calls; }
@@ -72,6 +113,18 @@ const char* mock_paho_last_private_key(void)
 {
   return s_last_had_private_key ? s_last_private_key : NULL;
 }
+
+const char* mock_paho_last_http_proxy(void)
+{
+  return s_last_http_proxy[0] != '\0' ? s_last_http_proxy : NULL;
+}
+
+const char* mock_paho_last_https_proxy(void)
+{
+  return s_last_https_proxy[0] != '\0' ? s_last_https_proxy : NULL;
+}
+
+int mock_paho_last_connect_struct_version(void) { return s_last_struct_version; }
 
 /* ------------------------------------------------------------------------- */
 /* MQTTAsync                                                                 */
@@ -114,12 +167,18 @@ int MQTTAsync_setCallbacks(
     MQTTAsync_deliveryComplete* dc)
 {
   (void)handle;
-  (void)context;
-  (void)cl;
-  (void)ma;
   (void)dc;
+  s_callback_context = context;
+  s_connection_lost = cl;
+  s_message_arrived = ma;
   return s_set_callbacks_rc;
 }
+
+void* mock_paho_callback_context(void) { return s_callback_context; }
+
+MQTTAsync_messageArrived* mock_paho_message_arrived(void) { return s_message_arrived; }
+
+MQTTAsync_connectionLost* mock_paho_connection_lost(void) { return s_connection_lost; }
 
 int MQTTAsync_setDisconnected(MQTTAsync handle, void* context, MQTTAsync_disconnected* co)
 {
@@ -150,13 +209,49 @@ int MQTTAsync_connect(MQTTAsync handle, const MQTTAsync_connectOptions* options)
     s_last_verify = -1;
     s_last_had_private_key = false;
   }
+  s_last_struct_version = options != NULL ? options->struct_version : -1;
+  s_last_http_proxy[0] = '\0';
+  s_last_https_proxy[0] = '\0';
+  if (options != NULL && options->httpProxy != NULL)
+  {
+    snprintf(s_last_http_proxy, sizeof(s_last_http_proxy), "%s", options->httpProxy);
+  }
+  if (options != NULL && options->httpsProxy != NULL)
+  {
+    snprintf(s_last_https_proxy, sizeof(s_last_https_proxy), "%s", options->httpsProxy);
+  }
   return s_connect_rc;
 }
 
 int MQTTAsync_disconnect(MQTTAsync handle, const MQTTAsync_disconnectOptions* options)
 {
   (void)handle;
-  (void)options;
+  ++s_disconnect_calls;
+  s_disconnect_had_callbacks = options != NULL && options->onSuccess != NULL
+      && options->onFailure != NULL && options->context != NULL;
+
+  if (s_disconnect_rc != MQTTASYNC_SUCCESS)
+  {
+    /* Refused: the real client runs no completion callback in this case. */
+    return s_disconnect_rc;
+  }
+  if (options != NULL)
+  {
+    if (s_disconnect_completion_success && options->onSuccess)
+    {
+      MQTTAsync_successData data;
+      memset(&data, 0, sizeof(data));
+      options->onSuccess(options->context, &data);
+    }
+    else if (!s_disconnect_completion_success && options->onFailure)
+    {
+      MQTTAsync_failureData data;
+      memset(&data, 0, sizeof(data));
+      data.code = MQTTASYNC_FAILURE;
+      data.message = "mock disconnect failure";
+      options->onFailure(options->context, &data);
+    }
+  }
   return MQTTASYNC_SUCCESS;
 }
 
@@ -217,7 +312,11 @@ void MQTTAsync_freeMessage(MQTTAsync_message** msg) { (void)msg; }
 
 void MQTTAsync_setTraceLevel(enum MQTTASYNC_TRACE_LEVELS level) { (void)level; }
 
-void MQTTAsync_setTraceCallback(MQTTAsync_traceCallback* callback) { (void)callback; }
+static MQTTAsync_traceCallback* s_trace_callback;
+
+void MQTTAsync_setTraceCallback(MQTTAsync_traceCallback* callback) { s_trace_callback = callback; }
+
+MQTTAsync_traceCallback* mock_paho_trace_callback(void) { return s_trace_callback; }
 
 /* ------------------------------------------------------------------------- */
 /* MQTTProperties. Reached only by the v5 branch of connect(); the adapter    */
@@ -236,8 +335,7 @@ void MQTTProperties_free(MQTTProperties* properties) { (void)properties; }
 int MQTTProperties_propertyCount(MQTTProperties* props, enum MQTTPropertyCodes propid)
 {
   (void)props;
-  (void)propid;
-  return 0;
+  return (propid == MQTTPROPERTY_CODE_USER_PROPERTY) ? s_user_property_count : 0;
 }
 
 MQTTProperty* MQTTProperties_getPropertyAt(
@@ -246,7 +344,34 @@ MQTTProperty* MQTTProperties_getPropertyAt(
     int index)
 {
   (void)props;
-  (void)propid;
-  (void)index;
-  return NULL;
+  if (propid != MQTTPROPERTY_CODE_USER_PROPERTY || index < 0 || index >= s_user_property_count)
+  {
+    return NULL;
+  }
+  return &s_user_properties[index];
+}
+
+void mock_paho_set_inbound_user_properties(const char* const* pairs, int count)
+{
+  if (pairs == NULL || count <= 0)
+  {
+    s_user_property_count = 0;
+    return;
+  }
+  if (count > MOCK_PAHO_MAX_USER_PROPERTIES)
+  {
+    count = MOCK_PAHO_MAX_USER_PROPERTIES;
+  }
+  for (int i = 0; i < count; ++i)
+  {
+    /* Length-delimited and NOT NUL-terminated, exactly as the real client
+     * reports them. An adapter that treats value.data as a C string reads past
+     * the end here just as it would on the wire. */
+    s_user_properties[i].identifier = MQTTPROPERTY_CODE_USER_PROPERTY;
+    s_user_properties[i].value.data.data = (char*)(uintptr_t)pairs[2 * i];
+    s_user_properties[i].value.data.len = (int)strlen(pairs[2 * i]);
+    s_user_properties[i].value.value.data = (char*)(uintptr_t)pairs[2 * i + 1];
+    s_user_properties[i].value.value.len = (int)strlen(pairs[2 * i + 1]);
+  }
+  s_user_property_count = count;
 }

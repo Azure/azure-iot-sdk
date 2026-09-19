@@ -10,18 +10,17 @@
 #                 over the Paho MQTT adapter (DPS x509 individual enrollment);
 #                 the cloud side is the `az_iot_e2e_service` facade (vendored
 #                 AMQP for telemetry/c2d, HTTPS+SAS for method/twin).
-# * Resources   : provisioned per job via the shared iot-sdks-e2e-fx script
-#                 (same one ci-dotnet uses) and ALWAYS torn down.
+# * Resources   : provisioned per job via the shared iot-sdks-e2e-fx composite
+#                 actions (same ones ci-dotnet uses) and ALWAYS torn down.
 #
 # Scope
 # -----
-# This workflow runs the fast scenarios (telemetry/c2d/method/twin) AND the
-# mocked Device Update (ADU) e2e suite (az_iot_tests_e2e_adu), which drives a
-# signed deployment through the device twin with the crypto/platform ops mocked
-# -- no Device Update account is required, so it is fast. A separate workflow
-# (ci-c-e2e-adu.yml) is reserved for the future real-ADU suite (which provisions
-# an actual Device Update account and triggers updates THROUGH the ADU service);
-# until that lands it runs this same mocked suite nightly as a placeholder.
+# This workflow runs the fast scenarios (telemetry/c2d/method/twin) and the file
+# upload suite. It previously also ran a mocked Device Update (ADU) suite
+# (az_iot_tests_e2e_adu) that drove a signed deployment through the device twin.
+# That suite retired with the removal of ADU's twin delivery channel and is
+# awaiting a rewrite against the new channel, so it is not built or run here.
+# The separate ci-c-e2e-adu.yml workflow is parked for the same reason.
 #
 # Stages
 # ------
@@ -37,8 +36,9 @@
 #                 the run id rather than reading a setup output, so it also cleans
 #                 up after a CANCELLED setup job (see the `env` block below).
 #
-# The provision/destroy steps live in .github/actions/{provision,destroy}-e2e-
-# resources so other pipelines (e.g. ci-dotnet) can reuse them.
+# The provision/destroy steps are the shared composite actions
+# Azure/iot-sdks-e2e-fx/actions/{provision,destroy}-e2e-resources, pinned to a
+# tag, so every language pipeline runs the same provisioning code.
 
 name: ci-c-e2e
 
@@ -48,20 +48,18 @@ on:
     paths:
       - 'c/**'
       - 'common/**'
-      # This workflow and the provisioning wiring it depends on: a change to any
-      # of them alters what the e2e legs actually do, so it has to be validated
-      # against real Azure rather than merged on the strength of the other jobs.
+      # This workflow: a change to it alters what the e2e legs actually do, so
+      # it has to be validated against real Azure rather than merged on the
+      # strength of the other jobs. The provisioning actions now live in
+      # Azure/iot-sdks-e2e-fx and are pinned to a tag, so a change there only
+      # reaches this repository when the pin below is moved.
       - '.github/workflows/ci-c-e2e.yml'
-      - '.github/actions/provision-e2e-resources/**'
-      - '.github/actions/destroy-e2e-resources/**'
   push:
     branches: [ main ]
     paths:
       - 'c/**'
       - 'common/**'
       - '.github/workflows/ci-c-e2e.yml'
-      - '.github/actions/provision-e2e-resources/**'
-      - '.github/actions/destroy-e2e-resources/**'
   schedule:
     - cron: '0 11 * * *'  # Nightly at 4am PST
 
@@ -99,9 +97,15 @@ jobs:
 
       - name: Provision resources
         id: provision
-        uses: ./.github/actions/provision-e2e-resources
+        uses: Azure/iot-sdks-e2e-fx/actions/provision-e2e-resources@v1
         with:
           rg-name: ${{ env.E2E_RESOURCE_GROUP }}
+          # The shared action defaults to EastUS; these pipelines run in
+          # eastus2euap, the region this subscription's IoT Hub scale unit is
+          # pinned to -- a hub created anywhere else is rejected with IH400059.
+          # An undefined repository variable arrives as an empty string, which
+          # would otherwise override the action default, so the fallback is here.
+          azure-location: ${{ vars.E2E_AZURE_LOCATION || 'eastus2euap' }}
           # Two DPS enrollments so the parallel Linux/Windows test legs can each
           # claim their own device (see the per-leg device-index selection below)
           # and never share a device twin.
@@ -175,7 +179,7 @@ jobs:
         # Windows runner image does not carry.
         run: |
           cmake --preset ${{ matrix.preset }} -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_WITH_PAHO=ON ${{ runner.os == 'Linux' && '-DAZ_IOT_BUILD_E2E_PKCS11=ON' || '' }}
-          cmake --build --preset ${{ matrix.preset }} ${{ runner.os == 'Windows' && '--config Debug' || '' }} --target az_iot_tests_e2e az_iot_tests_e2e_adu az_iot_tests_e2e_fileupload
+          cmake --build --preset ${{ matrix.preset }} ${{ runner.os == 'Windows' && '--config Debug' || '' }} --target az_iot_tests_e2e az_iot_tests_e2e_fileupload az_iot_tests_e2e_transport
           ${{ runner.os == 'Linux' && format('cmake --build --preset {0} --target az_iot_tests_e2e_custody', matrix.preset) || '' }}
 
       - name: Build the file upload sample (Linux)
@@ -200,8 +204,8 @@ jobs:
           # device-index) so they never share a device twin -- the mocked ADU
           # suite patches large desired properties, and a shared twin would bloat
           # the other leg's twin GET and flake test_twin. Fall back to the
-          # unsuffixed index-0 vars if an older (pre-indexing) provisioning script
-          # is fetched from iot-sdks-e2e-fx master.
+          # unsuffixed index-0 vars if the pinned provisioning action emits a
+          # pre-indexing test config.
           $idx = '${{ matrix.device-index }}'
           $regId   = (Get-Item "env:IOT_DPS_INDIVIDUAL_REGISTRATION_ID_$idx" -ErrorAction SilentlyContinue).Value
           $certB64 = (Get-Item "env:IOT_DPS_INDIVIDUAL_X509_CERTIFICATE_$idx" -ErrorAction SilentlyContinue).Value
@@ -263,8 +267,12 @@ jobs:
 
           New-Item -ItemType Directory -Path ./test_config/results -Force | Out-Null
           $cfg = if ($IsWindows) { @('-C', 'Debug') } else { @() }
-          # `-R e2e` runs the fast suite (az_iot_tests_e2e) and the mocked ADU
-          # suite (az_iot_tests_e2e_adu). The CSR enrollment test is not built
+          # `-R e2e` runs the fast suite (az_iot_tests_e2e), the file upload
+          # suite and the transport suite (WebSockets, and MQTT through an HTTP
+          # proxy; its proxy scenarios skip themselves when no proxy is
+          # configured for the leg).
+          # The mocked ADU suite retired with ADU's twin delivery channel
+          # and is not built. The CSR enrollment test is not built
           # here -- it needs a DPS enrollment linked to a signing CA, which only
           # ci-c-e2e-csr provisions, so it lives behind AZ_IOT_BUILD_E2E_CSR.
           # The adu_crypto_openssl unit test is not matched by the e2e name
@@ -309,17 +317,50 @@ jobs:
         run: |
           . ./test_config/set_test_env_vars.ps1
 
-          $exports = & bash -c 'set -e; c/eng/setup-pkcs11-provider.sh; c/eng/setup-softhsm.sh "$AZ_IOT_CLIENT_KEY" --keep-key-file'
+          # eval the provider script rather than merely running it, so
+          # setup-softhsm.sh sees OPENSSL_MODULES and writes an explicit
+          # "module = .../pkcs11.so" into the configuration it generates. The
+          # coverage job in ci-c.yml has always eval'd it; this one did not.
+          #
+          # This is hygiene, NOT the cause of the nightly failure. Without the
+          # eval the configuration names the provider by section only, but
+          # OPENSSL_MODULES still reaches the test process -- the loop below
+          # parses the provider script's own export line -- so the provider
+          # resolves either way. Measured: a configuration generated with
+          # OPENSSL_MODULES unset still activates pkcs11 when the variable is set
+          # at run time. Naming the module makes the configuration independent of
+          # that variable instead of relying on it.
+          $exports = & bash -c 'set -e; mods="$(c/eng/setup-pkcs11-provider.sh)"; eval "$mods"; echo "$mods"; c/eng/setup-softhsm.sh "$AZ_IOT_CLIENT_KEY" --keep-key-file'
           if ($LASTEXITCODE -ne 0) { throw "PKCS#11 token provisioning failed ($LASTEXITCODE)" }
           foreach ($line in $exports) {
             if ($line -match "^export ([A-Za-z0-9_]+)='(.*)'$") {
               [System.Environment]::SetEnvironmentVariable($Matches[1], $Matches[2])
             }
           }
-          # Fail here, not thirty lines into a test log, if the provider cannot
-          # be loaded: without it the token cannot sign.
-          & openssl list -providers -provider pkcs11 > $null
-          if ($LASTEXITCODE -ne 0) { throw "the OpenSSL pkcs11 provider did not load" }
+
+          # What the run will actually use. Printed rather than discarded: a
+          # custody failure is otherwise indistinguishable from a configuration
+          # that was never applied.
+          Write-Host "--- OPENSSL_CONF = $env:OPENSSL_CONF"
+          Get-Content $env:OPENSSL_CONF | Write-Host
+
+          # The provider must be active from the CONFIGURATION ALONE. The previous
+          # check passed "-provider pkcs11", which loads it explicitly and so could
+          # not tell a configuration that is in effect from one that is not -- the
+          # exact difference that matters here, because the adapter loads the
+          # provider at run time regardless and that path is the one that fails.
+          $providers = & openssl list -providers 2>&1 | Out-String
+          Write-Host "--- providers active from configuration:`n$providers"
+          if ($LASTEXITCODE -ne 0) {
+            throw "openssl list -providers failed ($LASTEXITCODE)"
+          }
+          # Match the provider's own entry in the list -- a line holding just its
+          # name -- not the substring anywhere in the output. $providers carries
+          # stderr too, so a load error that merely mentions pkcs11 must not read
+          # as success.
+          if ($providers -notmatch '(?m)^\s+pkcs11\s*$') {
+            throw "the pkcs11 provider is not active from OPENSSL_CONF; the custody path would fall back to a run-time load"
+          }
 
           # Verbose OpenSSL handshake errors. A custody failure otherwise
           # surfaces as Paho's "TCP/TLS connect failure", which says nothing
@@ -390,7 +431,7 @@ jobs:
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Delete Azure resources
-        uses: ./.github/actions/destroy-e2e-resources
+        uses: Azure/iot-sdks-e2e-fx/actions/destroy-e2e-resources@v1
         with:
           resource-group: ${{ env.E2E_RESOURCE_GROUP }}
 

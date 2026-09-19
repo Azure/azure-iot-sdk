@@ -122,6 +122,12 @@ jobs:
         env:
           AZ_IOT_MQTT_BROKER_HOST: localhost
           AZ_IOT_MQTT_BROKER_PORT: '1883'
+          # The Paho harness declares AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY, and an
+          # unproven capability fails the suite rather than warning. This job
+          # combines coverage traces and provisions no PKCS#11 token, so it
+          # cannot exercise that contract; the coverage job in ci-c.yml does,
+          # on every push. Accepted deliberately here rather than by accident.
+          AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN: '1'
         working-directory: c
         run: |
           set -euo pipefail

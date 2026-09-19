@@ -10,8 +10,8 @@
 #include <stddef.h>
 #include <stdbool.h>
 
+#include "az_iot_connection_client.h"
 #include "az_iot_result.h"
-#include "az_iot_twin_client.h"
 
 /* azure-sdk-for-c manifest parsing structs. This SDK header is named
  * az_iot_adu.h (NOT az_iot_adu_client.h) specifically so this angle-bracket
@@ -60,7 +60,7 @@ extern "C"
 #endif
 
 /* Scratch buffer (in-struct) that holds a COPY of the desired-property service
- * payload for the current deployment. The transient twin patch buffer is only
+ * payload for the current deployment. The channel's delivery buffer is only
  * valid during the subscriber callback, but the workflow is processed
  * asynchronously across many do_work() calls; the upstream parser stores spans
  * that point INTO this payload (and unescapes the manifest in place), so it must
@@ -348,11 +348,114 @@ extern "C"
   /* NOTE: keeps the _t suffix. The vendored azure-sdk-for-c defines az_iot_adu_client
    * (the low-level parser handle, embedded below as the `az` field), so our
    * higher-level client type must stay distinct from it. */
+  /* --- Update outcome vocabulary ------------------------------------------ */
+  /* The structured result the engine produces for a workflow. Public because an
+   * application observes it; the transport that carries it is internal. */
+
+  /**
+   * @brief Terminal and non-terminal outcomes a device reports for a workflow.
+   *
+   * These are the values the service accepts on the status-report operation.
+   * `SKIPPED` replaces the ADUv1 accept/reject acknowledgement: an engine that
+   * declines a deployment reports it rather than answering a protocol-level
+   * "reject".
+   */
+  typedef enum az_iot_adu_outcome
+  {
+    AZ_IOT_ADU_OUTCOME_IN_PROGRESS = 0,
+    AZ_IOT_ADU_OUTCOME_SUCCEEDED,
+    AZ_IOT_ADU_OUTCOME_FAILED,
+    AZ_IOT_ADU_OUTCOME_CANCELED,
+    AZ_IOT_ADU_OUTCOME_SKIPPED,
+  } az_iot_adu_outcome;
+
+  /**
+   * @brief Which layer a failure came from. `NOT_APPLICABLE` is used for every
+   *        non-failure outcome.
+   */
+  typedef enum az_iot_adu_failure_origin
+  {
+    AZ_IOT_ADU_FAILURE_ORIGIN_NOT_APPLICABLE = 0,
+    AZ_IOT_ADU_FAILURE_ORIGIN_ADU_CLOUD_SERVICE,
+    AZ_IOT_ADU_FAILURE_ORIGIN_ADU_MANAGED_RESOURCE,
+    AZ_IOT_ADU_FAILURE_ORIGIN_AGENT_CORE,
+    AZ_IOT_ADU_FAILURE_ORIGIN_AGENT_EXTENSION,
+    AZ_IOT_ADU_FAILURE_ORIGIN_AGENT_DEPENDENCY,
+    AZ_IOT_ADU_FAILURE_ORIGIN_DEVICE,
+    AZ_IOT_ADU_FAILURE_ORIGIN_OTHER,
+  } az_iot_adu_failure_origin;
+
+  /** @brief An update identity triple. Spans are NOT owned by this struct. */
+  typedef struct az_iot_adu_report_update_id
+  {
+    const char* provider;
+    const char* name;
+    const char* version;
+  } az_iot_adu_report_update_id;
+
+  /**
+   * @brief The structured result the engine hands a channel.
+   *
+   * `workflow_id` alone is the correlation key: reporting is idempotent on it,
+   * and the ADUv1 `retryTimestamp` half of the old composite key does not exist
+   * here.
+   *
+   * `installed_update_id` means "what is installed on the device *now*", not
+   * "what this workflow is about". It is therefore the previously installed
+   * update while a workflow is in progress or has failed, and the newly applied
+   * update once the workflow has succeeded. It may be NULL when the device has
+   * nothing installed (a day-0 onboarding device), in which case the channel
+   * omits it rather than serializing a null.
+   */
+  typedef struct az_iot_adu_report
+  {
+    const char* workflow_id;
+
+    /* NULL when the device has nothing installed. */
+    const az_iot_adu_report_update_id* installed_update_id;
+
+    az_iot_adu_outcome outcome;
+    az_iot_adu_failure_origin failure_origin;
+
+    /* Agent result code. The engine emits the values the contract defines:
+     * 1 while in progress, 700 on success, negative on failure. */
+    int32_t result_code;
+
+    /* Comma-separated hex codes, e.g. "00000000" or "0x80000001". Never NULL. */
+    const char* extended_result_codes;
+
+    /* Free-form human-readable detail. May be NULL. */
+    const char* result_details;
+
+    /* Array and detail spans are borrowed for the report call; NULL when count is zero. */
+    const az_iot_adu_client_step_result* step_results;
+    int32_t step_results_count;
+  } az_iot_adu_report;
+
+  /* Opaque forward declaration. The delivery/reporting channel is an INTERNAL
+   * construct (src/features/adu/internal/adu_channel_internal.h): applications
+   * do not build one and cannot see inside it. It is named here only because
+   * the client struct is caller-allocated and therefore needs its size. */
+  struct az_iot_adu_channel_vtable;
+
   typedef struct az_iot_adu_client_t
   {
     struct
     {
-      az_iot_twin_client* twin;
+      struct
+      {
+        const struct az_iot_adu_channel_vtable* vtable;
+        void* ctx;
+      } channel;
+
+      /* Storage for the SDK-built channel. Opaque here: sized so the client
+       * stays caller-allocated with no hidden allocation. */
+      struct
+      {
+        void* pointers[24];
+        uint8_t bytes[3328];
+        uint64_t alignment[4];
+      } channel_storage;
       az_iot_adu_platform_hooks hooks;
       az_iot_adu_crypto_hooks crypto;
 
@@ -391,7 +494,7 @@ extern "C"
       uint32_t active_manifest_crc;
 
       /* COPY of the service payload backing current_request/current_manifest
-       * spans (the live twin patch buffer is gone after the callback). */
+       * spans (the channel's delivery buffer is gone after the callback). */
       uint8_t request_buffer[AZ_IOT_ADU_REQUEST_BUFFER_SIZE];
       size_t request_len;
 
@@ -412,9 +515,10 @@ extern "C"
       size_t device_props_buffer_size;
       bool device_props_report_pending;
 
-      /* On startup, proactively GET the twin so a deployment already waiting
-       * in desired properties is consumed without needing a fresh push. */
-      bool initial_get_pending;
+      /* Which fetch the application asked for and the channel has not yet
+       * accepted: 0 none, 1 onboarding, 2 regular. Not a bool, because a retry
+       * must re-issue the route that was actually requested. */
+      uint8_t pending_fetch;
 
       /* Upstream-shaped view of the cached custom properties (az_span arrays
        * over the packed strings in device_props_buffer), handed to the
@@ -426,6 +530,20 @@ extern "C"
        * initialize time from the caller's update id. */
       char update_id_json[128];
       size_t update_id_json_len;
+
+      /* Terminal outcome for the active workflow, latched at the transition
+       * that ends it. Reporting is keyed on workflowId, so the engine must be
+       * able to distinguish SUCCEEDED / CANCELED / SKIPPED after the workflow
+       * state itself has returned to Idle. */
+      az_iot_adu_outcome pending_outcome;
+
+      /* The update id that was actually applied, captured BEFORE the return to
+       * Idle clears the manifest. A successful report carries this, because
+       * installedUpdateId means "what is installed now" — not "what this
+       * workflow was about". Strings are packed into applied_update_id_buf. */
+      char applied_update_id_buf[192];
+      az_iot_adu_report_update_id applied_update_id;
+      bool applied_update_id_valid;
 
       /* Connection-state observer / detach safety (see design doc §16). */
       bool detached;
@@ -465,6 +583,7 @@ extern "C"
      * allocation; the buffer MUST outlive the client. MUST be non-NULL. */
     uint8_t* device_props_buffer;
     size_t device_props_buffer_size;
+
   } az_iot_adu_client_config_options;
 
   /* Returns an options struct with all fields zero-initialized. Set hooks, crypto,
@@ -475,8 +594,11 @@ extern "C"
   /**
    * Initialize the ADU client.
    *
-   *   twin: an initialized twin client; the ADU client registers as a
-   *     feature-client desired-property subscriber.
+   *   connection: the connection client this device is provisioned with. The SDK
+   *     builds the device-update channel from it; the application does not
+   *     implement any transport. It need NOT be connected: the ADU bootstrap
+   *     check runs before the device registers, and the fields the channel needs
+   *     (DPS id scope, registration id, credential) are set at init time.
    *   options: configuration (hooks, crypto, trust store, device properties and
    *     the caller-owned cache); see az_iot_adu_client_config_options. Returns
    *     AZ_IOT_ERR_INVALID_ARG if any required field is NULL,
@@ -489,7 +611,7 @@ extern "C"
    */
   AZ_NODISCARD az_iot_result az_iot_adu_client_initialize(
       az_iot_adu_client_t* client,
-      az_iot_twin_client* twin,
+      az_iot_connection_client* connection,
       const az_iot_adu_client_config_options* options);
 
   /**
@@ -523,6 +645,51 @@ extern "C"
   az_iot_adu_state az_iot_adu_client_get_state(const az_iot_adu_client_t* client);
 
   /**
+   * Ask for an ONBOARDING update — the day-0/pre-registration route.
+   *
+   * Use this while the device has no device record with the service yet. It is
+   * the permissive route: it needs no registry entry, and it does not send
+   * `installedUpdateId`.
+   *
+   * The application chooses the route because it is the only party that knows:
+   * it persists its provisioning result across boots, while the SDK sees only
+   * the current process. The service cannot be asked either — "no device
+   * record" and "malformed request" share one error code, so probing would
+   * mask real errors.
+   *
+   * Asynchronous. Records the request; the NEXT az_iot_adu_client_do_work()
+   * issues it, and retries on a later tick if the channel is not ready. The
+   * result arrives through the engine, not this return value. Returns
+   * AZ_IOT_ERR_INVALID_ARG if @p client is NULL.
+   *
+   * There is ONE pending slot, and the newest request wins. Calling either
+   * request function twice before do_work() does NOT queue two fetches: the
+   * second replaces the first, and only the second is issued. A request made
+   * while an earlier one is still in flight likewise replaces whatever the
+   * engine would otherwise have retried.
+   *
+   * Single-threaded contract: MUST be called on the do_work thread or be
+   * externally serialized with do_work().
+   */
+  AZ_NODISCARD az_iot_result
+  az_iot_adu_client_request_onboarding_update(az_iot_adu_client_t* client);
+
+  /**
+   * Ask for a REGULAR (software) update — the operational route.
+   *
+   * Use this once the device is provisioned and has a device record. It sends
+   * `installedUpdateId`, which is how the service knows what to offer next.
+   *
+   * Calling it on a device that has no device record yet is rejected by the
+   * service as an invalid request; use
+   * az_iot_adu_client_request_onboarding_update() until then.
+   *
+   * Asynchronous, with the same contract as
+   * az_iot_adu_client_request_onboarding_update().
+   */
+  AZ_NODISCARD az_iot_result az_iot_adu_client_request_update(az_iot_adu_client_t* client);
+
+  /**
    * Update the cached device properties and request a report. Deep-copies
    * device_props into the client cache and sets a pending flag; the NEXT
    * do_work() publishes. Multiple calls coalesce into a single report. After this
@@ -540,7 +707,7 @@ extern "C"
   /*
    * The functions below let a caller build their OWN ADU agent on top of the
    * SDK's vetted parse + trust + report code, WITHOUT adopting the managed state
-   * machine, a twin, or any transport. They take spans/structs only, perform no
+   * machine, a channel, or any transport. They take spans/structs only, perform no
    * hidden allocation, and (where they verify) are fail-closed. The managed
    * az_iot_adu_client is implemented in terms of the same internal cores, so both
    * modes share one copy of the security-critical path. See
@@ -562,7 +729,7 @@ extern "C"
       void* read_ctx);
 
   /**
-   * Validate and parse a deployment payload with NO twin, state machine, or
+   * Validate and parse a deployment payload with NO channel, state machine, or
    * transport. Performs the full manifest trust chain (compact JWS split,
    * base64url decode, root-key `kid` resolution, `alg=RS256` enforcement, both
    * RSA signature checks via the crypto hooks, and the SHA-256 manifest binding),
@@ -613,7 +780,7 @@ extern "C"
 
   /**
    * Build the agent-state report payload from a caller's own outcome data,
-   * WITHOUT the state machine or a twin. Emits the same reported-property JSON the
+   * WITHOUT the state machine or a channel. Emits the same reported-property JSON the
    * managed client publishes, into the caller-provided @p out_json buffer.
    *
    *   device_props: the device's identity/version (manufacturer, model, installed
