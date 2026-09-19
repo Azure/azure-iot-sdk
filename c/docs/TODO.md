@@ -30,7 +30,7 @@ Canonical pending-work tracker for IoT Hub Next (AEG) integration.
 - [ ] Update Paho v5 adapter to extract User Properties from inbound MESSAGE events
 - [x] Wire `session_present` from CONNACK into `EVT_CONNECTED` — both versions now. The v5 path
   already did; the v3.1.1 path discarded the CONNACK flag, which a Classic session (Clean Session 0
-  by design) has no other way to observe. event
+  by design) has no other way to observe.
 
 ## Phase 4: Session Lifecycle
 

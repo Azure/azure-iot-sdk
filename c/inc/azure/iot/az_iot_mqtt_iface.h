@@ -277,7 +277,13 @@ extern "C"
     uint16_t packet_id; /* for *_ACK events */
     az_iot_result status; /* for ACK / ERROR events */
     const az_iot_mqtt_message* message; /* for AZ_IOT_MQTT_EVT_MESSAGE only */
-    bool session_present; /* for AZ_IOT_MQTT_EVT_CONNECTED (v5 CONNACK) */
+    /* For AZ_IOT_MQTT_EVT_CONNECTED: the Session Present flag the broker
+     * returned in the CONNACK. Carried by BOTH protocol versions -- MQTT 3.1.1
+     * has the flag too -- and adapters populate it for both, because a session
+     * connected with Clean Session 0 has no other way to learn whether the
+     * broker resumed it or quietly started a fresh one. False for every other
+     * event kind. */
+    bool session_present;
     /* The code that came off the wire, verbatim, for the ack this event carries
      * (a CONNACK return/reason code, a SUBACK return/reason code). A non-zero
      * value is always that code, including the granted QoS on a SUBACK that

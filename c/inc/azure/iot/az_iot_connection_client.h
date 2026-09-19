@@ -79,12 +79,11 @@ extern "C"
     bool connection_profile_raw_truncated;
   } az_iot_hub_profile;
 
-#define AZ_IOT_HUB_PROFILE_INIT                              \
-  {                                                          \
-    ._internal_size = sizeof(az_iot_hub_profile),            \
-    .connection_profile = AZ_IOT_CONNECTION_PROFILE_CLASSIC, \
-    .connection_profile_raw = NULL,                          \
-    .connection_profile_raw_truncated = false,               \
+#define AZ_IOT_HUB_PROFILE_INIT                                                              \
+  {                                                                                          \
+    ._internal_size = sizeof(az_iot_hub_profile),                                            \
+    .connection_profile = AZ_IOT_CONNECTION_PROFILE_CLASSIC, .connection_profile_raw = NULL, \
+    .connection_profile_raw_truncated = false,                                               \
   }
 
   typedef struct az_iot_reconnection_policy
