@@ -1348,6 +1348,13 @@ static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
            * diagnosable instead of an opaque fault. The formatted text
            * is truncated if the response is long, which is right for a
            * diagnostic: a shortened message still names the cause. */
+          /* Both an operation-level failure ("status":"failed"/"disabled") and
+           * a request-level one (a 4xx/5xx response topic, whose body carries
+           * errorCode/message and no operationId) arrive here -- the parser
+           * reports FAILED for both. Keep the service's retry-after: on a
+           * throttle or a server error it is the one authoritative statement
+           * about when this device may come back. */
+          c->dps_pending_retry_after_s = resp.retry_after_seconds;
           AZ_IOT_LOG_ERRORF(
               "dps register: provisioning failed/disabled; DPS response: %.*s",
               (int)az_span_size(payload_span),
@@ -1522,6 +1529,7 @@ static az_iot_result dps_start(az_iot_connection_client* c)
   c->dps_pending_finalize = false;
   c->dps_pending_have_assignment = false;
   c->dps_pending_status = AZ_IOT_OK;
+  c->dps_pending_retry_after_s = 0;
   c->dps_enrolling = c->opts.dps.request_operational_certificate;
 
   set_state_to(c, AZ_IOT_CONN_STATE_CONNECTING, AZ_IOT_OK);
@@ -1587,9 +1595,11 @@ static void dps_apply_deferred(az_iot_connection_client* c)
   }
   bool have_assignment = c->dps_pending_have_assignment;
   az_iot_result status = c->dps_pending_status;
+  uint32_t retry_after_s = c->dps_pending_retry_after_s;
   c->dps_pending_finalize = false;
   c->dps_pending_have_assignment = false;
   c->dps_pending_status = AZ_IOT_OK;
+  c->dps_pending_retry_after_s = 0;
 
   /* Disconnect and destroy the DPS MQTT session. */
   if (c->dps_mqtt && c->dps_mqtt->iface && c->dps_mqtt->iface->disconnect)
@@ -1641,6 +1651,24 @@ static void dps_apply_deferred(az_iot_connection_client* c)
        * re-provision. */
       c->session_role = AZ_IOT_MQTT_ROLE_DPS;
       schedule_reconnect(c, status);
+      /* The service's retry-after wins when it is longer than the policy's
+       * backoff. schedule_reconnect() has already set the deadline from the
+       * policy; raising it here keeps the two as a floor rather than letting
+       * either one alone decide. The policy's max_delay_ms deliberately does
+       * NOT cap this: it bounds how long the SDK waits of its own accord, not
+       * how long the service asked to be left alone. */
+      if (retry_after_s > 0 && c->state == AZ_IOT_CONN_STATE_RECONNECTING)
+      {
+        uint64_t floor_ms = az_iot_time_mono_ms() + (uint64_t)retry_after_s * 1000ull;
+        if (c->reconnect_due_ms < floor_ms)
+        {
+          AZ_IOT_LOG_WARNF(
+              "dps: the service asked for a %u second retry-after; honoring it over the "
+              "reconnection policy",
+              (unsigned)retry_after_s);
+          c->reconnect_due_ms = floor_ms;
+        }
+      }
       return;
     }
     set_state_to(c, AZ_IOT_CONN_STATE_FAULTED, status);
