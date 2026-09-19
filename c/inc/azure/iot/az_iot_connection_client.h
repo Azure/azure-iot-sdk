@@ -383,6 +383,21 @@ extern "C"
     AZ_IOT_CONN_STATE_CONNECTED,
     AZ_IOT_CONN_STATE_RECONNECTING,
     AZ_IOT_CONN_STATE_DISCONNECTING,
+    /* The connection gave up: either no reconnection policy is configured, or
+     * its attempts were exhausted, or the failure is one a retry cannot fix
+     * (AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH / _UNSUPPORTED).
+     *
+     * FAULTED is settled, not a dead end. The SDK never leaves it on its own --
+     * do_work() does not retry from here -- but it is recoverable:
+     * az_iot_connection_client_close() is legal from FAULTED and returns the
+     * client to IDLE, from which az_iot_connection_client_open() starts a fresh
+     * attempt. Attached feature clients keep working across that; they only
+     * have to be rebuilt when the reason says the hub generation changed.
+     *
+     * The application decides whether and when to retry, which is the point of
+     * the state: an unattended device can back off, ask for new credentials or
+     * report the fault before trying again, instead of the SDK looping on a
+     * failure it has already been told not to retry. */
     AZ_IOT_CONN_STATE_FAULTED
   } az_iot_connection_state;
 
@@ -919,10 +934,28 @@ extern "C"
       void* user_ctx);
 
   /* Open a session to the configured host. Non-blocking; observe state via callback
-   * and drive progress with do_work(). */
+   * and drive progress with do_work().
+   *
+   * Legal only from AZ_IOT_CONN_STATE_IDLE; any other state returns
+   * AZ_IOT_ERR_ALREADY_INITIALIZED. After a fault, call
+   * az_iot_connection_client_close() first: that returns the client to IDLE and
+   * makes this a supported retry. */
   AZ_NODISCARD az_iot_result az_iot_connection_client_open(az_iot_connection_client* client);
 
-  /* Not AZ_NODISCARD: teardown/lifecycle op commonly called fire-and-forget. */
+  /* Close the session and return the client to AZ_IOT_CONN_STATE_IDLE.
+   *
+   * Legal from every state. It is idempotent from IDLE, cancels a pending retry
+   * from RECONNECTING, and acknowledges a fault from FAULTED -- in all three
+   * cases IDLE is reached before this call returns. From CONNECTING /
+   * CONNECTED / DISCONNECTING the disconnect is asynchronous: IDLE is announced
+   * on the state callback once the transport reports the session gone, so keep
+   * calling do_work().
+   *
+   * The client's configuration and its attached feature clients survive, so
+   * close() + open() is the ordinary way to retry after a fault; destroy() is
+   * only needed when the client itself is going away.
+   *
+   * Not AZ_NODISCARD: teardown/lifecycle op commonly called fire-and-forget. */
   az_iot_result az_iot_connection_client_close(az_iot_connection_client* client);
 
   /* Pump network I/O and dispatch callbacks. Single-threaded contract: all user

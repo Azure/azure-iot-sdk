@@ -71,9 +71,14 @@ stateDiagram-v2
     RECONNECTING --> FAULTED: attempts exhausted
     RECONNECTING --> IDLE: close()
     DISCONNECTING --> IDLE: transport closed
-    FAULTED --> CONNECTING: open()
+    FAULTED --> IDLE: close()
     IDLE --> [*]: destroy()
 ```
+
+`FAULTED` is settled, not a dead end. The SDK never leaves it on its own -- `do_work()` does not
+retry from there -- but `close()` is legal from it and returns the client to `IDLE`, from which
+`open()` starts a fresh attempt with the configuration and the attached feature clients intact.
+`open()` itself remains `IDLE`-only.
 
 When DPS is configured the whole provisioning exchange happens **inside** the `CONNECTING` state, so
 the application never sees an intermediate `CONNECTED` for the DPS session. The DPS progress is

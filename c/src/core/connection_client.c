@@ -1615,7 +1615,10 @@ static void dps_apply_deferred(az_iot_connection_client* c)
   {
     /* Terminal on purpose: re-provisioning would return this same profile, so a
      * retry cannot succeed. The application owns the recovery -- destroy the
-     * feature clients and rebuild them for the profile this event carries. */
+     * feature clients and rebuild them for the profile this event carries, then
+     * close() this connection client (legal from FAULTED, and it returns it to
+     * IDLE) and open() it again. The connection client itself does not have to
+     * be destroyed. */
     AZ_IOT_LOG_ERRORF(
         "dps: assigned connectionProfile \"%s\", but the attached feature clients require the "
         "other hub generation; destroy them and rebuild for the assigned profile",
@@ -3090,6 +3093,33 @@ az_iot_result az_iot_connection_client_close(az_iot_connection_client* client)
     client->reconnect_attempt = 0;
     client->reconnect_due_ms = 0;
     client->user_close = false;
+    transition(client, AZ_IOT_CONN_STATE_IDLE, AZ_IOT_OK);
+    return AZ_IOT_OK;
+  }
+
+  /* Closing from FAULTED: acknowledge the fault and return the client to IDLE,
+   * which is what makes open() a supported retry.
+   *
+   * Every path into FAULTED has already torn the session down, so there is
+   * nothing to disconnect -- which is exactly why this has to be handled
+   * before the active_client check below, or close() would report
+   * NOT_INITIALIZED and leave the client in a state no API could leave. The
+   * only escape would then be destroy() plus a full re-init, which also forces
+   * the application to rebuild every attached feature client.
+   *
+   * Same shape as the RECONNECTING branch above: cancel the bookkeeping and
+   * transition. The configuration is untouched, so a DPS client re-provisions
+   * on the next open() and a client that had already been assigned a hub
+   * reconnects to it. */
+  if (client->state == AZ_IOT_CONN_STATE_FAULTED)
+  {
+    client->reconnect_attempt = 0;
+    client->reconnect_due_ms = 0;
+    client->user_close = false;
+    client->needs_reprovision = false;
+    /* Defensive: no fault path leaves one behind today, but close() must not
+     * depend on that to reach IDLE. */
+    teardown_active(client);
     transition(client, AZ_IOT_CONN_STATE_IDLE, AZ_IOT_OK);
     return AZ_IOT_OK;
   }
