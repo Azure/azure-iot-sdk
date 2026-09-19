@@ -208,6 +208,45 @@ Worked examples: [samples/websockets](../samples/websockets/main.c) and
 [samples/proxy](../samples/proxy/main.c). Each is the `telemetry_gen1` sample with
 one of these options set, so the diff against it is exactly the feature.
 
+### 3.2 Session terms per role **[implemented]**
+
+Every CONNECT also carries the terms of the session it is opening. They are decided per session
+role, in `resolve_session_options()` in `src/core/connection_client.c`, and the three roles do not
+want the same thing.
+
+| Role | MQTT | Clean Start / Clean Session | Session Expiry | Will | DISCONNECT reason |
+| --- | --- | --- | --- | --- | --- |
+| `DPS` | 3.1.1 | clean (`1`) | n/a | never | n/a |
+| `HUB_CLASSIC` | 3.1.1 | persistent (`0`) | n/a | `opts.lwt`, if set | n/a |
+| `HUB_NEXT` | 5 | clean | `0`, or the will delay when one is set | `opts.lwt`, if set | `0x04` when a Will is set, else `0x00` |
+
+Why each one:
+
+- **DPS starts clean.** Registration is a short exchange, fully torn down before the hub session
+  exists, and the response filter is re-subscribed on every attempt. A resumed session could only
+  redeliver the answer to an attempt that was abandoned.
+- **Classic stays persistent.** IoT Hub Classic holds a device's subscriptions and the
+  cloud-to-device messages that arrived while it was away only for a session that is *not* clean.
+  Connecting clean would silently drop whatever was queued during an outage; the SUBSCRIBEs are
+  re-issued on every connect either way, so resuming costs nothing.
+- **Next starts clean.** On this generation the birth handshake is what recovers state: the device
+  re-subscribes `ih/{device_id}/dev/#` and always publishes birth, and the presence protocol states
+  the backend must not consult `session_present` for any state decision. A resumed session recovers
+  nothing the birth does not, while keeping a dead session's queued messages alive against the new
+  one.
+
+Two rules that hold everywhere:
+
+- **A v3.1.1 broker never receives a v5-only property.** Session Expiry and Will Delay are MQTT 5
+  CONNECT properties; a v3.1.1 CONNECT has no field to carry them, and the DISCONNECT reason code
+  does not exist in 3.1.1 either.
+- **The SDK sets no Will of its own.** `opts.lwt` is the application's, and defaults to none. There
+  is no protocol-defined departure message for either generation to fill it with — the presence
+  protocol defines birth and birth-ack and nothing for the other direction — so the SDK plumbs the
+  Will through rather than inventing a payload for a topic the service parses.
+- A Will Delay only means something while the session is alive, so on `HUB_NEXT` the session expiry
+  is raised to cover it; MQTT 5 ends the delay at whichever comes first.
+
 ---
 
 ## 4. Connection profile selection **[planned]**

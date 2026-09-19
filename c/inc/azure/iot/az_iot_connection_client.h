@@ -79,11 +79,12 @@ extern "C"
     bool connection_profile_raw_truncated;
   } az_iot_hub_profile;
 
-#define AZ_IOT_HUB_PROFILE_INIT                                                              \
-  {                                                                                          \
-    ._internal_size = sizeof(az_iot_hub_profile),                                            \
-    .connection_profile = AZ_IOT_CONNECTION_PROFILE_CLASSIC, .connection_profile_raw = NULL, \
-    .connection_profile_raw_truncated = false,                                               \
+#define AZ_IOT_HUB_PROFILE_INIT                              \
+  {                                                          \
+    ._internal_size = sizeof(az_iot_hub_profile),            \
+    .connection_profile = AZ_IOT_CONNECTION_PROFILE_CLASSIC, \
+    .connection_profile_raw = NULL,                          \
+    .connection_profile_raw_truncated = false,               \
   }
 
   typedef struct az_iot_reconnection_policy
@@ -286,6 +287,44 @@ extern "C"
       bool push_reported; /* request one-shot rehydration of the reported
                            * payload on connect (for volatile devices) */
     } twin_push;
+
+    /* Last Will and Testament for the HUB session, announced in CONNECT and
+     * published by the broker if the device disappears without an orderly
+     * close. Leave zeroed (topic NULL) for no Will, which is the default.
+     *
+     * Scope, deliberately:
+     *  - It is applied to the hub session only -- Classic and Next alike. The
+     *    DPS session never carries it: provisioning is a short exchange that is
+     *    fully torn down before the hub session exists, and a Will published
+     *    from it would announce a departure that never happened.
+     *  - `will_delay_seconds` is MQTT 5 only (ignored on a Classic hub, which
+     *    speaks v3.1.1). On a Next session the SDK also raises the session
+     *    expiry to cover the delay, because MQTT 5 ends the delay at whichever
+     *    comes first -- a delay longer than the session expiry is silently no
+     *    delay at all.
+     *  - On a Next session, configuring a Will also makes the SDK close with
+     *    DISCONNECT reason 0x04 (Disconnect with Will Message) so an orderly
+     *    close announces the departure too, instead of discarding the Will.
+     *
+     * The SDK sets NO default Will: the topic and payload are an application
+     * (or protocol) decision, and this client does not have one to make. See
+     * docs/connection.md.
+     *
+     * The buffers are borrowed, like every other pointer on this struct, and
+     * must outlive the client.
+     *
+     * Appended, like the options above it and for the same reason: this struct
+     * is filled by callers, so a member inserted anywhere else would shift
+     * every one after it for positional aggregate initializers. */
+    struct
+    {
+      const char* topic; /* NULL = no Will */
+      const uint8_t* payload;
+      size_t payload_len;
+      az_iot_mqtt_qos qos;
+      bool retain;
+      uint32_t will_delay_seconds; /* MQTT 5 only; 0 = publish immediately */
+    } lwt;
   } az_iot_connection_client_options;
 
   typedef enum az_iot_connection_state

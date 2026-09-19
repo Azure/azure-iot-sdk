@@ -343,6 +343,58 @@ extern "C"
   uint32_t az_iot_test_proxy_packets_seen(az_iot_test_proxy* proxy);
   uint32_t az_iot_test_proxy_connections(az_iot_test_proxy* proxy);
 
+  /* --- Session-setup inspection. The proxy decodes FIELDS of the two control
+   * packets that carry a session's terms -- the client's CONNECT and its
+   * DISCONNECT -- and publishes them here.
+   *
+   * This does not weaken the "records no traffic" rule above and is not a step
+   * toward a codec: nothing is stored except the handful of scalars below, no
+   * PUBLISH is ever looked at, and no payload is retained (the Will is reported
+   * by topic and length, never by content). What it buys is the only honest way
+   * to assert that an adapter put the Clean Start flag, the Session Expiry
+   * Interval or the Will on the wire -- the client's own API cannot testify to
+   * that, and a broker will not report it back.
+   *
+   * Both are per-connection and reset when a new client connects, so a test
+   * that reconnects reads the terms of the latest session, not the first. --- */
+
+#define AZ_IOT_TEST_PROXY_WILL_TOPIC_MAX 128
+
+  typedef struct az_iot_test_proxy_connect_fields
+  {
+    /* 0 until a CONNECT has been decoded on this connection; everything below
+     * is meaningless while it is 0. */
+    int seen;
+    /* Protocol level byte: 4 for MQTT 3.1.1, 5 for MQTT 5. */
+    uint8_t protocol_level;
+    /* CONNECT flags bit 1: Clean Session in 3.1.1, Clean Start in 5. */
+    int clean_flag;
+    int will_flag;
+    uint8_t will_qos;
+    int will_retain;
+    char will_topic[AZ_IOT_TEST_PROXY_WILL_TOPIC_MAX];
+    size_t will_payload_len;
+    /* MQTT 5 CONNECT properties. `has_*` distinguishes "absent" from "present
+     * and zero", which is the distinction a v3.1.1 assertion rests on: a
+     * v3.1.1 CONNECT has no property field at all, so these are never set. */
+    int has_session_expiry;
+    uint32_t session_expiry_seconds;
+    int has_will_delay;
+    uint32_t will_delay_seconds;
+  } az_iot_test_proxy_connect_fields;
+
+  /* Copy the decoded CONNECT of the current connection into `out`. Returns 1
+   * when one has been seen, 0 otherwise (`out` is zeroed either way). */
+  int az_iot_test_proxy_last_connect_fields(
+      az_iot_test_proxy* proxy,
+      az_iot_test_proxy_connect_fields* out);
+
+  /* Reason code of the last DISCONNECT the CLIENT sent on this connection.
+   * Returns 1 and writes the code when one has been seen, 0 otherwise. A
+   * DISCONNECT with an empty body -- every 3.1.1 one, and a v5 one that omits
+   * the code -- reports 0, which is what both mean: Normal Disconnection. */
+  int az_iot_test_proxy_last_client_disconnect_reason(az_iot_test_proxy* proxy, uint8_t* out_code);
+
   /* CONNECT-mode observability. All cumulative, all zero in passthrough mode.
    *
    * These are what let a test prove the session went THROUGH the tunnel rather

@@ -228,7 +228,36 @@ extern "C"
      * and DPS expect. Must start with '/'. */
     const char* websocket_path;
     az_iot_mqtt_proxy_options proxy;
+    /* Reason code the adapter puts in the MQTT 5 DISCONNECT packet it sends
+     * when disconnect() is called on THIS session.
+     *
+     * It belongs to the connect options rather than to disconnect() because the
+     * vtable is a published seam: adding a parameter to disconnect(), or a slot
+     * to az_iot_mqtt_iface, changes the ABI every bring-your-own adapter is
+     * compiled against, while a field appended here is the evolution this
+     * struct already documents -- an adapter built against an older header
+     * simply never reads it, and a zero leaves the behaviour that predates the
+     * field (see docs/struct_versioning.md).
+     *
+     * 0 is AZ_IOT_MQTT_DISCONNECT_NORMAL, which is also what an MQTT 5
+     * DISCONNECT with no reason code means, so zero-initialization keeps the
+     * orderly close every caller had before. The only other value this SDK
+     * uses is AZ_IOT_MQTT_DISCONNECT_WITH_WILL_MESSAGE.
+     *
+     * MQTT 3.1.1 has no DISCONNECT reason codes at all: a v3.1.1 adapter MUST
+     * ignore this field rather than invent a byte for it. */
+    uint8_t disconnect_reason_code;
   } az_iot_mqtt_connect_options;
+
+/* MQTT 5 DISCONNECT reason codes used by az_iot_mqtt_connect_options.
+ * disconnect_reason_code. Named rather than spelled out because a bare 0x04 at
+ * a call site is indistinguishable from a typo.
+ *
+ * NORMAL (0x00) closes the session and DISCARDS any Will. WITH_WILL_MESSAGE
+ * (0x04) closes it and asks the broker to publish the Will anyway, which is the
+ * only way an orderly close can still announce the departure. */
+#define AZ_IOT_MQTT_DISCONNECT_NORMAL 0x00u
+#define AZ_IOT_MQTT_DISCONNECT_WITH_WILL_MESSAGE 0x04u
 
   /* Inbound event types delivered through the single adapter callback. */
   typedef enum az_iot_mqtt_event_kind
@@ -275,6 +304,10 @@ extern "C"
     az_iot_mqtt_version version;
 
     az_iot_result (*connect)(az_iot_mqtt_client* self, const az_iot_mqtt_connect_options* opts);
+    /* Orderly close of the session. On MQTT 5 the DISCONNECT carries the reason
+     * code the session was connected with
+     * (az_iot_mqtt_connect_options.disconnect_reason_code); on v3.1.1 there is
+     * no reason code to carry. */
     az_iot_result (*disconnect)(az_iot_mqtt_client* self);
     az_iot_result (*subscribe)(
         az_iot_mqtt_client* self,

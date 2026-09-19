@@ -903,6 +903,137 @@ static void classic_connect_skips_birth_handshake(void** state)
   assert_null(sub);
 }
 
+/* ------------------------------------------------------------------------- */
+/* session options per role                                                  */
+/* ------------------------------------------------------------------------- */
+
+static const uint8_t k_will_body[] = { 'g', 'o', 'n', 'e' };
+
+/* Fixture variants that configure a Last Will, so the tests can assert the
+ * core forwards it on the hub connect (and never on the DPS one). */
+static int setup_classic_with_will(void** state)
+{
+  int rc = setup(state);
+  fixture* fx = (fixture*)*state;
+  fx->client->opts.lwt.topic = "app/ut-device/gone";
+  fx->client->opts.lwt.payload = k_will_body;
+  fx->client->opts.lwt.payload_len = sizeof(k_will_body);
+  fx->client->opts.lwt.qos = AZ_IOT_MQTT_QOS_1;
+  fx->client->opts.lwt.retain = true;
+  fx->client->opts.lwt.will_delay_seconds = 30;
+  return rc;
+}
+
+static int setup_next_with_will(void** state)
+{
+  int rc = setup_next(state);
+  fixture* fx = (fixture*)*state;
+  fx->client->opts.lwt.topic = "app/ut-device/gone";
+  fx->client->opts.lwt.payload = k_will_body;
+  fx->client->opts.lwt.payload_len = sizeof(k_will_body);
+  fx->client->opts.lwt.qos = AZ_IOT_MQTT_QOS_1;
+  fx->client->opts.lwt.retain = true;
+  fx->client->opts.lwt.will_delay_seconds = 30;
+  return rc;
+}
+
+/* Open and return the CONNECT the core issued. */
+static const az_iot_mock_call* connect_options_of_first_attempt(fixture* fx)
+{
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(fx->client, fx->factory), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  assert_non_null(m);
+  const az_iot_mock_call* connect = last_call_of_kind(m, AZ_IOT_MOCK_CALL_CONNECT);
+  assert_non_null(connect);
+  return connect;
+}
+
+/* Classic keeps a PERSISTENT session: the hub holds this device's
+ * subscriptions and its queued cloud-to-device messages only while the session
+ * is not clean, so connecting clean would drop whatever arrived during an
+ * outage. */
+static void classic_connect_asks_to_resume_the_session(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  const az_iot_mock_call* connect = connect_options_of_first_attempt(fx);
+
+  assert_false(connect->connect.clean_start);
+  /* v3.1.1 has no property field to carry either of these. */
+  assert_int_equal(connect->connect.session_expiry_seconds, 0);
+  assert_int_equal(connect->connect.disconnect_reason_code, 0);
+  assert_string_equal(connect->connect.lwt_topic, "");
+}
+
+/* Hub-Next starts clean and lets the session end with the network connection:
+ * the birth handshake is what recovers state on this generation. */
+static void hub_next_connect_starts_a_clean_session(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  const az_iot_mock_call* connect = connect_options_of_first_attempt(fx);
+
+  assert_true(connect->connect.clean_start);
+  assert_int_equal(connect->connect.session_expiry_seconds, 0);
+  /* No Will configured, so nothing to announce on an orderly close. */
+  assert_int_equal(connect->connect.disconnect_reason_code, 0);
+  assert_string_equal(connect->connect.lwt_topic, "");
+}
+
+/* A Will configured by the application rides the Classic CONNECT, but the
+ * v5-only parts of it do not: v3.1.1 has no Will Delay Interval and no
+ * DISCONNECT reason codes. */
+static void a_will_rides_the_classic_connect_without_v5_fields(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  const az_iot_mock_call* connect = connect_options_of_first_attempt(fx);
+
+  assert_string_equal(connect->connect.lwt_topic, "app/ut-device/gone");
+  assert_int_equal(connect->connect.lwt_payload_len, sizeof(k_will_body));
+  assert_memory_equal(connect->connect.lwt_payload, k_will_body, sizeof(k_will_body));
+  assert_int_equal(connect->connect.lwt_qos, AZ_IOT_MQTT_QOS_1);
+  assert_true(connect->connect.lwt_retain);
+  assert_int_equal(connect->connect.lwt_will_delay_seconds, 0);
+  assert_int_equal(connect->connect.session_expiry_seconds, 0);
+  assert_int_equal(connect->connect.disconnect_reason_code, 0);
+  assert_false(connect->connect.clean_start);
+}
+
+/* On Hub-Next the Will carries its delay, the session is held open long enough
+ * for that delay to mean anything, and the close announces the departure
+ * instead of discarding the Will. */
+static void a_will_rides_the_hub_next_connect_with_delay_and_reason(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  const az_iot_mock_call* connect = connect_options_of_first_attempt(fx);
+
+  assert_string_equal(connect->connect.lwt_topic, "app/ut-device/gone");
+  assert_int_equal(connect->connect.lwt_payload_len, sizeof(k_will_body));
+  assert_memory_equal(connect->connect.lwt_payload, k_will_body, sizeof(k_will_body));
+  assert_int_equal(connect->connect.lwt_qos, AZ_IOT_MQTT_QOS_1);
+  assert_true(connect->connect.lwt_retain);
+  assert_int_equal(connect->connect.lwt_will_delay_seconds, 30);
+  /* MQTT 5 ends the will delay at whichever comes first, the delay or the
+   * session expiry; a session expiring at once would make the delay a no-op. */
+  assert_int_equal(connect->connect.session_expiry_seconds, 30);
+  assert_int_equal(connect->connect.disconnect_reason_code, 0x04);
+  assert_true(connect->connect.clean_start);
+}
+
+/* The session options are a property of the ROLE, not of what the broker
+ * answered: a resumed session must not change what the next CONNECT asks for. */
+static void hub_next_session_options_do_not_depend_on_session_present(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_mock_mqtt_client* m = NULL;
+  (void)drive_to_birth_published(fx, true, &m);
+
+  const az_iot_mock_call* connect = last_call_of_kind(m, AZ_IOT_MOCK_CALL_CONNECT);
+  assert_non_null(connect);
+  assert_true(connect->connect.clean_start);
+  assert_int_equal(connect->connect.session_expiry_seconds, 0);
+}
+
 /* With no reconnection policy, a birth-ack that never arrives faults the client
  * once the handshake deadline passes. */
 static void hub_next_birth_ack_timeout_faults(void** state)
@@ -2018,6 +2149,14 @@ int main(void)
     cmocka_unit_test_setup_teardown(hub_next_suback_failure_faults, setup_next, teardown),
     cmocka_unit_test_setup_teardown(hub_next_birth_ack_timeout_faults, setup_next, teardown),
     cmocka_unit_test_setup_teardown(classic_connect_skips_birth_handshake, setup, teardown),
+    cmocka_unit_test_setup_teardown(classic_connect_asks_to_resume_the_session, setup, teardown),
+    cmocka_unit_test_setup_teardown(hub_next_connect_starts_a_clean_session, setup_next, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_will_rides_the_classic_connect_without_v5_fields, setup_classic_with_will, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_will_rides_the_hub_next_connect_with_delay_and_reason, setup_next_with_will, teardown),
+    cmocka_unit_test_setup_teardown(
+        hub_next_session_options_do_not_depend_on_session_present, setup_next, teardown),
     cmocka_unit_test(hub_next_without_v5_factory_is_not_supported),
     cmocka_unit_test_setup_teardown(hub_next_birth_publish_failure_faults, setup_next, teardown),
     cmocka_unit_test_setup_teardown(

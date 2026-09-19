@@ -254,6 +254,9 @@ typedef struct conf_recorder
   char topics[CONF_EVENTS_MAX][CONF_TOPIC_MAX];
   uint8_t payloads[CONF_EVENTS_MAX][CONF_PAYLOAD_MAX];
   size_t payload_lens[CONF_EVENTS_MAX];
+  /* Session Present from the CONNACK, which is how a client learns the broker
+   * resumed its session rather than started a fresh one. */
+  int session_presents[CONF_EVENTS_MAX];
 } conf_recorder;
 
 static void on_event(const az_iot_mqtt_event* evt, void* ctx)
@@ -268,6 +271,7 @@ static void on_event(const az_iot_mqtt_event* evt, void* ctx)
   r->statuses[i] = evt->status;
   r->protocol_codes[i] = evt->protocol_code;
   r->packet_ids[i] = evt->packet_id;
+  r->session_presents[i] = evt->session_present ? 1 : 0;
   if (evt->message)
   {
     if (evt->message->topic)
@@ -1128,6 +1132,307 @@ static void reconnect_after_network_drop(void** state)
 
   /* The proxy must have accepted two distinct client connections. */
   assert_true(az_iot_test_proxy_connections(proxy) >= 2);
+
+  (void)c->iface->disconnect(c);
+  destroy_client(c);
+  az_iot_test_proxy_stop(proxy);
+}
+
+/* ------------------------------------------------------------------------- */
+/* session terms on the wire                                                 */
+/* ------------------------------------------------------------------------- */
+
+/* The cases below are the only ones that can prove an adapter put a session's
+ * terms on the wire. Clean Start, the Session Expiry Interval and the Will are
+ * all write-only from the client's side: the iface has no getter for them, the
+ * broker does not report them back, and an adapter that dropped every one of
+ * them would still connect, publish and subscribe exactly as these tests
+ * otherwise observe. So the proxy in front of the broker decodes the CONNECT
+ * (and the DISCONNECT) and the assertions are made on those fields.
+ *
+ * The version split is not cosmetic. A v3.1.1 CONNECT has no property field at
+ * all, so an adapter that sent a Session Expiry Interval or a Will Delay
+ * Interval to a v3.1.1 broker would be emitting bytes the protocol has no place
+ * for; "absent" is therefore asserted, not merely "not equal". */
+
+static int conf_is_v5(void) { return g_factory->version == AZ_IOT_MQTT_VERSION_5; }
+
+/* Stand the proxy up in front of the configured broker and point `copts` at
+ * it, leaving the caller to set whatever session terms it is asserting on. */
+static void conf_proxy_connect_options(
+    az_iot_test_proxy** out_proxy,
+    az_iot_mqtt_connect_options* copts,
+    const char* client_id)
+{
+  az_iot_test_proxy_options popts = az_iot_test_proxy_options_default();
+  popts.upstream_host = g_host;
+  popts.upstream_port = g_port;
+  uint16_t proxy_port = 0;
+  assert_int_equal(az_iot_test_proxy_start(&popts, out_proxy, &proxy_port), 0);
+  assert_int_not_equal(proxy_port, 0);
+
+  memset(copts, 0, sizeof(*copts));
+  copts->host = "127.0.0.1";
+  copts->port = proxy_port;
+  copts->client_id = client_id;
+  copts->keep_alive_seconds = 30;
+  copts->connect_timeout_seconds = k_step_timeout_seconds;
+}
+
+/* Clean Start (Clean Session on 3.1.1) is carried as the caller asked, in both
+ * directions: an adapter that hardcodes either value fails one half of this. */
+static void connect_carries_the_clean_session_flag(void** state)
+{
+  (void)state;
+  for (int clean = 1; clean >= 0; --clean)
+  {
+    char cid[64];
+    unique_client_id(cid, sizeof(cid), clean ? "az-iot-conf-clean1" : "az-iot-conf-clean0");
+
+    az_iot_test_proxy* proxy = NULL;
+    az_iot_mqtt_connect_options copts;
+    conf_proxy_connect_options(&proxy, &copts, cid);
+    copts.clean_start = clean ? true : false;
+
+    conf_recorder rec = { 0 };
+    az_iot_mqtt_client* c = make_client();
+    c->iface->set_inbound_cb(c, on_event, &rec);
+    assert_int_equal(c->iface->connect(c, &copts), AZ_IOT_OK);
+    assert_true(wait_until(c, &rec, saw_connected_ok, k_step_timeout_ms));
+
+    az_iot_test_proxy_connect_fields f;
+    assert_int_equal(az_iot_test_proxy_last_connect_fields(proxy, &f), 1);
+    assert_int_equal(f.protocol_level, conf_is_v5() ? 5 : 4);
+    assert_int_equal(f.clean_flag, clean);
+    assert_int_equal(f.will_flag, 0);
+
+    (void)c->iface->disconnect(c);
+    destroy_client(c);
+    az_iot_test_proxy_stop(proxy);
+  }
+}
+
+/* The Session Expiry Interval is an MQTT 5 property. A v5 adapter must put the
+ * value it was given in the CONNECT; a v3.1.1 adapter must send no property at
+ * all, because a v3.1.1 CONNECT has nowhere to put one. */
+static void session_expiry_is_sent_only_on_v5(void** state)
+{
+  (void)state;
+  char cid[64];
+  unique_client_id(cid, sizeof(cid), "az-iot-conf-expiry");
+
+  az_iot_test_proxy* proxy = NULL;
+  az_iot_mqtt_connect_options copts;
+  conf_proxy_connect_options(&proxy, &copts, cid);
+  copts.clean_start = true;
+  copts.session_expiry_seconds = 120;
+
+  conf_recorder rec = { 0 };
+  az_iot_mqtt_client* c = make_client();
+  c->iface->set_inbound_cb(c, on_event, &rec);
+  assert_int_equal(c->iface->connect(c, &copts), AZ_IOT_OK);
+  assert_true(wait_until(c, &rec, saw_connected_ok, k_step_timeout_ms));
+
+  az_iot_test_proxy_connect_fields f;
+  assert_int_equal(az_iot_test_proxy_last_connect_fields(proxy, &f), 1);
+  if (conf_is_v5())
+  {
+    assert_int_equal(f.has_session_expiry, 1);
+    assert_int_equal(f.session_expiry_seconds, 120);
+  }
+  else
+  {
+    assert_int_equal(f.has_session_expiry, 0);
+  }
+
+  (void)c->iface->disconnect(c);
+  destroy_client(c);
+  az_iot_test_proxy_stop(proxy);
+}
+
+/* The Will is announced in the CONNECT with the topic, QoS, retain flag and
+ * payload it was given. The Will Delay Interval is v5-only and must not appear
+ * on a v3.1.1 connection. */
+static void the_will_is_announced_in_connect(void** state)
+{
+  (void)state;
+  char cid[64];
+  unique_client_id(cid, sizeof(cid), "az-iot-conf-will");
+  char will_topic[128];
+  snprintf(will_topic, sizeof(will_topic), "az_iot/conformance/%s/gone", cid);
+  static const uint8_t will_body[] = { 'g', 'o', 'n', 'e' };
+
+  az_iot_test_proxy* proxy = NULL;
+  az_iot_mqtt_connect_options copts;
+  conf_proxy_connect_options(&proxy, &copts, cid);
+  copts.clean_start = true;
+  copts.lwt.topic = will_topic;
+  copts.lwt.payload = will_body;
+  copts.lwt.payload_len = sizeof(will_body);
+  copts.lwt.qos = AZ_IOT_MQTT_QOS_1;
+  copts.lwt.retain = true;
+  copts.lwt.will_delay_seconds = 30;
+  copts.session_expiry_seconds = 60; /* so the delay is expressible at all */
+
+  conf_recorder rec = { 0 };
+  az_iot_mqtt_client* c = make_client();
+  c->iface->set_inbound_cb(c, on_event, &rec);
+  assert_int_equal(c->iface->connect(c, &copts), AZ_IOT_OK);
+  assert_true(wait_until(c, &rec, saw_connected_ok, k_step_timeout_ms));
+
+  az_iot_test_proxy_connect_fields f;
+  assert_int_equal(az_iot_test_proxy_last_connect_fields(proxy, &f), 1);
+  assert_int_equal(f.will_flag, 1);
+  assert_string_equal(f.will_topic, will_topic);
+  assert_int_equal(f.will_payload_len, sizeof(will_body));
+  assert_int_equal(f.will_qos, 1);
+  assert_int_equal(f.will_retain, 1);
+  if (conf_is_v5())
+  {
+    assert_int_equal(f.has_will_delay, 1);
+    assert_int_equal(f.will_delay_seconds, 30);
+  }
+  else
+  {
+    assert_int_equal(f.has_will_delay, 0);
+  }
+
+  (void)c->iface->disconnect(c);
+  destroy_client(c);
+  az_iot_test_proxy_stop(proxy);
+}
+
+/* A session connected with a DISCONNECT reason code closes with that code, so
+ * "Disconnect with Will Message" (0x04) reaches the broker instead of the
+ * orderly close that discards the Will. On v3.1.1 there is no reason code to
+ * carry and the DISCONNECT body stays empty, which reads back as 0. */
+static void disconnect_carries_the_reason_code_it_was_connected_with(void** state)
+{
+  (void)state;
+  char cid[64];
+  unique_client_id(cid, sizeof(cid), "az-iot-conf-discreason");
+  char will_topic[128];
+  snprintf(will_topic, sizeof(will_topic), "az_iot/conformance/%s/gone", cid);
+
+  az_iot_test_proxy* proxy = NULL;
+  az_iot_mqtt_connect_options copts;
+  conf_proxy_connect_options(&proxy, &copts, cid);
+  copts.clean_start = true;
+  copts.lwt.topic = will_topic;
+  copts.lwt.qos = AZ_IOT_MQTT_QOS_0;
+  copts.disconnect_reason_code = (uint8_t)AZ_IOT_MQTT_DISCONNECT_WITH_WILL_MESSAGE;
+
+  conf_recorder rec = { 0 };
+  az_iot_mqtt_client* c = make_client();
+  c->iface->set_inbound_cb(c, on_event, &rec);
+  assert_int_equal(c->iface->connect(c, &copts), AZ_IOT_OK);
+  assert_true(wait_until(c, &rec, saw_connected_ok, k_step_timeout_ms));
+
+  assert_int_equal(c->iface->disconnect(c), AZ_IOT_OK);
+  assert_true(wait_until(c, &rec, saw_disconnected, k_step_timeout_ms));
+
+  uint8_t reason = 0xFFu;
+  assert_int_equal(az_iot_test_proxy_last_client_disconnect_reason(proxy, &reason), 1);
+  assert_int_equal(
+      reason,
+      conf_is_v5() ? (uint8_t)AZ_IOT_MQTT_DISCONNECT_WITH_WILL_MESSAGE
+                   : (uint8_t)AZ_IOT_MQTT_DISCONNECT_NORMAL);
+
+  destroy_client(c);
+  az_iot_test_proxy_stop(proxy);
+}
+
+/* A zero-initialized connect options struct -- every adapter's starting point,
+ * and every caller written before the field existed -- closes normally. */
+static void a_session_with_no_reason_code_closes_normally(void** state)
+{
+  (void)state;
+  char cid[64];
+  unique_client_id(cid, sizeof(cid), "az-iot-conf-discnorm");
+
+  az_iot_test_proxy* proxy = NULL;
+  az_iot_mqtt_connect_options copts;
+  conf_proxy_connect_options(&proxy, &copts, cid);
+
+  conf_recorder rec = { 0 };
+  az_iot_mqtt_client* c = make_client();
+  c->iface->set_inbound_cb(c, on_event, &rec);
+  assert_int_equal(c->iface->connect(c, &copts), AZ_IOT_OK);
+  assert_true(wait_until(c, &rec, saw_connected_ok, k_step_timeout_ms));
+
+  assert_int_equal(c->iface->disconnect(c), AZ_IOT_OK);
+  assert_true(wait_until(c, &rec, saw_disconnected, k_step_timeout_ms));
+
+  uint8_t reason = 0xFFu;
+  assert_int_equal(az_iot_test_proxy_last_client_disconnect_reason(proxy, &reason), 1);
+  assert_int_equal(reason, (uint8_t)AZ_IOT_MQTT_DISCONNECT_NORMAL);
+
+  destroy_client(c);
+  az_iot_test_proxy_stop(proxy);
+}
+
+/* Session Present is what an adapter reports back from the CONNACK, and both
+ * values have to be observable or the flag is untested: a clean session must
+ * report 0, and a session the broker actually resumed must report 1.
+ *
+ * The session is made resumable the way the protocol requires -- a subscription
+ * to hold, a non-clean reconnect, and on v5 a non-zero Session Expiry Interval,
+ * without which the session ends with the network connection and the second
+ * CONNACK would correctly report 0. */
+static void session_present_reports_whether_the_broker_resumed_the_session(void** state)
+{
+  (void)state;
+  char cid[64];
+  unique_client_id(cid, sizeof(cid), "az-iot-conf-sesspres");
+  char topic[160];
+  snprintf(topic, sizeof(topic), "az_iot/conformance/%s/resume", cid);
+
+  az_iot_test_proxy* proxy = NULL;
+  az_iot_mqtt_connect_options copts;
+  conf_proxy_connect_options(&proxy, &copts, cid);
+  if (conf_is_v5())
+  {
+    /* A v5 session ends with the network connection unless it is given an
+     * expiry, so a Clean Start session with one still survives the disconnect
+     * and is there to be resumed. */
+    copts.clean_start = true;
+    copts.session_expiry_seconds = 120;
+  }
+  else
+  {
+    /* MQTT 3.1.1 has no expiry: Clean Session 1 discards the state at
+     * disconnect, so there would be nothing left to resume. The client id is
+     * unique to this run, so this first CONNACK still has nothing to report. */
+    copts.clean_start = false;
+  }
+
+  conf_recorder rec = { 0 };
+  az_iot_mqtt_client* c = make_client();
+  c->iface->set_inbound_cb(c, on_event, &rec);
+  assert_int_equal(c->iface->connect(c, &copts), AZ_IOT_OK);
+  assert_true(wait_until(c, &rec, saw_connected_ok, k_step_timeout_ms));
+  /* Nothing existed under this client id, so nothing can have been resumed. */
+  assert_int_equal(rec.session_presents[rec.count - 1], 0);
+
+  /* Give the broker session state worth keeping. */
+  uint16_t sub_pid = 0;
+  assert_int_equal(c->iface->subscribe(c, topic, AZ_IOT_MQTT_QOS_1, &sub_pid), AZ_IOT_OK);
+  assert_true(wait_until(c, &rec, saw_subscribe_ack_ok, k_step_timeout_ms));
+
+  assert_int_equal(c->iface->disconnect(c), AZ_IOT_OK);
+  assert_true(wait_until(c, &rec, saw_disconnected, k_step_timeout_ms));
+
+  /* Same client id, this time asking to resume. */
+  conf_recorder rec2 = { 0 };
+  c->iface->set_inbound_cb(c, on_event, &rec2);
+  copts.clean_start = false;
+  assert_int_equal(c->iface->connect(c, &copts), AZ_IOT_OK);
+  assert_true(wait_until(c, &rec2, saw_connected_ok, k_step_timeout_ms));
+
+  az_iot_test_proxy_connect_fields f;
+  assert_int_equal(az_iot_test_proxy_last_connect_fields(proxy, &f), 1);
+  assert_int_equal(f.clean_flag, 0);
+  assert_int_equal(rec2.session_presents[rec2.count - 1], 1);
 
   (void)c->iface->disconnect(c);
   destroy_client(c);
@@ -3040,7 +3345,13 @@ static void a_proxy_that_refuses_the_tunnel_fails_the_connect(void** state)
       cmocka_unit_test(a_key_reference_is_never_silently_ignored),                               \
       cmocka_unit_test(a_sign_hook_is_never_silently_ignored),                                   \
       cmocka_unit_test(a_websocket_request_is_never_silently_downgraded),                        \
-      cmocka_unit_test(an_unreachable_proxy_is_never_bypassed)
+      cmocka_unit_test(an_unreachable_proxy_is_never_bypassed),                                  \
+      cmocka_unit_test(connect_carries_the_clean_session_flag),                                  \
+      cmocka_unit_test(session_expiry_is_sent_only_on_v5),                                       \
+      cmocka_unit_test(the_will_is_announced_in_connect),                                        \
+      cmocka_unit_test(disconnect_carries_the_reason_code_it_was_connected_with),                \
+      cmocka_unit_test(a_session_with_no_reason_code_closes_normally),                           \
+      cmocka_unit_test(session_present_reports_whether_the_broker_resumed_the_session)
 
 /* Expands to nothing when the certificate cases were compiled out, so the two
  * lists above stay a single expression either way. */
