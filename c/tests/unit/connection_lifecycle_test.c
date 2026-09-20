@@ -338,6 +338,151 @@ static void the_websocket_path_reaches_the_adapter(void** state)
   assert_string_equal(c.connect.websocket_path, "/mqtt");
 }
 
+/* Stock options retry. A zeroed struct does not -- that is the caller's
+ * choice -- but the function whose job is to supply sensible defaults must not
+ * hand back a client for which every transient failure is terminal. */
+static void the_default_options_enable_reconnection(void** state)
+{
+  (void)state;
+  az_iot_connection_client_options opts = az_iot_connection_client_options_default();
+  az_iot_reconnection_policy expected = az_iot_reconnection_policy_get_default();
+
+  assert_true(opts.reconnection_policy.initial_delay_ms > 0);
+  assert_int_equal(opts.reconnection_policy.initial_delay_ms, expected.initial_delay_ms);
+  assert_int_equal(opts.reconnection_policy.max_delay_ms, expected.max_delay_ms);
+  assert_int_equal(opts.reconnection_policy.max_attempts, expected.max_attempts);
+  assert_int_equal(opts.reconnection_policy.jitter_pct, expected.jitter_pct);
+}
+
+/* The field values are only half of it: they matter because they reach the
+ * lifecycle. A client built from az_iot_connection_client_options_default()
+ * must actually survive a refused CONNACK, or a future regression in wiring
+ * the default policy through could still pass the comparison above. */
+static void the_default_options_retry_a_refused_connack(void** state)
+{
+  (void)state;
+  az_iot_connection_client_options opts = az_iot_connection_client_options_default();
+  opts.host = "broker.example";
+  opts.client_id = "ut-device";
+  /* initial_delay_ms is deliberately NOT overridden: it is the field that
+   * decides whether reconnection happens at all, so the test has to depend on
+   * the default supplying it. Only the cap is shortened, which bounds the
+   * computed delay (base = min(max_delay_ms, initial_delay_ms << n)) so the
+   * retry deadline is reachable without a one-second wait. */
+  opts.reconnection_policy.max_delay_ms = 20u;
+  opts.reconnection_policy.jitter_pct = 0;
+
+  az_iot_connection_client c;
+  assert_int_equal(az_iot_connection_client_init(&c, &opts), AZ_IOT_OK);
+  az_iot_test_state_log log;
+  memset(&log, 0, sizeof(log));
+  assert_int_equal(
+      az_iot_connection_client_set_state_callback(&c, az_iot_test_on_state, &log), AZ_IOT_OK);
+
+  az_iot_mqtt_factory* f = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
+  assert_non_null(f);
+  assert_int_equal(az_iot_connection_client_register_mqtt_factory(&c, f), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_open(&c), AZ_IOT_OK);
+
+  az_iot_mock_mqtt_client* first = az_iot_mock_mqtt_factory_last_client(f);
+  assert_non_null(first);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(first, AZ_IOT_ERR_MQTT));
+  (void)az_iot_connection_client_do_work(&c, 0);
+  (void)az_iot_connection_client_do_work(&c, 0);
+
+  /* Retrying, not terminal. */
+  assert_int_equal(az_iot_test_last_state(&log), AZ_IOT_CONN_STATE_RECONNECTING);
+  assert_false(az_iot_test_saw_state(&log, AZ_IOT_CONN_STATE_FAULTED));
+
+  /* And the retry is really issued once the backoff elapses. */
+  az_iot_test_wait_ms(25u);
+  (void)az_iot_connection_client_do_work(&c, 0);
+  az_iot_mock_mqtt_client* second = az_iot_mock_mqtt_factory_last_client(f);
+  assert_non_null(second);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(second, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(&c, 0);
+  assert_true(az_iot_connection_client__is_connected(&c));
+
+  az_iot_connection_client_destroy(&c);
+}
+
+/* Opting out stays possible, and a zeroed struct keeps meaning "no retry". */
+static void reconnection_can_still_be_disabled(void** state)
+{
+  (void)state;
+  az_iot_connection_client_options zeroed = { 0 };
+  assert_int_equal(zeroed.reconnection_policy.initial_delay_ms, 0);
+
+  az_iot_connection_client_options opts = az_iot_connection_client_options_default();
+  opts.reconnection_policy.initial_delay_ms = 0;
+  opts.host = "broker.example";
+  opts.client_id = "ut-device";
+
+  az_iot_connection_client c;
+  assert_int_equal(az_iot_connection_client_init(&c, &opts), AZ_IOT_OK);
+  az_iot_test_state_log log;
+  memset(&log, 0, sizeof(log));
+  assert_int_equal(
+      az_iot_connection_client_set_state_callback(&c, az_iot_test_on_state, &log), AZ_IOT_OK);
+
+  az_iot_mqtt_factory* f = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
+  assert_non_null(f);
+  assert_int_equal(az_iot_connection_client_register_mqtt_factory(&c, f), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_open(&c), AZ_IOT_OK);
+
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(f);
+  assert_non_null(m);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_ERR_MQTT));
+  (void)az_iot_connection_client_do_work(&c, 0);
+  (void)az_iot_connection_client_do_work(&c, 0);
+
+  assert_int_equal(az_iot_test_last_state(&log), AZ_IOT_CONN_STATE_FAULTED);
+  az_iot_connection_client_destroy(&c);
+}
+
+/* ...but a clean peer DISCONNECT with retrying disabled is NOT a fault. It is
+ * the end of a session, so the client settles in IDLE and is ready to be
+ * opened again. Pinned because the header documents the two outcomes
+ * separately, and describing them as one was wrong. */
+static void a_peer_disconnect_without_retrying_settles_in_idle(void** state)
+{
+  (void)state;
+  az_iot_connection_client_options opts = az_iot_connection_client_options_default();
+  opts.reconnection_policy = az_iot_reconnection_policy_get_retry_disabled();
+  opts.host = "broker.example";
+  opts.client_id = "ut-device";
+
+  az_iot_connection_client c;
+  assert_int_equal(az_iot_connection_client_init(&c, &opts), AZ_IOT_OK);
+  az_iot_test_state_log log;
+  memset(&log, 0, sizeof(log));
+  assert_int_equal(
+      az_iot_connection_client_set_state_callback(&c, az_iot_test_on_state, &log), AZ_IOT_OK);
+
+  az_iot_mqtt_factory* f = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
+  assert_non_null(f);
+  assert_int_equal(az_iot_connection_client_register_mqtt_factory(&c, f), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_open(&c), AZ_IOT_OK);
+
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(f);
+  assert_non_null(m);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(&c, 0);
+  assert_true(az_iot_connection_client__is_connected(&c));
+
+  /* The peer goes away. No retry is configured, but this is not a failure. */
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(m));
+  (void)az_iot_connection_client_do_work(&c, 0);
+  (void)az_iot_connection_client_do_work(&c, 0);
+
+  assert_int_equal(az_iot_test_last_state(&log), AZ_IOT_CONN_STATE_IDLE);
+  assert_false(az_iot_test_saw_state(&log, AZ_IOT_CONN_STATE_FAULTED));
+
+  /* IDLE means reopenable, which is the point of the distinction. */
+  assert_int_equal(az_iot_connection_client_open(&c), AZ_IOT_OK);
+  az_iot_connection_client_destroy(&c);
+}
+
 /* The default options must not pin a port, or selecting WebSockets on top of
  * them would connect to 443's scheme on 8883's port. */
 static void the_default_options_leave_the_port_to_the_transport(void** state)
@@ -913,6 +1058,10 @@ int main(void)
     cmocka_unit_test(the_proxy_reaches_the_adapter_whole),
     cmocka_unit_test(the_websocket_path_reaches_the_adapter),
     cmocka_unit_test(the_default_options_leave_the_port_to_the_transport),
+    cmocka_unit_test(the_default_options_enable_reconnection),
+    cmocka_unit_test(the_default_options_retry_a_refused_connack),
+    cmocka_unit_test(reconnection_can_still_be_disabled),
+    cmocka_unit_test(a_peer_disconnect_without_retrying_settles_in_idle),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

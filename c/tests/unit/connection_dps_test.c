@@ -442,6 +442,32 @@ static void identity_rejection_without_a_policy_faults(void** state)
   assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_FAULTED);
 }
 
+/* ...but the verdict is not thrown away with the retry. Disabling retries
+ * stops the SDK acting on its own; it does not make the client forget that the
+ * hub refused this identity. Without this the next open() would see the cached
+ * host and walk straight back into the hub that just rejected it. */
+static void identity_rejection_without_a_policy_still_reprovisions_on_reopen(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_mock_mqtt_client* hub = provision_to_hub_connecting(fx);
+  assert_string_equal(fx->client->opts.host, "myhub.azure-devices.net");
+
+  assert_true(az_iot_mock_mqtt_client_inject_connected(hub, AZ_IOT_ERR_IDENTITY_REJECTED));
+  for (int i = 0; i < 3; ++i)
+  {
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
+  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_FAULTED);
+  assert_true(fx->client->needs_reprovision);
+
+  assert_int_equal(az_iot_connection_client_close(fx->client), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
+
+  az_iot_mock_mqtt_client* next = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  assert_non_null(next);
+  assert_string_equal(last_connect_host(next), "global.azure-devices-provisioning.net");
+}
+
 /* ------------------------------------------------------------------------- */
 /* endpoint + version selection                                              */
 /* ------------------------------------------------------------------------- */
@@ -2237,6 +2263,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         repeated_identity_rejection_still_honors_max_attempts, setup_with_reconnect, teardown),
     cmocka_unit_test_setup_teardown(identity_rejection_without_a_policy_faults, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        identity_rejection_without_a_policy_still_reprovisions_on_reopen, setup, teardown),
     /* connection profile */
     cmocka_unit_test(dps_mqtt_v5_profile_connects_the_hub_over_v5),
     cmocka_unit_test(dps_classic_profile_connects_the_hub_over_v3_1_1),

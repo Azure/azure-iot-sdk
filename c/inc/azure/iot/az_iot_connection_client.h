@@ -86,23 +86,78 @@ extern "C"
     .connection_profile_raw_truncated = false,                                               \
   }
 
+  /* How the client retries a failed connection. Four numbers describe every
+   * schedule the SDK can produce; the getters below name the three shapes
+   * worth naming, and an application that wants another writes a function of
+   * the same shape itself.
+   *
+   * The retry ladders are PER SCOPE (provisioning and hub, see
+   * az_iot_connection_scope), and these numbers apply to each of them
+   * independently -- including max_attempts, which is a budget per ladder, not
+   * one shared across both. */
   typedef struct az_iot_reconnection_policy
   {
+    /* Delay before the first retry, doubled on each subsequent one up to
+     * max_delay_ms.
+     *
+     * 0 DISABLES retrying: every failure becomes terminal. It is a sentinel,
+     * not a duration, so a zero-initialized policy has retries off whether or
+     * not that was intended -- prefer
+     * az_iot_reconnection_policy_get_retry_disabled() to say it deliberately.
+     * There is deliberately no way to express "retry immediately, forever":
+     * that is a hot loop against a service that is already failing. */
     uint32_t initial_delay_ms;
     /* Ceiling on the BACKOFF -- how far the doubling may climb. Jitter is
      * applied around it, so an individual delay may exceed this by up to
      * jitter_pct; that is the point of jitter, and clamping it back here would
      * put half of all retries on exactly this value. 0 means "same as
-     * initial_delay_ms". */
+     * initial_delay_ms".
+     *
+     * Setting this EQUAL to initial_delay_ms (or leaving it 0) pins the delay
+     * at initial_delay_ms from the first retry, which is a FIXED-INTERVAL
+     * schedule -- a supported configuration, not a degenerate one. See
+     * az_iot_reconnection_policy_get_fixed_interval(). */
     uint32_t max_delay_ms;
-    uint32_t max_attempts; /* 0 = infinite */
+    uint32_t max_attempts; /* 0 = infinite; applies PER ladder */
     uint8_t jitter_pct; /* 0..100, applied around the backoff */
   } az_iot_reconnection_policy;
 
-  /* Returns a reasonable default reconnection policy: 1s initial delay, 30s max
-   * backoff, infinite attempts, 20% jitter. Assign it to
-   * az_iot_connection_client_options.reconnection_policy, then override as needed. */
-  az_iot_reconnection_policy az_iot_reconnection_policy_default(void);
+  /* Exponential backoff with jitter: 1s initial delay, 30s cap, retry forever,
+   * +/-20% jitter. What az_iot_connection_client_options_default() installs. */
+  az_iot_reconnection_policy az_iot_reconnection_policy_get_default(void);
+
+  /* Never retry: every dropped link, refused CONNACK, stalled handshake and
+   * failed registration ends the session rather than being retried.
+   *
+   * Where the client ends up depends on how the session ended. A peer
+   * DISCONNECT is a clean end of session and settles in
+   * AZ_IOT_CONN_STATE_IDLE, ready for another
+   * az_iot_connection_client_open(). A failure -- a refused CONNACK, a
+   * transport error, a stalled handshake, a failed registration -- settles in
+   * AZ_IOT_CONN_STATE_FAULTED, which carries the reason and waits for the
+   * application to call close() and open again.
+   *
+   * This is the spelling for "no retries". It is what a zero-initialized
+   * policy already means, but saying it through this getter states the intent
+   * at the call site rather than leaving it to a zeroed field. */
+  az_iot_reconnection_policy az_iot_reconnection_policy_get_retry_disabled(void);
+
+  /* Retry at a constant interval rather than backing off: every
+   * @p interval_ms, up to @p max_attempts tries per ladder (0 = forever).
+   * Jitter is left at 0 -- add it on the returned struct if a fleet of these
+   * devices should not retry in lockstep.
+   *
+   * @p interval_ms must be non-zero. 0 is the sentinel that DISABLES retrying
+   * (see initial_delay_ms), so a zero interval cannot mean "retry with no
+   * delay" -- it is clamped to 1 ms rather than silently returning the
+   * opposite of what this function's name promises. Use
+   * az_iot_reconnection_policy_get_retry_disabled() to disable retrying.
+   *
+   * For a device on a link that is either up or down, where doubling the delay
+   * only delays recovery. */
+  az_iot_reconnection_policy az_iot_reconnection_policy_get_fixed_interval(
+      uint32_t interval_ms,
+      uint32_t max_attempts);
 
 /* Recommended minimum size (bytes) for opts.csr_payload_buffer: enough to build
  * the largest CSR request body {"id":...,"csr":<base64>,"replace":...} for the
@@ -206,6 +261,33 @@ extern "C"
                            * compatibility properties it sends with each
                            * update request. */
     az_iot_certificate_provider* certificate_provider; /* required for X.509 auth */
+
+    /* How the client retries after a failure. See az_iot_reconnection_policy
+     * for the fields and the getters that name the usual shapes.
+     *
+     * With retrying disabled (initial_delay_ms == 0, which is what a zeroed
+     * options struct has) nothing is retried, and where the client settles
+     * depends on how the session ended:
+     *   - a peer DISCONNECT is a clean end of session, so the client goes to
+     *     AZ_IOT_CONN_STATE_IDLE and is ready for another open();
+     *   - a failure -- refused CONNACK, transport error, stalled handshake,
+     *     failed registration -- goes to AZ_IOT_CONN_STATE_FAULTED, which
+     *     carries the reason and waits until the application calls
+     *     az_iot_connection_client_close() and opens again.
+     *
+     * That does NOT discard what the failure established. An identity
+     * rejection still records that the device must re-provision, so the next
+     * az_iot_connection_client_open() goes to DPS rather than back to the hub
+     * that refused it. What disabling retries removes is the SDK acting on
+     * its own; the verdict survives for the application's next open().
+     *
+     * One trigger does depend on retrying being enabled:
+     * dps.max_hub_connect_attempts_before_reprovision counts consecutive
+     * automatic attempts, and with retries off there is no such run to count.
+     *
+     * az_iot_connection_client_options_default() fills this with
+     * az_iot_reconnection_policy_get_default(). Use
+     * az_iot_reconnection_policy_get_retry_disabled() to opt out. */
     az_iot_reconnection_policy reconnection_policy;
     az_iot_log_sink log;
 
@@ -935,8 +1017,16 @@ extern "C"
   const char* az_iot_connection_state_to_string(az_iot_connection_state s);
 
   /* Returns an options struct with optional fields defaulted (port derived from
-   * the transport -- 8883 for TCP, 443 for WebSockets -- no proxy, no
-   * reconnect, no log sink). Set the required fields for your auth/provisioning
+   * the transport -- 8883 for TCP, 443 for WebSockets -- no proxy, no log sink,
+   * and the default reconnection policy from
+   * az_iot_reconnection_policy_get_default(): 1s initial delay, 30s cap, retry
+   * forever, +/-20% jitter). Set reconnection_policy.initial_delay_ms = 0 on
+   * the returned struct to make every failure terminal instead.
+   *
+   * Note that a zero-initialized options struct is NOT the same thing: it has
+   * reconnection disabled, since initial_delay_ms is then 0.
+   *
+   * Set the required fields for your auth/provisioning
    * mode on the returned struct before az_iot_connection_client_init():
    *   - DPS + X.509 (host==NULL): dps.id_scope, dps.registration_id,
    *     certificate_provider.
