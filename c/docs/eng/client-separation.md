@@ -691,12 +691,13 @@ feature-client PR. The e2e agent registers this callback, which is exactly the
 class of change that has broken `AZ_IOT_BUILD_E2E=ON` twice before; see
 [Verification per phase](#verification-per-phase).
 
-**This overlaps a second, unimplemented design and must not fork from it.**
+**This overlaps a second design and must not fork from it.**
 [connection-state-and-error-propagation.md](connection-state-and-error-propagation.md)
-proposes replacing `set_state_callback` with a shared observer registry and rich
-failure diagnostics. P1d settled their shared boundary: one size-stamped
-`az_iot_connection_state_event` parameter. The registry, when built, registers
-callbacks of this signature, and future status fields append to this event
+specified replacing `set_state_callback` with a shared observer registry and
+rich failure diagnostics. The registry has SHIPPED; the rich diagnostics have
+not. P1d settled their shared boundary: one size-stamped
+`az_iot_connection_state_event` parameter. The registry registers callbacks of
+this signature unchanged, and future status fields append to this event
 rather than adding a second parameter. P1d does **not** build the registry,
 teardown notification or raw-error fields; it takes only the argument shape,
 which is the part feature clients depend on.

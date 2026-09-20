@@ -194,7 +194,7 @@ static void fixture_open(e2e_fixture* fx, const char* registration_id)
   opts.certificate_provider = &fx->certs.base;
   assert_int_equal(az_iot_connection_client_init(&fx->conn, &opts), AZ_IOT_OK);
   assert_int_equal(
-      az_iot_connection_client_set_state_callback(&fx->conn, on_conn_state, fx), AZ_IOT_OK);
+      az_iot_connection_client_add_state_observer(&fx->conn, on_conn_state, fx), AZ_IOT_OK);
 
   az_iot_adu_device_properties dp = { 0 };
   dp.manufacturer = "contoso";

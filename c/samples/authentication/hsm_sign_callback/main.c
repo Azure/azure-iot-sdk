@@ -292,7 +292,7 @@ int main(void)
   {
     goto cleanup;
   }
-  az_iot_connection_client_set_state_callback(&connection_client, on_conn_state, NULL);
+  az_iot_connection_client_add_state_observer(&connection_client, on_conn_state, NULL);
   if (az_iot_connection_client_register_mqtt_factory(&connection_client, &factory) != AZ_IOT_OK)
   {
     goto cleanup;

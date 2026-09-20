@@ -202,7 +202,7 @@ static int device_connect(custody_fixture* fx)
     return 1;
   }
   fx->conn_ok = true;
-  az_iot_connection_client_set_state_callback(&fx->conn, on_conn_state, fx);
+  az_iot_connection_client_add_state_observer(&fx->conn, on_conn_state, fx);
 
   if (az_iot_connection_client_register_mqtt_factory(&fx->conn, az_iot_paho_factory_create_v3_1_1())
           != AZ_IOT_OK

@@ -148,7 +148,7 @@ void app_main(void)
     ESP_LOGE(TAG, "connection_client_init failed");
     esp_restart();
   }
-  az_iot_connection_client_set_state_callback(&conn, on_conn_state, NULL);
+  az_iot_connection_client_add_state_observer(&conn, on_conn_state, NULL);
 
   if (az_iot_connection_client_register_mqtt_factory(&conn, az_iot_esp_mqtt_factory_create_v3_1_1())
           != AZ_IOT_OK

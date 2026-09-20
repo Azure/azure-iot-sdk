@@ -536,7 +536,7 @@ extern "C"
    * user close -- so a feature client can complete whatever it had correlated
    * against that session instead of waiting forever for a response that can no
    * longer arrive. Registered through the internal header; applications use
-   * az_iot_connection_client_set_state_callback() instead.
+   * az_iot_connection_client_add_state_observer() instead.
    *
    * Deliberately NOT invoked from destroy(), for the same reason pending QoS-1
    * acknowledgements are not completed there: the application is tearing the
@@ -632,6 +632,21 @@ extern "C"
  * hub certificate renewal) register here to be told when that session ends. */
 #ifndef AZ_IOT_MAX_SESSION_HANDLERS
 #define AZ_IOT_MAX_SESSION_HANDLERS 4
+#endif
+
+/* Connection-state observers. Two pools, because the two kinds of subscriber
+ * must not be able to starve each other: an application that registers four
+ * observers must still leave every feature client able to attach, and a build
+ * with every feature client attached must still leave the application able to
+ * watch its own connection.
+ *
+ * The feature-client pool is sized for the clients that exist (telemetry, c2d,
+ * direct method, twin, file upload, adu). Raise either at compile time. */
+#ifndef AZ_IOT_MAX_FEATURE_STATE_OBSERVERS
+#define AZ_IOT_MAX_FEATURE_STATE_OBSERVERS 6
+#endif
+#ifndef AZ_IOT_MAX_APP_STATE_OBSERVERS
+#define AZ_IOT_MAX_APP_STATE_OBSERVERS 4
 #endif
 
 /* Defaults applied when the corresponding option is left at 0. */
@@ -776,8 +791,23 @@ extern "C"
     az_iot_mqtt_client* active_client;
 
     az_iot_connection_state state;
-    az_iot_connection_state_callback state_cb;
-    void* state_cb_ctx;
+    /* Connection-state observers, dispatched feature clients first (see
+     * az_iot_connection_client_add_state_observer). Two pools so neither kind
+     * of subscriber can starve the other. */
+    struct
+    {
+      az_iot_connection_state_callback cb;
+      void* user_ctx;
+    } feature_state_observers[AZ_IOT_MAX_FEATURE_STATE_OBSERVERS];
+    struct
+    {
+      az_iot_connection_state_callback cb;
+      void* user_ctx;
+    } app_state_observers[AZ_IOT_MAX_APP_STATE_OBSERVERS];
+    /* Set while a transition is being dispatched. Registering or removing an
+     * observer from inside a callback would mutate the array being walked, so
+     * both are refused with AZ_IOT_ERR_BUSY while this is set. */
+    bool dispatching_state;
     az_iot_operational_cert_callback op_cert_cb;
     void* op_cert_cb_ctx;
     az_iot_registration_payload_callback reg_payload_cb;
@@ -1049,10 +1079,37 @@ extern "C"
       az_iot_connection_client* client,
       const az_iot_mqtt_factory* factory);
 
-  /* Not AZ_NODISCARD: configuration setters that fail only on invalid arguments
-   * (a programming error), so callers routinely fire-and-forget them. The state
-   * callback receives an SDK-owned event valid only for the duration of the call. */
-  az_iot_result az_iot_connection_client_set_state_callback(
+  /* Ask to be told about every connection-state transition.
+   *
+   * A REGISTRY, not a single slot: the application and every attached feature
+   * client can watch the connection at the same time. Registering twice with
+   * the same (cb, user_ctx) pair is idempotent and consumes one entry.
+   *
+   * Observers are dispatched in two passes -- every feature-client observer
+   * first, in registration order, then every application observer. So by the
+   * time an application observer runs, the feature clients have already reacted
+   * to the transition (re-subscribed, re-armed, or given up), and the
+   * application sees a connection whose parts agree with each other.
+   *
+   * The event is SDK-owned and valid only for the duration of the call; copy
+   * anything that must outlive it.
+   *
+   * An observer MUST NOT add or remove an observer: the registry is being
+   * walked, and both calls answer AZ_IOT_ERR_BUSY while a dispatch is in
+   * progress. Calling close() from an observer IS supported.
+   *
+   * Returns AZ_IOT_ERR_NOT_ENOUGH_SPACE when the application pool
+   * (AZ_IOT_MAX_APP_STATE_OBSERVERS) is full. */
+  az_iot_result az_iot_connection_client_add_state_observer(
+      az_iot_connection_client* client,
+      az_iot_connection_state_callback cb,
+      void* user_ctx);
+
+  /* Stop being told. Matches on the (cb, user_ctx) pair, so one callback
+   * registered with two contexts can be withdrawn one at a time. Answers
+   * AZ_IOT_ERR_NOT_FOUND when that pair is not registered, and AZ_IOT_ERR_BUSY
+   * when called from inside an observer. */
+  az_iot_result az_iot_connection_client_remove_state_observer(
       az_iot_connection_client* client,
       az_iot_connection_state_callback cb,
       void* user_ctx);

@@ -143,7 +143,7 @@ static void reconnect_after_real_drop(void** state)
   assert_int_equal(az_iot_connection_client_init(client, &opts), AZ_IOT_OK);
 
   state_log log = { 0 };
-  (void)az_iot_connection_client_set_state_callback(client, on_state, &log);
+  (void)az_iot_connection_client_add_state_observer(client, on_state, &log);
 
   az_iot_mqtt_factory* factory = az_iot_paho_factory_create_v3_1_1();
   assert_non_null(factory);
@@ -226,7 +226,7 @@ static az_iot_connection_client* start_client_with_c2d(
   opts.reconnection_policy.max_attempts = 5;
   opts.reconnection_policy.jitter_pct = 0;
   assert_int_equal(az_iot_connection_client_init(client, &opts), AZ_IOT_OK);
-  (void)az_iot_connection_client_set_state_callback(client, on_state, log);
+  (void)az_iot_connection_client_add_state_observer(client, on_state, log);
 
   az_iot_mqtt_factory* factory = az_iot_paho_factory_create_v3_1_1();
   assert_non_null(factory);

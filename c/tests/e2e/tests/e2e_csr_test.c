@@ -130,7 +130,7 @@ static void run_csr_enrollment(az_iot_certificate_managed_key_type key_type, con
   }
 
   assert_int_equal(AZ_IOT_OK, az_iot_connection_client_init(&conn, &copts));
-  az_iot_connection_client_set_state_callback(&conn, on_conn_state, &ctx);
+  az_iot_connection_client_add_state_observer(&conn, on_conn_state, &ctx);
   az_iot_connection_client_set_operational_cert_callback(&conn, on_operational_cert, &ctx);
   assert_int_equal(
       AZ_IOT_OK,

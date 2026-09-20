@@ -143,7 +143,7 @@ int main(void)
     sample_state_destroy(&state);
     return 1;
   }
-  az_iot_connection_client_set_state_callback(&state.connection_client, on_conn_state, &user_ctx);
+  az_iot_connection_client_add_state_observer(&state.connection_client, on_conn_state, &user_ctx);
 
   /* v3.1.1 for the DPS leg, v5 for the hub leg. Both are required even though
    * only the hub is v5. */
