@@ -2464,20 +2464,25 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
          * broker has refused this client id / credential, so retrying the same
          * one cannot succeed. When the device provisions through DPS, ask DPS
          * for a fresh assignment instead -- that is the whole reason the
-         * adapter contract maps these CONNACK codes to a distinct result. The
-         * retry is still scheduled through the reconnection policy, so backoff
+         * adapter contract maps these CONNACK codes to a distinct result. When
+         * a policy is configured the retry is scheduled through it, so backoff
          * and max_attempts continue to bound it (a device whose enrollment has
          * been deleted must not hammer DPS either).
          *
-         * reconnect_enabled() is part of the condition deliberately, not as an
-         * oversight: needs_reprovision is only ever consumed by the
-         * RECONNECTING branch of do_work(), so with no policy there is no
-         * attempt to carry a re-provision and setting it would record an
-         * intention nothing acts on. The rejection faults instead, and the
-         * application decides. This is documented on
-         * opts.reconnection_policy. */
-        if (evt->status == AZ_IOT_ERR_IDENTITY_REJECTED && dps_configured(c) && !c->user_close
-            && reconnect_enabled(c))
+         * NOT gated on reconnect_enabled(). It used to be, on the reasoning
+         * that only the RECONNECTING branch of do_work() consumed the flag, so
+         * with no policy nothing would act on it. That is no longer true:
+         * open() consumes it as well, and routes to DPS even when a hub is
+         * cached. So with retries disabled the rejection still faults -- the
+         * application is still the one that decides -- but the verdict is
+         * remembered, and the next open() asks DPS rather than walking back
+         * into the hub that just refused this identity.
+         *
+         * The max_hub_connect_attempts_before_reprovision trigger is NOT
+         * decoupled with it, deliberately: that one counts consecutive
+         * automatic retries, and with retries disabled there is no such run to
+         * count. Each open() is a fresh decision by the application. */
+        if (evt->status == AZ_IOT_ERR_IDENTITY_REJECTED && dps_configured(c) && !c->user_close)
         {
           AZ_IOT_LOG_WARN("connack: identity rejected; re-provisioning through DPS");
           c->needs_reprovision = true;
@@ -2903,7 +2908,7 @@ az_iot_connection_client_options az_iot_connection_client_options_default(void)
    * Callers who genuinely want a single attempt set
    * reconnection_policy.initial_delay_ms = 0 on the returned struct, or build
    * their options from { 0 } instead. */
-  opts.reconnection_policy = az_iot_reconnection_policy_default();
+  opts.reconnection_policy = az_iot_reconnection_policy_get_default();
   opts.dps.max_hub_connect_attempts_before_reprovision
       = AZ_IOT_DEFAULT_MAX_HUB_CONNECT_ATTEMPTS_BEFORE_REPROVISION;
   return opts;

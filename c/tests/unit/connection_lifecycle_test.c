@@ -347,7 +347,7 @@ static void the_default_options_enable_reconnection(void** state)
 {
   (void)state;
   az_iot_connection_client_options opts = az_iot_connection_client_options_default();
-  az_iot_reconnection_policy expected = az_iot_reconnection_policy_default();
+  az_iot_reconnection_policy expected = az_iot_reconnection_policy_get_default();
 
   assert_true(opts.reconnection_policy.initial_delay_ms > 0);
   assert_int_equal(opts.reconnection_policy.initial_delay_ms, expected.initial_delay_ms);

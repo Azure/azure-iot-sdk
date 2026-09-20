@@ -120,13 +120,42 @@ uint32_t az_iot_reconnect_delay_ms(
   return (uint32_t)result;
 }
 
-az_iot_reconnection_policy az_iot_reconnection_policy_default(void)
+az_iot_reconnection_policy az_iot_reconnection_policy_get_default(void)
 {
   az_iot_reconnection_policy p = {
     .initial_delay_ms = 1000u, /* first retry after 1s           */
     .max_delay_ms = 30000u, /* cap exponential backoff at 30s */
     .max_attempts = 0u, /* 0 = retry forever              */
     .jitter_pct = 20u, /* +/-20% randomization            */
+  };
+  return p;
+}
+
+az_iot_reconnection_policy az_iot_reconnection_policy_get_retry_disabled(void)
+{
+  /* initial_delay_ms == 0 is what disables retrying. Returning it from a named
+   * getter is the whole point: the value is identical to a zeroed struct, so
+   * the difference this makes is at the call site, not in the bytes. */
+  az_iot_reconnection_policy p = {
+    .initial_delay_ms = 0u,
+    .max_delay_ms = 0u,
+    .max_attempts = 0u,
+    .jitter_pct = 0u,
+  };
+  return p;
+}
+
+az_iot_reconnection_policy az_iot_reconnection_policy_get_fixed_interval(
+    uint32_t interval_ms,
+    uint32_t max_attempts)
+{
+  /* max_delay_ms == initial_delay_ms pins the backoff at the first rung, which
+   * is exactly a fixed interval -- no separate code path needed. */
+  az_iot_reconnection_policy p = {
+    .initial_delay_ms = interval_ms,
+    .max_delay_ms = interval_ms,
+    .max_attempts = max_attempts,
+    .jitter_pct = 0u,
   };
   return p;
 }

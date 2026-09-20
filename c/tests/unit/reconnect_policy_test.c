@@ -235,6 +235,51 @@ static void an_oversized_result_saturates_rather_than_wrapping(void** state)
   assert_true(on_max > 150); /* about half the band saturates */
 }
 
+/* The getters are not just field bundles: each names a curve, and the curve is
+ * what an application is choosing. Assert the curve, not the struct. */
+static void the_default_getter_backs_off_and_then_holds_at_the_cap(void** state)
+{
+  (void)state;
+  az_iot_reconnection_policy p = az_iot_reconnection_policy_get_default();
+  p.jitter_pct = 0; /* the ladder, without the randomization on top */
+  uint64_t rng = 99;
+
+  assert_int_equal(az_iot_reconnect_delay_ms(&p, 1, &rng), 1000);
+  assert_int_equal(az_iot_reconnect_delay_ms(&p, 2, &rng), 2000);
+  assert_int_equal(az_iot_reconnect_delay_ms(&p, 3, &rng), 4000);
+  assert_int_equal(az_iot_reconnect_delay_ms(&p, 4, &rng), 8000);
+  assert_int_equal(az_iot_reconnect_delay_ms(&p, 5, &rng), 16000);
+  assert_int_equal(az_iot_reconnect_delay_ms(&p, 6, &rng), 30000); /* capped */
+  assert_int_equal(az_iot_reconnect_delay_ms(&p, 20, &rng), 30000);
+}
+
+static void the_retry_disabled_getter_yields_no_delay_at_all(void** state)
+{
+  (void)state;
+  az_iot_reconnection_policy p = az_iot_reconnection_policy_get_retry_disabled();
+  uint64_t rng = 1;
+
+  /* 0 is how the caller of this function learns retrying is off. */
+  assert_int_equal(az_iot_reconnect_delay_ms(&p, 1, &rng), 0);
+  assert_int_equal(az_iot_reconnect_delay_ms(&p, 7, &rng), 0);
+  assert_int_equal(az_iot_reconnect_delay_ms(&p, UINT32_MAX, &rng), 0);
+}
+
+/* The mechanism is max_delay_ms == initial_delay_ms, which pins the backoff at
+ * the first rung. Nothing in az_iot_reconnect_delay_ms() special-cases it. */
+static void the_fixed_interval_getter_yields_a_flat_curve(void** state)
+{
+  (void)state;
+  az_iot_reconnection_policy p = az_iot_reconnection_policy_get_fixed_interval(5000, 360);
+  uint64_t rng = 4242;
+
+  for (uint32_t attempt = 1; attempt <= 12; ++attempt)
+  {
+    assert_int_equal(az_iot_reconnect_delay_ms(&p, attempt, &rng), 5000);
+  }
+  assert_int_equal(az_iot_reconnect_delay_ms(&p, 1000, &rng), 5000);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -247,6 +292,9 @@ int main(void)
     cmocka_unit_test(zero_max_delay_means_initial_is_the_cap),
     cmocka_unit_test(attempt_zero_treated_as_one),
     cmocka_unit_test(shift_saturates_no_ub),
+    cmocka_unit_test(the_default_getter_backs_off_and_then_holds_at_the_cap),
+    cmocka_unit_test(the_retry_disabled_getter_yields_no_delay_at_all),
+    cmocka_unit_test(the_fixed_interval_getter_yields_a_flat_curve),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

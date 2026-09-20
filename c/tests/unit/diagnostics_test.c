@@ -261,7 +261,7 @@ static void version_string_matches_the_header_macros(void** state)
 static void reconnection_policy_default_is_usable_as_supplied(void** state)
 {
   (void)state;
-  az_iot_reconnection_policy p = az_iot_reconnection_policy_default();
+  az_iot_reconnection_policy p = az_iot_reconnection_policy_get_default();
 
   /* These are documented in az_iot_connection_client.h ("1s initial delay, 30s
    * max backoff, infinite attempts, 20% jitter"), which makes them part of the
@@ -275,6 +275,41 @@ static void reconnection_policy_default_is_usable_as_supplied(void** state)
 
   assert_true(p.max_delay_ms >= p.initial_delay_ms);
   assert_true(p.jitter_pct <= 100);
+}
+
+/* ---- the policy getter family --------------------------------------------- */
+
+/* Never retry. The bytes are the same as a zeroed struct -- the value of the
+ * getter is that the call site says so. The behaviour that follows from
+ * initial_delay_ms == 0 is asserted in reconnect_policy_test.c. */
+static void retry_disabled_policy_disables_retrying(void** state)
+{
+  (void)state;
+  az_iot_reconnection_policy p = az_iot_reconnection_policy_get_retry_disabled();
+  assert_int_equal(p.initial_delay_ms, 0u);
+  assert_int_equal(p.max_attempts, 0u);
+  assert_int_equal(p.jitter_pct, 0u);
+}
+
+/* The fixed-interval getter works by pinning the cap to the first rung. That
+ * is the whole mechanism, so assert it rather than just the field values. */
+static void fixed_interval_policy_pins_the_cap_to_the_interval(void** state)
+{
+  (void)state;
+  az_iot_reconnection_policy p = az_iot_reconnection_policy_get_fixed_interval(5000u, 360u);
+  assert_int_equal(p.initial_delay_ms, 5000u);
+  assert_int_equal(p.max_delay_ms, 5000u);
+  assert_int_equal(p.max_attempts, 360u);
+  assert_int_equal(p.jitter_pct, 0u);
+}
+
+/* 0 attempts means forever, matching the struct's own convention. */
+static void fixed_interval_policy_can_retry_forever(void** state)
+{
+  (void)state;
+  az_iot_reconnection_policy p = az_iot_reconnection_policy_get_fixed_interval(1000u, 0u);
+  assert_int_equal(p.max_attempts, 0u);
+  assert_int_equal(p.initial_delay_ms, p.max_delay_ms);
 }
 
 /* ---- built-in stderr sink ------------------------------------------------- */
@@ -380,6 +415,9 @@ int main(void)
     cmocka_unit_test(mqtt_role_to_string_reports_unknown_for_an_unmapped_role),
     cmocka_unit_test(version_string_matches_the_header_macros),
     cmocka_unit_test(reconnection_policy_default_is_usable_as_supplied),
+    cmocka_unit_test(retry_disabled_policy_disables_retrying),
+    cmocka_unit_test(fixed_interval_policy_pins_the_cap_to_the_interval),
+    cmocka_unit_test(fixed_interval_policy_can_retry_forever),
     cmocka_unit_test(stderr_sink_is_installable_and_emits),
     cmocka_unit_test(stderr_sink_honours_its_minimum_level),
     cmocka_unit_test(gen_request_id_fills_a_bounded_string),
