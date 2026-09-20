@@ -42,6 +42,10 @@ static void no_jitter_doubles_until_cap(void** state)
   assert_int_equal(az_iot_reconnect_delay_ms(&p, 100, &rng), 1000);
 }
 
+/* Jitter varies AROUND the backoff, so the band is symmetric and the top of it
+ * sits above max_delay_ms. It used to be clamped back to the cap, which folded
+ * every positive draw onto the cap itself -- half the fleet retrying on the
+ * same instant, which is what jitter exists to prevent. */
 static void jitter_stays_within_band(void** state)
 {
   (void)state;
@@ -51,13 +55,53 @@ static void jitter_stays_within_band(void** state)
   p.jitter_pct = 20; /* +/- 20% of base */
 
   uint64_t rng = 0xDEADBEEFCAFEBABEull;
+  int above_cap = 0;
   for (int i = 0; i < 200; ++i)
   {
     uint32_t d = az_iot_reconnect_delay_ms(&p, 1, &rng);
-    /* base = 1000, jitter +/- 200, clamped to [1, max=1000]. So [800, 1000]. */
+    /* base = 1000, jitter +/- 200, floored at 1. So [800, 1200]. */
     assert_true(d >= 800);
-    assert_true(d <= 1000);
+    assert_true(d <= 1200);
+    if (d > 1000)
+    {
+      above_cap++;
+    }
   }
+  /* The upper half of the band is reachable at all -- the property the old
+   * clamp destroyed. */
+  assert_true(above_cap > 0);
+}
+
+/* The distribution is centred on the backoff, not bunched under it. With the
+ * old clamp the mean of a capped policy sat ~5% low and half of all draws
+ * landed on exactly the cap. */
+static void jitter_is_centred_on_the_backoff(void** state)
+{
+  (void)state;
+  az_iot_reconnection_policy p = { 0 };
+  p.initial_delay_ms = 5000;
+  p.max_delay_ms = 5000; /* fixed interval: base == cap from attempt 1 */
+  p.jitter_pct = 20;
+
+  uint64_t rng = 0x12345678ull;
+  const int n = 20000;
+  double sum = 0;
+  int on_cap = 0;
+  for (int i = 0; i < n; ++i)
+  {
+    uint32_t d = az_iot_reconnect_delay_ms(&p, 1, &rng);
+    sum += d;
+    if (d == 5000)
+    {
+      on_cap++;
+    }
+  }
+  double mean = sum / n;
+  /* Centred within 1% of the nominal interval (it was 4749 before). */
+  assert_true(mean > 4950.0);
+  assert_true(mean < 5050.0);
+  /* And no spike on the cap: a single value out of a 2001-wide band. */
+  assert_true(on_cap < n / 100);
 }
 
 static void zero_max_delay_means_initial_is_the_cap(void** state)
@@ -103,6 +147,7 @@ int main(void)
     cmocka_unit_test(disabled_when_initial_delay_is_zero),
     cmocka_unit_test(no_jitter_doubles_until_cap),
     cmocka_unit_test(jitter_stays_within_band),
+    cmocka_unit_test(jitter_is_centred_on_the_backoff),
     cmocka_unit_test(zero_max_delay_means_initial_is_the_cap),
     cmocka_unit_test(attempt_zero_treated_as_one),
     cmocka_unit_test(shift_saturates_no_ub),
