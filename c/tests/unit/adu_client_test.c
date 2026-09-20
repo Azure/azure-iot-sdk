@@ -457,6 +457,7 @@ typedef struct
   az_iot_adu_client_step_result last_step_results[_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS];
   uint8_t last_step_details[_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS][256];
   size_t do_work_count;
+
 } fake_channel;
 
 static az_iot_result fake_channel_open(
@@ -488,7 +489,7 @@ static az_iot_result fake_channel_request_update(void* ctx, az_iot_adu_operation
   fc->last_request_operation = operation;
   if (fc->result_is_synchronous && fc->result_cb != NULL)
   {
-    fc->result_cb(operation, AZ_IOT_ERR_DPS, fc->synchronous_action, fc->engine_ctx);
+    fc->result_cb(operation, AZ_IOT_ERR_DPS, fc->synchronous_action, NULL, fc->engine_ctx);
   }
   return fc->request_update_result;
 }
@@ -583,7 +584,53 @@ typedef struct
 
   hook_log log;
   uint8_t dp_buf[256];
+
+  /* What the application would have been told. */
+  int abandoned_count;
+  az_iot_result last_abandoned_reason;
+  az_iot_adu_operation last_abandoned_operation;
+  int32_t last_error_code;
+  char last_error_text[64];
+  char last_tracking_id[64];
+
+  int state_event_count;
+  az_iot_adu_state last_state;
+  az_iot_adu_state last_previous_state;
 } fixture;
+
+/* Records whatever the client raises. */
+static void on_event(const az_iot_adu_event* event, void* user_ctx)
+{
+  fixture* fx = (fixture*)user_ctx;
+  /* Every event the SDK raises carries its own size, so a callback compiled
+   * against an older header can tell which fields are present. Checked on
+   * every event rather than in one dedicated test: an absent or wrong stamp
+   * is a silent ABI break that every other assertion here would survive. */
+  assert_int_equal(event->_internal_size, (uint32_t)sizeof(*event));
+  if (event->kind == AZ_IOT_ADU_EVENT_OPERATION_ABANDONED)
+  {
+    fx->abandoned_count++;
+    fx->last_abandoned_reason = event->reason;
+    fx->last_abandoned_operation = event->operation;
+    fx->last_error_code = event->service_error.code;
+    snprintf(fx->last_error_text, sizeof(fx->last_error_text), "%s", event->service_error.message);
+    snprintf(
+        fx->last_tracking_id, sizeof(fx->last_tracking_id), "%s", event->service_error.tracking_id);
+  }
+  else if (event->kind == AZ_IOT_ADU_EVENT_WORKFLOW_STATE_CHANGED)
+  {
+    fx->state_event_count++;
+    fx->last_state = event->state;
+    fx->last_previous_state = event->previous_state;
+  }
+}
+
+/* Counts events through a bare int, for the standalone-init case. */
+static void count_events(const az_iot_adu_event* event, void* user_ctx)
+{
+  assert_int_equal(event->_internal_size, (uint32_t)sizeof(*event));
+  (*(int*)user_ctx)++;
+}
 
 static void wire_hooks(
     hook_log* log,
@@ -988,6 +1035,75 @@ static void reboot_required_persists_and_resumes(void** state)
   }
   assert_true(saw_apply);
   assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
+}
+
+/* Resume raises its state change, synchronously, from inside resume().
+ *
+ * Deliberately a SECOND client over the same persisted store: that is the real
+ * post-reboot shape, and it is the only way the event is observable. The other
+ * resume tests reuse the instance that is already at INSTALL_COMPLETE, so
+ * set_adu_state() suppresses the unchanged value and nothing is raised -- they
+ * would pass whether or not resume reported at all. */
+static void resuming_a_fresh_client_reports_the_restored_state(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  /* Get a non-Idle state into the store. */
+  fx->log.install_result = AZ_IOT_ADU_RESULT_REBOOT_REQUIRED;
+  inject_patch(fx, signed_patch());
+  pump(fx, 40);
+  assert_true(fx->log.have_persist);
+
+  az_iot_adu_platform_hooks hooks;
+  az_iot_adu_crypto_hooks crypto;
+  init_hooks(fx, &hooks, &crypto);
+
+  az_iot_adu_device_properties dp = { 0 };
+  dp.manufacturer = "Contoso";
+  dp.model = "Foobar";
+  dp.installed_update_id.provider = "Contoso";
+  dp.installed_update_id.name = "Foobar";
+  dp.installed_update_id.version = "1.0";
+
+  uint8_t dp_buf[256];
+  az_iot_adu_client_config_options adu_opts = az_iot_adu_client_config_options_default();
+  adu_opts.hooks = &hooks;
+  adu_opts.crypto = &crypto;
+  adu_opts.root_keys = k_root_keys;
+  adu_opts.root_key_count = sizeof(k_root_keys) / sizeof(k_root_keys[0]);
+  adu_opts.device_props = &dp;
+  adu_opts.device_props_buffer = dp_buf;
+  adu_opts.device_props_buffer_size = sizeof(dp_buf);
+
+  fake_channel chan2;
+  memset(&chan2, 0, sizeof(chan2));
+  chan2.report_result = AZ_IOT_OK;
+  az_iot_adu_channel channel2;
+  channel2.vtable = &k_fake_channel_vtable;
+  channel2.ctx = &chan2;
+
+  /* Heap-allocated: the client struct is far too large for a test frame. */
+  az_iot_adu_client_t* fresh = (az_iot_adu_client_t*)calloc(1, sizeof(*fresh));
+  assert_non_null(fresh);
+  assert_int_equal(
+      az_iot_adu_client__initialize_with_channel(fresh, &channel2, &adu_opts), AZ_IOT_OK);
+  assert_int_equal(az_iot_adu_client_get_state(fresh), AZ_IOT_ADU_STATE_IDLE);
+
+  /* Observing from before the resume, which is the only way to see it. */
+  fx->state_event_count = 0;
+  assert_int_equal(az_iot_adu_client_add_observer(fresh, on_event, fx), AZ_IOT_OK);
+
+  assert_int_equal(az_iot_adu_client_resume(fresh), AZ_IOT_OK);
+
+  /* Raised during resume(), not on a later pump. */
+  assert_int_equal(fx->state_event_count, 1);
+  assert_int_equal(fx->last_previous_state, AZ_IOT_ADU_STATE_IDLE);
+  assert_int_equal(fx->last_state, AZ_IOT_ADU_STATE_INSTALL_COMPLETE);
+  assert_int_equal(az_iot_adu_client_get_state(fresh), AZ_IOT_ADU_STATE_INSTALL_COMPLETE);
+
+  az_iot_adu_client_destroy(fresh);
+  free(fresh);
 }
 
 static void resume_with_no_persisted_state_stays_idle(void** state)
@@ -1994,6 +2110,7 @@ static void a_terminal_verdict_does_not_re_arm_the_report(void** state)
       AZ_IOT_ADU_OP_REPORT_STATUS,
       AZ_IOT_ERR_DPS,
       AZ_IOT_ADU_ERROR_ACTION_ALREADY_REPORTED,
+      NULL,
       fx->chan.engine_ctx);
   assert_false(fx->adu._internal.device_props_report_pending);
 
@@ -2002,6 +2119,7 @@ static void a_terminal_verdict_does_not_re_arm_the_report(void** state)
       AZ_IOT_ADU_OP_REPORT_STATUS,
       AZ_IOT_ERR_DPS,
       AZ_IOT_ADU_ERROR_ACTION_FATAL,
+      NULL,
       fx->chan.engine_ctx);
   assert_false(fx->adu._internal.device_props_report_pending);
 
@@ -2011,8 +2129,228 @@ static void a_terminal_verdict_does_not_re_arm_the_report(void** state)
       AZ_IOT_ADU_OP_REPORT_STATUS,
       AZ_IOT_ERR_DPS,
       AZ_IOT_ADU_ERROR_ACTION_RETRY,
+      NULL,
       fx->chan.engine_ctx);
   assert_true(fx->adu._internal.device_props_report_pending);
+}
+
+/* An operation the client gives up on reaches the application, with the route
+ * and what the service said. Without this, "refused permanently" and "checked,
+ * nothing to install" are indistinguishable from outside. */
+static void an_abandoned_operation_is_reported_to_observers(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(az_iot_adu_client_add_observer(&fx->adu, on_event, fx), AZ_IOT_OK);
+  fx->abandoned_count = 0;
+
+  assert_non_null(fx->chan.result_cb);
+
+  /* A retryable verdict is not an abandonment. */
+  fx->chan.result_cb(
+      AZ_IOT_ADU_OP_GET_UPDATE,
+      AZ_IOT_ERR_DPS,
+      AZ_IOT_ADU_ERROR_ACTION_RETRY,
+      NULL,
+      fx->chan.engine_ctx);
+  assert_int_equal(fx->abandoned_count, 0);
+
+  /* Nor is a success, nor ALREADY_REPORTED -- the service has the report, so
+   * nothing was lost. */
+  fx->chan.result_cb(
+      AZ_IOT_ADU_OP_GET_UPDATE, AZ_IOT_OK, AZ_IOT_ADU_ERROR_ACTION_NONE, NULL, fx->chan.engine_ctx);
+  fx->chan.result_cb(
+      AZ_IOT_ADU_OP_REPORT_STATUS,
+      AZ_IOT_ERR_DPS,
+      AZ_IOT_ADU_ERROR_ACTION_ALREADY_REPORTED,
+      NULL,
+      fx->chan.engine_ctx);
+  assert_int_equal(fx->abandoned_count, 0);
+
+  /* FATAL is, and carries the diagnosis. */
+  az_iot_adu_service_error se
+      = { .code = 400002, .message = "INVALID_REQUEST", .tracking_id = "abc-123" };
+  fx->chan.result_cb(
+      AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE,
+      AZ_IOT_ERR_DPS,
+      AZ_IOT_ADU_ERROR_ACTION_FATAL,
+      &se,
+      fx->chan.engine_ctx);
+  assert_int_equal(fx->abandoned_count, 1);
+  assert_int_equal(fx->last_abandoned_operation, AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE);
+  assert_int_equal(fx->last_abandoned_reason, AZ_IOT_ERR_DPS);
+  assert_int_equal(fx->last_error_code, 400002);
+  assert_string_equal(fx->last_error_text, "INVALID_REQUEST");
+  assert_string_equal(fx->last_tracking_id, "abc-123");
+}
+
+/* PROCEED drops the request just as FATAL does, and must be reported for the
+ * same reason. It is UPDATE_ACCOUNT_NOT_LINKED on a fetch: the device asked,
+ * was refused permanently, and without this it reads exactly like "no update
+ * available" -- for ever, with no other signal. */
+static void a_proceed_verdict_is_also_reported(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(az_iot_adu_client_add_observer(&fx->adu, on_event, fx), AZ_IOT_OK);
+  fx->abandoned_count = 0;
+
+  az_iot_adu_service_error se
+      = { .code = 409000, .message = "UPDATE_ACCOUNT_NOT_LINKED", .tracking_id = "t-9" };
+  fx->chan.result_cb(
+      AZ_IOT_ADU_OP_GET_UPDATE,
+      AZ_IOT_ERR_DPS,
+      AZ_IOT_ADU_ERROR_ACTION_PROCEED,
+      &se,
+      fx->chan.engine_ctx);
+
+  assert_int_equal(fx->abandoned_count, 1);
+  assert_int_equal(fx->last_abandoned_operation, AZ_IOT_ADU_OP_GET_UPDATE);
+  assert_string_equal(fx->last_error_text, "UPDATE_ACCOUNT_NOT_LINKED");
+}
+
+/* A verdict with no service response behind it still delivers a usable event:
+ * the strings are empty, never NULL, so an observer never has to null-check. */
+static void an_abandonment_without_a_service_error_carries_empty_strings(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(az_iot_adu_client_add_observer(&fx->adu, on_event, fx), AZ_IOT_OK);
+  fx->abandoned_count = 0;
+
+  fx->chan.result_cb(
+      AZ_IOT_ADU_OP_GET_UPDATE,
+      AZ_IOT_ERR_PROTOCOL,
+      AZ_IOT_ADU_ERROR_ACTION_FATAL,
+      NULL,
+      fx->chan.engine_ctx);
+
+  assert_int_equal(fx->abandoned_count, 1);
+  assert_int_equal(fx->last_error_code, 0);
+  assert_string_equal(fx->last_error_text, "");
+  assert_string_equal(fx->last_tracking_id, "");
+}
+
+/* Registry mechanics: the pool is bounded, the pair is the identity, and the
+ * reentrancy rules match the connection client so an application learns one
+ * pattern for the whole SDK. */
+static az_iot_adu_client_t* g_reentrant_client;
+static az_iot_result g_reentrant_add;
+static az_iot_result g_reentrant_remove;
+
+static void reentrant_observer(const az_iot_adu_event* event, void* user_ctx)
+{
+  (void)event;
+  (void)user_ctx;
+  g_reentrant_add
+      = az_iot_adu_client_add_observer(g_reentrant_client, reentrant_observer, (void*)(uintptr_t)1);
+  /* Removing itself, which is what an owner torn down in reaction to an event
+   * must be able to do. */
+  g_reentrant_remove
+      = az_iot_adu_client_remove_observer(g_reentrant_client, reentrant_observer, NULL);
+}
+
+static void the_observer_registry_enforces_its_contract(void** state)
+{
+  fixture* fx = (fixture*)*state;
+
+  assert_int_equal(az_iot_adu_client_add_observer(NULL, on_event, fx), AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(az_iot_adu_client_add_observer(&fx->adu, NULL, fx), AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(az_iot_adu_client_remove_observer(&fx->adu, on_event, fx), AZ_IOT_ERR_NOT_FOUND);
+
+  /* Idempotent on the PAIR, so this consumes one slot, not two. */
+  assert_int_equal(az_iot_adu_client_add_observer(&fx->adu, on_event, fx), AZ_IOT_OK);
+  assert_int_equal(az_iot_adu_client_add_observer(&fx->adu, on_event, fx), AZ_IOT_OK);
+
+  /* ... but the same callback with a different context is a second
+   * subscription, and is delivered twice. */
+  int seen = 0;
+  assert_int_equal(az_iot_adu_client_add_observer(&fx->adu, count_events, &seen), AZ_IOT_OK);
+  int other = 0;
+  assert_int_equal(az_iot_adu_client_add_observer(&fx->adu, count_events, &other), AZ_IOT_OK);
+
+  /* Pool is bounded and says so rather than overwriting. */
+  int spare = 0;
+  assert_int_equal(az_iot_adu_client_add_observer(&fx->adu, count_events, &spare), AZ_IOT_OK);
+  int overflow = 0;
+  assert_int_equal(
+      az_iot_adu_client_add_observer(&fx->adu, count_events, &overflow),
+      AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+
+  fx->chan.result_cb(
+      AZ_IOT_ADU_OP_GET_UPDATE,
+      AZ_IOT_ERR_DPS,
+      AZ_IOT_ADU_ERROR_ACTION_FATAL,
+      NULL,
+      fx->chan.engine_ctx);
+  assert_int_equal(seen, 1);
+  assert_int_equal(other, 1);
+
+  /* Withdrawing one context leaves the other subscribed. */
+  assert_int_equal(az_iot_adu_client_remove_observer(&fx->adu, count_events, &seen), AZ_IOT_OK);
+  fx->chan.result_cb(
+      AZ_IOT_ADU_OP_GET_UPDATE,
+      AZ_IOT_ERR_DPS,
+      AZ_IOT_ADU_ERROR_ACTION_FATAL,
+      NULL,
+      fx->chan.engine_ctx);
+  assert_int_equal(seen, 1);
+  assert_int_equal(other, 2);
+}
+
+/* Adding from inside a dispatch is refused; removing is permitted, and must be
+ * -- an owner destroyed in reaction to an event has to give its seat back
+ * before its storage goes away. Same asymmetry as the connection client. */
+static void adding_is_refused_from_inside_an_observer_but_removing_is_not(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  g_reentrant_client = &fx->adu;
+  g_reentrant_add = AZ_IOT_OK;
+  g_reentrant_remove = AZ_IOT_ERR_BUSY;
+
+  assert_int_equal(az_iot_adu_client_add_observer(&fx->adu, reentrant_observer, NULL), AZ_IOT_OK);
+
+  fx->chan.result_cb(
+      AZ_IOT_ADU_OP_GET_UPDATE,
+      AZ_IOT_ERR_DPS,
+      AZ_IOT_ADU_ERROR_ACTION_FATAL,
+      NULL,
+      fx->chan.engine_ctx);
+
+  assert_int_equal(g_reentrant_add, AZ_IOT_ERR_BUSY);
+  assert_int_equal(g_reentrant_remove, AZ_IOT_OK);
+
+  /* The withdrawal took effect: a later event does not reach it. */
+  g_reentrant_add = AZ_IOT_OK;
+  fx->chan.result_cb(
+      AZ_IOT_ADU_OP_GET_UPDATE,
+      AZ_IOT_ERR_DPS,
+      AZ_IOT_ADU_ERROR_ACTION_FATAL,
+      NULL,
+      fx->chan.engine_ctx);
+  assert_int_equal(g_reentrant_add, AZ_IOT_OK);
+}
+
+/* Workflow transitions are reported, so an application no longer has to poll
+ * az_iot_adu_client_get_state() to see a deployment move. */
+static void a_workflow_transition_is_reported(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(az_iot_adu_client_add_observer(&fx->adu, on_event, fx), AZ_IOT_OK);
+  fx->state_event_count = 0;
+
+  open_to_connected(fx);
+
+  /* The offer arriving moves Idle -> ManifestReceived, which an application
+   * previously could only see by polling. */
+  inject_patch(fx, signed_patch());
+  assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_MANIFEST_RECEIVED);
+  assert_int_equal(fx->state_event_count, 1);
+  assert_int_equal(fx->last_previous_state, AZ_IOT_ADU_STATE_IDLE);
+  assert_int_equal(fx->last_state, AZ_IOT_ADU_STATE_MANIFEST_RECEIVED);
+
+  /* Driving the deployment reports every further transition, and the last one
+   * always agrees with the getter. */
+  pump(fx, 40);
+  assert_true(fx->state_event_count > 1);
+  assert_int_equal(fx->last_state, az_iot_adu_client_get_state(&fx->adu));
 }
 
 /* --- explicit update requests -------------------------------------------- */
@@ -2083,7 +2421,11 @@ static void a_retryable_verdict_re_arms_the_same_route(void** state)
 
   assert_non_null(fx->chan.result_cb);
   fx->chan.result_cb(
-      AZ_IOT_ADU_OP_GET_UPDATE, AZ_IOT_ERR_DPS, AZ_IOT_ADU_ERROR_ACTION_RETRY, fx->chan.engine_ctx);
+      AZ_IOT_ADU_OP_GET_UPDATE,
+      AZ_IOT_ERR_DPS,
+      AZ_IOT_ADU_ERROR_ACTION_RETRY,
+      NULL,
+      fx->chan.engine_ctx);
 
   assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
   assert_int_equal(fx->chan.request_update_count, 2);
@@ -2110,7 +2452,11 @@ static void a_retryable_verdict_does_not_overwrite_a_newer_request(void** state)
   /* The in-flight regular request then fails retryably. */
   assert_non_null(fx->chan.result_cb);
   fx->chan.result_cb(
-      AZ_IOT_ADU_OP_GET_UPDATE, AZ_IOT_ERR_DPS, AZ_IOT_ADU_ERROR_ACTION_RETRY, fx->chan.engine_ctx);
+      AZ_IOT_ADU_OP_GET_UPDATE,
+      AZ_IOT_ERR_DPS,
+      AZ_IOT_ADU_ERROR_ACTION_RETRY,
+      NULL,
+      fx->chan.engine_ctx);
 
   /* The newer onboarding request must survive, not be replaced by a regular
    * retry. */
@@ -2240,6 +2586,8 @@ int main(void)
         already_installed_is_rejected_without_download, setup, teardown),
     cmocka_unit_test_setup_teardown(install_in_progress_reenters_then_completes, setup, teardown),
     cmocka_unit_test_setup_teardown(reboot_required_persists_and_resumes, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        resuming_a_fresh_client_reports_the_restored_state, setup, teardown),
     cmocka_unit_test_setup_teardown(resume_with_no_persisted_state_stays_idle, setup, teardown),
     cmocka_unit_test_setup_teardown(cancel_action_sets_cancelled_flag, setup, teardown),
     cmocka_unit_test_setup_teardown(
@@ -2278,6 +2626,15 @@ int main(void)
         verify_file_hash_rejects_an_unsupported_algorithm, setup, teardown),
     cmocka_unit_test_setup_teardown(do_work_drives_the_channel, setup, teardown),
     cmocka_unit_test_setup_teardown(a_terminal_verdict_does_not_re_arm_the_report, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_abandoned_operation_is_reported_to_observers, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_proceed_verdict_is_also_reported, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_abandonment_without_a_service_error_carries_empty_strings, setup, teardown),
+    cmocka_unit_test_setup_teardown(the_observer_registry_enforces_its_contract, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        adding_is_refused_from_inside_an_observer_but_removing_is_not, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_workflow_transition_is_reported, setup, teardown),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

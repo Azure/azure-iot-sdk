@@ -29,6 +29,7 @@
 #include <cmocka.h>
 
 #include "azure/iot/az_iot_connection_client.h"
+#include "azure/iot/az_iot_log.h"
 #include "azure/iot/az_iot_mqtt_iface.h"
 #include "azure/iot/az_iot_result.h"
 
@@ -63,6 +64,12 @@ typedef struct
   az_iot_adu_operation last_op;
   az_iot_result last_result;
   az_iot_adu_error_action last_action;
+
+  /* What the channel forwarded about a refused operation. */
+  bool had_service_error;
+  int32_t last_error_code;
+  char last_error_text[64];
+  char last_tracking_id[64];
 } fixture;
 
 static void on_update(const uint8_t* payload, size_t payload_len, void* engine_ctx)
@@ -78,9 +85,20 @@ static void on_result(
     az_iot_adu_operation operation,
     az_iot_result result,
     az_iot_adu_error_action action,
+    const az_iot_adu_service_error* service_error,
     void* engine_ctx)
 {
   fixture* fx = (fixture*)engine_ctx;
+  fx->last_error_code = 0;
+  fx->last_error_text[0] = '\0';
+  fx->last_tracking_id[0] = '\0';
+  fx->had_service_error = (service_error != NULL);
+  if (service_error != NULL)
+  {
+    fx->last_error_code = service_error->code;
+    snprintf(fx->last_error_text, sizeof(fx->last_error_text), "%s", service_error->message);
+    snprintf(fx->last_tracking_id, sizeof(fx->last_tracking_id), "%s", service_error->tracking_id);
+  }
   fx->result_count++;
   fx->last_op = operation;
   fx->last_result = result;
@@ -1451,6 +1469,136 @@ static void a_demand_queued_before_the_hold_expires_runs_on_the_kept_session(voi
   assert_non_null(fx->client.dps_mqtt);
 }
 
+/* The service diagnosis reaches the engine. The classification alone collapses
+ * failures that need different operator responses -- a malformed body, a device
+ * that is not onboarded, a rejected credential -- and the trackingId is the one
+ * value a support request needs. Parsed and then dropped is the defect. */
+static void the_service_diagnosis_is_forwarded(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_mock_mqtt_client* m = open_and_bind(fx);
+
+  assert_int_equal(
+      fx->channel.vtable->request_update(fx->channel.ctx, AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE),
+      AZ_IOT_OK);
+  char rid[64];
+  last_rid(m, rid, sizeof(rid));
+  char topic[256];
+  snprintf(topic, sizeof(topic), "$dps/registrations/res/400/?$rid=%s", rid);
+  assert_true(inject(
+      fx,
+      m,
+      topic,
+      "{\"errorCode\":400002,\"trackingId\":\"9f1c-aa\",\"message\":\"INVALID_REQUEST\"}"));
+
+  assert_true(fx->had_service_error);
+  assert_int_equal(fx->last_error_code, 400002);
+  assert_string_equal(fx->last_error_text, "INVALID_REQUEST");
+  assert_string_equal(fx->last_tracking_id, "9f1c-aa");
+}
+
+/* A verdict with no service response behind it forwards no diagnosis, rather
+ * than a stale or invented one. */
+static void a_verdict_without_a_response_forwards_no_diagnosis(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_mock_mqtt_client* m = open_and_bind(fx);
+
+  assert_int_equal(
+      fx->channel.vtable->request_update(fx->channel.ctx, AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE),
+      AZ_IOT_OK);
+  char rid[64];
+  last_rid(m, rid, sizeof(rid));
+  char topic[256];
+  snprintf(topic, sizeof(topic), "$dps/registrations/res/200/?$rid=%s", rid);
+  assert_true(inject(fx, m, topic, "{\"updateAvailable\":false}"));
+
+  assert_false(fx->had_service_error);
+}
+
+/* The session-failure log is LATCHED, and the latch is not a permanent mute.
+ *
+ * This runs at the application's pump frequency and the demand is not cleared
+ * until a session is ready, so an unlatched log would emit one line per tick
+ * for as long as the failure lasted. A latch that is only cleared on a
+ * SUCCESSFUL ask is the opposite failure: a quiet spell leaves it set, and the
+ * next episode goes unreported.
+ *
+ * Asserted on the real log sink, not just the flag, so the thing the operator
+ * actually sees is what is pinned. */
+typedef struct
+{
+  size_t count;
+  char last[256];
+} adu_log_capture;
+
+static void adu_log_sink(
+    void* user_ctx,
+    az_iot_log_level level,
+    const char* file,
+    int line,
+    const char* msg)
+{
+  adu_log_capture* cap = (adu_log_capture*)user_ctx;
+  (void)file;
+  (void)line;
+  /* Only the line this test is about; the channel logs other things. */
+  if (level != AZ_IOT_LOG_LEVEL_ERROR || msg == NULL
+      || strstr(msg, "could not obtain a provisioning session") == NULL)
+  {
+    return;
+  }
+  cap->count++;
+  snprintf(cap->last, sizeof(cap->last), "%s", msg);
+}
+
+static void a_persistent_session_failure_is_logged_once_per_episode(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  adu_log_capture cap;
+  memset(&cap, 0, sizeof(cap));
+  az_iot_log_sink sink;
+  sink.sink = adu_log_sink;
+  sink.user_ctx = &cap;
+  sink.min_level = AZ_IOT_LOG_LEVEL_TRACE;
+  az_iot_log_set_global_sink(&sink);
+
+  assert_int_equal(fx->channel.vtable->open(fx->channel.ctx, on_update, on_result, fx), AZ_IOT_OK);
+  /* No MQTT factory registered, so starting a session fails outright -- not
+   * BUSY, which is the ordinary "coming up" answer. */
+  fx->client.dps_phase = AZ_IOT_DPS_PHASE_DONE;
+  assert_int_equal(
+      fx->channel.vtable->request_update(fx->channel.ctx, AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE),
+      AZ_IOT_ERR_NOT_CONNECTED);
+  assert_true(fx->channel_state.wants_session);
+
+  /* First failure is reported. */
+  assert_int_equal(fx->channel.vtable->do_work(fx->channel.ctx), AZ_IOT_OK);
+  assert_int_equal(cap.count, 1);
+
+  /* Repeats are not: one line per episode, not one per tick. */
+  for (int i = 0; i < 20; ++i)
+  {
+    assert_int_equal(fx->channel.vtable->do_work(fx->channel.ctx), AZ_IOT_OK);
+  }
+  assert_int_equal(cap.count, 1);
+
+  /* A tick that does not fail ends the episode -- including one that does not
+   * ASK, which is what a quiet spell looks like. */
+  fx->channel_state.wants_session = false;
+  assert_int_equal(fx->channel.vtable->do_work(fx->channel.ctx), AZ_IOT_OK);
+  assert_false(fx->channel_state.ensure_error_logged);
+
+  /* So the next episode is reported again rather than swallowed. */
+  assert_int_equal(
+      fx->channel.vtable->request_update(fx->channel.ctx, AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE),
+      AZ_IOT_ERR_NOT_CONNECTED);
+  assert_int_equal(fx->channel.vtable->do_work(fx->channel.ctx), AZ_IOT_OK);
+  assert_int_equal(cap.count, 2);
+
+  az_iot_log_set_global_sink(NULL);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -1469,6 +1617,11 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         an_available_update_is_delivered_to_the_engine, setup, teardown),
     cmocka_unit_test_setup_teardown(an_error_response_reports_an_action, setup, teardown),
+    cmocka_unit_test_setup_teardown(the_service_diagnosis_is_forwarded, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_verdict_without_a_response_forwards_no_diagnosis, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_persistent_session_failure_is_logged_once_per_episode, setup, teardown),
     cmocka_unit_test_setup_teardown(a_report_is_published_and_acknowledged, setup, teardown),
     cmocka_unit_test_setup_teardown(
         registration_does_not_cost_the_channel_its_request, setup, teardown),

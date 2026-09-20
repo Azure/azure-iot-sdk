@@ -921,6 +921,45 @@ typedef struct az_iot_adu_client_config_options
 
 az_iot_adu_client_config_options az_iot_adu_client_config_options_default(void);
 
+/* One observer registry, discriminated by event kind, matching the connection
+ * client's add/remove seam so an application learns one pattern for the whole
+ * SDK. Every observer receives every event; read `kind` first.
+ *
+ *   WORKFLOW_STATE_CHANGED -- the deployment moved. Otherwise observable only
+ *     by polling az_iot_adu_client_get_state().
+ *   OPERATION_ABANDONED    -- an operation reached a verdict that stops the
+ *     CLIENT re-arming it. It does NOT mean the application may not ask again;
+ *     that is the intended response, which is why the event carries the route:
+ *     a lost status report is not a lost update check, and the onboarding and
+ *     regular fetches are asked for separately.
+ *
+ * Abandonment is raised from on_channel_result()'s no-re-arm branch, which IS
+ * the definition of "the client will not retry this". Deriving both from one
+ * condition is deliberate: a second list in the channel would be free to drift
+ * away from the engine's. It covers PROCEED as well as FATAL -- PROCEED is
+ * UPDATE_ACCOUNT_NOT_LINKED on a fetch, a permanent refusal that otherwise
+ * reads exactly like "no update available".
+ *
+ * The event carries the service diagnosis (numeric `errorCode`, the
+ * best-effort error TEXT from `message`, and `trackingId`), because the
+ * classification alone collapses failures needing different operator
+ * responses, and trackingId is what a support request needs.
+ *
+ * `message` is TEXT, not a stable identifier: it usually carries the
+ * originating code ("INVALID_REQUEST", "UNKNOWN_WORKFLOW_ID"), which is what
+ * the classifier matches on defensively, but the same field is sometimes free
+ * prose ("Deserialization error."). Applications branch on `code` and on the
+ * event's `reason`. */
+az_iot_result az_iot_adu_client_add_observer(
+    az_iot_adu_client_t* client,
+    az_iot_adu_observer_callback cb,
+    void* user_ctx);
+
+az_iot_result az_iot_adu_client_remove_observer(
+    az_iot_adu_client_t* client,
+    az_iot_adu_observer_callback cb,
+    void* user_ctx);
+
 /**
  * Initialize the ADU client. `twin` is the initialized twin client the ADU
  * client subscribes to for desired properties; `options` carries the rest
