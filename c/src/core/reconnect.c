@@ -66,7 +66,7 @@ uint32_t az_iot_reconnect_delay_ms(
     base = cap;
   }
 
-  int32_t jitter = 0;
+  int64_t jitter = 0;
   uint8_t pct = policy->jitter_pct;
   if (pct > 100)
   {
@@ -79,7 +79,11 @@ uint32_t az_iot_reconnect_delay_ms(
     if (span > 0)
     {
       uint64_t r = xorshift64(rng_state) % (2u * span + 1u);
-      jitter = (int32_t)((int64_t)r - (int64_t)span);
+      /* int64_t throughout: with initial_delay_ms == max_delay_ms == UINT32_MAX
+       * and jitter_pct == 100, span is UINT32_MAX and this difference does not
+       * fit an int32_t. Narrowing here would be implementation-defined and
+       * could wrap to a smaller delay before the clamp below ever ran. */
+      jitter = (int64_t)r - (int64_t)span;
     }
   }
 

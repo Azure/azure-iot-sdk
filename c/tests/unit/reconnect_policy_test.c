@@ -141,6 +141,45 @@ static void shift_saturates_no_ub(void** state)
   assert_int_equal(az_iot_reconnect_delay_ms(&p, UINT32_MAX, &rng), 60000);
 }
 
+/* A policy at the very top of the representable range must not wrap. The
+ * jitter arithmetic is done in int64_t precisely so the difference of two
+ * UINT32_MAX-sized values cannot be narrowed before the clamps.
+ *
+ * The detector: with base == UINT32_MAX and jitter_pct == 100 the correct band
+ * is [0, 2*base] and the result is uniform across it, so about a quarter of
+ * the draws land BELOW 2^31. Narrowing the
+ * difference to int32_t bounds |jitter| at 2^31, which makes every result at
+ * least base - 2^31 -- the low half of the band becomes unreachable. */
+static void top_of_range_policy_does_not_wrap(void** state)
+{
+  (void)state;
+  az_iot_reconnection_policy p = { 0 };
+  p.initial_delay_ms = UINT32_MAX;
+  p.max_delay_ms = UINT32_MAX;
+  p.jitter_pct = 100;
+
+  uint64_t rng = 0xA5A5A5A5A5A5A5A5ull;
+  int below_half = 0;
+  for (int i = 0; i < 2000; ++i)
+  {
+    uint32_t d = az_iot_reconnect_delay_ms(&p, 1, &rng);
+    assert_true(d >= 1u); /* the floor still holds */
+    if (d < 2147483648u)
+    {
+      below_half++;
+    }
+  }
+  /* About 500 of 2000 when the arithmetic is correct; essentially zero when
+   * the difference is narrowed, since |jitter| is then bounded at 2^31. */
+  assert_true(below_half > 300);
+
+  /* With no jitter the answer is exact, proving the cast path itself is sound
+   * at the top of the range. */
+  p.jitter_pct = 0;
+  assert_int_equal(az_iot_reconnect_delay_ms(&p, 1, &rng), UINT32_MAX);
+  assert_int_equal(az_iot_reconnect_delay_ms(&p, 64, &rng), UINT32_MAX);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -148,6 +187,7 @@ int main(void)
     cmocka_unit_test(no_jitter_doubles_until_cap),
     cmocka_unit_test(jitter_stays_within_band),
     cmocka_unit_test(jitter_is_centred_on_the_backoff),
+    cmocka_unit_test(top_of_range_policy_does_not_wrap),
     cmocka_unit_test(zero_max_delay_means_initial_is_the_cap),
     cmocka_unit_test(attempt_zero_treated_as_one),
     cmocka_unit_test(shift_saturates_no_ub),
