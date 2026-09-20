@@ -1114,6 +1114,70 @@ static void reentrant_observer(const az_iot_connection_state_event* event, void*
       g_reentrant_client, reentrant_observer, NULL);
 }
 
+/* The guard must survive NESTING. close() is legal from inside an observer and
+ * transitions the state, which dispatches again; if the inner dispatch cleared
+ * the flag on its way out, the outer pass would resume unguarded and a later
+ * observer could mutate the arrays still being walked.
+ *
+ * Ordered deliberately: the first observer closes (nesting a dispatch), and a
+ * second, registered afterwards, then tries to mutate the registry. With a
+ * plain boolean it would succeed. */
+static az_iot_connection_client* g_nested_client;
+static az_iot_result g_nested_add_result;
+static bool g_nested_closed;
+
+static void nested_closing_observer(const az_iot_connection_state_event* event, void* user_ctx)
+{
+  (void)user_ctx;
+  /* CONNECTED specifically: close() only transitions -- and so only nests a
+   * dispatch -- once there is a live session to disconnect. During the
+   * CONNECTING event open() has not yet adopted the adapter, so close() there
+   * returns NOT_INITIALIZED and nests nothing. */
+  if (event->state == AZ_IOT_CONN_STATE_CONNECTED && !g_nested_closed)
+  {
+    g_nested_closed = true;
+    (void)az_iot_connection_client_close(g_nested_client);
+  }
+}
+
+static void late_mutating_observer(const az_iot_connection_state_event* event, void* user_ctx)
+{
+  (void)event;
+  (void)user_ctx;
+  /* Recorded only once the nesting has actually happened, so the assertion is
+   * about the OUTER pass resuming, not about the first event. */
+  if (g_nested_closed)
+  {
+    g_nested_add_result = az_iot_connection_client_add_state_observer(
+        g_nested_client, late_mutating_observer, (void*)(uintptr_t)7);
+  }
+}
+
+static void the_dispatch_guard_survives_nesting(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  g_nested_client = fx->client;
+  g_nested_add_result = AZ_IOT_OK;
+  g_nested_closed = false;
+
+  assert_int_equal(
+      az_iot_connection_client_add_state_observer(fx->client, nested_closing_observer, NULL),
+      AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_connection_client_add_state_observer(fx->client, late_mutating_observer, NULL),
+      AZ_IOT_OK);
+
+  /* Driven manually rather than via open_to_connected(): that helper asserts
+   * the client is still connected afterwards, and this test closes it from
+   * inside the CONNECTED dispatch on purpose. */
+  az_iot_mock_mqtt_client* m = open_to_connecting(fx);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  assert_true(g_nested_closed);
+  assert_int_equal(g_nested_add_result, AZ_IOT_ERR_BUSY);
+}
+
 static void the_registry_cannot_be_mutated_from_inside_an_observer(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
@@ -1279,6 +1343,7 @@ int main(void)
         feature_observers_are_dispatched_before_application_ones, setup, teardown),
     cmocka_unit_test_setup_teardown(
         the_registry_cannot_be_mutated_from_inside_an_observer, setup, teardown),
+    cmocka_unit_test_setup_teardown(the_dispatch_guard_survives_nesting, setup, teardown),
     /* traffic gating */
     cmocka_unit_test_setup_teardown(publish_before_connected_is_rejected, setup, teardown),
     cmocka_unit_test_setup_teardown(subscribe_before_connected_is_rejected, setup, teardown),

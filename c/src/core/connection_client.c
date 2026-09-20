@@ -246,11 +246,18 @@ static bool reconnect_enabled(const az_iot_connection_client* c)
  *
  * `dispatching_state` is held across BOTH passes rather than per pass: an
  * observer in the first pass could otherwise register one that the second pass
- * would walk into. */
+ * would walk into.
+ *
+ * The prior value is SAVED and RESTORED rather than simply cleared, because
+ * this can nest: close() is legal from inside an observer, and it transitions
+ * the state, which dispatches again. Clearing on the way out of the inner
+ * dispatch would drop the guard while the outer one is still walking its
+ * arrays, and a later observer in the outer pass could then mutate them. */
 static void dispatch_state_event(
     az_iot_connection_client* c,
     const az_iot_connection_state_event* event)
 {
+  bool was_dispatching = c->dispatching_state;
   c->dispatching_state = true;
   for (size_t i = 0; i < AZ_IOT_MAX_FEATURE_STATE_OBSERVERS; ++i)
   {
@@ -266,7 +273,7 @@ static void dispatch_state_event(
       c->app_state_observers[i].cb(event, c->app_state_observers[i].user_ctx);
     }
   }
-  c->dispatching_state = false;
+  c->dispatching_state = was_dispatching;
 }
 
 static bool have_state_observers(const az_iot_connection_client* c)
