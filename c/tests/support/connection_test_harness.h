@@ -155,4 +155,19 @@ static inline void az_iot_test_wait_ms(unsigned ms)
   }
 }
 
+/* Spin until `deadline_ms` on the monotonic clock has passed, plus a small
+ * margin.
+ *
+ * Takes the absolute deadline rather than a computed duration on purpose. The
+ * obvious form -- az_iot_test_wait_ms(deadline - now + 5) -- underflows when
+ * the deadline has ALREADY passed, which happens whenever the test process is
+ * descheduled for longer than the backoff it is waiting on. Both operands are
+ * uint64_t, so the difference wraps to an enormous value and the wait becomes
+ * a multi-day busy spin: a CI hang rather than a test failure. */
+static inline void az_iot_test_wait_until_ms(uint64_t deadline_ms)
+{
+  uint64_t now = az_iot_time_mono_ms();
+  az_iot_test_wait_ms((now >= deadline_ms) ? 5u : (unsigned)(deadline_ms - now) + 5u);
+}
+
 #endif /* AZ_IOT_CONNECTION_TEST_HARNESS_H */

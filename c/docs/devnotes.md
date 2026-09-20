@@ -164,7 +164,7 @@ _Captured from conversation as the C99 client repo was being scaffolded. Each bu
   - Unexpected `EVT_DISCONNECTED`, failed `EVT_CONNECTED`, and inbound `EVT_ERROR` schedule a reconnect attempt instead of terminating.
   - User-initiated `close()` is honoured regardless: if we're in `RECONNECTING`, the schedule is cancelled and we go straight to `IDLE`.
   - Backoff: `delay = min(max_delay_ms, initial_delay_ms << (attempt - 1))`, then jitter ±`jitter_pct`%. The shift saturates at 30 to avoid UB; `max_delay_ms == 0` is treated as "cap = initial".
-  - `max_attempts == 0` means infinite; otherwise the (`max_attempts + 1`)-th unsuccessful attempt-end transitions to `FAULTED`.
+  - `max_attempts == 0` means infinite; otherwise the (`max_attempts + 1`)-th unsuccessful attempt-end transitions to `FAULTED`. The budget is **per ladder**, not aggregate: `retry_attempt[]` is indexed by `az_iot_connection_scope`, so `DPS` and `HUB` each get `max_attempts` retries and exhausting one cannot fault the other.
 - Implementation:
   - Pure-policy delay calculator in `src/core/reconnect.c` (xorshift64 jitter, no I/O); unit-tested in `tests/unit/reconnect_policy_test.c`.
   - Monotonic-time helper `az_iot_time_mono_ms()` (Win32 `GetTickCount64`, POSIX `clock_gettime(CLOCK_MONOTONIC)`); `_POSIX_C_SOURCE=200809L` is set on `az_iot_core` for Linux.

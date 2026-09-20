@@ -278,19 +278,38 @@ sequenceDiagram
     else reconnect disabled (initial_delay_ms == 0)
         Conn->>Conn: state = FAULTED
         Conn-->>App: state callback(FAULTED, reason)
-    else attempts exhausted (attempt > max_attempts)
+    else this scope's attempts exhausted (retry_attempt[scope] > max_attempts)
         Conn->>Conn: state = FAULTED
         Conn-->>App: state callback(FAULTED, reason)
     else
-        Conn->>Conn: attempt++, delay = backoff(attempt)
+        Conn->>Conn: retry_attempt[scope]++, delay = backoff(retry_attempt[scope])
         Conn->>Conn: state = RECONNECTING
         Conn-->>App: state callback(RECONNECTING, reason)
         Note over Conn: do_work() waits until reconnect_due_ms
         Conn->>Conn: start_connect_attempt() -> full sequence of section 3
         Hub-->>Conn: CONNACK ok
-        Conn->>Conn: attempt = 0, state = CONNECTED
+        Conn->>Conn: retry_attempt[HUB] = 0, state = CONNECTED
     end
 ```
+
+**The retry ladder is per scope.** `retry_attempt[]` is indexed by
+`az_iot_connection_scope` (`DPS`, `HUB`), and `max_attempts` is a budget for **each** ladder rather
+than one shared across both. So a device may spend its whole hub budget and still get a full set of
+registration attempts, and a registration that follows an exhausted hub ladder starts again at
+`initial_delay_ms` instead of inheriting the hub's capped backoff.
+
+Which ladder a retry climbs is the scope of the **next attempt**, which is not always the scope of
+the failure: a hub CONNACK that rejects the identity is a HUB failure whose retry is a DPS
+registration.
+
+Reset points differ per ladder:
+
+| Event | Effect |
+| --- | --- |
+| DPS registration succeeds | both ladders reset |
+| Hub CONNACK succeeds (birth-ack on Hub-Next) | `HUB` resets; `DPS` untouched |
+| `dps.max_hub_connect_attempts_before_reprovision` crossed | `DPS` resets, so the first registration attempt waits `initial_delay_ms` |
+| `open()` / `close()` | both ladders reset |
 
 ### 5.1 Backoff policy
 
