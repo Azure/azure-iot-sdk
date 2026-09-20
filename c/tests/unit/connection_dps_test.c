@@ -550,11 +550,17 @@ static void dps_carries_the_proxy_and_transport(void** state)
   az_iot_connection_client_destroy(&c);
 }
 
-/* Provisioning is a short exchange that is fully torn down before the hub
- * session exists, and it re-subscribes its response topic on every attempt, so
- * a resumed session there could only redeliver the answer to an abandoned
- * registration. It asks for a clean one -- and never carries the hub's Will,
- * which would announce the departure of a device that was never present. */
+/* The provisioning service does not implement session persistence -- it treats
+ * every session as non-persistent whatever the CONNECT flag says -- so DPS asks
+ * for a clean one, and never carries the hub's Will, which nothing on this
+ * service would consume.
+ *
+ * Both are asserted against an EXPLICIT caller request for the opposite, which
+ * is what makes this a guard rather than a restatement of the default. It is
+ * also the regression guard for the session becoming longer-lived than
+ * registration: neither term is derived from how long the session lasts, so a
+ * provisioning session held open past its assignment -- or running alongside a
+ * hub session -- must still connect on exactly these terms. */
 static void dps_connects_with_a_clean_session_and_no_will(void** state)
 {
   (void)state;
@@ -1554,6 +1560,265 @@ static void removal_on_gen2_unsubscribes_only_the_owners_filter(void** state)
   profile_fixture_close(&pf);
 }
 
+/* ------------------------------------------------------------------------- */
+/* close() during provisioning                                               */
+/* ------------------------------------------------------------------------- */
+
+/* Before provisioning completes there is a DPS session but no hub adapter, so
+ * close() has to cancel that session itself. Without this it reported
+ * NOT_INITIALIZED and left the client in CONNECTING with nothing able to take
+ * it out -- the same shape as a fault. */
+static void close_during_provisioning_returns_to_idle(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  (void)dps_open(fx);
+  assert_int_equal(fx->client->state, AZ_IOT_CONN_STATE_CONNECTING);
+
+  assert_int_equal(az_iot_connection_client_close(fx->client), AZ_IOT_OK);
+  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_IDLE);
+  assert_false(az_iot_connection_client__dps_session_ready(fx->client));
+
+  /* And the client is reusable. */
+  assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
+  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_CONNECTING);
+}
+
+/* A registration response that arrived just before the close must not move a
+ * client the application has already closed. */
+static void close_during_provisioning_drops_the_pending_outcome(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_mock_mqtt_client* m = dps_open_to_registering(fx);
+
+  /* Queued, not yet applied: the deferred finalize runs from do_work(). */
+  assert_true(inject_dps_response(m, DPS_RESPONSE_TOPIC_ASSIGNED, k_failed_body));
+  assert_int_equal(az_iot_connection_client_close(fx->client), AZ_IOT_OK);
+  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_IDLE);
+
+  for (int i = 0; i < 3; ++i)
+  {
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
+  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_IDLE);
+  assert_false(az_iot_test_saw_state(&fx->log, AZ_IOT_CONN_STATE_FAULTED));
+}
+
+/* An assignment the SDK cannot speak must not be adopted. If opts.host were
+ * rewritten before the profile was checked, the next open() would see a host,
+ * skip DPS and connect to that hub with the pre-provisioning session role --
+ * speaking a protocol the service just said this hub does not use. */
+static void an_unsupported_profile_does_not_adopt_the_assigned_hub(void** state)
+{
+  (void)state;
+  set_dps_profile_override(NULL);
+
+  az_iot_test_conn* fx = (az_iot_test_conn*)calloc(1, sizeof(*fx));
+  assert_non_null(fx);
+  az_iot_connection_client_options opts = dps_options();
+  assert_int_equal(az_iot_connection_client_init(&fx->client_storage, &opts), AZ_IOT_OK);
+  fx->client = &fx->client_storage;
+  assert_int_equal(
+      az_iot_connection_client_set_state_callback(fx->client, az_iot_test_on_state, &fx->log),
+      AZ_IOT_OK);
+  fx->factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
+  assert_non_null(fx->factory);
+
+  az_iot_mock_mqtt_client* m = dps_open_to_registering(fx);
+  assert_true(inject_dps_response(m, DPS_RESPONSE_TOPIC_ASSIGNED, k_assigned_profile_unknown));
+  for (int i = 0; i < 3; ++i)
+  {
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
+  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_FAULTED);
+  assert_int_equal(
+      az_iot_test_reason_for(&fx->log, AZ_IOT_CONN_STATE_FAULTED),
+      AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED);
+
+  /* The rejected assignment was not adopted. */
+  assert_null(fx->client->opts.host);
+
+  /* So the retry asks DPS again instead of connecting to the rejected hub. */
+  assert_int_equal(az_iot_connection_client_close(fx->client), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
+  az_iot_mock_mqtt_client* second = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  assert_non_null(second);
+  const az_iot_mock_call* c = az_iot_mock_mqtt_client_last_of(second, AZ_IOT_MOCK_CALL_CONNECT);
+  assert_non_null(c);
+  assert_string_equal(c->connect.host, "global.azure-devices-provisioning.net");
+
+  az_iot_connection_client_destroy(&fx->client_storage);
+  free(fx);
+}
+
+/* ------------------------------------------------------------------------- */
+/* a rejected or unusable assignment must not leave a reusable cached one     */
+/*                                                                           */
+/* These all exist because FAULTED is now recoverable: close() + open() is a  */
+/* supported retry, and open() skips DPS whenever opts.host is set. Anything  */
+/* that faults while an assignment is cached therefore has to say explicitly  */
+/* that the cache is no good, or the retry walks straight back into it.       */
+/* ------------------------------------------------------------------------- */
+
+/* A device that has already provisioned, re-provisions, and is handed a
+ * profile this SDK cannot speak. The new assignment is refused -- but the
+ * PREVIOUS one is still cached, so the retry must still go to DPS. */
+static void a_rejected_reprovision_does_not_reuse_the_cached_hub(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  set_dps_profile_override(NULL);
+
+  az_iot_mock_mqtt_client* hub = provision_to_hub_connecting(fx);
+  assert_string_equal(fx->client->opts.host, "myhub.azure-devices.net");
+
+  /* Hub refuses the identity, so the client goes back to DPS. */
+  assert_true(az_iot_mock_mqtt_client_inject_connected(hub, AZ_IOT_ERR_IDENTITY_REJECTED));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  az_iot_test_wait_ms(REPROVISION_DELAY_MS + 5u);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  az_iot_mock_mqtt_client* dps2 = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  assert_non_null(dps2);
+  assert_string_equal(last_connect_host(dps2), "global.azure-devices-provisioning.net");
+  assert_true(az_iot_mock_mqtt_client_inject_connected(dps2, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  const az_iot_mock_call* sub = az_iot_mock_mqtt_client_last_of(dps2, AZ_IOT_MOCK_CALL_SUBSCRIBE);
+  assert_non_null(sub);
+  assert_true(az_iot_mock_mqtt_client_inject_suback(dps2, sub->packet_id, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  /* The new assignment carries a profile the SDK cannot speak. */
+  assert_true(inject_dps_response(dps2, DPS_RESPONSE_TOPIC_ASSIGNED, k_assigned_profile_unknown));
+  for (int i = 0; i < 3; ++i)
+  {
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
+  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_FAULTED);
+  assert_int_equal(
+      az_iot_test_reason_for(&fx->log, AZ_IOT_CONN_STATE_FAULTED),
+      AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED);
+
+  /* The retry must re-provision, NOT reconnect to the hub still in opts.host. */
+  assert_int_equal(az_iot_connection_client_close(fx->client), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
+  az_iot_mock_mqtt_client* next = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  assert_non_null(next);
+  assert_string_equal(last_connect_host(next), "global.azure-devices-provisioning.net");
+}
+
+/* The response parser accepts an empty device id -- it rejects only a negative
+ * or oversized one -- so an assignment can be half usable. Neither half may be
+ * adopted, or the client would hold the new hub with the previous device id. */
+static void a_half_usable_assignment_is_not_partially_adopted(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  set_dps_profile_override(NULL);
+
+  static const char k_assigned_no_device_id[]
+      = "{\"operationId\":\"op-1\",\"status\":\"assigned\","
+        "\"registrationState\":{\"registrationId\":\"ut-device\","
+        "\"assignedHub\":\"myhub.azure-devices.net\",\"deviceId\":\"\"}}";
+
+  az_iot_mock_mqtt_client* m = dps_open_to_registering(fx);
+  assert_true(inject_dps_response(m, DPS_RESPONSE_TOPIC_ASSIGNED, k_assigned_no_device_id));
+  for (int i = 0; i < 3; ++i)
+  {
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
+
+  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_FAULTED);
+  /* The hub half was NOT committed on the way to the fault. */
+  assert_null(fx->client->opts.host);
+
+  /* And the retry provisions again rather than connecting to a half-assignment. */
+  assert_int_equal(az_iot_connection_client_close(fx->client), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
+  az_iot_mock_mqtt_client* next = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  assert_non_null(next);
+  assert_string_equal(last_connect_host(next), "global.azure-devices-provisioning.net");
+}
+
+/* An identity rejection records that the device must re-provision, and the
+ * same failure can exhaust the policy and fault. close() must not throw that
+ * intent away: the cached host would otherwise send open() back to the hub
+ * that just rejected this identity. */
+static void the_reprovision_demand_survives_close_and_open(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  fx->client->opts.reconnection_policy.max_attempts = 1;
+
+  az_iot_mock_mqtt_client* hub = provision_to_hub_connecting(fx);
+
+  /* A transport failure uses up the one permitted attempt. */
+  assert_true(az_iot_mock_mqtt_client_inject_connected(hub, AZ_IOT_ERR_MQTT));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_RECONNECTING);
+  az_iot_test_wait_ms(REPROVISION_DELAY_MS + 5u);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  /* The retry is refused on identity: that sets the re-provision demand and
+   * exhausts the policy in the same step, so the client faults holding it. */
+  az_iot_mock_mqtt_client* hub2 = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  assert_non_null(hub2);
+  assert_string_equal(last_connect_host(hub2), "myhub.azure-devices.net");
+  assert_true(az_iot_mock_mqtt_client_inject_connected(hub2, AZ_IOT_ERR_IDENTITY_REJECTED));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_FAULTED);
+
+  assert_int_equal(az_iot_connection_client_close(fx->client), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
+
+  az_iot_mock_mqtt_client* next = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  assert_non_null(next);
+  assert_string_equal(last_connect_host(next), "global.azure-devices-provisioning.net");
+}
+
+/* close() is legal from inside the state callback, and the CONNECTING
+ * announcement in dps_start() runs that callback synchronously -- before
+ * dps_start() has finished with the adapter it just stored. A close() there
+ * destroys that adapter, so dps_start() must notice rather than keep using it. */
+typedef struct
+{
+  az_iot_connection_client* client;
+  az_iot_test_state_log* log;
+  int closed;
+} close_from_callback_ctx;
+
+static void close_on_connecting(const az_iot_connection_state_event* event, void* user_ctx)
+{
+  close_from_callback_ctx* ctx = (close_from_callback_ctx*)user_ctx;
+  az_iot_test_on_state(event, ctx->log);
+  if (event->state == AZ_IOT_CONN_STATE_CONNECTING && ctx->closed == 0)
+  {
+    ctx->closed = 1;
+    (void)az_iot_connection_client_close(ctx->client);
+  }
+}
+
+static void closing_from_the_connecting_callback_abandons_the_session(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  close_from_callback_ctx ctx = { fx->client, &fx->log, 0 };
+  assert_int_equal(
+      az_iot_connection_client_set_state_callback(fx->client, close_on_connecting, &ctx),
+      AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(fx->client, fx->factory), AZ_IOT_OK);
+
+  /* Must not touch the adapter the callback already destroyed. */
+  assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_ERR_NOT_CONNECTED);
+
+  assert_int_equal(ctx.closed, 1);
+  assert_int_equal(fx->client->state, AZ_IOT_CONN_STATE_IDLE);
+  assert_false(az_iot_connection_client__dps_session_ready(fx->client));
+
+  /* The pump must be safe afterwards too. */
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_equal(fx->client->state, AZ_IOT_CONN_STATE_IDLE);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -1637,6 +1902,20 @@ int main(void)
     cmocka_unit_test(init_rejects_a_connection_profile_the_sdk_cannot_speak),
     cmocka_unit_test(reassignment_to_another_generation_drops_the_old_filters),
     cmocka_unit_test(removal_on_gen2_unsubscribes_only_the_owners_filter),
+    /* close() during provisioning */
+    cmocka_unit_test_setup_teardown(close_during_provisioning_returns_to_idle, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        close_during_provisioning_drops_the_pending_outcome, setup, teardown),
+    cmocka_unit_test(an_unsupported_profile_does_not_adopt_the_assigned_hub),
+    /* a rejected or unusable assignment must not leave a reusable cached one */
+    cmocka_unit_test_setup_teardown(
+        a_rejected_reprovision_does_not_reuse_the_cached_hub, setup_with_reconnect, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_half_usable_assignment_is_not_partially_adopted, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        the_reprovision_demand_survives_close_and_open, setup_with_reconnect, teardown),
+    cmocka_unit_test_setup_teardown(
+        closing_from_the_connecting_callback_abandons_the_session, setup, teardown),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

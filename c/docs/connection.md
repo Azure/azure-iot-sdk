@@ -55,7 +55,7 @@ This document describes the target lifecycle. Not all of it is coded yet, so eve
 
 States are defined in
 [az_iot_connection_client.h](../inc/azure/iot/az_iot_connection_client.h); transitions are all funneled
-through the internal `transition()` helper, which is also what raises the user state callback.
+through the internal `set_state_to()` helper, which is also what raises the user state callback.
 
 ```mermaid
 stateDiagram-v2
@@ -71,9 +71,14 @@ stateDiagram-v2
     RECONNECTING --> FAULTED: attempts exhausted
     RECONNECTING --> IDLE: close()
     DISCONNECTING --> IDLE: transport closed
-    FAULTED --> CONNECTING: open()
+    FAULTED --> IDLE: close()
     IDLE --> [*]: destroy()
 ```
+
+`FAULTED` is settled, not a dead end. The SDK never leaves it on its own -- `do_work()` does not
+retry from there -- but `close()` is legal from it and returns the client to `IDLE`, from which
+`open()` starts a fresh attempt with the configuration and the attached feature clients intact.
+`open()` itself remains `IDLE`-only.
 
 When DPS is configured the whole provisioning exchange happens **inside** the `CONNECTING` state, so
 the application never sees an intermediate `CONNECTED` for the DPS session. The DPS progress is
@@ -227,8 +232,11 @@ would promise something the service does not do.
 Why each one:
 
 - **DPS starts clean.** Provisioning does not support persistent sessions — it treats every session
-  as non-persistent whatever the flag says. Registration is also a short exchange, fully torn down
-  before the hub session exists, and the response filter is re-subscribed on every attempt.
+  as non-persistent whatever the flag says — and the response filter is re-subscribed on every
+  attempt. That reason is a property of the *service*, not of how long the session lives, so it is
+  unaffected by any change to when the provisioning session is torn down: `clean_start` is only
+  read at CONNECT, and it is inert at this service whenever it is read. A provisioning session that
+  outlived registration, or ran alongside a hub session, would still take the same terms.
 - **Classic resumes.** A Classic hub holds the device's *subscription* and its in-flight QoS 1 only
   for a session that is not clean. Connecting clean does not lose the hub's server-side C2D queue —
   that is delivered once the device re-subscribes — but it does discard the subscription and any
@@ -251,9 +259,12 @@ Four rules that hold everywhere:
   platform deliberately leaves the Will slot to the application: MQTT 5 allows exactly one Will per
   CONNECT, device presence is derived from broker-emitted connection lifecycle events rather than
   from a device-authored will message, and taking the slot would deny the application its own
-  "device went away" signal.
+  "device went away" signal. It is never put on a provisioning session, whatever that session's
+  lifetime: nothing consumes a will published there.
 - **`Session Present` drives no application decision.** It is reported to the application and
   carried on the birth message as a diagnostic. No feature client tears down state because of it.
+  It is reported on both MQTT versions — a Classic session connects with Clean Session 0, so this
+  is the only place the application learns whether the broker resumed it.
 - A Will Delay only means something while the session is alive, so on `HUB_NEXT` the session expiry
   is raised to cover a delay longer than it; MQTT 5 ends the delay at whichever comes first.
 

@@ -26,11 +26,33 @@ Canonical pending-work tracker for IoT Hub Next (AEG) integration.
 - [x] Add `az_iot_mqtt_user_property` type to `az_iot_mqtt_iface.h`
 - [x] Extend `az_iot_mqtt_message` with typed user_properties array
 - [x] Extend inbound `az_iot_mqtt_event` (done — piggybacks on message)
-- [ ] Update Paho v5 adapter to set v5 User Properties on outbound PUBLISH
-- [ ] Update Paho v5 adapter to extract User Properties from inbound MESSAGE events
-- [x] Wire `session_present` from CONNACK into `EVT_CONNECTED` — both versions now. The v5 path
-  already did; the v3.1.1 path discarded the CONNACK flag, which a Classic session (Clean Session 0
-  by design) has no other way to observe.
+- [x] Update Paho v5 adapter to set v5 User Properties on outbound PUBLISH
+- [x] Update Paho v5 adapter to extract User Properties from inbound MESSAGE events
+- [x] Wire `session_present` from CONNACK into `EVT_CONNECTED` event — both versions. The v5 path
+      came first; the v3.1.1 path now reports it too. That bit was previously recorded here as not
+      needed, on the grounds that only the v5 presence/birth path consumes it. That reasoning no
+      longer holds: a Classic session connects with Clean Session 0 (Phase 4 below, and
+      `docs/connection.md` section 3.2), so whether the broker resumed the session or silently
+      started a fresh one is reported by the CONNACK and by nothing else. Nothing in the SDK
+      branches on the value — it is surfaced for the application, which cannot otherwise see it.
+- [x] Prove all three end to end. Conformance cases drive the real Paho v5 adapter against a
+      broker and against injected broker packets: `v5_message_properties_survive_a_roundtrip`,
+      `v5_properties_from_the_server_are_surfaced_intact`,
+      `v5_session_present_from_connack_is_reported`, plus
+      `v3_1_1_publish_ignores_the_v5_only_fields` to keep v5 bytes off a 3.1.1 session
+      (`c/tests/conformance/az_iot_conformance.c`).
+      `session_present_reports_whether_the_broker_resumed_the_session` covers the same flag from
+      the other direction and in BOTH suites: it drives a real resumption against the broker
+      (subscribe, disconnect, reconnect non-clean) instead of an injected CONNACK.
+
+### Not carried by the Paho adapter yet
+
+- [ ] CONNECT User Properties. `az_iot_mqtt_connect_options.user_properties` is accepted by
+      the interface and is silently ignored by the Paho v5 adapter, which puts only Session
+      Expiry on the CONNECT. Nothing in the SDK sets it today; it is listed here rather than
+      ticked so that stays a known gap and not a discovery.
+- [ ] PUBLISH `response_topic` and `topic_alias`. Both exist on `az_iot_mqtt_message` and
+      neither is serialized. Same reasoning: unused today, not implemented, not ticked.
 
 ## Phase 4: Session Lifecycle
 

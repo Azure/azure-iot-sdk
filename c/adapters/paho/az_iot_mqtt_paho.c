@@ -226,8 +226,16 @@ static void enqueue_status(
   enqueue_status_code(m, kind, status, packet_id, 0);
 }
 
-/* Allocate + enqueue an inbound MESSAGE event. Topic + payload are deep-copied
- * so the queued event is self-contained. */
+static void extract_v5_props(queued_event* n, MQTTAsync_message* msg);
+
+/* Allocate + enqueue an inbound MESSAGE event. Topic, payload and any v5
+ * properties are deep-copied so the queued event is self-contained.
+ *
+ * `v5_src` carries the properties to extract, or NULL for a v3.1.1 session.
+ * They are attached BEFORE the event is published to the queue: q_push() makes
+ * the node visible to process_loop() on the user thread, which is free to
+ * dispatch and free it immediately, so anything written to the node afterwards
+ * races with that free. */
 static void enqueue_message(
     paho_client* m,
     const char* topic,
@@ -235,7 +243,8 @@ static void enqueue_message(
     const void* payload,
     int payload_len,
     int qos,
-    int retain)
+    int retain,
+    MQTTAsync_message* v5_src)
 {
   queued_event* n = (queued_event*)calloc(1, sizeof(*n));
   if (!n)
@@ -279,6 +288,12 @@ static void enqueue_message(
 
   n->evt.kind = AZ_IOT_MQTT_EVT_MESSAGE;
   n->evt.message = &n->msg;
+
+  if (v5_src)
+  {
+    extract_v5_props(n, v5_src);
+  }
+
   q_push(m, n);
 }
 
@@ -286,18 +301,28 @@ static void enqueue_message(
 /* Paho callbacks (run on Paho threads - keep them tiny + queue-only)         */
 /* ------------------------------------------------------------------------- */
 
-/* Helper: duplicate a binary blob (len bytes from src) onto the heap. */
+/* Helper: copy `len` length-delimited bytes from Paho onto the heap as a C
+ * string.
+ *
+ * Paho hands out MQTT UTF-8 strings as a pointer plus a length and does NOT
+ * NUL-terminate them, so the terminator has to be added here before the bytes
+ * can be exposed through az_iot_mqtt_message as a `const char*`.
+ *
+ * A zero-length string is a legal MQTT v5 property value and yields "", not
+ * NULL: NULL is reserved for "allocation failed", and an application that
+ * cannot tell an empty value from a failed one has no way to react to either.
+ * Returns NULL only on allocation failure. */
 static char* dup_str_n(const char* src, int len)
 {
-  if (!src || len <= 0)
-  {
-    return NULL;
-  }
-  char* d = (char*)malloc((size_t)len + 1);
+  size_t n = (src && len > 0) ? (size_t)len : 0u;
+  char* d = (char*)malloc(n + 1);
   if (d)
   {
-    memcpy(d, src, (size_t)len);
-    d[len] = '\0';
+    if (n)
+    {
+      memcpy(d, src, n);
+    }
+    d[n] = '\0';
   }
   return d;
 }
@@ -356,9 +381,19 @@ static void extract_v5_props(queued_event* n, MQTTAsync_message* msg)
         {
           continue;
         }
-        n->user_props[n->user_props_count].key = dup_str_n(up->value.data.data, up->value.data.len);
-        n->user_props[n->user_props_count].value
-            = dup_str_n(up->value.value.data, up->value.value.len);
+        char* key = dup_str_n(up->value.data.data, up->value.data.len);
+        char* value = dup_str_n(up->value.value.data, up->value.value.len);
+        if (!key || !value)
+        {
+          /* Drop the pair whole rather than surface half of it: a NULL key or
+           * value in an array the application is told has N entries is a
+           * dereference waiting to happen. */
+          free(key);
+          free(value);
+          continue;
+        }
+        n->user_props[n->user_props_count].key = key;
+        n->user_props[n->user_props_count].value = value;
         n->user_props_count++;
       }
       n->msg.user_properties = n->user_props;
@@ -372,18 +407,15 @@ static int paho_msg_arrived(void* context, char* topic, int topic_len, MQTTAsync
   paho_client* m = (paho_client*)context;
   if (m && msg)
   {
-    enqueue_message(m, topic, topic_len, msg->payload, msg->payloadlen, msg->qos, msg->retained);
-    /* For v5: extract properties from the last enqueued event */
-    if (m->version == AZ_IOT_MQTT_VERSION_5)
-    {
-      paho_mutex_lock(&m->q_mutex);
-      queued_event* tail = m->q_tail;
-      paho_mutex_unlock(&m->q_mutex);
-      if (tail && tail->has_message)
-      {
-        extract_v5_props(tail, msg);
-      }
-    }
+    enqueue_message(
+        m,
+        topic,
+        topic_len,
+        msg->payload,
+        msg->payloadlen,
+        msg->qos,
+        msg->retained,
+        (m->version == AZ_IOT_MQTT_VERSION_5) ? msg : NULL);
   }
   MQTTAsync_freeMessage(&msg);
   MQTTAsync_free(topic);

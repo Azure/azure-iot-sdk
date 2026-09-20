@@ -63,6 +63,101 @@ sequenceDiagram
 
 - Abstracting it further to inform the MQTT version on the registation result is not a good design, since there will be [for the time being] just two versions of hub, and each have different MQTT-based protocol exchanges; so, for the client, knowing in separate just the MQTT version supported by the hub is not enough to communicate with it and exercise its messaging features (telemetry, c2d, direct methods, twin). 
 
+## Custom registration payload
+
+DPS lets a device send an arbitrary JSON object with its registration request.
+The service forwards it to a custom-allocation policy (webhook / Function), and
+it is also how a device declares an IoT Plug and Play model id at provisioning
+time. The service may return a payload of its own in the registration result.
+
+### Sending one
+
+Set `opts.dps.registration_payload` to the JSON, and give the SDK somewhere to
+build the request body — it never allocates and declares no payload buffer of
+its own:
+
+```c
+static const char k_payload[] = "{\"modelId\":\"dtmi:com:example:Thermostat;1\"}";
+AZ_IOT_DPS_REGISTRATION_BODY_STORAGE(body_buf);
+
+copts.dps.registration_payload
+    = az_span_create((uint8_t*)k_payload, (int32_t)(sizeof(k_payload) - 1));
+copts.dps.registration_body_buffer = az_span_create(body_buf, sizeof(body_buf));
+```
+
+Both options live in the nested `dps` struct, with the other provisioning
+options they belong with. `AZ_IOT_DPS_REGISTRATION_BODY_STORAGE()` follows the
+convention the rest of the library uses for caller-owned buffers
+(`AZ_IOT_CSR_PAYLOAD_STORAGE`, `AZ_IOT_ADU_DEVICE_PROPS_STORAGE`): a single
+`name` argument, sized by an `#ifndef`-overridable constant. The option itself
+takes an `az_span`, so a caller who wants a different size can declare the
+buffer directly and skip the macro.
+
+The payload is caller-supplied JSON and the SDK does not interpret it — but it
+does validate it, in `az_iot_connection_client_open()`, as exactly one
+well-formed JSON **object** and nothing else, rejecting anything else with
+`AZ_IOT_ERR_INVALID_ARG`. `payload` is an object on both directions of the DPS
+contract, and the alternative is emitting a body the service refuses at
+provisioning time, on a device in the field, with no clue as to why.
+
+`opts.model_id` is NOT announced here. It feeds the Classic MQTT username only,
+and injecting it into the payload would have to merge with — or silently
+override — a `modelId` the caller's payload already carries. Put the model id in
+the payload when provisioning should see it, as above.
+
+### The body on the wire
+
+The register PUBLISH carries one JSON object holding only the members that
+registration actually needs. The registration id is not one of them: it travels
+in the DPS username and topic.
+
+| configured | register body |
+|---|---|
+| neither | *(empty)* |
+| payload only | `{"payload":<json>}` |
+| `dps.request_operational_certificate` only | `{"csr":"<base64 DER>"}` |
+| both | `{"csr":"<base64 DER>","payload":<json>}` |
+
+`payload` is the member name the DPS registration request uses; azure-sdk-for-c
+writes the same one in `az_iot_provisioning_client_register_get_request_payload()`.
+That helper is not called here because it always emits `registrationId` and has
+no `csr` member, so it cannot produce the combined body.
+
+### Buffer sizing
+
+`AZ_IOT_CSR_PAYLOAD_BUFFER_MIN` (8448) covers the CSR body **alone**. Once a
+payload shares the body it no longer does: the body needs a further
+`AZ_IOT_DPS_REGISTRATION_PAYLOAD_OVERHEAD` (12) plus the payload itself.
+`AZ_IOT_DPS_REGISTRATION_BODY_STORAGE(name)` declares exactly that, leaving room for a payload of up to `AZ_IOT_DPS_REGISTRATION_PAYLOAD_MAX` (512, overridable before including).
+A payload-only device needs only its payload + 12 bytes and can declare a smaller buffer directly.
+
+If `dps.registration_body_buffer` is left empty the SDK builds into
+`csr_payload_buffer` instead, so a CSR-enrolling device that adds a small
+payload only has to enlarge the buffer it already provides. Either way a body
+that does not fit fails the registration with `AZ_IOT_ERR_NOT_ENOUGH_SPACE`; it
+is never truncated, and nothing is published.
+
+A zero-initialized options struct sends no payload and behaves exactly as
+before.
+
+### Reading the payload the service returns
+
+`registrationState.payload` of the assignment is delivered through an optional
+callback:
+
+```c
+static void on_registration_payload(az_span payload, void* ctx) { /* ... */ }
+
+az_iot_connection_client_set_registration_payload_callback(
+    &client, on_registration_payload, &ctx);
+```
+
+It fires once, only for an assignment that is otherwise good, and only when the
+service actually sent a payload (absent and `null` both mean "none"). The span
+is zero-copy into the inbound MQTT message and is valid **only for the duration
+of the call** — the buffer is reused as soon as it returns, so copy anything
+that must outlive it.
+
 ## Version
 
 - 05/20/2026: Created by ewertons/timtay.
