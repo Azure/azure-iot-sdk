@@ -942,11 +942,9 @@ static void one_callback_with_two_contexts_is_two_observers(void** state)
   az_iot_test_state_log a = { 0 };
   az_iot_test_state_log b = { 0 };
   assert_int_equal(
-      az_iot_connection_client_add_state_observer(fx->client, az_iot_test_on_state, &a),
-      AZ_IOT_OK);
+      az_iot_connection_client_add_state_observer(fx->client, az_iot_test_on_state, &a), AZ_IOT_OK);
   assert_int_equal(
-      az_iot_connection_client_add_state_observer(fx->client, az_iot_test_on_state, &b),
-      AZ_IOT_OK);
+      az_iot_connection_client_add_state_observer(fx->client, az_iot_test_on_state, &b), AZ_IOT_OK);
 
   (void)open_to_connecting(fx);
 
@@ -981,11 +979,9 @@ static void removing_one_context_leaves_the_other_registered(void** state)
   az_iot_test_state_log a = { 0 };
   az_iot_test_state_log b = { 0 };
   assert_int_equal(
-      az_iot_connection_client_add_state_observer(fx->client, az_iot_test_on_state, &a),
-      AZ_IOT_OK);
+      az_iot_connection_client_add_state_observer(fx->client, az_iot_test_on_state, &a), AZ_IOT_OK);
   assert_int_equal(
-      az_iot_connection_client_add_state_observer(fx->client, az_iot_test_on_state, &b),
-      AZ_IOT_OK);
+      az_iot_connection_client_add_state_observer(fx->client, az_iot_test_on_state, &b), AZ_IOT_OK);
   assert_int_equal(
       az_iot_connection_client_remove_state_observer(fx->client, az_iot_test_on_state, &a),
       AZ_IOT_OK);
@@ -1125,8 +1121,7 @@ static void the_registry_cannot_be_mutated_from_inside_an_observer(void** state)
   g_reentrant_add_result = AZ_IOT_OK;
   g_reentrant_remove_result = AZ_IOT_OK;
   assert_int_equal(
-      az_iot_connection_client_add_state_observer(fx->client, reentrant_observer, NULL),
-      AZ_IOT_OK);
+      az_iot_connection_client_add_state_observer(fx->client, reentrant_observer, NULL), AZ_IOT_OK);
 
   (void)open_to_connecting(fx);
 
