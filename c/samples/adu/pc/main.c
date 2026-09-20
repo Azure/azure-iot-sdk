@@ -379,7 +379,7 @@ int main(void)
     sample_state_destroy(&st);
     return 1;
   }
-  az_iot_connection_client_set_state_callback(&st.connection_client, on_conn_state, NULL);
+  az_iot_connection_client_add_state_observer(&st.connection_client, on_conn_state, NULL);
 
   if (az_iot_connection_client_register_mqtt_factory(
           &st.connection_client, az_iot_paho_factory_create_v3_1_1())

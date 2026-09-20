@@ -15,11 +15,11 @@ document are to be interpreted as described in
 
 ## 1. Motivation
 
-Today the connection client exposes a **single** state callback
-(`az_iot_connection_client_set_state_callback` → `state_cb` / `state_cb_ctx`)
-reserved for the application, and feature clients (twin, telemetry, c2d, direct
-method, file upload, and the planned ADU client) have **no** way to learn about
-connection transitions. This creates three problems:
+The connection client USED TO expose a **single** state callback
+(`az_iot_connection_client_set_state_callback` -> `state_cb` / `state_cb_ctx`)
+reserved for the application, leaving feature clients (twin, telemetry, c2d,
+direct method, file upload, and the ADU client) with **no** way to learn about
+connection transitions. That caused three problems:
 
 1. **No reconnect awareness for feature clients.** A feature client that needs to
    re-report or re-arm state on a fresh session cannot, because it never hears
@@ -36,14 +36,19 @@ This design replaces the single callback with a **shared observer registry**,
 adds a **lifecycle/reuse contract** with a teardown notification, and introduces
 a **rich status struct**.
 
-> **The event argument is implemented; the registry and rich status fields are
-> not.** Client-separation phase P1d changed
-> `az_iot_connection_state_callback` to take one SDK-produced, size-stamped
-> `az_iot_connection_state_event` carrying the resolved connection profile
-> ([client-separation.md §9](client-separation.md#the-profile-can-change-while-the-device-is-running)).
-> The remaining work must extend that event rather than introduce a second
-> status parameter, and a registry built later registers callbacks of its
-> existing signature.
+> **STATUS: the event argument and the observer registry (section 2) are
+> implemented. The rich status fields (section 4.3) are not.**
+>
+> Client-separation phase P1d changed `az_iot_connection_state_callback` to take
+> one SDK-produced, size-stamped `az_iot_connection_state_event` carrying the
+> resolved connection profile
+> ([client-separation.md section 9](client-separation.md#the-profile-can-change-while-the-device-is-running)).
+> The registry reuses that signature unchanged, which is why it did not have to
+> introduce a second callback type. The remaining work -- `source`,
+> `protocol_code`, `transport_code`, `message` -- must extend that same event
+> rather than introduce a second status parameter.
+>
+> Where the shipped registry differs from this document, see section 2.5.
 
 ---
 
@@ -112,6 +117,45 @@ full.
 - Because mutation-during-dispatch is forbidden, **no registry snapshot is
   required**. The sole exception (the `DEINITIALIZING` notice, §3.3) performs
   **no** list mutation — feature clients only poison their own local pointers.
+
+### 2.5 What shipped, and where it differs from §2.1–§2.4
+
+The registry is implemented. Four deviations from the design above, each
+deliberate:
+
+1. **Two arrays, not one array with an `is_feature_client` flag.** §2.1 proposed
+   a single array carrying the flag. Separate `feature_state_observers[]` and
+   `app_state_observers[]` give the same guarantee structurally: an application
+   cannot land in the feature-client pool because it calls a different function,
+   not because a flag was set correctly. It also makes §2.3's "neither pool can
+   starve the other" true by construction rather than by bookkeeping, and it
+   makes the two-pass dispatch of §2.2 the natural loop rather than a filter.
+2. **Names.** The capacity macros are `AZ_IOT_MAX_FEATURE_STATE_OBSERVERS` (6)
+   and `AZ_IOT_MAX_APP_STATE_OBSERVERS` (4) — the counts §2.3 specifies, under
+   names matching the `AZ_IOT_MAX_*` family already in the public header.
+3. **A full pool answers `AZ_IOT_ERR_NOT_ENOUGH_SPACE`, not
+   `AZ_IOT_ERR_NOT_SUPPORTED`.** §2.3 said the latter. The pool being full is a
+   capacity condition, and `NOT_ENOUGH_SPACE` is what every other bounded pool
+   in this client already returns; `NOT_SUPPORTED` would read as "this build
+   has no observer registry".
+4. **No debug-build assert on reentrant mutation** (§2.4's third bullet). The
+   `AZ_IOT_ERR_BUSY` return is the contract and is covered by a test; an assert
+   would add a second, divergent failure mode for the same mistake, and this
+   client does not assert anywhere else.
+
+Two further points the design did not state, both now pinned by tests:
+
+- **Registration is idempotent on the `(cb, user_ctx)` PAIR**, not on `cb`
+  alone. One callback shared by two owners is two subscriptions and is
+  delivered twice; registering the same pair again consumes no second slot and
+  causes no second delivery.
+- **Removal matches the same pair**, so withdrawing one owner's subscription
+  leaves another owner sharing that callback registered. It answers
+  `AZ_IOT_ERR_NOT_FOUND` when the pair is not registered.
+
+`az_iot_connection_client_set_state_callback()` is **removed**, not deprecated:
+the libraries are unreleased, and keeping a single-slot setter beside a registry
+would leave two ways to subscribe with different semantics.
 
 ---
 

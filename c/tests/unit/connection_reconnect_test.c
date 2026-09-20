@@ -54,7 +54,7 @@ static int setup_with_policy(void** state, uint32_t max_attempts)
   assert_int_equal(az_iot_connection_client_init(&fx->client_storage, &opts), AZ_IOT_OK);
   fx->client = &fx->client_storage;
   assert_int_equal(
-      az_iot_connection_client_set_state_callback(fx->client, az_iot_test_on_state, &fx->log),
+      az_iot_connection_client_add_state_observer(fx->client, az_iot_test_on_state, &fx->log),
       AZ_IOT_OK);
   az_iot_connection_client__seed_rng(fx->client, 0xC0FFEEFEEDFACEull);
 
@@ -92,7 +92,7 @@ static int setup_no_reconnect(void** state)
   assert_int_equal(az_iot_connection_client_init(&fx->client_storage, &opts), AZ_IOT_OK);
   fx->client = &fx->client_storage;
   assert_int_equal(
-      az_iot_connection_client_set_state_callback(fx->client, az_iot_test_on_state, &fx->log),
+      az_iot_connection_client_add_state_observer(fx->client, az_iot_test_on_state, &fx->log),
       AZ_IOT_OK);
 
   fx->factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);

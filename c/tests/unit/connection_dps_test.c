@@ -104,7 +104,7 @@ static int setup(void** state)
   assert_int_equal(az_iot_connection_client_init(&fx->client_storage, &opts), AZ_IOT_OK);
   fx->client = &fx->client_storage;
   assert_int_equal(
-      az_iot_connection_client_set_state_callback(fx->client, az_iot_test_on_state, &fx->log),
+      az_iot_connection_client_add_state_observer(fx->client, az_iot_test_on_state, &fx->log),
       AZ_IOT_OK);
 
   fx->factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
@@ -183,7 +183,7 @@ static int setup_with_reconnect(void** state)
   assert_int_equal(az_iot_connection_client_init(&fx->client_storage, &opts), AZ_IOT_OK);
   fx->client = &fx->client_storage;
   assert_int_equal(
-      az_iot_connection_client_set_state_callback(fx->client, az_iot_test_on_state, &fx->log),
+      az_iot_connection_client_add_state_observer(fx->client, az_iot_test_on_state, &fx->log),
       AZ_IOT_OK);
   az_iot_connection_client__seed_rng(fx->client, 0xC0FFEEFEEDFACEull);
 
@@ -277,7 +277,7 @@ static int setup_with_reprovision_threshold(void** state)
   assert_int_equal(az_iot_connection_client_init(&fx->client_storage, &opts), AZ_IOT_OK);
   fx->client = &fx->client_storage;
   assert_int_equal(
-      az_iot_connection_client_set_state_callback(fx->client, az_iot_test_on_state, &fx->log),
+      az_iot_connection_client_add_state_observer(fx->client, az_iot_test_on_state, &fx->log),
       AZ_IOT_OK);
   az_iot_connection_client__seed_rng(fx->client, 0xC0FFEEFEEDFACEull);
 
@@ -322,6 +322,49 @@ static void hub_unreachable_past_the_threshold_reprovisions(void** state)
    * device lives now instead of retrying a host that never answers. */
   az_iot_mock_mqtt_client* third = fail_hub_attempt(fx, second);
   assert_string_equal(last_connect_host(third), "global.azure-devices-provisioning.net");
+}
+
+/* The hub-failure counter must be reset by a SUCCESSFUL connection, whether or
+ * not anyone is watching the connection state.
+ *
+ * It used to be reset inside the `if (state_cb)` branch of the transition, so a
+ * client with no observer registered never cleared it: every successful
+ * reconnect left the count standing, and after enough intermittent outages --
+ * separated by working connections -- the device would re-provision as though
+ * the hub had been unreachable throughout. Observability must not change
+ * behaviour, which is what this pins.
+ *
+ * The fixture's own observer is withdrawn first, because with it registered the
+ * old code path happened to do the right thing. */
+static void a_successful_connect_clears_the_hub_failure_count_without_an_observer(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  assert_int_equal(
+      az_iot_connection_client_remove_state_observer(fx->client, az_iot_test_on_state, &fx->log),
+      AZ_IOT_OK);
+
+  az_iot_mock_mqtt_client* hub = provision_to_hub_connecting(fx);
+
+  az_iot_mock_mqtt_client* second = fail_hub_attempt(fx, hub);
+  assert_string_equal(last_connect_host(second), "myhub.azure-devices.net");
+
+  assert_true(az_iot_mock_mqtt_client_inject_connected(second, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  /* Read the state directly: there is deliberately no observer to log it. */
+  assert_int_equal(fx->client->state, AZ_IOT_CONN_STATE_CONNECTED);
+
+  /* Without the reset this drop would be failure number two and divert to DPS.
+   * a_successful_hub_connection_resets_the_failure_count proves the same thing
+   * WITH an observer registered, which is why it could not catch the reset
+   * living inside the observer branch. */
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(second));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  az_iot_test_wait_ms(REPROVISION_DELAY_MS + 5u);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  az_iot_mock_mqtt_client* third = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  assert_non_null(third);
+  assert_string_equal(last_connect_host(third), "myhub.azure-devices.net");
 }
 
 static void a_zero_threshold_never_reprovisions(void** state)
@@ -1135,7 +1178,7 @@ static void dps_rejected_identity_leaves_the_client_idle(void** state)
   az_iot_connection_client c;
   assert_int_equal(az_iot_connection_client_init(&c, &opts), AZ_IOT_OK);
   assert_int_equal(
-      az_iot_connection_client_set_state_callback(&c, az_iot_test_on_state, &log), AZ_IOT_OK);
+      az_iot_connection_client_add_state_observer(&c, az_iot_test_on_state, &log), AZ_IOT_OK);
 
   assert_int_equal(az_iot_connection_client_open(&c), AZ_IOT_ERR_INVALID_ARG);
   assert_false(az_iot_test_saw_state(&log, AZ_IOT_CONN_STATE_CONNECTING));
@@ -1166,7 +1209,7 @@ static void profile_fixture_open(profile_fixture* pf)
   az_iot_connection_client_options opts = dps_options();
   assert_int_equal(az_iot_connection_client_init(&pf->c, &opts), AZ_IOT_OK);
   assert_int_equal(
-      az_iot_connection_client_set_state_callback(&pf->c, az_iot_test_on_state, &pf->log),
+      az_iot_connection_client_add_state_observer(&pf->c, az_iot_test_on_state, &pf->log),
       AZ_IOT_OK);
   pf->v5 = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_5);
   pf->v3 = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
@@ -1811,7 +1854,7 @@ static void an_unsupported_profile_does_not_adopt_the_assigned_hub(void** state)
   assert_int_equal(az_iot_connection_client_init(&fx->client_storage, &opts), AZ_IOT_OK);
   fx->client = &fx->client_storage;
   assert_int_equal(
-      az_iot_connection_client_set_state_callback(fx->client, az_iot_test_on_state, &fx->log),
+      az_iot_connection_client_add_state_observer(fx->client, az_iot_test_on_state, &fx->log),
       AZ_IOT_OK);
   fx->factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
   assert_non_null(fx->factory);
@@ -1994,7 +2037,7 @@ static int setup_with_exponential_reconnect(void** state)
   assert_int_equal(az_iot_connection_client_init(&fx->client_storage, &opts), AZ_IOT_OK);
   fx->client = &fx->client_storage;
   assert_int_equal(
-      az_iot_connection_client_set_state_callback(fx->client, az_iot_test_on_state, &fx->log),
+      az_iot_connection_client_add_state_observer(fx->client, az_iot_test_on_state, &fx->log),
       AZ_IOT_OK);
   az_iot_connection_client__seed_rng(fx->client, 0xC0FFEEFEEDFACEull);
 
@@ -2175,7 +2218,7 @@ static void closing_from_the_connecting_callback_abandons_the_session(void** sta
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
   close_from_callback_ctx ctx = { fx->client, &fx->log, 0 };
   assert_int_equal(
-      az_iot_connection_client_set_state_callback(fx->client, close_on_connecting, &ctx),
+      az_iot_connection_client_add_state_observer(fx->client, close_on_connecting, &ctx),
       AZ_IOT_OK);
   assert_int_equal(
       az_iot_connection_client_register_mqtt_factory(fx->client, fx->factory), AZ_IOT_OK);
@@ -2254,6 +2297,10 @@ int main(void)
         teardown),
     cmocka_unit_test_setup_teardown(
         a_zero_threshold_never_reprovisions, setup_with_reprovision_threshold, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_successful_connect_clears_the_hub_failure_count_without_an_observer,
+        setup_with_reprovision_threshold,
+        teardown),
     cmocka_unit_test_setup_teardown(
         a_successful_hub_connection_resets_the_failure_count,
         setup_with_reprovision_threshold,

@@ -102,7 +102,7 @@ static int setup(void** state)
   assert_int_equal(az_iot_connection_client_init(&fx->client, &opts), AZ_IOT_OK);
 
   assert_int_equal(
-      az_iot_connection_client_set_state_callback(&fx->client, az_iot_test_on_state, &fx->log),
+      az_iot_connection_client_add_state_observer(&fx->client, az_iot_test_on_state, &fx->log),
       AZ_IOT_OK);
 
   fx->factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);

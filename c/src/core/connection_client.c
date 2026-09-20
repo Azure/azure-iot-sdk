@@ -234,6 +234,60 @@ static bool reconnect_enabled(const az_iot_connection_client* c)
   return c->opts.reconnection_policy.initial_delay_ms > 0;
 }
 
+/* Dispatch one transition to every registered observer.
+ *
+ * Feature clients first, then the application, so an application observer never
+ * sees a connection whose feature clients have not yet reacted to the same
+ * event.
+ *
+ * The event is built once and shared. It is const to the observers and lives on
+ * this frame, which is what makes "valid only for the duration of the call"
+ * true by construction.
+ *
+ * `dispatching_state` is held across BOTH passes rather than per pass: an
+ * observer in the first pass could otherwise register one that the second pass
+ * would walk into. */
+static void dispatch_state_event(
+    az_iot_connection_client* c,
+    const az_iot_connection_state_event* event)
+{
+  c->dispatching_state = true;
+  for (size_t i = 0; i < AZ_IOT_MAX_FEATURE_STATE_OBSERVERS; ++i)
+  {
+    if (c->feature_state_observers[i].cb)
+    {
+      c->feature_state_observers[i].cb(event, c->feature_state_observers[i].user_ctx);
+    }
+  }
+  for (size_t i = 0; i < AZ_IOT_MAX_APP_STATE_OBSERVERS; ++i)
+  {
+    if (c->app_state_observers[i].cb)
+    {
+      c->app_state_observers[i].cb(event, c->app_state_observers[i].user_ctx);
+    }
+  }
+  c->dispatching_state = false;
+}
+
+static bool have_state_observers(const az_iot_connection_client* c)
+{
+  for (size_t i = 0; i < AZ_IOT_MAX_FEATURE_STATE_OBSERVERS; ++i)
+  {
+    if (c->feature_state_observers[i].cb)
+    {
+      return true;
+    }
+  }
+  for (size_t i = 0; i < AZ_IOT_MAX_APP_STATE_OBSERVERS; ++i)
+  {
+    if (c->app_state_observers[i].cb)
+    {
+      return true;
+    }
+  }
+  return false;
+}
+
 static void set_state_to(
     az_iot_connection_client* c,
     az_iot_connection_state next,
@@ -244,29 +298,32 @@ static void set_state_to(
     return;
   }
   c->state = next;
-  if (c->state_cb)
+  /* Bookkeeping that belongs to the transition itself, not to any observer, so
+   * it runs whether or not anyone is watching. */
+  if (next == AZ_IOT_CONN_STATE_CONNECTED)
   {
-    az_iot_hub_profile profile = AZ_IOT_HUB_PROFILE_INIT;
-    az_iot_connection_state_event event = {
-      ._internal_size = sizeof(az_iot_connection_state_event),
-      .state = next,
-      .reason = reason,
-      .profile = NULL,
-    };
-    if (next == AZ_IOT_CONN_STATE_CONNECTED || reason == AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH
-        || reason == AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED)
-    {
-      profile.connection_profile = c->connection_profile;
-      profile.connection_profile_raw = c->connection_profile_raw;
-      profile.connection_profile_raw_truncated = c->connection_profile_raw_truncated;
-      event.profile = &profile;
-    }
-    if (next == AZ_IOT_CONN_STATE_CONNECTED)
-    {
-      c->consecutive_hub_connect_failures = 0;
-    }
-    c->state_cb(&event, c->state_cb_ctx);
+    c->consecutive_hub_connect_failures = 0;
   }
+  if (!have_state_observers(c))
+  {
+    return;
+  }
+  az_iot_hub_profile profile = AZ_IOT_HUB_PROFILE_INIT;
+  az_iot_connection_state_event event = {
+    ._internal_size = sizeof(az_iot_connection_state_event),
+    .state = next,
+    .reason = reason,
+    .profile = NULL,
+  };
+  if (next == AZ_IOT_CONN_STATE_CONNECTED || reason == AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH
+      || reason == AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED)
+  {
+    profile.connection_profile = c->connection_profile;
+    profile.connection_profile_raw = c->connection_profile_raw;
+    profile.connection_profile_raw_truncated = c->connection_profile_raw_truncated;
+    event.profile = &profile;
+  }
+  dispatch_state_event(c, &event);
 }
 
 static const az_iot_mqtt_factory* find_factory(
@@ -3083,18 +3140,139 @@ az_iot_result az_iot_connection_client_register_mqtt_factory(
   return AZ_IOT_OK;
 }
 
-az_iot_result az_iot_connection_client_set_state_callback(
+/* Shared by the public and internal registration entry points. The only
+ * difference between an application observer and a feature-client one is which
+ * pool it lands in -- and that is decided HERE, by which entry point was
+ * called, never by an argument. An application cannot register itself into the
+ * feature-client pool and take a slot a feature client needs. */
+static az_iot_result add_state_observer_to(
+    az_iot_connection_client* client,
+    az_iot_connection_state_callback cb,
+    void* user_ctx,
+    bool feature_client)
+{
+  if (!client || !cb)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if (client->dispatching_state)
+  {
+    AZ_IOT_LOG_ERROR("connection: cannot add a state observer from inside one");
+    return AZ_IOT_ERR_BUSY;
+  }
+
+  size_t count
+      = feature_client ? AZ_IOT_MAX_FEATURE_STATE_OBSERVERS : AZ_IOT_MAX_APP_STATE_OBSERVERS;
+  size_t free_slot = count;
+  for (size_t i = 0; i < count; ++i)
+  {
+    az_iot_connection_state_callback slot_cb = feature_client
+        ? client->feature_state_observers[i].cb
+        : client->app_state_observers[i].cb;
+    void* slot_ctx = feature_client ? client->feature_state_observers[i].user_ctx
+                                    : client->app_state_observers[i].user_ctx;
+    /* Idempotent on the (cb, user_ctx) PAIR, not on cb alone: one callback
+     * shared by two owners is two distinct subscriptions and must be delivered
+     * twice. */
+    if (slot_cb == cb && slot_ctx == user_ctx)
+    {
+      return AZ_IOT_OK;
+    }
+    if (!slot_cb && free_slot == count)
+    {
+      free_slot = i;
+    }
+  }
+  if (free_slot == count)
+  {
+    AZ_IOT_LOG_ERROR("connection: no free state-observer slot");
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  }
+  if (feature_client)
+  {
+    client->feature_state_observers[free_slot].cb = cb;
+    client->feature_state_observers[free_slot].user_ctx = user_ctx;
+  }
+  else
+  {
+    client->app_state_observers[free_slot].cb = cb;
+    client->app_state_observers[free_slot].user_ctx = user_ctx;
+  }
+  return AZ_IOT_OK;
+}
+
+az_iot_result az_iot_connection_client_add_state_observer(
     az_iot_connection_client* client,
     az_iot_connection_state_callback cb,
     void* user_ctx)
 {
-  if (!client)
+  return add_state_observer_to(client, cb, user_ctx, false);
+}
+
+az_iot_result az_iot_connection_client__add_state_observer(
+    az_iot_connection_client* client,
+    az_iot_connection_state_callback cb,
+    void* user_ctx)
+{
+  return add_state_observer_to(client, cb, user_ctx, true);
+}
+
+/* Withdraw from whichever pool holds the pair. Both are searched rather than
+ * requiring the caller to say which, so a feature client's deinit path does not
+ * have to name its own pool -- and an application cannot remove a feature
+ * client's entry by guessing, because it would have to already hold that
+ * client's exact (cb, user_ctx) pair. */
+static az_iot_result remove_state_observer_from(
+    az_iot_connection_client* client,
+    az_iot_connection_state_callback cb,
+    void* user_ctx)
+{
+  if (!client || !cb)
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
-  client->state_cb = cb;
-  client->state_cb_ctx = user_ctx;
-  return AZ_IOT_OK;
+  if (client->dispatching_state)
+  {
+    AZ_IOT_LOG_ERROR("connection: cannot remove a state observer from inside one");
+    return AZ_IOT_ERR_BUSY;
+  }
+  for (size_t i = 0; i < AZ_IOT_MAX_FEATURE_STATE_OBSERVERS; ++i)
+  {
+    if (client->feature_state_observers[i].cb == cb
+        && client->feature_state_observers[i].user_ctx == user_ctx)
+    {
+      client->feature_state_observers[i].cb = NULL;
+      client->feature_state_observers[i].user_ctx = NULL;
+      return AZ_IOT_OK;
+    }
+  }
+  for (size_t i = 0; i < AZ_IOT_MAX_APP_STATE_OBSERVERS; ++i)
+  {
+    if (client->app_state_observers[i].cb == cb
+        && client->app_state_observers[i].user_ctx == user_ctx)
+    {
+      client->app_state_observers[i].cb = NULL;
+      client->app_state_observers[i].user_ctx = NULL;
+      return AZ_IOT_OK;
+    }
+  }
+  return AZ_IOT_ERR_NOT_FOUND;
+}
+
+az_iot_result az_iot_connection_client_remove_state_observer(
+    az_iot_connection_client* client,
+    az_iot_connection_state_callback cb,
+    void* user_ctx)
+{
+  return remove_state_observer_from(client, cb, user_ctx);
+}
+
+az_iot_result az_iot_connection_client__remove_state_observer(
+    az_iot_connection_client* client,
+    az_iot_connection_state_callback cb,
+    void* user_ctx)
+{
+  return remove_state_observer_from(client, cb, user_ctx);
 }
 
 az_iot_result az_iot_connection_client_set_operational_cert_callback(

@@ -104,6 +104,28 @@ extern "C"
   /* True when the connection is in CONNECTED state. */
   bool az_iot_connection_client__is_connected(const az_iot_connection_client* client);
 
+  /* Feature-client seat in the connection-state observer registry.
+   *
+   * Same signature and same event as the application-facing
+   * az_iot_connection_client_add_state_observer(), but it lands in the
+   * feature-client pool: dispatched FIRST, and sized so an application that
+   * fills its own pool cannot leave a feature client unable to attach.
+   *
+   * A feature client MUST withdraw in its destroy path. The connection client
+   * outlives nothing here -- the entry holds a raw pointer to the feature
+   * client -- so an entry left behind is a call into freed memory on the next
+   * transition.
+   *
+   * Both answer AZ_IOT_ERR_BUSY when called from inside a dispatch. */
+  az_iot_result az_iot_connection_client__add_state_observer(
+      az_iot_connection_client* client,
+      az_iot_connection_state_callback cb,
+      void* user_ctx);
+  az_iot_result az_iot_connection_client__remove_state_observer(
+      az_iot_connection_client* client,
+      az_iot_connection_state_callback cb,
+      void* user_ctx);
+
   /* Returns the configured device id (== options.client_id). NULL only when the
    * client was created with a NULL client_id (rejected at create time, so this
    * is effectively never NULL for a live client). */

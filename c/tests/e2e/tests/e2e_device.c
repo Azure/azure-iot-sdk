@@ -150,7 +150,7 @@ int e2e_device_connect(e2e_device* dev)
     return 1;
   }
   dev->conn_ok = true;
-  az_iot_connection_client_set_state_callback(&dev->conn, on_conn_state, dev);
+  az_iot_connection_client_add_state_observer(&dev->conn, on_conn_state, dev);
 
   if (az_iot_connection_client_register_mqtt_factory(
           &dev->conn, az_iot_paho_factory_create_v3_1_1())

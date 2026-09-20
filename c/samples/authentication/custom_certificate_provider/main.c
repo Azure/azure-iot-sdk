@@ -97,7 +97,7 @@ int main(void)
     goto cleanup;
   }
 
-  az_iot_connection_client_set_state_callback(&connection_client, on_conn_state, &user_ctx);
+  az_iot_connection_client_add_state_observer(&connection_client, on_conn_state, &user_ctx);
   az_iot_connection_client_set_operational_cert_callback(
       &connection_client, on_operational_cert, &user_ctx);
 

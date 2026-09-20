@@ -392,7 +392,7 @@ int main(void)
     sample_state_destroy(&state);
     return 1;
   }
-  az_iot_connection_client_set_state_callback(&state.connection_client, on_conn_state, &user_ctx);
+  az_iot_connection_client_add_state_observer(&state.connection_client, on_conn_state, &user_ctx);
 
   /* DPS provisioning and the Classic hub session both run over MQTT v3.1.1. */
   if (az_iot_connection_client_register_mqtt_factory(
