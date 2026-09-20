@@ -251,8 +251,15 @@ Rules both clients must implement:
   The SDK will not guess which MQTT version to speak.
 - The profile is readable only once `CONNECTED`; before that
   `az_iot_connection_client_get_hub_profile()` returns `AZ_IOT_ERR_NOT_CONNECTED`.
-- A feature client from the wrong generation is refused with `AZ_IOT_ERR_HUB_GENERATION_MISMATCH`.
-  Because of this, feature clients must be created **after** the connection is open.
+- **A feature client may be created before or after `open()`.** `__require_profile()` records the
+  generation it needs and refuses a second client of the other generation immediately with
+  `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH`. When the profile is not yet resolved the requirement is
+  held; `dps_apply_deferred()` compares it with the assigned profile and rejects the assignment if
+  they differ.
+- **A generation mismatch on an assignment is terminal, not retried.** `reject_assignment()` faults
+  and forces the next `open()` back through DPS, so the stale cached host cannot be reused. The
+  application destroys and rebuilds its feature clients for the assigned profile, then `close()`
+  (legal from `FAULTED`) and `open()`. The connection client survives.
 
 > **Blocked on the api-version.** `connectionProfile` is new in DPS `2026-11-02-preview`; the SDK
 > still requests `2019-03-31` via the vendored `azure-sdk-for-c`, so the field never arrives today.
@@ -362,8 +369,19 @@ checked before backoff is scheduled.
 | Twin GET/PATCH, method responses, telemetry in flight | No | Feature clients must re-issue. |
 | ADU status report not yet acked | Yes | Held in durable storage and retried until acked; idempotent on `workflowId`. |
 | Presence (birth) phase | No | Restarted with a freshly generated nonce. |
-| DPS phase | No | Restarted from `CONNECTING` if DPS is configured. |
+| DPS phase | No | Not re-run on an ordinary reconnect: `opts.host` holds the cached assignment and `open()` skips DPS whenever a host is set. It is re-run only when `needs_reprovision` is set — an identity rejection at CONNACK, the `max_hub_connect_attempts_before_reprovision` threshold, or `reject_assignment()`. When it does re-run it restarts from `DPS_CONNECTING`. |
 | In-flight CSR operation | No | Abandoned; the callback fires with a failure/timeout result. |
+
+### 5.4 The first attempt
+
+`open()` calls `start_connect_attempt()` (or `dps_start()`) inline. A non-OK return from it
+transitions back to `IDLE` and is **returned from `open()`** — no backoff is scheduled. Everything
+that fails after that point, from the refused socket to the CONNACK, runs through
+`schedule_reconnect()` like any later attempt.
+
+So the synchronous half of the first attempt is never retried and the asynchronous half always is.
+That is the split [connection.md §5.4](../connection.md#54-does-the-retry-policy-cover-the-first-attempt)
+specifies, and it holds here without a separate option.
 
 ---
 

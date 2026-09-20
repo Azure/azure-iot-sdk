@@ -234,8 +234,15 @@ Rules every client must implement:
   will not guess which MQTT version to speak.
 - The profile is readable only once `CONNECTED`; before that, querying it fails with a not-connected
   error.
-- A feature client from the wrong generation is refused with a generation-mismatch error. Because of
-  this, feature clients must be created **after** the connection is open.
+- **A feature client may be created before or after `open()`.** It declares the generation it needs
+  when it attaches. Two feature clients of different generations on one connection is refused
+  immediately, at the second attach. A single generation declared before the assignment arrives is
+  held until the assignment resolves, and refused then if the service assigned the other one.
+- **A generation the attached feature clients cannot serve is terminal, not retried.**
+  Re-provisioning would return the same profile while the same feature clients still require the
+  other one, so an immediate retry cannot succeed. The application owns the recovery: destroy the
+  feature clients, rebuild them for the profile the event carries, then close and reopen the
+  connection. The connection client itself does not have to be destroyed.
 
 > **Blocked on the DPS api-version.** `connectionProfile` is new in DPS `2026-11-02-preview`, and
 > raising the requested api-version is a prerequisite for this entire section.
@@ -347,8 +354,32 @@ as terminal, retryable, contained or benign, and is the authority for which is w
 | Twin GET/PATCH, method responses, telemetry in flight | No | Feature clients must re-issue. |
 | Update status report not yet acked | Yes | Held in durable storage and retried until acked; idempotent on the workflow id. |
 | Presence (birth) phase | No | Restarted with a freshly generated nonce. |
-| DPS phase | No | Restarted from `CONNECTING` if DPS is configured. |
+| Provisioning phase | No | Provisioning is **not** re-run on an ordinary reconnect: once the device has an assignment, a reconnect re-establishes the *hub* session using the cached hub and device id. It is re-run only when something has invalidated the assignment — an identity refused at CONNACK, the consecutive-hub-failure threshold being crossed, or an assignment the client rejected. When it does re-run, it restarts from the beginning. |
 | In-flight CSR operation | No | Abandoned; the caller is notified with a failure or timeout result. |
+
+### 5.4 Does the retry policy cover the *first* attempt?
+
+Partly, and the split is deliberate.
+
+| Failure | Retried under the policy? | Why |
+| --- | --- | --- |
+| The connect call cannot be issued at all — no transport for the required protocol version, credential material the transport cannot use, a missing or invalid option | **No.** The `open()` call itself returns the error and the client stays `IDLE`. | These are configuration and programming errors ([§9.4.8](#948-phase-8--framework-resource-and-programming-errors)). A retry reproduces them, and the caller is still on the stack to be told. |
+| The attempt is issued and then fails — refused socket, TLS failure, CONNACK refusal, handshake timeout | **Yes**, exactly as on any later attempt. | The failure is a property of the moment or of the endpoint, not of the call. |
+
+**The rule: a failure that `open()` can report synchronously is reported, never retried; a failure
+that arrives after `open()` has returned goes through the policy.** An application therefore always
+learns about a misconfiguration from the return value of the call it made, and never has to
+discover it by watching for a state event that may be many backoff intervals away.
+
+Two consequences worth stating, because both have bitten people:
+
+- **A test that calls `open()` and asserts on its return value will not see a transient network
+  failure** — that one is retried and surfaces as a state event. Tests should wait for `CONNECTED`
+  or for a settled failure, not treat a successful `open()` as a connection.
+- **Making the first attempt opt-out of the policy is not recommended.** It splits one behaviour
+  across two configuration surfaces and makes the first failure of a device's life behave
+  differently from every later one, for no gain the synchronous return value does not already
+  provide.
 
 ---
 
@@ -621,20 +652,44 @@ contract requires.
 
 ### 9.1 Failure classes
 
-| Class | Definition | Required client behaviour |
+A failure is described by **two independent axes**. They are not alternatives: every failure has a
+value on each, and the rows in [§9.4](#94-the-taxonomy) give both.
+
+**Axis 1 — retryability. What is worth doing about it.**
+
+| Value | Definition | Required client behaviour |
 | --- | --- | --- |
-| **Terminal** | Deterministic. The same attempt, repeated, produces the same answer. Retrying cannot succeed. | Stop. Go to `FAULTED` and report the reason. Do not schedule a backoff. Where the failure is specific to a *credential* and the device is DPS-provisioned, re-provisioning — not retrying — is the recovery. |
-| **Retryable** | Transient. The same attempt may succeed later. | Reconnect under the retry policy of [§5](#5-reconnection). Exhausting the policy is what turns it into a fault, not the failure itself. |
-| **Contained** | Fails one operation, one subscription or one feature. The connection itself is healthy and stays up. | Fail that operation and tell whoever asked for it. Do not tear down the session. Do not schedule a reconnect. |
-| **Benign** | Expected, and absorbed by design. Not an error. | Absorb it. It must not surface to the application as a failure, and must not be logged at error severity. |
+| **Terminal** | Deterministic. The same attempt, repeated, produces the same answer. | Stop. Report the reason. Do not schedule a backoff. |
+| **Identity terminal** | Deterministic *for this credential or this identity*, and nothing else. A different assignment may well succeed. | Do not retry the same credential against the same endpoint. Where the device is provisioned, re-provisioning — not retrying — is the recovery; where it is not, this behaves as Terminal. |
+| **Retryable** | Transient. The same attempt may succeed later. | Retry under the policy of [§5](#5-reconnection). Exhausting the policy is what turns it into a fault, not the failure itself. |
 
-Two rules govern the boundaries:
+**Axis 2 — containment. What it takes down.**
 
-- **A class is a property of the failure, not of the code path.** The same trigger reached from a
+| Value | Definition | Required client behaviour |
+| --- | --- | --- |
+| **Contained** | Scoped to one operation, one subscription or one feature. The connection itself is healthy. | Fail that operation and tell whoever asked for it. Do not tear down the session. Do not schedule a reconnect. |
+| **Uncontained** | A property of the session. | Apply the retryability axis to the connection: fault it, or reconnect it. |
+
+**Benign** is the third possibility and sits outside both axes: the event is expected and absorbed by
+design. It must not surface to the application as a failure, and must not be logged at error
+severity. `0x10 No matching subscribers` is the canonical example.
+
+Why two axes and not one list: *contained and terminal* and *contained and retryable* are both real
+and common. A publish refused with `0x87 Not authorized` is contained **and** terminal — resending it
+cannot help, and the connection is fine. A publish refused with `0x97 Quota exceeded` is contained
+**and** retryable. Collapsing the two into one enum forces a choice between telling the caller "do
+not retry this" and telling it "the connection survived", when it needs both.
+
+Three rules govern the boundaries:
+
+- **The class is a property of the failure, not of the code path.** The same trigger reached from a
   first connect and from a reconnect has the same class.
 - **An unrecognised code is Retryable, and keeps its value.** A client that does not know a code must
   neither guess its meaning nor collapse it into a known one. It preserves the numeric value for
   logging and takes the conservative branch: retry rather than abandon a credential that may be good.
+- **Identity terminal is distinguished because it changes *where* the next attempt goes**, not only
+  whether there is one. That is the only reason it is a separate value rather than a note on
+  Terminal.
 
 ### 9.2 Failure phases
 
@@ -689,7 +744,7 @@ MQTT 3.1.1 §3.2.2.3 (CONNACK) and §3.9.3 (SUBACK); MQTT 5.0 §3.2.2.2 (CONNACK
 | `0x00` | Success – Maximum QoS 0 | Benign | Granted. |
 | `0x01` | Success – Maximum QoS 1 | Benign | Granted. |
 | `0x02` | Success – Maximum QoS 2 | Benign | Granted. |
-| `0x80` | Failure | **Terminal** for that filter | The **only** failure value in this version, and it carries no reason: 3.1.1 has no reason codes. A client cannot tell "not authorized" from "invalid filter" here, so it must not pretend to. See [§9.4.6](#946-phase-6--subscription-gate) for how the scope of the refusal decides what happens to the connection. |
+| `0x80` | Failure | **Terminal** | The **only** failure value in this version, and it carries no reason: 3.1.1 has no reason codes. A client cannot tell "not authorized" from "invalid filter" here, so it must not pretend to. See [§9.4.6](#946-phase-6--subscription-gate) for how the scope of the refusal decides what happens to the connection. |
 
 #### 9.3.3 MQTT 5.0 CONNACK reason codes (§3.2.2.2)
 
@@ -725,20 +780,24 @@ MQTT 3.1.1 §3.2.2.3 (CONNACK) and §3.9.3 (SUBACK); MQTT 5.0 §3.2.2.2 (CONNACK
 
 #### 9.3.4 MQTT 5.0 SUBACK reason codes (§3.9.3)
 
+The code decides **retryability**. **Containment** is decided by the filter, not by the code: a
+refusal on a filter the session cannot function without is uncontained, and one on a filter only its
+owner needs is contained. See [§9.4.6](#946-phase-6--subscription-gate).
+
 | Value | Spec name | Class | Required client behaviour |
 | --- | --- | --- | --- |
 | `0x00` | Granted QoS 0 | Benign | Granted. |
 | `0x01` | Granted QoS 1 | Benign | Granted. |
 | `0x02` | Granted QoS 2 | Benign | Granted. |
-| `0x80` | Unspecified error | Retryable for that filter | No reason given. |
-| `0x83` | Implementation specific error | Retryable for that filter | Server-defined. |
-| `0x87` | Not authorized | **Terminal** for that filter | The device may not subscribe here. Re-subscribing changes nothing. |
-| `0x8F` | Topic Filter invalid | **Terminal** for that filter | The filter is malformed or not permitted by the server's syntax. A defect in the filter the client built. |
+| `0x80` | Unspecified error | Retryable | No reason given. |
+| `0x83` | Implementation specific error | Retryable | Server-defined. |
+| `0x87` | Not authorized | **Terminal** | The device may not subscribe here. Re-subscribing changes nothing. |
+| `0x8F` | Topic Filter invalid | **Terminal** | The filter is malformed or not permitted by the server's syntax. A defect in the filter the client built. |
 | `0x91` | Packet Identifier in use | **Terminal** | A client-side bug: two in-flight operations reused an identifier. |
-| `0x97` | Quota exceeded | Retryable for that filter | The subscription quota is full. |
-| `0x9E` | Shared Subscriptions not supported | **Terminal** for that filter | This SDK subscribes to no shared filters, so it does not arise. |
+| `0x97` | Quota exceeded | Retryable | The subscription quota is full. |
+| `0x9E` | Shared Subscriptions not supported | **Terminal** | This SDK subscribes to no shared filters, so it does not arise. |
 | `0xA1` | Subscription Identifiers not supported | **Terminal** | Only arises if the SUBSCRIBE carried a Subscription Identifier property. |
-| `0xA2` | Wildcard Subscriptions not supported | **Terminal** for that filter | Relevant: the gen2 presence filter is a wildcard (`dev/#`). A server refusing wildcards cannot carry the presence handshake at all. |
+| `0xA2` | Wildcard Subscriptions not supported | **Terminal** | Relevant: the gen2 presence filter is a wildcard (`dev/#`). A server refusing wildcards cannot carry the presence handshake at all. |
 
 #### 9.3.5 MQTT 5.0 PUBACK reason codes (§3.4.2.1)
 
@@ -748,13 +807,13 @@ Contained by construction: a PUBACK settles **one** publish. None of these tears
 | --- | --- | --- | --- |
 | `0x00` | Success | Benign | Delivered. |
 | `0x10` | No matching subscribers | **Benign** | A success, not a failure: the message was accepted and no one was listening. Must not be reported as an error. |
-| `0x80` | Unspecified error | Contained, retryable for that publish | Re-publish under the caller's own policy. |
-| `0x83` | Implementation specific error | Contained, retryable for that publish | Server-defined. |
-| `0x87` | Not authorized | Contained, **terminal** for that publish | The device may not publish to that topic. Re-publishing changes nothing. |
-| `0x90` | Topic Name invalid | Contained, **terminal** for that publish | A defect in the topic the client built. |
+| `0x80` | Unspecified error | **Contained** · **Retryable** | Re-publish under the caller's own policy. |
+| `0x83` | Implementation specific error | **Contained** · **Retryable** | Server-defined. |
+| `0x87` | Not authorized | **Contained** · **Terminal** | The device may not publish to that topic. Re-publishing changes nothing. |
+| `0x90` | Topic Name invalid | **Contained** · **Terminal** | A defect in the topic the client built. |
 | `0x91` | Packet Identifier in use | Contained, **terminal** | A client-side bug: identifiers were reused while in flight. |
-| `0x97` | Quota exceeded | Contained, retryable for that publish | Back off before re-publishing. |
-| `0x99` | Payload format invalid | Contained, **terminal** for that publish | The payload contradicts the declared Payload Format Indicator or Content Type. |
+| `0x97` | Quota exceeded | **Contained** · **Retryable** | Back off before re-publishing. |
+| `0x99` | Payload format invalid | **Contained** · **Terminal** | The payload contradicts the declared Payload Format Indicator or Content Type. |
 
 #### 9.3.6 MQTT 5.0 UNSUBACK reason codes (§3.11.3)
 
@@ -809,9 +868,13 @@ carried up rather than flattened into a generic disconnect.
 ### 9.4 The taxonomy
 
 Column meanings: **Phase** is the sub-step within the phase named by the heading; **Trigger** is what
-happens on the wire or in the host; **Class** is one of the four in [§9.1](#91-failure-classes);
-**Required client behaviour** is normative; **Application observes** is what the contract guarantees
-the caller sees.
+happens on the wire or in the host; **Class** gives both axes of [§9.1](#91-failure-classes) — a bare
+retryability value means uncontained, and `Contained · X` gives the pair; **Required client
+behaviour** is normative; **Application observes** is what the contract guarantees the caller sees.
+
+A redirection is written **Terminal at this endpoint**: the same shape as *identity terminal*, but
+keyed on the endpoint rather than the credential. Retrying the same host repeats the redirection
+forever; the recovery is to follow the server reference, or to re-provision.
 
 #### 9.4.1 Phase 1 — host, network and OS
 
@@ -840,8 +903,8 @@ operator unable to tell a trust-store problem from an enrolment problem.
 | Handshake | Server certificate chains to a CA the device does not trust | **Terminal** | Fault. The trust store must be fixed. | `FAULTED` |
 | Handshake | Server certificate hostname mismatch — no subject alternative name covers the endpoint | **Terminal** | Fault. Never fall back to skipping verification. | `FAULTED` |
 | Handshake | Server certificate revoked | **Terminal** | Fault. | `FAULTED` |
-| Handshake | **Client certificate rejected during the handshake.** The server aborts with a TLS alert. No MQTT session ever exists and there is no CONNACK to read. | **Terminal** for this credential | Fault, or re-provision if the device is DPS-provisioned and the credential can be reissued. The distinguishing evidence is that the failure carries a TLS alert, not a CONNACK code. | `FAULTED` with a TLS reason |
-| CONNACK | **Client certificate accepted by TLS, identity refused at CONNACK** (`rc=5 Connection Refused, not authorized` / `0x87 Not authorized`). The TLS session succeeded; the broker's authorization layer refused it. | **Terminal** for this credential | Re-provision through DPS if provisioned; otherwise fault. This is the row that drives re-provisioning — the one above cannot, because no MQTT layer was reached. | `RECONNECTING` through DPS, or `FAULTED` |
+| Handshake | **Client certificate rejected during the handshake.** The server aborts with a TLS alert. No MQTT session ever exists and there is no CONNACK to read. | **Identity terminal** | Fault, or re-provision if the device is DPS-provisioned and the credential can be reissued. The distinguishing evidence is that the failure carries a TLS alert, not a CONNACK code. | `FAULTED` with a TLS reason |
+| CONNACK | **Client certificate accepted by TLS, identity refused at CONNACK** (`rc=5 Connection Refused, not authorized` / `0x87 Not authorized`). The TLS session succeeded; the broker's authorization layer refused it. | **Identity terminal** | Re-provision through DPS if provisioned; otherwise fault. This is the row that drives re-provisioning — the one above cannot, because no MQTT layer was reached. | `RECONNECTING` through DPS, or `FAULTED` |
 | Handshake | Protocol-version mismatch — the server requires a TLS version the client will not offer, or vice versa | **Terminal** | Fault. Deterministic for a given build. | `FAULTED` |
 | Handshake | No cipher suite in common | **Terminal** | Fault. As above. | `FAULTED` |
 | Handshake | The stack surfaces a specific TLS alert — `unknown_ca`, `bad_certificate`, `certificate_expired`, `handshake_failure` | Per alert; most are **Terminal** | Surface the alert. On a constrained device it is frequently the only diagnostic that exists, and flattening it to "TLS failed" destroys the entire signal. | Reason text carrying the alert |
@@ -854,7 +917,7 @@ Per-code classes are in [§9.3.1](#931-mqtt-311-connack-return-codes-3223) and
 | Phase | Trigger | Class | Required client behaviour | Application observes |
 | --- | --- | --- | --- | --- |
 | CONNACK | Accepted — `0 Connection Accepted` / `0x00 Success` | Benign | Continue the sequence of [§3](#3-full-connect-sequence). Reset the reconnect attempt counter. | Progress toward `CONNECTED` |
-| CONNACK | Identity refused — `rc=2 identifier rejected`, `rc=4 bad user name or password`, `rc=5 not authorized`; `0x85 Client Identifier not valid`, `0x86 Bad User Name or Password`, `0x87 Not authorized`, `0x8C Bad authentication method` | **Terminal** for this credential | The broker refused *who the device claims to be*. A DPS-provisioned device marks itself for re-provisioning so the next attempt goes back through DPS ([§5.2](#52-what-triggers-a-reconnect)); a directly-configured device faults. Never re-present the same rejected credential to the same endpoint. | `RECONNECTING` via DPS, or `FAULTED` |
+| CONNACK | Identity refused — `rc=2 identifier rejected`, `rc=4 bad user name or password`, `rc=5 not authorized`; `0x85 Client Identifier not valid`, `0x86 Bad User Name or Password`, `0x87 Not authorized`, `0x8C Bad authentication method` | **Identity terminal** | The broker refused *who the device claims to be*. A DPS-provisioned device marks itself for re-provisioning so the next attempt goes back through DPS ([§5.2](#52-what-triggers-a-reconnect)); a directly-configured device faults. Never re-present the same rejected credential to the same endpoint. | `RECONNECTING` via DPS, or `FAULTED` |
 | CONNACK | Deterministic protocol refusal — `rc=1 unacceptable protocol version`; `0x81 Malformed Packet`, `0x82 Protocol Error`, `0x84 Unsupported Protocol Version`, `0x95 Packet too large` | **Terminal** | Fault immediately. Retrying re-sends byte-for-byte the same CONNECT and gets byte-for-byte the same refusal. | `FAULTED` |
 | CONNACK | Transient server refusal — `rc=3 Connection Refused, Server unavailable`; `0x88 Server unavailable`, `0x89 Server busy`, `0x97 Quota exceeded`, `0x9F Connection rate exceeded` | Retryable | Reconnect under policy, with jitter. | `RECONNECTING` |
 | CONNACK | Redirection — `0x9C Use another server`, `0x9D Server moved` | **Terminal at this endpoint** | Do not retry the same host: the answer is a property of the host, and the policy will simply exhaust itself against it. Follow the Server Reference property, or re-provision. | `FAULTED`, or `RECONNECTING` via DPS |
@@ -888,7 +951,7 @@ that cannot be provisioned has nowhere to reconnect *to*.
 | Subscribing | The presence subscription is refused | Retryable | Abandon the handshake and reconnect. A deterministic refusal — `0x87 Not authorized`, `0x8F Topic Filter invalid`, `0xA2 Wildcard Subscriptions not supported` — will exhaust the policy and land in `FAULTED`, which is the correct destination even though the route is a retry. | `RECONNECTING`, then `FAULTED` if the refusal persists |
 | Birth | The birth publish cannot be issued | Retryable | Clear the handshake phase and reconnect. | `RECONNECTING` |
 | Birth | No birth acknowledgement within the handshake deadline (60 s per step) | Retryable | Clear the phase and reconnect. | `RECONNECTING` with a timeout reason |
-| Birth | A birth acknowledgement arrives **before** its own subscription is acknowledged | Contained | Do not complete the handshake on it. The handshake advances only from its own phase; anything else routes as an ordinary inbound message. Accepting it would announce `CONNECTED` on a session whose presence filter is not yet live. | Nothing |
+| Birth | A birth acknowledgement arrives **before** its own subscription is acknowledged | **Contained** | Do not complete the handshake on it. The handshake advances only from its own phase; anything else routes as an ordinary inbound message. Accepting it would announce `CONNECTED` on a session whose presence filter is not yet live. | Nothing |
 | Birth | A birth acknowledgement arrives carrying a correlation value from an **earlier** attempt | **Benign** | Discard it. The correlation value is regenerated per attempt precisely so a stale acknowledgement cannot complete a new handshake. | Nothing |
 | Birth | A birth acknowledgement arrives after `close()` | **Benign** | Discard it, exactly as for a late CONNACK. | Nothing |
 
@@ -907,7 +970,7 @@ feature that asked for it?**
 | SUBACK | Refused, and the refusal affects only the **requesting feature** | **Contained** | Keep the connection. Fail only that feature's registration and tell it. Every other feature continues. | Connection stays up; that feature reports a subscription failure |
 | SUBSCRIBE | The subscribe call fails synchronously in the transport, before any acknowledgement | Retryable | Treat as a failed connect attempt and reconnect. | `RECONNECTING` |
 | SUBACK | No acknowledgement arrives within the gate deadline | Retryable | Do not wait indefinitely and do not announce `CONNECTED`. Expire the gate and reconnect. | `RECONNECTING` with a timeout reason |
-| Registry | The persistent-subscription registry is full when a feature registers a filter | **Contained**, terminal for that registration | Reject the registration with a distinct capacity reason. The connection is unaffected. This is a build-configuration limit, so it is deterministic: the same application will hit it every run. | The feature's registration call fails |
+| Registry | The persistent-subscription registry is full when a feature registers a filter | **Contained** · **Terminal** | Reject the registration with a distinct capacity reason. The connection is unaffected. This is a build-configuration limit, so it is deterministic: the same application will hit it every run. | The feature's registration call fails |
 
 #### 9.4.7 Phase 7 — steady state
 
@@ -915,8 +978,8 @@ feature that asked for it?**
 | --- | --- | --- | --- | --- |
 | PUBACK | `0x00 Success` | Benign | Complete the publish successfully. | Acknowledgement callback |
 | PUBACK | `0x10 No matching subscribers` | **Benign** | A **success**. The broker accepted the message and no one was subscribed. Reporting it as a failure makes ordinary telemetry look broken. | Acknowledgement callback, success |
-| PUBACK | Deterministic refusal — `0x87 Not authorized`, `0x90 Topic Name invalid`, `0x91 Packet Identifier in use`, `0x99 Payload format invalid` | **Contained**, terminal for that publish | Fail that one publish with the code preserved. The connection survives. Do not re-publish: the same bytes get the same answer. | Acknowledgement callback with a failure |
-| PUBACK | Transient refusal — `0x80 Unspecified error`, `0x83 Implementation specific error`, `0x97 Quota exceeded` | **Contained**, retryable for that publish | Fail that publish and let the caller re-send after a delay. Still no reconnect. | Acknowledgement callback with a failure |
+| PUBACK | Deterministic refusal — `0x87 Not authorized`, `0x90 Topic Name invalid`, `0x91 Packet Identifier in use`, `0x99 Payload format invalid` | **Contained** · **Terminal** | Fail that one publish with the code preserved. The connection survives. Do not re-publish: the same bytes get the same answer. | Acknowledgement callback with a failure |
+| PUBACK | Transient refusal — `0x80 Unspecified error`, `0x83 Implementation specific error`, `0x97 Quota exceeded` | **Contained** · **Retryable** | Fail that publish and let the caller re-send after a delay. Still no reconnect. | Acknowledgement callback with a failure |
 | DISCONNECT | Server DISCONNECT with a transient reason — `0x8B Server shutting down`, `0x89 Server busy`, `0x96 Message rate too high`, `0x97 Quota exceeded`, `0xA0 Maximum connect time` | Retryable | Reconnect under policy. | `RECONNECTING` |
 | DISCONNECT | Server DISCONNECT with `0x8E Session taken over` | **Terminal** | Fault and report it distinctly. Another connection holds the client identifier; reconnecting starts a flap in which both devices repeatedly evict each other. This is the single most valuable reason code to carry up intact. | `FAULTED` with a distinguishable reason |
 | DISCONNECT | Server DISCONNECT with `0x8D Keep Alive timeout` | Retryable | Reconnect. Recurring, this means the device is not servicing its own network loop often enough, or the keep-alive is shorter than the pump cadence — a configuration finding, not a network one. | `RECONNECTING` |
@@ -924,10 +987,10 @@ feature that asked for it?**
 | DISCONNECT | Server DISCONNECT with `0x87 Not authorized` or `0x98 Administrative action` | **Terminal** | Authorization was revoked, or an operator ended the session. Re-provision if provisioned; otherwise fault. | `FAULTED` |
 | Keep-alive | The local keep-alive expires — no traffic and no ping response within the interval | Retryable | Tear down and reconnect. | `RECONNECTING` |
 | Inbound | A message arrives matching no registered handler | **Benign** | Drop it silently. Brokers rely on this for filters that outlive their subscriber, and treating it as an error turns a normal race into a fault. | Nothing |
-| Service response | A feature response carries a service status of `400 Bad Request` | **Contained**, terminal for that operation | Fail that operation with a distinct invalid-argument reason. Re-sending the identical request will fail identically. | That operation's callback fails |
-| Service response | A feature response carries `404 Not Found` | **Contained**, terminal for that operation | Fail that operation with a distinct not-found reason. | That operation's callback fails |
-| Service response | A feature response carries `429 Too Many Requests` | **Contained**, retryable for that operation | Back off and retry the operation. Must be reported distinctly from a **local** capacity failure: "the service is throttling me" and "I have too many requests in flight locally" demand opposite responses, and one reason code for both is unactionable. | That operation's callback fails with a throttling reason |
-| Service response | A feature response carries a `5xx` status, or one the client does not recognise | **Contained**, retryable for that operation | Fail the operation, preserve the status. | That operation's callback fails |
+| Service response | A feature response carries a service status of `400 Bad Request` | **Contained** · **Terminal** | Fail that operation with a distinct invalid-argument reason. Re-sending the identical request will fail identically. | That operation's callback fails |
+| Service response | A feature response carries `404 Not Found` | **Contained** · **Terminal** | Fail that operation with a distinct not-found reason. | That operation's callback fails |
+| Service response | A feature response carries `429 Too Many Requests` | **Contained** · **Retryable** | Back off and retry the operation. Must be reported distinctly from a **local** capacity failure: "the service is throttling me" and "I have too many requests in flight locally" demand opposite responses, and one reason code for both is unactionable. | That operation's callback fails with a throttling reason |
+| Service response | A feature response carries a `5xx` status, or one the client does not recognise | **Contained** · **Retryable** | Fail the operation, preserve the status. | That operation's callback fails |
 
 #### 9.4.8 Phase 8 — framework, resource and programming errors
 
@@ -944,7 +1007,7 @@ not silent are the ones worth having.
 | Init | Invalid or missing configuration — empty identity scope, absent credentials, undersized caller-provided buffers | **Terminal** | Validate at `init` and at `open`, and return an error. | The init or open call returns |
 | Init | Invalid configuration that is **not** caught locally and reaches a dependency's precondition handler | **Terminal**, and a defect in this SDK | Must not happen. A precondition handler may abort the process or spin, so a misconfigured device hangs inside the open call instead of receiving an error. Every value handed to a dependency must be validated first. | Undefined — process abort or hang |
 | Threading | The transport delivers a callback on a thread other than the one running the pump | **Terminal**, and a defect in the transport implementation | The SDK is a single-threaded pump; every inbound callback must fire on the thread that drives it. A transport with its own I/O thread must queue events and drain the queue inside the pump. Violating this corrupts state with no error at the point of corruption. | Undefined — corruption, not a reported failure |
-| Registry | A handler or factory registry is full | **Contained**, terminal for that registration | Reject the registration with a distinct capacity reason. | The registration call returns |
+| Registry | A handler or factory registry is full | **Contained** · **Terminal** | Reject the registration with a distinct capacity reason. | The registration call returns |
 
 #### 9.4.9 Phase 9 — teardown
 
@@ -1048,13 +1111,15 @@ normative ones; the language columns are informative and follow the code.
 | --- | --- | --- |
 | Connection client | `az_iot_connection_client` | `Unified.Connection.ConnectionClient` (dispatches by profile) and `Gen2.Connection.ConnectionClient` |
 | Open / close | `az_iot_connection_client_open()` / `_close()` | `ConnectAsync()` / `ProvisionAndConnectAsync()` / `DisconnectAsync()` |
-| State value | `az_iot_connection_state` (`IDLE`…`FAULTED`) | none — `ConnectingAsync` / `ConnectedAsync` / `DisconnectedAsync` events, plus an internal presence-complete signal |
+| State value | `az_iot_connection_state` (`IDLE`…`FAULTED`), delivered on `az_iot_connection_state_event` | none — `ConnectingAsync` / `ConnectedAsync` / `DisconnectedAsync` events, plus `ConnectionFaultedEventArgs` |
 | Session maintenance and reconnect | `connection_client.c` + `reconnect.c` | `MqttConnectionManager` |
 | Retry policy | `az_iot_reconnection_policy` (initial delay, max delay, max attempts, jitter %) | `IRetryPolicy`, default `ExponentialBackoffRetryPolicy`, `NoRetry` to disable |
-| Connection profile | `az_iot_connection_profile` / `az_iot_hub_profile` (planned) | `ConnectionContext.IsGen2Hub` (placeholder boolean) |
+| Connection profile | `az_iot_connection_profile`, read with `az_iot_connection_client_get_hub_profile()` | `ConnectionProfile` enum on `DeviceRegistrationResult`, carried on `ConnectionContext` |
 | Provisioning settings | id scope + global endpoint in the connection options | `ProvisioningSettings` |
 | Registration result | DPS assignment struct | `DeviceRegistrationResult` |
 | Credentials | `az_iot_certificate_provider` (`BOOTSTRAP` / `OPERATIONAL`) | `X509AuthenticationProvider` + `ConnectionContext.IssuedClientCertificates` |
-| CSR request / response | `az_iot_connection_client_send_csr()` and its callbacks | `SendCertificateSigningRequestAsync()` returning a `CertificateSigningOperation` |
+| CSR request / response | `az_iot_connection_client_send_csr()` and its callbacks | `SendCertificateSigningRequestAsync()` returning a `CertificateSigningOperation`; `ProvisioningSettings.CertificateSigningRequest` for the registration-borne one |
 | MQTT abstraction | adapter vtable (`how_to_byo_mqtt_client.md`) | `IMqttClient`, default backed by MQTTnet |
-| Update engine / channel | `adu_core` + `az_iot_adu_channel` (planned) | not present |
+| Update engine / channel | the ADU client plus the `az_iot_adu_channel` vtable; the provisioning channel is implemented, the hub channel is not | not present |
+| Failure classification | `az_iot_result`, plus the CONNACK and SUBACK mappers | `ErrorRetryability` { `Terminal`, `IdentityTerminal`, `Retryable` } and `IsContained` on `DeviceException` |
+| Egress: WebSockets and proxy | `transport`, `websocket_path`, `proxy` in the connection options | `MqttNetClientOptions` |

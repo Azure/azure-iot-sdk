@@ -13,6 +13,55 @@ document are to be interpreted as described in
 
 ---
 
+## 0. Status, and what is still open
+
+This document is a design. Part of it has shipped, part has not, and two of its decisions are now
+contested by a later review. Recording that here keeps the rest of the document readable as design
+rather than as a claim about the code.
+
+**Shipped since this was written**
+
+- `az_iot_connection_state_event` exists, with `_internal_size`, `state`, `reason` and `profile`,
+  and the state callback takes it (§4.2, §4.3). `profile` is populated on `CONNECTED` and on a
+  profile mismatch or unsupported profile.
+- `FAULTED` is settled rather than terminal: `close()` is a legal exit from it and returns the
+  client to `IDLE`, which is the reuse contract of §3.1 extended to the fault path.
+- `protocol_code` is carried on the MQTT interface event and reaches the subscription-failure
+  callback. It is **not** yet on the state event, which is what §4.5 asks for.
+
+**Not shipped**
+
+- The observer registry of §2. There is still one application-owned callback slot, which is why a
+  feature client cannot subscribe to connection state.
+- `DEINITIALIZING` (§4.1) and the deinit guard of §3.2.
+- `az_iot_conn_reason`, `source`, `transport_code` and `message` (§4.3, §4.4). The ergonomics
+  table in §5 reads `is_retriable`, which does not exist.
+
+**Open decisions this document does not yet answer**
+
+1. **Is state scoped?** A device that provisions runs two lifecycles — the provisioning session and
+   the hub session — over one enum and one variable, so the whole provisioning phase is reported as
+   a single `CONNECTING` and its teardown is reported not at all. The proposal on the table is to
+   make every event a `(scope, state)` pair, with `scope` ∈ { provisioning, hub }. If that is
+   adopted, §4.1's "lifecycle and connection state share one enum" stays true but becomes half of
+   the identity, and §5's first question becomes *"which connection is this about?"*.
+2. **Do `az_iot_conn_reason` and `is_retriable` survive?** The argument against is that `reason`
+   (an `az_iot_result`) plus the failure classification already answer both questions, and two
+   parallel taxonomies have to be kept consistent for no new information. The argument for is the
+   ergonomics of §5: one field an application reads without knowing any taxonomy. **Not decided
+   here** — §4.4 and §5 stand until it is.
+3. **Retry policy** (§6) is deferred to
+   [connection.md §5](../connection.md#5-reconnection) and
+   [connection-c.md §5](connection-c.md#5-reconnection-implemented) for what exists today. The
+   per-scope question — whether the provisioning and hub ladders share one attempt counter, which
+   they do today — belongs with decision 1.
+
+The failure classification this document's `reason` field carries is specified in
+[connection.md §9](../connection.md#9-connection-failure-taxonomy), with the C realization in
+[connection-c.md §9](connection-c.md#9-connection-failure-realization-c-partly-implemented).
+
+---
+
 ## 1. Motivation
 
 Today the connection client exposes a **single** state callback
@@ -395,6 +444,8 @@ static void on_conn(const az_iot_connection_state_event* event, void* ctx)
 
 ## 7. References
 
+- [connection.md](../connection.md) — the language-neutral connection lifecycle contract, and the failure taxonomy this document's `reason` field reports
+- [connection-c.md](connection-c.md) — the C realization of that contract
 - [azure-iot-sdk SDK design](../design.md) — overall architecture
 - [how_to_byo_mqtt_client.md](../how_to_byo_mqtt_client.md) — bring-your-own MQTT client model
 - [adu-client-design.md](adu-client-design.md) — first consumer of this foundation
