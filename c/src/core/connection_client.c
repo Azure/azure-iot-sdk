@@ -525,16 +525,31 @@ static az_iot_result apply_certificate_material(
   return AZ_IOT_OK;
 }
 
-static void schedule_reconnect(az_iot_connection_client* c, az_iot_result reason)
+/* Schedule a retry.
+ *
+ * @p failure_scope says WHERE the failure just happened, which is not always
+ * the scope of the next attempt: a hub CONNACK that rejects the identity is a
+ * HUB failure whose retry is a DPS registration. The two are used for
+ * different things -- the failure scope feeds the hub-unreachable counter, the
+ * next attempt's scope selects the backoff ladder and its attempt budget. */
+static void schedule_reconnect(
+    az_iot_connection_client* c,
+    az_iot_connection_scope failure_scope,
+    az_iot_result reason)
 {
   teardown_active(c);
-  c->reconnect_attempt++;
 
   /* A hub vacated service-side may stop answering rather than rejecting the
    * identity, in which case nothing else would ever send us back to DPS. Only
-   * hub attempts count -- a failing dps_start() must fall back to an ordinary
-   * retry rather than re-arming this and pinning every attempt to DPS. */
-  if (c->session_role != AZ_IOT_MQTT_ROLE_DPS)
+   * hub failures count -- a failing registration must fall back to an ordinary
+   * retry rather than re-arming this and pinning every attempt to DPS.
+   *
+   * Kept separate from retry_attempt[HUB] on purpose: this counts attempts
+   * towards a re-provision DECISION and is reset when that decision is taken,
+   * while the ladder counts backoff position and is reset by a successful
+   * connect or by open()/close(). Folding them together would make either
+   * reset silently move the other. */
+  if (failure_scope == AZ_IOT_CONN_SCOPE_HUB)
   {
     c->consecutive_hub_connect_failures++;
   }
@@ -547,17 +562,33 @@ static void schedule_reconnect(az_iot_connection_client* c, az_iot_result reason
                     "re-provisioning through DPS");
     c->consecutive_hub_connect_failures = 0;
     c->needs_reprovision = true;
+    /* Crossing into provisioning starts the DPS ladder at the beginning: the
+     * hub attempts that got us here say nothing about how long DPS will take,
+     * so the first registration attempt must wait initial_delay_ms rather than
+     * inherit the hub's exhausted backoff. */
+    c->retry_attempt[AZ_IOT_CONN_SCOPE_DPS] = 0;
   }
 
+  /* Which ladder this retry climbs: the scope of the attempt about to be
+   * scheduled, not of the failure. needs_reprovision is exactly what do_work()
+   * reads to decide the next attempt is a registration rather than a hub
+   * connect. */
+  az_iot_connection_scope scope
+      = c->needs_reprovision ? AZ_IOT_CONN_SCOPE_DPS : AZ_IOT_CONN_SCOPE_HUB;
+  c->retry_scope = scope;
+  c->retry_attempt[scope]++;
+
+  /* Per ladder, so a long hub outage cannot spend the budget a registration
+   * that has not been tried yet would need. */
   if (c->opts.reconnection_policy.max_attempts > 0
-      && c->reconnect_attempt > c->opts.reconnection_policy.max_attempts)
+      && c->retry_attempt[scope] > c->opts.reconnection_policy.max_attempts)
   {
     set_state_to(c, AZ_IOT_CONN_STATE_FAULTED, reason);
     return;
   }
 
   uint32_t delay = az_iot_reconnect_delay_ms(
-      &c->opts.reconnection_policy, c->reconnect_attempt, &c->rng_state);
+      &c->opts.reconnection_policy, c->retry_attempt[scope], &c->rng_state);
   c->reconnect_due_ms = az_iot_time_mono_ms() + delay;
   set_state_to(c, AZ_IOT_CONN_STATE_RECONNECTING, reason);
 }
@@ -1646,11 +1677,7 @@ static void dps_apply_deferred(az_iot_connection_client* c)
     if (reconnect_enabled(c) && !c->user_close)
     {
       c->needs_reprovision = true;
-      /* Registration attempts are not hub attempts, and naming the role keeps
-       * them out of the hub-failure counter that arms an automatic
-       * re-provision. */
-      c->session_role = AZ_IOT_MQTT_ROLE_DPS;
-      schedule_reconnect(c, status);
+      schedule_reconnect(c, AZ_IOT_CONN_SCOPE_DPS, status);
       /* The service's retry-after wins when it is longer than the policy's
        * backoff. schedule_reconnect() has already set the deadline from the
        * policy; raising it here keeps the two as a floor rather than letting
@@ -1763,6 +1790,14 @@ static void dps_apply_deferred(az_iot_connection_client* c)
   drop_subscriptions_from_other_generations(c);
   c->dps_phase = DPS_PHASE_NONE;
 
+  /* Registration succeeded, so BOTH ladders start over: the DPS one because it
+   * has done its job, and the hub one because this is a fresh assignment --
+   * the attempts that failed against the previous hub say nothing about the
+   * one just handed to us, and making the first connect to it wait at the
+   * old ladder's cap would be backoff for a failure that never happened. */
+  c->retry_attempt[AZ_IOT_CONN_SCOPE_DPS] = 0;
+  c->retry_attempt[AZ_IOT_CONN_SCOPE_HUB] = 0;
+
   r = start_connect_attempt(c);
   if (r != AZ_IOT_OK)
   {
@@ -1796,7 +1831,7 @@ static void presence_gen_nonce(az_iot_connection_client* c, uint8_t out[PRESENCE
   {
     uint64_t x = az_iot_time_mono_ms()
         ^ (c->rng_state * 6364136223846793005ull + 1442695040888963407ull)
-        ^ ((uint64_t)(c->reconnect_attempt + 1u) << 40);
+        ^ ((uint64_t)(c->retry_attempt[AZ_IOT_CONN_SCOPE_HUB] + 1u) << 40);
     c->rng_state = x;
     for (size_t b = 0; b < 8u; ++b)
     {
@@ -2399,8 +2434,10 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
           break;
         }
 
-        /* Successful CONNACK: clear the burst counter. */
-        c->reconnect_attempt = 0;
+        /* Successful CONNACK: clear the HUB ladder. The DPS ladder is left
+         * alone -- it is cleared when a REGISTRATION succeeds, not when the
+         * hub this device was already assigned to answers. */
+        c->retry_attempt[AZ_IOT_CONN_SCOPE_HUB] = 0;
         c->reconnect_due_ms = 0;
 
         /* AEG/Hub-Next (MQTT v5): the connection is not usable until
@@ -2680,12 +2717,14 @@ static void apply_deferred(az_iot_connection_client* c)
       set_state_to(c, AZ_IOT_CONN_STATE_FAULTED, reason);
       break;
     case DEFER_RECONNECT:
-      schedule_reconnect(c, reason);
+      /* Reached from on_mqtt_event, which serves the HUB session only. */
+      schedule_reconnect(c, AZ_IOT_CONN_SCOPE_HUB, reason);
       break;
     case DEFER_IDLE:
       teardown_active(c);
       c->user_close = false;
-      c->reconnect_attempt = 0;
+      c->retry_attempt[AZ_IOT_CONN_SCOPE_DPS] = 0;
+      c->retry_attempt[AZ_IOT_CONN_SCOPE_HUB] = 0;
       c->reconnect_due_ms = 0;
       set_state_to(c, AZ_IOT_CONN_STATE_IDLE, reason);
       break;
@@ -3160,7 +3199,8 @@ az_iot_result az_iot_connection_client_open(az_iot_connection_client* client)
   }
 
   client->user_close = false;
-  client->reconnect_attempt = 0;
+  client->retry_attempt[AZ_IOT_CONN_SCOPE_DPS] = 0;
+  client->retry_attempt[AZ_IOT_CONN_SCOPE_HUB] = 0;
   client->reconnect_due_ms = 0;
   /* needs_reprovision is deliberately NOT cleared here. It is pending recovery
    * intent -- "the cached assignment is no good, ask DPS again" -- set by an
@@ -3239,7 +3279,8 @@ az_iot_result az_iot_connection_client_close(az_iot_connection_client* client)
    * to IDLE. There is no live adapter to disconnect at this point. */
   if (client->state == AZ_IOT_CONN_STATE_RECONNECTING)
   {
-    client->reconnect_attempt = 0;
+    client->retry_attempt[AZ_IOT_CONN_SCOPE_DPS] = 0;
+    client->retry_attempt[AZ_IOT_CONN_SCOPE_HUB] = 0;
     client->reconnect_due_ms = 0;
     client->user_close = false;
     set_state_to(client, AZ_IOT_CONN_STATE_IDLE, AZ_IOT_OK);
@@ -3262,7 +3303,8 @@ az_iot_result az_iot_connection_client_close(az_iot_connection_client* client)
    * reconnects to it. */
   if (client->state == AZ_IOT_CONN_STATE_FAULTED)
   {
-    client->reconnect_attempt = 0;
+    client->retry_attempt[AZ_IOT_CONN_SCOPE_DPS] = 0;
+    client->retry_attempt[AZ_IOT_CONN_SCOPE_HUB] = 0;
     client->reconnect_due_ms = 0;
     client->user_close = false;
     /* needs_reprovision survives on purpose: it says the cached assignment is
@@ -3298,7 +3340,8 @@ az_iot_result az_iot_connection_client_close(az_iot_connection_client* client)
       client->dps_pending_finalize = false;
       client->dps_pending_have_assignment = false;
       client->dps_pending_status = AZ_IOT_OK;
-      client->reconnect_attempt = 0;
+      client->retry_attempt[AZ_IOT_CONN_SCOPE_DPS] = 0;
+      client->retry_attempt[AZ_IOT_CONN_SCOPE_HUB] = 0;
       client->reconnect_due_ms = 0;
       /* needs_reprovision survives, as in the FAULTED branch above. */
       client->user_close = false;
@@ -3463,7 +3506,7 @@ az_iot_result az_iot_connection_client_do_work(
     client->presence.phase = AZ_IOT_PRESENCE_PHASE_NONE;
     if (reconnect_enabled(client) && !client->user_close)
     {
-      schedule_reconnect(client, AZ_IOT_ERR_TIMEOUT);
+      schedule_reconnect(client, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_ERR_TIMEOUT);
     }
     else
     {
@@ -3501,7 +3544,7 @@ az_iot_result az_iot_connection_client_do_work(
     memset(&client->subscription_gate, 0, sizeof(client->subscription_gate));
     if (reconnect_enabled(client) && !client->user_close)
     {
-      schedule_reconnect(client, AZ_IOT_ERR_TIMEOUT);
+      schedule_reconnect(client, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_ERR_TIMEOUT);
     }
     else
     {
@@ -3515,6 +3558,7 @@ az_iot_result az_iot_connection_client_do_work(
       && az_iot_time_mono_ms() >= client->reconnect_due_ms)
   {
     az_iot_result cr;
+    az_iot_connection_scope attempted;
     if (client->needs_reprovision)
     {
       /* The hub refused this identity; go back to DPS for a new assignment
@@ -3524,15 +3568,21 @@ az_iot_result az_iot_connection_client_do_work(
       client->needs_reprovision = false;
       client->dps_phase = DPS_PHASE_NONE;
       client->session_role = AZ_IOT_MQTT_ROLE_DPS;
+      attempted = AZ_IOT_CONN_SCOPE_DPS;
       cr = dps_start(client);
     }
     else
     {
+      attempted = AZ_IOT_CONN_SCOPE_HUB;
       cr = start_connect_attempt(client);
     }
     if (cr != AZ_IOT_OK)
     {
-      schedule_reconnect(client, cr);
+      /* The failure belongs to whichever attempt was just made. Its retry is a
+       * hub one either way, because needs_reprovision was cleared above -- the
+       * deliberate fallback that stops a failing dps_start() looping through
+       * provisioning forever. */
+      schedule_reconnect(client, attempted, cr);
     }
   }
 

@@ -381,6 +381,25 @@ extern "C"
     } twin_push;
   } az_iot_connection_client_options;
 
+  /* Which of the client's two lifecycles something refers to.
+   *
+   * A DPS-provisioned device runs two connections in sequence, and sometimes
+   * side by side: the provisioning session, and the hub session it is assigned
+   * to. They fail, retry and settle independently, so anything scoped to one
+   * of them -- today the retry ladders below -- has to say which.
+   *
+   * DPS and HUB only. Which hub GENERATION a hub session speaks (Classic or
+   * MQTT v5) is reported through az_iot_hub_profile, not here: it is one
+   * logical connection either way, and splitting the scope by generation would
+   * make a caller handle two values for it. */
+  typedef enum az_iot_connection_scope
+  {
+    AZ_IOT_CONN_SCOPE_DPS = 0,
+    AZ_IOT_CONN_SCOPE_HUB = 1
+  } az_iot_connection_scope;
+
+#define AZ_IOT_CONN_SCOPE_COUNT 2
+
   typedef enum az_iot_connection_state
   {
     AZ_IOT_CONN_STATE_IDLE = 0,
@@ -694,7 +713,22 @@ extern "C"
     int deferred;
     az_iot_result deferred_reason;
 
-    uint32_t reconnect_attempt;
+    /* Retry ladder position, PER SCOPE. Two ladders, not one: provisioning and
+     * hub connection fail for unrelated reasons, and a device that exhausts
+     * one must not inherit the other's backoff or spend the other's budget.
+     *
+     * With a single counter a device that burned its hub attempts up to the
+     * 30s cap and then re-provisioned made its DPS retries at the cap instead
+     * of at initial_delay_ms, and reconnection_policy.max_attempts was one
+     * budget shared across both -- so a long hub outage could leave zero
+     * attempts for a registration that would have succeeded first try.
+     *
+     * max_attempts is therefore applied per ladder as well. Indexed by
+     * az_iot_connection_scope. */
+    uint32_t retry_attempt[AZ_IOT_CONN_SCOPE_COUNT];
+    /* Which ladder the currently scheduled retry belongs to. Only one retry is
+     * ever pending, so one deadline and one scope serve both. */
+    az_iot_connection_scope retry_scope;
     uint64_t reconnect_due_ms;
     uint64_t rng_state;
 
