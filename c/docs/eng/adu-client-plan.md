@@ -13,7 +13,7 @@ design detail and caveats for each capability.
 > keys, SHA-256, the download/backup/install/apply state machine, reboot/resume
 > persistence — is **harvested into a transport-independent `adu_core`** and reused
 > verbatim by ADUv2. See [What "ADUv1 is cut" means](#what-aduv1-is-cut-means).
-> Decision of record: [connection.md §7](../connection.md#7-aduv2-onboarding-and-renewal-planned);
+> Decision of record: [connection-c.md §7](connection-c.md#7-aduv2-onboarding-and-renewal-partly-implemented);
 > seam: [client-separation.md §8](client-separation.md#8-device-update).
 
 > **Supersedes `adu-feature-support.md`.** This doc replaces the old
@@ -348,7 +348,7 @@ registration on the **existing DPS endpoint, reusing its DPS credential**; DPS i
 verify → download → install → report engine are **unchanged** from ADUv1. Full digest, including
 the exact URL shape and which parts are measured vs. drafted:
 **[aduv2-spec.md](aduv2-spec.md)**; lifecycle placement:
-[connection.md §7](../connection.md#7-aduv2-onboarding-and-renewal-planned).
+[connection-c.md §7](connection-c.md#7-aduv2-onboarding-and-renewal-partly-implemented).
 
 ```mermaid
 sequenceDiagram
@@ -558,7 +558,7 @@ Not code — things I (or the team) must do out-of-band:
 
 - [aduv2-spec.md](aduv2-spec.md) — **ADUv2 device contract** + diagrams (request/response shapes,
   error codes, trust model).
-- [connection.md §7](../connection.md#7-aduv2-onboarding-and-renewal-planned) — decision of record
+- [connection-c.md §7](connection-c.md#7-aduv2-onboarding-and-renewal-partly-implemented) — decision of record
   for the cut, and where the bootstrap/operational checks sit in the connection lifecycle.
 - [client-separation.md §8](client-separation.md#8-device-update) — where the `adu_core` /
   `az_iot_adu_channel` seam lands relative to the client split.

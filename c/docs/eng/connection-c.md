@@ -794,7 +794,7 @@ left as gaps rather than guesses.
 | Handshake | TLS alert detail | not in the result | `paho_ssl_error_callback` | logged only | The OpenSSL error queue is drained line by line to the trace log when `AZ_IOT_PAHO_SSL` is built and tracing is enabled. It is the only place the concrete reason appears. |
 | Handshake | **Client certificate rejected during the handshake** | `AZ_IOT_ERR_MQTT` | Paho negative code | reconnect | No MQTT session exists, so no CONNACK code is available. Correctly **not** treated as an identity rejection: the negative-code rule exists for exactly this. Consequence: a device whose operational certificate has been revoked retries forever instead of re-provisioning. |
 | CONNACK | **Client certificate accepted by TLS, identity refused at CONNACK** (`rc=5` / `0x87 Not authorized`) | `AZ_IOT_ERR_IDENTITY_REJECTED` | `az_iot_mqtt_connack_result()` | sets `needs_reprovision`; the next attempt runs `dps_start()` | The distinction between this row and the previous one is exactly the distinction the negative-code rule encodes, and it is the reason adapters must not flatten codes. |
-| Configuration | TLS is only enabled when a client certificate, key or `verify_server` is set | — | `paho_iface_create` | scheme selected as `ssl://` or `tcp://` | Keying off the credential means an unconfigured device connects in the clear rather than failing. |
+| Configuration | TLS is selected by any of: a client certificate, a trusted CA, key custody, or the explicit `use_tls` flag | — | `paho_iface_create` | scheme selected as `ssl://` or `tcp://` | There is deliberately **no** option to disable server-certificate validation: whenever a TLS session is established, the chain **and** the hostname are validated unconditionally. `use_tls` exists for a connection carrying no other TLS material, such as server-authentication-only; it replaced `verify_server`, which could switch validation off and did so for any caller who left a zero-initialised struct alone. |
 
 #### 9.5.3 Phase 3 — CONNECT / CONNACK
 
@@ -833,7 +833,7 @@ left as gaps rather than guesses.
 
 | Phase | Trigger | Surfaced as | Mapped by | SDK action | Notes / limits |
 | --- | --- | --- | --- | --- | --- |
-| Subscribing | Presence SUBACK carries a failure | `AZ_IOT_ERR_MQTT` | adapter (reason code flattened, see [§9.6](#96-known-gaps)) | clear the phase, `DEFER_RECONNECT` or `DEFER_FAULT` | A deterministic refusal — `0x87`, `0x8F`, `0xA2` — is retried until the policy is exhausted. |
+| Subscribing | Presence SUBACK carries a failure | `AZ_IOT_ERR_SUBSCRIPTION_REFUSED` or `AZ_IOT_ERR_MQTT` | `az_iot_mqtt_suback_result()` | clear the phase, then `DEFER_RECONNECT` if a policy is configured, else `DEFER_FAULT` | **Gap.** The presence path branches on `reconnect_enabled()` alone, so it does **not** honour `AZ_IOT_ERR_SUBSCRIPTION_REFUSED` as terminal the way the subscription gate does. A deterministic refusal — `0x87`, `0x8F`, `0xA2` — is retried until the policy is exhausted, against a filter fixed by the protocol. The mapper already carries the verdict; only this branch ignores it. |
 | Subscribing | `presence_start()` fails after CONNACK | its own result | connection client | clear the phase, reconnect | |
 | Birth | `presence_publish_birth()` fails | its own result | connection client | clear the phase, reconnect | |
 | Birth | No birth-ack within 60 s | `AZ_IOT_ERR_TIMEOUT` | `_do_work()` | reconnect, or `FAULTED` with no policy | The deadline is armed at CONNACK and re-armed after the birth publish, so each step gets its own 60 s. |
@@ -935,35 +935,39 @@ version of this table have since been **closed** and are listed at the end, so t
    (`AZ_IOT_ERR_SUBSCRIPTION_REFUSED` is terminal regardless of policy), which is the shape the
    CONNACK path still needs. Tracked as the fatal-failure classification in
    [connection-impl-status.md](connection-impl-status.md).
-2. **The server DISCONNECT reason code is discarded.** `paho_disconnected` logs it and enqueues
+2. **The presence handshake ignores the SUBACK classification.** The subscription gate treats
+   `AZ_IOT_ERR_SUBSCRIPTION_REFUSED` as terminal regardless of policy; the presence path branches on
+   `reconnect_enabled()` alone and retries the same protocol-fixed filter until the policy is
+   exhausted. One branch, and the verdict is already in hand.
+3. **The server DISCONNECT reason code is discarded.** `paho_disconnected` logs it and enqueues
    `AZ_IOT_OK`, so `0x8E Session taken over` — where reconnecting makes things actively worse — is
    indistinguishable from a routine drop. The highest-value remaining fix in this table.
-3. **The PUBACK reason code is flattened.** `paho_publish_failure5` ignores `response->reasonCode`,
+4. **The PUBACK reason code is flattened.** `paho_publish_failure5` ignores `response->reasonCode`,
    so a caller cannot separate `0x87 Not authorized` (do not retry) from `0x97 Quota exceeded` (back
    off and retry). The same rule the CONNACK and SUBACK mappers now enforce; PUBACK is the one ack
    still without a mapper.
-4. **No TLS-specific result for a handshake outcome.** `AZ_IOT_ERR_TLS` is produced only for local
+5. **No TLS-specific result for a handshake outcome.** `AZ_IOT_ERR_TLS` is produced only for local
    key material that cannot be handed to the stack; every certificate, chain, hostname and cipher
    failure still arrives as `AZ_IOT_ERR_MQTT`, with the concrete reason only in the trace log.
    `AZ_IOT_ERR_AUTH` is never produced at all.
-5. **A v5 redirection is retried against the same host.** `0x9C Use another server` and
+6. **A v5 redirection is retried against the same host.** `0x9C Use another server` and
    `0x9D Server moved` carry a Server Reference property that is not read.
-6. **A dropped direct-method invocation is silent to the application.** Only a log warning marks it.
+7. **A dropped direct-method invocation is silent to the application.** Only a log warning marks it.
    A slot is released by responding; a handler that returns without responding leaks one permanently.
-7. **The classic-hub username is not bounds-checked.** Exceeding `AZ_IOT_MQTT_USERNAME_BUF` on the
+8. **The classic-hub username is not bounds-checked.** Exceeding `AZ_IOT_MQTT_USERNAME_BUF` on the
    gen2 path returns `AZ_IOT_ERR_NOT_ENOUGH_SPACE`; on the Classic path the username is simply
    omitted and the connect proceeds.
-8. **The single-threaded contract is unenforced.** Nothing detects an adapter callback delivered off
+9. **The single-threaded contract is unenforced.** Nothing detects an adapter callback delivered off
    the pump thread.
-9. **The default reconnection policy is not applied.** `az_iot_reconnection_policy_default()` exists
+10. **The default reconnection policy is not applied.** `az_iot_reconnection_policy_default()` exists
    and `az_iot_connection_client_options_default()` does not call it, so a caller taking the stock
    options gets `initial_delay_ms == 0`, which means reconnect disabled. Every retryable row above
    then faults on its first occurrence. The shipped default should not be read as intended
    behaviour.
-10. **Re-provisioning intent is gated on retries being enabled.** `needs_reprovision` is only set
+11. **Re-provisioning intent is gated on retries being enabled.** `needs_reprovision` is only set
     when a reconnection policy is configured, so a device with retries disabled that is refused on
     identity drops the intent instead of carrying it to the next `open()`.
-11. **A capacity failure does not say which pool ran out.** Every bound in
+12. **A capacity failure does not say which pool ran out.** Every bound in
     [§9.4](#94-compile-time-bounds) surfaces as `AZ_IOT_ERR_NOT_ENOUGH_SPACE` or
     `AZ_IOT_ERR_NOT_SUPPORTED` from whatever call was last, with no indication of the pool. On an
     unattended device that is expensive to diagnose.

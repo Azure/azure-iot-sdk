@@ -25,7 +25,7 @@ Keep this file in step with the code. It is expected to change often; `connectio
 | Section | C | .NET |
 | --- | --- | --- |
 | [§2 Top-level state machine](../connection.md#2-top-level-state-machine) | implemented | partial — the same lifecycle is driven internally, but it is surfaced as connect/disconnect events rather than as a single user-visible state value |
-| [§3 Full connect sequence](../connection.md#3-full-connect-sequence) | implemented | implemented, except the CSR carried in the registration |
+| [§3 Full connect sequence](../connection.md#3-full-connect-sequence) | implemented | implemented |
 | [§4 Connection profile selection](../connection.md#4-connection-profile-selection) | implemented | implemented |
 | [§5 Reconnection](../connection.md#5-reconnection) | implemented | implemented |
 | [§6 Certificate management](../connection.md#6-certificate-management-onboarding-and-renewal) | implemented | partial — the CSR now rides the registration, but renewal over the hub is classic-only |

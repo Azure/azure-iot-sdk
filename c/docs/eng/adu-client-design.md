@@ -6,7 +6,7 @@ The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "S
 > This document is the deep architecture reference and it was written when delivery ran over the
 > IoT Hub **device twin**. That channel is being **removed** — see
 > [adu-client-plan.md](adu-client-plan.md#what-aduv1-is-cut-means) for what is removed vs. kept and
-> [connection.md §7](../connection.md#7-aduv2-onboarding-and-renewal-planned) for the decision of
+> [connection-c.md §7](connection-c.md#7-aduv2-onboarding-and-renewal-partly-implemented) for the decision of
 > record. Read this doc as follows:
 >
 > | Content | How to read it |
@@ -2089,7 +2089,7 @@ ADU touch points that rely on it:
 ## 17. References
 
 - [adu-client-plan.md](adu-client-plan.md) — ADU status, cost & feature manual (supersedes the old feature-coverage matrix); the source for what the ADUv1 cut removes and keeps
-- [connection.md §7](../connection.md#7-aduv2-onboarding-and-renewal-planned) — decision of record for cutting ADUv1, and where the ADUv2 bootstrap/operational checks sit in the connection lifecycle
+- [connection-c.md §7](connection-c.md#7-aduv2-onboarding-and-renewal-partly-implemented) — decision of record for cutting ADUv1, and where the ADUv2 bootstrap/operational checks sit in the connection lifecycle
 - [client-separation.md §8](client-separation.md#8-device-update) — the `adu_core` / `az_iot_adu_channel` seam relative to the client split
 - [aduv2-spec.md](aduv2-spec.md) — **ADUv2 (via DPS) design summary** + diagrams: the device-facing DPS update APIs (`GetOnboardingDeviceUpdate` / `GetDeviceUpdate` / `ReportDeviceUpdateStatus`) and how the client uses them
 - **ADU device update via DPS** (DRAFT, api-version `2026-11-02-preview`) — ADUv2's device-facing delivery is now **fronted by DPS** (an authenticated pass-through to ADR → ADU); there is **no dedicated ADU endpoint** and **no separate `syncConfiguration`** (service config is returned inline in the fetch response). The manifest content and the D2C report structure are unchanged. See [aduv2-spec.md](aduv2-spec.md). Owner: ADU protocol/API team (Darko Aleksic); integration contact: Leo

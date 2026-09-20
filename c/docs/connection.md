@@ -948,7 +948,8 @@ that cannot be provisioned has nowhere to reconnect *to*.
 
 | Phase | Trigger | Class | Required client behaviour | Application observes |
 | --- | --- | --- | --- | --- |
-| Subscribing | The presence subscription is refused | Retryable | Abandon the handshake and reconnect. A deterministic refusal — `0x87 Not authorized`, `0x8F Topic Filter invalid`, `0xA2 Wildcard Subscriptions not supported` — will exhaust the policy and land in `FAULTED`, which is the correct destination even though the route is a retry. | `RECONNECTING`, then `FAULTED` if the refusal persists |
+| Subscribing | The presence subscription is refused with a deterministic code — `0x87 Not authorized`, `0x8F Topic Filter invalid`, `0xA2 Wildcard Subscriptions not supported` | **Terminal** | Fault. The presence filter is fixed by the protocol, so a broker that refuses it will refuse it again; reconnecting re-issues the same filter and leaves the device cycling without ever saying why. The refusal classification of [§9.3.4](#934-mqtt-50-suback-reason-codes-393) decides this, not the policy. | `FAULTED` with a subscription-refused reason |
+| Subscribing | The presence subscription is refused with a transient code — `0x80`, `0x83`, `0x97` | Retryable | Abandon the handshake and reconnect under the policy. | `RECONNECTING` |
 | Birth | The birth publish cannot be issued | Retryable | Clear the handshake phase and reconnect. | `RECONNECTING` |
 | Birth | No birth acknowledgement within the handshake deadline (60 s per step) | Retryable | Clear the phase and reconnect. | `RECONNECTING` with a timeout reason |
 | Birth | A birth acknowledgement arrives **before** its own subscription is acknowledged | **Contained** | Do not complete the handshake on it. The handshake advances only from its own phase; anything else routes as an ordinary inbound message. Accepting it would announce `CONNECTED` on a session whose presence filter is not yet live. | Nothing |
