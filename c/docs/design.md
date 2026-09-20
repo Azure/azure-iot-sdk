@@ -7,9 +7,9 @@ C99 client SDK for IoTHub-Next (AEG), with selectable Classic-vs-Next protocol b
 
 The public surface is a single low-level, single-threaded, callback-based API with a `do_work()` pump. Embedded-friendly, no internal threads, no hidden allocations on the hot path.
 
-> **In flight: the feature clients are being split by hub generation.** This
-> document describes the *current* feature clients, which branch internally on a
-> runtime Classic-vs-Next switch.
+> **In flight: the feature clients are being split by hub generation.**
+> Telemetry is already split; the remaining feature clients still branch
+> internally on a runtime Classic-vs-Next switch.
 > [eng/client-separation.md](eng/client-separation.md) specifies the target:
 > per-generation feature clients (`az_iot_gen1_*` / `az_iot_gen2_*`) over the
 > **same single connection client**, which keeps DPS internal and reports the
@@ -32,11 +32,10 @@ flowchart TB
     APP["User application"]
 
     subgraph PUB["Public API"]
-        APIA["az_iot_connection_client<br/>az_iot_twin_client<br/>az_iot_direct_method_client<br/>az_iot_telemetry_client"]
+        APIA["az_iot_connection_client<br/>az_iot_gen1_* / az_iot_gen2_*<br/>(telemetry, c2d, direct_method, twin)<br/>az_iot_gen1_file_upload_client"]
     end
 
     subgraph CORE["Core infrastructure"]
-        PROFILE["protocol_profile<br/>(Classic | Next)"]
         DISPATCH["dispatch<br/>(topic → handler)"]
         RECONNECT["reconnect<br/>(backoff + jitter)"]
         CORR["correlation"]
@@ -66,8 +65,8 @@ flowchart TB
     APIB --> APIA
     APIA --> CORE
     CORE --> AZCORE
-    PROFILE --> AZHUB
-    PROFILE --> AZDPS
+    CORE --> AZHUB
+    CORE --> AZDPS
     AZHUB --> AZCORE
     AZDPS --> AZCORE
     CORE --> IFACE
@@ -89,10 +88,9 @@ flowchart TB
 | Public API | Public opaque handles, lifecycle, feature client surfaces |
 | `connection_client` | TLS/cert config, CONNECT/CONNACK/DISCONNECT, sub/unsub, pub, dispatch table, reconnect, DPS, cert mgmt hooks |
 | Feature clients | Topic templates, payload schemas, request/response correlation, error mapping |
-| `protocol_profile` | Classic-vs-Next switch tables (topics, response timeouts, error codes). Classic + DPS rows delegate to `az::iot::hub` and `az::iot::provisioning` for topic build/parse. |
 | `az_iot_mqtt_iface` | vtable contract for MQTT adapters; each instance is tagged with the MQTT version it speaks (`v3_1_1` or `v5`) |
 | Adapters | Paho-C v3.1.1 (DPS + Classic), Paho-C v5 (Next), Rust MQTT v5 (Next, FFI shell P0), az_mqtt (P2) |
-| `azure-sdk-for-c` | Pinned third-party dependency. `az::core` provides spans / JSON / logging / contexts. `az::iot::hub` and `az::iot::provisioning` provide the IoTHub-Classic and DPS MQTT topic helpers we'd otherwise have to reimplement. **IoTHub-Next is NOT covered by this dependency** — we own the Next protocol profile in this repo. |
+| `azure-sdk-for-c` | Pinned third-party dependency. `az::core` provides spans / JSON / logging / contexts. `az::iot::hub` and `az::iot::provisioning` provide the IoTHub-Classic and DPS MQTT topic helpers we'd otherwise have to reimplement. **IoTHub-Next is NOT covered by this dependency** — we own the Next wire protocol in this repo. |
 | Platform | time / log / alloc / mutex / tls + cert hooks per OS |
 
 ### Why depend on azure-sdk-for-c
@@ -145,7 +143,9 @@ Every user callback fires from inside `az_iot_connection_client_do_work()`. The 
 
 ## 3. Protocol exchange
 
-Topic strings below are illustrative until the IoTHub-Next protocol contract is finalized. `protocol_profile` owns the actual templates and chooses Classic vs Next at runtime.
+Topic strings below are illustrative until the IoTHub-Next protocol contract is finalized. Each
+`az_iot_gen1_*` / `az_iot_gen2_*` feature client owns the templates for its own generation; there is
+no runtime Classic-vs-Next switch left to consult.
 
 ```mermaid
 sequenceDiagram

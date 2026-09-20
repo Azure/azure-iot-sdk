@@ -41,7 +41,6 @@
 
 #include "internal/cert_util.h"
 #include "internal/connection_client_internal.h"
-#include "internal/protocol_profile.h"
 
 /* ---- helpers -------------------------------------------------------------- */
 
@@ -109,6 +108,9 @@ static void result_to_string_covers_every_code(void** state)
     { AZ_IOT_ERR_NOT_FOUND, "AZ_IOT_ERR_NOT_FOUND" },
     { AZ_IOT_ERR_IDENTITY_REJECTED, "AZ_IOT_ERR_IDENTITY_REJECTED" },
     { AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED, "AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED" },
+    { AZ_IOT_ERR_SUBSCRIPTION_REFUSED, "AZ_IOT_ERR_SUBSCRIPTION_REFUSED" },
+    { AZ_IOT_ERR_CREDENTIAL_INCOMPLETE, "AZ_IOT_ERR_CREDENTIAL_INCOMPLETE" },
+    { AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH, "AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH" },
   };
   const size_t n = sizeof(all) / sizeof(all[0]);
   const char* got[sizeof(all) / sizeof(all[0])];
@@ -118,7 +120,7 @@ static void result_to_string_covers_every_code(void** state)
    * appended to, so "last enumerator + 1" is how many codes exist -- appending
    * one without extending this table now fails here, instead of silently
    * falling back to AZ_IOT_ERR_UNKNOWN at runtime. */
-  assert_int_equal(n, (size_t)AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED + 1);
+  assert_int_equal(n, (size_t)AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH + 1);
 
   for (size_t i = 0; i < n; ++i)
   {
@@ -228,32 +230,6 @@ static void mqtt_role_to_string_reports_unknown_for_an_unmapped_role(void** stat
 {
   (void)state;
   assert_string_equal(az_iot_mqtt_role_to_string((az_iot_mqtt_role)99), "ROLE?");
-}
-
-/* ---- hub flavor ----------------------------------------------------------- */
-
-static void hub_flavor_to_string_covers_every_flavor(void** state)
-{
-  (void)state;
-  assert_mapped(
-      az_iot_hub_flavor_to_string(AZ_IOT_HUB_FLAVOR_CLASSIC),
-      "AZ_IOT_HUB_FLAVOR_UNKNOWN",
-      "classic");
-  assert_mapped(
-      az_iot_hub_flavor_to_string(AZ_IOT_HUB_FLAVOR_NEXT), "AZ_IOT_HUB_FLAVOR_UNKNOWN", "next");
-  assert_string_not_equal(
-      az_iot_hub_flavor_to_string(AZ_IOT_HUB_FLAVOR_CLASSIC),
-      az_iot_hub_flavor_to_string(AZ_IOT_HUB_FLAVOR_NEXT));
-}
-
-static void hub_flavor_to_string_reports_unknown_for_an_unmapped_flavor(void** state)
-{
-  (void)state;
-  /* The enum has exactly CLASSIC and NEXT; "unknown" is the default arm's
-   * string, not an enumerator. Reaching it needs a value from outside the
-   * enum's range, which is how a profile from a newer build would arrive. */
-  assert_string_equal(
-      az_iot_hub_flavor_to_string((az_iot_hub_flavor)42), "AZ_IOT_HUB_FLAVOR_UNKNOWN");
 }
 
 /* ---- version -------------------------------------------------------------- */
@@ -402,8 +378,6 @@ int main(void)
     cmocka_unit_test(mqtt_version_to_string_reports_unknown_for_an_unmapped_version),
     cmocka_unit_test(mqtt_role_to_string_covers_every_role),
     cmocka_unit_test(mqtt_role_to_string_reports_unknown_for_an_unmapped_role),
-    cmocka_unit_test(hub_flavor_to_string_covers_every_flavor),
-    cmocka_unit_test(hub_flavor_to_string_reports_unknown_for_an_unmapped_flavor),
     cmocka_unit_test(version_string_matches_the_header_macros),
     cmocka_unit_test(reconnection_policy_default_is_usable_as_supplied),
     cmocka_unit_test(stderr_sink_is_installable_and_emits),

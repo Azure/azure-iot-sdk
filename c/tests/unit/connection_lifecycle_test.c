@@ -138,9 +138,10 @@ static void open_while_connected_is_rejected(void** state)
   assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_ERR_ALREADY_INITIALIZED);
 }
 
-/* FAULTED is terminal for this client instance: open() does not restart it.
- * Recovery requires destroy() + init(). Pinning this makes the limitation
- * visible rather than folklore. */
+/* open() is still IDLE-only: a fault has to be acknowledged with close()
+ * first, which is what returns the client to IDLE. See
+ * close_from_faulted_returns_to_idle() and
+ * open_after_close_from_faulted_starts_a_new_session(). */
 static void open_from_faulted_is_rejected(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
@@ -262,6 +263,90 @@ static void connect_timeout_is_configurable(void** state)
   az_iot_mock_call c;
   connect_call_for(&opts, &c);
   assert_int_equal(c.connect.connect_timeout_seconds, 5);
+}
+
+/* ------------------------------------------------------------------------- */
+/* transport and proxy                                                       */
+/* ------------------------------------------------------------------------- */
+
+/* Nothing selected: the behaviour that predates the transport and proxy
+ * options, so an application that never heard of them is unaffected. */
+static void transport_defaults_to_tcp_on_8883_with_no_proxy(void** state)
+{
+  (void)state;
+  az_iot_connection_client_options opts = az_iot_test_classic_options();
+  opts.port = 0; /* derive */
+  az_iot_mock_call c;
+  connect_call_for(&opts, &c);
+  assert_int_equal(c.connect.transport, AZ_IOT_MQTT_TRANSPORT_TCP);
+  assert_int_equal(c.connect.port, 8883);
+  assert_string_equal(c.connect.proxy_host, "");
+}
+
+/* Selecting WebSockets has to move the port too. 8883 is not served over
+ * WebSockets, and a device selects this transport precisely because the
+ * network it is on will not pass 8883 at all. */
+static void websockets_derive_port_443(void** state)
+{
+  (void)state;
+  az_iot_connection_client_options opts = az_iot_test_classic_options();
+  opts.port = 0;
+  opts.transport = AZ_IOT_MQTT_TRANSPORT_WEBSOCKET;
+  az_iot_mock_call c;
+  connect_call_for(&opts, &c);
+  assert_int_equal(c.connect.transport, AZ_IOT_MQTT_TRANSPORT_WEBSOCKET);
+  assert_int_equal(c.connect.port, 443);
+}
+
+static void an_explicit_port_survives_the_transport_default(void** state)
+{
+  (void)state;
+  az_iot_connection_client_options opts = az_iot_test_classic_options();
+  opts.transport = AZ_IOT_MQTT_TRANSPORT_WEBSOCKET;
+  opts.port = 8443;
+  az_iot_mock_call c;
+  connect_call_for(&opts, &c);
+  assert_int_equal(c.connect.port, 8443);
+}
+
+static void the_proxy_reaches_the_adapter_whole(void** state)
+{
+  (void)state;
+  az_iot_connection_client_options opts = az_iot_test_classic_options();
+  opts.proxy.host = "proxy.corp.example";
+  opts.proxy.port = 3128;
+  opts.proxy.username = "device";
+  opts.proxy.password = "s3cret";
+  az_iot_mock_call c;
+  connect_call_for(&opts, &c);
+  assert_string_equal(c.connect.proxy_host, "proxy.corp.example");
+  assert_int_equal(c.connect.proxy_port, 3128);
+  assert_string_equal(c.connect.proxy_username, "device");
+  assert_string_equal(c.connect.proxy_password, "s3cret");
+  /* The proxy does not change which broker the session targets. */
+  assert_string_equal(c.connect.host, "broker.example");
+}
+
+static void the_websocket_path_reaches_the_adapter(void** state)
+{
+  (void)state;
+  az_iot_connection_client_options opts = az_iot_test_classic_options();
+  opts.transport = AZ_IOT_MQTT_TRANSPORT_WEBSOCKET;
+  opts.websocket_path = "/mqtt";
+  az_iot_mock_call c;
+  connect_call_for(&opts, &c);
+  assert_string_equal(c.connect.websocket_path, "/mqtt");
+}
+
+/* The default options must not pin a port, or selecting WebSockets on top of
+ * them would connect to 443's scheme on 8883's port. */
+static void the_default_options_leave_the_port_to_the_transport(void** state)
+{
+  (void)state;
+  az_iot_connection_client_options opts = az_iot_connection_client_options_default();
+  assert_int_equal(opts.port, 0);
+  assert_int_equal(opts.transport, AZ_IOT_MQTT_TRANSPORT_TCP);
+  assert_null(opts.proxy.host);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -415,9 +500,10 @@ static void close_twice_is_idempotent(void** state)
   assert_int_equal(fx->log.count, transitions);
 }
 
-/* After a fault the adapter is already gone, so there is nothing to disconnect.
- * close() reports that rather than pretending it did something. */
-static void close_from_faulted_reports_not_initialized(void** state)
+/* After a fault the adapter is already gone, so there is nothing to
+ * disconnect -- which is exactly why close() has to reach IDLE by itself here
+ * rather than waiting for a transport event. */
+static void close_from_faulted_returns_to_idle(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
   az_iot_mock_mqtt_client* m = open_to_connecting(fx);
@@ -427,7 +513,48 @@ static void close_from_faulted_reports_not_initialized(void** state)
   (void)az_iot_connection_client_do_work(fx->client, 0);
   assert_true(az_iot_test_saw_state(&fx->log, AZ_IOT_CONN_STATE_FAULTED));
 
-  assert_int_equal(az_iot_connection_client_close(fx->client), AZ_IOT_ERR_NOT_INITIALIZED);
+  /* FAULTED is settled, not a trap: close() acknowledges it and the client is
+   * IDLE by the time the call returns -- there is no adapter left to wait for. */
+  assert_int_equal(az_iot_connection_client_close(fx->client), AZ_IOT_OK);
+  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_IDLE);
+}
+
+/* The recovery this makes possible: retry without destroying the client (and
+ * therefore without rebuilding every attached feature client). */
+static void open_after_close_from_faulted_starts_a_new_session(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_mock_mqtt_client* m = open_to_connecting(fx);
+
+  assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_ERR_MQTT));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_FAULTED);
+
+  assert_int_equal(az_iot_connection_client_close(fx->client), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
+
+  az_iot_mock_mqtt_client* second = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  assert_non_null(second);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(second, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_true(az_iot_connection_client__is_connected(fx->client));
+}
+
+/* Closing twice from a fault is as idempotent as closing twice from a session. */
+static void close_from_faulted_twice_is_idempotent(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_mock_mqtt_client* m = open_to_connecting(fx);
+
+  assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_ERR_MQTT));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_FAULTED);
+
+  assert_int_equal(az_iot_connection_client_close(fx->client), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_close(fx->client), AZ_IOT_OK);
+  assert_int_equal(az_iot_test_count_state(&fx->log, AZ_IOT_CONN_STATE_IDLE), 1);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -750,7 +877,10 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         a_connack_without_a_pending_close_still_connects, setup, teardown),
     cmocka_unit_test_setup_teardown(close_twice_is_idempotent, setup, teardown),
-    cmocka_unit_test_setup_teardown(close_from_faulted_reports_not_initialized, setup, teardown),
+    cmocka_unit_test_setup_teardown(close_from_faulted_returns_to_idle, setup, teardown),
+    cmocka_unit_test_setup_teardown(close_from_faulted_twice_is_idempotent, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        open_after_close_from_faulted_starts_a_new_session, setup, teardown),
     /* destroy() */
     cmocka_unit_test(destroy_while_connected_destroys_the_adapter),
     cmocka_unit_test(destroy_while_connecting_destroys_the_adapter),
@@ -776,6 +906,13 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         identity_rejection_faults_when_reconnect_is_disabled, setup, teardown),
     cmocka_unit_test_setup_teardown(connack_rejection_tears_the_adapter_down, setup, teardown),
+    /* transport + proxy */
+    cmocka_unit_test(transport_defaults_to_tcp_on_8883_with_no_proxy),
+    cmocka_unit_test(websockets_derive_port_443),
+    cmocka_unit_test(an_explicit_port_survives_the_transport_default),
+    cmocka_unit_test(the_proxy_reaches_the_adapter_whole),
+    cmocka_unit_test(the_websocket_path_reaches_the_adapter),
+    cmocka_unit_test(the_default_options_leave_the_port_to_the_transport),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

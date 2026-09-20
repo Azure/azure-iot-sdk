@@ -43,8 +43,14 @@ extern "C"
     const char* client_cert_path; /* may be NULL */
     const char* client_key_path; /* may be NULL */
     /* Non-extractable key backends (HSM / TPM / secure element; D8). When set,
-     * client_key_pem/path are NULL and the TLS adapter uses this reference to
-     * sign during the handshake instead of reading a private key. */
+     * client_key_pem/path are NULL and the TLS adapter signs the handshake
+     * through this reference instead of reading a private key.
+     *
+     * Honoured today by the Paho adapter, which resolves client_key_uri
+     * through the OpenSSL 3.x provider named by crypto_engine_id
+     * (pkcs11-provider, tpm2-openssl). An adapter that cannot honour a
+     * reference must fail the connect rather than proceed without a client
+     * key; the rust_mqtt adapter has no TLS credential handling at all. */
     const char* client_key_uri; /* may be NULL; e.g. "pkcs11:token=...;object=..." */
     const char* crypto_engine_id; /* may be NULL; OpenSSL ENGINE/provider id: "pkcs11", "tpm2" */
   } az_iot_certificate_material;
@@ -115,9 +121,17 @@ extern "C"
         az_iot_certificate_provider* self,
         const az_iot_issued_certificate* issued);
 
-    /* v2 non-extractable key custody (optional; D8). When present the TLS adapter
-     * calls sign() instead of reading a private key: signs the caller-provided
-     * digest, writing up to out_sig_cap bytes and setting *out_sig_len. */
+    /* v2 non-extractable key custody (optional; D8). When present the TLS
+     * adapter calls sign() instead of reading a private key: signs the
+     * caller-provided digest, writing up to out_sig_cap bytes and setting
+     * *out_sig_len.
+     *
+     * The connection client forwards this to the adapter (through
+     * az_iot_mqtt_tls_options::sign) when vtable->version >= 2 and the slot is
+     * set. It is the route for stacks with no engine/provider abstraction;
+     * Paho is not one of them -- it exposes no TLS key callback and refuses a
+     * sign()-only credential -- so this needs a BYO adapter. Use
+     * client_key_uri + crypto_engine_id with Paho. */
     az_iot_result (*sign)(
         az_iot_certificate_provider* self,
         const uint8_t* digest,

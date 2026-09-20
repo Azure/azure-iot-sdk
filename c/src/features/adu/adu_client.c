@@ -34,12 +34,20 @@
 #include <azure/core/az_span.h>
 
 #include "azure/iot/az_iot_adu.h"
-#include "azure/iot/az_iot_twin_client.h"
 
 #include "internal/adu_internal.h"
 #include "internal/log_internal.h"
 #include "internal/span_writer.h"
-#include "internal/twin_client_internal.h"
+
+/* The public header reserves opaque storage for the SDK-built channel so the
+ * client struct stays caller-allocated with no hidden allocation. If the
+ * channel ever outgrows that reservation this fails the build rather than
+ * silently corrupting the struct. */
+typedef char az_iot_adu_channel_storage_is_large_enough
+    [(sizeof(((az_iot_adu_client_t*)0)->_internal.channel_storage)
+      >= sizeof(az_iot_adu_channel_dps))
+         ? 1
+         : -1];
 
 /* ------------------------------------------------------------------------- */
 /* device-properties cache                                                   */
@@ -276,6 +284,35 @@ static void result_overall_success(az_iot_adu_client_t* client)
   az_iot_adu_client_install_result* r = &ADU_I(client).install_result;
   r->result_code = AZ_IOT_ADU_AGENT_RESULT_CODE_SUCCESS;
   r->extended_result_code = 0;
+
+  /* Latch the outcome and the applied update id while the manifest is still
+   * live: reset_to_idle() clears it before the report is emitted. */
+  ADU_I(client).pending_outcome = AZ_IOT_ADU_OUTCOME_SUCCEEDED;
+  ADU_I(client).applied_update_id_valid = false;
+
+  az_span parts[3] = { ADU_I(client).current_manifest.update_id.provider,
+                       ADU_I(client).current_manifest.update_id.name,
+                       ADU_I(client).current_manifest.update_id.version };
+  const char* out[3] = { NULL, NULL, NULL };
+  size_t used = 0;
+  for (int i = 0; i < 3; ++i)
+  {
+    int32_t n = az_span_size(parts[i]);
+    if (n <= 0 || (size_t)n + 1 > sizeof(ADU_I(client).applied_update_id_buf) - used)
+    {
+      return;
+    }
+    char* dst = ADU_I(client).applied_update_id_buf + used;
+    memcpy(dst, az_span_ptr(parts[i]), (size_t)n);
+    dst[n] = '\0';
+    out[i] = dst;
+    used += (size_t)n + 1;
+  }
+
+  ADU_I(client).applied_update_id.provider = out[0];
+  ADU_I(client).applied_update_id.name = out[1];
+  ADU_I(client).applied_update_id.version = out[2];
+  ADU_I(client).applied_update_id_valid = true;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -1057,7 +1094,7 @@ static bool same_retry_timestamp(az_iot_adu_client_t* client, az_span retry)
       retry, az_span_create(ADU_I(client).active_retry_timestamp, (int32_t)have));
 }
 
-/* Twin desired-property subscriber callback (feature-client pool).
+/* Desired-property patch handler, fed by the ADU channel.
  *
  * The patch buffer is only valid for the duration of this call, but the
  * workflow is processed asynchronously over many do_work() iterations and the
@@ -1152,91 +1189,134 @@ static void process_desired_patch(
       manifest_fingerprint(req.update_manifest));
 }
 
-/* Desired-property push subscriber: forward the patch to the shared handler. */
-static void on_desired(const uint8_t* patch, size_t patch_len, uint64_t version, void* user_ctx)
+/* Channel delivery callback: the channel hands us a raw update payload and the
+ * engine parses, verifies and drives it. The engine does not know, and must not
+ * know, whether that payload was pushed or pulled, nor what carried it. */
+static void on_channel_update(
+    const uint8_t* update_payload,
+    size_t update_payload_len,
+    void* engine_ctx)
 {
-  (void)version;
-  process_desired_patch((az_iot_adu_client_t*)user_ctx, patch, patch_len);
-}
-
-/* Initial twin GET response: a deployment may already be sitting in the desired
- * properties (e.g. the device was offline when it was created, so no push will
- * arrive). The GET payload is the full twin document
- *   { "desired": { "deviceUpdate": {...}, "$version": N }, "reported": {...} }.
- * Extract the raw "desired" object and feed it through the same path as a push. */
-static void on_initial_twin_get(
-    az_iot_result status,
-    const uint8_t* twin_payload,
-    size_t twin_payload_len,
-    void* user_ctx)
-{
-  az_iot_adu_client_t* client = (az_iot_adu_client_t*)user_ctx;
+  az_iot_adu_client_t* client = (az_iot_adu_client_t*)engine_ctx;
   if (client == NULL || ADU_I(client).detached)
   {
     return;
   }
-  if (status != AZ_IOT_OK || twin_payload == NULL || twin_payload_len == 0)
+  if (update_payload == NULL || update_payload_len == 0)
+  {
+    return;
+  }
+  process_desired_patch(client, update_payload, update_payload_len);
+}
+
+/* The channel's verdict on an operation it accepted earlier.
+ *
+ * An asynchronous channel returns AZ_IOT_OK from request_update()/report() to
+ * mean "sent". The pending flag is cleared at that point, so without this the
+ * engine would never learn the service rejected it and the fetch or report
+ * would be lost. Re-arming the flag puts it back in the do_work queue.
+ *
+ * FATAL is not re-armed: the request is malformed or the device is not
+ * entitled, so resending it every tick would spin against the service.
+ *
+ * ALREADY_REPORTED is not re-armed: a terminal result is already recorded for
+ * this workflow, so the report HAS been delivered and reporting is idempotent
+ * on workflowId. Re-arming it would retry forever, and during the held
+ * bootstrap session that starves the update check until the hold expires.
+ *
+ * PROCEED is not re-armed either. It is a terminal answer, not a failure: the
+ * service is telling the device there is no update service configured for it,
+ * and the classifier defines it as "carry on, do not retry". Re-arming it would
+ * also fire a fresh check just as the hold is released and registration goes
+ * out -- onto a session that is about to be torn down -- which is the race the
+ * hold exists to prevent. */
+static void on_channel_result(
+    az_iot_adu_operation operation,
+    az_iot_result result,
+    az_iot_adu_error_action action,
+    void* engine_ctx)
+{
+  az_iot_adu_client_t* client = (az_iot_adu_client_t*)engine_ctx;
+  if (client == NULL || ADU_I(client).detached)
+  {
+    return;
+  }
+  if (result == AZ_IOT_OK || action == AZ_IOT_ADU_ERROR_ACTION_FATAL
+      || action == AZ_IOT_ADU_ERROR_ACTION_PROCEED
+      || action == AZ_IOT_ADU_ERROR_ACTION_ALREADY_REPORTED
+      || action == AZ_IOT_ADU_ERROR_ACTION_NONE)
   {
     return;
   }
 
-  az_span doc = az_span_create((uint8_t*)(uintptr_t)twin_payload, (int32_t)twin_payload_len);
-  az_json_reader jr;
-  if (az_result_failed(az_json_reader_init(&jr, doc, NULL)))
+  switch (operation)
   {
-    return;
-  }
-  if (az_result_failed(az_json_reader_next_token(&jr)))
-  {
-    return;
-  }
-  if (jr.token.kind != AZ_JSON_TOKEN_BEGIN_OBJECT)
-  {
-    return;
-  }
-
-  while (az_result_succeeded(az_json_reader_next_token(&jr)))
-  {
-    if (jr.token.kind == AZ_JSON_TOKEN_END_OBJECT)
-    {
+    case AZ_IOT_ADU_OP_REPORT_STATUS:
+      ADU_I(client).device_props_report_pending = true;
       break;
-    }
-    if (jr.token.kind != AZ_JSON_TOKEN_PROPERTY_NAME)
-    {
-      return;
-    }
+    case AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE:
+    case AZ_IOT_ADU_OP_GET_UPDATE:
+      /* Re-arm the route that failed, not a default: the application asked for
+       * this one and a retry on the other would query the wrong thing.
+       *
+       * Unless it already asked for something newer. This verdict belongs to a
+       * request the channel accepted earlier, so the application has had time
+       * to queue another one in between; overwriting it here would silently
+       * discard the newer request and retry a route nobody currently wants.
+       * The newest request wins, which is what a second call to either request
+       * function does as well. */
+      if (ADU_I(client).pending_fetch == ADU_FETCH_NONE)
+      {
+        ADU_I(client).pending_fetch = (operation == AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE)
+            ? ADU_FETCH_ONBOARDING
+            : ADU_FETCH_REGULAR;
+      }
+      break;
+  }
+}
 
-    bool is_desired = az_json_token_is_text_equal(&jr.token, AZ_SPAN_FROM_STR("desired"));
-    if (az_result_failed(az_json_reader_next_token(&jr)))
-    {
-      return;
-    }
-    if (is_desired)
-    {
-      if (jr.token.kind != AZ_JSON_TOKEN_BEGIN_OBJECT)
-      {
-        return;
-      }
-      /* Capture the raw object text from its '{' to the matching '}'. The
-       * token slice points into the source buffer, so start/end bracket
-       * the whole sub-object. */
-      uint8_t* start = az_span_ptr(jr.token.slice);
-      if (az_result_failed(az_json_reader_skip_children(&jr)))
-      {
-        return;
-      }
-      uint8_t* end = az_span_ptr(jr.token.slice) + az_span_size(jr.token.slice);
-      if (end <= start)
-      {
-        return;
-      }
-      process_desired_patch(client, start, (size_t)(end - start));
-      return;
-    }
-    if (az_result_failed(az_json_reader_skip_children(&jr)))
-    {
-      return;
-    }
+/* Ask the channel to check for an update on `operation`. Returns the channel's
+ * result so the caller can leave pending_fetch set and retry on a later tick. */
+static az_iot_result channel_request_update(
+    az_iot_adu_client_t* client,
+    az_iot_adu_operation operation)
+{
+  if (ADU_I(client).channel.vtable == NULL || ADU_I(client).channel.vtable->request_update == NULL)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  return ADU_I(client).channel.vtable->request_update(ADU_I(client).channel.ctx, operation);
+}
+
+/* Issue whatever fetch is pending. No-op when nothing was requested.
+ *
+ * The slot is cleared BEFORE the channel is called, not after. A synchronous
+ * channel is allowed to deliver its verdict from inside request_update(), and
+ * that verdict re-arms the slot; clearing afterwards would wipe the re-armed
+ * retry. Clearing first also means the re-arm logic sees an empty slot, which
+ * is what tells it this is its own request rather than a newer one.
+ *
+ * On rejection the request is put back -- unless something already refilled the
+ * slot while the channel had control, because that value is newer. A channel
+ * that honours the contract cannot hit that case (the verdict callback fires
+ * only for an ACCEPTED operation), so the check is defensive: it keeps a
+ * misbehaving channel from turning a fresh request into a stale retry. */
+static void drive_pending_fetch(az_iot_adu_client_t* client)
+{
+  uint8_t requested = ADU_I(client).pending_fetch;
+  if (requested == ADU_FETCH_NONE)
+  {
+    return;
+  }
+  az_iot_adu_operation operation = (requested == ADU_FETCH_ONBOARDING)
+      ? AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE
+      : AZ_IOT_ADU_OP_GET_UPDATE;
+
+  ADU_I(client).pending_fetch = ADU_FETCH_NONE;
+  if (channel_request_update(client, operation) != AZ_IOT_OK
+      && ADU_I(client).pending_fetch == ADU_FETCH_NONE)
+  {
+    ADU_I(client).pending_fetch = requested;
   }
 }
 
@@ -1250,14 +1330,23 @@ az_iot_adu_client_config_options az_iot_adu_client_config_options_default(void)
   return opts;
 }
 
-az_iot_result az_iot_adu_client_initialize(
+/* Core initialization. Assumes the caller has ALREADY zeroed the client: the
+ * public path builds its channel into storage inside that client, so a memset
+ * here would wipe it. */
+static az_iot_result adu_client_init_core(
     az_iot_adu_client_t* client,
-    az_iot_twin_client* twin,
+    const az_iot_adu_channel* channel,
     const az_iot_adu_client_config_options* options)
 {
-  if (client == NULL || twin == NULL || options == NULL || options->hooks == NULL
-      || options->crypto == NULL || options->device_props == NULL
+  if (client == NULL || channel == NULL || channel->vtable == NULL || options == NULL
+      || options->hooks == NULL || options->crypto == NULL || options->device_props == NULL
       || options->device_props_buffer == NULL)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  /* open/close/request_update/report are required; do_work is optional. */
+  if (channel->vtable->open == NULL || channel->vtable->close == NULL
+      || channel->vtable->request_update == NULL || channel->vtable->report == NULL)
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
@@ -1266,8 +1355,8 @@ az_iot_result az_iot_adu_client_initialize(
     return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
   }
 
-  memset(client, 0, sizeof(*client));
-  ADU_I(client).twin = twin;
+  ADU_I(client).channel.vtable = channel->vtable;
+  ADU_I(client).channel.ctx = channel->ctx;
   ADU_I(client).hooks = *options->hooks;
   ADU_I(client).crypto = *options->crypto;
   ADU_I(client).device_props_buffer = options->device_props_buffer;
@@ -1296,7 +1385,7 @@ az_iot_result az_iot_adu_client_initialize(
     return r;
   }
 
-  r = az_iot_twin_client__subscribe_desired(twin, on_desired, client);
+  r = channel->vtable->open(channel->ctx, on_channel_update, on_channel_result, client);
   if (r != AZ_IOT_OK)
   {
     memset(client, 0, sizeof(*client));
@@ -1305,10 +1394,61 @@ az_iot_result az_iot_adu_client_initialize(
 
   /* Report the initial Idle agent state + installed update id on startup. */
   ADU_I(client).device_props_report_pending = true;
-  /* And proactively pull the twin so a deployment that arrived while we were
-   * offline (no fresh desired push) is still picked up. */
-  ADU_I(client).initial_get_pending = true;
+  /* No update check is issued here. Only the application knows which route it
+   * needs -- onboarding before it has a device record, regular after -- so it
+   * asks, with az_iot_adu_client_request_onboarding_update() or
+   * az_iot_adu_client_request_update(). */
+  ADU_I(client).pending_fetch = ADU_FETCH_NONE;
   return AZ_IOT_OK;
+}
+
+az_iot_result az_iot_adu_client__initialize_with_channel(
+    az_iot_adu_client_t* client,
+    const az_iot_adu_channel* channel,
+    const az_iot_adu_client_config_options* options)
+{
+  if (client == NULL)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  memset(client, 0, sizeof(*client));
+  return adu_client_init_core(client, channel, options);
+}
+
+az_iot_result az_iot_adu_client_initialize(
+    az_iot_adu_client_t* client,
+    az_iot_connection_client* connection,
+    const az_iot_adu_client_config_options* options)
+{
+  if (client == NULL || connection == NULL || options == NULL)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  /* The application hands us a connection, not a transport implementation: the
+   * SDK owns the device-update protocol. Build the shipping channel here.
+   *
+   * Order matters: the channel state lives INSIDE the client, so the client is
+   * zeroed first and the core initializer must not zero it again. */
+  memset(client, 0, sizeof(*client));
+
+  az_iot_adu_channel channel;
+  az_iot_adu_channel_dps* channel_state
+      = (az_iot_adu_channel_dps*)(void*)&ADU_I(client).channel_storage;
+
+  az_iot_result r
+      = az_iot_adu_channel_dps_init(channel_state, connection, options->device_props, &channel);
+  if (r != AZ_IOT_OK)
+  {
+    memset(client, 0, sizeof(*client));
+    return r;
+  }
+
+  r = adu_client_init_core(client, &channel, options);
+  if (r != AZ_IOT_OK)
+  {
+    memset(client, 0, sizeof(*client));
+  }
+  return r;
 }
 
 void az_iot_adu_client_destroy(az_iot_adu_client_t* client)
@@ -1317,12 +1457,10 @@ void az_iot_adu_client_destroy(az_iot_adu_client_t* client)
   {
     return;
   }
-  if (ADU_I(client).twin != NULL)
+  if (ADU_I(client).channel.vtable != NULL && ADU_I(client).channel.vtable->close != NULL)
   {
-    /* Best-effort unsubscribe during teardown; the result is intentionally ignored. */
-    az_iot_result rc
-        = az_iot_twin_client_unsubscribe_desired(ADU_I(client).twin, on_desired, client);
-    (void)rc;
+    /* Best-effort unbind during teardown. */
+    ADU_I(client).channel.vtable->close(ADU_I(client).channel.ctx);
   }
   memset(client, 0, sizeof(*client));
 }
@@ -1715,35 +1853,43 @@ az_iot_result az_iot_adu_client_do_work(az_iot_adu_client_t* client)
     return AZ_IOT_ERR_DETACHED;
   }
 
+  /* Give the channel its tick first. A channel with asynchronous work of its
+   * own reports lost operations here, and the engine's own pending flags are
+   * re-armed from that, so this has to run before they are read below. */
+  if (ADU_I(client).channel.vtable != NULL && ADU_I(client).channel.vtable->do_work != NULL)
+  {
+    (void)ADU_I(client).channel.vtable->do_work(ADU_I(client).channel.ctx);
+  }
+
   /* A pending device-properties / startup report takes priority. */
   if (ADU_I(client).device_props_report_pending)
   {
-    ADU_I(client).device_props_report_pending = false;
-    (void)az_iot_adu__report_state(client);
-    /* Piggyback the initial twin pull on the same startup tick so a
-     * deployment already waiting in desired properties is consumed without
-     * needing a fresh push. Clear the flag only once the GET is actually
-     * issued (the connection may not be ready yet). */
-    if (ADU_I(client).initial_get_pending
-        && az_iot_twin_client_get(ADU_I(client).twin, on_initial_twin_get, client) == AZ_IOT_OK)
+    /* Clear the flag only once the report is actually accepted. Clearing it up
+     * front drops the report on a transient channel failure with no retry,
+     * which matters because a status report is the only record the service
+     * gets of what this device did. Same retry-on-success rule as the update
+     * check below. */
+    if (az_iot_adu__report_state(client) == AZ_IOT_OK)
     {
-      ADU_I(client).initial_get_pending = false;
+      ADU_I(client).device_props_report_pending = false;
     }
+    /* Piggyback a requested update check on the same startup tick so a
+     * deployment already waiting is consumed without needing a fresh
+     * delivery. Cleared only once the request is actually issued (the channel
+     * may not be ready yet). */
+    drive_pending_fetch(client);
     return AZ_IOT_OK;
   }
 
-  /* Retry the initial twin pull if it could not be issued at startup (e.g.
-   * the connection was not ready). Self-heals across do_work iterations; does
-   * not preempt state-machine progress. */
-  if (ADU_I(client).initial_get_pending
-      && az_iot_twin_client_get(ADU_I(client).twin, on_initial_twin_get, client) == AZ_IOT_OK)
-  {
-    ADU_I(client).initial_get_pending = false;
-  }
+  /* Retry a requested update check that could not be issued earlier (e.g. the
+   * channel was not ready, or the service rejected it retryably). Self-heals
+   * across do_work iterations; does not preempt state-machine progress. */
+  drive_pending_fetch(client);
 
   /* Cancellation at a phase boundary returns immediately to Idle. */
   if (ADU_I(client).cancel_requested && ADU_I(client).state != AZ_IOT_ADU_STATE_IDLE)
   {
+    ADU_I(client).pending_outcome = AZ_IOT_ADU_OUTCOME_CANCELED;
     reset_to_idle(client);
     (void)az_iot_adu__report_state(client);
     return AZ_IOT_OK;
@@ -1782,12 +1928,15 @@ az_iot_result az_iot_adu_client_do_work(az_iot_adu_client_t* client)
         (void)az_iot_adu__report_state(client);
         break;
       }
-      /* Accept/Reject: reject (406) if already installed, else accept. */
+      /* Already installed: under ADUv1 this was a protocol-level reject (406).
+       * There is no accept/reject acknowledgement here, so it is reported as a
+       * SKIPPED outcome instead. */
       int32_t inst = (h->is_installed_fn != NULL)
           ? h->is_installed_fn(&ADU_I(client).current_manifest, h->user_ctx)
           : AZ_IOT_ADU_RESULT_SUCCESS;
       if (inst == AZ_IOT_ADU_RESULT_ALREADY_INSTALLED)
       {
+        ADU_I(client).pending_outcome = AZ_IOT_ADU_OUTCOME_SKIPPED;
         reset_to_idle(client);
         (void)az_iot_adu__report_state(client);
         break;
@@ -1987,6 +2136,26 @@ az_iot_adu_state az_iot_adu_client_get_state(const az_iot_adu_client_t* client)
   return ADU_I(client).state;
 }
 
+az_iot_result az_iot_adu_client_request_onboarding_update(az_iot_adu_client_t* client)
+{
+  if (client == NULL)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  ADU_I(client).pending_fetch = ADU_FETCH_ONBOARDING;
+  return AZ_IOT_OK;
+}
+
+az_iot_result az_iot_adu_client_request_update(az_iot_adu_client_t* client)
+{
+  if (client == NULL)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  ADU_I(client).pending_fetch = ADU_FETCH_REGULAR;
+  return AZ_IOT_OK;
+}
+
 az_iot_result az_iot_adu_client_update_device_properties(
     az_iot_adu_client_t* client,
     const az_iot_adu_device_properties* device_props)
@@ -2004,6 +2173,19 @@ az_iot_result az_iot_adu_client_update_device_properties(
   if (r != AZ_IOT_OK)
   {
     return r;
+  }
+
+  /* The channel may hold its own copy (compatibility properties, installed
+   * update id). Refresh it, or fetches keep carrying the startup identity. */
+  if (ADU_I(client).channel.vtable != NULL
+      && ADU_I(client).channel.vtable->set_device_properties != NULL)
+  {
+    r = ADU_I(client).channel.vtable->set_device_properties(
+        ADU_I(client).channel.ctx, device_props);
+    if (r != AZ_IOT_OK)
+    {
+      return r;
+    }
   }
 
   ADU_I(client).device_props_report_pending = true;

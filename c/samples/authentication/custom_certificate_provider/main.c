@@ -36,8 +36,10 @@ typedef struct
   int issued;
 } user_context;
 
-static void on_conn_state(az_iot_connection_state s, az_iot_result reason, void* user_ctx)
+static void on_conn_state(const az_iot_connection_state_event* event, void* user_ctx)
 {
+  az_iot_connection_state s = event->state;
+  az_iot_result reason = event->reason;
   (void)reason;
   ((user_context*)user_ctx)->conn_state = s;
 }
@@ -84,8 +86,7 @@ int main(void)
   }
 
   az_iot_connection_client_options copts = az_iot_connection_client_options_default();
-  copts.dps.id_scope = config.id_scope;
-  copts.dps.registration_id = config.reg_id;
+  sample_apply_dps_options(&copts, &config);
   copts.certificate_provider = &provider.base;
   AZ_IOT_CSR_PAYLOAD_STORAGE(csr_payload_buf);
   copts.csr_payload_buffer = az_span_create(csr_payload_buf, sizeof(csr_payload_buf));

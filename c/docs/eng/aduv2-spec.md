@@ -3,6 +3,8 @@
 > **Status: design summary of a DRAFT, Microsoft-internal spec** (api-version `2026-11-02-preview`).
 > Device-SDK-oriented digest of the DPS *"ADU first-time update"* design. Contract details are still
 > settling and DPS re-syncs on ADU revisions — treat field-level specifics as provisional.
+> **This is the only device-facing ADU channel the SDK will implement — ADUv1 (twin) is cut**
+> ([adu-client-plan.md](adu-client-plan.md#what-aduv1-is-cut-means)).
 > For SDK status/cost, see [adu-client-plan.md](adu-client-plan.md); for the shared engine/crypto core,
 > see [adu-client-design.md](adu-client-design.md).
 
@@ -54,11 +56,22 @@ later IoT Hub.
 The device **selects** onboarding vs regular by *which endpoint it calls* — DPS does not infer or validate the
 choice; it passes the ADR/ADU response (or error) straight through.
 
-| DPS operation (working name) | ADU route | When the device uses it |
+All three are **HTTPS POSTs on the DPS device endpoint**, under the device's own registration:
+
+```
+POST https://{dps-device-endpoint}/{idScope}/registrations/{registrationId}/{operation}?api-version=2026-11-02-preview
+```
+
+| Operation (on the wire) | Spec working name | When the device uses it |
 |---|---|---|
-| `GetOnboardingDeviceUpdate` | `POST /devices/requestOnboardingUpdates` | **Before provisioning** (not yet in ADR) — bootstrap / day-zero |
-| `GetDeviceUpdate` | `POST /devices/requestUpdates` | **Operational** (already provisioned) — interim, until Hub ships its API |
-| `ReportDeviceUpdateStatus` | `POST /devices/reportStatus` | After an install attempt (**required** so ADU can reconcile) |
+| `requestOnboardingUpdates` | `GetOnboardingDeviceUpdate` | **Before provisioning** (not yet in ADR) — bootstrap / day-zero |
+| `requestSoftwareUpdates` | `GetDeviceUpdate` | **Operational** (already provisioned) — interim, until Hub ships its API |
+| `reportUpdateStatus` | `ReportDeviceUpdateStatus` | After an install attempt (**required** so ADU can reconcile) |
+
+> **The left column is what the deployed preview answers to** — verified against a live environment
+> (see [Verified vs. drafted](#verified-vs-drafted)). The spec package uses the right-column names and
+> writes the routes as `/devices/requestUpdates` etc.; those are service-side working names, not the
+> device-facing URLs. Build against the left column.
 
 ## Architecture
 
@@ -85,13 +98,13 @@ sequenceDiagram
     participant DPS as DPS
     participant ADU as ADR to ADU
     loop until "no update"
-      Dev->>DPS: GetOnboardingDeviceUpdate (agentInfo, installedUpdateId)
+      Dev->>DPS: requestOnboardingUpdates (agentInfo, installedUpdateId)
       DPS->>ADU: proxy (externalDeviceId)
       ADU-->>DPS: serviceConfiguration [+ updateMetadata]
       DPS-->>Dev: 200 (no updateMetadata = no update)
       alt update available
         Dev->>Dev: verify signature, download fileUrls, install
-        Dev->>DPS: ReportDeviceUpdateStatus (workflowId, result)
+        Dev->>DPS: reportUpdateStatus (workflowId, result)
         DPS->>ADU: proxy report
         DPS-->>Dev: 200
       end
@@ -105,7 +118,7 @@ The device **re-checks after each successful install** and only proceeds to `Reg
 
 ### Operational (interim)
 
-An already-provisioned device polls `GetDeviceUpdate` on the same shape. This DPS-fronted operational path is a
+An already-provisioned device polls `requestSoftwareUpdates` on the same shape. This DPS-fronted operational path is a
 **time-boxed interim**; post-Ignite it moves to **IoT Hub's** own updating API (no device-contract change —
 same request/response, different gateway).
 
@@ -115,20 +128,20 @@ same request/response, different gateway).
 
 - `agentInfo` — `{ agentSdkVersion, agentProfile (opaque capability id), compatibilityProperties (1–5 KVPs) }`;
   the service combines `agentProfile` + compat props into the **device class**. Required unless a still-current
-  `agentInfoETag` is supplied (onboarding always requires it).
+  `agentInfoEtag` is supplied (onboarding always requires it).
 - `installedUpdateId` — currently installed `{ provider, name, version }`, or `null`.
-- `agentInfoETag`, `serviceConfigETag` — optional; let the service skip re-processing / omit unchanged config.
+- `agentInfoEtag`, `serviceConfigEtag` — optional; let the service skip re-processing / omit unchanged config.
 
 **Response** (`RequestUpdatesResponse`):
 
 - `serviceConfiguration.rootKeyDownloadUrl` — root-key package URL for signature verification (omitted when the
-  supplied `serviceConfigETag` still matches).
-- `serviceConfigETag`, `agentInfoETag` — always present.
+  supplied `serviceConfigEtag` still matches).
+- `serviceConfigEtag`, `agentInfoEtag` — always present.
 - `updateMetadata` — **present only when an update applies**: `{ workflowId, updateManifest (opaque JSON string),
   updateManifestSignature (JWS), fileUrls (fileId → URL) }`. **Omitted ⇒ "no update" (HTTP 200, not an error).**
 
-**Report** (`ReportStatusRequest`): `{ workflowId, installedUpdateId, lastInstallResult }` where
-`lastInstallResult` = `{ outcome ∈ IN_PROGRESS|SUCCEEDED|FAILED|CANCELED|SKIPPED, failureOrigin, resultCode,
+**Report** (`ReportStatusRequest`): `{ workflowId, installedUpdateId, installResult }` where
+`installResult` = `{ outcome ∈ IN_PROGRESS|SUCCEEDED|FAILED|CANCELED|SKIPPED, failureOrigin, resultCode,
 extendedResultCodes (comma-sep hex), resultDetails, stepResults{ step_0, step_1, … } }`. **Idempotent on
 `workflowId` alone**; a conflicting terminal for the same id ⇒ `409 REPORT_CONFLICT`.
 
@@ -137,10 +150,34 @@ extendedResultCodes (comma-sep hex), resultDetails, stepResults{ step_0, step_1,
 
 ## Auth & transport
 
-- **Auth:** reuse the existing DPS device credential. **Phase 1: X.509.** Symmetric key and TPM follow (TPM is a
-  two-phase 401-challenge, individual-only). No ADU-specific credentials.
+- **Auth:** reuse the existing DPS device credential — no ADU-specific credentials. The design phases
+  X.509 first, with symmetric key and TPM to follow (TPM is a two-phase 401-challenge, individual-only).
+  **Measured:** the deployed preview accepts a **SAS token** derived from the DPS enrollment group's
+  symmetric key — `Authorization: SharedAccessSignature sr={idScope}%2Fregistrations%2F{registrationId}&sig=…&se=…&skn=registration`
+  — so symmetric-key auth works today, ahead of the documented phasing. X.509 on this path is not yet
+  confirmed by measurement.
 - **Transport:** **Phase 1 HTTP + MQTT**; Phase 2 AMQP. (TPM works on HTTP/AMQP only, not MQTT.)
-- **api-version:** `2026-11-02-preview`.
+  **Measured:** the operations are exercised as **HTTPS REST** on the DPS device endpoint. No MQTT topic
+  binding for them has been observed yet — confirm before assuming the existing DPS MQTT session can carry them.
+- **api-version:** `2026-11-02-preview` — **confirmed deployed**; it is the value the reference
+  environment runs with.
+- **Request headers:** `Authorization` plus `x-ms-client-request-id` (a per-call GUID, for correlation).
+  The device sets no identity headers.
+
+## Verified vs. drafted
+
+Some of this document is measured against a live environment running the deployed preview; the rest is
+read off a DRAFT spec. Treat them differently.
+
+| Measured | Still drafted / unconfirmed |
+|---|---|
+| api-version `2026-11-02-preview` | X.509 on the update path; TPM; AMQP |
+| Device-facing URL shape and the three operation names | Whether an MQTT binding exists for the three operations |
+| SAS (enrollment-group symmetric key) auth | Payload caps, throttle / `Retry-After` values |
+| `agentInfo` = `{ agentSdkVersion, agentProfile, compatibilityProperties }`; `agentProfile` sent as an integer | The full `stepResults` shape on the report |
+| Response `agentInfoEtag` / `serviceConfigEtag` / `updateMetadata` (null ⇒ no update) | Root-key-package fetch and verification end to end |
+| Report `{ workflowId, installedUpdateId, installResult{ outcome, failureOrigin, resultCode, extendedResultCodes, resultDetails } }`; `resultCode` 700 = success; `failureOrigin` `AGENT_CORE` / `NOT_APPLICABLE` | The error-code table below (drawn from the spec, not exercised) |
+| No separate `syncConfiguration` call | |
 
 ## Trust model
 
@@ -160,7 +197,7 @@ Drive behavior from the machine-readable **`error.code`** (`x-ms-error-code` hea
 | No update | 200, `updateMetadata` omitted | Nothing to apply; proceed to `Register`. **Not an error.** |
 | ADU not linked | 409 `UPDATE_ACCOUNT_NOT_LINKED` | Treat as "no update service configured" (distinct from *no update*); proceed. Don't retry. |
 | Agent-info stale/unknown | 400 `OUTDATED_AGENT_INFO` / `UNKNOWN_AGENT_INFO_VERSION` | **Resend the full `agentInfo`** and retry (handle **both** codes). |
-| Service-config stale | 400 `OUTDATED_SERVICE_CONFIG` | Re-check **without** the stale `serviceConfigETag`; response returns fresh config. |
+| Service-config stale | 400 `OUTDATED_SERVICE_CONFIG` | Re-check **without** the stale `serviceConfigEtag`; response returns fresh config. |
 | Throttled | 429 + `Retry-After` | Wait `Retry-After`, then retry. |
 | Transient upstream | 503 `UPSTREAM_UNAVAILABLE` / `INTERNAL_SERVER_ERROR` | **Get:** proceed to `Register` (advisory), retry later. **Report:** retry (must not be lost). |
 | Bad request / auth / disabled | 400 / 401 / 403 | Fix request or credentials; don't retry unchanged. |
@@ -198,8 +235,9 @@ is a durable write — retry until acked; safe because ADU is idempotent on `wor
 
 ## What this means for the ADU client SDK
 
-The **verify → download → install → report engine is unchanged** from ADUv1 (shared core). New client work is the
-**transport binding + orchestration**:
+The **verify → download → install → report engine is unchanged** from ADUv1 (it becomes the
+transport-free `adu_core`), but **ADUv1's twin delivery is cut** — there is no second channel to
+keep working. New client work is the **transport binding + orchestration**:
 
 1. Call the three DPS ops over the device's **existing DPS transport/auth** (X.509, HTTP/MQTT) — no ADU endpoint,
    no mTLS, no identity headers to set.

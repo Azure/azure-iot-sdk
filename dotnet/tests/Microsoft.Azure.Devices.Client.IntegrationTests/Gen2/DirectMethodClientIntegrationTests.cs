@@ -14,7 +14,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Gen2
             string expectedDirectMethodName = "someDirectMethod-" + Guid.NewGuid().ToString();
             uint expectedResponseTimeout = 20;
 
-            Gen2DeviceTestContext testDeviceContext = await Setup.CreateConnectedGen2ConnectionClientAsync(null, TestContext.Current.CancellationToken);
+            Gen2DeviceTestContext testDeviceContext = await Setup.CreateConnectedGen2ConnectionClientAsync(null, null, TestContext.Current.CancellationToken);
             using DirectMethodClient directMethodClient = new DirectMethodClient(testDeviceContext.ConnectionClient);
 
             ServiceClient serviceClient = Setup.GetGen1IotHubServiceClient();
@@ -45,16 +45,10 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Gen2
 
                     ProbeReceivedTcs.TrySetResult(args);
 
-                    return Task.FromResult(new ProbeAck
-                    {
-                        Ready = new Ready { ReadyId = ByteString.CopyFrom(readyId) }
-                    });
+                    return Task.FromResult(DirectMethodProbeAck.Accepted());
                 }
 
-                return Task.FromResult(new ProbeAck
-                {
-                    Rejected = new Rejected { Reason =  RejectedReason.MethodNotFound }
-                });
+                return Task.FromResult(DirectMethodProbeAck.Rejected(RejectedReason.MethodNotFound));
             };
 
             TaskCompletionSource<DirectMethodRequestReceivedEventArgs> DirectMethodReceivedTcs = new();
@@ -93,7 +87,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Gen2
                 }
             };
 
-            var directMethodResponse = await serviceClient.InvokeDeviceMethodAsync(testDeviceContext.ConnectionContext.DeviceId, directMethodInvocation, TestContext.Current.CancellationToken);
+            var directMethodResponse = await serviceClient.InvokeDeviceMethodAsync(testDeviceContext.DeviceId, directMethodInvocation, TestContext.Current.CancellationToken);
 
             // The direct method probe request received by the device is validated in the callback itself, so no assertions needed here other than that the TCS completed.
             // The direct method request received by the device is validated in the callback itself, so no assertions needed here other than that the TCS completed.
@@ -118,7 +112,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Gen2
             string expectedDirectMethod2Name = "someDirectMethod-" + Guid.NewGuid().ToString();
             uint expectedResponseTimeout = 20;
 
-            Gen2DeviceTestContext testDeviceContext = await Setup.CreateConnectedGen2ConnectionClientAsync(null, TestContext.Current.CancellationToken);
+            Gen2DeviceTestContext testDeviceContext = await Setup.CreateConnectedGen2ConnectionClientAsync(null, null, TestContext.Current.CancellationToken);
             using DirectMethodClient directMethodClient = new DirectMethodClient(testDeviceContext.ConnectionClient);
 
             ServiceClient serviceClient = Setup.GetGen1IotHubServiceClient();
@@ -156,10 +150,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Gen2
                 {
                     Probe1ReceivedTcs.TrySetResult(args);
 
-                    return Task.FromResult(new ProbeAck
-                    {
-                        Rejected = new Rejected { Reason = RejectedReason.DeviceBusy }
-                    });
+                    return Task.FromResult(DirectMethodProbeAck.Rejected(RejectedReason.DeviceBusy));
                 }
                 else if (args.MethodName.Equals(expectedDirectMethod2Name) && args.ResponseTimeoutSeconds == expectedResponseTimeout)
                 {
@@ -167,16 +158,10 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Gen2
 
                     Probe2ReceivedTcs.TrySetResult(args);
                     
-                    return Task.FromResult(new ProbeAck
-                    {
-                        Ready = new Ready { ReadyId = ByteString.CopyFrom(readyId) }
-                    });
+                    return Task.FromResult(DirectMethodProbeAck.Accepted());
                 }
 
-                return Task.FromResult(new ProbeAck
-                {
-                    Rejected = new Rejected { Reason = RejectedReason.MethodNotFound }
-                });
+                return Task.FromResult(DirectMethodProbeAck.Rejected(RejectedReason.MethodNotFound));
             };
 
             TaskCompletionSource<DirectMethodRequestReceivedEventArgs> DirectMethodReceivedTcs = new();
@@ -221,7 +206,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Gen2
 
             try
             {
-                var directMethod1Response = await serviceClient.InvokeDeviceMethodAsync(testDeviceContext.ConnectionContext.DeviceId, directMethod1Invocation, TestContext.Current.CancellationToken);
+                var directMethod1Response = await serviceClient.InvokeDeviceMethodAsync(testDeviceContext.DeviceId, directMethod1Invocation, TestContext.Current.CancellationToken);
                 Assert.Fail("Expected the first direct method invocation to fail since the device rejects that invocation's probe message");
             }
             catch (Exception)
@@ -229,7 +214,7 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Gen2
                 //TODO what kind of exception will the service client see when a probe message is rejected?
             }
             
-            var directMethod2Response = await serviceClient.InvokeDeviceMethodAsync(testDeviceContext.ConnectionContext.DeviceId, directMethod2Invocation, TestContext.Current.CancellationToken);
+            var directMethod2Response = await serviceClient.InvokeDeviceMethodAsync(testDeviceContext.DeviceId, directMethod2Invocation, TestContext.Current.CancellationToken);
 
             // The direct method probe request received by the device is validated in the callback itself, so no assertions needed here other than that the TCS completed.
             // The direct method request received by the device is validated in the callback itself, so no assertions needed here other than that the TCS completed.

@@ -5,13 +5,15 @@
 
 ## Abstract
 
-Today one set of feature clients serves both hub generations. `az_iot_twin_client`,
-`az_iot_telemetry_client` and friends each branch internally on
-`profile->flavor` — 13 comparisons across the five feature clients — resolved
-through two static tables in
-[`protocol_profile.c`](../../src/core/protocol_profile.c). The result is that
+At the start of this work one set of feature clients served both hub generations,
+with 13 `profile->flavor` comparisons across five feature clients resolved
+through two static tables in `protocol_profile.c`. The result is that
 every public feature API is the union of what both generations can do, and the
 parts that only one generation supports are discoverable only at run time.
+
+Telemetry is the first completed split: the unified client is gone, its shared
+message/callback types live in `az_iot_message.h`, and the two wire paths now
+compile in separate `az_iot_gen1` and `az_iot_gen2` libraries.
 
 This document specifies splitting the **feature clients** by generation —
 `az_iot_gen1_*` for Azure IoT Hub Classic, `az_iot_gen2_*` for the Azure
@@ -38,7 +40,7 @@ az_iot_connection_client_register_mqtt_factory(&conn, az_iot_paho_factory_create
 az_iot_connection_client_open(&conn);             /* DPS runs internally       */
 
 /* open() is non-blocking, and it can end in FAULTED rather than CONNECTED.
- * Bound the wait and stop on a terminal state -- see samples/telemetry/main.c. */
+ * Bound the wait and stop on a terminal state -- see samples/telemetry_gen1/main.c. */
 for (int i = 0; i < 1200 && state != AZ_IOT_CONN_STATE_CONNECTED; ++i)
 {
   az_iot_connection_client_do_work(&conn, 50);
@@ -80,8 +82,9 @@ is to report the generation accurately and to refuse the wrong API loudly.
 | `az_iot_connection_client` + DPS + reconnect + adapter registry | **single, shared** |
 | MQTT abstraction, adapters, certificate provider, logging, results, dispatch | **single, shared** |
 | Message types (`az_iot_telemetry_message`, `az_iot_c2d_message`, …) and callback typedefs | **single, shared** — see [§5](#5-what-stays-shared) |
-| Telemetry, C2D, twin, direct methods, file upload **clients** | **split** `gen1` / `gen2` |
-| ADU | split by *channel*, see [§8](#8-device-update) |
+| Telemetry, C2D, twin, direct methods **clients** | **split** `gen1` / `gen2` |
+| File upload **client** | **`gen1` only** — cut from AEG, see [§4](#file-upload-is-gen1-only) |
+| ADU | **not split** — one engine (`adu_core`) behind a channel vtable; the twin channel is cut, see [§8](#8-device-update) |
 
 ---
 
@@ -246,6 +249,33 @@ raw ASSIGNED payload with `az_json_reader` to extract `issuedCertificateChain`
 the upstream client does not surface it. `connectionProfile` is read in the same
 walk.
 
+### Development bridge while P1a is parked
+
+P1a blocks **automatic production selection after DPS**, not implementation of
+the split. While the deployed DPS api-version omits `connectionProfile`, set:
+
+```text
+AZ_IOT_DPS_CONNECTION_PROFILE_OVERRIDE=mqttV5
+```
+
+The override is applied at the ASSIGNED-payload parser boundary and only when
+the property is absent or null. The DPS-assigned host and device id are still
+used; only the contract default (`classic`) is replaced, so the connection picks
+the MQTT v5 factory and runs the normal AEG presence handshake. Exact values are
+`classic` and `mqttV5`; anything else fails the assignment loudly.
+
+An explicit wire string always wins, even when the environment contains an
+invalid value. This makes the bridge self-disabling when the service rollout
+arrives instead of masking it. The reported `connection_profile_raw` is the
+effective profile text in the absent/null case — the contract default or the
+exact override — and remains verbatim wire text whenever DPS supplied one.
+
+This is a **development bridge, not a deployment contract**. Production devices
+must not rely on process environment to select their wire protocol, and test
+environments must remove the variable when P1a ships. It exists so P1d and
+P2–P6 can be implemented, tested against AEG, and merged while the service
+api-version remains parked.
+
 ---
 
 ## 3. Mismatch is an error, not a surprise
@@ -270,11 +300,10 @@ service actually reports, and the generation is our own derived label for it.
 Error codes should name the wire concept. The sibling code for an unrecognised
 profile is therefore `AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED`.
 
-The check requires the generation to be known, which means **feature clients must
-be initialized after the connection is open**. That is a change: today's samples
-construct feature clients before `az_iot_connection_client_open()`, and .NET
-constructs them before `ProvisionAndConnectAsync`. See
-[§9](#9-consequence-init-ordering-changes).
+The check requires the generation to be known. That does **not** force feature
+clients to be constructed after the connection is open: `_init()` records the
+generation the client needs and the connection verifies it once the profile is
+authoritative. See [§9](#9-pinning-the-generation-at-init).
 
 ---
 
@@ -290,16 +319,15 @@ on the other's API, even as a stub that returns an error.
 | Correlation-data request/response matching | gen2 |
 | Twin push on connect | gen2 |
 | Direct-method probe / ready handshake | gen2 |
-| File upload control plane over MQTT | gen2 |
 | Topic property-bag encoding | gen1 |
 | `$rid` correlation | gen1 |
 | File upload over HTTPS + the application HTTP transport hook | gen1 |
 
-This is the concrete reason the split is worth doing: today
-[`az_iot_file_upload_client.h`](../../inc/azure/iot/az_iot_file_upload_client.h)
-opens by promising "one seamless API, transport chosen by hub flavor", and then
-`az_iot_file_upload_client_get_sas_uri()` returns `AZ_IOT_ERR_NOT_SUPPORTED` at
-run time on gen2. Both generations pay for a surface neither fully implements.
+This is the concrete reason the split is worth doing: before it, the shared
+`az_iot_file_upload_client.h` opened by promising "one seamless API, transport
+chosen by hub flavor", and then `az_iot_file_upload_client_get_sas_uri()`
+returned `AZ_IOT_ERR_NOT_SUPPORTED` at run time on gen2. Both generations paid
+for a surface neither fully implemented.
 
 ### One documented exception: runtime CSR renewal
 
@@ -315,18 +343,33 @@ would cost users an extra object to construct and wire up, for no gain in
 clarity. Naming the exception is more honest than quietly widening the rule until
 it accommodates it.
 
-### File upload is redesigned, not just renamed
+### File upload is gen1-only
+
+The plan of record was to split file upload like the other four, with
+`az_iot_gen2_file_upload_client` carrying the control plane over MQTT. That is
+**not what shipped**, because the feature was cut from AEG.
 
 - **`az_iot_gen1_file_upload_client`** owns the HTTPS control plane. The
   `az_iot_file_upload_http_transport` hook, the response buffer, and the URL/body
-  size macros move out of the shared header into the gen1 header. They are a
-  Classic implementation detail and have no meaning on gen2.
-- **`az_iot_gen2_file_upload_client`** carries the control plane over the
-  existing MQTT connection and takes **no HTTP transport at all**. Its init
-  signature is smaller, which is the visible payoff.
+  size macros moved out of the shared header into the gen1 header. They are a
+  Classic implementation detail and have no meaning on gen2. The hook is now
+  **required** at `init()` rather than optional: without it the client can never
+  perform either operation, so refusing up front beats failing every later call.
+- **There is no `az_iot_gen2_file_upload_client`.** File upload is not carried on
+  the MQTT v5 hub for now, and the AEG Files message schema does not exist --
+  `implementation.md` §3.5 gives the topics and a processing model, but no
+  message definitions, where `dm.md` gives seven. Publishing a gen2 client whose
+  every entry point returned `AZ_IOT_ERR_NOT_SUPPORTED` would reintroduce
+  exactly the surface-nobody-implements problem this split exists to remove.
+  The gen1 client pins Classic instead, so an MQTT v5 connection is refused at
+  `init()` with `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH` rather than at the first
+  upload.
+- When the schema lands, a gen2 client is added beside the gen1 one. Nothing in
+  the gen1 header has to move for that to happen, which is why the hook and the
+  buffers live there rather than in a shared header.
 
-Uploading the blob bytes to Azure Storage remains the application's job on both
-generations — that never was an SDK responsibility.
+Uploading the blob bytes to Azure Storage remains the application's job -- that
+never was an SDK responsibility.
 
 ---
 
@@ -356,7 +399,7 @@ generation's `_options` argument, not in a forked message type.
 flowchart TB
     APP["Customer application"]
     G1["az_iot_gen1 -- IoT Hub Classic feature clients<br/>telemetry . c2d . twin . methods<br/>file_upload (HTTPS + app transport hook)"]
-    G2["az_iot_gen2 -- IoT/AEG Hub feature clients<br/>telemetry . c2d . twin . methods<br/>file_upload (over MQTT)"]
+    G2["az_iot_gen2 -- IoT/AEG Hub feature clients<br/>telemetry . c2d . twin . methods"]
     CONN["az_iot_connection_client -- SINGLE<br/>DPS registration . reconnect . adapter registry<br/>resolves + reports az_iot_hub_profile"]
     CORE["az_iot_core<br/>result . log . version . mqtt_iface . dispatch<br/>reconnect . span_writer . certificate_provider<br/>shared message types + shared callback typedefs"]
     ADAPT["Adapters -- paho v3.1.1 + v5 . rust v5 . cert_openssl . adu/crypto_openssl"]
@@ -420,8 +463,8 @@ carrying delivery and reporting.
 
 | Channel | Generation | Status |
 |---|---|---|
-| Twin-based (ADUv1) | gen1 | Works today; **deprecated** on arrival |
-| DPS-fronted RPC (ADUv2) | gen2 | **Declared, not implemented** |
+| Twin-based (ADUv1) | gen1 | **Cut** — the channel and its public API are being removed, not kept behind a flag |
+| DPS-fronted RPC (ADUv2) | gen2 | **The only channel that will ship** — declared, not yet implemented |
 
 > **ADUv2 is specified elsewhere; this section only states where the seam is.**
 > See [aduv2-spec.md](aduv2-spec.md) for the wire contract and
@@ -439,76 +482,119 @@ provisioning path, and for the bootstrap case it runs **before the device is
 provisioned at all**. A channel vtable that assumed "there is a connected hub
 session underneath me" would be the wrong shape.
 
-ADUv1 keeps working through the split. Dropping it is a separate decision with
-its own deprecation window, not a side effect of re-layering.
+ADUv1 is **cut** (decision of record: [connection.md §7](../connection.md#7-aduv2-onboarding-and-renewal-planned)):
+the twin channel and its public API are removed rather than carried through the split behind a
+deprecation window. That changes what the split owes ADU — the re-layer stops being a way to keep
+two channels alive and becomes the mechanism that lets the twin channel be deleted without taking
+the engine with it.
 
-**Decided: ADU is repointed in P2 and re-layered in P5.** When P2 splits the twin
-client, `az_iot_adu_client_initialize()` changes its parameter from
-`az_iot_twin_client*` to `az_iot_gen1_twin_client*`, and the five call sites
-follow. That is all P2 does to ADU: no `adu_core`, no channel vtable.
+**Ordering (was: repoint in P2, re-layer in P5).** The P2 step was to change
+`az_iot_adu_client_initialize()`'s parameter from `az_iot_twin_client*` to
+`az_iot_gen1_twin_client*` and follow the five call sites. **That step is now moot: the ADU cut
+landed first, so there is no twin pointer left to repoint and P2 does nothing to ADU.** ADU must
+not hold a cross-generation `az_iot_twin_client`: that is precisely the construct
+[§4](#4-no-cross-generation-constructs-on-the-public-surface) forbids, and it no longer does.
 
-This is a **public header break** and it is taken deliberately rather than
-avoided:
+**The re-layer had no real dependency on P4.** `src/features/adu/` referenced no
+`connection_client`, no `profile` and neither generation — its whole coupling to the split was the
+twin client. So the re-layer was schedulable at any point, and was taken early precisely to
+*remove* work from the twin PR rather than add to it. The full re-layer onto `adu_core` + the
+channel vtable, and the deletion of the twin channel, are **done**; what remains under ADU is the
+ADUv2 channel itself, which is not a rider on the twin split either. It was a **public header
+break**, taken deliberately:
 
-- The alternative — keeping a cross-generation `az_iot_twin_client` alive purely
-  so ADU can hold it — is exactly the construct
-  [§4](#4-no-cross-generation-constructs-on-the-public-surface) exists to
-  forbid, and it would keep the old type on the public surface through P3 and P4
-  for one consumer.
-- ADUv1 *is* gen1. The twin-based channel is the only one that exists, and
-  naming the type it actually requires makes the constraint visible at compile
-  time instead of at run time.
-- The break is mechanical and lands with the twin PR that causes it, so it is
-  reviewed once, in context, rather than twice.
+- ADU's only shipping channel becomes ADUv2, which hangs off the provisioning path, so keeping a
+  twin-shaped ADU API alive would preserve a surface no shipping channel uses.
+- The break is mechanical and lands with the PR that causes it, so it is reviewed once, in context.
 
-The full re-layer onto `adu_core` + the channel vtable stays at **P5**, where it
-is a refactor of ADU's internals and not a rider on the twin split.
+**Consequence for the twin split:** ADU was the only consumer of the twin desired-property
+subscriber registry in `src/`. After the cut its only callers were tests, so the twin split
+**removed it** rather than duplicating unused machinery into both generations: the internal
+`az_iot_twin_client__subscribe_desired()` entry point, the two-pool (feature-before-app) dispatch
+and its re-entrancy guard are gone. Each generation's twin client now carries a single
+`set_desired_handler()`, the same shape telemetry, C2D and direct methods already use. A future
+feature client that needs a slice of the desired patch gets a registry back when there is a real
+consumer to justify it.
 
 ---
 
-## 9. Consequence: init ordering changes
+## 9. Pinning the generation at init
 
-Because the generation is only known after registration completes, and because
-[§3](#3-mismatch-is-an-error-not-a-surprise) makes a mismatched init fail,
-feature clients must be created **after** the connection is open. Today
-[`samples/telemetry/main.c`](../../samples/telemetry/main.c) does the opposite.
+The generation is only known after registration completes, and
+[§3](#3-mismatch-is-an-error-not-a-surprise) makes a mismatch an error. The
+obvious reading of those two facts is that feature clients must be created
+**after** the connection is open. That was the original decision, and it was
+wrong — it cost more than it bought.
 
-This is a real ergonomic cost and it is worth stating plainly rather than
-discovering it in review: a feature client can no longer be a long-lived
-member constructed alongside the connection at start-up. Applications that
-subscribe to inbound traffic must register handlers after `CONNECTED`.
+**Decided: `_init()` pins the generation; the connection checks it at connect.**
+`_init()` records the generation the client requires and does not query the service,
+so it needs no live connection and a feature client can once again be a long-lived
+member constructed alongside the connection at start-up. The connection verifies
+every pin at the one moment the profile becomes authoritative — at connect, after
+DPS assignment, before the broker CONNECT and before `CONNECTED` is announced.
+When the profile is *already* authoritative (a direct connect, or a DPS
+connection past assignment) `_init()` validates immediately instead of deferring,
+so initializing after `CONNECTED` still works and still fails fast.
 
-**Decided: the profile is checked at init, and only at init.** Every feature
-client validates the connection's profile in its `_init()` and no individual
-send/receive/subscribe call re-checks it. Two reasons:
+The reasons the earlier decision gave for checking at init still hold, and the
+pin satisfies both:
 
-- **A per-call check buys nothing the init check has not already bought.** The
-  profile cannot change without a reconnect, and a reconnect that changes it
-  invalidates the client wholesale — a single call returning "mismatch" would be
-  a worse diagnostic than the rebuild the application already owes
-  ([the profile can change while the device is running](#the-profile-can-change-while-the-device-is-running)),
-  and it would put a branch on every hot path to say so.
-- **It has to be the init check anyway, because not every client has a
-  subscription to reject.** It is tempting to let the wrong-generation topic
-  filter fail and treat that as the diagnostic, and for twin, C2D and direct
-  methods it would work. Telemetry registers no persistent subscription at all —
-  it only publishes — so nothing on its path would ever fail against a
-  wrong-generation connection. It must be rejected at `_init()` on the profile
-  alone, and having one client work differently from the other three is not
-  worth the saving.
+- **A per-call check buys nothing.** The profile cannot change without a
+  reconnect, and a reconnect that changes it invalidates the client wholesale
+  ([the profile can change while the device is running](#the-profile-can-change-while-the-device-is-running)).
+  The pin keeps the check off every hot path. It also makes a per-call check
+  redundant: a connection can never reach `CONNECTED` carrying a pin it does not
+  satisfy, so a send on a mismatched connection already fails as not connected.
+- **Not every client has a subscription to reject.** Telemetry registers no
+  persistent subscription — it only publishes — so nothing on its path would ever
+  fail against a wrong-generation connection. A connection-level pin covers it
+  exactly like the other three.
 
-Init-time checking is therefore necessary and sufficient at start-up, and by
-construction says nothing about a profile that changes later — which is the next
-subsection.
+What checking at init cost, and pinning recovers:
+
+- **`CONNECTED` stops meaning "ready".** If no feature client can exist before
+  the first connect, the persistent-subscription registry is empty when the
+  connection comes up, so the gate has nothing to hold `CONNECTED` for. The
+  application is told it is connected and *then* the SUBSCRIBEs go out — while on
+  every reconnect the registry is populated and `CONNECTED` is correctly withheld
+  until the SUBACKs land. Two different meanings for one state.
+- **A refused subscription arrives too late to be honest about.** On the first
+  connect the refusal lands after `CONNECTED` was announced, so "a refused
+  subscription takes the session down" degrades to "the session came up and then
+  died". The conformance tests for this assert that `CONNECTED` is *never*
+  announced; under init-time checking that assertion is not expressible.
+- **Init runs inside the connection state callback**, which is where an
+  application would have to call back into the connection to register its
+  subscriptions.
+
+**Topics are built at connect, not at init.** A feature client cannot build
+`devices/{device_id}/...` or `ih/{device_id}/...` when it is constructed: on a
+DPS connection the assigned device id is not authoritative until ASSIGNED, and an
+enrollment may return a device id that differs from the registration id. Feature
+clients therefore register a bind callback that the connection runs before each
+connect attempt, after withdrawing that owner's previous subscriptions and
+inbound handlers. Registration is idempotent by construction, and a device id or
+generation that changed during re-provisioning cannot strand a filter the new hub
+would refuse.
 
 ### The profile can change while the device is running
 
-This is not hypothetical, and it is the reason init-time checking alone is not
-enough. A service admin can move a device to another hub, and that hub may be a
-new AEG/IoT hub. Nobody forces the client to disconnect — but the **previous hub**
-may drop it, and the ordinary reconnect path re-runs provisioning, at which point
-the device discovers it has been assigned somewhere else, possibly with a
-different profile.
+This is not hypothetical. A service admin can move a device to another hub, and
+that hub may be a new AEG/IoT hub. Nobody forces the client to disconnect — but
+the **previous hub** may drop it, and the device can come back assigned somewhere
+else, possibly with a different profile.
+
+An ordinary reconnect does **not** discover this: it reuses the cached assignment
+and credential without a DPS round trip. Only two things send the device back to
+DPS, and both are deliberate:
+
+- a CONNACK that **rejects the identity** — the credential cannot work, so
+  retrying it is pointless; and
+- **`dps.max_hub_connect_attempts_before_reprovision`** consecutive failed hub
+  attempts (default 50, about 23 minutes under the default backoff). A hub
+  vacated service-side may simply stop answering rather than rejecting anything,
+  and without this bound the device would retry a dead assignment until the
+  reconnection policy gave up, never asking DPS where it now lives.
 
 ```mermaid
 sequenceDiagram
@@ -520,31 +606,39 @@ sequenceDiagram
     participant New as Newly assigned hub
 
     Note over App,Old: Steady state - profile = classic, app holds gen1 feature clients
-    App->>Conn: az_iot_gen1_twin_client_init(...)
+    App->>Conn: az_iot_gen1_twin_client_init(...) - pins CLASSIC
 
     Note over Old: Admin reassigns the device service-side (no forced disconnect)
     Old--xConn: transport drop
-    Conn->>Conn: RECONNECTING - reconnect re-runs provisioning
+    Conn->>Old: reconnect to the cached assignment
+    Note over Conn,Old: identity rejected, or the threshold of silent attempts is crossed
     Conn->>DPS: REGISTER
     DPS-->>Conn: ASSIGNED { assignedHub = New, connectionProfile = mqttV5 }
-    Conn->>New: CONNECT (MQTT v5) + presence handshake
-    New-->>Conn: birth ack
-
-    Note over App,Conn: Profile changed classic -> mqttV5.<br/>Every gen1 feature client the app holds is now stale.
-    Conn-->>App: CONNECTED (event carries profile = mqttV5)
-    App->>App: destroy gen1 clients, construct gen2 clients
+    Note over Conn: pin CLASSIC != assigned mqttV5 - stop before the broker CONNECT
+    Conn-->>App: FAULTED, reason = CONNECTION_PROFILE_MISMATCH,<br/>event carries profile = mqttV5
+    App->>App: destroy gen1 clients (releases the pin), construct gen2 clients
+    App->>Conn: open()
 ```
+
+The pinned client never publishes to a classic topic on an AEG hub, and never
+offers a filter that hub would refuse: the connection stops while it still knows
+why. The mismatch is **terminal** rather than retried — re-provisioning would
+return the same profile, so a retry cannot succeed.
 
 **What the application has to do** — and this must be unambiguous in the shipped
 documentation, because getting it wrong is silent:
 
-1. Read the profile carried by **every** transition into `CONNECTED`, not only
-   the first (see the state-event struct below).
-2. If the profile differs from the one its feature clients were built against,
-   destroy them and construct the other generation's.
+1. Handle `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH`, and read the profile the
+   event carries (see the state-event struct below).
+2. Destroy the feature clients built for the old generation — which releases the
+   pin — construct the other generation's, and `open()` again.
 3. Treat in-flight operations on the old clients as lost, consistent with
    [connection.md §5.3](../connection.md), which already records that twin
    GET/PATCH, method responses and in-flight telemetry do not survive a reconnect.
+
+An application that wants to migrate unattended can also build its feature
+clients from the profile carried by each `CONNECTED` event rather than pinning a
+generation up front; it then handles both directions with no code change.
 
 **Decided: the profile is delivered with the state change, not looked up after
 it.** The connection-state callback stops taking loose arguments and takes one
@@ -553,10 +647,11 @@ caller-readable event struct instead:
 ```c
 typedef struct
 {
-  uint32_t _internal_size;            /* stamped by AZ_IOT_CONNECTION_STATE_EVENT_INIT */
+  uint32_t _internal_size;            /* stamped by the SDK producer */
   az_iot_connection_state state;
   az_iot_result reason;
-  const az_iot_hub_profile* profile;  /* NULL unless state == CONNECTED */
+  const az_iot_hub_profile* profile;  /* set on CONNECTED, and on a
+                                       * profile-driven failure */
   /* ... to be extended ... */
 } az_iot_connection_state_event;
 
@@ -565,6 +660,11 @@ typedef void (*az_iot_connection_state_callback)(
     void* user_ctx);
 ```
 
+Unlike `az_iot_hub_profile`, this struct is not caller-allocated and has no
+initializer macro. The SDK constructs it, stamps `_internal_size`, and keeps the
+event and `profile` alive only until the synchronous callback returns. Callers
+copy values they need to retain.
+
 Three things follow, and they are the reason this shape was chosen over adding a
 distinct state, a distinct reason code, or a second callback:
 
@@ -572,9 +672,12 @@ distinct state, a distinct reason code, or a second callback:
   profile is in the argument the callback already receives, so "compare against
   the one my clients were built for" is a field comparison, not a call the
   application has to remember to make on *every* transition into `CONNECTED`.
-- **`profile` is non-NULL exactly when it is meaningful.** Outside `CONNECTED`
-  there is no resolved profile to report, and a NULL there is a stronger
-  statement than a stale copy of the last known value.
+- **`profile` is non-NULL exactly when it is meaningful.** That is `CONNECTED`,
+  and also a failure whose reason is `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH` or
+  `AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED` — the cases where the application
+  needs the assigned generation in order to rebuild. Everywhere else there is no
+  resolved profile to report, and a NULL is a stronger statement than a stale
+  copy of the last known value.
 - **It absorbs the next field without another break.** The same size-stamp
   pattern as `az_iot_hub_profile` ([§2](#shape),
   [struct_versioning.md](../struct_versioning.md)) lets the event grow — a
@@ -582,23 +685,21 @@ distinct state, a distinct reason code, or a second callback:
   signature again. Taking the break once, before there are shipped callers of
   the split API, is the point.
 
-This is a **breaking change to a public callback signature**, so it is its own
-phase ahead of P2 ([§12](#12-phases)) rather than a side effect of a feature-client
-PR. The e2e agent registers this callback, which is exactly the class of change
-that has broken `AZ_IOT_BUILD_E2E=ON` twice before; see
+This was a **breaking change to a public callback signature**, so it landed as
+its own phase ahead of P2 ([§12](#12-phases)) rather than as a side effect of a
+feature-client PR. The e2e agent registers this callback, which is exactly the
+class of change that has broken `AZ_IOT_BUILD_E2E=ON` twice before; see
 [Verification per phase](#verification-per-phase).
 
 **This overlaps a second, unimplemented design and must not fork from it.**
 [connection-state-and-error-propagation.md](connection-state-and-error-propagation.md)
-proposes replacing `set_state_callback` with a shared observer registry whose
-callback takes `(state, const az_iot_conn_status*, user_ctx)`. None of it exists
-in the tree today. P1d changes the same callback, so the two must converge:
-`az_iot_connection_state_event` is the struct that design's status argument
-should grow into — one size-stamped, extensible parameter — and the registry, if
-it is built, registers callbacks of the P1d signature. What P1d does **not** do
-is build the registry, the teardown notification or the raw-error fields; it
-takes only the argument shape, which is the part that has to be settled before
-feature clients depend on it.
+proposes replacing `set_state_callback` with a shared observer registry and rich
+failure diagnostics. P1d settled their shared boundary: one size-stamped
+`az_iot_connection_state_event` parameter. The registry, when built, registers
+callbacks of this signature, and future status fields append to this event
+rather than adding a second parameter. P1d does **not** build the registry,
+teardown notification or raw-error fields; it takes only the argument shape,
+which is the part feature clients depend on.
 
 What remains undecided is narrower: whether a call on a now-stale feature client
 fails with a distinct result or is simply undefined. Init-time
@@ -622,7 +723,7 @@ Tracked as **[AB#39350066](https://dev.azure.com/msazure/One/_workitems/edit/393
 > one: MQTT *does* preserve ordering here. A broker processes the control packets
 > of a single connection in the order it receives them, so a PUBLISH cannot
 > overtake a SUBSCRIBE that was already written to that connection. The defect is
-> that ours has not been written yet. `transition()` invokes the application
+> that ours has not been written yet. `set_state_to()` invokes the application
 > callback **synchronously**, before the re-subscribe loop runs, so a request
 > published from inside that callback reaches the wire *ahead of* its own
 > SUBSCRIBE. Ordering then works against us rather than for us.
@@ -635,6 +736,126 @@ Tracked as **[AB#39350066](https://dev.azure.com/msazure/One/_workitems/edit/393
 > The gen2 presence handshake already implements the correct shape — it waits for
 > its own SUBACK before publishing birth — it simply is not applied to feature
 > subscriptions.
+>
+> **What a refusal means, and what the gate does about it.** A refused SUBACK is a
+> legitimate, spec-defined answer rather than a malfunction: MQTT lets a broker
+> decline a filter, and on gen2 that is the topic-space grant
+> `ih/${client.authenticationName}/dev/#` doing its job. What the refusal *by
+> itself* cannot tell you is whether the cause is permanent or a passing
+> service-side fault; only the reason code separates those, and they need opposite
+> responses. It says nothing about the client certificate either — X.509 is
+> validated at CONNECT, so a revoked or unvalidatable cert fails the CONNACK as
+> `AZ_IOT_ERR_IDENTITY_REJECTED` long before any SUBACK. A refusal means an
+> already-authenticated identity asked for a filter outside what it may have.
+>
+> That leaves two causes with opposite correct responses, so the gate has to tell
+> them apart rather than pick one:
+>
+> - **Deterministic** — not authorized, topic filter invalid. Re-issuing the same
+>   filter cannot succeed, so retrying is a loop with no exit. The session fails
+>   with a terminal result; recovering needs new configuration or a device
+>   update, not another attempt.
+> - **Retryable** — quota exceeded, or an unspecified/implementation-specific
+>   error, which is how a genuine service-side fault presents. These reconnect
+>   under the existing policy and clear when the service does.
+>
+> **A refusal is a failure either way — what differs is the blast radius.** Custom
+> topics ship on gen2 ([test-coverage.md](../test-coverage.md), D-6), which makes a
+> topic filter application-supplied runtime data rather than an SDK constant, and
+> a refusal an ordinary configuration error rather than a bug. Taking a whole
+> device offline, telemetry included, because one custom subscription was declined
+> is the wrong trade. So each registry entry records the scope of its failure:
+>
+> ```c
+> typedef enum az_iot_subscription_failure_scope
+> {
+>   AZ_IOT_SUBSCRIPTION_FAILS_SESSION = 0, /* refusal ends the connection      */
+>   AZ_IOT_SUBSCRIPTION_FAILS_SELF,        /* refusal is reported to the owner */
+> } az_iot_subscription_failure_scope;
+> ```
+>
+> Both values name a *failure*, deliberately. `FAILS_SELF` does not mean the
+> subscription was optional or that the refusal is tolerated: that subscription is
+> dead, its owner is told, and the entry is dropped from the registry so a
+> reconnect cannot silently re-issue it. The only thing it does not do is take the
+> rest of the device down with it. Calling it "optional" would invite precisely the
+> reading this gate exists to prevent — that a filter can be quietly absent while
+> the session still claims to be live.
+>
+> A feature client's own filter is `FAILS_SESSION`, because that client cannot work
+> without it. The public API for registering custom topics is not part of this
+> phase — the distinction is built now because retrofitting it after the gate ships
+> would mean changing the gate's contract.
+>
+> **Scope decides the blast radius; the reason decides only what happens inside
+> it.** These are not independent axes to be combined case by case — leaving the
+> intersection unstated is how two implementations end up disagreeing about what a
+> quota-exceeded custom topic should do:
+>
+> | | `FAILS_SESSION` | `FAILS_SELF` |
+> |---|---|---|
+> | **Deterministic** (not authorized, filter invalid) | session fails terminally, no retry | reported to the owner with the reason and the raw code, entry dropped, `CONNECTED` proceeds |
+> | **Retryable** (quota exceeded, unspecified) | reconnect under the existing policy | identical to the cell above |
+>
+> A `FAILS_SELF` entry never reconnects the session, whatever the reason. Doing so
+> would contradict the scope declared for it — a filter whose failure is defined as
+> contained cannot be allowed to restart the transport — and a SUBSCRIBE is
+> one-shot, so there is no in-session retry to fall back on either. The owner is
+> told *why*, transient or not, and re-registering is its decision, through the
+> same path it used to register in the first place. That costs no new mechanism.
+>
+> **Only `FAILS_SESSION` entries gate `CONNECTED`.** `FAILS_SELF` filters are
+> issued in the same batch but are not waited on: their outcome cannot change
+> whether the session is honest about being live, so holding the transition for
+> them would only delay it. Their SUBACK is reported to the owner whenever it
+> arrives, grant or refusal.
+>
+> **The reason code must survive the adapter.** None of the above is expressible
+> unless the adapter stops flattening SUBACK codes to `AZ_IOT_ERR_MQTT`, which is
+> what both Paho paths do today. That is the same mistake
+> [how_to_byo_mqtt_client.md](../how_to_byo_mqtt_client.md) already warns about
+> for CONNACK — *"An adapter that flattens the two leaves a device unable to
+> follow a DPS hub reassignment"* — so the fix is the mechanism that already
+> exists there: a shared `az_iot_mqtt_suback_result(version, code)` beside
+> `az_iot_mqtt_connack_result()`, keeping version-specific code knowledge in the
+> SDK so every adapter, in-tree or BYO, reports one vocabulary.
+>
+> Classification alone is still lossy, so the verbatim wire code travels with it,
+> exactly as `connection_profile_raw` accompanies the parsed profile in
+> [§2](#shape): a code this SDK has never seen is handled conservatively *and*
+> still reaches a log. Granted-QoS values (`0x00`–`0x02`) map to success, which
+> settles a non-question — neither hub downgrades a grant, and this SDK never
+> requests QoS 2 — but pins it so no future adapter reads a downgrade as a
+> refusal. MQTT 3.1.1 carries no reason at all (`0x80` is its only failure code);
+> Classic's topic set is closed at compile time, so a refusal there is treated as
+> deterministic rather than retried blindly.
+>
+> **A SUBACK that never arrives.** The gate needs a deadline, because nothing else
+> bounds it: the adapter's connect timeout covers the CONNACK, the birth-ack
+> timeout covers the gen2 presence handshake, and keep-alive cannot help because
+> the link is alive. A broker that accepts the connection and simply never answers
+> the SUBSCRIBE would otherwise leave the client in `CONNECTING` indefinitely.
+>
+> The contract, stated so two implementations cannot choose differently:
+>
+> - **Duration** — `AZ_IOT_SUBSCRIPTION_ACK_TIMEOUT_MS`, default 60000, overridable
+>   at compile time like the other footprint and timeout knobs in
+>   [`az_iot_connection_client.h`](../../inc/azure/iot/az_iot_connection_client.h).
+>   It matches `AZ_IOT_PRESENCE_BIRTH_ACK_TIMEOUT_MS` because it bounds the same
+>   kind of wait, and having two different "the broker went quiet" windows on one
+>   connect path would be arbitrary.
+> - **Start** — when the gate is armed, that is, once the last SUBSCRIBE of the
+>   batch has been handed to the adapter. Not per filter: they are issued together.
+> - **Reset** — never. One deadline covers the whole batch, and an arriving SUBACK
+>   does not extend it. A per-SUBACK reset would let a broker that acks one filter
+>   just inside each window hold `CONNECTED` open indefinitely, which is the exact
+>   failure the deadline exists to bound.
+> - **Expiry** — retryable: reconnect under the policy, or fault when reconnect is
+>   disabled, the same as any other transient connect failure. It is not
+>   `AZ_IOT_ERR_SUBSCRIPTION_REFUSED`, because silence is not a refusal and the
+>   broker may well grant the filter on the next attempt.
+> - **Scope** — it covers the gated (`FAILS_SESSION`) set only, since that is all
+>   the gate waits on.
 >
 > **2. Persistent subscriptions cannot be removed.**
 > `__add_subscription_on_connect()` has no remove counterpart, and every feature
@@ -666,12 +887,11 @@ Tracked as **[AB#39350066](https://dev.azure.com/msazure/One/_workitems/edit/393
 >
 > **The fix differs by generation, and that is the point.** On gen1, removal
 > issues an MQTT UNSUBSCRIBE — Classic supports it, and Classic genuinely has
-> per-feature filters that must be withdrawn. The gen2 *end state* is that there
-> is **nothing to unsubscribe**: the presence handshake already subscribes
+> per-feature filters that must be withdrawn. gen2 feature clients have
+> **nothing to unsubscribe**: the presence handshake already subscribes
 > `ih/{device_id}/dev/#`, the whole device-bound topic space, before `CONNECTED`,
-> so once the redundant per-feature filters below are dropped, removal on gen2 is
-> a dispatch-table unregister and no MQTT operation at all.
-> This matters because on gen2 there is then only ever **one** subscription, taken
+> so their removal is a dispatch-table unregister and no MQTT operation at all.
+> This matters because on gen2 there is only ever **one feature-delivery subscription**, taken
 > out once at connect and torn down with the session — and withdrawing *that* one
 > to retire a single feature client would take the whole device's topic space with
 > it. The .NET client behaves the same way: its gen2
@@ -679,28 +899,28 @@ Tracked as **[AB#39350066](https://dev.azure.com/msazure/One/_workitems/edit/393
 > and nothing in the library ever calls `UnsubscribeAsync` — the capability
 > exists on its MQTT interface and is unused.
 >
-> **Until then, gen2 removal must still unsubscribe.** Today gen2 feature clients
-> do register per-feature filters (see the related defect below), so they are real
-> subscriptions and leaving them live until the session ends is the same slot leak
-> in a different place. The device-wide wildcard is never at risk from this: the
-> presence handshake issues it directly rather than through the
-> persistent-subscription registry, so it has no owner and a per-owner removal can
-> never select it. Withdrawing a filter underneath it does not disturb it either —
-> the wildcard keeps matching. So removal unsubscribes on both generations, and
-> becomes a no-op on gen2 for free once those filters are gone.
+> **Removal unsubscribes on both generations.** The device-wide wildcard is never
+> at risk from this: the presence handshake issues it directly rather than through
+> the persistent-subscription registry, so it has no owner and a per-owner removal
+> can never select it. Withdrawing a filter underneath it does not disturb it
+> either — the wildcard keeps matching. On gen2 this is now a registry removal in
+> practice, since no feature client registers a filter there any more; it still
+> issues the UNSUBSCRIBE for anything that is registered, which is what an
+> application custom topic will be.
 >
 > (An earlier revision justified this by saying AEG does not support UNSUBSCRIBE.
 > That is **not** supported by the AEG RFCs — `unsubscribe` does not appear
 > anywhere in them — so the claim is withdrawn. The reason above does not depend
 > on it and is checkable.)
 >
-> **Related defect, same fix.** gen2 feature clients today *also* register their
+> **Related defect, same fix — done.** gen2 feature clients also registered their
 > own filters on top of that wildcard — `dev/twin/get/response`,
 > `dev/twin/reported/response`, `dev/twin/desired`, `dev/c2d`, `dev/methods/+` —
-> every one a strict subset of `ih/{device_id}/dev/#`. So gen2 issues six
-> subscriptions where one suffices, re-issues all six on every reconnect, and
-> spends registry slots it never needed. Dropping them shrinks the removal
-> problem rather than growing it.
+> every one a strict subset of `ih/{device_id}/dev/#`. gen2 issued six
+> subscriptions where one sufficed, re-issued all six on every reconnect, and
+> spent registry slots it never needed. All five are gone; the dispatch handlers
+> that route the messages stay, because it was never the filters that did the
+> routing.
 >
 > **The wildcard genuinely covers everything, including features not yet
 > designed.** The AEG topic RFC (`gateway/rfcs/aeg/topics.md`) defines the
@@ -771,9 +991,10 @@ touches one place.
 
 The internal `az_iot_hub_protocol` enum is gone — collapsed into
 `az_iot_connection_profile`, which is now both the public profile type and the
-internal selector. `az_iot_hub_flavor` deliberately **stays** for now: it is
-internal to `protocol_profile.c` and [P4](#12-phases) deletes it along with the
-flavor tables. `az_iot_mqtt_role` keeps its DPS member.
+internal selector. `az_iot_hub_flavor` is gone too, deleted in [P4](#12-phases)
+along with the rest of `protocol_profile`. `az_iot_mqtt_role` keeps its DPS
+member, and is now the only generation selector left inside the connection
+client.
 
 ---
 
@@ -800,7 +1021,8 @@ exist today:
 - `get_hub_profile` before `CONNECTED` returns `AZ_IOT_ERR_NOT_CONNECTED`
 - an older-header caller (smaller `_internal_size`) is defaulted, not misread
 - gen1 file upload with no HTTP transport supplied fails at init
-- gen2 file upload exposes no HTTP transport at all (compile-level)
+- file upload against an MQTT v5 connection fails at init with
+  `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH` (there is no gen2 file upload client)
 
 e2e needs provisioned resources for **both** generations. `iot-sdks-e2e-fx` cannot
 provision an AEG hub today — that arrives once gen2 is deployable through the
@@ -818,12 +1040,12 @@ plus the conformance suites.
 | P0b | This document + doc reconciliation | — | |
 | P1a | Add the `azure-sdk-for-c` patch mechanism and raise the DPS api-version to `2026-11-02-preview`, for **both** consumers of that source: the FetchContent tree (`PATCH_COMMAND`) and the `c/deps/azure-sdk-for-c` submodule the ESP-IDF sample builds from | — | **Blocked on the service.** `2026-11-02-preview` is not deployed ([azure-rest-api-specs#45041](https://github.com/Azure/azure-rest-api-specs/pull/45041) is still open), and requesting it makes the DPS CONNECT fail with CONNACK rc=5. Parked until it ships. |
 | P1b | `az_iot_hub_profile` + `get_hub_profile()` + `az_iot_connection_profile` + `AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED`; parse `connectionProfile` in the existing ASSIGNED-payload walk | — | Additive, and deliberately **not** blocked on P1a: with the stock api-version `connectionProfile` never arrives, absent resolves to `classic`, and the result is exactly the hardcoded behaviour it replaces. Lands inert, activates when P1a ships. `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH` is not here — it lands in P2, with the first client that can reject a mismatch. |
-| P1c | Gate `CONNECTED` on subscriptions being SUBACKed ([AB#39366084](https://dev.azure.com/msazure/One/_workitems/edit/39366084)); tag each persistent-subscription entry with its generation and drop non-matching entries on reconnect *before* re-subscribing; add a remove path wired into every feature client's `destroy()` and into its partial-init unwind, UNSUBSCRIBE on both generations (a no-op on gen2 once its redundant filters are gone); drop the five gen2 filters already covered by `ih/{device_id}/dev/#` ([AB#39366086](https://dev.azure.com/msazure/One/_workitems/edit/39366086)) | — | Pre-existing defects, independent of the split. **P2 depends on both**: §9's rebuild pattern is unsafe without the first and impossible without the second. The generation tagging is not optional — without it the two fixes deadlock each other on a profile change. Own PR, own review. |
-| P1d | Turn the connection-state callback into the extensible `az_iot_connection_state_event` struct, carrying the resolved profile on `CONNECTED` ([§9](#the-profile-can-change-while-the-device-is-running)) | — | Breaking change to a public callback signature, so it is its own PR rather than a rider on the first feature-client split. P2's rebuild pattern reads the profile from this event. 30 registration sites across 11 samples, the unit/integration suites and the e2e agent move with it — build with `AZ_IOT_BUILD_E2E=ON`, since the agent is not compiled by default and this is the exact class of change that has broken it before. |
-| P2 | Split the feature clients, one PR each: telemetry → c2d → direct methods → twin | P1a, P1b, **P1c**, P1d | Mutually parallel. Mismatch check per client, at `_init()` only. The twin PR also repoints `az_iot_adu_client_initialize()` at `az_iot_gen1_twin_client` ([§8](#8-device-update)) — a public header break, no ADU re-layer. |
-| P3 | File upload redesign — HTTP transport becomes gen1-only | P1 | Larger than the others; own PR. |
-| P4 | Delete `protocol_profile.c`'s flavor tables and the last `profile->flavor` branches | P2, P3 | |
-| P5 | Re-layer ADU onto `adu_core` + channel vtable | P4 | ADUv2 declared only. P2 already repointed ADU at the gen1 twin client; this phase is the internal re-layer, not the retyping. |
+| P1c | Gate `CONNECTED` on subscriptions being SUBACKed ([AB#39366084](https://dev.azure.com/msazure/One/_workitems/edit/39366084)); tag each persistent-subscription entry with its generation and drop non-matching entries on reconnect *before* re-subscribing; add a remove path wired into every feature client's `destroy()` and into its partial-init unwind, UNSUBSCRIBE on both generations (a no-op on gen2 once its redundant filters are gone); drop the five gen2 filters already covered by `ih/{device_id}/dev/#` ([AB#39366086](https://dev.azure.com/msazure/One/_workitems/edit/39366086)); preserve SUBACK reason codes through the adapters behind a shared `az_iot_mqtt_suback_result()`, and tag each entry with its failure scope (`AZ_IOT_SUBSCRIPTION_FAILS_SESSION` / `_FAILS_SELF`) so a refusal ends the connection only for a feature client's own filter — terminally when the reason is deterministic — while a refused custom topic is reported to its owner and dropped ([§9](#the-profile-can-change-while-the-device-is-running)); bound the gate with a deadline | — | **Done across four PRs:** removal + generation tagging (#116), adapter reason-code preservation (#123), the gate + failure-scope policy + deadline (#124), and redundant gen2 filter removal (#128). **P2 depends on all four parts**: §9's rebuild pattern is unsafe without the gate and impossible without removal. The generation tagging is not optional — without it the first two fixes deadlock each other on a profile change. |
+| P1d | Turn the connection-state callback into the extensible `az_iot_connection_state_event` struct, carrying the resolved profile on `CONNECTED` ([§9](#the-profile-can-change-while-the-device-is-running)) | — | **Implemented.** The SDK produces and size-stamps the callback-lifetime event. `profile` is set on `CONNECTED`, and also on a profile-driven failure so the application can rebuild for the newly assigned generation. All samples, unit/integration suites and e2e agents use the new signature. |
+| P2 | Split the feature clients, one PR each: telemetry → c2d → direct methods → twin | P1b, **P1c**, P1d | **Done — all four clients split.** P1a gates automatic production selection after DPS, not implementation: the absent/null development bridge above supplies `mqttV5` for AEG testing until the api-version ships. Each client pins its generation at `_init()` and the connection checks the pin at connect ([§9](#9-pinning-the-generation-at-init)); topics are built through the connect-time bind callback. The direct-method split shipped the gen2 client as a carry-over of the pre-split behaviour and a guard against mistaking a probe for an invocation; the AEG probe / exec / abandon handshake that [§4](#4-no-cross-generation-constructs-on-the-public-surface) assigns to gen2 landed after it, and is the first place the two generations differ in protocol rather than only in topic shape. **The twin PR carried no ADU change at all:** the ADU cut landed first, so there was no `az_iot_adu_client_initialize()` to repoint and ADU no longer consumes the twin desired-property registry ([§8](#8-device-update)) — which the twin split therefore deleted. Twin is also where the gen2 bind callback stopped being cosmetic: the unified client resolved the device id inside `init()`, which cannot work for a DPS connection before assignment; gen2 now binds its three `dev/twin/...` handlers at connect like every other gen2 client. |
+| P3 | File upload redesign — HTTP transport becomes gen1-only | P1 | **Done.** Shipped smaller than planned: file upload was **cut from AEG**, so there is no gen2 client and none is manufactured. `az_iot_gen1_file_upload_client` owns the HTTPS control plane, the transport hook is now required at `init()`, and the client pins Classic — see [§4](#file-upload-is-gen1-only). This removed the last three `profile->flavor` branches in `c/src`, which is what P4 was waiting on. |
+| P4 | Delete `protocol_profile.c`'s flavor tables and the last `profile->flavor` branches | P2, P3 | **Done, and larger than scoped.** Once P2 and P3 moved every topic into the feature clients, nothing in `c/src` read *any* profile field — not just the flavor tables. `az_iot_connection_client__profile()` had no production caller left, and `mqtt_version` merely duplicated `az_iot_mqtt_required_version_for_role()`. So the whole module went rather than only the flavor half: `protocol_profile.{c,h}`, the accessor, and the `az_iot_hub_flavor` enum. The `protocol_profile_dispatch_test` suite was testing a dead table alongside live dispatch routing; it is now `dispatch_test`. |
+| P5 | Re-layer ADU onto `adu_core` + channel vtable | — | **Done, ahead of P4.** ADU referenced neither generation nor the connection client, so the stated P4 dependency was not real; taking it early removed the ADU work from the P2 twin PR. The ADUv2 channel itself is the remaining ADU work. |
 | P6 | Dual samples per feature, `check-layering.sh`, coverage floors for `gen1`/`gen2` | P2–P4 | |
 
 The connection client is **not** restructured. That is the main saving versus the
@@ -873,16 +1095,56 @@ baseline.
   rather than pretend it does not exist.
 - **The connection-state callback takes an extensible
   `az_iot_connection_state_event` struct**, carrying `state`, `reason` and the
-  resolved `profile` (NULL unless `CONNECTED`)
+  resolved `profile` (set on `CONNECTED`, and on a profile-driven failure so the
+  application can rebuild)
   ([§9](#the-profile-can-change-while-the-device-is-running)). A public
   signature break, taken once, before the split API has callers. Own phase, P1d.
-- **The profile is checked at `_init()` and nowhere else**
-  ([§9](#9-consequence-init-ordering-changes)). Telemetry has no persistent
-  subscription to reject, so the init check is the only place all four clients
-  can be treated alike.
-- **ADU is repointed at `az_iot_gen1_twin_client` in P2, and re-layered in P5**
-  ([§8](#8-device-update)). A public header break in the twin PR, rather than
-  keeping a cross-generation twin client alive for one consumer.
+- **`_init()` pins the generation; the connection checks it at connect**
+  ([§9](#9-pinning-the-generation-at-init)). Recording the requirement rather
+  than reading the connection keeps feature clients constructible before
+  `open()`, which is what lets `CONNECTED` keep meaning "subscriptions granted"
+  on the first connect as well as on reconnects. When the profile is already
+  authoritative the pin is answered at `_init()` instead of deferred. Telemetry
+  has no persistent subscription to reject, so a connection-level pin is the
+  only mechanism that covers all four clients alike. Supersedes the earlier
+  decision to check at `_init()` and nowhere else.
+- **A mismatch discovered at connect is terminal, not retried**
+  ([§9](#the-profile-can-change-while-the-device-is-running)). Re-provisioning
+  returns the same profile, so a retry cannot succeed; the application destroys
+  its feature clients, rebuilds for the profile the event carries, and reopens.
+- **Feature clients build their topics at connect, through a bind callback**
+  ([§9](#9-pinning-the-generation-at-init)). The assigned device id is not
+  authoritative until ASSIGNED and an enrollment may override it, so a topic
+  built at `_init()` can be wrong — and a wrong feature filter is fatal to the
+  session.
+- **Re-provisioning is bounded, not only identity-triggered.**
+  `dps.max_hub_connect_attempts_before_reprovision` (default 50) sends a device
+  back to DPS after that many consecutive failed hub attempts, because a hub
+  vacated service-side may stop answering rather than rejecting the identity.
+- **ADU is not repointed at a twin client at all; it was re-layered in P5**
+  ([§8](#8-device-update)). The plan of record was a public header break in the
+  twin PR, repointing `az_iot_adu_client_initialize()` at
+  `az_iot_gen1_twin_client`. The ADU cut landing first made that moot, and the
+  twin PR touched no ADU code.
+- **P1a gates automatic production selection after DPS, not implementation of
+  P1d or P2–P6.** While its service api-version is parked, an absent/null
+  assignment can be supplied by the development-only
+  `AZ_IOT_DPS_CONNECTION_PROFILE_OVERRIDE`; explicit wire data always wins.
+- **A refused subscription always fails; its *scope* decides whether the
+  connection dies with it**
+  ([§9](#the-profile-can-change-while-the-device-is-running)). Entries are tagged
+  `AZ_IOT_SUBSCRIPTION_FAILS_SESSION` or `_FAILS_SELF`; both report the failure,
+  and neither treats a subscription as optional. Custom topics make refusal an
+  ordinary application error on gen2, so one declined custom filter must not take
+  a device offline — while a feature client's own filter is fatal to the session,
+  because that client cannot work without it.
+- **No layer swallows a result code an upper layer needs to act on.** Adapters
+  report SUBACK codes through `az_iot_mqtt_suback_result()` and CONNACK codes
+  through the existing `az_iot_mqtt_connack_result()`, and both carry the verbatim
+  wire code alongside the classification, for the same reason
+  `connection_profile_raw` exists. The classification is a decision; the raw code
+  is the evidence for it, and discarding it leaves the SDK unable to say anything
+  useful about a value it does not yet know.
 
 ## 14. Open questions
 
@@ -908,3 +1170,30 @@ baseline.
 - 08/25/2026: Record three decisions taken in review: the connection-state event
   struct (new phase P1d), init-only profile checking, and ADU repointed at the
   gen1 twin client in P2.
+- 08/26/2026: Scope the rest of P1c — per-entry failure scope, SUBACK and CONNACK
+  reason codes preserved through the adapters, deterministic refusals terminal,
+  and a deadline on the gate.
+- 09/02/2026: Add the absent/null development profile bridge so P1a remains a
+  production activation gate without blocking P1d and P2–P6 implementation.
+- 09/02/2026: Record the telemetry client split into separate gen1/gen2
+  libraries, with shared message and callback types retained in core.
+- 09/11/2026: Record the twin split, which completes P2. Two decisions taken
+  with it: the desired-property subscriber registry is **removed** rather than
+  duplicated into both generations (its only consumer, ADU, was re-layered off
+  the twin channel in P5), leaving a single `set_desired_handler()`; and the
+  gen2 client moves its topic construction into the connect-time bind callback,
+  fixing a latent defect where the unified client read the assigned device id
+  inside `init()` — before DPS could have supplied one.
+- 09/11/2026: Naming, taken in review on the twin PR and intended to spread to
+  the other clients: the teardown entry point is `_deinit()`, not `_destroy()`,
+  because it releases registrations on a caller-allocated struct rather than
+  freeing an SDK-allocated object. The reported-properties callback is
+  `az_iot_twin_patch_complete_callback`, not `..._ack_callback`: it reports
+  failures too, and on MQTT v5 "ack" would collide with the QoS 1 PUBACK, which
+  is a different event arriving at a different time.
+- 09/11/2026: **File upload is cut from AEG**, so P3 ships gen1-only and P4 is
+  unblocked. No `az_iot_gen2_file_upload_client` is manufactured: the AEG Files
+  message schema does not exist, and a client whose every entry point returned
+  `AZ_IOT_ERR_NOT_SUPPORTED` is the surface-nobody-implements problem this
+  separation exists to remove. The gen1 client pins Classic and now requires the
+  HTTP transport hook at `init()`.

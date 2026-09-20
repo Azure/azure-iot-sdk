@@ -8,7 +8,7 @@ device update (ADU).
 
 This document owns the *behaviour*. It deliberately names no types, functions or files: each client
 maps the concepts onto its own idioms, and those mappings are collected in
-[§10](#10-language-mapping).
+[§11](#11-language-mapping).
 
 Related documents:
 
@@ -58,9 +58,14 @@ stateDiagram-v2
     RECONNECTING --> FAULTED: attempts exhausted
     RECONNECTING --> IDLE: close()
     DISCONNECTING --> IDLE: transport closed
-    FAULTED --> CONNECTING: open()
+    FAULTED --> IDLE: close()
     IDLE --> [*]: destroy()
 ```
+
+`FAULTED` is settled, not a dead end. The SDK never leaves it on its own — no internal retry runs
+from there — but `close()` is legal from it and returns the client to `IDLE`, from which `open()`
+starts a fresh attempt with the configuration and the attached feature clients intact. `open()`
+itself remains `IDLE`-only.
 
 When DPS is configured the whole provisioning exchange happens **inside** the `CONNECTING` state, so
 the application never sees an intermediate `CONNECTED` for the DPS session. DPS progress is tracked
@@ -138,16 +143,22 @@ sequenceDiagram
         Hub-->>Conn: birth-ack on ih/{device_id}/dev/presence (nonce echoed)
     end
 
-    Conn->>Hub: re-SUBSCRIBE persistent feature filters (twin, methods, C2D, credentials, update channel)
+    opt persistent filters exist for this role
+      Conn->>Hub: re-SUBSCRIBE persistent filters
+      Hub-->>Conn: SUBACK each required filter
+    end
     Conn->>Conn: state = CONNECTED
     Conn-->>App: state callback(CONNECTED)
 ```
 
 Key ordering guarantees that every client must honour:
 
-1. `CONNECTED` is announced **after** the birth handshake (gen2) and **after** persistent
-   subscriptions have been re-issued, so a feature client never observes `CONNECTED` while its topic
-   filters are missing.
+1. `CONNECTED` is announced **after** the birth handshake (gen2) and **after** every required
+  persistent subscription has been SUBACKed, so a feature client never observes `CONNECTED` while
+  its topic filters are missing. gen2 feature delivery uses the single
+  `ih/{device_id}/dev/#` presence wildcard; Classic feature filters and application custom topics
+  use the persistent-subscription registry.
+
 2. The DPS session is fully torn down before the hub session is created — they are never concurrent,
    and DPS always uses MQTT 3.1.1 even when the hub session uses v5.
 3. The operational certificate is preferred over the bootstrap certificate on every connect attempt,
@@ -158,6 +169,34 @@ Key ordering guarantees that every client must honour:
    anyway. See [§7](#7-device-update-onboarding-and-renewal).
 5. The DPS assignment is the single delivery point for everything the device learns about its
    placement: hub, device id, connection profile and issued certificate chain.
+
+### 3.1 Egress: transport and proxy
+
+Both connects above — the DPS bootstrap connect and the hub connect — use the same egress
+configuration, because a device that needs a proxy or WebSockets to reach the hub needs them to
+reach DPS first.
+
+| Option | Effect |
+| --- | --- |
+| `transport` | `TCP` (default) or `WEBSOCKET`. WebSockets carries MQTT inside a WebSocket on 443, for a network that passes only HTTP(S) ports. |
+| `websocket_path` | Defaults to `/$iothub/websocket`, which is what the hub and DPS expect. |
+| `proxy` | Host, port and optional Basic credentials of an HTTP proxy. The connection is made with HTTP `CONNECT`, for both transports. |
+| `port` | `0` derives the port from the transport: 8883 for TCP, 443 for WebSockets. An explicit value always wins. |
+
+Two rules:
+
+- **The proxy is a transport detail only.** TLS is negotiated with the broker *inside* the tunnel,
+  so the proxy sees ciphertext, and chain and hostname validation are unchanged. The MQTT session,
+  the identity and the reconnection policy are all unaffected.
+- **A transport implementation that cannot honour the request must refuse it** with a distinct
+  unsupported error.
+  Connecting directly when a proxy was configured would bypass the egress control the caller
+  selected, and connecting over TCP when WebSockets were selected would be blocked by the firewall
+  the caller was working around; either would fail later and for the wrong reason.
+
+- **A transport implementation may have its own environment-driven fallback.** Where one does,
+  leaving the proxy setting unset can silently pick up an ambient proxy from the environment.
+  Set it explicitly to be independent of that.
 
 ---
 
@@ -298,7 +337,7 @@ as terminal, retryable, contained or benign, and is the authority for which is w
 
 | Item | Preserved | Behaviour |
 | --- | --- | --- |
-| Persistent subscriptions | Yes | Re-issued on reconnect. Intended to complete before `CONNECTED` is announced; see the caveat in [§3](#3-full-connect-sequence). |
+| Persistent subscriptions | Yes | Re-issued on reconnect. Every required filter must be SUBACKed before `CONNECTED`; a missing SUBACK expires on the configured deadline and retries as a transient failure. |
 | Assigned hub host / device id | Yes | Cached after the first DPS assignment. |
 | Connection profile | Yes | Re-resolved from the new assignment; a change invalidates held feature clients (open question, [§4](#4-connection-profile-selection)). |
 | Operational certificate | Yes | Owned by the certificate provider, reloaded on each attempt. |
@@ -375,11 +414,15 @@ to, reusing the credential it already has; the gateway is an authenticated pass-
 never talks to the update service directly, needs no update-specific credential, and there is no twin,
 no subscription and no unsolicited offer.
 
-| Phase | Gateway | Operation (working name) |
-| --- | --- | --- |
-| First-time / bootstrap (**before** provisioning) | DPS | `GetOnboardingDeviceUpdate` |
-| Regular / operational (**after** provisioning) | DPS *(interim)*, IoT Hub *(later)* | `GetDeviceUpdate` |
-| Reporting, either phase | same gateway as the fetch | `ReportDeviceUpdateStatus` |
+| Phase | Gateway | Operation (on the wire) | Spec working name |
+| --- | --- | --- | --- |
+| First-time / bootstrap (**before** provisioning) | DPS | `requestOnboardingUpdates` | `GetOnboardingDeviceUpdate` |
+| Regular / operational (**after** provisioning) | DPS *(Ignite '26 interim)*, IoT Hub *(post-Ignite)* | `requestSoftwareUpdates` | `GetDeviceUpdate` |
+| Reporting, either phase | same gateway as the fetch | `reportUpdateStatus` | `ReportDeviceUpdateStatus` |
+
+All three are POSTs under the device's own registration on the gateway's device endpoint; see
+[eng/aduv2-spec.md](eng/aduv2-spec.md) for the exact URL, headers and payloads, and for which parts
+of the contract are measured rather than drafted.
 
 The device selects onboarding vs regular **by which operation it calls**; the gateway does not infer
 or validate the choice.
@@ -407,11 +450,11 @@ sequenceDiagram
     participant Hub
 
     loop until "no update" or an advisory failure
-        ADU->>DPS: GetOnboardingDeviceUpdate (agent info, installed update id, ETags)
+        ADU->>DPS: requestOnboardingUpdates (agentInfo, installedUpdateId, ETags)
         alt update available
-            DPS-->>ADU: service configuration + update metadata (workflow id, manifest, signature, file URLs)
-            ADU->>ADU: verify signature, download files, install (reboot if required)
-            ADU->>DPS: ReportDeviceUpdateStatus (workflow id, installed update id, last install result)
+            DPS-->>ADU: serviceConfiguration + updateMetadata (workflowId, manifest, signature, fileUrls)
+            ADU->>ADU: verify signature, download fileUrls, install (reboot if required)
+            ADU->>DPS: reportUpdateStatus (workflowId, installedUpdateId, installResult)
         else no update
             DPS-->>ADU: 200 with update metadata omitted
         end
@@ -449,17 +492,17 @@ sequenceDiagram
     ADU->>Store: load state
     Store-->>ADU: installed update id, ETags, unsent report
     opt report pending from a previous session
-        ADU->>GW: ReportDeviceUpdateStatus (workflow id, last install result)
+        ADU->>GW: reportUpdateStatus (workflowId, installResult)
     end
 
     loop poll at the agent's own cadence
-        ADU->>GW: GetDeviceUpdate (agent info, installed update id, ETags)
-        Note over GW: the service derives the device class from the agent profile + compatibility properties
+        ADU->>GW: requestSoftwareUpdates (agentInfo, installedUpdateId, ETags)
+        Note over GW: ADU derives the device class from agentProfile + compatibilityProperties
         alt update available
             GW-->>ADU: service configuration + update metadata (workflow id, manifest, signature, file URLs)
             ADU->>ADU: verify, download, backup, install, apply
-            ADU->>Store: persist state
-            ADU->>GW: ReportDeviceUpdateStatus (workflow id, installed update id, last install result)
+            ADU->>Store: persist_state()
+            ADU->>GW: reportUpdateStatus (workflowId, installedUpdateId, installResult)
         else no update
             GW-->>ADU: 200 with update metadata omitted
         end
@@ -471,8 +514,9 @@ sequenceDiagram
     ADU->>GW: retry the report until acked, then resume polling
 ```
 
-The last install result carries the terminal outcome, its failure origin, the list of extended result
-codes and a per-step result map — see [eng/aduv2-spec.md](eng/aduv2-spec.md) for the field-level shape.
+`installResult` carries the terminal outcome, its failure origin, the hex `extendedResultCodes`
+list and a per-step `stepResults` map — see [eng/aduv2-spec.md](eng/aduv2-spec.md) for the field-level
+shape.
 
 ### 7.3 Rules every client must implement
 
@@ -481,12 +525,12 @@ codes and a per-step result map — see [eng/aduv2-spec.md](eng/aduv2-spec.md) f
 - **The workflow id is the correlation key.** It arrives in the update metadata and is echoed on the
   report. Reporting is **idempotent on the workflow id alone**; a conflicting terminal result for the
   same id is rejected as a conflict.
-- **The device is the sole retrier.** The gateway fails fast with one attempt per hop. The agent honours
-  `Retry-After` on throttling and retries the status report until it is acked — a report is a durable
-  write and must not be lost.
-- **Drive behaviour from the machine-readable error code, never the HTTP status.** A stale agent-info
-  ETag means resend the full agent info; a stale service-config ETag means re-ask without it; an
-  unlinked update account means "no update service configured", which is not a failure.
+- **The device is the sole retrier.** The gateway fails fast with one attempt per hop. The agent
+  honours `Retry-After` on throttling and retries `reportUpdateStatus` until it is acked — a
+  report is a durable write and must not be lost.
+- **Drive behaviour from the machine-readable error code, never the HTTP status.** A stale
+  `agentInfoEtag` means resend the full `agentInfo`; a stale `serviceConfigEtag` means re-ask without
+  it; an unlinked update account means "no update service configured", which is not a failure.
 - **"No update" is a success.** It is a 200 with the update metadata omitted, not an error.
 - **Update never drives the connection.** It does not open, close, or force a reconnect. It does
   sequence ahead of the *first* `open()`, via the advisory bootstrap check in
@@ -509,7 +553,7 @@ are deferred effects — they do not happen inline.
 
 ```mermaid
 flowchart TB
-    BOOT["Agent boot"] --> BCHK["Bootstrap update check<br/>GetOnboardingDeviceUpdate via DPS"]
+    BOOT["Agent boot"] --> BCHK["ADUv2 bootstrap check<br/>requestOnboardingUpdates via DPS"]
     BCHK -->|"update available"| BINST["Verify, download, install,<br/>report, re-check"]
     BINST --> BCHK
     BCHK -->|"no update, or advisory failure"| IDLE["IDLE"]
@@ -538,7 +582,7 @@ flowchart TB
 
     CONNECTED --> CRENEW["Cert renewal:<br/>CSR over the hub, 202 then 200"]
     CRENEW -.->|"new chain used on<br/>the next connect"| CRED
-    CONNECTED --> ARENEW["Operational update check:<br/>poll GetDeviceUpdate,<br/>ReportDeviceUpdateStatus"]
+    CONNECTED --> ARENEW["ADUv2 operational check:<br/>poll requestSoftwareUpdates,<br/>reportUpdateStatus"]
 
     CONNECTED -->|"close()"| DISC["DISCONNECTING"] --> IDLE
     CONNECTED --> DROP{"drop or error"}
@@ -554,8 +598,8 @@ Reading it as four overlapping concerns:
 
 | Concern | Onboarding (DPS gateway, onboarding auth) | Renewal (post-`CONNECTED`, operational auth) |
 | --- | --- | --- |
-| **Certificates** | CSR in the registration, issued chain in the assignment | CSR over the hub; the new chain applies on the next connect |
-| **Device update** | `GetOnboardingDeviceUpdate` loop **before** registration, advisory | Polled `GetDeviceUpdate` / `ReportDeviceUpdateStatus` (DPS in preview, Hub afterwards) |
+| **Certificates** | CSR in the registration, issued chain in the assignment | CSR over the hub; new chain applies on the next connect |
+| **Device update** | `requestOnboardingUpdates` loop **before** registration, advisory | Polled `requestSoftwareUpdates` / `reportUpdateStatus` (DPS in preview, Hub afterwards) |
 | **Connection profile** | Declared in the assignment; selects MQTT version and generation | Re-resolved on every reconnect that goes through DPS |
 | **Connection** | DPS phases inside `CONNECTING` | Backoff-driven reconnect replays the whole path |
 
@@ -915,7 +959,87 @@ not silent are the ones worth having.
 
 ---
 
-## 10. Language mapping
+## 10. Connection topology
+
+What a device is allowed to connect to, and what has to be true for that set to change.
+
+### 10.1 Provisioning is the advertised path
+
+**The device connects through DPS.** It learns its hub, its device id, its connection profile and
+its operational certificate from one assignment ([§3](#3-full-connect-sequence)), and it re-learns
+them on every reconnect that goes back through DPS. That is what makes a device re-homeable: a
+service-side reassignment reaches it without a firmware change.
+
+This is a contract, not a preference, and it has one consequence worth stating plainly: **a device
+that hardcodes a hub cannot be re-homed.** Samples and documentation should lead with the
+provisioned path, and a sample that connects directly should say why it does.
+
+### 10.2 Direct connect is supported, and the profile is declared rather than learned
+
+A caller may set the hub address itself and skip provisioning. The generation cannot be discovered
+in that case — there is nobody to ask — so the caller **declares** it, and the SDK settles the role
+from the declaration at initialisation.
+
+| | Provisioned | Direct |
+| --- | --- | --- |
+| Hub address | from the assignment | from the caller |
+| Connection profile | **reported** by the service; a caller-supplied value is ignored | **declared** by the caller; defaults to classic if unset |
+| Unknown profile | fails the connection ([§4](#4-connection-profile-selection)) | cannot arise — a caller may not declare a profile the SDK does not speak, and the attempt is rejected at initialisation |
+| Re-homeable | yes | no |
+
+Three rules follow:
+
+- **Unknown is service-produced only.** A client rejects an unknown profile *declared* by a caller
+  at initialisation, and *fails the connection* on one reported by the service. The two are
+  different failures with different owners and must not share a code path.
+- **A direct-connect client never opens a provisioning session.** Any per-scope state an
+  application can observe for provisioning stays idle for that client's whole life. This is the
+  deliberate answer, not an oversight, and an application must not wait on a provisioning event
+  that will never arrive.
+- **A feature that requires the provisioning session must refuse to attach on a direct-connect
+  client**, at attach time and with a distinct error. Attaching successfully and then failing every
+  operation is a worse contract than refusing once.
+
+### 10.3 What a Classic sunset would cost
+
+The generation is *learned*, not compiled in — which is the property that makes a sunset cheap. The
+profile selects the generation; the feature clients declare which generation they need; a mismatch
+is a clean error rather than a wire failure. On a sunset the service simply stops reporting
+`classic`, and every provisioned device follows with no SDK change. Only the direct-connect default
+would want revisiting, and only then.
+
+It is cheap only where the feature exists on both sides:
+
+| Feature | gen1 (classic) | gen2 |
+| --- | --- | --- |
+| Telemetry | yes | yes |
+| Cloud-to-device | yes | yes |
+| Direct methods | yes | yes |
+| Twin | yes | yes |
+| **File upload** | **yes** | **absent** |
+| Device update | via the provisioning channel, profile-agnostic | hub channel not implemented |
+
+**File upload is the real blocker.** There is no gen2 file-upload client, so "the sunset costs only
+sample changes" is false today for any device that uploads files: those devices lose the feature,
+not just their sample. That is a work item, not a documentation note.
+
+Device update is the second, and it is deliberate rather than accidental: update rides the
+provisioning session precisely so it works on a device that has no hub yet, which is why a hub
+channel is a later addition. The acceptance criterion for that addition is that **it must not
+require a change to the connection client** — the core decides whether a provisioning session is
+needed, and which channel to use is the update client's decision, expressed by which channel it
+constructs.
+
+### 10.4 One binary, two generations
+
+An application that must serve both generations from one build can do so: it creates feature
+clients after the connection is open and branches on the reported profile. That pattern becomes
+obsolete on a sunset, which is the correct outcome — worth knowing now so its lifetime is
+understood rather than discovered.
+
+---
+
+## 11. Language mapping
 
 How the vocabulary of this document maps onto each client. Concept names in the left column are the
 normative ones; the language columns are informative and follow the code.

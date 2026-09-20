@@ -59,25 +59,140 @@ extern "C"
     size_t correlation_data_len;
   } az_iot_mqtt_message;
 
+  /* Signs one digest with a private key the caller never sees (D8). This is the
+   * escape hatch for stacks that have no engine/provider abstraction: the key
+   * lives in an HSM / TPM / secure element and the only operation exposed is
+   * "sign these bytes".
+   *
+   * `ctx` is the opaque context supplied alongside the callback on
+   * az_iot_mqtt_tls_options. `digest`/`digest_len` are the bytes to sign;
+   * the signature is written to `out_sig` (at most `out_sig_cap` bytes) and its
+   * length reported through `out_sig_len`. Returns AZ_IOT_ERR_NOT_ENOUGH_SPACE
+   * when the buffer is too small, and leaves *out_sig_len untouched on failure.
+   *
+   * Deliberately a plain function pointer rather than the certificate-provider
+   * type: this header is the standalone BYO-MQTT-client seam (see
+   * docs/how_to_byo_mqtt_client.md) and must not depend on the certificate
+   * provider ABI. */
+  typedef az_iot_result (*az_iot_mqtt_sign_callback)(
+      void* ctx,
+      const uint8_t* digest,
+      size_t digest_len,
+      uint8_t* out_sig,
+      size_t out_sig_cap,
+      size_t* out_sig_len);
+
+  /* Which transport carries the MQTT session.
+   *
+   * Zero is TCP, so a zero-initialized connect options struct keeps the
+   * behaviour every caller had before this field existed. */
+  typedef enum az_iot_mqtt_transport
+  {
+    /* MQTT directly over TCP (over TLS when TLS is selected). Default port
+     * 8883 with TLS, 1883 without. */
+    AZ_IOT_MQTT_TRANSPORT_TCP = 0,
+    /* MQTT over WebSockets, for networks that only allow HTTP(S) ports.
+     * Default port 443 with TLS, 80 without. */
+    AZ_IOT_MQTT_TRANSPORT_WEBSOCKET = 1
+  } az_iot_mqtt_transport;
+
+  /* Default WebSocket resource path for Azure IoT Hub and DPS. Used when
+   * `websocket_path` is NULL. */
+#define AZ_IOT_MQTT_DEFAULT_WEBSOCKET_PATH "/$iothub/websocket"
+
+/* Default broker ports, by transport and by whether the session is TLS. Named
+ * rather than spelled out at each use: the same four numbers are needed by the
+ * core when it derives a port and by every adapter when it builds a URI, and a
+ * bare 8883 in one of those places is indistinguishable from a typo. */
+#define AZ_IOT_MQTT_DEFAULT_PORT_TCP_TLS 8883u
+#define AZ_IOT_MQTT_DEFAULT_PORT_TCP_PLAIN 1883u
+#define AZ_IOT_MQTT_DEFAULT_PORT_WEBSOCKET_TLS 443u
+#define AZ_IOT_MQTT_DEFAULT_PORT_WEBSOCKET_PLAIN 80u
+
+/* Default port of an HTTP proxy when az_iot_mqtt_proxy_options.port is 0. */
+#define AZ_IOT_MQTT_DEFAULT_PROXY_PORT 8080u
+
+  /* HTTP proxy to tunnel the MQTT connection through, via HTTP CONNECT.
+   *
+   * Applies to every transport, not only WebSockets: a device on a filtered
+   * network commonly has to tunnel plain MQTT over 8883 as well.
+   *
+   * The proxy is a transport detail only. The TLS session is end-to-end with
+   * the broker: it is established INSIDE the tunnel, so the proxy sees no
+   * plaintext and server-certificate and hostname validation are unchanged.
+   *
+   * `host` NULL means "no proxy". Credentials are optional; when `username` is
+   * set they are sent as HTTP Basic, which is why a proxy that requires
+   * authentication should itself be reached over a trusted network segment. */
+  typedef struct az_iot_mqtt_proxy_options
+  {
+    const char* host; /* proxy host name or IP; NULL = no proxy */
+    uint16_t port; /* 0 selects AZ_IOT_MQTT_DEFAULT_PROXY_PORT */
+    const char* username; /* may be NULL */
+    const char* password; /* may be NULL */
+  } az_iot_mqtt_proxy_options;
+
+  /* TLS credentials handed to an adapter on connect.
+   *
+   * Fields are only ever APPENDED, never reordered or removed: the struct is
+   * populated by the SDK and read by the adapter, so an adapter compiled
+   * against an older copy of this header simply never reads the tail. New
+   * fields must therefore mean "not requested" when zero, which is what
+   * az_iot_mqtt_connect_options zero-initialization already yields (see
+   * docs/struct_versioning.md). */
   typedef struct az_iot_mqtt_tls_options
   {
     const char* trusted_ca_path; /* file or NULL for system store */
     const char* client_cert_path; /* PEM */
     const char* client_key_path; /* PEM */
     const char* client_key_password; /* may be NULL */
-    bool verify_server; /* default true */
+    /* Selects TLS.
+     *
+     * There is deliberately NO option to disable server certificate
+     * validation. Whenever an adapter establishes a TLS session it validates
+     * the chain AND the hostname, unconditionally; this SDK connects to Azure
+     * endpoints, and an unverified session authenticates nothing.
+     *
+     * This slot previously held `verify_server`, which could switch validation
+     * off and, being false in a zero-initialized struct, did so for any caller
+     * who simply forgot it. It now only selects TLS, which is what the SDK ever
+     * used it for. Set it for a connection that carries no other TLS material,
+     * such as server-authentication-only; connections carrying a certificate,
+     * a CA or a key reference select TLS on that alone. */
+    bool use_tls;
     /* In-memory PEM material. Adapters that load credentials from memory rather
      * than from disk (e.g. esp-mqtt on a device with no filesystem) use these;
      * file-path adapters (Paho + OpenSSL) ignore them. Any field may be NULL. */
     const char* trusted_ca_pem; /* CA chain PEM, or NULL */
     const char* client_cert_pem; /* client certificate PEM, or NULL */
     const char* client_key_pem; /* client private key PEM, or NULL */
+    /* Non-extractable key custody (D8). Set when the private key cannot be read
+     * -- it stays inside an HSM, TPM or secure element -- so the adapter has to
+     * sign THROUGH it instead of loading it.
+     *
+     * Two mutually independent routes; an adapter may support either, both, or
+     * neither, and must fail the connect with AZ_IOT_ERR_NOT_SUPPORTED rather
+     * than connect without a client key when asked for one it cannot honour:
+     *
+     *  - client_key_uri + crypto_engine_id: the stack has an engine/provider
+     *    abstraction (OpenSSL ENGINE or OpenSSL 3.x provider). The adapter
+     *    loads the named engine/provider and resolves the URI through it.
+     *  - sign + sign_ctx: no such abstraction exists; the adapter drives the
+     *    handshake signature through the callback.
+     *
+     * All four are NULL when the key is an ordinary PEM or file. */
+    const char* client_key_uri; /* e.g. "pkcs11:token=...;object=..." */
+    const char* crypto_engine_id; /* OpenSSL ENGINE/provider id: "pkcs11", "tpm2" */
+    az_iot_mqtt_sign_callback sign; /* may be NULL */
+    void* sign_ctx; /* opaque, passed back to sign() */
   } az_iot_mqtt_tls_options;
 
   typedef struct az_iot_mqtt_connect_options
   {
     const char* host;
-    uint16_t port; /* typically 8883 */
+    /* 0 selects the default for the transport and TLS selection: 8883/1883 for
+     * TCP, 443/80 for WebSockets. */
+    uint16_t port;
     const char* client_id;
     const char* username; /* may be NULL */
     const char* password; /* may be NULL */
@@ -99,6 +214,20 @@ extern "C"
       bool retain;
       uint32_t will_delay_seconds; /* v5 only; 0 = immediate */
     } lwt;
+    /* Transport selection and HTTP proxy. Appended, so zero means TCP with no
+     * proxy -- the behaviour that predates these fields.
+     *
+     * An adapter that cannot honour a non-default value here MUST fail the
+     * connect with AZ_IOT_ERR_NOT_SUPPORTED. Silently connecting directly when
+     * a proxy was asked for would bypass the very egress control the caller
+     * selected, and silently connecting over TCP when WebSockets were asked for
+     * would be blocked by the firewall the caller was working around. */
+    az_iot_mqtt_transport transport;
+    /* WebSocket resource path, used only when transport is WEBSOCKET. NULL
+     * selects AZ_IOT_MQTT_DEFAULT_WEBSOCKET_PATH, which is what Azure IoT Hub
+     * and DPS expect. Must start with '/'. */
+    const char* websocket_path;
+    az_iot_mqtt_proxy_options proxy;
   } az_iot_mqtt_connect_options;
 
   /* Inbound event types delivered through the single adapter callback. */
@@ -120,6 +249,19 @@ extern "C"
     az_iot_result status; /* for ACK / ERROR events */
     const az_iot_mqtt_message* message; /* for AZ_IOT_MQTT_EVT_MESSAGE only */
     bool session_present; /* for AZ_IOT_MQTT_EVT_CONNECTED (v5 CONNACK) */
+    /* The code that came off the wire, verbatim, for the ack this event carries
+     * (a CONNACK return/reason code, a SUBACK return/reason code). A non-zero
+     * value is always that code, including the granted QoS on a SUBACK that
+     * succeeded -- a grant is diagnostic too. Only 0 is ambiguous: it means
+     * either "no code applies here" or "a producer that does not populate this
+     * field", and nothing can tell those apart, which is the reason no decision
+     * may rest on it.
+     *
+     * `status` is the classification the SDK acts on; this is the evidence for
+     * it. Both travel because a classification cannot describe a code this SDK
+     * has never seen, and a log that prints only "AZ_IOT_ERR_MQTT" cannot
+     * either. Diagnostics and telemetry only -- never branch on it. */
+    int32_t protocol_code;
   } az_iot_mqtt_event;
 
   typedef void (*az_iot_mqtt_event_callback)(const az_iot_mqtt_event* evt, void* user_ctx);
@@ -196,6 +338,32 @@ extern "C"
    * safe one. */
   AZ_NODISCARD az_iot_result
   az_iot_mqtt_connack_result(az_iot_mqtt_version version, int connack_code);
+
+  /* Map a SUBACK code from the wire onto the status an adapter reports with
+   * AZ_IOT_MQTT_EVT_SUBSCRIBE_ACK. The SUBACK counterpart of
+   * az_iot_mqtt_connack_result(), and adapters should route every SUBACK
+   * through it for the same reason: the core needs one vocabulary regardless of
+   * which MQTT client is underneath.
+   *
+   * The distinction that matters here is permanent-versus-transient. A filter
+   * the broker will never accept (not authorized, invalid filter) becomes
+   * AZ_IOT_ERR_SUBSCRIPTION_REFUSED, because re-issuing it can only be refused
+   * again; a quota or unspecified error stays AZ_IOT_ERR_MQTT and is retried,
+   * which is how a transient service-side fault presents.
+   *
+   * `suback_code` is the value carried in the SUBACK: a granted QoS (0..2), a
+   * v3.1.1 failure (0x80), or a v5 reason code (>= 0x80). **A granted QoS lower
+   * than the one requested is a success, not a refusal** -- the subscription
+   * exists and MQTT delivers at min(publish QoS, granted QoS). A negative value
+   * is treated as an adapter-internal failure (socket, TLS, library error): it
+   * never reached a broker, so it says nothing about the filter and is retried.
+   *
+   * `version` selects which code scheme applies. A version this function does
+   * not recognize yields AZ_IOT_ERR_MQTT for any non-grant code -- guessing a
+   * scheme would be guessing whether to fail the session, and retrying is the
+   * safe half of that split. */
+  AZ_NODISCARD az_iot_result
+  az_iot_mqtt_suback_result(az_iot_mqtt_version version, int suback_code);
 
 #ifdef __cplusplus
 }

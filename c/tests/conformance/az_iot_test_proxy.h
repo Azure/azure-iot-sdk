@@ -49,6 +49,7 @@
 #ifndef AZ_IOT_TEST_PROXY_H
 #define AZ_IOT_TEST_PROXY_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -62,12 +63,80 @@ extern "C"
 
   typedef struct az_iot_test_proxy_options
   {
-    /* Upstream (real) broker the proxy forwards to. Required. */
+    /* Upstream (real) broker the proxy forwards to. Required UNLESS
+     * http_connect is set, which makes the client name the upstream instead. */
     const char* upstream_host;
     uint16_t upstream_port;
+
+    /* Behave as an HTTP CONNECT proxy rather than a transparent passthrough.
+     *
+     * The proxy reads a "CONNECT host:port HTTP/1.1" request, answers
+     * "200 Connection established", and pumps bytes to the host the CLIENT
+     * named -- so upstream_host/upstream_port are ignored and one fixture can
+     * front DPS and a hub in the same test, which a passthrough cannot.
+     *
+     * Everything the passthrough offers still applies once the tunnel is open:
+     * the drop controls, the impairments and the counters all see the tunnelled
+     * bytes. TLS is NOT terminated here -- the client negotiates it end to end
+     * with the real broker inside the tunnel, which is the property that makes
+     * a proxied session worth testing at all.
+     *
+     * NOTE, and the reason the "cannot intercept" wording above is narrower in
+     * this mode: a CONNECT proxy dials whatever host the client asks for. It
+     * still only ever receives connections a test aimed at its loopback port,
+     * so it intercepts nothing; but it is no longer limited to one preset
+     * upstream. */
+    bool http_connect;
+
+    /* Require HTTP Basic proxy authentication, and refuse with 407 when the
+     * client's credentials are absent or wrong. NULL (the default) accepts any
+     * client, authenticated or not.
+     *
+     * These are the DECODED credentials the proxy expects, exactly as the
+     * caller configured them on az_iot_mqtt_proxy_options. Checking them here
+     * is what proves the SDK's own encoding round-trips: a client that mangles
+     * a credential containing a delimiter fails to authenticate against this,
+     * which no unit test on the generated string can demonstrate.
+     *
+     * Ignored unless http_connect is set. */
+    const char* required_username;
+    const char* required_password;
+
+    /* Carry the stream as opaque bytes: shape and forward, without framing it
+     * as MQTT.
+     *
+     * The pump normally reassembles each MQTT packet before forwarding, which
+     * is what lets rules match on packet type and what makes the packet
+     * counters meaningful. That framing assumes the stream IS MQTT, so a
+     * WebSocket session -- an HTTP upgrade followed by WS frames carrying MQTT
+     * inside them -- stalls: the framer waits for a packet length it read out
+     * of bytes that were never an MQTT header, and forwards nothing.
+     *
+     * Set this to put a proxy in front of a WebSocket listener. The
+     * impairments still apply (they shape writes, which needs no protocol
+     * knowledge), so fragmentation, latency, bandwidth and stalls all work.
+     * What does NOT work in this mode, because it has no packets to act on:
+     * az_iot_test_proxy_add_rule(), reset_after_packets, and
+     * az_iot_test_proxy_packets_seen(), which stays 0.
+     *
+     * This is the narrow form of the protocol/transport split tracked in
+     * docs/design.md section 4.5; it separates the two for the cases that never
+     * needed the protocol, rather than introducing the full codec seam. */
+    bool opaque_stream;
   } az_iot_test_proxy_options;
 
   az_iot_test_proxy_options az_iot_test_proxy_options_default(void);
+
+  /* Initialize through az_iot_test_proxy_options_default() rather than by
+   * aggregate initialization: it zeroes the struct, and every field added here
+   * is APPENDED and means "not requested" when zero, so a caller written
+   * against an older revision keeps its behaviour (passthrough, no
+   * authentication) without being edited.
+   *
+   * There is no size/version guard because there is nothing to guard against:
+   * this is a test fixture, built as a static library from this tree and never
+   * installed or shipped, so its header and its objects cannot be mixed across
+   * revisions the way a distributed library's can. */
 
   /* Bind a listener on 127.0.0.1 (fixed; see the note above) on an ephemeral
    * port and start the pump thread. On success returns 0, writes the owning
@@ -274,6 +343,22 @@ extern "C"
   uint32_t az_iot_test_proxy_packets_seen(az_iot_test_proxy* proxy);
   uint32_t az_iot_test_proxy_connections(az_iot_test_proxy* proxy);
 
+  /* CONNECT-mode observability. All cumulative, all zero in passthrough mode.
+   *
+   * These are what let a test prove the session went THROUGH the tunnel rather
+   * than around it: a client that ignored the proxy and dialled the broker
+   * directly leaves tunnels_opened at 0 while still reaching CONNECTED. */
+
+  /* Tunnels the proxy answered with 2xx and then pumped. */
+  uint32_t az_iot_test_proxy_tunnels_opened(az_iot_test_proxy* proxy);
+  /* CONNECT requests refused with 407 (missing or wrong credentials). */
+  uint32_t az_iot_test_proxy_auth_failures(az_iot_test_proxy* proxy);
+  /* The authority from the last CONNECT request line ("host:port"), or NULL if
+   * none has been received. Lets a test assert WHICH endpoint was tunnelled --
+   * the DPS gateway first, then the assigned hub. Valid until the next
+   * CONNECT; copy it if it must outlive that. */
+  const char* az_iot_test_proxy_last_connect_target(az_iot_test_proxy* proxy);
+
   /* --- TLS termination (C2): present a runtime-generated leaf to the client so
    * certificate-rejection paths (untrusted chain, expiry, hostname) are drivable
    * without an external TLS broker. Requires an OpenSSL build. --- */
@@ -296,6 +381,19 @@ extern "C"
      * fixture work can produce a rejection: a peer that never asks cannot
      * refuse. */
     int require_client_cert;
+
+    /* Ask the client for a certificate but accept whatever it presents, without
+     * checking the issuer.
+     *
+     * For proving a client holds a private key, the chain is the wrong thing to
+     * look at: what proves possession is the CertificateVerify signature, which
+     * TLS requires the client to produce with that key. A key that lives inside
+     * a token cannot be handed to this proxy's CA to be certified, so requiring
+     * the proxy's own issuer would make such a key untestable for the one
+     * property that matters. The handshake completing IS the proof.
+     *
+     * Ignored when require_client_cert is set. */
+    int accept_any_client_cert;
   } az_iot_test_proxy_tls_options;
 
   az_iot_test_proxy_tls_options az_iot_test_proxy_tls_options_default(void);

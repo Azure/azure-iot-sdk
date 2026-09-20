@@ -183,6 +183,11 @@ struct az_iot_test_proxy
   /* config, immutable after start */
   char upstream_host[256];
   char upstream_port[8];
+  int http_connect;
+  int opaque_stream;
+  char required_username[128];
+  char required_password[128];
+  int require_auth;
   proxy_sock listen_sock;
   uint16_t listen_port;
 
@@ -214,6 +219,10 @@ struct az_iot_test_proxy
   uint64_t total_bytes; /* both directions, cumulative */
   uint32_t total_packets; /* client->broker packets, cumulative */
   uint32_t connections; /* accepted client connections */
+  uint32_t tunnels_opened; /* CONNECT requests answered 2xx (http_connect only) */
+  uint32_t auth_failures; /* CONNECT requests refused 407 (http_connect only) */
+  char last_connect_target[300]; /* authority from the last CONNECT request line */
+  int have_connect_target;
 
   /* client->broker fixed-header parser state (pump thread only) */
   int pkt_phase; /* 0=first byte, 1=remaining-length, 2=body */
@@ -364,7 +373,10 @@ static proxy_sock proxy_accept_timeout(proxy_sock listen_sock, unsigned timeout_
   return accept(listen_sock, NULL, NULL);
 }
 
-static proxy_sock proxy_connect_upstream(struct az_iot_test_proxy* m)
+/* Dial host:port (both as strings), returning a connected socket or
+ * PROXY_INVALID_SOCK. Shared by the passthrough upstream and by CONNECT mode,
+ * which dials whatever authority the client named. */
+static proxy_sock proxy_dial(const char* host, const char* port)
 {
   struct addrinfo hints;
   memset(&hints, 0, sizeof(hints));
@@ -372,7 +384,7 @@ static proxy_sock proxy_connect_upstream(struct az_iot_test_proxy* m)
   hints.ai_socktype = SOCK_STREAM;
 
   struct addrinfo* res = NULL;
-  if (getaddrinfo(m->upstream_host, m->upstream_port, &hints, &res) != 0 || res == NULL)
+  if (getaddrinfo(host, port, &hints, &res) != 0 || res == NULL)
   {
     return PROXY_INVALID_SOCK;
   }
@@ -391,6 +403,286 @@ static proxy_sock proxy_connect_upstream(struct az_iot_test_proxy* m)
     return PROXY_INVALID_SOCK;
   }
   return s;
+}
+
+static proxy_sock proxy_connect_upstream(struct az_iot_test_proxy* m)
+{
+  return proxy_dial(m->upstream_host, m->upstream_port);
+}
+
+/* ------------------------------------------------------------------------- */
+/* HTTP CONNECT mode                                                          */
+/*                                                                            */
+/* Enough of an HTTP proxy to tunnel a real MQTT session and to refuse one:    */
+/* read the request line and headers, optionally check Basic credentials,      */
+/* answer 200 or 407, then hand the socket to the ordinary pump. Deliberately  */
+/* not a general HTTP implementation -- only the CONNECT method exists, and    */
+/* only the headers this needs are parsed.                                     */
+/* ------------------------------------------------------------------------- */
+
+static const char k_b64_alphabet[]
+    = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+/* Base64-encode `len` bytes. Returns the length written, or 0 if it would not
+ * fit. Used to build the credential this proxy EXPECTS, so the comparison is
+ * against the same encoding a client must produce. */
+static size_t proxy_b64_encode(const unsigned char* in, size_t len, char* out, size_t cap)
+{
+  size_t need = ((len + 2u) / 3u) * 4u;
+  if (need + 1u > cap)
+  {
+    return 0;
+  }
+  size_t o = 0;
+  for (size_t i = 0; i < len; i += 3)
+  {
+    unsigned v = (unsigned)in[i] << 16;
+    v |= (i + 1 < len) ? ((unsigned)in[i + 1] << 8) : 0u;
+    v |= (i + 2 < len) ? (unsigned)in[i + 2] : 0u;
+    out[o++] = k_b64_alphabet[(v >> 18) & 0x3Fu];
+    out[o++] = k_b64_alphabet[(v >> 12) & 0x3Fu];
+    out[o++] = (i + 1 < len) ? k_b64_alphabet[(v >> 6) & 0x3Fu] : '=';
+    out[o++] = (i + 2 < len) ? k_b64_alphabet[v & 0x3Fu] : '=';
+  }
+  out[o] = '\0';
+  return o;
+}
+
+/* Read the request head, up to and including the blank line that ends it.
+ *
+ * One byte at a time, so the tunnelled payload that may arrive in the same
+ * segment is left in the socket: those bytes belong to the client's TLS
+ * handshake with the real broker and must not be consumed here.
+ *
+ * Bounded, and it watches should_stop. An unbounded blocking recv would hang
+ * the pump thread on a client that connects and then says nothing -- and
+ * az_iot_test_proxy_stop() joins that thread, so the hang would take down the
+ * whole test process at teardown instead of failing inside the test's own
+ * timeout. `deadline_ms` bounds the head as a whole, not each byte, so a
+ * dribbling client cannot extend it indefinitely. */
+static int proxy_read_http_head(
+    struct az_iot_test_proxy* m,
+    proxy_sock s,
+    char* buf,
+    size_t cap,
+    size_t* out_len,
+    unsigned deadline_ms)
+{
+  size_t n = 0;
+  /* One fixed end time, not an accumulator of idle waits: counting only the
+   * timed-out selects would leave a peer that dribbles a byte every 199ms
+   * inside its budget forever, bounded in practice only by the header cap. */
+  const uint64_t end_ms = proxy_now_ms() + (uint64_t)deadline_ms;
+  while (n + 1 < cap)
+  {
+    proxy_lock(&m->lock);
+    int stop = m->should_stop;
+    proxy_unlock(&m->lock);
+    if (stop)
+    {
+      return -1;
+    }
+    if (proxy_now_ms() >= end_ms)
+    {
+      return -1;
+    }
+
+    int ready = proxy_wait_readable_one(s, 200);
+    if (ready < 0)
+    {
+      return -1;
+    }
+    if (ready == 0)
+    {
+      continue;
+    }
+
+    char c;
+    long r = (long)recv(s, &c, 1, 0);
+    if (r != 1)
+    {
+      return -1;
+    }
+    buf[n++] = c;
+    if (n >= 4 && memcmp(buf + n - 4, "\r\n\r\n", 4) == 0)
+    {
+      buf[n] = '\0';
+      *out_len = n;
+      return 0;
+    }
+  }
+  return -1;
+}
+
+/* Case-insensitive search for a header line, returning its value (trimmed of
+ * leading spaces) or NULL. `head` is NUL-terminated. */
+static const char* proxy_find_header(const char* head, const char* name)
+{
+  size_t name_len = strlen(name);
+  const char* p = head;
+  while (*p != '\0')
+  {
+    const char* line_end = strstr(p, "\r\n");
+    if (line_end == NULL || line_end == p)
+    {
+      break;
+    }
+    size_t line_len = (size_t)(line_end - p);
+    if (line_len > name_len)
+    {
+      size_t i = 0;
+      for (; i < name_len; ++i)
+      {
+        char a = p[i];
+        char b = name[i];
+        if (a >= 'A' && a <= 'Z')
+        {
+          a = (char)(a - 'A' + 'a');
+        }
+        if (b >= 'A' && b <= 'Z')
+        {
+          b = (char)(b - 'A' + 'a');
+        }
+        if (a != b)
+        {
+          break;
+        }
+      }
+      if (i == name_len && p[name_len] == ':')
+      {
+        const char* v = p + name_len + 1;
+        while (*v == ' ' || *v == '\t')
+        {
+          ++v;
+        }
+        return v;
+      }
+    }
+    p = line_end + 2;
+  }
+  return NULL;
+}
+
+/* Perform the CONNECT exchange. On success returns a connected upstream socket
+ * and the tunnel is open; on any refusal the client has been answered and the
+ * caller closes it. */
+static proxy_sock proxy_http_connect_accept(struct az_iot_test_proxy* m, proxy_sock client)
+{
+  char head[2048];
+  size_t head_len = 0;
+  /* 10s is generous for a request a real client sends in one segment, and short
+   * enough that a stuck client fails well inside a test's own timeout. */
+  if (proxy_read_http_head(m, client, head, sizeof(head), &head_len, 10000u) != 0)
+  {
+    return PROXY_INVALID_SOCK;
+  }
+
+  /* Request line: "CONNECT host:port HTTP/1.1". Only CONNECT is implemented;
+   * anything else is answered 405 so a misdirected client fails loudly rather
+   * than hanging. */
+  if (strncmp(head, "CONNECT ", 8) != 0)
+  {
+    static const char k_405[] = "HTTP/1.1 405 Method Not Allowed\r\nContent-Length: 0\r\n\r\n";
+    (void)proxy_send_all(client, k_405, sizeof(k_405) - 1);
+    return PROXY_INVALID_SOCK;
+  }
+
+  const char* authority = head + 8;
+  const char* sp = strchr(authority, ' ');
+  if (sp == NULL || (size_t)(sp - authority) >= sizeof(m->last_connect_target))
+  {
+    return PROXY_INVALID_SOCK;
+  }
+  size_t auth_len = (size_t)(sp - authority);
+
+  char target[300];
+  memcpy(target, authority, auth_len);
+  target[auth_len] = '\0';
+
+  proxy_lock(&m->lock);
+  memcpy(m->last_connect_target, target, auth_len + 1);
+  m->have_connect_target = 1;
+  int require_auth = m->require_auth;
+  char want_user[128];
+  char want_pass[128];
+  memcpy(want_user, m->required_username, sizeof(want_user));
+  memcpy(want_pass, m->required_password, sizeof(want_pass));
+  proxy_unlock(&m->lock);
+
+  if (require_auth)
+  {
+    /* Build the credential this proxy expects and compare against what arrived.
+     * Comparing the ENCODED forms keeps the check in one place and means a
+     * client that percent-mangles a delimiter mismatches here. */
+    char plain[264];
+    int plain_len = snprintf(plain, sizeof(plain), "%s:%s", want_user, want_pass);
+    char expected[360];
+    size_t expected_len = 0;
+    if (plain_len > 0 && (size_t)plain_len < sizeof(plain))
+    {
+      expected_len = proxy_b64_encode(
+          (const unsigned char*)plain, (size_t)plain_len, expected, sizeof(expected));
+    }
+
+    const char* got = proxy_find_header(head, "proxy-authorization");
+    int ok = 0;
+    if (got != NULL && expected_len > 0 && strncmp(got, "Basic ", 6) == 0)
+    {
+      const char* got_b64 = got + 6;
+      size_t got_len = 0;
+      while (got_b64[got_len] != '\0' && got_b64[got_len] != '\r' && got_b64[got_len] != ' ')
+      {
+        ++got_len;
+      }
+      ok = (got_len == expected_len) && (memcmp(got_b64, expected, expected_len) == 0);
+    }
+
+    if (!ok)
+    {
+      proxy_lock(&m->lock);
+      m->auth_failures++;
+      proxy_unlock(&m->lock);
+      static const char k_407[] = "HTTP/1.1 407 Proxy Authentication Required\r\n"
+                                  "Proxy-Authenticate: Basic realm=\"az-iot-test-proxy\"\r\n"
+                                  "Content-Length: 0\r\n\r\n";
+      (void)proxy_send_all(client, k_407, sizeof(k_407) - 1);
+      return PROXY_INVALID_SOCK;
+    }
+  }
+
+  /* Split "host:port". A missing port is a malformed CONNECT here: the client
+   * always knows the port it wants. */
+  char host[256];
+  const char* colon = strrchr(target, ':');
+  if (colon == NULL || colon == target || (size_t)(colon - target) >= sizeof(host))
+  {
+    static const char k_400[] = "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n";
+    (void)proxy_send_all(client, k_400, sizeof(k_400) - 1);
+    return PROXY_INVALID_SOCK;
+  }
+  size_t host_len = (size_t)(colon - target);
+  memcpy(host, target, host_len);
+  host[host_len] = '\0';
+
+  proxy_sock upstream = proxy_dial(host, colon + 1);
+  if (upstream == PROXY_INVALID_SOCK)
+  {
+    static const char k_502[] = "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n";
+    (void)proxy_send_all(client, k_502, sizeof(k_502) - 1);
+    return PROXY_INVALID_SOCK;
+  }
+
+  static const char k_200[] = "HTTP/1.1 200 Connection established\r\n\r\n";
+  if (proxy_send_all(client, k_200, sizeof(k_200) - 1) != 0)
+  {
+    proxy_closesock(upstream);
+    return PROXY_INVALID_SOCK;
+  }
+
+  proxy_lock(&m->lock);
+  m->tunnels_opened++;
+  proxy_unlock(&m->lock);
+  return upstream;
 }
 
 /* Fixed on purpose: the proxy must never be reachable from another host. Read
@@ -976,6 +1268,16 @@ static void proxy_ingest(
 {
   const uint8_t* p = (const uint8_t*)data;
   size_t left = n;
+
+  /* Opaque mode: shape and forward, with no framing at all. The stream is not
+   * MQTT here (a WebSocket session, say), so anything the framer decided about
+   * packet boundaries would be read out of bytes that are not a fixed header --
+   * and it would stall waiting for a length that never arrives. */
+  if (m->opaque_stream)
+  {
+    (void)eg_push(&eg[dir], &imp[dir], data, n);
+    return;
+  }
 
   while (left > 0)
   {
@@ -1564,7 +1866,19 @@ static void proxy_run(struct az_iot_test_proxy* m)
       continue;
     }
 
-    proxy_sock upstream = proxy_connect_upstream(m);
+    proxy_sock upstream;
+    if (m->http_connect)
+    {
+      /* The client names its own upstream, so the CONNECT exchange happens
+       * before any pumping. TLS is deliberately NOT terminated on this path:
+       * the bytes that follow the 200 are the client's end-to-end handshake
+       * with the real broker, and this proxy must stay ignorant of them. */
+      upstream = proxy_http_connect_accept(m, client);
+    }
+    else
+    {
+      upstream = proxy_connect_upstream(m);
+    }
     if (upstream == PROXY_INVALID_SOCK)
     {
       proxy_client_free(client_ssl);
@@ -1620,6 +1934,17 @@ int az_iot_test_proxy_tls_supported(void)
   return 0;
 #endif
 }
+
+#if defined(AZ_IOT_TEST_PROXY_TLS)
+/* Verify callback for accept_any_client_cert: report success regardless of what
+ * OpenSSL made of the chain. See the option's note in the header. */
+static int proxy_accept_any_cert_cb(int preverify_ok, X509_STORE_CTX* ctx)
+{
+  (void)preverify_ok;
+  (void)ctx;
+  return 1;
+}
+#endif
 
 int az_iot_test_proxy_enable_tls(az_iot_test_proxy* m, const az_iot_test_proxy_tls_options* tls_in)
 {
@@ -1769,6 +2094,14 @@ int az_iot_test_proxy_enable_tls(az_iot_test_proxy* m, const az_iot_test_proxy_t
       goto done;
     }
     SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT, NULL);
+  }
+  else if (tls.accept_any_client_cert)
+  {
+    /* Request a certificate and let every one through. The point is to make the
+     * client sign the CertificateVerify with its private key; who issued the
+     * certificate is deliberately not examined. See the header. */
+    SSL_CTX_set_verify(
+        ctx, SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT, proxy_accept_any_cert_cb);
   }
 
   if (SSL_CTX_use_PrivateKey(ctx, leaf_key) != 1)
@@ -2054,16 +2387,53 @@ int az_iot_test_proxy_start(
     az_iot_test_proxy** out_proxy,
     uint16_t* out_port)
 {
-  if (options == NULL || out_proxy == NULL || options->upstream_host == NULL
-      || options->upstream_port == 0)
+  /* In CONNECT mode the client names the upstream, so upstream_host/port are
+   * not required -- and supplying them would be misleading, since they are
+   * ignored. In passthrough mode they remain mandatory. */
+  if (options == NULL || out_proxy == NULL)
+  {
+    return -1;
+  }
+  if (!options->http_connect && (options->upstream_host == NULL || options->upstream_port == 0))
   {
     return -1;
   }
 
-  size_t host_len = strlen(options->upstream_host);
+  size_t host_len = (options->upstream_host != NULL) ? strlen(options->upstream_host) : 0;
   if (host_len >= sizeof(((struct az_iot_test_proxy*)0)->upstream_host))
   {
     return -1;
+  }
+
+  /* Credential validation applies only to CONNECT mode, where these fields
+   * mean something. Rejecting them in passthrough mode would change that
+   * mode's existing contract, having documented them as ignored there. */
+  if (options->http_connect)
+  {
+    /* A password without a username is not a credential Basic can express. */
+    if (options->required_password != NULL && options->required_username == NULL)
+    {
+      return -1;
+    }
+    /* Nor can a user-id contain a colon: Basic splits the decoded credential at
+     * the first one, so "dev:ice" would authenticate as user "dev" with a
+     * different password than the caller configured -- and the fixture would
+     * quietly be testing something else. The Paho adapter refuses the same
+     * input; refuse it here too rather than accepting a credential neither
+     * side can represent. */
+    if (options->required_username != NULL && strchr(options->required_username, ':') != NULL)
+    {
+      return -1;
+    }
+    if (options->required_username != NULL
+        && (strlen(options->required_username)
+                >= sizeof(((struct az_iot_test_proxy*)0)->required_username)
+            || (options->required_password != NULL
+                && strlen(options->required_password)
+                    >= sizeof(((struct az_iot_test_proxy*)0)->required_password))))
+    {
+      return -1;
+    }
   }
 
   proxy_ensure_wsa();
@@ -2075,9 +2445,25 @@ int az_iot_test_proxy_start(
   }
   m->listen_sock = PROXY_INVALID_SOCK;
   m->pkt_mult = 1;
-  memcpy(m->upstream_host, options->upstream_host, host_len + 1);
+  if (options->upstream_host != NULL)
+  {
+    memcpy(m->upstream_host, options->upstream_host, host_len + 1);
+  }
   (void)snprintf(
       m->upstream_port, sizeof(m->upstream_port), "%u", (unsigned)options->upstream_port);
+  m->http_connect = options->http_connect ? 1 : 0;
+  m->opaque_stream = options->opaque_stream ? 1 : 0;
+  if (m->http_connect && options->required_username != NULL)
+  {
+    m->require_auth = 1;
+    (void)snprintf(
+        m->required_username, sizeof(m->required_username), "%s", options->required_username);
+    (void)snprintf(
+        m->required_password,
+        sizeof(m->required_password),
+        "%s",
+        (options->required_password != NULL) ? options->required_password : "");
+  }
   proxy_mutex_init(&m->lock);
 
   if (proxy_open_listener(m) != 0)
@@ -2348,6 +2734,30 @@ uint32_t az_iot_test_proxy_connections(az_iot_test_proxy* m)
 {
   proxy_lock(&m->lock);
   uint32_t v = m->connections;
+  proxy_unlock(&m->lock);
+  return v;
+}
+
+uint32_t az_iot_test_proxy_tunnels_opened(az_iot_test_proxy* m)
+{
+  proxy_lock(&m->lock);
+  uint32_t v = m->tunnels_opened;
+  proxy_unlock(&m->lock);
+  return v;
+}
+
+uint32_t az_iot_test_proxy_auth_failures(az_iot_test_proxy* m)
+{
+  proxy_lock(&m->lock);
+  uint32_t v = m->auth_failures;
+  proxy_unlock(&m->lock);
+  return v;
+}
+
+const char* az_iot_test_proxy_last_connect_target(az_iot_test_proxy* m)
+{
+  proxy_lock(&m->lock);
+  const char* v = m->have_connect_target ? m->last_connect_target : NULL;
   proxy_unlock(&m->lock);
   return v;
 }

@@ -14,14 +14,14 @@
 <!-- Scope callout -->
 <table width="100%" cellpadding="10" cellspacing="0" border="0" style="background: #fff8e5; border-left: 4px solid #c19c00; margin-bottom: 24px;">
 <tr><td style="font-size: 13px;">
-<b>Scope:</b> Both samples perform the same end-to-end flow &mdash; provision a device via DPS using X.509 certificates, connect to the assigned IoT Hub, send telemetry, and disconnect. The original C SDK requires combining two separate samples (<code>prov_dev_client_ll_x509_sample</code> + <code>iothub_ll_telemetry_sample</code>) to achieve this; the new library does it in a single file.
+<b>Scope:</b> Both samples perform the same end-to-end flow &mdash; provision a device via DPS using X.509 certificates, connect to the assigned IoT Hub, send telemetry, and disconnect. The new-library excerpt shows the Classic <code>az_iot_gen1_telemetry_client</code>; an MQTT v5 assignment selects <code>az_iot_gen2_telemetry_client</code> after <code>CONNECTED</code> while keeping the same message and callback types. The original C SDK requires combining two separate samples (<code>prov_dev_client_ll_x509_sample</code> + <code>iothub_ll_telemetry_sample</code>) to achieve this; the new library does it in a single file.
 </td></tr>
 </table>
 
 <!-- Section 1: New API walkthrough -->
 <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom: 28px;">
 <tr><td style="font-size: 18px; font-weight: 600; color: #0078D4; padding-bottom: 8px;">1. New Library &mdash; Complete Sample (Annotated)</td></tr>
-<tr><td style="font-size: 12px; color: #666; padding-bottom: 8px;">Source: <code>samples/telemetry/main.c</code> &mdash; <b>~95 lines of functional code</b> (excluding comments, blank lines, and logging)</td></tr>
+<tr><td style="font-size: 12px; color: #666; padding-bottom: 8px;">Source: <code>samples/telemetry_gen1/main.c</code> &mdash; <b>~95 lines of functional code</b> (excluding comments, blank lines, and logging)</td></tr>
 <tr><td>
 <table width="100%" cellpadding="10" cellspacing="0" border="0" style="background: #f8f9fa; border: 1px solid #e0e0e0; border-radius: 4px;">
 <tr><td style="font-family: 'Cascadia Code', Consolas, 'Courier New', monospace; font-size: 11.5px; white-space: pre-wrap; line-height: 1.7; color: #1e1e1e;">
@@ -34,13 +34,13 @@
     sample_config_t             config;
     az_iot_certificate_provider_pem certs;          <span style="color: #6a9955;">// X.509 cert provider</span>
     az_iot_connection_client  connection_client;    <span style="color: #6a9955;">// DPS + Hub connection</span>
-    az_iot_telemetry_client   telemetry_client;    <span style="color: #6a9955;">// telemetry sender</span>
+    az_iot_gen1_telemetry_client telemetry_client; <span style="color: #6a9955;">// Classic telemetry sender</span>
 } sample_state_t;
 
 <span style="color: #6a9955;">// ─── Callbacks (simple, typed) ───────────────────────────────</span>
-<span style="color: #0000ff;">static void</span> <span style="color: #795e26;">on_conn_state</span>(az_iot_connection_state s, az_iot_result reason, <span style="color: #0000ff;">void</span>* ctx)
+<span style="color: #0000ff;">static void</span> <span style="color: #795e26;">on_conn_state</span>(<span style="color: #0000ff;">const</span> az_iot_connection_state_event* event, <span style="color: #0000ff;">void</span>* ctx)
 {   <span style="color: #6a9955;">// Just store the new state — 3 lines total</span>
-    ((user_context_t*)ctx)-&gt;conn_state = s;
+    ((user_context_t*)ctx)-&gt;conn_state = event-&gt;state;
 }
 
 <span style="color: #0000ff;">static void</span> <span style="color: #795e26;">on_send_done</span>(az_iot_result status, <span style="color: #0000ff;">void</span>* ctx)
@@ -73,19 +73,19 @@
     az_iot_connection_client_register_mqtt_factory(
         &amp;conn, az_iot_paho_factory_create_v3_1_1());
 
-    <span style="color: #6a9955;">// ─── Step 4: Create telemetry feature-client ─────────────</span>
-    az_iot_telemetry_client_init(&amp;telemetry, &amp;conn);
-
-    <span style="color: #6a9955;">// ─── Step 5: Open (provisions via DPS → connects to Hub) ─</span>
+    <span style="color: #6a9955;">// ─── Step 4: Open (provisions via DPS → connects to Hub) ─</span>
     az_iot_connection_client_open(&amp;conn);
     <span style="color: #0000ff;">while</span> (ctx.conn_state != AZ_IOT_CONN_STATE_CONNECTED)
         az_iot_connection_client_do_work(&amp;conn, <span style="color: #098658;">50</span>);
+
+    <span style="color: #6a9955;">// ─── Step 5: Select the feature client from the profile ──</span>
+    az_iot_gen1_telemetry_client_init(&amp;telemetry, &amp;conn);
 
     <span style="color: #6a9955;">// ─── Step 6: Send telemetry ──────────────────────────────</span>
     az_iot_telemetry_message msg = {
         .payload = <span style="color: #a31515;">"{\"temp\":23}"</span>, .payload_len = <span style="color: #098658;">11</span>,
         .properties = props, .properties_count = <span style="color: #098658;">1</span> };
-    az_iot_telemetry_client_send(&amp;telemetry, &amp;msg, on_send_done, &amp;ctx);
+    az_iot_gen1_telemetry_client_send(&amp;telemetry, &amp;msg, on_send_done, &amp;ctx);
     <span style="color: #0000ff;">while</span> (!ctx.send_done)
         az_iot_connection_client_do_work(&amp;conn, <span style="color: #098658;">50</span>);
 
@@ -302,7 +302,7 @@ az_iot_telemetry_message msg = {<br>
 &nbsp;&nbsp;.properties_count = 1 };<br>
 <br>
 <span style="color: #6a9955;">// Single send call with completion callback</span><br>
-az_iot_telemetry_client_send(<br>
+az_iot_gen1_telemetry_client_send(<br>
 &nbsp;&nbsp;&amp;telemetry, &amp;msg, on_send_done, &amp;ctx);
 </td>
 <td style="padding: 8px 12px; vertical-align: top; font-family: Consolas, monospace; font-size: 11px; background: #fafafa;">
@@ -473,7 +473,7 @@ IoTHub_Deinit();
 </td></tr></table>
 
 <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-top: 1px solid #e0e0e0; padding-top: 8px;">
-<tr><td style="font-size: 11px; color: #999;">Comparison based on <code>azure-iot-sdk/samples/telemetry/main.c</code> vs <code>azure-iot-sdk-c</code> samples <code>prov_dev_client_ll_x509_sample.c</code> + <code>iothub_ll_telemetry_sample.c</code> &bull; May 2026</td></tr>
+<tr><td style="font-size: 11px; color: #999;">Comparison based on <code>azure-iot-sdk/samples/telemetry_gen1/main.c</code> vs <code>azure-iot-sdk-c</code> samples <code>prov_dev_client_ll_x509_sample.c</code> + <code>iothub_ll_telemetry_sample.c</code> &bull; May 2026</td></tr>
 </table>
 
 </body>

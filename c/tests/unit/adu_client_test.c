@@ -24,12 +24,14 @@
 #include <azure/core/az_span.h>
 
 #include "azure/iot/az_iot_connection_client.h"
-#include "azure/iot/az_iot_twin_client.h"
+#include "../../src/features/adu/internal/adu_channel_internal.h"
+#include "../../src/features/adu/internal/adu_internal.h"
 #include "azure/iot/az_iot_mqtt_iface.h"
 #include "azure/iot/az_iot_result.h"
 #include "azure/iot/az_iot_adu.h"
 
 #include "support/mock_mqtt_iface.h"
+#include "support/subscription_ack.h"
 
 /* ------------------------------------------------------------------------- */
 /* parser-valid payloads (from azure-sdk-for-c test_az_iot_adu.c)            */
@@ -421,13 +423,160 @@ static int32_t mock_load(uint8_t* blob, size_t cap, size_t* out_len, void* ctx)
 }
 
 /* ------------------------------------------------------------------------- */
+/* fake channel                                                              */
+/* ------------------------------------------------------------------------- */
+/* The engine names no transport, so the suite drives it through a channel that
+ * carries nothing: deliveries are injected by the test and reports are captured
+ * for inspection. No MQTT, no HTTP, no service. */
+
+typedef struct
+{
+  az_iot_adu_channel_update_cb cb;
+  az_iot_adu_channel_result_cb result_cb;
+  void* engine_ctx;
+  bool opened;
+  int request_update_count;
+  az_iot_result request_update_result;
+  az_iot_adu_operation last_request_operation;
+  /* When true, the verdict is delivered from INSIDE request_update(), which the
+   * channel contract explicitly permits for a synchronous channel. */
+  bool result_is_synchronous;
+  az_iot_adu_error_action synchronous_action;
+
+  int report_count;
+  /* AZ_IOT_OK unless a test wants to see a refusal handled. */
+  az_iot_result report_result;
+  az_iot_adu_report last_report;
+  char last_workflow_id[128];
+  char last_extended[32];
+  char last_details[256];
+  bool last_had_installed_update_id;
+  char last_installed_provider[64];
+  char last_installed_name[64];
+  char last_installed_version[64];
+  az_iot_adu_client_step_result last_step_results[_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS];
+  uint8_t last_step_details[_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS][256];
+  size_t do_work_count;
+} fake_channel;
+
+static az_iot_result fake_channel_open(
+    void* ctx,
+    az_iot_adu_channel_update_cb cb,
+    az_iot_adu_channel_result_cb result_cb,
+    void* engine_ctx)
+{
+  fake_channel* fc = (fake_channel*)ctx;
+  fc->cb = cb;
+  fc->result_cb = result_cb;
+  fc->engine_ctx = engine_ctx;
+  fc->opened = true;
+  return AZ_IOT_OK;
+}
+
+static void fake_channel_close(void* ctx) { ((fake_channel*)ctx)->opened = false; }
+
+static az_iot_result fake_channel_do_work(void* ctx)
+{
+  ((fake_channel*)ctx)->do_work_count++;
+  return AZ_IOT_OK;
+}
+
+static az_iot_result fake_channel_request_update(void* ctx, az_iot_adu_operation operation)
+{
+  fake_channel* fc = (fake_channel*)ctx;
+  fc->request_update_count++;
+  fc->last_request_operation = operation;
+  if (fc->result_is_synchronous && fc->result_cb != NULL)
+  {
+    fc->result_cb(operation, AZ_IOT_ERR_DPS, fc->synchronous_action, fc->engine_ctx);
+  }
+  return fc->request_update_result;
+}
+
+static void copy_str(char* dst, size_t cap, const char* src)
+{
+  if (src == NULL)
+  {
+    dst[0] = '\0';
+    return;
+  }
+  size_t n = strlen(src);
+  if (n > cap - 1)
+  {
+    n = cap - 1;
+  }
+  memcpy(dst, src, n);
+  dst[n] = '\0';
+}
+
+static az_iot_result fake_channel_report(void* ctx, const az_iot_adu_report* report)
+{
+  fake_channel* fc = (fake_channel*)ctx;
+  fc->report_count++;
+  fc->last_report = *report;
+  assert_true(report->step_results_count >= 0);
+  assert_true(report->step_results_count <= _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS);
+  if (report->step_results_count == 0)
+  {
+    assert_null(report->step_results);
+  }
+  else
+  {
+    assert_non_null(report->step_results);
+  }
+  for (int32_t i = 0; i < report->step_results_count; ++i)
+  {
+    fc->last_step_results[i] = report->step_results[i];
+    az_span details = report->step_results[i].result_details;
+    int32_t len = az_span_size(details);
+    assert_true(len >= 0 && (size_t)len <= sizeof(fc->last_step_details[i]));
+    if (len > 0)
+    {
+      memcpy(fc->last_step_details[i], az_span_ptr(details), (size_t)len);
+      fc->last_step_results[i].result_details = az_span_create(fc->last_step_details[i], len);
+    }
+  }
+  fc->last_report.step_results = (report->step_results_count > 0) ? fc->last_step_results : NULL;
+  copy_str(fc->last_workflow_id, sizeof(fc->last_workflow_id), report->workflow_id);
+  copy_str(fc->last_extended, sizeof(fc->last_extended), report->extended_result_codes);
+  copy_str(fc->last_details, sizeof(fc->last_details), report->result_details);
+  fc->last_had_installed_update_id = (report->installed_update_id != NULL);
+  if (report->installed_update_id != NULL)
+  {
+    copy_str(
+        fc->last_installed_provider,
+        sizeof(fc->last_installed_provider),
+        report->installed_update_id->provider);
+    copy_str(
+        fc->last_installed_name,
+        sizeof(fc->last_installed_name),
+        report->installed_update_id->name);
+    copy_str(
+        fc->last_installed_version,
+        sizeof(fc->last_installed_version),
+        report->installed_update_id->version);
+  }
+  return fc->report_result;
+}
+
+static const az_iot_adu_channel_vtable k_fake_channel_vtable = {
+  .open = fake_channel_open,
+  .close = fake_channel_close,
+  .request_update = fake_channel_request_update,
+  .report = fake_channel_report,
+  .set_device_properties = NULL,
+  .do_work = fake_channel_do_work,
+};
+
+/* ------------------------------------------------------------------------- */
 /* fixture                                                                   */
 /* ------------------------------------------------------------------------- */
 
 typedef struct
 {
   az_iot_connection_client conn;
-  az_iot_twin_client twin;
+  fake_channel chan;
+  az_iot_adu_channel channel;
   az_iot_adu_client_t adu;
   az_iot_mqtt_factory* factory;
   az_iot_mock_mqtt_client* mock;
@@ -504,7 +653,10 @@ static int setup(void** state)
   fx->factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
   assert_non_null(fx->factory);
 
-  assert_int_equal(az_iot_twin_client_init(&fx->twin, &fx->conn), AZ_IOT_OK);
+  memset(&fx->chan, 0, sizeof(fx->chan));
+  fx->chan.report_result = AZ_IOT_OK;
+  fx->channel.vtable = &k_fake_channel_vtable;
+  fx->channel.ctx = &fx->chan;
 
   az_iot_adu_platform_hooks hooks;
   az_iot_adu_crypto_hooks crypto;
@@ -525,7 +677,8 @@ static int setup(void** state)
   adu_opts.device_props = &dp;
   adu_opts.device_props_buffer = fx->dp_buf;
   adu_opts.device_props_buffer_size = sizeof(fx->dp_buf);
-  assert_int_equal(az_iot_adu_client_initialize(&fx->adu, &fx->twin, &adu_opts), AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_adu_client__initialize_with_channel(&fx->adu, &fx->channel, &adu_opts), AZ_IOT_OK);
 
   *state = fx;
   return 0;
@@ -542,7 +695,7 @@ static int teardown(void** state)
      * here. Check before deinit() clears factory_count. */
     bool factory_adopted = (fx->conn.factory_count > 0);
     az_iot_adu_client_destroy(&fx->adu);
-    az_iot_twin_client_destroy(&fx->twin);
+
     az_iot_connection_client_destroy(&fx->conn);
     if (!factory_adopted)
     {
@@ -562,15 +715,18 @@ static void open_to_connected(fixture* fx)
   assert_non_null(fx->mock);
   assert_true(az_iot_mock_mqtt_client_inject_connected(fx->mock, AZ_IOT_OK));
   assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+  az_iot_test_ack_subscriptions(&fx->conn, fx->mock);
   az_iot_mock_mqtt_client_clear_calls(fx->mock);
 }
 
+/* Deliver an update payload through the channel. Under ADUv1 this arrived as an
+ * MQTT twin desired-property PATCH; the engine no longer knows or cares what
+ * carried it, so the test hands the payload straight to the channel callback. */
 static void inject_patch(fixture* fx, const char* body)
 {
-  char topic[] = "$iothub/twin/PATCH/properties/desired/?$version=7";
-  assert_true(az_iot_mock_mqtt_client_inject_message(
-      fx->mock, topic, (const uint8_t*)body, strlen(body), AZ_IOT_MQTT_QOS_0));
-  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+  assert_true(fx->chan.opened);
+  assert_non_null(fx->chan.cb);
+  fx->chan.cb((const uint8_t*)body, strlen(body), fx->chan.engine_ctx);
 }
 
 /* Pump the ADU state machine until Idle or a max iteration cap. */
@@ -642,6 +798,11 @@ static void deployment_drives_full_workflow_single_step(void** state)
   {
     assert_int_not_equal(fx->log.ops[i], OP_RESTORE);
   }
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_ADU_OUTCOME_SUCCEEDED);
+  assert_int_equal(fx->chan.last_report.step_results_count, 1);
+  assert_int_equal(
+      fx->chan.last_report.step_results[0].result_code, AZ_IOT_ADU_AGENT_RESULT_CODE_SUCCESS);
+  assert_int_equal(fx->chan.last_report.step_results[0].extended_result_code, 0);
 }
 
 static void verify_failure_blocks_download_and_fails(void** state)
@@ -859,13 +1020,18 @@ static void cancel_action_sets_cancelled_flag(void** state)
   assert_false(az_iot_adu_is_cancelled(&fx->adu));
 }
 
-static void update_device_properties_sets_report_pending(void** state)
+/* Reporting is keyed on workflowId and is therefore per-workflow: a device with
+ * no workflow in flight has nothing the service could attribute a report to.
+ * Refreshing device properties must be accepted and must NOT manufacture a
+ * report. Under ADUv1 this same call produced an unsolicited reported-property
+ * PATCH; that channel, and the concept, are gone. */
+static void update_device_properties_is_accepted_without_reporting(void** state)
 {
   fixture* fx = (fixture*)*state;
   open_to_connected(fx);
-  /* drain the startup report */
+  /* drain the startup tick */
   assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
-  az_iot_mock_mqtt_client_clear_calls(fx->mock);
+  fx->chan.report_count = 0;
 
   az_iot_adu_device_properties dp = { 0 };
   dp.manufacturer = "Contoso";
@@ -875,48 +1041,87 @@ static void update_device_properties_sets_report_pending(void** state)
   dp.installed_update_id.version = "2.0";
   assert_int_equal(az_iot_adu_client_update_device_properties(&fx->adu, &dp), AZ_IOT_OK);
 
-  /* Next do_work publishes a reported-property PATCH. */
   assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
-
-  size_t n = az_iot_mock_mqtt_client_call_count(fx->mock);
-  bool saw_reported_publish = false;
-  for (size_t i = 0; i < n; ++i)
-  {
-    const az_iot_mock_call* c = az_iot_mock_mqtt_client_call_at(fx->mock, i);
-    if (c->kind == AZ_IOT_MOCK_CALL_PUBLISH && c->topic[0] != '\0'
-        && strstr(c->topic, "twin/PATCH/properties/reported") != NULL)
-    {
-      saw_reported_publish = true;
-    }
-  }
-  assert_true(saw_reported_publish);
+  assert_int_equal(fx->chan.report_count, 0);
 }
 
-/* Search a recorded PUBLISH payload for a literal needle. */
-static bool payload_contains(const az_iot_mock_call* c, const char* needle)
-{
-  size_t nlen = strlen(needle);
-  if (c->payload_len < nlen)
-  {
-    return false;
-  }
-  for (size_t i = 0; i + nlen <= c->payload_len; ++i)
-  {
-    if (memcmp(c->payload + i, needle, nlen) == 0)
-    {
-      return true;
-    }
-  }
-  return false;
-}
-
-static void custom_device_properties_are_reported(void** state)
+/* With a workflow in flight the same tick DOES report, and the report carries
+ * the workflow id the deployment was delivered with. */
+static void report_carries_the_active_workflow_id(void** state)
 {
   fixture* fx = (fixture*)*state;
   open_to_connected(fx);
-  /* drain the startup report */
   assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
-  az_iot_mock_mqtt_client_clear_calls(fx->mock);
+  fx->chan.report_count = 0;
+
+  inject_patch(fx, signed_patch());
+  pump(fx, 40);
+
+  assert_true(fx->chan.report_count > 0);
+  assert_string_equal(fx->chan.last_workflow_id, "51552a54-765e-419f-892a-c822549b6f38");
+}
+
+static void report_before_manifest_parse_has_no_step_results(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  inject_patch(fx, signed_patch());
+
+  assert_int_equal(az_iot_adu__report_state(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(fx->chan.report_count, 1);
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_ADU_OUTCOME_IN_PROGRESS);
+  assert_int_equal(fx->chan.last_report.step_results_count, 0);
+  assert_null(fx->chan.last_report.step_results);
+}
+
+static void report_preserves_step_results_at_capacity(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  inject_patch(fx, signed_patch());
+
+  az_iot_adu_client_install_result* result = &fx->adu._internal.install_result;
+  result->step_results_count = _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS;
+  uint8_t details[] = { 'a', '\0', 'b' };
+  for (int32_t i = 0; i < result->step_results_count; ++i)
+  {
+    result->step_results[i].result_code = 100 + i;
+    result->step_results[i].extended_result_code
+        = AZ_IOT_ADU_EXTENDED_RESULT(AZ_IOT_ADU_FACILITY_INTERNAL, (uint32_t)i);
+    result->step_results[i].result_details = AZ_SPAN_FROM_BUFFER(details);
+  }
+
+  assert_int_equal(az_iot_adu__report_state(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(fx->chan.report_count, 1);
+  assert_int_equal(
+      fx->chan.last_report.step_results_count, _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS);
+
+  /* A retaining channel copies the array and span bytes before the engine
+   * reuses its storage for another workflow. */
+  memset(result, 0, sizeof(*result));
+  memset(details, 0, sizeof(details));
+  static const uint8_t expected_details[] = { 'a', '\0', 'b' };
+  for (int32_t i = 0; i < fx->chan.last_report.step_results_count; ++i)
+  {
+    const az_iot_adu_client_step_result* step = &fx->chan.last_report.step_results[i];
+    assert_int_equal(step->result_code, 100 + i);
+    assert_int_equal(
+        step->extended_result_code,
+        AZ_IOT_ADU_EXTENDED_RESULT(AZ_IOT_ADU_FACILITY_INTERNAL, (uint32_t)i));
+    assert_int_equal(az_span_size(step->result_details), sizeof(expected_details));
+    assert_memory_equal(
+        az_span_ptr(step->result_details), expected_details, sizeof(expected_details));
+  }
+}
+
+/* Custom (compatibility) properties are cached by the engine and, under ADUv2,
+ * are carried in agentInfo on the fetch — which is the channel's business, not
+ * the engine's. What remains engine-side is that they are accepted and that the
+ * standalone builder serializes them; the old assertion on a twin
+ * reported-property PATCH tested the deleted channel and is gone. */
+static void custom_device_properties_are_accepted_and_serialized(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
 
   static const az_iot_adu_custom_property customs[] = {
     { "location", "building42" },
@@ -931,24 +1136,141 @@ static void custom_device_properties_are_reported(void** state)
   dp.custom_properties = customs;
   dp.custom_properties_count = sizeof(customs) / sizeof(customs[0]);
   assert_int_equal(az_iot_adu_client_update_device_properties(&fx->adu, &dp), AZ_IOT_OK);
-
-  /* Next do_work publishes the reported-property PATCH carrying the customs. */
   assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
 
-  size_t n = az_iot_mock_mqtt_client_call_count(fx->mock);
-  bool saw_customs = false;
-  for (size_t i = 0; i < n; ++i)
+  /* The builder reports bytes used, not a C string, so reserve a byte for the
+   * terminator rather than writing at json[json_len] on a full buffer. */
+  uint8_t json[1024];
+  size_t json_len = 0;
+  assert_int_equal(
+      az_iot_adu_build_report(
+          &dp, NULL, NULL, AZ_IOT_ADU_STATE_IDLE, json, sizeof(json) - 1, &json_len),
+      AZ_IOT_OK);
+  assert_true(json_len > 0);
+  assert_true(json_len < sizeof(json));
+
+  char* text = (char*)json;
+  text[json_len] = '\0';
+  assert_non_null(strstr(text, "location"));
+  assert_non_null(strstr(text, "building42"));
+  assert_non_null(strstr(text, "tier"));
+  assert_non_null(strstr(text, "gold"));
+}
+
+/* The public entry point takes a CONNECTION and nothing else: the SDK owns the
+ * device-update protocol end to end. */
+
+static void public_initialize_takes_a_connection_and_builds_its_own_channel(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  (void)fx;
+
+  az_iot_connection_client conn;
+  az_iot_connection_client_options copts = { 0 };
+  copts.host = "broker.example";
+  copts.port = 8883;
+  copts.client_id = "ut-adu-public";
+  assert_int_equal(az_iot_connection_client_init(&conn, &copts), AZ_IOT_OK);
+
+  hook_log log = { 0 };
+  az_iot_adu_platform_hooks hooks = { 0 };
+  az_iot_adu_crypto_hooks crypto = { 0 };
+  hooks.install_fn = mock_install;
+  hooks.apply_fn = mock_apply;
+  hooks.user_ctx = &log;
+  crypto.verify_rs256_fn = mock_verify_rs256;
+  crypto.user_ctx = &log;
+
+  az_iot_adu_device_properties dp = { 0 };
+  dp.manufacturer = "Contoso";
+  dp.model = "Foobar";
+  dp.installed_update_id.provider = "Contoso";
+  dp.installed_update_id.name = "Foobar";
+  dp.installed_update_id.version = "1.0";
+
+  uint8_t buf[256];
+  az_iot_adu_client_config_options o = az_iot_adu_client_config_options_default();
+  o.hooks = &hooks;
+  o.crypto = &crypto;
+  o.device_props = &dp;
+  o.device_props_buffer = buf;
+  o.device_props_buffer_size = sizeof(buf);
+
+  /* The connection is NOT open: the bootstrap update check runs before the
+   * device registers, so initialize must not require a live session. */
+  az_iot_adu_client_t adu;
+  assert_int_equal(az_iot_adu_client_initialize(&adu, &conn, &o), AZ_IOT_OK);
+  assert_int_equal(az_iot_adu_client_get_state(&adu), AZ_IOT_ADU_STATE_IDLE);
+  az_iot_adu_client_destroy(&adu);
+
+  /* The channel state lives INSIDE the client. Initialization must not zero the
+   * client after building it there, or the channel would be left bound to a
+   * wiped state struct -- with a NULL connection -- and would fail only later,
+   * on the first operation. Reaching the connection through the client proves
+   * it survived initialization. */
+  az_iot_adu_client_t adu_state;
+  assert_int_equal(az_iot_adu_client_initialize(&adu_state, &conn, &o), AZ_IOT_OK);
+  const az_iot_adu_channel_dps* bound
+      = (const az_iot_adu_channel_dps*)(const void*)&adu_state._internal.channel_storage;
+  assert_ptr_equal(bound->connection, &conn);
+  assert_ptr_equal(adu_state._internal.channel.ctx, bound);
+  az_iot_adu_client_destroy(&adu_state);
+
+  az_iot_adu_client_t adu_no_conn;
+  assert_int_equal(az_iot_adu_client_initialize(&adu_no_conn, NULL, &o), AZ_IOT_ERR_INVALID_ARG);
+
+  az_iot_connection_client_destroy(&conn);
+}
+
+/* extendedResultCodes is contract-shaped: comma-separated UNSIGNED hex int32,
+ * NO "0x" prefix, no fixed width, case-insensitive. Pinned here because nothing
+ * else asserts the wire form, and a prefixed or zero-padded value is accepted by
+ * the compiler while being wrong on the wire. */
+static void extended_result_codes_are_bare_hex(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  fx->chan.report_count = 0;
+
+  fx->log.download_result = AZ_IOT_ADU_RESULT_FAILURE;
+  inject_patch(fx, signed_patch());
+  pump(fx, 40);
+
+  assert_true(fx->chan.report_count > 0);
+  const char* ext = fx->chan.last_extended;
+  assert_non_null(ext);
+  assert_true(ext[0] != '\0');
+  /* no 0x/0X prefix */
+  assert_false(ext[0] == '0' && (ext[1] == 'x' || ext[1] == 'X'));
+  /* Walk the comma-separated list explicitly: every segment must be non-empty
+   * and hex-only. Checking the character set alone would accept a leading or
+   * trailing comma and empty segments such as "1,,2", none of which are valid
+   * values of this field. */
+  const char* c = ext;
+  size_t segments = 0;
+  while (*c != '\0')
   {
-    const az_iot_mock_call* c = az_iot_mock_mqtt_client_call_at(fx->mock, i);
-    if (c->kind == AZ_IOT_MOCK_CALL_PUBLISH
-        && strstr(c->topic, "twin/PATCH/properties/reported") != NULL
-        && payload_contains(c, "location") && payload_contains(c, "building42")
-        && payload_contains(c, "tier") && payload_contains(c, "gold"))
+    size_t digits = 0;
+    while (*c != '\0' && *c != ',')
     {
-      saw_customs = true;
+      assert_true((*c >= '0' && *c <= '9') || (*c >= 'a' && *c <= 'f') || (*c >= 'A' && *c <= 'F'));
+      ++digits;
+      ++c;
+    }
+    /* Rejects "", a leading comma, a trailing comma, and ",,". */
+    assert_true(digits > 0);
+    /* Unsigned int32, so at most 8 hex digits. */
+    assert_true(digits <= 8);
+    ++segments;
+
+    if (*c == ',')
+    {
+      ++c; /* a separator must be followed by another segment */
+      assert_true(*c != '\0');
     }
   }
-  assert_true(saw_customs);
+  assert_true(segments > 0);
 }
 
 static void device_props_too_small_is_rejected(void** state)
@@ -957,14 +1279,17 @@ static void device_props_too_small_is_rejected(void** state)
   (void)fx;
 
   az_iot_connection_client conn;
-  az_iot_twin_client twin;
+  fake_channel fc;
+  az_iot_adu_channel channel;
   az_iot_adu_client_t adu;
   az_iot_connection_client_options opts = { 0 };
   opts.host = "broker.example";
   opts.port = 8883;
   opts.client_id = "ut-device2";
   assert_int_equal(az_iot_connection_client_init(&conn, &opts), AZ_IOT_OK);
-  assert_int_equal(az_iot_twin_client_init(&twin, &conn), AZ_IOT_OK);
+  memset(&fc, 0, sizeof(fc));
+  channel.vtable = &k_fake_channel_vtable;
+  channel.ctx = &fc;
 
   hook_log log = { 0 };
   az_iot_adu_platform_hooks hooks = { 0 };
@@ -987,9 +1312,9 @@ static void device_props_too_small_is_rejected(void** state)
   adu_opts.device_props_buffer = tiny;
   adu_opts.device_props_buffer_size = sizeof(tiny);
   assert_int_equal(
-      az_iot_adu_client_initialize(&adu, &twin, &adu_opts), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+      az_iot_adu_client__initialize_with_channel(&adu, &channel, &adu_opts),
+      AZ_IOT_ERR_NOT_ENOUGH_SPACE);
 
-  az_iot_twin_client_destroy(&twin);
   az_iot_connection_client_destroy(&conn);
 }
 
@@ -1001,13 +1326,16 @@ static void device_props_buffer_size_matches_need(void** state)
   assert_int_equal(az_iot_adu_device_props_buffer_size(NULL), 0);
 
   az_iot_connection_client conn;
-  az_iot_twin_client twin;
+  fake_channel fc;
+  az_iot_adu_channel channel;
   az_iot_connection_client_options opts = { 0 };
   opts.host = "broker.example";
   opts.port = 8883;
   opts.client_id = "ut-device3";
   assert_int_equal(az_iot_connection_client_init(&conn, &opts), AZ_IOT_OK);
-  assert_int_equal(az_iot_twin_client_init(&twin, &conn), AZ_IOT_OK);
+  memset(&fc, 0, sizeof(fc));
+  channel.vtable = &k_fake_channel_vtable;
+  channel.ctx = &fc;
 
   hook_log log = { 0 };
   az_iot_adu_platform_hooks hooks = { 0 };
@@ -1043,15 +1371,15 @@ static void device_props_buffer_size_matches_need(void** state)
   /* Exactly `need` bytes must succeed; one byte short must be rejected. */
   az_iot_adu_client_t adu_ok;
   o.device_props_buffer_size = need;
-  assert_int_equal(az_iot_adu_client_initialize(&adu_ok, &twin, &o), AZ_IOT_OK);
+  assert_int_equal(az_iot_adu_client__initialize_with_channel(&adu_ok, &channel, &o), AZ_IOT_OK);
   az_iot_adu_client_destroy(&adu_ok);
 
   az_iot_adu_client_t adu_short;
   o.device_props_buffer_size = need - 1;
   assert_int_equal(
-      az_iot_adu_client_initialize(&adu_short, &twin, &o), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+      az_iot_adu_client__initialize_with_channel(&adu_short, &channel, &o),
+      AZ_IOT_ERR_NOT_ENOUGH_SPACE);
 
-  az_iot_twin_client_destroy(&twin);
   az_iot_connection_client_destroy(&conn);
 }
 
@@ -1281,6 +1609,71 @@ static void multi_step_update_runs_every_step_in_order(void** state)
   assert_true(install0 < apply0);
   assert_true(apply0 < install1);
   assert_true(install1 < apply1);
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_ADU_OUTCOME_SUCCEEDED);
+  assert_int_equal(fx->chan.last_report.step_results_count, 2);
+  for (int32_t i = 0; i < fx->chan.last_report.step_results_count; ++i)
+  {
+    assert_int_equal(
+        fx->chan.last_report.step_results[i].result_code, AZ_IOT_ADU_AGENT_RESULT_CODE_SUCCESS);
+    assert_int_equal(fx->chan.last_report.step_results[i].extended_result_code, 0);
+  }
+}
+
+static void multi_step_report_preserves_progress_and_failure(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  inject_patch(fx, two_step_patch());
+  for (int i = 0; i < 40 && fx->adu._internal.current_step == 0; ++i)
+  {
+    assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  }
+  assert_int_equal(fx->adu._internal.current_step, 1);
+  assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_DOWNLOAD_STARTED);
+
+  const az_iot_adu_report* report = &fx->chan.last_report;
+  assert_int_equal(report->outcome, AZ_IOT_ADU_OUTCOME_IN_PROGRESS);
+  assert_int_equal(report->step_results_count, 2);
+  assert_int_equal(report->step_results[0].result_code, AZ_IOT_ADU_AGENT_RESULT_CODE_SUCCESS);
+  assert_int_equal(report->step_results[0].extended_result_code, 0);
+  assert_int_equal(report->step_results[1].result_code, 0);
+  assert_int_equal(report->step_results[1].extended_result_code, 0);
+
+  fx->log.install_result = AZ_IOT_ADU_RESULT_FAILURE;
+  fx->log.restore_result = AZ_IOT_ADU_RESULT_FAILURE;
+  pump(fx, 40);
+
+  assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
+  assert_int_equal(report->outcome, AZ_IOT_ADU_OUTCOME_FAILED);
+  assert_int_equal(report->step_results_count, 2);
+  assert_int_equal(report->step_results[0].result_code, AZ_IOT_ADU_AGENT_RESULT_CODE_SUCCESS);
+  assert_int_equal(report->step_results[0].extended_result_code, 0);
+  assert_int_equal(report->step_results[1].result_code, 700 - AZ_IOT_ADU_FACILITY_INSTALL);
+  assert_int_equal(
+      report->step_results[1].extended_result_code,
+      AZ_IOT_ADU_EXTENDED_RESULT(AZ_IOT_ADU_FACILITY_INSTALL, (uint32_t)AZ_IOT_ADU_RESULT_FAILURE));
+  assert_int_equal(
+      fx->adu._internal.install_result.extended_result_code,
+      AZ_IOT_ADU_EXTENDED_RESULT(AZ_IOT_ADU_FACILITY_RESTORE, (uint32_t)AZ_IOT_ADU_RESULT_FAILURE));
+}
+
+static void multi_step_failure_preserves_unexecuted_step_results(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  fx->log.download_result = AZ_IOT_ADU_RESULT_FAILURE;
+  inject_patch(fx, two_step_patch());
+  pump(fx, 40);
+
+  const az_iot_adu_report* report = &fx->chan.last_report;
+  assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
+  assert_int_equal(report->outcome, AZ_IOT_ADU_OUTCOME_FAILED);
+  assert_int_equal(report->step_results_count, 2);
+  assert_int_equal(report->step_results[0].result_code, 700 - AZ_IOT_ADU_FACILITY_DOWNLOAD);
+  assert_int_equal(
+      report->step_results[0].extended_result_code,
+      AZ_IOT_ADU_EXTENDED_RESULT(
+          AZ_IOT_ADU_FACILITY_DOWNLOAD, (uint32_t)AZ_IOT_ADU_RESULT_FAILURE));
+  assert_int_equal(report->step_results[1].result_code, 0);
+  assert_int_equal(report->step_results[1].extended_result_code, 0);
 }
 
 static void download_failure_is_reported_and_does_not_install(void** state)
@@ -1314,21 +1707,14 @@ static void download_failure_is_reported_and_does_not_install(void** state)
   assert_false(saw_apply);
   assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
 
-  /* The outcome reaches the service rather than the agent going quiet.
-   * The agent-state protocol spells Failed as 255 (0 = Idle,
-   * 6 = DeploymentInProgress); matching on a shorter prefix would also accept
-   * an in-progress report. */
-  bool reported_failed = false;
-  size_t n = az_iot_mock_mqtt_client_call_count(fx->mock);
-  for (size_t i = 0; i < n; ++i)
-  {
-    const az_iot_mock_call* c = az_iot_mock_mqtt_client_call_at(fx->mock, i);
-    if (c->kind == AZ_IOT_MOCK_CALL_PUBLISH && payload_contains(c, "\"state\":255"))
-    {
-      reported_failed = true;
-    }
-  }
-  assert_true(reported_failed);
+  /* The outcome reaches the service rather than the agent going quiet. Under
+   * the structured contract this is an explicit FAILED outcome attributed to
+   * the agent core, not an agent-state integer. */
+  assert_true(fx->chan.report_count > 0);
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_ADU_OUTCOME_FAILED);
+  assert_int_equal(fx->chan.last_report.failure_origin, AZ_IOT_ADU_FAILURE_ORIGIN_AGENT_CORE);
+  assert_true(fx->chan.last_report.result_code != 700);
+  assert_true(fx->chan.last_workflow_id[0] != '\0');
 }
 
 static void cancel_during_download_aborts_the_transfer(void** state)
@@ -1573,10 +1959,279 @@ static void verify_file_hash_rejects_an_unsupported_algorithm(void** state)
       AZ_IOT_ERR_AUTH);
 }
 
+/* The vtable advertises an optional do_work hook for a channel with
+ * asynchronous work of its own. A channel that reports lost operations there
+ * depends on actually being ticked, so pin that the engine drives it. */
+static void do_work_drives_the_channel(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  size_t before = fx->chan.do_work_count;
+
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(fx->chan.do_work_count, before + 1);
+
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(fx->chan.do_work_count, before + 2);
+}
+
+/* A verdict the engine must NOT retry. ALREADY_REPORTED means a terminal result
+ * is already recorded for this workflow, so the report HAS been delivered --
+ * reporting is idempotent on workflowId. Re-arming it would retry forever, and
+ * during a held bootstrap session that starves the update check until the hold
+ * expires.
+ *
+ * Asserted on the pending flag rather than a report count: an advancing
+ * workflow emits progress reports of its own, which would mask the difference.
+ */
+static void a_terminal_verdict_does_not_re_arm_the_report(void** state)
+{
+  fixture* fx = (fixture*)*state;
+
+  fx->adu._internal.device_props_report_pending = false;
+
+  assert_non_null(fx->chan.result_cb);
+  fx->chan.result_cb(
+      AZ_IOT_ADU_OP_REPORT_STATUS,
+      AZ_IOT_ERR_DPS,
+      AZ_IOT_ADU_ERROR_ACTION_ALREADY_REPORTED,
+      fx->chan.engine_ctx);
+  assert_false(fx->adu._internal.device_props_report_pending);
+
+  /* Same for the other terminal verdicts. */
+  fx->chan.result_cb(
+      AZ_IOT_ADU_OP_REPORT_STATUS,
+      AZ_IOT_ERR_DPS,
+      AZ_IOT_ADU_ERROR_ACTION_FATAL,
+      fx->chan.engine_ctx);
+  assert_false(fx->adu._internal.device_props_report_pending);
+
+  /* A retryable verdict IS re-armed -- otherwise the assertions above would
+   * pass for a callback that simply did nothing. */
+  fx->chan.result_cb(
+      AZ_IOT_ADU_OP_REPORT_STATUS,
+      AZ_IOT_ERR_DPS,
+      AZ_IOT_ADU_ERROR_ACTION_RETRY,
+      fx->chan.engine_ctx);
+  assert_true(fx->adu._internal.device_props_report_pending);
+}
+
+/* --- explicit update requests -------------------------------------------- */
+
+/* The application chooses the route, so the SDK must not pick one for it. An
+ * unrequested fetch at init would query a route the SDK guessed, and on a
+ * device with no device record the regular route is an outright error. */
+static void no_update_is_fetched_until_one_is_requested(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(fx->chan.request_update_count, 0);
+}
+
+static void each_request_function_asks_for_its_own_route(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  assert_int_equal(az_iot_adu_client_request_onboarding_update(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(fx->chan.request_update_count, 1);
+  assert_int_equal(fx->chan.last_request_operation, AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE);
+
+  assert_int_equal(az_iot_adu_client_request_update(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(fx->chan.request_update_count, 2);
+  assert_int_equal(fx->chan.last_request_operation, AZ_IOT_ADU_OP_GET_UPDATE);
+
+  /* One request, one fetch: a further tick must not re-issue it. */
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(fx->chan.request_update_count, 2);
+}
+
+/* A channel that is not ready yet must not lose the request, and must not
+ * downgrade it to the other route on the retry. */
+static void a_refused_request_is_retried_on_the_same_route(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  fx->chan.request_update_result = AZ_IOT_ERR_NOT_CONNECTED;
+  assert_int_equal(az_iot_adu_client_request_update(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(fx->chan.request_update_count, 1);
+  assert_int_equal(fx->chan.last_request_operation, AZ_IOT_ADU_OP_GET_UPDATE);
+
+  fx->chan.request_update_result = AZ_IOT_OK;
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(fx->chan.request_update_count, 2);
+  assert_int_equal(fx->chan.last_request_operation, AZ_IOT_ADU_OP_GET_UPDATE);
+}
+
+/* The same rule for a service-side retryable rejection: the verdict arrives
+ * after the channel already accepted the publish, so the engine re-arms it --
+ * and must re-arm the route that was actually asked for. */
+static void a_retryable_verdict_re_arms_the_same_route(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  assert_int_equal(az_iot_adu_client_request_update(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(fx->chan.request_update_count, 1);
+
+  assert_non_null(fx->chan.result_cb);
+  fx->chan.result_cb(
+      AZ_IOT_ADU_OP_GET_UPDATE, AZ_IOT_ERR_DPS, AZ_IOT_ADU_ERROR_ACTION_RETRY, fx->chan.engine_ctx);
+
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(fx->chan.request_update_count, 2);
+  assert_int_equal(fx->chan.last_request_operation, AZ_IOT_ADU_OP_GET_UPDATE);
+}
+
+/* A verdict belongs to a request the channel accepted earlier, so the
+ * application may have queued a different route in the meantime. Re-arming the
+ * old route over it would silently discard the newer request. */
+static void a_retryable_verdict_does_not_overwrite_a_newer_request(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  /* Regular is asked for and accepted; it is now in flight. */
+  assert_int_equal(az_iot_adu_client_request_update(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(fx->chan.request_update_count, 1);
+  assert_int_equal(fx->chan.last_request_operation, AZ_IOT_ADU_OP_GET_UPDATE);
+
+  /* The application changes its mind before the answer arrives. */
+  assert_int_equal(az_iot_adu_client_request_onboarding_update(&fx->adu), AZ_IOT_OK);
+
+  /* The in-flight regular request then fails retryably. */
+  assert_non_null(fx->chan.result_cb);
+  fx->chan.result_cb(
+      AZ_IOT_ADU_OP_GET_UPDATE, AZ_IOT_ERR_DPS, AZ_IOT_ADU_ERROR_ACTION_RETRY, fx->chan.engine_ctx);
+
+  /* The newer onboarding request must survive, not be replaced by a regular
+   * retry. */
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(fx->chan.request_update_count, 2);
+  assert_int_equal(fx->chan.last_request_operation, AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE);
+
+  /* And it is not issued twice. */
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(fx->chan.request_update_count, 2);
+}
+
+/* A synchronous channel delivers its verdict from inside request_update(), so
+ * the re-arm happens before that call returns. Clearing the slot after the call
+ * would wipe the retry the verdict just armed. */
+static void a_synchronous_retryable_verdict_is_not_lost(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  fx->chan.result_is_synchronous = true;
+  fx->chan.synchronous_action = AZ_IOT_ADU_ERROR_ACTION_RETRY;
+
+  assert_int_equal(az_iot_adu_client_request_update(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(fx->chan.request_update_count, 1);
+
+  /* The retry survived the accepted publish and goes out again, on the route
+   * that was asked for. */
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(fx->chan.request_update_count, 2);
+  assert_int_equal(fx->chan.last_request_operation, AZ_IOT_ADU_OP_GET_UPDATE);
+}
+
+/* The mirror case: a synchronous TERMINAL verdict must not be retried, or the
+ * test above would pass for an engine that simply never clears the slot. */
+static void a_synchronous_terminal_verdict_is_not_retried(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  fx->chan.result_is_synchronous = true;
+  fx->chan.synchronous_action = AZ_IOT_ADU_ERROR_ACTION_FATAL;
+
+  assert_int_equal(az_iot_adu_client_request_update(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(fx->chan.request_update_count, 1);
+
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(fx->chan.request_update_count, 1);
+}
+
+/* One pending slot, newest wins: two requests before a do_work() issue one
+ * fetch, not two. This is the documented public contract. */
+static void two_requests_before_do_work_issue_only_the_newest(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  assert_int_equal(az_iot_adu_client_request_update(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(az_iot_adu_client_request_onboarding_update(&fx->adu), AZ_IOT_OK);
+
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(fx->chan.request_update_count, 1);
+  assert_int_equal(fx->chan.last_request_operation, AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE);
+
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(fx->chan.request_update_count, 1);
+}
+
+/* A report the channel cannot take right now must not be lost. Most callers are
+ * state transitions that discard the result, so the engine has to re-arm it
+ * itself -- and a status report is the only record the service gets of what
+ * this device did. */
+static void a_refused_report_is_re_armed_and_resent(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  /* Drain the startup report so the next one is the interesting one. */
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  int before = fx->chan.report_count;
+
+  fx->chan.report_result = AZ_IOT_ERR_BUSY;
+  inject_patch(fx, signed_patch());
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  assert_true(fx->chan.report_count > before);
+  /* Refused, so the engine must be holding it for another go. */
+  assert_true(fx->adu._internal.device_props_report_pending);
+
+  fx->chan.report_result = AZ_IOT_OK;
+  int refused = fx->chan.report_count;
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  assert_true(fx->chan.report_count > refused);
+  assert_false(fx->adu._internal.device_props_report_pending);
+}
+
+static void a_request_on_a_null_client_is_rejected(void** state)
+{
+  (void)state;
+  assert_int_equal(az_iot_adu_client_request_update(NULL), AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(az_iot_adu_client_request_onboarding_update(NULL), AZ_IOT_ERR_INVALID_ARG);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
     cmocka_unit_test_setup_teardown(init_starts_idle_and_pending_report, setup, teardown),
+    cmocka_unit_test_setup_teardown(no_update_is_fetched_until_one_is_requested, setup, teardown),
+    cmocka_unit_test_setup_teardown(each_request_function_asks_for_its_own_route, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_refused_request_is_retried_on_the_same_route, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_retryable_verdict_re_arms_the_same_route, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_retryable_verdict_does_not_overwrite_a_newer_request, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_synchronous_retryable_verdict_is_not_lost, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_synchronous_terminal_verdict_is_not_retried, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        two_requests_before_do_work_issue_only_the_newest, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_refused_report_is_re_armed_and_resent, setup, teardown),
+    cmocka_unit_test(a_request_on_a_null_client_is_rejected),
     cmocka_unit_test_setup_teardown(deployment_drives_full_workflow_single_step, setup, teardown),
     cmocka_unit_test_setup_teardown(verify_failure_blocks_download_and_fails, setup, teardown),
     cmocka_unit_test_setup_teardown(install_failure_triggers_rollback, setup, teardown),
@@ -1587,8 +2242,17 @@ int main(void)
     cmocka_unit_test_setup_teardown(reboot_required_persists_and_resumes, setup, teardown),
     cmocka_unit_test_setup_teardown(resume_with_no_persisted_state_stays_idle, setup, teardown),
     cmocka_unit_test_setup_teardown(cancel_action_sets_cancelled_flag, setup, teardown),
-    cmocka_unit_test_setup_teardown(update_device_properties_sets_report_pending, setup, teardown),
-    cmocka_unit_test_setup_teardown(custom_device_properties_are_reported, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        update_device_properties_is_accepted_without_reporting, setup, teardown),
+    cmocka_unit_test_setup_teardown(report_carries_the_active_workflow_id, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        report_before_manifest_parse_has_no_step_results, setup, teardown),
+    cmocka_unit_test_setup_teardown(report_preserves_step_results_at_capacity, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        custom_device_properties_are_accepted_and_serialized, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        public_initialize_takes_a_connection_and_builds_its_own_channel, setup, teardown),
+    cmocka_unit_test_setup_teardown(extended_result_codes_are_bare_hex, setup, teardown),
     cmocka_unit_test_setup_teardown(device_props_too_small_is_rejected, setup, teardown),
     cmocka_unit_test_setup_teardown(device_props_buffer_size_matches_need, setup, teardown),
     cmocka_unit_test_setup_teardown(duplicate_redelivery_is_ignored, setup, teardown),
@@ -1599,6 +2263,10 @@ int main(void)
     cmocka_unit_test(microsoft_root_keys_are_embedded),
     cmocka_unit_test_setup_teardown(multi_step_update_runs_every_step_in_order, setup, teardown),
     cmocka_unit_test_setup_teardown(
+        multi_step_report_preserves_progress_and_failure, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        multi_step_failure_preserves_unexecuted_step_results, setup, teardown),
+    cmocka_unit_test_setup_teardown(
         download_failure_is_reported_and_does_not_install, setup, teardown),
     cmocka_unit_test_setup_teardown(cancel_during_download_aborts_the_transfer, setup, teardown),
     cmocka_unit_test(build_report_with_too_small_a_buffer_is_rejected),
@@ -1608,6 +2276,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(malformed_manifest_json_is_rejected, setup, teardown),
     cmocka_unit_test_setup_teardown(
         verify_file_hash_rejects_an_unsupported_algorithm, setup, teardown),
+    cmocka_unit_test_setup_teardown(do_work_drives_the_channel, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_terminal_verdict_does_not_re_arm_the_report, setup, teardown),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

@@ -23,12 +23,32 @@ typedef struct
   sample_config config;
   az_iot_certificate_provider_pem certs;
   az_iot_connection_client connection_client;
-  az_iot_twin_client twin_client;
+  az_iot_gen1_twin_client gen1_twin;
+  az_iot_gen2_twin_client gen2_twin;
+  az_iot_connection_profile twin_profile;
+  int twin_initialized;
 } sample_state;
+
+static void twin_deinit(sample_state* s)
+{
+  if (!s->twin_initialized)
+  {
+    return;
+  }
+  if (s->twin_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
+  {
+    az_iot_gen2_twin_client_deinit(&s->gen2_twin);
+  }
+  else
+  {
+    az_iot_gen1_twin_client_deinit(&s->gen1_twin);
+  }
+  s->twin_initialized = 0;
+}
 
 static void sample_state_destroy(sample_state* s)
 {
-  az_iot_twin_client_destroy(&s->twin_client);
+  twin_deinit(s);
   az_iot_connection_client_destroy(&s->connection_client);
   az_iot_certificate_provider_pem_destroy(&s->certs);
   sample_config_release(&s->config);
@@ -36,18 +56,91 @@ static void sample_state_destroy(sample_state* s)
 
 typedef struct
 {
+  sample_state* state;
   az_iot_connection_state conn_state;
+  az_iot_result twin_status;
+  int rebuild_pending;
   int get_done;
   int patch_done;
+  int desired_count;
   az_iot_result get_status;
   az_iot_result patch_status;
   uint64_t patch_version;
 } user_context;
 
-static void on_conn_state(az_iot_connection_state s, az_iot_result reason, void* user_ctx)
+static void on_desired(const uint8_t* patch, size_t patch_len, uint64_t version, void* user_ctx);
+
+/* The generation is only known once CONNECTED reports the resolved profile,
+ * and a reconnect can land on the other one -- so the client is built from the
+ * transition rather than constructed once up front. */
+static az_iot_result twin_rebuild(
+    sample_state* s,
+    az_iot_connection_profile profile,
+    void* handler_ctx)
 {
-  (void)reason;
-  ((user_context*)user_ctx)->conn_state = s;
+  twin_deinit(s);
+
+  az_iot_result result;
+  if (profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
+  {
+    result = az_iot_gen2_twin_client_init(&s->gen2_twin, &s->connection_client);
+    if (result == AZ_IOT_OK)
+    {
+      result = az_iot_gen2_twin_client_set_desired_handler(&s->gen2_twin, on_desired, handler_ctx);
+    }
+  }
+  else if (profile == AZ_IOT_CONNECTION_PROFILE_CLASSIC)
+  {
+    result = az_iot_gen1_twin_client_init(&s->gen1_twin, &s->connection_client);
+    if (result == AZ_IOT_OK)
+    {
+      result = az_iot_gen1_twin_client_set_desired_handler(&s->gen1_twin, on_desired, handler_ctx);
+    }
+  }
+  else
+  {
+    return AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED;
+  }
+
+  if (result == AZ_IOT_OK)
+  {
+    s->twin_profile = profile;
+    s->twin_initialized = 1;
+  }
+  return result;
+}
+
+static void on_conn_state(const az_iot_connection_state_event* event, void* user_ctx)
+{
+  user_context* ctx = (user_context*)user_ctx;
+  ctx->conn_state = event->state;
+  if (event->state == AZ_IOT_CONN_STATE_CONNECTED)
+  {
+    ctx->twin_status = event->profile
+        ? twin_rebuild(ctx->state, event->profile->connection_profile, ctx)
+        : AZ_IOT_ERR_INTERNAL;
+  }
+  else if (event->reason == AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH && event->profile)
+  {
+    /* Re-provisioning moved the device to the other generation, so the pinned
+     * client can never connect again. Rebuilding for the assigned profile
+     * releases the old pin and takes the new one; the reopen is driven from
+     * the main loop rather than from inside this callback. */
+    printf("Reassigned to the other hub generation; rebuilding the twin client.\n");
+    ctx->twin_status = twin_rebuild(ctx->state, event->profile->connection_profile, ctx);
+    ctx->rebuild_pending = (ctx->twin_status == AZ_IOT_OK);
+  }
+}
+
+static void on_desired(const uint8_t* patch, size_t patch_len, uint64_t version, void* user_ctx)
+{
+  user_context* ctx = (user_context*)user_ctx;
+  ctx->desired_count++;
+  printf(
+      "twin desired (version %llu): %.*s\n",
+      (unsigned long long)version,
+      (int)patch_len,
+      (const char*)patch);
 }
 
 static void on_get(az_iot_result status, const uint8_t* body, size_t len, void* user_ctx)
@@ -82,6 +175,7 @@ int main(void)
 
   int rc = 1;
   user_context user_ctx = { 0 };
+  user_ctx.state = &state;
 
   /* Certificate provider */
   az_iot_certificate_provider_pem_options pem = az_iot_certificate_provider_pem_options_default();
@@ -97,8 +191,7 @@ int main(void)
 
   /* Connection client (DPS provisioning is internal when host==NULL) */
   az_iot_connection_client_options copts = az_iot_connection_client_options_default();
-  copts.dps.id_scope = state.config.id_scope;
-  copts.dps.registration_id = state.config.reg_id;
+  sample_apply_dps_options(&copts, &state.config);
   copts.certificate_provider = &state.certs.base;
 
   if (az_iot_connection_client_init(&state.connection_client, &copts) != AZ_IOT_OK)
@@ -126,12 +219,8 @@ int main(void)
     return 1;
   }
 
-  /* Twin client */
-  if (az_iot_twin_client_init(&state.twin_client, &state.connection_client) != AZ_IOT_OK)
-  {
-    sample_state_destroy(&state);
-    return 1;
-  }
+  /* The twin client is built from the CONNECTED transition, once the resolved
+   * profile says which generation this hub speaks. */
 
   /* Open (internally provisions via DPS then connects to assigned hub) */
   if (az_iot_connection_client_open(&state.connection_client) != AZ_IOT_OK)
@@ -143,23 +232,42 @@ int main(void)
   for (int i = 0; i < 1200 && user_ctx.conn_state != AZ_IOT_CONN_STATE_CONNECTED; ++i)
   {
     (void)az_iot_connection_client_do_work(&state.connection_client, 50);
+    if (user_ctx.rebuild_pending)
+    {
+      user_ctx.rebuild_pending = 0;
+      if (az_iot_connection_client_open(&state.connection_client) != AZ_IOT_OK)
+      {
+        break;
+      }
+      continue;
+    }
     if (user_ctx.conn_state == AZ_IOT_CONN_STATE_FAULTED)
     {
       break;
     }
   }
 
-  if (user_ctx.conn_state == AZ_IOT_CONN_STATE_CONNECTED)
+  if (user_ctx.conn_state == AZ_IOT_CONN_STATE_CONNECTED && state.twin_initialized)
   {
     /* Issue twin GET (the return is the send/queue status; the twin data
      * arrives asynchronously via on_get, checked below). */
-    az_iot_result get_rc = az_iot_twin_client_get(&state.twin_client, on_get, &user_ctx);
-    (void)get_rc;
-
-    /* Issue twin PATCH reported (the ack arrives via on_patch). */
     static const uint8_t patch[] = "{\"sample\":\"hello\"}";
-    az_iot_result patch_rc = az_iot_twin_client_patch_reported(
-        &state.twin_client, patch, sizeof(patch) - 1, on_patch, &user_ctx);
+    az_iot_result get_rc;
+    az_iot_result patch_rc;
+
+    if (state.twin_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
+    {
+      get_rc = az_iot_gen2_twin_client_get(&state.gen2_twin, on_get, &user_ctx);
+      patch_rc = az_iot_gen2_twin_client_patch_reported(
+          &state.gen2_twin, patch, sizeof(patch) - 1, on_patch, &user_ctx);
+    }
+    else
+    {
+      get_rc = az_iot_gen1_twin_client_get(&state.gen1_twin, on_get, &user_ctx);
+      patch_rc = az_iot_gen1_twin_client_patch_reported(
+          &state.gen1_twin, patch, sizeof(patch) - 1, on_patch, &user_ctx);
+    }
+    (void)get_rc;
     (void)patch_rc;
 
     /* Pump until both responses arrive */

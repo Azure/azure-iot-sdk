@@ -163,7 +163,7 @@ static az_iot_result mock_connect(az_iot_mqtt_client* self, const az_iot_mqtt_co
     c->connect.keep_alive_seconds = opts->keep_alive_seconds;
     c->connect.connect_timeout_seconds = opts->connect_timeout_seconds;
     c->connect.clean_start = opts->clean_start;
-    c->connect.verify_server = opts->tls.verify_server;
+    c->connect.use_tls = opts->tls.use_tls;
     copy_str(
         c->connect.trusted_ca_path, sizeof(c->connect.trusted_ca_path), opts->tls.trusted_ca_path);
     copy_str(
@@ -175,6 +175,21 @@ static az_iot_result mock_connect(az_iot_mqtt_client* self, const az_iot_mqtt_co
     c->connect.has_trusted_ca_pem = (opts->tls.trusted_ca_pem != NULL);
     c->connect.has_client_cert_pem = (opts->tls.client_cert_pem != NULL);
     c->connect.has_client_key_pem = (opts->tls.client_key_pem != NULL);
+    copy_str(
+        c->connect.client_key_uri, sizeof(c->connect.client_key_uri), opts->tls.client_key_uri);
+    copy_str(
+        c->connect.crypto_engine_id,
+        sizeof(c->connect.crypto_engine_id),
+        opts->tls.crypto_engine_id);
+    c->connect.has_sign = (opts->tls.sign != NULL);
+    c->connect.sign = opts->tls.sign;
+    c->connect.sign_ctx = opts->tls.sign_ctx;
+    c->connect.transport = opts->transport;
+    copy_str(c->connect.websocket_path, sizeof(c->connect.websocket_path), opts->websocket_path);
+    copy_str(c->connect.proxy_host, sizeof(c->connect.proxy_host), opts->proxy.host);
+    c->connect.proxy_port = opts->proxy.port;
+    copy_str(c->connect.proxy_username, sizeof(c->connect.proxy_username), opts->proxy.username);
+    copy_str(c->connect.proxy_password, sizeof(c->connect.proxy_password), opts->proxy.password);
   }
   return take_override(m, AZ_IOT_MOCK_CALL_CONNECT);
 }
@@ -258,6 +273,7 @@ static az_iot_result mock_publish(
         msg->correlation_data_len,
         &c->correlation_data_len);
     copy_str(c->content_type, sizeof(c->content_type), msg->content_type);
+    c->message_expiry_seconds = msg->message_expiry_seconds;
     for (size_t i = 0; i < msg->user_properties_count; ++i)
     {
       const az_iot_mqtt_user_property* up = &msg->user_properties[i];

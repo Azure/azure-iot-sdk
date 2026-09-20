@@ -387,11 +387,12 @@ sequenceDiagram
 
 **Consideration.** Two codebases (or two build targets maintained by different
 people) drift: twin, direct methods, C2D, telemetry, and especially **ADU** can
-diverge in behavior, error mapping, or API shape. ADU already differs by channel
-(ADUv1 over twin vs ADUv2 over HTTPS/ADR — see
-[adu-client-plan.md](adu-client-plan.md)), which compounds the
-
-risk.
+diverge in behavior, error mapping, or API shape. ADU keeps this bounded by having
+**one** channel: the twin channel (ADUv1) is cut, and the ADUv2 pull protocol,
+fronted by the DPS gateway, is the only channel that will ship — it is the
+implementation target, not yet built. See
+[adu-client-plan.md](adu-client-plan.md). Drift would therefore be drift in the
+shared engine, which is exactly what the conformance suite has to catch.
 
 **Mitigations.**
 
@@ -400,8 +401,9 @@ risk.
   differences only behind the protocol profile.
 - Run the **conformance suite** (`tests/conformance`) against *both* build
   flavors in CI, asserting identical public behavior where the protocols allow.
-- Keep ADU's verify→download→install→report core shared; only the
-  reporting channel (twin vs ADR) varies by flavor.
+- Keep ADU's verify→download→install→report core shared (`adu_core`); the
+  only variation is the channel implementation behind `az_iot_adu_channel`, and for now
+  there is exactly one.
 
 **Flow — issue vs. solution.**
 

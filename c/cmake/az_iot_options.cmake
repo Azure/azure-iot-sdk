@@ -3,6 +3,13 @@
 
 option(AZ_IOT_WITH_PAHO        "Build the Paho-C MQTT adapter (default)"      ON)
 option(AZ_IOT_WITH_RUST_MQTT   "Build the Rust MQTT adapter shell"             OFF)
+# Non-extractable key custody (D8) in the Paho adapter: resolve a
+# "pkcs11:"/"tpm2:" key reference through an OpenSSL ENGINE or provider so the
+# TLS handshake signs inside the HSM. Needs the OSSL_STORE/OSSL_ENCODER APIs,
+# so it is compiled in only when OpenSSL 3.0+ is present; the adapter builds
+# either way and refuses a key reference with AZ_IOT_ERR_NOT_SUPPORTED when the
+# support is absent, rather than connecting without a client key.
+option(AZ_IOT_PAHO_KEY_CUSTODY "Honour non-extractable key references in the Paho adapter (needs OpenSSL 3.0+)" ON)
 option(AZ_IOT_WITH_ADU_CRYPTO_OPENSSL "Build the OpenSSL ADU crypto adapter"   ON)
 option(AZ_IOT_WITH_CERT_PROVIDER_MANAGED "Build the OpenSSL managed certificate provider" ON)
 option(AZ_IOT_BUILD_SAMPLES    "Build sample apps"                              ON)
@@ -11,6 +18,11 @@ option(AZ_IOT_BUILD_TESTS      "Build unit tests"                               
 # default (they require provisioned cloud resources + the Paho adapter). The
 # e2e GitHub Actions workflow enables this alongside AZ_IOT_BUILD_TESTS.
 option(AZ_IOT_BUILD_E2E        "Build the end-to-end test device agent"         OFF)
+# The ADUv2 device-update e2e suite. Selects that suite WITHIN the e2e tests;
+# AZ_IOT_BUILD_E2E and AZ_IOT_WITH_PAHO are still required, and this option on
+# its own creates no target. Separate because the suite needs a Device Update
+# environment and an X.509 enrollment that the other e2e jobs do not provision.
+option(AZ_IOT_BUILD_E2E_ADU_V2 "Build the ADUv2 device-update end-to-end suite (needs AZ_IOT_BUILD_E2E + AZ_IOT_WITH_PAHO)" OFF)
 # The conformance suites drive a REAL MQTT broker over the network. The harness
 # executables always build when the Paho adapter is on -- customers link the
 # conformance library to validate their own adapter -- but they are registered
@@ -41,6 +53,16 @@ option(AZ_IOT_BUILD_CONFORMANCE_TESTS_TLS "Include the TLS certificate-validatio
 # only the dedicated ci-c-e2e-csr workflow provisions. Same rule as above: the
 # test is built when it is going to be run, not built-and-skipped.
 option(AZ_IOT_BUILD_E2E_CSR    "Build the CSR enrollment e2e test (needs a CA-linked DPS enrollment)" OFF)
+# The PKCS#11 custody tests drive a REAL token (SoftHSM2 in CI) through an
+# OpenSSL 3.x pkcs11 provider. Same rule as the conformance suites: the test is
+# built when it is going to be run, not built-and-skipped. The token URI comes
+# from AZ_IOT_TEST_PKCS11_KEY_URI at run time and the suite fails if it is unset.
+option(AZ_IOT_BUILD_PKCS11_TESTS "Register the Paho key-custody tests that need a PKCS#11 token" OFF)
+# The custody e2e suite runs DPS issuance and hub traffic with a device key that
+# lives inside a PKCS#11 token. It needs BOTH a provisioned token and the
+# standard e2e Azure resources, which only the e2e workflow has, so it follows
+# the same build-it-when-it-will-run rule as AZ_IOT_BUILD_E2E_CSR.
+option(AZ_IOT_BUILD_E2E_PKCS11 "Build the PKCS#11 custody e2e test (needs a token + e2e resources)" OFF)
 option(AZ_IOT_USE_SYSTEM_DEPS  "Prefer find_package() over fetched deps"       OFF)
 option(AZ_IOT_USE_CPM          "Use CPM.cmake to fetch deps from source"       OFF)
 option(AZ_IOT_WARNINGS_AS_ERRORS "Treat compiler warnings as errors"           ON)

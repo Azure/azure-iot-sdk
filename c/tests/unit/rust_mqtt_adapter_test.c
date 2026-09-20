@@ -219,6 +219,71 @@ static void test_uninstall_disables_factory(void** s)
   assert_null(az_iot_rust_mqtt_factory_create_v5());
 }
 
+/* An egress requirement this adapter cannot carry must stop at the shell. The
+ * Rust runtime behind the FFI table predates these fields and would ignore
+ * them, so forwarding the connect would open a direct session to the broker --
+ * around the proxy the caller demanded, or on 8883 when only 443 is reachable.
+ * Refusing is the only answer that cannot silently do the wrong thing. */
+static void test_connect_refuses_a_proxy(void** s)
+{
+  (void)s;
+  assert_int_equal(AZ_IOT_OK, az_iot_rust_mqtt_install(&k_fake_ffi));
+  az_iot_mqtt_factory* f = az_iot_rust_mqtt_factory_create_v5();
+  assert_non_null(f);
+  az_iot_mqtt_client* c = f->create(f->factory_ctx);
+  assert_non_null(c);
+
+  az_iot_mqtt_connect_options opts = { .host = "h", .port = 8883, .client_id = "id" };
+  opts.proxy.host = "proxy.corp.example";
+  opts.proxy.port = 3128;
+
+  assert_int_equal(AZ_IOT_ERR_NOT_SUPPORTED, c->iface->connect(c, &opts));
+  assert_int_equal(g_last_client->connected, 0);
+
+  c->iface->destroy(c);
+  az_iot_rust_mqtt_factory_destroy(f);
+}
+
+static void test_connect_refuses_websockets(void** s)
+{
+  (void)s;
+  assert_int_equal(AZ_IOT_OK, az_iot_rust_mqtt_install(&k_fake_ffi));
+  az_iot_mqtt_factory* f = az_iot_rust_mqtt_factory_create_v5();
+  assert_non_null(f);
+  az_iot_mqtt_client* c = f->create(f->factory_ctx);
+  assert_non_null(c);
+
+  az_iot_mqtt_connect_options opts = { .host = "h", .client_id = "id" };
+  opts.transport = AZ_IOT_MQTT_TRANSPORT_WEBSOCKET;
+
+  assert_int_equal(AZ_IOT_ERR_NOT_SUPPORTED, c->iface->connect(c, &opts));
+  assert_int_equal(g_last_client->connected, 0);
+
+  c->iface->destroy(c);
+  az_iot_rust_mqtt_factory_destroy(f);
+}
+
+/* An empty proxy host is not a proxy, so it must not trip the refusal: it is
+ * what an unset environment variable copied into the options looks like. */
+static void test_connect_allows_an_empty_proxy_host(void** s)
+{
+  (void)s;
+  assert_int_equal(AZ_IOT_OK, az_iot_rust_mqtt_install(&k_fake_ffi));
+  az_iot_mqtt_factory* f = az_iot_rust_mqtt_factory_create_v5();
+  assert_non_null(f);
+  az_iot_mqtt_client* c = f->create(f->factory_ctx);
+  assert_non_null(c);
+
+  az_iot_mqtt_connect_options opts = { .host = "h", .port = 8883, .client_id = "id" };
+  opts.proxy.host = "";
+
+  assert_int_equal(AZ_IOT_OK, c->iface->connect(c, &opts));
+  assert_int_equal(g_last_client->connected, 1);
+
+  c->iface->destroy(c);
+  az_iot_rust_mqtt_factory_destroy(f);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -226,6 +291,9 @@ int main(void)
     cmocka_unit_test_setup(test_install_rejects_partial_table, reset_fixture),
     cmocka_unit_test_setup(test_install_then_factory_then_dispatch, reset_fixture),
     cmocka_unit_test_setup(test_uninstall_disables_factory, reset_fixture),
+    cmocka_unit_test_setup(test_connect_refuses_a_proxy, reset_fixture),
+    cmocka_unit_test_setup(test_connect_refuses_websockets, reset_fixture),
+    cmocka_unit_test_setup(test_connect_allows_an_empty_proxy_host, reset_fixture),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

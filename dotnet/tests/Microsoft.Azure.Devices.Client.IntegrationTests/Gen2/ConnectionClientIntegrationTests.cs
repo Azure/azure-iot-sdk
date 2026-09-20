@@ -1,6 +1,12 @@
-﻿using Microsoft.Azure.Devices.Client.Gen2.Connection;
+﻿using CaptureProxy;
+using Microsoft.Azure.Devices.Client.IntegrationTests.Unified;
 using Microsoft.Azure.Devices.Client.Models;
-using System.Security.Cryptography.X509Certificates;
+using Microsoft.Azure.Devices.Client.MqttNetAdapter;
+using Microsoft.Azure.Devices.Client.MQTTnetAdapter;
+using System;
+using System.Collections.Generic;
+using System.Net;
+using System.Text;
 using Xunit;
 
 namespace Microsoft.Azure.Devices.Client.IntegrationTests.Gen2
@@ -8,49 +14,51 @@ namespace Microsoft.Azure.Devices.Client.IntegrationTests.Gen2
     public class ConnectionClientIntegrationTests
     {
         [Fact(Timeout = Setup.TestTimeoutMilliseconds)]
-        public async Task CanConnectDirectlyToIotHub()
+        public async Task CanConnectOverWebsocket()
         {
-            Assert.Skip("No AEG hub to test against yet");
-
-            string deviceId = Guid.NewGuid().ToString();
-            string certId = Guid.NewGuid().ToString();
-            string certPath = $"./{certId}.cer";
-            string pfxPath = $"./{certId}.pfx";
-            Setup.CreateTestCertificates(pfxPath, certPath, deviceId);
-
-            X509Certificate2 certificate = X509CertificateLoader.LoadCertificateFromFile(certPath);
-            X509Certificate2 pfx = X509CertificateLoader.LoadPkcs12FromFile(pfxPath, Setup.TestCertificatesPassword);
-            var authenticationProvider = new X509AuthenticationProvider(pfx);
-
-            Device device = new(deviceId)
+            MqttNetClientOptions mqttClientOptions = new()
             {
-                Authentication = new AuthenticationMechanism()
-                {
-                    X509Thumbprint = new()
-                    {
-                        PrimaryThumbprint = certificate.Thumbprint
-                    }
-                }
+                UseWebsocket = true,
             };
 
-            await Setup.GetGen2IotHubRegistryManager().AddDeviceAsync(device, TestContext.Current.CancellationToken);
-
-            ConnectionContext connectionContext = new()
+            ConnectionClientOptions connectionClientOptions = new()
             {
-                DeviceId = deviceId,
-                IotHubHostName = Setup.GetGen2IotHubHostName(),
-                AuthenticationProvider = authenticationProvider, 
-                IsGen2Hub = true,
+                MqttClient = new MqttNetClient(mqttClientOptions)
             };
 
-            ConnectionClient connectionClient = new();
+            Gen2DeviceTestContext testDeviceContext = await Setup.CreateConnectedGen2ConnectionClientAsync(null, connectionClientOptions, TestContext.Current.CancellationToken);
 
-            // This basic retry logic covers the issue where a device is created on the Hub side, but it still 
-            // rejects the connection for authorization reasons. Usually, after a few seconds, the device is ready to 
-            // authorize the newly created device.
-            await Setup.RetryAroundAuthorizationAsync(
-               async () => await connectionClient.ConnectAsync(connectionContext, null, cancellationToken: TestContext.Current.CancellationToken),
-               TestContext.Current.CancellationToken);
+            await testDeviceContext.DisposeAsync(); // Dispose this before any feature clients so that the test device identity can be cleaned up and the MQTT client disconnected gracefully
+        }
+
+        [Fact(Timeout = Setup.TestTimeoutMilliseconds)]
+        public async Task CanConnectOverWebsocketAndHttpProxy()
+        {
+            int proxyPort = 8879; // Use a port that won't collide with any other proxy test
+            var httpProxy = new HttpProxy(proxyPort);
+
+            // Start the proxy server
+            httpProxy.Start();
+
+
+            MqttNetClientOptions mqttClientOptions = new()
+            {
+                UseWebsocket = true,
+                Proxy = new WebProxy("localhost", proxyPort)
+            };
+
+            ConnectionClientOptions connectionClientOptions = new()
+            {
+                MqttClient = new MqttNetClient(mqttClientOptions)
+            };
+
+            Gen2DeviceTestContext testDeviceContext = await Setup.CreateConnectedGen2ConnectionClientAsync(null, connectionClientOptions, TestContext.Current.CancellationToken);
+
+            await testDeviceContext.DisposeAsync(); // Dispose this before any feature clients so that the test device identity can be cleaned up and the MQTT client disconnected gracefully
+
+            // Stop the proxy server
+            httpProxy.Stop();
+            httpProxy.Dispose();
         }
     }
 }

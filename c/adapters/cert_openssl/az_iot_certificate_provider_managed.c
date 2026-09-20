@@ -33,9 +33,16 @@
  * Paho adapter carries the same copy for the same reason. */
 #define is_nonempty_cstr(s) ((s) != NULL && (s)[0] != '\0')
 
-/* PEM framing written around each base64 DER certificate the service issues. */
-#define PEM_CERT_BEGIN "-----BEGIN CERTIFICATE-----\n"
+/* What a PEM certificate starts with, used both to frame one and to tell an
+ * already-PEM payload from base64 DER after decoding. */
+#define PEM_CERT_PREFIX "-----BEGIN CERTIFICATE-----"
+
+/* PEM framing written around a certificate the service issues as base64 DER. */
+#define PEM_CERT_BEGIN PEM_CERT_PREFIX "\n"
 #define PEM_CERT_END "\n-----END CERTIFICATE-----\n"
+
+/* Longest base64 line a PEM body may contain (RFC 7468 recommends 64). */
+#define PEM_LINE_LEN 64
 
 /* Encoded length (excluding NUL) of base64 over `binary_len` bytes. */
 #define BASE64_ENCODED_LEN(binary_len) ((((binary_len) + 2) / 3) * 4)
@@ -283,6 +290,89 @@ static void managed_release_csr(
   }
 }
 
+/* Write one issued certificate to `b` as PEM.
+ *
+ * The chain arrives base64-encoded, but what that base64 covers is not fixed:
+ * the provisioning service encodes a whole PEM certificate, while the DER form
+ * the header documents is what a plain base64-DER encoder produces. Wrapping an
+ * already-PEM payload in a second set of BEGIN/END lines yields a file no TLS
+ * stack can parse, which surfaces only much later as a handshake failure, so
+ * decode first and write whichever form came back.
+ *
+ * Returns true on success. */
+static bool write_issued_cert(BIO* b, const uint8_t* base64, int base64_len)
+{
+  bool ok = false;
+  /* Decoded output is always shorter than its base64; +1 so the result can be
+   * examined as a string. */
+  unsigned char* decoded = (unsigned char*)calloc(1, (size_t)base64_len + 1);
+  if (decoded == NULL)
+  {
+    return false;
+  }
+
+  int decoded_len = EVP_DecodeBlock(decoded, base64, base64_len);
+  if (decoded_len <= 0)
+  {
+    /* Not decodable base64, so neither form can be recovered from it. Writing it
+     * anyway would persist a certificate file that cannot be parsed and would
+     * only be discovered later, as a connection failure. */
+    free(decoded);
+    return false;
+  }
+
+  /* EVP_DecodeBlock rounds up to a multiple of three and counts the '=' padding
+   * as data, so trim it back before the content is inspected or written. */
+  if (base64_len >= 2 && base64[base64_len - 1] == '=')
+  {
+    decoded_len--;
+    if (base64[base64_len - 2] == '=')
+    {
+      decoded_len--;
+    }
+  }
+
+  if (decoded_len <= 0)
+  {
+    free(decoded);
+    return false;
+  }
+
+  if ((size_t)decoded_len >= strlen(PEM_CERT_PREFIX)
+      && memcmp(decoded, PEM_CERT_PREFIX, strlen(PEM_CERT_PREFIX)) == 0)
+  {
+    /* Already PEM: write it through unchanged, and guarantee the newline that
+     * separates it from the next certificate in the chain. */
+    ok = BIO_write(b, decoded, decoded_len) == decoded_len;
+    if (ok && decoded[decoded_len - 1] != '\n')
+    {
+      ok = BIO_puts(b, "\n") > 0;
+    }
+  }
+  else
+  {
+    /* Base64 DER: frame it, breaking the body into PEM-length lines. A single
+     * unbroken line is accepted by some parsers and rejected by others. */
+    ok = BIO_puts(b, PEM_CERT_BEGIN) > 0;
+    for (int off = 0; ok && off < base64_len; off += PEM_LINE_LEN)
+    {
+      int chunk = base64_len - off < PEM_LINE_LEN ? base64_len - off : PEM_LINE_LEN;
+      ok = BIO_write(b, base64 + off, chunk) == chunk;
+      if (ok && off + chunk < base64_len)
+      {
+        ok = BIO_puts(b, "\n") > 0;
+      }
+    }
+    if (ok)
+    {
+      ok = BIO_puts(b, PEM_CERT_END) > 0;
+    }
+  }
+
+  free(decoded);
+  return ok;
+}
+
 static az_iot_result managed_store(
     az_iot_certificate_provider* self,
     const az_iot_issued_certificate* issued)
@@ -307,7 +397,7 @@ static az_iot_result managed_store(
     return AZ_IOT_ERR_INTERNAL;
   }
 
-  /* PEM-wrap each base64 DER cert (leaf first) into the operational cert file. */
+  /* Write each issued cert (leaf first) into the operational cert file. */
   az_iot_result rc = AZ_IOT_OK;
   for (size_t i = 0; i < issued->count; ++i)
   {
@@ -317,8 +407,7 @@ static az_iot_result managed_store(
     {
       continue;
     }
-    if (BIO_puts(b, PEM_CERT_BEGIN) < 0 || BIO_write(b, az_span_ptr(cert), len) != len
-        || BIO_puts(b, PEM_CERT_END) < 0)
+    if (!write_issued_cert(b, az_span_ptr(cert), len))
     {
       rc = AZ_IOT_ERR_INTERNAL;
       break;

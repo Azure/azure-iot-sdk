@@ -40,6 +40,8 @@
 
 #include "azure/iot/az_iot_mqtt_iface.h"
 
+#include <stdint.h>
+
 #ifdef __cplusplus
 extern "C"
 {
@@ -53,14 +55,201 @@ extern "C"
     AZ_IOT_CONFORMANCE_SUITE_V5 = 1
   } az_iot_conformance_suite;
 
+  /* Optional adapter capabilities (D8 and later).
+   *
+   * The suite's baseline applies to EVERY adapter and is not negotiable. A
+   * capability declares that the adapter implements an OPTIONAL feature, which
+   * makes the suite hold it to that feature's contract as well.
+   *
+   * Declaring nothing is therefore never a way to be tested less on safety:
+   * the baseline includes what an adapter must do when asked for a feature it
+   * does NOT implement -- refuse the connect rather than proceed without the
+   * credential it was asked to use. */
+  typedef enum az_iot_conformance_capability
+  {
+    AZ_IOT_CONFORMANCE_CAP_NONE = 0,
+
+    /* Non-extractable key custody (D8) has TWO independent routes, and
+     * az_iot_mqtt_tls_options says an adapter may implement either, both or
+     * neither. They are therefore separate capabilities: one bit covering both
+     * would hold an adapter to a contract it never claimed, and -- because an
+     * unexercised claim fails the run -- would leave an adapter that implements
+     * only one route unable to obtain a conformant result at all.
+     *
+     * Declare only the routes you implement. Each is proved by its own
+     * end-to-end handshake, and declaring one without supplying the material it
+     * needs, or in a build without TLS support, fails the run rather than
+     * warning. */
+
+    /* RENAME, deliberately not aliased: AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY
+     * became _URI (same bit, 1u << 0, and the same proof it always had).
+     * A harness declaring the old name gets a compile error; change it to the
+     * route you implement.
+     *
+     * An alias would compile, and for a URI-route adapter would behave
+     * identically -- but it would also let the adapter this split exists for
+     * keep compiling: a sign-hook-only adapter would carry on declaring a name
+     * that reads as "custody" while being held to the URI route it cannot
+     * satisfy, and would keep failing without ever meeting _SIGN. The build
+     * error is what sends it to the right bit. The old name also cannot say
+     * which route is meant, which is the ambiguity being removed. */
+
+    /* client_key_uri + crypto_engine_id: the stack has an engine/provider
+     * abstraction and resolves the key reference through it. Proved with
+     * az_iot_conformance_options key_uri + crypto_engine_id + client_cert_path. */
+    AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY_URI = 1u << 0,
+
+    /* sign + sign_ctx: no engine/provider abstraction exists, so the adapter
+     * drives the handshake signature through the caller's callback. Proved with
+     * az_iot_conformance_options sign (+ sign_ctx) + client_cert_path.
+     *
+     * The bundled Paho adapter does NOT implement this route -- Paho exposes no
+     * TLS key callback -- so its harnesses declare only the URI route. */
+    AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY_SIGN = 1u << 1,
+
+    /* MQTT carried inside WebSockets (az_iot_mqtt_connect_options.transport =
+     * AZ_IOT_MQTT_TRANSPORT_WEBSOCKET), for devices whose network passes only
+     * HTTP(S) ports. Proved by an end-to-end session over a WebSocket listener;
+     * supply az_iot_conformance_options websocket_port (and websocket_path when
+     * the broker does not serve the Azure default).
+     *
+     * Not declaring it does NOT mean untested: the baseline requires an adapter
+     * asked for a transport it does not implement to REFUSE the connect with
+     * AZ_IOT_ERR_NOT_SUPPORTED, never to fall back to TCP. */
+    AZ_IOT_CONFORMANCE_CAP_WEBSOCKETS = 1u << 2,
+
+    /* Reaching the broker through an HTTP CONNECT proxy
+     * (az_iot_mqtt_connect_options.proxy). Needs no configuration: the suite
+     * runs its own in-process CONNECT proxy, so declaring this always proves
+     * it -- positively (a tunnelled session carrying real traffic, with and
+     * without Basic credentials) and negatively (wrong credential, missing
+     * credential, a refused tunnel, a tunnel dropped mid-session).
+     *
+     * As above, the baseline holds every adapter -- declared or not -- to the
+     * rule that matters for an egress control: a proxy that cannot be reached
+     * must end as a failed connect, NEVER as a direct session to the broker. */
+    AZ_IOT_CONFORMANCE_CAP_PROXY = 1u << 3
+  } az_iot_conformance_capability;
+
+  typedef struct az_iot_conformance_options
+  {
+    /* Bitwise OR of az_iot_conformance_capability. */
+    uint32_t capabilities;
+
+    /* End-to-end key custody material. Supply the set matching each capability
+     * declared above, and the suite proves the adapter can actually sign a TLS
+     * handshake with a key it cannot read.
+     *
+     * AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY_URI needs all three of:
+     *   key_uri          a key reference the adapter can resolve
+     *                    ("pkcs11:object=...;type=private", "tpm2:...")
+     *   crypto_engine_id the provider/engine that owns it ("pkcs11", "tpm2")
+     *   client_cert_path a certificate whose PUBLIC key is that key's
+     *
+     * AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY_SIGN needs:
+     *   sign             a callback that signs one digest with that key
+     *   sign_ctx         opaque, handed back to sign(); NULL is legitimate
+     *   client_cert_path as above
+     *
+     * client_cert_path is shared: declare both capabilities and one certificate
+     * serves both, provided its public key is the one behind each route.
+     *
+     * Material for a route is all-or-none, and material supplied for a route
+     * that was not declared fails the run -- being ignored in silence is
+     * indistinguishable from a machine that has no token at all.
+     *
+     * A declared capability that is never exercised FAILS the run: a pass has
+     * to mean the claim was checked. When no token is available, either do not
+     * declare the capability or set AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN=1 in the
+     * environment, which downgrades it to a notice -- such a run proves
+     * nothing about custody and must not be reported as conformant for it. */
+    const char* key_uri;
+    const char* crypto_engine_id;
+    const char* client_cert_path;
+    az_iot_mqtt_sign_callback sign;
+    void* sign_ctx;
+
+    /* Material for the transport capabilities above. Each is needed only by the
+     * capability that names it, and supplying it without declaring that
+     * capability fails the run -- being ignored in silence is indistinguishable
+     * from an environment that has neither. */
+
+    /* AZ_IOT_CONFORMANCE_CAP_WEBSOCKETS: a WebSocket listener on the same
+     * broker host. 0 means "not available here". */
+    uint16_t websocket_port;
+    /* Resource path that listener serves. NULL selects the SDK default
+     * (AZ_IOT_MQTT_DEFAULT_WEBSOCKET_PATH); a plain MQTT broker usually wants
+     * "/mqtt" instead. */
+    const char* websocket_path;
+
+    /* AZ_IOT_CONFORMANCE_CAP_PROXY needs nothing here: the suite starts its own
+     * in-process CONNECT proxy, including for the authenticated cases. */
+  } az_iot_conformance_options;
+
   /* Run the conformance suite for `suite_kind` against the given factory.
    * Returns:
-   *   0  on success (all tests passed)
-   *   77 if the suite was skipped (no broker configured)
-   *   1  on failure (one or more tests failed)
+   *   0  on success: all tests passed and every declared capability was
+   *      exercised -- UNLESS AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN=1 was set in
+   *      the environment, which lets an unexercised capability through as a
+   *      notice on stderr. A 0 from such a run says nothing about that
+   *      capability and must not be reported as conformant for it.
+   *   1  on failure: a test failed, a declared capability was never exercised
+   *      (without that opt-out), or no broker was configured. There is no skip
+   *      code -- whether the suite runs is decided at build time by
+   *      AZ_IOT_BUILD_CONFORMANCE_TESTS, so a run that cannot test what it was
+   *      asked to test is a failure.
    *
-   * Suitable to use directly as the return value of main() in a harness exe. */
+   * Suitable to use directly as the return value of main() in a harness exe.
+   *
+   * Equivalent to az_iot_conformance_run_with_options() with no capabilities
+   * declared. An adapter that implements an optional feature should call that
+   * instead, or the suite cannot hold it to the feature's contract. */
   int az_iot_conformance_run(az_iot_conformance_suite suite_kind, az_iot_mqtt_factory* factory);
+
+  /* Result of az_iot_conformance_custody_material_state(): either NONE,
+   * or PARTIAL, or the OR of the route bits whose material is complete. */
+  enum
+  {
+    AZ_IOT_CONFORMANCE_CUSTODY_NONE = 0,
+    AZ_IOT_CONFORMANCE_CUSTODY_PARTIAL = 1u << 0,
+    AZ_IOT_CONFORMANCE_CUSTODY_URI = 1u << 1,
+    AZ_IOT_CONFORMANCE_CUSTODY_SIGN = 1u << 2
+  };
+
+  /* Internal, exposed for the suite's own tests.
+   *
+   * Classifies the end-to-end custody material, counting an empty string as
+   * missing. Each route is all-or-none, and a certificate with no route to use
+   * it is partial too -- material that is silently ignored must not be able to
+   * look like a machine that deliberately has no token. PARTIAL is rejected
+   * before the opt-out is considered, so misconfigured material cannot be
+   * downgraded to a notice. */
+  int az_iot_conformance_custody_material_state(
+      const char* key_uri,
+      const char* crypto_engine_id,
+      const char* client_cert_path,
+      bool has_sign,
+      bool has_sign_ctx);
+
+  /* Internal, exposed for the suite's own tests.
+   *
+   * Reports a declared capability whose contract was never exercised and
+   * returns what it contributes to the run's failure count: 1, unless
+   * `allow_value` -- the value of AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN, NULL when
+   * unset -- is exactly "1", in which case it reports a notice and returns 0.
+   * This is the whole of the opt-out policy, kept callable so a regression in
+   * it cannot pass unnoticed. */
+  int az_iot_conformance_report_unproven_capability(
+      const char* capability,
+      const char* why,
+      const char* allow_value);
+
+  /* As above, plus the adapter's declared capabilities. `options` may be NULL,
+   * which means the same as declaring nothing. */
+  int az_iot_conformance_run_with_options(
+      az_iot_conformance_suite suite_kind,
+      az_iot_mqtt_factory* factory,
+      const az_iot_conformance_options* options);
 
 #ifdef __cplusplus
 }

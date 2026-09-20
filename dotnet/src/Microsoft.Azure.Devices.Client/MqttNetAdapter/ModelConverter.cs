@@ -144,55 +144,55 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
             }
         }
 
-        internal static Mqtt.MqttConnectResultCode ToGeneric(MQTTnet.MqttClientConnectResultCode resultCode)
+        internal static Mqtt.MqttConnectReasonCode ToGeneric(MQTTnet.MqttClientConnectResultCode resultCode)
         {
             switch (resultCode)
             {
                 case MQTTnet.MqttClientConnectResultCode.Success:
-                    return Mqtt.MqttConnectResultCode.Success;
+                    return Mqtt.MqttConnectReasonCode.Success;
                 case MQTTnet.MqttClientConnectResultCode.UnspecifiedError:
-                    return Mqtt.MqttConnectResultCode.UnspecifiedError;
+                    return Mqtt.MqttConnectReasonCode.UnspecifiedError;
                 case MQTTnet.MqttClientConnectResultCode.MalformedPacket:
-                    return Mqtt.MqttConnectResultCode.MalformedPacket;
+                    return Mqtt.MqttConnectReasonCode.MalformedPacket;
                 case MQTTnet.MqttClientConnectResultCode.ProtocolError:
-                    return Mqtt.MqttConnectResultCode.ProtocolError;
+                    return Mqtt.MqttConnectReasonCode.ProtocolError;
                 case MQTTnet.MqttClientConnectResultCode.ImplementationSpecificError:
-                    return Mqtt.MqttConnectResultCode.ImplementationSpecificError;
+                    return Mqtt.MqttConnectReasonCode.ImplementationSpecificError;
                 case MQTTnet.MqttClientConnectResultCode.UnsupportedProtocolVersion:
-                    return Mqtt.MqttConnectResultCode.UnsupportedProtocolVersion;
+                    return Mqtt.MqttConnectReasonCode.UnsupportedProtocolVersion;
                 case MQTTnet.MqttClientConnectResultCode.ClientIdentifierNotValid:
-                    return Mqtt.MqttConnectResultCode.ClientIdentifierNotValid;
+                    return Mqtt.MqttConnectReasonCode.ClientIdentifierNotValid;
                 case MQTTnet.MqttClientConnectResultCode.BadUserNameOrPassword:
-                    return Mqtt.MqttConnectResultCode.BadUserNameOrPassword;
+                    return Mqtt.MqttConnectReasonCode.BadUserNameOrPassword;
                 case MQTTnet.MqttClientConnectResultCode.NotAuthorized:
-                    return Mqtt.MqttConnectResultCode.NotAuthorized;
+                    return Mqtt.MqttConnectReasonCode.NotAuthorized;
                 case MQTTnet.MqttClientConnectResultCode.ServerUnavailable:
-                    return Mqtt.MqttConnectResultCode.ServerUnavailable;
+                    return Mqtt.MqttConnectReasonCode.ServerUnavailable;
                 case MQTTnet.MqttClientConnectResultCode.ServerBusy:
-                    return Mqtt.MqttConnectResultCode.ServerBusy;
+                    return Mqtt.MqttConnectReasonCode.ServerBusy;
                 case MQTTnet.MqttClientConnectResultCode.Banned:
-                    return Mqtt.MqttConnectResultCode.Banned;
+                    return Mqtt.MqttConnectReasonCode.Banned;
                 case MQTTnet.MqttClientConnectResultCode.BadAuthenticationMethod:
-                    return Mqtt.MqttConnectResultCode.BadAuthenticationMethod;
+                    return Mqtt.MqttConnectReasonCode.BadAuthenticationMethod;
                 case MQTTnet.MqttClientConnectResultCode.TopicNameInvalid:
-                    return Mqtt.MqttConnectResultCode.TopicNameInvalid;
+                    return Mqtt.MqttConnectReasonCode.TopicNameInvalid;
                 case MQTTnet.MqttClientConnectResultCode.PacketTooLarge:
-                    return Mqtt.MqttConnectResultCode.PacketTooLarge;
+                    return Mqtt.MqttConnectReasonCode.PacketTooLarge;
                 case MQTTnet.MqttClientConnectResultCode.QuotaExceeded:
-                    return Mqtt.MqttConnectResultCode.QuotaExceeded;
+                    return Mqtt.MqttConnectReasonCode.QuotaExceeded;
                 case MQTTnet.MqttClientConnectResultCode.PayloadFormatInvalid:
-                    return Mqtt.MqttConnectResultCode.PayloadFormatInvalid;
+                    return Mqtt.MqttConnectReasonCode.PayloadFormatInvalid;
                 case MQTTnet.MqttClientConnectResultCode.RetainNotSupported:
-                    return Mqtt.MqttConnectResultCode.RetainNotSupported;
+                    return Mqtt.MqttConnectReasonCode.RetainNotSupported;
                 case MQTTnet.MqttClientConnectResultCode.QoSNotSupported:
-                    return Mqtt.MqttConnectResultCode.QoSNotSupported;
+                    return Mqtt.MqttConnectReasonCode.QoSNotSupported;
                 case MQTTnet.MqttClientConnectResultCode.UseAnotherServer:
-                    return Mqtt.MqttConnectResultCode.UseAnotherServer;
+                    return Mqtt.MqttConnectReasonCode.UseAnotherServer;
                 case MQTTnet.MqttClientConnectResultCode.ServerMoved:
-                    return Mqtt.MqttConnectResultCode.ServerMoved;
+                    return Mqtt.MqttConnectReasonCode.ServerMoved;
                 case MQTTnet.MqttClientConnectResultCode.ConnectionRateExceeded:
                 default:
-                    return Mqtt.MqttConnectResultCode.ConnectionRateExceeded;
+                    return Mqtt.MqttConnectReasonCode.ConnectionRateExceeded;
 
             }
         }
@@ -243,7 +243,7 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
                 {
                     genericItems.Add(new()
                     {
-                        ResultCode = ToGeneric(mqttnetSubscribeResultItem.ResultCode),
+                        ReasonCode = ToGeneric(mqttnetSubscribeResultItem.ResultCode),
                         TopicFilter = new(mqttnetSubscribeResultItem.TopicFilter.Topic, ToGeneric(mqttnetSubscribeResultItem.TopicFilter.QualityOfServiceLevel))
                     });
                 }
@@ -261,46 +261,40 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
             return generic;
         }
 
-        private static Mqtt.MqttClientSubscribeResultCode ToGeneric(MQTTnet.MqttClientSubscribeResultCode resultCode)
+        private static Mqtt.MqttClientSubscribeReasonCode ToGeneric(MQTTnet.MqttClientSubscribeResultCode resultCode)
         {
             switch (resultCode)
             {
                 case MQTTnet.MqttClientSubscribeResultCode.GrantedQoS0:
-                    return Mqtt.MqttClientSubscribeResultCode.GrantedQoS0;
+                    return Mqtt.MqttClientSubscribeReasonCode.GrantedQoS0;
                 case MQTTnet.MqttClientSubscribeResultCode.GrantedQoS1:
-                    return Mqtt.MqttClientSubscribeResultCode.GrantedQoS1;
+                    return Mqtt.MqttClientSubscribeReasonCode.GrantedQoS1;
                 case MQTTnet.MqttClientSubscribeResultCode.GrantedQoS2:
-                    return Mqtt.MqttClientSubscribeResultCode.GrantedQoS2;
+                    return Mqtt.MqttClientSubscribeReasonCode.GrantedQoS2;
                 case MQTTnet.MqttClientSubscribeResultCode.UnspecifiedError:
-                    return Mqtt.MqttClientSubscribeResultCode.UnspecifiedError;
+                    return Mqtt.MqttClientSubscribeReasonCode.UnspecifiedError;
                 case MQTTnet.MqttClientSubscribeResultCode.ImplementationSpecificError:
-                    return Mqtt.MqttClientSubscribeResultCode.ImplementationSpecificError;
+                    return Mqtt.MqttClientSubscribeReasonCode.ImplementationSpecificError;
                 case MQTTnet.MqttClientSubscribeResultCode.NotAuthorized:
-                    return Mqtt.MqttClientSubscribeResultCode.NotAuthorized;
+                    return Mqtt.MqttClientSubscribeReasonCode.NotAuthorized;
                 case MQTTnet.MqttClientSubscribeResultCode.TopicFilterInvalid:
-                    return Mqtt.MqttClientSubscribeResultCode.TopicFilterInvalid;
+                    return Mqtt.MqttClientSubscribeReasonCode.TopicFilterInvalid;
                 case MQTTnet.MqttClientSubscribeResultCode.PacketIdentifierInUse:
-                    return Mqtt.MqttClientSubscribeResultCode.PacketIdentifierInUse;
+                    return Mqtt.MqttClientSubscribeReasonCode.PacketIdentifierInUse;
                 case MQTTnet.MqttClientSubscribeResultCode.QuotaExceeded:
-                    return Mqtt.MqttClientSubscribeResultCode.QuotaExceeded;
+                    return Mqtt.MqttClientSubscribeReasonCode.QuotaExceeded;
                 case MQTTnet.MqttClientSubscribeResultCode.SharedSubscriptionsNotSupported:
-                    return Mqtt.MqttClientSubscribeResultCode.SharedSubscriptionsNotSupported;
+                    return Mqtt.MqttClientSubscribeReasonCode.SharedSubscriptionsNotSupported;
                 case MQTTnet.MqttClientSubscribeResultCode.SubscriptionIdentifiersNotSupported:
-                    return Mqtt.MqttClientSubscribeResultCode.SubscriptionIdentifiersNotSupported;
+                    return Mqtt.MqttClientSubscribeReasonCode.SubscriptionIdentifiersNotSupported;
                 case MQTTnet.MqttClientSubscribeResultCode.WildcardSubscriptionsNotSupported:
                 default:
-                    return Mqtt.MqttClientSubscribeResultCode.WildcardSubscriptionsNotSupported;
+                    return Mqtt.MqttClientSubscribeReasonCode.WildcardSubscriptionsNotSupported;
             }
         }
 
         internal static MqttUnsubscribeAck ToGeneric(MqttClientUnsubscribeResult unsuback)
         {
-            if (unsuback.Items.Count != 1)
-            {
-                throw new Exception("TODO");
-            }
-
-
             return new()
             {
                 ReasonString = unsuback.ReasonString,
@@ -316,7 +310,7 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
             {
                 generic.Add(new()
                 { 
-                    ResultCode = toGeneric(item.ResultCode),
+                    ReasonCode = toGeneric(item.ResultCode),
                     TopicFilter = item.TopicFilter,
                 });
             }
@@ -324,25 +318,25 @@ namespace Microsoft.Azure.Devices.Client.MQTTnetAdapter
             return generic;
         }
 
-        private static Mqtt.MqttClientUnsubscribeResultCode toGeneric(MQTTnet.MqttClientUnsubscribeResultCode resultCode)
+        private static Mqtt.MqttClientUnsubscribeReasonCode toGeneric(MQTTnet.MqttClientUnsubscribeResultCode resultCode)
         {
             switch (resultCode)
             {
                 case MQTTnet.MqttClientUnsubscribeResultCode.Success:
-                    return Mqtt.MqttClientUnsubscribeResultCode.Success;
+                    return Mqtt.MqttClientUnsubscribeReasonCode.Success;
                 case MQTTnet.MqttClientUnsubscribeResultCode.NoSubscriptionExisted:
-                    return Mqtt.MqttClientUnsubscribeResultCode.NoSubscriptionExisted;
+                    return Mqtt.MqttClientUnsubscribeReasonCode.NoSubscriptionExisted;
                 case MQTTnet.MqttClientUnsubscribeResultCode.UnspecifiedError:
-                    return Mqtt.MqttClientUnsubscribeResultCode.UnspecifiedError;
+                    return Mqtt.MqttClientUnsubscribeReasonCode.UnspecifiedError;
                 case MQTTnet.MqttClientUnsubscribeResultCode.ImplementationSpecificError:
-                    return Mqtt.MqttClientUnsubscribeResultCode.ImplementationSpecificError;
+                    return Mqtt.MqttClientUnsubscribeReasonCode.ImplementationSpecificError;
                 case MQTTnet.MqttClientUnsubscribeResultCode.NotAuthorized:
-                    return Mqtt.MqttClientUnsubscribeResultCode.NotAuthorized;
+                    return Mqtt.MqttClientUnsubscribeReasonCode.NotAuthorized;
                 case MQTTnet.MqttClientUnsubscribeResultCode.TopicFilterInvalid:
-                    return Mqtt.MqttClientUnsubscribeResultCode.TopicFilterInvalid;
+                    return Mqtt.MqttClientUnsubscribeReasonCode.TopicFilterInvalid;
                 case MQTTnet.MqttClientUnsubscribeResultCode.PacketIdentifierInUse:
                 default:
-                    return Mqtt.MqttClientUnsubscribeResultCode.PacketIdentifierInUse;
+                    return Mqtt.MqttClientUnsubscribeReasonCode.PacketIdentifierInUse;
             }
         }
 
