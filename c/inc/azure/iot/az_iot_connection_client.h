@@ -89,9 +89,14 @@ extern "C"
   typedef struct az_iot_reconnection_policy
   {
     uint32_t initial_delay_ms;
+    /* Ceiling on the BACKOFF -- how far the doubling may climb. Jitter is
+     * applied around it, so an individual delay may exceed this by up to
+     * jitter_pct; that is the point of jitter, and clamping it back here would
+     * put half of all retries on exactly this value. 0 means "same as
+     * initial_delay_ms". */
     uint32_t max_delay_ms;
     uint32_t max_attempts; /* 0 = infinite */
-    uint8_t jitter_pct; /* 0..100 */
+    uint8_t jitter_pct; /* 0..100, applied around the backoff */
   } az_iot_reconnection_policy;
 
   /* Returns a reasonable default reconnection policy: 1s initial delay, 30s max
