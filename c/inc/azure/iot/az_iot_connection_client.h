@@ -836,7 +836,7 @@ extern "C"
      * reconnection policy's own backoff. Ignoring it would let a device retry
      * faster than the service asked, which is how a throttled fleet turns into
      * a blocked one. */
-    uint32_t dps_pending_retry_after_s;
+    uint32_t dps_pending_retry_after_secs;
     bool dps_enrolling; /* CSR-based enrollment active for this DPS session */
     bool dps_have_issued_cert; /* an operational cert was issued by DPS/Hub and stored */
 

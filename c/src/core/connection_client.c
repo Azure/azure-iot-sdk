@@ -1385,7 +1385,7 @@ static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
            * reports FAILED for both. Keep the service's retry-after: on a
            * throttle or a server error it is the one authoritative statement
            * about when this device may come back. */
-          c->dps_pending_retry_after_s = resp.retry_after_seconds;
+          c->dps_pending_retry_after_secs = resp.retry_after_seconds;
           AZ_IOT_LOG_ERRORF(
               "dps register: provisioning failed/disabled; DPS response: %.*s",
               (int)az_span_size(payload_span),
@@ -1560,7 +1560,7 @@ static az_iot_result dps_start(az_iot_connection_client* c)
   c->dps_pending_finalize = false;
   c->dps_pending_have_assignment = false;
   c->dps_pending_status = AZ_IOT_OK;
-  c->dps_pending_retry_after_s = 0;
+  c->dps_pending_retry_after_secs = 0;
   c->dps_enrolling = c->opts.dps.request_operational_certificate;
 
   set_state_to(c, AZ_IOT_CONN_STATE_CONNECTING, AZ_IOT_OK);
@@ -1626,11 +1626,11 @@ static void dps_apply_deferred(az_iot_connection_client* c)
   }
   bool have_assignment = c->dps_pending_have_assignment;
   az_iot_result status = c->dps_pending_status;
-  uint32_t retry_after_s = c->dps_pending_retry_after_s;
+  uint32_t retry_after_secs = c->dps_pending_retry_after_secs;
   c->dps_pending_finalize = false;
   c->dps_pending_have_assignment = false;
   c->dps_pending_status = AZ_IOT_OK;
-  c->dps_pending_retry_after_s = 0;
+  c->dps_pending_retry_after_secs = 0;
 
   /* Disconnect and destroy the DPS MQTT session. */
   if (c->dps_mqtt && c->dps_mqtt->iface && c->dps_mqtt->iface->disconnect)
@@ -1684,15 +1684,15 @@ static void dps_apply_deferred(az_iot_connection_client* c)
        * either one alone decide. The policy's max_delay_ms deliberately does
        * NOT cap this: it bounds how long the SDK waits of its own accord, not
        * how long the service asked to be left alone. */
-      if (retry_after_s > 0 && c->state == AZ_IOT_CONN_STATE_RECONNECTING)
+      if (retry_after_secs > 0 && c->state == AZ_IOT_CONN_STATE_RECONNECTING)
       {
-        uint64_t floor_ms = az_iot_time_mono_ms() + (uint64_t)retry_after_s * 1000ull;
+        uint64_t floor_ms = az_iot_time_mono_ms() + (uint64_t)retry_after_secs * 1000ull;
         if (c->reconnect_due_ms < floor_ms)
         {
           AZ_IOT_LOG_WARNF(
               "dps: the service asked for a %u second retry-after; honoring it over the "
               "reconnection policy",
-              (unsigned)retry_after_s);
+              (unsigned)retry_after_secs);
           c->reconnect_due_ms = floor_ms;
         }
       }
@@ -3561,11 +3561,17 @@ az_iot_result az_iot_connection_client_do_work(
     az_iot_connection_scope attempted;
     if (client->needs_reprovision)
     {
-      /* The hub refused this identity; go back to DPS for a new assignment
-       * rather than reconnecting to the same rejected credential. Cleared
-       * before the attempt so a failure here falls back to a normal retry
-       * instead of looping through provisioning forever. */
-      client->needs_reprovision = false;
+      /* The hub refused this identity, or this device has not registered yet;
+       * go to DPS rather than reconnecting to a credential that was rejected.
+       *
+       * The demand is cleared before the attempt ONLY when there is a cached
+       * assignment to fall back to. That fallback exists so a failing
+       * dps_start() cannot loop through provisioning forever -- but it is only
+       * a fallback if the hub path has somewhere to go. With no assignment
+       * (opts.host still NULL) an ordinary retry would hand the adapter a NULL
+       * endpoint and the client would never reach DPS again, so the demand
+       * survives and the next retry provisions. */
+      client->needs_reprovision = (client->opts.host == NULL);
       client->dps_phase = DPS_PHASE_NONE;
       client->session_role = AZ_IOT_MQTT_ROLE_DPS;
       attempted = AZ_IOT_CONN_SCOPE_DPS;
@@ -3578,10 +3584,9 @@ az_iot_result az_iot_connection_client_do_work(
     }
     if (cr != AZ_IOT_OK)
     {
-      /* The failure belongs to whichever attempt was just made. Its retry is a
-       * hub one either way, because needs_reprovision was cleared above -- the
-       * deliberate fallback that stops a failing dps_start() looping through
-       * provisioning forever. */
+      /* The failure belongs to whichever attempt was just made. Which ladder
+       * its retry climbs is decided inside schedule_reconnect(), from the
+       * needs_reprovision left standing above. */
       schedule_reconnect(client, attempted, cr);
     }
   }

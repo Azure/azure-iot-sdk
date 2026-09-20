@@ -805,6 +805,48 @@ static void dps_failed_status_retries_against_dps(void** state)
 
 /* max_attempts still bounds it, so an enrollment that really is absent stops
  * instead of hammering the service. */
+/* A DPS retry whose dps_start() fails must stay on the DPS path when there is
+ * no cached assignment to fall back to.
+ *
+ * do_work() clears needs_reprovision before the attempt, deliberately, so a
+ * failing dps_start() falls back to an ordinary retry rather than looping
+ * through provisioning forever. That fallback is right for a device that HAS
+ * an assignment -- it still has a hub to try. For a device that has never
+ * registered, opts.host is NULL, so the hub path has no endpoint at all and
+ * the client would never reach DPS again. */
+static void a_failed_dps_retry_stays_on_dps_when_no_hub_is_known(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_mock_mqtt_client* m = dps_open_to_registering(fx);
+
+  /* No assignment has ever been made. */
+  assert_null(fx->client->opts.host);
+
+  /* Registration fails -> retry scheduled on the DPS ladder. */
+  assert_true(inject_dps_response(m, DPS_RESPONSE_TOPIC_ASSIGNED, k_failed_body));
+  for (int i = 0; i < 3; ++i)
+  {
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
+  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_RECONNECTING);
+  assert_true(fx->client->needs_reprovision);
+
+  /* Make the next connect fail synchronously, so dps_start() itself fails. */
+  az_iot_mock_mqtt_factory_fail_next_connect(fx->factory, AZ_IOT_ERR_MQTT);
+  az_iot_test_wait_ms(REPROVISION_DELAY_MS + 5u);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  /* The demand must survive: there is no hub to fall back to. */
+  assert_true(fx->client->needs_reprovision);
+
+  /* And the next retry really does go to DPS rather than a NULL endpoint. */
+  az_iot_test_wait_ms(REPROVISION_DELAY_MS + 5u);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  az_iot_mock_mqtt_client* next = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  assert_non_null(next);
+  assert_string_equal(last_connect_host(next), "global.azure-devices-provisioning.net");
+}
+
 static void dps_failed_status_still_honors_max_attempts(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
@@ -2011,7 +2053,7 @@ static void the_hub_ladder_cannot_spend_the_dps_budget(void** state)
     (void)az_iot_connection_client_do_work(fx->client, 0);
     (void)az_iot_connection_client_do_work(fx->client, 0);
     assert_false(az_iot_test_saw_state(&fx->log, AZ_IOT_CONN_STATE_FAULTED));
-    az_iot_test_wait_ms((unsigned)(fx->client->reconnect_due_ms - az_iot_time_mono_ms()) + 5u);
+    az_iot_test_wait_until_ms(fx->client->reconnect_due_ms);
     (void)az_iot_connection_client_do_work(fx->client, 0);
   }
 
@@ -2048,7 +2090,7 @@ static void a_successful_registration_clears_both_ladders(void** state)
     assert_true(az_iot_mock_mqtt_client_inject_connected(hub, AZ_IOT_ERR_MQTT));
     (void)az_iot_connection_client_do_work(fx->client, 0);
     (void)az_iot_connection_client_do_work(fx->client, 0);
-    az_iot_test_wait_ms((unsigned)(fx->client->reconnect_due_ms - az_iot_time_mono_ms()) + 5u);
+    az_iot_test_wait_until_ms(fx->client->reconnect_due_ms);
     (void)az_iot_connection_client_do_work(fx->client, 0);
   }
   assert_true(fx->client->retry_attempt[AZ_IOT_CONN_SCOPE_HUB] > 0);
@@ -2058,7 +2100,7 @@ static void a_successful_registration_clears_both_ladders(void** state)
   assert_true(az_iot_mock_mqtt_client_inject_connected(hub, AZ_IOT_ERR_IDENTITY_REJECTED));
   (void)az_iot_connection_client_do_work(fx->client, 0);
   (void)az_iot_connection_client_do_work(fx->client, 0);
-  az_iot_test_wait_ms((unsigned)(fx->client->reconnect_due_ms - az_iot_time_mono_ms()) + 5u);
+  az_iot_test_wait_until_ms(fx->client->reconnect_due_ms);
   (void)az_iot_connection_client_do_work(fx->client, 0);
 
   /* Re-register successfully. */
@@ -2158,6 +2200,8 @@ int main(void)
         dps_failed_status_retries_against_dps, setup_with_reconnect, teardown),
     cmocka_unit_test_setup_teardown(
         dps_failed_status_still_honors_max_attempts, setup_with_reconnect, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_failed_dps_retry_stays_on_dps_when_no_hub_is_known, setup_with_reconnect, teardown),
     cmocka_unit_test_setup_teardown(
         a_service_retry_after_outranks_the_policy_backoff, setup_with_reconnect, teardown),
     cmocka_unit_test_setup_teardown(
