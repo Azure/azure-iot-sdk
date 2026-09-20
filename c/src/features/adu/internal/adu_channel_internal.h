@@ -75,12 +75,16 @@ extern "C"
    * @param result     AZ_IOT_OK when the service accepted it.
    * @param action     How to proceed when @p result is not AZ_IOT_OK;
    *                   AZ_IOT_ADU_ERROR_ACTION_NONE on success.
+   * @param service_error What the service said, when it said anything. NULL
+   *                      when the verdict did not come from a service
+   *                      response. Valid only for the duration of the call.
    * @param engine_ctx The context the engine passed to `open()`.
    */
   typedef void (*az_iot_adu_channel_result_cb)(
       az_iot_adu_operation operation,
       az_iot_result result,
       az_iot_adu_error_action action,
+      const az_iot_adu_service_error* service_error,
       void* engine_ctx);
 
   /**
@@ -153,6 +157,7 @@ extern "C"
      *        with its own asynchronous work has somewhere to run. May be NULL.
      */
     az_iot_result (*do_work)(void* ctx);
+
   } az_iot_adu_channel_vtable;
 
   /** @brief A channel instance: its vtable plus its own context. */
@@ -239,6 +244,12 @@ extern "C"
      * to know a session is actually wanted -- opening one speculatively would
      * just linger and close again. */
     bool wants_session;
+
+    /* Set once a dps_session_ensure() failure has been logged, so a refusal
+     * that persists does not emit one line per pump tick. Cleared as soon as
+     * the call succeeds or reports BUSY, so a later failure is reported as a
+     * new episode. */
+    bool ensure_error_logged;
 
     /* When the retry-after the service put on a response topic expires: a
      * monotonic instant, not a duration, which is why it is named for the

@@ -43,6 +43,9 @@
  * client struct stays caller-allocated with no hidden allocation. If the
  * channel ever outgrows that reservation this fails the build rather than
  * silently corrupting the struct. */
+/* Defined below; used from the workflow state machine above it. */
+static void set_adu_state(az_iot_adu_client_t* client, az_iot_adu_state next);
+
 typedef char az_iot_adu_channel_storage_is_large_enough
     [(sizeof(((az_iot_adu_client_t*)0)->_internal.channel_storage)
       >= sizeof(az_iot_adu_channel_dps))
@@ -857,7 +860,7 @@ static int32_t verify_file_hash(
 /* Reset the workflow back to Idle, clearing the parsed request. */
 static void reset_to_idle(az_iot_adu_client_t* client)
 {
-  ADU_I(client).state = AZ_IOT_ADU_STATE_IDLE;
+  set_adu_state(client, AZ_IOT_ADU_STATE_IDLE);
   ADU_I(client).have_request = false;
   ADU_I(client).current_step = 0;
   ADU_I(client).current_file = 0;
@@ -1181,7 +1184,7 @@ static void process_desired_patch(
   ADU_I(client).cancel_requested = false;
   ADU_I(client).current_step = 0;
   ADU_I(client).current_file = 0;
-  ADU_I(client).state = AZ_IOT_ADU_STATE_MANIFEST_RECEIVED;
+  set_adu_state(client, AZ_IOT_ADU_STATE_MANIFEST_RECEIVED);
   set_active_workflow(
       client,
       req.workflow.id,
@@ -1209,6 +1212,78 @@ static void on_channel_update(
   process_desired_patch(client, update_payload, update_payload_len);
 }
 
+/* Deliver an event to every observer.
+ *
+ * The guard is save/restore, not a plain set/clear: an observer may raise
+ * another event indirectly (request_update() is permitted), so dispatches can
+ * nest, and clearing on the way out of the inner one would drop the guard
+ * while the outer pass was still walking the array.
+ *
+ * Each slot is re-read and a NULL callback skipped, which is what makes
+ * withdrawing from inside a callback safe. */
+static void dispatch_event(az_iot_adu_client_t* client, const az_iot_adu_event* event)
+{
+  bool was_dispatching = ADU_I(client).dispatching;
+  ADU_I(client).dispatching = true;
+  for (size_t i = 0; i < AZ_IOT_MAX_ADU_OBSERVERS; ++i)
+  {
+    if (ADU_I(client).observers[i].cb != NULL)
+    {
+      ADU_I(client).observers[i].cb(event, ADU_I(client).observers[i].user_ctx);
+    }
+  }
+  ADU_I(client).dispatching = was_dispatching;
+}
+
+/* Raise OPERATION_ABANDONED. `service_error` may be NULL when the verdict did
+ * not come from a service response; the event then carries an empty diagnosis
+ * rather than a NULL pointer, so an observer never has to null-check it. */
+static void raise_abandoned(
+    az_iot_adu_client_t* client,
+    az_iot_adu_operation operation,
+    az_iot_result reason,
+    const az_iot_adu_service_error* service_error)
+{
+  az_iot_adu_event event = {
+    ._internal_size = sizeof(az_iot_adu_event),
+    .kind = AZ_IOT_ADU_EVENT_OPERATION_ABANDONED,
+    .state = ADU_I(client).state,
+    .previous_state = ADU_I(client).state,
+    .operation = operation,
+    .reason = reason,
+    .service_error = { .code = 0, .message = "", .tracking_id = "" },
+  };
+  if (service_error != NULL)
+  {
+    event.service_error = *service_error;
+  }
+  dispatch_event(client, &event);
+}
+
+/* Move the workflow, telling anyone watching. Centralised so every transition
+ * is reported: eighteen assignment sites cannot each be trusted to remember,
+ * and a state change nobody hears about is the gap this closes. */
+static void set_adu_state(az_iot_adu_client_t* client, az_iot_adu_state next)
+{
+  az_iot_adu_state previous = ADU_I(client).state;
+  if (previous == next)
+  {
+    return;
+  }
+  ADU_I(client).state = next;
+
+  az_iot_adu_event event = {
+    ._internal_size = sizeof(az_iot_adu_event),
+    .kind = AZ_IOT_ADU_EVENT_WORKFLOW_STATE_CHANGED,
+    .state = next,
+    .previous_state = previous,
+    .operation = AZ_IOT_ADU_OP_GET_UPDATE,
+    .reason = AZ_IOT_OK,
+    .service_error = { .code = 0, .message = "", .tracking_id = "" },
+  };
+  dispatch_event(client, &event);
+}
+
 /* The channel's verdict on an operation it accepted earlier.
  *
  * An asynchronous channel returns AZ_IOT_OK from request_update()/report() to
@@ -1234,6 +1309,7 @@ static void on_channel_result(
     az_iot_adu_operation operation,
     az_iot_result result,
     az_iot_adu_error_action action,
+    const az_iot_adu_service_error* service_error,
     void* engine_ctx)
 {
   az_iot_adu_client_t* client = (az_iot_adu_client_t*)engine_ctx;
@@ -1246,6 +1322,23 @@ static void on_channel_result(
       || action == AZ_IOT_ADU_ERROR_ACTION_ALREADY_REPORTED
       || action == AZ_IOT_ADU_ERROR_ACTION_NONE)
   {
+    /* This branch IS the definition of "the client will not re-arm it", so it
+     * is also where the application is told. Deriving the two from one
+     * condition is the point: a separate list elsewhere would be free to drift.
+     *
+     * Not every verdict here is an abandonment:
+     *   - AZ_IOT_OK is success, and NONE accompanies it.
+     *   - ALREADY_REPORTED means the service already has a terminal result for
+     *     this workflow, so the report was not lost -- nothing to report.
+     * What remains -- FATAL and PROCEED -- are requests that were dropped. Both
+     * are reported. PROCEED in particular is UPDATE_ACCOUNT_NOT_LINKED on a
+     * fetch: the device asked, was refused permanently, and without this reads
+     * exactly like "no update available". */
+    if (result != AZ_IOT_OK
+        && (action == AZ_IOT_ADU_ERROR_ACTION_FATAL || action == AZ_IOT_ADU_ERROR_ACTION_PROCEED))
+    {
+      raise_abandoned(client, operation, result, service_error);
+    }
     return;
   }
 
@@ -1361,7 +1454,7 @@ static az_iot_result adu_client_init_core(
   ADU_I(client).crypto = *options->crypto;
   ADU_I(client).device_props_buffer = options->device_props_buffer;
   ADU_I(client).device_props_buffer_size = options->device_props_buffer_size;
-  ADU_I(client).state = AZ_IOT_ADU_STATE_IDLE;
+  set_adu_state(client, AZ_IOT_ADU_STATE_IDLE);
 
   if (options->root_keys != NULL && options->root_key_count > 0)
   {
@@ -1768,7 +1861,7 @@ az_iot_result az_iot_adu_client_resume(az_iot_adu_client_t* client)
     retry_ts = az_span_create(ADU_I(client).request_buffer + retry_off, (int32_t)retry_len);
   }
   ADU_I(client).current_request.workflow.retry_timestamp = retry_ts;
-  ADU_I(client).state = (az_iot_adu_state)state;
+  set_adu_state(client, (az_iot_adu_state)state);
   ADU_I(client).current_step = step;
   ADU_I(client).current_file = file;
   ADU_I(client).cancel_requested = (flags & 0x1u) != 0;
@@ -1839,7 +1932,7 @@ static void begin_rollback(az_iot_adu_client_t* client, uint32_t restore_count)
       }
     }
   }
-  ADU_I(client).state = AZ_IOT_ADU_STATE_FAILED;
+  set_adu_state(client, AZ_IOT_ADU_STATE_FAILED);
 }
 
 az_iot_result az_iot_adu_client_do_work(az_iot_adu_client_t* client)
@@ -1909,12 +2002,12 @@ az_iot_result az_iot_adu_client_do_work(az_iot_adu_client_t* client)
       {
         result_init_steps(client, 1);
         result_step_failure(client, 0, AZ_IOT_ADU_FACILITY_INTERNAL, 0);
-        ADU_I(client).state = AZ_IOT_ADU_STATE_FAILED;
+        set_adu_state(client, AZ_IOT_ADU_STATE_FAILED);
         (void)az_iot_adu__report_state(client);
         break;
       }
       result_init_steps(client, (int32_t)ADU_I(client).current_manifest.instructions.steps_count);
-      ADU_I(client).state = AZ_IOT_ADU_STATE_VERIFYING_MANIFEST;
+      set_adu_state(client, AZ_IOT_ADU_STATE_VERIFYING_MANIFEST);
       (void)az_iot_adu__report_state(client);
       break;
     }
@@ -1924,7 +2017,7 @@ az_iot_result az_iot_adu_client_do_work(az_iot_adu_client_t* client)
       if (verify_manifest(client) != AZ_IOT_ADU_RESULT_SUCCESS)
       {
         result_step_failure(client, 0, AZ_IOT_ADU_FACILITY_MANIFEST, 0);
-        ADU_I(client).state = AZ_IOT_ADU_STATE_FAILED;
+        set_adu_state(client, AZ_IOT_ADU_STATE_FAILED);
         (void)az_iot_adu__report_state(client);
         break;
       }
@@ -1943,7 +2036,7 @@ az_iot_result az_iot_adu_client_do_work(az_iot_adu_client_t* client)
       }
       ADU_I(client).current_step = 0;
       ADU_I(client).current_file = 0;
-      ADU_I(client).state = AZ_IOT_ADU_STATE_DOWNLOAD_STARTED;
+      set_adu_state(client, AZ_IOT_ADU_STATE_DOWNLOAD_STARTED);
       (void)az_iot_adu__report_state(client);
       break;
     }
@@ -1954,7 +2047,7 @@ az_iot_result az_iot_adu_client_do_work(az_iot_adu_client_t* client)
       uint32_t fcount = step_file_count(client, step);
       if (ADU_I(client).current_file >= fcount)
       {
-        ADU_I(client).state = AZ_IOT_ADU_STATE_DOWNLOAD_COMPLETE;
+        set_adu_state(client, AZ_IOT_ADU_STATE_DOWNLOAD_COMPLETE);
         break;
       }
       /* Resolve the file + its download url, then drive download_fn. */
@@ -2003,7 +2096,7 @@ az_iot_result az_iot_adu_client_do_work(az_iot_adu_client_t* client)
     }
 
     case AZ_IOT_ADU_STATE_DOWNLOAD_COMPLETE:
-      ADU_I(client).state = AZ_IOT_ADU_STATE_BACKUP_STARTED;
+      set_adu_state(client, AZ_IOT_ADU_STATE_BACKUP_STARTED);
       break;
 
     case AZ_IOT_ADU_STATE_BACKUP_STARTED:
@@ -2023,12 +2116,12 @@ az_iot_result az_iot_adu_client_do_work(az_iot_adu_client_t* client)
         (void)az_iot_adu__report_state(client);
         break;
       }
-      ADU_I(client).state = AZ_IOT_ADU_STATE_BACKUP_COMPLETE;
+      set_adu_state(client, AZ_IOT_ADU_STATE_BACKUP_COMPLETE);
       break;
     }
 
     case AZ_IOT_ADU_STATE_BACKUP_COMPLETE:
-      ADU_I(client).state = AZ_IOT_ADU_STATE_INSTALL_STARTED;
+      set_adu_state(client, AZ_IOT_ADU_STATE_INSTALL_STARTED);
       break;
 
     case AZ_IOT_ADU_STATE_INSTALL_STARTED:
@@ -2047,7 +2140,7 @@ az_iot_result az_iot_adu_client_do_work(az_iot_adu_client_t* client)
          * workflow so az_iot_adu_client_resume() can continue at Apply
          * on the next boot, report, and advance (a real device reboots
          * here; the loop simply continues if it does not). */
-        ADU_I(client).state = AZ_IOT_ADU_STATE_INSTALL_COMPLETE;
+        set_adu_state(client, AZ_IOT_ADU_STATE_INSTALL_COMPLETE);
         adu_persist(client);
         (void)az_iot_adu__report_state(client);
         break;
@@ -2059,12 +2152,12 @@ az_iot_result az_iot_adu_client_do_work(az_iot_adu_client_t* client)
         (void)az_iot_adu__report_state(client);
         break;
       }
-      ADU_I(client).state = AZ_IOT_ADU_STATE_INSTALL_COMPLETE;
+      set_adu_state(client, AZ_IOT_ADU_STATE_INSTALL_COMPLETE);
       break;
     }
 
     case AZ_IOT_ADU_STATE_INSTALL_COMPLETE:
-      ADU_I(client).state = AZ_IOT_ADU_STATE_APPLY_STARTED;
+      set_adu_state(client, AZ_IOT_ADU_STATE_APPLY_STARTED);
       break;
 
     case AZ_IOT_ADU_STATE_APPLY_STARTED:
@@ -2092,7 +2185,7 @@ az_iot_result az_iot_adu_client_do_work(az_iot_adu_client_t* client)
       {
         ADU_I(client).current_step = step + 1;
         ADU_I(client).current_file = 0;
-        ADU_I(client).state = AZ_IOT_ADU_STATE_DOWNLOAD_STARTED;
+        set_adu_state(client, AZ_IOT_ADU_STATE_DOWNLOAD_STARTED);
         (void)az_iot_adu__report_state(client);
         break;
       }
@@ -2105,7 +2198,7 @@ az_iot_result az_iot_adu_client_do_work(az_iot_adu_client_t* client)
     case AZ_IOT_ADU_STATE_RESTORE_STARTED:
       /* begin_rollback() performs restore synchronously then sets Failed;
        * this state is reserved for a future chunked rollback. */
-      ADU_I(client).state = AZ_IOT_ADU_STATE_FAILED;
+      set_adu_state(client, AZ_IOT_ADU_STATE_FAILED);
       break;
 
     case AZ_IOT_ADU_STATE_FAILED:
@@ -2134,6 +2227,76 @@ az_iot_adu_state az_iot_adu_client_get_state(const az_iot_adu_client_t* client)
     return AZ_IOT_ADU_STATE_IDLE;
   }
   return ADU_I(client).state;
+}
+
+az_iot_result az_iot_adu_client_add_observer(
+    az_iot_adu_client_t* client,
+    az_iot_adu_observer_callback cb,
+    void* user_ctx)
+{
+  if (client == NULL || cb == NULL)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  /* Adding from inside a dispatch would hand the new subscriber the event in
+   * flight -- one it was not watching for -- and mutate the array being
+   * walked. Removing is allowed; see the remove function. */
+  if (ADU_I(client).dispatching)
+  {
+    AZ_IOT_LOG_ERROR("adu: cannot add an observer from inside one");
+    return AZ_IOT_ERR_BUSY;
+  }
+
+  size_t free_slot = AZ_IOT_MAX_ADU_OBSERVERS;
+  for (size_t i = 0; i < AZ_IOT_MAX_ADU_OBSERVERS; ++i)
+  {
+    /* Idempotent on the (cb, user_ctx) PAIR, not on cb alone: one callback
+     * shared by two owners is two subscriptions and must be delivered twice. */
+    if (ADU_I(client).observers[i].cb == cb && ADU_I(client).observers[i].user_ctx == user_ctx)
+    {
+      return AZ_IOT_OK;
+    }
+    if (ADU_I(client).observers[i].cb == NULL && free_slot == AZ_IOT_MAX_ADU_OBSERVERS)
+    {
+      free_slot = i;
+    }
+  }
+  if (free_slot == AZ_IOT_MAX_ADU_OBSERVERS)
+  {
+    AZ_IOT_LOG_ERROR("adu: no free observer slot");
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  }
+  ADU_I(client).observers[free_slot].cb = cb;
+  ADU_I(client).observers[free_slot].user_ctx = user_ctx;
+  return AZ_IOT_OK;
+}
+
+az_iot_result az_iot_adu_client_remove_observer(
+    az_iot_adu_client_t* client,
+    az_iot_adu_observer_callback cb,
+    void* user_ctx)
+{
+  if (client == NULL || cb == NULL)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  /* Deliberately NOT refused during a dispatch, unlike adding. An owner torn
+   * down in reaction to an event runs its teardown from inside the callback,
+   * and the entry holds a raw pointer to storage it is about to release, so it
+   * must be able to withdraw. Safe against the walk in dispatch_event(): that
+   * loop re-reads each slot and skips a NULL callback, and nothing is
+   * compacted, so clearing a slot only means that observer is not called --
+   * which is what withdrawing asks for. */
+  for (size_t i = 0; i < AZ_IOT_MAX_ADU_OBSERVERS; ++i)
+  {
+    if (ADU_I(client).observers[i].cb == cb && ADU_I(client).observers[i].user_ctx == user_ctx)
+    {
+      ADU_I(client).observers[i].cb = NULL;
+      ADU_I(client).observers[i].user_ctx = NULL;
+      return AZ_IOT_OK;
+    }
+  }
+  return AZ_IOT_ERR_NOT_FOUND;
 }
 
 az_iot_result az_iot_adu_client_request_onboarding_update(az_iot_adu_client_t* client)
