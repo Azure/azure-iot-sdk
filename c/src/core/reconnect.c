@@ -66,31 +66,38 @@ uint32_t az_iot_reconnect_delay_ms(
     base = cap;
   }
 
-  int64_t jitter = 0;
   uint8_t pct = policy->jitter_pct;
   if (pct > 100)
   {
     pct = 100;
   }
+
+  uint64_t result = base;
   if (pct > 0 && base > 0)
   {
-    /* Range: [-pct%, +pct%] of base. */
-    uint64_t span = ((uint64_t)base * pct) / 100u;
+    /* Jitter the backoff by [-pct%, +pct%], computed WITHOUT a signed
+     * intermediate.
+     *
+     * The obvious form is `base + (r - span)`, but that difference is signed
+     * and spans [-span, +span]; with initial_delay_ms == max_delay_ms ==
+     * UINT32_MAX and pct == 100 it does not fit in 32 bits, so it has to be
+     * carried in a wider signed type and narrowed back -- which is exactly the
+     * implementation-defined narrowing this used to get wrong.
+     *
+     * pct is clamped to 100 above, so span <= base and `base - span` cannot
+     * underflow. Rearranging to (base - span) + r gives the identical
+     * distribution over [base-span, base+span] in unsigned arithmetic only. */
+    uint64_t span = (base * pct) / 100u;
     if (span > 0)
     {
       uint64_t r = xorshift64(rng_state) % (2u * span + 1u);
-      /* int64_t throughout: with initial_delay_ms == max_delay_ms == UINT32_MAX
-       * and jitter_pct == 100, span is UINT32_MAX and this difference does not
-       * fit an int32_t. Narrowing here would be implementation-defined and
-       * could wrap to a smaller delay before the clamp below ever ran. */
-      jitter = (int64_t)r - (int64_t)span;
+      result = (base - span) + r;
     }
   }
 
-  int64_t result = (int64_t)base + jitter;
-  if (result < 1)
+  if (result < 1u)
   {
-    result = 1;
+    result = 1u;
   }
   /* Deliberately NOT clamped back to `cap`. `cap` bounds the BACKOFF -- it is
    * how far the doubling is allowed to climb -- and jitter varies around that,
@@ -105,10 +112,10 @@ uint32_t az_iot_reconnect_delay_ms(
    * fixed-interval policy low (a nominal 5s interval averaged 4749 ms).
    *
    * Only the representable range is enforced, so a caller using the extreme
-   * end of uint32_t cannot wrap. */
-  if (result > (int64_t)UINT32_MAX)
+   * end of uint32_t saturates instead of wrapping on the cast below. */
+  if (result > (uint64_t)UINT32_MAX)
   {
-    result = (int64_t)UINT32_MAX;
+    result = (uint64_t)UINT32_MAX;
   }
   return (uint32_t)result;
 }

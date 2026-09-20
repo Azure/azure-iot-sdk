@@ -150,6 +150,19 @@ static void shift_saturates_no_ub(void** state)
  * the draws land BELOW 2^31. Narrowing the
  * difference to int32_t bounds |jitter| at 2^31, which makes every result at
  * least base - 2^31 -- the low half of the band becomes unreachable. */
+/* A policy at the very top of the representable range must neither wrap nor
+ * lose half its band.
+ *
+ * Two distinct failure modes are pinned here, because each survives the other's
+ * check:
+ *
+ *  - Computing the jitter through a narrower signed type bounds it at 2^31, so
+ *    the low part of the band becomes unreachable. Detected by `below_half`.
+ *  - Dropping the saturation clamp lets a result above UINT32_MAX truncate on
+ *    the cast. Those wrap to small values, which would only INCREASE
+ *    `below_half` -- so that counter cannot see it. Detected by `on_max`:
+ *    saturation puts a large spike on exactly UINT32_MAX, and truncation
+ *    removes it. */
 static void top_of_range_policy_does_not_wrap(void** state)
 {
   (void)state;
@@ -158,8 +171,12 @@ static void top_of_range_policy_does_not_wrap(void** state)
   p.max_delay_ms = UINT32_MAX;
   p.jitter_pct = 100;
 
+  /* base == UINT32_MAX and span == base, so the mathematical result is uniform
+   * over [0, 2*UINT32_MAX]: about half the draws exceed UINT32_MAX and must
+   * saturate, and about a quarter fall below 2^31. */
   uint64_t rng = 0xA5A5A5A5A5A5A5A5ull;
   int below_half = 0;
+  int on_max = 0;
   for (int i = 0; i < 2000; ++i)
   {
     uint32_t d = az_iot_reconnect_delay_ms(&p, 1, &rng);
@@ -168,16 +185,54 @@ static void top_of_range_policy_does_not_wrap(void** state)
     {
       below_half++;
     }
+    if (d == UINT32_MAX)
+    {
+      on_max++;
+    }
   }
   /* About 500 of 2000 when the arithmetic is correct; essentially zero when
    * the difference is narrowed, since |jitter| is then bounded at 2^31. */
   assert_true(below_half > 300);
+  /* About 1000 of 2000 when the oversized results saturate; essentially zero
+   * when they truncate instead (a wrapped value hits UINT32_MAX only by a
+   * 1-in-2^32 coincidence). */
+  assert_true(on_max > 600);
 
   /* With no jitter the answer is exact, proving the cast path itself is sound
    * at the top of the range. */
   p.jitter_pct = 0;
   assert_int_equal(az_iot_reconnect_delay_ms(&p, 1, &rng), UINT32_MAX);
   assert_int_equal(az_iot_reconnect_delay_ms(&p, 64, &rng), UINT32_MAX);
+}
+
+/* The saturation clamp on its own, with a narrow band so the assertion is a
+ * hard bound rather than a distribution shape.
+ *
+ * base is UINT32_MAX and the band is +/-1% of it, so every legitimate result
+ * is at least base - base/100 = 4252017623, and the upper half of the band
+ * lies above UINT32_MAX and must come back as exactly UINT32_MAX. A truncated
+ * result would land far below the lower bound, which the per-draw assertion
+ * catches outright. */
+static void an_oversized_result_saturates_rather_than_wrapping(void** state)
+{
+  (void)state;
+  az_iot_reconnection_policy p = { 0 };
+  p.initial_delay_ms = UINT32_MAX;
+  p.max_delay_ms = UINT32_MAX;
+  p.jitter_pct = 1;
+
+  uint64_t rng = 0x0123456789ABCDEFull;
+  int on_max = 0;
+  for (int i = 0; i < 500; ++i)
+  {
+    uint32_t d = az_iot_reconnect_delay_ms(&p, 1, &rng);
+    assert_true(d >= 4252017623u);
+    if (d == UINT32_MAX)
+    {
+      on_max++;
+    }
+  }
+  assert_true(on_max > 150); /* about half the band saturates */
 }
 
 int main(void)
@@ -188,6 +243,7 @@ int main(void)
     cmocka_unit_test(jitter_stays_within_band),
     cmocka_unit_test(jitter_is_centred_on_the_backoff),
     cmocka_unit_test(top_of_range_policy_does_not_wrap),
+    cmocka_unit_test(an_oversized_result_saturates_rather_than_wrapping),
     cmocka_unit_test(zero_max_delay_means_initial_is_the_cap),
     cmocka_unit_test(attempt_zero_treated_as_one),
     cmocka_unit_test(shift_saturates_no_ub),
