@@ -127,8 +127,15 @@ extern "C"
   az_iot_reconnection_policy az_iot_reconnection_policy_get_default(void);
 
   /* Never retry: every dropped link, refused CONNACK, stalled handshake and
-   * failed registration is terminal, and the client waits in FAULTED for the
-   * application to decide.
+   * failed registration ends the session rather than being retried.
+   *
+   * Where the client ends up depends on how the session ended. A peer
+   * DISCONNECT is a clean end of session and settles in
+   * AZ_IOT_CONN_STATE_IDLE, ready for another
+   * az_iot_connection_client_open(). A failure -- a refused CONNACK, a
+   * transport error, a stalled handshake, a failed registration -- settles in
+   * AZ_IOT_CONN_STATE_FAULTED, which carries the reason and waits for the
+   * application to call close() and open again.
    *
    * This is the spelling for "no retries". It is what a zero-initialized
    * policy already means, but saying it through this getter states the intent
@@ -139,6 +146,12 @@ extern "C"
    * @p interval_ms, up to @p max_attempts tries per ladder (0 = forever).
    * Jitter is left at 0 -- add it on the returned struct if a fleet of these
    * devices should not retry in lockstep.
+   *
+   * @p interval_ms must be non-zero. 0 is the sentinel that DISABLES retrying
+   * (see initial_delay_ms), so a zero interval cannot mean "retry with no
+   * delay" -- it is clamped to 1 ms rather than silently returning the
+   * opposite of what this function's name promises. Use
+   * az_iot_reconnection_policy_get_retry_disabled() to disable retrying.
    *
    * For a device on a link that is either up or down, where doubling the delay
    * only delays recovery. */
@@ -253,10 +266,14 @@ extern "C"
      * for the fields and the getters that name the usual shapes.
      *
      * With retrying disabled (initial_delay_ms == 0, which is what a zeroed
-     * options struct has) every unexpected drop, refused CONNACK, stalled
-     * handshake and failed registration is terminal: the client goes to
-     * AZ_IOT_CONN_STATE_FAULTED and stays there until the application calls
-     * az_iot_connection_client_close() and opens again.
+     * options struct has) nothing is retried, and where the client settles
+     * depends on how the session ended:
+     *   - a peer DISCONNECT is a clean end of session, so the client goes to
+     *     AZ_IOT_CONN_STATE_IDLE and is ready for another open();
+     *   - a failure -- refused CONNACK, transport error, stalled handshake,
+     *     failed registration -- goes to AZ_IOT_CONN_STATE_FAULTED, which
+     *     carries the reason and waits until the application calls
+     *     az_iot_connection_client_close() and opens again.
      *
      * That does NOT discard what the failure established. An identity
      * rejection still records that the device must re-provision, so the next

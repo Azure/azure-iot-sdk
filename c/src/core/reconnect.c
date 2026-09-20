@@ -150,10 +150,18 @@ az_iot_reconnection_policy az_iot_reconnection_policy_get_fixed_interval(
     uint32_t max_attempts)
 {
   /* max_delay_ms == initial_delay_ms pins the backoff at the first rung, which
-   * is exactly a fixed interval -- no separate code path needed. */
+   * is exactly a fixed interval -- no separate code path needed.
+   *
+   * A zero interval is clamped to 1 ms rather than passed through: 0 in
+   * initial_delay_ms is the sentinel that disables retrying, so honouring it
+   * here would hand back a policy that never retries from a function whose
+   * name promises the opposite. 1 ms is the smallest schedule the delay
+   * calculator can represent (it floors every result at 1), so it is the
+   * nearest thing to the caller's request that is still a retry. */
+  uint32_t interval = interval_ms ? interval_ms : 1u;
   az_iot_reconnection_policy p = {
-    .initial_delay_ms = interval_ms,
-    .max_delay_ms = interval_ms,
+    .initial_delay_ms = interval,
+    .max_delay_ms = interval,
     .max_attempts = max_attempts,
     .jitter_pct = 0u,
   };

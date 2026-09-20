@@ -312,6 +312,22 @@ static void fixed_interval_policy_can_retry_forever(void** state)
   assert_int_equal(p.initial_delay_ms, p.max_delay_ms);
 }
 
+/* A zero interval must not silently return the opposite of what the function
+ * promises. 0 in initial_delay_ms is the retry-DISABLED sentinel, so passing
+ * it through would hand back a policy that never retries from a getter named
+ * "fixed interval". It is clamped to the smallest representable schedule
+ * instead. */
+static void a_zero_fixed_interval_does_not_disable_retrying(void** state)
+{
+  (void)state;
+  az_iot_reconnection_policy p = az_iot_reconnection_policy_get_fixed_interval(0u, 5u);
+
+  assert_int_not_equal(p.initial_delay_ms, 0u); /* not the disable sentinel */
+  assert_int_equal(p.initial_delay_ms, 1u);
+  assert_int_equal(p.max_delay_ms, p.initial_delay_ms); /* still flat */
+  assert_int_equal(p.max_attempts, 5u);
+}
+
 /* ---- built-in stderr sink ------------------------------------------------- */
 
 static void stderr_sink_is_installable_and_emits(void** state)
@@ -418,6 +434,7 @@ int main(void)
     cmocka_unit_test(retry_disabled_policy_disables_retrying),
     cmocka_unit_test(fixed_interval_policy_pins_the_cap_to_the_interval),
     cmocka_unit_test(fixed_interval_policy_can_retry_forever),
+    cmocka_unit_test(a_zero_fixed_interval_does_not_disable_retrying),
     cmocka_unit_test(stderr_sink_is_installable_and_emits),
     cmocka_unit_test(stderr_sink_honours_its_minimum_level),
     cmocka_unit_test(gen_request_id_fills_a_bounded_string),
