@@ -3238,11 +3238,21 @@ static az_iot_result remove_state_observer_from(
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
-  if (client->dispatching_state)
-  {
-    AZ_IOT_LOG_ERROR("connection: cannot remove a state observer from inside one");
-    return AZ_IOT_ERR_BUSY;
-  }
+  /* Deliberately NOT refused during a dispatch, unlike adding.
+   *
+   * The two directions are not symmetric. Adding from inside an observer would
+   * deliver the transition being dispatched to a subscriber that was not
+   * watching when it happened, so it is refused. Removing is the opposite: a
+   * feature client destroyed from inside an observer -- which is a natural
+   * reaction to FAULTED -- MUST be able to withdraw, because the entry holds a
+   * raw pointer to storage its destroy path is about to release. Refusing here
+   * left the caller with no way to give the seat back, and the next transition
+   * called into freed memory.
+   *
+   * Safe against the walk in dispatch_state_event(): it re-reads each slot and
+   * skips a NULL callback, and nothing is compacted, so clearing a slot only
+   * means that observer is not called -- which is exactly what withdrawing
+   * asks for. An entry already visited in this pass is unaffected. */
   for (size_t i = 0; i < AZ_IOT_MAX_FEATURE_STATE_OBSERVERS; ++i)
   {
     if (client->feature_state_observers[i].cb == cb
