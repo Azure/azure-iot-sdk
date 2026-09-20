@@ -109,18 +109,24 @@ full.
 ### 2.4 Removal & reentrancy
 
 - Feature-client `deinit` **MUST** self-remove its entry.
-- An observer callback **MUST NOT** call `add`/`remove` or any client
-  `init`/`deinit` during a dispatch. Enforcement:
+- An observer callback **MUST NOT** call `add`, or any client `init`/`deinit`
+  that would add, during a dispatch. Enforcement:
   - the client carries a `dispatching` guard flag;
-  - `add`/`remove` return `AZ_IOT_ERR_BUSY` when called during dispatch;
+  - `add` returns `AZ_IOT_ERR_BUSY` when called during dispatch;
   - debug builds assert.
-- Because mutation-during-dispatch is forbidden, **no registry snapshot is
-  required**. The sole exception (the `DEINITIALIZING` notice, §3.3) performs
-  **no** list mutation — feature clients only poison their own local pointers.
+- An observer callback **MAY** call `remove`, and a feature-client `deinit` from
+  inside a dispatch MUST be able to: the entry holds a raw pointer to storage
+  the deinit is about to release, and the caller has no later point at which to
+  retry. See deviation 5 in §2.5.
+- Because ADDITION during dispatch is forbidden, and removal only ever clears a
+  slot in place, **no registry snapshot is required**: the dispatch loop
+  re-reads each slot and skips a NULL callback, and nothing is compacted. The
+  `DEINITIALIZING` notice (§3.3) performs **no** list mutation either — feature
+  clients only poison their own local pointers.
 
 ### 2.5 What shipped, and where it differs from §2.1–§2.4
 
-The registry is implemented. Four deviations from the design above, each
+The registry is implemented. Five deviations from the design above, each
 deliberate:
 
 1. **Two arrays, not one array with an `is_feature_client` flag.** §2.1 proposed
@@ -142,6 +148,14 @@ deliberate:
    `AZ_IOT_ERR_BUSY` return is the contract and is covered by a test; an assert
    would add a second, divergent failure mode for the same mistake, and this
    client does not assert anywhere else.
+5. **REMOVAL during dispatch is permitted; only addition is refused.** §2.4
+   originally forbade both. Refusing removal is not a safe default: a feature
+   client destroyed from inside an observer -- a natural reaction to FAULTED --
+   runs its deinit within the dispatch, and had no way to give its seat back,
+   so the entry became a call into freed storage and the seat leaked. Removal
+   is safe against the walk because it clears a slot in place and the loop
+   re-reads each slot, skipping NULL. Addition stays refused: a subscriber
+   added mid-pass would be handed a transition it was not watching for.
 
 Two further points the design did not state, both now pinned by tests:
 
