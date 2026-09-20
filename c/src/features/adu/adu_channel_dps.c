@@ -470,6 +470,10 @@ static void channel_close(void* ctx)
   c->result_cb = NULL;
   c->engine_ctx = NULL;
   c->request_pending = false;
+  /* The demand for a session belongs to the binding that raised it. Leaving it
+   * set would make the next binding open a session for an operation nobody
+   * asked for. */
+  c->wants_session = false;
   /* The delay belongs to the binding that earned it. A fresh bind is a fresh
    * start, not a continuation of someone else's backoff. */
   c->retry_after_deadline_ms = 0;
@@ -713,13 +717,21 @@ static az_iot_result channel_do_work(void* ctx)
    * its session down at registration, and nothing else would open another.
    *
    * Only when there is work -- a session opened speculatively would linger and
-   * close again on every tick, for nothing. */
-  if (c->holds_user && had_work && !az_iot_connection_client__dps_session_ready(c->connection))
+   * close again on every tick, for nothing.
+   *
+   * The demand is satisfied by the session being READY, which is the only thing
+   * the refused caller was waiting for. It is deliberately not cleared on the
+   * result of dps_session_ensure(): that call answers AZ_IOT_OK only when a
+   * session is already usable, which this branch has just excluded, so clearing
+   * on it would never happen. The flag would then latch on for the life of the
+   * client and every linger expiry would reopen a session nobody wants. */
+  if (az_iot_connection_client__dps_session_ready(c->connection))
   {
-    if (az_iot_connection_client__dps_session_ensure(c->connection) == AZ_IOT_OK)
-    {
-      c->wants_session = false;
-    }
+    c->wants_session = false;
+  }
+  else if (c->holds_user && had_work)
+  {
+    (void)az_iot_connection_client__dps_session_ensure(c->connection);
   }
 
   /* A session that is gone takes its exchange with it: the next one is a fresh
