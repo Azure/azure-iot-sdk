@@ -184,6 +184,29 @@ extern "C"
 #define AZ_IOT_ADU_CHANNEL_MAX_COMPAT 5
 #endif
 
+/* How many times an operation is RETRIED after losing the provisioning session
+ * underneath it, before it is abandoned. N retries, so the operation is given
+ * up on the (N+1)th consecutive loss.
+ *
+ * The retry reopens a SESSION, and what usually ended the last one was the
+ * REGISTRATION failing -- which a new session cannot fix. Unbounded, that is a
+ * reconnect loop for the life of the device; bounded, the application is told
+ * the operation was abandoned.
+ *
+ * The BOUND only. Spacing the attempts out belongs to the connection client,
+ * which already paces its own provisioning-session attempts under the
+ * reconnection policy, with jitter. */
+#ifndef AZ_IOT_ADU_CHANNEL_MAX_SESSION_RETRIES
+#define AZ_IOT_ADU_CHANNEL_MAX_SESSION_RETRIES 4
+#endif
+
+/* The attempt counter is a uint8_t and saturates at 255, so the bound must be
+ * strictly below that or the "> bound" test can never be true and the cap
+ * silently disappears. Fail the build instead. */
+#if AZ_IOT_ADU_CHANNEL_MAX_SESSION_RETRIES < 1 || AZ_IOT_ADU_CHANNEL_MAX_SESSION_RETRIES > 254
+#error "AZ_IOT_ADU_CHANNEL_MAX_SESSION_RETRIES must be between 1 and 254"
+#endif
+
   typedef struct az_iot_adu_channel_dps
   {
     az_iot_connection_client* connection;
@@ -258,6 +281,15 @@ extern "C"
      * force. Honouring it is the difference between backing off on the
      * schedule the service asked for and hammering it on our own. */
     uint64_t retry_after_deadline_ms;
+
+    /* Consecutive session losses that cost an operation its answer.
+     *
+     * Cleared by any answered operation -- an answer is proof the session works
+     * -- and by a binding ending. Distinct from retry_after_deadline_ms, which
+     * carries the delay the SERVICE asked for and must be honoured exactly as
+     * given; this is only a count, because the spacing between attempts belongs
+     * to the connection client's reconnection policy. */
+    uint8_t session_loss_attempts;
 
     /* Whether the pre-registration exchange has already run on the CURRENT
      * session. Distinct from wants_hold: it stops the same session being held
