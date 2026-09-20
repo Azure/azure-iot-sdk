@@ -726,9 +726,11 @@ extern "C"
      * max_attempts is therefore applied per ladder as well. Indexed by
      * az_iot_connection_scope. */
     uint32_t retry_attempt[AZ_IOT_CONN_SCOPE_COUNT];
-    /* Which ladder the currently scheduled retry belongs to. Only one retry is
-     * ever pending, so one deadline and one scope serve both. */
-    az_iot_connection_scope retry_scope;
+    /* Only one retry is ever pending, so a single deadline serves both ladders.
+     * Which ladder it belongs to is not stored: do_work() derives it from
+     * needs_reprovision at the moment it acts, the same way schedule_reconnect()
+     * derived it when it set the deadline. Keeping a copy would be a second
+     * source of truth that nothing reads and a later change could desync. */
     uint64_t reconnect_due_ms;
     uint64_t rng_state;
 

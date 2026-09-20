@@ -1974,9 +1974,16 @@ static void the_dps_ladder_does_not_inherit_the_hub_backoff(void** state)
 
   /* The hub ladder had reached 40 ms; the DPS one starts over at 10 ms. */
   assert_true(fx->client->needs_reprovision);
-  assert_int_equal(fx->client->retry_scope, AZ_IOT_CONN_SCOPE_DPS);
   assert_true(last_delay <= (uint64_t)LADDER_INITIAL_MS + 2u);
   assert_int_equal(fx->client->retry_attempt[AZ_IOT_CONN_SCOPE_DPS], 1);
+
+  /* And the attempt that deadline schedules really is a registration -- the
+   * observable fact the short delay is only evidence for. */
+  az_iot_test_wait_ms((unsigned)last_delay + 5u);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  az_iot_mock_mqtt_client* next = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  assert_non_null(next);
+  assert_string_equal(last_connect_host(next), "global.azure-devices-provisioning.net");
 }
 
 /* max_attempts is a budget PER ladder. With one shared counter a long hub

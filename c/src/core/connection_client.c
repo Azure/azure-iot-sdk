@@ -572,10 +572,10 @@ static void schedule_reconnect(
   /* Which ladder this retry climbs: the scope of the attempt about to be
    * scheduled, not of the failure. needs_reprovision is exactly what do_work()
    * reads to decide the next attempt is a registration rather than a hub
-   * connect. */
+   * connect, so it derives the same answer there rather than reading a stored
+   * copy of this one. */
   az_iot_connection_scope scope
       = c->needs_reprovision ? AZ_IOT_CONN_SCOPE_DPS : AZ_IOT_CONN_SCOPE_HUB;
-  c->retry_scope = scope;
   c->retry_attempt[scope]++;
 
   /* Per ladder, so a long hub outage cannot spend the budget a registration
