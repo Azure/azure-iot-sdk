@@ -1,15 +1,15 @@
 ﻿using Google.Protobuf;
-using Microsoft.Azure.Devices.Client;
+using Microsoft.Azure.Iot.Device;
 using System.Diagnostics;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.Json;
-using Microsoft.Azure.Devices.Client.Gen2.Twin;
-using Microsoft.Azure.Devices.Client.Models;
-using Microsoft.Azure.Devices.Client.Gen2.Connection;
-using Microsoft.Azure.Devices.Client.Gen2.DirectMethods;
-using Microsoft.Azure.Devices.Client.Models.DirectMethods;
-using Microsoft.Azure.Devices.Client.Models.Twin;
+using Microsoft.Azure.Iot.Device.Gen2.Twin;
+using Microsoft.Azure.Iot.Device.Models;
+using Microsoft.Azure.Iot.Device.Gen2.Connection;
+using Microsoft.Azure.Iot.Device.Gen2.DirectMethods;
+using Microsoft.Azure.Iot.Device.Models.DirectMethods;
+using Microsoft.Azure.Iot.Device.Models.Twin;
 
 internal class Program
 {

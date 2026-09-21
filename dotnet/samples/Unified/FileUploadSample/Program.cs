@@ -1,13 +1,13 @@
 ﻿using Azure.Storage.Blobs.Models;
 using Azure.Storage.Blobs.Specialized;
-using Microsoft.Azure.Devices.Client;
+using Microsoft.Azure.Iot.Device;
 using SetupSampleDevice;
 using System.Text;
-using Microsoft.Azure.Devices.Client.Unified.Connection;
-using Microsoft.Azure.Devices.Client.Models;
-using Microsoft.Azure.Devices.Client.Unified.FileUpload;
-using Microsoft.Azure.Devices.Client.Models.FileUpload;
-using Microsoft.Azure.Devices.Client.Exceptions;
+using Microsoft.Azure.Iot.Device.Unified.Connection;
+using Microsoft.Azure.Iot.Device.Models;
+using Microsoft.Azure.Iot.Device.Unified.FileUpload;
+using Microsoft.Azure.Iot.Device.Models.FileUpload;
+using Microsoft.Azure.Iot.Device.Exceptions;
 
 internal class Program
 {

@@ -1,11 +1,11 @@
 ﻿using DirectMethodsClientSample;
-using Microsoft.Azure.Devices.Client;
-using Microsoft.Azure.Devices.Client.Unified.DirectMethods;
+using Microsoft.Azure.Iot.Device;
+using Microsoft.Azure.Iot.Device.Unified.DirectMethods;
 using SetupSampleDevice;
 using System.Text.Json;
-using Microsoft.Azure.Devices.Client.Unified.Connection;
-using Microsoft.Azure.Devices.Client.Models;
-using Microsoft.Azure.Devices.Client.Models.DirectMethods;
+using Microsoft.Azure.Iot.Device.Unified.Connection;
+using Microsoft.Azure.Iot.Device.Models;
+using Microsoft.Azure.Iot.Device.Models.DirectMethods;
 
 internal class Program
 {

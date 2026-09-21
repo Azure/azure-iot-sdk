@@ -1,8 +1,8 @@
-﻿using Microsoft.Azure.Devices.Client;
-using Microsoft.Azure.Devices.Client.Models;
-using Microsoft.Azure.Devices.Client.Models.Twin;
-using Microsoft.Azure.Devices.Client.Gen2.Connection;
-using Microsoft.Azure.Devices.Client.Gen2.Twin;
+﻿using Microsoft.Azure.Iot.Device;
+using Microsoft.Azure.Iot.Device.Models;
+using Microsoft.Azure.Iot.Device.Models.Twin;
+using Microsoft.Azure.Iot.Device.Gen2.Connection;
+using Microsoft.Azure.Iot.Device.Gen2.Twin;
 using SetupSampleDevice;
 using System.Text.Json;
 

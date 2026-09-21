@@ -1,8 +1,8 @@
-﻿using Microsoft.Azure.Devices.Client;
-using Microsoft.Azure.Devices.Client.Models;
-using Microsoft.Azure.Devices.Client.Models.Telemetry;
-using Microsoft.Azure.Devices.Client.Gen2.Connection;
-using Microsoft.Azure.Devices.Client.Gen2.Telemetry;
+﻿using Microsoft.Azure.Iot.Device;
+using Microsoft.Azure.Iot.Device.Models;
+using Microsoft.Azure.Iot.Device.Models.Telemetry;
+using Microsoft.Azure.Iot.Device.Gen2.Connection;
+using Microsoft.Azure.Iot.Device.Gen2.Telemetry;
 using SetupSampleDevice;
 using System.Text;
 

@@ -1,4 +1,4 @@
-﻿using Microsoft.Azure.Devices.Client;
+﻿using Microsoft.Azure.Iot.Device;
 using System.Security.Cryptography.X509Certificates;
 
 namespace SetupSampleDevice

@@ -1,12 +1,12 @@
-﻿using Microsoft.Azure.Devices.Client;
-using Microsoft.Azure.Devices.Client.Models;
-using Microsoft.Azure.Devices.Client.Models.CertificateManagement;
-using Microsoft.Azure.Devices.Client.Unified.Connection;
+﻿using Microsoft.Azure.Iot.Device;
+using Microsoft.Azure.Iot.Device.Models;
+using Microsoft.Azure.Iot.Device.Models.CertificateManagement;
+using Microsoft.Azure.Iot.Device.Unified.Connection;
 using SetupSampleDevice;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
-using static Microsoft.Azure.Devices.Client.IntegrationTests.CertificateUtilities;
+using static Microsoft.Azure.Iot.Device.IntegrationTests.CertificateUtilities;
 
 internal class Program
 {
