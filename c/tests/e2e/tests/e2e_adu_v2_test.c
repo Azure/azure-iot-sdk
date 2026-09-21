@@ -132,6 +132,8 @@ typedef struct
  * longer make progress just burns its whole budget before failing. */
 static void on_conn_state(const az_iot_connection_state_event* event, void* ctx)
 {
+  /* Deliberately scope-agnostic: this device rides the provisioning session, so
+   * a DPS fault ends the wait just as a hub fault does. */
   if (event != NULL && event->state == AZ_IOT_CONN_STATE_FAULTED)
   {
     ((e2e_fixture*)ctx)->faulted = true;
@@ -194,7 +196,7 @@ static void fixture_open(e2e_fixture* fx, const char* registration_id)
   opts.certificate_provider = &fx->certs.base;
   assert_int_equal(az_iot_connection_client_init(&fx->conn, &opts), AZ_IOT_OK);
   assert_int_equal(
-      az_iot_connection_client_set_state_callback(&fx->conn, on_conn_state, fx), AZ_IOT_OK);
+      az_iot_connection_client_add_state_observer(&fx->conn, on_conn_state, fx), AZ_IOT_OK);
 
   az_iot_adu_device_properties dp = { 0 };
   dp.manufacturer = "contoso";

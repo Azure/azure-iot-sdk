@@ -158,6 +158,13 @@ extern "C"
   /* Script the next return code for the given call kind. By default every call
    * returns AZ_IOT_OK. The override is one-shot: it applies to the next call of
    * the kind, then reverts to AZ_IOT_OK. */
+  /* Arm a one-shot CONNECT failure on the NEXT client this factory creates.
+   * For code paths that build their own adapter inside the call under test,
+   * where there is no client object to script beforehand. */
+  void az_iot_mock_mqtt_factory_fail_next_connect(
+      az_iot_mqtt_factory* factory,
+      az_iot_result result);
+
   void az_iot_mock_mqtt_client_set_next_result(
       az_iot_mock_mqtt_client* m,
       az_iot_mock_call_kind kind,

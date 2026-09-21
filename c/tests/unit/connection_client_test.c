@@ -71,7 +71,7 @@ static int setup(void** state)
   assert_int_equal(az_iot_connection_client_init(&fx->client_storage, &opts), AZ_IOT_OK);
   fx->client = &fx->client_storage;
   assert_int_equal(
-      az_iot_connection_client_set_state_callback(fx->client, on_state, &fx->rec), AZ_IOT_OK);
+      az_iot_connection_client_add_state_observer(fx->client, on_state, &fx->rec), AZ_IOT_OK);
 
   fx->factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
   assert_non_null(fx->factory);
@@ -121,7 +121,7 @@ static int setup_with_reconnect(void** state)
   assert_int_equal(az_iot_connection_client_init(&fx->client_storage, &opts), AZ_IOT_OK);
   fx->client = &fx->client_storage;
   assert_int_equal(
-      az_iot_connection_client_set_state_callback(fx->client, on_state, &fx->rec), AZ_IOT_OK);
+      az_iot_connection_client_add_state_observer(fx->client, on_state, &fx->rec), AZ_IOT_OK);
   az_iot_connection_client__seed_rng(fx->client, 0xC0FFEEFEEDFACEull);
 
   fx->factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
@@ -556,7 +556,7 @@ static int setup_next_ex(void** state, bool push_desired, bool push_reported)
   assert_int_equal(az_iot_connection_client_init(&fx->client_storage, &opts), AZ_IOT_OK);
   fx->client = &fx->client_storage;
   assert_int_equal(
-      az_iot_connection_client_set_state_callback(fx->client, on_state, &fx->rec), AZ_IOT_OK);
+      az_iot_connection_client_add_state_observer(fx->client, on_state, &fx->rec), AZ_IOT_OK);
 
   fx->factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_5);
   assert_non_null(fx->factory);
@@ -1803,7 +1803,7 @@ static int setup_next_with_reconnect(void** state)
   assert_int_equal(az_iot_connection_client_init(&fx->client_storage, &opts), AZ_IOT_OK);
   fx->client = &fx->client_storage;
   assert_int_equal(
-      az_iot_connection_client_set_state_callback(fx->client, on_state, &fx->rec), AZ_IOT_OK);
+      az_iot_connection_client_add_state_observer(fx->client, on_state, &fx->rec), AZ_IOT_OK);
   az_iot_connection_client__seed_rng(fx->client, 0xC0FFEEFEEDFACEull);
 
   fx->factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_5);
