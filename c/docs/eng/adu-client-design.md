@@ -1653,8 +1653,11 @@ target_link_libraries(az_iot_adu
 
 **Deliverables** (specified in
 [docs/eng/connection-state-and-error-propagation.md](connection-state-and-error-propagation.md)):
-- Replace the single `set_state_callback` with the shared observer registry
-  (public + internal registration, two-pass dispatch, compile-time capacity).
+- ~~Replace the single `set_state_callback` with the shared observer registry
+  (public + internal registration, two-pass dispatch, compile-time capacity).~~
+  **DONE** -- `az_iot_connection_client_add_state_observer()` (public) and
+  `az_iot_connection_client__add_state_observer()` (internal) ship the registry;
+  the single setter is removed.
 - Extend `az_iot_connection_state_event` with `az_iot_conn_reason` +
   `az_iot_error_source`; wire `protocol_code`/`transport_code` from the MQTT
   iface.

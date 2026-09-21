@@ -41,7 +41,7 @@ static int setup(void** state)
   assert_int_equal(az_iot_connection_client_init(&fx->client_storage, &opts), AZ_IOT_OK);
   fx->client = &fx->client_storage;
   assert_int_equal(
-      az_iot_connection_client_set_state_callback(fx->client, az_iot_test_on_state, &fx->log),
+      az_iot_connection_client_add_state_observer(fx->client, az_iot_test_on_state, &fx->log),
       AZ_IOT_OK);
 
   fx->factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
@@ -138,9 +138,10 @@ static void open_while_connected_is_rejected(void** state)
   assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_ERR_ALREADY_INITIALIZED);
 }
 
-/* FAULTED is terminal for this client instance: open() does not restart it.
- * Recovery requires destroy() + init(). Pinning this makes the limitation
- * visible rather than folklore. */
+/* open() is still IDLE-only: a fault has to be acknowledged with close()
+ * first, which is what returns the client to IDLE. See
+ * close_from_faulted_returns_to_idle() and
+ * open_after_close_from_faulted_starts_a_new_session(). */
 static void open_from_faulted_is_rejected(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
@@ -337,6 +338,151 @@ static void the_websocket_path_reaches_the_adapter(void** state)
   assert_string_equal(c.connect.websocket_path, "/mqtt");
 }
 
+/* Stock options retry. A zeroed struct does not -- that is the caller's
+ * choice -- but the function whose job is to supply sensible defaults must not
+ * hand back a client for which every transient failure is terminal. */
+static void the_default_options_enable_reconnection(void** state)
+{
+  (void)state;
+  az_iot_connection_client_options opts = az_iot_connection_client_options_default();
+  az_iot_reconnection_policy expected = az_iot_reconnection_policy_get_default();
+
+  assert_true(opts.reconnection_policy.initial_delay_ms > 0);
+  assert_int_equal(opts.reconnection_policy.initial_delay_ms, expected.initial_delay_ms);
+  assert_int_equal(opts.reconnection_policy.max_delay_ms, expected.max_delay_ms);
+  assert_int_equal(opts.reconnection_policy.max_attempts, expected.max_attempts);
+  assert_int_equal(opts.reconnection_policy.jitter_pct, expected.jitter_pct);
+}
+
+/* The field values are only half of it: they matter because they reach the
+ * lifecycle. A client built from az_iot_connection_client_options_default()
+ * must actually survive a refused CONNACK, or a future regression in wiring
+ * the default policy through could still pass the comparison above. */
+static void the_default_options_retry_a_refused_connack(void** state)
+{
+  (void)state;
+  az_iot_connection_client_options opts = az_iot_connection_client_options_default();
+  opts.host = "broker.example";
+  opts.client_id = "ut-device";
+  /* initial_delay_ms is deliberately NOT overridden: it is the field that
+   * decides whether reconnection happens at all, so the test has to depend on
+   * the default supplying it. Only the cap is shortened, which bounds the
+   * computed delay (base = min(max_delay_ms, initial_delay_ms << n)) so the
+   * retry deadline is reachable without a one-second wait. */
+  opts.reconnection_policy.max_delay_ms = 20u;
+  opts.reconnection_policy.jitter_pct = 0;
+
+  az_iot_connection_client c;
+  assert_int_equal(az_iot_connection_client_init(&c, &opts), AZ_IOT_OK);
+  az_iot_test_state_log log;
+  memset(&log, 0, sizeof(log));
+  assert_int_equal(
+      az_iot_connection_client_add_state_observer(&c, az_iot_test_on_state, &log), AZ_IOT_OK);
+
+  az_iot_mqtt_factory* f = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
+  assert_non_null(f);
+  assert_int_equal(az_iot_connection_client_register_mqtt_factory(&c, f), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_open(&c), AZ_IOT_OK);
+
+  az_iot_mock_mqtt_client* first = az_iot_mock_mqtt_factory_last_client(f);
+  assert_non_null(first);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(first, AZ_IOT_ERR_MQTT));
+  (void)az_iot_connection_client_do_work(&c, 0);
+  (void)az_iot_connection_client_do_work(&c, 0);
+
+  /* Retrying, not terminal. */
+  assert_int_equal(az_iot_test_last_state(&log), AZ_IOT_CONN_STATE_RECONNECTING);
+  assert_false(az_iot_test_saw_state(&log, AZ_IOT_CONN_STATE_FAULTED));
+
+  /* And the retry is really issued once the backoff elapses. */
+  az_iot_test_wait_ms(25u);
+  (void)az_iot_connection_client_do_work(&c, 0);
+  az_iot_mock_mqtt_client* second = az_iot_mock_mqtt_factory_last_client(f);
+  assert_non_null(second);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(second, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(&c, 0);
+  assert_true(az_iot_connection_client__is_connected(&c));
+
+  az_iot_connection_client_destroy(&c);
+}
+
+/* Opting out stays possible, and a zeroed struct keeps meaning "no retry". */
+static void reconnection_can_still_be_disabled(void** state)
+{
+  (void)state;
+  az_iot_connection_client_options zeroed = { 0 };
+  assert_int_equal(zeroed.reconnection_policy.initial_delay_ms, 0);
+
+  az_iot_connection_client_options opts = az_iot_connection_client_options_default();
+  opts.reconnection_policy.initial_delay_ms = 0;
+  opts.host = "broker.example";
+  opts.client_id = "ut-device";
+
+  az_iot_connection_client c;
+  assert_int_equal(az_iot_connection_client_init(&c, &opts), AZ_IOT_OK);
+  az_iot_test_state_log log;
+  memset(&log, 0, sizeof(log));
+  assert_int_equal(
+      az_iot_connection_client_add_state_observer(&c, az_iot_test_on_state, &log), AZ_IOT_OK);
+
+  az_iot_mqtt_factory* f = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
+  assert_non_null(f);
+  assert_int_equal(az_iot_connection_client_register_mqtt_factory(&c, f), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_open(&c), AZ_IOT_OK);
+
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(f);
+  assert_non_null(m);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_ERR_MQTT));
+  (void)az_iot_connection_client_do_work(&c, 0);
+  (void)az_iot_connection_client_do_work(&c, 0);
+
+  assert_int_equal(az_iot_test_last_state(&log), AZ_IOT_CONN_STATE_FAULTED);
+  az_iot_connection_client_destroy(&c);
+}
+
+/* ...but a clean peer DISCONNECT with retrying disabled is NOT a fault. It is
+ * the end of a session, so the client settles in IDLE and is ready to be
+ * opened again. Pinned because the header documents the two outcomes
+ * separately, and describing them as one was wrong. */
+static void a_peer_disconnect_without_retrying_settles_in_idle(void** state)
+{
+  (void)state;
+  az_iot_connection_client_options opts = az_iot_connection_client_options_default();
+  opts.reconnection_policy = az_iot_reconnection_policy_get_retry_disabled();
+  opts.host = "broker.example";
+  opts.client_id = "ut-device";
+
+  az_iot_connection_client c;
+  assert_int_equal(az_iot_connection_client_init(&c, &opts), AZ_IOT_OK);
+  az_iot_test_state_log log;
+  memset(&log, 0, sizeof(log));
+  assert_int_equal(
+      az_iot_connection_client_add_state_observer(&c, az_iot_test_on_state, &log), AZ_IOT_OK);
+
+  az_iot_mqtt_factory* f = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
+  assert_non_null(f);
+  assert_int_equal(az_iot_connection_client_register_mqtt_factory(&c, f), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_open(&c), AZ_IOT_OK);
+
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(f);
+  assert_non_null(m);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(&c, 0);
+  assert_true(az_iot_connection_client__is_connected(&c));
+
+  /* The peer goes away. No retry is configured, but this is not a failure. */
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(m));
+  (void)az_iot_connection_client_do_work(&c, 0);
+  (void)az_iot_connection_client_do_work(&c, 0);
+
+  assert_int_equal(az_iot_test_last_state(&log), AZ_IOT_CONN_STATE_IDLE);
+  assert_false(az_iot_test_saw_state(&log, AZ_IOT_CONN_STATE_FAULTED));
+
+  /* IDLE means reopenable, which is the point of the distinction. */
+  assert_int_equal(az_iot_connection_client_open(&c), AZ_IOT_OK);
+  az_iot_connection_client_destroy(&c);
+}
+
 /* The default options must not pin a port, or selecting WebSockets on top of
  * them would connect to 443's scheme on 8883's port. */
 static void the_default_options_leave_the_port_to_the_transport(void** state)
@@ -499,9 +645,10 @@ static void close_twice_is_idempotent(void** state)
   assert_int_equal(fx->log.count, transitions);
 }
 
-/* After a fault the adapter is already gone, so there is nothing to disconnect.
- * close() reports that rather than pretending it did something. */
-static void close_from_faulted_reports_not_initialized(void** state)
+/* After a fault the adapter is already gone, so there is nothing to
+ * disconnect -- which is exactly why close() has to reach IDLE by itself here
+ * rather than waiting for a transport event. */
+static void close_from_faulted_returns_to_idle(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
   az_iot_mock_mqtt_client* m = open_to_connecting(fx);
@@ -511,7 +658,48 @@ static void close_from_faulted_reports_not_initialized(void** state)
   (void)az_iot_connection_client_do_work(fx->client, 0);
   assert_true(az_iot_test_saw_state(&fx->log, AZ_IOT_CONN_STATE_FAULTED));
 
-  assert_int_equal(az_iot_connection_client_close(fx->client), AZ_IOT_ERR_NOT_INITIALIZED);
+  /* FAULTED is settled, not a trap: close() acknowledges it and the client is
+   * IDLE by the time the call returns -- there is no adapter left to wait for. */
+  assert_int_equal(az_iot_connection_client_close(fx->client), AZ_IOT_OK);
+  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_IDLE);
+}
+
+/* The recovery this makes possible: retry without destroying the client (and
+ * therefore without rebuilding every attached feature client). */
+static void open_after_close_from_faulted_starts_a_new_session(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_mock_mqtt_client* m = open_to_connecting(fx);
+
+  assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_ERR_MQTT));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_FAULTED);
+
+  assert_int_equal(az_iot_connection_client_close(fx->client), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
+
+  az_iot_mock_mqtt_client* second = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  assert_non_null(second);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(second, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_true(az_iot_connection_client__is_connected(fx->client));
+}
+
+/* Closing twice from a fault is as idempotent as closing twice from a session. */
+static void close_from_faulted_twice_is_idempotent(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_mock_mqtt_client* m = open_to_connecting(fx);
+
+  assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_ERR_MQTT));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_FAULTED);
+
+  assert_int_equal(az_iot_connection_client_close(fx->client), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_close(fx->client), AZ_IOT_OK);
+  assert_int_equal(az_iot_test_count_state(&fx->log, AZ_IOT_CONN_STATE_IDLE), 1);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -681,14 +869,14 @@ static void reopen_after_close_starts_a_second_session(void** state)
 }
 
 /* ------------------------------------------------------------------------- */
-/* state callback                                                            */
+/* state observer registry                                                   */
 /* ------------------------------------------------------------------------- */
 
-static void set_state_callback_rejects_null_client(void** state)
+static void add_state_observer_rejects_null_client(void** state)
 {
   (void)state;
   assert_int_equal(
-      az_iot_connection_client_set_state_callback(NULL, az_iot_test_on_state, NULL),
+      az_iot_connection_client_add_state_observer(NULL, az_iot_test_on_state, NULL),
       AZ_IOT_ERR_INVALID_ARG);
 }
 
@@ -705,19 +893,304 @@ static void state_callback_carries_the_failure_reason(void** state)
       az_iot_test_reason_for(&fx->log, AZ_IOT_CONN_STATE_FAULTED), AZ_IOT_ERR_IDENTITY_REJECTED);
 }
 
-static void state_callback_can_be_replaced(void** state)
+/* The registry is what replaced the single callback slot, so the behaviour
+ * worth pinning is that a second observer does not displace the first: both
+ * are delivered. Under the old single-slot setter this test asserted the
+ * opposite -- that registering again silently stopped the first from being
+ * called -- which is exactly the limitation the registry removes. */
+static void a_second_observer_does_not_displace_the_first(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
   az_iot_test_state_log second = { 0 };
   assert_int_equal(
-      az_iot_connection_client_set_state_callback(fx->client, az_iot_test_on_state, &second),
+      az_iot_connection_client_add_state_observer(fx->client, az_iot_test_on_state, &second),
       AZ_IOT_OK);
 
   size_t before = fx->log.count;
   (void)open_to_connecting(fx);
 
-  assert_int_equal(fx->log.count, before);
+  assert_true(fx->log.count > before);
   assert_true(second.count > 0);
+  assert_int_equal(fx->log.count - before, second.count);
+}
+
+/* Registering the same (cb, user_ctx) pair twice must not consume a second
+ * slot, and must not deliver the event twice: a caller that cannot easily tell
+ * whether it has already subscribed should be able to just call again. */
+static void adding_the_same_observer_twice_is_idempotent(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_test_state_log second = { 0 };
+  assert_int_equal(
+      az_iot_connection_client_add_state_observer(fx->client, az_iot_test_on_state, &second),
+      AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_connection_client_add_state_observer(fx->client, az_iot_test_on_state, &second),
+      AZ_IOT_OK);
+
+  (void)open_to_connecting(fx);
+
+  /* One delivery per transition, not two. */
+  assert_int_equal(second.count, fx->log.count);
+}
+
+/* The same callback with two different contexts is two distinct
+ * subscriptions -- the pair is the identity, not the function pointer. */
+static void one_callback_with_two_contexts_is_two_observers(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_test_state_log a = { 0 };
+  az_iot_test_state_log b = { 0 };
+  assert_int_equal(
+      az_iot_connection_client_add_state_observer(fx->client, az_iot_test_on_state, &a), AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_connection_client_add_state_observer(fx->client, az_iot_test_on_state, &b), AZ_IOT_OK);
+
+  (void)open_to_connecting(fx);
+
+  assert_true(a.count > 0);
+  assert_int_equal(a.count, b.count);
+}
+
+static void a_removed_observer_stops_being_called(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_test_state_log second = { 0 };
+  assert_int_equal(
+      az_iot_connection_client_add_state_observer(fx->client, az_iot_test_on_state, &second),
+      AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_connection_client_remove_state_observer(fx->client, az_iot_test_on_state, &second),
+      AZ_IOT_OK);
+
+  size_t before = fx->log.count;
+  (void)open_to_connecting(fx);
+
+  /* The one still registered keeps working; the withdrawn one is silent. */
+  assert_true(fx->log.count > before);
+  assert_int_equal(second.count, 0);
+}
+
+/* Removing matches on the pair, so withdrawing one context must leave the
+ * other subscription intact. */
+static void removing_one_context_leaves_the_other_registered(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_test_state_log a = { 0 };
+  az_iot_test_state_log b = { 0 };
+  assert_int_equal(
+      az_iot_connection_client_add_state_observer(fx->client, az_iot_test_on_state, &a), AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_connection_client_add_state_observer(fx->client, az_iot_test_on_state, &b), AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_connection_client_remove_state_observer(fx->client, az_iot_test_on_state, &a),
+      AZ_IOT_OK);
+
+  (void)open_to_connecting(fx);
+
+  assert_int_equal(a.count, 0);
+  assert_true(b.count > 0);
+}
+
+static void removing_an_unregistered_observer_reports_not_found(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_test_state_log never_added = { 0 };
+  assert_int_equal(
+      az_iot_connection_client_remove_state_observer(
+          fx->client, az_iot_test_on_state, &never_added),
+      AZ_IOT_ERR_NOT_FOUND);
+}
+
+/* The application pool is bounded, and a full pool must SAY so rather than
+ * silently dropping a subscription the caller believes it holds. The fixture
+ * already occupies one slot. */
+static void a_full_application_pool_is_reported(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_test_state_log logs[AZ_IOT_MAX_APP_STATE_OBSERVERS];
+  memset(logs, 0, sizeof(logs));
+
+  for (size_t i = 0; i + 1 < AZ_IOT_MAX_APP_STATE_OBSERVERS; ++i)
+  {
+    assert_int_equal(
+        az_iot_connection_client_add_state_observer(fx->client, az_iot_test_on_state, &logs[i]),
+        AZ_IOT_OK);
+  }
+  assert_int_equal(
+      az_iot_connection_client_add_state_observer(
+          fx->client, az_iot_test_on_state, &logs[AZ_IOT_MAX_APP_STATE_OBSERVERS - 1]),
+      AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+}
+
+/* The ordering guarantee the registry exists to provide: every feature-client
+ * observer runs before any application observer, so by the time the
+ * application is told about a transition, the feature clients have already
+ * reacted to it. An application that rebuilds its own state on CONNECTED would
+ * otherwise race the clients it depends on. */
+static char g_dispatch_order[8];
+static size_t g_dispatch_order_len;
+
+static void record_order(char tag)
+{
+  if (g_dispatch_order_len < sizeof(g_dispatch_order) - 1)
+  {
+    g_dispatch_order[g_dispatch_order_len++] = tag;
+  }
+}
+
+static void feature_observer(const az_iot_connection_state_event* event, void* user_ctx)
+{
+  (void)event;
+  (void)user_ctx;
+  record_order('f');
+}
+
+static void app_observer(const az_iot_connection_state_event* event, void* user_ctx)
+{
+  (void)event;
+  (void)user_ctx;
+  record_order('a');
+}
+
+static void feature_observers_are_dispatched_before_application_ones(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  memset(g_dispatch_order, 0, sizeof(g_dispatch_order));
+  g_dispatch_order_len = 0;
+
+  /* Registered application-first on purpose: if the pools were walked in
+   * registration order rather than feature-pool-first, this would record "af"
+   * and the test would fail. */
+  assert_int_equal(
+      az_iot_connection_client_add_state_observer(fx->client, app_observer, NULL), AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_connection_client__add_state_observer(fx->client, feature_observer, NULL), AZ_IOT_OK);
+
+  (void)open_to_connecting(fx);
+
+  assert_true(g_dispatch_order_len >= 2);
+  assert_int_equal(g_dispatch_order[0], 'f');
+  assert_int_equal(g_dispatch_order[1], 'a');
+}
+
+/* The feature-client pool is separate storage, so an application that fills
+ * its own pool must still leave every feature client able to attach. */
+static void a_full_application_pool_does_not_block_a_feature_client(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_test_state_log logs[AZ_IOT_MAX_APP_STATE_OBSERVERS];
+  memset(logs, 0, sizeof(logs));
+
+  for (size_t i = 0; i + 1 < AZ_IOT_MAX_APP_STATE_OBSERVERS; ++i)
+  {
+    assert_int_equal(
+        az_iot_connection_client_add_state_observer(fx->client, az_iot_test_on_state, &logs[i]),
+        AZ_IOT_OK);
+  }
+  assert_int_equal(
+      az_iot_connection_client_add_state_observer(
+          fx->client, az_iot_test_on_state, &logs[AZ_IOT_MAX_APP_STATE_OBSERVERS - 1]),
+      AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+
+  assert_int_equal(
+      az_iot_connection_client__add_state_observer(fx->client, feature_observer, NULL), AZ_IOT_OK);
+}
+
+/* Mutating the registry from inside a dispatch would rewrite the array being
+ * walked. Both entry points refuse rather than corrupt it. close() from an
+ * observer stays legal and is covered elsewhere. */
+static az_iot_connection_client* g_reentrant_client;
+static az_iot_result g_reentrant_add_result;
+static az_iot_result g_reentrant_remove_result;
+
+static void reentrant_observer(const az_iot_connection_state_event* event, void* user_ctx)
+{
+  (void)event;
+  (void)user_ctx;
+  g_reentrant_add_result = az_iot_connection_client_add_state_observer(
+      g_reentrant_client, reentrant_observer, (void*)(uintptr_t)1);
+  g_reentrant_remove_result = az_iot_connection_client_remove_state_observer(
+      g_reentrant_client, reentrant_observer, NULL);
+}
+
+/* The guard must survive NESTING. close() is legal from inside an observer and
+ * transitions the state, which dispatches again; if the inner dispatch cleared
+ * the flag on its way out, the outer pass would resume unguarded and a later
+ * observer could mutate the arrays still being walked.
+ *
+ * Ordered deliberately: the first observer closes (nesting a dispatch), and a
+ * second, registered afterwards, then tries to mutate the registry. With a
+ * plain boolean it would succeed. */
+static az_iot_connection_client* g_nested_client;
+static az_iot_result g_nested_add_result;
+static bool g_nested_closed;
+
+static void nested_closing_observer(const az_iot_connection_state_event* event, void* user_ctx)
+{
+  (void)user_ctx;
+  /* CONNECTED specifically: close() only transitions -- and so only nests a
+   * dispatch -- once there is a live session to disconnect. During the
+   * CONNECTING event open() has not yet adopted the adapter, so close() there
+   * returns NOT_INITIALIZED and nests nothing. */
+  if (event->state == AZ_IOT_CONN_STATE_CONNECTED && !g_nested_closed)
+  {
+    g_nested_closed = true;
+    (void)az_iot_connection_client_close(g_nested_client);
+  }
+}
+
+static void late_mutating_observer(const az_iot_connection_state_event* event, void* user_ctx)
+{
+  (void)event;
+  (void)user_ctx;
+  /* Recorded only once the nesting has actually happened, so the assertion is
+   * about the OUTER pass resuming, not about the first event. */
+  if (g_nested_closed)
+  {
+    g_nested_add_result = az_iot_connection_client_add_state_observer(
+        g_nested_client, late_mutating_observer, (void*)(uintptr_t)7);
+  }
+}
+
+static void the_dispatch_guard_survives_nesting(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  g_nested_client = fx->client;
+  g_nested_add_result = AZ_IOT_OK;
+  g_nested_closed = false;
+
+  assert_int_equal(
+      az_iot_connection_client_add_state_observer(fx->client, nested_closing_observer, NULL),
+      AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_connection_client_add_state_observer(fx->client, late_mutating_observer, NULL),
+      AZ_IOT_OK);
+
+  /* Driven manually rather than via open_to_connected(): that helper asserts
+   * the client is still connected afterwards, and this test closes it from
+   * inside the CONNECTED dispatch on purpose. */
+  az_iot_mock_mqtt_client* m = open_to_connecting(fx);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  assert_true(g_nested_closed);
+  assert_int_equal(g_nested_add_result, AZ_IOT_ERR_BUSY);
+}
+
+static void the_registry_cannot_be_mutated_from_inside_an_observer(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  g_reentrant_client = fx->client;
+  g_reentrant_add_result = AZ_IOT_OK;
+  g_reentrant_remove_result = AZ_IOT_OK;
+  assert_int_equal(
+      az_iot_connection_client_add_state_observer(fx->client, reentrant_observer, NULL), AZ_IOT_OK);
+
+  (void)open_to_connecting(fx);
+
+  assert_int_equal(g_reentrant_add_result, AZ_IOT_ERR_BUSY);
+  assert_int_equal(g_reentrant_remove_result, AZ_IOT_ERR_BUSY);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -834,7 +1307,10 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         a_connack_without_a_pending_close_still_connects, setup, teardown),
     cmocka_unit_test_setup_teardown(close_twice_is_idempotent, setup, teardown),
-    cmocka_unit_test_setup_teardown(close_from_faulted_reports_not_initialized, setup, teardown),
+    cmocka_unit_test_setup_teardown(close_from_faulted_returns_to_idle, setup, teardown),
+    cmocka_unit_test_setup_teardown(close_from_faulted_twice_is_idempotent, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        open_after_close_from_faulted_starts_a_new_session, setup, teardown),
     /* destroy() */
     cmocka_unit_test(destroy_while_connected_destroys_the_adapter),
     cmocka_unit_test(destroy_while_connecting_destroys_the_adapter),
@@ -848,10 +1324,26 @@ int main(void)
     cmocka_unit_test_setup_teardown(do_work_surfaces_the_adapter_pump_error, setup, teardown),
     /* reopen */
     cmocka_unit_test_setup_teardown(reopen_after_close_starts_a_second_session, setup, teardown),
-    /* state callback */
-    cmocka_unit_test(set_state_callback_rejects_null_client),
+    /* state observer registry */
+    cmocka_unit_test(add_state_observer_rejects_null_client),
     cmocka_unit_test_setup_teardown(state_callback_carries_the_failure_reason, setup, teardown),
-    cmocka_unit_test_setup_teardown(state_callback_can_be_replaced, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_second_observer_does_not_displace_the_first, setup, teardown),
+    cmocka_unit_test_setup_teardown(adding_the_same_observer_twice_is_idempotent, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        one_callback_with_two_contexts_is_two_observers, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_removed_observer_stops_being_called, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        removing_one_context_leaves_the_other_registered, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        removing_an_unregistered_observer_reports_not_found, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_full_application_pool_is_reported, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_full_application_pool_does_not_block_a_feature_client, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        feature_observers_are_dispatched_before_application_ones, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        the_registry_cannot_be_mutated_from_inside_an_observer, setup, teardown),
+    cmocka_unit_test_setup_teardown(the_dispatch_guard_survives_nesting, setup, teardown),
     /* traffic gating */
     cmocka_unit_test_setup_teardown(publish_before_connected_is_rejected, setup, teardown),
     cmocka_unit_test_setup_teardown(subscribe_before_connected_is_rejected, setup, teardown),
@@ -867,6 +1359,10 @@ int main(void)
     cmocka_unit_test(the_proxy_reaches_the_adapter_whole),
     cmocka_unit_test(the_websocket_path_reaches_the_adapter),
     cmocka_unit_test(the_default_options_leave_the_port_to_the_transport),
+    cmocka_unit_test(the_default_options_enable_reconnection),
+    cmocka_unit_test(the_default_options_retry_a_refused_connack),
+    cmocka_unit_test(reconnection_can_still_be_disabled),
+    cmocka_unit_test(a_peer_disconnect_without_retrying_settles_in_idle),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }
