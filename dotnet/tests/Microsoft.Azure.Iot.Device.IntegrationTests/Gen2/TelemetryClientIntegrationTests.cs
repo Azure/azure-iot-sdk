@@ -1,4 +1,7 @@
-﻿using Microsoft.Azure.Iot.Device.Gen2.Connection;
+﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
+// See LICENSE file in the project root for full license information.
+
+using Microsoft.Azure.Iot.Device.Gen2.Connection;
 using Microsoft.Azure.Iot.Device.Gen2.Telemetry;
 using Microsoft.Azure.Iot.Device.IntegrationTests.Gen2;
 using Microsoft.Azure.Iot.Device.IntegrationTests.Models;
@@ -38,7 +41,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Gen2
 
             DeviceToCloudTelemetry outgoingTelemetryMessage = new()
             {
-                Payload = JsonSerializer.SerializeToUtf8Bytes(new SimpleTelemetryObject() { SomeString = "SomeValue"}),
+                Payload = JsonSerializer.SerializeToUtf8Bytes(new SimpleTelemetryObject() { SomeString = "SomeValue" }),
                 ContentEncoding = "utf-8",
                 ContentType = "application/json",
                 MessageId = Guid.NewGuid().ToString(),

@@ -1,4 +1,7 @@
-﻿using Microsoft.Azure.Iot.Device.Mqtt;
+﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
+// See LICENSE file in the project root for full license information.
+
+using Microsoft.Azure.Iot.Device.Mqtt;
 using Microsoft.Azure.Iot.Device.MQTTnetAdapter;
 using Microsoft.Azure.Iot.Device.Unified.Connection;
 using System;
@@ -6,7 +9,7 @@ using System.Collections.Generic;
 using System.Text;
 using Xunit;
 
-namespace Microsoft.Azure.Iot.Device.IntegrationTests 
+namespace Microsoft.Azure.Iot.Device.IntegrationTests
 {
     // This integration test suite has the MQTTnet client adapter connect to a faultable MQTT broker (sourced from the AIO SDK repo here:https://github.com/Azure/iot-operations-sdks/tree/main/eng/test/faultablemqttbroker/src/Azure.Iot.Operations.FaultableMqttBroker).
     //

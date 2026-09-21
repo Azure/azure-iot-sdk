@@ -1,4 +1,7 @@
-﻿namespace Microsoft.Azure.Iot.Device.Models.Twin
+﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
+// See LICENSE file in the project root for full license information.
+
+namespace Microsoft.Azure.Iot.Device.Models.Twin
 {
     internal class PendingReportedPropertiesUpdateRequest
     {

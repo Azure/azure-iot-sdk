@@ -1,4 +1,7 @@
-﻿using CaptureProxy;
+﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
+// See LICENSE file in the project root for full license information.
+
+using CaptureProxy;
 using Microsoft.Azure.Iot.Device.IntegrationTests.Unified;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.MqttNetAdapter;

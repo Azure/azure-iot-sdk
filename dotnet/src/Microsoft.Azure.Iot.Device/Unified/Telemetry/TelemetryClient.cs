@@ -1,4 +1,7 @@
-﻿using Microsoft.Azure.Iot.Device.Exceptions;
+﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
+// See LICENSE file in the project root for full license information.
+
+using Microsoft.Azure.Iot.Device.Exceptions;
 using Microsoft.Azure.Iot.Device.Models.Telemetry;
 using Microsoft.Azure.Iot.Device.Mqtt;
 using Microsoft.Azure.Iot.Device.Unified.Connection;
@@ -116,7 +119,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Telemetry
                 }
 
                 foreach (var customUserPropertyKey in message.UserProperties.Keys)
-                { 
+                {
                     mqttMessage.Topic += $"&{Uri.EscapeDataString(customUserPropertyKey)}={Uri.EscapeDataString(message.UserProperties[customUserPropertyKey])}";
                 }
 

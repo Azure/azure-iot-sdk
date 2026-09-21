@@ -1,4 +1,7 @@
-﻿using System;
+﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
+// See LICENSE file in the project root for full license information.
+
+using System;
 using System.Collections.Generic;
 using System.Text;
 
@@ -27,10 +30,10 @@ namespace Microsoft.Azure.Iot.Device.Models.Twin
         /// </summary>
         public DateTimeOffset RequestSentOnUtc { get; set; } = DateTimeOffset.UtcNow;
 
-        public bool GetReported { get; set; } 
-        
+        public bool GetReported { get; set; }
+
         public bool GetDesired { get; set; }
-        
+
         public ulong IfNotMatchReported { get; set; }
 
         public ulong IfNotMatchDesired { get; set; }

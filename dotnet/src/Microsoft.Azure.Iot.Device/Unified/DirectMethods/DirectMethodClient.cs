@@ -1,4 +1,7 @@
-﻿using Google.Protobuf;
+﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
+// See LICENSE file in the project root for full license information.
+
+using Google.Protobuf;
 using Microsoft.Azure.Iot.Device.Gen2.DirectMethods;
 using Microsoft.Azure.Iot.Device.Models.DirectMethods;
 using Microsoft.Azure.Iot.Device.Mqtt;
@@ -55,7 +58,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.DirectMethods
         {
             _connection = connection;
             _connection.PublishReceivedAsync += HandleReceivedMqttPublish;
-            
+
             _aegDirectMethodClient = new(new Stub(_connection));
             _aegDirectMethodClient.DirectMethodProbeReceivedAsync += HandleAegDirectMethodProbeRequestAsync;
             _aegDirectMethodClient.DirectMethodInvokedAsync += HandleAegDirectMethodRequestAsync;
@@ -118,7 +121,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.DirectMethods
 
             if (DirectMethodInvokedAsync == null)
             {
-                Trace.TraceError("Received a direct method request, but no handler was set on this client to handle it.");            
+                Trace.TraceError("Received a direct method request, but no handler was set on this client to handle it.");
             }
 
             byte[] payload = args.Publish.Payload;
@@ -142,7 +145,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.DirectMethods
 
             DirectMethodResponse methodResponse = await DirectMethodInvokedAsync!.Invoke(methodRequest);
 
-            string responsePublishTopic = string.Format(ClassicDirectMethodsResponseTopicFormat,methodResponse.Status, requestId);
+            string responsePublishTopic = string.Format(ClassicDirectMethodsResponseTopicFormat, methodResponse.Status, requestId);
             MqttPublish publish = new MqttPublish()
             {
                 Topic = responsePublishTopic,

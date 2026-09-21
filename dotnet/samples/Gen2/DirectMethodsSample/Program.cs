@@ -1,4 +1,7 @@
-﻿using DirectMethodsClientSample;
+﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
+// See LICENSE file in the project root for full license information.
+
+using DirectMethodsClientSample;
 using Google.Protobuf;
 using Microsoft.Azure.Iot.Device;
 using Microsoft.Azure.Iot.Device.Gen2.Connection;
@@ -38,7 +41,7 @@ internal class Program
                 Console.WriteLine($"Received direct method probe for the expected method '{args.MethodName}'. Responding to IoT Hub that this device is ready for it.");
                 return DirectMethodProbeAck.Accepted();
             }
-            
+
             Console.WriteLine($"Received direct method probe for an unknown method '{args.MethodName}'. Rejecting it.");
             return DirectMethodProbeAck.Rejected(RejectedReason.MethodNotFound);
         };

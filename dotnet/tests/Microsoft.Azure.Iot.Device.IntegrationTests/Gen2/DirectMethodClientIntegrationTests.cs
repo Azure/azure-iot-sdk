@@ -1,4 +1,7 @@
-﻿using Microsoft.Azure.Iot.Device.Gen2.DirectMethods;
+﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
+// See LICENSE file in the project root for full license information.
+
+using Microsoft.Azure.Iot.Device.Gen2.DirectMethods;
 using Xunit;
 using Microsoft.Azure.Iot.Device.IntegrationTests.Models;
 using Microsoft.Azure.Devices;
@@ -71,13 +74,13 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Gen2
                             Status = 200,
                             Payload = expectedResponsePayload.ToJsonByteArray(), // Echo back the request payload
                         };
-                        
+
                         DirectMethodReceivedTcs.TrySetResult(args);
 
                         return Task.FromResult(response);
                     }
                     else
-                    { 
+                    {
                         return Task.FromResult(new DirectMethodResponse() { Status = 400 }); // Unexpected request payload shape
                     }
                 }
@@ -157,7 +160,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Gen2
                     byte[] readyId = Guid.NewGuid().ToByteArray();
 
                     Probe2ReceivedTcs.TrySetResult(args);
-                    
+
                     return Task.FromResult(DirectMethodProbeAck.Accepted());
                 }
 
@@ -210,10 +213,10 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Gen2
                 Assert.Fail("Expected the first direct method invocation to fail since the device rejects that invocation's probe message");
             }
             catch (Exception)
-            { 
+            {
                 //TODO what kind of exception will the service client see when a probe message is rejected?
             }
-            
+
             var directMethod2Response = await serviceClient.InvokeDeviceMethodAsync(testDeviceContext.DeviceId, directMethod2Invocation, TestContext.Current.CancellationToken);
 
             // The direct method probe request received by the device is validated in the callback itself, so no assertions needed here other than that the TCS completed.

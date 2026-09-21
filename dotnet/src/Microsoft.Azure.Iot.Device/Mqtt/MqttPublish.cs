@@ -1,4 +1,7 @@
-﻿using System.Buffers;
+﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
+// See LICENSE file in the project root for full license information.
+
+using System.Buffers;
 
 namespace Microsoft.Azure.Iot.Device.Mqtt
 {
@@ -50,12 +53,12 @@ namespace Microsoft.Azure.Iot.Device.Mqtt
 
         public ReadOnlySequence<byte> PayloadAsReadOnlySequence { get; set; }
 
-        public byte[] Payload 
+        public byte[] Payload
         {
             get
             {
                 if (PayloadAsReadOnlySequence.IsEmpty)
-                { 
+                {
                     return Array.Empty<byte>();
                 }
 

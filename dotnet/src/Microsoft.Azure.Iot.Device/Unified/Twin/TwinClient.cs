@@ -1,4 +1,7 @@
-﻿using Microsoft.Azure.Iot.Device.Exceptions;
+﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
+// See LICENSE file in the project root for full license information.
+
+using Microsoft.Azure.Iot.Device.Exceptions;
 using Microsoft.Azure.Iot.Device.Gen2.Twin;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Models.Twin;
@@ -183,7 +186,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
                 {
                     Topic = topic,
                     QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce,
-                    Payload = JsonSerializer.SerializeToUtf8Bytes(reportedProperties), 
+                    Payload = JsonSerializer.SerializeToUtf8Bytes(reportedProperties),
                 };
 
                 try

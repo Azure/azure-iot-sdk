@@ -1,4 +1,7 @@
-﻿using Microsoft.Azure.Iot.Device.Unified.Connection;
+﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
+// See LICENSE file in the project root for full license information.
+
+using Microsoft.Azure.Iot.Device.Unified.Connection;
 using Microsoft.Azure.Iot.Device.Unified.Telemetry;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Mqtt;
@@ -29,8 +32,8 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         public async Task ConnectionClientReannouncesBirthBeforeContinuingPublish(bool isGen2, bool isSessionResumed)
         {
             MockMqttClient mockMqttClient = new(true);
-            ConnectionClient connectionClient = new(new() 
-            { 
+            ConnectionClient connectionClient = new(new()
+            {
                 MqttClient = mockMqttClient
             });
 
@@ -66,7 +69,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
                     Assert.Equal(4, mockMqttClient.SentMqttTrafficInOrder.Count);
                 }
                 else
-                { 
+                {
                     Assert.Equal(5, mockMqttClient.SentMqttTrafficInOrder.Count);
                 }
             }

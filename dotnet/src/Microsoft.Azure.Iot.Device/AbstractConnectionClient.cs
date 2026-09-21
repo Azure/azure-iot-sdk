@@ -1,4 +1,7 @@
-﻿using Google.Protobuf;
+﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
+// See LICENSE file in the project root for full license information.
+
+using Google.Protobuf;
 using Microsoft.Azure.Iot.Device.Exceptions;
 using Microsoft.Azure.Iot.Device.Gen2.Connection;
 using Microsoft.Azure.Iot.Device.Gen2.Twin;
@@ -28,7 +31,7 @@ namespace Microsoft.Azure.Iot.Device
         public Func<IReadOnlyList<string>, Task<X509AuthenticationProvider>>? HandleCertificateSigningCompleteAsync;
 
         internal event Func<DevicePresenceFlowCompletedArgs, Task>? DevicePresenceFlowCompletedAsync;
-        
+
         /// <summary>
         /// Raised once the provisioning flow that runs upon connecting to Device Provisioning Service has either
         /// produced a registration result or failed. This is the provisioning counterpart of

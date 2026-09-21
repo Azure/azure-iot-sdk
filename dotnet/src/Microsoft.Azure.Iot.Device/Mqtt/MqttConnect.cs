@@ -1,4 +1,7 @@
-﻿using System.Security.Cryptography.X509Certificates;
+﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
+// See LICENSE file in the project root for full license information.
+
+using System.Security.Cryptography.X509Certificates;
 
 namespace Microsoft.Azure.Iot.Device.Mqtt
 {
@@ -33,7 +36,7 @@ namespace Microsoft.Azure.Iot.Device.Mqtt
         public string? Username { get; set; }
 
         public byte[]? Password { get; set; } // Should always be empty array in x509 only world
-        
+
         public required string HostName { get; set; }
 
         public int TcpPort { get; set; }

@@ -1,4 +1,7 @@
-﻿using Google.Protobuf;
+﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
+// See LICENSE file in the project root for full license information.
+
+using Google.Protobuf;
 using Microsoft.Azure.Iot.Device.Exceptions;
 using Microsoft.Azure.Iot.Device.Gen2.Connection;
 using Microsoft.Azure.Iot.Device.Models;
@@ -91,7 +94,7 @@ namespace Microsoft.Azure.Iot.Device.Gen2.Twin
         /// However, this SDK will parse the twin that the service returns to filter out unrequested sections to mimic the behavior of Azure Event Grid IoT hubs.
         /// </remarks>
         /// <exception cref="PublishRejectedException">Thrown if this get twin request is rejected by IoT Hub for any reason.</exception>
-        public async Task<DeviceTwin> GetTwinAsync(bool getReported = true, bool getDesired = true, ulong ifNotMatchReported = 0, ulong ifNotMatchDesired = 0,  CancellationToken cancellationToken = default)
+        public async Task<DeviceTwin> GetTwinAsync(bool getReported = true, bool getDesired = true, ulong ifNotMatchReported = 0, ulong ifNotMatchDesired = 0, CancellationToken cancellationToken = default)
         {
             //TODO need to handle case where get twin request is successfully published, but connection + session is lost before receiving response.
             // Would need to re-send the get twin request upon device ready
@@ -160,7 +163,7 @@ namespace Microsoft.Azure.Iot.Device.Gen2.Twin
             var currentConnectionContext = EnsureCorrectConnectionContext();
 
             Guid requestId = Guid.NewGuid();
-            
+
             // Note the request as "in progress" before actually sending it so that no matter how quickly the service
             // responds, this layer can correlate the request.
             var pendingReportedPropertiesUpdateRequest = new PendingReportedPropertiesUpdateRequest();

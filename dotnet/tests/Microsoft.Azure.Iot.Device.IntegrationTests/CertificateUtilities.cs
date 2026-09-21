@@ -1,4 +1,7 @@
-﻿using System.Security.Cryptography;
+﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
+// See LICENSE file in the project root for full license information.
+
+using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using static Microsoft.Azure.Iot.Device.IntegrationTests.Setup;
@@ -162,7 +165,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
                 byte[] csrDer = request.CreateSigningRequest();
                 return Convert.ToBase64String(csrDer);
             }
-            else 
+            else
             {
                 throw new NotSupportedException("Unrecognized private key");
             }

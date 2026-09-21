@@ -1,4 +1,7 @@
-﻿using Google.Protobuf;
+﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
+// See LICENSE file in the project root for full license information.
+
+using Google.Protobuf;
 using Microsoft.Azure.Iot.Device.Gen2.Twin;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Models.CertificateManagement;

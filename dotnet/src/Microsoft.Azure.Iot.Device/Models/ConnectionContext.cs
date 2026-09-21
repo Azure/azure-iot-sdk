@@ -1,4 +1,7 @@
-﻿using Microsoft.Azure.Iot.Device.Provisioning.Models;
+﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
+// See LICENSE file in the project root for full license information.
+
+using Microsoft.Azure.Iot.Device.Provisioning.Models;
 
 namespace Microsoft.Azure.Iot.Device.Models
 {
@@ -6,8 +9,8 @@ namespace Microsoft.Azure.Iot.Device.Models
     {
         // Users should not be constructing this object. It should only be returned to the user.
         internal ConnectionContext()
-        { 
-        
+        {
+
         }
 
         public required string DeviceId { get; init; }

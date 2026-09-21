@@ -1,4 +1,7 @@
-﻿using Microsoft.Azure.Iot.Device.Mqtt;
+﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
+// See LICENSE file in the project root for full license information.
+
+using Microsoft.Azure.Iot.Device.Mqtt;
 using Microsoft.Azure.Iot.Device.MqttNetAdapter;
 using MQTTnet;
 using System.Net;
@@ -7,7 +10,7 @@ using System.Text;
 
 namespace Microsoft.Azure.Iot.Device.MQTTnetAdapter
 {
-    public class MqttNetClient : Mqtt.IMqttClient 
+    public class MqttNetClient : Mqtt.IMqttClient
     {
         private bool _isDisposed = false;
 
@@ -28,7 +31,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTnetAdapter
                 _underlyingClient = new MQTTnet.MqttClientFactory().CreateMqttClient(MqttNetTraceLogger.CreateTraceLogger());
             }
             else
-            { 
+            {
                 _underlyingClient = new MQTTnet.MqttClientFactory().CreateMqttClient();
             }
 
@@ -240,7 +243,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTnetAdapter
 
             var unsubscribeBuilder = new MqttClientUnsubscribeOptionsBuilder();
             foreach (var topicFilter in unsubscribe.TopicFilters)
-            { 
+            {
                 unsubscribeBuilder.WithTopicFilter(topicFilter);
             }
 

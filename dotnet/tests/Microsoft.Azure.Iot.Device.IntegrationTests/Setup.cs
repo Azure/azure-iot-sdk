@@ -1,4 +1,7 @@
-﻿using Microsoft.Azure.Iot.Device.IntegrationTests.Gen2;
+﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
+// See LICENSE file in the project root for full license information.
+
+using Microsoft.Azure.Iot.Device.IntegrationTests.Gen2;
 using Microsoft.Azure.Iot.Device.IntegrationTests.Unified;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Models.Twin;
@@ -72,7 +75,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
         public static async Task<Gen2DeviceTestContext> CreateProvisionableGen2DeviceAsync(DeviceTwin? initialTwin, ConnectionClientOptions? options = null, CancellationToken cancellationToken = default)
         {
             Assert.Skip("No test infrastructure setup for Gen2 client testing yet.");
-            
+
             ServiceClient iotHubServiceClient = ServiceClient.CreateFromConnectionString(Gen1IotHubConnectionString);
             ProvisioningServiceClient provisioningServiceClient = ProvisioningServiceClient.CreateFromConnectionString(DpsConnectionString);
 
@@ -100,7 +103,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
             Device.Gen2.Connection.ConnectionClient connectionClient = new(options);
 
             return new Gen2DeviceTestContext()
-            { 
+            {
                 ConnectionClient = connectionClient,
                 DeviceId = deviceId,
                 ConnectionProfile = Provisioning.Models.ConnectionProfile.MqttV5,
@@ -223,7 +226,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
                 cancellationToken);
 
             return new UnifiedDeviceTestContext()
-            { 
+            {
                 ConnectionClient = connectionClient,
                 ConnectionContext = connectionContext!,
                 AuthenticationProvider = x509AuthenticationProvider,
@@ -269,7 +272,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
             };
 
             ConnectionContext connectionContext = await RetryAroundAuthorizationAsync<ConnectionContext>(
-                async () => await connectionClient.ProvisionAndConnectAsync(provisioningSettings, x509AuthenticationProvider, cancellationToken: cancellationToken), 
+                async () => await connectionClient.ProvisionAndConnectAsync(provisioningSettings, x509AuthenticationProvider, cancellationToken: cancellationToken),
                 cancellationToken);
 
             return new UnifiedDeviceTestContext()

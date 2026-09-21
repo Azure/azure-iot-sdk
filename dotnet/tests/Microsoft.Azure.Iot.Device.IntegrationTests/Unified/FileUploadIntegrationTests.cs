@@ -1,4 +1,7 @@
-﻿using Azure.Storage.Blobs.Models;
+﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
+// See LICENSE file in the project root for full license information.
+
+using Azure.Storage.Blobs.Models;
 using Azure.Storage.Blobs.Specialized;
 using System.Text;
 using Xunit;
@@ -34,7 +37,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
                     fileUploadClient = new FileUploadClient(testDeviceContext.ConnectionClient);
                 }
             }
-            else 
+            else
             {
                 fileUploadClient = new FileUploadClient(testDeviceContext.ConnectionClient);
             }

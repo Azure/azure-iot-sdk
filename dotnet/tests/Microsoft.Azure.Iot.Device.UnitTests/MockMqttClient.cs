@@ -1,4 +1,7 @@
-﻿using Google.Protobuf;
+﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
+// See LICENSE file in the project root for full license information.
+
+using Google.Protobuf;
 using Microsoft.Azure.Iot.Device.Gen2.Connection;
 using Microsoft.Azure.Iot.Device.Mqtt;
 using System.Text;
@@ -36,7 +39,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         public async Task SimulateNewMessageAsync(MqttPublish publish)
         {
             await PublishReceivedAsync.Invoke(new MockMqttPublishReceivedEventArgs()
-            { 
+            {
                 Publish = publish,
             });
         }
@@ -48,7 +51,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             if (DisconnectedAsync != null)
             {
                 await DisconnectedAsync.Invoke(new MqttClientDisconnectedEventArgs()
-                { 
+                {
                     Exception = cause,
                     Reason = reason,
                 });
@@ -106,15 +109,15 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
                 await OnDisconnectAttempt(disconnect);
             }
 
-            DisconnectedAsync?.Invoke(new() 
-            { 
+            DisconnectedAsync?.Invoke(new()
+            {
                 Reason = MqttDisconnectReason.NormalDisconnection,
             });
         }
 
         public void Dispose()
         {
-            
+
         }
 
         public bool IsConnected() => _isConnected;

@@ -1,4 +1,7 @@
-﻿using Microsoft.Azure.Iot.Device.Unified.DirectMethods;
+﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
+// See LICENSE file in the project root for full license information.
+
+using Microsoft.Azure.Iot.Device.Unified.DirectMethods;
 using Microsoft.Azure.Iot.Device.IntegrationTests.Models;
 using Microsoft.Azure.Iot.Device.Models.DirectMethods;
 using Microsoft.Azure.Devices;

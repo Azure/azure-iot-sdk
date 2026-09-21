@@ -1,4 +1,7 @@
-﻿using Microsoft.Azure.Iot.Device.IntegrationTests.Models;
+﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
+// See LICENSE file in the project root for full license information.
+
+using Microsoft.Azure.Iot.Device.IntegrationTests.Models;
 using Microsoft.Azure.Iot.Device.Models.Telemetry;
 using Microsoft.Azure.Iot.Device.Unified.Connection;
 using Microsoft.Azure.Iot.Device.Unified.Telemetry;
@@ -41,7 +44,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
 
             DeviceToCloudTelemetry outgoingTelemetryMessage = new()
             {
-                Payload = JsonSerializer.SerializeToUtf8Bytes(new SimpleTelemetryObject() { SomeString = "SomeValue"}),
+                Payload = JsonSerializer.SerializeToUtf8Bytes(new SimpleTelemetryObject() { SomeString = "SomeValue" }),
                 ContentEncoding = "utf-8",
                 ContentType = "application/json",
                 MessageId = Guid.NewGuid().ToString(),
