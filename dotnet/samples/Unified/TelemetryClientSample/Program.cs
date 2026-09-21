@@ -1,8 +1,11 @@
-﻿using Microsoft.Azure.Devices.Client;
-using Microsoft.Azure.Devices.Client.Models;
-using Microsoft.Azure.Devices.Client.Models.Telemetry;
-using Microsoft.Azure.Devices.Client.Unified.Connection;
-using Microsoft.Azure.Devices.Client.Unified.Telemetry;
+﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
+// See LICENSE file in the project root for full license information.
+
+using Microsoft.Azure.Iot.Device;
+using Microsoft.Azure.Iot.Device.Models;
+using Microsoft.Azure.Iot.Device.Models.Telemetry;
+using Microsoft.Azure.Iot.Device.Unified.Connection;
+using Microsoft.Azure.Iot.Device.Unified.Telemetry;
 using SetupSampleDevice;
 using System.Text;
 
@@ -55,7 +58,7 @@ internal class Program
                 await Task.Delay(TimeSpan.FromSeconds(1), cts.Token);
             }
             catch (OperationCanceledException)
-            { 
+            {
                 // Expected when user cancels the sample    
             }
         }

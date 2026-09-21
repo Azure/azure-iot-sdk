@@ -1,10 +1,13 @@
-﻿using Microsoft.Azure.Devices.Client;
-using Microsoft.Azure.Devices.Client.Models;
-using Microsoft.Azure.Devices.Client.Models.Twin;
-using Microsoft.Azure.Devices.Client.Unified.Connection;
+﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
+// See LICENSE file in the project root for full license information.
+
+using Microsoft.Azure.Iot.Device;
+using Microsoft.Azure.Iot.Device.Models;
+using Microsoft.Azure.Iot.Device.Models.Twin;
+using Microsoft.Azure.Iot.Device.Unified.Connection;
 using SetupSampleDevice;
 using System.Text.Json;
-using TwinClient = Microsoft.Azure.Devices.Client.Unified.Twin.TwinClient;
+using TwinClient = Microsoft.Azure.Iot.Device.Unified.Twin.TwinClient;
 
 internal class Program
 {

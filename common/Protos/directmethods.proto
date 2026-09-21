@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package iothub.methods.v1;
 
-option csharp_namespace = "Microsoft.Azure.Devices.Client.Models.DirectMethods";
+option csharp_namespace = "Microsoft.Azure.Iot.Device.Models.DirectMethods";
 
 import "google/protobuf/timestamp.proto";
 
