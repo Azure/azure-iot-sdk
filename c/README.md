@@ -158,7 +158,7 @@ int main(void)
   {
     return 1;
   }
-  az_iot_connection_client_set_state_callback(&conn, on_conn_state, &ctx);
+  az_iot_connection_client_add_state_observer(&conn, on_conn_state, &ctx);
 
   if (az_iot_connection_client_open(&conn) != AZ_IOT_OK)
   {

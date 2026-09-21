@@ -108,6 +108,14 @@ typedef struct
 static void on_conn_state(const az_iot_connection_state_event* event, void* user_ctx)
 {
   user_context* ctx = (user_context*)user_ctx;
+  /* Hub lifecycle only: the provisioning session reports on its own scope,
+   * and storing its state here would overwrite the hub state this code acts
+   * on. */
+  if (event->scope != AZ_IOT_CONN_SCOPE_HUB)
+  {
+    return;
+  }
+
   ctx->conn_state = event->state;
 
   if (event->reason == AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH)
@@ -244,7 +252,7 @@ int main(void)
     sample_state_destroy(&state);
     return 1;
   }
-  az_iot_connection_client_set_state_callback(&state.connection_client, on_conn_state, &user_ctx);
+  az_iot_connection_client_add_state_observer(&state.connection_client, on_conn_state, &user_ctx);
 
   /* v3.1.1 for the DPS leg, v5 for the hub leg. Both are required even though
    * only the hub is v5. */

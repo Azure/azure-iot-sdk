@@ -309,6 +309,14 @@ static void sample_state_destroy(sample_state* s)
 static az_iot_connection_state g_conn_state = AZ_IOT_CONN_STATE_IDLE;
 static void on_conn_state(const az_iot_connection_state_event* event, void* user_ctx)
 {
+  /* Hub lifecycle only: the provisioning session reports on its own scope,
+   * and storing its state here would overwrite the hub state this code acts
+   * on. */
+  if (event->scope != AZ_IOT_CONN_SCOPE_HUB)
+  {
+    return;
+  }
+
   az_iot_connection_state st = event->state;
   az_iot_result reason = event->reason;
   (void)user_ctx;
@@ -379,7 +387,7 @@ int main(void)
     sample_state_destroy(&st);
     return 1;
   }
-  az_iot_connection_client_set_state_callback(&st.connection_client, on_conn_state, NULL);
+  az_iot_connection_client_add_state_observer(&st.connection_client, on_conn_state, NULL);
 
   if (az_iot_connection_client_register_mqtt_factory(
           &st.connection_client, az_iot_paho_factory_create_v3_1_1())

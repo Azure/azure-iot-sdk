@@ -36,6 +36,8 @@
 typedef struct az_iot_test_state_log
 {
   az_iot_connection_state states[AZ_IOT_TEST_MAX_STATES];
+  /* The scope each event carried. `states` is meaningless without it. */
+  az_iot_connection_scope scopes[AZ_IOT_TEST_MAX_STATES];
   az_iot_result reasons[AZ_IOT_TEST_MAX_STATES];
   uint32_t event_sizes[AZ_IOT_TEST_MAX_STATES];
   bool profile_present[AZ_IOT_TEST_MAX_STATES];
@@ -52,6 +54,7 @@ static inline void az_iot_test_on_state(const az_iot_connection_state_event* eve
   {
     size_t index = log->count;
     log->states[index] = event->state;
+    log->scopes[index] = event->scope;
     log->reasons[index] = event->reason;
     log->event_sizes[index] = event->_internal_size;
     log->profile_present[index] = event->profile != NULL;
@@ -134,6 +137,56 @@ static inline az_iot_connection_state az_iot_test_last_state(const az_iot_test_s
   return log->count ? log->states[log->count - 1] : AZ_IOT_CONN_STATE_IDLE;
 }
 
+/* Scope-aware queries. The unscoped helpers above answer "what happened", which
+ * is still useful; these answer "what happened to THIS lifecycle", which is the
+ * only question with a well-defined answer once the two move independently. */
+static inline az_iot_connection_state az_iot_test_last_state_for(
+    const az_iot_test_state_log* log,
+    az_iot_connection_scope scope)
+{
+  for (size_t i = log->count; i > 0; --i)
+  {
+    if (log->scopes[i - 1] == scope)
+    {
+      return log->states[i - 1];
+    }
+  }
+  return AZ_IOT_CONN_STATE_IDLE;
+}
+
+static inline size_t az_iot_test_count_for(
+    const az_iot_test_state_log* log,
+    az_iot_connection_scope scope,
+    az_iot_connection_state state)
+{
+  size_t n = 0;
+  for (size_t i = 0; i < log->count; ++i)
+  {
+    if (log->scopes[i] == scope && log->states[i] == state)
+    {
+      ++n;
+    }
+  }
+  return n;
+}
+
+/* Index of the first event matching (scope, state), or SIZE_MAX. Lets a test
+ * assert ORDER between the two lifecycles. */
+static inline size_t az_iot_test_index_of(
+    const az_iot_test_state_log* log,
+    az_iot_connection_scope scope,
+    az_iot_connection_state state)
+{
+  for (size_t i = 0; i < log->count; ++i)
+  {
+    if (log->scopes[i] == scope && log->states[i] == state)
+    {
+      return i;
+    }
+  }
+  return SIZE_MAX;
+}
+
 /* Options for a direct Classic hub connect with reconnection disabled. */
 static inline az_iot_connection_client_options az_iot_test_classic_options(void)
 {
@@ -153,6 +206,21 @@ static inline void az_iot_test_wait_ms(unsigned ms)
   while (az_iot_time_mono_ms() < deadline)
   { /* spin */
   }
+}
+
+/* Spin until `deadline_ms` on the monotonic clock has passed, plus a small
+ * margin.
+ *
+ * Takes the absolute deadline rather than a computed duration on purpose. The
+ * obvious form -- az_iot_test_wait_ms(deadline - now + 5) -- underflows when
+ * the deadline has ALREADY passed, which happens whenever the test process is
+ * descheduled for longer than the backoff it is waiting on. Both operands are
+ * uint64_t, so the difference wraps to an enormous value and the wait becomes
+ * a multi-day busy spin: a CI hang rather than a test failure. */
+static inline void az_iot_test_wait_until_ms(uint64_t deadline_ms)
+{
+  uint64_t now = az_iot_time_mono_ms();
+  az_iot_test_wait_ms((now >= deadline_ms) ? 5u : (unsigned)(deadline_ms - now) + 5u);
 }
 
 #endif /* AZ_IOT_CONNECTION_TEST_HARNESS_H */

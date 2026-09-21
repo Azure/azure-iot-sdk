@@ -55,7 +55,7 @@ This document describes the target lifecycle. Not all of it is coded yet, so eve
 
 States are defined in
 [az_iot_connection_client.h](../inc/azure/iot/az_iot_connection_client.h); transitions are all funneled
-through the internal `transition()` helper, which is also what raises the user state callback.
+through the internal `set_state_to()` helper, which is also what raises the user state callback.
 
 ```mermaid
 stateDiagram-v2
@@ -71,9 +71,14 @@ stateDiagram-v2
     RECONNECTING --> FAULTED: attempts exhausted
     RECONNECTING --> IDLE: close()
     DISCONNECTING --> IDLE: transport closed
-    FAULTED --> CONNECTING: open()
+    FAULTED --> IDLE: close()
     IDLE --> [*]: destroy()
 ```
+
+`FAULTED` is settled, not a dead end. The SDK never leaves it on its own -- `do_work()` does not
+retry from there -- but `close()` is legal from it and returns the client to `IDLE`, from which
+`open()` starts a fresh attempt with the configuration and the attached feature clients intact.
+`open()` itself remains `IDLE`-only.
 
 When DPS is configured the whole provisioning exchange happens **inside** the `CONNECTING` state, so
 the application never sees an intermediate `CONNECTED` for the DPS session. The DPS progress is
@@ -273,19 +278,38 @@ sequenceDiagram
     else reconnect disabled (initial_delay_ms == 0)
         Conn->>Conn: state = FAULTED
         Conn-->>App: state callback(FAULTED, reason)
-    else attempts exhausted (attempt > max_attempts)
+    else this scope's attempts exhausted (retry_attempt[scope] > max_attempts)
         Conn->>Conn: state = FAULTED
         Conn-->>App: state callback(FAULTED, reason)
     else
-        Conn->>Conn: attempt++, delay = backoff(attempt)
+        Conn->>Conn: retry_attempt[scope]++, delay = backoff(retry_attempt[scope])
         Conn->>Conn: state = RECONNECTING
         Conn-->>App: state callback(RECONNECTING, reason)
         Note over Conn: do_work() waits until reconnect_due_ms
         Conn->>Conn: start_connect_attempt() -> full sequence of section 3
         Hub-->>Conn: CONNACK ok
-        Conn->>Conn: attempt = 0, state = CONNECTED
+        Conn->>Conn: retry_attempt[HUB] = 0, state = CONNECTED
     end
 ```
+
+**The retry ladder is per scope.** `retry_attempt[]` is indexed by
+`az_iot_connection_scope` (`DPS`, `HUB`), and `max_attempts` is a budget for **each** ladder rather
+than one shared across both. So a device may spend its whole hub budget and still get a full set of
+registration attempts, and a registration that follows an exhausted hub ladder starts again at
+`initial_delay_ms` instead of inheriting the hub's capped backoff.
+
+Which ladder a retry climbs is the scope of the **next attempt**, which is not always the scope of
+the failure: a hub CONNACK that rejects the identity is a HUB failure whose retry is a DPS
+registration.
+
+Reset points differ per ladder:
+
+| Event | Effect |
+| --- | --- |
+| DPS registration succeeds | both ladders reset |
+| Hub CONNACK succeeds (birth-ack on Hub-Next) | `HUB` resets; `DPS` untouched |
+| `dps.max_hub_connect_attempts_before_reprovision` crossed | `DPS` resets, so the first registration attempt waits `initial_delay_ms` |
+| `open()` / `close()` | both ladders reset |
 
 ### 5.1 Backoff policy
 
@@ -296,13 +320,13 @@ sequenceDiagram
 ```text
 base   = min(max_delay_ms, initial_delay_ms << min(attempt - 1, 30))
 jitter = uniform(-jitter_pct%, +jitter_pct%) * base
-delay  = clamp(base + jitter, 1, max_delay_ms)
+delay  = clamp(base + jitter, 1, UINT32_MAX)
 ```
 
 | Field | Default | Notes |
 | --- | --- | --- |
 | `initial_delay_ms` | 1000 | `0` disables automatic reconnect entirely. |
-| `max_delay_ms` | 30000 | Cap for the exponential term and for the jittered result. |
+| `max_delay_ms` | 30000 | Cap for the exponential term only. Jitter varies around it, so a delay may exceed it by up to `jitter_pct`; clamping the jittered result would put half of all retries on exactly this value once the ladder reached the cap. |
 | `max_attempts` | 0 | `0` means retry forever. |
 | `jitter_pct` | 20 | Symmetric randomization, seeded from the monotonic clock. |
 

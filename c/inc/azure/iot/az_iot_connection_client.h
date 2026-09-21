@@ -86,18 +86,78 @@ extern "C"
     .connection_profile_raw_truncated = false,                                               \
   }
 
+  /* How the client retries a failed connection. Four numbers describe every
+   * schedule the SDK can produce; the getters below name the three shapes
+   * worth naming, and an application that wants another writes a function of
+   * the same shape itself.
+   *
+   * The retry ladders are PER SCOPE (provisioning and hub, see
+   * az_iot_connection_scope), and these numbers apply to each of them
+   * independently -- including max_attempts, which is a budget per ladder, not
+   * one shared across both. */
   typedef struct az_iot_reconnection_policy
   {
+    /* Delay before the first retry, doubled on each subsequent one up to
+     * max_delay_ms.
+     *
+     * 0 DISABLES retrying: every failure becomes terminal. It is a sentinel,
+     * not a duration, so a zero-initialized policy has retries off whether or
+     * not that was intended -- prefer
+     * az_iot_reconnection_policy_get_retry_disabled() to say it deliberately.
+     * There is deliberately no way to express "retry immediately, forever":
+     * that is a hot loop against a service that is already failing. */
     uint32_t initial_delay_ms;
+    /* Ceiling on the BACKOFF -- how far the doubling may climb. Jitter is
+     * applied around it, so an individual delay may exceed this by up to
+     * jitter_pct; that is the point of jitter, and clamping it back here would
+     * put half of all retries on exactly this value. 0 means "same as
+     * initial_delay_ms".
+     *
+     * Setting this EQUAL to initial_delay_ms (or leaving it 0) pins the delay
+     * at initial_delay_ms from the first retry, which is a FIXED-INTERVAL
+     * schedule -- a supported configuration, not a degenerate one. See
+     * az_iot_reconnection_policy_get_fixed_interval(). */
     uint32_t max_delay_ms;
-    uint32_t max_attempts; /* 0 = infinite */
-    uint8_t jitter_pct; /* 0..100 */
+    uint32_t max_attempts; /* 0 = infinite; applies PER ladder */
+    uint8_t jitter_pct; /* 0..100, applied around the backoff */
   } az_iot_reconnection_policy;
 
-  /* Returns a reasonable default reconnection policy: 1s initial delay, 30s max
-   * backoff, infinite attempts, 20% jitter. Assign it to
-   * az_iot_connection_client_options.reconnection_policy, then override as needed. */
-  az_iot_reconnection_policy az_iot_reconnection_policy_default(void);
+  /* Exponential backoff with jitter: 1s initial delay, 30s cap, retry forever,
+   * +/-20% jitter. What az_iot_connection_client_options_default() installs. */
+  az_iot_reconnection_policy az_iot_reconnection_policy_get_default(void);
+
+  /* Never retry: every dropped link, refused CONNACK, stalled handshake and
+   * failed registration ends the session rather than being retried.
+   *
+   * Where the client ends up depends on how the session ended. A peer
+   * DISCONNECT is a clean end of session and settles in
+   * AZ_IOT_CONN_STATE_IDLE, ready for another
+   * az_iot_connection_client_open(). A failure -- a refused CONNACK, a
+   * transport error, a stalled handshake, a failed registration -- settles in
+   * AZ_IOT_CONN_STATE_FAULTED, which carries the reason and waits for the
+   * application to call close() and open again.
+   *
+   * This is the spelling for "no retries". It is what a zero-initialized
+   * policy already means, but saying it through this getter states the intent
+   * at the call site rather than leaving it to a zeroed field. */
+  az_iot_reconnection_policy az_iot_reconnection_policy_get_retry_disabled(void);
+
+  /* Retry at a constant interval rather than backing off: every
+   * @p interval_ms, up to @p max_attempts tries per ladder (0 = forever).
+   * Jitter is left at 0 -- add it on the returned struct if a fleet of these
+   * devices should not retry in lockstep.
+   *
+   * @p interval_ms must be non-zero. 0 is the sentinel that DISABLES retrying
+   * (see initial_delay_ms), so a zero interval cannot mean "retry with no
+   * delay" -- it is clamped to 1 ms rather than silently returning the
+   * opposite of what this function's name promises. Use
+   * az_iot_reconnection_policy_get_retry_disabled() to disable retrying.
+   *
+   * For a device on a link that is either up or down, where doubling the delay
+   * only delays recovery. */
+  az_iot_reconnection_policy az_iot_reconnection_policy_get_fixed_interval(
+      uint32_t interval_ms,
+      uint32_t max_attempts);
 
 /* Recommended minimum size (bytes) for opts.csr_payload_buffer: enough to build
  * the largest CSR request body {"id":...,"csr":<base64>,"replace":...} for the
@@ -201,6 +261,33 @@ extern "C"
                            * compatibility properties it sends with each
                            * update request. */
     az_iot_certificate_provider* certificate_provider; /* required for X.509 auth */
+
+    /* How the client retries after a failure. See az_iot_reconnection_policy
+     * for the fields and the getters that name the usual shapes.
+     *
+     * With retrying disabled (initial_delay_ms == 0, which is what a zeroed
+     * options struct has) nothing is retried, and where the client settles
+     * depends on how the session ended:
+     *   - a peer DISCONNECT is a clean end of session, so the client goes to
+     *     AZ_IOT_CONN_STATE_IDLE and is ready for another open();
+     *   - a failure -- refused CONNACK, transport error, stalled handshake,
+     *     failed registration -- goes to AZ_IOT_CONN_STATE_FAULTED, which
+     *     carries the reason and waits until the application calls
+     *     az_iot_connection_client_close() and opens again.
+     *
+     * That does NOT discard what the failure established. An identity
+     * rejection still records that the device must re-provision, so the next
+     * az_iot_connection_client_open() goes to DPS rather than back to the hub
+     * that refused it. What disabling retries removes is the SDK acting on
+     * its own; the verdict survives for the application's next open().
+     *
+     * One trigger does depend on retrying being enabled:
+     * dps.max_hub_connect_attempts_before_reprovision counts consecutive
+     * automatic attempts, and with retries off there is no such run to count.
+     *
+     * az_iot_connection_client_options_default() fills this with
+     * az_iot_reconnection_policy_get_default(). Use
+     * az_iot_reconnection_policy_get_retry_disabled() to opt out. */
     az_iot_reconnection_policy reconnection_policy;
     az_iot_log_sink log;
 
@@ -376,6 +463,25 @@ extern "C"
     } twin_push;
   } az_iot_connection_client_options;
 
+  /* Which of the client's two lifecycles something refers to.
+   *
+   * A DPS-provisioned device runs two connections in sequence, and sometimes
+   * side by side: the provisioning session, and the hub session it is assigned
+   * to. They fail, retry and settle independently, so anything scoped to one
+   * of them -- today the retry ladders below -- has to say which.
+   *
+   * DPS and HUB only. Which hub GENERATION a hub session speaks (Classic or
+   * MQTT v5) is reported through az_iot_hub_profile, not here: it is one
+   * logical connection either way, and splitting the scope by generation would
+   * make a caller handle two values for it. */
+  typedef enum az_iot_connection_scope
+  {
+    AZ_IOT_CONN_SCOPE_DPS = 0,
+    AZ_IOT_CONN_SCOPE_HUB = 1
+  } az_iot_connection_scope;
+
+#define AZ_IOT_CONN_SCOPE_COUNT 2
+
   typedef enum az_iot_connection_state
   {
     AZ_IOT_CONN_STATE_IDLE = 0,
@@ -383,6 +489,21 @@ extern "C"
     AZ_IOT_CONN_STATE_CONNECTED,
     AZ_IOT_CONN_STATE_RECONNECTING,
     AZ_IOT_CONN_STATE_DISCONNECTING,
+    /* The connection gave up: either no reconnection policy is configured, or
+     * its attempts were exhausted, or the failure is one a retry cannot fix
+     * (AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH / _UNSUPPORTED).
+     *
+     * FAULTED is settled, not a dead end. The SDK never leaves it on its own --
+     * do_work() does not retry from here -- but it is recoverable:
+     * az_iot_connection_client_close() is legal from FAULTED and returns the
+     * client to IDLE, from which az_iot_connection_client_open() starts a fresh
+     * attempt. Attached feature clients keep working across that; they only
+     * have to be rebuilt when the reason says the hub generation changed.
+     *
+     * The application decides whether and when to retry, which is the point of
+     * the state: an unattended device can back off, ask for new credentials or
+     * report the fault before trying again, instead of the SDK looping on a
+     * failure it has already been told not to retry. */
     AZ_IOT_CONN_STATE_FAULTED
   } az_iot_connection_state;
 
@@ -390,6 +511,11 @@ extern "C"
    * The SDK stamps _internal_size; callers never initialize this struct. Future
    * SDKs may append fields, so callbacks must check _internal_size before
    * reading a field added after the version they were compiled against.
+   *
+   * `scope` says WHICH connection the event is about, and `state` is
+   * meaningless without it: a device that provisions through DPS runs two
+   * independent lifecycles, and `CONNECTED` on the provisioning scope does not
+   * mean the hub is usable. Always read the pair.
    *
    * profile is non-NULL when state == AZ_IOT_CONN_STATE_CONNECTED, and also on
    * a failure whose reason is AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH or
@@ -400,6 +526,9 @@ extern "C"
   typedef struct az_iot_connection_state_event
   {
     uint32_t _internal_size;
+    /* Which lifecycle this event is about. Placed beside `state` because the
+     * two are only meaningful together. */
+    az_iot_connection_scope scope;
     az_iot_connection_state state;
     az_iot_result reason;
     const az_iot_hub_profile* profile;
@@ -415,7 +544,7 @@ extern "C"
    * user close -- so a feature client can complete whatever it had correlated
    * against that session instead of waiting forever for a response that can no
    * longer arrive. Registered through the internal header; applications use
-   * az_iot_connection_client_set_state_callback() instead.
+   * az_iot_connection_client_add_state_observer() instead.
    *
    * Deliberately NOT invoked from destroy(), for the same reason pending QoS-1
    * acknowledgements are not completed there: the application is tearing the
@@ -513,6 +642,21 @@ extern "C"
 #define AZ_IOT_MAX_SESSION_HANDLERS 4
 #endif
 
+/* Connection-state observers. Two pools, because the two kinds of subscriber
+ * must not be able to starve each other: an application that registers four
+ * observers must still leave every feature client able to attach, and a build
+ * with every feature client attached must still leave the application able to
+ * watch its own connection.
+ *
+ * The feature-client pool is sized for the clients that exist (telemetry, c2d,
+ * direct method, twin, file upload, adu). Raise either at compile time. */
+#ifndef AZ_IOT_MAX_FEATURE_STATE_OBSERVERS
+#define AZ_IOT_MAX_FEATURE_STATE_OBSERVERS 6
+#endif
+#ifndef AZ_IOT_MAX_APP_STATE_OBSERVERS
+#define AZ_IOT_MAX_APP_STATE_OBSERVERS 4
+#endif
+
 /* Defaults applied when the corresponding option is left at 0. */
 #ifndef AZ_IOT_DEFAULT_KEEP_ALIVE_SECONDS
 #define AZ_IOT_DEFAULT_KEEP_ALIVE_SECONDS 30
@@ -578,14 +722,6 @@ extern "C"
  * not leave the device unable to provision. */
 #ifndef AZ_IOT_DPS_HOLD_TIMEOUT_MS
 #define AZ_IOT_DPS_HOLD_TIMEOUT_MS 60000u
-#endif
-
-/* How long an auxiliary provisioning session stays open after its last
- * request. Long enough to collapse a fetch-then-report pair onto one session,
- * short enough that nothing is held between polls. 0 is a valid setting and
- * closes the session as soon as it falls idle. */
-#ifndef AZ_IOT_DPS_AUX_IDLE_TIMEOUT_MS
-#define AZ_IOT_DPS_AUX_IDLE_TIMEOUT_MS 5000u
 #endif
 
   /* ------------------------------------------------------------------------- */
@@ -654,9 +790,28 @@ extern "C"
     az_iot_mqtt_role session_role;
     az_iot_mqtt_client* active_client;
 
-    az_iot_connection_state state;
-    az_iot_connection_state_callback state_cb;
-    void* state_cb_ctx;
+    /* One lifecycle per scope, indexed by az_iot_connection_scope. They move
+     * independently: a provisioning session failing must not disturb a healthy
+     * hub session, and a hub drop must not invalidate a provisioning session a
+     * feature client is using. */
+    az_iot_connection_state state[AZ_IOT_CONN_SCOPE_COUNT];
+    /* Connection-state observers, dispatched feature clients first (see
+     * az_iot_connection_client_add_state_observer). Two pools so neither kind
+     * of subscriber can starve the other. */
+    struct
+    {
+      az_iot_connection_state_callback cb;
+      void* user_ctx;
+    } feature_state_observers[AZ_IOT_MAX_FEATURE_STATE_OBSERVERS];
+    struct
+    {
+      az_iot_connection_state_callback cb;
+      void* user_ctx;
+    } app_state_observers[AZ_IOT_MAX_APP_STATE_OBSERVERS];
+    /* Set while a transition is being dispatched. Registering or removing an
+     * observer from inside a callback would mutate the array being walked, so
+     * both are refused with AZ_IOT_ERR_BUSY while this is set. */
+    bool dispatching_state;
     az_iot_operational_cert_callback op_cert_cb;
     void* op_cert_cb_ctx;
     az_iot_registration_payload_callback reg_payload_cb;
@@ -674,7 +829,24 @@ extern "C"
     int deferred;
     az_iot_result deferred_reason;
 
-    uint32_t reconnect_attempt;
+    /* Retry ladder position, PER SCOPE. Two ladders, not one: provisioning and
+     * hub connection fail for unrelated reasons, and a device that exhausts
+     * one must not inherit the other's backoff or spend the other's budget.
+     *
+     * With a single counter a device that burned its hub attempts up to the
+     * 30s cap and then re-provisioned made its DPS retries at the cap instead
+     * of at initial_delay_ms, and reconnection_policy.max_attempts was one
+     * budget shared across both -- so a long hub outage could leave zero
+     * attempts for a registration that would have succeeded first try.
+     *
+     * max_attempts is therefore applied per ladder as well. Indexed by
+     * az_iot_connection_scope. */
+    uint32_t retry_attempt[AZ_IOT_CONN_SCOPE_COUNT];
+    /* Only one retry is ever pending, so a single deadline serves both ladders.
+     * Which ladder it belongs to is not stored: do_work() derives it from
+     * needs_reprovision at the moment it acts, the same way schedule_reconnect()
+     * derived it when it set the deadline. Keeping a copy would be a second
+     * source of truth that nothing reads and a later change could desync. */
     uint64_t reconnect_due_ms;
     uint64_t rng_state;
 
@@ -744,26 +916,16 @@ extern "C"
     bool dps_hold_active;
     uint64_t dps_hold_deadline_ms;
 
-    /* Standing interest in the provisioning session, held by feature clients
-     * that need to talk to it after the device has already provisioned.
-     * Non-zero means a session may be opened on demand; it does NOT mean one is
-     * open. Keeping a session open between polls would cost a connection for
-     * hours on devices chosen for being small. */
-    uint8_t dps_user_count;
-
-    /* An AUXILIARY provisioning session: opened after the device is already
-     * provisioned, purely so a feature client can exchange messages on it.
+    /* Who needs the provisioning session. It exists exactly while this total is
+     * non-zero: the connection client holds dps_registration_ref while the
+     * device must register, and each session user holds a count.
      *
-     * It must never register. Registering would take the assignment path in
-     * dps_finalize(), which rewrites opts.host, opts.client_id and
-     * session_role and then reconnects -- tearing down the live hub connection
-     * this session is supposed to run alongside. */
-    bool dps_session_auxiliary;
-
-    /* When the auxiliary session may be torn down for being idle. 0 while a
-     * request is outstanding. A short linger collapses a fetch-then-report pair
-     * onto one session without holding it between polls. */
-    uint64_t dps_aux_idle_deadline_ms;
+     * Registration is a task performed on the session, not a property of it --
+     * it runs only while dps_registration_ref is held, which is what keeps a
+     * session opened for its other users from registering and tearing down the
+     * hub connection beside it. */
+    bool dps_registration_ref;
+    uint8_t dps_user_count;
 
     char dps_operation_id[AZ_IOT_DPS_OPERATION_ID_MAX];
     size_t dps_operation_id_len;
@@ -773,6 +935,14 @@ extern "C"
     bool dps_pending_finalize;
     bool dps_pending_have_assignment;
     az_iot_result dps_pending_status;
+    /* retry-after the provisioning service put on a FAILED response, in
+     * seconds; 0 when it sent none. A throttle (429) or a server error carries
+     * it, and it is the service telling the device when to come back -- so it
+     * is a FLOOR on the next registration attempt, applied over the
+     * reconnection policy's own backoff. Ignoring it would let a device retry
+     * faster than the service asked, which is how a throttled fleet turns into
+     * a blocked one. */
+    uint32_t dps_pending_retry_after_secs;
     bool dps_enrolling; /* CSR-based enrollment active for this DPS session */
     bool dps_have_issued_cert; /* an operational cert was issued by DPS/Hub and stored */
 
@@ -871,8 +1041,16 @@ extern "C"
   const char* az_iot_connection_state_to_string(az_iot_connection_state s);
 
   /* Returns an options struct with optional fields defaulted (port derived from
-   * the transport -- 8883 for TCP, 443 for WebSockets -- no proxy, no
-   * reconnect, no log sink). Set the required fields for your auth/provisioning
+   * the transport -- 8883 for TCP, 443 for WebSockets -- no proxy, no log sink,
+   * and the default reconnection policy from
+   * az_iot_reconnection_policy_get_default(): 1s initial delay, 30s cap, retry
+   * forever, +/-20% jitter). Set reconnection_policy.initial_delay_ms = 0 on
+   * the returned struct to make every failure terminal instead.
+   *
+   * Note that a zero-initialized options struct is NOT the same thing: it has
+   * reconnection disabled, since initial_delay_ms is then 0.
+   *
+   * Set the required fields for your auth/provisioning
    * mode on the returned struct before az_iot_connection_client_init():
    *   - DPS + X.509 (host==NULL): dps.id_scope, dps.registration_id,
    *     certificate_provider.
@@ -895,13 +1073,53 @@ extern "C"
       az_iot_connection_client* client,
       const az_iot_mqtt_factory* factory);
 
-  /* Not AZ_NODISCARD: configuration setters that fail only on invalid arguments
-   * (a programming error), so callers routinely fire-and-forget them. The state
-   * callback receives an SDK-owned event valid only for the duration of the call. */
-  az_iot_result az_iot_connection_client_set_state_callback(
+  /* Ask to be told about every connection-state transition.
+   *
+   * A REGISTRY, not a single slot: the application and every attached feature
+   * client can watch the connection at the same time. Registering twice with
+   * the same (cb, user_ctx) pair is idempotent and consumes one entry.
+   *
+   * Observers are dispatched in two passes -- every feature-client observer
+   * first, in registration order, then every application observer. So by the
+   * time an application observer runs, the feature clients have already reacted
+   * to the transition (re-subscribed, re-armed, or given up), and the
+   * application sees a connection whose parts agree with each other.
+   *
+   * The event is SDK-owned and valid only for the duration of the call; copy
+   * anything that must outlive it.
+   *
+   * An observer MUST NOT add or remove an observer: the registry is being
+   * walked, and both calls answer AZ_IOT_ERR_BUSY while a dispatch is in
+   * progress. Calling close() from an observer IS supported.
+   *
+   * Returns AZ_IOT_ERR_NOT_ENOUGH_SPACE when the application pool
+   * (AZ_IOT_MAX_APP_STATE_OBSERVERS) is full. */
+  az_iot_result az_iot_connection_client_add_state_observer(
       az_iot_connection_client* client,
       az_iot_connection_state_callback cb,
       void* user_ctx);
+
+  /* Stop being told. Matches on the (cb, user_ctx) pair, so one callback
+   * registered with two contexts can be withdrawn one at a time. Answers
+   * AZ_IOT_ERR_NOT_FOUND when that pair is not registered, and AZ_IOT_ERR_BUSY
+   * when called from inside an observer. */
+  az_iot_result az_iot_connection_client_remove_state_observer(
+      az_iot_connection_client* client,
+      az_iot_connection_state_callback cb,
+      void* user_ctx);
+
+  /* The current state of one lifecycle. There is no unscoped state to ask for:
+   * a DPS-provisioned device runs two, and they move independently.
+   *
+   * AZ_IOT_CONN_SCOPE_HUB is what "am I connected?" means for telemetry, twin,
+   * c2d, direct methods and file upload. AZ_IOT_CONN_SCOPE_DPS is what the
+   * device-update client rides, and it stays IDLE for the life of a client that
+   * connects directly to a hub -- that is the answer, not an error.
+   *
+   * Returns AZ_IOT_CONN_STATE_IDLE for a NULL client or an unknown scope. */
+  az_iot_connection_state az_iot_connection_client_get_state(
+      const az_iot_connection_client* client,
+      az_iot_connection_scope scope);
 
   /* Register a callback fired when a DPS/provider-issued operational certificate
    * is obtained during provisioning (D4). Optional. */
@@ -919,10 +1137,28 @@ extern "C"
       void* user_ctx);
 
   /* Open a session to the configured host. Non-blocking; observe state via callback
-   * and drive progress with do_work(). */
+   * and drive progress with do_work().
+   *
+   * Legal only from AZ_IOT_CONN_STATE_IDLE; any other state returns
+   * AZ_IOT_ERR_ALREADY_INITIALIZED. After a fault, call
+   * az_iot_connection_client_close() first: that returns the client to IDLE and
+   * makes this a supported retry. */
   AZ_NODISCARD az_iot_result az_iot_connection_client_open(az_iot_connection_client* client);
 
-  /* Not AZ_NODISCARD: teardown/lifecycle op commonly called fire-and-forget. */
+  /* Close the session and return the client to AZ_IOT_CONN_STATE_IDLE.
+   *
+   * Legal from every state. It is idempotent from IDLE, cancels a pending retry
+   * from RECONNECTING, cancels a provisioning exchange that has not reached a
+   * hub yet, and acknowledges a fault from FAULTED -- in all of those IDLE is
+   * reached before this call returns. From a state with a live hub session the
+   * disconnect is asynchronous: IDLE is announced on the state callback once
+   * the transport reports the session gone, so keep calling do_work().
+   *
+   * The client's configuration and its attached feature clients survive, so
+   * close() + open() is the ordinary way to retry after a fault; destroy() is
+   * only needed when the client itself is going away.
+   *
+   * Not AZ_NODISCARD: teardown/lifecycle op commonly called fire-and-forget. */
   az_iot_result az_iot_connection_client_close(az_iot_connection_client* client);
 
   /* Pump network I/O and dispatch callbacks. Single-threaded contract: all user
