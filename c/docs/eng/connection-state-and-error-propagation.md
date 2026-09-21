@@ -238,6 +238,68 @@ recovery is a re-registration leaves `HUB` in `RECONNECTING` while the attempt
 runs on `DPS`, so the pending-retry deadline — not the state — is the token, and
 firing consumes it.
 
+### 2.7 A third, internal retry ladder: the user-held provisioning session
+
+§2.6 says the retry ladders are per scope, and `max_attempts` is a budget per
+ladder. There is one ladder beyond those two. It is internal — it adds no
+option, no enum value and no public field — but it is worth stating, because
+"per scope" is otherwise a complete description and this is a deviation from it.
+
+**What it paces.** A provisioning session can be held by a feature client past
+registration (the session is refcounted). When such a session *fails*, the
+connection client deliberately does **not** put it through `schedule_reconnect()`:
+that begins with `teardown_active()`, so a side channel dropping would destroy a
+healthy hub connection. The DPS scope settles at `IDLE` instead.
+
+But `IDLE` is exactly what `dps_session_ensure()` lets through. With no deadline,
+the next pump tick opened another session — a full TLS handshake, CONNECT and
+SUBSCRIBE per tick, against a service that is already failing, for as long as the
+application kept pumping. The ladder is what stops that.
+
+**Why not reuse `retry_attempt[DPS]`.** That is the *registration* ladder. Spending
+it on a user session's outage would leave a later re-provisioning with no budget
+— the same argument that made `max_attempts` per-ladder in the first place.
+
+**Where the numbers come from.** `opts.reconnection_policy`, via
+`az_iot_reconnect_delay_ms()` on its own attempt counter. So the pacing, the
+jitter and the bound are the ones the application already configured; a feature
+client does not get a second retry vocabulary to learn.
+
+**Retries disabled is an explicit refusal, not a zero delay.**
+`az_iot_reconnect_delay_ms()` returns 0 ms when `initial_delay_ms == 0`, which
+would pace nothing — "no retries" would be the one setting that reproduced the
+hot loop. So the core latches instead, and `dps_session_ensure()` answers
+`AZ_IOT_ERR_NOT_SUPPORTED`: a settled answer a holder can report, rather than a
+session attempt per tick. `max_attempts` being spent latches the same way.
+
+**Exits from the latch**, all of which mean the demand or the evidence changed:
+a session that comes up, a successful registration, `open()`, `close()` — which
+clears it *before* its idempotent early return, because on a DPS-only device both
+scopes sit at `IDLE` and that early return is the case that most needs clearing —
+and the last user releasing its ref, since a later holder is new demand.
+
+**Two paths that are easy to miss.**
+
+* A **synchronous** `dps_start()` failure — the adapter cannot be built, or `connect()` refuses
+  inline — never reaches `dps_finalize()`, so the deferred path does not pace it. It is paced at
+  the call site instead. Without that, the caller got the error and asked again on the next pump
+  tick: the same hot loop, on the path least likely to fix itself.
+* A `close()` from inside the synchronous `DPS:CONNECTING` announcement is a **cancellation**, and
+  it reports the same result code as a genuine start failure. Pacing it would recreate the
+  deadline — or the latch, with retries disabled — immediately after `close()` reset it, so the
+  documented escape would not work. The two are told apart by a flag `dps_start()` sets;
+  `user_close` does **not** work here, because `close()` with no hub adapter (exactly this case)
+  clears it before returning.
+* The deferred failure is only charged **while a user ref is still held**. Release is reachable
+  from inside a message callback, so a finalize can land in the same pump iteration with
+  `dps_user_count` already 0 — after the collect that would otherwise have torn the session down.
+  Recording a backoff there would hand the next holder a latch it did not earn.
+
+**What the core does not decide.** Whether the *operation* is still worth
+re-issuing is the feature client's judgement, not the connection client's: the
+core has no idea what the request meant. The core paces the transport; the
+feature client bounds the operation and reports it.
+
 ---
 
 ## 3. Lifecycle & Reuse Contract
