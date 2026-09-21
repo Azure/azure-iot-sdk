@@ -648,6 +648,8 @@ caller-readable event struct instead:
 typedef struct
 {
   uint32_t _internal_size;            /* stamped by the SDK producer */
+  az_iot_connection_scope scope;      /* WHICH lifecycle: DPS or HUB. `state`
+                                       * is meaningless without it. */
   az_iot_connection_state state;
   az_iot_result reason;
   const az_iot_hub_profile* profile;  /* set on CONNECTED, and on a

@@ -304,6 +304,9 @@ parameter or a nested status object:
 typedef struct az_iot_connection_state_event
 {
   uint32_t                    _internal_size;
+  /* WHICH lifecycle this event is about. Shipped; see section 2.6. `state` is
+   * meaningless without it. */
+  az_iot_connection_scope     scope;
   az_iot_connection_state    state;
 
     /* SDK-level result of the operation that produced this status. This is the

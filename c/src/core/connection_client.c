@@ -1680,6 +1680,16 @@ static az_iot_result dps_start(az_iot_connection_client* c)
   {
     dps_teardown_mqtt(c);
     c->dps_phase = DPS_PHASE_NONE;
+    /* The announcement above already moved the DPS lifecycle to CONNECTING, so
+     * a synchronous connect failure has to settle it again here -- every other
+     * teardown does. Leaving it pinned at CONNECTING would make the next
+     * dps_start() announce nothing (the value would be unchanged) and, for a
+     * session the connection client owns, would make open() reject for ever.
+     *
+     * Settled at the point the session dies rather than in each caller: this is
+     * the only place that knows the announcement happened. */
+    set_state_to(c, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_DISCONNECTING, r);
+    set_state_to(c, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_IDLE, r);
   }
   return r;
 }

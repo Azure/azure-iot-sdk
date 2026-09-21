@@ -2060,6 +2060,37 @@ static int setup_with_exponential_reconnect(void** state)
 /* scoped state: DPS and the hub are two independent lifecycles              */
 /* ------------------------------------------------------------------------- */
 
+/* dps_start() announces DPS:CONNECTING before it calls connect(), so a
+ * SYNCHRONOUS connect failure has to settle the lifecycle again -- there is no
+ * inbound event coming to do it later.
+ *
+ * Exercised through dps_session_ensure(), the path a FEATURE client uses.
+ * open() happens to settle the scope on its own failure path, so a test that
+ * went through open() would pass whether or not dps_start() cleaned up after
+ * itself -- and the feature-client path would still leak.
+ *
+ * Left pinned at CONNECTING, two things break: the next dps_start() announces
+ * nothing, because the value is unchanged, so a retry is invisible; and open()
+ * would see a DPS lifecycle it cannot explain. */
+static void a_synchronous_dps_connect_failure_settles_the_scope(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(fx->client, fx->factory), AZ_IOT_OK);
+  /* Stand in for a feature client holding an interest in the session. */
+  assert_int_equal(az_iot_connection_client__dps_user_acquire(fx->client), AZ_IOT_OK);
+
+  az_iot_mock_mqtt_factory_fail_next_connect(fx->factory, AZ_IOT_ERR_MQTT);
+  assert_int_not_equal(az_iot_connection_client__dps_session_ensure(fx->client), AZ_IOT_ERR_BUSY);
+
+  assert_int_equal(
+      az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_DPS),
+      AZ_IOT_CONN_STATE_IDLE);
+  /* The hub lifecycle was never involved. */
+  assert_int_equal(
+      az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_HUB),
+      AZ_IOT_CONN_STATE_IDLE);
+}
 /* The headline change. A DPS-provisioned device runs provisioning and then the
  * hub; before scopes both collapsed into one enum, so the whole provisioning
  * phase was invisible -- set_state_to() suppressed the hub's CONNECTING because
@@ -2525,6 +2556,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         the_reprovision_demand_survives_close_and_open, setup_with_reconnect, teardown),
     /* scoped state: the two lifecycles are independent */
+    cmocka_unit_test_setup_teardown(
+        a_synchronous_dps_connect_failure_settles_the_scope, setup, teardown),
     cmocka_unit_test_setup_teardown(a_dps_run_reports_both_lifecycles_in_order, setup, teardown),
     cmocka_unit_test_setup_teardown(
         the_hub_connecting_is_not_swallowed_by_the_dps_one, setup, teardown),
