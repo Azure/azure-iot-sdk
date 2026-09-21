@@ -1296,9 +1296,9 @@ static void a_session_without_the_registration_ref_does_not_register(void** stat
   az_iot_connection_client__dps_user_release(fx->client);
 }
 
-/* dps_apply_deferred() also finalizes AUXILIARY sessions -- the ones a feature
- * client opens for itself alongside a live hub connection. Those can only
- * reach it by failing, and the retry added above must not apply to them:
+/* dps_apply_deferred() also finalizes sessions held by their USERS -- the ones
+ * a feature client opens for itself alongside a live hub connection. Those can
+ * only reach it by failing, and the registration retry must not apply to them:
  * schedule_reconnect() calls teardown_active(), which would destroy a hub
  * session that is up and healthy. */
 static void a_failing_feature_held_session_does_not_tear_down_the_hub(void** state)
@@ -1327,15 +1327,17 @@ static void a_failing_feature_held_session_does_not_tear_down_the_hub(void** sta
     (void)az_iot_connection_client_do_work(fx->client, 0);
   }
 
-  /* The auxiliary session is gone; the hub is untouched and no retry was
-   * scheduled for the application's connection. */
+  /* The user-held session is gone; the hub is untouched and no retry was
+   * scheduled for the application's connection. (It gets its own pacing --
+   * see the user-session ladder tests above -- which does not announce a
+   * state change.) */
   assert_null(fx->client->dps_mqtt);
   assert_ptr_equal(fx->client->active_client, hub);
   assert_false(az_iot_test_saw_state(&fx->log, AZ_IOT_CONN_STATE_RECONNECTING));
   assert_false(az_iot_test_saw_state(&fx->log, AZ_IOT_CONN_STATE_FAULTED));
 
   /* Destroyed explicitly: the mock factory frees only its LAST client, and the
-   * auxiliary session created one after this stand-in. */
+   * user-held session created one after this stand-in. */
   fx->client->active_client = NULL;
   hub->iface->destroy(hub);
   az_iot_connection_client__dps_user_release(fx->client);

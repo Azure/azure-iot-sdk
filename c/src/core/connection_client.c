@@ -1905,8 +1905,9 @@ static void reject_assignment(az_iot_connection_client* c, az_iot_result reason)
  * attached feature clients require) stay terminal either way: a retry would
  * return the same answer, so they go through reject_assignment() instead.
  *
- * An AUXILIARY session ends here without touching the public connection state
- * at all -- see the guard below. */
+ * A session held by its USERS rather than by a registration ends here without
+ * touching the public connection state at all -- see the guard below. Its
+ * retries are paced separately; the application's connection is not involved. */
 static void dps_apply_deferred(az_iot_connection_client* c)
 {
   if (!c->dps_pending_finalize)
