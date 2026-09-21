@@ -16,7 +16,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
 {
     public class CertificateManagementIntegrationTests
     {
-        [Theory(Timeout = Setup.TestTimeoutMilliseconds)]
+        [Theory(Timeout = Setup.TestTimeoutMilliseconds, Skip = "Disabled CI infrastructure temporarily")]
         [InlineData(true)]
         [InlineData(false)]
         public async Task TestCertificateManagementWithDpsAndHub(bool testAgainstClassicHub)
