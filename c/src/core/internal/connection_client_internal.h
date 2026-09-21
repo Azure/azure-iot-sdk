@@ -193,7 +193,14 @@ extern "C"
   /* True when the session currently up was opened for a feature client rather
    * than by the ordinary provisioning flow. Such a session never registers, so
    * the pre-registration hold does not apply to it. */
-  bool az_iot_connection_client__dps_session_is_auxiliary(const az_iot_connection_client* client);
+  /* True while the connection client is driving a registration on the
+   * provisioning session -- that is, it holds the registration ref and the run
+   * has not reached a terminal outcome.
+   *
+   * The question a feature client actually needs: "is there a registration for
+   * my pre-registration hold to hold back?" False once registration is over,
+   * and false on a session opened purely for feature clients. */
+  bool az_iot_connection_client__dps_registration_pending(const az_iot_connection_client* client);
 
   /* Ensure a provisioning session is up and usable, opening one if needed.
    *

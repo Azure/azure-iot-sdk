@@ -388,10 +388,18 @@ static void a_report_is_published_and_acknowledged(void** state)
   assert_int_equal(fx->last_result, AZ_IOT_OK);
 }
 
-/* The reply can only come back on the session the request went out on. When
- * that session ends the slot must be released, with a retry verdict, or the
- * channel would wait forever for an answer that can never arrive. */
-static void losing_the_session_releases_the_pending_request(void** state)
+/* Registration no longer costs the channel its request.
+ *
+ * The provisioning session used to be destroyed the moment registration
+ * finished, so a check still in flight was lost and had to be retried on a
+ * session that then had to be built from scratch. The channel holds an interest
+ * in the session, so the refcount keeps it across registration and the reply
+ * still has somewhere to arrive.
+ *
+ * (The "lost request is released with a retry verdict" rule still holds and is
+ * covered by a_request_lost_to_teardown_is_reported_on_the_next_tick, which
+ * kills the session outright rather than assuming registration does it.) */
+static void registration_does_not_cost_the_channel_its_request(void** state)
 {
   fixture* fx = (fixture*)*state;
   az_iot_mock_mqtt_client* m = open_and_bind(fx);
@@ -399,27 +407,39 @@ static void losing_the_session_releases_the_pending_request(void** state)
   assert_int_equal(
       fx->channel.vtable->request_update(fx->channel.ctx, AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE),
       AZ_IOT_OK);
+  /* Captured now: the registration publish below is the last one on the wire
+   * afterwards, so asking for the last rid later would return the
+   * registration's, not this request's. */
+  char rid[64];
+  last_rid(m, rid, sizeof(rid));
   assert_int_equal(
       fx->channel.vtable->request_update(fx->channel.ctx, AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE),
       AZ_IOT_ERR_BUSY);
 
   /* The check is never answered, so the hold expires and the device registers
-   * with the request still outstanding. Provisioning then completes, which
-   * tears the session down underneath it. */
+   * with the request still outstanding. Provisioning then completes. */
   az_iot_test_wait_ms(60); /* opts.dps_hold_timeout_ms is 50 */
   (void)az_iot_connection_client_do_work(&fx->client, 0);
   assert_true(inject(fx, m, "$dps/registrations/res/200/?$rid=1", k_assigned_body));
   (void)az_iot_connection_client_do_work(&fx->client, 0);
 
-  /* Not BUSY: the dead request was abandoned rather than held forever. The
-   * session is gone, so the answer is "no session", and the engine was told to
-   * retry rather than left believing the operation was delivered. */
+  /* The session is still up, because the channel still holds it. */
+  assert_non_null(fx->client.dps_mqtt);
+  assert_true(az_iot_connection_client__dps_session_ready(&fx->client));
+
+  /* So the request was never lost: still outstanding, and no failure reported
+   * to the engine. */
   assert_int_equal(
       fx->channel.vtable->request_update(fx->channel.ctx, AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE),
-      AZ_IOT_ERR_NOT_CONNECTED);
+      AZ_IOT_ERR_BUSY);
+  assert_int_equal(fx->result_count, 0);
+
+  /* And the answer still arrives on it. */
+  char topic[256];
+  snprintf(topic, sizeof(topic), "$dps/registrations/res/200/?$rid=%s", rid);
+  assert_true(inject(fx, m, topic, "{\"updateAvailable\":false}"));
   assert_int_equal(fx->result_count, 1);
-  assert_int_equal(fx->last_action, AZ_IOT_ADU_ERROR_ACTION_RETRY);
-  assert_int_not_equal(fx->last_result, AZ_IOT_OK);
+  assert_int_equal(fx->last_result, AZ_IOT_OK);
 }
 
 /* Refreshing device properties must reach the channel: otherwise every later
@@ -568,7 +588,7 @@ static void a_request_during_a_delay_does_not_ask_for_a_session(void** state)
 
   /* So the tick opens nothing. */
   assert_int_equal(fx->channel.vtable->do_work(fx->channel.ctx), AZ_IOT_OK);
-  assert_false(fx->client.dps_session_auxiliary);
+  assert_null(fx->client.dps_mqtt);
 
   /* Once it expires the demand is recorded again and the session is opened,
    * so the delay defers the request rather than dropping it. */
@@ -578,7 +598,7 @@ static void a_request_during_a_delay_does_not_ask_for_a_session(void** state)
       AZ_IOT_ERR_NOT_CONNECTED);
   assert_true(fx->channel_state.wants_session);
   assert_int_equal(fx->channel.vtable->do_work(fx->channel.ctx), AZ_IOT_OK);
-  assert_true(fx->client.dps_session_auxiliary);
+  assert_non_null(fx->client.dps_mqtt);
 }
 
 /* A failure WITHOUT the parameter must not invent a delay, or every ordinary
@@ -753,11 +773,12 @@ static void a_request_lost_to_teardown_is_reported_on_the_next_tick(void** state
       AZ_IOT_OK);
   size_t results_before = fx->result_count;
 
-  /* The hold expires, the device registers, and the response tears the
-   * provisioning session down underneath the outstanding request. */
-  az_iot_test_wait_ms(60);
+  /* The session dies under the outstanding request. A transport drop, because
+   * that kills a session no matter who holds it -- registration completing no
+   * longer does, since the channel's interest keeps the session alive across
+   * it. */
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(m));
   (void)az_iot_connection_client_do_work(&fx->client, 0);
-  assert_true(inject(fx, m, "$dps/registrations/res/200/?$rid=1", k_assigned_body));
 
   /* Nothing has told the engine yet. */
   assert_int_equal(fx->result_count, results_before);
@@ -879,8 +900,9 @@ static void a_reprovision_is_held_again_after_a_completed_check(void** state)
   assert_true(inject(fx, m, topic, "{\"updateMetadata\":null}"));
   assert_int_equal(fx->client.dps_hold_count, 0);
 
-  /* The session ends. */
-  assert_true(inject(fx, m, "$dps/registrations/res/200/?$rid=1", k_assigned_body));
+  /* The session ends -- a transport drop, since registration completing no
+   * longer ends it while the channel holds an interest. */
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(m));
   (void)az_iot_connection_client_do_work(&fx->client, 0);
   assert_false(az_iot_connection_client__dps_session_ready(&fx->client));
 
@@ -1098,7 +1120,7 @@ static void a_session_is_opened_on_demand_after_provisioning(void** state)
 
   /* BUSY, not OK: the session has to come up first. */
   assert_int_equal(az_iot_connection_client__dps_session_ensure(&fx->client), AZ_IOT_ERR_BUSY);
-  assert_true(fx->client.dps_session_auxiliary);
+  assert_non_null(fx->client.dps_mqtt);
 }
 
 /* A caller with no standing interest must not be able to open one. */
@@ -1110,7 +1132,7 @@ static void without_interest_no_session_is_opened(void** state)
 
   assert_int_equal(
       az_iot_connection_client__dps_session_ensure(&fx->client), AZ_IOT_ERR_NOT_SUPPORTED);
-  assert_false(fx->client.dps_session_auxiliary);
+  assert_null(fx->client.dps_mqtt);
 }
 
 /* The whole point of the auxiliary session: it must not register. Registering
@@ -1130,7 +1152,7 @@ static void an_auxiliary_session_never_registers(void** state)
   assert_int_equal(az_iot_connection_client__dps_user_acquire(&fx->client), AZ_IOT_OK);
   fx->client.dps_phase = AZ_IOT_DPS_PHASE_DONE;
   assert_int_equal(az_iot_connection_client__dps_session_ensure(&fx->client), AZ_IOT_ERR_BUSY);
-  assert_true(fx->client.dps_session_auxiliary);
+  assert_non_null(fx->client.dps_mqtt);
   assert_int_equal(fx->client.dps_hold_count, 0); /* nothing else is holding it */
 
   az_iot_mock_mqtt_client* m = drive_existing_session(fx);
@@ -1141,7 +1163,7 @@ static void an_auxiliary_session_never_registers(void** state)
    * only for the register topic passes vacuously if nothing publishes. */
   assert_null(az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PUBLISH));
   assert_int_not_equal(fx->client.dps_phase, AZ_IOT_DPS_PHASE_REGISTERING);
-  assert_true(fx->client.dps_session_auxiliary);
+  assert_non_null(fx->client.dps_mqtt);
 
   az_iot_connection_client__dps_user_release(&fx->client);
 }
@@ -1161,18 +1183,24 @@ static void the_session_closes_when_the_last_user_lets_go(void** state)
 
   /* Still open while the interest is held. */
   (void)az_iot_connection_client_do_work(&fx->client, 0);
-  assert_true(fx->client.dps_session_auxiliary);
+  assert_non_null(fx->client.dps_mqtt);
 
   fx->channel.vtable->close(fx->channel.ctx);
   assert_int_equal(fx->client.dps_user_count, 0);
 
   (void)az_iot_connection_client_do_work(&fx->client, 0);
-  assert_false(fx->client.dps_session_auxiliary);
+  assert_null(fx->client.dps_mqtt);
   assert_false(az_iot_connection_client__dps_session_ready(&fx->client));
 }
 
 /* A session is not held between polls. Idle beyond the linger closes it. */
-static void an_idle_session_is_closed_after_the_linger(void** state)
+/* The session lives as long as somebody holds it, and goes when nobody does.
+ *
+ * This replaces an idle-linger test. The old model closed a session a feature
+ * client still held after a few seconds of quiet, so every later operation paid
+ * a fresh TLS handshake, CONNECT and SUBSCRIBE; the refcount makes holding the
+ * interest mean what it says. */
+static void the_session_survives_while_held_and_closes_when_released(void** state)
 {
   fixture* fx = (fixture*)*state;
   assert_int_equal(fx->channel.vtable->open(fx->channel.ctx, on_update, on_result, fx), AZ_IOT_OK);
@@ -1181,14 +1209,23 @@ static void an_idle_session_is_closed_after_the_linger(void** state)
   fx->client.dps_phase = AZ_IOT_DPS_PHASE_DONE;
   (void)az_iot_connection_client__dps_session_ensure(&fx->client);
   (void)drive_existing_session(fx);
-  assert_true(fx->client.dps_session_auxiliary);
+  assert_non_null(fx->client.dps_mqtt);
 
-  /* Force the deadline into the past rather than waiting out the real linger. */
-  fx->client.dps_aux_idle_deadline_ms = 1;
+  /* Idle, and pumped repeatedly: it must NOT be closed out from under the
+   * holder. */
+  for (int i = 0; i < 10; ++i)
+  {
+    (void)az_iot_connection_client_do_work(&fx->client, 0);
+  }
+  assert_non_null(fx->client.dps_mqtt);
+
+  /* The last holder lets go, and the pump closes it at a safe point -- not at
+   * release time, which is reachable from inside a callback. */
+  az_iot_connection_client__dps_user_release(&fx->client);
+  assert_non_null(fx->client.dps_mqtt);
   (void)az_iot_connection_client_do_work(&fx->client, 0);
-
-  assert_false(fx->client.dps_session_auxiliary);
-  assert_int_equal(fx->client.dps_user_count, 1); /* interest survives the session */
+  assert_null(fx->client.dps_mqtt);
+  assert_int_equal(fx->client.dps_user_count, 0);
 }
 
 /* The interest count is a uint8_t; refuse rather than wrap. */
@@ -1226,7 +1263,7 @@ static void the_hub_is_still_pumped_while_an_auxiliary_session_is_open(void** st
   assert_int_equal(az_iot_connection_client__dps_user_acquire(&fx->client), AZ_IOT_OK);
   fx->client.dps_phase = AZ_IOT_DPS_PHASE_DONE;
   assert_int_equal(az_iot_connection_client__dps_session_ensure(&fx->client), AZ_IOT_ERR_BUSY);
-  assert_true(fx->client.dps_session_auxiliary);
+  assert_non_null(fx->client.dps_mqtt);
 
   size_t before = (size_t)az_iot_mock_mqtt_client_count_of(hub_mock, AZ_IOT_MOCK_CALL_PROCESS_LOOP);
 
@@ -1271,7 +1308,7 @@ static void a_refused_request_causes_a_session_to_be_opened(void** state)
 
   /* The tick acts on it. */
   assert_int_equal(fx->channel.vtable->do_work(fx->channel.ctx), AZ_IOT_OK);
-  assert_true(fx->client.dps_session_auxiliary);
+  assert_non_null(fx->client.dps_mqtt);
 
   az_iot_mock_mqtt_client* m = drive_existing_session(fx);
   assert_true(az_iot_connection_client__dps_session_ready(&fx->client));
@@ -1329,18 +1366,14 @@ static void a_satisfied_session_demand_stops_reopening_sessions(void** state)
   assert_true(inject(fx, m, topic, "{\"updateAvailable\":false}"));
   assert_false(fx->channel_state.request_pending);
 
-  /* The idle session closes on its linger, as it is meant to. */
-  fx->client.dps_aux_idle_deadline_ms = 1;
-  (void)az_iot_connection_client_do_work(&fx->client, 0);
-  assert_false(fx->client.dps_session_auxiliary);
-
-  /* And with no work outstanding the channel does NOT reopen it. */
+  /* The session stays up: the channel still holds its interest. With no work
+   * outstanding the channel must not churn it either -- no close, no reopen. */
   for (int i = 0; i < 3; ++i)
   {
     assert_int_equal(fx->channel.vtable->do_work(fx->channel.ctx), AZ_IOT_OK);
     (void)az_iot_connection_client_do_work(&fx->client, 0);
   }
-  assert_false(fx->client.dps_session_auxiliary);
+  assert_non_null(fx->client.dps_mqtt);
   assert_false(fx->channel_state.wants_session);
 }
 
@@ -1371,7 +1404,7 @@ static void closing_the_channel_drops_the_session_demand(void** state)
  * and the moment the session is actually torn down the refusal records the
  * demand again. This pins that recovery so the clearing rule cannot be tightened
  * into a stall. */
-static void a_demand_queued_before_the_hold_expires_still_reopens_a_session(void** state)
+static void a_demand_queued_before_the_hold_expires_runs_on_the_kept_session(void** state)
 {
   fixture* fx = (fixture*)*state;
   assert_int_equal(fx->channel.vtable->open(fx->channel.ctx, on_update, on_result, fx), AZ_IOT_OK);
@@ -1407,19 +1440,19 @@ static void a_demand_queued_before_the_hold_expires_still_reopens_a_session(void
       fx->channel.vtable->request_update(fx->channel.ctx, AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE),
       AZ_IOT_ERR_NOT_CONNECTED);
 
-  /* Registration completes and takes the session with it. */
+  /* Registration completes. The session SURVIVES it, because the channel holds
+   * an interest -- and that is the improvement: the operation the hold expiry
+   * pushed aside can now run immediately, with no reconnect in between. */
   assert_true(inject(fx, m, "$dps/registrations/res/200/?$rid=1", k_assigned_body));
   (void)az_iot_connection_client_do_work(&fx->client, 0);
-  assert_false(az_iot_connection_client__dps_session_ready(&fx->client));
+  assert_true(az_iot_connection_client__dps_session_ready(&fx->client));
 
-  /* The engine's next attempt records the demand again, and the tick acts on
-   * it: an auxiliary session is opened rather than the operation stalling. */
+  /* The gate reopens once the registration is no longer pending, so the
+   * engine's next attempt is accepted on the session already up. */
   assert_int_equal(
       fx->channel.vtable->request_update(fx->channel.ctx, AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE),
-      AZ_IOT_ERR_NOT_CONNECTED);
-  assert_true(fx->channel_state.wants_session);
-  assert_int_equal(fx->channel.vtable->do_work(fx->channel.ctx), AZ_IOT_OK);
-  assert_true(fx->client.dps_session_auxiliary);
+      AZ_IOT_OK);
+  assert_non_null(fx->client.dps_mqtt);
 }
 
 int main(void)
@@ -1442,7 +1475,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(an_error_response_reports_an_action, setup, teardown),
     cmocka_unit_test_setup_teardown(a_report_is_published_and_acknowledged, setup, teardown),
     cmocka_unit_test_setup_teardown(
-        losing_the_session_releases_the_pending_request, setup, teardown),
+        registration_does_not_cost_the_channel_its_request, setup, teardown),
     cmocka_unit_test_setup_teardown(updated_device_properties_change_what_is_sent, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_request_before_the_session_is_ready_is_refused, setup, teardown),
@@ -1484,7 +1517,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(without_interest_no_session_is_opened, setup, teardown),
     cmocka_unit_test_setup_teardown(an_auxiliary_session_never_registers, setup, teardown),
     cmocka_unit_test_setup_teardown(the_session_closes_when_the_last_user_lets_go, setup, teardown),
-    cmocka_unit_test_setup_teardown(an_idle_session_is_closed_after_the_linger, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        the_session_survives_while_held_and_closes_when_released, setup, teardown),
     cmocka_unit_test_setup_teardown(the_user_count_refuses_to_overflow, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_refused_request_causes_a_session_to_be_opened, setup, teardown),
@@ -1492,7 +1526,7 @@ int main(void)
         a_satisfied_session_demand_stops_reopening_sessions, setup, teardown),
     cmocka_unit_test_setup_teardown(closing_the_channel_drops_the_session_demand, setup, teardown),
     cmocka_unit_test_setup_teardown(
-        a_demand_queued_before_the_hold_expires_still_reopens_a_session, setup, teardown),
+        a_demand_queued_before_the_hold_expires_runs_on_the_kept_session, setup, teardown),
     cmocka_unit_test_setup_teardown(
         the_hub_is_still_pumped_while_an_auxiliary_session_is_open, setup, teardown),
     cmocka_unit_test_setup_teardown(

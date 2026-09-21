@@ -122,11 +122,12 @@ static az_iot_result publish_operation(
    *
    * Checked here rather than in each caller so a new operation cannot forget
    * it. */
-  /* The hold only governs the PRE-REGISTRATION exchange. An auxiliary session
-   * is opened after registration and deliberately has no hold -- there is no
-   * registration left to hold back -- so requiring one here would reject every
-   * operational publish on a session that is perfectly usable. */
-  if (c->wants_hold && !az_iot_connection_client__dps_session_is_auxiliary(c->connection)
+  /* The hold only governs the PRE-REGISTRATION exchange -- it exists to stop
+   * the device registering before this client has had its turn. Once there is
+   * no registration pending on the session there is nothing to hold back, so
+   * requiring a hold then would reject every operational publish on a session
+   * that is perfectly usable. */
+  if (c->wants_hold && az_iot_connection_client__dps_registration_pending(c->connection)
       && (!c->holds_registration || !az_iot_connection_client__dps_hold_is_active(c->connection)))
   {
     return AZ_IOT_ERR_NOT_CONNECTED;
