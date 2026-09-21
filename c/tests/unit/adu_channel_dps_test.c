@@ -1422,9 +1422,86 @@ static void a_demand_queued_before_the_hold_expires_still_reopens_a_session(void
   assert_true(fx->client.dps_session_auxiliary);
 }
 
+/* A registration failure the provisioning parser turns into a fault. */
+static const char k_failed_body[]
+    = "{\"operationId\":\"op-1\",\"status\":\"failed\","
+      "\"registrationState\":{\"errorCode\":400207,\"errorMessage\":\"Custom allocation failed\"}}";
+
+/* A feature client must not be able to drag the connection out of FAULTED.
+ *
+ * The device-update channel holds a standing DPS interest and asks for a
+ * session whenever it has work. On a faulted connection that call reached
+ * dps_start(), whose set_state_to(CONNECTING) left the terminal state -- so an
+ * application watching the connection never saw the fault settle. Measured: the
+ * state reads CONNECTING with the channel attached, and FAULTED without it.
+ *
+ * Asserted through the real channel rather than by calling the seam directly,
+ * because the loop is what the channel does with the answer. Note the channel
+ * itself is unmodified: the rule belongs to the connection state. */
+static void a_feature_client_cannot_reopen_a_session_while_faulted(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_mock_mqtt_client* m = open_and_bind(fx);
+
+  assert_int_equal(
+      fx->channel.vtable->request_update(fx->channel.ctx, AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE),
+      AZ_IOT_OK);
+
+  /* The check is never answered, the hold expires, the device registers -- and
+   * registration fails. */
+  az_iot_test_wait_ms(60); /* opts.dps_hold_timeout_ms is 50 */
+  (void)az_iot_connection_client_do_work(&fx->client, 0);
+  assert_true(inject(fx, m, "$dps/registrations/res/200/?$rid=1", k_failed_body));
+  for (int i = 0; i < 3; ++i)
+  {
+    (void)az_iot_connection_client_do_work(&fx->client, 0);
+  }
+  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_FAULTED);
+
+  /* The channel keeps asking, exactly as the engine makes it: on every tick
+   * drive_pending_fetch() re-issues the operation, which is refused for want of
+   * a session and records the demand again. Simulated here because the fixture
+   * drives the channel directly, with no ADU engine behind it.
+   *
+   * Nothing opens, nothing is published, and the fault stays put. */
+  for (int i = 0; i < 50; ++i)
+  {
+    assert_int_equal(
+        fx->channel.vtable->request_update(fx->channel.ctx, AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE),
+        AZ_IOT_ERR_NOT_CONNECTED);
+    assert_true(fx->channel_state.wants_session);
+    assert_int_equal(fx->channel.vtable->do_work(fx->channel.ctx), AZ_IOT_OK);
+    (void)az_iot_connection_client_do_work(&fx->client, 0);
+
+    assert_false(fx->client.dps_session_auxiliary);
+    assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_FAULTED);
+  }
+
+  /* Exactly ONE verdict across the whole run: the request outstanding when the
+   * session died is retired once, and the refusals that follow are silent. */
+  assert_int_equal(fx->result_count, 1);
+
+  /* The demand SURVIVES the fault -- it is deferred, not discarded. */
+  assert_true(fx->channel_state.wants_session);
+
+  /* A gate, not a latch. close() is the supported exit from FAULTED, and it is
+   * the state that gated the session, so the refusal lifts with it.
+   *
+   * Asserted on the seam directly: open() starts a provisioning session of its
+   * own, so "a session exists" afterwards would pass whether or not the guard
+   * had lifted. */
+  assert_int_equal(az_iot_connection_client_close(&fx->client), AZ_IOT_OK);
+  assert_int_not_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_FAULTED);
+  assert_true(fx->channel_state.wants_session);
+  assert_int_not_equal(
+      az_iot_connection_client__dps_session_ensure(&fx->client), AZ_IOT_ERR_NOT_SUPPORTED);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
+    cmocka_unit_test_setup_teardown(
+        a_feature_client_cannot_reopen_a_session_while_faulted, setup, teardown),
     cmocka_unit_test_setup_teardown(request_update_publishes_on_the_dps_topic, setup, teardown),
     cmocka_unit_test_setup_teardown(
         the_onboarding_route_selects_its_topic_and_omits_the_installed_id, setup, teardown),

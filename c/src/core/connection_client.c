@@ -4291,6 +4291,28 @@ az_iot_result az_iot_connection_client__dps_session_ensure(az_iot_connection_cli
     return AZ_IOT_ERR_BUSY;
   }
 
+  /* Never from FAULTED. A feature client asking for a session here would call
+   * dps_start(), whose set_state_to(CONNECTING) drags the connection back out
+   * of the terminal state -- so the application never sees the fault settle and
+   * cannot act on it. Measured with the device-update client attached: the
+   * state read CONNECTING after a registration failure that leaves an
+   * unattached client in FAULTED indefinitely.
+   *
+   * A gate, not a latch: close() is the supported exit from FAULTED and leaves
+   * feature clients attached, so the next open() lets this through again and a
+   * demand raised while faulted is simply honoured late.
+   *
+   * Here rather than in each feature client: the rule is a property of the
+   * connection state, and every feature client that can hold a DPS interest
+   * would otherwise need its own copy of it.
+   *
+   * Only the START is refused. A session already up or already coming up is
+   * still reported, because neither moves the public state. */
+  if (client->state == AZ_IOT_CONN_STATE_FAULTED)
+  {
+    return AZ_IOT_ERR_NOT_SUPPORTED;
+  }
+
   client->dps_session_auxiliary = true;
   client->dps_phase = DPS_PHASE_NONE;
   az_iot_result r = dps_start(client);

@@ -201,6 +201,15 @@ extern "C"
    * is still coming up (call again on a later tick), AZ_IOT_ERR_NOT_SUPPORTED
    * when the caller holds no interest or DPS is not configured.
    *
+   * A FAULTED connection refuses to START one, also with
+   * AZ_IOT_ERR_NOT_SUPPORTED: opening one there would drag the connection out
+   * of its terminal state and hide the fault from the application, so a feature
+   * client does not need to track the connection state to avoid that. Only the
+   * start is refused -- a session already usable still answers AZ_IOT_OK, and
+   * one already coming up still answers AZ_IOT_ERR_BUSY, because neither moves
+   * the public state. Both are reachable while FAULTED: the fault may arrive
+   * from the hub side with an auxiliary session already up.
+   *
    * A session opened this way is AUXILIARY: it runs alongside the hub
    * connection and never registers. Registering would take the assignment path,
    * which rewrites the host and role and reconnects -- destroying the very hub
