@@ -1,4 +1,7 @@
-﻿using Microsoft.Azure.Devices.Client;
+﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
+// See LICENSE file in the project root for full license information.
+
+using Microsoft.Azure.Iot.Device;
 using System.Security.Cryptography.X509Certificates;
 
 namespace SetupSampleDevice
@@ -21,7 +24,7 @@ namespace SetupSampleDevice
                 File.Delete(outputPath + "certificate.pfx");
             }
             catch (DirectoryNotFoundException)
-            { 
+            {
                 // sample credentials are already deleted
             }
         }
@@ -99,7 +102,7 @@ namespace SetupSampleDevice
             {
                 certificate = X509CertificateLoader.LoadPkcs12FromFile(pfxContentsPath, certPassword);
             }
-            else 
+            else
             {
                 certificate = X509CertificateLoader.LoadPkcs12(SampleConstants.LoadPfx(), certPassword);
             }
