@@ -1106,6 +1106,121 @@ static void close_ends_a_session_held_by_a_feature_client(void** state)
   az_iot_connection_client__dps_user_release(fx->client);
 }
 
+/* close() from a FAULTED hub must end a provisioning session its users hold.
+ *
+ * The FAULTED and RECONNECTING branches return early, and each used to return
+ * without touching the provisioning session -- which the pump would not
+ * collect either while a ref was held. The teardown therefore has to happen
+ * before every branch, not inside the ordinary one. */
+static void close_from_a_faulted_hub_still_ends_the_held_session(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  assert_int_equal(az_iot_connection_client__dps_user_acquire(fx->client), AZ_IOT_OK);
+
+  az_iot_mock_mqtt_client* dps = dps_open_to_registering(fx);
+  assert_true(inject_dps_response(dps, DPS_RESPONSE_TOPIC_ASSIGNED, k_assigned_body));
+  for (int i = 0; i < 5; ++i)
+  {
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
+  assert_non_null(fx->client->dps_mqtt);
+
+  /* Fault the hub. With no reconnection policy this is terminal, and the
+   * provisioning session its user holds is untouched by that. */
+  az_iot_mock_mqtt_client* hub = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  assert_non_null(hub);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(hub, AZ_IOT_ERR_IDENTITY_REJECTED));
+  for (int i = 0; i < 3; ++i)
+  {
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
+  assert_int_equal(
+      az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_HUB),
+      AZ_IOT_CONN_STATE_FAULTED);
+  assert_non_null(fx->client->dps_mqtt);
+
+  assert_int_equal(az_iot_connection_client_close(fx->client), AZ_IOT_OK);
+
+  assert_null(fx->client->dps_mqtt);
+  assert_int_equal(
+      az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_DPS),
+      AZ_IOT_CONN_STATE_IDLE);
+  assert_int_equal(fx->client->dps_user_count, 1);
+
+  az_iot_connection_client__dps_user_release(fx->client);
+}
+
+/* An automatic re-provision must adopt a session its users hold, not build a
+ * second one.
+ *
+ * A session held across registration is still up when a hub failure sends the
+ * device back to DPS. An unconditional dps_start() there overwrites dps_mqtt,
+ * orphaning that socket and losing any exchange in flight on it. */
+static void a_reprovision_adopts_the_session_its_users_hold(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  assert_int_equal(az_iot_connection_client__dps_user_acquire(fx->client), AZ_IOT_OK);
+
+  az_iot_mock_mqtt_client* dps = dps_open_to_registering(fx);
+  assert_true(inject_dps_response(dps, DPS_RESPONSE_TOPIC_ASSIGNED, k_assigned_body));
+  for (int i = 0; i < 5; ++i)
+  {
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
+  az_iot_mqtt_client* held = fx->client->dps_mqtt;
+  assert_non_null(held);
+
+  /* The hub rejects the identity, so the retry is a re-registration. */
+  az_iot_mock_mqtt_client* hub = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  assert_non_null(hub);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(hub, AZ_IOT_ERR_IDENTITY_REJECTED));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  az_iot_test_wait_until_ms(fx->client->reconnect_due_ms);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  /* Same session object: adopted, not replaced. */
+  assert_ptr_equal(fx->client->dps_mqtt, held);
+  /* And the registration really is running on it. */
+  assert_true(fx->client->dps_registration_ref);
+
+  az_iot_connection_client__dps_user_release(fx->client);
+}
+
+/* A session user must not be able to open one while a registration retry is
+ * scheduled.
+ *
+ * Opening moves the DPS lifecycle to CONNECTING without consuming the pending
+ * deadline, so the retry gate -- which matches on RECONNECTING -- stops
+ * matching. The registration never fires and the device stays unregistered. */
+static void a_pending_retry_refuses_a_new_session(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  assert_int_equal(az_iot_connection_client__dps_user_acquire(fx->client), AZ_IOT_OK);
+
+  /* A registration failure schedules a DPS retry. */
+  az_iot_mock_mqtt_client* dps = dps_open_to_registering(fx);
+  assert_true(inject_dps_response(dps, DPS_RESPONSE_TOPIC_ASSIGNED, k_failed_body));
+  for (int i = 0; i < 3; ++i)
+  {
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
+  assert_int_equal(
+      az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_DPS),
+      AZ_IOT_CONN_STATE_RECONNECTING);
+  assert_int_not_equal(fx->client->reconnect_due_ms, 0);
+
+  /* Refused, and the pending retry is left intact. */
+  assert_int_equal(az_iot_connection_client__dps_session_ensure(fx->client), AZ_IOT_ERR_BUSY);
+  assert_null(fx->client->dps_mqtt);
+  assert_int_equal(
+      az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_DPS),
+      AZ_IOT_CONN_STATE_RECONNECTING);
+  assert_int_not_equal(fx->client->reconnect_due_ms, 0);
+
+  az_iot_connection_client__dps_user_release(fx->client);
+}
+
 /* A holder cannot register on the session it holds: registration runs only
  * while the CONNECTION CLIENT holds the registration ref. Without that rule a
  * session opened for a feature client would take the assignment path, rewrite
@@ -2673,6 +2788,12 @@ int main(void)
         releasing_the_last_ref_closes_the_session_from_the_pump, setup, teardown),
     cmocka_unit_test_setup_teardown(a_kept_session_is_still_pumped, setup, teardown),
     cmocka_unit_test_setup_teardown(close_ends_a_session_held_by_a_feature_client, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        close_from_a_faulted_hub_still_ends_the_held_session, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_reprovision_adopts_the_session_its_users_hold, setup_with_reconnect, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_pending_retry_refuses_a_new_session, setup_with_reconnect, teardown),
     cmocka_unit_test_setup_teardown(
         a_session_without_the_registration_ref_does_not_register, setup, teardown),
     cmocka_unit_test_setup_teardown(dps_connack_failure_faults, setup, teardown),

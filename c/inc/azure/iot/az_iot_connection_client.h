@@ -916,38 +916,16 @@ extern "C"
     bool dps_hold_active;
     uint64_t dps_hold_deadline_ms;
 
-    /* WHO NEEDS THE PROVISIONING SESSION.
+    /* Who needs the provisioning session. It exists exactly while this total is
+     * non-zero: the connection client holds dps_registration_ref while the
+     * device must register, and each session user holds a count.
      *
-     * There is one provisioning connection, and it exists exactly while
-     * somebody needs it. Two kinds of somebody:
-     *
-     *   dps_registration_ref -- the connection client itself, because the
-     *     device has to register. Raised by open() (or a reconnect that must
-     *     re-provision) and released when registration reaches a terminal
-     *     outcome.
-     *   dps_user_count -- feature clients that talk on the provisioning
-     *     session, the device-update client today. Raised at attach, released
-     *     at detach.
-     *
-     * The session is opened when the total goes from zero, and torn down when
-     * it returns to zero. That is the whole rule: there is no "auxiliary"
-     * session, no mode bit, and no separate lifetime for a session opened on a
-     * feature client's behalf. A device whose update client is attached keeps
-     * one provisioning connection across registration; a device without one
-     * drops it the moment registration finishes.
-     *
-     * REGISTRATION IS A TASK PERFORMED ON THE SESSION, not a property of it:
-     * it runs only while dps_registration_ref is held. That is what stops a
-     * session opened for a feature client from registering and tearing down
-     * the hub connection beside it -- the rule that used to be spelled "an
-     * auxiliary session never registers". */
+     * Registration is a task performed on the session, not a property of it --
+     * it runs only while dps_registration_ref is held, which is what keeps a
+     * session opened for its other users from registering and tearing down the
+     * hub connection beside it. */
     bool dps_registration_ref;
     uint8_t dps_user_count;
-
-    /* Set between the register PUBLISH and its outcome. What the pre-
-     * registration hold refuses to hold against, and what tells the SUBACK
-     * path a registration is already on the wire. */
-    bool dps_registration_active;
 
     char dps_operation_id[AZ_IOT_DPS_OPERATION_ID_MAX];
     size_t dps_operation_id_len;

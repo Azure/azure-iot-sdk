@@ -563,10 +563,9 @@ static void a_retry_after_on_the_topic_defers_the_next_request(void** state)
   assert_int_equal(c->retry_after_deadline_ms, 0);
 }
 
-/* During a delay a request must NOT ask for a provisioning session. If it did,
- * the tick would open an auxiliary session, the publish would be refused, the
- * session would linger idle and close, and the cycle would repeat for the whole
- * backoff -- reconnecting over and over to say nothing. */
+/* During a delay a request must NOT ask for a provisioning session: it would be
+ * opened only to have the publish refused, over and over for the whole
+ * backoff. */
 static void a_request_during_a_delay_does_not_ask_for_a_session(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -574,8 +573,8 @@ static void a_request_during_a_delay_does_not_ask_for_a_session(void** state)
   assert_int_equal(
       az_iot_connection_client_register_mqtt_factory(&fx->client, fx->factory), AZ_IOT_OK);
 
-  /* Provisioned, and the ordinary flow has taken its session away -- the state
-   * in which a request would otherwise open an auxiliary one. */
+  /* Provisioned, with no session up -- the state in which a request would
+   * otherwise open one. */
   fx->client.dps_phase = AZ_IOT_DPS_PHASE_DONE;
   assert_false(az_iot_connection_client__dps_session_ready(&fx->client));
 
@@ -1135,15 +1134,14 @@ static void without_interest_no_session_is_opened(void** state)
   assert_null(fx->client.dps_mqtt);
 }
 
-/* The whole point of the auxiliary session: it must not register. Registering
- * would take the assignment path, which rewrites the host and role and
- * reconnects -- destroying the hub connection it is meant to sit beside.
+/* A session nobody registered on must not register. Registering would take the
+ * assignment path, which rewrites the host and role and reconnects --
+ * destroying a hub connection it may sit beside.
  *
- * No ADU channel here on purpose. The channel also holds registration back for
- * its pre-registration check, and that hold would stop the session first --
- * proving nothing about the auxiliary guard. This drives the connection client
- * directly so the guard is the only thing that can prevent a register. */
-static void an_auxiliary_session_never_registers(void** state)
+ * No ADU channel here on purpose: the channel also holds registration back for
+ * its pre-registration check, and that hold would stop the session first,
+ * proving nothing about this guard. */
+static void a_session_without_the_registration_ref_never_registers(void** state)
 {
   fixture* fx = (fixture*)*state;
 
@@ -1241,12 +1239,12 @@ static void the_user_count_refuses_to_overflow(void** state)
   fx->client.dps_user_count = 0;
 }
 
-/* An auxiliary session runs ALONGSIDE the hub connection, so the hub must keep
+/* A provisioning session runs ALONGSIDE the hub connection, so the hub must keep
  * being serviced while it is open. If the DPS pump returned early -- as it
  * rightly does for an ordinary provisioning run, which owns the client -- a
  * device that opened one would stop servicing telemetry, twin and method
  * traffic for as long as the session lasted. */
-static void the_hub_is_still_pumped_while_an_auxiliary_session_is_open(void** state)
+static void the_hub_is_still_pumped_while_a_provisioning_session_is_open(void** state)
 {
   fixture* fx = (fixture*)*state;
 
@@ -1273,7 +1271,7 @@ static void the_hub_is_still_pumped_while_an_auxiliary_session_is_open(void** st
   assert_true(after > before);
 
   /* Destroyed explicitly. The mock factory frees only its LAST client, and the
-   * auxiliary session created one after this stand-in, so nothing else would
+   * provisioning session created one after this stand-in, so nothing else would
    * ever free it -- confirmed by LeakSanitizer, which reports it otherwise. */
   fx->client.active_client = NULL;
   hub->iface->destroy(hub);
@@ -1329,9 +1327,7 @@ static void a_refused_request_causes_a_session_to_be_opened(void** state)
  * Without this the flag latches on for the life of the client: it is only ever
  * cleared on dps_session_ensure() answering AZ_IOT_OK, and that answer requires
  * a session that is already ready -- which is exactly the case in which the
- * call is not made. Every linger expiry then reopens an auxiliary session, so a
- * single update check turns into continuous reconnect churn against the
- * service. */
+ * call is not made. */
 static void a_satisfied_session_demand_stops_reopening_sessions(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -1396,7 +1392,7 @@ static void closing_the_channel_drops_the_session_demand(void** state)
   assert_false(fx->channel_state.wants_session);
 }
 
-/* A demand raised BEFORE the session was ready still reaches an auxiliary
+/* A demand raised BEFORE the session was ready still reaches a provisioning
  * session, even when the hold expires and registration publishes underneath it.
  *
  * Clearing the demand on readiness is safe because the publish gate's refusal
@@ -1515,7 +1511,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         a_session_is_opened_on_demand_after_provisioning, setup, teardown),
     cmocka_unit_test_setup_teardown(without_interest_no_session_is_opened, setup, teardown),
-    cmocka_unit_test_setup_teardown(an_auxiliary_session_never_registers, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_session_without_the_registration_ref_never_registers, setup, teardown),
     cmocka_unit_test_setup_teardown(the_session_closes_when_the_last_user_lets_go, setup, teardown),
     cmocka_unit_test_setup_teardown(
         the_session_survives_while_held_and_closes_when_released, setup, teardown),
@@ -1528,7 +1525,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         a_demand_queued_before_the_hold_expires_runs_on_the_kept_session, setup, teardown),
     cmocka_unit_test_setup_teardown(
-        the_hub_is_still_pumped_while_an_auxiliary_session_is_open, setup, teardown),
+        the_hub_is_still_pumped_while_a_provisioning_session_is_open, setup, teardown),
     cmocka_unit_test_setup_teardown(
         the_dps_pump_caps_its_wait_at_the_hold_deadline, setup, teardown),
   };

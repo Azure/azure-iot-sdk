@@ -77,10 +77,8 @@ static bool rid_is_ours(const char* rid)
  * Checked in two places, and both matter. publish_operation() is the gate every
  * operation funnels through, so nothing can forget it. But the request entry
  * points have to refuse BEFORE they ask for a provisioning session: otherwise a
- * request during a long delay sets the standing interest, the tick opens an
- * auxiliary session, the publish is refused, the session lingers idle and
- * closes, and the cycle repeats for the whole backoff -- reconnecting over and
- * over to say nothing. */
+ * request during a long delay would open a provisioning session only to have
+ * the publish refused, over and over for the whole backoff. */
 static bool retry_after_in_force(az_iot_adu_channel_dps* c)
 {
   if (c->retry_after_deadline_ms == 0)

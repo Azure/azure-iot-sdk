@@ -177,48 +177,74 @@ extern "C"
    * waiting on a holder. */
   bool az_iot_connection_client__dps_hold_is_active(const az_iot_connection_client* client);
 
-  /* Standing interest in the provisioning session, for a feature client that
-   * needs to talk on it.
+  /**
+   * @brief Take a standing interest in the provisioning session.
    *
-   * Acquire at initialize, release at destroy. The session exists exactly while
-   * somebody holds it -- this count plus the connection client's own
-   * registration ref -- so a holder KEEPS a session alive, including across
-   * registration, and the last release closes it.
+   * The session exists exactly while somebody holds it -- these interests plus
+   * the connection client's own registration ref -- so a holder keeps it alive
+   * across registration, and the last release ends it.
    *
-   * Release does not close anything itself: it is reachable from inside a
-   * message callback, where freeing the adapter would free the object still
-   * being dispatched on. The pump closes at a safe point.
+   * Acquire at initialize, release at destroy. Distinct from the
+   * pre-registration hold, which delays a registration that is about to happen
+   * rather than asking for the session itself; a caller usually wants both.
    *
-   * Separate from the pre-registration hold: the hold delays a registration
-   * that is about to happen, this says the session itself is needed. A feature
-   * client usually wants both. */
+   * @param[in] client The connection client. Must not be NULL.
+   *
+   * @return AZ_IOT_OK on success.
+   * @retval AZ_IOT_ERR_INVALID_ARG @p client is NULL.
+   * @retval AZ_IOT_ERR_NOT_ENOUGH_SPACE The interest count is saturated.
+   */
   az_iot_result az_iot_connection_client__dps_user_acquire(az_iot_connection_client* client);
+
+  /**
+   * @brief Give up a standing interest taken with
+   *        az_iot_connection_client__dps_user_acquire().
+   *
+   * Does not close the session, even when this is the last interest: this is
+   * reachable from inside a message callback, where freeing the adapter would
+   * free the object being dispatched on. az_iot_connection_client_do_work()
+   * closes it at a safe point.
+   *
+   * @param[in] client The connection client. NULL, and an interest count
+   *                   already at zero, are both ignored.
+   */
   void az_iot_connection_client__dps_user_release(az_iot_connection_client* client);
 
-  /* True while the connection client is driving a registration on the
-   * provisioning session -- that is, it holds the registration ref and the run
-   * has not reached a terminal outcome.
+  /**
+   * @brief Whether a registration is pending on the provisioning session.
    *
-   * The question a feature client actually needs: "is there a registration for
-   * my pre-registration hold to hold back?" False once registration is over,
-   * and false on a session that only feature clients hold. */
+   * Answers "is there a registration for my pre-registration hold to hold
+   * back?". False once registration has reached a terminal outcome, and false
+   * on a session no registration was started on.
+   *
+   * @param[in] client The connection client. NULL reads as false.
+   *
+   * @return true while the registration ref is held.
+   */
   bool az_iot_connection_client__dps_registration_pending(const az_iot_connection_client* client);
 
-  /* Is the session this caller holds usable yet, opening one if there is none?
+  /**
+   * @brief Report whether the provisioning session is usable, opening one if
+   *        there is none.
    *
    * The caller is not requesting a session so much as asking about the one its
-   * ref already entitles it to.
+   * interest already entitles it to.
    *
-   * Returns AZ_IOT_OK when a publish can be made now, AZ_IOT_ERR_BUSY while one
-   * is coming up (call again on a later tick), and AZ_IOT_ERR_NOT_SUPPORTED
-   * when the caller holds no interest, DPS is not configured, or a lifecycle
-   * has settled into FAULTED -- starting a session from there would drag the
-   * connection out of its terminal state and hide the fault from the
-   * application.
+   * Registration is NOT implied: a session opened through this call carries its
+   * users' messages, and registers only if the connection client separately
+   * holds the registration ref, which az_iot_connection_client_open() raises.
    *
-   * REGISTRATION IS NOT IMPLIED. A session opened through this call carries the
-   * caller's messages; it registers only if the connection client separately
-   * holds the registration ref, which is what open() raises. */
+   * @param[in] client The connection client. Must not be NULL.
+   *
+   * @return AZ_IOT_OK when a publish can be made now.
+   * @retval AZ_IOT_ERR_INVALID_ARG @p client is NULL.
+   * @retval AZ_IOT_ERR_BUSY A session is coming up, or a retry is scheduled;
+   *         call again on a later tick.
+   * @retval AZ_IOT_ERR_NOT_SUPPORTED The caller holds no interest, DPS is not
+   *         configured, or a lifecycle has settled into FAULTED -- opening a
+   *         session from there would drag it out of its terminal state and
+   *         hide the fault from the application.
+   */
   az_iot_result az_iot_connection_client__dps_session_ensure(az_iot_connection_client* client);
 
   /* Register the observer for inbound provisioning-session messages the
