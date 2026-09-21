@@ -145,6 +145,77 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         }
 
         [Fact]
+        public async Task TerminalFaultThatIsNotAboutIdentityRaisesConnectionFaultedAsync()
+        {
+            using MockConnectionMqttClient mockMqttClient = new();
+            MockDeviceProvisioningService mockDps = new(mockMqttClient, _ => FirstAssignedHub);
+
+            using TestConnectionClient connectionClient = new(new() { MqttClient = mockMqttClient });
+
+            await connectionClient.ProvisionAndConnectAsync(
+                CreateProvisioningSettings(),
+                CreateAuthenticationProvider(),
+                TestContext.Current.CancellationToken);
+
+            TaskCompletionSource<ConnectionFaultedEventArgs> connectionFaulted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            connectionClient.ConnectionFaultedAsync += args =>
+            {
+                connectionFaulted.TrySetResult(args);
+                return Task.CompletedTask;
+            };
+
+            // This reason is terminal, but it says nothing about this device's identity, so nothing on this client
+            // will bring the connection back: the application must be told so that it can connect again itself.
+            await mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.ServerMoved);
+
+            ConnectionFaultedEventArgs raisedArgs = await connectionFaulted.Task.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+
+            Assert.Equal(ErrorRetryability.Terminal, raisedArgs.Exception.Retryability);
+        }
+
+        [Fact]
+        public async Task ConnectionFaultedAsyncIsNotRaisedWhenAnIdentityFaultRecoversOnItsOwn()
+        {
+            using MockConnectionMqttClient mockMqttClient = new();
+            MockDeviceProvisioningService mockDps = new(mockMqttClient, registrationCount => registrationCount == 1 ? FirstAssignedHub : SecondAssignedHub);
+
+            TaskCompletionSource connectedToSecondHub = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            mockMqttClient.OnConnect = connect =>
+            {
+                if (connect.HostName == SecondAssignedHub)
+                {
+                    connectedToSecondHub.TrySetResult();
+                }
+
+                return Task.FromResult(new MqttConnectAck() { ResultCode = MqttConnectReasonCode.Success });
+            };
+
+            using TestConnectionClient connectionClient = new(new() { MqttClient = mockMqttClient });
+
+            bool connectionFaultedAsyncRaised = false;
+            connectionClient.ConnectionFaultedAsync += _ =>
+            {
+                connectionFaultedAsyncRaised = true;
+                return Task.CompletedTask;
+            };
+
+            await connectionClient.ProvisionAndConnectAsync(
+                CreateProvisioningSettings(),
+                CreateAuthenticationProvider(),
+                TestContext.Current.CancellationToken);
+
+            // The hub rejects this device's identity mid-session, but this client recovers on its own by
+            // re-provisioning and connecting to the hub it is assigned this time, so the application is never told
+            // that the connection is gone for good.
+            await mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.NotAuthorized);
+            await connectedToSecondHub.Task.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+
+            await Task.Delay(s_negativeTestTimeout, TestContext.Current.CancellationToken);
+
+            Assert.False(connectionFaultedAsyncRaised);
+        }
+
+        [Fact]
         public async Task IdentityFaultDoesNotReprovisionADeviceThatWasNeverProvisioned()
         {
             using MockConnectionMqttClient mockMqttClient = new();
@@ -431,6 +502,56 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             DeviceException fault = Assert.IsType<DeviceException>(exception.InnerException);
             Assert.Equal(ErrorRetryability.Terminal, fault.Retryability);
 
+            Assert.Equal(2, dpsConnectAttempts);
+            Assert.Equal(1, mockDps.RegistrationCount);
+        }
+
+        [Fact]
+        public async Task ConnectionFaultedAsyncIsRaisedWhenReprovisioningFailsTerminally()
+        {
+            using MockConnectionMqttClient mockMqttClient = new();
+            MockDeviceProvisioningService mockDps = new(mockMqttClient, _ => FirstAssignedHub);
+
+            int dpsConnectAttempts = 0;
+            mockMqttClient.OnConnect = connect =>
+            {
+                if (connect.HostName != GlobalDeviceEndpoint)
+                {
+                    return Task.FromResult(new MqttConnectAck() { ResultCode = MqttConnectReasonCode.Success });
+                }
+
+                // The first registration succeeds so that this device gets connected to a hub. The re-provisioning that
+                // the identity fault starts is refused for a reason that no amount of retrying or re-provisioning fixes.
+                return Task.FromResult(new MqttConnectAck()
+                {
+                    ResultCode = Interlocked.Increment(ref dpsConnectAttempts) == 1
+                        ? MqttConnectReasonCode.Success
+                        : MqttConnectReasonCode.Banned,
+                });
+            };
+
+            using TestConnectionClient connectionClient = new(new() { MqttClient = mockMqttClient });
+
+            TaskCompletionSource<ConnectionFaultedEventArgs> connectionFaulted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            connectionClient.ConnectionFaultedAsync += args =>
+            {
+                connectionFaulted.TrySetResult(args);
+                return Task.CompletedTask;
+            };
+
+            await connectionClient.ProvisionAndConnectAsync(
+                CreateProvisioningSettings(),
+                CreateAuthenticationProvider(),
+                TestContext.Current.CancellationToken);
+
+            // The hub rejects this device's identity, so this client starts re-provisioning, but that re-provisioning
+            // attempt hits a terminal error of its own, so the application must be told that the connection is gone
+            // for good rather than being left with no indication that anything went wrong.
+            await mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.NotAuthorized);
+
+            ConnectionFaultedEventArgs raisedArgs = await connectionFaulted.Task.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+
+            Assert.Equal(ErrorRetryability.Terminal, raisedArgs.Exception.Retryability);
             Assert.Equal(2, dpsConnectAttempts);
             Assert.Equal(1, mockDps.RegistrationCount);
         }

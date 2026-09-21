@@ -443,7 +443,7 @@ namespace Microsoft.Azure.Iot.Device
             }
 
             // Nothing is going to bring this connection back, so stop anything that is waiting for it.
-            MarkUnrecoverablyFaulted(args.Exception);
+            await MarkUnrecoverablyFaultedAsync(args.Exception);
         }
 
         /// <summary>
@@ -509,7 +509,7 @@ namespace Microsoft.Azure.Iot.Device
 
                     // This recovery was the only thing left that could have re-established the connection, so anything
                     // waiting for it is waiting for something that will never happen.
-                    MarkUnrecoverablyFaulted(AsUnrecoverableFault(e));
+                    await MarkUnrecoverablyFaultedAsync(AsUnrecoverableFault(e));
                 }
                 finally
                 {
@@ -525,14 +525,20 @@ namespace Microsoft.Azure.Iot.Device
 
         /// <summary>
         /// Record that this client has stopped maintaining its connection for a reason that neither the connection
-        /// layer nor this client will recover from, and release everything that is waiting for the connection.
+        /// layer nor this client will recover from, release everything that is waiting for the connection, and let
+        /// the application know that it must connect again itself if it wants to keep using this client.
         /// </summary>
-        private void MarkUnrecoverablyFaulted(DeviceException fault)
+        private async Task MarkUnrecoverablyFaultedAsync(DeviceException fault)
         {
             Trace.TraceError("ConnectionClient encountered an unrecoverable exception", fault);
             _unrecoverableFault = fault;
 
             UnrecoverablyFaulted?.Invoke();
+
+            if (ConnectionFaultedAsync != null)
+            {
+                await ConnectionFaultedAsync.Invoke(new ConnectionFaultedEventArgs { Exception = fault });
+            }
         }
 
         /// <summary>
