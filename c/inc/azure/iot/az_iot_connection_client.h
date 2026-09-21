@@ -1031,6 +1031,33 @@ extern "C"
     bool dps_registration_ref;
     uint8_t dps_user_count;
 
+    /* Pacing for re-opening a provisioning session that was held for its USERS
+     * rather than for a registration.
+     *
+     * Such a session is not put through schedule_reconnect(): that begins with
+     * teardown_active(), so a side channel dropping would destroy a healthy hub
+     * connection. It settles the DPS scope at IDLE instead. But IDLE is exactly
+     * the state dps_session_ensure() lets through, so without a deadline the
+     * next pump tick opened another session -- a full TLS handshake, CONNECT
+     * and SUBSCRIBE per tick, against a service that is already failing.
+     *
+     * A THIRD ladder, deliberately separate from retry_attempt[DPS]. That one
+     * is the registration ladder; spending it on a user session's outage would
+     * leave a later re-provisioning with no budget, which is the same argument
+     * that made max_attempts per-ladder in the first place. It is internal, so
+     * it adds no public vocabulary: the pacing, the jitter and the bound all
+     * come from opts.reconnection_policy.
+     *
+     * dps_user_retry_due_ms is a consumed token, like reconnect_due_ms: firing
+     * clears it. dps_user_retry_blocked latches when the policy disables
+     * retries (initial_delay_ms == 0, where the computed delay would be 0 and
+     * pace nothing) or when max_attempts is spent; it is cleared by a session
+     * that comes up, by a successful registration, by open()/close(), and by
+     * the last user releasing its ref -- a new holder is new demand. */
+    uint32_t dps_user_retry_attempt;
+    uint64_t dps_user_retry_due_ms;
+    bool dps_user_retry_blocked;
+
     char dps_operation_id[AZ_IOT_DPS_OPERATION_ID_MAX];
     size_t dps_operation_id_len;
     uint64_t dps_poll_due_ms;

@@ -821,6 +821,61 @@ static bool dps_configured(const az_iot_connection_client* c)
 }
 
 /* The session exists exactly while this is true. */
+/* Reset the user-session ladder. Called wherever the evidence says the
+ * provisioning service is reachable again, or the demand has been rebuilt. */
+static void dps_user_retry_reset(az_iot_connection_client* c)
+{
+  c->dps_user_retry_attempt = 0;
+  c->dps_user_retry_due_ms = 0;
+  c->dps_user_retry_blocked = false;
+}
+
+/* Space out the next attempt to re-open a session held for its users, after
+ * this one failed. `retry_after_secs` is the service's own floor, if it gave
+ * one.
+ *
+ * Distinct from schedule_reconnect(): nothing is torn down and no state change
+ * is announced. The DPS scope has already settled at IDLE by the time this
+ * runs; all that is recorded is when a holder may ask again. */
+static void dps_user_retry_schedule(az_iot_connection_client* c, uint32_t retry_after_secs)
+{
+  /* 0 disables retrying, and az_iot_reconnect_delay_ms() would return a 0 ms
+   * delay for it -- which is the hot loop, not a fix for it. An application
+   * that turned retries off owns the decision to try again, and reaches it by
+   * closing the client or by dropping and re-taking the ref. */
+  if (c->opts.reconnection_policy.initial_delay_ms == 0)
+  {
+    c->dps_user_retry_blocked = true;
+    c->dps_user_retry_due_ms = 0;
+    return;
+  }
+
+  c->dps_user_retry_attempt++;
+  if (c->opts.reconnection_policy.max_attempts > 0
+      && c->dps_user_retry_attempt > c->opts.reconnection_policy.max_attempts)
+  {
+    c->dps_user_retry_blocked = true;
+    c->dps_user_retry_due_ms = 0;
+    return;
+  }
+
+  uint32_t delay = az_iot_reconnect_delay_ms(
+      &c->opts.reconnection_policy, c->dps_user_retry_attempt, &c->rng_state);
+  c->dps_user_retry_due_ms = az_iot_time_mono_ms() + delay;
+
+  /* The service's retry-after is a floor, never a ceiling -- the same rule the
+   * registration ladder applies. Backing off further than asked is allowed;
+   * coming back sooner is not. */
+  if (retry_after_secs > 0)
+  {
+    uint64_t floor_ms = az_iot_time_mono_ms() + (uint64_t)retry_after_secs * 1000ull;
+    if (c->dps_user_retry_due_ms < floor_ms)
+    {
+      c->dps_user_retry_due_ms = floor_ms;
+    }
+  }
+}
+
 static bool dps_refs_held(const az_iot_connection_client* c)
 {
   return c->dps_registration_ref || c->dps_user_count > 0;
@@ -1446,6 +1501,8 @@ static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
       if (!c->dps_registration_ref)
       {
         AZ_IOT_LOG_DEBUG("dps: session ready for its users");
+        /* It came up: whatever the ladder had climbed is spent evidence. */
+        dps_user_retry_reset(c);
         break;
       }
       /* A holder wants the session before the device registers. Registration is
@@ -1903,6 +1960,7 @@ static void dps_apply_deferred(az_iot_connection_client* c)
     if (status != AZ_IOT_OK)
     {
       AZ_IOT_LOG_ERRORF("dps: the provisioning session ended with an error (%d)", (int)status);
+      dps_user_retry_schedule(c, retry_after_secs);
     }
     return;
   }
@@ -2045,6 +2103,10 @@ static void dps_apply_deferred(az_iot_connection_client* c)
    * old ladder's cap would be backoff for a failure that never happened. */
   c->retry_attempt[AZ_IOT_CONN_SCOPE_DPS] = 0;
   c->retry_attempt[AZ_IOT_CONN_SCOPE_HUB] = 0;
+
+  /* The service answered, so it is reachable: a user session that failed
+   * earlier should not still be serving out a backoff from that. */
+  dps_user_retry_reset(c);
 
   r = start_connect_attempt(c);
   if (r != AZ_IOT_OK)
@@ -3618,6 +3680,7 @@ az_iot_result az_iot_connection_client_open(az_iot_connection_client* client)
   client->retry_attempt[AZ_IOT_CONN_SCOPE_DPS] = 0;
   client->retry_attempt[AZ_IOT_CONN_SCOPE_HUB] = 0;
   client->reconnect_due_ms = 0;
+  dps_user_retry_reset(client);
   /* needs_reprovision is deliberately NOT cleared here. It is pending recovery
    * intent -- "the cached assignment is no good, ask DPS again" -- set by an
    * identity rejection, by the unreachable-hub threshold, or by an assignment
@@ -3726,6 +3789,15 @@ az_iot_result az_iot_connection_client_close(az_iot_connection_client* client)
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
+
+  /* Before the idempotency check below, not after it. close() is the
+   * documented exit from a settled refusal, and on a DPS-only device both
+   * scopes sit at IDLE when the user-session ladder latches -- which is
+   * precisely the early return. Clearing it there would be unreachable in the
+   * one case that needs it most. Resetting an already-clear ladder is a
+   * no-op. */
+  dps_user_retry_reset(client);
+
   /* Idempotent only when BOTH lifecycles are already settled. A client whose
    * hub is IDLE but whose provisioning session is still up has something to
    * close. */
@@ -3741,6 +3813,13 @@ az_iot_result az_iot_connection_client_close(az_iot_connection_client* client)
    * branch used to return without touching it, and the pump would not collect
    * it either while a ref was held -- so close() left a connection running. */
   dps_close_session(client);
+
+  /* close() is the documented exit from a settled refusal, so it clears the
+   * user-session ladder too -- including the blocked latch. Here rather than in
+   * dps_close_session(), which returns early when no session is up: the ladder
+   * outlives the session that earned it, and that is the case that most needs
+   * clearing. */
+  dps_user_retry_reset(client);
 
   /* Closing while waiting to reconnect: cancel the schedule and go straight
    * to IDLE. There is no live adapter to disconnect at this point.
@@ -4531,6 +4610,12 @@ void az_iot_connection_client__dps_user_release(az_iot_connection_client* client
     return;
   }
   client->dps_user_count--;
+  if (client->dps_user_count == 0)
+  {
+    /* The demand is gone. A later holder is NEW demand and must not inherit a
+     * backoff, or a latched refusal, earned by whoever came before it. */
+    dps_user_retry_reset(client);
+  }
   /* The session is NOT torn down here even if this was the last ref. Release
    * is reachable from inside a message callback, and freeing the adapter there
    * would free the object it is still dispatching on. The pump notices the
@@ -4603,6 +4688,23 @@ az_iot_result az_iot_connection_client__dps_session_ensure(az_iot_connection_cli
   {
     return AZ_IOT_ERR_BUSY;
   }
+
+  /* The core's own pacing for a session held by its users. Without it a failed
+   * session was re-opened on the very next pump tick, for as long as the
+   * application kept pumping. */
+  if (client->dps_user_retry_blocked)
+  {
+    /* Settled, like FAULTED: retries are off or the budget is spent, and the
+     * core will not re-open on its own. A holder that keeps asking gets a
+     * stable answer it can report, rather than a session attempt per tick. */
+    return AZ_IOT_ERR_NOT_SUPPORTED;
+  }
+  if (client->dps_user_retry_due_ms != 0 && az_iot_time_mono_ms() < client->dps_user_retry_due_ms)
+  {
+    return AZ_IOT_ERR_BUSY;
+  }
+  /* Consumed on firing, so the deadline cannot re-authorize a second attempt. */
+  client->dps_user_retry_due_ms = 0;
 
   client->dps_phase = DPS_PHASE_NONE;
   az_iot_result r = dps_start(client);
