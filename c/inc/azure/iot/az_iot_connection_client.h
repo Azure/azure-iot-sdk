@@ -808,9 +808,11 @@ extern "C"
       az_iot_connection_state_callback cb;
       void* user_ctx;
     } app_state_observers[AZ_IOT_MAX_APP_STATE_OBSERVERS];
-    /* Set while a transition is being dispatched. Registering or removing an
-     * observer from inside a callback would mutate the array being walked, so
-     * both are refused with AZ_IOT_ERR_BUSY while this is set. */
+    /* Set while a transition is being dispatched. Registering an observer from
+     * inside a callback would hand it the transition in flight, so adding is
+     * refused with AZ_IOT_ERR_BUSY while this is set. Removing is allowed: the
+     * walk re-reads each slot and skips a NULL callback, and an owner being
+     * torn down must be able to withdraw. */
     bool dispatching_state;
     az_iot_operational_cert_callback op_cert_cb;
     void* op_cert_cb_ctx;
@@ -1088,9 +1090,12 @@ extern "C"
    * The event is SDK-owned and valid only for the duration of the call; copy
    * anything that must outlive it.
    *
-   * An observer MUST NOT add or remove an observer: the registry is being
-   * walked, and both calls answer AZ_IOT_ERR_BUSY while a dispatch is in
-   * progress. Calling close() from an observer IS supported.
+   * An observer MUST NOT ADD an observer: the registry is being walked, and a
+   * subscriber added mid-pass would be handed a transition it was not watching
+   * for, so it answers AZ_IOT_ERR_BUSY while a dispatch is in progress.
+   * REMOVING from inside an observer IS supported -- a feature client torn down
+   * in reaction to a transition has to be able to give its seat back. Calling
+   * close() from an observer IS supported.
    *
    * Returns AZ_IOT_ERR_NOT_ENOUGH_SPACE when the application pool
    * (AZ_IOT_MAX_APP_STATE_OBSERVERS) is full. */
@@ -1101,8 +1106,11 @@ extern "C"
 
   /* Stop being told. Matches on the (cb, user_ctx) pair, so one callback
    * registered with two contexts can be withdrawn one at a time. Answers
-   * AZ_IOT_ERR_NOT_FOUND when that pair is not registered, and AZ_IOT_ERR_BUSY
-   * when called from inside an observer. */
+   * AZ_IOT_ERR_NOT_FOUND when that pair is not registered.
+   *
+   * Legal from inside an observer, and that case is the reason it must be: an
+   * owner destroyed in reaction to a transition releases the storage the entry
+   * points at, so it has to be able to withdraw before it returns. */
   az_iot_result az_iot_connection_client_remove_state_observer(
       az_iot_connection_client* client,
       az_iot_connection_state_callback cb,
