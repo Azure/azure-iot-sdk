@@ -1604,6 +1604,35 @@ static void a_user_session_coming_up_resets_the_ladder(void** state)
   az_iot_connection_client__dps_user_release(fx->client);
 }
 
+/* A SYNCHRONOUS dps_start() failure -- the adapter cannot be built, or connect()
+ * refuses inline -- never reaches dps_finalize(), so the deferred path does not
+ * pace it. Without pacing here the caller gets the error and asks again on the
+ * very next pump tick: the same hot loop, on the path least likely to fix
+ * itself. */
+static void a_synchronous_start_failure_is_paced_too(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(fx->client, fx->factory), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client__dps_user_acquire(fx->client), AZ_IOT_OK);
+
+  az_iot_mock_mqtt_factory_fail_next_connect(fx->factory, AZ_IOT_ERR_MQTT);
+  fx->client->dps_phase = AZ_IOT_DPS_PHASE_DONE;
+  assert_int_not_equal(az_iot_connection_client__dps_session_ensure(fx->client), AZ_IOT_OK);
+  assert_null(fx->client->dps_mqtt);
+
+  /* Paced, and asking again opens nothing. */
+  assert_int_equal(fx->client->dps_user_retry_attempt, 1u);
+  assert_int_not_equal(fx->client->dps_user_retry_due_ms, 0u);
+  for (int i = 0; i < 3; ++i)
+  {
+    assert_int_equal(az_iot_connection_client__dps_session_ensure(fx->client), AZ_IOT_ERR_BUSY);
+    assert_null(fx->client->dps_mqtt);
+  }
+
+  az_iot_connection_client__dps_user_release(fx->client);
+}
+
 /* A throttle or a server error carries a retry-after, and that is the service
  * telling the device when it may come back. It must win over the policy's own
  * backoff, or routing this failure through the policy (which this change does)
@@ -3108,6 +3137,8 @@ int main(void)
         the_last_release_clears_the_user_session_ladder, setup_with_reconnect, teardown),
     cmocka_unit_test_setup_teardown(
         a_user_session_coming_up_resets_the_ladder, setup_with_reconnect, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_synchronous_start_failure_is_paced_too, setup_with_reconnect, teardown),
     /* one provisioning session, refcounted */
     cmocka_unit_test_setup_teardown(a_held_session_survives_registration, setup, teardown),
     cmocka_unit_test_setup_teardown(an_unheld_session_is_dropped_at_registration, setup, teardown),

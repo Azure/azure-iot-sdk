@@ -1960,7 +1960,15 @@ static void dps_apply_deferred(az_iot_connection_client* c)
     if (status != AZ_IOT_OK)
     {
       AZ_IOT_LOG_ERRORF("dps: the provisioning session ended with an error (%d)", (int)status);
-      dps_user_retry_schedule(c, retry_after_secs);
+      /* Only while somebody still wants a session. This runs from the pump, so
+       * the last user can have released between the failure and this point --
+       * and dps_user_release() has already cleared the ladder for exactly that
+       * reason. Recording a backoff here would hand the next holder a latch it
+       * did not earn, on demand that no longer exists. */
+      if (c->dps_user_count > 0)
+      {
+        dps_user_retry_schedule(c, retry_after_secs);
+      }
     }
     return;
   }
@@ -4711,6 +4719,11 @@ az_iot_result az_iot_connection_client__dps_session_ensure(az_iot_connection_cli
   if (r != AZ_IOT_OK)
   {
     AZ_IOT_LOG_ERRORF("dps: could not open a provisioning session (%d)", (int)r);
+    /* A SYNCHRONOUS failure never reaches dps_finalize(), so nothing else would
+     * pace it: the caller gets the error and its next pump tick asks again
+     * immediately. That is the same hot loop, on the path where the adapter
+     * cannot even be created -- which is the one least likely to fix itself. */
+    dps_user_retry_schedule(client, 0);
     return r;
   }
   /* Started, not ready: the caller must wait for the SUBACK. */

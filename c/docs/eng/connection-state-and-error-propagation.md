@@ -278,6 +278,17 @@ clears it *before* its idempotent early return, because on a DPS-only device bot
 scopes sit at `IDLE` and that early return is the case that most needs clearing —
 and the last user releasing its ref, since a later holder is new demand.
 
+**Two paths that are easy to miss.**
+
+* A **synchronous** `dps_start()` failure — the adapter cannot be built, or `connect()` refuses
+  inline — never reaches `dps_finalize()`, so the deferred path does not pace it. It is paced at
+  the call site instead. Without that, the caller got the error and asked again on the next pump
+  tick: the same hot loop, on the path least likely to fix itself.
+* The deferred failure is only charged **while a user ref is still held**. Release is reachable
+  from inside a message callback, so a finalize can land in the same pump iteration with
+  `dps_user_count` already 0 — after the collect that would otherwise have torn the session down.
+  Recording a backoff there would hand the next holder a latch it did not earn.
+
 **What the core does not decide.** Whether the *operation* is still worth
 re-issuing is the feature client's judgement, not the connection client's: the
 core has no idea what the request meant. The core paces the transport; the
