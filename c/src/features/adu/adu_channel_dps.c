@@ -77,10 +77,8 @@ static bool rid_is_ours(const char* rid)
  * Checked in two places, and both matter. publish_operation() is the gate every
  * operation funnels through, so nothing can forget it. But the request entry
  * points have to refuse BEFORE they ask for a provisioning session: otherwise a
- * request during a long delay sets the standing interest, the tick opens an
- * auxiliary session, the publish is refused, the session lingers idle and
- * closes, and the cycle repeats for the whole backoff -- reconnecting over and
- * over to say nothing. */
+ * request during a long delay would open a provisioning session only to have
+ * the publish refused, over and over for the whole backoff. */
 static bool retry_after_in_force(az_iot_adu_channel_dps* c)
 {
   if (c->retry_after_deadline_ms == 0)
@@ -122,11 +120,12 @@ static az_iot_result publish_operation(
    *
    * Checked here rather than in each caller so a new operation cannot forget
    * it. */
-  /* The hold only governs the PRE-REGISTRATION exchange. An auxiliary session
-   * is opened after registration and deliberately has no hold -- there is no
-   * registration left to hold back -- so requiring one here would reject every
-   * operational publish on a session that is perfectly usable. */
-  if (c->wants_hold && !az_iot_connection_client__dps_session_is_auxiliary(c->connection)
+  /* The hold only governs the PRE-REGISTRATION exchange -- it exists to stop
+   * the device registering before this client has had its turn. Once there is
+   * no registration pending on the session there is nothing to hold back, so
+   * requiring a hold then would reject every operational publish on a session
+   * that is perfectly usable. */
+  if (c->wants_hold && az_iot_connection_client__dps_registration_pending(c->connection)
       && (!c->holds_registration || !az_iot_connection_client__dps_hold_is_active(c->connection)))
   {
     return AZ_IOT_ERR_NOT_CONNECTED;
