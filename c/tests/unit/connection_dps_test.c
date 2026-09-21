@@ -1744,7 +1744,10 @@ static void dps_malformed_response_faults_with_a_protocol_error(void** state)
   assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_FAULTED);
   assert_int_equal(
       az_iot_test_reason_for(&fx->log, AZ_IOT_CONN_STATE_FAULTED), AZ_IOT_ERR_PROTOCOL);
-  assert_false(az_iot_test_saw_state(&fx->log, AZ_IOT_CONN_STATE_CONNECTED));
+  /* Scoped: the DPS session itself DOES reach CONNECTED at its SUBACK -- the
+   * claim here is that the HUB never did. */
+  assert_int_equal(
+      az_iot_test_count_for(&fx->log, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_CONNECTED), 0);
 }
 
 /* MQTT permits an empty payload, and an adapter may legally report that as a
@@ -1767,7 +1770,10 @@ static void dps_empty_response_body_faults_without_a_null_deref(void** state)
   assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_FAULTED);
   assert_int_equal(
       az_iot_test_reason_for(&fx->log, AZ_IOT_CONN_STATE_FAULTED), AZ_IOT_ERR_PROTOCOL);
-  assert_false(az_iot_test_saw_state(&fx->log, AZ_IOT_CONN_STATE_CONNECTED));
+  /* Scoped: the DPS session itself DOES reach CONNECTED at its SUBACK -- the
+   * claim here is that the HUB never did. */
+  assert_int_equal(
+      az_iot_test_count_for(&fx->log, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_CONNECTED), 0);
 }
 
 /* A DPS identity the SDK cannot use must come back as an error, not as a hang.
@@ -1999,7 +2005,10 @@ static void assert_state_event_contract(
   for (size_t i = 0; i < log->count; ++i)
   {
     assert_int_equal(log->event_sizes[i], sizeof(az_iot_connection_state_event));
-    if (log->states[i] == AZ_IOT_CONN_STATE_CONNECTED)
+    /* The profile rides HUB:CONNECTED only. DPS:CONNECTED carries none: the
+     * generation comes from the ASSIGNMENT, and a provisioning session reaches
+     * CONNECTED at its SUBACK -- before any assignment exists. */
+    if (log->scopes[i] == AZ_IOT_CONN_SCOPE_HUB && log->states[i] == AZ_IOT_CONN_STATE_CONNECTED)
     {
       saw_connected = true;
       assert_true(log->profile_present[i]);
@@ -2200,7 +2209,10 @@ static void dps_unknown_profile_faults_the_connection(void** state)
   assert_int_equal(
       az_iot_test_reason_for(&pf.log, AZ_IOT_CONN_STATE_FAULTED),
       AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED);
-  assert_false(az_iot_test_saw_state(&pf.log, AZ_IOT_CONN_STATE_CONNECTED));
+  /* Scoped: the provisioning session came up; the HUB is what never
+   * connected, because the assignment was refused. */
+  assert_int_equal(
+      az_iot_test_count_for(&pf.log, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_CONNECTED), 0);
   /* No hub leg was attempted on either generation. */
   assert_null(az_iot_mock_mqtt_factory_last_client(pf.v5));
 
@@ -3117,6 +3129,235 @@ static void closing_from_the_connecting_callback_is_not_paced(void** state)
   az_iot_connection_client__dps_user_release(fx->client);
 }
 
+/* --- provision_only: a device that has no IoT Hub -------------------------- */
+
+/* Bring a provision_only client all the way up: open(), then CONNACK + SUBACK
+ * on the provisioning session it started. */
+static az_iot_mock_mqtt_client* provision_only_open(az_iot_test_conn* fx)
+{
+  fx->client->opts.dps.provision_only = true;
+  assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
+
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  assert_non_null(m);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  const az_iot_mock_call* sub = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_SUBSCRIBE);
+  assert_non_null(sub);
+  assert_true(az_iot_mock_mqtt_client_inject_suback(m, sub->packet_id, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  return m;
+}
+
+/* The settled shape: DPS:CONNECTED, HUB never leaves IDLE, and NOTHING is
+ * published -- no registration is attempted, because there is nothing for this
+ * device to be assigned. */
+static void provision_only_settles_at_dps_connected_with_no_hub(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(fx->client, fx->factory), AZ_IOT_OK);
+
+  az_iot_mock_mqtt_client* m = provision_only_open(fx);
+
+  assert_int_equal(
+      az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_DPS),
+      AZ_IOT_CONN_STATE_CONNECTED);
+  assert_int_equal(
+      az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_HUB),
+      AZ_IOT_CONN_STATE_IDLE);
+
+  /* No registration: the PUBLISH that would carry one was never issued. */
+  assert_null(az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PUBLISH));
+  assert_false(fx->client->dps_registration_ref);
+
+  /* The HUB lifecycle was never announced at all -- nothing for an application
+   * to wait on that cannot come. */
+  assert_int_equal(
+      az_iot_test_count_for(&fx->log, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_CONNECTING), 0);
+  assert_int_equal(
+      az_iot_test_count_for(&fx->log, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_CONNECTED), 0);
+
+  /* And it STAYS there: pumping does not drift it anywhere. */
+  for (int i = 0; i < 5; ++i)
+  {
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
+  assert_int_equal(
+      az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_DPS),
+      AZ_IOT_CONN_STATE_CONNECTED);
+  assert_non_null(fx->client->dps_mqtt);
+
+  (void)az_iot_connection_client_close(fx->client);
+}
+
+/* The session is the connection, so it must survive a pump with no feature
+ * client attached. Without the standing ref the collect at the top of do_work()
+ * would take it: nobody else is holding it. */
+static void provision_only_session_is_not_collected_with_no_feature_client(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(fx->client, fx->factory), AZ_IOT_OK);
+
+  (void)provision_only_open(fx);
+  assert_int_equal(fx->client->dps_user_count, 0);
+
+  for (int i = 0; i < 5; ++i)
+  {
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
+
+  assert_non_null(fx->client->dps_mqtt);
+  assert_true(az_iot_connection_client__dps_session_ready(fx->client));
+  assert_int_equal(
+      az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_DPS),
+      AZ_IOT_CONN_STATE_CONNECTED);
+
+  (void)az_iot_connection_client_close(fx->client);
+}
+
+/* A dropped session is re-established. There is no hub connect to fall back on,
+ * so if the pump does not do this the device is simply off the air. */
+static void provision_only_reopens_a_dropped_session(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(fx->client, fx->factory), AZ_IOT_OK);
+
+  az_iot_mock_mqtt_client* m = provision_only_open(fx);
+
+  /* The peer drops it. */
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(m));
+  for (int i = 0; i < 3; ++i)
+  {
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
+  assert_null(fx->client->dps_mqtt);
+
+  /* The pacing applies here too, so let the deadline pass rather than
+   * asserting an immediate reopen -- an immediate one would be the hot loop. */
+  fx->client->dps_user_retry_due_ms = 0;
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_non_null(fx->client->dps_mqtt);
+
+  (void)az_iot_connection_client_close(fx->client);
+}
+
+/* close() ends the standing demand. Without that the next pump tick would
+ * reopen a session the application just closed -- and on this device both
+ * scopes are IDLE afterwards, which is close()'s idempotent early return. */
+static void close_ends_the_provision_only_demand(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(fx->client, fx->factory), AZ_IOT_OK);
+
+  (void)provision_only_open(fx);
+  assert_true(fx->client->dps_standing_ref);
+
+  assert_int_equal(az_iot_connection_client_close(fx->client), AZ_IOT_OK);
+  assert_false(fx->client->dps_standing_ref);
+  assert_null(fx->client->dps_mqtt);
+  assert_int_equal(
+      az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_DPS),
+      AZ_IOT_CONN_STATE_IDLE);
+
+  /* Stays closed. */
+  for (int i = 0; i < 5; ++i)
+  {
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
+  assert_null(fx->client->dps_mqtt);
+}
+
+/* close() then open() is the supported reuse, and it must work here too. */
+static void provision_only_reopens_after_close(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(fx->client, fx->factory), AZ_IOT_OK);
+
+  (void)provision_only_open(fx);
+  assert_int_equal(az_iot_connection_client_close(fx->client), AZ_IOT_OK);
+
+  (void)provision_only_open(fx);
+  assert_int_equal(
+      az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_DPS),
+      AZ_IOT_CONN_STATE_CONNECTED);
+
+  (void)az_iot_connection_client_close(fx->client);
+}
+
+/* A second open() while one is already up is refused, the same as any other
+ * client. The standing ref is what makes the DPS scope "the application's"
+ * here -- without it this open() would be let through, because the existing
+ * rule only recognises the REGISTRATION ref. */
+static void provision_only_rejects_a_second_open(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(fx->client, fx->factory), AZ_IOT_OK);
+
+  (void)provision_only_open(fx);
+  assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_ERR_ALREADY_INITIALIZED);
+
+  (void)az_iot_connection_client_close(fx->client);
+}
+
+/* opts.host names the hub this option says does not exist. Rejected rather
+ * than silently ignoring one of the two. */
+static void provision_only_with_a_host_is_rejected(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(fx->client, fx->factory), AZ_IOT_OK);
+  fx->client->opts.dps.provision_only = true;
+  fx->client->opts.host = "example.azure-devices.net";
+
+  assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_ERR_INVALID_ARG);
+  assert_null(fx->client->dps_mqtt);
+  assert_false(fx->client->dps_standing_ref);
+}
+
+/* The operational certificate is issued BY a registration, so a device that
+ * never registers cannot obtain one. Rejected rather than hanging. */
+static void provision_only_with_a_csr_request_is_rejected(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(fx->client, fx->factory), AZ_IOT_OK);
+  fx->client->opts.dps.provision_only = true;
+  fx->client->opts.dps.request_operational_certificate = true;
+
+  /* INVALID_ARG specifically, not merely "not OK": without the provision_only
+   * check this call still fails, with NOT_SUPPORTED from the pre-existing
+   * "CSR enrollment needs a capable certificate provider" rule. Asserting the
+   * exact code is what makes this test about the new rule. */
+  assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_ERR_INVALID_ARG);
+  assert_null(fx->client->dps_mqtt);
+  assert_false(fx->client->dps_standing_ref);
+}
+
+/* An ORDINARY DPS device now sees DPS:CONNECTED too -- the announcement is a
+ * property of the session being usable, not of provision_only. It lands before
+ * the registration, and the session still settles at IDLE afterwards. */
+static void an_ordinary_dps_run_announces_dps_connected_before_registering(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_mock_mqtt_client* dps = dps_open_to_registering(fx);
+  assert_non_null(dps);
+
+  size_t i_conn
+      = az_iot_test_index_of(&fx->log, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_CONNECTED);
+  assert_int_not_equal(i_conn, SIZE_MAX);
+
+  /* It really did register, and the PUBLISH came after the announcement. */
+  assert_non_null(az_iot_mock_mqtt_client_last_of(dps, AZ_IOT_MOCK_CALL_PUBLISH));
+  assert_true(fx->client->dps_registration_ref);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -3295,6 +3536,28 @@ int main(void)
         closing_from_the_connecting_callback_abandons_the_session, setup, teardown),
     cmocka_unit_test_setup_teardown(
         closing_from_the_connecting_callback_is_not_paced, setup_with_reconnect, teardown),
+    cmocka_unit_test_setup_teardown(
+        provision_only_settles_at_dps_connected_with_no_hub, setup_with_reconnect, teardown),
+    cmocka_unit_test_setup_teardown(
+        provision_only_session_is_not_collected_with_no_feature_client,
+        setup_with_reconnect,
+        teardown),
+    cmocka_unit_test_setup_teardown(
+        provision_only_reopens_a_dropped_session, setup_with_reconnect, teardown),
+    cmocka_unit_test_setup_teardown(
+        close_ends_the_provision_only_demand, setup_with_reconnect, teardown),
+    cmocka_unit_test_setup_teardown(
+        provision_only_reopens_after_close, setup_with_reconnect, teardown),
+    cmocka_unit_test_setup_teardown(
+        provision_only_rejects_a_second_open, setup_with_reconnect, teardown),
+    cmocka_unit_test_setup_teardown(
+        provision_only_with_a_host_is_rejected, setup_with_reconnect, teardown),
+    cmocka_unit_test_setup_teardown(
+        provision_only_with_a_csr_request_is_rejected, setup_with_reconnect, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_ordinary_dps_run_announces_dps_connected_before_registering,
+        setup_with_reconnect,
+        teardown),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }
