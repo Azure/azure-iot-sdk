@@ -512,6 +512,11 @@ extern "C"
    * SDKs may append fields, so callbacks must check _internal_size before
    * reading a field added after the version they were compiled against.
    *
+   * `scope` says WHICH connection the event is about, and `state` is
+   * meaningless without it: a device that provisions through DPS runs two
+   * independent lifecycles, and `CONNECTED` on the provisioning scope does not
+   * mean the hub is usable. Always read the pair.
+   *
    * profile is non-NULL when state == AZ_IOT_CONN_STATE_CONNECTED, and also on
    * a failure whose reason is AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH or
    * AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED -- an application needs the
@@ -521,6 +526,9 @@ extern "C"
   typedef struct az_iot_connection_state_event
   {
     uint32_t _internal_size;
+    /* Which lifecycle this event is about. Placed beside `state` because the
+     * two are only meaningful together. */
+    az_iot_connection_scope scope;
     az_iot_connection_state state;
     az_iot_result reason;
     const az_iot_hub_profile* profile;
@@ -716,14 +724,6 @@ extern "C"
 #define AZ_IOT_DPS_HOLD_TIMEOUT_MS 60000u
 #endif
 
-/* How long an auxiliary provisioning session stays open after its last
- * request. Long enough to collapse a fetch-then-report pair onto one session,
- * short enough that nothing is held between polls. 0 is a valid setting and
- * closes the session as soon as it falls idle. */
-#ifndef AZ_IOT_DPS_AUX_IDLE_TIMEOUT_MS
-#define AZ_IOT_DPS_AUX_IDLE_TIMEOUT_MS 5000u
-#endif
-
   /* ------------------------------------------------------------------------- */
   /* struct az_iot_connection_client (caller-owned, init/deinit lifecycle)    */
   /* Fields below are INTERNAL — do not access directly from user code.        */
@@ -790,7 +790,11 @@ extern "C"
     az_iot_mqtt_role session_role;
     az_iot_mqtt_client* active_client;
 
-    az_iot_connection_state state;
+    /* One lifecycle per scope, indexed by az_iot_connection_scope. They move
+     * independently: a provisioning session failing must not disturb a healthy
+     * hub session, and a hub drop must not invalidate a provisioning session a
+     * feature client is using. */
+    az_iot_connection_state state[AZ_IOT_CONN_SCOPE_COUNT];
     /* Connection-state observers, dispatched feature clients first (see
      * az_iot_connection_client_add_state_observer). Two pools so neither kind
      * of subscriber can starve the other. */
@@ -914,26 +918,16 @@ extern "C"
     bool dps_hold_active;
     uint64_t dps_hold_deadline_ms;
 
-    /* Standing interest in the provisioning session, held by feature clients
-     * that need to talk to it after the device has already provisioned.
-     * Non-zero means a session may be opened on demand; it does NOT mean one is
-     * open. Keeping a session open between polls would cost a connection for
-     * hours on devices chosen for being small. */
-    uint8_t dps_user_count;
-
-    /* An AUXILIARY provisioning session: opened after the device is already
-     * provisioned, purely so a feature client can exchange messages on it.
+    /* Who needs the provisioning session. It exists exactly while this total is
+     * non-zero: the connection client holds dps_registration_ref while the
+     * device must register, and each session user holds a count.
      *
-     * It must never register. Registering would take the assignment path in
-     * dps_finalize(), which rewrites opts.host, opts.client_id and
-     * session_role and then reconnects -- tearing down the live hub connection
-     * this session is supposed to run alongside. */
-    bool dps_session_auxiliary;
-
-    /* When the auxiliary session may be torn down for being idle. 0 while a
-     * request is outstanding. A short linger collapses a fetch-then-report pair
-     * onto one session without holding it between polls. */
-    uint64_t dps_aux_idle_deadline_ms;
+     * Registration is a task performed on the session, not a property of it --
+     * it runs only while dps_registration_ref is held, which is what keeps a
+     * session opened for its other users from registering and tearing down the
+     * hub connection beside it. */
+    bool dps_registration_ref;
+    uint8_t dps_user_count;
 
     char dps_operation_id[AZ_IOT_DPS_OPERATION_ID_MAX];
     size_t dps_operation_id_len;
@@ -1121,6 +1115,19 @@ extern "C"
       az_iot_connection_client* client,
       az_iot_connection_state_callback cb,
       void* user_ctx);
+
+  /* The current state of one lifecycle. There is no unscoped state to ask for:
+   * a DPS-provisioned device runs two, and they move independently.
+   *
+   * AZ_IOT_CONN_SCOPE_HUB is what "am I connected?" means for telemetry, twin,
+   * c2d, direct methods and file upload. AZ_IOT_CONN_SCOPE_DPS is what the
+   * device-update client rides, and it stays IDLE for the life of a client that
+   * connects directly to a hub -- that is the answer, not an error.
+   *
+   * Returns AZ_IOT_CONN_STATE_IDLE for a NULL client or an unknown scope. */
+  az_iot_connection_state az_iot_connection_client_get_state(
+      const az_iot_connection_client* client,
+      az_iot_connection_scope scope);
 
   /* Register a callback fired when a DPS/provider-issued operational certificate
    * is obtained during provisioning (D4). Optional. */

@@ -351,7 +351,9 @@ static void a_successful_connect_clears_the_hub_failure_count_without_an_observe
   assert_true(az_iot_mock_mqtt_client_inject_connected(second, AZ_IOT_OK));
   (void)az_iot_connection_client_do_work(fx->client, 0);
   /* Read the state directly: there is deliberately no observer to log it. */
-  assert_int_equal(fx->client->state, AZ_IOT_CONN_STATE_CONNECTED);
+  assert_int_equal(
+      az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_HUB),
+      AZ_IOT_CONN_STATE_CONNECTED);
 
   /* Without the reset this drop would be failure number two and divert to DPS.
    * a_successful_hub_connection_resets_the_failure_count proves the same thing
@@ -955,12 +957,308 @@ static void dps_failed_status_still_honors_max_attempts(void** state)
   assert_int_equal(az_iot_test_count_state(&fx->log, AZ_IOT_CONN_STATE_RECONNECTING), 3);
 }
 
+/* ------------------------------------------------------------------------- */
+/* one provisioning session, refcounted                                      */
+/* ------------------------------------------------------------------------- */
+
+/* The headline behaviour. A device with a feature client attached keeps ONE
+ * provisioning connection across registration, instead of tearing it down at
+ * registration and immediately building another -- which cost a full TLS
+ * handshake, CONNECT and SUBSCRIBE for every operation afterwards. */
+static void a_held_session_survives_registration(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  assert_int_equal(az_iot_connection_client__dps_user_acquire(fx->client), AZ_IOT_OK);
+
+  az_iot_mock_mqtt_client* dps = dps_open_to_registering(fx);
+  az_iot_mqtt_client* session = fx->client->dps_mqtt;
+  assert_non_null(session);
+
+  assert_true(inject_dps_response(dps, DPS_RESPONSE_TOPIC_ASSIGNED, k_assigned_body));
+  for (int i = 0; i < 5; ++i)
+  {
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
+
+  /* Same session object, still SUBACKed and usable. */
+  assert_ptr_equal(fx->client->dps_mqtt, session);
+  assert_true(az_iot_connection_client__dps_session_ready(fx->client));
+  /* And the registration ref is gone: registration is over, the holder is not. */
+  assert_false(fx->client->dps_registration_ref);
+
+  /* The hub connect proceeded beside it. */
+  az_iot_mock_mqtt_client* hub = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  assert_non_null(hub);
+  assert_string_equal(last_connect_host(hub), "myhub.azure-devices.net");
+
+  az_iot_connection_client__dps_user_release(fx->client);
+}
+
+/* The mirror image, and the behaviour every device without a feature client
+ * gets: nobody holds it, so registration is the end of it.
+ *
+ * Two places enforce this -- dps_apply_deferred() drops it immediately, and the
+ * pump closes any session nobody holds -- so this pins the INVARIANT rather
+ * than either mechanism. Existing assignment tests cover the immediate drop. */
+static void an_unheld_session_is_dropped_at_registration(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_mock_mqtt_client* dps = dps_open_to_registering(fx);
+  assert_non_null(fx->client->dps_mqtt);
+
+  assert_true(inject_dps_response(dps, DPS_RESPONSE_TOPIC_ASSIGNED, k_assigned_body));
+  for (int i = 0; i < 5; ++i)
+  {
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
+
+  assert_null(fx->client->dps_mqtt);
+  /* Announced, not merely applied: the DPS lifecycle settles. */
+  assert_int_equal(
+      az_iot_test_count_for(&fx->log, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_DISCONNECTING), 1);
+  assert_int_equal(
+      az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_DPS),
+      AZ_IOT_CONN_STATE_IDLE);
+}
+
+/* Releasing the last ref closes the session -- but from the PUMP, never from
+ * release itself. Release is reachable from inside a message callback, where
+ * freeing the adapter would free the object still being dispatched on. */
+static void releasing_the_last_ref_closes_the_session_from_the_pump(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  assert_int_equal(az_iot_connection_client__dps_user_acquire(fx->client), AZ_IOT_OK);
+
+  az_iot_mock_mqtt_client* dps = dps_open_to_registering(fx);
+  assert_true(inject_dps_response(dps, DPS_RESPONSE_TOPIC_ASSIGNED, k_assigned_body));
+  for (int i = 0; i < 5; ++i)
+  {
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
+  assert_non_null(fx->client->dps_mqtt);
+
+  az_iot_connection_client__dps_user_release(fx->client);
+  /* Still there: release must not free anything itself. */
+  assert_non_null(fx->client->dps_mqtt);
+
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_null(fx->client->dps_mqtt);
+}
+
+/* A session kept across registration sits at DPS_PHASE_DONE. A pump gated on
+ * the registration phases would never service it, so nothing inbound would
+ * arrive on the very session the refcount kept alive -- the holder would see a
+ * connection that is "ready" and permanently silent. */
+static void a_kept_session_is_still_pumped(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  assert_int_equal(az_iot_connection_client__dps_user_acquire(fx->client), AZ_IOT_OK);
+
+  az_iot_mock_mqtt_client* dps = dps_open_to_registering(fx);
+  assert_true(inject_dps_response(dps, DPS_RESPONSE_TOPIC_ASSIGNED, k_assigned_body));
+  for (int i = 0; i < 5; ++i)
+  {
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
+  assert_non_null(fx->client->dps_mqtt);
+
+  size_t before = az_iot_mock_mqtt_client_count_of(dps, AZ_IOT_MOCK_CALL_PROCESS_LOOP);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_true(az_iot_mock_mqtt_client_count_of(dps, AZ_IOT_MOCK_CALL_PROCESS_LOOP) > before);
+
+  az_iot_connection_client__dps_user_release(fx->client);
+}
+
+/* close() must end the PROVISIONING session too, not just the hub one.
+ *
+ * With a session kept for a feature client, close() reached the hub-disconnect
+ * branch and returned -- leaving a live provisioning adapter behind. The
+ * feature refs are still held, so the pump would not close it either, and the
+ * DPS lifecycle never settled: the application had closed the client and one
+ * of its two connections was still up.
+ *
+ * The refs themselves SURVIVE: they are a standing interest in the session, not
+ * in this particular one, so the next open() reopens for the same holder. */
+static void close_ends_a_session_held_by_a_feature_client(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  assert_int_equal(az_iot_connection_client__dps_user_acquire(fx->client), AZ_IOT_OK);
+
+  az_iot_mock_mqtt_client* dps = dps_open_to_registering(fx);
+  assert_true(inject_dps_response(dps, DPS_RESPONSE_TOPIC_ASSIGNED, k_assigned_body));
+  for (int i = 0; i < 5; ++i)
+  {
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
+  /* Both connections are up: the hub is connecting, the kept session is ready. */
+  assert_non_null(fx->client->active_client);
+  assert_non_null(fx->client->dps_mqtt);
+
+  assert_int_equal(az_iot_connection_client_close(fx->client), AZ_IOT_OK);
+
+  assert_null(fx->client->dps_mqtt);
+  assert_int_equal(
+      az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_DPS),
+      AZ_IOT_CONN_STATE_IDLE);
+  /* The standing interest is untouched, so a later open() serves it again. */
+  assert_int_equal(fx->client->dps_user_count, 1);
+
+  az_iot_connection_client__dps_user_release(fx->client);
+}
+
+/* close() from a FAULTED hub must end a provisioning session its users hold.
+ *
+ * The FAULTED and RECONNECTING branches return early, and each used to return
+ * without touching the provisioning session -- which the pump would not
+ * collect either while a ref was held. The teardown therefore has to happen
+ * before every branch, not inside the ordinary one. */
+static void close_from_a_faulted_hub_still_ends_the_held_session(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  assert_int_equal(az_iot_connection_client__dps_user_acquire(fx->client), AZ_IOT_OK);
+
+  az_iot_mock_mqtt_client* dps = dps_open_to_registering(fx);
+  assert_true(inject_dps_response(dps, DPS_RESPONSE_TOPIC_ASSIGNED, k_assigned_body));
+  for (int i = 0; i < 5; ++i)
+  {
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
+  assert_non_null(fx->client->dps_mqtt);
+
+  /* Fault the hub. With no reconnection policy this is terminal, and the
+   * provisioning session its user holds is untouched by that. */
+  az_iot_mock_mqtt_client* hub = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  assert_non_null(hub);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(hub, AZ_IOT_ERR_IDENTITY_REJECTED));
+  for (int i = 0; i < 3; ++i)
+  {
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
+  assert_int_equal(
+      az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_HUB),
+      AZ_IOT_CONN_STATE_FAULTED);
+  assert_non_null(fx->client->dps_mqtt);
+
+  assert_int_equal(az_iot_connection_client_close(fx->client), AZ_IOT_OK);
+
+  assert_null(fx->client->dps_mqtt);
+  assert_int_equal(
+      az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_DPS),
+      AZ_IOT_CONN_STATE_IDLE);
+  assert_int_equal(fx->client->dps_user_count, 1);
+
+  az_iot_connection_client__dps_user_release(fx->client);
+}
+
+/* An automatic re-provision must adopt a session its users hold, not build a
+ * second one.
+ *
+ * A session held across registration is still up when a hub failure sends the
+ * device back to DPS. An unconditional dps_start() there overwrites dps_mqtt,
+ * orphaning that socket and losing any exchange in flight on it. */
+static void a_reprovision_adopts_the_session_its_users_hold(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  assert_int_equal(az_iot_connection_client__dps_user_acquire(fx->client), AZ_IOT_OK);
+
+  az_iot_mock_mqtt_client* dps = dps_open_to_registering(fx);
+  assert_true(inject_dps_response(dps, DPS_RESPONSE_TOPIC_ASSIGNED, k_assigned_body));
+  for (int i = 0; i < 5; ++i)
+  {
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
+  az_iot_mqtt_client* held = fx->client->dps_mqtt;
+  assert_non_null(held);
+
+  /* The hub rejects the identity, so the retry is a re-registration. */
+  az_iot_mock_mqtt_client* hub = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  assert_non_null(hub);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(hub, AZ_IOT_ERR_IDENTITY_REJECTED));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  az_iot_test_wait_until_ms(fx->client->reconnect_due_ms);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  /* Same session object: adopted, not replaced. */
+  assert_ptr_equal(fx->client->dps_mqtt, held);
+  /* And the registration really is running on it. */
+  assert_true(fx->client->dps_registration_ref);
+
+  az_iot_connection_client__dps_user_release(fx->client);
+}
+
+/* A session user must not be able to open one while a registration retry is
+ * scheduled.
+ *
+ * Opening moves the DPS lifecycle to CONNECTING without consuming the pending
+ * deadline, so the retry gate -- which matches on RECONNECTING -- stops
+ * matching. The registration never fires and the device stays unregistered. */
+static void a_pending_retry_refuses_a_new_session(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  assert_int_equal(az_iot_connection_client__dps_user_acquire(fx->client), AZ_IOT_OK);
+
+  /* A registration failure schedules a DPS retry. */
+  az_iot_mock_mqtt_client* dps = dps_open_to_registering(fx);
+  assert_true(inject_dps_response(dps, DPS_RESPONSE_TOPIC_ASSIGNED, k_failed_body));
+  for (int i = 0; i < 3; ++i)
+  {
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
+  assert_int_equal(
+      az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_DPS),
+      AZ_IOT_CONN_STATE_RECONNECTING);
+  assert_int_not_equal(fx->client->reconnect_due_ms, 0);
+
+  /* Refused, and the pending retry is left intact. */
+  assert_int_equal(az_iot_connection_client__dps_session_ensure(fx->client), AZ_IOT_ERR_BUSY);
+  assert_null(fx->client->dps_mqtt);
+  assert_int_equal(
+      az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_DPS),
+      AZ_IOT_CONN_STATE_RECONNECTING);
+  assert_int_not_equal(fx->client->reconnect_due_ms, 0);
+
+  az_iot_connection_client__dps_user_release(fx->client);
+}
+
+/* A holder cannot register on the session it holds: registration runs only
+ * while the CONNECTION CLIENT holds the registration ref. Without that rule a
+ * session opened for a feature client would take the assignment path, rewrite
+ * the host and role, and tear down the hub connection beside it. */
+static void a_session_without_the_registration_ref_does_not_register(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(fx->client, fx->factory), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client__dps_user_acquire(fx->client), AZ_IOT_OK);
+
+  /* Opened by the holder, with no open() anywhere: no registration ref. */
+  fx->client->dps_phase = AZ_IOT_DPS_PHASE_DONE;
+  assert_int_equal(az_iot_connection_client__dps_session_ensure(fx->client), AZ_IOT_ERR_BUSY);
+  assert_false(fx->client->dps_registration_ref);
+
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  assert_non_null(m);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  const az_iot_mock_call* sub = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_SUBSCRIBE);
+  assert_non_null(sub);
+  assert_true(az_iot_mock_mqtt_client_inject_suback(m, sub->packet_id, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  /* Ready for the holder, and nothing was published: no registration. */
+  assert_true(az_iot_connection_client__dps_session_ready(fx->client));
+  assert_null(az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PUBLISH));
+
+  az_iot_connection_client__dps_user_release(fx->client);
+}
+
 /* dps_apply_deferred() also finalizes AUXILIARY sessions -- the ones a feature
  * client opens for itself alongside a live hub connection. Those can only
  * reach it by failing, and the retry added above must not apply to them:
  * schedule_reconnect() calls teardown_active(), which would destroy a hub
  * session that is up and healthy. */
-static void a_failing_auxiliary_session_does_not_tear_down_the_hub(void** state)
+static void a_failing_feature_held_session_does_not_tear_down_the_hub(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
   assert_int_equal(
@@ -974,7 +1272,9 @@ static void a_failing_auxiliary_session_does_not_tear_down_the_hub(void** state)
   assert_int_equal(az_iot_connection_client__dps_user_acquire(fx->client), AZ_IOT_OK);
   fx->client->dps_phase = AZ_IOT_DPS_PHASE_DONE;
   assert_int_equal(az_iot_connection_client__dps_session_ensure(fx->client), AZ_IOT_ERR_BUSY);
-  assert_true(fx->client->dps_session_auxiliary);
+  /* A session held only by a feature client: no registration ref. */
+  assert_false(fx->client->dps_registration_ref);
+  assert_non_null(fx->client->dps_mqtt);
 
   az_iot_mock_mqtt_client* aux = az_iot_mock_mqtt_factory_last_client(fx->factory);
   assert_non_null(aux);
@@ -986,7 +1286,7 @@ static void a_failing_auxiliary_session_does_not_tear_down_the_hub(void** state)
 
   /* The auxiliary session is gone; the hub is untouched and no retry was
    * scheduled for the application's connection. */
-  assert_false(fx->client->dps_session_auxiliary);
+  assert_null(fx->client->dps_mqtt);
   assert_ptr_equal(fx->client->active_client, hub);
   assert_false(az_iot_test_saw_state(&fx->log, AZ_IOT_CONN_STATE_RECONNECTING));
   assert_false(az_iot_test_saw_state(&fx->log, AZ_IOT_CONN_STATE_FAULTED));
@@ -1808,7 +2108,9 @@ static void close_during_provisioning_returns_to_idle(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
   (void)dps_open(fx);
-  assert_int_equal(fx->client->state, AZ_IOT_CONN_STATE_CONNECTING);
+  assert_int_equal(
+      az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_DPS),
+      AZ_IOT_CONN_STATE_CONNECTING);
 
   assert_int_equal(az_iot_connection_client_close(fx->client), AZ_IOT_OK);
   assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_IDLE);
@@ -2052,6 +2354,206 @@ static int setup_with_exponential_reconnect(void** state)
  * With one shared counter the first registration retry inherited the hub's
  * exhausted backoff, so a device that had been failing against a dead hub for
  * a while waited at the cap before asking DPS where it actually lives. */
+/* ------------------------------------------------------------------------- */
+/* scoped state: DPS and the hub are two independent lifecycles              */
+/* ------------------------------------------------------------------------- */
+
+/* dps_start() announces DPS:CONNECTING before it calls connect(), so a
+ * SYNCHRONOUS connect failure has to settle the lifecycle again -- there is no
+ * inbound event coming to do it later.
+ *
+ * Exercised through dps_session_ensure(), the path a FEATURE client uses.
+ * open() happens to settle the scope on its own failure path, so a test that
+ * went through open() would pass whether or not dps_start() cleaned up after
+ * itself -- and the feature-client path would still leak.
+ *
+ * Left pinned at CONNECTING, two things break: the next dps_start() announces
+ * nothing, because the value is unchanged, so a retry is invisible; and open()
+ * would see a DPS lifecycle it cannot explain. */
+static void a_synchronous_dps_connect_failure_settles_the_scope(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(fx->client, fx->factory), AZ_IOT_OK);
+  /* Stand in for a feature client holding an interest in the session. */
+  assert_int_equal(az_iot_connection_client__dps_user_acquire(fx->client), AZ_IOT_OK);
+
+  az_iot_mock_mqtt_factory_fail_next_connect(fx->factory, AZ_IOT_ERR_MQTT);
+  assert_int_not_equal(az_iot_connection_client__dps_session_ensure(fx->client), AZ_IOT_ERR_BUSY);
+
+  assert_int_equal(
+      az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_DPS),
+      AZ_IOT_CONN_STATE_IDLE);
+  /* The hub lifecycle was never involved. */
+  assert_int_equal(
+      az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_HUB),
+      AZ_IOT_CONN_STATE_IDLE);
+}
+/* The headline change. A DPS-provisioned device runs provisioning and then the
+ * hub; before scopes both collapsed into one enum, so the whole provisioning
+ * phase was invisible -- set_state_to() suppressed the hub's CONNECTING because
+ * the VALUE already matched the DPS one, and a device could sit in CONNECTING
+ * for a minute with no way to tell which half it was in. */
+static void a_dps_run_reports_both_lifecycles_in_order(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_mock_mqtt_client* hub = provision_to_hub_connecting(fx);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(hub, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  size_t dps_connecting
+      = az_iot_test_index_of(&fx->log, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_CONNECTING);
+  size_t hub_connecting
+      = az_iot_test_index_of(&fx->log, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_CONNECTING);
+  size_t hub_connected
+      = az_iot_test_index_of(&fx->log, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_CONNECTED);
+
+  assert_int_not_equal(dps_connecting, SIZE_MAX);
+  assert_int_not_equal(hub_connecting, SIZE_MAX);
+  assert_int_not_equal(hub_connected, SIZE_MAX);
+  /* Provisioning first, then the hub. The hub's CONNECTING is the one the old
+   * single-state machine swallowed. */
+  assert_true(dps_connecting < hub_connecting);
+  assert_true(hub_connecting < hub_connected);
+}
+
+/* The per-scope comparison in set_state_to(). With one shared `state` the
+ * second CONNECTING is dropped as a no-op; this is the regression that would
+ * reintroduce the invisible provisioning phase. */
+static void the_hub_connecting_is_not_swallowed_by_the_dps_one(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  (void)provision_to_hub_connecting(fx);
+
+  assert_int_equal(
+      az_iot_test_count_for(&fx->log, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_CONNECTING), 1);
+  assert_int_equal(
+      az_iot_test_count_for(&fx->log, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_CONNECTING), 1);
+}
+
+/* Same (scope, state) twice in a row is still one event: the suppression is
+ * per scope, not abandoned. */
+static void a_repeated_state_in_one_scope_is_still_suppressed(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_mock_mqtt_client* hub = provision_to_hub_connecting(fx);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(hub, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  /* A second CONNACK on a session already CONNECTED must not re-announce. */
+  assert_true(az_iot_mock_mqtt_client_inject_connected(hub, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  assert_int_equal(
+      az_iot_test_count_for(&fx->log, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_CONNECTED), 1);
+}
+
+/* A registration that fails is a DPS-scope event. The hub never started, so its
+ * lifecycle must never have left IDLE -- an application waiting on
+ * HUB:CONNECTED must not be told the hub faulted when there was no hub. */
+static void a_registration_failure_is_reported_on_the_dps_scope_only(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_mock_mqtt_client* dps = dps_open_to_registering(fx);
+  assert_true(inject_dps_response(dps, DPS_RESPONSE_TOPIC_ASSIGNED, k_failed_body));
+  for (int i = 0; i < 3; ++i)
+  {
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
+
+  assert_int_equal(
+      az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_HUB),
+      AZ_IOT_CONN_STATE_IDLE);
+  assert_int_equal(
+      az_iot_test_count_for(&fx->log, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_FAULTED), 0);
+  assert_int_not_equal(
+      az_iot_test_last_state_for(&fx->log, AZ_IOT_CONN_SCOPE_DPS), AZ_IOT_CONN_STATE_IDLE);
+}
+
+/* The scoped getter is the supported way to ask, and the two lifecycles
+ * genuinely differ: the provisioning session is torn down at registration, so
+ * its scope settles to IDLE while the hub is CONNECTED.
+ *
+ * Asserted as IDLE, not merely "not CONNECTED": leaving the DPS scope pinned at
+ * CONNECTING after its session died would satisfy the weaker form, and would
+ * then silently suppress the CONNECTING of any later re-provisioning run. */
+static void the_scoped_getter_reports_each_lifecycle_separately(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_mock_mqtt_client* hub = provision_to_hub_connecting(fx);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(hub, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  assert_int_equal(
+      az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_HUB),
+      AZ_IOT_CONN_STATE_CONNECTED);
+  assert_int_equal(
+      az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_DPS),
+      AZ_IOT_CONN_STATE_IDLE);
+  /* And the teardown was announced, not just applied. */
+  assert_int_equal(
+      az_iot_test_count_for(&fx->log, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_DISCONNECTING), 1);
+}
+
+/* A hub failure that diverts to re-provisioning must fire the retry ONCE.
+ *
+ * `reconnect_due_ms` is the pending-retry token and firing consumes it. Gating
+ * the retry on the STATE alone is not enough once the scopes are independent:
+ * a hub failure whose recovery is a re-registration leaves HUB in RECONNECTING
+ * while the attempt runs on DPS, so a state-only gate re-fires dps_start() on
+ * every tick for as long as the hub stays down.
+ *
+ * Asserted on the token rather than on the state log on purpose: a repeated
+ * dps_start() re-announces nothing, because DPS is already CONNECTING and
+ * set_state_to() suppresses it -- so the storm is invisible in the log and a
+ * log-based assertion would pass while the device hammered the service. */
+static void a_diverted_retry_consumes_its_pending_token(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_mock_mqtt_client* hub = provision_to_hub_connecting(fx);
+
+  assert_true(az_iot_mock_mqtt_client_inject_connected(hub, AZ_IOT_ERR_IDENTITY_REJECTED));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  /* A retry really is pending, and it is the hub scope that is waiting even
+   * though the attempt will be a registration. */
+  assert_int_not_equal(fx->client->reconnect_due_ms, 0);
+  assert_int_equal(
+      az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_HUB),
+      AZ_IOT_CONN_STATE_RECONNECTING);
+
+  az_iot_test_wait_until_ms(fx->client->reconnect_due_ms);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  /* Fired, and the token is spent: further ticks cannot start another attempt
+   * while this one is in flight. */
+  assert_int_equal(fx->client->reconnect_due_ms, 0);
+  for (int i = 0; i < 20; ++i)
+  {
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
+  assert_int_equal(fx->client->reconnect_due_ms, 0);
+}
+
+/* close() is a statement about the whole client: whichever scope was waiting or
+ * faulted, both settle. */
+static void close_settles_both_lifecycles(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_mock_mqtt_client* hub = provision_to_hub_connecting(fx);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(hub, AZ_IOT_ERR_IDENTITY_REJECTED));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  assert_int_equal(az_iot_connection_client_close(fx->client), AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_HUB),
+      AZ_IOT_CONN_STATE_IDLE);
+  assert_int_equal(
+      az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_DPS),
+      AZ_IOT_CONN_STATE_IDLE);
+}
+
 static void the_dps_ladder_does_not_inherit_the_hub_backoff(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
@@ -2227,12 +2729,16 @@ static void closing_from_the_connecting_callback_abandons_the_session(void** sta
   assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_ERR_NOT_CONNECTED);
 
   assert_int_equal(ctx.closed, 1);
-  assert_int_equal(fx->client->state, AZ_IOT_CONN_STATE_IDLE);
+  assert_int_equal(
+      az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_HUB),
+      AZ_IOT_CONN_STATE_IDLE);
   assert_false(az_iot_connection_client__dps_session_ready(fx->client));
 
   /* The pump must be safe afterwards too. */
   (void)az_iot_connection_client_do_work(fx->client, 0);
-  assert_int_equal(fx->client->state, AZ_IOT_CONN_STATE_IDLE);
+  assert_int_equal(
+      az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_HUB),
+      AZ_IOT_CONN_STATE_IDLE);
 }
 
 int main(void)
@@ -2274,7 +2780,22 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         a_service_retry_after_outranks_the_policy_backoff, setup_with_reconnect, teardown),
     cmocka_unit_test_setup_teardown(
-        a_failing_auxiliary_session_does_not_tear_down_the_hub, setup_with_reconnect, teardown),
+        a_failing_feature_held_session_does_not_tear_down_the_hub, setup_with_reconnect, teardown),
+    /* one provisioning session, refcounted */
+    cmocka_unit_test_setup_teardown(a_held_session_survives_registration, setup, teardown),
+    cmocka_unit_test_setup_teardown(an_unheld_session_is_dropped_at_registration, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        releasing_the_last_ref_closes_the_session_from_the_pump, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_kept_session_is_still_pumped, setup, teardown),
+    cmocka_unit_test_setup_teardown(close_ends_a_session_held_by_a_feature_client, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        close_from_a_faulted_hub_still_ends_the_held_session, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_reprovision_adopts_the_session_its_users_hold, setup_with_reconnect, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_pending_retry_refuses_a_new_session, setup_with_reconnect, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_session_without_the_registration_ref_does_not_register, setup, teardown),
     cmocka_unit_test_setup_teardown(dps_connack_failure_faults, setup, teardown),
     cmocka_unit_test_setup_teardown(dps_suback_failure_faults, setup, teardown),
     cmocka_unit_test_setup_teardown(dps_disconnect_midflow_faults, setup, teardown),
@@ -2347,6 +2868,21 @@ int main(void)
         a_half_usable_assignment_is_not_partially_adopted, setup, teardown),
     cmocka_unit_test_setup_teardown(
         the_reprovision_demand_survives_close_and_open, setup_with_reconnect, teardown),
+    /* scoped state: the two lifecycles are independent */
+    cmocka_unit_test_setup_teardown(
+        a_synchronous_dps_connect_failure_settles_the_scope, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_dps_run_reports_both_lifecycles_in_order, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        the_hub_connecting_is_not_swallowed_by_the_dps_one, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_repeated_state_in_one_scope_is_still_suppressed, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_registration_failure_is_reported_on_the_dps_scope_only, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        the_scoped_getter_reports_each_lifecycle_separately, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_diverted_retry_consumes_its_pending_token, setup_with_reconnect, teardown),
+    cmocka_unit_test_setup_teardown(close_settles_both_lifecycles, setup_with_reconnect, teardown),
     /* the two retry ladders are independent */
     cmocka_unit_test_setup_teardown(
         the_dps_ladder_does_not_inherit_the_hub_backoff,

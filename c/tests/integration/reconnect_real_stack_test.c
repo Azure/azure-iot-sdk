@@ -68,6 +68,14 @@ typedef struct state_log
 
 static void on_state(const az_iot_connection_state_event* event, void* ctx)
 {
+  /* Hub lifecycle only: the provisioning session reports on its own scope,
+   * and storing its state here would overwrite the hub state this code acts
+   * on. */
+  if (event->scope != AZ_IOT_CONN_SCOPE_HUB)
+  {
+    return;
+  }
+
   az_iot_connection_state state = event->state;
   az_iot_result reason = event->reason;
   (void)reason;

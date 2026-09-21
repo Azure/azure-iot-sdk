@@ -132,6 +132,8 @@ typedef struct
  * longer make progress just burns its whole budget before failing. */
 static void on_conn_state(const az_iot_connection_state_event* event, void* ctx)
 {
+  /* Deliberately scope-agnostic: this device rides the provisioning session, so
+   * a DPS fault ends the wait just as a hub fault does. */
   if (event != NULL && event->state == AZ_IOT_CONN_STATE_FAULTED)
   {
     ((e2e_fixture*)ctx)->faulted = true;

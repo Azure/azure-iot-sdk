@@ -36,8 +36,9 @@ This design replaces the single callback with a **shared observer registry**,
 adds a **lifecycle/reuse contract** with a teardown notification, and introduces
 a **rich status struct**.
 
-> **STATUS: the event argument and the observer registry (section 2) are
-> implemented. The rich status fields (section 4.3) are not.**
+> **STATUS: the event argument, the observer registry (section 2) and SCOPED
+> state (section 2.6) are implemented. The rich status fields (section 4.3) are
+> not.**
 >
 > Client-separation phase P1d changed `az_iot_connection_state_callback` to take
 > one SDK-produced, size-stamped `az_iot_connection_state_event` carrying the
@@ -48,7 +49,8 @@ a **rich status struct**.
 > `protocol_code`, `transport_code`, `message` -- must extend that same event
 > rather than introduce a second status parameter.
 >
-> Where the shipped registry differs from this document, see section 2.5.
+> Where the shipped registry differs from this document, see section 2.5. The
+> scope dimension, which this document predates, is described in section 2.6.
 
 ---
 
@@ -173,6 +175,71 @@ would leave two ways to subscribe with different semantics.
 
 ---
 
+### 2.6 Scope: state is `(scope, state)`, not `state`
+
+This document predates the scope dimension. Every state in it is now half of a
+pair.
+
+A device that provisions through DPS runs **two independent lifecycles**: the
+provisioning session, and the hub session. They fail, retry and settle
+separately — a provisioning session dropping must not disturb a healthy hub
+connection, and a hub drop must not invalidate a provisioning session a feature
+client is using.
+
+```c
+typedef enum az_iot_connection_scope
+{
+  AZ_IOT_CONN_SCOPE_DPS = 0,
+  AZ_IOT_CONN_SCOPE_HUB = 1
+} az_iot_connection_scope;
+```
+
+`scope` sits beside `state` in `az_iot_connection_state_event`, and
+`az_iot_connection_client_get_state(client, scope)` is the poll-side
+equivalent. **There is no unscoped state to ask for.**
+
+Why it is not optional:
+
+- **`CONNECTED` was ambiguous.** For hub messaging it means the hub is usable;
+  for the device-update client, riding the provisioning session, it does not.
+- **A whole phase was invisible.** `set_state_to()` suppresses a transition
+  whose value is unchanged. With one shared value, the hub's `CONNECTING`
+  immediately after the DPS one was dropped as a no-op, so a DPS + hub run
+  reported exactly one `CONNECTING` and one `CONNECTED` — an application could
+  not tell provisioning from hub connect, nor either from a retry loop. **The
+  suppression is now per scope.**
+- **It replaces a special case with a rule.** A provisioning session opened for
+  a feature client used to have to be hidden from the public state, because
+  announcing it would report a lifecycle the application never asked for. With
+  scopes it is simply `DPS:*`, and `HUB:*` is untouched.
+
+Rules that follow, each pinned by a test:
+
+1. **IDLE and FAULTED are per scope, and still distinct.** A clean peer
+   disconnect with retries disabled is `HUB:IDLE` — reopenable. Only *failures*
+   reach `FAULTED`. Conflating them per scope is the same mistake as conflating
+   them globally.
+2. **A session teardown settles its scope.** The provisioning session is
+   destroyed at registration, so `DPS` emits `DISCONNECTING` then `IDLE` even
+   though the hub connect is about to start. Leaving it pinned at `CONNECTING`
+   would make the *next* re-provisioning run invisible, by the same suppression
+   rule above.
+3. **A failure is reported against the scope that failed**, not the scope the
+   recovery attempt uses: a hub CONNACK that rejects the identity is a HUB
+   session going down, even though the retry is a DPS registration.
+4. **`close()` settles both.** It is a statement about the client, not about one
+   lifecycle.
+5. **A direct hub connection never leaves `DPS:IDLE`.** That is the answer, not
+   an error — nothing should wait on a `DPS:CONNECTED` that cannot come.
+
+One consequence worth stating because it bit during implementation: with two
+scopes, a state-only test for "a retry is pending" is wrong. A hub failure whose
+recovery is a re-registration leaves `HUB` in `RECONNECTING` while the attempt
+runs on `DPS`, so the pending-retry deadline — not the state — is the token, and
+firing consumes it.
+
+---
+
 ## 3. Lifecycle & Reuse Contract
 
 ### 3.1 Supported reuse: `close` → `open`
@@ -230,6 +297,10 @@ with a terminal lifecycle value:
 - `IDLE`, `CONNECTING`, `CONNECTED`, `RECONNECTING`, `DISCONNECTING`, `FAULTED`,
   and terminal `DEINITIALIZING`.
 
+Each value is reported **per scope** (section 2.6): the enum says what happened,
+`scope` says to which lifecycle. `DEINITIALIZING` is the exception — it is a
+client-level event, emitted once, not once per scope.
+
 ### 4.2 Observer signature
 
 P1d replaced the loose `(state, reason)` arguments with one const event pointer
@@ -247,6 +318,9 @@ parameter or a nested status object:
 typedef struct az_iot_connection_state_event
 {
   uint32_t                    _internal_size;
+  /* WHICH lifecycle this event is about. Shipped; see section 2.6. `state` is
+   * meaningless without it. */
+  az_iot_connection_scope     scope;
   az_iot_connection_state    state;
 
     /* SDK-level result of the operation that produced this status. This is the
@@ -285,9 +359,18 @@ typedef struct az_iot_connection_state_event
   } az_iot_connection_state_event;
 ```
 
-  `connection_reason` is deliberately not named `reason`: P1d already shipped
-  `reason` as the normalized `az_iot_result`. Renaming or repurposing that field
-  would break the event prefix older callbacks compiled against.
+  `connection_reason` is deliberately not named `reason`: P1d already defines
+  `reason` as the normalized `az_iot_result`, and two fields with the same name
+  meaning different things is a trap regardless of layout.
+
+  **There is no prefix-compatibility constraint on this struct yet.** These
+  libraries are unreleased (`git tag` is empty) and every consumer of the event
+  is in this repository, so members are ordered for sense, not appended for
+  compatibility — `scope` sits beside `state` because the two are only
+  meaningful together (section 2.6). `_internal_size` is carried so that growth
+  becomes safe *after* the first release; it does not oblige append-only
+  ordering before it. Once a release exists, that flips and this paragraph
+  should be rewritten to say so.
 
 - **`is_retriable`** — included. Derivable from `reason`, but it directly answers
   "is the SDK going to keep trying?" without forcing the app to memorize the
@@ -350,7 +433,8 @@ single field, and can stop as soon as it has what it needs:
 
 | Question the app asks | Field to read | Notes |
 |---|---|---|
-| "Am I connected now?" | `state` | `CONNECTED` = usable session; everything else is not-ready. |
+| "Which connection is this about?" | `scope` | **Read first.** `state` is meaningless without it: `CONNECTED` on `SCOPE_DPS` does not mean the hub is usable. See section 2.6. |
+| "Am I connected now?" | `state` | `CONNECTED` on `SCOPE_HUB` = usable hub session; everything else is not-ready. |
 | "Is this about connection at all, or lifecycle?" | `state` | `DEINITIALIZING` is the only non-connection value. |
 | "Is this terminal or will the SDK recover?" | `is_retriable` | No taxonomy knowledge needed. |
 | "Do I need to act / surface an error?" | `connection_reason` + `source` | `connection_reason==USER_CLOSE` ⇒ expected; `source` tells which layer. |
