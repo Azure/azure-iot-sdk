@@ -154,7 +154,7 @@ static void fixture_init(payload_fixture* fx, const az_iot_connection_client_opt
   assert_int_equal(az_iot_connection_client_init(&fx->conn.client_storage, opts), AZ_IOT_OK);
   fx->conn.client = &fx->conn.client_storage;
   assert_int_equal(
-      az_iot_connection_client_set_state_callback(
+      az_iot_connection_client_add_state_observer(
           fx->conn.client, az_iot_test_on_state, &fx->conn.log),
       AZ_IOT_OK);
   fx->conn.factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);

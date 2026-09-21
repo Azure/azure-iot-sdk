@@ -1,8 +1,11 @@
-﻿using System.Security.Cryptography;
+﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
+// See LICENSE file in the project root for full license information.
+
+using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 
-namespace Microsoft.Azure.Devices.Client.IntegrationTests
+namespace Microsoft.Azure.Iot.Device.IntegrationTests
 {
     /// <summary>
     /// Provides helper methods for working with certificates issued by IoT Hub or DPS.

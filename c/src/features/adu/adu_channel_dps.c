@@ -77,10 +77,8 @@ static bool rid_is_ours(const char* rid)
  * Checked in two places, and both matter. publish_operation() is the gate every
  * operation funnels through, so nothing can forget it. But the request entry
  * points have to refuse BEFORE they ask for a provisioning session: otherwise a
- * request during a long delay sets the standing interest, the tick opens an
- * auxiliary session, the publish is refused, the session lingers idle and
- * closes, and the cycle repeats for the whole backoff -- reconnecting over and
- * over to say nothing. */
+ * request during a long delay would open a provisioning session only to have
+ * the publish refused, over and over for the whole backoff. */
 static bool retry_after_in_force(az_iot_adu_channel_dps* c)
 {
   if (c->retry_after_deadline_ms == 0)
@@ -122,11 +120,12 @@ static az_iot_result publish_operation(
    *
    * Checked here rather than in each caller so a new operation cannot forget
    * it. */
-  /* The hold only governs the PRE-REGISTRATION exchange. An auxiliary session
-   * is opened after registration and deliberately has no hold -- there is no
-   * registration left to hold back -- so requiring one here would reject every
-   * operational publish on a session that is perfectly usable. */
-  if (c->wants_hold && !az_iot_connection_client__dps_session_is_auxiliary(c->connection)
+  /* The hold only governs the PRE-REGISTRATION exchange -- it exists to stop
+   * the device registering before this client has had its turn. Once there is
+   * no registration pending on the session there is nothing to hold back, so
+   * requiring a hold then would reject every operational publish on a session
+   * that is perfectly usable. */
+  if (c->wants_hold && az_iot_connection_client__dps_registration_pending(c->connection)
       && (!c->holds_registration || !az_iot_connection_client__dps_hold_is_active(c->connection)))
   {
     return AZ_IOT_ERR_NOT_CONNECTED;
@@ -470,6 +469,10 @@ static void channel_close(void* ctx)
   c->result_cb = NULL;
   c->engine_ctx = NULL;
   c->request_pending = false;
+  /* The demand for a session belongs to the binding that raised it. Leaving it
+   * set would make the next binding open a session for an operation nobody
+   * asked for. */
+  c->wants_session = false;
   /* The delay belongs to the binding that earned it. A fresh bind is a fresh
    * start, not a continuation of someone else's backoff. */
   c->retry_after_deadline_ms = 0;
@@ -713,13 +716,21 @@ static az_iot_result channel_do_work(void* ctx)
    * its session down at registration, and nothing else would open another.
    *
    * Only when there is work -- a session opened speculatively would linger and
-   * close again on every tick, for nothing. */
-  if (c->holds_user && had_work && !az_iot_connection_client__dps_session_ready(c->connection))
+   * close again on every tick, for nothing.
+   *
+   * The demand is satisfied by the session being READY, which is the only thing
+   * the refused caller was waiting for. It is deliberately not cleared on the
+   * result of dps_session_ensure(): that call answers AZ_IOT_OK only when a
+   * session is already usable, which this branch has just excluded, so clearing
+   * on it would never happen. The flag would then latch on for the life of the
+   * client and every linger expiry would reopen a session nobody wants. */
+  if (az_iot_connection_client__dps_session_ready(c->connection))
   {
-    if (az_iot_connection_client__dps_session_ensure(c->connection) == AZ_IOT_OK)
-    {
-      c->wants_session = false;
-    }
+    c->wants_session = false;
+  }
+  else if (c->holds_user && had_work)
+  {
+    (void)az_iot_connection_client__dps_session_ensure(c->connection);
   }
 
   /* A session that is gone takes its exchange with it: the next one is a fresh

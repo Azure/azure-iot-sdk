@@ -15,11 +15,11 @@ document are to be interpreted as described in
 
 ## 1. Motivation
 
-Today the connection client exposes a **single** state callback
-(`az_iot_connection_client_set_state_callback` → `state_cb` / `state_cb_ctx`)
-reserved for the application, and feature clients (twin, telemetry, c2d, direct
-method, file upload, and the planned ADU client) have **no** way to learn about
-connection transitions. This creates three problems:
+The connection client USED TO expose a **single** state callback
+(`az_iot_connection_client_set_state_callback` -> `state_cb` / `state_cb_ctx`)
+reserved for the application, leaving feature clients (twin, telemetry, c2d,
+direct method, file upload, and the ADU client) with **no** way to learn about
+connection transitions. That caused three problems:
 
 1. **No reconnect awareness for feature clients.** A feature client that needs to
    re-report or re-arm state on a fresh session cannot, because it never hears
@@ -36,14 +36,21 @@ This design replaces the single callback with a **shared observer registry**,
 adds a **lifecycle/reuse contract** with a teardown notification, and introduces
 a **rich status struct**.
 
-> **The event argument is implemented; the registry and rich status fields are
-> not.** Client-separation phase P1d changed
-> `az_iot_connection_state_callback` to take one SDK-produced, size-stamped
-> `az_iot_connection_state_event` carrying the resolved connection profile
-> ([client-separation.md §9](client-separation.md#the-profile-can-change-while-the-device-is-running)).
-> The remaining work must extend that event rather than introduce a second
-> status parameter, and a registry built later registers callbacks of its
-> existing signature.
+> **STATUS: the event argument, the observer registry (section 2) and SCOPED
+> state (section 2.6) are implemented. The rich status fields (section 4.3) are
+> not.**
+>
+> Client-separation phase P1d changed `az_iot_connection_state_callback` to take
+> one SDK-produced, size-stamped `az_iot_connection_state_event` carrying the
+> resolved connection profile
+> ([client-separation.md section 9](client-separation.md#the-profile-can-change-while-the-device-is-running)).
+> The registry reuses that signature unchanged, which is why it did not have to
+> introduce a second callback type. The remaining work -- `source`,
+> `protocol_code`, `transport_code`, `message` -- must extend that same event
+> rather than introduce a second status parameter.
+>
+> Where the shipped registry differs from this document, see section 2.5. The
+> scope dimension, which this document predates, is described in section 2.6.
 
 ---
 
@@ -104,14 +111,132 @@ full.
 ### 2.4 Removal & reentrancy
 
 - Feature-client `deinit` **MUST** self-remove its entry.
-- An observer callback **MUST NOT** call `add`/`remove` or any client
-  `init`/`deinit` during a dispatch. Enforcement:
+- An observer callback **MUST NOT** call `add`, or any client `init`/`deinit`
+  that would add, during a dispatch. Enforcement:
   - the client carries a `dispatching` guard flag;
-  - `add`/`remove` return `AZ_IOT_ERR_BUSY` when called during dispatch;
+  - `add` returns `AZ_IOT_ERR_BUSY` when called during dispatch;
   - debug builds assert.
-- Because mutation-during-dispatch is forbidden, **no registry snapshot is
-  required**. The sole exception (the `DEINITIALIZING` notice, §3.3) performs
-  **no** list mutation — feature clients only poison their own local pointers.
+- An observer callback **MAY** call `remove`, and a feature-client `deinit` from
+  inside a dispatch MUST be able to: the entry holds a raw pointer to storage
+  the deinit is about to release, and the caller has no later point at which to
+  retry. See deviation 5 in §2.5.
+- Because ADDITION during dispatch is forbidden, and removal only ever clears a
+  slot in place, **no registry snapshot is required**: the dispatch loop
+  re-reads each slot and skips a NULL callback, and nothing is compacted. The
+  `DEINITIALIZING` notice (§3.3) performs **no** list mutation either — feature
+  clients only poison their own local pointers.
+
+### 2.5 What shipped, and where it differs from §2.1–§2.4
+
+The registry is implemented. Five deviations from the design above, each
+deliberate:
+
+1. **Two arrays, not one array with an `is_feature_client` flag.** §2.1 proposed
+   a single array carrying the flag. Separate `feature_state_observers[]` and
+   `app_state_observers[]` give the same guarantee structurally: an application
+   cannot land in the feature-client pool because it calls a different function,
+   not because a flag was set correctly. It also makes §2.3's "neither pool can
+   starve the other" true by construction rather than by bookkeeping, and it
+   makes the two-pass dispatch of §2.2 the natural loop rather than a filter.
+2. **Names.** The capacity macros are `AZ_IOT_MAX_FEATURE_STATE_OBSERVERS` (6)
+   and `AZ_IOT_MAX_APP_STATE_OBSERVERS` (4) — the counts §2.3 specifies, under
+   names matching the `AZ_IOT_MAX_*` family already in the public header.
+3. **A full pool answers `AZ_IOT_ERR_NOT_ENOUGH_SPACE`, not
+   `AZ_IOT_ERR_NOT_SUPPORTED`.** §2.3 said the latter. The pool being full is a
+   capacity condition, and `NOT_ENOUGH_SPACE` is what every other bounded pool
+   in this client already returns; `NOT_SUPPORTED` would read as "this build
+   has no observer registry".
+4. **No debug-build assert on reentrant mutation** (§2.4's third bullet). The
+   `AZ_IOT_ERR_BUSY` return is the contract and is covered by a test; an assert
+   would add a second, divergent failure mode for the same mistake, and this
+   client does not assert anywhere else.
+5. **REMOVAL during dispatch is permitted; only addition is refused.** §2.4
+   originally forbade both. Refusing removal is not a safe default: a feature
+   client destroyed from inside an observer -- a natural reaction to FAULTED --
+   runs its deinit within the dispatch, and had no way to give its seat back,
+   so the entry became a call into freed storage and the seat leaked. Removal
+   is safe against the walk because it clears a slot in place and the loop
+   re-reads each slot, skipping NULL. Addition stays refused: a subscriber
+   added mid-pass would be handed a transition it was not watching for.
+
+Two further points the design did not state, both now pinned by tests:
+
+- **Registration is idempotent on the `(cb, user_ctx)` PAIR**, not on `cb`
+  alone. One callback shared by two owners is two subscriptions and is
+  delivered twice; registering the same pair again consumes no second slot and
+  causes no second delivery.
+- **Removal matches the same pair**, so withdrawing one owner's subscription
+  leaves another owner sharing that callback registered. It answers
+  `AZ_IOT_ERR_NOT_FOUND` when the pair is not registered.
+
+`az_iot_connection_client_set_state_callback()` is **removed**, not deprecated:
+the libraries are unreleased, and keeping a single-slot setter beside a registry
+would leave two ways to subscribe with different semantics.
+
+---
+
+### 2.6 Scope: state is `(scope, state)`, not `state`
+
+This document predates the scope dimension. Every state in it is now half of a
+pair.
+
+A device that provisions through DPS runs **two independent lifecycles**: the
+provisioning session, and the hub session. They fail, retry and settle
+separately — a provisioning session dropping must not disturb a healthy hub
+connection, and a hub drop must not invalidate a provisioning session a feature
+client is using.
+
+```c
+typedef enum az_iot_connection_scope
+{
+  AZ_IOT_CONN_SCOPE_DPS = 0,
+  AZ_IOT_CONN_SCOPE_HUB = 1
+} az_iot_connection_scope;
+```
+
+`scope` sits beside `state` in `az_iot_connection_state_event`, and
+`az_iot_connection_client_get_state(client, scope)` is the poll-side
+equivalent. **There is no unscoped state to ask for.**
+
+Why it is not optional:
+
+- **`CONNECTED` was ambiguous.** For hub messaging it means the hub is usable;
+  for the device-update client, riding the provisioning session, it does not.
+- **A whole phase was invisible.** `set_state_to()` suppresses a transition
+  whose value is unchanged. With one shared value, the hub's `CONNECTING`
+  immediately after the DPS one was dropped as a no-op, so a DPS + hub run
+  reported exactly one `CONNECTING` and one `CONNECTED` — an application could
+  not tell provisioning from hub connect, nor either from a retry loop. **The
+  suppression is now per scope.**
+- **It replaces a special case with a rule.** A provisioning session opened for
+  a feature client used to have to be hidden from the public state, because
+  announcing it would report a lifecycle the application never asked for. With
+  scopes it is simply `DPS:*`, and `HUB:*` is untouched.
+
+Rules that follow, each pinned by a test:
+
+1. **IDLE and FAULTED are per scope, and still distinct.** A clean peer
+   disconnect with retries disabled is `HUB:IDLE` — reopenable. Only *failures*
+   reach `FAULTED`. Conflating them per scope is the same mistake as conflating
+   them globally.
+2. **A session teardown settles its scope.** The provisioning session is
+   destroyed at registration, so `DPS` emits `DISCONNECTING` then `IDLE` even
+   though the hub connect is about to start. Leaving it pinned at `CONNECTING`
+   would make the *next* re-provisioning run invisible, by the same suppression
+   rule above.
+3. **A failure is reported against the scope that failed**, not the scope the
+   recovery attempt uses: a hub CONNACK that rejects the identity is a HUB
+   session going down, even though the retry is a DPS registration.
+4. **`close()` settles both.** It is a statement about the client, not about one
+   lifecycle.
+5. **A direct hub connection never leaves `DPS:IDLE`.** That is the answer, not
+   an error — nothing should wait on a `DPS:CONNECTED` that cannot come.
+
+One consequence worth stating because it bit during implementation: with two
+scopes, a state-only test for "a retry is pending" is wrong. A hub failure whose
+recovery is a re-registration leaves `HUB` in `RECONNECTING` while the attempt
+runs on `DPS`, so the pending-retry deadline — not the state — is the token, and
+firing consumes it.
 
 ---
 
@@ -172,6 +297,10 @@ with a terminal lifecycle value:
 - `IDLE`, `CONNECTING`, `CONNECTED`, `RECONNECTING`, `DISCONNECTING`, `FAULTED`,
   and terminal `DEINITIALIZING`.
 
+Each value is reported **per scope** (section 2.6): the enum says what happened,
+`scope` says to which lifecycle. `DEINITIALIZING` is the exception — it is a
+client-level event, emitted once, not once per scope.
+
 ### 4.2 Observer signature
 
 P1d replaced the loose `(state, reason)` arguments with one const event pointer
@@ -189,6 +318,9 @@ parameter or a nested status object:
 typedef struct az_iot_connection_state_event
 {
   uint32_t                    _internal_size;
+  /* WHICH lifecycle this event is about. Shipped; see section 2.6. `state` is
+   * meaningless without it. */
+  az_iot_connection_scope     scope;
   az_iot_connection_state    state;
 
     /* SDK-level result of the operation that produced this status. This is the
@@ -227,9 +359,18 @@ typedef struct az_iot_connection_state_event
   } az_iot_connection_state_event;
 ```
 
-  `connection_reason` is deliberately not named `reason`: P1d already shipped
-  `reason` as the normalized `az_iot_result`. Renaming or repurposing that field
-  would break the event prefix older callbacks compiled against.
+  `connection_reason` is deliberately not named `reason`: P1d already defines
+  `reason` as the normalized `az_iot_result`, and two fields with the same name
+  meaning different things is a trap regardless of layout.
+
+  **There is no prefix-compatibility constraint on this struct yet.** These
+  libraries are unreleased (`git tag` is empty) and every consumer of the event
+  is in this repository, so members are ordered for sense, not appended for
+  compatibility — `scope` sits beside `state` because the two are only
+  meaningful together (section 2.6). `_internal_size` is carried so that growth
+  becomes safe *after* the first release; it does not oblige append-only
+  ordering before it. Once a release exists, that flips and this paragraph
+  should be rewritten to say so.
 
 - **`is_retriable`** — included. Derivable from `reason`, but it directly answers
   "is the SDK going to keep trying?" without forcing the app to memorize the
@@ -292,7 +433,8 @@ single field, and can stop as soon as it has what it needs:
 
 | Question the app asks | Field to read | Notes |
 |---|---|---|
-| "Am I connected now?" | `state` | `CONNECTED` = usable session; everything else is not-ready. |
+| "Which connection is this about?" | `scope` | **Read first.** `state` is meaningless without it: `CONNECTED` on `SCOPE_DPS` does not mean the hub is usable. See section 2.6. |
+| "Am I connected now?" | `state` | `CONNECTED` on `SCOPE_HUB` = usable hub session; everything else is not-ready. |
 | "Is this about connection at all, or lifecycle?" | `state` | `DEINITIALIZING` is the only non-connection value. |
 | "Is this terminal or will the SDK recover?" | `is_retriable` | No taxonomy knowledge needed. |
 | "Do I need to act / surface an error?" | `connection_reason` + `source` | `connection_reason==USER_CLOSE` ⇒ expected; `source` tells which layer. |
