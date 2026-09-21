@@ -3702,6 +3702,35 @@ az_iot_result az_iot_connection_client_close(az_iot_connection_client* client)
     return AZ_IOT_ERR_NOT_INITIALIZED;
   }
 
+  /* End the provisioning session too, before the hub disconnect below returns.
+   *
+   * close() is a statement about the whole client, and there may be TWO
+   * connections up: a hub session, and a provisioning session a feature client
+   * holds. Without this the hub branch returns and leaves the provisioning
+   * adapter live -- and the pump will not close it either, because the feature
+   * refs are still held, so the application would have closed the client with
+   * one of its connections still running.
+   *
+   * The feature refs themselves SURVIVE. They are a standing interest in
+   * having a session, not in this particular one, so the next open() serves
+   * the same holder again. */
+  if (client->dps_mqtt)
+  {
+    if (client->dps_mqtt->iface && client->dps_mqtt->iface->disconnect)
+    {
+      (void)client->dps_mqtt->iface->disconnect(client->dps_mqtt);
+    }
+    dps_teardown_mqtt(client);
+    client->dps_registration_ref = false;
+    client->dps_registration_active = false;
+    client->dps_phase = DPS_PHASE_NONE;
+    client->dps_pending_finalize = false;
+    client->dps_pending_have_assignment = false;
+    client->dps_pending_status = AZ_IOT_OK;
+    set_state_to(client, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_DISCONNECTING, AZ_IOT_OK);
+    set_state_to(client, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_IDLE, AZ_IOT_OK);
+  }
+
   client->user_close = true;
   set_state_to(client, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_DISCONNECTING, AZ_IOT_OK);
   az_iot_result r = client->active_client->iface->disconnect(client->active_client);

@@ -178,43 +178,47 @@ extern "C"
   bool az_iot_connection_client__dps_hold_is_active(const az_iot_connection_client* client);
 
   /* Standing interest in the provisioning session, for a feature client that
-   * needs it after the device has provisioned.
+   * needs to talk on it.
    *
-   * Acquire at initialize, release at destroy. A non-zero count permits a
-   * session to be OPENED ON DEMAND -- it does not keep one open, and does not
-   * open one by itself. Between polls there is deliberately no session.
+   * Acquire at initialize, release at destroy. The session exists exactly while
+   * somebody holds it -- this count plus the connection client's own
+   * registration ref -- so a holder KEEPS a session alive, including across
+   * registration, and the last release closes it.
+   *
+   * Release does not close anything itself: it is reachable from inside a
+   * message callback, where freeing the adapter would free the object still
+   * being dispatched on. The pump closes at a safe point.
    *
    * Separate from the pre-registration hold: the hold delays a registration
-   * that is about to happen, this asks for a session once registration is long
-   * done. A feature client usually wants both. */
+   * that is about to happen, this says the session itself is needed. A feature
+   * client usually wants both. */
   az_iot_result az_iot_connection_client__dps_user_acquire(az_iot_connection_client* client);
   void az_iot_connection_client__dps_user_release(az_iot_connection_client* client);
 
-  /* True when the session currently up was opened for a feature client rather
-   * than by the ordinary provisioning flow. Such a session never registers, so
-   * the pre-registration hold does not apply to it. */
   /* True while the connection client is driving a registration on the
    * provisioning session -- that is, it holds the registration ref and the run
    * has not reached a terminal outcome.
    *
    * The question a feature client actually needs: "is there a registration for
    * my pre-registration hold to hold back?" False once registration is over,
-   * and false on a session opened purely for feature clients. */
+   * and false on a session that only feature clients hold. */
   bool az_iot_connection_client__dps_registration_pending(const az_iot_connection_client* client);
 
-  /* Ensure a provisioning session is up and usable, opening one if needed.
+  /* Is the session this caller holds usable yet, opening one if there is none?
+   *
+   * The caller is not requesting a session so much as asking about the one its
+   * ref already entitles it to.
    *
    * Returns AZ_IOT_OK when a publish can be made now, AZ_IOT_ERR_BUSY while one
-   * is still coming up (call again on a later tick), AZ_IOT_ERR_NOT_SUPPORTED
-   * when the caller holds no interest or DPS is not configured.
+   * is coming up (call again on a later tick), and AZ_IOT_ERR_NOT_SUPPORTED
+   * when the caller holds no interest, DPS is not configured, or a lifecycle
+   * has settled into FAULTED -- starting a session from there would drag the
+   * connection out of its terminal state and hide the fault from the
+   * application.
    *
-   * A session opened this way is AUXILIARY: it runs alongside the hub
-   * connection and never registers. Registering would take the assignment path,
-   * which rewrites the host and role and reconnects -- destroying the very hub
-   * connection this is meant to sit beside.
-   *
-   * Each call also renews the idle linger, so a caller that is actively using
-   * the session keeps it, and one that stops loses it shortly after. */
+   * REGISTRATION IS NOT IMPLIED. A session opened through this call carries the
+   * caller's messages; it registers only if the connection client separately
+   * holds the registration ref, which is what open() raises. */
   az_iot_result az_iot_connection_client__dps_session_ensure(az_iot_connection_client* client);
 
   /* Register the observer for inbound provisioning-session messages the

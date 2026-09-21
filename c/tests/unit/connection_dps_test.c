@@ -1069,6 +1069,43 @@ static void a_kept_session_is_still_pumped(void** state)
   az_iot_connection_client__dps_user_release(fx->client);
 }
 
+/* close() must end the PROVISIONING session too, not just the hub one.
+ *
+ * With a session kept for a feature client, close() reached the hub-disconnect
+ * branch and returned -- leaving a live provisioning adapter behind. The
+ * feature refs are still held, so the pump would not close it either, and the
+ * DPS lifecycle never settled: the application had closed the client and one
+ * of its two connections was still up.
+ *
+ * The refs themselves SURVIVE: they are a standing interest in the session, not
+ * in this particular one, so the next open() reopens for the same holder. */
+static void close_ends_a_session_held_by_a_feature_client(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  assert_int_equal(az_iot_connection_client__dps_user_acquire(fx->client), AZ_IOT_OK);
+
+  az_iot_mock_mqtt_client* dps = dps_open_to_registering(fx);
+  assert_true(inject_dps_response(dps, DPS_RESPONSE_TOPIC_ASSIGNED, k_assigned_body));
+  for (int i = 0; i < 5; ++i)
+  {
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
+  /* Both connections are up: the hub is connecting, the kept session is ready. */
+  assert_non_null(fx->client->active_client);
+  assert_non_null(fx->client->dps_mqtt);
+
+  assert_int_equal(az_iot_connection_client_close(fx->client), AZ_IOT_OK);
+
+  assert_null(fx->client->dps_mqtt);
+  assert_int_equal(
+      az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_DPS),
+      AZ_IOT_CONN_STATE_IDLE);
+  /* The standing interest is untouched, so a later open() serves it again. */
+  assert_int_equal(fx->client->dps_user_count, 1);
+
+  az_iot_connection_client__dps_user_release(fx->client);
+}
+
 /* A holder cannot register on the session it holds: registration runs only
  * while the CONNECTION CLIENT holds the registration ref. Without that rule a
  * session opened for a feature client would take the assignment path, rewrite
@@ -2635,6 +2672,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         releasing_the_last_ref_closes_the_session_from_the_pump, setup, teardown),
     cmocka_unit_test_setup_teardown(a_kept_session_is_still_pumped, setup, teardown),
+    cmocka_unit_test_setup_teardown(close_ends_a_session_held_by_a_feature_client, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_session_without_the_registration_ref_does_not_register, setup, teardown),
     cmocka_unit_test_setup_teardown(dps_connack_failure_faults, setup, teardown),
