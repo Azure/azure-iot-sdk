@@ -621,6 +621,49 @@ static void dps_carries_the_proxy_and_transport(void** state)
   az_iot_connection_client_destroy(&c);
 }
 
+/* The provisioning service does not implement session persistence -- it treats
+ * every session as non-persistent whatever the CONNECT flag says -- so DPS asks
+ * for a clean one, and never carries the hub's Will, which nothing on this
+ * service would consume.
+ *
+ * Both are asserted against an EXPLICIT caller request for the opposite, which
+ * is what makes this a guard rather than a restatement of the default. It is
+ * also the regression guard for the session becoming longer-lived than
+ * registration: neither term is derived from how long the session lasts, so a
+ * provisioning session held open past its assignment -- or running alongside a
+ * hub session -- must still connect on exactly these terms. */
+static void dps_connects_with_a_clean_session_and_no_will(void** state)
+{
+  (void)state;
+  az_iot_connection_client_options opts = dps_options();
+  opts.lwt.topic = "app/ut-device/gone";
+  opts.lwt.qos = AZ_IOT_MQTT_QOS_1;
+  opts.lwt.will_delay_seconds = 30;
+  /* Even asked for explicitly, session continuity must not reach DPS: the
+   * provisioning service does not implement session persistence, so honouring
+   * the request would promise something the service does not do. */
+  opts.session_continuity = AZ_IOT_SESSION_CONTINUITY_RESUME;
+  opts.session_expiry_seconds = 900;
+
+  az_iot_connection_client c;
+  assert_int_equal(az_iot_connection_client_init(&c, &opts), AZ_IOT_OK);
+  az_iot_mqtt_factory* factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
+  assert_int_equal(az_iot_connection_client_register_mqtt_factory(&c, factory), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_open(&c), AZ_IOT_OK);
+
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(factory);
+  const az_iot_mock_call* call = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_CONNECT);
+  assert_non_null(call);
+  assert_true(call->connect.clean_start);
+  assert_string_equal(call->connect.lwt_topic, "");
+  assert_int_equal(call->connect.lwt_will_delay_seconds, 0);
+  /* v3.1.1: no session expiry property and no DISCONNECT reason code. */
+  assert_int_equal(call->connect.session_expiry_seconds, 0);
+  assert_int_equal(call->connect.disconnect_reason_code, 0);
+
+  az_iot_connection_client_destroy(&c);
+}
+
 /* DPS speaks MQTT v3.1.1 only. Even when the device is headed for a v5
  * Hub-Next endpoint, the provisioning leg must pick the v3.1.1 factory. */
 static void dps_uses_v3_1_1_even_when_the_hub_is_next(void** state)
@@ -2750,6 +2793,7 @@ int main(void)
     cmocka_unit_test(dps_honors_the_configured_timings),
     cmocka_unit_test(dps_defaults_the_timings_when_unset),
     cmocka_unit_test(dps_carries_the_proxy_and_transport),
+    cmocka_unit_test(dps_connects_with_a_clean_session_and_no_will),
     cmocka_unit_test(dps_honors_a_custom_global_endpoint),
     cmocka_unit_test(dps_uses_v3_1_1_even_when_the_hub_is_next),
     cmocka_unit_test(dps_without_a_v3_1_1_factory_is_not_supported),

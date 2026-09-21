@@ -425,6 +425,126 @@ static void resolve_connect_transport(
   copts->port = port ? port : default_port_for_transport(c->opts.transport);
 }
 
+/* Apply the session semantics for one role: Clean Start / Clean Session, the
+ * MQTT 5 Session Expiry Interval, the Last Will, and the reason code the
+ * session will be closed with.
+ *
+ * Every CONNECT this client issues used to go out with whatever the
+ * zero-initialized options struct yielded, which is clean_start = false for all
+ * three roles -- so DPS and Hub-Next both asked the broker to resume a session
+ * neither of them has any use for. The three roles do not want the same thing,
+ * and the choice is made here, in one place, rather than at the two connect
+ * sites:
+ *
+ *  - DPS (v3.1.1): a clean session, and not overridable. The provisioning
+ *    service does not implement session persistence at all -- it treats every
+ *    session as non-persistent whatever the CONNECT flag says -- so there is no
+ *    state for a resumed session to carry and asking for one would promise
+ *    something the service does not do. dps_start() re-subscribes
+ *    $dps/registrations/res/# on every attempt regardless.
+ *
+ *    This reason is deliberately a property of the SERVICE, not of how long the
+ *    session happens to live. The session is torn down at registration today,
+ *    but a feature client (ADU) can hold one open past that, and a longer-lived
+ *    or hub-concurrent DPS session does not change the answer: clean_start is
+ *    only read at CONNECT, and it is inert at this service whenever it is read.
+ *
+ *  - HUB_CLASSIC (v3.1.1): a PERSISTENT session, which is the behaviour this
+ *    role already had and is kept deliberately. Classic IoT Hub holds a
+ *    device's subscriptions, and the cloud-to-device messages that arrived
+ *    while it was away, only for a session that is NOT clean; connecting clean
+ *    would silently drop whatever was queued during an outage. The SUBSCRIBEs
+ *    are re-issued on every connect either way (begin_feature_subscriptions),
+ *    so resuming costs nothing and losing the queue costs delivery.
+ *
+ *  - HUB_NEXT (v5): a resumed session as well, with a Session Expiry Interval
+ *    so there is something left to resume. The presence design is explicit that
+ *    this is a TRANSPORT EFFICIENCY choice and not a correctness one: the
+ *    backend never reads clean_start or session_present, the device always
+ *    publishes birth, and every feature protocol is correct even if each
+ *    connect started a fresh session. What resuming buys is the broker's QoS 1
+ *    redelivery across a transient drop, and a re-subscribe saved. Both halves
+ *    are needed -- a session that expires the instant the connection closes is
+ *    gone before any reconnect could resume it -- which is why the expiry is
+ *    set here and not left at 0.
+ *
+ * Either hub role may be overridden by the caller through
+ * opts.session_continuity; DPS may not, because the provisioning service does
+ * not implement session persistence at all and honouring a request for it
+ * would be promising something the service does not do.
+ *
+ * The v5-only fields are set for the v5 role only. A v3.1.1 broker must never
+ * be sent a Session Expiry Interval or a Will Delay Interval -- there is no
+ * property field in a v3.1.1 CONNECT to carry them. */
+static void resolve_session_options(
+    const az_iot_connection_client* c,
+    az_iot_mqtt_connect_options* copts,
+    az_iot_mqtt_role role)
+{
+  if (role == AZ_IOT_MQTT_ROLE_DPS)
+  {
+    copts->clean_start = true;
+  }
+  else
+  {
+    copts->clean_start
+        = (c->opts.session_continuity == AZ_IOT_SESSION_CONTINUITY_CLEAN) ? true : false;
+  }
+  copts->session_expiry_seconds = 0;
+  copts->disconnect_reason_code = (uint8_t)AZ_IOT_MQTT_DISCONNECT_NORMAL;
+
+  /* Session Expiry is an MQTT 5 property, so it exists only for the v5 hub.
+   * A session the caller asked to be clean still carries it: clean_start
+   * discards whatever was there at CONNECT, while the expiry governs what
+   * happens to THIS session after it ends, and those are independent. */
+  if (role == AZ_IOT_MQTT_ROLE_HUB_NEXT)
+  {
+    copts->session_expiry_seconds = c->opts.session_expiry_seconds
+        ? c->opts.session_expiry_seconds
+        : (uint32_t)AZ_IOT_DEFAULT_SESSION_EXPIRY_SECONDS;
+  }
+
+  /* The Will belongs to the hub session. Nothing consumes a will published from
+   * a provisioning session: DPS has no presence or device-lifecycle protocol to
+   * deliver one to, and opts.lwt is the application's signal about its DEVICE,
+   * which is reachable through the hub. Announcing a departure on a channel
+   * with no listener is worse than not announcing it.
+   *
+   * Stated without reference to how long the session lives, deliberately. It
+   * used to read "the DPS session is torn down as soon as the assignment lands,
+   * so a will could only fire for a failed attempt" -- true today, but a feature
+   * client can hold the session open past registration, which would make that
+   * sentence false while the conclusion stayed correct. */
+  if (role == AZ_IOT_MQTT_ROLE_DPS || !is_nonempty_cstr(c->opts.lwt.topic))
+  {
+    return;
+  }
+
+  copts->lwt.topic = c->opts.lwt.topic;
+  copts->lwt.payload = c->opts.lwt.payload;
+  copts->lwt.payload_len = c->opts.lwt.payload_len;
+  copts->lwt.qos = c->opts.lwt.qos;
+  copts->lwt.retain = c->opts.lwt.retain;
+
+  if (role != AZ_IOT_MQTT_ROLE_HUB_NEXT)
+  {
+    return; /* v3.1.1: no will delay, no reason codes */
+  }
+
+  copts->lwt.will_delay_seconds = c->opts.lwt.will_delay_seconds;
+  /* MQTT 5 ends the Will Delay at whichever comes first, the delay or the
+   * session expiry, so a delay asked for on a session that expires at once is
+   * no delay at all. Carry the session far enough to honour it rather than
+   * accepting the option and then ignoring it. */
+  if (copts->lwt.will_delay_seconds > copts->session_expiry_seconds)
+  {
+    copts->session_expiry_seconds = copts->lwt.will_delay_seconds;
+  }
+  /* An orderly close discards the Will by default. A device that configured one
+   * wants its departure announced however it leaves, so close with 0x04. */
+  copts->disconnect_reason_code = (uint8_t)AZ_IOT_MQTT_DISCONNECT_WITH_WILL_MESSAGE;
+}
+
 static void teardown_active(az_iot_connection_client* c)
 {
   if (c->active_client && c->active_client->iface && c->active_client->iface->destroy)
@@ -1591,6 +1711,7 @@ static az_iot_result dps_start(az_iot_connection_client* c)
   copts.client_id = c->opts.dps.registration_id;
   resolve_connect_timings(c, &copts);
   resolve_connect_transport(c, &copts, 0);
+  resolve_session_options(c, &copts, AZ_IOT_MQTT_ROLE_DPS);
 
   /* Build the DPS MQTT username. CSR-based operational-certificate issuance
    * (Azure Device Registration) requires a newer DPS API version than the
@@ -2756,6 +2877,7 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
   copts.client_id = c->opts.client_id;
   resolve_connect_timings(c, &copts);
   resolve_connect_transport(c, &copts, c->opts.port);
+  resolve_session_options(c, &copts, c->session_role);
 
   /* Build hub MQTT username via azure-sdk-for-c (Classic only).
    * Hub-Next does not use the Classic username format. */
