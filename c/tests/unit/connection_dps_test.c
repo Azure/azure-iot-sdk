@@ -3078,6 +3078,45 @@ static void closing_from_the_connecting_callback_abandons_the_session(void** sta
       AZ_IOT_CONN_STATE_IDLE);
 }
 
+/* close() from inside the synchronous DPS:CONNECTING announcement is a
+ * CANCELLATION, and dps_start() reports it with the same AZ_IOT_ERR_NOT_CONNECTED
+ * a genuine start failure uses. The two need opposite treatment: a failure is
+ * paced, while close() is the documented escape from a settled refusal and has
+ * just reset the ladder. Pacing the cancellation would recreate the deadline --
+ * or the blocked latch, with retries disabled -- immediately after the caller
+ * cleared it, so the escape would not work. */
+static void closing_from_the_connecting_callback_is_not_paced(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  close_from_callback_ctx ctx = { fx->client, &fx->log, 0 };
+  assert_int_equal(
+      az_iot_connection_client_add_state_observer(fx->client, close_on_connecting, &ctx),
+      AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(fx->client, fx->factory), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client__dps_user_acquire(fx->client), AZ_IOT_OK);
+  /* Retries disabled: the case where pacing would LATCH, not merely delay. */
+  fx->client->opts.reconnection_policy.initial_delay_ms = 0u;
+
+  fx->client->dps_phase = AZ_IOT_DPS_PHASE_DONE;
+  assert_int_equal(
+      az_iot_connection_client__dps_session_ensure(fx->client), AZ_IOT_ERR_NOT_CONNECTED);
+  assert_int_equal(ctx.closed, 1);
+
+  /* The close stands: nothing was re-armed behind it. */
+  assert_false(fx->client->dps_user_retry_blocked);
+  assert_int_equal(fx->client->dps_user_retry_attempt, 0u);
+  assert_int_equal(fx->client->dps_user_retry_due_ms, 0u);
+
+  /* So the holder can immediately ask again, which is the point of close(). */
+  ctx.closed = 1; /* do not close a second time */
+  fx->client->dps_phase = AZ_IOT_DPS_PHASE_DONE;
+  assert_int_equal(az_iot_connection_client__dps_session_ensure(fx->client), AZ_IOT_ERR_BUSY);
+  assert_non_null(fx->client->dps_mqtt);
+
+  az_iot_connection_client__dps_user_release(fx->client);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -3254,6 +3293,8 @@ int main(void)
         a_successful_registration_clears_both_ladders, setup_with_exponential_reconnect, teardown),
     cmocka_unit_test_setup_teardown(
         closing_from_the_connecting_callback_abandons_the_session, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        closing_from_the_connecting_callback_is_not_paced, setup_with_reconnect, teardown),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

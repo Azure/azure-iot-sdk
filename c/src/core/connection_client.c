@@ -1841,6 +1841,7 @@ static az_iot_result dps_start(az_iot_connection_client* c)
   c->dps_pending_status = AZ_IOT_OK;
   c->dps_pending_retry_after_secs = 0;
   c->dps_enrolling = c->opts.dps.request_operational_certificate;
+  c->dps_start_cancelled = false;
 
   set_state_to(c, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_CONNECTING, AZ_IOT_OK);
 
@@ -1853,6 +1854,11 @@ static az_iot_result dps_start(az_iot_connection_client* c)
   if (c->dps_mqtt != mc)
   {
     AZ_IOT_LOG_DEBUG("dps: the session was closed from the state callback; abandoning the start");
+    /* Cancellation, not failure -- and it returns the same code as a genuine
+     * start failure, so callers that treat a failure as something to retry
+     * need to be told which happened. close() has just reset the retry
+     * bookkeeping; recreating it here would undo the caller's own close. */
+    c->dps_start_cancelled = true;
     return AZ_IOT_ERR_NOT_CONNECTED;
   }
 
@@ -4723,8 +4729,23 @@ az_iot_result az_iot_connection_client__dps_session_ensure(az_iot_connection_cli
     /* A SYNCHRONOUS failure never reaches dps_finalize(), so nothing else would
      * pace it: the caller gets the error and its next pump tick asks again
      * immediately. That is the same hot loop, on the path where the adapter
-     * cannot even be created -- which is the one least likely to fix itself. */
-    dps_user_retry_schedule(client, 0);
+     * cannot even be created -- which is the one least likely to fix itself.
+     *
+     * But NOT every error here is a failure. dps_start() announces
+     * DPS:CONNECTING synchronously, and close() is legal from inside that
+     * callback; the cancellation it detects returns the same
+     * AZ_IOT_ERR_NOT_CONNECTED as a genuine start failure. close() has just
+     * RESET this ladder -- it is the documented escape from a settled refusal
+     * -- so pacing that case would recreate the deadline, or the blocked latch,
+     * immediately after the caller cleared it, and the escape would not work.
+     *
+     * dps_start() sets dps_start_cancelled for exactly that case. user_close
+     * does NOT work here: close() with no hub adapter -- which is this case,
+     * closing during provisioning -- clears it before returning. */
+    if (!client->dps_start_cancelled)
+    {
+      dps_user_retry_schedule(client, 0);
+    }
     return r;
   }
   /* Started, not ready: the caller must wait for the SUBACK. */

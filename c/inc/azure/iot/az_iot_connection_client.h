@@ -1058,6 +1058,14 @@ extern "C"
     uint64_t dps_user_retry_due_ms;
     bool dps_user_retry_blocked;
 
+    /* Set by dps_start() when an observer closed the client from inside the
+     * synchronous DPS:CONNECTING announcement. That cancellation returns the
+     * same result code as a genuine start failure, and the two need opposite
+     * treatment: a failure should be paced, a close is the caller's documented
+     * escape and has already reset the pacing. Cleared at the top of every
+     * dps_start(). */
+    bool dps_start_cancelled;
+
     char dps_operation_id[AZ_IOT_DPS_OPERATION_ID_MAX];
     size_t dps_operation_id_len;
     uint64_t dps_poll_due_ms;

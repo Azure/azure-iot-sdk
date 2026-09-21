@@ -284,6 +284,12 @@ and the last user releasing its ref, since a later holder is new demand.
   inline — never reaches `dps_finalize()`, so the deferred path does not pace it. It is paced at
   the call site instead. Without that, the caller got the error and asked again on the next pump
   tick: the same hot loop, on the path least likely to fix itself.
+* A `close()` from inside the synchronous `DPS:CONNECTING` announcement is a **cancellation**, and
+  it reports the same result code as a genuine start failure. Pacing it would recreate the
+  deadline — or the latch, with retries disabled — immediately after `close()` reset it, so the
+  documented escape would not work. The two are told apart by a flag `dps_start()` sets;
+  `user_close` does **not** work here, because `close()` with no hub adapter (exactly this case)
+  clears it before returning.
 * The deferred failure is only charged **while a user ref is still held**. Release is reachable
   from inside a message callback, so a finalize can land in the same pump iteration with
   `dps_user_count` already 0 — after the collect that would otherwise have torn the session down.
