@@ -21,11 +21,20 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Gen2
 
         public async ValueTask DisposeAsync()
         {
-            await Setup.GetGen1IotHubRegistryManager().RemoveDeviceAsync(DeviceId);
+            try
+            {
+                // Disconnect before deleting the device identity. Deleting it while the connection is still open makes
+                // IoT hub drop that connection as an identity fault, and this client responds to that fault by
+                // re-provisioning and connecting again. That recovery races this teardown's disconnect, so the
+                // connection is closed first to make sure there is nothing left for the hub to fault.
+                await ConnectionClient.DisconnectAsync();
 
-            await ConnectionClient.DisconnectAsync();
-
-            ConnectionClient.Dispose();
+                ConnectionClient.Dispose();
+            }
+            finally
+            {
+                await Setup.GetGen1IotHubRegistryManager().RemoveDeviceAsync(DeviceId);
+            }
         }
     }
 }
