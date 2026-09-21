@@ -1,7 +1,7 @@
 ﻿using Microsoft.Azure.Iot.Device.Gen2.DirectMethods;
 using Xunit;
 using Microsoft.Azure.Iot.Device.IntegrationTests.Models;
-using Google.Protobuf;
+using Microsoft.Azure.Devices;
 using Microsoft.Azure.Iot.Device.Models.DirectMethods;
 
 namespace Microsoft.Azure.Iot.Device.IntegrationTests.Gen2

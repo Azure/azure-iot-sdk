@@ -5,6 +5,7 @@ using Microsoft.Azure.Iot.Device.Unified.Telemetry;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Xunit;
+using Microsoft.Azure.Devices;
 
 namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
 {

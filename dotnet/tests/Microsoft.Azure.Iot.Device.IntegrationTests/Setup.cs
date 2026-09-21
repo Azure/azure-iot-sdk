@@ -2,15 +2,15 @@
 using Microsoft.Azure.Iot.Device.IntegrationTests.Unified;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Models.Twin;
-using Microsoft.Azure.Iot.Device.Mqtt;
 using Microsoft.Azure.Iot.Device.Unified.Connection;
 using Microsoft.Azure.Devices.Provisioning.Service;
 using Microsoft.Azure.Devices.Shared;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
-using System.Text;
+using Microsoft.Azure.Devices;
 using System.Text.Json;
 using Xunit;
+using Microsoft.Azure.Devices;
 
 namespace Microsoft.Azure.Iot.Device.IntegrationTests
 {
@@ -97,7 +97,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
 
             X509AuthenticationProvider x509AuthenticationProvider = new(pfx);
 
-            Client.Gen2.Connection.ConnectionClient connectionClient = new(options);
+            Device.Gen2.Connection.ConnectionClient connectionClient = new(options);
 
             return new Gen2DeviceTestContext()
             { 
@@ -123,7 +123,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
             X509Certificate2 certificate = X509CertificateLoader.LoadCertificateFromFile(certPath);
             X509Certificate2 pfx = X509CertificateLoader.LoadPkcs12FromFile(pfxPath, TestCertificatesPassword);
 
-            Device device = new(deviceId)
+            Devices.Device device = new(deviceId)
             {
                 Authentication = new AuthenticationMechanism()
                 {
@@ -138,7 +138,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
 
             X509AuthenticationProvider x509AuthenticationProvider = new(pfx);
 
-            Client.Gen2.Connection.ConnectionClient connectionClient = new(options);
+            Device.Gen2.Connection.ConnectionClient connectionClient = new(options);
             ProvisioningSettings provisioningSettings = new(DpsIdScope);
 
             return new Gen2DeviceTestContext()
@@ -173,7 +173,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
 
             X509AuthenticationProvider x509AuthenticationProvider = new(pfx);
 
-            Client.Gen2.Connection.ConnectionClient connectionClient = new(options);
+            Device.Gen2.Connection.ConnectionClient connectionClient = new(options);
             ProvisioningSettings provisioningSettings = new(DpsIdScope);
 
             ConnectionContext connectionContext = await RetryAroundAuthorizationAsync<ConnectionContext>(

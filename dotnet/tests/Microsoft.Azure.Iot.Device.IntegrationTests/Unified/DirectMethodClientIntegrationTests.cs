@@ -1,6 +1,7 @@
 ﻿using Microsoft.Azure.Iot.Device.Unified.DirectMethods;
 using Microsoft.Azure.Iot.Device.IntegrationTests.Models;
 using Microsoft.Azure.Iot.Device.Models.DirectMethods;
+using Microsoft.Azure.Devices;
 using Xunit;
 
 namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
