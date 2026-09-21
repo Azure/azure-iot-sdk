@@ -345,9 +345,18 @@ typedef struct az_iot_connection_state_event
   } az_iot_connection_state_event;
 ```
 
-  `connection_reason` is deliberately not named `reason`: P1d already shipped
-  `reason` as the normalized `az_iot_result`. Renaming or repurposing that field
-  would break the event prefix older callbacks compiled against.
+  `connection_reason` is deliberately not named `reason`: P1d already defines
+  `reason` as the normalized `az_iot_result`, and two fields with the same name
+  meaning different things is a trap regardless of layout.
+
+  **There is no prefix-compatibility constraint on this struct yet.** These
+  libraries are unreleased (`git tag` is empty) and every consumer of the event
+  is in this repository, so members are ordered for sense, not appended for
+  compatibility — `scope` sits beside `state` because the two are only
+  meaningful together (section 2.6). `_internal_size` is carried so that growth
+  becomes safe *after* the first release; it does not oblige append-only
+  ordering before it. Once a release exists, that flips and this paragraph
+  should be rewritten to say so.
 
 - **`is_retriable`** — included. Derivable from `reason`, but it directly answers
   "is the SDK going to keep trying?" without forcing the app to memorize the
