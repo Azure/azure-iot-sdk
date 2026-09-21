@@ -160,15 +160,15 @@
 #define PRESENCE_UUID_VARIANT_KEEP_MASK 0x3Fu
 #define PRESENCE_UUID_VARIANT_RFC4122 0x80u
 #define PRESENCE_UUID_STAMP_VERSION_4(octet) \
-  ((uint8_t)(((octet)&PRESENCE_UUID_VERSION_KEEP_MASK) | PRESENCE_UUID_VERSION_4))
+  ((uint8_t)(((octet) & PRESENCE_UUID_VERSION_KEEP_MASK) | PRESENCE_UUID_VERSION_4))
 #define PRESENCE_UUID_STAMP_VARIANT_RFC4122(octet) \
-  ((uint8_t)(((octet)&PRESENCE_UUID_VARIANT_KEEP_MASK) | PRESENCE_UUID_VARIANT_RFC4122))
+  ((uint8_t)(((octet) & PRESENCE_UUID_VARIANT_KEEP_MASK) | PRESENCE_UUID_VARIANT_RFC4122))
 
 /* Nibble halves of a byte, for rendering the nonce as hex. */
 #define PRESENCE_NIBBLE_MASK 0x0Fu
 #define PRESENCE_NIBBLE_BITS 4u
 #define PRESENCE_HI_NIBBLE(byte) (((byte) >> PRESENCE_NIBBLE_BITS) & PRESENCE_NIBBLE_MASK)
-#define PRESENCE_LO_NIBBLE(byte) ((byte)&PRESENCE_NIBBLE_MASK)
+#define PRESENCE_LO_NIBBLE(byte) ((byte) & PRESENCE_NIBBLE_MASK)
 
 /* proto3 wire format, as much of it as the birth encoder and the birth-ack
  * decoder need. A record is a varint key -- field number in the high bits, wire
@@ -183,7 +183,7 @@
 #define PROTO_WIRE_32BIT_SIZE 4u
 #define PROTO_WIRE_64BIT_SIZE 8u
 #define PROTO_KEY_FIELD_NUMBER(key) ((key) >> PROTO_WIRE_TYPE_BITS)
-#define PROTO_KEY_WIRE_TYPE(key) ((uint8_t)((key)&PROTO_WIRE_TYPE_MASK))
+#define PROTO_KEY_WIRE_TYPE(key) ((uint8_t)((key) & PROTO_WIRE_TYPE_MASK))
 /* Single-byte key for a varint field. Valid for field numbers 1..15, which is
  * every field this client encodes. */
 #define PROTO_KEY_VARINT(field) \
@@ -200,8 +200,8 @@
 #define PROTO_VARINT_MAX_SHIFT 63u
 /* Largest payload the tenth byte may carry: at shift 63 only bit 63 fits. */
 #define PROTO_VARINT_TOP_BIT_MAX 1u
-#define PROTO_VARINT_PAYLOAD(byte) ((byte)&PROTO_VARINT_PAYLOAD_MASK)
-#define PROTO_VARINT_HAS_CONTINUATION(byte) (((byte)&PROTO_VARINT_CONTINUATION_BIT) != 0u)
+#define PROTO_VARINT_PAYLOAD(byte) ((byte) & PROTO_VARINT_PAYLOAD_MASK)
+#define PROTO_VARINT_HAS_CONTINUATION(byte) (((byte) & PROTO_VARINT_CONTINUATION_BIT) != 0u)
 
 /* Field numbers from presence.proto. */
 #define PRESENCE_BIRTH_FIELD_SESSION_PRESENT 1u
