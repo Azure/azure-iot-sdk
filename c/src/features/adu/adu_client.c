@@ -36,6 +36,7 @@
 #include "azure/iot/az_iot_adu.h"
 
 #include "internal/adu_internal.h"
+#include "internal/reconnect.h" /* az_iot_time_mono_ms */
 #include "internal/log_internal.h"
 #include "internal/span_writer.h"
 
@@ -45,6 +46,7 @@
  * silently corrupting the struct. */
 /* Defined below; used from the workflow state machine above it. */
 static void set_adu_state(az_iot_adu_client_t* client, az_iot_adu_state next);
+static void arm_pending_fetch_deadline(az_iot_adu_client_t* client, uint32_t timeout_ms);
 
 typedef char az_iot_adu_channel_storage_is_large_enough
     [(sizeof(((az_iot_adu_client_t*)0)->_internal.channel_storage)
@@ -1339,6 +1341,14 @@ static void on_channel_result(
     {
       raise_abandoned(client, operation, result, service_error);
     }
+    /* The request is over -- but only ITS deadline goes with it. A newer
+     * request may already be queued, holding the slot with its own deadline;
+     * clearing unconditionally would strip that and leave the newer request
+     * retrying for ever. */
+    if (operation != AZ_IOT_ADU_OP_REPORT_STATUS && ADU_I(client).pending_fetch == ADU_FETCH_NONE)
+    {
+      ADU_I(client).pending_fetch_deadline_ms = 0;
+    }
     return;
   }
 
@@ -1349,6 +1359,28 @@ static void on_channel_result(
       break;
     case AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE:
     case AZ_IOT_ADU_OP_GET_UPDATE:
+      /* A service-requested delay that cannot fit inside the caller's deadline
+       * ends the request NOW rather than at the deadline. Retrying until then
+       * would publish nothing -- the channel refuses for the whole delay -- so
+       * the wait buys nothing and only postpones the same answer.
+       *
+       * The delay is reported on the event, so the application learns WHEN the
+       * service is willing to be asked again and can schedule its next attempt
+       * instead of guessing. Deliberately not waited out on its behalf: that
+       * would spend a budget the application set. */
+      if (service_error != NULL && service_error->retry_after_ms != 0
+          && ADU_I(client).pending_fetch_deadline_ms != 0
+          && az_iot_time_mono_ms() + (uint64_t)service_error->retry_after_ms
+              > ADU_I(client).pending_fetch_deadline_ms)
+      {
+        AZ_IOT_LOG_ERRORF(
+            "adu: service asked for %u ms, which does not fit the request timeout; giving up",
+            (unsigned)service_error->retry_after_ms);
+        ADU_I(client).pending_fetch = ADU_FETCH_NONE;
+        ADU_I(client).pending_fetch_deadline_ms = 0;
+        raise_abandoned(client, operation, AZ_IOT_ERR_TIMEOUT, service_error);
+        break;
+      }
       /* Re-arm the route that failed, not a default: the application asked for
        * this one and a retry on the other would query the wrong thing.
        *
@@ -1363,6 +1395,17 @@ static void on_channel_result(
         ADU_I(client).pending_fetch = (operation == AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE)
             ? ADU_FETCH_ONBOARDING
             : ADU_FETCH_REGULAR;
+        /* A re-armed request is always bounded. Without this a LATE verdict
+         * could resurrect an operation after the slot had been abandoned: the
+         * abandonment cleared the deadline, this puts the request back, and it
+         * would then retry for ever.
+         *
+         * Re-armed with the timeout the CALLER gave, not a default: it is the
+         * same request, so it keeps the same policy. */
+        if (ADU_I(client).pending_fetch_deadline_ms == 0)
+        {
+          arm_pending_fetch_deadline(client, ADU_I(client).pending_fetch_timeout_ms);
+        }
       }
       break;
   }
@@ -1394,6 +1437,16 @@ static az_iot_result channel_request_update(
  * that honours the contract cannot hit that case (the verdict callback fires
  * only for an ACCEPTED operation), so the check is defensive: it keeps a
  * misbehaving channel from turning a fresh request into a stale retry. */
+/* A fresh request gets a fresh clock. Asking again is how an application
+ * responds to an abandonment, so inheriting the old deadline would abandon the
+ * new request immediately. */
+static void arm_pending_fetch_deadline(az_iot_adu_client_t* client, uint32_t timeout_ms)
+{
+  ADU_I(client).pending_fetch_timeout_ms = timeout_ms;
+  ADU_I(client).pending_fetch_deadline_ms
+      = (timeout_ms == 0u) ? 0u : az_iot_time_mono_ms() + (uint64_t)timeout_ms;
+}
+
 static void drive_pending_fetch(az_iot_adu_client_t* client)
 {
   uint8_t requested = ADU_I(client).pending_fetch;
@@ -1405,12 +1458,40 @@ static void drive_pending_fetch(az_iot_adu_client_t* client)
       ? AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE
       : AZ_IOT_ADU_OP_GET_UPDATE;
 
+  /* Give up on a request that has gone unaccepted for too long -- refused, or
+   * accepted and returned by a retryable verdict. Checked BEFORE the attempt,
+   * so the deadline bounds how long the slot is retried rather than how long it
+   * is held: an attempt that is about to succeed still does.
+   *
+   * WALL-CLOCK: time spent obeying a service-requested delay counts like any
+   * other. The caller asked for an answer within N ms, and quietly moving its
+   * deadline to exclude the wait would take away the very thing it was
+   * planning around. A delay that CANNOT fit is answered immediately instead
+   * -- see on_channel_result() -- rather than leaving the request to sit until
+   * it expires. */
+  if (ADU_I(client).pending_fetch_deadline_ms != 0
+      && az_iot_time_mono_ms() >= ADU_I(client).pending_fetch_deadline_ms)
+  {
+    AZ_IOT_LOG_ERROR("adu: giving up on a pending update check; its deadline expired");
+    ADU_I(client).pending_fetch = ADU_FETCH_NONE;
+    ADU_I(client).pending_fetch_deadline_ms = 0;
+    raise_abandoned(client, operation, AZ_IOT_ERR_TIMEOUT, NULL);
+    return;
+  }
+
   ADU_I(client).pending_fetch = ADU_FETCH_NONE;
-  if (channel_request_update(client, operation) != AZ_IOT_OK
-      && ADU_I(client).pending_fetch == ADU_FETCH_NONE)
+  az_iot_result r = channel_request_update(client, operation);
+  if (r != AZ_IOT_OK && ADU_I(client).pending_fetch == ADU_FETCH_NONE)
   {
     ADU_I(client).pending_fetch = requested;
   }
+  /* No refresh on a refusal: the deadline is the caller's, and a request whose
+   * verdict never arrives has to stay bounded. */
+  (void)r;
+  /* The deadline otherwise SURVIVES the channel accepting the request. A
+   * retryable verdict puts the same request straight back in the slot, so
+   * clearing it here would restart the clock on every accepted-then-retried
+   * round and the bound would never be reached. */
 }
 
 /* ------------------------------------------------------------------------- */
@@ -2299,23 +2380,27 @@ az_iot_result az_iot_adu_client_remove_observer(
   return AZ_IOT_ERR_NOT_FOUND;
 }
 
-az_iot_result az_iot_adu_client_request_onboarding_update(az_iot_adu_client_t* client)
+az_iot_result az_iot_adu_client_request_onboarding_update(
+    az_iot_adu_client_t* client,
+    uint32_t timeout_ms)
 {
   if (client == NULL)
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
   ADU_I(client).pending_fetch = ADU_FETCH_ONBOARDING;
+  arm_pending_fetch_deadline(client, timeout_ms);
   return AZ_IOT_OK;
 }
 
-az_iot_result az_iot_adu_client_request_update(az_iot_adu_client_t* client)
+az_iot_result az_iot_adu_client_request_update(az_iot_adu_client_t* client, uint32_t timeout_ms)
 {
   if (client == NULL)
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
   ADU_I(client).pending_fetch = ADU_FETCH_REGULAR;
+  arm_pending_fetch_deadline(client, timeout_ms);
   return AZ_IOT_OK;
 }
 

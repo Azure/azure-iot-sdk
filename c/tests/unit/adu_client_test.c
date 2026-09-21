@@ -24,6 +24,8 @@
 #include <azure/core/az_span.h>
 
 #include "azure/iot/az_iot_connection_client.h"
+
+#include "internal/reconnect.h" /* az_iot_time_mono_ms */
 #include "../../src/features/adu/internal/adu_channel_internal.h"
 #include "../../src/features/adu/internal/adu_internal.h"
 #include "azure/iot/az_iot_mqtt_iface.h"
@@ -457,7 +459,8 @@ typedef struct
   az_iot_adu_client_step_result last_step_results[_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS];
   uint8_t last_step_details[_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS][256];
   size_t do_work_count;
-
+  /* Simulates the channel deferring because the SERVICE asked, as opposed to
+   * because an operation is already outstanding. Monotonic instant; 0 = none. */
 } fake_channel;
 
 static az_iot_result fake_channel_open(
@@ -478,7 +481,13 @@ static void fake_channel_close(void* ctx) { ((fake_channel*)ctx)->opened = false
 
 static az_iot_result fake_channel_do_work(void* ctx)
 {
-  ((fake_channel*)ctx)->do_work_count++;
+  fake_channel* fc = (fake_channel*)ctx;
+  /* Faithful to the DPS channel: its retry_after gate SELF-EXPIRES as a side
+   * effect of being read, and several channel operations read it -- the
+   * status-report path among them, which do_work() runs ahead of the fetch
+   * path. Modelled on the channel tick because that is the earliest of them.
+   * Without this the fake cannot reproduce the ordering hazard at all. */
+  fc->do_work_count++;
   return AZ_IOT_OK;
 }
 
@@ -560,6 +569,12 @@ static az_iot_result fake_channel_report(void* ctx, const az_iot_adu_report* rep
   return fc->report_result;
 }
 
+/* The request timeout these tests pass to the request functions. */
+#define UT_TIMEOUT_MS 300000u
+/* A service-requested delay far longer than UT_TIMEOUT_MS -- the case that
+ * matters, since the protocol accepts retry-after values in hours. */
+#define SERVICE_DELAY_MS 3600000u
+
 static const az_iot_adu_channel_vtable k_fake_channel_vtable = {
   .open = fake_channel_open,
   .close = fake_channel_close,
@@ -592,6 +607,7 @@ typedef struct
   int32_t last_error_code;
   char last_error_text[64];
   char last_tracking_id[64];
+  uint32_t last_retry_after_ms;
 
   int state_event_count;
   az_iot_adu_state last_state;
@@ -616,6 +632,7 @@ static void on_event(const az_iot_adu_event* event, void* user_ctx)
     snprintf(fx->last_error_text, sizeof(fx->last_error_text), "%s", event->service_error.message);
     snprintf(
         fx->last_tracking_id, sizeof(fx->last_tracking_id), "%s", event->service_error.tracking_id);
+    fx->last_retry_after_ms = event->service_error.retry_after_ms;
   }
   else if (event->kind == AZ_IOT_ADU_EVENT_WORKFLOW_STATE_CHANGED)
   {
@@ -2353,6 +2370,314 @@ static void a_workflow_transition_is_reported(void** state)
   assert_int_equal(fx->last_state, az_iot_adu_client_get_state(&fx->adu));
 }
 
+/* A request the channel never accepts is bounded, and the application is told.
+ *
+ * The pending slot auto-retries: the channel refusing puts the request straight
+ * back, so a request that can NEVER be served -- the device never provisions,
+ * the enrollment is missing -- was reissued for the life of the client with the
+ * application never told. It could not tell that from "no update available". */
+static void a_request_the_channel_never_accepts_is_abandoned(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  fx->chan.request_update_result = AZ_IOT_ERR_NOT_CONNECTED;
+  fx->abandoned_count = 0;
+
+  assert_int_equal(az_iot_adu_client_add_observer(&fx->adu, on_event, fx), AZ_IOT_OK);
+
+  assert_int_equal(az_iot_adu_client_request_update(&fx->adu, UT_TIMEOUT_MS), AZ_IOT_OK);
+  assert_int_not_equal(fx->adu._internal.pending_fetch, 0);
+  assert_int_not_equal(fx->adu._internal.pending_fetch_deadline_ms, 0);
+
+  /* Retried while the deadline stands, and not abandoned. */
+  for (int i = 0; i < 5; ++i)
+  {
+    (void)az_iot_adu_client_do_work(&fx->adu);
+  }
+  assert_int_not_equal(fx->adu._internal.pending_fetch, 0);
+  assert_int_equal(fx->abandoned_count, 0);
+  assert_true(fx->chan.request_update_count >= 5);
+
+  /* Force the deadline into the past rather than waiting out the real timeout. */
+  fx->adu._internal.pending_fetch_deadline_ms = 1;
+  (void)az_iot_adu_client_do_work(&fx->adu);
+
+  /* Given up on, the slot cleared, and the application told WHICH route and
+   * why -- not silently dropped. */
+  assert_int_equal(fx->adu._internal.pending_fetch, 0);
+  assert_int_equal(fx->adu._internal.pending_fetch_deadline_ms, 0);
+  assert_int_equal(fx->abandoned_count, 1);
+  assert_int_equal(fx->last_abandoned_reason, AZ_IOT_ERR_TIMEOUT);
+  /* WHICH route, so a route-mapping regression is caught: the application
+   * responds by asking again on the same one. */
+  assert_int_equal(fx->last_abandoned_operation, AZ_IOT_ADU_OP_GET_UPDATE);
+
+  /* And it stops: no further attempts, no repeated reports. */
+  int attempts_after = fx->chan.request_update_count;
+  for (int i = 0; i < 5; ++i)
+  {
+    (void)az_iot_adu_client_do_work(&fx->adu);
+  }
+  assert_int_equal(fx->chan.request_update_count, attempts_after);
+  assert_int_equal(fx->abandoned_count, 1);
+
+  /* The onboarding route reports itself, not a constant. */
+  assert_int_equal(az_iot_adu_client_request_onboarding_update(&fx->adu, UT_TIMEOUT_MS), AZ_IOT_OK);
+  fx->adu._internal.pending_fetch_deadline_ms = 1;
+  (void)az_iot_adu_client_do_work(&fx->adu);
+  assert_int_equal(fx->abandoned_count, 2);
+  assert_int_equal(fx->last_abandoned_operation, AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE);
+}
+
+/* A newer request queued while an earlier fetch is still in flight keeps its
+ * own deadline. The earlier verdict must not strip it -- that would leave the
+ * newer request retrying for ever, which is the defect this change removes. */
+static void a_newer_request_keeps_its_deadline_when_an_older_verdict_arrives(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  fx->chan.request_update_result = AZ_IOT_OK; /* accepted, verdict comes later */
+
+  assert_int_equal(az_iot_adu_client_request_update(&fx->adu, UT_TIMEOUT_MS), AZ_IOT_OK);
+  (void)az_iot_adu_client_do_work(&fx->adu);
+  assert_int_equal(fx->adu._internal.pending_fetch, 0); /* accepted */
+
+  /* The application asks again before the first verdict arrives. */
+  assert_int_equal(az_iot_adu_client_request_onboarding_update(&fx->adu, UT_TIMEOUT_MS), AZ_IOT_OK);
+  assert_int_not_equal(fx->adu._internal.pending_fetch, 0);
+  uint64_t newer_deadline = fx->adu._internal.pending_fetch_deadline_ms;
+  assert_int_not_equal(newer_deadline, 0);
+
+  /* Now the EARLIER request's verdict lands, terminally. */
+  assert_non_null(fx->chan.result_cb);
+  fx->chan.result_cb(
+      AZ_IOT_ADU_OP_GET_UPDATE, AZ_IOT_OK, AZ_IOT_ADU_ERROR_ACTION_NONE, NULL, fx->chan.engine_ctx);
+
+  /* The newer request still holds the slot AND its deadline. */
+  assert_int_not_equal(fx->adu._internal.pending_fetch, 0);
+  assert_int_equal(fx->adu._internal.pending_fetch_deadline_ms, newer_deadline);
+}
+
+/* Asking again is how an application responds to an abandonment, so the new
+ * request must get a fresh clock rather than inherit the expired one. */
+static void a_new_request_restarts_the_deadline(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  fx->chan.request_update_result = AZ_IOT_ERR_NOT_CONNECTED;
+
+  assert_int_equal(az_iot_adu_client_request_update(&fx->adu, UT_TIMEOUT_MS), AZ_IOT_OK);
+  fx->adu._internal.pending_fetch_deadline_ms = 1;
+  (void)az_iot_adu_client_do_work(&fx->adu);
+  assert_int_equal(fx->adu._internal.pending_fetch, 0);
+
+  /* A fresh request is not abandoned on the next tick. */
+  assert_int_equal(az_iot_adu_client_request_update(&fx->adu, UT_TIMEOUT_MS), AZ_IOT_OK);
+  assert_int_not_equal(fx->adu._internal.pending_fetch_deadline_ms, 1);
+  (void)az_iot_adu_client_do_work(&fx->adu);
+  assert_int_not_equal(fx->adu._internal.pending_fetch, 0);
+}
+
+/* A LATE verdict must not resurrect an operation after the slot was abandoned.
+ *
+ * Request A is accepted, B replaces it in the slot, B is abandoned on its
+ * deadline -- which clears it -- and then A's late retryable verdict arrives
+ * and re-arms A. Without a deadline armed at that point A would retry for
+ * ever, which is exactly what this change removes. */
+static void a_late_verdict_cannot_resurrect_an_unbounded_request(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  fx->chan.request_update_result = AZ_IOT_OK; /* A is accepted */
+
+  assert_int_equal(az_iot_adu_client_request_update(&fx->adu, UT_TIMEOUT_MS), AZ_IOT_OK);
+  (void)az_iot_adu_client_do_work(&fx->adu);
+  assert_int_equal(fx->adu._internal.pending_fetch, 0);
+
+  /* B queued behind A, then abandoned on its own deadline. */
+  fx->chan.request_update_result = AZ_IOT_ERR_NOT_CONNECTED;
+  assert_int_equal(az_iot_adu_client_request_onboarding_update(&fx->adu, UT_TIMEOUT_MS), AZ_IOT_OK);
+  fx->adu._internal.pending_fetch_deadline_ms = 1;
+  (void)az_iot_adu_client_do_work(&fx->adu);
+  assert_int_equal(fx->adu._internal.pending_fetch, 0);
+  assert_int_equal(fx->adu._internal.pending_fetch_deadline_ms, 0);
+
+  /* A's late retryable verdict re-arms it -- WITH a deadline. */
+  assert_non_null(fx->chan.result_cb);
+  fx->chan.result_cb(
+      AZ_IOT_ADU_OP_GET_UPDATE,
+      AZ_IOT_ERR_DPS,
+      AZ_IOT_ADU_ERROR_ACTION_RETRY,
+      NULL,
+      fx->chan.engine_ctx);
+  assert_int_not_equal(fx->adu._internal.pending_fetch, 0);
+  assert_int_not_equal(fx->adu._internal.pending_fetch_deadline_ms, 0);
+}
+
+/* The documented opt-out: timeout_ms == 0 retries indefinitely. Passed as the
+ * real argument, so the zero path is covered through the public API rather
+ * than by poking the deadline. */
+static void a_disabled_timeout_never_abandons(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  fx->chan.request_update_result = AZ_IOT_ERR_NOT_CONNECTED;
+  fx->abandoned_count = 0;
+
+  assert_int_equal(az_iot_adu_client_request_update(&fx->adu, 0u), AZ_IOT_OK);
+  assert_int_equal(fx->adu._internal.pending_fetch_deadline_ms, 0);
+
+  for (int i = 0; i < 20; ++i)
+  {
+    (void)az_iot_adu_client_do_work(&fx->adu);
+  }
+
+  /* Still queued, still retrying, never abandoned. */
+  assert_int_not_equal(fx->adu._internal.pending_fetch, 0);
+  assert_int_equal(fx->adu._internal.pending_fetch_deadline_ms, 0);
+  assert_int_equal(fx->abandoned_count, 0);
+  assert_true(fx->chan.request_update_count >= 20);
+}
+
+/* The deadline is the CALLER's, in wall-clock terms, and each call carries its
+ * own. A compile-time constant could not express both a short boot-time probe
+ * and a long background poll. */
+static void each_request_carries_its_own_timeout(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  fx->chan.request_update_result = AZ_IOT_ERR_NOT_CONNECTED;
+
+  uint64_t before = az_iot_time_mono_ms();
+  assert_int_equal(az_iot_adu_client_request_update(&fx->adu, 1000u), AZ_IOT_OK);
+  uint64_t d1 = fx->adu._internal.pending_fetch_deadline_ms;
+  assert_true(d1 >= before + 1000u && d1 <= az_iot_time_mono_ms() + 1000u);
+
+  before = az_iot_time_mono_ms();
+  assert_int_equal(az_iot_adu_client_request_onboarding_update(&fx->adu, 90000u), AZ_IOT_OK);
+  uint64_t d2 = fx->adu._internal.pending_fetch_deadline_ms;
+  assert_true(d2 >= before + 90000u && d2 <= az_iot_time_mono_ms() + 90000u);
+
+  /* Different calls, different deadlines -- not one shared constant. */
+  assert_true(d2 > d1);
+}
+
+/* A service-requested delay is NOT excluded from the caller's budget.
+ *
+ * Excluding it would silently move the deadline the caller set: a device that
+ * asked for an answer within 5 minutes would be answered in an hour, and its
+ * own scheduling would be built on a promise the SDK had quietly rewritten. */
+static void a_service_delay_does_not_extend_the_callers_deadline(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  fx->chan.request_update_result = AZ_IOT_ERR_BUSY;
+
+  assert_int_equal(az_iot_adu_client_request_update(&fx->adu, UT_TIMEOUT_MS), AZ_IOT_OK);
+  uint64_t armed = fx->adu._internal.pending_fetch_deadline_ms;
+
+  az_iot_adu_service_error se
+      = { .code = 429001, .message = "", .tracking_id = "", .retry_after_ms = 1000u };
+  for (int i = 0; i < 5; ++i)
+  {
+    fx->chan.result_cb(
+        AZ_IOT_ADU_OP_GET_UPDATE,
+        AZ_IOT_ERR_DPS,
+        AZ_IOT_ADU_ERROR_ACTION_RETRY,
+        &se,
+        fx->chan.engine_ctx);
+  }
+
+  /* Unmoved, however many delays the service asks for. */
+  assert_int_equal(fx->adu._internal.pending_fetch_deadline_ms, armed);
+}
+
+/* A delay that cannot fit ends the request AT ONCE, and says how long the
+ * service asked for.
+ *
+ * Waiting for the deadline would buy nothing -- the channel refuses for the
+ * whole delay -- and would withhold the one fact the application needs to
+ * schedule its next attempt. */
+static void a_delay_that_cannot_fit_abandons_immediately_and_reports_it(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(az_iot_adu_client_add_observer(&fx->adu, on_event, fx), AZ_IOT_OK);
+  fx->abandoned_count = 0;
+  fx->last_retry_after_ms = 0;
+  fx->chan.request_update_result = AZ_IOT_ERR_BUSY;
+
+  assert_int_equal(az_iot_adu_client_request_update(&fx->adu, UT_TIMEOUT_MS), AZ_IOT_OK);
+
+  az_iot_adu_service_error se = { .code = 429001,
+                                  .message = "TooManyRequests",
+                                  .tracking_id = "tid-1",
+                                  .retry_after_ms = SERVICE_DELAY_MS };
+  fx->chan.result_cb(
+      AZ_IOT_ADU_OP_GET_UPDATE,
+      AZ_IOT_ERR_DPS,
+      AZ_IOT_ADU_ERROR_ACTION_RETRY,
+      &se,
+      fx->chan.engine_ctx);
+
+  /* Told now, not at the deadline, and told WHEN to come back. */
+  assert_int_equal(fx->abandoned_count, 1);
+  assert_int_equal(fx->last_abandoned_reason, AZ_IOT_ERR_TIMEOUT);
+  assert_int_equal(fx->last_abandoned_operation, AZ_IOT_ADU_OP_GET_UPDATE);
+  assert_int_equal(fx->last_retry_after_ms, SERVICE_DELAY_MS);
+  assert_int_equal(fx->last_error_code, 429001);
+
+  /* And the slot is genuinely empty: no further attempts. */
+  assert_int_equal(fx->adu._internal.pending_fetch, 0);
+  assert_int_equal(fx->adu._internal.pending_fetch_deadline_ms, 0);
+  size_t before = fx->chan.request_update_count;
+  (void)az_iot_adu_client_do_work(&fx->adu);
+  assert_int_equal(fx->chan.request_update_count, before);
+}
+
+/* A delay that DOES fit is waited out normally: the request stays queued and
+ * keeps its deadline. Otherwise any retry-after at all would end a request the
+ * service was willing to serve within the caller's budget. */
+static void a_delay_that_fits_leaves_the_request_queued(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(az_iot_adu_client_add_observer(&fx->adu, on_event, fx), AZ_IOT_OK);
+  fx->abandoned_count = 0;
+  fx->chan.request_update_result = AZ_IOT_ERR_BUSY;
+
+  assert_int_equal(az_iot_adu_client_request_update(&fx->adu, UT_TIMEOUT_MS), AZ_IOT_OK);
+  uint64_t armed = fx->adu._internal.pending_fetch_deadline_ms;
+
+  az_iot_adu_service_error se
+      = { .code = 429001, .message = "", .tracking_id = "", .retry_after_ms = 1000u };
+  fx->chan.result_cb(
+      AZ_IOT_ADU_OP_GET_UPDATE,
+      AZ_IOT_ERR_DPS,
+      AZ_IOT_ADU_ERROR_ACTION_RETRY,
+      &se,
+      fx->chan.engine_ctx);
+
+  assert_int_equal(fx->abandoned_count, 0);
+  assert_int_not_equal(fx->adu._internal.pending_fetch, 0);
+  assert_int_equal(fx->adu._internal.pending_fetch_deadline_ms, armed);
+}
+
+/* With no bound, even a delay longer than any budget cannot abandon: there is
+ * no deadline for it to fail to fit inside. */
+static void a_delay_cannot_abandon_an_unbounded_request(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(az_iot_adu_client_add_observer(&fx->adu, on_event, fx), AZ_IOT_OK);
+  fx->abandoned_count = 0;
+  fx->chan.request_update_result = AZ_IOT_ERR_BUSY;
+
+  assert_int_equal(az_iot_adu_client_request_update(&fx->adu, 0u), AZ_IOT_OK);
+
+  az_iot_adu_service_error se
+      = { .code = 429001, .message = "", .tracking_id = "", .retry_after_ms = SERVICE_DELAY_MS };
+  fx->chan.result_cb(
+      AZ_IOT_ADU_OP_GET_UPDATE,
+      AZ_IOT_ERR_DPS,
+      AZ_IOT_ADU_ERROR_ACTION_RETRY,
+      &se,
+      fx->chan.engine_ctx);
+
+  assert_int_equal(fx->abandoned_count, 0);
+  assert_int_not_equal(fx->adu._internal.pending_fetch, 0);
+}
+
 /* --- explicit update requests -------------------------------------------- */
 
 /* The application chooses the route, so the SDK must not pick one for it. An
@@ -2373,12 +2698,12 @@ static void each_request_function_asks_for_its_own_route(void** state)
   fixture* fx = (fixture*)*state;
   open_to_connected(fx);
 
-  assert_int_equal(az_iot_adu_client_request_onboarding_update(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(az_iot_adu_client_request_onboarding_update(&fx->adu, UT_TIMEOUT_MS), AZ_IOT_OK);
   assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
   assert_int_equal(fx->chan.request_update_count, 1);
   assert_int_equal(fx->chan.last_request_operation, AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE);
 
-  assert_int_equal(az_iot_adu_client_request_update(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(az_iot_adu_client_request_update(&fx->adu, UT_TIMEOUT_MS), AZ_IOT_OK);
   assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
   assert_int_equal(fx->chan.request_update_count, 2);
   assert_int_equal(fx->chan.last_request_operation, AZ_IOT_ADU_OP_GET_UPDATE);
@@ -2396,7 +2721,7 @@ static void a_refused_request_is_retried_on_the_same_route(void** state)
   open_to_connected(fx);
 
   fx->chan.request_update_result = AZ_IOT_ERR_NOT_CONNECTED;
-  assert_int_equal(az_iot_adu_client_request_update(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(az_iot_adu_client_request_update(&fx->adu, UT_TIMEOUT_MS), AZ_IOT_OK);
   assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
   assert_int_equal(fx->chan.request_update_count, 1);
   assert_int_equal(fx->chan.last_request_operation, AZ_IOT_ADU_OP_GET_UPDATE);
@@ -2415,7 +2740,7 @@ static void a_retryable_verdict_re_arms_the_same_route(void** state)
   fixture* fx = (fixture*)*state;
   open_to_connected(fx);
 
-  assert_int_equal(az_iot_adu_client_request_update(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(az_iot_adu_client_request_update(&fx->adu, UT_TIMEOUT_MS), AZ_IOT_OK);
   assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
   assert_int_equal(fx->chan.request_update_count, 1);
 
@@ -2441,13 +2766,13 @@ static void a_retryable_verdict_does_not_overwrite_a_newer_request(void** state)
   open_to_connected(fx);
 
   /* Regular is asked for and accepted; it is now in flight. */
-  assert_int_equal(az_iot_adu_client_request_update(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(az_iot_adu_client_request_update(&fx->adu, UT_TIMEOUT_MS), AZ_IOT_OK);
   assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
   assert_int_equal(fx->chan.request_update_count, 1);
   assert_int_equal(fx->chan.last_request_operation, AZ_IOT_ADU_OP_GET_UPDATE);
 
   /* The application changes its mind before the answer arrives. */
-  assert_int_equal(az_iot_adu_client_request_onboarding_update(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(az_iot_adu_client_request_onboarding_update(&fx->adu, UT_TIMEOUT_MS), AZ_IOT_OK);
 
   /* The in-flight regular request then fails retryably. */
   assert_non_null(fx->chan.result_cb);
@@ -2480,7 +2805,7 @@ static void a_synchronous_retryable_verdict_is_not_lost(void** state)
   fx->chan.result_is_synchronous = true;
   fx->chan.synchronous_action = AZ_IOT_ADU_ERROR_ACTION_RETRY;
 
-  assert_int_equal(az_iot_adu_client_request_update(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(az_iot_adu_client_request_update(&fx->adu, UT_TIMEOUT_MS), AZ_IOT_OK);
   assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
   assert_int_equal(fx->chan.request_update_count, 1);
 
@@ -2501,7 +2826,7 @@ static void a_synchronous_terminal_verdict_is_not_retried(void** state)
   fx->chan.result_is_synchronous = true;
   fx->chan.synchronous_action = AZ_IOT_ADU_ERROR_ACTION_FATAL;
 
-  assert_int_equal(az_iot_adu_client_request_update(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(az_iot_adu_client_request_update(&fx->adu, UT_TIMEOUT_MS), AZ_IOT_OK);
   assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
   assert_int_equal(fx->chan.request_update_count, 1);
 
@@ -2516,8 +2841,8 @@ static void two_requests_before_do_work_issue_only_the_newest(void** state)
   fixture* fx = (fixture*)*state;
   open_to_connected(fx);
 
-  assert_int_equal(az_iot_adu_client_request_update(&fx->adu), AZ_IOT_OK);
-  assert_int_equal(az_iot_adu_client_request_onboarding_update(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(az_iot_adu_client_request_update(&fx->adu, UT_TIMEOUT_MS), AZ_IOT_OK);
+  assert_int_equal(az_iot_adu_client_request_onboarding_update(&fx->adu, UT_TIMEOUT_MS), AZ_IOT_OK);
 
   assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
   assert_int_equal(fx->chan.request_update_count, 1);
@@ -2557,8 +2882,9 @@ static void a_refused_report_is_re_armed_and_resent(void** state)
 static void a_request_on_a_null_client_is_rejected(void** state)
 {
   (void)state;
-  assert_int_equal(az_iot_adu_client_request_update(NULL), AZ_IOT_ERR_INVALID_ARG);
-  assert_int_equal(az_iot_adu_client_request_onboarding_update(NULL), AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(az_iot_adu_client_request_update(NULL, UT_TIMEOUT_MS), AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(
+      az_iot_adu_client_request_onboarding_update(NULL, UT_TIMEOUT_MS), AZ_IOT_ERR_INVALID_ARG);
 }
 
 int main(void)
@@ -2635,6 +2961,21 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         adding_is_refused_from_inside_an_observer_but_removing_is_not, setup, teardown),
     cmocka_unit_test_setup_teardown(a_workflow_transition_is_reported, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_request_the_channel_never_accepts_is_abandoned, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_newer_request_keeps_its_deadline_when_an_older_verdict_arrives, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_new_request_restarts_the_deadline, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_late_verdict_cannot_resurrect_an_unbounded_request, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_disabled_timeout_never_abandons, setup, teardown),
+    cmocka_unit_test_setup_teardown(each_request_carries_its_own_timeout, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_service_delay_does_not_extend_the_callers_deadline, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_delay_that_cannot_fit_abandons_immediately_and_reports_it, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_delay_that_fits_leaves_the_request_queued, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_delay_cannot_abandon_an_unbounded_request, setup, teardown),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

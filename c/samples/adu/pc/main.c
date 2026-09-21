@@ -460,7 +460,9 @@ int main(void)
    * application asks: only it knows whether it has a device record yet, and
    * the onboarding route is the one that needs none. A device that had already
    * provisioned would call az_iot_adu_client_request_update() instead. */
-  if (az_iot_adu_client_request_onboarding_update(&st.adu_client) != AZ_IOT_OK)
+  if (az_iot_adu_client_request_onboarding_update(
+          &st.adu_client, AZ_IOT_ADU_SUGGESTED_REQUEST_TIMEOUT_MS)
+      != AZ_IOT_OK)
   {
     sample_state_destroy(&st);
     return 1;

@@ -328,6 +328,16 @@ extern "C"
 #define AZ_IOT_ADU_DEVICE_PROPS_BUFFER_SIZE 512
 #endif
 
+/* A suggested request timeout, in milliseconds, for callers with no policy of
+ * their own to apply.
+ *
+ * It is ONLY a suggested value. The bound itself is a per-call argument of
+ * az_iot_adu_client_request_update() / _request_onboarding_update(), because
+ * only the application knows how long it can wait for a given check: a
+ * boot-time onboarding probe and a nightly background poll do not share a
+ * deadline, and a compile-time constant cannot express both. */
+#define AZ_IOT_ADU_SUGGESTED_REQUEST_TIMEOUT_MS 300000u
+
 /* Declares a device-properties cache buffer named `name`, sized by
  * AZ_IOT_ADU_DEVICE_PROPS_BUFFER_SIZE, for az_iot_adu_client_config_options:
  *   AZ_IOT_ADU_DEVICE_PROPS_STORAGE(dp_buf);
@@ -529,6 +539,14 @@ extern "C"
     /* The service's correlation GUID (`trackingId`) -- the one value a support
      * request needs. Never NULL; empty when the body carried none. */
     const char* tracking_id;
+    /* How long the service asked the device to wait before asking again, in
+     * milliseconds. 0 when it asked for no particular delay.
+     *
+     * Carried so the application can SCHEDULE its next attempt instead of
+     * guessing. It is the service's own instruction, not an SDK heuristic: the
+     * client does not silently wait it out on the application's behalf, because
+     * that would consume a request budget the application set. */
+    uint32_t retry_after_ms;
   } az_iot_adu_service_error;
 
   /* SDK-produced, callback-lifetime view of something the ADU client did.
@@ -648,6 +666,30 @@ extern "C"
        * accepted: 0 none, 1 onboarding, 2 regular. Not a bool, because a retry
        * must re-issue the route that was actually requested. */
       uint8_t pending_fetch;
+
+      /* When the pending fetch stops being retried, as a monotonic instant.
+       *
+       * WALL-CLOCK, and honoured absolutely: the caller asked for an answer
+       * within N milliseconds, not for N milliseconds of some subset of the
+       * wait. Time spent obeying a service-requested delay is NOT excluded --
+       * excluding it would silently move the deadline the caller set and take
+       * away its ability to plan.
+       *
+       * 0 means NO DEADLINE IS ARMED -- either nothing is pending, or the
+       * caller passed timeout_ms = 0, which deliberately leaves a queued
+       * request retrying indefinitely.
+       *
+       * The slot auto-retries: the channel refusing puts the request straight
+       * back, so a request that can NEVER be served -- the device never
+       * provisions, the enrollment is missing, DPS has no linked hub -- was
+       * reissued for the life of the client with the application never told.
+       * It could not tell that from "no update available". */
+      uint64_t pending_fetch_deadline_ms;
+
+      /* The timeout the caller passed for the pending fetch, so a request the
+       * client re-arms itself after a retryable verdict keeps the caller's
+       * policy instead of silently acquiring a new one. */
+      uint32_t pending_fetch_timeout_ms;
 
       /* Upstream-shaped view of the cached custom properties (az_span arrays
        * over the packed strings in device_props_buffer), handed to the
@@ -858,11 +900,25 @@ extern "C"
    * while an earlier one is still in flight likewise replaces whatever the
    * engine would otherwise have retried.
    *
+   * @p timeout_ms bounds the WHOLE wait, in wall-clock milliseconds: if the
+   * check has not been answered by then, the request is dropped and
+   * AZ_IOT_ADU_EVENT_OPERATION_ABANDONED is raised with
+   * `reason = AZ_IOT_ERR_TIMEOUT`. Time the device spends obeying a
+   * service-requested delay counts against it like any other -- the deadline
+   * the caller set is the deadline that is kept, so the caller can plan around
+   * it. If the service asks for a delay that cannot fit, the request is
+   * abandoned AT ONCE rather than at the deadline, and the event carries
+   * `service_error.retry_after_ms` so the caller can decide when to ask again.
+   *
+   * Pass 0 for no bound: the request is then retried indefinitely and the only
+   * abandonment is a channel verdict. AZ_IOT_ADU_SUGGESTED_REQUEST_TIMEOUT_MS
+   * is available for callers with no policy of their own.
+   *
    * Single-threaded contract: MUST be called on the do_work thread or be
    * externally serialized with do_work().
    */
   AZ_NODISCARD az_iot_result
-  az_iot_adu_client_request_onboarding_update(az_iot_adu_client_t* client);
+  az_iot_adu_client_request_onboarding_update(az_iot_adu_client_t* client, uint32_t timeout_ms);
 
   /**
    * Ask for a REGULAR (software) update — the operational route.
@@ -877,7 +933,8 @@ extern "C"
    * Asynchronous, with the same contract as
    * az_iot_adu_client_request_onboarding_update().
    */
-  AZ_NODISCARD az_iot_result az_iot_adu_client_request_update(az_iot_adu_client_t* client);
+  AZ_NODISCARD az_iot_result
+  az_iot_adu_client_request_update(az_iot_adu_client_t* client, uint32_t timeout_ms);
 
   /**
    * Update the cached device properties and request a report. Deep-copies
