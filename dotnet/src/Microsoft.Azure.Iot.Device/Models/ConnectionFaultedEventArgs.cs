@@ -4,7 +4,7 @@
 using Microsoft.Azure.Iot.Device.Exceptions;
 using System;
 
-namespace Microsoft.Azure.Iot.Device.Gen2.Connection
+namespace Microsoft.Azure.Iot.Device.Models
 {
     /// <summary>
     /// Raised when this client has permanently stopped maintaining its connection to IoT hub.
