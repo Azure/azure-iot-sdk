@@ -512,6 +512,11 @@ extern "C"
    * SDKs may append fields, so callbacks must check _internal_size before
    * reading a field added after the version they were compiled against.
    *
+   * `scope` says WHICH connection the event is about, and `state` is
+   * meaningless without it: a device that provisions through DPS runs two
+   * independent lifecycles, and `CONNECTED` on the provisioning scope does not
+   * mean the hub is usable. Always read the pair.
+   *
    * profile is non-NULL when state == AZ_IOT_CONN_STATE_CONNECTED, and also on
    * a failure whose reason is AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH or
    * AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED -- an application needs the
@@ -521,6 +526,9 @@ extern "C"
   typedef struct az_iot_connection_state_event
   {
     uint32_t _internal_size;
+    /* Which lifecycle this event is about. Placed beside `state` because the
+     * two are only meaningful together. */
+    az_iot_connection_scope scope;
     az_iot_connection_state state;
     az_iot_result reason;
     const az_iot_hub_profile* profile;
@@ -790,7 +798,11 @@ extern "C"
     az_iot_mqtt_role session_role;
     az_iot_mqtt_client* active_client;
 
-    az_iot_connection_state state;
+    /* One lifecycle per scope, indexed by az_iot_connection_scope. They move
+     * independently: a provisioning session failing must not disturb a healthy
+     * hub session, and a hub drop must not invalidate a provisioning session a
+     * feature client is using. */
+    az_iot_connection_state state[AZ_IOT_CONN_SCOPE_COUNT];
     /* Connection-state observers, dispatched feature clients first (see
      * az_iot_connection_client_add_state_observer). Two pools so neither kind
      * of subscriber can starve the other. */
@@ -1113,6 +1125,19 @@ extern "C"
       az_iot_connection_client* client,
       az_iot_connection_state_callback cb,
       void* user_ctx);
+
+  /* The current state of one lifecycle. There is no unscoped state to ask for:
+   * a DPS-provisioned device runs two, and they move independently.
+   *
+   * AZ_IOT_CONN_SCOPE_HUB is what "am I connected?" means for telemetry, twin,
+   * c2d, direct methods and file upload. AZ_IOT_CONN_SCOPE_DPS is what the
+   * device-update client rides, and it stays IDLE for the life of a client that
+   * connects directly to a hub -- that is the answer, not an error.
+   *
+   * Returns AZ_IOT_CONN_STATE_IDLE for a NULL client or an unknown scope. */
+  az_iot_connection_state az_iot_connection_client_get_state(
+      const az_iot_connection_client* client,
+      az_iot_connection_scope scope);
 
   /* Register a callback fired when a DPS/provider-issued operational certificate
    * is obtained during provisioning (D4). Optional. */

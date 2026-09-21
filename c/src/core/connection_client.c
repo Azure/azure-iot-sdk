@@ -297,17 +297,22 @@ static bool have_state_observers(const az_iot_connection_client* c)
 
 static void set_state_to(
     az_iot_connection_client* c,
+    az_iot_connection_scope scope,
     az_iot_connection_state next,
     az_iot_result reason)
 {
-  if (c->state == next)
+  /* Per scope, deliberately. A single comparison here would swallow
+   * HUB:CONNECTING straight after DPS:CONNECTING purely because the VALUE
+   * matched -- which is exactly why a DPS+hub run used to be reported as one
+   * CONNECTING and one CONNECTED, with the whole provisioning phase invisible. */
+  if (c->state[scope] == next)
   {
     return;
   }
-  c->state = next;
+  c->state[scope] = next;
   /* Bookkeeping that belongs to the transition itself, not to any observer, so
    * it runs whether or not anyone is watching. */
-  if (next == AZ_IOT_CONN_STATE_CONNECTED)
+  if (scope == AZ_IOT_CONN_SCOPE_HUB && next == AZ_IOT_CONN_STATE_CONNECTED)
   {
     c->consecutive_hub_connect_failures = 0;
   }
@@ -318,11 +323,18 @@ static void set_state_to(
   az_iot_hub_profile profile = AZ_IOT_HUB_PROFILE_INIT;
   az_iot_connection_state_event event = {
     ._internal_size = sizeof(az_iot_connection_state_event),
+    .scope = scope,
     .state = next,
     .reason = reason,
     .profile = NULL,
   };
-  if (next == AZ_IOT_CONN_STATE_CONNECTED || reason == AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH
+  /* The profile answers "which hub generation is this?", so it rides every
+   * event that settles that question: a hub coming up, a provisioning session
+   * whose assignment has resolved it, and the two failures that are ABOUT the
+   * profile. */
+  if ((next == AZ_IOT_CONN_STATE_CONNECTED
+       && (scope == AZ_IOT_CONN_SCOPE_HUB || c->connection_profile_resolved))
+      || reason == AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH
       || reason == AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED)
   {
     profile.connection_profile = c->connection_profile;
@@ -331,6 +343,24 @@ static void set_state_to(
     event.profile = &profile;
   }
   dispatch_state_event(c, &event);
+}
+
+static bool client_is_fully_idle(const az_iot_connection_client* c)
+{
+  return c->state[AZ_IOT_CONN_SCOPE_DPS] == AZ_IOT_CONN_STATE_IDLE
+      && c->state[AZ_IOT_CONN_SCOPE_HUB] == AZ_IOT_CONN_STATE_IDLE;
+}
+
+/* Settle BOTH lifecycles.
+ *
+ * close() is a statement about the whole client, not about one scope: it
+ * cancels a pending retry whichever ladder it belonged to, and it acknowledges
+ * a fault on either. Emitting per scope keeps the rule that every state change
+ * is observable, and set_state_to() suppresses the ones that did not move. */
+static void settle_all_scopes_to_idle(az_iot_connection_client* c)
+{
+  set_state_to(c, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_IDLE, AZ_IOT_OK);
+  set_state_to(c, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_IDLE, AZ_IOT_OK);
 }
 
 static const az_iot_mqtt_factory* find_factory(
@@ -647,14 +677,18 @@ static void schedule_reconnect(
   if (c->opts.reconnection_policy.max_attempts > 0
       && c->retry_attempt[scope] > c->opts.reconnection_policy.max_attempts)
   {
-    set_state_to(c, AZ_IOT_CONN_STATE_FAULTED, reason);
+    set_state_to(c, failure_scope, AZ_IOT_CONN_STATE_FAULTED, reason);
     return;
   }
 
   uint32_t delay = az_iot_reconnect_delay_ms(
       &c->opts.reconnection_policy, c->retry_attempt[scope], &c->rng_state);
   c->reconnect_due_ms = az_iot_time_mono_ms() + delay;
-  set_state_to(c, AZ_IOT_CONN_STATE_RECONNECTING, reason);
+  /* Reported against the scope that FAILED, not the ladder the retry climbs:
+   * a hub CONNACK that rejects the identity is a HUB session going down, even
+   * though the recovery attempt is a DPS registration. The ladder scope is
+   * separate and lives in retry_attempt[] above. */
+  set_state_to(c, failure_scope, AZ_IOT_CONN_STATE_RECONNECTING, reason);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -1627,7 +1661,7 @@ static az_iot_result dps_start(az_iot_connection_client* c)
   c->dps_pending_retry_after_secs = 0;
   c->dps_enrolling = c->opts.dps.request_operational_certificate;
 
-  set_state_to(c, AZ_IOT_CONN_STATE_CONNECTING, AZ_IOT_OK);
+  set_state_to(c, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_CONNECTING, AZ_IOT_OK);
 
   /* That announcement ran the application's state callback synchronously, and
    * close() is legal from inside it -- including the branch that cancels a
@@ -1646,6 +1680,16 @@ static az_iot_result dps_start(az_iot_connection_client* c)
   {
     dps_teardown_mqtt(c);
     c->dps_phase = DPS_PHASE_NONE;
+    /* The announcement above already moved the DPS lifecycle to CONNECTING, so
+     * a synchronous connect failure has to settle it again here -- every other
+     * teardown does. Leaving it pinned at CONNECTING would make the next
+     * dps_start() announce nothing (the value would be unchanged) and, for a
+     * session the connection client owns, would make open() reject for ever.
+     *
+     * Settled at the point the session dies rather than in each caller: this is
+     * the only place that knows the announcement happened. */
+    set_state_to(c, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_DISCONNECTING, r);
+    set_state_to(c, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_IDLE, r);
   }
   return r;
 }
@@ -1666,7 +1710,7 @@ static az_iot_result dps_start(az_iot_connection_client* c)
 static void reject_assignment(az_iot_connection_client* c, az_iot_result reason)
 {
   c->needs_reprovision = true;
-  set_state_to(c, AZ_IOT_CONN_STATE_FAULTED, reason);
+  set_state_to(c, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_FAULTED, reason);
 }
 
 /* Process deferred DPS finalization. Called from _do_work() after process_loop.
@@ -1703,6 +1747,18 @@ static void dps_apply_deferred(az_iot_connection_client* c)
   }
   dps_teardown_mqtt(c);
   c->dps_phase = DPS_PHASE_DONE;
+
+  /* The provisioning session is gone, so its lifecycle settles here -- whatever
+   * happens to the hub below. Without this the DPS scope would sit at
+   * CONNECTING for the life of the client, and the next dps_start() would find
+   * the value unchanged and announce nothing: a re-provisioning run would be
+   * invisible, which is the exact failure the scopes exist to prevent.
+   *
+   * A failure path overwrites this with RECONNECTING or FAULTED a few lines
+   * below; set_state_to() emits both, which is right -- "the session closed,
+   * and then the attempt failed" is two facts. */
+  set_state_to(c, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_DISCONNECTING, status);
+  set_state_to(c, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_IDLE, status);
 
   /* An auxiliary session -- one a feature client opened for itself, alongside
    * the hub connection -- never registers, so it only ever reaches here by
@@ -1748,7 +1804,7 @@ static void dps_apply_deferred(az_iot_connection_client* c)
        * either one alone decide. The policy's max_delay_ms deliberately does
        * NOT cap this: it bounds how long the SDK waits of its own accord, not
        * how long the service asked to be left alone. */
-      if (retry_after_secs > 0 && c->state == AZ_IOT_CONN_STATE_RECONNECTING)
+      if (retry_after_secs > 0 && c->state[AZ_IOT_CONN_SCOPE_DPS] == AZ_IOT_CONN_STATE_RECONNECTING)
       {
         uint64_t floor_ms = az_iot_time_mono_ms() + (uint64_t)retry_after_secs * 1000ull;
         if (c->reconnect_due_ms < floor_ms)
@@ -1762,7 +1818,7 @@ static void dps_apply_deferred(az_iot_connection_client* c)
       }
       return;
     }
-    set_state_to(c, AZ_IOT_CONN_STATE_FAULTED, status);
+    set_state_to(c, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_FAULTED, status);
     return;
   }
 
@@ -1865,7 +1921,7 @@ static void dps_apply_deferred(az_iot_connection_client* c)
   r = start_connect_attempt(c);
   if (r != AZ_IOT_OK)
   {
-    set_state_to(c, AZ_IOT_CONN_STATE_FAULTED, r);
+    set_state_to(c, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_FAULTED, r);
   }
 }
 
@@ -2117,7 +2173,7 @@ static void presence_decode_birth_ack(az_iot_connection_client* c, const uint8_t
  * would catch. See AB#39366084. */
 static void announce_connected(az_iot_connection_client* c)
 {
-  set_state_to(c, AZ_IOT_CONN_STATE_CONNECTED, AZ_IOT_OK);
+  set_state_to(c, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_CONNECTED, AZ_IOT_OK);
 }
 
 /* Fail the session because a subscription it depends on could not be
@@ -2492,7 +2548,7 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
          * publishes on CONNECTED would write into a socket that is already
          * being torn down. The DISCONNECTED event still on its way settles the
          * session to IDLE. */
-        if (c->user_close || c->state == AZ_IOT_CONN_STATE_DISCONNECTING)
+        if (c->user_close || c->state[AZ_IOT_CONN_SCOPE_HUB] == AZ_IOT_CONN_STATE_DISCONNECTING)
         {
           AZ_IOT_LOG_DEBUG("connack ignored: close already requested");
           break;
@@ -2594,7 +2650,7 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
            * abandoned. A birth-ack the broker sent before close() reached it
            * arrives in a later process_loop batch, when user_close is set and
            * the state is DISCONNECTING. */
-          if (c->user_close || c->state == AZ_IOT_CONN_STATE_DISCONNECTING)
+          if (c->user_close || c->state[AZ_IOT_CONN_SCOPE_HUB] == AZ_IOT_CONN_STATE_DISCONNECTING)
           {
             AZ_IOT_LOG_DEBUG("birth-ack ignored: close already requested");
             break;
@@ -2765,7 +2821,7 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
     }
   }
 
-  set_state_to(c, AZ_IOT_CONN_STATE_CONNECTING, AZ_IOT_OK);
+  set_state_to(c, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_CONNECTING, AZ_IOT_OK);
   az_iot_result r = mc->iface->connect(mc, &copts);
   if (r != AZ_IOT_OK)
   {
@@ -2791,7 +2847,7 @@ static void apply_deferred(az_iot_connection_client* c)
   {
     case DEFER_FAULT:
       teardown_active(c);
-      set_state_to(c, AZ_IOT_CONN_STATE_FAULTED, reason);
+      set_state_to(c, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_FAULTED, reason);
       break;
     case DEFER_RECONNECT:
       /* Reached from on_mqtt_event, which serves the HUB session only. */
@@ -2803,7 +2859,7 @@ static void apply_deferred(az_iot_connection_client* c)
       c->retry_attempt[AZ_IOT_CONN_SCOPE_DPS] = 0;
       c->retry_attempt[AZ_IOT_CONN_SCOPE_HUB] = 0;
       c->reconnect_due_ms = 0;
-      set_state_to(c, AZ_IOT_CONN_STATE_IDLE, reason);
+      set_state_to(c, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_IDLE, reason);
       break;
     default:
       break;
@@ -2997,7 +3053,8 @@ az_iot_result az_iot_connection_client_init(
   }
   memset(client, 0, sizeof(*client));
   client->opts = *opts;
-  client->state = AZ_IOT_CONN_STATE_IDLE;
+  client->state[AZ_IOT_CONN_SCOPE_DPS] = AZ_IOT_CONN_STATE_IDLE;
+  client->state[AZ_IOT_CONN_SCOPE_HUB] = AZ_IOT_CONN_STATE_IDLE;
   /* Determine session role early so feature clients can query the profile
    * during their init (which happens before open()). When mock-next is
    * configured, also resolve the device_id so subscriptions can be built. */
@@ -3317,7 +3374,21 @@ az_iot_result az_iot_connection_client_open(az_iot_connection_client* client)
     AZ_IOT_LOG_ERROR("connection_client_open: NULL client");
     return AZ_IOT_ERR_INVALID_ARG;
   }
-  if (client->state != AZ_IOT_CONN_STATE_IDLE)
+  /* What "already open" means, now that there are two lifecycles.
+   *
+   * The HUB scope is the application's connection, so any non-IDLE value there
+   * is a refusal. The DPS scope is only the application's when the connection
+   * client is driving it: a provisioning session a FEATURE client opened for
+   * itself must NOT block open(), or a device-update client that pumped before
+   * the application opened would wedge the client permanently -- open() would
+   * answer ALREADY_INITIALIZED for ever.
+   *
+   * `dps_session_auxiliary` is what distinguishes the two today. That flag is
+   * the thing the refcounted-session work removes; when it does, this becomes
+   * "is a registration ref held?", which is the same question asked properly. */
+  if (client->state[AZ_IOT_CONN_SCOPE_HUB] != AZ_IOT_CONN_STATE_IDLE
+      || (client->state[AZ_IOT_CONN_SCOPE_DPS] != AZ_IOT_CONN_STATE_IDLE
+          && !client->dps_session_auxiliary))
   {
     AZ_IOT_LOG_ERROR("connection_client_open: client not in IDLE state");
     return AZ_IOT_ERR_ALREADY_INITIALIZED;
@@ -3426,7 +3497,7 @@ az_iot_result az_iot_connection_client_open(az_iot_connection_client* client)
     az_iot_result r = apply_mock_next_bypass(client);
     if (r != AZ_IOT_OK)
     {
-      set_state_to(client, AZ_IOT_CONN_STATE_IDLE, r);
+      set_state_to(client, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_IDLE, r);
       return r;
     }
     /* host + client_id are set, session_role = HUB_NEXT → fall through
@@ -3434,7 +3505,7 @@ az_iot_result az_iot_connection_client_open(az_iot_connection_client* client)
     r = start_connect_attempt(client);
     if (r != AZ_IOT_OK)
     {
-      set_state_to(client, AZ_IOT_CONN_STATE_IDLE, r);
+      set_state_to(client, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_IDLE, r);
     }
     return r;
   }
@@ -3451,7 +3522,7 @@ az_iot_result az_iot_connection_client_open(az_iot_connection_client* client)
     az_iot_result r = dps_start(client);
     if (r != AZ_IOT_OK)
     {
-      set_state_to(client, AZ_IOT_CONN_STATE_IDLE, r);
+      set_state_to(client, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_IDLE, r);
       return r;
     }
     /* Consumed only once provisioning is really under way, so a dps_start()
@@ -3469,7 +3540,7 @@ az_iot_result az_iot_connection_client_open(az_iot_connection_client* client)
   az_iot_result r = start_connect_attempt(client);
   if (r != AZ_IOT_OK)
   {
-    set_state_to(client, AZ_IOT_CONN_STATE_IDLE, r);
+    set_state_to(client, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_IDLE, r);
   }
   return r;
 }
@@ -3480,20 +3551,29 @@ az_iot_result az_iot_connection_client_close(az_iot_connection_client* client)
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
-  if (client->state == AZ_IOT_CONN_STATE_IDLE)
+  /* Idempotent only when BOTH lifecycles are already settled. A client whose
+   * hub is IDLE but whose provisioning session is still up has something to
+   * close. */
+  if (client->state[AZ_IOT_CONN_SCOPE_HUB] == AZ_IOT_CONN_STATE_IDLE
+      && client->state[AZ_IOT_CONN_SCOPE_DPS] == AZ_IOT_CONN_STATE_IDLE)
   {
     return AZ_IOT_OK; /* idempotent */
   }
 
   /* Closing while waiting to reconnect: cancel the schedule and go straight
-   * to IDLE. There is no live adapter to disconnect at this point. */
-  if (client->state == AZ_IOT_CONN_STATE_RECONNECTING)
+   * to IDLE. There is no live adapter to disconnect at this point.
+   *
+   * Either scope may be the one waiting -- a registration retry is scheduled on
+   * DPS, a hub retry on HUB -- and there is one deadline, so one of them
+   * waiting means the client as a whole is waiting. */
+  if (client->state[AZ_IOT_CONN_SCOPE_HUB] == AZ_IOT_CONN_STATE_RECONNECTING
+      || client->state[AZ_IOT_CONN_SCOPE_DPS] == AZ_IOT_CONN_STATE_RECONNECTING)
   {
     client->retry_attempt[AZ_IOT_CONN_SCOPE_DPS] = 0;
     client->retry_attempt[AZ_IOT_CONN_SCOPE_HUB] = 0;
     client->reconnect_due_ms = 0;
     client->user_close = false;
-    set_state_to(client, AZ_IOT_CONN_STATE_IDLE, AZ_IOT_OK);
+    settle_all_scopes_to_idle(client);
     return AZ_IOT_OK;
   }
 
@@ -3511,7 +3591,8 @@ az_iot_result az_iot_connection_client_close(az_iot_connection_client* client)
    * transition. The configuration is untouched, so a DPS client re-provisions
    * on the next open() and a client that had already been assigned a hub
    * reconnects to it. */
-  if (client->state == AZ_IOT_CONN_STATE_FAULTED)
+  if (client->state[AZ_IOT_CONN_SCOPE_HUB] == AZ_IOT_CONN_STATE_FAULTED
+      || client->state[AZ_IOT_CONN_SCOPE_DPS] == AZ_IOT_CONN_STATE_FAULTED)
   {
     client->retry_attempt[AZ_IOT_CONN_SCOPE_DPS] = 0;
     client->retry_attempt[AZ_IOT_CONN_SCOPE_HUB] = 0;
@@ -3523,7 +3604,7 @@ az_iot_result az_iot_connection_client_close(az_iot_connection_client* client)
     /* Defensive: no fault path leaves one behind today, but close() must not
      * depend on that to reach IDLE. */
     teardown_active(client);
-    set_state_to(client, AZ_IOT_CONN_STATE_IDLE, AZ_IOT_OK);
+    settle_all_scopes_to_idle(client);
     return AZ_IOT_OK;
   }
 
@@ -3555,14 +3636,17 @@ az_iot_result az_iot_connection_client_close(az_iot_connection_client* client)
       client->reconnect_due_ms = 0;
       /* needs_reprovision survives, as in the FAULTED branch above. */
       client->user_close = false;
-      set_state_to(client, AZ_IOT_CONN_STATE_IDLE, AZ_IOT_OK);
+      /* DISCONNECTING first, so a user close reads the same as any other
+       * provisioning-session teardown rather than jumping straight to IDLE. */
+      set_state_to(client, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_DISCONNECTING, AZ_IOT_OK);
+      set_state_to(client, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_IDLE, AZ_IOT_OK);
       return AZ_IOT_OK;
     }
     return AZ_IOT_ERR_NOT_INITIALIZED;
   }
 
   client->user_close = true;
-  set_state_to(client, AZ_IOT_CONN_STATE_DISCONNECTING, AZ_IOT_OK);
+  set_state_to(client, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_DISCONNECTING, AZ_IOT_OK);
   az_iot_result r = client->active_client->iface->disconnect(client->active_client);
   if (r != AZ_IOT_OK && r != AZ_IOT_ERR_NOT_CONNECTED)
   {
@@ -3600,6 +3684,10 @@ az_iot_result az_iot_connection_client_do_work(
       client->dps_session_auxiliary = false;
       client->dps_aux_idle_deadline_ms = 0;
       client->dps_phase = DPS_PHASE_DONE;
+      /* The session is gone, so its lifecycle settles -- the same rule as any
+       * other provisioning-session teardown. The HUB scope is untouched. */
+      set_state_to(client, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_DISCONNECTING, AZ_IOT_OK);
+      set_state_to(client, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_IDLE, AZ_IOT_OK);
       return AZ_IOT_OK;
     }
 
@@ -3721,7 +3809,7 @@ az_iot_result az_iot_connection_client_do_work(
     else
     {
       teardown_active(client);
-      set_state_to(client, AZ_IOT_CONN_STATE_FAULTED, AZ_IOT_ERR_TIMEOUT);
+      set_state_to(client, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_FAULTED, AZ_IOT_ERR_TIMEOUT);
     }
   }
 
@@ -3729,7 +3817,7 @@ az_iot_result az_iot_connection_client_do_work(
    * the transition -- but the ack that would have announced CONNECTED is never
    * coming, so the release has to be noticed here. */
   if (client->subscription_gate.active && client->subscription_gate.gated_outstanding == 0
-      && client->state == AZ_IOT_CONN_STATE_CONNECTING)
+      && client->state[AZ_IOT_CONN_SCOPE_HUB] == AZ_IOT_CONN_STATE_CONNECTING)
   {
     announce_connected(client);
   }
@@ -3747,8 +3835,8 @@ az_iot_result az_iot_connection_client_do_work(
    * shutting down cleanly. */
   if (client->subscription_gate.active && client->subscription_gate.gated_outstanding > 0
       && !client->user_close
-      && (client->state == AZ_IOT_CONN_STATE_CONNECTING
-          || client->state == AZ_IOT_CONN_STATE_CONNECTED)
+      && (client->state[AZ_IOT_CONN_SCOPE_HUB] == AZ_IOT_CONN_STATE_CONNECTING
+          || client->state[AZ_IOT_CONN_SCOPE_HUB] == AZ_IOT_CONN_STATE_CONNECTED)
       && az_iot_time_mono_ms() >= client->subscription_gate.deadline_ms)
   {
     memset(&client->subscription_gate, 0, sizeof(client->subscription_gate));
@@ -3759,16 +3847,25 @@ az_iot_result az_iot_connection_client_do_work(
     else
     {
       teardown_active(client);
-      set_state_to(client, AZ_IOT_CONN_STATE_FAULTED, AZ_IOT_ERR_TIMEOUT);
+      set_state_to(client, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_FAULTED, AZ_IOT_ERR_TIMEOUT);
     }
   }
 
-  /* If we're waiting to reconnect and the deadline has passed, attempt it. */
-  if (client->state == AZ_IOT_CONN_STATE_RECONNECTING && client->active_client == NULL
-      && az_iot_time_mono_ms() >= client->reconnect_due_ms)
+  /* If we are waiting to reconnect and the deadline has passed, attempt it.
+   *
+   * `reconnect_due_ms` is the pending-retry token, and firing CONSUMES it.
+   * Gating on the state alone is not enough now that the two scopes move
+   * independently: a hub failure whose recovery is a re-registration leaves
+   * HUB in RECONNECTING while the attempt runs on DPS, so a state-only test
+   * would re-fire on every tick for as long as the hub stayed down. */
+  if (client->reconnect_due_ms != 0
+      && (client->state[AZ_IOT_CONN_SCOPE_HUB] == AZ_IOT_CONN_STATE_RECONNECTING
+          || client->state[AZ_IOT_CONN_SCOPE_DPS] == AZ_IOT_CONN_STATE_RECONNECTING)
+      && client->active_client == NULL && az_iot_time_mono_ms() >= client->reconnect_due_ms)
   {
     az_iot_result cr;
     az_iot_connection_scope attempted;
+    client->reconnect_due_ms = 0;
     if (client->needs_reprovision)
     {
       /* The hub refused this identity, or this device has not registered yet;
@@ -3816,7 +3913,7 @@ az_iot_result az_iot_connection_client__set_session_role(
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
-  if (client->state != AZ_IOT_CONN_STATE_IDLE)
+  if (!client_is_fully_idle(client))
   {
     return AZ_IOT_ERR_ALREADY_INITIALIZED;
   }
@@ -3869,7 +3966,7 @@ az_iot_result az_iot_connection_client__set_host(az_iot_connection_client* clien
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
-  if (client->state != AZ_IOT_CONN_STATE_IDLE)
+  if (!client_is_fully_idle(client))
   {
     return AZ_IOT_ERR_ALREADY_INITIALIZED;
   }
@@ -3888,7 +3985,7 @@ az_iot_result az_iot_connection_client__set_client_id(
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
-  if (client->state != AZ_IOT_CONN_STATE_IDLE)
+  if (!client_is_fully_idle(client))
   {
     return AZ_IOT_ERR_ALREADY_INITIALIZED;
   }
@@ -4030,9 +4127,23 @@ size_t az_iot_connection_client__unregister_session_end_handler(
   return 0;
 }
 
+az_iot_connection_state az_iot_connection_client_get_state(
+    const az_iot_connection_client* client,
+    az_iot_connection_scope scope)
+{
+  /* IDLE is the honest answer for a scope that does not apply -- a direct hub
+   * connection never provisions, so its DPS lifecycle genuinely never leaves
+   * IDLE -- and it is the safe answer for a NULL client: nothing is usable. */
+  if (client == NULL || (scope != AZ_IOT_CONN_SCOPE_DPS && scope != AZ_IOT_CONN_SCOPE_HUB))
+  {
+    return AZ_IOT_CONN_STATE_IDLE;
+  }
+  return client->state[scope];
+}
+
 bool az_iot_connection_client__is_connected(const az_iot_connection_client* client)
 {
-  return client && client->state == AZ_IOT_CONN_STATE_CONNECTED;
+  return client && client->state[AZ_IOT_CONN_SCOPE_HUB] == AZ_IOT_CONN_STATE_CONNECTED;
 }
 
 const char* az_iot_connection_client__device_id(const az_iot_connection_client* client)
@@ -4074,7 +4185,7 @@ az_iot_result az_iot_connection_client_get_hub_profile(
   }
   /* Readable once connected, and also after a profile-driven failure -- that is
    * the case where an application most needs to see what the service said. */
-  if (client->state != AZ_IOT_CONN_STATE_CONNECTED
+  if (client->state[AZ_IOT_CONN_SCOPE_HUB] != AZ_IOT_CONN_STATE_CONNECTED
       && client->connection_profile != AZ_IOT_CONNECTION_PROFILE_UNKNOWN)
   {
     return AZ_IOT_ERR_NOT_CONNECTED;
@@ -4162,7 +4273,7 @@ az_iot_result az_iot_connection_client__register_feature_client_bind(
   /* Already connected means the identity is settled and this session's binds
    * have run, so this one has to catch up or it would sit idle until the next
    * connect. Mirrors __add_subscription_on_connect subscribing immediately. */
-  if (client->state == AZ_IOT_CONN_STATE_CONNECTED)
+  if (client->state[AZ_IOT_CONN_SCOPE_HUB] == AZ_IOT_CONN_STATE_CONNECTED)
   {
     return on_bind(owner, client);
   }
@@ -4416,7 +4527,7 @@ az_iot_result az_iot_connection_client__publish(
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
-  if (!client->active_client || client->state != AZ_IOT_CONN_STATE_CONNECTED)
+  if (!client->active_client || client->state[AZ_IOT_CONN_SCOPE_HUB] != AZ_IOT_CONN_STATE_CONNECTED)
   {
     return AZ_IOT_ERR_NOT_CONNECTED;
   }
@@ -4470,7 +4581,7 @@ az_iot_result az_iot_connection_client__subscribe(
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
-  if (!client->active_client || client->state != AZ_IOT_CONN_STATE_CONNECTED)
+  if (!client->active_client || client->state[AZ_IOT_CONN_SCOPE_HUB] != AZ_IOT_CONN_STATE_CONNECTED)
   {
     return AZ_IOT_ERR_NOT_CONNECTED;
   }
@@ -4538,7 +4649,8 @@ az_iot_result az_iot_connection_client__add_subscription_on_connect(
    * path, so the ack is correlated like any other -- otherwise a refusal would
    * leave the session reporting CONNECTED with a filter that is dead. */
   if (client->active_client && client->active_client->iface
-      && (client->state == AZ_IOT_CONN_STATE_CONNECTED || client->subscription_gate.active))
+      && (client->state[AZ_IOT_CONN_SCOPE_HUB] == AZ_IOT_CONN_STATE_CONNECTED
+          || client->subscription_gate.active))
   {
     uint16_t pid = 0;
     az_iot_result sr
@@ -4577,7 +4689,8 @@ size_t az_iot_connection_client__remove_subscriptions_for(
    * Withdrawing a custom filter leaves the wildcard -- and therefore every
    * feature's delivery -- untouched. */
   const bool unsubscribe_on_the_wire = client->active_client && client->active_client->iface
-      && client->active_client->iface->unsubscribe && client->state == AZ_IOT_CONN_STATE_CONNECTED;
+      && client->active_client->iface->unsubscribe
+      && client->state[AZ_IOT_CONN_SCOPE_HUB] == AZ_IOT_CONN_STATE_CONNECTED;
 
   size_t removed = 0;
   for (size_t i = 0; i < AZ_IOT_MAX_PERSISTENT_SUBS; ++i)

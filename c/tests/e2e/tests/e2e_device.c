@@ -92,6 +92,14 @@ static int device_config_load(e2e_device* dev)
 
 static void on_conn_state(const az_iot_connection_state_event* event, void* user_ctx)
 {
+  /* Hub lifecycle only: the provisioning session reports on its own scope,
+   * and storing its state here would overwrite the hub state this code acts
+   * on. */
+  if (event->scope != AZ_IOT_CONN_SCOPE_HUB)
+  {
+    return;
+  }
+
   az_iot_connection_state s = event->state;
   az_iot_result reason = event->reason;
   (void)reason;

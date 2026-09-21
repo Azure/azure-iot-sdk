@@ -63,6 +63,14 @@ typedef struct
 static void on_conn_state(const az_iot_connection_state_event* event, void* user_ctx)
 {
   user_context* ctx = (user_context*)user_ctx;
+  /* Hub lifecycle only: the provisioning session reports on its own scope,
+   * and storing its state here would overwrite the hub state this code acts
+   * on. */
+  if (event->scope != AZ_IOT_CONN_SCOPE_HUB)
+  {
+    return;
+  }
+
   ctx->conn_state = event->state;
   ctx->conn_reason = event->reason;
 
