@@ -181,11 +181,19 @@ static az_iot_adu_error_action handle_failure(
     az_iot_adu_channel_dps* c,
     az_iot_adu_operation operation,
     const uint8_t* payload,
-    size_t payload_len)
+    size_t payload_len,
+    char* code,
+    size_t code_size,
+    char* tracking_id,
+    size_t tracking_id_size,
+    int32_t* out_numeric)
 {
-  char code[64];
   int32_t numeric = 0;
-  (void)az_iot_adu__parse_error_code(payload, payload_len, code, sizeof(code), &numeric);
+  (void)az_iot_adu__parse_error_code(payload, payload_len, code, code_size, &numeric);
+  /* Diagnostics only, and best-effort: an empty tracking id is not a parse
+   * failure, it is a body that carried none. */
+  (void)az_iot_adu__parse_tracking_id(payload, payload_len, tracking_id, tracking_id_size);
+  *out_numeric = numeric;
 
   az_iot_adu_error_action action = az_iot_adu__classify_error(code, numeric, operation);
 
@@ -236,7 +244,8 @@ static void emit_result(
     az_iot_adu_channel_dps* c,
     az_iot_adu_operation operation,
     az_iot_result result,
-    az_iot_adu_error_action action)
+    az_iot_adu_error_action action,
+    const az_iot_adu_service_error* service_error)
 {
   /* The pre-registration exchange is over once an update check reaches a
    * verdict it will not immediately repeat: either it succeeded, or it failed
@@ -249,9 +258,25 @@ static void emit_result(
     channel_release_hold(c);
   }
 
+  /* Reported to the engine and nowhere else. Whether a verdict ends the
+   * client's re-arming -- and so whether the application hears about it -- is
+   * the engine's decision, and it already makes exactly that decision in
+   * on_channel_result(). Deciding it here too would be the same rule in two
+   * files, free to drift apart. */
   if (c->result_cb != NULL)
   {
-    c->result_cb(operation, result, action, c->engine_ctx);
+    /* NEVER NULL to the engine. A NULL here would have to be checked at every
+     * point the diagnosis is read, and one missed check is a crash in the
+     * application's own callback. "The service said nothing" is a value, so it
+     * is passed as one: zero code, empty (not NULL) strings, no delay. */
+    static const az_iot_adu_service_error k_no_service_error
+        = { .code = 0, .message = "", .tracking_id = "", .retry_after_ms = 0 };
+    c->result_cb(
+        operation,
+        result,
+        action,
+        service_error != NULL ? service_error : &k_no_service_error,
+        c->engine_ctx);
   }
 }
 
@@ -296,28 +321,56 @@ static bool on_dps_message(
 
   az_iot_adu_operation operation = c->pending_operation;
   c->request_pending = false;
+  /* An answer arrived, so the session works: the run of losses that armed the
+   * bounded retry is over. */
+  c->session_loss_attempts = 0;
 
   if (status < 200 || status >= 300)
   {
-    az_iot_adu_error_action action = handle_failure(c, operation, payload, payload_len);
+    char code[64];
+    char tracking_id[64];
+    int32_t numeric = 0;
+    az_iot_adu_error_action action = handle_failure(
+        c,
+        operation,
+        payload,
+        payload_len,
+        code,
+        sizeof(code),
+        tracking_id,
+        sizeof(tracking_id),
+        &numeric);
     /* MQTT has no headers, so the delay rides the response topic. Taken from
      * any failure that carries one, not only a throttle: the service attaches
-     * it to 5xx as well, and the point is to wait as long as it asked. */
+     * it to 5xx as well, and the point is to wait as long as it asked.
+     *
+     * Reported to the engine as well as gating this channel: the engine bounds
+     * the OPERATION against the caller's own deadline, so it has to see a delay
+     * that will not fit rather than discover it one refusal at a time. */
     uint32_t retry_after_s = az_iot_adu__parse_retry_after_seconds(topic, strlen(topic));
+    uint32_t retry_after_ms = (uint32_t)((uint64_t)retry_after_s * 1000ull);
     if (retry_after_s > 0)
     {
-      c->retry_after_deadline_ms = az_iot_time_mono_ms() + ((uint64_t)retry_after_s * 1000ull);
+      c->retry_after_deadline_ms = az_iot_time_mono_ms() + (uint64_t)retry_after_ms;
       AZ_IOT_LOG_DEBUGF("adu: service asked for a %u second delay", (unsigned)retry_after_s);
     }
+    az_iot_adu_service_error service_error = {
+      .code = numeric, .message = code, .tracking_id = tracking_id, .retry_after_ms = retry_after_ms
+    };
     AZ_IOT_LOG_ERRORF("adu: operation failed with status %d", (int)status);
-    emit_result(c, operation, AZ_IOT_ERR_DPS, action);
+    AZ_IOT_LOG_ERRORF(
+        "adu: service error %d (%s) trackingId=%s",
+        (int)numeric,
+        code[0] != '\0' ? code : "-",
+        tracking_id[0] != '\0' ? tracking_id : "-");
+    emit_result(c, operation, AZ_IOT_ERR_DPS, action, &service_error);
     return true;
   }
 
   if (operation == AZ_IOT_ADU_OP_REPORT_STATUS)
   {
     /* Nothing to parse: the report was accepted. */
-    emit_result(c, operation, AZ_IOT_OK, AZ_IOT_ADU_ERROR_ACTION_NONE);
+    emit_result(c, operation, AZ_IOT_OK, AZ_IOT_ADU_ERROR_ACTION_NONE, NULL);
     return true;
   }
 
@@ -325,7 +378,7 @@ static bool on_dps_message(
   if (az_iot_adu__parse_fetch_response(payload, payload_len, &resp) != AZ_IOT_OK)
   {
     AZ_IOT_LOG_ERROR("adu: could not parse the update-check response");
-    emit_result(c, operation, AZ_IOT_ERR_PROTOCOL, AZ_IOT_ADU_ERROR_ACTION_FATAL);
+    emit_result(c, operation, AZ_IOT_ERR_PROTOCOL, AZ_IOT_ADU_ERROR_ACTION_FATAL, NULL);
     return true;
   }
 
@@ -337,7 +390,7 @@ static bool on_dps_message(
   if (!resp.has_update)
   {
     AZ_IOT_LOG_DEBUG("adu: no update available");
-    emit_result(c, operation, AZ_IOT_OK, AZ_IOT_ADU_ERROR_ACTION_NONE);
+    emit_result(c, operation, AZ_IOT_OK, AZ_IOT_ADU_ERROR_ACTION_NONE, NULL);
     return true;
   }
 
@@ -348,22 +401,52 @@ static bool on_dps_message(
         (size_t)az_span_size(resp.update_metadata),
         c->engine_ctx);
   }
-  emit_result(c, operation, AZ_IOT_OK, AZ_IOT_ADU_ERROR_ACTION_NONE);
+  emit_result(c, operation, AZ_IOT_OK, AZ_IOT_ADU_ERROR_ACTION_NONE, NULL);
   return true;
 }
 
 /* A request can only be answered on the session it was sent on. Once that
  * session is gone the reply can never arrive, so the slot is released and the
  * engine is free to ask again. */
-static void channel_forget_pending_if_session_gone(az_iot_adu_channel_dps* c)
+/* Returns true when the operation was ABANDONED rather than re-armed, so the
+ * caller can tell that the demand it saw a moment ago is gone. */
+static bool channel_forget_pending_if_session_gone(az_iot_adu_channel_dps* c)
 {
   if (c->request_pending && !az_iot_connection_client__dps_session_ready(c->connection))
   {
     AZ_IOT_LOG_DEBUG("adu: provisioning session ended with a request outstanding");
     az_iot_adu_operation operation = c->pending_operation;
     c->request_pending = false;
-    emit_result(c, operation, AZ_IOT_ERR_NOT_CONNECTED, AZ_IOT_ADU_ERROR_ACTION_RETRY);
+
+    /* Bounded. The session normally ended because REGISTRATION failed, and
+     * opening another session cannot fix that -- so an unbounded retry is a
+     * reconnect loop that never succeeds. Past the bound the operation is
+     * abandoned, which is reported to the application instead of being retried
+     * silently for ever.
+     *
+     * The bound only. Spacing the retries out is the connection client's job:
+     * it already paces its own provisioning-session attempts under the
+     * reconnection policy, with jitter. A second ladder here would pace the
+     * same reconnect twice, with a fixed delay and no jitter -- which is a
+     * synchronised retry storm across a fleet that loses DPS together. */
+    if (c->session_loss_attempts < UINT8_MAX)
+    {
+      c->session_loss_attempts++;
+    }
+    if (c->session_loss_attempts > AZ_IOT_ADU_CHANNEL_MAX_SESSION_RETRIES)
+    {
+      AZ_IOT_LOG_ERRORF(
+          "adu: giving up on the operation after %u consecutive provisioning-session losses",
+          (unsigned)c->session_loss_attempts);
+      c->session_loss_attempts = 0;
+      c->wants_session = false;
+      emit_result(c, operation, AZ_IOT_ERR_NOT_CONNECTED, AZ_IOT_ADU_ERROR_ACTION_FATAL, NULL);
+      return true;
+    }
+
+    emit_result(c, operation, AZ_IOT_ERR_NOT_CONNECTED, AZ_IOT_ADU_ERROR_ACTION_RETRY, NULL);
   }
+  return false;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -476,6 +559,7 @@ static void channel_close(void* ctx)
   /* The delay belongs to the binding that earned it. A fresh bind is a fresh
    * start, not a continuation of someone else's backoff. */
   c->retry_after_deadline_ms = 0;
+  c->session_loss_attempts = 0;
 }
 
 static az_iot_result channel_request_update(void* ctx, az_iot_adu_operation operation)
@@ -499,7 +583,7 @@ static az_iot_result channel_request_update(void* ctx, az_iot_adu_operation oper
    * answered. Clearing it here is what stops a lost response -- or one lost to
    * the session being torn down at registration -- from wedging the channel in
    * BUSY for the life of the client. */
-  channel_forget_pending_if_session_gone(c);
+  (void)channel_forget_pending_if_session_gone(c);
 
   if (c->request_pending)
   {
@@ -709,7 +793,14 @@ static az_iot_result channel_do_work(void* ctx)
    * afterwards could never be true and the session would never be reopened. */
   bool had_work = c->request_pending || c->wants_session;
 
-  channel_forget_pending_if_session_gone(c);
+  /* An operation ABANDONED here takes its demand with it: wants_session was
+   * just cleared, and had_work was captured before that. Acting on the stale
+   * value would open a session for an operation that has already been given up
+   * on -- the exact loop the bound exists to end. */
+  if (channel_forget_pending_if_session_gone(c))
+  {
+    had_work = false;
+  }
 
   /* Ask for a session when there is work and none is up. This is what makes an
    * operation possible after the device has provisioned: the ordinary flow tore
@@ -724,13 +815,42 @@ static az_iot_result channel_do_work(void* ctx)
    * session is already usable, which this branch has just excluded, so clearing
    * on it would never happen. The flag would then latch on for the life of the
    * client and every linger expiry would reopen a session nobody wants. */
+  bool ensure_failed = false;
   if (az_iot_connection_client__dps_session_ready(c->connection))
   {
     c->wants_session = false;
   }
-  else if (c->holds_user && had_work)
+  else if (c->holds_user && had_work && !retry_after_in_force(c))
   {
-    (void)az_iot_connection_client__dps_session_ensure(c->connection);
+    /* Not fatal, so the tick continues either way -- but not silent. BUSY is
+     * the ordinary answer (a session is coming up, ask again next tick);
+     * anything else means no session will appear, and without a line here an
+     * operation that never goes out has no explanation in the log.
+     *
+     * Latched, because this runs at the application's pump frequency and the
+     * demand is not cleared until a session is ready: a persistent refusal
+     * would otherwise emit one line per tick, for ever. One line per failure
+     * episode is what has diagnostic value; the repeats carry nothing. */
+    az_iot_result er = az_iot_connection_client__dps_session_ensure(c->connection);
+    if (er != AZ_IOT_OK && er != AZ_IOT_ERR_BUSY)
+    {
+      ensure_failed = true;
+      if (!c->ensure_error_logged)
+      {
+        c->ensure_error_logged = true;
+        AZ_IOT_LOG_ERRORF("adu: could not obtain a provisioning session (%d)", (int)er);
+      }
+    }
+  }
+  /* Cleared by ANY tick that did not fail -- including one that did not ask,
+   * because there was no work or a session was already up. Clearing it only on
+   * a successful ask would let a quiet spell swallow the next episode: the
+   * latch would still be set from the previous one, so the new failure would go
+   * unreported. An episode is a run of CONSECUTIVE failures; anything else ends
+   * it. */
+  if (!ensure_failed)
+  {
+    c->ensure_error_logged = false;
   }
 
   /* A session that is gone takes its exchange with it: the next one is a fresh
@@ -750,6 +870,12 @@ static az_iot_result channel_do_work(void* ctx)
   return AZ_IOT_OK;
 }
 
+/* When the SERVICE asked us to wait until. Distinct from an operation already
+ * being outstanding, which also answers BUSY but IS a request going unserved
+ * and must stay bounded.
+ *
+ * Reported raw, without expiring it: retry_after_in_force() clears the deadline
+ * as a side effect of reading it, and the engine needs the instant itself. */
 static const az_iot_adu_channel_vtable k_channel_vtable = {
   .open = channel_open,
   .close = channel_close,

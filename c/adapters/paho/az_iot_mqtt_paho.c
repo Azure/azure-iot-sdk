@@ -106,6 +106,13 @@ typedef struct paho_client
    * reference file handed to Paho, held for as long as the connection that
    * uses them. */
   az_iot_paho_key_custody key_custody;
+
+  /* Reason code to put in the MQTT 5 DISCONNECT, taken from the connect
+   * options of the session in progress. Held here because disconnect() takes
+   * no options of its own; reset on every connect so a reason cannot outlive
+   * the session that asked for it. Unused on v3.1.1, which has no reason
+   * codes. */
+  uint8_t disconnect_reason_code;
 } paho_client;
 
 static paho_client* paho_self(az_iot_mqtt_client* c) { return (paho_client*)c; }
@@ -678,12 +685,25 @@ static void paho_disconnect_failure(void* context, MQTTAsync_failureData* respon
 
 static void paho_connect_success(void* context, MQTTAsync_successData* response)
 {
-  (void)response;
   paho_client* m = (paho_client*)context;
-  if (m)
+  if (!m)
   {
-    enqueue_status(m, AZ_IOT_MQTT_EVT_CONNECTED, AZ_IOT_OK, 0);
+    return;
   }
+  /* Report Session Present from the CONNACK, as the v5 path does. MQTT 3.1.1
+   * carries the flag too, and a caller that connects with Clean Session 0 --
+   * which is what a Classic hub session does, so its queued cloud-to-device
+   * messages survive a reconnect -- has no other way to learn whether the
+   * broker actually resumed the session or quietly started a fresh one. */
+  queued_event* n = (queued_event*)calloc(1, sizeof(*n));
+  if (!n)
+  {
+    return;
+  }
+  n->evt.kind = AZ_IOT_MQTT_EVT_CONNECTED;
+  n->evt.status = AZ_IOT_OK;
+  n->evt.session_present = (response && response->alt.connect.sessionPresent) ? true : false;
+  q_push(m, n);
 }
 
 static void paho_connect_failure(void* context, MQTTAsync_failureData* response)
@@ -1094,6 +1114,11 @@ static az_iot_result paho_iface_connect(
   }
   paho_client* m = paho_self(self);
 
+  /* The DISCONNECT reason belongs to this session, so it is captured with the
+   * rest of the connect options; a session that does not ask for one is closed
+   * normally, which is what a zero yields. */
+  m->disconnect_reason_code = opts->disconnect_reason_code;
+
   /* Use TLS when any TLS material or server verification is requested: a
    * client identity (cert), a server trust anchor (CA), their in-memory PEM
    * variants, an explicit use_tls, or a non-extractable key reference.
@@ -1382,6 +1407,15 @@ static az_iot_result paho_iface_disconnect(az_iot_mqtt_client* self)
   }
 
   MQTTAsync_disconnectOptions opts = MQTTAsync_disconnectOptions_initializer;
+  if (m->version == AZ_IOT_MQTT_VERSION_5)
+  {
+    /* The v5 initializer is a different struct_version: it is what makes Paho
+     * write the reason code and the property field into the DISCONNECT. Taking
+     * the v3.1.1 one and setting reasonCode would leave the code unsent. */
+    MQTTAsync_disconnectOptions v5_opts = MQTTAsync_disconnectOptions_initializer5;
+    opts = v5_opts;
+    opts.reasonCode = (enum MQTTReasonCodes)m->disconnect_reason_code;
+  }
   opts.timeout = 1000;
   /* Without these the disconnect completes silently: Paho raises
    * connectionLost() and disconnected() only for a disconnect the PEER caused,

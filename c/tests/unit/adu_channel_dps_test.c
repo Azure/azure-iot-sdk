@@ -29,6 +29,7 @@
 #include <cmocka.h>
 
 #include "azure/iot/az_iot_connection_client.h"
+#include "azure/iot/az_iot_log.h"
 #include "azure/iot/az_iot_mqtt_iface.h"
 #include "azure/iot/az_iot_result.h"
 
@@ -63,6 +64,14 @@ typedef struct
   az_iot_adu_operation last_op;
   az_iot_result last_result;
   az_iot_adu_error_action last_action;
+
+  /* What the channel forwarded about a refused operation. */
+  bool had_service_error;
+  int32_t last_error_code;
+  char last_error_text[64];
+  char last_tracking_id[64];
+  uint32_t last_retry_after_ms;
+  bool service_error_strings_were_non_null;
 } fixture;
 
 static void on_update(const uint8_t* payload, size_t payload_len, void* engine_ctx)
@@ -78,9 +87,25 @@ static void on_result(
     az_iot_adu_operation operation,
     az_iot_result result,
     az_iot_adu_error_action action,
+    const az_iot_adu_service_error* service_error,
     void* engine_ctx)
 {
   fixture* fx = (fixture*)engine_ctx;
+  fx->last_error_code = 0;
+  fx->last_error_text[0] = '\0';
+  fx->last_tracking_id[0] = '\0';
+  fx->last_retry_after_ms = 0;
+  fx->had_service_error = (service_error != NULL);
+  fx->service_error_strings_were_non_null
+      = (service_error != NULL && service_error->message != NULL
+         && service_error->tracking_id != NULL);
+  if (service_error != NULL)
+  {
+    fx->last_error_code = service_error->code;
+    fx->last_retry_after_ms = service_error->retry_after_ms;
+    snprintf(fx->last_error_text, sizeof(fx->last_error_text), "%s", service_error->message);
+    snprintf(fx->last_tracking_id, sizeof(fx->last_tracking_id), "%s", service_error->tracking_id);
+  }
   fx->result_count++;
   fx->last_op = operation;
   fx->last_result = result;
@@ -541,6 +566,12 @@ static void a_retry_after_on_the_topic_defers_the_next_request(void** state)
   assert_true(inject(fx, m, topic, "{\"errorCode\":429000,\"message\":\"THROTTLED\"}"));
   assert_int_equal(fx->result_count, 1);
   assert_int_equal(fx->last_action, AZ_IOT_ADU_ERROR_ACTION_RETRY_AFTER);
+  /* Forwarded to the engine, in milliseconds. The engine bounds the operation
+   * against the CALLER's deadline, so it has to be told how long the service
+   * asked for -- a delay that cannot fit ends the request at once, and the
+   * value reaches the application on the abandonment event. */
+  assert_true(fx->had_service_error);
+  assert_int_equal(fx->last_retry_after_ms, 30000u);
 
   /* The slot is free -- the answer retired it -- so BUSY here is the delay
    * talking, not the one-operation-at-a-time rule. */
@@ -600,11 +631,55 @@ static void a_request_during_a_delay_does_not_ask_for_a_session(void** state)
   assert_non_null(fx->client.dps_mqtt);
 }
 
+/* The tick's own delay gate, which is a SEPARATE branch from the one
+ * request_update() applies.
+ *
+ * Demand already recorded (wants_session), no session up, and a delay running:
+ * do_work() must not open one. a_request_during_a_delay_does_not_ask_for_a_session
+ * cannot pin this -- there the delay stops the demand ever being recorded, so
+ * had_work is false and the branch is never reached.
+ *
+ * Without this the service's quiet period would be honoured for the PUBLISH and
+ * ignored for the TLS handshake and CONNECT underneath it, which is the more
+ * expensive half. */
+static void a_delay_stops_the_tick_reopening_the_session(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(fx->channel.vtable->open(fx->channel.ctx, on_update, on_result, fx), AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(&fx->client, fx->factory), AZ_IOT_OK);
+
+  fx->client.dps_phase = AZ_IOT_DPS_PHASE_DONE;
+  assert_false(az_iot_connection_client__dps_session_ready(&fx->client));
+
+  /* Stale demand: recorded before the delay began, which is the real sequence
+   * -- a request goes out, the service answers with retry-after, and the
+   * demand from that request is still standing. */
+  fx->channel_state.wants_session = true;
+  fx->channel_state.retry_after_deadline_ms = az_iot_time_mono_ms() + 60000u;
+
+  assert_int_equal(fx->channel.vtable->do_work(fx->channel.ctx), AZ_IOT_OK);
+  assert_null(fx->client.dps_mqtt);
+  /* The demand survives the refusal -- deferred, not dropped. */
+  assert_true(fx->channel_state.wants_session);
+
+  /* Repeated ticks inside the window change nothing. */
+  assert_int_equal(fx->channel.vtable->do_work(fx->channel.ctx), AZ_IOT_OK);
+  assert_int_equal(fx->channel.vtable->do_work(fx->channel.ctx), AZ_IOT_OK);
+  assert_null(fx->client.dps_mqtt);
+
+  /* On expiry the same tick opens one. */
+  fx->channel_state.retry_after_deadline_ms = az_iot_time_mono_ms();
+  assert_int_equal(fx->channel.vtable->do_work(fx->channel.ctx), AZ_IOT_OK);
+  assert_non_null(fx->client.dps_mqtt);
+}
+
 /* A failure WITHOUT the parameter must not invent a delay, or every ordinary
  * error would silently stall the next request. */
 static void a_failure_without_a_retry_after_defers_nothing(void** state)
 {
   fixture* fx = (fixture*)*state;
+  fx->last_retry_after_ms = 0xFFFFFFFFu;
   az_iot_mock_mqtt_client* m = open_and_bind(fx);
 
   assert_int_equal(
@@ -616,6 +691,10 @@ static void a_failure_without_a_retry_after_defers_nothing(void** state)
   snprintf(topic, sizeof(topic), "$dps/registrations/res/500/?$rid=%s", rid);
 
   assert_true(inject(fx, m, topic, "{\"errorCode\":500000,\"message\":\"server error\"}"));
+  /* And nothing is invented for the engine either: 0 means "the service named
+   * no delay", which is what lets the engine tell it apart from one it must
+   * measure against the caller's deadline. */
+  assert_int_equal(fx->last_retry_after_ms, 0u);
 
   az_iot_adu_channel_dps* c = (az_iot_adu_channel_dps*)fx->channel.ctx;
   assert_int_equal(c->retry_after_deadline_ms, 0);
@@ -1451,6 +1530,298 @@ static void a_demand_queued_before_the_hold_expires_runs_on_the_kept_session(voi
   assert_non_null(fx->client.dps_mqtt);
 }
 
+/* The service diagnosis reaches the engine. The classification alone collapses
+ * failures that need different operator responses -- a malformed body, a device
+ * that is not onboarded, a rejected credential -- and the trackingId is the one
+ * value a support request needs. Parsed and then dropped is the defect. */
+static void the_service_diagnosis_is_forwarded(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_mock_mqtt_client* m = open_and_bind(fx);
+
+  assert_int_equal(
+      fx->channel.vtable->request_update(fx->channel.ctx, AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE),
+      AZ_IOT_OK);
+  char rid[64];
+  last_rid(m, rid, sizeof(rid));
+  char topic[256];
+  snprintf(topic, sizeof(topic), "$dps/registrations/res/400/?$rid=%s", rid);
+  assert_true(inject(
+      fx,
+      m,
+      topic,
+      "{\"errorCode\":400002,\"trackingId\":\"9f1c-aa\",\"message\":\"INVALID_REQUEST\"}"));
+
+  assert_true(fx->had_service_error);
+  assert_int_equal(fx->last_error_code, 400002);
+  assert_string_equal(fx->last_error_text, "INVALID_REQUEST");
+  assert_string_equal(fx->last_tracking_id, "9f1c-aa");
+}
+
+/* A verdict with no service response behind it forwards an EMPTY diagnosis,
+ * rather than a stale or invented one -- and never a NULL pointer.
+ *
+ * "The service said nothing" is a value: a zero code, empty (not NULL) strings
+ * and no delay. Passing NULL instead would put a check at every point the
+ * diagnosis is read, and one missed check is a crash inside the application's
+ * own callback. */
+static void a_verdict_without_a_response_forwards_an_empty_diagnosis(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_mock_mqtt_client* m = open_and_bind(fx);
+
+  assert_int_equal(
+      fx->channel.vtable->request_update(fx->channel.ctx, AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE),
+      AZ_IOT_OK);
+  char rid[64];
+  last_rid(m, rid, sizeof(rid));
+  char topic[256];
+  snprintf(topic, sizeof(topic), "$dps/registrations/res/200/?$rid=%s", rid);
+  assert_true(inject(fx, m, topic, "{\"updateAvailable\":false}"));
+
+  /* Present, and empty. */
+  assert_true(fx->had_service_error);
+  assert_int_equal(fx->last_error_code, 0);
+  assert_string_equal(fx->last_error_text, "");
+  assert_string_equal(fx->last_tracking_id, "");
+  assert_int_equal(fx->last_retry_after_ms, 0);
+  /* The strings an application may print without checking. */
+  assert_true(fx->service_error_strings_were_non_null);
+}
+
+/* The session-failure log is LATCHED, and the latch is not a permanent mute.
+ *
+ * This runs at the application's pump frequency and the demand is not cleared
+ * until a session is ready, so an unlatched log would emit one line per tick
+ * for as long as the failure lasted. A latch that is only cleared on a
+ * SUCCESSFUL ask is the opposite failure: a quiet spell leaves it set, and the
+ * next episode goes unreported.
+ *
+ * Asserted on the real log sink, not just the flag, so the thing the operator
+ * actually sees is what is pinned. */
+typedef struct
+{
+  size_t count;
+  char last[256];
+} adu_log_capture;
+
+static void adu_log_sink(
+    void* user_ctx,
+    az_iot_log_level level,
+    const char* file,
+    int line,
+    const char* msg)
+{
+  adu_log_capture* cap = (adu_log_capture*)user_ctx;
+  (void)file;
+  (void)line;
+  /* Only the line this test is about; the channel logs other things. */
+  if (level != AZ_IOT_LOG_LEVEL_ERROR || msg == NULL
+      || strstr(msg, "could not obtain a provisioning session") == NULL)
+  {
+    return;
+  }
+  cap->count++;
+  snprintf(cap->last, sizeof(cap->last), "%s", msg);
+}
+
+static void a_persistent_session_failure_is_logged_once_per_episode(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  adu_log_capture cap;
+  memset(&cap, 0, sizeof(cap));
+  az_iot_log_sink sink;
+  sink.sink = adu_log_sink;
+  sink.user_ctx = &cap;
+  sink.min_level = AZ_IOT_LOG_LEVEL_TRACE;
+  az_iot_log_set_global_sink(&sink);
+
+  assert_int_equal(fx->channel.vtable->open(fx->channel.ctx, on_update, on_result, fx), AZ_IOT_OK);
+  /* No MQTT factory registered, so starting a session fails outright -- not
+   * BUSY, which is the ordinary "coming up" answer. */
+  fx->client.dps_phase = AZ_IOT_DPS_PHASE_DONE;
+  assert_int_equal(
+      fx->channel.vtable->request_update(fx->channel.ctx, AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE),
+      AZ_IOT_ERR_NOT_CONNECTED);
+  assert_true(fx->channel_state.wants_session);
+
+  /* First failure is reported. */
+  assert_int_equal(fx->channel.vtable->do_work(fx->channel.ctx), AZ_IOT_OK);
+  assert_int_equal(cap.count, 1);
+
+  /* Repeats are not: one line per episode, not one per tick. */
+  for (int i = 0; i < 20; ++i)
+  {
+    assert_int_equal(fx->channel.vtable->do_work(fx->channel.ctx), AZ_IOT_OK);
+  }
+  assert_int_equal(cap.count, 1);
+
+  /* A tick that does not fail ends the episode -- including one that does not
+   * ASK, which is what a quiet spell looks like. */
+  fx->channel_state.wants_session = false;
+  assert_int_equal(fx->channel.vtable->do_work(fx->channel.ctx), AZ_IOT_OK);
+  assert_false(fx->channel_state.ensure_error_logged);
+
+  /* So the next episode is reported again rather than swallowed. */
+  assert_int_equal(
+      fx->channel.vtable->request_update(fx->channel.ctx, AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE),
+      AZ_IOT_ERR_NOT_CONNECTED);
+  assert_int_equal(fx->channel.vtable->do_work(fx->channel.ctx), AZ_IOT_OK);
+  assert_int_equal(cap.count, 2);
+
+  az_iot_log_set_global_sink(NULL);
+}
+
+/* The retry the channel asks for after losing a session is BOUNDED.
+ *
+ * What normally ended the session is the REGISTRATION failing, and reopening a
+ * session cannot fix that -- so an unbounded retry is a reconnect loop that can
+ * never succeed. Past the bound the operation is abandoned with a verdict the
+ * engine does not re-arm.
+ *
+ * The BOUND only: spacing the attempts out is the connection client's job, and
+ * a second ladder here would pace the same reconnect twice without jitter. */
+static void a_lost_session_is_retried_a_bounded_number_of_times(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(fx->channel.vtable->open(fx->channel.ctx, on_update, on_result, fx), AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(&fx->client, fx->factory), AZ_IOT_OK);
+  fx->client.dps_phase = AZ_IOT_DPS_PHASE_DONE;
+
+  /* The connection client paces its own re-opening of a user-held provisioning
+   * session from the application's reconnection policy, and reads an unset
+   * policy (initial_delay_ms == 0) as "retries disabled" -- a settled refusal
+   * after the first loss. The fixture leaves the policy zeroed, so give this
+   * test the configuration a device that wants retries would have; otherwise
+   * the core settles first and the channel's bound is never reached.
+   * max_attempts = 0 is "no ceiling", which keeps the ceiling under test the
+   * channel's. */
+  fx->client.opts.reconnection_policy.initial_delay_ms = 10u;
+  fx->client.opts.reconnection_policy.max_delay_ms = 10u;
+  fx->client.opts.reconnection_policy.max_attempts = 0u;
+  fx->client.opts.reconnection_policy.jitter_pct = 0u;
+
+  /* N retries, then the (N+1)th loss abandons -- which is what the macro name
+   * says, and is why the loop runs one past the bound. */
+  for (unsigned attempt = 1; attempt <= AZ_IOT_ADU_CHANNEL_MAX_SESSION_RETRIES + 1u; ++attempt)
+  {
+    /* Expire the connection client's pacing of user-held provisioning
+     * sessions. That ladder spaces out the next session after a loss; this
+     * test is about the channel's bound on how many of those the OPERATION is
+     * worth, so the wait is skipped rather than slept through. The pacing
+     * itself is covered by az_iot_tests_connection_dps.
+     *
+     * Asserted not-blocked because a spent ladder would refuse outright and
+     * the loop would stall on a cause that is not what is under test. */
+    fx->client.dps_user_retry_due_ms = 0;
+    assert_false(fx->client.dps_user_retry_blocked);
+
+    /* A session, a request on it, and then the session goes away. */
+    assert_int_equal(
+        fx->channel.vtable->request_update(fx->channel.ctx, AZ_IOT_ADU_OP_GET_UPDATE),
+        AZ_IOT_ERR_NOT_CONNECTED);
+    assert_int_equal(fx->channel.vtable->do_work(fx->channel.ctx), AZ_IOT_OK);
+    (void)drive_existing_session(fx);
+    assert_int_equal(
+        fx->channel.vtable->request_update(fx->channel.ctx, AZ_IOT_ADU_OP_GET_UPDATE), AZ_IOT_OK);
+
+    /* The session dies under the outstanding request: a transport drop, which
+     * kills it no matter who holds an interest. */
+    az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+    assert_non_null(m);
+    assert_true(az_iot_mock_mqtt_client_inject_disconnected(m));
+    (void)az_iot_connection_client_do_work(&fx->client, 0);
+    assert_false(az_iot_connection_client__dps_session_ready(&fx->client));
+
+    assert_int_equal(fx->channel.vtable->do_work(fx->channel.ctx), AZ_IOT_OK);
+    assert_int_equal(fx->result_count, attempt);
+    assert_int_equal(fx->last_result, AZ_IOT_ERR_NOT_CONNECTED);
+
+    if (attempt <= AZ_IOT_ADU_CHANNEL_MAX_SESSION_RETRIES)
+    {
+      assert_int_equal(fx->last_action, AZ_IOT_ADU_ERROR_ACTION_RETRY);
+      assert_int_equal(fx->channel_state.session_loss_attempts, attempt);
+      /* Nothing defers the next attempt here: the retry is available at once,
+       * and the pacing comes from the connection client. */
+      assert_int_equal(
+          fx->channel.vtable->request_update(fx->channel.ctx, AZ_IOT_ADU_OP_GET_UPDATE),
+          AZ_IOT_ERR_NOT_CONNECTED);
+    }
+    else
+    {
+      /* Exhausted: abandoned, not retried, and the count starts over. */
+      assert_int_equal(fx->last_action, AZ_IOT_ADU_ERROR_ACTION_FATAL);
+      assert_int_equal(fx->channel_state.session_loss_attempts, 0);
+      assert_false(fx->channel_state.wants_session);
+    }
+  }
+}
+
+/* An abandoned operation takes its demand with it. `had_work` is captured
+ * before the loss is processed, so acting on it afterwards would open a session
+ * for an operation that has just been given up on -- the loop the bound exists
+ * to end. */
+static void abandoning_an_operation_does_not_reopen_a_session(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(fx->channel.vtable->open(fx->channel.ctx, on_update, on_result, fx), AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(&fx->client, fx->factory), AZ_IOT_OK);
+  fx->client.dps_phase = AZ_IOT_DPS_PHASE_DONE;
+
+  /* One loss short of the bound, so the next one abandons. */
+  fx->channel_state.session_loss_attempts = AZ_IOT_ADU_CHANNEL_MAX_SESSION_RETRIES;
+
+  assert_int_equal(
+      fx->channel.vtable->request_update(fx->channel.ctx, AZ_IOT_ADU_OP_GET_UPDATE),
+      AZ_IOT_ERR_NOT_CONNECTED);
+  assert_int_equal(fx->channel.vtable->do_work(fx->channel.ctx), AZ_IOT_OK);
+  (void)drive_existing_session(fx);
+  assert_int_equal(
+      fx->channel.vtable->request_update(fx->channel.ctx, AZ_IOT_ADU_OP_GET_UPDATE), AZ_IOT_OK);
+
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  assert_non_null(m);
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(m));
+  (void)az_iot_connection_client_do_work(&fx->client, 0);
+  assert_false(az_iot_connection_client__dps_session_ready(&fx->client));
+
+  /* The tick that abandons must not also ask for a session. Asserted on
+   * dps_mqtt, not on session_ready: ensure() answers BUSY while a session it
+   * just started comes up, so "not ready" would pass either way. */
+  assert_int_equal(fx->channel.vtable->do_work(fx->channel.ctx), AZ_IOT_OK);
+  assert_int_equal(fx->last_action, AZ_IOT_ADU_ERROR_ACTION_FATAL);
+  assert_false(fx->channel_state.wants_session);
+  assert_null(fx->client.dps_mqtt);
+  (void)az_iot_connection_client_do_work(&fx->client, 0);
+  assert_null(fx->client.dps_mqtt);
+  assert_false(az_iot_connection_client__dps_session_ready(&fx->client));
+}
+
+/* An answered operation is proof the session works, so the run of losses that
+ * armed the bound is over. Without this a device that loses a session now and
+ * then, months apart, eventually abandons an operation for no reason. */
+static void an_answered_operation_clears_the_retry_count(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_mock_mqtt_client* m = open_and_bind(fx);
+
+  fx->channel_state.session_loss_attempts = AZ_IOT_ADU_CHANNEL_MAX_SESSION_RETRIES - 1;
+
+  assert_int_equal(
+      fx->channel.vtable->request_update(fx->channel.ctx, AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE),
+      AZ_IOT_OK);
+  char rid[64];
+  last_rid(m, rid, sizeof(rid));
+  char topic[256];
+  snprintf(topic, sizeof(topic), "$dps/registrations/res/200/?$rid=%s", rid);
+  assert_true(inject(fx, m, topic, "{\"updateAvailable\":false}"));
+
+  assert_int_equal(fx->last_result, AZ_IOT_OK);
+  assert_int_equal(fx->channel_state.session_loss_attempts, 0);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -1469,6 +1840,16 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         an_available_update_is_delivered_to_the_engine, setup, teardown),
     cmocka_unit_test_setup_teardown(an_error_response_reports_an_action, setup, teardown),
+    cmocka_unit_test_setup_teardown(the_service_diagnosis_is_forwarded, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_verdict_without_a_response_forwards_an_empty_diagnosis, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_persistent_session_failure_is_logged_once_per_episode, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_lost_session_is_retried_a_bounded_number_of_times, setup, teardown),
+    cmocka_unit_test_setup_teardown(an_answered_operation_clears_the_retry_count, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        abandoning_an_operation_does_not_reopen_a_session, setup, teardown),
     cmocka_unit_test_setup_teardown(a_report_is_published_and_acknowledged, setup, teardown),
     cmocka_unit_test_setup_teardown(
         registration_does_not_cost_the_channel_its_request, setup, teardown),
@@ -1481,6 +1862,7 @@ int main(void)
         a_failure_without_a_retry_after_defers_nothing, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_request_during_a_delay_does_not_ask_for_a_session, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_delay_stops_the_tick_reopening_the_session, setup, teardown),
     cmocka_unit_test_setup_teardown(
         the_channel_holds_registration_so_bootstrap_can_run, setup, teardown),
     cmocka_unit_test_setup_teardown(
