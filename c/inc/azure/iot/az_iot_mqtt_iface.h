@@ -297,6 +297,15 @@ extern "C"
      * has never seen, and a log that prints only "AZ_IOT_ERR_MQTT" cannot
      * either. Diagnostics and telemetry only -- never branch on it. */
     int32_t protocol_code;
+    /* The adapter's own error code for a failure BELOW MQTT: TLS handshake,
+     * socket refused, DNS. Adapter-defined and not comparable across adapters,
+     * which is why it is separate from protocol_code rather than sharing it --
+     * a value here has no wire meaning.
+     *
+     * 0 means "none", with the same ambiguity as protocol_code. Diagnostics
+     * only; an adapter that has nothing to report leaves it 0 and stays
+     * conformant. */
+    int32_t transport_code;
   } az_iot_mqtt_event;
 
   typedef void (*az_iot_mqtt_event_callback)(const az_iot_mqtt_event* evt, void* user_ctx);
@@ -403,6 +412,18 @@ extern "C"
    * safe half of that split. */
   AZ_NODISCARD az_iot_result
   az_iot_mqtt_suback_result(az_iot_mqtt_version version, int suback_code);
+
+  /* Classify a server-sent MQTT 5 DISCONNECT reason code.
+   *
+   * A server DISCONNECT is not automatically a clean close: 0x00 is, and
+   * everything from 0x80 up is the server saying why it terminated the
+   * session. Reporting those as AZ_IOT_OK made "the hub closed us for quota
+   * exceeded" indistinguishable from an ordinary peer close, and with retries
+   * disabled it settled the session at IDLE with nothing to explain it.
+   *
+   * v3.1.1 has no DISCONNECT reason code; pass 0. */
+  AZ_NODISCARD az_iot_result
+  az_iot_mqtt_disconnect_result(az_iot_mqtt_version version, int disconnect_code);
 
 #ifdef __cplusplus
 }
