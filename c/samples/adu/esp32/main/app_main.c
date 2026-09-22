@@ -221,7 +221,8 @@ void app_main(void)
    * through DPS on this boot, so it uses the day-0 onboarding route; one that
    * already has a device record would call az_iot_adu_client_request_update().
    */
-  if (az_iot_adu_client_request_onboarding_update(&adu) != AZ_IOT_OK)
+  if (az_iot_adu_client_request_onboarding_update(&adu, AZ_IOT_ADU_SUGGESTED_REQUEST_TIMEOUT_MS)
+      != AZ_IOT_OK)
   {
     ESP_LOGE(TAG, "could not request an onboarding update");
     esp_restart();

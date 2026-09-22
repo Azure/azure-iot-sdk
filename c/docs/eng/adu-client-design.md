@@ -1022,15 +1022,28 @@ az_iot_adu_state az_iot_adu_client_get_state(const az_iot_adu_client_t* client);
  *
  * Asynchronous: records the request; the NEXT do_work() issues it, retrying on
  * a later tick if the channel is not ready.
+ *
+ * timeout_ms bounds the whole wait in WALL-CLOCK terms; 0 means no bound. On
+ * expiry the request is dropped and OPERATION_ABANDONED is raised with
+ * AZ_IOT_ERR_TIMEOUT. Per call, not a compile-time constant: a boot-time
+ * onboarding probe and a nightly poll do not share a deadline.
+ *
+ * Time spent obeying a service-requested delay COUNTS against it. Excluding it
+ * would move the deadline the caller set, and the caller plans around that
+ * deadline. A delay that cannot fit ends the request at once -- waiting buys
+ * nothing, since the channel refuses for its whole duration -- and the event
+ * carries service_error.retry_after_ms so the application can schedule its own
+ * next attempt.
  */
-az_iot_result az_iot_adu_client_request_onboarding_update(az_iot_adu_client_t* client);
+az_iot_result az_iot_adu_client_request_onboarding_update(
+    az_iot_adu_client_t* client, uint32_t timeout_ms);
 
 /**
  * Ask for a REGULAR (software) update -- the operational route. Requires a
  * provisioned device with a device record, and sends installedUpdateId, which
  * is how the service knows what to offer next. Same asynchronous contract.
  */
-az_iot_result az_iot_adu_client_request_update(az_iot_adu_client_t* client);
+az_iot_result az_iot_adu_client_request_update(az_iot_adu_client_t* client, uint32_t timeout_ms);
 
 /**
  * Update the cached device properties and request a report. Deep-copies

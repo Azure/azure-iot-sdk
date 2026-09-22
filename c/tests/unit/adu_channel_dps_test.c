@@ -70,6 +70,7 @@ typedef struct
   int32_t last_error_code;
   char last_error_text[64];
   char last_tracking_id[64];
+  uint32_t last_retry_after_ms;
 } fixture;
 
 static void on_update(const uint8_t* payload, size_t payload_len, void* engine_ctx)
@@ -92,10 +93,12 @@ static void on_result(
   fx->last_error_code = 0;
   fx->last_error_text[0] = '\0';
   fx->last_tracking_id[0] = '\0';
+  fx->last_retry_after_ms = 0;
   fx->had_service_error = (service_error != NULL);
   if (service_error != NULL)
   {
     fx->last_error_code = service_error->code;
+    fx->last_retry_after_ms = service_error->retry_after_ms;
     snprintf(fx->last_error_text, sizeof(fx->last_error_text), "%s", service_error->message);
     snprintf(fx->last_tracking_id, sizeof(fx->last_tracking_id), "%s", service_error->tracking_id);
   }
@@ -559,6 +562,12 @@ static void a_retry_after_on_the_topic_defers_the_next_request(void** state)
   assert_true(inject(fx, m, topic, "{\"errorCode\":429000,\"message\":\"THROTTLED\"}"));
   assert_int_equal(fx->result_count, 1);
   assert_int_equal(fx->last_action, AZ_IOT_ADU_ERROR_ACTION_RETRY_AFTER);
+  /* Forwarded to the engine, in milliseconds. The engine bounds the operation
+   * against the CALLER's deadline, so it has to be told how long the service
+   * asked for -- a delay that cannot fit ends the request at once, and the
+   * value reaches the application on the abandonment event. */
+  assert_true(fx->had_service_error);
+  assert_int_equal(fx->last_retry_after_ms, 30000u);
 
   /* The slot is free -- the answer retired it -- so BUSY here is the delay
    * talking, not the one-operation-at-a-time rule. */
@@ -666,6 +675,7 @@ static void a_delay_stops_the_tick_reopening_the_session(void** state)
 static void a_failure_without_a_retry_after_defers_nothing(void** state)
 {
   fixture* fx = (fixture*)*state;
+  fx->last_retry_after_ms = 0xFFFFFFFFu;
   az_iot_mock_mqtt_client* m = open_and_bind(fx);
 
   assert_int_equal(
@@ -677,6 +687,10 @@ static void a_failure_without_a_retry_after_defers_nothing(void** state)
   snprintf(topic, sizeof(topic), "$dps/registrations/res/500/?$rid=%s", rid);
 
   assert_true(inject(fx, m, topic, "{\"errorCode\":500000,\"message\":\"server error\"}"));
+  /* And nothing is invented for the engine either: 0 means "the service named
+   * no delay", which is what lets the engine tell it apart from one it must
+   * measure against the caller's deadline. */
+  assert_int_equal(fx->last_retry_after_ms, 0u);
 
   az_iot_adu_channel_dps* c = (az_iot_adu_channel_dps*)fx->channel.ctx;
   assert_int_equal(c->retry_after_deadline_ms, 0);

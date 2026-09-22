@@ -329,17 +329,23 @@ static bool on_dps_message(
         tracking_id,
         sizeof(tracking_id),
         &numeric);
-    az_iot_adu_service_error service_error
-        = { .code = numeric, .message = code, .tracking_id = tracking_id };
     /* MQTT has no headers, so the delay rides the response topic. Taken from
      * any failure that carries one, not only a throttle: the service attaches
-     * it to 5xx as well, and the point is to wait as long as it asked. */
+     * it to 5xx as well, and the point is to wait as long as it asked.
+     *
+     * Reported to the engine as well as gating this channel: the engine bounds
+     * the OPERATION against the caller's own deadline, so it has to see a delay
+     * that will not fit rather than discover it one refusal at a time. */
     uint32_t retry_after_s = az_iot_adu__parse_retry_after_seconds(topic, strlen(topic));
+    uint32_t retry_after_ms = (uint32_t)((uint64_t)retry_after_s * 1000ull);
     if (retry_after_s > 0)
     {
-      c->retry_after_deadline_ms = az_iot_time_mono_ms() + ((uint64_t)retry_after_s * 1000ull);
+      c->retry_after_deadline_ms = az_iot_time_mono_ms() + (uint64_t)retry_after_ms;
       AZ_IOT_LOG_DEBUGF("adu: service asked for a %u second delay", (unsigned)retry_after_s);
     }
+    az_iot_adu_service_error service_error = {
+      .code = numeric, .message = code, .tracking_id = tracking_id, .retry_after_ms = retry_after_ms
+    };
     AZ_IOT_LOG_ERRORF("adu: operation failed with status %d", (int)status);
     AZ_IOT_LOG_ERRORF(
         "adu: service error %d (%s) trackingId=%s",
@@ -853,6 +859,12 @@ static az_iot_result channel_do_work(void* ctx)
   return AZ_IOT_OK;
 }
 
+/* When the SERVICE asked us to wait until. Distinct from an operation already
+ * being outstanding, which also answers BUSY but IS a request going unserved
+ * and must stay bounded.
+ *
+ * Reported raw, without expiring it: retry_after_in_force() clears the deadline
+ * as a side effect of reading it, and the engine needs the instant itself. */
 static const az_iot_adu_channel_vtable k_channel_vtable = {
   .open = channel_open,
   .close = channel_close,
