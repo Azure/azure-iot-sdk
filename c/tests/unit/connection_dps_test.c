@@ -3667,7 +3667,7 @@ static void a_successful_suback_does_not_stage_its_granted_qos(void** state)
   (void)az_iot_connection_client_do_work(fx->client, 0);
 
   /* Nothing may be staged by a success. */
-  assert_int_equal(fx->client->err_source, AZ_IOT_CONN_ERR_SRC_NONE);
+  assert_int_equal(fx->client->error_source, AZ_IOT_CONN_ERR_SRC_NONE);
 
   /* And a later failure that carries no code of its own must report none. */
   fx->log.count = 0;
@@ -3709,10 +3709,10 @@ static void a_dps_verdict_does_not_attach_to_a_hub_event(void** state)
   /* Stage a DPS verdict directly: reaching this state through a real
    * registration failure would also tear the hub down, which is a different
    * test. */
-  fx->client->err_scope = AZ_IOT_CONN_SCOPE_DPS;
-  fx->client->err_source = AZ_IOT_CONN_ERR_SRC_DPS;
-  fx->client->err_code = 401001;
-  fx->client->err_message_len = 0;
+  fx->client->error_scope = AZ_IOT_CONN_SCOPE_DPS;
+  fx->client->error_source = AZ_IOT_CONN_ERR_SRC_DPS;
+  fx->client->error_code = 401001;
+  fx->client->error_message_len = 0;
 
   /* A hub failure with no code of its own. */
   fx->log.count = 0;
@@ -3736,6 +3736,121 @@ static void a_dps_verdict_does_not_attach_to_a_hub_event(void** state)
     }
   }
   assert_true(saw_hub_event);
+}
+
+/* A server-sent MQTT 5 DISCONNECT with an error reason is NOT a clean close.
+ * Reported as AZ_IOT_OK it settled the session at IDLE carrying nothing, which
+ * is exactly the no-retry case this API exists for: the application owns the
+ * ladder and had no way to learn the hub had closed it for quota. */
+static void a_server_disconnect_reason_reaches_the_app_with_retries_disabled(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_mock_mqtt_client* dps = dps_open_to_registering(fx);
+  assert_true(inject_dps_response(dps, DPS_RESPONSE_TOPIC_ASSIGNED, k_assigned_body));
+  for (int i = 0; i < 3; ++i)
+  {
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
+  az_iot_mock_mqtt_client* hub = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  assert_non_null(hub);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(hub, AZ_IOT_OK));
+  for (int i = 0; i < 3; ++i)
+  {
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
+
+  /* The application owns the retry ladder. */
+  fx->client->opts.reconnection_policy = az_iot_reconnection_policy_get_retry_disabled();
+
+  /* 0x97 quota exceeded, classified by the adapter as a failure. */
+  fx->log.count = 0;
+  az_iot_mqtt_event disc;
+  memset(&disc, 0, sizeof(disc));
+  disc.kind = AZ_IOT_MQTT_EVT_DISCONNECTED;
+  disc.status = az_iot_mqtt_disconnect_result(AZ_IOT_MQTT_VERSION_5, 0x97);
+  disc.protocol_code = 0x97;
+  assert_true(az_iot_mock_mqtt_client_inject_event(hub, &disc));
+  for (int i = 0; i < 3; ++i)
+  {
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
+
+  size_t i_evt = SIZE_MAX;
+  for (size_t i = 0; i < fx->log.count; ++i)
+  {
+    if (fx->log.scopes[i] == AZ_IOT_CONN_SCOPE_HUB && fx->log.error_present[i])
+    {
+      i_evt = i;
+      break;
+    }
+  }
+  assert_int_not_equal(i_evt, SIZE_MAX);
+  assert_int_equal(fx->log.error_sources[i_evt], AZ_IOT_CONN_ERR_SRC_MQTT);
+  assert_int_equal(fx->log.error_codes[i_evt], 0x97);
+  /* Quota clears with time, so another attempt is worth making. */
+  assert_true(fx->log.is_retriable[i_evt]);
+}
+
+/* 0x00 is an ordinary close and must stay one: classifying every DISCONNECT as
+ * a failure would fault a session the peer ended cleanly. */
+static void a_normal_server_disconnect_is_still_a_clean_close(void** state)
+{
+  (void)state;
+  assert_int_equal(az_iot_mqtt_disconnect_result(AZ_IOT_MQTT_VERSION_5, 0x00), AZ_IOT_OK);
+  /* v3.1.1 has no reason code at all. */
+  assert_int_equal(az_iot_mqtt_disconnect_result(AZ_IOT_MQTT_VERSION_3_1_1, 0), AZ_IOT_OK);
+  /* A refused credential is named, so is_retriable can say "do not bother". */
+  assert_int_equal(az_iot_mqtt_disconnect_result(AZ_IOT_MQTT_VERSION_5, 0x87), AZ_IOT_ERR_AUTH);
+  /* Transient service-side conditions stay retriable. */
+  assert_int_equal(az_iot_mqtt_disconnect_result(AZ_IOT_MQTT_VERSION_5, 0x8D), AZ_IOT_ERR_MQTT);
+  assert_int_equal(az_iot_mqtt_disconnect_result(AZ_IOT_MQTT_VERSION_5, 0x97), AZ_IOT_ERR_MQTT);
+  /* An adapter's own negative code carries no verdict from the server. */
+  assert_int_equal(az_iot_mqtt_disconnect_result(AZ_IOT_MQTT_VERSION_5, -1), AZ_IOT_ERR_MQTT);
+}
+
+/* A failed client-initiated disconnect has an adapter code and used to drop it,
+ * so the teardown failure arrived with no detail at all. */
+static void a_failed_disconnect_carries_the_adapter_code(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_mock_mqtt_client* dps = dps_open_to_registering(fx);
+  assert_true(inject_dps_response(dps, DPS_RESPONSE_TOPIC_ASSIGNED, k_assigned_body));
+  for (int i = 0; i < 3; ++i)
+  {
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
+  az_iot_mock_mqtt_client* hub = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  assert_non_null(hub);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(hub, AZ_IOT_OK));
+  for (int i = 0; i < 3; ++i)
+  {
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
+
+  fx->log.count = 0;
+  az_iot_mqtt_event disc;
+  memset(&disc, 0, sizeof(disc));
+  disc.kind = AZ_IOT_MQTT_EVT_DISCONNECTED;
+  disc.status = AZ_IOT_ERR_MQTT;
+  disc.transport_code = -3; /* MQTTASYNC_DISCONNECTED's shape: negative. */
+  assert_true(az_iot_mock_mqtt_client_inject_event(hub, &disc));
+  for (int i = 0; i < 3; ++i)
+  {
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
+
+  size_t i_evt = SIZE_MAX;
+  for (size_t i = 0; i < fx->log.count; ++i)
+  {
+    if (fx->log.error_present[i])
+    {
+      i_evt = i;
+      break;
+    }
+  }
+  assert_int_not_equal(i_evt, SIZE_MAX);
+  assert_int_equal(fx->log.error_sources[i_evt], AZ_IOT_CONN_ERR_SRC_TRANSPORT);
+  assert_int_equal(fx->log.error_codes[i_evt], -3);
 }
 
 int main(void)
@@ -3954,6 +4069,14 @@ int main(void)
         a_dps_failure_carries_the_service_error_code_and_message, setup_with_reconnect, teardown),
     cmocka_unit_test_setup_teardown(
         the_dps_error_message_survives_its_source_buffer, setup_with_reconnect, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_server_disconnect_reason_reaches_the_app_with_retries_disabled,
+        setup_with_reconnect,
+        teardown),
+    cmocka_unit_test_setup_teardown(
+        a_normal_server_disconnect_is_still_a_clean_close, setup_with_reconnect, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_failed_disconnect_carries_the_adapter_code, setup_with_reconnect, teardown),
     cmocka_unit_test_setup_teardown(
         a_refused_connack_carries_the_wire_code_as_mqtt, setup_with_reconnect, teardown),
     cmocka_unit_test_setup_teardown(

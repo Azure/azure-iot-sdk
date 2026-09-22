@@ -413,6 +413,18 @@ extern "C"
   AZ_NODISCARD az_iot_result
   az_iot_mqtt_suback_result(az_iot_mqtt_version version, int suback_code);
 
+  /* Classify a server-sent MQTT 5 DISCONNECT reason code.
+   *
+   * A server DISCONNECT is not automatically a clean close: 0x00 is, and
+   * everything from 0x80 up is the server saying why it terminated the
+   * session. Reporting those as AZ_IOT_OK made "the hub closed us for quota
+   * exceeded" indistinguishable from an ordinary peer close, and with retries
+   * disabled it settled the session at IDLE with nothing to explain it.
+   *
+   * v3.1.1 has no DISCONNECT reason code; pass 0. */
+  AZ_NODISCARD az_iot_result
+  az_iot_mqtt_disconnect_result(az_iot_mqtt_version version, int disconnect_code);
+
 #ifdef __cplusplus
 }
 #endif
