@@ -3519,6 +3519,37 @@ static void a_dps_failure_carries_the_service_error_code_and_message(void** stat
   assert_string_equal(fx->log.error_message[i_fault], "Custom allocation failed");
 }
 
+/* The staged message must not point at the adapter's buffer.
+ *
+ * It is captured inside the adapter callback and reported later, from the pump,
+ * by which time a real adapter has freed or reused that buffer. The mock now
+ * scrubs its backing storage the moment the callback returns, so holding a span
+ * into it reads zeroes here instead of passing locally and failing only under
+ * valgrind or ASan. */
+static void the_dps_error_message_survives_its_source_buffer(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_mock_mqtt_client* dps = dps_open_to_registering(fx);
+
+  assert_true(inject_dps_response(dps, DPS_RESPONSE_TOPIC_ASSIGNED, k_failed_body));
+  for (int i = 0; i < 3; ++i)
+  {
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
+
+  size_t i_evt = SIZE_MAX;
+  for (size_t i = 0; i < fx->log.count; ++i)
+  {
+    if (fx->log.error_present[i] && fx->log.error_sources[i] == AZ_IOT_CONN_ERR_SRC_DPS)
+    {
+      i_evt = i;
+      break;
+    }
+  }
+  assert_int_not_equal(i_evt, SIZE_MAX);
+  assert_string_equal(fx->log.error_message[i_evt], "Custom allocation failed");
+}
+
 /* A refused CONNACK reaches the application as the wire code, under the MQTT
  * codebook -- not a hub-specific one. `scope` already says which connection. */
 static void a_refused_connack_carries_the_wire_code_as_mqtt(void** state)
@@ -3681,7 +3712,7 @@ static void a_dps_verdict_does_not_attach_to_a_hub_event(void** state)
   fx->client->err_scope = AZ_IOT_CONN_SCOPE_DPS;
   fx->client->err_source = AZ_IOT_CONN_ERR_SRC_DPS;
   fx->client->err_code = 401001;
-  fx->client->err_message = AZ_SPAN_EMPTY;
+  fx->client->err_message_len = 0;
 
   /* A hub failure with no code of its own. */
   fx->log.count = 0;
@@ -3921,6 +3952,8 @@ int main(void)
         closing_from_the_dps_connected_callback_is_safe, setup_with_reconnect, teardown),
     cmocka_unit_test_setup_teardown(
         a_dps_failure_carries_the_service_error_code_and_message, setup_with_reconnect, teardown),
+    cmocka_unit_test_setup_teardown(
+        the_dps_error_message_survives_its_source_buffer, setup_with_reconnect, teardown),
     cmocka_unit_test_setup_teardown(
         a_refused_connack_carries_the_wire_code_as_mqtt, setup_with_reconnect, teardown),
     cmocka_unit_test_setup_teardown(

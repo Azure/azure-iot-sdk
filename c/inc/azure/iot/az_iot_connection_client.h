@@ -631,6 +631,10 @@ extern "C"
    *
    * It and the event itself are valid only until the callback returns; copy any
    * value that must be retained. */
+/** @brief Bound on the service error text retained for an event. Longer
+ * messages are truncated; a shortened diagnostic still names the cause. */
+#define AZ_IOT_CONN_ERR_MESSAGE_MAX 128
+
   /**
    * @brief Which codebook decodes az_iot_connection_error_detail.code.
    *
@@ -1168,16 +1172,21 @@ extern "C"
      * Staged rather than passed to set_state_to(): a failure is usually
      * recorded in an adapter callback and applied later from the pump (the
      * `deferred` / `dps_pending_finalize` queues), so the two are not the same
-     * call. Consumed and cleared by the matching transition, and scoped so a
-     * DPS verdict cannot leak onto a hub event that happens to run in between.
+     * call.  Consumed by the matching transition, and scoped so a DPS verdict
+     * cannot leak onto a hub event that happens to run in between.
      *
-     * err_message points into the inbound message buffer, which the adapter
-     * reuses after the pump returns -- which is exactly the lifetime the public
-     * event promises, and why it is never retained past dispatch. */
+     * The message is COPIED, not referenced. It arrives as a span into the
+     * adapter's inbound buffer, and that buffer is reused or freed as soon as
+     * the adapter's callback returns -- which is BEFORE the pump dispatches the
+     * transition that reports it. The public event still promises only
+     * callback lifetime; this buffer is what makes that promise keepable.
+     * Truncated rather than grown: a shortened diagnostic still names the
+     * cause. */
     az_iot_connection_error_source err_source;
     az_iot_connection_scope err_scope;
     int32_t err_code;
-    az_span err_message;
+    char err_message[AZ_IOT_CONN_ERR_MESSAGE_MAX];
+    size_t err_message_len;
     bool dps_enrolling; /* CSR-based enrollment active for this DPS session */
     bool dps_have_issued_cert; /* an operational cert was issued by DPS/Hub and stored */
 

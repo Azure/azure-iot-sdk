@@ -312,7 +312,24 @@ static void stage_error(
   c->err_scope = scope;
   c->err_source = source;
   c->err_code = code;
-  c->err_message = message;
+
+  /* COPIED, not referenced. `message` spans the adapter's inbound buffer, and
+   * that buffer is reused or freed the moment the adapter's callback returns --
+   * before the pump dispatches the transition that reports this. Holding the
+   * span would be a use-after-free that only a memory checker catches, because
+   * the bytes usually still look right. */
+  c->err_message_len = 0;
+  int32_t n = az_span_size(message);
+  if (n > 0)
+  {
+    size_t copy_n = (size_t)n;
+    if (copy_n > sizeof(c->err_message))
+    {
+      copy_n = sizeof(c->err_message);
+    }
+    memcpy(c->err_message, az_span_ptr(message), copy_n);
+    c->err_message_len = copy_n;
+  }
 }
 
 /**
@@ -333,7 +350,7 @@ static void clear_staged_error(az_iot_connection_client* c)
 {
   c->err_source = AZ_IOT_CONN_ERR_SRC_NONE;
   c->err_code = 0;
-  c->err_message = AZ_SPAN_EMPTY;
+  c->err_message_len = 0;
 }
 
 /**
@@ -487,7 +504,9 @@ static void set_state_to(
   {
     detail.source = c->err_source;
     detail.code = c->err_code;
-    detail.message = c->err_message;
+    detail.message = (c->err_message_len > 0)
+        ? az_span_create((uint8_t*)c->err_message, (int32_t)c->err_message_len)
+        : AZ_SPAN_EMPTY;
     event.error = &detail;
   }
   /* The profile rides the events that settle "which hub generation is this?":
