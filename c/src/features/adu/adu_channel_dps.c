@@ -310,6 +310,9 @@ static bool on_dps_message(
 
   az_iot_adu_operation operation = c->pending_operation;
   c->request_pending = false;
+  /* An answer arrived, so the session works: the run of losses that armed the
+   * bounded retry is over. */
+  c->session_loss_attempts = 0;
 
   if (status < 200 || status >= 300)
   {
@@ -388,15 +391,45 @@ static bool on_dps_message(
 /* A request can only be answered on the session it was sent on. Once that
  * session is gone the reply can never arrive, so the slot is released and the
  * engine is free to ask again. */
-static void channel_forget_pending_if_session_gone(az_iot_adu_channel_dps* c)
+/* Returns true when the operation was ABANDONED rather than re-armed, so the
+ * caller can tell that the demand it saw a moment ago is gone. */
+static bool channel_forget_pending_if_session_gone(az_iot_adu_channel_dps* c)
 {
   if (c->request_pending && !az_iot_connection_client__dps_session_ready(c->connection))
   {
     AZ_IOT_LOG_DEBUG("adu: provisioning session ended with a request outstanding");
     az_iot_adu_operation operation = c->pending_operation;
     c->request_pending = false;
+
+    /* Bounded. The session normally ended because REGISTRATION failed, and
+     * opening another session cannot fix that -- so an unbounded retry is a
+     * reconnect loop that never succeeds. Past the bound the operation is
+     * abandoned, which is reported to the application instead of being retried
+     * silently for ever.
+     *
+     * The bound only. Spacing the retries out is the connection client's job:
+     * it already paces its own provisioning-session attempts under the
+     * reconnection policy, with jitter. A second ladder here would pace the
+     * same reconnect twice, with a fixed delay and no jitter -- which is a
+     * synchronised retry storm across a fleet that loses DPS together. */
+    if (c->session_loss_attempts < UINT8_MAX)
+    {
+      c->session_loss_attempts++;
+    }
+    if (c->session_loss_attempts > AZ_IOT_ADU_CHANNEL_MAX_SESSION_RETRIES)
+    {
+      AZ_IOT_LOG_ERRORF(
+          "adu: giving up on the operation after %u consecutive provisioning-session losses",
+          (unsigned)c->session_loss_attempts);
+      c->session_loss_attempts = 0;
+      c->wants_session = false;
+      emit_result(c, operation, AZ_IOT_ERR_NOT_CONNECTED, AZ_IOT_ADU_ERROR_ACTION_FATAL, NULL);
+      return true;
+    }
+
     emit_result(c, operation, AZ_IOT_ERR_NOT_CONNECTED, AZ_IOT_ADU_ERROR_ACTION_RETRY, NULL);
   }
+  return false;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -509,6 +542,7 @@ static void channel_close(void* ctx)
   /* The delay belongs to the binding that earned it. A fresh bind is a fresh
    * start, not a continuation of someone else's backoff. */
   c->retry_after_deadline_ms = 0;
+  c->session_loss_attempts = 0;
 }
 
 static az_iot_result channel_request_update(void* ctx, az_iot_adu_operation operation)
@@ -532,7 +566,7 @@ static az_iot_result channel_request_update(void* ctx, az_iot_adu_operation oper
    * answered. Clearing it here is what stops a lost response -- or one lost to
    * the session being torn down at registration -- from wedging the channel in
    * BUSY for the life of the client. */
-  channel_forget_pending_if_session_gone(c);
+  (void)channel_forget_pending_if_session_gone(c);
 
   if (c->request_pending)
   {
@@ -742,7 +776,14 @@ static az_iot_result channel_do_work(void* ctx)
    * afterwards could never be true and the session would never be reopened. */
   bool had_work = c->request_pending || c->wants_session;
 
-  channel_forget_pending_if_session_gone(c);
+  /* An operation ABANDONED here takes its demand with it: wants_session was
+   * just cleared, and had_work was captured before that. Acting on the stale
+   * value would open a session for an operation that has already been given up
+   * on -- the exact loop the bound exists to end. */
+  if (channel_forget_pending_if_session_gone(c))
+  {
+    had_work = false;
+  }
 
   /* Ask for a session when there is work and none is up. This is what makes an
    * operation possible after the device has provisioned: the ordinary flow tore
@@ -762,7 +803,7 @@ static az_iot_result channel_do_work(void* ctx)
   {
     c->wants_session = false;
   }
-  else if (c->holds_user && had_work)
+  else if (c->holds_user && had_work && !retry_after_in_force(c))
   {
     /* Not fatal, so the tick continues either way -- but not silent. BUSY is
      * the ordinary answer (a session is coming up, ask again next tick);
