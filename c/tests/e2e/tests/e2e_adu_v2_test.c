@@ -122,6 +122,11 @@ typedef struct
   az_iot_adu_operation last_op;
   az_iot_result last_result;
   az_iot_adu_error_action last_action;
+  /* The service's own diagnosis of the last failure, when it sent one. */
+  bool had_service_error;
+  int32_t last_error_code;
+  char last_error_text[128];
+  char last_tracking_id[64];
 
   bool faulted;
   az_iot_result fault_reason;
@@ -132,6 +137,8 @@ typedef struct
  * longer make progress just burns its whole budget before failing. */
 static void on_conn_state(const az_iot_connection_state_event* event, void* ctx)
 {
+  /* Deliberately scope-agnostic: this device rides the provisioning session, so
+   * a DPS fault ends the wait just as a hub fault does. */
   if (event != NULL && event->state == AZ_IOT_CONN_STATE_FAULTED)
   {
     ((e2e_fixture*)ctx)->faulted = true;
@@ -150,6 +157,7 @@ static void on_result(
     az_iot_adu_operation operation,
     az_iot_result result,
     az_iot_adu_error_action action,
+    const az_iot_adu_service_error* service_error,
     void* ctx)
 {
   e2e_fixture* fx = (e2e_fixture*)ctx;
@@ -157,6 +165,15 @@ static void on_result(
   fx->last_op = operation;
   fx->last_result = result;
   fx->last_action = action;
+
+  /* NULL whenever the failure was local, so it is optional by contract. */
+  fx->had_service_error = (service_error != NULL);
+  if (service_error != NULL)
+  {
+    fx->last_error_code = service_error->code;
+    snprintf(fx->last_error_text, sizeof(fx->last_error_text), "%s", service_error->message);
+    snprintf(fx->last_tracking_id, sizeof(fx->last_tracking_id), "%s", service_error->tracking_id);
+  }
 }
 
 /* With X.509 the registrationId is not free to choose: it is the identity bound
@@ -194,7 +211,7 @@ static void fixture_open(e2e_fixture* fx, const char* registration_id)
   opts.certificate_provider = &fx->certs.base;
   assert_int_equal(az_iot_connection_client_init(&fx->conn, &opts), AZ_IOT_OK);
   assert_int_equal(
-      az_iot_connection_client_set_state_callback(&fx->conn, on_conn_state, fx), AZ_IOT_OK);
+      az_iot_connection_client_add_state_observer(&fx->conn, on_conn_state, fx), AZ_IOT_OK);
 
   az_iot_adu_device_properties dp = { 0 };
   dp.manufacturer = "contoso";

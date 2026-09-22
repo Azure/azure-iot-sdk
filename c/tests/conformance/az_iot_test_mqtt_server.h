@@ -109,6 +109,38 @@ extern "C"
   /* Identical in both versions. */
   az_iot_test_mqtt_packet az_iot_test_mqtt_pingresp(void);
 
+  /* One MQTT v5 User Property, as a broker would put it on a PUBLISH.
+   *
+   * `key` and `value` are length-delimited on the wire, so NULL and "" are the
+   * same thing here: a zero-length UTF-8 string, which MQTT 5.0 permits and
+   * which a client must surface as an empty value rather than as nothing. */
+  typedef struct az_iot_test_mqtt_user_property
+  {
+    const char* key;
+    const char* value;
+  } az_iot_test_mqtt_user_property;
+
+  /* QoS 0 PUBLISH carrying v5 properties, for driving a client's inbound
+   * property extraction from the broker side.
+   *
+   * v5 only, and QoS 0 only: the packet carries no id, so nothing has to be
+   * echoed into it and it needs no acknowledgement back. `content_type` may be
+   * NULL to omit that property; `user_properties` are emitted in the order
+   * given, duplicate keys included, because the order and the duplicates are
+   * exactly what a client must not collapse.
+   *
+   * Yields len == 0 -- which the proxy rejects, so the test fails where it is
+   * set up -- when the result would not fit AZ_IOT_TEST_MQTT_PACKET_MAX or
+   * would need a multi-byte length field. This builds the small packets an
+   * injected fixture needs, not arbitrary ones. */
+  az_iot_test_mqtt_packet az_iot_test_mqtt_publish_v5(
+      const char* topic,
+      const uint8_t* payload,
+      size_t payload_len,
+      const az_iot_test_mqtt_user_property* user_properties,
+      size_t user_properties_count,
+      const char* content_type);
+
   /* Escape hatches for when the exact code is the subject of the test. */
   az_iot_test_mqtt_packet az_iot_test_mqtt_connack_raw(
       az_iot_test_mqtt_version version,

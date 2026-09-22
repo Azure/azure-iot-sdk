@@ -119,10 +119,11 @@ jobs:
         with:
           rg-name: ${{ env.E2E_RESOURCE_GROUP }}
           # The shared action defaults to EastUS; these pipelines run in
-          # centraluseuap. An undefined repository variable arrives as an empty
-          # string, which would otherwise override that default, so the fallback
-          # is applied here.
-          azure-location: ${{ vars.E2E_AZURE_LOCATION || 'centraluseuap' }}
+          # eastus2euap, the region this subscription's IoT Hub scale unit is
+          # pinned to -- a hub created anywhere else is rejected with IH400059.
+          # An undefined repository variable arrives as an empty string, which
+          # would otherwise override the action default, so the fallback is here.
+          azure-location: ${{ vars.E2E_AZURE_LOCATION || 'eastus2euap' }}
           # Provision the DPS with Azure Device Registration (ADR) integration so
           # the enrollment can issue an operational certificate for the device CSR.
           enable-certificate-management: 'true'

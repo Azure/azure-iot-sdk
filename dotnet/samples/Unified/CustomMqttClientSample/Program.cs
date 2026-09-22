@@ -1,9 +1,12 @@
-﻿using Microsoft.Azure.Devices.Client;
-using Microsoft.Azure.Devices.Client.Models;
-using Microsoft.Azure.Devices.Client.Mqtt;
-using Microsoft.Azure.Devices.Client.MqttNetAdapter;
-using Microsoft.Azure.Devices.Client.MQTTnetAdapter;
-using Microsoft.Azure.Devices.Client.Unified.Connection;
+﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
+// See LICENSE file in the project root for full license information.
+
+using Microsoft.Azure.Iot.Device;
+using Microsoft.Azure.Iot.Device.Models;
+using Microsoft.Azure.Iot.Device.Mqtt;
+using Microsoft.Azure.Iot.Device.MqttNetAdapter;
+using Microsoft.Azure.Iot.Device.MQTTnetAdapter;
+using Microsoft.Azure.Iot.Device.Unified.Connection;
 using SetupSampleDevice;
 
 internal class Program

@@ -777,3 +777,100 @@ az_iot_adu_error_action az_iot_adu__classify_error(
       return AZ_IOT_ADU_ERROR_ACTION_FATAL;
   }
 }
+
+az_iot_result az_iot_adu__parse_tracking_id(
+    const uint8_t* payload,
+    size_t payload_len,
+    char* out_tracking_id,
+    size_t out_tracking_id_size)
+{
+  if (out_tracking_id == NULL || out_tracking_id_size == 0)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  out_tracking_id[0] = '\0';
+
+  /* az_span carries an int32_t length, so an oversized payload would wrap
+   * before az_span_create() saw it and trip az_core's precondition handler
+   * rather than returning. Refused here instead. */
+  if (payload == NULL || payload_len == 0 || payload_len > (size_t)INT32_MAX)
+  {
+    return AZ_IOT_ERR_NOT_FOUND;
+  }
+
+  az_json_reader jr;
+  az_span doc = az_span_create((uint8_t*)(uintptr_t)payload, (int32_t)payload_len);
+  if (az_result_failed(az_json_reader_init(&jr, doc, NULL))
+      || az_result_failed(az_json_reader_next_token(&jr))
+      || jr.token.kind != AZ_JSON_TOKEN_BEGIN_OBJECT)
+  {
+    return AZ_IOT_ERR_NOT_FOUND;
+  }
+
+  /* Top level only, and skipping whole child values: trackingId is documented
+   * at the root, and a nested one belongs to something else.
+   *
+   * The value is held as a candidate until the root object is seen to CLOSE,
+   * matching the other response parsers here: a truncated body must be
+   * rejected, not reported as a successful parse of whatever arrived before
+   * the cut. */
+  bool found = false;
+  bool closed = false;
+  while (az_result_succeeded(az_json_reader_next_token(&jr)))
+  {
+    if (jr.token.kind == AZ_JSON_TOKEN_END_OBJECT)
+    {
+      closed = true;
+      break;
+    }
+    if (jr.token.kind != AZ_JSON_TOKEN_PROPERTY_NAME)
+    {
+      return AZ_IOT_ERR_NOT_FOUND;
+    }
+
+    bool is_tracking = az_json_token_is_text_equal(&jr.token, AZ_SPAN_FROM_STR("trackingId"));
+
+    if (az_result_failed(az_json_reader_next_token(&jr)))
+    {
+      break;
+    }
+
+    if (is_tracking && jr.token.kind == AZ_JSON_TOKEN_STRING)
+    {
+      int32_t n = az_span_size(jr.token.slice);
+      /* Dropped rather than truncated when it does not fit: half a correlation
+       * id is worse than none, because it would be quoted in a support request
+       * and match nothing. */
+      if (n >= 0 && (size_t)n + 1 <= out_tracking_id_size && out_tracking_id_size <= INT32_MAX)
+      {
+        /* az_core's own copy: it NUL-terminates, and it asserts the span fits
+         * rather than silently truncating. The guard above keeps that
+         * precondition satisfied instead of relying on it to catch us. */
+        az_span_to_str(out_tracking_id, (int32_t)out_tracking_id_size, jr.token.slice);
+        found = true;
+        continue;
+      }
+      /* Too long to fit is dropped, not truncated: half a correlation id would
+       * be quoted in a support request and match nothing. The buffer is cleared
+       * because a duplicate key may already have put a good value there, and
+       * the caller ignores the status -- an empty string is the contract. */
+      out_tracking_id[0] = 0;
+      return AZ_IOT_ERR_NOT_FOUND;
+    }
+
+    if (jr.token.kind == AZ_JSON_TOKEN_BEGIN_OBJECT || jr.token.kind == AZ_JSON_TOKEN_BEGIN_ARRAY)
+    {
+      if (az_result_failed(az_json_reader_skip_children(&jr)))
+      {
+        break;
+      }
+    }
+  }
+
+  if (!closed || !found)
+  {
+    out_tracking_id[0] = 0;
+    return AZ_IOT_ERR_NOT_FOUND;
+  }
+  return AZ_IOT_OK;
+}

@@ -67,7 +67,7 @@
     copts.dps.registration_id = reg_id;
     copts.certificate_provider = &amp;certs.base;
     az_iot_connection_client_init(&amp;conn, &amp;copts);
-    az_iot_connection_client_set_state_callback(&amp;conn, on_conn_state, &amp;ctx);
+    az_iot_connection_client_add_state_observer(&amp;conn, on_conn_state, &amp;ctx);
 
     <span style="color: #6a9955;">// ─── Step 3: Plug in MQTT transport (one line) ───────────</span>
     az_iot_connection_client_register_mqtt_factory(

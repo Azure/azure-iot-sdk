@@ -16,33 +16,8 @@
 name: cd-dotnet
 
 on:
-  # Manual publish, for a version that no push or release produces on its own.
-  workflow_dispatch:
-    inputs:
-      version:
-        description: 'Exact version to publish, e.g. 2.0.0 or 2.0.0-beta.1. Leave empty to use the csproj VersionPrefix plus the suffix below.'
-        required: false
-        type: string
-      version-suffix:
-        description: 'Prerelease suffix appended to the csproj VersionPrefix. Ignored when an exact version is given. Defaults to today''s UTC date, dd-MM-yyyy.'
-        required: false
-        type: string
-
-  # Every change that lands publishes a prerelease of the version the csproj declares, dated so that
-  # it is clear how old a given build is. Only the first publish of a day gets that day's version:
-  # the registry does not allow a version to be republished, so later pushes on the same day are
-  # skipped. Publish a release, or dispatch this workflow with an explicit version, to publish a
-  # second build of the same day.
-  push:
-    branches: [ main ]
-    paths:
-      - 'dotnet/**'
-      - 'common/**'
-      - '.github/workflows/cd-dotnet.yml'
-
-  # Publishing a GitHub release publishes the version named by its tag.
-  release:
-    types: [ published ]
+  schedule:
+    - cron: '0 11 * * *'  # Nightly at 4am PST
 
 # Never let two publishes race. Cancelling one mid-push could leave only part of the packages
 # published, so queue instead.

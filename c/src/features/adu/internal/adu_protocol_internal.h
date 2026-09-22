@@ -32,16 +32,9 @@ extern "C"
 
   /* --- Operations ---------------------------------------------------------- */
 
-  typedef enum az_iot_adu_operation
-  {
-    /* Day-0 fetch: the device has no registry entry yet. Sends agentInfo and
-     * omits installedUpdateId. */
-    AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE = 0,
-    /* Operational fetch: the device is already registered. */
-    AZ_IOT_ADU_OP_GET_UPDATE,
-    /* Status report for a workflow. */
-    AZ_IOT_ADU_OP_REPORT_STATUS,
-  } az_iot_adu_operation;
+  /* az_iot_adu_operation is declared in the public header: an application that
+   * subscribes to abandonment needs to know WHICH operation was abandoned, so
+   * the enum is part of the public contract rather than duplicated here. */
 
 /* --- Topics -------------------------------------------------------------- */
 
@@ -300,6 +293,21 @@ extern "C"
       char* out_code,
       size_t out_code_size,
       int32_t* out_numeric_code);
+
+  /* Extract the service's correlation GUID (`trackingId`) from an error body.
+   *
+   * Separate from __parse_error_code rather than another out-parameter on it:
+   * that function classifies, this one is for diagnostics only, and keeping
+   * them apart leaves the classification path and its tests untouched.
+   *
+   * out_tracking_id is always NUL-terminated, and empty when the body carries
+   * no trackingId or it does not fit. Returns AZ_IOT_ERR_NOT_FOUND when there
+   * is nothing to report. */
+  az_iot_result az_iot_adu__parse_tracking_id(
+      const uint8_t* payload,
+      size_t payload_len,
+      char* out_tracking_id,
+      size_t out_tracking_id_size);
 
 #ifdef __cplusplus
 }

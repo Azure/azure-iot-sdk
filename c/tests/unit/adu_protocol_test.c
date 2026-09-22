@@ -1139,6 +1139,61 @@ static void an_oversized_message_is_dropped_not_truncated(void** state)
       AZ_IOT_ADU_ERROR_ACTION_RETRY);
 }
 
+/* The service correlation GUID is the one value a support request needs, so it
+ * is extracted rather than discarded. */
+static void the_tracking_id_is_extracted(void** state)
+{
+  (void)state;
+  char id[64];
+
+  const char body[]
+      = "{\"errorCode\":400002,\"trackingId\":\"9f1c-aa\",\"message\":\"INVALID_REQUEST\"}";
+  assert_int_equal(
+      az_iot_adu__parse_tracking_id((const uint8_t*)body, sizeof(body) - 1, id, sizeof(id)),
+      AZ_IOT_OK);
+  assert_string_equal(id, "9f1c-aa");
+
+  /* A body without one is not a parse failure -- it is a body without one. */
+  const char none[] = "{\"errorCode\":400002}";
+  assert_int_equal(
+      az_iot_adu__parse_tracking_id((const uint8_t*)none, sizeof(none) - 1, id, sizeof(id)),
+      AZ_IOT_ERR_NOT_FOUND);
+  assert_string_equal(id, "");
+
+  /* A nested trackingId belongs to something else and is not taken. */
+  const char nested[] = "{\"info\":{\"trackingId\":\"inner\"},\"errorCode\":1}";
+  assert_int_equal(
+      az_iot_adu__parse_tracking_id((const uint8_t*)nested, sizeof(nested) - 1, id, sizeof(id)),
+      AZ_IOT_ERR_NOT_FOUND);
+  assert_string_equal(id, "");
+
+  /* A truncated body is rejected, not reported as a successful parse of
+   * whatever arrived before the cut -- matching the other response parsers. */
+  const char cut[] = "{\"trackingId\":\"abc\"";
+  assert_int_equal(
+      az_iot_adu__parse_tracking_id((const uint8_t*)cut, sizeof(cut) - 1, id, sizeof(id)),
+      AZ_IOT_ERR_NOT_FOUND);
+  assert_string_equal(id, "");
+
+  /* A duplicate key whose second value does not fit must not leave the first
+   * behind: the caller ignores the status, so an empty string is the contract. */
+  const char dup[] = "{\"trackingId\":\"ok\",\"trackingId\":\"far-too-long-to-fit-here\"}";
+  char small_dup[8];
+  assert_int_equal(
+      az_iot_adu__parse_tracking_id(
+          (const uint8_t*)dup, sizeof(dup) - 1, small_dup, sizeof(small_dup)),
+      AZ_IOT_ERR_NOT_FOUND);
+  assert_string_equal(small_dup, "");
+
+  /* Too long to fit is dropped, not truncated: half a correlation id would be
+   * quoted in a support request and match nothing. */
+  char small[4];
+  assert_int_equal(
+      az_iot_adu__parse_tracking_id((const uint8_t*)body, sizeof(body) - 1, small, sizeof(small)),
+      AZ_IOT_ERR_NOT_FOUND);
+  assert_string_equal(small, "");
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -1186,6 +1241,7 @@ int main(void)
     cmocka_unit_test(the_shared_conflict_code_is_split_by_operation),
     cmocka_unit_test(transient_numeric_codes_are_retried),
     cmocka_unit_test(unknown_and_absent_signals_are_fatal),
+    cmocka_unit_test(the_tracking_id_is_extracted),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

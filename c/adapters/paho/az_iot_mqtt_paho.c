@@ -106,6 +106,13 @@ typedef struct paho_client
    * reference file handed to Paho, held for as long as the connection that
    * uses them. */
   az_iot_paho_key_custody key_custody;
+
+  /* Reason code to put in the MQTT 5 DISCONNECT, taken from the connect
+   * options of the session in progress. Held here because disconnect() takes
+   * no options of its own; reset on every connect so a reason cannot outlive
+   * the session that asked for it. Unused on v3.1.1, which has no reason
+   * codes. */
+  uint8_t disconnect_reason_code;
 } paho_client;
 
 static paho_client* paho_self(az_iot_mqtt_client* c) { return (paho_client*)c; }
@@ -219,8 +226,16 @@ static void enqueue_status(
   enqueue_status_code(m, kind, status, packet_id, 0);
 }
 
-/* Allocate + enqueue an inbound MESSAGE event. Topic + payload are deep-copied
- * so the queued event is self-contained. */
+static void extract_v5_props(queued_event* n, MQTTAsync_message* msg);
+
+/* Allocate + enqueue an inbound MESSAGE event. Topic, payload and any v5
+ * properties are deep-copied so the queued event is self-contained.
+ *
+ * `v5_src` carries the properties to extract, or NULL for a v3.1.1 session.
+ * They are attached BEFORE the event is published to the queue: q_push() makes
+ * the node visible to process_loop() on the user thread, which is free to
+ * dispatch and free it immediately, so anything written to the node afterwards
+ * races with that free. */
 static void enqueue_message(
     paho_client* m,
     const char* topic,
@@ -228,7 +243,8 @@ static void enqueue_message(
     const void* payload,
     int payload_len,
     int qos,
-    int retain)
+    int retain,
+    MQTTAsync_message* v5_src)
 {
   queued_event* n = (queued_event*)calloc(1, sizeof(*n));
   if (!n)
@@ -272,6 +288,12 @@ static void enqueue_message(
 
   n->evt.kind = AZ_IOT_MQTT_EVT_MESSAGE;
   n->evt.message = &n->msg;
+
+  if (v5_src)
+  {
+    extract_v5_props(n, v5_src);
+  }
+
   q_push(m, n);
 }
 
@@ -279,18 +301,28 @@ static void enqueue_message(
 /* Paho callbacks (run on Paho threads - keep them tiny + queue-only)         */
 /* ------------------------------------------------------------------------- */
 
-/* Helper: duplicate a binary blob (len bytes from src) onto the heap. */
+/* Helper: copy `len` length-delimited bytes from Paho onto the heap as a C
+ * string.
+ *
+ * Paho hands out MQTT UTF-8 strings as a pointer plus a length and does NOT
+ * NUL-terminate them, so the terminator has to be added here before the bytes
+ * can be exposed through az_iot_mqtt_message as a `const char*`.
+ *
+ * A zero-length string is a legal MQTT v5 property value and yields "", not
+ * NULL: NULL is reserved for "allocation failed", and an application that
+ * cannot tell an empty value from a failed one has no way to react to either.
+ * Returns NULL only on allocation failure. */
 static char* dup_str_n(const char* src, int len)
 {
-  if (!src || len <= 0)
-  {
-    return NULL;
-  }
-  char* d = (char*)malloc((size_t)len + 1);
+  size_t n = (src && len > 0) ? (size_t)len : 0u;
+  char* d = (char*)malloc(n + 1);
   if (d)
   {
-    memcpy(d, src, (size_t)len);
-    d[len] = '\0';
+    if (n)
+    {
+      memcpy(d, src, n);
+    }
+    d[n] = '\0';
   }
   return d;
 }
@@ -349,9 +381,19 @@ static void extract_v5_props(queued_event* n, MQTTAsync_message* msg)
         {
           continue;
         }
-        n->user_props[n->user_props_count].key = dup_str_n(up->value.data.data, up->value.data.len);
-        n->user_props[n->user_props_count].value
-            = dup_str_n(up->value.value.data, up->value.value.len);
+        char* key = dup_str_n(up->value.data.data, up->value.data.len);
+        char* value = dup_str_n(up->value.value.data, up->value.value.len);
+        if (!key || !value)
+        {
+          /* Drop the pair whole rather than surface half of it: a NULL key or
+           * value in an array the application is told has N entries is a
+           * dereference waiting to happen. */
+          free(key);
+          free(value);
+          continue;
+        }
+        n->user_props[n->user_props_count].key = key;
+        n->user_props[n->user_props_count].value = value;
         n->user_props_count++;
       }
       n->msg.user_properties = n->user_props;
@@ -365,18 +407,15 @@ static int paho_msg_arrived(void* context, char* topic, int topic_len, MQTTAsync
   paho_client* m = (paho_client*)context;
   if (m && msg)
   {
-    enqueue_message(m, topic, topic_len, msg->payload, msg->payloadlen, msg->qos, msg->retained);
-    /* For v5: extract properties from the last enqueued event */
-    if (m->version == AZ_IOT_MQTT_VERSION_5)
-    {
-      paho_mutex_lock(&m->q_mutex);
-      queued_event* tail = m->q_tail;
-      paho_mutex_unlock(&m->q_mutex);
-      if (tail && tail->has_message)
-      {
-        extract_v5_props(tail, msg);
-      }
-    }
+    enqueue_message(
+        m,
+        topic,
+        topic_len,
+        msg->payload,
+        msg->payloadlen,
+        msg->qos,
+        msg->retained,
+        (m->version == AZ_IOT_MQTT_VERSION_5) ? msg : NULL);
   }
   MQTTAsync_freeMessage(&msg);
   MQTTAsync_free(topic);
@@ -646,12 +685,25 @@ static void paho_disconnect_failure(void* context, MQTTAsync_failureData* respon
 
 static void paho_connect_success(void* context, MQTTAsync_successData* response)
 {
-  (void)response;
   paho_client* m = (paho_client*)context;
-  if (m)
+  if (!m)
   {
-    enqueue_status(m, AZ_IOT_MQTT_EVT_CONNECTED, AZ_IOT_OK, 0);
+    return;
   }
+  /* Report Session Present from the CONNACK, as the v5 path does. MQTT 3.1.1
+   * carries the flag too, and a caller that connects with Clean Session 0 --
+   * which is what a Classic hub session does, so its queued cloud-to-device
+   * messages survive a reconnect -- has no other way to learn whether the
+   * broker actually resumed the session or quietly started a fresh one. */
+  queued_event* n = (queued_event*)calloc(1, sizeof(*n));
+  if (!n)
+  {
+    return;
+  }
+  n->evt.kind = AZ_IOT_MQTT_EVT_CONNECTED;
+  n->evt.status = AZ_IOT_OK;
+  n->evt.session_present = (response && response->alt.connect.sessionPresent) ? true : false;
+  q_push(m, n);
 }
 
 static void paho_connect_failure(void* context, MQTTAsync_failureData* response)
@@ -1062,6 +1114,11 @@ static az_iot_result paho_iface_connect(
   }
   paho_client* m = paho_self(self);
 
+  /* The DISCONNECT reason belongs to this session, so it is captured with the
+   * rest of the connect options; a session that does not ask for one is closed
+   * normally, which is what a zero yields. */
+  m->disconnect_reason_code = opts->disconnect_reason_code;
+
   /* Use TLS when any TLS material or server verification is requested: a
    * client identity (cert), a server trust anchor (CA), their in-memory PEM
    * variants, an explicit use_tls, or a non-extractable key reference.
@@ -1350,6 +1407,15 @@ static az_iot_result paho_iface_disconnect(az_iot_mqtt_client* self)
   }
 
   MQTTAsync_disconnectOptions opts = MQTTAsync_disconnectOptions_initializer;
+  if (m->version == AZ_IOT_MQTT_VERSION_5)
+  {
+    /* The v5 initializer is a different struct_version: it is what makes Paho
+     * write the reason code and the property field into the DISCONNECT. Taking
+     * the v3.1.1 one and setting reasonCode would leave the code unsent. */
+    MQTTAsync_disconnectOptions v5_opts = MQTTAsync_disconnectOptions_initializer5;
+    opts = v5_opts;
+    opts.reasonCode = (enum MQTTReasonCodes)m->disconnect_reason_code;
+  }
   opts.timeout = 1000;
   /* Without these the disconnect completes silently: Paho raises
    * connectionLost() and disconnected() only for a disconnect the PEER caused,

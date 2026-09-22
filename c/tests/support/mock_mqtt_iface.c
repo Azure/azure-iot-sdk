@@ -56,6 +56,11 @@ typedef struct az_iot_mock_mqtt_factory_state
 {
   az_iot_mqtt_factory public_;
   az_iot_mock_mqtt_client* last_client;
+  /* One-shot CONNECT failure armed on the FACTORY rather than a client, for
+   * the cases where the client under test has not been created yet -- the
+   * connection client builds a fresh adapter inside the call being tested. */
+  bool fail_next_connect;
+  az_iot_result next_connect_result;
 } az_iot_mock_mqtt_factory_state;
 
 /* ------------------------------------------------------------------------- */
@@ -190,6 +195,18 @@ static az_iot_result mock_connect(az_iot_mqtt_client* self, const az_iot_mqtt_co
     c->connect.proxy_port = opts->proxy.port;
     copy_str(c->connect.proxy_username, sizeof(c->connect.proxy_username), opts->proxy.username);
     copy_str(c->connect.proxy_password, sizeof(c->connect.proxy_password), opts->proxy.password);
+    c->connect.session_expiry_seconds = opts->session_expiry_seconds;
+    c->connect.disconnect_reason_code = opts->disconnect_reason_code;
+    copy_str(c->connect.lwt_topic, sizeof(c->connect.lwt_topic), opts->lwt.topic);
+    copy_bytes(
+        c->connect.lwt_payload,
+        sizeof(c->connect.lwt_payload),
+        opts->lwt.payload,
+        opts->lwt.payload_len,
+        &c->connect.lwt_payload_len);
+    c->connect.lwt_qos = opts->lwt.qos;
+    c->connect.lwt_retain = opts->lwt.retain;
+    c->connect.lwt_will_delay_seconds = opts->lwt.will_delay_seconds;
   }
   return take_override(m, AZ_IOT_MOCK_CALL_CONNECT);
 }
@@ -387,6 +404,12 @@ static az_iot_mqtt_client* mock_factory_create(void* factory_ctx)
   m->base.iface = &m->iface_storage;
   m->next_packet_id = 0;
   m->owner = st;
+  if (st->fail_next_connect)
+  {
+    st->fail_next_connect = false;
+    m->has_override[AZ_IOT_MOCK_CALL_CONNECT] = true;
+    m->override_result[AZ_IOT_MOCK_CALL_CONNECT] = st->next_connect_result;
+  }
 
   st->last_client = m;
   return &m->base;
@@ -464,6 +487,21 @@ void az_iot_mock_mqtt_client_clear_calls(az_iot_mock_mqtt_client* m)
     return;
   }
   m->call_count = 0;
+}
+
+void az_iot_mock_mqtt_factory_fail_next_connect(az_iot_mqtt_factory* factory, az_iot_result result)
+{
+  if (!factory)
+  {
+    return;
+  }
+  az_iot_mock_mqtt_factory_state* st = (az_iot_mock_mqtt_factory_state*)factory->factory_ctx;
+  if (!st)
+  {
+    return;
+  }
+  st->fail_next_connect = true;
+  st->next_connect_result = result;
 }
 
 void az_iot_mock_mqtt_client_set_next_result(

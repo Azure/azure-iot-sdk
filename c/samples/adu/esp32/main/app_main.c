@@ -54,6 +54,14 @@ static az_iot_connection_state g_conn_state = AZ_IOT_CONN_STATE_IDLE;
 
 static void on_conn_state(const az_iot_connection_state_event* event, void* ctx)
 {
+  /* Hub lifecycle only: the provisioning session reports on its own scope,
+   * and storing its state here would overwrite the hub state this code acts
+   * on. */
+  if (event->scope != AZ_IOT_CONN_SCOPE_HUB)
+  {
+    return;
+  }
+
   az_iot_connection_state st = event->state;
   az_iot_result reason = event->reason;
   (void)ctx;
@@ -148,7 +156,7 @@ void app_main(void)
     ESP_LOGE(TAG, "connection_client_init failed");
     esp_restart();
   }
-  az_iot_connection_client_set_state_callback(&conn, on_conn_state, NULL);
+  az_iot_connection_client_add_state_observer(&conn, on_conn_state, NULL);
 
   if (az_iot_connection_client_register_mqtt_factory(&conn, az_iot_esp_mqtt_factory_create_v3_1_1())
           != AZ_IOT_OK
@@ -204,8 +212,14 @@ void app_main(void)
   /* Nothing is fetched unless the application asks. This device provisions
    * through DPS on this boot, so it uses the day-0 onboarding route; one that
    * already has a device record would call az_iot_adu_client_request_update().
-   */
-  if (az_iot_adu_client_request_onboarding_update(&adu) != AZ_IOT_OK)
+   *
+   * The timeout bounds how long the CLIENT keeps reissuing this check before
+   * giving up and raising AZ_IOT_ADU_EVENT_OPERATION_ABANDONED with
+   * AZ_IOT_ERR_TIMEOUT -- otherwise an unservable check is retried on every
+   * do_work() for the life of the client. AZ_IOT_ADU_REQUEST_NO_TIMEOUT asks
+   * for exactly that, and is the wrong default on a battery-powered device. */
+  if (az_iot_adu_client_request_onboarding_update(&adu, AZ_IOT_ADU_REQUEST_DEFAULT_TIMEOUT_MS)
+      != AZ_IOT_OK)
   {
     ESP_LOGE(TAG, "could not request an onboarding update");
     esp_restart();

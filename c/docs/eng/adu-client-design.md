@@ -957,6 +957,45 @@ typedef struct az_iot_adu_client_config_options
 
 az_iot_adu_client_config_options az_iot_adu_client_config_options_default(void);
 
+/* One observer registry, discriminated by event kind, matching the connection
+ * client's add/remove seam so an application learns one pattern for the whole
+ * SDK. Every observer receives every event; read `kind` first.
+ *
+ *   WORKFLOW_STATE_CHANGED -- the deployment moved. Otherwise observable only
+ *     by polling az_iot_adu_client_get_state().
+ *   OPERATION_ABANDONED    -- an operation reached a verdict that stops the
+ *     CLIENT re-arming it. It does NOT mean the application may not ask again;
+ *     that is the intended response, which is why the event carries the route:
+ *     a lost status report is not a lost update check, and the onboarding and
+ *     regular fetches are asked for separately.
+ *
+ * Abandonment is raised from on_channel_result()'s no-re-arm branch, which IS
+ * the definition of "the client will not retry this". Deriving both from one
+ * condition is deliberate: a second list in the channel would be free to drift
+ * away from the engine's. It covers PROCEED as well as FATAL -- PROCEED is
+ * UPDATE_ACCOUNT_NOT_LINKED on a fetch, a permanent refusal that otherwise
+ * reads exactly like "no update available".
+ *
+ * The event carries the service diagnosis (numeric `errorCode`, the
+ * best-effort error TEXT from `message`, and `trackingId`), because the
+ * classification alone collapses failures needing different operator
+ * responses, and trackingId is what a support request needs.
+ *
+ * `message` is TEXT, not a stable identifier: it usually carries the
+ * originating code ("INVALID_REQUEST", "UNKNOWN_WORKFLOW_ID"), which is what
+ * the classifier matches on defensively, but the same field is sometimes free
+ * prose ("Deserialization error."). Applications branch on `code` and on the
+ * event's `reason`. */
+az_iot_result az_iot_adu_client_add_observer(
+    az_iot_adu_client_t* client,
+    az_iot_adu_observer_callback cb,
+    void* user_ctx);
+
+az_iot_result az_iot_adu_client_remove_observer(
+    az_iot_adu_client_t* client,
+    az_iot_adu_observer_callback cb,
+    void* user_ctx);
+
 /**
  * Initialize the ADU client. `twin` is the initialized twin client the ADU
  * client subscribes to for desired properties; `options` carries the rest
@@ -1019,15 +1058,32 @@ az_iot_adu_state az_iot_adu_client_get_state(const az_iot_adu_client_t* client);
  *
  * Asynchronous: records the request; the NEXT do_work() issues it, retrying on
  * a later tick if the channel is not ready.
+ *
+ * timeout_ms bounds the whole wait in WALL-CLOCK terms;
+ * AZ_IOT_ADU_REQUEST_NO_TIMEOUT (0) means no bound, and
+ * AZ_IOT_ADU_REQUEST_DEFAULT_TIMEOUT_MS (60000) is the default for a caller
+ * with no policy of its own -- it bounds the retries an unservable check keeps
+ * issuing, not the wait. On
+ * expiry the request is dropped and OPERATION_ABANDONED is raised with
+ * AZ_IOT_ERR_TIMEOUT. Per call, not a compile-time constant: a boot-time
+ * onboarding probe and a nightly poll do not share a deadline.
+ *
+ * Time spent obeying a service-requested delay COUNTS against it. Excluding it
+ * would move the deadline the caller set, and the caller plans around that
+ * deadline. A delay that cannot fit ends the request at once -- waiting buys
+ * nothing, since the channel refuses for its whole duration -- and the event
+ * carries service_error.retry_after_ms so the application can schedule its own
+ * next attempt.
  */
-az_iot_result az_iot_adu_client_request_onboarding_update(az_iot_adu_client_t* client);
+az_iot_result az_iot_adu_client_request_onboarding_update(
+    az_iot_adu_client_t* client, uint32_t timeout_ms);
 
 /**
  * Ask for a REGULAR (software) update -- the operational route. Requires a
  * provisioned device with a device record, and sends installedUpdateId, which
  * is how the service knows what to offer next. Same asynchronous contract.
  */
-az_iot_result az_iot_adu_client_request_update(az_iot_adu_client_t* client);
+az_iot_result az_iot_adu_client_request_update(az_iot_adu_client_t* client, uint32_t timeout_ms);
 
 /**
  * Update the cached device properties and request a report. Deep-copies
@@ -1684,8 +1740,11 @@ target_link_libraries(az_iot_adu
 
 **Deliverables** (specified in
 [docs/eng/connection-state-and-error-propagation.md](connection-state-and-error-propagation.md)):
-- Replace the single `set_state_callback` with the shared observer registry
-  (public + internal registration, two-pass dispatch, compile-time capacity).
+- ~~Replace the single `set_state_callback` with the shared observer registry
+  (public + internal registration, two-pass dispatch, compile-time capacity).~~
+  **DONE** -- `az_iot_connection_client_add_state_observer()` (public) and
+  `az_iot_connection_client__add_state_observer()` (internal) ship the registry;
+  the single setter is removed.
 - Extend `az_iot_connection_state_event` with `az_iot_conn_reason` +
   `az_iot_error_source`; wire `protocol_code`/`transport_code` from the MQTT
   iface.

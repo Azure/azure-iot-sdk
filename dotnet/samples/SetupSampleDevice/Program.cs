@@ -1,4 +1,7 @@
-﻿using Microsoft.Azure.Devices;
+﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
+// See LICENSE file in the project root for full license information.
+
+using Microsoft.Azure.Devices;
 using Microsoft.Azure.Devices.Provisioning.Service;
 using System.Diagnostics;
 using System.Security.Cryptography;
