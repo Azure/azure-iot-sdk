@@ -25,7 +25,8 @@ az_iot_result az_iot_adu__validate_compatibility_properties(
     {
       return AZ_IOT_ERR_INVALID_ARG;
     }
-    if (strlen(properties[i].name) > INT32_MAX || strlen(properties[i].value) > INT32_MAX)
+    if (strlen(properties[i].name) > AZ_IOT_ADU_MAX_JSON_STRING_SIZE
+        || strlen(properties[i].value) > AZ_IOT_ADU_MAX_JSON_STRING_SIZE)
     {
       return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
     }
@@ -51,8 +52,9 @@ az_iot_result az_iot_adu__validate_installed_update_id(const az_iot_adu_report_u
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
-  if (strlen(id->provider) > INT32_MAX || strlen(id->name) > INT32_MAX
-      || strlen(id->version) > INT32_MAX)
+  if (strlen(id->provider) > AZ_IOT_ADU_MAX_JSON_STRING_SIZE
+      || strlen(id->name) > AZ_IOT_ADU_MAX_JSON_STRING_SIZE
+      || strlen(id->version) > AZ_IOT_ADU_MAX_JSON_STRING_SIZE)
   {
     return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
   }

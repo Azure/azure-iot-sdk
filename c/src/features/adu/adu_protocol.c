@@ -217,7 +217,7 @@ static az_result write_string_property(az_json_writer* jw, const char* name, con
 {
   size_t name_size = strlen(name);
   size_t value_size = strlen(value);
-  if (name_size > INT32_MAX || value_size > INT32_MAX)
+  if (name_size > AZ_IOT_ADU_MAX_JSON_STRING_SIZE || value_size > AZ_IOT_ADU_MAX_JSON_STRING_SIZE)
   {
     return AZ_ERROR_NOT_ENOUGH_SPACE;
   }
@@ -230,15 +230,6 @@ static az_result write_string_property(az_json_writer* jw, const char* name, con
 /* Serialize an update-id triple. The service requires all three parts, so a
  * partially-populated triple is a caller error rather than something to paper
  * over with empty strings. */
-az_result az_iot_adu__write_update_id(az_json_writer* jw, const az_iot_adu_report_update_id* id)
-{
-  ADU_RETURN_IF_FAILED(az_json_writer_append_begin_object(jw));
-  ADU_RETURN_IF_FAILED(write_string_property(jw, "provider", id->provider));
-  ADU_RETURN_IF_FAILED(write_string_property(jw, "name", id->name));
-  ADU_RETURN_IF_FAILED(write_string_property(jw, "version", id->version));
-  return az_json_writer_append_end_object(jw);
-}
-
 static az_result write_update_id(
     az_json_writer* jw,
     const char* name,
@@ -246,7 +237,11 @@ static az_result write_update_id(
 {
   ADU_RETURN_IF_FAILED(
       az_json_writer_append_property_name(jw, az_span_create_from_str((char*)(uintptr_t)name)));
-  return az_iot_adu__write_update_id(jw, id);
+  ADU_RETURN_IF_FAILED(az_json_writer_append_begin_object(jw));
+  ADU_RETURN_IF_FAILED(write_string_property(jw, "provider", id->provider));
+  ADU_RETURN_IF_FAILED(write_string_property(jw, "name", id->name));
+  ADU_RETURN_IF_FAILED(write_string_property(jw, "version", id->version));
+  return az_json_writer_append_end_object(jw);
 }
 
 az_iot_result az_iot_adu__build_fetch_request(

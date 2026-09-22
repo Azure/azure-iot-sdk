@@ -15,6 +15,10 @@ extern "C"
 #define AZ_IOT_ADU_COMPATIBILITY_STORAGE_SIZE 256
 #define AZ_IOT_ADU_INSTALLED_ID_STORAGE_SIZE 192
 
+/* az_core's JSON writer reserves up to six escaped bytes per input byte within
+ * its 1,000,000,000-byte string limit. Reject before reaching its precondition. */
+#define AZ_IOT_ADU_MAX_JSON_STRING_SIZE (1000000000 / 6)
+
   typedef struct az_iot_adu_device_properties_snapshot
   {
     az_iot_adu_device_properties properties;

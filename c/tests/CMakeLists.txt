@@ -266,6 +266,12 @@ target_include_directories(az_iot_tests_adu_channel_dps PRIVATE
     ${CMAKE_SOURCE_DIR}/src/core
     ${CMAKE_SOURCE_DIR}/src/features/adu/internal)
 
+# Bound precondition hangs while leaving headroom for Valgrind instrumentation.
+set_tests_properties(
+    az_iot_tests_adu_client az_iot_tests_adu_protocol az_iot_tests_adu_report
+    az_iot_tests_adu_channel_dps
+    PROPERTIES TIMEOUT 300)
+
 # File upload is HTTPS-only (stateless request-build/response-parse helpers), so
 # these tests need neither the mqtt mock nor internal headers. gen2 is linked
 # only so the profile-pin test can show a released pin admits the other

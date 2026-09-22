@@ -22,8 +22,6 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <azure/core/az_json.h>
-
 #include "azure/iot/az_iot_adu.h"
 #include "azure/iot/az_iot_result.h"
 
@@ -113,12 +111,6 @@ extern "C"
     const az_iot_adu_custom_property* compatibility_properties;
     size_t compatibility_properties_count;
   } az_iot_adu_agent_info;
-
-  /* Writes the object itself. All three strings must be non-NULL; callers
-   * select their own contract (legacy empty strings or a validated ADUv2 ID). */
-  az_result az_iot_adu__write_update_id(
-      az_json_writer* writer,
-      const az_iot_adu_report_update_id* id);
 
   /**
    * Build a fetch request body.

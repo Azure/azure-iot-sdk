@@ -336,7 +336,7 @@ extern "C"
    * custom names and every NUL terminator) and 192 bytes of installed-ID strings.
    * These are inherited SDK storage capacities, not protocol byte limits.
    * The channel also checks the escaped request against its body capacity.
-   * The standalone report formatter retains its separate legacy contract.
+   * These properties ride update checks, not workflow-status reports.
    */
   typedef struct az_iot_adu_device_properties
   {
