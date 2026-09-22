@@ -20,6 +20,33 @@ directly and needs no Device Update credential.
 | `requestSoftwareUpdates` | Operational (already provisioned) — not used by this sample |
 | `reportUpdateStatus` | After an install attempt |
 
+## No IoT Hub is required
+
+Every one of those operations runs on the provisioning session, before the device
+registers. The sample therefore sets `dps.provision_only`: the provisioning
+session is brought up and kept up, registration never runs, and the hub lifecycle
+stays `Idle`. That session *is* the connection.
+
+This is **declared, not inferred**. A device whose enrollment has no linked hub
+and a device that is simply misconfigured both fail registration the same way, so
+a sample that guessed from the failure would hide real misconfiguration.
+
+Set `AZ_IOT_ADU_REGISTER_WITH_HUB=1` for a device that should also register and
+connect to its assigned hub. The update workflow is identical either way; only
+the connection lifecycle differs.
+
+The sample prints both lifecycles as they move, for example:
+
+```
+Provisioning: Idle -> Connecting (AZ_IOT_OK)
+Provisioning: Connecting -> Connected (AZ_IOT_OK)
+Ready for device update. Waiting for a deployment (Ctrl-C to exit)...
+```
+
+It runs until interrupted (Ctrl-C), like the long-lived agent it stands in for,
+and exits 0. It stops early and exits non-zero only if a lifecycle settles at
+`Faulted`, or if the update check is abandoned — both of which it prints first.
+
 ---
 
 ## What you need from the service
@@ -63,6 +90,19 @@ The sample reads these environment variables (see
 | `AZ_IOT_CLIENT_KEY` | yes | Path to the device private key PEM |
 | `AZ_IOT_TRUSTED_CA` | yes | Trusted CA bundle, e.g. `/etc/ssl/certs/ca-certificates.crt` |
 | `AZ_IOT_DPS_GLOBAL_ENDPOINT` | no | The provisioning endpoint to use. Unset means the SDK default, `global.azure-devices-provisioning.net`; set it when your environment uses a different one. |
+
+The device's **compatibility properties** — what the service matches a deployed
+update against. A value that does not match the imported update is answered
+"nothing for me", which looks exactly like "nothing deployed", so the sample
+prints what it reported at startup.
+
+| Variable | Default |
+|---|---|
+| `AZ_IOT_ADU_MANUFACTURER` | `Contoso` |
+| `AZ_IOT_ADU_MODEL` | `ADU-Sim` |
+| `AZ_IOT_ADU_INSTALLED_PROVIDER` | `Contoso` |
+| `AZ_IOT_ADU_INSTALLED_NAME` | `ADU-Sim` |
+| `AZ_IOT_ADU_INSTALLED_VERSION` | `1.0.0` |
 
 ```bash
 export AZ_IOT_DPS_ID_SCOPE='<id-scope>'
@@ -203,8 +243,9 @@ route, which is the one this sample uses.
 ## When an update is offered
 
 **Have the update deployed before you start the sample.** It asks once, on the
-onboarding route, before it provisions — it does not poll. A deployment created
-after that check has run is not picked up; restart the sample to ask again.
+onboarding route, when its provisioning session comes up — it does not poll. A
+deployment created after that check has run is not picked up; restart the sample
+to ask again.
 
 If an update is waiting, the sample verifies the manifest signature, runs the
 simulated download/install/apply workflow and reports the result, all on stdout.
@@ -262,6 +303,8 @@ All default off. Set them in the shell that runs the sample:
 | `ADU_SIM_REBOOT=1` | `install_fn` returns `REBOOT_REQUIRED`; the sample persists state and **exits**. Re-run it (without this knob) to `resume()` and finish the workflow |
 | `ADU_SIM_DELAY_MS=<ms>` | Per-download delay so progress is observable |
 | `ADU_SIM_STATE_FILE=<path>` | Resume blob path (default `./adu_sim_state.blob`) |
+| `AZ_IOT_ADU_REGISTER_WITH_HUB=1` | Also register and connect to the assigned hub, instead of keeping only the provisioning session (see [No IoT Hub is required](#no-iot-hub-is-required)) |
+| `AZ_IOT_ADU_LOG_LEVEL=<lvl>` | SDK log level: `trace`, `debug`, `info` (default), `warn`, `error`, `off`. The SDK's `adu:` and `dps:` protocol lines are emitted at `debug` |
 | `AZ_IOT_PAHO_TRACE=1` | Enable the Paho MQTT library's trace logging (`[paho-trace]` lines). Use this to diagnose `connection lost: (unknown)` — the trace reveals the underlying cause (socket error, server `DISCONNECT`, keep-alive timeout, etc.) |
 
 ```bash
