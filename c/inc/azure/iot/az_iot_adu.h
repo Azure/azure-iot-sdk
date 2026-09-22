@@ -328,15 +328,17 @@ extern "C"
 #define AZ_IOT_ADU_DEVICE_PROPS_BUFFER_SIZE 512
 #endif
 
-/* The `timeout_ms` that asks for NO bound: the request is retried for as long
- * as it takes, and the only abandonment is a channel verdict.
+/**
+ * @brief The `timeout_ms` that asks for NO bound: the request is retried for as
+ * long as it takes, and the only abandonment is a channel verdict.
  *
  * Named because a bare 0 at a call site reads like "expire immediately", which
  * is the opposite of what it does. */
 #define AZ_IOT_ADU_REQUEST_NO_TIMEOUT 0u
 
-/* A default request timeout, in milliseconds, for callers with no policy of
- * their own.
+/**
+ * @brief A default request timeout, in milliseconds, for callers with no policy
+ * of their own.
  *
  * One minute. The cost of an unserved check is the retries it keeps issuing,
  * so the default bounds that rather than the wait: a check that has not been
@@ -461,7 +463,7 @@ extern "C"
   struct az_iot_adu_channel_vtable;
 
   /**
-   * Which device-update operation an event refers to.
+   * @brief Which device-update operation an event refers to.
    *
    * The two fetch routes are distinct: the onboarding route is the day-0 one,
    * for a device with no registry entry yet, and only the application knows
@@ -488,7 +490,7 @@ extern "C"
 #define AZ_IOT_MAX_ADU_OBSERVERS 4
 #endif
 
-  /** Which kind of thing an az_iot_adu_event reports. */
+  /** @brief Which kind of thing an az_iot_adu_event reports. */
   typedef enum az_iot_adu_event_kind
   {
     /* The deployment workflow moved. Carries `state` and `previous_state`.
@@ -524,7 +526,8 @@ extern "C"
     AZ_IOT_ADU_EVENT_OPERATION_ABANDONED
   } az_iot_adu_event_kind;
 
-  /* What the service said about a refused operation.
+  /**
+   * @brief What the service said about a refused operation.
    *
    * The classification alone collapses distinct failures that need different
    * operator responses: a malformed body, a device that is not onboarded, a
@@ -561,7 +564,9 @@ extern "C"
     uint32_t retry_after_ms;
   } az_iot_adu_service_error;
 
-  /* SDK-produced, callback-lifetime view of something the ADU client did.
+  /**
+   * @brief SDK-produced, callback-lifetime view of something the ADU client
+   * did.
    *
    * Read `kind` first: it says which of the remaining fields carry meaning.
    * The event and everything it points at are valid only until the callback
@@ -587,7 +592,8 @@ extern "C"
     az_iot_adu_service_error service_error;
   } az_iot_adu_event;
 
-  /* Told when the ADU client raises an event.
+  /**
+   * @brief Told when the ADU client raises an event.
    *
    * Called synchronously, from whichever call observed the change: a verdict
    * carried by an inbound message is delivered during
@@ -837,8 +843,8 @@ extern "C"
   az_iot_adu_state az_iot_adu_client_get_state(const az_iot_adu_client_t* client);
 
   /**
-   * Start being told about az_iot_adu_event. Every observer receives every
-   * event; read `kind` to see which fields carry meaning.
+   * @brief Start being told about az_iot_adu_event. Every observer receives
+   * every event; read `kind` to see which fields carry meaning.
    *
    * Idempotent on the (cb, user_ctx) PAIR, not on cb alone: one callback shared
    * by two owners is two subscriptions and is delivered twice.
@@ -860,6 +866,10 @@ extern "C"
    * Returns AZ_IOT_ERR_INVALID_ARG on a NULL client or NULL cb,
    * AZ_IOT_ERR_NOT_ENOUGH_SPACE when the pool (AZ_IOT_MAX_ADU_OBSERVERS) is
    * full, and AZ_IOT_ERR_BUSY when called from inside an observer.
+   *
+   * @param[in] client   The ADU client.
+   * @param[in] cb       Callback to register. MUST NOT be NULL.
+   * @param[in] user_ctx Opaque context passed back to @p cb.
    */
   az_iot_result az_iot_adu_client_add_observer(
       az_iot_adu_client_t* client,
@@ -867,8 +877,8 @@ extern "C"
       void* user_ctx);
 
   /**
-   * Stop being told. Matches on the (cb, user_ctx) pair, so one callback
-   * registered with two contexts can be withdrawn one at a time.
+   * @brief Stop being told. Matches on the (cb, user_ctx) pair, so one
+   * callback registered with two contexts can be withdrawn one at a time.
    *
    * Legal from inside an observer, and that case is the reason it must be: an
    * owner destroyed in reaction to an event releases the storage the entry
@@ -882,6 +892,10 @@ extern "C"
    *
    * Returns AZ_IOT_ERR_INVALID_ARG on a NULL client or NULL cb, and
    * AZ_IOT_ERR_NOT_FOUND when that pair is not registered.
+   *
+   * @param[in] client   The ADU client.
+   * @param[in] cb       Callback to withdraw. MUST NOT be NULL.
+   * @param[in] user_ctx The context it was registered with.
    */
   az_iot_result az_iot_adu_client_remove_observer(
       az_iot_adu_client_t* client,
@@ -889,7 +903,7 @@ extern "C"
       void* user_ctx);
 
   /**
-   * Ask for an ONBOARDING update — the day-0/pre-registration route.
+   * @brief Ask for an ONBOARDING update — the day-0/pre-registration route.
    *
    * Use this while the device has no device record with the service yet. It is
    * the permissive route: it needs no registry entry, and it does not send
@@ -927,6 +941,12 @@ extern "C"
    * AZ_IOT_ADU_REQUEST_DEFAULT_TIMEOUT_MS is available for callers with no
    * policy of their own.
    *
+   * @param[in] client   The ADU client.
+   * @param[in] timeout_ms Wall-clock bound in milliseconds;
+   *                     AZ_IOT_ADU_REQUEST_NO_TIMEOUT for none.
+   * @return AZ_IOT_OK when the request is recorded, AZ_IOT_ERR_INVALID_ARG if
+   *         @p client is NULL.
+   *
    * Single-threaded contract: MUST be called on the do_work thread or be
    * externally serialized with do_work().
    */
@@ -934,7 +954,7 @@ extern "C"
   az_iot_adu_client_request_onboarding_update(az_iot_adu_client_t* client, uint32_t timeout_ms);
 
   /**
-   * Ask for a REGULAR (software) update — the operational route.
+   * @brief Ask for a REGULAR (software) update — the operational route.
    *
    * Use this once the device is provisioned and has a device record. It sends
    * `installedUpdateId`, which is how the service knows what to offer next.

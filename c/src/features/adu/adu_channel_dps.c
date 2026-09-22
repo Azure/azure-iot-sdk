@@ -265,7 +265,18 @@ static void emit_result(
    * files, free to drift apart. */
   if (c->result_cb != NULL)
   {
-    c->result_cb(operation, result, action, service_error, c->engine_ctx);
+    /* NEVER NULL to the engine. A NULL here would have to be checked at every
+     * point the diagnosis is read, and one missed check is a crash in the
+     * application's own callback. "The service said nothing" is a value, so it
+     * is passed as one: zero code, empty (not NULL) strings, no delay. */
+    static const az_iot_adu_service_error k_no_service_error
+        = { .code = 0, .message = "", .tracking_id = "", .retry_after_ms = 0 };
+    c->result_cb(
+        operation,
+        result,
+        action,
+        service_error != NULL ? service_error : &k_no_service_error,
+        c->engine_ctx);
   }
 }
 

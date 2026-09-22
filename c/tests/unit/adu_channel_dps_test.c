@@ -71,6 +71,7 @@ typedef struct
   char last_error_text[64];
   char last_tracking_id[64];
   uint32_t last_retry_after_ms;
+  bool service_error_strings_were_non_null;
 } fixture;
 
 static void on_update(const uint8_t* payload, size_t payload_len, void* engine_ctx)
@@ -95,6 +96,9 @@ static void on_result(
   fx->last_tracking_id[0] = '\0';
   fx->last_retry_after_ms = 0;
   fx->had_service_error = (service_error != NULL);
+  fx->service_error_strings_were_non_null
+      = (service_error != NULL && service_error->message != NULL
+         && service_error->tracking_id != NULL);
   if (service_error != NULL)
   {
     fx->last_error_code = service_error->code;
@@ -1554,9 +1558,14 @@ static void the_service_diagnosis_is_forwarded(void** state)
   assert_string_equal(fx->last_tracking_id, "9f1c-aa");
 }
 
-/* A verdict with no service response behind it forwards no diagnosis, rather
- * than a stale or invented one. */
-static void a_verdict_without_a_response_forwards_no_diagnosis(void** state)
+/* A verdict with no service response behind it forwards an EMPTY diagnosis,
+ * rather than a stale or invented one -- and never a NULL pointer.
+ *
+ * "The service said nothing" is a value: a zero code, empty (not NULL) strings
+ * and no delay. Passing NULL instead would put a check at every point the
+ * diagnosis is read, and one missed check is a crash inside the application's
+ * own callback. */
+static void a_verdict_without_a_response_forwards_an_empty_diagnosis(void** state)
 {
   fixture* fx = (fixture*)*state;
   az_iot_mock_mqtt_client* m = open_and_bind(fx);
@@ -1570,7 +1579,14 @@ static void a_verdict_without_a_response_forwards_no_diagnosis(void** state)
   snprintf(topic, sizeof(topic), "$dps/registrations/res/200/?$rid=%s", rid);
   assert_true(inject(fx, m, topic, "{\"updateAvailable\":false}"));
 
-  assert_false(fx->had_service_error);
+  /* Present, and empty. */
+  assert_true(fx->had_service_error);
+  assert_int_equal(fx->last_error_code, 0);
+  assert_string_equal(fx->last_error_text, "");
+  assert_string_equal(fx->last_tracking_id, "");
+  assert_int_equal(fx->last_retry_after_ms, 0);
+  /* The strings an application may print without checking. */
+  assert_true(fx->service_error_strings_were_non_null);
 }
 
 /* The session-failure log is LATCHED, and the latch is not a permanent mute.
@@ -1826,7 +1842,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(an_error_response_reports_an_action, setup, teardown),
     cmocka_unit_test_setup_teardown(the_service_diagnosis_is_forwarded, setup, teardown),
     cmocka_unit_test_setup_teardown(
-        a_verdict_without_a_response_forwards_no_diagnosis, setup, teardown),
+        a_verdict_without_a_response_forwards_an_empty_diagnosis, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_persistent_session_failure_is_logged_once_per_episode, setup, teardown),
     cmocka_unit_test_setup_teardown(

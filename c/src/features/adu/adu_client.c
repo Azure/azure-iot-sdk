@@ -1240,6 +1240,11 @@ static void dispatch_event(az_iot_adu_client_t* client, const az_iot_adu_event* 
 /* Raise OPERATION_ABANDONED. `service_error` may be NULL when the verdict did
  * not come from a service response; the event then carries an empty diagnosis
  * rather than a NULL pointer, so an observer never has to null-check it. */
+/* "The service said nothing." A value rather than an absent pointer, so no
+ * caller -- and no application callback -- has to test for NULL. */
+static const az_iot_adu_service_error k_no_service_error
+    = { .code = 0, .message = "", .tracking_id = "", .retry_after_ms = 0 };
+
 static void raise_abandoned(
     az_iot_adu_client_t* client,
     az_iot_adu_operation operation,
@@ -1253,11 +1258,22 @@ static void raise_abandoned(
     .previous_state = ADU_I(client).state,
     .operation = operation,
     .reason = reason,
-    .service_error = { .code = 0, .message = "", .tracking_id = "" },
+    .service_error = k_no_service_error,
   };
   if (service_error != NULL)
   {
     event.service_error = *service_error;
+    /* The event's string fields are documented as never NULL, and an
+     * application is entitled to print them without checking. A channel that
+     * left one unset must not turn that contract into a crash. */
+    if (event.service_error.message == NULL)
+    {
+      event.service_error.message = "";
+    }
+    if (event.service_error.tracking_id == NULL)
+    {
+      event.service_error.tracking_id = "";
+    }
   }
   dispatch_event(client, &event);
 }
@@ -1475,7 +1491,7 @@ static void drive_pending_fetch(az_iot_adu_client_t* client)
     AZ_IOT_LOG_ERROR("adu: giving up on a pending update check; its deadline expired");
     ADU_I(client).pending_fetch = ADU_FETCH_NONE;
     ADU_I(client).pending_fetch_deadline_ms = 0;
-    raise_abandoned(client, operation, AZ_IOT_ERR_TIMEOUT, NULL);
+    raise_abandoned(client, operation, AZ_IOT_ERR_TIMEOUT, &k_no_service_error);
     return;
   }
 

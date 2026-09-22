@@ -1085,10 +1085,12 @@ az_iot_result az_iot_adu__parse_tracking_id(
       /* Dropped rather than truncated when it does not fit: half a correlation
        * id is worse than none, because it would be quoted in a support request
        * and match nothing. */
-      if (n >= 0 && (size_t)n + 1 <= out_tracking_id_size)
+      if (n >= 0 && (size_t)n + 1 <= out_tracking_id_size && out_tracking_id_size <= INT32_MAX)
       {
-        (void)memcpy(out_tracking_id, az_span_ptr(jr.token.slice), (size_t)n);
-        out_tracking_id[n] = '\0';
+        /* az_core's own copy: it NUL-terminates, and it asserts the span fits
+         * rather than silently truncating. The guard above keeps that
+         * precondition satisfied instead of relying on it to catch us. */
+        az_span_to_str(out_tracking_id, (int32_t)out_tracking_id_size, jr.token.slice);
         found = true;
         continue;
       }

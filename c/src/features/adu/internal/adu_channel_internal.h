@@ -80,6 +80,14 @@ extern "C"
    *                      response. Valid only for the duration of the call.
    * @param engine_ctx The context the engine passed to `open()`.
    */
+  /**
+   * @brief A channel's verdict on an operation it accepted earlier.
+   *
+   * @p service_error is NEVER NULL, so neither the engine nor anything it
+   * feeds has to check. When the service said nothing, it carries a zero code,
+   * EMPTY (never NULL) strings and no delay -- "nothing to report" expressed as
+   * a value rather than as an absent pointer.
+   */
   typedef void (*az_iot_adu_channel_result_cb)(
       az_iot_adu_operation operation,
       az_iot_result result,
