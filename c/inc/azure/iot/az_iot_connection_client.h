@@ -360,6 +360,25 @@ extern "C"
        * without an operator. */
       uint32_t max_hub_connect_attempts_before_reprovision;
 
+      /**
+       * @brief This device has no IoT Hub: keep a provisioning session up, never
+       * register, never connect to a hub. Settles at DPS:CONNECTED + HUB:IDLE.
+       *
+       * For devices whose operations all run pre-registration over the
+       * provisioning session, which is therefore the connection itself. The
+       * session is pumped and re-established as usual under
+       * opts.reconnection_policy.
+       *
+       * Declared, not inferred: a hubless enrollment fails registration with
+       * errorCode 401001, and so does a MISCONFIGURED one. Inferring success
+       * from it would hide real misconfiguration; retrying it would loop.
+       *
+       * Requires dps.id_scope and dps.registration_id. open() returns
+       * AZ_IOT_ERR_INVALID_ARG if opts.host or
+       * dps.request_operational_certificate is also set.
+       */
+      bool provision_only;
+
       /* Custom registration payload: caller-supplied JSON sent with the
        * registration request as the `payload` member of the registration body.
        * DPS forwards it to a custom-allocation policy (webhook / Function), and
@@ -603,11 +622,14 @@ extern "C"
    * independent lifecycles, and `CONNECTED` on the provisioning scope does not
    * mean the hub is usable. Always read the pair.
    *
-   * profile is non-NULL when state == AZ_IOT_CONN_STATE_CONNECTED, and also on
-   * a failure whose reason is AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH or
-   * AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED -- an application needs the
-   * assigned generation there in order to rebuild its feature clients. It
-   * and the event itself remain valid only until the callback returns; copy any
+   * profile is non-NULL on HUB:CONNECTED, and on a failure whose reason is
+   * AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH or _UNSUPPORTED -- an application
+   * needs the assigned generation there to rebuild its feature clients.
+   *
+   * NULL on DPS:CONNECTED: the generation comes from the assignment, which does
+   * not exist at the SUBACK and never will on a provision_only device.
+   *
+   * It and the event itself are valid only until the callback returns; copy any
    * value that must be retained. */
   typedef struct az_iot_connection_state_event
   {
@@ -1030,6 +1052,18 @@ extern "C"
      * hub connection beside it. */
     bool dps_registration_ref;
     uint8_t dps_user_count;
+
+    /* SUBACK seen; DPS:CONNECTED still to be announced. Announcing from the
+     * adapter callback would let an observer's close() free that adapter
+     * mid-dispatch, so the pump does it. */
+    bool dps_pending_ready_announce;
+
+    /* The client's own demand for a provisioning session, held for the whole
+     * open()..close() life of a provision_only client. Distinct from
+     * dps_registration_ref (a task) and dps_user_count (feature clients): it
+     * says the session IS the connection, so the pump must neither collect it
+     * nor leave it down. */
+    bool dps_standing_ref;
 
     /* Pacing for re-opening a provisioning session that was held for its USERS
      * rather than for a registration.
