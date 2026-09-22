@@ -20,8 +20,8 @@
     DPS, the device certificate and its X.509 enrollment, the storage account,
     and the AZ_IOT_* environment variables.
 
-    See samples/adu/pc/README.md for the resources the DPS-fronted model needs
-    and how to provision them.
+    See samples/adu/pc/README.md for what the samples need from a Device
+    Update environment.
 
     The resource group is the identity of an environment:
 
@@ -68,7 +68,8 @@ offered an update by this environment.
 Still produced and usable: resource group, DPS, device certificate + X.509
 enrollment, storage, and the AZ_IOT_* environment variables.
 
-See samples/adu/pc/README.md for the resources the samples need.
+See samples/adu/pc/README.md for what the samples need from a Device Update
+environment.
 '@
 
 # The az CLI 'iot' commands live in the azure-iot extension. Make sure it is
