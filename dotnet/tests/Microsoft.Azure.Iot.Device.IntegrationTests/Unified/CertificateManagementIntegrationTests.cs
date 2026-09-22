@@ -124,33 +124,46 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             using X509Certificate2 deviceCertificate = CreateX509CertificateFromKeyAndCert(certificatePem, privateKeyPem);
             X509AuthenticationProvider x509AuthenticationProvider = new(deviceCertificate);
 
-            // Simulates the device's own identity key living inside an HSM: the RSA key material never leaves
-            // MockHsmRsa, and every signing operation the SDK performs -- CSR generation here, and later the TLS
-            // handshake -- is delegated to it rather than performed against an in-memory key this process holds.
-            using RSA hsmHeldKey = RSA.Create(2048);
-            using var mockHsmKey = new MockHsmRsa(hsmHeldKey);
+            // Simulates the device's own identity key living inside an HSM: the RSA key material never leaves the
+            // SoftHSM2 token, and every signing operation the SDK performs -- CSR generation here, and later the
+            // TLS handshake -- is delegated to it via PKCS#11 (Pkcs11Interop) rather than performed against an
+            // in-memory key this process holds. This mirrors the C SDK's e2e "key custody" test
+            // (c/tests/e2e/tests/e2e_custody_test.c): the SAME provisioning script, c/eng/setup-softhsm.sh, is run
+            // by CI (see ci-dotnet.yml) to create the token this test opens, and the environment variable names
+            // below are exactly the ones that script exports -- no .NET-specific renaming -- so both SDKs'
+            // pipelines provision a token the same way.
+            string pkcs11LibraryPath = Environment.GetEnvironmentVariable("PKCS11_PROVIDER_MODULE")
+                ?? throw new InvalidOperationException("Missing PKCS11_PROVIDER_MODULE environment variable (path to libsofthsm2.so/.dll, exported by c/eng/setup-softhsm.sh).");
+            string tokenLabel = Environment.GetEnvironmentVariable("AZ_IOT_PKCS11_TOKEN_LABEL")
+                ?? throw new InvalidOperationException("Missing AZ_IOT_PKCS11_TOKEN_LABEL environment variable (exported by c/eng/setup-softhsm.sh).");
+            string keyLabel = Environment.GetEnvironmentVariable("AZ_IOT_PKCS11_KEY_LABEL")
+                ?? throw new InvalidOperationException("Missing AZ_IOT_PKCS11_KEY_LABEL environment variable (exported by c/eng/setup-softhsm.sh).");
+            string userPin = Environment.GetEnvironmentVariable("AZ_IOT_PKCS11_PIN")
+                ?? throw new InvalidOperationException("Missing AZ_IOT_PKCS11_PIN environment variable (exported by c/eng/setup-softhsm.sh).");
 
-            // Create initial CSR to be processed by DPS, signed by the mock HSM key.
-            string csrBase64 = CertificateUtilities.GenerateCsrWithPrivateKey(registrationId, mockHsmKey);
+            using SoftHsmRsaKey hsmKey = SoftHsmRsaKey.Open(pkcs11LibraryPath, tokenLabel, keyLabel, userPin);
+
+            // Create initial CSR to be processed by DPS, signed by the SoftHSM2-held key.
+            string csrBase64 = CertificateUtilities.GenerateCsrWithPrivateKey(registrationId, hsmKey);
 
             ConnectionClient connectionClient = new()
             {
                 HandleCertificateSigningCompleteAsync = (IssuedCertificates) =>
                 {
                     // Unlike the software-key path (TestCertificateManagementWithDpsAndHub), the issued leaf
-                    // certificate is bound directly to the mock HSM key handle via the HSM-backed
+                    // certificate is bound directly to the token-backed key handle via the HSM-backed
                     // X509AuthenticationProvider constructor: no PFX export/reimport round-trip, and no private
-                    // key material is ever held by this process outside the mock HSM.
+                    // key material is ever held by this process outside the token.
                     byte[] leafCertBytes = Convert.FromBase64String(IssuedCertificates[0]);
                     using X509Certificate2 publicOnlyLeafCert = X509CertificateLoader.LoadCertificate(leafCertBytes);
 
-                    return Task.FromResult(new X509AuthenticationProvider(publicOnlyLeafCert, mockHsmKey));
+                    return Task.FromResult(new X509AuthenticationProvider(publicOnlyLeafCert, hsmKey));
                 }
             };
 
             ProvisioningSettings provisioningSettings = new(DpsIdScope)
             {
-                CertificateSigningRequest = new(mockHsmKey, csrBase64),
+                CertificateSigningRequest = new(hsmKey, csrBase64),
             };
 
             ConnectionContext connectionContext = await RetryAroundAuthorizationAsync<ConnectionContext>(
@@ -160,10 +173,10 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             Assert.NotNull(connectionContext.IssuedClientCertificates);
             Assert.NotEmpty(connectionContext.IssuedClientCertificates);
             // The composed certificate reports a private key even though it was never present in managed memory --
-            // it is the mock HSM key driving every private-key operation.
+            // it is the SoftHSM2 token driving every private-key operation.
             Assert.True(connectionContext.AuthenticationProvider.ClientCertificate.HasPrivateKey);
 
-            var secondCsrBase64 = CertificateUtilities.GenerateCsrWithPrivateKey(connectionContext.DeviceId, mockHsmKey);
+            var secondCsrBase64 = CertificateUtilities.GenerateCsrWithPrivateKey(connectionContext.DeviceId, hsmKey);
             var certificateSigningRequest = new IotHubCertificateSigningRequest(connectionContext.DeviceId, secondCsrBase64, null, "*");
 
             CertificateSigningOperation pendingCsr = await connectionClient.SendCertificateSigningRequestAsync(certificateSigningRequest, cts.Token);

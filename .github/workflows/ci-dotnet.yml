@@ -99,6 +99,45 @@ jobs:
           name: e2e-test-config
           path: test_config
 
+      - name: Install SoftHSM2 (Linux)
+        if: runner.os == 'Linux'
+        # softhsm2 + opensc back the HSM-backed X.509 test
+        # (TestCertificateManagementWithDpsAndHubUsingHsmBackedKey): a token to hold
+        # a device key and the tool (pkcs11-tool) that writes it there. Unlike the C
+        # SDK's custody suite in ci-c-e2e.yml, no OpenSSL pkcs11 provider is built
+        # here -- the .NET test talks to the token directly via Pkcs11Interop, and
+        # the TLS handshake goes through .NET's own stack, not OpenSSL, so meson and
+        # pkg-config are not needed.
+        run: sudo apt-get update && sudo apt-get install -y softhsm2 opensc
+
+      - name: Provision SoftHSM2 token for the HSM-backed X.509 test (Linux)
+        if: runner.os == 'Linux'
+        # Reuses the SAME provisioning script as the C SDK's e2e "key custody" test
+        # (c/eng/setup-softhsm.sh, see ci-c-e2e.yml) so both SDKs create a SoftHSM2
+        # token the same way. The script imports an EXISTING key file into the
+        # token; this leg has no pre-provisioned device key to reuse for that
+        # purpose (the .NET test's token-held key only ever signs a CSR -- it does
+        # not need to match any certificate DPS/the hub already trusts), so a
+        # throwaway RSA key is generated here purely to give the script something
+        # to import.
+        #
+        # The script's own exports (PKCS11_PROVIDER_MODULE, AZ_IOT_PKCS11_TOKEN_LABEL,
+        # AZ_IOT_PKCS11_KEY_LABEL, AZ_IOT_PKCS11_PIN, ...) are forwarded to
+        # $GITHUB_ENV verbatim -- the .NET test reads these exact variable names --
+        # rather than renamed to a .NET-specific set.
+        shell: bash
+        run: |
+          key_file="$(mktemp --suffix=.pem)"
+          openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "${key_file}"
+
+          exports="$(c/eng/setup-softhsm.sh "${key_file}")"
+          echo "${exports}"
+          while IFS= read -r line; do
+            if [[ "${line}" =~ ^export\ ([A-Za-z0-9_]+)=\'(.*)\'$ ]]; then
+              echo "${BASH_REMATCH[1]}=${BASH_REMATCH[2]}" >> "$GITHUB_ENV"
+            fi
+          done <<< "${exports}"
+
       - name: Run e2e
         shell: pwsh
         run: |
@@ -169,6 +208,20 @@ jobs:
           $env:AZ_IOT_TRUSTED_CA          = $caPath
           if ($env:IOT_DPS_GLOBAL_ENDPOINT) { $env:AZ_IOT_DPS_GLOBAL_ENDPOINT = $env:IOT_DPS_GLOBAL_ENDPOINT }
 
+          # Forward the SoftHSM2 token identifiers the "Provision SoftHSM2 token"
+          # step (Linux only) wrote to $GITHUB_ENV, so
+          # TestCertificateManagementWithDpsAndHubUsingHsmBackedKey can open the
+          # same token via Pkcs11Interop. Built as a splatted array rather than
+          # inlined, since these variables are simply absent on the Windows leg.
+          $hsmEnvArgs = @()
+          if ($IsLinux -and $env:PKCS11_PROVIDER_MODULE) {
+            $hsmEnvArgs = @(
+              '--environment', "PKCS11_PROVIDER_MODULE=$env:PKCS11_PROVIDER_MODULE",
+              '--environment', "AZ_IOT_PKCS11_TOKEN_LABEL=$env:AZ_IOT_PKCS11_TOKEN_LABEL",
+              '--environment', "AZ_IOT_PKCS11_KEY_LABEL=$env:AZ_IOT_PKCS11_KEY_LABEL",
+              '--environment', "AZ_IOT_PKCS11_PIN=$env:AZ_IOT_PKCS11_PIN")
+          }
+
           dotnet test ./dotnet/Project.slnx `
             --collect:"XPlat Code Coverage" `
             --logger:"trx;LogFileName=test-results.trx" `
@@ -178,6 +231,7 @@ jobs:
             --environment IOT_DPS_GROUP_X509_REGISTRATION_ID=$groupRegId `
             --environment IOT_DPS_GROUP_X509_CERTIFICATE=$groupCertB64 `
             --environment IOT_DPS_GROUP_X509_KEY=$groupKeyB64 `
+            @hsmEnvArgs `
             --results-directory ./coverage `
             -- xunit.parallelizeAssembly=true
 

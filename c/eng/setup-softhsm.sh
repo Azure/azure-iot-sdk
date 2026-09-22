@@ -26,6 +26,14 @@
 #                             with digests disabled (see the note further down)
 #   AZ_IOT_CRYPTO_ENGINE_ID   "pkcs11"
 #   AZ_IOT_TEST_PKCS11_KEY_URI  same URI, for the unit-level custody suite
+#   AZ_IOT_PKCS11_TOKEN_LABEL   the token label used (the input override if one
+#                               was given, otherwise the "aziot" default) --
+#                               raw, for consumers that address the token
+#                               through a PKCS#11 API directly rather than
+#                               through OpenSSL's URI, such as the .NET SDK's
+#                               Pkcs11Interop-based integration test
+#   AZ_IOT_PKCS11_KEY_LABEL     the key label used, same rationale
+#   AZ_IOT_PKCS11_PIN           the token PIN used, same rationale
 #
 # Requirements: softhsm2-util, pkcs11-tool (opensc) and openssl, each checked
 # below -- a missing one is a hard error, because a token that silently is not
@@ -232,4 +240,7 @@ export OPENSSL_CONF='${openssl_cnf}'
 export AZ_IOT_CLIENT_KEY_URI='${uri}'
 export AZ_IOT_CRYPTO_ENGINE_ID='pkcs11'
 export AZ_IOT_TEST_PKCS11_KEY_URI='${uri}'
+export AZ_IOT_PKCS11_TOKEN_LABEL='${TOKEN_LABEL}'
+export AZ_IOT_PKCS11_KEY_LABEL='${KEY_LABEL}'
+export AZ_IOT_PKCS11_PIN='${PIN}'
 EOF
