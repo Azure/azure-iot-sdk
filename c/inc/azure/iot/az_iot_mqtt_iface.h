@@ -297,6 +297,15 @@ extern "C"
      * has never seen, and a log that prints only "AZ_IOT_ERR_MQTT" cannot
      * either. Diagnostics and telemetry only -- never branch on it. */
     int32_t protocol_code;
+    /* The adapter's own error code for a failure BELOW MQTT: TLS handshake,
+     * socket refused, DNS. Adapter-defined and not comparable across adapters,
+     * which is why it is separate from protocol_code rather than sharing it --
+     * a value here has no wire meaning.
+     *
+     * 0 means "none", with the same ambiguity as protocol_code. Diagnostics
+     * only; an adapter that has nothing to report leaves it 0 and stays
+     * conformant. */
+    int32_t transport_code;
   } az_iot_mqtt_event;
 
   typedef void (*az_iot_mqtt_event_callback)(const az_iot_mqtt_event* evt, void* user_ctx);

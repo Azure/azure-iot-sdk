@@ -295,12 +295,157 @@ static bool have_state_observers(const az_iot_connection_client* c)
   return false;
 }
 
+/**
+ * @brief Stage diagnostic detail for the next state event on @p scope.
+ *
+ * Scoped so a DPS verdict cannot attach to a hub event that runs in between.
+ * @p message is not copied: it must stay valid until the pump dispatches, which
+ * is the lifetime the public event promises.
+ */
+static void stage_error(
+    az_iot_connection_client* c,
+    az_iot_connection_scope scope,
+    az_iot_connection_error_source source,
+    int32_t code,
+    az_span message)
+{
+  c->err_scope = scope;
+  c->err_source = source;
+  c->err_code = code;
+  c->err_message = message;
+}
+
+/**
+ * @brief Stage whatever codes an adapter event carried, for @p scope.
+ *
+ * transport_code wins when both are present: a failure below MQTT is the more
+ * specific fact, and a wire code alongside it would be describing the session
+ * that never formed. Neither present stages nothing, which is correct -- an
+ * adapter that reports no codes is conformant.
+ */
+static void stage_error_from_event(
+    az_iot_connection_client* c,
+    az_iot_connection_scope scope,
+    const az_iot_mqtt_event* evt);
+
+/** @brief Discard staged detail; the failure it described is no longer current. */
+static void clear_staged_error(az_iot_connection_client* c)
+{
+  c->err_source = AZ_IOT_CONN_ERR_SRC_NONE;
+  c->err_code = 0;
+  c->err_message = AZ_SPAN_EMPTY;
+}
+
+/**
+ * @brief Would another attempt at this cause plausibly succeed?
+ *
+ * A property of the CAUSE, not of SDK intent -- an application that disabled
+ * retries owns the ladder and needs this to decide whether to bother. Errs
+ * toward retriable: a wrong "do not retry" strands a device that would have
+ * recovered, while a wrong "retriable" costs one more attempt.
+ */
+static void stage_error_from_event(
+    az_iot_connection_client* c,
+    az_iot_connection_scope scope,
+    const az_iot_mqtt_event* evt)
+{
+  if (evt == NULL)
+  {
+    return;
+  }
+  /* Only a failure-bearing event stages. A SUBACK that SUCCEEDED also carries a
+   * protocol_code -- the granted QoS -- and staging that would hand a later
+   * failure a code describing something that worked. A server-sent MQTT 5
+   * DISCONNECT is the exception that is not flagged by status: the session
+   * ended cleanly as far as the transport is concerned, and the reason code is
+   * the whole point of the event. */
+  bool bears_failure = (evt->status != AZ_IOT_OK)
+      || (evt->kind == AZ_IOT_MQTT_EVT_DISCONNECTED && evt->protocol_code != 0);
+  if (!bears_failure)
+  {
+    return;
+  }
+  if (evt->transport_code != 0)
+  {
+    stage_error(c, scope, AZ_IOT_CONN_ERR_SRC_TRANSPORT, evt->transport_code, AZ_SPAN_EMPTY);
+  }
+  else if (evt->protocol_code != 0)
+  {
+    stage_error(c, scope, AZ_IOT_CONN_ERR_SRC_MQTT, evt->protocol_code, AZ_SPAN_EMPTY);
+  }
+}
+
+static bool reason_is_retriable(az_iot_result reason)
+{
+  /* Exhaustive on purpose: -Werror=switch-enum makes a new result code a
+   * compile error here, so classifying it is a decision someone has to take
+   * rather than one that defaults silently. */
+  switch (reason)
+  {
+    /* The credential or the identity is refused. Retrying with the same inputs
+     * returns the same answer; the application has to change something. */
+    case AZ_IOT_ERR_AUTH:
+    case AZ_IOT_ERR_IDENTITY_REJECTED:
+    case AZ_IOT_ERR_CREDENTIAL_INCOMPLETE:
+    /* The assigned generation is not one the attached feature clients can use.
+     * Re-provisioning returns the same assignment. */
+    case AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH:
+    case AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED:
+    /* The broker refused the filter itself. */
+    case AZ_IOT_ERR_SUBSCRIPTION_REFUSED:
+    /* Caller, build or programming faults: retrying re-runs the same bad call. */
+    case AZ_IOT_ERR_INVALID_ARG:
+    case AZ_IOT_ERR_NOT_SUPPORTED:
+    case AZ_IOT_ERR_NOT_ENOUGH_SPACE:
+    case AZ_IOT_ERR_OUT_OF_MEMORY:
+    case AZ_IOT_ERR_NOT_INITIALIZED:
+    case AZ_IOT_ERR_ALREADY_INITIALIZED:
+    case AZ_IOT_ERR_NOT_FOUND:
+    case AZ_IOT_ERR_DETACHED:
+    case AZ_IOT_ERR_PROTOCOL:
+      return false;
+
+    /* Transport and service conditions that commonly clear on their own. */
+    case AZ_IOT_ERR_NOT_CONNECTED:
+    case AZ_IOT_ERR_TIMEOUT:
+    case AZ_IOT_ERR_TLS:
+    case AZ_IOT_ERR_MQTT:
+    case AZ_IOT_ERR_BUSY:
+    case AZ_IOT_ERR_INTERNAL:
+    /* A DPS verdict is retriable as a class: the commonest are a throttle, a
+     * server error, or an enrollment that does not exist YET on first boot.
+     * The permanent ones are distinguishable through error->code, which is why
+     * the code travels. */
+    case AZ_IOT_ERR_DPS:
+      return true;
+
+    /* Not a failure; set_state_to() never asks about AZ_IOT_OK. */
+    case AZ_IOT_OK:
+    default:
+      return false;
+  }
+}
+
 static void set_state_to(
     az_iot_connection_client* c,
     az_iot_connection_scope scope,
     az_iot_connection_state next,
     az_iot_result reason)
 {
+  /* One failure produces a SEQUENCE of transitions -- a dying session reports
+   * DISCONNECTING, then IDLE, then RECONNECTING or FAULTED -- and they are all
+   * reporting the same failure, so the detail rides all of them rather than
+   * being consumed by whichever ran first. (It was: the terminal event, the one
+   * an application acts on, arrived with nothing.)
+   *
+   * It is discarded when the scope starts a NEW attempt or succeeds, which is
+   * the point at which the old evidence stops describing anything current. */
+  if (scope == c->err_scope
+      && (next == AZ_IOT_CONN_STATE_CONNECTING || next == AZ_IOT_CONN_STATE_CONNECTED))
+  {
+    clear_staged_error(c);
+  }
+
   /* Per scope, deliberately. A single comparison here would swallow
    * HUB:CONNECTING straight after DPS:CONNECTING purely because the VALUE
    * matched -- which is exactly why a DPS+hub run used to be reported as one
@@ -321,13 +466,30 @@ static void set_state_to(
     return;
   }
   az_iot_hub_profile profile = AZ_IOT_HUB_PROFILE_INIT;
+  az_iot_connection_error_detail detail = {
+    ._internal_size = sizeof(az_iot_connection_error_detail),
+    .source = AZ_IOT_CONN_ERR_SRC_NONE,
+    .code = 0,
+    .message = AZ_SPAN_EMPTY,
+  };
   az_iot_connection_state_event event = {
     ._internal_size = sizeof(az_iot_connection_state_event),
     .scope = scope,
     .state = next,
     .reason = reason,
     .profile = NULL,
+    .is_retriable = (reason != AZ_IOT_OK) && reason_is_retriable(reason),
+    .error = NULL,
   };
+  /* Detail rides only an event that is actually reporting a failure, and only
+   * on the scope it was recorded for. */
+  if (reason != AZ_IOT_OK && c->err_source != AZ_IOT_CONN_ERR_SRC_NONE && c->err_scope == scope)
+  {
+    detail.source = c->err_source;
+    detail.code = c->err_code;
+    detail.message = c->err_message;
+    event.error = &detail;
+  }
   /* The profile rides the events that settle "which hub generation is this?":
    * HUB:CONNECTED, and the two failures that are ABOUT the profile.
    *
@@ -1474,6 +1636,11 @@ static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
     return;
   }
 
+  /* Before the switch, so every failure route below carries its code without
+   * each one having to remember. Staged, not dispatched: the transition that
+   * reports it may not run until the pump drains the deferred queue. */
+  stage_error_from_event(c, AZ_IOT_CONN_SCOPE_DPS, evt);
+
   switch (evt->kind)
   {
     case AZ_IOT_MQTT_EVT_CONNECTED:
@@ -1690,6 +1857,17 @@ static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
               "dps register: provisioning failed/disabled; DPS response: %.*s",
               (int)az_span_size(payload_span),
               (const char*)az_span_ptr(payload_span));
+          /* The service's own verdict -- 401001 "IoTHub not found" is this
+           * path. Both are parsed already and were being thrown away, which is
+           * what made "registration failed" and "no hub linked" the same
+           * opaque AZ_IOT_ERR_DPS. The message spans the inbound buffer and so
+           * lives exactly as long as the event that carries it. */
+          stage_error(
+              c,
+              AZ_IOT_CONN_SCOPE_DPS,
+              AZ_IOT_CONN_ERR_SRC_DPS,
+              (int32_t)resp.registration_state.extended_error_code,
+              resp.registration_state.error_message);
           dps_finalize(c, AZ_IOT_ERR_DPS, false);
           return;
         }
@@ -2762,6 +2940,9 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
   {
     return;
   }
+
+  /* See the DPS handler: staged here so every failure route below inherits it. */
+  stage_error_from_event(c, AZ_IOT_CONN_SCOPE_HUB, evt);
 
   switch (evt->kind)
   {
