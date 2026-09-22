@@ -460,12 +460,10 @@ static void an_unknown_workflow_report_is_not_treated_as_delivered(void** state)
 
   wait_for_hold(&fx);
 
-  az_iot_adu_report report;
-  memset(&report, 0, sizeof(report));
+  az_iot_adu_report report = AZ_IOT_ADU_REPORT_INIT;
   report.workflow_id = "e2e-workflow-that-does-not-exist";
 
-  az_iot_adu_install_result result;
-  memset(&result, 0, sizeof(result));
+  az_iot_adu_install_result result = AZ_IOT_ADU_INSTALL_RESULT_INIT;
   result.outcome = AZ_IOT_ADU_OUTCOME_SUCCEEDED;
   result.failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_NOT_APPLICABLE;
   result.result_code = 700;

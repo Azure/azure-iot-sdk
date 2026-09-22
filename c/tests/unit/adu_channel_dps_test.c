@@ -393,6 +393,7 @@ static void an_error_response_reports_an_action(void** state)
 static void init_transport_result(az_iot_adu_install_result* result)
 {
   memset(result, 0, sizeof(*result));
+  result->_internal_size = (uint32_t)sizeof(*result);
   result->outcome = AZ_IOT_ADU_OUTCOME_SUCCEEDED;
   result->failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_NOT_APPLICABLE;
   result->result_code = 700;
@@ -406,7 +407,7 @@ static void a_report_is_published_and_acknowledged(void** state)
   fixture* fx = (fixture*)*state;
   az_iot_mock_mqtt_client* m = open_and_bind(fx);
 
-  az_iot_adu_report report = { 0 };
+  az_iot_adu_report report = AZ_IOT_ADU_REPORT_INIT;
   report.workflow_id = "wf-1";
   az_iot_adu_install_result result;
   init_transport_result(&result);
@@ -595,7 +596,7 @@ static void a_retry_after_on_the_topic_defers_the_next_request(void** state)
       AZ_IOT_ERR_BUSY);
   /* A report is deferred too: the delay is the service asking for quiet, not
    * for one particular operation to stop. */
-  az_iot_adu_report report = { 0 };
+  az_iot_adu_report report = AZ_IOT_ADU_REPORT_INIT;
   report.workflow_id = "wf-1";
   az_iot_adu_install_result result;
   init_transport_result(&result);
@@ -964,8 +965,7 @@ static void a_late_bind_defers_operations_to_the_next_session(void** state)
       fx->channel.vtable->request_update(fx->channel.ctx, AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE),
       AZ_IOT_ERR_NOT_CONNECTED);
 
-  az_iot_adu_report report;
-  memset(&report, 0, sizeof(report));
+  az_iot_adu_report report = AZ_IOT_ADU_REPORT_INIT;
   report.workflow_id = "wf-1";
   az_iot_adu_install_result result;
   init_transport_result(&result);
@@ -1182,8 +1182,7 @@ static void a_report_after_the_exchange_is_refused_not_lost(void** state)
   assert_int_equal(fx->client.dps_hold_count, 0);
   assert_true(az_iot_connection_client__dps_session_ready(&fx->client));
 
-  az_iot_adu_report report;
-  memset(&report, 0, sizeof(report));
+  az_iot_adu_report report = AZ_IOT_ADU_REPORT_INIT;
   report.workflow_id = "wf-1";
   az_iot_adu_install_result result;
   init_transport_result(&result);

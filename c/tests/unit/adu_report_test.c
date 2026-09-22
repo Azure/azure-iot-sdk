@@ -104,11 +104,23 @@ static void set_install_fields(
 
 static az_iot_adu_install_result valid_result(void)
 {
-  az_iot_adu_install_result result = { 0 };
+  az_iot_adu_install_result result = AZ_IOT_ADU_INSTALL_RESULT_INIT;
   result.outcome = AZ_IOT_ADU_OUTCOME_IN_PROGRESS;
   result.failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_NOT_APPLICABLE;
   set_install_codes(&result, AZ_SPAN_FROM_STR("0"));
   return result;
+}
+
+static az_iot_adu_report make_report(
+    const char* workflow_id,
+    const az_iot_adu_report_update_id* installed,
+    const az_iot_adu_install_result* result)
+{
+  az_iot_adu_report report = AZ_IOT_ADU_REPORT_INIT;
+  report.workflow_id = workflow_id;
+  report.installed_update_id = installed;
+  report.install_result = result;
+  return report;
 }
 
 static void expect_token(az_json_reader* reader, az_json_token_kind kind)
@@ -308,7 +320,7 @@ static void test_minimal_exact_shape(void** state)
 {
   (void)state;
   az_iot_adu_install_result result = valid_result();
-  az_iot_adu_report report = { "workflow", NULL, &result };
+  az_iot_adu_report report = make_report("workflow", NULL, &result);
   uint8_t json[512];
   size_t length = 0;
   const char expected[] = "{\"workflowId\":\"workflow\",\"installResult\":{"
@@ -346,7 +358,7 @@ static void test_steps_and_int64_preserved(void** state)
   set_details(&result.step_results[0], AZ_SPAN_FROM_STR("step failed"));
   result.step_results[1].outcome = AZ_IOT_ADU_OUTCOME_SUCCEEDED;
   const az_iot_adu_report_update_id installed = { "provider", "name", "1.0" };
-  az_iot_adu_report report = { "workflow", &installed, &result };
+  az_iot_adu_report report = make_report("workflow", &installed, &result);
   for (size_t i = 0; i < sizeof(codes) / sizeof(codes[0]); ++i)
   {
     result.result_code = codes[i];
@@ -361,7 +373,7 @@ static void test_outcomes_and_failure_origins(void** state)
   (void)state;
   az_iot_adu_install_result result = valid_result();
   result.step_results_count = 1;
-  az_iot_adu_report report = { "workflow", NULL, &result };
+  az_iot_adu_report report = make_report("workflow", NULL, &result);
   for (size_t outcome = 0; outcome < sizeof(outcomes) / sizeof(outcomes[0]); ++outcome)
   {
     for (size_t origin = 0; origin < sizeof(origins) / sizeof(origins[0]); ++origin)
@@ -387,7 +399,7 @@ static void test_invalid_enums_and_counts(void** state)
 {
   (void)state;
   az_iot_adu_install_result result = valid_result();
-  az_iot_adu_report report = { "workflow", NULL, &result };
+  az_iot_adu_report report = make_report("workflow", NULL, &result);
   assert_int_equal(az_iot_adu__validate_install_result(NULL), AZ_IOT_ERR_INVALID_ARG);
   result.step_results_count = -1;
   expect_invalid(&report);
@@ -440,7 +452,7 @@ static void test_extended_result_validation(void** state)
           "FFFFFFFFF", "0x1",       "0XFF",  "-1",  "+1",   "g",         " 1",
           "1 ",        "dead beef", "1,\t2", "1\n", "1.0",  "1;2" };
   az_iot_adu_install_result result = valid_result();
-  az_iot_adu_report report = { "workflow", NULL, &result };
+  az_iot_adu_report report = make_report("workflow", NULL, &result);
   for (size_t i = 0; i < sizeof(valid) / sizeof(valid[0]); ++i)
   {
     set_install_codes(&result, text_span(valid[i]));
@@ -502,7 +514,7 @@ static void test_escaping_and_owned_text(void** state)
   result.step_results_count = 1;
   result.step_results[0] = install_fields(&result);
   const az_iot_adu_report_update_id installed = { "p\"\\\n", "n\t\xc3\xa9", "v\r\b" };
-  az_iot_adu_report report = { "w\"\\\n\xc3\xa9", &installed, &result };
+  az_iot_adu_report report = make_report("w\"\\\n\xc3\xa9", &installed, &result);
   serialize_and_check(&report);
   detail[0] = 'x';
   serialize_and_check(&report);
@@ -521,7 +533,7 @@ static void test_detail_character_limit(void** state)
       = { { 'a' }, { 0xc3, 0xa9 }, { 0xe2, 0x82, 0xac }, { 0xf0, 0x9f, 0x98, 0x80 } };
   uint8_t detail[4 * (AZ_IOT_ADU_RESULT_TEXT_MAX_LENGTH + 1)];
   az_iot_adu_install_result result = valid_result();
-  az_iot_adu_report report = { "workflow", NULL, &result };
+  az_iot_adu_report report = make_report("workflow", NULL, &result);
   for (int32_t width = 1; width <= 4; ++width)
   {
     for (int32_t i = 0; i <= AZ_IOT_ADU_RESULT_TEXT_MAX_LENGTH; ++i)
@@ -572,7 +584,7 @@ static void test_malformed_utf8(void** state)
   az_iot_adu_install_result result = valid_result();
   result.step_results_count = 1;
   result.step_results[0] = install_fields(&result);
-  az_iot_adu_report report = { "workflow", NULL, &result };
+  az_iot_adu_report report = make_report("workflow", NULL, &result);
   for (size_t i = 0; i < sizeof(malformed) / sizeof(malformed[0]); ++i)
   {
     az_span bad = az_span_create((uint8_t*)(uintptr_t)malformed[i].bytes, malformed[i].length);
@@ -600,7 +612,7 @@ static void test_invalid_owned_lengths(void** state)
 {
   (void)state;
   az_iot_adu_install_result result = valid_result();
-  az_iot_adu_report report = { "workflow", NULL, &result };
+  az_iot_adu_report report = make_report("workflow", NULL, &result);
   result.step_results_count = 1;
   result.step_results[0] = install_fields(&result);
   const int32_t invalid_codes[] = { -1, 0, AZ_IOT_ADU_RESULT_TEXT_MAX_LENGTH + 1, INT32_MAX };
@@ -625,11 +637,54 @@ static void test_invalid_owned_lengths(void** state)
   }
 }
 
+/* Both caller-allocated structs carry a size stamp (docs/struct_versioning.md).
+ * Zero means the _INIT macro was skipped; any other size is a header from another
+ * SDK version. Neither is serialized, and neither leaves partial output. */
+static void test_size_stamps(void** state)
+{
+  (void)state;
+  const az_iot_adu_report stamped_report = AZ_IOT_ADU_REPORT_INIT;
+  const az_iot_adu_install_result stamped_result = AZ_IOT_ADU_INSTALL_RESULT_INIT;
+  assert_int_equal(stamped_report._internal_size, sizeof(az_iot_adu_report));
+  assert_int_equal(stamped_result._internal_size, sizeof(az_iot_adu_install_result));
+
+  az_iot_adu_install_result result = valid_result();
+  az_iot_adu_report report = make_report("workflow", NULL, &result);
+  uint8_t json[512];
+  size_t length = 0;
+  assert_int_equal(az_iot_adu_build_report(&report, json, sizeof(json), &length), AZ_IOT_OK);
+
+  const struct
+  {
+    uint32_t report_size;
+    uint32_t result_size;
+    az_iot_result expected;
+  } cases[] = {
+    { 0, sizeof(az_iot_adu_install_result), AZ_IOT_ERR_INVALID_ARG },
+    { sizeof(az_iot_adu_report), 0, AZ_IOT_ERR_INVALID_ARG },
+    { sizeof(az_iot_adu_report) - 1, sizeof(az_iot_adu_install_result), AZ_IOT_ERR_NOT_SUPPORTED },
+    { sizeof(az_iot_adu_report) + 8, sizeof(az_iot_adu_install_result), AZ_IOT_ERR_NOT_SUPPORTED },
+    { sizeof(az_iot_adu_report), sizeof(az_iot_adu_install_result) - 1, AZ_IOT_ERR_NOT_SUPPORTED },
+    { sizeof(az_iot_adu_report), sizeof(az_iot_adu_install_result) + 8, AZ_IOT_ERR_NOT_SUPPORTED },
+  };
+  for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i)
+  {
+    report._internal_size = cases[i].report_size;
+    result._internal_size = cases[i].result_size;
+    length = 999;
+    json[0] = 'x';
+    assert_int_equal(
+        az_iot_adu_build_report(&report, json, sizeof(json), &length), cases[i].expected);
+    assert_int_equal(length, 0);
+    assert_int_equal(json[0], 0);
+  }
+}
+
 static void test_invalid_arguments(void** state)
 {
   (void)state;
   az_iot_adu_install_result result = valid_result();
-  az_iot_adu_report report = { "workflow", NULL, &result };
+  az_iot_adu_report report = make_report("workflow", NULL, &result);
   uint8_t json[512];
   size_t length = 999;
   expect_invalid(NULL);
@@ -678,7 +733,7 @@ static void test_small_buffers_never_succeed_partially(void** state)
   result.step_results[1].result_code = INT64_MAX;
   set_install_details(&result, AZ_SPAN_FROM_STR("\"\\\n"));
   const az_iot_adu_report_update_id installed = { "provider", "name", "1.0" };
-  az_iot_adu_report report = { "workflow", &installed, &result };
+  az_iot_adu_report report = make_report("workflow", &installed, &result);
   uint8_t json[2048];
   size_t full_length = 0;
   assert_int_equal(az_iot_adu_build_report(&report, json, sizeof(json), &full_length), AZ_IOT_OK);
@@ -842,6 +897,7 @@ int main(void)
     cmocka_unit_test(test_detail_character_limit),
     cmocka_unit_test(test_malformed_utf8),
     cmocka_unit_test(test_invalid_owned_lengths),
+    cmocka_unit_test(test_size_stamps),
     cmocka_unit_test(test_invalid_arguments),
     cmocka_unit_test(test_small_buffers_never_succeed_partially),
     cmocka_unit_test(test_report_state_preserves_canonical_result),

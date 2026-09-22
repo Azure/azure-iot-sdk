@@ -301,6 +301,7 @@ static void a_short_request_buffer_is_rejected(void** state)
 static void init_report_result(az_iot_adu_install_result* result)
 {
   memset(result, 0, sizeof(*result));
+  result->_internal_size = (uint32_t)sizeof(*result);
   result->outcome = AZ_IOT_ADU_OUTCOME_SUCCEEDED;
   result->failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_NOT_APPLICABLE;
   result->result_code = 700;
@@ -316,7 +317,7 @@ static void report_carries_workflow_id_and_install_result(void** state)
   az_iot_adu_report_update_id installed = { "Contoso", "Tractor", "2.0" };
   az_iot_adu_install_result result;
   init_report_result(&result);
-  az_iot_adu_report report = { 0 };
+  az_iot_adu_report report = AZ_IOT_ADU_REPORT_INIT;
   report.workflow_id = "wf-1";
   report.installed_update_id = &installed;
   report.install_result = &result;
@@ -345,7 +346,7 @@ static void report_drops_installed_update_id_when_absent(void** state)
   size_t len = 0;
   az_iot_adu_install_result result;
   init_report_result(&result);
-  az_iot_adu_report report = { 0 };
+  az_iot_adu_report report = AZ_IOT_ADU_REPORT_INIT;
   report.workflow_id = "wf-1";
   report.installed_update_id = NULL;
   report.install_result = &result;
@@ -371,7 +372,7 @@ static void outcome_and_failure_origin_must_agree(void** state)
   uint8_t buf[512];
   az_iot_adu_install_result result;
   init_report_result(&result);
-  az_iot_adu_report report = { 0 };
+  az_iot_adu_report report = AZ_IOT_ADU_REPORT_INIT;
   report.workflow_id = "wf-1";
   report.install_result = &result;
   result.result_code = -1;
@@ -402,7 +403,7 @@ static void report_without_a_workflow_id_is_rejected(void** state)
   uint8_t buf[512];
   az_iot_adu_install_result result;
   init_report_result(&result);
-  az_iot_adu_report report = { 0 };
+  az_iot_adu_report report = AZ_IOT_ADU_REPORT_INIT;
   report.workflow_id = "";
   report.install_result = &result;
   assert_int_equal(
@@ -421,7 +422,7 @@ static void report_protocol_uses_canonical_serializer(void** state)
   result.step_results[0].result_code = INT64_MIN;
   memcpy(result.step_results[0].extended_result_codes, "FFFFFFFF,0", 10);
   result.step_results[0].extended_result_codes_length = 10;
-  az_iot_adu_report report = { 0 };
+  az_iot_adu_report report = AZ_IOT_ADU_REPORT_INIT;
   report.workflow_id = "canonical";
   report.install_result = &result;
   uint8_t protocol[2048];
@@ -539,7 +540,7 @@ static void a_report_with_a_partial_installed_update_id_is_rejected(void** state
   az_iot_adu_report_update_id partial = { "Contoso", NULL, "2.0" };
   az_iot_adu_install_result result;
   init_report_result(&result);
-  az_iot_adu_report report = { 0 };
+  az_iot_adu_report report = AZ_IOT_ADU_REPORT_INIT;
   report.workflow_id = "wf-1";
   report.installed_update_id = &partial;
   report.install_result = &result;
@@ -583,8 +584,7 @@ static void step_results_serialize_as_an_indexed_map(void** state)
   uint8_t buf[1024];
   size_t len = 0;
 
-  az_iot_adu_install_result result;
-  memset(&result, 0, sizeof(result));
+  az_iot_adu_install_result result = AZ_IOT_ADU_INSTALL_RESULT_INIT;
   result.outcome = AZ_IOT_ADU_OUTCOME_FAILED;
   result.failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_AGENT_CORE;
   result.result_code = -1;
@@ -606,7 +606,7 @@ static void step_results_serialize_as_an_indexed_map(void** state)
   memcpy(result.step_results[1].result_details, "step two failed", 15);
   result.step_results[1].result_details_length = 15;
 
-  az_iot_adu_report report = { 0 };
+  az_iot_adu_report report = AZ_IOT_ADU_REPORT_INIT;
   report.workflow_id = "wf-1";
   report.install_result = &result;
 
@@ -633,15 +633,14 @@ static void no_step_results_means_no_key(void** state)
   (void)state;
   uint8_t buf[512];
   size_t len = 0;
-  az_iot_adu_install_result result;
-  memset(&result, 0, sizeof(result));
+  az_iot_adu_install_result result = AZ_IOT_ADU_INSTALL_RESULT_INIT;
   result.outcome = AZ_IOT_ADU_OUTCOME_SUCCEEDED;
   result.failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_NOT_APPLICABLE;
   result.result_code = 700;
   memcpy(result.extended_result_codes, "0", 1);
   result.extended_result_codes_length = 1;
 
-  az_iot_adu_report report = { 0 };
+  az_iot_adu_report report = AZ_IOT_ADU_REPORT_INIT;
   report.workflow_id = "wf-1";
   report.install_result = &result;
 

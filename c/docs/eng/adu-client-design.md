@@ -1235,6 +1235,10 @@ az_iot_result az_iot_adu_verify_file_hash(
 /**
  * Serialize the canonical report as ADUv2 JSON using az_json_writer.
  * No state machine, network I/O, or diagnostic-code remapping.
+ * Both structs are caller-allocated and size-stamped (docs/struct_versioning.md):
+ * initialize them with AZ_IOT_ADU_REPORT_INIT / AZ_IOT_ADU_INSTALL_RESULT_INIT.
+ * A zero stamp is INVALID_ARG; any other mismatch is NOT_SUPPORTED, because
+ * step_results is an inline array whose stride a different header would change.
  */
 az_iot_result az_iot_adu_build_report(
     const az_iot_adu_report* report,

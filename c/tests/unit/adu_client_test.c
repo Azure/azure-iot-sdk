@@ -583,6 +583,10 @@ static az_iot_result fake_channel_report(void* ctx, const az_iot_adu_report* rep
   fc->report_count++;
   fc->last_report = *report;
   assert_non_null(report->install_result);
+  /* The engine's result is reset on every workflow and on resume; a reset that
+   * dropped the stamp would have the real channel's serializer refuse it. */
+  assert_int_equal(report->_internal_size, sizeof(az_iot_adu_report));
+  assert_int_equal(report->install_result->_internal_size, sizeof(az_iot_adu_install_result));
   fc->last_result_source = report->install_result;
   fc->last_install_result = *report->install_result;
   fc->last_report.install_result = &fc->last_install_result;
@@ -1257,6 +1261,15 @@ static void resuming_a_fresh_client_reports_the_restored_state(void** state)
 
   az_iot_adu_client_destroy(fresh);
   free(fresh);
+}
+
+/* The engine's own result is stamped from initialize on, not only once the
+ * first workflow resets it: nothing may ever serialize an unstamped result. */
+static void a_fresh_client_result_is_already_stamped(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(
+      fx->adu._internal.install_result._internal_size, sizeof(az_iot_adu_install_result));
 }
 
 static void resume_with_no_persisted_state_stays_idle(void** state)
@@ -2486,7 +2499,7 @@ static void cancel_after_resume_does_not_overwrite_result_text(void** state)
   assert_memory_equal(result->step_results[0].result_details, "completed", 9);
   assert_int_equal(result->step_results[1].outcome, AZ_IOT_ADU_OUTCOME_CANCELED);
   assert_extended_codes(&result->step_results[1], "0");
-  az_iot_adu_report report = { 0 };
+  az_iot_adu_report report = AZ_IOT_ADU_REPORT_INIT;
   report.workflow_id = fresh->chan.last_workflow_id;
   report.install_result = result;
   uint8_t json[2048];
@@ -2952,10 +2965,10 @@ static void cancel_during_download_aborts_the_transfer(void** state)
 static void build_report_with_too_small_a_buffer_is_rejected(void** state)
 {
   (void)state;
-  az_iot_adu_install_result result = { 0 };
+  az_iot_adu_install_result result = AZ_IOT_ADU_INSTALL_RESULT_INIT;
   az_iot_adu__set_extended_result(
       AZ_SPAN_FROM_BUFFER(result.extended_result_codes), &result.extended_result_codes_length, 0);
-  az_iot_adu_report report = { 0 };
+  az_iot_adu_report report = AZ_IOT_ADU_REPORT_INIT;
   report.workflow_id = "workflow";
   report.install_result = &result;
 
@@ -3977,6 +3990,7 @@ int main(void)
         replacement_deployment_retires_the_stored_checkpoint, setup, teardown),
     cmocka_unit_test_setup_teardown(
         resuming_a_fresh_client_reports_the_restored_state, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_fresh_client_result_is_already_stamped, setup, teardown),
     cmocka_unit_test_setup_teardown(resume_with_no_persisted_state_stays_idle, setup, teardown),
     cmocka_unit_test_setup_teardown(cancel_action_sets_cancelled_flag, setup, teardown),
     cmocka_unit_test_setup_teardown(

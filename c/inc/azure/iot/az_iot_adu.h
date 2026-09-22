@@ -445,9 +445,18 @@ extern "C"
     int32_t result_details_length;
   } az_iot_adu_step_result;
 
-  /** @brief Overall result and manifest-indexed steps, shared by engine and reporting. */
+  /**
+   * @brief Overall result and manifest-indexed steps, shared by engine and reporting.
+   *
+   * Caller-allocated for az_iot_adu_build_report(), so it carries a size stamp per
+   * docs/struct_versioning.md. MUST be initialized with
+   * AZ_IOT_ADU_INSTALL_RESULT_INIT -- a raw `= {0}` stamps size 0 and is rejected.
+   * The stamp covers step_results too: it is an inline array, so any change to
+   * az_iot_adu_step_result changes this struct's size.
+   */
   typedef struct az_iot_adu_install_result
   {
+    uint32_t _internal_size;
     az_iot_adu_outcome outcome;
     az_iot_adu_failure_origin failure_origin;
     int64_t result_code;
@@ -458,6 +467,11 @@ extern "C"
     int32_t step_results_count;
     az_iot_adu_step_result step_results[_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS];
   } az_iot_adu_install_result;
+
+#define AZ_IOT_ADU_INSTALL_RESULT_INIT                   \
+  {                                                      \
+    ._internal_size = sizeof(az_iot_adu_install_result), \
+  }
 
   /**
    * @brief The structured result the engine hands a channel.
@@ -472,9 +486,15 @@ extern "C"
    * update once the workflow has succeeded. It may be NULL when the device has
    * nothing installed (a day-0 onboarding device), in which case the channel
    * omits it rather than serializing a null.
+   *
+   * Caller-allocated for az_iot_adu_build_report(), so it carries a size stamp
+   * per docs/struct_versioning.md. MUST be initialized with
+   * AZ_IOT_ADU_REPORT_INIT -- a raw `= {0}` stamps size 0 and is rejected.
    */
   typedef struct az_iot_adu_report
   {
+    uint32_t _internal_size;
+
     const char* workflow_id;
 
     /* NULL when the device has nothing installed. */
@@ -483,6 +503,11 @@ extern "C"
     /* Borrowed for the report call; a struct copy owns all result text. */
     const az_iot_adu_install_result* install_result;
   } az_iot_adu_report;
+
+#define AZ_IOT_ADU_REPORT_INIT                   \
+  {                                              \
+    ._internal_size = sizeof(az_iot_adu_report), \
+  }
 
   /* Opaque forward declaration. The delivery/reporting channel is an INTERNAL
    * construct (src/features/adu/internal/adu_channel_internal.h): applications
@@ -1091,11 +1116,15 @@ extern "C"
 
   /**
    * Serialize a canonical report as ADUv2 JSON without network I/O.
-   * The report and its install_result are borrowed for this call.
+   * The report and its install_result are borrowed for this call; both must be
+   * initialized with their _INIT macros (AZ_IOT_ADU_REPORT_INIT,
+   * AZ_IOT_ADU_INSTALL_RESULT_INIT).
    * step_results indices become step_<index> object keys, never a JSON array.
    * out_len receives bytes written (zero on error) and may be NULL.
    *
-   * Returns AZ_IOT_OK on success, AZ_IOT_ERR_INVALID_ARG on bad arguments, or
+   * Returns AZ_IOT_OK on success, AZ_IOT_ERR_INVALID_ARG on bad arguments
+   * (including a zero size stamp), AZ_IOT_ERR_NOT_SUPPORTED if either size stamp
+   * differs from this library's (a header from another SDK version), or
    * AZ_IOT_ERR_NOT_ENOUGH_SPACE if the payload does not fit @p out_json.
    */
   AZ_NODISCARD az_iot_result az_iot_adu_build_report(

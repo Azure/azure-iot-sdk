@@ -234,10 +234,18 @@ az_iot_result az_iot_adu__cache_device_properties(
 /* result-code accumulation                                                  */
 /* ------------------------------------------------------------------------- */
 
+/* The engine's own result is serialized through az_iot_adu_build_report(), so
+ * every reset must leave it stamped or the next report would be refused. */
+static void reset_install_result(az_iot_adu_install_result* r)
+{
+  memset(r, 0, sizeof(*r));
+  r->_internal_size = (uint32_t)sizeof(*r);
+}
+
 static void result_init_steps(az_iot_adu_client_t* client, int32_t step_count)
 {
   az_iot_adu_install_result* r = &ADU_I(client).install_result;
-  memset(r, 0, sizeof(*r));
+  reset_install_result(r);
   if (step_count < 0)
   {
     step_count = 0;
@@ -1636,6 +1644,7 @@ static az_iot_result adu_client_init_core(
   ADU_I(client).crypto = *options->crypto;
   ADU_I(client).device_props_buffer = options->device_props_buffer;
   ADU_I(client).device_props_buffer_size = options->device_props_buffer_size;
+  reset_install_result(&ADU_I(client).install_result);
   set_adu_state(client, AZ_IOT_ADU_STATE_IDLE);
 
   if (options->root_keys != NULL && options->root_key_count > 0)
@@ -2483,7 +2492,7 @@ az_iot_result az_iot_adu_client_resume(az_iot_adu_client_t* client)
         urls[i].url, blob + AZ_IOT_ADU_PERSIST_HEADER_SIZE, ADU_I(client).request_buffer);
   }
   az_iot_adu_install_result* restored = &ADU_I(client).install_result;
-  memset(restored, 0, sizeof(*restored));
+  reset_install_result(restored);
   restored->step_results_count = (int32_t)count;
   pos = t + trailer_fixed;
   if (version == 2)
