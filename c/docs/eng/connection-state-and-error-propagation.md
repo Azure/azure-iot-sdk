@@ -230,7 +230,16 @@ Rules that follow, each pinned by a test:
 4. **`close()` settles both.** It is a statement about the client, not about one
    lifecycle.
 5. **A direct hub connection never leaves `DPS:IDLE`.** That is the answer, not
-   an error — nothing should wait on a `DPS:CONNECTED` that cannot come.
+   an error — nothing should wait on a `DPS:CONNECTED` that cannot come. The
+   mirror of it is `dps.provision_only` (§2.8): there, `HUB` never leaves
+   `IDLE`, for the same reason.
+6. **`DPS:CONNECTED` is real, and it is the SUBACK.** The provisioning session
+   reaches `CONNECTED` when its subscription is confirmed — the same fact that
+   makes it usable to a feature client. An ordinary DPS device therefore reports
+   `DPS:CONNECTING → CONNECTED → DISCONNECTING → IDLE` around its registration.
+   **`profile` is NULL on `DPS:CONNECTED`**: the hub generation comes from the
+   *assignment*, which does not exist yet at the SUBACK, and on a
+   `provision_only` device never will. It is carried on `HUB:CONNECTED` only.
 
 One consequence worth stating because it bit during implementation: with two
 scopes, a state-only test for "a retry is pending" is wrong. A hub failure whose
@@ -299,6 +308,51 @@ and the last user releasing its ref, since a later holder is new demand.
 re-issuing is the feature client's judgement, not the connection client's: the
 core has no idea what the request meant. The core paces the transport; the
 feature client bounds the operation and reports it.
+
+### 2.8 `dps.provision_only`: a device with no IoT Hub
+
+Some devices legitimately have no hub. Device Update v2 devices are shaped that
+way: their device operations all run **pre-registration** over the provisioning
+session, and the device is never assigned a hub.
+
+`opts.dps.provision_only` declares that. The client brings up a provisioning
+session, keeps it up, and never registers and never connects to a hub.
+
+**Settled state is `DPS:CONNECTED` + `HUB:IDLE`.** `HUB` is never announced at
+all, so nothing waits on a `HUB:CONNECTED` that cannot come. No new enum value
+was needed — that is what the scope dimension bought: before it, "provisioned
+but hubless" had no way to be expressed except by overloading `CONNECTED` or
+adding a state.
+
+**Why registration is skipped rather than attempted.** An enrollment with no
+linked hub answers the registration with `errorCode 401001`, *"IoTHub not
+found"*. That is a failure, routed through the reconnection policy like any
+other — so a device that will never have a hub would retry forever, or fault,
+and tear down the very session its feature clients were using on each attempt.
+There is nothing for it to succeed at.
+
+**Why it is declared and not inferred.** "The registration failed with 401001"
+is exactly what a **misconfigured** enrollment looks like too — one that should
+have had a hub and does not. Treating that as success would remove the
+operator's only signal for a real misconfiguration.
+
+**Rejected combinations**, both at `open()` with `AZ_IOT_ERR_INVALID_ARG` rather
+than silently ignoring one half:
+
+- `opts.host` — it names the hub this option says does not exist.
+- `dps.request_operational_certificate` — the certificate is issued *by* a
+  registration, which this device never performs.
+
+**How the session is kept.** The client takes a **standing ref** for its whole
+`open()`..`close()` life, distinct from the registration ref (a task) and from
+the feature clients' user refs. Without it the pump would collect the session
+whenever no feature client happened to be holding one. The ref also makes the
+`DPS` scope "the application's" for the purposes of `open()`'s
+already-open check, and it is what `do_work()` reads to re-establish a session
+that dropped — **paced by the same ladder as a user-held session** (§2.7), so a
+refusing service is not hammered. `close()` ends the demand, and does so
+*before* its idempotent early return, because on this device both scopes sit at
+`IDLE` while a backoff is pending — which is precisely that early return.
 
 ---
 
