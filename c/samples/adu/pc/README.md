@@ -24,231 +24,31 @@ ADU-specific credential. See
 
 ---
 
-## Azure environment
+## What you need from the service
 
-> **Read this before provisioning.** ADUv2 has **no Device Update "accounts"**.
-> The PowerShell scripts under [samples/common/scripts](../../common/scripts)
-> provision the **older, IoT-Hub-based Device Update model**
-> (`az iot du account create` / `az iot du instance create --iothub-ids`), which
-> is *not* the model this sample talks to. Running them does not produce an
-> environment this sample can get an update from. Provision the resources below
-> instead.
->
-> If you have already run them, what they produce is still usable except for the
-> update side: the resource group, the DPS, the device certificate and its X.509
-> enrollment, the storage account, and the `AZ_IOT_DPS_ID_SCOPE`,
-> `AZ_IOT_DPS_REGISTRATION_ID`, `AZ_IOT_CLIENT_CERT`, `AZ_IOT_CLIENT_KEY` and
-> `AZ_IOT_TRUSTED_CA` values the sample reads. The Device Update account,
-> instance and any deployment they create cannot be reused.
+This sample is the **device half** only. It needs a Device Update service
+environment that is already provisioned and that will offer it an update; setting
+one up is the service operator's side and is not covered here.
 
-### Required resources
+From that environment you need four things, all of which go into the environment
+variables in the next section:
 
-| Resource | Role |
+| You need | Used for |
 |---|---|
-| `Microsoft.DeviceUpdate/updateInstances` | Hosts and distributes update files. Replaces the account/instance pair of the older model — there is no parent account. |
-| `Microsoft.DeviceRegistry/namespaces` (ADR namespace) | Device identities, groups, and deployments (`jobs` / `runs`). Linked to the update instance. |
-| DPS | The device gateway. Carries the three update operations and proxies them to ADR. Needs a managed identity holding an ADR role on the namespace, and a link to that namespace. |
-| Storage account + blob container | Staging for update payloads. |
-| A DPS enrollment for the device | This sample authenticates to DPS with an X.509 client certificate. |
+| A DPS **ID scope** | Identifies the provisioning service the device talks to |
+| A **registration id** for the device | The device's identity in that service |
+| A device **X.509 certificate and private key** | How this sample authenticates to DPS |
+| A **trusted CA bundle** | Validates the service's TLS certificate |
 
-### Is an IoT Hub required?
+The update offered to the device must declare `compatibility` matching what this
+sample reports — manufacturer `Contoso`, model `ADU-Sim`. An update that does not
+match is never offered, however it was imported.
 
-**Not for the device-update operations.** All three are served on the DPS session
-before the device registers; no hub is involved in them.
-
-A hub is still needed for the part of this sample that runs *after* the update
-check: `az_iot_connection_client_open()` provisions through DPS and then connects
-to the assigned hub, so with no hub linked to the DPS, `Register` fails with
-`errorCode 401001 "IoTHub not found."` (measured). Making the hub connection
-optional in the sample source is being handled separately; until that lands, link
-a hub to the DPS if you want the sample to get past the update check.
-
-### Provisioning
-
-There is currently **no script in this repo that provisions an ADUv2
-environment**; the steps below are the manual equivalent.
-
-> The api-versions, regions, ordering and failure modes recorded here were
-> measured against a working environment. They have **not** been re-verified as
-> part of the change that wrote this document, and the preview contract is still
-> moving — read values back from your own resources rather than assuming them.
-
-Constants used below:
-
-```bash
-ARM=https://centraluseuap.management.azure.com   # preview resources often answer
-                                                 # only on the canary ARM host;
-                                                 # probe management.azure.com too
-API=2026-11-02-preview                           # ADR + ADU management operations
-DPS_API=2026-03-01-preview                       # DPS-side ADR link property only
-SUB=<subscription-id>
-RG=<resource-group>
-LOC=eastus2euap      # Microsoft.DeviceUpdate/updateInstances does NOT support
-                     # centraluseuap (400 LocationNotAvailableForResourceType).
-                     # eastus2euap is the only EUAP region supporting both
-                     # updateInstances and ADR namespaces.
-```
-
-**1. Resource group**
-
-```bash
-az group create --name $RG --location $LOC
-```
-
-**2. ADU update instance**
-
-```bash
-az rest --method put \
-  --url "$ARM/subscriptions/$SUB/resourceGroups/$RG/providers/Microsoft.DeviceUpdate/updateInstances/<adu-name>?api-version=$API" \
-  --body "{\"location\":\"$LOC\"}"
-```
-
-Creation is slow: one instance took **~22 minutes** to reach
-`provisioningState=Succeeded` (still `Creating` at 10 minutes). Budget ~40 minutes
-and poll:
-
-```bash
-az rest --method get \
-  --url "$ARM/subscriptions/$SUB/resourceGroups/$RG/providers/Microsoft.DeviceUpdate/updateInstances/<adu-name>?api-version=$API" \
-  --query properties.provisioningState -o tsv
-```
-
-**3. ADR namespace, linked to the update instance**
-
-Do not use `az iot adr ns create`: the pinned `azure-iot` CLI extension still
-writes the retired `namespaces/credentials` shape and the service rejects it with
-`DisallowedResourceOperation ... 'namespaces/credentials' is disallowed`. Use a
-plain ARM REST PUT.
-
-Wait until the update instance reports `Succeeded` first — linking a resource that
-has not reached `Succeeded` fails with `LinkableResourceNotReady` ("Linked
-resource provisioning state is 'Creating'").
-
-```bash
-az rest --method put \
-  --url "$ARM/subscriptions/$SUB/resourceGroups/$RG/providers/Microsoft.DeviceRegistry/namespaces/<ns-name>?api-version=$API" \
-  --body @namespace.json
-```
-
-`namespace.json`, the shape read back from a working environment — confirm
-`endpointType` against your own service before relying on it:
-
-```json
-{
-  "location": "eastus2euap",
-  "identity": { "type": "SystemAssigned" },
-  "properties": {
-    "updating": {
-      "endpoints": {
-        "<endpoint-key>": {
-          "endpointType": "<endpoint type>",
-          "resourceId": "/subscriptions/<sub>/resourceGroups/<rg>/providers/Microsoft.DeviceUpdate/updateInstances/<adu-name>"
-        }
-      }
-    }
-  }
-}
-```
-
-Notes on the link:
-
-- One update instance links to exactly **one** ADR namespace. A second attempt is
-  refused with `AduAlreadyLinked`.
-- The endpoint collection is **immutable** once accepted — re-sending endpoints is
-  rejected.
-- A **failed** link leaves the namespace at `provisioningState: Failed`, after
-  which every child write returns `409 ResourceProvisioningFailed`. Heal it with a
-  **tags-only PATCH** (re-sending endpoints will not work).
-- A completed link can **migrate** an endpoint between the
-  `updating` / `provisioning` / `messaging` sections, so read all three when
-  verifying:
-
-  ```bash
-  az rest --method get \
-    --url "$ARM/subscriptions/$SUB/resourceGroups/$RG/providers/Microsoft.DeviceRegistry/namespaces/<ns-name>?api-version=$API" \
-    --query "properties.[updating,provisioning,messaging]"
-  ```
-
-  Each endpoint carries `endpointType`, `resourceId`, `serviceAddress` and
-  `linkingState`. `serviceAddress` is the ADU data-plane hostname and is
-  **authoritative** — do not derive it from the instance name (an INT instance is
-  `*.api.int.adu.microsoft.com`, production is `*.api.adu.microsoft.com`).
-
-**4. DPS, linked to the ADR namespace**
-
-Create the DPS, give it a managed identity, and grant that identity
-**Azure Device Registry Contributor** on the namespace:
-
-```bash
-DPSID="/subscriptions/$SUB/resourceGroups/$RG/providers/Microsoft.Devices/provisioningServices/<dps-name>"
-NSID="/subscriptions/$SUB/resourceGroups/$RG/providers/Microsoft.DeviceRegistry/namespaces/<ns-name>"
-
-az iot dps create --name <dps-name> --resource-group $RG --location $LOC
-az identity create --name <dps-name>-identity --resource-group $RG --location $LOC
-
-IDID=$(az identity show --name <dps-name>-identity --resource-group $RG --query id -o tsv)
-IDPRINC=$(az identity show --name <dps-name>-identity --resource-group $RG --query principalId -o tsv)
-
-az role assignment create \
-  --assignee-object-id "$IDPRINC" --assignee-principal-type ServicePrincipal \
-  --role "Azure Device Registry Contributor" --scope "$NSID"
-```
-
-The identity must then be **attached to the DPS**, and the DPS's
-`properties.deviceRegistryNamespace` set to the namespace resource id — a role
-assignment alone gives the DPS no principal to call the registry with. Both go in
-one PATCH. `deviceRegistryNamespace` exists **only at api-version
-`2026-03-01-preview`**; the stable api-version silently omits it, on write and on
-read-back:
-
-```bash
-az rest --method patch --url "$ARM$DPSID?api-version=$DPS_API" --body "{
-  \"identity\": {
-    \"type\": \"UserAssigned\",
-    \"userAssignedIdentities\": { \"$IDID\": {} }
-  },
-  \"properties\": { \"deviceRegistryNamespace\": \"$NSID\" }
-}"
-```
-
-Verify both landed — reading at the stable api-version will not show the link:
-
-```bash
-az rest --method get --url "$ARM$DPSID?api-version=$DPS_API" \
-  --query "{identity:identity.type, ns:properties.deviceRegistryNamespace}"
-```
-
-**5. Storage account + container** for update payloads:
-
-```bash
-az storage account create --name <storage-name> --resource-group $RG \
-  --location $LOC --sku Standard_LRS
-az storage container create --account-name <storage-name> --name adu-imports \
-  --auth-mode login
-```
-
-**6. Device certificate + DPS enrollment.** The sample presents an X.509 client
-certificate, so create one and enroll it:
-
-```bash
-openssl req -new -x509 -days 365 -newkey rsa:2048 -nodes \
-  -subj "/CN=<registration-id>" -keyout device-key.pem -out device-cert.pem
-
-az iot dps enrollment create --dps-name <dps-name> --resource-group $RG \
-  --enrollment-id <registration-id> --attestation-type x509 \
-  --certificate-path device-cert.pem
-```
-
-> The ADUv2 design phases X.509 first on the update path, but X.509 there is not
-> yet confirmed by measurement; SAS (enrollment-group symmetric key) auth is.
-
-### Cleanup
-
-Deleting the resource group removes everything:
-
-```bash
-az group delete --name <resource-group> --yes
-```
+> The PowerShell scripts under [samples/common/scripts](../../common/scripts)
+> provision an older, IoT-Hub-based Device Update model that this sample does not
+> talk to. The DPS, device certificate, X.509 enrollment and the `AZ_IOT_*`
+> variables they produce are still usable; the Device Update account, instance and
+> deployment are not.
 
 ---
 
@@ -395,58 +195,15 @@ route, which is the one this sample uses.
 
 ---
 
-## Offering an update to the device
+## When an update is offered
 
-Deployments in ADUv2 are **ADR jobs and runs** on the namespace, not
-`az iot du device deployment ...` — those CLI commands are account-scoped and
-belong to the older model.
+Leave the sample running. Once the service offers it an update, it verifies the
+manifest signature, runs the simulated download/install/apply workflow and reports
+the result — all visible on stdout.
 
-Create the job:
-
-```bash
-NSID="/subscriptions/$SUB/resourceGroups/$RG/providers/Microsoft.DeviceRegistry/namespaces/<ns-name>"
-
-az rest --method put --url "$ARM$NSID/jobs/<job-name>?api-version=$API" --body '{
-  "location": "eastus2euap",
-  "properties": {
-    "description": "ADU PC sample",
-    "jobType": "OnboardingUpdate",
-    "definition": {
-      "schedulingType": "Continuous",
-      "updateResourceId": "updates/providers/<provider>/names/<name>/versions/<version>"
-    }
-  }
-}'
-```
-
-Then start a run:
-
-```bash
-az rest --method put --url "$ARM$NSID/jobs/<job-name>/runs/<run-name>?api-version=$API" \
-  --body '{"properties":{}}'
-```
-
-Rules that bite:
-
-- `updateResourceId` is a **relative path**, not an ARM resource id.
-- `properties.definition` is **immutable**. Changing it needs delete + recreate
-  (`PropertyChangeNotAllowed`).
-- An `OnboardingUpdate` job is **namespace-scoped**; the service rejects a payload
-  carrying a target. A `SoftwareUpdate` job instead requires
-  `properties.target.resourceId = {namespace-id}/groups/<group>`.
-- A `Continuous` run never reaches a terminal state, so the job cannot be deleted
-  until its runs are cancelled and deleted — otherwise `409 JobHasActiveRun`.
-  `POST .../runs/<run-name>/cancel` answers `202` with a `Location` header only, so
-  poll the run to see it finish.
-- An update whose **import** succeeded is still never offered if its
-  `compatibility` does not match the device's reported `manufacturer` / `model` (this
-  sample reports `Contoso` / `ADU-Sim`, see below). A successful import is not
-  enough.
-
-**Importing an update** into an ADUv2 update instance is **not documented here**:
-`az iot du update init/stage/import` are account-scoped commands of the older
-model and do not apply, and the ADUv2 import path has not been established by
-measurement. The job above assumes an update already exists in the instance.
+**A 200 response carrying no `updateMetadata` means "nothing for me on this
+route" — it is not an error.** An update is only offered on the route matching the
+deployment: this sample asks on the onboarding route.
 
 ---
 
