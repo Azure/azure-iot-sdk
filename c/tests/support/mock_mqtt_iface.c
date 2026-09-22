@@ -195,6 +195,18 @@ static az_iot_result mock_connect(az_iot_mqtt_client* self, const az_iot_mqtt_co
     c->connect.proxy_port = opts->proxy.port;
     copy_str(c->connect.proxy_username, sizeof(c->connect.proxy_username), opts->proxy.username);
     copy_str(c->connect.proxy_password, sizeof(c->connect.proxy_password), opts->proxy.password);
+    c->connect.session_expiry_seconds = opts->session_expiry_seconds;
+    c->connect.disconnect_reason_code = opts->disconnect_reason_code;
+    copy_str(c->connect.lwt_topic, sizeof(c->connect.lwt_topic), opts->lwt.topic);
+    copy_bytes(
+        c->connect.lwt_payload,
+        sizeof(c->connect.lwt_payload),
+        opts->lwt.payload,
+        opts->lwt.payload_len,
+        &c->connect.lwt_payload_len);
+    c->connect.lwt_qos = opts->lwt.qos;
+    c->connect.lwt_retain = opts->lwt.retain;
+    c->connect.lwt_will_delay_seconds = opts->lwt.will_delay_seconds;
   }
   return take_override(m, AZ_IOT_MOCK_CALL_CONNECT);
 }

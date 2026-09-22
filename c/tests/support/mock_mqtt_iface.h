@@ -114,6 +114,19 @@ extern "C"
       uint16_t proxy_port;
       char proxy_username[128];
       char proxy_password[128];
+      /* Session semantics, captured so a test can assert the options the core
+       * chose for the role it was connecting in rather than only that it
+       * connected. */
+      uint32_t session_expiry_seconds;
+      uint8_t disconnect_reason_code;
+      /* Last Will, as handed to the adapter. `lwt_topic` is empty when no Will
+       * was requested, which is the assertion most cases need. */
+      char lwt_topic[AZ_IOT_MOCK_TOPIC_MAX];
+      uint8_t lwt_payload[256];
+      size_t lwt_payload_len;
+      az_iot_mqtt_qos lwt_qos;
+      bool lwt_retain;
+      uint32_t lwt_will_delay_seconds;
     } connect;
   } az_iot_mock_call;
 
