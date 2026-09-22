@@ -329,11 +329,17 @@ static void set_state_to(
     .profile = NULL,
   };
   /* The profile answers "which hub generation is this?", so it rides every
-   * event that settles that question: a hub coming up, a provisioning session
-   * whose assignment has resolved it, and the two failures that are ABOUT the
-   * profile. */
-  if ((next == AZ_IOT_CONN_STATE_CONNECTED
-       && (scope == AZ_IOT_CONN_SCOPE_HUB || c->connection_profile_resolved))
+   * event that settles that question: a hub coming up, and the two failures
+   * that are ABOUT the profile.
+   *
+   * HUB:CONNECTED only, deliberately. A provisioning session reaches CONNECTED
+   * at its SUBACK, before any assignment exists -- and on a provision_only
+   * device no assignment is ever coming. connection_profile_resolved is not a
+   * usable test here either: it survives close() and a re-provision, so a
+   * client on its SECOND run would publish the PREVIOUS assignment's profile
+   * on DPS:CONNECTED, which is both stale and contrary to the documented
+   * contract. */
+  if ((next == AZ_IOT_CONN_STATE_CONNECTED && scope == AZ_IOT_CONN_SCOPE_HUB)
       || reason == AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH
       || reason == AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED)
   {
@@ -3639,7 +3645,13 @@ az_iot_result az_iot_connection_client_open(az_iot_connection_client* client)
    * open() would answer ALREADY_INITIALIZED for ever. */
   if (client->state[AZ_IOT_CONN_SCOPE_HUB] != AZ_IOT_CONN_STATE_IDLE
       || (client->state[AZ_IOT_CONN_SCOPE_DPS] != AZ_IOT_CONN_STATE_IDLE
-          && (client->dps_registration_ref || client->dps_standing_ref)))
+          && (client->dps_registration_ref || client->dps_standing_ref))
+      /* A standing ref is an open client whatever the DPS scope says. Its
+       * session can be legitimately absent and the scope legitimately IDLE --
+       * between a drop and the paced reopen, or once the ladder has settled --
+       * and without this a second open() would be accepted there, reset the
+       * ladder and start an unpaced attempt with no close() in between. */
+      || client->dps_standing_ref)
   {
     AZ_IOT_LOG_ERROR("connection_client_open: client not in IDLE state");
     return AZ_IOT_ERR_ALREADY_INITIALIZED;
@@ -3770,8 +3782,13 @@ az_iot_result az_iot_connection_client_open(az_iot_connection_client* client)
    * is still set. It is consumed by the DPS route below. */
 
   /* --- Mock-Next bypass: when AZ_IOT_HUB_NEXT_MOCK_ENDPOINT is set,
-   * skip DPS and connect directly to the mock Hub-Next (MQTT v5). --- */
-  if (mock_next_configured())
+   * skip DPS and connect directly to the mock Hub-Next (MQTT v5). ---
+   *
+   * NOT for a provision_only client. The bypass turns a hostless client into a
+   * hub connection, which is exactly what that option says this device does
+   * not do -- an environment variable must not silently override a declared
+   * device shape. */
+  if (mock_next_configured() && !client->opts.dps.provision_only)
   {
     az_iot_result r = apply_mock_next_bypass(client);
     if (r != AZ_IOT_OK)

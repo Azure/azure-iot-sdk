@@ -3358,6 +3358,106 @@ static void an_ordinary_dps_run_announces_dps_connected_before_registering(void*
   assert_true(fx->client->dps_registration_ref);
 }
 
+/* The profile rides HUB:CONNECTED only. A client on its SECOND run has
+ * connection_profile_resolved still true from the first assignment, so a
+ * resolved-based test would republish the PREVIOUS assignment's profile on
+ * DPS:CONNECTED -- stale, and contrary to the documented contract that the
+ * generation comes from the assignment. */
+static void dps_connected_never_carries_a_profile_even_after_a_previous_assignment(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+
+  az_iot_mock_mqtt_client* m = dps_open(fx);
+
+  /* Stand in for a client that has ALREADY been assigned once: after any
+   * completed assignment connection_profile_resolved stays true, and it
+   * survives close() and a re-provision. Set directly because reaching it
+   * through a full hub leg and back would test the hub teardown, not this. */
+  fx->client->connection_profile_resolved = true;
+  fx->client->connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
+
+  assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  const az_iot_mock_call* sub = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_SUBSCRIBE);
+  assert_non_null(sub);
+  assert_true(az_iot_mock_mqtt_client_inject_suback(m, sub->packet_id, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  /* DPS:CONNECTED was announced, and carried NO profile -- the stale one from
+   * the previous assignment must not ride it. */
+  size_t i_dps = az_iot_test_index_of(&fx->log, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_CONNECTED);
+  assert_int_not_equal(i_dps, SIZE_MAX);
+  assert_false(fx->log.profile_present[i_dps]);
+}
+
+/* A standing ref is an open client whatever the DPS scope says. Between a drop
+ * and the paced reopen the scope is IDLE and no session exists -- and a second
+ * open() accepted there would reset the ladder and start an unpaced attempt
+ * with no close() in between. */
+static void provision_only_rejects_a_second_open_while_backing_off(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(fx->client, fx->factory), AZ_IOT_OK);
+
+  az_iot_mock_mqtt_client* m = provision_only_open(fx);
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(m));
+  for (int i = 0; i < 3; ++i)
+  {
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
+
+  /* The state that used to let a second open() through: no session, DPS IDLE,
+   * demand still standing. */
+  assert_null(fx->client->dps_mqtt);
+  assert_int_equal(
+      az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_DPS),
+      AZ_IOT_CONN_STATE_IDLE);
+  assert_true(fx->client->dps_standing_ref);
+
+  uint32_t attempts_before = fx->client->dps_user_retry_attempt;
+  assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_ERR_ALREADY_INITIALIZED);
+  /* Refused, and the pacing it would have reset is intact. */
+  assert_int_equal(fx->client->dps_user_retry_attempt, attempts_before);
+  assert_null(fx->client->dps_mqtt);
+
+  (void)az_iot_connection_client_close(fx->client);
+}
+
+/* The Hub-Next mock bypass turns a hostless client into a hub connection. That
+ * is exactly what provision_only says this device does not do, so an
+ * environment variable must not silently override a declared device shape. */
+static void the_mock_next_bypass_does_not_capture_a_provision_only_client(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(fx->client, fx->factory), AZ_IOT_OK);
+
+#if defined(_MSC_VER)
+  _putenv_s("AZ_IOT_HUB_NEXT_MOCK_ENDPOINT", "localhost:8883");
+#else
+  setenv("AZ_IOT_HUB_NEXT_MOCK_ENDPOINT", "localhost:8883", 1);
+#endif
+
+  fx->client->opts.dps.provision_only = true;
+  assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
+
+  /* Took the provisioning route, not the hub one. */
+  assert_true(fx->client->dps_standing_ref);
+  assert_non_null(fx->client->dps_mqtt);
+  assert_null(fx->client->active_client);
+  assert_int_equal(
+      az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_HUB),
+      AZ_IOT_CONN_STATE_IDLE);
+
+#if defined(_MSC_VER)
+  _putenv_s("AZ_IOT_HUB_NEXT_MOCK_ENDPOINT", "");
+#else
+  unsetenv("AZ_IOT_HUB_NEXT_MOCK_ENDPOINT");
+#endif
+  (void)az_iot_connection_client_close(fx->client);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -3556,6 +3656,16 @@ int main(void)
         provision_only_with_a_csr_request_is_rejected, setup_with_reconnect, teardown),
     cmocka_unit_test_setup_teardown(
         an_ordinary_dps_run_announces_dps_connected_before_registering,
+        setup_with_reconnect,
+        teardown),
+    cmocka_unit_test_setup_teardown(
+        dps_connected_never_carries_a_profile_even_after_a_previous_assignment,
+        setup_with_reconnect,
+        teardown),
+    cmocka_unit_test_setup_teardown(
+        provision_only_rejects_a_second_open_while_backing_off, setup_with_reconnect, teardown),
+    cmocka_unit_test_setup_teardown(
+        the_mock_next_bypass_does_not_capture_a_provision_only_client,
         setup_with_reconnect,
         teardown),
   };
