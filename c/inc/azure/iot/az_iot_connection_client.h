@@ -360,41 +360,23 @@ extern "C"
        * without an operator. */
       uint32_t max_hub_connect_attempts_before_reprovision;
 
-      /* This device has NO IoT Hub. The connection client brings up a
-       * provisioning session, keeps it up, and never registers and never
-       * connects to a hub.
+      /**
+       * @brief This device has no IoT Hub: keep a provisioning session up, never
+       * register, never connect to a hub. Settles at DPS:CONNECTED + HUB:IDLE.
        *
-       * Device Update v2 devices are shaped this way: all of their device
-       * operations run PRE-registration over the provisioning session, and the
-       * device is never assigned a hub. For such a device the provisioning
-       * session is not a step on the way to something else -- it IS the
-       * connection, so it is what open() establishes and what close() ends.
+       * For devices whose operations all run pre-registration over the
+       * provisioning session, which is therefore the connection itself. The
+       * session is pumped and re-established as usual under
+       * opts.reconnection_policy.
        *
-       * Why registering is skipped rather than attempted and tolerated: an
-       * enrollment with no linked hub answers the registration with
-       * errorCode 401001, "IoTHub not found". That is a failure, and it is
-       * routed through the reconnection policy like any other -- so a device
-       * that will never have a hub would retry forever, or fault, and tear
-       * down the very session its feature clients were using each time it
-       * tried. There is nothing for it to succeed at.
+       * Declared, not inferred: a hubless enrollment fails registration with
+       * errorCode 401001, and so does a MISCONFIGURED one. Inferring success
+       * from it would hide real misconfiguration; retrying it would loop.
        *
-       * Why it is an explicit declaration and not an inference: "the
-       * registration failed with 401001" is exactly what a MISCONFIGURED
-       * enrollment looks like too -- one that should have had a hub and does
-       * not. Treating that as success would remove the operator's only signal
-       * for a real misconfiguration. The application has to say which it is.
-       *
-       * Settled state is DPS:CONNECTED with HUB:IDLE. HUB never leaves IDLE;
-       * nothing should wait on a HUB:CONNECTED that cannot come. The session
-       * is pumped by az_iot_connection_client_do_work() as usual, and is
-       * re-established under opts.reconnection_policy if it drops.
-       *
-       * Requires dps.id_scope and dps.registration_id -- a provisioning
-       * session still needs an identity to open one with. open() rejects with
-       * AZ_IOT_ERR_INVALID_ARG if opts.host is also set (that is a request for
-       * the hub this option says does not exist) or if
-       * request_operational_certificate is also set (a CSR is issued BY a
-       * registration, so it cannot be obtained without one). */
+       * Requires dps.id_scope and dps.registration_id. open() returns
+       * AZ_IOT_ERR_INVALID_ARG if opts.host or
+       * dps.request_operational_certificate is also set.
+       */
       bool provision_only;
 
       /* Custom registration payload: caller-supplied JSON sent with the
@@ -640,19 +622,15 @@ extern "C"
    * independent lifecycles, and `CONNECTED` on the provisioning scope does not
    * mean the hub is usable. Always read the pair.
    *
-   * profile is non-NULL on HUB:CONNECTED, and also on a failure whose reason is
-   * AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH or
-   * AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED -- an application needs the
-   * assigned generation there in order to rebuild its feature clients.
+   * profile is non-NULL on HUB:CONNECTED, and on a failure whose reason is
+   * AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH or _UNSUPPORTED -- an application
+   * needs the assigned generation there to rebuild its feature clients.
    *
-   * It is NULL on DPS:CONNECTED. Which hub generation the device will speak is
-   * carried by the ASSIGNMENT, and a provisioning session reaches CONNECTED at
-   * its SUBACK -- before the registration that produces one, and on a
-   * provision_only device there is never going to be one at all. Reporting a
-   * guess there would be worse than reporting nothing.
+   * NULL on DPS:CONNECTED: the generation comes from the assignment, which does
+   * not exist at the SUBACK and never will on a provision_only device.
    *
-   * It and the event itself remain valid only until the callback returns; copy
-   * any value that must be retained. */
+   * It and the event itself are valid only until the callback returns; copy any
+   * value that must be retained. */
   typedef struct az_iot_connection_state_event
   {
     uint32_t _internal_size;
@@ -1075,15 +1053,16 @@ extern "C"
     bool dps_registration_ref;
     uint8_t dps_user_count;
 
-    /* The connection client's OWN standing demand for a provisioning session,
-     * held for the whole open() .. close() life of a provision_only client.
-     *
-     * Separate from dps_registration_ref, which is a TASK ("register, then let
-     * go"), and from dps_user_count, which belongs to feature clients. This one
-     * says the session is the connection: it must not be collected when no
-     * feature client happens to be holding it, and it must be re-established
-     * when it drops. Without it a provision_only device with no feature client
-     * attached yet would open a session and have the next pump collect it. */
+    /* SUBACK seen; DPS:CONNECTED still to be announced. Announcing from the
+     * adapter callback would let an observer's close() free that adapter
+     * mid-dispatch, so the pump does it. */
+    bool dps_pending_ready_announce;
+
+    /* The client's own demand for a provisioning session, held for the whole
+     * open()..close() life of a provision_only client. Distinct from
+     * dps_registration_ref (a task) and dps_user_count (feature clients): it
+     * says the session IS the connection, so the pump must neither collect it
+     * nor leave it down. */
     bool dps_standing_ref;
 
     /* Pacing for re-opening a provisioning session that was held for its USERS
