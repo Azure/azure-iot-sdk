@@ -459,9 +459,19 @@ int main(void)
   /* Ask for a day-0 onboarding update. Nothing is fetched unless the
    * application asks: only it knows whether it has a device record yet, and
    * the onboarding route is the one that needs none. A device that had already
-   * provisioned would call az_iot_adu_client_request_update() instead. */
+   * provisioned would call az_iot_adu_client_request_update() instead.
+   *
+   * The timeout bounds how long the CLIENT keeps reissuing this check before
+   * giving up and raising AZ_IOT_ADU_EVENT_OPERATION_ABANDONED with
+   * AZ_IOT_ERR_TIMEOUT. Without it an unservable check -- no device record, no
+   * linked hub -- is retried on every do_work() for the life of the client,
+   * and looks exactly like "no update available".
+   *
+   * AZ_IOT_ADU_REQUEST_DEFAULT_TIMEOUT_MS is the default for an application
+   * with no policy of its own. Pass your own value when you have one, or
+   * AZ_IOT_ADU_REQUEST_NO_TIMEOUT to keep retrying indefinitely. */
   if (az_iot_adu_client_request_onboarding_update(
-          &st.adu_client, AZ_IOT_ADU_SUGGESTED_REQUEST_TIMEOUT_MS)
+          &st.adu_client, AZ_IOT_ADU_REQUEST_DEFAULT_TIMEOUT_MS)
       != AZ_IOT_OK)
   {
     sample_state_destroy(&st);

@@ -328,15 +328,27 @@ extern "C"
 #define AZ_IOT_ADU_DEVICE_PROPS_BUFFER_SIZE 512
 #endif
 
-/* A suggested request timeout, in milliseconds, for callers with no policy of
- * their own to apply.
+/* The `timeout_ms` that asks for NO bound: the request is retried for as long
+ * as it takes, and the only abandonment is a channel verdict.
  *
- * It is ONLY a suggested value. The bound itself is a per-call argument of
+ * Named because a bare 0 at a call site reads like "expire immediately", which
+ * is the opposite of what it does. */
+#define AZ_IOT_ADU_REQUEST_NO_TIMEOUT 0u
+
+/* A default request timeout, in milliseconds, for callers with no policy of
+ * their own.
+ *
+ * One minute. The cost of an unserved check is the retries it keeps issuing,
+ * so the default bounds that rather than the wait: a check that has not been
+ * accepted in a minute is told to the application, which can ask again when it
+ * chooses instead of the client retrying silently on every do_work().
+ *
+ * Only a default. The bound is a per-call argument of
  * az_iot_adu_client_request_update() / _request_onboarding_update(), because
- * only the application knows how long it can wait for a given check: a
+ * only the application knows how long it can wait for a given check -- a
  * boot-time onboarding probe and a nightly background poll do not share a
- * deadline, and a compile-time constant cannot express both. */
-#define AZ_IOT_ADU_SUGGESTED_REQUEST_TIMEOUT_MS 300000u
+ * deadline. */
+#define AZ_IOT_ADU_REQUEST_DEFAULT_TIMEOUT_MS 60000u
 
 /* Declares a device-properties cache buffer named `name`, sized by
  * AZ_IOT_ADU_DEVICE_PROPS_BUFFER_SIZE, for az_iot_adu_client_config_options:
@@ -910,9 +922,10 @@ extern "C"
    * abandoned AT ONCE rather than at the deadline, and the event carries
    * `service_error.retry_after_ms` so the caller can decide when to ask again.
    *
-   * Pass 0 for no bound: the request is then retried indefinitely and the only
-   * abandonment is a channel verdict. AZ_IOT_ADU_SUGGESTED_REQUEST_TIMEOUT_MS
-   * is available for callers with no policy of their own.
+   * Pass AZ_IOT_ADU_REQUEST_NO_TIMEOUT for no bound: the request is then
+   * retried indefinitely and the only abandonment is a channel verdict.
+   * AZ_IOT_ADU_REQUEST_DEFAULT_TIMEOUT_MS is available for callers with no
+   * policy of their own.
    *
    * Single-threaded contract: MUST be called on the do_work thread or be
    * externally serialized with do_work().

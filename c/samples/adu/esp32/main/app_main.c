@@ -220,8 +220,13 @@ void app_main(void)
   /* Nothing is fetched unless the application asks. This device provisions
    * through DPS on this boot, so it uses the day-0 onboarding route; one that
    * already has a device record would call az_iot_adu_client_request_update().
-   */
-  if (az_iot_adu_client_request_onboarding_update(&adu, AZ_IOT_ADU_SUGGESTED_REQUEST_TIMEOUT_MS)
+   *
+   * The timeout bounds how long the CLIENT keeps reissuing this check before
+   * giving up and raising AZ_IOT_ADU_EVENT_OPERATION_ABANDONED with
+   * AZ_IOT_ERR_TIMEOUT -- otherwise an unservable check is retried on every
+   * do_work() for the life of the client. AZ_IOT_ADU_REQUEST_NO_TIMEOUT asks
+   * for exactly that, and is the wrong default on a battery-powered device. */
+  if (az_iot_adu_client_request_onboarding_update(&adu, AZ_IOT_ADU_REQUEST_DEFAULT_TIMEOUT_MS)
       != AZ_IOT_OK)
   {
     ESP_LOGE(TAG, "could not request an onboarding update");

@@ -1023,7 +1023,11 @@ az_iot_adu_state az_iot_adu_client_get_state(const az_iot_adu_client_t* client);
  * Asynchronous: records the request; the NEXT do_work() issues it, retrying on
  * a later tick if the channel is not ready.
  *
- * timeout_ms bounds the whole wait in WALL-CLOCK terms; 0 means no bound. On
+ * timeout_ms bounds the whole wait in WALL-CLOCK terms;
+ * AZ_IOT_ADU_REQUEST_NO_TIMEOUT (0) means no bound, and
+ * AZ_IOT_ADU_REQUEST_DEFAULT_TIMEOUT_MS (60000) is the default for a caller
+ * with no policy of its own -- it bounds the retries an unservable check keeps
+ * issuing, not the wait. On
  * expiry the request is dropped and OPERATION_ABANDONED is raised with
  * AZ_IOT_ERR_TIMEOUT. Per call, not a compile-time constant: a boot-time
  * onboarding probe and a nightly poll do not share a deadline.

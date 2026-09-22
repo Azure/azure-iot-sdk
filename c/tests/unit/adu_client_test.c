@@ -569,6 +569,17 @@ static az_iot_result fake_channel_report(void* ctx, const az_iot_adu_report* rep
   return fc->report_result;
 }
 
+/* The public macros mean what the header says they mean. Pinned because a
+ * sample or an application compiled against a changed value would fail
+ * silently, and because NO_TIMEOUT must stay the value the engine reads as
+ * "no bound". */
+static void the_public_timeout_macros_hold_their_contract(void** state)
+{
+  (void)state;
+  assert_int_equal(AZ_IOT_ADU_REQUEST_NO_TIMEOUT, 0u);
+  assert_int_equal(AZ_IOT_ADU_REQUEST_DEFAULT_TIMEOUT_MS, 60000u);
+}
+
 /* The request timeout these tests pass to the request functions. */
 #define UT_TIMEOUT_MS 300000u
 /* A service-requested delay far longer than UT_TIMEOUT_MS -- the case that
@@ -2510,16 +2521,17 @@ static void a_late_verdict_cannot_resurrect_an_unbounded_request(void** state)
   assert_int_not_equal(fx->adu._internal.pending_fetch_deadline_ms, 0);
 }
 
-/* The documented opt-out: timeout_ms == 0 retries indefinitely. Passed as the
- * real argument, so the zero path is covered through the public API rather
- * than by poking the deadline. */
+/* The documented opt-out: AZ_IOT_ADU_REQUEST_NO_TIMEOUT retries indefinitely.
+ * Passed as the real argument, so the path is covered through the public API
+ * rather than by poking the deadline. */
 static void a_disabled_timeout_never_abandons(void** state)
 {
   fixture* fx = (fixture*)*state;
   fx->chan.request_update_result = AZ_IOT_ERR_NOT_CONNECTED;
   fx->abandoned_count = 0;
 
-  assert_int_equal(az_iot_adu_client_request_update(&fx->adu, 0u), AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_adu_client_request_update(&fx->adu, AZ_IOT_ADU_REQUEST_NO_TIMEOUT), AZ_IOT_OK);
   assert_int_equal(fx->adu._internal.pending_fetch_deadline_ms, 0);
 
   for (int i = 0; i < 20; ++i)
@@ -2663,7 +2675,8 @@ static void a_delay_cannot_abandon_an_unbounded_request(void** state)
   fx->abandoned_count = 0;
   fx->chan.request_update_result = AZ_IOT_ERR_BUSY;
 
-  assert_int_equal(az_iot_adu_client_request_update(&fx->adu, 0u), AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_adu_client_request_update(&fx->adu, AZ_IOT_ADU_REQUEST_NO_TIMEOUT), AZ_IOT_OK);
 
   az_iot_adu_service_error se
       = { .code = 429001, .message = "", .tracking_id = "", .retry_after_ms = SERVICE_DELAY_MS };
@@ -2968,6 +2981,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(a_new_request_restarts_the_deadline, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_late_verdict_cannot_resurrect_an_unbounded_request, setup, teardown),
+    cmocka_unit_test(the_public_timeout_macros_hold_their_contract),
     cmocka_unit_test_setup_teardown(a_disabled_timeout_never_abandons, setup, teardown),
     cmocka_unit_test_setup_teardown(each_request_carries_its_own_timeout, setup, teardown),
     cmocka_unit_test_setup_teardown(
