@@ -337,6 +337,22 @@ static az_iot_result mock_process_loop(az_iot_mqtt_client* self, uint32_t timeou
 
     m->inbound_cb(&q->evt, m->inbound_ctx);
 
+    /* Scrub the backing storage the moment the callback returns, because that
+     * is exactly what a real adapter does: Paho frees the message, and the core
+     * is documented to treat inbound topic and payload as callback-lifetime
+     * only. Without this the mock keeps the bytes readable for the rest of the
+     * run, so code that retains a span into them passes locally and fails under
+     * valgrind or ASan -- which is precisely how a staged error message
+     * survived review once. */
+    if (q->has_message)
+    {
+      memset(q->topic, 0, sizeof(q->topic));
+      memset(q->payload, 0, sizeof(q->payload));
+      q->payload_len = 0;
+      q->has_message = false;
+      q->evt.message = NULL;
+    }
+
     m->pending_head = (m->pending_head + 1) % AZ_IOT_MOCK_EVENT_QUEUE_MAX;
     m->pending_count--;
   }

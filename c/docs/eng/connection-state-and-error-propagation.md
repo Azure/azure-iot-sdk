@@ -354,6 +354,50 @@ refusing service is not hammered. `close()` ends the demand, and does so
 *before* its idempotent early return, because on this device both scopes sit at
 `IDLE` while a backoff is pending — which is precisely that early return.
 
+### 2.9 Diagnostic detail: `is_retriable` and `error`
+
+A failure event carries two things beyond `reason`.
+
+**`is_retriable`** — would another attempt at this *cause* plausibly succeed? It says nothing
+about whether the SDK will try. That matters because an application that set
+`az_iot_reconnection_policy_get_retry_disabled()` **is** the retry policy: it sees `FAULTED` and
+has to decide, and `reason` alone is too coarse (`AZ_IOT_ERR_MQTT` covers both a dropped socket
+and a rejected identity). Computed from `reason` by an exhaustive switch, so adding a result code
+is a compile error until someone classifies it. It errs toward retriable: a wrong "do not retry"
+strands a device that would have recovered, a wrong "retriable" costs one attempt.
+
+The application does **not** need a retry counter from the SDK. It configured the policy and can
+read it back, and with the policy in hand `is_retriable` separates every case — with retries
+disabled, `FAULTED` + retriable means the SDK never tried; with `max_attempts = N`, it means N
+were spent.
+
+**`error`** — `{source, code, message}`, or NULL. `source` names the **codebook that decodes
+`code`**, not the connection: which connection is already `scope`.
+
+| `source` | `code` is | `message` |
+|---|---|---|
+| `_TRANSPORT` | the adapter's own code: TLS, socket, DNS. Not comparable across adapters | empty |
+| `_MQTT` | a code off the wire: CONNACK, SUBACK, or a server-sent v5 DISCONNECT reason | empty |
+| `_DPS` | the provisioning service's `extended_error_code`, e.g. `401001` | the service's text |
+
+There is deliberately no `_HUB`: a hub CONNACK and a DPS CONNACK are both `_MQTT`, and a value
+matching two sources would make the application guess which the SDK picked. The asymmetry in the
+table is a property of the services — DPS returns a structured error document, IoT Hub does not.
+
+**Lifetime.** `message` points into the adapter's inbound buffer and dies with the callback, like
+the event itself. Copy anything that must be retained.
+
+**Staging.** A failure is usually recorded in an adapter callback and reported later from the pump,
+so the detail is staged on the client and attached when the transition runs. It is scoped, so a
+DPS verdict cannot attach to a hub event; it rides **every** event of one failure's sequence
+(`DISCONNECTING` → `IDLE` → `RECONNECTING`/`FAULTED`), because they all report the same failure and
+consuming it on the first would leave the terminal event — the one applications act on — empty;
+and it is discarded when the scope next reaches `CONNECTING` or `CONNECTED`, which is when the old
+evidence stops describing anything current.
+
+**A success stages nothing.** A SUBACK that succeeded still carries a `protocol_code` — the granted
+QoS — and staging it would hand a later failure a code describing something that worked.
+
 ---
 
 ## 3. Lifecycle & Reuse Contract
