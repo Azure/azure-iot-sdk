@@ -224,6 +224,12 @@ struct az_iot_test_proxy
   char last_connect_target[300]; /* authority from the last CONNECT request line */
   int have_connect_target;
 
+  /* Decoded terms of the current session: the client's CONNECT and the reason
+   * code of its DISCONNECT. Reset when a client connects. */
+  az_iot_test_proxy_connect_fields connect_fields;
+  int have_client_disconnect;
+  uint8_t client_disconnect_reason;
+
   /* client->broker fixed-header parser state (pump thread only) */
   int pkt_phase; /* 0=first byte, 1=remaining-length, 2=body */
   uint32_t pkt_rem;
@@ -1151,9 +1157,301 @@ static int proxy_packet_id(const uint8_t* pkt, size_t len, uint8_t out[2])
   return 1;
 }
 
+/* --- session-setup inspection: decode the FIELDS of the client's CONNECT and
+ * DISCONNECT. Nothing is retained but the scalars in
+ * az_iot_test_proxy_connect_fields; no PUBLISH is examined and no payload is
+ * copied (a Will is reported by topic and length only). --- */
+
+/* Read an MQTT variable byte integer at *at. Returns 0 on a truncated or
+ * over-long encoding, which ends decoding of the packet. */
+static int proxy_mqtt_varint(const uint8_t* p, size_t len, size_t* at, uint32_t* out)
+{
+  uint32_t value = 0;
+  uint32_t multiplier = 1;
+  for (int i = 0; i < 4; ++i)
+  {
+    if (*at >= len)
+    {
+      return 0;
+    }
+    uint8_t b = p[(*at)++];
+    value += (uint32_t)(b & 0x7Fu) * multiplier;
+    if ((b & 0x80u) == 0)
+    {
+      *out = value;
+      return 1;
+    }
+    multiplier *= 128u;
+  }
+  return 0;
+}
+
+/* Length in bytes of the value of MQTT 5 property `id` starting at *at, so an
+ * unrecognised property between two that matter does not end the scan. Returns
+ * 0 when the property cannot be spanned -- an id this table does not know, or a
+ * length that runs past the packet -- and the caller stops there rather than
+ * reading whatever follows as a property id. */
+static int proxy_mqtt_skip_property(const uint8_t* p, size_t len, size_t* at, uint8_t id)
+{
+  size_t fixed = 0;
+  switch (id)
+  {
+    case 0x01u: /* payload format indicator */
+    case 0x17u: /* request problem information */
+    case 0x19u: /* request response information */
+    case 0x24u: /* maximum QoS */
+    case 0x25u: /* retain available */
+    case 0x28u: /* wildcard subscription available */
+    case 0x29u: /* subscription identifier available */
+    case 0x2Au: /* shared subscription available */
+      fixed = 1;
+      break;
+    case 0x13u: /* server keep alive */
+    case 0x21u: /* receive maximum */
+    case 0x22u: /* topic alias maximum */
+    case 0x23u: /* topic alias */
+      fixed = 2;
+      break;
+    case 0x02u: /* message expiry interval */
+    case 0x11u: /* session expiry interval */
+    case 0x18u: /* will delay interval */
+    case 0x27u: /* maximum packet size */
+      fixed = 4;
+      break;
+    case 0x0Bu: /* subscription identifier (variable byte integer) */
+    {
+      uint32_t ignored = 0;
+      return proxy_mqtt_varint(p, len, at, &ignored);
+    }
+    case 0x26u: /* user property: two length-prefixed strings */
+    {
+      for (int i = 0; i < 2; ++i)
+      {
+        if (*at + 2 > len)
+        {
+          return 0;
+        }
+        size_t n = ((size_t)p[*at] << 8) | (size_t)p[*at + 1];
+        *at += 2;
+        if (*at + n > len)
+        {
+          return 0;
+        }
+        *at += n;
+      }
+      return 1;
+    }
+    case 0x03u: /* content type */
+    case 0x08u: /* response topic */
+    case 0x09u: /* correlation data (binary, same framing) */
+    case 0x12u: /* assigned client identifier */
+    case 0x15u: /* authentication method */
+    case 0x16u: /* authentication data (binary) */
+    case 0x1Au: /* response information */
+    case 0x1Cu: /* server reference */
+    case 0x1Fu: /* reason string */
+    {
+      if (*at + 2 > len)
+      {
+        return 0;
+      }
+      size_t n = ((size_t)p[*at] << 8) | (size_t)p[*at + 1];
+      *at += 2;
+      if (*at + n > len)
+      {
+        return 0;
+      }
+      *at += n;
+      return 1;
+    }
+    default:
+      return 0;
+  }
+  if (*at + fixed > len)
+  {
+    return 0;
+  }
+  *at += fixed;
+  return 1;
+}
+
+static uint32_t proxy_be32(const uint8_t* p)
+{
+  return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | (uint32_t)p[3];
+}
+
+/* Walk one MQTT 5 property block, recording the one property the caller cares
+ * about (`want`) and stepping over everything else. `*at` is left just past the
+ * block when the whole block was spanned. */
+static void proxy_mqtt_scan_properties(
+    const uint8_t* p,
+    size_t len,
+    size_t* at,
+    uint8_t want,
+    int* out_present,
+    uint32_t* out_value)
+{
+  uint32_t props_len = 0;
+  if (!proxy_mqtt_varint(p, len, at, &props_len))
+  {
+    *at = len; /* undecodable: nothing after this can be trusted either */
+    return;
+  }
+  size_t end = *at + (size_t)props_len;
+  if (end > len)
+  {
+    *at = len;
+    return;
+  }
+  size_t cur = *at;
+  while (cur < end)
+  {
+    uint8_t id = p[cur++];
+    size_t value_at = cur;
+    if (!proxy_mqtt_skip_property(p, end, &cur, id))
+    {
+      break;
+    }
+    if (id == want && value_at + 4 <= end)
+    {
+      *out_present = 1;
+      *out_value = proxy_be32(p + value_at);
+    }
+  }
+  *at = end;
+}
+
+/* Decode the client's CONNECT into `out`. Silently leaves `out->seen` at 0 for
+ * anything that does not decode: this is observation, not validation. */
+static void proxy_decode_connect(
+    const uint8_t* pkt,
+    size_t len,
+    az_iot_test_proxy_connect_fields* out)
+{
+  size_t hdr = 0;
+  size_t total = 0;
+  if (proxy_frame_size(pkt, len, &hdr, &total) != 1 || total > len)
+  {
+    return;
+  }
+  size_t at = hdr;
+  /* protocol name */
+  if (at + 2 > len)
+  {
+    return;
+  }
+  size_t name_len = ((size_t)pkt[at] << 8) | (size_t)pkt[at + 1];
+  at += 2 + name_len;
+  if (at + 4 > len)
+  {
+    return;
+  }
+  uint8_t level = pkt[at++];
+  uint8_t flags = pkt[at++];
+  at += 2; /* keep alive */
+
+  az_iot_test_proxy_connect_fields f;
+  memset(&f, 0, sizeof(f));
+  f.protocol_level = level;
+  f.clean_flag = (flags & 0x02u) ? 1 : 0;
+  f.will_flag = (flags & 0x04u) ? 1 : 0;
+  f.will_qos = (uint8_t)((flags >> 3) & 0x03u);
+  f.will_retain = (flags & 0x20u) ? 1 : 0;
+
+  if (level >= 5)
+  {
+    proxy_mqtt_scan_properties(
+        pkt, len, &at, 0x11u, &f.has_session_expiry, &f.session_expiry_seconds);
+  }
+
+  /* client identifier */
+  if (at + 2 > len)
+  {
+    return;
+  }
+  size_t id_len = ((size_t)pkt[at] << 8) | (size_t)pkt[at + 1];
+  at += 2 + id_len;
+
+  if (f.will_flag)
+  {
+    if (level >= 5)
+    {
+      proxy_mqtt_scan_properties(pkt, len, &at, 0x18u, &f.has_will_delay, &f.will_delay_seconds);
+    }
+    if (at + 2 > len)
+    {
+      return;
+    }
+    size_t topic_len = ((size_t)pkt[at] << 8) | (size_t)pkt[at + 1];
+    at += 2;
+    if (at + topic_len > len)
+    {
+      return;
+    }
+    size_t copy = topic_len;
+    if (copy >= sizeof(f.will_topic))
+    {
+      copy = sizeof(f.will_topic) - 1;
+    }
+    memcpy(f.will_topic, pkt + at, copy);
+    f.will_topic[copy] = '\0';
+    at += topic_len;
+    if (at + 2 > len)
+    {
+      return;
+    }
+    f.will_payload_len = ((size_t)pkt[at] << 8) | (size_t)pkt[at + 1];
+  }
+
+  f.seen = 1;
+  *out = f;
+}
+
+/* Record what one client->broker packet says about the session. Called for
+ * every framed packet in that direction; only CONNECT and DISCONNECT are
+ * looked at. */
+static void proxy_observe_c2b(struct az_iot_test_proxy* m, const uint8_t* pkt, size_t len)
+{
+  if (len == 0)
+  {
+    return;
+  }
+  uint8_t type = (uint8_t)(pkt[0] >> 4);
+  if (type == AZ_IOT_TEST_PROXY_PKT_CONNECT)
+  {
+    az_iot_test_proxy_connect_fields f;
+    memset(&f, 0, sizeof(f));
+    proxy_decode_connect(pkt, len, &f);
+    if (!f.seen)
+    {
+      return;
+    }
+    proxy_lock(&m->lock);
+    m->connect_fields = f;
+    proxy_unlock(&m->lock);
+    return;
+  }
+  if (type != AZ_IOT_TEST_PROXY_PKT_DISCONNECT)
+  {
+    return;
+  }
+  size_t hdr = 0;
+  size_t total = 0;
+  if (proxy_frame_size(pkt, len, &hdr, &total) != 1)
+  {
+    return;
+  }
+  /* An empty body is a DISCONNECT with no reason code, which MQTT 5 defines as
+   * Normal Disconnection and 3.1.1 has no way to qualify at all. */
+  uint8_t reason = (total > hdr) ? pkt[hdr] : 0u;
+  proxy_lock(&m->lock);
+  m->have_client_disconnect = 1;
+  m->client_disconnect_reason = reason;
+  proxy_unlock(&m->lock);
+}
+
 /* Run the rule table over one complete packet. May shorten or edit `pkt` in
  * place. Returns 0 if the packet must not be forwarded.
- *
  * Injections are collected under the lock and pushed after releasing it, so
  * that queueing never happens with the lock held. */
 static int proxy_apply_rules(
@@ -1345,6 +1643,12 @@ static void proxy_ingest(
     if (fr->have == fr->need)
     {
       size_t len = fr->need;
+      if (dir == AZ_IOT_TEST_PROXY_C2B)
+      {
+        /* Before the rules, which may edit or suppress the packet: what is
+         * asserted on has to be what the client actually sent. */
+        proxy_observe_c2b(m, fr->buf, len);
+      }
       if (proxy_apply_rules(m, dir, eg, imp, fr->buf, &len, out_drop) && len > 0)
       {
         (void)eg_push(&eg[dir], &imp[dir], (const char*)fr->buf, len);
@@ -1825,6 +2129,9 @@ static void proxy_run(struct az_iot_test_proxy* m)
     m->pkt_rem = 0;
     m->pkt_mult = 1;
     m->pkt_body_left = 0;
+    memset(&m->connect_fields, 0, sizeof(m->connect_fields));
+    m->have_client_disconnect = 0;
+    m->client_disconnect_reason = 0;
     proxy_unlock(&m->lock);
 
     /* Terminate TLS on the client side when enabled. A handshake failure is the
@@ -2736,6 +3043,44 @@ uint32_t az_iot_test_proxy_connections(az_iot_test_proxy* m)
   uint32_t v = m->connections;
   proxy_unlock(&m->lock);
   return v;
+}
+
+int az_iot_test_proxy_last_connect_fields(
+    az_iot_test_proxy* m,
+    az_iot_test_proxy_connect_fields* out)
+{
+  if (!out)
+  {
+    return 0;
+  }
+  memset(out, 0, sizeof(*out));
+  if (!m)
+  {
+    return 0;
+  }
+  proxy_lock(&m->lock);
+  az_iot_test_proxy_connect_fields f = m->connect_fields;
+  proxy_unlock(&m->lock);
+  *out = f;
+  return f.seen ? 1 : 0;
+}
+
+int az_iot_test_proxy_last_client_disconnect_reason(az_iot_test_proxy* m, uint8_t* out_code)
+{
+  if (!m || !out_code)
+  {
+    return 0;
+  }
+  proxy_lock(&m->lock);
+  int have = m->have_client_disconnect;
+  uint8_t code = m->client_disconnect_reason;
+  proxy_unlock(&m->lock);
+  if (!have)
+  {
+    return 0;
+  }
+  *out_code = code;
+  return 1;
 }
 
 uint32_t az_iot_test_proxy_tunnels_opened(az_iot_test_proxy* m)

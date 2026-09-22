@@ -116,7 +116,9 @@ extern "C"
    * client -- so an entry left behind is a call into freed memory on the next
    * transition.
    *
-   * Both answer AZ_IOT_ERR_BUSY when called from inside a dispatch. */
+   * Adding answers AZ_IOT_ERR_BUSY from inside a dispatch; removing is allowed
+   * there, because a feature client torn down in reaction to a transition must
+   * be able to give its seat back before its storage goes away. */
   az_iot_result az_iot_connection_client__add_state_observer(
       az_iot_connection_client* client,
       az_iot_connection_state_callback cb,

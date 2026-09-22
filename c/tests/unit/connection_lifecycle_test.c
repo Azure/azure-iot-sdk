@@ -1097,9 +1097,10 @@ static void a_full_application_pool_does_not_block_a_feature_client(void** state
       az_iot_connection_client__add_state_observer(fx->client, feature_observer, NULL), AZ_IOT_OK);
 }
 
-/* Mutating the registry from inside a dispatch would rewrite the array being
- * walked. Both entry points refuse rather than corrupt it. close() from an
- * observer stays legal and is covered elsewhere. */
+/* ADDING from inside a dispatch would hand the new subscriber the transition
+ * in flight, so it is refused. REMOVING is allowed, and must be: an owner torn
+ * down in reaction to a transition releases the storage its entry points at.
+ * close() from an observer stays legal and is covered elsewhere. */
 static az_iot_connection_client* g_reentrant_client;
 static az_iot_result g_reentrant_add_result;
 static az_iot_result g_reentrant_remove_result;
@@ -1178,7 +1179,7 @@ static void the_dispatch_guard_survives_nesting(void** state)
   assert_int_equal(g_nested_add_result, AZ_IOT_ERR_BUSY);
 }
 
-static void the_registry_cannot_be_mutated_from_inside_an_observer(void** state)
+static void adding_is_refused_from_inside_an_observer_but_removing_is_not(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
   g_reentrant_client = fx->client;
@@ -1190,7 +1191,64 @@ static void the_registry_cannot_be_mutated_from_inside_an_observer(void** state)
   (void)open_to_connecting(fx);
 
   assert_int_equal(g_reentrant_add_result, AZ_IOT_ERR_BUSY);
-  assert_int_equal(g_reentrant_remove_result, AZ_IOT_ERR_BUSY);
+  /* Withdrawing is the direction that has to work: refusing it left a feature
+   * client destroyed from an observer no way to give its seat back, and the
+   * next transition then called into freed storage. */
+  assert_int_equal(g_reentrant_remove_result, AZ_IOT_OK);
+}
+
+/* The case the removal rule exists for: an owner that tears itself down from
+ * inside an observer.
+ *
+ * This is what a feature client's destroy path does when an application
+ * destroys it in reaction to a transition. Withdrawing must take effect, or the
+ * registry keeps calling a callback whose context has been released -- the
+ * entry holds a raw pointer, and the storage is gone the moment destroy()
+ * returns.
+ *
+ * Asserted as "no further deliveries", which is the property that matters; a
+ * use-after-free would not reliably crash a unit test. */
+static az_iot_connection_client* g_selfwithdraw_client;
+static int g_selfwithdraw_calls;
+static az_iot_result g_selfwithdraw_result;
+
+static void self_withdrawing_observer(const az_iot_connection_state_event* event, void* user_ctx)
+{
+  (void)event;
+  g_selfwithdraw_calls++;
+  g_selfwithdraw_result = az_iot_connection_client_remove_state_observer(
+      g_selfwithdraw_client, self_withdrawing_observer, user_ctx);
+}
+
+static void withdrawing_from_inside_an_observer_stops_further_delivery(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  g_selfwithdraw_client = fx->client;
+  g_selfwithdraw_calls = 0;
+  g_selfwithdraw_result = AZ_IOT_ERR_BUSY;
+
+  assert_int_equal(
+      az_iot_connection_client_add_state_observer(fx->client, self_withdrawing_observer, NULL),
+      AZ_IOT_OK);
+
+  az_iot_mock_mqtt_client* m = open_to_connecting(fx);
+
+  /* It ran, and it got its seat back from inside the dispatch. */
+  assert_int_equal(g_selfwithdraw_calls, 1);
+  assert_int_equal(g_selfwithdraw_result, AZ_IOT_OK);
+
+  /* Further transitions do not reach it. Without this, the entry would still be
+   * live and pointing at storage the owner has released. */
+  assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  (void)az_iot_connection_client_close(fx->client);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_equal(g_selfwithdraw_calls, 1);
+
+  /* And the seat really is free, not merely skipped. */
+  assert_int_equal(
+      az_iot_connection_client_remove_state_observer(fx->client, self_withdrawing_observer, NULL),
+      AZ_IOT_ERR_NOT_FOUND);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -1342,7 +1400,9 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         feature_observers_are_dispatched_before_application_ones, setup, teardown),
     cmocka_unit_test_setup_teardown(
-        the_registry_cannot_be_mutated_from_inside_an_observer, setup, teardown),
+        adding_is_refused_from_inside_an_observer_but_removing_is_not, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        withdrawing_from_inside_an_observer_stops_further_delivery, setup, teardown),
     cmocka_unit_test_setup_teardown(the_dispatch_guard_survives_nesting, setup, teardown),
     /* traffic gating */
     cmocka_unit_test_setup_teardown(publish_before_connected_is_rejected, setup, teardown),

@@ -328,12 +328,13 @@ static void set_state_to(
     .reason = reason,
     .profile = NULL,
   };
-  /* The profile answers "which hub generation is this?", so it rides every
-   * event that settles that question: a hub coming up, a provisioning session
-   * whose assignment has resolved it, and the two failures that are ABOUT the
-   * profile. */
-  if ((next == AZ_IOT_CONN_STATE_CONNECTED
-       && (scope == AZ_IOT_CONN_SCOPE_HUB || c->connection_profile_resolved))
+  /* The profile rides the events that settle "which hub generation is this?":
+   * HUB:CONNECTED, and the two failures that are ABOUT the profile.
+   *
+   * HUB only. DPS:CONNECTED is the SUBACK, before any assignment exists.
+   * connection_profile_resolved cannot stand in for that: it survives close()
+   * and a re-provision, so a second run would report a stale profile. */
+  if ((next == AZ_IOT_CONN_STATE_CONNECTED && scope == AZ_IOT_CONN_SCOPE_HUB)
       || reason == AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH
       || reason == AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED)
   {
@@ -423,6 +424,126 @@ static void resolve_connect_transport(
   copts->websocket_path = c->opts.websocket_path;
   copts->proxy = c->opts.proxy;
   copts->port = port ? port : default_port_for_transport(c->opts.transport);
+}
+
+/* Apply the session semantics for one role: Clean Start / Clean Session, the
+ * MQTT 5 Session Expiry Interval, the Last Will, and the reason code the
+ * session will be closed with.
+ *
+ * Every CONNECT this client issues used to go out with whatever the
+ * zero-initialized options struct yielded, which is clean_start = false for all
+ * three roles -- so DPS and Hub-Next both asked the broker to resume a session
+ * neither of them has any use for. The three roles do not want the same thing,
+ * and the choice is made here, in one place, rather than at the two connect
+ * sites:
+ *
+ *  - DPS (v3.1.1): a clean session, and not overridable. The provisioning
+ *    service does not implement session persistence at all -- it treats every
+ *    session as non-persistent whatever the CONNECT flag says -- so there is no
+ *    state for a resumed session to carry and asking for one would promise
+ *    something the service does not do. dps_start() re-subscribes
+ *    $dps/registrations/res/# on every attempt regardless.
+ *
+ *    This reason is deliberately a property of the SERVICE, not of how long the
+ *    session happens to live. The session is torn down at registration today,
+ *    but a feature client (ADU) can hold one open past that, and a longer-lived
+ *    or hub-concurrent DPS session does not change the answer: clean_start is
+ *    only read at CONNECT, and it is inert at this service whenever it is read.
+ *
+ *  - HUB_CLASSIC (v3.1.1): a PERSISTENT session, which is the behaviour this
+ *    role already had and is kept deliberately. Classic IoT Hub holds a
+ *    device's subscriptions, and the cloud-to-device messages that arrived
+ *    while it was away, only for a session that is NOT clean; connecting clean
+ *    would silently drop whatever was queued during an outage. The SUBSCRIBEs
+ *    are re-issued on every connect either way (begin_feature_subscriptions),
+ *    so resuming costs nothing and losing the queue costs delivery.
+ *
+ *  - HUB_NEXT (v5): a resumed session as well, with a Session Expiry Interval
+ *    so there is something left to resume. The presence design is explicit that
+ *    this is a TRANSPORT EFFICIENCY choice and not a correctness one: the
+ *    backend never reads clean_start or session_present, the device always
+ *    publishes birth, and every feature protocol is correct even if each
+ *    connect started a fresh session. What resuming buys is the broker's QoS 1
+ *    redelivery across a transient drop, and a re-subscribe saved. Both halves
+ *    are needed -- a session that expires the instant the connection closes is
+ *    gone before any reconnect could resume it -- which is why the expiry is
+ *    set here and not left at 0.
+ *
+ * Either hub role may be overridden by the caller through
+ * opts.session_continuity; DPS may not, because the provisioning service does
+ * not implement session persistence at all and honouring a request for it
+ * would be promising something the service does not do.
+ *
+ * The v5-only fields are set for the v5 role only. A v3.1.1 broker must never
+ * be sent a Session Expiry Interval or a Will Delay Interval -- there is no
+ * property field in a v3.1.1 CONNECT to carry them. */
+static void resolve_session_options(
+    const az_iot_connection_client* c,
+    az_iot_mqtt_connect_options* copts,
+    az_iot_mqtt_role role)
+{
+  if (role == AZ_IOT_MQTT_ROLE_DPS)
+  {
+    copts->clean_start = true;
+  }
+  else
+  {
+    copts->clean_start
+        = (c->opts.session_continuity == AZ_IOT_SESSION_CONTINUITY_CLEAN) ? true : false;
+  }
+  copts->session_expiry_seconds = 0;
+  copts->disconnect_reason_code = (uint8_t)AZ_IOT_MQTT_DISCONNECT_NORMAL;
+
+  /* Session Expiry is an MQTT 5 property, so it exists only for the v5 hub.
+   * A session the caller asked to be clean still carries it: clean_start
+   * discards whatever was there at CONNECT, while the expiry governs what
+   * happens to THIS session after it ends, and those are independent. */
+  if (role == AZ_IOT_MQTT_ROLE_HUB_NEXT)
+  {
+    copts->session_expiry_seconds = c->opts.session_expiry_seconds
+        ? c->opts.session_expiry_seconds
+        : (uint32_t)AZ_IOT_DEFAULT_SESSION_EXPIRY_SECONDS;
+  }
+
+  /* The Will belongs to the hub session. Nothing consumes a will published from
+   * a provisioning session: DPS has no presence or device-lifecycle protocol to
+   * deliver one to, and opts.lwt is the application's signal about its DEVICE,
+   * which is reachable through the hub. Announcing a departure on a channel
+   * with no listener is worse than not announcing it.
+   *
+   * Stated without reference to how long the session lives, deliberately. It
+   * used to read "the DPS session is torn down as soon as the assignment lands,
+   * so a will could only fire for a failed attempt" -- true today, but a feature
+   * client can hold the session open past registration, which would make that
+   * sentence false while the conclusion stayed correct. */
+  if (role == AZ_IOT_MQTT_ROLE_DPS || !is_nonempty_cstr(c->opts.lwt.topic))
+  {
+    return;
+  }
+
+  copts->lwt.topic = c->opts.lwt.topic;
+  copts->lwt.payload = c->opts.lwt.payload;
+  copts->lwt.payload_len = c->opts.lwt.payload_len;
+  copts->lwt.qos = c->opts.lwt.qos;
+  copts->lwt.retain = c->opts.lwt.retain;
+
+  if (role != AZ_IOT_MQTT_ROLE_HUB_NEXT)
+  {
+    return; /* v3.1.1: no will delay, no reason codes */
+  }
+
+  copts->lwt.will_delay_seconds = c->opts.lwt.will_delay_seconds;
+  /* MQTT 5 ends the Will Delay at whichever comes first, the delay or the
+   * session expiry, so a delay asked for on a session that expires at once is
+   * no delay at all. Carry the session far enough to honour it rather than
+   * accepting the option and then ignoring it. */
+  if (copts->lwt.will_delay_seconds > copts->session_expiry_seconds)
+  {
+    copts->session_expiry_seconds = copts->lwt.will_delay_seconds;
+  }
+  /* An orderly close discards the Will by default. A device that configured one
+   * wants its departure announced however it leaves, so close with 0x04. */
+  copts->disconnect_reason_code = (uint8_t)AZ_IOT_MQTT_DISCONNECT_WITH_WILL_MESSAGE;
 }
 
 static void teardown_active(az_iot_connection_client* c)
@@ -701,14 +822,83 @@ static bool dps_configured(const az_iot_connection_client* c)
 }
 
 /* The session exists exactly while this is true. */
+/* Reset the user-session ladder. Called wherever the evidence says the
+ * provisioning service is reachable again, or the demand has been rebuilt. */
+static void dps_user_retry_reset(az_iot_connection_client* c)
+{
+  c->dps_user_retry_attempt = 0;
+  c->dps_user_retry_due_ms = 0;
+  c->dps_user_retry_blocked = false;
+}
+
+/* Space out the next attempt to re-open a session held for its users, after
+ * this one failed. `retry_after_secs` is the service's own floor, if it gave
+ * one.
+ *
+ * Distinct from schedule_reconnect(): nothing is torn down and no state change
+ * is announced. The DPS scope has already settled at IDLE by the time this
+ * runs; all that is recorded is when a holder may ask again. */
+static void dps_user_retry_schedule(az_iot_connection_client* c, uint32_t retry_after_secs)
+{
+  /* 0 disables retrying, and az_iot_reconnect_delay_ms() would return a 0 ms
+   * delay for it -- which is the hot loop, not a fix for it. An application
+   * that turned retries off owns the decision to try again, and reaches it by
+   * closing the client or by dropping and re-taking the ref. */
+  if (c->opts.reconnection_policy.initial_delay_ms == 0)
+  {
+    c->dps_user_retry_blocked = true;
+    c->dps_user_retry_due_ms = 0;
+    return;
+  }
+
+  c->dps_user_retry_attempt++;
+  if (c->opts.reconnection_policy.max_attempts > 0
+      && c->dps_user_retry_attempt > c->opts.reconnection_policy.max_attempts)
+  {
+    c->dps_user_retry_blocked = true;
+    c->dps_user_retry_due_ms = 0;
+    return;
+  }
+
+  uint32_t delay = az_iot_reconnect_delay_ms(
+      &c->opts.reconnection_policy, c->dps_user_retry_attempt, &c->rng_state);
+  c->dps_user_retry_due_ms = az_iot_time_mono_ms() + delay;
+
+  /* The service's retry-after is a floor, never a ceiling -- the same rule the
+   * registration ladder applies. Backing off further than asked is allowed;
+   * coming back sooner is not. */
+  if (retry_after_secs > 0)
+  {
+    uint64_t floor_ms = az_iot_time_mono_ms() + (uint64_t)retry_after_secs * 1000ull;
+    if (c->dps_user_retry_due_ms < floor_ms)
+    {
+      c->dps_user_retry_due_ms = floor_ms;
+    }
+  }
+}
+
 static bool dps_refs_held(const az_iot_connection_client* c)
 {
-  return c->dps_registration_ref || c->dps_user_count > 0;
+  return c->dps_registration_ref || c->dps_user_count > 0 || c->dps_standing_ref;
+}
+
+/**
+ * @brief Whether anyone may ask for a session through dps_session_ensure(): a
+ * feature client holding a user ref, or a provision_only client's standing ref.
+ *
+ * The registration ref is excluded: a registration starts its own session from
+ * open(), and a second entry point would duplicate that.
+ */
+static bool dps_session_demanded(const az_iot_connection_client* c)
+{
+  return c->dps_user_count > 0 || c->dps_standing_ref;
 }
 
 static void dps_teardown_mqtt(az_iot_connection_client* c)
 {
   c->dps_subscription_confirmed = false;
+  /* A session that is gone never became ready. */
+  c->dps_pending_ready_announce = false;
   /* The live hold belongs to the session. The holder count is the feature
    * client's standing interest and deliberately survives, so a reprovision
    * holds again rather than racing past. */
@@ -1319,6 +1509,13 @@ static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
         return;
       }
       c->dps_subscription_confirmed = true;
+
+      /* The SUBACK is what makes the session usable, so it is DPS:CONNECTED.
+       * Only RECORDED here: announcing runs observers, close() is legal from
+       * one, and it would free this adapter while its process_loop is still on
+       * the stack. The pump announces it once process_loop has returned. */
+      c->dps_pending_ready_announce = true;
+
       /* Registration is a task, and it runs only while the registration ref is
        * held. Registering on a session opened for its other users would take
        * the assignment path -- rewriting host and role and reconnecting --
@@ -1326,6 +1523,8 @@ static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
       if (!c->dps_registration_ref)
       {
         AZ_IOT_LOG_DEBUG("dps: session ready for its users");
+        /* It came up: whatever the ladder had climbed is spent evidence. */
+        dps_user_retry_reset(c);
         break;
       }
       /* A holder wants the session before the device registers. Registration is
@@ -1591,6 +1790,7 @@ static az_iot_result dps_start(az_iot_connection_client* c)
   copts.client_id = c->opts.dps.registration_id;
   resolve_connect_timings(c, &copts);
   resolve_connect_transport(c, &copts, 0);
+  resolve_session_options(c, &copts, AZ_IOT_MQTT_ROLE_DPS);
 
   /* Build the DPS MQTT username. CSR-based operational-certificate issuance
    * (Azure Device Registration) requires a newer DPS API version than the
@@ -1663,6 +1863,7 @@ static az_iot_result dps_start(az_iot_connection_client* c)
   c->dps_pending_status = AZ_IOT_OK;
   c->dps_pending_retry_after_secs = 0;
   c->dps_enrolling = c->opts.dps.request_operational_certificate;
+  c->dps_start_cancelled = false;
 
   set_state_to(c, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_CONNECTING, AZ_IOT_OK);
 
@@ -1675,6 +1876,11 @@ static az_iot_result dps_start(az_iot_connection_client* c)
   if (c->dps_mqtt != mc)
   {
     AZ_IOT_LOG_DEBUG("dps: the session was closed from the state callback; abandoning the start");
+    /* Cancellation, not failure -- and it returns the same code as a genuine
+     * start failure, so callers that treat a failure as something to retry
+     * need to be told which happened. close() has just reset the retry
+     * bookkeeping; recreating it here would undo the caller's own close. */
+    c->dps_start_cancelled = true;
     return AZ_IOT_ERR_NOT_CONNECTED;
   }
 
@@ -1727,8 +1933,9 @@ static void reject_assignment(az_iot_connection_client* c, az_iot_result reason)
  * attached feature clients require) stay terminal either way: a retry would
  * return the same answer, so they go through reject_assignment() instead.
  *
- * An AUXILIARY session ends here without touching the public connection state
- * at all -- see the guard below. */
+ * A session held by its USERS rather than by a registration ends here without
+ * touching the public connection state at all -- see the guard below. Its
+ * retries are paced separately; the application's connection is not involved. */
 static void dps_apply_deferred(az_iot_connection_client* c)
 {
   if (!c->dps_pending_finalize)
@@ -1782,6 +1989,14 @@ static void dps_apply_deferred(az_iot_connection_client* c)
     if (status != AZ_IOT_OK)
     {
       AZ_IOT_LOG_ERRORF("dps: the provisioning session ended with an error (%d)", (int)status);
+      /* Only while a session is still wanted. This runs from the pump, so the
+       * last holder can have released since the failure -- and release already
+       * cleared the ladder. Pacing here would hand the next holder a latch it
+       * did not earn. */
+      if (dps_session_demanded(c))
+      {
+        dps_user_retry_schedule(c, retry_after_secs);
+      }
     }
     return;
   }
@@ -1924,6 +2139,10 @@ static void dps_apply_deferred(az_iot_connection_client* c)
    * old ladder's cap would be backoff for a failure that never happened. */
   c->retry_attempt[AZ_IOT_CONN_SCOPE_DPS] = 0;
   c->retry_attempt[AZ_IOT_CONN_SCOPE_HUB] = 0;
+
+  /* The service answered, so it is reachable: a user session that failed
+   * earlier should not still be serving out a backoff from that. */
+  dps_user_retry_reset(c);
 
   r = start_connect_attempt(c);
   if (r != AZ_IOT_OK)
@@ -2756,6 +2975,7 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
   copts.client_id = c->opts.client_id;
   resolve_connect_timings(c, &copts);
   resolve_connect_transport(c, &copts, c->opts.port);
+  resolve_session_options(c, &copts, c->session_role);
 
   /* Build hub MQTT username via azure-sdk-for-c (Classic only).
    * Hub-Next does not use the Classic username format. */
@@ -3302,11 +3522,21 @@ static az_iot_result remove_state_observer_from(
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
-  if (client->dispatching_state)
-  {
-    AZ_IOT_LOG_ERROR("connection: cannot remove a state observer from inside one");
-    return AZ_IOT_ERR_BUSY;
-  }
+  /* Deliberately NOT refused during a dispatch, unlike adding.
+   *
+   * The two directions are not symmetric. Adding from inside an observer would
+   * deliver the transition being dispatched to a subscriber that was not
+   * watching when it happened, so it is refused. Removing is the opposite: a
+   * feature client destroyed from inside an observer -- which is a natural
+   * reaction to FAULTED -- MUST be able to withdraw, because the entry holds a
+   * raw pointer to storage its destroy path is about to release. Refusing here
+   * left the caller with no way to give the seat back, and the next transition
+   * called into freed memory.
+   *
+   * Safe against the walk in dispatch_state_event(): it re-reads each slot and
+   * skips a NULL callback, and nothing is compacted, so clearing a slot only
+   * means that observer is not called -- which is exactly what withdrawing
+   * asks for. An entry already visited in this pass is unaffected. */
   for (size_t i = 0; i < AZ_IOT_MAX_FEATURE_STATE_OBSERVERS; ++i)
   {
     if (client->feature_state_observers[i].cb == cb
@@ -3383,18 +3613,47 @@ az_iot_result az_iot_connection_client_open(az_iot_connection_client* client)
   }
   /* What "already open" means, now that there are two lifecycles.
    *
-   * The HUB scope is the application's connection, so any non-IDLE value there
-   * is a refusal. The DPS scope is only the application's while the connection
-   * client is driving it -- that is, while it holds the registration ref. A
-   * session a FEATURE client opened for itself must NOT block open(), or a
-   * device-update client that pumped first would wedge the client permanently:
-   * open() would answer ALREADY_INITIALIZED for ever. */
+   * Any non-IDLE HUB value is a refusal. The DPS scope is the application's
+   * only while this client drives it, so a session a FEATURE client opened for
+   * itself must not block open() -- otherwise a device-update client that
+   * pumped first would wedge it at ALREADY_INITIALIZED for ever.
+   *
+   * A standing ref is an open client whatever the DPS scope says: between a
+   * drop and the paced reopen the scope is legitimately IDLE with no session,
+   * and a second open() accepted there would reset the ladder and start an
+   * unpaced attempt with no close() in between. */
   if (client->state[AZ_IOT_CONN_SCOPE_HUB] != AZ_IOT_CONN_STATE_IDLE
       || (client->state[AZ_IOT_CONN_SCOPE_DPS] != AZ_IOT_CONN_STATE_IDLE
-          && client->dps_registration_ref))
+          && client->dps_registration_ref)
+      || client->dps_standing_ref)
   {
     AZ_IOT_LOG_ERROR("connection_client_open: client not in IDLE state");
     return AZ_IOT_ERR_ALREADY_INITIALIZED;
+  }
+
+  /* Rejected rather than quietly ignored: opts.host names the hub this option
+   * says does not exist, and an operational certificate is issued BY a
+   * registration, which this device never performs. */
+  if (client->opts.dps.provision_only)
+  {
+    if (!dps_configured(client))
+    {
+      AZ_IOT_LOG_ERROR("connection_client_open: dps.provision_only requires dps.id_scope");
+      return AZ_IOT_ERR_INVALID_ARG;
+    }
+    if (is_nonempty_cstr(client->opts.host))
+    {
+      AZ_IOT_LOG_ERROR(
+          "connection_client_open: dps.provision_only is set, but opts.host names a hub");
+      return AZ_IOT_ERR_INVALID_ARG;
+    }
+    if (client->opts.dps.request_operational_certificate)
+    {
+      AZ_IOT_LOG_ERROR("connection_client_open: dps.provision_only cannot be combined with "
+                       "request_operational_certificate; the certificate is issued by a "
+                       "registration, which this device never performs");
+      return AZ_IOT_ERR_INVALID_ARG;
+    }
   }
 
   /* CSR-based operational-cert enrollment (D2) requires a certificate_provider
@@ -3486,6 +3745,7 @@ az_iot_result az_iot_connection_client_open(az_iot_connection_client* client)
   client->retry_attempt[AZ_IOT_CONN_SCOPE_DPS] = 0;
   client->retry_attempt[AZ_IOT_CONN_SCOPE_HUB] = 0;
   client->reconnect_due_ms = 0;
+  dps_user_retry_reset(client);
   /* needs_reprovision is deliberately NOT cleared here. It is pending recovery
    * intent -- "the cached assignment is no good, ask DPS again" -- set by an
    * identity rejection, by the unreachable-hub threshold, or by an assignment
@@ -3494,8 +3754,12 @@ az_iot_result az_iot_connection_client_open(az_iot_connection_client* client)
    * is still set. It is consumed by the DPS route below. */
 
   /* --- Mock-Next bypass: when AZ_IOT_HUB_NEXT_MOCK_ENDPOINT is set,
-   * skip DPS and connect directly to the mock Hub-Next (MQTT v5). --- */
-  if (mock_next_configured())
+   * skip DPS and connect directly to the mock Hub-Next (MQTT v5). ---
+   *
+   * Never for provision_only: the bypass makes a hostless client a hub
+   * connection, and an environment variable must not override a declared
+   * device shape. */
+  if (mock_next_configured() && !client->opts.dps.provision_only)
   {
     az_iot_result r = apply_mock_next_bypass(client);
     if (r != AZ_IOT_OK)
@@ -3510,6 +3774,27 @@ az_iot_result az_iot_connection_client_open(az_iot_connection_client* client)
     {
       set_state_to(client, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_IDLE, r);
     }
+    return r;
+  }
+
+  /* No hub: bring the provisioning session up and stop there. No registration
+   * ref is taken. The standing ref alone gives both behaviours the pump needs
+   * -- do not collect it, and re-establish it if it drops.
+   *
+   * Before the registration route below, which would otherwise claim this
+   * client: opts.host is NULL on a provision_only device, so it matches. */
+  if (client->opts.dps.provision_only)
+  {
+    client->dps_standing_ref = true;
+    /* BUSY is the ordinary answer: started, and the caller waits for
+     * DPS:CONNECTED as a hub client waits for HUB:CONNECTED. */
+    az_iot_result r = az_iot_connection_client__dps_session_ensure(client);
+    if (r == AZ_IOT_ERR_BUSY || r == AZ_IOT_OK)
+    {
+      return AZ_IOT_OK;
+    }
+    client->dps_standing_ref = false;
+    AZ_IOT_LOG_ERRORF("connection_client_open: provision_only session did not start (%d)", (int)r);
     return r;
   }
 
@@ -3594,6 +3879,20 @@ az_iot_result az_iot_connection_client_close(az_iot_connection_client* client)
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
+
+  /* Before the idempotency check below, not after it. close() is the
+   * documented exit from a settled refusal, and on a DPS-only device both
+   * scopes sit at IDLE when the user-session ladder latches -- which is
+   * precisely the early return. Clearing it there would be unreachable in the
+   * one case that needs it most. Resetting an already-clear ladder is a
+   * no-op. */
+  dps_user_retry_reset(client);
+
+  /* Before the idempotency check, for the same reason: a provision_only client
+   * waiting out a backoff sits at DPS:IDLE with the ref held, which IS that
+   * early return, and the next pump tick would reopen what was just closed. */
+  client->dps_standing_ref = false;
+
   /* Idempotent only when BOTH lifecycles are already settled. A client whose
    * hub is IDLE but whose provisioning session is still up has something to
    * close. */
@@ -3609,6 +3908,13 @@ az_iot_result az_iot_connection_client_close(az_iot_connection_client* client)
    * branch used to return without touching it, and the pump would not collect
    * it either while a ref was held -- so close() left a connection running. */
   dps_close_session(client);
+
+  /* close() is the documented exit from a settled refusal, so it clears the
+   * user-session ladder too -- including the blocked latch. Here rather than in
+   * dps_close_session(), which returns early when no session is up: the ladder
+   * outlives the session that earned it, and that is the case that most needs
+   * clearing. */
+  dps_user_retry_reset(client);
 
   /* Closing while waiting to reconnect: cancel the schedule and go straight
    * to IDLE. There is no live adapter to disconnect at this point.
@@ -3721,6 +4027,25 @@ az_iot_result az_iot_connection_client_do_work(
    * clients holding it sits at DPS_PHASE_DONE, and a phase-gated pump would
    * never service it -- so nothing inbound would ever arrive on the very
    * session the refcount kept alive. */
+  if (client->dps_mqtt == NULL && client->dps_standing_ref)
+  {
+    /* A provision_only device has no hub connect to fall back on, so only the
+     * pump can bring its session back. Through the same gate a feature client
+     * uses, so the pacing applies and a refusing service is not hammered.
+     *
+     * OK/BUSY mean up or coming up, and NOT_SUPPORTED means the ladder has
+     * settled -- all three already visible to the application as DPS states,
+     * so none of them is a pump failure. Anything else is unexpected and is
+     * reported here rather than being swallowed; do_work() still returns the
+     * pump's own result, since one tick failing to start a session is not a
+     * reason to stop servicing the rest of the client. */
+    az_iot_result sr = az_iot_connection_client__dps_session_ensure(client);
+    if (sr != AZ_IOT_OK && sr != AZ_IOT_ERR_BUSY && sr != AZ_IOT_ERR_NOT_SUPPORTED)
+    {
+      AZ_IOT_LOG_ERRORF("dps: could not re-establish the provisioning session (%d)", (int)sr);
+    }
+  }
+
   if (client->dps_mqtt != NULL)
   {
     /* Leave the pre-registration hold once every holder has released, or once
@@ -3775,6 +4100,20 @@ az_iot_result az_iot_connection_client_do_work(
         }
       }
       r = client->dps_mqtt->iface->process_loop(client->dps_mqtt, wait_ms);
+    }
+
+    /* Deferred out of the SUBACK handler: observers may close() the client,
+     * which frees the adapter whose process_loop has only just returned.
+     *
+     * Before dps_apply_deferred() so that a registration answered in the same
+     * batch still reports CONNECTED before DISCONNECTING. */
+    if (client->dps_pending_ready_announce)
+    {
+      client->dps_pending_ready_announce = false;
+      if (client->dps_mqtt != NULL)
+      {
+        set_state_to(client, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_CONNECTED, AZ_IOT_OK);
+      }
     }
 
     dps_apply_deferred(client);
@@ -4399,6 +4738,12 @@ void az_iot_connection_client__dps_user_release(az_iot_connection_client* client
     return;
   }
   client->dps_user_count--;
+  if (client->dps_user_count == 0)
+  {
+    /* The demand is gone. A later holder is NEW demand and must not inherit a
+     * backoff, or a latched refusal, earned by whoever came before it. */
+    dps_user_retry_reset(client);
+  }
   /* The session is NOT torn down here even if this was the last ref. Release
    * is reachable from inside a message callback, and freeing the adapter there
    * would free the object it is still dispatching on. The pump notices the
@@ -4416,10 +4761,9 @@ az_iot_result az_iot_connection_client__dps_session_ensure(az_iot_connection_cli
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
-  /* Only a holder may ask. This is the demand, already recorded -- the caller
-   * is not requesting a session so much as asking whether the one it is
-   * entitled to is usable yet. */
-  if (client->dps_user_count == 0 || !dps_configured(client))
+  /* Only a holder may ask: the demand is already recorded, so this asks
+   * whether the session it is entitled to is usable yet. */
+  if (!dps_session_demanded(client) || !dps_configured(client))
   {
     return AZ_IOT_ERR_NOT_SUPPORTED;
   }
@@ -4472,11 +4816,48 @@ az_iot_result az_iot_connection_client__dps_session_ensure(az_iot_connection_cli
     return AZ_IOT_ERR_BUSY;
   }
 
+  /* The core's own pacing for a session held by its users. Without it a failed
+   * session was re-opened on the very next pump tick, for as long as the
+   * application kept pumping. */
+  if (client->dps_user_retry_blocked)
+  {
+    /* Settled, like FAULTED: retries are off or the budget is spent, and the
+     * core will not re-open on its own. A holder that keeps asking gets a
+     * stable answer it can report, rather than a session attempt per tick. */
+    return AZ_IOT_ERR_NOT_SUPPORTED;
+  }
+  if (client->dps_user_retry_due_ms != 0 && az_iot_time_mono_ms() < client->dps_user_retry_due_ms)
+  {
+    return AZ_IOT_ERR_BUSY;
+  }
+  /* Consumed on firing, so the deadline cannot re-authorize a second attempt. */
+  client->dps_user_retry_due_ms = 0;
+
   client->dps_phase = DPS_PHASE_NONE;
   az_iot_result r = dps_start(client);
   if (r != AZ_IOT_OK)
   {
     AZ_IOT_LOG_ERRORF("dps: could not open a provisioning session (%d)", (int)r);
+    /* A SYNCHRONOUS failure never reaches dps_finalize(), so nothing else would
+     * pace it: the caller gets the error and its next pump tick asks again
+     * immediately. That is the same hot loop, on the path where the adapter
+     * cannot even be created -- which is the one least likely to fix itself.
+     *
+     * But NOT every error here is a failure. dps_start() announces
+     * DPS:CONNECTING synchronously, and close() is legal from inside that
+     * callback; the cancellation it detects returns the same
+     * AZ_IOT_ERR_NOT_CONNECTED as a genuine start failure. close() has just
+     * RESET this ladder -- it is the documented escape from a settled refusal
+     * -- so pacing that case would recreate the deadline, or the blocked latch,
+     * immediately after the caller cleared it, and the escape would not work.
+     *
+     * dps_start() sets dps_start_cancelled for exactly that case. user_close
+     * does NOT work here: close() with no hub adapter -- which is this case,
+     * closing during provisioning -- clears it before returning. */
+    if (!client->dps_start_cancelled)
+    {
+      dps_user_retry_schedule(client, 0);
+    }
     return r;
   }
   /* Started, not ready: the caller must wait for the SUBACK. */
