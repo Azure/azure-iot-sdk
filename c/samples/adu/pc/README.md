@@ -66,8 +66,10 @@ variables in the next section:
 | A **trusted CA bundle** | Validates the service's TLS certificate |
 
 The update offered to the device must declare `compatibility` matching what this
-sample reports — manufacturer `Contoso`, model `ADU-Sim`. An update that does not
-match is never offered, however it was imported.
+sample reports — by default manufacturer `Contoso`, model `ADU-Sim`, and the
+custom property `environment` = `sim`. An update that does not match is never
+offered, however it was imported. See
+[Configure the sample](#configure-the-sample) to change what is reported.
 
 > The PowerShell scripts under [samples/common/scripts](../../common/scripts)
 > provision an older, IoT-Hub-based Device Update model that this sample does not
@@ -94,7 +96,8 @@ The sample reads these environment variables (see
 The device's **compatibility properties** — what the service matches a deployed
 update against. A value that does not match the imported update is answered
 "nothing for me", which looks exactly like "nothing deployed", so the sample
-prints what it reported at startup.
+prints what it reported at startup. The sample also sends the fixed custom
+property `environment` = `sim`, which a deployed update must match too.
 
 | Variable | Default |
 |---|---|
@@ -277,9 +280,15 @@ check passes. Random content would not match.
 The device reports these properties (see [main.c](main.c)); an update must declare
 matching `compatibility` to be offered:
 
-- **Manufacturer:** `Contoso`
-- **Model:** `ADU-Sim`
-- **Installed update id:** `{ provider: Contoso, name: ADU-Sim, version: 1.0.0 }`
+| Property | Value | Overridden by |
+|---|---|---|
+| Manufacturer | `Contoso` | `AZ_IOT_ADU_MANUFACTURER` |
+| Model | `ADU-Sim` | `AZ_IOT_ADU_MODEL` |
+| Custom `environment` | `sim` | fixed in [main.c](main.c) |
+| Installed update id | `{ provider: Contoso, name: ADU-Sim, version: 1.0.0 }` | `AZ_IOT_ADU_INSTALLED_PROVIDER` / `_NAME` / `_VERSION` |
+
+The sample prints the identity it reported at startup, so a mismatch is visible
+rather than silent.
 
 ### Root keys
 

@@ -360,6 +360,16 @@ static void sample_state_destroy(sample_state* s)
 static void on_conn_state(const az_iot_connection_state_event* event, void* user_ctx)
 {
   sample_run* run = (sample_run*)user_ctx;
+
+  /* The SDK stamps the event with its own size. A library older than this
+   * header would not carry every field read below, and `scope` indexes an
+   * array -- so an event that is short, or that names a scope this build does
+   * not know, is ignored rather than read. */
+  if (event->_internal_size < sizeof(*event) || (unsigned)event->scope >= AZ_IOT_CONN_SCOPE_COUNT)
+  {
+    return;
+  }
+
   az_iot_connection_scope scope = event->scope;
 
   if (run->conn[scope] != event->state)
@@ -382,6 +392,13 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
 static void on_adu_event(const az_iot_adu_event* event, void* user_ctx)
 {
   sample_run* run = (sample_run*)user_ctx;
+
+  /* Same contract as the connection event above: an event shorter than this
+   * build's struct does not carry every field read below. */
+  if (event->_internal_size < sizeof(*event))
+  {
+    return;
+  }
 
   switch (event->kind)
   {
