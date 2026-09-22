@@ -5,6 +5,7 @@ using Microsoft.Azure.Iot.Device.Mqtt;
 using Microsoft.Azure.Iot.Device.MqttNetAdapter;
 using MQTTnet;
 using System.Net;
+using System.Net.Security;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 
@@ -125,6 +126,23 @@ namespace Microsoft.Azure.Iot.Device.MQTTnetAdapter
                     {
                         connect.ClientCertificate,
                     });
+
+                    // Custom validation of the server (remote) certificate, e.g. certificate pinning or a private root.
+                    if (connect.RemoteCertificateValidationCallback != null)
+                    {
+                        RemoteCertificateValidationCallback remoteValidation = connect.RemoteCertificateValidationCallback;
+                        tlsOptions.WithCertificateValidationHandler(args =>
+                            remoteValidation(_underlyingClient, args.Certificate, args.Chain, args.SslPolicyErrors));
+                    }
+
+                    // Custom selection of the client certificate to present, e.g. to support certificate rotation.
+                    // The selected certificate signs the handshake with its own (possibly HSM-backed) private key.
+                    if (connect.LocalCertificateSelectionCallback != null)
+                    {
+                        LocalCertificateSelectionCallback localSelection = connect.LocalCertificateSelectionCallback;
+                        tlsOptions.WithCertificateSelectionHandler(args =>
+                            localSelection(_underlyingClient, args.TargetHost, args.LocalCertificates, null, args.AcceptableIssuers));
+                    }
 
                     tlsOptions.UseTls(true);
                     tlsOptions.WithSslProtocols(System.Security.Authentication.SslProtocols.Tls12 | System.Security.Authentication.SslProtocols.Tls13);
