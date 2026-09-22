@@ -10,11 +10,9 @@ against a real service, but with **simulated** download/install hooks so it is
 safe to run on a dev box or in CI — it never touches real firmware. It builds and
 runs on both **Linux** and **Windows**.
 
-The sample implements **ADUv2**: the device-facing update operations are issued on
-the device's **DPS** session and proxied **DPS → Azure Device Registry (ADR) →
-Azure Device Update (ADU)**. The device never talks to ADU directly and needs no
-ADU-specific credential. See
-[docs/eng/aduv2-spec.md](../../../docs/eng/aduv2-spec.md) for the wire contract.
+The device-facing update operations are issued on the device's **DPS** session and
+proxied by the service to Device Update. The device never talks to Device Update
+directly and needs no Device Update credential.
 
 | Operation | When the sample uses it |
 |---|---|
@@ -64,8 +62,7 @@ The sample reads these environment variables (see
 | `AZ_IOT_CLIENT_CERT` | yes | Path to the device certificate PEM |
 | `AZ_IOT_CLIENT_KEY` | yes | Path to the device private key PEM |
 | `AZ_IOT_TRUSTED_CA` | yes | Trusted CA bundle, e.g. `/etc/ssl/certs/ca-certificates.crt` |
-| `AZ_IOT_DPS_GLOBAL_ENDPOINT` | see note | Overrides the SDK's global DPS endpoint. Leave it unset to use the SDK default, `global.azure-devices-provisioning.net`. **A preview/canary environment is not reachable there** — set it to `global-canary.azure-devices-provisioning.net` for an environment provisioned as above. |
-| `AZ_IOT_DEVICE_ID`, `AZ_IOT_HUB_NEXT_MOCK_ENDPOINT` | no | Loaded by the shared sample config for the mock-endpoint bypass; this sample does not use them |
+| `AZ_IOT_DPS_GLOBAL_ENDPOINT` | no | The provisioning endpoint to use. Unset means the SDK default, `global.azure-devices-provisioning.net`; set it when your environment uses a different one. |
 
 ```bash
 export AZ_IOT_DPS_ID_SCOPE='<id-scope>'
@@ -73,8 +70,16 @@ export AZ_IOT_DPS_REGISTRATION_ID='<registration-id>'
 export AZ_IOT_CLIENT_CERT="$PWD/device-cert.pem"
 export AZ_IOT_CLIENT_KEY="$PWD/device-key.pem"
 export AZ_IOT_TRUSTED_CA='/etc/ssl/certs/ca-certificates.crt'
-# Preview/canary environment; omit for a production DPS.
-export AZ_IOT_DPS_GLOBAL_ENDPOINT='global-canary.azure-devices-provisioning.net'
+```
+
+PowerShell:
+
+```powershell
+$env:AZ_IOT_DPS_ID_SCOPE        = '<id-scope>'
+$env:AZ_IOT_DPS_REGISTRATION_ID = '<registration-id>'
+$env:AZ_IOT_CLIENT_CERT         = "$PWD\device-cert.pem"
+$env:AZ_IOT_CLIENT_KEY          = "$PWD\device-key.pem"
+$env:AZ_IOT_TRUSTED_CA          = "$PWD\ca.pem"
 ```
 
 > Manifest signature verification works out of the box: the sample uses
@@ -197,13 +202,16 @@ route, which is the one this sample uses.
 
 ## When an update is offered
 
-Leave the sample running. Once the service offers it an update, it verifies the
-manifest signature, runs the simulated download/install/apply workflow and reports
-the result — all visible on stdout.
+**Have the update deployed before you start the sample.** It asks once, on the
+onboarding route, before it provisions — it does not poll. A deployment created
+after that check has run is not picked up; restart the sample to ask again.
 
-**A 200 response carrying no `updateMetadata` means "nothing for me on this
-route" — it is not an error.** An update is only offered on the route matching the
-deployment: this sample asks on the onboarding route.
+If an update is waiting, the sample verifies the manifest signature, runs the
+simulated download/install/apply workflow and reports the result, all on stdout.
+
+**A response carrying no update means "nothing for me on this route" — it is not
+an error.** An update is only offered on the route matching the deployment, and
+this sample asks on the onboarding route.
 
 ---
 
@@ -267,11 +275,3 @@ ADU_SIM_HASH_MISMATCH=1 ./az_iot_sample_adu
 ADU_SIM_REBOOT=1 ./az_iot_sample_adu
 ./az_iot_sample_adu            # resumes from the persisted blob
 ```
-
----
-
-## References
-
-- ADUv2 wire contract: [docs/eng/aduv2-spec.md](../../../docs/eng/aduv2-spec.md)
-- On-device design: [docs/eng/adu-client-design.md](../../../docs/eng/adu-client-design.md)
-- Client status / scope: [docs/eng/adu-client-plan.md](../../../docs/eng/adu-client-plan.md)
