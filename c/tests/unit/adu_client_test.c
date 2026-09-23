@@ -1465,14 +1465,26 @@ static void failure_after_success_does_not_replay_success(void** state)
 static void rejected_failure_report_retains_outcome_after_idle(void** state)
 {
   fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
   assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
-  fx->chan.report_result = AZ_IOT_ERR_TIMEOUT;
   fx->log.download_result = AZ_IOT_ADU_RESULT_FAILURE;
   inject_patch(fx, signed_patch());
-  pump(fx, 40);
+  for (int i = 0; i < 40 && az_iot_adu_client_get_state(&fx->adu) != AZ_IOT_ADU_STATE_FAILED; ++i)
+  {
+    if (az_iot_adu_client_get_state(&fx->adu) == AZ_IOT_ADU_STATE_DOWNLOAD_STARTED)
+    {
+      fx->chan.report_result = AZ_IOT_ERR_TIMEOUT;
+    }
+    assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  }
+  assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_FAILED);
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_ADU_OUTCOME_FAILED);
+  assert_true(fx->adu._internal.device_props_report_pending);
 
-  /* Request another report explicitly; automatic retries are outside this test. */
+  /* The refused failure report is retried, then the machine returns to Idle. */
   fx->chan.report_result = AZ_IOT_OK;
+  pump(fx, 40);
+  assert_false(fx->adu._internal.device_props_report_pending);
   assert_idle_report_retains_outcome(fx, AZ_IOT_ADU_OUTCOME_FAILED);
 }
 
