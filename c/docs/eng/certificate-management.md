@@ -719,7 +719,7 @@ dedicated e2e test app), driven by the in-process all-C e2e suite (`tests/e2e`).
 - 08/30/2026: Implemented D8 end to end for the Paho adapter: key-reference fields and the
   `sign()` hook now reach the adapter on both connect paths,
   `AZ_IOT_ERR_CREDENTIAL_INCOMPLETE` rejects a credential that cannot sign, and the
-  handshake signs inside a PKCS#11 / TPM token. Added `samples/authentication/hsm_pkcs11_gen1`
-  and `hsm_sign_callback`, the SoftHSM2 provisioning script, and unit + e2e custody
-  suites. Corrected **Status**, the storage-methods gap, **D8**, **Samples** and
-  **E2E tests** to match. By ewertons.
+  handshake signs inside a PKCS#11 / TPM token. Added `samples/authentication/hsm_pkcs11`
+  (later split into `hsm_pkcs11_gen1` / `hsm_pkcs11_gen2`) and `hsm_sign_callback`, the
+  SoftHSM2 provisioning script, and unit + e2e custody suites. Corrected **Status**, the
+  storage-methods gap, **D8**, **Samples** and **E2E tests** to match. By ewertons.
