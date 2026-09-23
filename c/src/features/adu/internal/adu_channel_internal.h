@@ -304,6 +304,20 @@ extern "C"
      * twice, while leaving the standing interest intact for the next one. Reset
      * when the session goes away. */
     bool exchange_done;
+
+    /* True while the channel holds a seat in the connection-state registry. */
+    bool observes_state;
+
+    /* Last state of each connection scope, seeded at open and kept by the
+     * observer. Tells a settled fault apart from a session coming up. */
+    az_iot_connection_state conn_state[AZ_IOT_CONN_SCOPE_COUNT];
+
+    /* Bumped on every DPS:DISCONNECTING, i.e. every provisioning-session end.
+     * pending_epoch is its value when the outstanding request was published, so
+     * a request whose session was replaced between two ticks is still seen as
+     * lost. */
+    uint32_t session_epoch;
+    uint32_t pending_epoch;
   } az_iot_adu_channel_dps;
 
   /* Bind the channel to a connection and an HTTPS transport and emit the vtable

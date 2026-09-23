@@ -1822,9 +1822,360 @@ static void an_answered_operation_clears_the_retry_count(void** state)
   assert_int_equal(fx->channel_state.session_loss_attempts, 0);
 }
 
+/* The channel's seat in the connection-state registry: taken at open, returned
+ * at close. The entry points at the channel, so one left behind is a call into
+ * freed storage on the next transition. */
+static bool channel_observes_state(const fixture* fx)
+{
+  for (size_t i = 0; i < AZ_IOT_MAX_FEATURE_STATE_OBSERVERS; ++i)
+  {
+    if (fx->client.feature_state_observers[i].cb != NULL
+        && fx->client.feature_state_observers[i].user_ctx == &fx->channel_state)
+    {
+      return true;
+    }
+  }
+  return false;
+}
+
+static void the_channel_takes_and_returns_a_state_observer_seat(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_false(channel_observes_state(fx));
+
+  assert_int_equal(fx->channel.vtable->open(fx->channel.ctx, on_update, on_result, fx), AZ_IOT_OK);
+  assert_true(channel_observes_state(fx));
+
+  fx->channel.vtable->close(fx->channel.ctx);
+  assert_false(channel_observes_state(fx));
+
+  /* More bind/unbind cycles than the pool has seats: none leak. */
+  for (size_t i = 0; i < AZ_IOT_MAX_FEATURE_STATE_OBSERVERS + 2u; ++i)
+  {
+    assert_int_equal(
+        fx->channel.vtable->open(fx->channel.ctx, on_update, on_result, fx), AZ_IOT_OK);
+    fx->channel.vtable->close(fx->channel.ctx);
+  }
+  assert_false(channel_observes_state(fx));
+}
+
+/* Without a seat the channel cannot see its session being replaced, so the
+ * binding is refused rather than made silently unreliable. */
+static void a_full_observer_pool_refuses_the_bind(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  for (size_t i = 0; i < AZ_IOT_MAX_FEATURE_STATE_OBSERVERS; ++i)
+  {
+    fx->client.feature_state_observers[i].cb = az_iot_test_on_state;
+    fx->client.feature_state_observers[i].user_ctx = &fx->log;
+  }
+
+  assert_int_equal(
+      fx->channel.vtable->open(fx->channel.ctx, on_update, on_result, fx),
+      AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  /* Nothing else it took is left behind. */
+  assert_false(fx->channel_state.holds_user);
+  assert_int_equal(fx->client.dps_user_count, 0);
+  assert_int_equal(fx->client.dps_hold_count, 0);
+
+  memset(fx->client.feature_state_observers, 0, sizeof(fx->client.feature_state_observers));
+}
+
+/* The session a request rode can be replaced between two channel ticks: the
+ * application recovers with close() + open() and pumps the connection until
+ * the new session is up. Polling "is a session ready?" then reads true
+ * throughout, so the lost request was never retired and the channel answered
+ * BUSY for the life of the binding. */
+static void a_request_lost_to_a_replaced_session_is_reported(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_mock_mqtt_client* old_m = open_and_bind(fx);
+
+  assert_int_equal(
+      fx->channel.vtable->request_update(fx->channel.ctx, AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE),
+      AZ_IOT_OK);
+
+  /* Replaced with no channel tick in between. */
+  assert_int_equal(az_iot_connection_client_close(&fx->client), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_OK);
+  az_iot_mock_mqtt_client* new_m = drive_existing_session(fx);
+  assert_ptr_not_equal(new_m, old_m);
+  assert_true(az_iot_connection_client__dps_session_ready(&fx->client));
+  assert_int_equal(fx->result_count, 0);
+
+  /* The loss is reported, as for any other session that went away. */
+  assert_int_equal(fx->channel.vtable->do_work(fx->channel.ctx), AZ_IOT_OK);
+  assert_int_equal(fx->result_count, 1);
+  assert_int_equal(fx->last_result, AZ_IOT_ERR_NOT_CONNECTED);
+  assert_int_equal(fx->last_action, AZ_IOT_ADU_ERROR_ACTION_RETRY);
+
+  /* And the channel is free again: the retry goes out on the new session. */
+  assert_int_equal(
+      fx->channel.vtable->request_update(fx->channel.ctx, AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE),
+      AZ_IOT_OK);
+  const az_iot_mock_call* pub = az_iot_mock_mqtt_client_last_of(new_m, AZ_IOT_MOCK_CALL_PUBLISH);
+  assert_non_null(pub);
+  assert_non_null(strstr(pub->topic, "deviceupdate"));
+}
+
+/* Same replacement, after the check on the first session completed. The next
+ * session needs its own check, so it must be held -- and the hold has to be in
+ * place before that session's SUBACK, which can arrive before the channel's
+ * next tick. */
+static void a_replaced_session_is_held_for_its_own_check(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_mock_mqtt_client* m = open_and_bind(fx);
+
+  assert_int_equal(
+      fx->channel.vtable->request_update(fx->channel.ctx, AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE),
+      AZ_IOT_OK);
+  char rid[64];
+  last_rid(m, rid, sizeof(rid));
+  char topic[256];
+  snprintf(topic, sizeof(topic), "$dps/registrations/res/200/?$rid=%s", rid);
+  assert_true(inject(fx, m, topic, "{\"updateMetadata\":null}"));
+  assert_int_equal(fx->client.dps_hold_count, 0);
+
+  assert_int_equal(az_iot_connection_client_close(&fx->client), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_OK);
+  (void)drive_existing_session(fx);
+
+  assert_int_equal(fx->client.dps_hold_count, 1);
+  assert_true(az_iot_connection_client__dps_hold_is_active(&fx->client));
+  assert_int_equal(fx->client.dps_phase, AZ_IOT_DPS_PHASE_HOLD);
+}
+
+/* The teardown that ends a failed registration is announced while the phase
+ * still refuses a hold, so the hold for the next session is taken when that
+ * session starts -- still before its SUBACK, and without a channel tick. */
+static void a_session_after_a_failed_registration_is_held_for_its_check(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_mock_mqtt_client* m = open_and_bind(fx);
+
+  assert_int_equal(
+      fx->channel.vtable->request_update(fx->channel.ctx, AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE),
+      AZ_IOT_OK);
+  char rid[64];
+  last_rid(m, rid, sizeof(rid));
+  char topic[256];
+  snprintf(topic, sizeof(topic), "$dps/registrations/res/200/?$rid=%s", rid);
+  assert_true(inject(fx, m, topic, "{\"updateMetadata\":null}"));
+  (void)az_iot_connection_client_do_work(&fx->client, 0);
+  assert_int_equal(fx->client.dps_phase, AZ_IOT_DPS_PHASE_REGISTERING);
+
+  assert_true(inject(
+      fx,
+      m,
+      "$dps/registrations/res/401/?$rid=1",
+      "{\"errorCode\":401002,\"message\":\"unauthorized\"}"));
+  (void)az_iot_connection_client_do_work(&fx->client, 0);
+  assert_int_equal(
+      az_iot_connection_client_get_state(&fx->client, AZ_IOT_CONN_SCOPE_DPS),
+      AZ_IOT_CONN_STATE_FAULTED);
+  assert_int_equal(fx->client.dps_hold_count, 0);
+
+  assert_int_equal(az_iot_connection_client_close(&fx->client), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_OK);
+  (void)drive_existing_session(fx);
+
+  assert_int_equal(fx->client.dps_hold_count, 1);
+  assert_int_equal(fx->client.dps_phase, AZ_IOT_DPS_PHASE_HOLD);
+}
+
+/* Binding from inside a connection-state callback: the registry refuses a new
+ * seat mid-dispatch, so the bind succeeds without one and the seat is taken on
+ * the channel's next entry. */
+static fixture* g_bind_from_observer_fx;
+static az_iot_result g_bind_from_observer_result;
+
+static void bind_channel_on_dps_connecting(
+    const az_iot_connection_state_event* event,
+    void* user_ctx)
+{
+  (void)user_ctx;
+  if (g_bind_from_observer_fx != NULL && event->scope == AZ_IOT_CONN_SCOPE_DPS
+      && event->state == AZ_IOT_CONN_STATE_CONNECTING)
+  {
+    fixture* fx = g_bind_from_observer_fx;
+    g_bind_from_observer_fx = NULL;
+    g_bind_from_observer_result
+        = fx->channel.vtable->open(fx->channel.ctx, on_update, on_result, fx);
+  }
+}
+
+static void binding_from_a_state_observer_takes_the_seat_later(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(
+      az_iot_connection_client_add_state_observer(
+          &fx->client, bind_channel_on_dps_connecting, NULL),
+      AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(&fx->client, fx->factory), AZ_IOT_OK);
+
+  g_bind_from_observer_fx = fx;
+  g_bind_from_observer_result = AZ_IOT_ERR_INTERNAL;
+  assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_OK);
+  assert_null(g_bind_from_observer_fx);
+  assert_int_equal(g_bind_from_observer_result, AZ_IOT_OK);
+  assert_false(channel_observes_state(fx));
+
+  assert_int_equal(fx->channel.vtable->do_work(fx->channel.ctx), AZ_IOT_OK);
+  assert_true(channel_observes_state(fx));
+  assert_int_equal(
+      fx->channel_state.conn_state[AZ_IOT_CONN_SCOPE_DPS], AZ_IOT_CONN_STATE_CONNECTING);
+
+  assert_int_equal(
+      az_iot_connection_client_remove_state_observer(
+          &fx->client, bind_channel_on_dps_connecting, NULL),
+      AZ_IOT_OK);
+}
+
+/* Counts the channel's "could not obtain a provisioning session" line. */
+static adu_log_capture g_ensure_log;
+
+static void count_ensure_failures(void)
+{
+  memset(&g_ensure_log, 0, sizeof(g_ensure_log));
+  static az_iot_log_sink sink;
+  sink.sink = adu_log_sink;
+  sink.user_ctx = &g_ensure_log;
+  sink.min_level = AZ_IOT_LOG_LEVEL_TRACE;
+  az_iot_log_set_global_sink(&sink);
+}
+
+/* Registration fails with retries disabled: DPS settles in FAULTED. A
+ * provisioning session cannot be had from there, so the channel stops asking
+ * for one instead of being refused -- and logging the refusal -- on every tick.
+ * close() is the exit, and the demand returns with it. */
+static void a_settled_fault_stops_the_channel_asking_for_a_session(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_mock_mqtt_client* m = open_and_bind(fx);
+
+  /* The check completes, the hold is released and registration goes out. */
+  assert_int_equal(
+      fx->channel.vtable->request_update(fx->channel.ctx, AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE),
+      AZ_IOT_OK);
+  char rid[64];
+  last_rid(m, rid, sizeof(rid));
+  char topic[256];
+  snprintf(topic, sizeof(topic), "$dps/registrations/res/200/?$rid=%s", rid);
+  assert_true(inject(fx, m, topic, "{\"updateMetadata\":null}"));
+  (void)az_iot_connection_client_do_work(&fx->client, 0);
+  assert_int_equal(fx->client.dps_phase, AZ_IOT_DPS_PHASE_REGISTERING);
+
+  /* The service rejects the registration. The fixture's policy is zeroed, so
+   * retries are disabled and the fault settles. */
+  assert_true(inject(
+      fx,
+      m,
+      "$dps/registrations/res/401/?$rid=1",
+      "{\"errorCode\":401002,\"message\":\"unauthorized\"}"));
+  (void)az_iot_connection_client_do_work(&fx->client, 0);
+  assert_int_equal(
+      az_iot_connection_client_get_state(&fx->client, AZ_IOT_CONN_SCOPE_DPS),
+      AZ_IOT_CONN_STATE_FAULTED);
+  assert_null(fx->client.dps_mqtt);
+
+  count_ensure_failures();
+  assert_int_equal(
+      fx->channel.vtable->request_update(fx->channel.ctx, AZ_IOT_ADU_OP_GET_UPDATE),
+      AZ_IOT_ERR_NOT_CONNECTED);
+  assert_false(fx->channel_state.wants_session);
+  for (int i = 0; i < 5; ++i)
+  {
+    assert_int_equal(fx->channel.vtable->do_work(fx->channel.ctx), AZ_IOT_OK);
+  }
+  assert_int_equal(g_ensure_log.count, 0);
+  assert_int_equal(
+      az_iot_connection_client_get_state(&fx->client, AZ_IOT_CONN_SCOPE_DPS),
+      AZ_IOT_CONN_STATE_FAULTED);
+  az_iot_log_set_global_sink(NULL);
+
+  /* close() leaves the fault; a refused operation asks for a session again. */
+  assert_int_equal(az_iot_connection_client_close(&fx->client), AZ_IOT_OK);
+  assert_int_equal(
+      fx->channel.vtable->request_update(fx->channel.ctx, AZ_IOT_ADU_OP_GET_UPDATE),
+      AZ_IOT_ERR_NOT_CONNECTED);
+  assert_true(fx->channel_state.wants_session);
+}
+
+/* A channel bound to a connection that has ALREADY faulted learns it from the
+ * scoped getter: it will never see the transition. */
+static void a_channel_bound_after_a_fault_starts_settled(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  fx->client.state[AZ_IOT_CONN_SCOPE_DPS] = AZ_IOT_CONN_STATE_FAULTED;
+  fx->client.dps_phase = AZ_IOT_DPS_PHASE_DONE;
+
+  assert_int_equal(fx->channel.vtable->open(fx->channel.ctx, on_update, on_result, fx), AZ_IOT_OK);
+  assert_int_equal(
+      fx->channel.vtable->request_update(fx->channel.ctx, AZ_IOT_ADU_OP_GET_UPDATE),
+      AZ_IOT_ERR_NOT_CONNECTED);
+  assert_false(fx->channel_state.wants_session);
+
+  fx->client.state[AZ_IOT_CONN_SCOPE_DPS] = AZ_IOT_CONN_STATE_IDLE;
+}
+
+/* An application may destroy the ADU client from its own state observer. The
+ * channel's seat must be returned there too, or the rest of that dispatch -- and
+ * every later one -- calls into the storage being released. Run under ASan in
+ * CI; fails there as a use-after-free if the seat is left behind. */
+static fixture* g_close_from_observer_fx;
+
+static void close_channel_on_dps_idle(const az_iot_connection_state_event* event, void* user_ctx)
+{
+  (void)user_ctx;
+  if (g_close_from_observer_fx != NULL && event->scope == AZ_IOT_CONN_SCOPE_DPS
+      && event->state == AZ_IOT_CONN_STATE_IDLE)
+  {
+    fixture* fx = g_close_from_observer_fx;
+    g_close_from_observer_fx = NULL;
+    fx->channel.vtable->close(fx->channel.ctx);
+  }
+}
+
+static void closing_the_channel_from_a_state_observer_returns_the_seat(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_mock_mqtt_client* m = open_and_bind(fx);
+  assert_true(channel_observes_state(fx));
+  assert_int_equal(
+      az_iot_connection_client_add_state_observer(&fx->client, close_channel_on_dps_idle, NULL),
+      AZ_IOT_OK);
+
+  g_close_from_observer_fx = fx;
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(m));
+  (void)az_iot_connection_client_do_work(&fx->client, 0);
+
+  assert_null(g_close_from_observer_fx);
+  assert_false(channel_observes_state(fx));
+  assert_int_equal(
+      az_iot_connection_client_remove_state_observer(&fx->client, close_channel_on_dps_idle, NULL),
+      AZ_IOT_OK);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
+    cmocka_unit_test_setup_teardown(
+        the_channel_takes_and_returns_a_state_observer_seat, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_full_observer_pool_refuses_the_bind, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_request_lost_to_a_replaced_session_is_reported, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_replaced_session_is_held_for_its_own_check, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_session_after_a_failed_registration_is_held_for_its_check, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        binding_from_a_state_observer_takes_the_seat_later, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_settled_fault_stops_the_channel_asking_for_a_session, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_channel_bound_after_a_fault_starts_settled, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        closing_the_channel_from_a_state_observer_returns_the_seat, setup, teardown),
     cmocka_unit_test_setup_teardown(request_update_publishes_on_the_dps_topic, setup, teardown),
     cmocka_unit_test_setup_teardown(
         the_onboarding_route_selects_its_topic_and_omits_the_installed_id, setup, teardown),
