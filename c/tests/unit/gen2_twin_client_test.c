@@ -290,13 +290,9 @@ static size_t count_twin_publishes(az_iot_mock_mqtt_client* m)
  *
  * Unlike Classic, CONNACK alone does not announce CONNECTED: the presence
  * wildcard and the birth handshake complete first. */
-static void open_to_birth_ack_with_versions(fixture* fx, uint64_t desired, uint64_t reported)
+/* From an opened session (fx->mock set): CONNACK, presence SUBACKs, birth-ack. */
+static void open_to_birth_ack_after_open(fixture* fx, uint64_t desired, uint64_t reported)
 {
-  assert_int_equal(
-      az_iot_connection_client_register_mqtt_factory(&fx->conn, fx->factory), AZ_IOT_OK);
-  fx->factory_registered = true;
-  assert_int_equal(az_iot_connection_client_open(&fx->conn), AZ_IOT_OK);
-  fx->mock = az_iot_mock_mqtt_factory_last_client(fx->factory);
   assert_non_null(fx->mock);
 
   az_iot_mqtt_event connack;
@@ -370,6 +366,16 @@ static void open_to_birth_ack_with_versions(fixture* fx, uint64_t desired, uint6
   ack.message = &ack_msg;
   assert_true(az_iot_mock_mqtt_client_inject_event(fx->mock, &ack));
   assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+}
+
+static void open_to_birth_ack_with_versions(fixture* fx, uint64_t desired, uint64_t reported)
+{
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(&fx->conn, fx->factory), AZ_IOT_OK);
+  fx->factory_registered = true;
+  assert_int_equal(az_iot_connection_client_open(&fx->conn), AZ_IOT_OK);
+  fx->mock = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  open_to_birth_ack_after_open(fx, desired, reported);
 }
 
 /* Up to the birth-ack, then ack any feature SUBACKs so hub CONNECTED is announced. */
@@ -1601,8 +1607,8 @@ static void the_largest_get_body_fits(void** state)
   assert_int_equal(last_get(fx)->payload_len, 24);
 }
 
-/* A replaced twin still gets a fetch in push mode: a push cannot be relied on
- * to replace newer state. */
+/* A replaced twin with no push yet is fetched in push mode: the service may not
+ * push when the device's delivered version was higher. */
 static void with_push_desired_a_replaced_twin_is_still_fetched(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -1619,6 +1625,44 @@ static void with_push_desired_a_replaced_twin_is_still_fetched(void** state)
   answer_last_get(fx, 2, "{}");
   assert_int_equal(rec.kind, AZ_IOT_GEN2_TWIN_DESIRED_SNAPSHOT);
   assert_int_equal(rec.version, 2);
+}
+
+/* A pushed snapshot of the new lineage satisfies a replaced twin: no GET. */
+static void with_push_desired_a_replaced_twin_is_settled_by_a_push(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(
+      az_iot_connection_client__add_subscription_on_connect(
+          &fx->conn,
+          "ih/ut-device/dev/other",
+          AZ_IOT_MQTT_QOS_1,
+          fx,
+          AZ_IOT_SUBSCRIPTION_FAILS_SESSION,
+          NULL),
+      AZ_IOT_OK);
+  desired_record rec = { 0 };
+  set_desired(fx, &rec);
+  open_to_connected_with_versions(fx, 7, 0);
+  const uint8_t push7[] = { 0x0A, 0x06, 0x08, 0x07, 0x12, 0x02, 0x7B, 0x7D };
+  inject_twin(fx, "twin-push:1", fx->nonce, push7, sizeof(push7));
+  assert_int_equal(rec.version, 7);
+
+  /* New session at 2; the push arrives before CONNECTED. */
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(fx->mock));
+  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_open(&fx->conn), AZ_IOT_OK);
+  fx->mock = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  open_to_birth_ack_after_open(fx, 2, 0);
+  assert_false(az_iot_connection_client__is_connected(&fx->conn));
+  const uint8_t push2[] = { 0x0A, 0x06, 0x08, 0x02, 0x12, 0x02, 0x7B, 0x7D };
+  inject_twin(fx, "twin-push:1", fx->nonce, push2, sizeof(push2));
+  assert_int_equal(rec.kind, AZ_IOT_GEN2_TWIN_DESIRED_SNAPSHOT);
+  assert_int_equal(rec.version, 2);
+
+  size_t before = count_gets(fx);
+  az_iot_test_ack_subscriptions(&fx->conn, fx->mock);
+  assert_true(az_iot_connection_client__is_connected(&fx->conn));
+  assert_int_equal(count_gets(fx), before);
 }
 
 /* A push that lands before hub CONNECTED (held back here by another feature's
@@ -2520,6 +2564,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(the_largest_get_body_fits, setup, teardown),
     cmocka_unit_test_setup_teardown(
         with_push_desired_a_replaced_twin_is_still_fetched, setup_push_desired, teardown),
+    cmocka_unit_test_setup_teardown(
+        with_push_desired_a_replaced_twin_is_settled_by_a_push, setup_push_desired, teardown),
     cmocka_unit_test_setup_teardown(
         a_push_before_connected_is_not_overwritten_by_the_birth_ack, setup, teardown),
     cmocka_unit_test_setup_teardown(a_reported_version_reset_to_zero_is_adopted, setup, teardown),
