@@ -13,27 +13,6 @@ add_executable(az_iot_sample_auth_custom_provider_template
 target_link_libraries(az_iot_sample_auth_custom_provider_template PRIVATE az_iot_core)
 az_iot_apply_warnings(az_iot_sample_auth_custom_provider_template)
 
-# Direct hub connect (no DPS): caller supplies the hub FQDN + X.509 device
-# credentials. With no DPS step to learn the hub flavor, each sample states it
-# at compile time via opts.connection_profile -- Classic v3.1.1 in _gen1, AEG v5
-# in _gen2. Needs the Paho adapter to connect; the PEM provider ships in
-# az_iot_core.
-if(AZ_IOT_WITH_PAHO)
-    add_executable(az_iot_sample_auth_direct_hub_gen1
-        direct_hub_gen1/main.c ${_auth_common}/sample_utils.c)
-    target_include_directories(az_iot_sample_auth_direct_hub_gen1 PRIVATE ${_auth_common})
-    target_link_libraries(az_iot_sample_auth_direct_hub_gen1
-        PRIVATE az_iot_gen1 az_iot_adapter_paho)
-    az_iot_apply_warnings(az_iot_sample_auth_direct_hub_gen1)
-
-    add_executable(az_iot_sample_auth_direct_hub_gen2
-        direct_hub_gen2/main.c ${_auth_common}/sample_utils.c)
-    target_include_directories(az_iot_sample_auth_direct_hub_gen2 PRIVATE ${_auth_common})
-    target_link_libraries(az_iot_sample_auth_direct_hub_gen2
-        PRIVATE az_iot_gen2 az_iot_adapter_paho)
-    az_iot_apply_warnings(az_iot_sample_auth_direct_hub_gen2)
-endif()
-
 # The DPS-CSR and hub-renewal samples need the Paho adapter to connect and the
 # OpenSSL "managed" provider for real CSR generation + persistence.
 if(AZ_IOT_WITH_PAHO AND TARGET az_iot_certificate_provider_managed)
