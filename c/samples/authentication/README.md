@@ -135,6 +135,7 @@ Shared (all DPS-based connecting samples):
 |----------|---------|
 | `AZ_IOT_DPS_ID_SCOPE` | DPS ID scope |
 | `AZ_IOT_DPS_REGISTRATION_ID` | Registration id / device id |
+| `AZ_IOT_DPS_GLOBAL_ENDPOINT` | Provisioning endpoint (optional; `global.azure-devices-provisioning.net` if unset). Set it for a regional, private-link or sovereign-cloud endpoint. |
 | `AZ_IOT_CLIENT_CERT` | Bootstrap X.509 certificate path |
 | `AZ_IOT_CLIENT_KEY` | Bootstrap X.509 private key path |
 | `AZ_IOT_TRUSTED_CA` | Trusted CA path |
