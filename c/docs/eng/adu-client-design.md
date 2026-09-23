@@ -1695,7 +1695,7 @@ at `init` (compiled-in Microsoft defaults or caller-supplied keys).
 | Component name check (`az_iot_adu_client_is_component_device_update`) | Not used (device twin only) |
 | Workflow struct with `action`, `id`, `retry_timestamp` | Only `id` is used (from `workflowId`) |
 | File hash parsing (`hash_type` + `hash_value` as `az_span`) | ✅ Sufficient |
-| `az_json_string_unescape()` for manifest string unescaping | ✅ Sufficient |
+| `az_json_string_unescape()` for manifest string unescaping | Not used: it stops at `\u` escapes. The SDK decodes JSON strings with `az_iot_json_string_decode()` (`src/core/json_string.c`) |
 | `az_iot_hub_client_properties_writer_*` for PnP component wrapping | Not used (device twin only) |
 
 ### Configurable Limits (No Source Change Needed)
