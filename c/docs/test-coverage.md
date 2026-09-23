@@ -730,6 +730,7 @@ RS256 signature verification) in `c/adapters/adu/crypto_openssl`.
 | | Resume with no persisted state stays idle | — | unit | Done | [resume_with_no_persisted_state_stays_idle](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_client_test.c#L832) |
 | | updateMetadata drives the full workflow | Download gets the offered URL; the report carries the workflowId; a re-offer is ignored. | unit | Done | [update_metadata_drives_full_workflow](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_client_test.c) |
 | | Escaped file URL is decoded | JSON escapes, including \\u, are decoded before download_fn. | unit | Done | [escaped_file_url_is_decoded](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_client_test.c) |
+| | Escaped workflow id is decoded | Report carries the decoded id; another escaped spelling of the active id is a duplicate; undecodable id ignored. | unit | Done | [escaped_workflow_id_is_decoded](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_client_test.c) |
 | | Unusable updateMetadata is ignored | Missing id or manifest, bad types, non-object `fileUrls`, truncated JSON, trailing data, undecodable escapes. | unit | Done | [unusable_update_metadata_is_ignored](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_client_test.c) |
 | | fileUrls are bounded | At the bound accepted; one past ignored. | unit | Done | [file_urls_are_bounded](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_client_test.c) |
 | | Oversized updateMetadata is ignored | Larger than `AZ_IOT_ADU_REQUEST_BUFFER_SIZE`. | unit | Done | [oversized_update_metadata_is_ignored](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_client_test.c) |
@@ -922,6 +923,14 @@ own, so they are unit-tested only.
 
 | Group | Test | Scenario | Type | Status | Code Location |
 | --- | --- | --- | --- | --- | --- |
+| JSON string decode | Plain text is copied | — | unit | Done | [plain_text_is_copied](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/json_string_test.c) |
+|  | Every two-character escape decodes | — | unit | Done | [every_two_character_escape_decodes](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/json_string_test.c) |
+|  | Unicode escapes cover each UTF-8 width | 1-, 2- and 3-byte bounds. | unit | Done | [unicode_escapes_cover_each_utf8_width](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/json_string_test.c) |
+|  | Surrogate pairs decode to four bytes | Incl. U+10000 and U+10FFFF. | unit | Done | [surrogate_pairs_decode_to_four_bytes](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/json_string_test.c) |
+|  | Malformed escapes are rejected | Truncated/unknown escapes, lone or reversed surrogates, \\u0000. | unit | Done | [malformed_escapes_are_rejected](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/json_string_test.c) |
+|  | A destination too small is reported | Exact fit succeeds. | unit | Done | [a_destination_too_small_is_reported](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/json_string_test.c) |
+|  | Decoding in place is supported | — | unit | Done | [decoding_in_place_is_supported](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/json_string_test.c) |
+|  | A null output is rejected | — | unit | Done | [a_null_output_is_rejected](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/json_string_test.c) |
 | Span writer | Empty destination latches failure | — | unit | Done | [empty_destination_latches_failure](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/span_writer_test.c#L26) |
 | | Builds a topic that fits exactly | — | unit | Done | [builds_a_topic_that_fits_exactly](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/span_writer_test.c#L35) |
 | | Content fitting without room for the terminator fails | — | unit | Done | [content_fitting_without_room_for_terminator_fails](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/span_writer_test.c#L52) |

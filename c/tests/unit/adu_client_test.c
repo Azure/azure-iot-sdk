@@ -914,6 +914,32 @@ static void escaped_file_url_is_decoded(void** state)
   assert_string_equal(fx->log.last_download_url, "https://host/p.bin?x=1&y=2");
 }
 
+/* workflowId is decoded before it is stored, reported and compared: an escaped
+ * spelling of the active id is a duplicate, and the report carries the decoded
+ * id. An undecodable id is ignored. */
+static void escaped_workflow_id_is_decoded(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  inject_patch(fx, build_patch("wf\\u002d1"));
+  pump(fx, 40);
+  assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
+  assert_string_equal(fx->chan.last_workflow_id, "wf-1");
+
+  fx->log.op_count = 0;
+  int reports = fx->chan.report_count;
+  inject_patch(fx, build_patch("wf\\u002D1")); /* another spelling of the same id */
+  assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
+  pump(fx, 5);
+  assert_int_equal((int)fx->log.op_count, 0);
+  assert_int_equal(fx->chan.report_count, reports);
+
+  inject_patch(fx, build_patch("wf\\q"));
+  assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
+  assert_int_equal((int)fx->log.op_count, 0);
+}
+
 /* An updateMetadata the engine cannot act on is ignored, not half-applied. */
 static void unusable_update_metadata_is_ignored(void** state)
 {
@@ -2960,6 +2986,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(deployment_drives_full_workflow_single_step, setup, teardown),
     cmocka_unit_test_setup_teardown(update_metadata_drives_full_workflow, setup, teardown),
     cmocka_unit_test_setup_teardown(escaped_file_url_is_decoded, setup, teardown),
+    cmocka_unit_test_setup_teardown(escaped_workflow_id_is_decoded, setup, teardown),
     cmocka_unit_test_setup_teardown(unusable_update_metadata_is_ignored, setup, teardown),
     cmocka_unit_test_setup_teardown(file_urls_are_bounded, setup, teardown),
     cmocka_unit_test_setup_teardown(oversized_update_metadata_is_ignored, setup, teardown),
