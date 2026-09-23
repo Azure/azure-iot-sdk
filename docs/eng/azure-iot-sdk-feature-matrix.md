@@ -1,6 +1,6 @@
 # Azure/azure-iot-sdk — client feature matrix
 
-Repo: `Azure/azure-iot-sdk` (**private** mono-repo), `main` @ `75e281ab`, 2026-09-23. Verified by reading the code, not docs or the public SDKs.
+Repo: `Azure/azure-iot-sdk` (**private** mono-repo), `main` @ `271234e5`, 2026-09-23. Verified by reading the code, not docs or the public SDKs.
 
 **This is not the old public SDK.** It ships two client libraries only — **C** (`/c`, C99, `AZ_IOT_VERSION_STRING "0.0.1"`, status "early bootstrap") and **.NET** (`/dotnet`, `net10.0`, `Microsoft.Azure.Iot.Device` 2.0.0 — renamed from `Microsoft.Azure.Devices.Client` in #226 — published to **GitHub Packages**, not nuget.org). No Java/Node/Python/embedded columns exist.
 
@@ -182,7 +182,7 @@ Legend: **Yes** supported · **Partial** partial/caveated · **No** absent · **
 - gen2 direct-method ready-token sweep still runs only on inbound messages.
 - C2D: no strict-settlement state machine; no e2e against a real Classic hub.
 - Classic username still sent for HUB_NEXT (Phase 6); no Next-mock CI job, v5 conformance not passing against mosquitto (Phase 7).
-- ADU: operational (post-registration) poll returns `AZ_IOT_ERR_NOT_CONNECTED` (`adu_channel_dps.c:191-196`); root-key rotation (Option B) deferred, 8 sub-items. ADUv1 twin channel cut. No event for a successful "no update available".
+- ADU: operational (post-registration) poll returns `AZ_IOT_ERR_NOT_CONNECTED` (`adu_channel_dps.c:21-24` STATUS note; needs connection-client session-lifetime work); root-key rotation (Option B) deferred, 8 sub-items. ADUv1 twin channel cut. No event for a successful "no update available".
 - `connection_client.c:5562` — "Hub-Next (AEG) path not defined yet" for one credentials flow (was `:4145`).
 - Error-check audit outstanding.
 - `max_attempts` is per-ladder and misnamed; renaming it gets harder after release.
@@ -214,7 +214,7 @@ Old-SDK staples deliberately **absent**: AMQP and multiplexing, HTTPS transport,
 
 ## 12. Caveats on this report
 
-- Read from a local clone at `75e281ab` (2026-09-23); nothing was built or executed, so "Yes" means the code path exists and is wired, not that it was run. The one exception is the .NET CD failure, which was confirmed from the workflow logs (`MSB1009`).
+- Read from a local clone at `271234e5` (2026-09-23); nothing was built or executed, so "Yes" means the code path exists and is wired, not that it was run. The one exception is the .NET CD failure, which was confirmed from the workflow logs (`MSB1009`).
 - Generation-specific rows for .NET describe the **wire behaviour** of each generation. Because `Unified` implements gen1 itself but delegates gen2 to nested `Gen2` clients, some gen2 cells differ depending on whether `Gen2` is used directly or through the facade; those cases are flagged in the Notes.
 - **Cut ≠ missing.** gen2 C2D and gen2 file upload are absent because the *service* cut them from AEG — file upload permanently by design, C2D temporarily for Ignite 2026 (the C gen2 C2D client is already written and is ahead of the service). Neither is an SDK defect, and the gen2 C2D code should not be deleted as dead.
 - These libraries are **unreleased** — `git tag` is empty, so there is no shipped ABI and no back-compat constraint on any of the shapes described here.
