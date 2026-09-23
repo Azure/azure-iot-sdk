@@ -112,8 +112,10 @@ sample-only / not factored) · 🔜 Coming soon (planned / designed, not yet bui
 | Core update workflow | ❌ | **Startup + reconnect re-reporting / initial twin GET** — no subscription and no unsolicited offer in ADUv2; the device polls instead. [→](#b-core-update-workflow) |
 | Core update workflow | ❌→✅ | **Accept / reject acknowledgement** — twin 200/406 ack is cut; already-installed becomes a `SKIPPED` outcome in the report. [→](#b-core-update-workflow) |
 | Core update workflow | ✅ | **Multi-step (composite) updates** — per-step Download→Backup→Install→Apply loop. [→](#b-core-update-workflow) |
-| Core update workflow | ✅ | **Per-step result reporting** — `resultCode`/`extendedResultCodes`/`stepResults`. [→](#b-core-update-workflow) |
+| Core update workflow | ✅ | **Per-step result reporting** — `resultCode`/`extendedResultCodes`/`stepResults`, each entry carrying its own `outcome` and `failureOrigin`. [→](#b-core-update-workflow) |
 | Core update workflow | ✅ | **Replacement / duplicate detection** — keyed on `workflowId` alone, the sole correlation key in ADUv2; `retryTimestamp` is gone. [→](#b-core-update-workflow) |
+| Core update workflow | ✅ | **Application event notification** — `az_iot_adu_client_add_observer()` / `remove_observer()`, dispatching `WORKFLOW_STATE_CHANGED` and `OPERATION_ABANDONED`. Replaced polling `get_state()` as the way an application follows a workflow, and is the only way it learns an operation was given up on. [→](#b-core-update-workflow) |
+| Core update workflow | ✅ | **Bounded requests** — `request_update()` / `request_onboarding_update()` take a `timeout_ms`; on expiry the request is abandoned and reported as `OPERATION_ABANDONED` with `AZ_IOT_ERR_TIMEOUT`. `AZ_IOT_ADU_REQUEST_NO_TIMEOUT` keeps the old unbounded behaviour. [→](#b-core-update-workflow) |
 | Core update workflow | 🟡 | **Cancellation** — cooperative flag still honored at phase boundaries, but ADUv2 has no input that sets it; a new `workflowId` replaces instead. [→](#b-core-update-workflow) |
 | Download and integrity | ✅ | **File download from manifest URLs** — resolves `fileUrls`, drives `download_fn`. [→](#c-download-and-integrity) |
 | Download and integrity | ✅ | **Chunked / streaming download** — `download_fn` may return `IN_PROGRESS`. [→](#c-download-and-integrity) |
@@ -140,9 +142,10 @@ sample-only / not factored) · 🔜 Coming soon (planned / designed, not yet bui
 | ADUv2 transport | ✅ | **DPS update-check binding** — `requestSoftwareUpdates` / `requestOnboardingUpdates` over the device's DPS transport; both send `agentInfo`, and only the regular route sends `installedUpdateId` (onboarding omits it by contract: a day-0 device has nothing installed); parse `serviceConfiguration` + `updateMetadata`. [→](#g-aduv2-transport-via-the-dps-gateway) |
 | ADUv2 transport | 🟡 | **`reportUpdateStatus`** — `workflowId` + install result, idempotent, retried while the client lives. NOT durable across a reboot: the persistence blob is still v2 and does not carry an unsent report, so a device that reboots mid-install loses it. [→](#g-aduv2-transport-via-the-dps-gateway) |
 | ADUv2 transport | ✅ | **Reuse DPS device auth** — X.509 (P1) over the existing DPS connection; no ADU endpoint/creds/mTLS; identity headers are gateway-populated. [→](#g-aduv2-transport-via-the-dps-gateway) |
-| ADUv2 transport | 🟡 | **Bootstrap orchestration** — the pre-registration hold, the onboarding fetch and the report are in place and the hold is advisory (registration proceeds when it expires). The re-check **loop** is not: the engine issues one fetch per request. [→](#g-aduv2-transport-via-the-dps-gateway) |
+| ADUv2 transport | 🟡 | **Bootstrap orchestration** — the pre-registration hold, the onboarding fetch and the report are in place, the hold is advisory (registration proceeds when it expires), and a queued request is bounded by `timeout_ms` so one that can never be served is abandoned rather than retried forever. The re-check **loop** is still absent: the engine issues one fetch per request. [→](#g-aduv2-transport-via-the-dps-gateway) |
 | ADUv2 transport | 🟡 | **Operational polling loop** — an on-demand provisioning session after registration exists, and the application picks the route with `az_iot_adu_client_request_update()`. No cadence is owned by the SDK: the application decides when to poll. [→](#g-aduv2-transport-via-the-dps-gateway) |
 | ADUv2 transport | 🔜 | **Root key package download** — fetch/cache from `rootKeyDownloadUrl`, verify as usual. [→](#g-aduv2-transport-via-the-dps-gateway) |
+| ADUv2 transport | ✅ | **Channel observes connection state** — the DPS channel registers as a scoped state observer instead of polling the connection client, and stops asking for a session once EITHER scope has settled in FAULTED rather than retrying into it. [→](#g-aduv2-transport-via-the-dps-gateway) |
 | ADUv2 transport | ✅ | **ETag + api-version + agent-info resend** — `agentInfoEtag`/`serviceConfigEtag`; resend full `agentInfo` on `OUTDATED_`/`UNKNOWN_AGENT_INFO`; re-sync on `OUTDATED_SERVICE_CONFIG`. [→](#g-aduv2-transport-via-the-dps-gateway) |
 | ADUv2 transport | ✅ | **Advisory + load contracts** — the error classifier drives on the code, the device is the sole retrier, and `Retry-After` is honoured: it arrives as a response-topic query parameter, and the channel defers every publish until the delay elapses. [→](#g-aduv2-transport-via-the-dps-gateway) |
 | Day0 recovery | 🔜 | **Unauthenticated recovery transport** — plain-HTTP recovery endpoint (protocol not yet defined). [→](#h-day0-recovery) |
@@ -285,7 +288,9 @@ stateDiagram-v2
   upstream JSON primitives to serialize ADUv2 `step_<index>` map entries, not a JSON array.
   Diagnostic codes are preserved, not interpreted as outcomes; their service-side conventions
   remain to be agreed. Schema validation covers enums, failure-origin consistency, unsigned
-  hex lists and text limits. Network delivery/retry remains pending.
+  hex lists and text limits. `stepResults` is a map keyed by step; each entry carries
+  `outcome`, `failureOrigin`, `resultCode`, `extendedResultCodes` and optional `resultDetails`.
+  Network delivery/retry remains pending.
 - **Replacement vs. duplicate (✅)** — keyed on **`workflowId` alone**, as ADUv2 defines it: a
   new id restarts the workflow, the same id is ignored whatever the manifest bytes. The
   `retryTimestamp` input is gone.
@@ -293,6 +298,14 @@ stateDiagram-v2
   ADUv2 input sets the flag and no local cancel API exists yet; a superseding `workflowId`
   restarts the workflow instead. A checkpoint saved with a cancel pending still resumes and
   terminates as `CANCELED`. Core never force-interrupts a hook.
+- **Application notification (✅)** — `az_iot_adu_client_add_observer()` /
+  `remove_observer()`, matching the connection client's registry. Two event kinds:
+  `WORKFLOW_STATE_CHANGED` carries the `az_iot_adu_state`, replacing a polled
+  `get_state()`; `OPERATION_ABANDONED` carries the operation and the reason, and is the
+  only way an application learns the client has stopped trying. Both fetch entry points
+  take a `timeout_ms` that bounds the wait, so a request that can never be served ends in
+  `OPERATION_ABANDONED` with `AZ_IOT_ERR_TIMEOUT` instead of being retried for the life of
+  the client.
 
 ### Remaining device-properties follow-ups
 
@@ -408,8 +421,9 @@ handling should be reused rather than rebuilt. Remaining work is narrower:
   install command, file-based persistence). *Caveat:* the PC sample's download/install hooks are
   still **simulated** and live in the sample, so there is no real Linux install/apply reference
   under `adapters/`.
-- **The PC sample is current** (`samples/adu/pc`): it provisions through DPS and drives the
-  workflow off the device-update operations, asking for an onboarding update explicitly.
+- **The PC sample is current** (`samples/adu/pc`): it provisions through DPS, asks for an
+  onboarding update explicitly, and follows the workflow through the ADU observer rather
+  than polling. It runs on a device with no IoT Hub via `dps.provision_only`.
 - **The ESP32 sample is ported but unverified (🟡).** `samples/adu/esp32` passes the connection
   client to `az_iot_adu_client_initialize()` and asks for an onboarding update, like the PC
   sample. It is not part of the CMake build (it needs the ESP-IDF toolchain) and has not been
@@ -470,10 +484,11 @@ flowchart TB
 Work items, in the order they were taken. Shipped (✅): **`adu_core` + channel extraction and
 twin-channel deletion** → **DPS update-check binding** (`GetDeviceUpdate` /
 `GetOnboardingDeviceUpdate`) → **reuse DPS device auth** (X.509) → **ETag/api-version +
-agent-info resend** → **advisory + load contracts**. Partial (🟡):
-**`ReportDeviceUpdateStatus`** (not durable across a reboot), **bootstrap orchestration** (no
-re-check loop), **operational polling loop** (no SDK-owned cadence). Not started (🔜): **root
-key package download**. The per-row detail is in the matrix above.
+agent-info resend** → **advisory + load contracts** → **channel observes scoped connection
+state**. Partial (🟡): **`ReportDeviceUpdateStatus`** (not durable across a reboot),
+**bootstrap orchestration** (requests are bounded, but there is no re-check loop),
+**operational polling loop** (no SDK-owned cadence). Not started (🔜): **root key package
+download**. The per-row detail is in the matrix above.
 
 *Key points / caveats:*
 - **Reuse DPS auth & transport** (X.509 over HTTP/MQTT for Ignite) — no ADU endpoint, no mTLS to ADU,
