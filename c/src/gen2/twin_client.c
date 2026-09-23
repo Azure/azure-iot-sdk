@@ -357,16 +357,31 @@ static az_iot_result issue_get(
     bool internal);
 
 /* Hand a desired patch to the application, if it is listening. */
-static void dispatch_desired(
+/* True when this GET asked "is my desired copy still v?" and the service
+ * answered yes by omitting the payload. The device already holds that version,
+ * so the response establishes it as applied even though no bytes came back. */
+static bool is_if_not_match_hit(const az_iot_gen2_twin_client* t, int idx, uint64_t version)
+{
+  return TI(t).pending[idx].get_opts.if_not_match_desired != 0u
+      && TI(t).pending[idx].get_opts.if_not_match_desired == version;
+}
+
+/* Hand a desired patch to the application. Returns false when there is no
+ * handler registered, so the caller can leave the applied version where it is:
+ * state the application never received has not been applied, and advancing past
+ * it would make the next patch look in-order on top of a gap. */
+static bool dispatch_desired(
     az_iot_gen2_twin_client* t,
     const uint8_t* payload,
     size_t len,
     uint64_t version)
 {
-  if (TI(t).desired_handler)
+  if (!TI(t).desired_handler)
   {
-    TI(t).desired_handler(payload, len, version, TI(t).desired_handler_ctx);
+    return false;
   }
+  TI(t).desired_handler(payload, len, version, TI(t).desired_handler_ctx);
+  return true;
 }
 
 /* Buffer a desired patch received while resyncing. Returns false when the
@@ -447,8 +462,10 @@ static void resync_complete(
     const uint8_t* payload,
     size_t payload_len)
 {
-  TI(t).desired_local = version;
-  dispatch_desired(t, payload, payload_len, version);
+  if (dispatch_desired(t, payload, payload_len, version))
+  {
+    TI(t).desired_local = version;
+  }
 
   for (size_t i = 0; i < TI(t).resync_count; ++i)
   {
@@ -456,12 +473,15 @@ static void resync_complete(
     {
       continue;
     }
+    if (!dispatch_desired(
+            t,
+            TI(t).resync_buffer + TI(t).resync_patches[i].offset,
+            TI(t).resync_patches[i].len,
+            TI(t).resync_patches[i].version))
+    {
+      break; /* delivery is paused; the rest is not applied either */
+    }
     TI(t).desired_local = TI(t).resync_patches[i].version;
-    dispatch_desired(
-        t,
-        TI(t).resync_buffer + TI(t).resync_patches[i].offset,
-        TI(t).resync_patches[i].len,
-        TI(t).resync_patches[i].version);
   }
 
   resync_reset(t);
@@ -701,8 +721,10 @@ static void on_desired_patch(az_iot_gen2_twin_client* t, const az_iot_mqtt_messa
 
   if (version == TI(t).desired_local + 1u)
   {
-    TI(t).desired_local = version;
-    dispatch_desired(t, patch, patch_len, version);
+    if (dispatch_desired(t, patch, patch_len, version))
+    {
+      TI(t).desired_local = version;
+    }
     return;
   }
 
@@ -787,12 +809,41 @@ static void on_get_response(az_iot_gen2_twin_client* t, int idx, const az_iot_mq
     TI(t).reported_version = twin.reported.version;
   }
 
-  /* A desired snapshot ends a resync: apply it, then replay the patches that
-   * are newer than it. Done before the slot is released so the replay is not
-   * interleaved with whatever the application does in its callback. */
-  if (TI(t).resyncing && twin.desired.version)
+  /* Any GET response that carries a desired snapshot establishes what the
+   * device holds -- not just the SDK's own resync one. A normal GET used to
+   * deliver desired vN to the caller while desired_local stayed where it was,
+   * so the next patch at N+1 looked like a gap and triggered a pointless
+   * resync.
+   *
+   * A section whose payload the service omitted for an if-not-match hit still
+   * establishes it: the filter matching is the service confirming the version
+   * the device already holds. */
+  if (twin.desired.version)
   {
-    resync_complete(t, twin.desired.version, twin.desired.payload, twin.desired.payload_len);
+    if (TI(t).resyncing)
+    {
+      /* Ends the resync: apply, then replay the newer buffered patches. Done
+       * before the slot is released so the replay is not interleaved with
+       * whatever the application does in its callback. */
+      resync_complete(t, twin.desired.version, twin.desired.payload, twin.desired.payload_len);
+    }
+    else if (twin.desired.payload || is_if_not_match_hit(t, idx, twin.desired.version))
+    {
+      if (dispatch_desired(t, twin.desired.payload, twin.desired.payload_len, twin.desired.version)
+          || !twin.desired.payload)
+      {
+        TI(t).desired_local = twin.desired.version;
+      }
+    }
+  }
+  else if (TI(t).resyncing && TI(t).pending[idx].internal)
+  {
+    /* The snapshot this resync was waiting on came back without a desired
+     * version, so it settles nothing. Leaving resyncing set would wedge the
+     * client: the GET is about to be released and nothing else would complete
+     * it. Drop back out so the next gap can start a fresh one. */
+    AZ_IOT_LOG_WARN("gen2_twin: the resync snapshot carried no desired version; leaving resync");
+    resync_reset(t);
   }
 
   release_pending(t, idx, AZ_IOT_OK, &twin, NULL);
@@ -1174,7 +1225,23 @@ az_iot_result az_iot_gen2_twin_client_get_with_options(
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
+  /* C does not constrain an enum variable to its named values, so a selector
+   * the protocol has no meaning for would otherwise be serialized as-is and
+   * reported as success. 0 is accepted and means BOTH. */
+  if ((unsigned)opts->sections > (unsigned)AZ_IOT_GEN2_TWIN_SECTIONS_BOTH)
+  {
+    AZ_IOT_LOG_ERROR("gen2_twin: the GET section selector is not a value the protocol defines");
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
   return issue_get(twin, opts, cb, user_ctx, false);
+}
+
+az_iot_gen2_twin_get_options az_iot_gen2_twin_get_options_default(void)
+{
+  az_iot_gen2_twin_get_options opts;
+  memset(&opts, 0, sizeof(opts));
+  opts.sections = AZ_IOT_GEN2_TWIN_SECTIONS_BOTH;
+  return opts;
 }
 
 /* Frame the saved reported patch into ReportedPatch { 1 if_match, 2 payload }
@@ -1417,16 +1484,32 @@ az_iot_result az_iot_gen2_twin_client_do_work(az_iot_gen2_twin_client* twin)
   uint64_t now = az_iot_time_mono_ms();
 
   /* A birth-triggered push that never arrived means the service believes it
-   * dispatched state the device never saw. Only a fresh connection re-runs that
-   * decision, so reconnect rather than paper over it with a GET. */
+   * dispatched state the device never saw. Recover by fetching that state
+   * directly.
+   *
+   * This deliberately does NOT tear the connection down. The twin client is one
+   * feature on a connection it shares with telemetry, C2D, direct methods and
+   * device update, and it has no idea what else is in flight; a feature must
+   * not close a connection the application owns. az_iot_connection_client_close()
+   * is also the wrong primitive for it -- it is a user-initiated shutdown that
+   * latches user_close and suppresses every reconnect path, so it would stop
+   * the connection permanently rather than re-running the birth.
+   *
+   * A GET settles the device's side of the divergence, which is the part the
+   * device can act on: it ends up holding the state the push would have carried.
+   * The service's own record is reconciled by the next birth, whenever that
+   * happens for its own reasons. */
   if (TI(twin).push_expected && now >= TI(twin).push_deadline_ms)
   {
     TI(twin).push_expected = false;
     TI(twin).push_attempt++;
     AZ_IOT_LOG_WARN(
-        "gen2_twin: the birth-triggered twin-push did not arrive; reconnecting to re-run the "
-        "service's push decision");
-    (void)az_iot_connection_client_close(TI(twin).conn);
+        "gen2_twin: the birth-triggered twin-push did not arrive; fetching the twin instead");
+
+    az_iot_gen2_twin_get_options opts;
+    memset(&opts, 0, sizeof(opts));
+    opts.sections = AZ_IOT_GEN2_TWIN_SECTIONS_BOTH;
+    (void)issue_get(twin, &opts, NULL, NULL, true);
     return AZ_IOT_OK;
   }
 

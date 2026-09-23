@@ -143,6 +143,15 @@ extern "C"
     uint64_t if_not_match_reported;
   } az_iot_gen2_twin_get_options;
 
+  /**
+   * @brief Returns a GET options struct with the SDK defaults: both sections,
+   *        no version filter.
+   *
+   * Use this rather than zero-initializing, so a field added later still gets
+   * its intended default instead of zero.
+   */
+  AZ_NODISCARD az_iot_gen2_twin_get_options az_iot_gen2_twin_get_options_default(void);
+
   typedef struct az_iot_gen2_twin_client
   {
     struct

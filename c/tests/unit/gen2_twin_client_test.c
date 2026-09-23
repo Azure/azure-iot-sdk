@@ -1754,6 +1754,142 @@ static void get_with_options_defaults_the_selector_to_both(void** state)
   assert_memory_equal(get->payload, expect, sizeof(expect));
 }
 
+/* A plain GET establishes what the device holds. It used to deliver desired vN
+ * to the caller while the applied version stayed put, so the very next patch at
+ * N+1 looked like a gap and cost a pointless resync round trip. */
+static void a_normal_get_establishes_the_applied_desired_version(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  desired_record des = { 0 };
+  assert_int_equal(
+      az_iot_gen2_twin_client_set_desired_handler(&fx->twin, on_desired, &des), AZ_IOT_OK);
+
+  get_record rec = { 0 };
+  uint8_t corr[16];
+  issue_get(fx, &rec, corr);
+
+  /* TwinGetResponse { desired_version = 4, desired_payload } */
+  const uint8_t body[] = { 0x08, 0x04, 0x1A, 0x07, '{', '"', 'd', '"', ':', '1', '}' };
+  inject_twin(fx, "get-response:1", corr, body, sizeof(body));
+  assert_true(rec.fired);
+
+  size_t before = count_twin_publishes(fx->mock);
+
+  /* v5 is the next one in sequence, so it applies with no resync. */
+  inject_desired(fx, 5, "{\"e\":5}");
+  assert_true(des.fired);
+  assert_int_equal(des.version, 5);
+  assert_int_equal(count_twin_publishes(fx->mock), before);
+}
+
+/* An if-not-match hit comes back with the version and no payload. That is the
+ * service confirming the copy the device already holds, so it establishes the
+ * applied version just as a payload would. */
+static void an_if_not_match_hit_establishes_the_applied_version(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  desired_record des = { 0 };
+  assert_int_equal(
+      az_iot_gen2_twin_client_set_desired_handler(&fx->twin, on_desired, &des), AZ_IOT_OK);
+
+  az_iot_gen2_twin_get_options opts = az_iot_gen2_twin_get_options_default();
+  opts.if_not_match_desired = 4;
+  get_record rec = { 0 };
+  assert_int_equal(
+      az_iot_gen2_twin_client_get_with_options(&fx->twin, &opts, on_get, &rec), AZ_IOT_OK);
+  const az_iot_mock_call* pub = last_get_publish(fx);
+  uint8_t corr[16];
+  memcpy(corr, pub->correlation_data, sizeof(corr));
+
+  /* Version 4, payload omitted: "you are current". */
+  const uint8_t body[] = { 0x08, 0x04 };
+  inject_twin(fx, "get-response:1", corr, body, sizeof(body));
+
+  size_t before = count_twin_publishes(fx->mock);
+  inject_desired(fx, 5, "{\"e\":5}");
+  assert_true(des.fired);
+  assert_int_equal(des.version, 5);
+  assert_int_equal(count_twin_publishes(fx->mock), before);
+}
+
+/* With delivery paused the application receives nothing, so nothing has been
+ * applied. Advancing the applied version anyway would make the next patch look
+ * in-order on top of state the application never got. */
+static void a_paused_handler_does_not_advance_the_applied_version(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  desired_record des = { 0 };
+  /* No handler registered at all: delivery is paused. */
+  inject_desired(fx, 1, "{\"a\":1}");
+  assert_false(des.fired);
+
+  assert_int_equal(
+      az_iot_gen2_twin_client_set_desired_handler(&fx->twin, on_desired, &des), AZ_IOT_OK);
+
+  /* v1 was never applied, so v2 is a gap and must resync rather than merge. */
+  size_t before = count_twin_publishes(fx->mock);
+  inject_desired(fx, 2, "{\"b\":2}");
+  assert_false(des.fired);
+  assert_true(count_twin_publishes(fx->mock) > before);
+}
+
+/* A resync snapshot that carries no desired version settles nothing. Leaving
+ * the client resyncing would wedge it: the GET is released and nothing else
+ * would ever complete it. */
+static void a_snapshot_without_a_version_leaves_resync(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  desired_record des = { 0 };
+  assert_int_equal(
+      az_iot_gen2_twin_client_set_desired_handler(&fx->twin, on_desired, &des), AZ_IOT_OK);
+
+  inject_desired(fx, 3, "{\"c\":3}"); /* gap -> resync */
+  const az_iot_mock_call* get = last_get_publish(fx);
+  assert_non_null(get);
+  uint8_t corr[16];
+  memcpy(corr, get->correlation_data, sizeof(corr));
+
+  /* Response with only a reported version: nothing for the desired resync. */
+  const uint8_t body[] = { 0x10, 0x09 };
+  inject_twin(fx, "get-response:1", corr, body, sizeof(body));
+
+  /* Not wedged: the next gap starts a fresh resync. */
+  size_t before = count_twin_publishes(fx->mock);
+  inject_desired(fx, 7, "{\"g\":7}");
+  assert_true(count_twin_publishes(fx->mock) > before);
+}
+
+/* C does not constrain an enum variable to its named values. */
+static void get_with_options_rejects_an_unknown_selector(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  az_iot_gen2_twin_get_options opts = az_iot_gen2_twin_get_options_default();
+  opts.sections = (az_iot_gen2_twin_sections)99;
+  get_record rec = { 0 };
+  assert_int_equal(
+      az_iot_gen2_twin_client_get_with_options(&fx->twin, &opts, on_get, &rec),
+      AZ_IOT_ERR_INVALID_ARG);
+}
+
+static void the_default_options_request_both_sections(void** state)
+{
+  (void)state;
+  az_iot_gen2_twin_get_options opts = az_iot_gen2_twin_get_options_default();
+  assert_int_equal(opts.sections, AZ_IOT_GEN2_TWIN_SECTIONS_BOTH);
+  assert_int_equal(opts.if_not_match_desired, 0);
+  assert_int_equal(opts.if_not_match_reported, 0);
+}
+
 static void get_with_options_rejects_null_arguments(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -1873,21 +2009,9 @@ static void a_second_concurrent_patch_is_refused(void** state)
 /* A birth-triggered push that never arrives means the service believes it
  * dispatched state the device never saw. Only a fresh birth re-runs that
  * decision, so the client reconnects rather than papering over it with a GET. */
-static void a_missing_twin_push_reconnects(void** state)
+static void a_missing_twin_push_fetches_the_twin(void** state)
 {
   fixture* fx = (fixture*)*state;
-
-  /* The expectation is only armed when the application asked for a push. */
-  az_iot_connection_client_destroy(&fx->conn);
-  az_iot_connection_client_options opts = { 0 };
-  opts.host = "broker.example";
-  opts.port = 8883;
-  opts.client_id = "ut-device";
-  opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
-  opts.twin_push.push_reported = true;
-  assert_int_equal(az_iot_connection_client_init(&fx->conn, &opts), AZ_IOT_OK);
-  assert_int_equal(az_iot_gen2_twin_client_init(&fx->twin, &fx->conn), AZ_IOT_OK);
-
   open_to_connected_with_versions(fx, 7, 9);
   assert_int_equal(az_iot_gen2_twin_client_do_work(&fx->twin), AZ_IOT_OK);
 
@@ -1895,12 +2019,21 @@ static void a_missing_twin_push_reconnects(void** state)
   assert_int_equal(az_iot_gen2_twin_client_do_work(&fx->twin), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
 
-  assert_true(saw_disconnect(fx));
+  /* Recovery is a GET for the state the push would have carried. */
+  const az_iot_mock_call* get = last_get_publish(fx);
+  assert_non_null(get);
+  const uint8_t expect[] = { 0x08, 0x03 }; /* sections = BOTH */
+  assert_int_equal(get->payload_len, sizeof(expect));
+  assert_memory_equal(get->payload, expect, sizeof(expect));
+
+  /* And the shared connection is left alone. The twin client is one feature on
+   * a connection also carrying telemetry, C2D, direct methods and device
+   * update; closing it would additionally latch user_close and suppress every
+   * reconnect path, so the connection would never come back at all. */
+  assert_false(saw_disconnect(fx));
 }
 
-/* A push that did arrive disarms the expectation, so do_work must not then
- * tear down a perfectly good connection. */
-static void a_delivered_twin_push_does_not_reconnect(void** state)
+static void a_delivered_twin_push_does_not_recover(void** state)
 {
   fixture* fx = (fixture*)*state;
   open_to_connected_with_versions(fx, 7, 9);
@@ -2193,15 +2326,25 @@ int main(void)
         get_with_options_encodes_the_selector_and_filters, setup, teardown),
     cmocka_unit_test_setup_teardown(
         get_with_options_defaults_the_selector_to_both, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_normal_get_establishes_the_applied_desired_version, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_if_not_match_hit_establishes_the_applied_version, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_paused_handler_does_not_advance_the_applied_version, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_snapshot_without_a_version_leaves_resync, setup, teardown),
+    cmocka_unit_test_setup_teardown(get_with_options_rejects_an_unknown_selector, setup, teardown),
+    cmocka_unit_test_setup_teardown(the_default_options_request_both_sections, setup, teardown),
     cmocka_unit_test_setup_teardown(get_with_options_rejects_null_arguments, setup, teardown),
     cmocka_unit_test_setup_teardown(
         an_unanswered_get_is_re_issued_with_a_fresh_correlation_id, setup, teardown),
     cmocka_unit_test_setup_teardown(
         an_unanswered_patch_is_re_framed_with_the_current_version, setup, teardown),
     cmocka_unit_test_setup_teardown(a_second_concurrent_patch_is_refused, setup, teardown),
-    cmocka_unit_test_setup_teardown(a_missing_twin_push_reconnects, setup_push_expected, teardown),
     cmocka_unit_test_setup_teardown(
-        a_delivered_twin_push_does_not_reconnect, setup_push_expected, teardown),
+        a_missing_twin_push_fetches_the_twin, setup_push_expected, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_delivered_twin_push_does_not_recover, setup_push_expected, teardown),
     cmocka_unit_test_setup_teardown(do_work_without_a_connection_is_a_no_op, setup, teardown),
     cmocka_unit_test_setup_teardown(a_session_end_abandons_the_resync, setup, teardown),
     cmocka_unit_test_setup_teardown(set_resync_buffer_rejects_a_null_client, setup, teardown),
