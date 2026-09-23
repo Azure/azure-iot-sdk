@@ -40,8 +40,15 @@ The sample prints both lifecycles as they move, for example:
 ```
 Provisioning: Idle -> Connecting (AZ_IOT_OK)
 Provisioning: Connecting -> Connected (AZ_IOT_OK)
-Ready. Waiting for the answer to the onboarding update request (Ctrl-C to exit)...
+Provisioning session up. Running (Ctrl-C to exit)...
 ```
+
+That line reports only which lifecycle came up. It says nothing about whether
+the update check has been answered — the SDK raises no event for a successful
+"no update available", so the sample does not claim to know. With
+`AZ_IOT_ADU_REGISTER_WITH_HUB=1` it reads `Hub connection up.` and appears
+*after* that answer, since a successful verdict releases the provisioning hold
+and only then do registration and the hub connect run.
 
 It runs until interrupted (Ctrl-C), like the long-lived agent it stands in for,
 and exits 0. It stops early and exits non-zero only if a lifecycle settles at

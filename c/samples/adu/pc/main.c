@@ -703,11 +703,18 @@ int main(void)
     (void)az_iot_connection_client_do_work(&st.connection_client, 50);
     (void)az_iot_adu_client_do_work(&st.adu_client);
 
+    /* Says only which lifecycle came up, never whether the update check has
+     * been answered. In hub mode this fires strictly AFTER that answer: a
+     * successful verdict releases the provisioning hold, and only then does
+     * registration and the hub connect run. The SDK raises no event for a
+     * successful "no update available", so the sample cannot tell pending
+     * from answered and does not claim to. */
     if (!st.run.announced && st.run.conn[ready_scope] == AZ_IOT_CONN_STATE_CONNECTED)
     {
       st.run.announced = 1;
-      printf("Ready. Waiting for the answer to the onboarding update request "
-             "(Ctrl-C to exit)...\n");
+      printf(
+          "%s up. Running (Ctrl-C to exit)...\n",
+          (ready_scope == AZ_IOT_CONN_SCOPE_DPS) ? "Provisioning session" : "Hub connection");
     }
 
     /* A workflow ran to completion and returned to Idle. The process stays
