@@ -1018,7 +1018,8 @@ extern "C"
    * returned.
    *
    *   request_json: the desired-property patch carrying the "deviceUpdate"
-   *     component (the same shape the managed client consumes). MUTATED IN PLACE
+   *     component, or an ADUv2 `updateMetadata` object (both shapes the managed
+   *     client consumes). MUTATED IN PLACE
    *     (the manifest is unescaped within the buffer) and MUST outlive
    *     @p out_request / @p out_manifest, whose az_spans point into it. No heap.
    *   crypto: RSA-verify + SHA-256 primitives (as for the managed client).
@@ -1029,7 +1030,7 @@ extern "C"
    *     is a Cancel action (inspect out_request->workflow.action).
    *
    * Returns AZ_IOT_OK on a verified parse (or a parsed Cancel request),
-   * AZ_IOT_ERR_NOT_FOUND when the patch carries no deviceUpdate/service object,
+   * AZ_IOT_ERR_NOT_FOUND when the payload is in neither shape,
    * AZ_IOT_ERR_INVALID_ARG on bad arguments or malformed input, or
    * AZ_IOT_ERR_AUTH when manifest verification fails.
    */

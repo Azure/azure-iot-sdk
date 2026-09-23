@@ -39,6 +39,19 @@
 /* parser-valid payloads (from azure-sdk-for-c test_az_iot_adu.c)            */
 /* ------------------------------------------------------------------------- */
 
+/* The escaped updateManifest property shared by both payload shapes; `%s` is
+ * the manifest version. */
+#define ADU_TEST_MANIFEST_PROPERTY                                                              \
+  "\"updateManifest\":\"{\\\"manifestVersion\\\":\\\"5\\\",\\\"updateId\\\":{\\\"provider\\\":" \
+  "\\\"Contoso\\\",\\\"name\\\":\\\"Foobar\\\",\\\"version\\\":\\\"%s\\\"},"                    \
+  "\\\"compatibility\\\":[{\\\"deviceManufacturer\\\":\\\"Contoso\\\",\\\"deviceModel\\\":"     \
+  "\\\"Foobar\\\"}],\\\"instructions\\\":{\\\"steps\\\":[{\\\"handler\\\":\\\"microsoft/"       \
+  "swupdate:1\\\",\\\"files\\\":[\\\"f2f4a804ca17afbae\\\"],\\\"handlerProperties\\\":{"        \
+  "\\\"installedCriteria\\\":\\\"1.0\\\"}}]},\\\"files\\\":{\\\"f2f4a804ca17afbae\\\":{"        \
+  "\\\"fileName\\\":\\\"iot-middleware-sample-adu-v1.1\\\",\\\"sizeInBytes\\\":844976,"         \
+  "\\\"hashes\\\":{\\\"sha256\\\":\\\"xsoCnYAMkZZ7m9RL9Vyg9jKfFehCNxyuPFaJVM/"                  \
+  "WBi0=\\\"}}},\\\"createdDateTime\\\":\\\"2022-07-07T03:02:48.8449038Z\\\"}\""
+
 /* A single-step, single-file v5 deployment wrapped in the deviceUpdate
  * component envelope. The `%s` is filled at runtime with a structurally-valid
  * JWS (see signed_patch()): core fully parses the JWS/SJWK chain, so a real
@@ -46,18 +59,17 @@
  * check the signature bytes themselves. */
 static const char k_patch_fmt[]
     = "{\"deviceUpdate\":{\"__t\":\"c\",\"service\":{"
-      "%s,"
-      "\"updateManifest\":\"{\\\"manifestVersion\\\":\\\"5\\\",\\\"updateId\\\":{\\\"provider\\\":"
-      "\\\"Contoso\\\",\\\"name\\\":\\\"Foobar\\\",\\\"version\\\":\\\"%s\\\"},"
-      "\\\"compatibility\\\":[{\\\"deviceManufacturer\\\":\\\"Contoso\\\",\\\"deviceModel\\\":"
-      "\\\"Foobar\\\"}],\\\"instructions\\\":{\\\"steps\\\":[{\\\"handler\\\":\\\"microsoft/"
-      "swupdate:1\\\",\\\"files\\\":[\\\"f2f4a804ca17afbae\\\"],\\\"handlerProperties\\\":{"
-      "\\\"installedCriteria\\\":\\\"1.0\\\"}}]},\\\"files\\\":{\\\"f2f4a804ca17afbae\\\":{"
-      "\\\"fileName\\\":\\\"iot-middleware-sample-adu-v1.1\\\",\\\"sizeInBytes\\\":844976,"
-      "\\\"hashes\\\":{\\\"sha256\\\":\\\"xsoCnYAMkZZ7m9RL9Vyg9jKfFehCNxyuPFaJVM/"
-      "WBi0=\\\"}}},\\\"createdDateTime\\\":\\\"2022-07-07T03:02:48.8449038Z\\\"}\","
+      "%s," ADU_TEST_MANIFEST_PROPERTY ","
       "\"updateManifestSignature\":\"%s\","
       "\"fileUrls\":{\"f2f4a804ca17afbae\":\"http://example.com/payload.bin\"}}}}";
+
+/* The same deployment as the ADUv2 updateMetadata object the provisioning
+ * channel delivers: workflow id, manifest version, JWS. The unknown property
+ * must be skipped. */
+static const char k_metadata_fmt[]
+    = "{\"workflowId\":\"%s\",\"futureField\":{\"a\":[1,2]}," ADU_TEST_MANIFEST_PROPERTY ","
+      "\"updateManifestSignature\":\"%s\","
+      "\"fileUrls\":{\"f2f4a804ca17afbae\":\"http://example.com/payload.bin\"}}";
 
 /* The fixed digest the mock SHA-256 returns; the JWS payload below carries its
  * base64, so the manifest-binding check (step 6 of verify) passes regardless of
@@ -198,6 +210,18 @@ static const char* signed_patch(void)
   return build_patch("51552a54-765e-419f-892a-c822549b6f38", NULL);
 }
 
+/* The default deployment as an ADUv2 updateMetadata object. Static buffer, as
+ * build_patch_ex(). */
+static const char* signed_metadata(const char* workflow_id)
+{
+  static char doc[4096];
+  char jws[2048];
+  build_jws(jws, (int32_t)sizeof(jws));
+  int n = snprintf(doc, sizeof(doc), k_metadata_fmt, workflow_id, "1.1", jws);
+  assert_true(n > 0 && (size_t)n < sizeof(doc));
+  return doc;
+}
+
 /* A Cancel action (action=255), no manifest. */
 static const char k_patch_cancel[]
     = "{\"deviceUpdate\":{\"__t\":\"c\",\"service\":{"
@@ -247,6 +271,9 @@ typedef struct
   uint8_t persist_blob[AZ_IOT_ADU_REQUEST_BUFFER_SIZE + 128];
   size_t persist_len;
   bool have_persist;
+
+  /* URL the last download was handed. */
+  char last_download_url[128];
 } hook_log;
 
 static void log_op(hook_log* l, op_kind k, uint32_t step)
@@ -267,10 +294,19 @@ static int32_t mock_download(
     void* ctx)
 {
   (void)file;
-  (void)url;
   (void)file_index;
   (void)file_count;
   hook_log* l = (hook_log*)ctx;
+  int32_t n = az_span_size(url);
+  if (n < 0 || (size_t)n >= sizeof(l->last_download_url))
+  {
+    n = 0;
+  }
+  if (n > 0)
+  {
+    memcpy(l->last_download_url, az_span_ptr(url), (size_t)n);
+  }
+  l->last_download_url[n] = '\0';
   log_op(l, OP_DOWNLOAD, file_index);
   return l->download_result;
 }
@@ -878,6 +914,54 @@ static void deployment_drives_full_workflow_single_step(void** state)
   assert_int_equal(
       fx->chan.last_report.step_results[0].result_code, AZ_IOT_ADU_AGENT_RESULT_CODE_SUCCESS);
   assert_int_equal(fx->chan.last_report.step_results[0].extended_result_code, 0);
+}
+
+/* The provisioning channel delivers the ADUv2 updateMetadata object, not a twin
+ * patch. It must drive the same workflow, keyed on its workflowId. */
+static void update_metadata_drives_full_workflow(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  inject_patch(fx, signed_metadata("56db153e-6ae7-410f-9949-c201b6fd0d59"));
+  assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_MANIFEST_RECEIVED);
+
+  pump(fx, 40);
+
+  assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
+  static const op_kind expect[]
+      = { OP_VERIFY, OP_IS_INSTALLED, OP_DOWNLOAD, OP_BACKUP, OP_INSTALL, OP_APPLY };
+  assert_true(ops_contain_sequence(&fx->log, expect, sizeof(expect) / sizeof(expect[0])));
+  assert_string_equal(fx->log.last_download_url, "http://example.com/payload.bin");
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_ADU_OUTCOME_SUCCEEDED);
+  assert_string_equal(fx->chan.last_workflow_id, "56db153e-6ae7-410f-9949-c201b6fd0d59");
+
+  /* The service re-offers the same workflow until it is superseded. */
+  fx->log.op_count = 0;
+  inject_patch(fx, signed_metadata("56db153e-6ae7-410f-9949-c201b6fd0d59"));
+  assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
+  assert_int_equal((int)fx->log.op_count, 0);
+}
+
+/* An updateMetadata the engine cannot act on is ignored, not half-applied. */
+static void unusable_update_metadata_is_ignored(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  const char* bad[] = {
+    "{\"updateManifest\":\"{}\",\"updateManifestSignature\":\"a.b.c\"}",
+    "{\"workflowId\":\"w\",\"updateManifestSignature\":\"a.b.c\"}",
+    "{\"workflowId\":7,\"updateManifest\":\"{}\"}",
+    "{\"workflowId\":\"w\",\"updateManifest\":\"{}\",\"fileUrls\":{\"f\":1}}",
+    "{\"workflowId\":\"w\",\"updateManifest\":\"{}\"",
+  };
+  for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); ++i)
+  {
+    inject_patch(fx, bad[i]);
+    assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
+  }
+  assert_int_equal((int)fx->log.op_count, 0);
 }
 
 static void verify_failure_blocks_download_and_fails(void** state)
@@ -1976,6 +2060,26 @@ static void manifest_signed_by_an_unknown_root_key_is_rejected(void** state)
       parse_with_roots(&fx->log, signed_patch(), strangers, 1, &req, &manifest), AZ_IOT_ERR_AUTH);
 }
 
+/* The public parser accepts the ADUv2 updateMetadata shape too. */
+static void public_parser_accepts_update_metadata(void** state)
+{
+  fixture* fx = (fixture*)*state;
+
+  az_iot_adu_client_update_request req;
+  az_iot_adu_client_update_manifest manifest;
+  assert_int_equal(
+      parse_with_roots(&fx->log, signed_metadata("wf-1"), k_root_keys, 1, &req, &manifest),
+      AZ_IOT_OK);
+  assert_int_equal(req.workflow.action, AZ_IOT_ADU_CLIENT_SERVICE_ACTION_APPLY_DEPLOYMENT);
+  assert_true(az_span_is_content_equal(req.workflow.id, AZ_SPAN_FROM_STR("wf-1")));
+  assert_int_equal(req.file_urls_count, 1);
+  assert_int_equal(manifest.instructions.steps_count, 1);
+
+  assert_int_equal(
+      parse_with_roots(&fx->log, "{\"other\":1}", k_root_keys, 1, &req, &manifest),
+      AZ_IOT_ERR_NOT_FOUND);
+}
+
 static void malformed_jws_is_rejected(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -2918,6 +3022,9 @@ int main(void)
     cmocka_unit_test_setup_teardown(a_refused_report_is_re_armed_and_resent, setup, teardown),
     cmocka_unit_test(a_request_on_a_null_client_is_rejected),
     cmocka_unit_test_setup_teardown(deployment_drives_full_workflow_single_step, setup, teardown),
+    cmocka_unit_test_setup_teardown(update_metadata_drives_full_workflow, setup, teardown),
+    cmocka_unit_test_setup_teardown(unusable_update_metadata_is_ignored, setup, teardown),
+    cmocka_unit_test_setup_teardown(public_parser_accepts_update_metadata, setup, teardown),
     cmocka_unit_test_setup_teardown(verify_failure_blocks_download_and_fails, setup, teardown),
     cmocka_unit_test_setup_teardown(install_failure_triggers_rollback, setup, teardown),
     cmocka_unit_test_setup_teardown(hash_mismatch_blocks_install_and_fails, setup, teardown),

@@ -68,7 +68,7 @@ typedef struct
   /* What the channel forwarded about a refused operation. */
   bool had_service_error;
   int32_t last_error_code;
-  char last_error_text[64];
+  char last_error_text[256];
   char last_tracking_id[64];
   uint32_t last_retry_after_ms;
   bool service_error_strings_were_non_null;
@@ -1558,6 +1558,32 @@ static void the_service_diagnosis_is_forwarded(void** state)
   assert_string_equal(fx->last_tracking_id, "9f1c-aa");
 }
 
+/* A prose message, as a 5xx carries, is forwarded whole rather than dropped. */
+static void a_prose_service_message_is_forwarded(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_mock_mqtt_client* m = open_and_bind(fx);
+
+  assert_int_equal(
+      fx->channel.vtable->request_update(fx->channel.ctx, AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE),
+      AZ_IOT_OK);
+  char rid[64];
+  last_rid(m, rid, sizeof(rid));
+  char topic[256];
+  snprintf(topic, sizeof(topic), "$dps/registrations/res/500/?$rid=%s", rid);
+  assert_true(inject(
+      fx,
+      m,
+      topic,
+      "{\"errorCode\":500001,\"trackingId\":\"t-1\",\"message\":\"The upstream resource "
+      "could not be read to authorize this request.\"}"));
+
+  assert_int_equal(fx->last_error_code, 500001);
+  assert_string_equal(
+      fx->last_error_text, "The upstream resource could not be read to authorize this request.");
+  assert_int_equal(fx->last_action, AZ_IOT_ADU_ERROR_ACTION_RETRY);
+}
+
 /* A verdict with no service response behind it forwards an EMPTY diagnosis,
  * rather than a stale or invented one -- and never a NULL pointer.
  *
@@ -2311,6 +2337,7 @@ int main(void)
         an_available_update_is_delivered_to_the_engine, setup, teardown),
     cmocka_unit_test_setup_teardown(an_error_response_reports_an_action, setup, teardown),
     cmocka_unit_test_setup_teardown(the_service_diagnosis_is_forwarded, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_prose_service_message_is_forwarded, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_verdict_without_a_response_forwards_an_empty_diagnosis, setup, teardown),
     cmocka_unit_test_setup_teardown(

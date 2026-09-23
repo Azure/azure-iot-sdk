@@ -1016,6 +1016,142 @@ static az_iot_result parse_service_request(
   return AZ_IOT_OK;
 }
 
+/**
+ * @brief Parse an ADUv2 `updateMetadata` object into @p out_req.
+ *
+ * Shape: `{ workflowId, updateManifest, updateManifestSignature, fileUrls }`.
+ * It carries no action, so it is an apply; unknown properties are skipped.
+ *
+ * @param doc     The object. MUST outlive @p out_req, whose spans point into it.
+ * @param out_req Zeroed, then filled.
+ * @return AZ_IOT_OK; AZ_IOT_ERR_NOT_FOUND when @p doc has no `workflowId`;
+ * AZ_IOT_ERR_INVALID_ARG when malformed or without a manifest.
+ */
+static az_iot_result parse_update_metadata(az_span doc, az_iot_adu_client_update_request* out_req)
+{
+  memset(out_req, 0, sizeof(*out_req));
+
+  az_json_reader jr;
+  if (az_result_failed(az_json_reader_init(&jr, doc, NULL))
+      || az_result_failed(az_json_reader_next_token(&jr))
+      || jr.token.kind != AZ_JSON_TOKEN_BEGIN_OBJECT)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+
+  bool closed = false;
+  while (az_result_succeeded(az_json_reader_next_token(&jr)))
+  {
+    if (jr.token.kind == AZ_JSON_TOKEN_END_OBJECT)
+    {
+      closed = true;
+      break;
+    }
+    if (jr.token.kind != AZ_JSON_TOKEN_PROPERTY_NAME)
+    {
+      return AZ_IOT_ERR_INVALID_ARG;
+    }
+    az_json_token name = jr.token;
+    if (az_result_failed(az_json_reader_next_token(&jr)))
+    {
+      return AZ_IOT_ERR_INVALID_ARG;
+    }
+
+    if (az_json_token_is_text_equal(&name, AZ_SPAN_FROM_STR("workflowId")))
+    {
+      if (jr.token.kind != AZ_JSON_TOKEN_STRING)
+      {
+        return AZ_IOT_ERR_INVALID_ARG;
+      }
+      out_req->workflow.id = jr.token.slice;
+    }
+    else if (az_json_token_is_text_equal(&name, AZ_SPAN_FROM_STR("updateManifest")))
+    {
+      if (jr.token.kind != AZ_JSON_TOKEN_STRING)
+      {
+        return AZ_IOT_ERR_INVALID_ARG;
+      }
+      out_req->update_manifest = jr.token.slice;
+    }
+    else if (az_json_token_is_text_equal(&name, AZ_SPAN_FROM_STR("updateManifestSignature")))
+    {
+      if (jr.token.kind != AZ_JSON_TOKEN_STRING)
+      {
+        return AZ_IOT_ERR_INVALID_ARG;
+      }
+      out_req->update_manifest_signature = jr.token.slice;
+    }
+    else if (
+        az_json_token_is_text_equal(&name, AZ_SPAN_FROM_STR("fileUrls"))
+        && jr.token.kind == AZ_JSON_TOKEN_BEGIN_OBJECT)
+    {
+      while (az_result_succeeded(az_json_reader_next_token(&jr))
+             && jr.token.kind != AZ_JSON_TOKEN_END_OBJECT)
+      {
+        if (jr.token.kind != AZ_JSON_TOKEN_PROPERTY_NAME
+            || out_req->file_urls_count == _az_IOT_ADU_CLIENT_MAX_TOTAL_FILE_COUNT)
+        {
+          return AZ_IOT_ERR_INVALID_ARG;
+        }
+        az_span id = jr.token.slice;
+        if (az_result_failed(az_json_reader_next_token(&jr))
+            || jr.token.kind != AZ_JSON_TOKEN_STRING)
+        {
+          return AZ_IOT_ERR_INVALID_ARG;
+        }
+        out_req->file_urls[out_req->file_urls_count].id = id;
+        out_req->file_urls[out_req->file_urls_count].url = jr.token.slice;
+        out_req->file_urls_count++;
+      }
+      if (jr.token.kind != AZ_JSON_TOKEN_END_OBJECT)
+      {
+        return AZ_IOT_ERR_INVALID_ARG;
+      }
+    }
+    else if (az_result_failed(az_json_reader_skip_children(&jr)))
+    {
+      return AZ_IOT_ERR_INVALID_ARG;
+    }
+  }
+
+  if (!closed)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if (az_span_size(out_req->workflow.id) <= 0)
+  {
+    return AZ_IOT_ERR_NOT_FOUND;
+  }
+  if (az_span_size(out_req->update_manifest) <= 0)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  out_req->workflow.action = AZ_IOT_ADU_CLIENT_SERVICE_ACTION_APPLY_DEPLOYMENT;
+  return AZ_IOT_OK;
+}
+
+/**
+ * @brief Parse an update payload in either shape the engine can be handed.
+ *
+ * The ADUv1 twin patch (`{"deviceUpdate":{"service":{...}}}`) is tried first;
+ * without that envelope, the ADUv2 `updateMetadata` object the provisioning
+ * channel delivers.
+ *
+ * @param az      Upstream parser state.
+ * @param doc     The payload. MUST outlive @p out_req.
+ * @param out_req Filled on success.
+ * @return AZ_IOT_OK; AZ_IOT_ERR_NOT_FOUND when neither shape is present;
+ * AZ_IOT_ERR_INVALID_ARG when malformed.
+ */
+static az_iot_result parse_update_payload(
+    az_iot_adu_client* az,
+    az_span doc,
+    az_iot_adu_client_update_request* out_req)
+{
+  az_iot_result r = parse_service_request(az, doc, out_req);
+  return (r == AZ_IOT_ERR_NOT_FOUND) ? parse_update_metadata(doc, out_req) : r;
+}
+
 /* --- Retry / replacement / duplicate detection --------------------------- */
 
 /* Copy the deployment identity (workflow `id` + `retryTimestamp`) out of the
@@ -1099,7 +1235,8 @@ static bool same_retry_timestamp(az_iot_adu_client_t* client, az_span retry)
       retry, az_span_create(ADU_I(client).active_retry_timestamp, (int32_t)have));
 }
 
-/* Desired-property patch handler, fed by the ADU channel.
+/* Update payload handler, fed by the ADU channel: an ADUv1 twin patch or an
+ * ADUv2 updateMetadata object (see parse_update_payload()).
  *
  * The patch buffer is only valid for the duration of this call, but the
  * workflow is processed asynchronously over many do_work() iterations and the
@@ -1127,11 +1264,15 @@ static void process_desired_patch(
   }
   if (patch_len > sizeof(ADU_I(client).request_buffer))
   {
-    return; /* too large to back */
+    AZ_IOT_LOG_ERRORF(
+        "adu: update payload of %u bytes exceeds AZ_IOT_ADU_REQUEST_BUFFER_SIZE (%u); ignored",
+        (unsigned)patch_len,
+        (unsigned)sizeof(ADU_I(client).request_buffer));
+    return;
   }
 
   AZ_IOT_LOG_DEBUGF(
-      "adu: deviceUpdate desired property received (%u bytes): %.*s",
+      "adu: update payload received (%u bytes): %.*s",
       (unsigned)patch_len,
       (int)patch_len,
       (const char*)patch);
@@ -1140,9 +1281,11 @@ static void process_desired_patch(
    * valid for the duration of this call, which is enough to decide what to do. */
   az_span transient = az_span_create((uint8_t*)(uintptr_t)patch, (int32_t)patch_len);
   az_iot_adu_client_update_request probe;
-  if (parse_service_request(&ADU_I(client).az, transient, &probe) != AZ_IOT_OK)
+  az_iot_result pr = parse_update_payload(&ADU_I(client).az, transient, &probe);
+  if (pr != AZ_IOT_OK)
   {
-    return; /* no deviceUpdate/service object, or malformed: ignore */
+    AZ_IOT_LOG_ERRORF("adu: update payload not understood (%d); ignored", (int)pr);
+    return;
   }
 
   /* Duplicate redelivery of the in-flight (or last) deployment: ignore it
@@ -1165,7 +1308,7 @@ static void process_desired_patch(
   az_span buf = az_span_create(ADU_I(client).request_buffer, (int32_t)patch_len);
 
   az_iot_adu_client_update_request req;
-  if (parse_service_request(&ADU_I(client).az, buf, &req) != AZ_IOT_OK)
+  if (parse_update_payload(&ADU_I(client).az, buf, &req) != AZ_IOT_OK)
   {
     ADU_I(client).request_len = 0;
     return;
@@ -2485,10 +2628,10 @@ az_iot_result az_iot_adu_parse_update_request(
   }
 
   az_iot_adu_client_update_request req;
-  az_iot_result r = parse_service_request(&az, request_json, &req);
+  az_iot_result r = parse_update_payload(&az, request_json, &req);
   if (r != AZ_IOT_OK)
   {
-    return r; /* NOT_FOUND (no deviceUpdate/service) or INVALID_ARG */
+    return r; /* NOT_FOUND (neither shape) or INVALID_ARG */
   }
 
   /* A Cancel request carries no manifest to verify. */
