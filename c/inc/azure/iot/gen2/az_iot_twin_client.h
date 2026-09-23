@@ -184,6 +184,8 @@ extern "C"
       /* The handler's state predates the service's current lineage (the
        * birth-ack reported a lower version); only a snapshot may follow. */
       bool desired_snapshot_required;
+      /* A patch or probe showed the device behind before hub CONNECTED. */
+      bool desired_catch_up_pending;
       /* Birth nonce of the session whose birth-ack baseline was adopted. */
       uint8_t birth_nonce[AZ_IOT_GEN2_TWIN_CORRELATION_ID_LEN];
       bool birth_nonce_valid;

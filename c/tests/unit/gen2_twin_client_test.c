@@ -1661,6 +1661,79 @@ static void a_push_before_connected_is_not_overwritten_by_the_birth_ack(void** s
   assert_memory_equal(pub->payload, expect, sizeof(expect));
 }
 
+/* Patch reported and return the if_match it carried (0 when omitted). */
+static uint8_t patch_and_read_if_match(fixture* fx)
+{
+  /* No callback: the request outlives this frame. */
+  static const uint8_t patch[] = "{}";
+  assert_int_equal(
+      az_iot_gen2_twin_client_patch_reported(&fx->twin, patch, sizeof(patch) - 1, NULL, NULL),
+      AZ_IOT_OK);
+  const az_iot_mock_call* pub = find_publish(fx->mock, TWIN_SRV_TOPIC);
+  assert_non_null(pub);
+  return (pub->payload[0] == 0x08) ? pub->payload[1] : 0;
+}
+
+/* Reported version 0 is authoritative (proto3 omits it on the wire). */
+static void a_reported_version_reset_to_zero_is_adopted(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected_with_versions(fx, 0, 9);
+  assert_int_equal(patch_and_read_if_match(fx), 9);
+
+  /* GET response without reported_version: the service is at 0. */
+  get_record rec = { 0 };
+  uint8_t corr[16];
+  issue_get(fx, &rec, corr);
+  inject_twin(fx, "get-response:1", corr, NULL, 0);
+  assert_int_equal(patch_and_read_if_match(fx), 0);
+
+  /* Push with a present, version-0 reported section. */
+  const uint8_t push9[] = { 0x12, 0x02, 0x08, 0x09 };
+  inject_twin(fx, "twin-push:1", fx->nonce, push9, sizeof(push9));
+  assert_int_equal(patch_and_read_if_match(fx), 9);
+  const uint8_t push0[] = { 0x12, 0x00 };
+  inject_twin(fx, "twin-push:1", fx->nonce, push0, sizeof(push0));
+  assert_int_equal(patch_and_read_if_match(fx), 0);
+
+  /* Patch response carrying version 0. */
+  inject_twin(fx, "twin-push:1", fx->nonce, push9, sizeof(push9));
+  assert_int_equal(patch_and_read_if_match(fx), 9);
+  const az_iot_mock_call* pub = find_publish(fx->mock, TWIN_SRV_TOPIC);
+  uint8_t pcorr[16];
+  memcpy(pcorr, pub->correlation_data, sizeof(pcorr));
+  const uint8_t resp[] = { 0x08, 0x01 }; /* OK, version 0 */
+  inject_twin(fx, "reported-patch-response:1", pcorr, resp, sizeof(resp));
+  assert_int_equal(patch_and_read_if_match(fx), 0);
+}
+
+/* push_desired suppresses only the birth-ack fetch: a gap seen before CONNECTED
+ * is fetched once CONNECTED. */
+static void with_push_desired_a_gap_before_connected_is_fetched(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(
+      az_iot_connection_client__add_subscription_on_connect(
+          &fx->conn,
+          "ih/ut-device/dev/other",
+          AZ_IOT_MQTT_QOS_1,
+          fx,
+          AZ_IOT_SUBSCRIPTION_FAILS_SESSION,
+          NULL),
+      AZ_IOT_OK);
+  desired_record rec = { 0 };
+  set_desired(fx, &rec);
+
+  open_to_birth_ack_with_versions(fx, 0, 0);
+  assert_false(az_iot_connection_client__is_connected(&fx->conn));
+  inject_desired(fx, 3, "{}"); /* gap while not yet CONNECTED */
+  assert_int_equal(count_gets(fx), 0);
+
+  az_iot_test_ack_subscriptions(&fx->conn, fx->mock);
+  assert_true(az_iot_connection_client__is_connected(&fx->conn));
+  assert_int_equal(count_gets(fx), 1);
+}
+
 /* A refused snapshot publish leaves nothing in flight, so the next gap retries. */
 static void a_refused_snapshot_publish_does_not_wedge(void** state)
 {
@@ -2449,6 +2522,9 @@ int main(void)
         with_push_desired_a_replaced_twin_is_still_fetched, setup_push_desired, teardown),
     cmocka_unit_test_setup_teardown(
         a_push_before_connected_is_not_overwritten_by_the_birth_ack, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_reported_version_reset_to_zero_is_adopted, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        with_push_desired_a_gap_before_connected_is_fetched, setup_push_desired, teardown),
     cmocka_unit_test_setup_teardown(a_refused_snapshot_publish_does_not_wedge, setup, teardown),
     cmocka_unit_test_setup_teardown(an_in_order_patch_while_behind_fetches_again, setup, teardown),
     cmocka_unit_test_setup_teardown(a_handler_set_at_version_zero_fetches_nothing, setup, teardown),

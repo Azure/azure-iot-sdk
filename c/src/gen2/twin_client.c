@@ -261,9 +261,13 @@ static void request_snapshot_if_behind(az_iot_gen2_twin_client* t)
 {
   if (!TI(t).desired_handler || TI(t).snapshot.in_flight
       || (!TI(t).desired_snapshot_required
-          && TI(t).desired_properties_service_version <= TI(t).desired_properties_device_version)
-      || !az_iot_connection_client__is_connected(TI(t).conn))
+          && TI(t).desired_properties_service_version <= TI(t).desired_properties_device_version))
   {
+    return;
+  }
+  if (!az_iot_connection_client__is_connected(TI(t).conn))
+  {
+    TI(t).desired_catch_up_pending = true; /* issued on hub CONNECTED */
     return;
   }
 
@@ -281,6 +285,7 @@ static void request_snapshot_if_behind(az_iot_gen2_twin_client* t)
   }
   TI(t).snapshot.in_flight = true;
   TI(t).snapshot.deadline_ms = deadline_from_now(t);
+  TI(t).desired_catch_up_pending = false;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -482,7 +487,7 @@ static void on_twin_push(az_iot_gen2_twin_client* t, const az_iot_mqtt_message* 
     return;
   }
 
-  if (twin.reported.version)
+  if (reported_present)
   {
     TI(t).reported_properties_service_version = twin.reported.version;
   }
@@ -562,10 +567,7 @@ static void on_snapshot_response(az_iot_gen2_twin_client* t, const az_iot_mqtt_m
     AZ_IOT_LOG_WARN("gen2_twin: dropping an unusable desired-snapshot response");
     return;
   }
-  if (twin.reported.version)
-  {
-    TI(t).reported_properties_service_version = twin.reported.version;
-  }
+  TI(t).reported_properties_service_version = twin.reported.version;
   deliver_snapshot(t, &twin.desired);
   /* Still behind if the service moved on while the GET was in flight. */
   request_snapshot_if_behind(t);
@@ -581,10 +583,7 @@ static void on_get_response(az_iot_gen2_twin_client* t, int idx, const az_iot_mq
     release_pending(t, idx, AZ_IOT_ERR_PROTOCOL, NULL, NULL);
     return;
   }
-  if (twin.reported.version)
-  {
-    TI(t).reported_properties_service_version = twin.reported.version;
-  }
+  TI(t).reported_properties_service_version = twin.reported.version;
   note_desired_service_version(t, twin.desired.version);
   release_pending(t, idx, AZ_IOT_OK, &twin, NULL);
   request_snapshot_if_behind(t);
@@ -630,10 +629,7 @@ static void on_patch_response(az_iot_gen2_twin_client* t, int idx, const az_iot_
     return;
   }
 
-  if (result.version)
-  {
-    TI(t).reported_properties_service_version = result.version;
-  }
+  TI(t).reported_properties_service_version = result.version;
   release_pending(t, idx, AZ_IOT_OK, NULL, &result);
 }
 
@@ -728,13 +724,14 @@ static void adopt_session(az_iot_gen2_twin_client* t)
 /**
  * @brief Hub CONNECTED: requests can now be published, so catch up.
  *
- * With `twin_push.push_desired` the service pushes the snapshot itself, unless
- * the twin was replaced: a push cannot be relied on to replace newer state.
+ * `twin_push.push_desired` only replaces the birth-ack fetch. A replaced twin,
+ * or a gap a patch or probe showed before CONNECTED, is still fetched.
  */
 static void on_hub_connected(az_iot_gen2_twin_client* t)
 {
   adopt_session(t);
-  if (!az_iot_connection_client__twin_push_desired(TI(t).conn) || TI(t).desired_snapshot_required)
+  if (!az_iot_connection_client__twin_push_desired(TI(t).conn) || TI(t).desired_snapshot_required
+      || TI(t).desired_catch_up_pending)
   {
     request_snapshot_if_behind(t);
   }
