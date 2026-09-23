@@ -86,9 +86,9 @@ extern "C"
   /**
    * @brief Set the handler for service-pushed desired-property patches.
    *
-   * The handler receives every desired update and decides whether it carries
-   * keys it cares about. NULL @p cb pauses delivery without tearing the
-   * subscription down.
+   * The handler receives every desired update delivered while connected, and
+   * decides whether it carries keys it cares about. NULL @p cb pauses delivery
+   * without tearing the subscription down.
    *
    * Patches sent while the device is disconnected are not redelivered. To
    * catch up after a reconnect, call az_iot_gen1_twin_client_get() and ignore
