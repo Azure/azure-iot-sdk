@@ -274,7 +274,9 @@ Rules every client must implement:
 - `connectionProfile` is a `readOnly` **string** on the DPS registration result, delivered alongside
   `assignedHub`, `deviceId` and `issuedCertificateChain`. There is no numeric hub version on the wire.
 - It is an **extensible union**, so the raw string must be preserved verbatim and not collapsed into a
-  closed enum. A value newer than the SDK still has to be loggable.
+  closed enum. A value newer than the SDK still has to be loggable. A client with bounded storage may
+  cap the stored length, but must then report that the value was truncated and treat it as
+  unrecognised — a truncated profile is never matched against a known one.
 - An unrecognised profile **fails the connection** with a dedicated unsupported-profile error. The SDK
   will not guess which MQTT version to speak.
 - The profile is readable only once `CONNECTED`; before that, querying it fails with a not-connected
@@ -685,7 +687,7 @@ flowchart TB
     CONNECTING --> SUBS
     SUBS --> CONNECTED["CONNECTED"]
 
-    REG -->|"registration failed,<br/>or no assignment"| FAULTED
+    REG -->|"registration failed,<br/>or no assignment"| DROP
     CONNECTING -->|"CONNACK failure,<br/>or cannot start the session"| DROP
     CONNECTING -->|"identity rejected"| RECON
     BIRTH -->|"SUBSCRIBE, SUBACK or birth<br/>failure, or birth-ack timeout"| DROP
@@ -1112,8 +1114,9 @@ What a device is allowed to connect to, and what has to be true for that set to 
 
 ### 10.1 Provisioning is the advertised path
 
-**The device connects through DPS.** It learns its hub, its device id, its connection profile and
-its operational certificate from one assignment ([§3](#3-full-connect-sequence)), and it re-learns
+**The device connects through DPS.** It learns its hub, its device id and its connection profile —
+and, when it sent a CSR, its operational certificate — from one assignment
+([§3](#3-full-connect-sequence)), and it re-learns
 them on every reconnect that goes back through DPS. That is what makes a device re-homeable: a
 service-side reassignment reaches it without a firmware change.
 
