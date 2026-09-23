@@ -17,6 +17,7 @@
  * See README.md for setup and environment variables.
  */
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -35,13 +36,18 @@
 /** @brief Duration of one do_work() tick. */
 #define SAMPLE_TICK_MS 50u
 
+/** @brief True when the SDK-stamped @p ev is long enough to carry @p field. */
+#define SAMPLE_EVENT_HAS(ev, field) \
+  ((ev)->_internal_size >= offsetof(az_iot_connection_state_event, field) + sizeof((ev)->field))
+
 /** @brief State shared with the client callbacks. */
 typedef struct
 {
   az_iot_connection_state hub_state; /**< Latest hub-scope state. */
-  az_iot_result hub_reason; /**< Reason of the latest hub-scope transition. */
-  bool dps_faulted; /**< Provisioning failed; the hub will not be reached. */
-  az_iot_result dps_reason; /**< Reason provisioning failed. */
+  bool failed; /**< A failure the SDK faulted on, or one retrying cannot fix. */
+  az_iot_connection_scope failed_scope; /**< Scope of that failure. */
+  az_iot_result failed_reason; /**< Reason of that failure. */
+  az_iot_result last_error[AZ_IOT_CONN_SCOPE_COUNT]; /**< Latest non-OK reason per scope. */
   bool issued; /**< An operational certificate was issued and persisted. */
   const char* operational_cert_path; /**< Where the issued chain is persisted. */
 } sample_context;
@@ -60,7 +66,8 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
       az_iot_result_to_string(event->reason));
 
   /* Service verdicts only; transport codes are adapter-defined. */
-  const az_iot_connection_error_detail* error = event->error;
+  const az_iot_connection_error_detail* error
+      = SAMPLE_EVENT_HAS(event, error) ? event->error : NULL;
   if (error != NULL
       && (error->source == AZ_IOT_CONN_ERR_SRC_DPS || error->source == AZ_IOT_CONN_ERR_SRC_MQTT))
   {
@@ -75,19 +82,29 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
         message_len > 0 ? (const char*)az_span_ptr(error->message) : "");
   }
 
-  if (is_dps)
+  if (event->scope != AZ_IOT_CONN_SCOPE_DPS && event->scope != AZ_IOT_CONN_SCOPE_HUB)
   {
-    /* A failed registration leaves the hub IDLE, so it must end the wait. */
-    if (event->state == AZ_IOT_CONN_STATE_FAULTED)
-    {
-      ctx->dps_faulted = true;
-      ctx->dps_reason = event->reason;
-    }
+    return;
   }
-  else if (event->scope == AZ_IOT_CONN_SCOPE_HUB)
+  if (event->scope == AZ_IOT_CONN_SCOPE_HUB)
   {
     ctx->hub_state = event->state;
-    ctx->hub_reason = event->reason;
+  }
+  if (event->reason == AZ_IOT_OK)
+  {
+    return;
+  }
+  ctx->last_error[event->scope] = event->reason;
+
+  /* The default policy retries forever, including failures that retrying
+   * cannot fix (e.g. no issued certificate, a rejected bootstrap identity);
+   * those end the wait instead of running into the timeout. */
+  bool permanent = SAMPLE_EVENT_HAS(event, is_retriable) && !event->is_retriable;
+  if (!ctx->failed && (event->state == AZ_IOT_CONN_STATE_FAULTED || permanent))
+  {
+    ctx->failed = true;
+    ctx->failed_scope = event->scope;
+    ctx->failed_reason = event->reason;
   }
 }
 
@@ -113,6 +130,12 @@ static void on_operational_cert(const az_iot_issued_certificate* issued, void* u
       "[dps_csr] operational certificate issued (%zu cert(s) in chain), saved to %s\n",
       issued != NULL ? issued->count : (size_t)0,
       ctx->operational_cert_path);
+}
+
+/** @brief Name of @p r, or "none" for AZ_IOT_OK. */
+static const char* error_name(az_iot_result r)
+{
+  return r == AZ_IOT_OK ? "none" : az_iot_result_to_string(r);
 }
 
 /** @brief Runs one do_work() tick of at least SAMPLE_TICK_MS, so the loops
@@ -215,8 +238,7 @@ int main(void)
   }
 
   uint64_t deadline = sample_now_ms() + SAMPLE_CONNECT_TIMEOUT_MS;
-  while (ctx.hub_state != AZ_IOT_CONN_STATE_CONNECTED && ctx.hub_state != AZ_IOT_CONN_STATE_FAULTED
-         && !ctx.dps_faulted && sample_now_ms() < deadline)
+  while (ctx.hub_state != AZ_IOT_CONN_STATE_CONNECTED && !ctx.failed && sample_now_ms() < deadline)
   {
     pump(&connection_client);
   }
@@ -233,21 +255,23 @@ int main(void)
   {
     fprintf(stderr, "[dps_csr] connected, but no operational certificate was issued\n");
   }
-  else if (ctx.dps_faulted)
-  {
-    fprintf(stderr, "[dps_csr] provisioning failed: %s\n", az_iot_result_to_string(ctx.dps_reason));
-  }
-  else if (ctx.hub_state == AZ_IOT_CONN_STATE_FAULTED)
+  else if (ctx.failed)
   {
     fprintf(
-        stderr, "[dps_csr] hub connection failed: %s\n", az_iot_result_to_string(ctx.hub_reason));
+        stderr,
+        "[dps_csr] %s failed: %s\n",
+        ctx.failed_scope == AZ_IOT_CONN_SCOPE_DPS ? "provisioning" : "hub connection",
+        az_iot_result_to_string(ctx.failed_reason));
   }
   else
   {
     fprintf(
         stderr,
-        "[dps_csr] timed out after %u s waiting for the hub connection\n",
-        SAMPLE_CONNECT_TIMEOUT_MS / 1000u);
+        "[dps_csr] timed out after %u s waiting for the hub connection (last dps error: %s, "
+        "last hub error: %s)\n",
+        SAMPLE_CONNECT_TIMEOUT_MS / 1000u,
+        error_name(ctx.last_error[AZ_IOT_CONN_SCOPE_DPS]),
+        error_name(ctx.last_error[AZ_IOT_CONN_SCOPE_HUB]));
   }
 
   az_iot_connection_client_close(&connection_client);

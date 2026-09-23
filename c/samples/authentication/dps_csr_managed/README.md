@@ -8,13 +8,16 @@ certificate signing request (CSR) with its registration, and connects to IoT Hub
 with the **operational** certificate that DPS issues. The operational private key
 is generated on the device and never leaves it.
 
-```
-device                                   DPS                    IoT Hub
-  | TLS (bootstrap cert)                  |                         |
-  |-- register { csr } ------------------>|                         |
-  |<- assigned { hub, issued chain } -----|                         |
-  | save chain to operational_cert.pem    |                         |
-  | TLS (operational cert + key) ---------------------------------->|
+```mermaid
+sequenceDiagram
+    participant D as Device
+    participant DPS
+    participant Hub as IoT Hub
+    D->>DPS: TLS with bootstrap certificate
+    D->>DPS: register { csr }
+    DPS-->>D: assigned { hub, issued chain }
+    Note over D: save chain to operational_cert.pem
+    D->>Hub: TLS with operational certificate + key
 ```
 
 The SDK's OpenSSL-backed managed certificate provider does the key, CSR and file
@@ -87,8 +90,10 @@ cmake --build --preset linux-gcc-debug --target az_iot_sample_auth_dps_csr_manag
 On Windows, use the `windows-msvc-debug` preset and make OpenSSL 3 visible to CMake
 (for example through vcpkg; see [`c/CMakePresets.json`](../../../CMakePresets.json)).
 
-The target is skipped, without an error, when OpenSSL 3.0+ or the Paho adapter is
-unavailable (`AZ_IOT_WITH_CERT_PROVIDER_MANAGED`, `AZ_IOT_WITH_PAHO`).
+The target exists only when OpenSSL 3.0+ is found and the Paho adapter is enabled
+(`AZ_IOT_WITH_CERT_PROVIDER_MANAGED`, `AZ_IOT_WITH_PAHO`). Otherwise `--target`
+fails with `unknown target`; the configure output must include
+`building managed certificate provider`.
 
 ## 4. Run
 
@@ -153,10 +158,14 @@ The chain length depends on the credential policy.
 | Symptom | Likely cause |
 |---------|--------------|
 | `provisioning failed: AZ_IOT_ERR_NOT_FOUND` | DPS assigned the device but returned no certificate: the enrollment group has no credential policy. |
-| `provisioning failed`, with a `DPS code 401...` line | Bootstrap rejected: the certificate does not chain to the group's CA, or its CN differs from `AZ_IOT_DPS_REGISTRATION_ID`. |
+| `provisioning failed: AZ_IOT_ERR_AUTH` | DPS refused the bootstrap certificate: it does not chain to the group's CA. |
+| Repeated `DPS code 401...` lines, then `timed out` (last dps error `AZ_IOT_ERR_DPS`) | DPS rejected the registration, e.g. the certificate CN differs from `AZ_IOT_DPS_REGISTRATION_ID` or no enrollment matches. DPS verdicts are retried, so the sample runs into the timeout. |
+| `hub connection failed: AZ_IOT_ERR_AUTH` | IoT Hub refused the operational certificate: the policy CA is not synced to the hub (`az iot adr ns credential sync`). |
 | `hub connection failed: AZ_IOT_ERR_NOT_SUPPORTED` | DPS assigned an MQTT v5 hub. This sample connects to Classic hubs only (MQTT 3.1.1). |
-| `open failed` after a `registration_payload` log line | `AZ_IOT_DPS_REGISTRATION_PAYLOAD` is not a single JSON object. |
-| `timed out after 60 s` with repeated `dps: Reconnecting` | DPS unreachable (network, proxy, `AZ_IOT_DPS_GLOBAL_ENDPOINT`) or server TLS failing (`AZ_IOT_TRUSTED_CA`). |
+| `open failed` immediately, after an SDK error `registration_payload must be a single well-formed JSON object` | `AZ_IOT_DPS_REGISTRATION_PAYLOAD` is not a single JSON object. |
+| `timed out` (last dps error `AZ_IOT_ERR_MQTT` or `AZ_IOT_ERR_TLS`) | DPS unreachable (network, proxy, `AZ_IOT_DPS_GLOBAL_ENDPOINT`) or server TLS failing (`AZ_IOT_TRUSTED_CA`). |
+
+The sample stops at the first failure the SDK marks as not retriable, or when the SDK faults; anything else is retried until the 60 s timeout, which prints the last error per scope.
 
 The SDK logs at `INFO` to stderr; change the level in `main()` for more detail.
 
