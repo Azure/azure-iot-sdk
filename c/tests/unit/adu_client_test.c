@@ -4131,6 +4131,7 @@ int main(void)
         resuming_a_fresh_client_reports_the_restored_state, setup, teardown),
     cmocka_unit_test_setup_teardown(a_fresh_client_result_is_already_stamped, setup, teardown),
     cmocka_unit_test_setup_teardown(resume_with_no_persisted_state_stays_idle, setup, teardown),
+    cmocka_unit_test_setup_teardown(cancel_action_sets_cancelled_flag, setup, teardown),
     cmocka_unit_test_setup_teardown(
         late_cancel_does_not_overwrite_a_reported_failure, setup, teardown),
     cmocka_unit_test_setup_teardown(
