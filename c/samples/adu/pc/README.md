@@ -40,12 +40,16 @@ The sample prints both lifecycles as they move, for example:
 ```
 Provisioning: Idle -> Connecting (AZ_IOT_OK)
 Provisioning: Connecting -> Connected (AZ_IOT_OK)
-Ready for device update. Waiting for a deployment (Ctrl-C to exit)...
+Ready. Waiting for the answer to the onboarding update request (Ctrl-C to exit)...
 ```
 
 It runs until interrupted (Ctrl-C), like the long-lived agent it stands in for,
 and exits 0. It stops early and exits non-zero only if a lifecycle settles at
 `Faulted`, or if the update check is abandoned — both of which it prints first.
+
+> Its output is block-buffered when piped or redirected, so a run that is killed
+> rather than interrupted can lose it. Prefix with `stdbuf -oL -eL` when
+> capturing to a file.
 
 ---
 
@@ -91,10 +95,10 @@ The sample reads these environment variables (see
 | `AZ_IOT_CLIENT_CERT` | yes | Path to the device certificate PEM |
 | `AZ_IOT_CLIENT_KEY` | yes | Path to the device private key PEM |
 | `AZ_IOT_TRUSTED_CA` | yes | Trusted CA bundle, e.g. `/etc/ssl/certs/ca-certificates.crt` |
-| `AZ_IOT_DPS_GLOBAL_ENDPOINT` | no | The provisioning endpoint to use. Unset means the SDK default, `global.azure-devices-provisioning.net`; set it when your environment uses a different one. |
+| `AZ_IOT_DPS_GLOBAL_ENDPOINT` | no | The provisioning endpoint to use. Unset means the SDK default, `global.azure-devices-provisioning.net`; set it when your environment uses a different one. Leaving it unset for an environment that needs it fails as a repeating `TCP/TLS connect failure` against the default host. |
 
-The device's **compatibility properties** — what the service matches a deployed
-update against. A value that does not match the imported update is answered
+**Matched against a deployed update.** These are the device's *compatibility
+properties*. A value that does not match the imported update is answered
 "nothing for me", which looks exactly like "nothing deployed", so the sample
 prints what it reported at startup. The sample also sends the fixed custom
 property `environment` = `sim`, which a deployed update must match too.
@@ -103,6 +107,13 @@ property `environment` = `sim`, which a deployed update must match too.
 |---|---|
 | `AZ_IOT_ADU_MANUFACTURER` | `Contoso` |
 | `AZ_IOT_ADU_MODEL` | `ADU-Sim` |
+
+**Reported, not matched.** The installed update id says what is on the device
+now. It takes no part in matching, and the onboarding route this sample uses
+omits it entirely — changing it cannot make an update eligible.
+
+| Variable | Default |
+|---|---|
 | `AZ_IOT_ADU_INSTALLED_PROVIDER` | `Contoso` |
 | `AZ_IOT_ADU_INSTALLED_NAME` | `ADU-Sim` |
 | `AZ_IOT_ADU_INSTALLED_VERSION` | `1.0.0` |
@@ -113,6 +124,9 @@ export AZ_IOT_DPS_REGISTRATION_ID='<registration-id>'
 export AZ_IOT_CLIENT_CERT="$PWD/device-cert.pem"
 export AZ_IOT_CLIENT_KEY="$PWD/device-key.pem"
 export AZ_IOT_TRUSTED_CA='/etc/ssl/certs/ca-certificates.crt'
+# Only when your provisioning service is not on the default global endpoint,
+# e.g. a preview environment:
+# export AZ_IOT_DPS_GLOBAL_ENDPOINT='global-canary.azure-devices-provisioning.net'
 ```
 
 PowerShell:
@@ -123,6 +137,9 @@ $env:AZ_IOT_DPS_REGISTRATION_ID = '<registration-id>'
 $env:AZ_IOT_CLIENT_CERT         = "$PWD\device-cert.pem"
 $env:AZ_IOT_CLIENT_KEY          = "$PWD\device-key.pem"
 $env:AZ_IOT_TRUSTED_CA          = "$PWD\ca.pem"
+# Only when your provisioning service is not on the default global endpoint,
+# e.g. a preview environment:
+# $env:AZ_IOT_DPS_GLOBAL_ENDPOINT = 'global-canary.azure-devices-provisioning.net'
 ```
 
 > Manifest signature verification works out of the box: the sample uses
@@ -278,18 +295,18 @@ The simulated update payload is **zero-filled** on purpose: the device synthesiz
 the same zero bytes the import manifest declares, so the **real** per-file SHA-256
 check passes. Random content would not match.
 
-The device reports these properties (see [main.c](main.c)); an update must declare
-matching `compatibility` to be offered:
+An update must declare `compatibility` matching the first three rows to be
+offered (see [main.c](main.c)):
 
-| Property | Value | Overridden by |
-|---|---|---|
-| Manufacturer | `Contoso` | `AZ_IOT_ADU_MANUFACTURER` |
-| Model | `ADU-Sim` | `AZ_IOT_ADU_MODEL` |
-| Custom `environment` | `sim` | fixed in [main.c](main.c) |
-| Installed update id | `{ provider: Contoso, name: ADU-Sim, version: 1.0.0 }` | `AZ_IOT_ADU_INSTALLED_PROVIDER` / `_NAME` / `_VERSION` |
+| Property | Value | Overridden by | Matched? |
+|---|---|---|---|
+| Manufacturer | `Contoso` | `AZ_IOT_ADU_MANUFACTURER` | yes |
+| Model | `ADU-Sim` | `AZ_IOT_ADU_MODEL` | yes |
+| Custom `environment` | `sim` | fixed in [main.c](main.c) | yes |
+| Installed update id | `{ provider: Contoso, name: ADU-Sim, version: 1.0.0 }` | `AZ_IOT_ADU_INSTALLED_PROVIDER` / `_NAME` / `_VERSION` | no — reported only, and omitted on the onboarding route |
 
-The sample prints the identity it reported at startup, so a mismatch is visible
-rather than silent.
+The sample prints what it reported at startup, so a mismatch is visible rather
+than silent.
 
 ### Root keys
 

@@ -24,12 +24,18 @@
  *            install/apply/backup/restore (log only, optional forced failure
  *            or reboot), persist/load (a temp file so resume() works).
  *
- * Device identity (environment variables, all optional). These are the
- * COMPATIBILITY PROPERTIES the service matches an update against: if they do
- * not match the imported update, the device is answered "nothing to do" and is
- * never offered anything, so the sample prints what it reported.
+ * Device identity (environment variables, all optional).
+ *
+ * MATCHED: manufacturer, model and the fixed custom property environment=sim
+ * are the COMPATIBILITY PROPERTIES the service matches an update against. If
+ * they do not match the imported update, the device is answered "nothing to
+ * do" and is never offered anything, so the sample prints what it reported.
  *   AZ_IOT_ADU_MANUFACTURER=<s>        default "Contoso"
  *   AZ_IOT_ADU_MODEL=<s>               default "ADU-Sim"
+ *
+ * REPORTED, NOT MATCHED: the installed update id says what is on the device
+ * now. It takes no part in matching, and the onboarding route this sample uses
+ * omits it entirely -- changing it cannot make an update eligible.
  *   AZ_IOT_ADU_INSTALLED_PROVIDER=<s>  default "Contoso"
  *   AZ_IOT_ADU_INSTALLED_NAME=<s>      default "ADU-Sim"
  *   AZ_IOT_ADU_INSTALLED_VERSION=<s>   default "1.0.0"
@@ -49,6 +55,7 @@
  */
 #include <errno.h>
 #include <signal.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -299,6 +306,14 @@ static const char* const k_adu_operation_names[] = {
 #define SAMPLE_NAME_OF(table, i) \
   (((size_t)(i) < sizeof(table) / sizeof((table)[0])) ? (table)[(size_t)(i)] : "?")
 
+/* True when the event the SDK stamped is long enough to carry @p field.
+ *
+ * Events grow by APPENDING, so the test is against the last field this code
+ * actually reads -- not sizeof(the whole struct), which would reject a usable
+ * event from any library older than the newest field. */
+#define SAMPLE_EVENT_HAS(ev, type, field) \
+  ((ev)->_internal_size >= offsetof(type, field) + sizeof((ev)->field))
+
 static volatile sig_atomic_t g_stop = 0;
 static void on_sigint(int signo)
 {
@@ -361,11 +376,11 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
 {
   sample_run* run = (sample_run*)user_ctx;
 
-  /* The SDK stamps the event with its own size. A library older than this
-   * header would not carry every field read below, and `scope` indexes an
-   * array -- so an event that is short, or that names a scope this build does
-   * not know, is ignored rather than read. */
-  if (event->_internal_size < sizeof(*event) || (unsigned)event->scope >= AZ_IOT_CONN_SCOPE_COUNT)
+  /* `reason` is the last field read here, and `scope` indexes an array -- so an
+   * event too short to carry them, or naming a scope this build does not know,
+   * is ignored rather than read. */
+  if (!SAMPLE_EVENT_HAS(event, az_iot_connection_state_event, reason)
+      || (unsigned)event->scope >= AZ_IOT_CONN_SCOPE_COUNT)
   {
     return;
   }
@@ -393,9 +408,8 @@ static void on_adu_event(const az_iot_adu_event* event, void* user_ctx)
 {
   sample_run* run = (sample_run*)user_ctx;
 
-  /* Same contract as the connection event above: an event shorter than this
-   * build's struct does not carry every field read below. */
-  if (event->_internal_size < sizeof(*event))
+  /* `service_error` is the last field read here. */
+  if (!SAMPLE_EVENT_HAS(event, az_iot_adu_event, service_error))
   {
     return;
   }
@@ -655,9 +669,9 @@ int main(void)
   }
 
   printf(
-      "Device identity: manufacturer=%s model=%s installedUpdateId=%s/%s/%s\n"
-      "These are the compatibility properties the service matches an update "
-      "against.\n",
+      "Matched against a deployed update: manufacturer=%s model=%s environment=sim\n"
+      "Reported only (not matched, and omitted on the onboarding route): "
+      "installedUpdateId=%s/%s/%s\n",
       st.manufacturer,
       st.model,
       st.installed_provider,
@@ -692,15 +706,16 @@ int main(void)
     if (!st.run.announced && st.run.conn[ready_scope] == AZ_IOT_CONN_STATE_CONNECTED)
     {
       st.run.announced = 1;
-      printf("Ready for device update. Waiting for a deployment (Ctrl-C to exit)...\n");
+      printf("Ready. Waiting for the answer to the onboarding update request "
+             "(Ctrl-C to exit)...\n");
     }
 
-    /* A workflow ran to completion and returned to Idle. The device keeps
-     * running: another deployment may follow on the same session. */
+    /* A workflow ran to completion and returned to Idle. The process stays
+     * alive, but it asked once: nothing further arrives on this run. */
     if (st.run.workflow_completed)
     {
       st.run.workflow_completed = 0;
-      printf("Deployment workflow complete.\n");
+      printf("Deployment workflow complete. Restart the sample to ask again.\n");
       remove(st.sim.state_file); /* clear the resume blob */
     }
 
