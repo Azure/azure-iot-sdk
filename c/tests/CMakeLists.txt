@@ -243,6 +243,7 @@ az_iot_add_cmocka_test(az_iot_tests_gen1_twin_client unit/gen1_twin_client_test.
 target_link_libraries(az_iot_tests_gen1_twin_client PRIVATE az_iot_test_support az_iot_gen1)
 az_iot_add_cmocka_test(az_iot_tests_gen2_twin_client unit/gen2_twin_client_test.c)
 target_link_libraries(az_iot_tests_gen2_twin_client PRIVATE az_iot_test_support az_iot_gen2)
+target_include_directories(az_iot_tests_gen2_twin_client PRIVATE ${CMAKE_SOURCE_DIR}/src/core)
 
 az_iot_add_cmocka_test(az_iot_tests_adu_client unit/adu_client_test.c)
 az_iot_add_cmocka_test(az_iot_tests_adu_protocol unit/adu_protocol_test.c)

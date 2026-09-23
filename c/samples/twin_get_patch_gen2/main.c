@@ -113,15 +113,22 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
   ctx->conn_state = event->state;
 }
 
-static void on_desired(const uint8_t* patch, size_t patch_len, uint64_t version, void* user_ctx)
+/* A SNAPSHOT replaces local desired state; a PATCH merges onto it. */
+static void on_desired(
+    az_iot_gen2_twin_desired_kind kind,
+    uint64_t version,
+    const uint8_t* payload,
+    size_t payload_len,
+    void* user_ctx)
 {
   user_context* ctx = (user_context*)user_ctx;
   ctx->desired_count++;
   printf(
-      "twin desired (version %llu): %.*s\n",
+      "twin desired %s (version %llu): %.*s\n",
+      kind == AZ_IOT_GEN2_TWIN_DESIRED_SNAPSHOT ? "snapshot" : "patch",
       (unsigned long long)version,
-      (int)patch_len,
-      (const char*)patch);
+      (int)payload_len,
+      (const char*)payload);
 }
 
 /* gen2 returns the two twin sections separately, each with its own
@@ -253,6 +260,7 @@ int main(void)
   for (int i = 0; i < 1200 && user_ctx.conn_state != AZ_IOT_CONN_STATE_CONNECTED; ++i)
   {
     (void)az_iot_connection_client_do_work(&state.connection_client, 50);
+    (void)az_iot_gen2_twin_client_do_work(&state.twin);
     if (user_ctx.conn_state == AZ_IOT_CONN_STATE_FAULTED || user_ctx.provisioning_faulted)
     {
       break;
@@ -274,6 +282,7 @@ int main(void)
     for (int i = 0; i < 600 && (!user_ctx.get_done || !user_ctx.patch_done); ++i)
     {
       (void)az_iot_connection_client_do_work(&state.connection_client, 50);
+      (void)az_iot_gen2_twin_client_do_work(&state.twin);
     }
 
     /* A refused write is a failed sample run: the exchange completing is not
@@ -303,6 +312,7 @@ int main(void)
   for (int i = 0; i < 100 && user_ctx.conn_state != AZ_IOT_CONN_STATE_IDLE; ++i)
   {
     (void)az_iot_connection_client_do_work(&state.connection_client, 50);
+    (void)az_iot_gen2_twin_client_do_work(&state.twin);
   }
 
   sample_state_destroy(&state);
