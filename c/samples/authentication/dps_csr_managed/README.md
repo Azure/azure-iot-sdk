@@ -137,8 +137,9 @@ The chain length depends on the credential policy.
 
 ## Later runs
 
-- The operational key is loaded from `AZ_IOT_OPERATIONAL_KEY`; it is generated
-  (EC P-256) only when the file does not exist.
+- The operational key is loaded from `AZ_IOT_OPERATIONAL_KEY`. If the file is
+  missing, unreadable or not a PEM private key, a new EC P-256 key is generated and
+  **overwrites** it.
 - Every run registers again, and DPS issues a new certificate over the same key;
   `AZ_IOT_OPERATIONAL_CERT` is overwritten.
 - To rotate the key, delete both files.
