@@ -474,7 +474,7 @@ Rules that apply to both clients:
 
 ## 7. ADUv2: onboarding and renewal **[planned]**
 
-**ADUv1 is cut.** Its Twin-based public API is being removed; what survives is everything that has
+**ADUv1 is cut.** Its Twin-based public API has been removed; what survives is everything that has
 nothing to do with transport. ADU is re-layered into a transport-independent **`adu_core`** —
 manifest v5 parsing, JWS/SJWK verification, root keys, SHA-256 integrity, the
 download/backup/install/apply state machine, and reboot/resume persistence — plus an

@@ -253,9 +253,8 @@ are never leaked.
 
 ### Future work
 
-- Re-target the device-side ADU e2e scenarios at **ADUv2**. The five existing
-  `az_iot_tests_e2e_adu` scenarios drive a twin desired-property PATCH; ADUv1 is cut, so
-  they retire with it (see [adu-client-plan.md](adu-client-plan.md#what-aduv1-is-cut-means)).
+- Re-target the device-side ADU e2e scenarios at **ADUv2**. The five scenarios in
+  `tests/e2e/tests/e2e_adu_test.c` drove a device-twin deployment and are retired (not built) (see [adu-client-plan.md](adu-client-plan.md#what-aduv1-is-cut-means)).
   The replacement drives the update check, install and report through the DPS-fronted
   operations, with the service side verified in the ADU workflow's test job. The device
   fixture and the mocked crypto/payload hooks carry over unchanged.

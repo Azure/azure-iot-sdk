@@ -463,7 +463,7 @@ carrying delivery and reporting.
 
 | Channel | Generation | Status |
 |---|---|---|
-| Twin-based (ADUv1) | gen1 | **Cut** — the channel and its public API are being removed, not kept behind a flag |
+| Twin-based (ADUv1) | gen1 | **Cut** — the channel and its public API were removed, not kept behind a flag |
 | DPS-fronted RPC (ADUv2) | gen2 | **The only channel that will ship** — declared, not yet implemented |
 
 > **ADUv2 is specified elsewhere; this section only states where the seam is.**

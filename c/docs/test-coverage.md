@@ -713,8 +713,8 @@ below stand in for what would otherwise be a second flavor section.
 > being extended with newly identified gaps the way the other areas are. Revisit once the
 > feature settles.
 
-Covers `az_iot_adu_client`: the deployment workflow driven off desired properties, the
-agent state reported back through the twin, and the manifest crypto (SHA-256 file hashes,
+Covers `az_iot_adu_client`: the deployment workflow driven by ADUv2 `updateMetadata` offers, the
+status reported through the ADUv2 channel, and the manifest crypto (SHA-256 file hashes,
 RS256 signature verification) in `c/adapters/adu/crypto_openssl`.
 
 | Group | Test | Scenario | Type | Status | Code Location |
@@ -755,12 +755,11 @@ RS256 signature verification) in `c/adapters/adu/crypto_openssl`.
 | | Malformed jws is rejected | Wrong segment count, bad base64url, missing header. | unit | Done | [malformed_jws_is_rejected](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_client_test.c#L1449) |
 | | Malformed manifest JSON is rejected | — | unit | Done | [malformed_manifest_json_is_rejected](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_client_test.c#L1481) |
 | | Verify file hash rejects an unsupported algorithm | — | unit | Done | [verify_file_hash_rejects_an_unsupported_algorithm](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_client_test.c#L1534) |
-| End-to-end | Agent state report | Device reports its ADU agent state through the twin. | e2e | Done | [test_adu_agent_state_report](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/e2e/tests/e2e_adu_test.c#L717) |
-| | Update deployment | Real deployment driven from the service. | e2e | Done | [test_adu_update_deployment](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/e2e/tests/e2e_adu_test.c#L754) |
-| | Install failure rollback | — | e2e | Done | [test_adu_install_failure_rollback](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/e2e/tests/e2e_adu_test.c#L783) |
-| | Verify rejects the deployment | — | e2e | Done | [test_adu_verify_rejects_deployment](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/e2e/tests/e2e_adu_test.c#L813) |
-| | Already installed is a noop | — | e2e | Done | [test_adu_already_installed_noop](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/e2e/tests/e2e_adu_test.c#L844) |
-| | Cancelled deployment reported service side | — | e2e | Pending | *e2e_adu_test.c* |
+| End-to-end | Agent state report | Device reports its ADU agent state. | e2e | Pending | *test_adu_agent_state_report* (e2e_adu_test.c, retired with the device-twin channel; awaiting the ADUv2 rewrite) |
+| | Update deployment | Real deployment driven from the service. | e2e | Pending | *test_adu_update_deployment* (e2e_adu_test.c, retired with the device-twin channel; awaiting the ADUv2 rewrite) |
+| | Install failure rollback | — | e2e | Pending | *test_adu_install_failure_rollback* (e2e_adu_test.c, retired with the device-twin channel; awaiting the ADUv2 rewrite) |
+| | Verify rejects the deployment | — | e2e | Pending | *test_adu_verify_rejects_deployment* (e2e_adu_test.c, retired with the device-twin channel; awaiting the ADUv2 rewrite) |
+| | Already installed is a noop | — | e2e | Pending | *test_adu_already_installed_noop* (e2e_adu_test.c, retired with the device-twin channel; awaiting the ADUv2 rewrite) |
 | Event observers | A workflow transition is reported | State changes reach the application through the registry instead of being pollable only. | unit | Done | [a_workflow_transition_is_reported](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_client_test.c#L2361) |
 |  | Resuming a fresh client reports the restored state | Resume raises its transition synchronously; the other resume tests reuse an instance already in that state, so it is suppressed and untested there. | unit | Done | [resuming_a_fresh_client_reports_the_restored_state](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_client_test.c#L1075) |
 |  | An abandoned operation is reported to observers | A dropped request is told to the application, which otherwise cannot distinguish it from "no update available". | unit | Done | [an_abandoned_operation_is_reported_to_observers](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_client_test.c#L2168) |
