@@ -32,7 +32,12 @@ extern "C"
    * Algorithm:
    *   base  = min(max_delay_ms, initial_delay_ms << min(attempt - 1, 30))
    *   jitter ~ uniform(-jitter_pct%, +jitter_pct%) of base
-   *   result = clamp(base + jitter, 1, max_delay_ms)  (if reconnect enabled)
+   *   result = clamp(base + jitter, 1, UINT32_MAX)   (if reconnect enabled)
+   *
+   * max_delay_ms caps the BACKOFF, not the jittered result: jitter varies
+   * around base, so a delay may exceed max_delay_ms by up to jitter_pct.
+   * Clamping it back would put half of all retries on exactly max_delay_ms
+   * once the ladder reached the cap.
    *
    * The shift cap at 30 prevents UB on 32-bit overflow. attempt == 0 is treated
    * as attempt == 1.

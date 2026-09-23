@@ -1,0 +1,7 @@
+# Top-most EditorConfig file
+root = true
+
+# Apply to all C# files
+[*.cs]
+
+file_header_template = Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.\nSee LICENSE file in the project root for full license information.

@@ -97,9 +97,10 @@ stateDiagram-v2
     DPS_DONE --> [*]: hub host and device id applied
 ```
 
-A transport drop or transient session failure during a DPS phase is handled by the same backoff path
-as a hub failure, and a retry restarts provisioning from `DPS_CONNECTING`. A *registration* failure
-is not: `dps_apply_deferred()` transitions to `FAULTED`. See §5.2 for the split.
+Every failure in a DPS phase is handled by the same backoff path as a hub failure, and a retry
+restarts provisioning from `DPS_CONNECTING` — a rejected registration included. What does not retry
+is an assignment the client cannot use: `reject_assignment()` faults on an unsupported
+`connectionProfile` or one that contradicts the attached feature clients. See §5.2 for the split.
 
 ---
 
@@ -214,6 +215,67 @@ Worked examples: [samples/websockets](../../samples/websockets/main.c) and
 [samples/proxy](../../samples/proxy/main.c). Each is the `telemetry_gen1` sample with
 one of these options set, so the diff against it is exactly the feature.
 
+### 3.2 Session terms per role **[implemented]**
+
+Every CONNECT also carries the terms of the session it is opening. They are decided per session
+role, in `resolve_session_options()` in `src/core/connection_client.c`, and the three roles do not
+want the same thing.
+
+| Role | MQTT | Clean Start / Clean Session | Session Expiry | Will | DISCONNECT reason |
+| --- | --- | --- | --- | --- | --- |
+| `DPS` | 3.1.1 | clean (`1`), not overridable | n/a | never | n/a |
+| `HUB_CLASSIC` | 3.1.1 | resume (`0`) by default | n/a | `opts.lwt`, if set | n/a |
+| `HUB_NEXT` | 5 | resume by default | `opts.session_expiry_seconds`, default 1 h | `opts.lwt`, if set | `0x04` when a Will is set, else `0x00` |
+
+Both hub roles honour `opts.session_continuity` (`DEFAULT` / `RESUME` / `CLEAN`). DPS does not: the
+provisioning service does not implement session persistence at all, so honouring a request for it
+would promise something the service does not do.
+
+Why each one:
+
+- **DPS starts clean.** Provisioning does not support persistent sessions — it treats every session
+  as non-persistent whatever the flag says — and the response filter is re-subscribed on every
+  attempt. That reason is a property of the *service*, not of how long the session lives, so it is
+  unaffected by any change to when the provisioning session is torn down: `clean_start` is only
+  read at CONNECT, and it is inert at this service whenever it is read. A provisioning session that
+  outlived registration, or ran alongside a hub session, would still take the same terms.
+- **Classic resumes.** A Classic hub holds the device's *subscription* and its in-flight QoS 1 only
+  for a session that is not clean. Connecting clean does not lose the hub's server-side C2D queue —
+  that is delivered once the device re-subscribes — but it does discard the subscription and any
+  in-flight delivery, so resuming is the cheaper default. This is also the behaviour the role
+  already had before the terms were set explicitly.
+- **Next resumes, with an expiry.** Session continuity on this generation is a **transport
+  efficiency choice, not a correctness one**: the backend never reads `clean_start` or
+  `session_present`, the device publishes birth on every connection, and every feature protocol is
+  correct even if each connect started a fresh session. What resuming buys is the broker's QoS 1
+  redelivery across a transient drop and a re-subscribe saved. Both halves are required — a session
+  asked to expire the instant the connection closes is gone before any reconnect could resume it —
+  which is why the expiry is set rather than left at 0.
+
+Four rules that hold everywhere:
+
+- **A v3.1.1 broker never receives a v5-only property.** Session Expiry and Will Delay are MQTT 5
+  CONNECT properties; a v3.1.1 CONNECT has no field to carry them, and the DISCONNECT reason code
+  does not exist in 3.1.1 either.
+- **The SDK sets no Will of its own.** `opts.lwt` is the application's, and defaults to none. The
+  platform deliberately leaves the Will slot to the application: MQTT 5 allows exactly one Will per
+  CONNECT, device presence is derived from broker-emitted connection lifecycle events rather than
+  from a device-authored will message, and taking the slot would deny the application its own
+  "device went away" signal. It is never put on a provisioning session, whatever that session's
+  lifetime: nothing consumes a will published there.
+- **`Session Present` drives no application decision.** It is reported to the application and
+  carried on the birth message as a diagnostic. No feature client tears down state because of it.
+  It is reported on both MQTT versions — a Classic session connects with Clean Session 0, so this
+  is the only place the application learns whether the broker resumed it.
+- A Will Delay only means something while the session is alive, so on `HUB_NEXT` the session expiry
+  is raised to cover a delay longer than it; MQTT 5 ends the delay at whichever comes first.
+
+Session Expiry is an operational tuning knob. A long expiry suits a rarely-connected, low-traffic
+device; a shorter one suits an always-connected device receiving heavy traffic, whose disconnected
+session queue (bounded at 100 messages / 1 MB, and destroyed entirely on overflow) would otherwise
+fill. The default is one hour, which matches the broker namespace default; the namespace maximum is
+eight hours and the broker clamps anything above it.
+
 ---
 
 ## 4. Connection profile selection **[implemented]**
@@ -286,19 +348,38 @@ sequenceDiagram
     else reconnect disabled (initial_delay_ms == 0)
         Conn->>Conn: state = FAULTED
         Conn-->>App: state callback(FAULTED, reason)
-    else attempts exhausted (attempt > max_attempts)
+    else this scope's attempts exhausted (retry_attempt[scope] > max_attempts)
         Conn->>Conn: state = FAULTED
         Conn-->>App: state callback(FAULTED, reason)
     else
-        Conn->>Conn: attempt++, delay = backoff(attempt)
+        Conn->>Conn: retry_attempt[scope]++, delay = backoff(retry_attempt[scope])
         Conn->>Conn: state = RECONNECTING
         Conn-->>App: state callback(RECONNECTING, reason)
         Note over Conn: do_work() waits until reconnect_due_ms
         Conn->>Conn: start_connect_attempt() -> full sequence of section 3
         Hub-->>Conn: CONNACK ok
-        Conn->>Conn: attempt = 0, state = CONNECTED
+        Conn->>Conn: retry_attempt[HUB] = 0, state = CONNECTED
     end
 ```
+
+**The retry ladder is per scope.** `retry_attempt[]` is indexed by
+`az_iot_connection_scope` (`DPS`, `HUB`), and `max_attempts` is a budget for **each** ladder rather
+than one shared across both. So a device may spend its whole hub budget and still get a full set of
+registration attempts, and a registration that follows an exhausted hub ladder starts again at
+`initial_delay_ms` instead of inheriting the hub's capped backoff.
+
+Which ladder a retry climbs is the scope of the **next attempt**, which is not always the scope of
+the failure: a hub CONNACK that rejects the identity is a HUB failure whose retry is a DPS
+registration.
+
+Reset points differ per ladder:
+
+| Event | Effect |
+| --- | --- |
+| DPS registration succeeds | both ladders reset |
+| Hub CONNACK succeeds (birth-ack on Hub-Next) | `HUB` resets; `DPS` untouched |
+| `dps.max_hub_connect_attempts_before_reprovision` crossed | `DPS` resets, so the first registration attempt waits `initial_delay_ms` |
+| `open()` / `close()` | both ladders reset |
 
 ### 5.1 Backoff policy
 
@@ -309,13 +390,13 @@ sequenceDiagram
 ```text
 base   = min(max_delay_ms, initial_delay_ms << min(attempt - 1, 30))
 jitter = uniform(-jitter_pct%, +jitter_pct%) * base
-delay  = clamp(base + jitter, 1, max_delay_ms)
+delay  = clamp(base + jitter, 1, UINT32_MAX)
 ```
 
 | Field | Default | Notes |
 | --- | --- | --- |
 | `initial_delay_ms` | 1000 | `0` disables automatic reconnect entirely. |
-| `max_delay_ms` | 30000 | Cap for the exponential term and for the jittered result. |
+| `max_delay_ms` | 30000 | Cap for the exponential term only. Jitter varies around it, so a delay may exceed it by up to `jitter_pct`; clamping the jittered result would put half of all retries on exactly this value once the ladder reached the cap. |
 | `max_attempts` | 0 | `0` means retry forever. |
 | `jitter_pct` | 20 | Symmetric randomization, seeded from the monotonic clock. |
 
@@ -333,13 +414,22 @@ successful CONNACK.
   failing all clear the phase and reconnect.
 - Hub-Next birth-ack timeout (60 s per handshake step), checked in `_do_work()`.
 
+- **A failed registration, or one with no assignment.** `dps_apply_deferred()` sets
+  `needs_reprovision` and calls `schedule_reconnect(AZ_IOT_CONN_SCOPE_DPS, status)`, so the retry is
+  a re-registration on the DPS ladder rather than an ordinary connect — which would have no host on
+  a DPS client. It faults only when no policy is configured or the application has closed.
+  `dps_pending_retry_after_secs`, when the service supplied one, raises `reconnect_due_ms` to at
+  least that far out: the two are a floor, not alternatives, and `max_delay_ms` deliberately does
+  **not** cap it — the cap bounds how long the SDK waits of its own accord, not how long the service
+  asked to be left alone.
+
 Not triggers, because they fault instead:
 
-- **DPS registration failure.** `dps_apply_deferred()` transitions to `FAULTED` when the register
-  status is non-OK or no assignment arrived, and again if applying the assigned host or device id
-  fails. Provisioning is re-run on a reconnect only via the re-provision path below.
-- **An unsupported `connectionProfile`.** Faults with
-  `AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED` rather than guessing a protocol (§4).
+- **An assignment the client cannot use.** `reject_assignment()` faults with
+  `AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED` for a profile the SDK does not speak, or
+  `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH` when the assigned generation contradicts the attached
+  feature clients, rather than guessing a protocol (§4). Terminal even with a policy configured, and
+  it also forces the next `open()` back through DPS so the stale cached host cannot be reused.
 
 `AZ_IOT_ERR_IDENTITY_REJECTED` on CONNACK is a special case: when DPS is configured and reconnection
 is enabled, it sets `reprovision_pending`, so the next attempt runs `dps_start()` for a fresh
@@ -380,7 +470,7 @@ that fails after that point, from the refused socket to the CONNACK, runs throug
 `schedule_reconnect()` like any later attempt.
 
 So the synchronous half of the first attempt is never retried and the asynchronous half always is.
-That is the split [connection.md §5.4](../connection.md#54-does-the-retry-policy-cover-the-first-attempt)
+That is the split [connection.md §5.5](../connection.md#55-does-the-retry-policy-cover-the-first-attempt)
 specifies, and it holds here without a separate option.
 
 ---
@@ -680,7 +770,9 @@ cannot be expressed to the TLS stack — not by a handshake, certificate, chain 
 Those all reach the core as `AZ_IOT_ERR_MQTT`, because the adapter signals its own failures with
 negative codes and [`az_iot_mqtt_connack_result()`](../../src/core/mqtt_iface.c) maps every negative
 code to `AZ_IOT_ERR_MQTT` by design (a failure that never reached a broker carries no verdict about
-the identity). `AZ_IOT_ERR_AUTH` is never produced on the connection path at all. The consequence is
+the identity). `AZ_IOT_ERR_AUTH` is produced by `az_iot_mqtt_disconnect_result()` for a server DISCONNECT
+carrying `0x87 Not authorized` — authorization revoked mid-session — and is classified
+non-retriable. The consequence is
 recorded in [§9.6](#96-known-gaps).
 
 ### 9.2 CONNACK mapping
@@ -789,7 +881,7 @@ left as gaps rather than guesses.
 
 | Phase | Trigger | Surfaced as | Mapped by | SDK action | Notes / limits |
 | --- | --- | --- | --- | --- | --- |
-| Handshake | Any TLS failure — expired, untrusted CA, hostname mismatch, revoked, version or cipher mismatch | `AZ_IOT_ERR_MQTT` | Paho negative code → `az_iot_mqtt_connack_result()` | reconnect if a policy is configured, else fault | **All five collapse to one value.** `AZ_IOT_ERR_TLS` is produced only for local key material the stack cannot be given (next row), never for a handshake outcome. |
+| Handshake | Any TLS failure — expired, untrusted CA, hostname mismatch, revoked, version or cipher mismatch | `AZ_IOT_ERR_MQTT` | Paho negative code → `az_iot_mqtt_connack_result()` | reconnect if a policy is configured, else fault | **All five collapse to one value.** `AZ_IOT_ERR_TLS` is produced only for local key material the stack cannot be given (next row), never for a handshake outcome. The adapter's own negative code now reaches the application as `error->code` with `source` naming the layer, so the detail is recoverable even though the result is not specific. |
 | Credential | Certificate material the adapter cannot use — a certificate with no key, a key URI with no engine or provider, a key reference nothing can express | `AZ_IOT_ERR_CREDENTIAL_INCOMPLETE` (core) or `AZ_IOT_ERR_TLS` (key custody) | `connection_client.c` validation before the connect, and `az_iot_paho_key_custody.c` | the attempt fails before any socket is opened | Deliberate: caught up front so the device gets a specific result instead of an opaque TLS failure several seconds later. This is the one place a TLS-flavoured result is produced. |
 | Handshake | TLS alert detail | not in the result | `paho_ssl_error_callback` | logged only | The OpenSSL error queue is drained line by line to the trace log when `AZ_IOT_PAHO_SSL` is built and tracing is enabled. It is the only place the concrete reason appears. |
 | Handshake | **Client certificate rejected during the handshake** | `AZ_IOT_ERR_MQTT` | Paho negative code | reconnect | No MQTT session exists, so no CONNACK code is available. Correctly **not** treated as an identity rejection: the negative-code rule exists for exactly this. Consequence: a device whose operational certificate has been revoked retries forever instead of re-provisioning. |
@@ -815,7 +907,7 @@ left as gaps rather than guesses.
 
 | Phase | Trigger | Surfaced as | Mapped by | SDK action | Notes / limits |
 | --- | --- | --- | --- | --- | --- |
-| Registering | Registration status is failed or disabled | `AZ_IOT_ERR_DPS` | connection client | `dps_finalize()` → `FAULTED` | Not a reconnect trigger, by design (§5.2). |
+| Registering | Registration status is failed or disabled | `AZ_IOT_ERR_DPS` | connection client | `needs_reprovision = true`, `schedule_reconnect(SCOPE_DPS)`; `FAULTED` only with no policy or after `close()` | A service-supplied `retry-after` raises the deadline as a floor over the policy's backoff, uncapped by `max_delay_ms`. |
 | Registering | Response payload empty | `AZ_IOT_ERR_PROTOCOL` | connection client | `FAULTED` | Checked **before** calling the parser: the dependency's precondition on an empty span would spin, because this build ships with precondition checking on and no handler installed. |
 | Registering | Response payload unparsable | `AZ_IOT_ERR_PROTOCOL` | dependency parser | `FAULTED` | The body is logged. |
 | Registering | Assigned hostname or device id longer than its 128-byte buffer | `AZ_IOT_ERR_NOT_SUPPORTED` | connection client | `FAULTED` | |
@@ -825,7 +917,7 @@ left as gaps rather than guesses.
 | Assignment | `registrationState` key absent | `AZ_IOT_ERR_NOT_FOUND`, treated as OK | connection client | continues, profile stays classic | Deliberate: the stock api-version does not carry the key. |
 | Polling | `assigning` with a `retry-after` | `AZ_IOT_OK` | connection client | `dps_poll_due_ms = now + retry_after_seconds * 1000`; the pump re-publishes the query when it elapses | The service-supplied delay is honoured verbatim, with no reconnect backoff on top and no SDK-side cap on the number of polls. |
 | Assignment | Unrecognised `connectionProfile`, or one longer than 64 bytes | `AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED` | `connection_profile_set()`, detected in `dps_apply_deferred()` | `FAULTED` | The raw string stays readable through the profile getter even in `FAULTED`. **[planned]** — the field never arrives at the current api-version. |
-| Registration SUBACK | The `$dps/registrations/res/#` subscription is refused | the SUBACK mapper's result — `AZ_IOT_ERR_SUBSCRIPTION_REFUSED` or `AZ_IOT_ERR_MQTT` | `az_iot_mqtt_suback_result()` | `dps_finalize(status, false)` → `FAULTED` | Handled in the DPS event path, guarded on `dps_phase == DPS_PHASE_SUBSCRIBING`. The assignment is delivered on that filter, so there is no point retrying the register publish without it. |
+| Registration SUBACK | The `$dps/registrations/res/#` subscription is refused | `AZ_IOT_ERR_SUBSCRIPTION_REFUSED` or `AZ_IOT_ERR_MQTT` | `az_iot_mqtt_suback_result()` | `dps_finalize(status, false)`, then the registration-failure path above — **retried under the policy** | **Gap.** `dps_apply_deferred()` branches on `status != AZ_IOT_OK` alone, so it does not honour `AZ_IOT_ERR_SUBSCRIPTION_REFUSED` as terminal the way the hub subscription gate does. A deterministic refusal of a fixed filter is re-registered until the policy is exhausted. Same defect as the presence path. |
 | Any DPS phase | DPS message arrives in the wrong phase | ignored | connection client | dropped | Guarded on `dps_phase` being REGISTERING or POLLING. |
 | Hub CONNACK | Identity rejected on a DPS-provisioned device | `AZ_IOT_ERR_IDENTITY_REJECTED` | `az_iot_mqtt_connack_result()` | `reprovision_pending` → `dps_start()` on the next attempt | See [§9.2](#92-connack-mapping). |
 
@@ -923,63 +1015,61 @@ registry carries Classic feature filters and application custom topics.
 
 ### 9.6 Known gaps
 
-Filling the table above surfaced these, re-verified against `main`. They are recorded here rather
-than smoothed over, because an honest gap is the point of the exercise. Four entries from the first
-version of this table have since been **closed** and are listed at the end, so the delta is legible.
+Re-verified against `main` at each revision of this document. They are recorded rather than smoothed
+over, because an honest gap is the point of the exercise. Entries that have since **closed** are
+listed at the end rather than deleted, so the delta stays legible.
 
-1. **A deterministic CONNACK refusal is retried.** `1 Connection Refused, unacceptable protocol
-   version` is the clearest case — it can never succeed on retry — and so are v5 `0x81`, `0x82`,
-   `0x84`, `0x8A` and `0x95`. All become `AZ_IOT_ERR_MQTT` and are retried until the policy is
-   exhausted. The CONNACK mapper is right to exclude them from the identity set; what is missing is
-   the fatal classification alongside it. The SUBACK path now has exactly that
-   (`AZ_IOT_ERR_SUBSCRIPTION_REFUSED` is terminal regardless of policy), which is the shape the
-   CONNACK path still needs. Tracked as the fatal-failure classification in
-   [connection-impl-status.md](connection-impl-status.md).
-2. **The presence handshake ignores the SUBACK classification.** The subscription gate treats
-   `AZ_IOT_ERR_SUBSCRIPTION_REFUSED` as terminal regardless of policy; the presence path branches on
-   `reconnect_enabled()` alone and retries the same protocol-fixed filter until the policy is
-   exhausted. One branch, and the verdict is already in hand.
-3. **The server DISCONNECT reason code is discarded.** `paho_disconnected` logs it and enqueues
-   `AZ_IOT_OK`, so `0x8E Session taken over` — where reconnecting makes things actively worse — is
-   indistinguishable from a routine drop. The highest-value remaining fix in this table.
-4. **The PUBACK reason code is flattened.** `paho_publish_failure5` ignores `response->reasonCode`,
-   so a caller cannot separate `0x87 Not authorized` (do not retry) from `0x97 Quota exceeded` (back
-   off and retry). The same rule the CONNACK and SUBACK mappers now enforce; PUBACK is the one ack
-   still without a mapper.
-5. **No TLS-specific result for a handshake outcome.** `AZ_IOT_ERR_TLS` is produced only for local
-   key material that cannot be handed to the stack; every certificate, chain, hostname and cipher
-   failure still arrives as `AZ_IOT_ERR_MQTT`, with the concrete reason only in the trace log.
-   `AZ_IOT_ERR_AUTH` is never produced at all.
-6. **A v5 redirection is retried against the same host.** `0x9C Use another server` and
-   `0x9D Server moved` carry a Server Reference property that is not read.
-7. **A dropped direct-method invocation is silent to the application.** Only a log warning marks it.
-   A slot is released by responding; a handler that returns without responding leaks one permanently.
-8. **The classic-hub username is not bounds-checked.** Exceeding `AZ_IOT_MQTT_USERNAME_BUF` on the
-   gen2 path returns `AZ_IOT_ERR_NOT_ENOUGH_SPACE`; on the Classic path the username is simply
-   omitted and the connect proceeds.
-9. **The single-threaded contract is unenforced.** Nothing detects an adapter callback delivered off
+1. **A deterministic CONNACK refusal is still retried.** `1 Connection Refused, unacceptable
+   protocol version` can never succeed on retry, and neither can v5 `0x81`, `0x82`, `0x84`, `0x8A`
+   or `0x95`. All become `AZ_IOT_ERR_MQTT`, which `reason_is_retriable()` classifies retriable, so
+   the ladder runs to exhaustion. Narrowed, though: the event now carries `is_retriable` and
+   `error->code`, so an application can see the verdict and the wire code even while the SDK retries.
+   What is missing is the SDK acting on its own classification for these codes.
+2. **Two paths ignore the SUBACK classification.** The hub subscription gate treats
+   `AZ_IOT_ERR_SUBSCRIPTION_REFUSED` as terminal regardless of policy. The presence path branches on
+   `reconnect_enabled()` alone, and `dps_apply_deferred()` on `status != AZ_IOT_OK` alone, so both
+   re-issue a protocol-fixed filter that was deterministically refused until the policy is
+   exhausted. The verdict is already in hand in both cases; only the branch is missing.
+3. **The PUBACK reason code is flattened.** `paho_publish_failure5()` reports `AZ_IOT_ERR_MQTT`
+   without reading `response->reasonCode`, so a caller cannot separate `0x87 Not authorized` (do not
+   retry) from `0x97 Quota exceeded` (back off and retry). CONNACK, SUBACK and DISCONNECT now each
+   have a mapper; PUBACK is the one ack left without one.
+4. **`0x8E Session taken over` is not distinguished.** `az_iot_mqtt_disconnect_result()` names only
+   `0x00` and `0x87`; everything else becomes `AZ_IOT_ERR_MQTT` and reconnects. For `0x8E` that is
+   the one response that makes things worse — two devices sharing a client id evict each other
+   indefinitely. `0x9C Use another server` and `0x9D Server moved` are grouped there too and are
+   retried against the same host, the Server Reference property being unread. The raw code does
+   reach the application through `error->code`, so this is a classification gap rather than a
+   total loss.
+5. **No TLS-specific result for a handshake outcome.** Every certificate, chain, hostname and cipher
+   failure arrives as `AZ_IOT_ERR_MQTT`; `AZ_IOT_ERR_TLS` is produced only for local key material
+   the stack cannot be given. The adapter's negative code now reaches `error->code`.
+6. **A dropped direct-method invocation is silent to the application.** Only a log warning marks it.
+   A slot is released by responding; a handler that returns without responding leaks one until the
+   request times out.
+7. **The Classic hub username is not bounds-checked.** The gen2 path returns
+   `AZ_IOT_ERR_NOT_ENOUGH_SPACE` when `AZ_IOT_MQTT_USERNAME_BUF` is too small. The Classic path
+   ignores the failure of `az_iot_hub_client_get_user_name()` and connects with no username at all.
+8. **The single-threaded contract is unenforced.** Nothing detects an adapter callback delivered off
    the pump thread.
-10. **The default reconnection policy is not applied.** `az_iot_reconnection_policy_default()` exists
-   and `az_iot_connection_client_options_default()` does not call it, so a caller taking the stock
-   options gets `initial_delay_ms == 0`, which means reconnect disabled. Every retryable row above
-   then faults on its first occurrence. The shipped default should not be read as intended
-   behaviour.
-11. **Re-provisioning intent is gated on retries being enabled.** `needs_reprovision` is only set
-    when a reconnection policy is configured, so a device with retries disabled that is refused on
-    identity drops the intent instead of carrying it to the next `open()`.
-12. **A capacity failure does not say which pool ran out.** Every bound in
-    [§9.4](#94-compile-time-bounds) surfaces as `AZ_IOT_ERR_NOT_ENOUGH_SPACE` or
-    `AZ_IOT_ERR_NOT_SUPPORTED` from whatever call was last, with no indication of the pool. On an
-    unattended device that is expensive to diagnose.
+9. **A capacity failure does not say which pool ran out.** Every bound in
+   [§9.4](#94-compile-time-bounds) surfaces as `AZ_IOT_ERR_NOT_ENOUGH_SPACE` or
+   `AZ_IOT_ERR_NOT_SUPPORTED` from whatever call was last, with no indication of the pool.
 
-**Closed since this table was first written:**
+**Closed, in the order they closed:**
 
 | Gap | How it closed |
 | --- | --- |
-| The SUBACK reason code is flattened | `az_iot_mqtt_suback_result()` now classifies it, and the adapter calls it on every SUBACK path ([§9.3](#93-suback-mapping)). |
+| The SUBACK reason code is flattened | `az_iot_mqtt_suback_result()` classifies it, and the adapter calls it on every SUBACK path ([§9.3](#93-suback-mapping)). |
 | The subscription gate, `AZ_IOT_ERR_SUBSCRIPTION_REFUSED` and the failure scope are planned | All shipped, with the gate deadline ([§9.5.6](#956-phase-6--subscription-gate)). |
-| `close()` returns an error in `CONNECTING` and in `FAULTED` | `close()` is a legal exit from both. The `CONNECTING` half of that claim was **wrong when written**: `active_client` is assigned synchronously inside `start_connect_attempt()`, so it was never NULL to a caller. Recorded rather than quietly dropped. |
-| Unverified: a refused DPS registration SUBACK | Verified: it is handled in the DPS event path and faults with the mapper's result ([§9.5.4](#954-phase-4--dps-provisioning)). |
+| `close()` returns an error in `CONNECTING` and in `FAULTED` | `close()` is a legal exit from both. The `CONNECTING` half of that claim was **wrong when written**: `active_client` is assigned synchronously inside `start_connect_attempt()`, so it was never NULL to a caller. |
+| Unverified: a refused DPS registration SUBACK | Verified: handled in the DPS event path. It is now item 2 above, because the handling ignores the refusal classification. |
+| The reconnect jitter is clamped to the backoff cap | Fixed in #219. `max_delay_ms` bounds the backoff only; the jittered delay may exceed it by up to `jitter_pct`, which is what keeps the band symmetric and stops half of all retries landing on exactly the cap. |
+| The default reconnection policy is not applied | Fixed in #215. `az_iot_connection_client_options_default()` now fills a retrying policy, so stock options no longer mean "reconnection disabled". |
+| Re-provisioning intent is gated on retries being enabled | Fixed. An identity rejection sets `needs_reprovision` whatever the policy, so the intent survives to the next `open()`. The `max_hub_connect_attempts_before_reprovision` trigger stays gated, deliberately: it counts a run of automatic retries, and with retries disabled there is no such run. |
+| A registration failure is fatal | Fixed in #214. It retries on the DPS ladder, with a service-supplied `retry-after` as an uncapped floor. Only an unusable assignment stays terminal. |
+| The server DISCONNECT reason code is discarded | Partly fixed: it is classified by `az_iot_mqtt_disconnect_result()` and the raw code is carried, but only `0x87` is named — see item 4. |
+| The state event carries no diagnostics | Fixed. `az_iot_connection_error_detail` (`source`, `code`, `message`) and `is_retriable` are on the event. |
 
 ---
 

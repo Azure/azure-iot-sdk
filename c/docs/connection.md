@@ -84,9 +84,11 @@ stateDiagram-v2
     DPS_DONE --> [*]: hub host and device id applied
 ```
 
-A transport drop or transient session failure during a DPS phase is handled by the same backoff path
-as a hub failure, and a retry restarts provisioning from `DPS_CONNECTING`. A *registration* failure is
-not: it goes straight to `FAULTED`. See [§5.2](#52-what-triggers-a-reconnect) for the split.
+Every failure in a DPS phase is handled by the same backoff path as a hub failure, and a retry
+restarts provisioning from `DPS_CONNECTING` — a rejected registration included. What does *not*
+retry is an assignment the client cannot use: an unrecognised connection profile, or one that
+contradicts the generation the attached feature clients require. See
+[§5.3](#53-what-triggers-a-reconnect) for the split.
 
 ---
 
@@ -198,6 +200,49 @@ Two rules:
   leaving the proxy setting unset can silently pick up an ambient proxy from the environment.
   Set it explicitly to be independent of that.
 
+### 3.2 Session terms per role
+
+Every CONNECT also carries the terms of the session it is opening, and the three roles do not want
+the same thing.
+
+| Role | MQTT | Clean start | Session expiry | Will |
+| --- | --- | --- | --- | --- |
+| Provisioning | 3.1.1 | clean, not overridable | n/a | never |
+| Classic hub | 3.1.1 | resume by default | n/a | caller-supplied, if set |
+| gen2 hub | 5 | resume by default | caller-supplied, default 1 h | caller-supplied, if set |
+
+Rules every client must implement:
+
+- **Provisioning always connects clean, and a caller cannot override it.** The provisioning service
+  does not implement session persistence at all — it treats every session as non-persistent whatever
+  the flag says — so honouring a request to resume would promise something the service does not do.
+  This is a property of the *service*, not of how long the session lives, so it is unaffected by any
+  change to when that session is torn down.
+- **Both hub roles resume by default**, and both honour a caller's explicit choice. Resuming keeps
+  the broker's subscription state and its in-flight QoS 1 redelivery across a transient drop.
+  Connecting clean does not lose a server-side C2D queue — that is delivered once the device
+  re-subscribes — but it does discard the subscription and any in-flight delivery, so resuming is
+  the cheaper default.
+- **On gen2 this is an efficiency choice, not a correctness one.** Every feature protocol is correct
+  even if each connect started a fresh session; what resuming buys is redelivery and a saved
+  re-subscribe. Both halves are required together — a session asked to expire the instant the
+  connection closes is gone before any reconnect could resume it — which is why an expiry is set
+  rather than left at zero.
+- **Session expiry and the DISCONNECT reason code are MQTT 5 only.** A v3.1.1 CONNECT has no field
+  to carry an expiry, and 3.1.1 has no DISCONNECT reason code.
+- **The Will slot belongs to the application.** MQTT 5 allows exactly one Will per CONNECT, and
+  device presence is derived from broker-emitted connection lifecycle events rather than from a
+  device-authored will message, so taking the slot would deny the application its own
+  "device went away" signal. A Will is never put on a provisioning session, whatever its lifetime:
+  nothing consumes a will published there.
+- **Whether the broker resumed the session is a diagnostic, not a trigger.** It is reported on both
+  MQTT versions, and no feature client tears down state because of it. On Classic it is the only
+  place the application learns whether the broker resumed it.
+
+Session expiry is an operational tuning knob: a long expiry suits a rarely-connected, low-traffic
+device, a shorter one an always-connected device under heavy traffic whose disconnected-session
+queue would otherwise fill.
+
 ---
 
 ## 4. Connection profile selection
@@ -268,17 +313,17 @@ sequenceDiagram
     else reconnect disabled
         Conn->>Conn: state = FAULTED
         Conn-->>App: state callback(FAULTED, reason)
-    else attempts exhausted, or the failure is fatal
+    else this lifecycle's attempts exhausted, or the failure is terminal
         Conn->>Conn: state = FAULTED
         Conn-->>App: state callback(FAULTED, reason)
     else
-        Conn->>Conn: attempt++, delay = backoff(attempt)
+        Conn->>Conn: this lifecycle's attempt++, delay = backoff(attempt)
         Conn->>Conn: state = RECONNECTING
         Conn-->>App: state callback(RECONNECTING, reason)
         Note over Conn: wait out the backoff delay
         Conn->>Conn: restart the full sequence of section 3
         Hub-->>Conn: CONNACK ok
-        Conn->>Conn: attempt = 0, state = CONNECTED
+        Conn->>Conn: hub attempts = 0, state = CONNECTED
     end
 ```
 
@@ -294,17 +339,47 @@ successful CONNACK — but the parameters and their defaults are **not** current
 | Cap (default) | 30 s | 60 s as configured by the connection client; 30 min for the bare policy default |
 | Max attempts (default) | unlimited | unlimited |
 | Jitter (default) | ±20 % of the computed delay | 95–105 % of the computed delay, skipped below 50 ms |
+| What the cap bounds | the backoff only — a jittered delay may exceed it by up to the jitter fraction | the backoff only |
 | Disable reconnect | zero initial delay | a no-retry policy |
 | Policy is caller-replaceable | no — parameters only | yes — the policy itself is an interface |
 
 Both clients also cap a single connect attempt with a timeout and treat the expiry as a failed
 attempt.
 
+**The cap bounds the backoff, not the delay.** Jitter varies around the capped backoff, so an
+individual delay may exceed the cap by up to the jitter fraction. That is deliberate: clamping the
+jittered result to the same cap folds the whole upper half of the distribution onto one value, so
+once the ladder reaches the cap roughly half of all retries fire on exactly it — reintroducing, at
+steady state, the synchronised fleet that jitter exists to prevent. A client must not clamp the
+jittered result to the cap.
+
+### 5.2 One retry ladder per lifecycle
+
+A device that provisions runs two lifecycles ([§10](#10-connection-topology)), and each keeps its
+**own** attempt counter and its own share of the attempt budget. A maximum-attempts setting is a
+budget for **each** ladder, not one shared between them.
+
+This is what stops one lifecycle's bad day from spending the other's: a device may exhaust its whole
+hub budget and still get a full set of provisioning attempts, and a registration that follows an
+exhausted hub ladder starts again at the initial delay instead of inheriting the hub's capped
+backoff.
+
+Which ladder a retry climbs is the lifecycle of the **next attempt**, which is not always the
+lifecycle of the failure: a hub CONNACK that refuses the device's identity is a hub failure whose
+retry is a provisioning attempt.
+
+| Event | Effect |
+| --- | --- |
+| Registration succeeds | both ladders reset |
+| Hub CONNACK succeeds (birth-ack on gen2) | the hub ladder resets; the provisioning ladder is untouched |
+| The consecutive-hub-failure threshold is crossed | the provisioning ladder resets, so its first attempt waits the initial delay |
+| `open()` / `close()` | both ladders reset |
+
 > **Divergence to close.** Aligning the defaults, and deciding whether C should also accept a
 > caller-supplied policy object, is open work. Applications must not depend on the current numbers
 > being the same across languages.
 
-### 5.2 What triggers a reconnect
+### 5.3 What triggers a reconnect
 
 - CONNACK with a non-success status.
 - Unexpected transport disconnect or adapter error while `CONNECTING` or `CONNECTED`.
@@ -315,16 +390,21 @@ attempt.
   the handshake and reconnect.
 - gen2 birth-ack timeout (60 s per handshake step, in both clients).
 
-Two cases are deliberately **not** on that list, because they change where the device goes next
-rather than simply retrying:
+- **A rejected registration**, a registration that completes with no assignment, or a failure of the
+  provisioning session itself. This is the **most** transient failure a device meets, not the least:
+  the enrolment may not have been created yet, the provisioning service may not have a hub linked
+  yet, or the service may simply have been unavailable. A device on its first boot, running slightly
+  ahead of its own enrolment, must not end terminally. Where the service supplies a `retry-after`,
+  it is a **floor** on the policy's delay — the longer of the two wins, and the policy's cap does not
+  bound it: the cap bounds how long the client waits of its own accord, not how long the service
+  asked to be left alone.
 
-- **A DPS registration failure is fatal, not retried.** If provisioning itself fails — the DPS
-  session errors, the register call returns a failure status, or it completes without an assignment —
-  the client goes to `FAULTED`. A reconnect restarts provisioning from the beginning only when the
-  device already had an assignment and is re-establishing the *hub* session.
-- **An unrecognised connection profile is fatal.** DPS returning a profile the client does not know
-  fails the connection rather than reconnecting or guessing a protocol
-  ([§4](#4-connection-profile-selection)).
+One case is deliberately **not** on that list, because retrying it cannot succeed:
+
+- **An assignment the client cannot use is terminal.** A connection profile the client does not
+  recognise, or one that contradicts the generation the attached feature clients require, fails the
+  connection rather than reconnecting or guessing a protocol
+  ([§4](#4-connection-profile-selection)). Re-registering returns the same answer.
 
 One case reconnects but not to the same place: a CONNACK rejecting the device's **identity**, when
 the device is DPS-provisioned, marks the client for re-provisioning, so the retry goes back through
@@ -340,7 +420,7 @@ server-moved among them. A fatal failure goes straight to `FAULTED` and is repor
 application. [§9](#9-connection-failure-taxonomy) classifies every failure this document knows about
 as terminal, retryable, contained or benign, and is the authority for which is which.
 
-### 5.3 What is preserved across a reconnect
+### 5.4 What is preserved across a reconnect
 
 | Item | Preserved | Behaviour |
 | --- | --- | --- |
@@ -357,7 +437,7 @@ as terminal, retryable, contained or benign, and is the authority for which is w
 | Provisioning phase | No | Provisioning is **not** re-run on an ordinary reconnect: once the device has an assignment, a reconnect re-establishes the *hub* session using the cached hub and device id. It is re-run only when something has invalidated the assignment — an identity refused at CONNACK, the consecutive-hub-failure threshold being crossed, or an assignment the client rejected. When it does re-run, it restarts from the beginning. |
 | In-flight CSR operation | No | Abandoned; the caller is notified with a failure or timeout result. |
 
-### 5.4 Does the retry policy cover the *first* attempt?
+### 5.5 Does the retry policy cover the *first* attempt?
 
 Partly, and the split is deliberate.
 
@@ -885,7 +965,7 @@ forever; the recovery is to follow the server reference, or to re-provision.
 | Socket connect | Connection refused — the host is reachable and nothing is listening on the MQTT port | Retryable | Reconnect under policy. | As above |
 | Socket connect | Network or host unreachable — no route | Retryable | Reconnect under policy. | As above |
 | Socket connect | Connect timed out — no response within the OS or the client's own connect deadline | Retryable | Treat a connect-deadline expiry as an ordinary failed attempt, so the attempt counter and the backoff govern it. | As above |
-| Established session | Connection reset by peer, or a write to a half-closed socket | Retryable | Tear down the session and reconnect. Drop in-flight acknowledgements; their packet identifiers belong to the destroyed session ([§5.3](#53-what-is-preserved-across-a-reconnect)). | `RECONNECTING`; in-flight operations fail |
+| Established session | Connection reset by peer, or a write to a half-closed socket | Retryable | Tear down the session and reconnect. Drop in-flight acknowledgements; their packet identifiers belong to the destroyed session ([§5.4](#54-what-is-preserved-across-a-reconnect)). | `RECONNECTING`; in-flight operations fail |
 | Session bytes | A captive portal or transparent proxy accepts the connection and returns non-MQTT bytes | Retryable | Fail the attempt. The bytes must never be parsed as a CONNACK — a portal's HTTP response can decode as a well-formed but meaningless packet. Deterministic in practice, but indistinguishable from a transient fault, so retry is correct. | As above |
 | Host clock | The system clock is skewed far enough that the server certificate is outside its validity window | **Terminal** | Report it as a clock problem where the transport can tell, distinctly from a genuinely expired certificate. Retrying cannot help until the clock is corrected. | `FAULTED` with a TLS reason |
 | Host clock | The clock steps backwards during a session, e.g. the first time synchronisation completes | **Benign** | Every internal deadline — connect timeout, birth-ack, backoff, polling — must be measured on a **monotonic** clock, so a wall-clock step cannot fire a timeout early or stall one indefinitely. | Nothing |
@@ -917,7 +997,7 @@ Per-code classes are in [§9.3.1](#931-mqtt-311-connack-return-codes-3223) and
 | Phase | Trigger | Class | Required client behaviour | Application observes |
 | --- | --- | --- | --- | --- |
 | CONNACK | Accepted — `0 Connection Accepted` / `0x00 Success` | Benign | Continue the sequence of [§3](#3-full-connect-sequence). Reset the reconnect attempt counter. | Progress toward `CONNECTED` |
-| CONNACK | Identity refused — `rc=2 identifier rejected`, `rc=4 bad user name or password`, `rc=5 not authorized`; `0x85 Client Identifier not valid`, `0x86 Bad User Name or Password`, `0x87 Not authorized`, `0x8C Bad authentication method` | **Identity terminal** | The broker refused *who the device claims to be*. A DPS-provisioned device marks itself for re-provisioning so the next attempt goes back through DPS ([§5.2](#52-what-triggers-a-reconnect)); a directly-configured device faults. Never re-present the same rejected credential to the same endpoint. | `RECONNECTING` via DPS, or `FAULTED` |
+| CONNACK | Identity refused — `rc=2 identifier rejected`, `rc=4 bad user name or password`, `rc=5 not authorized`; `0x85 Client Identifier not valid`, `0x86 Bad User Name or Password`, `0x87 Not authorized`, `0x8C Bad authentication method` | **Identity terminal** | The broker refused *who the device claims to be*. A DPS-provisioned device marks itself for re-provisioning so the next attempt goes back through DPS ([§5.3](#53-what-triggers-a-reconnect)); a directly-configured device faults. Never re-present the same rejected credential to the same endpoint. | `RECONNECTING` via DPS, or `FAULTED` |
 | CONNACK | Deterministic protocol refusal — `rc=1 unacceptable protocol version`; `0x81 Malformed Packet`, `0x82 Protocol Error`, `0x84 Unsupported Protocol Version`, `0x95 Packet too large` | **Terminal** | Fault immediately. Retrying re-sends byte-for-byte the same CONNECT and gets byte-for-byte the same refusal. | `FAULTED` |
 | CONNACK | Transient server refusal — `rc=3 Connection Refused, Server unavailable`; `0x88 Server unavailable`, `0x89 Server busy`, `0x97 Quota exceeded`, `0x9F Connection rate exceeded` | Retryable | Reconnect under policy, with jitter. | `RECONNECTING` |
 | CONNACK | Redirection — `0x9C Use another server`, `0x9D Server moved` | **Terminal at this endpoint** | Do not retry the same host: the answer is a property of the host, and the policy will simply exhaust itself against it. Follow the Server Reference property, or re-provision. | `FAULTED`, or `RECONNECTING` via DPS |
@@ -930,17 +1010,21 @@ Per-code classes are in [§9.3.1](#931-mqtt-311-connack-return-codes-3223) and
 
 #### 9.4.4 Phase 4 — DPS provisioning
 
-Provisioning failures are **not** reconnect triggers ([§5.2](#52-what-triggers-a-reconnect)). A device
-that cannot be provisioned has nowhere to reconnect *to*.
+Provisioning failures **are** reconnect triggers, on the provisioning ladder
+([§5.2](#52-one-retry-ladder-per-lifecycle)). The intuition that a device which cannot be provisioned
+has nowhere to reconnect *to* is wrong in the common case: it usually means the service is not ready
+for this device *yet*. What is terminal is an assignment the client cannot use, not a missing one.
 
 | Phase | Trigger | Class | Required client behaviour | Application observes |
 | --- | --- | --- | --- | --- |
-| Registering | The service returns a failed or disabled registration status | **Terminal** | Fault. Enrolment is a service-side configuration matter; the device cannot fix it by asking again. | `FAULTED` |
-| Registering | Registration completes but carries no assignment, or the assignment payload is unparsable or missing required fields | **Terminal** | Fault. Report it as a protocol failure, distinctly from a rejected registration — the two have different owners. | `FAULTED` |
-| Subscribing | The subscription for registration responses is refused | **Terminal** | Fault. The assignment is delivered on that filter and can never arrive without it, so retrying the register publish is pointless. | `FAULTED` |
+| Registering | The service returns a failed or disabled registration status | Retryable | Retry on the provisioning ladder. An enrolment that does not exist yet, or a hub not yet linked to it, presents exactly like one that never will, and only the retry tells them apart. Honour any service-supplied `retry-after` as a floor on the delay. | `RECONNECTING`, then `FAULTED` if the policy is exhausted |
+| Registering | Registration completes but carries no assignment | Retryable | As above: most often the service is not ready for this device yet. | `RECONNECTING` |
+| Registering | The assignment payload is unparsable or is missing required fields | Retryable | Retry, but report it as a protocol failure, distinctly from a rejected registration — the two have different owners. | `RECONNECTING` |
+| Subscribing | The subscription for registration responses is refused | Per the refusal code ([§9.3.4](#934-mqtt-50-suback-reason-codes-393)) | The assignment is delivered on that filter and can never arrive without it, so the registration cannot proceed. A deterministic refusal is terminal; a transient one retries on the provisioning ladder. | `FAULTED`, or `RECONNECTING` |
 | Polling | The service answers `assigning` with a retry-after interval | **Benign** | Honour the service-supplied delay exactly. Do not add the reconnect backoff on top of it, and do not poll earlier. This is the normal path, not an error path. | Still `CONNECTING`; no state change |
-| Assignment | `connectionProfile` carries a value the client does not recognise | **Terminal** | Fail the connection with a dedicated unsupported-profile reason and keep the raw string readable. The SDK will not guess which MQTT version to speak ([§4](#4-connection-profile-selection)). | `FAULTED`, raw profile string still readable |
-| Assignment | The issued certificate chain is requested but absent, or there is nowhere to store it | **Terminal** | Fault. Continuing would connect with the bootstrap credential and silently never obtain an operational one. | `FAULTED` |
+| Assignment | `connectionProfile` carries a value the client does not recognise | **Terminal** | Fail the connection with a dedicated unsupported-profile reason and keep the raw string readable. The SDK will not guess which MQTT version to speak ([§4](#4-connection-profile-selection)). Terminal **even with a policy configured**: re-registering returns the same profile. | `FAULTED`, raw profile string still readable |
+| Assignment | The assigned generation contradicts what the attached feature clients require | **Terminal** | Fail the connection. Terminal for the same reason as the row above, and the recovery is the application's: rebuild the feature clients for the assigned generation, then close and reopen ([§4](#4-connection-profile-selection)). | `FAULTED` |
+| Assignment | The issued certificate chain is requested but absent, or there is nowhere to store it | Retryable | Do not continue: connecting with the bootstrap credential would silently never obtain an operational one. | `RECONNECTING`, then `FAULTED` if the policy is exhausted |
 | Hub CONNACK | The hub refuses the identity of a device that *is* DPS-provisioned | Retryable **through re-provisioning** | Mark for re-provisioning; the next attempt runs DPS for a fresh assignment rather than re-presenting the rejected credential. Clear the mark before the attempt, so a failure there degrades to an ordinary retry instead of looping through provisioning forever. | `RECONNECTING`; the next connect goes via DPS |
 | Any DPS phase | Transport drop or transient session failure during the exchange | Retryable | Reconnect under policy; the retry restarts provisioning from the beginning ([§2](#2-top-level-state-machine)). | `RECONNECTING` |
 

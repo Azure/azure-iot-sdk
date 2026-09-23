@@ -24,7 +24,7 @@ Keep this file in step with the code. It is expected to change often; `connectio
 
 | Section | C | .NET |
 | --- | --- | --- |
-| [§2 Top-level state machine](../connection.md#2-top-level-state-machine) | implemented | partial — the same lifecycle is driven internally, but it is surfaced as connect/disconnect events rather than as a single user-visible state value |
+| [§2 Top-level state machine](../connection.md#2-top-level-state-machine) | implemented, per scope | partial — the same lifecycle is driven internally, but it is surfaced as connect/disconnect events rather than as a state value |
 | [§3 Full connect sequence](../connection.md#3-full-connect-sequence) | implemented | implemented |
 | [§4 Connection profile selection](../connection.md#4-connection-profile-selection) | implemented | implemented |
 | [§5 Reconnection](../connection.md#5-reconnection) | implemented | implemented |
@@ -38,15 +38,18 @@ Keep this file in step with the code. It is expected to change often; `connectio
 
 | Area | C | .NET |
 | --- | --- | --- |
-| Top-level states ([§2](../connection.md#2-top-level-state-machine)) | implemented, user-visible state value | partial — internal lifecycle, surfaced as events, no single state value |
+| Top-level states ([§2](../connection.md#2-top-level-state-machine)) | implemented — one state per scope, read with `get_state(client, scope)` | partial — internal lifecycle, surfaced as events, no state value |
+| One retry ladder per lifecycle ([§5.2](../connection.md#52-one-retry-ladder-per-lifecycle)) | implemented — `retry_attempt[]` per scope, `max_attempts` a budget for each | not present — one ladder |
+| Connection-state observers ([§2](../connection.md#2-top-level-state-machine)) | implemented — a registry, feature clients dispatched before the application | n/a — events are multicast by the language |
+| Failure diagnostics on the event | implemented — `error->source` / `error->code` / `message`, plus `is_retriable` | implemented — `DeviceException` carries `Retryability` and `IsContained` |
 | DPS provisioning inside connect ([§3](../connection.md#3-full-connect-sequence)) | implemented | implemented |
 | CSR carried in the registration ([§3](../connection.md#3-full-connect-sequence)) | implemented | implemented — `ProvisioningSettings.CertificateSigningRequest`, on its own api-version |
 | Subscriptions established before `CONNECTED` ([§3](../connection.md#3-full-connect-sequence)) | implemented — the gate waits for every `FAILS_SESSION` SUBACK, with its own deadline | implemented — connect completes, and feature traffic is latched, on readiness |
 | gen2 birth handshake, 60 s timeout ([§3](../connection.md#3-full-connect-sequence)) | implemented | implemented |
 | Connection profile from DPS ([§4](../connection.md#4-connection-profile-selection)) | implemented — `az_iot_connection_profile`, reported by `get_hub_profile()`; still resolves to classic until the api-version carrying it is deployed | implemented — `ConnectionProfile` enum on the registration result; same api-version dependency |
-| Exponential backoff with jitter ([§5](../connection.md#5-reconnection)) | implemented, fixed policy | implemented, caller-replaceable policy |
-| Fatal-failure classification ([§5.2](../connection.md#52-what-triggers-a-reconnect)) | partial — a refused SUBACK is terminal regardless of policy; a deterministic CONNACK refusal is still retried | implemented — `ErrorRetryability` { `Terminal`, `IdentityTerminal`, `Retryable` } on every classified failure |
-| Failure taxonomy — MQTT reason-code fidelity ([§9](../connection.md#9-connection-failure-taxonomy)) | partial — CONNACK and SUBACK codes are classified by their own mappers; PUBACK and server-DISCONNECT codes are still flattened | implemented — codes are preserved as typed values and classified per §9.3.3, §9.3.7, §9.4.1, §9.4.2 and §9.4.8, which the source cites by section number |
+| Exponential backoff with jitter ([§5](../connection.md#5-reconnection)) | implemented, fixed policy; the cap bounds the backoff only, not the jittered delay | implemented, caller-replaceable policy |
+| Fatal-failure classification ([§5.3](../connection.md#53-what-triggers-a-reconnect)) | partial — the classification exists and is reported as `is_retriable`, but only the hub subscription gate acts on it; the presence and provisioning paths still retry a deterministic refusal | implemented — `ErrorRetryability` { `Terminal`, `IdentityTerminal`, `Retryable` } on every classified failure |
+| Failure taxonomy — MQTT reason-code fidelity ([§9](../connection.md#9-connection-failure-taxonomy)) | partial — CONNACK, SUBACK and DISCONNECT each have a mapper and the raw code reaches the application; PUBACK has none, and DISCONNECT names only `0x87`, so `0x8E Session taken over` is not distinguished | implemented — codes are preserved as typed values and classified per §9.3.3, §9.3.7, §9.4.1, §9.4.2 and §9.4.8, which the source cites by section number |
 | Certificate renewal over the hub ([§6](../connection.md#6-certificate-management-onboarding-and-renewal)) | implemented (classic) | partial (classic) — no busy rejection for a duplicate in-flight request; explicit unsupported error on gen2 |
 | gen2 file upload ([§10.3](../connection.md#103-what-a-classic-sunset-would-cost)) | **absent** — gen1 only | n/a |
 | Device update ([§7](../connection.md#7-device-update-onboarding-and-renewal)) | implemented over the provisioning gateway; hub channel not written | none |
@@ -77,7 +80,7 @@ absent, so an actual wire value always wins and enabling it cannot mask the roll
 
 ### Fatal-failure classification (C)
 
-[§5.2](../connection.md#52-what-triggers-a-reconnect) requires failures that cannot succeed on retry
+[§5.3](../connection.md#53-what-triggers-a-reconnect) requires failures that cannot succeed on retry
 — protocol errors, malformed packets, authorization failures, session-taken-over, invalid topic
 filters, server-moved — to go straight to `FAULTED` rather than being retried.
 

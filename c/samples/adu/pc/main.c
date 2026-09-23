@@ -309,6 +309,14 @@ static void sample_state_destroy(sample_state* s)
 static az_iot_connection_state g_conn_state = AZ_IOT_CONN_STATE_IDLE;
 static void on_conn_state(const az_iot_connection_state_event* event, void* user_ctx)
 {
+  /* Hub lifecycle only: the provisioning session reports on its own scope,
+   * and storing its state here would overwrite the hub state this code acts
+   * on. */
+  if (event->scope != AZ_IOT_CONN_SCOPE_HUB)
+  {
+    return;
+  }
+
   az_iot_connection_state st = event->state;
   az_iot_result reason = event->reason;
   (void)user_ctx;
@@ -379,7 +387,7 @@ int main(void)
     sample_state_destroy(&st);
     return 1;
   }
-  az_iot_connection_client_set_state_callback(&st.connection_client, on_conn_state, NULL);
+  az_iot_connection_client_add_state_observer(&st.connection_client, on_conn_state, NULL);
 
   if (az_iot_connection_client_register_mqtt_factory(
           &st.connection_client, az_iot_paho_factory_create_v3_1_1())
@@ -451,8 +459,20 @@ int main(void)
   /* Ask for a day-0 onboarding update. Nothing is fetched unless the
    * application asks: only it knows whether it has a device record yet, and
    * the onboarding route is the one that needs none. A device that had already
-   * provisioned would call az_iot_adu_client_request_update() instead. */
-  if (az_iot_adu_client_request_onboarding_update(&st.adu_client) != AZ_IOT_OK)
+   * provisioned would call az_iot_adu_client_request_update() instead.
+   *
+   * The timeout bounds how long the CLIENT keeps reissuing this check before
+   * giving up and raising AZ_IOT_ADU_EVENT_OPERATION_ABANDONED with
+   * AZ_IOT_ERR_TIMEOUT. Without it an unservable check -- no device record, no
+   * linked hub -- is retried on every do_work() for the life of the client,
+   * and looks exactly like "no update available".
+   *
+   * AZ_IOT_ADU_REQUEST_DEFAULT_TIMEOUT_MS is the default for an application
+   * with no policy of its own. Pass your own value when you have one, or
+   * AZ_IOT_ADU_REQUEST_NO_TIMEOUT to keep retrying indefinitely. */
+  if (az_iot_adu_client_request_onboarding_update(
+          &st.adu_client, AZ_IOT_ADU_REQUEST_DEFAULT_TIMEOUT_MS)
+      != AZ_IOT_OK)
   {
     sample_state_destroy(&st);
     return 1;
