@@ -483,11 +483,11 @@ extern "C"
      * client: changing push mode at runtime would desynchronize the device's
      * expectation from the service's most recently recorded decision.
      *
-     * Both default to false (pull-only), which is what this SDK can honor
-     * today: it does not yet consume the service's twin-push dispatch, so
-     * advertising a push would ask for messages the client would drop. Read the
-     * twin with az_iot_twin_client_get() instead. Ignored for Classic hubs and
-     * for DPS sessions.
+     * Both default to false (pull-only). With push_desired, the service pushes
+     * the desired snapshot on connect instead of the gen2 twin client fetching
+     * it. With push_reported, a pushed reported section reaches
+     * az_iot_gen2_twin_client_set_reported_handler(); without a handler it is
+     * dropped. Ignored for Classic hubs and for DPS sessions.
      *
      * Appended, like the options above it and for the same reason: this struct
      * is filled by callers, so a member inserted anywhere else would shift

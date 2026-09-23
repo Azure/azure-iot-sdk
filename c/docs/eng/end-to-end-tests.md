@@ -55,8 +55,7 @@ single-threaded and non-blocking.
 
 The device is the public SDK over the Paho adapter, connected exactly like a
 real device: **DPS provisioning with an X.509 individual enrollment**
-(`host == NULL` + `dps.id_scope` set → the connection client provisions
-internally, then connects to the assigned hub). Both Paho MQTT v3.1.1 and v5
+(`dps.id_scope` set → the connection client provisions internally, then connects to the assigned hub). Both Paho MQTT v3.1.1 and v5
 factories are registered. The connect flow + all four scenarios live in
 [`e2e_scenarios_test.c`](../../tests/e2e/tests/e2e_scenarios_test.c); the connect
 is done once for the whole suite via cmocka's group setup.
@@ -254,9 +253,8 @@ are never leaked.
 
 ### Future work
 
-- Re-target the device-side ADU e2e scenarios at **ADUv2**. The five existing
-  `az_iot_tests_e2e_adu` scenarios drive a twin desired-property PATCH; ADUv1 is cut, so
-  they retire with it (see [adu-client-plan.md](adu-client-plan.md#what-aduv1-is-cut-means)).
+- Re-target the device-side ADU e2e scenarios at **ADUv2**. The five scenarios in
+  `tests/e2e/tests/e2e_adu_test.c` drove a device-twin deployment and are retired (not built) (see [adu-client-plan.md](adu-client-plan.md#what-aduv1-is-cut-means)).
   The replacement drives the update check, install and report through the DPS-fronted
   operations, with the service side verified in the ADU workflow's test job. The device
   fixture and the mocked crypto/payload hooks carry over unchanged.
