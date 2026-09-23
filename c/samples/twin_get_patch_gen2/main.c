@@ -67,6 +67,10 @@ static void sample_state_destroy(sample_state* s)
 typedef struct
 {
   az_iot_connection_state conn_state;
+  /* A rejected assignment faults the PROVISIONING lifecycle, not the hub one,
+   * so the hub state alone never settles and the wait below would run to its
+   * full length for a failure already decided. */
+  int provisioning_faulted;
   int get_done;
   int patch_done;
   int desired_count;
@@ -84,26 +88,29 @@ static uint8_t s_twin_encode_buffer[256];
 
 static void on_conn_state(const az_iot_connection_state_event* event, void* user_ctx)
 {
-  /* Hub lifecycle only: the provisioning session reports on its own scope,
-   * and storing its state here would overwrite the hub state this code acts
-   * on. */
-  if (event->scope != AZ_IOT_CONN_SCOPE_HUB)
+  user_context* ctx = (user_context*)user_ctx;
+
+  /* The provisioning lifecycle reports on its own scope. It is watched only
+   * for its terminal state: this sample pins one generation, and an assignment
+   * to the other is rejected there -- the hub lifecycle never leaves IDLE, so
+   * a hub-only observer would wait out the whole connect budget for a failure
+   * that has already been decided. */
+  if (event->scope == AZ_IOT_CONN_SCOPE_DPS)
   {
+    if (event->state == AZ_IOT_CONN_STATE_FAULTED)
+    {
+      ctx->provisioning_faulted = 1;
+      if (event->reason == AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH)
+      {
+        printf("Provisioned to a Classic hub; this AEG-only sample cannot serve it. "
+               "Use twin_get_patch_gen1.\n");
+      }
+    }
     return;
   }
 
-  user_context* ctx = (user_context*)user_ctx;
+  /* Hub lifecycle: what the GET and PATCH below actually wait on. */
   ctx->conn_state = event->state;
-
-  /* Pinned to AEG, so an assignment to the other generation is terminal here
-   * rather than something to rebuild for: the twin client cannot be re-pinned
-   * without being destroyed, and this sample has nothing else to be. An
-   * application that must survive a reassignment is connection_profile_fallback. */
-  if (event->reason == AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH)
-  {
-    printf("Provisioned to a Classic hub; this AEG-only sample cannot serve it. "
-           "Use twin_get_patch_gen1.\n");
-  }
 }
 
 static void on_desired(const uint8_t* patch, size_t patch_len, uint64_t version, void* user_ctx)
@@ -246,7 +253,7 @@ int main(void)
   for (int i = 0; i < 1200 && user_ctx.conn_state != AZ_IOT_CONN_STATE_CONNECTED; ++i)
   {
     (void)az_iot_connection_client_do_work(&state.connection_client, 50);
-    if (user_ctx.conn_state == AZ_IOT_CONN_STATE_FAULTED)
+    if (user_ctx.conn_state == AZ_IOT_CONN_STATE_FAULTED || user_ctx.provisioning_faulted)
     {
       break;
     }
