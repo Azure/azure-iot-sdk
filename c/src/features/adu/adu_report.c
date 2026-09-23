@@ -349,11 +349,19 @@ static az_result append_result_fields(
   ADU_JSON_TRY(append_string_property(
       writer, AZ_SPAN_FROM_STR("failureOrigin"), failure_origin_name(origin)));
   ADU_JSON_TRY(az_json_writer_append_property_name(writer, AZ_SPAN_FROM_STR("resultCode")));
-  /* The upstream writer's integer overload is int32. Convert int64 losslessly
-   * with az_span instead of routing diagnostics through floating point. */
+  /* The upstream writer's integer overload is int32, and az_span_i64toa()
+   * negates INT64_MIN as a signed value (undefined). Negate in uint64_t. */
   uint8_t number[21];
+  az_span digits = AZ_SPAN_FROM_BUFFER(number);
+  uint64_t magnitude = (uint64_t)result_code;
+  if (result_code < 0)
+  {
+    number[0] = (uint8_t)'-';
+    digits = az_span_slice_to_end(digits, 1);
+    magnitude = 0u - magnitude;
+  }
   az_span remainder;
-  ADU_JSON_TRY(az_span_i64toa(AZ_SPAN_FROM_BUFFER(number), result_code, &remainder));
+  ADU_JSON_TRY(az_span_u64toa(digits, magnitude, &remainder));
   ADU_JSON_TRY(az_json_writer_append_json_text(
       writer, az_span_create(number, (int32_t)sizeof(number) - az_span_size(remainder))));
   ADU_JSON_TRY(append_string_property(writer, AZ_SPAN_FROM_STR("extendedResultCodes"), extended));

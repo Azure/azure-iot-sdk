@@ -5,6 +5,7 @@
 /* SPDX-License-Identifier: MIT */
 #include <stdarg.h>
 #include <stddef.h>
+#include <inttypes.h>
 #include <setjmp.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -223,9 +224,10 @@ static void expect_result_fields(
   expect_json_string(reader, text_span(origins[origin]));
   expect_property(reader, "resultCode");
   expect_token(reader, AZ_JSON_TOKEN_NUMBER);
-  int64_t code = 0;
-  assert_int_equal(az_json_token_get_int64(&reader->token, &code), AZ_OK);
-  assert_true(code == result_code);
+  /* Compare text: az_span_atoi64() overflows on INT64_MIN. */
+  char code[21];
+  (void)snprintf(code, sizeof(code), "%" PRId64, result_code);
+  assert_true(az_span_is_content_equal(reader->token.slice, text_span(code)));
   expect_property(reader, "extendedResultCodes");
   expect_json_string(reader, extended);
   if (az_span_size(details) > 0)
