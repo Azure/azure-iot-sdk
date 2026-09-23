@@ -20,7 +20,7 @@
  * so one adapter covers both legs; the gen2 sample needs two.
  *
  * Provision via DPS, open, GET + PATCH, close. DPS is handled internally by the
- * connection client when host == NULL and dps.id_scope is set.
+ * connection client when dps.id_scope is set.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -150,7 +150,7 @@ int main(void)
     return 1;
   }
 
-  /* Connection client (DPS provisioning is internal when host==NULL) */
+  /* Connection client (DPS provisioning is internal) */
   az_iot_connection_client_options copts = az_iot_connection_client_options_default();
   sample_apply_dps_options(&copts, &state.config);
   copts.certificate_provider = &state.certs.base;
