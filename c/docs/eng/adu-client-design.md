@@ -426,9 +426,12 @@ power cycle, so it lives in the blob rather than only in RAM.
 
 #### Resume semantics (`az_iot_adu_client_resume()`)
 
-1. Call `load_state_fn`. If it reports no state, or `magic`/`version`/`crc32`
-   fail validation, `resume()` is a **no-op** returning success — the agent
-   starts clean and waits for the next update offer.
+1. Call `load_state_fn`. If it reports no state or a zero-length record,
+   `resume()` is a **no-op** returning success — the agent starts clean and
+   waits for the next update offer. A record that fails validation (size,
+   `magic`, `crc32`, field bounds) returns `AZ_IOT_ERR_INVALID_ARG`; an unknown
+   `version`, or an older one lacking download URLs still needed, returns
+   `AZ_IOT_ERR_NOT_SUPPORTED`. Either way the client is left unchanged.
 2. Otherwise core rehydrates `current_request`, `current_step`, `current_file`,
    the `step_results[]`, and `backup_done` flags from the blob.
 3. **Replacement check** — when the next offer arrives, core compares its

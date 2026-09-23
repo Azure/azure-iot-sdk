@@ -872,6 +872,11 @@ extern "C"
   /**
    * Resume a workflow after device reboot. The application SHOULD call this during
    * startup. If no persisted state exists, this is a no-op. (Phase 5.)
+   *
+   * @return AZ_IOT_OK if resumed or nothing was persisted; AZ_IOT_ERR_INVALID_ARG
+   *   for a malformed record; AZ_IOT_ERR_NOT_SUPPORTED for an unknown record
+   *   version, or an older one that lacks the download URLs still needed. On
+   *   error the client is left unchanged.
    */
   AZ_NODISCARD az_iot_result az_iot_adu_client_resume(az_iot_adu_client_t* client);
 
