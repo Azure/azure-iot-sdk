@@ -111,7 +111,7 @@ sample-only / not factored) · 🔜 Coming soon (planned / designed, not yet bui
 | Core update workflow | ❌ | **Startup + reconnect re-reporting / initial twin GET** — no subscription and no unsolicited offer in ADUv2; the device polls instead. [→](#b-core-update-workflow) |
 | Core update workflow | ❌→✅ | **Accept / reject acknowledgement** — twin 200/406 ack is cut; already-installed becomes a `SKIPPED` outcome in the report. [→](#b-core-update-workflow) |
 | Core update workflow | ✅ | **Multi-step (composite) updates** — per-step Download→Backup→Install→Apply loop. [→](#b-core-update-workflow) |
-| Core update workflow | ✅ | **Per-step result reporting** — `resultCode`/`extendedResultCode`/`stepResults`. [→](#b-core-update-workflow) |
+| Core update workflow | ✅ | **Per-step result reporting** — `resultCode`/`extendedResultCodes`/`stepResults`. [→](#b-core-update-workflow) |
 | Core update workflow | ✅ | **Replacement / duplicate detection** — keyed on `workflowId` alone, the sole correlation key in ADUv2; `retryTimestamp` is gone. [→](#b-core-update-workflow) |
 | Core update workflow | 🟡 | **Cancellation** — cooperative flag still honored at phase boundaries, but ADUv2 has no input that sets it; a new `workflowId` replaces instead. [→](#b-core-update-workflow) |
 | Download and integrity | ✅ | **File download from manifest URLs** — resolves `fileUrls`, drives `download_fn`. [→](#c-download-and-integrity) |
@@ -248,8 +248,8 @@ stateDiagram-v2
   becomes a `SKIPPED` outcome in the report rather than a wire-level rejection. *Caveat:* still
   no app-level `accept_deployment_fn` veto hook (e.g. battery / critical-op deferral) — a
   candidate add, now more useful because the device controls the poll.
-- **Multi-step / per-step results** — sequential per-step loop; `step_results[]` with a
-  4-bit facility + raw-code `extendedResultCode` for field debugging. The engine exposes the
+- **Multi-step / per-step results** — sequential per-step loop; each result's
+  `extended_result_codes` holds comma-separated hex codes (4-bit facility + raw code) for field debugging. The engine exposes the
   accumulated entries in one SDK-owned `az_iot_adu_install_result`: direct overall fields plus
   an array of `az_iot_adu_step_result` entries, each with outcome/origin, int64 diagnostic code and owned
   text buffers with byte lengths. The report envelope points to that same result. `az_iot_adu_build_report` uses
