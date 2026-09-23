@@ -1634,6 +1634,20 @@ static void an_in_order_patch_while_behind_fetches_again(void** state)
   assert_int_equal(count_gets(fx), before + 1);
 }
 
+/* At desired version 0 the document is empty: a live handler has nothing to fetch. */
+static void a_handler_set_at_version_zero_fetches_nothing(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  desired_record rec = { 0 };
+  set_desired(fx, &rec);
+  assert_int_equal(count_gets(fx), 0);
+
+  inject_desired(fx, 1, "{\"a\":1}");
+  assert_int_equal(rec.kind, AZ_IOT_GEN2_TWIN_DESIRED_PATCH);
+  assert_int_equal(rec.version, 1);
+}
+
 /* A replacement handler holds nothing, even when the old one was current. */
 static void a_replacement_handler_starts_from_a_snapshot(void** state)
 {
@@ -2369,6 +2383,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(the_largest_get_body_fits, setup, teardown),
     cmocka_unit_test_setup_teardown(a_refused_snapshot_publish_does_not_wedge, setup, teardown),
     cmocka_unit_test_setup_teardown(an_in_order_patch_while_behind_fetches_again, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_handler_set_at_version_zero_fetches_nothing, setup, teardown),
     cmocka_unit_test_setup_teardown(a_replacement_handler_starts_from_a_snapshot, setup, teardown),
     cmocka_unit_test_setup_teardown(
         an_app_get_does_not_deliver_to_the_desired_handler, setup, teardown),

@@ -281,9 +281,10 @@ extern "C"
   /**
    * @brief Set the desired-state handler.
    *
-   * Setting a handler while connected fetches a snapshot, so a handler set late
-   * or resumed after a pause starts from current state. NULL pauses delivery;
-   * nothing received while paused counts as delivered.
+   * A handler set while connected is fetched a snapshot when the service's
+   * desired version is above 0, so one set late or resumed after a pause starts
+   * from current state; at version 0 the document is empty and nothing is sent.
+   * NULL pauses delivery; nothing received while paused counts as delivered.
    */
   az_iot_result az_iot_gen2_twin_client_set_desired_handler(
       az_iot_gen2_twin_client* twin,
