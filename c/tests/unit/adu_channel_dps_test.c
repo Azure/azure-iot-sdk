@@ -1988,6 +1988,7 @@ static void a_session_after_a_failed_registration_is_held_for_its_check(void** s
  * the channel's next entry. */
 static fixture* g_bind_from_observer_fx;
 static az_iot_result g_bind_from_observer_result;
+static az_iot_result g_request_from_observer_result;
 
 static void bind_channel_on_dps_connecting(
     const az_iot_connection_state_event* event,
@@ -2001,6 +2002,8 @@ static void bind_channel_on_dps_connecting(
     g_bind_from_observer_fx = NULL;
     g_bind_from_observer_result
         = fx->channel.vtable->open(fx->channel.ctx, on_update, on_result, fx);
+    g_request_from_observer_result
+        = fx->channel.vtable->request_update(fx->channel.ctx, AZ_IOT_ADU_OP_GET_UPDATE);
   }
 }
 
@@ -2019,6 +2022,8 @@ static void binding_from_a_state_observer_takes_the_seat_later(void** state)
   assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_OK);
   assert_null(g_bind_from_observer_fx);
   assert_int_equal(g_bind_from_observer_result, AZ_IOT_OK);
+  /* No seat yet, so nothing goes out: a replaced session would be invisible. */
+  assert_int_equal(g_request_from_observer_result, AZ_IOT_ERR_BUSY);
   assert_false(channel_observes_state(fx));
 
   assert_int_equal(fx->channel.vtable->do_work(fx->channel.ctx), AZ_IOT_OK);

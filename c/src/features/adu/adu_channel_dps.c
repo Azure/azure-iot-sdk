@@ -146,22 +146,17 @@ static az_iot_result channel_observe(az_iot_adu_channel_dps* c)
 /**
  * @brief Retry for a seat a bind inside a dispatch could not take.
  *
- * Without a seat a replaced session is invisible, so a hard failure refuses
- * operations as it refuses a bind, until a seat frees up.
+ * Without a seat a replaced session is invisible, so no operation goes out
+ * until the seat is taken.
  *
  * @param c The channel.
- * @return AZ_IOT_OK if unbound, observing, or still refused with
- * AZ_IOT_ERR_BUSY. Otherwise the registry's error, e.g.
- * AZ_IOT_ERR_NOT_ENOUGH_SPACE when the pool is full.
+ * @return AZ_IOT_OK if unbound or observing. AZ_IOT_ERR_BUSY while still
+ * inside a dispatch. Otherwise the registry's error, e.g.
+ * AZ_IOT_ERR_NOT_ENOUGH_SPACE when the pool is full, until a seat frees up.
  */
 static az_iot_result channel_observe_deferred(az_iot_adu_channel_dps* c)
 {
-  if (!c->holds_user)
-  {
-    return AZ_IOT_OK;
-  }
-  az_iot_result r = channel_observe(c);
-  return r == AZ_IOT_ERR_BUSY ? AZ_IOT_OK : r;
+  return c->holds_user ? channel_observe(c) : AZ_IOT_OK;
 }
 
 /**
@@ -955,8 +950,7 @@ static az_iot_result channel_do_work(void* ctx)
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
-  /* Returned at the end, not here: the rest of the tick still retires a
-   * request that went out before the seat was refused. */
+  /* Returned at the end, not here: the rest of the tick still runs. */
   az_iot_result sr = channel_observe_deferred(c);
 
   /* Recorded BEFORE the pending request is retired: that call clears
