@@ -1453,9 +1453,9 @@ sequenceDiagram
     DPS-->>Ch: 200 { updateMetadata }
     Ch-->>ADU: updateMetadata
     ADU->>ADU: parse, dedupe on workflowId
-    ADU->>Hook: crypto.verify_rs256_fn(root_key, sjwk_signature)
+    ADU->>ADU: az_iot_adu_client_parse_update_manifest() (ManifestReceived)
+    ADU->>Hook: crypto.verify_rs256_fn(root_key, sjwk_signature) (VerifyingManifest)
     ADU->>Hook: crypto.verify_rs256_fn(signing_key, manifest_signature)
-    ADU->>ADU: az_iot_adu_client_parse_update_manifest()
     loop For each step
         ADU->>Hook: download_fn(file) [chunked]
         ADU->>Hook: backup_fn(step)

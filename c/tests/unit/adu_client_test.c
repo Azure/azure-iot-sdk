@@ -914,6 +914,79 @@ static void escaped_file_url_is_decoded(void** state)
   assert_string_equal(fx->log.last_download_url, "https://host/p.bin?x=1&y=2");
 }
 
+static az_iot_result parse_with_roots(
+    hook_log* log,
+    const char* patch,
+    const az_iot_adu_root_key* roots,
+    size_t root_count,
+    az_iot_adu_client_update_request* out_req,
+    az_iot_adu_client_update_manifest* out_manifest);
+
+/* updateManifest is decoded with \u support on both the managed and the
+ * public path; a \u escape must not truncate it. */
+static const char* manifest_with_unicode_escape(void)
+{
+  static char doc[4096];
+  static const char plain[] = "iot-middleware-sample-adu-v1.1";
+  const char* base = build_patch("unicode-manifest");
+  const char* at = strstr(base, plain);
+  assert_non_null(at);
+  int n = snprintf(
+      doc,
+      sizeof(doc),
+      "%.*siot-middleware-sample-adu-v1\\u002e1%s",
+      (int)(at - base),
+      base,
+      at + sizeof(plain) - 1);
+  assert_true(n > 0 && (size_t)n < sizeof(doc));
+  return doc;
+}
+
+static void manifest_unicode_escape_is_decoded(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  inject_patch(fx, manifest_with_unicode_escape());
+  pump(fx, 40);
+  assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_ADU_OUTCOME_SUCCEEDED);
+
+  az_iot_adu_client_update_request req;
+  az_iot_adu_client_update_manifest manifest;
+  assert_int_equal(
+      parse_with_roots(&fx->log, manifest_with_unicode_escape(), k_root_keys, 1, &req, &manifest),
+      AZ_IOT_OK);
+  assert_true(az_span_is_content_equal(
+      manifest.files[0].file_name, AZ_SPAN_FROM_STR("iot-middleware-sample-adu-v1.1")));
+}
+
+/* workflowId is decoded before it is stored, reported and compared: an escaped
+ * spelling of the active id is a duplicate, and the report carries the decoded
+ * id. An undecodable id is ignored. */
+static void escaped_workflow_id_is_decoded(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  inject_patch(fx, build_patch("wf\\u002d1"));
+  pump(fx, 40);
+  assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
+  assert_string_equal(fx->chan.last_workflow_id, "wf-1");
+
+  fx->log.op_count = 0;
+  int reports = fx->chan.report_count;
+  inject_patch(fx, build_patch("wf\\u002D1")); /* another spelling of the same id */
+  assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
+  pump(fx, 5);
+  assert_int_equal((int)fx->log.op_count, 0);
+  assert_int_equal(fx->chan.report_count, reports);
+
+  inject_patch(fx, build_patch("wf\\q"));
+  assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
+  assert_int_equal((int)fx->log.op_count, 0);
+}
+
 /* An updateMetadata the engine cannot act on is ignored, not half-applied. */
 static void unusable_update_metadata_is_ignored(void** state)
 {
@@ -2960,6 +3033,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(deployment_drives_full_workflow_single_step, setup, teardown),
     cmocka_unit_test_setup_teardown(update_metadata_drives_full_workflow, setup, teardown),
     cmocka_unit_test_setup_teardown(escaped_file_url_is_decoded, setup, teardown),
+    cmocka_unit_test_setup_teardown(escaped_workflow_id_is_decoded, setup, teardown),
+    cmocka_unit_test_setup_teardown(manifest_unicode_escape_is_decoded, setup, teardown),
     cmocka_unit_test_setup_teardown(unusable_update_metadata_is_ignored, setup, teardown),
     cmocka_unit_test_setup_teardown(file_urls_are_bounded, setup, teardown),
     cmocka_unit_test_setup_teardown(oversized_update_metadata_is_ignored, setup, teardown),
