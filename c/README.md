@@ -139,7 +139,7 @@ int main(void)
     return 1;
   }
 
-  /* Connection client — DPS runs internally when host == NULL */
+  /* Connection client — DPS runs internally */
   az_iot_connection_client_options copts = az_iot_connection_client_options_default();
   copts.dps.id_scope         = getenv("AZ_IOT_ID_SCOPE");
   copts.dps.registration_id  = getenv("AZ_IOT_REGISTRATION_ID");
