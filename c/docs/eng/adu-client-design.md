@@ -903,10 +903,11 @@ az_iot_result az_iot_adu_client_request_onboarding_update(
 az_iot_result az_iot_adu_client_request_update(az_iot_adu_client_t* client, uint32_t timeout_ms);
 
 /**
- * Update the cached device properties and request a report. Deep-copies
- * device_props into the client cache and sets a pending flag; the NEXT
- * do_work() publishes. Multiple calls coalesce into a single report. After
- * this returns, the caller MAY mutate or free device_props. Returns
+ * Replace the cached device properties; after success the caller MAY mutate or
+ * free device_props. No I/O or update check is scheduled. The application explicitly
+ * requests an onboarding or regular check to transmit compatibility properties.
+ * Also marks a workflow-status report pending; without a recorded workflow it
+ * sends nothing. Status reports do not carry compatibility properties. Returns
  * AZ_IOT_ERR_NOT_ENOUGH_SPACE if the cache buffer is too small.
  *
  * Single-threaded contract: MUST be called on the do_work thread or be
@@ -934,6 +935,8 @@ az_iot_result az_iot_adu_client_update_device_properties(
 > The managed upstream-shaped view/serialized-ID cache described below has been removed;
 > the standalone legacy formatter is retained. The twin re-report/reconnect sequence
 > below is historical and is not proof of runtime ADUv2 fetch scheduling.
+> The application explicitly requests each check and chooses its route. The
+> property setter refreshes the caches, but does not itself queue a fetch.
 
 Device properties are supplied as a **plain struct** that the client
 **deep-copies** into a caller-provided cache buffer. There is no callback and no
@@ -942,11 +945,12 @@ application owns its struct outright and may mutate or free it.
 
 - At `init` the application passes `az_iot_adu_device_properties` plus a cache
   buffer. The client MUST copy every string into the cache.
-- The client maps the cached values onto azure-sdk-for-c's
-  `az_iot_adu_client_device_properties` internally, only when formatting the
-  payload — that type never escapes to the application.
-- `update_device_properties()` re-copies a new struct and flags a re-report on
-  the next `do_work()`. Reconnect re-reports reuse the existing cache.
+- The channel serializes compatibility properties into `agentInfo` on an explicit
+  update check; the regular route also carries the cached installed ID.
+- `update_device_properties()` re-copies a new struct. To publish its compatibility
+  properties, the application calls `request_onboarding_update()` or `request_update()`.
+  The setter's pending workflow-status report is distinct and cannot replace that
+  fetch. Property-revision freshness and installed-ID promotion remain follow-ups.
 
 ```c
 /* Build the struct on the stack; strings are caller-owned. */

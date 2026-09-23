@@ -1029,10 +1029,17 @@ extern "C"
   az_iot_adu_client_request_update(az_iot_adu_client_t* client, uint32_t timeout_ms);
 
   /**
-   * Update the cached device properties and request a report. Deep-copies
-   * device_props into the client cache and sets a pending flag; the NEXT
-   * do_work() publishes. Multiple calls coalesce into a single report. After this
-   * returns, the caller MAY mutate or free device_props. Returns
+   * Replace the cached device properties. Deep-copies device_props into the
+   * engine and channel caches; after success the caller MAY mutate or free it.
+   * This call performs no I/O and does not schedule an update check. To transmit
+   * compatibility properties, explicitly request an onboarding or regular update
+   * using the corresponding request function. A later check uses the latest cache.
+   *
+   * Also marks a workflow-status report pending for do_work(); without a recorded
+   * workflow identity that report is a no-op. Status reports do not carry agentInfo
+   * or compatibility properties. A successful setter is not a service acknowledgement.
+   *
+   * Returns
    * AZ_IOT_ERR_INVALID_ARG for malformed properties and AZ_IOT_ERR_NOT_ENOUGH_SPACE
    * if the cache, managed snapshot, property count, or request capacity is exceeded.
    * On failure the previous properties and pending work are unchanged.

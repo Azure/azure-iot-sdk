@@ -92,9 +92,9 @@ sample-only / not factored) · 🔜 Coming soon (planned / designed, not yet bui
 *(Outside the cut channel there is no "not planned" state — see
 [Scope and philosophy](#scope-and-philosophy-the-adu-reference-implementation).)*
 
-> ✅ on an engine row means **the code exists and was audited**; under the cut it also means
-> **it must survive the move into `adu_core` unchanged**. It does *not* mean the feature is
-> reachable end-to-end today, because the only channel that will ship (ADUv2) is not built yet.
+> ✅ means the capability named in that row is implemented. It does not imply complete
+> managed-workflow or live-service coverage. The ADUv2 channel exists; remaining freshness,
+> orchestration, and verification gaps are called out separately.
 
 ---
 
@@ -266,8 +266,12 @@ stateDiagram-v2
   2048-byte preflight body plus bounded property snapshots (several KiB in total,
   ABI/compiler dependent). Include this in embedded task-stack sizing; it is not
   hidden heap allocation.
-  **Scope:** this does not yet make a runtime setter schedule an update check, change
-  ETag freshness, select the operational route, or promote a newly installed identity.
+  **Scope:** this is cache correctness and ADUv2 reporting cleanup, not a new polling
+  or orchestration feature. The application already chooses route and timing via
+  `az_iot_adu_client_request_onboarding_update()` / `az_iot_adu_client_request_update()`
+  (#195); service-directed `retry-after` deferral and retrying synchronously refused
+  status reports are already implemented (#197). The property setter does not
+  schedule a fetch or select a route.
 - **Accept / reject (❌→🔜 re-shaped)** — the twin 200/406 acknowledgement is cut. The
   `is_installed_fn` decision stays in `adu_core`; an already-installed or non-applicable update
   becomes a `SKIPPED` outcome in the report rather than a wire-level rejection. *Caveat:* still
@@ -289,6 +293,30 @@ stateDiagram-v2
   ADUv2 input sets the flag and no local cancel API exists yet; a superseding `workflowId`
   restarts the workflow instead. A checkpoint saved with a cancel pending still resumes and
   terminates as `CANCELED`. Core never force-interrupts a hook.
+
+### Remaining device-properties follow-ups
+
+The cache and serializer work does not need another route-selection implementation:
+the application chooses the route and timing using the existing request APIs.
+Explicit request coalescing, route-preserving retries, and service `retry-after`
+handling should be reused rather than rebuilt. Remaining work is narrower:
+
+1. **Property freshness and API contract.** Invalidate agent-info freshness when
+   properties change and prevent an outstanding response for an older property
+   snapshot from restoring stale ETags or delivering an outdated offer. Keep checks
+   explicitly application-requested; automatic setter-triggered polling is not
+   included. Documentation must distinguish cache acceptance from service delivery.
+2. **Workflow reporting and current installed identity.** Terminal results now
+   survive the return to Idle; order them against later workflow activity, and
+   propagate the successfully applied ID into the cached identity for subsequent
+   checks. Reuse the existing refused-report retry; it currently rebuilds from live
+   state rather than retaining a terminal snapshot. Reboot-durable reporting remains
+   a separate persistence concern.
+3. **Managed end-to-end evidence.** Test property replacement plus an explicit public
+   request through the managed client and shipping channel, then verify operational
+   convergence using a supported live-service fixture. Actual offered workflows also
+   need the remaining ADUv2 offer-to-engine normalization; channel-only tests do not
+   prove that path.
 
 ## C. Download and integrity
 
