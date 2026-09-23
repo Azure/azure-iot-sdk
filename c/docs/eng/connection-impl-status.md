@@ -26,7 +26,7 @@ Keep this file in step with the code. It is expected to change often; `connectio
 | --- | --- | --- |
 | [§2 Top-level state machine](../connection.md#2-top-level-state-machine) | implemented, per scope | partial — the same lifecycle is driven internally, but it is surfaced as connect/disconnect events rather than as a state value |
 | [§3 Full connect sequence](../connection.md#3-full-connect-sequence) | implemented | implemented |
-| [§4 Connection profile selection](../connection.md#4-connection-profile-selection) | implemented | implemented |
+| [§4 Connection profile selection](../connection.md#4-connection-profile-selection) | implemented | partial — a closed enum with no raw value, so an unrecognised profile cannot be preserved or reported as unsupported |
 | [§5 Reconnection](../connection.md#5-reconnection) | implemented | partial — MQTT connect failures retry under the policy, but a failed provisioning flow is returned to the caller of `ProvisionAndConnectAsync` rather than retried |
 | [§6 Certificate management](../connection.md#6-certificate-management-onboarding-and-renewal) | implemented | partial — the CSR now rides the registration, but renewal over the hub is classic-only |
 | [§7 Device update](../connection.md#7-device-update-onboarding-and-renewal) | implemented over the provisioning gateway — the hub channel is not written | none — no update support exists in the .NET client today, and §7 is the contract it will have to meet when it is added |
