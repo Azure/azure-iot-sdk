@@ -722,6 +722,49 @@ static void a_short_type_value_is_handled(void** state)
   assert_int_equal(rec.status, AZ_IOT_ERR_PROTOCOL);
 }
 
+/* The schema version is pinned, not skipped. A future "get-response:2" is a
+ * message this SDK does not know how to read; accepting it as v1 would complete
+ * a live request from fields that may have been redefined. */
+static void a_response_with_an_unsupported_schema_version_is_refused(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  get_record rec = { 0 };
+  uint8_t corr[16];
+  issue_get(fx, &rec, corr);
+
+  const uint8_t body[] = { 0x08, 0x07, 0x10, 0x09 };
+  inject_twin(fx, "get-response:2", corr, body, sizeof(body));
+
+  /* Not decoded as v1; the slot is released as a protocol error instead. */
+  assert_true(rec.fired);
+  assert_int_equal(rec.status, AZ_IOT_ERR_PROTOCOL);
+  assert_false(rec.had_twin);
+}
+
+/* A section the service sent as explicitly empty is an update to empty, and
+ * must stay distinguishable from one it omitted for an if-not-match hit. */
+static void an_explicitly_empty_section_payload_is_present(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  get_record rec = { 0 };
+  uint8_t corr[16];
+  issue_get(fx, &rec, corr);
+
+  /* TwinGetResponse { 1: desired_version=4, 2: reported_version=5,
+   *                   3: desired_payload = "" }  -- field 3 present, empty. */
+  const uint8_t body[] = { 0x08, 0x04, 0x10, 0x05, 0x1A, 0x00 };
+  inject_twin(fx, "get-response:1", corr, body, sizeof(body));
+
+  assert_true(rec.fired);
+  assert_true(rec.desired.has_payload); /* present */
+  assert_int_equal(rec.desired.payload_len, 0); /* and empty */
+  assert_false(rec.reported.has_payload); /* omitted entirely */
+}
+
 static void a_response_without_a_type_releases_the_slot(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -2086,6 +2129,10 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         a_response_with_an_unusable_type_releases_the_slot, setup, teardown),
     cmocka_unit_test_setup_teardown(a_short_type_value_is_handled, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_response_with_an_unsupported_schema_version_is_refused, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_explicitly_empty_section_payload_is_present, setup, teardown),
     cmocka_unit_test_setup_teardown(a_response_without_a_type_releases_the_slot, setup, teardown),
     cmocka_unit_test_setup_teardown(a_patch_response_does_not_satisfy_a_get_slot, setup, teardown),
     cmocka_unit_test_setup_teardown(a_message_on_a_longer_topic_is_dropped, setup, teardown),

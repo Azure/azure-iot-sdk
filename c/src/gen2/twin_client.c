@@ -46,6 +46,9 @@
  * the schema version the service expects; inbound ones are matched on the bare
  * name so a later schema revision still routes. */
 #define TWIN_TYPE_KEY "type"
+/* Schema version this client speaks; stamped on what it sends and required on
+ * what it accepts. */
+#define TWIN_SCHEMA_VERSION "1"
 #define TWIN_CONTENT_TYPE "application/protobuf"
 #define TWIN_TYPE_GET "get:1"
 #define TWIN_TYPE_REPORTED_PATCH "reported-patch:1"
@@ -108,8 +111,12 @@ static int alloc_pending(az_iot_gen2_twin_client* t)
   return -1;
 }
 
-/* True when the message's `type` user property is @p want, matching either the
- * bare name or the "<name>:<schemaVersion>" form the service stamps. */
+/* True when the message's `type` user property is exactly "<want>:1".
+ *
+ * The schema version is checked rather than skipped: a future "get-response:2"
+ * is a message this SDK does not know how to read, and accepting it as v1 would
+ * complete a live request from fields that may have been redefined. The
+ * direct-method client pins its version the same way. */
 static bool type_is(const az_iot_mqtt_message* msg, const char* want)
 {
   for (size_t i = 0; i < msg->user_properties_count; ++i)
@@ -124,7 +131,8 @@ static bool type_is(const az_iot_mqtt_message* msg, const char* want)
       return false;
     }
     size_t n = strlen(want);
-    return strncmp(up->value, want, n) == 0 && (up->value[n] == '\0' || up->value[n] == ':');
+    return strncmp(up->value, want, n) == 0 && up->value[n] == ':'
+        && strcmp(up->value + n + 1, TWIN_SCHEMA_VERSION) == 0;
   }
   return false;
 }

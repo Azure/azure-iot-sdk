@@ -209,7 +209,7 @@ az group delete --name <resource-group> --yes
 
 | Concern | Behavior |
 |---|---|
-| Connection, twin, manifest receipt, accept/reject, state reporting | **Real** (Paho MQTT adapter, real hub/ADU instance) |
+| Connection, update request/response, manifest receipt, status reporting | **Real** (Paho MQTT adapter, real provisioning/device-update endpoint) |
 | Manifest JWS signature verification | **Real** (OpenSSL crypto hooks, real root keys) |
 | `download_fn` | **Simulated** — synthesizes deterministic (zero-filled) payload bytes of the manifest-declared size |
 | `read_file_fn` | **Simulated** — serves the same deterministic bytes back so core can run the **real** streaming SHA-256 hash check |

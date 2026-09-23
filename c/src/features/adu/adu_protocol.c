@@ -9,6 +9,7 @@
  * why that boundary matters.
  */
 
+#include <stdint.h>
 #include <string.h>
 
 #include <azure/core/az_json.h>
@@ -35,6 +36,15 @@
 
 #define ADU_TOPIC_PREFIX "$dps/registrations/"
 #define ADU_TOPIC_RID "/?$rid="
+
+/* MQTT carries no headers, so a retry-after rides the response topic's query
+ * string: "$dps/registrations/res/500/?$rid=adu1&retry-after=3". */
+#define ADU_TOPIC_RETRY_AFTER "retry-after="
+
+/* Upper bound on a retry-after we will honour. The service asks for seconds,
+ * not hours; a value past this is treated as no value at all rather than
+ * parking the device for an implausible stretch on one malformed topic. */
+#define ADU_RETRY_AFTER_MAX_SECONDS 86400u
 
 /* Operation names as they appear on the wire. The service lower-cases the
  * segment before matching, so these are emitted lower-case. */
@@ -140,6 +150,62 @@ az_iot_result az_iot_adu__parse_response_topic(
   }
 
   return AZ_IOT_ERR_INVALID_ARG;
+}
+
+uint32_t az_iot_adu__parse_retry_after_seconds(const char* topic, size_t topic_len)
+{
+  if (topic == NULL || topic_len == 0 || topic_len > (size_t)INT32_MAX)
+  {
+    return 0;
+  }
+
+  az_span full = az_span_create((uint8_t*)(uintptr_t)topic, (int32_t)topic_len);
+  az_span key = AZ_SPAN_FROM_STR(ADU_TOPIC_RETRY_AFTER);
+  int32_t from = 0;
+
+  while (from < az_span_size(full))
+  {
+    int32_t at = az_span_find(az_span_slice(full, from, az_span_size(full)), key);
+    if (at < 0)
+    {
+      return 0;
+    }
+    int32_t start = from + at;
+
+    /* Only as a query parameter in its own right: without this, a key such as
+     * "no-retry-after=" would match on its tail. */
+    if (start > 0 && az_span_ptr(full)[start - 1] != '?' && az_span_ptr(full)[start - 1] != '&')
+    {
+      from = start + 1;
+      continue;
+    }
+
+    az_span value = az_span_slice(full, start + az_span_size(key), az_span_size(full));
+    int32_t sep = az_span_find(value, AZ_SPAN_FROM_STR("&"));
+    if (sep >= 0)
+    {
+      value = az_span_slice(value, 0, sep);
+    }
+
+    /* az_span_atou32 rejects a non-digit and rejects overflow, so both are
+     * covered without a hand-rolled digit loop. Two things it does NOT do:
+     * an empty span trips a precondition rather than returning an error, and
+     * it accepts a leading '+'. The contract here is plain digits, so guard
+     * both before handing the span over. */
+    if (az_span_size(value) == 0 || az_span_ptr(value)[0] < '0' || az_span_ptr(value)[0] > '9')
+    {
+      return 0;
+    }
+
+    uint32_t seconds = 0;
+    if (az_result_failed(az_span_atou32(value, &seconds)) || seconds > ADU_RETRY_AFTER_MAX_SECONDS)
+    {
+      return 0;
+    }
+    return seconds;
+  }
+
+  return 0;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -888,38 +954,167 @@ az_iot_adu_error_action az_iot_adu__classify_error(
   }
 
   /* No string code: the numeric code carries the class. This path matters --
-   * surfacing the string code is a SHOULD, not a MUST. */
-  switch (numeric_code)
+   * surfacing the string code is a SHOULD, not a MUST.
+   *
+   * Classified by status, not by exact code. The codes are the HTTP status
+   * times 1000 plus a sub-code (400012, 429001, 503000), so the status is
+   * readable even when the exact sub-code is new to us -- and the status is
+   * the part the service cannot redefine.
+   *
+   * Matching only known values would call a server-side fault permanent the
+   * first time the service added a sub-code. Measured: a real deployment
+   * answers with 500001, which no list here contains, and treating that as
+   * "never retry" makes a device abandon its update check over a transient
+   * fault.
+   *
+   * A code below the scale is already a bare status: dividing it would give 0
+   * and send a transient 503 to FATAL -- the exact failure this classification
+   * exists to prevent. The contract says the code is always status-prefixed
+   * and every value measured has been, so this is not a shape we expect; it is
+   * here because the wire value is taken as-is and the two outcomes are not
+   * symmetric. A needless retry costs one request; a wrong FATAL makes the
+   * device abandon updates for good. */
+  int32_t status = (numeric_code >= ADU_ERROR_CODE_STATUS_SCALE)
+      ? (numeric_code / ADU_ERROR_CODE_STATUS_SCALE)
+      : numeric_code;
+
+  switch (status)
   {
-    case AZ_IOT_ADU_ERR_AGENT_INFO_RESEND_REQUIRED:
-      /* The whole resend/re-sync family shares this code. Resending the full
+    case ADU_ERROR_STATUS_BAD_REQUEST:
+      /* One 400 IS recoverable, which its status does not say. The whole
+       * resend/re-sync family shares that code, and resending the full
        * agentInfo also drops the stale service-config ETag, so one action
-       * covers every member. */
-      return AZ_IOT_ADU_ERROR_ACTION_RESEND_AGENT_INFO;
+       * covers every member. Every other 400 is a malformed request. */
+      return (numeric_code == AZ_IOT_ADU_ERR_AGENT_INFO_RESEND_REQUIRED)
+          ? AZ_IOT_ADU_ERROR_ACTION_RESEND_AGENT_INFO
+          : AZ_IOT_ADU_ERROR_ACTION_FATAL;
 
-    case AZ_IOT_ADU_ERR_GENERIC_CONFLICT:
-      /* Shared by two conditions needing OPPOSITE handling: a fetch means the
-       * account is not linked (proceed, do not retry); a report means a
-       * terminal result is already recorded (treat as delivered). Without the
-       * string code, the operation in flight is what disambiguates them. */
-      return (operation == AZ_IOT_ADU_OP_REPORT_STATUS) ? AZ_IOT_ADU_ERROR_ACTION_ALREADY_REPORTED
-                                                        : AZ_IOT_ADU_ERROR_ACTION_PROCEED;
+    case ADU_ERROR_STATUS_CONFLICT:
+      /* The one documented 409 is shared by two conditions needing OPPOSITE
+       * handling: a fetch means the account is not linked (proceed, do not
+       * retry); a report means a terminal result is already recorded (treat as
+       * delivered). Without the string code, the operation in flight is what
+       * disambiguates them. An undocumented 409 is not assumed to mean either. */
+      if (numeric_code == AZ_IOT_ADU_ERR_GENERIC_CONFLICT)
+      {
+        return (operation == AZ_IOT_ADU_OP_REPORT_STATUS) ? AZ_IOT_ADU_ERROR_ACTION_ALREADY_REPORTED
+                                                          : AZ_IOT_ADU_ERROR_ACTION_PROCEED;
+      }
+      return AZ_IOT_ADU_ERROR_ACTION_FATAL;
 
-    case AZ_IOT_ADU_ERR_THROTTLED:
-    case AZ_IOT_ADU_ERR_QUOTA_EXCEEDED:
+    case ADU_ERROR_STATUS_TOO_MANY_REQUESTS:
+      /* Load shedding, whatever the sub-code. The retry-after on the response
+       * topic supplies the delay. */
       return AZ_IOT_ADU_ERROR_ACTION_RETRY_AFTER;
 
-    case AZ_IOT_ADU_ERR_SERVER_ERROR:
-    case AZ_IOT_ADU_ERR_SERVICE_UNAVAILABLE:
+    case ADU_ERROR_STATUS_INTERNAL_SERVER_ERROR:
+    case ADU_ERROR_STATUS_BAD_GATEWAY:
+    case ADU_ERROR_STATUS_SERVICE_UNAVAILABLE:
+    case ADU_ERROR_STATUS_GATEWAY_TIMEOUT:
+      /* The request was not rejected on its merits; the service could not
+       * answer it. Repeating it unchanged is exactly right. */
       return AZ_IOT_ADU_ERROR_ACTION_RETRY;
 
-    case 0:
-      /* No code at all: nothing to classify. */
-      return AZ_IOT_ADU_ERROR_ACTION_FATAL;
-
     default:
-      /* Every other documented code is a request or credential fault: fix the
-       * request, do not repeat it unchanged. */
+      /* Other 4xx, no code at all (0), and anything unrecognized: a request or
+       * credential fault. Fix the request, do not repeat it unchanged. */
       return AZ_IOT_ADU_ERROR_ACTION_FATAL;
   }
+}
+
+az_iot_result az_iot_adu__parse_tracking_id(
+    const uint8_t* payload,
+    size_t payload_len,
+    char* out_tracking_id,
+    size_t out_tracking_id_size)
+{
+  if (out_tracking_id == NULL || out_tracking_id_size == 0)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  out_tracking_id[0] = '\0';
+
+  /* az_span carries an int32_t length, so an oversized payload would wrap
+   * before az_span_create() saw it and trip az_core's precondition handler
+   * rather than returning. Refused here instead. */
+  if (payload == NULL || payload_len == 0 || payload_len > (size_t)INT32_MAX)
+  {
+    return AZ_IOT_ERR_NOT_FOUND;
+  }
+
+  az_json_reader jr;
+  az_span doc = az_span_create((uint8_t*)(uintptr_t)payload, (int32_t)payload_len);
+  if (az_result_failed(az_json_reader_init(&jr, doc, NULL))
+      || az_result_failed(az_json_reader_next_token(&jr))
+      || jr.token.kind != AZ_JSON_TOKEN_BEGIN_OBJECT)
+  {
+    return AZ_IOT_ERR_NOT_FOUND;
+  }
+
+  /* Top level only, and skipping whole child values: trackingId is documented
+   * at the root, and a nested one belongs to something else.
+   *
+   * The value is held as a candidate until the root object is seen to CLOSE,
+   * matching the other response parsers here: a truncated body must be
+   * rejected, not reported as a successful parse of whatever arrived before
+   * the cut. */
+  bool found = false;
+  bool closed = false;
+  while (az_result_succeeded(az_json_reader_next_token(&jr)))
+  {
+    if (jr.token.kind == AZ_JSON_TOKEN_END_OBJECT)
+    {
+      closed = true;
+      break;
+    }
+    if (jr.token.kind != AZ_JSON_TOKEN_PROPERTY_NAME)
+    {
+      return AZ_IOT_ERR_NOT_FOUND;
+    }
+
+    bool is_tracking = az_json_token_is_text_equal(&jr.token, AZ_SPAN_FROM_STR("trackingId"));
+
+    if (az_result_failed(az_json_reader_next_token(&jr)))
+    {
+      break;
+    }
+
+    if (is_tracking && jr.token.kind == AZ_JSON_TOKEN_STRING)
+    {
+      int32_t n = az_span_size(jr.token.slice);
+      /* Dropped rather than truncated when it does not fit: half a correlation
+       * id is worse than none, because it would be quoted in a support request
+       * and match nothing. */
+      if (n >= 0 && (size_t)n + 1 <= out_tracking_id_size && out_tracking_id_size <= INT32_MAX)
+      {
+        /* az_core's own copy: it NUL-terminates, and it asserts the span fits
+         * rather than silently truncating. The guard above keeps that
+         * precondition satisfied instead of relying on it to catch us. */
+        az_span_to_str(out_tracking_id, (int32_t)out_tracking_id_size, jr.token.slice);
+        found = true;
+        continue;
+      }
+      /* Too long to fit is dropped, not truncated: half a correlation id would
+       * be quoted in a support request and match nothing. The buffer is cleared
+       * because a duplicate key may already have put a good value there, and
+       * the caller ignores the status -- an empty string is the contract. */
+      out_tracking_id[0] = 0;
+      return AZ_IOT_ERR_NOT_FOUND;
+    }
+
+    if (jr.token.kind == AZ_JSON_TOKEN_BEGIN_OBJECT || jr.token.kind == AZ_JSON_TOKEN_BEGIN_ARRAY)
+    {
+      if (az_result_failed(az_json_reader_skip_children(&jr)))
+      {
+        break;
+      }
+    }
+  }
+
+  if (!closed || !found)
+  {
+    out_tracking_id[0] = 0;
+    return AZ_IOT_ERR_NOT_FOUND;
+  }
+  return AZ_IOT_OK;
 }

@@ -181,6 +181,72 @@ static void field_number_zero_is_rejected(void** state)
   assert_false(az_iot_proto3_read_tag(buf, sizeof(buf), &pos, &field, &wire));
 }
 
+/* A field number above protobuf's 2^29-1 would wrap on the narrowing cast and
+ * land on a field the SDK knows, letting malformed input populate protocol
+ * state. 2^32 + 1 is the case that matters: it truncates to 1. */
+static void an_out_of_range_field_number_is_rejected(void** state)
+{
+  (void)state;
+  /* key = ((2^32 + 1) << 3) | 0, as a varint */
+  uint64_t key = ((uint64_t)0x100000001ull) << 3;
+  uint8_t buf[16];
+  size_t n = 0;
+  do
+  {
+    uint8_t b = (uint8_t)(key & 0x7Fu);
+    key >>= 7;
+    if (key)
+    {
+      b = (uint8_t)(b | 0x80u);
+    }
+    buf[n++] = b;
+  } while (key);
+
+  size_t pos = 0;
+  uint32_t field = 0;
+  uint8_t wire = 0;
+  assert_false(az_iot_proto3_read_tag(buf, n, &pos, &field, &wire));
+}
+
+/* The largest legal field number still reads. */
+static void the_maximum_field_number_reads(void** state)
+{
+  (void)state;
+  uint64_t key = ((uint64_t)536870911u) << 3;
+  uint8_t buf[16];
+  size_t n = 0;
+  do
+  {
+    uint8_t b = (uint8_t)(key & 0x7Fu);
+    key >>= 7;
+    if (key)
+    {
+      b = (uint8_t)(b | 0x80u);
+    }
+    buf[n++] = b;
+  } while (key);
+
+  size_t pos = 0;
+  uint32_t field = 0;
+  uint8_t wire = 0;
+  assert_true(az_iot_proto3_read_tag(buf, n, &pos, &field, &wire));
+  assert_int_equal(field, 536870911u);
+}
+
+/* A cursor already past the end makes len - *pos wrap to a huge size_t, which
+ * would report success and advance further out of bounds. */
+static void skipping_with_a_cursor_past_the_end_is_rejected(void** state)
+{
+  (void)state;
+  const uint8_t buf[] = { 1, 2, 3, 4 };
+  size_t pos = sizeof(buf) + 1;
+  assert_false(az_iot_proto3_skip_field(buf, sizeof(buf), &pos, AZ_IOT_PROTO3_WIRE_32BIT));
+  pos = sizeof(buf) + 1;
+  assert_false(az_iot_proto3_skip_field(buf, sizeof(buf), &pos, AZ_IOT_PROTO3_WIRE_64BIT));
+  pos = 0;
+  assert_false(az_iot_proto3_skip_field(NULL, sizeof(buf), &pos, AZ_IOT_PROTO3_WIRE_32BIT));
+}
+
 static void read_tag_rejects_null_outputs(void** state)
 {
   (void)state;
@@ -210,18 +276,21 @@ static void a_length_delimited_field_points_into_the_buffer(void** state)
   assert_int_equal(pos, 4);
 }
 
-/* An explicitly-present but empty field is legal, and is reported as a NULL
- * pointer with zero length rather than as a failure. */
-static void a_zero_length_field_reads(void** state)
+/* An explicitly-present but empty field is legal, and must stay
+ * distinguishable from an absent one -- proto3 separates the two, and so does
+ * the twin protocol (an omitted section payload vs. an explicitly empty one).
+ * So the pointer comes back non-NULL with zero length. */
+static void a_zero_length_field_reads_as_present(void** state)
 {
   (void)state;
   const uint8_t buf[] = { 0x00 };
   size_t pos = 0;
-  const uint8_t* bytes = (const uint8_t*)1;
+  const uint8_t* bytes = NULL;
   size_t len = 99;
   assert_true(az_iot_proto3_read_bytes(buf, sizeof(buf), &pos, &bytes, &len));
-  assert_null(bytes);
+  assert_non_null(bytes);
   assert_int_equal(len, 0);
+  assert_int_equal(pos, 1);
 }
 
 /* A length past the end of the buffer must be refused, not clamped: clamping
@@ -415,9 +484,12 @@ int main(void)
     cmocka_unit_test(a_tag_splits_into_field_and_wire_type),
     cmocka_unit_test(a_two_byte_tag_splits),
     cmocka_unit_test(field_number_zero_is_rejected),
+    cmocka_unit_test(an_out_of_range_field_number_is_rejected),
+    cmocka_unit_test(the_maximum_field_number_reads),
+    cmocka_unit_test(skipping_with_a_cursor_past_the_end_is_rejected),
     cmocka_unit_test(read_tag_rejects_null_outputs),
     cmocka_unit_test(a_length_delimited_field_points_into_the_buffer),
-    cmocka_unit_test(a_zero_length_field_reads),
+    cmocka_unit_test(a_zero_length_field_reads_as_present),
     cmocka_unit_test(a_length_past_the_end_is_rejected),
     cmocka_unit_test(skipping_each_wire_type_advances_correctly),
     cmocka_unit_test(skipping_a_truncated_fixed_width_field_is_rejected),

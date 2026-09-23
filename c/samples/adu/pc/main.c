@@ -10,8 +10,9 @@
  * download/install hooks so it is safe to run on a dev box (it never touches
  * real firmware). See the companion README.md and docs/azure-device-update.md.
  *
- * Real:      connection, twin, manifest receipt, JWS verification (OpenSSL),
- *            per-file SHA-256 hash check, state reporting.
+ * Real:      connection, update request/response, manifest receipt, JWS
+ *            verification (OpenSSL), per-file SHA-256 hash check, status
+ *            reporting.
  * Simulated: download_fn (synthesizes deterministic payload bytes),
  *            install/apply/backup/restore (log only, optional forced failure
  *            or reboot), persist/load (a temp file so resume() works).
@@ -76,22 +77,6 @@ typedef struct
   int reboot_signalled; /* set by install_fn when it returns REBOOT_REQUIRED */
 } sim_ctx;
 
-static void sleep_ms(long ms)
-{
-  if (ms <= 0)
-  {
-    return;
-  }
-#if defined(_WIN32)
-  Sleep((DWORD)ms);
-#else
-  struct timespec ts;
-  ts.tv_sec = ms / 1000;
-  ts.tv_nsec = (ms % 1000) * 1000000L;
-  (void)nanosleep(&ts, NULL);
-#endif
-}
-
 /* Portable getenv (MSVC flags plain getenv as unsafe under -Werror). Read once
  * at startup; the small one-time Windows duplicate is acceptable for a sample. */
 static char* sample_getenv(const char* name)
@@ -123,7 +108,7 @@ static int32_t sim_download(
       file_index + 1,
       file_count,
       (long long)file->size_in_bytes);
-  sleep_ms(s->delay_ms);
+  sample_sleep_ms(s->delay_ms);
   return AZ_IOT_ADU_RESULT_SUCCESS;
 }
 
@@ -322,28 +307,16 @@ static void sample_state_destroy(sample_state* s)
 }
 
 static az_iot_connection_state g_conn_state = AZ_IOT_CONN_STATE_IDLE;
-static const char* conn_state_name(az_iot_connection_state s)
-{
-  switch (s)
-  {
-    case AZ_IOT_CONN_STATE_IDLE:
-      return "Idle";
-    case AZ_IOT_CONN_STATE_CONNECTING:
-      return "Connecting";
-    case AZ_IOT_CONN_STATE_CONNECTED:
-      return "Connected";
-    case AZ_IOT_CONN_STATE_RECONNECTING:
-      return "Reconnecting";
-    case AZ_IOT_CONN_STATE_DISCONNECTING:
-      return "Disconnecting";
-    case AZ_IOT_CONN_STATE_FAULTED:
-      return "Faulted";
-    default:
-      return "?";
-  }
-}
 static void on_conn_state(const az_iot_connection_state_event* event, void* user_ctx)
 {
+  /* Hub lifecycle only: the provisioning session reports on its own scope,
+   * and storing its state here would overwrite the hub state this code acts
+   * on. */
+  if (event->scope != AZ_IOT_CONN_SCOPE_HUB)
+  {
+    return;
+  }
+
   az_iot_connection_state st = event->state;
   az_iot_result reason = event->reason;
   (void)user_ctx;
@@ -351,8 +324,8 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
   {
     printf(
         "Connection: %s -> %s (reason=0x%08x)\n",
-        conn_state_name(g_conn_state),
-        conn_state_name(st),
+        sample_connection_state_name(g_conn_state),
+        sample_connection_state_name(st),
         (unsigned)reason);
   }
   g_conn_state = st;
@@ -401,12 +374,6 @@ int main(void)
   az_iot_connection_client_options copts = az_iot_connection_client_options_default();
   sample_apply_dps_options(&copts, &st.config);
   copts.certificate_provider = &st.certs.base;
-  /* Announce the Device Update PnP model id at connection. Device Update
-   * imports and classifies a device ONLY if it advertises a model id as part
-   * of the MQTT CONNECT; without it the device never lands in the ADU
-   * instance and no device group ever forms. This value matches the
-   * contractModelId the ADU agent reports in its twin. */
-  copts.model_id = "dtmi:azure:iot:deviceUpdateContractModel;2";
   /* Enable automatic reconnect with exponential backoff + jitter so the
    * long-running sample recovers transparently from transient drops (e.g.
    * a duplicate-connection eviction or a network blip) while it waits for a
@@ -420,7 +387,7 @@ int main(void)
     sample_state_destroy(&st);
     return 1;
   }
-  az_iot_connection_client_set_state_callback(&st.connection_client, on_conn_state, NULL);
+  az_iot_connection_client_add_state_observer(&st.connection_client, on_conn_state, NULL);
 
   if (az_iot_connection_client_register_mqtt_factory(
           &st.connection_client, az_iot_paho_factory_create_v3_1_1())
@@ -487,6 +454,28 @@ int main(void)
     printf(
         "Resumed persisted workflow at state: %s\n",
         adu_state_name(az_iot_adu_client_get_state(&st.adu_client)));
+  }
+
+  /* Ask for a day-0 onboarding update. Nothing is fetched unless the
+   * application asks: only it knows whether it has a device record yet, and
+   * the onboarding route is the one that needs none. A device that had already
+   * provisioned would call az_iot_adu_client_request_update() instead.
+   *
+   * The timeout bounds how long the CLIENT keeps reissuing this check before
+   * giving up and raising AZ_IOT_ADU_EVENT_OPERATION_ABANDONED with
+   * AZ_IOT_ERR_TIMEOUT. Without it an unservable check -- no device record, no
+   * linked hub -- is retried on every do_work() for the life of the client,
+   * and looks exactly like "no update available".
+   *
+   * AZ_IOT_ADU_REQUEST_DEFAULT_TIMEOUT_MS is the default for an application
+   * with no policy of its own. Pass your own value when you have one, or
+   * AZ_IOT_ADU_REQUEST_NO_TIMEOUT to keep retrying indefinitely. */
+  if (az_iot_adu_client_request_onboarding_update(
+          &st.adu_client, AZ_IOT_ADU_REQUEST_DEFAULT_TIMEOUT_MS)
+      != AZ_IOT_OK)
+  {
+    sample_state_destroy(&st);
+    return 1;
   }
 
   /* Open (internally provisions via DPS then connects to the assigned hub). */

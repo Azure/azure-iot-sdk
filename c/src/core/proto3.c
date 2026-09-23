@@ -67,16 +67,18 @@ bool az_iot_proto3_read_tag(
     return false;
   }
 
-  uint32_t field = (uint32_t)(key >> 3);
-  /* Field number 0 does not exist in protobuf, so a key carrying it is a
-   * malformed frame rather than a field this SDK does not know. Skipping it as
-   * unknown would let a corrupt message parse as a partially valid one. */
-  if (field == 0u)
+  /* Range-check before narrowing. protobuf defines field numbers as
+   * 1..2^29-1: 0 does not exist, and a key above the maximum would wrap on the
+   * cast to uint32_t and land on a field the SDK knows -- letting malformed
+   * broker input populate protocol state. Both are malformed frames rather
+   * than fields this SDK does not know, so neither may be skipped as unknown. */
+  uint64_t field = key >> 3;
+  if (field == 0u || field > AZ_IOT_PROTO3_MAX_FIELD_NUMBER)
   {
     return false;
   }
 
-  *out_field = field;
+  *out_field = (uint32_t)field;
   *out_wire = (uint8_t)(key & 0x07u);
   return true;
 }
@@ -103,7 +105,11 @@ bool az_iot_proto3_read_bytes(
     return false;
   }
 
-  *out_bytes = (n > 0) ? (buf + *pos) : NULL;
+  /* Non-NULL even when empty, so the caller can tell a present-but-empty field
+   * from an absent one -- proto3 distinguishes them and so does the twin
+   * protocol (an omitted section payload vs. an explicitly empty one). The
+   * pointer is one-past-the-end at worst, which is well-defined to form. */
+  *out_bytes = buf + *pos;
   *out_len = (size_t)n;
   *pos += (size_t)n;
   return true;
@@ -111,7 +117,10 @@ bool az_iot_proto3_read_bytes(
 
 bool az_iot_proto3_skip_field(const uint8_t* buf, size_t len, size_t* pos, uint8_t wire)
 {
-  if (!pos)
+  /* The fixed-width arms below compute len - *pos, which wraps to a huge
+   * size_t if the cursor is already past the end -- reporting success and
+   * advancing further out of bounds. Reject that here, as the other readers do. */
+  if (!buf || !pos || *pos > len)
   {
     return false;
   }

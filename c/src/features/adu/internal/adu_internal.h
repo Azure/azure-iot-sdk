@@ -21,6 +21,12 @@ extern "C"
 /* Internal accessor shorthand. */
 #define ADU_I(c) ((c)->_internal)
 
+/* Values for _internal.pending_fetch: which fetch route the application asked
+ * for and the channel has not yet accepted. */
+#define ADU_FETCH_NONE 0u
+#define ADU_FETCH_ONBOARDING 1u
+#define ADU_FETCH_REGULAR 2u
+
   /* Map an internal fine-grained state to the protocol-defined agent state
    * (0=Idle, 6=DeploymentInProgress, 255=Failed). */
   az_iot_adu_client_agent_state az_iot_adu__agent_state(az_iot_adu_state state);

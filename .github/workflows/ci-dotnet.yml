@@ -51,11 +51,17 @@ jobs:
 
       - name: Provision resources
         id: provision
-        uses: ./.github/actions/provision-e2e-resources
+        uses: Azure/iot-sdks-e2e-fx/actions/provision-e2e-resources@v1
         with:
           rg-name: ${{ env.E2E_RESOURCE_GROUP }}
-          azure-location: eastus
-          enable-certificate-management: 'true'
+          # The shared action defaults to EastUS; these pipelines run in
+          # eastus2euap, the region this subscription's IoT Hub scale unit is
+          # pinned to -- a hub created anywhere else is rejected with IH400059.
+          # An undefined repository variable arrives as an empty string, which
+          # would otherwise override the action default, so the fallback is here.
+          azure-location: ${{ vars.E2E_AZURE_LOCATION || 'eastus2euap' }}
+          enable-file-upload: 'true'
+          enable-certificate-management: 'false'
           dps-x509-group-enrollment-devices: '2'
           dps-x509-individual-enrollments: '2'
 
@@ -105,8 +111,8 @@ jobs:
           # device-index) so they never share a device twin -- the mocked ADU
           # suite patches large desired properties, and a shared twin would bloat
           # the other leg's twin GET and flake test_twin. Fall back to the
-          # unsuffixed index-0 vars if an older (pre-indexing) provisioning script
-          # is fetched from iot-sdks-e2e-fx master.
+          # unsuffixed index-0 vars if the pinned provisioning action emits a
+          # pre-indexing test config.
           $idx = '${{ matrix.device-index }}'
           $regId   = (Get-Item "env:IOT_DPS_INDIVIDUAL_REGISTRATION_ID_$idx" -ErrorAction SilentlyContinue).Value
           $certB64 = (Get-Item "env:IOT_DPS_INDIVIDUAL_X509_CERTIFICATE_$idx" -ErrorAction SilentlyContinue).Value
@@ -244,6 +250,6 @@ jobs:
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Delete Azure resources
-        uses: ./.github/actions/destroy-e2e-resources
+        uses: Azure/iot-sdks-e2e-fx/actions/destroy-e2e-resources@v1
         with:
           resource-group: ${{ env.E2E_RESOURCE_GROUP }}

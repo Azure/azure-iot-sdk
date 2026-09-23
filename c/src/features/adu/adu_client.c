@@ -36,6 +36,7 @@
 #include "azure/iot/az_iot_adu.h"
 
 #include "internal/adu_internal.h"
+#include "internal/reconnect.h" /* az_iot_time_mono_ms */
 #include "internal/log_internal.h"
 #include "internal/span_writer.h"
 
@@ -43,6 +44,10 @@
  * client struct stays caller-allocated with no hidden allocation. If the
  * channel ever outgrows that reservation this fails the build rather than
  * silently corrupting the struct. */
+/* Defined below; used from the workflow state machine above it. */
+static void set_adu_state(az_iot_adu_client_t* client, az_iot_adu_state next);
+static void arm_pending_fetch_deadline(az_iot_adu_client_t* client, uint32_t timeout_ms);
+
 typedef char az_iot_adu_channel_storage_is_large_enough
     [(sizeof(((az_iot_adu_client_t*)0)->_internal.channel_storage)
       >= sizeof(az_iot_adu_channel_dps))
@@ -857,7 +862,7 @@ static int32_t verify_file_hash(
 /* Reset the workflow back to Idle, clearing the parsed request. */
 static void reset_to_idle(az_iot_adu_client_t* client)
 {
-  ADU_I(client).state = AZ_IOT_ADU_STATE_IDLE;
+  set_adu_state(client, AZ_IOT_ADU_STATE_IDLE);
   ADU_I(client).have_request = false;
   ADU_I(client).current_step = 0;
   ADU_I(client).current_file = 0;
@@ -1181,7 +1186,7 @@ static void process_desired_patch(
   ADU_I(client).cancel_requested = false;
   ADU_I(client).current_step = 0;
   ADU_I(client).current_file = 0;
-  ADU_I(client).state = AZ_IOT_ADU_STATE_MANIFEST_RECEIVED;
+  set_adu_state(client, AZ_IOT_ADU_STATE_MANIFEST_RECEIVED);
   set_active_workflow(
       client,
       req.workflow.id,
@@ -1209,6 +1214,94 @@ static void on_channel_update(
   process_desired_patch(client, update_payload, update_payload_len);
 }
 
+/* Deliver an event to every observer.
+ *
+ * The guard is save/restore, not a plain set/clear: an observer may raise
+ * another event indirectly (request_update() is permitted), so dispatches can
+ * nest, and clearing on the way out of the inner one would drop the guard
+ * while the outer pass was still walking the array.
+ *
+ * Each slot is re-read and a NULL callback skipped, which is what makes
+ * withdrawing from inside a callback safe. */
+static void dispatch_event(az_iot_adu_client_t* client, const az_iot_adu_event* event)
+{
+  bool was_dispatching = ADU_I(client).dispatching;
+  ADU_I(client).dispatching = true;
+  for (size_t i = 0; i < AZ_IOT_MAX_ADU_OBSERVERS; ++i)
+  {
+    if (ADU_I(client).observers[i].cb != NULL)
+    {
+      ADU_I(client).observers[i].cb(event, ADU_I(client).observers[i].user_ctx);
+    }
+  }
+  ADU_I(client).dispatching = was_dispatching;
+}
+
+/* Raise OPERATION_ABANDONED. `service_error` may be NULL when the verdict did
+ * not come from a service response; the event then carries an empty diagnosis
+ * rather than a NULL pointer, so an observer never has to null-check it. */
+/* "The service said nothing." A value rather than an absent pointer, so no
+ * caller -- and no application callback -- has to test for NULL. */
+static const az_iot_adu_service_error k_no_service_error
+    = { .code = 0, .message = "", .tracking_id = "", .retry_after_ms = 0 };
+
+static void raise_abandoned(
+    az_iot_adu_client_t* client,
+    az_iot_adu_operation operation,
+    az_iot_result reason,
+    const az_iot_adu_service_error* service_error)
+{
+  az_iot_adu_event event = {
+    ._internal_size = sizeof(az_iot_adu_event),
+    .kind = AZ_IOT_ADU_EVENT_OPERATION_ABANDONED,
+    .state = ADU_I(client).state,
+    .previous_state = ADU_I(client).state,
+    .operation = operation,
+    .reason = reason,
+    .service_error = k_no_service_error,
+  };
+  if (service_error != NULL)
+  {
+    event.service_error = *service_error;
+    /* The event's string fields are documented as never NULL, and an
+     * application is entitled to print them without checking. A channel that
+     * left one unset must not turn that contract into a crash. */
+    if (event.service_error.message == NULL)
+    {
+      event.service_error.message = "";
+    }
+    if (event.service_error.tracking_id == NULL)
+    {
+      event.service_error.tracking_id = "";
+    }
+  }
+  dispatch_event(client, &event);
+}
+
+/* Move the workflow, telling anyone watching. Centralised so every transition
+ * is reported: eighteen assignment sites cannot each be trusted to remember,
+ * and a state change nobody hears about is the gap this closes. */
+static void set_adu_state(az_iot_adu_client_t* client, az_iot_adu_state next)
+{
+  az_iot_adu_state previous = ADU_I(client).state;
+  if (previous == next)
+  {
+    return;
+  }
+  ADU_I(client).state = next;
+
+  az_iot_adu_event event = {
+    ._internal_size = sizeof(az_iot_adu_event),
+    .kind = AZ_IOT_ADU_EVENT_WORKFLOW_STATE_CHANGED,
+    .state = next,
+    .previous_state = previous,
+    .operation = AZ_IOT_ADU_OP_GET_UPDATE,
+    .reason = AZ_IOT_OK,
+    .service_error = { .code = 0, .message = "", .tracking_id = "" },
+  };
+  dispatch_event(client, &event);
+}
+
 /* The channel's verdict on an operation it accepted earlier.
  *
  * An asynchronous channel returns AZ_IOT_OK from request_update()/report() to
@@ -1234,6 +1327,7 @@ static void on_channel_result(
     az_iot_adu_operation operation,
     az_iot_result result,
     az_iot_adu_error_action action,
+    const az_iot_adu_service_error* service_error,
     void* engine_ctx)
 {
   az_iot_adu_client_t* client = (az_iot_adu_client_t*)engine_ctx;
@@ -1246,6 +1340,31 @@ static void on_channel_result(
       || action == AZ_IOT_ADU_ERROR_ACTION_ALREADY_REPORTED
       || action == AZ_IOT_ADU_ERROR_ACTION_NONE)
   {
+    /* This branch IS the definition of "the client will not re-arm it", so it
+     * is also where the application is told. Deriving the two from one
+     * condition is the point: a separate list elsewhere would be free to drift.
+     *
+     * Not every verdict here is an abandonment:
+     *   - AZ_IOT_OK is success, and NONE accompanies it.
+     *   - ALREADY_REPORTED means the service already has a terminal result for
+     *     this workflow, so the report was not lost -- nothing to report.
+     * What remains -- FATAL and PROCEED -- are requests that were dropped. Both
+     * are reported. PROCEED in particular is UPDATE_ACCOUNT_NOT_LINKED on a
+     * fetch: the device asked, was refused permanently, and without this reads
+     * exactly like "no update available". */
+    if (result != AZ_IOT_OK
+        && (action == AZ_IOT_ADU_ERROR_ACTION_FATAL || action == AZ_IOT_ADU_ERROR_ACTION_PROCEED))
+    {
+      raise_abandoned(client, operation, result, service_error);
+    }
+    /* The request is over -- but only ITS deadline goes with it. A newer
+     * request may already be queued, holding the slot with its own deadline;
+     * clearing unconditionally would strip that and leave the newer request
+     * retrying for ever. */
+    if (operation != AZ_IOT_ADU_OP_REPORT_STATUS && ADU_I(client).pending_fetch == ADU_FETCH_NONE)
+    {
+      ADU_I(client).pending_fetch_deadline_ms = 0;
+    }
     return;
   }
 
@@ -1256,21 +1375,139 @@ static void on_channel_result(
       break;
     case AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE:
     case AZ_IOT_ADU_OP_GET_UPDATE:
-      /* Both update-check operations are re-driven by the same flag. */
-      ADU_I(client).initial_get_pending = true;
+      /* A service-requested delay that cannot fit inside the caller's deadline
+       * ends the request NOW rather than at the deadline. Retrying until then
+       * would publish nothing -- the channel refuses for the whole delay -- so
+       * the wait buys nothing and only postpones the same answer.
+       *
+       * The delay is reported on the event, so the application learns WHEN the
+       * service is willing to be asked again and can schedule its next attempt
+       * instead of guessing. Deliberately not waited out on its behalf: that
+       * would spend a budget the application set. */
+      if (service_error != NULL && service_error->retry_after_ms != 0
+          && ADU_I(client).pending_fetch_deadline_ms != 0
+          && az_iot_time_mono_ms() + (uint64_t)service_error->retry_after_ms
+              > ADU_I(client).pending_fetch_deadline_ms)
+      {
+        AZ_IOT_LOG_ERRORF(
+            "adu: service asked for %u ms, which does not fit the request timeout; giving up",
+            (unsigned)service_error->retry_after_ms);
+        ADU_I(client).pending_fetch = ADU_FETCH_NONE;
+        ADU_I(client).pending_fetch_deadline_ms = 0;
+        raise_abandoned(client, operation, AZ_IOT_ERR_TIMEOUT, service_error);
+        break;
+      }
+      /* Re-arm the route that failed, not a default: the application asked for
+       * this one and a retry on the other would query the wrong thing.
+       *
+       * Unless it already asked for something newer. This verdict belongs to a
+       * request the channel accepted earlier, so the application has had time
+       * to queue another one in between; overwriting it here would silently
+       * discard the newer request and retry a route nobody currently wants.
+       * The newest request wins, which is what a second call to either request
+       * function does as well. */
+      if (ADU_I(client).pending_fetch == ADU_FETCH_NONE)
+      {
+        ADU_I(client).pending_fetch = (operation == AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE)
+            ? ADU_FETCH_ONBOARDING
+            : ADU_FETCH_REGULAR;
+        /* A re-armed request is always bounded. Without this a LATE verdict
+         * could resurrect an operation after the slot had been abandoned: the
+         * abandonment cleared the deadline, this puts the request back, and it
+         * would then retry for ever.
+         *
+         * Re-armed with the timeout the CALLER gave, not a default: it is the
+         * same request, so it keeps the same policy. */
+        if (ADU_I(client).pending_fetch_deadline_ms == 0)
+        {
+          arm_pending_fetch_deadline(client, ADU_I(client).pending_fetch_timeout_ms);
+        }
+      }
       break;
   }
 }
 
-/* Ask the channel to check for an update. Returns the channel's result so the
- * caller can leave the pending flag set and retry on a later do_work tick. */
-static az_iot_result channel_request_update(az_iot_adu_client_t* client)
+/* Ask the channel to check for an update on `operation`. Returns the channel's
+ * result so the caller can leave pending_fetch set and retry on a later tick. */
+static az_iot_result channel_request_update(
+    az_iot_adu_client_t* client,
+    az_iot_adu_operation operation)
 {
   if (ADU_I(client).channel.vtable == NULL || ADU_I(client).channel.vtable->request_update == NULL)
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
-  return ADU_I(client).channel.vtable->request_update(ADU_I(client).channel.ctx);
+  return ADU_I(client).channel.vtable->request_update(ADU_I(client).channel.ctx, operation);
+}
+
+/* Issue whatever fetch is pending. No-op when nothing was requested.
+ *
+ * The slot is cleared BEFORE the channel is called, not after. A synchronous
+ * channel is allowed to deliver its verdict from inside request_update(), and
+ * that verdict re-arms the slot; clearing afterwards would wipe the re-armed
+ * retry. Clearing first also means the re-arm logic sees an empty slot, which
+ * is what tells it this is its own request rather than a newer one.
+ *
+ * On rejection the request is put back -- unless something already refilled the
+ * slot while the channel had control, because that value is newer. A channel
+ * that honours the contract cannot hit that case (the verdict callback fires
+ * only for an ACCEPTED operation), so the check is defensive: it keeps a
+ * misbehaving channel from turning a fresh request into a stale retry. */
+/* A fresh request gets a fresh clock. Asking again is how an application
+ * responds to an abandonment, so inheriting the old deadline would abandon the
+ * new request immediately. */
+static void arm_pending_fetch_deadline(az_iot_adu_client_t* client, uint32_t timeout_ms)
+{
+  ADU_I(client).pending_fetch_timeout_ms = timeout_ms;
+  ADU_I(client).pending_fetch_deadline_ms
+      = (timeout_ms == 0u) ? 0u : az_iot_time_mono_ms() + (uint64_t)timeout_ms;
+}
+
+static void drive_pending_fetch(az_iot_adu_client_t* client)
+{
+  uint8_t requested = ADU_I(client).pending_fetch;
+  if (requested == ADU_FETCH_NONE)
+  {
+    return;
+  }
+  az_iot_adu_operation operation = (requested == ADU_FETCH_ONBOARDING)
+      ? AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE
+      : AZ_IOT_ADU_OP_GET_UPDATE;
+
+  /* Give up on a request that has gone unaccepted for too long -- refused, or
+   * accepted and returned by a retryable verdict. Checked BEFORE the attempt,
+   * so the deadline bounds how long the slot is retried rather than how long it
+   * is held: an attempt that is about to succeed still does.
+   *
+   * WALL-CLOCK: time spent obeying a service-requested delay counts like any
+   * other. The caller asked for an answer within N ms, and quietly moving its
+   * deadline to exclude the wait would take away the very thing it was
+   * planning around. A delay that CANNOT fit is answered immediately instead
+   * -- see on_channel_result() -- rather than leaving the request to sit until
+   * it expires. */
+  if (ADU_I(client).pending_fetch_deadline_ms != 0
+      && az_iot_time_mono_ms() >= ADU_I(client).pending_fetch_deadline_ms)
+  {
+    AZ_IOT_LOG_ERROR("adu: giving up on a pending update check; its deadline expired");
+    ADU_I(client).pending_fetch = ADU_FETCH_NONE;
+    ADU_I(client).pending_fetch_deadline_ms = 0;
+    raise_abandoned(client, operation, AZ_IOT_ERR_TIMEOUT, &k_no_service_error);
+    return;
+  }
+
+  ADU_I(client).pending_fetch = ADU_FETCH_NONE;
+  az_iot_result r = channel_request_update(client, operation);
+  if (r != AZ_IOT_OK && ADU_I(client).pending_fetch == ADU_FETCH_NONE)
+  {
+    ADU_I(client).pending_fetch = requested;
+  }
+  /* No refresh on a refusal: the deadline is the caller's, and a request whose
+   * verdict never arrives has to stay bounded. */
+  (void)r;
+  /* The deadline otherwise SURVIVES the channel accepting the request. A
+   * retryable verdict puts the same request straight back in the slot, so
+   * clearing it here would restart the clock on every accepted-then-retried
+   * round and the bound would never be reached. */
 }
 
 /* ------------------------------------------------------------------------- */
@@ -1314,7 +1551,7 @@ static az_iot_result adu_client_init_core(
   ADU_I(client).crypto = *options->crypto;
   ADU_I(client).device_props_buffer = options->device_props_buffer;
   ADU_I(client).device_props_buffer_size = options->device_props_buffer_size;
-  ADU_I(client).state = AZ_IOT_ADU_STATE_IDLE;
+  set_adu_state(client, AZ_IOT_ADU_STATE_IDLE);
 
   if (options->root_keys != NULL && options->root_key_count > 0)
   {
@@ -1347,9 +1584,11 @@ static az_iot_result adu_client_init_core(
 
   /* Report the initial Idle agent state + installed update id on startup. */
   ADU_I(client).device_props_report_pending = true;
-  /* And proactively ask the channel for an update so a deployment that became
-   * available while we were offline is still picked up. */
-  ADU_I(client).initial_get_pending = true;
+  /* No update check is issued here. Only the application knows which route it
+   * needs -- onboarding before it has a device record, regular after -- so it
+   * asks, with az_iot_adu_client_request_onboarding_update() or
+   * az_iot_adu_client_request_update(). */
+  ADU_I(client).pending_fetch = ADU_FETCH_NONE;
   return AZ_IOT_OK;
 }
 
@@ -1719,7 +1958,7 @@ az_iot_result az_iot_adu_client_resume(az_iot_adu_client_t* client)
     retry_ts = az_span_create(ADU_I(client).request_buffer + retry_off, (int32_t)retry_len);
   }
   ADU_I(client).current_request.workflow.retry_timestamp = retry_ts;
-  ADU_I(client).state = (az_iot_adu_state)state;
+  set_adu_state(client, (az_iot_adu_state)state);
   ADU_I(client).current_step = step;
   ADU_I(client).current_file = file;
   ADU_I(client).cancel_requested = (flags & 0x1u) != 0;
@@ -1790,7 +2029,7 @@ static void begin_rollback(az_iot_adu_client_t* client, uint32_t restore_count)
       }
     }
   }
-  ADU_I(client).state = AZ_IOT_ADU_STATE_FAILED;
+  set_adu_state(client, AZ_IOT_ADU_STATE_FAILED);
 }
 
 az_iot_result az_iot_adu_client_do_work(az_iot_adu_client_t* client)
@@ -1824,24 +2063,18 @@ az_iot_result az_iot_adu_client_do_work(az_iot_adu_client_t* client)
     {
       ADU_I(client).device_props_report_pending = false;
     }
-    /* Piggyback the initial update check on the same startup tick so a
+    /* Piggyback a requested update check on the same startup tick so a
      * deployment already waiting is consumed without needing a fresh
-     * delivery. Clear the flag only once the request is actually issued (the
-     * channel may not be ready yet). */
-    if (ADU_I(client).initial_get_pending && channel_request_update(client) == AZ_IOT_OK)
-    {
-      ADU_I(client).initial_get_pending = false;
-    }
+     * delivery. Cleared only once the request is actually issued (the channel
+     * may not be ready yet). */
+    drive_pending_fetch(client);
     return AZ_IOT_OK;
   }
 
-  /* Retry the initial update check if it could not be issued at startup (e.g.
-   * the channel was not ready). Self-heals across do_work iterations; does
-   * not preempt state-machine progress. */
-  if (ADU_I(client).initial_get_pending && channel_request_update(client) == AZ_IOT_OK)
-  {
-    ADU_I(client).initial_get_pending = false;
-  }
+  /* Retry a requested update check that could not be issued earlier (e.g. the
+   * channel was not ready, or the service rejected it retryably). Self-heals
+   * across do_work iterations; does not preempt state-machine progress. */
+  drive_pending_fetch(client);
 
   /* Cancellation at a phase boundary returns immediately to Idle. */
   if (ADU_I(client).cancel_requested && ADU_I(client).state != AZ_IOT_ADU_STATE_IDLE)
@@ -1866,12 +2099,12 @@ az_iot_result az_iot_adu_client_do_work(az_iot_adu_client_t* client)
       {
         result_init_steps(client, 1);
         result_step_failure(client, 0, AZ_IOT_ADU_FACILITY_INTERNAL, 0);
-        ADU_I(client).state = AZ_IOT_ADU_STATE_FAILED;
+        set_adu_state(client, AZ_IOT_ADU_STATE_FAILED);
         (void)az_iot_adu__report_state(client);
         break;
       }
       result_init_steps(client, (int32_t)ADU_I(client).current_manifest.instructions.steps_count);
-      ADU_I(client).state = AZ_IOT_ADU_STATE_VERIFYING_MANIFEST;
+      set_adu_state(client, AZ_IOT_ADU_STATE_VERIFYING_MANIFEST);
       (void)az_iot_adu__report_state(client);
       break;
     }
@@ -1881,7 +2114,7 @@ az_iot_result az_iot_adu_client_do_work(az_iot_adu_client_t* client)
       if (verify_manifest(client) != AZ_IOT_ADU_RESULT_SUCCESS)
       {
         result_step_failure(client, 0, AZ_IOT_ADU_FACILITY_MANIFEST, 0);
-        ADU_I(client).state = AZ_IOT_ADU_STATE_FAILED;
+        set_adu_state(client, AZ_IOT_ADU_STATE_FAILED);
         (void)az_iot_adu__report_state(client);
         break;
       }
@@ -1900,7 +2133,7 @@ az_iot_result az_iot_adu_client_do_work(az_iot_adu_client_t* client)
       }
       ADU_I(client).current_step = 0;
       ADU_I(client).current_file = 0;
-      ADU_I(client).state = AZ_IOT_ADU_STATE_DOWNLOAD_STARTED;
+      set_adu_state(client, AZ_IOT_ADU_STATE_DOWNLOAD_STARTED);
       (void)az_iot_adu__report_state(client);
       break;
     }
@@ -1911,7 +2144,7 @@ az_iot_result az_iot_adu_client_do_work(az_iot_adu_client_t* client)
       uint32_t fcount = step_file_count(client, step);
       if (ADU_I(client).current_file >= fcount)
       {
-        ADU_I(client).state = AZ_IOT_ADU_STATE_DOWNLOAD_COMPLETE;
+        set_adu_state(client, AZ_IOT_ADU_STATE_DOWNLOAD_COMPLETE);
         break;
       }
       /* Resolve the file + its download url, then drive download_fn. */
@@ -1960,7 +2193,7 @@ az_iot_result az_iot_adu_client_do_work(az_iot_adu_client_t* client)
     }
 
     case AZ_IOT_ADU_STATE_DOWNLOAD_COMPLETE:
-      ADU_I(client).state = AZ_IOT_ADU_STATE_BACKUP_STARTED;
+      set_adu_state(client, AZ_IOT_ADU_STATE_BACKUP_STARTED);
       break;
 
     case AZ_IOT_ADU_STATE_BACKUP_STARTED:
@@ -1980,12 +2213,12 @@ az_iot_result az_iot_adu_client_do_work(az_iot_adu_client_t* client)
         (void)az_iot_adu__report_state(client);
         break;
       }
-      ADU_I(client).state = AZ_IOT_ADU_STATE_BACKUP_COMPLETE;
+      set_adu_state(client, AZ_IOT_ADU_STATE_BACKUP_COMPLETE);
       break;
     }
 
     case AZ_IOT_ADU_STATE_BACKUP_COMPLETE:
-      ADU_I(client).state = AZ_IOT_ADU_STATE_INSTALL_STARTED;
+      set_adu_state(client, AZ_IOT_ADU_STATE_INSTALL_STARTED);
       break;
 
     case AZ_IOT_ADU_STATE_INSTALL_STARTED:
@@ -2004,7 +2237,7 @@ az_iot_result az_iot_adu_client_do_work(az_iot_adu_client_t* client)
          * workflow so az_iot_adu_client_resume() can continue at Apply
          * on the next boot, report, and advance (a real device reboots
          * here; the loop simply continues if it does not). */
-        ADU_I(client).state = AZ_IOT_ADU_STATE_INSTALL_COMPLETE;
+        set_adu_state(client, AZ_IOT_ADU_STATE_INSTALL_COMPLETE);
         adu_persist(client);
         (void)az_iot_adu__report_state(client);
         break;
@@ -2016,12 +2249,12 @@ az_iot_result az_iot_adu_client_do_work(az_iot_adu_client_t* client)
         (void)az_iot_adu__report_state(client);
         break;
       }
-      ADU_I(client).state = AZ_IOT_ADU_STATE_INSTALL_COMPLETE;
+      set_adu_state(client, AZ_IOT_ADU_STATE_INSTALL_COMPLETE);
       break;
     }
 
     case AZ_IOT_ADU_STATE_INSTALL_COMPLETE:
-      ADU_I(client).state = AZ_IOT_ADU_STATE_APPLY_STARTED;
+      set_adu_state(client, AZ_IOT_ADU_STATE_APPLY_STARTED);
       break;
 
     case AZ_IOT_ADU_STATE_APPLY_STARTED:
@@ -2049,7 +2282,7 @@ az_iot_result az_iot_adu_client_do_work(az_iot_adu_client_t* client)
       {
         ADU_I(client).current_step = step + 1;
         ADU_I(client).current_file = 0;
-        ADU_I(client).state = AZ_IOT_ADU_STATE_DOWNLOAD_STARTED;
+        set_adu_state(client, AZ_IOT_ADU_STATE_DOWNLOAD_STARTED);
         (void)az_iot_adu__report_state(client);
         break;
       }
@@ -2062,7 +2295,7 @@ az_iot_result az_iot_adu_client_do_work(az_iot_adu_client_t* client)
     case AZ_IOT_ADU_STATE_RESTORE_STARTED:
       /* begin_rollback() performs restore synchronously then sets Failed;
        * this state is reserved for a future chunked rollback. */
-      ADU_I(client).state = AZ_IOT_ADU_STATE_FAILED;
+      set_adu_state(client, AZ_IOT_ADU_STATE_FAILED);
       break;
 
     case AZ_IOT_ADU_STATE_FAILED:
@@ -2091,6 +2324,100 @@ az_iot_adu_state az_iot_adu_client_get_state(const az_iot_adu_client_t* client)
     return AZ_IOT_ADU_STATE_IDLE;
   }
   return ADU_I(client).state;
+}
+
+az_iot_result az_iot_adu_client_add_observer(
+    az_iot_adu_client_t* client,
+    az_iot_adu_observer_callback cb,
+    void* user_ctx)
+{
+  if (client == NULL || cb == NULL)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  /* Adding from inside a dispatch would hand the new subscriber the event in
+   * flight -- one it was not watching for -- and mutate the array being
+   * walked. Removing is allowed; see the remove function. */
+  if (ADU_I(client).dispatching)
+  {
+    AZ_IOT_LOG_ERROR("adu: cannot add an observer from inside one");
+    return AZ_IOT_ERR_BUSY;
+  }
+
+  size_t free_slot = AZ_IOT_MAX_ADU_OBSERVERS;
+  for (size_t i = 0; i < AZ_IOT_MAX_ADU_OBSERVERS; ++i)
+  {
+    /* Idempotent on the (cb, user_ctx) PAIR, not on cb alone: one callback
+     * shared by two owners is two subscriptions and must be delivered twice. */
+    if (ADU_I(client).observers[i].cb == cb && ADU_I(client).observers[i].user_ctx == user_ctx)
+    {
+      return AZ_IOT_OK;
+    }
+    if (ADU_I(client).observers[i].cb == NULL && free_slot == AZ_IOT_MAX_ADU_OBSERVERS)
+    {
+      free_slot = i;
+    }
+  }
+  if (free_slot == AZ_IOT_MAX_ADU_OBSERVERS)
+  {
+    AZ_IOT_LOG_ERROR("adu: no free observer slot");
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  }
+  ADU_I(client).observers[free_slot].cb = cb;
+  ADU_I(client).observers[free_slot].user_ctx = user_ctx;
+  return AZ_IOT_OK;
+}
+
+az_iot_result az_iot_adu_client_remove_observer(
+    az_iot_adu_client_t* client,
+    az_iot_adu_observer_callback cb,
+    void* user_ctx)
+{
+  if (client == NULL || cb == NULL)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  /* Deliberately NOT refused during a dispatch, unlike adding. An owner torn
+   * down in reaction to an event runs its teardown from inside the callback,
+   * and the entry holds a raw pointer to storage it is about to release, so it
+   * must be able to withdraw. Safe against the walk in dispatch_event(): that
+   * loop re-reads each slot and skips a NULL callback, and nothing is
+   * compacted, so clearing a slot only means that observer is not called --
+   * which is what withdrawing asks for. */
+  for (size_t i = 0; i < AZ_IOT_MAX_ADU_OBSERVERS; ++i)
+  {
+    if (ADU_I(client).observers[i].cb == cb && ADU_I(client).observers[i].user_ctx == user_ctx)
+    {
+      ADU_I(client).observers[i].cb = NULL;
+      ADU_I(client).observers[i].user_ctx = NULL;
+      return AZ_IOT_OK;
+    }
+  }
+  return AZ_IOT_ERR_NOT_FOUND;
+}
+
+az_iot_result az_iot_adu_client_request_onboarding_update(
+    az_iot_adu_client_t* client,
+    uint32_t timeout_ms)
+{
+  if (client == NULL)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  ADU_I(client).pending_fetch = ADU_FETCH_ONBOARDING;
+  arm_pending_fetch_deadline(client, timeout_ms);
+  return AZ_IOT_OK;
+}
+
+az_iot_result az_iot_adu_client_request_update(az_iot_adu_client_t* client, uint32_t timeout_ms)
+{
+  if (client == NULL)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  ADU_I(client).pending_fetch = ADU_FETCH_REGULAR;
+  arm_pending_fetch_deadline(client, timeout_ms);
+  return AZ_IOT_OK;
 }
 
 az_iot_result az_iot_adu_client_update_device_properties(
