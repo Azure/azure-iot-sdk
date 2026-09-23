@@ -713,8 +713,8 @@ below stand in for what would otherwise be a second flavor section.
 > being extended with newly identified gaps the way the other areas are. Revisit once the
 > feature settles.
 
-Covers `az_iot_adu_client`: the deployment workflow driven off desired properties, the
-agent state reported back through the twin, and the manifest crypto (SHA-256 file hashes,
+Covers `az_iot_adu_client`: the deployment workflow driven by ADUv2 `updateMetadata` offers, the
+status reported through the ADUv2 channel, and the manifest crypto (SHA-256 file hashes,
 RS256 signature verification) in `c/adapters/adu/crypto_openssl`.
 
 | Group | Test | Scenario | Type | Status | Code Location |
@@ -728,21 +728,26 @@ RS256 signature verification) in `c/adapters/adu/crypto_openssl`.
 | | Install in progress reenters then completes | — | unit | Done | [install_in_progress_reenters_then_completes](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_client_test.c#L767) |
 | | Reboot required persists and resumes | State survives a restart. | unit | Done | [reboot_required_persists_and_resumes](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_client_test.c#L796) |
 | | Resume with no persisted state stays idle | — | unit | Done | [resume_with_no_persisted_state_stays_idle](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_client_test.c#L832) |
-| | Cancel action sets the cancelled flag | — | unit | Done | [cancel_action_sets_cancelled_flag](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_client_test.c#L843) |
+| | updateMetadata drives the full workflow | Download gets the offered URL; the report carries the workflowId; a re-offer is ignored. | unit | Done | [update_metadata_drives_full_workflow](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_client_test.c) |
+| | Escaped file URL is decoded | JSON escapes, including \\u, are decoded before download_fn. | unit | Done | [escaped_file_url_is_decoded](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_client_test.c) |
+| | Escaped workflow id is decoded | Report carries the decoded id; another escaped spelling of the active id is a duplicate; undecodable id ignored. | unit | Done | [escaped_workflow_id_is_decoded](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_client_test.c) |
+| | Manifest unicode escape is decoded | A `\u` escape in updateManifest does not truncate it (managed and public parser). | unit | Done | [manifest_unicode_escape_is_decoded](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_client_test.c) |
+| | Unusable updateMetadata is ignored | Missing id or manifest, bad types, non-object `fileUrls`, truncated JSON, trailing data, undecodable escapes. | unit | Done | [unusable_update_metadata_is_ignored](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_client_test.c) |
+| | fileUrls are bounded | At the bound accepted; one past ignored. | unit | Done | [file_urls_are_bounded](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_client_test.c) |
+| | Oversized updateMetadata is ignored | Larger than `AZ_IOT_ADU_REQUEST_BUFFER_SIZE`. | unit | Done | [oversized_update_metadata_is_ignored](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_client_test.c) |
 | | Multi step update runs every step in order | A two-step manifest: step 1 is installed and applied before step 2 begins, so an install cannot land on a half-applied step. | unit | Done | [multi_step_update_runs_every_step_in_order](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_client_test.c#L1245) |
 | | Download failure is reported and does not install | — | unit | Done | [download_failure_is_reported_and_does_not_install](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_client_test.c#L1286) |
-| | Cancel during download aborts the transfer | The cancel lands while the download hook is held on IN_PROGRESS; the hook then succeeds, so an ignored cancel would run on to install. | unit | Done | [cancel_during_download_aborts_the_transfer](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_client_test.c#L1334) |
 | Deduplication | Duplicate redelivery is ignored | Same manifest re-sent by the service. | unit | Done | [duplicate_redelivery_is_ignored](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_client_test.c#L1058) |
-| | Retry with a newer timestamp restarts | — | unit | Done | [retry_with_newer_timestamp_restarts](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_client_test.c#L1084) |
 | | Replacement with a new id restarts | — | unit | Done | [replacement_with_new_id_restarts](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_client_test.c#L1108) |
-| | Retry timestamp survives resume | — | unit | Done | [retry_timestamp_survives_resume](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_client_test.c#L1131) |
-| | Same id with a changed manifest restarts | — | unit | Done | [same_id_changed_manifest_restarts](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_client_test.c#L1163) |
+| | Workflow id survives resume | A re-offer after resume is still a duplicate. | unit | Done | [workflow_id_survives_resume](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_client_test.c) |
+| | Same id with a changed manifest is a duplicate | `workflowId` is the sole identity. | unit | Done | [same_id_changed_manifest_is_a_duplicate](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_client_test.c) |
 | Device properties | Update device properties sets report pending | — | unit | Done | [update_device_properties_sets_report_pending](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_client_test.c#L862) |
 | | Custom device properties are reported | — | unit | Done | [custom_device_properties_are_reported](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_client_test.c#L913) |
 | | Device props too small is rejected | — | unit | Done | [device_props_too_small_is_rejected](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_client_test.c#L954) |
 | | Device props buffer size matches the need | The reported requirement is exact, not an estimate. | unit | Done | [device_props_buffer_size_matches_need](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_client_test.c#L996) |
 | | Build report with too small a buffer is rejected | `az_iot_adu_build_report()` bound. | unit | Done | [build_report_with_too_small_a_buffer_is_rejected](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_client_test.c#L1373) |
 | Manifest & crypto | Microsoft root keys are embedded | The shipped roots match the published values. | unit | Done | [microsoft_root_keys_are_embedded](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_client_test.c#L1187) |
+| | Public parser accepts updateMetadata | `az_iot_adu_parse_update_request()`; other shapes are NOT_FOUND. | unit | Done | [public_parser_accepts_update_metadata](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_client_test.c) |
 | | Sha256 oneshot matches a known vector | — | unit | Done | [sha256_oneshot_matches_known_vector](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_crypto_openssl_test.c#L37) |
 | | Sha256 incremental matches a known vector | Streaming a large file in chunks. | unit | Done | [sha256_incremental_matches_known_vector](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_crypto_openssl_test.c#L47) |
 | | Verify rs256 accepts a valid signature | — | unit | Done | [verify_rs256_accepts_valid_signature](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_crypto_openssl_test.c#L100) |
@@ -752,12 +757,11 @@ RS256 signature verification) in `c/adapters/adu/crypto_openssl`.
 | | Malformed jws is rejected | Wrong segment count, bad base64url, missing header. | unit | Done | [malformed_jws_is_rejected](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_client_test.c#L1449) |
 | | Malformed manifest JSON is rejected | — | unit | Done | [malformed_manifest_json_is_rejected](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_client_test.c#L1481) |
 | | Verify file hash rejects an unsupported algorithm | — | unit | Done | [verify_file_hash_rejects_an_unsupported_algorithm](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_client_test.c#L1534) |
-| End-to-end | Agent state report | Device reports its ADU agent state through the twin. | e2e | Done | [test_adu_agent_state_report](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/e2e/tests/e2e_adu_test.c#L717) |
-| | Update deployment | Real deployment driven from the service. | e2e | Done | [test_adu_update_deployment](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/e2e/tests/e2e_adu_test.c#L754) |
-| | Install failure rollback | — | e2e | Done | [test_adu_install_failure_rollback](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/e2e/tests/e2e_adu_test.c#L783) |
-| | Verify rejects the deployment | — | e2e | Done | [test_adu_verify_rejects_deployment](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/e2e/tests/e2e_adu_test.c#L813) |
-| | Already installed is a noop | — | e2e | Done | [test_adu_already_installed_noop](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/e2e/tests/e2e_adu_test.c#L844) |
-| | Cancelled deployment reported service side | — | e2e | Pending | *e2e_adu_test.c* |
+| End-to-end | Agent state report | Device reports its ADU agent state. | e2e | Pending | *test_adu_agent_state_report* (e2e_adu_test.c, retired with the device-twin channel; awaiting the ADUv2 rewrite) |
+| | Update deployment | Real deployment driven from the service. | e2e | Pending | *test_adu_update_deployment* (e2e_adu_test.c, retired with the device-twin channel; awaiting the ADUv2 rewrite) |
+| | Install failure rollback | — | e2e | Pending | *test_adu_install_failure_rollback* (e2e_adu_test.c, retired with the device-twin channel; awaiting the ADUv2 rewrite) |
+| | Verify rejects the deployment | — | e2e | Pending | *test_adu_verify_rejects_deployment* (e2e_adu_test.c, retired with the device-twin channel; awaiting the ADUv2 rewrite) |
+| | Already installed is a noop | — | e2e | Pending | *test_adu_already_installed_noop* (e2e_adu_test.c, retired with the device-twin channel; awaiting the ADUv2 rewrite) |
 | Event observers | A workflow transition is reported | State changes reach the application through the registry instead of being pollable only. | unit | Done | [a_workflow_transition_is_reported](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_client_test.c#L2361) |
 |  | Resuming a fresh client reports the restored state | Resume raises its transition synchronously; the other resume tests reuse an instance already in that state, so it is suppressed and untested there. | unit | Done | [resuming_a_fresh_client_reports_the_restored_state](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_client_test.c#L1075) |
 |  | An abandoned operation is reported to observers | A dropped request is told to the application, which otherwise cannot distinguish it from "no update available". | unit | Done | [an_abandoned_operation_is_reported_to_observers](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_client_test.c#L2168) |
@@ -778,6 +782,17 @@ RS256 signature verification) in `c/adapters/adu/crypto_openssl`.
 |  | A delay stops the tick reopening the session | The service's quiet period must gate the TLS handshake and CONNECT, not just the PUBLISH. | unit | Done | [a_delay_stops_the_tick_reopening_the_session](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_channel_dps_test.c#L645) |
 |  | A retry-after on the topic defers the next request | Parsed from the response topic (MQTT has no headers) and forwarded to the engine in milliseconds. | unit | Done | [a_retry_after_on_the_topic_defers_the_next_request](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_channel_dps_test.c#L550) |
 |  | A verdict without a response forwards an empty diagnosis | Never a NULL pointer: one missed check would fault inside the application's own callback. | unit | Done | [a_verdict_without_a_response_forwards_an_empty_diagnosis](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_channel_dps_test.c#L1568) |
+|  | The channel takes and returns a state observer seat | Feature-client pool; taken at open, returned at close, none leaked across rebinds. | unit | Done | [the_channel_takes_and_returns_a_state_observer_seat](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_channel_dps_test.c#L1841) |
+|  | A full observer pool refuses the bind | Without a seat a replaced session is invisible, so open fails and releases what it took. | unit | Done | [a_full_observer_pool_refuses_the_bind](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_channel_dps_test.c#L1864) |
+|  | A request lost to a replaced session is reported | close() + open() between two channel ticks: readiness polling reads true throughout, so the request was never retired and the channel answered BUSY. | unit | Done | [a_request_lost_to_a_replaced_session_is_reported](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_channel_dps_test.c#L1889) |
+|  | A replaced session is held for its own check | The hold must be in place before the new session's SUBACK, which can precede the next tick. | unit | Done | [a_replaced_session_is_held_for_its_own_check](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_channel_dps_test.c#L1924) |
+|  | A session after a failed registration is held for its check | That teardown is announced while the phase refuses a hold, so the hold is taken when the next session starts. | unit | Done | [a_session_after_a_failed_registration_is_held_for_its_check](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_channel_dps_test.c#L1951) |
+|  | Binding from a state observer takes the seat later | The registry refuses a seat mid-dispatch; the bind still succeeds, operations answer BUSY, and the seat is taken on the next entry. | unit | Done | [binding_from_a_state_observer_takes_the_seat_later](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_channel_dps_test.c#L2010) |
+|  | A deferred seat refused by a full pool refuses operations | The pool can fill before the next entry; request, report and tick return the error until a seat frees up. | unit | Done | [a_deferred_seat_refused_by_a_full_pool_refuses_operations](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_channel_dps_test.c#L2043) |
+|  | A hub fault leaves a live provisioning session usable | The channel rides the provisioning session; only once that is gone does a hub fault stop it asking. | unit | Done | [a_hub_fault_leaves_a_live_provisioning_session_usable](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_channel_dps_test.c#L2096) |
+|  | A settled fault stops the channel asking for a session | FAULTED: no session request, no refusal logged per tick; demand returns after close(). | unit | Done | [a_settled_fault_stops_the_channel_asking_for_a_session](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_channel_dps_test.c#L2168) |
+|  | A channel bound after a fault starts settled | Seeded from the scoped getter; a past transition is not re-announced. | unit | Done | [a_channel_bound_after_a_fault_starts_settled](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_channel_dps_test.c#L2223) |
+|  | Closing the channel from a state observer returns the seat | ADU client destroyed from the application's observer; ASan catches a leftover seat. | unit | Done | [closing_the_channel_from_a_state_observer_returns_the_seat](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/adu_channel_dps_test.c#L2256) |
 
 ## Certificate management
 
@@ -909,6 +924,14 @@ own, so they are unit-tested only.
 
 | Group | Test | Scenario | Type | Status | Code Location |
 | --- | --- | --- | --- | --- | --- |
+| JSON string decode | Plain text is copied | — | unit | Done | [plain_text_is_copied](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/json_string_test.c) |
+|  | Every two-character escape decodes | — | unit | Done | [every_two_character_escape_decodes](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/json_string_test.c) |
+|  | Unicode escapes cover each UTF-8 width | 1-, 2- and 3-byte bounds. | unit | Done | [unicode_escapes_cover_each_utf8_width](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/json_string_test.c) |
+|  | Surrogate pairs decode to four bytes | Incl. U+10000 and U+10FFFF. | unit | Done | [surrogate_pairs_decode_to_four_bytes](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/json_string_test.c) |
+|  | Malformed escapes are rejected | Truncated/unknown escapes, lone or reversed surrogates, \\u0000. | unit | Done | [malformed_escapes_are_rejected](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/json_string_test.c) |
+|  | A destination too small is reported | Exact fit succeeds. | unit | Done | [a_destination_too_small_is_reported](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/json_string_test.c) |
+|  | Decoding in place is supported | — | unit | Done | [decoding_in_place_is_supported](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/json_string_test.c) |
+|  | A null output is rejected | — | unit | Done | [a_null_output_is_rejected](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/json_string_test.c) |
 | Span writer | Empty destination latches failure | — | unit | Done | [empty_destination_latches_failure](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/span_writer_test.c#L26) |
 | | Builds a topic that fits exactly | — | unit | Done | [builds_a_topic_that_fits_exactly](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/span_writer_test.c#L35) |
 | | Content fitting without room for the terminator fails | — | unit | Done | [content_fitting_without_room_for_terminator_fails](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/span_writer_test.c#L52) |

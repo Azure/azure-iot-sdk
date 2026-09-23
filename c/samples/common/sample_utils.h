@@ -30,9 +30,9 @@ int sample_config_load(sample_config* config);
 // assigning those fields by hand, so a sample picks up a new DPS option
 // without being edited.
 //
-// Deliberately does NOT touch certificate_provider, host or anything else: a
-// sample that needs different auth or a direct hub connect still says so
-// itself, and this stays the one thing every DPS sample shares.
+// Deliberately does NOT touch certificate_provider or anything else: a sample
+// that needs different auth still says so itself, and this stays the one thing
+// every DPS sample shares.
 struct az_iot_connection_client_options;
 void sample_apply_dps_options(
     struct az_iot_connection_client_options* options,

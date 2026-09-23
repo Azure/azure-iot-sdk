@@ -559,6 +559,51 @@ static void step_results_serialize_as_an_indexed_map(void** state)
   assert_null(strstr(json, "0x80000001"));
 }
 
+/* Every stepResults entry carries outcome and failureOrigin; the service
+ * rejects an entry without them as undeserializable. */
+static void step_results_carry_outcome_and_failure_origin(void** state)
+{
+  (void)state;
+  uint8_t buf[1024];
+  size_t len = 0;
+
+  az_iot_adu_client_step_result steps[3];
+  memset(steps, 0, sizeof(steps));
+  steps[0].result_code = 700;
+  steps[1].result_code = 699;
+  /* steps[2] never ran. */
+
+  az_iot_adu_report report = { 0 };
+  report.workflow_id = "wf-1";
+  report.outcome = AZ_IOT_ADU_OUTCOME_FAILED;
+  report.failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_AGENT_CORE;
+  report.result_code = 699;
+  report.extended_result_codes = "1";
+  report.step_results = steps;
+  report.step_results_count = 3;
+
+  assert_int_equal(az_iot_adu__build_report_request(&report, buf, sizeof(buf), &len), AZ_IOT_OK);
+  buf[len] = '\0';
+  const char* json = (const char*)buf;
+  assert_non_null(
+      strstr(json, "\"step_0\":{\"outcome\":\"SUCCEEDED\",\"failureOrigin\":\"NOT_APPLICABLE\""));
+  assert_non_null(
+      strstr(json, "\"step_1\":{\"outcome\":\"FAILED\",\"failureOrigin\":\"AGENT_CORE\""));
+  assert_non_null(
+      strstr(json, "\"step_2\":{\"outcome\":\"SKIPPED\",\"failureOrigin\":\"NOT_APPLICABLE\""));
+
+  /* A step not reached while the workflow runs is in progress, not skipped. */
+  report.outcome = AZ_IOT_ADU_OUTCOME_IN_PROGRESS;
+  report.failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_NOT_APPLICABLE;
+  report.result_code = 1;
+  steps[1].result_code = 0;
+  report.step_results_count = 2;
+  assert_int_equal(az_iot_adu__build_report_request(&report, buf, sizeof(buf), &len), AZ_IOT_OK);
+  buf[len] = '\0';
+  assert_non_null(
+      strstr(json, "\"step_1\":{\"outcome\":\"IN_PROGRESS\",\"failureOrigin\":\"NOT_APPLICABLE\""));
+}
+
 /* Omitted entirely when there are none -- an empty map is a different statement
  * from having no per-step results. */
 static void no_step_results_means_no_key(void** state)
@@ -1149,6 +1194,7 @@ int main(void)
     cmocka_unit_test(a_report_with_a_partial_installed_update_id_is_rejected),
     cmocka_unit_test(a_truncated_response_body_is_rejected),
     cmocka_unit_test(step_results_serialize_as_an_indexed_map),
+    cmocka_unit_test(step_results_carry_outcome_and_failure_origin),
     cmocka_unit_test(no_step_results_means_no_key),
     cmocka_unit_test(both_error_signals_are_read_from_the_body),
     cmocka_unit_test(a_numeric_only_body_is_still_usable),
