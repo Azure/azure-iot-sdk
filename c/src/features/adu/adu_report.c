@@ -479,14 +479,22 @@ az_iot_result az_iot_adu_build_report(
   /* Size stamps (docs/struct_versioning.md). Zero means the caller skipped the
    * _INIT macro. Any other mismatch is a header from another SDK version, and is
    * refused outright: step_results is an inline array, so a different step size
-   * shifts every element after the first and nothing can be safely read. */
-  const az_iot_adu_install_result* install = report->install_result;
-  if (report->_internal_size == 0 || (install != NULL && install->_internal_size == 0))
+   * shifts every element after the first and nothing can be safely read.
+   * The report stamp is checked before any later field is read. */
+  if (report->_internal_size == 0)
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
-  if (report->_internal_size != sizeof(az_iot_adu_report)
-      || (install != NULL && install->_internal_size != sizeof(az_iot_adu_install_result)))
+  if (report->_internal_size != sizeof(az_iot_adu_report))
+  {
+    return AZ_IOT_ERR_NOT_SUPPORTED;
+  }
+  const az_iot_adu_install_result* install = report->install_result;
+  if (install != NULL && install->_internal_size == 0)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if (install != NULL && install->_internal_size != sizeof(az_iot_adu_install_result))
   {
     return AZ_IOT_ERR_NOT_SUPPORTED;
   }
