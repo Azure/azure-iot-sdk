@@ -58,12 +58,29 @@ static void sample_state_destroy(sample_state* s)
 typedef struct
 {
   az_iot_connection_state conn_state;
+  int provisioning_faulted;
   int messages_received;
 } user_context;
 
 static void on_conn_state(const az_iot_connection_state_event* event, void* user_ctx)
 {
   user_context* ctx = (user_context*)user_ctx;
+  /* A rejected assignment or a failed registration faults the provisioning
+   * lifecycle and leaves the hub IDLE, so the wait below must watch for it. */
+  if (event->scope == AZ_IOT_CONN_SCOPE_DPS)
+  {
+    if (event->state == AZ_IOT_CONN_STATE_FAULTED)
+    {
+      ctx->provisioning_faulted = 1;
+      if (event->reason == AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH)
+      {
+        printf("This device is assigned to a Classic hub. Run the c2d_receiver_gen1 sample "
+               "instead.\n");
+      }
+    }
+    return;
+  }
+
   /* Hub lifecycle only: the provisioning session reports on its own scope,
    * and storing its state here would overwrite the hub state this code acts
    * on. */
@@ -73,14 +90,6 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
   }
 
   ctx->conn_state = event->state;
-
-  /* The device provisioned to a Classic hub, so this AEG client can never serve
-   * it. The connection faults before reporting CONNECTED rather than waiting
-   * for messages on a topic that hub does not publish. */
-  if (event->reason == AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH)
-  {
-    printf("This device is assigned to a Classic hub. Run the c2d_receiver_gen1 sample instead.\n");
-  }
 }
 
 static void on_c2d(const az_iot_c2d_message* msg, void* user_ctx)
@@ -198,7 +207,7 @@ int main(void)
   for (int i = 0; i < 1200 && user_ctx.conn_state != AZ_IOT_CONN_STATE_CONNECTED; ++i)
   {
     (void)az_iot_connection_client_do_work(&state.connection_client, 50);
-    if (user_ctx.conn_state == AZ_IOT_CONN_STATE_FAULTED)
+    if (user_ctx.conn_state == AZ_IOT_CONN_STATE_FAULTED || user_ctx.provisioning_faulted)
     {
       break;
     }

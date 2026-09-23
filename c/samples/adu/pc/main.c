@@ -307,8 +307,20 @@ static void sample_state_destroy(sample_state* s)
 }
 
 static az_iot_connection_state g_conn_state = AZ_IOT_CONN_STATE_IDLE;
+static int g_provisioning_faulted;
 static void on_conn_state(const az_iot_connection_state_event* event, void* user_ctx)
 {
+  /* A rejected assignment or a failed registration faults the provisioning
+   * lifecycle and leaves the hub IDLE, so the wait below must watch for it. */
+  if (event->scope == AZ_IOT_CONN_SCOPE_DPS)
+  {
+    if (event->state == AZ_IOT_CONN_STATE_FAULTED)
+    {
+      g_provisioning_faulted = 1;
+    }
+    return;
+  }
+
   /* Hub lifecycle only: the provisioning session reports on its own scope,
    * and storing its state here would overwrite the hub state this code acts
    * on. */
@@ -504,7 +516,7 @@ int main(void)
   {
     (void)az_iot_connection_client_do_work(&st.connection_client, 50);
     (void)az_iot_adu_client_do_work(&st.adu_client);
-    if (g_conn_state == AZ_IOT_CONN_STATE_FAULTED)
+    if (g_conn_state == AZ_IOT_CONN_STATE_FAULTED || g_provisioning_faulted)
     {
       break;
     }
