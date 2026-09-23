@@ -233,8 +233,9 @@ cd /azure-iot-sdk/build/linux-gcc-debug/samples
 
 </details>
 
-Leave it running. It asks for an onboarding update on the provisioning session,
-then provisions via DPS and waits.
+Leave it running. It brings up its provisioning session, asks for an onboarding
+update on that session, and waits there. By default it never registers — see
+[No IoT Hub is required](#no-iot-hub-is-required).
 
 **A 200 response carrying no `updateMetadata` means "nothing for me on this
 route" — it is not an error.** An update is only offered on the route that matches
