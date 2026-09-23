@@ -91,13 +91,13 @@ if (-not (Test-Path $DirectMethodSampleExe)) {
 }
 
 Write-Host "[build] Building twin sample..."
-cmake --build $BuildDir --config Debug --target az_iot_sample_twin_get_patch
+cmake --build $BuildDir --config Debug --target az_iot_sample_twin_get_patch_gen2
 if ($LASTEXITCODE -ne 0) { throw "Build failed." }
 
-$TwinSampleExe = Join-Path $BuildDir "samples\Debug\az_iot_sample_twin_get_patch.exe"
+$TwinSampleExe = Join-Path $BuildDir "samples\Debug\az_iot_sample_twin_get_patch_gen2.exe"
 if (-not (Test-Path $TwinSampleExe)) {
     # Try non-multi-config generator path
-    $TwinSampleExe = Join-Path $BuildDir "samples\az_iot_sample_twin_get_patch.exe"
+    $TwinSampleExe = Join-Path $BuildDir "samples\az_iot_sample_twin_get_patch_gen2.exe"
 }
 
 Write-Host "[build] Building C2D receiver sample..."
