@@ -546,8 +546,8 @@ static void on_desired_patch(az_iot_gen2_twin_client* t, const az_iot_mqtt_messa
     TI(t).desired_properties_device_version = version;
     TI(t).desired_handler(
         AZ_IOT_GEN2_TWIN_DESIRED_PATCH, version, patch, patch_len, TI(t).desired_handler_ctx);
-    return;
   }
+  /* Still behind after an in-order patch if an earlier fetch was lost. */
   request_snapshot_if_behind(t);
 }
 

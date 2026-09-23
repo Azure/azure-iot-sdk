@@ -1613,6 +1613,27 @@ static void a_refused_snapshot_publish_does_not_wedge(void** state)
   assert_int_equal(count_gets(fx), before + 1);
 }
 
+/* An in-order patch while still behind (the fetch was lost) fetches again. */
+static void an_in_order_patch_while_behind_fetches_again(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  assert_int_equal(az_iot_gen2_twin_client_set_request_timeout(&fx->twin, 1), AZ_IOT_OK);
+  desired_record rec = { 0 };
+  set_desired(fx, &rec);
+
+  inject_desired(fx, 1, "{\"a\":1}");
+  inject_desired(fx, 4, "{}"); /* gap: GET */
+  az_iot_test_wait_ms(5);
+  assert_int_equal(az_iot_gen2_twin_client_do_work(&fx->twin), AZ_IOT_OK); /* GET lost */
+  size_t before = count_gets(fx);
+
+  inject_desired(fx, 2, "{\"b\":2}");
+  assert_int_equal(rec.kind, AZ_IOT_GEN2_TWIN_DESIRED_PATCH);
+  assert_int_equal(rec.version, 2);
+  assert_int_equal(count_gets(fx), before + 1);
+}
+
 /* A replacement handler holds nothing, even when the old one was current. */
 static void a_replacement_handler_starts_from_a_snapshot(void** state)
 {
@@ -2347,6 +2368,7 @@ int main(void)
         a_version_only_reported_push_reaches_the_handler, setup, teardown),
     cmocka_unit_test_setup_teardown(the_largest_get_body_fits, setup, teardown),
     cmocka_unit_test_setup_teardown(a_refused_snapshot_publish_does_not_wedge, setup, teardown),
+    cmocka_unit_test_setup_teardown(an_in_order_patch_while_behind_fetches_again, setup, teardown),
     cmocka_unit_test_setup_teardown(a_replacement_handler_starts_from_a_snapshot, setup, teardown),
     cmocka_unit_test_setup_teardown(
         an_app_get_does_not_deliver_to_the_desired_handler, setup, teardown),
