@@ -45,12 +45,19 @@ if(AZ_IOT_WITH_PAHO)
         PRIVATE az_iot_gen1 az_iot_adapter_paho)
     az_iot_apply_warnings(az_iot_sample_proxy)
 
-    add_executable(az_iot_sample_twin_get_patch
-        twin_get_patch/main.c common/sample_utils.c)
-    target_include_directories(az_iot_sample_twin_get_patch PRIVATE common)
-    target_link_libraries(az_iot_sample_twin_get_patch
-        PRIVATE az_iot_gen1 az_iot_gen2 az_iot_adapter_paho)
-    az_iot_apply_warnings(az_iot_sample_twin_get_patch)
+    add_executable(az_iot_sample_twin_get_patch_gen1
+        twin_get_patch_gen1/main.c common/sample_utils.c)
+    target_include_directories(az_iot_sample_twin_get_patch_gen1 PRIVATE common)
+    target_link_libraries(az_iot_sample_twin_get_patch_gen1
+        PRIVATE az_iot_gen1 az_iot_adapter_paho)
+    az_iot_apply_warnings(az_iot_sample_twin_get_patch_gen1)
+
+    add_executable(az_iot_sample_twin_get_patch_gen2
+        twin_get_patch_gen2/main.c common/sample_utils.c)
+    target_include_directories(az_iot_sample_twin_get_patch_gen2 PRIVATE common)
+    target_link_libraries(az_iot_sample_twin_get_patch_gen2
+        PRIVATE az_iot_gen2 az_iot_adapter_paho)
+    az_iot_apply_warnings(az_iot_sample_twin_get_patch_gen2)
 
     add_executable(az_iot_sample_direct_method_responder_gen1
         direct_method_responder_gen1/main.c common/sample_utils.c)

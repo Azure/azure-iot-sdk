@@ -232,6 +232,13 @@ az_iot_add_cmocka_test(
 target_link_libraries(az_iot_tests_gen2_direct_method_codec PRIVATE az_iot_test_support az_iot_gen2)
 target_include_directories(az_iot_tests_gen2_direct_method_codec PRIVATE
     ${CMAKE_SOURCE_DIR}/src/gen2)
+# The shared proto3 codec, pinned against bytes taken from the protobuf spec
+# rather than from itself. The twin and presence clients only exercise the paths
+# their own protocols take, so the boundaries are covered here.
+az_iot_add_cmocka_test(az_iot_tests_proto3 unit/proto3_test.c)
+target_link_libraries(az_iot_tests_proto3 PRIVATE az_iot_test_support az_iot_core)
+target_include_directories(az_iot_tests_proto3 PRIVATE ${CMAKE_SOURCE_DIR}/src/core)
+
 az_iot_add_cmocka_test(az_iot_tests_gen1_twin_client unit/gen1_twin_client_test.c)
 target_link_libraries(az_iot_tests_gen1_twin_client PRIVATE az_iot_test_support az_iot_gen1)
 az_iot_add_cmocka_test(az_iot_tests_gen2_twin_client unit/gen2_twin_client_test.c)

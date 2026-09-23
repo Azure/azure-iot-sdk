@@ -21,7 +21,7 @@
  * is ever reached.
  *
  * Provision via DPS, open, send, close. DPS is handled internally by the
- * connection client when host == NULL and dps.id_scope is set.
+ * connection client when dps.id_scope is set.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -55,6 +55,7 @@ static void sample_state_destroy(sample_state* state)
 typedef struct
 {
   az_iot_connection_state conn_state;
+  int provisioning_faulted;
   az_iot_result conn_reason;
   int send_done;
   az_iot_result send_status;
@@ -63,6 +64,22 @@ typedef struct
 static void on_conn_state(const az_iot_connection_state_event* event, void* user_ctx)
 {
   user_context* ctx = (user_context*)user_ctx;
+  /* A rejected assignment or a failed registration faults the provisioning
+   * lifecycle and leaves the hub IDLE, so the wait below must watch for it. */
+  if (event->scope == AZ_IOT_CONN_SCOPE_DPS)
+  {
+    if (event->state == AZ_IOT_CONN_STATE_FAULTED)
+    {
+      ctx->provisioning_faulted = 1;
+      if (event->reason == AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH)
+      {
+        printf(
+            "This device is assigned to a Classic hub. Run the telemetry_gen1 sample instead.\n");
+      }
+    }
+    return;
+  }
+
   /* Hub lifecycle only: the provisioning session reports on its own scope,
    * and storing its state here would overwrite the hub state this code acts
    * on. */
@@ -73,14 +90,6 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
 
   ctx->conn_state = event->state;
   ctx->conn_reason = event->reason;
-
-  /* The device provisioned to a Classic hub, so this AEG client can never serve
-   * it. The connection faults before reporting CONNECTED rather than letting a
-   * send fail later against the wrong topic shape. */
-  if (event->reason == AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH)
-  {
-    printf("This device is assigned to a Classic hub. Run the telemetry_gen1 sample instead.\n");
-  }
 }
 
 static void on_send_done(az_iot_result status, void* user_ctx)
@@ -116,7 +125,7 @@ int main(void)
     return 1;
   }
 
-  /* Connection client (DPS provisioning is internal when host==NULL) */
+  /* Connection client (DPS provisioning is internal) */
   az_iot_connection_client_options copts = az_iot_connection_client_options_default();
   sample_apply_dps_options(&copts, &state.config);
   copts.certificate_provider = &state.certs.base;
@@ -164,7 +173,7 @@ int main(void)
   for (int i = 0; i < 1200 && user_ctx.conn_state != AZ_IOT_CONN_STATE_CONNECTED; ++i)
   {
     (void)az_iot_connection_client_do_work(&state.connection_client, 50);
-    if (user_ctx.conn_state == AZ_IOT_CONN_STATE_FAULTED)
+    if (user_ctx.conn_state == AZ_IOT_CONN_STATE_FAULTED || user_ctx.provisioning_faulted)
     {
       break;
     }
