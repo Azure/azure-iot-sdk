@@ -1472,6 +1472,58 @@ static void setting_a_desired_handler_replaces_the_previous_one(void** state)
   assert_true(second.fired);
 }
 
+/* The next-version check must not wrap at UINT64_MAX. */
+static void a_patch_after_the_maximum_version_is_not_in_order(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  desired_record rec = { 0 };
+  set_desired(fx, &rec);
+
+  inject_desired(fx, 3, "{}"); /* gap: snapshot GET */
+  const az_iot_mock_call* get = last_get(fx);
+  uint8_t corr[16];
+  memcpy(corr, get->correlation_data, sizeof(corr));
+  /* TwinGetResponse { 1: UINT64_MAX, 3: "{}" } */
+  const uint8_t max_body[] = { 0x08, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+                               0xFF, 0xFF, 0x01, 0x1A, 0x02, 0x7B, 0x7D };
+  inject_twin(fx, "get-response:1", corr, max_body, sizeof(max_body));
+  assert_true(rec.version == UINT64_MAX);
+  int delivered = rec.count;
+
+  const uint8_t zero_patch[] = { 0x12, 0x02, 0x7B, 0x7D }; /* version 0 (omitted) */
+  inject_twin(fx, "desired-patch:1", fx->nonce, zero_patch, sizeof(zero_patch));
+  assert_int_equal(rec.count, delivered);
+}
+
+/* A client initialized on a live session still adopts its birth-ack versions. */
+static void init_on_a_live_connection_adopts_the_birth_ack(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_gen2_twin_client_deinit(&fx->twin);
+  open_to_connected_with_versions(fx, 5, 9);
+
+  assert_int_equal(az_iot_gen2_twin_client_init(&fx->twin, &fx->conn), AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_gen2_twin_client_set_encode_buffer(
+          &fx->twin, fx->encode_buffer, sizeof(fx->encode_buffer)),
+      AZ_IOT_OK);
+
+  desired_record rec = { 0 };
+  set_desired(fx, &rec);
+  assert_int_equal(count_gets(fx), 1); /* behind at 5 */
+
+  patch_record prec = { 0 };
+  static const uint8_t patch[] = "{}";
+  assert_int_equal(
+      az_iot_gen2_twin_client_patch_reported(&fx->twin, patch, sizeof(patch) - 1, on_patch, &prec),
+      AZ_IOT_OK);
+  const uint8_t expect[] = { 0x08, 0x09, 0x12, 0x02, 0x7B, 0x7D }; /* if_match = 9 */
+  const az_iot_mock_call* pub = find_publish(fx->mock, TWIN_SRV_TOPIC);
+  assert_int_equal(pub->payload_len, sizeof(expect));
+  assert_memory_equal(pub->payload, expect, sizeof(expect));
+}
+
 /* A refused snapshot publish leaves nothing in flight, so the next gap retries. */
 static void a_refused_snapshot_publish_does_not_wedge(void** state)
 {
@@ -2212,6 +2264,10 @@ int main(void)
         a_resumed_handler_does_not_merge_over_what_it_missed, setup, teardown),
     cmocka_unit_test_setup_teardown(
         setting_a_desired_handler_replaces_the_previous_one, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_patch_after_the_maximum_version_is_not_in_order, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        init_on_a_live_connection_adopts_the_birth_ack, setup, teardown),
     cmocka_unit_test_setup_teardown(a_refused_snapshot_publish_does_not_wedge, setup, teardown),
     cmocka_unit_test_setup_teardown(a_replacement_handler_starts_from_a_snapshot, setup, teardown),
     cmocka_unit_test_setup_teardown(

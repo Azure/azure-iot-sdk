@@ -532,8 +532,8 @@ static void on_desired_patch(az_iot_gen2_twin_client* t, const az_iot_mqtt_messa
   }
 
   note_desired_service_version(t, version);
-  if (TI(t).desired_handler && has_payload
-      && version == TI(t).desired_properties_device_version + 1u)
+  if (TI(t).desired_handler && has_payload && version > TI(t).desired_properties_device_version
+      && version - TI(t).desired_properties_device_version == 1u)
   {
     TI(t).desired_properties_device_version = version;
     TI(t).desired_handler(
@@ -688,15 +688,8 @@ static void on_twin_inbound(void* user_ctx, const az_iot_mqtt_message* msg)
  * When `twin_push.push_desired` is set the service pushes the desired snapshot
  * itself, so no GET is issued here.
  */
-static void on_connection_state(const az_iot_connection_state_event* event, void* user_ctx)
+static void on_hub_connected(az_iot_gen2_twin_client* t)
 {
-  az_iot_gen2_twin_client* t = (az_iot_gen2_twin_client*)user_ctx;
-  if (!t || !event || event->scope != AZ_IOT_CONN_SCOPE_HUB
-      || event->state != AZ_IOT_CONN_STATE_CONNECTED)
-  {
-    return;
-  }
-
   uint64_t desired = 0;
   uint64_t reported = 0;
   if (az_iot_connection_client__presence_twin_versions(TI(t).conn, &desired, &reported)
@@ -709,6 +702,16 @@ static void on_connection_state(const az_iot_connection_state_event* event, void
   if (!az_iot_connection_client__twin_push_desired(TI(t).conn))
   {
     request_snapshot_if_behind(t);
+  }
+}
+
+static void on_connection_state(const az_iot_connection_state_event* event, void* user_ctx)
+{
+  az_iot_gen2_twin_client* t = (az_iot_gen2_twin_client*)user_ctx;
+  if (t && event && event->scope == AZ_IOT_CONN_SCOPE_HUB
+      && event->state == AZ_IOT_CONN_STATE_CONNECTED)
+  {
+    on_hub_connected(t);
   }
 }
 
@@ -793,8 +796,15 @@ az_iot_result az_iot_gen2_twin_client_init(
     withdraw_registrations(conn, client);
     az_iot_connection_client__release_profile(conn);
     memset(client, 0, sizeof(*client));
+    return result;
   }
-  return result;
+
+  /* Observers are not told about a session already up; catch up on it. */
+  if (az_iot_connection_client__is_connected(conn))
+  {
+    on_hub_connected(client);
+  }
+  return AZ_IOT_OK;
 }
 
 void az_iot_gen2_twin_client_deinit(az_iot_gen2_twin_client* client)
