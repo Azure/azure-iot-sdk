@@ -665,6 +665,8 @@ static void test_size_stamps(void** state)
   } cases[] = {
     { 0, sizeof(az_iot_adu_install_result), AZ_IOT_ERR_INVALID_ARG },
     { sizeof(az_iot_adu_report), 0, AZ_IOT_ERR_INVALID_ARG },
+    /* An unsupported report stamp is refused before install_result is read. */
+    { sizeof(az_iot_adu_report) - 1, 0, AZ_IOT_ERR_NOT_SUPPORTED },
     { sizeof(az_iot_adu_report) - 1, sizeof(az_iot_adu_install_result), AZ_IOT_ERR_NOT_SUPPORTED },
     { sizeof(az_iot_adu_report) + 8, sizeof(az_iot_adu_install_result), AZ_IOT_ERR_NOT_SUPPORTED },
     { sizeof(az_iot_adu_report), sizeof(az_iot_adu_install_result) - 1, AZ_IOT_ERR_NOT_SUPPORTED },
