@@ -532,8 +532,8 @@ so it needs no live connection and a feature client can once again be a long-liv
 member constructed alongside the connection at start-up. The connection verifies
 every pin at the one moment the profile becomes authoritative — at connect, after
 DPS assignment, before the broker CONNECT and before `CONNECTED` is announced.
-When the profile is *already* authoritative (a direct connect, or a DPS
-connection past assignment) `_init()` validates immediately instead of deferring,
+When the profile is *already* authoritative (a connection past DPS
+assignment) `_init()` validates immediately instead of deferring,
 so initializing after `CONNECTED` still works and still fails fast.
 
 The reasons the earlier decision gave for checking at init still hold, and the

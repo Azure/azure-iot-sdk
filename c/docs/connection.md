@@ -67,7 +67,7 @@ from there — but `close()` is legal from it and returns the client to `IDLE`, 
 starts a fresh attempt with the configuration and the attached feature clients intact. `open()`
 itself remains `IDLE`-only.
 
-When DPS is configured the whole provisioning exchange happens **inside** the `CONNECTING` state, so
+The whole provisioning exchange happens **inside** the `CONNECTING` state, so
 the application never sees an intermediate `CONNECTED` for the DPS session. DPS progress is tracked
 separately as a phase:
 
@@ -106,7 +106,7 @@ sequenceDiagram
     App->>Conn: open(options)
     Conn->>Conn: state = CONNECTING
 
-    alt DPS configured (id scope present)
+    opt no valid assignment cached
         Conn->>Cert: load(BOOTSTRAP)
         Cert-->>Conn: CA + client cert/key
         opt operational certificate requested
@@ -406,8 +406,8 @@ One case is deliberately **not** on that list, because retrying it cannot succee
   connection rather than reconnecting or guessing a protocol
   ([§4](#4-connection-profile-selection)). Re-registering returns the same answer.
 
-One case reconnects but not to the same place: a CONNACK rejecting the device's **identity**, when
-the device is DPS-provisioned, marks the client for re-provisioning, so the retry goes back through
+One case reconnects but not to the same place: a CONNACK rejecting the device's **identity** marks
+the client for re-provisioning, so the retry goes back through
 DPS for a fresh assignment instead of presenting the same rejected credential to the same hub.
 
 A user-initiated `close()` never triggers a reconnect: the intent to close is recorded and checked
@@ -670,7 +670,6 @@ flowchart TB
     BCHK -->|"no update, or advisory failure"| IDLE["IDLE"]
 
     IDLE -->|"open() with id scope"| REG["DPS register<br/>CSR optional"]
-    IDLE -->|"open() with host"| CRED
 
     REG --> ASSIGN["Assignment:<br/>assignedHub, deviceId,<br/>connectionProfile,<br/>issuedCertificateChain"]
     ASSIGN --> STORE1["Store the issued chain"]
@@ -688,7 +687,7 @@ flowchart TB
 
     REG -->|"registration failed,<br/>or no assignment"| FAULTED
     CONNECTING -->|"CONNACK failure,<br/>or cannot start the session"| DROP
-    CONNECTING -->|"identity rejected,<br/>DPS configured"| RECON
+    CONNECTING -->|"identity rejected"| RECON
     BIRTH -->|"SUBSCRIBE, SUBACK or birth<br/>failure, or birth-ack timeout"| DROP
 
     CONNECTED --> CRENEW["Cert renewal:<br/>CSR over the hub, 202 then 200"]
@@ -699,8 +698,8 @@ flowchart TB
     CONNECTED --> DROP{"drop or error"}
     DROP -->|"reconnect disabled,<br/>attempts exhausted<br/>or fatal failure"| FAULTED["FAULTED"]
     DROP -->|"reconnect enabled"| RECON["RECONNECTING<br/>exponential backoff + jitter"]
-    RECON -->|"DPS configured"| REG
-    RECON -->|"direct host"| CRED
+    RECON -->|"re-provision needed"| REG
+    RECON -->|"assignment still valid"| CRED
     RECON -->|"attempt cannot start"| DROP
     ARENEW -.->|"workflow id and unsent<br/>report persisted"| RECON
 ```
@@ -740,7 +739,7 @@ value on each, and the rows in [§9.4](#94-the-taxonomy) give both.
 | Value | Definition | Required client behaviour |
 | --- | --- | --- |
 | **Terminal** | Deterministic. The same attempt, repeated, produces the same answer. | Stop. Report the reason. Do not schedule a backoff. |
-| **Identity terminal** | Deterministic *for this credential or this identity*, and nothing else. A different assignment may well succeed. | Do not retry the same credential against the same endpoint. Where the device is provisioned, re-provisioning — not retrying — is the recovery; where it is not, this behaves as Terminal. |
+| **Identity terminal** | Deterministic *for this credential or this identity*, and nothing else. A different assignment may well succeed. | Do not retry the same credential against the same endpoint. Re-provisioning for a fresh assignment — not retrying — is the recovery. |
 | **Retryable** | Transient. The same attempt may succeed later. | Retry under the policy of [§5](#5-reconnection). Exhausting the policy is what turns it into a fault, not the failure itself. |
 
 **Axis 2 — containment. What it takes down.**
@@ -811,10 +810,10 @@ MQTT 3.1.1 §3.2.2.3 (CONNACK) and §3.9.3 (SUBACK); MQTT 5.0 §3.2.2.2 (CONNACK
 | --- | --- | --- | --- |
 | `0` | Connection Accepted | Benign | Proceed. |
 | `1` | Connection Refused, unacceptable protocol version | **Terminal** | The server will not speak the version offered. Nothing about the device changes between attempts, so a retry cannot succeed. Fault and report. |
-| `2` | Connection Refused, identifier rejected | **Terminal** for this identity | The client identifier is malformed or not permitted. A DPS-provisioned device re-provisions for a fresh assignment; a directly-configured one faults. |
+| `2` | Connection Refused, identifier rejected | **Identity terminal** | The client identifier is malformed or not permitted. The device re-provisions for a fresh assignment. |
 | `3` | Connection Refused, Server unavailable | Retryable | The canonical transient refusal. |
-| `4` | Connection Refused, bad user name or password | **Terminal** for this credential | Same handling as `2`. |
-| `5` | Connection Refused, not authorized | **Terminal** for this credential | Same handling as `2`. Also what a server returns when it does not recognise the requested service api-version. |
+| `4` | Connection Refused, bad user name or password | **Identity terminal** | Same handling as `2`. |
+| `5` | Connection Refused, not authorized | **Identity terminal** | Same handling as `2`. Also what a server returns when it does not recognise the requested service api-version. |
 | `6`–`255` | Reserved | Retryable | Unrecognised. Preserve the value, take the conservative branch. |
 
 #### 9.3.2 MQTT 3.1.1 SUBACK return codes (§3.9.3)
@@ -836,13 +835,13 @@ MQTT 3.1.1 §3.2.2.3 (CONNACK) and §3.9.3 (SUBACK); MQTT 5.0 §3.2.2.2 (CONNACK
 | `0x82` | Protocol Error | **Terminal** | As `0x81`. |
 | `0x83` | Implementation specific error | Retryable | Server-defined and opaque. |
 | `0x84` | Unsupported Protocol Version | **Terminal** | The v5 spelling of 3.1.1's `1`. |
-| `0x85` | Client Identifier not valid | **Terminal** for this identity | Re-provision if DPS-provisioned; otherwise fault. |
-| `0x86` | Bad User Name or Password | **Terminal** for this credential | The v5 spelling of 3.1.1's `4`. Handled identically to it, so that the re-provisioning trigger does not depend on which protocol version the endpoint speaks. |
-| `0x87` | Not authorized | **Terminal** for this credential | The v5 spelling of 3.1.1's `5`. |
+| `0x85` | Client Identifier not valid | **Identity terminal** | Re-provision for a fresh assignment. |
+| `0x86` | Bad User Name or Password | **Identity terminal** | The v5 spelling of 3.1.1's `4`. Handled identically to it, so that the re-provisioning trigger does not depend on which protocol version the endpoint speaks. |
+| `0x87` | Not authorized | **Identity terminal** | The v5 spelling of 3.1.1's `5`. |
 | `0x88` | Server unavailable | Retryable | The v5 spelling of 3.1.1's `3`. |
 | `0x89` | Server busy | Retryable | Back off; this is exactly what backoff is for. |
 | `0x8A` | Banned | **Terminal** | An administrative decision. Retrying is precisely what the server is refusing. |
-| `0x8C` | Bad authentication method | **Terminal** for this credential | The enhanced-authentication method offered is not supported. Grouped with the identity refusals: what the device presented is not acceptable. |
+| `0x8C` | Bad authentication method | **Identity terminal** | The enhanced-authentication method offered is not supported. Grouped with the identity refusals: what the device presented is not acceptable. |
 | `0x90` | Topic Name invalid | **Terminal** | Refers to the **Will topic** in the CONNECT packet, not to any subscription. This SDK sends no Will, so it does not arise; a client that adds one must not retry. |
 | `0x95` | Packet too large | **Terminal** | The CONNECT exceeded the server's maximum packet size. Deterministic for a given configuration. |
 | `0x97` | Quota exceeded | Retryable | A quota, unlike a ban, is expected to refill. |
@@ -901,8 +900,8 @@ Contained by construction: a PUBACK settles **one** publish. None of these tears
 | --- | --- | --- | --- |
 | `0x00` | Success | Benign | Removed. |
 | `0x11` | No subscription existed | **Benign** | Idempotent removal. Unsubscribing a filter that is already gone is the intended outcome, not an error. |
-| `0x80` | Unspecified error | Contained | The filter may still be live; the client's own view of it must not be updated optimistically. |
-| `0x83` | Implementation specific error | Contained | As `0x80`. |
+| `0x80` | Unspecified error | **Contained** · **Retryable** | The filter may still be live. Do not update the client's own view of it optimistically; retry the unsubscribe under the caller's policy. |
+| `0x83` | Implementation specific error | **Contained** · **Retryable** | As `0x80`. |
 | `0x87` | Not authorized | Contained, **terminal** | Retrying changes nothing. |
 | `0x8F` | Topic Filter invalid | Contained, **terminal** | A defect in the filter. |
 | `0x91` | Packet Identifier in use | Contained, **terminal** | A client-side bug. |
@@ -920,7 +919,7 @@ carried up rather than flattened into a generic disconnect.
 | `0x81` | Malformed Packet | **Terminal** | The client sent invalid bytes. A defect. |
 | `0x82` | Protocol Error | **Terminal** | As `0x81`. |
 | `0x83` | Implementation specific error | Retryable | Server-defined. |
-| `0x87` | Not authorized | **Terminal** for this credential | Authorization was revoked mid-session. Re-provision if DPS-provisioned. |
+| `0x87` | Not authorized | **Identity terminal** | Authorization was revoked mid-session. Re-provision for a fresh assignment. |
 | `0x89` | Server busy | Retryable | Back off. |
 | `0x8B` | Server shutting down | Retryable | Planned server-side maintenance. Reconnecting is the correct response, after a backoff. |
 | `0x8D` | Keep Alive timeout | Retryable | The client failed to keep the session alive. Reconnect, and review the keep-alive interval and the pump cadence — this recurring means the device is starving its own network loop. |
@@ -983,8 +982,8 @@ operator unable to tell a trust-store problem from an enrolment problem.
 | Handshake | Server certificate chains to a CA the device does not trust | **Terminal** | Fault. The trust store must be fixed. | `FAULTED` |
 | Handshake | Server certificate hostname mismatch — no subject alternative name covers the endpoint | **Terminal** | Fault. Never fall back to skipping verification. | `FAULTED` |
 | Handshake | Server certificate revoked | **Terminal** | Fault. | `FAULTED` |
-| Handshake | **Client certificate rejected during the handshake.** The server aborts with a TLS alert. No MQTT session ever exists and there is no CONNACK to read. | **Identity terminal** | Fault, or re-provision if the device is DPS-provisioned and the credential can be reissued. The distinguishing evidence is that the failure carries a TLS alert, not a CONNACK code. | `FAULTED` with a TLS reason |
-| CONNACK | **Client certificate accepted by TLS, identity refused at CONNACK** (`rc=5 Connection Refused, not authorized` / `0x87 Not authorized`). The TLS session succeeded; the broker's authorization layer refused it. | **Identity terminal** | Re-provision through DPS if provisioned; otherwise fault. This is the row that drives re-provisioning — the one above cannot, because no MQTT layer was reached. | `RECONNECTING` through DPS, or `FAULTED` |
+| Handshake | **Client certificate rejected during the handshake.** The server aborts with a TLS alert. No MQTT session ever exists and there is no CONNACK to read. | **Identity terminal** | Re-provision if the credential can be reissued; otherwise fault. The distinguishing evidence is that the failure carries a TLS alert, not a CONNACK code. | `FAULTED` with a TLS reason |
+| CONNACK | **Client certificate accepted by TLS, identity refused at CONNACK** (`rc=5 Connection Refused, not authorized` / `0x87 Not authorized`). The TLS session succeeded; the broker's authorization layer refused it. | **Identity terminal** | Re-provision through DPS. This is the row that drives re-provisioning — the one above cannot, because no MQTT layer was reached. | `RECONNECTING` through DPS, or `FAULTED` |
 | Handshake | Protocol-version mismatch — the server requires a TLS version the client will not offer, or vice versa | **Terminal** | Fault. Deterministic for a given build. | `FAULTED` |
 | Handshake | No cipher suite in common | **Terminal** | Fault. As above. | `FAULTED` |
 | Handshake | The stack surfaces a specific TLS alert — `unknown_ca`, `bad_certificate`, `certificate_expired`, `handshake_failure` | Per alert; most are **Terminal** | Surface the alert. On a constrained device it is frequently the only diagnostic that exists, and flattening it to "TLS failed" destroys the entire signal. | Reason text carrying the alert |
@@ -997,7 +996,7 @@ Per-code classes are in [§9.3.1](#931-mqtt-311-connack-return-codes-3223) and
 | Phase | Trigger | Class | Required client behaviour | Application observes |
 | --- | --- | --- | --- | --- |
 | CONNACK | Accepted — `0 Connection Accepted` / `0x00 Success` | Benign | Continue the sequence of [§3](#3-full-connect-sequence). Reset the reconnect attempt counter. | Progress toward `CONNECTED` |
-| CONNACK | Identity refused — `rc=2 identifier rejected`, `rc=4 bad user name or password`, `rc=5 not authorized`; `0x85 Client Identifier not valid`, `0x86 Bad User Name or Password`, `0x87 Not authorized`, `0x8C Bad authentication method` | **Identity terminal** | The broker refused *who the device claims to be*. A DPS-provisioned device marks itself for re-provisioning so the next attempt goes back through DPS ([§5.3](#53-what-triggers-a-reconnect)); a directly-configured device faults. Never re-present the same rejected credential to the same endpoint. | `RECONNECTING` via DPS, or `FAULTED` |
+| CONNACK | Identity refused — `rc=2 identifier rejected`, `rc=4 bad user name or password`, `rc=5 not authorized`; `0x85 Client Identifier not valid`, `0x86 Bad User Name or Password`, `0x87 Not authorized`, `0x8C Bad authentication method` | **Identity terminal** | The broker refused *who the device claims to be*. The device marks itself for re-provisioning so the next attempt goes back through DPS ([§5.3](#53-what-triggers-a-reconnect)). Never re-present the same rejected credential to the same endpoint. | `RECONNECTING` via DPS, or `FAULTED` |
 | CONNACK | Deterministic protocol refusal — `rc=1 unacceptable protocol version`; `0x81 Malformed Packet`, `0x82 Protocol Error`, `0x84 Unsupported Protocol Version`, `0x95 Packet too large` | **Terminal** | Fault immediately. Retrying re-sends byte-for-byte the same CONNECT and gets byte-for-byte the same refusal. | `FAULTED` |
 | CONNACK | Transient server refusal — `rc=3 Connection Refused, Server unavailable`; `0x88 Server unavailable`, `0x89 Server busy`, `0x97 Quota exceeded`, `0x9F Connection rate exceeded` | Retryable | Reconnect under policy, with jitter. | `RECONNECTING` |
 | CONNACK | Redirection — `0x9C Use another server`, `0x9D Server moved` | **Terminal at this endpoint** | Do not retry the same host: the answer is a property of the host, and the policy will simply exhaust itself against it. Follow the Server Reference property, or re-provision. | `FAULTED`, or `RECONNECTING` via DPS |
@@ -1025,7 +1024,7 @@ for this device *yet*. What is terminal is an assignment the client cannot use, 
 | Assignment | `connectionProfile` carries a value the client does not recognise | **Terminal** | Fail the connection with a dedicated unsupported-profile reason and keep the raw string readable. The SDK will not guess which MQTT version to speak ([§4](#4-connection-profile-selection)). Terminal **even with a policy configured**: re-registering returns the same profile. | `FAULTED`, raw profile string still readable |
 | Assignment | The assigned generation contradicts what the attached feature clients require | **Terminal** | Fail the connection. Terminal for the same reason as the row above, and the recovery is the application's: rebuild the feature clients for the assigned generation, then close and reopen ([§4](#4-connection-profile-selection)). | `FAULTED` |
 | Assignment | The issued certificate chain is requested but absent, or there is nowhere to store it | Retryable | Do not continue: connecting with the bootstrap credential would silently never obtain an operational one. | `RECONNECTING`, then `FAULTED` if the policy is exhausted |
-| Hub CONNACK | The hub refuses the identity of a device that *is* DPS-provisioned | Retryable **through re-provisioning** | Mark for re-provisioning; the next attempt runs DPS for a fresh assignment rather than re-presenting the rejected credential. Clear the mark before the attempt, so a failure there degrades to an ordinary retry instead of looping through provisioning forever. | `RECONNECTING`; the next connect goes via DPS |
+| Hub CONNACK | The hub refuses the device's identity | Retryable **through re-provisioning** | Mark for re-provisioning; the next attempt runs DPS for a fresh assignment rather than re-presenting the rejected credential. Clear the mark before the attempt, so a failure there degrades to an ordinary retry instead of looping through provisioning forever. | `RECONNECTING`; the next connect goes via DPS |
 | Any DPS phase | Transport drop or transient session failure during the exchange | Retryable | Reconnect under policy; the retry restarts provisioning from the beginning ([§2](#2-top-level-state-machine)). | `RECONNECTING` |
 
 #### 9.4.5 Phase 5 — presence handshake (gen2)
@@ -1069,7 +1068,7 @@ feature that asked for it?**
 | DISCONNECT | Server DISCONNECT with `0x8E Session taken over` | **Terminal** | Fault and report it distinctly. Another connection holds the client identifier; reconnecting starts a flap in which both devices repeatedly evict each other. This is the single most valuable reason code to carry up intact. | `FAULTED` with a distinguishable reason |
 | DISCONNECT | Server DISCONNECT with `0x8D Keep Alive timeout` | Retryable | Reconnect. Recurring, this means the device is not servicing its own network loop often enough, or the keep-alive is shorter than the pump cadence — a configuration finding, not a network one. | `RECONNECTING` |
 | DISCONNECT | Server DISCONNECT with `0x9C Use another server` / `0x9D Server moved` | **Terminal at this endpoint** | As for the CONNACK equivalents: re-provision or follow the Server Reference. Never retry the same host. | `FAULTED`, or `RECONNECTING` via DPS |
-| DISCONNECT | Server DISCONNECT with `0x87 Not authorized` or `0x98 Administrative action` | **Terminal** | Authorization was revoked, or an operator ended the session. Re-provision if provisioned; otherwise fault. | `FAULTED` |
+| DISCONNECT | Server DISCONNECT with `0x87 Not authorized` or `0x98 Administrative action` | **Terminal** | Authorization was revoked, or an operator ended the session. Re-provision for a fresh assignment. | `FAULTED` |
 | Keep-alive | The local keep-alive expires — no traffic and no ping response within the interval | Retryable | Tear down and reconnect. | `RECONNECTING` |
 | Inbound | A message arrives matching no registered handler | **Benign** | Drop it silently. Brokers rely on this for filters that outlive their subscriber, and treating it as an error turns a normal race into a fault. | Nothing |
 | Service response | A feature response carries a service status of `400 Bad Request` | **Contained** · **Terminal** | Fail that operation with a distinct invalid-argument reason. Re-sending the identical request will fail identically. | That operation's callback fails |
@@ -1118,43 +1117,15 @@ its operational certificate from one assignment ([§3](#3-full-connect-sequence)
 them on every reconnect that goes back through DPS. That is what makes a device re-homeable: a
 service-side reassignment reaches it without a firmware change.
 
-This is a contract, not a preference, and it has one consequence worth stating plainly: **a device
-that hardcodes a hub cannot be re-homed.** Samples and documentation should lead with the
-provisioned path, and a sample that connects directly should say why it does.
+This is a contract, not a preference: samples and documentation present the provisioned path and
+no other.
 
-### 10.2 Direct connect is supported, and the profile is declared rather than learned
-
-A caller may set the hub address itself and skip provisioning. The generation cannot be discovered
-in that case — there is nobody to ask — so the caller **declares** it, and the SDK settles the role
-from the declaration at initialisation.
-
-| | Provisioned | Direct |
-| --- | --- | --- |
-| Hub address | from the assignment | from the caller |
-| Connection profile | **reported** by the service; a caller-supplied value is ignored | **declared** by the caller; defaults to classic if unset |
-| Unknown profile | fails the connection ([§4](#4-connection-profile-selection)) | cannot arise — a caller may not declare a profile the SDK does not speak, and the attempt is rejected at initialisation |
-| Re-homeable | yes | no |
-
-Three rules follow:
-
-- **Unknown is service-produced only.** A client rejects an unknown profile *declared* by a caller
-  at initialisation, and *fails the connection* on one reported by the service. The two are
-  different failures with different owners and must not share a code path.
-- **A direct-connect client never opens a provisioning session.** Any per-scope state an
-  application can observe for provisioning stays idle for that client's whole life. This is the
-  deliberate answer, not an oversight, and an application must not wait on a provisioning event
-  that will never arrive.
-- **A feature that requires the provisioning session must refuse to attach on a direct-connect
-  client**, at attach time and with a distinct error. Attaching successfully and then failing every
-  operation is a worse contract than refusing once.
-
-### 10.3 What a Classic sunset would cost
+### 10.2 What a Classic sunset would cost
 
 The generation is *learned*, not compiled in — which is the property that makes a sunset cheap. The
 profile selects the generation; the feature clients declare which generation they need; a mismatch
 is a clean error rather than a wire failure. On a sunset the service simply stops reporting
-`classic`, and every provisioned device follows with no SDK change. Only the direct-connect default
-would want revisiting, and only then.
+`classic`, and every provisioned device follows with no SDK change.
 
 It is cheap only where the feature exists on both sides:
 
@@ -1178,12 +1149,15 @@ require a change to the connection client** — the core decides whether a provi
 needed, and which channel to use is the update client's decision, expressed by which channel it
 constructs.
 
-### 10.4 One binary, two generations
+### 10.3 One binary, two generations
 
-An application that must serve both generations from one build can do so: it creates feature
-clients after the connection is open and branches on the reported profile. That pattern becomes
-obsolete on a sunset, which is the correct outcome — worth knowing now so its lifetime is
-understood rather than discovered.
+An application that must serve both generations from one build cannot pin a generation up front,
+because it does not know which one it will be assigned. That is the one case where a client waits
+for `CONNECTED`, reads the reported profile, and only then builds the matching feature clients —
+the exception to the attach-before-`open()` pattern of [§4](#4-connection-profile-selection), not
+a requirement. A client whose feature clients serve either generation, as .NET's unified clients
+do, does not need it at all. The pattern becomes obsolete on a sunset, which is the correct outcome
+— worth knowing now so its lifetime is understood rather than discovered.
 
 ---
 

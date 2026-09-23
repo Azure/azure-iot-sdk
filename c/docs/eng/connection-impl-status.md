@@ -30,7 +30,7 @@ Keep this file in step with the code. It is expected to change often; `connectio
 | [§5 Reconnection](../connection.md#5-reconnection) | implemented | implemented |
 | [§6 Certificate management](../connection.md#6-certificate-management-onboarding-and-renewal) | implemented | partial — the CSR now rides the registration, but renewal over the hub is classic-only |
 | [§7 Device update](../connection.md#7-device-update-onboarding-and-renewal) | implemented over the provisioning gateway — the hub channel is not written | none — no update support exists in the .NET client today, and §7 is the contract it will have to meet when it is added |
-| [§10 Connection topology](../connection.md#10-connection-topology) | partial — the three connect paths exist; no gen2 file-upload client, and a provisioning-only feature can attach to a direct-connect client and then fail every call | partial — same file-upload gap is not applicable; topology otherwise followed |
+| [§10 Connection topology](../connection.md#10-connection-topology) | partial — no gen2 file-upload client | partial — the gen2 file-upload client exists but both operations throw `NotImplementedException` |
 
 ---
 
@@ -48,10 +48,10 @@ Keep this file in step with the code. It is expected to change often; `connectio
 | gen2 birth handshake, 60 s timeout ([§3](../connection.md#3-full-connect-sequence)) | implemented | implemented |
 | Connection profile from DPS ([§4](../connection.md#4-connection-profile-selection)) | implemented — `az_iot_connection_profile`, reported by `get_hub_profile()`; still resolves to classic until the api-version carrying it is deployed | implemented — `ConnectionProfile` enum on the registration result; same api-version dependency |
 | Exponential backoff with jitter ([§5](../connection.md#5-reconnection)) | implemented, fixed policy; the cap bounds the backoff only, not the jittered delay | implemented, caller-replaceable policy |
-| Fatal-failure classification ([§5.3](../connection.md#53-what-triggers-a-reconnect)) | partial — the classification exists and is reported as `is_retriable`, but only the hub subscription gate acts on it; the presence and provisioning paths still retry a deterministic refusal | implemented — `ErrorRetryability` { `Terminal`, `IdentityTerminal`, `Retryable` } on every classified failure |
+| Fatal-failure classification ([§5.3](../connection.md#53-what-triggers-a-reconnect)) | partial — the classification exists and is reported as `is_retriable`, but only the hub subscription gate acts on it; deterministic TLS failures, deterministic CONNACK refusals and refused presence or provisioning filters are all retried | implemented — `ErrorRetryability` { `Terminal`, `IdentityTerminal`, `Retryable` } on every classified failure |
 | Failure taxonomy — MQTT reason-code fidelity ([§9](../connection.md#9-connection-failure-taxonomy)) | partial — CONNACK, SUBACK and DISCONNECT each have a mapper and the raw code reaches the application; PUBACK has none, and DISCONNECT names only `0x87`, so `0x8E Session taken over` is not distinguished | implemented — codes are preserved as typed values and classified per §9.3.3, §9.3.7, §9.4.1, §9.4.2 and §9.4.8, which the source cites by section number |
 | Certificate renewal over the hub ([§6](../connection.md#6-certificate-management-onboarding-and-renewal)) | implemented (classic) | partial (classic) — no busy rejection for a duplicate in-flight request; explicit unsupported error on gen2 |
-| gen2 file upload ([§10.3](../connection.md#103-what-a-classic-sunset-would-cost)) | **absent** — gen1 only | n/a |
+| gen2 file upload ([§10.2](../connection.md#102-what-a-classic-sunset-would-cost)) | **absent** — gen1 only | **stub** — `Gen2.FileUpload.FileUploadClient` exists; both operations throw `NotImplementedException` |
 | Device update ([§7](../connection.md#7-device-update-onboarding-and-renewal)) | implemented over the provisioning gateway; hub channel not written | none |
 
 ---

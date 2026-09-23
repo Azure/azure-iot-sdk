@@ -27,8 +27,7 @@ readable as design rather than as a claim about the code.
 - **Scope.** Open decision 1 below was answered yes. Every event carries
   `az_iot_connection_scope` (`DPS`, `HUB`) beside `state`, the client keeps one state per scope,
   and `az_iot_connection_client_get_state(client, scope)` is the getter. There is no unscoped
-  state to ask for. The DPS scope stays `IDLE` for the life of a direct-connect client, and that
-  is the answer rather than an error.
+  state to ask for.
 - **The diagnostics of §4.5.** `az_iot_connection_error_detail` carries `source`, `code` and a
   service-supplied `message`, hung off the event and valid for the callback only.
 - **`is_retriable`**, computed by an exhaustive `reason_is_retriable()` — `-Werror=switch-enum`
@@ -281,10 +280,9 @@ Rules that follow, each pinned by a test:
    session going down, even though the retry is a DPS registration.
 4. **`close()` settles both.** It is a statement about the client, not about one
    lifecycle.
-5. **A direct hub connection never leaves `DPS:IDLE`.** That is the answer, not
-   an error — nothing should wait on a `DPS:CONNECTED` that cannot come. The
-   mirror of it is `dps.provision_only` (§2.8): there, `HUB` never leaves
-   `IDLE`, for the same reason.
+5. **Under `dps.provision_only` (§2.8) `HUB` never leaves `IDLE`.** That is
+   the answer, not an error — nothing should wait on a `HUB:CONNECTED` that
+   cannot come.
 6. **`DPS:CONNECTED` is real, and it is the SUBACK.** The provisioning session
    reaches `CONNECTED` when its subscription is confirmed — the same fact that
    makes it usable to a feature client. An ordinary DPS device therefore reports
@@ -388,10 +386,9 @@ is exactly what a **misconfigured** enrollment looks like too — one that shoul
 have had a hub and does not. Treating that as success would remove the
 operator's only signal for a real misconfiguration.
 
-**Rejected combinations**, both at `open()` with `AZ_IOT_ERR_INVALID_ARG` rather
-than silently ignoring one half:
+**Rejected combination**, at `open()` with `AZ_IOT_ERR_INVALID_ARG` rather than
+silently ignoring one half:
 
-- `opts.host` — it names the hub this option says does not exist.
 - `dps.request_operational_certificate` — the certificate is issued *by* a
   registration, which this device never performs.
 
