@@ -197,12 +197,13 @@ static void q_drain_all(paho_client* m)
 
 /* Allocate + enqueue a simple status event (no message payload), carrying the
  * code that came off the wire. */
-static void enqueue_status_code(
+static void enqueue_status_codes(
     paho_client* m,
     az_iot_mqtt_event_kind kind,
     az_iot_result status,
     uint16_t packet_id,
-    int32_t protocol_code)
+    int32_t protocol_code,
+    int32_t transport_code)
 {
   queued_event* n = (queued_event*)calloc(1, sizeof(*n));
   if (!n)
@@ -213,8 +214,30 @@ static void enqueue_status_code(
   n->evt.status = status;
   n->evt.packet_id = packet_id;
   n->evt.protocol_code = protocol_code;
+  n->evt.transport_code = transport_code;
   q_push(m, n);
 }
+
+/* A code that came off the wire, with no transport code to report. */
+static void enqueue_status_code(
+    paho_client* m,
+    az_iot_mqtt_event_kind kind,
+    az_iot_result status,
+    uint16_t packet_id,
+    int32_t protocol_code)
+{
+  enqueue_status_codes(m, kind, status, packet_id, protocol_code, 0);
+}
+
+/* Only a code that actually came off the wire is reportable as one. Paho's own
+ * failures are negative, and 0 is this field's "not applicable". */
+static int32_t paho_wire_code(int code) { return (code > 0) ? (int32_t)code : 0; }
+
+/* The other half of the same split: Paho's negative MQTTASYNC_* codes are
+ * failures BELOW MQTT -- socket refused, TLS handshake, DNS -- and are what
+ * makes those three distinguishable to an application. Reported as the
+ * transport code rather than being discarded. */
+static int32_t paho_transport_code(int code) { return (code < 0) ? (int32_t)code : 0; }
 
 /* Allocate + enqueue a simple status event (no message payload). */
 static void enqueue_status(
@@ -445,7 +468,17 @@ static void paho_disconnected(
   AZ_IOT_LOG_WARNF("paho: server sent DISCONNECT (reason %d)", (int)reasonCode);
   if (m)
   {
-    enqueue_status(m, AZ_IOT_MQTT_EVT_DISCONNECTED, AZ_IOT_OK, 0);
+    /* Classified, not assumed clean. 0x00 is an ordinary close; anything from
+     * 0x80 up is the server saying why it terminated the session, and
+     * reporting that as AZ_IOT_OK left the core settling at IDLE with nothing
+     * to explain it -- the reason code was the one thing that distinguished
+     * "the hub closed us for quota exceeded" from a dropped socket. */
+    enqueue_status_code(
+        m,
+        AZ_IOT_MQTT_EVT_DISCONNECTED,
+        az_iot_mqtt_disconnect_result(m->version, (int)reasonCode),
+        0,
+        paho_wire_code((int)reasonCode));
   }
 }
 
@@ -593,10 +626,6 @@ static void paho_maybe_enable_trace(void)
   MQTTAsync_setTraceLevel((enum MQTTASYNC_TRACE_LEVELS)level);
 }
 
-/* Only a code that actually came off the wire is reportable as one. Paho's own
- * failures are negative, and 0 is this field's "not applicable". */
-static int32_t paho_wire_code(int code) { return (code > 0) ? (int32_t)code : 0; }
-
 /* Paho reports a broker-side CONNACK rejection through nextOrClose(), which
  * fills failureData::code with the CONNACK return code and sets the message to
  * "CONNACK return code". Every other connect failure it reports here is one of
@@ -669,17 +698,22 @@ static void paho_disconnect_success(void* context, MQTTAsync_successData* respon
 static void paho_disconnect_failure(void* context, MQTTAsync_failureData* response)
 {
   paho_client* m = (paho_client*)context;
+  int code = response ? response->code : 0;
   AZ_IOT_LOG_WARNF(
       "paho: disconnect failed: rc=%d msg=%s",
-      response ? response->code : 0,
+      code,
       (response && response->message) ? response->message : "(none)");
   if (m)
   {
     /* The session is over either way, so this is still DISCONNECTED -- but it
      * carries an error, not AZ_IOT_OK. The core reports evt->status as the
      * reason the connection ended, and calling a failed teardown a clean one
-     * would tell the application the opposite of what happened. */
-    enqueue_status(m, AZ_IOT_MQTT_EVT_DISCONNECTED, AZ_IOT_ERR_MQTT, 0);
+     * would tell the application the opposite of what happened.
+     *
+     * The code travels as the TRANSPORT code: this is Paho refusing the
+     * teardown, not a verdict off the wire. */
+    enqueue_status_codes(
+        m, AZ_IOT_MQTT_EVT_DISCONNECTED, AZ_IOT_ERR_MQTT, 0, 0, paho_transport_code(code));
   }
 }
 
@@ -722,12 +756,14 @@ static void paho_connect_failure(void* context, MQTTAsync_failureData* response)
   }
   if (m)
   {
-    enqueue_status_code(
+    int code = response ? response->code : 0;
+    enqueue_status_codes(
         m,
         AZ_IOT_MQTT_EVT_CONNECTED,
         paho_connect_failure_result(m, response),
         0,
-        paho_wire_code(response ? response->code : 0));
+        paho_wire_code(code),
+        paho_transport_code(code));
   }
 }
 
@@ -758,12 +794,13 @@ static void paho_subscribe_failure(void* context, MQTTAsync_failureData* respons
   if (m)
   {
     int code = response ? response->code : -1;
-    enqueue_status_code(
+    enqueue_status_codes(
         m,
         AZ_IOT_MQTT_EVT_SUBSCRIBE_ACK,
         az_iot_mqtt_suback_result(m->version, code),
         pid,
-        paho_wire_code(code));
+        paho_wire_code(code),
+        paho_transport_code(code));
   }
 }
 
@@ -826,12 +863,16 @@ static void paho_connect_failure5(void* context, MQTTAsync_failureData5* respons
   }
   if (m)
   {
-    enqueue_status_code(
+    int code5 = paho_connect_failure5_code(response);
+    enqueue_status_codes(
         m,
         AZ_IOT_MQTT_EVT_CONNECTED,
         paho_connect_failure5_result(m, response),
         0,
-        paho_wire_code(paho_connect_failure5_code(response)));
+        paho_wire_code(code5),
+        /* A v5 CONNACK reason is >= 0 and lands in protocol_code; anything
+         * negative is Paho's own failure and belongs here. */
+        paho_transport_code(code5));
   }
 }
 
@@ -863,12 +904,13 @@ static void paho_subscribe_failure5(void* context, MQTTAsync_failureData5* respo
     int code = response
         ? (((int)response->reasonCode >= 0x80) ? (int)response->reasonCode : response->code)
         : -1;
-    enqueue_status_code(
+    enqueue_status_codes(
         m,
         AZ_IOT_MQTT_EVT_SUBSCRIBE_ACK,
         az_iot_mqtt_suback_result(m->version, code),
         pid,
-        paho_wire_code(code));
+        paho_wire_code(code),
+        paho_transport_code(code));
   }
 }
 
@@ -1429,8 +1471,10 @@ static az_iot_result paho_iface_disconnect(az_iot_mqtt_client* self)
   {
     /* The call was refused, so neither callback will run. Report the end of the
      * session here instead, or the caller is left waiting on an event that can
-     * no longer arrive -- with the error, for the reason above. */
-    enqueue_status(m, AZ_IOT_MQTT_EVT_DISCONNECTED, AZ_IOT_ERR_MQTT, 0);
+     * no longer arrive -- with the error, for the reason above, and with the
+     * refusal code as the transport code. */
+    enqueue_status_codes(
+        m, AZ_IOT_MQTT_EVT_DISCONNECTED, AZ_IOT_ERR_MQTT, 0, 0, paho_transport_code(rc));
     return AZ_IOT_ERR_MQTT;
   }
   return AZ_IOT_OK;

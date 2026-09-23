@@ -44,6 +44,16 @@ typedef struct az_iot_test_state_log
   uint32_t profile_sizes[AZ_IOT_TEST_MAX_STATES];
   az_iot_connection_profile profiles[AZ_IOT_TEST_MAX_STATES];
   char profile_raw[AZ_IOT_TEST_MAX_STATES][AZ_IOT_CONNECTION_PROFILE_RAW_BUF];
+  /* Diagnostic detail (item 8). `error_message` is COPIED because the event's
+   * span points into the adapter's inbound buffer and dies with the callback --
+   * a test that kept the span would be reading freed memory by the time it
+   * asserted. */
+  bool is_retriable[AZ_IOT_TEST_MAX_STATES];
+  bool error_present[AZ_IOT_TEST_MAX_STATES];
+  uint32_t error_sizes[AZ_IOT_TEST_MAX_STATES];
+  az_iot_connection_error_source error_sources[AZ_IOT_TEST_MAX_STATES];
+  int32_t error_codes[AZ_IOT_TEST_MAX_STATES];
+  char error_message[AZ_IOT_TEST_MAX_STATES][128];
   size_t count;
 } az_iot_test_state_log;
 
@@ -58,6 +68,25 @@ static inline void az_iot_test_on_state(const az_iot_connection_state_event* eve
     log->reasons[index] = event->reason;
     log->event_sizes[index] = event->_internal_size;
     log->profile_present[index] = event->profile != NULL;
+    log->is_retriable[index] = event->is_retriable;
+    log->error_present[index] = event->error != NULL;
+    if (event->error)
+    {
+      log->error_sizes[index] = event->error->_internal_size;
+      log->error_sources[index] = event->error->source;
+      log->error_codes[index] = event->error->code;
+      int32_t msg_len = az_span_size(event->error->message);
+      if (msg_len > 0)
+      {
+        size_t n = (size_t)msg_len;
+        if (n >= sizeof(log->error_message[index]))
+        {
+          n = sizeof(log->error_message[index]) - 1u;
+        }
+        memcpy(log->error_message[index], az_span_ptr(event->error->message), n);
+        log->error_message[index][n] = '\0';
+      }
+    }
     if (event->profile)
     {
       log->profile_sizes[index] = event->profile->_internal_size;
