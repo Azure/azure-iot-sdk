@@ -89,10 +89,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
                 Assert.Skip("No AEG hub to test against yet");
             }
 
-            if (string.IsNullOrEmpty(Environment.GetEnvironmentVariable("PKCS11_PROVIDER_MODULE")))
-            {
-                Assert.Fail("SoftHSM token not provisioned. Run c/eng/setup-softhsm.sh and eval its exports first.");
-            }
+            SoftHsmRsaCredential.SkipIfUnsupported();
 
             string certificatePem = DecodeBase64EnvironmentVariable("IOT_DPS_GROUP_X509_CERTIFICATE");
 

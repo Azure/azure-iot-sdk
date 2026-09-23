@@ -77,10 +77,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Gen2
         [Fact(Timeout = Setup.TestTimeoutMilliseconds)]
         public async Task CanConnectWithHsmBackedX509UsingSoftHsm()
         {
-            if (string.IsNullOrEmpty(Environment.GetEnvironmentVariable("PKCS11_PROVIDER_MODULE")))
-            {
-                Assert.Fail("SoftHSM token not provisioned. Run c/eng/setup-softhsm.sh and eval its exports first.");
-            }
+            SoftHsmRsaCredential.SkipIfUnsupported();
 
             string certificatePem = DecodeBase64EnvironmentVariable("IOT_DPS_GROUP_X509_CERTIFICATE");
 

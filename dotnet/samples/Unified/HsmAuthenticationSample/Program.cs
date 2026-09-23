@@ -16,78 +16,99 @@ internal class Program
 {
     private static async Task Main()
     {
-        // 1. Open a handle to the device's hardware security module. This sample talks to a real PKCS#11 token
-        //    (SoftHSM2), configured from the outputs of c/eng/setup-softhsm.sh - the same token the SDK's
-        //    CertificateManagementIntegrationTests use. The private key never leaves the module: only public-key
-        //    material and signing results cross the boundary.
-        using IHardwareSecurityModule hsm = SoftHsmHardwareSecurityModule.Create();
-
-        // 2. Wrap the HSM key handle in an RSA that forwards signing to the HSM. The private key material is never in
-        //    managed memory; .NET's TLS stack signs the handshake by calling into this object.
-        using RSA hsmBackedKey = new HsmBackedRsa(hsm);
-
-        // Prove the delegation works: the signature below is produced inside the HSM and verifies against the public
-        // key. This runs on every operating system.
-        DemonstrateHsmSigning(hsmBackedKey);
-
-        // 3. Bind the HSM-backed key to the device certificate. How this is done depends on the OS TLS stack:
+        // How an HSM-backed key is bound to a TLS certificate depends on the OS TLS stack:
         //
-        //    - Windows (SChannel): a managed custom RSA cannot back a TLS certificate. Instead the key lives in the
-        //      HSM's CNG Key Storage Provider and the certificate is loaded from the certificate store, already bound
-        //      to that key. SChannel then calls the KSP to sign. See LoadWindowsHsmCertificateFromStore below.
+        //   - Windows (SChannel): a certificate's key must live in a CNG Key Storage Provider. The HSM's KSP
+        //     installs the certificate into the store already bound to the non-exportable key; SChannel then calls
+        //     the KSP to sign. See RunWindows below.
         //
-        //    - Linux / macOS (OpenSSL): the managed HSM-backed key can be attached to the certificate with
-        //      CopyWithPrivateKey, and OpenSSL calls into it to sign. See CreateHsmBackedCertificate below.
+        //   - Linux / macOS (OpenSSL): the key is opened from the PKCS#11 token as a native OpenSSL handle and
+        //     attached to the certificate with CopyWithPrivateKey, which duplicates the handle by reference. OpenSSL
+        //     then calls into the token to sign. The key never leaves the token. See RunUnixAsync below.
         if (OperatingSystem.IsWindows())
         {
-            Console.WriteLine();
-            Console.WriteLine("On Windows, bind the HSM key through a CNG Key Storage Provider and load the certificate");
-            Console.WriteLine("from the certificate store, then pass it to X509AuthenticationProvider.");
-
-            string subjectName = Environment.GetEnvironmentVariable("SAMPLE_DEVICE_ID") ?? "hsm-sample-device";
-            try
-            {
-                using X509Certificate2 storeCertificate = LoadWindowsHsmCertificateFromStore(subjectName);
-                _ = new X509AuthenticationProvider(storeCertificate);
-                Console.WriteLine($"Loaded HSM-backed certificate '{storeCertificate.Subject}' from the store.");
-            }
-            catch (InvalidOperationException ex)
-            {
-                Console.WriteLine(ex.Message);
-                Console.WriteLine("Install the HSM vendor's KSP and provision the certificate into the store to run this path.");
-            }
-
+            RunWindows();
             return;
         }
 
-        using X509Certificate2 deviceCertificate = CreateHsmBackedCertificate(hsmBackedKey);
+        await RunUnixAsync();
+    }
 
-        // 4. Build the authentication provider. The certificate carries a non-exportable, HSM-backed private key.
-        //    The optional callbacks show custom server validation (for example certificate pinning) and client
-        //    certificate selection. Neither callback touches the HSM-backed private key.
-        var authentication = new X509AuthenticationProvider(
-            deviceCertificate,
-            certificateChain: null,
-            remoteCertificateValidationCallback: ValidateServerCertificate,
-            localCertificateSelectionCallback: SelectClientCertificate);
-
-        string? idScope = Environment.GetEnvironmentVariable("DPS_ID_SCOPE");
-        if (string.IsNullOrEmpty(idScope))
+    // Linux / macOS: open the SoftHSM token key natively and use it for the whole flow. This is the same token the
+    // SDK's SoftHSM integration tests use, configured from the outputs of c/eng/setup-softhsm.sh.
+    private static async Task RunUnixAsync()
+    {
+        RSA hsmBackedKey;
+        try
         {
-            Console.WriteLine();
-            Console.WriteLine("Set the DPS_ID_SCOPE environment variable, and enroll the device certificate's public");
-            Console.WriteLine("key in DPS, to run the provisioning + telemetry portion of this sample.");
+            // 1. Open the device's private key from the PKCS#11 token as a native OpenSSL key. The private key never
+            //    leaves the token: this handle only references it, and the provider/engine signs inside the token.
+            hsmBackedKey = SoftHsmKey.Open();
+        }
+        catch (InvalidOperationException ex)
+        {
+            Console.WriteLine(ex.Message);
             return;
         }
 
-        await ProvisionAndSendTelemetryAsync(idScope, authentication);
+        using (hsmBackedKey)
+        {
+            // 2. Prove the delegation works: the signature below is produced inside the token and verifies against
+            //    the public key. No private-key bytes are ever read into managed memory.
+            DemonstrateHsmSigning(hsmBackedKey);
+
+            // 3. Bind the token-held key to the device certificate. Because the key is a native OpenSSL key,
+            //    CopyWithPrivateKey duplicates the handle by reference rather than exporting the private key.
+            using X509Certificate2 deviceCertificate = CreateHsmBackedCertificate(hsmBackedKey);
+
+            // 4. Build the authentication provider. The certificate carries a non-exportable, token-held private key.
+            //    The optional callbacks show custom server validation (for example certificate pinning) and client
+            //    certificate selection. Neither callback touches the token-held private key.
+            var authentication = new X509AuthenticationProvider(
+                deviceCertificate,
+                certificateChain: null,
+                remoteCertificateValidationCallback: ValidateServerCertificate,
+                localCertificateSelectionCallback: SelectClientCertificate);
+
+            string? idScope = Environment.GetEnvironmentVariable("DPS_ID_SCOPE");
+            if (string.IsNullOrEmpty(idScope))
+            {
+                Console.WriteLine();
+                Console.WriteLine("Set the DPS_ID_SCOPE environment variable, and enroll the device certificate's public");
+                Console.WriteLine("key in DPS, to run the provisioning + telemetry portion of this sample.");
+                return;
+            }
+
+            await ProvisionAndSendTelemetryAsync(idScope, authentication);
+        }
+    }
+
+    // Windows: the certificate must be bound to the HSM key through a CNG Key Storage Provider, which happens outside
+    // this process (the HSM vendor's KSP installs the certificate into the store with a non-exportable key handle).
+    private static void RunWindows()
+    {
+        Console.WriteLine("On Windows, bind the HSM key through a CNG Key Storage Provider and load the certificate");
+        Console.WriteLine("from the certificate store, then pass it to X509AuthenticationProvider.");
+
+        string subjectName = Environment.GetEnvironmentVariable("SAMPLE_DEVICE_ID") ?? "hsm-sample-device";
+        try
+        {
+            using X509Certificate2 storeCertificate = LoadWindowsHsmCertificateFromStore(subjectName);
+            _ = new X509AuthenticationProvider(storeCertificate);
+            Console.WriteLine($"Loaded HSM-backed certificate '{storeCertificate.Subject}' from the store.");
+        }
+        catch (InvalidOperationException ex)
+        {
+            Console.WriteLine(ex.Message);
+            Console.WriteLine("Install the HSM vendor's KSP and provision the certificate into the store to run this path.");
+        }
     }
 
     private static void DemonstrateHsmSigning(RSA hsmBackedKey)
     {
         byte[] data = Encoding.UTF8.GetBytes("proof that the HSM performs the signature");
 
-        // Signing routes through HsmBackedRsa into the HSM.
+        // Signing routes through the OpenSSL PKCS#11 provider into the token.
         byte[] signature = hsmBackedKey.SignData(data, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
 
         // Verifying uses only the public key.
@@ -95,14 +116,14 @@ internal class Program
         publicKey.ImportParameters(hsmBackedKey.ExportParameters(includePrivateParameters: false));
         bool valid = publicKey.VerifyData(data, signature, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
 
-        Console.WriteLine($"Private key type    : {hsmBackedKey.GetType().Name} (delegates signing to the HSM)");
+        Console.WriteLine($"Private key type    : {hsmBackedKey.GetType().Name} (signs inside the token)");
         Console.WriteLine($"HSM signature valid : {valid}");
     }
 
-    // Linux / macOS: build a certificate whose private key is the HSM-backed key. The certificate is self-signed by
-    // the HSM (proving the wiring), then the same key is attached with CopyWithPrivateKey, which keeps a reference to
-    // the managed HSM-backed key rather than exporting it. In production this certificate would instead be the one
-    // issued for the HSM's public key, for example via a CSR to DPS.
+    // Linux / macOS: build a certificate whose private key is the token-held key. The certificate is self-signed by
+    // the token (proving the wiring), then the same key is attached with CopyWithPrivateKey, which keeps a reference
+    // to the token key rather than exporting it. In production this certificate would instead be the one issued for
+    // the token's public key, for example via a CSR to DPS.
     private static X509Certificate2 CreateHsmBackedCertificate(RSA hsmBackedKey)
     {
         string deviceId = Environment.GetEnvironmentVariable("SAMPLE_DEVICE_ID") ?? "hsm-sample-device";
