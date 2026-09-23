@@ -125,7 +125,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
 
             if (string.IsNullOrEmpty(Environment.GetEnvironmentVariable("PKCS11_PROVIDER_MODULE")))
             {
-                Assert.Skip("SoftHSM token not provisioned. Run c/eng/setup-softhsm.sh and eval its exports first.");
+                Assert.Fail("SoftHSM token not provisioned. Run c/eng/setup-softhsm.sh and eval its exports first.");
             }
 
             string registrationId = Environment.GetEnvironmentVariable("IOT_DPS_GROUP_X509_REGISTRATION_ID")
