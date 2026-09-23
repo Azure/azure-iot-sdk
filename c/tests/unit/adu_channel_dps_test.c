@@ -2032,6 +2032,117 @@ static void binding_from_a_state_observer_takes_the_seat_later(void** state)
       AZ_IOT_OK);
 }
 
+/* The deferred seat is not guaranteed: the pool can fill before the channel's
+ * next entry. Operations are then refused, as the bind would have been, until
+ * a seat frees up. */
+static void a_deferred_seat_refused_by_a_full_pool_refuses_operations(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(
+      az_iot_connection_client_add_state_observer(
+          &fx->client, bind_channel_on_dps_connecting, NULL),
+      AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(&fx->client, fx->factory), AZ_IOT_OK);
+
+  g_bind_from_observer_fx = fx;
+  g_bind_from_observer_result = AZ_IOT_ERR_INTERNAL;
+  assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_OK);
+  assert_int_equal(g_bind_from_observer_result, AZ_IOT_OK);
+  assert_false(channel_observes_state(fx));
+
+  for (size_t i = 0; i < AZ_IOT_MAX_FEATURE_STATE_OBSERVERS; ++i)
+  {
+    fx->client.feature_state_observers[i].cb = az_iot_test_on_state;
+    fx->client.feature_state_observers[i].user_ctx = &fx->log;
+  }
+
+  az_iot_adu_report report = { 0 };
+  report.workflow_id = "wf-1";
+  report.extended_result_codes = "00000000";
+  assert_int_equal(
+      fx->channel.vtable->request_update(fx->channel.ctx, AZ_IOT_ADU_OP_GET_UPDATE),
+      AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  assert_int_equal(
+      fx->channel.vtable->report(fx->channel.ctx, &report), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  assert_int_equal(fx->channel.vtable->do_work(fx->channel.ctx), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  assert_false(channel_observes_state(fx));
+
+  /* A seat frees up: the next entry takes it. */
+  memset(&fx->client.feature_state_observers[0], 0, sizeof(fx->client.feature_state_observers[0]));
+  assert_int_equal(fx->channel.vtable->do_work(fx->channel.ctx), AZ_IOT_OK);
+  assert_true(channel_observes_state(fx));
+
+  for (size_t i = 1; i < AZ_IOT_MAX_FEATURE_STATE_OBSERVERS; ++i)
+  {
+    memset(
+        &fx->client.feature_state_observers[i], 0, sizeof(fx->client.feature_state_observers[i]));
+  }
+  assert_int_equal(
+      az_iot_connection_client_remove_state_observer(
+          &fx->client, bind_channel_on_dps_connecting, NULL),
+      AZ_IOT_OK);
+}
+
+/* The channel rides the provisioning session, not the hub, so a hub fault
+ * does not stop it while that session is up. Only once the session is gone
+ * does the fault matter: the connection client will not open another until
+ * close(), so the channel does not ask. */
+static void a_hub_fault_leaves_a_live_provisioning_session_usable(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_mock_mqtt_client* m = open_and_bind(fx);
+
+  /* The check completes and the device registers; the channel keeps the
+   * session. */
+  assert_int_equal(
+      fx->channel.vtable->request_update(fx->channel.ctx, AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE),
+      AZ_IOT_OK);
+  char rid[64];
+  last_rid(m, rid, sizeof(rid));
+  char topic[256];
+  snprintf(topic, sizeof(topic), "$dps/registrations/res/200/?$rid=%s", rid);
+  assert_true(inject(fx, m, topic, "{\"updateMetadata\":null}"));
+  (void)az_iot_connection_client_do_work(&fx->client, 0);
+  assert_true(inject(fx, m, "$dps/registrations/res/200/?$rid=1", k_assigned_body));
+  (void)az_iot_connection_client_do_work(&fx->client, 0);
+
+  /* The hub connect fails; with retries disabled it settles in FAULTED. */
+  az_iot_mock_mqtt_client* hub = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  assert_non_null(hub);
+  assert_ptr_not_equal(hub, m);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(hub, AZ_IOT_ERR_TIMEOUT));
+  (void)az_iot_connection_client_do_work(&fx->client, 0);
+  assert_int_equal(
+      az_iot_connection_client_get_state(&fx->client, AZ_IOT_CONN_SCOPE_HUB),
+      AZ_IOT_CONN_STATE_FAULTED);
+  assert_int_equal(fx->channel_state.conn_state[AZ_IOT_CONN_SCOPE_HUB], AZ_IOT_CONN_STATE_FAULTED);
+  assert_true(az_iot_connection_client__dps_session_ready(&fx->client));
+
+  /* The channel still works on the provisioning session. */
+  size_t results = fx->result_count;
+  assert_int_equal(fx->channel.vtable->do_work(fx->channel.ctx), AZ_IOT_OK);
+  assert_int_equal(
+      fx->channel.vtable->request_update(fx->channel.ctx, AZ_IOT_ADU_OP_GET_UPDATE), AZ_IOT_OK);
+  last_rid(m, rid, sizeof(rid));
+  snprintf(topic, sizeof(topic), "$dps/registrations/res/200/?$rid=%s", rid);
+  assert_true(inject(fx, m, topic, "{\"updateAvailable\":false}"));
+  assert_int_equal(fx->result_count, results + 1u);
+  assert_int_equal(fx->last_result, AZ_IOT_OK);
+
+  /* The session is lost: the connection client refuses a new one from here,
+   * and the channel does not ask. */
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(m));
+  (void)az_iot_connection_client_do_work(&fx->client, 0);
+  assert_false(az_iot_connection_client__dps_session_ready(&fx->client));
+  assert_int_equal(
+      az_iot_connection_client__dps_session_ensure(&fx->client), AZ_IOT_ERR_NOT_SUPPORTED);
+  assert_int_equal(
+      fx->channel.vtable->request_update(fx->channel.ctx, AZ_IOT_ADU_OP_GET_UPDATE),
+      AZ_IOT_ERR_NOT_CONNECTED);
+  assert_false(fx->channel_state.wants_session);
+}
+
 /* Counts the channel's "could not obtain a provisioning session" line. */
 static adu_log_capture g_ensure_log;
 
@@ -2170,6 +2281,10 @@ int main(void)
         a_session_after_a_failed_registration_is_held_for_its_check, setup, teardown),
     cmocka_unit_test_setup_teardown(
         binding_from_a_state_observer_takes_the_seat_later, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_deferred_seat_refused_by_a_full_pool_refuses_operations, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_hub_fault_leaves_a_live_provisioning_session_usable, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_settled_fault_stops_the_channel_asking_for_a_session, setup, teardown),
     cmocka_unit_test_setup_teardown(a_channel_bound_after_a_fault_starts_settled, setup, teardown),
