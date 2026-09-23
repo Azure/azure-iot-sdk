@@ -114,6 +114,9 @@ extern "C"
  * with a newer if_match, so size it to twice your largest patch plus this. */
 #define AZ_IOT_GEN2_TWIN_ENCODE_OVERHEAD 24
 
+/** Size of a twin MQTT v5 Correlation Data value: a binary UUID. */
+#define AZ_IOT_GEN2_TWIN_CORRELATION_ID_LEN 16u
+
 /* How many desired patches may be held while a resync is outstanding. Past
  * this the buffer overflows, which is recovered from by re-issuing the snapshot
  * GET rather than by losing an update. */
@@ -183,7 +186,7 @@ extern "C"
 
       /* The birth nonce those versions were seeded from, so a reconnect is
        * noticed and the versions re-seeded from the new birth-ack. */
-      uint8_t nonce[16];
+      uint8_t nonce[AZ_IOT_GEN2_TWIN_CORRELATION_ID_LEN];
       bool nonce_valid;
 
       /* A birth-triggered twin-push the service is expected to send, and the
@@ -219,8 +222,8 @@ extern "C"
       {
         bool in_use;
         int kind; /* internal enum */
-        /* Per-attempt correlation id: a 16-byte UUID the service echoes. */
-        uint8_t corr[16];
+        /* Per-attempt UUID; the service echoes it. */
+        uint8_t correlation_id[AZ_IOT_GEN2_TWIN_CORRELATION_ID_LEN];
         union
         {
           az_iot_gen2_twin_get_callback get_cb;

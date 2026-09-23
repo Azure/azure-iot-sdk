@@ -94,6 +94,11 @@
 /* Internal shorthand to access _internal fields */
 #define TI(t) ((t)->_internal)
 
+/* The public slot arrays are sized by the public macro, but filled and compared
+ * with the core's internal length. Fail the build if the two ever diverge. */
+typedef char az_iot_twin_correlation_id_len_agrees
+    [(AZ_IOT_GEN2_TWIN_CORRELATION_ID_LEN == AZ_IOT_CORRELATION_UUID_LEN) ? 1 : -1];
+
 /* ------------------------------------------------------------------------- */
 /* helpers                                                                   */
 /* ------------------------------------------------------------------------- */
@@ -151,7 +156,9 @@ static bool topic_is_inbound(az_iot_gen2_twin_client* t, const char* topic)
 
 /* Find the pending slot whose correlation id matches the message's Correlation
  * Data. Returns the slot index or -1. */
-static int find_pending_by_corr(az_iot_gen2_twin_client* t, const az_iot_mqtt_message* msg)
+static int find_pending_by_correlation_id(
+    az_iot_gen2_twin_client* t,
+    const az_iot_mqtt_message* msg)
 {
   if (!msg->correlation_data || msg->correlation_data_len != AZ_IOT_CORRELATION_UUID_LEN)
   {
@@ -161,7 +168,9 @@ static int find_pending_by_corr(az_iot_gen2_twin_client* t, const az_iot_mqtt_me
   for (int i = 0; i < AZ_IOT_TWIN_MAX_PENDING; ++i)
   {
     if (TI(t).pending[i].in_use
-        && memcmp(TI(t).pending[i].corr, msg->correlation_data, AZ_IOT_CORRELATION_UUID_LEN) == 0)
+        && memcmp(
+               TI(t).pending[i].correlation_id, msg->correlation_data, AZ_IOT_CORRELATION_UUID_LEN)
+            == 0)
     {
       return i;
     }
@@ -946,7 +955,7 @@ static void on_twin_inbound(void* user_ctx, const az_iot_mqtt_message* msg)
 
   /* What is left answers a request the device made, so correlate it to the
    * slot that issued it. */
-  int idx = find_pending_by_corr(t, msg);
+  int idx = find_pending_by_correlation_id(t, msg);
   if (idx < 0)
   {
     return; /* stale, unknown or uncorrelated */
@@ -1117,7 +1126,7 @@ static az_iot_result publish_request(
     return r;
   }
 
-  az_iot_connection_client__gen_uuid(TI(twin).conn, TI(twin).pending[idx].corr);
+  az_iot_connection_client__gen_uuid(TI(twin).conn, TI(twin).pending[idx].correlation_id);
   TI(twin).pending[idx].in_use = true;
   TI(twin).pending[idx].kind = kind;
   /* Arm the defensive timeout: at QoS 0 nothing in the transport will ever
@@ -1136,7 +1145,7 @@ static az_iot_result publish_request(
   out.content_type = TWIN_CONTENT_TYPE;
   out.user_properties = &type_prop;
   out.user_properties_count = 1;
-  out.correlation_data = TI(twin).pending[idx].corr;
+  out.correlation_data = TI(twin).pending[idx].correlation_id;
   out.correlation_data_len = AZ_IOT_CORRELATION_UUID_LEN;
 
   r = az_iot_connection_client__publish(TI(twin).conn, &out, NULL, NULL);
