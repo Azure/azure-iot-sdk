@@ -231,7 +231,7 @@ int main(void)
     return 1;
   }
 
-  /* Connection client (DPS provisioning is internal when host==NULL) */
+  /* Connection client (DPS provisioning is internal) */
   az_iot_connection_client_options copts = az_iot_connection_client_options_default();
   sample_apply_dps_options(&copts, &state.config);
   copts.certificate_provider = &state.certs.base;
