@@ -318,7 +318,7 @@ returned to its pre-deployment state:
 1. Rollback MUST invoke `restore_fn` only for steps that had a successful
    `backup_fn` (steps whose Backup never ran MUST be skipped).
 2. If a `restore_fn` itself fails, the client MUST record facility `0x7`
-   (Restore) in the overall `extended_result_code` but MUST continue attempting
+   (Restore) in the overall `extended_result_codes` but MUST continue attempting
    to restore the remaining earlier steps (best-effort rollback).
 3. After rollback completes (or is best-effort exhausted), the client MUST report
    the terminal `Failed` state with the accumulated step results, then return to
