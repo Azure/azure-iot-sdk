@@ -5,8 +5,8 @@
 /* SPDX-License-Identifier: MIT */
 /* Azure Device Update (ADU) core state machine.
  *
- * Single-threaded, callback-driven. A desired-property patch carrying the
- * "deviceUpdate" component is parsed into current_request/current_manifest; the
+ * Single-threaded, callback-driven. The `updateMetadata` payload the channel
+ * delivers is parsed into current_request/current_manifest; the
  * do_work pump then advances the workflow one phase per invocation:
  *
  *   Idle -> ManifestReceived -> VerifyingManifest -> (accept/reject)
@@ -908,114 +908,6 @@ static az_iot_result parse_manifest(az_iot_adu_client_t* client)
   return AZ_IOT_OK;
 }
 
-/* Navigate a desired-property patch to deviceUpdate.service and parse the
- * service properties into `out_req`. Client-independent so both the managed
- * subscriber and the public az_iot_adu_parse_update_request() share it.
- * Returns AZ_IOT_OK (out_req filled), AZ_IOT_ERR_NOT_FOUND (no
- * deviceUpdate/service object — ignore), or AZ_IOT_ERR_INVALID_ARG (malformed).
- * out_req spans point into `patch`, which MUST outlive out_req. */
-static az_iot_result parse_service_request(
-    az_iot_adu_client* az,
-    az_span patch,
-    az_iot_adu_client_update_request* out_req)
-{
-  az_json_reader jr;
-  if (az_result_failed(az_json_reader_init(&jr, patch, NULL)))
-  {
-    return AZ_IOT_ERR_INVALID_ARG;
-  }
-
-  /* Navigate: { "deviceUpdate": { ... "service": {...} } }. The upstream
-   * parser must be positioned ON the "service" property name. */
-  if (az_result_failed(az_json_reader_next_token(&jr)))
-  {
-    return AZ_IOT_ERR_INVALID_ARG;
-  }
-  if (jr.token.kind != AZ_JSON_TOKEN_BEGIN_OBJECT)
-  {
-    return AZ_IOT_ERR_INVALID_ARG;
-  }
-
-  /* Find the "deviceUpdate" component value object. */
-  bool in_component = false;
-  while (az_result_succeeded(az_json_reader_next_token(&jr)))
-  {
-    if (jr.token.kind == AZ_JSON_TOKEN_END_OBJECT)
-    {
-      break;
-    }
-    if (jr.token.kind != AZ_JSON_TOKEN_PROPERTY_NAME)
-    {
-      return AZ_IOT_ERR_INVALID_ARG;
-    }
-
-    bool is_component = az_json_token_is_text_equal(
-        &jr.token, AZ_SPAN_FROM_STR(AZ_IOT_ADU_CLIENT_PROPERTIES_COMPONENT_NAME));
-    if (az_result_failed(az_json_reader_next_token(&jr)))
-    {
-      return AZ_IOT_ERR_INVALID_ARG;
-    }
-    if (is_component)
-    {
-      if (jr.token.kind != AZ_JSON_TOKEN_BEGIN_OBJECT)
-      {
-        return AZ_IOT_ERR_INVALID_ARG;
-      }
-      in_component = true;
-      break;
-    }
-    if (az_result_failed(az_json_reader_skip_children(&jr)))
-    {
-      return AZ_IOT_ERR_INVALID_ARG;
-    }
-  }
-  if (!in_component)
-  {
-    return AZ_IOT_ERR_NOT_FOUND;
-  }
-
-  /* Inside "deviceUpdate": locate the "service" property name (skipping
-   * "__t" and any agent-side properties). Stop ON the "service" prop name. */
-  bool on_service = false;
-  while (az_result_succeeded(az_json_reader_next_token(&jr)))
-  {
-    if (jr.token.kind == AZ_JSON_TOKEN_END_OBJECT)
-    {
-      break;
-    }
-    if (jr.token.kind != AZ_JSON_TOKEN_PROPERTY_NAME)
-    {
-      return AZ_IOT_ERR_INVALID_ARG;
-    }
-
-    if (az_json_token_is_text_equal(&jr.token, AZ_SPAN_FROM_STR("service")))
-    {
-      on_service = true;
-      break;
-    }
-    /* Skip this property's value. */
-    if (az_result_failed(az_json_reader_next_token(&jr)))
-    {
-      return AZ_IOT_ERR_INVALID_ARG;
-    }
-    if (az_result_failed(az_json_reader_skip_children(&jr)))
-    {
-      return AZ_IOT_ERR_INVALID_ARG;
-    }
-  }
-  if (!on_service)
-  {
-    return AZ_IOT_ERR_NOT_FOUND;
-  }
-
-  memset(out_req, 0, sizeof(*out_req));
-  if (az_result_failed(az_iot_adu_client_parse_service_properties(az, &jr, out_req)))
-  {
-    return AZ_IOT_ERR_INVALID_ARG;
-  }
-  return AZ_IOT_OK;
-}
-
 /**
  * @brief Parse an ADUv2 `updateMetadata` object into @p out_req.
  *
@@ -1081,10 +973,12 @@ static az_iot_result parse_update_metadata(az_span doc, az_iot_adu_client_update
       }
       out_req->update_manifest_signature = jr.token.slice;
     }
-    else if (
-        az_json_token_is_text_equal(&name, AZ_SPAN_FROM_STR("fileUrls"))
-        && jr.token.kind == AZ_JSON_TOKEN_BEGIN_OBJECT)
+    else if (az_json_token_is_text_equal(&name, AZ_SPAN_FROM_STR("fileUrls")))
     {
+      if (jr.token.kind != AZ_JSON_TOKEN_BEGIN_OBJECT)
+      {
+        return AZ_IOT_ERR_INVALID_ARG;
+      }
       while (az_result_succeeded(az_json_reader_next_token(&jr))
              && jr.token.kind != AZ_JSON_TOKEN_END_OBJECT)
       {
@@ -1130,37 +1024,13 @@ static az_iot_result parse_update_metadata(az_span doc, az_iot_adu_client_update
   return AZ_IOT_OK;
 }
 
-/**
- * @brief Parse an update payload in either shape the engine can be handed.
- *
- * The ADUv1 twin patch (`{"deviceUpdate":{"service":{...}}}`) is tried first;
- * without that envelope, the ADUv2 `updateMetadata` object the provisioning
- * channel delivers.
- *
- * @param az      Upstream parser state.
- * @param doc     The payload. MUST outlive @p out_req.
- * @param out_req Filled on success.
- * @return AZ_IOT_OK; AZ_IOT_ERR_NOT_FOUND when neither shape is present;
- * AZ_IOT_ERR_INVALID_ARG when malformed.
- */
-static az_iot_result parse_update_payload(
-    az_iot_adu_client* az,
-    az_span doc,
-    az_iot_adu_client_update_request* out_req)
-{
-  az_iot_result r = parse_service_request(az, doc, out_req);
-  return (r == AZ_IOT_ERR_NOT_FOUND) ? parse_update_metadata(doc, out_req) : r;
-}
+/* --- Duplicate detection -------------------------------------------------- */
 
-/* --- Retry / replacement / duplicate detection --------------------------- */
-
-/* Copy the deployment identity (workflow `id` + `retryTimestamp`) out of the
- * request into dedicated client buffers so it survives request_buffer being
- * overwritten by a later patch. `manifest_crc` fingerprints the deployment's raw
- * updateManifest so a same-id/same-retry patch carrying a different manifest is
- * still treated as a replacement. An identity that does not fit disables
- * de-duplication for that deployment (active_workflow_valid stays false), so it
- * is simply reprocessed on redelivery rather than skipped. */
+/* Copy the deployment identity (workflow `id`) out of the request so it
+ * survives request_buffer being overwritten by a later payload. `retry` and
+ * `manifest_crc` are kept only for the persisted snapshot. An id that does not
+ * fit disables de-duplication for that deployment (active_workflow_valid stays
+ * false), so it is reprocessed on redelivery rather than skipped. */
 static void set_active_workflow(
     az_iot_adu_client_t* client,
     az_span id,
@@ -1207,49 +1077,21 @@ static bool same_workflow_id(az_iot_adu_client_t* client, az_span id)
           ADU_I(client).active_workflow_id, (int32_t)ADU_I(client).active_workflow_id_len));
 }
 
-/* True if `manifest_crc` matches the active deployment's manifest fingerprint. */
-static bool same_manifest(az_iot_adu_client_t* client, uint32_t manifest_crc)
-{
-  if (!ADU_I(client).active_workflow_valid)
-  {
-    return false;
-  }
-  return ADU_I(client).active_manifest_crc == manifest_crc;
-}
-
-/* True if `retry` matches the active deployment's retryTimestamp (both empty
- * counts as a match — an unchanged/absent timestamp means "same deployment"). */
-static bool same_retry_timestamp(az_iot_adu_client_t* client, az_span retry)
-{
-  int32_t rt_len = az_span_size(retry);
-  size_t have = ADU_I(client).active_retry_timestamp_len;
-  if (rt_len <= 0 && have == 0)
-  {
-    return true;
-  }
-  if (rt_len <= 0 || have == 0)
-  {
-    return false;
-  }
-  return az_span_is_content_equal(
-      retry, az_span_create(ADU_I(client).active_retry_timestamp, (int32_t)have));
-}
-
-/* Update payload handler, fed by the ADU channel: an ADUv1 twin patch or an
- * ADUv2 updateMetadata object (see parse_update_payload()).
+/**
+ * @brief Stage and start the deployment in an `updateMetadata` payload.
  *
- * The patch buffer is only valid for the duration of this call, but the
- * workflow is processed asynchronously over many do_work() iterations and the
- * upstream parser stores spans that point into the payload. So we COPY the patch
- * into the client-owned request_buffer and parse from there; current_request /
- * current_manifest then reference stable storage.
+ * The payload is valid only for this call, and the parsed spans must outlive
+ * it, so it is copied into request_buffer and parsed from there.
  *
- * Before staging, a probe parse off the transient buffer reads the workflow
- * identity so a duplicate redelivery (same id + same/empty retryTimestamp) can
- * be ignored WITHOUT disturbing the bytes backing an in-progress deployment. A
- * new id is a replacement and a newer retryTimestamp is a retry; both (re)start
- * the workflow from scratch. */
-static void process_desired_patch(
+ * `workflowId` is the sole deployment identity: a payload with the active id
+ * is a redelivery and is ignored before request_buffer is touched, so the
+ * running workflow is undisturbed. A new id (re)starts the workflow.
+ *
+ * @param client    The client.
+ * @param patch     The payload.
+ * @param patch_len Length of @p patch.
+ */
+static void process_update_metadata(
     az_iot_adu_client_t* client,
     const uint8_t* patch,
     size_t patch_len)
@@ -1281,24 +1123,16 @@ static void process_desired_patch(
    * valid for the duration of this call, which is enough to decide what to do. */
   az_span transient = az_span_create((uint8_t*)(uintptr_t)patch, (int32_t)patch_len);
   az_iot_adu_client_update_request probe;
-  az_iot_result pr = parse_update_payload(&ADU_I(client).az, transient, &probe);
+  az_iot_result pr = parse_update_metadata(transient, &probe);
   if (pr != AZ_IOT_OK)
   {
     AZ_IOT_LOG_ERRORF("adu: update payload not understood (%d); ignored", (int)pr);
     return;
   }
 
-  /* Duplicate redelivery of the in-flight (or last) deployment: ignore it
-   * before touching request_buffer so the running workflow is undisturbed.
-   * Cancel is never a duplicate; it always supersedes. A matching id + retry
-   * timestamp but a changed manifest is a replacement, not a duplicate. */
-  bool is_cancel = (probe.workflow.action == AZ_IOT_ADU_CLIENT_SERVICE_ACTION_CANCEL);
-  uint32_t probe_manifest_crc = manifest_fingerprint(probe.update_manifest);
-  if (!is_cancel && same_workflow_id(client, probe.workflow.id)
-      && same_retry_timestamp(client, probe.workflow.retry_timestamp)
-      && same_manifest(client, probe_manifest_crc))
+  if (same_workflow_id(client, probe.workflow.id))
   {
-    return; /* same deployment, unchanged retryTimestamp + manifest: no-op */
+    return;
   }
 
   /* Stage the patch into client-owned storage and re-parse so current_request
@@ -1308,22 +1142,12 @@ static void process_desired_patch(
   az_span buf = az_span_create(ADU_I(client).request_buffer, (int32_t)patch_len);
 
   az_iot_adu_client_update_request req;
-  if (parse_update_payload(&ADU_I(client).az, buf, &req) != AZ_IOT_OK)
+  if (parse_update_metadata(buf, &req) != AZ_IOT_OK)
   {
     ADU_I(client).request_len = 0;
     return;
   }
 
-  /* A Cancel action supersedes any in-progress workflow. */
-  if (req.workflow.action == AZ_IOT_ADU_CLIENT_SERVICE_ACTION_CANCEL)
-  {
-    ADU_I(client).cancel_requested = true;
-    ADU_I(client).current_request = req;
-    ADU_I(client).have_request = true;
-    return;
-  }
-
-  /* Retry (same id, newer retryTimestamp) or replacement (new id): (re)start. */
   ADU_I(client).current_request = req;
   ADU_I(client).have_request = true;
   ADU_I(client).cancel_requested = false;
@@ -1354,7 +1178,7 @@ static void on_channel_update(
   {
     return;
   }
-  process_desired_patch(client, update_payload, update_payload_len);
+  process_update_metadata(client, update_payload, update_payload_len);
 }
 
 /* Deliver an event to every observer.
@@ -1830,8 +1654,8 @@ void az_iot_adu_client_destroy(az_iot_adu_client_t* client)
  *   [T+24] step_results_count * { i32 result_code, i32 extended_result_code }
  *   [end] u32 crc32 (over bytes [0 .. end))
  *
- * Persisting retryTimestamp + manifest fingerprint keeps duplicate / retry /
- * replacement detection correct across a reboot; persisting install_result keeps
+ * retryTimestamp and manifest fingerprint are kept for snapshot format
+ * compatibility; duplicate detection uses the workflow id alone. Persisting install_result keeps
  * already-completed step results from a multi-step deployment from being lost
  * when a mid-deployment reboot resumes.  */
 #define AZ_IOT_ADU_PERSIST_MAGIC0 'A'
@@ -2124,11 +1948,8 @@ az_iot_result az_iot_adu_client_resume(az_iot_adu_client_t* client)
     }
   }
 
-  /* Re-establish the active deployment identity so a redelivery of the same
-   * deployment after the reboot is recognized as a duplicate and does NOT
-   * restart the workflow we just resumed. The retryTimestamp and manifest
-   * fingerprint are part of the snapshot, so duplicate vs. retry vs.
-   * replacement detection stays correct across the reboot. */
+  /* Re-establish the active workflow id so a redelivery after the reboot is
+   * recognized as a duplicate and does NOT restart the resumed workflow. */
   set_active_workflow(client, ADU_I(client).current_request.workflow.id, retry_ts, manifest_crc);
   return AZ_IOT_OK;
 }
@@ -2628,17 +2449,10 @@ az_iot_result az_iot_adu_parse_update_request(
   }
 
   az_iot_adu_client_update_request req;
-  az_iot_result r = parse_update_payload(&az, request_json, &req);
+  az_iot_result r = parse_update_metadata(request_json, &req);
   if (r != AZ_IOT_OK)
   {
-    return r; /* NOT_FOUND (neither shape) or INVALID_ARG */
-  }
-
-  /* A Cancel request carries no manifest to verify. */
-  if (req.workflow.action == AZ_IOT_ADU_CLIENT_SERVICE_ACTION_CANCEL)
-  {
-    *out_request = req;
-    return AZ_IOT_OK;
+    return r;
   }
 
   /* Unescape the manifest in place (the unescaped form is never longer) and

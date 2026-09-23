@@ -1173,8 +1173,8 @@ path.
  *     Mutated in place (manifest string unescaped); pass a writable buffer.
  *   crypto / root_keys: same trust inputs as az_iot_adu_client_initialize().
  *
- * Returns AZ_IOT_OK (verified parse, or a Cancel request), AZ_IOT_ERR_NOT_FOUND
- * (no deviceUpdate/service component), AZ_IOT_ERR_INVALID_ARG (bad args or
+ * Returns AZ_IOT_OK (verified parse), AZ_IOT_ERR_NOT_FOUND
+ * (no workflowId), AZ_IOT_ERR_INVALID_ARG (bad args or
  * malformed JSON), or AZ_IOT_ERR_AUTH (signature/trust verification failed).
  */
 az_iot_result az_iot_adu_parse_update_request(
