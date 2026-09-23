@@ -166,6 +166,62 @@ static void pingresp_is_a_bare_fixed_header(void** state)
   assert_packet(&p, expected, sizeof(expected));
 }
 
+/* The v5 PUBLISH builder, byte for byte. The property section is where an
+ * inbound-property test gets its fixture, so its layout is the assertion:
+ * identifier, then each string as a two-byte length followed by the bytes, with
+ * no NUL anywhere -- which is exactly what a client must not mistake for a C
+ * string. */
+static void publish_v5_lays_out_topic_properties_and_payload(void** state)
+{
+  (void)state;
+  static const uint8_t body[] = { 'h', 'i' };
+  const az_iot_test_mqtt_user_property props[] = { { "k", "v" } };
+  static const uint8_t expected[] = {
+    0x30, 0x13, /* PUBLISH QoS 0, remaining length 19 */
+    0x00, 0x02, 't',  'p', /* topic "tp" */
+    0x0C, /* property length 12 */
+    0x03, 0x00, 0x02, 'c', 't', /* content type "ct" */
+    0x26, 0x00, 0x01, 'k', 0x00, 0x01, 'v', /* user property k=v */
+    'h',  'i' /* payload */
+  };
+  az_iot_test_mqtt_packet p = az_iot_test_mqtt_publish_v5("tp", body, sizeof(body), props, 1, "ct");
+  assert_packet(&p, expected, sizeof(expected));
+  /* QoS 0 carries no packet id, so there is nothing for the proxy to echo. */
+  assert_int_equal(p.packet_id_offset, 0);
+  assert_int_equal(p.echo_packet_id, 0);
+}
+
+/* A zero-length key or value is legal MQTT and must be expressible, or the
+ * empty-property case has no fixture to be driven with. NULL means the same
+ * thing, so a caller does not have to spell "" to omit half a pair. */
+static void publish_v5_emits_zero_length_keys_and_values(void** state)
+{
+  (void)state;
+  const az_iot_test_mqtt_user_property props[] = { { "", NULL } };
+  static const uint8_t expected[]
+      = { 0x30, 0x0A, 0x00, 0x02, 't', 'p', 0x05, 0x26, 0x00, 0x00, 0x00, 0x00 };
+  az_iot_test_mqtt_packet p = az_iot_test_mqtt_publish_v5("tp", NULL, 0, props, 1, NULL);
+  assert_packet(&p, expected, sizeof(expected));
+}
+
+/* Too big to express comes back empty rather than truncated: the proxy rejects
+ * a zero-length injection, so the test fails where it was set up instead of
+ * asserting against half a packet. */
+static void publish_v5_refuses_a_packet_that_does_not_fit(void** state)
+{
+  (void)state;
+  const az_iot_test_mqtt_user_property props[] = {
+    { "0123456789012345678901234567890123456789", "0123456789012345678901234567890123456789" },
+    { "0123456789012345678901234567890123456789", "0123456789012345678901234567890123456789" }
+  };
+  az_iot_test_mqtt_packet p = az_iot_test_mqtt_publish_v5("tp", NULL, 0, props, 2, NULL);
+  assert_int_equal(p.len, 0);
+
+  /* And a missing topic is not a packet at all. */
+  az_iot_test_mqtt_packet none = az_iot_test_mqtt_publish_v5(NULL, NULL, 0, NULL, 0, NULL);
+  assert_int_equal(none.len, 0);
+}
+
 /* Setting an id on purpose must also stop the proxy echoing the real one over
  * it, or "an ack for a packet nobody sent" quietly becomes a valid ack. */
 static void pinning_a_packet_id_clears_the_echo(void** state)
@@ -246,6 +302,9 @@ int main(void)
     cmocka_unit_test(a_refusal_a_version_cannot_express_yields_nothing),
     cmocka_unit_test(server_disconnect_carries_the_v5_reason),
     cmocka_unit_test(pingresp_is_a_bare_fixed_header),
+    cmocka_unit_test(publish_v5_lays_out_topic_properties_and_payload),
+    cmocka_unit_test(publish_v5_emits_zero_length_keys_and_values),
+    cmocka_unit_test(publish_v5_refuses_a_packet_that_does_not_fit),
     cmocka_unit_test(pinning_a_packet_id_clears_the_echo),
     cmocka_unit_test(pinning_a_packet_id_on_a_packet_without_one_is_ignored),
     cmocka_unit_test(a_packet_id_offset_that_does_not_fit_is_refused),

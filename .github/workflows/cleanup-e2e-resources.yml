@@ -60,6 +60,15 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
+      # Checked out (rather than downloaded at run time) so the cleanup module
+      # is always the commit this ref is pinned to.
+      - name: Checkout the shared e2e framework
+        uses: actions/checkout@v5
+        with:
+          repository: Azure/iot-sdks-e2e-fx
+          ref: v1
+          path: iot-sdks-e2e-fx
+
       - name: Delete leaked e2e resource groups
         uses: azure/powershell@v3
         env:
@@ -68,11 +77,11 @@ jobs:
           # supply the defaults on the `schedule` trigger, where `inputs` is empty.
           RG_PREFIXES: ${{ inputs.prefixes || 'CSDKE2E,DotnetE2ETestPipeline-' }}
           MINIMUM_AGE_HOURS: ${{ inputs.minimum-age-hours || '6' }}
+          AZ_IOT_MODULE: ${{ github.workspace }}/iot-sdks-e2e-fx/scripts/AzIotSdkTest/AzIotSdkTest.psd1
         with:
           azPSVersion: "latest"
           inlineScript: |
-            Invoke-WebRequest -Uri "https://raw.githubusercontent.com/Azure/iot-sdks-e2e-fx/refs/heads/master/scripts/Azure.Iot.Sdk.Test.psm1" -OutFile "./Azure.Iot.Sdk.Test.psm1"
-            Import-Module "./Azure.Iot.Sdk.Test.psm1"
+            Import-Module $env:AZ_IOT_MODULE
 
             $ageHours = 0
             if (-not [int]::TryParse($env:MINIMUM_AGE_HOURS, [ref]$ageHours) -or $ageHours -lt 1) {

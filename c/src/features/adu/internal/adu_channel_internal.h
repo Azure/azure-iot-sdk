@@ -75,12 +75,24 @@ extern "C"
    * @param result     AZ_IOT_OK when the service accepted it.
    * @param action     How to proceed when @p result is not AZ_IOT_OK;
    *                   AZ_IOT_ADU_ERROR_ACTION_NONE on success.
+   * @param service_error What the service said, when it said anything. NULL
+   *                      when the verdict did not come from a service
+   *                      response. Valid only for the duration of the call.
    * @param engine_ctx The context the engine passed to `open()`.
+   */
+  /**
+   * @brief A channel's verdict on an operation it accepted earlier.
+   *
+   * @p service_error is NEVER NULL, so neither the engine nor anything it
+   * feeds has to check. When the service said nothing, it carries a zero code,
+   * EMPTY (never NULL) strings and no delay -- "nothing to report" expressed as
+   * a value rather than as an absent pointer.
    */
   typedef void (*az_iot_adu_channel_result_cb)(
       az_iot_adu_operation operation,
       az_iot_result result,
       az_iot_adu_error_action action,
+      const az_iot_adu_service_error* service_error,
       void* engine_ctx);
 
   /**
@@ -111,14 +123,23 @@ extern "C"
     void (*close)(void* ctx);
 
     /**
-     * @brief Ask the channel to check for an update now.
+     * @brief Ask the channel to check for an update now, on a named route.
      *
      * A pull channel performs its fetch. A push channel may treat this as a
      * proactive get. The channel reports the outcome by invoking the update
      * callback; "no update available" is a success and simply means the
      * callback is not invoked.
+     *
+     * @param operation Which fetch route to use: AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE
+     *                  or AZ_IOT_ADU_OP_GET_UPDATE. The caller chooses; the
+     *                  channel does not infer it, because the only state that
+     *                  could distinguish the two lives in the application (it
+     *                  persists its provisioning result across boots) and the
+     *                  service cannot be probed for it -- a device with no
+     *                  device record and a malformed request are both rejected
+     *                  with the same error code.
      */
-    az_iot_result (*request_update)(void* ctx);
+    az_iot_result (*request_update)(void* ctx, az_iot_adu_operation operation);
 
     /**
      * @brief Deliver a structured status report.
@@ -144,6 +165,7 @@ extern "C"
      *        with its own asynchronous work has somewhere to run. May be NULL.
      */
     az_iot_result (*do_work)(void* ctx);
+
   } az_iot_adu_channel_vtable;
 
   /** @brief A channel instance: its vtable plus its own context. */
@@ -168,6 +190,29 @@ extern "C"
 /* The service accepts a bounded number of compatibility properties. */
 #ifndef AZ_IOT_ADU_CHANNEL_MAX_COMPAT
 #define AZ_IOT_ADU_CHANNEL_MAX_COMPAT 5
+#endif
+
+/* How many times an operation is RETRIED after losing the provisioning session
+ * underneath it, before it is abandoned. N retries, so the operation is given
+ * up on the (N+1)th consecutive loss.
+ *
+ * The retry reopens a SESSION, and what usually ended the last one was the
+ * REGISTRATION failing -- which a new session cannot fix. Unbounded, that is a
+ * reconnect loop for the life of the device; bounded, the application is told
+ * the operation was abandoned.
+ *
+ * The BOUND only. Spacing the attempts out belongs to the connection client,
+ * which already paces its own provisioning-session attempts under the
+ * reconnection policy, with jitter. */
+#ifndef AZ_IOT_ADU_CHANNEL_MAX_SESSION_RETRIES
+#define AZ_IOT_ADU_CHANNEL_MAX_SESSION_RETRIES 4
+#endif
+
+/* The attempt counter is a uint8_t and saturates at 255, so the bound must be
+ * strictly below that or the "> bound" test can never be true and the cap
+ * silently disappears. Fail the build instead. */
+#if AZ_IOT_ADU_CHANNEL_MAX_SESSION_RETRIES < 1 || AZ_IOT_ADU_CHANNEL_MAX_SESSION_RETRIES > 254
+#error "AZ_IOT_ADU_CHANNEL_MAX_SESSION_RETRIES must be between 1 and 254"
 #endif
 
   typedef struct az_iot_adu_channel_dps
@@ -230,6 +275,29 @@ extern "C"
      * to know a session is actually wanted -- opening one speculatively would
      * just linger and close again. */
     bool wants_session;
+
+    /* Set once a dps_session_ensure() failure has been logged, so a refusal
+     * that persists does not emit one line per pump tick. Cleared as soon as
+     * the call succeeds or reports BUSY, so a later failure is reported as a
+     * new episode. */
+    bool ensure_error_logged;
+
+    /* When the retry-after the service put on a response topic expires: a
+     * monotonic instant, not a duration, which is why it is named for the
+     * deadline and not for the seconds it was derived from (see
+     * dps_hold_deadline_ms for the same distinction). 0 means no delay is in
+     * force. Honouring it is the difference between backing off on the
+     * schedule the service asked for and hammering it on our own. */
+    uint64_t retry_after_deadline_ms;
+
+    /* Consecutive session losses that cost an operation its answer.
+     *
+     * Cleared by any answered operation -- an answer is proof the session works
+     * -- and by a binding ending. Distinct from retry_after_deadline_ms, which
+     * carries the delay the SERVICE asked for and must be honoured exactly as
+     * given; this is only a count, because the spacing between attempts belongs
+     * to the connection client's reconnection policy. */
+    uint8_t session_loss_attempts;
 
     /* Whether the pre-registration exchange has already run on the CURRENT
      * session. Distinct from wants_hold: it stops the same session being held

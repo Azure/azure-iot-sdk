@@ -182,6 +182,14 @@ typedef struct
 
 static void on_conn_state(const az_iot_connection_state_event* event, void* user_ctx)
 {
+  /* Hub lifecycle only: the provisioning session reports on its own scope,
+   * and storing its state here would overwrite the hub state this code acts
+   * on. */
+  if (event->scope != AZ_IOT_CONN_SCOPE_HUB)
+  {
+    return;
+  }
+
   user_context* ctx = (user_context*)user_ctx;
   ctx->conn_state = event->state;
   ctx->conn_reason = event->reason;
@@ -238,7 +246,7 @@ int main(void)
   {
     goto cleanup;
   }
-  az_iot_connection_client_set_state_callback(&connection_client, on_conn_state, &user_ctx);
+  az_iot_connection_client_add_state_observer(&connection_client, on_conn_state, &user_ctx);
 
   /* One adapter covers both legs here: DPS speaks v3.1.1 and so does Classic. */
   if (az_iot_connection_client_register_mqtt_factory(
