@@ -211,8 +211,7 @@ static int setup_ex(void** state, bool push_desired)
 
   assert_int_equal(az_iot_gen2_twin_client_init(&fx->twin, &fx->conn), AZ_IOT_OK);
   assert_int_equal(
-      az_iot_gen2_twin_client_set_encode_buffer(
-          &fx->twin, fx->encode_buffer, sizeof(fx->encode_buffer)),
+      az_iot_gen2_twin_client_set_encode_buffer(&fx->twin, AZ_SPAN_FROM_BUFFER(fx->encode_buffer)),
       AZ_IOT_OK);
 
   *state = fx;
@@ -1027,7 +1026,7 @@ static void patch_without_an_encode_buffer_reports_no_space(void** state)
   fixture* fx = (fixture*)*state;
   open_to_connected(fx);
 
-  assert_int_equal(az_iot_gen2_twin_client_set_encode_buffer(&fx->twin, NULL, 0), AZ_IOT_OK);
+  assert_int_equal(az_iot_gen2_twin_client_set_encode_buffer(&fx->twin, AZ_SPAN_EMPTY), AZ_IOT_OK);
 
   patch_record rec = { 0 };
   static const uint8_t patch[] = "{\"x\":1}";
@@ -1046,7 +1045,7 @@ static void a_patch_larger_than_the_encode_buffer_is_refused(void** state)
 
   uint8_t small[AZ_IOT_GEN2_TWIN_ENCODE_OVERHEAD];
   assert_int_equal(
-      az_iot_gen2_twin_client_set_encode_buffer(&fx->twin, small, sizeof(small)), AZ_IOT_OK);
+      az_iot_gen2_twin_client_set_encode_buffer(&fx->twin, AZ_SPAN_FROM_BUFFER(small)), AZ_IOT_OK);
 
   uint8_t big[AZ_IOT_GEN2_TWIN_ENCODE_OVERHEAD * 2];
   memset(big, 'x', sizeof(big));
@@ -1060,8 +1059,7 @@ static void a_patch_larger_than_the_encode_buffer_is_refused(void** state)
 
   /* The slots were released, so a patch that does fit still goes out. */
   assert_int_equal(
-      az_iot_gen2_twin_client_set_encode_buffer(
-          &fx->twin, fx->encode_buffer, sizeof(fx->encode_buffer)),
+      az_iot_gen2_twin_client_set_encode_buffer(&fx->twin, AZ_SPAN_FROM_BUFFER(fx->encode_buffer)),
       AZ_IOT_OK);
   assert_int_equal(
       az_iot_gen2_twin_client_patch_reported(&fx->twin, big, sizeof(big), on_patch, &rec),
@@ -1076,9 +1074,10 @@ static void set_encode_buffer_accepts_exactly_the_documented_overhead(void** sta
 
   uint8_t buf[AZ_IOT_GEN2_TWIN_ENCODE_OVERHEAD];
   assert_int_equal(
-      az_iot_gen2_twin_client_set_encode_buffer(&fx->twin, buf, sizeof(buf)), AZ_IOT_OK);
+      az_iot_gen2_twin_client_set_encode_buffer(&fx->twin, AZ_SPAN_FROM_BUFFER(buf)), AZ_IOT_OK);
   assert_int_equal(
-      az_iot_gen2_twin_client_set_encode_buffer(&fx->twin, buf, sizeof(buf) - 1),
+      az_iot_gen2_twin_client_set_encode_buffer(
+          &fx->twin, az_span_create(buf, (int32_t)sizeof(buf) - 1)),
       AZ_IOT_ERR_NOT_ENOUGH_SPACE);
 }
 
@@ -1087,7 +1086,8 @@ static void set_encode_buffer_rejects_a_null_client(void** state)
   (void)state;
   uint8_t buf[64];
   assert_int_equal(
-      az_iot_gen2_twin_client_set_encode_buffer(NULL, buf, sizeof(buf)), AZ_IOT_ERR_INVALID_ARG);
+      az_iot_gen2_twin_client_set_encode_buffer(NULL, AZ_SPAN_FROM_BUFFER(buf)),
+      AZ_IOT_ERR_INVALID_ARG);
 }
 
 static void patch_rejects_a_null_client(void** state)
@@ -1505,8 +1505,7 @@ static void init_on_a_live_connection_adopts_the_birth_ack(void** state)
 
   assert_int_equal(az_iot_gen2_twin_client_init(&fx->twin, &fx->conn), AZ_IOT_OK);
   assert_int_equal(
-      az_iot_gen2_twin_client_set_encode_buffer(
-          &fx->twin, fx->encode_buffer, sizeof(fx->encode_buffer)),
+      az_iot_gen2_twin_client_set_encode_buffer(&fx->twin, AZ_SPAN_FROM_BUFFER(fx->encode_buffer)),
       AZ_IOT_OK);
 
   desired_record rec = { 0 };
@@ -1522,6 +1521,65 @@ static void init_on_a_live_connection_adopts_the_birth_ack(void** state)
   const az_iot_mock_call* pub = find_publish(fx->mock, TWIN_SRV_TOPIC);
   assert_int_equal(pub->payload_len, sizeof(expect));
   assert_memory_equal(pub->payload, expect, sizeof(expect));
+}
+
+/* A birth-ack below the delivered version means the twin was replaced; the
+ * handler must get a snapshot before any patch. */
+static void a_lower_birth_ack_version_requires_a_snapshot(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  desired_record rec = { 0 };
+  set_desired(fx, &rec);
+  inject_desired(fx, 3, "{}"); /* gap: GET */
+  answer_last_get(fx, 7, "{\"s\":7}");
+  assert_int_equal(rec.version, 7);
+
+  reconnect_with_versions(fx, 2, 0);
+  const uint8_t expect[] = { 0x08, 0x01 }; /* DESIRED, no filter */
+  assert_memory_equal(last_get(fx)->payload, expect, sizeof(expect));
+
+  inject_desired(fx, 3, "{\"p\":3}"); /* not a PATCH on the old lineage */
+  assert_int_equal(rec.version, 7);
+
+  answer_last_get(fx, 2, "{\"s\":2}");
+  assert_int_equal(rec.kind, AZ_IOT_GEN2_TWIN_DESIRED_SNAPSHOT);
+  assert_int_equal(rec.version, 2);
+
+  inject_desired(fx, 3, "{\"p\":3}");
+  assert_int_equal(rec.kind, AZ_IOT_GEN2_TWIN_DESIRED_PATCH);
+  assert_int_equal(rec.version, 3);
+}
+
+/* A pushed reported section without a payload still reports its version. */
+static void a_version_only_reported_push_reaches_the_handler(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  reported_record rep = { 0 };
+  assert_int_equal(
+      az_iot_gen2_twin_client_set_reported_handler(&fx->twin, on_reported, &rep), AZ_IOT_OK);
+
+  const uint8_t body[] = { 0x12, 0x02, 0x08, 0x15 }; /* TwinPush { 2: Section{21} } */
+  inject_twin(fx, "twin-push:1", fx->nonce, body, sizeof(body));
+  assert_true(rep.fired);
+  assert_int_equal(rep.section.version, 21);
+  assert_false(rep.section.has_payload);
+}
+
+/* The largest TwinGet body fits: BOTH plus two ten-byte filters. */
+static void the_largest_get_body_fits(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  az_iot_gen2_twin_get_options opts = az_iot_gen2_twin_get_options_default();
+  opts.if_not_match_desired = UINT64_MAX;
+  opts.if_not_match_reported = UINT64_MAX;
+  get_record rec = { 0 };
+  assert_int_equal(
+      az_iot_gen2_twin_client_get_with_options(&fx->twin, &opts, on_get, &rec), AZ_IOT_OK);
+  assert_int_equal(last_get(fx)->payload_len, 24);
 }
 
 /* A refused snapshot publish leaves nothing in flight, so the next gap retries. */
@@ -2268,6 +2326,10 @@ int main(void)
         a_patch_after_the_maximum_version_is_not_in_order, setup, teardown),
     cmocka_unit_test_setup_teardown(
         init_on_a_live_connection_adopts_the_birth_ack, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_lower_birth_ack_version_requires_a_snapshot, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_version_only_reported_push_reaches_the_handler, setup, teardown),
+    cmocka_unit_test_setup_teardown(the_largest_get_body_fits, setup, teardown),
     cmocka_unit_test_setup_teardown(a_refused_snapshot_publish_does_not_wedge, setup, teardown),
     cmocka_unit_test_setup_teardown(a_replacement_handler_starts_from_a_snapshot, setup, teardown),
     cmocka_unit_test_setup_teardown(

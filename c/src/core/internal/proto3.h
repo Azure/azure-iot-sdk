@@ -40,6 +40,9 @@
 /* protobuf caps field numbers at 2^29-1; 0 is not a valid field number. */
 #define AZ_IOT_PROTO3_MAX_FIELD_NUMBER 536870911u
 
+/** Most bytes a varint can take: a uint64 needs ten 7-bit groups. */
+#define AZ_IOT_PROTO3_VARINT_MAX_BYTES 10u
+
 #define AZ_IOT_PROTO3_VARINT_MAX_SHIFT 63u
 #define AZ_IOT_PROTO3_VARINT_TOP_BIT_MAX 1u
 

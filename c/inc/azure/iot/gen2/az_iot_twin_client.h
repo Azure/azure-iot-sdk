@@ -38,28 +38,30 @@ extern "C"
   /**
    * @brief One twin section and the service's version of it.
    *
-   * @p payload is NULL when the service sent none: not requested, or the GET's
+   * `payload` is NULL when the service sent none: not requested, or the GET's
    * if-not-match matched. Valid only during the callback.
    */
   typedef struct az_iot_gen2_twin_section
   {
-    uint64_t version; /**< Service version; 0 means none. */
-    const uint8_t* payload; /**< Opaque section content, or NULL. */
-    size_t payload_len; /**< Length of @p payload. */
+    /** Service version; 0 means none. */
+    uint64_t version;
+    /** Opaque section content, or NULL. */
+    const uint8_t* payload;
+    size_t payload_len;
   } az_iot_gen2_twin_section;
 
   /** @brief Both twin sections, as returned by a GET. */
   typedef struct az_iot_gen2_twin_state
   {
-    az_iot_gen2_twin_section desired; /**< Desired section. */
-    az_iot_gen2_twin_section reported; /**< Reported section. */
+    az_iot_gen2_twin_section desired;
+    az_iot_gen2_twin_section reported;
   } az_iot_gen2_twin_state;
 
   /** @brief The service's verdict on a reported patch. */
   typedef enum az_iot_gen2_twin_patch_status
   {
     AZ_IOT_GEN2_TWIN_PATCH_UNSPECIFIED = 0,
-    AZ_IOT_GEN2_TWIN_PATCH_OK = 1, /**< Applied. */
+    AZ_IOT_GEN2_TWIN_PATCH_OK = 1,
     /** `if_match` was not the current version; another writer was first. */
     AZ_IOT_GEN2_TWIN_PATCH_VERSION_MISMATCH = 2,
     AZ_IOT_GEN2_TWIN_PATCH_PAYLOAD_INVALID = 3,
@@ -70,7 +72,7 @@ extern "C"
   /** @brief Outcome of a reported patch. */
   typedef struct az_iot_gen2_twin_patch_result
   {
-    az_iot_gen2_twin_patch_status status; /**< Service verdict. */
+    az_iot_gen2_twin_patch_status status;
     /** New reported version on OK; the unchanged current one otherwise. */
     uint64_t version;
   } az_iot_gen2_twin_patch_result;
@@ -95,7 +97,7 @@ extern "C"
   /** @brief GET options. Initialize with az_iot_gen2_twin_get_options_default(). */
   typedef struct az_iot_gen2_twin_get_options
   {
-    az_iot_gen2_twin_sections sections; /**< Sections to return. */
+    az_iot_gen2_twin_sections sections;
     /** Omit the desired payload if the service version equals this; 0 = no filter. */
     uint64_t if_not_match_desired;
     /** Omit the reported payload if the service version equals this; 0 = no filter. */
@@ -179,10 +181,12 @@ extern "C"
       uint64_t desired_properties_service_version;
       /* Version of the last desired delivery to the handler; 0 before the first. */
       uint64_t desired_properties_device_version;
+      /* The handler's state predates the service's current lineage (the
+       * birth-ack reported a lower version); only a snapshot may follow. */
+      bool desired_snapshot_required;
       /* Service's reported version; the default `if_match`. */
       uint64_t reported_properties_service_version;
-      uint8_t* encode_buffer;
-      size_t encode_buffer_len;
+      az_span encode_buffer;
       uint32_t request_timeout_ms;
       /* The SDK's own desired-snapshot GET, kept out of `pending`. */
       struct
@@ -297,13 +301,13 @@ extern "C"
    *
    * Borrowed; must outlive the client. Size it to the largest patch plus
    * AZ_IOT_GEN2_TWIN_ENCODE_OVERHEAD. Free for reuse once the patch call returns.
+   * AZ_SPAN_EMPTY removes it.
    *
    * @return AZ_IOT_ERR_NOT_ENOUGH_SPACE when smaller than the framing alone.
    */
   az_iot_result az_iot_gen2_twin_client_set_encode_buffer(
       az_iot_gen2_twin_client* twin,
-      uint8_t* buffer,
-      size_t buffer_len);
+      az_span buffer);
 
   /**
    * @brief How long a request waits for its response before completing with

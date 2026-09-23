@@ -66,8 +66,9 @@
 #define TWIN_F_PATCH_RESP_RESULT 1u
 #define TWIN_F_PATCH_RESP_VERSION 2u
 
-/* Largest TwinGet body: the selector and two 10-byte-varint filters. */
-#define TWIN_GET_BODY_MAX 32
+/* Largest TwinGet body: three varint fields, each a one-byte key (field <= 15)
+ * and a value of at most AZ_IOT_PROTO3_VARINT_MAX_BYTES. */
+#define TWIN_GET_BODY_MAX (3u * (1u + AZ_IOT_PROTO3_VARINT_MAX_BYTES))
 
 #define TWIN_PENDING_NONE 0
 #define TWIN_PENDING_GET 1
@@ -259,7 +260,8 @@ static bool encode_get_body(
 static void request_snapshot_if_behind(az_iot_gen2_twin_client* t)
 {
   if (!TI(t).desired_handler || TI(t).snapshot.in_flight
-      || TI(t).desired_properties_service_version <= TI(t).desired_properties_device_version
+      || (!TI(t).desired_snapshot_required
+          && TI(t).desired_properties_service_version <= TI(t).desired_properties_device_version)
       || !az_iot_connection_client__is_connected(TI(t).conn))
   {
     return;
@@ -267,7 +269,8 @@ static void request_snapshot_if_behind(az_iot_gen2_twin_client* t)
 
   az_iot_gen2_twin_get_options opts = az_iot_gen2_twin_get_options_default();
   opts.sections = AZ_IOT_GEN2_TWIN_SECTIONS_DESIRED;
-  opts.if_not_match_desired = TI(t).desired_properties_device_version;
+  opts.if_not_match_desired
+      = TI(t).desired_snapshot_required ? 0u : TI(t).desired_properties_device_version;
 
   uint8_t body[TWIN_GET_BODY_MAX];
   size_t body_len = 0;
@@ -336,11 +339,13 @@ static void deliver_snapshot(az_iot_gen2_twin_client* t, const az_iot_gen2_twin_
 {
   note_desired_service_version(t, section->version);
   if (!TI(t).desired_handler || !section->payload
-      || section->version <= TI(t).desired_properties_device_version)
+      || (!TI(t).desired_snapshot_required
+          && section->version <= TI(t).desired_properties_device_version))
   {
     return;
   }
   TI(t).desired_properties_device_version = section->version;
+  TI(t).desired_snapshot_required = false;
   TI(t).desired_handler(
       AZ_IOT_GEN2_TWIN_DESIRED_SNAPSHOT,
       section->version,
@@ -446,6 +451,7 @@ static void on_twin_push(az_iot_gen2_twin_client* t, const az_iot_mqtt_message* 
   size_t len = msg->payload_len;
   size_t pos = 0;
   bool ok = true;
+  bool reported_present = false;
   while (ok && buf && pos < len)
   {
     uint32_t field = 0;
@@ -460,6 +466,7 @@ static void on_twin_push(az_iot_gen2_twin_client* t, const az_iot_mqtt_message* 
     {
       const uint8_t* sec = NULL;
       size_t sec_len = 0;
+      reported_present |= (field == TWIN_F_PUSH_REPORTED);
       ok = az_iot_proto3_read_bytes(buf, len, &pos, &sec, &sec_len)
           && decode_section(
                sec, sec_len, (field == TWIN_F_PUSH_DESIRED) ? &twin.desired : &twin.reported);
@@ -479,7 +486,7 @@ static void on_twin_push(az_iot_gen2_twin_client* t, const az_iot_mqtt_message* 
   {
     TI(t).reported_properties_service_version = twin.reported.version;
   }
-  if (twin.reported.payload && TI(t).reported_handler)
+  if (reported_present && TI(t).reported_handler)
   {
     TI(t).reported_handler(&twin.reported, TI(t).reported_handler_ctx);
   }
@@ -532,7 +539,8 @@ static void on_desired_patch(az_iot_gen2_twin_client* t, const az_iot_mqtt_messa
   }
 
   note_desired_service_version(t, version);
-  if (TI(t).desired_handler && has_payload && version > TI(t).desired_properties_device_version
+  if (TI(t).desired_handler && has_payload && !TI(t).desired_snapshot_required
+      && version > TI(t).desired_properties_device_version
       && version - TI(t).desired_properties_device_version == 1u)
   {
     TI(t).desired_properties_device_version = version;
@@ -697,8 +705,14 @@ static void on_hub_connected(az_iot_gen2_twin_client* t)
   {
     return;
   }
+  /* Each birth-ack is the session baseline. A desired version below what the
+   * handler holds means the twin was replaced: patches cannot follow it. */
   TI(t).reported_properties_service_version = reported;
-  note_desired_service_version(t, desired);
+  if (desired < TI(t).desired_properties_device_version)
+  {
+    TI(t).desired_snapshot_required = true;
+  }
+  TI(t).desired_properties_service_version = desired;
   if (!az_iot_connection_client__twin_push_desired(TI(t).conn))
   {
     request_snapshot_if_behind(t);
@@ -913,7 +927,9 @@ az_iot_result az_iot_gen2_twin_client_patch_reported_if_match(
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
-  if (!TI(twin).encode_buffer)
+  uint8_t* buf = az_span_ptr(TI(twin).encode_buffer);
+  size_t cap = (size_t)az_span_size(TI(twin).encode_buffer);
+  if (cap == 0)
   {
     AZ_IOT_LOG_ERROR("gen2_twin: refusing a patch -- no encode buffer; call "
                      "az_iot_gen2_twin_client_set_encode_buffer()");
@@ -923,19 +939,9 @@ az_iot_result az_iot_gen2_twin_client_patch_reported_if_match(
   /* ReportedPatch { 1 if_match, 2 payload }; proto3 omits a zero if_match. */
   size_t pos = 0;
   if ((if_match
-       && !az_iot_proto3_write_varint_field(
-           TI(twin).encode_buffer,
-           TI(twin).encode_buffer_len,
-           &pos,
-           TWIN_F_REPORTED_IF_MATCH,
-           if_match))
+       && !az_iot_proto3_write_varint_field(buf, cap, &pos, TWIN_F_REPORTED_IF_MATCH, if_match))
       || !az_iot_proto3_write_bytes_field(
-          TI(twin).encode_buffer,
-          TI(twin).encode_buffer_len,
-          &pos,
-          TWIN_F_REPORTED_PAYLOAD,
-          patch,
-          patch_len))
+          buf, cap, &pos, TWIN_F_REPORTED_PAYLOAD, patch, patch_len))
   {
     AZ_IOT_LOG_ERROR("gen2_twin: the framed patch did not fit the encode buffer");
     return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
@@ -950,8 +956,7 @@ az_iot_result az_iot_gen2_twin_client_patch_reported_if_match(
   }
   TI(twin).pending[idx].cb.patch_cb = cb;
   TI(twin).pending[idx].user_ctx = user_ctx;
-  return submit_request(
-      twin, TWIN_PENDING_PATCH, TWIN_TYPE_REPORTED_PATCH, TI(twin).encode_buffer, pos, idx);
+  return submit_request(twin, TWIN_PENDING_PATCH, TWIN_TYPE_REPORTED_PATCH, buf, pos, idx);
 }
 
 az_iot_result az_iot_gen2_twin_client_set_desired_handler(
@@ -967,6 +972,7 @@ az_iot_result az_iot_gen2_twin_client_set_desired_handler(
   TI(twin).desired_handler_ctx = user_ctx;
   /* A new or resumed handler holds nothing yet. */
   TI(twin).desired_properties_device_version = 0;
+  TI(twin).desired_snapshot_required = false;
   request_snapshot_if_behind(twin);
   return AZ_IOT_OK;
 }
@@ -987,20 +993,18 @@ az_iot_result az_iot_gen2_twin_client_set_reported_handler(
 
 az_iot_result az_iot_gen2_twin_client_set_encode_buffer(
     az_iot_gen2_twin_client* twin,
-    uint8_t* buffer,
-    size_t buffer_len)
+    az_span buffer)
 {
   if (!twin)
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
   /* Exactly the overhead is the valid minimum: it frames an empty patch. */
-  if (buffer && buffer_len < AZ_IOT_GEN2_TWIN_ENCODE_OVERHEAD)
+  if (az_span_size(buffer) > 0 && az_span_size(buffer) < AZ_IOT_GEN2_TWIN_ENCODE_OVERHEAD)
   {
     return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
   }
   TI(twin).encode_buffer = buffer;
-  TI(twin).encode_buffer_len = buffer ? buffer_len : 0;
   return AZ_IOT_OK;
 }
 

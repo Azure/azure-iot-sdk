@@ -243,7 +243,7 @@ int main(void)
     return 1;
   }
   if (az_iot_gen2_twin_client_set_encode_buffer(
-          &state.twin, s_twin_encode_buffer, sizeof(s_twin_encode_buffer))
+          &state.twin, AZ_SPAN_FROM_BUFFER(s_twin_encode_buffer))
       != AZ_IOT_OK)
   {
     sample_state_destroy(&state);
