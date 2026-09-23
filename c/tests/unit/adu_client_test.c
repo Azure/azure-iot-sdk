@@ -1360,6 +1360,7 @@ static void reboot_required_persists_and_resumes(void** state)
   pump_to_checkpoint(fx, 40);
   assert_true(fx->log.have_persist);
   assert_true(fx->log.persist_len > 40);
+  assert_true(fx->log.persist_len <= AZ_IOT_ADU_STATE_BLOB_MAX_SIZE);
 
   /* Simulate a reboot: forget the in-RAM workflow and the pre-reboot op log,
    * then resume purely from the persisted blob (post-reboot the install is

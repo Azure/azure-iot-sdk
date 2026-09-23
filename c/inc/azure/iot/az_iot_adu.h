@@ -95,16 +95,13 @@ extern "C"
 #define AZ_IOT_ADU_RETRY_TIMESTAMP_SIZE 64
 #endif
 
-/* Persistence/resume blob (see design doc; consumed by Phase 5 resume logic). */
-#ifndef AZ_IOT_ADU_STATE_BLOB_VERSION
-#define AZ_IOT_ADU_STATE_BLOB_VERSION 1
-#endif
 #ifndef AZ_IOT_ADU_MAX_WORKFLOW_ID_LEN
 #define AZ_IOT_ADU_MAX_WORKFLOW_ID_LEN 73 /* ADU service id: GUID-style, plus NUL */
 #endif
-#ifndef AZ_IOT_ADU_STATE_BLOB_MAX_SIZE
-#define AZ_IOT_ADU_STATE_BLOB_MAX_SIZE 512
-#endif
+
+/** @brief Largest blob passed to persist_state_fn; size storage for this. The format
+ * version is internal and checked by az_iot_adu_client_resume(). */
+#define AZ_IOT_ADU_STATE_BLOB_MAX_SIZE AZ_IOT_ADU_PERSIST_BLOB_SIZE
 
   /* --- Internal fine-grained state enum ------------------------------------ */
 

@@ -365,64 +365,20 @@ If `install_fn` or `apply_fn` returns `AZ_IOT_ADU_RESULT_REBOOT_REQUIRED`:
 
 `persist_state_fn` / `load_state_fn` exchange an **opaque, self-contained byte
 blob** that the core serializes and the platform merely stores verbatim (file,
-NVS partition, EEPROM, …). The platform MUST NOT interpret it. This section
-specifies its layout so the format is stable across firmware builds and portable
-across MCU endianness.
+NVS partition, EEPROM, …). The platform MUST NOT interpret it; the format is
+internal and may change between SDK versions.
 
-#### Design constraints
+- **Size** — at most `AZ_IOT_ADU_STATE_BLOB_MAX_SIZE` bytes; size storage for it.
+- **Versioned** — magic `"ADU1"` and a `u16` version (currently 4; 2 and 3 are
+  still read). All integers are little-endian.
+- **Integrity-checked** — a trailing CRC-32 over the whole blob.
+- **Contents** — workflow state, step/file position, flags (cancel, have-request),
+  the raw request buffer (manifest, workflow id, retry timestamp), the canonical
+  install and step results with their owned text, and (v4) the download URLs
+  still needed by remaining steps.
 
-- **Self-describing & versioned** — a magic + version prefix lets a newer agent
-  detect and reject an incompatible older blob (returns "no resumable state",
-  i.e. a clean restart) rather than misparsing it.
-- **Fixed endianness** — all multi-byte integers MUST be **little-endian**, so a
-  blob written on one core type is readable on another.
-- **Integrity-checked** — a trailing CRC-32 detects torn writes / corrupted NVS;
-  a bad CRC MUST be treated as "no resumable state".
-- **Bounded, no dynamic allocation** — the maximum size is a compile-time
-  constant so the caller can statically size the `state_blob` buffer it passes to
-  `load_state_fn`.
-
-```c
-#ifndef AZ_IOT_ADU_STATE_BLOB_VERSION
-#define AZ_IOT_ADU_STATE_BLOB_VERSION 1
-#endif
-
-/* Bounds the workflow id stored in the blob (and elsewhere in the client). */
-#ifndef AZ_IOT_ADU_MAX_WORKFLOW_ID_LEN
-#define AZ_IOT_ADU_MAX_WORKFLOW_ID_LEN 73   /* ADU service id: GUID-style, plus NUL */
-#endif
-
-/* Upper bound the caller uses to size the load_state_fn buffer. Derived from the
- * fixed header + bounded workflow-id + bounded step-result array. */
-#ifndef AZ_IOT_ADU_STATE_BLOB_MAX_SIZE
-#define AZ_IOT_ADU_STATE_BLOB_MAX_SIZE 512
-#endif
-```
-
-#### Layout (v1)
-
-| Offset | Field | Type | Notes |
-|--------|-------|------|-------|
-| 0 | `magic` | `uint8[4]` | ASCII `"ADUS"`. Mismatch ⇒ not our blob. |
-| 4 | `version` | `uint8` | `AZ_IOT_ADU_STATE_BLOB_VERSION`. Mismatch ⇒ discard. |
-| 5 | `flags` | `uint8` | bit0 `backup_taken` summary; reserved bits MUST be 0. |
-| 6 | `state` | `uint8` | `az_iot_adu_state` to re-enter (see Resume semantics). |
-| 7 | `action` | `uint8` | workflow action (ApplyDeployment/Cancel) from the request. |
-| 8 | `current_step` | `uint16` | step index in progress. |
-| 10 | `step_count` | `uint16` | total steps (== `step_results` entries). |
-| 12 | `current_file` | `uint16` | file index within the current step. |
-| 14 | `file_count` | `uint16` | files in the current step. |
-| 16 | `overall_result_code` | `int32` | accumulated overall result. |
-| 20 | `overall_extended_result_code` | `int32` | accumulated facility-coded value. |
-| 24 | `workflow_id_len` | `uint16` | length of the UTF-8 workflow id that follows. |
-| 26 | `workflow_id` | `uint8[workflow_id_len]` | bounded by `AZ_IOT_ADU_MAX_WORKFLOW_ID_LEN`. |
-| … | `manifest_sha256` | `uint8[32]` | SHA-256 of the signed manifest body (replacement detection). |
-| … | `step_results[step_count]` | `{ int32 result_code; int32 extended_result_code; uint8 phase; uint8 backup_done; }` | per-step accumulation + rollback eligibility. |
-| … | `crc32` | `uint32` | CRC-32 (IEEE 802.3) over every byte from offset 0 up to here. |
-
-`backup_done` per step is what the **Partial-Failure Rollback** logic consults to
-decide which `restore_fn` calls are eligible after a reboot — it MUST survive the
-power cycle, so it lives in the blob rather than only in RAM.
+The byte layout is documented next to the serializer in
+`src/features/adu/adu_client.c`; it is not a public contract.
 
 #### Resume semantics (`az_iot_adu_client_resume()`)
 
@@ -433,7 +389,7 @@ power cycle, so it lives in the blob rather than only in RAM.
    `version`, or an older one lacking download URLs still needed, returns
    `AZ_IOT_ERR_NOT_SUPPORTED`. Either way the client is left unchanged.
 2. Otherwise core rehydrates `current_request`, `current_step`, `current_file`,
-   the `step_results[]`, and `backup_done` flags from the blob.
+   and the install and step results from the blob.
 3. **Replacement check** — when the next offer arrives, core compares its
    `workflowId` against the persisted one. A different id means the persisted
    workflow was superseded while the device was down: core MUST discard the
