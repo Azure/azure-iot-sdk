@@ -92,6 +92,14 @@ static int device_config_load(e2e_device* dev)
 
 static void on_conn_state(const az_iot_connection_state_event* event, void* user_ctx)
 {
+  /* Hub lifecycle only: the provisioning session reports on its own scope,
+   * and storing its state here would overwrite the hub state this code acts
+   * on. */
+  if (event->scope != AZ_IOT_CONN_SCOPE_HUB)
+  {
+    return;
+  }
+
   az_iot_connection_state s = event->state;
   az_iot_result reason = event->reason;
   (void)reason;
@@ -150,7 +158,7 @@ int e2e_device_connect(e2e_device* dev)
     return 1;
   }
   dev->conn_ok = true;
-  az_iot_connection_client_set_state_callback(&dev->conn, on_conn_state, dev);
+  az_iot_connection_client_add_state_observer(&dev->conn, on_conn_state, dev);
 
   if (az_iot_connection_client_register_mqtt_factory(
           &dev->conn, az_iot_paho_factory_create_v3_1_1())

@@ -60,14 +60,14 @@
     az_iot_certificate_provider_pem_init(&amp;certs, &amp;pem);
 
     <span style="color: #6a9955;">// ─── Step 2: Connection client (DPS is automatic) ────────</span>
-    <span style="color: #6a9955;">// When host==NULL and id_scope is provided, DPS provisioning</span>
+    <span style="color: #6a9955;">// When id_scope is provided, DPS provisioning</span>
     <span style="color: #6a9955;">// happens internally during open() — no separate API needed</span>
     az_iot_connection_client_options copts = az_iot_connection_client_options_default();
     copts.dps.id_scope = id_scope;
     copts.dps.registration_id = reg_id;
     copts.certificate_provider = &amp;certs.base;
     az_iot_connection_client_init(&amp;conn, &amp;copts);
-    az_iot_connection_client_set_state_callback(&amp;conn, on_conn_state, &amp;ctx);
+    az_iot_connection_client_add_state_observer(&amp;conn, on_conn_state, &amp;ctx);
 
     <span style="color: #6a9955;">// ─── Step 3: Plug in MQTT transport (one line) ───────────</span>
     az_iot_connection_client_register_mqtt_factory(

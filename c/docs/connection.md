@@ -55,7 +55,7 @@ This document describes the target lifecycle. Not all of it is coded yet, so eve
 
 States are defined in
 [az_iot_connection_client.h](../inc/azure/iot/az_iot_connection_client.h); transitions are all funneled
-through the internal `transition()` helper, which is also what raises the user state callback.
+through the internal `set_state_to()` helper, which is also what raises the user state callback.
 
 ```mermaid
 stateDiagram-v2
@@ -71,9 +71,14 @@ stateDiagram-v2
     RECONNECTING --> FAULTED: attempts exhausted
     RECONNECTING --> IDLE: close()
     DISCONNECTING --> IDLE: transport closed
-    FAULTED --> CONNECTING: open()
+    FAULTED --> IDLE: close()
     IDLE --> [*]: destroy()
 ```
+
+`FAULTED` is settled, not a dead end. The SDK never leaves it on its own -- `do_work()` does not
+retry from there -- but `close()` is legal from it and returns the client to `IDLE`, from which
+`open()` starts a fresh attempt with the configuration and the attached feature clients intact.
+`open()` itself remains `IDLE`-only.
 
 When DPS is configured the whole provisioning exchange happens **inside** the `CONNECTING` state, so
 the application never sees an intermediate `CONNECTED` for the DPS session. The DPS progress is
@@ -208,6 +213,67 @@ Worked examples: [samples/websockets](../samples/websockets/main.c) and
 [samples/proxy](../samples/proxy/main.c). Each is the `telemetry_gen1` sample with
 one of these options set, so the diff against it is exactly the feature.
 
+### 3.2 Session terms per role **[implemented]**
+
+Every CONNECT also carries the terms of the session it is opening. They are decided per session
+role, in `resolve_session_options()` in `src/core/connection_client.c`, and the three roles do not
+want the same thing.
+
+| Role | MQTT | Clean Start / Clean Session | Session Expiry | Will | DISCONNECT reason |
+| --- | --- | --- | --- | --- | --- |
+| `DPS` | 3.1.1 | clean (`1`), not overridable | n/a | never | n/a |
+| `HUB_CLASSIC` | 3.1.1 | resume (`0`) by default | n/a | `opts.lwt`, if set | n/a |
+| `HUB_NEXT` | 5 | resume by default | `opts.session_expiry_seconds`, default 1 h | `opts.lwt`, if set | `0x04` when a Will is set, else `0x00` |
+
+Both hub roles honour `opts.session_continuity` (`DEFAULT` / `RESUME` / `CLEAN`). DPS does not: the
+provisioning service does not implement session persistence at all, so honouring a request for it
+would promise something the service does not do.
+
+Why each one:
+
+- **DPS starts clean.** Provisioning does not support persistent sessions — it treats every session
+  as non-persistent whatever the flag says — and the response filter is re-subscribed on every
+  attempt. That reason is a property of the *service*, not of how long the session lives, so it is
+  unaffected by any change to when the provisioning session is torn down: `clean_start` is only
+  read at CONNECT, and it is inert at this service whenever it is read. A provisioning session that
+  outlived registration, or ran alongside a hub session, would still take the same terms.
+- **Classic resumes.** A Classic hub holds the device's *subscription* and its in-flight QoS 1 only
+  for a session that is not clean. Connecting clean does not lose the hub's server-side C2D queue —
+  that is delivered once the device re-subscribes — but it does discard the subscription and any
+  in-flight delivery, so resuming is the cheaper default. This is also the behaviour the role
+  already had before the terms were set explicitly.
+- **Next resumes, with an expiry.** Session continuity on this generation is a **transport
+  efficiency choice, not a correctness one**: the backend never reads `clean_start` or
+  `session_present`, the device publishes birth on every connection, and every feature protocol is
+  correct even if each connect started a fresh session. What resuming buys is the broker's QoS 1
+  redelivery across a transient drop and a re-subscribe saved. Both halves are required — a session
+  asked to expire the instant the connection closes is gone before any reconnect could resume it —
+  which is why the expiry is set rather than left at 0.
+
+Four rules that hold everywhere:
+
+- **A v3.1.1 broker never receives a v5-only property.** Session Expiry and Will Delay are MQTT 5
+  CONNECT properties; a v3.1.1 CONNECT has no field to carry them, and the DISCONNECT reason code
+  does not exist in 3.1.1 either.
+- **The SDK sets no Will of its own.** `opts.lwt` is the application's, and defaults to none. The
+  platform deliberately leaves the Will slot to the application: MQTT 5 allows exactly one Will per
+  CONNECT, device presence is derived from broker-emitted connection lifecycle events rather than
+  from a device-authored will message, and taking the slot would deny the application its own
+  "device went away" signal. It is never put on a provisioning session, whatever that session's
+  lifetime: nothing consumes a will published there.
+- **`Session Present` drives no application decision.** It is reported to the application and
+  carried on the birth message as a diagnostic. No feature client tears down state because of it.
+  It is reported on both MQTT versions — a Classic session connects with Clean Session 0, so this
+  is the only place the application learns whether the broker resumed it.
+- A Will Delay only means something while the session is alive, so on `HUB_NEXT` the session expiry
+  is raised to cover a delay longer than it; MQTT 5 ends the delay at whichever comes first.
+
+Session Expiry is an operational tuning knob. A long expiry suits a rarely-connected, low-traffic
+device; a shorter one suits an always-connected device receiving heavy traffic, whose disconnected
+session queue (bounded at 100 messages / 1 MB, and destroyed entirely on overflow) would otherwise
+fill. The default is one hour, which matches the broker namespace default; the namespace maximum is
+eight hours and the broker clamps anything above it.
+
 ---
 
 ## 4. Connection profile selection **[planned]**
@@ -273,19 +339,38 @@ sequenceDiagram
     else reconnect disabled (initial_delay_ms == 0)
         Conn->>Conn: state = FAULTED
         Conn-->>App: state callback(FAULTED, reason)
-    else attempts exhausted (attempt > max_attempts)
+    else this scope's attempts exhausted (retry_attempt[scope] > max_attempts)
         Conn->>Conn: state = FAULTED
         Conn-->>App: state callback(FAULTED, reason)
     else
-        Conn->>Conn: attempt++, delay = backoff(attempt)
+        Conn->>Conn: retry_attempt[scope]++, delay = backoff(retry_attempt[scope])
         Conn->>Conn: state = RECONNECTING
         Conn-->>App: state callback(RECONNECTING, reason)
         Note over Conn: do_work() waits until reconnect_due_ms
         Conn->>Conn: start_connect_attempt() -> full sequence of section 3
         Hub-->>Conn: CONNACK ok
-        Conn->>Conn: attempt = 0, state = CONNECTED
+        Conn->>Conn: retry_attempt[HUB] = 0, state = CONNECTED
     end
 ```
+
+**The retry ladder is per scope.** `retry_attempt[]` is indexed by
+`az_iot_connection_scope` (`DPS`, `HUB`), and `max_attempts` is a budget for **each** ladder rather
+than one shared across both. So a device may spend its whole hub budget and still get a full set of
+registration attempts, and a registration that follows an exhausted hub ladder starts again at
+`initial_delay_ms` instead of inheriting the hub's capped backoff.
+
+Which ladder a retry climbs is the scope of the **next attempt**, which is not always the scope of
+the failure: a hub CONNACK that rejects the identity is a HUB failure whose retry is a DPS
+registration.
+
+Reset points differ per ladder:
+
+| Event | Effect |
+| --- | --- |
+| DPS registration succeeds | both ladders reset |
+| Hub CONNACK succeeds (birth-ack on Hub-Next) | `HUB` resets; `DPS` untouched |
+| `dps.max_hub_connect_attempts_before_reprovision` crossed | `DPS` resets, so the first registration attempt waits `initial_delay_ms` |
+| `open()` / `close()` | both ladders reset |
 
 ### 5.1 Backoff policy
 
@@ -296,13 +381,13 @@ sequenceDiagram
 ```text
 base   = min(max_delay_ms, initial_delay_ms << min(attempt - 1, 30))
 jitter = uniform(-jitter_pct%, +jitter_pct%) * base
-delay  = clamp(base + jitter, 1, max_delay_ms)
+delay  = clamp(base + jitter, 1, UINT32_MAX)
 ```
 
 | Field | Default | Notes |
 | --- | --- | --- |
 | `initial_delay_ms` | 1000 | `0` disables automatic reconnect entirely. |
-| `max_delay_ms` | 30000 | Cap for the exponential term and for the jittered result. |
+| `max_delay_ms` | 30000 | Cap for the exponential term only. Jitter varies around it, so a delay may exceed it by up to `jitter_pct`; clamping the jittered result would put half of all retries on exactly this value once the ladder reached the cap. |
 | `max_attempts` | 0 | `0` means retry forever. |
 | `jitter_pct` | 20 | Symmetric randomization, seeded from the monotonic clock. |
 
@@ -331,6 +416,7 @@ checked before backoff is scheduled.
 | Reconnect attempt counter | Reset on success | Incremented per failed attempt. |
 | In-flight QoS 1 PUBACKs | No | Packet ids belong to the destroyed adapter; callers must re-send. |
 | Twin GET/PATCH, method responses, telemetry in flight | No | Feature clients must re-issue. |
+| Classic desired-property patches sent while disconnected | No | IoT Hub does not queue them, and the SDK does not fetch the twin on reconnect. The application calls `az_iot_gen1_twin_client_get()` if it needs the current desired state. |
 | ADU status report not yet acked | Yes | Held in durable storage and retried until acked; idempotent on `workflowId`. |
 | Presence (birth) phase | No | Restarted with a freshly generated nonce. |
 | DPS phase | No | Restarted from `CONNECTING` if DPS is configured. |
@@ -388,7 +474,7 @@ Rules that apply to both clients:
 
 ## 7. ADUv2: onboarding and renewal **[planned]**
 
-**ADUv1 is cut.** Its Twin-based public API is being removed; what survives is everything that has
+**ADUv1 is cut.** Its Twin-based public API has been removed; what survives is everything that has
 nothing to do with transport. ADU is re-layered into a transport-independent **`adu_core`** —
 manifest v5 parsing, JWS/SJWK verification, root keys, SHA-256 integrity, the
 download/backup/install/apply state machine, and reboot/resume persistence — plus an

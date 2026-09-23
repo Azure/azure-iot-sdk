@@ -463,8 +463,8 @@ carrying delivery and reporting.
 
 | Channel | Generation | Status |
 |---|---|---|
-| Twin-based (ADUv1) | gen1 | **Cut** — the channel and its public API are being removed, not kept behind a flag |
-| DPS-fronted RPC (ADUv2) | gen2 | **The only channel that will ship** — declared, not yet implemented |
+| Twin-based (ADUv1) | gen1 | **Cut** — the channel and its public API were removed, not kept behind a flag |
+| DPS-fronted RPC (ADUv2) | gen2 | **The only channel** — implemented in `adu_channel_dps.c`; onboarding route verified against the live service |
 
 > **ADUv2 is specified elsewhere; this section only states where the seam is.**
 > See [aduv2-spec.md](aduv2-spec.md) for the wire contract and
@@ -648,6 +648,8 @@ caller-readable event struct instead:
 typedef struct
 {
   uint32_t _internal_size;            /* stamped by the SDK producer */
+  az_iot_connection_scope scope;      /* WHICH lifecycle: DPS or HUB. `state`
+                                       * is meaningless without it. */
   az_iot_connection_state state;
   az_iot_result reason;
   const az_iot_hub_profile* profile;  /* set on CONNECTED, and on a
@@ -691,12 +693,13 @@ feature-client PR. The e2e agent registers this callback, which is exactly the
 class of change that has broken `AZ_IOT_BUILD_E2E=ON` twice before; see
 [Verification per phase](#verification-per-phase).
 
-**This overlaps a second, unimplemented design and must not fork from it.**
+**This overlaps a second design and must not fork from it.**
 [connection-state-and-error-propagation.md](connection-state-and-error-propagation.md)
-proposes replacing `set_state_callback` with a shared observer registry and rich
-failure diagnostics. P1d settled their shared boundary: one size-stamped
-`az_iot_connection_state_event` parameter. The registry, when built, registers
-callbacks of this signature, and future status fields append to this event
+specified replacing `set_state_callback` with a shared observer registry and
+rich failure diagnostics. The registry has SHIPPED; the rich diagnostics have
+not. P1d settled their shared boundary: one size-stamped
+`az_iot_connection_state_event` parameter. The registry registers callbacks of
+this signature unchanged, and future status fields append to this event
 rather than adding a second parameter. P1d does **not** build the registry,
 teardown notification or raw-error fields; it takes only the argument shape,
 which is the part feature clients depend on.
@@ -723,7 +726,7 @@ Tracked as **[AB#39350066](https://dev.azure.com/msazure/One/_workitems/edit/393
 > one: MQTT *does* preserve ordering here. A broker processes the control packets
 > of a single connection in the order it receives them, so a PUBLISH cannot
 > overtake a SUBSCRIBE that was already written to that connection. The defect is
-> that ours has not been written yet. `transition()` invokes the application
+> that ours has not been written yet. `set_state_to()` invokes the application
 > callback **synchronously**, before the re-subscribe loop runs, so a request
 > published from inside that callback reaches the wire *ahead of* its own
 > SUBSCRIBE. Ordering then works against us rather than for us.

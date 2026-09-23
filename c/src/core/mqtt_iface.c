@@ -106,6 +106,38 @@ az_iot_result az_iot_mqtt_connack_result(az_iot_mqtt_version version, int connac
 #define SUBACK_V5_SUB_IDS_NOT_SUPPORTED 0xA1
 #define SUBACK_V5_WILDCARD_SUBS_NOT_SUPPORTED 0xA2
 
+/* Server-sent DISCONNECT reason codes worth naming. The rest are transient
+ * service-side conditions -- 0x89 server busy, 0x8B shutting down, 0x8D
+ * keep-alive timeout, 0x97 quota exceeded, 0x9C/0x9D use-another-server -- and
+ * reconnecting is the right response to them. */
+#define DISCONNECT_V5_NORMAL 0x00
+#define DISCONNECT_V5_NOT_AUTHORIZED 0x87
+
+az_iot_result az_iot_mqtt_disconnect_result(az_iot_mqtt_version version, int disconnect_code)
+{
+  /* No code: an ordinary end of session, and what v3.1.1 always reports. */
+  if (disconnect_code == DISCONNECT_V5_NORMAL || version != AZ_IOT_MQTT_VERSION_5)
+  {
+    return AZ_IOT_OK;
+  }
+
+  /* Adapters report their own failures with negative codes; those never came
+   * off the wire, so they carry no verdict from the server. */
+  if (disconnect_code < 0)
+  {
+    return AZ_IOT_ERR_MQTT;
+  }
+
+  /* The credential was refused. Reconnecting with it returns the same answer,
+   * which is what AZ_IOT_ERR_AUTH tells the application through is_retriable. */
+  if (disconnect_code == DISCONNECT_V5_NOT_AUTHORIZED)
+  {
+    return AZ_IOT_ERR_AUTH;
+  }
+
+  return AZ_IOT_ERR_MQTT;
+}
+
 az_iot_result az_iot_mqtt_suback_result(az_iot_mqtt_version version, int suback_code)
 {
   /* A granted QoS, including one below what was requested. That is still a

@@ -61,6 +61,14 @@ typedef struct
 
 static void on_conn_state(const az_iot_connection_state_event* event, void* user_ctx)
 {
+  /* Hub lifecycle only: the provisioning session reports on its own scope,
+   * and storing its state here would overwrite the hub state this code acts
+   * on. */
+  if (event->scope != AZ_IOT_CONN_SCOPE_HUB)
+  {
+    return;
+  }
+
   az_iot_connection_state s = event->state;
   az_iot_result reason = event->reason;
   csr_ctx* c = (csr_ctx*)user_ctx;
@@ -130,7 +138,7 @@ static void run_csr_enrollment(az_iot_certificate_managed_key_type key_type, con
   }
 
   assert_int_equal(AZ_IOT_OK, az_iot_connection_client_init(&conn, &copts));
-  az_iot_connection_client_set_state_callback(&conn, on_conn_state, &ctx);
+  az_iot_connection_client_add_state_observer(&conn, on_conn_state, &ctx);
   az_iot_connection_client_set_operational_cert_callback(&conn, on_operational_cert, &ctx);
   assert_int_equal(
       AZ_IOT_OK,

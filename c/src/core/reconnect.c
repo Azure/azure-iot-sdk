@@ -66,42 +66,104 @@ uint32_t az_iot_reconnect_delay_ms(
     base = cap;
   }
 
-  int32_t jitter = 0;
   uint8_t pct = policy->jitter_pct;
   if (pct > 100)
   {
     pct = 100;
   }
+
+  uint64_t result = base;
   if (pct > 0 && base > 0)
   {
-    /* Range: [-pct%, +pct%] of base. */
-    uint64_t span = ((uint64_t)base * pct) / 100u;
+    /* Jitter the backoff by [-pct%, +pct%], computed WITHOUT a signed
+     * intermediate.
+     *
+     * The obvious form is `base + (r - span)`, but that difference is signed
+     * and spans [-span, +span]; with initial_delay_ms == max_delay_ms ==
+     * UINT32_MAX and pct == 100 it does not fit in 32 bits, so it has to be
+     * carried in a wider signed type and narrowed back -- which is exactly the
+     * implementation-defined narrowing this used to get wrong.
+     *
+     * pct is clamped to 100 above, so span <= base and `base - span` cannot
+     * underflow. Rearranging to (base - span) + r gives the identical
+     * distribution over [base-span, base+span] in unsigned arithmetic only. */
+    uint64_t span = (base * pct) / 100u;
     if (span > 0)
     {
       uint64_t r = xorshift64(rng_state) % (2u * span + 1u);
-      jitter = (int32_t)((int64_t)r - (int64_t)span);
+      result = (base - span) + r;
     }
   }
 
-  int64_t result = (int64_t)base + jitter;
-  if (result < 1)
+  if (result < 1u)
   {
-    result = 1;
+    result = 1u;
   }
-  if ((uint64_t)result > (uint64_t)cap)
+  /* Deliberately NOT clamped back to `cap`. `cap` bounds the BACKOFF -- it is
+   * how far the doubling is allowed to climb -- and jitter varies around that,
+   * so the delay may exceed it by up to jitter_pct.
+   *
+   * Clamping here used to fold the whole upper half of the distribution onto
+   * the cap itself. Once the ladder reached the cap, half of all retries fired
+   * at exactly max_delay_ms: measured over 200000 draws of the default policy,
+   * 50.1% landed on 30000 ms and the mean sat at 28507 ms instead of 30000. So
+   * jitter stopped de-correlating a fleet precisely at steady state, which is
+   * the thundering herd it exists to prevent, and it biased every
+   * fixed-interval policy low (a nominal 5s interval averaged 4749 ms).
+   *
+   * Only the representable range is enforced, so a caller using the extreme
+   * end of uint32_t saturates instead of wrapping on the cast below. */
+  if (result > (uint64_t)UINT32_MAX)
   {
-    result = (int64_t)cap;
+    result = (uint64_t)UINT32_MAX;
   }
   return (uint32_t)result;
 }
 
-az_iot_reconnection_policy az_iot_reconnection_policy_default(void)
+az_iot_reconnection_policy az_iot_reconnection_policy_get_default(void)
 {
   az_iot_reconnection_policy p = {
     .initial_delay_ms = 1000u, /* first retry after 1s           */
     .max_delay_ms = 30000u, /* cap exponential backoff at 30s */
     .max_attempts = 0u, /* 0 = retry forever              */
     .jitter_pct = 20u, /* +/-20% randomization            */
+  };
+  return p;
+}
+
+az_iot_reconnection_policy az_iot_reconnection_policy_get_retry_disabled(void)
+{
+  /* initial_delay_ms == 0 is what disables retrying. Returning it from a named
+   * getter is the whole point: the value is identical to a zeroed struct, so
+   * the difference this makes is at the call site, not in the bytes. */
+  az_iot_reconnection_policy p = {
+    .initial_delay_ms = 0u,
+    .max_delay_ms = 0u,
+    .max_attempts = 0u,
+    .jitter_pct = 0u,
+  };
+  return p;
+}
+
+az_iot_reconnection_policy az_iot_reconnection_policy_get_fixed_interval(
+    uint32_t interval_ms,
+    uint32_t max_attempts)
+{
+  /* max_delay_ms == initial_delay_ms pins the backoff at the first rung, which
+   * is exactly a fixed interval -- no separate code path needed.
+   *
+   * A zero interval is clamped to 1 ms rather than passed through: 0 in
+   * initial_delay_ms is the sentinel that disables retrying, so honouring it
+   * here would hand back a policy that never retries from a function whose
+   * name promises the opposite. 1 ms is the smallest schedule the delay
+   * calculator can represent (it floors every result at 1), so it is the
+   * nearest thing to the caller's request that is still a retry. */
+  uint32_t interval = interval_ms ? interval_ms : 1u;
+  az_iot_reconnection_policy p = {
+    .initial_delay_ms = interval,
+    .max_delay_ms = interval,
+    .max_attempts = max_attempts,
+    .jitter_pct = 0u,
   };
   return p;
 }

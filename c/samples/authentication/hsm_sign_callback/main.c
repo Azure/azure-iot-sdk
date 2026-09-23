@@ -16,7 +16,8 @@
  * a Paho path: Paho takes its client key as a file path and exposes neither the
  * SSL_CTX nor a key callback (upstream has none either), so the Paho adapter
  * refuses a sign()-only credential with AZ_IOT_ERR_NOT_SUPPORTED instead of
- * connecting without a client key. Use hsm_pkcs11 with Paho.
+ * connecting without a client key. Use hsm_pkcs11_gen1 or hsm_pkcs11_gen2 with
+ * Paho.
  *
  * What the sample shows, and what it does not:
  *
@@ -261,6 +262,14 @@ static az_iot_mqtt_client* standin_create(void* factory_ctx)
 
 static void on_conn_state(const az_iot_connection_state_event* event, void* user_ctx)
 {
+  /* Hub lifecycle only: the provisioning session reports on its own scope,
+   * and storing its state here would overwrite the hub state this code acts
+   * on. */
+  if (event->scope != AZ_IOT_CONN_SCOPE_HUB)
+  {
+    return;
+  }
+
   az_iot_connection_state s = event->state;
   az_iot_result reason = event->reason;
   (void)user_ctx;
@@ -282,9 +291,10 @@ int main(void)
       = { .version = AZ_IOT_MQTT_VERSION_3_1_1, .create = standin_create, .factory_ctx = NULL };
 
   az_iot_connection_client_options copts = az_iot_connection_client_options_default();
-  copts.host = "example.invalid";
-  copts.client_id = "hsm-sign-callback-sample";
-  copts.connection_profile = AZ_IOT_CONNECTION_PROFILE_CLASSIC;
+  /* Placeholder provisioning settings: the stand-in adapter fails the first
+   * connect, which is the DPS one, after the signature has been made. */
+  copts.dps.id_scope = "0ne00000000";
+  copts.dps.registration_id = "hsm-sign-callback-sample";
   copts.certificate_provider = &provider.base;
 
   int rc = 1;
@@ -292,7 +302,7 @@ int main(void)
   {
     goto cleanup;
   }
-  az_iot_connection_client_set_state_callback(&connection_client, on_conn_state, NULL);
+  az_iot_connection_client_add_state_observer(&connection_client, on_conn_state, NULL);
   if (az_iot_connection_client_register_mqtt_factory(&connection_client, &factory) != AZ_IOT_OK)
   {
     goto cleanup;

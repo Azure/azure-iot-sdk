@@ -64,10 +64,30 @@ static void sample_state_destroy(sample_state* s)
 typedef struct
 {
   az_iot_connection_state conn_state;
+  int provisioning_faulted;
 } user_context;
 
 static void on_conn_state(const az_iot_connection_state_event* event, void* user_ctx)
 {
+  /* A rejected assignment or a failed registration faults the provisioning
+   * lifecycle and leaves the hub IDLE, so the wait below must watch for it. */
+  if (event->scope == AZ_IOT_CONN_SCOPE_DPS)
+  {
+    if (event->state == AZ_IOT_CONN_STATE_FAULTED)
+    {
+      ((user_context*)user_ctx)->provisioning_faulted = 1;
+    }
+    return;
+  }
+
+  /* Hub lifecycle only: the provisioning session reports on its own scope,
+   * and storing its state here would overwrite the hub state this code acts
+   * on. */
+  if (event->scope != AZ_IOT_CONN_SCOPE_HUB)
+  {
+    return;
+  }
+
   az_iot_connection_state s = event->state;
   az_iot_result reason = event->reason;
   (void)reason;
@@ -382,7 +402,7 @@ int main(void)
     return 1;
   }
 
-  /* Connection client (DPS provisioning is internal when host==NULL). */
+  /* Connection client (DPS provisioning is internal). */
   az_iot_connection_client_options copts = az_iot_connection_client_options_default();
   sample_apply_dps_options(&copts, &state.config);
   copts.certificate_provider = &state.certs.base;
@@ -392,7 +412,7 @@ int main(void)
     sample_state_destroy(&state);
     return 1;
   }
-  az_iot_connection_client_set_state_callback(&state.connection_client, on_conn_state, &user_ctx);
+  az_iot_connection_client_add_state_observer(&state.connection_client, on_conn_state, &user_ctx);
 
   /* DPS provisioning and the Classic hub session both run over MQTT v3.1.1. */
   if (az_iot_connection_client_register_mqtt_factory(
@@ -413,7 +433,7 @@ int main(void)
   for (int i = 0; i < 1200 && user_ctx.conn_state != AZ_IOT_CONN_STATE_CONNECTED; ++i)
   {
     (void)az_iot_connection_client_do_work(&state.connection_client, 50);
-    if (user_ctx.conn_state == AZ_IOT_CONN_STATE_FAULTED)
+    if (user_ctx.conn_state == AZ_IOT_CONN_STATE_FAULTED || user_ctx.provisioning_faulted)
     {
       break;
     }

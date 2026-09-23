@@ -26,18 +26,68 @@ Canonical pending-work tracker for IoT Hub Next (AEG) integration.
 - [x] Add `az_iot_mqtt_user_property` type to `az_iot_mqtt_iface.h`
 - [x] Extend `az_iot_mqtt_message` with typed user_properties array
 - [x] Extend inbound `az_iot_mqtt_event` (done — piggybacks on message)
-- [ ] Update Paho v5 adapter to set v5 User Properties on outbound PUBLISH
-- [ ] Update Paho v5 adapter to extract User Properties from inbound MESSAGE events
-- [ ] Wire `session_present` from CONNACK into `EVT_CONNECTED` event
+- [x] Update Paho v5 adapter to set v5 User Properties on outbound PUBLISH
+- [x] Update Paho v5 adapter to extract User Properties from inbound MESSAGE events
+- [x] Wire `session_present` from CONNACK into `EVT_CONNECTED` event — both versions. The v5 path
+      came first; the v3.1.1 path now reports it too. That bit was previously recorded here as not
+      needed, on the grounds that only the v5 presence/birth path consumes it. That reasoning no
+      longer holds: a Classic session connects with Clean Session 0 (Phase 4 below, and
+      `docs/connection.md` section 3.2), so whether the broker resumed the session or silently
+      started a fresh one is reported by the CONNACK and by nothing else. Nothing in the SDK
+      branches on the value — it is surfaced for the application, which cannot otherwise see it.
+- [x] Prove all three end to end. Conformance cases drive the real Paho v5 adapter against a
+      broker and against injected broker packets: `v5_message_properties_survive_a_roundtrip`,
+      `v5_properties_from_the_server_are_surfaced_intact`,
+      `v5_session_present_from_connack_is_reported`, plus
+      `v3_1_1_publish_ignores_the_v5_only_fields` to keep v5 bytes off a 3.1.1 session
+      (`c/tests/conformance/az_iot_conformance.c`).
+      `session_present_reports_whether_the_broker_resumed_the_session` covers the same flag from
+      the other direction and in BOTH suites: it drives a real resumption against the broker
+      (subscribe, disconnect, reconnect non-clean) instead of an injected CONNACK.
+
+### Not carried by the Paho adapter yet
+
+- [ ] CONNECT User Properties. `az_iot_mqtt_connect_options.user_properties` is accepted by
+      the interface and is silently ignored by the Paho v5 adapter, which puts only Session
+      Expiry on the CONNECT. Nothing in the SDK sets it today; it is listed here rather than
+      ticked so that stays a known gap and not a discovery.
+- [ ] PUBLISH `response_topic` and `topic_alias`. Both exist on `az_iot_mqtt_message` and
+      neither is serialized. Same reasoning: unused today, not implemented, not ticked.
 
 ## Phase 4: Session Lifecycle
 
-- [ ] Create `src/core/session_client.c` + internal header
-- [ ] Generate UUID for sessionId (platform helper or inline)
-- [ ] Set LWT in CONNECT options for HUB_NEXT
-- [ ] Publish session open on `session_present=0`
-- [ ] Extend adapter vtable connect options: `clean_start`, `session_expiry_interval`, LWT fields
-- [ ] Send DISCONNECT with reason code 0x04 on close (HUB_NEXT only)
+- [ ] ~~Create `src/core/session_client.c` + internal header~~ — **not needed, deliberately not
+  done.** The connection client already owns the connect/reconnect state machine, the presence
+  (birth) handshake and the subscription gate, and the per-role session terms are three assignments
+  on the connect options it already builds (`resolve_session_options()`). A separate file would have
+  to reach into that state to say anything, so the logic lives in `connection_client.c`.
+- [ ] ~~Generate UUID for sessionId (platform helper or inline)~~ — **dropped: already served by the
+  connection nonce.** `presence_gen_nonce()` produces a fresh RFC 4122 version 4 UUID per CONNECT
+  attempt; it rides the CONNECT username as `correlationId` and the birth PUBLISH as MQTT 5
+  Correlation Data, which is the identifier the presence protocol actually defines. A second UUID
+  would identify nothing the service looks at.
+- [x] Set LWT in CONNECT options for HUB_NEXT — **the platform sets no Will, by design.**
+  `az_iot_connection_client_options.lwt` exposes the Will to the application and is applied to the
+  hub roles (never to DPS), with the Will Delay Interval and a close that carries DISCONNECT reason
+  `0x04` when a Will is configured. The SDK sets no Will of its own: MQTT 5 allows exactly one Will
+  per CONNECT, device presence is derived from broker-emitted connection lifecycle events rather
+  than from a device-authored will message, and taking the slot would deny the application its own
+  "device went away" signal. The earlier LWT-based session-close protocol was superseded by the
+  presence design.
+- [x] Publish session open on `session_present=0` — satisfied by the birth flow, which is stronger:
+  birth is published on EVERY connection, carrying the observed `session_present` as a diagnostic
+  field, because the backend must not consult that flag for state decisions.
+- [x] Extend adapter vtable connect options: `clean_start`, `session_expiry_interval`, LWT fields —
+  the fields already existed and the Paho adapter already honoured them; the gap was that the core
+  set none of them. It does now, per role, with `session_continuity` and `session_expiry_seconds`
+  overridable by the application on the hub roles (see `docs/connection.md` section 3.2).
+- [x] Send DISCONNECT with reason code 0x04 on close (HUB_NEXT only) — expressed as an additive,
+  zero-safe `disconnect_reason_code` on `az_iot_mqtt_connect_options` rather than a new parameter or
+  vtable slot, so no bring-your-own adapter's ABI changes and a zero keeps today's normal close. The
+  core sets it on HUB_NEXT only, and only when a Will is configured: 0x04 asks the broker to publish
+  the Will on an orderly close, which is meaningless when there is none. The reason code carries no
+  protocol meaning for the platform (presence does not depend on a will message), so this exists to
+  serve an application that configured its own Will.
 
 ## Phase 5: Feature Clients Dual-Mode
 
@@ -74,9 +124,8 @@ Canonical pending-work tracker for IoT Hub Next (AEG) integration.
       topics at connect instead of resolving the device id inside `init()`
 - [x] Desired-property subscriber registry collapsed to a single `set_desired_handler()`; its only
       consumer (ADU) was re-layered off the twin channel
-- [ ] gen2: carry a desired-properties version. The service does not send one on
-      `ih/{device_id}/dev/twin/desired` yet, so the handler always reports 0 and an application
-      cannot tell a replay from a fresh patch the way it can on Classic's `$version`.
+- [x] gen2: desired deliveries carry the version and a PATCH/SNAPSHOT kind; the client fetches a
+      snapshot whenever the version sequence shows the device behind.
 
 ### C2D
 - [x] `az_iot_c2d_client` feature client (header + implementation)

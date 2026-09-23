@@ -559,6 +559,51 @@ static void step_results_serialize_as_an_indexed_map(void** state)
   assert_null(strstr(json, "0x80000001"));
 }
 
+/* Every stepResults entry carries outcome and failureOrigin; the service
+ * rejects an entry without them as undeserializable. */
+static void step_results_carry_outcome_and_failure_origin(void** state)
+{
+  (void)state;
+  uint8_t buf[1024];
+  size_t len = 0;
+
+  az_iot_adu_client_step_result steps[3];
+  memset(steps, 0, sizeof(steps));
+  steps[0].result_code = 700;
+  steps[1].result_code = 699;
+  /* steps[2] never ran. */
+
+  az_iot_adu_report report = { 0 };
+  report.workflow_id = "wf-1";
+  report.outcome = AZ_IOT_ADU_OUTCOME_FAILED;
+  report.failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_AGENT_CORE;
+  report.result_code = 699;
+  report.extended_result_codes = "1";
+  report.step_results = steps;
+  report.step_results_count = 3;
+
+  assert_int_equal(az_iot_adu__build_report_request(&report, buf, sizeof(buf), &len), AZ_IOT_OK);
+  buf[len] = '\0';
+  const char* json = (const char*)buf;
+  assert_non_null(
+      strstr(json, "\"step_0\":{\"outcome\":\"SUCCEEDED\",\"failureOrigin\":\"NOT_APPLICABLE\""));
+  assert_non_null(
+      strstr(json, "\"step_1\":{\"outcome\":\"FAILED\",\"failureOrigin\":\"AGENT_CORE\""));
+  assert_non_null(
+      strstr(json, "\"step_2\":{\"outcome\":\"SKIPPED\",\"failureOrigin\":\"NOT_APPLICABLE\""));
+
+  /* A step not reached while the workflow runs is in progress, not skipped. */
+  report.outcome = AZ_IOT_ADU_OUTCOME_IN_PROGRESS;
+  report.failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_NOT_APPLICABLE;
+  report.result_code = 1;
+  steps[1].result_code = 0;
+  report.step_results_count = 2;
+  assert_int_equal(az_iot_adu__build_report_request(&report, buf, sizeof(buf), &len), AZ_IOT_OK);
+  buf[len] = '\0';
+  assert_non_null(
+      strstr(json, "\"step_1\":{\"outcome\":\"IN_PROGRESS\",\"failureOrigin\":\"NOT_APPLICABLE\""));
+}
+
 /* Omitted entirely when there are none -- an empty map is a different statement
  * from having no per-step results. */
 static void no_step_results_means_no_key(void** state)
@@ -1067,6 +1112,61 @@ static void an_oversized_message_is_dropped_not_truncated(void** state)
       AZ_IOT_ADU_ERROR_ACTION_RETRY);
 }
 
+/* The service correlation GUID is the one value a support request needs, so it
+ * is extracted rather than discarded. */
+static void the_tracking_id_is_extracted(void** state)
+{
+  (void)state;
+  char id[64];
+
+  const char body[]
+      = "{\"errorCode\":400002,\"trackingId\":\"9f1c-aa\",\"message\":\"INVALID_REQUEST\"}";
+  assert_int_equal(
+      az_iot_adu__parse_tracking_id((const uint8_t*)body, sizeof(body) - 1, id, sizeof(id)),
+      AZ_IOT_OK);
+  assert_string_equal(id, "9f1c-aa");
+
+  /* A body without one is not a parse failure -- it is a body without one. */
+  const char none[] = "{\"errorCode\":400002}";
+  assert_int_equal(
+      az_iot_adu__parse_tracking_id((const uint8_t*)none, sizeof(none) - 1, id, sizeof(id)),
+      AZ_IOT_ERR_NOT_FOUND);
+  assert_string_equal(id, "");
+
+  /* A nested trackingId belongs to something else and is not taken. */
+  const char nested[] = "{\"info\":{\"trackingId\":\"inner\"},\"errorCode\":1}";
+  assert_int_equal(
+      az_iot_adu__parse_tracking_id((const uint8_t*)nested, sizeof(nested) - 1, id, sizeof(id)),
+      AZ_IOT_ERR_NOT_FOUND);
+  assert_string_equal(id, "");
+
+  /* A truncated body is rejected, not reported as a successful parse of
+   * whatever arrived before the cut -- matching the other response parsers. */
+  const char cut[] = "{\"trackingId\":\"abc\"";
+  assert_int_equal(
+      az_iot_adu__parse_tracking_id((const uint8_t*)cut, sizeof(cut) - 1, id, sizeof(id)),
+      AZ_IOT_ERR_NOT_FOUND);
+  assert_string_equal(id, "");
+
+  /* A duplicate key whose second value does not fit must not leave the first
+   * behind: the caller ignores the status, so an empty string is the contract. */
+  const char dup[] = "{\"trackingId\":\"ok\",\"trackingId\":\"far-too-long-to-fit-here\"}";
+  char small_dup[8];
+  assert_int_equal(
+      az_iot_adu__parse_tracking_id(
+          (const uint8_t*)dup, sizeof(dup) - 1, small_dup, sizeof(small_dup)),
+      AZ_IOT_ERR_NOT_FOUND);
+  assert_string_equal(small_dup, "");
+
+  /* Too long to fit is dropped, not truncated: half a correlation id would be
+   * quoted in a support request and match nothing. */
+  char small[4];
+  assert_int_equal(
+      az_iot_adu__parse_tracking_id((const uint8_t*)body, sizeof(body) - 1, small, sizeof(small)),
+      AZ_IOT_ERR_NOT_FOUND);
+  assert_string_equal(small, "");
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -1094,6 +1194,7 @@ int main(void)
     cmocka_unit_test(a_report_with_a_partial_installed_update_id_is_rejected),
     cmocka_unit_test(a_truncated_response_body_is_rejected),
     cmocka_unit_test(step_results_serialize_as_an_indexed_map),
+    cmocka_unit_test(step_results_carry_outcome_and_failure_origin),
     cmocka_unit_test(no_step_results_means_no_key),
     cmocka_unit_test(both_error_signals_are_read_from_the_body),
     cmocka_unit_test(a_numeric_only_body_is_still_usable),
@@ -1113,6 +1214,7 @@ int main(void)
     cmocka_unit_test(the_shared_conflict_code_is_split_by_operation),
     cmocka_unit_test(transient_numeric_codes_are_retried),
     cmocka_unit_test(unknown_and_absent_signals_are_fatal),
+    cmocka_unit_test(the_tracking_id_is_extracted),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

@@ -96,19 +96,38 @@ typedef struct
 {
   sample_state* state;
   az_iot_connection_state conn_state;
+  int provisioning_faulted;
   deferred_call deferred;
 } user_context;
 
 static void on_conn_state(const az_iot_connection_state_event* event, void* user_ctx)
 {
   user_context* ctx = (user_context*)user_ctx;
-  ctx->conn_state = event->state;
-
-  if (event->reason == AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH)
+  /* A rejected assignment or a failed registration faults the provisioning
+   * lifecycle and leaves the hub IDLE, so the wait below must watch for it. */
+  if (event->scope == AZ_IOT_CONN_SCOPE_DPS)
   {
-    printf("This device is assigned to an AEG hub. Run the "
-           "direct_method_slow_responder_gen2 sample instead.\n");
+    if (event->state == AZ_IOT_CONN_STATE_FAULTED)
+    {
+      ctx->provisioning_faulted = 1;
+      if (event->reason == AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH)
+      {
+        printf("This device is assigned to an AEG hub. Run the "
+               "direct_method_slow_responder_gen2 sample instead.\n");
+      }
+    }
+    return;
   }
+
+  /* Hub lifecycle only: the provisioning session reports on its own scope,
+   * and storing its state here would overwrite the hub state this code acts
+   * on. */
+  if (event->scope != AZ_IOT_CONN_SCOPE_HUB)
+  {
+    return;
+  }
+
+  ctx->conn_state = event->state;
 }
 
 static void on_slow_echo(
@@ -223,7 +242,7 @@ int main(void)
     return 1;
   }
 
-  /* Connection client (DPS provisioning is internal when host==NULL) */
+  /* Connection client (DPS provisioning is internal) */
   az_iot_connection_client_options copts = az_iot_connection_client_options_default();
   sample_apply_dps_options(&copts, &state.config);
   copts.certificate_provider = &state.certs.base;
@@ -233,7 +252,7 @@ int main(void)
     sample_state_destroy(&state);
     return 1;
   }
-  az_iot_connection_client_set_state_callback(&state.connection_client, on_conn_state, &user_ctx);
+  az_iot_connection_client_add_state_observer(&state.connection_client, on_conn_state, &user_ctx);
 
   /* One adapter covers both legs here: DPS always speaks v3.1.1, and so does a
    * Classic hub. */
@@ -279,7 +298,7 @@ int main(void)
   for (int i = 0; i < 1200 && user_ctx.conn_state != AZ_IOT_CONN_STATE_CONNECTED; ++i)
   {
     (void)az_iot_connection_client_do_work(&state.connection_client, 50);
-    if (user_ctx.conn_state == AZ_IOT_CONN_STATE_FAULTED)
+    if (user_ctx.conn_state == AZ_IOT_CONN_STATE_FAULTED || user_ctx.provisioning_faulted)
     {
       break;
     }
