@@ -30,6 +30,7 @@
 #include "azure/iot/az_iot_result.h"
 #include "azure/iot/gen2/az_iot_twin_client.h"
 
+#include "internal/connection_client_internal.h"
 #include "support/connection_test_harness.h"
 #include "support/mock_mqtt_iface.h"
 #include "support/subscription_ack.h"
@@ -289,7 +290,7 @@ static size_t count_twin_publishes(az_iot_mock_mqtt_client* m)
  *
  * Unlike Classic, CONNACK alone does not announce CONNECTED: the presence
  * wildcard and the birth handshake complete first. */
-static void open_to_connected_with_versions(fixture* fx, uint64_t desired, uint64_t reported)
+static void open_to_birth_ack_with_versions(fixture* fx, uint64_t desired, uint64_t reported)
 {
   assert_int_equal(
       az_iot_connection_client_register_mqtt_factory(&fx->conn, fx->factory), AZ_IOT_OK);
@@ -369,9 +370,12 @@ static void open_to_connected_with_versions(fixture* fx, uint64_t desired, uint6
   ack.message = &ack_msg;
   assert_true(az_iot_mock_mqtt_client_inject_event(fx->mock, &ack));
   assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+}
 
-  /* gen2 feature delivery uses the presence wildcard; there are no later
-   * per-feature SUBACKs to wait for. */
+/* Up to the birth-ack, then ack any feature SUBACKs so hub CONNECTED is announced. */
+static void open_to_connected_with_versions(fixture* fx, uint64_t desired, uint64_t reported)
+{
+  open_to_birth_ack_with_versions(fx, desired, reported);
   az_iot_test_ack_subscriptions(&fx->conn, fx->mock);
 }
 
@@ -1597,6 +1601,66 @@ static void the_largest_get_body_fits(void** state)
   assert_int_equal(last_get(fx)->payload_len, 24);
 }
 
+/* A replaced twin still gets a fetch in push mode: a push cannot be relied on
+ * to replace newer state. */
+static void with_push_desired_a_replaced_twin_is_still_fetched(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  desired_record rec = { 0 };
+  set_desired(fx, &rec);
+  open_to_connected_with_versions(fx, 7, 0);
+  const uint8_t push[] = { 0x0A, 0x06, 0x08, 0x07, 0x12, 0x02, 0x7B, 0x7D };
+  inject_twin(fx, "twin-push:1", fx->nonce, push, sizeof(push));
+  assert_int_equal(rec.version, 7);
+  assert_int_equal(count_gets(fx), 0);
+
+  reconnect_with_versions(fx, 2, 0);
+  assert_int_equal(count_gets(fx), 1);
+  answer_last_get(fx, 2, "{}");
+  assert_int_equal(rec.kind, AZ_IOT_GEN2_TWIN_DESIRED_SNAPSHOT);
+  assert_int_equal(rec.version, 2);
+}
+
+/* A push that lands before hub CONNECTED (held back here by another feature's
+ * subscription) is applied on top of the birth-ack, not overwritten by it. */
+static void a_push_before_connected_is_not_overwritten_by_the_birth_ack(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(
+      az_iot_connection_client__add_subscription_on_connect(
+          &fx->conn,
+          "ih/ut-device/dev/other",
+          AZ_IOT_MQTT_QOS_1,
+          fx,
+          AZ_IOT_SUBSCRIPTION_FAILS_SESSION,
+          NULL),
+      AZ_IOT_OK);
+  desired_record rec = { 0 };
+  set_desired(fx, &rec);
+
+  open_to_birth_ack_with_versions(fx, 3, 9);
+  assert_false(az_iot_connection_client__is_connected(&fx->conn));
+
+  /* TwinPush { 1: Section{5, "{}"}, 2: Section{21} } */
+  const uint8_t push[] = { 0x0A, 0x06, 0x08, 0x05, 0x12, 0x02, 0x7B, 0x7D, 0x12, 0x02, 0x08, 0x15 };
+  inject_twin(fx, "twin-push:1", fx->nonce, push, sizeof(push));
+  assert_int_equal(rec.version, 5);
+
+  az_iot_test_ack_subscriptions(&fx->conn, fx->mock);
+  assert_true(az_iot_connection_client__is_connected(&fx->conn));
+  assert_int_equal(count_gets(fx), 0); /* current at 5: nothing to fetch */
+
+  patch_record prec = { 0 };
+  static const uint8_t patch[] = "{}";
+  assert_int_equal(
+      az_iot_gen2_twin_client_patch_reported(&fx->twin, patch, sizeof(patch) - 1, on_patch, &prec),
+      AZ_IOT_OK);
+  const uint8_t expect[] = { 0x08, 0x15, 0x12, 0x02, 0x7B, 0x7D }; /* if_match = 21, not 9 */
+  const az_iot_mock_call* pub = find_publish(fx->mock, TWIN_SRV_TOPIC);
+  assert_int_equal(pub->payload_len, sizeof(expect));
+  assert_memory_equal(pub->payload, expect, sizeof(expect));
+}
+
 /* A refused snapshot publish leaves nothing in flight, so the next gap retries. */
 static void a_refused_snapshot_publish_does_not_wedge(void** state)
 {
@@ -2381,6 +2445,10 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         a_version_only_reported_push_reaches_the_handler, setup, teardown),
     cmocka_unit_test_setup_teardown(the_largest_get_body_fits, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        with_push_desired_a_replaced_twin_is_still_fetched, setup_push_desired, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_push_before_connected_is_not_overwritten_by_the_birth_ack, setup, teardown),
     cmocka_unit_test_setup_teardown(a_refused_snapshot_publish_does_not_wedge, setup, teardown),
     cmocka_unit_test_setup_teardown(an_in_order_patch_while_behind_fetches_again, setup, teardown),
     cmocka_unit_test_setup_teardown(a_handler_set_at_version_zero_fetches_nothing, setup, teardown),

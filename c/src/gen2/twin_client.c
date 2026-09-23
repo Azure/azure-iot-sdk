@@ -637,6 +637,8 @@ static void on_patch_response(az_iot_gen2_twin_client* t, int idx, const az_iot_
   release_pending(t, idx, AZ_IOT_OK, NULL, &result);
 }
 
+static void adopt_session(az_iot_gen2_twin_client* t);
+
 /** @brief Single handler for `ih/{id}/dev/twin`, routed on `type`. */
 static void on_twin_inbound(void* user_ctx, const az_iot_mqtt_message* msg)
 {
@@ -645,6 +647,7 @@ static void on_twin_inbound(void* user_ctx, const az_iot_mqtt_message* msg)
   {
     return;
   }
+  adopt_session(t);
 
   if (type_is(msg, TWIN_TYPE_TWIN_PUSH) || type_is(msg, TWIN_TYPE_DESIRED_PATCH))
   {
@@ -691,29 +694,47 @@ static void on_twin_inbound(void* user_ctx, const az_iot_mqtt_message* msg)
 }
 
 /**
- * @brief Hub CONNECTED (after the birth-ack): adopt its versions and catch up.
+ * @brief Adopt the birth-ack baseline, once per session.
  *
- * When `twin_push.push_desired` is set the service pushes the desired snapshot
- * itself, so no GET is issued here.
+ * Keyed on the birth nonce and run by whatever touches the new session first:
+ * a twin-push can arrive before hub CONNECTED is announced, and must be applied
+ * on top of the baseline, not overwritten by it. A desired version below what
+ * the handler holds means the twin was replaced; patches cannot follow it.
  */
-static void on_hub_connected(az_iot_gen2_twin_client* t)
+static void adopt_session(az_iot_gen2_twin_client* t)
 {
+  uint8_t birth_nonce[AZ_IOT_CORRELATION_UUID_LEN];
   uint64_t desired = 0;
   uint64_t reported = 0;
-  if (az_iot_connection_client__presence_twin_versions(TI(t).conn, &desired, &reported)
-      != AZ_IOT_OK)
+  if (az_iot_connection_client__presence_nonce(TI(t).conn, birth_nonce) != AZ_IOT_OK
+      || (TI(t).birth_nonce_valid
+          && memcmp(TI(t).birth_nonce, birth_nonce, AZ_IOT_CORRELATION_UUID_LEN) == 0)
+      || az_iot_connection_client__presence_twin_versions(TI(t).conn, &desired, &reported)
+          != AZ_IOT_OK)
   {
     return;
   }
-  /* Each birth-ack is the session baseline. A desired version below what the
-   * handler holds means the twin was replaced: patches cannot follow it. */
+  memcpy(TI(t).birth_nonce, birth_nonce, AZ_IOT_CORRELATION_UUID_LEN);
+  TI(t).birth_nonce_valid = true;
+
   TI(t).reported_properties_service_version = reported;
   if (desired < TI(t).desired_properties_device_version)
   {
     TI(t).desired_snapshot_required = true;
   }
   TI(t).desired_properties_service_version = desired;
-  if (!az_iot_connection_client__twin_push_desired(TI(t).conn))
+}
+
+/**
+ * @brief Hub CONNECTED: requests can now be published, so catch up.
+ *
+ * With `twin_push.push_desired` the service pushes the snapshot itself, unless
+ * the twin was replaced: a push cannot be relied on to replace newer state.
+ */
+static void on_hub_connected(az_iot_gen2_twin_client* t)
+{
+  adopt_session(t);
+  if (!az_iot_connection_client__twin_push_desired(TI(t).conn) || TI(t).desired_snapshot_required)
   {
     request_snapshot_if_behind(t);
   }
