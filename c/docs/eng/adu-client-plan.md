@@ -88,7 +88,7 @@ ADUv2/DPS channel is the only implementation that will ship (plus an in-test fak
 
 **Legend.** Support: ✅ Implemented (in core) · 🟡 Partial (built but simplified /
 sample-only / not factored) · 🔜 Coming soon (planned / designed, not yet built) ·
-⚙️ Architectural capability (enabled by hooks, no core code) · ❌ Cut (ADUv1-only, being removed).
+⚙️ Architectural capability (enabled by hooks, no core code) · ❌ Cut (ADUv1-only, removed).
 *(Outside the cut channel there is no "not planned" state — see
 [Scope and philosophy](#scope-and-philosophy-the-adu-reference-implementation).)*
 
@@ -112,8 +112,8 @@ sample-only / not factored) · 🔜 Coming soon (planned / designed, not yet bui
 | Core update workflow | ❌→✅ | **Accept / reject acknowledgement** — twin 200/406 ack is cut; already-installed becomes a `SKIPPED` outcome in the report. [→](#b-core-update-workflow) |
 | Core update workflow | ✅ | **Multi-step (composite) updates** — per-step Download→Backup→Install→Apply loop. [→](#b-core-update-workflow) |
 | Core update workflow | ✅ | **Per-step result reporting** — `resultCode`/`extendedResultCode`/`stepResults`. [→](#b-core-update-workflow) |
-| Core update workflow | ✅→🔜 | **Retry / replacement / duplicate detection** — engine logic kept; re-keyed from `workflow.id` + `retryTimestamp` onto `workflowId`, which is the sole correlation key in ADUv2. [→](#b-core-update-workflow) |
-| Core update workflow | ✅ | **Cancellation** — cooperative flag honored at phase boundaries. [→](#b-core-update-workflow) |
+| Core update workflow | ✅ | **Replacement / duplicate detection** — keyed on `workflowId` alone, the sole correlation key in ADUv2; `retryTimestamp` is gone. [→](#b-core-update-workflow) |
+| Core update workflow | 🟡 | **Cancellation** — cooperative flag still honored at phase boundaries, but ADUv2 has no input that sets it; a new `workflowId` replaces instead. [→](#b-core-update-workflow) |
 | Download and integrity | ✅ | **File download from manifest URLs** — resolves `fileUrls`, drives `download_fn`. [→](#c-download-and-integrity) |
 | Download and integrity | ✅ | **Chunked / streaming download** — `download_fn` may return `IN_PROGRESS`. [→](#c-download-and-integrity) |
 | Download and integrity | ✅ | **SHA-256 integrity (streaming, opt-in)** — runs when `read_file_fn` + incremental hooks supplied. [→](#c-download-and-integrity) |
@@ -257,13 +257,12 @@ stateDiagram-v2
   ADUv2 serialization/delivery remains pending: the contract describes a `stepResults` map plus
   a comma-separated hex `extendedResultCodes` list, with the full step wire shape still
   unconfirmed in [aduv2-spec.md](aduv2-spec.md#verified-vs-drafted).
-- **Retry vs. replacement vs. duplicate** — `set_active_workflow` tracks the workflow id
-  + a CRC-32 fingerprint of `updateManifest`. Under ADUv2 the correlation key is **`workflowId`
-  alone** and reporting is idempotent on it, so the `retryTimestamp` input disappears; the
-  supersede / ignore-duplicate logic itself is kept and re-keyed.
-- **Cancellation** — the cooperative flag and `az_iot_adu_is_cancelled()` stay. The ADUv1
-  `action: Cancel` desired property is cut; a cancel now originates locally or from a
-  superseding workflow, and terminates with a `CANCELED` outcome. Core never force-interrupts a hook.
+- **Replacement vs. duplicate (✅)** — keyed on **`workflowId` alone**, as ADUv2 defines it: a
+  new id restarts the workflow, the same id is ignored whatever the manifest bytes. The
+  `retryTimestamp` input is gone.
+- **Cancellation (🟡)** — the cooperative flag and `az_iot_adu_is_cancelled()` stay, but no
+  ADUv2 input sets the flag and no local cancel API exists yet; a superseding `workflowId`
+  restarts the workflow instead. Core never force-interrupts a hook.
 
 ## C. Download and integrity
 
@@ -305,7 +304,8 @@ stateDiagram-v2
 
 - **Install/Apply, Backup/Restore, partial rollback, reboot/resume (✅).** Persist-before-
   reboot uses a versioned, CRC-checked, little-endian blob (`ADU1`, blob **v2**) carrying
-  `retryTimestamp`, a manifest CRC, and the accumulated `install_result` incl.
+  `retryTimestamp` and a manifest CRC (kept for format compatibility, unused for
+  duplicate detection), and the accumulated `install_result` incl.
   `step_results[]`; `resume()` re-enters at the persisted phase boundary
   (`INSTALL_COMPLETE` → Apply). *Caveats:* the only persist point today is the
   install-requested reboot; post-reboot rollback assumes the platform retained per-step
@@ -563,8 +563,7 @@ Not code — things I (or the team) must do out-of-band:
 - [client-separation.md §8](client-separation.md#8-device-update) — where the `adu_core` /
   `az_iot_adu_channel` seam lands relative to the client split.
 - [adu-client-design.md](adu-client-design.md) — deep architecture: public API, hook/crypto
-  model, state machine, source layout, phase plan, library mode (§5.3), test strategy. Its
-  twin-delivery sections are **historical** (see its banner).
+  model, state machine, source layout, phase plan, library mode (§5.3), test strategy.
 - [connection-state-and-error-propagation.md](connection-state-and-error-propagation.md) —
   the Phase-0 foundation.
 - [split-client.md](split-client.md) — packaging / client-split considerations.

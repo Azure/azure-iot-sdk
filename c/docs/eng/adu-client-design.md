@@ -2,24 +2,16 @@
 
 The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "SHOULD NOT", "RECOMMENDED", "MAY", and "OPTIONAL" in this document are to be interpreted as described in [RFC 2119](https://datatracker.ietf.org/doc/html/rfc2119).
 
-> **Status: ADUv2 is the implementation target; ADUv1 is cut.**
-> This document is the deep architecture reference and it was written when delivery ran over the
-> IoT Hub **device twin**. That channel is being **removed** — see
-> [adu-client-plan.md](adu-client-plan.md#what-aduv1-is-cut-means) for what is removed vs. kept and
+> **Status: ADUv2 is implemented; the ADUv1 device-twin channel has been removed.**
+> Delivery and reporting go through the `az_iot_adu_channel` vtable. The only channel is ADUv2,
+> over the device's DPS connection ([aduv2-spec.md](aduv2-spec.md)). See
+> [adu-client-plan.md](adu-client-plan.md#what-aduv1-is-cut-means) for what the cut removed and
 > [connection.md §7](../connection.md#7-aduv2-onboarding-and-renewal-planned) for the decision of
-> record. Read this doc as follows:
->
-> | Content | How to read it |
-> |---|---|
-> | Engine: state machine (§4), public hooks (§5.1), crypto model (§6), root keys (§7), adapters (§8), persistence (§4), test strategy (§15) | **Current.** Transport-free; moves into `adu_core` unchanged. |
-> | Twin delivery: §3 "Twin Client: Multiple Desired-Property Subscribers", the twin wiring in §5.1/§10.1/§10.2, twin reported-property reporting in §4 | **Historical.** Describes the cut channel; kept because the replacement is derived from it. Delivery/reporting move behind an `az_iot_adu_channel` vtable. |
-> | Phases 0–6 (§11) | **As-built history.** The forward plan is Phases 7–8 below and the tiers in [adu-client-plan.md](adu-client-plan.md#priority--sequencing). |
->
-> Sections that are historical are marked **[ADUv1 — cut]** in their heading.
+> record. Phases 0–6 (§11) are as-built history.
 
 ## 1. Overview
 
-The `adu_client` is a **feature client** in the azure-iot-sdk SDK that implements the on-device side of the Azure Device Update protocol. It is being re-layered into a transport-independent **`adu_core`** (manifest parsing, signature verification, root keys, payload integrity, the download → backup → install → apply → restore state machine, reboot/resume persistence) plus an **`az_iot_adu_channel`** vtable that carries delivery and reporting. The only channel that will ship is **ADUv2** — the device-initiated pull protocol fronted by the DPS gateway ([aduv2-spec.md](aduv2-spec.md)). The ADUv1 twin channel described in the delivery sections below is being removed, and with it `adu_client`'s dependency on `az_iot_twin_client`.
+The `adu_client` is a **feature client** in the azure-iot-sdk SDK that implements the on-device side of the Azure Device Update protocol. It is layered into a transport-independent engine (manifest parsing, signature verification, root keys, payload integrity, the download → backup → install → apply → restore state machine, reboot/resume persistence) plus an **`az_iot_adu_channel`** vtable that carries delivery and reporting. The only channel is **ADUv2** — the device-initiated pull protocol fronted by the DPS gateway ([aduv2-spec.md](aduv2-spec.md)). The engine does not depend on `az_iot_twin_client`.
 
 ### Requirements
 
@@ -29,7 +21,7 @@ The `adu_client` is a **feature client** in the azure-iot-sdk SDK that implement
 - The ADU client MUST provide **platform abstraction hooks** so customers can plug their own download, install, apply, backup, and restore routines.
 - Pre-built platform adapters SHOULD be shipped for **Linux** and **ESP32** (in `adapters/adu/`, not in core `src/`).
 - The implementation MUST remain C99, single-threaded (callback-driven via `do_work()`), with no hidden allocations on the hot path — consistent with the existing SDK philosophy.
-- The ADU client MUST report update state and results to the cloud. The wire shape is channel-specific: `ReportDeviceUpdateStatus` for ADUv2 (see [aduv2-spec.md](aduv2-spec.md)); the ADUv1 twin reported-property shape is **cut**. The engine emits a structured result; the channel serializes it.
+- The ADU client MUST report update state and results to the cloud. The wire shape is channel-specific: `ReportDeviceUpdateStatus` for ADUv2 (see [aduv2-spec.md](aduv2-spec.md)). The engine emits a structured result; the channel serializes it.
 - The ADU client MUST support multi-step (composite) updates — the manifest MAY contain multiple instruction steps, each with its own handler type and file set.
 - The SDK SHOULD be usable as an **agent core library**: in addition to the managed client, it SHOULD expose transport-free primitives to *validate + parse* a manifest into a filled struct and to *build* the result report, so consumers can implement their own ADU agent and state machine on top of the SDK's vetted trust code. (See §5.3 and [adu-client-plan.md](adu-client-plan.md) — Library / agent-core mode.)
 
@@ -51,26 +43,24 @@ The `azure-sdk-for-c` dependency (already fetched via CMake FetchContent) includ
 
 | Capability | Function |
 |-----------|----------|
-| Parse service writable properties (deployment request) | `az_iot_adu_client_parse_service_properties()` |
 | Parse update manifest JSON | `az_iot_adu_client_parse_update_manifest()` |
-| Format agent state reported properties | `az_iot_adu_client_get_agent_state_payload()` |
-| Format service property acknowledgement | `az_iot_adu_client_get_service_properties_response()` |
-| Identify ADU PnP component | `az_iot_adu_client_is_component_device_update()` |
 | Structs for manifest, workflow, file info, step results | `az_iot_adu_client_update_manifest`, `az_iot_adu_client_update_request`, etc. |
+
+Its device-twin helpers (service-property parsing, agent-state and acknowledgement formatting, component check) are not used by the engine. `az_iot_adu_build_report()` still emits the upstream agent-state JSON; the ADUv2 `reportStatus` body is built by the channel.
 
 **What azure-sdk-for-c does NOT provide:**
 - State machine / workflow orchestration.
 - JWS signature verification.
-- Any network I/O (download, MQTT, twin integration).
+- Any network I/O (download, MQTT).
 - Platform hooks for install/apply/backup/restore.
 
 ### Strategy: Reuse, Don't Reimplement
 
-Our `adu_client` MUST **delegate** manifest parsing and reported-property formatting to `azure-sdk-for-c`'s `az_iot_adu_client` module. We MUST NOT reimplement JSON parsing already provided by the upstream dependency. We own:
+Our `adu_client` MUST **delegate** manifest parsing to `azure-sdk-for-c`'s `az_iot_adu_client` module. We MUST NOT reimplement JSON parsing already provided by the upstream dependency. We own:
 
 1. **State machine** — orchestrating the Download → Backup → Install → Apply → (Restore) lifecycle.
 2. **JWS verification** — via customer-provided crypto hooks.
-3. **Channel integration** — carrying an update manifest in and a structured report out. ADUv1 did this through `az_iot_twin_client` desired/reported properties; that wiring is **cut** and replaced by the `az_iot_adu_channel` vtable with a single ADUv2 implementation.
+3. **Channel integration** — carrying an update manifest in and a structured report out, through the `az_iot_adu_channel` vtable; the ADUv2 channel serializes both.
 4. **Platform hooks** — the vtable for download, install, apply, etc.
 
 This avoids duplicating the well-tested JSON parsing logic and keeps us aligned with the protocol schema as it evolves in the upstream dependency.
@@ -79,8 +69,8 @@ This avoids duplicating the well-tested JSON parsing logic and keeps us aligned 
 
 ## 3. Architecture
 
-**Target layering** (post-cut): the application drives `adu_core`, which reaches the network only
-through the channel vtable and the platform hooks.
+The application drives the engine, which reaches the network only through the channel vtable and
+the platform hooks.
 
 ```mermaid
 flowchart TB
@@ -92,134 +82,6 @@ flowchart TB
     CORE --> HK["platform + crypto hooks"]
 ```
 
-**As-built (ADUv1, being removed)** — kept here because the engine boxes below are what move into
-`adu_core`; the `az_iot_twin_client` edges are the ones that disappear.
-
-```mermaid
-flowchart TB
-    subgraph APP["Application"]
-        MAIN["main / do_work loop"]
-    end
-
-    subgraph SDK["azure-iot-sdk SDK"]
-        CONN["az_iot_connection_client"]
-        TWIN["az_iot_twin_client"]
-        ADU["az_iot_adu_client (NEW)"]
-    end
-
-    subgraph AZSDK["azure-sdk-for-c (FetchContent)"]
-        AZSDK_ADU["az_iot_adu_client<br/>(parsing & formatting)"]
-    end
-
-    subgraph HOOKS["Platform Hooks (customer-provided or adapter)"]
-        DL["download_fn"]
-        INST["install_fn"]
-        APPLY["apply_fn"]
-        BACKUP["backup_fn"]
-        RESTORE["restore_fn"]
-        IS_INST["is_installed_fn"]
-        CRYPTO["crypto hooks<br/>(JWS verify, SHA-256)"]
-    end
-
-    MAIN --> CONN
-    CONN --> TWIN
-    TWIN --> ADU
-    ADU --> AZSDK_ADU
-    ADU --> HOOKS
-    ADU -->|"reported properties"| TWIN
-```
-
-### Twin Client: Multiple Desired-Property Subscribers
-
-> **[ADUv1 — cut]**
-
-> The subscriber registry itself stays: it is an `az_iot_twin_client` feature with other consumers.
-> What is cut is **ADU being one of its subscribers** — ADUv2 has no subscription, no unsolicited
-> offer and no reported-property status.
-
-The current `az_iot_twin_client_set_desired_callback()` accepts a **single**
-callback, so ADU and the user application cannot both observe desired-property
-changes. The twin client MUST be extended to a **subscriber registry**,
-structurally identical to the connection-client observer registry
-([connection-state-and-error-propagation.md §2](connection-state-and-error-propagation.md)).
-
-#### Registry shape
-
-The twin client holds **one** array of entries
-`{ cb, user_ctx, is_feature_client }`. Public registration sets
-`is_feature_client = false`; an internal (internal-header) helper sets `true`.
-The application MUST NOT be able to register as a feature client — the flag is
-set by the registration helper, never passed by the caller.
-
-```c
-/* Unchanged callback signature. */
-typedef void (*az_iot_twin_desired_callback)(
-    const uint8_t* desired_patch,
-    size_t desired_patch_len,
-    uint64_t version,
-    void* user_ctx);
-
-/* Public — application. */
-az_iot_result az_iot_twin_client_subscribe_desired(
-    az_iot_twin_client* twin, az_iot_twin_desired_callback cb, void* user_ctx);
-az_iot_result az_iot_twin_client_unsubscribe_desired(
-    az_iot_twin_client* twin, az_iot_twin_desired_callback cb, void* user_ctx);
-
-/* Internal header — feature clients (e.g. ADU). */
-az_iot_result az_iot_twin_client__subscribe_desired(
-    az_iot_twin_client* twin, az_iot_twin_desired_callback cb, void* user_ctx);
-```
-
-`az_iot_twin_client_set_desired_callback()` is **removed** and replaced by the
-registry; existing single-callback callers migrate to
-`az_iot_twin_client_subscribe_desired()` (one-line change).
-
-#### Dispatch
-
-On each inbound desired patch, the twin client dispatches the **full patch** to
-**all** subscribers in **two passes**: (1) feature-client entries in registration
-order, then (2) application entries in registration order. Each subscriber is
-responsible for checking whether the patch contains its keys (ADU checks for
-`"deviceUpdate"`; the application checks for its own properties). Feature clients
-MUST therefore be notified before the application, so that by the time the app
-callback runs, ADU has already consumed/acted on its slice.
-
-#### Capacity (compile-time configurable)
-
-Total default **4** = **2 feature-client** + **2 application** slots (ADU is the
-only feature-client subscriber today; the split leaves headroom):
-
-```c
-#ifndef AZ_IOT_TWIN_MAX_DESIRED_FEATURE_SUBS
-#define AZ_IOT_TWIN_MAX_DESIRED_FEATURE_SUBS 2
-#endif
-#ifndef AZ_IOT_TWIN_MAX_DESIRED_APP_SUBS
-#define AZ_IOT_TWIN_MAX_DESIRED_APP_SUBS 2
-#endif
-```
-
-`subscribe_desired` returns `AZ_IOT_ERR_NOT_SUPPORTED` when the relevant pool is
-full.
-
-#### Removal & reentrancy
-
-- A feature client (ADU) MUST `unsubscribe_desired` from its own `deinit`.
-- A subscriber callback MUST NOT call `subscribe`/`unsubscribe` or twin
-  `init`/`deinit` during a dispatch: the twin client carries a `dispatching`
-  guard; `subscribe`/`unsubscribe` return `AZ_IOT_ERR_BUSY` during dispatch;
-  debug builds assert. Because mutation-during-dispatch is forbidden, no registry
-  snapshot is required.
-
-#### Interaction with the connection lifecycle
-
-The twin client's underlying SUBSCRIBE to the desired-property topic is a
-persistent subscription (re-issued on every reconnect by the connection client).
-The subscriber registry is independent of connection state and survives
-`close`→`open`. On twin `deinit`, the poison-magic guard
-([connection doc §3.2](connection-state-and-error-propagation.md)) blocks
-re-init, and any still-registered feature client receives `AZ_IOT_ERR_DETACHED`
-on subsequent calls.
-
 ---
 
 ## 4. State Machine
@@ -228,13 +90,13 @@ on subsequent calls.
 stateDiagram-v2
     [*] --> Idle
 
-    Idle --> ManifestReceived : desired props with updateManifest
+    Idle --> ManifestReceived : updateMetadata offered
     ManifestReceived --> VerifyingManifest : begin JWS verification
-    VerifyingManifest --> AcceptReject : manifest valid
+    VerifyingManifest --> InstalledCheck : manifest valid
     VerifyingManifest --> Failed : invalid signature / revoked key
 
-    AcceptReject --> DownloadStarted : accepted (report ACCEPT 200)
-    AcceptReject --> Idle : rejected (report REJECT 406)
+    InstalledCheck --> DownloadStarted : not installed
+    InstalledCheck --> Idle : already installed (reports SKIPPED)
 
     DownloadStarted --> DownloadStarted : IN_PROGRESS (next chunk / next file)
     DownloadStarted --> DownloadComplete : all files for current step downloaded
@@ -258,19 +120,16 @@ stateDiagram-v2
     RestoreStarted --> Idle : restore complete (reports failure)
     Failed --> Idle : error reported to cloud
 
-    Idle --> Idle : Cancel
-    DownloadStarted --> Idle : Cancel
-    InstallStarted --> Idle : Cancel
+    DownloadStarted --> ManifestReceived : new workflowId (replacement)
+    InstallStarted --> ManifestReceived : new workflowId (replacement)
 ```
 
-### Deployment Accept/Reject
+### Already-Installed Check
 
-> **[ADUv1 wire shape — cut]** The `is_installed_fn` decision stays in the engine; with no twin acknowledgement, an already-installed or non-applicable update is reported as a `SKIPPED` outcome.
+After verifying the manifest signature, the client MUST call `is_installed_fn`:
 
-After verifying the manifest signature, the client MUST acknowledge the service property using `az_iot_adu_client_get_service_properties_response()`. The client MUST call `is_installed_fn` to determine if the update is already applied:
-
-- If already installed: the client MUST respond with `AZ_IOT_ADU_CLIENT_REQUEST_DECISION_REJECT` (406) and remain Idle.
-- If not installed: the client MUST respond with `AZ_IOT_ADU_CLIENT_REQUEST_DECISION_ACCEPT` (200) and transition to DownloadStarted.
+- If already installed: the client MUST report a `SKIPPED` outcome and return to Idle without downloading.
+- Otherwise: the client MUST transition to DownloadStarted.
 
 A customer-provided `accept_deployment_fn` hook MAY be added to allow application-level rejection (e.g., battery too low, critical operation in progress).
 
@@ -310,17 +169,12 @@ authenticate the manifest, *then* trust its hashes, *then* verify payloads — i
 mandatory; verifying payload hashes from an unverified manifest provides no
 security.
 
-### Startup Reporting
+### Device Properties on the Wire
 
-> **[ADUv1 — cut]** ADUv2 sends `agentInfo` + `installedUpdateId` on each update check instead of re-reporting to the twin on startup and reconnect.
-
-On initial connection (and after every reconnect), the ADU client MUST report device properties to the cloud via twin reported properties, even when no update is in progress. This MUST include:
-
-- `deviceProperties` (manufacturer, model, aduVer, compatPropertyNames).
-- `state: 0` (Idle).
-- `installedUpdateId` (currently installed version).
-
-This is REQUIRED for the ADU service to know the device exists and its current firmware version. The client MUST perform this report inside its first `do_work()` invocation after `az_iot_adu_client_initialize()` or `az_iot_adu_client_resume()` completes.
+Device properties reach the service on **every update check**: manufacturer, model and custom
+properties as `agentInfo.compatibilityProperties`, and `installedUpdateId` on the regular route
+(the onboarding route omits it). There is no unsolicited report: status reports are keyed on
+`workflowId`, so a device with no workflow has nothing to report.
 
 #### Device-Properties Model
 
@@ -334,23 +188,13 @@ The design (full API in [§5.2](#52-device-properties-api)):
    **deep-copies** every string into the cache; after `init` returns the
    application MAY mutate or free its own struct.
 2. **No exposure of azure-sdk-for-c types.** The library MUST NOT expose
-   `az_iot_adu_client_device_properties`. It maps the cached values onto that
-   type internally, only when formatting the payload.
-3. **Cache reused for every report.** azure-sdk-for-c's
-   `az_iot_adu_client_get_agent_state_payload()` requires device properties on
-   *every* reported-property publish. All workflow state reports read from the
-   cache; the application MUST NOT be invoked mid-`do_work`.
-4. **Runtime update (deferred publish).**
-   `az_iot_adu_client_update_device_properties()` deep-copies a new struct into
-   the cache and sets a "report pending" flag; the **next** `do_work()` publishes.
-   Multiple calls coalesce into one report. This subsumes any manual-trigger need
-   and supports dynamic custom-property changes at runtime.
-5. **Reconnect re-report.** The ADU client registers a *feature-client* observer
-   (see [§16](#16-prerequisite-connection-state--error-propagation)); on
-   `AZ_IOT_CONN_STATE_CONNECTED` it sets the same "report pending" flag, re-sending
-   the cached properties on the next `do_work()`. Persistent subscriptions are
-   re-issued automatically by the connection client, so ADU only needs the
-   re-report.
+   `az_iot_adu_client_device_properties`.
+3. **Cache reused for every request.** Every update check and status report
+   reads from the cache; the application MUST NOT be invoked mid-`do_work`.
+4. **Runtime update.** `az_iot_adu_client_update_device_properties()`
+   deep-copies a new struct into the cache and refreshes the channel's copy; the
+   **next** update check carries it. With a workflow active, its status is
+   re-reported on the next `do_work()`.
 
 **Threading.** This follows the SDK-wide single-threaded contract: `init`,
 `update_device_properties`, and `do_work` MUST run on the same thread or be
@@ -358,27 +202,15 @@ externally serialized (e.g. one mutex guarding all SDK calls). The deep-copy
 gives clean **ownership** (no dangling pointer into caller memory), not
 cross-thread safety. SDK-wide thread-safety is a separate future effort.
 
-### Retry vs. Replacement Detection
+### Duplicate vs. Replacement Detection
 
-The `az_iot_adu_client_workflow` struct contains `action`, `id`, and `retry_timestamp`. The client MUST distinguish between:
+`workflowId` is the sole deployment identity; the service re-offers a workflow until it is
+superseded. The client MUST distinguish:
 
 | Condition | Meaning | Behavior |
 |-----------|---------|----------|
-| New `workflow.id` arrives while processing another | **Replacement** | MUST cancel current workflow, start new one |
-| Same `workflow.id` + newer `retry_timestamp` | **Retry** | MUST cancel current workflow, restart same deployment from scratch |
-| Same `workflow.id` + same or empty `retry_timestamp` | **Duplicate/no-op** | MUST ignore |
-
-### Cloud State Mapping
-
-> **[ADUv1 — cut]** The `0/6/255` agent-state mapping goes with the twin channel.
-
-The internal fine-grained states (`az_iot_adu_state`) MUST be mapped to the protocol-defined agent states when reporting to the cloud:
-
-| Internal State(s) | Reported `state` value | Protocol Meaning |
-|-------------------|----------------------|------------------|
-| `IDLE` | `0` | Idle |
-| All others (Download, Backup, Install, Apply, Restore) | `6` | DeploymentInProgress |
-| `FAILED` | `255` | Failed |
+| New `workflowId` | **Replacement** | MUST restart from ManifestReceived with the new deployment |
+| Same `workflowId`, whatever the manifest bytes | **Duplicate** | MUST ignore |
 
 ### Result-Code Mapping
 
@@ -395,7 +227,6 @@ client MUST report:
 | Outcome | `result_code` |
 |---|---|
 | Step/overall success | `700` |
-| Cancelled (replacement/Cancel during a phase) | `0` |
 | Any failure | A non-success ADU code (`< 700`) indicating the failing phase |
 
 **`extended_result_code`.** A 32-bit diagnostic value the client MUST compose so
@@ -473,40 +304,30 @@ returned to its pre-deployment state:
 
 ### State reporting to cloud
 
-> **[ADUv1 wire shape — cut]** ADUv2 reports a structured `installResult` through `reportUpdateStatus`; see [aduv2-spec.md](aduv2-spec.md).
-
-Each state transition MUST produce a twin reported-property update (formatted using `az_iot_adu_client_get_agent_state_payload()` from azure-sdk-for-c):
+Workflow transitions produce a status report. The engine hands the channel a structured result
+(see Result-Code Mapping); the ADUv2 channel sends it as `ReportDeviceUpdateStatus`:
 
 ```json
 {
-  "deviceUpdate": {
-    "__t": "c",
-    "agent": {
-      "state": 6,
-      "workflow": {
-        "action": 3,
-        "id": "<workflow_id>"
-      },
-      "installedUpdateId": "{\"provider\":\"...\",\"name\":\"...\",\"version\":\"...\"}",
-      "lastInstallResult": {
-        "resultCode": 700,
-        "extendedResultCode": 0,
-        "resultDetails": "",
-        "stepResults": {
-          "step_0": { "resultCode": 700, "extendedResultCode": 0 }
-        }
-      }
-    }
+  "workflowId": "<workflowId from updateMetadata>",
+  "installedUpdateId": { "provider": "...", "name": "...", "version": "..." },
+  "installResult": {
+    "outcome": "IN_PROGRESS",
+    "failureOrigin": "NOT_APPLICABLE",
+    "resultCode": 1,
+    "extendedResultCodes": "0"
   }
 }
 ```
 
+Per-step results go in `installResult.stepResults`, keyed `step_0`, `step_1`, …; field rules are
+in [aduv2-spec.md](aduv2-spec.md).
+
 ### Cancellation
 
-The client MUST support cancellation at phase boundaries. When a cancel is requested (new desired property with `action: Cancel`, or a replacement deployment arrives):
-
-1. If currently idle or between phases: the client MUST transition immediately to Idle.
-2. If mid-phase (e.g., download in progress): the client MUST set a `cancel_requested` flag; the platform hook SHOULD check it via `az_iot_adu_is_cancelled()` periodically and return early.
+ADUv2 carries no cancel action. A new `workflowId` replaces the in-progress workflow: the
+engine restarts at ManifestReceived when it is delivered. `az_iot_adu_is_cancelled()` remains
+for hooks to poll; no ADUv2 input sets it.
 
 ### Reboot coordination
 
@@ -583,14 +404,14 @@ power cycle, so it lives in the blob rather than only in RAM.
 
 1. Call `load_state_fn`. If it reports no state, or `magic`/`version`/`crc32`
    fail validation, `resume()` is a **no-op** returning success — the agent
-   starts clean and waits for a desired-property deployment.
+   starts clean and waits for the next update offer.
 2. Otherwise core rehydrates `current_request`, `current_step`, `current_file`,
    the `step_results[]`, and `backup_done` flags from the blob.
-3. **Replacement check** — when the next desired-property deployment arrives,
-   core compares its workflow `id` (and `manifest_sha256`) against the persisted
-   pair. If they differ, the persisted workflow was superseded while the device
-   was down: core MUST discard the resumed state and process the new deployment
-   from `Idle`.
+3. **Replacement check** — when the next offer arrives, core compares its
+   `workflowId` against the persisted one. A different id means the persisted
+   workflow was superseded while the device was down: core MUST discard the
+   resumed state and process the new deployment. The same id is a duplicate and
+   is ignored.
 4. **Re-entry point** — `resume()` MUST re-enter at a *phase boundary*, never
    mid-hook (hooks are not assumed re-entrant across reboot):
    - persisted `state` ∈ {`INSTALL_*`} ⇒ re-enter at the start of **Apply** for
@@ -627,7 +448,7 @@ power cycle, so it lives in the blob rather than only in RAM.
 #include <stddef.h>
 #include <stdbool.h>
 #include "az_iot_result.h"
-#include "az_iot_twin_client.h"
+#include "az_iot_connection_client.h"
 #include <azure/iot/az_iot_adu_client.h>  /* azure-sdk-for-c: parsing structs */
 
 #ifdef __cplusplus
@@ -865,7 +686,7 @@ typedef struct az_iot_adu_client_t
 {
     struct
     {
-        az_iot_twin_client* twin;
+        az_iot_adu_channel channel;   /* ADUv2 channel bound to the connection client */
         az_iot_adu_platform_hooks hooks;
         az_iot_adu_crypto_hooks crypto;
         /* Root-key store (core-owned). Pointers reference caller arrays; see §7.
@@ -961,21 +782,16 @@ az_iot_result az_iot_adu_client_remove_observer(
     void* user_ctx);
 
 /**
- * Initialize the ADU client. `twin` is the initialized twin client the ADU
- * client subscribes to for desired properties; `options` carries the rest
- * (hooks, crypto, trust store, device properties + caller cache). Returns
+ * Initialize the ADU client. `connection` is the connection client whose DPS
+ * session carries the ADUv2 channel; `options` carries the rest (hooks,
+ * crypto, trust store, device properties + caller cache). Returns
  * AZ_IOT_ERR_INVALID_ARG if a required field is NULL, or
  * AZ_IOT_ERR_NOT_ENOUGH_SPACE if root_key_count > AZ_IOT_ADU_MAX_ROOT_KEYS or
  * the buffer is too small for device_props.
- *
- * [ADUv1 — cut] The `az_iot_twin_client*` parameter goes away with the twin
- * channel: initialization takes an az_iot_adu_channel* instead, and
- * device_props is re-shaped into the ADUv2 agentInfo cache. This is a
- * deliberate public header break with no deprecation window.
  */
 az_iot_result az_iot_adu_client_initialize(
     az_iot_adu_client_t* client,
-    az_iot_twin_client* twin,
+    az_iot_connection_client* connection,
     const az_iot_adu_client_config_options* options);
 
 /**
@@ -1108,38 +924,33 @@ adu_opts.root_key_count = root_key_count;
 adu_opts.device_props = &props;
 adu_opts.device_props_buffer = props_cache;
 adu_opts.device_props_buffer_size = sizeof(props_cache);
-az_iot_adu_client_initialize(&adu, &twin, &adu_opts);
+az_iot_adu_client_initialize(&adu, &conn, &adu_opts);
 /* `props` and its strings may now be freed/reused; the client holds a deep copy. */
 
 /* Later, when firmware version or a custom property changes at runtime: */
 props.installed_update_id.version = "1.1.0";
-az_iot_adu_client_update_device_properties(&adu, &props); /* reported on next do_work() */
+az_iot_adu_client_update_device_properties(&adu, &props); /* carried by the next update check */
 ```
 
-Reporting triggers, end to end:
+Device properties on the wire, end to end:
 
 ```mermaid
 sequenceDiagram
     participant App
     participant ADU as adu_client
-    participant Conn as connection_client
-    participant Twin as twin_client
+    participant Ch as ADUv2 channel
+    participant DPS
 
-    Note over ADU: init() deep-copies device_props into cache<br/>registers feature-client state observer on Conn
-    App->>ADU: do_work() (first call)
-    ADU->>Twin: patch_reported(state=Idle + deviceProperties)
-
-    Note over Conn: network drop → reconnect → CONNECTED
-    Conn->>ADU: state observer(CONNECTED)
-    ADU->>ADU: set report-pending
-    App->>ADU: do_work()
-    ADU->>Twin: patch_reported(cached deviceProperties)
+    Note over ADU: init() deep-copies device_props into the cache and the channel
+    App->>ADU: request_onboarding_update()
+    ADU->>Ch: request_update(onboarding)
+    Ch->>DPS: update check { agentInfo }
+    DPS-->>Ch: 200 { serviceConfiguration, updateMetadata? }
+    Ch-->>ADU: updateMetadata (when an update applies)
 
     Note over App: firmware/custom property changed at runtime
     App->>ADU: update_device_properties(&props)
-    ADU->>ADU: deep-copy into cache + set report-pending
-    App->>ADU: do_work()
-    ADU->>Twin: patch_reported(updated deviceProperties)
+    ADU->>Ch: set_device_properties (next update check carries it)
 ```
 
 ### 5.3 Agent Core-Library API (parse-only / BYO state machine)
@@ -1151,7 +962,7 @@ sequenceDiagram
 > on top of our vetted parse + trust + report code, without adopting our state
 > machine or any transport.
 
-These functions are **transport-free and twin-free**. They take spans/structs
+These functions are **transport-free**. They take spans/structs
 only, perform no hidden allocation, and (where they return a struct) populate the
 output **only after** trust verification passes (fail-closed). After the §10
 engine extraction, the managed `az_iot_adu_client` is implemented in terms of
@@ -1166,15 +977,15 @@ path.
  * payload into filled structs. Fail-closed: out_request/out_manifest are valid
  * only on AZ_IOT_OK. The manifest is unescaped in place, so spans inside the
  * outputs reference `request_json`, which the caller owns and MUST keep alive
- * (and stable) for as long as the structs are used. No heap, no twin, no network.
+ * (and stable) for as long as the structs are used. No heap, no network.
  *
- *   request_json: the raw deployment payload (update manifest + signature +
- *     fileUrls), exactly as delivered by whatever transport the consumer uses.
+ *   request_json: the `updateMetadata` object (workflowId, updateManifest,
+ *     updateManifestSignature, fileUrls), exactly as the service sends it.
  *     Mutated in place (manifest string unescaped); pass a writable buffer.
  *   crypto / root_keys: same trust inputs as az_iot_adu_client_initialize().
  *
- * Returns AZ_IOT_OK (verified parse, or a Cancel request), AZ_IOT_ERR_NOT_FOUND
- * (no deviceUpdate/service component), AZ_IOT_ERR_INVALID_ARG (bad args or
+ * Returns AZ_IOT_OK (verified parse), AZ_IOT_ERR_NOT_FOUND
+ * (no workflowId), AZ_IOT_ERR_INVALID_ARG (bad args or
  * malformed JSON), or AZ_IOT_ERR_AUTH (signature/trust verification failed).
  */
 az_iot_result az_iot_adu_parse_update_request(
@@ -1198,9 +1009,8 @@ az_iot_result az_iot_adu_verify_file_hash(
 
 /**
  * Build the report payload from the consumer's own outcome data, without the
- * state machine. Emits the structured result; the generation-specific serializer
- * turns it into the twin reported-properties (ADUv1) or the reportStatus body
- * (ADUv2, see adu-client-plan.md — ADUv2 transport).
+ * state machine. Emits the upstream agent-state JSON today; the ADUv2
+ * reportStatus body is built by the channel (see aduv2-spec.md).
  */
 az_iot_result az_iot_adu_build_report(
     const az_iot_adu_device_properties* device_props,
@@ -1305,7 +1115,7 @@ graph TD
     H1 -->|"resolve kid → root key (reject if disabled/unknown)"| RK
     RK -->|"verify_rs256_fn(root key, sjwk signed bytes, sjwk sig)"| SJWK["2. SJWK verified → parse signing key (n,e)"]
     SJWK -->|"verify_rs256_fn(signing key, manifest signed bytes, manifest sig)"| M["3. Manifest JWS verified"]
-    M -->|"core: SHA-256(manifest body) == hash from twin updateManifest"| BIND["4. Manifest bound to deployment"]
+    M -->|"core: SHA-256(manifest body) == hash in updateManifestSignature"| BIND["4. Manifest bound to deployment"]
     BIND --> F["5. Per-file SHA-256 hashes now trusted (§ Payload Hash Verification)"]
 ```
 
@@ -1325,8 +1135,8 @@ Worked sequence inside core (`verify_jws` is internal, not a hook):
 5. Reconstruct the manifest's signed bytes; call `verify_rs256_fn(signing.n,
    signing.e, manifest_signed, manifest_sig)`. On failure → `0x1`.
 6. The manifest JSON is now trusted. Core computes `SHA-256` over the manifest
-   body and compares it to the `updateManifestSignature`/hash delivered in the
-   twin desired payload, binding the signed manifest to *this* deployment.
+   body and compares it to the hash in `updateManifestSignature` from the
+   `updateMetadata` offer, binding the signed manifest to *this* deployment.
 
 Only after all six steps succeed does core trust any field in the manifest —
 including the per-file `sha256` hashes used below.
@@ -1410,7 +1220,7 @@ Platform-specific code (Linux libcurl downloads, ESP32 OTA partition writes, etc
 
 1. **Consistency with existing pattern** — MQTT adapters live in `adapters/paho/` and `adapters/rust_mqtt/`, not in `src/core/`. Platform-specific ADU code MUST follow the same convention.
 
-2. **Clean dependency graph** — `src/features/adu/` MUST depend only on `az_iot_twin_client`, `azure-sdk-for-c` (for parsing), and the hooks vtable. It MUST NOT depend on libcurl, ESP-IDF, or OS-specific headers. This makes it compilable and testable on any platform including host-only unit tests.
+2. **Clean dependency graph** — `src/features/adu/` MUST depend only on `az_iot_connection_client` (through the ADUv2 channel), `azure-sdk-for-c` (for parsing), and the hooks vtable. It MUST NOT depend on libcurl, ESP-IDF, or OS-specific headers. This makes it compilable and testable on any platform including host-only unit tests.
 
 3. **Customer freedom** — Customers who bring their own platform MUST NOT be forced to build/link our Linux or ESP32 code. They implement the hooks and never touch `adapters/adu/`.
 
@@ -1422,7 +1232,7 @@ Platform-specific code (Linux libcurl downloads, ESP32 OTA partition writes, etc
 
 | Location | Contains | Links to |
 |----------|----------|----------|
-| `src/features/adu/` | State machine, twin integration, step orchestration | `az_iot_twin_client`, `azure-sdk-for-c` |
+| `src/features/adu/` | State machine, ADUv2 channel, step orchestration | `az_iot_connection_client`, `azure-sdk-for-c` |
 | `adapters/adu/crypto_mbedtls/` | `verify_rs256_fn`, `sha256_*` using mbedTLS | mbedTLS |
 | `adapters/adu/crypto_openssl/` | `verify_rs256_fn`, `sha256_*` using OpenSSL | OpenSSL |
 | `adapters/adu/linux/` | `download_fn` (libcurl), `install_fn` (exec), `persist_state_fn` (file I/O) | libcurl, POSIX |
@@ -1435,7 +1245,7 @@ Platform-specific code (Linux libcurl downloads, ESP32 OTA partition writes, etc
 Two samples demonstrate the feature client at opposite ends of the spectrum:
 `adu_linux` is a **simulation** that exercises the full protocol and state machine
 with *no real firmware risk*, while `adu_esp32` performs a **real OTA** on device.
-Both share the same wiring shape — connection client + twin + ADU client + crypto
+Both share the same wiring shape — connection client + ADU client + crypto
 hooks + platform hooks + a non-blocking `do_work` loop (§10.2) — differing only in
 the platform-hook implementations they install.
 
@@ -1450,7 +1260,7 @@ What is real vs. mocked:
 
 | Concern | adu_linux behavior |
 |---------|--------------------|
-| Connection, twin, manifest receipt, accept/reject, state reporting | **Real** — talks to a real hub/ADU instance via the Paho adapter. |
+| Connection, update check, manifest receipt, status reporting | **Real** — talks to a real DPS/ADU instance via the Paho adapter. |
 | Manifest JWS verification | **Real** — uses the OpenSSL crypto adapter and real root keys, so signature checks genuinely run. |
 | `download_fn` | **Mocked** — instead of fetching the payload URL, it synthesizes bytes of the manifest-declared size and feeds them through the **real** `sha256_*` hooks. To exercise both paths it can either (a) generate bytes that hash to the manifest value (success), or (b) corrupt one byte to drive the facility-`0x3` hash-mismatch path on demand (env-selectable). |
 | `install_fn` / `apply_fn` | **Mocked** — log "installing step N", optionally `sleep` to simulate work, return `SUCCESS` (or `REBOOT_REQUIRED` when `ADU_SIM_REBOOT=1`, to exercise persist/resume). |
@@ -1472,9 +1282,8 @@ Behavior knobs (environment variables, all optional):
 /* samples/adu_linux/main.c (sketch) */
 int main(void)
 {
-    /* 1. connection + twin (real, via Paho) */
-    az_iot_connection_client_init(&conn, /* hub/device creds from env */ ...);
-    az_iot_twin_client_init(&twin, &conn);
+    /* 1. connection (real, via Paho) */
+    az_iot_connection_client_init(&conn, /* DPS/device creds from env */ ...);
 
     /* 2. real crypto (OpenSSL) + real Microsoft root keys */
     az_iot_adu_crypto_hooks crypto = az_iot_adu_crypto_openssl_hooks();
@@ -1496,10 +1305,11 @@ int main(void)
     adu_opts.device_props = &props;
     adu_opts.device_props_buffer = props_cache;
     adu_opts.device_props_buffer_size = sizeof props_cache;
-    az_iot_adu_client_initialize(&adu, &twin, &adu_opts);
+    az_iot_adu_client_initialize(&adu, &conn, &adu_opts);
 
     az_iot_connection_client_open(&conn);
     az_iot_adu_client_resume(&adu);   /* continue if a prior run persisted state */
+    az_iot_adu_client_request_onboarding_update(&adu, 30000);
 
     while (running) {
         az_iot_connection_client_do_work(&conn);
@@ -1519,7 +1329,7 @@ What is real:
 
 | Concern | adu_esp32 behavior |
 |---------|--------------------|
-| Connection, twin, state reporting | **Real** via the device's MQTT path. |
+| Connection, update check, status reporting | **Real** via the device's MQTT path. |
 | Manifest JWS verification | **Real** — mbedTLS crypto adapter + root keys. |
 | `download_fn` | **Real** — `esp_http_client` streams the payload URL in chunks, feeding each chunk through the `sha256_*` hooks; returns `IN_PROGRESS` between chunks so the loop stays responsive and the TLS/MQTT keepalive is serviced. |
 | `install_fn` | **Real** — writes the downloaded image into the inactive OTA partition via `esp_ota_begin/_write/_end`. |
@@ -1557,20 +1367,21 @@ OTA image valid (cancelling the automatic rollback), then report success.
 
 ## 9. Source Layout
 
-> **[Target after the cut]** `src/features/adu/` splits into `adu_core/` (engine, transport-free)
-> and `channels/aduv2/` (the DPS-fronted channel); `adu_state_reporter.c` — which wraps the twin
-> reported-property formatter — is deleted and its structured-result assembly moves into the
-> engine. `tests/unit/adu/test_adu_device_props.c` becomes an `agentInfo` test, and a fake channel
-> joins `tests/support/`. Samples keep their platform-hook halves and lose their twin halves.
-> The tree below is as-built for ADUv1.
+> As built, `src/features/adu/` holds the engine (`adu_client.c`), the ADUv2 channel
+> (`adu_channel_dps.c`), its wire codec (`adu_protocol.c`), the structured-result assembly
+> (`adu_report.c`) and the Microsoft root keys; the `adu_core/` + `channels/` split was not
+> taken. Unit tests live in `tests/unit/adu_*_test.c` against a fake channel.
 
 ```
 inc/azure/iot/
 ├── az_iot_adu.h                           ← public API (our feature client)
 
 src/features/adu/
-├── adu_client.c                           ← state machine, twin integration, step dispatch
-├── adu_state_reporter.c                   ← wraps az_iot_adu_client_get_agent_state_payload()
+├── adu_client.c                           ← state machine, step dispatch, persistence
+├── adu_channel_dps.c                      ← ADUv2 channel over the DPS session
+├── adu_protocol.c                         ← ADUv2 request/response codec
+├── adu_report.c                           ← structured result for the channel
+├── adu_root_keys_microsoft.c              ← compiled-in Microsoft root keys
 └── internal/
     └── adu_internal.h                     ← internal structs, forward decls
     (sources are compiled into the az_iot_core target via src/CMakeLists.txt)
@@ -1612,7 +1423,7 @@ tests/conformance/adu/
 └── CMakeLists.txt
 
 samples/adu_linux/
-├── main.c                                 ← wires real conn/twin/crypto + simulated platform hooks
+├── main.c                                 ← wires real conn/crypto + simulated platform hooks
 ├── adu_sim_hooks.c                        ← mock download/install/apply/backup/restore/persist
 └── CMakeLists.txt
 
@@ -1626,44 +1437,36 @@ samples/adu_esp32/
 
 ## 10. Integration with Existing SDK
 
-### 10.1 Twin Desired Property Flow
-
-> **[ADUv1 — cut]** This flow is removed with the twin channel; ADUv2 pulls instead.
+### 10.1 ADUv2 Update Flow
 
 ```mermaid
 sequenceDiagram
-    participant Hub as IoT Hub
-    participant Twin as az_iot_twin_client
+    participant App
     participant ADU as az_iot_adu_client
-    participant AzSDK as azure-sdk-for-c parser
+    participant Ch as ADUv2 channel
+    participant DPS
     participant Hook as Platform Hook
 
-    Hub->>Twin: desired props PATCH
-    Twin->>ADU: desired_cb fires (one of N subscribers)
-    ADU->>AzSDK: az_iot_adu_client_is_component_device_update()
-    AzSDK-->>ADU: true
-    ADU->>AzSDK: az_iot_adu_client_parse_service_properties()
-    AzSDK-->>ADU: update_request struct
-    ADU->>ADU: parse JWS/SJWK, resolve root `kid`, assert alg=RS256
+    App->>ADU: request_onboarding_update() / request_update()
+    ADU->>Ch: request_update(route)
+    Ch->>DPS: update check { agentInfo, installedUpdateId? }
+    DPS-->>Ch: 200 { updateMetadata }
+    Ch-->>ADU: updateMetadata
+    ADU->>ADU: parse, dedupe on workflowId
     ADU->>Hook: crypto.verify_rs256_fn(root_key, sjwk_signature)
-    Hook-->>ADU: valid
     ADU->>Hook: crypto.verify_rs256_fn(signing_key, manifest_signature)
-    Hook-->>ADU: valid
-    ADU->>AzSDK: az_iot_adu_client_parse_update_manifest()
-    AzSDK-->>ADU: parsed manifest with steps[]
-    Note over ADU: Begin step iteration
+    ADU->>ADU: az_iot_adu_client_parse_update_manifest()
     loop For each step
         ADU->>Hook: download_fn(file) [chunked]
         ADU->>Hook: backup_fn(step)
         ADU->>Hook: install_fn(step) [chunked]
         ADU->>Hook: apply_fn(step)
     end
-    ADU->>Twin: report state = Idle + installedUpdateId
+    ADU->>Ch: report(workflowId, installResult)
+    Ch->>DPS: ReportDeviceUpdateStatus
 ```
 
 ### 10.2 do_work Integration
-
-> **[Partly ADUv1 — cut]** The twin wiring goes; the `do_work()` pump stays.
 
 ```c
 while (running)
@@ -1677,7 +1480,7 @@ while (running)
 
 Operations MUST NOT be long-blocking. Each `do_work` invocation MUST process at most one chunk of work (one download chunk, one install step, etc.), then return control to the application. This allows the device to:
 - Keep the MQTT connection alive (ping).
-- Process other twin changes or direct methods.
+- Service other clients on the same connection.
 - Service watchdog timers.
 - Handle sensor readings or user interactions.
 
@@ -1687,11 +1490,14 @@ Operations MUST NOT be long-blocking. Each `do_work` invocation MUST process at 
 # src/features/adu/CMakeLists.txt
 add_library(az_iot_adu
     adu_client.c
-    adu_state_reporter.c
+    adu_channel_dps.c
+    adu_protocol.c
+    adu_report.c
+    adu_root_keys_microsoft.c
 )
 
 target_link_libraries(az_iot_adu
-    PRIVATE az_iot_core        # connection_client, twin_client
+    PRIVATE az_iot_core        # connection_client
     PRIVATE az::iot            # azure-sdk-for-c ADU parsing
     PRIVATE az::core           # JSON, spans
 )
@@ -1725,6 +1531,9 @@ target_link_libraries(az_iot_adu
 
 ### Phase 1: Twin Client Multi-Subscriber & Core State Machine
 
+> As-built history. The twin subscription, twin reporting and reported-property formatting listed
+> here were removed in Phase 7.
+
 **Deliverables:**
 - Extend `az_iot_twin_client` with the desired-property subscriber registry
   (public + internal registration, two-pass dispatch, compile-time capacity,
@@ -1755,7 +1564,7 @@ target_link_libraries(az_iot_adu
 **Deliverables:**
 - `adapters/adu/linux/` — libcurl download (chunked, streaming hash), configurable install command, file-based state persistence.
 - Integration test (mock HTTP server, test manifest).
-- Sample: `samples/adu_linux/` — **simulation** sample (real conn/twin/crypto +
+- Sample: `samples/adu_linux/` — **simulation** sample (real conn/crypto +
   mocked download/install) with env-selectable failure/rollback/reboot paths
   (§8.1). Safe to run in CI; does not touch real firmware.
 
@@ -1799,6 +1608,8 @@ target_link_libraries(az_iot_adu
 > the reusable conformance suite and the gated cloud E2E on top.
 
 ### Phase 7: `adu_core` Extraction + Channel Vtable, and the ADUv1 Cut
+
+> Done: the channel vtable and the twin removal landed. The directory split was not taken (§9).
 
 **Deliverables:**
 - Split `src/features/adu/` into a transport-free `adu_core` (state machine, verification, root
@@ -1879,13 +1690,13 @@ at `init` (compiled-in Microsoft defaults or caller-supplied keys).
 | Capability | Assessment |
 |-----------|------------|
 | Manifest v5 JSON parsing (inline steps, files, hashes) | ✅ Sufficient |
-| Reported-property JSON formatting (agent state + per-step results) | ✅ Sufficient |
-| Service property acknowledgement formatting (ACCEPT/REJECT) | ✅ Sufficient |
-| Component name check (`az_iot_adu_client_is_component_device_update`) | ✅ Sufficient |
-| Workflow struct with `action`, `id`, `retry_timestamp` | ✅ Sufficient |
+| Reported-property JSON formatting (agent state + per-step results) | Used only by `az_iot_adu_build_report()`; the channel builds the ADUv2 report |
+| Service property acknowledgement formatting (ACCEPT/REJECT) | Not used (device twin only) |
+| Component name check (`az_iot_adu_client_is_component_device_update`) | Not used (device twin only) |
+| Workflow struct with `action`, `id`, `retry_timestamp` | Only `id` is used (from `workflowId`) |
 | File hash parsing (`hash_type` + `hash_value` as `az_span`) | ✅ Sufficient |
 | `az_json_string_unescape()` for manifest string unescaping | ✅ Sufficient |
-| `az_iot_hub_client_properties_writer_*` for PnP component wrapping | ✅ Works (NULL client accepted in practice) |
+| `az_iot_hub_client_properties_writer_*` for PnP component wrapping | Not used (device twin only) |
 
 ### Configurable Limits (No Source Change Needed)
 
@@ -1992,9 +1803,9 @@ burden.
 | Root key store, `kid` resolution & revocation | Our `adu_client.c` (core-owned; runtime rotation deferred, §7) |
 | File download (HTTP/HTTPS) | Platform adapter hooks |
 | Install/Apply/Backup/Restore execution | Platform adapter hooks |
-| Twin desired-property subscription & routing | Our `adu_client.c` via `az_iot_twin_client` |
-| Startup device-property reporting | Our `adu_client.c` |
-| Retry vs. replacement workflow detection | Our `adu_client.c` |
+| Update check, delivery & status reporting | Our `adu_channel_dps.c` (ADUv2 over the DPS session) |
+| `agentInfo` / `installedUpdateId` on each update check | Our `adu_channel_dps.c` |
+| Duplicate vs. replacement detection (by `workflowId`) | Our `adu_client.c` |
 | Reboot coordination & state persistence | Our `adu_client.c` + platform hooks |
 
 ---
@@ -2024,7 +1835,7 @@ graph TD
 
 The core (`src/features/adu/`) is fully testable on the host because every
 external effect is a hook. Tests drive `do_work()` step-by-step and assert state
-transitions and emitted twin payloads.
+transitions and the structured reports handed to the channel.
 
 Test doubles required (new, under `tests/support/`):
 
@@ -2032,11 +1843,11 @@ Test doubles required (new, under `tests/support/`):
 |--------|---------|
 | `mock_adu_platform_hooks` | Scriptable `download/install/apply/backup/restore/is_installed/persist/load` — each returns a queued result (`SUCCESS`/`IN_PROGRESS`/`REBOOT_REQUIRED`/`FAILURE`) and records the call. Mirrors `mock_mqtt_iface`'s record-and-script model. |
 | `mock_adu_crypto_hooks` | Deterministic `verify_rs256_fn` (scripted valid/invalid) + real-or-stub `sha256_*`. Lets manifest-auth tests run with **no** crypto library linked. |
-| `fake_twin` | Drives the ADU client's desired-property subscriber with canned manifest JSON and captures reported-property writes. Reuses the existing `mock_mqtt_iface` underneath the real `az_iot_twin_client`. |
+| fake channel | Injects `updateMetadata` payloads through the channel's update callback and captures reports. As built in `tests/unit/adu_client_test.c`. |
 
 Coverage targets (one cmocka exe per file, matching §9 layout):
 
-- `test_adu_state_machine.c` — every transition in §4; happy path, accept/reject,
+- `test_adu_state_machine.c` — every transition in §4; happy path, already-installed skip,
   verification-gating failure (Stage 1 reject ⇒ no download), cancel at each phase
   boundary, `is_installed_fn` short-circuit (`ALREADY_INSTALLED`).
 - `test_adu_step_orchestration.c` — multi-step iteration, per-step result
@@ -2084,7 +1895,7 @@ customer provides — without a broker or the cloud.
 typedef enum { AZ_IOT_ADU_CONF_SUITE_FULL = 0 } az_iot_adu_conformance_suite;
 
 /* Returns 0 pass / 1 fail / 77 skip (suitable as main()'s return). The suite
- * drives a real az_iot_adu_client over a fake twin, calling the customer's
+ * drives a real az_iot_adu_client over a fake channel, calling the customer's
  * hooks, and asserts protocol-correct behavior across all states. */
 int az_iot_adu_conformance_run(
     az_iot_adu_conformance_suite suite_kind,
@@ -2094,10 +1905,10 @@ int az_iot_adu_conformance_run(
     size_t root_key_count);
 ```
 
-The suite exercises: accept/reject, single- and multi-step manifests, download +
-hash verification, install/apply/reboot/`resume()`, cancellation, and rollback —
-asserting the reported-property JSON matches the expected agent-state at each
-step. It is **host-only** (fake twin) so customers can validate their adapters in
+The suite exercises: already-installed skip, single- and multi-step manifests,
+download + hash verification, install/apply/reboot/`resume()`, replacement, and
+rollback — asserting the structured report at each step. It is **host-only**
+(fake channel) so customers can validate their adapters in
 CI with no Azure dependency. Where a sub-test needs a capability the supplied
 hooks declare unsupported (e.g. no `persist_state_fn`), it is compiled out rather
 than skipped at run time — see the no-self-skips rule below.
@@ -2133,12 +1944,13 @@ feature client. Those decisions are now specified in their own engineering doc:
 
 ADU touch points that rely on it:
 
-- **Reconnect re-report.** The ADU client registers a *feature-client* observer
-  (§2 of the connection doc) and, on `CONNECTED`, flags a device-properties
-  re-report (see [§4 Startup Reporting](#startup-reporting) and the device-props
-  API in [§5](#5-public-api-surface)).
+- **Session tracking.** The ADUv2 channel registers a *feature-client* observer
+  (§2 of the connection doc) to learn when a provisioning session ends, and
+  retires a request lost with it. There is no reconnect re-report: device
+  properties travel on each update check (see
+  [§4 Device Properties on the Wire](#device-properties-on-the-wire)).
 - **Detach safety.** On `AZ_IOT_CONN_STATE_DEINITIALIZING` the ADU client nulls
-  its `conn`/`twin` pointers and sets `detached`; subsequent calls return
+  its connection binding and sets `detached`; subsequent calls return
   `AZ_IOT_ERR_DETACHED` (§3.3 of the connection doc).
 - **Reuse.** ADU survives a `close`→`open` cycle; `deinit`→`init` is rejected by
   the poison-magic guard (§3 of the connection doc).

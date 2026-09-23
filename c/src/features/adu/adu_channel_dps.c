@@ -457,7 +457,9 @@ static bool on_dps_message(
 
   if (status < 200 || status >= 300)
   {
-    char code[64];
+    /* Sized for prose: "message" is often a sentence, and dropping it leaves
+     * the operator with only a numeric bucket. */
+    char code[256];
     char tracking_id[64];
     int32_t numeric = 0;
     az_iot_adu_error_action action = handle_failure(

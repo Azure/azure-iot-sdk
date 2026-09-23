@@ -6,9 +6,8 @@
 /* ADU client (Phase 1) unit tests. Drives the state machine through the public
  * API + the in-memory mock_mqtt_iface, with recording platform/crypto hooks.
  *
- * The service-property + manifest payloads are taken from azure-sdk-for-c's own
- * parser tests (the only known parser-valid v5 manifest) and wrapped in the
- * real twin component envelope {"deviceUpdate":{"__t":"c","service":{...}}}. */
+ * The manifest is taken from azure-sdk-for-c's own parser tests (the only known
+ * parser-valid v5 manifest) and wrapped in the ADUv2 updateMetadata object. */
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -39,25 +38,28 @@
 /* parser-valid payloads (from azure-sdk-for-c test_az_iot_adu.c)            */
 /* ------------------------------------------------------------------------- */
 
-/* A single-step, single-file v5 deployment wrapped in the deviceUpdate
- * component envelope. The `%s` is filled at runtime with a structurally-valid
- * JWS (see signed_patch()): core fully parses the JWS/SJWK chain, so a real
- * compact-token structure is required even though the mock crypto hook does not
- * check the signature bytes themselves. */
+/* The escaped updateManifest property shared by both payload shapes; `%s` is
+ * the manifest version. */
+#define ADU_TEST_MANIFEST_PROPERTY                                                              \
+  "\"updateManifest\":\"{\\\"manifestVersion\\\":\\\"5\\\",\\\"updateId\\\":{\\\"provider\\\":" \
+  "\\\"Contoso\\\",\\\"name\\\":\\\"Foobar\\\",\\\"version\\\":\\\"%s\\\"},"                    \
+  "\\\"compatibility\\\":[{\\\"deviceManufacturer\\\":\\\"Contoso\\\",\\\"deviceModel\\\":"     \
+  "\\\"Foobar\\\"}],\\\"instructions\\\":{\\\"steps\\\":[{\\\"handler\\\":\\\"microsoft/"       \
+  "swupdate:1\\\",\\\"files\\\":[\\\"f2f4a804ca17afbae\\\"],\\\"handlerProperties\\\":{"        \
+  "\\\"installedCriteria\\\":\\\"1.0\\\"}}]},\\\"files\\\":{\\\"f2f4a804ca17afbae\\\":{"        \
+  "\\\"fileName\\\":\\\"iot-middleware-sample-adu-v1.1\\\",\\\"sizeInBytes\\\":844976,"         \
+  "\\\"hashes\\\":{\\\"sha256\\\":\\\"xsoCnYAMkZZ7m9RL9Vyg9jKfFehCNxyuPFaJVM/"                  \
+  "WBi0=\\\"}}},\\\"createdDateTime\\\":\\\"2022-07-07T03:02:48.8449038Z\\\"}\""
+
+/* A single-step, single-file v5 deployment as the updateMetadata object the
+ * channel delivers. Filled with workflow id, manifest version and a
+ * structurally-valid JWS (see signed_patch()): core fully parses the JWS/SJWK
+ * chain even though the mock crypto hook ignores the signature bytes. The
+ * unknown property must be skipped. */
 static const char k_patch_fmt[]
-    = "{\"deviceUpdate\":{\"__t\":\"c\",\"service\":{"
-      "%s,"
-      "\"updateManifest\":\"{\\\"manifestVersion\\\":\\\"5\\\",\\\"updateId\\\":{\\\"provider\\\":"
-      "\\\"Contoso\\\",\\\"name\\\":\\\"Foobar\\\",\\\"version\\\":\\\"%s\\\"},"
-      "\\\"compatibility\\\":[{\\\"deviceManufacturer\\\":\\\"Contoso\\\",\\\"deviceModel\\\":"
-      "\\\"Foobar\\\"}],\\\"instructions\\\":{\\\"steps\\\":[{\\\"handler\\\":\\\"microsoft/"
-      "swupdate:1\\\",\\\"files\\\":[\\\"f2f4a804ca17afbae\\\"],\\\"handlerProperties\\\":{"
-      "\\\"installedCriteria\\\":\\\"1.0\\\"}}]},\\\"files\\\":{\\\"f2f4a804ca17afbae\\\":{"
-      "\\\"fileName\\\":\\\"iot-middleware-sample-adu-v1.1\\\",\\\"sizeInBytes\\\":844976,"
-      "\\\"hashes\\\":{\\\"sha256\\\":\\\"xsoCnYAMkZZ7m9RL9Vyg9jKfFehCNxyuPFaJVM/"
-      "WBi0=\\\"}}},\\\"createdDateTime\\\":\\\"2022-07-07T03:02:48.8449038Z\\\"}\","
+    = "{\"workflowId\":\"%s\",\"futureField\":{\"a\":[1,2]}," ADU_TEST_MANIFEST_PROPERTY ","
       "\"updateManifestSignature\":\"%s\","
-      "\"fileUrls\":{\"f2f4a804ca17afbae\":\"http://example.com/payload.bin\"}}}}";
+      "\"fileUrls\":{\"f2f4a804ca17afbae\":\"http://example.com/payload.bin\"}}";
 
 /* The fixed digest the mock SHA-256 returns; the JWS payload below carries its
  * base64, so the manifest-binding check (step 6 of verify) passes regardless of
@@ -155,54 +157,26 @@ static void build_jws(char* out, int32_t out_cap)
   assert_true(n > 0 && n < out_cap);
 }
 
-/* Build a single-step patch carrying a freshly built, structurally-valid JWS,
- * with a caller-chosen workflow `id`, optional `retryTimestamp` (pass NULL or
- * "" to omit it), and a manifest `version` (lets a test vary the manifest while
- * keeping the same id). Returns a pointer to a static buffer (valid until the
- * next call), which is fine because each is injected before the next is built. */
-static const char* build_patch_ex(const char* id, const char* retry_ts, const char* version)
+/* Build a single-step payload with a caller-chosen workflow `id` and manifest
+ * `version`. Returns a static buffer, valid until the next call. */
+static const char* build_patch_ex(const char* id, const char* version)
 {
   static char patch[4096];
   char jws[2048];
   build_jws(jws, (int32_t)sizeof(jws));
-
-  char workflow[256];
-  if (retry_ts != NULL && retry_ts[0] != '\0')
-  {
-    snprintf(
-        workflow,
-        sizeof(workflow),
-        "\"workflow\":{\"action\":3,\"id\":\"%s\",\"retryTimestamp\":\"%s\"}",
-        id,
-        retry_ts);
-  }
-  else
-  {
-    snprintf(workflow, sizeof(workflow), "\"workflow\":{\"action\":3,\"id\":\"%s\"}", id);
-  }
-
-  int n = snprintf(patch, sizeof(patch), k_patch_fmt, workflow, version, jws);
+  int n = snprintf(patch, sizeof(patch), k_patch_fmt, id, version, jws);
   assert_true(n > 0 && (size_t)n < sizeof(patch));
   return patch;
 }
 
-/* Build a single-step patch with the default manifest version ("1.1"). */
-static const char* build_patch(const char* id, const char* retry_ts)
-{
-  return build_patch_ex(id, retry_ts, "1.1");
-}
+/* Build a single-step payload with the default manifest version ("1.1"). */
+static const char* build_patch(const char* id) { return build_patch_ex(id, "1.1"); }
 
-/* The default single-step deployment (fixed id, no retryTimestamp). */
+/* The default single-step deployment. */
 static const char* signed_patch(void)
 {
-  return build_patch("51552a54-765e-419f-892a-c822549b6f38", NULL);
+  return build_patch("51552a54-765e-419f-892a-c822549b6f38");
 }
-
-/* A Cancel action (action=255), no manifest. */
-static const char k_patch_cancel[]
-    = "{\"deviceUpdate\":{\"__t\":\"c\",\"service\":{"
-      "\"workflow\":{\"action\":255,\"id\":\"nodeployment\"},"
-      "\"updateManifest\":null,\"updateManifestSignature\":null,\"fileUrls\":null}}}";
 
 /* ------------------------------------------------------------------------- */
 /* recording hooks                                                           */
@@ -247,6 +221,9 @@ typedef struct
   uint8_t persist_blob[AZ_IOT_ADU_REQUEST_BUFFER_SIZE + 128];
   size_t persist_len;
   bool have_persist;
+
+  /* URL the last download was handed. */
+  char last_download_url[128];
 } hook_log;
 
 static void log_op(hook_log* l, op_kind k, uint32_t step)
@@ -267,10 +244,19 @@ static int32_t mock_download(
     void* ctx)
 {
   (void)file;
-  (void)url;
   (void)file_index;
   (void)file_count;
   hook_log* l = (hook_log*)ctx;
+  int32_t n = az_span_size(url);
+  if (n < 0 || (size_t)n >= sizeof(l->last_download_url))
+  {
+    n = 0;
+  }
+  if (n > 0)
+  {
+    memcpy(l->last_download_url, az_span_ptr(url), (size_t)n);
+  }
+  l->last_download_url[n] = '\0';
   log_op(l, OP_DOWNLOAD, file_index);
   return l->download_result;
 }
@@ -880,6 +866,142 @@ static void deployment_drives_full_workflow_single_step(void** state)
   assert_int_equal(fx->chan.last_report.step_results[0].extended_result_code, 0);
 }
 
+/* The provisioning channel delivers the ADUv2 updateMetadata object, not a twin
+ * patch. It must drive the same workflow, keyed on its workflowId. */
+static void update_metadata_drives_full_workflow(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  inject_patch(fx, build_patch("56db153e-6ae7-410f-9949-c201b6fd0d59"));
+  assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_MANIFEST_RECEIVED);
+
+  pump(fx, 40);
+
+  assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
+  static const op_kind expect[]
+      = { OP_VERIFY, OP_IS_INSTALLED, OP_DOWNLOAD, OP_BACKUP, OP_INSTALL, OP_APPLY };
+  assert_true(ops_contain_sequence(&fx->log, expect, sizeof(expect) / sizeof(expect[0])));
+  assert_string_equal(fx->log.last_download_url, "http://example.com/payload.bin");
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_ADU_OUTCOME_SUCCEEDED);
+  assert_string_equal(fx->chan.last_workflow_id, "56db153e-6ae7-410f-9949-c201b6fd0d59");
+
+  /* The service re-offers the same workflow until it is superseded. */
+  fx->log.op_count = 0;
+  inject_patch(fx, build_patch("56db153e-6ae7-410f-9949-c201b6fd0d59"));
+  assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
+  assert_int_equal((int)fx->log.op_count, 0);
+}
+
+/* A fileUrls value using JSON escapes reaches download_fn decoded. */
+static void escaped_file_url_is_decoded(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  static const char plain[] = "\"http://example.com/payload.bin\"";
+  static const char escaped[] = "\"https:\\/\\/host\\/p.bin?x=1\\u0026y=2\"";
+  static char doc[4096];
+  const char* base = build_patch("escaped-url");
+  const char* at = strstr(base, plain);
+  assert_non_null(at);
+  int n = snprintf(
+      doc, sizeof(doc), "%.*s%s%s", (int)(at - base), base, escaped, at + sizeof(plain) - 1);
+  assert_true(n > 0 && (size_t)n < sizeof(doc));
+
+  inject_patch(fx, doc);
+  pump(fx, 40);
+  assert_string_equal(fx->log.last_download_url, "https://host/p.bin?x=1&y=2");
+}
+
+/* An updateMetadata the engine cannot act on is ignored, not half-applied. */
+static void unusable_update_metadata_is_ignored(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  const char* bad[] = {
+    "{\"updateManifest\":\"{}\",\"updateManifestSignature\":\"a.b.c\"}",
+    "{\"workflowId\":\"w\",\"updateManifestSignature\":\"a.b.c\"}",
+    "{\"workflowId\":7,\"updateManifest\":\"{}\"}",
+    "{\"workflowId\":\"w\",\"updateManifest\":\"{}\",\"fileUrls\":{\"f\":1}}",
+    "{\"workflowId\":\"w\",\"updateManifest\":\"{}\",\"fileUrls\":\"u\"}",
+    "{\"workflowId\":\"w\",\"updateManifest\":\"{}\",\"fileUrls\":[\"u\"]}",
+    "{\"workflowId\":\"w\",\"updateManifest\":\"{}\",\"fileUrls\":null}",
+    "{\"workflowId\":\"w\",\"updateManifest\":\"{}\"",
+    "{\"workflowId\":\"w\",\"updateManifest\":\"{}\"} x",
+    "{\"workflowId\":\"w\",\"updateManifest\":\"{}\",\"fileUrls\":{\"f\":\"a\\uD800\"}}",
+  };
+  for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); ++i)
+  {
+    inject_patch(fx, bad[i]);
+    assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
+  }
+  assert_int_equal((int)fx->log.op_count, 0);
+}
+
+/* fileUrls is bounded by _az_IOT_ADU_CLIENT_MAX_TOTAL_FILE_COUNT: at the bound
+ * the payload is accepted, one past it is ignored rather than overflowing. */
+static void file_urls_are_bounded(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  for (int count = _az_IOT_ADU_CLIENT_MAX_TOTAL_FILE_COUNT + 1;
+       count >= _az_IOT_ADU_CLIENT_MAX_TOTAL_FILE_COUNT;
+       --count)
+  {
+    char urls[256] = "";
+    size_t used = 0;
+    for (int i = 0; i < count; ++i)
+    {
+      int w = snprintf(urls + used, sizeof(urls) - used, "%s\"f%d\":\"u\"", i ? "," : "", i);
+      assert_true(w > 0 && (size_t)w < sizeof(urls) - used);
+      used += (size_t)w;
+    }
+    char doc[512];
+    int n = snprintf(
+        doc,
+        sizeof(doc),
+        "{\"workflowId\":\"w%d\",\"updateManifest\":\"{}\",\"fileUrls\":{%s}}",
+        count,
+        urls);
+    assert_true(n > 0 && (size_t)n < sizeof(doc));
+
+    inject_patch(fx, doc);
+    assert_int_equal(
+        az_iot_adu_client_get_state(&fx->adu),
+        count > _az_IOT_ADU_CLIENT_MAX_TOTAL_FILE_COUNT ? AZ_IOT_ADU_STATE_IDLE
+                                                        : AZ_IOT_ADU_STATE_MANIFEST_RECEIVED);
+  }
+}
+
+/* A payload larger than the request buffer is ignored, not truncated. */
+static void oversized_update_metadata_is_ignored(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  static char big[AZ_IOT_ADU_REQUEST_BUFFER_SIZE + 64];
+  const char* base = signed_patch();
+  size_t len = strlen(base);
+  memcpy(big, base, len - 1); /* drop the closing brace */
+  size_t pos = len - 1;
+  pos += (size_t)snprintf(big + pos, sizeof(big) - pos, ",\"pad\":\"");
+  while (pos < sizeof(big) - 3)
+  {
+    big[pos++] = 'x';
+  }
+  big[pos++] = '"';
+  big[pos++] = '}';
+  big[pos] = '\0';
+  assert_true(strlen(big) > AZ_IOT_ADU_REQUEST_BUFFER_SIZE);
+
+  inject_patch(fx, big);
+  assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
+  assert_int_equal((int)fx->log.op_count, 0);
+}
+
 static void verify_failure_blocks_download_and_fails(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -1143,25 +1265,6 @@ static void resume_with_no_persisted_state_stays_idle(void** state)
   assert_false(fx->log.have_persist);
   assert_int_equal(az_iot_adu_client_resume(&fx->adu), AZ_IOT_OK);
   assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
-}
-
-static void cancel_action_sets_cancelled_flag(void** state)
-{
-  fixture* fx = (fixture*)*state;
-  open_to_connected(fx);
-
-  /* Start a deployment, then cancel mid-flight at a phase boundary. */
-  inject_patch(fx, signed_patch());
-  assert_int_equal(
-      az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK); /* ManifestReceived -> Verifying */
-
-  inject_patch(fx, k_patch_cancel);
-  assert_true(az_iot_adu_is_cancelled(&fx->adu));
-
-  /* Next do_work honors cancellation and returns to Idle. */
-  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
-  assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
-  assert_false(az_iot_adu_is_cancelled(&fx->adu));
 }
 
 /* Reporting is keyed on workflowId and is therefore per-workflow: a device with
@@ -1553,30 +1656,6 @@ static void duplicate_redelivery_is_ignored(void** state)
   assert_int_equal((int)fx->log.op_count, 0);
 }
 
-static void retry_with_newer_timestamp_restarts(void** state)
-{
-  fixture* fx = (fixture*)*state;
-  open_to_connected(fx);
-
-  /* Initial deployment (no retryTimestamp) runs to completion. */
-  inject_patch(fx, signed_patch());
-  pump(fx, 40);
-  assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
-
-  /* Same id, now WITH a retryTimestamp: the service is forcing a retry, so the
-   * workflow must restart from scratch (not be ignored as a duplicate). */
-  fx->log.op_count = 0;
-  inject_patch(fx, build_patch("51552a54-765e-419f-892a-c822549b6f38", "2022-08-01T00:00:00Z"));
-  assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_MANIFEST_RECEIVED);
-
-  pump(fx, 40);
-  assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
-  /* The full op sequence ran a second time. */
-  static const op_kind expect[]
-      = { OP_VERIFY, OP_IS_INSTALLED, OP_DOWNLOAD, OP_BACKUP, OP_INSTALL, OP_APPLY };
-  assert_true(ops_contain_sequence(&fx->log, expect, sizeof(expect) / sizeof(expect[0])));
-}
-
 static void replacement_with_new_id_restarts(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -1586,29 +1665,28 @@ static void replacement_with_new_id_restarts(void** state)
   assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
 
   /* Start deployment A and let it advance past ManifestReceived. */
-  inject_patch(fx, build_patch("aaaaaaaa-0000-0000-0000-000000000001", NULL));
+  inject_patch(fx, build_patch("aaaaaaaa-0000-0000-0000-000000000001"));
   assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_MANIFEST_RECEIVED);
   assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
   assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_VERIFYING_MANIFEST);
 
   /* A different deployment id arrives mid-flight: a replacement restarts from
    * ManifestReceived (state moves backwards, proving it was not ignored). */
-  inject_patch(fx, build_patch("bbbbbbbb-0000-0000-0000-000000000002", NULL));
+  inject_patch(fx, build_patch("bbbbbbbb-0000-0000-0000-000000000002"));
   assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_MANIFEST_RECEIVED);
 
   pump(fx, 40);
   assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
 }
 
-static void retry_timestamp_survives_resume(void** state)
+static void workflow_id_survives_resume(void** state)
 {
   fixture* fx = (fixture*)*state;
   open_to_connected(fx);
 
-  /* A deployment carrying a retryTimestamp installs and requires a reboot, so
-   * the workflow snapshots itself (including the retryTimestamp) via persist. */
+  /* The install requires a reboot, so the workflow snapshots itself. */
   fx->log.install_result = AZ_IOT_ADU_RESULT_REBOOT_REQUIRED;
-  inject_patch(fx, build_patch("51552a54-765e-419f-892a-c822549b6f38", "2022-08-01T00:00:00Z"));
+  inject_patch(fx, signed_patch());
   pump(fx, 40);
   assert_true(fx->log.have_persist);
 
@@ -1618,13 +1696,9 @@ static void retry_timestamp_survives_resume(void** state)
   assert_int_equal(az_iot_adu_client_resume(&fx->adu), AZ_IOT_OK);
   assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_INSTALL_COMPLETE);
 
-  /* The service redelivers the identical deployment (same id AND same
-   * retryTimestamp) while the post-reboot workflow is still finishing. Because
-   * the retryTimestamp round-tripped through the snapshot, this is recognized
-   * as a duplicate and ignored: the workflow does NOT restart from
-   * ManifestReceived. (If retryTimestamp had not survived the reboot, the
-   * active timestamp would be empty and this would be mistaken for a retry.) */
-  inject_patch(fx, build_patch("51552a54-765e-419f-892a-c822549b6f38", "2022-08-01T00:00:00Z"));
+  /* The service re-offers the same workflow while the resumed one finishes. The
+   * id round-tripped through the snapshot, so it is ignored as a duplicate. */
+  inject_patch(fx, signed_patch());
   assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_INSTALL_COMPLETE);
 
   /* And the resumed workflow still completes normally. */
@@ -1632,28 +1706,24 @@ static void retry_timestamp_survives_resume(void** state)
   assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
 }
 
-static void same_id_changed_manifest_restarts(void** state)
+/* workflowId is the sole identity: the same id with different manifest bytes
+ * is a redelivery, not a new deployment, so no second install or report. */
+static void same_id_changed_manifest_is_a_duplicate(void** state)
 {
   fixture* fx = (fixture*)*state;
   open_to_connected(fx);
 
-  /* A deployment (id X, manifest version 1.1) runs to completion. */
-  inject_patch(fx, build_patch_ex("51552a54-765e-419f-892a-c822549b6f38", NULL, "1.1"));
+  inject_patch(fx, build_patch_ex("51552a54-765e-419f-892a-c822549b6f38", "1.1"));
   pump(fx, 40);
   assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
+  int reports = fx->chan.report_count;
 
-  /* The SAME id with NO retryTimestamp but a DIFFERENT manifest (version 1.2)
-   * is an anomalous re-publish: it must be treated as a replacement and
-   * restart, not silently ignored as a duplicate. */
   fx->log.op_count = 0;
-  inject_patch(fx, build_patch_ex("51552a54-765e-419f-892a-c822549b6f38", NULL, "1.2"));
-  assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_MANIFEST_RECEIVED);
-
-  pump(fx, 40);
+  inject_patch(fx, build_patch_ex("51552a54-765e-419f-892a-c822549b6f38", "1.2"));
   assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
-  static const op_kind expect[]
-      = { OP_VERIFY, OP_IS_INSTALLED, OP_DOWNLOAD, OP_BACKUP, OP_INSTALL, OP_APPLY };
-  assert_true(ops_contain_sequence(&fx->log, expect, sizeof(expect) / sizeof(expect[0])));
+  pump(fx, 5);
+  assert_int_equal((int)fx->log.op_count, 0);
+  assert_int_equal(fx->chan.report_count, reports);
 }
 
 static void microsoft_root_keys_are_embedded(void** state)
@@ -1675,15 +1745,14 @@ static void microsoft_root_keys_are_embedded(void** state)
 }
 
 /* ------------------------------------------------------------------------- */
-/* workflow: multi-step, download failure, cancel mid-flight                 */
+/* workflow: multi-step, download failure                                    */
 /* ------------------------------------------------------------------------- */
 
 /* Two-step variant of k_patch_fmt. Both steps use the same file so the fixture's
  * single hash still verifies; what is under test is the ordering, not the file
  * set. */
 static const char k_patch_two_steps_fmt[]
-    = "{\"deviceUpdate\":{\"__t\":\"c\",\"service\":{"
-      "%s,"
+    = "{\"workflowId\":\"%s\","
       "\"updateManifest\":\"{\\\"manifestVersion\\\":\\\"5\\\",\\\"updateId\\\":{\\\"provider\\\":"
       "\\\"Contoso\\\",\\\"name\\\":\\\"Foobar\\\",\\\"version\\\":\\\"%s\\\"},"
       "\\\"compatibility\\\":[{\\\"deviceManufacturer\\\":\\\"Contoso\\\",\\\"deviceModel\\\":"
@@ -1696,20 +1765,15 @@ static const char k_patch_two_steps_fmt[]
       "\\\"hashes\\\":{\\\"sha256\\\":\\\"xsoCnYAMkZZ7m9RL9Vyg9jKfFehCNxyuPFaJVM/"
       "WBi0=\\\"}}},\\\"createdDateTime\\\":\\\"2022-07-07T03:02:48.8449038Z\\\"}\","
       "\"updateManifestSignature\":\"%s\","
-      "\"fileUrls\":{\"f2f4a804ca17afbae\":\"http://example.com/payload.bin\"}}}}";
+      "\"fileUrls\":{\"f2f4a804ca17afbae\":\"http://example.com/payload.bin\"}}";
 
 static const char* two_step_patch(void)
 {
   static char patch[4096];
   char jws[2048];
   build_jws(jws, (int32_t)sizeof(jws));
-  int n = snprintf(
-      patch,
-      sizeof(patch),
-      k_patch_two_steps_fmt,
-      "\"workflow\":{\"action\":3,\"id\":\"multi-step-deployment\"}",
-      "1.1",
-      jws);
+  int n
+      = snprintf(patch, sizeof(patch), k_patch_two_steps_fmt, "multi-step-deployment", "1.1", jws);
   assert_true(n > 0 && (size_t)n < sizeof(patch));
   return patch;
 }
@@ -1861,41 +1925,6 @@ static void download_failure_is_reported_and_does_not_install(void** state)
   assert_true(fx->chan.last_workflow_id[0] != '\0');
 }
 
-static void cancel_during_download_aborts_the_transfer(void** state)
-{
-  fixture* fx = (fixture*)*state;
-  open_to_connected(fx);
-
-  /* Hold the deployment inside download so the cancel lands mid-transfer. */
-  fx->log.download_result = AZ_IOT_ADU_RESULT_IN_PROGRESS;
-  inject_patch(fx, signed_patch());
-  pump(fx, 4);
-
-  bool saw_download = false;
-  for (size_t i = 0; i < fx->log.op_count; ++i)
-  {
-    if (fx->log.ops[i] == OP_DOWNLOAD)
-    {
-      saw_download = true;
-    }
-  }
-  assert_true(saw_download);
-
-  size_t ops_at_cancel = fx->log.op_count;
-  inject_patch(fx, k_patch_cancel);
-  /* Let the download hook succeed from here on: if the cancel were ignored the
-   * workflow would now run to completion and install. */
-  fx->log.download_result = AZ_IOT_ADU_RESULT_SUCCESS;
-  pump(fx, 40);
-
-  for (size_t i = ops_at_cancel; i < fx->log.op_count; ++i)
-  {
-    assert_int_not_equal(fx->log.ops[i], OP_INSTALL);
-    assert_int_not_equal(fx->log.ops[i], OP_APPLY);
-  }
-  assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
-}
-
 /* ------------------------------------------------------------------------- */
 /* standalone api: report building, manifest verification                    */
 /* ------------------------------------------------------------------------- */
@@ -1976,6 +2005,25 @@ static void manifest_signed_by_an_unknown_root_key_is_rejected(void** state)
       parse_with_roots(&fx->log, signed_patch(), strangers, 1, &req, &manifest), AZ_IOT_ERR_AUTH);
 }
 
+/* The public parser accepts the ADUv2 updateMetadata shape too. */
+static void public_parser_accepts_update_metadata(void** state)
+{
+  fixture* fx = (fixture*)*state;
+
+  az_iot_adu_client_update_request req;
+  az_iot_adu_client_update_manifest manifest;
+  assert_int_equal(
+      parse_with_roots(&fx->log, build_patch("wf-1"), k_root_keys, 1, &req, &manifest), AZ_IOT_OK);
+  assert_int_equal(req.workflow.action, AZ_IOT_ADU_CLIENT_SERVICE_ACTION_APPLY_DEPLOYMENT);
+  assert_true(az_span_is_content_equal(req.workflow.id, AZ_SPAN_FROM_STR("wf-1")));
+  assert_int_equal(req.file_urls_count, 1);
+  assert_int_equal(manifest.instructions.steps_count, 1);
+
+  assert_int_equal(
+      parse_with_roots(&fx->log, "{\"other\":1}", k_root_keys, 1, &req, &manifest),
+      AZ_IOT_ERR_NOT_FOUND);
+}
+
 static void malformed_jws_is_rejected(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -1990,13 +2038,7 @@ static void malformed_jws_is_rejected(void** state)
   for (size_t i = 0; i < sizeof(broken) / sizeof(broken[0]); ++i)
   {
     static char patch[4096];
-    int n = snprintf(
-        patch,
-        sizeof(patch),
-        k_patch_fmt,
-        "\"workflow\":{\"action\":3,\"id\":\"bad-jws\"}",
-        "1.1",
-        broken[i]);
+    int n = snprintf(patch, sizeof(patch), k_patch_fmt, "bad-jws", "1.1", broken[i]);
     assert_true(n > 0 && (size_t)n < sizeof(patch));
 
     az_iot_adu_client_update_request req;
@@ -2020,11 +2062,10 @@ static void malformed_manifest_json_is_rejected(void** state)
   int n = snprintf(
       patch,
       sizeof(patch),
-      "{\"deviceUpdate\":{\"__t\":\"c\",\"service\":{"
-      "\"workflow\":{\"action\":3,\"id\":\"bad-manifest\"},"
+      "{\"workflowId\":\"bad-manifest\","
       "\"updateManifest\":\"{\\\"manifestVersion\\\":\\\"5\\\",\\\"updateId\\\":{\","
       "\"updateManifestSignature\":\"%s\","
-      "\"fileUrls\":{\"f\":\"http://example.com/p.bin\"}}}}",
+      "\"fileUrls\":{\"f\":\"http://example.com/p.bin\"}}",
       jws);
   assert_true(n > 0 && (size_t)n < sizeof(patch));
 
@@ -2068,8 +2109,7 @@ static void verify_file_hash_rejects_an_unsupported_algorithm(void** state)
   /* A manifest whose only listed digest is sha512. The agent cannot compute it,
    * and treating "no algorithm I know" as a pass would skip integrity entirely. */
   static const char k_patch_sha512_fmt[]
-      = "{\"deviceUpdate\":{\"__t\":\"c\",\"service\":{"
-        "\"workflow\":{\"action\":3,\"id\":\"sha512-only\"},"
+      = "{\"workflowId\":\"sha512-only\","
         "\"updateManifest\":\"{\\\"manifestVersion\\\":\\\"5\\\",\\\"updateId\\\":{"
         "\\\"provider\\\":\\\"Contoso\\\",\\\"name\\\":\\\"Foobar\\\",\\\"version\\\":"
         "\\\"1.1\\\"},\\\"compatibility\\\":[{\\\"deviceManufacturer\\\":\\\"Contoso\\\","
@@ -2080,7 +2120,7 @@ static void verify_file_hash_rejects_an_unsupported_algorithm(void** state)
         "\\\"hashes\\\":{\\\"sha512\\\":\\\"AAAA\\\"}}},\\\"createdDateTime\\\":"
         "\\\"2022-07-07T03:02:48.8449038Z\\\"}\","
         "\"updateManifestSignature\":\"%s\","
-        "\"fileUrls\":{\"f2f4a804ca17afbae\":\"http://example.com/payload.bin\"}}}}";
+        "\"fileUrls\":{\"f2f4a804ca17afbae\":\"http://example.com/payload.bin\"}}";
 
   char jws[2048];
   build_jws(jws, (int32_t)sizeof(jws));
@@ -2918,6 +2958,12 @@ int main(void)
     cmocka_unit_test_setup_teardown(a_refused_report_is_re_armed_and_resent, setup, teardown),
     cmocka_unit_test(a_request_on_a_null_client_is_rejected),
     cmocka_unit_test_setup_teardown(deployment_drives_full_workflow_single_step, setup, teardown),
+    cmocka_unit_test_setup_teardown(update_metadata_drives_full_workflow, setup, teardown),
+    cmocka_unit_test_setup_teardown(escaped_file_url_is_decoded, setup, teardown),
+    cmocka_unit_test_setup_teardown(unusable_update_metadata_is_ignored, setup, teardown),
+    cmocka_unit_test_setup_teardown(file_urls_are_bounded, setup, teardown),
+    cmocka_unit_test_setup_teardown(oversized_update_metadata_is_ignored, setup, teardown),
+    cmocka_unit_test_setup_teardown(public_parser_accepts_update_metadata, setup, teardown),
     cmocka_unit_test_setup_teardown(verify_failure_blocks_download_and_fails, setup, teardown),
     cmocka_unit_test_setup_teardown(install_failure_triggers_rollback, setup, teardown),
     cmocka_unit_test_setup_teardown(hash_mismatch_blocks_install_and_fails, setup, teardown),
@@ -2928,7 +2974,6 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         resuming_a_fresh_client_reports_the_restored_state, setup, teardown),
     cmocka_unit_test_setup_teardown(resume_with_no_persisted_state_stays_idle, setup, teardown),
-    cmocka_unit_test_setup_teardown(cancel_action_sets_cancelled_flag, setup, teardown),
     cmocka_unit_test_setup_teardown(
         update_device_properties_is_accepted_without_reporting, setup, teardown),
     cmocka_unit_test_setup_teardown(report_carries_the_active_workflow_id, setup, teardown),
@@ -2943,10 +2988,9 @@ int main(void)
     cmocka_unit_test_setup_teardown(device_props_too_small_is_rejected, setup, teardown),
     cmocka_unit_test_setup_teardown(device_props_buffer_size_matches_need, setup, teardown),
     cmocka_unit_test_setup_teardown(duplicate_redelivery_is_ignored, setup, teardown),
-    cmocka_unit_test_setup_teardown(retry_with_newer_timestamp_restarts, setup, teardown),
     cmocka_unit_test_setup_teardown(replacement_with_new_id_restarts, setup, teardown),
-    cmocka_unit_test_setup_teardown(retry_timestamp_survives_resume, setup, teardown),
-    cmocka_unit_test_setup_teardown(same_id_changed_manifest_restarts, setup, teardown),
+    cmocka_unit_test_setup_teardown(workflow_id_survives_resume, setup, teardown),
+    cmocka_unit_test_setup_teardown(same_id_changed_manifest_is_a_duplicate, setup, teardown),
     cmocka_unit_test(microsoft_root_keys_are_embedded),
     cmocka_unit_test_setup_teardown(multi_step_update_runs_every_step_in_order, setup, teardown),
     cmocka_unit_test_setup_teardown(
@@ -2955,7 +2999,6 @@ int main(void)
         multi_step_failure_preserves_unexecuted_step_results, setup, teardown),
     cmocka_unit_test_setup_teardown(
         download_failure_is_reported_and_does_not_install, setup, teardown),
-    cmocka_unit_test_setup_teardown(cancel_during_download_aborts_the_transfer, setup, teardown),
     cmocka_unit_test(build_report_with_too_small_a_buffer_is_rejected),
     cmocka_unit_test_setup_teardown(
         manifest_signed_by_an_unknown_root_key_is_rejected, setup, teardown),
