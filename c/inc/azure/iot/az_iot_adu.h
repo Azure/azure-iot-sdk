@@ -1003,8 +1003,8 @@ extern "C"
   /**
    * @brief Verify and parse an `updateMetadata` object without a client.
    *
-   * Runs the full manifest trust chain (JWS/SJWK, root-key `kid`, RS256, both
-   * RSA checks, SHA-256 binding) before parsing the manifest. Fail-closed:
+   * Verifies the manifest trust chain (JWS/SJWK, root-key `kid`, RS256, both
+   * RSA checks, SHA-256 binding), then parses the manifest. Fail-closed:
    * outputs stay zeroed on any error.
    *
    * @param request_json   `{ workflowId, updateManifest, updateManifestSignature,

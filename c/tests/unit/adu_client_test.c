@@ -893,6 +893,27 @@ static void update_metadata_drives_full_workflow(void** state)
   assert_int_equal((int)fx->log.op_count, 0);
 }
 
+/* A fileUrls value using JSON escapes reaches download_fn decoded. */
+static void escaped_file_url_is_decoded(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  static const char plain[] = "\"http://example.com/payload.bin\"";
+  static const char escaped[] = "\"https:\\/\\/host\\/p.bin?x=1\\u0026y=2\"";
+  static char doc[4096];
+  const char* base = build_patch("escaped-url");
+  const char* at = strstr(base, plain);
+  assert_non_null(at);
+  int n = snprintf(
+      doc, sizeof(doc), "%.*s%s%s", (int)(at - base), base, escaped, at + sizeof(plain) - 1);
+  assert_true(n > 0 && (size_t)n < sizeof(doc));
+
+  inject_patch(fx, doc);
+  pump(fx, 40);
+  assert_string_equal(fx->log.last_download_url, "https://host/p.bin?x=1&y=2");
+}
+
 /* An updateMetadata the engine cannot act on is ignored, not half-applied. */
 static void unusable_update_metadata_is_ignored(void** state)
 {
@@ -908,6 +929,8 @@ static void unusable_update_metadata_is_ignored(void** state)
     "{\"workflowId\":\"w\",\"updateManifest\":\"{}\",\"fileUrls\":[\"u\"]}",
     "{\"workflowId\":\"w\",\"updateManifest\":\"{}\",\"fileUrls\":null}",
     "{\"workflowId\":\"w\",\"updateManifest\":\"{}\"",
+    "{\"workflowId\":\"w\",\"updateManifest\":\"{}\"} x",
+    "{\"workflowId\":\"w\",\"updateManifest\":\"{}\",\"fileUrls\":{\"f\":\"a\\uD800\"}}",
   };
   for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); ++i)
   {
@@ -2936,6 +2959,7 @@ int main(void)
     cmocka_unit_test(a_request_on_a_null_client_is_rejected),
     cmocka_unit_test_setup_teardown(deployment_drives_full_workflow_single_step, setup, teardown),
     cmocka_unit_test_setup_teardown(update_metadata_drives_full_workflow, setup, teardown),
+    cmocka_unit_test_setup_teardown(escaped_file_url_is_decoded, setup, teardown),
     cmocka_unit_test_setup_teardown(unusable_update_metadata_is_ignored, setup, teardown),
     cmocka_unit_test_setup_teardown(file_urls_are_bounded, setup, teardown),
     cmocka_unit_test_setup_teardown(oversized_update_metadata_is_ignored, setup, teardown),
