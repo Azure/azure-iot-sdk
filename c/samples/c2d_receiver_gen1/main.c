@@ -20,8 +20,7 @@
  * Classic speaks v3.1.1 and so does DPS, so one adapter covers both legs.
  *
  * Provision via DPS, open, listen for ~60 seconds, close. DPS is handled
- * internally by the connection client when host == NULL and dps.id_scope is
- * set.
+ * internally by the connection client when dps.id_scope is set.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -144,7 +143,7 @@ int main(void)
     return 1;
   }
 
-  /* Connection client (DPS provisioning is internal when host==NULL) */
+  /* Connection client (DPS provisioning is internal) */
   az_iot_connection_client_options copts = az_iot_connection_client_options_default();
   sample_apply_dps_options(&copts, &state.config);
   copts.certificate_provider = &state.certs.base;
