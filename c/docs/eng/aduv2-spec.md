@@ -202,9 +202,10 @@ read off a DRAFT spec. Treat them differently.
 | api-version `2026-11-02-preview` | X.509 on the update path; TPM; AMQP |
 | Device-facing URL shape and the three operation names | Whether an MQTT binding exists for the three operations |
 | SAS (enrollment-group symmetric key) auth | Payload caps, throttle / `Retry-After` values |
-| `agentInfo` = `{ agentSdkVersion, agentProfile, compatibilityProperties }`; `agentProfile` sent as an integer | `stepResults` service validation and diagnostic conventions (schema confirmed above) |
+| `agentInfo` = `{ agentSdkVersion, agentProfile, compatibilityProperties }`; `agentProfile` sent as an integer | Per-step `resultDetails`; reports with more than one step; `stepResults` diagnostic-code conventions |
 | Response `agentInfoEtag` / `serviceConfigEtag` / `updateMetadata` (null ⇒ no update) | Root-key-package fetch and verification end to end |
 | Report `{ workflowId, installedUpdateId, installResult{ outcome, failureOrigin, resultCode, extendedResultCodes, resultDetails } }`; `resultCode` 700 = success; `failureOrigin` `AGENT_CORE` / `NOT_APPLICABLE` | The error-code table below (drawn from the spec, not exercised) |
+| `stepResults` entries `{ outcome, failureOrigin, resultCode, extendedResultCodes }` accepted (single-step update); without `outcome`/`failureOrigin` the report was rejected with `400012` | |
 | No separate `syncConfiguration` call | |
 
 ## Trust model
