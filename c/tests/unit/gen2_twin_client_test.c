@@ -1081,6 +1081,21 @@ static void set_encode_buffer_accepts_exactly_the_documented_overhead(void** sta
       AZ_IOT_ERR_NOT_ENOUGH_SPACE);
 }
 
+/* A negative or pointer-less span would become a huge size_t capacity. */
+static void set_encode_buffer_rejects_a_malformed_span(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  uint8_t buf[AZ_IOT_GEN2_TWIN_ENCODE_OVERHEAD];
+  az_span negative = AZ_SPAN_FROM_BUFFER(buf);
+  negative._internal.size = -1;
+  az_span no_ptr = AZ_SPAN_FROM_BUFFER(buf);
+  no_ptr._internal.ptr = NULL;
+  assert_int_equal(
+      az_iot_gen2_twin_client_set_encode_buffer(&fx->twin, negative), AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(
+      az_iot_gen2_twin_client_set_encode_buffer(&fx->twin, no_ptr), AZ_IOT_ERR_INVALID_ARG);
+}
+
 static void set_encode_buffer_rejects_a_null_client(void** state)
 {
   (void)state;
@@ -2295,6 +2310,7 @@ int main(void)
         a_patch_larger_than_the_encode_buffer_is_refused, setup, teardown),
     cmocka_unit_test_setup_teardown(
         set_encode_buffer_accepts_exactly_the_documented_overhead, setup, teardown),
+    cmocka_unit_test_setup_teardown(set_encode_buffer_rejects_a_malformed_span, setup, teardown),
     cmocka_unit_test_setup_teardown(set_encode_buffer_rejects_a_null_client, setup, teardown),
     cmocka_unit_test_setup_teardown(patch_rejects_a_null_client, setup, teardown),
     cmocka_unit_test_setup_teardown(patch_rejects_a_null_patch_with_a_length, setup, teardown),

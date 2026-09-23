@@ -999,8 +999,13 @@ az_iot_result az_iot_gen2_twin_client_set_encode_buffer(
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
+  int32_t size = az_span_size(buffer);
+  if (size < 0 || (size > 0 && !az_span_ptr(buffer)))
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
   /* Exactly the overhead is the valid minimum: it frames an empty patch. */
-  if (az_span_size(buffer) > 0 && az_span_size(buffer) < AZ_IOT_GEN2_TWIN_ENCODE_OVERHEAD)
+  if (size > 0 && size < AZ_IOT_GEN2_TWIN_ENCODE_OVERHEAD)
   {
     return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
   }

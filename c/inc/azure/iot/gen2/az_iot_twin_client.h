@@ -303,6 +303,7 @@ extern "C"
    * AZ_IOT_GEN2_TWIN_ENCODE_OVERHEAD. Free for reuse once the patch call returns.
    * AZ_SPAN_EMPTY removes it.
    *
+   * @return AZ_IOT_ERR_INVALID_ARG for a negative size, or a non-empty span with a NULL pointer.
    * @return AZ_IOT_ERR_NOT_ENOUGH_SPACE when smaller than the framing alone.
    */
   az_iot_result az_iot_gen2_twin_client_set_encode_buffer(
