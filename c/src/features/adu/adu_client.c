@@ -887,10 +887,10 @@ static az_iot_result parse_manifest(az_iot_adu_client_t* client)
     return AZ_IOT_ERR_INVALID_ARG;
   }
 
-  /* Unescape in place: the unescaped form is never longer than the source.
-   * az_json_string_unescape returns the unescaped span (empty on failure). */
-  az_span unescaped = az_json_string_unescape(manifest, manifest);
-  if (az_span_size(unescaped) <= 0)
+  /* Decode in place: the decoded form is never longer than the source. */
+  az_span unescaped;
+  if (az_iot_json_string_decode(manifest, manifest, &unescaped) != AZ_IOT_OK
+      || az_span_size(unescaped) <= 0)
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
@@ -2513,10 +2513,12 @@ az_iot_result az_iot_adu_parse_update_request(
     return r;
   }
 
-  /* Unescape the manifest in place (the unescaped form is never longer); the
-   * JWS is signed over the unescaped text. */
-  az_span manifest_text = az_json_string_unescape(req.update_manifest, req.update_manifest);
-  if (az_span_size(manifest_text) <= 0)
+  /* Decode the manifest in place (never longer); the JWS is signed over the
+   * decoded text. */
+  az_span manifest_text;
+  if (az_iot_json_string_decode(req.update_manifest, req.update_manifest, &manifest_text)
+          != AZ_IOT_OK
+      || az_span_size(manifest_text) <= 0)
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }

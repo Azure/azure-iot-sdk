@@ -132,7 +132,7 @@ sample-only / not factored) · 🔜 Coming soon (planned / designed, not yet bui
 | Install, apply, recovery | 🟡 | **Health-check / auto-rollback after reboot (core)** — sample-only today; promote to core. [→](#e-install-apply-recovery) |
 | Platform and crypto adapters | ✅ | **`crypto_openssl` adapter** — RS256 + SHA-256, factored in `adapters/adu/`. [→](#f-platform-and-crypto-adapters) |
 | Platform and crypto adapters | ✅ | **`crypto_mbedtls` adapter** — factored into `adapters/adu/crypto_mbedtls/`. [→](#f-platform-and-crypto-adapters) |
-| Platform and crypto adapters | ❌ | **ESP32 sample port** — `samples/adu/esp32` still passes a twin client to `az_iot_adu_client_initialize()` and does not compile against the current API; it is outside the CMake build (needs ESP-IDF), so nothing catches it. [→](#f-platform-and-crypto-adapters) |
+| Platform and crypto adapters | 🟡 | **ESP32 sample port** — `samples/adu/esp32` passes the connection client to `az_iot_adu_client_initialize()` and asks for an onboarding update; not built or run with ESP-IDF since the port, and outside the CMake build, so nothing catches a regression. [→](#f-platform-and-crypto-adapters) |
 | Platform and crypto adapters | 🔜 | **Linux platform adapter** — libcurl download / install cmd / file persist; factor from sample. [→](#f-platform-and-crypto-adapters) |
 | Platform and crypto adapters | ✅ | **ESP32 platform adapter** — factored into `adapters/adu/esp32/` (`esp_http_client` + `esp_ota` + NVS resume). [→](#f-platform-and-crypto-adapters) |
 | ADUv2 transport | ❌ | **Twin (ADUv1) delivery + reporting** — the twin channel is removed, not kept behind a flag. [→](#what-aduv1-is-cut-means) |
@@ -331,11 +331,10 @@ stateDiagram-v2
   under `adapters/`.
 - **The PC sample is current** (`samples/adu/pc`): it provisions through DPS and drives the
   workflow off the device-update operations, asking for an onboarding update explicitly.
-- **The ESP32 sample is NOT (❌).** `samples/adu/esp32` still builds a twin client and passes it
-  to `az_iot_adu_client_initialize()`, which no longer takes one, so it does not compile against
-  the current API. It is not part of the CMake build (it needs the ESP-IDF toolchain), which is
-  why nothing caught it. Its platform-hook half is already salvaged into
-  `adapters/adu/esp32/`; the sample itself still has to be ported.
+- **The ESP32 sample is ported but unverified (🟡).** `samples/adu/esp32` passes the connection
+  client to `az_iot_adu_client_initialize()` and asks for an onboarding update, like the PC
+  sample. It is not part of the CMake build (it needs the ESP-IDF toolchain) and has not been
+  built or run on a device since the port. Its platform hooks live in `adapters/adu/esp32/`.
 
 ## G. ADUv2 transport (via the DPS gateway)
 
