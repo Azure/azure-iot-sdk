@@ -24,6 +24,7 @@ idf_component_register(
         "${AZ_IOT_ROOT}/src/core/cert_util.c"
         "${AZ_IOT_ROOT}/src/core/reconnect.c"
         "${AZ_IOT_ROOT}/src/core/dispatch.c"
+        "${AZ_IOT_ROOT}/src/core/proto3.c"
         "${AZ_IOT_ROOT}/src/core/span_writer.c"
         "${AZ_IOT_ROOT}/src/core/message.c"
         "${AZ_IOT_ROOT}/src/core/certificate_provider_pem.c"
