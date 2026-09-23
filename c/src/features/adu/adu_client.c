@@ -905,6 +905,7 @@ static az_iot_result parse_manifest(az_iot_adu_client_t* client)
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
+  ADU_I(client).current_request.update_manifest = unescaped;
   ADU_I(client).manifest_text = unescaped;
   return AZ_IOT_OK;
 }
@@ -2522,6 +2523,7 @@ az_iot_result az_iot_adu_parse_update_request(
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
+  req.update_manifest = manifest_text;
 
   /* Trust gate before the manifest is parsed. */
   if (verify_manifest_core(

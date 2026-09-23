@@ -959,6 +959,12 @@ static void manifest_unicode_escape_is_decoded(void** state)
       AZ_IOT_OK);
   assert_true(az_span_is_content_equal(
       manifest.files[0].file_name, AZ_SPAN_FROM_STR("iot-middleware-sample-adu-v1.1")));
+  /* out_request exposes the decoded manifest, with no stale escaped tail. */
+  int32_t len = az_span_size(req.update_manifest);
+  assert_true(len > 0);
+  assert_int_equal(az_span_ptr(req.update_manifest)[len - 1], (uint8_t)'}');
+  assert_null(memchr(az_span_ptr(req.update_manifest), '\\', (size_t)len));
+  assert_true(az_span_find(req.update_manifest, AZ_SPAN_FROM_STR("sample-adu-v1.1")) >= 0);
 }
 
 /* workflowId is decoded before it is stored, reported and compared: an escaped
