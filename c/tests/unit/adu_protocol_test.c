@@ -626,6 +626,72 @@ static void step_results_serialize_as_an_indexed_map(void** state)
   assert_null(strstr(json, "0x80000001"));
 }
 
+/* Every stepResults entry carries outcome and failureOrigin; the service
+ * rejects an entry without them as undeserializable. The engine records each
+ * step's outcome explicitly, so the serializer writes it rather than deriving it
+ * from the result code. The manifest holds at most two steps, so the outcomes
+ * are covered across three reports. */
+static void step_results_carry_outcome_and_failure_origin(void** state)
+{
+  (void)state;
+  const struct
+  {
+    az_iot_adu_outcome overall;
+    az_iot_adu_outcome steps[2];
+    const char* expected[2];
+  } cases[] = {
+    { AZ_IOT_ADU_OUTCOME_FAILED,
+      { AZ_IOT_ADU_OUTCOME_SUCCEEDED, AZ_IOT_ADU_OUTCOME_FAILED },
+      { "\"step_0\":{\"outcome\":\"SUCCEEDED\",\"failureOrigin\":\"NOT_APPLICABLE\"",
+        "\"step_1\":{\"outcome\":\"FAILED\",\"failureOrigin\":\"AGENT_CORE\"" } },
+    { AZ_IOT_ADU_OUTCOME_FAILED,
+      { AZ_IOT_ADU_OUTCOME_FAILED, AZ_IOT_ADU_OUTCOME_SKIPPED },
+      { "\"step_0\":{\"outcome\":\"FAILED\",\"failureOrigin\":\"AGENT_CORE\"",
+        "\"step_1\":{\"outcome\":\"SKIPPED\",\"failureOrigin\":\"NOT_APPLICABLE\"" } },
+    /* A step not yet reached while the workflow runs is in progress, not skipped. */
+    { AZ_IOT_ADU_OUTCOME_IN_PROGRESS,
+      { AZ_IOT_ADU_OUTCOME_SUCCEEDED, AZ_IOT_ADU_OUTCOME_IN_PROGRESS },
+      { "\"step_0\":{\"outcome\":\"SUCCEEDED\",\"failureOrigin\":\"NOT_APPLICABLE\"",
+        "\"step_1\":{\"outcome\":\"IN_PROGRESS\",\"failureOrigin\":\"NOT_APPLICABLE\"" } },
+  };
+  for (size_t c = 0; c < sizeof(cases) / sizeof(cases[0]); ++c)
+  {
+    az_iot_adu_install_result result;
+    init_report_result(&result);
+    bool failed = cases[c].overall == AZ_IOT_ADU_OUTCOME_FAILED;
+    result.outcome = cases[c].overall;
+    result.failure_origin
+        = failed ? AZ_IOT_ADU_FAILURE_ORIGIN_AGENT_CORE : AZ_IOT_ADU_FAILURE_ORIGIN_NOT_APPLICABLE;
+    result.result_code = failed ? 699 : 1;
+    result.step_results_count = 2;
+    for (int32_t i = 0; i < 2; ++i)
+    {
+      az_iot_adu_step_result* step = &result.step_results[i];
+      step->outcome = cases[c].steps[i];
+      step->failure_origin = step->outcome == AZ_IOT_ADU_OUTCOME_FAILED
+          ? AZ_IOT_ADU_FAILURE_ORIGIN_AGENT_CORE
+          : AZ_IOT_ADU_FAILURE_ORIGIN_NOT_APPLICABLE;
+      step->result_code = step->outcome == AZ_IOT_ADU_OUTCOME_SUCCEEDED ? 700
+          : step->outcome == AZ_IOT_ADU_OUTCOME_FAILED                  ? 699
+                                                                        : 0;
+      step->extended_result_codes[0] = '0';
+      step->extended_result_codes_length = 1;
+    }
+
+    az_iot_adu_report report = AZ_IOT_ADU_REPORT_INIT;
+    report.workflow_id = "wf-1";
+    report.install_result = &result;
+
+    uint8_t buf[1024];
+    size_t len = 0;
+    assert_int_equal(
+        az_iot_adu__build_report_request(&report, buf, sizeof(buf) - 1, &len), AZ_IOT_OK);
+    buf[len] = '\0';
+    assert_non_null(strstr((const char*)buf, cases[c].expected[0]));
+    assert_non_null(strstr((const char*)buf, cases[c].expected[1]));
+  }
+}
+
 /* Omitted entirely when there are none -- an empty map is a different statement
  * from having no per-step results. */
 static void no_step_results_means_no_key(void** state)
@@ -1221,6 +1287,7 @@ int main(void)
     cmocka_unit_test(a_report_with_a_partial_installed_update_id_is_rejected),
     cmocka_unit_test(a_truncated_response_body_is_rejected),
     cmocka_unit_test(step_results_serialize_as_an_indexed_map),
+    cmocka_unit_test(step_results_carry_outcome_and_failure_origin),
     cmocka_unit_test(no_step_results_means_no_key),
     cmocka_unit_test(both_error_signals_are_read_from_the_body),
     cmocka_unit_test(a_numeric_only_body_is_still_usable),

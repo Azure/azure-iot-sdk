@@ -62,6 +62,29 @@ extern "C"
       uint64_t* out_desired_version,
       uint64_t* out_reported_version);
 
+/* Width of the MQTT v5 Correlation Data every AEG flow uses: a 16-byte UUID,
+ * for the connection's birth nonce and for per-request correlation ids alike. */
+#define AZ_IOT_CORRELATION_UUID_LEN 16u
+
+  /* Fill `out` with a fresh RFC 4122 version 4 UUID from the client's PRNG.
+   * Feature clients use this for the per-attempt Correlation Data that the AEG
+   * request/response flows (twin GET, reported patch, ...) require. */
+  void az_iot_connection_client__gen_uuid(
+      az_iot_connection_client* client,
+      uint8_t out[AZ_IOT_CORRELATION_UUID_LEN]);
+
+  /* Copy the current connection's birth nonce into `out`. Backend-initiated
+   * dev-bound messages (twin-push, desired-patch) carry it as Correlation Data
+   * so the device can tell traffic for this connection from traffic left over
+   * from a defunct one. Returns AZ_IOT_ERR_NOT_CONNECTED when no presence
+   * handshake has completed on this connection (Classic/DPS sessions included). */
+  az_iot_result az_iot_connection_client__presence_nonce(
+      const az_iot_connection_client* client,
+      uint8_t out[AZ_IOT_CORRELATION_UUID_LEN]);
+
+  /** @brief Whether options.twin_push.push_desired asks the service to push desired state. */
+  bool az_iot_connection_client__twin_push_desired(const az_iot_connection_client* client);
+
   /* Test seam: force a pending subscription gate to expire on the next
    * do_work(). No-op when no gate is armed. Lets unit tests exercise the
    * never-acked path without waiting out the configured timeout. */

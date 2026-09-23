@@ -68,6 +68,135 @@ static bool rid_is_ours(const char* rid)
 }
 
 /* ------------------------------------------------------------------------- */
+/* connection state                                                          */
+/* ------------------------------------------------------------------------- */
+
+/**
+ * @brief Connection-state observer, run inside the connection client's
+ * dispatch. Records state; the hold is taken here because it must precede the
+ * new session's SUBACK, which can arrive before the channel's next tick.
+ *
+ * DPS:DISCONNECTING ends every provisioning session, so it marks the session a
+ * request rode as gone; dps_session_ready() cannot, as a session replaced
+ * between two ticks reads ready throughout. The hold is taken on
+ * DPS:CONNECTING, because a teardown ending a registration is announced while
+ * the phase still refuses a hold.
+ *
+ * @param event    The transition.
+ * @param user_ctx The channel.
+ */
+static void on_connection_state(const az_iot_connection_state_event* event, void* user_ctx)
+{
+  az_iot_adu_channel_dps* c = (az_iot_adu_channel_dps*)user_ctx;
+  if (c == NULL || event == NULL || (size_t)event->scope >= AZ_IOT_CONN_SCOPE_COUNT)
+  {
+    return;
+  }
+  c->conn_state[event->scope] = event->state;
+  if (event->scope != AZ_IOT_CONN_SCOPE_DPS)
+  {
+    return;
+  }
+
+  if (event->state == AZ_IOT_CONN_STATE_DISCONNECTING)
+  {
+    c->session_epoch++;
+    c->exchange_done = false;
+  }
+  else if (
+      event->state == AZ_IOT_CONN_STATE_CONNECTING && c->wants_hold && !c->holds_registration
+      && !c->exchange_done
+      && az_iot_connection_client__dps_hold_acquire(c->connection) == AZ_IOT_OK)
+  {
+    c->holds_registration = true;
+  }
+}
+
+/**
+ * @brief Take a seat in the feature-client state-observer pool.
+ *
+ * State is seeded from the scoped getter first: a past transition is not
+ * announced again.
+ *
+ * @param c The channel.
+ * @return AZ_IOT_OK if observing. AZ_IOT_ERR_BUSY inside a dispatch (e.g. the
+ * ADU client initialized from a state callback); retried by
+ * channel_observe_deferred(). Otherwise the registry's error.
+ */
+static az_iot_result channel_observe(az_iot_adu_channel_dps* c)
+{
+  if (c->observes_state)
+  {
+    return AZ_IOT_OK;
+  }
+  for (size_t i = 0; i < AZ_IOT_CONN_SCOPE_COUNT; ++i)
+  {
+    c->conn_state[i]
+        = az_iot_connection_client_get_state(c->connection, (az_iot_connection_scope)i);
+  }
+  az_iot_result r
+      = az_iot_connection_client__add_state_observer(c->connection, on_connection_state, c);
+  if (r == AZ_IOT_OK)
+  {
+    c->observes_state = true;
+  }
+  return r;
+}
+
+/**
+ * @brief Retry for a seat a bind inside a dispatch could not take.
+ *
+ * Without a seat a replaced session is invisible, so no operation goes out
+ * until the seat is taken.
+ *
+ * @param c The channel.
+ * @return AZ_IOT_OK if unbound or observing. AZ_IOT_ERR_BUSY while still
+ * inside a dispatch. Otherwise the registry's error, e.g.
+ * AZ_IOT_ERR_NOT_ENOUGH_SPACE when the pool is full, until a seat frees up.
+ */
+static az_iot_result channel_observe_deferred(az_iot_adu_channel_dps* c)
+{
+  return c->holds_user ? channel_observe(c) : AZ_IOT_OK;
+}
+
+/**
+ * @brief Whether either scope has settled in FAULTED.
+ *
+ * Consulted only when no provisioning session is up: the connection client
+ * will not open one from there until close() (same rule as
+ * dps_session_ensure()). A live session stays usable whatever the hub state.
+ *
+ * @param c The channel.
+ * @return true if a new provisioning session cannot be had until close().
+ */
+static bool connection_settled_in_fault(const az_iot_adu_channel_dps* c)
+{
+  for (size_t i = 0; i < AZ_IOT_CONN_SCOPE_COUNT; ++i)
+  {
+    if (c->conn_state[i] == AZ_IOT_CONN_STATE_FAULTED)
+    {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * @brief Refuse an operation because no provisioning session is up.
+ *
+ * Records the demand so the next tick opens a session, unless the connection
+ * has settled in a fault; the first refusal after close() raises it again.
+ *
+ * @param c The channel.
+ * @return AZ_IOT_ERR_NOT_CONNECTED.
+ */
+static az_iot_result refuse_for_no_session(az_iot_adu_channel_dps* c)
+{
+  c->wants_session = !connection_settled_in_fault(c);
+  return AZ_IOT_ERR_NOT_CONNECTED;
+}
+
+/* ------------------------------------------------------------------------- */
 /* outbound                                                                  */
 /* ------------------------------------------------------------------------- */
 
@@ -167,6 +296,7 @@ static az_iot_result publish_operation(
    * leave the channel waiting for a response that will never come. */
   (void)memcpy(c->pending_rid, rid, sizeof(rid));
   c->pending_operation = operation;
+  c->pending_epoch = c->session_epoch;
   c->request_pending = true;
   return AZ_IOT_OK;
 }
@@ -327,7 +457,9 @@ static bool on_dps_message(
 
   if (status < 200 || status >= 300)
   {
-    char code[64];
+    /* Sized for prose: "message" is often a sentence, and dropping it leaves
+     * the operator with only a numeric bucket. */
+    char code[256];
     char tracking_id[64];
     int32_t numeric = 0;
     az_iot_adu_error_action action = handle_failure(
@@ -412,7 +544,9 @@ static bool on_dps_message(
  * caller can tell that the demand it saw a moment ago is gone. */
 static bool channel_forget_pending_if_session_gone(az_iot_adu_channel_dps* c)
 {
-  if (c->request_pending && !az_iot_connection_client__dps_session_ready(c->connection))
+  if (c->request_pending
+      && (c->pending_epoch != c->session_epoch
+          || !az_iot_connection_client__dps_session_ready(c->connection)))
   {
     AZ_IOT_LOG_DEBUG("adu: provisioning session ended with a request outstanding");
     az_iot_adu_operation operation = c->pending_operation;
@@ -496,6 +630,20 @@ static az_iot_result channel_open(
   }
   c->holds_user = true;
 
+  /* How the channel learns that its session was replaced, or that the
+   * connection settled in a fault. BUSY is retried later
+   * (channel_observe_deferred()); anything else refuses the bind. */
+  az_iot_result sr = channel_observe(c);
+  if (sr != AZ_IOT_OK && sr != AZ_IOT_ERR_BUSY)
+  {
+    AZ_IOT_LOG_ERROR("adu: could not observe the connection state");
+    c->wants_hold = false;
+    c->holds_user = false;
+    az_iot_connection_client__dps_user_release(c->connection);
+    az_iot_connection_client__set_dps_message_observer(c->connection, NULL, NULL);
+    return sr;
+  }
+
   az_iot_result hr = az_iot_connection_client__dps_hold_acquire(c->connection);
   if (hr == AZ_IOT_OK)
   {
@@ -503,6 +651,11 @@ static az_iot_result channel_open(
   }
   else if (hr != AZ_IOT_ERR_NOT_SUPPORTED)
   {
+    if (c->observes_state)
+    {
+      c->observes_state = false;
+      (void)az_iot_connection_client__remove_state_observer(c->connection, on_connection_state, c);
+    }
     c->wants_hold = false;
     c->holds_user = false;
     az_iot_connection_client__dps_user_release(c->connection);
@@ -539,6 +692,14 @@ static void channel_close(void* ctx)
     return;
   }
   az_iot_connection_client__set_dps_message_observer(c->connection, NULL, NULL);
+  /* Before anything else: the entry points at this channel. Removal is legal
+   * from inside a dispatch, which is where an application destroying the ADU
+   * client from its own state observer calls this. */
+  if (c->observes_state)
+  {
+    c->observes_state = false;
+    (void)az_iot_connection_client__remove_state_observer(c->connection, on_connection_state, c);
+  }
   if (c->holds_user)
   {
     c->holds_user = false;
@@ -573,6 +734,11 @@ static az_iot_result channel_request_update(void* ctx, az_iot_adu_operation oper
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
+  az_iot_result sr = channel_observe_deferred(c);
+  if (sr != AZ_IOT_OK)
+  {
+    return sr;
+  }
   /* Before the session check, not after: asking for a session we may not
    * publish on is what turns one delay into a reconnect loop. */
   if (retry_after_in_force(c))
@@ -592,10 +758,7 @@ static az_iot_result channel_request_update(void* ctx, az_iot_adu_operation oper
   }
   if (!az_iot_connection_client__dps_session_ready(c->connection))
   {
-    /* Remember the caller wanted one, so the next tick opens it. Without this
-     * nothing records the demand and the session is never reopened. */
-    c->wants_session = true;
-    return AZ_IOT_ERR_NOT_CONNECTED;
+    return refuse_for_no_session(c);
   }
 
   az_iot_adu_agent_info agent = { 0 };
@@ -642,6 +805,11 @@ static az_iot_result channel_report(void* ctx, const az_iot_adu_report* report)
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
+  az_iot_result sr = channel_observe_deferred(c);
+  if (sr != AZ_IOT_OK)
+  {
+    return sr;
+  }
   if (retry_after_in_force(c))
   {
     return AZ_IOT_ERR_BUSY;
@@ -652,10 +820,7 @@ static az_iot_result channel_report(void* ctx, const az_iot_adu_report* report)
   }
   if (!az_iot_connection_client__dps_session_ready(c->connection))
   {
-    /* Remember the caller wanted one, so the next tick opens it. Without this
-     * nothing records the demand and the session is never reopened. */
-    c->wants_session = true;
-    return AZ_IOT_ERR_NOT_CONNECTED;
+    return refuse_for_no_session(c);
   }
 
   size_t body_len = 0;
@@ -787,6 +952,8 @@ static az_iot_result channel_do_work(void* ctx)
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
+  /* Returned at the end, not here: the rest of the tick still runs. */
+  az_iot_result sr = channel_observe_deferred(c);
 
   /* Recorded BEFORE the pending request is retired: that call clears
    * request_pending precisely when the session is gone, so testing it
@@ -818,6 +985,11 @@ static az_iot_result channel_do_work(void* ctx)
   bool ensure_failed = false;
   if (az_iot_connection_client__dps_session_ready(c->connection))
   {
+    c->wants_session = false;
+  }
+  else if (connection_settled_in_fault(c))
+  {
+    /* Nothing to ask for until close(); the demand is raised again after it. */
     c->wants_session = false;
   }
   else if (c->holds_user && had_work && !retry_after_in_force(c))
@@ -867,7 +1039,7 @@ static az_iot_result channel_do_work(void* ctx)
       c->holds_registration = true;
     }
   }
-  return AZ_IOT_OK;
+  return sr;
 }
 
 /* When the SERVICE asked us to wait until. Distinct from an operation already

@@ -3,57 +3,164 @@ Copyright (c) Microsoft. All rights reserved.
 Licensed under the MIT license. See LICENSE file in the project root for full license information.
 -->
 
-# ADU PC Sample — Device Update over IoT Hub (simulation)
+# ADU PC Sample — device update over DPS (simulated install)
 
-This sample runs the **entire** Azure Device Update (ADU) on-device workflow end
-to end against a real IoT Hub + Device Update instance, but with **simulated**
-download/install hooks so it is safe to run on a dev box or in CI — it never
-touches real firmware. It builds and runs on both **Linux** and **Windows**.
+This sample runs the **entire** Azure Device Update on-device workflow end to end
+against a real service, but with **simulated** download/install hooks so it is
+safe to run on a dev box or in CI — it never touches real firmware. It builds and
+runs on both **Linux** and **Windows**.
 
-If you are new to ADU, start with the **Quickstart** below: three PowerShell
-scripts create the Azure resources, deploy a simulated update, and clean up.
+The device-facing update operations are issued on the device's **DPS** session and
+proxied by the service to Device Update. The device never talks to Device Update
+directly and needs no Device Update credential.
 
-The **Details** section further down explains what is real vs. simulated, the
-simulation knobs, and how to exercise failure/rollback/reboot paths.
+| Operation | When the sample uses it |
+|---|---|
+| `requestOnboardingUpdates` | Before provisioning — this sample calls `az_iot_adu_client_request_onboarding_update()` |
+| `requestSoftwareUpdates` | Operational (already provisioned) — not used by this sample |
+| `reportUpdateStatus` | After an install attempt |
+
+## No IoT Hub is required
+
+Every one of those operations runs on the provisioning session, before the device
+registers. The sample therefore sets `dps.provision_only`: the provisioning
+session is brought up and kept up, registration never runs, and the hub lifecycle
+stays `Idle`. That session *is* the connection.
+
+This is **declared, not inferred**. A device whose enrollment has no linked hub
+and a device that is simply misconfigured both fail registration the same way, so
+a sample that guessed from the failure would hide real misconfiguration.
+
+Set `AZ_IOT_ADU_REGISTER_WITH_HUB=1` for a device that should also register and
+connect to its assigned hub. The update workflow is identical either way; only
+the connection lifecycle differs.
+
+The sample prints both lifecycles as they move, for example:
+
+```
+Provisioning: Idle -> Connecting (AZ_IOT_OK)
+Provisioning: Connecting -> Connected (AZ_IOT_OK)
+Provisioning session up. Running (Ctrl-C to exit)...
+```
+
+That line reports only which lifecycle came up. It says nothing about whether
+the update check has been answered — the SDK raises no event for a successful
+"no update available", so the sample does not claim to know. With
+`AZ_IOT_ADU_REGISTER_WITH_HUB=1` it reads `Hub connection up.` and appears
+*after* that answer, since a successful verdict releases the provisioning hold
+and only then do registration and the hub connect run.
+
+It runs until interrupted (Ctrl-C), like the long-lived agent it stands in for,
+and exits 0. It stops early and exits non-zero only if a lifecycle settles at
+`Faulted`, or if the update check is abandoned — both of which it prints first.
+
+> Its output is block-buffered when piped or redirected, so a run that is killed
+> rather than interrupted can lose it. Prefix with `stdbuf -oL -eL` when
+> capturing to a file.
 
 ---
 
-## Quickstart
+## What you need from the service
 
-Prerequisites: [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli)
-with the IoT extension (`az extension add --name azure-iot`),
-PowerShell 7+, and a logged-in subscription (`az login`).
+This sample is the **device half** only. It needs a Device Update service
+environment that is already provisioned and that will offer it an update; setting
+one up is the service operator's side and is not covered here.
 
-### 1. Set up the environment
+From that environment you need four things, all of which go into the environment
+variables in the next section:
 
-Creates a resource group, IoT Hub, DPS, Device Update account/instance, storage,
-a device certificate + DPS enrollment, and sets the sample's environment
-variables in your current shell:
+| You need | Used for |
+|---|---|
+| A DPS **ID scope** | Identifies the provisioning service the device talks to |
+| A **registration id** for the device | The device's identity in that service |
+| A device **X.509 certificate and private key** | How this sample authenticates to DPS |
+| A **trusted CA bundle** | Validates the service's TLS certificate |
 
-```powershell
-cd samples/common/scripts
-./Initialize-AduSampleEnvironment.ps1
+The update offered to the device must declare `compatibility` matching what this
+sample reports — by default manufacturer `Contoso`, model `ADU-Sim`, and the
+custom property `environment` = `sim`. An update that does not match is never
+offered, however it was imported. See
+[Configure the sample](#configure-the-sample) to change what is reported.
+
+> The PowerShell scripts under [samples/common/scripts](../../common/scripts)
+> provision an older, IoT-Hub-based Device Update model that this sample does not
+> talk to. The DPS, device certificate, X.509 enrollment and the `AZ_IOT_*`
+> variables they produce are still usable; the Device Update account, instance and
+> deployment are not.
+
+---
+
+## Configure the sample
+
+The sample reads these environment variables (see
+[samples/common/sample_utils.c](../../common/sample_utils.c)):
+
+| Variable | Required | Meaning |
+|---|---|---|
+| `AZ_IOT_DPS_ID_SCOPE` | yes | DPS ID scope |
+| `AZ_IOT_DPS_REGISTRATION_ID` | yes | Registration id / device id |
+| `AZ_IOT_CLIENT_CERT` | yes | Path to the device certificate PEM |
+| `AZ_IOT_CLIENT_KEY` | yes | Path to the device private key PEM |
+| `AZ_IOT_TRUSTED_CA` | yes | Trusted CA bundle, e.g. `/etc/ssl/certs/ca-certificates.crt` |
+| `AZ_IOT_DPS_GLOBAL_ENDPOINT` | no | The provisioning endpoint to use. Unset means the SDK default, `global.azure-devices-provisioning.net`; set it when your environment uses a different one. Leaving it unset for an environment that needs it fails as a repeating `TCP/TLS connect failure` against the default host. |
+
+**Matched against a deployed update.** These are the device's *compatibility
+properties*. A value that does not match the imported update is answered
+"nothing for me", which looks exactly like "nothing deployed", so the sample
+prints what it reported at startup. The sample also sends the fixed custom
+property `environment` = `sim`, which a deployed update must match too.
+
+| Variable | Default |
+|---|---|
+| `AZ_IOT_ADU_MANUFACTURER` | `Contoso` |
+| `AZ_IOT_ADU_MODEL` | `ADU-Sim` |
+
+**Reported, not matched.** The installed update id says what is on the device
+now. It takes no part in matching, and the onboarding route this sample uses
+omits it entirely — changing it cannot make an update eligible.
+
+| Variable | Default |
+|---|---|
+| `AZ_IOT_ADU_INSTALLED_PROVIDER` | `Contoso` |
+| `AZ_IOT_ADU_INSTALLED_NAME` | `ADU-Sim` |
+| `AZ_IOT_ADU_INSTALLED_VERSION` | `1.0.0` |
+
+```bash
+export AZ_IOT_DPS_ID_SCOPE='<id-scope>'
+export AZ_IOT_DPS_REGISTRATION_ID='<registration-id>'
+export AZ_IOT_CLIENT_CERT="$PWD/device-cert.pem"
+export AZ_IOT_CLIENT_KEY="$PWD/device-key.pem"
+export AZ_IOT_TRUSTED_CA='/etc/ssl/certs/ca-certificates.crt'
+# Only when your provisioning service is not on the default global endpoint,
+# e.g. a preview environment:
+# export AZ_IOT_DPS_GLOBAL_ENDPOINT='global-canary.azure-devices-provisioning.net'
 ```
 
-To **reuse** an existing environment provisioned by a previous run, pass its
-resource group. The script discovers the IoT Hub, DPS, storage, and Device
-Update account/instance inside it and reuses them (it fails if the group is
-missing or incomplete, and never creates resources in this mode):
+PowerShell:
 
 ```powershell
-./Initialize-AduSampleEnvironment.ps1 -ResourceGroup adu-sim-rg-72351e
+$env:AZ_IOT_DPS_ID_SCOPE        = '<id-scope>'
+$env:AZ_IOT_DPS_REGISTRATION_ID = '<registration-id>'
+$env:AZ_IOT_CLIENT_CERT         = "$PWD\device-cert.pem"
+$env:AZ_IOT_CLIENT_KEY          = "$PWD\device-key.pem"
+$env:AZ_IOT_TRUSTED_CA          = "$PWD\ca.pem"
+# Only when your provisioning service is not on the default global endpoint,
+# e.g. a preview environment:
+# $env:AZ_IOT_DPS_GLOBAL_ENDPOINT = 'global-canary.azure-devices-provisioning.net'
 ```
 
 > Manifest signature verification works out of the box: the sample uses
 > `az_iot_adu_microsoft_root_keys()`, Microsoft's published ADU production roots
 > compiled into the SDK — see [Root keys](#root-keys) below.
 
-### 2. Build and run the sample
+---
 
-The sample target is `az_iot_sample_adu` (built when `AZ_IOT_WITH_PAHO=ON`
-and the OpenSSL ADU crypto adapter is available — both are on by default).
+## Build and run
 
-#### Prerequisites
+The sample target is `az_iot_sample_adu` (built when `AZ_IOT_WITH_PAHO=ON` and the
+OpenSSL ADU crypto adapter is available — both are on by default).
+
+### Prerequisites
 
 The build fetches its CMake dependencies (Paho MQTT, azure-sdk-for-c, vcpkg)
 automatically, so you only need a toolchain, CMake, and OpenSSL on the host.
@@ -88,19 +195,18 @@ sudo update-ca-certificates   # populates /etc/ssl/certs/ca-certificates.crt
   skipped.
 - **Git** to clone the repo and let CMake fetch dependencies.
 
-Run the commands from a *Developer PowerShell for VS 2022* (or any shell where
-the MSVC environment is available).
+Run the commands from a *Developer PowerShell for VS 2022* (or any shell where the
+MSVC environment is available).
 
-#### Build
+### Build
 
-On a Linux box with the toolchain installed:
+On Linux:
 
 ```bash
 cmake --preset linux-gcc-debug
 cmake --build --preset linux-gcc-debug --target az_iot_sample_adu
 
-# Set the env vars printed by step 1 (copy-paste the bash block it emits, or
-# `source adu-sample-env.sh`), then run the binary:
+# Set the environment variables above, then run the binary:
 ./build/linux-gcc-debug/samples/az_iot_sample_adu
 ```
 
@@ -110,25 +216,15 @@ On Windows (the same sources, the simulation knobs work identically):
 cmake --preset windows-msvc-debug
 cmake --build --preset windows-msvc-debug --target az_iot_sample_adu
 
-# Set the env vars printed by step 1 in this shell, then run the binary:
+# Set the environment variables above in this shell, then run the binary:
 ./build/windows-msvc-debug/samples/Debug/az_iot_sample_adu.exe
 ```
-
-`Initialize-AduSampleEnvironment.ps1` (step 1) only configures Azure and sets the
-variables in *its own* shell. When the sample runs elsewhere (a Linux host, a
-container), use the bash `export` block the script prints — or the
-`adu-sample-env.sh` it writes next to the generated certificate — to set the same
-variables there. Copy the two PEM files (`adu-sim-device-cert.pem`,
-`adu-sim-device-key.pem`) to wherever you run the binary.
 
 <details>
 <summary>Example: build and run inside a Docker container</summary>
 
-Run step 1 on your host first (it creates the Azure resources, the device
-certificate, and `adu-sample-env.sh`). Then, from another shell on the host:
-
 ```bash
-# Start a container and copy in the SDK plus the generated credentials.
+# Start a container and copy in the SDK plus the device credentials.
 docker run -it --name adu-sample ubuntu:24.04 bash
 
 # --- inside the container ---
@@ -143,63 +239,48 @@ cmake --preset linux-gcc-debug
 cmake --build --preset linux-gcc-debug --target az_iot_sample_adu
 ```
 
-In a separate host shell, copy the credentials + env script into the container
-(into the build directory so `$PWD`-relative cert paths resolve), then run it:
+In a separate host shell, copy the device certificate and key into the build
+directory so `$PWD`-relative paths resolve, then run it:
 
 ```bash
-docker cp samples/common/scripts/adu-sim-device-cert.pem adu-sample:/azure-iot-sdk/build/linux-gcc-debug/samples/
-docker cp samples/common/scripts/adu-sim-device-key.pem  adu-sample:/azure-iot-sdk/build/linux-gcc-debug/samples/
-docker cp samples/common/scripts/adu-sample-env.sh       adu-sample:/azure-iot-sdk/build/linux-gcc-debug/samples/
+docker cp device-cert.pem adu-sample:/azure-iot-sdk/build/linux-gcc-debug/samples/
+docker cp device-key.pem  adu-sample:/azure-iot-sdk/build/linux-gcc-debug/samples/
 
 # --- back inside the container ---
 cd /azure-iot-sdk/build/linux-gcc-debug/samples
-source ./adu-sample-env.sh        # or paste the export block from step 1
+# export the variables from "Configure the sample", then:
 ./az_iot_sample_adu
 ```
 
 > The container needs outbound network access to clone the repo, fetch CMake
-> dependencies (Paho MQTT, azure-sdk-for-c), and reach your IoT Hub / DPS.
+> dependencies (Paho MQTT, azure-sdk-for-c), and reach your DPS.
 
 </details>
 
-Leave it running. It provisions via DPS, reports its device properties, and waits for a deployment.
+Leave it running. It brings up its provisioning session, asks for an onboarding
+update on that session, and waits there. By default it never registers — see
+[No IoT Hub is required](#no-iot-hub-is-required).
 
-### 3. Deploy a simulated update
+**A 200 response carrying no `updateMetadata` means "nothing for me on this
+route" — it is not an error.** An update is only offered on the route that matches
+the job type: an `OnboardingUpdate` job is served **only** on the onboarding
+route, which is the one this sample uses.
 
-In a **second** terminal (same shell session as step 1, so the env vars are
-present), import a simulated update and deploy it to the running device:
+---
 
-```powershell
-cd samples/common/scripts
-./New-AduSampleDeployment.ps1
-```
+## When an update is offered
 
-The update version auto-bumps to the next unused patch on each run (so every run
-triggers a fresh workflow); pass `-UpdateVersion <x.y.z>` to target a specific
-one. Watch the device terminal: manifest received → JWS verified → ACCEPT →
-simulated download + real SHA-256 check → simulated install → reports the new
-`installedUpdateId`.
+**Have the update deployed before you start the sample.** It asks once, on the
+onboarding route, when its provisioning session comes up — it does not poll. A
+deployment created after that check has run is not picked up; restart the sample
+to ask again.
 
-### 4. Clean up
+If an update is waiting, the sample verifies the manifest signature, runs the
+simulated download/install/apply workflow and reports the result, all on stdout.
 
-Delete everything:
-
-```powershell
-./Remove-AduSampleEnvironment.ps1
-```
-
-Or remove just the deployment + imported update and keep the infrastructure ready
-for another run of step 3:
-
-```powershell
-./Remove-AduSampleEnvironment.ps1 -DeploymentOnly
-```
-
-The full cleanup is equivalent to deleting the resource group directly:
-
-```bash
-az group delete --name <resource-group> --yes
-```
+**A response carrying no update means "nothing for me on this route" — it is not
+an error.** An update is only offered on the route matching the deployment, and
+this sample asks on the onboarding route.
 
 ---
 
@@ -209,7 +290,7 @@ az group delete --name <resource-group> --yes
 
 | Concern | Behavior |
 |---|---|
-| Connection, update request/response, manifest receipt, status reporting | **Real** (Paho MQTT adapter, real provisioning/device-update endpoint) |
+| Connection, update request/response, manifest receipt, status reporting | **Real** (Paho MQTT adapter, real DPS endpoint) |
 | Manifest JWS signature verification | **Real** (OpenSSL crypto hooks, real root keys) |
 | `download_fn` | **Simulated** — synthesizes deterministic (zero-filled) payload bytes of the manifest-declared size |
 | `read_file_fn` | **Simulated** — serves the same deterministic bytes back so core can run the **real** streaming SHA-256 hash check |
@@ -221,12 +302,18 @@ The simulated update payload is **zero-filled** on purpose: the device synthesiz
 the same zero bytes the import manifest declares, so the **real** per-file SHA-256
 check passes. Random content would not match.
 
-The device reports these properties (see [main.c](main.c)); the deployment script
-imports an update that matches them:
+An update must declare `compatibility` matching the first three rows to be
+offered (see [main.c](main.c)):
 
-- **Manufacturer:** `Contoso`
-- **Model:** `ADU-Sim`
-- **Installed update id:** `{ provider: Contoso, name: ADU-Sim, version: 1.0.0 }`
+| Property | Value | Overridden by | Matched? |
+|---|---|---|---|
+| Manufacturer | `Contoso` | `AZ_IOT_ADU_MANUFACTURER` | yes |
+| Model | `ADU-Sim` | `AZ_IOT_ADU_MODEL` | yes |
+| Custom `environment` | `sim` | fixed in [main.c](main.c) | yes |
+| Installed update id | `{ provider: Contoso, name: ADU-Sim, version: 1.0.0 }` | `AZ_IOT_ADU_INSTALLED_PROVIDER` / `_NAME` / `_VERSION` | no — reported only, and omitted on the onboarding route |
+
+The sample prints what it reported at startup, so a mismatch is visible rather
+than silent.
 
 ### Root keys
 
@@ -236,28 +323,8 @@ ADU production roots, compiled into the SDK (`src/features/adu/adu_root_keys_mic
 — so updates imported through the real Device Update service (which signs every
 manifest with Microsoft's signing service) verify with no extra setup. To accept
 updates signed by your **own** root instead, build your own `az_iot_adu_root_key`
-array and pass it to `az_iot_adu_client_initialize()` in place of the Microsoft keys.
-
-### What the scripts do
-
-The scripts under [scripts](scripts) wrap the Azure CLI; they print each step and
-do no error handling so they stay easy to read.
-
-| Script | Purpose |
-|---|---|
-| [Initialize-AduSampleEnvironment.ps1](scripts/Initialize-AduSampleEnvironment.ps1) | Create a full environment from scratch, or (with `-ResourceGroup`) discover and reuse an existing one: IoT Hub, DPS, Device Update account/instance, storage, a device cert + DPS X.509 enrollment, connection diagnostics; set the sample's env vars |
-| [New-AduSampleDeployment.ps1](scripts/New-AduSampleDeployment.ps1) | Build a payload + v5 import manifest, stage+import the update, tag the device into the group, create the deployment |
-| [Remove-AduSampleEnvironment.ps1](scripts/Remove-AduSampleEnvironment.ps1) | Delete the resource group (and the hub diagnostic setting), or (`-DeploymentOnly`) just the deployment + update |
-
-`Initialize-AduSampleEnvironment.ps1` sets these environment variables in your
-session — the sample reads the first group, the other two scripts read the second:
-
-| Sample variables | Sharing variables (for the other scripts) |
-|---|---|
-| `AZ_IOT_DPS_ID_SCOPE`, `AZ_IOT_DPS_REGISTRATION_ID`, `AZ_IOT_CLIENT_CERT`, `AZ_IOT_CLIENT_KEY`, `AZ_IOT_TRUSTED_CA` | `AZ_IOT_ADU_RESOURCE_GROUP`, `AZ_IOT_ADU_IOTHUB`, `AZ_IOT_ADU_ACCOUNT`, `AZ_IOT_ADU_INSTANCE`, `AZ_IOT_ADU_STORAGE`, `AZ_IOT_ADU_CONTAINER`, `AZ_IOT_ADU_DEVICE_ID`, `AZ_IOT_ADU_GROUP` |
-
-`AZ_IOT_TRUSTED_CA` defaults to the Linux system CA bundle
-(`/etc/ssl/certs/ca-certificates.crt`).
+array and pass it to `az_iot_adu_client_initialize()` in place of the Microsoft
+keys.
 
 ### Simulation knobs
 
@@ -270,10 +337,9 @@ All default off. Set them in the shell that runs the sample:
 | `ADU_SIM_REBOOT=1` | `install_fn` returns `REBOOT_REQUIRED`; the sample persists state and **exits**. Re-run it (without this knob) to `resume()` and finish the workflow |
 | `ADU_SIM_DELAY_MS=<ms>` | Per-download delay so progress is observable |
 | `ADU_SIM_STATE_FILE=<path>` | Resume blob path (default `./adu_sim_state.blob`) |
+| `AZ_IOT_ADU_REGISTER_WITH_HUB=1` | Also register and connect to the assigned hub, instead of keeping only the provisioning session (see [No IoT Hub is required](#no-iot-hub-is-required)) |
+| `AZ_IOT_ADU_LOG_LEVEL=<lvl>` | SDK log level: `trace`, `debug`, `info` (default), `warn`, `error`, `off`. The SDK's `adu:` and `dps:` protocol lines are emitted at `debug` |
 | `AZ_IOT_PAHO_TRACE=1` | Enable the Paho MQTT library's trace logging (`[paho-trace]` lines). Use this to diagnose `connection lost: (unknown)` — the trace reveals the underlying cause (socket error, server `DISCONNECT`, keep-alive timeout, etc.) |
-
-Exercise the alternate paths, then redeploy (the deployment script always uses a
-fresh deployment id):
 
 ```bash
 # Force step 1 install to fail -> reverse-order rollback, failure reported.
@@ -286,47 +352,3 @@ ADU_SIM_HASH_MISMATCH=1 ./az_iot_sample_adu
 ADU_SIM_REBOOT=1 ./az_iot_sample_adu
 ./az_iot_sample_adu            # resumes from the persisted blob
 ```
-
-### Tracking deployment status from the service
-
-```bash
-az iot du device deployment show \
-  --account "$AZ_IOT_ADU_ACCOUNT" --instance "$AZ_IOT_ADU_INSTANCE" \
-  --group-id "$AZ_IOT_ADU_GROUP" --deployment-id "$AZ_IOT_ADU_DEPLOYMENT" \
-  --status -o json
-
-az iot du device list --account "$AZ_IOT_ADU_ACCOUNT" --instance "$AZ_IOT_ADU_INSTANCE" -o table
-```
-
-### Diagnosing connection drops from the service
-
-The init script enables an IoT Hub diagnostic setting (`adu-sim-conn-diag`) that
-routes **Connections** events to a Log Analytics workspace, so server-side
-disconnect reasons (e.g. a duplicate-connection eviction) can be inspected. Query
-it after reproducing a drop (allow a few minutes for ingestion):
-
-```powershell
-$wsGuid = az monitor log-analytics workspace show `
-  --resource-group $env:AZ_IOT_ADU_RESOURCE_GROUP `
-  --workspace-name $env:AZ_IOT_ADU_LOG_WORKSPACE --query customerId -o tsv
-az monitor log-analytics query -w $wsGuid --analytics-query @"
-AzureDiagnostics
-| where ResourceProvider == 'MICROSOFT.DEVICES' and Category == 'Connections'
-| where TimeGenerated > ago(1h)
-| project TimeGenerated, OperationName, ResultType, ResultDescription
-| order by TimeGenerated desc
-"@ -o table
-```
-
-On the device, set `AZ_IOT_PAHO_TRACE=1` to capture the client-side cause at the
-same time. `Remove-AduSampleEnvironment.ps1` deletes the diagnostic setting (the
-full teardown also removes the workspace with the resource group).
-
----
-
-## References
-
-- On-device design: [docs/azure-device-update.md](../../docs/azure-device-update.md)
-- Protocol coverage / client API: [docs/adu-protocol-coverage.md](../../docs/adu-protocol-coverage.md)
-- Azure CLI Device Update commands: <https://learn.microsoft.com/cli/azure/iot/du>
-- Device Update for IoT Hub docs: <https://learn.microsoft.com/azure/iot-hub-device-update/>

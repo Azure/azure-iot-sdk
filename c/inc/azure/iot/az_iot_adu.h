@@ -62,7 +62,7 @@ extern "C"
 #define AZ_IOT_ADU_MAX_ROOT_KEYS 4
 #endif
 
-/* Scratch buffer (in-struct) that holds a COPY of the desired-property service
+/* Scratch buffer (in-struct) that holds a COPY of the `updateMetadata`
  * payload for the current deployment. The channel's delivery buffer is only
  * valid during the subscriber callback, but the workflow is processed
  * asynchronously across many do_work() calls; the upstream parser stores spans
@@ -83,12 +83,11 @@ extern "C"
 #endif
 #define AZ_IOT_ADU_PERSIST_BLOB_SIZE (AZ_IOT_ADU_REQUEST_BUFFER_SIZE + AZ_IOT_ADU_PERSIST_OVERHEAD)
 
-/* Capacities for the copied-out deployment identity (workflow `id` and
- * `retryTimestamp`) used to distinguish a retry/replacement from a harmless
- * redelivery. Deployment ids are GUID-shaped (~36 chars) and retry timestamps
- * are ISO-8601 (~28 chars); these include generous headroom. An identity that
- * does not fit simply disables de-duplication for that deployment (it is then
- * reprocessed on redelivery), so correctness never depends on the size. */
+/* Capacities for the copied-out workflow `id` (duplicate detection) and
+ * `retryTimestamp` (persisted snapshot only). Deployment ids are GUID-shaped (~36 chars) and retry
+ * timestamps are ISO-8601 (~28 chars); these include generous headroom. An identity that does not
+ * fit simply disables de-duplication for that deployment (it is then reprocessed on redelivery), so
+ * correctness never depends on the size. */
 #ifndef AZ_IOT_ADU_WORKFLOW_ID_SIZE
 #define AZ_IOT_ADU_WORKFLOW_ID_SIZE 64
 #endif
@@ -687,7 +686,7 @@ extern "C"
 
       az_iot_adu_state state;
 
-      /* Current deployment, parsed from the desired-property patch. */
+      /* Current deployment, parsed from the `updateMetadata` payload. */
       az_iot_adu_client_update_request current_request;
       az_iot_adu_client_update_manifest current_manifest;
       bool have_request;
@@ -703,21 +702,14 @@ extern "C"
        * endurance). */
       bool checkpoint_stored;
 
-      /* Identity of the deployment currently being processed (or the last one
-       * started). Copied out of the request so it survives request_buffer
-       * being overwritten by a later patch, and used to tell a retry (same id,
-       * newer retryTimestamp) and a replacement (different id) apart from a
-       * harmless redelivery (same id + same/empty retryTimestamp). See the
-       * design doc "Retry vs. Replacement Detection". */
+      /* Workflow id of the active (or last) deployment; a payload carrying it
+       * is a redelivery and is ignored. Retry timestamp and manifest CRC are
+       * kept only for the persisted snapshot. */
       bool active_workflow_valid;
       uint8_t active_workflow_id[AZ_IOT_ADU_WORKFLOW_ID_SIZE];
       size_t active_workflow_id_len;
       uint8_t active_retry_timestamp[AZ_IOT_ADU_RETRY_TIMESTAMP_SIZE];
       size_t active_retry_timestamp_len;
-      /* CRC-32 fingerprint of the active deployment's raw updateManifest, used
-       * to catch the (anomalous) case of an unchanged workflow id + retry
-       * timestamp carrying a different manifest: that is a replacement, not a
-       * duplicate, so it must (re)start rather than be ignored. */
       uint32_t active_manifest_crc;
 
       /* COPY of the service payload backing current_request/current_manifest
@@ -1065,29 +1057,27 @@ extern "C"
       void* read_ctx);
 
   /**
-   * Validate and parse a deployment payload with NO channel, state machine, or
-   * transport. Performs the full manifest trust chain (compact JWS split,
-   * base64url decode, root-key `kid` resolution, `alg=RS256` enforcement, both
-   * RSA signature checks via the crypto hooks, and the SHA-256 manifest binding),
-   * and only then parses the update manifest. FAIL-CLOSED: on any error
-   * @p out_request and @p out_manifest are left zeroed and a non-OK result is
-   * returned.
+   * @brief Verify and parse an `updateMetadata` object without a client.
    *
-   *   request_json: the desired-property patch carrying the "deviceUpdate"
-   *     component (the same shape the managed client consumes). MUTATED IN PLACE
-   *     (the manifest is unescaped within the buffer) and MUST outlive
-   *     @p out_request / @p out_manifest, whose az_spans point into it. No heap.
-   *   crypto: RSA-verify + SHA-256 primitives (as for the managed client).
-   *   root_keys / root_key_count: trusted RSA root public keys anchoring manifest
-   *     trust; pass az_iot_adu_microsoft_root_keys() for Microsoft-signed updates.
-   *   out_request: filled service request (workflow id/action, file urls, ...).
-   *   out_manifest: filled, VERIFIED update manifest. Left empty when the request
-   *     is a Cancel action (inspect out_request->workflow.action).
+   * Verifies the manifest trust chain (JWS/SJWK, root-key `kid`, RS256, both
+   * RSA checks, SHA-256 binding), then parses the manifest. Fail-closed:
+   * outputs stay zeroed on any error.
    *
-   * Returns AZ_IOT_OK on a verified parse (or a parsed Cancel request),
-   * AZ_IOT_ERR_NOT_FOUND when the patch carries no deviceUpdate/service object,
-   * AZ_IOT_ERR_INVALID_ARG on bad arguments or malformed input, or
-   * AZ_IOT_ERR_AUTH when manifest verification fails.
+   * @param request_json   `{ workflowId, updateManifest, updateManifestSignature,
+   *                       fileUrls }` as the service sends it. The
+   *                       `workflowId`, `updateManifest` and every `fileUrls` id
+   *                       and URL are decoded in place, overwriting those string
+   *                       values (also on failure), so the buffer must be
+   *                       writable and outlive both outputs, whose spans point
+   *                       into it.
+   * @param crypto         RSA-verify and SHA-256 hooks.
+   * @param root_keys      Trusted root keys, e.g. az_iot_adu_microsoft_root_keys().
+   * @param root_key_count Entries in @p root_keys.
+   * @param out_request    Workflow id and file URLs.
+   * @param out_manifest   The verified manifest.
+   * @return AZ_IOT_OK; AZ_IOT_ERR_NOT_FOUND without `workflowId`;
+   * AZ_IOT_ERR_INVALID_ARG on bad arguments or malformed input;
+   * AZ_IOT_ERR_AUTH when verification fails.
    */
   AZ_NODISCARD az_iot_result az_iot_adu_parse_update_request(
       az_span request_json,

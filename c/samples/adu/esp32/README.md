@@ -26,7 +26,7 @@ samples/adu/esp32/
 │   ├── azure-iot-sdk/          wraps this repo's src/ as an ESP-IDF component
 │   └── azure-sdk-for-c/        builds az_core + az_iot from the submodule
 └── main/
-    ├── app_main.c              entry point: wifi → DPS → twin → ADU pump
+    ├── app_main.c              entry point: wifi → DPS → ADU pump
     ├── az_iot_mqtt_esp.[ch]    esp-mqtt az_iot_mqtt_iface adapter (v3.1.1 + v5)
     ├── az_iot_adu_crypto_mbedtls.[ch]   PSA-Crypto RS256 / SHA-256 hooks
     ├── adu_esp32_ota.[ch]      real OTA platform hooks (download/install/rollback)
