@@ -10,22 +10,38 @@ read out of the module.
 | File | Responsibility |
 | ---- | -------------- |
 | `IHardwareSecurityModule.cs` | The HSM boundary: exposes the public key and a signing operation only. |
-| `SimulatedHardwareSecurityModule.cs` | A runnable stand-in for a real module. Replace it with your PKCS#11 / TPM / Key Vault implementation. |
+| `SoftHsmHardwareSecurityModule.cs` | A **real** PKCS#11 implementation backed by SoftHSM2, configured from the outputs of `c/eng/setup-softhsm.sh` (the same token the SDK's `CertificateManagementIntegrationTests` use). |
 | `HsmBackedRsa.cs` | An `RSA` that forwards every private-key (signing) operation across the HSM boundary and refuses to export the private key. |
-| `Program.cs` | Binds the HSM-backed key to a device certificate via `CopyWithPrivateKey`, builds an `X509AuthenticationProvider`, and provisions + sends telemetry. |
+| `Program.cs` | Opens the SoftHSM token, binds the HSM-backed key to a device certificate via `CopyWithPrivateKey`, builds an `X509AuthenticationProvider`, and provisions + sends telemetry. |
 
 The important, reusable piece is `HsmBackedRsa`. Once an `X509Certificate2` is bound to it with
 `CopyWithPrivateKey`, the rest of the SDK is unchanged: the certificate flows into the TLS layer as usual and the
 handshake signature is produced inside the HSM.
 
-## Using a real HSM
+## Backing the sample with SoftHSM
 
-Replace `SimulatedHardwareSecurityModule` with an implementation of `IHardwareSecurityModule` that talks to your
-hardware:
+`SoftHsmHardwareSecurityModule` opens a PKCS#11 token via
+[Pkcs11Interop](https://github.com/Pkcs11Interop/Pkcs11Interop) and signs through it (`CKM_RSA_PKCS` /
+`CKM_RSA_PKCS_PSS`); the private key never leaves the token. It is configured from the environment the C SDK's
+SoftHSM setup script already produces:
 
-- **PKCS#11** (most cross-platform HSMs, smart cards, TPMs via a PKCS#11 layer): use a library such as
-  [Pkcs11Interop](https://github.com/Pkcs11Interop/Pkcs11Interop). Key generation maps to `C_GenerateKeyPair`
-  with the private key marked non-extractable; `SignHash` maps to `C_Sign`.
+1. Run `c/eng/setup-softhsm.sh` and `eval` its exports. That creates the token and sets `PKCS11_PROVIDER_MODULE`
+   (path to `libsofthsm2.so`) and `AZ_IOT_CLIENT_KEY_URI`
+   (e.g. `pkcs11:token=aziot;object=device-key;type=private?pin-source=file:/tmp/token-pin`).
+2. `dotnet run`
+
+The sample **requires** SoftHSM: if `PKCS11_PROVIDER_MODULE` is not set it exits with an error telling you to run
+the setup script. The token label, key label and PIN can also be supplied directly via
+`AZ_IOT_PKCS11_TOKEN_LABEL` / `AZ_IOT_PKCS11_KEY_LABEL` / `AZ_IOT_PKCS11_PIN`. SoftHSM is a Linux/macOS construct,
+which is also where `CopyWithPrivateKey` binding works (see below).
+
+## Using a different HSM
+
+Replace the module with another implementation of `IHardwareSecurityModule` that talks to your hardware:
+
+- **PKCS#11** (most cross-platform HSMs, smart cards, TPMs via a PKCS#11 layer): follow
+  `SoftHsmHardwareSecurityModule` — key generation maps to `C_GenerateKeyPair` with the private key marked
+  non-extractable; `SignHash` maps to `C_Sign`.
 - **Windows CNG / Key Storage Provider**: you often do not need this wrapper at all — load the certificate from
   the certificate store and pass it straight to `X509AuthenticationProvider`; SChannel calls the KSP to sign.
 - **Azure Key Vault**: use the `RSAKeyVault` type from the Key Vault SDK, which already has this exact shape.
@@ -35,9 +51,11 @@ hardware:
 The sample always demonstrates the HSM signing path offline, then takes the branch appropriate to the OS:
 
 - **Windows** loads the (CNG/KSP-backed) certificate from the certificate store. Install your HSM vendor's Key
-  Storage Provider and provision the certificate into the store first.
-- **Linux / macOS** attaches the managed HSM-backed key to the certificate directly, then — if `DPS_ID_SCOPE` is
-  set and the certificate's public key is enrolled in DPS — provisions and sends telemetry.
+  Storage Provider and provision the certificate into the store first. (SoftHSM on Windows can still perform the
+  offline signing demonstration, but cannot back a TLS certificate — see below.)
+- **Linux / macOS** attaches the managed HSM-backed key (from SoftHSM) to the certificate directly,
+  then — if `DPS_ID_SCOPE` is set and the certificate's public key is enrolled in DPS — provisions and sends
+  telemetry.
 
 To run the provisioning + telemetry portion (Linux / macOS):
 

@@ -16,10 +16,11 @@ internal class Program
 {
     private static async Task Main()
     {
-        // 1. Open a handle to the device's hardware security module. On a real device this opens a PKCS#11 session or
-        //    a vendor SDK handle. It is simulated here, but in both cases the private key never leaves the module:
-        //    only public-key material and signing results cross the boundary.
-        using IHardwareSecurityModule hsm = new SimulatedHardwareSecurityModule();
+        // 1. Open a handle to the device's hardware security module. This sample talks to a real PKCS#11 token
+        //    (SoftHSM2), configured from the outputs of c/eng/setup-softhsm.sh - the same token the SDK's
+        //    CertificateManagementIntegrationTests use. The private key never leaves the module: only public-key
+        //    material and signing results cross the boundary.
+        using IHardwareSecurityModule hsm = SoftHsmHardwareSecurityModule.Create();
 
         // 2. Wrap the HSM key handle in an RSA that forwards signing to the HSM. The private key material is never in
         //    managed memory; .NET's TLS stack signs the handshake by calling into this object.
