@@ -82,6 +82,9 @@ extern "C"
       const az_iot_connection_client* client,
       uint8_t out[AZ_IOT_CORRELATION_UUID_LEN]);
 
+  /** @brief Whether options.twin_push.push_desired asks the service to push desired state. */
+  bool az_iot_connection_client__twin_push_desired(const az_iot_connection_client* client);
+
   /* Test seam: force a pending subscription gate to expire on the next
    * do_work(). No-op when no gate is armed. Lets unit tests exercise the
    * never-acked path without waiting out the configured timeout. */
