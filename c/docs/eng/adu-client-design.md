@@ -46,7 +46,7 @@ The `azure-sdk-for-c` dependency (already fetched via CMake FetchContent) includ
 | Parse update manifest JSON | `az_iot_adu_client_parse_update_manifest()` |
 | Structs for manifest, workflow, file info, step results | `az_iot_adu_client_update_manifest`, `az_iot_adu_client_update_request`, etc. |
 
-Its device-twin helpers (service-property parsing, agent-state and acknowledgement formatting, component check) are not used by the engine. `az_iot_adu_build_report()` still emits the upstream agent-state JSON; the ADUv2 `reportStatus` body is built by the channel.
+Its device-twin helpers (service-property parsing, agent-state and acknowledgement formatting, component check) are not used by the engine. `az_iot_adu_build_report()` emits the ADUv2 `reportStatus` body; the channel delegates to it.
 
 **What azure-sdk-for-c does NOT provide:**
 - State machine / workflow orchestration.
@@ -1730,7 +1730,7 @@ at `init` (compiled-in Microsoft defaults or caller-supplied keys).
 | Capability | Assessment |
 |-----------|------------|
 | Manifest v5 JSON parsing (inline steps, files, hashes) | ✅ Sufficient |
-| Reported-property JSON formatting (agent state + per-step results) | Used only by `az_iot_adu_build_report()`; the channel builds the ADUv2 report |
+| Reported-property JSON formatting (agent state + per-step results) | Not used; `az_iot_adu_build_report()` builds the ADUv2 report and the channel delegates to it |
 | Service property acknowledgement formatting (ACCEPT/REJECT) | Not used (device twin only) |
 | Component name check (`az_iot_adu_client_is_component_device_update`) | Not used (device twin only) |
 | Workflow struct with `action`, `id`, `retry_timestamp` | Only `id` is used (from `workflowId`) |
