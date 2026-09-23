@@ -144,7 +144,7 @@ sample-only / not factored) · 🔜 Coming soon (planned / designed, not yet bui
 | ADUv2 transport | 🟡 | **Bootstrap orchestration** — the pre-registration hold, the onboarding fetch and the report are in place, the hold is advisory (registration proceeds when it expires), and a queued request is bounded by `timeout_ms` so one that can never be served is abandoned rather than retried forever. The re-check **loop** is still absent: the engine issues one fetch per request. [→](#g-aduv2-transport-via-the-dps-gateway) |
 | ADUv2 transport | 🟡 | **Operational polling loop** — an on-demand provisioning session after registration exists, and the application picks the route with `az_iot_adu_client_request_update()`. No cadence is owned by the SDK: the application decides when to poll. [→](#g-aduv2-transport-via-the-dps-gateway) |
 | ADUv2 transport | 🔜 | **Root key package download** — fetch/cache from `rootKeyDownloadUrl`, verify as usual. [→](#g-aduv2-transport-via-the-dps-gateway) |
-| ADUv2 transport | ✅ | **Channel observes connection state** — the DPS channel registers as a scoped state observer instead of polling the connection client, and reacts to a settled DPS fault rather than retrying into it. [→](#g-aduv2-transport-via-the-dps-gateway) |
+| ADUv2 transport | ✅ | **Channel observes connection state** — the DPS channel registers as a scoped state observer instead of polling the connection client, and stops asking for a session once EITHER scope has settled in FAULTED rather than retrying into it. [→](#g-aduv2-transport-via-the-dps-gateway) |
 | ADUv2 transport | ✅ | **ETag + api-version + agent-info resend** — `agentInfoEtag`/`serviceConfigEtag`; resend full `agentInfo` on `OUTDATED_`/`UNKNOWN_AGENT_INFO`; re-sync on `OUTDATED_SERVICE_CONFIG`. [→](#g-aduv2-transport-via-the-dps-gateway) |
 | ADUv2 transport | ✅ | **Advisory + load contracts** — the error classifier drives on the code, the device is the sole retrier, and `Retry-After` is honoured: it arrives as a response-topic query parameter, and the channel defers every publish until the delay elapses. [→](#g-aduv2-transport-via-the-dps-gateway) |
 | Day0 recovery | 🔜 | **Unauthenticated recovery transport** — plain-HTTP recovery endpoint (protocol not yet defined). [→](#h-day0-recovery) |
@@ -258,8 +258,8 @@ stateDiagram-v2
   during the internal channel's report call; a retaining channel must copy the entries and
   their `result_details` span contents. Existing per-step codes are preserved without conversion.
   ADUv2 serialization ships: `stepResults` is written as a map keyed by step, each entry
-  carrying `outcome`, `failureOrigin`, `resultCode`, a comma-separated hex
-  `extendedResultCodes` and `resultDetails`.
+  carrying `outcome`, `failureOrigin`, `resultCode` and a comma-separated hex
+  `extendedResultCodes`, plus `resultDetails` when the step supplied any.
 - **Replacement vs. duplicate (✅)** — keyed on **`workflowId` alone**, as ADUv2 defines it: a
   new id restarts the workflow, the same id is ignored whatever the manifest bytes. The
   `retryTimestamp` input is gone.
