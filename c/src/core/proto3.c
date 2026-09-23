@@ -160,7 +160,7 @@ bool az_iot_proto3_skip_field(const uint8_t* buf, size_t len, size_t* pos, uint8
 /* Append a varint, or report that it does not fit without touching `pos`. */
 static bool proto3_write_varint(uint8_t* buf, size_t cap, size_t* pos, uint64_t value)
 {
-  uint8_t tmp[10];
+  uint8_t tmp[AZ_IOT_PROTO3_VARINT_MAX_BYTES];
   size_t n = 0;
   do
   {

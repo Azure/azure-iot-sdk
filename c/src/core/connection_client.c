@@ -4568,6 +4568,11 @@ az_iot_result az_iot_connection_client__presence_nonce(
   return AZ_IOT_OK;
 }
 
+bool az_iot_connection_client__twin_push_desired(const az_iot_connection_client* client)
+{
+  return client && client->opts.twin_push.push_desired;
+}
+
 void az_iot_connection_client__subscription_gate_force_timeout(az_iot_connection_client* client)
 {
   if (client && client->subscription_gate.active)
