@@ -32,16 +32,9 @@ extern "C"
 
   /* --- Operations ---------------------------------------------------------- */
 
-  typedef enum az_iot_adu_operation
-  {
-    /* Day-0 fetch: the device has no registry entry yet. Sends agentInfo and
-     * omits installedUpdateId. */
-    AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE = 0,
-    /* Operational fetch: the device is already registered. */
-    AZ_IOT_ADU_OP_GET_UPDATE,
-    /* Status report for a workflow. */
-    AZ_IOT_ADU_OP_REPORT_STATUS,
-  } az_iot_adu_operation;
+  /* az_iot_adu_operation is declared in the public header: an application that
+   * subscribes to abandonment needs to know WHICH operation was abandoned, so
+   * the enum is part of the public contract rather than duplicated here. */
 
 /* --- Topics -------------------------------------------------------------- */
 
@@ -90,6 +83,21 @@ extern "C"
       int32_t* out_status,
       char* out_request_id,
       size_t request_id_size);
+
+  /**
+   * Read the retry-after delay, in seconds, out of a response topic.
+   *
+   * MQTT carries no HTTP headers, so the service puts the value in the query
+   * string instead:
+   *
+   *   $dps/registrations/res/500/?$rid={request_id}&retry-after=3
+   *
+   * Returns 0 when the parameter is absent, empty, non-numeric or absurdly
+   * large. 0 means "no delay asked for", which is also the safe reading of a
+   * value we could not make sense of: the caller falls back on its own backoff
+   * rather than stalling on a number it did not understand.
+   */
+  uint32_t az_iot_adu__parse_retry_after_seconds(const char* topic, size_t topic_len);
 
   /* --- Requests ------------------------------------------------------------ */
 
@@ -221,6 +229,18 @@ extern "C"
 #define AZ_IOT_ADU_ERR_SERVER_ERROR 500000
 #define AZ_IOT_ADU_ERR_SERVICE_UNAVAILABLE 503000
 
+/* The codes above are the HTTP status times this scale, plus a sub-code, which
+ * is what lets an undocumented sub-code still be classified by its status. */
+#define ADU_ERROR_CODE_STATUS_SCALE 1000
+
+#define ADU_ERROR_STATUS_BAD_REQUEST 400
+#define ADU_ERROR_STATUS_CONFLICT 409
+#define ADU_ERROR_STATUS_TOO_MANY_REQUESTS 429
+#define ADU_ERROR_STATUS_INTERNAL_SERVER_ERROR 500
+#define ADU_ERROR_STATUS_BAD_GATEWAY 502
+#define ADU_ERROR_STATUS_SERVICE_UNAVAILABLE 503
+#define ADU_ERROR_STATUS_GATEWAY_TIMEOUT 504
+
   /**
    * Map a service error to the action the device should take.
    *
@@ -280,6 +300,21 @@ extern "C"
       char* out_code,
       size_t out_code_size,
       int32_t* out_numeric_code);
+
+  /* Extract the service's correlation GUID (`trackingId`) from an error body.
+   *
+   * Separate from __parse_error_code rather than another out-parameter on it:
+   * that function classifies, this one is for diagnostics only, and keeping
+   * them apart leaves the classification path and its tests untouched.
+   *
+   * out_tracking_id is always NUL-terminated, and empty when the body carries
+   * no trackingId or it does not fit. Returns AZ_IOT_ERR_NOT_FOUND when there
+   * is nothing to report. */
+  az_iot_result az_iot_adu__parse_tracking_id(
+      const uint8_t* payload,
+      size_t payload_len,
+      char* out_tracking_id,
+      size_t out_tracking_id_size);
 
 #ifdef __cplusplus
 }

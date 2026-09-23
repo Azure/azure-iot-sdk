@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-option csharp_namespace = "Microsoft.Azure.Devices.Client.Models.Twin";
+option csharp_namespace = "Microsoft.Azure.Iot.Device.Models.Twin";
 
 // Backend-initiated full-state push: Service → Device
 // type = "twin-push:1"

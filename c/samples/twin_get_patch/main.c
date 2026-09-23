@@ -65,6 +65,9 @@ typedef struct
   int desired_count;
   az_iot_result get_status;
   az_iot_result patch_status;
+  /* The service's verdict, which is separate from patch_status: the exchange
+   * can complete (AZ_IOT_OK) while the write itself is refused. */
+  az_iot_gen2_twin_patch_status patch_verdict;
   uint64_t patch_version;
 } user_context;
 
@@ -122,6 +125,14 @@ static az_iot_result twin_rebuild(
 static void on_conn_state(const az_iot_connection_state_event* event, void* user_ctx)
 {
   user_context* ctx = (user_context*)user_ctx;
+  /* Hub lifecycle only: the provisioning session reports on its own scope,
+   * and storing its state here would overwrite the hub state this code acts
+   * on. */
+  if (event->scope != AZ_IOT_CONN_SCOPE_HUB)
+  {
+    return;
+  }
+
   ctx->conn_state = event->state;
   if (event->state == AZ_IOT_CONN_STATE_CONNECTED)
   {
@@ -202,6 +213,7 @@ static void on_gen2_patch(
 {
   user_context* ctx = (user_context*)user_ctx;
   ctx->patch_status = status;
+  ctx->patch_verdict = result ? result->status : AZ_IOT_GEN2_TWIN_PATCH_UNSPECIFIED;
   ctx->patch_version = result ? result->version : 0;
   ctx->patch_done = 1;
   if (status == AZ_IOT_OK && result && result->status != AZ_IOT_GEN2_TWIN_PATCH_OK)
@@ -250,7 +262,7 @@ int main(void)
     sample_state_destroy(&state);
     return 1;
   }
-  az_iot_connection_client_set_state_callback(&state.connection_client, on_conn_state, &user_ctx);
+  az_iot_connection_client_add_state_observer(&state.connection_client, on_conn_state, &user_ctx);
 
   /* MQTT adapters: register both v3.1.1 (DPS + Classic) and v5 (Next).
    * The connection client selects the appropriate factory based on the
@@ -327,8 +339,11 @@ int main(void)
       (void)az_iot_connection_client_do_work(&state.connection_client, 50);
     }
 
+    /* A refused write is a failed sample run: the exchange completing is not
+     * the same as the twin being updated. */
     if (user_ctx.get_done && user_ctx.get_status == AZ_IOT_OK && user_ctx.patch_done
-        && user_ctx.patch_status == AZ_IOT_OK)
+        && user_ctx.patch_status == AZ_IOT_OK
+        && user_ctx.patch_verdict == AZ_IOT_GEN2_TWIN_PATCH_OK)
     {
       rc = 0;
     }
@@ -338,9 +353,10 @@ int main(void)
         user_ctx.get_done,
         az_iot_result_to_string(user_ctx.get_status));
     printf(
-        "patch_reported: done=%d status=%s version=%llu\n",
+        "patch_reported: done=%d status=%s verdict=%d version=%llu\n",
         user_ctx.patch_done,
         az_iot_result_to_string(user_ctx.patch_status),
+        (int)user_ctx.patch_verdict,
         (unsigned long long)user_ctx.patch_version);
   }
 

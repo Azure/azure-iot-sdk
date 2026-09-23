@@ -37,6 +37,9 @@
 /* A varint carries seven payload bits per byte. Bits 0..62 come from nine such
  * groups and bit 63 from a tenth, so MAX_SHIFT is the last shift a legal uint64
  * can reach and TOP_BIT_MAX is the largest payload that tenth byte may carry. */
+/* protobuf caps field numbers at 2^29-1; 0 is not a valid field number. */
+#define AZ_IOT_PROTO3_MAX_FIELD_NUMBER 536870911u
+
 #define AZ_IOT_PROTO3_VARINT_MAX_SHIFT 63u
 #define AZ_IOT_PROTO3_VARINT_TOP_BIT_MAX 1u
 
@@ -45,9 +48,10 @@
 /* Read a base-128 varint. Rejects encodings longer than 10 bytes. */
 bool az_iot_proto3_read_varint(const uint8_t* buf, size_t len, size_t* pos, uint64_t* out_value);
 
-/* Read a field key and split it into field number and wire type. Rejects field
- * number 0, which protobuf does not define: a key carrying it means the frame
- * is malformed, not that the field is one this SDK does not know. */
+/* Read a field key and split it into field number and wire type. Rejects a
+ * field number outside protobuf's 1..2^29-1: such a key means the frame is
+ * malformed, not that the field is one this SDK does not know, so it must not
+ * be skipped as unknown. */
 bool az_iot_proto3_read_tag(
     const uint8_t* buf,
     size_t len,
@@ -56,7 +60,8 @@ bool az_iot_proto3_read_tag(
     uint8_t* out_wire);
 
 /* Read a length-delimited field, returning a pointer into `buf` (no copy).
- * `out_bytes` may be NULL for a zero-length field. */
+ * `out_bytes` is non-NULL even when the field is empty, so a present-but-empty
+ * field stays distinguishable from an absent one. */
 bool az_iot_proto3_read_bytes(
     const uint8_t* buf,
     size_t len,

@@ -87,4 +87,38 @@ int mock_paho_last_connect_struct_version(void);
  * assert on what it forwards. NULL until the adapter installs one. */
 MQTTAsync_traceCallback* mock_paho_trace_callback(void);
 
+/* ------------------------------------------------------------------------- */
+/* Driving the adapter's inbound callbacks directly.                          */
+/*                                                                            */
+/* Paho calls these from ITS OWN threads while the application thread is in    */
+/* process_loop(). That concurrency is the adapter's contract, and the only    */
+/* way to exercise it deterministically is to be the producer thread -- so     */
+/* the mock records what the adapter registered and hands it back.             */
+/*                                                                            */
+/* All three are NULL until the adapter's connect() has registered them.       */
+/* ------------------------------------------------------------------------- */
+
+/* The context the adapter passed to MQTTAsync_setCallbacks: its own client
+ * object, which every callback below expects as its first argument. */
+void* mock_paho_callback_context(void);
+
+MQTTAsync_messageArrived* mock_paho_message_arrived(void);
+MQTTAsync_connectionLost* mock_paho_connection_lost(void);
+
+/* Script the MQTT v5 User Properties that MQTTProperties_getPropertyAt() will
+ * report, so a test can drive the adapter's inbound property extraction
+ * without a broker.
+ *
+ * `pairs` is 2 * `count` NUL-terminated strings, key first. The mock keeps
+ * POINTERS to them -- they must outlive the test -- and copies nothing, which
+ * is what lets the property table be read concurrently by several producer
+ * threads without the mock itself becoming the race under investigation.
+ * Call with count 0 to go back to reporting no properties.
+ *
+ * Deliberately a SEPARATE table rather than a real implementation over the
+ * MQTTProperties the adapter builds: MQTTProperties_add() here is a no-op that
+ * stores nothing, and making it real would hand the adapter's outbound path
+ * allocations that this mock's no-op MQTTProperties_free() would then leak. */
+void mock_paho_set_inbound_user_properties(const char* const* pairs, int count);
+
 #endif /* AZ_IOT_TEST_MOCK_PAHO_ASYNC_H */

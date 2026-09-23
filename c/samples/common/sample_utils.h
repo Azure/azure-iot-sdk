@@ -3,6 +3,8 @@
 
 #include <stdint.h>
 
+#include "azure/iot/az_iot_connection_client.h"
+
 typedef struct sample_config
 {
   char* id_scope;
@@ -48,5 +50,13 @@ char* sample_env_dup(const char* name, const char* fallback);
 // differences are meaningful. The SDK keeps its clock internal, so a sample
 // that has to measure elapsed time brings its own.
 uint64_t sample_now_ms(void);
+
+// Blocks the calling thread for `ms` milliseconds; returns immediately for
+// ms <= 0. Portable across Windows and POSIX, which every polling sample needs
+// for its do_work loop.
+void sample_sleep_ms(long ms);
+
+// Human-readable name for a connection state, for logging. Never NULL.
+const char* sample_connection_state_name(az_iot_connection_state state);
 
 #endif // SAMPLE_UTILS_H

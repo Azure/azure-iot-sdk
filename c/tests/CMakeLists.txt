@@ -135,6 +135,12 @@ target_include_directories(az_iot_tests_connection_dps PRIVATE
 if(UNIX)
     target_compile_definitions(az_iot_tests_connection_dps PRIVATE _POSIX_C_SOURCE=200809L)
 endif()
+# Custom DPS registration payload: the request body it produces (alone and
+# alongside a CSR) and the payload the assignment returns.
+az_iot_add_cmocka_test(az_iot_tests_connection_dps_payload unit/connection_dps_payload_test.c)
+target_link_libraries(az_iot_tests_connection_dps_payload PRIVATE az_iot_test_support)
+target_include_directories(az_iot_tests_connection_dps_payload PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/core)
 az_iot_add_cmocka_test(az_iot_tests_reconnect_policy unit/reconnect_policy_test.c)
 target_include_directories(az_iot_tests_reconnect_policy PRIVATE
     ${CMAKE_SOURCE_DIR}/src/core)
@@ -241,6 +247,9 @@ target_link_libraries(az_iot_tests_gen2_twin_client PRIVATE az_iot_test_support 
 az_iot_add_cmocka_test(az_iot_tests_adu_client unit/adu_client_test.c)
 az_iot_add_cmocka_test(az_iot_tests_adu_protocol unit/adu_protocol_test.c)
 target_link_libraries(az_iot_tests_adu_client PRIVATE az_iot_test_support)
+# For az_iot_time_mono_ms: the request deadline is a monotonic instant, so a
+# test that exercises it has to speak the same clock.
+target_include_directories(az_iot_tests_adu_client PRIVATE ${CMAKE_SOURCE_DIR}/src/core)
 
 # The channel over a real connection client: what reaches the broker, how a
 # response is correlated back, and the paths that can fault provisioning.
@@ -373,6 +382,38 @@ if(AZ_IOT_WITH_PAHO)
             _POSIX_C_SOURCE=200809L)
     endif()
     az_iot_apply_coverage(az_iot_tests_paho_transport_proxy)
+
+    # Data races in the adapter's event queue: the producer/consumer seam
+    # between Paho's callback threads and the application's process_loop().
+    #
+    # Same construction again -- the mock lets the test BE the Paho thread, so
+    # the only concurrency in the binary is the concurrency under test. It
+    # runs in the ordinary suite, and CI additionally runs this one exe under
+    # helgrind, which is what actually adjudicates happens-before; memcheck
+    # and ASan cannot see a race at all. See the race-detector job in
+    # .github/workflows/ci-c.yml.
+    az_iot_add_cmocka_test(az_iot_tests_paho_event_queue_race
+        unit/paho_event_queue_race_test.c
+        support/mock_paho_async.c
+        support/fake_paho_key_custody.c
+        ${CMAKE_SOURCE_DIR}/adapters/paho/az_iot_mqtt_paho.c)
+    target_include_directories(az_iot_tests_paho_event_queue_race PRIVATE
+        ${CMAKE_SOURCE_DIR}/adapters/paho
+        ${CMAKE_CURRENT_SOURCE_DIR}/support)
+    if(AZ_IOT_PAHO_INCLUDE_DIRS)
+        target_include_directories(az_iot_tests_paho_event_queue_race SYSTEM PRIVATE
+            ${AZ_IOT_PAHO_INCLUDE_DIRS})
+    endif()
+    if(_paho_defs)
+        target_compile_definitions(az_iot_tests_paho_event_queue_race PRIVATE ${_paho_defs})
+    endif()
+    if(WIN32)
+        target_link_libraries(az_iot_tests_paho_event_queue_race PRIVATE ws2_32 crypt32)
+    endif()
+    if(UNIX)
+        target_link_libraries(az_iot_tests_paho_event_queue_race PRIVATE pthread)
+    endif()
+    az_iot_apply_coverage(az_iot_tests_paho_event_queue_race)
 endif()
 
 if(AZ_IOT_WITH_RUST_MQTT)

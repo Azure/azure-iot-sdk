@@ -11,6 +11,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -42,6 +43,18 @@ static char s_last_http_proxy[256];
 static char s_last_https_proxy[256];
 static int s_last_struct_version;
 
+/* The inbound callbacks the adapter registered, and the context it expects
+ * back. Written once by connect(), read by the test's producer threads. */
+static void* s_callback_context;
+static MQTTAsync_messageArrived* s_message_arrived;
+static MQTTAsync_connectionLost* s_connection_lost;
+
+/* Scripted inbound v5 User Properties. Set up before any producer thread
+ * starts and only read after that, so the table is never itself contended. */
+#define MOCK_PAHO_MAX_USER_PROPERTIES 8
+static MQTTProperty s_user_properties[MOCK_PAHO_MAX_USER_PROPERTIES];
+static int s_user_property_count;
+
 void mock_paho_reset(void)
 {
   s_create_rc = MQTTASYNC_SUCCESS;
@@ -64,6 +77,10 @@ void mock_paho_reset(void)
   s_last_http_proxy[0] = '\0';
   s_last_https_proxy[0] = '\0';
   s_last_struct_version = -1;
+  s_callback_context = NULL;
+  s_message_arrived = NULL;
+  s_connection_lost = NULL;
+  s_user_property_count = 0;
 }
 
 void mock_paho_set_create_rc(int rc) { s_create_rc = rc; }
@@ -150,12 +167,18 @@ int MQTTAsync_setCallbacks(
     MQTTAsync_deliveryComplete* dc)
 {
   (void)handle;
-  (void)context;
-  (void)cl;
-  (void)ma;
   (void)dc;
+  s_callback_context = context;
+  s_connection_lost = cl;
+  s_message_arrived = ma;
   return s_set_callbacks_rc;
 }
+
+void* mock_paho_callback_context(void) { return s_callback_context; }
+
+MQTTAsync_messageArrived* mock_paho_message_arrived(void) { return s_message_arrived; }
+
+MQTTAsync_connectionLost* mock_paho_connection_lost(void) { return s_connection_lost; }
 
 int MQTTAsync_setDisconnected(MQTTAsync handle, void* context, MQTTAsync_disconnected* co)
 {
@@ -312,8 +335,7 @@ void MQTTProperties_free(MQTTProperties* properties) { (void)properties; }
 int MQTTProperties_propertyCount(MQTTProperties* props, enum MQTTPropertyCodes propid)
 {
   (void)props;
-  (void)propid;
-  return 0;
+  return (propid == MQTTPROPERTY_CODE_USER_PROPERTY) ? s_user_property_count : 0;
 }
 
 MQTTProperty* MQTTProperties_getPropertyAt(
@@ -322,7 +344,34 @@ MQTTProperty* MQTTProperties_getPropertyAt(
     int index)
 {
   (void)props;
-  (void)propid;
-  (void)index;
-  return NULL;
+  if (propid != MQTTPROPERTY_CODE_USER_PROPERTY || index < 0 || index >= s_user_property_count)
+  {
+    return NULL;
+  }
+  return &s_user_properties[index];
+}
+
+void mock_paho_set_inbound_user_properties(const char* const* pairs, int count)
+{
+  if (pairs == NULL || count <= 0)
+  {
+    s_user_property_count = 0;
+    return;
+  }
+  if (count > MOCK_PAHO_MAX_USER_PROPERTIES)
+  {
+    count = MOCK_PAHO_MAX_USER_PROPERTIES;
+  }
+  for (int i = 0; i < count; ++i)
+  {
+    /* Length-delimited and NOT NUL-terminated, exactly as the real client
+     * reports them. An adapter that treats value.data as a C string reads past
+     * the end here just as it would on the wire. */
+    s_user_properties[i].identifier = MQTTPROPERTY_CODE_USER_PROPERTY;
+    s_user_properties[i].value.data.data = (char*)(uintptr_t)pairs[2 * i];
+    s_user_properties[i].value.data.len = (int)strlen(pairs[2 * i]);
+    s_user_properties[i].value.value.data = (char*)(uintptr_t)pairs[2 * i + 1];
+    s_user_properties[i].value.value.len = (int)strlen(pairs[2 * i + 1]);
+  }
+  s_user_property_count = count;
 }
