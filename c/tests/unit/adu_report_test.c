@@ -16,6 +16,7 @@
 #include <azure/core/az_span.h>
 
 #include "azure/iot/az_iot_adu.h"
+#include "internal/adu_channel_internal.h"
 #include "internal/adu_internal.h"
 
 static const char* const outcomes[]
@@ -887,6 +888,41 @@ static void test_report_state_no_workflow_and_invalid_inputs(void** state)
   assert_int_equal(az_iot_adu__report_state(&client), AZ_IOT_ERR_DETACHED);
 }
 
+/* The largest report the engine produces fits the channel body: engine results
+ * carry no resultDetails and one 8-hex extended code per result. */
+static void test_largest_engine_report_fits_channel_body(void** state)
+{
+  (void)state;
+  char workflow_id[AZ_IOT_ADU_MAX_WORKFLOW_ID_LEN];
+  memset(workflow_id, 'w', sizeof(workflow_id) - 1);
+  workflow_id[sizeof(workflow_id) - 1] = '\0';
+  /* A 192-byte installed ID (applied-ID buffer size), every byte escaped. */
+  char id[3][64];
+  for (int i = 0; i < 3; ++i)
+  {
+    memset(id[i], 0x01, sizeof(id[i]) - 1);
+    id[i][sizeof(id[i]) - 1] = '\0';
+  }
+  const az_iot_adu_report_update_id installed = { id[0], id[1], id[2] };
+
+  az_iot_adu_install_result result = valid_result();
+  result.outcome = AZ_IOT_ADU_OUTCOME_FAILED;
+  result.failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_AGENT_CORE;
+  result.result_code = INT64_MIN;
+  set_install_codes(&result, AZ_SPAN_FROM_STR("ffffffff"));
+  result.step_results_count = _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS;
+  for (int32_t i = 0; i < result.step_results_count; ++i)
+  {
+    result.step_results[i] = install_fields(&result);
+  }
+  az_iot_adu_report report = make_report(workflow_id, &installed, &result);
+
+  uint8_t body[AZ_IOT_ADU_CHANNEL_BODY_MAX_SIZE];
+  size_t length = 0;
+  assert_int_equal(az_iot_adu_build_report(&report, body, sizeof(body), &length), AZ_IOT_OK);
+  assert_true(length > 0 && length <= sizeof(body));
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -901,6 +937,7 @@ int main(void)
     cmocka_unit_test(test_malformed_utf8),
     cmocka_unit_test(test_invalid_owned_lengths),
     cmocka_unit_test(test_size_stamps),
+    cmocka_unit_test(test_largest_engine_report_fits_channel_body),
     cmocka_unit_test(test_invalid_arguments),
     cmocka_unit_test(test_small_buffers_never_succeed_partially),
     cmocka_unit_test(test_report_state_preserves_canonical_result),
