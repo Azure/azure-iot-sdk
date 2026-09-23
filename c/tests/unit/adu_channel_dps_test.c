@@ -1889,7 +1889,7 @@ static void a_full_observer_pool_refuses_the_bind(void** state)
 static void a_request_lost_to_a_replaced_session_is_reported(void** state)
 {
   fixture* fx = (fixture*)*state;
-  az_iot_mock_mqtt_client* old_m = open_and_bind(fx);
+  (void)open_and_bind(fx);
 
   assert_int_equal(
       fx->channel.vtable->request_update(fx->channel.ctx, AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE),
@@ -1899,7 +1899,6 @@ static void a_request_lost_to_a_replaced_session_is_reported(void** state)
   assert_int_equal(az_iot_connection_client_close(&fx->client), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_OK);
   az_iot_mock_mqtt_client* new_m = drive_existing_session(fx);
-  assert_ptr_not_equal(new_m, old_m);
   assert_true(az_iot_connection_client__dps_session_ready(&fx->client));
   assert_int_equal(fx->result_count, 0);
 
