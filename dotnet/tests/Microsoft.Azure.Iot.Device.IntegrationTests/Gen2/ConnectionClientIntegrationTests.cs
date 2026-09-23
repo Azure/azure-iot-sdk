@@ -74,7 +74,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Gen2
         /// <c>IOT_DPS_GROUP_X509_CERTIFICATE</c>, whose public key matches the token-held private key.
         /// </para>
         /// </summary>
-        [Fact(Timeout = Setup.TestTimeoutMilliseconds)]
+        [Fact(Timeout = Setup.TestTimeoutMilliseconds, Skip = "No test infra")]
         public async Task CanConnectWithHsmBackedX509UsingSoftHsm()
         {
             SoftHsmRsaCredential.SkipIfUnsupported();

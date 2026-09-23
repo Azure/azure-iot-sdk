@@ -1,9 +1,13 @@
 # HSM-backed X.509 authentication sample
 
 This sample shows how to authenticate a device to Azure IoT with an X.509 certificate whose **private key never
-leaves a hardware security module (HSM)**. On Linux/macOS the key is opened from a PKCS#11 token (SoftHSM2) as a
-**native OpenSSL key handle**, so signing happens inside the token and the key material is never read into managed
-memory.
+leaves a hardware security module (HSM)**. The key is opened from a PKCS#11 token (SoftHSM2) as a **native OpenSSL
+key handle**, so signing happens inside the token and the key material is never read into managed memory.
+
+Like the SDK's SoftHSM integration tests, this sample runs on **Linux/macOS only**: it uses OpenSSL's pkcs11
+provider, which is unavailable on Windows. Run on Windows, it prints a message explaining this and exits. (On
+Windows a device would instead surface the key through a CNG Key Storage Provider and load the certificate from the
+certificate store; that path is out of scope for this sample.)
 
 ## How it works
 
@@ -43,30 +47,28 @@ custody models:
 
 - **PKCS#11** (most cross-platform HSMs, smart cards, TPMs via a PKCS#11 layer): use `SoftHsmKey` as-is with your
   token's RFC 7512 URI; the OpenSSL provider/engine handles the session and PIN.
-- **Windows CNG / Key Storage Provider**: load the certificate from the certificate store and pass it straight to
-  `X509AuthenticationProvider`; SChannel calls the KSP to sign (see below).
+- **Windows CNG / Key Storage Provider**: not shown here — load the certificate from the certificate store and pass
+  it straight to `X509AuthenticationProvider`; SChannel calls the KSP to sign.
 - **Azure Key Vault**: use the `RSAKeyVault` type from the Key Vault SDK, which surfaces the key as an `RSA` whose
   signing is delegated to Key Vault.
 
 ## Running the sample
 
-The sample takes the branch appropriate to the OS:
+The sample runs on **Linux / macOS only**. It opens the SoftHSM token key natively, demonstrates the in-token
+signing path offline, attaches the key to the certificate, then — if `DPS_ID_SCOPE` is set and the certificate's
+public key is enrolled in DPS — provisions and sends telemetry. Run on Windows, it prints a message that the
+OpenSSL pkcs11 provider is unavailable there and exits.
 
-- **Linux / macOS** opens the SoftHSM token key natively, demonstrates the in-token signing path offline, attaches
-  the key to the certificate, then — if `DPS_ID_SCOPE` is set and the certificate's public key is enrolled in DPS —
-  provisions and sends telemetry.
-- **Windows** loads the (CNG/KSP-backed) certificate from the certificate store. Install your HSM vendor's Key
-  Storage Provider and provision the certificate into the store first.
-
-To run the provisioning + telemetry portion (Linux / macOS):
+To run the provisioning + telemetry portion:
 
 1. Enroll the device certificate's public key in your Device Provisioning Service (DPS) instance.
 2. Set the `DPS_ID_SCOPE` environment variable (and optionally `SAMPLE_DEVICE_ID`).
 3. `dotnet run`
 
-### Why the platform difference?
+### Why Linux / macOS only?
 
-On Windows the TLS stack (SChannel) requires the certificate's key to live in a CNG/CAPI provider, so HSM keys are
-surfaced through a **CNG Key Storage Provider** and loaded from the certificate store. On Linux and macOS the
-OpenSSL-based stack can drive a PKCS#11 token directly through the OpenSSL PKCS#11 provider/engine, so the key is
-opened as a native handle and stays in the token.
+The key is opened through OpenSSL's PKCS#11 provider/engine, which the .NET `SafeEvpPKeyHandle` + `RSAOpenSsl` types
+drive. Those types exist only on the OpenSSL-based stack (Linux/macOS); on Windows they throw
+`PlatformNotSupportedException`. On Windows the TLS stack (SChannel) instead requires the certificate's key to live
+in a CNG/CAPI provider, so HSM keys are surfaced through a **CNG Key Storage Provider** and loaded from the
+certificate store — a different mechanism this SoftHSM sample does not cover.

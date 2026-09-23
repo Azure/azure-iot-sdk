@@ -16,27 +16,23 @@ internal class Program
 {
     private static async Task Main()
     {
-        // How an HSM-backed key is bound to a TLS certificate depends on the OS TLS stack:
-        //
-        //   - Windows (SChannel): a certificate's key must live in a CNG Key Storage Provider. The HSM's KSP
-        //     installs the certificate into the store already bound to the non-exportable key; SChannel then calls
-        //     the KSP to sign. See RunWindows below.
-        //
-        //   - Linux / macOS (OpenSSL): the key is opened from the PKCS#11 token as a native OpenSSL handle and
-        //     attached to the certificate with CopyWithPrivateKey, which duplicates the handle by reference. OpenSSL
-        //     then calls into the token to sign. The key never leaves the token. See RunUnixAsync below.
+        // This sample is SoftHSM-only and, like the SDK's SoftHSM integration tests, runs on Linux/macOS only: the
+        // key is opened from the PKCS#11 token through OpenSSL's pkcs11 provider (RSAOpenSsl over SafeEvpPKeyHandle),
+        // which does not exist on Windows. On Windows a device would instead surface the key through a CNG Key
+        // Storage Provider and load the certificate from the certificate store; that path is out of scope here.
         if (OperatingSystem.IsWindows())
         {
-            RunWindows();
+            Console.WriteLine("This SoftHSM sample runs on Linux/macOS only: it uses the OpenSSL pkcs11 provider,");
+            Console.WriteLine("which is unavailable on Windows (surface the key through a CNG Key Storage Provider there).");
             return;
         }
 
-        await RunUnixAsync();
+        await RunAsync();
     }
 
     // Linux / macOS: open the SoftHSM token key natively and use it for the whole flow. This is the same token the
     // SDK's SoftHSM integration tests use, configured from the outputs of c/eng/setup-softhsm.sh.
-    private static async Task RunUnixAsync()
+    private static async Task RunAsync()
     {
         RSA hsmBackedKey;
         try
@@ -83,27 +79,6 @@ internal class Program
         }
     }
 
-    // Windows: the certificate must be bound to the HSM key through a CNG Key Storage Provider, which happens outside
-    // this process (the HSM vendor's KSP installs the certificate into the store with a non-exportable key handle).
-    private static void RunWindows()
-    {
-        Console.WriteLine("On Windows, bind the HSM key through a CNG Key Storage Provider and load the certificate");
-        Console.WriteLine("from the certificate store, then pass it to X509AuthenticationProvider.");
-
-        string subjectName = Environment.GetEnvironmentVariable("SAMPLE_DEVICE_ID") ?? "hsm-sample-device";
-        try
-        {
-            using X509Certificate2 storeCertificate = LoadWindowsHsmCertificateFromStore(subjectName);
-            _ = new X509AuthenticationProvider(storeCertificate);
-            Console.WriteLine($"Loaded HSM-backed certificate '{storeCertificate.Subject}' from the store.");
-        }
-        catch (InvalidOperationException ex)
-        {
-            Console.WriteLine(ex.Message);
-            Console.WriteLine("Install the HSM vendor's KSP and provision the certificate into the store to run this path.");
-        }
-    }
-
     private static void DemonstrateHsmSigning(RSA hsmBackedKey)
     {
         byte[] data = Encoding.UTF8.GetBytes("proof that the HSM performs the signature");
@@ -147,28 +122,6 @@ internal class Program
             serialNumber);
 
         return publicCertificate.CopyWithPrivateKey(hsmBackedKey);
-    }
-
-    // Windows: the certificate must be bound to the HSM key through a CNG Key Storage Provider, which happens outside
-    // this process (the HSM vendor's KSP installs the certificate into the store with a non-exportable key handle).
-    // This helper shows how to load it; SChannel then calls the KSP to sign during the handshake.
-    private static X509Certificate2 LoadWindowsHsmCertificateFromStore(string subjectName)
-    {
-        using var store = new X509Store(StoreName.My, StoreLocation.CurrentUser);
-        store.Open(OpenFlags.ReadOnly);
-
-        X509Certificate2Collection matches = store.Certificates.Find(
-            X509FindType.FindBySubjectName,
-            subjectName,
-            validOnly: false);
-
-        if (matches.Count == 0)
-        {
-            throw new InvalidOperationException($"No certificate found in the store for subject '{subjectName}'.");
-        }
-
-        // The returned certificate references the HSM key via its CNG provider; no private key bytes are present.
-        return matches[0];
     }
 
     // Validates the server (remote) certificate. Replace with certificate pinning or a private/enterprise root check
