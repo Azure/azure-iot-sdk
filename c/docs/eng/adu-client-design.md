@@ -386,7 +386,8 @@ The byte layout is documented next to the serializer in
    `resume()` is a **no-op** returning success — the agent starts clean and
    waits for the next update offer. A record that fails validation (size,
    `magic`, `crc32`, field bounds) returns `AZ_IOT_ERR_INVALID_ARG`; an unknown
-   `version`, or an older one lacking download URLs still needed, returns
+   `version`, an older one lacking download URLs still needed, or any record
+   when `persist_state_fn` is NULL (it could never be cleared), returns
    `AZ_IOT_ERR_NOT_SUPPORTED`. Either way the client is left unchanged.
 2. Otherwise core rehydrates `current_request`, `current_step`, `current_file`,
    and the install and step results from the blob.
