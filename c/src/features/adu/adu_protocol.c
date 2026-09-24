@@ -244,24 +244,16 @@ static az_result write_update_id(
   return az_json_writer_append_end_object(jw);
 }
 
-az_iot_result az_iot_adu__build_fetch_request(
+/** @brief Validates the inputs and writes the fetch body into an initialized writer.
+ * @return AZ_IOT_OK, a validation error, or AZ_IOT_ERR_NOT_ENOUGH_SPACE. */
+static az_iot_result write_fetch_request(
+    az_json_writer* jw,
     const az_iot_adu_agent_info* agent_info,
     const az_iot_adu_report_update_id* installed_update_id,
     const char* agent_info_etag,
-    const char* service_config_etag,
-    uint8_t* out,
-    size_t out_size,
-    size_t* out_len)
+    const char* service_config_etag)
 {
-  if (out_len != NULL)
-  {
-    *out_len = 0;
-  }
-  if (agent_info == NULL || agent_info->agent_sdk_version == NULL || out == NULL || out_size == 0)
-  {
-    return AZ_IOT_ERR_INVALID_ARG;
-  }
-  if (out_size > INT32_MAX || strlen(agent_info->agent_sdk_version) > INT32_MAX
+  if (strlen(agent_info->agent_sdk_version) > INT32_MAX
       || (agent_info_etag != NULL && strlen(agent_info_etag) > INT32_MAX)
       || (service_config_etag != NULL && strlen(service_config_etag) > INT32_MAX))
   {
@@ -279,34 +271,28 @@ az_iot_result az_iot_adu__build_fetch_request(
     return validation;
   }
 
-  az_json_writer jw;
-  if (az_result_failed(az_json_writer_init(&jw, az_span_create(out, (int32_t)out_size), NULL)))
-  {
-    return AZ_IOT_ERR_INTERNAL;
-  }
-
-  az_result r = az_json_writer_append_begin_object(&jw);
+  az_result r = az_json_writer_append_begin_object(jw);
 
   if (az_result_succeeded(r))
   {
-    r = az_json_writer_append_property_name(&jw, AZ_SPAN_FROM_STR("agentInfo"));
+    r = az_json_writer_append_property_name(jw, AZ_SPAN_FROM_STR("agentInfo"));
   }
   if (az_result_succeeded(r))
   {
-    r = az_json_writer_append_begin_object(&jw);
+    r = az_json_writer_append_begin_object(jw);
   }
   if (az_result_succeeded(r))
   {
-    r = write_string_property(&jw, "agentSdkVersion", agent_info->agent_sdk_version);
+    r = write_string_property(jw, "agentSdkVersion", agent_info->agent_sdk_version);
   }
   if (az_result_succeeded(r))
   {
-    r = az_json_writer_append_property_name(&jw, AZ_SPAN_FROM_STR("agentProfile"));
+    r = az_json_writer_append_property_name(jw, AZ_SPAN_FROM_STR("agentProfile"));
   }
   if (az_result_succeeded(r))
   {
     /* An integer on the wire, not a string. */
-    r = az_json_writer_append_int32(&jw, agent_info->agent_profile);
+    r = az_json_writer_append_int32(jw, agent_info->agent_profile);
   }
   if (az_result_succeeded(r) && agent_info->compatibility_properties_count > 0)
   {
@@ -314,10 +300,10 @@ az_iot_result az_iot_adu__build_fetch_request(
     {
       return AZ_IOT_ERR_INVALID_ARG;
     }
-    r = az_json_writer_append_property_name(&jw, AZ_SPAN_FROM_STR("compatibilityProperties"));
+    r = az_json_writer_append_property_name(jw, AZ_SPAN_FROM_STR("compatibilityProperties"));
     if (az_result_succeeded(r))
     {
-      r = az_json_writer_append_begin_object(&jw);
+      r = az_json_writer_append_begin_object(jw);
     }
     for (size_t i = 0; az_result_succeeded(r) && i < agent_info->compatibility_properties_count;
          ++i)
@@ -327,46 +313,160 @@ az_iot_result az_iot_adu__build_fetch_request(
       {
         return AZ_IOT_ERR_INVALID_ARG;
       }
-      r = write_string_property(&jw, p->name, p->value);
+      r = write_string_property(jw, p->name, p->value);
     }
     if (az_result_succeeded(r))
     {
-      r = az_json_writer_append_end_object(&jw);
+      r = az_json_writer_append_end_object(jw);
     }
   }
   if (az_result_succeeded(r))
   {
-    r = az_json_writer_append_end_object(&jw); /* agentInfo */
+    r = az_json_writer_append_end_object(jw); /* agentInfo */
   }
 
   /* Omitted entirely on the onboarding route: a day-0 device has nothing
    * installed, and an empty triple is not the same statement. */
   if (az_result_succeeded(r) && installed_update_id != NULL)
   {
-    r = write_update_id(&jw, "installedUpdateId", installed_update_id);
+    r = write_update_id(jw, "installedUpdateId", installed_update_id);
   }
 
   if (az_result_succeeded(r) && agent_info_etag != NULL)
   {
-    r = write_string_property(&jw, "agentInfoEtag", agent_info_etag);
+    r = write_string_property(jw, "agentInfoEtag", agent_info_etag);
   }
   if (az_result_succeeded(r) && service_config_etag != NULL)
   {
-    r = write_string_property(&jw, "serviceConfigEtag", service_config_etag);
+    r = write_string_property(jw, "serviceConfigEtag", service_config_etag);
   }
 
   if (az_result_succeeded(r))
   {
-    r = az_json_writer_append_end_object(&jw);
+    r = az_json_writer_append_end_object(jw);
   }
   if (az_result_failed(r))
   {
     return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
   }
+  return AZ_IOT_OK;
+}
+
+az_iot_result az_iot_adu__build_fetch_request(
+    const az_iot_adu_agent_info* agent_info,
+    const az_iot_adu_report_update_id* installed_update_id,
+    const char* agent_info_etag,
+    const char* service_config_etag,
+    uint8_t* out,
+    size_t out_size,
+    size_t* out_len)
+{
+  if (out_len != NULL)
+  {
+    *out_len = 0;
+  }
+  if (agent_info == NULL || agent_info->agent_sdk_version == NULL || out == NULL || out_size == 0)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if (out_size > INT32_MAX)
+  {
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  }
+
+  az_json_writer jw;
+  if (az_result_failed(az_json_writer_init(&jw, az_span_create(out, (int32_t)out_size), NULL)))
+  {
+    return AZ_IOT_ERR_INTERNAL;
+  }
+  az_iot_result r = write_fetch_request(
+      &jw, agent_info, installed_update_id, agent_info_etag, service_config_etag);
+  if (r != AZ_IOT_OK)
+  {
+    return r;
+  }
 
   if (out_len != NULL)
   {
     *out_len = (size_t)az_span_size(az_json_writer_get_bytes_used_in_destination(&jw));
+  }
+  return AZ_IOT_OK;
+}
+
+/** @brief Byte counter behind az_iot_adu__fetch_request_size().
+ *
+ * Each chunk is min(remaining capacity, 64) bytes, so the writer sees the same
+ * remaining space at every token as with one contiguous buffer. The writer asks
+ * for at most 64 bytes at a time. */
+typedef struct
+{
+  uint8_t chunk[64]; /**< Reused for every chunk. */
+  size_t counted; /**< Bytes written to earlier chunks. */
+  size_t capacity; /**< Size of the emulated contiguous buffer. */
+} fetch_request_counter;
+
+static az_span fetch_request_chunk(fetch_request_counter* counter)
+{
+  size_t remaining = counter->capacity - counter->counted;
+  size_t size = remaining < sizeof(counter->chunk) ? remaining : sizeof(counter->chunk);
+  return az_span_create(counter->chunk, (int32_t)size);
+}
+
+static az_result count_fetch_request_chunk(
+    az_span_allocator_context* context,
+    az_span* out_next_destination)
+{
+  fetch_request_counter* counter = (fetch_request_counter*)context->user_context;
+  counter->counted += (size_t)context->bytes_used;
+  az_span next = fetch_request_chunk(counter);
+  if (az_span_size(next) < context->minimum_required_size)
+  {
+    return AZ_ERROR_NOT_ENOUGH_SPACE;
+  }
+  *out_next_destination = next;
+  return AZ_OK;
+}
+
+az_iot_result az_iot_adu__fetch_request_size(
+    const az_iot_adu_agent_info* agent_info,
+    const az_iot_adu_report_update_id* installed_update_id,
+    const char* agent_info_etag,
+    const char* service_config_etag,
+    size_t capacity,
+    size_t* out_len)
+{
+  if (out_len != NULL)
+  {
+    *out_len = 0;
+  }
+  if (agent_info == NULL || agent_info->agent_sdk_version == NULL || capacity == 0)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if (capacity > INT32_MAX)
+  {
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  }
+
+  fetch_request_counter counter = { .counted = 0, .capacity = capacity };
+  az_json_writer jw;
+  if (az_result_failed(az_json_writer_chunked_init(
+          &jw, fetch_request_chunk(&counter), count_fetch_request_chunk, &counter, NULL)))
+  {
+    return AZ_IOT_ERR_INTERNAL;
+  }
+  az_iot_result r = write_fetch_request(
+      &jw, agent_info, installed_update_id, agent_info_etag, service_config_etag);
+  if (r != AZ_IOT_OK)
+  {
+    return r;
+  }
+
+  size_t total
+      = counter.counted + (size_t)az_span_size(az_json_writer_get_bytes_used_in_destination(&jw));
+  if (out_len != NULL)
+  {
+    *out_len = total;
   }
   return AZ_IOT_OK;
 }

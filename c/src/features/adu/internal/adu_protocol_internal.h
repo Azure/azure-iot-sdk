@@ -132,6 +132,24 @@ extern "C"
       size_t* out_len);
 
   /**
+   * @brief Sizes the body az_iot_adu__build_fetch_request() would write, using a
+   * 64-byte scratch instead of a full body buffer. Same result as that builder
+   * given a @p capacity -byte buffer.
+   *
+   * @param[in] capacity Emulated buffer size; zero is invalid.
+   * @param[out] out_len Required size; zero on error. May be NULL.
+   * @return AZ_IOT_OK if it fits, AZ_IOT_ERR_NOT_ENOUGH_SPACE if not, or the
+   *   builder's validation error.
+   */
+  az_iot_result az_iot_adu__fetch_request_size(
+      const az_iot_adu_agent_info* agent_info,
+      const az_iot_adu_report_update_id* installed_update_id,
+      const char* agent_info_etag,
+      const char* service_config_etag,
+      size_t capacity,
+      size_t* out_len);
+
+  /**
    * Build a status report body.
    *
    * workflowId is the sole correlation key. installedUpdateId is dropped from the

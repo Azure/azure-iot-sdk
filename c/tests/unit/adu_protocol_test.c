@@ -368,6 +368,57 @@ static void fetch_enforces_the_compatibility_property_contract(void** state)
       AZ_IOT_ERR_INVALID_ARG);
 }
 
+/* The size-only fetch check accepts and rejects exactly what the builder does
+ * for a contiguous buffer of the same size, including the writer's headroom. */
+static void fetch_request_size_matches_the_builder(void** state)
+{
+  (void)state;
+  static char provider[151];
+  static char name[81];
+  memset(provider, 'p', sizeof(provider) - 1);
+  memset(name, '\n', sizeof(name) - 1); /* each byte escapes to two */
+  const az_iot_adu_report_update_id ids[] = { { "p", "n", "v" }, { provider, name, "1.0" } };
+  const char* etags[] = { NULL, "\"etag\\\"" };
+  az_iot_adu_agent_info agent = make_agent_info();
+  uint8_t json[1024];
+  size_t checked = 0;
+  for (size_t k = 0; k < sizeof(ids) / sizeof(ids[0]); ++k)
+  {
+    for (size_t e = 0; e < sizeof(etags) / sizeof(etags[0]); ++e)
+    {
+      size_t need = 0;
+      assert_int_equal(
+          az_iot_adu__build_fetch_request(
+              &agent, &ids[k], etags[e], etags[e], json, sizeof(json), &need),
+          AZ_IOT_OK);
+      assert_true(need + 80 <= sizeof(json));
+      for (size_t capacity = 1; capacity <= need + 80; ++capacity)
+      {
+        size_t built = 1;
+        size_t sized = 1;
+        az_iot_result b = az_iot_adu__build_fetch_request(
+            &agent, &ids[k], etags[e], etags[e], json, capacity, &built);
+        az_iot_result s
+            = az_iot_adu__fetch_request_size(&agent, &ids[k], etags[e], etags[e], capacity, &sized);
+        assert_int_equal(s, b);
+        assert_int_equal(sized, built);
+        ++checked;
+      }
+    }
+  }
+  assert_true(checked > 1000);
+
+  size_t len = 1;
+  assert_int_equal(
+      az_iot_adu__fetch_request_size(&agent, NULL, NULL, NULL, 0, &len), AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(len, 0);
+  assert_int_equal(
+      az_iot_adu__fetch_request_size(NULL, NULL, NULL, NULL, 64, NULL), AZ_IOT_ERR_INVALID_ARG);
+  const az_iot_adu_report_update_id partial = { "p", NULL, "v" };
+  assert_int_equal(
+      az_iot_adu__fetch_request_size(&agent, &partial, NULL, NULL, sizeof(json), NULL),
+      AZ_IOT_ERR_INVALID_ARG);
+}
 static void fetch_validates_ids_and_output_capacity(void** state)
 {
   (void)state;
@@ -1422,6 +1473,7 @@ int main(void)
     cmocka_unit_test(a_short_request_buffer_is_rejected),
     cmocka_unit_test(fetch_enforces_the_compatibility_property_contract),
     cmocka_unit_test(fetch_validates_ids_and_output_capacity),
+    cmocka_unit_test(fetch_request_size_matches_the_builder),
     cmocka_unit_test(report_carries_workflow_id_and_install_result),
     cmocka_unit_test(report_drops_installed_update_id_when_absent),
     cmocka_unit_test(outcome_and_failure_origin_must_agree),

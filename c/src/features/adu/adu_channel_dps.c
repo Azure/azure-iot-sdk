@@ -860,16 +860,14 @@ static az_iot_result channel_set_device_properties(
   az_iot_adu_report_update_id installed = { snapshot.properties.installed_update_id.provider,
                                             snapshot.properties.installed_update_id.name,
                                             snapshot.properties.installed_update_id.version };
-  /* Scratch must not overwrite the body of an outstanding operation. Check
-   * the operational shape too, even when this session uses onboarding. */
-  uint8_t body[AZ_IOT_ADU_CHANNEL_BODY_MAX_SIZE];
-  r = az_iot_adu__build_fetch_request(
+  /* Size only: c->body may hold an outstanding operation. Check the
+   * operational shape too, even when this session uses onboarding. */
+  r = az_iot_adu__fetch_request_size(
       &agent,
       installed.provider != NULL ? &installed : NULL,
       c->agent_info_etag[0] != '\0' ? c->agent_info_etag : NULL,
       c->service_config_etag[0] != '\0' ? c->service_config_etag : NULL,
-      body,
-      sizeof(body),
+      sizeof(c->body),
       NULL);
   if (r != AZ_IOT_OK)
   {
