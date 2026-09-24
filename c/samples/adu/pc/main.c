@@ -614,6 +614,17 @@ int main(void)
   /* Named, rather than a bare error out of initialize(): the cache is fixed
    * and these values now come from the environment. */
   size_t dp_needed = az_iot_adu_device_properties_buffer_size(&dp);
+  if (dp_needed == 0)
+  {
+    fprintf(
+        stderr,
+        "Device properties are invalid or too long: at most %d nonempty, unique "
+        "compatibility properties, and an installed update id that is unset or "
+        "complete.\n",
+        AZ_IOT_ADU_MAX_COMPATIBILITY_PROPERTIES);
+    sample_state_destroy(&st);
+    return 1;
+  }
   if (dp_needed > sizeof(st.dp_buffer))
   {
     fprintf(
