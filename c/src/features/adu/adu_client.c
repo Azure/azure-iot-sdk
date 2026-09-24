@@ -2318,8 +2318,8 @@ az_iot_result az_iot_adu_client_do_work(az_iot_adu_client_t* client)
       break;
 
     case AZ_IOT_ADU_STATE_FAILED:
-      /* Terminal failure already reported; return to Idle for the next
-       * deployment. */
+      /* Retain failure for later reports after returning to Idle. */
+      ADU_I(client).pending_outcome = AZ_IOT_ADU_OUTCOME_FAILED;
       reset_to_idle(client);
       break;
   }
