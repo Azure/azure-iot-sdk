@@ -30,7 +30,7 @@ permissions:
   packages: write   # required to upload and publish to GitHub Packages
 
 env:
-  PACKAGE_PROJECT: dotnet/src/Microsoft.Azure.Devices.Client/Microsoft.Azure.Devices.Client.csproj
+  PACKAGE_PROJECT: dotnet/src/Microsoft.Azure.Iot.Device/Microsoft.Azure.Iot.Device.csproj
 
 jobs:
   publish:
