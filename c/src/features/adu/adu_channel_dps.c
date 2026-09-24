@@ -835,15 +835,15 @@ static az_iot_result channel_report(void* ctx, const az_iot_adu_report* report)
 
 static az_iot_result channel_set_device_properties(
     void* ctx,
-    const az_iot_adu_device_properties* props)
+    const az_iot_adu_device_properties* properties)
 {
   az_iot_adu_channel_dps* c = (az_iot_adu_channel_dps*)ctx;
-  if (c == NULL || props == NULL)
+  if (c == NULL || properties == NULL)
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
   az_iot_adu_device_properties_snapshot snapshot;
-  az_iot_result r = az_iot_adu__prepare_device_properties(props, &snapshot);
+  az_iot_result r = az_iot_adu__prepare_device_properties(properties, &snapshot);
   if (r != AZ_IOT_OK)
   {
     return r;
@@ -1013,7 +1013,7 @@ static const az_iot_adu_channel_vtable k_channel_vtable = {
 az_iot_result az_iot_adu_channel_dps_init(
     az_iot_adu_channel_dps* channel_state,
     az_iot_connection_client* connection,
-    const az_iot_adu_device_properties* device_props,
+    const az_iot_adu_device_properties* device_properties,
     az_iot_adu_channel* out_channel)
 {
   if (channel_state == NULL || connection == NULL || out_channel == NULL)
@@ -1026,7 +1026,7 @@ az_iot_result az_iot_adu_channel_dps_init(
   /* The profile the device reports for compatibility matching. */
   channel_state->agent_profile = 1;
 
-  az_iot_result r = channel_set_device_properties(channel_state, device_props);
+  az_iot_result r = channel_set_device_properties(channel_state, device_properties);
   if (r != AZ_IOT_OK)
   {
     return r;

@@ -195,16 +195,16 @@ void app_main(void)
   dp.installed_update_id.name = ADU_UPDATE_NAME;
   dp.installed_update_id.version = ADU_UPDATE_VERSION;
 
-  static AZ_IOT_ADU_DEVICE_PROPS_STORAGE(dp_buffer);
+  static AZ_IOT_ADU_DEVICE_PROPERTIES_STORAGE(dp_buffer);
   static az_iot_adu_client_t adu;
   az_iot_adu_client_config_options adu_opts = az_iot_adu_client_config_options_default();
   adu_opts.hooks = &hooks;
   adu_opts.crypto = &crypto;
   adu_opts.root_keys = root_keys;
   adu_opts.root_key_count = root_key_count;
-  adu_opts.device_props = &dp;
-  adu_opts.device_props_buffer = dp_buffer;
-  adu_opts.device_props_buffer_size = sizeof(dp_buffer);
+  adu_opts.device_properties = &dp;
+  adu_opts.device_properties_buffer = dp_buffer;
+  adu_opts.device_properties_buffer_size = sizeof(dp_buffer);
   if (az_iot_adu_client_initialize(&adu, &conn, &adu_opts) != AZ_IOT_OK)
   {
     ESP_LOGE(TAG, "adu_client_initialize failed");

@@ -787,10 +787,12 @@ static void channel_keeps_all_five_custom_properties_and_owns_their_strings(void
   char value[] = "revision-2";
   az_iot_adu_custom_property custom[]
       = { { "a", value }, { "b", "" }, { "c", "3" }, { "d", "4" }, { "e", "5" } };
-  az_iot_adu_device_properties props = { .custom_properties = custom,
-                                         .custom_properties_count = 5,
-                                         .installed_update_id = { "provider", "name", "version" } };
-  assert_int_equal(fx->channel.vtable->set_device_properties(fx->channel.ctx, &props), AZ_IOT_OK);
+  az_iot_adu_device_properties properties
+      = { .custom_properties = custom,
+          .custom_properties_count = 5,
+          .installed_update_id = { "provider", "name", "version" } };
+  assert_int_equal(
+      fx->channel.vtable->set_device_properties(fx->channel.ctx, &properties), AZ_IOT_OK);
   memset(value, 'x', sizeof(value));
   memset(custom, 0, sizeof(custom));
   assert_int_equal(fx->channel_state.compat_count, 5);
@@ -798,15 +800,18 @@ static void channel_keeps_all_five_custom_properties_and_owns_their_strings(void
   assert_string_equal(fx->channel_state.compat[1].value, "");
   assert_string_equal(fx->channel_state.compat[4].name, "e");
 
-  props = fx->channel_state.device_properties.properties;
-  props.installed_update_id = (az_iot_adu_update_id_info){ "provider-2", "name-2", "version-2" };
-  assert_int_equal(fx->channel.vtable->set_device_properties(fx->channel.ctx, &props), AZ_IOT_OK);
+  properties = fx->channel_state.device_properties.properties;
+  properties.installed_update_id
+      = (az_iot_adu_update_id_info){ "provider-2", "name-2", "version-2" };
+  assert_int_equal(
+      fx->channel.vtable->set_device_properties(fx->channel.ctx, &properties), AZ_IOT_OK);
   assert_string_equal(fx->channel_state.compat[0].value, "revision-2");
   assert_string_equal(fx->channel_state.installed_update_id.version, "version-2");
-  props.installed_update_id = (az_iot_adu_update_id_info){ 0 };
+  properties.installed_update_id = (az_iot_adu_update_id_info){ 0 };
   /* Re-read the aliased custom-property descriptors after the preceding commit. */
-  props.custom_properties = fx->channel_state.device_properties.properties.custom_properties;
-  assert_int_equal(fx->channel.vtable->set_device_properties(fx->channel.ctx, &props), AZ_IOT_OK);
+  properties.custom_properties = fx->channel_state.device_properties.properties.custom_properties;
+  assert_int_equal(
+      fx->channel.vtable->set_device_properties(fx->channel.ctx, &properties), AZ_IOT_OK);
   assert_false(fx->channel_state.has_installed_update_id);
   assert_null(fx->channel_state.installed_update_id.provider);
 
@@ -847,14 +852,14 @@ static void public_replacement_is_atomic_when_escaped_request_does_not_fit(void*
   fixture* fx = (fixture*)*state;
   az_iot_adu_platform_hooks hooks = { 0 };
   az_iot_adu_crypto_hooks crypto = { 0 };
-  az_iot_adu_device_properties props = { .manufacturer = "original" };
+  az_iot_adu_device_properties properties = { .manufacturer = "original" };
   uint8_t storage[512] = { 0 };
   az_iot_adu_client_config_options options = az_iot_adu_client_config_options_default();
   options.hooks = &hooks;
   options.crypto = &crypto;
-  options.device_props = &props;
-  options.device_props_buffer = storage;
-  options.device_props_buffer_size = sizeof(storage);
+  options.device_properties = &properties;
+  options.device_properties_buffer = storage;
+  options.device_properties_buffer_size = sizeof(storage);
   az_iot_adu_client_t client;
   assert_int_equal(az_iot_adu_client_initialize(&client, &fx->client, &options), AZ_IOT_OK);
 
@@ -864,9 +869,9 @@ static void public_replacement_is_atomic_when_escaped_request_does_not_fit(void*
   escaped_compat[sizeof(escaped_compat) - 1] = '\0';
   memset(escaped_provider, '\1', sizeof(escaped_provider) - 1);
   escaped_provider[sizeof(escaped_provider) - 1] = '\0';
-  props.manufacturer = escaped_compat;
-  props.installed_update_id = (az_iot_adu_update_id_info){ escaped_provider, "n", "v" };
-  size_t need = az_iot_adu_device_props_buffer_size(&props);
+  properties.manufacturer = escaped_compat;
+  properties.installed_update_id = (az_iot_adu_update_id_info){ escaped_provider, "n", "v" };
+  size_t need = az_iot_adu_device_properties_buffer_size(&properties);
   assert_true(need > 0 && need <= sizeof(storage));
 
   az_iot_adu_client_t before;
@@ -874,7 +879,8 @@ static void public_replacement_is_atomic_when_escaped_request_does_not_fit(void*
   uint8_t storage_before[sizeof(storage)];
   memcpy(storage_before, storage, sizeof(storage));
   assert_int_equal(
-      az_iot_adu_client_update_device_properties(&client, &props), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+      az_iot_adu_client_update_device_properties(&client, &properties),
+      AZ_IOT_ERR_NOT_ENOUGH_SPACE);
   assert_memory_equal(&client, &before, sizeof(before));
   assert_memory_equal(storage, storage_before, sizeof(storage_before));
   az_iot_adu_client_destroy(&client);

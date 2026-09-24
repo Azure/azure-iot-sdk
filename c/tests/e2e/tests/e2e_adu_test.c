@@ -496,9 +496,9 @@ static void adu_agent_init(adu_agent* a)
   adu_opts.crypto = &crypto;
   adu_opts.root_keys = k_root_keys;
   adu_opts.root_key_count = sizeof(k_root_keys) / sizeof(k_root_keys[0]);
-  adu_opts.device_props = &dp;
-  adu_opts.device_props_buffer = a->dp_buf;
-  adu_opts.device_props_buffer_size = sizeof(a->dp_buf);
+  adu_opts.device_properties = &dp;
+  adu_opts.device_properties_buffer = a->dp_buf;
+  adu_opts.device_properties_buffer_size = sizeof(a->dp_buf);
   assert_int_equal(az_iot_adu_client_initialize(&a->adu, &a->twin, &adu_opts), AZ_IOT_OK);
 }
 

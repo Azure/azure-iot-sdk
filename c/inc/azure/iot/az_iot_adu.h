@@ -348,11 +348,11 @@ extern "C"
  * in az_iot_adu_client_config_options. The 512-byte default covers the maximum
  * 448 bytes of managed property strings, including NUL terminators. Override
  * before including to reduce the allocation for smaller property sets, or use
- * az_iot_adu_device_props_buffer_size() for exact sizing. Increasing this value
+ * az_iot_adu_device_properties_buffer_size() for exact sizing. Increasing this value
  * does not increase supported property sizes or protocol/channel limits.
  * The buffer stores strings only; no alignment is required. */
-#ifndef AZ_IOT_ADU_DEVICE_PROPS_BUFFER_SIZE
-#define AZ_IOT_ADU_DEVICE_PROPS_BUFFER_SIZE 512
+#ifndef AZ_IOT_ADU_DEVICE_PROPERTIES_BUFFER_SIZE
+#define AZ_IOT_ADU_DEVICE_PROPERTIES_BUFFER_SIZE 512
 #endif
 
 /**
@@ -380,20 +380,21 @@ extern "C"
 #define AZ_IOT_ADU_REQUEST_DEFAULT_TIMEOUT_MS 60000u
 
 /* Declares a device-properties cache buffer named `name`, sized by
- * AZ_IOT_ADU_DEVICE_PROPS_BUFFER_SIZE, for az_iot_adu_client_config_options:
- *   AZ_IOT_ADU_DEVICE_PROPS_STORAGE(dp_buf);
- *   opts.device_props_buffer = dp_buf;
- *   opts.device_props_buffer_size = sizeof(dp_buf); */
-#define AZ_IOT_ADU_DEVICE_PROPS_STORAGE(name) uint8_t name[AZ_IOT_ADU_DEVICE_PROPS_BUFFER_SIZE]
+ * AZ_IOT_ADU_DEVICE_PROPERTIES_BUFFER_SIZE, for az_iot_adu_client_config_options:
+ *   AZ_IOT_ADU_DEVICE_PROPERTIES_STORAGE(dp_buf);
+ *   opts.device_properties_buffer = dp_buf;
+ *   opts.device_properties_buffer_size = sizeof(dp_buf); */
+#define AZ_IOT_ADU_DEVICE_PROPERTIES_STORAGE(name) \
+  uint8_t name[AZ_IOT_ADU_DEVICE_PROPERTIES_BUFFER_SIZE]
 
   /* Returns the exact number of bytes az_iot_adu_client_initialize() needs in
-   * device_props_buffer to cache `device_props` (packed NUL-terminated strings;
+   * device_properties_buffer to cache `device_properties` (packed NUL-terminated strings;
    * descriptors live in the client). Use it to size the buffer
-   * precisely instead of the AZ_IOT_ADU_DEVICE_PROPS_BUFFER_SIZE default. Returns
-   * 0 if device_props is NULL, invalid, or exceeds the managed snapshot limits.
+   * precisely instead of the AZ_IOT_ADU_DEVICE_PROPERTIES_BUFFER_SIZE default. Returns
+   * 0 if device_properties is NULL, invalid, or exceeds the managed snapshot limits.
    * The channel may additionally reject an oversized escaped request. */
   AZ_NODISCARD size_t
-  az_iot_adu_device_props_buffer_size(const az_iot_adu_device_properties* device_props);
+  az_iot_adu_device_properties_buffer_size(const az_iot_adu_device_properties* device_properties);
 
   /* --- Client struct -------------------------------------------------------- */
 
@@ -745,11 +746,11 @@ extern "C"
       az_iot_adu_install_result install_result;
 
       /* Client-owned device-properties cache (deep copy of caller's struct). */
-      uint8_t* device_props_buffer;
-      size_t device_props_buffer_size;
-      az_iot_adu_device_properties device_props;
-      az_iot_adu_custom_property custom_props[AZ_IOT_ADU_MAX_COMPATIBILITY_PROPERTIES];
-      bool device_props_report_pending;
+      uint8_t* device_properties_buffer;
+      size_t device_properties_buffer_size;
+      az_iot_adu_device_properties device_properties;
+      az_iot_adu_custom_property custom_properties[AZ_IOT_ADU_MAX_COMPATIBILITY_PROPERTIES];
+      bool device_properties_report_pending;
 
       /* Which fetch the application asked for and the channel has not yet
        * accepted: 0 none, 1 onboarding, 2 regular. Not a bool, because a retry
@@ -830,16 +831,16 @@ extern "C"
     size_t root_key_count;
     /* Caller-owned device properties, DEEP-COPIED into the cache. May be
      * mutated/freed by the caller after initialize returns. MUST be non-NULL. */
-    const az_iot_adu_device_properties* device_props;
-    /* Caller-owned cache the client copies device_props into. No hidden
+    const az_iot_adu_device_properties* device_properties;
+    /* Caller-owned cache the client copies device_properties into. No hidden
      * allocation; the buffer MUST outlive the client. MUST be non-NULL. */
-    uint8_t* device_props_buffer;
-    size_t device_props_buffer_size;
+    uint8_t* device_properties_buffer;
+    size_t device_properties_buffer_size;
 
   } az_iot_adu_client_config_options;
 
   /* Returns an options struct with all fields zero-initialized. Set hooks, crypto,
-   * root_keys/root_key_count, device_props and device_props_buffer/size on the
+   * root_keys/root_key_count, device_properties and device_properties_buffer/size on the
    * returned struct before passing it to az_iot_adu_client_initialize(). */
   AZ_NODISCARD az_iot_adu_client_config_options az_iot_adu_client_config_options_default(void);
 
@@ -1031,7 +1032,7 @@ extern "C"
   az_iot_adu_client_request_update(az_iot_adu_client_t* client, uint32_t timeout_ms);
 
   /**
-   * Replace the cached device properties. Deep-copies device_props into the
+   * Replace the cached device properties. Deep-copies device_properties into the
    * engine and channel caches; after success the caller MAY mutate or free it.
    * This call performs no I/O and does not schedule an update check. To transmit
    * compatibility properties, explicitly request an onboarding or regular update
@@ -1051,7 +1052,7 @@ extern "C"
    */
   AZ_NODISCARD az_iot_result az_iot_adu_client_update_device_properties(
       az_iot_adu_client_t* client,
-      const az_iot_adu_device_properties* device_props);
+      const az_iot_adu_device_properties* device_properties);
 
   /* --- Agent core-library API (library mode / bring-your-own state machine) - */
   /*

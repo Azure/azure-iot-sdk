@@ -58,10 +58,11 @@ typedef char az_iot_adu_channel_storage_is_large_enough
 /* ------------------------------------------------------------------------- */
 /* device-properties cache                                                   */
 /* ------------------------------------------------------------------------- */
-size_t az_iot_adu_device_props_buffer_size(const az_iot_adu_device_properties* device_props)
+size_t az_iot_adu_device_properties_buffer_size(
+    const az_iot_adu_device_properties* device_properties)
 {
   az_iot_adu_device_properties_snapshot snapshot;
-  return az_iot_adu__prepare_device_properties(device_props, &snapshot) == AZ_IOT_OK
+  return az_iot_adu__prepare_device_properties(device_properties, &snapshot) == AZ_IOT_OK
       ? snapshot.strings_size
       : 0;
 }
@@ -76,8 +77,8 @@ static az_iot_result prepare_device_properties_cache(
   {
     return r;
   }
-  if (ADU_I(client).device_props_buffer == NULL
-      || ADU_I(client).device_props_buffer_size < snapshot->strings_size)
+  if (ADU_I(client).device_properties_buffer == NULL
+      || ADU_I(client).device_properties_buffer_size < snapshot->strings_size)
   {
     return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
   }
@@ -90,9 +91,9 @@ static void commit_device_properties_cache(
 {
   az_iot_adu__commit_device_properties(
       snapshot,
-      &ADU_I(client).device_props,
-      ADU_I(client).custom_props,
-      (char*)ADU_I(client).device_props_buffer);
+      &ADU_I(client).device_properties,
+      ADU_I(client).custom_properties,
+      (char*)ADU_I(client).device_properties_buffer);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -1352,7 +1353,7 @@ static void on_channel_result(
   switch (operation)
   {
     case AZ_IOT_ADU_OP_REPORT_STATUS:
-      ADU_I(client).device_props_report_pending = true;
+      ADU_I(client).device_properties_report_pending = true;
       break;
     case AZ_IOT_ADU_OP_GET_ONBOARDING_UPDATE:
     case AZ_IOT_ADU_OP_GET_UPDATE:
@@ -1510,8 +1511,8 @@ static az_iot_result adu_client_init_core(
     const az_iot_adu_client_config_options* options)
 {
   if (client == NULL || channel == NULL || channel->vtable == NULL || options == NULL
-      || options->hooks == NULL || options->crypto == NULL || options->device_props == NULL
-      || options->device_props_buffer == NULL)
+      || options->hooks == NULL || options->crypto == NULL || options->device_properties == NULL
+      || options->device_properties_buffer == NULL)
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
@@ -1530,8 +1531,8 @@ static az_iot_result adu_client_init_core(
   ADU_I(client).channel.ctx = channel->ctx;
   ADU_I(client).hooks = *options->hooks;
   ADU_I(client).crypto = *options->crypto;
-  ADU_I(client).device_props_buffer = options->device_props_buffer;
-  ADU_I(client).device_props_buffer_size = options->device_props_buffer_size;
+  ADU_I(client).device_properties_buffer = options->device_properties_buffer;
+  ADU_I(client).device_properties_buffer_size = options->device_properties_buffer_size;
   reset_install_result(&ADU_I(client).install_result);
   set_adu_state(client, AZ_IOT_ADU_STATE_IDLE);
 
@@ -1551,7 +1552,7 @@ static az_iot_result adu_client_init_core(
   }
 
   az_iot_adu_device_properties_snapshot snapshot;
-  az_iot_result r = prepare_device_properties_cache(client, options->device_props, &snapshot);
+  az_iot_result r = prepare_device_properties_cache(client, options->device_properties, &snapshot);
   if (r != AZ_IOT_OK)
   {
     memset(client, 0, sizeof(*client));
@@ -1567,7 +1568,7 @@ static az_iot_result adu_client_init_core(
   }
 
   /* Report the initial Idle agent state + installed update id on startup. */
-  ADU_I(client).device_props_report_pending = true;
+  ADU_I(client).device_properties_report_pending = true;
   /* No update check is issued here. Only the application knows which route it
    * needs -- onboarding before it has a device record, regular after -- so it
    * asks, with az_iot_adu_client_request_onboarding_update() or
@@ -1609,8 +1610,8 @@ az_iot_result az_iot_adu_client_initialize(
   az_iot_adu_channel_dps* channel_state
       = (az_iot_adu_channel_dps*)(void*)&ADU_I(client).channel_storage;
 
-  az_iot_result r
-      = az_iot_adu_channel_dps_init(channel_state, connection, options->device_props, &channel);
+  az_iot_result r = az_iot_adu_channel_dps_init(
+      channel_state, connection, options->device_properties, &channel);
   if (r != AZ_IOT_OK)
   {
     memset(client, 0, sizeof(*client));
@@ -2553,7 +2554,7 @@ az_iot_result az_iot_adu_client_do_work(az_iot_adu_client_t* client)
   }
 
   /* A pending device-properties / startup report takes priority. */
-  if (ADU_I(client).device_props_report_pending)
+  if (ADU_I(client).device_properties_report_pending)
   {
     /* Clear the flag only once the report is actually accepted. Clearing it up
      * front drops the report on a transient channel failure with no retry,
@@ -2562,7 +2563,7 @@ az_iot_result az_iot_adu_client_do_work(az_iot_adu_client_t* client)
      * check below. */
     if (az_iot_adu__report_state(client) == AZ_IOT_OK)
     {
-      ADU_I(client).device_props_report_pending = false;
+      ADU_I(client).device_properties_report_pending = false;
     }
     /* Piggyback a requested update check on the same startup tick so a
      * deployment already waiting is consumed without needing a fresh
@@ -2945,9 +2946,9 @@ az_iot_result az_iot_adu_client_request_update(az_iot_adu_client_t* client, uint
 
 az_iot_result az_iot_adu_client_update_device_properties(
     az_iot_adu_client_t* client,
-    const az_iot_adu_device_properties* device_props)
+    const az_iot_adu_device_properties* device_properties)
 {
-  if (client == NULL || device_props == NULL)
+  if (client == NULL || device_properties == NULL)
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
@@ -2957,7 +2958,7 @@ az_iot_result az_iot_adu_client_update_device_properties(
   }
 
   az_iot_adu_device_properties_snapshot snapshot;
-  az_iot_result r = prepare_device_properties_cache(client, device_props, &snapshot);
+  az_iot_result r = prepare_device_properties_cache(client, device_properties, &snapshot);
   if (r != AZ_IOT_OK)
   {
     return r;
@@ -2977,7 +2978,7 @@ az_iot_result az_iot_adu_client_update_device_properties(
   }
 
   commit_device_properties_cache(client, &snapshot);
-  ADU_I(client).device_props_report_pending = true;
+  ADU_I(client).device_properties_report_pending = true;
   return AZ_IOT_OK;
 }
 

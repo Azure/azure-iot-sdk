@@ -159,7 +159,8 @@ extern "C"
      * installed update id at init keeps sending stale device identity after
      * az_iot_adu_client_update_device_properties().
      */
-    az_iot_result (*set_device_properties)(void* ctx, const az_iot_adu_device_properties* props);
+    az_iot_result (
+        *set_device_properties)(void* ctx, const az_iot_adu_device_properties* properties);
 
     /**
      * @brief OPTIONAL. Driven from the engine's do_work() tick so a channel
@@ -189,7 +190,7 @@ extern "C"
 #endif
 
 /* The service accepts a bounded number of compatibility properties. */
-#define AZ_IOT_ADU_CHANNEL_MAX_COMPAT AZ_IOT_ADU_MAX_COMPATIBILITY_PROPERTIES
+#define AZ_IOT_ADU_CHANNEL_MAX_COMPATIBILITY_PROPERTIES AZ_IOT_ADU_MAX_COMPATIBILITY_PROPERTIES
 
 /* How many times an operation is RETRIED after losing the provisioning session
  * underneath it, before it is abandoned. N retries, so the operation is given
@@ -239,7 +240,7 @@ extern "C"
 
     /* Compatibility properties, and what is installed now. Both are required on
      * a fetch: they are how the service picks the right update. */
-    az_iot_adu_custom_property compat[AZ_IOT_ADU_CHANNEL_MAX_COMPAT];
+    az_iot_adu_custom_property compat[AZ_IOT_ADU_CHANNEL_MAX_COMPATIBILITY_PROPERTIES];
     size_t compat_count;
     az_iot_adu_device_properties_snapshot device_properties;
 
@@ -322,7 +323,7 @@ extern "C"
   az_iot_result az_iot_adu_channel_dps_init(
       az_iot_adu_channel_dps* channel_state,
       az_iot_connection_client* connection,
-      const az_iot_adu_device_properties* device_props,
+      const az_iot_adu_device_properties* device_properties,
       az_iot_adu_channel* out_channel);
 
 #ifdef __cplusplus

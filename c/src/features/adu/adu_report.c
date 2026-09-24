@@ -288,9 +288,9 @@ az_iot_result az_iot_adu__report_state(az_iot_adu_client_t* client)
   {
     installed_ptr = &ADU_I(client).applied_update_id;
   }
-  else if (ADU_I(client).device_props_buffer != NULL)
+  else if (ADU_I(client).device_properties_buffer != NULL)
   {
-    const az_iot_adu_device_properties* cached = &ADU_I(client).device_props;
+    const az_iot_adu_device_properties* cached = &ADU_I(client).device_properties;
     if (cached->installed_update_id.provider != NULL && cached->installed_update_id.name != NULL
         && cached->installed_update_id.version != NULL)
     {
@@ -316,7 +316,7 @@ az_iot_result az_iot_adu__report_state(az_iot_adu_client_t* client)
      * gets of what this device did. The re-offer rebuilds the report from the
      * engine's state at that moment, so what eventually goes out is current
      * rather than a stale snapshot. */
-    ADU_I(client).device_props_report_pending = true;
+    ADU_I(client).device_properties_report_pending = true;
   }
   return sent;
 }

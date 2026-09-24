@@ -256,7 +256,7 @@ stateDiagram-v2
   Replacement is atomic: invalid input, a short caller cache, or channel serialization
   failure leaves the previous engine/channel properties and pending request untouched.
   Caller storage holds only copied strings and needs no special alignment; typed
-  descriptors live in the client. `az_iot_adu_device_props_buffer_size()` gives the
+  descriptors live in the client. `az_iot_adu_device_properties_buffer_size()` gives the
   exact string-storage requirement, or zero for invalid/unsupported properties.
   Managed snapshots are bounded to 256 bytes of compatibility strings (custom names
   and every terminator included) plus 192 bytes of installed-ID strings; the channel
