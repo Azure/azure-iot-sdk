@@ -142,8 +142,11 @@ same request/response, different gateway).
 
 **Report** (`ReportStatusRequest`): `{ workflowId, installedUpdateId, installResult }` where
 `installResult` = `{ outcome ∈ IN_PROGRESS|SUCCEEDED|FAILED|CANCELED|SKIPPED, failureOrigin, resultCode,
-extendedResultCodes (comma-sep hex), resultDetails, stepResults{ step_0, step_1, … } }`. **Idempotent on
-`workflowId` alone**; a conflicting terminal for the same id ⇒ `409 REPORT_CONFLICT`.
+extendedResultCodes (comma-sep hex), resultDetails, stepResults{ step_0, step_1, … } }`. Each step
+value has the same required `outcome`, `failureOrigin`, `resultCode`, and `extendedResultCodes`
+fields plus optional `resultDetails`. In-progress reports omit `stepResults`; terminal reports
+include complete entries when the manifest has steps. **Idempotent on `workflowId` alone**; a
+conflicting terminal for the same id ⇒ `409 REPORT_CONFLICT`.
 
 > Identity headers (`x-ms-external-device-id` = registrationId; `x-ms-device-id` = ADR UUID on the regular path)
 > are **gateway-populated — the device sets none of them**.
@@ -174,9 +177,9 @@ read off a DRAFT spec. Treat them differently.
 | api-version `2026-11-02-preview` | X.509 on the update path; TPM; AMQP |
 | Device-facing URL shape and the three operation names | Whether an MQTT binding exists for the three operations |
 | SAS (enrollment-group symmetric key) auth | Payload caps, throttle / `Retry-After` values |
-| `agentInfo` = `{ agentSdkVersion, agentProfile, compatibilityProperties }`; `agentProfile` sent as an integer | The full `stepResults` shape on the report |
+| `agentInfo` = `{ agentSdkVersion, agentProfile, compatibilityProperties }`; `agentProfile` sent as an integer | Report payload caps |
 | Response `agentInfoEtag` / `serviceConfigEtag` / `updateMetadata` (null ⇒ no update) | Root-key-package fetch and verification end to end |
-| Report `{ workflowId, installedUpdateId, installResult{ outcome, failureOrigin, resultCode, extendedResultCodes, resultDetails } }`; `resultCode` 700 = success; `failureOrigin` `AGENT_CORE` / `NOT_APPLICABLE` | The error-code table below (drawn from the spec, not exercised) |
+| Report `{ workflowId, installedUpdateId, installResult{ outcome, failureOrigin, resultCode, extendedResultCodes, resultDetails, stepResults } }`; every step requires the four structured result fields | The error-code table below (drawn from the spec, not exercised) |
 | No separate `syncConfiguration` call | |
 
 ## Trust model

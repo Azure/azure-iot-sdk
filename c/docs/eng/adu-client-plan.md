@@ -251,12 +251,11 @@ stateDiagram-v2
 - **Multi-step / per-step results** — sequential per-step loop; `step_results[]` with a
   4-bit facility + raw-code `extendedResultCode` for field debugging. The engine exposes the
   accumulated entries through `az_iot_adu_report.step_results` and `step_results_count`, in
-  manifest-step order, including on completion or failure. These are borrowed views valid only
+  manifest-step order on terminal reports; in-progress reports omit the map. These are borrowed views valid only
   during the internal channel's report call; a retaining channel must copy the entries and
-  their `result_details` span contents. Existing per-step codes are preserved without conversion.
-  ADUv2 serialization/delivery remains pending: the contract describes a `stepResults` map plus
-  a comma-separated hex `extendedResultCodes` list, with the full step wire shape still
-  unconfirmed in [aduv2-spec.md](aduv2-spec.md#verified-vs-drafted).
+  their `result_details` span contents. Every terminal entry carries `outcome`, `failureOrigin`,
+  `resultCode`, and comma-separated hex `extendedResultCodes`; existing per-step codes are
+  preserved without conversion.
 - **Replacement vs. duplicate (✅)** — keyed on **`workflowId` alone**, as ADUv2 defines it: a
   new id restarts the workflow, the same id is ignored whatever the manifest bytes. The
   `retryTimestamp` input is gone.
