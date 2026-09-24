@@ -3039,6 +3039,44 @@ static void canonical_resume_rejects_corruption(void** state)
   assert_int_equal(az_iot_adu_client_resume(&fx->adu), AZ_IOT_ERR_INVALID_ARG);
 }
 
+/* A record that could never be invalidated is refused, or every later boot
+ * would resume and re-apply it. */
+static void resume_without_a_persist_hook_is_refused(void** state)
+{
+  fixture* source = (fixture*)*state;
+  checkpoint_second_step(source);
+  for (int i = 0; i < 40 && !source->log.have_persist; ++i)
+  {
+    assert_int_equal(az_iot_adu_client_do_work(&source->adu), AZ_IOT_OK);
+  }
+  assert_true(source->log.have_persist);
+
+  void* fresh_state = NULL;
+  assert_int_equal(setup(&fresh_state), 0);
+  fixture* fresh = (fixture*)fresh_state;
+  memcpy(fresh->log.persist_blob, source->log.persist_blob, source->log.persist_len);
+  fresh->log.persist_len = source->log.persist_len;
+  fresh->log.have_persist = true;
+  fresh->adu._internal.hooks.persist_state_fn = NULL;
+  az_iot_adu_client_t* expected = malloc(sizeof(*expected));
+  assert_non_null(expected);
+  *expected = fresh->adu;
+
+  assert_int_equal(az_iot_adu_client_resume(&fresh->adu), AZ_IOT_ERR_NOT_SUPPORTED);
+  memcpy(
+      expected->_internal.persist_scratch,
+      fresh->adu._internal.persist_scratch,
+      sizeof(expected->_internal.persist_scratch));
+  assert_memory_equal(&fresh->adu, expected, sizeof(*expected));
+
+  /* An invalidated (zero-length) record is still a clean no-op. */
+  fresh->log.persist_len = 0;
+  assert_int_equal(az_iot_adu_client_resume(&fresh->adu), AZ_IOT_OK);
+  assert_int_equal(az_iot_adu_client_get_state(&fresh->adu), AZ_IOT_ADU_STATE_IDLE);
+  free(expected);
+  assert_int_equal(teardown(&fresh_state), 0);
+}
+
 static void rejected_snapshot_preserves_live_client(void** state)
 {
   fixture* source = (fixture*)*state;
@@ -4544,6 +4582,7 @@ int main(void)
         cancel_after_resume_does_not_overwrite_result_text, setup, teardown),
     cmocka_unit_test_setup_teardown(canonical_resume_rejects_corruption, setup, teardown),
     cmocka_unit_test_setup_teardown(rejected_snapshot_preserves_live_client, setup, teardown),
+    cmocka_unit_test_setup_teardown(resume_without_a_persist_hook_is_refused, setup, teardown),
     cmocka_unit_test_setup_teardown(resumed_clients_have_independent_storage, setup, teardown),
     cmocka_unit_test_setup_teardown(
         resume_before_last_step_restores_download_urls, setup, teardown),

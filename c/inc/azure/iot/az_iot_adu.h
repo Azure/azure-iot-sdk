@@ -894,7 +894,8 @@ extern "C"
    *
    * @return AZ_IOT_OK if resumed or nothing was persisted; AZ_IOT_ERR_INVALID_ARG
    *   for a malformed record; AZ_IOT_ERR_NOT_SUPPORTED for an unknown record
-   *   version, or an older one that lacks the download URLs still needed. On
+   *   version, an older one that lacks the download URLs still needed, or any
+   *   record when persist_state_fn is NULL (it could never be cleared). On
    *   error the client is left unchanged.
    */
   AZ_NODISCARD az_iot_result az_iot_adu_client_resume(az_iot_adu_client_t* client);

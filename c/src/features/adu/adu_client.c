@@ -2229,6 +2229,12 @@ az_iot_result az_iot_adu_client_resume(az_iot_adu_client_t* client)
      * normal steady state after a workflow finishes -- not a corrupt blob. */
     return AZ_IOT_OK;
   }
+  if (ADU_I(client).hooks.persist_state_fn == NULL)
+  {
+    /* Without a persist hook the record can never be invalidated, so every
+     * later boot would resume and re-apply it. */
+    return AZ_IOT_ERR_NOT_SUPPORTED;
+  }
   if (blen > sizeof(ADU_I(client).persist_scratch) || blen < AZ_IOT_ADU_PERSIST_HEADER_SIZE + 4u)
   {
     return AZ_IOT_ERR_INVALID_ARG;
