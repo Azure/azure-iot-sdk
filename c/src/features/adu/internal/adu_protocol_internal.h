@@ -136,6 +136,8 @@ extern "C"
    * 64-byte scratch instead of a full body buffer. Same result as that builder
    * given a @p capacity -byte buffer.
    *
+   * Other parameters are as for az_iot_adu__build_fetch_request().
+   *
    * @param[in] capacity Emulated buffer size; zero is invalid.
    * @param[out] out_len Required size; zero on error. May be NULL.
    * @return AZ_IOT_OK if it fits, AZ_IOT_ERR_NOT_ENOUGH_SPACE if not, or the

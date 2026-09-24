@@ -12,40 +12,91 @@ extern "C"
 {
 #endif
 
+/** @brief Bytes for compatibility-property strings, NUL terminators included. */
 #define AZ_IOT_ADU_COMPATIBILITY_STORAGE_SIZE 256
+/** @brief Bytes for installed-update-ID strings, NUL terminators included. */
 #define AZ_IOT_ADU_INSTALLED_ID_STORAGE_SIZE 192
 
-/* az_core's JSON writer reserves up to six escaped bytes per input byte within
- * its 1,000,000,000-byte string limit. Reject before reaching its precondition. */
+/**
+ * @brief Longest string passed to the JSON writer.
+ *
+ * az_core's writer asserts on strings whose escaped form (up to six bytes per
+ * input byte) exceeds 1,000,000,000 bytes; longer strings are rejected first.
+ */
 #define AZ_IOT_ADU_MAX_JSON_STRING_SIZE (1000000000 / 6)
 
+  /** @brief Self-contained copy of validated device properties. */
   typedef struct az_iot_adu_device_properties_snapshot
   {
+    /** Copied properties; strings point into strings. */
     az_iot_adu_device_properties properties;
+    /** Copied custom properties referenced by properties. */
     az_iot_adu_custom_property custom_properties[AZ_IOT_ADU_MAX_COMPATIBILITY_PROPERTIES];
+    /** Packed NUL-terminated strings. */
     char strings[AZ_IOT_ADU_COMPATIBILITY_STORAGE_SIZE + AZ_IOT_ADU_INSTALLED_ID_STORAGE_SIZE];
-    size_t strings_size;
+    size_t strings_size; /**< Bytes used in strings. */
   } az_iot_adu_device_properties_snapshot;
 
+  /**
+   * @brief Validates the compatibility properties of an update check.
+   *
+   * @param[in] properties Properties to check.
+   * @param[in] count Entries in @p properties.
+   * @return AZ_IOT_OK if valid.
+   * @retval AZ_IOT_ERR_INVALID_ARG NULL or empty list, empty or duplicate name,
+   *   or NULL value.
+   * @retval AZ_IOT_ERR_NOT_ENOUGH_SPACE More than
+   *   AZ_IOT_ADU_MAX_COMPATIBILITY_PROPERTIES entries, or a string over
+   *   AZ_IOT_ADU_MAX_JSON_STRING_SIZE.
+   */
   az_iot_result az_iot_adu__validate_compatibility_properties(
       const az_iot_adu_custom_property* properties,
       size_t count);
 
-  /* NULL means nothing installed; a supplied ID must be a complete nonempty triple. */
+  /**
+   * @brief Validates an installed update ID.
+   *
+   * @param[in] id NULL for nothing installed; otherwise a complete nonempty triple.
+   * @return AZ_IOT_OK if valid.
+   * @retval AZ_IOT_ERR_INVALID_ARG A part is NULL or empty.
+   * @retval AZ_IOT_ERR_NOT_ENOUGH_SPACE A part exceeds AZ_IOT_ADU_MAX_JSON_STRING_SIZE.
+   */
   az_iot_result az_iot_adu__validate_installed_update_id(const az_iot_adu_report_update_id* id);
 
-  /* Input must not overlap the scratch snapshot. No live state is changed on failure. */
+  /**
+   * @brief Validates @p properties and copies them into @p snapshot.
+   *
+   * Changes no live state, so a failure leaves the current properties in place.
+   *
+   * @param[in] properties Caller's properties; must not overlap @p snapshot.
+   * @param[out] snapshot Scratch copy.
+   * @return AZ_IOT_OK, AZ_IOT_ERR_INVALID_ARG for malformed input, or
+   *   AZ_IOT_ERR_NOT_ENOUGH_SPACE if a count or storage limit is exceeded.
+   */
   az_iot_result az_iot_adu__prepare_device_properties(
       const az_iot_adu_device_properties* properties,
       az_iot_adu_device_properties_snapshot* snapshot);
 
-  /* The properties must already be validated; out has MAX_COMPATIBILITY_PROPERTIES slots. */
+  /**
+   * @brief Lists the emitted compatibility properties: manufacturer, model, then custom.
+   *
+   * @param[in] properties Validated properties.
+   * @param[out] out AZ_IOT_ADU_MAX_COMPATIBILITY_PROPERTIES entries.
+   * @return Entries written.
+   */
   size_t az_iot_adu__compatibility_properties(
       const az_iot_adu_device_properties* properties,
       az_iot_adu_custom_property* out);
 
-  /* Commit a prepared snapshot into distinct, preflighted storage: strings has at
-   * least snapshot->strings_size bytes and custom_properties has MAX slots. */
+  /**
+   * @brief Copies a prepared snapshot into live storage. Cannot fail.
+   *
+   * @param[in] snapshot From az_iot_adu__prepare_device_properties().
+   * @param[out] properties Live properties, repointed at @p strings.
+   * @param[out] custom_properties AZ_IOT_ADU_MAX_COMPATIBILITY_PROPERTIES entries.
+   * @param[out] strings At least snapshot->strings_size bytes, separate from
+   *   @p snapshot.
+   */
   void az_iot_adu__commit_device_properties(
       const az_iot_adu_device_properties_snapshot* snapshot,
       az_iot_adu_device_properties* properties,

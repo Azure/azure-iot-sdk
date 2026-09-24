@@ -309,48 +309,47 @@ extern "C"
     const char* version;
   } az_iot_adu_update_id_info;
 
+/** @brief Maximum compatibility properties: manufacturer, model and custom ones combined. */
 #define AZ_IOT_ADU_MAX_COMPATIBILITY_PROPERTIES 5
 
+  /** @brief A custom compatibility property. */
   typedef struct az_iot_adu_custom_property
   {
-    const char* name;
-    const char* value;
+    const char* name; /**< Nonempty; unique across the emitted properties. */
+    const char* value; /**< May be empty, not NULL. */
   } az_iot_adu_custom_property;
 
   /**
-   * Device properties supplied by the application. All fields are caller-owned;
-   * the client DEEP-COPIES them into its cache buffer at init() and on
-   * update_device_properties(). After those calls return, the application MAY
-   * mutate or free this struct and the arrays/strings it points to.
+   * @brief Device properties sent on update checks, not on status reports.
    *
-   * Managed ADUv2 clients require 1-5 compatibility properties in total:
-   * non-NULL manufacturer/model each count as one, plus custom_properties_count.
-   * Names must be nonempty and unique across the emitted properties; values
-   * may be empty but not NULL. An installed update ID is either entirely NULL
-   * or a complete, nonempty provider/name/version triple.
+   * Caller-owned. az_iot_adu_client_initialize() and
+   * az_iot_adu_client_update_device_properties() deep-copy them; the caller may
+   * then change or free them.
    *
-   * The managed snapshot supports 256 bytes of compatibility strings (including
-   * custom names and every NUL terminator) and 192 bytes of installed-ID strings.
-   * These are inherited SDK storage capacities, not protocol byte limits.
-   * The channel also checks the escaped request against its body capacity.
-   * These properties ride update checks, not workflow-status reports.
+   * Requires 1 to AZ_IOT_ADU_MAX_COMPATIBILITY_PROPERTIES compatibility
+   * properties: manufacturer and model count one each when non-NULL, plus the
+   * custom ones. The copy holds at most 256 bytes of compatibility strings and
+   * 192 bytes of installed-ID strings, NUL terminators included; these are SDK
+   * storage limits, not protocol limits.
    */
   typedef struct az_iot_adu_device_properties
   {
-    const char* manufacturer;
-    const char* model;
+    const char* manufacturer; /**< Compatibility property; NULL to omit. */
+    const char* model; /**< Compatibility property; NULL to omit. */
+    /** All NULL (nothing installed), or a complete nonempty triple. */
     az_iot_adu_update_id_info installed_update_id;
-    const az_iot_adu_custom_property* custom_properties; /* caller's array, MAY be NULL */
-    size_t custom_properties_count;
+    const az_iot_adu_custom_property* custom_properties; /**< May be NULL if count is 0. */
+    size_t custom_properties_count; /**< Entries in custom_properties. */
   } az_iot_adu_device_properties;
 
-/* Default size (bytes) for the caller-owned device-properties cache buffer set
- * in az_iot_adu_client_config_options. The 512-byte default covers the maximum
- * 448 bytes of managed property strings, including NUL terminators. Override
- * before including to reduce the allocation for smaller property sets, or use
- * az_iot_adu_device_properties_buffer_size() for exact sizing. Increasing this value
- * does not increase supported property sizes or protocol/channel limits.
- * The buffer stores strings only; no alignment is required. */
+/**
+ * @brief Default size, in bytes, of the device-properties cache buffer.
+ *
+ * 512 covers the 448-byte maximum of property strings. Define a smaller value
+ * before including to save memory, or size exactly with
+ * az_iot_adu_device_properties_buffer_size(). A larger value does not raise any
+ * limit. The buffer holds strings only and needs no alignment.
+ */
 #ifndef AZ_IOT_ADU_DEVICE_PROPERTIES_BUFFER_SIZE
 #define AZ_IOT_ADU_DEVICE_PROPERTIES_BUFFER_SIZE 512
 #endif
@@ -379,20 +378,27 @@ extern "C"
  * deadline. */
 #define AZ_IOT_ADU_REQUEST_DEFAULT_TIMEOUT_MS 60000u
 
-/* Declares a device-properties cache buffer named `name`, sized by
- * AZ_IOT_ADU_DEVICE_PROPERTIES_BUFFER_SIZE, for az_iot_adu_client_config_options:
- *   AZ_IOT_ADU_DEVICE_PROPERTIES_STORAGE(dp_buf);
- *   opts.device_properties_buffer = dp_buf;
- *   opts.device_properties_buffer_size = sizeof(dp_buf); */
+/**
+ * @brief Declares a device-properties cache buffer of
+ * AZ_IOT_ADU_DEVICE_PROPERTIES_BUFFER_SIZE bytes.
+ *
+ * @code
+ * AZ_IOT_ADU_DEVICE_PROPERTIES_STORAGE(dp_buf);
+ * opts.device_properties_buffer = dp_buf;
+ * opts.device_properties_buffer_size = sizeof(dp_buf);
+ * @endcode
+ */
 #define AZ_IOT_ADU_DEVICE_PROPERTIES_STORAGE(name) \
   uint8_t name[AZ_IOT_ADU_DEVICE_PROPERTIES_BUFFER_SIZE]
 
-  /* Returns the exact number of bytes az_iot_adu_client_initialize() needs in
-   * device_properties_buffer to cache `device_properties` (packed NUL-terminated strings;
-   * descriptors live in the client). Use it to size the buffer
-   * precisely instead of the AZ_IOT_ADU_DEVICE_PROPERTIES_BUFFER_SIZE default. Returns
-   * 0 if device_properties is NULL, invalid, or exceeds the managed snapshot limits.
-   * The channel may additionally reject an oversized escaped request. */
+  /**
+   * @brief Exact device_properties_buffer size needed to cache @p device_properties.
+   *
+   * @param[in] device_properties Properties to size.
+   * @return Bytes of packed NUL-terminated strings; 0 if @p device_properties is
+   *   NULL, invalid, or over the storage limits. An update-check body that would
+   *   not fit the channel is still rejected when the properties are set.
+   */
   AZ_NODISCARD size_t
   az_iot_adu_device_properties_buffer_size(const az_iot_adu_device_properties* device_properties);
 
@@ -745,12 +751,14 @@ extern "C"
       /* Accumulated result reported to the service. */
       az_iot_adu_install_result install_result;
 
-      /* Client-owned device-properties cache (deep copy of caller's struct). */
+      /** Caller's buffer holding the copied property strings. */
       uint8_t* device_properties_buffer;
-      size_t device_properties_buffer_size;
+      size_t device_properties_buffer_size; /**< Size of device_properties_buffer. */
+      /** Copied properties; strings point into device_properties_buffer. */
       az_iot_adu_device_properties device_properties;
+      /** Copied custom properties referenced by device_properties. */
       az_iot_adu_custom_property custom_properties[AZ_IOT_ADU_MAX_COMPATIBILITY_PROPERTIES];
-      bool device_properties_report_pending;
+      bool device_properties_report_pending; /**< A status report is due. */
 
       /* Which fetch the application asked for and the channel has not yet
        * accepted: 0 none, 1 onboarding, 2 regular. Not a bool, because a retry
@@ -829,40 +837,42 @@ extern "C"
      * az_iot_adu_microsoft_root_keys(). */
     const az_iot_adu_root_key* root_keys;
     size_t root_key_count;
-    /* Caller-owned device properties, DEEP-COPIED into the cache. May be
-     * mutated/freed by the caller after initialize returns. MUST be non-NULL. */
+    /** Required. Deep-copied; may be changed or freed after initialize. */
     const az_iot_adu_device_properties* device_properties;
-    /* Caller-owned cache the client copies device_properties into. No hidden
-     * allocation; the buffer MUST outlive the client. MUST be non-NULL. */
+    /** Required. Holds the copied strings; must outlive the client. */
     uint8_t* device_properties_buffer;
-    size_t device_properties_buffer_size;
+    size_t device_properties_buffer_size; /**< Size of device_properties_buffer. */
 
   } az_iot_adu_client_config_options;
 
-  /* Returns an options struct with all fields zero-initialized. Set hooks, crypto,
-   * root_keys/root_key_count, device_properties and device_properties_buffer/size on the
-   * returned struct before passing it to az_iot_adu_client_initialize(). */
+  /**
+   * @brief Returns zero-initialized options.
+   *
+   * Set hooks, crypto, root_keys, root_key_count, device_properties,
+   * device_properties_buffer and device_properties_buffer_size before
+   * az_iot_adu_client_initialize().
+   *
+   * @return Zero-initialized options.
+   */
   AZ_NODISCARD az_iot_adu_client_config_options az_iot_adu_client_config_options_default(void);
 
   /**
-   * Initialize the ADU client.
+   * @brief Initializes the ADU client.
    *
-   *   connection: the connection client this device is provisioned with. The SDK
-   *     builds the device-update channel from it; the application does not
-   *     implement any transport. It need NOT be connected: the ADU bootstrap
-   *     check runs before the device registers, and the fields the channel needs
-   *     (DPS id scope, registration id, credential) are set at init time.
-   *   options: configuration (hooks, crypto, trust store, device properties and
-   *     the caller-owned cache); see az_iot_adu_client_config_options. Returns
-   *     AZ_IOT_ERR_INVALID_ARG if any required field is NULL or device properties
-   *     are malformed (including zero compatibility properties),
-   *     AZ_IOT_ERR_NOT_ENOUGH_SPACE if root_key_count exceeds
-   *     AZ_IOT_ADU_MAX_ROOT_KEYS, properties exceed the managed count/storage
-   *     limits, or the cache/request buffer is too small.
+   * Named *_initialize because azure-sdk-for-c's az_iot_adu_client_init() is
+   * visible through the hook signatures.
    *
-   * NOTE: named *_initialize (not *_init) to avoid colliding with
-   * azure-sdk-for-c's az_iot_adu_client_init(), which is visible here because the
-   * platform-hook signatures use upstream parsing types.
+   * @param[out] client Client to initialize.
+   * @param[in] connection Connection client the device-update channel is built
+   *   on. Need not be connected, but its DPS ID scope, registration ID and
+   *   credential must be set: the bootstrap check runs before registration.
+   * @param[in] options Hooks, crypto, trust store, device properties and cache.
+   * @return AZ_IOT_OK on success.
+   * @retval AZ_IOT_ERR_INVALID_ARG A required field is NULL, or the device
+   *   properties are malformed (including zero compatibility properties).
+   * @retval AZ_IOT_ERR_NOT_ENOUGH_SPACE root_key_count exceeds
+   *   AZ_IOT_ADU_MAX_ROOT_KEYS, the properties exceed the count or storage
+   *   limits, or the cache or update-check body is too small.
    */
   AZ_NODISCARD az_iot_result az_iot_adu_client_initialize(
       az_iot_adu_client_t* client,
@@ -1032,23 +1042,23 @@ extern "C"
   az_iot_adu_client_request_update(az_iot_adu_client_t* client, uint32_t timeout_ms);
 
   /**
-   * Replace the cached device properties. Deep-copies device_properties into the
-   * engine and channel caches; after success the caller MAY mutate or free it.
-   * This call performs no I/O and does not schedule an update check. To transmit
-   * compatibility properties, explicitly request an onboarding or regular update
-   * using the corresponding request function. A later check uses the latest cache.
+   * @brief Replaces the cached device properties.
    *
-   * Also marks a workflow-status report pending for do_work(); without a recorded
-   * workflow identity that report is a no-op. Status reports do not carry agentInfo
-   * or compatibility properties. A successful setter is not a service acknowledgement.
+   * Deep-copies @p device_properties. No I/O, and no update check is scheduled:
+   * the next az_iot_adu_client_request_update() or
+   * az_iot_adu_client_request_onboarding_update() sends them. Also marks a
+   * workflow-status report due on do_work(), which does nothing without a
+   * recorded workflow and never carries these properties.
    *
-   * Returns
-   * AZ_IOT_ERR_INVALID_ARG for malformed properties and AZ_IOT_ERR_NOT_ENOUGH_SPACE
-   * if the cache, managed snapshot, property count, or request capacity is exceeded.
-   * On failure the previous properties and pending work are unchanged.
+   * Call on the do_work() thread, or serialize with it.
    *
-   * Single-threaded contract: MUST be called on the do_work thread or be
-   * externally serialized with do_work().
+   * @param[in,out] client Initialized client.
+   * @param[in] device_properties New properties; may be changed or freed after return.
+   * @return AZ_IOT_OK on success. On failure the previous properties and pending
+   *   work are unchanged.
+   * @retval AZ_IOT_ERR_INVALID_ARG Malformed properties.
+   * @retval AZ_IOT_ERR_NOT_ENOUGH_SPACE The cache, count or storage limits, or
+   *   the update-check body capacity, would be exceeded.
    */
   AZ_NODISCARD az_iot_result az_iot_adu_client_update_device_properties(
       az_iot_adu_client_t* client,

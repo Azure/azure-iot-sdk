@@ -189,7 +189,7 @@ extern "C"
 #define AZ_IOT_ADU_CHANNEL_BODY_MAX_SIZE 2048
 #endif
 
-/* The service accepts a bounded number of compatibility properties. */
+/** @brief Compatibility properties the channel sends; the service's limit. */
 #define AZ_IOT_ADU_CHANNEL_MAX_COMPATIBILITY_PROPERTIES AZ_IOT_ADU_MAX_COMPATIBILITY_PROPERTIES
 
 /* How many times an operation is RETRIED after losing the provisioning session
