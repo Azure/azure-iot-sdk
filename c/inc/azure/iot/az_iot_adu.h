@@ -327,9 +327,9 @@ extern "C"
    * The managed client requires 1 to AZ_IOT_ADU_MAX_COMPATIBILITY_PROPERTIES
    * compatibility properties: manufacturer and model count one each when
    * non-NULL, plus the custom ones. az_iot_adu_build_report() keeps its own
-   * limit of up to five custom properties. The copy holds at most 256 bytes of compatibility strings and
-   * 192 bytes of installed-ID strings, NUL terminators included; these are SDK
-   * storage limits, not protocol limits.
+   * limit of up to five custom properties. The copy holds at most 256 bytes of compatibility
+   * strings and 192 bytes of installed-ID strings, NUL terminators included; these are SDK storage
+   * limits, not protocol limits.
    */
   typedef struct az_iot_adu_device_properties
   {
