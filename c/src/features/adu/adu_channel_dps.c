@@ -790,6 +790,17 @@ static az_iot_result channel_request_update(void* ctx, az_iot_adu_operation oper
       c->body,
       sizeof(c->body),
       &body_len);
+  if (r == AZ_IOT_ERR_NOT_ENOUGH_SPACE
+      && (c->agent_info_etag[0] != '\0' || c->service_config_etag[0] != '\0'))
+  {
+    /* ETags are optional; property validation sized the request without them.
+     * Drop them rather than fail every later request. */
+    AZ_IOT_LOG_ERROR("adu: cached ETags do not fit the request; sending without them");
+    c->agent_info_etag[0] = '\0';
+    c->service_config_etag[0] = '\0';
+    r = az_iot_adu__build_fetch_request(
+        &agent, installed, NULL, NULL, c->body, sizeof(c->body), &body_len);
+  }
   if (r != AZ_IOT_OK)
   {
     return r;
@@ -861,14 +872,10 @@ static az_iot_result channel_set_device_properties(
                                             snapshot.properties.installed_update_id.name,
                                             snapshot.properties.installed_update_id.version };
   /* Size only: c->body may hold an outstanding operation. Check the
-   * operational shape too, even when this session uses onboarding. */
+   * operational shape too, even when this session uses onboarding. ETags are
+   * left out: they are optional, and a request that cannot fit them drops them. */
   r = az_iot_adu__fetch_request_size(
-      &agent,
-      installed.provider != NULL ? &installed : NULL,
-      c->agent_info_etag[0] != '\0' ? c->agent_info_etag : NULL,
-      c->service_config_etag[0] != '\0' ? c->service_config_etag : NULL,
-      sizeof(c->body),
-      NULL);
+      &agent, installed.provider != NULL ? &installed : NULL, NULL, NULL, sizeof(c->body), NULL);
   if (r != AZ_IOT_OK)
   {
     return r;

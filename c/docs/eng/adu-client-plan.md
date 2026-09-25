@@ -260,7 +260,8 @@ stateDiagram-v2
   exact string-storage requirement, or zero for invalid/unsupported properties.
   Managed snapshots are bounded to 256 bytes of compatibility strings (custom names
   and every terminator included) plus 192 bytes of installed-ID strings; the channel
-  separately checks the escaped request against its body capacity.
+  separately checks the escaped request against its body capacity, without cached ETags;
+  a request that cached ETags would overflow is sent without them.
   These inherited byte budgets are SDK capacities, not service limits. Configurable
   or caller-sized capacity is deferred to a separate team design discussion.
   The unused managed legacy serialized-ID cache is removed. The standalone report

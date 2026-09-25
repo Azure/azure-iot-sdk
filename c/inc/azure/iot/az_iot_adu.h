@@ -314,7 +314,11 @@ extern "C"
   } az_iot_adu_custom_property;
 
   /**
-   * @brief Device properties sent on update checks, not on status reports.
+   * @brief Device properties sent on update checks.
+   *
+   * Compatibility properties go only on update checks. The installed update ID
+   * also goes on status reports that have no applied update to report, so
+   * replacing it can change a pending status report.
    *
    * Caller-owned. az_iot_adu_client_initialize() and
    * az_iot_adu_client_update_device_properties() deep-copy them; the caller may

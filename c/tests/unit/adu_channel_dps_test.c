@@ -829,6 +829,42 @@ static void channel_keeps_all_five_custom_properties_and_owns_their_strings(void
   assert_int_equal(found, 5);
 }
 
+/* Cached ETags never make a validated property set unsendable: properties are
+ * sized without them, and a request they would overflow is sent without them. */
+static void oversized_cached_etags_are_dropped_from_the_request(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  char manufacturer[151];
+  memset(manufacturer, '\1', sizeof(manufacturer) - 1);
+  manufacturer[sizeof(manufacturer) - 1] = '\0';
+  az_iot_adu_device_properties properties = { .manufacturer = manufacturer };
+
+  /* Worst-case escaped ETags already cached. */
+  memset(fx->channel_state.agent_info_etag, '\1', sizeof(fx->channel_state.agent_info_etag) - 1);
+  fx->channel_state.agent_info_etag[sizeof(fx->channel_state.agent_info_etag) - 1] = '\0';
+  memset(
+      fx->channel_state.service_config_etag,
+      '\1',
+      sizeof(fx->channel_state.service_config_etag) - 1);
+  fx->channel_state.service_config_etag[sizeof(fx->channel_state.service_config_etag) - 1] = '\0';
+  assert_int_equal(
+      fx->channel.vtable->set_device_properties(fx->channel.ctx, &properties), AZ_IOT_OK);
+
+  az_iot_mock_mqtt_client* m = open_and_bind(fx);
+  assert_int_equal(
+      fx->channel.vtable->request_update(fx->channel.ctx, AZ_IOT_ADU_OP_GET_UPDATE), AZ_IOT_OK);
+  const az_iot_mock_call* pub = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PUBLISH);
+  assert_non_null(pub);
+  char body[2048 + 1];
+  assert_true(pub->payload_len < sizeof(body));
+  memcpy(body, pub->payload, pub->payload_len);
+  body[pub->payload_len] = '\0';
+  assert_null(strstr(body, "Etag"));
+  assert_non_null(strstr(body, "manufacturer"));
+  assert_string_equal(fx->channel_state.agent_info_etag, "");
+  assert_string_equal(fx->channel_state.service_config_etag, "");
+}
+
 static void public_replacement_is_atomic_when_escaped_request_does_not_fit(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -2496,6 +2532,8 @@ int main(void)
         invalid_replacements_preserve_channel_state_and_outstanding_body, setup, teardown),
     cmocka_unit_test_setup_teardown(
         channel_keeps_all_five_custom_properties_and_owns_their_strings, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        oversized_cached_etags_are_dropped_from_the_request, setup, teardown),
     cmocka_unit_test_setup_teardown(
         public_replacement_is_atomic_when_escaped_request_does_not_fit, setup, teardown),
     cmocka_unit_test_setup_teardown(request_update_publishes_on_the_dps_topic, setup, teardown),
