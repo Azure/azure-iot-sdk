@@ -2170,8 +2170,11 @@ az_iot_result az_iot_adu_client_do_work(az_iot_adu_client_t* client)
    * across do_work iterations; does not preempt state-machine progress. */
   drive_pending_fetch(client);
 
-  /* Cancellation at a phase boundary returns immediately to Idle. */
-  if (ADU_I(client).cancel_requested && ADU_I(client).state != AZ_IOT_ADU_STATE_IDLE)
+  /* Cancellation at a phase boundary returns immediately to Idle. FAILED is
+   * excluded: its terminal outcome is already reported, and a late cancel would
+   * report a second, conflicting one for the same workflow. */
+  if (ADU_I(client).cancel_requested && ADU_I(client).state != AZ_IOT_ADU_STATE_IDLE
+      && ADU_I(client).state != AZ_IOT_ADU_STATE_FAILED)
   {
     result_step_canceled(client);
     ADU_I(client).pending_outcome = AZ_IOT_ADU_OUTCOME_CANCELED;

@@ -2035,6 +2035,32 @@ static const char* distinct_files_patch(void)
   return patch;
 }
 
+/* A cancel landing on the tick the workflow spends in FAILED must not displace
+ * the reported failure with a second, conflicting terminal outcome. */
+static void late_cancel_does_not_overwrite_a_reported_failure(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  fx->log.install_result = AZ_IOT_ADU_RESULT_FAILURE;
+  inject_patch(fx, signed_patch());
+  for (int i = 0; i < 40 && az_iot_adu_client_get_state(&fx->adu) != AZ_IOT_ADU_STATE_FAILED; ++i)
+  {
+    assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  }
+  assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_FAILED);
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_ADU_OUTCOME_FAILED);
+  int reports_after_failure = fx->chan.report_count;
+
+  fx->adu._internal.cancel_requested = true;
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+
+  assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_ADU_OUTCOME_FAILED);
+  assert_int_equal(fx->chan.report_count, reports_after_failure);
+  assert_false(az_iot_adu_is_cancelled(&fx->adu));
+}
+
 /* Each step downloads the file its own `files` entry names, not the manifest's
  * first entry. */
 static void each_step_downloads_its_own_file(void** state)
@@ -3319,6 +3345,8 @@ int main(void)
     cmocka_unit_test(microsoft_root_keys_are_embedded),
     cmocka_unit_test_setup_teardown(multi_step_update_runs_every_step_in_order, setup, teardown),
     cmocka_unit_test_setup_teardown(each_step_downloads_its_own_file, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        late_cancel_does_not_overwrite_a_reported_failure, setup, teardown),
     cmocka_unit_test_setup_teardown(
         multi_step_report_preserves_progress_and_failure, setup, teardown),
     cmocka_unit_test_setup_teardown(
