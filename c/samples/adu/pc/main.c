@@ -26,10 +26,10 @@
  *
  * Device identity (environment variables, all optional).
  *
- * MATCHED: manufacturer, model and the fixed custom property environment=sim
- * are the COMPATIBILITY PROPERTIES the service matches an update against. If
- * they do not match the imported update, the device is answered "nothing to
- * do" and is never offered anything, so the sample prints what it reported.
+ * MATCHED: manufacturer and model are the COMPATIBILITY PROPERTIES the
+ * service matches an update against. If they do not match the imported
+ * update, the device is answered "nothing to do" and is never offered
+ * anything, so the sample prints what it reported.
  *   AZ_IOT_ADU_MANUFACTURER=<s>        default "Contoso"
  *   AZ_IOT_ADU_MODEL=<s>               default "ADU-Sim"
  *
@@ -82,9 +82,8 @@
 /*
  * ADU anchors manifest trust in one or more RSA root public keys. This sample
  * uses az_iot_adu_microsoft_root_keys() — Microsoft's published ADU production
- * roots, compiled into the SDK — so updates imported through the real Device
- * Update service (which signs every manifest with Microsoft's signing service)
- * verify out of the box.
+ * roots, compiled into the SDK — so manifests signed under those roots
+ * verify out of the box. Other issuers require explicitly trusted keys.
  *
  * To accept updates signed by your OWN root instead, build your own
  * az_iot_adu_root_key array (kid + big-endian modulus/exponent) and pass it
@@ -571,10 +570,6 @@ int main(void)
   size_t root_key_count = 0;
   const az_iot_adu_root_key* root_keys = az_iot_adu_microsoft_root_keys(&root_key_count);
 
-  static const az_iot_adu_custom_property customs[] = {
-    { "environment", "sim" },
-  };
-
   /* Compatibility properties: what the service matches a deployed update
    * against. Configurable because a hard-coded value that does not match the
    * imported update is answered "nothing to do" -- indistinguishable from
@@ -597,8 +592,6 @@ int main(void)
   dp.installed_update_id.provider = st.installed_provider;
   dp.installed_update_id.name = st.installed_name;
   dp.installed_update_id.version = st.installed_version;
-  dp.custom_properties = customs;
-  dp.custom_properties_count = sizeof(customs) / sizeof(customs[0]);
 
   /* Named, rather than a bare error out of initialize(): the cache is fixed
    * and these values now come from the environment. */
@@ -669,7 +662,7 @@ int main(void)
   }
 
   printf(
-      "Matched against a deployed update: manufacturer=%s model=%s environment=sim\n"
+      "Matched against a deployed update: manufacturer=%s model=%s\n"
       "Reported only (not matched, and omitted on the onboarding route): "
       "installedUpdateId=%s/%s/%s\n",
       st.manufacturer,
