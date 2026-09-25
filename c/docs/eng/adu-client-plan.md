@@ -266,10 +266,10 @@ stateDiagram-v2
   or caller-sized capacity is deferred to a separate team design discussion.
   The unused managed legacy serialized-ID cache is removed. The standalone report
   builder retains its legacy wire/count contract but correctly escapes installed IDs.
-  Initialization/replacement uses transient stack scratch: the shipping channel's
-  2048-byte preflight body plus bounded property snapshots (several KiB in total,
-  ABI/compiler dependent). Include this in embedded task-stack sizing; it is not
-  hidden heap allocation.
+  Initialization/replacement uses transient stack scratch: bounded property snapshots
+  (several KiB in total, ABI/compiler dependent) and a 64-byte sizing buffer; the
+  2048-byte channel body lives in the channel state. Include this in embedded
+  task-stack sizing; it is not hidden heap allocation.
   **Scope:** this is cache correctness and ADUv2 reporting cleanup, not a new polling
   or orchestration feature. The application already chooses route and timing via
   `az_iot_adu_client_request_onboarding_update()` / `az_iot_adu_client_request_update()`
