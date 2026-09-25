@@ -1006,6 +1006,42 @@ static az_iot_result decode_request_strings(az_iot_adu_client_update_request* re
   return AZ_IOT_OK;
 }
 
+/** @brief True if @p s decodes to a nonempty string; @p scratch receives it. */
+static bool decodes_nonempty(az_span s, az_span scratch)
+{
+  az_span decoded;
+  return az_iot_json_string_decode(s, scratch, &decoded) == AZ_IOT_OK && az_span_size(decoded) > 0;
+}
+
+/**
+ * @brief Check that decode_request_strings() will accept @p req, without
+ * changing it. Lets a bad payload be refused before it disturbs the active
+ * workflow or its checkpoint.
+ *
+ * @param client The client; its persist_scratch is used as decode scratch.
+ * @param req    Parsed request; each string is no longer than the payload.
+ * @return AZ_IOT_OK; AZ_IOT_ERR_INVALID_ARG on an undecodable or empty value.
+ */
+static az_iot_result check_request_strings(
+    az_iot_adu_client_t* client,
+    const az_iot_adu_client_update_request* req)
+{
+  az_span scratch = AZ_SPAN_FROM_BUFFER(ADU_I(client).persist_scratch);
+  if (!decodes_nonempty(req->workflow.id, scratch))
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  for (uint32_t i = 0; i < req->file_urls_count; ++i)
+  {
+    if (!decodes_nonempty(req->file_urls[i].id, scratch)
+        || !decodes_nonempty(req->file_urls[i].url, scratch))
+    {
+      return AZ_IOT_ERR_INVALID_ARG;
+    }
+  }
+  return AZ_IOT_OK;
+}
+
 /**
  * @brief Parse an ADUv2 `updateMetadata` object into @p out_req.
  *
@@ -1242,6 +1278,12 @@ static void process_update_metadata(
   }
   if (dr == AZ_IOT_OK && same_workflow_id(client, probe_id))
   {
+    return;
+  }
+
+  if (check_request_strings(client, &probe) != AZ_IOT_OK)
+  {
+    AZ_IOT_LOG_ERROR("adu: update payload has an undecodable string; ignored");
     return;
   }
 

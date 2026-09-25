@@ -2283,6 +2283,34 @@ static void a_failed_checkpoint_retire_is_retried(void** state)
   assert_false(fx->log.have_persist);
 }
 
+/* A new workflow that fails to decode is ignored before it disturbs the active
+ * workflow or retires its checkpoint. */
+static void an_undecodable_replacement_keeps_the_active_checkpoint(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  fx->log.install_result = AZ_IOT_ADU_RESULT_REBOOT_REQUIRED;
+  inject_patch(fx, signed_patch());
+  pump_to_checkpoint(fx);
+  uint8_t blob[sizeof(fx->log.persist_blob)];
+  size_t blob_len = fx->log.persist_len;
+  memcpy(blob, fx->log.persist_blob, blob_len);
+
+  inject_patch(
+      fx, "{\"workflowId\":\"new\",\"updateManifest\":\"{}\",\"fileUrls\":{\"f\":\"a\\uD800\"}}");
+  assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_INSTALL_COMPLETE);
+  assert_true(fx->log.have_persist);
+  assert_int_equal(fx->log.persist_len, blob_len);
+  assert_memory_equal(fx->log.persist_blob, blob, blob_len);
+
+  /* The active workflow still finishes. */
+  fx->log.install_result = AZ_IOT_ADU_RESULT_SUCCESS;
+  pump(fx, 40);
+  assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_ADU_OUTCOME_SUCCEEDED);
+}
+
 /* A new workflow retires the checkpoint of the one it supersedes. */
 static void superseding_workflow_retires_the_stored_checkpoint(void** state)
 {
@@ -3675,6 +3703,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(a_failed_checkpoint_retire_is_retried, setup, teardown),
     cmocka_unit_test_setup_teardown(
         superseding_workflow_retires_the_stored_checkpoint, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_undecodable_replacement_keeps_the_active_checkpoint, setup, teardown),
     cmocka_unit_test_setup_teardown(
         resume_without_a_persist_hook_is_not_supported, setup, teardown),
     cmocka_unit_test_setup_teardown(a_v2_snapshot_with_downloads_left_is_refused, setup, teardown),
