@@ -916,7 +916,7 @@ left as gaps rather than guesses.
 | CONNACK | Identity refused — v3 `2`/`4`/`5`, v5 `0x85`/`0x86`/`0x87`/`0x8C` | `AZ_IOT_ERR_IDENTITY_REJECTED` | `az_iot_mqtt_connack_result()` | `needs_reprovision` is set whatever the policy; the next attempt runs `dps_start()` — as a retry when a policy is configured, otherwise on the application's next `open()`. | The retry is still scheduled through the reconnection policy, so backoff and `max_attempts` bound it — a device whose enrollment has been deleted must not hammer DPS either. **The flag is only set when a policy is configured**, so with retries disabled the intent to re-provision is dropped rather than carried to the next `open()`. |
 | CONNACK | v3 `1 unacceptable protocol version` | `AZ_IOT_ERR_MQTT` | `az_iot_mqtt_connack_result()` | **retried** under policy | **Known defect.** Deterministic and can never succeed on retry; the generic table classes it Terminal. The exclusion from the identity set is correct — `1` says nothing about the identity — but the result should be a fatal classification, not a retry. Fixing it needs the fatal-failure classification that is `planned` for C. |
 | CONNACK | v3 `3 Server unavailable` | `AZ_IOT_ERR_MQTT` | `az_iot_mqtt_connack_result()` | retried | Correct: the canonical transient refusal. |
-| CONNACK | v5 deterministic refusals — `0x81`, `0x82`, `0x84`, `0x95`, `0x8A`, `0x90`, `0x99`, `0x9A`, `0x9B` | `AZ_IOT_ERR_MQTT` | `az_iot_mqtt_connack_result()` | **retried** | Same defect as v3 `1`. The four Will-related codes cannot arise: no client here sends a Will. |
+| CONNACK | v5 deterministic refusals — `0x81`, `0x82`, `0x84`, `0x95`, `0x8A`, `0x90`, `0x99`, `0x9A`, `0x9B` | `AZ_IOT_ERR_MQTT` | `az_iot_mqtt_connack_result()` | **retried** | Same defect as v3 `1`. The four Will-related codes arise only when `opts.lwt` is set; the SDK sets no Will of its own. |
 | CONNACK | v5 transient refusals — `0x88`, `0x89`, `0x97`, `0x9F`, `0x80`, `0x83` | `AZ_IOT_ERR_MQTT` | `az_iot_mqtt_connack_result()` | retried with jitter | Correct. |
 | CONNACK | v5 redirection — `0x9C Use another server`, `0x9D Server moved` | `AZ_IOT_ERR_MQTT` | `az_iot_mqtt_connack_result()` | **retried against the same host** | **Known gap.** The Server Reference property is not read. Retrying the same endpoint repeats the redirection until the policy is exhausted. |
 | CONNECT | No CONNACK within the connect timeout | `AZ_IOT_ERR_MQTT` | Paho | ordinary failed attempt | 30 s by default, configurable; the same value is used for the DPS bootstrap connect. |
@@ -1007,7 +1007,7 @@ registry carries Classic feature filters and application custom topics.
 | Publish / subscribe | A bound in [§9.4](#94-compile-time-bounds) is exceeded | see that table | connection client | the call fails before the transport is touched | Never truncated. |
 | Publish | Pending-PUBACK table full (17th unacknowledged publish with a callback) | `AZ_IOT_ERR_NOT_SUPPORTED` | connection client | the publish already succeeded; the error exists so the caller can apply backpressure | Contained. The value overlaps "no factory registered", which is a poor fit for a capacity condition. |
 | Twin | Pending-request pool full (9th) | `AZ_IOT_ERR_NOT_SUPPORTED` | twin client | the request is rejected | Contained. Distinct from the `429` row above, which is the point. |
-| Direct methods | In-flight pool full (5th) | **none** | direct-method client | **the invocation is dropped**, with a warning logged | **Known gap.** A slot is released only by responding; a handler that returns without responding leaks one permanently, and after four leaks every invocation disappears. The generic contract requires this to be visible, not silent — a warning in a log is the weakest form of visible there is. |
+| Direct methods | In-flight pool full (5th) | **none** | direct-method client | **the invocation is dropped**, with a warning logged | **Known gap.** A slot is released by responding, or reclaimed by `requests_expire_stale()` once `response_timeout_seconds` has passed. While all slots are still live, a further invocation is dropped with only a log warning — the generic contract requires it to be visible to the application. |
 | Connect | No factory for the required version | `AZ_IOT_ERR_NOT_SUPPORTED` | `find_factory()` | back to `IDLE`, error returned from `open()` | |
 | Registry | Session-end handler registry full (5th distinct context) | `AZ_IOT_ERR_NOT_SUPPORTED` | connection client | the registration fails | Re-registering the same context upserts rather than consuming a slot. |
 | Registry | Inbound dispatch table full (9th) | `AZ_IOT_ERR_NOT_SUPPORTED` | dispatch | the registration fails | |
@@ -1073,8 +1073,8 @@ listed at the end rather than deleted, so the delta stays legible.
    material the stack cannot be given, and the adapter's negative code reaches `error->code` but
    nothing acts on it.
 6. **A dropped direct-method invocation is silent to the application.** Only a log warning marks it.
-   A slot is released by responding; a handler that returns without responding leaks one until the
-   request times out.
+   A slot is released by responding, or reclaimed after `response_timeout_seconds`; while all slots
+   are live, a further invocation is dropped.
 7. **The Classic hub username is not bounds-checked.** The gen2 path returns
    `AZ_IOT_ERR_NOT_ENOUGH_SPACE` when `AZ_IOT_MQTT_USERNAME_BUF` is too small. The Classic path
    ignores the failure of `az_iot_hub_client_get_user_name()` and connects with no username at all.

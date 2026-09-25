@@ -866,7 +866,7 @@ MQTT 3.1.1 §3.2.2.3 (CONNACK) and §3.9.3 (SUBACK); MQTT 5.0 §3.2.2.2 (CONNACK
 | `0x89` | Server busy | Retryable | Back off; this is exactly what backoff is for. |
 | `0x8A` | Banned | **Terminal** | An administrative decision. Retrying is precisely what the server is refusing. |
 | `0x8C` | Bad authentication method | **Identity terminal** | The enhanced-authentication method offered is not supported. Grouped with the identity refusals: what the device presented is not acceptable. |
-| `0x90` | Topic Name invalid | **Terminal** | Refers to the **Will topic** in the CONNECT packet, not to any subscription. This SDK sends no Will, so it does not arise; a client that adds one must not retry. |
+| `0x90` | Topic Name invalid | **Terminal** | Refers to the **Will topic** in the CONNECT packet, not to any subscription. Arises only when the application configures a Will; the client sets none of its own. Must not be retried. |
 | `0x95` | Packet too large | **Terminal** | The CONNECT exceeded the server's maximum packet size. Deterministic for a given configuration. |
 | `0x97` | Quota exceeded | Retryable | A quota, unlike a ban, is expected to refill. |
 | `0x99` | Payload format invalid | **Terminal** | Refers to the **Will payload**. Same note as `0x90`. |
@@ -1025,7 +1025,7 @@ Per-code classes are in [§9.3.1](#931-mqtt-311-connack-return-codes-3223) and
 | CONNACK | Transient server refusal — `rc=3 Connection Refused, Server unavailable`; `0x88 Server unavailable`, `0x89 Server busy`, `0x97 Quota exceeded`, `0x9F Connection rate exceeded` | Retryable | Reconnect under policy, with jitter. | `RECONNECTING` |
 | CONNACK | Redirection — `0x9C Use another server`, `0x9D Server moved` | **Terminal at this endpoint** | Do not retry the same host: the answer is a property of the host, and the policy will simply exhaust itself against it. Follow the Server Reference property, or re-provision. | `FAULTED`, or `RECONNECTING` via DPS |
 | CONNACK | Administrative refusal — `0x8A Banned` | **Terminal** | Fault. Retrying is exactly what the server is refusing. | `FAULTED` |
-| CONNACK | Will-related refusal — `0x90 Topic Name invalid`, `0x99 Payload format invalid`, `0x9A Retain not supported`, `0x9B QoS not supported` | **Terminal** | Cannot arise in this SDK: no client here sends a Will. Pinned so that a client that adds one classifies it correctly rather than retrying a deterministic refusal. | `FAULTED` |
+| CONNACK | Will-related refusal — `0x90 Topic Name invalid`, `0x99 Payload format invalid`, `0x9A Retain not supported`, `0x9B QoS not supported` | **Terminal** | Arises only when the application configures a Will ([§3.2](#32-session-terms-per-role)); the client sets none of its own. Fault rather than retry: the same Will is refused the same way. | `FAULTED` |
 | CONNACK | Server declines to give a reason — `0x80 Unspecified error`, `0x83 Implementation specific error` | Retryable | Retry under policy. Deliberately conservative: abandoning a credential on an unexplained refusal risks discarding a good one. | `RECONNECTING` |
 | CONNACK | A code the client does not recognise, including 3.1.1's reserved `6`–`255` range | Retryable | Preserve the numeric value in the reason and log it. Retry. Never map an unknown code onto a known one. | `RECONNECTING`, reason carries the raw value |
 | CONNECT | No CONNACK arrives within the connect deadline | Retryable | Treat the deadline expiry as a failed attempt: tear down, count it, back off. | `RECONNECTING` |
