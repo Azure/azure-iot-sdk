@@ -249,6 +249,7 @@ int main(void)
       az_iot_connection_client_close(&state.connection_client);
       if (az_iot_connection_client_open(&state.connection_client) != AZ_IOT_OK)
       {
+        user_ctx.faulted = 1; /* recovery failed */
         break;
       }
       continue;
@@ -267,6 +268,7 @@ int main(void)
       if (sample_get_hub_profile(&state.connection_client, &profile) != AZ_IOT_OK
           || telemetry_build(&state, profile) != AZ_IOT_OK)
       {
+        user_ctx.faulted = 1;
         break;
       }
     }

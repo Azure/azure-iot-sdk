@@ -291,6 +291,7 @@ int main(void)
       if (telemetry_build(&state, user_ctx.assigned_profile) != AZ_IOT_OK
           || az_iot_connection_client_open(&state.connection_client) != AZ_IOT_OK)
       {
+        user_ctx.faulted = 1; /* recovery failed */
         break;
       }
       continue;

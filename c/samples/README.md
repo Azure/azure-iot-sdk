@@ -13,7 +13,8 @@
 | [adu/](adu/) | Either generation | Device Update agent. See [adu/pc](adu/pc/README.md). |
 | [common/](common/) | — | Shared helpers (`sample_utils`, certificate provider, CSR backends) and setup scripts. |
 
-There are no Classic-only samples: the unified samples cover Classic hubs.
+There is no Classic-only group: the unified samples cover Classic hubs. The one
+Classic-only feature, file upload, is in `unified/` and reports AEG hubs.
 
 ## How a unified sample works
 
@@ -24,7 +25,7 @@ its generation at `init()`; DPS assigning the other one stops the connection
 with `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH` before that hub is reached, and
 the state event carries the assigned profile.
 
-Every unified sample:
+The unified samples, except `connect_first` and `file_upload` (below):
 
 1. Registers **both** Paho adapters (`az_iot_paho_factory_create_v3_1_1()` and
    `az_iot_paho_factory_create_v5()`).
@@ -58,7 +59,8 @@ Device setup is done with scripts, not with a sample program.
 
 ## Configuration
 
-Every connecting sample reads:
+The unified and gen2 samples read these; the authentication samples add or
+replace some (see [authentication/README.md](authentication/README.md)):
 
 | Variable | Required | Meaning |
 | --- | --- | --- |

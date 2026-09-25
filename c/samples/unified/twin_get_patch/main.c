@@ -394,6 +394,7 @@ int main(void)
       if (clients_build(&state, user_ctx.assigned_profile, &user_ctx) != AZ_IOT_OK
           || az_iot_connection_client_open(&state.connection_client) != AZ_IOT_OK)
       {
+        user_ctx.faulted = 1; /* recovery failed */
         break;
       }
       continue;
