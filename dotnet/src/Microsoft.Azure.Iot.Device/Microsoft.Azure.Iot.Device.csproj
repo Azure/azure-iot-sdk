@@ -36,6 +36,7 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="Microsoft.Azure.Iot.Device.UnitTests" />
+    <InternalsVisibleTo Include="Mqtt5SdkSmoke" />
   </ItemGroup>
 
   <ItemGroup>
