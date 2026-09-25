@@ -19,7 +19,9 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientAsync(testAgainstClassicHub, null, TestContext.Current.CancellationToken);
             string deviceId = testDeviceContext.ConnectionContext.DeviceId;
 
-            RegistryManager registryManager = Setup.GetMQTTv3IotHubRegistryManager();
+            RegistryManager registryManager = testAgainstClassicHub
+                ? Setup.GetMQTTv3IotHubRegistryManager()
+                : Setup.GetMQTTv5IotHubRegistryManager();
             using TwinClient twinClient = new TwinClient(testDeviceContext.ConnectionClient);
             TaskCompletionSource<DesiredPatchReceivedEventArgs> onDesiredPropertiesUpdateReceived = new();
             int desiredPatchesReceived = 0;
