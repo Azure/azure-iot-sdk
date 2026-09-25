@@ -1139,9 +1139,8 @@ baseline.
   twin PR, repointing `az_iot_adu_client_initialize()` at
   `az_iot_gen1_twin_client`. The ADU cut landing first made that moot, and the
   twin PR touched no ADU code.
-- **P1a gates automatic production selection after DPS, not implementation of
-  P1d or P2–P6.** While its service api-version is parked, an absent/null
-  assignment can be supplied by the development-only
+- **The shared DPS CONNECT now requests `2026-11-02-preview`.** When DPS omits
+  `connectionProfile`, local tests can still use the development-only
   `AZ_IOT_DPS_CONNECTION_PROFILE_OVERRIDE`; explicit wire data always wins.
 - **A refused subscription always fails; its *scope* decides whether the
   connection dies with it**
