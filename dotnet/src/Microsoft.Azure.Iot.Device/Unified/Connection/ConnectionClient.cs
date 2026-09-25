@@ -28,7 +28,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
 
         private readonly ConcurrentDictionary<string, CertificateSigningOperation> _pendingCertificateSigningOperations = new();
 
-        private MQTTv5.Connection.ConnectionClient _MQTTv5ConnectionClient;
+        private MQTTv5.Connection.ConnectionClient _mqttv5ConnectionClient;
 
         /// <summary>
         /// Construct a new <see cref="ConnectionClient"/>
@@ -45,7 +45,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
             // not be handed the application-supplied MQTT client. Doing so would attach a second MqttConnectionManager to that
             // same client, and that manager's "connecting" handler would rewrite every CONNECT this client sends (including the
             // one sent to DPS) with gen 2 hub credentials and MQTT 5.
-            _MQTTv5ConnectionClient = new(new ConnectionClientOptions()
+            _mqttv5ConnectionClient = new(new ConnectionClientOptions()
             {
                 ConnectionRetryPolicy = options.ConnectionRetryPolicy,
                 ConnectionAttemptTimeout = options.ConnectionAttemptTimeout,
@@ -55,7 +55,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
 
             ManagedMqttConnection.PublishReceivedAsync += HandleReceivedCertificateSigningPublish;
 
-            _MQTTv5ConnectionClient.DevicePresenceFlowCompletedAsync += HandleMQTTv5ClientConnectionReady;
+            _mqttv5ConnectionClient.DevicePresenceFlowCompletedAsync += HandleMQTTv5ClientConnectionReady;
         }
 
         private async Task HandleMQTTv5ClientConnectionReady(DevicePresenceFlowCompletedArgs args)
@@ -70,7 +70,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
             Debug.Assert(CurrentConnectionContext != null);
             if (CurrentConnectionContext.ConnectionProfile == Provisioning.Models.ConnectionProfile.MqttV5)
             {
-                return _MQTTv5ConnectionClient.MqttConnectOverride(connect);
+                return _mqttv5ConnectionClient.MqttConnectOverride(connect);
             }
 
             connect.WebsocketUri = $"wss://{connect.HostName}/$iothub/websocket";
@@ -94,7 +94,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
                 // A gen 2 hub connection re-announces this device's birth instead of re-subscribing to the classic topics.
                 // The gen 2 client owns that flow, but it must run on this client's connection. It signals that the device
                 // is ready by raising its own device presence flow completed event, which this client relays.
-                await _MQTTv5ConnectionClient.AnnounceDevicePresenceAsync(ManagedMqttConnection, CurrentConnectionContext.DeviceId, args);
+                await _mqttv5ConnectionClient.AnnounceDevicePresenceAsync(ManagedMqttConnection, CurrentConnectionContext.DeviceId, args);
                 return;
             }
 
@@ -154,7 +154,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
 
             if (CurrentConnectionContext.ConnectionProfile == Provisioning.Models.ConnectionProfile.MqttV5)
             {
-                return await _MQTTv5ConnectionClient.SendCertificateSigningRequestAsync(request, cancellationToken);
+                return await _mqttv5ConnectionClient.SendCertificateSigningRequestAsync(request, cancellationToken);
             }
             else
             {
@@ -234,8 +234,8 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
         public override void Dispose(bool disposing)
         {
             ManagedMqttConnection.PublishReceivedAsync -= HandleReceivedCertificateSigningPublish;
-            _MQTTv5ConnectionClient.DevicePresenceFlowCompletedAsync -= HandleMQTTv5ClientConnectionReady;
-            _MQTTv5ConnectionClient.Dispose(disposing);
+            _mqttv5ConnectionClient.DevicePresenceFlowCompletedAsync -= HandleMQTTv5ClientConnectionReady;
+            _mqttv5ConnectionClient.Dispose(disposing);
             base.Dispose(disposing);
         }
 
@@ -245,8 +245,8 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
         public override void Dispose()
         {
             ManagedMqttConnection.PublishReceivedAsync -= HandleReceivedCertificateSigningPublish;
-            _MQTTv5ConnectionClient.DevicePresenceFlowCompletedAsync -= HandleMQTTv5ClientConnectionReady;
-            _MQTTv5ConnectionClient.Dispose();
+            _mqttv5ConnectionClient.DevicePresenceFlowCompletedAsync -= HandleMQTTv5ClientConnectionReady;
+            _mqttv5ConnectionClient.Dispose();
             base.Dispose();
         }
 
