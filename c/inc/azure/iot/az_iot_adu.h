@@ -72,14 +72,17 @@ extern "C"
 #endif
 
 /* In-struct scratch used to (de)serialize the persisted workflow state passed to
- * persist_state_fn / load_state_fn. Sized as the request buffer plus a fixed
- * overhead for the persistence header and v2 trailer (retry offset/len, manifest
- * CRC, install-result ints, per-step result pairs and a trailing CRC-32). The
- * overhead is generous; a compile-time assertion in adu_client.c guarantees the
- * exact serialized size always fits. This lives in the caller-allocated client
- * struct (one per instance) so no file-scope static or heap buffer is needed. */
+ * persist_state_fn / load_state_fn: the request buffer plus the snapshot header
+ * (40 bytes) and v3 trailer (24 fixed, 16 per step, 4 + 16 per file URL, 4 CRC).
+ * Derived from the upstream step/file limits, so raising them grows it; a
+ * compile-time assertion in adu_client.c checks the exact serialized size fits.
+ * Lives in the caller-allocated client struct, so no static or heap buffer. */
 #ifndef AZ_IOT_ADU_PERSIST_OVERHEAD
-#define AZ_IOT_ADU_PERSIST_OVERHEAD 256
+#define AZ_IOT_ADU_PERSIST_OVERHEAD                   \
+  (72u                                                \
+   + 16u                                              \
+       * ((_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS) \
+          + (_az_IOT_ADU_CLIENT_MAX_TOTAL_FILE_COUNT)))
 #endif
 #define AZ_IOT_ADU_PERSIST_BLOB_SIZE (AZ_IOT_ADU_REQUEST_BUFFER_SIZE + AZ_IOT_ADU_PERSIST_OVERHEAD)
 
