@@ -692,7 +692,7 @@ namespace Microsoft.Azure.Iot.Device
                 ThrowIfPubackHasErrorCode(puback);
                 return puback;
             }
-            catch (Exception e) when (e is not DeviceException and not MqttClientNotConnectedException)
+            catch (Exception e) when (e is not DeviceException and not MqttClientNotConnectedException and not OperationCanceledException)
             {
                 throw new DeviceException("Encountered an exception while publishing", e)
                 {
@@ -719,7 +719,7 @@ namespace Microsoft.Azure.Iot.Device
                 ThrowIfSubackHasErrorCode(suback);
                 return suback;
             }
-            catch (Exception e) when (e is not DeviceException and not MqttClientNotConnectedException)
+            catch (Exception e) when (e is not DeviceException and not MqttClientNotConnectedException and not OperationCanceledException)
             {
                 throw new DeviceException("Encountered an exception while subscribing", e)
                 {
@@ -746,7 +746,7 @@ namespace Microsoft.Azure.Iot.Device
                 ThrowIfUnsubackHasErrorCode(unsuback);
                 return unsuback;
             }
-            catch (Exception e) when (e is not DeviceException and not MqttClientNotConnectedException)
+            catch (Exception e) when (e is not DeviceException and not MqttClientNotConnectedException and not OperationCanceledException)
             {
                 throw new DeviceException("Encountered an exception while unsubscribing", e)
                 {
