@@ -59,6 +59,24 @@ Keep this file in step with the code. It is expected to change often; `connectio
 
 ---
 
+## Backoff parameters
+
+[§5.1](../connection.md#51-backoff-policy) fixes the shape; the parameters and defaults differ.
+
+| Property | C | .NET |
+| --- | --- | --- |
+| Growth | `initial_delay << (attempt - 1)`, shift clamped at 30 | `2^(baseExponent + attempt)` ms, exponent clamped at 32 |
+| First delay (default) | 1 s | 128 ms (base exponent 6) |
+| Cap (default) | 30 s | 60 s as configured by the connection client; 30 min for the bare policy default |
+| Max attempts (default) | unlimited | unlimited |
+| Jitter (default) | ±20 % of the computed delay | 95–105 % of the computed delay, skipped below 50 ms |
+| Disable reconnect | zero initial delay | a no-retry policy |
+| Policy is caller-replaceable | no — parameters only | yes — the policy itself is an interface |
+
+Aligning the defaults, and whether C should accept a caller-supplied policy object, are open.
+
+---
+
 ## Known gaps, in detail
 
 ### Duplicate in-flight CSR request id is not rejected (.NET)
