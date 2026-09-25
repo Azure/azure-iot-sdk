@@ -2,7 +2,7 @@
 // See LICENSE file in the project root for full license information.
 
 using Google.Protobuf;
-using Microsoft.Azure.Iot.Device.Gen2.Connection;
+using Microsoft.Azure.Iot.Device.MQTTv5.Connection;
 using Microsoft.Azure.Iot.Device.Mqtt;
 using System.Text;
 
@@ -29,11 +29,11 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         // The list of publishes/subscribes/unsubscribes as they were "sent on the wire" after any necessary reconnection
         public List<MockMqttOutgoingTraffic> SentMqttTrafficInOrder = new();
 
-        private bool _isGen2;
+        private bool _isMQTTv5;
 
-        public MockMqttClient(bool isGen2)
+        public MockMqttClient(bool isMQTTv5)
         {
-            _isGen2 = isGen2;
+            _isMQTTv5 = isMQTTv5;
         }
 
         public async Task SimulateNewMessageAsync(MqttPublish publish)
@@ -124,7 +124,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
         public async Task<MqttPublishAck> PublishAsync(MqttPublish publish, CancellationToken cancellationToken = default)
         {
-            if (_isGen2)
+            if (_isMQTTv5)
             {
                 // Respond to birth message by simulating birth ack message
                 if (publish.Topic.StartsWith("ih") && publish.Topic.EndsWith("srv/presence")) // A bit of an assumption, but I don't expect tests to use this topic suffix elsewhere
