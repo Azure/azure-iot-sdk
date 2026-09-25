@@ -1027,10 +1027,12 @@ extern "C"
    * outputs stay zeroed on any error.
    *
    * @param request_json   `{ workflowId, updateManifest, updateManifestSignature,
-   *                       fileUrls }` as the service sends it. The escaped
-   *                       manifest is decoded in this buffer, overwriting it, so
-   *                       it must be writable and outlive both outputs, whose
-   *                       spans point into it.
+   *                       fileUrls }` as the service sends it. The
+   *                       `workflowId`, `updateManifest` and every `fileUrls` id
+   *                       and URL are decoded in place, overwriting those string
+   *                       values (also on failure), so the buffer must be
+   *                       writable and outlive both outputs, whose spans point
+   *                       into it.
    * @param crypto         RSA-verify and SHA-256 hooks.
    * @param root_keys      Trusted root keys, e.g. az_iot_adu_microsoft_root_keys().
    * @param root_key_count Entries in @p root_keys.

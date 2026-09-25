@@ -36,6 +36,7 @@
 #include "azure/iot/az_iot_adu.h"
 
 #include "internal/adu_internal.h"
+#include "internal/json_string.h"
 #include "internal/reconnect.h" /* az_iot_time_mono_ms */
 #include "internal/log_internal.h"
 #include "internal/span_writer.h"
@@ -920,10 +921,10 @@ static az_iot_result parse_manifest(az_iot_adu_client_t* client)
     return AZ_IOT_ERR_INVALID_ARG;
   }
 
-  /* Unescape in place: the unescaped form is never longer than the source.
-   * az_json_string_unescape returns the unescaped span (empty on failure). */
-  az_span unescaped = az_json_string_unescape(manifest, manifest);
-  if (az_span_size(unescaped) <= 0)
+  /* Decode in place: the decoded form is never longer than the source. */
+  az_span unescaped;
+  if (az_iot_json_string_decode(manifest, manifest, &unescaped) != AZ_IOT_OK
+      || az_span_size(unescaped) <= 0)
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
@@ -938,163 +939,45 @@ static az_iot_result parse_manifest(az_iot_adu_client_t* client)
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
+  ADU_I(client).current_request.update_manifest = unescaped;
   ADU_I(client).manifest_text = unescaped;
   return AZ_IOT_OK;
 }
 
 /**
- * @brief Read four hex digits.
+ * @brief Decode one JSON string span in place.
  *
- * @param p   The digits.
- * @param out The value.
- * @return true when all four are hex digits.
- */
-static bool read_hex4(const uint8_t* p, uint32_t* out)
-{
-  uint32_t v = 0;
-  for (int k = 0; k < 4; ++k)
-  {
-    uint8_t c = p[k];
-    uint32_t d;
-    if (c >= '0' && c <= '9')
-    {
-      d = (uint32_t)(c - '0');
-    }
-    else if (c >= 'a' && c <= 'f')
-    {
-      d = (uint32_t)(c - 'a' + 10);
-    }
-    else if (c >= 'A' && c <= 'F')
-    {
-      d = (uint32_t)(c - 'A' + 10);
-    }
-    else
-    {
-      return false;
-    }
-    v = (v << 4) | d;
-  }
-  *out = v;
-  return true;
-}
-
-/**
- * @brief Decode a JSON string body in place, including `\u` escapes (as UTF-8).
- *
- * Unlike az_json_string_unescape(), which stops silently at `\u`, any escape
- * it cannot decode is an error. The output is never longer than the input.
- *
- * @param s   The string body, without quotes. Overwritten.
- * @param out The decoded slice of @p s.
+ * @param s The span; replaced by its decoded, non-empty slice.
  * @return true on success.
  */
-static bool json_unescape_in_place(az_span s, az_span* out)
+static bool decode_in_place(az_span* s)
 {
-  uint8_t* b = az_span_ptr(s);
-  int32_t n = az_span_size(s);
-  int32_t w = 0;
-  for (int32_t i = 0; i < n; ++i)
+  az_span decoded;
+  if (az_iot_json_string_decode(*s, *s, &decoded) != AZ_IOT_OK || az_span_size(decoded) <= 0)
   {
-    uint8_t c = b[i];
-    if (c != '\\')
-    {
-      b[w++] = c;
-      continue;
-    }
-    if (++i >= n)
-    {
-      return false;
-    }
-    switch (b[i])
-    {
-      case '"':
-      case '\\':
-      case '/':
-        b[w++] = b[i];
-        break;
-      case 'b':
-        b[w++] = '\b';
-        break;
-      case 'f':
-        b[w++] = '\f';
-        break;
-      case 'n':
-        b[w++] = '\n';
-        break;
-      case 'r':
-        b[w++] = '\r';
-        break;
-      case 't':
-        b[w++] = '\t';
-        break;
-      case 'u':
-      {
-        uint32_t cp;
-        if (i + 4 >= n || !read_hex4(&b[i + 1], &cp))
-        {
-          return false;
-        }
-        i += 4;
-        if (cp >= 0xD800 && cp <= 0xDBFF)
-        {
-          uint32_t lo;
-          if (i + 6 >= n || b[i + 1] != '\\' || b[i + 2] != 'u' || !read_hex4(&b[i + 3], &lo)
-              || lo < 0xDC00 || lo > 0xDFFF)
-          {
-            return false;
-          }
-          i += 6;
-          cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
-        }
-        else if (cp >= 0xDC00 && cp <= 0xDFFF)
-        {
-          return false;
-        }
-        if (cp < 0x80)
-        {
-          b[w++] = (uint8_t)cp;
-        }
-        else if (cp < 0x800)
-        {
-          b[w++] = (uint8_t)(0xC0 | (cp >> 6));
-          b[w++] = (uint8_t)(0x80 | (cp & 0x3F));
-        }
-        else if (cp < 0x10000)
-        {
-          b[w++] = (uint8_t)(0xE0 | (cp >> 12));
-          b[w++] = (uint8_t)(0x80 | ((cp >> 6) & 0x3F));
-          b[w++] = (uint8_t)(0x80 | (cp & 0x3F));
-        }
-        else
-        {
-          b[w++] = (uint8_t)(0xF0 | (cp >> 18));
-          b[w++] = (uint8_t)(0x80 | ((cp >> 12) & 0x3F));
-          b[w++] = (uint8_t)(0x80 | ((cp >> 6) & 0x3F));
-          b[w++] = (uint8_t)(0x80 | (cp & 0x3F));
-        }
-        break;
-      }
-      default:
-        return false;
-    }
+    return false;
   }
-  *out = az_span_create(b, w);
+  *s = decoded;
   return true;
 }
 
 /**
- * @brief Decode the JSON escapes in each `fileUrls` id and URL, in place.
+ * @brief Decode the JSON escapes in `workflowId` and each `fileUrls` id and
+ * URL, in place.
  *
  * @param req Parsed request whose spans point into writable storage.
- * @return AZ_IOT_OK; AZ_IOT_ERR_INVALID_ARG on an undecodable or empty entry.
+ * @return AZ_IOT_OK; AZ_IOT_ERR_INVALID_ARG on an undecodable or empty value.
  */
-static az_iot_result decode_file_urls(az_iot_adu_client_update_request* req)
+static az_iot_result decode_request_strings(az_iot_adu_client_update_request* req)
 {
+  if (!decode_in_place(&req->workflow.id))
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
   for (uint32_t i = 0; i < req->file_urls_count; ++i)
   {
     az_iot_adu_client_file_url* f = &req->file_urls[i];
-    if (!json_unescape_in_place(f->id, &f->id) || !json_unescape_in_place(f->url, &f->url)
-        || az_span_size(f->id) <= 0 || az_span_size(f->url) <= 0)
+    if (!decode_in_place(&f->id) || !decode_in_place(&f->url))
     {
       return AZ_IOT_ERR_INVALID_ARG;
     }
@@ -1324,7 +1207,19 @@ static void process_update_metadata(
     return;
   }
 
-  if (same_workflow_id(client, probe.workflow.id))
+  /* Compare the decoded id: an escaped spelling of the active id is the same
+   * workflow. One too long for the scratch cannot match the active id, which
+   * is stored only when it fits in the same capacity. */
+  uint8_t id_scratch[AZ_IOT_ADU_WORKFLOW_ID_SIZE];
+  az_span probe_id;
+  az_iot_result dr
+      = az_iot_json_string_decode(probe.workflow.id, AZ_SPAN_FROM_BUFFER(id_scratch), &probe_id);
+  if (dr == AZ_IOT_ERR_INVALID_ARG)
+  {
+    AZ_IOT_LOG_ERROR("adu: update payload has an undecodable workflowId; ignored");
+    return;
+  }
+  if (dr == AZ_IOT_OK && same_workflow_id(client, probe_id))
   {
     return;
   }
@@ -1336,7 +1231,7 @@ static void process_update_metadata(
   az_span buf = az_span_create(ADU_I(client).request_buffer, (int32_t)patch_len);
 
   az_iot_adu_client_update_request req;
-  if (parse_update_metadata(buf, &req) != AZ_IOT_OK || decode_file_urls(&req) != AZ_IOT_OK)
+  if (parse_update_metadata(buf, &req) != AZ_IOT_OK || decode_request_strings(&req) != AZ_IOT_OK)
   {
     ADU_I(client).request_len = 0;
     return;
@@ -2471,8 +2366,8 @@ az_iot_result az_iot_adu_client_do_work(az_iot_adu_client_t* client)
       break;
 
     case AZ_IOT_ADU_STATE_FAILED:
-      /* Terminal failure already reported; return to Idle for the next
-       * deployment. */
+      /* Retain failure for later reports after returning to Idle. */
+      ADU_I(client).pending_outcome = AZ_IOT_ADU_OUTCOME_FAILED;
       reset_to_idle(client);
       break;
   }
@@ -2660,20 +2555,23 @@ az_iot_result az_iot_adu_parse_update_request(
   az_iot_result r = parse_update_metadata(request_json, &req);
   if (r == AZ_IOT_OK)
   {
-    r = decode_file_urls(&req);
+    r = decode_request_strings(&req);
   }
   if (r != AZ_IOT_OK)
   {
     return r;
   }
 
-  /* Unescape the manifest in place (the unescaped form is never longer); the
-   * JWS is signed over the unescaped text. */
-  az_span manifest_text = az_json_string_unescape(req.update_manifest, req.update_manifest);
-  if (az_span_size(manifest_text) <= 0)
+  /* Decode the manifest in place (never longer); the JWS is signed over the
+   * decoded text. */
+  az_span manifest_text;
+  if (az_iot_json_string_decode(req.update_manifest, req.update_manifest, &manifest_text)
+          != AZ_IOT_OK
+      || az_span_size(manifest_text) <= 0)
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
+  req.update_manifest = manifest_text;
 
   /* Trust gate before the manifest is parsed. */
   if (verify_manifest_core(

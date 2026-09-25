@@ -12,6 +12,7 @@ add_library(az_iot_core
     core/dispatch.c
     core/proto3.c
     core/span_writer.c
+    core/json_string.c
     core/message.c
     core/certificate_provider_pem.c
     features/adu/adu_client.c

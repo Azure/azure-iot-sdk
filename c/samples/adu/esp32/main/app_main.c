@@ -6,7 +6,7 @@
 /* adu/esp32 - real Azure Device Update (ADU) over-the-air firmware update on an
  * ESP32-WROOM, end to end:
  *
- *   Wi-Fi -> DPS provisioning (X.509) -> IoT Hub (esp-mqtt) -> twin/ADU ->
+ *   Wi-Fi -> DPS provisioning (X.509, esp-mqtt) -> ADUv2 update check ->
  *   manifest JWS verification (mbedTLS) -> HTTPS download straight into the
  *   inactive OTA partition -> per-file SHA-256 check -> set boot partition ->
  *   reboot -> resume the workflow in the new image -> report the new version.
@@ -179,14 +179,6 @@ void app_main(void)
     esp_restart();
   }
 
-  /* Twin client (ADU registers as a desired-property subscriber on it). */
-  az_iot_twin_client twin;
-  if (az_iot_twin_client_init(&twin, &conn) != AZ_IOT_OK)
-  {
-    ESP_LOGE(TAG, "twin_client_init failed");
-    esp_restart();
-  }
-
   /* Real OTA platform hooks + mbedTLS crypto + Microsoft root keys. */
   adu_ota_ctx ota = { 0 };
   ota.installed_version = ADU_UPDATE_VERSION;
@@ -213,7 +205,7 @@ void app_main(void)
   adu_opts.device_props = &dp;
   adu_opts.device_props_buffer = dp_buffer;
   adu_opts.device_props_buffer_size = sizeof(dp_buffer);
-  if (az_iot_adu_client_initialize(&adu, &twin, &adu_opts) != AZ_IOT_OK)
+  if (az_iot_adu_client_initialize(&adu, &conn, &adu_opts) != AZ_IOT_OK)
   {
     ESP_LOGE(TAG, "adu_client_initialize failed");
     esp_restart();

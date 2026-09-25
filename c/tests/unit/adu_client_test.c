@@ -803,6 +803,33 @@ static void pump(fixture* fx, int max_iters)
   }
 }
 
+static void assert_idle_report_retains_outcome(fixture* fx, az_iot_adu_outcome outcome)
+{
+  assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
+  assert_true(fx->chan.report_count > 0);
+  assert_int_equal(fx->chan.last_report.outcome, outcome);
+  int32_t result_code = fx->chan.last_report.result_code;
+  az_iot_adu_failure_origin failure_origin = fx->chan.last_report.failure_origin;
+  int32_t step_count = fx->chan.last_report.step_results_count;
+  char workflow_id[sizeof(fx->chan.last_workflow_id)];
+  char extended[sizeof(fx->chan.last_extended)];
+  copy_str(workflow_id, sizeof(workflow_id), fx->chan.last_workflow_id);
+  copy_str(extended, sizeof(extended), fx->chan.last_extended);
+
+  for (int i = 0; i < 2; ++i)
+  {
+    int report_count = fx->chan.report_count;
+    assert_int_equal(az_iot_adu__report_state(&fx->adu), AZ_IOT_OK);
+    assert_int_equal(fx->chan.report_count, report_count + 1);
+    assert_int_equal(fx->chan.last_report.outcome, outcome);
+    assert_int_equal(fx->chan.last_report.result_code, result_code);
+    assert_int_equal(fx->chan.last_report.failure_origin, failure_origin);
+    assert_int_equal(fx->chan.last_report.step_results_count, step_count);
+    assert_string_equal(fx->chan.last_workflow_id, workflow_id);
+    assert_string_equal(fx->chan.last_extended, extended);
+  }
+}
+
 static bool ops_contain_sequence(const hook_log* l, const op_kind* seq, size_t n)
 {
   if (l->op_count < n)
@@ -868,6 +895,7 @@ static void deployment_drives_full_workflow_single_step(void** state)
   assert_int_equal(
       fx->chan.last_report.step_results[0].result_code, AZ_IOT_ADU_AGENT_RESULT_CODE_SUCCESS);
   assert_int_equal(fx->chan.last_report.step_results[0].extended_result_code, 0);
+  assert_idle_report_retains_outcome(fx, AZ_IOT_ADU_OUTCOME_SUCCEEDED);
 }
 
 /* The provisioning channel delivers the ADUv2 updateMetadata object, not a twin
@@ -916,6 +944,85 @@ static void escaped_file_url_is_decoded(void** state)
   inject_patch(fx, doc);
   pump(fx, 40);
   assert_string_equal(fx->log.last_download_url, "https://host/p.bin?x=1&y=2");
+}
+
+static az_iot_result parse_with_roots(
+    hook_log* log,
+    const char* patch,
+    const az_iot_adu_root_key* roots,
+    size_t root_count,
+    az_iot_adu_client_update_request* out_req,
+    az_iot_adu_client_update_manifest* out_manifest);
+
+/* updateManifest is decoded with \u support on both the managed and the
+ * public path; a \u escape must not truncate it. */
+static const char* manifest_with_unicode_escape(void)
+{
+  static char doc[4096];
+  static const char plain[] = "iot-middleware-sample-adu-v1.1";
+  const char* base = build_patch("unicode-manifest");
+  const char* at = strstr(base, plain);
+  assert_non_null(at);
+  int n = snprintf(
+      doc,
+      sizeof(doc),
+      "%.*siot-middleware-sample-adu-v1\\u002e1%s",
+      (int)(at - base),
+      base,
+      at + sizeof(plain) - 1);
+  assert_true(n > 0 && (size_t)n < sizeof(doc));
+  return doc;
+}
+
+static void manifest_unicode_escape_is_decoded(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  inject_patch(fx, manifest_with_unicode_escape());
+  pump(fx, 40);
+  assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_ADU_OUTCOME_SUCCEEDED);
+
+  az_iot_adu_client_update_request req;
+  az_iot_adu_client_update_manifest manifest;
+  assert_int_equal(
+      parse_with_roots(&fx->log, manifest_with_unicode_escape(), k_root_keys, 1, &req, &manifest),
+      AZ_IOT_OK);
+  assert_true(az_span_is_content_equal(
+      manifest.files[0].file_name, AZ_SPAN_FROM_STR("iot-middleware-sample-adu-v1.1")));
+  /* out_request exposes the decoded manifest, with no stale escaped tail. */
+  int32_t len = az_span_size(req.update_manifest);
+  assert_true(len > 0);
+  assert_int_equal(az_span_ptr(req.update_manifest)[len - 1], (uint8_t)'}');
+  assert_null(memchr(az_span_ptr(req.update_manifest), '\\', (size_t)len));
+  assert_true(az_span_find(req.update_manifest, AZ_SPAN_FROM_STR("sample-adu-v1.1")) >= 0);
+}
+
+/* workflowId is decoded before it is stored, reported and compared: an escaped
+ * spelling of the active id is a duplicate, and the report carries the decoded
+ * id. An undecodable id is ignored. */
+static void escaped_workflow_id_is_decoded(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  inject_patch(fx, build_patch("wf\\u002d1"));
+  pump(fx, 40);
+  assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
+  assert_string_equal(fx->chan.last_workflow_id, "wf-1");
+
+  fx->log.op_count = 0;
+  int reports = fx->chan.report_count;
+  inject_patch(fx, build_patch("wf\\u002D1")); /* another spelling of the same id */
+  assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
+  pump(fx, 5);
+  assert_int_equal((int)fx->log.op_count, 0);
+  assert_int_equal(fx->chan.report_count, reports);
+
+  inject_patch(fx, build_patch("wf\\q"));
+  assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
+  assert_int_equal((int)fx->log.op_count, 0);
 }
 
 /* An updateMetadata the engine cannot act on is ignored, not half-applied. */
@@ -1032,6 +1139,7 @@ static void verify_failure_blocks_download_and_fails(void** state)
   assert_false(saw_download);
   /* Terminal: machine returns to Idle after reporting FAILED. */
   assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
+  assert_idle_report_retains_outcome(fx, AZ_IOT_ADU_OUTCOME_FAILED);
 }
 
 static void install_failure_triggers_rollback(void** state)
@@ -1064,6 +1172,7 @@ static void install_failure_triggers_rollback(void** state)
   assert_true(saw_restore);
   assert_false(saw_apply);
   assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
+  assert_idle_report_retains_outcome(fx, AZ_IOT_ADU_OUTCOME_FAILED);
 }
 
 static void hash_mismatch_blocks_install_and_fails(void** state)
@@ -1097,6 +1206,7 @@ static void hash_mismatch_blocks_install_and_fails(void** state)
   assert_false(saw_install);
   assert_false(saw_apply);
   assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
+  assert_idle_report_retains_outcome(fx, AZ_IOT_ADU_OUTCOME_FAILED);
 }
 
 static void already_installed_is_rejected_without_download(void** state)
@@ -1132,6 +1242,7 @@ static void already_installed_is_rejected_without_download(void** state)
       AZ_IOT_ADU_FAILURE_ORIGIN_NOT_APPLICABLE);
   assert_int_equal(fx->chan.last_report.step_results[0].result_code, 0);
   assert_int_equal(fx->chan.last_report.step_results[0].extended_result_code, 0);
+  assert_idle_report_retains_outcome(fx, AZ_IOT_ADU_OUTCOME_SKIPPED);
 }
 
 static void install_in_progress_reenters_then_completes(void** state)
@@ -1279,6 +1390,27 @@ static void resume_with_no_persisted_state_stays_idle(void** state)
   assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
 }
 
+static void cancel_action_sets_cancelled_flag(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  /* Start a deployment, then cancel mid-flight at a phase boundary. */
+  inject_patch(fx, signed_patch());
+  assert_int_equal(
+      az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK); /* ManifestReceived -> Verifying */
+
+  /* ADUv2 has no cancel action; set the internal flag a resumed checkpoint restores. */
+  fx->adu._internal.cancel_requested = true;
+  assert_true(az_iot_adu_is_cancelled(&fx->adu));
+
+  /* Next do_work honors cancellation and returns to Idle. */
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
+  assert_false(az_iot_adu_is_cancelled(&fx->adu));
+  assert_idle_report_retains_outcome(fx, AZ_IOT_ADU_OUTCOME_CANCELED);
+}
+
 /* Reporting is keyed on workflowId and is therefore per-workflow: a device with
  * no workflow in flight has nothing the service could attribute a report to.
  * Refreshing device properties must be accepted and must NOT manufacture a
@@ -1318,6 +1450,54 @@ static void report_carries_the_active_workflow_id(void** state)
 
   assert_true(fx->chan.report_count > 0);
   assert_string_equal(fx->chan.last_workflow_id, "51552a54-765e-419f-892a-c822549b6f38");
+}
+
+static void failure_after_success_does_not_replay_success(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  inject_patch(fx, signed_patch());
+  pump(fx, 40);
+  assert_idle_report_retains_outcome(fx, AZ_IOT_ADU_OUTCOME_SUCCEEDED);
+
+  fx->log.verify_result = AZ_IOT_ADU_RESULT_FAILURE;
+  inject_patch(fx, build_patch("failed-after-success"));
+  pump(fx, 40);
+  assert_string_equal(fx->chan.last_workflow_id, "failed-after-success");
+  assert_idle_report_retains_outcome(fx, AZ_IOT_ADU_OUTCOME_FAILED);
+
+  fx->log.verify_result = AZ_IOT_ADU_RESULT_SUCCESS;
+  inject_patch(fx, build_patch("new-after-failure"));
+  pump(fx, 2);
+  assert_string_equal(fx->chan.last_workflow_id, "new-after-failure");
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_ADU_OUTCOME_IN_PROGRESS);
+  pump(fx, 40);
+  assert_idle_report_retains_outcome(fx, AZ_IOT_ADU_OUTCOME_SUCCEEDED);
+}
+
+static void rejected_failure_report_retains_outcome_after_idle(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  fx->log.download_result = AZ_IOT_ADU_RESULT_FAILURE;
+  inject_patch(fx, signed_patch());
+  for (int i = 0; i < 40 && az_iot_adu_client_get_state(&fx->adu) != AZ_IOT_ADU_STATE_FAILED; ++i)
+  {
+    if (az_iot_adu_client_get_state(&fx->adu) == AZ_IOT_ADU_STATE_DOWNLOAD_STARTED)
+    {
+      fx->chan.report_result = AZ_IOT_ERR_TIMEOUT;
+    }
+    assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  }
+  assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_FAILED);
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_ADU_OUTCOME_FAILED);
+  assert_true(fx->adu._internal.device_props_report_pending);
+
+  /* The refused failure report is retried, then the machine returns to Idle. */
+  fx->chan.report_result = AZ_IOT_OK;
+  pump(fx, 40);
+  assert_false(fx->adu._internal.device_props_report_pending);
+  assert_idle_report_retains_outcome(fx, AZ_IOT_ADU_OUTCOME_FAILED);
 }
 
 static void report_before_manifest_parse_has_no_step_results(void** state)
@@ -1885,6 +2065,7 @@ static void multi_step_report_preserves_progress_and_failure(void** state)
   assert_int_equal(
       fx->adu._internal.install_result.extended_result_code,
       AZ_IOT_ADU_EXTENDED_RESULT(AZ_IOT_ADU_FACILITY_RESTORE, (uint32_t)AZ_IOT_ADU_RESULT_FAILURE));
+  assert_idle_report_retains_outcome(fx, AZ_IOT_ADU_OUTCOME_FAILED);
 }
 
 static void multi_step_failure_preserves_unexecuted_step_results(void** state)
@@ -1980,6 +2161,7 @@ static void download_failure_is_reported_and_does_not_install(void** state)
   assert_int_equal(fx->chan.last_report.failure_origin, AZ_IOT_ADU_FAILURE_ORIGIN_AGENT_CORE);
   assert_true(fx->chan.last_report.result_code != 700);
   assert_true(fx->chan.last_workflow_id[0] != '\0');
+  assert_idle_report_retains_outcome(fx, AZ_IOT_ADU_OUTCOME_FAILED);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -3017,6 +3199,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(deployment_drives_full_workflow_single_step, setup, teardown),
     cmocka_unit_test_setup_teardown(update_metadata_drives_full_workflow, setup, teardown),
     cmocka_unit_test_setup_teardown(escaped_file_url_is_decoded, setup, teardown),
+    cmocka_unit_test_setup_teardown(escaped_workflow_id_is_decoded, setup, teardown),
+    cmocka_unit_test_setup_teardown(manifest_unicode_escape_is_decoded, setup, teardown),
     cmocka_unit_test_setup_teardown(unusable_update_metadata_is_ignored, setup, teardown),
     cmocka_unit_test_setup_teardown(file_urls_are_bounded, setup, teardown),
     cmocka_unit_test_setup_teardown(oversized_update_metadata_is_ignored, setup, teardown),
@@ -3031,9 +3215,13 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         resuming_a_fresh_client_reports_the_restored_state, setup, teardown),
     cmocka_unit_test_setup_teardown(resume_with_no_persisted_state_stays_idle, setup, teardown),
+    cmocka_unit_test_setup_teardown(cancel_action_sets_cancelled_flag, setup, teardown),
     cmocka_unit_test_setup_teardown(
         update_device_properties_is_accepted_without_reporting, setup, teardown),
     cmocka_unit_test_setup_teardown(report_carries_the_active_workflow_id, setup, teardown),
+    cmocka_unit_test_setup_teardown(failure_after_success_does_not_replay_success, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        rejected_failure_report_retains_outcome_after_idle, setup, teardown),
     cmocka_unit_test_setup_teardown(
         report_before_manifest_parse_has_no_step_results, setup, teardown),
     cmocka_unit_test_setup_teardown(

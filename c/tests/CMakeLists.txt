@@ -147,6 +147,9 @@ target_include_directories(az_iot_tests_reconnect_policy PRIVATE
 az_iot_add_cmocka_test(az_iot_tests_span_writer unit/span_writer_test.c)
 target_include_directories(az_iot_tests_span_writer PRIVATE
     ${CMAKE_SOURCE_DIR}/src/core)
+az_iot_add_cmocka_test(az_iot_tests_json_string unit/json_string_test.c)
+target_include_directories(az_iot_tests_json_string PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/core)
 az_iot_add_cmocka_test(az_iot_tests_log unit/log_test.c)
 # Diagnostic surface: the *_to_string helpers, version string, default
 # reconnection policy and the built-in stderr sink. Pulls internal headers for
