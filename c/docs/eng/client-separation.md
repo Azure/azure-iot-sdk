@@ -175,8 +175,10 @@ connect and then misbehaves in ways that surface as unrelated bugs.
 
 ### Blocker: the api-version must be raised
 
-**`connectionProfile` is new in `2026-11-02-preview`. The SDK currently requests
-`2019-03-31`, so the service will never send it.**
+**Implementation update:** `connectionProfile` is new in `2026-11-02-preview`.
+The SDK now requests that version on every DPS CONNECT by building the username
+in the common connection client. The patching strategy and blocked-status notes
+below describe the earlier plan, not the current implementation.
 
 The version travels in the DPS **CONNECT username**
 (`<id_scope>/registrations/<registration_id>/api-version=<version>`), built by
