@@ -60,7 +60,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
 
         private async Task HandleMQTTv5ClientConnectionReady(DevicePresenceFlowCompletedArgs args)
         {
-            // When the underlying MQTTv5 connection client has re-established its presence, then it is ready to use (analogous to a MQTTv3 client that has finished re-subscribing to twin/direct methods/telemetry topics)
+            // When the underlying MQTTv5 connection client has re-established its presence, then it is ready to use (analogous to an MQTTv3 client that has finished re-subscribing to twin/direct methods/telemetry topics)
             await RaiseDevicePresenceFlowCompletedAsync(new DevicePresenceFlowCompletedArgs() { IsSuccess = true });
         }
 
