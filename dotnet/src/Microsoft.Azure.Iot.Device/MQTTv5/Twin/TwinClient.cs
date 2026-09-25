@@ -93,12 +93,17 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
         /// Only IoT hubs that use MQTTv5 will actually respond to the getReported/getDesired/ifNotMatch flags as this feature is unsupported in older IoT hubs. 
         /// However, this SDK will parse the twin that the service returns to filter out unrequested sections to mimic the behavior of MQTTv5 IoT hubs.
         /// </remarks>
+        /// <exception cref="ArgumentException">Thrown when neither desired nor reported properties are requested.</exception>
         /// <exception cref="PublishRejectedException">Thrown if this get twin request is rejected by IoT Hub for any reason.</exception>
         public async Task<DeviceTwin> GetTwinAsync(bool getReported = true, bool getDesired = true, ulong ifNotMatchReported = 0, ulong ifNotMatchDesired = 0, CancellationToken cancellationToken = default)
         {
             //TODO need to handle case where get twin request is successfully published, but connection + session is lost before receiving response.
             // Would need to re-send the get twin request upon device ready
             ObjectDisposedException.ThrowIf(_isDisposed, this);
+            if (!getReported && !getDesired)
+            {
+                throw new ArgumentException("At least one twin section must be requested.");
+            }
 
             var currentConnectionContext = EnsureCorrectConnectionContext();
 
@@ -122,7 +127,9 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
                 CorrelationData = requestId.ToByteArray(bigEndian: true),
                 Payload = new TwinGet()
                 {
-                    Sections = Sections.Both,
+                    Sections = getReported
+                        ? getDesired ? Sections.Both : Sections.Reported
+                        : Sections.Desired,
                     IfNotMatchDesired = ifNotMatchDesired,
                     IfNotMatchReported = ifNotMatchReported,
                 }.ToByteArray(),
@@ -260,8 +267,14 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
 
                 pendingGetTwinRequest.TwinResponseTask.TrySetResult(new()
                 {
-                    Desired = JsonObject.Parse(twinGetResponse.DesiredPayload.Span)!.AsObject(),
-                    Reported = JsonObject.Parse(twinGetResponse.ReportedPayload.Span)!.AsObject(),
+                    Desired = pendingGetTwinRequest.GetDesired
+                        && twinGetResponse.HasDesiredPayload
+                        ? JsonObject.Parse(twinGetResponse.DesiredPayload.Span)!.AsObject()
+                        : null,
+                    Reported = pendingGetTwinRequest.GetReported
+                        && twinGetResponse.HasReportedPayload
+                        ? JsonObject.Parse(twinGetResponse.ReportedPayload.Span)!.AsObject()
+                        : null,
                     DesiredVersion = twinGetResponse.DesiredVersion,
                     ReportedVersion = twinGetResponse.ReportedVersion,
                 });
@@ -300,7 +313,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
 
                 if (receivedTwinPush.Reported != null)
                 {
-                    twinPushArgs.Desired = new()
+                    twinPushArgs.Reported = new()
                     {
                         Properties = JsonObject.Parse(receivedTwinPush.Reported.Payload.Span)!.AsObject(),
                         PropertiesVersion = receivedTwinPush.Reported.Version
