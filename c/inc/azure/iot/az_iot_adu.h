@@ -656,6 +656,8 @@ extern "C"
       uint32_t current_step;
       uint32_t current_file;
       bool cancel_requested;
+      /* A reboot checkpoint failed to persist; Apply waits until it succeeds. */
+      bool checkpoint_pending;
 
       /* Workflow id of the active (or last) deployment; a payload carrying it
        * is a redelivery and is ignored. Retry timestamp and manifest CRC are

@@ -218,6 +218,8 @@ typedef struct
   size_t file_len; /* bytes the read-back mock serves */
 
   /* Persistence / resume. */
+  int persist_failures; /* this many persist calls fail before one succeeds */
+  int persist_calls;
   uint8_t persist_blob[AZ_IOT_ADU_REQUEST_BUFFER_SIZE + 128];
   size_t persist_len;
   bool have_persist;
@@ -416,6 +418,12 @@ static int32_t mock_sha_final(void* c, uint8_t out[32], void* ctx)
 static int32_t mock_persist(const uint8_t* blob, size_t len, void* ctx)
 {
   hook_log* l = (hook_log*)ctx;
+  l->persist_calls++;
+  if (l->persist_failures > 0)
+  {
+    l->persist_failures--;
+    return 1;
+  }
   assert_true(len <= sizeof(l->persist_blob));
   memcpy(l->persist_blob, blob, len);
   l->persist_len = len;
@@ -2080,6 +2088,141 @@ static void each_step_downloads_its_own_file(void** state)
   assert_string_equal(fx->log.download_urls[1], "http://example.com/payload-a.bin");
 }
 
+/* Checkpoint the distinct-files workflow at step 0 (install asks for a reboot),
+ * then resume it on a fresh client. */
+static fixture* resume_distinct_files_from_step_0(fixture* source, void** fresh_state)
+{
+  source->log.install_result = AZ_IOT_ADU_RESULT_REBOOT_REQUIRED;
+  inject_patch(source, distinct_files_patch());
+  for (int i = 0; i < 40 && !source->log.have_persist; ++i)
+  {
+    assert_int_equal(az_iot_adu_client_do_work(&source->adu), AZ_IOT_OK);
+  }
+  assert_true(source->log.have_persist);
+  assert_int_equal(source->adu._internal.current_step, 0);
+
+  assert_int_equal(setup(fresh_state), 0);
+  fixture* fresh = (fixture*)*fresh_state;
+  memcpy(fresh->log.persist_blob, source->log.persist_blob, source->log.persist_len);
+  fresh->log.persist_len = source->log.persist_len;
+  fresh->log.have_persist = true;
+  return fresh;
+}
+
+/* Resume before the last step must still be able to download the next step's
+ * own file: the snapshot carries the fileUrls map. */
+static void resume_before_last_step_downloads_the_next_step_file(void** state)
+{
+  fixture* source = (fixture*)*state;
+  void* fresh_state = NULL;
+  fixture* fresh = resume_distinct_files_from_step_0(source, &fresh_state);
+
+  assert_int_equal(az_iot_adu_client_resume(&fresh->adu), AZ_IOT_OK);
+  pump(fresh, 60);
+
+  assert_int_equal(az_iot_adu_client_get_state(&fresh->adu), AZ_IOT_ADU_STATE_IDLE);
+  assert_int_equal(fresh->log.download_calls, 1);
+  assert_string_equal(fresh->log.download_file_ids[0], "fa00000000000001");
+  assert_string_equal(fresh->log.download_urls[0], "http://example.com/payload-a.bin");
+  assert_int_equal(fresh->chan.last_report.outcome, AZ_IOT_ADU_OUTCOME_SUCCEEDED);
+  assert_int_equal(teardown(&fresh_state), 0);
+}
+
+/* A v2 snapshot carries no URLs. It is refused when a later step still has
+ * files to download, instead of resuming into a download with no URL. */
+static void a_v2_snapshot_with_downloads_left_is_refused(void** state)
+{
+  fixture* source = (fixture*)*state;
+  void* fresh_state = NULL;
+  fixture* fresh = resume_distinct_files_from_step_0(source, &fresh_state);
+
+  /* Rewrite the v3 snapshot as the v2 layout: 8-byte step records and no URL
+   * table, then re-seal it. */
+  uint8_t* b = fresh->log.persist_blob;
+  uint32_t req_len = (uint32_t)b[36] | ((uint32_t)b[37] << 8) | ((uint32_t)b[38] << 16)
+      | ((uint32_t)b[39] << 24);
+  uint32_t t = 40u + req_len;
+  uint32_t steps = (uint32_t)b[t + 20];
+  uint8_t v2[sizeof(fresh->log.persist_blob)];
+  memcpy(v2, b, t + 24u);
+  v2[4] = 2;
+  v2[5] = 0;
+  uint32_t p = t + 24u;
+  for (uint32_t i = 0; i < steps; ++i)
+  {
+    memcpy(&v2[p], &b[t + 24u + i * 16u + 8u], 8u);
+    p += 8u;
+  }
+  uint32_t crc = 0xFFFFFFFFu;
+  for (uint32_t i = 0; i < p; ++i)
+  {
+    crc ^= v2[i];
+    for (int k = 0; k < 8; ++k)
+    {
+      crc = (crc >> 1) ^ (0xEDB88320u & (uint32_t)(-(int32_t)(crc & 1u)));
+    }
+  }
+  crc ^= 0xFFFFFFFFu;
+  v2[p + 0] = (uint8_t)crc;
+  v2[p + 1] = (uint8_t)(crc >> 8);
+  v2[p + 2] = (uint8_t)(crc >> 16);
+  v2[p + 3] = (uint8_t)(crc >> 24);
+  memcpy(fresh->log.persist_blob, v2, p + 4u);
+  fresh->log.persist_len = p + 4u;
+
+  assert_int_equal(az_iot_adu_client_resume(&fresh->adu), AZ_IOT_ERR_NOT_SUPPORTED);
+  assert_int_equal(az_iot_adu_client_get_state(&fresh->adu), AZ_IOT_ADU_STATE_IDLE);
+  assert_int_equal(fresh->log.download_calls, 0);
+  assert_int_equal(teardown(&fresh_state), 0);
+}
+
+/* A failed checkpoint write must not let Apply run: the device would activate
+ * an update it could not resume after the reboot. It is retried, and Install
+ * is not re-run. */
+static size_t count_ops(const hook_log* l, op_kind k)
+{
+  size_t n = 0;
+  for (size_t i = 0; i < l->op_count; ++i)
+  {
+    n += (l->ops[i] == k);
+  }
+  return n;
+}
+
+static void a_failed_checkpoint_blocks_apply_until_it_is_written(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  fx->log.install_result = AZ_IOT_ADU_RESULT_REBOOT_REQUIRED;
+  fx->log.persist_failures = 3;
+  inject_patch(fx, signed_patch());
+  for (int i = 0; i < 40 && fx->log.persist_calls == 0; ++i)
+  {
+    assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  }
+
+  /* Still failing: parked at INSTALL_COMPLETE, retrying, no Apply. */
+  while (fx->log.persist_failures > 0)
+  {
+    assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_INSTALL_COMPLETE);
+    assert_true(fx->adu._internal.checkpoint_pending);
+    assert_int_equal(count_ops(&fx->log, OP_APPLY), 0);
+    assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  }
+  assert_int_equal(count_ops(&fx->log, OP_APPLY), 0);
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK); /* this write succeeds */
+  assert_true(fx->log.have_persist);
+  assert_false(fx->adu._internal.checkpoint_pending);
+  assert_int_equal(fx->log.persist_calls, 4);
+
+  /* Written: Apply may now run, and Install is never re-run. */
+  pump(fx, 20);
+  assert_int_equal(count_ops(&fx->log, OP_APPLY), 1);
+  assert_int_equal(count_ops(&fx->log, OP_INSTALL), 1);
+}
+
+
 static void multi_step_update_runs_every_step_in_order(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -3345,6 +3488,12 @@ int main(void)
     cmocka_unit_test(microsoft_root_keys_are_embedded),
     cmocka_unit_test_setup_teardown(multi_step_update_runs_every_step_in_order, setup, teardown),
     cmocka_unit_test_setup_teardown(each_step_downloads_its_own_file, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        resume_before_last_step_downloads_the_next_step_file, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_v2_snapshot_with_downloads_left_is_refused, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_failed_checkpoint_blocks_apply_until_it_is_written, setup, teardown),
     cmocka_unit_test_setup_teardown(
         late_cancel_does_not_overwrite_a_reported_failure, setup, teardown),
     cmocka_unit_test_setup_teardown(
