@@ -7,7 +7,7 @@ using System.Text;
 
 namespace Microsoft.Azure.Iot.Device.Mqtt
 {
-    public enum MqttClientDisconnectOptionsReason //TODO "options" in name? That's an MQTTnet thing
+    public enum MqttDisconnectReasonCode
     {
         NormalDisconnection = 0,
         DisconnectWithWillMessage = 4,
