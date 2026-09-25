@@ -1,16 +1,19 @@
 ﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
+using Microsoft.Azure.Iot.Device.MQTTv5.Connection;
 using Microsoft.Azure.Iot.Device.Models;
-using Microsoft.Azure.Iot.Device.Unified.Connection;
+using Microsoft.Azure.Iot.Device.Provisioning.Models;
 
-namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
+namespace Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5
 {
-    public class UnifiedDeviceTestContext : IAsyncDisposable
+    public class MQTTv5DeviceTestContext : IAsyncDisposable
     {
         public required ConnectionClient ConnectionClient { get; set; }
 
-        public required ConnectionContext ConnectionContext { get; set; }
+        public required string DeviceId { get; set; }
+
+        public required ConnectionProfile ConnectionProfile { get; set; }
 
         public required X509AuthenticationProvider AuthenticationProvider { get; set; }
 
@@ -30,10 +33,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             }
             finally
             {
-                if (ConnectionContext.DeviceId != null)
-                {
-                    await Setup.GetMQTTv3IotHubRegistryManager().RemoveDeviceAsync(ConnectionContext.DeviceId);
-                }
+                await Setup.GetMQTTv3IotHubRegistryManager().RemoveDeviceAsync(DeviceId);
             }
         }
     }

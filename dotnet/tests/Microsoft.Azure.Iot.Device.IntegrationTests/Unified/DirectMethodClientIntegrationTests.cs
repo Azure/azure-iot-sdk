@@ -22,7 +22,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientAsync(testAgainstClassicHub, null, TestContext.Current.CancellationToken);
             using DirectMethodClient directMethodClient = new DirectMethodClient(testDeviceContext.ConnectionClient);
 
-            ServiceClient serviceClient = Setup.GetGen1IotHubServiceClient();
+            ServiceClient serviceClient = Setup.GetMQTTv3IotHubServiceClient();
             var directMethodInvocation = new CloudToDeviceMethod(expectedDirectMethodName, TimeSpan.FromSeconds(expectedResponseTimeout));
             SimpleDirectMethodPayload expectedRequestPayload = new()
             {

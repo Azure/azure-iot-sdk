@@ -19,7 +19,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.FileUpload
         private bool _isUserSuppliedHttpClient;
         private HttpClient? _httpClient;
         private readonly IConnectionClient _connection;
-        private Gen2.FileUpload.FileUploadClient _aegFileUploadClient;
+        private MQTTv5.FileUpload.FileUploadClient _aegFileUploadClient;
 
         public FileUploadClient(IConnectionClient connection)
         {

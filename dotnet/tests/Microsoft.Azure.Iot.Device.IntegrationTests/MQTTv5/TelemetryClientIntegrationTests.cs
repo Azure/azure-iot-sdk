@@ -1,27 +1,26 @@
 ﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
+using Microsoft.Azure.Iot.Device.MQTTv5.Connection;
+using Microsoft.Azure.Iot.Device.MQTTv5.Telemetry;
+using Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5;
 using Microsoft.Azure.Iot.Device.IntegrationTests.Models;
 using Microsoft.Azure.Iot.Device.Models.Telemetry;
-using Microsoft.Azure.Iot.Device.Unified.Connection;
-using Microsoft.Azure.Iot.Device.Unified.Telemetry;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Xunit;
 using Microsoft.Azure.Devices;
 
-namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
+namespace Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5
 {
     public class TelemetryClientIntegrationTests
     {
-        [Theory(Timeout = Setup.TestTimeoutMilliseconds)]
-        [InlineData(true)]
-        [InlineData(false)]
-        public async Task TestDeviceToCloudTelemetry(bool testAgainstClassicHub)
+        [Fact(Timeout = Setup.TestTimeoutMilliseconds)]
+        public async Task TestDeviceToCloudTelemetry()
         {
-            UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientAsync(testAgainstClassicHub, null, TestContext.Current.CancellationToken);
+            MQTTv5DeviceTestContext testDeviceContext = await Setup.CreateConnectedMQTTv5ConnectionClientAsync(null, null, TestContext.Current.CancellationToken);
 
-            TelemetryClient telemetryClient = new TelemetryClient(testDeviceContext.ConnectionClient);
+            using TelemetryClient telemetryClient = new TelemetryClient(testDeviceContext.ConnectionClient);
 
             DeviceToCloudTelemetry outgoingTelemetryMessage = new()
             {
@@ -33,12 +32,10 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             await testDeviceContext.DisposeAsync(); // Dispose this before any feature clients so that the test device identity can be cleaned up and the MQTT client disconnected gracefully
         }
 
-        [Theory(Timeout = Setup.TestTimeoutMilliseconds)]
-        [InlineData(true)]
-        [InlineData(false)]
-        public async Task TestDeviceToCloudTelemetryWithAllUserProperties(bool testAgainstClassicHub)
+        [Fact(Timeout = Setup.TestTimeoutMilliseconds)]
+        public async Task TestDeviceToCloudTelemetryWithAllUserProperties()
         {
-            UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientAsync(testAgainstClassicHub, null, TestContext.Current.CancellationToken);
+            MQTTv5DeviceTestContext testDeviceContext = await Setup.CreateConnectedMQTTv5ConnectionClientAsync(null, null, TestContext.Current.CancellationToken);
 
             using TelemetryClient telemetryClient = new TelemetryClient(testDeviceContext.ConnectionClient);
 
@@ -54,35 +51,14 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             outgoingTelemetryMessage.UserProperties.Add("SomeUserPropertyKey", "SomeUserPropertyValue");
 
             await telemetryClient.SendTelemetryAsync(outgoingTelemetryMessage, TestContext.Current.CancellationToken);
-        }
-
-        [Theory(Timeout = Setup.TestTimeoutMilliseconds)]
-        [InlineData(true)]
-        [InlineData(false)]
-        public async Task TelemetryClientEncodesUserProperties(bool testAgainstClassicHub)
-        {
-            UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientAsync(testAgainstClassicHub, null, TestContext.Current.CancellationToken);
-
-            using TelemetryClient telemetryClient = new TelemetryClient(testDeviceContext.ConnectionClient);
-
-            DeviceToCloudTelemetry message = new()
-            {
-                MessageId = Guid.NewGuid().ToString(),
-                CorrelationId = Guid.NewGuid().ToString(),
-            };
-            message.UserProperties.Add("!@#$%^&*()", "!@#$%%^&*()");
-
-            await telemetryClient.SendTelemetryAsync(message, TestContext.Current.CancellationToken);
 
             await testDeviceContext.DisposeAsync(); // Dispose this before any feature clients so that the test device identity can be cleaned up and the MQTT client disconnected gracefully
         }
 
-        [Theory(Timeout = Setup.TestTimeoutMilliseconds)]
-        [InlineData(true)]
-        [InlineData(false)]
-        public async Task TestCloudToDeviceMessages(bool testAgainstClassicHub)
+        [Fact(Timeout = Setup.TestTimeoutMilliseconds)]
+        public async Task TestCloudToDeviceMessages()
         {
-            UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientAsync(testAgainstClassicHub, null, TestContext.Current.CancellationToken);
+            MQTTv5DeviceTestContext testDeviceContext = await Setup.CreateConnectedMQTTv5ConnectionClientAsync(null, null, TestContext.Current.CancellationToken);
             ConnectionClient connectionClient = testDeviceContext.ConnectionClient;
 
             ServiceClient serviceClient = Setup.GetMQTTv3IotHubServiceClient();
@@ -109,7 +85,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
                 ContentEncoding = expectedContentEncoding
             };
 
-            await serviceClient.SendAsync(testDeviceContext.ConnectionContext.DeviceId, cloudToDeviceMessageToSend);
+            await serviceClient.SendAsync(testDeviceContext.DeviceId, cloudToDeviceMessageToSend);
 
             CloudToDeviceTelemetry receivedC2dMessage = await c2dMessageReceived.Task.WaitAsync(TestContext.Current.CancellationToken);
 

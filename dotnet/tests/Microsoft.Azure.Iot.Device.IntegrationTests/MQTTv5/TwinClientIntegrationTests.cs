@@ -1,26 +1,48 @@
 ﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
+using Microsoft.Azure.Iot.Device.MQTTv5.Connection;
+using Microsoft.Azure.Iot.Device.MQTTv5.Twin;
+using Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5;
+using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Models.Twin;
-using Microsoft.Azure.Iot.Device.Unified.Twin;
 using System.Text.Json.Nodes;
 using Xunit;
 using Microsoft.Azure.Devices;
 
-namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
+namespace Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5
 {
     public class TwinClientIntegrationTests
     {
-        [Theory(Timeout = Setup.TestTimeoutMilliseconds)]
-        [InlineData(true)]
-        [InlineData(false)]
-        public async Task TestTwin(bool testAgainstClassicHub)
+        [Fact(Timeout = Setup.TestTimeoutMilliseconds)]
+        public async Task TestTwin()
         {
-            UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientAsync(testAgainstClassicHub, null, TestContext.Current.CancellationToken);
-            string deviceId = testDeviceContext.ConnectionContext.DeviceId;
+            DeviceTwin initialTwin = new()
+            {
+                Desired = new JsonObject(),
+                DesiredVersion = 5,
+            };
 
-            RegistryManager registryManager = Setup.GetMQTTv3IotHubRegistryManager();
-            using TwinClient twinClient = new TwinClient(testDeviceContext.ConnectionClient);
+            string expectedInitialDesiredPropertyKey = Guid.NewGuid().ToString();
+            string expectedInitialDesiredPropertyValue = Guid.NewGuid().ToString();
+            initialTwin.Desired[expectedInitialDesiredPropertyKey] = expectedInitialDesiredPropertyValue;
+
+            // Want to defer connecting until TwinClient is set up to consume TwinPush
+            MQTTv5DeviceTestContext testDeviceContext = await Setup.CreateProvisionableMQTTv5DeviceAsync(initialTwin, null, TestContext.Current.CancellationToken);
+
+            string deviceId = testDeviceContext.DeviceId;
+
+            RegistryManager registryManager = Setup.GetMQTTv5IotHubRegistryManager();
+
+            ProvisioningSettings provisioningSettings = new(Setup.DpsIdScope);
+
+            TwinClient twinClient = new(testDeviceContext.ConnectionClient);
+            TaskCompletionSource<TwinPushReceivedEventArgs> twinPushTcs = new();
+            twinClient.TwinPushReceived += (args) =>
+            {
+                twinPushTcs.TrySetResult(args);
+            };
+
             TaskCompletionSource<DesiredPatchReceivedEventArgs> onDesiredPropertiesUpdateReceived = new();
             int desiredPatchesReceived = 0;
             twinClient.DesiredPatchReceived += (args) =>
@@ -28,6 +50,22 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
                 desiredPatchesReceived++;
                 onDesiredPropertiesUpdateReceived.TrySetResult(args);
             };
+
+            ConnectionContext connectionContext = await Setup.RetryAroundAuthorizationAsync<ConnectionContext>(
+                async () => await testDeviceContext.ConnectionClient.ProvisionAndConnectAsync(provisioningSettings, testDeviceContext.AuthenticationProvider, cancellationToken: TestContext.Current.CancellationToken),
+                TestContext.Current.CancellationToken);
+
+            try
+            {
+                var twinPushArgs = await twinPushTcs.Task.WaitAsync(TestContext.Current.CancellationToken);
+                Assert.NotNull(twinPushArgs.Desired);
+                Assert.True(twinPushArgs.Desired.Properties.ContainsKey(expectedInitialDesiredPropertyKey));
+                Assert.Equal(expectedInitialDesiredPropertyValue, twinPushArgs.Desired.Properties[expectedInitialDesiredPropertyKey]);
+            }
+            catch (TimeoutException)
+            {
+                Assert.Fail("Timed out waiting for twin push to be received");
+            }
 
             var getTwinResponse = await twinClient.GetTwinAsync(cancellationToken: TestContext.Current.CancellationToken);
             Assert.NotNull(getTwinResponse.Desired);
@@ -56,11 +94,15 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             string expectedReportedPropertyValue = Guid.NewGuid().ToString();
 
             getTwinResponse.Reported![expectedReportedPropertyKey] = expectedReportedPropertyValue;
-            var reportedProperties = new JsonObject();
+            ReportedPatchRequest reportedPatchRequest = new()
+            {
+                ReportedProperties = new JsonObject(),
+                IfMatch = 0
+            };
 
-            reportedProperties[expectedReportedPropertyKey] = expectedReportedPropertyValue;
+            reportedPatchRequest.ReportedProperties[expectedReportedPropertyKey] = expectedReportedPropertyValue;
 
-            var updateReportedPropertiesResponse = await twinClient.UpdateReportedPropertiesAsync(reportedProperties, TestContext.Current.CancellationToken);
+            var updateReportedPropertiesResponse = await twinClient.UpdateReportedPropertiesAsync(reportedPatchRequest, TestContext.Current.CancellationToken);
             Assert.Equal(Result.Ok, updateReportedPropertiesResponse.Result);
             Assert.Equal((ulong)2, updateReportedPropertiesResponse.Version);
 
@@ -73,6 +115,18 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             Assert.Equal(expectedReportedPropertyValue, (string)twin.Properties.Reported[expectedReportedPropertyKey]);
 
             await testDeviceContext.DisposeAsync(); // Dispose this before any feature clients so that the test device identity can be cleaned up and the MQTT client disconnected gracefully
+        }
+
+        [Fact(Timeout = Setup.TestTimeoutMilliseconds)]
+        public async Task TestIfMatchFilteringTwinPush()
+        {
+            Assert.Skip("Not implemented yet");
+        }
+
+        [Fact(Timeout = Setup.TestTimeoutMilliseconds)]
+        public async Task TestIfMatchFilteringReportedPatchRequest()
+        {
+            Assert.Skip("Not implemented yet");
         }
     }
 }

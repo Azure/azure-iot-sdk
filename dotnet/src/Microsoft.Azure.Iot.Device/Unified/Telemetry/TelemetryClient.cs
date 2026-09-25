@@ -21,7 +21,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Telemetry
         internal const string DeviceBoundMessagesTopicFormat = "devices/{0}/messages/devicebound/";
 
         private IConnectionClient _connection;
-        private Gen2.Telemetry.TelemetryClient _aegTelemetryClient;
+        private MQTTv5.Telemetry.TelemetryClient _aegTelemetryClient;
 
         public const string MessagePropertyCorrelationId = "$.cid";
         public const string MessagePropertyMessageId = "$.mid";
@@ -43,10 +43,10 @@ namespace Microsoft.Azure.Iot.Device.Unified.Telemetry
             _connection = connection;
             _aegTelemetryClient = new(new Stub(_connection));
             _connection.PublishReceivedAsync += HandleReceivedMqttPublish;
-            _aegTelemetryClient.CloudToDeviceTelemetryReceivedAsync += DelegateGen2CloudToDeviceTelemetry;
+            _aegTelemetryClient.CloudToDeviceTelemetryReceivedAsync += DelegateMQTTv5CloudToDeviceTelemetry;
         }
 
-        private async Task DelegateGen2CloudToDeviceTelemetry(CloudToDeviceTelemetry telemetry)
+        private async Task DelegateMQTTv5CloudToDeviceTelemetry(CloudToDeviceTelemetry telemetry)
         {
             if (CloudToDeviceTelemetryReceivedAsync != null)
             {
@@ -205,7 +205,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Telemetry
         public void Dispose(bool disposing)
         {
             _connection.PublishReceivedAsync -= HandleReceivedMqttPublish;
-            _aegTelemetryClient.CloudToDeviceTelemetryReceivedAsync -= DelegateGen2CloudToDeviceTelemetry;
+            _aegTelemetryClient.CloudToDeviceTelemetryReceivedAsync -= DelegateMQTTv5CloudToDeviceTelemetry;
             if (disposing)
             {
                 _connection.Dispose();
@@ -220,7 +220,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Telemetry
         public void Dispose()
         {
             _connection.PublishReceivedAsync -= HandleReceivedMqttPublish;
-            _aegTelemetryClient.CloudToDeviceTelemetryReceivedAsync -= DelegateGen2CloudToDeviceTelemetry;
+            _aegTelemetryClient.CloudToDeviceTelemetryReceivedAsync -= DelegateMQTTv5CloudToDeviceTelemetry;
             _connection.Dispose();
             _isDisposed = true;
         }

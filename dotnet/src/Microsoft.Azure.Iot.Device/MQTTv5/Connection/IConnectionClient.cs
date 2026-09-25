@@ -4,9 +4,9 @@
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Mqtt;
 
-namespace Microsoft.Azure.Iot.Device.Unified.Connection
+namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
 {
-    public interface IConnectionClient : IDisposable //TODO the MQTTv5 and unified connection client interfaces are now the same. It may be worth keeping them separate though just so that users don't try to plug in MQTTv5 connections into unified feature clients?
+    public interface IConnectionClient : IDisposable //TODO what is the disposal pattern like with feature clients + this client? Mimic HTTP pattern of "disposing" flag?
     {
         /// <summary>
         /// Get the current connection context.

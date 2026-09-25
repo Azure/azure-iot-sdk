@@ -3,8 +3,8 @@
 
 using Google.Protobuf;
 using Microsoft.Azure.Iot.Device.Exceptions;
-using Microsoft.Azure.Iot.Device.Gen2.Connection;
-using Microsoft.Azure.Iot.Device.Gen2.Twin;
+using Microsoft.Azure.Iot.Device.MQTTv5.Connection;
+using Microsoft.Azure.Iot.Device.MQTTv5.Twin;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Models.CertificateManagement;
 using Microsoft.Azure.Iot.Device.Mqtt;
@@ -55,10 +55,10 @@ namespace Microsoft.Azure.Iot.Device
 
         private static readonly TimeSpan s_defaultOperationPollingInterval = TimeSpan.FromSeconds(2);
 
-        // The abstract methods cover all the differences between a gen2 client and a unified client.
+        // The abstract methods cover all the differences between a MQTTv5 client and a unified client.
         public abstract MqttConnect MqttConnectOverride(MqttConnect connect);
 
-        // In gen2 case, SUB to devicebound, send birth message, wait for birth ack. In gen1 case, send all DM/Twin/Telem SUBs.
+        // In MQTTv5 case, SUB to devicebound, send birth message, wait for birth ack. In MQTTv3 case, send all DM/Twin/Telem SUBs.
         // In both cases, this method should trigger the "OnDevicePresenceFlowCompleted" callback
         public abstract Task HandleConnectedToHubAsync(MqttClientConnectedEventArgs args);
 

@@ -9,8 +9,8 @@ using System.Text;
 
 namespace Microsoft.Azure.Iot.Device.Unified.Connection
 {
-    // A stub class that is for converting Unified connection client traffic into Gen2 client traffic
-    internal class Stub : Gen2.Connection.IConnectionClient
+    // A stub class that is for converting Unified connection client traffic into MQTTv5 client traffic
+    internal class Stub : MQTTv5.Connection.IConnectionClient
     {
         public event Func<MqttPublishReceivedEventArgs, Task> PublishReceivedAsync;
 
@@ -24,7 +24,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
 
         // Forward received publishes through a stable method reference. Subscribing the 'PublishReceivedAsync' event
         // field directly would capture its (null) backing delegate at construction time, so later subscribers (the
-        // underlying gen2 feature clients) would never be invoked.
+        // underlying MQTTv5 feature clients) would never be invoked.
         private Task ForwardPublishReceivedAsync(MqttPublishReceivedEventArgs args)
         {
             return PublishReceivedAsync?.Invoke(args) ?? Task.CompletedTask;
