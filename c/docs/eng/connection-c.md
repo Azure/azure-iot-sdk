@@ -642,9 +642,10 @@ sequenceDiagram
     ADU->>GW: retry the report until acked, then resume polling
 ```
 
-`installResult` carries the terminal outcome, its failure origin, the hex `extendedResultCodes`
-list and a per-step `stepResults` map — see [aduv2-spec.md](aduv2-spec.md) for the field-level
-shape.
+`installResult` carries the outcome, its failure origin and the hex
+`extendedResultCodes` list. In-progress reports omit `stepResults`; terminal
+reports include complete per-step outcomes when steps are available — see
+[aduv2-spec.md](aduv2-spec.md) for the field-level shape.
 
 ### 7.3 Rules both clients must implement
 
