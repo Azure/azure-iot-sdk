@@ -243,8 +243,8 @@ int main(void)
     return 1;
   }
 
-  /* Assume Classic until DPS says otherwise; see unified/telemetry. */
-  if (clients_build(&state, AZ_IOT_CONNECTION_PROFILE_CLASSIC, &user_ctx) != AZ_IOT_OK
+  /* Assume a generation until DPS says otherwise; see unified/telemetry. */
+  if (clients_build(&state, sample_initial_profile(&state.config), &user_ctx) != AZ_IOT_OK
       || az_iot_connection_client_open(&state.connection_client) != AZ_IOT_OK)
   {
     sample_state_destroy(&state);

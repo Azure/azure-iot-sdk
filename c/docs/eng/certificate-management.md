@@ -244,8 +244,9 @@ Not part of the public API; listed for implementation context.
 ## Sample — before / after
 
 Only the cert-provider setup and one option line change; the entire
-connect / `do_work` / send flow stays identical (enrollment is transparent). Delta
-against `samples/unified/telemetry/main.c`:
+connect / `do_work` / send flow stays identical (enrollment is transparent). Sketch of
+the delta against the certificate setup in `samples/unified/telemetry/main.c`
+(which sets the DPS fields through `sample_apply_dps_options()`):
 
 ```c
     /* --- BEFORE: static cert used for both DPS and Hub --- */

@@ -277,3 +277,10 @@ bool sample_event_is_profile_mismatch(
   *out_profile = event->profile->connection_profile;
   return true;
 }
+
+az_iot_connection_profile sample_initial_profile(const sample_config* config)
+{
+  /* The mock bypass skips DPS, so no mismatch would ever correct a guess. */
+  return (config != NULL && config->mock_endpoint != NULL) ? AZ_IOT_CONNECTION_PROFILE_MQTT_V5
+                                                           : AZ_IOT_CONNECTION_PROFILE_CLASSIC;
+}

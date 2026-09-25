@@ -220,5 +220,7 @@ A fuller version is [samples/unified/connect_first/main.c](samples/unified/conne
 
 Samples are grouped like the .NET SDK's: [samples/unified](samples/unified/) serve
 whichever hub generation DPS assigns, [samples/gen2](samples/gen2/) serve AEG hubs
-only. There are no Classic-only samples. Layout, configuration and the full list
-are in [samples/README.md](samples/README.md).
+only. There is no Classic-only group; the Classic-only samples
+(`unified/file_upload`, `authentication/dps_csr_managed`,
+`authentication/hub_renew`) exit non-zero on an MQTT v5 hub. Layout,
+configuration and the full list are in [samples/README.md](samples/README.md).

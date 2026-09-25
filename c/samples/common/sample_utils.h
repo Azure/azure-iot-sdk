@@ -92,4 +92,16 @@ bool sample_event_is_profile_mismatch(
     const az_iot_connection_state_event* event,
     az_iot_connection_profile* out_profile);
 
+/**
+ * @brief Generation to build feature clients for before open().
+ *
+ * MQTT v5 when AZ_IOT_HUB_NEXT_MOCK_ENDPOINT is set (that bypass skips DPS and
+ * always connects over MQTT v5); otherwise Classic, which DPS assigns when it
+ * names no connectionProfile.
+ *
+ * @param[in] config Loaded sample configuration.
+ * @return The profile to assume.
+ */
+az_iot_connection_profile sample_initial_profile(const sample_config* config);
+
 #endif // SAMPLE_UTILS_H

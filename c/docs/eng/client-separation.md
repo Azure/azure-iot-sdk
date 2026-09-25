@@ -1017,15 +1017,17 @@ client.
 
 ## 11. Samples and tests
 
-**Unified and gen2 samples**, grouped like the .NET SDK's. Each feature ships a
-`samples/unified/` sample that registers both adapters, builds its clients for an
-assumed generation before `open()`, and on `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH`
+**Unified and gen2 samples**, grouped like the .NET SDK's. Each dual-generation
+feature ships a `samples/unified/` sample that registers both adapters, builds its
+clients for an assumed generation before `open()`, and on `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH`
 rebuilds them for the profile the event carries and reopens -- the recovery of
 [§9](#the-profile-can-change-while-the-device-is-running), exercised on the first
 connect and on a move in either direction. `samples/unified/connect_first` shows
 the conservative alternative: build once `CONNECTED`, from the profile read then.
-Where AEG has the feature, a `samples/gen2/` sample pins gen2 at `init()`. There
-are no Classic-only samples. See [samples/README.md](../../samples/README.md).
+Where AEG has the feature, a `samples/gen2/` sample pins gen2 at `init()`.
+`samples/unified/file_upload` is the Classic-only exception: it builds after
+`CONNECTED` and reports an MQTT v5 hub, with no rebuild. There is no Classic-only
+group. See [samples/README.md](../../samples/README.md).
 
 **Test expansion.** This roughly doubles the feature-client test surface: each
 generation's client needs its own unit suite against the in-memory mock, and each

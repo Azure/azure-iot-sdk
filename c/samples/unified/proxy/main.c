@@ -298,7 +298,7 @@ int main(void)
     return 1;
   }
 
-  if (telemetry_build(&state, AZ_IOT_CONNECTION_PROFILE_CLASSIC) != AZ_IOT_OK
+  if (telemetry_build(&state, sample_initial_profile(&state.config)) != AZ_IOT_OK
       || az_iot_connection_client_open(&state.connection_client) != AZ_IOT_OK)
   {
     sample_state_destroy(&state);

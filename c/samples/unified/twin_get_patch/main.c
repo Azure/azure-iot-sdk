@@ -366,8 +366,8 @@ int main(void)
     return 1;
   }
 
-  /* Assume Classic until DPS says otherwise; see unified/telemetry. */
-  if (clients_build(&state, AZ_IOT_CONNECTION_PROFILE_CLASSIC, &user_ctx) != AZ_IOT_OK
+  /* Assume a generation until DPS says otherwise; see unified/telemetry. */
+  if (clients_build(&state, sample_initial_profile(&state.config), &user_ctx) != AZ_IOT_OK
       || az_iot_connection_client_open(&state.connection_client) != AZ_IOT_OK)
   {
     sample_state_destroy(&state);
@@ -378,6 +378,7 @@ int main(void)
   int rounds = 0; /* connects already served */
   int round_active = 0;
   int rounds_ok = 0;
+  int rounds_failed = 0;
   while (!user_ctx.faulted && sample_now_ms() < end_ms)
   {
     pump(&state, 100);
@@ -423,10 +424,18 @@ int main(void)
       {
         rounds_ok++;
       }
+      /* Cut short by the session ending (e.g. the device was moved): not a
+       * failure, the next connect starts a new round. */
+      else if (
+          user_ctx.get_status != AZ_IOT_ERR_NOT_CONNECTED
+          && user_ctx.patch_status != AZ_IOT_ERR_NOT_CONNECTED)
+      {
+        rounds_failed++;
+      }
     }
   }
 
-  int rc = (rounds_ok > 0 && !user_ctx.faulted) ? 0 : 1;
+  int rc = (rounds_ok > 0 && rounds_failed == 0 && !user_ctx.faulted) ? 0 : 1;
 
   az_iot_connection_client_close(&state.connection_client);
   for (int i = 0; i < 100 && user_ctx.conn_state != AZ_IOT_CONN_STATE_IDLE; ++i)

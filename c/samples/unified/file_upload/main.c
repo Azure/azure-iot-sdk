@@ -454,6 +454,11 @@ int main(void)
   {
     printf("Failed to reach CONNECTED (state=%d).\n", (int)user_ctx.conn_state);
   }
+  else if (state.config.mock_endpoint != NULL)
+  {
+    /* The mock bypass is MQTT v5 only. */
+    printf("File upload is not available on this hub generation.\n");
+  }
   else if (sample_get_hub_profile(&state.connection_client, &profile) != AZ_IOT_OK)
   {
     /* Already reported. */

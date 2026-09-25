@@ -264,8 +264,10 @@ int main(void)
      * it ask what it reached and build to match. */
     if (!state.telemetry_initialized)
     {
-      az_iot_connection_profile profile = AZ_IOT_CONNECTION_PROFILE_UNKNOWN;
-      if (sample_get_hub_profile(&state.connection_client, &profile) != AZ_IOT_OK
+      /* The mock bypass skips DPS and always speaks MQTT v5; nothing to read. */
+      az_iot_connection_profile profile = sample_initial_profile(&state.config);
+      if ((state.config.mock_endpoint == NULL
+           && sample_get_hub_profile(&state.connection_client, &profile) != AZ_IOT_OK)
           || telemetry_build(&state, profile) != AZ_IOT_OK)
       {
         user_ctx.faulted = 1;

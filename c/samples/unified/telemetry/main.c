@@ -15,7 +15,8 @@
  *   1. Register BOTH MQTT adapters: DPS and Classic speak v3.1.1, AEG speaks v5.
  *   2. Build the feature clients for an assumed generation BEFORE open(). This
  *      one assumes Classic, which is what DPS assigns when it names no
- *      connectionProfile; a real device would persist the last assigned one.
+ *      connectionProfile (MQTT v5 under AZ_IOT_HUB_NEXT_MOCK_ENDPOINT, see
+ *      sample_initial_profile()); a real device would persist the last one.
  *   3. If DPS assigns the other generation -- on the first connect, or later
  *      when the device is moved and re-provisions -- the connection stops with
  *      AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH before the hub is reached, and
@@ -240,7 +241,7 @@ int main(void)
     return 1;
   }
 
-  if (telemetry_build(&state, AZ_IOT_CONNECTION_PROFILE_CLASSIC) != AZ_IOT_OK
+  if (telemetry_build(&state, sample_initial_profile(&state.config)) != AZ_IOT_OK
       || az_iot_connection_client_open(&state.connection_client) != AZ_IOT_OK)
   {
     sample_state_destroy(&state);
