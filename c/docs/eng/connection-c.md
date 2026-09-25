@@ -146,10 +146,10 @@ sequenceDiagram
             Conn->>Cert: store_issued_certificate(chain)
             Conn-->>App: operational_cert_callback(chain)
         end
-        alt !dps_refs_held()
+        alt no ref held (dps_refs_held() false)
             Conn->>DPS: DISCONNECT + tear down v3.1.1 adapter
         else a ref is held
-            Note over Conn,DPS: session kept; do_work() pumps it with the hub session
+            Note over Conn,DPS: session kept, do_work() pumps it with the hub session
         end
         Conn->>Conn: resolve connection profile, apply assigned host / client id, pick hub role
     end
