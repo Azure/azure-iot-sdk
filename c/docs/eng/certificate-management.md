@@ -245,7 +245,7 @@ Not part of the public API; listed for implementation context.
 
 Only the cert-provider setup and one option line change; the entire
 connect / `do_work` / send flow stays identical (enrollment is transparent). Delta
-against `samples/telemetry_gen1/main.c`:
+against `samples/unified/telemetry/main.c`:
 
 ```c
     /* --- BEFORE: static cert used for both DPS and Hub --- */
@@ -638,7 +638,7 @@ non-extractable-key custody, and CSR — the three axes this feature needs.
 
 All scenarios above get a dedicated, single-purpose sample under a new cross-cutting
 **`samples/authentication/`** group (auth is orthogonal to the feature clients like
-`telemetry_gen1`, `c2d_receiver_gen1`, ...). Each sample reuses `samples/common/sample_utils` and
+`unified/telemetry`, `gen2/c2d_receiver`, ...). Each sample reuses `samples/common/sample_utils` and
 differs only in the credential-setup block, so they stay small and diff-able.
 
 ```
@@ -647,8 +647,7 @@ samples/authentication/
   dps_csr_managed/             SHIPS - D9 provider-owned: `managed` provider, DPS issuance
   hub_renew/                   SHIPS - D7 provider-owned transparent renewal
   custom_certificate_provider/ SHIPS - D9 app-owned: app builds the CSR, data-in/out
-  hsm_pkcs11_gen1/             SHIPS - D8 key-reference URI (non-extractable), Paho
-  hsm_pkcs11_gen2/             SHIPS - the same against an AEG hub
+  hsm_pkcs11/                  SHIPS - D8 key-reference URI (non-extractable), Paho, either hub generation
   hsm_sign_callback/           SHIPS - D8 provider sign() hook (stack without an engine)
   custom_provider_template/    SHIPS - fork-me stub (mirrors classic custom_hsm_example)
 
