@@ -417,6 +417,22 @@ extern "C"
   } az_iot_adu_report_update_id;
 
   /**
+   * @brief Terminal result for one manifest step.
+   *
+   * The DPS report contract requires every serialized step to carry all four
+   * structured result fields. `result_details` is optional and its span is
+   * borrowed for the duration of the report call.
+   */
+  typedef struct az_iot_adu_step_result
+  {
+    az_iot_adu_outcome outcome;
+    az_iot_adu_failure_origin failure_origin;
+    int32_t result_code;
+    int32_t extended_result_code;
+    az_span result_details;
+  } az_iot_adu_step_result;
+
+  /**
    * @brief The structured result the engine hands a channel.
    *
    * `workflow_id` alone is the correlation key: reporting is idempotent on it,
@@ -450,8 +466,9 @@ extern "C"
     /* Free-form human-readable detail. May be NULL. */
     const char* result_details;
 
-    /* Array and detail spans are borrowed for the report call; NULL when count is zero. */
-    const az_iot_adu_client_step_result* step_results;
+    /* Terminal per-step results. Omitted for IN_PROGRESS reports. Array and
+     * detail spans are borrowed for the report call; NULL when count is zero. */
+    const az_iot_adu_step_result* step_results;
     int32_t step_results_count;
   } az_iot_adu_report;
 
@@ -666,6 +683,8 @@ extern "C"
 
       /* Accumulated result reported to the service. */
       az_iot_adu_client_install_result install_result;
+      az_iot_adu_step_result step_results[_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS];
+      int32_t step_results_count;
 
       /* Client-owned device-properties cache (deep copy of caller's struct). */
       uint8_t* device_props_buffer;

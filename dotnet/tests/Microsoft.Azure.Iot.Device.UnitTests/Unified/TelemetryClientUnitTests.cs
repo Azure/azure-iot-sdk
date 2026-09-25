@@ -50,7 +50,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         }
 
         [Fact]
-        public async Task SendTelemetryAsync_MqttV5_PublishesToAegTopic()
+        public async Task SendTelemetryAsync_MqttV5_PublishesToMqttv5Topic()
         {
             MockFeatureConnectionClient connection = new()
             {

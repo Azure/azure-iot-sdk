@@ -142,10 +142,11 @@ same request/response, different gateway).
 
 **Report** (`ReportStatusRequest`): `{ workflowId, installedUpdateId, installResult }` where
 `installResult` = `{ outcome ∈ IN_PROGRESS|SUCCEEDED|FAILED|CANCELED|SKIPPED, failureOrigin, resultCode,
-extendedResultCodes (comma-sep hex), resultDetails, stepResults{ step_0, step_1, … } }`; each
-`stepResults` entry carries its own `outcome`, `failureOrigin`, `resultCode`, `extendedResultCodes` and optional
-`resultDetails`. **Idempotent on
-`workflowId` alone**; a conflicting terminal for the same id ⇒ `409 REPORT_CONFLICT`.
+extendedResultCodes (comma-sep hex), resultDetails, stepResults{ step_0, step_1, … } }`. Each step
+value has the same required `outcome`, `failureOrigin`, `resultCode`, and `extendedResultCodes`
+fields plus optional `resultDetails`. In-progress reports omit `stepResults`; terminal reports
+include complete entries when the manifest has steps. **Idempotent on `workflowId` alone**; a
+conflicting terminal for the same id ⇒ `409 REPORT_CONFLICT`.
 
 > Identity headers (`x-ms-external-device-id` = registrationId; `x-ms-device-id` = ADR UUID on the regular path)
 > are **gateway-populated — the device sets none of them**.

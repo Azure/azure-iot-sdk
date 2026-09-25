@@ -236,8 +236,11 @@ az_iot_result az_iot_adu__report_state(az_iot_adu_client_t* client)
   report.result_code = result_code;
   report.extended_result_codes = extended;
   report.result_details = (details[0] != '\0') ? details : NULL;
-  report.step_results = (r->step_results_count > 0) ? r->step_results : NULL;
-  report.step_results_count = r->step_results_count;
+  if (outcome != AZ_IOT_ADU_OUTCOME_IN_PROGRESS && ADU_I(client).step_results_count > 0)
+  {
+    report.step_results = ADU_I(client).step_results;
+    report.step_results_count = ADU_I(client).step_results_count;
+  }
 
   az_iot_result sent = ADU_I(client).channel.vtable->report(ADU_I(client).channel.ctx, &report);
   if (sent != AZ_IOT_OK)

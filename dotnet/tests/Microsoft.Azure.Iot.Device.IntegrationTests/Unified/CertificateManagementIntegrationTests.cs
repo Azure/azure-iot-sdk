@@ -26,7 +26,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
 
             if (!testAgainstClassicHub)
             {
-                Assert.Skip("No AEG hub to test against yet");
+                Assert.Skip("No MQTTv5 hub to test against yet");
             }
 
             string registrationId = Environment.GetEnvironmentVariable("IOT_DPS_GROUP_X509_REGISTRATION_ID")
