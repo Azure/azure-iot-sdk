@@ -14,6 +14,7 @@
  *   4. The client connects to the assigned hub using the issued OPERATIONAL
  *      identity - reaching CONNECTED is the hub's proof that it authenticated
  *      the DPS-issued certificate.
+ *   5. A telemetry publish completes on that same hub connection.
  *
  * This requires a DPS enrollment (group) linked to a signing CA so DPS issues an
  * operational cert - a setup only the ci-c-e2e-csr workflow provisions. It is
@@ -57,6 +58,8 @@ typedef struct
   az_iot_result last_reason;
   int issued;
   size_t issued_count;
+  int send_done;
+  az_iot_result send_status;
 } csr_ctx;
 
 static void on_conn_state(const az_iot_connection_state_event* event, void* user_ctx)
@@ -82,6 +85,13 @@ static void on_operational_cert(const az_iot_issued_certificate* issued, void* u
   csr_ctx* c = (csr_ctx*)user_ctx;
   c->issued = 1;
   c->issued_count = issued ? issued->count : 0;
+}
+
+static void on_send_done(az_iot_result status, void* user_ctx)
+{
+  csr_ctx* c = (csr_ctx*)user_ctx;
+  c->send_status = status;
+  c->send_done = 1;
 }
 
 /* ---- scenario ------------------------------------------------------------- */
@@ -114,6 +124,7 @@ static void run_csr_enrollment(az_iot_certificate_managed_key_type key_type, con
   csr_ctx ctx = { 0 };
   az_iot_certificate_provider_managed provider = { 0 };
   az_iot_connection_client conn = { 0 };
+  az_iot_gen1_telemetry_client telemetry = { 0 };
 
   az_iot_certificate_provider_managed_options mopts = {
     .bootstrap_cert_pem_path = cert,
@@ -143,6 +154,7 @@ static void run_csr_enrollment(az_iot_certificate_managed_key_type key_type, con
   assert_int_equal(
       AZ_IOT_OK,
       az_iot_connection_client_register_mqtt_factory(&conn, az_iot_paho_factory_create_v3_1_1()));
+  assert_int_equal(AZ_IOT_OK, az_iot_gen1_telemetry_client_init(&telemetry, &conn));
 
   assert_int_equal(AZ_IOT_OK, az_iot_connection_client_open(&conn));
 
@@ -165,12 +177,28 @@ static void run_csr_enrollment(az_iot_certificate_managed_key_type key_type, con
   /* the managed provider persisted the issued cert for the next boot. */
   assert_true(provider.has_operational);
 
+  static const uint8_t payload[] = "{\"source\":\"e2e_csr\"}";
+  az_iot_telemetry_message message = { 0 };
+  message.payload = payload;
+  message.payload_len = sizeof(payload) - 1;
+  assert_int_equal(
+      AZ_IOT_OK, az_iot_gen1_telemetry_client_send(&telemetry, &message, on_send_done, &ctx));
+  start = time(NULL);
+  while (!ctx.send_done && ctx.conn_state == AZ_IOT_CONN_STATE_CONNECTED
+         && (time(NULL) - start) < 30)
+  {
+    (void)az_iot_connection_client_do_work(&conn, 50);
+  }
+  assert_int_equal(ctx.send_done, 1);
+  assert_int_equal(ctx.send_status, AZ_IOT_OK);
+
   az_iot_connection_client_close(&conn);
   for (int i = 0; i < 100 && ctx.conn_state != AZ_IOT_CONN_STATE_IDLE; ++i)
   {
     (void)az_iot_connection_client_do_work(&conn, 50);
   }
 
+  az_iot_gen1_telemetry_client_destroy(&telemetry);
   az_iot_connection_client_destroy(&conn);
   az_iot_certificate_provider_managed_destroy(&provider);
 

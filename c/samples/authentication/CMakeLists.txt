@@ -20,7 +20,7 @@ if(AZ_IOT_WITH_PAHO AND TARGET az_iot_certificate_provider_managed)
         dps_csr_managed/main.c ${_auth_common}/sample_utils.c)
     target_include_directories(az_iot_sample_auth_dps_csr_managed PRIVATE ${_auth_common})
     target_link_libraries(az_iot_sample_auth_dps_csr_managed
-        PRIVATE az_iot_core az_iot_adapter_paho az_iot_certificate_provider_managed)
+        PRIVATE az_iot_gen1 az_iot_adapter_paho az_iot_certificate_provider_managed)
     az_iot_apply_warnings(az_iot_sample_auth_dps_csr_managed)
 
     add_executable(az_iot_sample_auth_hub_renew
