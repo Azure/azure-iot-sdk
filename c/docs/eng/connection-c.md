@@ -532,7 +532,8 @@ Renewal topics (classic hub):
 | Subscribe | `$iothub/credentials/res/#` |
 | Response | `$iothub/credentials/res/{status}/{request_id}` |
 
-Rules that apply to both clients:
+Rules every client must implement. The C client meets all of them; where .NET does not, see
+[connection-impl-status.md](connection-impl-status.md).
 
 - Only one CSR operation may be in flight; a second request fails fast with a *busy* result.
 - The issued chain is delivered leaf-first as base64 DER and is only valid for the duration of the
