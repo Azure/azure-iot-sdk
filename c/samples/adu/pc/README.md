@@ -77,9 +77,8 @@ variables in the next section:
 | A **trusted CA bundle** | Validates the service's TLS certificate |
 
 The update offered to the device must declare `compatibility` matching what this
-sample reports — by default manufacturer `Contoso`, model `ADU-Sim`, and the
-custom property `environment` = `sim`. An update that does not match is never
-offered, however it was imported. See
+sample reports — by default manufacturer `Contoso` and model `ADU-Sim`.
+An update that does not match is never offered, however it was imported. See
 [Configure the sample](#configure-the-sample) to change what is reported.
 
 > The PowerShell scripts under [samples/common/scripts](../../common/scripts)
@@ -107,8 +106,9 @@ The sample reads these environment variables (see
 **Matched against a deployed update.** These are the device's *compatibility
 properties*. A value that does not match the imported update is answered
 "nothing for me", which looks exactly like "nothing deployed", so the sample
-prints what it reported at startup. The sample also sends the fixed custom
-property `environment` = `sim`, which a deployed update must match too.
+prints what it reported at startup. It sends no custom compatibility
+properties; configure them in [main.c](main.c) if the imported update
+requires them.
 
 | Variable | Default |
 |---|---|
@@ -302,14 +302,13 @@ The simulated update payload is **zero-filled** on purpose: the device synthesiz
 the same zero bytes the import manifest declares, so the **real** per-file SHA-256
 check passes. Random content would not match.
 
-An update must declare `compatibility` matching the first three rows to be
+An update must declare `compatibility` matching the first two rows to be
 offered (see [main.c](main.c)):
 
 | Property | Value | Overridden by | Matched? |
 |---|---|---|---|
 | Manufacturer | `Contoso` | `AZ_IOT_ADU_MANUFACTURER` | yes |
 | Model | `ADU-Sim` | `AZ_IOT_ADU_MODEL` | yes |
-| Custom `environment` | `sim` | fixed in [main.c](main.c) | yes |
 | Installed update id | `{ provider: Contoso, name: ADU-Sim, version: 1.0.0 }` | `AZ_IOT_ADU_INSTALLED_PROVIDER` / `_NAME` / `_VERSION` | no — reported only, and omitted on the onboarding route |
 
 The sample prints what it reported at startup, so a mismatch is visible rather
@@ -320,11 +319,12 @@ than silent.
 ADU verifies the manifest's JWS signature against one or more RSA root public
 keys. The sample calls `az_iot_adu_microsoft_root_keys()` — Microsoft's published
 ADU production roots, compiled into the SDK (`src/features/adu/adu_root_keys_microsoft.c`)
-— so updates imported through the real Device Update service (which signs every
-manifest with Microsoft's signing service) verify with no extra setup. To accept
-updates signed by your **own** root instead, build your own `az_iot_adu_root_key`
-array and pass it to `az_iot_adu_client_initialize()` in place of the Microsoft
-keys.
+— so manifests signed under those roots can be verified. A manifest signed
+under a different key (including a preview or test issuer) fails verification;
+this sample does not download roots dynamically. To trust another issuer,
+validate its public key out of band, build a corresponding `az_iot_adu_root_key`
+array, and pass it to `az_iot_adu_client_initialize()` instead. Do not bypass
+signature verification.
 
 ### Simulation knobs
 
