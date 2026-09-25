@@ -105,7 +105,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         }
 
         [Fact]
-        public async Task GetTwinAsync_MqttV5_DelegatesToAegPath()
+        public async Task GetTwinAsync_MqttV5_DelegatesToMqttv5Path()
         {
             MockFeatureConnectionClient connection = new()
             {

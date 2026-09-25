@@ -2,7 +2,7 @@
 // See LICENSE file in the project root for full license information.
 
 using Google.Protobuf;
-using Microsoft.Azure.Iot.Device.Gen2.DirectMethods;
+using Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods;
 using Microsoft.Azure.Iot.Device.Models.DirectMethods;
 using Microsoft.Azure.Iot.Device.Mqtt;
 using Microsoft.Azure.Iot.Device.Unified.Connection;
@@ -24,7 +24,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.DirectMethods
 
         private IConnectionClient _connection;
 
-        private Gen2.DirectMethods.DirectMethodClient _aegDirectMethodClient;
+        private MQTTv5.DirectMethods.DirectMethodClient _mqttv5DirectMethodClient;
 
         /// <summary>
         /// An event that executes whenever this device receives a direct method request from IoT hub. After executing the direct method, the device must
@@ -59,19 +59,19 @@ namespace Microsoft.Azure.Iot.Device.Unified.DirectMethods
             _connection = connection;
             _connection.PublishReceivedAsync += HandleReceivedMqttPublish;
 
-            _aegDirectMethodClient = new(new Stub(_connection));
-            _aegDirectMethodClient.DirectMethodProbeReceivedAsync += HandleAegDirectMethodProbeRequestAsync;
-            _aegDirectMethodClient.DirectMethodInvokedAsync += HandleAegDirectMethodRequestAsync;
+            _mqttv5DirectMethodClient = new(new Stub(_connection));
+            _mqttv5DirectMethodClient.DirectMethodProbeReceivedAsync += HandleMqttv5DirectMethodProbeRequestAsync;
+            _mqttv5DirectMethodClient.DirectMethodInvokedAsync += HandleMqttv5DirectMethodRequestAsync;
         }
 
-        private async Task<DirectMethodResponse> HandleAegDirectMethodRequestAsync(DirectMethodRequestReceivedEventArgs args)
+        private async Task<DirectMethodResponse> HandleMqttv5DirectMethodRequestAsync(DirectMethodRequestReceivedEventArgs args)
         {
             if (DirectMethodInvokedAsync == null)
             {
                 Trace.TraceError("Received a direct method request, but no handler was set on this client to handle it.");
 #pragma warning disable CS8600 // Converting null literal or possible null value to non-nullable type.
 #pragma warning disable CS8603 // Possible null reference return.
-                return (DirectMethodResponse)null; // A little hacky, but we want a way for the unified client to communicate back to the Gen2 client to not send anything in response
+                return (DirectMethodResponse)null; // A little hacky, but we want a way for the unified client to communicate back to the MQTTv5 client to not send anything in response
 #pragma warning restore CS8603 // Possible null reference return.
 #pragma warning restore CS8600 // Converting null literal or possible null value to non-nullable type.
             }
@@ -79,7 +79,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.DirectMethods
             return await DirectMethodInvokedAsync.Invoke(args);
         }
 
-        private async Task<DirectMethodProbeAck> HandleAegDirectMethodProbeRequestAsync(DirectMethodRequestProbeReceivedEventArgs args)
+        private async Task<DirectMethodProbeAck> HandleMqttv5DirectMethodProbeRequestAsync(DirectMethodRequestProbeReceivedEventArgs args)
         {
             // Since Classic Hub has no concept of a direct method probe message, make this unified client just accept any received probe request
             return DirectMethodProbeAck.Accepted();
@@ -106,7 +106,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.DirectMethods
 
             if (currentConnectionContext.ConnectionProfile == Provisioning.Models.ConnectionProfile.MqttV5)
             {
-                // The underlying Gen2 DirectMethodClient handles this flow
+                // The underlying MQTTv5 DirectMethodClient handles this flow
                 return;
             }
 
@@ -173,8 +173,8 @@ namespace Microsoft.Azure.Iot.Device.Unified.DirectMethods
         {
             _connection.PublishReceivedAsync -= HandleReceivedMqttPublish;
 
-            _aegDirectMethodClient.DirectMethodProbeReceivedAsync -= HandleAegDirectMethodProbeRequestAsync;
-            _aegDirectMethodClient.DirectMethodInvokedAsync -= HandleAegDirectMethodRequestAsync;
+            _mqttv5DirectMethodClient.DirectMethodProbeReceivedAsync -= HandleMqttv5DirectMethodProbeRequestAsync;
+            _mqttv5DirectMethodClient.DirectMethodInvokedAsync -= HandleMqttv5DirectMethodRequestAsync;
 
             if (disposing)
             {
@@ -189,8 +189,8 @@ namespace Microsoft.Azure.Iot.Device.Unified.DirectMethods
         {
             _connection.PublishReceivedAsync -= HandleReceivedMqttPublish;
 
-            _aegDirectMethodClient.DirectMethodProbeReceivedAsync -= HandleAegDirectMethodProbeRequestAsync;
-            _aegDirectMethodClient.DirectMethodInvokedAsync -= HandleAegDirectMethodRequestAsync;
+            _mqttv5DirectMethodClient.DirectMethodProbeReceivedAsync -= HandleMqttv5DirectMethodProbeRequestAsync;
+            _mqttv5DirectMethodClient.DirectMethodInvokedAsync -= HandleMqttv5DirectMethodRequestAsync;
 
             _connection.Dispose();
         }

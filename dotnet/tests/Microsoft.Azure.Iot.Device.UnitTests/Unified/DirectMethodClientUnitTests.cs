@@ -92,7 +92,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
 
             // The unified client auto-accepts any probe on an MQTT 5 hub since classic hubs have no probe concept.
             var probe = new Probe() { MethodName = "reboot", ResponseTimeoutSeconds = 30 };
-            await connection.SimulateReceiveAsync(CreateAegMethodPublish("probe:1", correlationData, probe.ToByteArray()));
+            await connection.SimulateReceiveAsync(CreateMqttv5MethodPublish("probe:1", correlationData, probe.ToByteArray()));
 
             MqttPublish probeAckPublish = Assert.Single(connection.PublishedMessages);
             Assert.Equal($"ih/{DeviceId}/srv/methods", probeAckPublish.Topic);
@@ -102,7 +102,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             ByteString readyId = sentProbeAck.Ready.ReadyId;
 
             var exec = new Exec() { ReadyId = readyId, Params = ByteString.CopyFromUtf8("{}") };
-            await connection.SimulateReceiveAsync(CreateAegMethodPublish("exec:1", correlationData, exec.ToByteArray()));
+            await connection.SimulateReceiveAsync(CreateMqttv5MethodPublish("exec:1", correlationData, exec.ToByteArray()));
 
             Assert.Equal(2, connection.PublishedMessages.Count);
             MqttPublish resultPublish = connection.PublishedMessages[1];
@@ -112,7 +112,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             Assert.Equal(responseBody, result.Body.ToByteArray());
         }
 
-        private static MqttPublish CreateAegMethodPublish(string type, byte[] correlationData, byte[] payload)
+        private static MqttPublish CreateMqttv5MethodPublish(string type, byte[] correlationData, byte[] payload)
         {
             var publish = new MqttPublish()
             {

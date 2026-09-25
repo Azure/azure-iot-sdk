@@ -4,8 +4,8 @@
 using Microsoft.Azure.Iot.Device;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Models.Telemetry;
-using Microsoft.Azure.Iot.Device.Unified.Connection;
-using Microsoft.Azure.Iot.Device.Unified.Telemetry;
+using Microsoft.Azure.Iot.Device.MQTTv5.Connection;
+using Microsoft.Azure.Iot.Device.MQTTv5.Telemetry;
 using SetupSampleDevice;
 using System.Text;
 
