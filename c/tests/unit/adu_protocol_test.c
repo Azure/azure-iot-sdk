@@ -23,6 +23,7 @@
 
 #include "azure/iot/az_iot_adu.h"
 
+#include "../../src/features/adu/internal/adu_channel_internal.h"
 #include "../../src/features/adu/internal/adu_protocol_internal.h"
 
 /* ------------------------------------------------------------------------- */
@@ -494,31 +495,20 @@ static void fetch_validates_ids_and_output_capacity(void** state)
 /* report request                                                            */
 /* ------------------------------------------------------------------------- */
 
-static void init_report_result(az_iot_adu_install_result* result)
-{
-  memset(result, 0, sizeof(*result));
-  result->_internal_size = (uint32_t)sizeof(*result);
-  result->outcome = AZ_IOT_ADU_OUTCOME_SUCCEEDED;
-  result->failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_NOT_APPLICABLE;
-  result->result_code = 700;
-  result->extended_result_codes[0] = '0';
-  result->extended_result_codes_length = 1;
-}
-
 static void report_carries_workflow_id_and_install_result(void** state)
 {
   (void)state;
   uint8_t buf[512];
   size_t len = 0;
   az_iot_adu_report_update_id installed = { "Contoso", "Tractor", "2.0" };
-  az_iot_adu_install_result result;
-  init_report_result(&result);
-  az_iot_adu_report report = AZ_IOT_ADU_REPORT_INIT;
+  az_iot_adu_report report = { 0 };
   report.workflow_id = "wf-1";
   report.installed_update_id = &installed;
-  report.install_result = &result;
-  memcpy(result.result_details, "done", 4);
-  result.result_details_length = 4;
+  report.outcome = AZ_IOT_ADU_OUTCOME_SUCCEEDED;
+  report.failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_NOT_APPLICABLE;
+  report.result_code = 700;
+  report.extended_result_codes = "0";
+  report.result_details = "done";
 
   assert_int_equal(az_iot_adu__build_report_request(&report, buf, sizeof(buf), &len), AZ_IOT_OK);
   buf[len] = '\0';
@@ -540,23 +530,25 @@ static void report_drops_installed_update_id_when_absent(void** state)
   (void)state;
   uint8_t buf[512];
   size_t len = 0;
-  az_iot_adu_install_result result;
-  init_report_result(&result);
-  az_iot_adu_report report = AZ_IOT_ADU_REPORT_INIT;
+  az_iot_adu_step_result step = { 0 };
+  step.outcome = AZ_IOT_ADU_OUTCOME_SKIPPED;
+  step.failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_NOT_APPLICABLE;
+  az_iot_adu_report report = { 0 };
   report.workflow_id = "wf-1";
   report.installed_update_id = NULL;
-  report.install_result = &result;
-  result.outcome = AZ_IOT_ADU_OUTCOME_IN_PROGRESS;
-  result.result_code = 1;
+  report.outcome = AZ_IOT_ADU_OUTCOME_IN_PROGRESS;
+  report.failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_NOT_APPLICABLE;
+  report.result_code = 1;
+  report.extended_result_codes = "0";
+  report.step_results = &step;
+  report.step_results_count = 1;
 
   assert_int_equal(az_iot_adu__build_report_request(&report, buf, sizeof(buf), &len), AZ_IOT_OK);
   buf[len] = '\0';
-  /* Dropped, not serialized as null. */
-  assert_null(strstr((const char*)buf, "installedUpdateId"));
-  assert_null(strstr((const char*)buf, "null"));
-  assert_non_null(strstr((const char*)buf, "\"outcome\":\"IN_PROGRESS\""));
-  /* resultDetails is optional and must be absent when unset. */
-  assert_null(strstr((const char*)buf, "resultDetails"));
+  assert_string_equal(
+      (const char*)buf,
+      "{\"workflowId\":\"wf-1\",\"installResult\":{\"outcome\":\"IN_PROGRESS\","
+      "\"failureOrigin\":\"NOT_APPLICABLE\",\"resultCode\":1,\"extendedResultCodes\":\"0\"}}");
 }
 
 /* The contract ties outcome and failureOrigin together. Catching a mismatched
@@ -566,30 +558,26 @@ static void outcome_and_failure_origin_must_agree(void** state)
 {
   (void)state;
   uint8_t buf[512];
-  az_iot_adu_install_result result;
-  init_report_result(&result);
-  az_iot_adu_report report = AZ_IOT_ADU_REPORT_INIT;
+  az_iot_adu_report report = { 0 };
   report.workflow_id = "wf-1";
-  report.install_result = &result;
-  result.result_code = -1;
-  memcpy(result.extended_result_codes, "80000001", 8);
-  result.extended_result_codes_length = 8;
+  report.result_code = -1;
+  report.extended_result_codes = "80000001";
 
   /* FAILED with NOT_APPLICABLE is invalid. */
-  result.outcome = AZ_IOT_ADU_OUTCOME_FAILED;
-  result.failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_NOT_APPLICABLE;
+  report.outcome = AZ_IOT_ADU_OUTCOME_FAILED;
+  report.failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_NOT_APPLICABLE;
   assert_int_equal(
       az_iot_adu__build_report_request(&report, buf, sizeof(buf), NULL), AZ_IOT_ERR_INVALID_ARG);
 
   /* A non-failure outcome with a failure origin is equally invalid. */
-  result.outcome = AZ_IOT_ADU_OUTCOME_SUCCEEDED;
-  result.failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_AGENT_CORE;
+  report.outcome = AZ_IOT_ADU_OUTCOME_SUCCEEDED;
+  report.failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_AGENT_CORE;
   assert_int_equal(
       az_iot_adu__build_report_request(&report, buf, sizeof(buf), NULL), AZ_IOT_ERR_INVALID_ARG);
 
   /* FAILED with a real origin is accepted. */
-  result.outcome = AZ_IOT_ADU_OUTCOME_FAILED;
-  result.failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_AGENT_CORE;
+  report.outcome = AZ_IOT_ADU_OUTCOME_FAILED;
+  report.failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_AGENT_CORE;
   assert_int_equal(az_iot_adu__build_report_request(&report, buf, sizeof(buf), NULL), AZ_IOT_OK);
 }
 
@@ -597,56 +585,13 @@ static void report_without_a_workflow_id_is_rejected(void** state)
 {
   (void)state;
   uint8_t buf[512];
-  az_iot_adu_install_result result;
-  init_report_result(&result);
-  az_iot_adu_report report = AZ_IOT_ADU_REPORT_INIT;
+  az_iot_adu_report report = { 0 };
   report.workflow_id = "";
-  report.install_result = &result;
+  report.outcome = AZ_IOT_ADU_OUTCOME_SUCCEEDED;
+  report.failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_NOT_APPLICABLE;
+  report.extended_result_codes = "0";
   assert_int_equal(
       az_iot_adu__build_report_request(&report, buf, sizeof(buf), NULL), AZ_IOT_ERR_INVALID_ARG);
-}
-
-static void report_protocol_uses_canonical_serializer(void** state)
-{
-  (void)state;
-  az_iot_adu_install_result result;
-  init_report_result(&result);
-  result.result_code = INT64_MAX;
-  result.step_results_count = 1;
-  result.step_results[0].outcome = AZ_IOT_ADU_OUTCOME_FAILED;
-  result.step_results[0].failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_DEVICE;
-  result.step_results[0].result_code = INT64_MIN;
-  memcpy(result.step_results[0].extended_result_codes, "FFFFFFFF,0", 10);
-  result.step_results[0].extended_result_codes_length = 10;
-  az_iot_adu_report report = AZ_IOT_ADU_REPORT_INIT;
-  report.workflow_id = "canonical";
-  report.install_result = &result;
-  uint8_t protocol[2048];
-  uint8_t canonical[2048];
-  size_t protocol_length = 0;
-  size_t canonical_length = 0;
-  assert_int_equal(
-      az_iot_adu__build_report_request(&report, protocol, sizeof(protocol), &protocol_length),
-      AZ_IOT_OK);
-  assert_int_equal(
-      az_iot_adu_build_report(&report, canonical, sizeof(canonical), &canonical_length), AZ_IOT_OK);
-  assert_int_equal(protocol_length, canonical_length);
-  assert_memory_equal(protocol, canonical, canonical_length);
-  assert_true(protocol_length < sizeof(protocol));
-  protocol[protocol_length] = '\0';
-  assert_non_null(strstr((const char*)protocol, "\"stepResults\":{\"step_0\":"));
-  assert_non_null(strstr((const char*)protocol, "\"resultCode\":-9223372036854775808"));
-
-  assert_int_equal(
-      az_iot_adu__build_report_request(&report, protocol, 1, &protocol_length),
-      AZ_IOT_ERR_NOT_ENOUGH_SPACE);
-  assert_int_equal(protocol_length, 0);
-  assert_int_equal(protocol[0], 0);
-  result.step_results[0].failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_NOT_APPLICABLE;
-  assert_int_equal(
-      az_iot_adu__build_report_request(&report, protocol, sizeof(protocol), &protocol_length),
-      AZ_IOT_ERR_INVALID_ARG);
-  assert_int_equal(protocol_length, 0);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -734,12 +679,13 @@ static void a_report_with_a_partial_installed_update_id_is_rejected(void** state
   (void)state;
   uint8_t buf[512];
   az_iot_adu_report_update_id partial = { "Contoso", NULL, "2.0" };
-  az_iot_adu_install_result result;
-  init_report_result(&result);
-  az_iot_adu_report report = AZ_IOT_ADU_REPORT_INIT;
+  az_iot_adu_report report = { 0 };
   report.workflow_id = "wf-1";
   report.installed_update_id = &partial;
-  report.install_result = &result;
+  report.outcome = AZ_IOT_ADU_OUTCOME_SUCCEEDED;
+  report.failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_NOT_APPLICABLE;
+  report.result_code = 700;
+  report.extended_result_codes = "0";
 
   assert_int_equal(
       az_iot_adu__build_report_request(&report, buf, sizeof(buf), NULL), AZ_IOT_ERR_INVALID_ARG);
@@ -774,118 +720,95 @@ static void a_truncated_response_body_is_rejected(void** state)
 /* Per-step results are a MAP keyed step_0, step_1, ... -- NOT a JSON array. The
  * index is the only thing carrying step identity, so emitting an array would
  * lose it. */
-static void step_results_serialize_as_an_indexed_map(void** state)
+static void terminal_failure_step_results_match_the_dps_shape(void** state)
 {
   (void)state;
   uint8_t buf[1024];
   size_t len = 0;
 
-  az_iot_adu_install_result result = AZ_IOT_ADU_INSTALL_RESULT_INIT;
-  result.outcome = AZ_IOT_ADU_OUTCOME_FAILED;
-  result.failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_AGENT_CORE;
-  result.result_code = -1;
-  memcpy(result.extended_result_codes, "80000001", 8);
-  result.extended_result_codes_length = 8;
-  result.step_results_count = 2;
+  az_iot_adu_step_result steps[2];
+  memset(steps, 0, sizeof(steps));
+  steps[0].outcome = AZ_IOT_ADU_OUTCOME_SUCCEEDED;
+  steps[0].failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_NOT_APPLICABLE;
+  steps[0].result_code = 700;
+  steps[0].extended_result_code = 0;
+  steps[1].outcome = AZ_IOT_ADU_OUTCOME_FAILED;
+  steps[1].failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_AGENT_CORE;
+  steps[1].result_code = -1;
+  steps[1].extended_result_code = (int32_t)0x80000001;
+  steps[1].result_details = AZ_SPAN_FROM_STR("step two failed");
 
-  result.step_results[0].outcome = AZ_IOT_ADU_OUTCOME_SUCCEEDED;
-  result.step_results[0].failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_NOT_APPLICABLE;
-  result.step_results[0].result_code = 700;
-  memcpy(result.step_results[0].extended_result_codes, "0", 1);
-  result.step_results[0].extended_result_codes_length = 1;
-
-  result.step_results[1].outcome = AZ_IOT_ADU_OUTCOME_FAILED;
-  result.step_results[1].failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_AGENT_CORE;
-  result.step_results[1].result_code = -1;
-  memcpy(result.step_results[1].extended_result_codes, "80000001", 8);
-  result.step_results[1].extended_result_codes_length = 8;
-  memcpy(result.step_results[1].result_details, "step two failed", 15);
-  result.step_results[1].result_details_length = 15;
-
-  az_iot_adu_report report = AZ_IOT_ADU_REPORT_INIT;
+  az_iot_adu_report report = { 0 };
   report.workflow_id = "wf-1";
-  report.install_result = &result;
+  report.outcome = AZ_IOT_ADU_OUTCOME_FAILED;
+  report.failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_AGENT_CORE;
+  report.result_code = -1;
+  report.extended_result_codes = "80000001";
+  report.step_results = steps;
+  report.step_results_count = 2;
 
   assert_int_equal(az_iot_adu__build_report_request(&report, buf, sizeof(buf), &len), AZ_IOT_OK);
   buf[len] = '\0';
   const char* json = (const char*)buf;
 
-  assert_non_null(strstr(json, "\"stepResults\""));
-  assert_non_null(strstr(json, "\"step_0\""));
-  assert_non_null(strstr(json, "\"step_1\""));
-  /* A map, not an array. */
-  assert_null(strstr(json, "\"stepResults\":["));
-  assert_non_null(strstr(json, "\"resultCode\":700"));
-  assert_non_null(strstr(json, "\"step two failed\""));
-  /* Per-step codes use the same bare-hex form as the aggregate. */
-  assert_non_null(strstr(json, "\"extendedResultCodes\":\"80000001\""));
-  assert_null(strstr(json, "0x80000001"));
+  assert_string_equal(
+      json,
+      "{\"workflowId\":\"wf-1\",\"installResult\":{\"outcome\":\"FAILED\","
+      "\"failureOrigin\":\"AGENT_CORE\",\"resultCode\":-1,"
+      "\"extendedResultCodes\":\"80000001\",\"stepResults\":{\"step_0\":{"
+      "\"outcome\":\"SUCCEEDED\",\"failureOrigin\":\"NOT_APPLICABLE\","
+      "\"resultCode\":700,\"extendedResultCodes\":\"0\"},\"step_1\":{"
+      "\"outcome\":\"FAILED\",\"failureOrigin\":\"AGENT_CORE\",\"resultCode\":-1,"
+      "\"extendedResultCodes\":\"80000001\",\"resultDetails\":\"step two failed\"}}}}");
 }
 
-/* Every stepResults entry carries outcome and failureOrigin; the service
- * rejects an entry without them as undeserializable. The engine records each
- * step's outcome explicitly, so the serializer writes it rather than deriving it
- * from the result code. The manifest holds at most two steps, so the outcomes
- * are covered across three reports. */
-static void step_results_carry_outcome_and_failure_origin(void** state)
+static void terminal_success_step_results_match_the_dps_shape(void** state)
 {
   (void)state;
-  const struct
-  {
-    az_iot_adu_outcome overall;
-    az_iot_adu_outcome steps[2];
-    const char* expected[2];
-  } cases[] = {
-    { AZ_IOT_ADU_OUTCOME_FAILED,
-      { AZ_IOT_ADU_OUTCOME_SUCCEEDED, AZ_IOT_ADU_OUTCOME_FAILED },
-      { "\"step_0\":{\"outcome\":\"SUCCEEDED\",\"failureOrigin\":\"NOT_APPLICABLE\"",
-        "\"step_1\":{\"outcome\":\"FAILED\",\"failureOrigin\":\"AGENT_CORE\"" } },
-    { AZ_IOT_ADU_OUTCOME_FAILED,
-      { AZ_IOT_ADU_OUTCOME_FAILED, AZ_IOT_ADU_OUTCOME_SKIPPED },
-      { "\"step_0\":{\"outcome\":\"FAILED\",\"failureOrigin\":\"AGENT_CORE\"",
-        "\"step_1\":{\"outcome\":\"SKIPPED\",\"failureOrigin\":\"NOT_APPLICABLE\"" } },
-    /* A step not yet reached while the workflow runs is in progress, not skipped. */
-    { AZ_IOT_ADU_OUTCOME_IN_PROGRESS,
-      { AZ_IOT_ADU_OUTCOME_SUCCEEDED, AZ_IOT_ADU_OUTCOME_IN_PROGRESS },
-      { "\"step_0\":{\"outcome\":\"SUCCEEDED\",\"failureOrigin\":\"NOT_APPLICABLE\"",
-        "\"step_1\":{\"outcome\":\"IN_PROGRESS\",\"failureOrigin\":\"NOT_APPLICABLE\"" } },
-  };
-  for (size_t c = 0; c < sizeof(cases) / sizeof(cases[0]); ++c)
-  {
-    az_iot_adu_install_result result;
-    init_report_result(&result);
-    bool failed = cases[c].overall == AZ_IOT_ADU_OUTCOME_FAILED;
-    result.outcome = cases[c].overall;
-    result.failure_origin
-        = failed ? AZ_IOT_ADU_FAILURE_ORIGIN_AGENT_CORE : AZ_IOT_ADU_FAILURE_ORIGIN_NOT_APPLICABLE;
-    result.result_code = failed ? 699 : 1;
-    result.step_results_count = 2;
-    for (int32_t i = 0; i < 2; ++i)
-    {
-      az_iot_adu_step_result* step = &result.step_results[i];
-      step->outcome = cases[c].steps[i];
-      step->failure_origin = step->outcome == AZ_IOT_ADU_OUTCOME_FAILED
-          ? AZ_IOT_ADU_FAILURE_ORIGIN_AGENT_CORE
-          : AZ_IOT_ADU_FAILURE_ORIGIN_NOT_APPLICABLE;
-      step->result_code = step->outcome == AZ_IOT_ADU_OUTCOME_SUCCEEDED ? 700
-          : step->outcome == AZ_IOT_ADU_OUTCOME_FAILED                  ? 699
-                                                                        : 0;
-      step->extended_result_codes[0] = '0';
-      step->extended_result_codes_length = 1;
-    }
+  uint8_t buf[768];
+  size_t len = 0;
 
-    az_iot_adu_report report = AZ_IOT_ADU_REPORT_INIT;
-    report.workflow_id = "wf-1";
-    report.install_result = &result;
+  az_iot_adu_step_result step = { 0 };
+  step.outcome = AZ_IOT_ADU_OUTCOME_SUCCEEDED;
+  step.failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_NOT_APPLICABLE;
+  step.result_code = AZ_IOT_ADU_AGENT_RESULT_CODE_SUCCESS;
 
-    uint8_t buf[1024];
-    size_t len = 0;
-    assert_int_equal(
-        az_iot_adu__build_report_request(&report, buf, sizeof(buf) - 1, &len), AZ_IOT_OK);
-    buf[len] = '\0';
-    assert_non_null(strstr((const char*)buf, cases[c].expected[0]));
-    assert_non_null(strstr((const char*)buf, cases[c].expected[1]));
-  }
+  az_iot_adu_report report = { 0 };
+  report.workflow_id = "wf-success";
+  report.outcome = AZ_IOT_ADU_OUTCOME_SUCCEEDED;
+  report.failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_NOT_APPLICABLE;
+  report.result_code = AZ_IOT_ADU_AGENT_RESULT_CODE_SUCCESS;
+  report.extended_result_codes = "0";
+  report.step_results = &step;
+  report.step_results_count = 1;
+
+  assert_int_equal(az_iot_adu__build_report_request(&report, buf, sizeof(buf), &len), AZ_IOT_OK);
+  buf[len] = '\0';
+  assert_string_equal(
+      (const char*)buf,
+      "{\"workflowId\":\"wf-success\",\"installResult\":{\"outcome\":\"SUCCEEDED\","
+      "\"failureOrigin\":\"NOT_APPLICABLE\",\"resultCode\":700,"
+      "\"extendedResultCodes\":\"0\",\"stepResults\":{\"step_0\":{"
+      "\"outcome\":\"SUCCEEDED\",\"failureOrigin\":\"NOT_APPLICABLE\","
+      "\"resultCode\":700,\"extendedResultCodes\":\"0\"}}}}");
+}
+
+static void terminal_step_results_must_be_complete(void** state)
+{
+  (void)state;
+  uint8_t buf[512];
+  az_iot_adu_step_result step = { 0 };
+  az_iot_adu_report report = { 0 };
+  report.workflow_id = "wf-1";
+  report.outcome = AZ_IOT_ADU_OUTCOME_FAILED;
+  report.failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_AGENT_CORE;
+  report.result_code = -1;
+  report.extended_result_codes = "1";
+  report.step_results = &step;
+  report.step_results_count = 1;
+
+  assert_int_equal(
+      az_iot_adu__build_report_request(&report, buf, sizeof(buf), NULL), AZ_IOT_ERR_INVALID_ARG);
 }
 
 /* Omitted entirely when there are none -- an empty map is a different statement
@@ -895,20 +818,60 @@ static void no_step_results_means_no_key(void** state)
   (void)state;
   uint8_t buf[512];
   size_t len = 0;
-  az_iot_adu_install_result result = AZ_IOT_ADU_INSTALL_RESULT_INIT;
-  result.outcome = AZ_IOT_ADU_OUTCOME_SUCCEEDED;
-  result.failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_NOT_APPLICABLE;
-  result.result_code = 700;
-  memcpy(result.extended_result_codes, "0", 1);
-  result.extended_result_codes_length = 1;
-
-  az_iot_adu_report report = AZ_IOT_ADU_REPORT_INIT;
+  az_iot_adu_report report = { 0 };
   report.workflow_id = "wf-1";
-  report.install_result = &result;
+  report.outcome = AZ_IOT_ADU_OUTCOME_SUCCEEDED;
+  report.failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_NOT_APPLICABLE;
+  report.result_code = 700;
+  report.extended_result_codes = "0";
 
   assert_int_equal(az_iot_adu__build_report_request(&report, buf, sizeof(buf), &len), AZ_IOT_OK);
   buf[len] = '\0';
   assert_null(strstr((const char*)buf, "stepResults"));
+}
+
+/* The largest report the engine produces fits the channel body: max-length
+ * workflow id, a 192-byte applied update id with every byte escaped, and every
+ * step failed with INT32_MIN and an 8-hex extended code. The engine sets no
+ * resultDetails. */
+static void largest_engine_report_fits_the_channel_body(void** state)
+{
+  (void)state;
+  char workflow_id[AZ_IOT_ADU_WORKFLOW_ID_SIZE];
+  memset(workflow_id, 'w', sizeof(workflow_id) - 1);
+  workflow_id[sizeof(workflow_id) - 1] = '\0';
+  char id[3][64];
+  for (int i = 0; i < 3; ++i)
+  {
+    memset(id[i], 0x01, sizeof(id[i]) - 1);
+    id[i][sizeof(id[i]) - 1] = '\0';
+  }
+  const az_iot_adu_report_update_id installed = { id[0], id[1], id[2] };
+
+  az_iot_adu_step_result steps[_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS];
+  memset(steps, 0, sizeof(steps));
+  for (int32_t i = 0; i < _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS; ++i)
+  {
+    steps[i].outcome = AZ_IOT_ADU_OUTCOME_FAILED;
+    steps[i].failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_AGENT_CORE;
+    steps[i].result_code = INT32_MIN;
+    steps[i].extended_result_code = (int32_t)0xFFFFFFFFu;
+  }
+
+  az_iot_adu_report report = { 0 };
+  report.workflow_id = workflow_id;
+  report.installed_update_id = &installed;
+  report.outcome = AZ_IOT_ADU_OUTCOME_FAILED;
+  report.failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_AGENT_CORE;
+  report.result_code = INT32_MIN;
+  report.extended_result_codes = "ffffffff";
+  report.step_results = steps;
+  report.step_results_count = _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS;
+
+  uint8_t body[AZ_IOT_ADU_CHANNEL_BODY_MAX_SIZE];
+  size_t len = 0;
+  assert_int_equal(az_iot_adu__build_report_request(&report, body, sizeof(body), &len), AZ_IOT_OK);
+  assert_true(len > 0 && len <= sizeof(body));
 }
 
 static void both_error_signals_are_read_from_the_body(void** state)
@@ -1478,16 +1441,17 @@ int main(void)
     cmocka_unit_test(report_drops_installed_update_id_when_absent),
     cmocka_unit_test(outcome_and_failure_origin_must_agree),
     cmocka_unit_test(report_without_a_workflow_id_is_rejected),
-    cmocka_unit_test(report_protocol_uses_canonical_serializer),
     cmocka_unit_test(an_offered_update_is_captured_verbatim),
     cmocka_unit_test(no_update_is_success_whether_absent_or_null),
     cmocka_unit_test(the_root_key_url_is_read_from_service_configuration),
     cmocka_unit_test(a_malformed_response_body_is_rejected),
     cmocka_unit_test(a_report_with_a_partial_installed_update_id_is_rejected),
     cmocka_unit_test(a_truncated_response_body_is_rejected),
-    cmocka_unit_test(step_results_serialize_as_an_indexed_map),
-    cmocka_unit_test(step_results_carry_outcome_and_failure_origin),
+    cmocka_unit_test(terminal_failure_step_results_match_the_dps_shape),
+    cmocka_unit_test(terminal_success_step_results_match_the_dps_shape),
+    cmocka_unit_test(terminal_step_results_must_be_complete),
     cmocka_unit_test(no_step_results_means_no_key),
+    cmocka_unit_test(largest_engine_report_fits_the_channel_body),
     cmocka_unit_test(both_error_signals_are_read_from_the_body),
     cmocka_unit_test(a_numeric_only_body_is_still_usable),
     cmocka_unit_test(live_no_update_response_parses),

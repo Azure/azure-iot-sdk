@@ -112,7 +112,7 @@ sample-only / not factored) · 🔜 Coming soon (planned / designed, not yet bui
 | Core update workflow | ❌ | **Startup + reconnect re-reporting / initial twin GET** — no subscription and no unsolicited offer in ADUv2; the device polls instead. [→](#b-core-update-workflow) |
 | Core update workflow | ❌→✅ | **Accept / reject acknowledgement** — twin 200/406 ack is cut; already-installed becomes a `SKIPPED` outcome in the report. [→](#b-core-update-workflow) |
 | Core update workflow | ✅ | **Multi-step (composite) updates** — per-step Download→Backup→Install→Apply loop. [→](#b-core-update-workflow) |
-| Core update workflow | ✅ | **Per-step result reporting** — `resultCode`/`extendedResultCodes`/`stepResults`, each entry carrying its own `outcome` and `failureOrigin`. [→](#b-core-update-workflow) |
+| Core update workflow | ✅ | **Per-step result reporting** — `resultCode`/`extendedResultCode`/`stepResults`, each entry carrying its own `outcome` and `failureOrigin`. [→](#b-core-update-workflow) |
 | Core update workflow | ✅ | **Replacement / duplicate detection** — keyed on `workflowId` alone, the sole correlation key in ADUv2; `retryTimestamp` is gone. [→](#b-core-update-workflow) |
 | Core update workflow | ✅ | **Application event notification** — `az_iot_adu_client_add_observer()` / `remove_observer()`, dispatching `WORKFLOW_STATE_CHANGED` and `OPERATION_ABANDONED`. Replaced polling `get_state()` as the way an application follows a workflow, and is the only way it learns an operation was given up on. [→](#b-core-update-workflow) |
 | Core update workflow | ✅ | **Bounded requests** — `request_update()` / `request_onboarding_update()` take a `timeout_ms`; on expiry the request is abandoned and reported as `OPERATION_ABANDONED` with `AZ_IOT_ERR_TIMEOUT`. `AZ_IOT_ADU_REQUEST_NO_TIMEOUT` keeps the old unbounded behaviour. [→](#b-core-update-workflow) |
@@ -140,7 +140,7 @@ sample-only / not factored) · 🔜 Coming soon (planned / designed, not yet bui
 | Platform and crypto adapters | ✅ | **ESP32 platform adapter** — factored into `adapters/adu/esp32/` (`esp_http_client` + `esp_ota` + NVS resume). [→](#f-platform-and-crypto-adapters) |
 | ADUv2 transport | ❌ | **Twin (ADUv1) delivery + reporting** — the twin channel is removed, not kept behind a flag. [→](#what-aduv1-is-cut-means) |
 | ADUv2 transport | ✅ | **DPS update-check binding** — `requestSoftwareUpdates` / `requestOnboardingUpdates` over the device's DPS transport; both send `agentInfo`, and only the regular route sends `installedUpdateId` (onboarding omits it by contract: a day-0 device has nothing installed); parse `serviceConfiguration` + `updateMetadata`. [→](#g-aduv2-transport-via-the-dps-gateway) |
-| ADUv2 transport | 🟡 | **`reportUpdateStatus`** — `workflowId` + install result, idempotent, retried while the client lives. NOT durable across a reboot: the persistence blob is still v2 and does not carry an unsent report, so a device that reboots mid-install loses it. [→](#g-aduv2-transport-via-the-dps-gateway) |
+| ADUv2 transport | 🟡 | **`reportUpdateStatus`** — `workflowId` + install result, idempotent, retried while the client lives. NOT durable across a reboot: the persistence blob (v3) does not carry an unsent report, so a device that reboots mid-install loses it. [→](#g-aduv2-transport-via-the-dps-gateway) |
 | ADUv2 transport | ✅ | **Reuse DPS device auth** — X.509 (P1) over the existing DPS connection; no ADU endpoint/creds/mTLS; identity headers are gateway-populated. [→](#g-aduv2-transport-via-the-dps-gateway) |
 | ADUv2 transport | 🟡 | **Bootstrap orchestration** — the pre-registration hold, the onboarding fetch and the report are in place, the hold is advisory (registration proceeds when it expires), and a queued request is bounded by `timeout_ms` so one that can never be served is abandoned rather than retried forever. The re-check **loop** is still absent: the engine issues one fetch per request. [→](#g-aduv2-transport-via-the-dps-gateway) |
 | ADUv2 transport | 🟡 | **Operational polling loop** — an on-demand provisioning session after registration exists, and the application picks the route with `az_iot_adu_client_request_update()`. No cadence is owned by the SDK: the application decides when to poll. [→](#g-aduv2-transport-via-the-dps-gateway) |
@@ -280,24 +280,21 @@ stateDiagram-v2
   becomes a `SKIPPED` outcome in the report rather than a wire-level rejection. *Caveat:* still
   no app-level `accept_deployment_fn` veto hook (e.g. battery / critical-op deferral) — a
   candidate add, now more useful because the device controls the poll.
-- **Multi-step / per-step results** — sequential per-step loop; each result's
-  `extended_result_codes` holds comma-separated hex codes (4-bit facility + raw code) for field debugging. The engine exposes the
-  accumulated entries in one SDK-owned `az_iot_adu_install_result`: direct overall fields plus
-  an array of `az_iot_adu_step_result` entries, each with outcome/origin, int64 diagnostic code and owned
-  text buffers with byte lengths. The report envelope points to that same result. `az_iot_adu_build_report` uses
-  upstream JSON primitives to serialize ADUv2 `step_<index>` map entries, not a JSON array.
-  Diagnostic codes are preserved, not interpreted as outcomes; their service-side conventions
-  remain to be agreed. Schema validation covers enums, failure-origin consistency, unsigned
-  hex lists and text limits. `stepResults` is a map keyed by step; each entry carries
-  `outcome`, `failureOrigin`, `resultCode`, `extendedResultCodes` and optional `resultDetails`.
-  Network delivery/retry remains pending.
+- **Multi-step / per-step results** — sequential per-step loop; `step_results[]` with a
+  4-bit facility + raw-code `extendedResultCode` for field debugging. The engine exposes the
+  accumulated entries through `az_iot_adu_report.step_results` and `step_results_count`, in
+  manifest-step order on terminal reports; in-progress reports omit the map. These are borrowed views valid only
+  during the internal channel's report call; a retaining channel must copy the entries and
+  their `result_details` span contents. Existing per-step codes are preserved without conversion.
+  ADUv2 serialization ships: terminal reports write `stepResults` as a map keyed by step, each
+  entry carrying `outcome`, `failureOrigin`, `resultCode` and a comma-separated hex
+  `extendedResultCodes`, plus `resultDetails` when the step supplied any.
 - **Replacement vs. duplicate (✅)** — keyed on **`workflowId` alone**, as ADUv2 defines it: a
   new id restarts the workflow, the same id is ignored whatever the manifest bytes. The
   `retryTimestamp` input is gone.
 - **Cancellation (🟡)** — the cooperative flag and `az_iot_adu_is_cancelled()` stay, but no
   ADUv2 input sets the flag and no local cancel API exists yet; a superseding `workflowId`
-  restarts the workflow instead. A checkpoint saved with a cancel pending still resumes and
-  terminates as `CANCELED`. Core never force-interrupts a hook.
+  restarts the workflow instead. Core never force-interrupts a hook.
 - **Application notification (✅)** — `az_iot_adu_client_add_observer()` /
   `remove_observer()`, matching the connection client's registry. Two event kinds:
   `WORKFLOW_STATE_CHANGED` carries the `az_iot_adu_state`, replacing a polled
@@ -370,43 +367,20 @@ handling should be reused rather than rebuilt. Remaining work is narrower:
 ## E. Install, apply, recovery
 
 - **Install/Apply, Backup/Restore, partial rollback, reboot/resume (✅).** Persist-before-
-  reboot uses a versioned, CRC-checked, little-endian blob (`ADU1`, blob **v4**) carrying
-  `retryTimestamp` and a manifest CRC (kept for format compatibility, unused for
-  duplicate detection), and the accumulated `install_result` incl.
-  `step_results[]`; `resume()` re-enters at the persisted phase boundary
-  (`INSTALL_COMPLETE` → Apply). *Caveats:* the only persist point today is the
-  install-requested reboot; post-reboot rollback assumes the platform retained per-step
-  backups across the reboot.
+  reboot uses a versioned, CRC-checked, little-endian blob (`ADU1`, blob **v3**; v2 still
+  read) carrying `retryTimestamp` and a manifest CRC (kept for format compatibility, unused
+  for duplicate detection), the overall result, each step's result, and the download URLs
+  so a resume before the last step can fetch later steps' files; `resume()` re-enters at the
+  persisted phase boundary (`INSTALL_COMPLETE` → Apply). A failed checkpoint write holds
+  Apply and is retried; the blob is cleared (zero-length write) once the workflow returns to
+  Idle or is superseded. *Caveats:* the only persist point today is the install-requested
+  reboot; post-reboot rollback assumes the platform retained per-step backups across the
+  reboot.
 - **Persistence must grow for ADUv2 (🔜).** ADUv2 makes reporting a **durable write**, so the
-  blob must additionally carry the unsent `reportUpdateStatus` payload (keyed by
+  blob gains a **blob v4**: the unsent `reportUpdateStatus` payload (keyed by
   `workflowId`), `installedUpdateId`, and the `agentInfoEtag` / `serviceConfigEtag` pair, so a
   device that reboots mid-install still reports its result afterwards and does not resend a full
   `agentInfo` needlessly. `retryTimestamp` leaves the blob with the twin channel.
-  Blob v3 introduced canonical results (outcomes, origins, 64-bit diagnostics and text).
-  The current **blob v4** also carries validated ID/URL offset mappings into the saved request,
-  so remaining steps can download after resume without reparsing in-place-unescaped JSON.
-  Legacy v2/v3 checkpoints remain supported when no further downloads are needed; otherwise
-  resume returns `AZ_IOT_ERR_NOT_SUPPORTED` because their URL metadata is unavailable.
-  It is not an unsent-report queue. Resumed text is copied into result-owned buffers, so
-  later incoming payloads cannot overwrite it. The default snapshot storage covers maximum
-  result text; invalid lengths and corrupt snapshots are errors, not truncated results.
-  Resume validates the entire snapshot before committing to client-owned result storage,
-  avoiding a large stack-local result. Rejected snapshots leave the existing result and
-  workflow intact; only snapshot scratch is overwritten by the load hook.
-  Persistence failures are returned to the caller and block Apply. Subsequent work ticks retry
-  only the checkpoint, not Install; cancellation or a replacement clears the pending checkpoint.
-  A missing persistence hook returns `AZ_IOT_ERR_NOT_SUPPORTED` and also blocks Apply.
-  Checkpoints are retired once consumed or abandoned — completion, rollback, cancellation and
-  supersession all issue the zero-length `persist_state_fn` invalidation — because the platform
-  loaders are repeatable and would otherwise replay a finished workflow on every later boot.
-  A failed invalidation keeps the record marked live and retries at the next terminal transition.
-  No network-report retry/outbox or change to application-controlled reboot timing is introduced.
-  **Follow-up (not implemented):** distinguish permanent request-validation errors from
-  retryable storage-write failures. A missing remaining-step URL currently returns
-  `AZ_IOT_ERR_INVALID_ARG` on every checkpoint attempt, leaving the workflow pending until
-  cancellation or replacement. Reject malformed requests before execution or fail the workflow
-  explicitly instead of retrying unchanged invalid data; retain retries for recoverable storage
-  failures. Add a regression test covering this distinction.
 - **Health-check / auto-rollback after reboot (🟡 → core).** Today only the ESP32
   A/B sample confirms/marks-valid the new image; core does not re-run `is_installed_fn` on
   resume. **To do:** add an optional post-reboot confirm step in core with an auto-rollback

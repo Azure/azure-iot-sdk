@@ -46,7 +46,7 @@ The `azure-sdk-for-c` dependency (already fetched via CMake FetchContent) includ
 | Parse update manifest JSON | `az_iot_adu_client_parse_update_manifest()` |
 | Structs for manifest, workflow, file info, step results | `az_iot_adu_client_update_manifest`, `az_iot_adu_client_update_request`, etc. |
 
-Its device-twin helpers (service-property parsing, agent-state and acknowledgement formatting, component check) are not used by the engine. `az_iot_adu_build_report()` emits the ADUv2 `reportStatus` body; the channel delegates to it.
+Its device-twin helpers (service-property parsing, agent-state and acknowledgement formatting, component check) are not used by the engine. `az_iot_adu_build_report()` still emits the upstream agent-state JSON; the ADUv2 `reportStatus` body is built by the channel.
 
 **What azure-sdk-for-c does NOT provide:**
 - State machine / workflow orchestration.
@@ -56,22 +56,14 @@ Its device-twin helpers (service-property parsing, agent-state and acknowledgeme
 
 ### Strategy: Reuse, Don't Reimplement
 
-Our `adu_client` MUST **delegate** manifest parsing to `azure-sdk-for-c`'s `az_iot_adu_client`
-module. We MUST NOT reimplement JSON parsing already provided by the dependency.
-The upstream reported-property formatter describes the removed ADUv1 channel, not ADUv2.
-ADUv2 reporting uses the existing `az_json_writer` primitives with SDK-owned canonical result
-types: the engine and serializer share `az_iot_adu_install_result` / `az_iot_adu_step_result`.
-This avoids both a parallel report-result hierarchy and a dependency patch changing legacy
-types consumed by the upstream twin formatter. Manifest parsing, spans and JSON primitives
-remain reused; no dependency fork or patch is introduced. We own:
+Our `adu_client` MUST **delegate** manifest parsing to `azure-sdk-for-c`'s `az_iot_adu_client` module. We MUST NOT reimplement JSON parsing already provided by the upstream dependency. We own:
 
 1. **State machine** — orchestrating the Download → Backup → Install → Apply → (Restore) lifecycle.
 2. **JWS verification** — via customer-provided crypto hooks.
 3. **Channel integration** — carrying an update manifest in and a structured report out, through the `az_iot_adu_channel` vtable; the ADUv2 channel serializes both.
 4. **Platform hooks** — the vtable for download, install, apply, etc.
 
-This preserves the well-tested parsing logic while allowing the ADUv2 result schema to evolve
-independently of the archived dependency's ADUv1 formatter.
+This avoids duplicating the well-tested JSON parsing logic and keeps us aligned with the protocol schema as it evolves in the upstream dependency.
 
 ---
 
@@ -222,24 +214,24 @@ superseded. The client MUST distinguish:
 
 ### Result-Code Mapping
 
-ADUv2 uses explicit `outcome` fields in the SDK-owned `az_iot_adu_install_result`
-and `az_iot_adu_step_result` types. `result_code` is a signed 64-bit diagnostic,
-not the source of the outcome; `extended_result_codes` is owned hex text.
-The following table records current engine conventions, not a resolved service
-mapping. Diagnostic-code conventions still require confirmation.
+The state mapping above tells the service *what phase* the agent is in; the
+**result codes** tell it *how the last action ended*. Every report carries an
+`az_iot_adu_client_install_result` (and per-step `step_results[]`), each with a
+`result_code` (high-level) and `extended_result_code` (diagnostic). The client
+MUST populate them as follows.
+
+**`result_code`.** Follows ADU agent convention: the success value reported by
+the agent is **`700`** (the value used throughout azure-sdk-for-c examples). The
+client MUST report:
 
 | Outcome | `result_code` |
 |---|---|
 | Step/overall success | `700` |
-| Overall in progress | `1` |
-| Unfinished step | `0` |
-| Overall canceled/skipped | `-1` |
-| Canceled/skipped unfinished step | `0` |
-| Phase failure | `700 - facility`, retained for diagnostics |
+| Any failure | A non-success ADU code (`< 700`) indicating the failing phase |
 
-**Extended diagnostics.** The engine composes a 32-bit value using the layout below,
-then formats it into `extended_result_codes` as unsigned hex without `0x`.
-There is no numeric `extended_result_code` member in the canonical result types.
+**`extended_result_code`.** A 32-bit diagnostic value the client MUST compose so
+the failing layer and raw cause are recoverable from the cloud report. The SDK
+defines a structured layout:
 
 ```
  bits 31..28 : facility  (which phase/layer failed)
@@ -273,41 +265,27 @@ The update manifest v5 `instructions.steps[]` array MAY contain multiple steps, 
 1. For step N: the client MUST Download all files → Backup → Install → Apply.
 2. If Apply succeeds and more steps remain: the client MUST advance to step N+1 and loop back to Download.
 3. If any step fails: the client MUST Restore (rolling back from step N backward to step 0).
-4. Per-step results MUST be reported via the SDK-owned `az_iot_adu_step_result` array.
+4. Terminal per-step results MUST be reported via `az_iot_adu_step_result`.
 
 #### Per-Step Result Accumulation
 
-The client MUST maintain an `az_iot_adu_install_result` whose
-`step_results[]` array has **one entry per manifest step**, indexed by step
-number. As the machine progresses:
+The client MUST maintain an `az_iot_adu_step_result` for every manifest step,
+indexed by step number. As the machine progresses:
 
-- On initialization, unfinished steps have outcome `IN_PROGRESS` and zero diagnostics.
-- On a step completing successfully (Apply done), `step_results[N].result_code`
-  MUST be set to `700`.
-- On a step failing, `step_results[N]` MUST be set to the failing phase's
-  `FAILED` outcome, diagnostic code and unsigned hex diagnostics, and
+- Before execution, a step is `SKIPPED` / `NOT_APPLICABLE` with zero result
+  codes. This becomes the terminal state for steps not reached after a failure.
+- On successful Apply, the step becomes `SUCCEEDED` / `NOT_APPLICABLE`, result
+  code `700`, extended result code `0`.
+- On failure, the step becomes `FAILED` / `AGENT_CORE` with the failing phase's
+  `result_code` + composed `extended_result_code` (see Result-Code Mapping), and
   no further steps MUST be started.
-- The overall install result retains the first failure's diagnostic code; rollback failure
-  may replace its extended diagnostics without changing the failing step's result.
-- `step_results_count` matches the number of manifest steps; serialization uses
-  `step_<index>` map keys. Outcomes are not inferred from diagnostic-code signs.
-- On cancellation the unfinished current step is `CANCELED`; other unfinished steps
-  become `SKIPPED` on termination. Completed/failed steps keep their outcomes.
-
-Results own their text buffers and explicit byte lengths: 1024 bytes for ASCII hex diagnostics
-and 4096 bytes for up to 1024 UTF-8 characters of details. A result struct copy therefore owns
-all its text, independent of incoming payloads and snapshot scratch. This deliberately favors
-simple lifetimes over memory usage; optimize the footprint later if needed. The report
-envelope still borrows the same canonical install result rather than translating to a second
-model. The default snapshot buffer accommodates the maximum text in every result.
-Install results declare their overall fields directly, matching the service schema; they do
-not embed a step result. The separate step-result type is used only for entries in `step_results`.
-
-Embedded applications should keep the client out of small task stacks; the ESP32 sample uses
-static client storage. Resume first validates the snapshot records and manifest without changing
-the active client (except load scratch), then restores directly into the client-owned result.
-It keeps only a small parsed-manifest view on the stack, not a second owned install result.
-Whole-application stack and RAM usage still require validation on the target device.
+- On cancellation, the active unfinished step becomes `CANCELED` /
+  `NOT_APPLICABLE`, result code `-1`, extended result code `0`; later steps stay
+  `SKIPPED`.
+- The **overall** `result_code`/`extended_result_code` MUST mirror the *first*
+  failing step (the root cause), not a later rollback outcome.
+- `step_results_count` MUST equal the number of manifest steps for terminal
+  reports.
 
 #### Partial-Failure Rollback
 
@@ -318,7 +296,7 @@ returned to its pre-deployment state:
 1. Rollback MUST invoke `restore_fn` only for steps that had a successful
    `backup_fn` (steps whose Backup never ran MUST be skipped).
 2. If a `restore_fn` itself fails, the client MUST record facility `0x7`
-   (Restore) in the overall `extended_result_codes` but MUST continue attempting
+   (Restore) in the overall `extended_result_code` but MUST continue attempting
    to restore the remaining earlier steps (best-effort rollback).
 3. After rollback completes (or is best-effort exhausted), the client MUST report
    the terminal `Failed` state with the accumulated step results, then return to
@@ -344,8 +322,11 @@ Workflow transitions produce a status report. The engine hands the channel a str
 }
 ```
 
-Per-step results go in `installResult.stepResults`, keyed `step_0`, `step_1`, …; field rules are
-in [aduv2-spec.md](aduv2-spec.md).
+In-progress reports omit `installResult.stepResults`, even after some steps
+have completed. Terminal reports include the map when the manifest has steps,
+keyed `step_0`, `step_1`, …; every entry carries `outcome`, `failureOrigin`,
+`resultCode`, and `extendedResultCodes` (plus optional `resultDetails`). Field
+rules are in [aduv2-spec.md](aduv2-spec.md).
 
 ### Cancellation
 
@@ -369,28 +350,28 @@ NVS partition, EEPROM, …). The platform MUST NOT interpret it; the format is
 internal and may change between SDK versions.
 
 - **Size** — at most `AZ_IOT_ADU_STATE_BLOB_MAX_SIZE` bytes; size storage for it.
-- **Versioned** — magic `"ADU1"` and a `u16` version (currently 4; 2 and 3 are
-  still read). All integers are little-endian.
+- **Versioned** — magic `"ADU1"` and a `u16` version (currently 3; 2 is still
+  read). All integers are little-endian.
 - **Integrity-checked** — a trailing CRC-32 over the whole blob.
 - **Contents** — workflow state, step/file position, flags (cancel, have-request),
-  the raw request buffer (manifest, workflow id, retry timestamp), the canonical
-  install and step results with their owned text, and (v4) the download URLs
-  still needed by remaining steps.
+  the raw request buffer (manifest, workflow id, retry timestamp), the overall
+  and per-step results, and (v3) the download URLs of the request.
 
 The byte layout is documented next to the serializer in
 `src/features/adu/adu_client.c`; it is not a public contract.
 
 #### Resume semantics (`az_iot_adu_client_resume()`)
 
-1. Call `load_state_fn`. If it reports no state or a zero-length record,
-   `resume()` is a **no-op** returning success — the agent starts clean and
-   waits for the next update offer. A record that fails validation (size,
-   `magic`, `crc32`, field bounds) returns `AZ_IOT_ERR_INVALID_ARG`; an unknown
-   `version`, an older one lacking download URLs still needed, or any record
-   when `persist_state_fn` is NULL (it could never be cleared), returns
-   `AZ_IOT_ERR_NOT_SUPPORTED`. Either way the client is left unchanged.
+1. Call `load_state_fn`. If it reports no state (including an empty record), or
+   `magic`/`version`/`crc32` fail validation, `resume()` is a **no-op** returning
+   success — the agent starts clean and waits for the next update offer. A
+   stored record is refused with `AZ_IOT_ERR_NOT_SUPPORTED` when
+   `persist_state_fn` is NULL (it could never be cleared), or when it is a v2
+   record and later steps still need downloads; it is refused with
+   `AZ_IOT_ERR_INVALID_ARG` when its URLs do not cover the remaining steps. A
+   refused v2/URL record is cleared.
 2. Otherwise core rehydrates `current_request`, `current_step`, `current_file`,
-   and the install and step results from the blob.
+   and the overall and per-step results from the blob.
 3. **Replacement check** — when the next offer arrives, core compares its
    `workflowId` against the persisted one. A different id means the persisted
    workflow was superseded while the device was down: core MUST discard the
@@ -405,22 +386,12 @@ The byte layout is documented next to the serializer in
    - any earlier phase (download/backup) ⇒ re-enter at the **start of that step**
      (Download), re-downloading any partially fetched file; partial download
      progress is intentionally **not** trusted across reboot.
-5. After a successful resume-to-completion or a rollback, core MUST clear the
-   persisted blob (a zero-length `persist_state_fn` write) so a later boot does
-   not replay a finished workflow.
-
-   This applies to **every** way a checkpoint stops being current — completion,
-   rollback, cancellation, and supersession by a newer deployment — because the
-   platform loaders are repeatable: `load_state_fn` keeps returning the same
-   record until something overwrites it. Core tracks whether storage is believed
-   to hold a record and only issues the invalidation when there is one, so a
-   device that never checkpoints never pays a flash write. If the invalidation
-   write fails, core keeps the record marked live and retries at the next
-   terminal transition rather than leaving a replayable checkpoint behind.
-
-   `resume()` treats a zero-length load as "nothing persisted" and returns
-   success, since a cleared record is the normal steady state rather than
-   corruption.
+5. Core clears the stored blob (a zero-length `persist_state_fn` write) whenever
+   the workflow returns to Idle and when a new workflow supersedes it, so a later
+   boot does not replay a finished workflow. It writes only when it wrote or
+   resumed from a blob; a failed clear is retried at the next such transition.
+   A failed checkpoint write before a requested reboot holds the workflow at
+   `INSTALL_COMPLETE`, retrying the write, and Apply does not run until it lands.
 
 > Persisting after **every** phase is OPTIONAL; the only MUST is to persist before
 > a reboot the agent itself requested (`REBOOT_REQUIRED`). Persisting at more
@@ -543,6 +514,7 @@ typedef struct az_iot_adu_platform_hooks
     /**
      * Persist workflow state to non-volatile storage (for reboot survival).
      * OPTIONAL — REQUIRED only if reboot is possible during update.
+     * state_blob_len == 0 means erase the stored record.
      */
     int32_t (*persist_state_fn)(
         const uint8_t* state_blob,
@@ -1020,15 +992,15 @@ az_iot_result az_iot_adu_verify_file_hash(
     void* read_ctx);
 
 /**
- * Serialize the canonical report as ADUv2 JSON using az_json_writer.
- * No state machine, network I/O, or diagnostic-code remapping.
- * Both structs are caller-allocated and size-stamped (docs/struct_versioning.md):
- * initialize them with AZ_IOT_ADU_REPORT_INIT / AZ_IOT_ADU_INSTALL_RESULT_INIT.
- * A zero stamp is INVALID_ARG; any other mismatch is NOT_SUPPORTED, because
- * step_results is an inline array whose stride a different header would change.
+ * Build the report payload from the consumer's own outcome data, without the
+ * state machine. Emits the upstream agent-state JSON today; the ADUv2
+ * reportStatus body is built by the channel (see aduv2-spec.md).
  */
 az_iot_result az_iot_adu_build_report(
-    const az_iot_adu_report* report,
+    const az_iot_adu_device_properties* device_props,
+    const az_iot_adu_client_install_result* result,
+    const az_iot_adu_client_update_request* request,
+    az_iot_adu_state state,
     uint8_t* out_json,
     size_t out_size,
     size_t* out_len);
@@ -1690,7 +1662,7 @@ at `init` (compiled-in Microsoft defaults or caller-supplied keys).
 | 2 | Root key provisioning | **Both compiled-in and runtime-loadable, core-owned.** Core ships Microsoft defaults (`az_iot_adu_microsoft_root_keys()`), callers MAY override at `init`. Runtime Root Key Package rotation is tracked as future/pending (not in v1). |
 | 3 | Manifest algorithm | **RS256 only (v1).** Core MUST reject any JWS with `alg != RS256`; adapters MUST implement `verify_rs256_fn`. |
 | 4 | Manifest version | **v5 only.** The client MUST support manifest v5. Earlier versions MUST NOT be supported. |
-| 5 | Multi-file handling | **Per-file.** `download_fn` MUST be called once per file per do_work, with `file_index`/`file_count` for progress awareness. Operations MUST NOT be long-blocking. `file_index` is the slot within *that step's* `files[]` list; because `instructions.steps[].files[]` holds file **ids** rather than indices into `updateManifest.files`, the client MUST resolve each id against the manifest file map (the two lists are ordered independently) and MUST fail the step when an id is not described by the manifest. |
+| 5 | Multi-file handling | **Per-file.** `download_fn` MUST be called once per file per do_work, with `file_index`/`file_count` for progress awareness. Operations MUST NOT be long-blocking. |
 | 6 | Thread safety | **Single-threaded.** The ADU client MUST NOT use internal locks or threads. Applications that need concurrency MUST wrap externally. |
 
 ---
@@ -1702,7 +1674,7 @@ at `init` (compiled-in Microsoft defaults or caller-supplied keys).
 | Capability | Assessment |
 |-----------|------------|
 | Manifest v5 JSON parsing (inline steps, files, hashes) | ✅ Sufficient |
-| Reported-property JSON formatting (agent state + per-step results) | Not used; `az_iot_adu_build_report()` builds the ADUv2 report and the channel delegates to it |
+| Reported-property JSON formatting (agent state + per-step results) | Used only by `az_iot_adu_build_report()`; the channel builds the ADUv2 report |
 | Service property acknowledgement formatting (ACCEPT/REJECT) | Not used (device twin only) |
 | Component name check (`az_iot_adu_client_is_component_device_update`) | Not used (device twin only) |
 | Workflow struct with `action`, `id`, `retry_timestamp` | Only `id` is used (from `workflowId`) |

@@ -18,6 +18,8 @@
 #ifndef AZ_IOT_ADU_PROTOCOL_INTERNAL_H
 #define AZ_IOT_ADU_PROTOCOL_INTERNAL_H
 
+#include <azure/core/az_json.h>
+
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -132,6 +134,23 @@ extern "C"
       size_t* out_len);
 
   /**
+   * @brief Writes an update-id object (provider, name, version), escaped.
+   *
+   * All three strings must be non-NULL; callers choose their own contract
+   * (legacy empty strings or a validated ADUv2 ID).
+   */
+  az_result az_iot_adu__write_update_id(
+      az_json_writer* writer,
+      const az_iot_adu_report_update_id* id);
+
+  /**
+   * Render an extended result code in the contract's form: comma-separated
+   * unsigned hex int32, no 0x prefix, no fixed width. Shared so the aggregate
+   * result and the per-step results cannot drift apart.
+   */
+  void az_iot_adu__format_extended_result_code(char* out, size_t out_size, int32_t code);
+
+  /**
    * @brief Sizes the body az_iot_adu__build_fetch_request() would write, using a
    * 64-byte scratch instead of a full body buffer. Same result as that builder
    * given a @p capacity -byte buffer.
@@ -155,7 +174,7 @@ extern "C"
    * Build a status report body.
    *
    * workflowId is the sole correlation key. installedUpdateId is dropped from the
-   * body when NULL rather than serialized as null. Uses the canonical report serializer.
+   * body when NULL rather than serialized as null.
    */
   az_iot_result az_iot_adu__build_report_request(
       const az_iot_adu_report* report,
