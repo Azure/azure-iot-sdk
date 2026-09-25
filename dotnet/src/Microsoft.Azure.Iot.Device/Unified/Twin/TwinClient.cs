@@ -50,7 +50,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         /// </summary>
         public event Action<DesiredPatchReceivedEventArgs>? DesiredPatchReceived;
 
-        private MQTTv5.Twin.TwinClient _aegHubTwinClient;
+        private MQTTv5.Twin.TwinClient _mqttv5HubTwinClient;
 
         /// <summary>
         /// Construct a new <see cref="TwinClient"/> instance.
@@ -77,8 +77,8 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         public TwinClient(IConnectionClient connection)
         {
             _connection = connection;
-            _aegHubTwinClient = new MQTTv5.Twin.TwinClient(new Stub(connection));
-            _aegHubTwinClient.DesiredPatchReceived += HandleMQTTv5DesiredPatchReceivedAsync;
+            _mqttv5HubTwinClient = new MQTTv5.Twin.TwinClient(new Stub(connection));
+            _mqttv5HubTwinClient.DesiredPatchReceived += HandleMQTTv5DesiredPatchReceivedAsync;
             _connection.PublishReceivedAsync += HandleReceivedMqttPublish;
         }
 
@@ -105,7 +105,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
             if (_connection.GetCurrentConnectionContext()!.ConnectionProfile == Provisioning.Models.ConnectionProfile.MqttV5)
             {
                 // Unconditionally return the full twin since classic Hub cannot mimic any of the filtering that MQTTv5 Hub allows.
-                return await _aegHubTwinClient.GetTwinAsync(true, true, 0, 0, cancellationToken);
+                return await _mqttv5HubTwinClient.GetTwinAsync(true, true, 0, 0, cancellationToken);
             }
             else
             {
@@ -164,12 +164,12 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
             MqttPublish publish;
             if (_connection.GetCurrentConnectionContext()!.ConnectionProfile == Provisioning.Models.ConnectionProfile.MqttV5)
             {
-                ReportedPatchRequest aegRequest = new()
+                ReportedPatchRequest mqttv5Request = new()
                 {
                     ReportedProperties = reportedProperties,
                     IfMatch = 0
                 };
-                return await _aegHubTwinClient.UpdateReportedPropertiesAsync(aegRequest, cancellationToken);
+                return await _mqttv5HubTwinClient.UpdateReportedPropertiesAsync(mqttv5Request, cancellationToken);
             }
             else
             {
@@ -361,7 +361,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         /// <param name="disposing">true to release both managed and unmanaged resources; false to releases only unmanaged resources.</param>
         public void Dispose(bool disposing)
         {
-            _aegHubTwinClient.DesiredPatchReceived -= HandleMQTTv5DesiredPatchReceivedAsync;
+            _mqttv5HubTwinClient.DesiredPatchReceived -= HandleMQTTv5DesiredPatchReceivedAsync;
             _connection.PublishReceivedAsync -= HandleReceivedMqttPublish;
             if (disposing)
             {
@@ -375,7 +375,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         /// </summary>
         public void Dispose()
         {
-            _aegHubTwinClient.DesiredPatchReceived -= HandleMQTTv5DesiredPatchReceivedAsync;
+            _mqttv5HubTwinClient.DesiredPatchReceived -= HandleMQTTv5DesiredPatchReceivedAsync;
             _connection.PublishReceivedAsync -= HandleReceivedMqttPublish;
             _connection.Dispose();
             _isDisposed = true;

@@ -16,7 +16,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
         private const string DeviceId = "someDeviceId";
 
         [Fact]
-        public async Task SendTelemetryAsync_PublishesToAegTopicWithProperties()
+        public async Task SendTelemetryAsync_PublishesToMqttv5TopicWithProperties()
         {
             MockFeatureConnectionClient connection = new()
             {

@@ -24,7 +24,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.DirectMethods
 
         private IConnectionClient _connection;
 
-        private MQTTv5.DirectMethods.DirectMethodClient _aegDirectMethodClient;
+        private MQTTv5.DirectMethods.DirectMethodClient _mqttv5DirectMethodClient;
 
         /// <summary>
         /// An event that executes whenever this device receives a direct method request from IoT hub. After executing the direct method, the device must
@@ -59,12 +59,12 @@ namespace Microsoft.Azure.Iot.Device.Unified.DirectMethods
             _connection = connection;
             _connection.PublishReceivedAsync += HandleReceivedMqttPublish;
 
-            _aegDirectMethodClient = new(new Stub(_connection));
-            _aegDirectMethodClient.DirectMethodProbeReceivedAsync += HandleAegDirectMethodProbeRequestAsync;
-            _aegDirectMethodClient.DirectMethodInvokedAsync += HandleAegDirectMethodRequestAsync;
+            _mqttv5DirectMethodClient = new(new Stub(_connection));
+            _mqttv5DirectMethodClient.DirectMethodProbeReceivedAsync += HandleMqttv5DirectMethodProbeRequestAsync;
+            _mqttv5DirectMethodClient.DirectMethodInvokedAsync += HandleMqttv5DirectMethodRequestAsync;
         }
 
-        private async Task<DirectMethodResponse> HandleAegDirectMethodRequestAsync(DirectMethodRequestReceivedEventArgs args)
+        private async Task<DirectMethodResponse> HandleMqttv5DirectMethodRequestAsync(DirectMethodRequestReceivedEventArgs args)
         {
             if (DirectMethodInvokedAsync == null)
             {
@@ -79,7 +79,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.DirectMethods
             return await DirectMethodInvokedAsync.Invoke(args);
         }
 
-        private async Task<DirectMethodProbeAck> HandleAegDirectMethodProbeRequestAsync(DirectMethodRequestProbeReceivedEventArgs args)
+        private async Task<DirectMethodProbeAck> HandleMqttv5DirectMethodProbeRequestAsync(DirectMethodRequestProbeReceivedEventArgs args)
         {
             // Since Classic Hub has no concept of a direct method probe message, make this unified client just accept any received probe request
             return DirectMethodProbeAck.Accepted();
@@ -173,8 +173,8 @@ namespace Microsoft.Azure.Iot.Device.Unified.DirectMethods
         {
             _connection.PublishReceivedAsync -= HandleReceivedMqttPublish;
 
-            _aegDirectMethodClient.DirectMethodProbeReceivedAsync -= HandleAegDirectMethodProbeRequestAsync;
-            _aegDirectMethodClient.DirectMethodInvokedAsync -= HandleAegDirectMethodRequestAsync;
+            _mqttv5DirectMethodClient.DirectMethodProbeReceivedAsync -= HandleMqttv5DirectMethodProbeRequestAsync;
+            _mqttv5DirectMethodClient.DirectMethodInvokedAsync -= HandleMqttv5DirectMethodRequestAsync;
 
             if (disposing)
             {
@@ -189,8 +189,8 @@ namespace Microsoft.Azure.Iot.Device.Unified.DirectMethods
         {
             _connection.PublishReceivedAsync -= HandleReceivedMqttPublish;
 
-            _aegDirectMethodClient.DirectMethodProbeReceivedAsync -= HandleAegDirectMethodProbeRequestAsync;
-            _aegDirectMethodClient.DirectMethodInvokedAsync -= HandleAegDirectMethodRequestAsync;
+            _mqttv5DirectMethodClient.DirectMethodProbeReceivedAsync -= HandleMqttv5DirectMethodProbeRequestAsync;
+            _mqttv5DirectMethodClient.DirectMethodInvokedAsync -= HandleMqttv5DirectMethodRequestAsync;
 
             _connection.Dispose();
         }
