@@ -255,8 +255,7 @@ static int32_t sim_persist(const uint8_t* blob, size_t len, void* user_ctx)
   sim_ctx* s = (sim_ctx*)user_ctx;
   if (len == 0)
   {
-    /* Invalidation: remove the file so a later run sees no checkpoint and does
-     * not replay a workflow that already finished. */
+    /* Invalidation: remove the file so a later run finds no checkpoint. */
     if (remove(s->state_file) != 0 && errno != ENOENT)
     {
       return AZ_IOT_ADU_RESULT_FAILURE;

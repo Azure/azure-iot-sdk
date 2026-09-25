@@ -142,39 +142,14 @@ same request/response, different gateway).
 
 **Report** (`ReportStatusRequest`): `{ workflowId, installedUpdateId, installResult }` where
 `installResult` = `{ outcome ∈ IN_PROGRESS|SUCCEEDED|FAILED|CANCELED|SKIPPED, failureOrigin, resultCode,
-extendedResultCodes (comma-sep hex), resultDetails, stepResults{ step_0, step_1, … } }`; each
-`stepResults` entry carries its own `outcome`, `failureOrigin`, `resultCode`, `extendedResultCodes` and optional
-`resultDetails`. **Idempotent on
-`workflowId` alone**; a conflicting terminal for the same id ⇒ `409 REPORT_CONFLICT`.
+extendedResultCodes (comma-sep hex), resultDetails, stepResults{ step_0, step_1, … } }`. Each step
+value has the same required `outcome`, `failureOrigin`, `resultCode`, and `extendedResultCodes`
+fields plus optional `resultDetails`. In-progress reports omit `stepResults`; terminal reports
+include complete entries when the manifest has steps. **Idempotent on `workflowId` alone**; a
+conflicting terminal for the same id ⇒ `409 REPORT_CONFLICT`.
 
 > Identity headers (`x-ms-external-device-id` = registrationId; `x-ms-device-id` = ADR UUID on the regular path)
 > are **gateway-populated — the device sets none of them**.
-
-### Canonical reporting model
-
-The ADU client owner confirmed `stepResults` as an optional map keyed `step_0`, `step_1`, etc.
-It may be omitted on success and SHOULD be present on failure. Each step requires `outcome`,
-`failureOrigin`, signed int64 `resultCode`, and `extendedResultCodes`; `resultDetails` is optional.
-Steps have no `updateId`.
-
-Both text fields are `@maxLength(1024)`. That limit is expressed in Unicode characters, not
-bytes: JSON is UTF-8 on the wire, so a conforming value may reach 4096 bytes. `resultDetails`
-is free-form text and is therefore sized at 4096 bytes; `extendedResultCodes` is ASCII by
-construction, so 1024 bytes is exact. Service-side byte-vs-character enforcement still needs
-confirmation. The SDK validates Unicode character limits and rejects over-limit or malformed
-text with `AZ_IOT_ERR_INVALID_ARG`; it does not truncate.
-Extended codes are comma-separated unsigned hex int32 values: no `0x`, case-insensitive, no
-fixed width. Ordering is not semantic and the service may inspect only the first code.
-Outcomes use the five v2 values above. Failure origins
-are `NOT_APPLICABLE`, `ADU_CLOUD_SERVICE`, `ADU_MANAGED_RESOURCE`, `AGENT_CORE`, `AGENT_EXTENSION`,
-`AGENT_DEPENDENCY`, `DEVICE`, `OTHER`. Non-failures require `NOT_APPLICABLE`; failures require a
-failure origin (`OTHER` if unknown).
-
-SDK engine and serializer share one canonical install/step result model. Results own text
-buffers and byte lengths to simplify lifetime management; memory optimization is deferred.
-The serializer preserves diagnostic values, validates
-the schema and emits the map with upstream JSON primitives; it does not implement delivery.
-Outcome is authoritative: diagnostic-code conventions remain inconsistent across service docs.
 
 ## Auth & transport
 
@@ -202,7 +177,7 @@ read off a DRAFT spec. Treat them differently.
 | api-version `2026-11-02-preview` | X.509 on the update path; TPM; AMQP |
 | Device-facing URL shape and the three operation names | Whether an MQTT binding exists for the three operations |
 | SAS (enrollment-group symmetric key) auth | Payload caps, throttle / `Retry-After` values |
-| `agentInfo` = `{ agentSdkVersion, agentProfile, compatibilityProperties }`; `agentProfile` sent as an integer | Per-step `resultDetails`; reports with more than one step; `stepResults` diagnostic-code conventions |
+| `agentInfo` = `{ agentSdkVersion, agentProfile, compatibilityProperties }`; `agentProfile` sent as an integer | Per-step `resultDetails`; reports with more than one step |
 | Response `agentInfoEtag` / `serviceConfigEtag` / `updateMetadata` (null ⇒ no update) | Root-key-package fetch and verification end to end |
 | Report `{ workflowId, installedUpdateId, installResult{ outcome, failureOrigin, resultCode, extendedResultCodes, resultDetails } }`; `resultCode` 700 = success; `failureOrigin` `AGENT_CORE` / `NOT_APPLICABLE` | The error-code table below (drawn from the spec, not exercised) |
 | `stepResults` entries `{ outcome, failureOrigin, resultCode, extendedResultCodes }` accepted (single-step update); without `outcome`/`failureOrigin` the report was rejected with `400012` | |

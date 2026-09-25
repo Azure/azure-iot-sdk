@@ -130,10 +130,17 @@ extern "C"
       size_t* out_len);
 
   /**
+   * Render an extended result code in the contract's form: comma-separated
+   * unsigned hex int32, no 0x prefix, no fixed width. Shared so the aggregate
+   * result and the per-step results cannot drift apart.
+   */
+  void az_iot_adu__format_extended_result_code(char* out, size_t out_size, int32_t code);
+
+  /**
    * Build a status report body.
    *
    * workflowId is the sole correlation key. installedUpdateId is dropped from the
-   * body when NULL rather than serialized as null. Uses the canonical report serializer.
+   * body when NULL rather than serialized as null.
    */
   az_iot_result az_iot_adu__build_report_request(
       const az_iot_adu_report* report,

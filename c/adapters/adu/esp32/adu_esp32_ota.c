@@ -313,8 +313,7 @@ static int32_t ota_persist(const uint8_t* blob, size_t len, void* user_ctx)
   int32_t result = AZ_IOT_ADU_RESULT_FAILURE;
   if (len == 0)
   {
-    /* Invalidation: drop the key outright so a later boot sees no checkpoint
-     * and does not replay a workflow that already finished. */
+    /* Invalidation: erase the key so a later boot finds no checkpoint. */
     esp_err_t err = nvs_erase_key(h, ADU_NVS_STATE_KEY);
     if ((err == ESP_OK || err == ESP_ERR_NVS_NOT_FOUND) && nvs_commit(h) == ESP_OK)
     {

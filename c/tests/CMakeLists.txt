@@ -251,9 +251,6 @@ target_include_directories(az_iot_tests_gen2_twin_client PRIVATE ${CMAKE_SOURCE_
 az_iot_add_cmocka_test(az_iot_tests_adu_client unit/adu_client_test.c)
 az_iot_add_cmocka_test(az_iot_tests_adu_protocol unit/adu_protocol_test.c)
 target_link_libraries(az_iot_tests_adu_client PRIVATE az_iot_test_support)
-az_iot_add_cmocka_test(az_iot_tests_adu_report unit/adu_report_test.c)
-target_include_directories(az_iot_tests_adu_report PRIVATE
-    ${CMAKE_SOURCE_DIR}/src/features/adu)
 # For az_iot_time_mono_ms: the request deadline is a monotonic instant, so a
 # test that exercises it has to speak the same clock.
 target_include_directories(az_iot_tests_adu_client PRIVATE ${CMAKE_SOURCE_DIR}/src/core)

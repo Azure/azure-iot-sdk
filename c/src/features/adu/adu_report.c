@@ -3,7 +3,10 @@
 // information.
 
 /* SPDX-License-Identifier: MIT */
-#include <limits.h>
+/* ADU reporting: turns the engine state into the STRUCTURED result handed to
+ * a channel, plus the standalone report builder used in library mode. The
+ * upstream az_iot_adu_client_device_properties type never escapes to the
+ * application; it is built here, on demand, from the client-owned cache. */
 #include <string.h>
 
 #include <azure/core/az_json.h>
@@ -11,251 +14,109 @@
 #include <azure/core/az_span.h>
 
 #include "azure/iot/az_iot_adu.h"
+
 #include "internal/adu_internal.h"
-#include "internal/log_internal.h"
+#include "internal/adu_protocol_internal.h"
 #include "internal/span_writer.h"
 
-static az_span outcome_name(az_iot_adu_outcome outcome)
+/* Reported-property payload buffer. v5 manifests with the upper-bounded step
+ * count fit comfortably; bounded and stack-local, no heap. */
+#ifndef AZ_IOT_ADU_REPORT_BUFFER_SIZE
+#define AZ_IOT_ADU_REPORT_BUFFER_SIZE 1024
+#endif
+
+/* Bound on the free-form result detail carried in a structured report. */
+#ifndef AZ_IOT_ADU_RESULT_DETAILS_SIZE
+#define AZ_IOT_ADU_RESULT_DETAILS_SIZE 256
+#endif
+
+/* Agent result codes the contract defines. */
+#define AZ_IOT_ADU_RESULT_CODE_IN_PROGRESS 1
+#define AZ_IOT_ADU_RESULT_CODE_SUCCESS 700
+#define AZ_IOT_ADU_RESULT_CODE_FAILURE (-1)
+
+az_iot_adu_client_agent_state az_iot_adu__agent_state(az_iot_adu_state state)
 {
-  switch (outcome)
+  /* The service knows three agent states; the workflow has twelve. Every one is
+   * listed rather than folded into default:, so that adding a workflow state
+   * forces a decision about how the service should see it -- the previous
+   * default: would silently have reported it as in-progress, including for a
+   * state that was actually terminal. */
+  switch (state)
   {
-    case AZ_IOT_ADU_OUTCOME_IN_PROGRESS:
-      return AZ_SPAN_FROM_STR("IN_PROGRESS");
-    case AZ_IOT_ADU_OUTCOME_SUCCEEDED:
-      return AZ_SPAN_FROM_STR("SUCCEEDED");
-    case AZ_IOT_ADU_OUTCOME_FAILED:
-      return AZ_SPAN_FROM_STR("FAILED");
-    case AZ_IOT_ADU_OUTCOME_CANCELED:
-      return AZ_SPAN_FROM_STR("CANCELED");
-    case AZ_IOT_ADU_OUTCOME_SKIPPED:
-      return AZ_SPAN_FROM_STR("SKIPPED");
+    case AZ_IOT_ADU_STATE_IDLE:
+      return AZ_IOT_ADU_CLIENT_AGENT_STATE_IDLE;
+
+    case AZ_IOT_ADU_STATE_FAILED:
+      return AZ_IOT_ADU_CLIENT_AGENT_STATE_FAILED;
+
+    case AZ_IOT_ADU_STATE_MANIFEST_RECEIVED:
+    case AZ_IOT_ADU_STATE_VERIFYING_MANIFEST:
+    case AZ_IOT_ADU_STATE_DOWNLOAD_STARTED:
+    case AZ_IOT_ADU_STATE_DOWNLOAD_COMPLETE:
+    case AZ_IOT_ADU_STATE_BACKUP_STARTED:
+    case AZ_IOT_ADU_STATE_BACKUP_COMPLETE:
+    case AZ_IOT_ADU_STATE_INSTALL_STARTED:
+    case AZ_IOT_ADU_STATE_INSTALL_COMPLETE:
+    case AZ_IOT_ADU_STATE_APPLY_STARTED:
+    case AZ_IOT_ADU_STATE_RESTORE_STARTED:
+      return AZ_IOT_ADU_CLIENT_AGENT_STATE_DEPLOYMENT_IN_PROGRESS;
+
     default:
-      return AZ_SPAN_EMPTY;
+      /* A value from outside the enum: report the deployment as still running
+       * rather than inventing a terminal outcome for it. */
+      return AZ_IOT_ADU_CLIENT_AGENT_STATE_DEPLOYMENT_IN_PROGRESS;
   }
 }
 
-static az_span failure_origin_name(az_iot_adu_failure_origin origin)
+az_iot_adu_client_device_properties az_iot_adu__device_properties_view(
+    const az_iot_adu_client_t* client)
 {
-  switch (origin)
+  az_iot_adu_client_device_properties props = az_iot_adu_client_device_properties_default();
+
+  /* The cache layout (see az_iot_adu__cache_device_properties) packs
+   * NUL-terminated manufacturer/model/installed-update-id strings into the
+   * caller's buffer. We rebuild az_span views over those C strings here. */
+  const az_iot_adu_device_properties* cached
+      = (const az_iot_adu_device_properties*)(const void*)ADU_I(client).device_props_buffer;
+
+  if (ADU_I(client).device_props_buffer != NULL)
   {
-    case AZ_IOT_ADU_FAILURE_ORIGIN_NOT_APPLICABLE:
-      return AZ_SPAN_FROM_STR("NOT_APPLICABLE");
-    case AZ_IOT_ADU_FAILURE_ORIGIN_ADU_CLOUD_SERVICE:
-      return AZ_SPAN_FROM_STR("ADU_CLOUD_SERVICE");
-    case AZ_IOT_ADU_FAILURE_ORIGIN_ADU_MANAGED_RESOURCE:
-      return AZ_SPAN_FROM_STR("ADU_MANAGED_RESOURCE");
-    case AZ_IOT_ADU_FAILURE_ORIGIN_AGENT_CORE:
-      return AZ_SPAN_FROM_STR("AGENT_CORE");
-    case AZ_IOT_ADU_FAILURE_ORIGIN_AGENT_EXTENSION:
-      return AZ_SPAN_FROM_STR("AGENT_EXTENSION");
-    case AZ_IOT_ADU_FAILURE_ORIGIN_AGENT_DEPENDENCY:
-      return AZ_SPAN_FROM_STR("AGENT_DEPENDENCY");
-    case AZ_IOT_ADU_FAILURE_ORIGIN_DEVICE:
-      return AZ_SPAN_FROM_STR("DEVICE");
-    case AZ_IOT_ADU_FAILURE_ORIGIN_OTHER:
-      return AZ_SPAN_FROM_STR("OTHER");
-    default:
-      return AZ_SPAN_EMPTY;
+    if (cached->manufacturer != NULL)
+    {
+      props.manufacturer = az_span_create_from_str((char*)(uintptr_t)cached->manufacturer);
+    }
+    if (cached->model != NULL)
+    {
+      props.model = az_span_create_from_str((char*)(uintptr_t)cached->model);
+    }
   }
+
+  /* The ADU service requires a non-empty serialized installed-update-id; the
+   * upstream formatter has a precondition on it. Built once at initialize. */
+  if (ADU_I(client).update_id_json_len > 0)
+  {
+    props.update_id = az_span_create(
+        (uint8_t*)(uintptr_t)ADU_I(client).update_id_json,
+        (int32_t)ADU_I(client).update_id_json_len);
+  }
+
+  props.adu_version = AZ_SPAN_FROM_STR(AZ_IOT_ADU_CLIENT_AGENT_VERSION);
+
+  /* Hand the cached custom-property view (built at cache time) to the
+   * formatter so they are emitted for deployment compatibility checks. */
+  if (ADU_I(client).custom_props_view.count > 0)
+  {
+    props.custom_properties
+        = (az_iot_adu_device_custom_properties*)(uintptr_t)&ADU_I(client).custom_props_view;
+  }
+
+  return props;
 }
 
-/* az_json_writer escapes bytes but does not validate UTF-8. Count Unicode scalar
- * values here, not bytes, so the contract's character limit also accepts non-ASCII. */
-static bool valid_utf8(az_span text, int32_t max_characters)
-{
-  int32_t size = az_span_size(text);
-  const uint8_t* bytes = az_span_ptr(text);
-  if (size < 0 || (size > 0 && bytes == NULL))
-  {
-    return false;
-  }
-
-  int32_t characters = 0;
-  for (int32_t i = 0; i < size;)
-  {
-    if (characters == max_characters)
-    {
-      return false;
-    }
-    ++characters;
-    uint32_t codepoint = bytes[i++];
-    int32_t continuation;
-    uint32_t minimum;
-    if (codepoint < 0x80)
-    {
-      continue;
-    }
-    if (codepoint >= 0xc2 && codepoint <= 0xdf)
-    {
-      continuation = 1;
-      minimum = 0x80;
-      codepoint &= 0x1f;
-    }
-    else if (codepoint >= 0xe0 && codepoint <= 0xef)
-    {
-      continuation = 2;
-      minimum = 0x800;
-      codepoint &= 0x0f;
-    }
-    else if (codepoint >= 0xf0 && codepoint <= 0xf4)
-    {
-      continuation = 3;
-      minimum = 0x10000;
-      codepoint &= 0x07;
-    }
-    else
-    {
-      return false;
-    }
-    if (continuation > size - i)
-    {
-      return false;
-    }
-    while (continuation-- > 0)
-    {
-      uint8_t next = bytes[i++];
-      if ((next & 0xc0) != 0x80)
-      {
-        return false;
-      }
-      codepoint = (codepoint << 6) | (next & 0x3f);
-    }
-    if (codepoint < minimum || codepoint > 0x10ffff || (codepoint >= 0xd800 && codepoint <= 0xdfff))
-    {
-      return false;
-    }
-  }
-  return true;
-}
-
-static bool valid_extended_results(az_span codes)
-{
-  int32_t size = az_span_size(codes);
-  const uint8_t* bytes = az_span_ptr(codes);
-  if (size <= 0 || size > AZ_IOT_ADU_RESULT_TEXT_MAX_LENGTH || bytes == NULL)
-  {
-    return false;
-  }
-
-  uint32_t value = 0;
-  bool has_digit = false;
-  for (int32_t i = 0; i < size; ++i)
-  {
-    uint8_t c = bytes[i];
-    if (c == ',')
-    {
-      if (!has_digit)
-      {
-        return false;
-      }
-      value = 0;
-      has_digit = false;
-      continue;
-    }
-    uint32_t digit;
-    if (c >= '0' && c <= '9')
-    {
-      digit = (uint32_t)(c - '0');
-    }
-    else if (c >= 'a' && c <= 'f')
-    {
-      digit = (uint32_t)(c - 'a') + 10;
-    }
-    else if (c >= 'A' && c <= 'F')
-    {
-      digit = (uint32_t)(c - 'A') + 10;
-    }
-    else
-    {
-      return false;
-    }
-    if (value > (UINT32_MAX - digit) / 16)
-    {
-      return false;
-    }
-    value = value * 16 + digit;
-    has_digit = true;
-  }
-  return has_digit;
-}
-
-bool az_iot_adu__valid_result_fields(
-    az_iot_adu_outcome outcome,
-    az_iot_adu_failure_origin origin,
-    const uint8_t* extended,
-    int32_t extended_length,
-    const uint8_t* details,
-    int32_t details_length)
-{
-  if (extended == NULL || (details == NULL && details_length > 0) || extended_length <= 0
-      || extended_length > AZ_IOT_ADU_RESULT_TEXT_MAX_LENGTH || details_length < 0
-      || details_length > AZ_IOT_ADU_RESULT_DETAILS_MAX_SIZE
-      || az_span_size(outcome_name(outcome)) == 0 || az_span_size(failure_origin_name(origin)) == 0)
-  {
-    return false;
-  }
-  bool failed = outcome == AZ_IOT_ADU_OUTCOME_FAILED;
-  bool not_applicable = origin == AZ_IOT_ADU_FAILURE_ORIGIN_NOT_APPLICABLE;
-  return failed != not_applicable
-      && valid_extended_results(az_span_create((uint8_t*)(uintptr_t)extended, extended_length))
-      && valid_utf8(
-             az_span_create((uint8_t*)(uintptr_t)details, details_length),
-             AZ_IOT_ADU_RESULT_TEXT_MAX_LENGTH);
-}
-
-az_iot_result az_iot_adu__validate_install_result(const az_iot_adu_install_result* result)
-{
-  if (result == NULL || result->step_results_count < 0
-      || result->step_results_count > _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS
-      || !az_iot_adu__valid_result_fields(
-          result->outcome,
-          result->failure_origin,
-          result->extended_result_codes,
-          result->extended_result_codes_length,
-          result->result_details,
-          result->result_details_length))
-  {
-    return AZ_IOT_ERR_INVALID_ARG;
-  }
-  for (int32_t i = 0; i < result->step_results_count; ++i)
-  {
-    const az_iot_adu_step_result* step = &result->step_results[i];
-    if (!az_iot_adu__valid_result_fields(
-            step->outcome,
-            step->failure_origin,
-            step->extended_result_codes,
-            step->extended_result_codes_length,
-            step->result_details,
-            step->result_details_length))
-    {
-      return AZ_IOT_ERR_INVALID_ARG;
-    }
-  }
-  return AZ_IOT_OK;
-}
-
-void az_iot_adu__set_extended_result(az_span destination, int32_t* length, uint32_t code)
-{
-  if (length == NULL)
-  {
-    AZ_IOT_LOG_ERROR("adu: cannot format diagnostics without an output length");
-    return;
-  }
-  *length = 0;
-  az_iot_span_writer writer;
-  az_iot_span_writer_init(&writer, destination);
-  az_iot_span_writer_append_hex32(&writer, code, 1);
-  az_span written;
-  if (az_iot_span_writer_end(&writer, &written) == AZ_IOT_OK)
-  {
-    *length = az_span_size(written);
-  }
-  else
-  {
-    AZ_IOT_LOG_ERROR("adu: extended diagnostic formatting failed");
-  }
-}
-
+/* Assemble the structured result and hand it to the channel. The engine emits
+ * no wire format: how this becomes a request body is the channel's business
+ * alone. Reporting is per-workflow and idempotent on the workflow id. */
 az_iot_result az_iot_adu__report_state(az_iot_adu_client_t* client)
 {
   if (client == NULL)
@@ -266,25 +127,87 @@ az_iot_result az_iot_adu__report_state(az_iot_adu_client_t* client)
   {
     return AZ_IOT_ERR_DETACHED;
   }
-  if (!ADU_I(client).active_workflow_valid || ADU_I(client).active_workflow_id_len == 0)
-  {
-    return AZ_IOT_OK;
-  }
-  if (ADU_I(client).channel.vtable == NULL || ADU_I(client).channel.vtable->report == NULL
-      || ADU_I(client).active_workflow_id_len > AZ_IOT_ADU_WORKFLOW_ID_SIZE)
+  if (ADU_I(client).channel.vtable == NULL || ADU_I(client).channel.vtable->report == NULL)
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
 
+  /* With no active workflow there is no correlation key, and therefore nothing
+   * the service could attribute a report to. Not an error: a day-0 device that
+   * has never been offered an update simply has nothing to say. */
+  if (!ADU_I(client).active_workflow_valid || ADU_I(client).active_workflow_id_len == 0)
+  {
+    return AZ_IOT_OK;
+  }
+
   char workflow_id[AZ_IOT_ADU_WORKFLOW_ID_SIZE + 1];
   size_t wlen = ADU_I(client).active_workflow_id_len;
+  if (wlen > AZ_IOT_ADU_WORKFLOW_ID_SIZE)
+  {
+    wlen = AZ_IOT_ADU_WORKFLOW_ID_SIZE;
+  }
   memcpy(workflow_id, ADU_I(client).active_workflow_id, wlen);
   workflow_id[wlen] = '\0';
 
+  az_iot_adu_outcome outcome;
+  if (ADU_I(client).state == AZ_IOT_ADU_STATE_FAILED)
+  {
+    outcome = AZ_IOT_ADU_OUTCOME_FAILED;
+  }
+  else if (ADU_I(client).state == AZ_IOT_ADU_STATE_IDLE)
+  {
+    outcome = ADU_I(client).pending_outcome;
+  }
+  else
+  {
+    outcome = AZ_IOT_ADU_OUTCOME_IN_PROGRESS;
+  }
+
+  const az_iot_adu_client_install_result* r = &ADU_I(client).install_result;
+
+  int32_t result_code;
+  switch (outcome)
+  {
+    case AZ_IOT_ADU_OUTCOME_IN_PROGRESS:
+      result_code = AZ_IOT_ADU_RESULT_CODE_IN_PROGRESS;
+      break;
+    case AZ_IOT_ADU_OUTCOME_SUCCEEDED:
+      result_code = AZ_IOT_ADU_RESULT_CODE_SUCCESS;
+      break;
+    case AZ_IOT_ADU_OUTCOME_FAILED:
+    case AZ_IOT_ADU_OUTCOME_CANCELED:
+    case AZ_IOT_ADU_OUTCOME_SKIPPED:
+    default:
+      /* Carry the engine's own code when it set one, so a specific failure is
+       * not flattened into the generic one. */
+      result_code = (r->result_code != 0) ? r->result_code : AZ_IOT_ADU_RESULT_CODE_FAILURE;
+      break;
+  }
+
+  /* Fixed-width hex, matching the contract's comma-separated hex form. A
+   * single code is the only shape the engine produces today. */
+  char extended[16];
+  az_iot_adu__format_extended_result_code(extended, sizeof(extended), r->extended_result_code);
+
+  char details[AZ_IOT_ADU_RESULT_DETAILS_SIZE];
+  details[0] = '\0';
+  int32_t dlen = az_span_size(r->result_details);
+  if (dlen > 0)
+  {
+    if (dlen > (int32_t)sizeof(details) - 1)
+    {
+      dlen = (int32_t)sizeof(details) - 1;
+    }
+    memcpy(details, az_span_ptr(r->result_details), (size_t)dlen);
+    details[dlen] = '\0';
+  }
+
+  /* installedUpdateId is what is installed on the device NOW. Once a workflow
+   * has succeeded that is the update it applied; until then, and on any
+   * non-success outcome, it is whatever was installed before. */
   az_iot_adu_report_update_id installed;
   const az_iot_adu_report_update_id* installed_ptr = NULL;
-  if (ADU_I(client).install_result.outcome == AZ_IOT_ADU_OUTCOME_SUCCEEDED
-      && ADU_I(client).applied_update_id_valid)
+  if (outcome == AZ_IOT_ADU_OUTCOME_SUCCEEDED && ADU_I(client).applied_update_id_valid)
   {
     installed_ptr = &ADU_I(client).applied_update_id;
   }
@@ -302,10 +225,22 @@ az_iot_result az_iot_adu__report_state(az_iot_adu_client_t* client)
     }
   }
 
-  az_iot_adu_report report = AZ_IOT_ADU_REPORT_INIT;
+  az_iot_adu_report report;
+  memset(&report, 0, sizeof(report));
   report.workflow_id = workflow_id;
   report.installed_update_id = installed_ptr;
-  report.install_result = &ADU_I(client).install_result;
+  report.outcome = outcome;
+  report.failure_origin = (outcome == AZ_IOT_ADU_OUTCOME_FAILED)
+      ? AZ_IOT_ADU_FAILURE_ORIGIN_AGENT_CORE
+      : AZ_IOT_ADU_FAILURE_ORIGIN_NOT_APPLICABLE;
+  report.result_code = result_code;
+  report.extended_result_codes = extended;
+  report.result_details = (details[0] != '\0') ? details : NULL;
+  if (outcome != AZ_IOT_ADU_OUTCOME_IN_PROGRESS && ADU_I(client).step_results_count > 0)
+  {
+    report.step_results = ADU_I(client).step_results;
+    report.step_results_count = ADU_I(client).step_results_count;
+  }
 
   az_iot_result sent = ADU_I(client).channel.vtable->report(ADU_I(client).channel.ctx, &report);
   if (sent != AZ_IOT_OK)
@@ -322,217 +257,119 @@ az_iot_result az_iot_adu__report_state(az_iot_adu_client_t* client)
   return sent;
 }
 
-#define ADU_JSON_TRY(expression) \
-  do                             \
-  {                              \
-    az_result r = (expression);  \
-    if (az_result_failed(r))     \
-    {                            \
-      return r;                  \
-    }                            \
-  } while (0)
-
-static az_result append_string_property(az_json_writer* writer, az_span name, az_span value)
-{
-  ADU_JSON_TRY(az_json_writer_append_property_name(writer, name));
-  return az_json_writer_append_string(writer, value);
-}
-
-static az_result append_result_fields(
-    az_json_writer* writer,
-    az_iot_adu_outcome outcome,
-    az_iot_adu_failure_origin origin,
-    int64_t result_code,
-    az_span extended,
-    az_span details)
-{
-  ADU_JSON_TRY(append_string_property(writer, AZ_SPAN_FROM_STR("outcome"), outcome_name(outcome)));
-  ADU_JSON_TRY(append_string_property(
-      writer, AZ_SPAN_FROM_STR("failureOrigin"), failure_origin_name(origin)));
-  ADU_JSON_TRY(az_json_writer_append_property_name(writer, AZ_SPAN_FROM_STR("resultCode")));
-  /* The upstream writer's integer overload is int32, and az_span_i64toa()
-   * negates INT64_MIN as a signed value (undefined). Negate in uint64_t. */
-  uint8_t number[21];
-  az_span digits = AZ_SPAN_FROM_BUFFER(number);
-  uint64_t magnitude = (uint64_t)result_code;
-  if (result_code < 0)
-  {
-    number[0] = (uint8_t)'-';
-    digits = az_span_slice_to_end(digits, 1);
-    magnitude = 0u - magnitude;
-  }
-  az_span remainder;
-  ADU_JSON_TRY(az_span_u64toa(digits, magnitude, &remainder));
-  ADU_JSON_TRY(az_json_writer_append_json_text(
-      writer, az_span_create(number, (int32_t)sizeof(number) - az_span_size(remainder))));
-  ADU_JSON_TRY(append_string_property(writer, AZ_SPAN_FROM_STR("extendedResultCodes"), extended));
-  if (az_span_size(details) > 0)
-  {
-    ADU_JSON_TRY(append_string_property(writer, AZ_SPAN_FROM_STR("resultDetails"), details));
-  }
-  return AZ_OK;
-}
-
-static az_result append_install_result(
-    az_json_writer* writer,
-    const az_iot_adu_install_result* result)
-{
-  ADU_JSON_TRY(az_json_writer_append_begin_object(writer));
-  ADU_JSON_TRY(append_result_fields(
-      writer,
-      result->outcome,
-      result->failure_origin,
-      result->result_code,
-      az_span_create(
-          (uint8_t*)(uintptr_t)result->extended_result_codes, result->extended_result_codes_length),
-      az_span_create((uint8_t*)(uintptr_t)result->result_details, result->result_details_length)));
-  if (result->step_results_count > 0)
-  {
-    ADU_JSON_TRY(az_json_writer_append_property_name(writer, AZ_SPAN_FROM_STR("stepResults")));
-    ADU_JSON_TRY(az_json_writer_append_begin_object(writer));
-    for (int32_t i = 0; i < result->step_results_count; ++i)
-    {
-      uint8_t name[16];
-      az_iot_span_writer name_writer;
-      az_iot_span_writer_init(&name_writer, AZ_SPAN_FROM_BUFFER(name));
-      az_iot_span_writer_append_str(&name_writer, "step_");
-      az_iot_span_writer_append_i32(&name_writer, i);
-      az_span name_span;
-      if (az_iot_span_writer_end(&name_writer, &name_span) != AZ_IOT_OK)
-      {
-        return AZ_ERROR_NOT_ENOUGH_SPACE;
-      }
-      ADU_JSON_TRY(az_json_writer_append_property_name(writer, name_span));
-      ADU_JSON_TRY(az_json_writer_append_begin_object(writer));
-      const az_iot_adu_step_result* step = &result->step_results[i];
-      ADU_JSON_TRY(append_result_fields(
-          writer,
-          step->outcome,
-          step->failure_origin,
-          step->result_code,
-          az_span_create(
-              (uint8_t*)(uintptr_t)step->extended_result_codes, step->extended_result_codes_length),
-          az_span_create((uint8_t*)(uintptr_t)step->result_details, step->result_details_length)));
-      ADU_JSON_TRY(az_json_writer_append_end_object(writer));
-    }
-    ADU_JSON_TRY(az_json_writer_append_end_object(writer));
-  }
-  return az_json_writer_append_end_object(writer);
-}
-
-static bool validated_string_span(const char* text, az_span* span)
-{
-  if (text == NULL)
-  {
-    return false;
-  }
-  size_t length = strlen(text);
-  /* Match az_json_writer's maximum unescaped string size before its precondition. */
-  if (length > 1000000000 / 6)
-  {
-    return false;
-  }
-  *span = az_span_create((uint8_t*)(uintptr_t)text, (int32_t)length);
-  return valid_utf8(*span, INT32_MAX);
-}
-
-static az_result append_report(
-    az_json_writer* writer,
-    const az_iot_adu_report* report,
-    az_span workflow,
-    const az_span installed[3])
-{
-  ADU_JSON_TRY(az_json_writer_append_begin_object(writer));
-  ADU_JSON_TRY(append_string_property(writer, AZ_SPAN_FROM_STR("workflowId"), workflow));
-  if (report->installed_update_id != NULL)
-  {
-    ADU_JSON_TRY(
-        az_json_writer_append_property_name(writer, AZ_SPAN_FROM_STR("installedUpdateId")));
-    ADU_JSON_TRY(az_json_writer_append_begin_object(writer));
-    ADU_JSON_TRY(append_string_property(writer, AZ_SPAN_FROM_STR("provider"), installed[0]));
-    ADU_JSON_TRY(append_string_property(writer, AZ_SPAN_FROM_STR("name"), installed[1]));
-    ADU_JSON_TRY(append_string_property(writer, AZ_SPAN_FROM_STR("version"), installed[2]));
-    ADU_JSON_TRY(az_json_writer_append_end_object(writer));
-  }
-  ADU_JSON_TRY(az_json_writer_append_property_name(writer, AZ_SPAN_FROM_STR("installResult")));
-  ADU_JSON_TRY(append_install_result(writer, report->install_result));
-  return az_json_writer_append_end_object(writer);
-}
+/* ------------------------------------------------------------------------- */
+/* agent core-library API: standalone report builder                         */
+/* ------------------------------------------------------------------------- */
 
 az_iot_result az_iot_adu_build_report(
-    const az_iot_adu_report* report,
+    const az_iot_adu_device_properties* device_props,
+    const az_iot_adu_client_install_result* result,
+    const az_iot_adu_client_update_request* request,
+    az_iot_adu_state state,
     uint8_t* out_json,
     size_t out_size,
     size_t* out_len)
 {
-  if (out_len != NULL)
-  {
-    *out_len = 0;
-  }
-  if (out_json != NULL && out_size > 0)
-  {
-    out_json[0] = '\0';
-  }
-  if (report == NULL || out_json == NULL || out_size == 0 || out_size > INT32_MAX)
-  {
-    return AZ_IOT_ERR_INVALID_ARG;
-  }
-  /* Size stamps (docs/struct_versioning.md). Zero means the caller skipped the
-   * _INIT macro. Any other mismatch is a header from another SDK version, and is
-   * refused outright: step_results is an inline array, so a different step size
-   * shifts every element after the first and nothing can be safely read.
-   * The report stamp is checked before any later field is read. */
-  if (report->_internal_size == 0)
-  {
-    return AZ_IOT_ERR_INVALID_ARG;
-  }
-  if (report->_internal_size != sizeof(az_iot_adu_report))
-  {
-    return AZ_IOT_ERR_NOT_SUPPORTED;
-  }
-  const az_iot_adu_install_result* install = report->install_result;
-  if (install != NULL && install->_internal_size == 0)
-  {
-    return AZ_IOT_ERR_INVALID_ARG;
-  }
-  if (install != NULL && install->_internal_size != sizeof(az_iot_adu_install_result))
-  {
-    return AZ_IOT_ERR_NOT_SUPPORTED;
-  }
-  if (az_iot_adu__validate_install_result(install) != AZ_IOT_OK)
+  if (device_props == NULL || out_json == NULL || out_size == 0)
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
 
-  az_span workflow;
-  az_span installed[3] = { 0 };
-  if (!validated_string_span(report->workflow_id, &workflow) || az_span_size(workflow) == 0)
+  /* Stateless upstream formatter handle (no channel / state machine). */
+  az_iot_adu_client az;
+  if (az_result_failed(az_iot_adu_client_init(&az, NULL)))
   {
-    return AZ_IOT_ERR_INVALID_ARG;
-  }
-  if (report->installed_update_id != NULL
-      && (!validated_string_span(report->installed_update_id->provider, &installed[0])
-          || !validated_string_span(report->installed_update_id->name, &installed[1])
-          || !validated_string_span(report->installed_update_id->version, &installed[2])))
-  {
-    return AZ_IOT_ERR_INVALID_ARG;
+    return AZ_IOT_ERR_INTERNAL;
   }
 
-  az_json_writer writer;
-  az_result result
-      = az_json_writer_init(&writer, az_span_create(out_json, (int32_t)out_size), NULL);
-  if (az_result_succeeded(result))
+  /* Serialize the installed-update-id object the service expects. */
+  char update_id_json[128];
+  size_t update_id_json_len = 0;
+  const char* prov = device_props->installed_update_id.provider
+      ? device_props->installed_update_id.provider
+      : "";
+  const char* name
+      = device_props->installed_update_id.name ? device_props->installed_update_id.name : "";
+  const char* ver
+      = device_props->installed_update_id.version ? device_props->installed_update_id.version : "";
+  const char* update_id_parts[]
+      = { "{\"provider\":\"", prov, "\",\"name\":\"", name, "\",\"version\":\"", ver, "\"}" };
+  if (az_iot_span_writer_build_str(
+          AZ_SPAN_FROM_BUFFER(update_id_json), &update_id_json_len, update_id_parts, 7)
+      != AZ_IOT_OK)
   {
-    result = append_report(&writer, report, workflow, installed);
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
   }
-  if (az_result_failed(result))
+
+  az_iot_adu_client_device_properties props = az_iot_adu_client_device_properties_default();
+  if (device_props->manufacturer != NULL)
   {
-    out_json[0] = '\0';
-    return result == AZ_ERROR_NOT_ENOUGH_SPACE ? AZ_IOT_ERR_NOT_ENOUGH_SPACE : AZ_IOT_ERR_INTERNAL;
+    props.manufacturer = az_span_create_from_str((char*)(uintptr_t)device_props->manufacturer);
   }
+  if (device_props->model != NULL)
+  {
+    props.model = az_span_create_from_str((char*)(uintptr_t)device_props->model);
+  }
+  props.update_id = az_span_create((uint8_t*)update_id_json, (int32_t)update_id_json_len);
+  props.adu_version = AZ_SPAN_FROM_STR(AZ_IOT_ADU_CLIENT_AGENT_VERSION);
+
+  /* Custom properties (az_span views over the caller's strings; read-only for
+   * the duration of this call). Clamped to the upstream array capacity. */
+  az_iot_adu_device_custom_properties cprops;
+  memset(&cprops, 0, sizeof(cprops));
+  if (device_props->custom_properties != NULL && device_props->custom_properties_count > 0)
+  {
+    const size_t max_cp = sizeof(cprops.names) / sizeof(cprops.names[0]);
+    size_t count = device_props->custom_properties_count;
+    if (count > max_cp)
+    {
+      return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+    }
+    for (size_t i = 0; i < count; ++i)
+    {
+      if (device_props->custom_properties[i].name == NULL
+          || device_props->custom_properties[i].value == NULL)
+      {
+        return AZ_IOT_ERR_INVALID_ARG;
+      }
+      cprops.names[i]
+          = az_span_create_from_str((char*)(uintptr_t)device_props->custom_properties[i].name);
+      cprops.values[i]
+          = az_span_create_from_str((char*)(uintptr_t)device_props->custom_properties[i].value);
+    }
+    cprops.count = (int32_t)count;
+    props.custom_properties = &cprops;
+  }
+
+  /* Report the workflow id only when a deployment is in progress. */
+  az_iot_adu_client_workflow* workflow = NULL;
+  if (request != NULL && az_span_size(request->workflow.id) > 0)
+  {
+    workflow = &((az_iot_adu_client_update_request*)(uintptr_t)request)->workflow;
+  }
+
+  az_json_writer jw;
+  if (az_result_failed(az_json_writer_init(&jw, az_span_create(out_json, (int32_t)out_size), NULL)))
+  {
+    return AZ_IOT_ERR_INTERNAL;
+  }
+
+  az_result ar = az_iot_adu_client_get_agent_state_payload(
+      &az,
+      &props,
+      az_iot_adu__agent_state(state),
+      workflow,
+      (az_iot_adu_client_install_result*)(uintptr_t)result,
+      &jw);
+  if (az_result_failed(ar))
+  {
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE; /* destination too small for the payload */
+  }
+
+  az_span payload = az_json_writer_get_bytes_used_in_destination(&jw);
   if (out_len != NULL)
   {
-    *out_len = (size_t)az_span_size(az_json_writer_get_bytes_used_in_destination(&writer));
+    *out_len = (size_t)az_span_size(payload);
   }
   return AZ_IOT_OK;
 }

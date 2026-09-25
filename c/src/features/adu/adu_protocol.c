@@ -348,13 +348,287 @@ az_iot_result az_iot_adu__build_fetch_request(
   return AZ_IOT_OK;
 }
 
+static const char* outcome_name(az_iot_adu_outcome outcome)
+{
+  switch (outcome)
+  {
+    case AZ_IOT_ADU_OUTCOME_IN_PROGRESS:
+      return "IN_PROGRESS";
+    case AZ_IOT_ADU_OUTCOME_SUCCEEDED:
+      return "SUCCEEDED";
+    case AZ_IOT_ADU_OUTCOME_FAILED:
+      return "FAILED";
+    case AZ_IOT_ADU_OUTCOME_CANCELED:
+      return "CANCELED";
+    case AZ_IOT_ADU_OUTCOME_SKIPPED:
+      return "SKIPPED";
+    default:
+      return NULL;
+  }
+}
+
+static const char* failure_origin_name(az_iot_adu_failure_origin origin)
+{
+  switch (origin)
+  {
+    case AZ_IOT_ADU_FAILURE_ORIGIN_NOT_APPLICABLE:
+      return "NOT_APPLICABLE";
+    case AZ_IOT_ADU_FAILURE_ORIGIN_ADU_CLOUD_SERVICE:
+      return "ADU_CLOUD_SERVICE";
+    case AZ_IOT_ADU_FAILURE_ORIGIN_ADU_MANAGED_RESOURCE:
+      return "ADU_MANAGED_RESOURCE";
+    case AZ_IOT_ADU_FAILURE_ORIGIN_AGENT_CORE:
+      return "AGENT_CORE";
+    case AZ_IOT_ADU_FAILURE_ORIGIN_AGENT_EXTENSION:
+      return "AGENT_EXTENSION";
+    case AZ_IOT_ADU_FAILURE_ORIGIN_AGENT_DEPENDENCY:
+      return "AGENT_DEPENDENCY";
+    case AZ_IOT_ADU_FAILURE_ORIGIN_DEVICE:
+      return "DEVICE";
+    case AZ_IOT_ADU_FAILURE_ORIGIN_OTHER:
+      return "OTHER";
+    default:
+      return NULL;
+  }
+}
+
+/* Render extendedResultCodes.
+ *
+ * Contract: comma-separated UNSIGNED hex int32, NO "0x" prefix, no fixed width,
+ * case-insensitive. The engine produces a single code today; the comma-separated
+ * form is what the field accepts, so a future multi-code producer changes only
+ * this function. Zero is rendered "0" -- a bare value, not a padded one. */
+void az_iot_adu__format_extended_result_code(char* out, size_t out_size, int32_t code)
+{
+  static const char hex[] = "0123456789abcdef";
+  if (out_size < 9)
+  {
+    if (out_size > 0)
+    {
+      out[0] = '\0';
+    }
+    return;
+  }
+
+  uint32_t v = (uint32_t)code;
+  char tmp[8];
+  size_t n = 0;
+  do
+  {
+    tmp[n++] = hex[v & 0xFu];
+    v >>= 4;
+  } while (v != 0);
+
+  for (size_t i = 0; i < n; ++i)
+  {
+    out[i] = tmp[n - 1 - i];
+  }
+  out[n] = '\0';
+}
+
 az_iot_result az_iot_adu__build_report_request(
     const az_iot_adu_report* report,
     uint8_t* out,
     size_t out_size,
     size_t* out_len)
 {
-  return az_iot_adu_build_report(report, out, out_size, out_len);
+  if (report == NULL || report->workflow_id == NULL || report->workflow_id[0] == '\0' || out == NULL
+      || out_size == 0)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+
+  const char* outcome = outcome_name(report->outcome);
+  const char* origin = failure_origin_name(report->failure_origin);
+  if (outcome == NULL || origin == NULL || report->extended_result_codes == NULL)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  /* A triple must be complete or absent. Passing a NULL member through to the
+   * writer would trip an upstream precondition rather than returning an error
+   * to the caller. */
+  if (report->installed_update_id != NULL
+      && (report->installed_update_id->provider == NULL || report->installed_update_id->name == NULL
+          || report->installed_update_id->version == NULL))
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  /* The contract ties these together: NOT_APPLICABLE unless the outcome is a
+   * failure, and a real origin when it is. Catching it here keeps an invalid
+   * pair off the wire rather than having the service reject it. */
+  if ((report->outcome == AZ_IOT_ADU_OUTCOME_FAILED)
+      == (report->failure_origin == AZ_IOT_ADU_FAILURE_ORIGIN_NOT_APPLICABLE))
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if (report->step_results_count < 0
+      || report->step_results_count > _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS
+      || (report->step_results_count > 0 && report->step_results == NULL))
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if (report->outcome != AZ_IOT_ADU_OUTCOME_IN_PROGRESS)
+  {
+    for (int32_t i = 0; i < report->step_results_count; ++i)
+    {
+      const az_iot_adu_step_result* step = &report->step_results[i];
+      if (step->outcome == AZ_IOT_ADU_OUTCOME_IN_PROGRESS || outcome_name(step->outcome) == NULL
+          || failure_origin_name(step->failure_origin) == NULL
+          || ((step->outcome == AZ_IOT_ADU_OUTCOME_FAILED)
+              == (step->failure_origin == AZ_IOT_ADU_FAILURE_ORIGIN_NOT_APPLICABLE)))
+      {
+        return AZ_IOT_ERR_INVALID_ARG;
+      }
+    }
+  }
+
+  az_json_writer jw;
+  if (az_result_failed(az_json_writer_init(&jw, az_span_create(out, (int32_t)out_size), NULL)))
+  {
+    return AZ_IOT_ERR_INTERNAL;
+  }
+
+  az_result r = az_json_writer_append_begin_object(&jw);
+  if (az_result_succeeded(r))
+  {
+    r = write_string_property(&jw, "workflowId", report->workflow_id);
+  }
+
+  /* Dropped rather than serialized as null when the device has nothing
+   * installed. */
+  if (az_result_succeeded(r) && report->installed_update_id != NULL)
+  {
+    r = write_update_id(&jw, "installedUpdateId", report->installed_update_id);
+  }
+
+  if (az_result_succeeded(r))
+  {
+    r = az_json_writer_append_property_name(&jw, AZ_SPAN_FROM_STR("installResult"));
+  }
+  if (az_result_succeeded(r))
+  {
+    r = az_json_writer_append_begin_object(&jw);
+  }
+  if (az_result_succeeded(r))
+  {
+    r = write_string_property(&jw, "outcome", outcome);
+  }
+  if (az_result_succeeded(r))
+  {
+    r = write_string_property(&jw, "failureOrigin", origin);
+  }
+  if (az_result_succeeded(r))
+  {
+    r = az_json_writer_append_property_name(&jw, AZ_SPAN_FROM_STR("resultCode"));
+  }
+  if (az_result_succeeded(r))
+  {
+    r = az_json_writer_append_int32(&jw, report->result_code);
+  }
+  if (az_result_succeeded(r))
+  {
+    r = write_string_property(&jw, "extendedResultCodes", report->extended_result_codes);
+  }
+  if (az_result_succeeded(r) && report->result_details != NULL)
+  {
+    r = write_string_property(&jw, "resultDetails", report->result_details);
+  }
+
+  /* Per-step results are a MAP keyed step_0, step_1, ... -- not an array. The
+   * index carries the step identity, so ordering is the only thing that ties a
+   * result back to its step. Omitted for in-progress reports and when there
+   * are none. */
+  if (az_result_succeeded(r) && report->outcome != AZ_IOT_ADU_OUTCOME_IN_PROGRESS
+      && report->step_results != NULL && report->step_results_count > 0)
+  {
+    r = az_json_writer_append_property_name(&jw, AZ_SPAN_FROM_STR("stepResults"));
+    if (az_result_succeeded(r))
+    {
+      r = az_json_writer_append_begin_object(&jw);
+    }
+    for (int32_t i = 0; az_result_succeeded(r) && i < report->step_results_count; ++i)
+    {
+      const az_iot_adu_step_result* step = &report->step_results[i];
+
+      char key[16];
+      az_iot_span_writer kw;
+      az_iot_span_writer_init(&kw, AZ_SPAN_FROM_BUFFER(key));
+      az_iot_span_writer_append_str(&kw, "step_");
+      az_iot_span_writer_append_u32(&kw, (uint32_t)i);
+      if (az_iot_span_writer_end_str(&kw, NULL) != AZ_IOT_OK)
+      {
+        return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+      }
+
+      r = az_json_writer_append_property_name(&jw, az_span_create_from_str(key));
+      if (az_result_succeeded(r))
+      {
+        r = az_json_writer_append_begin_object(&jw);
+      }
+      if (az_result_succeeded(r))
+      {
+        r = write_string_property(&jw, "outcome", outcome_name(step->outcome));
+      }
+      if (az_result_succeeded(r))
+      {
+        r = write_string_property(&jw, "failureOrigin", failure_origin_name(step->failure_origin));
+      }
+      if (az_result_succeeded(r))
+      {
+        r = az_json_writer_append_property_name(&jw, AZ_SPAN_FROM_STR("resultCode"));
+      }
+      if (az_result_succeeded(r))
+      {
+        r = az_json_writer_append_int32(&jw, step->result_code);
+      }
+      if (az_result_succeeded(r))
+      {
+        r = az_json_writer_append_property_name(&jw, AZ_SPAN_FROM_STR("extendedResultCodes"));
+      }
+      if (az_result_succeeded(r))
+      {
+        char step_ext[16];
+        az_iot_adu__format_extended_result_code(
+            step_ext, sizeof(step_ext), step->extended_result_code);
+        r = az_json_writer_append_string(&jw, az_span_create_from_str(step_ext));
+      }
+      if (az_result_succeeded(r) && az_span_size(step->result_details) > 0)
+      {
+        r = az_json_writer_append_property_name(&jw, AZ_SPAN_FROM_STR("resultDetails"));
+        if (az_result_succeeded(r))
+        {
+          r = az_json_writer_append_string(&jw, step->result_details);
+        }
+      }
+      if (az_result_succeeded(r))
+      {
+        r = az_json_writer_append_end_object(&jw);
+      }
+    }
+    if (az_result_succeeded(r))
+    {
+      r = az_json_writer_append_end_object(&jw); /* stepResults */
+    }
+  }
+
+  if (az_result_succeeded(r))
+  {
+    r = az_json_writer_append_end_object(&jw); /* installResult */
+  }
+  if (az_result_succeeded(r))
+  {
+    r = az_json_writer_append_end_object(&jw);
+  }
+  if (az_result_failed(r))
+  {
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  }
+
+  if (out_len != NULL)
+  {
+    *out_len = (size_t)az_span_size(az_json_writer_get_bytes_used_in_destination(&jw));
+  }
+  return AZ_IOT_OK;
 }
 
 /* ------------------------------------------------------------------------- */
