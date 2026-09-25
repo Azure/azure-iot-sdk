@@ -1346,6 +1346,7 @@ static void reboot_required_persists_and_resumes(void** state)
   inject_patch(fx, signed_patch());
   pump_to_checkpoint(fx);
   assert_true(fx->log.persist_len > 40);
+  assert_true(fx->log.persist_len <= AZ_IOT_ADU_STATE_BLOB_MAX_SIZE);
 
   /* Simulate a reboot: forget the in-RAM workflow and the pre-reboot op log,
    * then resume purely from the persisted blob (post-reboot the install is
