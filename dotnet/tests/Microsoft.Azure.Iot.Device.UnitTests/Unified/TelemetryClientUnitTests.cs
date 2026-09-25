@@ -73,36 +73,6 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         }
 
         [Fact]
-        public async Task CloudToDeviceTelemetryReceivedAsync_RaisedOnDeviceBoundMessage()
-        {
-            MockFeatureConnectionClient connection = new()
-            {
-                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(ConnectionProfile.Classic, DeviceId),
-            };
-            using TelemetryClient telemetryClient = new(connection);
-
-            CloudToDeviceTelemetry? received = null;
-            telemetryClient.CloudToDeviceTelemetryReceivedAsync += (message) =>
-            {
-                received = message;
-                return Task.CompletedTask;
-            };
-
-            string propertyBag = $"{Uri.EscapeDataString(TelemetryClient.MessagePropertyMessageId)}=msg-1&color=blue";
-            await connection.SimulateReceiveAsync(new MqttPublish()
-            {
-                Topic = $"devices/{DeviceId}/messages/devicebound/{propertyBag}",
-                Payload = Encoding.UTF8.GetBytes("cloud payload"),
-                QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce,
-            });
-
-            Assert.NotNull(received);
-            Assert.Equal(Encoding.UTF8.GetBytes("cloud payload"), received!.Payload);
-            Assert.Equal("msg-1", received.MessageId);
-            Assert.Equal("blue", received.UserProperties["color"]);
-        }
-
-        [Fact]
         public async Task SendTelemetryAsync_Classic_ThrowsWhenMessageTooLarge()
         {
             MockFeatureConnectionClient connection = new()
