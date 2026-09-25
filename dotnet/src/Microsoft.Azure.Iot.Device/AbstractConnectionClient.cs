@@ -775,7 +775,7 @@ namespace Microsoft.Azure.Iot.Device
 
             if (subscribeResults.Items.FirstOrDefault()!.ReasonCode != MqttClientSubscribeReasonCode.GrantedQoS1)
             {
-                throw new Exception("DPS rejected the mandatory subscription to the response topic" + subscribeResults.Items.FirstOrDefault()!.ReasonCode);
+                throw new Exception($"DPS did not grant QoS 1 for the mandatory response-topic subscription; received SUBACK reason '{subscribeResults.Items.FirstOrDefault()!.ReasonCode}'.");
             }
         }
 
