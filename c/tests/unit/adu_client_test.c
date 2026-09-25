@@ -224,7 +224,27 @@ typedef struct
 
   /* URL the last download was handed. */
   char last_download_url[128];
+
+  /* Per-download record of the resolved manifest file, so a test can prove a
+   * step-local file id maps to the right manifest entry. */
+  int download_calls;
+  char download_file_ids[MAX_OPS][32];
+  char download_urls[MAX_OPS][64];
 } hook_log;
+
+static void span_to_cstr(az_span s, char* out, size_t cap)
+{
+  size_t n = (size_t)az_span_size(s);
+  if (n >= cap)
+  {
+    n = cap - 1;
+  }
+  if (n > 0)
+  {
+    memcpy(out, az_span_ptr(s), n);
+  }
+  out[n] = '\0';
+}
 
 static void log_op(hook_log* l, op_kind k, uint32_t step)
 {
@@ -243,10 +263,15 @@ static int32_t mock_download(
     uint32_t file_count,
     void* ctx)
 {
-  (void)file;
   (void)file_index;
   (void)file_count;
   hook_log* l = (hook_log*)ctx;
+  int slot = l->download_calls++;
+  if (slot < MAX_OPS)
+  {
+    span_to_cstr(file->id, l->download_file_ids[slot], sizeof(l->download_file_ids[slot]));
+    span_to_cstr(url, l->download_urls[slot], sizeof(l->download_urls[slot]));
+  }
   int32_t n = az_span_size(url);
   if (n < 0 || (size_t)n >= sizeof(l->last_download_url))
   {
@@ -1975,6 +2000,60 @@ static const char* two_step_patch(void)
   return patch;
 }
 
+/* Two steps, each with its own file. The `files` map lists "fa00000000000001"
+ * first while step 0 references the SECOND entry, so resolving a step-local
+ * slot positionally against manifest.files[] picks the wrong file. Both
+ * entries share one hash because the SHA-256 mock returns a single digest. */
+static const char k_patch_distinct_files_fmt[]
+    = "{\"workflowId\":\"%s\","
+      "\"updateManifest\":\"{\\\"manifestVersion\\\":\\\"5\\\",\\\"updateId\\\":{\\\"provider\\\":"
+      "\\\"Contoso\\\",\\\"name\\\":\\\"Foobar\\\",\\\"version\\\":\\\"%s\\\"},"
+      "\\\"compatibility\\\":[{\\\"deviceManufacturer\\\":\\\"Contoso\\\",\\\"deviceModel\\\":"
+      "\\\"Foobar\\\"}],\\\"instructions\\\":{\\\"steps\\\":[{\\\"handler\\\":\\\"microsoft/"
+      "swupdate:1\\\",\\\"files\\\":[\\\"fb00000000000002\\\"],\\\"handlerProperties\\\":{"
+      "\\\"installedCriteria\\\":\\\"1.0\\\"}},{\\\"handler\\\":\\\"microsoft/"
+      "swupdate:1\\\",\\\"files\\\":[\\\"fa00000000000001\\\"],\\\"handlerProperties\\\":{"
+      "\\\"installedCriteria\\\":\\\"1.1\\\"}}]},\\\"files\\\":{\\\"fa00000000000001\\\":{"
+      "\\\"fileName\\\":\\\"payload-a.bin\\\",\\\"sizeInBytes\\\":844976,"
+      "\\\"hashes\\\":{\\\"sha256\\\":\\\"" ADU_TEST_FILE_HASH_B64 "\\\"}},"
+      "\\\"fb00000000000002\\\":{"
+      "\\\"fileName\\\":\\\"payload-b.bin\\\",\\\"sizeInBytes\\\":844976,"
+      "\\\"hashes\\\":{\\\"sha256\\\":\\\"" ADU_TEST_FILE_HASH_B64 "\\\"}}},"
+      "\\\"createdDateTime\\\":\\\"2022-07-07T03:02:48.8449038Z\\\"}\","
+      "\"updateManifestSignature\":\"%s\","
+      "\"fileUrls\":{\"fa00000000000001\":\"http://example.com/payload-a.bin\","
+      "\"fb00000000000002\":\"http://example.com/payload-b.bin\"}}";
+
+static const char* distinct_files_patch(void)
+{
+  static char patch[4096];
+  char jws[2048];
+  build_jws(jws, (int32_t)sizeof(jws));
+  int n = snprintf(
+      patch, sizeof(patch), k_patch_distinct_files_fmt, "distinct-files-deployment", "1.1", jws);
+  assert_true(n > 0 && (size_t)n < sizeof(patch));
+  return patch;
+}
+
+/* Each step downloads the file its own `files` entry names, not the manifest's
+ * first entry. */
+static void each_step_downloads_its_own_file(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  inject_patch(fx, distinct_files_patch());
+  pump(fx, 60);
+
+  assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_ADU_OUTCOME_SUCCEEDED);
+  assert_int_equal(fx->log.download_calls, 2);
+  assert_string_equal(fx->log.download_file_ids[0], "fb00000000000002");
+  assert_string_equal(fx->log.download_urls[0], "http://example.com/payload-b.bin");
+  assert_string_equal(fx->log.download_file_ids[1], "fa00000000000001");
+  assert_string_equal(fx->log.download_urls[1], "http://example.com/payload-a.bin");
+}
+
 static void multi_step_update_runs_every_step_in_order(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -3239,6 +3318,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(same_id_changed_manifest_is_a_duplicate, setup, teardown),
     cmocka_unit_test(microsoft_root_keys_are_embedded),
     cmocka_unit_test_setup_teardown(multi_step_update_runs_every_step_in_order, setup, teardown),
+    cmocka_unit_test_setup_teardown(each_step_downloads_its_own_file, setup, teardown),
     cmocka_unit_test_setup_teardown(
         multi_step_report_preserves_progress_and_failure, setup, teardown),
     cmocka_unit_test_setup_teardown(
