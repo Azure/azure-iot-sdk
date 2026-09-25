@@ -231,9 +231,9 @@ Note for the Paho adapter: when `proxy` is left unset, Paho still falls back to 
 `http_proxy` / `https_proxy` environment variables on its own (the uppercase spellings are ignored).
 Set `proxy` to be explicit and independent of the environment.
 
-Worked examples: [samples/websockets](../../samples/websockets/main.c) and
-[samples/proxy](../../samples/proxy/main.c). Each is the `telemetry_gen1` sample with
-one of these options set, so the diff against it is exactly the feature.
+Worked examples: [samples/unified/websockets](../../samples/unified/websockets/main.c) and
+[samples/unified/proxy](../../samples/unified/proxy/main.c). Each is the `unified/telemetry` sample
+with one of these options set, so the diff against it is exactly the feature.
 
 ### 3.2 Session terms per role **[implemented]**
 
@@ -542,8 +542,10 @@ Rules every client must implement. The C client meets all of them; where .NET do
   the next connect, whether that is a reconnect or an explicit reopen.
 - At connect time the provider is asked for `OPERATIONAL` first and falls back to `BOOTSTRAP` when
   the operational credential is absent or uninitialized.
-- CSR-based DPS enrollment uses the `2026-11-02-preview` DPS API version and requires a
-  caller-provided CSR payload buffer of at least `AZ_IOT_CSR_PAYLOAD_BUFFER_MIN` bytes.
+- CSR-based DPS enrollment uses the `2026-11-02-preview` DPS API version and a caller-provided,
+  non-empty `csr_payload_buffer`. `AZ_IOT_CSR_PAYLOAD_BUFFER_MIN` (8448) is the recommended size, enough
+  for the largest CSR the service accepts; small keys fit in less, and a buffer too small for the
+  CSR fails with `AZ_IOT_ERR_NOT_ENOUGH_SPACE` when the request is built.
 
 ---
 
@@ -862,7 +864,7 @@ a slow path. Every constant is `#ifndef`-guarded and can be raised at build time
 | `AZ_IOT_MQTT_USERNAME_BUF` | 256 | Hub username | Hub-Next: `AZ_IOT_ERR_NOT_ENOUGH_SPACE`. Classic: **no explicit error** — the connect proceeds without a username. See [§9.6](#96-known-gaps). |
 | `AZ_IOT_PRESENCE_TOPIC_BUF` | 256 | Presence topics | `AZ_IOT_ERR_NOT_ENOUGH_SPACE` |
 | `AZ_IOT_CONNECTION_PROFILE_RAW_BUF` | 64 | Raw `connectionProfile` string, NUL included (63 bytes of payload) | Truncated, resolves to UNKNOWN, then `AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED` |
-| `AZ_IOT_CSR_PAYLOAD_BUFFER_MIN` | 8448 | Minimum caller-supplied CSR payload buffer | `AZ_IOT_ERR_NOT_ENOUGH_SPACE` |
+| `AZ_IOT_CSR_PAYLOAD_BUFFER_MIN` | 8448 | Recommended size for the caller-supplied CSR payload buffer; smaller works for small keys | `AZ_IOT_ERR_NOT_ENOUGH_SPACE` when the CSR does not fit; an empty buffer is refused at `open()` |
 | `CSR_MAX_BASE64` | 8192 | Base64 CSR body ([connection_client.c](../../src/core/connection_client.c)) | `AZ_IOT_ERR_INVALID_ARG` |
 | `AZ_IOT_MAX_FEATURE_CLIENT_BINDS` | 8 | Feature clients bound to one connection | `AZ_IOT_ERR_NOT_ENOUGH_SPACE` |
 | `AZ_IOT_DPS_OPERATION_ID_MAX` | 64 | DPS `operation_id` from the assigning response | `AZ_IOT_ERR_NOT_SUPPORTED` |
@@ -1027,7 +1029,7 @@ registry carries Classic feature filters and application custom topics.
 | Phase | Trigger | Surfaced as | Mapped by | SDK action | Notes / limits |
 | --- | --- | --- | --- | --- | --- |
 | `close()` while `IDLE` | — | `AZ_IOT_OK` | connection client | idempotent no-op | |
-| `close()` while `CONNECTING`, hub attempt in flight | — | `AZ_IOT_OK` | connection client | sets `user_close`, `DISCONNECTING`, calls `disconnect()` | `active_client` is assigned synchronously at the end of `start_connect_attempt()`, so it is already set by the time `open()` returns. The late-CONNACK guard arms correctly. |
+| `close()` while `CONNECTING`, hub attempt in flight | — | `AZ_IOT_OK` | connection client | sets `user_close`, `DISCONNECTING`, calls `disconnect()` | `active_client` is assigned at the end of `start_connect_attempt()`, after `HUB:CONNECTING` has been raised. A `close()` from a state observer during that transition sees no adapter and takes the no-adapter path. |
 | `close()` while `CONNECTING`, provisioning in flight | — | `AZ_IOT_OK` | connection client | disconnects and tears down the DPS session, drops `dps_pending_finalize`, resets the attempt counter, goes to `IDLE` | The pending finalize is dropped on purpose: it describes the outcome of a session being abandoned, and acting on it in the next pump tick would move a client the application has just closed. `needs_reprovision` survives. |
 | `close()` while `CONNECTED` | — | `AZ_IOT_OK`, or the adapter's disconnect error | connection client | sets `user_close`, transitions to `DISCONNECTING`, calls the adapter's `disconnect()` | |
 | `close()` while `DISCONNECTING` | — | `AZ_IOT_OK`, or the adapter's error | connection client | sets `user_close` again and re-issues `disconnect()` | Harmless, but not a no-op. |
