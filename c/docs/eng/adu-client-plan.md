@@ -139,7 +139,7 @@ sample-only / not factored) · 🔜 Coming soon (planned / designed, not yet bui
 | Platform and crypto adapters | ✅ | **ESP32 platform adapter** — factored into `adapters/adu/esp32/` (`esp_http_client` + `esp_ota` + NVS resume). [→](#f-platform-and-crypto-adapters) |
 | ADUv2 transport | ❌ | **Twin (ADUv1) delivery + reporting** — the twin channel is removed, not kept behind a flag. [→](#what-aduv1-is-cut-means) |
 | ADUv2 transport | ✅ | **DPS update-check binding** — `requestSoftwareUpdates` / `requestOnboardingUpdates` over the device's DPS transport; both send `agentInfo`, and only the regular route sends `installedUpdateId` (onboarding omits it by contract: a day-0 device has nothing installed); parse `serviceConfiguration` + `updateMetadata`. [→](#g-aduv2-transport-via-the-dps-gateway) |
-| ADUv2 transport | 🟡 | **`reportUpdateStatus`** — `workflowId` + install result, idempotent, retried while the client lives. NOT durable across a reboot: the persistence blob is still v2 and does not carry an unsent report, so a device that reboots mid-install loses it. [→](#g-aduv2-transport-via-the-dps-gateway) |
+| ADUv2 transport | 🟡 | **`reportUpdateStatus`** — `workflowId` + install result, idempotent, retried while the client lives. NOT durable across a reboot: the persistence blob (v3) does not carry an unsent report, so a device that reboots mid-install loses it. [→](#g-aduv2-transport-via-the-dps-gateway) |
 | ADUv2 transport | ✅ | **Reuse DPS device auth** — X.509 (P1) over the existing DPS connection; no ADU endpoint/creds/mTLS; identity headers are gateway-populated. [→](#g-aduv2-transport-via-the-dps-gateway) |
 | ADUv2 transport | 🟡 | **Bootstrap orchestration** — the pre-registration hold, the onboarding fetch and the report are in place, the hold is advisory (registration proceeds when it expires), and a queued request is bounded by `timeout_ms` so one that can never be served is abandoned rather than retried forever. The re-check **loop** is still absent: the engine issues one fetch per request. [→](#g-aduv2-transport-via-the-dps-gateway) |
 | ADUv2 transport | 🟡 | **Operational polling loop** — an on-demand provisioning session after registration exists, and the application picks the route with `az_iot_adu_client_request_update()`. No cadence is owned by the SDK: the application decides when to poll. [→](#g-aduv2-transport-via-the-dps-gateway) |
@@ -314,15 +314,17 @@ stateDiagram-v2
 ## E. Install, apply, recovery
 
 - **Install/Apply, Backup/Restore, partial rollback, reboot/resume (✅).** Persist-before-
-  reboot uses a versioned, CRC-checked, little-endian blob (`ADU1`, blob **v2**) carrying
-  `retryTimestamp` and a manifest CRC (kept for format compatibility, unused for
-  duplicate detection), and the accumulated `install_result` incl.
-  `step_results[]`; `resume()` re-enters at the persisted phase boundary
-  (`INSTALL_COMPLETE` → Apply). *Caveats:* the only persist point today is the
-  install-requested reboot; post-reboot rollback assumes the platform retained per-step
-  backups across the reboot.
+  reboot uses a versioned, CRC-checked, little-endian blob (`ADU1`, blob **v3**; v2 still
+  read) carrying `retryTimestamp` and a manifest CRC (kept for format compatibility, unused
+  for duplicate detection), the overall result, each step's result, and the download URLs
+  so a resume before the last step can fetch later steps' files; `resume()` re-enters at the
+  persisted phase boundary (`INSTALL_COMPLETE` → Apply). A failed checkpoint write holds
+  Apply and is retried; the blob is cleared (zero-length write) once the workflow returns to
+  Idle or is superseded. *Caveats:* the only persist point today is the install-requested
+  reboot; post-reboot rollback assumes the platform retained per-step backups across the
+  reboot.
 - **Persistence must grow for ADUv2 (🔜).** ADUv2 makes reporting a **durable write**, so the
-  blob gains a **blob v3**: the unsent `reportUpdateStatus` payload (keyed by
+  blob gains a **blob v4**: the unsent `reportUpdateStatus` payload (keyed by
   `workflowId`), `installedUpdateId`, and the `agentInfoEtag` / `serviceConfigEtag` pair, so a
   device that reboots mid-install still reports its result afterwards and does not resend a full
   `agentInfo` needlessly. `retryTimestamp` leaves the blob with the twin channel.
