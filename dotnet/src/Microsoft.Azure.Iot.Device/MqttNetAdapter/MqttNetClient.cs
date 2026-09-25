@@ -4,6 +4,7 @@
 using Microsoft.Azure.Iot.Device.Mqtt;
 using Microsoft.Azure.Iot.Device.MqttNetAdapter;
 using MQTTnet;
+using System.Diagnostics;
 using System.Net;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
@@ -284,7 +285,8 @@ namespace Microsoft.Azure.Iot.Device.MQTTnetAdapter
         {
             if (PublishReceivedAsync == null)
             {
-                return Task.CompletedTask; //TODO what to do with received MQTT message when user doesn't have callback set. Does this even happen?
+                Trace.TraceWarning("Could not delegate a received MQTT publish because no 'PublishReceivedAsync' callback handler was registered");
+                return Task.CompletedTask;
             }
 
             MqttPublishReceivedEventArgs genericArgs = new MqttPublishReceivedEventArgsImpl(args)
@@ -309,7 +311,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTnetAdapter
                 }
             }
 
-            args.AutoAcknowledge = false; // TODO do we want to do AutoAck things in generic interface as well? For now, assume always manual ack
+            args.AutoAcknowledge = false;
 
             if (PublishReceivedAsync != null)
             {

@@ -654,10 +654,10 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         [Fact]
         public void ToMqttNet_DisconnectOptionsReason_MapsEveryDefinedValue()
         {
-            foreach (MqttClientDisconnectOptionsReason reason in Enum.GetValues<MqttClientDisconnectOptionsReason>())
+            foreach (MqttDisconnectReasonCode reason in Enum.GetValues<MqttDisconnectReasonCode>())
             {
                 MQTTnet.MqttClientDisconnectOptionsReason expected =
-                    ExpectedByName<MqttClientDisconnectOptionsReason, MQTTnet.MqttClientDisconnectOptionsReason>(reason);
+                    ExpectedByName<MqttDisconnectReasonCode, MQTTnet.MqttClientDisconnectOptionsReason>(reason);
 
                 Assert.Equal(expected, ModelConverter.ToMqttNet(reason));
             }
@@ -668,7 +668,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         {
             Assert.Equal(
                 MQTTnet.MqttClientDisconnectOptionsReason.PayloadFormatInvalid,
-                ModelConverter.ToMqttNet((MqttClientDisconnectOptionsReason)250));
+                ModelConverter.ToMqttNet((MqttDisconnectReasonCode)250));
         }
 
         [Theory]
