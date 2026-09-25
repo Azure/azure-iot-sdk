@@ -99,6 +99,10 @@ namespace Microsoft.Azure.Iot.Device.Gen2.Twin
             //TODO need to handle case where get twin request is successfully published, but connection + session is lost before receiving response.
             // Would need to re-send the get twin request upon device ready
             ObjectDisposedException.ThrowIf(_isDisposed, this);
+            if (!getReported && !getDesired)
+            {
+                throw new ArgumentException("At least one twin section must be requested.");
+            }
 
             var currentConnectionContext = EnsureCorrectConnectionContext();
 
@@ -122,7 +126,9 @@ namespace Microsoft.Azure.Iot.Device.Gen2.Twin
                 CorrelationData = requestId.ToByteArray(bigEndian: true),
                 Payload = new TwinGet()
                 {
-                    Sections = Sections.Both,
+                    Sections = getReported
+                        ? getDesired ? Sections.Both : Sections.Reported
+                        : Sections.Desired,
                     IfNotMatchDesired = ifNotMatchDesired,
                     IfNotMatchReported = ifNotMatchReported,
                 }.ToByteArray(),
@@ -260,8 +266,12 @@ namespace Microsoft.Azure.Iot.Device.Gen2.Twin
 
                 pendingGetTwinRequest.TwinResponseTask.TrySetResult(new()
                 {
-                    Desired = JsonObject.Parse(twinGetResponse.DesiredPayload.Span)!.AsObject(),
-                    Reported = JsonObject.Parse(twinGetResponse.ReportedPayload.Span)!.AsObject(),
+                    Desired = twinGetResponse.HasDesiredPayload
+                        ? JsonObject.Parse(twinGetResponse.DesiredPayload.Span)!.AsObject()
+                        : null,
+                    Reported = twinGetResponse.HasReportedPayload
+                        ? JsonObject.Parse(twinGetResponse.ReportedPayload.Span)!.AsObject()
+                        : null,
                     DesiredVersion = twinGetResponse.DesiredVersion,
                     ReportedVersion = twinGetResponse.ReportedVersion,
                 });
@@ -300,7 +310,7 @@ namespace Microsoft.Azure.Iot.Device.Gen2.Twin
 
                 if (receivedTwinPush.Reported != null)
                 {
-                    twinPushArgs.Desired = new()
+                    twinPushArgs.Reported = new()
                     {
                         Properties = JsonObject.Parse(receivedTwinPush.Reported.Payload.Span)!.AsObject(),
                         PropertiesVersion = receivedTwinPush.Reported.Version
