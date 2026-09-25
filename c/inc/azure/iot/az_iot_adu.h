@@ -324,9 +324,10 @@ extern "C"
    * az_iot_adu_client_update_device_properties() deep-copy them; the caller may
    * then change or free them.
    *
-   * Requires 1 to AZ_IOT_ADU_MAX_COMPATIBILITY_PROPERTIES compatibility
-   * properties: manufacturer and model count one each when non-NULL, plus the
-   * custom ones. The copy holds at most 256 bytes of compatibility strings and
+   * The managed client requires 1 to AZ_IOT_ADU_MAX_COMPATIBILITY_PROPERTIES
+   * compatibility properties: manufacturer and model count one each when
+   * non-NULL, plus the custom ones. az_iot_adu_build_report() keeps its own
+   * limit of up to five custom properties. The copy holds at most 256 bytes of compatibility strings and
    * 192 bytes of installed-ID strings, NUL terminators included; these are SDK
    * storage limits, not protocol limits.
    */
@@ -845,7 +846,8 @@ extern "C"
    * @param[out] client Client to initialize.
    * @param[in] connection Connection client the device-update channel is built
    *   on. Need not be connected, but its DPS ID scope, registration ID and
-   *   credential must be set: the bootstrap check runs before registration.
+   *   credential must be set: an application-requested onboarding check can
+   *   run before registration. Initialization sends nothing.
    * @param[in] options Hooks, crypto, trust store, device properties and cache.
    * @return AZ_IOT_OK on success.
    * @retval AZ_IOT_ERR_INVALID_ARG A required field is NULL, or the device
