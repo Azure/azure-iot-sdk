@@ -1198,7 +1198,7 @@ normative ones; the language columns are informative and follow the code.
 
 | Concept | C | .NET |
 | --- | --- | --- |
-| Connection client | `az_iot_connection_client` | `Unified.Connection.ConnectionClient` (dispatches by profile) and `Gen2.Connection.ConnectionClient` |
+| Connection client | `az_iot_connection_client` | `Unified.Connection.ConnectionClient` (dispatches by profile) and `MQTTv5.Connection.ConnectionClient` |
 | Open / close | `az_iot_connection_client_open()` / `_close()` | `ConnectAsync()` / `ProvisionAndConnectAsync()` / `DisconnectAsync()` |
 | State value | `az_iot_connection_state` (`IDLE`…`FAULTED`), delivered on `az_iot_connection_state_event` | none — `ConnectingAsync` / `ConnectedAsync` / `DisconnectedAsync` events, plus `ConnectionFaultedEventArgs` |
 | Session maintenance and reconnect | `connection_client.c` + `reconnect.c` | `MqttConnectionManager` |
