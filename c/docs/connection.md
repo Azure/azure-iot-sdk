@@ -67,9 +67,14 @@ from there — but `close()` is legal from it and returns the client to `IDLE`, 
 starts a fresh attempt with the configuration and the attached feature clients intact. `open()`
 itself remains `IDLE`-only.
 
-The whole provisioning exchange happens **inside** the `CONNECTING` state, so
-the application never sees an intermediate `CONNECTED` for the DPS session. DPS progress is tracked
-separately as a phase:
+State is reported **per lifecycle**. A device that provisions runs two: the provisioning session and
+the hub session. Each has its own state from the diagram above, and every state event says which
+one it is about. The provisioning lifecycle reports `CONNECTED` once its response subscription is
+confirmed — the point at which the session is usable — and `DISCONNECTING` then `IDLE` when it is
+released. An application that only cares whether it can use hub features watches the hub
+lifecycle alone.
+
+Within the provisioning lifecycle, progress is tracked as a phase:
 
 ```mermaid
 stateDiagram-v2
@@ -77,12 +82,19 @@ stateDiagram-v2
     [*] --> DPS_CONNECTING: open() with id_scope
     DPS_CONNECTING --> DPS_SUBSCRIBING: CONNACK ok
     DPS_SUBSCRIBING --> DPS_REGISTERING: SUBACK
+    DPS_SUBSCRIBING --> DPS_HOLD: SUBACK, registration held
+    DPS_HOLD --> DPS_REGISTERING: hold released or expired
     DPS_REGISTERING --> DPS_POLLING: assigning
     DPS_POLLING --> DPS_POLLING: retry-after elapsed
     DPS_POLLING --> DPS_DONE: assigned
     DPS_REGISTERING --> DPS_DONE: assigned
     DPS_DONE --> [*]: hub host and device id applied
 ```
+
+`DPS_HOLD` exists so a feature can use the provisioning session **before** the device registers —
+the bootstrap update check of [§7.1](#71-onboarding--bootstrap-update-before-provisioning) is the
+one that does. The hold is bounded (60 s by default): when it expires the device registers
+regardless, so a feature can delay provisioning but never prevent it.
 
 Every failure in a DPS phase is handled by the same backoff path as a hub failure, and a retry
 restarts provisioning from `DPS_CONNECTING` — a rejected registration included. What does *not*
@@ -161,16 +173,25 @@ Key ordering guarantees that every client must honour:
   `ih/{device_id}/dev/#` presence wildcard; Classic feature filters and application custom topics
   use the persistent-subscription registry.
 
-2. The DPS session is fully torn down before the hub session is created — they are never concurrent,
-   and DPS always uses MQTT 3.1.1 even when the hub session uses v5.
+2. The provisioning session is released after registration **unless a feature still holds it**, in
+   which case it stays up alongside the hub session and is pumped with it. Device update over the
+   provisioning gateway is such a feature. With no holder the session is torn down before the hub
+   session is created. DPS always uses MQTT 3.1.1, even when the hub session uses v5.
 3. The operational certificate is preferred over the bootstrap certificate on every connect attempt,
    including reconnects.
-4. **The bootstrap update check runs before `open()`, not inside it.** The agent drives the onboarding
-   update call against the DPS gateway until the service reports no update, and only then does the
-   connection client register. The check is **advisory**: if it fails, the device proceeds to register
+4. **The bootstrap update check runs inside `open()`, ahead of registration.** The connection opens
+   the provisioning session and, while a feature holds registration (`DPS_HOLD`), the update check
+   runs on it. The check is **advisory**: if it fails or the hold expires, the device registers
    anyway. See [§7](#7-device-update-onboarding-and-renewal).
 5. The DPS assignment is the single delivery point for everything the device learns about its
    placement: hub, device id, connection profile and issued certificate chain.
+6. **A device with no hub declares it.** In provisioning-only mode the client keeps the provisioning
+   session up, never registers and never connects to a hub: it settles with the provisioning
+   lifecycle `CONNECTED` and the hub lifecycle `IDLE`, and every operation runs over the
+   provisioning session. It is declared rather than inferred, because a hubless enrolment and a
+   misconfigured one fail registration identically; inferring success would hide the
+   misconfiguration. It cannot be combined with a request for an operational certificate, which is
+   issued *by* a registration.
 
 ### 3.1 Egress: transport and proxy
 
@@ -293,9 +314,7 @@ Rules every client must implement:
 
 > **Blocked on the DPS api-version.** `connectionProfile` is new in DPS `2026-11-02-preview`, and
 > raising the requested api-version is a prerequisite for this entire section.
->
-> **Open:** whether a reconnect can change the generation. If DPS can reassign a device mid-life,
-> every feature client the application holds becomes invalid at that moment and it must be told.
+
 
 ---
 
@@ -390,7 +409,8 @@ retry is a provisioning attempt.
 - Any failure in the gen2 presence handshake, not only its timeout: the presence SUBSCRIBE failing to
   be issued, a presence SUBACK carrying a failure status, and the birth PUBLISH failing all abandon
   the handshake and reconnect.
-- gen2 birth-ack timeout (60 s per handshake step, in both clients).
+- A gen2 presence handshake step that does not complete in time. Every step is bounded — the
+  subscription acknowledgement and the birth-ack each have their own 60 s deadline.
 
 - **A rejected registration**, a registration that completes with no assignment, or a failure of the
   provisioning session itself. This is the **most** transient failure a device meets, not the least:
@@ -428,7 +448,7 @@ as terminal, retryable, contained or benign, and is the authority for which is w
 | --- | --- | --- |
 | Persistent subscriptions | Yes | Re-issued on reconnect. Every required filter must be SUBACKed before `CONNECTED`; a missing SUBACK expires on the configured deadline and retries as a transient failure. |
 | Assigned hub host / device id | Yes | Cached after the first DPS assignment. |
-| Connection profile | Yes | Re-resolved from the new assignment; a change invalidates held feature clients (open question, [§4](#4-connection-profile-selection)). |
+| Connection profile | Yes | Re-resolved from the new assignment. A change of generation is terminal and the application rebuilds its feature clients ([§4](#4-connection-profile-selection)). |
 | Operational certificate | Yes | Owned by the certificate provider, reloaded on each attempt. |
 | Update workflow state | Yes | Owned by the update engine and persisted, so an install survives a reconnect and a reboot. |
 | Reconnect attempt counter | Reset on success | Incremented per failed attempt. |
@@ -438,7 +458,7 @@ as terminal, retryable, contained or benign, and is the authority for which is w
 | Update status report not yet acked | Yes | Held in durable storage and retried until acked; idempotent on the workflow id. |
 | Presence (birth) phase | No | Restarted with a freshly generated nonce. |
 | Provisioning phase | No | Provisioning is **not** re-run on an ordinary reconnect: once the device has an assignment, a reconnect re-establishes the *hub* session using the cached hub and device id. It is re-run only when something has invalidated the assignment — an identity refused at CONNACK, the consecutive-hub-failure threshold being crossed, or an assignment the client rejected. When it does re-run, it restarts from the beginning. |
-| In-flight CSR operation | No | Abandoned; the caller is notified with a failure or timeout result. |
+| In-flight CSR operation | Yes | Survives the drop, and a response on the next session completes it. It fails with a timeout only at its own deadline, or ends when the application cancels it. |
 
 ### 5.5 Does the retry policy cover the *first* attempt?
 
@@ -549,11 +569,11 @@ or validate the choice.
 ### 7.1 Onboarding — bootstrap update, before provisioning
 
 The critical ordering fact for this document: **the bootstrap update check happens before the device
-registers.** The agent, not the connection client, drives it. On the happy path `open()` waits until
-the check reports no update, so several updates can chain before provisioning.
+registers.** It runs inside `open()`: the connection opens the provisioning session and holds
+registration while the update client performs the check on it.
 
-The check is **advisory and must never block provisioning.** If it errors, times out, or the account
-is not linked, the device proceeds to register anyway.
+The check is **advisory and must never block provisioning.** If it errors, times out, the hold
+expires, or the account is not linked, the device proceeds to register anyway.
 
 ```mermaid
 sequenceDiagram
@@ -563,25 +583,24 @@ sequenceDiagram
     participant DPS
     participant Hub
 
-    loop until "no update" or an advisory failure
-        ADU->>DPS: requestOnboardingUpdates (agentInfo, installedUpdateId, ETags)
-        alt update available
-            DPS-->>ADU: serviceConfiguration + updateMetadata (workflowId, manifest, signature, fileUrls)
-            ADU->>ADU: verify signature, download fileUrls, install (reboot if required)
-            ADU->>DPS: reportUpdateStatus (workflowId, installedUpdateId, installResult)
-        else no update
-            DPS-->>ADU: 200 with update metadata omitted
-        end
+    Conn->>DPS: CONNECT + SUBSCRIBE, registration held
+    ADU->>DPS: requestOnboardingUpdates (agentInfo, installedUpdateId, ETags)
+    alt update available
+        DPS-->>ADU: serviceConfiguration + updateMetadata (workflowId, manifest, signature, fileUrls)
+    else no update
+        DPS-->>ADU: 200 with update metadata omitted
     end
 
-    Note over ADU,Conn: provisioning proceeds - on success or on an advisory failure
+    Note over ADU,Conn: hold released - on a verdict, or on an advisory failure or expiry
     Conn->>DPS: Register (unchanged, CSR optional)
     DPS-->>Conn: assignedHub, deviceId, connectionProfile, issuedCertificateChain
     Conn->>Hub: CONNECT with operational auth
 ```
 
-- The loop is genuine: after installing a bootstrap update the agent re-checks, because a bootstrap
-  deployment can chain.
+- **Registration is held for the check, not for the install.** A check that finds an update releases
+  the hold like any other verdict; the install, its report and any re-check run afterwards on the
+  provisioning session the update client still holds. A bootstrap deployment can chain, so the agent
+  re-checks after installing.
 - Bootstrap progress is stored **in the bootstrap update job**, not on the device's own attributes —
   the device resource does not exist yet.
 - Trust comes from the **root-key package** whose download URL is returned by the same call. Account
@@ -602,7 +621,7 @@ sequenceDiagram
     participant GW as Gateway (Hub, or DPS in preview)
     participant Store as Durable update state
 
-    Conn-->>ADU: CONNECTED
+    Conn-->>ADU: provisioning session CONNECTED
     ADU->>Store: load state
     Store-->>ADU: installed update id, ETags, unsent report
     opt report pending from a previous session
@@ -622,9 +641,9 @@ sequenceDiagram
         end
     end
 
-    Conn--xADU: connection drop
+    Conn--xADU: provisioning session drop
     Note over ADU: install continues, report held in durable storage
-    Conn-->>ADU: CONNECTED again
+    Conn-->>ADU: provisioning session CONNECTED again
     ADU->>GW: retry the report until acked, then resume polling
 ```
 
@@ -647,9 +666,12 @@ reports include complete per-step outcomes when steps are available — see
   `agentInfoEtag` means resend the full `agentInfo`; a stale `serviceConfigEtag` means re-ask without
   it; an unlinked update account means "no update service configured", which is not a failure.
 - **"No update" is a success.** It is a 200 with the update metadata omitted, not an error.
-- **Update never drives the connection.** It does not open, close, or force a reconnect. It does
-  sequence ahead of the *first* `open()`, via the advisory bootstrap check in
-  [§7.1](#71-onboarding--bootstrap-update-before-provisioning).
+- **Update follows the provisioning lifecycle, not the hub one.** In preview its gateway is DPS, so it
+  works whatever the hub state, and on a device with no hub at all. It never opens, closes or
+  reconnects the **hub** session. It does hold the provisioning session: it holds registration for
+  the advisory bootstrap check of [§7.1](#71-onboarding--bootstrap-update-before-provisioning), and it
+  asks for a provisioning session to be opened when it needs one after the device has provisioned.
+  A connection that has settled in `FAULTED` opens nothing until the application closes it.
 - **Compatibility properties are opaque key/value pairs** (1–5) reported by the agent alongside an
   opaque agent profile; the service combines them into a device class. The agent assigns them no
   meaning.
@@ -668,12 +690,10 @@ are deferred effects — they do not happen inline.
 
 ```mermaid
 flowchart TB
-    BOOT["Agent boot"] --> BCHK["ADUv2 bootstrap check<br/>requestOnboardingUpdates via DPS"]
-    BCHK -->|"update available"| BINST["Verify, download, install,<br/>report, re-check"]
-    BINST --> BCHK
-    BCHK -->|"no update, or advisory failure"| IDLE["IDLE"]
-
-    IDLE -->|"open() with id scope"| REG["DPS register<br/>CSR optional"]
+    IDLE["IDLE"] -->|"open() with id scope"| DSESS["Provisioning session up<br/>registration held"]
+    DSESS --> BCHK["ADUv2 bootstrap check<br/>requestOnboardingUpdates via DPS"]
+    BCHK -->|"update available"| BINST["Verify, download, install,<br/>report"]
+    BCHK -->|"verdict, advisory failure,<br/>or hold expired"| REG["DPS register<br/>CSR optional"]
 
     REG --> ASSIGN["Assignment:<br/>assignedHub, deviceId,<br/>connectionProfile,<br/>issuedCertificateChain"]
     ASSIGN --> STORE1["Store the issued chain"]
@@ -715,11 +735,11 @@ Reading it as four overlapping concerns:
 | **Certificates** | CSR in the registration, issued chain in the assignment | CSR over the hub; new chain applies on the next connect |
 | **Device update** | `requestOnboardingUpdates` loop **before** registration, advisory | Polled `requestSoftwareUpdates` / `reportUpdateStatus` (DPS in preview, Hub afterwards) |
 | **Connection profile** | Declared in the assignment; selects MQTT version and generation | Re-resolved on every reconnect that goes through DPS |
-| **Connection** | DPS phases inside `CONNECTING` | Backoff-driven reconnect replays the whole path |
+| **Connection** | Provisioning lifecycle, with registration held for the bootstrap check | Backoff-driven reconnect replays the whole path |
 
 The two onboarding concerns are **not** symmetric, and that asymmetry is the thing to remember: the
-CSR travels *inside* registration, while the bootstrap update check happens *before* it and must
-complete first.
+CSR travels *inside* registration, while the bootstrap update check happens *before* it, with
+registration held for it.
 
 ---
 
@@ -788,7 +808,7 @@ presence handshake) happen to line up with them.
 | 1 | Host, network and OS | Name resolution, address selection, socket setup, the host clock |
 | 2 | TLS | From `ClientHello` to a usable encrypted channel |
 | 3 | CONNECT / CONNACK | The MQTT session handshake |
-| 4 | DPS provisioning | The whole DPS exchange, inside `CONNECTING` |
+| 4 | DPS provisioning | The whole DPS exchange, on the provisioning lifecycle |
 | 5 | Presence handshake (gen2) | The `dev/#` subscription and the birth exchange |
 | 6 | Subscription gate | Persistent feature subscriptions, before `CONNECTED` is announced |
 | 7 | Steady state | Everything after `CONNECTED` |

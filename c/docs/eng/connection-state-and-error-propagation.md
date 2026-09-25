@@ -270,9 +270,9 @@ Rules that follow, each pinned by a test:
    disconnect with retries disabled is `HUB:IDLE` — reopenable. Only *failures*
    reach `FAULTED`. Conflating them per scope is the same mistake as conflating
    them globally.
-2. **A session teardown settles its scope.** The provisioning session is
-   destroyed at registration, so `DPS` emits `DISCONNECTING` then `IDLE` even
-   though the hub connect is about to start. Leaving it pinned at `CONNECTING`
+2. **A session teardown settles its scope.** When nothing still holds the
+   provisioning session it is released at registration, so `DPS` emits
+   `DISCONNECTING` then `IDLE` even though the hub connect is about to start. Leaving it pinned at `CONNECTING`
    would make the *next* re-provisioning run invisible, by the same suppression
    rule above.
 3. **A failure is reported against the scope that failed**, not the scope the

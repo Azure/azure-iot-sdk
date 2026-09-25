@@ -48,7 +48,7 @@ This document describes the target lifecycle. Not all of it is coded yet, so eve
 | **Renewal** | The recurring, post-provisioning counterpart under *operational auth*: certificate re-issuance and the periodic ADUv2 update check. |
 | **Bootstrap credential** | Initial device identity (`AZ_IOT_CRED_BOOTSTRAP`). |
 | **Operational credential** | Certificate issued to the device via CSR (`AZ_IOT_CRED_OPERATIONAL`). |
-| **ADU channel** | The `az_iot_adu_channel` vtable that carries update delivery and reporting, keeping `adu_core` transport-independent. |
+| **ADU channel** | The `az_iot_adu_channel` vtable that carries update delivery and reporting, keeping the ADU engine transport-independent. |
 
 ---
 
@@ -81,9 +81,13 @@ retry from there -- but `close()` is legal from it and returns the client to `ID
 `open()` starts a fresh attempt with the configuration and the attached feature clients intact.
 `open()` itself remains `IDLE`-only.
 
-The whole provisioning exchange happens **inside** the `CONNECTING` state, so
-the application never sees an intermediate `CONNECTED` for the DPS session. The DPS progress is
-tracked separately as a phase:
+State is kept and reported **per scope**: `state[AZ_IOT_CONN_SCOPE_COUNT]`, and every
+`az_iot_connection_state_event` carries `scope`. `AZ_IOT_CONN_SCOPE_DPS` reports `CONNECTED` at the
+provisioning SUBACK (announced from the pump via `dps_pending_ready_announce`), then
+`DISCONNECTING` and `IDLE` when `dps_apply_deferred()` releases the session.
+`az_iot_connection_client_get_state(client, scope)` is the getter; there is no unscoped state.
+
+Within the DPS scope, progress is tracked as `dps_phase`:
 
 ```mermaid
 stateDiagram-v2
@@ -91,6 +95,8 @@ stateDiagram-v2
     [*] --> DPS_CONNECTING: open() with id_scope
     DPS_CONNECTING --> DPS_SUBSCRIBING: CONNACK ok
     DPS_SUBSCRIBING --> DPS_REGISTERING: SUBACK
+    DPS_SUBSCRIBING --> DPS_HOLD: SUBACK, dps_hold_count > 0
+    DPS_HOLD --> DPS_REGISTERING: last hold released, or dps_hold_timeout_ms
     DPS_REGISTERING --> DPS_POLLING: assigning
     DPS_POLLING --> DPS_POLLING: retry-after elapsed
     DPS_POLLING --> DPS_DONE: assigned
@@ -174,16 +180,25 @@ Key ordering guarantees that both clients must honour:
   `ih/{device_id}/dev/#` presence wildcard; Classic feature filters and application custom topics
   use the persistent-subscription registry.
 
-2. The DPS session is fully torn down before the hub session is created — they are never concurrent,
-   and DPS always uses MQTT 3.1.1 even when the hub session uses v5.
+2. `dps_apply_deferred()` keeps the DPS session after a successful assignment while
+   `dps_refs_held()` — a feature client's `__dps_user_acquire()` ref, or `provision_only`'s standing
+   ref — and tears it down otherwise. A kept session runs alongside the hub session and `do_work()`
+   pumps both. DPS always uses MQTT 3.1.1, even when the hub session uses v5.
 3. The operational certificate is preferred over the bootstrap certificate on every connect attempt,
    including reconnects.
-4. **The ADUv2 bootstrap update check runs before `open()`, not inside it.** The agent drives the
-   onboarding update call against the DPS gateway until the service reports no update, and only then
-   does the connection client register. The check is **advisory**: if it fails, the device proceeds
-   to register anyway. See [§7](#7-aduv2-onboarding-and-renewal-partly-implemented).
+4. **The ADUv2 bootstrap update check runs inside `open()`, ahead of registration.** The DPS channel
+   takes `__dps_hold_acquire()` when it binds and again on each `DPS:CONNECTING` until its exchange is
+   done, so the SUBACK enters `DPS_HOLD` instead of registering.
+   The hold is released at the first check verdict that will not immediately repeat, or on close;
+   `dps_hold_timeout_ms` (default `AZ_IOT_DPS_HOLD_TIMEOUT_MS`, 60 s) bounds it, and on expiry the
+   device registers anyway. See [§7](#7-aduv2-onboarding-and-renewal-partly-implemented).
 5. The DPS assignment is the single delivery point for everything the device learns about its
    placement: hub, device id, connection profile and issued certificate chain.
+6. **`opts.dps.provision_only`** keeps the DPS session up, never registers and never connects to a
+   hub, settling at `DPS:CONNECTED` + `HUB:IDLE`. `open()` refuses it with `AZ_IOT_ERR_INVALID_ARG`
+   without `dps.id_scope` and `dps.registration_id`, or combined with `opts.host` or
+   `dps.request_operational_certificate`. The session is re-established under
+   `opts.reconnection_policy`.
 
 ### 3.1 Egress: transport and proxy **[implemented]**
 
@@ -327,9 +342,7 @@ Rules both clients must implement:
 > **Blocked on the api-version.** `connectionProfile` is new in DPS `2026-11-02-preview`; the SDK
 > still requests `2019-03-31` via the vendored `azure-sdk-for-c`, so the field never arrives today.
 > Raising it is a prerequisite for this entire section.
->
-> **Open:** whether a reconnect can change the generation. If DPS can reassign a device mid-life,
-> every feature client the application holds becomes invalid at that moment and it must be told.
+
 
 ---
 
@@ -413,7 +426,9 @@ successful CONNACK.
 - Any failure in the Hub-Next presence handshake, not only its timeout: `presence_start()` failing
   after CONNACK, the presence SUBACK arriving with a failure status, and `presence_publish_birth()`
   failing all clear the phase and reconnect.
-- Hub-Next birth-ack timeout (60 s per handshake step), checked in `_do_work()`.
+- A Hub-Next presence step that does not complete in time. `presence.deadline_ms` is armed at CONNACK
+  for the SUBACK and re-armed after the birth PUBLISH for the birth-ack, each
+  `AZ_IOT_PRESENCE_BIRTH_ACK_TIMEOUT_MS` (60 s), and checked in `do_work()`.
 
 - **A failed registration, or one with no assignment.** `dps_apply_deferred()` sets
   `needs_reprovision` and calls `schedule_reconnect(AZ_IOT_CONN_SCOPE_DPS, status)`, so the retry is
@@ -454,9 +469,9 @@ checked before backoff is scheduled.
 | --- | --- | --- |
 | Persistent subscriptions | Yes | Re-issued on reconnect. Every required filter must be SUBACKed before `CONNECTED`; a missing SUBACK expires on the configured deadline and retries as a transient failure. |
 | Assigned hub host / device id | Yes | Cached after the first DPS assignment. |
-| Connection profile | Yes | Re-resolved from the new assignment; a change invalidates held feature clients (open question, §4). |
+| Connection profile | Yes | Re-resolved from the new assignment. A change of generation faults with `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH`; the application rebuilds its feature clients (§4). |
 | Operational certificate | Yes | Owned by the certificate provider, reloaded on each attempt. |
-| ADU workflow state | Yes | Owned by `adu_core` and persisted, so an install survives a reconnect and a reboot. |
+| ADU workflow state | Yes | Owned by the ADU engine and persisted, so an install survives a reconnect and a reboot. |
 | Reconnect attempt counter | Reset on success | Incremented per failed attempt. |
 | In-flight QoS 1 PUBACKs | No | Packet ids belong to the destroyed adapter; callers must re-send. |
 | Twin GET/PATCH, method responses, telemetry in flight | No | Feature clients must re-issue. |
@@ -464,7 +479,7 @@ checked before backoff is scheduled.
 | ADU status report not yet acked | Yes | Held in durable storage and retried until acked; idempotent on `workflowId`. |
 | Presence (birth) phase | No | Restarted with a freshly generated nonce. |
 | DPS phase | No | Not re-run on an ordinary reconnect: the cached assignment is reused. It is re-run only when `needs_reprovision` is set — an identity rejection at CONNACK, the `max_hub_connect_attempts_before_reprovision` threshold, or `reject_assignment()`. When it does re-run it restarts from `DPS_CONNECTING`. |
-| In-flight CSR operation | No | Abandoned; the callback fires with a failure/timeout result. |
+| In-flight CSR operation | Yes | `teardown_active()` does not touch `csr_op`, so a response on the next session completes it. `AZ_IOT_ERR_TIMEOUT` fires only at `CSR_OP_TIMEOUT_MS` (120 s, re-armed on each `202`); `az_iot_connection_client_cancel_csr()` ends it early. |
 
 ### 5.4 The first attempt
 
@@ -530,7 +545,7 @@ Rules that apply to both clients:
 ## 7. ADUv2: onboarding and renewal **[partly implemented]**
 
 **ADUv1 is cut.** Its Twin-based public API has been removed; what survives is everything that has
-nothing to do with transport. ADU is re-layered into a transport-independent **`adu_core`** —
+nothing to do with transport. ADU is re-layered into a transport-independent **ADU engine** —
 manifest v5 parsing, JWS/SJWK verification, root keys, SHA-256 integrity, the
 download/backup/install/apply state machine, and reboot/resume persistence — plus an
 **`az_iot_adu_channel`** vtable carrying delivery and reporting.
@@ -562,39 +577,39 @@ or validate the choice.
 ### 7.1 Onboarding — bootstrap update, before provisioning
 
 The critical ordering fact for this document: **the bootstrap update check happens before the device
-registers.** The agent, not the connection client, drives it. On the happy path `open()` waits until
-the check reports no update, so several updates can chain before provisioning.
+registers.** It runs inside `open()`, on the DPS session, while the DPS channel holds registration.
 
-The check is **advisory and must never block provisioning.** If it errors, times out, or the account
-is not linked, the device proceeds to register anyway.
+The check is **advisory and must never block provisioning.** `emit_result()` releases the hold at the
+first verdict that will not immediately repeat — success, or an error action of `FATAL` or `PROCEED`.
+A retryable failure keeps the hold, and `dps_hold_timeout_ms` bounds it: on expiry the device
+registers anyway (`"dps: pre-registration hold timed out; registering anyway"`).
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant ADU as adu_core + DPS channel
+    participant ADU as ADU engine + DPS channel
     participant Conn as Connection client
     participant DPS
     participant Hub
 
-    loop until "no update" or an advisory failure
-        ADU->>DPS: requestOnboardingUpdates (agentInfo, installedUpdateId, ETags)
-        alt update available
-            DPS-->>ADU: serviceConfiguration + updateMetadata (workflowId, manifest, signature, fileUrls)
-            ADU->>ADU: verify signature, download fileUrls, install (reboot if required)
-            ADU->>DPS: reportUpdateStatus (workflowId, installedUpdateId, installResult)
-        else no update
-            DPS-->>ADU: 200 with updateMetadata omitted
-        end
+    Conn->>DPS: CONNECT + SUBSCRIBE, SUBACK enters DPS_HOLD
+    ADU->>DPS: requestOnboardingUpdates (agentInfo, installedUpdateId, ETags)
+    alt update available
+        DPS-->>ADU: serviceConfiguration + updateMetadata (workflowId, manifest, signature, fileUrls)
+    else no update
+        DPS-->>ADU: 200 with updateMetadata omitted
     end
 
-    Note over ADU,Conn: provisioning proceeds - on success or on an advisory failure
+    Note over ADU,Conn: __dps_hold_release() - on a verdict, a FATAL/PROCEED error, or expiry
     Conn->>DPS: Register (unchanged, CSR optional)
     DPS-->>Conn: assignedHub, deviceId, connectionProfile, issuedCertificateChain
     Conn->>Hub: CONNECT with operational auth
 ```
 
-- The loop is genuine: after installing a bootstrap update the agent re-checks, because a bootstrap
-  deployment can chain.
+- **Registration is held for the check, not for the install.** A check that finds an update releases
+  the hold like any other verdict; the install, its report and any re-check run afterwards on the DPS
+  session, which the channel's `__dps_user_acquire()` ref keeps up. A bootstrap deployment can
+  chain, so the agent re-checks after installing.
 - Bootstrap progress is stored **in the bootstrap update job**, not on the device's ADR attributes —
   the device resource does not exist yet.
 - Trust comes from the **root-key package** at `serviceConfiguration.rootKeyDownloadUrl` returned by
@@ -612,11 +627,11 @@ sequenceDiagram
 sequenceDiagram
     autonumber
     participant Conn as Connection client
-    participant ADU as adu_core + channel
+    participant ADU as ADU engine + channel
     participant GW as Gateway (Hub, or DPS in preview)
     participant Store as Durable ADU state
 
-    Conn-->>ADU: CONNECTED
+    Conn-->>ADU: DPS:CONNECTED
     ADU->>Store: load_state()
     Store-->>ADU: installedUpdateId, ETags, unsent report
     opt report pending from a previous session
@@ -636,9 +651,9 @@ sequenceDiagram
         end
     end
 
-    Conn--xADU: connection drop
+    Conn--xADU: DPS session drop
     Note over ADU: install continues, report held in durable storage
-    Conn-->>ADU: CONNECTED again
+    Conn-->>ADU: DPS:CONNECTED again
     ADU->>GW: retry the report until acked, then resume polling
 ```
 
@@ -661,8 +676,11 @@ reports include complete per-step outcomes when steps are available — see
   `agentInfoEtag` means resend the full `agentInfo`; a stale `serviceConfigEtag` means re-ask without
   it; an unlinked update account means "no update service configured", which is not a failure.
 - **"No update" is a success.** It is a 200 with the update metadata omitted, not an error.
-- **ADU never drives the connection.** It does not open, close, or force a reconnect. It does
-  sequence ahead of the *first* `open()`, via the advisory bootstrap check in §7.1.
+- **ADU follows the DPS scope, not the hub one.** The channel records both scopes but acts only on
+  `AZ_IOT_CONN_SCOPE_DPS`, so it works whatever the hub state and under `provision_only`. It never opens, closes or reconnects
+  the hub session. It holds registration for the bootstrap check (§7.1), and opens a DPS session
+  after provisioning through `__dps_session_ensure()`. While either scope has settled in
+  `FAULTED`, no new session is opened until `close()`.
 - **Compatibility properties are opaque key/value pairs** (1–5) reported by the agent alongside an
   opaque `agentProfile`; the service combines them into a device class. The agent assigns them no
   meaning.
@@ -682,12 +700,10 @@ deferred effects — they do not happen inline.
 
 ```mermaid
 flowchart TB
-    BOOT["Agent boot"] --> BCHK["ADUv2 bootstrap check<br/>requestOnboardingUpdates via DPS"]
-    BCHK -->|"update available"| BINST["Verify, download, install,<br/>report, re-check"]
-    BINST --> BCHK
-    BCHK -->|"no update, or advisory failure"| IDLE["IDLE"]
-
-    IDLE -->|"open() with id_scope"| REG["DPS register<br/>CSR optional"]
+    IDLE["IDLE"] -->|"open() with id_scope"| DSESS["DPS session up<br/>DPS_HOLD"]
+    DSESS --> BCHK["ADUv2 bootstrap check<br/>requestOnboardingUpdates via DPS"]
+    BCHK -->|"update available"| BINST["Verify, download, install,<br/>report"]
+    BCHK -->|"verdict, FATAL/PROCEED,<br/>or hold expired"| REG["DPS register<br/>CSR optional"]
 
     REG --> ASSIGN["Assignment:<br/>assignedHub, deviceId,<br/>connectionProfile,<br/>issuedCertificateChain"]
     ASSIGN --> STORE1["Store issued chain"]
@@ -723,11 +739,11 @@ Reading it as four overlapping concerns:
 | **Certificates** | CSR in the registration, issued chain in the assignment | `send_csr` over the hub; new chain applies on the next connect |
 | **ADUv2** | `requestOnboardingUpdates` loop **before** registration, advisory | Polled `requestSoftwareUpdates` / `reportUpdateStatus` (DPS in preview, Hub afterwards) |
 | **Connection profile** | Declared in the assignment; selects MQTT version and generation | Re-resolved on every reconnect that goes through DPS |
-| **Connection** | DPS phases inside `CONNECTING` | Backoff-driven reconnect replays the whole path |
+| **Connection** | DPS scope, with registration held in `DPS_HOLD` for the bootstrap check | Backoff-driven reconnect replays the whole path |
 
 The two onboarding concerns are **not** symmetric, and that asymmetry is the thing to remember:
-the CSR travels *inside* registration, while the ADU bootstrap check happens *before* it and must
-complete first.
+the CSR travels *inside* registration, while the ADU bootstrap check happens *before* it, with
+registration held for it.
 
 ---
 
@@ -855,7 +871,6 @@ a slow path. Every constant is `#ifndef`-guarded and can be raised at build time
 | `AZ_IOT_DEFAULT_SUBSCRIPTION_ACK_TIMEOUT_SECONDS` | 60 | The subscription gate: how long the SUBACKs of one batch may take | `AZ_IOT_ERR_TIMEOUT` |
 | `AZ_IOT_PRESENCE_BIRTH_ACK_TIMEOUT_MS` | 60000 | Each presence handshake step | `AZ_IOT_ERR_TIMEOUT` |
 | `AZ_IOT_DPS_HOLD_TIMEOUT_MS` | 60000 | How long registration may be held for a pre-registration exchange | the hold expires and registration proceeds |
-| `AZ_IOT_DPS_AUX_IDLE_TIMEOUT_MS` | 5000 | Idle linger on an auxiliary DPS session before it is dropped | session closed, no error |
 | `AZ_IOT_DEFAULT_MAX_HUB_CONNECT_ATTEMPTS_BEFORE_REPROVISION` | 50 | Consecutive hub connect failures before the client re-provisions | `needs_reprovision` set; not an error |
 | `CSR_OP_TIMEOUT_MS` | 120000 | Hub CSR renewal, re-armed on each `202 Accepted` | `AZ_IOT_ERR_TIMEOUT` |
 
@@ -891,7 +906,7 @@ left as gaps rather than guesses.
 | Handshake | TLS alert detail | not in the result | `paho_ssl_error_callback` | logged only | The OpenSSL error queue is drained line by line to the trace log when `AZ_IOT_PAHO_SSL` is built and tracing is enabled. It is the only place the concrete reason appears. |
 | Handshake | **Client certificate rejected during the handshake** | `AZ_IOT_ERR_MQTT` | Paho negative code | reconnect | No MQTT session exists, so no CONNACK code is available. Correctly **not** treated as an identity rejection: the negative-code rule exists for exactly this. Consequence: a device whose operational certificate has been revoked retries forever instead of re-provisioning. |
 | CONNACK | **Client certificate accepted by TLS, identity refused at CONNACK** (`rc=5` / `0x87 Not authorized`) | `AZ_IOT_ERR_IDENTITY_REJECTED` | `az_iot_mqtt_connack_result()` | sets `needs_reprovision`; the next attempt runs `dps_start()` | The distinction between this row and the previous one is exactly the distinction the negative-code rule encodes, and it is the reason adapters must not flatten codes. |
-| Configuration | TLS is selected by any of: a client certificate, a trusted CA, key custody, or the explicit `use_tls` flag | — | `paho_iface_create` | scheme selected as `ssl://` or `tcp://` | There is deliberately **no** option to disable server-certificate validation: whenever a TLS session is established, the chain **and** the hostname are validated unconditionally. `use_tls` exists for a connection carrying no other TLS material, such as server-authentication-only; it replaced `verify_server`, which could switch validation off and did so for any caller who left a zero-initialised struct alone. |
+| Configuration | TLS is selected by any of: a client certificate, a trusted CA, key custody, or the explicit `use_tls` flag | — | `paho_factory_create` | scheme selected as `ssl://` or `tcp://` | There is deliberately **no** option to disable server-certificate validation: whenever a TLS session is established, the chain **and** the hostname are validated unconditionally. `use_tls` exists for a connection carrying no other TLS material, such as server-authentication-only; it replaced `verify_server`, which could switch validation off and did so for any caller who left a zero-initialised struct alone. |
 
 #### 9.5.3 Phase 3 — CONNECT / CONNACK
 
@@ -1011,7 +1026,7 @@ registry carries Classic feature filters and application custom topics.
 | `close()` while `CONNECTING`, provisioning in flight | — | `AZ_IOT_OK` | connection client | disconnects and tears down the DPS session, drops `dps_pending_finalize`, resets the attempt counter, goes to `IDLE` | The pending finalize is dropped on purpose: it describes the outcome of a session being abandoned, and acting on it in the next pump tick would move a client the application has just closed. `needs_reprovision` survives. |
 | `close()` while `CONNECTED` | — | `AZ_IOT_OK`, or the adapter's disconnect error | connection client | sets `user_close`, transitions to `DISCONNECTING`, calls the adapter's `disconnect()` | |
 | `close()` while `DISCONNECTING` | — | `AZ_IOT_OK`, or the adapter's error | connection client | sets `user_close` again and re-issues `disconnect()` | Harmless, but not a no-op. |
-| `close()` while `RECONNECTING` | — | `AZ_IOT_OK` | connection client | cancels the schedule (`reconnect_attempt = 0`, `reconnect_due_ms = 0`), clears `user_close`, transitions straight to `IDLE` | No adapter exists to disconnect. |
+| `close()` while `RECONNECTING` | — | `AZ_IOT_OK` | connection client | cancels the schedule (`retry_attempt[]` both scopes and `reconnect_due_ms` to 0), clears `user_close`, transitions straight to `IDLE` | No adapter exists to disconnect. |
 | `close()` while `FAULTED` | — | `AZ_IOT_OK` | connection client | resets the attempt counter, defensively calls `teardown_active()`, goes to `IDLE` | Handled **before** the `active_client` check, or it would report `NOT_INITIALIZED` and leave the client in a state no API could leave. `needs_reprovision` survives on purpose: it says the cached assignment is no good, which a `close()` does not change. |
 | `destroy()` with PUBACKs pending | — | none | connection client | the table is zeroed **without** invoking the callbacks | Deliberate: on destroy the context those callbacks close over may already be gone, and calling into it would turn cleanup into a use-after-free. Contrast session teardown, where the callbacks **do** fire. |
 | `destroy()` with session handlers registered | — | none | connection client | cleared without invoking them | Same reasoning. |
@@ -1143,7 +1158,7 @@ decide now than later.
   for the assigned device id, and the registration payload is delivered through a zero-copy callback
   valid only for the duration of the call. A device that wants to log or persist what it was
   assigned has to copy it out of that callback or not at all.
-- **`max_attempts` is misnamed.** `reconnect_attempt` resets on every successful CONNACK, so the
+- **`max_attempts` is misnamed.** `retry_attempt[scope]` resets on every successful connect of its scope, so the
   field bounds *consecutive* failures, not attempts over the client's life.
   `max_consecutive_attempts` would say what it does.
 
