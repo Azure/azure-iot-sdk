@@ -343,9 +343,9 @@ Rules both clients must implement:
   application destroys and rebuilds its feature clients for the assigned profile, then `close()`
   (legal from `FAULTED`) and `open()`. The connection client survives.
 
-> **Blocked on the api-version.** `connectionProfile` is new in DPS `2026-11-02-preview`; the SDK
-> still requests `2019-03-31` via the vendored `azure-sdk-for-c`, so the field never arrives today.
-> Raising it is a prerequisite for this entire section.
+> The SDK sends DPS `2026-11-02-preview` in the CONNECT username for every DPS session, including CSR
+> and provision-only update sessions, so DPS can return `connectionProfile`; absent or null still
+> resolves to `classic`.
 
 
 ---
@@ -542,7 +542,7 @@ Rules every client must implement. The C client meets all of them; where .NET do
   the next connect, whether that is a reconnect or an explicit reopen.
 - At connect time the provider is asked for `OPERATIONAL` first and falls back to `BOOTSTRAP` when
   the operational credential is absent or uninitialized.
-- CSR-based DPS enrollment uses the `2025-07-01-preview` DPS API version and requires a
+- CSR-based DPS enrollment uses the `2026-11-02-preview` DPS API version and requires a
   caller-provided CSR payload buffer of at least `AZ_IOT_CSR_PAYLOAD_BUFFER_MIN` bytes.
 
 ---
@@ -1008,7 +1008,7 @@ registry carries Classic feature filters and application custom topics.
 
 | Phase | Trigger | Surfaced as | Mapped by | SDK action | Notes / limits |
 | --- | --- | --- | --- | --- | --- |
-| Any | Runtime allocation failure | not applicable to the core | — | — | The core state machine performs **no** allocation: every buffer is an in-struct fixed array. The only `malloc` on any core path is a Windows-only environment-variable read used by the mock endpoints in dev and test builds; on failure it returns `AZ_IOT_ERR_INTERNAL` or `AZ_IOT_ERR_INVALID_ARG`, not an out-of-memory value. The adapter does allocate, for the server URI and duplicated option strings. |
+| Any | Runtime allocation failure | the PEM provider's `load()` returns `AZ_IOT_ERR_OUT_OF_MEMORY`; the connection client does not surface it | `certificate_provider_pem.c`; `start_connect_attempt()` / `dps_start()` | the connect proceeds **without a client credential**: the hub path ignores any `load()` result other than `NOT_FOUND` / `NOT_INITIALIZED`, and the DPS path logs it | The connection-client state machine does not allocate: every buffer is an in-struct fixed array, apart from a Windows-only environment read used by the mock endpoints in dev and test builds. The PEM certificate provider allocates to read PEM files; the Paho adapter allocates for the server URI and duplicated option strings. |
 | Publish / subscribe | A bound in [§9.4](#94-compile-time-bounds) is exceeded | see that table | connection client | the call fails before the transport is touched | Never truncated. |
 | Publish | Pending-PUBACK table full (17th unacknowledged publish with a callback) | `AZ_IOT_ERR_NOT_SUPPORTED` | connection client | the publish has already been sent; the ack callback is not registered | The table is checked after the publish, not before. |
 | Twin | Pending-request pool full (9th) | `AZ_IOT_ERR_NOT_SUPPORTED` | twin client | the request is rejected | Contained. Distinct from the `429` row above, which is the point. |
@@ -1120,10 +1120,9 @@ a value of `AZ_IOT_CONNECTION_PROFILE_RAW_BUF` bytes or more (63 fit, plus the N
 with `AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED`. `az_iot_connection_client_get_hub_profile()`
 reports the result, and the raw string stays readable.
 
-While the api-version that carries `connectionProfile` is not deployed,
-`dps_apply_connection_profile_override()` is a development bridge: it applies **only** when the
-property is absent or null, so an actual wire value always wins and enabling it cannot mask the
-service rollout.
+`dps_apply_connection_profile_override()` lets a development build replace the `classic` default
+when the assignment carries no `connectionProfile`. It applies **only** when the property is absent
+or null, so an actual wire value always wins.
 
 Gaps this section surfaced:
 

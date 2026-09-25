@@ -43,9 +43,6 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5
             {
                 if (args.MethodName.Equals(expectedDirectMethodName) && args.ResponseTimeoutSeconds == expectedResponseTimeout)
                 {
-                    //TODO just generate this for the user
-                    byte[] readyId = Guid.NewGuid().ToByteArray();
-
                     ProbeReceivedTcs.TrySetResult(args);
 
                     return Task.FromResult(DirectMethodProbeAck.Accepted());

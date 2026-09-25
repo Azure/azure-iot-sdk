@@ -54,6 +54,137 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             Assert.Equal(21, (int)twin.Reported!["temperature"]!);
         }
 
+        [Theory]
+        [InlineData(true, false, Sections.Reported)]
+        [InlineData(false, true, Sections.Desired)]
+        [InlineData(true, true, Sections.Both)]
+        public async Task GetTwinAsync_RequestsSelectedSections(
+            bool getReported,
+            bool getDesired,
+            Sections expectedSections)
+        {
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(ConnectionProfile.MqttV5, DeviceId),
+            };
+            using TwinClient twinClient = new(connection);
+
+            connection.OnPublish += async (publish) =>
+            {
+                var response = new TwinGetResponse()
+                {
+                    DesiredVersion = 5,
+                    ReportedVersion = 7,
+                };
+                if (getDesired)
+                {
+                    response.DesiredPayload = ByteString.CopyFromUtf8("{\"fanSpeed\":10}");
+                }
+                if (getReported)
+                {
+                    response.ReportedPayload = ByteString.CopyFromUtf8("{\"temperature\":21}");
+                }
+
+                await connection.SimulateReceiveAsync(CreateInboundTwinPublish("get-response:1", publish.CorrelationData!, response.ToByteArray()));
+                return new MqttPublishAck() { ReasonCode = MqttPublishAckReasonCode.Success };
+            };
+
+            DeviceTwin twin = await twinClient.GetTwinAsync(
+                getReported,
+                getDesired,
+                cancellationToken: TestContext.Current.CancellationToken);
+
+            TwinGet request = TwinGet.Parser.ParseFrom(Assert.Single(connection.PublishedMessages).Payload);
+            Assert.Equal(expectedSections, request.Sections);
+            Assert.Equal(getDesired, twin.Desired is not null);
+            Assert.Equal(getReported, twin.Reported is not null);
+        }
+
+        [Theory]
+        [InlineData(true, false)]
+        [InlineData(false, true)]
+        public async Task GetTwinAsync_FiltersUnrequestedSectionReturnedByService(
+            bool getReported,
+            bool getDesired)
+        {
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(ConnectionProfile.MqttV5, DeviceId),
+            };
+            using TwinClient twinClient = new(connection);
+
+            connection.OnPublish += async publish =>
+            {
+                var response = new TwinGetResponse
+                {
+                    DesiredVersion = 5,
+                    ReportedVersion = 7,
+                    DesiredPayload = ByteString.CopyFromUtf8("{\"fanSpeed\":10}"),
+                    ReportedPayload = ByteString.CopyFromUtf8("{\"temperature\":21}"),
+                };
+
+                await connection.SimulateReceiveAsync(
+                    CreateInboundTwinPublish("get-response:1", publish.CorrelationData!, response.ToByteArray()));
+                return new MqttPublishAck { ReasonCode = MqttPublishAckReasonCode.Success };
+            };
+
+            DeviceTwin twin = await twinClient.GetTwinAsync(
+                getReported,
+                getDesired,
+                cancellationToken: TestContext.Current.CancellationToken);
+
+            Assert.Equal(getDesired, twin.Desired is not null);
+            Assert.Equal(getReported, twin.Reported is not null);
+        }
+
+        [Fact]
+        public async Task GetTwinAsync_AllowsConditionalResponseWithoutPayloads()
+        {
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(ConnectionProfile.MqttV5, DeviceId),
+            };
+            using TwinClient twinClient = new(connection);
+
+            connection.OnPublish += async (publish) =>
+            {
+                var response = new TwinGetResponse()
+                {
+                    DesiredVersion = 5,
+                    ReportedVersion = 7,
+                };
+
+                await connection.SimulateReceiveAsync(CreateInboundTwinPublish("get-response:1", publish.CorrelationData!, response.ToByteArray()));
+                return new MqttPublishAck() { ReasonCode = MqttPublishAckReasonCode.Success };
+            };
+
+            DeviceTwin twin = await twinClient.GetTwinAsync(
+                ifNotMatchReported: 7,
+                ifNotMatchDesired: 5,
+                cancellationToken: TestContext.Current.CancellationToken);
+
+            Assert.Null(twin.Desired);
+            Assert.Null(twin.Reported);
+            Assert.Equal(5ul, twin.DesiredVersion);
+            Assert.Equal(7ul, twin.ReportedVersion);
+        }
+
+        [Fact]
+        public async Task GetTwinAsync_RejectsRequestWithoutSections()
+        {
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(ConnectionProfile.MqttV5, DeviceId),
+            };
+            using TwinClient twinClient = new(connection);
+
+            await Assert.ThrowsAsync<ArgumentException>(
+                () => twinClient.GetTwinAsync(
+                    getReported: false,
+                    getDesired: false,
+                    cancellationToken: TestContext.Current.CancellationToken));
+        }
+
         [Fact]
         public async Task UpdateReportedPropertiesAsync_PublishesPatchAndReturnsResponse()
         {
@@ -114,6 +245,42 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             Assert.NotNull(received);
             Assert.Equal(3ul, received!.DesiredPropertiesVersion);
             Assert.Equal(40, (int)received.DesiredProperties["fanSpeed"]!);
+        }
+
+        [Fact]
+        public async Task TwinPushReceived_MapsDesiredAndReportedSections()
+        {
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(ConnectionProfile.MqttV5, DeviceId),
+            };
+            using TwinClient twinClient = new(connection);
+
+            TwinPushReceivedEventArgs? received = null;
+            twinClient.TwinPushReceived += args => received = args;
+
+            var push = new TwinPush()
+            {
+                Desired = new Section
+                {
+                    Version = 3,
+                    Payload = ByteString.CopyFromUtf8("{\"fanSpeed\":40}"),
+                },
+                Reported = new Section
+                {
+                    Version = 4,
+                    Payload = ByteString.CopyFromUtf8("{\"temperature\":21}"),
+                },
+            };
+
+            await connection.SimulateReceiveAsync(
+                CreateInboundTwinPublish("twin-push:1", Guid.NewGuid().ToByteArray(), push.ToByteArray()));
+
+            Assert.NotNull(received);
+            Assert.Equal(3ul, received!.Desired!.PropertiesVersion);
+            Assert.Equal(40, (int)received.Desired.Properties["fanSpeed"]!);
+            Assert.Equal(4ul, received.Reported!.PropertiesVersion);
+            Assert.Equal(21, (int)received.Reported.Properties["temperature"]!);
         }
 
         [Fact]

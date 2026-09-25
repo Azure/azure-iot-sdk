@@ -12,7 +12,7 @@ using System.Text;
 namespace Microsoft.Azure.Iot.Device.MQTTv5.Telemetry
 {
     /// <summary>
-    /// A feature client for sending device-to-cloud telemetry and receiving cloud-to-device telemetry.
+    /// A feature client for sending device-to-cloud telemetry.
     /// </summary>
     public class TelemetryClient : IDisposable
     {
@@ -27,8 +27,6 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Telemetry
         public const string MessagePropertyContentType = "$.ct";
         public const string MessagePropertyContentEncoding = "$.ce";
 
-        public event Func<CloudToDeviceTelemetry, Task>? CloudToDeviceTelemetryReceivedAsync; //Not supported yet
-
         /// <summary>
         /// Construct a new <see cref="TelemetryClient"/> instance.
         /// </summary>
@@ -40,7 +38,6 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Telemetry
         public TelemetryClient(IConnectionClient connection)
         {
             _connection = connection;
-            _connection.PublishReceivedAsync += HandleReceivedMqttPublish;
         }
 
 
@@ -115,18 +112,12 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Telemetry
             MqttPublishAck puback = await _connection.PublishAsync(mqttMessage, cancellationToken);
         }
 
-        private async Task HandleReceivedMqttPublish(MqttPublishReceivedEventArgs args)
-        {
-            Trace.TraceError("c2d is not supported when connected to MQTTv5 Hub currently");
-        }
-
         /// <summary>
         /// Releases the unmanaged resources used by this client and optionally disposes of the managed resources.
         /// </summary>
         /// <param name="disposing">true to release both managed and unmanaged resources; false to releases only unmanaged resources.</param>
         public void Dispose(bool disposing)
         {
-            _connection.PublishReceivedAsync -= HandleReceivedMqttPublish;
             if (disposing)
             {
                 _connection.Dispose();
@@ -140,7 +131,6 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Telemetry
         /// </summary>
         public void Dispose()
         {
-            _connection.PublishReceivedAsync -= HandleReceivedMqttPublish;
             _connection.Dispose();
 
             _isDisposed = true;

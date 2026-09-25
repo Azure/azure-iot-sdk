@@ -264,7 +264,7 @@ namespace Microsoft.Azure.Iot.Device
             // started is no longer wanted.
             CancelCurrentReprovisioning();
 
-            await ManagedMqttConnection.DisconnectAsync(false, new MqttDisconnect() { Reason = MqttClientDisconnectOptionsReason.NormalDisconnection }, cancellationToken);
+            await ManagedMqttConnection.DisconnectAsync(false, new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection }, cancellationToken);
             CurrentConnectionContext = null;
 
             Trace.TraceInformation("ConnectionClient's current endpoint is now neither IoT Hub or DPS");
@@ -680,7 +680,7 @@ namespace Microsoft.Azure.Iot.Device
 
                 // Always close the MQTT connection once provisioning has finished so that the connection can be
                 // re-established against the assigned IoT hub.
-                var disconnect = new MqttDisconnect() { Reason = MqttClientDisconnectOptionsReason.NormalDisconnection };
+                var disconnect = new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection };
 
                 try
                 {
@@ -775,7 +775,7 @@ namespace Microsoft.Azure.Iot.Device
 
             if (subscribeResults.Items.FirstOrDefault()!.ReasonCode != MqttClientSubscribeReasonCode.GrantedQoS1)
             {
-                throw new Exception("todo");
+                throw new Exception($"DPS did not grant QoS 1 for the mandatory response-topic subscription; received SUBACK reason '{subscribeResults.Items.FirstOrDefault()!.ReasonCode}'.");
             }
         }
 
