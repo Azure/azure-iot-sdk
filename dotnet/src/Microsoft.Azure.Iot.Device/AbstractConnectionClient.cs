@@ -55,7 +55,7 @@ namespace Microsoft.Azure.Iot.Device
 
         private static readonly TimeSpan s_defaultOperationPollingInterval = TimeSpan.FromSeconds(2);
 
-        // The abstract methods cover all the differences between a MQTTv5 client and a unified client.
+        // The abstract methods cover all the differences between an MQTTv5 client and a unified client.
         public abstract MqttConnect MqttConnectOverride(MqttConnect connect);
 
         // In MQTTv5 case, SUB to devicebound, send birth message, wait for birth ack. In MQTTv3 case, send all DM/Twin/Telem SUBs.
