@@ -2482,6 +2482,73 @@ static void each_step_downloads_its_own_file(void** state)
   assert_string_equal(fx->log.download_urls[1], "http://example.com/payload-a.bin");
 }
 
+/* A step whose file id is not in the manifest file map fails the step; it is
+ * not downloaded or installed. */
+static void an_unknown_step_file_id_fails_the_step(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  /* Point step 1 at an id the files map does not have. */
+  char* patch = (char*)(uintptr_t)distinct_files_patch();
+  const char needle[] = "[\\\"fa00000000000001\\\"],";
+  char* at = strstr(patch, needle);
+  assert_non_null(at);
+  memcpy(at + 3, "fc", 2);
+
+  inject_patch(fx, patch);
+  pump(fx, 60);
+
+  assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_ADU_OUTCOME_FAILED);
+  assert_int_equal(fx->log.download_calls, 1);
+  assert_string_equal(fx->log.download_file_ids[0], "fb00000000000002");
+  for (size_t i = 0; i < fx->log.op_count; ++i)
+  {
+    assert_false(fx->log.ops[i] == OP_INSTALL && fx->log.op_steps[i] == 1);
+  }
+}
+
+/* Completed step results survive a checkpoint taken at a later step. */
+static void earlier_step_results_survive_a_later_checkpoint(void** state)
+{
+  fixture* source = (fixture*)*state;
+  open_to_connected(source);
+
+  inject_patch(source, distinct_files_patch());
+  for (int i = 0; i < 60 && source->adu._internal.current_step == 0; ++i)
+  {
+    assert_int_equal(az_iot_adu_client_do_work(&source->adu), AZ_IOT_OK);
+  }
+  assert_int_equal(source->adu._internal.current_step, 1);
+
+  /* Distinct values, so a dropped or misordered field is caught. */
+  az_iot_adu_step_result* done = &source->adu._internal.step_results[0];
+  done->outcome = AZ_IOT_ADU_OUTCOME_SKIPPED;
+  done->failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_OTHER;
+  done->result_code = 12345;
+  done->extended_result_code = 0x0BADF00D;
+
+  source->log.install_result = AZ_IOT_ADU_RESULT_REBOOT_REQUIRED;
+  pump_to_checkpoint(source);
+
+  void* fresh_state = NULL;
+  assert_int_equal(setup(&fresh_state), 0);
+  fixture* fresh = (fixture*)fresh_state;
+  memcpy(fresh->log.persist_blob, source->log.persist_blob, source->log.persist_len);
+  fresh->log.persist_len = source->log.persist_len;
+  fresh->log.have_persist = true;
+  assert_int_equal(az_iot_adu_client_resume(&fresh->adu), AZ_IOT_OK);
+
+  assert_int_equal(fresh->adu._internal.current_step, 1);
+  const az_iot_adu_step_result* got = &fresh->adu._internal.step_results[0];
+  assert_int_equal(got->outcome, AZ_IOT_ADU_OUTCOME_SKIPPED);
+  assert_int_equal(got->failure_origin, AZ_IOT_ADU_FAILURE_ORIGIN_OTHER);
+  assert_int_equal(got->result_code, 12345);
+  assert_int_equal(got->extended_result_code, 0x0BADF00D);
+  assert_int_equal(teardown(&fresh_state), 0);
+}
+
 /* Checkpoint the distinct-files workflow at step 0 (install asks for a reboot),
  * then resume it on a fresh client. */
 static fixture* resume_distinct_files_from_step_0(fixture* source, void** fresh_state)
@@ -2522,8 +2589,6 @@ static void resume_before_last_step_downloads_the_next_step_file(void** state)
   assert_int_equal(teardown(&fresh_state), 0);
 }
 
-/* A v2 snapshot carries no URLs. It is refused when a later step still has
- * files to download, instead of resuming into a download with no URL. */
 /* A finished workflow retires its checkpoint, so a later reboot does not
  * reload, re-apply and re-report it. */
 static void finished_workflow_is_not_replayed_after_reboot(void** state)
@@ -2607,6 +2672,8 @@ static void resume_without_a_persist_hook_is_not_supported(void** state)
   assert_int_equal(az_iot_adu_client_resume(&fx->adu), AZ_IOT_ERR_NOT_SUPPORTED);
 }
 
+/* A v2 snapshot carries no URLs. It is refused when a later step still has
+ * files to download, instead of resuming into a download with no URL. */
 static void a_v2_snapshot_with_downloads_left_is_refused(void** state)
 {
   fixture* source = (fixture*)*state;
@@ -3968,6 +4035,9 @@ int main(void)
     cmocka_unit_test(microsoft_root_keys_are_embedded),
     cmocka_unit_test_setup_teardown(multi_step_update_runs_every_step_in_order, setup, teardown),
     cmocka_unit_test_setup_teardown(each_step_downloads_its_own_file, setup, teardown),
+    cmocka_unit_test_setup_teardown(an_unknown_step_file_id_fails_the_step, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        earlier_step_results_survive_a_later_checkpoint, setup, teardown),
     cmocka_unit_test_setup_teardown(
         resume_before_last_step_downloads_the_next_step_file, setup, teardown),
     cmocka_unit_test_setup_teardown(
