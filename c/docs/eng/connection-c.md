@@ -799,8 +799,7 @@ negative codes and [`az_iot_mqtt_connack_result()`](../../src/core/mqtt_iface.c)
 code to `AZ_IOT_ERR_MQTT` by design (a failure that never reached a broker carries no verdict about
 the identity). `AZ_IOT_ERR_AUTH` is produced by `az_iot_mqtt_disconnect_result()` for a server DISCONNECT
 carrying `0x87 Not authorized` — authorization revoked mid-session — and is classified
-non-retriable. The consequence is
-recorded in [§9.6](#96-known-gaps).
+non-retriable.
 
 ### 9.2 CONNACK mapping
 
@@ -834,7 +833,7 @@ is subject to the same "do not flatten codes" rule.
 | `0x00`–`0x02` (either version) | `AZ_IOT_OK` | A grant, including one below the QoS requested: the subscription exists and delivery is `min(publish QoS, granted QoS)`. Reading a downgrade as a refusal would fail a session no broker objected to. |
 | Any **negative** code | `AZ_IOT_ERR_MQTT` | The adapter's own failure. It never reached a broker, so it carries no verdict about the filter and stays retryable. |
 | v5 `0x87 Not authorized`, `0x8F Topic Filter invalid`, `0x9E Shared Subscriptions not supported`, `0xA1 Subscription Identifiers not supported`, `0xA2 Wildcard Subscriptions not supported` | `AZ_IOT_ERR_SUBSCRIPTION_REFUSED` | The broker will repeat this answer to the same filter. |
-| v5 `0x91 Packet Identifier in use` | `AZ_IOT_ERR_MQTT` | **Gap.** Not in the refusal set, so it takes the retryable path. [connection.md §9.3.4](../connection.md#934-mqtt-50-suback-reason-codes-393) classes it terminal: it is a client-side defect, identifiers reused while in flight, which a retry reproduces. |
+| v5 `0x91 Packet Identifier in use` | `AZ_IOT_ERR_MQTT` | Not in the refusal set, so it takes the retryable path. |
 | v5 `0x80 Unspecified error`, `0x83 Implementation specific error`, `0x97 Quota exceeded` | `AZ_IOT_ERR_MQTT` | **Deliberately excluded** from the refusal set: this is how a transient service-side fault presents, and re-subscribing is the right response. |
 | v3.1.1 `0x80 Failure` | `AZ_IOT_ERR_SUBSCRIPTION_REFUSED` | No reason code exists to consult. The classification comes from what a Classic device can subscribe to — a topic set fixed at compile time — which makes a refusal a property of the filter rather than of the moment. |
 | Any code, with a version the function does not know | `AZ_IOT_ERR_MQTT` | Same reasoning as the CONNACK mapper. |
@@ -861,7 +860,7 @@ a slow path. Every constant is `#ifndef`-guarded and can be raised at build time
 | `AZ_IOT_DPS_HOST_BUF` | 128 | Assigned hub hostname | `AZ_IOT_ERR_NOT_SUPPORTED` |
 | `AZ_IOT_DPS_DEVICE_ID_BUF` | 128 | Assigned device id | as above |
 | `AZ_IOT_DPS_TOPIC_BUF` | 256 | DPS register / query publish topic | `AZ_IOT_ERR_INTERNAL` |
-| `AZ_IOT_MQTT_USERNAME_BUF` | 256 | Hub username | Hub-Next: `AZ_IOT_ERR_NOT_ENOUGH_SPACE`. Classic: **no explicit error** — the connect proceeds without a username. See [§9.6](#96-known-gaps). |
+| `AZ_IOT_MQTT_USERNAME_BUF` | 256 | Hub username | Hub-Next: `AZ_IOT_ERR_NOT_ENOUGH_SPACE`. Classic: no error — the connect proceeds without a username. |
 | `AZ_IOT_PRESENCE_TOPIC_BUF` | 256 | Presence topics | `AZ_IOT_ERR_NOT_ENOUGH_SPACE` |
 | `AZ_IOT_CONNECTION_PROFILE_RAW_BUF` | 64 | Raw `connectionProfile` string, NUL included (63 bytes of payload) | Truncated, resolves to UNKNOWN, then `AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED` |
 | `AZ_IOT_CSR_PAYLOAD_BUFFER_MIN` | 8448 | Recommended size for the caller-supplied CSR payload buffer; smaller works for small keys | `AZ_IOT_ERR_NOT_ENOUGH_SPACE` when the CSR does not fit; an empty buffer is refused at `open()` |
@@ -870,7 +869,7 @@ a slow path. Every constant is `#ifndef`-guarded and can be raised at build time
 | `AZ_IOT_DPS_OPERATION_ID_MAX` | 64 | DPS `operation_id` from the assigning response | `AZ_IOT_ERR_NOT_SUPPORTED` |
 | `AZ_IOT_DPS_REGISTRATION_PAYLOAD_MAX` | 512 | Caller-supplied DPS registration payload | `AZ_IOT_ERR_NOT_ENOUGH_SPACE` |
 | `AZ_IOT_TWIN_MAX_PENDING` | 8 | Pending twin requests, per generation ([gen1](../../inc/azure/iot/gen1/az_iot_twin_client.h), [gen2](../../inc/azure/iot/gen2/az_iot_twin_client.h)) | `AZ_IOT_ERR_NOT_SUPPORTED` |
-| `AZ_IOT_DM_MAX_INFLIGHT` | 4 | In-flight direct-method requests ([gen1](../../inc/azure/iot/gen1/az_iot_direct_method_client.h); gen2 derives `AZ_IOT_GEN2_DM_MAX_CONCURRENT` from it) | **No result** — the invocation is dropped and a warning is logged. See [§9.6](#96-known-gaps). |
+| `AZ_IOT_DM_MAX_INFLIGHT` | 4 | In-flight direct-method requests ([gen1](../../inc/azure/iot/gen1/az_iot_direct_method_client.h); gen2 derives `AZ_IOT_GEN2_DM_MAX_CONCURRENT` from it) | No result — the invocation is dropped and a warning is logged. |
 | `AZ_IOT_GEN2_DM_MAX_METHODS` | 8 | Registered gen2 direct-method handlers | `AZ_IOT_ERR_NOT_ENOUGH_SPACE` |
 | CSR slot | 1 | In-flight hub CSR renewals | `AZ_IOT_ERR_BUSY` |
 | `AZ_IOT_DEFAULT_CONNECT_TIMEOUT_SECONDS` | 30 | Connect attempt, hub and DPS alike | Adapter-reported failure → `AZ_IOT_ERR_MQTT` |
@@ -901,7 +900,7 @@ left as gaps rather than guesses.
 | Socket connect | Connection refused, unreachable, or connect timeout | `AZ_IOT_ERR_MQTT` | as above | as above | The 30 s connect timeout is passed to the adapter; expiry arrives as an ordinary connect failure. |
 | Established session | Reset by peer, or write to a half-closed socket | `AZ_IOT_ERR_NOT_CONNECTED` (substituted when the event carries no status) | Paho `connectionLost` → `AZ_IOT_MQTT_EVT_DISCONNECTED` | `DEFER_RECONNECT` unless `user_close` or no policy, in which case `DEFER_IDLE` | `teardown_active()` drops pending PUBACKs and resets the presence phase. |
 | Session bytes | Captive portal returns non-MQTT bytes | `AZ_IOT_ERR_MQTT` | Paho | reconnect | Paho rejects the bytes; the SDK sees an ordinary connect failure. |
-| Host clock | Certificate outside its validity window because the clock is wrong | `AZ_IOT_ERR_MQTT` | Paho → negative code | reconnect until the policy is exhausted | **Gap:** classified Terminal generically, retried here. The OpenSSL reason is available in the trace log via `ssl_error_cb`, but not in the result. |
+| Host clock | Certificate outside its validity window because the clock is wrong | `AZ_IOT_ERR_MQTT` | Paho → negative code | reconnect until the policy is exhausted | The OpenSSL reason is in the trace log via `ssl_error_cb`, not in the result. |
 | Host clock | Wall clock steps backwards | none | — | none | Correct today: every deadline uses `az_iot_time_mono_ms()`, a monotonic source. Backoff jitter is seeded from it, never driven by wall time. |
 
 #### 9.5.2 Phase 2 — TLS
@@ -921,11 +920,11 @@ left as gaps rather than guesses.
 | --- | --- | --- | --- | --- | --- |
 | CONNACK | Accepted | `AZ_IOT_OK` | adapter | gen2: start the presence handshake, then the subscription gate. Classic: straight to the subscription gate. `CONNECTED` once the gate settles. Attempt counter reset. | |
 | CONNACK | Identity refused — v3 `2`/`4`/`5`, v5 `0x85`/`0x86`/`0x87`/`0x8C` | `AZ_IOT_ERR_IDENTITY_REJECTED` | `az_iot_mqtt_connack_result()` | `needs_reprovision` is set whatever the policy; the next attempt runs `dps_start()` — as a retry when a policy is configured, otherwise on the application's next `open()`. | The retry is still scheduled through the reconnection policy, so backoff and `max_attempts` bound it — a device whose enrollment has been deleted must not hammer DPS either. **The flag is only set when a policy is configured**, so with retries disabled the intent to re-provision is dropped rather than carried to the next `open()`. |
-| CONNACK | v3 `1 unacceptable protocol version` | `AZ_IOT_ERR_MQTT` | `az_iot_mqtt_connack_result()` | **retried** under policy | **Known defect.** Deterministic and can never succeed on retry; the generic table classes it Terminal. The exclusion from the identity set is correct — `1` says nothing about the identity — but the result should be a fatal classification, not a retry. Fixing it needs the fatal-failure classification that is `planned` for C. |
+| CONNACK | v3 `1 unacceptable protocol version` | `AZ_IOT_ERR_MQTT` | `az_iot_mqtt_connack_result()` | **retried** under policy | Excluded from the identity set: `1` says nothing about the identity. |
 | CONNACK | v3 `3 Server unavailable` | `AZ_IOT_ERR_MQTT` | `az_iot_mqtt_connack_result()` | retried | Correct: the canonical transient refusal. |
 | CONNACK | v5 deterministic refusals — `0x81`, `0x82`, `0x84`, `0x95`, `0x8A`, `0x90`, `0x99`, `0x9A`, `0x9B` | `AZ_IOT_ERR_MQTT` | `az_iot_mqtt_connack_result()` | **retried** | Same defect as v3 `1`. The four Will-related codes arise only when `opts.lwt` is set; the SDK sets no Will of its own. |
 | CONNACK | v5 transient refusals — `0x88`, `0x89`, `0x97`, `0x9F`, `0x80`, `0x83` | `AZ_IOT_ERR_MQTT` | `az_iot_mqtt_connack_result()` | retried with jitter | Correct. |
-| CONNACK | v5 redirection — `0x9C Use another server`, `0x9D Server moved` | `AZ_IOT_ERR_MQTT` | `az_iot_mqtt_connack_result()` | **retried against the same host** | **Known gap.** The Server Reference property is not read. Retrying the same endpoint repeats the redirection until the policy is exhausted. |
+| CONNACK | v5 redirection — `0x9C Use another server`, `0x9D Server moved` | `AZ_IOT_ERR_MQTT` | `az_iot_mqtt_connack_result()` | **retried against the same host** | The Server Reference property is not read. |
 | CONNECT | No CONNACK within the connect timeout | `AZ_IOT_ERR_MQTT` | Paho | ordinary failed attempt | 30 s by default, configurable; the same value is used for the DPS bootstrap connect. |
 | CONNACK | Arrives after `close()` | ignored | connection client | logged at debug, `break` — the pending DISCONNECTED event settles the session to `IDLE` | Guarded on `user_close || state == DISCONNECTING`. Correct. |
 | CONNECT | No factory registered for the version the role requires | `AZ_IOT_ERR_NOT_SUPPORTED` | `find_factory()` | `open()` transitions back to `IDLE` and returns the error | Role → version: DPS and Hub-Classic are v3.1.1, Hub-Next is v5. |
@@ -936,15 +935,15 @@ left as gaps rather than guesses.
 | --- | --- | --- | --- | --- | --- |
 | Registering | Registration status is failed or disabled | `AZ_IOT_ERR_DPS` | connection client | `needs_reprovision = true`, `schedule_reconnect(SCOPE_DPS)`; `FAULTED` only with no policy or after `close()` | A service-supplied `retry-after` raises the deadline as a floor over the policy's backoff, uncapped by `max_delay_ms`. |
 | Registering | Response payload empty | `AZ_IOT_ERR_PROTOCOL` | connection client | `dps_finalize()`, then the registration-failure path: retried on the DPS ladder; `FAULTED` only with no policy or after `close()` | Checked **before** calling the parser: the dependency's precondition on an empty span would spin, because this build ships with precondition checking on and no handler installed. |
-| Registering | Response payload unparsable | `AZ_IOT_ERR_PROTOCOL` | dependency parser | as above | The body is logged. `reason_is_retriable()` classifies `AZ_IOT_ERR_PROTOCOL` non-retriable, so the event reports `is_retriable = false` while the SDK retries — the same classification/action gap as [§9.6](#96-known-gaps) item 1. |
-| Registering | Assigned hostname or device id longer than its 128-byte buffer | `AZ_IOT_ERR_NOT_SUPPORTED` | connection client | `dps_finalize(..., false)`, then the registration-failure path: retried on the DPS ladder; `FAULTED` only with no policy or after `close()` | **Gap:** deterministic, and `reason_is_retriable()` reports it non-retriable, yet it is retried to exhaustion. |
-| Polling | `operation_id` longer than its buffer | `AZ_IOT_ERR_NOT_SUPPORTED` | connection client | `dps_finalize(..., false)`, then the registration-failure path: retried on the DPS ladder; `FAULTED` only with no policy or after `close()` | **Gap:** deterministic, and `reason_is_retriable()` reports it non-retriable, yet it is retried to exhaustion. |
-| Assignment | `issuedCertificateChain` absent when a CSR was sent | `AZ_IOT_ERR_NOT_FOUND` | connection client | `dps_finalize(..., false)`, then the registration-failure path: retried on the DPS ladder; `FAULTED` only with no policy or after `close()` | **Gap:** deterministic, and `reason_is_retriable()` reports it non-retriable, yet it is retried to exhaustion. |
-| Assignment | No handler to store the issued chain | `AZ_IOT_ERR_NOT_SUPPORTED` | connection client | `dps_finalize(..., false)`, then the registration-failure path: retried on the DPS ladder; `FAULTED` only with no policy or after `close()` | Neither the provider vtable hook nor the callback was supplied. **Gap:** deterministic, and `reason_is_retriable()` reports it non-retriable, yet it is retried to exhaustion. |
+| Registering | Response payload unparsable | `AZ_IOT_ERR_PROTOCOL` | dependency parser | as above | The body is logged. `reason_is_retriable()` classifies `AZ_IOT_ERR_PROTOCOL` non-retriable, so the event reports `is_retriable = false` while the SDK retries. |
+| Registering | Assigned hostname or device id longer than its 128-byte buffer | `AZ_IOT_ERR_NOT_SUPPORTED` | connection client | `dps_finalize(..., false)`, then the registration-failure path: retried on the DPS ladder; `FAULTED` only with no policy or after `close()` | Reported non-retriable by `reason_is_retriable()`. |
+| Polling | `operation_id` longer than its buffer | `AZ_IOT_ERR_NOT_SUPPORTED` | connection client | `dps_finalize(..., false)`, then the registration-failure path: retried on the DPS ladder; `FAULTED` only with no policy or after `close()` | Reported non-retriable by `reason_is_retriable()`. |
+| Assignment | `issuedCertificateChain` absent when a CSR was sent | `AZ_IOT_ERR_NOT_FOUND` | connection client | `dps_finalize(..., false)`, then the registration-failure path: retried on the DPS ladder; `FAULTED` only with no policy or after `close()` | Reported non-retriable by `reason_is_retriable()`. |
+| Assignment | No handler to store the issued chain | `AZ_IOT_ERR_NOT_SUPPORTED` | connection client | `dps_finalize(..., false)`, then the registration-failure path: retried on the DPS ladder; `FAULTED` only with no policy or after `close()` | Neither the provider vtable hook nor the callback was supplied. Reported non-retriable by `reason_is_retriable()`. |
 | Assignment | `registrationState` key absent | `AZ_IOT_ERR_NOT_FOUND`, treated as OK | connection client | continues, profile stays classic | Deliberate: the stock api-version does not carry the key. |
 | Polling | `assigning` with a `retry-after` | `AZ_IOT_OK` | connection client | `dps_poll_due_ms = now + retry_after_seconds * 1000`; the pump re-publishes the query when it elapses | The service-supplied delay is honoured verbatim, with no reconnect backoff on top and no SDK-side cap on the number of polls. |
 | Assignment | Unrecognised `connectionProfile`, or one that does not fit the 64-byte buffer (63 bytes plus NUL) | `AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED` | `connection_profile_set()`, detected in `dps_apply_deferred()` | `FAULTED` | The raw string stays readable through the profile getter even in `FAULTED`; `connection_profile_raw_truncated` says when it was cut. Terminal regardless of policy, via `reject_assignment()`. Implemented; only the service rollout is pending — the field does not arrive at the current api-version. |
-| Registration SUBACK | The `$dps/registrations/res/#` subscription is refused | `AZ_IOT_ERR_SUBSCRIPTION_REFUSED` or `AZ_IOT_ERR_MQTT` | `az_iot_mqtt_suback_result()` | `dps_finalize(status, false)`, then the registration-failure path above — **retried under the policy** | **Gap.** `dps_apply_deferred()` branches on `status != AZ_IOT_OK` alone, so it does not honour `AZ_IOT_ERR_SUBSCRIPTION_REFUSED` as terminal the way the hub subscription gate does. A deterministic refusal of a fixed filter is re-registered until the policy is exhausted. Same defect as the presence path. |
+| Registration SUBACK | The `$dps/registrations/res/#` subscription is refused | `AZ_IOT_ERR_SUBSCRIPTION_REFUSED` or `AZ_IOT_ERR_MQTT` | `az_iot_mqtt_suback_result()` | `dps_finalize(status, false)`, then the registration-failure path above — **retried under the policy** | `dps_apply_deferred()` branches on `status != AZ_IOT_OK`; `AZ_IOT_ERR_SUBSCRIPTION_REFUSED` is not treated as terminal here. |
 | Any DPS phase | DPS message arrives in the wrong phase | ignored | connection client | dropped | Guarded on `dps_phase` being REGISTERING or POLLING. |
 | Hub CONNACK | Identity rejected | `AZ_IOT_ERR_IDENTITY_REJECTED` | `az_iot_mqtt_connack_result()` | `needs_reprovision` → `dps_start()` on the next attempt | See [§9.2](#92-connack-mapping). |
 
@@ -952,7 +951,7 @@ left as gaps rather than guesses.
 
 | Phase | Trigger | Surfaced as | Mapped by | SDK action | Notes / limits |
 | --- | --- | --- | --- | --- | --- |
-| Subscribing | Presence SUBACK carries a failure | `AZ_IOT_ERR_SUBSCRIPTION_REFUSED` or `AZ_IOT_ERR_MQTT` | `az_iot_mqtt_suback_result()` | clear the phase, then `DEFER_RECONNECT` if a policy is configured, else `DEFER_FAULT` | **Gap.** The presence path branches on `reconnect_enabled()` alone, so it does **not** honour `AZ_IOT_ERR_SUBSCRIPTION_REFUSED` as terminal the way the subscription gate does. A deterministic refusal — `0x87`, `0x8F`, `0xA2` — is retried until the policy is exhausted, against a filter fixed by the protocol. The mapper already carries the verdict; only this branch ignores it. |
+| Subscribing | Presence SUBACK carries a failure | `AZ_IOT_ERR_SUBSCRIPTION_REFUSED` or `AZ_IOT_ERR_MQTT` | `az_iot_mqtt_suback_result()` | clear the phase, then `DEFER_RECONNECT` if a policy is configured, else `DEFER_FAULT` | The presence path branches on `reconnect_enabled()`; `AZ_IOT_ERR_SUBSCRIPTION_REFUSED` is not treated as terminal here. |
 | Subscribing | `presence_start()` fails after CONNACK | its own result | connection client | clear the phase, reconnect | |
 | Birth | `presence_publish_birth()` fails | its own result | connection client | clear the phase, reconnect | |
 | Birth | No birth-ack within 60 s | `AZ_IOT_ERR_TIMEOUT` | `_do_work()` | reconnect, or `FAULTED` with no policy | The deadline is armed at CONNACK and re-armed after the birth publish, so each step gets its own 60 s. |
@@ -996,7 +995,7 @@ registry carries Classic feature filters and application custom topics.
 | PUBACK | v5 PUBACK `>= 0x80` — `0x87 Not authorized`, `0x90 Topic Name invalid`, `0x97 Quota exceeded`, `0x99 Payload format invalid` | `AZ_IOT_ERR_MQTT` | `paho_publish_failure5` | the ack callback fires with the failure; the connection survives | Correctly **Contained**, but the reason code is **flattened**: `response->reasonCode` is not inspected, so a caller cannot tell a deterministic refusal from a quota it should back off on. |
 | PUBACK | v3.1.1 PUBACK | `AZ_IOT_OK` / `AZ_IOT_ERR_MQTT` | `paho_publish_success` / `_failure` | as above | v3.1.1 PUBACK carries no reason code; there is nothing to flatten. |
 | PUBACK | Unknown packet id | dropped | connection client | nothing | Deliberate: a publish issued without an ack callback has no table entry. |
-| DISCONNECT | Server-initiated v5 DISCONNECT | `az_iot_mqtt_disconnect_result()`: `AZ_IOT_OK` for `0x00`, `AZ_IOT_ERR_AUTH` for `0x87`, `AZ_IOT_ERR_MQTT` otherwise; the wire code is carried as `error->code` | `paho_disconnected` | `DEFER_RECONNECT` for every code while a policy is configured, `DEFER_IDLE` otherwise | **Classified but not acted on.** `0x87` is reported non-retriable and still reconnects; `0x8E Session taken over` is not named, so it reconnects like a routine drop, and two devices sharing a client id evict each other indefinitely. See [§9.6](#96-known-gaps) item 4. |
+| DISCONNECT | Server-initiated v5 DISCONNECT | `az_iot_mqtt_disconnect_result()`: `AZ_IOT_OK` for `0x00`, `AZ_IOT_ERR_AUTH` for `0x87`, `AZ_IOT_ERR_MQTT` otherwise; the wire code is carried as `error->code` | `paho_disconnected` | `DEFER_RECONNECT` for every code while a policy is configured, `DEFER_IDLE` otherwise | `0x87` is reported non-retriable and still reconnects; `0x8E Session taken over` is not named, so it reconnects like a routine drop. |
 | Keep-alive | Local keep-alive expiry | `AZ_IOT_OK` on DISCONNECTED | Paho `connectionLost` | reconnect | Keep-alive is 30 s by default. |
 | Transport | Adapter raises `AZ_IOT_MQTT_EVT_ERROR` | the event's status, or `AZ_IOT_ERR_MQTT` | adapter | `DEFER_RECONNECT` or `DEFER_FAULT` | |
 | Inbound | Message matching no dispatch prefix | dropped | `az_iot_dispatch_route()` | nothing; the return value is explicitly discarded | Correct and deliberate — the behaviour brokers rely on for filters that outlive their subscriber. |
@@ -1014,7 +1013,7 @@ registry carries Classic feature filters and application custom topics.
 | Publish / subscribe | A bound in [§9.4](#94-compile-time-bounds) is exceeded | see that table | connection client | the call fails before the transport is touched | Never truncated. |
 | Publish | Pending-PUBACK table full (17th unacknowledged publish with a callback) | `AZ_IOT_ERR_NOT_SUPPORTED` | connection client | the publish has already been sent; the ack callback is not registered | The table is checked after the publish, not before. |
 | Twin | Pending-request pool full (9th) | `AZ_IOT_ERR_NOT_SUPPORTED` | twin client | the request is rejected | Contained. Distinct from the `429` row above, which is the point. |
-| Direct methods | In-flight pool full (5th) | **none** | direct-method client | **the invocation is dropped**, with a warning logged | **Known gap.** A slot is released by responding, or reclaimed by `requests_expire_stale()` once `response_timeout_seconds` has passed. While all slots are still live, a further invocation is dropped with only a log warning — the generic contract requires it to be visible to the application. |
+| Direct methods | In-flight pool full (5th) | **none** | direct-method client | **the invocation is dropped**, with a warning logged | A slot is released by responding, or reclaimed by `requests_expire_stale()` after `response_timeout_seconds`. |
 | Connect | No factory for the required version | `AZ_IOT_ERR_NOT_SUPPORTED` | `find_factory()` | back to `IDLE`, error returned from `open()` | |
 | Registry | Session-end handler registry full (5th distinct context) | `AZ_IOT_ERR_NOT_SUPPORTED` | connection client | the registration fails | Re-registering the same context upserts rather than consuming a slot. |
 | Registry | Inbound dispatch table full (9th) | `AZ_IOT_ERR_NOT_SUPPORTED` | dispatch | the registration fails | |
@@ -1039,74 +1038,6 @@ registry carries Classic feature filters and application custom topics.
 | `destroy()` with session handlers registered | — | none | connection client | cleared without invoking them | Same reasoning. |
 | `destroy()` with a CSR in flight | — | none | connection client | no callback fires | The slot is irrelevant after destruction. |
 | `destroy()` mid-handshake | — | none | `teardown_active()` | the presence phase is reset; the hub and DPS adapters are destroyed; each registered factory's `destroy` hook runs | |
-
-### 9.6 Known gaps
-
-Re-verified against `main` at each revision of this document. They are recorded rather than smoothed
-over, because an honest gap is the point of the exercise. Entries that have since **closed** are
-listed at the end rather than deleted, so the delta stays legible.
-
-1. **A deterministic CONNACK refusal is still retried.** `1 Connection Refused, unacceptable
-   protocol version` can never succeed on retry, and neither can v5 `0x81`, `0x82`, `0x84`, `0x8A`
-   or `0x95`. All become `AZ_IOT_ERR_MQTT`, which `reason_is_retriable()` classifies retriable, so
-   the ladder runs to exhaustion. Narrowed, though: the event now carries `is_retriable` and
-   `error->code`, so an application can see the verdict and the wire code even while the SDK retries.
-   What is missing is the SDK acting on its own classification for these codes.
-2. **Two paths ignore the SUBACK classification.** The hub subscription gate treats
-   `AZ_IOT_ERR_SUBSCRIPTION_REFUSED` as terminal regardless of policy. The presence path branches on
-   `reconnect_enabled()` alone, and `dps_apply_deferred()` on `status != AZ_IOT_OK` alone, so both
-   re-issue a protocol-fixed filter that was deterministically refused until the policy is
-   exhausted. The verdict is already in hand in both cases; only the branch is missing. The same
-   holds for every other DPS-side failure `dps_apply_deferred()` sees: an oversized hostname,
-   device id or operation id, a missing issued chain, or no handler to store it are deterministic
-   and reported non-retriable, yet retried.
-3. **The PUBACK reason code is flattened.** `paho_publish_failure5()` reports `AZ_IOT_ERR_MQTT`
-   without reading `response->reasonCode`, so a caller cannot separate `0x87 Not authorized` (do not
-   retry) from `0x97 Quota exceeded` (back off and retry). CONNACK, SUBACK and DISCONNECT now each
-   have a mapper; PUBACK is the one ack left without one.
-4. **`0x8E Session taken over` is not distinguished.** `az_iot_mqtt_disconnect_result()` names only
-   `0x00` and `0x87`; everything else becomes `AZ_IOT_ERR_MQTT` and reconnects. For `0x8E` that is
-   the one response that makes things worse — two devices sharing a client id evict each other
-   indefinitely. `0x9C Use another server` and `0x9D Server moved` are grouped there too and are
-   retried against the same host, the Server Reference property being unread. The raw code does
-   reach the application through `error->code`, so this is a classification gap rather than a
-   total loss.
-5. **Deterministic TLS failures are retried.** Every certificate, chain, hostname, protocol-version
-   and cipher failure — and a client certificate refused in the handshake — arrives as
-   `AZ_IOT_ERR_MQTT`, which is retriable, so the ladder runs to exhaustion.
-   [connection.md §9.4.2](../connection.md#942-phase-2--tls) classes all but the least specific of
-   these terminal, and the handshake-time client-certificate refusal identity terminal. This is a
-   behaviour gap, not only a result-code one: `AZ_IOT_ERR_TLS` is produced only for local key
-   material the stack cannot be given, and the adapter's negative code reaches `error->code` but
-   nothing acts on it.
-6. **A dropped direct-method invocation is silent to the application.** Only a log warning marks it.
-   A slot is released by responding, or reclaimed after `response_timeout_seconds`; while all slots
-   are live, a further invocation is dropped.
-7. **The Classic hub username is not bounds-checked.** The gen2 path returns
-   `AZ_IOT_ERR_NOT_ENOUGH_SPACE` when `AZ_IOT_MQTT_USERNAME_BUF` is too small. The Classic path
-   ignores the failure of `az_iot_hub_client_get_user_name()` and connects with no username at all.
-8. **The single-threaded contract is unenforced.** Nothing detects an adapter callback delivered off
-   the pump thread.
-9. **SUBACK `0x91 Packet Identifier in use` is retried.** It is missing from
-   `az_iot_mqtt_suback_result()`'s refusal set ([§9.3](#93-suback-mapping)).
-10. **A capacity failure does not say which pool ran out.** Every bound in
-   [§9.4](#94-compile-time-bounds) surfaces as `AZ_IOT_ERR_NOT_ENOUGH_SPACE` or
-   `AZ_IOT_ERR_NOT_SUPPORTED` from whatever call was last, with no indication of the pool.
-
-**Closed, in the order they closed:**
-
-| Gap | How it closed |
-| --- | --- |
-| The SUBACK reason code is flattened | `az_iot_mqtt_suback_result()` classifies it, and the adapter calls it on every SUBACK path ([§9.3](#93-suback-mapping)). |
-| The subscription gate, `AZ_IOT_ERR_SUBSCRIPTION_REFUSED` and the failure scope are planned | All shipped, with the gate deadline ([§9.5.6](#956-phase-6--subscription-gate)). |
-| `close()` returns an error in `CONNECTING` and in `FAULTED` | `close()` is a legal exit from both. The `CONNECTING` half of that claim was **wrong when written**: `active_client` is assigned synchronously inside `start_connect_attempt()`, so it was never NULL to a caller. |
-| Unverified: a refused DPS registration SUBACK | Verified: handled in the DPS event path. It is now item 2 above, because the handling ignores the refusal classification. |
-| The reconnect jitter is clamped to the backoff cap | Fixed in #219. `max_delay_ms` bounds the backoff only; the jittered delay may exceed it by up to `jitter_pct`, which is what keeps the band symmetric and stops half of all retries landing on exactly the cap. |
-| The default reconnection policy is not applied | Fixed in #215. `az_iot_connection_client_options_default()` now fills a retrying policy, so stock options no longer mean "reconnection disabled". |
-| Re-provisioning intent is gated on retries being enabled | Fixed. An identity rejection sets `needs_reprovision` whatever the policy, so the intent survives to the next `open()`. The `max_hub_connect_attempts_before_reprovision` trigger stays gated, deliberately: it counts a run of automatic retries, and with retries disabled there is no such run. |
-| A registration failure is fatal | Fixed in #214. It retries on the DPS ladder, with a service-supplied `retry-after` as an uncapped floor. Only an unusable assignment stays terminal. |
-| The server DISCONNECT reason code is discarded | Partly fixed: it is classified by `az_iot_mqtt_disconnect_result()` and the raw code is carried, but only `0x87` is named — see item 4. |
-| The state event carries no diagnostics | Fixed. `az_iot_connection_error_detail` (`source`, `code`, `message`) and `is_retriable` are on the event. |
 
 ---
 
@@ -1184,7 +1115,7 @@ decide now than later.
 | ADU engine internals reused by ADUv2 | [c/src/features/adu](../../src/features/adu) | implemented; the ADUv1 twin-based API has been removed |
 | ADUv2 device contract | [aduv2-spec.md](aduv2-spec.md), [adu_protocol.c](../../src/features/adu/adu_protocol.c) | implemented over the DPS gateway — DPS fronts both flows for Ignite '26 |
 | CONNACK code mapping | [mqtt_iface.c](../../src/core/mqtt_iface.c) | implemented |
-| Paho adapter event and code mapping | [az_iot_mqtt_paho.c](../../adapters/paho/az_iot_mqtt_paho.c) | implemented — PUBACK and server-DISCONNECT codes still flattened ([§9.6](#96-known-gaps)) |
+| Paho adapter event and code mapping | [az_iot_mqtt_paho.c](../../adapters/paho/az_iot_mqtt_paho.c) | implemented |
 | Inbound dispatch table | [dispatch.c](../../src/core/dispatch.c) | implemented |
 | SUBACK code mapping | [mqtt_iface.c](../../src/core/mqtt_iface.c) | implemented |
 | Subscription gate and failure scope | [connection_client.c](../../src/core/connection_client.c) | implemented |

@@ -112,7 +112,6 @@ The .NET client classifies all of them, through `ErrorRetryability`.
 The C client classifies **one family**: a SUBACK refusal the broker will repeat is terminal even
 when a reconnection policy is configured. Everything else — including `rc=1 unacceptable protocol
 version` and the deterministic v5 CONNACK codes — still retries until the policy is exhausted.
-The SUBACK path is the shape the CONNACK path needs; see [connection-c.md §9.6](connection-c.md#96-known-gaps).
 
 ### Failure taxonomy — where each client stands
 
@@ -128,8 +127,7 @@ as fatal — have both been corrected to the contract.
 **C is partway.** CONNACK and SUBACK each have a mapper that preserves the wire code and classifies
 it. PUBACK failures and server-initiated DISCONNECTs still collapse to one generic transport
 result, so `0x8E Session taken over` is indistinguishable from a routine drop and a caller cannot
-separate a publish refusal it must not retry from a quota it should back off on. The full list is
-[connection-c.md §9.6](connection-c.md#96-known-gaps).
+separate a publish refusal it must not retry from a quota it should back off on.
 
 > **This document is a dependency of shipped .NET code.** `MqttConnectionManager.cs` cites
 > `connection.md` §9.3.3, §9.3.7, §9.4.1, §9.4.2 and §9.4.8 as the reason for each branch. Those

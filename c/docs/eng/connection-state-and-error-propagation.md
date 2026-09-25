@@ -52,8 +52,7 @@ readable as design rather than as a claim about the code.
    decision is still `reconnect_enabled()`, so a failure the client itself classifies
    non-retriable — a deterministic CONNACK refusal, a refused provisioning filter — is retried to
    exhaustion anyway. Two places already diverge in opposite directions: the hub subscription gate
-   *does* treat a refusal as terminal, the presence and provisioning paths do not. See
-   [connection-c.md §9.6](connection-c.md#96-known-gaps) items 1 and 2.
+   *does* treat a refusal as terminal, the presence and provisioning paths do not.
 2. **What `0` means in `error->code`.** The field documents it as "none supplied", which is
    ambiguous against a genuine `0x00`. `source` disambiguates it today by convention rather than
    by construction.
