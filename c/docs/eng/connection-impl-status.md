@@ -72,9 +72,10 @@ completes.
 
 ### Connection profile is not yet reported by DPS (both)
 
-[§4](../connection.md#4-connection-profile-selection) is implemented in both clients — a real
-profile value, resolved from the service-reported string, driving protocol and feature selection.
-What is still missing is the **service**: `connectionProfile` is new in a preview api-version that
+In both clients a real profile value, resolved from the service-reported string, drives protocol and
+feature selection. C implements [§4](../connection.md#4-connection-profile-selection) in full; .NET is
+partial, because its closed enum cannot preserve or report an unrecognised profile. What both still
+lack is the **service**: `connectionProfile` is new in a preview api-version that
 is not deployed, so the property never arrives and both clients resolve the contract default,
 `classic`. The C client carries a development override that applies only when the property is
 absent, so an actual wire value always wins and enabling it cannot mask the rollout.

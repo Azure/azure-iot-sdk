@@ -139,7 +139,11 @@ sequenceDiagram
             Conn->>Cert: store issued certificate(chain)
             Conn-->>App: operational certificate callback(chain)
         end
-        Conn->>DPS: DISCONNECT + tear down the v3.1.1 session
+        alt no feature holds the provisioning session
+            Conn->>DPS: DISCONNECT + tear down the v3.1.1 session
+        else a feature holds it
+            Note over Conn,DPS: session kept, pumped alongside the hub session
+        end
         Conn->>Conn: resolve connection profile, apply assigned host / client id, pick hub role
     end
 
