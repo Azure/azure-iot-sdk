@@ -392,6 +392,38 @@ static const char* failure_origin_name(az_iot_adu_failure_origin origin)
   }
 }
 
+/**
+ * @brief Outcome and failure origin of one step, which every stepResults entry
+ * must carry.
+ *
+ * Derived from the step's result code: success is SUCCEEDED; any other
+ * non-zero code is FAILED; 0 (not reached) is IN_PROGRESS while the workflow
+ * is, otherwise SKIPPED.
+ *
+ * @param step        The step.
+ * @param overall     The workflow outcome being reported.
+ * @param out_origin  The step's failure origin.
+ * @return The step's outcome.
+ */
+static az_iot_adu_outcome step_outcome(
+    const az_iot_adu_client_step_result* step,
+    az_iot_adu_outcome overall,
+    az_iot_adu_failure_origin* out_origin)
+{
+  *out_origin = AZ_IOT_ADU_FAILURE_ORIGIN_NOT_APPLICABLE;
+  if (step->result_code == AZ_IOT_ADU_AGENT_RESULT_CODE_SUCCESS)
+  {
+    return AZ_IOT_ADU_OUTCOME_SUCCEEDED;
+  }
+  if (step->result_code == 0)
+  {
+    return (overall == AZ_IOT_ADU_OUTCOME_IN_PROGRESS) ? AZ_IOT_ADU_OUTCOME_IN_PROGRESS
+                                                       : AZ_IOT_ADU_OUTCOME_SKIPPED;
+  }
+  *out_origin = AZ_IOT_ADU_FAILURE_ORIGIN_AGENT_CORE;
+  return AZ_IOT_ADU_OUTCOME_FAILED;
+}
+
 /* Render extendedResultCodes.
  *
  * Contract: comma-separated UNSIGNED hex int32, NO "0x" prefix, no fixed width,
@@ -538,10 +570,21 @@ az_iot_result az_iot_adu__build_report_request(
         return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
       }
 
+      az_iot_adu_failure_origin step_origin;
+      az_iot_adu_outcome step_out = step_outcome(step, report->outcome, &step_origin);
+
       r = az_json_writer_append_property_name(&jw, az_span_create_from_str(key));
       if (az_result_succeeded(r))
       {
         r = az_json_writer_append_begin_object(&jw);
+      }
+      if (az_result_succeeded(r))
+      {
+        r = write_string_property(&jw, "outcome", outcome_name(step_out));
+      }
+      if (az_result_succeeded(r))
+      {
+        r = write_string_property(&jw, "failureOrigin", failure_origin_name(step_origin));
       }
       if (az_result_succeeded(r))
       {

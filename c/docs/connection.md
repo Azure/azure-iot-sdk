@@ -434,6 +434,7 @@ as terminal, retryable, contained or benign, and is the authority for which is w
 | Reconnect attempt counter | Reset on success | Incremented per failed attempt. |
 | In-flight QoS 1 PUBACKs | No | Packet ids belong to the destroyed session; callers must re-send. |
 | Twin GET/PATCH, method responses, telemetry in flight | No | Feature clients must re-issue. |
+| Classic desired-property patches sent while disconnected | No | The hub does not queue them, and the client does not fetch the twin on reconnect. The application re-reads the twin if it needs the current desired state. |
 | Update status report not yet acked | Yes | Held in durable storage and retried until acked; idempotent on the workflow id. |
 | Presence (birth) phase | No | Restarted with a freshly generated nonce. |
 | Provisioning phase | No | Provisioning is **not** re-run on an ordinary reconnect: once the device has an assignment, a reconnect re-establishes the *hub* session using the cached hub and device id. It is re-run only when something has invalidated the assignment — an identity refused at CONNACK, the consecutive-hub-failure threshold being crossed, or an assignment the client rejected. When it does re-run, it restarts from the beginning. |

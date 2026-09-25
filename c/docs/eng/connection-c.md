@@ -460,6 +460,7 @@ checked before backoff is scheduled.
 | Reconnect attempt counter | Reset on success | Incremented per failed attempt. |
 | In-flight QoS 1 PUBACKs | No | Packet ids belong to the destroyed adapter; callers must re-send. |
 | Twin GET/PATCH, method responses, telemetry in flight | No | Feature clients must re-issue. |
+| Classic desired-property patches sent while disconnected | No | IoT Hub does not queue them, and the SDK does not fetch the twin on reconnect. The application calls `az_iot_gen1_twin_client_get()` if it needs the current desired state. |
 | ADU status report not yet acked | Yes | Held in durable storage and retried until acked; idempotent on `workflowId`. |
 | Presence (birth) phase | No | Restarted with a freshly generated nonce. |
 | DPS phase | No | Not re-run on an ordinary reconnect: the cached assignment is reused. It is re-run only when `needs_reprovision` is set — an identity rejection at CONNACK, the `max_hub_connect_attempts_before_reprovision` threshold, or `reject_assignment()`. When it does re-run it restarts from `DPS_CONNECTING`. |
@@ -528,7 +529,7 @@ Rules that apply to both clients:
 
 ## 7. ADUv2: onboarding and renewal **[partly implemented]**
 
-**ADUv1 is cut.** Its Twin-based public API is being removed; what survives is everything that has
+**ADUv1 is cut.** Its Twin-based public API has been removed; what survives is everything that has
 nothing to do with transport. ADU is re-layered into a transport-independent **`adu_core`** —
 manifest v5 parsing, JWS/SJWK verification, root keys, SHA-256 integrity, the
 download/backup/install/apply state machine, and reboot/resume persistence — plus an

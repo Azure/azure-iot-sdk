@@ -10,7 +10,7 @@ for the full design.
 | Scenario | Provider | Sample | Notes |
 |----------|----------|--------|-------|
 | X.509 from files (no CSR) | `az_iot_certificate_provider_pem` | [../telemetry_gen1](../telemetry_gen1/main.c), [../telemetry_gen2](../telemetry_gen2/main.c) and the other feature samples | Baseline device auth (via DPS). Identical on both generations -- the provider is generation-agnostic. |
-| DPS CSR enrollment (issued operational cert) | managed (OpenSSL) | `dps_csr_managed` | Bootstrap X.509 → CSR in DPS register → operational cert persisted. |
+| DPS CSR enrollment (issued operational cert) | managed (OpenSSL) | [`dps_csr_managed`](dps_csr_managed/README.md) | Bootstrap X.509 → CSR in DPS register → operational cert persisted. |
 | App-notified issuance (D4) | managed (OpenSSL) | `dps_csr_managed` | Uses `set_operational_cert_callback` to observe the issued chain. |
 | Runtime Hub renewal (D7) | managed (OpenSSL) | `hub_renew` | `send_csr()` two-phase renewal on a connected Classic hub. |
 | DPS CSR enrollment with an APP-OWNED provider | `sample_cert_provider` (samples/common) | `custom_certificate_provider` | Same flow as `dps_csr_managed`, but the provider - incl. real PKCS#10 issuance - lives in the samples tree so you can copy it. |
@@ -62,7 +62,7 @@ exercises the vtable so the wiring compiles and round-trips.
 DPS enrollment that obtains an operational certificate via CSR using the
 OpenSSL-backed managed provider, then connects to the assigned hub with the
 issued identity. Requires the managed provider (OpenSSL 3.0+) and the Paho
-adapter.
+adapter. Setup, run and troubleshooting: [dps_csr_managed/README.md](dps_csr_managed/README.md).
 
 ### `hub_renew`
 Runtime operational-certificate renewal against a connected Classic hub: builds

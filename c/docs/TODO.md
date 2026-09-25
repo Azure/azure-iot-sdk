@@ -124,9 +124,8 @@ Canonical pending-work tracker for IoT Hub Next (AEG) integration.
       topics at connect instead of resolving the device id inside `init()`
 - [x] Desired-property subscriber registry collapsed to a single `set_desired_handler()`; its only
       consumer (ADU) was re-layered off the twin channel
-- [ ] gen2: carry a desired-properties version. The service does not send one on
-      `ih/{device_id}/dev/twin/desired` yet, so the handler always reports 0 and an application
-      cannot tell a replay from a fresh patch the way it can on Classic's `$version`.
+- [x] gen2: desired deliveries carry the version and a PATCH/SNAPSHOT kind; the client fetches a
+      snapshot whenever the version sequence shows the device behind.
 
 ### C2D
 - [x] `az_iot_c2d_client` feature client (header + implementation)

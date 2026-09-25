@@ -19,12 +19,20 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
         internal Stub(Unified.Connection.IConnectionClient unifiedConnectionClient)
         {
             _unifiedConnectionClient = unifiedConnectionClient;
-            _unifiedConnectionClient.PublishReceivedAsync += PublishReceivedAsync;
+            _unifiedConnectionClient.PublishReceivedAsync += ForwardPublishReceivedAsync;
+        }
+
+        // Forward received publishes through a stable method reference. Subscribing the 'PublishReceivedAsync' event
+        // field directly would capture its (null) backing delegate at construction time, so later subscribers (the
+        // underlying gen2 feature clients) would never be invoked.
+        private Task ForwardPublishReceivedAsync(MqttPublishReceivedEventArgs args)
+        {
+            return PublishReceivedAsync?.Invoke(args) ?? Task.CompletedTask;
         }
 
         public void Dispose()
         {
-            _unifiedConnectionClient.PublishReceivedAsync -= PublishReceivedAsync;
+            _unifiedConnectionClient.PublishReceivedAsync -= ForwardPublishReceivedAsync;
             _unifiedConnectionClient.Dispose();
         }
 

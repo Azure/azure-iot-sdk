@@ -483,13 +483,11 @@ extern "C"
      * client: changing push mode at runtime would desynchronize the device's
      * expectation from the service's most recently recorded decision.
      *
-     * Both default to false (pull-only). Enabling either one is a two-part
-     * decision: the bit tells the service to dispatch, and the gen2 twin client
-     * must be registered to receive it via
-     * az_iot_gen2_twin_client_set_push_callback(). Setting a bit without that
-     * callback asks the service for state the client decodes and then drops.
-     * Leave both false to poll instead, with az_iot_gen2_twin_client_get().
-     * Ignored for Classic hubs and for DPS sessions.
+     * Both default to false (pull-only). With push_desired, the service pushes
+     * the desired snapshot on connect instead of the gen2 twin client fetching
+     * it. With push_reported, a pushed reported section reaches
+     * az_iot_gen2_twin_client_set_reported_handler(); without a handler it is
+     * dropped. Ignored for Classic hubs and for DPS sessions.
      *
      * Appended, like the options above it and for the same reason: this struct
      * is filled by callers, so a member inserted anywhere else would shift
