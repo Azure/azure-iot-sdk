@@ -40,7 +40,7 @@ az_iot_connection_client_register_mqtt_factory(&conn, az_iot_paho_factory_create
 az_iot_connection_client_open(&conn);             /* DPS runs internally       */
 
 /* open() is non-blocking, and it can end in FAULTED rather than CONNECTED.
- * Bound the wait and stop on a terminal state -- see samples/telemetry_gen1/main.c. */
+ * Bound the wait and stop on a terminal state -- see samples/unified/telemetry/main.c. */
 for (int i = 0; i < 1200 && state != AZ_IOT_CONN_STATE_CONNECTED; ++i)
 {
   az_iot_connection_client_do_work(&conn, 50);
@@ -1017,10 +1017,17 @@ client.
 
 ## 11. Samples and tests
 
-**Per-feature dual samples.** Every feature ships two samples — the Classic route
-and the AEG route — so each API is demonstrated on its own terms rather than
-through a branch. Plus one sample showing the profile query and the
-application-side fallback, which is the migration story in executable form.
+**Unified and gen2 samples**, grouped like the .NET SDK's. Each dual-generation
+feature ships a `samples/unified/` sample that registers both adapters, builds its
+clients for an assumed generation before `open()`, and on `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH`
+rebuilds them for the profile the event carries and reopens -- the recovery of
+[§9](#the-profile-can-change-while-the-device-is-running), exercised on the first
+connect and on a move in either direction. `samples/unified/connect_first` shows
+the conservative alternative: build once `CONNECTED`, from the profile read then.
+Where AEG has the feature, a `samples/gen2/` sample pins gen2 at `init()`.
+`samples/unified/file_upload` is the Classic-only exception: it builds after
+`CONNECTED` and reports an MQTT v5 hub, with no rebuild. There is no Classic-only
+group. See [samples/README.md](../../samples/README.md).
 
 **Test expansion.** This roughly doubles the feature-client test surface: each
 generation's client needs its own unit suite against the in-memory mock, and each
@@ -1209,3 +1216,7 @@ baseline.
   `AZ_IOT_ERR_NOT_SUPPORTED` is the surface-nobody-implements problem this
   separation exists to remove. The gen1 client pins Classic and now requires the
   HTTP transport hook at `init()`.
+- 09/25/2026: Samples regrouped into `samples/unified/` (either generation;
+  rebuild on a profile mismatch, including after a move) and `samples/gen2/`;
+  the Classic-only samples and `connection_profile_fallback` are folded into the
+  unified ones (section 11).
