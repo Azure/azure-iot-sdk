@@ -137,7 +137,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
                 }
             };
 
-            await GetMQTTv3IotHubRegistryManager().AddDeviceAsync(device);
+            await GetMQTTv5IotHubRegistryManager().AddDeviceAsync(device);
 
             X509AuthenticationProvider x509AuthenticationProvider = new(pfx);
 
