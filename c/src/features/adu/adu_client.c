@@ -888,9 +888,35 @@ static int32_t verify_file_hash(
   return verify_file_hash_core(&ADU_I(client).crypto, file, adu_read_file_adapter, &a);
 }
 
+/**
+ * @brief Retire the stored checkpoint with a zero-length persist_state_fn write.
+ *
+ * Both shipped loaders re-read the same record on every boot, so without this
+ * a finished workflow is reloaded, re-applied and re-reported. Only issued when
+ * a record is believed stored, to spare flash endurance; a failed write keeps
+ * it believed stored so the next terminal transition retries.
+ */
+static void clear_checkpoint(az_iot_adu_client_t* client)
+{
+  az_iot_adu_platform_hooks* h = &ADU_I(client).hooks;
+  if (!ADU_I(client).checkpoint_stored || h->persist_state_fn == NULL)
+  {
+    return;
+  }
+  if (h->persist_state_fn(ADU_I(client).persist_scratch, 0, h->user_ctx) == 0)
+  {
+    ADU_I(client).checkpoint_stored = false;
+  }
+  else
+  {
+    AZ_IOT_LOG_ERROR("adu: failed to clear the persisted checkpoint; will retry");
+  }
+}
+
 /* Reset the workflow back to Idle, clearing the parsed request. */
 static void reset_to_idle(az_iot_adu_client_t* client)
 {
+  clear_checkpoint(client);
   set_adu_state(client, AZ_IOT_ADU_STATE_IDLE);
   ADU_I(client).have_request = false;
   ADU_I(client).current_step = 0;
@@ -1218,6 +1244,9 @@ static void process_update_metadata(
   {
     return;
   }
+
+  /* A new workflow supersedes whatever the stored checkpoint belongs to. */
+  clear_checkpoint(client);
 
   /* Stage the patch into client-owned storage and re-parse so current_request
    * / current_manifest reference stable memory. */
@@ -1768,11 +1797,10 @@ void az_iot_adu_client_destroy(az_iot_adu_client_t* client)
 #define AZ_IOT_ADU_PERSIST_STEP_RECORD_V2 8u
 #define AZ_IOT_ADU_PERSIST_STEP_RECORD 16u
 #define AZ_IOT_ADU_PERSIST_URL_RECORD 16u
-#define AZ_IOT_ADU_PERSIST_TRAILER_MAX                                                     \
-  (AZ_IOT_ADU_PERSIST_TRAILER_FIXED                                                        \
-   + ((uint32_t)(_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS) * AZ_IOT_ADU_PERSIST_STEP_RECORD) \
-   + 4u + ((uint32_t)(_az_IOT_ADU_CLIENT_MAX_TOTAL_FILE_COUNT) * AZ_IOT_ADU_PERSIST_URL_RECORD) \
-   + 4u)
+#define AZ_IOT_ADU_PERSIST_TRAILER_MAX                                                             \
+  (AZ_IOT_ADU_PERSIST_TRAILER_FIXED                                                                \
+   + ((uint32_t)(_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS) * AZ_IOT_ADU_PERSIST_STEP_RECORD) + 4u \
+   + ((uint32_t)(_az_IOT_ADU_CLIENT_MAX_TOTAL_FILE_COUNT) * AZ_IOT_ADU_PERSIST_URL_RECORD) + 4u)
 
 /* The per-instance persist_scratch (AZ_IOT_ADU_PERSIST_BLOB_SIZE, in the client
  * struct) must hold the largest serialized blob: header + full request buffer +
@@ -1970,8 +1998,12 @@ static az_iot_result adu_persist(az_iot_adu_client_t* client)
   }
 
   wr_u32le(&blob[p], adu_crc32(blob, p));
-  return (h->persist_state_fn(blob, (size_t)p + 4u, h->user_ctx) == 0) ? AZ_IOT_OK
-                                                                        : AZ_IOT_ERR_INTERNAL;
+  if (h->persist_state_fn(blob, (size_t)p + 4u, h->user_ctx) != 0)
+  {
+    return AZ_IOT_ERR_INTERNAL;
+  }
+  ADU_I(client).checkpoint_stored = true;
+  return AZ_IOT_OK;
 }
 
 az_iot_result az_iot_adu_client_resume(az_iot_adu_client_t* client)
@@ -1999,7 +2031,12 @@ az_iot_result az_iot_adu_client_resume(az_iot_adu_client_t* client)
   }
   if (blen < AZ_IOT_ADU_PERSIST_HEADER_SIZE + 4u)
   {
-    return AZ_IOT_OK; /* too small */
+    return AZ_IOT_OK; /* too small, including an invalidated (empty) record */
+  }
+  if (ADU_I(client).hooks.persist_state_fn == NULL)
+  {
+    /* It could never be invalidated, so every later boot would re-apply it. */
+    return AZ_IOT_ERR_NOT_SUPPORTED;
   }
   if (blob[0] != AZ_IOT_ADU_PERSIST_MAGIC0 || blob[1] != AZ_IOT_ADU_PERSIST_MAGIC1
       || blob[2] != AZ_IOT_ADU_PERSIST_MAGIC2 || blob[3] != AZ_IOT_ADU_PERSIST_MAGIC3)
@@ -2011,9 +2048,9 @@ az_iot_result az_iot_adu_client_resume(az_iot_adu_client_t* client)
   {
     return AZ_IOT_OK;
   }
-  uint32_t step_record
-      = (version == AZ_IOT_ADU_PERSIST_VERSION) ? AZ_IOT_ADU_PERSIST_STEP_RECORD
-                                                : AZ_IOT_ADU_PERSIST_STEP_RECORD_V2;
+  uint32_t step_record = (version == AZ_IOT_ADU_PERSIST_VERSION)
+      ? AZ_IOT_ADU_PERSIST_STEP_RECORD
+      : AZ_IOT_ADU_PERSIST_STEP_RECORD_V2;
 
   uint32_t request_len = rd_u32le(&blob[36]);
   if (request_len > AZ_IOT_ADU_REQUEST_BUFFER_SIZE)
@@ -2122,14 +2159,17 @@ az_iot_result az_iot_adu_client_resume(az_iot_adu_client_t* client)
     const uint8_t* u = &blob[urls_at + i * AZ_IOT_ADU_PERSIST_URL_RECORD];
     req->file_urls[i].id
         = az_span_create(ADU_I(client).request_buffer + rd_u32le(u), (int32_t)rd_u32le(u + 4));
-    req->file_urls[i].url = az_span_create(
-        ADU_I(client).request_buffer + rd_u32le(u + 8), (int32_t)rd_u32le(u + 12));
+    req->file_urls[i].url
+        = az_span_create(ADU_I(client).request_buffer + rd_u32le(u + 8), (int32_t)rd_u32le(u + 12));
   }
 
   /* Any step still to run must be able to download its files. A v2 snapshot
    * carries no URLs, so it resumes only when nothing is left to download. */
-  if (!remaining_files_have_urls(&ADU_I(client).current_manifest, step + 1, req->file_urls, url_count))
+  if (!remaining_files_have_urls(
+          &ADU_I(client).current_manifest, step + 1, req->file_urls, url_count))
   {
+    /* It can never be resumed, so retire it rather than refuse it every boot. */
+    ADU_I(client).checkpoint_stored = true;
     reset_to_idle(client);
     return (version == AZ_IOT_ADU_PERSIST_VERSION_V2) ? AZ_IOT_ERR_NOT_SUPPORTED
                                                       : AZ_IOT_ERR_INVALID_ARG;
@@ -2149,6 +2189,7 @@ az_iot_result az_iot_adu_client_resume(az_iot_adu_client_t* client)
   ADU_I(client).cancel_requested = (flags & 0x1u) != 0;
   ADU_I(client).have_request = (flags & 0x2u) != 0;
   ADU_I(client).checkpoint_pending = false;
+  ADU_I(client).checkpoint_stored = true;
 
   /* Restore the accumulated result so completed step results of a multi-step
    * deployment survive a mid-deployment reboot. */

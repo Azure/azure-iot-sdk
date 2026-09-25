@@ -311,7 +311,17 @@ static int32_t ota_persist(const uint8_t* blob, size_t len, void* user_ctx)
     return AZ_IOT_ADU_RESULT_FAILURE;
   }
   int32_t result = AZ_IOT_ADU_RESULT_FAILURE;
-  if (nvs_set_blob(h, ADU_NVS_STATE_KEY, blob, len) == ESP_OK && nvs_commit(h) == ESP_OK)
+  if (len == 0)
+  {
+    /* Invalidation: erase the key so a later boot finds no checkpoint. */
+    esp_err_t err = nvs_erase_key(h, ADU_NVS_STATE_KEY);
+    if ((err == ESP_OK || err == ESP_ERR_NVS_NOT_FOUND) && nvs_commit(h) == ESP_OK)
+    {
+      ESP_LOGI(TAG, "cleared persisted workflow state from NVS");
+      result = AZ_IOT_ADU_RESULT_SUCCESS;
+    }
+  }
+  else if (nvs_set_blob(h, ADU_NVS_STATE_KEY, blob, len) == ESP_OK && nvs_commit(h) == ESP_OK)
   {
     ESP_LOGI(TAG, "persisted %zu bytes of workflow state to NVS", len);
     result = AZ_IOT_ADU_RESULT_SUCCESS;

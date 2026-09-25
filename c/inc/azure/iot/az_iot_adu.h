@@ -209,12 +209,17 @@ extern "C"
      * Persist workflow state for reboot survival. OPTIONAL — REQUIRED only if a
      * reboot is possible mid-update (i.e. install/apply may return
      * REBOOT_REQUIRED). Consumed by Phase 5 resume logic.
+     *
+     * @p state_blob_len == 0 means invalidate: empty or erase the stored record
+     * so a later boot does not resume a workflow that has already ended. Return
+     * non-zero to keep it; the client retries at the next terminal transition.
      */
     int32_t (*persist_state_fn)(const uint8_t* state_blob, size_t state_blob_len, void* user_ctx);
 
     /**
      * Load previously-persisted workflow state. Return 0 and fill
-     * state_blob/len on success; non-zero if no state persisted.
+     * state_blob/len on success; non-zero if no state persisted. A successful
+     * zero-length read also means nothing to resume.
      */
     int32_t (*load_state_fn)(
         uint8_t* state_blob,
@@ -658,6 +663,9 @@ extern "C"
       bool cancel_requested;
       /* A reboot checkpoint failed to persist; Apply waits until it succeeds. */
       bool checkpoint_pending;
+      /* Storage is believed to hold a checkpoint this client wrote or resumed
+       * from, so an invalidation write is owed when the workflow ends. */
+      bool checkpoint_stored;
 
       /* Workflow id of the active (or last) deployment; a payload carrying it
        * is a redelivery and is ignored. Retry timestamp and manifest CRC are
@@ -837,6 +845,13 @@ extern "C"
   /**
    * Resume a workflow after device reboot. The application SHOULD call this during
    * startup. If no persisted state exists, this is a no-op. (Phase 5.)
+   *
+   * @return AZ_IOT_OK if resumed or nothing usable was persisted;
+   *   AZ_IOT_ERR_NOT_SUPPORTED for a record left by an older version that lacks
+   *   download URLs still needed, or any record when persist_state_fn is NULL
+   *   (it could never be cleared); AZ_IOT_ERR_INVALID_ARG for a NULL client or
+   *   a record whose download URLs do not cover the remaining steps;
+   *   AZ_IOT_ERR_DETACHED if the client is detached.
    */
   AZ_NODISCARD az_iot_result az_iot_adu_client_resume(az_iot_adu_client_t* client);
 
