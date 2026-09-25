@@ -284,7 +284,8 @@ int main(void)
         = az_iot_gen1_telemetry_client_send(&telemetry, &message, on_send_done, &ctx);
     if (send_result != AZ_IOT_OK)
     {
-      fprintf(stderr, "[dps_csr] telemetry send failed: %s\n", az_iot_result_to_string(send_result));
+      fprintf(
+          stderr, "[dps_csr] telemetry send failed: %s\n", az_iot_result_to_string(send_result));
     }
     else
     {

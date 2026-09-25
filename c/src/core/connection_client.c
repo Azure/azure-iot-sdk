@@ -1948,10 +1948,9 @@ static az_iot_result dps_start(az_iot_connection_client* c)
   /* All DPS features share the CONNECT API version, including registration,
    * CSR issuance, and update requests on a provision-only session. */
   char dps_username[AZ_IOT_MQTT_USERNAME_BUF];
-  const char* username_parts[] = { c->opts.dps.id_scope,
-                                   DPS_USERNAME_INFIX,
-                                   c->opts.dps.registration_id,
-                                   DPS_USERNAME_SUFFIX };
+  const char* username_parts[] = {
+    c->opts.dps.id_scope, DPS_USERNAME_INFIX, c->opts.dps.registration_id, DPS_USERNAME_SUFFIX
+  };
   if (az_iot_span_writer_build_str(AZ_SPAN_FROM_BUFFER(dps_username), NULL, username_parts, 4)
       != AZ_IOT_OK)
   {
