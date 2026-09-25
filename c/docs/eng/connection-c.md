@@ -1010,7 +1010,7 @@ registry carries Classic feature filters and application custom topics.
 | --- | --- | --- | --- | --- | --- |
 | Any | Runtime allocation failure | not applicable to the core | — | — | The core state machine performs **no** allocation: every buffer is an in-struct fixed array. The only `malloc` on any core path is a Windows-only environment-variable read used by the mock endpoints in dev and test builds; on failure it returns `AZ_IOT_ERR_INTERNAL` or `AZ_IOT_ERR_INVALID_ARG`, not an out-of-memory value. The adapter does allocate, for the server URI and duplicated option strings. |
 | Publish / subscribe | A bound in [§9.4](#94-compile-time-bounds) is exceeded | see that table | connection client | the call fails before the transport is touched | Never truncated. |
-| Publish | Pending-PUBACK table full (17th unacknowledged publish with a callback) | `AZ_IOT_ERR_NOT_SUPPORTED` | connection client | the publish is **already on the wire**; only the ack callback is lost | **Gap.** The table is checked after the publish, not before, so a caller that retries on this error sends the message twice. The contract requires the publish to be rejected. The value also overlaps "no factory registered", a poor fit for a capacity condition. |
+| Publish | Pending-PUBACK table full (17th unacknowledged publish with a callback) | `AZ_IOT_ERR_NOT_SUPPORTED` | connection client | the publish has already been sent; the ack callback is not registered | The table is checked after the publish, not before. |
 | Twin | Pending-request pool full (9th) | `AZ_IOT_ERR_NOT_SUPPORTED` | twin client | the request is rejected | Contained. Distinct from the `429` row above, which is the point. |
 | Direct methods | In-flight pool full (5th) | **none** | direct-method client | **the invocation is dropped**, with a warning logged | **Known gap.** A slot is released by responding, or reclaimed by `requests_expire_stale()` once `response_timeout_seconds` has passed. While all slots are still live, a further invocation is dropped with only a log warning — the generic contract requires it to be visible to the application. |
 | Connect | No factory for the required version | `AZ_IOT_ERR_NOT_SUPPORTED` | `find_factory()` | back to `IDLE`, error returned from `open()` | |
@@ -1087,10 +1087,7 @@ listed at the end rather than deleted, so the delta stays legible.
    the pump thread.
 9. **SUBACK `0x91 Packet Identifier in use` is retried.** It is missing from
    `az_iot_mqtt_suback_result()`'s refusal set ([§9.3](#93-suback-mapping)).
-10. **A full pending-PUBACK table does not reject the publish.** `az_iot_connection_client__publish()`
-    publishes first and returns `AZ_IOT_ERR_NOT_SUPPORTED` only when no slot is free for the ack, so
-    the message is already sent and a retry duplicates it.
-11. **A capacity failure does not say which pool ran out.** Every bound in
+10. **A capacity failure does not say which pool ran out.** Every bound in
    [§9.4](#94-compile-time-bounds) surfaces as `AZ_IOT_ERR_NOT_ENOUGH_SPACE` or
    `AZ_IOT_ERR_NOT_SUPPORTED` from whatever call was last, with no indication of the pool.
 
