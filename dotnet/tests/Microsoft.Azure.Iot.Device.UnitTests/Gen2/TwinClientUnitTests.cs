@@ -100,6 +100,43 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Gen2
             Assert.Equal(getReported, twin.Reported is not null);
         }
 
+        [Theory]
+        [InlineData(true, false)]
+        [InlineData(false, true)]
+        public async Task GetTwinAsync_FiltersUnrequestedSectionReturnedByService(
+            bool getReported,
+            bool getDesired)
+        {
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(ConnectionProfile.MqttV5, DeviceId),
+            };
+            using TwinClient twinClient = new(connection);
+
+            connection.OnPublish += async publish =>
+            {
+                var response = new TwinGetResponse
+                {
+                    DesiredVersion = 5,
+                    ReportedVersion = 7,
+                    DesiredPayload = ByteString.CopyFromUtf8("{\"fanSpeed\":10}"),
+                    ReportedPayload = ByteString.CopyFromUtf8("{\"temperature\":21}"),
+                };
+
+                await connection.SimulateReceiveAsync(
+                    CreateInboundTwinPublish("get-response:1", publish.CorrelationData!, response.ToByteArray()));
+                return new MqttPublishAck { ReasonCode = MqttPublishAckReasonCode.Success };
+            };
+
+            DeviceTwin twin = await twinClient.GetTwinAsync(
+                getReported,
+                getDesired,
+                cancellationToken: TestContext.Current.CancellationToken);
+
+            Assert.Equal(getDesired, twin.Desired is not null);
+            Assert.Equal(getReported, twin.Reported is not null);
+        }
+
         [Fact]
         public async Task GetTwinAsync_AllowsConditionalResponseWithoutPayloads()
         {

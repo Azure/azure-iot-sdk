@@ -21,8 +21,6 @@ namespace Microsoft.Azure.Iot.Device.Gen2.Connection
 
         private Guid? CurrentConnectionNonce { get; set; }
 
-        internal event Action<Guid>? ConnectAttemptStarting;
-
         public ConnectionClient(ConnectionClientOptions? options = null, TwinPushOptions? twinPushOptions = null) : base(options)
         {
             _twinPushOptions = twinPushOptions ?? new TwinPushOptions();
@@ -193,7 +191,6 @@ namespace Microsoft.Azure.Iot.Device.Gen2.Connection
         public override MqttConnect MqttConnectOverride(MqttConnect connect)
         {
             CurrentConnectionNonce = Guid.NewGuid(); //Note that this nonce must be unique per connection attempt, not per successfuly connection
-            ConnectAttemptStarting?.Invoke(CurrentConnectionNonce.Value);
 
             string hexEncodedConnectNonce = Convert.ToHexString(CurrentConnectionNonce.Value.ToByteArray(bigEndian: true));
 

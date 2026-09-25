@@ -266,10 +266,12 @@ namespace Microsoft.Azure.Iot.Device.Gen2.Twin
 
                 pendingGetTwinRequest.TwinResponseTask.TrySetResult(new()
                 {
-                    Desired = twinGetResponse.HasDesiredPayload
+                    Desired = pendingGetTwinRequest.GetDesired
+                        && twinGetResponse.HasDesiredPayload
                         ? JsonObject.Parse(twinGetResponse.DesiredPayload.Span)!.AsObject()
                         : null,
-                    Reported = twinGetResponse.HasReportedPayload
+                    Reported = pendingGetTwinRequest.GetReported
+                        && twinGetResponse.HasReportedPayload
                         ? JsonObject.Parse(twinGetResponse.ReportedPayload.Span)!.AsObject()
                         : null,
                     DesiredVersion = twinGetResponse.DesiredVersion,
