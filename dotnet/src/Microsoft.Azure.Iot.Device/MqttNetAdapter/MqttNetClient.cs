@@ -55,7 +55,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTnetAdapter
 
             if (ConnectingAsync != null)
             {
-                connect = await ConnectingAsync.Invoke(connect); // Allow Gen2 connection client to inject a fresh connect nonce each time a connect happens
+                connect = await ConnectingAsync.Invoke(connect); // Allow MQTTv5 connection client to inject a fresh connect nonce each time a connect happens
             }
 
             MqttClientOptionsBuilder optionsBuilder;

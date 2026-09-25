@@ -1,7 +1,7 @@
 ﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
-using Microsoft.Azure.Iot.Device.IntegrationTests.Gen2;
+using Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5;
 using Microsoft.Azure.Iot.Device.IntegrationTests.Unified;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Models.Twin;
@@ -19,9 +19,9 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
 {
     public class Setup
     {
-        public static string Gen1IotHubConnectionString { get; set; } = Environment.GetEnvironmentVariable("IOTHUB_CONNECTION_STRING") ?? throw new ArgumentException("Missing env var");
+        public static string MQTTv3IotHubConnectionString { get; set; } = Environment.GetEnvironmentVariable("IOTHUB_CONNECTION_STRING") ?? throw new ArgumentException("Missing env var");
 
-        public static string Gen2IotHubConnectionString { get; set; } = Environment.GetEnvironmentVariable("IOTHUB_CONNECTION_STRING_GEN2") ?? "No test infrastructure setup for this yet";
+        public static string MQTTv5IotHubConnectionString { get; set; } = Environment.GetEnvironmentVariable("IOTHUB_CONNECTION_STRING_MQTTV5") ?? "No test infrastructure setup for this yet";
 
         public static string DpsConnectionString { get; set; } = Environment.GetEnvironmentVariable("IOT_DPS_CONNECTION_STRING") ?? throw new ArgumentException("Missing env var");
 
@@ -29,19 +29,19 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
 
         public const string TestCertificatesPassword = "some fake password";
 
-        public static ServiceClient GetGen1IotHubServiceClient() => ServiceClient.CreateFromConnectionString(Gen1IotHubConnectionString);
+        public static ServiceClient GetMQTTv3IotHubServiceClient() => ServiceClient.CreateFromConnectionString(MQTTv3IotHubConnectionString);
 
-        public static RegistryManager GetGen1IotHubRegistryManager() => RegistryManager.CreateFromConnectionString(Gen1IotHubConnectionString);
+        public static RegistryManager GetMQTTv3IotHubRegistryManager() => RegistryManager.CreateFromConnectionString(MQTTv3IotHubConnectionString);
 
-        public static ServiceClient GetGen2IotHubServiceClient() => ServiceClient.CreateFromConnectionString(Gen2IotHubConnectionString);
+        public static ServiceClient GetMQTTv5IotHubServiceClient() => ServiceClient.CreateFromConnectionString(MQTTv5IotHubConnectionString);
 
-        public static RegistryManager GetGen2IotHubRegistryManager() => RegistryManager.CreateFromConnectionString(Gen2IotHubConnectionString);
+        public static RegistryManager GetMQTTv5IotHubRegistryManager() => RegistryManager.CreateFromConnectionString(MQTTv5IotHubConnectionString);
 
         public static ProvisioningServiceClient GetDpsHubServiceClient() => ProvisioningServiceClient.CreateFromConnectionString(DpsConnectionString);
 
-        public static string GetGen1IotHubHostName()
+        public static string GetMQTTv3IotHubHostName()
         {
-            string[] connectionStringKeyValuePairs = Gen1IotHubConnectionString.Split(";");
+            string[] connectionStringKeyValuePairs = MQTTv3IotHubConnectionString.Split(";");
             foreach (string connectionStringKeyValuePair in connectionStringKeyValuePairs)
             {
                 string[] keyAndValue = connectionStringKeyValuePair.Split("=");
@@ -55,9 +55,9 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
         }
 
 
-        public static string GetGen2IotHubHostName()
+        public static string GetMQTTv5IotHubHostName()
         {
-            string[] connectionStringKeyValuePairs = Gen2IotHubConnectionString.Split(";");
+            string[] connectionStringKeyValuePairs = MQTTv5IotHubConnectionString.Split(";");
             foreach (string connectionStringKeyValuePair in connectionStringKeyValuePairs)
             {
                 string[] keyAndValue = connectionStringKeyValuePair.Split("=");
@@ -72,11 +72,11 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
 
         public const int TestTimeoutMilliseconds = 60 * 1000;
 
-        public static async Task<Gen2DeviceTestContext> CreateProvisionableGen2DeviceAsync(DeviceTwin? initialTwin, ConnectionClientOptions? options = null, CancellationToken cancellationToken = default)
+        public static async Task<MQTTv5DeviceTestContext> CreateProvisionableMQTTv5DeviceAsync(DeviceTwin? initialTwin, ConnectionClientOptions? options = null, CancellationToken cancellationToken = default)
         {
-            Assert.Skip("No test infrastructure setup for Gen2 client testing yet.");
+            Assert.Skip("No test infrastructure setup for MQTTv5 client testing yet.");
 
-            ServiceClient iotHubServiceClient = ServiceClient.CreateFromConnectionString(Gen1IotHubConnectionString);
+            ServiceClient iotHubServiceClient = ServiceClient.CreateFromConnectionString(MQTTv3IotHubConnectionString);
             ProvisioningServiceClient provisioningServiceClient = ProvisioningServiceClient.CreateFromConnectionString(DpsConnectionString);
 
             string deviceId = Guid.NewGuid().ToString();
@@ -100,9 +100,9 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
 
             X509AuthenticationProvider x509AuthenticationProvider = new(pfx);
 
-            Device.Gen2.Connection.ConnectionClient connectionClient = new(options);
+            Device.MQTTv5.Connection.ConnectionClient connectionClient = new(options);
 
-            return new Gen2DeviceTestContext()
+            return new MQTTv5DeviceTestContext()
             {
                 ConnectionClient = connectionClient,
                 DeviceId = deviceId,
@@ -112,9 +112,9 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
         }
 
         // Skip DPS registration + provisioning. Just create a device identity on the IoT hub
-        public static async Task<Gen2DeviceTestContext> CreateGen2DeviceOnDirectlyOnHubAsync(ConnectionClientOptions? options = null, CancellationToken cancellationToken = default)
+        public static async Task<MQTTv5DeviceTestContext> CreateMQTTv5DeviceOnDirectlyOnHubAsync(ConnectionClientOptions? options = null, CancellationToken cancellationToken = default)
         {
-            Assert.Skip("No test infrastructure setup for Gen2 client testing yet.");
+            Assert.Skip("No test infrastructure setup for MQTTv5 client testing yet.");
 
             string deviceId = Guid.NewGuid().ToString();
             string registrationId = deviceId;
@@ -137,14 +137,14 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
                 }
             };
 
-            await GetGen1IotHubRegistryManager().AddDeviceAsync(device);
+            await GetMQTTv5IotHubRegistryManager().AddDeviceAsync(device);
 
             X509AuthenticationProvider x509AuthenticationProvider = new(pfx);
 
-            Device.Gen2.Connection.ConnectionClient connectionClient = new(options);
+            Device.MQTTv5.Connection.ConnectionClient connectionClient = new(options);
             ProvisioningSettings provisioningSettings = new(DpsIdScope);
 
-            return new Gen2DeviceTestContext()
+            return new MQTTv5DeviceTestContext()
             {
                 ConnectionClient = connectionClient,
                 DeviceId = deviceId,
@@ -153,9 +153,9 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
             };
         }
 
-        public static async Task<Gen2DeviceTestContext> CreateConnectedGen2ConnectionClientAsync(DeviceTwin? initialTwin, ConnectionClientOptions? options = null, CancellationToken cancellationToken = default)
+        public static async Task<MQTTv5DeviceTestContext> CreateConnectedMQTTv5ConnectionClientAsync(DeviceTwin? initialTwin, ConnectionClientOptions? options = null, CancellationToken cancellationToken = default)
         {
-            Assert.Skip("No test infrastructure setup for Gen2 client testing yet.");
+            Assert.Skip("No test infrastructure setup for MQTTv5 client testing yet.");
 
             ProvisioningServiceClient provisioningServiceClient = ProvisioningServiceClient.CreateFromConnectionString(DpsConnectionString);
 
@@ -176,14 +176,14 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
 
             X509AuthenticationProvider x509AuthenticationProvider = new(pfx);
 
-            Device.Gen2.Connection.ConnectionClient connectionClient = new(options);
+            Device.MQTTv5.Connection.ConnectionClient connectionClient = new(options);
             ProvisioningSettings provisioningSettings = new(DpsIdScope);
 
             ConnectionContext connectionContext = await RetryAroundAuthorizationAsync<ConnectionContext>(
                 async () => await connectionClient.ProvisionAndConnectAsync(provisioningSettings, x509AuthenticationProvider, cancellationToken: cancellationToken),
                 cancellationToken);
 
-            return new Gen2DeviceTestContext()
+            return new MQTTv5DeviceTestContext()
             {
                 ConnectionClient = connectionClient,
                 DeviceId = connectionContext!.DeviceId,
@@ -196,7 +196,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
         {
             if (!testAgainstClassicHub)
             {
-                Assert.Skip("No AEG hub to test against yet");
+                Assert.Skip("No MQTTv5 hub to test against yet");
             }
 
             ProvisioningServiceClient provisioningServiceClient = ProvisioningServiceClient.CreateFromConnectionString(DpsConnectionString);
@@ -237,7 +237,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
         {
             if (!testAgainstClassicHub)
             {
-                Assert.Skip("No AEG hub to test against yet");
+                Assert.Skip("No MQTTv5 hub to test against yet");
             }
 
             ProvisioningServiceClient provisioningServiceClient = ProvisioningServiceClient.CreateFromConnectionString(DpsConnectionString);

@@ -85,7 +85,9 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientAsync(testAgainstClassicHub, null, TestContext.Current.CancellationToken);
             ConnectionClient connectionClient = testDeviceContext.ConnectionClient;
 
-            ServiceClient serviceClient = Setup.GetGen1IotHubServiceClient();
+            ServiceClient serviceClient = testAgainstClassicHub
+                ? Setup.GetMQTTv3IotHubServiceClient()
+                : Setup.GetMQTTv5IotHubServiceClient();
             using TelemetryClient telemetryClient = new TelemetryClient(connectionClient);
 
             TaskCompletionSource<CloudToDeviceTelemetry> c2dMessageReceived = new();

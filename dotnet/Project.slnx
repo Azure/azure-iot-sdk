@@ -2,10 +2,10 @@
   <Folder Name="/samples/">
     <Project Path="samples/SetupSampleDevice/SetupSampleDevice.csproj" Id="7bd6b448-6702-4afa-921c-53f0f5ee6aae" />
   </Folder>
-  <Folder Name="/samples/Gen2/">
-    <Project Path="samples/Gen2/DirectMethodsSample/DirectMethodsClientSample.csproj" />
-    <Project Path="samples/Gen2/TelemetryClientSample/TelemetryClientSample.csproj" />
-    <Project Path="samples/Gen2/TwinClientSample/TwinClientSample.csproj" />
+  <Folder Name="/samples/MQTTv5/">
+    <Project Path="samples/MQTTv5/DirectMethodsSample/DirectMethodsClientSample.csproj" />
+    <Project Path="samples/MQTTv5/TelemetryClientSample/TelemetryClientSample.csproj" />
+    <Project Path="samples/MQTTv5/TwinClientSample/TwinClientSample.csproj" />
   </Folder>
   <Folder Name="/samples/Unified/">
     <Project Path="samples/Unified/CertificateManagementSample/CertificateManagementSample.csproj" Id="9cbac237-d923-4a86-a44f-1b5547a69752" />
