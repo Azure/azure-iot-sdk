@@ -43,9 +43,8 @@ readable as design rather than as a claim about the code.
 - `DEINITIALIZING` (§4.1) and the deinit guard of §3.2.
 - `az_iot_conn_reason` (§4.4). Open decision 2 was answered by omission: `reason` plus
   `error->source` / `error->code` carry the information, and no second taxonomy was added.
-  `is_retriable` — the other half of that decision — *was* taken. §4.4 and §5's
-  `connection_reason` row describe a shape that does not exist; they are kept as the record of
-  what was considered.
+  §4.4 and §5's `connection_reason` row describe a shape that does not exist; they are kept as
+  the record of what was considered.
 
 **Still open**
 

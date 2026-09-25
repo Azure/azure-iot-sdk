@@ -1175,7 +1175,7 @@ decide now than later.
 | Managed OpenSSL provider | [az_iot_certificate_provider_managed.c](../../adapters/cert_openssl/az_iot_certificate_provider_managed.c) | implemented |
 | Connection profile enum, `az_iot_hub_profile`, `get_hub_profile()` | [az_iot_connection_client.h](../../inc/azure/iot/az_iot_connection_client.h) | implemented — the DPS-reported value still needs the raised api-version to arrive, so it resolves to `classic` until then |
 | `az_iot_adu_channel` vtable, DPS channel | [az_iot_adu.h](../../inc/azure/iot/az_iot_adu.h), [adu_channel_dps.c](../../src/features/adu/adu_channel_dps.c) | implemented — the gen2 hub channel is not written |
-| ADU engine internals reused by ADUv2 | [c/src/features/adu](../../src/features/adu) | implemented (ADUv1 API to be removed) |
+| ADU engine internals reused by ADUv2 | [c/src/features/adu](../../src/features/adu) | implemented; the ADUv1 twin-based API has been removed |
 | ADUv2 device contract | [aduv2-spec.md](aduv2-spec.md), [adu_protocol.c](../../src/features/adu/adu_protocol.c) | implemented over the DPS gateway — DPS fronts both flows for Ignite '26 |
 | CONNACK code mapping | [mqtt_iface.c](../../src/core/mqtt_iface.c) | implemented |
 | Paho adapter event and code mapping | [az_iot_mqtt_paho.c](../../adapters/paho/az_iot_mqtt_paho.c) | implemented — PUBACK and server-DISCONNECT codes still flattened ([§9.6](#96-known-gaps)) |
