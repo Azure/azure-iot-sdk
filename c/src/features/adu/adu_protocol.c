@@ -212,6 +212,21 @@ uint32_t az_iot_adu__parse_retry_after_seconds(const char* topic, size_t topic_l
 /* requests                                                                  */
 /* ------------------------------------------------------------------------- */
 
+/**
+ * @brief Appends an int32 JSON number.
+ *
+ * az_json_writer_append_int32() negates INT32_MIN as an int (undefined), so that
+ * one value is written as text.
+ */
+static az_result append_int32(az_json_writer* jw, int32_t value)
+{
+  if (value == INT32_MIN)
+  {
+    return az_json_writer_append_json_text(jw, AZ_SPAN_FROM_STR("-2147483648"));
+  }
+  return az_json_writer_append_int32(jw, value);
+}
+
 static az_result write_string_property(az_json_writer* jw, const char* name, const char* value)
 {
   ADU_RETURN_IF_FAILED(
@@ -283,7 +298,7 @@ az_iot_result az_iot_adu__build_fetch_request(
   if (az_result_succeeded(r))
   {
     /* An integer on the wire, not a string. */
-    r = az_json_writer_append_int32(&jw, agent_info->agent_profile);
+    r = append_int32(&jw, agent_info->agent_profile);
   }
   if (az_result_succeeded(r) && agent_info->compatibility_properties_count > 0)
   {
@@ -523,7 +538,7 @@ az_iot_result az_iot_adu__build_report_request(
   }
   if (az_result_succeeded(r))
   {
-    r = az_json_writer_append_int32(&jw, report->result_code);
+    r = append_int32(&jw, report->result_code);
   }
   if (az_result_succeeded(r))
   {
@@ -579,7 +594,7 @@ az_iot_result az_iot_adu__build_report_request(
       }
       if (az_result_succeeded(r))
       {
-        r = az_json_writer_append_int32(&jw, step->result_code);
+        r = append_int32(&jw, step->result_code);
       }
       if (az_result_succeeded(r))
       {

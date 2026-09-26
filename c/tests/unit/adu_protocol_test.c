@@ -676,6 +676,10 @@ static void largest_engine_report_fits_the_channel_body(void** state)
   size_t len = 0;
   assert_int_equal(az_iot_adu__build_report_request(&report, body, sizeof(body), &len), AZ_IOT_OK);
   assert_true(len > 0 && len <= sizeof(body));
+  assert_true(
+      az_span_find(
+          az_span_create(body, (int32_t)len), AZ_SPAN_FROM_STR("\"resultCode\":-2147483648"))
+      >= 0);
 }
 
 static void both_error_signals_are_read_from_the_body(void** state)
