@@ -140,7 +140,7 @@ _Captured from conversation as the C99 client repo was being scaffolded. Each bu
 - `connectionProfile` is a `readOnly` **string** property on `DeviceRegistrationResult`, arriving with `assignedHub` / `deviceId` / `issuedCertificateChain`. There is **no** numeric `hub_version` on the wire.
 - Values: `"classic"` (Classic MQTT 3.x hub) and `"mqttV5"` (MQTT 5 hub). **Absent or null resolves to `classic`.**
 - It is an **extensible union** — the spec states future hub capabilities pass through without a breaking change. The SDK must therefore expect values it does not know, and must preserve the raw string rather than collapsing it to a closed enum.
-- **Device-facing API version:** the common connection client builds the DPS CONNECT username with `2026-11-02-preview` for both CSR and non-CSR sessions, including provision-only ADU. The pinned `azure-sdk-for-c` remains unmodified; its `get_user_name()` helper would still emit `2019-03-31`.
+- **Device-facing API version:** the common connection client builds the DPS CONNECT username with `2026-11-02-preview` for both CSR and non-CSR sessions, including provision-only software updates. The pinned `azure-sdk-for-c` remains unmodified; its `get_user_name()` helper would still emit `2019-03-31`.
 - **Development override:** `AZ_IOT_DPS_CONNECTION_PROFILE_OVERRIDE=classic|mqttV5` replaces only an absent/null profile after ASSIGNED; the DPS-assigned host/device remain authoritative, and an explicit wire profile always wins. Invalid values fault the assignment. It is not a production deployment contract.
 - **DECIDED:** `"classic"` maps to gen1, `"mqttV5"` maps to gen2 (for now).
 - **DECIDED:** an unrecognised profile **fails the connection** (`AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED`). The profile is not expected to break, but devices must be defensive about service-side hazards they cannot verify.
@@ -148,7 +148,7 @@ _Captured from conversation as the C99 client repo was being scaffolded. Each bu
 ### Dependency ownership: azure-sdk-for-c is ARCHIVED (08/11/2026)
 - `Azure/azure-sdk-for-c` is **archived** upstream (last push 2026-07-15). There will be no upstream fixes, so this repo owns the dependency and must carry its own patches.
 - This supersedes the "No git submodules" / "pinned FetchContent tag" arrangement as the whole story: the pin still holds, but a patch mechanism is now required alongside it.
-- **Not a dead gitlink (corrected):** `.gitmodules` registers a submodule at `c/deps/azure-sdk-for-c`, gitlink `6d6e634a` — exactly what tag `1.5.0` resolves to. It is uninitialised on a fresh clone, which makes it look unused, but the ESP-IDF component under `c/samples/adu/esp32` builds its sources from it (the sample README says to `git submodule update --init` it). So the source exists twice: the FetchContent tree and the submodule, and both must receive the same patches.
+- **Not a dead gitlink (corrected):** `.gitmodules` registers a submodule at `c/deps/azure-sdk-for-c`, gitlink `6d6e634a` — exactly what tag `1.5.0` resolves to. It is uninitialised on a fresh clone, which makes it look unused, but the ESP-IDF component under `c/samples/su/esp32` builds its sources from it (the sample README says to `git submodule update --init` it). So the source exists twice: the FetchContent tree and the submodule, and both must receive the same patches.
 
 ### ConnectionClient lifecycle (Phase 2.1)
 - States: `IDLE -> CONNECTING -> CONNECTED -> DISCONNECTING -> IDLE`, plus `RECONNECTING` (Phase 2.2) and `FAULTED` (CONNACK / inbound ERROR).

@@ -56,7 +56,7 @@
                 "AZ_IOT_ENABLE_COVERAGE": "ON",
                 "AZ_IOT_WITH_PAHO": "ON",
                 "AZ_IOT_WITH_RUST_MQTT": "OFF",
-                "AZ_IOT_WITH_ADU_CRYPTO_OPENSSL": "ON",
+                "AZ_IOT_WITH_SU_CRYPTO_OPENSSL": "ON",
                 "AZ_IOT_WITH_CERT_PROVIDER_MANAGED": "ON"
             },
             "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" }

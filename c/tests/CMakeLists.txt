@@ -248,25 +248,25 @@ az_iot_add_cmocka_test(az_iot_tests_gen2_twin_client unit/gen2_twin_client_test.
 target_link_libraries(az_iot_tests_gen2_twin_client PRIVATE az_iot_test_support az_iot_gen2)
 target_include_directories(az_iot_tests_gen2_twin_client PRIVATE ${CMAKE_SOURCE_DIR}/src/core)
 
-az_iot_add_cmocka_test(az_iot_tests_adu_client unit/adu_client_test.c)
-az_iot_add_cmocka_test(az_iot_tests_adu_protocol unit/adu_protocol_test.c)
-target_link_libraries(az_iot_tests_adu_client PRIVATE az_iot_test_support)
+az_iot_add_cmocka_test(az_iot_tests_su_client unit/su_client_test.c)
+az_iot_add_cmocka_test(az_iot_tests_su_protocol unit/su_protocol_test.c)
+target_link_libraries(az_iot_tests_su_client PRIVATE az_iot_test_support)
 # For az_iot_time_mono_ms: the request deadline is a monotonic instant, so a
 # test that exercises it has to speak the same clock.
-target_include_directories(az_iot_tests_adu_client PRIVATE ${CMAKE_SOURCE_DIR}/src/core)
+target_include_directories(az_iot_tests_su_client PRIVATE ${CMAKE_SOURCE_DIR}/src/core)
 
 # The channel over a real connection client: what reaches the broker, how a
 # response is correlated back, and the paths that can fault provisioning.
-az_iot_add_cmocka_test(az_iot_tests_adu_channel_dps unit/adu_channel_dps_test.c)
-target_link_libraries(az_iot_tests_adu_channel_dps PRIVATE az_iot_test_support)
-target_include_directories(az_iot_tests_adu_channel_dps PRIVATE
+az_iot_add_cmocka_test(az_iot_tests_su_channel_dps unit/su_channel_dps_test.c)
+target_link_libraries(az_iot_tests_su_channel_dps PRIVATE az_iot_test_support)
+target_include_directories(az_iot_tests_su_channel_dps PRIVATE
     ${CMAKE_SOURCE_DIR}/src/core
-    ${CMAKE_SOURCE_DIR}/src/features/adu/internal)
+    ${CMAKE_SOURCE_DIR}/src/features/su/internal)
 
 # Bound precondition hangs while leaving headroom for Valgrind instrumentation.
 set_tests_properties(
-    az_iot_tests_adu_client az_iot_tests_adu_protocol
-    az_iot_tests_adu_channel_dps
+    az_iot_tests_su_client az_iot_tests_su_protocol
+    az_iot_tests_su_channel_dps
     PROPERTIES TIMEOUT 300)
 
 # File upload is HTTPS-only (stateless request-build/response-parse helpers), so
@@ -431,13 +431,13 @@ if(AZ_IOT_WITH_RUST_MQTT)
     target_link_libraries(az_iot_tests_rust_mqtt_adapter PRIVATE az_iot_adapter_rust_mqtt)
 endif()
 
-# ADU OpenSSL crypto adapter (only when the adapter target was built, i.e.
+# Software updates OpenSSL crypto adapter (only when the adapter target was built, i.e.
 # OpenSSL 3.0+ was found). Links OpenSSL only to generate test vectors.
-if(TARGET az_iot_adu_crypto_openssl)
+if(TARGET az_iot_su_crypto_openssl)
     find_package(OpenSSL 3.0 QUIET)
-    az_iot_add_cmocka_test(az_iot_tests_adu_crypto_openssl unit/adu_crypto_openssl_test.c)
-    target_link_libraries(az_iot_tests_adu_crypto_openssl PRIVATE
-        az_iot_adu_crypto_openssl OpenSSL::Crypto)
+    az_iot_add_cmocka_test(az_iot_tests_su_crypto_openssl unit/su_crypto_openssl_test.c)
+    target_link_libraries(az_iot_tests_su_crypto_openssl PRIVATE
+        az_iot_su_crypto_openssl OpenSSL::Crypto)
 endif()
 
 # Managed OpenSSL certificate provider (only when the adapter target was built,

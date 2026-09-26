@@ -1,0 +1,7 @@
+## Dependencies for the azure-iot-sdk SDK component.
+## The upstream Azure SDK for C (az_core + az_iot hub/provisioning/su parsing)
+## is built from the in-repo git submodule via the sibling `azure-sdk-for-c`
+## ESP-IDF component (see components/azure-sdk-for-c). No registry dependency is
+## needed for it.
+dependencies:
+  idf: ">=5.1"

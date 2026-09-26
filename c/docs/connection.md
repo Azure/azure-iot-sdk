@@ -10,17 +10,17 @@ Related documents:
 
 - [design.md](design.md) — overall layering and adapter model.
 - [eng/certificate-management.md](eng/certificate-management.md) — CSR / operational certificate design.
-- [eng/client-separation.md](eng/client-separation.md) — connection profile (§2) and the ADU channel split (§8).
+- [eng/client-separation.md](eng/client-separation.md) — connection profile (§2) and the software updates channel split (§8).
 - [eng/connection-state-and-error-propagation.md](eng/connection-state-and-error-propagation.md) — observer registry and status codes.
 - [dps-integration.md](dps-integration.md), [devnotes.md](devnotes.md) — DPS contract and the running requirements log.
-- **ADUv2** — [eng/aduv2-spec.md](eng/aduv2-spec.md) is the device contract and the source for §7
+- **Software updates** — [eng/su-spec.md](eng/su-spec.md) is the device contract and the source for §7
   below; it owns the request/response shapes, error codes and trust model, which are deliberately not
-  restated here. [eng/adu-client-plan.md](eng/adu-client-plan.md) carries the SDK status and the
-  work queue for the ADUv1 cut. Background: *Azure Device Update v2 — Public Preview (Ignite 2026)*, Leo Lie /
+  restated here. [eng/su-client-plan.md](eng/su-client-plan.md) carries the SDK status and the
+  work queue for the Device Update for IoT Hub cut. Background: *Azure Device Update v2 — Public Preview (Ignite 2026)*, Leo Lie /
   Joe Heiniger / Darko Aleksic, 7/6/2026
   ([SharePoint](https://microsoft.sharepoint.com/:w:/r/teams/DigitalOperations/_layouts/15/Doc.aspx?sourcedoc=%7B0f2203ff-bda7-4f97-b2a5-468fcb95f7f0%7D&action=default&share=cQr_AyIPp72XT7KlRo_LlffwEgUCJRfZ3zpZHPh4PbcI-NloUw)).
-  [eng/adu-client-design.md](eng/adu-client-design.md) covers the shared verify/download/install
-  engine, which is unchanged from ADUv1.
+  [eng/su-client-design.md](eng/su-client-design.md) covers the shared verify/download/install
+  engine, which is unchanged from Device Update for IoT Hub.
 
 ### Status legend
 
@@ -44,10 +44,10 @@ This document describes the target lifecycle. Not all of it is coded yet, so eve
 | **Phase** | Internal sub-step inside a state — DPS phases and presence (birth) phases. Not user-visible. |
 | **Provisioning** | Obtaining a hub assignment from DPS. |
 | **Onboarding** | Everything that happens against the DPS gateway under *onboarding auth*: the bootstrap update check, the CSR, and registration itself. |
-| **Renewal** | The recurring, post-provisioning counterpart under *operational auth*: certificate re-issuance and the periodic ADUv2 update check. |
+| **Renewal** | The recurring, post-provisioning counterpart under *operational auth*: certificate re-issuance and the periodic software update check. |
 | **Bootstrap credential** | Initial device identity (`AZ_IOT_CRED_BOOTSTRAP`). |
 | **Operational credential** | Certificate issued to the device via CSR (`AZ_IOT_CRED_OPERATIONAL`). |
-| **ADU channel** | The `az_iot_adu_channel` vtable that carries update delivery and reporting, keeping `adu_core` transport-independent. |
+| **Software updates channel** | The `az_iot_su_channel` vtable that carries update delivery and reporting, keeping `su_core` transport-independent. |
 
 ---
 
@@ -175,10 +175,10 @@ Key ordering guarantees that both clients must honour:
    and DPS always uses MQTT 3.1.1 even when the hub session uses v5.
 3. The operational certificate is preferred over the bootstrap certificate on every connect attempt,
    including reconnects.
-4. **The ADUv2 bootstrap update check runs before `open()`, not inside it.** The agent drives the
+4. **The software updates bootstrap update check runs before `open()`, not inside it.** The agent drives the
    onboarding update call against the DPS gateway until the service reports no update, and only then
    does the connection client register. The check is **advisory**: if it fails, the device proceeds
-   to register anyway. See [§7](#7-aduv2-onboarding-and-renewal-planned).
+   to register anyway. See [§7](#7-software-updates-onboarding-and-renewal-planned).
 5. The DPS assignment is the single delivery point for everything the device learns about its
    placement: hub, device id, connection profile and issued certificate chain.
 
@@ -290,7 +290,7 @@ flowchart TB
     B -->|"mqttV5"| D["AZ_IOT_CONNECTION_PROFILE_MQTT_V5<br/>MQTT 5, role HUB_NEXT"]
     B -->|"anything else"| E["AZ_IOT_CONNECTION_PROFILE_UNKNOWN"]
     C --> F["gen1 feature clients"]
-    D --> G["gen2 feature clients<br/>+ presence handshake<br/>+ ADUv2 channel"]
+    D --> G["gen2 feature clients<br/>+ presence handshake<br/>+ software updates channel"]
     E --> H["Connection fails:<br/>AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED<br/>raw string still readable"]
 ```
 
@@ -412,12 +412,12 @@ checked before backoff is scheduled.
 | Assigned hub host / device id | Yes | Cached after the first DPS assignment. |
 | Connection profile | Yes | Re-resolved from the new assignment; a change invalidates held feature clients (open question, §4). |
 | Operational certificate | Yes | Owned by the certificate provider, reloaded on each attempt. |
-| ADU workflow state | Yes | Owned by `adu_core` and persisted, so an install survives a reconnect and a reboot. |
+| Software updates workflow state | Yes | Owned by `su_core` and persisted, so an install survives a reconnect and a reboot. |
 | Reconnect attempt counter | Reset on success | Incremented per failed attempt. |
 | In-flight QoS 1 PUBACKs | No | Packet ids belong to the destroyed adapter; callers must re-send. |
 | Twin GET/PATCH, method responses, telemetry in flight | No | Feature clients must re-issue. |
 | Classic desired-property patches sent while disconnected | No | IoT Hub does not queue them, and the SDK does not fetch the twin on reconnect. The application calls `az_iot_gen1_twin_client_get()` if it needs the current desired state. |
-| ADU status report not yet acked | Yes | Held in durable storage and retried until acked; idempotent on `workflowId`. |
+| Software updates status report not yet acked | Yes | Held in durable storage and retried until acked; idempotent on `workflowId`. |
 | Presence (birth) phase | No | Restarted with a freshly generated nonce. |
 | DPS phase | No | Restarted from `CONNECTING` if DPS is configured. |
 | In-flight CSR operation | No | Abandoned; the callback fires with a failure/timeout result. |
@@ -472,18 +472,18 @@ Rules that apply to both clients:
 
 ---
 
-## 7. ADUv2: onboarding and renewal **[planned]**
+## 7. Software updates: onboarding and renewal **[planned]**
 
-**ADUv1 is cut.** Its Twin-based public API has been removed; what survives is everything that has
-nothing to do with transport. ADU is re-layered into a transport-independent **`adu_core`** —
+**Device Update for IoT Hub is cut.** Its Twin-based public API has been removed; what survives is everything that has
+nothing to do with transport. Software updates is re-layered into a transport-independent **`su_core`** —
 manifest v5 parsing, JWS/SJWK verification, root keys, SHA-256 integrity, the
 download/backup/install/apply state machine, and reboot/resume persistence — plus an
-**`az_iot_adu_channel`** vtable carrying delivery and reporting.
+**`az_iot_su_channel`** vtable carrying delivery and reporting.
 
-ADUv2 is a **device-initiated pull protocol**, and its device-facing delivery moved **off** a
-dedicated ADU HTTPS endpoint. The agent calls an updating operation on a gateway it already talks to,
+Software updates is a **device-initiated pull protocol**, and its device-facing delivery moved **off** a
+dedicated Device Update HTTPS endpoint. The agent calls an updating operation on a gateway it already talks to,
 reusing the credential it already has; the gateway is an authenticated pass-through to ADR and then
-ADU. The device never talks to ADU directly, needs no ADU-specific credential, and there is no twin,
+Software updates. The device never talks to Device Update directly, needs no software-updates-specific credential, and there is no twin,
 no subscription and no unsolicited offer.
 
 | Phase | Gateway | Operation (on the wire) | Spec working name |
@@ -493,7 +493,7 @@ no subscription and no unsolicited offer.
 | Reporting, either phase | same gateway as the fetch | `reportUpdateStatus` | `ReportDeviceUpdateStatus` |
 
 All three are POSTs under the device's own registration on the gateway's device endpoint; see
-[eng/aduv2-spec.md](eng/aduv2-spec.md) for the exact URL, headers and payloads, and for which parts
+[eng/su-spec.md](eng/su-spec.md) for the exact URL, headers and payloads, and for which parts
 of the contract are measured rather than drafted.
 
 The device selects onboarding vs regular **by which operation it calls**; the gateway does not infer
@@ -516,23 +516,23 @@ is not linked, the device proceeds to register anyway.
 ```mermaid
 sequenceDiagram
     autonumber
-    participant ADU as adu_core + DPS channel
+    participant SU as su_core + DPS channel
     participant Conn as Connection client
     participant DPS
     participant Hub
 
     loop until "no update" or an advisory failure
-        ADU->>DPS: requestOnboardingUpdates (agentInfo, installedUpdateId, ETags)
+        SU->>DPS: requestOnboardingUpdates (agentInfo, installedUpdateId, ETags)
         alt update available
-            DPS-->>ADU: serviceConfiguration + updateMetadata (workflowId, manifest, signature, fileUrls)
-            ADU->>ADU: verify signature, download fileUrls, install (reboot if required)
-            ADU->>DPS: reportUpdateStatus (workflowId, installedUpdateId, installResult)
+            DPS-->>SU: serviceConfiguration + updateMetadata (workflowId, manifest, signature, fileUrls)
+            SU->>SU: verify signature, download fileUrls, install (reboot if required)
+            SU->>DPS: reportUpdateStatus (workflowId, installedUpdateId, installResult)
         else no update
-            DPS-->>ADU: 200 with updateMetadata omitted
+            DPS-->>SU: 200 with updateMetadata omitted
         end
     end
 
-    Note over ADU,Conn: provisioning proceeds - on success or on an advisory failure
+    Note over SU,Conn: provisioning proceeds - on success or on an advisory failure
     Conn->>DPS: Register (unchanged, CSR optional)
     DPS-->>Conn: assignedHub, deviceId, connectionProfile, issuedCertificateChain
     Conn->>Hub: CONNECT with operational auth
@@ -544,7 +544,7 @@ sequenceDiagram
   the device resource does not exist yet.
 - Trust comes from the **root-key package** at `serviceConfiguration.rootKeyDownloadUrl` returned by
   the same call. Account scoping (`accountId` bound into the manifest signature) is **deferred past
-  Ignite '26** — DPS returns no `accountId`, so the device verifies provenance-from-ADU but not
+  Ignite '26** — DPS returns no `accountId`, so the device verifies provenance-from-Device-Update but not
   account scoping. Base signature validation stays required.
 - `fileUrls` are **not** covered by the signed manifest; payloads are downloaded straight from blob
   storage and integrity comes from the per-file hashes inside the manifest.
@@ -557,45 +557,45 @@ sequenceDiagram
 sequenceDiagram
     autonumber
     participant Conn as Connection client
-    participant ADU as adu_core + channel
+    participant SU as su_core + channel
     participant GW as Gateway (Hub, or DPS in preview)
-    participant Store as Durable ADU state
+    participant Store as Durable software updates state
 
-    Conn-->>ADU: CONNECTED
-    ADU->>Store: load_state()
-    Store-->>ADU: installedUpdateId, ETags, unsent report
+    Conn-->>SU: CONNECTED
+    SU->>Store: load_state()
+    Store-->>SU: installedUpdateId, ETags, unsent report
     opt report pending from a previous session
-        ADU->>GW: reportUpdateStatus (workflowId, installResult)
+        SU->>GW: reportUpdateStatus (workflowId, installResult)
     end
 
     loop poll at the agent's own cadence
-        ADU->>GW: requestSoftwareUpdates (agentInfo, installedUpdateId, ETags)
-        Note over GW: ADU derives the device class from agentProfile + compatibilityProperties
+        SU->>GW: requestSoftwareUpdates (agentInfo, installedUpdateId, ETags)
+        Note over GW: Software updates derives the device class from agentProfile + compatibilityProperties
         alt update available
-            GW-->>ADU: serviceConfiguration + updateMetadata (workflowId, manifest, signature, fileUrls)
-            ADU->>ADU: verify, download, backup, install, apply
-            ADU->>Store: persist_state()
-            ADU->>GW: reportUpdateStatus (workflowId, installedUpdateId, installResult)
+            GW-->>SU: serviceConfiguration + updateMetadata (workflowId, manifest, signature, fileUrls)
+            SU->>SU: verify, download, backup, install, apply
+            SU->>Store: persist_state()
+            SU->>GW: reportUpdateStatus (workflowId, installedUpdateId, installResult)
         else no update
-            GW-->>ADU: 200 with updateMetadata omitted
+            GW-->>SU: 200 with updateMetadata omitted
         end
     end
 
-    Conn--xADU: connection drop
-    Note over ADU: install continues, report held in durable storage
-    Conn-->>ADU: CONNECTED again
-    ADU->>GW: retry the report until acked, then resume polling
+    Conn--xSU: connection drop
+    Note over SU: install continues, report held in durable storage
+    Conn-->>SU: CONNECTED again
+    SU->>GW: retry the report until acked, then resume polling
 ```
 
 `installResult` carries the outcome, its failure origin and the hex
 `extendedResultCodes` list. In-progress reports omit `stepResults`; terminal
 reports include complete per-step outcomes when steps are available — see
-[eng/aduv2-spec.md](eng/aduv2-spec.md) for the field-level shape.
+[eng/su-spec.md](eng/su-spec.md) for the field-level shape.
 
 ### 7.3 Rules both clients must implement
 
 - **Poll, never wait.** The agent owns the cadence. A missed poll is not an error and there is no
-  offer to lose, which is why a reconnect needs no replay of ADU subscriptions — there are none.
+  offer to lose, which is why a reconnect needs no replay of software updates subscriptions — there are none.
 - **`workflowId` is the correlation key.** It arrives in `updateMetadata` and is echoed on the
   report. Reporting is **idempotent on `workflowId` alone**; a conflicting terminal result for the
   same id is rejected as a conflict.
@@ -606,7 +606,7 @@ reports include complete per-step outcomes when steps are available — see
   `agentInfoEtag` means resend the full `agentInfo`; a stale `serviceConfigEtag` means re-ask without
   it; an unlinked update account means "no update service configured", which is not a failure.
 - **"No update" is a success.** It is a 200 with the update metadata omitted, not an error.
-- **ADU never drives the connection.** It does not open, close, or force a reconnect. It does
+- **Software updates never drives the connection.** It does not open, close, or force a reconnect. It does
   sequence ahead of the *first* `open()`, via the advisory bootstrap check in §7.1.
 - **Compatibility properties are opaque key/value pairs** (1–5) reported by the agent alongside an
   opaque `agentProfile`; the service combines them into a device class. The agent assigns them no
@@ -614,7 +614,7 @@ reports include complete per-step outcomes when steps are available — see
 - **The gateway is a channel parameter.** Bootstrap always uses DPS; operational uses DPS in the
   Ignite '26 preview and IoT Hub afterwards, with no device-contract change. This SDK plans to
   expose the operational channel as a gen2 feature client
-  ([eng/client-separation.md](eng/client-separation.md) §8), but the service contract binds ADU to
+  ([eng/client-separation.md](eng/client-separation.md) §8), but the service contract binds software updates to
   the updating operations, not to a connection profile.
 
 ---
@@ -622,12 +622,12 @@ reports include complete per-step outcomes when steps are available — see
 ## 8. Combined reference diagram
 
 One picture of the whole device lifecycle: connection and reconnection, connection-profile selection,
-certificate management (onboarding + renewal) and ADUv2 (onboarding + renewal). Dotted edges are
+certificate management (onboarding + renewal) and software updates (onboarding + renewal). Dotted edges are
 deferred effects — they do not happen inline.
 
 ```mermaid
 flowchart TB
-    BOOT["Agent boot"] --> BCHK["ADUv2 bootstrap check<br/>requestOnboardingUpdates via DPS"]
+    BOOT["Agent boot"] --> BCHK["Software updates bootstrap check<br/>requestOnboardingUpdates via DPS"]
     BCHK -->|"update available"| BINST["Verify, download, install,<br/>report, re-check"]
     BINST --> BCHK
     BCHK -->|"no update, or advisory failure"| IDLE["IDLE"]
@@ -651,7 +651,7 @@ flowchart TB
 
     CONNECTED --> CRENEW["Cert renewal:<br/>send_csr, 202 then 200"]
     CRENEW -.->|"new chain used on<br/>the next connect"| CRED
-    CONNECTED --> ARENEW["ADUv2 operational check:<br/>poll requestSoftwareUpdates,<br/>reportUpdateStatus"]
+    CONNECTED --> ARENEW["Software updates operational check:<br/>poll requestSoftwareUpdates,<br/>reportUpdateStatus"]
 
     CONNECTED -->|"close()"| DISC["DISCONNECTING"] --> IDLE
     CONNECTED --> DROP{"drop or error"}
@@ -667,12 +667,12 @@ Reading it as four overlapping concerns:
 | Concern | Onboarding (DPS gateway, onboarding auth) | Renewal (post-`CONNECTED`, operational auth) |
 | --- | --- | --- |
 | **Certificates** | CSR in the registration, issued chain in the assignment | `send_csr` over the hub; new chain applies on the next connect |
-| **ADUv2** | `requestOnboardingUpdates` loop **before** registration, advisory | Polled `requestSoftwareUpdates` / `reportUpdateStatus` (DPS in preview, Hub afterwards) |
+| **Software updates** | `requestOnboardingUpdates` loop **before** registration, advisory | Polled `requestSoftwareUpdates` / `reportUpdateStatus` (DPS in preview, Hub afterwards) |
 | **Connection profile** | Declared in the assignment; selects MQTT version and generation | Re-resolved on every reconnect that goes through DPS |
 | **Connection** | DPS phases inside `CONNECTING` | Backoff-driven reconnect replays the whole path |
 
 The two onboarding concerns are **not** symmetric, and that asymmetry is the thing to remember:
-the CSR travels *inside* registration, while the ADU bootstrap check happens *before* it and must
+the CSR travels *inside* registration, while the software updates bootstrap check happens *before* it and must
 complete first.
 
 ---
@@ -687,6 +687,6 @@ complete first.
 | Certificate provider contract | [az_iot_certificate_provider.h](../inc/azure/iot/az_iot_certificate_provider.h) | implemented |
 | Managed OpenSSL provider | [az_iot_certificate_provider_managed.c](../adapters/cert_openssl/az_iot_certificate_provider_managed.c) | implemented |
 | Connection profile enum, `az_iot_hub_profile`, `get_hub_profile()` | [eng/client-separation.md](eng/client-separation.md) §2 | planned — blocked on the DPS api-version |
-| `adu_core` / `az_iot_adu_channel` split | [eng/client-separation.md](eng/client-separation.md) §8 | planned |
-| ADU engine internals reused by ADUv2 | [c/src/features/adu](../src/features/adu) | implemented (ADUv1 API to be removed) |
-| ADUv2 device contract | [eng/aduv2-spec.md](eng/aduv2-spec.md) | planned — DPS fronts both flows for Ignite '26 |
+| `su_core` / `az_iot_su_channel` split | [eng/client-separation.md](eng/client-separation.md) §8 | planned |
+| Software updates engine internals reused by software updates | [c/src/features/su](../src/features/su) | implemented (Device Update for IoT Hub API to be removed) |
+| Software updates device contract | [eng/su-spec.md](eng/su-spec.md) | planned — DPS fronts both flows for Ignite '26 |

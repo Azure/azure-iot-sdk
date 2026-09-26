@@ -3,7 +3,7 @@
 > Engineering design for the azure-iot-sdk connection client's **state observer
 > registry**, **lifecycle/reuse contract**, and **state & status notification**
 > model. This is the authoritative home for these decisions; consumers such as
-> the ADU feature client ([adu-client-design.md](adu-client-design.md))
+> the software updates feature client ([su-client-design.md](su-client-design.md))
 > depend on it.
 
 The key words **MUST**, **MUST NOT**, **REQUIRED**, **SHALL**, **SHALL NOT**,
@@ -68,7 +68,7 @@ The failure classification this document's `reason` field carries is specified i
 The connection client USED TO expose a **single** state callback
 (`az_iot_connection_client_set_state_callback` -> `state_cb` / `state_cb_ctx`)
 reserved for the application, leaving feature clients (twin, telemetry, c2d,
-direct method, file upload, and the ADU client) with **no** way to learn about
+direct method, file upload, and the software updates client) with **no** way to learn about
 connection transitions. That caused three problems:
 
 1. **No reconnect awareness for feature clients.** A feature client that needs to
@@ -144,7 +144,7 @@ flagged re-report, or detached).
 ### 2.3 Capacity (compile-time configurable)
 
 Total default **10** = **6 feature-client** + **4 application** slots (the 6
-feature clients: twin, telemetry, c2d, direct method, file upload, adu):
+feature clients: twin, telemetry, c2d, direct method, file upload, su):
 
 ```c
 #ifndef AZ_IOT_CONN_MAX_FEATURE_OBSERVERS
@@ -671,7 +671,7 @@ static void on_conn(const az_iot_connection_state_event* event, void* ctx)
     {
         case AZ_IOT_CONN_STATE_CONNECTED:
             app->online = true;
-            /* ADU re-reports cached device properties on the next do_work(). */
+            /* Software updates re-reports cached device properties on the next do_work(). */
             break;
 
         case AZ_IOT_CONN_STATE_RECONNECTING:
@@ -749,4 +749,4 @@ static void on_conn(const az_iot_connection_state_event* event, void* ctx)
 - [connection-c.md](connection-c.md) — the C realization of that contract
 - [azure-iot-sdk SDK design](../design.md) — overall architecture
 - [how_to_byo_mqtt_client.md](../how_to_byo_mqtt_client.md) — bring-your-own MQTT client model
-- [adu-client-design.md](adu-client-design.md) — first consumer of this foundation
+- [su-client-design.md](su-client-design.md) — first consumer of this foundation

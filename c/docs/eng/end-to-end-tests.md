@@ -22,9 +22,9 @@ The infrastructure was designed to satisfy these requirements:
   resource group.
 - **As parallel as possible.** The OS matrix legs run concurrently, each in its
   own isolated resource group.
-- **Long-running suites out of PRs.** The Device Update (ADU) service takes
-  ~25 minutes to provision, so ADU e2e is excluded from normal PRs and runs on a
-  fixed nightly schedule / manual dispatch — *unless* a PR changes ADU code
+- **Long-running suites out of PRs.** The software updates service takes
+  ~25 minutes to provision, so software updates e2e is excluded from normal PRs and runs on a
+  fixed nightly schedule / manual dispatch — *unless* a PR changes software updates code
   paths, in which case it is opted in automatically.
 - **Cross-platform.** Every scenario runs on both Windows and Linux hosts.
 
@@ -202,15 +202,14 @@ The two `test` legs share the one resource group provisioned by `setup`, and
 `teardown` runs even if a leg fails — or if the run is cancelled — so resources
 are never leaked.
 
-> **ADU e2e runs in a separate slow-lane workflow**
-> ([`ci-c-e2e-adu.yml`](../../../.github/workflows/ci-c-e2e-adu.yml)) because the
-> Device Update account/instance takes ~25 min to provision. It uses the same
-> in-process model (no dotnet) and the same provision/teardown actions, on a
-> nightly / dispatch / ADU-paths cadence. `az_iot_tests_e2e_adu` now carries five
-> real scenarios (agent-state report, deployment, install-failure rollback,
-> verify-rejects, already-installed no-op) driven by a twin desired-property
-> PATCH, with crypto and payload operations mocked. **They are twin-driven, so
-> they retire with the ADUv1 cut** — see *Future work*.
+> **Software updates e2e** is `az_iot_tests_e2e_su` (`tests/e2e_su_test.c`, built with
+> `-DAZ_IOT_BUILD_E2E_SU=ON`, not on Windows). Its four scenarios drive the DPS channel
+> directly: onboarding check, hold release and registration, ETag storage, and an
+> unknown-workflow report. The workflow engine is not exercised. The five twin-driven
+> scenarios in `tests/e2e_su_twin_test.c` retired with the Device Update for IoT Hub cut
+> and are not built. The slow-lane workflow
+> ([`ci-c-e2e-adu.yml`](../../../.github/workflows/ci-c-e2e-adu.yml)) is parked (manual
+> dispatch only) — see *Future work*.
 
 ---
 
@@ -230,7 +229,7 @@ are never leaked.
   watcher before opening the c2d/method/twin connections.
 - **Resource quotas are hard limits.** Provisioning per matrix leg keeps tests
   isolated but multiplies resource usage; keep the matrix lean and always delete
-  the RG. ADU is intentionally kept off PRs for this reason.
+  the RG. Software updates is intentionally kept off PRs for this reason.
 
 ---
 
@@ -253,8 +252,8 @@ are never leaked.
 
 ### Future work
 
-- Re-target the device-side ADU e2e scenarios at **ADUv2**. The five scenarios in
-  `tests/e2e/tests/e2e_adu_test.c` drove a device-twin deployment and are retired (not built) (see [adu-client-plan.md](adu-client-plan.md#what-aduv1-is-cut-means)).
+- Re-target the device-side software updates e2e scenarios at **Software updates**. The five scenarios in
+  `tests/e2e/tests/e2e_su_twin_test.c` drove a device-twin deployment and are retired (not built) (see [su-client-plan.md](su-client-plan.md#what-device-update-for-iot-hub-is-cut-means)).
   The replacement drives the update check, install and report through the DPS-fronted
-  operations, with the service side verified in the ADU workflow's test job. The device
+  operations, with the service side verified in the software updates workflow's test job. The device
   fixture and the mocked crypto/payload hooks carry over unchanged.

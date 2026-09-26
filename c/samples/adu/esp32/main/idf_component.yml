@@ -1,6 +1,0 @@
-## Managed-component dependencies for the ESP32 ADU sample's main component.
-dependencies:
-  idf: ">=5.1"
-  ## esp-mqtt moved out of the IDF core tree in v6.0 and is now a managed
-  ## component. The component it installs is named `mqtt`.
-  espressif/mqtt: "^1.0.0"

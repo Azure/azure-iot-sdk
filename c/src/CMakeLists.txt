@@ -15,12 +15,12 @@ add_library(az_iot_core
     core/json_string.c
     core/message.c
     core/certificate_provider_pem.c
-    features/adu/adu_client.c
-    features/adu/adu_device_properties.c
-    features/adu/adu_root_keys_microsoft.c
-    features/adu/adu_report.c
-    features/adu/adu_channel_dps.c
-    features/adu/adu_protocol.c
+    features/su/su_client.c
+    features/su/su_device_properties.c
+    features/su/su_root_keys_microsoft.c
+    features/su/su_report.c
+    features/su/su_channel_dps.c
+    features/su/su_protocol.c
 )
 
 add_library(azure::iot::core ALIAS az_iot_core)
@@ -34,8 +34,8 @@ target_include_directories(az_iot_core
         # of where in src/ the includer lives. Required for GCC's strict
         # quoted-include resolution.
         ${CMAKE_CURRENT_SOURCE_DIR}/core
-        # ADU's internal header lives under features/adu/internal/.
-        ${CMAKE_CURRENT_SOURCE_DIR}/features/adu
+        # Software updates' internal header lives under features/su/internal/.
+        ${CMAKE_CURRENT_SOURCE_DIR}/features/su
 )
 
 # reconnect.c uses clock_gettime(CLOCK_MONOTONIC) on POSIX.

@@ -72,7 +72,7 @@ for pair in "${pairs[@]}"; do
           --json-summary "${out_dir}/${label}.summary.json" --json-summary-pretty \
           --print-summary > /dev/null
     # Report-only per suite. A single leg legitimately never touches large parts
-    # of the tree -- the CSR e2e run has no reason to enter the ADU client -- so
+    # of the tree -- the CSR e2e run has no reason to enter the software updates client -- so
     # enforcing here would be noise. The combined report is the one that gates.
     python3 "${reporter}" \
         --summary "${out_dir}/${label}.summary.json" \

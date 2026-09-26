@@ -279,7 +279,7 @@ jobs:
           # and is not built. The CSR enrollment test is not built
           # here -- it needs a DPS enrollment linked to a signing CA, which only
           # ci-c-e2e-csr provisions, so it lives behind AZ_IOT_BUILD_E2E_CSR.
-          # The adu_crypto_openssl unit test is not matched by the e2e name
+          # The su_crypto_openssl unit test is not matched by the e2e name
           # filter, so it stays out of this job.
           # The custody suite is excluded here and run by its own step below: it
           # needs the device key moved into a PKCS#11 token first.

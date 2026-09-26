@@ -50,7 +50,7 @@ Run a sample binary:
 inc/azure/iot/        public headers
 src/{core,features}/ implementation
 adapters/{paho,rust_mqtt}/ MQTT adapters
-samples/                  examples (unified/, gen2/, authentication/, adu/)
+samples/                  examples (unified/, gen2/, authentication/, su/)
 tests/                    ctest suites
 tests/conformance/        reusable MQTT iface conformance suite
 docs/                     design + dev notes

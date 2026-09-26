@@ -533,7 +533,7 @@ static void the_model_id_is_announced_in_the_username(void** state)
 {
   (void)state;
   /* Plug and Play model announcement. Device Update discovers a device by this
-   * value, so losing it silently disables ADU on every device. */
+   * value, so losing it silently disables software updates on every device. */
   az_iot_connection_client_options opts = az_iot_test_classic_options();
   opts.model_id = "dtmi:azure:iot:deviceUpdateContractModel;2";
   az_iot_mock_call c;

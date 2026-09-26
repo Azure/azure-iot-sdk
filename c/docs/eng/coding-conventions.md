@@ -122,8 +122,7 @@ PEM loader, and the Windows `_dupenv_s` used by the dev-only mock bypass.
 
 ## 5. Follow azure-sdk-for-c naming and shapes
 
-- No `_t` type suffixes. Three ADU types keep theirs because they would
-  otherwise collide with vendored upstream names.
+- No `_t` type suffixes.
 - Every options struct gets `az_iot_<x>_options_default(void)` taking no
   arguments; required fields are set by the caller afterwards.
 - Error type is this project's `az_iot_result`, not `az_result`.
