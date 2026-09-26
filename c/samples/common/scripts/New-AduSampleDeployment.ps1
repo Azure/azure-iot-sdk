@@ -1,21 +1,38 @@
 #Requires -Version 7.0
 <#
 .SYNOPSIS
-    Imports a simulated update and deploys it to the ADU sample's device group.
+    Imports a simulated update and deploys it through the IoT-Hub-based Device
+    Update model.
 
 .DESCRIPTION
-    Run this AFTER Initialize-AduSampleEnvironment.ps1 and AFTER the device sample
-    is running and connected (the device must exist in the hub so its twin can be
-    tagged). Resource names are read from the environment variables set by the
-    initialize script; override any of them with parameters.
+    IMPORTANT - which Device Update model this targets.
+
+    This script drives 'az iot du update ...' and 'az iot du device deployment
+    ...', which are scoped to a Device Update account + instance: the
+    IoT-Hub-based model. The ADU samples in this repository implement the
+    DPS-fronted model, which has no accounts and delivers updates as Azure Device
+    Registry jobs and runs on the registry namespace. This script cannot deliver
+    an update to those samples.
+
+    See samples/adu/pc/README.md for the job/run shape the samples are offered
+    updates through.
+
+    Run this AFTER Initialize-AduSampleEnvironment.ps1, and AFTER an
+    IoT-Hub-based Device Update consumer is connected to the hub - the device
+    must already exist there so its twin can be tagged. The samples in this
+    repository are not such a consumer.
+
+    Resource names are read from the environment variables set by the initialize
+    script; override any of them with parameters.
 
     Steps: build a zero-filled payload + v5 import manifest, stage+import the
     update, tag the device into the group, then create the deployment.
 
     By default the update version AUTO-BUMPS to the next unused patch (highest
     existing + 1, or 1.0.0 when none exist) so every run pushes a genuinely new
-    update and triggers a fresh workflow on the device. Pass -UpdateVersion to
-    target a specific version instead (reused if it already exists).
+    update, which an IoT-Hub-based consumer picks up as a fresh workflow. Pass
+    -UpdateVersion to target a specific version instead (reused if it already
+    exists).
 
 .EXAMPLE
     ./New-AduSampleDeployment.ps1
@@ -36,6 +53,16 @@ param(
     [string]$UpdateName     = "ADU-Sim",
     [string]$UpdateVersion  = ""
 )
+
+Write-Warning @'
+This script targets the IoT-Hub-based Device Update model (account + instance).
+The ADU samples in this repository implement the DPS-fronted model, which
+delivers updates as Azure Device Registry jobs and runs on the registry
+namespace. An update imported and deployed by this script will not be offered to
+those samples.
+
+See samples/adu/pc/README.md.
+'@
 
 $payloadPath  = Join-Path $PWD "adu-sim-payload.bin"
 $manifestPath = Join-Path $PWD "adu-sim-manifest.importmanifest.json"

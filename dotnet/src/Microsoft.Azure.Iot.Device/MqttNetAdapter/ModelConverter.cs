@@ -343,37 +343,37 @@ namespace Microsoft.Azure.Iot.Device.MQTTnetAdapter
             }
         }
 
-        internal static MQTTnet.MqttClientDisconnectOptionsReason ToMqttNet(Mqtt.MqttClientDisconnectOptionsReason reason)
+        internal static MQTTnet.MqttClientDisconnectOptionsReason ToMqttNet(Mqtt.MqttDisconnectReasonCode reason)
         {
             switch (reason)
             {
-                case Mqtt.MqttClientDisconnectOptionsReason.NormalDisconnection:
+                case Mqtt.MqttDisconnectReasonCode.NormalDisconnection:
                     return MQTTnet.MqttClientDisconnectOptionsReason.NormalDisconnection;
-                case Mqtt.MqttClientDisconnectOptionsReason.DisconnectWithWillMessage:
+                case Mqtt.MqttDisconnectReasonCode.DisconnectWithWillMessage:
                     return MQTTnet.MqttClientDisconnectOptionsReason.DisconnectWithWillMessage;
-                case Mqtt.MqttClientDisconnectOptionsReason.UnspecifiedError:
+                case Mqtt.MqttDisconnectReasonCode.UnspecifiedError:
                     return MQTTnet.MqttClientDisconnectOptionsReason.UnspecifiedError;
-                case Mqtt.MqttClientDisconnectOptionsReason.MalformedPacket:
+                case Mqtt.MqttDisconnectReasonCode.MalformedPacket:
                     return MQTTnet.MqttClientDisconnectOptionsReason.MalformedPacket;
-                case Mqtt.MqttClientDisconnectOptionsReason.ProtocolError:
+                case Mqtt.MqttDisconnectReasonCode.ProtocolError:
                     return MQTTnet.MqttClientDisconnectOptionsReason.ProtocolError;
-                case Mqtt.MqttClientDisconnectOptionsReason.ImplementationSpecificError:
+                case Mqtt.MqttDisconnectReasonCode.ImplementationSpecificError:
                     return MQTTnet.MqttClientDisconnectOptionsReason.ImplementationSpecificError;
-                case Mqtt.MqttClientDisconnectOptionsReason.TopicNameInvalid:
+                case Mqtt.MqttDisconnectReasonCode.TopicNameInvalid:
                     return MQTTnet.MqttClientDisconnectOptionsReason.TopicNameInvalid;
-                case Mqtt.MqttClientDisconnectOptionsReason.ReceiveMaximumExceeded:
+                case Mqtt.MqttDisconnectReasonCode.ReceiveMaximumExceeded:
                     return MQTTnet.MqttClientDisconnectOptionsReason.ReceiveMaximumExceeded;
-                case Mqtt.MqttClientDisconnectOptionsReason.TopicAliasInvalid:
+                case Mqtt.MqttDisconnectReasonCode.TopicAliasInvalid:
                     return MQTTnet.MqttClientDisconnectOptionsReason.TopicAliasInvalid;
-                case Mqtt.MqttClientDisconnectOptionsReason.PacketTooLarge:
+                case Mqtt.MqttDisconnectReasonCode.PacketTooLarge:
                     return MQTTnet.MqttClientDisconnectOptionsReason.PacketTooLarge;
-                case Mqtt.MqttClientDisconnectOptionsReason.MessageRateTooHigh:
+                case Mqtt.MqttDisconnectReasonCode.MessageRateTooHigh:
                     return MQTTnet.MqttClientDisconnectOptionsReason.MessageRateTooHigh;
-                case Mqtt.MqttClientDisconnectOptionsReason.QuotaExceeded:
+                case Mqtt.MqttDisconnectReasonCode.QuotaExceeded:
                     return MQTTnet.MqttClientDisconnectOptionsReason.QuotaExceeded;
-                case Mqtt.MqttClientDisconnectOptionsReason.AdministrativeAction:
+                case Mqtt.MqttDisconnectReasonCode.AdministrativeAction:
                     return MQTTnet.MqttClientDisconnectOptionsReason.AdministrativeAction;
-                case Mqtt.MqttClientDisconnectOptionsReason.PayloadFormatInvalid:
+                case Mqtt.MqttDisconnectReasonCode.PayloadFormatInvalid:
                 default:
                     return MQTTnet.MqttClientDisconnectOptionsReason.PayloadFormatInvalid;
             }

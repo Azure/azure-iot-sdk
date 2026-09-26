@@ -525,6 +525,33 @@ static void dps_connects_to_the_global_endpoint_by_default(void** state)
   const az_iot_mock_call* c = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_CONNECT);
   assert_non_null(c);
   assert_string_equal(c->connect.host, "global.azure-devices-provisioning.net");
+  assert_string_equal(
+      c->username, "0ne00000000/registrations/ut-device/api-version=2026-11-02-preview");
+}
+
+static void dps_provision_only_uses_the_current_api_version(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  fx->client->opts.dps.provision_only = true;
+  az_iot_mock_mqtt_client* m = dps_open(fx);
+  const az_iot_mock_call* c = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_CONNECT);
+  assert_non_null(c);
+  assert_string_equal(
+      c->username, "0ne00000000/registrations/ut-device/api-version=2026-11-02-preview");
+}
+
+static void dps_oversized_username_fails_before_creating_a_client(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  char registration_id[230];
+  memset(registration_id, 'a', sizeof(registration_id) - 1);
+  registration_id[sizeof(registration_id) - 1] = '\0';
+  fx->client->opts.dps.registration_id = registration_id;
+
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(fx->client, fx->factory), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  assert_null(az_iot_mock_mqtt_factory_last_client(fx->factory));
 }
 
 static void dps_honors_a_custom_global_endpoint(void** state)
@@ -4033,6 +4060,10 @@ int main(void)
         closing_from_the_connecting_callback_is_not_paced, setup_with_reconnect, teardown),
     cmocka_unit_test_setup_teardown(
         provision_only_settles_at_dps_connected_with_no_hub, setup_with_reconnect, teardown),
+    cmocka_unit_test_setup_teardown(
+        dps_provision_only_uses_the_current_api_version, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        dps_oversized_username_fails_before_creating_a_client, setup, teardown),
     cmocka_unit_test_setup_teardown(
         provision_only_session_is_not_collected_with_no_feature_client,
         setup_with_reconnect,

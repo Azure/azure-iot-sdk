@@ -1,9 +1,16 @@
 #Requires -Version 7.0
 <#
 .SYNOPSIS
-    Tears down the ADU sample resources, or just the last deployment/update.
+    Tears down the resources created by Initialize-AduSampleEnvironment.ps1, or
+    just the last deployment/update.
 
 .DESCRIPTION
+    -DeploymentOnly removes a deployment and an imported update through
+    'az iot du ...', i.e. the IoT-Hub-based Device Update model. The ADU samples
+    in this repository implement the DPS-fronted model, whose deployments are
+    Azure Device Registry jobs and runs; this script does not touch those.
+    See samples/adu/pc/README.md.
+
     By default deletes the entire resource group created by
     Initialize-AduSampleEnvironment.ps1 (the simplest, complete cleanup).
 
@@ -30,6 +37,16 @@ param(
     [string]$UpdateName     = "ADU-Sim",
     [string]$UpdateVersion  = $env:AZ_IOT_ADU_UPDATE_VERSION
 )
+
+Write-Warning @'
+The -DeploymentOnly mode deletes a deployment and an imported update through
+'az iot du ...', i.e. the IoT-Hub-based Device Update model. The ADU samples in
+this repository implement the DPS-fronted model, whose deployments are Azure
+Device Registry jobs and runs; this script does not remove those. Deleting the
+resource group removes everything it contains either way.
+
+See samples/adu/pc/README.md.
+'@
 
 if ($DeploymentOnly) {
     Write-Host "==> Deleting deployment $DeploymentId"

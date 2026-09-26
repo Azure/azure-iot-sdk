@@ -209,8 +209,8 @@ Note for the Paho adapter: when `proxy` is left unset, Paho still falls back to 
 `http_proxy` / `https_proxy` environment variables on its own (the uppercase spellings are ignored).
 Set `proxy` to be explicit and independent of the environment.
 
-Worked examples: [samples/websockets](../samples/websockets/main.c) and
-[samples/proxy](../samples/proxy/main.c). Each is the `telemetry_gen1` sample with
+Worked examples: [samples/unified/websockets](../samples/unified/websockets/main.c) and
+[samples/unified/proxy](../samples/unified/proxy/main.c). Each is the `unified/telemetry` sample with
 one of these options set, so the diff against it is exactly the feature.
 
 ### 3.2 Session terms per role **[implemented]**
@@ -314,9 +314,9 @@ Rules both clients must implement:
 - A feature client from the wrong generation is refused with `AZ_IOT_ERR_HUB_GENERATION_MISMATCH`.
   Because of this, feature clients must be created **after** the connection is open.
 
-> **Blocked on the api-version.** `connectionProfile` is new in DPS `2026-11-02-preview`; the SDK
-> still requests `2019-03-31` via the vendored `azure-sdk-for-c`, so the field never arrives today.
-> Raising it is a prerequisite for this entire section.
+> The SDK now sends DPS `2026-11-02-preview` in the CONNECT username for every DPS session,
+> including CSR and provision-only update sessions. This allows DPS to return `connectionProfile`;
+> absent/null values still resolve to `classic`.
 >
 > **Open:** whether a reconnect can change the generation. If DPS can reassign a device mid-life,
 > every feature client the application holds becomes invalid at that moment and it must be told.
@@ -467,7 +467,7 @@ Rules that apply to both clients:
   the next connect, whether that is a reconnect or an explicit reopen.
 - At connect time the provider is asked for `OPERATIONAL` first and falls back to `BOOTSTRAP` when
   the operational credential is absent or uninitialized.
-- CSR-based DPS enrollment uses the `2025-07-01-preview` DPS API version and requires a
+- CSR-based DPS enrollment uses the `2026-11-02-preview` DPS API version and requires a
   caller-provided CSR payload buffer of at least `AZ_IOT_CSR_PAYLOAD_BUFFER_MIN` bytes.
 
 ---

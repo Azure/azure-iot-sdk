@@ -9,16 +9,20 @@ for the full design.
 
 | Scenario | Provider | Sample | Notes |
 |----------|----------|--------|-------|
-| X.509 from files (no CSR) | `az_iot_certificate_provider_pem` | [../telemetry_gen1](../telemetry_gen1/main.c), [../telemetry_gen2](../telemetry_gen2/main.c) and the other feature samples | Baseline device auth (via DPS). Identical on both generations -- the provider is generation-agnostic. |
+| X.509 from files (no CSR) | `az_iot_certificate_provider_pem` | [../unified/telemetry](../unified/telemetry/main.c), [../gen2/telemetry](../gen2/telemetry/main.c) and the other feature samples | Baseline device auth (via DPS). Identical on both generations -- the provider is generation-agnostic. |
 | DPS CSR enrollment (issued operational cert) | managed (OpenSSL) | [`dps_csr_managed`](dps_csr_managed/README.md) | Bootstrap X.509 → CSR in DPS register → operational cert persisted. |
 | App-notified issuance (D4) | managed (OpenSSL) | `dps_csr_managed` | Uses `set_operational_cert_callback` to observe the issued chain. |
 | Runtime Hub renewal (D7) | managed (OpenSSL) | `hub_renew` | `send_csr()` two-phase renewal on a connected Classic hub. |
 | DPS CSR enrollment with an APP-OWNED provider | `sample_cert_provider` (samples/common) | `custom_certificate_provider` | Same flow as `dps_csr_managed`, but the provider - incl. real PKCS#10 issuance - lives in the samples tree so you can copy it. |
-| Non-extractable key, engine/provider stack (D8) | your own (10 lines) | `hsm_pkcs11_gen1`, `hsm_pkcs11_gen2` | Key stays in a PKCS#11 token / TPM; the provider returns a `pkcs11:` URI + provider id and the **Paho adapter signs the TLS handshake through it**. Needs OpenSSL 3.0+ and a provider for the token. The custody code is identical in both. |
+| Non-extractable key, engine/provider stack (D8) | your own (10 lines) | `hsm_pkcs11` | Key stays in a PKCS#11 token / TPM; the provider returns a `pkcs11:` URI + provider id and the **Paho adapter signs the TLS handshake through it**. Needs OpenSSL 3.0+ and a provider for the token. Serves either hub generation. |
 | Non-extractable key, no engine abstraction (D8) | your own | `hsm_sign_callback` | Only "sign these bytes" is available, so the provider implements the `sign()` hook and a BYO adapter drives the handshake through it. **Not a Paho path** — see below. |
 | BYO provider (TPM / HSM / secure element / OS keystore) | your own | `custom_provider_template` | Minimal template implementing the full vtable, incl. the `sign()` hook (D8) for non-extractable keys. |
 
-Every connecting sample here reaches its hub through **DPS**.
+Every connecting sample here reaches its hub through **DPS**. The Paho-based ones
+register both MQTT adapters, so they serve whichever hub generation DPS assigns (see
+[../README.md](../README.md)), except `dps_csr_managed`, which connects to Classic
+hubs only. `hub_renew` needs a Classic hub: on an AEG hub it reports that runtime
+renewal is unavailable and exits non-zero.
 
 The reusable app-owned provider `sample_cert_provider` (in `samples/common`)
 issues CSRs with **platform-native crypto** - OpenSSL 3.0+ on Linux
@@ -32,7 +36,7 @@ so pick by what the platform's crypto stack offers:
 
 - **The key can be named** (a PKCS#11 URI, a TPM 2.0 object) and an OpenSSL 3.x
   provider for it is installed: use `client_key_uri` + `crypto_engine_id`, i.e.
-  `hsm_pkcs11_gen1` / `hsm_pkcs11_gen2`. The shipping **Paho adapter honours
+  `hsm_pkcs11`. The shipping **Paho adapter honours
   this**: it resolves the URI
   through the provider and the handshake signs inside the hardware. A URI it
   cannot resolve fails the connect with `AZ_IOT_ERR_TLS` and a message naming
@@ -65,11 +69,12 @@ issued identity. Requires the managed provider (OpenSSL 3.0+) and the Paho
 adapter. Setup, run and troubleshooting: [dps_csr_managed/README.md](dps_csr_managed/README.md).
 
 ### `hub_renew`
-Runtime operational-certificate renewal against a connected Classic hub: builds
+Runtime operational-certificate renewal against a connected Classic hub (not
+available on AEG hubs): builds
 a fresh CSR from the managed provider, calls `az_iot_connection_client_send_csr()`,
 and persists the renewed chain. Requires the managed provider and Paho.
 
-### `hsm_pkcs11_gen1` / `hsm_pkcs11_gen2`
+### `hsm_pkcs11`
 Provisions through DPS and connects with a device key that never leaves a
 PKCS#11 token (D8). The provider returns `client_key_uri` + `crypto_engine_id`
 and no key material at all; the certificate stays an ordinary PEM file, because
@@ -78,10 +83,9 @@ OpenSSL 3.x provider for the token (`pkcs11-provider` for PKCS#11,
 `tpm2-openssl` for TPM 2.0) that OpenSSL can find.
 
 Key custody is generation-agnostic — the token signs a TLS handshake and neither
-MQTT version is visible to it. The two samples differ only in which telemetry
-client they build and which MQTT adapters they register (`_gen2` registers
-v3.1.1 as well, because the DPS leg speaks it), which leaves the custody code
-visible as the part that does not change.
+MQTT version is visible to it. The sample registers both MQTT adapters and
+builds the gen1 or gen2 telemetry client for the profile DPS assigned; the
+custody code is the same either way.
 
 The provider must register a **decoder for its own key-reference PEM**, because
 that is what OpenSSL — and therefore Paho — uses to resolve the file back to the
@@ -121,7 +125,7 @@ Shared (all DPS-based connecting samples):
 | `AZ_IOT_CLIENT_KEY` | Bootstrap X.509 private key path |
 | `AZ_IOT_TRUSTED_CA` | Trusted CA path |
 
-The `hsm_pkcs11_*` samples replace `AZ_IOT_CLIENT_KEY` with the key reference:
+The `hsm_pkcs11` sample replaces `AZ_IOT_CLIENT_KEY` with the key reference:
 
 | Variable | Meaning |
 |----------|---------|
@@ -210,6 +214,6 @@ Managed-provider samples additionally use (optional, with defaults):
 The samples build with the rest of the tree when `AZ_IOT_BUILD_SAMPLES=ON`
 (default). The two connecting samples appear only when OpenSSL 3.0+ is available
 (`AZ_IOT_WITH_CERT_PROVIDER_MANAGED`) and the Paho adapter is enabled
-(`AZ_IOT_WITH_PAHO`). The `hsm_pkcs11_*` samples need only the Paho adapter to
+(`AZ_IOT_WITH_PAHO`). The `hsm_pkcs11` sample needs only the Paho adapter to
 build; the provider they drive is a run-time requirement. The template and
 `hsm_sign_callback` always build.

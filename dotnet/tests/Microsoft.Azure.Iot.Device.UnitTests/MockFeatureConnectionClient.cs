@@ -12,13 +12,13 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
     /// methods) in isolation from the real connection/MQTT layers.
     /// </summary>
     /// <remarks>
-    /// It implements both the gen2 and unified <c>IConnectionClient</c> interfaces (which are structurally identical) so
+    /// It implements both the MQTTv5 and unified <c>IConnectionClient</c> interfaces (which are structurally identical) so
     /// that a single instance can be handed to feature clients from either namespace. Tests control what the "service"
     /// does by inspecting <see cref="PublishedMessages"/>, wiring <see cref="OnPublish"/>, and injecting inbound traffic
     /// with <see cref="SimulateReceiveAsync"/>.
     /// </remarks>
     internal sealed class MockFeatureConnectionClient
-        : global::Microsoft.Azure.Iot.Device.Gen2.Connection.IConnectionClient,
+        : global::Microsoft.Azure.Iot.Device.MQTTv5.Connection.IConnectionClient,
           global::Microsoft.Azure.Iot.Device.Unified.Connection.IConnectionClient
     {
         public event Func<MqttPublishReceivedEventArgs, Task>? PublishReceivedAsync;

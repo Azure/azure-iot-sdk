@@ -40,7 +40,7 @@ az_iot_connection_client_register_mqtt_factory(&conn, az_iot_paho_factory_create
 az_iot_connection_client_open(&conn);             /* DPS runs internally       */
 
 /* open() is non-blocking, and it can end in FAULTED rather than CONNECTED.
- * Bound the wait and stop on a terminal state -- see samples/telemetry_gen1/main.c. */
+ * Bound the wait and stop on a terminal state -- see samples/unified/telemetry/main.c. */
 for (int i = 0; i < 1200 && state != AZ_IOT_CONN_STATE_CONNECTED; ++i)
 {
   az_iot_connection_client_do_work(&conn, 50);
@@ -173,10 +173,24 @@ Connecting anyway would mean guessing the wire protocol. Failing closed turns
 that into one clear error at one place, instead of a device that appears to
 connect and then misbehaves in ways that surface as unrelated bugs.
 
+### DPS CONNECT api-version
+
+All DPS CONNECT usernames use `2026-11-02-preview`, constructed by the shared
+connection client without changing the pinned `azure-sdk-for-c` dependency.
+This includes registration, CSR issuance, and device-update sessions. The
+version unlocks `connectionProfile` in the assignment response; absent or null
+still resolves to `classic`. The REST specification describes HTTP operations;
+MQTT uses its own topics and the CONNECT username carries the api-version.
+
+<details>
+<summary>Historical plan (superseded): patching azure-sdk-for-c</summary>
+
 ### Blocker: the api-version must be raised
 
-**`connectionProfile` is new in `2026-11-02-preview`. The SDK currently requests
-`2019-03-31`, so the service will never send it.**
+**Implementation update:** `connectionProfile` is new in `2026-11-02-preview`.
+The SDK now requests that version on every DPS CONNECT by building the username
+in the common connection client. The patching strategy and blocked-status notes
+below describe the earlier plan, not the current implementation.
 
 The version travels in the DPS **CONNECT username**
 (`<id_scope>/registrations/<registration_id>/api-version=<version>`), built by
@@ -243,16 +257,18 @@ through an in-place apply at configure time.
 > handshake. The reason to build the patch mechanism now is the archived
 > dependency in general, not this field.
 
+</details>
+
 **Parsing the field needs nothing new.** The connection client already walks the
 raw ASSIGNED payload with `az_json_reader` to extract `issuedCertificateChain`
 (`connection_client.c`, the `DPS_JSON_ISSUED_CERT_CHAIN` path) precisely because
 the upstream client does not surface it. `connectionProfile` is read in the same
 walk.
 
-### Development bridge while P1a is parked
+### Development override when connectionProfile is absent
 
-P1a blocks **automatic production selection after DPS**, not implementation of
-the split. While the deployed DPS api-version omits `connectionProfile`, set:
+For a deployment that returns no `connectionProfile`, local testing can
+override the `classic` default:
 
 ```text
 AZ_IOT_DPS_CONNECTION_PROFILE_OVERRIDE=mqttV5
@@ -270,11 +286,9 @@ arrives instead of masking it. The reported `connection_profile_raw` is the
 effective profile text in the absent/null case — the contract default or the
 exact override — and remains verbatim wire text whenever DPS supplied one.
 
-This is a **development bridge, not a deployment contract**. Production devices
-must not rely on process environment to select their wire protocol, and test
-environments must remove the variable when P1a ships. It exists so P1d and
-P2–P6 can be implemented, tested against AEG, and merged while the service
-api-version remains parked.
+This is a **development override, not a deployment contract**. Production
+devices must not rely on process environment to select their wire protocol.
+Remove the variable when DPS supplies the profile on the wire.
 
 ---
 
@@ -482,7 +496,7 @@ provisioning path, and for the bootstrap case it runs **before the device is
 provisioned at all**. A channel vtable that assumed "there is a connected hub
 session underneath me" would be the wrong shape.
 
-ADUv1 is **cut** (decision of record: [connection.md §7](../connection.md#7-aduv2-onboarding-and-renewal-planned)):
+ADUv1 is **cut** (decision of record: [connection-c.md §7](connection-c.md#7-aduv2-onboarding-and-renewal-partly-implemented)):
 the twin channel and its public API are removed rather than carried through the split behind a
 deprecation window. That changes what the split owes ADU — the re-layer stops being a way to keep
 two channels alive and becomes the mechanism that lets the twin channel be deleted without taking
@@ -532,8 +546,8 @@ so it needs no live connection and a feature client can once again be a long-liv
 member constructed alongside the connection at start-up. The connection verifies
 every pin at the one moment the profile becomes authoritative — at connect, after
 DPS assignment, before the broker CONNECT and before `CONNECTED` is announced.
-When the profile is *already* authoritative (a direct connect, or a DPS
-connection past assignment) `_init()` validates immediately instead of deferring,
+When the profile is *already* authoritative (a connection past DPS
+assignment) `_init()` validates immediately instead of deferring,
 so initializing after `CONNECTED` still works and still fails fast.
 
 The reasons the earlier decision gave for checking at init still hold, and the
@@ -1003,10 +1017,17 @@ client.
 
 ## 11. Samples and tests
 
-**Per-feature dual samples.** Every feature ships two samples — the Classic route
-and the AEG route — so each API is demonstrated on its own terms rather than
-through a branch. Plus one sample showing the profile query and the
-application-side fallback, which is the migration story in executable form.
+**Unified and gen2 samples**, grouped like the .NET SDK's. Each dual-generation
+feature ships a `samples/unified/` sample that registers both adapters, builds its
+clients for an assumed generation before `open()`, and on `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH`
+rebuilds them for the profile the event carries and reopens -- the recovery of
+[§9](#the-profile-can-change-while-the-device-is-running), exercised on the first
+connect and on a move in either direction. `samples/unified/connect_first` shows
+the conservative alternative: build once `CONNECTED`, from the profile read then.
+Where AEG has the feature, a `samples/gen2/` sample pins gen2 at `init()`.
+`samples/unified/file_upload` is the Classic-only exception: it builds after
+`CONNECTED` and reports an MQTT v5 hub, with no rebuild. There is no Classic-only
+group. See [samples/README.md](../../samples/README.md).
 
 **Test expansion.** This roughly doubles the feature-client test surface: each
 generation's client needs its own unit suite against the in-memory mock, and each
@@ -1041,11 +1062,11 @@ plus the conformance suites.
 |---|---|---|---|
 | P0a | Purge the dead "easy"/API B remnants | — | **Done** (`db074c0`) |
 | P0b | This document + doc reconciliation | — | |
-| P1a | Add the `azure-sdk-for-c` patch mechanism and raise the DPS api-version to `2026-11-02-preview`, for **both** consumers of that source: the FetchContent tree (`PATCH_COMMAND`) and the `c/deps/azure-sdk-for-c` submodule the ESP-IDF sample builds from | — | **Blocked on the service.** `2026-11-02-preview` is not deployed ([azure-rest-api-specs#45041](https://github.com/Azure/azure-rest-api-specs/pull/45041) is still open), and requesting it makes the DPS CONNECT fail with CONNACK rc=5. Parked until it ships. |
-| P1b | `az_iot_hub_profile` + `get_hub_profile()` + `az_iot_connection_profile` + `AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED`; parse `connectionProfile` in the existing ASSIGNED-payload walk | — | Additive, and deliberately **not** blocked on P1a: with the stock api-version `connectionProfile` never arrives, absent resolves to `classic`, and the result is exactly the hardcoded behaviour it replaces. Lands inert, activates when P1a ships. `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH` is not here — it lands in P2, with the first client that can reject a mismatch. |
+| P1a | Request `2026-11-02-preview` for all DPS CONNECT sessions in the shared connection client without patching `azure-sdk-for-c` | — | **Implemented in this PR.** The pinned dependency and ESP-IDF submodule are unchanged; verify the platform-specific sample builds separately. |
+| P1b | `az_iot_hub_profile` + `get_hub_profile()` + `az_iot_connection_profile` + `AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED`; parse `connectionProfile` in the existing ASSIGNED-payload walk | — | Additive: absent/null still resolves to `classic`; the `2026-11-02-preview` CONNECT version enables wire values when the service supplies them. `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH` is not here — it lands in P2, with the first client that can reject a mismatch. |
 | P1c | Gate `CONNECTED` on subscriptions being SUBACKed ([AB#39366084](https://dev.azure.com/msazure/One/_workitems/edit/39366084)); tag each persistent-subscription entry with its generation and drop non-matching entries on reconnect *before* re-subscribing; add a remove path wired into every feature client's `destroy()` and into its partial-init unwind, UNSUBSCRIBE on both generations (a no-op on gen2 once its redundant filters are gone); drop the five gen2 filters already covered by `ih/{device_id}/dev/#` ([AB#39366086](https://dev.azure.com/msazure/One/_workitems/edit/39366086)); preserve SUBACK reason codes through the adapters behind a shared `az_iot_mqtt_suback_result()`, and tag each entry with its failure scope (`AZ_IOT_SUBSCRIPTION_FAILS_SESSION` / `_FAILS_SELF`) so a refusal ends the connection only for a feature client's own filter — terminally when the reason is deterministic — while a refused custom topic is reported to its owner and dropped ([§9](#the-profile-can-change-while-the-device-is-running)); bound the gate with a deadline | — | **Done across four PRs:** removal + generation tagging (#116), adapter reason-code preservation (#123), the gate + failure-scope policy + deadline (#124), and redundant gen2 filter removal (#128). **P2 depends on all four parts**: §9's rebuild pattern is unsafe without the gate and impossible without removal. The generation tagging is not optional — without it the first two fixes deadlock each other on a profile change. |
 | P1d | Turn the connection-state callback into the extensible `az_iot_connection_state_event` struct, carrying the resolved profile on `CONNECTED` ([§9](#the-profile-can-change-while-the-device-is-running)) | — | **Implemented.** The SDK produces and size-stamps the callback-lifetime event. `profile` is set on `CONNECTED`, and also on a profile-driven failure so the application can rebuild for the newly assigned generation. All samples, unit/integration suites and e2e agents use the new signature. |
-| P2 | Split the feature clients, one PR each: telemetry → c2d → direct methods → twin | P1b, **P1c**, P1d | **Done — all four clients split.** P1a gates automatic production selection after DPS, not implementation: the absent/null development bridge above supplies `mqttV5` for AEG testing until the api-version ships. Each client pins its generation at `_init()` and the connection checks the pin at connect ([§9](#9-pinning-the-generation-at-init)); topics are built through the connect-time bind callback. The direct-method split shipped the gen2 client as a carry-over of the pre-split behaviour and a guard against mistaking a probe for an invocation; the AEG probe / exec / abandon handshake that [§4](#4-no-cross-generation-constructs-on-the-public-surface) assigns to gen2 landed after it, and is the first place the two generations differ in protocol rather than only in topic shape. **The twin PR carried no ADU change at all:** the ADU cut landed first, so there was no `az_iot_adu_client_initialize()` to repoint and ADU no longer consumes the twin desired-property registry ([§8](#8-device-update)) — which the twin split therefore deleted. Twin is also where the gen2 bind callback stopped being cosmetic: the unified client resolved the device id inside `init()`, which cannot work for a DPS connection before assignment; gen2 now binds its three `dev/twin/...` handlers at connect like every other gen2 client. |
+| P2 | Split the feature clients, one PR each: telemetry → c2d → direct methods → twin | P1b, **P1c**, P1d | **Done — all four clients split.** For local testing when DPS omits the profile, the absent/null development override above supplies `mqttV5` for AEG testing. Each client pins its generation at `_init()` and the connection checks the pin at connect ([§9](#9-pinning-the-generation-at-init)); topics are built through the connect-time bind callback. The direct-method split shipped the gen2 client as a carry-over of the pre-split behaviour and a guard against mistaking a probe for an invocation; the AEG probe / exec / abandon handshake that [§4](#4-no-cross-generation-constructs-on-the-public-surface) assigns to gen2 landed after it, and is the first place the two generations differ in protocol rather than only in topic shape. **The twin PR carried no ADU change at all:** the ADU cut landed first, so there was no `az_iot_adu_client_initialize()` to repoint and ADU no longer consumes the twin desired-property registry ([§8](#8-device-update)) — which the twin split therefore deleted. Twin is also where the gen2 bind callback stopped being cosmetic: the unified client resolved the device id inside `init()`, which cannot work for a DPS connection before assignment; gen2 now binds its three `dev/twin/...` handlers at connect like every other gen2 client. |
 | P3 | File upload redesign — HTTP transport becomes gen1-only | P1 | **Done.** Shipped smaller than planned: file upload was **cut from AEG**, so there is no gen2 client and none is manufactured. `az_iot_gen1_file_upload_client` owns the HTTPS control plane, the transport hook is now required at `init()`, and the client pins Classic — see [§4](#file-upload-is-gen1-only). This removed the last three `profile->flavor` branches in `c/src`, which is what P4 was waiting on. |
 | P4 | Delete `protocol_profile.c`'s flavor tables and the last `profile->flavor` branches | P2, P3 | **Done, and larger than scoped.** Once P2 and P3 moved every topic into the feature clients, nothing in `c/src` read *any* profile field — not just the flavor tables. `az_iot_connection_client__profile()` had no production caller left, and `mqtt_version` merely duplicated `az_iot_mqtt_required_version_for_role()`. So the whole module went rather than only the flavor half: `protocol_profile.{c,h}`, the accessor, and the `az_iot_hub_flavor` enum. The `protocol_profile_dispatch_test` suite was testing a dead table alongside live dispatch routing; it is now `dispatch_test`. |
 | P5 | Re-layer ADU onto `adu_core` + channel vtable | — | **Done, ahead of P4.** ADU referenced neither generation nor the connection client, so the stated P4 dependency was not real; taking it early removed the ADU work from the P2 twin PR. The ADUv2 channel itself is the remaining ADU work. |
@@ -1076,14 +1097,10 @@ baseline.
 
 ## 13. Decided
 
-- **The DPS exchange moves to the `2026-11-02-preview` api-version**, and
-  `azure-sdk-for-c` is patched in this repo to allow it. The upstream repo is
-  archived, so there is no alternative and no risk of divergence.
-- **The patch mechanism is `PATCH_COMMAND`** ([§2](#blocker-the-api-version-must-be-raised)),
-  with a `.patch` file in this repo and a guard so re-running configure is a
-  no-op. Forking the archived repo is not available. The
-  `c/deps/azure-sdk-for-c` submodule **stays** — the ESP-IDF sample builds from
-  it — and must receive the same patches from the same list.
+- **The DPS exchange requests `2026-11-02-preview` in the shared connection
+  client**, including CSR issuance and device-update sessions. The pinned
+  `azure-sdk-for-c` dependency is not patched; the ESP-IDF sample must be
+  validated independently.
 - **`classic` maps to gen1, `mqttV5` maps to gen2**, for now.
 - **An unrecognised profile fails the connection.** The profile is not expected
   to break, but a device should be defensive about service-side hazards it
@@ -1129,9 +1146,8 @@ baseline.
   twin PR, repointing `az_iot_adu_client_initialize()` at
   `az_iot_gen1_twin_client`. The ADU cut landing first made that moot, and the
   twin PR touched no ADU code.
-- **P1a gates automatic production selection after DPS, not implementation of
-  P1d or P2–P6.** While its service api-version is parked, an absent/null
-  assignment can be supplied by the development-only
+- **The shared DPS CONNECT now requests `2026-11-02-preview`.** When DPS omits
+  `connectionProfile`, local tests can still use the development-only
   `AZ_IOT_DPS_CONNECTION_PROFILE_OVERRIDE`; explicit wire data always wins.
 - **A refused subscription always fails; its *scope* decides whether the
   connection dies with it**
@@ -1200,3 +1216,7 @@ baseline.
   `AZ_IOT_ERR_NOT_SUPPORTED` is the surface-nobody-implements problem this
   separation exists to remove. The gen1 client pins Classic and now requires the
   HTTP transport hook at `init()`.
+- 09/25/2026: Samples regrouped into `samples/unified/` (either generation;
+  rebuild on a profile mismatch, including after a move) and `samples/gen2/`;
+  the Classic-only samples and `connection_profile_fallback` are folded into the
+  unified ones (section 11).
