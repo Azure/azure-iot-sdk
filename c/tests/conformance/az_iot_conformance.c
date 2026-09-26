@@ -413,10 +413,11 @@ static int wait_client_disconnect_reason(
     uint8_t* out_code,
     unsigned timeout_ms)
 {
-  unsigned long deadline = conf_now_ms() + timeout_ms;
+  /* Elapsed-time subtraction stays correct if the clock wraps. */
+  unsigned long start = conf_now_ms();
   while (az_iot_test_proxy_last_client_disconnect_reason(proxy, out_code) != 1)
   {
-    if (conf_now_ms() >= deadline)
+    if (conf_now_ms() - start >= timeout_ms)
     {
       return 0;
     }
