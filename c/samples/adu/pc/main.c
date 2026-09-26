@@ -352,7 +352,7 @@ typedef struct
   sample_run run;
   /* Sized by the SDK's own default so raising it really does grow this cache;
    * the values it holds come from the environment. */
-  AZ_IOT_ADU_DEVICE_PROPS_STORAGE(dp_buffer);
+  AZ_IOT_ADU_DEVICE_PROPERTIES_STORAGE(dp_buffer);
 
   /* Device identity, kept past initialize() only so it can be printed. */
   char* manufacturer;
@@ -605,13 +605,25 @@ int main(void)
 
   /* Named, rather than a bare error out of initialize(): the cache is fixed
    * and these values now come from the environment. */
-  size_t dp_needed = az_iot_adu_device_props_buffer_size(&dp);
+  size_t dp_needed = az_iot_adu_device_properties_buffer_size(&dp);
+  if (dp_needed == 0)
+  {
+    fprintf(
+        stderr,
+        "Device properties are invalid or too long. Need 1-%d compatibility "
+        "properties (nonempty, unique names; non-NULL values, empty allowed), and "
+        "an installed update id that is unset or has nonempty provider, name and "
+        "version.\n",
+        AZ_IOT_ADU_MAX_COMPATIBILITY_PROPERTIES);
+    sample_state_destroy(&st);
+    return 1;
+  }
   if (dp_needed > sizeof(st.dp_buffer))
   {
     fprintf(
         stderr,
         "Device properties need %zu bytes of cache; this sample has %zu. Shorten "
-        "them or raise AZ_IOT_ADU_DEVICE_PROPS_BUFFER_SIZE.\n",
+        "them or raise AZ_IOT_ADU_DEVICE_PROPERTIES_BUFFER_SIZE.\n",
         dp_needed,
         sizeof(st.dp_buffer));
     sample_state_destroy(&st);
@@ -623,9 +635,9 @@ int main(void)
   adu_opts.crypto = &crypto;
   adu_opts.root_keys = root_keys;
   adu_opts.root_key_count = root_key_count;
-  adu_opts.device_props = &dp;
-  adu_opts.device_props_buffer = st.dp_buffer;
-  adu_opts.device_props_buffer_size = sizeof(st.dp_buffer);
+  adu_opts.device_properties = &dp;
+  adu_opts.device_properties_buffer = st.dp_buffer;
+  adu_opts.device_properties_buffer_size = sizeof(st.dp_buffer);
   if (az_iot_adu_client_initialize(&st.adu_client, &st.connection_client, &adu_opts) != AZ_IOT_OK)
   {
     fprintf(stderr, "az_iot_adu_client_initialize failed\n");

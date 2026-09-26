@@ -304,33 +304,54 @@ extern "C"
     const char* version;
   } az_iot_adu_update_id_info;
 
+/** @brief Maximum compatibility properties: manufacturer, model and custom ones combined. */
+#define AZ_IOT_ADU_MAX_COMPATIBILITY_PROPERTIES 5
+
+  /** @brief A custom compatibility property. */
   typedef struct az_iot_adu_custom_property
   {
-    const char* name;
-    const char* value;
+    const char* name; /**< Nonempty; unique across the emitted properties. */
+    const char* value; /**< May be empty, not NULL. */
   } az_iot_adu_custom_property;
 
   /**
-   * Device properties supplied by the application. All fields are caller-owned;
-   * the client DEEP-COPIES them into its cache buffer at init() and on
-   * update_device_properties(). After those calls return, the application MAY
-   * mutate or free this struct and the arrays/strings it points to.
+   * @brief Device properties sent on update checks.
+   *
+   * Compatibility properties go only on update checks. The installed update ID
+   * also goes on status reports that have no applied update to report, so
+   * replacing it can change a pending status report.
+   *
+   * Caller-owned. az_iot_adu_client_initialize() and
+   * az_iot_adu_client_update_device_properties() deep-copy them; the caller may
+   * then change or free them.
+   *
+   * The managed client requires 1 to AZ_IOT_ADU_MAX_COMPATIBILITY_PROPERTIES
+   * compatibility properties: manufacturer and model count one each when
+   * non-NULL, plus the custom ones. az_iot_adu_build_report() keeps its own
+   * limit of up to five custom properties. The copy holds at most 256 bytes of compatibility
+   * strings and 192 bytes of installed-ID strings, NUL terminators included; these are SDK storage
+   * limits, not protocol limits.
    */
   typedef struct az_iot_adu_device_properties
   {
-    const char* manufacturer;
-    const char* model;
+    const char* manufacturer; /**< Compatibility property; NULL to omit. */
+    const char* model; /**< Compatibility property; NULL to omit. */
+    /** All NULL (nothing installed), or a complete nonempty triple. */
     az_iot_adu_update_id_info installed_update_id;
-    const az_iot_adu_custom_property* custom_properties; /* caller's array, MAY be NULL */
-    size_t custom_properties_count;
+    const az_iot_adu_custom_property* custom_properties; /**< May be NULL if count is 0. */
+    size_t custom_properties_count; /**< Entries in custom_properties. */
   } az_iot_adu_device_properties;
 
-/* Default size (bytes) for the caller-owned device-properties cache buffer set
- * in az_iot_adu_client_config_options. Override before including if your device
- * properties (manufacturer/model/update-id/custom props) are larger, or size a
- * buffer exactly with az_iot_adu_device_props_buffer_size(). */
-#ifndef AZ_IOT_ADU_DEVICE_PROPS_BUFFER_SIZE
-#define AZ_IOT_ADU_DEVICE_PROPS_BUFFER_SIZE 512
+/**
+ * @brief Default size, in bytes, of the device-properties cache buffer.
+ *
+ * 512 covers the 448-byte maximum of property strings. Define a smaller value
+ * before including to save memory, or size exactly with
+ * az_iot_adu_device_properties_buffer_size(). A larger value does not raise any
+ * limit. The buffer holds strings only and needs no alignment.
+ */
+#ifndef AZ_IOT_ADU_DEVICE_PROPERTIES_BUFFER_SIZE
+#define AZ_IOT_ADU_DEVICE_PROPERTIES_BUFFER_SIZE 512
 #endif
 
 /**
@@ -357,20 +378,29 @@ extern "C"
  * deadline. */
 #define AZ_IOT_ADU_REQUEST_DEFAULT_TIMEOUT_MS 60000u
 
-/* Declares a device-properties cache buffer named `name`, sized by
- * AZ_IOT_ADU_DEVICE_PROPS_BUFFER_SIZE, for az_iot_adu_client_config_options:
- *   AZ_IOT_ADU_DEVICE_PROPS_STORAGE(dp_buf);
- *   opts.device_props_buffer = dp_buf;
- *   opts.device_props_buffer_size = sizeof(dp_buf); */
-#define AZ_IOT_ADU_DEVICE_PROPS_STORAGE(name) uint8_t name[AZ_IOT_ADU_DEVICE_PROPS_BUFFER_SIZE]
+/**
+ * @brief Declares a device-properties cache buffer of
+ * AZ_IOT_ADU_DEVICE_PROPERTIES_BUFFER_SIZE bytes.
+ *
+ * @code
+ * AZ_IOT_ADU_DEVICE_PROPERTIES_STORAGE(dp_buf);
+ * opts.device_properties_buffer = dp_buf;
+ * opts.device_properties_buffer_size = sizeof(dp_buf);
+ * @endcode
+ */
+#define AZ_IOT_ADU_DEVICE_PROPERTIES_STORAGE(name) \
+  uint8_t name[AZ_IOT_ADU_DEVICE_PROPERTIES_BUFFER_SIZE]
 
-  /* Returns the exact number of bytes az_iot_adu_client_initialize() needs in
-   * device_props_buffer to cache `device_props` (a az_iot_adu_device_properties
-   * header plus the packed NUL-terminated strings). Use it to size the buffer
-   * precisely instead of the AZ_IOT_ADU_DEVICE_PROPS_BUFFER_SIZE default. Returns
-   * 0 if device_props is NULL. */
+  /**
+   * @brief Exact device_properties_buffer size needed to cache @p device_properties.
+   *
+   * @param[in] device_properties Properties to size.
+   * @return Bytes of packed NUL-terminated strings; 0 if @p device_properties is
+   *   NULL, invalid, or over the storage limits. An update-check body that would
+   *   not fit the channel is still rejected when the properties are set.
+   */
   AZ_NODISCARD size_t
-  az_iot_adu_device_props_buffer_size(const az_iot_adu_device_properties* device_props);
+  az_iot_adu_device_properties_buffer_size(const az_iot_adu_device_properties* device_properties);
 
   /* --- Client struct -------------------------------------------------------- */
 
@@ -699,10 +729,14 @@ extern "C"
       az_iot_adu_step_result step_results[_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS];
       int32_t step_results_count;
 
-      /* Client-owned device-properties cache (deep copy of caller's struct). */
-      uint8_t* device_props_buffer;
-      size_t device_props_buffer_size;
-      bool device_props_report_pending;
+      /** Caller's buffer holding the copied property strings. */
+      uint8_t* device_properties_buffer;
+      size_t device_properties_buffer_size; /**< Size of device_properties_buffer. */
+      /** Copied properties; strings point into device_properties_buffer. */
+      az_iot_adu_device_properties device_properties;
+      /** Copied custom properties referenced by device_properties. */
+      az_iot_adu_custom_property custom_properties[AZ_IOT_ADU_MAX_COMPATIBILITY_PROPERTIES];
+      bool device_properties_report_pending; /**< A status report is due. */
 
       /* Which fetch the application asked for and the channel has not yet
        * accepted: 0 none, 1 onboarding, 2 regular. Not a bool, because a retry
@@ -732,17 +766,6 @@ extern "C"
        * client re-arms itself after a retryable verdict keeps the caller's
        * policy instead of silently acquiring a new one. */
       uint32_t pending_fetch_timeout_ms;
-
-      /* Upstream-shaped view of the cached custom properties (az_span arrays
-       * over the packed strings in device_props_buffer), handed to the
-       * agent-state formatter at report time. */
-      az_iot_adu_device_custom_properties custom_props_view;
-
-      /* Serialized installed-update-id, the JSON object the ADU service
-       * expects in the reported `installedUpdateId` field, built once at
-       * initialize time from the caller's update id. */
-      char update_id_json[128];
-      size_t update_id_json_len;
 
       /* Terminal outcome for the active workflow, latched at the transition
        * that ends it. Reporting is keyed on workflowId, so the engine must be
@@ -787,49 +810,52 @@ extern "C"
    */
   typedef struct az_iot_adu_client_config_options
   {
-    /* Platform operations (download/install/apply/...). MUST be non-NULL. */
+    /** Required. Platform operations (download, install, apply, ...). */
     const az_iot_adu_platform_hooks* hooks;
-    /* Pure-primitive crypto hooks (RSA verify + SHA-256). MUST be non-NULL. */
+    /** Required. Crypto primitives (RSA verify, SHA-256). */
     const az_iot_adu_crypto_hooks* crypto;
-    /* Caller-owned RSA root public keys that anchor manifest trust. The core
-     * copies the small descriptor array into its fixed store (key BYTES are
-     * referenced, not copied, so they MUST outlive the client). Capped at
-     * AZ_IOT_ADU_MAX_ROOT_KEYS. For Microsoft-signed updates, pass
-     * az_iot_adu_microsoft_root_keys(). */
+    /** RSA root keys that anchor manifest trust. The descriptors are copied; the
+     * key bytes are referenced and must outlive the client. For Microsoft-signed
+     * updates pass az_iot_adu_microsoft_root_keys(). */
     const az_iot_adu_root_key* root_keys;
-    size_t root_key_count;
-    /* Caller-owned device properties, DEEP-COPIED into the cache. May be
-     * mutated/freed by the caller after initialize returns. MUST be non-NULL. */
-    const az_iot_adu_device_properties* device_props;
-    /* Caller-owned cache the client copies device_props into. No hidden
-     * allocation; the buffer MUST outlive the client. MUST be non-NULL. */
-    uint8_t* device_props_buffer;
-    size_t device_props_buffer_size;
+    size_t root_key_count; /**< Entries in root_keys; at most AZ_IOT_ADU_MAX_ROOT_KEYS. */
+    /** Required. Deep-copied; may be changed or freed after initialize. */
+    const az_iot_adu_device_properties* device_properties;
+    /** Required. Holds the copied strings; must outlive the client. */
+    uint8_t* device_properties_buffer;
+    size_t device_properties_buffer_size; /**< Size of device_properties_buffer. */
 
   } az_iot_adu_client_config_options;
 
-  /* Returns an options struct with all fields zero-initialized. Set hooks, crypto,
-   * root_keys/root_key_count, device_props and device_props_buffer/size on the
-   * returned struct before passing it to az_iot_adu_client_initialize(). */
+  /**
+   * @brief Returns zero-initialized options.
+   *
+   * Set hooks, crypto, root_keys, root_key_count, device_properties,
+   * device_properties_buffer and device_properties_buffer_size before
+   * az_iot_adu_client_initialize().
+   *
+   * @return Zero-initialized options.
+   */
   AZ_NODISCARD az_iot_adu_client_config_options az_iot_adu_client_config_options_default(void);
 
   /**
-   * Initialize the ADU client.
+   * @brief Initializes the ADU client.
    *
-   *   connection: the connection client this device is provisioned with. The SDK
-   *     builds the device-update channel from it; the application does not
-   *     implement any transport. It need NOT be connected: the ADU bootstrap
-   *     check runs before the device registers, and the fields the channel needs
-   *     (DPS id scope, registration id, credential) are set at init time.
-   *   options: configuration (hooks, crypto, trust store, device properties and
-   *     the caller-owned cache); see az_iot_adu_client_config_options. Returns
-   *     AZ_IOT_ERR_INVALID_ARG if any required field is NULL,
-   *     AZ_IOT_ERR_NOT_ENOUGH_SPACE if root_key_count exceeds
-   *     AZ_IOT_ADU_MAX_ROOT_KEYS or the buffer is too small for device_props.
+   * Named *_initialize because azure-sdk-for-c's az_iot_adu_client_init() is
+   * visible through the hook signatures.
    *
-   * NOTE: named *_initialize (not *_init) to avoid colliding with
-   * azure-sdk-for-c's az_iot_adu_client_init(), which is visible here because the
-   * platform-hook signatures use upstream parsing types.
+   * @param[out] client Client to initialize.
+   * @param[in] connection Connection client the device-update channel is built
+   *   on. Need not be connected, but its DPS ID scope, registration ID and
+   *   credential must be set: an application-requested onboarding check can
+   *   run before registration. Initialization sends nothing.
+   * @param[in] options Hooks, crypto, trust store, device properties and cache.
+   * @return AZ_IOT_OK on success.
+   * @retval AZ_IOT_ERR_INVALID_ARG A required field is NULL, or the device
+   *   properties are malformed (including zero compatibility properties).
+   * @retval AZ_IOT_ERR_NOT_ENOUGH_SPACE root_key_count exceeds
+   *   AZ_IOT_ADU_MAX_ROOT_KEYS, the properties exceed the count or storage
+   *   limits, or the cache or update-check body is too small.
    */
   AZ_NODISCARD az_iot_result az_iot_adu_client_initialize(
       az_iot_adu_client_t* client,
@@ -1001,18 +1027,28 @@ extern "C"
   az_iot_adu_client_request_update(az_iot_adu_client_t* client, uint32_t timeout_ms);
 
   /**
-   * Update the cached device properties and request a report. Deep-copies
-   * device_props into the client cache and sets a pending flag; the NEXT
-   * do_work() publishes. Multiple calls coalesce into a single report. After this
-   * returns, the caller MAY mutate or free device_props. Returns
-   * AZ_IOT_ERR_NOT_ENOUGH_SPACE if the cache buffer is too small.
+   * @brief Replaces the cached device properties.
    *
-   * Single-threaded contract: MUST be called on the do_work thread or be
-   * externally serialized with do_work().
+   * Deep-copies @p device_properties. No I/O, and no update check is scheduled:
+   * the next az_iot_adu_client_request_update() or
+   * az_iot_adu_client_request_onboarding_update() sends them. Also marks a
+   * workflow-status report due on do_work(), which does nothing without a
+   * recorded workflow. That report never carries the compatibility properties,
+   * but carries the new installed update ID unless an applied update succeeded.
+   *
+   * Call on the do_work() thread, or serialize with it.
+   *
+   * @param[in,out] client Initialized client.
+   * @param[in] device_properties New properties; may be changed or freed after return.
+   * @return AZ_IOT_OK on success. On failure the previous properties and pending
+   *   work are unchanged.
+   * @retval AZ_IOT_ERR_INVALID_ARG Malformed properties.
+   * @retval AZ_IOT_ERR_NOT_ENOUGH_SPACE The cache, count or storage limits, or
+   *   the update-check body capacity, would be exceeded.
    */
   AZ_NODISCARD az_iot_result az_iot_adu_client_update_device_properties(
       az_iot_adu_client_t* client,
-      const az_iot_adu_device_properties* device_props);
+      const az_iot_adu_device_properties* device_properties);
 
   /* --- Agent core-library API (library mode / bring-your-own state machine) - */
   /*
@@ -1088,25 +1124,25 @@ extern "C"
       void* read_ctx);
 
   /**
-   * Build the agent-state report payload from a caller's own outcome data,
-   * WITHOUT the state machine or a channel. Emits the same reported-property JSON the
-   * managed client publishes, into the caller-provided @p out_json buffer.
+   * @brief Builds the agent-state report payload without the state machine or a channel.
    *
-   *   device_props: the device's identity/version (manufacturer, model, installed
-   *     update id, custom properties). Caller-owned; only read during the call.
-   *   result: the accumulated install result (overall + per-step), or NULL when
-   *     no result is available yet.
-   *   request: the in-progress deployment request (for the reported workflow id),
-   *     or NULL when idle.
-   *   state: the agent state to report (mapped to Idle / InProgress / Failed).
-   *   out_json / out_size: caller-owned destination buffer; out_len receives the
-   *     number of bytes written (MAY be NULL).
+   * Emits the same reported-property JSON the managed client publishes.
    *
-   * Returns AZ_IOT_OK on success, AZ_IOT_ERR_INVALID_ARG on bad arguments, or
-   * AZ_IOT_ERR_NOT_ENOUGH_SPACE if the payload does not fit @p out_json.
+   * @param[in] device_properties Manufacturer, model, installed update ID and custom
+   *   properties. Only read during the call.
+   * @param[in] result Accumulated install result (overall and per step); NULL if none yet.
+   * @param[in] request In-progress deployment request, for the workflow ID; NULL when idle.
+   * @param[in] state Agent state to report (mapped to Idle / InProgress / Failed).
+   * @param[out] out_json Destination buffer.
+   * @param[in] out_size Size of @p out_json.
+   * @param[out] out_len Bytes written; zero on error. May be NULL.
+   * @return AZ_IOT_OK on success.
+   * @retval AZ_IOT_ERR_INVALID_ARG Bad arguments.
+   * @retval AZ_IOT_ERR_NOT_ENOUGH_SPACE The payload does not fit @p out_json, or a
+   *   string exceeds the JSON writer's input limit.
    */
   AZ_NODISCARD az_iot_result az_iot_adu_build_report(
-      const az_iot_adu_device_properties* device_props,
+      const az_iot_adu_device_properties* device_properties,
       const az_iot_adu_client_install_result* result,
       const az_iot_adu_client_update_request* request,
       az_iot_adu_state state,

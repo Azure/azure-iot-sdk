@@ -17,6 +17,7 @@
 #include <azure/core/az_span.h>
 
 #include "internal/adu_protocol_internal.h"
+#include "internal/adu_device_properties_internal.h"
 #include "internal/span_writer.h"
 
 /* Local, so this file does not reach into azure-sdk-for-c internal headers. */
@@ -229,14 +230,30 @@ static az_result append_int32(az_json_writer* jw, int32_t value)
 
 static az_result write_string_property(az_json_writer* jw, const char* name, const char* value)
 {
-  ADU_RETURN_IF_FAILED(
-      az_json_writer_append_property_name(jw, az_span_create_from_str((char*)(uintptr_t)name)));
-  return az_json_writer_append_string(jw, az_span_create_from_str((char*)(uintptr_t)value));
+  size_t name_size = strlen(name);
+  size_t value_size = strlen(value);
+  if (name_size > AZ_IOT_ADU_MAX_JSON_STRING_SIZE || value_size > AZ_IOT_ADU_MAX_JSON_STRING_SIZE)
+  {
+    return AZ_ERROR_NOT_ENOUGH_SPACE;
+  }
+  ADU_RETURN_IF_FAILED(az_json_writer_append_property_name(
+      jw, az_span_create((uint8_t*)(uintptr_t)name, (int32_t)name_size)));
+  return az_json_writer_append_string(
+      jw, az_span_create((uint8_t*)(uintptr_t)value, (int32_t)value_size));
 }
 
 /* Serialize an update-id triple. The service requires all three parts, so a
  * partially-populated triple is a caller error rather than something to paper
  * over with empty strings. */
+az_result az_iot_adu__write_update_id(az_json_writer* jw, const az_iot_adu_report_update_id* id)
+{
+  ADU_RETURN_IF_FAILED(az_json_writer_append_begin_object(jw));
+  ADU_RETURN_IF_FAILED(write_string_property(jw, "provider", id->provider));
+  ADU_RETURN_IF_FAILED(write_string_property(jw, "name", id->name));
+  ADU_RETURN_IF_FAILED(write_string_property(jw, "version", id->version));
+  return az_json_writer_append_end_object(jw);
+}
+
 static az_result write_update_id(
     az_json_writer* jw,
     const char* name,
@@ -244,11 +261,115 @@ static az_result write_update_id(
 {
   ADU_RETURN_IF_FAILED(
       az_json_writer_append_property_name(jw, az_span_create_from_str((char*)(uintptr_t)name)));
-  ADU_RETURN_IF_FAILED(az_json_writer_append_begin_object(jw));
-  ADU_RETURN_IF_FAILED(write_string_property(jw, "provider", id->provider));
-  ADU_RETURN_IF_FAILED(write_string_property(jw, "name", id->name));
-  ADU_RETURN_IF_FAILED(write_string_property(jw, "version", id->version));
-  return az_json_writer_append_end_object(jw);
+  return az_iot_adu__write_update_id(jw, id);
+}
+
+/** @brief Validates the inputs and writes the fetch body into an initialized writer.
+ * @return AZ_IOT_OK, a validation error, or AZ_IOT_ERR_NOT_ENOUGH_SPACE. */
+static az_iot_result write_fetch_request(
+    az_json_writer* jw,
+    const az_iot_adu_agent_info* agent_info,
+    const az_iot_adu_report_update_id* installed_update_id,
+    const char* agent_info_etag,
+    const char* service_config_etag)
+{
+  if (strlen(agent_info->agent_sdk_version) > INT32_MAX
+      || (agent_info_etag != NULL && strlen(agent_info_etag) > INT32_MAX)
+      || (service_config_etag != NULL && strlen(service_config_etag) > INT32_MAX))
+  {
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  }
+  az_iot_result validation = az_iot_adu__validate_compatibility_properties(
+      agent_info->compatibility_properties, agent_info->compatibility_properties_count);
+  if (validation != AZ_IOT_OK)
+  {
+    return validation;
+  }
+  validation = az_iot_adu__validate_installed_update_id(installed_update_id);
+  if (validation != AZ_IOT_OK)
+  {
+    return validation;
+  }
+
+  az_result r = az_json_writer_append_begin_object(jw);
+
+  if (az_result_succeeded(r))
+  {
+    r = az_json_writer_append_property_name(jw, AZ_SPAN_FROM_STR("agentInfo"));
+  }
+  if (az_result_succeeded(r))
+  {
+    r = az_json_writer_append_begin_object(jw);
+  }
+  if (az_result_succeeded(r))
+  {
+    r = write_string_property(jw, "agentSdkVersion", agent_info->agent_sdk_version);
+  }
+  if (az_result_succeeded(r))
+  {
+    r = az_json_writer_append_property_name(jw, AZ_SPAN_FROM_STR("agentProfile"));
+  }
+  if (az_result_succeeded(r))
+  {
+    /* An integer on the wire, not a string. */
+    r = append_int32(jw, agent_info->agent_profile);
+  }
+  if (az_result_succeeded(r) && agent_info->compatibility_properties_count > 0)
+  {
+    if (agent_info->compatibility_properties == NULL)
+    {
+      return AZ_IOT_ERR_INVALID_ARG;
+    }
+    r = az_json_writer_append_property_name(jw, AZ_SPAN_FROM_STR("compatibilityProperties"));
+    if (az_result_succeeded(r))
+    {
+      r = az_json_writer_append_begin_object(jw);
+    }
+    for (size_t i = 0; az_result_succeeded(r) && i < agent_info->compatibility_properties_count;
+         ++i)
+    {
+      const az_iot_adu_custom_property* p = &agent_info->compatibility_properties[i];
+      if (p->name == NULL || p->value == NULL)
+      {
+        return AZ_IOT_ERR_INVALID_ARG;
+      }
+      r = write_string_property(jw, p->name, p->value);
+    }
+    if (az_result_succeeded(r))
+    {
+      r = az_json_writer_append_end_object(jw);
+    }
+  }
+  if (az_result_succeeded(r))
+  {
+    r = az_json_writer_append_end_object(jw); /* agentInfo */
+  }
+
+  /* Omitted entirely on the onboarding route: a day-0 device has nothing
+   * installed, and an empty triple is not the same statement. */
+  if (az_result_succeeded(r) && installed_update_id != NULL)
+  {
+    r = write_update_id(jw, "installedUpdateId", installed_update_id);
+  }
+
+  if (az_result_succeeded(r) && agent_info_etag != NULL)
+  {
+    r = write_string_property(jw, "agentInfoEtag", agent_info_etag);
+  }
+  if (az_result_succeeded(r) && service_config_etag != NULL)
+  {
+    r = write_string_property(jw, "serviceConfigEtag", service_config_etag);
+  }
+
+  if (az_result_succeeded(r))
+  {
+    r = az_json_writer_append_end_object(jw);
+  }
+  if (az_result_failed(r))
+  {
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  }
+  return AZ_IOT_OK;
 }
 
 az_iot_result az_iot_adu__build_fetch_request(
@@ -260,15 +381,17 @@ az_iot_result az_iot_adu__build_fetch_request(
     size_t out_size,
     size_t* out_len)
 {
+  if (out_len != NULL)
+  {
+    *out_len = 0;
+  }
   if (agent_info == NULL || agent_info->agent_sdk_version == NULL || out == NULL || out_size == 0)
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
-  if (installed_update_id != NULL
-      && (installed_update_id->provider == NULL || installed_update_id->name == NULL
-          || installed_update_id->version == NULL))
+  if (out_size > INT32_MAX)
   {
-    return AZ_IOT_ERR_INVALID_ARG;
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
   }
 
   az_json_writer jw;
@@ -276,84 +399,11 @@ az_iot_result az_iot_adu__build_fetch_request(
   {
     return AZ_IOT_ERR_INTERNAL;
   }
-
-  az_result r = az_json_writer_append_begin_object(&jw);
-
-  if (az_result_succeeded(r))
+  az_iot_result r = write_fetch_request(
+      &jw, agent_info, installed_update_id, agent_info_etag, service_config_etag);
+  if (r != AZ_IOT_OK)
   {
-    r = az_json_writer_append_property_name(&jw, AZ_SPAN_FROM_STR("agentInfo"));
-  }
-  if (az_result_succeeded(r))
-  {
-    r = az_json_writer_append_begin_object(&jw);
-  }
-  if (az_result_succeeded(r))
-  {
-    r = write_string_property(&jw, "agentSdkVersion", agent_info->agent_sdk_version);
-  }
-  if (az_result_succeeded(r))
-  {
-    r = az_json_writer_append_property_name(&jw, AZ_SPAN_FROM_STR("agentProfile"));
-  }
-  if (az_result_succeeded(r))
-  {
-    /* An integer on the wire, not a string. */
-    r = append_int32(&jw, agent_info->agent_profile);
-  }
-  if (az_result_succeeded(r) && agent_info->compatibility_properties_count > 0)
-  {
-    if (agent_info->compatibility_properties == NULL)
-    {
-      return AZ_IOT_ERR_INVALID_ARG;
-    }
-    r = az_json_writer_append_property_name(&jw, AZ_SPAN_FROM_STR("compatibilityProperties"));
-    if (az_result_succeeded(r))
-    {
-      r = az_json_writer_append_begin_object(&jw);
-    }
-    for (size_t i = 0; az_result_succeeded(r) && i < agent_info->compatibility_properties_count;
-         ++i)
-    {
-      const az_iot_adu_custom_property* p = &agent_info->compatibility_properties[i];
-      if (p->name == NULL || p->value == NULL)
-      {
-        return AZ_IOT_ERR_INVALID_ARG;
-      }
-      r = write_string_property(&jw, p->name, p->value);
-    }
-    if (az_result_succeeded(r))
-    {
-      r = az_json_writer_append_end_object(&jw);
-    }
-  }
-  if (az_result_succeeded(r))
-  {
-    r = az_json_writer_append_end_object(&jw); /* agentInfo */
-  }
-
-  /* Omitted entirely on the onboarding route: a day-0 device has nothing
-   * installed, and an empty triple is not the same statement. */
-  if (az_result_succeeded(r) && installed_update_id != NULL)
-  {
-    r = write_update_id(&jw, "installedUpdateId", installed_update_id);
-  }
-
-  if (az_result_succeeded(r) && agent_info_etag != NULL)
-  {
-    r = write_string_property(&jw, "agentInfoEtag", agent_info_etag);
-  }
-  if (az_result_succeeded(r) && service_config_etag != NULL)
-  {
-    r = write_string_property(&jw, "serviceConfigEtag", service_config_etag);
-  }
-
-  if (az_result_succeeded(r))
-  {
-    r = az_json_writer_append_end_object(&jw);
-  }
-  if (az_result_failed(r))
-  {
-    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+    return r;
   }
 
   if (out_len != NULL)
@@ -439,6 +489,84 @@ void az_iot_adu__format_extended_result_code(char* out, size_t out_size, int32_t
     out[i] = tmp[n - 1 - i];
   }
   out[n] = '\0';
+}
+
+/** @brief Byte counter behind az_iot_adu__fetch_request_size().
+ *
+ * Each chunk is min(remaining capacity, 64) bytes, so the writer sees the same
+ * remaining space at every token as with one contiguous buffer. The writer asks
+ * for at most 64 bytes at a time. */
+typedef struct
+{
+  uint8_t chunk[64]; /**< Reused for every chunk. */
+  size_t counted; /**< Bytes written to earlier chunks. */
+  size_t capacity; /**< Size of the emulated contiguous buffer. */
+} fetch_request_counter;
+
+static az_span fetch_request_chunk(fetch_request_counter* counter)
+{
+  size_t remaining = counter->capacity - counter->counted;
+  size_t size = remaining < sizeof(counter->chunk) ? remaining : sizeof(counter->chunk);
+  return az_span_create(counter->chunk, (int32_t)size);
+}
+
+static az_result count_fetch_request_chunk(
+    az_span_allocator_context* context,
+    az_span* out_next_destination)
+{
+  fetch_request_counter* counter = (fetch_request_counter*)context->user_context;
+  counter->counted += (size_t)context->bytes_used;
+  az_span next = fetch_request_chunk(counter);
+  if (az_span_size(next) < context->minimum_required_size)
+  {
+    return AZ_ERROR_NOT_ENOUGH_SPACE;
+  }
+  *out_next_destination = next;
+  return AZ_OK;
+}
+
+az_iot_result az_iot_adu__fetch_request_size(
+    const az_iot_adu_agent_info* agent_info,
+    const az_iot_adu_report_update_id* installed_update_id,
+    const char* agent_info_etag,
+    const char* service_config_etag,
+    size_t capacity,
+    size_t* out_len)
+{
+  if (out_len != NULL)
+  {
+    *out_len = 0;
+  }
+  if (agent_info == NULL || agent_info->agent_sdk_version == NULL || capacity == 0)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if (capacity > INT32_MAX)
+  {
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  }
+
+  fetch_request_counter counter = { .counted = 0, .capacity = capacity };
+  az_json_writer jw;
+  if (az_result_failed(az_json_writer_chunked_init(
+          &jw, fetch_request_chunk(&counter), count_fetch_request_chunk, &counter, NULL)))
+  {
+    return AZ_IOT_ERR_INTERNAL;
+  }
+  az_iot_result r = write_fetch_request(
+      &jw, agent_info, installed_update_id, agent_info_etag, service_config_etag);
+  if (r != AZ_IOT_OK)
+  {
+    return r;
+  }
+
+  size_t total
+      = counter.counted + (size_t)az_span_size(az_json_writer_get_bytes_used_in_destination(&jw));
+  if (out_len != NULL)
+  {
+    *out_len = total;
+  }
+  return AZ_IOT_OK;
 }
 
 az_iot_result az_iot_adu__build_report_request(

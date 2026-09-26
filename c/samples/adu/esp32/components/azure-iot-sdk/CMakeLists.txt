@@ -30,6 +30,7 @@ idf_component_register(
         "${AZ_IOT_ROOT}/src/core/message.c"
         "${AZ_IOT_ROOT}/src/core/certificate_provider_pem.c"
         "${AZ_IOT_ROOT}/src/features/adu/adu_client.c"
+        "${AZ_IOT_ROOT}/src/features/adu/adu_device_properties.c"
         "${AZ_IOT_ROOT}/src/features/adu/adu_root_keys_microsoft.c"
         "${AZ_IOT_ROOT}/src/features/adu/adu_report.c"
         "${AZ_IOT_ROOT}/src/features/adu/adu_channel_dps.c"

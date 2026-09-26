@@ -670,9 +670,9 @@ typedef struct az_iot_adu_client_t
         uint32_t current_file;
         bool cancel_requested;
         /* Client-owned device-properties cache (deep copy of caller's struct). */
-        uint8_t* device_props_buffer;
-        size_t device_props_buffer_size;
-        bool device_props_report_pending;
+        uint8_t* device_properties_buffer;
+        size_t device_properties_buffer_size;
+        bool device_properties_report_pending;
         /* Connection-state observer / detach safety (see §16). */
         bool detached;
     } _internal;
@@ -690,11 +690,11 @@ typedef struct az_iot_adu_client_t
  *     fixed store (the key BYTES are referenced, not copied, so they MUST
  *     outlive the client), capped at AZ_IOT_ADU_MAX_ROOT_KEYS. For
  *     Microsoft-signed updates, pass az_iot_adu_microsoft_root_keys().
- *   device_props: caller-owned device properties, DEEP-COPIED into the cache.
+ *   device_properties: caller-owned device properties, DEEP-COPIED into the cache.
  *     May be mutated/freed by the caller after init returns.
- *   device_props_buffer / size: caller-owned cache the client copies into.
+ *   device_properties_buffer / size: caller-owned cache the client copies into.
  *     No hidden allocation; the buffer MUST outlive the client. Size it exactly
- *     with az_iot_adu_device_props_buffer_size().
+ *     with az_iot_adu_device_properties_buffer_size().
  *
  * Named az_iot_adu_client_config_options (the `config_` qualifier) to avoid
  * colliding with azure-sdk-for-c's own az_iot_adu_client_options.
@@ -705,9 +705,9 @@ typedef struct az_iot_adu_client_config_options
     const az_iot_adu_crypto_hooks*      crypto;
     const az_iot_adu_root_key*          root_keys;
     size_t                              root_key_count;
-    const az_iot_adu_device_properties* device_props;
-    uint8_t*                            device_props_buffer;
-    size_t                              device_props_buffer_size;
+    const az_iot_adu_device_properties* device_properties;
+    uint8_t*                            device_properties_buffer;
+    size_t                              device_properties_buffer_size;
 } az_iot_adu_client_config_options;
 
 az_iot_adu_client_config_options az_iot_adu_client_config_options_default(void);
@@ -757,7 +757,7 @@ az_iot_result az_iot_adu_client_remove_observer(
  * crypto, trust store, device properties + caller cache). Returns
  * AZ_IOT_ERR_INVALID_ARG if a required field is NULL, or
  * AZ_IOT_ERR_NOT_ENOUGH_SPACE if root_key_count > AZ_IOT_ADU_MAX_ROOT_KEYS or
- * the buffer is too small for device_props.
+ * the buffer is too small for device_properties.
  */
 az_iot_result az_iot_adu_client_initialize(
     az_iot_adu_client_t* client,
@@ -836,10 +836,11 @@ az_iot_result az_iot_adu_client_request_onboarding_update(
 az_iot_result az_iot_adu_client_request_update(az_iot_adu_client_t* client, uint32_t timeout_ms);
 
 /**
- * Update the cached device properties and request a report. Deep-copies
- * device_props into the client cache and sets a pending flag; the NEXT
- * do_work() publishes. Multiple calls coalesce into a single report. After
- * this returns, the caller MAY mutate or free device_props. Returns
+ * Replace the cached device properties; after success the caller MAY mutate or
+ * free device_properties. No I/O or update check is scheduled. The application explicitly
+ * requests an onboarding or regular check to transmit compatibility properties.
+ * Also marks a workflow-status report pending; without a recorded workflow it
+ * sends nothing. Status reports do not carry compatibility properties. Returns
  * AZ_IOT_ERR_NOT_ENOUGH_SPACE if the cache buffer is too small.
  *
  * Single-threaded contract: MUST be called on the do_work thread or be
@@ -847,7 +848,7 @@ az_iot_result az_iot_adu_client_request_update(az_iot_adu_client_t* client, uint
  */
 az_iot_result az_iot_adu_client_update_device_properties(
     az_iot_adu_client_t* client,
-    const az_iot_adu_device_properties* device_props);
+    const az_iot_adu_device_properties* device_properties);
 
 #ifdef __cplusplus
 }
@@ -857,6 +858,19 @@ az_iot_result az_iot_adu_client_update_device_properties(
 
 ### 5.2 Device-Properties API
 
+> **Current managed ADUv2 cache:** strings are deep-copied into the caller's byte
+> buffer; typed property/custom-property descriptors live in the client, so the
+> buffer has no alignment requirement. Replacement validates the entire snapshot
+> and the channel's escaped request before committing either cache. Failure preserves
+> the previous accepted properties. The specified 1-5 compatibility KVP limit includes
+> supplied manufacturer/model keys, not `agentProfile`; an installed ID must be absent
+> or a complete nonempty triple. See the [current contract and limits](adu-client-plan.md#b-core-update-workflow).
+> The managed upstream-shaped view/serialized-ID cache described below has been removed;
+> the standalone legacy formatter is retained. The twin re-report/reconnect sequence
+> below is historical and is not proof of runtime ADUv2 fetch scheduling.
+> The application explicitly requests each check and chooses its route. The
+> property setter refreshes the caches, but does not itself queue a fetch.
+
 Device properties are supplied as a **plain struct** that the client
 **deep-copies** into a caller-provided cache buffer. There is no callback and no
 shared ownership: once `init` (or `update_device_properties`) returns, the
@@ -864,18 +878,19 @@ application owns its struct outright and may mutate or free it.
 
 - At `init` the application passes `az_iot_adu_device_properties` plus a cache
   buffer. The client MUST copy every string into the cache.
-- The client maps the cached values onto azure-sdk-for-c's
-  `az_iot_adu_client_device_properties` internally, only when formatting the
-  payload — that type never escapes to the application.
-- `update_device_properties()` re-copies a new struct and flags a re-report on
-  the next `do_work()`. Reconnect re-reports reuse the existing cache.
+- The channel serializes compatibility properties into `agentInfo` on an explicit
+  update check; the regular route also carries the cached installed ID.
+- `update_device_properties()` re-copies a new struct. To publish its compatibility
+  properties, the application calls `request_onboarding_update()` or `request_update()`.
+  The setter's pending workflow-status report is distinct and cannot replace that
+  fetch. Property-revision freshness and installed-ID promotion remain follow-ups.
 
 ```c
 /* Build the struct on the stack; strings are caller-owned. */
 static const az_iot_adu_custom_property custom[] = {
     { "region", "westus2" },
 };
-az_iot_adu_device_properties props = {
+az_iot_adu_device_properties properties = {
     .manufacturer = "Contoso",
     .model        = "Thermostat-9000",
     .installed_update_id = { .provider = "Contoso", .name = "Thermostat", .version = "1.0.0" },
@@ -883,7 +898,7 @@ az_iot_adu_device_properties props = {
     .custom_properties_count = 1,
 };
 
-uint8_t props_cache[256];
+uint8_t properties_cache[256];
 size_t root_key_count;
 const az_iot_adu_root_key* root_keys = az_iot_adu_microsoft_root_keys(&root_key_count);
 az_iot_adu_client_config_options adu_opts = az_iot_adu_client_config_options_default();
@@ -891,15 +906,15 @@ adu_opts.hooks = &hooks;
 adu_opts.crypto = &crypto;
 adu_opts.root_keys = root_keys;
 adu_opts.root_key_count = root_key_count;
-adu_opts.device_props = &props;
-adu_opts.device_props_buffer = props_cache;
-adu_opts.device_props_buffer_size = sizeof(props_cache);
+adu_opts.device_properties = &properties;
+adu_opts.device_properties_buffer = properties_cache;
+adu_opts.device_properties_buffer_size = sizeof(properties_cache);
 az_iot_adu_client_initialize(&adu, &conn, &adu_opts);
-/* `props` and its strings may now be freed/reused; the client holds a deep copy. */
+/* `properties` and its strings may now be freed/reused; the client holds a deep copy. */
 
 /* Later, when firmware version or a custom property changes at runtime: */
-props.installed_update_id.version = "1.1.0";
-az_iot_adu_client_update_device_properties(&adu, &props); /* carried by the next update check */
+properties.installed_update_id.version = "1.1.0";
+az_iot_adu_client_update_device_properties(&adu, &properties); /* carried by the next update check */
 ```
 
 Device properties on the wire, end to end:
@@ -911,7 +926,7 @@ sequenceDiagram
     participant Ch as ADUv2 channel
     participant DPS
 
-    Note over ADU: init() deep-copies device_props into the cache and the channel
+    Note over ADU: init() deep-copies device_properties into the cache and the channel
     App->>ADU: request_onboarding_update()
     ADU->>Ch: request_update(onboarding)
     Ch->>DPS: update check { agentInfo }
@@ -919,7 +934,7 @@ sequenceDiagram
     Ch-->>ADU: updateMetadata (when an update applies)
 
     Note over App: firmware/custom property changed at runtime
-    App->>ADU: update_device_properties(&props)
+    App->>ADU: update_device_properties(&properties)
     ADU->>Ch: set_device_properties (next update check carries it)
 ```
 
@@ -983,7 +998,7 @@ az_iot_result az_iot_adu_verify_file_hash(
  * reportStatus body is built by the channel (see aduv2-spec.md).
  */
 az_iot_result az_iot_adu_build_report(
-    const az_iot_adu_device_properties* device_props,
+    const az_iot_adu_device_properties* device_properties,
     const az_iot_adu_client_install_result* result,
     const az_iot_adu_client_update_request* request,
     az_iot_adu_state state,
@@ -1263,18 +1278,18 @@ int main(void)
     /* 3. SIMULATED platform hooks (this sample's whole point) */
     az_iot_adu_platform_hooks hooks = adu_sim_hooks();  /* defined in this sample */
 
-    az_iot_adu_device_properties props = { .manufacturer = "Contoso",
+    az_iot_adu_device_properties properties = { .manufacturer = "Contoso",
                                              .model = "ADU-Sim",
                                              .installed_update_id = { "Contoso", "ADU-Sim", "1.0.0" } };
-    uint8_t props_cache[256];
+    uint8_t properties_cache[256];
     az_iot_adu_client_config_options adu_opts = az_iot_adu_client_config_options_default();
     adu_opts.hooks = &hooks;
     adu_opts.crypto = &crypto;
     adu_opts.root_keys = root_keys;
     adu_opts.root_key_count = rk_count;
-    adu_opts.device_props = &props;
-    adu_opts.device_props_buffer = props_cache;
-    adu_opts.device_props_buffer_size = sizeof props_cache;
+    adu_opts.device_properties = &properties;
+    adu_opts.device_properties_buffer = properties_cache;
+    adu_opts.device_properties_buffer_size = sizeof properties_cache;
     az_iot_adu_client_initialize(&adu, &conn, &adu_opts);
 
     az_iot_connection_client_open(&conn);
@@ -1381,7 +1396,7 @@ tests/unit/adu/
 ├── test_adu_manifest_verify.c             ← two-level JWS chain via verify_rs256_fn (§15 L1)
 ├── test_adu_payload_hash.c                ← streaming sha256 verify, mismatch abort
 ├── test_adu_persistence.c                 ← resume blob round-trip + re-entry phases
-├── test_adu_device_props.c                ← deep-copy ownership, coalesced re-report
+├── test_adu_device_properties.c                ← deep-copy ownership, coalesced re-report
 └── CMakeLists.txt
 
 tests/support/
@@ -1833,7 +1848,7 @@ Coverage targets (one cmocka exe per file, matching §9 layout):
   CRC/magic/version rejection ⇒ clean restart; each `resume()` re-entry phase;
   replacement detection (different workflow id / `manifest_sha256`) discards
   resumed state; blob cleared on completion.
-- `test_adu_device_props.c` — deep-copy ownership (mutate/free caller struct after
+- `test_adu_device_properties.c` — deep-copy ownership (mutate/free caller struct after
   `init`), `update_device_properties()` coalescing, reconnect re-report.
 
 Known-answer vectors (committed as test fixtures, no network):

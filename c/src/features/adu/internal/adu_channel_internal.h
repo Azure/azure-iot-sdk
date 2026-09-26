@@ -34,6 +34,7 @@
 #include "azure/iot/az_iot_adu.h"
 
 #include "adu_protocol_internal.h"
+#include "adu_device_properties_internal.h"
 #include "azure/iot/az_iot_result.h"
 
 #ifdef __cplusplus
@@ -158,7 +159,8 @@ extern "C"
      * installed update id at init keeps sending stale device identity after
      * az_iot_adu_client_update_device_properties().
      */
-    az_iot_result (*set_device_properties)(void* ctx, const az_iot_adu_device_properties* props);
+    az_iot_result (
+        *set_device_properties)(void* ctx, const az_iot_adu_device_properties* properties);
 
     /**
      * @brief OPTIONAL. Driven from the engine's do_work() tick so a channel
@@ -187,10 +189,8 @@ extern "C"
 #define AZ_IOT_ADU_CHANNEL_BODY_MAX_SIZE 2048
 #endif
 
-/* The service accepts a bounded number of compatibility properties. */
-#ifndef AZ_IOT_ADU_CHANNEL_MAX_COMPAT
-#define AZ_IOT_ADU_CHANNEL_MAX_COMPAT 5
-#endif
+/** @brief Compatibility properties the channel sends; the service's limit. */
+#define AZ_IOT_ADU_CHANNEL_MAX_COMPATIBILITY_PROPERTIES AZ_IOT_ADU_MAX_COMPATIBILITY_PROPERTIES
 
 /* How many times an operation is RETRIED after losing the provisioning session
  * underneath it, before it is abandoned. N retries, so the operation is given
@@ -240,13 +240,12 @@ extern "C"
 
     /* Compatibility properties, and what is installed now. Both are required on
      * a fetch: they are how the service picks the right update. */
-    az_iot_adu_custom_property compat[AZ_IOT_ADU_CHANNEL_MAX_COMPAT];
+    az_iot_adu_custom_property compat[AZ_IOT_ADU_CHANNEL_MAX_COMPATIBILITY_PROPERTIES];
     size_t compat_count;
-    char compat_storage[256];
+    az_iot_adu_device_properties_snapshot device_properties;
 
     az_iot_adu_report_update_id installed_update_id;
     bool has_installed_update_id;
-    char installed_storage[192];
 
     /* ETags from the last successful fetch, echoed on the next one. Empty
      * means "not held yet". */
@@ -324,7 +323,7 @@ extern "C"
   az_iot_result az_iot_adu_channel_dps_init(
       az_iot_adu_channel_dps* channel_state,
       az_iot_connection_client* connection,
-      const az_iot_adu_device_properties* device_props,
+      const az_iot_adu_device_properties* device_properties,
       az_iot_adu_channel* out_channel);
 
 #ifdef __cplusplus
