@@ -60,6 +60,7 @@ readable as design rather than as a claim about the code.
 The failure classification this document's `reason` field carries is specified in
 [connection.md §9](../connection.md#9-connection-failure-taxonomy), with the C realization in
 [connection-c.md §9](connection-c.md#9-connection-failure-realization-c-partly-implemented).
+
 ---
 
 ## 1. Motivation

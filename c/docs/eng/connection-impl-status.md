@@ -111,8 +111,8 @@ filters, server-moved — to go straight to `FAULTED` rather than being retried.
 
 The .NET client classifies all of them, through `ErrorRetryability`.
 
-The C client classifies **one family**: a SUBACK refusal the broker will repeat is terminal even
-when a reconnection policy is configured. Everything else — including `rc=1 unacceptable protocol
+The C client classifies **one family**: a SUBACK refusal the broker will repeat, on a `FAILS_SESSION`
+hub subscription, is terminal even when a reconnection policy is configured. Everything else — including `rc=1 unacceptable protocol
 version` and the deterministic v5 CONNACK codes — still retries until the policy is exhausted.
 
 ### Failure taxonomy — where each client stands

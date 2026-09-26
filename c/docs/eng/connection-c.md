@@ -420,8 +420,8 @@ delay  = clamp(base + jitter, 1, UINT32_MAX)
 | `max_attempts` | 0 | `0` means retry forever. |
 | `jitter_pct` | 20 | Symmetric randomization, seeded from the monotonic clock. |
 
-The shift is clamped at 30 to avoid 32-bit overflow. The attempt counter resets to zero on every
-successful CONNACK.
+The shift is clamped at 30 to avoid 32-bit overflow. The `HUB` counter resets on every successful hub
+CONNACK; the `DPS` counter only when registration succeeds.
 
 ### 5.2 What triggers a reconnect
 
@@ -790,7 +790,7 @@ connection failure path:
 | `AZ_IOT_ERR_NOT_FOUND` | A required field was absent from a service payload. |
 | `AZ_IOT_ERR_INTERNAL` | A dependency call failed in a way the SDK cannot attribute. |
 | `AZ_IOT_ERR_IDENTITY_REJECTED` | The broker refused *who the device claims to be*. The only result that drives re-provisioning. |
-| `AZ_IOT_ERR_SUBSCRIPTION_REFUSED` | A SUBACK carried a code the broker will repeat. Terminal even when a reconnection policy is configured. |
+| `AZ_IOT_ERR_SUBSCRIPTION_REFUSED` | A SUBACK carried a code the broker will repeat. Terminal even when a reconnection policy is configured on a `FAILS_SESSION` persistent subscription; the DPS and presence paths retry it ([§9.5](#95-the-realization-table)). |
 | `AZ_IOT_ERR_CREDENTIAL_INCOMPLETE` | The certificate provider returned material the adapter cannot use — a certificate with no key, or a key URI with no engine or provider to resolve it. Caught before the connect, so the device gets this instead of an opaque TLS failure seconds later. |
 | `AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED` | DPS assigned a `connectionProfile` this build does not know. |
 | `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH` | A feature client of one generation was attached to a connection of the other. |
@@ -841,8 +841,8 @@ is subject to the same "do not flatten codes" rule.
 | v3.1.1 `0x80 Failure` | `AZ_IOT_ERR_SUBSCRIPTION_REFUSED` | No reason code exists to consult. The classification comes from what a Classic device can subscribe to — a topic set fixed at compile time — which makes a refusal a property of the filter rather than of the moment. |
 | Any code, with a version the function does not know | `AZ_IOT_ERR_MQTT` | Same reasoning as the CONNACK mapper. |
 
-`AZ_IOT_ERR_SUBSCRIPTION_REFUSED` is the only failure that is **terminal even when a reconnection
-policy is configured** (`fail_subscription_restore()`): reconnecting would re-issue the same filter,
+`AZ_IOT_ERR_SUBSCRIPTION_REFUSED` on a `FAILS_SESSION` persistent subscription is the only failure
+that is **terminal even when a reconnection policy is configured** (`fail_subscription_restore()`): reconnecting would re-issue the same filter,
 be refused again, and leave the device cycling forever without saying why.
 
 ### 9.4 Compile-time bounds
