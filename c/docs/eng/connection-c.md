@@ -192,12 +192,15 @@ Key ordering guarantees that both clients must honour:
    pumps both. DPS always uses MQTT 3.1.1, even when the hub session uses v5.
 3. The operational certificate is preferred over the bootstrap certificate on every connect attempt,
    including reconnects.
-4. **The ADUv2 bootstrap update check runs inside `open()`, ahead of registration.** The DPS channel
-   takes `__dps_hold_acquire()` when it binds and again on each `DPS:CONNECTING` until its exchange is
-   done, so the SUBACK enters `DPS_HOLD` instead of registering.
+4. **The ADUv2 bootstrap update check runs inside `open()`, ahead of registration**, once the
+   application calls `az_iot_adu_client_request_onboarding_update()`; nothing queues it
+   automatically. The DPS channel takes `__dps_hold_acquire()` when it binds and again on each
+   `DPS:CONNECTING` until its exchange is done, so the SUBACK enters `DPS_HOLD` instead of
+   registering.
    The hold is released at the first check verdict that will not immediately repeat, or on close;
    `dps_hold_timeout_ms` (default `AZ_IOT_DPS_HOLD_TIMEOUT_MS`, 60 s) bounds it, and on expiry the
-   device registers anyway. See [§7](#7-aduv2-onboarding-and-renewal-partly-implemented).
+   device registers anyway — so a bound channel with no request delays registration by that timeout.
+   See [§7](#7-aduv2-onboarding-and-renewal-partly-implemented).
 5. The DPS assignment is the single delivery point for everything the device learns about its
    placement: hub, device id, connection profile and issued certificate chain.
 6. **`opts.dps.provision_only`** keeps the DPS session up, never registers and never connects to a
@@ -494,7 +497,10 @@ transitions back to `IDLE` and is **returned from `open()`** — no backoff is s
 that fails after that point, from the refused socket to the CONNACK, runs through
 `schedule_reconnect()` like any later attempt.
 
-So the synchronous half of the first attempt is never retried and the asynchronous half always is.
+So the synchronous half of the first attempt is never retried and the asynchronous half is. One
+exception: when the hub attempt follows a DPS assignment, `dps_apply_deferred()` runs it from the
+pump, and a synchronous `start_connect_attempt()` failure there settles at `HUB:FAULTED` without
+backoff.
 That is the split [connection.md §5.5](../connection.md#55-does-the-retry-policy-cover-the-first-attempt)
 specifies, and it holds here without a separate option.
 
@@ -749,7 +755,7 @@ Reading it as four overlapping concerns:
 | **Certificates** | CSR in the registration, issued chain in the assignment | `send_csr` over the hub; new chain applies on the next connect |
 | **ADUv2** | `requestOnboardingUpdates` loop **before** registration, advisory | Polled `requestSoftwareUpdates` / `reportUpdateStatus` (DPS in preview, Hub afterwards) |
 | **Connection profile** | Declared in the assignment; selects MQTT version and generation | Re-resolved on every reconnect that goes through DPS |
-| **Connection** | DPS scope, with registration held in `DPS_HOLD` for the bootstrap check | Backoff-driven reconnect replays the whole path |
+| **Connection** | DPS scope, with registration held in `DPS_HOLD` for the bootstrap check | Backoff-driven reconnect reuses the cached assignment; DPS again only on `needs_reprovision` |
 
 The two onboarding concerns are **not** symmetric, and that asymmetry is the thing to remember:
 the CSR travels *inside* registration, while the ADU bootstrap check happens *before* it, with
