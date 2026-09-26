@@ -15,6 +15,7 @@
 
 #include "azure/iot/az_iot_adu.h"
 
+#include "internal/adu_device_properties_internal.h"
 #include "internal/adu_internal.h"
 #include "internal/adu_protocol_internal.h"
 
@@ -214,6 +215,23 @@ az_iot_result az_iot_adu__report_state(az_iot_adu_client_t* client)
 /* agent core-library API: standalone report builder                         */
 /* ------------------------------------------------------------------------- */
 
+/**
+ * @brief Wraps @p value in a span if the JSON writer accepts its length.
+ *
+ * @return false if longer than AZ_IOT_ADU_MAX_JSON_STRING_SIZE, which would
+ *   trip the writer's preconditions instead of failing.
+ */
+static bool bounded_span(const char* value, az_span* out)
+{
+  size_t length = strlen(value);
+  if (length > AZ_IOT_ADU_MAX_JSON_STRING_SIZE)
+  {
+    return false;
+  }
+  *out = az_span_create((uint8_t*)(uintptr_t)value, (int32_t)length);
+  return true;
+}
+
 az_iot_result az_iot_adu_build_report(
     const az_iot_adu_device_properties* device_properties,
     const az_iot_adu_client_install_result* result,
@@ -223,9 +241,18 @@ az_iot_result az_iot_adu_build_report(
     size_t out_size,
     size_t* out_len)
 {
+  if (out_len != NULL)
+  {
+    *out_len = 0;
+  }
   if (device_properties == NULL || out_json == NULL || out_size == 0)
   {
     return AZ_IOT_ERR_INVALID_ARG;
+  }
+
+  if (out_size > INT32_MAX)
+  {
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
   }
 
   /* Stateless upstream formatter handle (no channel / state machine). */
@@ -262,14 +289,15 @@ az_iot_result az_iot_adu_build_report(
 
   az_iot_adu_client_device_properties upstream_properties
       = az_iot_adu_client_device_properties_default();
-  if (device_properties->manufacturer != NULL)
+  if (device_properties->manufacturer != NULL
+      && !bounded_span(device_properties->manufacturer, &upstream_properties.manufacturer))
   {
-    upstream_properties.manufacturer
-        = az_span_create_from_str((char*)(uintptr_t)device_properties->manufacturer);
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
   }
-  if (device_properties->model != NULL)
+  if (device_properties->model != NULL
+      && !bounded_span(device_properties->model, &upstream_properties.model))
   {
-    upstream_properties.model = az_span_create_from_str((char*)(uintptr_t)device_properties->model);
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
   }
   upstream_properties.update_id
       = az_span_create((uint8_t*)update_id_json, (int32_t)update_id_json_len);
@@ -296,10 +324,13 @@ az_iot_result az_iot_adu_build_report(
       {
         return AZ_IOT_ERR_INVALID_ARG;
       }
-      upstream_custom_properties.names[i]
-          = az_span_create_from_str((char*)(uintptr_t)device_properties->custom_properties[i].name);
-      upstream_custom_properties.values[i] = az_span_create_from_str(
-          (char*)(uintptr_t)device_properties->custom_properties[i].value);
+      if (!bounded_span(
+              device_properties->custom_properties[i].name, &upstream_custom_properties.names[i])
+          || !bounded_span(
+              device_properties->custom_properties[i].value, &upstream_custom_properties.values[i]))
+      {
+        return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+      }
     }
     upstream_custom_properties.count = (int32_t)count;
     upstream_properties.custom_properties = &upstream_custom_properties;

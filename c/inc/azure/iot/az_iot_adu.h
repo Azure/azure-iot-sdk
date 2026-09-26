@@ -1132,10 +1132,11 @@ extern "C"
    * @param[in] state Agent state to report (mapped to Idle / InProgress / Failed).
    * @param[out] out_json Destination buffer.
    * @param[in] out_size Size of @p out_json.
-   * @param[out] out_len Bytes written. May be NULL.
+   * @param[out] out_len Bytes written; zero on error. May be NULL.
    * @return AZ_IOT_OK on success.
    * @retval AZ_IOT_ERR_INVALID_ARG Bad arguments.
-   * @retval AZ_IOT_ERR_NOT_ENOUGH_SPACE The payload does not fit @p out_json.
+   * @retval AZ_IOT_ERR_NOT_ENOUGH_SPACE The payload does not fit @p out_json, or a
+   *   string exceeds the JSON writer's input limit.
    */
   AZ_NODISCARD az_iot_result az_iot_adu_build_report(
       const az_iot_adu_device_properties* device_properties,

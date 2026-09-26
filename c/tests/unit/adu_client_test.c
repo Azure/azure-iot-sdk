@@ -2255,6 +2255,50 @@ static void standalone_properties_keep_the_legacy_count_contract(void** state)
   assert_int_equal(found, 5);
 }
 
+/* Strings past the JSON writer's input limit are refused rather than reaching
+ * its preconditions, which spin instead of returning. */
+static void standalone_oversized_strings_are_refused(void** state)
+{
+  (void)state;
+  size_t size = (size_t)AZ_IOT_ADU_MAX_JSON_STRING_SIZE + 2;
+  char* big = malloc(size);
+  assert_non_null(big);
+  memset(big, 'x', size - 1);
+  big[size - 1] = '\0';
+  uint8_t json[256];
+  size_t len = 1;
+  for (int field = 0; field < 4; ++field)
+  {
+    az_iot_adu_custom_property custom = { "k", "v" };
+    az_iot_adu_device_properties dp = { .manufacturer = "m", .model = "n" };
+    switch (field)
+    {
+      case 0:
+        dp.manufacturer = big;
+        break;
+      case 1:
+        dp.model = big;
+        break;
+      case 2:
+        custom.name = big;
+        break;
+      default:
+        custom.value = big;
+        break;
+    }
+    if (field >= 2)
+    {
+      dp.custom_properties = &custom;
+      dp.custom_properties_count = 1;
+    }
+    assert_int_equal(
+        az_iot_adu_build_report(&dp, NULL, NULL, AZ_IOT_ADU_STATE_IDLE, json, sizeof(json), &len),
+        AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+    assert_int_equal(len, 0);
+  }
+  free(big);
+}
+
 static void duplicate_redelivery_is_ignored(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -4005,6 +4049,7 @@ int main(void)
         property_updates_work_without_a_channel_setter, setup, teardown),
     cmocka_unit_test(standalone_installed_id_escaping_preserves_values),
     cmocka_unit_test(standalone_properties_keep_the_legacy_count_contract),
+    cmocka_unit_test(standalone_oversized_strings_are_refused),
     cmocka_unit_test_setup_teardown(init_starts_idle_and_pending_report, setup, teardown),
     cmocka_unit_test_setup_teardown(no_update_is_fetched_until_one_is_requested, setup, teardown),
     cmocka_unit_test_setup_teardown(each_request_function_asks_for_its_own_route, setup, teardown),
