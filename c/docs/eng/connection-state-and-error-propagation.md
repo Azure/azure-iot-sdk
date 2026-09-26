@@ -13,6 +13,56 @@ document are to be interpreted as described in
 
 ---
 
+## 0. Status, and what is still open
+
+This document is a design, and most of it has now shipped. Recording the delta here keeps the rest
+readable as design rather than as a claim about the code.
+
+**Shipped**
+
+- **The observer registry of §2.** `az_iot_connection_client_add_state_observer()` /
+  `_remove_state_observer()` replaced the single callback slot, with separate pools for feature
+  clients and the application (`AZ_IOT_MAX_APP_STATE_OBSERVERS`, default 4). Adding from inside an
+  observer answers `AZ_IOT_ERR_BUSY`; removing from inside one is supported, and so is `close()`.
+- **Scope.** Open decision 1 below was answered yes. Every event carries
+  `az_iot_connection_scope` (`DPS`, `HUB`) beside `state`, the client keeps one state per scope,
+  and `az_iot_connection_client_get_state(client, scope)` is the getter. There is no unscoped
+  state to ask for.
+- **The diagnostics of §4.5.** `az_iot_connection_error_detail` carries `source`, `code` and a
+  service-supplied `message`, hung off the event and valid for the callback only.
+- **`is_retriable`**, computed by an exhaustive `reason_is_retriable()` — `-Werror=switch-enum`
+  makes a new result code a compile error there, so classifying one is a decision someone has to
+  take rather than one that defaults silently.
+- **Per-scope retry.** Each lifecycle keeps its own ladder and its own attempt budget, so one
+  cannot spend the other's.
+- **`FAULTED` is settled, not terminal**: `close()` is a legal exit from it and returns the client
+  to `IDLE`, which is §3.1's reuse contract extended to the fault path.
+
+**Not shipped**
+
+- `DEINITIALIZING` (§4.1) and the deinit guard of §3.2.
+- `az_iot_conn_reason` (§4.4). Open decision 2 was answered by omission: `reason` plus
+  `error->source` / `error->code` carry the information, and no second taxonomy was added.
+  §4.4 and §5's `connection_reason` row describe a shape that does not exist; they are kept as
+  the record of what was considered.
+
+**Still open**
+
+1. **Should the SDK act on its own `is_retriable`?** It is computed and reported, but the retry
+   decision is still `reconnect_enabled()`, so a failure the client itself classifies
+   non-retriable — a deterministic CONNACK refusal, a refused provisioning filter — is retried to
+   exhaustion anyway. Two places already diverge in opposite directions: the hub subscription gate
+   *does* treat a refusal as terminal, the presence and provisioning paths do not.
+2. **What `0` means in `error->code`.** The field documents it as "none supplied", which is
+   ambiguous against a genuine `0x00`. `source` disambiguates it today by convention rather than
+   by construction.
+
+The failure classification this document's `reason` field carries is specified in
+[connection.md §9](../connection.md#9-connection-failure-taxonomy), with the C realization in
+[connection-c.md §9](connection-c.md#9-connection-failure-realization-c-partly-implemented).
+
+---
+
 ## 1. Motivation
 
 The connection client USED TO expose a **single** state callback
@@ -219,9 +269,9 @@ Rules that follow, each pinned by a test:
    disconnect with retries disabled is `HUB:IDLE` — reopenable. Only *failures*
    reach `FAULTED`. Conflating them per scope is the same mistake as conflating
    them globally.
-2. **A session teardown settles its scope.** The provisioning session is
-   destroyed at registration, so `DPS` emits `DISCONNECTING` then `IDLE` even
-   though the hub connect is about to start. Leaving it pinned at `CONNECTING`
+2. **A session teardown settles its scope.** When nothing still holds the
+   provisioning session it is released at registration, so `DPS` emits
+   `DISCONNECTING` then `IDLE` even though the hub connect is about to start. Leaving it pinned at `CONNECTING`
    would make the *next* re-provisioning run invisible, by the same suppression
    rule above.
 3. **A failure is reported against the scope that failed**, not the scope the
@@ -229,10 +279,9 @@ Rules that follow, each pinned by a test:
    session going down, even though the retry is a DPS registration.
 4. **`close()` settles both.** It is a statement about the client, not about one
    lifecycle.
-5. **A direct hub connection never leaves `DPS:IDLE`.** That is the answer, not
-   an error — nothing should wait on a `DPS:CONNECTED` that cannot come. The
-   mirror of it is `dps.provision_only` (§2.8): there, `HUB` never leaves
-   `IDLE`, for the same reason.
+5. **Under `dps.provision_only` (§2.8) `HUB` never leaves `IDLE`.** That is
+   the answer, not an error — nothing should wait on a `HUB:CONNECTED` that
+   cannot come.
 6. **`DPS:CONNECTED` is real, and it is the SUBACK.** The provisioning session
    reaches `CONNECTED` when its subscription is confirmed — the same fact that
    makes it usable to a feature client. An ordinary DPS device therefore reports
@@ -336,10 +385,9 @@ is exactly what a **misconfigured** enrollment looks like too — one that shoul
 have had a hub and does not. Treating that as success would remove the
 operator's only signal for a real misconfiguration.
 
-**Rejected combinations**, both at `open()` with `AZ_IOT_ERR_INVALID_ARG` rather
-than silently ignoring one half:
+**Rejected combination**, at `open()` with `AZ_IOT_ERR_INVALID_ARG` rather than
+silently ignoring one half:
 
-- `opts.host` — it names the hub this option says does not exist.
 - `dps.request_operational_certificate` — the certificate is issued *by* a
   registration, which this device never performs.
 
@@ -697,6 +745,8 @@ static void on_conn(const az_iot_connection_state_event* event, void* ctx)
 
 ## 7. References
 
+- [connection.md](../connection.md) — the language-neutral connection lifecycle contract, and the failure taxonomy this document's `reason` field reports
+- [connection-c.md](connection-c.md) — the C realization of that contract
 - [azure-iot-sdk SDK design](../design.md) — overall architecture
 - [how_to_byo_mqtt_client.md](../how_to_byo_mqtt_client.md) — bring-your-own MQTT client model
 - [adu-client-design.md](adu-client-design.md) — first consumer of this foundation
