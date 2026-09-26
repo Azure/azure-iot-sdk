@@ -17,18 +17,22 @@
     See samples/adu/pc/README.md for the job/run shape the samples are offered
     updates through.
 
-    Run this AFTER Initialize-AduSampleEnvironment.ps1 and AFTER the device sample
-    is running and connected (the device must exist in the hub so its twin can be
-    tagged). Resource names are read from the environment variables set by the
-    initialize script; override any of them with parameters.
+    Run this AFTER Initialize-AduSampleEnvironment.ps1, and AFTER an
+    IoT-Hub-based Device Update consumer is connected to the hub - the device
+    must already exist there so its twin can be tagged. The samples in this
+    repository are not such a consumer.
+
+    Resource names are read from the environment variables set by the initialize
+    script; override any of them with parameters.
 
     Steps: build a zero-filled payload + v5 import manifest, stage+import the
     update, tag the device into the group, then create the deployment.
 
     By default the update version AUTO-BUMPS to the next unused patch (highest
     existing + 1, or 1.0.0 when none exist) so every run pushes a genuinely new
-    update and triggers a fresh workflow on the device. Pass -UpdateVersion to
-    target a specific version instead (reused if it already exists).
+    update, which an IoT-Hub-based consumer picks up as a fresh workflow. Pass
+    -UpdateVersion to target a specific version instead (reused if it already
+    exists).
 
 .EXAMPLE
     ./New-AduSampleDeployment.ps1

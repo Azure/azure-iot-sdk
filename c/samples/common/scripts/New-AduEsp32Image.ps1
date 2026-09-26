@@ -1,7 +1,8 @@
 #Requires -Version 7.0
 <#
 .SYNOPSIS
-    Builds an ESP32 firmware update image and deploys it as a real ADU update.
+    Builds an ESP32 firmware update image and deploys it through the
+    IoT-Hub-based Device Update model.
 
 .DESCRIPTION
     IMPORTANT - which Device Update model this targets.
@@ -16,11 +17,14 @@
     The ESP32 counterpart of New-AduSampleDeployment.ps1. Where that script ships
     a zero-filled simulated payload, this one BUILDS a genuine ESP32 app image
     (the sample firmware) with the new version baked in, then imports + deploys
-    it so the running device downloads and flashes it over the air.
+    it. An IoT-Hub-based Device Update consumer downloads and flashes that image
+    over the air; the ESP32 sample in this repository is not one, so it is never
+    offered the deployment.
 
     Run this AFTER Initialize-AduSampleEnvironment.ps1 (which creates the Azure
-    resources + device cert and sets the AZ_IOT_ADU_* environment variables) and
-    AFTER the ESP32 sample is running and connected to the hub.
+    resources + device cert and sets the AZ_IOT_ADU_* environment variables).
+    The deployment steps additionally need an IoT-Hub-based consumer already
+    connected to the hub, so its twin can be tagged.
 
     Steps:
       1. Resolve the next update version (auto-bump, or -UpdateVersion).
