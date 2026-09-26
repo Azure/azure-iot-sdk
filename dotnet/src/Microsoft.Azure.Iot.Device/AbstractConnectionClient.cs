@@ -41,13 +41,9 @@ namespace Microsoft.Azure.Iot.Device
 
         private const string ProvisioningUsernameFormat = "{0}/registrations/{1}/api-version={2}&ClientVersion={3}";
 
-        private const string ProvisioningApiVersion = "2021-10-01"; // TODO 2026-11-02-preview is required for connection profile fields, but is not available yet.
-
-        // Issuing an operational certificate from a certificate signing request is not part of the GA API version
-        // above: Device Provisioning Service rejects a registration request that carries a "csr" field unless the
-        // connection asked for a version that knows about it. Only used when the caller supplies a request, so a
-        // registration without one keeps the GA version.
-        private const string ProvisioningCertificateSigningRequestApiVersion = "2025-07-01-preview";
+        // Used for every DPS session. Required for the "connectionProfile" registration result field and supports
+        // certificate signing requests.
+        private const string ProvisioningApiVersion = "2026-11-02-preview";
         private const string ProvisioningSubscribeFilter = "$dps/registrations/res/#";
         private const string ProvisioningRegisterTopic = "$dps/registrations/PUT/iotdps-register/?$rid={0}";
         private const string ProvisioningGetOperationsTopic = "$dps/registrations/GET/iotdps-get-operationstatus/?$rid={0}&operationId={1}";
@@ -198,7 +194,7 @@ namespace Microsoft.Azure.Iot.Device
                 IotHubHostName = provisioningResult.AssignedHub!,
                 IssuedClientCertificates = provisioningResult.IssuedClientCertificateChain,
                 AuthenticationProvider = authentication,
-                ConnectionProfile = provisioningResult.ConnectionProfile,
+                ConnectionProfile = provisioningResult.ConnectionProfile ?? Provisioning.Models.ConnectionProfile.Classic,
             };
 
             // If CSR was a part of the provisioning request, then connect to IoT hub using the operational certificates (the ones signed by DPS) rather than the boot certificates (the ones used to authenticate with DPS).
@@ -640,8 +636,7 @@ namespace Microsoft.Azure.Iot.Device
             MqttConnect connect = CreateProvisioningConnectPacket(
                 authentication,
                 provisioningSettings.IdScope,
-                provisioningSettings.GlobalEndpointAddress,
-                provisioningSettings.CertificateSigningRequest != null);
+                provisioningSettings.GlobalEndpointAddress);
 
             TaskCompletionSource<ProvisioningFlowCompletedArgs> provisioningFlowResult = new(TaskCreationOptions.RunContinuationsAsynchronously);
             Task HandleProvisioningFlowCompletedAsync(ProvisioningFlowCompletedArgs args)
@@ -883,7 +878,7 @@ namespace Microsoft.Azure.Iot.Device
             }
         }
 
-        private MqttConnect CreateProvisioningConnectPacket(X509AuthenticationProvider authentication, string idScope, string globalDeviceEndpoint, bool isCertificateSigningRequest)
+        private MqttConnect CreateProvisioningConnectPacket(X509AuthenticationProvider authentication, string idScope, string globalDeviceEndpoint)
         {
             string hostName = globalDeviceEndpoint;
 
@@ -892,7 +887,7 @@ namespace Microsoft.Azure.Iot.Device
                 ProvisioningUsernameFormat,
                 idScope,
                 authentication.GetRegistrationId(),
-                isCertificateSigningRequest ? ProvisioningCertificateSigningRequestApiVersion : ProvisioningApiVersion,
+                ProvisioningApiVersion,
                 Uri.EscapeDataString(GetProvisioningUserAgentString()));
 
 
