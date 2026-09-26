@@ -99,11 +99,11 @@ Canonical pending-work tracker for IoT Hub Next (AEG) integration.
 - [x] Flavor-aware init: Next dispatches methods from the presence wildcard; Classic subscribes to `$iothub/methods/POST/#`
 - [x] Flavor-aware respond: publishes with correlation_data (Next) or topic-encoded `$rid` (Classic)
 - [x] E2E verified against mock Hub-Next (auto-trigger loops 4 methods continuously)
-- [x] gen2: implement the AEG probe / exec / abandon phases (`common/Protos/directmethods.proto`)
+- [x] MQTTv5: implement the AEG probe / exec / abandon phases (`common/Protos/directmethods.proto`)
 - [x] ~~Add nanopb (protobuf) dependency via FetchContent~~ **Rejected.** The six direct-method
       messages are two varints, three length-delimited fields and a two-arm oneof, so the wire
-      format actually in use is a few hundred bytes of code (`src/gen2/direct_method_codec.c`,
-      pinned by `tests/unit/gen2_direct_method_codec_test.c` against frames written out from the
+      format actually in use is a few hundred bytes of code (`src/mqttv5/direct_method_codec.c`,
+      pinned by `tests/unit/mqttv5_direct_method_codec_test.c` against frames written out from the
       `.proto` by hand). Generating it would put protoc in the path of both the CMake build and the
       ESP-IDF component build, which composes its sources by listing files, and would pull in
       `google/protobuf/timestamp.proto` solely for `Exec.exec_start` -- the one field the protocol
@@ -111,7 +111,7 @@ Canonical pending-work tracker for IoT Hub Next (AEG) integration.
       `core/connection_client.c` already encodes `presence.proto` the same way. Revisit if a
       feature arrives with messages large or variable enough that hand-rolling stops being
       auditable.
-- [ ] gen2: re-check the ready-wait sweep once feature clients have a periodic tick. The sweep runs
+- [ ] MQTTv5: re-check the ready-wait sweep once feature clients have a periodic tick. The sweep runs
       on inbound method messages today, so a token whose exec never arrives is only reclaimed when
       the next probe or exec shows up.
 
@@ -120,11 +120,11 @@ Canonical pending-work tracker for IoT Hub Next (AEG) integration.
 - [x] GET and PATCH reported use correlation_data for Next path
 - [x] Desired push handler for Next path
 - [x] E2E verified against mock Hub-Next
-- [x] Split into `az_iot_gen1_twin_client` / `az_iot_gen2_twin_client`; gen2 binds its inbound
+- [x] Split into `az_iot_mqttv3_twin_client` / `az_iot_mqttv5_twin_client`; MQTTv5 binds its inbound
       topics at connect instead of resolving the device id inside `init()`
 - [x] Desired-property subscriber registry collapsed to a single `set_desired_handler()`; its only
       consumer (software updates) was re-layered off the twin channel
-- [x] gen2: desired deliveries carry the version and a PATCH/SNAPSHOT kind; the client fetches a
+- [x] MQTTv5: desired deliveries carry the version and a PATCH/SNAPSHOT kind; the client fetches a
       snapshot whenever the version sequence shows the device behind.
 
 ### C2D

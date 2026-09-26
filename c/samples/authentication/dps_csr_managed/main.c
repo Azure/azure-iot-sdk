@@ -184,7 +184,7 @@ int main(void)
   ctx.operational_cert_path = op_cert;
   az_iot_certificate_provider_managed provider = { 0 };
   az_iot_connection_client connection_client = { 0 };
-  az_iot_gen1_telemetry_client telemetry = { 0 };
+  az_iot_mqttv3_telemetry_client telemetry = { 0 };
   bool telemetry_initialized = false;
 
   if (op_key == NULL || op_cert == NULL)
@@ -245,7 +245,7 @@ int main(void)
     goto cleanup;
   }
 
-  if (az_iot_gen1_telemetry_client_init(&telemetry, &connection_client) != AZ_IOT_OK)
+  if (az_iot_mqttv3_telemetry_client_init(&telemetry, &connection_client) != AZ_IOT_OK)
   {
     fprintf(stderr, "[dps_csr] Classic hub telemetry client setup failed\n");
     goto cleanup;
@@ -281,7 +281,7 @@ int main(void)
     message.properties_count = sizeof(properties) / sizeof(properties[0]);
 
     az_iot_result send_result
-        = az_iot_gen1_telemetry_client_send(&telemetry, &message, on_send_done, &ctx);
+        = az_iot_mqttv3_telemetry_client_send(&telemetry, &message, on_send_done, &ctx);
     if (send_result != AZ_IOT_OK)
     {
       fprintf(
@@ -350,7 +350,7 @@ int main(void)
 cleanup:
   if (telemetry_initialized)
   {
-    az_iot_gen1_telemetry_client_destroy(&telemetry);
+    az_iot_mqttv3_telemetry_client_destroy(&telemetry);
   }
   az_iot_connection_client_destroy(&connection_client);
   az_iot_certificate_provider_managed_destroy(&provider);

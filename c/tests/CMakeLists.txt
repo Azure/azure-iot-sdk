@@ -162,79 +162,79 @@ az_iot_add_cmocka_test(az_iot_tests_dispatch unit/dispatch_test.c)
 target_include_directories(az_iot_tests_dispatch PRIVATE
     ${CMAKE_SOURCE_DIR}/src/core)
 az_iot_add_cmocka_test(
-    az_iot_tests_gen1_telemetry_client unit/gen1_telemetry_client_test.c)
+    az_iot_tests_mqttv3_telemetry_client unit/mqttv3_telemetry_client_test.c)
 target_link_libraries(
-    az_iot_tests_gen1_telemetry_client PRIVATE az_iot_test_support az_iot_gen1)
+    az_iot_tests_mqttv3_telemetry_client PRIVATE az_iot_test_support az_iot_mqttv3)
 az_iot_add_cmocka_test(
-    az_iot_tests_gen2_telemetry_client unit/gen2_telemetry_client_test.c)
+    az_iot_tests_mqttv5_telemetry_client unit/mqttv5_telemetry_client_test.c)
 target_link_libraries(
-    az_iot_tests_gen2_telemetry_client PRIVATE az_iot_test_support az_iot_gen2)
-az_iot_add_cmocka_test(az_iot_tests_gen1_c2d_client unit/gen1_c2d_client_test.c)
-target_link_libraries(az_iot_tests_gen1_c2d_client PRIVATE az_iot_test_support az_iot_gen1)
-az_iot_add_cmocka_test(az_iot_tests_gen2_c2d_client unit/gen2_c2d_client_test.c)
-target_link_libraries(az_iot_tests_gen2_c2d_client PRIVATE az_iot_test_support az_iot_gen2)
-az_iot_add_cmocka_test(az_iot_tests_gen1_direct_method_client unit/gen1_direct_method_client_test.c)
-target_link_libraries(az_iot_tests_gen1_direct_method_client PRIVATE az_iot_test_support az_iot_gen1)
+    az_iot_tests_mqttv5_telemetry_client PRIVATE az_iot_test_support az_iot_mqttv5)
+az_iot_add_cmocka_test(az_iot_tests_mqttv3_c2d_client unit/mqttv3_c2d_client_test.c)
+target_link_libraries(az_iot_tests_mqttv3_c2d_client PRIVATE az_iot_test_support az_iot_mqttv3)
+az_iot_add_cmocka_test(az_iot_tests_mqttv5_c2d_client unit/mqttv5_c2d_client_test.c)
+target_link_libraries(az_iot_tests_mqttv5_c2d_client PRIVATE az_iot_test_support az_iot_mqttv5)
+az_iot_add_cmocka_test(az_iot_tests_mqttv3_direct_method_client unit/mqttv3_direct_method_client_test.c)
+target_link_libraries(az_iot_tests_mqttv3_direct_method_client PRIVATE az_iot_test_support az_iot_mqttv3)
 if(UNIX)
     # The slot-reclaim deadline is only observable once a real second has
     # passed, so the suite calls nanosleep().
-    target_compile_definitions(az_iot_tests_gen1_direct_method_client PRIVATE
+    target_compile_definitions(az_iot_tests_mqttv3_direct_method_client PRIVATE
         _POSIX_C_SOURCE=200809L)
 endif()
 # AZ_IOT_DM_RID_MAX is a documented compile-time knob, and it sizes both a
 # public struct and the response topic the client builds from it -- so the
 # library and the application have to be built against the same value, hence
-# compiling the gen1 source into this target rather than linking az_iot_gen1,
+# compiling the mqttv3 source into this target rather than linking az_iot_mqttv3,
 # which carries the default. Running the whole suite against a raised rid bound
 # is what proves the knob reaches every buffer derived from it.
-az_iot_add_cmocka_test(az_iot_tests_gen1_direct_method_client_tuned
-    unit/gen1_direct_method_client_test.c
-    ${CMAKE_SOURCE_DIR}/src/gen1/direct_method_client.c)
-target_link_libraries(az_iot_tests_gen1_direct_method_client_tuned PRIVATE az_iot_test_support)
-target_include_directories(az_iot_tests_gen1_direct_method_client_tuned PRIVATE
+az_iot_add_cmocka_test(az_iot_tests_mqttv3_direct_method_client_tuned
+    unit/mqttv3_direct_method_client_test.c
+    ${CMAKE_SOURCE_DIR}/src/mqttv3/direct_method_client.c)
+target_link_libraries(az_iot_tests_mqttv3_direct_method_client_tuned PRIVATE az_iot_test_support)
+target_include_directories(az_iot_tests_mqttv3_direct_method_client_tuned PRIVATE
     ${CMAKE_SOURCE_DIR}/src/core
-    ${CMAKE_SOURCE_DIR}/src/gen1)
-target_compile_definitions(az_iot_tests_gen1_direct_method_client_tuned PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/mqttv3)
+target_compile_definitions(az_iot_tests_mqttv3_direct_method_client_tuned PRIVATE
     AZ_IOT_DM_RID_MAX=200)
 if(UNIX)
-    target_compile_definitions(az_iot_tests_gen1_direct_method_client_tuned PRIVATE
+    target_compile_definitions(az_iot_tests_mqttv3_direct_method_client_tuned PRIVATE
         _POSIX_C_SOURCE=200809L)
 endif()
-az_iot_add_cmocka_test(az_iot_tests_gen2_direct_method_client unit/gen2_direct_method_client_test.c)
-target_link_libraries(az_iot_tests_gen2_direct_method_client PRIVATE az_iot_test_support az_iot_gen2)
+az_iot_add_cmocka_test(az_iot_tests_mqttv5_direct_method_client unit/mqttv5_direct_method_client_test.c)
+target_link_libraries(az_iot_tests_mqttv5_direct_method_client PRIVATE az_iot_test_support az_iot_mqttv5)
 if(UNIX)
     # Two AEG direct-method budgets are only observable once a real second has
     # passed, so the suite calls nanosleep().
-    target_compile_definitions(az_iot_tests_gen2_direct_method_client PRIVATE
+    target_compile_definitions(az_iot_tests_mqttv5_direct_method_client PRIVATE
         _POSIX_C_SOURCE=200809L)
 endif()
 # The AEG design requires the concurrency limit to be configurable. It sizes a
 # public struct, so the library and the application must be built against the
-# same value -- hence the gen2 sources are compiled into this target rather than
-# linked from az_iot_gen2, which carries the default. Running the whole suite
+# same value -- hence the mqttv5 sources are compiled into this target rather than
+# linked from az_iot_mqttv5, which carries the default. Running the whole suite
 # against an overridden limit proves the knob reaches every pool, loop and
 # admission check, and catches anyone reintroducing a hardcoded bound.
-az_iot_add_cmocka_test(az_iot_tests_gen2_direct_method_client_tuned
-    unit/gen2_direct_method_client_test.c
-    ${CMAKE_SOURCE_DIR}/src/gen2/direct_method_client.c
-    ${CMAKE_SOURCE_DIR}/src/gen2/direct_method_codec.c)
-target_link_libraries(az_iot_tests_gen2_direct_method_client_tuned PRIVATE az_iot_test_support)
-target_include_directories(az_iot_tests_gen2_direct_method_client_tuned PRIVATE
+az_iot_add_cmocka_test(az_iot_tests_mqttv5_direct_method_client_tuned
+    unit/mqttv5_direct_method_client_test.c
+    ${CMAKE_SOURCE_DIR}/src/mqttv5/direct_method_client.c
+    ${CMAKE_SOURCE_DIR}/src/mqttv5/direct_method_codec.c)
+target_link_libraries(az_iot_tests_mqttv5_direct_method_client_tuned PRIVATE az_iot_test_support)
+target_include_directories(az_iot_tests_mqttv5_direct_method_client_tuned PRIVATE
     ${CMAKE_SOURCE_DIR}/src/core
-    ${CMAKE_SOURCE_DIR}/src/gen2)
-target_compile_definitions(az_iot_tests_gen2_direct_method_client_tuned PRIVATE
-    AZ_IOT_GEN2_DM_MAX_CONCURRENT=2)
+    ${CMAKE_SOURCE_DIR}/src/mqttv5)
+target_compile_definitions(az_iot_tests_mqttv5_direct_method_client_tuned PRIVATE
+    AZ_IOT_MQTTV5_DM_MAX_CONCURRENT=2)
 if(UNIX)
-    target_compile_definitions(az_iot_tests_gen2_direct_method_client_tuned PRIVATE
+    target_compile_definitions(az_iot_tests_mqttv5_direct_method_client_tuned PRIVATE
         _POSIX_C_SOURCE=200809L)
 endif()
 # The AEG direct-method protobuf codec is hand-rolled, so its wire format is
 # pinned here against bytes taken from the .proto rather than from itself.
 az_iot_add_cmocka_test(
-    az_iot_tests_gen2_direct_method_codec unit/gen2_direct_method_codec_test.c)
-target_link_libraries(az_iot_tests_gen2_direct_method_codec PRIVATE az_iot_test_support az_iot_gen2)
-target_include_directories(az_iot_tests_gen2_direct_method_codec PRIVATE
-    ${CMAKE_SOURCE_DIR}/src/gen2)
+    az_iot_tests_mqttv5_direct_method_codec unit/mqttv5_direct_method_codec_test.c)
+target_link_libraries(az_iot_tests_mqttv5_direct_method_codec PRIVATE az_iot_test_support az_iot_mqttv5)
+target_include_directories(az_iot_tests_mqttv5_direct_method_codec PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/mqttv5)
 # The shared proto3 codec, pinned against bytes taken from the protobuf spec
 # rather than from itself. The twin and presence clients only exercise the paths
 # their own protocols take, so the boundaries are covered here.
@@ -242,11 +242,11 @@ az_iot_add_cmocka_test(az_iot_tests_proto3 unit/proto3_test.c)
 target_link_libraries(az_iot_tests_proto3 PRIVATE az_iot_test_support az_iot_core)
 target_include_directories(az_iot_tests_proto3 PRIVATE ${CMAKE_SOURCE_DIR}/src/core)
 
-az_iot_add_cmocka_test(az_iot_tests_gen1_twin_client unit/gen1_twin_client_test.c)
-target_link_libraries(az_iot_tests_gen1_twin_client PRIVATE az_iot_test_support az_iot_gen1)
-az_iot_add_cmocka_test(az_iot_tests_gen2_twin_client unit/gen2_twin_client_test.c)
-target_link_libraries(az_iot_tests_gen2_twin_client PRIVATE az_iot_test_support az_iot_gen2)
-target_include_directories(az_iot_tests_gen2_twin_client PRIVATE ${CMAKE_SOURCE_DIR}/src/core)
+az_iot_add_cmocka_test(az_iot_tests_mqttv3_twin_client unit/mqttv3_twin_client_test.c)
+target_link_libraries(az_iot_tests_mqttv3_twin_client PRIVATE az_iot_test_support az_iot_mqttv3)
+az_iot_add_cmocka_test(az_iot_tests_mqttv5_twin_client unit/mqttv5_twin_client_test.c)
+target_link_libraries(az_iot_tests_mqttv5_twin_client PRIVATE az_iot_test_support az_iot_mqttv5)
+target_include_directories(az_iot_tests_mqttv5_twin_client PRIVATE ${CMAKE_SOURCE_DIR}/src/core)
 
 az_iot_add_cmocka_test(az_iot_tests_su_client unit/su_client_test.c)
 az_iot_add_cmocka_test(az_iot_tests_su_protocol unit/su_protocol_test.c)
@@ -270,11 +270,11 @@ set_tests_properties(
     PROPERTIES TIMEOUT 300)
 
 # File upload is HTTPS-only (stateless request-build/response-parse helpers), so
-# these tests need neither the mqtt mock nor internal headers. gen2 is linked
+# these tests need neither the mqtt mock nor internal headers. mqttv5 is linked
 # only so the profile-pin test can show a released pin admits the other
 # generation.
-az_iot_add_cmocka_test(az_iot_tests_gen1_file_upload unit/gen1_file_upload_client_test.c)
-target_link_libraries(az_iot_tests_gen1_file_upload PRIVATE az_iot_gen1 az_iot_gen2)
+az_iot_add_cmocka_test(az_iot_tests_mqttv3_file_upload unit/mqttv3_file_upload_client_test.c)
+target_link_libraries(az_iot_tests_mqttv3_file_upload PRIVATE az_iot_mqttv3 az_iot_mqttv5)
 
 az_iot_add_cmocka_test(az_iot_tests_certificate_provider_pem unit/certificate_provider_pem_test.c)
 
@@ -642,7 +642,7 @@ if(AZ_IOT_WITH_PAHO)
     target_include_directories(az_iot_reconnect_integration PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/conformance)
     target_link_libraries(az_iot_reconnect_integration PRIVATE
-        az_iot_gen1 az_iot_adapter_paho az_iot_test_proxy az_iot_test_mqtt_server)
+        az_iot_mqttv3 az_iot_adapter_paho az_iot_test_proxy az_iot_test_mqtt_server)
     if(UNIX)
         target_compile_definitions(az_iot_reconnect_integration PRIVATE
             _POSIX_C_SOURCE=200809L _DEFAULT_SOURCE)

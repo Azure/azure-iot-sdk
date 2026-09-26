@@ -39,7 +39,7 @@ This document describes the target lifecycle. Not all of it is coded yet, so eve
 | --- | --- |
 | **State** | User-visible connection lifecycle value (`az_iot_connection_state`). Reported through the state callback. |
 | **Connection profile** | What the device is connected to, as declared by DPS: `classic` or `mqttV5` (`az_iot_connection_profile`). Not caller-settable. |
-| **Generation** | The feature-client family selected by the profile: `gen1` (classic) or `gen2` (mqttV5). |
+| **Generation** | The feature-client family selected by the profile: `mqttv3` (classic) or `mqttv5` (mqttV5). |
 | **Role** | Which endpoint/protocol the current MQTT session targets (`az_iot_mqtt_role`): `DPS` (v3.1.1), `HUB_CLASSIC` (v3.1.1), `HUB_NEXT` (v5). |
 | **Phase** | Internal sub-step inside a state — DPS phases and presence (birth) phases. Not user-visible. |
 | **Provisioning** | Obtaining a hub assignment from DPS. |
@@ -289,15 +289,15 @@ flowchart TB
     B -->|"absent or null"| C
     B -->|"mqttV5"| D["AZ_IOT_CONNECTION_PROFILE_MQTT_V5<br/>MQTT 5, role HUB_NEXT"]
     B -->|"anything else"| E["AZ_IOT_CONNECTION_PROFILE_UNKNOWN"]
-    C --> F["gen1 feature clients"]
-    D --> G["gen2 feature clients<br/>+ presence handshake<br/>+ software updates channel"]
+    C --> F["mqttv3 feature clients"]
+    D --> G["mqttv5 feature clients<br/>+ presence handshake<br/>+ software updates channel"]
     E --> H["Connection fails:<br/>AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED<br/>raw string still readable"]
 ```
 
 | Wire value | Enum | MQTT | Generation |
 | --- | --- | --- | --- |
-| `"classic"`, absent, or `null` | `AZ_IOT_CONNECTION_PROFILE_CLASSIC` | 3.1.1 | gen1 |
-| `"mqttV5"` | `AZ_IOT_CONNECTION_PROFILE_MQTT_V5` | 5 | gen2 |
+| `"classic"`, absent, or `null` | `AZ_IOT_CONNECTION_PROFILE_CLASSIC` | 3.1.1 | MQTTv3 |
+| `"mqttV5"` | `AZ_IOT_CONNECTION_PROFILE_MQTT_V5` | 5 | MQTTv5 |
 | anything else | `AZ_IOT_CONNECTION_PROFILE_UNKNOWN` | — | connection fails |
 
 Rules both clients must implement:
@@ -416,7 +416,7 @@ checked before backoff is scheduled.
 | Reconnect attempt counter | Reset on success | Incremented per failed attempt. |
 | In-flight QoS 1 PUBACKs | No | Packet ids belong to the destroyed adapter; callers must re-send. |
 | Twin GET/PATCH, method responses, telemetry in flight | No | Feature clients must re-issue. |
-| Classic desired-property patches sent while disconnected | No | IoT Hub does not queue them, and the SDK does not fetch the twin on reconnect. The application calls `az_iot_gen1_twin_client_get()` if it needs the current desired state. |
+| Classic desired-property patches sent while disconnected | No | IoT Hub does not queue them, and the SDK does not fetch the twin on reconnect. The application calls `az_iot_mqttv3_twin_client_get()` if it needs the current desired state. |
 | Software updates status report not yet acked | Yes | Held in durable storage and retried until acked; idempotent on `workflowId`. |
 | Presence (birth) phase | No | Restarted with a freshly generated nonce. |
 | DPS phase | No | Restarted from `CONNECTING` if DPS is configured. |
@@ -613,7 +613,7 @@ reports include complete per-step outcomes when steps are available — see
   meaning.
 - **The gateway is a channel parameter.** Bootstrap always uses DPS; operational uses DPS in the
   Ignite '26 preview and IoT Hub afterwards, with no device-contract change. This SDK plans to
-  expose the operational channel as a gen2 feature client
+  expose the operational channel as an MQTTv5 feature client
   ([eng/client-separation.md](eng/client-separation.md) §8), but the service contract binds software updates to
   the updating operations, not to a connection profile.
 
@@ -640,11 +640,11 @@ flowchart TB
     STORE1 --> PROFILE{"connectionProfile"}
 
     PROFILE -->|"unknown profile"| FAULTED
-    PROFILE -->|"classic - gen1"| CRED
-    PROFILE -->|"mqttV5 - gen2"| CRED["Load credential:<br/>operational, else bootstrap"]
+    PROFILE -->|"classic - mqttv3"| CRED
+    PROFILE -->|"mqttV5 - mqttv5"| CRED["Load credential:<br/>operational, else bootstrap"]
 
     CRED --> CONNECTING["CONNECTING<br/>MQTT CONNECT + mutual TLS"]
-    CONNECTING --> BIRTH["Presence handshake<br/>gen2 only"]
+    CONNECTING --> BIRTH["Presence handshake<br/>mqttv5 only"]
     BIRTH --> SUBS["Replay persistent subscriptions"]
     CONNECTING --> SUBS
     SUBS --> CONNECTED["CONNECTED"]

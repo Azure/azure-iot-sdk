@@ -12,7 +12,7 @@ get_filename_component(AZ_IOT_ROOT "${CMAKE_CURRENT_LIST_DIR}/../../../../.." AB
 
 idf_component_register(
     SRCS
-        # Mirrors the az_iot_core/gen1/gen2 source list in src/CMakeLists.txt.
+        # Mirrors the az_iot_core/mqttv3/mqttv5 source list in src/CMakeLists.txt.
         # ESP-IDF cannot include that file, so this list is maintained by hand:
         # when you add or remove a source there, change it here too. Nothing in
         # CI builds this component, so a mismatch surfaces only on-device.
@@ -35,16 +35,16 @@ idf_component_register(
         "${AZ_IOT_ROOT}/src/features/su/su_report.c"
         "${AZ_IOT_ROOT}/src/features/su/su_channel_dps.c"
         "${AZ_IOT_ROOT}/src/features/su/su_protocol.c"
-        "${AZ_IOT_ROOT}/src/gen1/telemetry_client.c"
-        "${AZ_IOT_ROOT}/src/gen1/c2d_client.c"
-        "${AZ_IOT_ROOT}/src/gen1/direct_method_client.c"
-        "${AZ_IOT_ROOT}/src/gen1/twin_client.c"
-        "${AZ_IOT_ROOT}/src/gen1/file_upload_client.c"
-        "${AZ_IOT_ROOT}/src/gen2/telemetry_client.c"
-        "${AZ_IOT_ROOT}/src/gen2/c2d_client.c"
-        "${AZ_IOT_ROOT}/src/gen2/direct_method_client.c"
-        "${AZ_IOT_ROOT}/src/gen2/direct_method_codec.c"
-        "${AZ_IOT_ROOT}/src/gen2/twin_client.c"
+        "${AZ_IOT_ROOT}/src/mqttv3/telemetry_client.c"
+        "${AZ_IOT_ROOT}/src/mqttv3/c2d_client.c"
+        "${AZ_IOT_ROOT}/src/mqttv3/direct_method_client.c"
+        "${AZ_IOT_ROOT}/src/mqttv3/twin_client.c"
+        "${AZ_IOT_ROOT}/src/mqttv3/file_upload_client.c"
+        "${AZ_IOT_ROOT}/src/mqttv5/telemetry_client.c"
+        "${AZ_IOT_ROOT}/src/mqttv5/c2d_client.c"
+        "${AZ_IOT_ROOT}/src/mqttv5/direct_method_client.c"
+        "${AZ_IOT_ROOT}/src/mqttv5/direct_method_codec.c"
+        "${AZ_IOT_ROOT}/src/mqttv5/twin_client.c"
     INCLUDE_DIRS
         "${AZ_IOT_ROOT}/inc"
     PRIV_INCLUDE_DIRS

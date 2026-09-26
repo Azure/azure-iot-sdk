@@ -638,7 +638,7 @@ non-extractable-key custody, and CSR — the three axes this feature needs.
 
 All scenarios above get a dedicated, single-purpose sample under a new cross-cutting
 **`samples/authentication/`** group (auth is orthogonal to the feature clients like
-`unified/telemetry`, `gen2/c2d_receiver`, ...). Each sample reuses `samples/common/sample_utils` and
+`unified/telemetry`, `mqttv5/c2d_receiver`, ...). Each sample reuses `samples/common/sample_utils` and
 differs only in the credential-setup block, so they stay small and diff-able.
 
 ```
@@ -675,7 +675,7 @@ already provides most of the scaffolding:
   with a signature generator), RSA/ECDSA key gen + PEM export, `DpsX509EnrollmentGroupInfo`,
   root-CA handling (`RootCaCertificates` / `AddRootCaCertificate`), `LinkedIotHubs`.
 - **Add (new):** enrollment-group config with a **linked CA enabled for operational-cert
-  issuance**; provision a **Gen2/P-SKU hub** with cert issuance on API `2025-08-01-preview`.
+  issuance**; provision a **MQTTv5/P-SKU hub** with cert issuance on API `2025-08-01-preview`.
 - **Done:** SoftHSM2 for the PKCS#11 custody tests. The e2e legs run on GitHub-hosted
   runners rather than a Docker image, so it is provisioned per job:
   [`eng/setup-softhsm.sh`](../../eng/setup-softhsm.sh) initializes a token, imports the
@@ -717,6 +717,6 @@ dedicated e2e test app), driven by the in-process all-C e2e suite (`tests/e2e`).
   `sign()` hook now reach the adapter on both connect paths,
   `AZ_IOT_ERR_CREDENTIAL_INCOMPLETE` rejects a credential that cannot sign, and the
   handshake signs inside a PKCS#11 / TPM token. Added `samples/authentication/hsm_pkcs11`
-  (later split into `hsm_pkcs11_gen1` / `hsm_pkcs11_gen2`) and `hsm_sign_callback`, the
+  (later split into `hsm_pkcs11_mqttv3` / `hsm_pkcs11_mqttv5`) and `hsm_sign_callback`, the
   SoftHSM2 provisioning script, and unit + e2e custody suites. Corrected **Status**, the
   storage-methods gap, **D8**, **Samples** and **E2E tests** to match. By ewertons.

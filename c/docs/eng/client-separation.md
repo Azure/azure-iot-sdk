@@ -13,10 +13,10 @@ parts that only one generation supports are discoverable only at run time.
 
 Telemetry is the first completed split: the unified client is gone, its shared
 message/callback types live in `az_iot_message.h`, and the two wire paths now
-compile in separate `az_iot_gen1` and `az_iot_gen2` libraries.
+compile in separate `az_iot_mqttv3` and `az_iot_mqttv5` libraries.
 
 This document specifies splitting the **feature clients** by generation —
-`az_iot_gen1_*` for Azure IoT Hub Classic, `az_iot_gen2_*` for the Azure
+`az_iot_mqttv3_*` for Azure IoT Hub Classic, `az_iot_mqttv5_*` for the Azure
 IoT/AEG Hub — while the **connection client stays single**.
 
 > **Supersedes [split-client.md](split-client.md).** That document evaluated
@@ -60,14 +60,14 @@ az_iot_connection_client_get_hub_profile(&conn, &hub);
 
 if (hub.connection_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
 {
-  az_iot_gen2_telemetry_client tel;
-  az_iot_gen2_telemetry_client_init(&tel, &conn);   /* AEG API */
+  az_iot_mqttv5_telemetry_client tel;
+  az_iot_mqttv5_telemetry_client_init(&tel, &conn);   /* AEG API */
   ...
 }
 else
 {
-  az_iot_gen1_telemetry_client tel;
-  az_iot_gen1_telemetry_client_init(&tel, &conn);   /* Classic API */
+  az_iot_mqttv3_telemetry_client tel;
+  az_iot_mqttv3_telemetry_client_init(&tel, &conn);   /* Classic API */
   ...
 }
 ```
@@ -82,8 +82,8 @@ is to report the generation accurately and to refuse the wrong API loudly.
 | `az_iot_connection_client` + DPS + reconnect + adapter registry | **single, shared** |
 | MQTT abstraction, adapters, certificate provider, logging, results, dispatch | **single, shared** |
 | Message types (`az_iot_telemetry_message`, `az_iot_c2d_message`, …) and callback typedefs | **single, shared** — see [§5](#5-what-stays-shared) |
-| Telemetry, C2D, twin, direct methods **clients** | **split** `gen1` / `gen2` |
-| File upload **client** | **`gen1` only** — cut from AEG, see [§4](#file-upload-is-gen1-only) |
+| Telemetry, C2D, twin, direct methods **clients** | **split** `mqttv3` / `mqttv5` |
+| File upload **client** | **`mqttv3` only** — cut from AEG, see [§4](#file-upload-is-mqttv3-only) |
 | Software updates | **not split** — one engine (`su_core`) behind a channel vtable; the twin channel is cut, see [§8](#8-device-update) |
 
 ---
@@ -253,7 +253,7 @@ through an in-place apply at configure time.
 > **Worth stating plainly:** for *this particular* change, patching is not
 > strictly required. The api-version is only consumed by
 > `az_iot_provisioning_client_get_user_name()`, and this SDK could build the DPS
-> CONNECT username itself — it already hand-builds one for the gen2 presence
+> CONNECT username itself — it already hand-builds one for the MQTTv5 presence
 > handshake. The reason to build the patch mechanism now is the archived
 > dependency in general, not this field.
 
@@ -298,9 +298,9 @@ Initializing a feature client against a connection of the other generation
 **fails**:
 
 ```c
-/* conn resolved to GEN2 */
-az_iot_gen1_twin_client twin;
-az_iot_result r = az_iot_gen1_twin_client_init(&twin, &conn);
+/* conn resolved to MQTTV5 */
+az_iot_mqttv3_twin_client twin;
+az_iot_result r = az_iot_mqttv3_twin_client_init(&twin, &conn);
 /* r == AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH */
 ```
 
@@ -329,57 +329,57 @@ on the other's API, even as a stub that returns an error.
 
 | Construct | Belongs to |
 |---|---|
-| MQTT v5 user properties on telemetry / C2D | gen2 |
-| Correlation-data request/response matching | gen2 |
-| Twin push on connect | gen2 |
-| Direct-method probe / ready handshake | gen2 |
-| Topic property-bag encoding | gen1 |
-| `$rid` correlation | gen1 |
-| File upload over HTTPS + the application HTTP transport hook | gen1 |
+| MQTT v5 user properties on telemetry / C2D | MQTTv5 |
+| Correlation-data request/response matching | MQTTv5 |
+| Twin push on connect | MQTTv5 |
+| Direct-method probe / ready handshake | MQTTv5 |
+| Topic property-bag encoding | MQTTv3 |
+| `$rid` correlation | MQTTv3 |
+| File upload over HTTPS + the application HTTP transport hook | MQTTv3 |
 
 This is the concrete reason the split is worth doing: before it, the shared
 `az_iot_file_upload_client.h` opened by promising "one seamless API, transport
 chosen by hub flavor", and then `az_iot_file_upload_client_get_sas_uri()`
-returned `AZ_IOT_ERR_NOT_SUPPORTED` at run time on gen2. Both generations paid
+returned `AZ_IOT_ERR_NOT_SUPPORTED` at run time on MQTTv5. Both generations paid
 for a surface neither fully implemented.
 
 ### One documented exception: runtime CSR renewal
 
 `az_iot_connection_client_send_csr()` is Classic-only and returns
-`AZ_IOT_ERR_NOT_SUPPORTED` on gen2 — by the rule above, exactly the thing that
+`AZ_IOT_ERR_NOT_SUPPORTED` on MQTTv5 — by the rule above, exactly the thing that
 should not exist. It **stays** on the shared connection client anyway, as a single
 function, matching what .NET does.
 
 The rule is worth keeping where it pays: in the feature clients, where the whole
 point is that each generation's header describes only what that generation can
-do. Manufacturing a gen1 certificate-management client purely to satisfy the rule
+do. Manufacturing an MQTTv3 certificate-management client purely to satisfy the rule
 would cost users an extra object to construct and wire up, for no gain in
 clarity. Naming the exception is more honest than quietly widening the rule until
 it accommodates it.
 
-### File upload is gen1-only
+### File upload is mqttv3-only
 
 The plan of record was to split file upload like the other four, with
-`az_iot_gen2_file_upload_client` carrying the control plane over MQTT. That is
+`az_iot_mqttv5_file_upload_client` carrying the control plane over MQTT. That is
 **not what shipped**, because the feature was cut from AEG.
 
-- **`az_iot_gen1_file_upload_client`** owns the HTTPS control plane. The
+- **`az_iot_mqttv3_file_upload_client`** owns the HTTPS control plane. The
   `az_iot_file_upload_http_transport` hook, the response buffer, and the URL/body
-  size macros moved out of the shared header into the gen1 header. They are a
-  Classic implementation detail and have no meaning on gen2. The hook is now
+  size macros moved out of the shared header into the MQTTv3 header. They are a
+  Classic implementation detail and have no meaning on MQTTv5. The hook is now
   **required** at `init()` rather than optional: without it the client can never
   perform either operation, so refusing up front beats failing every later call.
-- **There is no `az_iot_gen2_file_upload_client`.** File upload is not carried on
+- **There is no `az_iot_mqttv5_file_upload_client`.** File upload is not carried on
   the MQTT v5 hub for now, and the AEG Files message schema does not exist --
   `implementation.md` §3.5 gives the topics and a processing model, but no
-  message definitions, where `dm.md` gives seven. Publishing a gen2 client whose
+  message definitions, where `dm.md` gives seven. Publishing an MQTTv5 client whose
   every entry point returned `AZ_IOT_ERR_NOT_SUPPORTED` would reintroduce
   exactly the surface-nobody-implements problem this split exists to remove.
-  The gen1 client pins Classic instead, so an MQTT v5 connection is refused at
+  The MQTTv3 client pins Classic instead, so an MQTT v5 connection is refused at
   `init()` with `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH` rather than at the first
   upload.
-- When the schema lands, a gen2 client is added beside the gen1 one. Nothing in
-  the gen1 header has to move for that to happen, which is why the hook and the
+- When the schema lands, an MQTTv5 client is added beside the MQTTv3 one. Nothing in
+  the MQTTv3 header has to move for that to happen, which is why the hook and the
   buffers live there rather than in a shared header.
 
 Uploading the blob bytes to Azure Storage remains the application's job -- that
@@ -395,8 +395,8 @@ Message types and callback typedefs stay **single and shared**, in
 ```c
 az_iot_telemetry_message msg = { .payload = body, .payload_len = len };
 
-az_iot_gen1_telemetry_client_send(&t1, &msg, on_send_done, &ctx);
-az_iot_gen2_telemetry_client_send(&t2, &msg, on_send_done, &ctx);   /* same msg, same callback */
+az_iot_mqttv3_telemetry_client_send(&t1, &msg, on_send_done, &ctx);
+az_iot_mqttv5_telemetry_client_send(&t2, &msg, on_send_done, &ctx);   /* same msg, same callback */
 ```
 
 Splitting the *clients* is what removes the cross-generation constructs.
@@ -412,8 +412,8 @@ generation's `_options` argument, not in a forked message type.
 ```mermaid
 flowchart TB
     APP["Customer application"]
-    G1["az_iot_gen1 -- IoT Hub Classic feature clients<br/>telemetry . c2d . twin . methods<br/>file_upload (HTTPS + app transport hook)"]
-    G2["az_iot_gen2 -- IoT/AEG Hub feature clients<br/>telemetry . c2d . twin . methods"]
+    G1["az_iot_mqttv3 -- IoT Hub Classic feature clients<br/>telemetry . c2d . twin . methods<br/>file_upload (HTTPS + app transport hook)"]
+    G2["az_iot_mqttv5 -- IoT/AEG Hub feature clients<br/>telemetry . c2d . twin . methods"]
     CONN["az_iot_connection_client -- SINGLE<br/>DPS registration . reconnect . adapter registry<br/>resolves + reports az_iot_hub_profile"]
     CORE["az_iot_core<br/>result . log . version . mqtt_iface . dispatch<br/>reconnect . span_writer . certificate_provider<br/>shared message types + shared callback typedefs"]
     ADAPT["Adapters -- paho v3.1.1 + v5 . rust v5 . cert_openssl . su/crypto_openssl"]
@@ -432,15 +432,15 @@ flowchart TB
 
 Rules, mechanically enforced (see [§7](#7-enforcement)):
 
-1. `az_iot_gen1` and `az_iot_gen2` MUST NOT reference each other.
-2. `core` and the connection client MUST NOT reference `gen1_` or `gen2_`
+1. `az_iot_mqttv3` and `az_iot_mqttv5` MUST NOT reference each other.
+2. `core` and the connection client MUST NOT reference `mqttv3_` or `mqttv5_`
    symbols. The connection client resolves the generation and publishes it as
    data; it does not call into either library.
 3. Feature clients reach the transport only through the connection client's
    existing internal interface — no direct adapter access.
 
 The connection client necessarily contains both generations' *connect* logic
-(username construction, the gen2 presence/birth handshake). That is inherent in
+(username construction, the MQTTv5 presence/birth handshake). That is inherent in
 having one connection client, and is accepted.
 
 ---
@@ -452,11 +452,11 @@ having one connection client, and is accepted.
 
 | Check | Rule |
 |---|---|
-| `src/gen1/**` contains `gen2_`, or `src/gen2/**` contains `gen1_` | 1 |
-| `inc/azure/iot/gen1/*.h` includes `gen2/*`, or vice versa | 1 |
-| `src/core/**` contains `gen1_` or `gen2_` | 2 |
-| A gen1 header mentions a gen2-only construct from [§4](#4-no-cross-generation-constructs-on-the-public-surface), or vice versa | [§4](#4-no-cross-generation-constructs-on-the-public-surface) |
-| A `gen1`/`gen2` symbol name contains `classic`, `next`, `aeg` or `flavor` | [§10](#10-naming) |
+| `src/mqttv3/**` contains `mqttv5_`, or `src/mqttv5/**` contains `mqttv3_` | 1 |
+| `inc/azure/iot/mqttv3/*.h` includes `mqttv5/*`, or vice versa | 1 |
+| `src/core/**` contains `mqttv3_` or `mqttv5_` | 2 |
+| An MQTTv3 header mentions an mqttv5-only construct from [§4](#4-no-cross-generation-constructs-on-the-public-surface), or vice versa | [§4](#4-no-cross-generation-constructs-on-the-public-surface) |
+| A `mqttv3`/`mqttv5` symbol name contains `classic`, `next`, `aeg` or `flavor` | [§10](#10-naming) |
 
 Negative-test the gate — reintroduce each violation in a scratch copy and confirm
 it fails — before trusting it. A check that cannot fail is worse than no check,
@@ -477,8 +477,8 @@ carrying delivery and reporting.
 
 | Channel | Generation | Status |
 |---|---|---|
-| Twin-based (Device Update for IoT Hub) | gen1 | **Cut** — the channel and its public API were removed, not kept behind a flag |
-| DPS-fronted RPC (software updates) | gen2 | **The only channel** — implemented in `su_channel_dps.c`; onboarding route verified against the live service |
+| Twin-based (Device Update for IoT Hub) | MQTTv3 | **Cut** — the channel and its public API were removed, not kept behind a flag |
+| DPS-fronted RPC (software updates) | MQTTv5 | **The only channel** — implemented in `su_channel_dps.c`; onboarding route verified against the live service |
 
 > **Software updates is specified elsewhere; this section only states where the seam is.**
 > See [su-spec.md](su-spec.md) for the wire contract and
@@ -504,7 +504,7 @@ the engine with it.
 
 **Ordering (was: repoint in P2, re-layer in P5).** The P2 step was to change
 `az_iot_su_client_initialize()`'s parameter from `az_iot_twin_client*` to
-`az_iot_gen1_twin_client*` and follow the five call sites. **That step is now moot: the software updates cut
+`az_iot_mqttv3_twin_client*` and follow the five call sites. **That step is now moot: the software updates cut
 landed first, so there is no twin pointer left to repoint and P2 does nothing to software updates.** software updates must
 not hold a cross-generation `az_iot_twin_client`: that is precisely the construct
 [§4](#4-no-cross-generation-constructs-on-the-public-surface) forbids, and it no longer does.
@@ -619,8 +619,8 @@ sequenceDiagram
     participant Old as Previously assigned hub
     participant New as Newly assigned hub
 
-    Note over App,Old: Steady state - profile = classic, app holds gen1 feature clients
-    App->>Conn: az_iot_gen1_twin_client_init(...) - pins CLASSIC
+    Note over App,Old: Steady state - profile = classic, app holds mqttv3 feature clients
+    App->>Conn: az_iot_mqttv3_twin_client_init(...) - pins CLASSIC
 
     Note over Old: Admin reassigns the device service-side (no forced disconnect)
     Old--xConn: transport drop
@@ -630,7 +630,7 @@ sequenceDiagram
     DPS-->>Conn: ASSIGNED { assignedHub = New, connectionProfile = mqttV5 }
     Note over Conn: pin CLASSIC != assigned mqttV5 - stop before the broker CONNECT
     Conn-->>App: FAULTED, reason = CONNECTION_PROFILE_MISMATCH,<br/>event carries profile = mqttV5
-    App->>App: destroy gen1 clients (releases the pin), construct gen2 clients
+    App->>App: destroy mqttv3 clients (releases the pin), construct mqttv5 clients
     App->>Conn: open()
 ```
 
@@ -750,13 +750,13 @@ Tracked as **[AB#39350066](https://dev.azure.com/msazure/One/_workitems/edit/393
 > *rejects* (topic filter not authorized, which is a live possibility on AEG's
 > topic-space authorization) must not be reported as a live subscription either.
 > Tracked as [AB#39366084](https://dev.azure.com/msazure/One/_workitems/edit/39366084).
-> The gen2 presence handshake already implements the correct shape — it waits for
+> The MQTTv5 presence handshake already implements the correct shape — it waits for
 > its own SUBACK before publishing birth — it simply is not applied to feature
 > subscriptions.
 >
 > **What a refusal means, and what the gate does about it.** A refused SUBACK is a
 > legitimate, spec-defined answer rather than a malfunction: MQTT lets a broker
-> decline a filter, and on gen2 that is the topic-space grant
+> decline a filter, and on MQTTv5 that is the topic-space grant
 > `ih/${client.authenticationName}/dev/#` doing its job. What the refusal *by
 > itself* cannot tell you is whether the cause is permanent or a passing
 > service-side fault; only the reason code separates those, and they need opposite
@@ -777,7 +777,7 @@ Tracked as **[AB#39350066](https://dev.azure.com/msazure/One/_workitems/edit/393
 >   under the existing policy and clear when the service does.
 >
 > **A refusal is a failure either way — what differs is the blast radius.** Custom
-> topics ship on gen2 ([test-coverage.md](../test-coverage.md), D-6), which makes a
+> topics ship on MQTTv5 ([test-coverage.md](../test-coverage.md), D-6), which makes a
 > topic filter application-supplied runtime data rather than an SDK constant, and
 > a refusal an ordinary configuration error rather than a bug. Taking a whole
 > device offline, telemetry included, because one custom subscription was declined
@@ -849,7 +849,7 @@ Tracked as **[AB#39350066](https://dev.azure.com/msazure/One/_workitems/edit/393
 >
 > **A SUBACK that never arrives.** The gate needs a deadline, because nothing else
 > bounds it: the adapter's connect timeout covers the CONNACK, the birth-ack
-> timeout covers the gen2 presence handshake, and keep-alive cannot help because
+> timeout covers the MQTTv5 presence handshake, and keep-alive cannot help because
 > the link is alive. A broker that accepts the connection and simply never answers
 > the SUBSCRIBE would otherwise leave the client in `CONNECTING` indefinitely.
 >
@@ -876,9 +876,9 @@ Tracked as **[AB#39350066](https://dev.azure.com/msazure/One/_workitems/edit/393
 >
 > **2. Persistent subscriptions cannot be removed.**
 > `__add_subscription_on_connect()` has no remove counterpart, and every feature
-> client's `destroy()` leaves its filter registered. Destroying the gen1 set and
-> constructing the gen2 set therefore leaves the Classic filters behind, so the
-> device re-subscribes to `$iothub/...` topics on a gen2 hub and consumes registry
+> client's `destroy()` leaves its filter registered. Destroying the MQTTv3 set and
+> constructing the MQTTv5 set therefore leaves the Classic filters behind, so the
+> device re-subscribes to `$iothub/...` topics on an MQTTv5 hub and consumes registry
 > slots permanently — past `AZ_IOT_MAX_PERSISTENT_SUBS` (8) and past the
 > service-side limit of five topics per device. Step 2 above cannot work until
 > this exists. Tracked as
@@ -887,10 +887,10 @@ Tracked as **[AB#39350066](https://dev.azure.com/msazure/One/_workitems/edit/393
 > **These two fixes deadlock if they are built naively — the order matters.**
 > Gating `CONNECTED` on SUBACKs (defect 1) while removal is still driven by the
 > application (defect 2) produces a connection that can never come up. On a
-> profile change the stale gen1 `$iothub/...` filters are still in the registry,
+> profile change the stale MQTTv3 `$iothub/...` filters are still in the registry,
 > because the only thing that removes them is the application destroying those
 > clients, and the application does not act until it observes `CONNECTED`. The
-> new gate would first re-issue those filters against the gen2 hub and wait for
+> new gate would first re-issue those filters against the MQTTv5 hub and wait for
 > their SUBACKs. AEG's topic-space authorization does not grant `$iothub/...`, so
 > they are rejected, `CONNECTED` never arrives, and the application never gets
 > the callback that would have removed them.
@@ -902,16 +902,16 @@ Tracked as **[AB#39350066](https://dev.azure.com/msazure/One/_workitems/edit/393
 > ordinary feature-client teardown; it just cannot be the only thing standing
 > between a profile change and a connection that comes up.
 >
-> **The fix differs by generation, and that is the point.** On gen1, removal
+> **The fix differs by generation, and that is the point.** On MQTTv3, removal
 > issues an MQTT UNSUBSCRIBE — Classic supports it, and Classic genuinely has
-> per-feature filters that must be withdrawn. gen2 feature clients have
+> per-feature filters that must be withdrawn. MQTTv5 feature clients have
 > **nothing to unsubscribe**: the presence handshake already subscribes
 > `ih/{device_id}/dev/#`, the whole device-bound topic space, before `CONNECTED`,
 > so their removal is a dispatch-table unregister and no MQTT operation at all.
-> This matters because on gen2 there is only ever **one feature-delivery subscription**, taken
+> This matters because on MQTTv5 there is only ever **one feature-delivery subscription**, taken
 > out once at connect and torn down with the session — and withdrawing *that* one
 > to retire a single feature client would take the whole device's topic space with
-> it. The .NET client behaves the same way: its gen2
+> it. The .NET client behaves the same way: its MQTTv5
 > connection issues a single `SubscribeAsync("ih/{deviceId}/dev/#", AtLeastOnce)`
 > and nothing in the library ever calls `UnsubscribeAsync` — the capability
 > exists on its MQTT interface and is unused.
@@ -920,7 +920,7 @@ Tracked as **[AB#39350066](https://dev.azure.com/msazure/One/_workitems/edit/393
 > at risk from this: the presence handshake issues it directly rather than through
 > the persistent-subscription registry, so it has no owner and a per-owner removal
 > can never select it. Withdrawing a filter underneath it does not disturb it
-> either — the wildcard keeps matching. On gen2 this is now a registry removal in
+> either — the wildcard keeps matching. On MQTTv5 this is now a registry removal in
 > practice, since no feature client registers a filter there any more; it still
 > issues the UNSUBSCRIBE for anything that is registered, which is what an
 > application custom topic will be.
@@ -930,10 +930,10 @@ Tracked as **[AB#39350066](https://dev.azure.com/msazure/One/_workitems/edit/393
 > anywhere in them — so the claim is withdrawn. The reason above does not depend
 > on it and is checkable.)
 >
-> **Related defect, same fix — done.** gen2 feature clients also registered their
+> **Related defect, same fix — done.** MQTTv5 feature clients also registered their
 > own filters on top of that wildcard — `dev/twin/get/response`,
 > `dev/twin/reported/response`, `dev/twin/desired`, `dev/c2d`, `dev/methods/+` —
-> every one a strict subset of `ih/{device_id}/dev/#`. gen2 issued six
+> every one a strict subset of `ih/{device_id}/dev/#`. MQTTv5 issued six
 > subscriptions where one sufficed, re-issued all six on every reconnect, and
 > spent registry slots it never needed. All five are gone; the dispatch handlers
 > that route the messages stay, because it was never the filters that did the
@@ -964,8 +964,8 @@ Tracked as **[AB#39350066](https://dev.azure.com/msazure/One/_workitems/edit/393
 
 Open, and deliberately called out because it makes the invalidation bidirectional
 rather than one-way: **can a device be rolled back to a classic IoT Hub?** Every
-example above moves gen1 → gen2. If gen2 → gen1 is also reachable, then gen1
-feature clients must handle being constructed *after* a gen2 session, and the
+example above moves MQTTv3 → MQTTv5. If MQTTv5 → MQTTv3 is also reachable, then MQTTv3
+feature clients must handle being constructed *after* an MQTTv5 session, and the
 "migrate forward and delete the Classic code" story in
 [§1](#1-shape) stops being a one-way door.
 
@@ -973,14 +973,14 @@ feature clients must handle being constructed *after* a gen2 session, and the
 
 ## 10. Naming
 
-`gen1` / `gen2` matches .NET's vocabulary and is short enough to sit in every
+`mqttv3` / `mqttv5` matches .NET's vocabulary and is short enough to sit in every
 feature-client symbol without noise. The team expects to rename once service-side
 naming settles, so the scheme keeps that rename mechanical:
 
-- Headers `inc/azure/iot/gen1/`, `inc/azure/iot/gen2/`; sources `src/gen1/`, `src/gen2/`
-- Symbols `az_iot_gen1_*`, `az_iot_gen2_*` — the infix appears in exactly one
+- Headers `inc/azure/iot/mqttv3/`, `inc/azure/iot/mqttv5/`; sources `src/mqttv3/`, `src/mqttv5/`
+- Symbols `az_iot_mqttv3_*`, `az_iot_mqttv5_*` — the infix appears in exactly one
   position, immediately after `az_iot_`
-- CMake targets `az_iot_gen1`, `az_iot_gen2`
+- CMake targets `az_iot_mqttv3`, `az_iot_mqttv5`
 - `classic`, `next`, `aeg` and `flavor` are banned from generation symbol names
 
 ### Two vocabularies, deliberately
@@ -990,15 +990,15 @@ document keeps **both**, mapped in exactly one place:
 
 | API namespace | Wire value | Meaning |
 |---|---|---|
-| `az_iot_gen1_*` | `"classic"` | Classic MQTT 3.x capable IoT Hub |
-| `az_iot_gen2_*` | `"mqttV5"` | MQTT 5 capable IoT Hub |
+| `az_iot_mqttv3_*` | `"classic"` | Classic MQTT 3.x capable IoT Hub |
+| `az_iot_mqttv5_*` | `"mqttV5"` | MQTT 5 capable IoT Hub |
 
-**Decided (for now):** `classic` maps to gen1, `mqttV5` maps to gen2.
+**Decided (for now):** `classic` maps to MQTTv3, `mqttV5` maps to MQTTv5.
 
 The profile enum uses the service's spelling
 (`AZ_IOT_CONNECTION_PROFILE_CLASSIC` / `_MQTT_V5`) so the wire vocabulary is not
 invented twice and a log line matches the spec. The feature-client namespaces
-keep `gen1`/`gen2` because they name an *API surface*, not a transport — and
+keep `mqttv3`/`mqttv5` because they name an *API surface*, not a transport — and
 because `mqttV5` would be an actively misleading name for a namespace whose
 distinguishing feature is topic structure and payload shape, not merely the MQTT
 version.
@@ -1017,14 +1017,14 @@ client.
 
 ## 11. Samples and tests
 
-**Unified and gen2 samples**, grouped like the .NET SDK's. Each dual-generation
+**Unified and MQTTv5 samples**, grouped like the .NET SDK's. Each dual-generation
 feature ships a `samples/unified/` sample that registers both adapters, builds its
 clients for an assumed generation before `open()`, and on `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH`
 rebuilds them for the profile the event carries and reopens -- the recovery of
 [§9](#the-profile-can-change-while-the-device-is-running), exercised on the first
 connect and on a move in either direction. `samples/unified/connect_first` shows
 the conservative alternative: build once `CONNECTED`, from the profile read then.
-Where AEG has the feature, a `samples/gen2/` sample pins gen2 at `init()`.
+Where AEG has the feature, a `samples/mqttv5/` sample pins MQTTv5 at `init()`.
 `samples/unified/file_upload` is the Classic-only exception: it builds after
 `CONNECTED` and reports an MQTT v5 hub, with no rebuild. There is no Classic-only
 group. See [samples/README.md](../../samples/README.md).
@@ -1044,14 +1044,14 @@ exist today:
 - the DPS CONNECT username carries `api-version=2026-11-02-preview`
 - `get_hub_profile` before `CONNECTED` returns `AZ_IOT_ERR_NOT_CONNECTED`
 - an older-header caller (smaller `_internal_size`) is defaulted, not misread
-- gen1 file upload with no HTTP transport supplied fails at init
+- MQTTv3 file upload with no HTTP transport supplied fails at init
 - file upload against an MQTT v5 connection fails at init with
-  `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH` (there is no gen2 file upload client)
+  `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH` (there is no MQTTv5 file upload client)
 
 e2e needs provisioned resources for **both** generations. `iot-sdks-e2e-fx` cannot
-provision an AEG hub today — that arrives once gen2 is deployable through the
-Azure CLI, and the same script is then used for gen2. Until then the gen2 e2e leg
-cannot exist, and gen2 coverage comes from unit tests against the in-memory mock
+provision an AEG hub today — that arrives once MQTTv5 is deployable through the
+Azure CLI, and the same script is then used for MQTTv5. Until then the MQTTv5 e2e leg
+cannot exist, and MQTTv5 coverage comes from unit tests against the in-memory mock
 plus the conformance suites.
 
 ---
@@ -1064,13 +1064,13 @@ plus the conformance suites.
 | P0b | This document + doc reconciliation | — | |
 | P1a | Request `2026-11-02-preview` for all DPS CONNECT sessions in the shared connection client without patching `azure-sdk-for-c` | — | **Implemented in this PR.** The pinned dependency and ESP-IDF submodule are unchanged; verify the platform-specific sample builds separately. |
 | P1b | `az_iot_hub_profile` + `get_hub_profile()` + `az_iot_connection_profile` + `AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED`; parse `connectionProfile` in the existing ASSIGNED-payload walk | — | Additive: absent/null still resolves to `classic`; the `2026-11-02-preview` CONNECT version enables wire values when the service supplies them. `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH` is not here — it lands in P2, with the first client that can reject a mismatch. |
-| P1c | Gate `CONNECTED` on subscriptions being SUBACKed ([AB#39366084](https://dev.azure.com/msazure/One/_workitems/edit/39366084)); tag each persistent-subscription entry with its generation and drop non-matching entries on reconnect *before* re-subscribing; add a remove path wired into every feature client's `destroy()` and into its partial-init unwind, UNSUBSCRIBE on both generations (a no-op on gen2 once its redundant filters are gone); drop the five gen2 filters already covered by `ih/{device_id}/dev/#` ([AB#39366086](https://dev.azure.com/msazure/One/_workitems/edit/39366086)); preserve SUBACK reason codes through the adapters behind a shared `az_iot_mqtt_suback_result()`, and tag each entry with its failure scope (`AZ_IOT_SUBSCRIPTION_FAILS_SESSION` / `_FAILS_SELF`) so a refusal ends the connection only for a feature client's own filter — terminally when the reason is deterministic — while a refused custom topic is reported to its owner and dropped ([§9](#the-profile-can-change-while-the-device-is-running)); bound the gate with a deadline | — | **Done across four PRs:** removal + generation tagging (#116), adapter reason-code preservation (#123), the gate + failure-scope policy + deadline (#124), and redundant gen2 filter removal (#128). **P2 depends on all four parts**: §9's rebuild pattern is unsafe without the gate and impossible without removal. The generation tagging is not optional — without it the first two fixes deadlock each other on a profile change. |
+| P1c | Gate `CONNECTED` on subscriptions being SUBACKed ([AB#39366084](https://dev.azure.com/msazure/One/_workitems/edit/39366084)); tag each persistent-subscription entry with its generation and drop non-matching entries on reconnect *before* re-subscribing; add a remove path wired into every feature client's `destroy()` and into its partial-init unwind, UNSUBSCRIBE on both generations (a no-op on MQTTv5 once its redundant filters are gone); drop the five MQTTv5 filters already covered by `ih/{device_id}/dev/#` ([AB#39366086](https://dev.azure.com/msazure/One/_workitems/edit/39366086)); preserve SUBACK reason codes through the adapters behind a shared `az_iot_mqtt_suback_result()`, and tag each entry with its failure scope (`AZ_IOT_SUBSCRIPTION_FAILS_SESSION` / `_FAILS_SELF`) so a refusal ends the connection only for a feature client's own filter — terminally when the reason is deterministic — while a refused custom topic is reported to its owner and dropped ([§9](#the-profile-can-change-while-the-device-is-running)); bound the gate with a deadline | — | **Done across four PRs:** removal + generation tagging (#116), adapter reason-code preservation (#123), the gate + failure-scope policy + deadline (#124), and redundant MQTTv5 filter removal (#128). **P2 depends on all four parts**: §9's rebuild pattern is unsafe without the gate and impossible without removal. The generation tagging is not optional — without it the first two fixes deadlock each other on a profile change. |
 | P1d | Turn the connection-state callback into the extensible `az_iot_connection_state_event` struct, carrying the resolved profile on `CONNECTED` ([§9](#the-profile-can-change-while-the-device-is-running)) | — | **Implemented.** The SDK produces and size-stamps the callback-lifetime event. `profile` is set on `CONNECTED`, and also on a profile-driven failure so the application can rebuild for the newly assigned generation. All samples, unit/integration suites and e2e agents use the new signature. |
-| P2 | Split the feature clients, one PR each: telemetry → c2d → direct methods → twin | P1b, **P1c**, P1d | **Done — all four clients split.** For local testing when DPS omits the profile, the absent/null development override above supplies `mqttV5` for AEG testing. Each client pins its generation at `_init()` and the connection checks the pin at connect ([§9](#9-pinning-the-generation-at-init)); topics are built through the connect-time bind callback. The direct-method split shipped the gen2 client as a carry-over of the pre-split behaviour and a guard against mistaking a probe for an invocation; the AEG probe / exec / abandon handshake that [§4](#4-no-cross-generation-constructs-on-the-public-surface) assigns to gen2 landed after it, and is the first place the two generations differ in protocol rather than only in topic shape. **The twin PR carried no software updates change at all:** the software updates cut landed first, so there was no `az_iot_su_client_initialize()` to repoint and software updates no longer consumes the twin desired-property registry ([§8](#8-device-update)) — which the twin split therefore deleted. Twin is also where the gen2 bind callback stopped being cosmetic: the unified client resolved the device id inside `init()`, which cannot work for a DPS connection before assignment; gen2 now binds its three `dev/twin/...` handlers at connect like every other gen2 client. |
-| P3 | File upload redesign — HTTP transport becomes gen1-only | P1 | **Done.** Shipped smaller than planned: file upload was **cut from AEG**, so there is no gen2 client and none is manufactured. `az_iot_gen1_file_upload_client` owns the HTTPS control plane, the transport hook is now required at `init()`, and the client pins Classic — see [§4](#file-upload-is-gen1-only). This removed the last three `profile->flavor` branches in `c/src`, which is what P4 was waiting on. |
+| P2 | Split the feature clients, one PR each: telemetry → c2d → direct methods → twin | P1b, **P1c**, P1d | **Done — all four clients split.** For local testing when DPS omits the profile, the absent/null development override above supplies `mqttV5` for AEG testing. Each client pins its generation at `_init()` and the connection checks the pin at connect ([§9](#9-pinning-the-generation-at-init)); topics are built through the connect-time bind callback. The direct-method split shipped the MQTTv5 client as a carry-over of the pre-split behaviour and a guard against mistaking a probe for an invocation; the AEG probe / exec / abandon handshake that [§4](#4-no-cross-generation-constructs-on-the-public-surface) assigns to MQTTv5 landed after it, and is the first place the two generations differ in protocol rather than only in topic shape. **The twin PR carried no software updates change at all:** the software updates cut landed first, so there was no `az_iot_su_client_initialize()` to repoint and software updates no longer consumes the twin desired-property registry ([§8](#8-device-update)) — which the twin split therefore deleted. Twin is also where the MQTTv5 bind callback stopped being cosmetic: the unified client resolved the device id inside `init()`, which cannot work for a DPS connection before assignment; MQTTv5 now binds its three `dev/twin/...` handlers at connect like every other MQTTv5 client. |
+| P3 | File upload redesign — HTTP transport becomes mqttv3-only | P1 | **Done.** Shipped smaller than planned: file upload was **cut from AEG**, so there is no MQTTv5 client and none is manufactured. `az_iot_mqttv3_file_upload_client` owns the HTTPS control plane, the transport hook is now required at `init()`, and the client pins Classic — see [§4](#file-upload-is-mqttv3-only). This removed the last three `profile->flavor` branches in `c/src`, which is what P4 was waiting on. |
 | P4 | Delete `protocol_profile.c`'s flavor tables and the last `profile->flavor` branches | P2, P3 | **Done, and larger than scoped.** Once P2 and P3 moved every topic into the feature clients, nothing in `c/src` read *any* profile field — not just the flavor tables. `az_iot_connection_client__profile()` had no production caller left, and `mqtt_version` merely duplicated `az_iot_mqtt_required_version_for_role()`. So the whole module went rather than only the flavor half: `protocol_profile.{c,h}`, the accessor, and the `az_iot_hub_flavor` enum. The `protocol_profile_dispatch_test` suite was testing a dead table alongside live dispatch routing; it is now `dispatch_test`. |
 | P5 | Re-layer software updates onto `su_core` + channel vtable | — | **Done, ahead of P4.** software updates referenced neither generation nor the connection client, so the stated P4 dependency was not real; taking it early removed the software updates work from the P2 twin PR. The software updates channel itself is the remaining software updates work. |
-| P6 | Dual samples per feature, `check-layering.sh`, coverage floors for `gen1`/`gen2` | P2–P4 | |
+| P6 | Dual samples per feature, `check-layering.sh`, coverage floors for `mqttv3`/`mqttv5` | P2–P4 | |
 
 The connection client is **not** restructured. That is the main saving versus the
 earlier plan.
@@ -1089,7 +1089,7 @@ public callback signature changes that every other job accepted.
 
 Per-component coverage floors in
 [`coverage-components.json`](../../tests/coverage-components.json) must gain
-`gen1` and `gen2` entries in the same PR that creates those directories, or the
+`mqttv3` and `mqttv5` entries in the same PR that creates those directories, or the
 split silently drops coverage against the current 72.5% line / 49.9% branch
 baseline.
 
@@ -1101,7 +1101,7 @@ baseline.
   client**, including CSR issuance and device-update sessions. The pinned
   `azure-sdk-for-c` dependency is not patched; the ESP-IDF sample must be
   validated independently.
-- **`classic` maps to gen1, `mqttV5` maps to gen2**, for now.
+- **`classic` maps to MQTTv3, `mqttV5` maps to MQTTv5**, for now.
 - **An unrecognised profile fails the connection.** The profile is not expected
   to break, but a device should be defensive about service-side hazards it
   cannot verify.
@@ -1144,7 +1144,7 @@ baseline.
 - **Software updates is not repointed at a twin client at all; it was re-layered in P5**
   ([§8](#8-device-update)). The plan of record was a public header break in the
   twin PR, repointing `az_iot_su_client_initialize()` at
-  `az_iot_gen1_twin_client`. The software updates cut landing first made that moot, and the
+  `az_iot_mqttv3_twin_client`. The software updates cut landing first made that moot, and the
   twin PR touched no software updates code.
 - **The shared DPS CONNECT now requests `2026-11-02-preview`.** When DPS omits
   `connectionProfile`, local tests can still use the development-only
@@ -1154,7 +1154,7 @@ baseline.
   ([§9](#the-profile-can-change-while-the-device-is-running)). Entries are tagged
   `AZ_IOT_SUBSCRIPTION_FAILS_SESSION` or `_FAILS_SELF`; both report the failure,
   and neither treats a subscription as optional. Custom topics make refusal an
-  ordinary application error on gen2, so one declined custom filter must not take
+  ordinary application error on MQTTv5, so one declined custom filter must not take
   a device offline — while a feature client's own filter is fatal to the session,
   because that client cannot work without it.
 - **No layer swallows a result code an upper layer needs to act on.** Adapters
@@ -1188,19 +1188,19 @@ baseline.
 - 08/10/2026: Created. Supersedes [split-client.md](split-client.md).
 - 08/25/2026: Record three decisions taken in review: the connection-state event
   struct (new phase P1d), init-only profile checking, and software updates repointed at the
-  gen1 twin client in P2.
+  MQTTv3 twin client in P2.
 - 08/26/2026: Scope the rest of P1c — per-entry failure scope, SUBACK and CONNACK
   reason codes preserved through the adapters, deterministic refusals terminal,
   and a deadline on the gate.
 - 09/02/2026: Add the absent/null development profile bridge so P1a remains a
   production activation gate without blocking P1d and P2–P6 implementation.
-- 09/02/2026: Record the telemetry client split into separate gen1/gen2
+- 09/02/2026: Record the telemetry client split into separate mqttv3/mqttv5
   libraries, with shared message and callback types retained in core.
 - 09/11/2026: Record the twin split, which completes P2. Two decisions taken
   with it: the desired-property subscriber registry is **removed** rather than
   duplicated into both generations (its only consumer, software updates, was re-layered off
   the twin channel in P5), leaving a single `set_desired_handler()`; and the
-  gen2 client moves its topic construction into the connect-time bind callback,
+  MQTTv5 client moves its topic construction into the connect-time bind callback,
   fixing a latent defect where the unified client read the assigned device id
   inside `init()` — before DPS could have supplied one.
 - 09/11/2026: Naming, taken in review on the twin PR and intended to spread to
@@ -1210,13 +1210,13 @@ baseline.
   `az_iot_twin_patch_complete_callback`, not `..._ack_callback`: it reports
   failures too, and on MQTT v5 "ack" would collide with the QoS 1 PUBACK, which
   is a different event arriving at a different time.
-- 09/11/2026: **File upload is cut from AEG**, so P3 ships gen1-only and P4 is
-  unblocked. No `az_iot_gen2_file_upload_client` is manufactured: the AEG Files
+- 09/11/2026: **File upload is cut from AEG**, so P3 ships mqttv3-only and P4 is
+  unblocked. No `az_iot_mqttv5_file_upload_client` is manufactured: the AEG Files
   message schema does not exist, and a client whose every entry point returned
   `AZ_IOT_ERR_NOT_SUPPORTED` is the surface-nobody-implements problem this
-  separation exists to remove. The gen1 client pins Classic and now requires the
+  separation exists to remove. The MQTTv3 client pins Classic and now requires the
   HTTP transport hook at `init()`.
 - 09/25/2026: Samples regrouped into `samples/unified/` (either generation;
-  rebuild on a profile mismatch, including after a move) and `samples/gen2/`;
+  rebuild on a profile mismatch, including after a move) and `samples/mqttv5/`;
   the Classic-only samples and `connection_profile_fallback` are folded into the
   unified ones (section 11).

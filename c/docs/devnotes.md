@@ -129,7 +129,7 @@ _Captured from conversation as the C99 client repo was being scaffolded. Each bu
 - `devnotes.md` is the running requirements log: every time a new requirement is presented, this document must be updated.
 
 ### Hub flavor selection
-- **AMENDED (08/10/2026) by [eng/client-separation.md](eng/client-separation.md).** DPS stays a phase *inside* `az_iot_connection_client` and there is still exactly one connection client — that part is unchanged. What changes is that the **feature clients** split per generation (`az_iot_gen1_*` / `az_iot_gen2_*`), so the application must be able to see which generation it landed on in order to pick the right one.
+- **AMENDED (08/10/2026) by [eng/client-separation.md](eng/client-separation.md).** DPS stays a phase *inside* `az_iot_connection_client` and there is still exactly one connection client — that part is unchanged. What changes is that the **feature clients** split per generation (`az_iot_mqttv3_*` / `az_iot_mqttv5_*`), so the application must be able to see which generation it landed on in order to pick the right one.
 - ~~The IoT Hub flavor (Classic vs Next) is **not** a caller-facing knob. There is no `hub_version` field on any public options struct, and no `az_iot_HUB_*` enum exposed in the public API.~~ The generation is now readable via `az_iot_connection_client_get_hub_profile()` once connected. It is still **not** a caller-settable knob — nothing selects it, DPS decides and the SDK reports.
 - DPS tells the SDK which hub the device was provisioned to and the SDK selects the appropriate MQTT version internally (v3.1.1 for Classic, v5 for Next).
 - The DPS assignment callback exposes `assigned_hub` + `assigned_device_id`. The generation it learned is surfaced through the hub profile rather than the assignment callback.
@@ -142,7 +142,7 @@ _Captured from conversation as the C99 client repo was being scaffolded. Each bu
 - It is an **extensible union** — the spec states future hub capabilities pass through without a breaking change. The SDK must therefore expect values it does not know, and must preserve the raw string rather than collapsing it to a closed enum.
 - **Device-facing API version:** the common connection client builds the DPS CONNECT username with `2026-11-02-preview` for both CSR and non-CSR sessions, including provision-only software updates. The pinned `azure-sdk-for-c` remains unmodified; its `get_user_name()` helper would still emit `2019-03-31`.
 - **Development override:** `AZ_IOT_DPS_CONNECTION_PROFILE_OVERRIDE=classic|mqttV5` replaces only an absent/null profile after ASSIGNED; the DPS-assigned host/device remain authoritative, and an explicit wire profile always wins. Invalid values fault the assignment. It is not a production deployment contract.
-- **DECIDED:** `"classic"` maps to gen1, `"mqttV5"` maps to gen2 (for now).
+- **DECIDED:** `"classic"` maps to MQTTv3, `"mqttV5"` maps to MQTTv5 (for now).
 - **DECIDED:** an unrecognised profile **fails the connection** (`AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED`). The profile is not expected to break, but devices must be defensive about service-side hazards they cannot verify.
 
 ### Dependency ownership: azure-sdk-for-c is ARCHIVED (08/11/2026)

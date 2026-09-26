@@ -22,10 +22,10 @@ function(az_iot_add_sample group name)
 endfunction()
 
 if(AZ_IOT_WITH_PAHO)
-    # Classic (gen1) or AEG (gen2), picked from the DPS assignment.
+    # Classic (mqttv3) or AEG (mqttv5), picked from the DPS assignment.
     add_subdirectory(unified)
     # AEG (MQTT v5) hubs only.
-    add_subdirectory(gen2)
+    add_subdirectory(mqttv5)
 
     # The software updates sample additionally needs the OpenSSL crypto adapter for real
     # manifest JWS verification + SHA-256. Built only when that adapter exists.

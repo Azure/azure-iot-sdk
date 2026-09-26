@@ -232,9 +232,9 @@ const char* sample_connection_profile_name(az_iot_connection_profile profile)
   switch (profile)
   {
     case AZ_IOT_CONNECTION_PROFILE_CLASSIC:
-      return "Classic (gen1, MQTT v3.1.1)";
+      return "Classic (mqttv3, MQTT v3.1.1)";
     case AZ_IOT_CONNECTION_PROFILE_MQTT_V5:
-      return "AEG (gen2, MQTT v5)";
+      return "AEG (mqttv5, MQTT v5)";
     case AZ_IOT_CONNECTION_PROFILE_UNKNOWN:
     default:
       return "not known to this SDK";

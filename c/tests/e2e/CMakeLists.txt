@@ -69,7 +69,7 @@ add_subdirectory(service)
 # built when AZ_IOT_BUILD_E2E and AZ_IOT_WITH_PAHO are enabled.
 # ---------------------------------------------------------------------------
 az_iot_add_cmocka_test(az_iot_tests_e2e tests/e2e_scenarios_test.c tests/e2e_device.c)
-target_link_libraries(az_iot_tests_e2e PRIVATE az_iot_e2e_service az_iot_gen1 az_iot_adapter_paho)
+target_link_libraries(az_iot_tests_e2e PRIVATE az_iot_e2e_service az_iot_mqttv3 az_iot_adapter_paho)
 
 # ---------------------------------------------------------------------------
 # (historical description of the retired twin-driven suite)
@@ -129,7 +129,7 @@ if(AZ_IOT_BUILD_E2E_CSR)
     endif()
     az_iot_add_cmocka_test(az_iot_tests_e2e_csr tests/e2e_csr_test.c)
     target_link_libraries(az_iot_tests_e2e_csr PRIVATE
-        az_iot_gen1 az_iot_adapter_paho az_iot_certificate_provider_managed)
+        az_iot_mqttv3 az_iot_adapter_paho az_iot_certificate_provider_managed)
 endif()
 
 # ---------------------------------------------------------------------------
@@ -160,7 +160,7 @@ if(WIN32)
 endif()
 az_iot_add_cmocka_test(az_iot_tests_e2e_fileupload ${_e2e_fileupload_ctest}
     tests/e2e_fileupload_test.c tests/e2e_device.c)
-target_link_libraries(az_iot_tests_e2e_fileupload PRIVATE az_iot_e2e_service az_iot_gen1 az_iot_adapter_paho)
+target_link_libraries(az_iot_tests_e2e_fileupload PRIVATE az_iot_e2e_service az_iot_mqttv3 az_iot_adapter_paho)
 
 # ---------------------------------------------------------------------------
 # az_iot_tests_e2e_transport
@@ -180,7 +180,7 @@ target_link_libraries(az_iot_tests_e2e_fileupload PRIVATE az_iot_e2e_service az_
 az_iot_add_cmocka_test(az_iot_tests_e2e_transport
     tests/e2e_transport_test.c tests/e2e_device.c)
 target_link_libraries(az_iot_tests_e2e_transport PRIVATE
-    az_iot_e2e_service az_iot_gen1 az_iot_adapter_paho)
+    az_iot_e2e_service az_iot_mqttv3 az_iot_adapter_paho)
 if(UNIX)
     # setenv()/unsetenv() are POSIX, not C99, and these targets build -std=c99:
     # without this the calls are implicit declarations and the build fails rather
@@ -204,7 +204,7 @@ endif()
 if(AZ_IOT_BUILD_E2E_PKCS11)
     az_iot_add_cmocka_test(az_iot_tests_e2e_custody tests/e2e_custody_test.c)
     target_link_libraries(az_iot_tests_e2e_custody PRIVATE
-        az_iot_e2e_service az_iot_gen1 az_iot_adapter_paho)
+        az_iot_e2e_service az_iot_mqttv3 az_iot_adapter_paho)
 endif()
 
 

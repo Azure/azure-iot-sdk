@@ -5,7 +5,7 @@
 /* SPDX-License-Identifier: MIT */
 /* authentication/hsm_pkcs11 - sample.
  *
- * Connect to whichever hub DPS assigns -- Classic (gen1) or AEG (gen2) -- with a
+ * Connect to whichever hub DPS assigns -- Classic (mqttv3) or AEG (mqttv5) -- with a
  * device private key that NEVER LEAVES the hardware (design decision D8). The
  * provider hands the SDK a key REFERENCE -- an RFC 7512 "pkcs11:" URI plus the
  * id of the OpenSSL provider that owns it -- instead of a key, and the Paho
@@ -239,8 +239,8 @@ int main(void)
   hsm_provider provider = { .base = { .vtable = &k_hsm_vtable }, .config = &config };
   az_iot_connection_client connection_client = { 0 };
   /* Only the one matching `profile` is initialized, once CONNECTED. */
-  az_iot_gen1_telemetry_client gen1 = { 0 };
-  az_iot_gen2_telemetry_client gen2 = { 0 };
+  az_iot_mqttv3_telemetry_client mqttv3 = { 0 };
+  az_iot_mqttv5_telemetry_client mqttv5 = { 0 };
   az_iot_connection_profile profile = AZ_IOT_CONNECTION_PROFILE_UNKNOWN;
   int telemetry_initialized = 0;
 
@@ -305,11 +305,11 @@ int main(void)
     {
       if (profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
       {
-        init_rc = az_iot_gen2_telemetry_client_init(&gen2, &connection_client);
+        init_rc = az_iot_mqttv5_telemetry_client_init(&mqttv5, &connection_client);
       }
       else if (profile == AZ_IOT_CONNECTION_PROFILE_CLASSIC)
       {
-        init_rc = az_iot_gen1_telemetry_client_init(&gen1, &connection_client);
+        init_rc = az_iot_mqttv3_telemetry_client_init(&mqttv3, &connection_client);
       }
     }
     telemetry_initialized = (init_rc == AZ_IOT_OK);
@@ -323,8 +323,8 @@ int main(void)
     if (telemetry_initialized)
     {
       sent = profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5
-          ? az_iot_gen2_telemetry_client_send(&gen2, &msg, on_send_done, &user_ctx)
-          : az_iot_gen1_telemetry_client_send(&gen1, &msg, on_send_done, &user_ctx);
+          ? az_iot_mqttv5_telemetry_client_send(&mqttv5, &msg, on_send_done, &user_ctx)
+          : az_iot_mqttv3_telemetry_client_send(&mqttv3, &msg, on_send_done, &user_ctx);
     }
     if (sent == AZ_IOT_OK)
     {
@@ -359,11 +359,11 @@ cleanup:
   {
     if (profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
     {
-      az_iot_gen2_telemetry_client_destroy(&gen2);
+      az_iot_mqttv5_telemetry_client_destroy(&mqttv5);
     }
     else
     {
-      az_iot_gen1_telemetry_client_destroy(&gen1);
+      az_iot_mqttv3_telemetry_client_destroy(&mqttv3);
     }
   }
   az_iot_connection_client_destroy(&connection_client);

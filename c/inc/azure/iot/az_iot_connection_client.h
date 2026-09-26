@@ -484,9 +484,9 @@ extern "C"
      * expectation from the service's most recently recorded decision.
      *
      * Both default to false (pull-only). With push_desired, the service pushes
-     * the desired snapshot on connect instead of the gen2 twin client fetching
+     * the desired snapshot on connect instead of the mqttv5 twin client fetching
      * it. With push_reported, a pushed reported section reaches
-     * az_iot_gen2_twin_client_set_reported_handler(); without a handler it is
+     * az_iot_mqttv5_twin_client_set_reported_handler(); without a handler it is
      * dropped. Ignored for Classic hubs and for DPS sessions.
      *
      * Appended, like the options above it and for the same reason: this struct

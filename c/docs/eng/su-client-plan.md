@@ -549,7 +549,7 @@ download**. The per-row detail is in the matrix above.
   device-contract change**. The channel must not hard-code DPS in its request shapes.
 - **Config is inline** in the fetch response (`serviceConfiguration` + ETags) — there is **no separate
   `syncConfiguration` call** anymore.
-- **Report shape** matches Gen1's structured result (`outcome`/`failureOrigin`, hex `extendedResultCodes`,
+- **Report shape** matches MQTTv3's structured result (`outcome`/`failureOrigin`, hex `extendedResultCodes`,
   `stepResults` map) — the engine emits structured data and the channel serializes it.
 - **Contract is DRAFT** (api-version `2026-11-02-preview`); DPS re-syncs on software updates revs — see
   [Manual / external actions](#manual--external-actions).

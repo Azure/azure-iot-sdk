@@ -6,8 +6,8 @@
 /* unified/c2d_receiver - sample.
  *
  * Receive cloud-to-device messages for ~60 seconds on whichever hub DPS
- * assigns: Classic (gen1) or AEG (gen2), including after the device is moved to
- * a hub of the other generation. The AEG-only route is gen2/c2d_receiver. See
+ * assigns: Classic (mqttv3) or AEG (mqttv5), including after the device is moved to
+ * a hub of the other generation. The AEG-only route is mqttv5/c2d_receiver. See
  * unified/telemetry for the shape every unified sample shares: build for an
  * assumed generation before open(), rebuild when DPS assigns the other one.
  *
@@ -41,8 +41,8 @@ typedef struct
   az_iot_certificate_provider_pem certs;
   az_iot_connection_client connection_client;
   /* Only the one matching `profile` is initialized. */
-  az_iot_gen1_c2d_client gen1;
-  az_iot_gen2_c2d_client gen2;
+  az_iot_mqttv3_c2d_client mqttv3;
+  az_iot_mqttv5_c2d_client mqttv5;
   az_iot_connection_profile profile;
   int c2d_initialized;
 } sample_state;
@@ -67,11 +67,11 @@ static void clients_destroy(sample_state* s, user_context* ctx)
   }
   if (s->profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
   {
-    az_iot_gen2_c2d_client_destroy(&s->gen2);
+    az_iot_mqttv5_c2d_client_destroy(&s->mqttv5);
   }
   else
   {
-    az_iot_gen1_c2d_client_destroy(&s->gen1);
+    az_iot_mqttv3_c2d_client_destroy(&s->mqttv3);
   }
   s->c2d_initialized = 0;
 }
@@ -155,21 +155,21 @@ static az_iot_result clients_build(
   switch (profile)
   {
     case AZ_IOT_CONNECTION_PROFILE_MQTT_V5:
-      result = az_iot_gen2_c2d_client_init(&s->gen2, &s->connection_client);
+      result = az_iot_mqttv5_c2d_client_init(&s->mqttv5, &s->connection_client);
       if (result == AZ_IOT_OK)
       {
         s->profile = profile;
         s->c2d_initialized = 1;
-        result = az_iot_gen2_c2d_client_set_handler(&s->gen2, on_c2d, ctx);
+        result = az_iot_mqttv5_c2d_client_set_handler(&s->mqttv5, on_c2d, ctx);
       }
       return result;
     case AZ_IOT_CONNECTION_PROFILE_CLASSIC:
-      result = az_iot_gen1_c2d_client_init(&s->gen1, &s->connection_client);
+      result = az_iot_mqttv3_c2d_client_init(&s->mqttv3, &s->connection_client);
       if (result == AZ_IOT_OK)
       {
         s->profile = profile;
         s->c2d_initialized = 1;
-        result = az_iot_gen1_c2d_client_set_handler(&s->gen1, on_c2d, ctx);
+        result = az_iot_mqttv3_c2d_client_set_handler(&s->mqttv3, on_c2d, ctx);
       }
       return result;
     case AZ_IOT_CONNECTION_PROFILE_UNKNOWN:

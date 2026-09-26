@@ -50,7 +50,7 @@ Run a sample binary:
 inc/azure/iot/        public headers
 src/{core,features}/ implementation
 adapters/{paho,rust_mqtt}/ MQTT adapters
-samples/                  examples (unified/, gen2/, authentication/, su/)
+samples/                  examples (unified/, mqttv5/, authentication/, su/)
 tests/                    ctest suites
 tests/conformance/        reusable MQTT iface conformance suite
 docs/                     design + dev notes
@@ -146,8 +146,8 @@ int main(void)
   copts.certificate_provider = &certs.base;
 
   az_iot_connection_client conn;
-  az_iot_gen1_telemetry_client gen1_tel = { 0 };
-  az_iot_gen2_telemetry_client gen2_tel = { 0 };
+  az_iot_mqttv3_telemetry_client mqttv3_tel = { 0 };
+  az_iot_mqttv5_telemetry_client mqttv5_tel = { 0 };
   if (az_iot_connection_client_init(&conn, &copts) != AZ_IOT_OK
       /* Register both MQTT versions: v3.1.1 for DPS + Classic, v5 for Next. */
       || az_iot_connection_client_register_mqtt_factory(
@@ -181,8 +181,8 @@ int main(void)
   if (ctx.conn_state == AZ_IOT_CONN_STATE_CONNECTED && ctx.profile_valid)
   {
     az_iot_result init_result = ctx.connection_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5
-        ? az_iot_gen2_telemetry_client_init(&gen2_tel, &conn)
-        : az_iot_gen1_telemetry_client_init(&gen1_tel, &conn);
+        ? az_iot_mqttv5_telemetry_client_init(&mqttv5_tel, &conn)
+        : az_iot_mqttv3_telemetry_client_init(&mqttv3_tel, &conn);
     static const uint8_t body[] = "{\"hello\":\"world\"}";
     az_iot_telemetry_message msg = { 0 };
     msg.payload = body;
@@ -192,8 +192,8 @@ int main(void)
     if (init_result == AZ_IOT_OK)
     {
       send_result = ctx.connection_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5
-        ? az_iot_gen2_telemetry_client_send(&gen2_tel, &msg, on_send_done, &ctx)
-        : az_iot_gen1_telemetry_client_send(&gen1_tel, &msg, on_send_done, &ctx);
+        ? az_iot_mqttv5_telemetry_client_send(&mqttv5_tel, &msg, on_send_done, &ctx)
+        : az_iot_mqttv3_telemetry_client_send(&mqttv3_tel, &msg, on_send_done, &ctx);
     }
     if (init_result == AZ_IOT_OK && send_result == AZ_IOT_OK)
     {
@@ -206,8 +206,8 @@ int main(void)
   }
 
   az_iot_connection_client_close(&conn);
-  az_iot_gen1_telemetry_client_destroy(&gen1_tel);
-  az_iot_gen2_telemetry_client_destroy(&gen2_tel);
+  az_iot_mqttv3_telemetry_client_destroy(&mqttv3_tel);
+  az_iot_mqttv5_telemetry_client_destroy(&mqttv5_tel);
   az_iot_connection_client_destroy(&conn);
   az_iot_certificate_provider_pem_destroy(&certs);
   return rc;
@@ -219,7 +219,7 @@ A fuller version is [samples/unified/connect_first/main.c](samples/unified/conne
 ## Samples
 
 Samples are grouped like the .NET SDK's: [samples/unified](samples/unified/) serve
-whichever hub generation DPS assigns, [samples/gen2](samples/gen2/) serve AEG hubs
+whichever hub generation DPS assigns, [samples/mqttv5](samples/mqttv5/) serve AEG hubs
 only. There is no Classic-only group; the Classic-only samples
 (`unified/file_upload`, `authentication/dps_csr_managed`,
 `authentication/hub_renew`) exit non-zero on an MQTT v5 hub. Layout,

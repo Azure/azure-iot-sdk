@@ -9,7 +9,7 @@ for the full design.
 
 | Scenario | Provider | Sample | Notes |
 |----------|----------|--------|-------|
-| X.509 from files (no CSR) | `az_iot_certificate_provider_pem` | [../unified/telemetry](../unified/telemetry/main.c), [../gen2/telemetry](../gen2/telemetry/main.c) and the other feature samples | Baseline device auth (via DPS). Identical on both generations -- the provider is generation-agnostic. |
+| X.509 from files (no CSR) | `az_iot_certificate_provider_pem` | [../unified/telemetry](../unified/telemetry/main.c), [../mqttv5/telemetry](../mqttv5/telemetry/main.c) and the other feature samples | Baseline device auth (via DPS). Identical on both generations -- the provider is generation-agnostic. |
 | DPS CSR enrollment (issued operational cert) | managed (OpenSSL) | [`dps_csr_managed`](dps_csr_managed/README.md) | Bootstrap X.509 → CSR in DPS register → operational cert persisted. |
 | App-notified issuance (D4) | managed (OpenSSL) | `dps_csr_managed` | Uses `set_operational_cert_callback` to observe the issued chain. |
 | Runtime Hub renewal (D7) | managed (OpenSSL) | `hub_renew` | `send_csr()` two-phase renewal on a connected Classic hub. |
@@ -84,7 +84,7 @@ OpenSSL 3.x provider for the token (`pkcs11-provider` for PKCS#11,
 
 Key custody is generation-agnostic — the token signs a TLS handshake and neither
 MQTT version is visible to it. The sample registers both MQTT adapters and
-builds the gen1 or gen2 telemetry client for the profile DPS assigned; the
+builds the MQTTv3 or MQTTv5 telemetry client for the profile DPS assigned; the
 custody code is the same either way.
 
 The provider must register a **decoder for its own key-reference PEM**, because

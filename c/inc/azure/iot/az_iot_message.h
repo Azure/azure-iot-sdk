@@ -46,8 +46,8 @@ extern "C"
 #define AZ_IOT_MSG_PROP_CREATION_TIME "$.ctime"
 #define AZ_IOT_MSG_PROP_COMPONENT_NAME "$.sub"
 
-  /* Shared by the gen1 and gen2 telemetry clients. Callers always pass plain
-   * text: gen1 percent-encodes properties into the topic, while gen2 carries
+  /* Shared by the mqttv3 and mqttv5 telemetry clients. Callers always pass plain
+   * text: mqttv3 percent-encodes properties into the topic, while mqttv5 carries
    * them as MQTT v5 User Properties. */
   typedef struct az_iot_telemetry_property
   {
@@ -72,9 +72,9 @@ extern "C"
 #define AZ_IOT_C2D_MAX_PROPERTIES 8
 #endif
 /* Bytes available to hold the decoded property names and values of one
- * message. Only gen1 decodes -- gen2 user properties arrive already decoded --
+ * message. Only mqttv3 decodes -- mqttv5 user properties arrive already decoded --
  * and decoding never grows the text, so this only has to cover the
- * property-bag portion of a gen1 topic. */
+ * property-bag portion of an mqttv3 topic. */
 #ifndef AZ_IOT_C2D_PROPERTY_BUFFER
 #define AZ_IOT_C2D_PROPERTY_BUFFER 256
 #endif
@@ -82,7 +82,7 @@ extern "C"
   /**
    * @brief One property carried by a cloud-to-device message.
    *
-   * Plain text, already decoded: gen1 reverses the percent-encoding IoT Hub
+   * Plain text, already decoded: mqttv3 reverses the percent-encoding IoT Hub
    * applies to the topic property bag, so a value sent as `application%2Fjson`
    * arrives as `application/json` and a system property key arrives as `$.ct`
    * rather than `%24.ct`. Same shape az_iot_telemetry_property uses on the way
@@ -104,8 +104,8 @@ extern "C"
   {
     const uint8_t* payload; /**< May be NULL when @p payload_len is 0. */
     size_t payload_len;
-    /** Convenience view of the `$.ct` property (gen1) or the MQTT v5
-     * content-type (gen2). NULL when the message carries none. */
+    /** Convenience view of the `$.ct` property (mqttv3) or the MQTT v5
+     * content-type (mqttv5). NULL when the message carries none. */
     const char* content_type;
     const az_iot_c2d_property* properties;
     size_t properties_count;
@@ -127,11 +127,11 @@ extern "C"
 #ifndef AZ_IOT_DM_METHOD_NAME_MAX
 #define AZ_IOT_DM_METHOD_NAME_MAX 96
 #endif
-/* Longest gen1 request id ($rid) carried on an invocation. */
+/* Longest mqttv3 request id ($rid) carried on an invocation. */
 #ifndef AZ_IOT_DM_RID_MAX
 #define AZ_IOT_DM_RID_MAX 32
 #endif
-/* Longest gen2 correlation data echoed back on a response. */
+/* Longest mqttv5 correlation data echoed back on a response. */
 #ifndef AZ_IOT_DM_CORR_DATA_MAX
 #define AZ_IOT_DM_CORR_DATA_MAX 64
 #endif
@@ -150,8 +150,8 @@ extern "C"
    * applications -- they never hold one; they hold an
    * az_iot_direct_method_request naming it.
    *
-   * The correlation fields are generation-specific: gen1 answers on a `$rid`,
-   * gen2 echoes MQTT v5 correlation data. Both live here because the pool is
+   * The correlation fields are generation-specific: mqttv3 answers on a `$rid`,
+   * mqttv5 echoes MQTT v5 correlation data. Both live here because the pool is
    * the one piece of this feature the two generations share.
    */
   typedef struct az_iot_direct_method_slot

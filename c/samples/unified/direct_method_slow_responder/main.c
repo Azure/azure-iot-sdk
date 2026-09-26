@@ -6,10 +6,10 @@
 /* unified/direct_method_slow_responder - sample.
  *
  * Answer a direct method AFTER the handler returned, for work that does not fit
- * inside a callback, on whichever hub DPS assigns: Classic (gen1) or AEG
- * (gen2). Read unified/direct_method_responder first: it answers inline, which
+ * inside a callback, on whichever hub DPS assigns: Classic (mqttv3) or AEG
+ * (mqttv5). Read unified/direct_method_responder first: it answers inline, which
  * is all a fast method needs. The AEG-only route is
- * gen2/direct_method_slow_responder.
+ * mqttv5/direct_method_slow_responder.
  *
  * The handler keeps the request and returns; the pump loop answers it a couple
  * of seconds later. The request is a value, so keeping it is a struct copy --
@@ -88,8 +88,8 @@ typedef struct
   az_iot_certificate_provider_pem certs;
   az_iot_connection_client connection_client;
   /* Only the one matching `profile` is ever initialized. */
-  az_iot_gen1_direct_method_client gen1;
-  az_iot_gen2_direct_method_client gen2;
+  az_iot_mqttv3_direct_method_client mqttv3;
+  az_iot_mqttv5_direct_method_client mqttv5;
   az_iot_connection_profile profile;
   int methods_initialized;
 } sample_state;
@@ -118,11 +118,11 @@ static void clients_destroy(sample_state* s, user_context* ctx)
   }
   if (s->profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
   {
-    az_iot_gen2_direct_method_client_destroy(&s->gen2);
+    az_iot_mqttv5_direct_method_client_destroy(&s->mqttv5);
   }
   else
   {
-    az_iot_gen1_direct_method_client_destroy(&s->gen1);
+    az_iot_mqttv3_direct_method_client_destroy(&s->mqttv3);
   }
   s->methods_initialized = 0;
 }
@@ -144,8 +144,8 @@ static az_iot_result respond(
     size_t payload_len)
 {
   return s->profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5
-      ? az_iot_gen2_direct_method_respond(&s->gen2, request, status, payload, payload_len)
-      : az_iot_gen1_direct_method_respond(&s->gen1, request, status, payload, payload_len);
+      ? az_iot_mqttv5_direct_method_respond(&s->mqttv5, request, status, payload, payload_len)
+      : az_iot_mqttv3_direct_method_respond(&s->mqttv3, request, status, payload, payload_len);
 }
 
 static void on_conn_state(const az_iot_connection_state_event* event, void* user_ctx)
@@ -178,7 +178,7 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
   }
 }
 
-/* Serves both generations: on Classic it is reached through on_method_gen1, on
+/* Serves both generations: on Classic it is reached through on_method_mqttv3, on
  * AEG it is the handler registered for SLOW_ECHO_METHOD. */
 static void on_slow_echo(
     az_iot_direct_method_request request,
@@ -219,7 +219,7 @@ static void on_slow_echo(
 
 /* Classic routes nothing for you: this handler receives every name the service
  * sends, so it dispatches and turns down the rest. */
-static void on_method_gen1(
+static void on_method_mqttv3(
     az_iot_direct_method_request request,
     const char* method_name,
     const uint8_t* payload,
@@ -235,13 +235,14 @@ static void on_method_gen1(
   }
 
   printf("method '%s' is not implemented here\n", method_name ? method_name : "(null)");
-  (void)az_iot_gen1_direct_method_respond(&ctx->state->gen1, request, STATUS_NOT_FOUND, NULL, 0);
+  (void)az_iot_mqttv3_direct_method_respond(
+      &ctx->state->mqttv3, request, STATUS_NOT_FOUND, NULL, 0);
 }
 
 /* AEG only: saying busy at the probe spares the caller a wasted argument
  * transfer. */
-static az_iot_gen2_direct_method_probe_result on_probe_gen2(
-    const az_iot_gen2_direct_method_probe* probe,
+static az_iot_mqttv5_direct_method_probe_result on_probe_mqttv5(
+    const az_iot_mqttv5_direct_method_probe* probe,
     void* user_ctx)
 {
   user_context* ctx = (user_context*)user_ctx;
@@ -250,8 +251,8 @@ static az_iot_gen2_direct_method_probe_result on_probe_gen2(
       probe->method_name,
       (unsigned)probe->response_timeout_seconds);
 
-  return ctx->deferred.pending ? AZ_IOT_GEN2_DM_PROBE_REJECT_DEVICE_BUSY
-                               : AZ_IOT_GEN2_DM_PROBE_ACCEPT;
+  return ctx->deferred.pending ? AZ_IOT_MQTTV5_DM_PROBE_REJECT_DEVICE_BUSY
+                               : AZ_IOT_MQTTV5_DM_PROBE_ACCEPT;
 }
 
 /* Driven from the pump loop. Measured on a clock rather than counted in pump
@@ -290,7 +291,7 @@ static az_iot_result clients_build(
   switch (profile)
   {
     case AZ_IOT_CONNECTION_PROFILE_MQTT_V5:
-      result = az_iot_gen2_direct_method_client_init(&s->gen2, &s->connection_client);
+      result = az_iot_mqttv5_direct_method_client_init(&s->mqttv5, &s->connection_client);
       if (result != AZ_IOT_OK)
       {
         return result;
@@ -299,27 +300,28 @@ static az_iot_result clients_build(
       s->methods_initialized = 1;
       /* Declared with the time the work needs, so a caller whose timeout cannot
        * cover it is turned away at the probe. */
-      result = az_iot_gen2_direct_method_client_register_method(
-          &s->gen2, SLOW_ECHO_METHOD, SLOW_ECHO_SECONDS, on_slow_echo, ctx);
+      result = az_iot_mqttv5_direct_method_client_register_method(
+          &s->mqttv5, SLOW_ECHO_METHOD, SLOW_ECHO_SECONDS, on_slow_echo, ctx);
       if (result == AZ_IOT_OK)
       {
-        result = az_iot_gen2_direct_method_client_set_probe_handler(&s->gen2, on_probe_gen2, ctx);
+        result = az_iot_mqttv5_direct_method_client_set_probe_handler(
+            &s->mqttv5, on_probe_mqttv5, ctx);
       }
       return result;
     case AZ_IOT_CONNECTION_PROFILE_CLASSIC:
-      result = az_iot_gen1_direct_method_client_init(&s->gen1, &s->connection_client);
+      result = az_iot_mqttv3_direct_method_client_init(&s->mqttv3, &s->connection_client);
       if (result != AZ_IOT_OK)
       {
         return result;
       }
       s->profile = profile;
       s->methods_initialized = 1;
-      result = az_iot_gen1_direct_method_client_set_handler(&s->gen1, on_method_gen1, ctx);
+      result = az_iot_mqttv3_direct_method_client_set_handler(&s->mqttv3, on_method_mqttv3, ctx);
       if (result == AZ_IOT_OK)
       {
         /* A deferred answer has to land inside this window or the slot is gone. */
-        result = az_iot_gen1_direct_method_client_set_response_timeout(
-            &s->gen1, RESPONSE_TIMEOUT_SECONDS);
+        result = az_iot_mqttv3_direct_method_client_set_response_timeout(
+            &s->mqttv3, RESPONSE_TIMEOUT_SECONDS);
       }
       return result;
     case AZ_IOT_CONNECTION_PROFILE_UNKNOWN:

@@ -11,7 +11,7 @@ The public surface is a single low-level, single-threaded, callback-based API wi
 > Telemetry is already split; the remaining feature clients still branch
 > internally on a runtime Classic-vs-Next switch.
 > [eng/client-separation.md](eng/client-separation.md) specifies the target:
-> per-generation feature clients (`az_iot_gen1_*` / `az_iot_gen2_*`) over the
+> per-generation feature clients (`az_iot_mqttv3_*` / `az_iot_mqttv5_*`) over the
 > **same single connection client**, which keeps DPS internal and reports the
 > resolved generation through `az_iot_connection_client_get_hub_profile()`.
 > Where the two documents disagree, the separation document is the intended end
@@ -32,7 +32,7 @@ flowchart TB
     APP["User application"]
 
     subgraph PUB["Public API"]
-        APIA["az_iot_connection_client<br/>az_iot_gen1_* / az_iot_gen2_*<br/>(telemetry, c2d, direct_method, twin)<br/>az_iot_gen1_file_upload_client"]
+        APIA["az_iot_connection_client<br/>az_iot_mqttv3_* / az_iot_mqttv5_*<br/>(telemetry, c2d, direct_method, twin)<br/>az_iot_mqttv3_file_upload_client"]
     end
 
     subgraph CORE["Core infrastructure"]
@@ -144,7 +144,7 @@ Every user callback fires from inside `az_iot_connection_client_do_work()`. The 
 ## 3. Protocol exchange
 
 Topic strings below are illustrative until the IoTHub-Next protocol contract is finalized. Each
-`az_iot_gen1_*` / `az_iot_gen2_*` feature client owns the templates for its own generation; there is
+`az_iot_mqttv3_*` / `az_iot_mqttv5_*` feature client owns the templates for its own generation; there is
 no runtime Classic-vs-Next switch left to consult.
 
 ```mermaid

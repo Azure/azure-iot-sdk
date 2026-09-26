@@ -194,6 +194,6 @@ The SDK logs at `INFO` to stderr; change the level in `main()` for more detail.
 | Custom registration payload | `opts.dps.registration_payload`, `opts.dps.registration_body_buffer` |
 | Issuance notification | `az_iot_connection_client_set_operational_cert_callback()` |
 | Progress and failure reasons | `az_iot_connection_client_add_state_observer()` |
-| Send one telemetry message over the issued identity | `az_iot_gen1_telemetry_client_send()` and `on_send_done()` |
+| Send one telemetry message over the issued identity | `az_iot_mqttv3_telemetry_client_send()` and `on_send_done()` |
 
 Design background: [certificate-management.md](../../../docs/eng/certificate-management.md).

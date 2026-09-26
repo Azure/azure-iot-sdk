@@ -2380,7 +2380,7 @@ static void reassignment_to_another_generation_drops_the_old_filters(void** stat
   profile_fixture_open(&pf);
 
   /* A Classic-shaped filter, registered while the client still defaults to
-   * classic -- exactly what a gen1 feature client would have left behind. */
+   * classic -- exactly what an mqttv3 feature client would have left behind. */
   assert_int_equal(
       az_iot_connection_client__add_subscription_on_connect(
           &pf.c,
@@ -2401,7 +2401,7 @@ static void reassignment_to_another_generation_drops_the_old_filters(void** stat
   profile_finish_hub_leg(&pf, true);
   assert_int_equal(az_iot_test_last_state(&pf.log), AZ_IOT_CONN_STATE_CONNECTED);
 
-  /* The only SUBSCRIBE on a gen2 session is the presence handshake's own
+  /* The only SUBSCRIBE on an mqttv5 session is the presence handshake's own
    * ih/{id}/dev/#; the Classic filter must not have come along. */
   az_iot_mock_mqtt_client* hub = az_iot_mock_mqtt_factory_last_client(pf.v5);
   assert_non_null(hub);
@@ -2420,14 +2420,14 @@ static void reassignment_to_another_generation_drops_the_old_filters(void** stat
   profile_fixture_close(&pf);
 }
 
-/* Removal withdraws the filter from the broker on gen2 as well, not just on
+/* Removal withdraws the filter from the broker on mqttv5 as well, not just on
  * Classic. The device-wide ih/{id}/dev/# subscription is not endangered by
  * that: the presence handshake issues it directly rather than through the
  * persistent-subscription registry, so it has no owner and removal can never
- * select it. Anything a gen2 feature client did register is its own, and
+ * select it. Anything an mqttv5 feature client did register is its own, and
  * leaving it live until the session ends would be the very slot leak this
  * change exists to close. */
-static void removal_on_gen2_unsubscribes_only_the_owners_filter(void** state)
+static void removal_on_mqttv5_unsubscribes_only_the_owners_filter(void** state)
 {
   (void)state;
   int owner = 0;
@@ -2442,7 +2442,7 @@ static void removal_on_gen2_unsubscribes_only_the_owners_filter(void** state)
   az_iot_mock_mqtt_client* hub = az_iot_mock_mqtt_factory_last_client(pf.v5);
   assert_non_null(hub);
 
-  /* A filter registered underneath the presence wildcard. No gen2 feature
+  /* A filter registered underneath the presence wildcard. No mqttv5 feature
    * client does this any more -- the wildcard covers them -- but an application
    * custom topic will, and the property being pinned is about the registry, not
    * about which caller filled it. */
@@ -4017,7 +4017,7 @@ int main(void)
     cmocka_unit_test(get_hub_profile_rejects_null_arguments),
     cmocka_unit_test(init_rejects_a_connection_profile_the_sdk_cannot_speak),
     cmocka_unit_test(reassignment_to_another_generation_drops_the_old_filters),
-    cmocka_unit_test(removal_on_gen2_unsubscribes_only_the_owners_filter),
+    cmocka_unit_test(removal_on_mqttv5_unsubscribes_only_the_owners_filter),
     /* close() during provisioning */
     cmocka_unit_test_setup_teardown(close_during_provisioning_returns_to_idle, setup, teardown),
     cmocka_unit_test_setup_teardown(

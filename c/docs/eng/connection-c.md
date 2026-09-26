@@ -40,7 +40,7 @@ This document describes the target lifecycle. Not all of it is coded yet, so eve
 | --- | --- |
 | **State** | User-visible connection lifecycle value (`az_iot_connection_state`). Reported through the state callback. |
 | **Connection profile** | What the device is connected to, as declared by DPS: `classic` or `mqttV5` (`az_iot_connection_profile`). Not caller-settable. |
-| **Generation** | The feature-client family selected by the profile: `gen1` (classic) or `gen2` (mqttV5). |
+| **Generation** | The feature-client family selected by the profile: `mqttv3` (classic) or `mqttv5` (mqttV5). |
 | **Role** | Which endpoint/protocol the current MQTT session targets (`az_iot_mqtt_role`): `DPS` (v3.1.1), `HUB_CLASSIC` (v3.1.1), `HUB_NEXT` (v5). |
 | **Phase** | Internal sub-step inside a state — DPS phases and presence (birth) phases. Not user-visible. |
 | **Provisioning** | Obtaining a hub assignment from DPS. |
@@ -314,15 +314,15 @@ flowchart TB
     B -->|"absent or null"| C
     B -->|"mqttV5"| D["AZ_IOT_CONNECTION_PROFILE_MQTT_V5<br/>MQTT 5, role HUB_NEXT"]
     B -->|"anything else"| E["AZ_IOT_CONNECTION_PROFILE_UNKNOWN"]
-    C --> F["gen1 feature clients"]
-    D --> G["gen2 feature clients<br/>+ presence handshake<br/>+ software updates channel"]
+    C --> F["mqttv3 feature clients"]
+    D --> G["mqttv5 feature clients<br/>+ presence handshake<br/>+ software updates channel"]
     E --> H["Connection fails:<br/>AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED<br/>raw string still readable"]
 ```
 
 | Wire value | Enum | MQTT | Generation |
 | --- | --- | --- | --- |
-| `"classic"`, absent, or `null` | `AZ_IOT_CONNECTION_PROFILE_CLASSIC` | 3.1.1 | gen1 |
-| `"mqttV5"` | `AZ_IOT_CONNECTION_PROFILE_MQTT_V5` | 5 | gen2 |
+| `"classic"`, absent, or `null` | `AZ_IOT_CONNECTION_PROFILE_CLASSIC` | 3.1.1 | MQTTv3 |
+| `"mqttV5"` | `AZ_IOT_CONNECTION_PROFILE_MQTT_V5` | 5 | MQTTv5 |
 | anything else | `AZ_IOT_CONNECTION_PROFILE_UNKNOWN` | — | connection fails |
 
 Rules both clients must implement:
@@ -484,7 +484,7 @@ checked before backoff is scheduled.
 | Reconnect attempt counter | Reset on success | Incremented per failed attempt. |
 | In-flight QoS 1 PUBACKs | No | Packet ids belong to the destroyed adapter; callers must re-send. |
 | Twin GET/PATCH, method responses, telemetry in flight | No | Feature clients must re-issue. |
-| Classic desired-property patches sent while disconnected | No | IoT Hub does not queue them, and the SDK does not fetch the twin on reconnect. The application calls `az_iot_gen1_twin_client_get()` if it needs the current desired state. |
+| Classic desired-property patches sent while disconnected | No | IoT Hub does not queue them, and the SDK does not fetch the twin on reconnect. The application calls `az_iot_mqttv3_twin_client_get()` if it needs the current desired state. |
 | Software updates status report not yet acked | Yes | Held in durable storage and retried until acked; idempotent on `workflowId`. |
 | Presence (birth) phase | No | Restarted with a freshly generated nonce. |
 | DPS phase | No | Not re-run on an ordinary reconnect: the cached assignment is reused. It is re-run only when `needs_reprovision` is set — an identity rejection at CONNACK, the `max_hub_connect_attempts_before_reprovision` threshold, or `reject_assignment()`. When it does re-run it restarts from `DPS_CONNECTING`. |
@@ -701,7 +701,7 @@ reports include complete per-step outcomes when steps are available — see
   meaning.
 - **The gateway is a channel parameter.** Bootstrap always uses DPS; operational uses DPS in the
   Ignite '26 preview and IoT Hub afterwards, with no device-contract change. This SDK plans to
-  expose the operational channel as a gen2 feature client
+  expose the operational channel as an MQTTv5 feature client
   ([client-separation.md](client-separation.md) §8), but the service contract binds software updates to
   the updating operations, not to a connection profile.
 
@@ -725,11 +725,11 @@ flowchart TB
     STORE1 --> PROFILE{"connectionProfile"}
 
     PROFILE -->|"unknown profile"| FAULTED
-    PROFILE -->|"classic - gen1"| CRED
-    PROFILE -->|"mqttV5 - gen2"| CRED["Load credential:<br/>operational, else bootstrap"]
+    PROFILE -->|"classic - mqttv3"| CRED
+    PROFILE -->|"mqttV5 - mqttv5"| CRED["Load credential:<br/>operational, else bootstrap"]
 
     CRED --> CONNECTING["CONNECTING<br/>MQTT CONNECT + mutual TLS"]
-    CONNECTING --> BIRTH["Presence handshake<br/>gen2 only"]
+    CONNECTING --> BIRTH["Presence handshake<br/>mqttv5 only"]
     BIRTH --> SUBS["Replay persistent subscriptions"]
     CONNECTING --> SUBS
     SUBS --> CONNECTED["CONNECTED"]
@@ -879,9 +879,9 @@ a slow path. Constants are `#ifndef`-guarded and can be raised at build time, ex
 | `AZ_IOT_MAX_FEATURE_CLIENT_BINDS` | 8 | Feature clients bound to one connection | `AZ_IOT_ERR_NOT_ENOUGH_SPACE` |
 | `AZ_IOT_DPS_OPERATION_ID_MAX` | 64 | DPS `operation_id` from the assigning response | `AZ_IOT_ERR_NOT_SUPPORTED` |
 | `AZ_IOT_DPS_REGISTRATION_PAYLOAD_MAX` | 512 | Caller-supplied DPS registration payload | `AZ_IOT_ERR_NOT_ENOUGH_SPACE` |
-| `AZ_IOT_TWIN_MAX_PENDING` | 8 | Pending twin requests, per generation ([gen1](../../inc/azure/iot/gen1/az_iot_twin_client.h), [gen2](../../inc/azure/iot/gen2/az_iot_twin_client.h)) | `AZ_IOT_ERR_NOT_SUPPORTED` |
-| `AZ_IOT_DM_MAX_INFLIGHT` | 4 | In-flight direct-method requests ([gen1](../../inc/azure/iot/gen1/az_iot_direct_method_client.h); gen2 derives `AZ_IOT_GEN2_DM_MAX_CONCURRENT` from it) | No result — the invocation is dropped and a warning is logged. |
-| `AZ_IOT_GEN2_DM_MAX_METHODS` | 8 | Registered gen2 direct-method handlers | `AZ_IOT_ERR_NOT_ENOUGH_SPACE` |
+| `AZ_IOT_TWIN_MAX_PENDING` | 8 | Pending twin requests, per generation ([MQTTv3](../../inc/azure/iot/mqttv3/az_iot_twin_client.h), [MQTTv5](../../inc/azure/iot/mqttv5/az_iot_twin_client.h)) | `AZ_IOT_ERR_NOT_SUPPORTED` |
+| `AZ_IOT_DM_MAX_INFLIGHT` | 4 | In-flight direct-method requests ([MQTTv3](../../inc/azure/iot/mqttv3/az_iot_direct_method_client.h); MQTTv5 derives `AZ_IOT_MQTTV5_DM_MAX_CONCURRENT` from it) | No result — the invocation is dropped and a warning is logged. |
+| `AZ_IOT_MQTTV5_DM_MAX_METHODS` | 8 | Registered MQTTv5 direct-method handlers | `AZ_IOT_ERR_NOT_ENOUGH_SPACE` |
 | CSR slot | 1 | In-flight hub CSR renewals | `AZ_IOT_ERR_BUSY` |
 | `AZ_IOT_DEFAULT_CONNECT_TIMEOUT_SECONDS` | 30 | Connect attempt, hub and DPS alike | Adapter-reported failure → `AZ_IOT_ERR_MQTT` |
 | `AZ_IOT_DEFAULT_KEEP_ALIVE_SECONDS` | 30 | MQTT keep-alive in CONNECT | — |
@@ -929,7 +929,7 @@ left as gaps rather than guesses.
 
 | Phase | Trigger | Surfaced as | Mapped by | SDK action | Notes / limits |
 | --- | --- | --- | --- | --- | --- |
-| CONNACK | Accepted | `AZ_IOT_OK` | adapter | gen2: start the presence handshake, then the subscription gate. Classic: straight to the subscription gate. `CONNECTED` once the gate settles. Attempt counter reset. | |
+| CONNACK | Accepted | `AZ_IOT_OK` | adapter | MQTTv5: start the presence handshake, then the subscription gate. Classic: straight to the subscription gate. `CONNECTED` once the gate settles. Attempt counter reset. | |
 | CONNACK | Identity refused — v3 `2`/`4`/`5`, v5 `0x85`/`0x86`/`0x87`/`0x8C` | `AZ_IOT_ERR_IDENTITY_REJECTED` | `az_iot_mqtt_connack_result()` | `needs_reprovision` is set whatever the policy; the next attempt runs `dps_start()` — as a retry when a policy is configured, otherwise on the application's next `open()`. | The retry is still scheduled through the reconnection policy, so backoff and `max_attempts` bound it — a device whose enrollment has been deleted must not hammer DPS either. |
 | CONNACK | v3 `1 unacceptable protocol version` | `AZ_IOT_ERR_MQTT` | `az_iot_mqtt_connack_result()` | **retried** under policy | Excluded from the identity set: `1` says nothing about the identity. |
 | CONNACK | v3 `3 Server unavailable` | `AZ_IOT_ERR_MQTT` | `az_iot_mqtt_connack_result()` | retried | Correct: the canonical transient refusal. |
@@ -958,7 +958,7 @@ left as gaps rather than guesses.
 | Any DPS phase | DPS message arrives in the wrong phase | ignored | connection client | dropped | Guarded on `dps_phase` being REGISTERING or POLLING. |
 | Hub CONNACK | Identity rejected | `AZ_IOT_ERR_IDENTITY_REJECTED` | `az_iot_mqtt_connack_result()` | `needs_reprovision` → `dps_start()` on the next attempt | See [§9.2](#92-connack-mapping). |
 
-#### 9.5.5 Phase 5 — presence handshake (gen2)
+#### 9.5.5 Phase 5 — presence handshake (MQTTv5)
 
 | Phase | Trigger | Surfaced as | Mapped by | SDK action | Notes / limits |
 | --- | --- | --- | --- | --- | --- |
@@ -982,7 +982,7 @@ runs only once none are outstanding. Each entry declares its own blast radius at
 | `AZ_IOT_SUBSCRIPTION_FAILS_SESSION` | The session cannot function without this filter — a feature client's own control-plane topic. | The connect fails. |
 | `AZ_IOT_SUBSCRIPTION_FAILS_SELF` | Only the owner is affected — an application-supplied topic. | The entry is dropped, its owner is told through `on_failed`, the connection stays up. |
 
-On gen2 there is usually nothing to gate: the five per-feature filters were dropped in favour of the
+On MQTTv5 there is usually nothing to gate: the five per-feature filters were dropped in favour of the
 single `ih/{device_id}/dev/#` presence wildcard, which the birth handshake already waits for. The
 registry carries Classic feature filters and application custom topics.
 
@@ -1070,8 +1070,8 @@ or null, so an actual wire value always wins.
 
 Gaps this section surfaced:
 
-- **There is no gen2 file-upload client.** `src/gen2/` has no `file_upload_client.c` and `az_iot.h`
-  includes only `gen1/az_iot_file_upload_client.h`. This is the one feature a Classic sunset would
+- **There is no MQTTv5 file-upload client.** `src/mqttv5/` has no `file_upload_client.c` and `az_iot.h`
+  includes only `mqttv3/az_iot_file_upload_client.h`. This is the one feature a Classic sunset would
   remove rather than migrate.
 - **The update hub channel is unwritten**, by design. `su_channel_dps.c` is the only channel. The
   acceptance criterion for adding a hub one is that `connection_client.c` does not change.
@@ -1122,7 +1122,7 @@ decide now than later.
 | Certificate provider contract | [az_iot_certificate_provider.h](../../inc/azure/iot/az_iot_certificate_provider.h) | implemented |
 | Managed OpenSSL provider | [az_iot_certificate_provider_managed.c](../../adapters/cert_openssl/az_iot_certificate_provider_managed.c) | implemented |
 | Connection profile enum, `az_iot_hub_profile`, `get_hub_profile()` | [az_iot_connection_client.h](../../inc/azure/iot/az_iot_connection_client.h) | implemented — the DPS-reported value still needs the raised api-version to arrive, so it resolves to `classic` until then |
-| `az_iot_su_channel` vtable, DPS channel | [az_iot_su.h](../../inc/azure/iot/az_iot_su.h), [su_channel_dps.c](../../src/features/su/su_channel_dps.c) | implemented — the gen2 hub channel is not written |
+| `az_iot_su_channel` vtable, DPS channel | [az_iot_su.h](../../inc/azure/iot/az_iot_su.h), [su_channel_dps.c](../../src/features/su/su_channel_dps.c) | implemented — the MQTTv5 hub channel is not written |
 | Software updates engine internals reused by software updates | [c/src/features/su](../../src/features/su) | implemented; the Device Update for IoT Hub twin-based API has been removed |
 | Software updates device contract | [su-spec.md](su-spec.md), [su_protocol.c](../../src/features/su/su_protocol.c) | implemented over the DPS gateway — DPS fronts both flows for Ignite '26 |
 | CONNACK code mapping | [mqtt_iface.c](../../src/core/mqtt_iface.c) | implemented |
@@ -1132,4 +1132,4 @@ decide now than later.
 | Subscription gate and failure scope | [connection_client.c](../../src/core/connection_client.c) | implemented |
 | Egress: WebSockets, HTTP proxy | [az_iot_mqtt_paho.c](../../adapters/paho/az_iot_mqtt_paho.c) | implemented |
 | Key custody (engine / PKCS#11 / sign hook) | [az_iot_paho_key_custody.c](../../adapters/paho/az_iot_paho_key_custody.c) | implemented |
-| gen2 file-upload client | — | **absent** — `src/gen2/` has no `file_upload_client.c`, so the feature is gen1-only |
+| MQTTv5 file-upload client | — | **absent** — `src/mqttv5/` has no `file_upload_client.c`, so the feature is mqttv3-only |

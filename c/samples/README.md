@@ -7,8 +7,8 @@
 
 | Folder | Serves | Use when |
 | --- | --- | --- |
-| [unified/](unified/) | Classic (gen1, MQTT v3.1.1) **or** AEG (gen2, MQTT v5), whichever DPS assigns | Default. The device does not control which hub it is provisioned to. |
-| [gen2/](gen2/) | AEG only | The device is known to be on an AEG hub. |
+| [unified/](unified/) | Classic (MQTTv3, MQTT v3.1.1) **or** AEG (MQTTv5, MQTT v5), whichever DPS assigns | Default. The device does not control which hub it is provisioned to. |
+| [mqttv5/](mqttv5/) | AEG only | The device is known to be on an AEG hub. |
 | [authentication/](authentication/) | Either generation | Certificate providers, CSR enrollment, non-extractable keys. See its [README](authentication/README.md). |
 | [su/](su/) | Either generation | Software updates agent. See [su/pc](su/pc/README.md). |
 | [common/](common/) | — | Shared helpers (`sample_utils`, certificate provider, CSR backends) and setup scripts. |
@@ -29,10 +29,10 @@ The unified samples, except `connect_first` and `file_upload` (below):
 
 1. Registers **both** Paho adapters (`az_iot_paho_factory_create_v3_1_1()` and
    `az_iot_paho_factory_create_v5()`).
-2. Builds its `az_iot_gen1_*` feature clients **before** `open()`, assuming
+2. Builds its `az_iot_mqttv3_*` feature clients **before** `open()`, assuming
    Classic (what DPS assigns when it names no profile).
 3. On a profile mismatch -- first connect, or a later move in either
-   direction -- destroys them, builds the `az_iot_gen2_*` or `az_iot_gen1_*`
+   direction -- destroys them, builds the `az_iot_mqttv5_*` or `az_iot_mqttv3_*`
    ones for the profile the event carries, then calls `close()` and `open()`.
    In-flight operations of the old clients are lost.
 
@@ -42,7 +42,7 @@ alternative: open with no feature client, read the profile with
 handles later moves the same way. `unified/file_upload` builds this way too,
 since its client needs the assigned hub at `init()`.
 
-The gen2 samples build theirs before `open()` and do not rebuild: an assignment
+The MQTTv5 samples build theirs before `open()` and do not rebuild: an assignment
 to a Classic hub fails. A profile this SDK does not know fails the connection
 with `AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED`.
 
@@ -59,7 +59,7 @@ Device setup is done with scripts, not with a sample program.
 
 ## Configuration
 
-The unified and gen2 samples read these; the authentication samples add or
+The unified and MQTTv5 samples read these; the authentication samples add or
 replace some (see [authentication/README.md](authentication/README.md)):
 
 | Variable | Required | Meaning |
@@ -104,10 +104,10 @@ Authentication samples land in `<build>/samples/authentication/`.
 | [unified/file_upload](unified/file_upload/) | SAS-URI request, blob PUT via libcurl, completion notification. Classic only; on AEG it says so and exits non-zero. One-shot. |
 | [unified/websockets](unified/websockets/) | unified/telemetry over MQTT-over-WebSockets (443). |
 | [unified/proxy](unified/proxy/) | unified/telemetry through an HTTP CONNECT proxy. |
-| [gen2/telemetry](gen2/telemetry/) | Telemetry on AEG. |
-| [gen2/twin_get_patch](gen2/twin_get_patch/) | Twin on AEG. |
-| [gen2/direct_method_responder](gen2/direct_method_responder/) | Direct methods on AEG, with a probe handler. |
-| [gen2/direct_method_slow_responder](gen2/direct_method_slow_responder/) | Deferred direct-method answers on AEG. |
-| [gen2/c2d_receiver](gen2/c2d_receiver/) | Cloud-to-device messages on AEG. |
+| [mqttv5/telemetry](mqttv5/telemetry/) | Telemetry on AEG. |
+| [mqttv5/twin_get_patch](mqttv5/twin_get_patch/) | Twin on AEG. |
+| [mqttv5/direct_method_responder](mqttv5/direct_method_responder/) | Direct methods on AEG, with a probe handler. |
+| [mqttv5/direct_method_slow_responder](mqttv5/direct_method_slow_responder/) | Deferred direct-method answers on AEG. |
+| [mqttv5/c2d_receiver](mqttv5/c2d_receiver/) | Cloud-to-device messages on AEG. |
 | [authentication](authentication/) | Certificate providers, CSR enrollment, operational certificates, key custody. |
 | [su](su/) | Software updates agent: manifest verify, download, install, report. |
