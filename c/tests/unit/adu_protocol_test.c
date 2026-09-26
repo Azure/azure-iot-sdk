@@ -23,6 +23,7 @@
 
 #include "azure/iot/az_iot_adu.h"
 
+#include "../../src/features/adu/internal/adu_channel_internal.h"
 #include "../../src/features/adu/internal/adu_protocol_internal.h"
 
 /* ------------------------------------------------------------------------- */
@@ -633,6 +634,54 @@ static void no_step_results_means_no_key(void** state)
   assert_null(strstr((const char*)buf, "stepResults"));
 }
 
+/* The largest report the engine produces fits the channel body: a
+ * AZ_IOT_ADU_WORKFLOW_ID_SIZE-byte workflow id and a 192-byte applied update id,
+ * every byte of both escaped, and every step failed with INT32_MIN and an 8-hex
+ * extended code. The engine sets no resultDetails. */
+static void largest_engine_report_fits_the_channel_body(void** state)
+{
+  (void)state;
+  char workflow_id[AZ_IOT_ADU_WORKFLOW_ID_SIZE + 1]; /* as adu_report.c */
+  memset(workflow_id, 0x01, sizeof(workflow_id) - 1);
+  workflow_id[sizeof(workflow_id) - 1] = '\0';
+  char id[3][64];
+  for (int i = 0; i < 3; ++i)
+  {
+    memset(id[i], 0x01, sizeof(id[i]) - 1);
+    id[i][sizeof(id[i]) - 1] = '\0';
+  }
+  const az_iot_adu_report_update_id installed = { id[0], id[1], id[2] };
+
+  az_iot_adu_step_result steps[_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS];
+  memset(steps, 0, sizeof(steps));
+  for (int32_t i = 0; i < _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS; ++i)
+  {
+    steps[i].outcome = AZ_IOT_ADU_OUTCOME_FAILED;
+    steps[i].failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_AGENT_CORE;
+    steps[i].result_code = INT32_MIN;
+    steps[i].extended_result_code = (int32_t)0xFFFFFFFFu;
+  }
+
+  az_iot_adu_report report = { 0 };
+  report.workflow_id = workflow_id;
+  report.installed_update_id = &installed;
+  report.outcome = AZ_IOT_ADU_OUTCOME_FAILED;
+  report.failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_AGENT_CORE;
+  report.result_code = INT32_MIN;
+  report.extended_result_codes = "ffffffff";
+  report.step_results = steps;
+  report.step_results_count = _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS;
+
+  uint8_t body[AZ_IOT_ADU_CHANNEL_BODY_MAX_SIZE];
+  size_t len = 0;
+  assert_int_equal(az_iot_adu__build_report_request(&report, body, sizeof(body), &len), AZ_IOT_OK);
+  assert_true(len > 0 && len <= sizeof(body));
+  assert_true(
+      az_span_find(
+          az_span_create(body, (int32_t)len), AZ_SPAN_FROM_STR("\"resultCode\":-2147483648"))
+      >= 0);
+}
+
 static void both_error_signals_are_read_from_the_body(void** state)
 {
   (void)state;
@@ -1207,6 +1256,7 @@ int main(void)
     cmocka_unit_test(terminal_success_step_results_match_the_dps_shape),
     cmocka_unit_test(terminal_step_results_must_be_complete),
     cmocka_unit_test(no_step_results_means_no_key),
+    cmocka_unit_test(largest_engine_report_fits_the_channel_body),
     cmocka_unit_test(both_error_signals_are_read_from_the_body),
     cmocka_unit_test(a_numeric_only_body_is_still_usable),
     cmocka_unit_test(live_no_update_response_parses),

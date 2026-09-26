@@ -72,14 +72,17 @@ extern "C"
 #endif
 
 /* In-struct scratch used to (de)serialize the persisted workflow state passed to
- * persist_state_fn / load_state_fn. Sized as the request buffer plus a fixed
- * overhead for the persistence header and v2 trailer (retry offset/len, manifest
- * CRC, install-result ints, per-step result pairs and a trailing CRC-32). The
- * overhead is generous; a compile-time assertion in adu_client.c guarantees the
- * exact serialized size always fits. This lives in the caller-allocated client
- * struct (one per instance) so no file-scope static or heap buffer is needed. */
+ * persist_state_fn / load_state_fn: the request buffer plus the snapshot header
+ * (40 bytes) and v3 trailer (24 fixed, 16 per step, 4 + 16 per file URL, 4 CRC).
+ * Derived from the upstream step/file limits, so raising them grows it; a
+ * compile-time assertion in adu_client.c checks the exact serialized size fits.
+ * Lives in the caller-allocated client struct, so no static or heap buffer. */
 #ifndef AZ_IOT_ADU_PERSIST_OVERHEAD
-#define AZ_IOT_ADU_PERSIST_OVERHEAD 256
+#define AZ_IOT_ADU_PERSIST_OVERHEAD                   \
+  (72u                                                \
+   + 16u                                              \
+       * ((_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS) \
+          + (_az_IOT_ADU_CLIENT_MAX_TOTAL_FILE_COUNT)))
 #endif
 #define AZ_IOT_ADU_PERSIST_BLOB_SIZE (AZ_IOT_ADU_REQUEST_BUFFER_SIZE + AZ_IOT_ADU_PERSIST_OVERHEAD)
 
@@ -95,16 +98,13 @@ extern "C"
 #define AZ_IOT_ADU_RETRY_TIMESTAMP_SIZE 64
 #endif
 
-/* Persistence/resume blob (see design doc; consumed by Phase 5 resume logic). */
-#ifndef AZ_IOT_ADU_STATE_BLOB_VERSION
-#define AZ_IOT_ADU_STATE_BLOB_VERSION 1
-#endif
 #ifndef AZ_IOT_ADU_MAX_WORKFLOW_ID_LEN
 #define AZ_IOT_ADU_MAX_WORKFLOW_ID_LEN 73 /* ADU service id: GUID-style, plus NUL */
 #endif
-#ifndef AZ_IOT_ADU_STATE_BLOB_MAX_SIZE
-#define AZ_IOT_ADU_STATE_BLOB_MAX_SIZE 512
-#endif
+
+/** @brief Largest blob passed to persist_state_fn; size storage for this. The format
+ * version is internal and checked by az_iot_adu_client_resume(). */
+#define AZ_IOT_ADU_STATE_BLOB_MAX_SIZE AZ_IOT_ADU_PERSIST_BLOB_SIZE
 
   /* --- Internal fine-grained state enum ------------------------------------ */
 
@@ -209,12 +209,18 @@ extern "C"
      * Persist workflow state for reboot survival. OPTIONAL — REQUIRED only if a
      * reboot is possible mid-update (i.e. install/apply may return
      * REBOOT_REQUIRED). Consumed by Phase 5 resume logic.
+     *
+     * @p state_blob_len == 0 means invalidate: empty or erase the stored record
+     * so a later boot does not resume a workflow that has already ended. Return
+     * non-zero to keep it; the client retries from do_work() while Idle, at most
+     * once a second, and at the next terminal transition.
      */
     int32_t (*persist_state_fn)(const uint8_t* state_blob, size_t state_blob_len, void* user_ctx);
 
     /**
      * Load previously-persisted workflow state. Return 0 and fill
-     * state_blob/len on success; non-zero if no state persisted.
+     * state_blob/len on success; non-zero if no state persisted. A successful
+     * zero-length read also means nothing to resume.
      */
     int32_t (*load_state_fn)(
         uint8_t* state_blob,
@@ -656,6 +662,13 @@ extern "C"
       uint32_t current_step;
       uint32_t current_file;
       bool cancel_requested;
+      /* A reboot checkpoint failed to persist; Apply waits until it succeeds. */
+      bool checkpoint_pending;
+      /* Storage is believed to hold a checkpoint this client wrote or resumed
+       * from, so an invalidation write is owed when the workflow ends. */
+      bool checkpoint_stored;
+      /** Earliest az_iot_time_mono_ms() for retrying a failed clear while Idle. */
+      uint64_t checkpoint_clear_retry_ms;
 
       /* Workflow id of the active (or last) deployment; a payload carrying it
        * is a redelivery and is ignored. Retry timestamp and manifest CRC are
@@ -835,6 +848,13 @@ extern "C"
   /**
    * Resume a workflow after device reboot. The application SHOULD call this during
    * startup. If no persisted state exists, this is a no-op. (Phase 5.)
+   *
+   * @return AZ_IOT_OK if resumed or nothing usable was persisted;
+   *   AZ_IOT_ERR_NOT_SUPPORTED for a record left by an older version that lacks
+   *   download URLs still needed, or any record when persist_state_fn is NULL
+   *   (it could never be cleared); AZ_IOT_ERR_INVALID_ARG for a NULL client or
+   *   a record whose download URLs do not cover the remaining steps;
+   *   AZ_IOT_ERR_DETACHED if the client is detached.
    */
   AZ_NODISCARD az_iot_result az_iot_adu_client_resume(az_iot_adu_client_t* client);
 

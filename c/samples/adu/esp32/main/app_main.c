@@ -196,7 +196,8 @@ void app_main(void)
   dp.installed_update_id.version = ADU_UPDATE_VERSION;
 
   static AZ_IOT_ADU_DEVICE_PROPS_STORAGE(dp_buffer);
-  az_iot_adu_client_t adu;
+  /* ~14 KB: too large for the 12 KB main task stack. */
+  static az_iot_adu_client_t adu;
   az_iot_adu_client_config_options adu_opts = az_iot_adu_client_config_options_default();
   adu_opts.hooks = &hooks;
   adu_opts.crypto = &crypto;

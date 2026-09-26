@@ -218,13 +218,35 @@ typedef struct
   size_t file_len; /* bytes the read-back mock serves */
 
   /* Persistence / resume. */
+  int persist_failures; /* this many persist calls fail before one succeeds */
+  int persist_calls;
   uint8_t persist_blob[AZ_IOT_ADU_REQUEST_BUFFER_SIZE + 128];
   size_t persist_len;
   bool have_persist;
 
   /* URL the last download was handed. */
   char last_download_url[128];
+
+  /* Per-download record of the resolved manifest file, so a test can prove a
+   * step-local file id maps to the right manifest entry. */
+  int download_calls;
+  char download_file_ids[MAX_OPS][32];
+  char download_urls[MAX_OPS][64];
 } hook_log;
+
+static void span_to_cstr(az_span s, char* out, size_t cap)
+{
+  size_t n = (size_t)az_span_size(s);
+  if (n >= cap)
+  {
+    n = cap - 1;
+  }
+  if (n > 0)
+  {
+    memcpy(out, az_span_ptr(s), n);
+  }
+  out[n] = '\0';
+}
 
 static void log_op(hook_log* l, op_kind k, uint32_t step)
 {
@@ -243,10 +265,15 @@ static int32_t mock_download(
     uint32_t file_count,
     void* ctx)
 {
-  (void)file;
   (void)file_index;
   (void)file_count;
   hook_log* l = (hook_log*)ctx;
+  int slot = l->download_calls++;
+  if (slot < MAX_OPS)
+  {
+    span_to_cstr(file->id, l->download_file_ids[slot], sizeof(l->download_file_ids[slot]));
+    span_to_cstr(url, l->download_urls[slot], sizeof(l->download_urls[slot]));
+  }
   int32_t n = az_span_size(url);
   if (n < 0 || (size_t)n >= sizeof(l->last_download_url))
   {
@@ -391,6 +418,19 @@ static int32_t mock_sha_final(void* c, uint8_t out[32], void* ctx)
 static int32_t mock_persist(const uint8_t* blob, size_t len, void* ctx)
 {
   hook_log* l = (hook_log*)ctx;
+  l->persist_calls++;
+  if (l->persist_failures > 0)
+  {
+    l->persist_failures--;
+    return 1;
+  }
+  if (len == 0)
+  {
+    /* A zero-length write retires the stored checkpoint. */
+    l->persist_len = 0;
+    l->have_persist = false;
+    return 0;
+  }
   assert_true(len <= sizeof(l->persist_blob));
   memcpy(l->persist_blob, blob, len);
   l->persist_len = len;
@@ -801,6 +841,28 @@ static void pump(fixture* fx, int max_iters)
       break;
     }
   }
+}
+
+static size_t count_ops(const hook_log* l, op_kind k)
+{
+  size_t n = 0;
+  for (size_t i = 0; i < l->op_count; ++i)
+  {
+    n += (l->ops[i] == k);
+  }
+  return n;
+}
+
+/* Pump until the post-install checkpoint is stored. A finished workflow retires
+ * its checkpoint, so resume tests must stop here to have one to resume from. */
+static void pump_to_checkpoint(fixture* fx)
+{
+  for (int i = 0; i < 40 && !fx->log.have_persist; ++i)
+  {
+    assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  }
+  assert_true(fx->log.have_persist);
+  assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_INSTALL_COMPLETE);
 }
 
 static void assert_idle_report_retains_outcome(fixture* fx, az_iot_adu_outcome outcome)
@@ -1282,9 +1344,9 @@ static void reboot_required_persists_and_resumes(void** state)
   /* Install requires a reboot: the workflow snapshots itself via persist. */
   fx->log.install_result = AZ_IOT_ADU_RESULT_REBOOT_REQUIRED;
   inject_patch(fx, signed_patch());
-  pump(fx, 40);
-  assert_true(fx->log.have_persist);
+  pump_to_checkpoint(fx);
   assert_true(fx->log.persist_len > 40);
+  assert_true(fx->log.persist_len <= AZ_IOT_ADU_STATE_BLOB_MAX_SIZE);
 
   /* Simulate a reboot: forget the in-RAM workflow and the pre-reboot op log,
    * then resume purely from the persisted blob (post-reboot the install is
@@ -1325,8 +1387,7 @@ static void resuming_a_fresh_client_reports_the_restored_state(void** state)
   /* Get a non-Idle state into the store. */
   fx->log.install_result = AZ_IOT_ADU_RESULT_REBOOT_REQUIRED;
   inject_patch(fx, signed_patch());
-  pump(fx, 40);
-  assert_true(fx->log.have_persist);
+  pump_to_checkpoint(fx);
 
   az_iot_adu_platform_hooks hooks;
   az_iot_adu_crypto_hooks crypto;
@@ -1374,6 +1435,15 @@ static void resuming_a_fresh_client_reports_the_restored_state(void** state)
   assert_int_equal(fx->last_previous_state, AZ_IOT_ADU_STATE_IDLE);
   assert_int_equal(fx->last_state, AZ_IOT_ADU_STATE_INSTALL_COMPLETE);
   assert_int_equal(az_iot_adu_client_get_state(fresh), AZ_IOT_ADU_STATE_INSTALL_COMPLETE);
+
+  /* The restored record is the fresh client's to retire once it finishes. */
+  fx->log.install_result = AZ_IOT_ADU_RESULT_SUCCESS;
+  for (int i = 0; i < 40 && az_iot_adu_client_get_state(fresh) != AZ_IOT_ADU_STATE_IDLE; ++i)
+  {
+    assert_int_equal(az_iot_adu_client_do_work(fresh), AZ_IOT_OK);
+  }
+  assert_int_equal(az_iot_adu_client_get_state(fresh), AZ_IOT_ADU_STATE_IDLE);
+  assert_false(fx->log.have_persist);
 
   az_iot_adu_client_destroy(fresh);
   free(fresh);
@@ -1884,8 +1954,7 @@ static void workflow_id_survives_resume(void** state)
   /* The install requires a reboot, so the workflow snapshots itself. */
   fx->log.install_result = AZ_IOT_ADU_RESULT_REBOOT_REQUIRED;
   inject_patch(fx, signed_patch());
-  pump(fx, 40);
-  assert_true(fx->log.have_persist);
+  pump_to_checkpoint(fx);
 
   /* Simulate the reboot: forget the in-RAM workflow, resume from the blob. */
   fx->log.op_count = 0;
@@ -1973,6 +2042,430 @@ static const char* two_step_patch(void)
       = snprintf(patch, sizeof(patch), k_patch_two_steps_fmt, "multi-step-deployment", "1.1", jws);
   assert_true(n > 0 && (size_t)n < sizeof(patch));
   return patch;
+}
+
+/* Two steps, each with its own file. The `files` map lists "fa00000000000001"
+ * first while step 0 references the SECOND entry, so resolving a step-local
+ * slot positionally against manifest.files[] picks the wrong file. Both
+ * entries share one hash because the SHA-256 mock returns a single digest. */
+static const char k_patch_distinct_files_fmt[]
+    = "{\"workflowId\":\"%s\","
+      "\"updateManifest\":\"{\\\"manifestVersion\\\":\\\"5\\\",\\\"updateId\\\":{\\\"provider\\\":"
+      "\\\"Contoso\\\",\\\"name\\\":\\\"Foobar\\\",\\\"version\\\":\\\"%s\\\"},"
+      "\\\"compatibility\\\":[{\\\"deviceManufacturer\\\":\\\"Contoso\\\",\\\"deviceModel\\\":"
+      "\\\"Foobar\\\"}],\\\"instructions\\\":{\\\"steps\\\":[{\\\"handler\\\":\\\"microsoft/"
+      "swupdate:1\\\",\\\"files\\\":[\\\"fb00000000000002\\\"],\\\"handlerProperties\\\":{"
+      "\\\"installedCriteria\\\":\\\"1.0\\\"}},{\\\"handler\\\":\\\"microsoft/"
+      "swupdate:1\\\",\\\"files\\\":[\\\"fa00000000000001\\\"],\\\"handlerProperties\\\":{"
+      "\\\"installedCriteria\\\":\\\"1.1\\\"}}]},\\\"files\\\":{\\\"fa00000000000001\\\":{"
+      "\\\"fileName\\\":\\\"payload-a.bin\\\",\\\"sizeInBytes\\\":844976,"
+      "\\\"hashes\\\":{\\\"sha256\\\":\\\"" ADU_TEST_FILE_HASH_B64 "\\\"}},"
+      "\\\"fb00000000000002\\\":{"
+      "\\\"fileName\\\":\\\"payload-b.bin\\\",\\\"sizeInBytes\\\":844976,"
+      "\\\"hashes\\\":{\\\"sha256\\\":\\\"" ADU_TEST_FILE_HASH_B64 "\\\"}}},"
+      "\\\"createdDateTime\\\":\\\"2022-07-07T03:02:48.8449038Z\\\"}\","
+      "\"updateManifestSignature\":\"%s\","
+      "\"fileUrls\":{\"fa00000000000001\":\"http://example.com/payload-a.bin\","
+      "\"fb00000000000002\":\"http://example.com/payload-b.bin\"}}";
+
+static const char* distinct_files_patch(void)
+{
+  static char patch[4096];
+  char jws[2048];
+  build_jws(jws, (int32_t)sizeof(jws));
+  int n = snprintf(
+      patch, sizeof(patch), k_patch_distinct_files_fmt, "distinct-files-deployment", "1.1", jws);
+  assert_true(n > 0 && (size_t)n < sizeof(patch));
+  return patch;
+}
+
+/* A cancel landing on the tick the workflow spends in FAILED must not displace
+ * the reported failure with a second, conflicting terminal outcome. */
+static void late_cancel_does_not_overwrite_a_reported_failure(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  fx->log.install_result = AZ_IOT_ADU_RESULT_FAILURE;
+  inject_patch(fx, signed_patch());
+  for (int i = 0; i < 40 && az_iot_adu_client_get_state(&fx->adu) != AZ_IOT_ADU_STATE_FAILED; ++i)
+  {
+    assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  }
+  assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_FAILED);
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_ADU_OUTCOME_FAILED);
+  int reports_after_failure = fx->chan.report_count;
+
+  fx->adu._internal.cancel_requested = true;
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+
+  assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_ADU_OUTCOME_FAILED);
+  assert_int_equal(fx->chan.report_count, reports_after_failure);
+  assert_false(az_iot_adu_is_cancelled(&fx->adu));
+}
+
+/* Each step downloads the file its own `files` entry names, not the manifest's
+ * first entry. */
+static void each_step_downloads_its_own_file(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  inject_patch(fx, distinct_files_patch());
+  pump(fx, 60);
+
+  assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_ADU_OUTCOME_SUCCEEDED);
+  assert_int_equal(fx->log.download_calls, 2);
+  assert_string_equal(fx->log.download_file_ids[0], "fb00000000000002");
+  assert_string_equal(fx->log.download_urls[0], "http://example.com/payload-b.bin");
+  assert_string_equal(fx->log.download_file_ids[1], "fa00000000000001");
+  assert_string_equal(fx->log.download_urls[1], "http://example.com/payload-a.bin");
+}
+
+/* A step whose file id is not in the manifest file map fails the step; it is
+ * not downloaded or installed. */
+static void an_unknown_step_file_id_fails_the_step(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  /* Point step 1 at an id the files map does not have. */
+  char* patch = (char*)(uintptr_t)distinct_files_patch();
+  const char needle[] = "[\\\"fa00000000000001\\\"],";
+  char* at = strstr(patch, needle);
+  assert_non_null(at);
+  memcpy(at + 3, "fc", 2);
+
+  inject_patch(fx, patch);
+  pump(fx, 60);
+
+  assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_ADU_OUTCOME_FAILED);
+  assert_int_equal(fx->log.download_calls, 1);
+  assert_string_equal(fx->log.download_file_ids[0], "fb00000000000002");
+  for (size_t i = 0; i < fx->log.op_count; ++i)
+  {
+    assert_false(fx->log.ops[i] == OP_INSTALL && fx->log.op_steps[i] == 1);
+  }
+}
+
+/* Completed step results survive a checkpoint taken at a later step. */
+static void earlier_step_results_survive_a_later_checkpoint(void** state)
+{
+  fixture* source = (fixture*)*state;
+  open_to_connected(source);
+
+  inject_patch(source, distinct_files_patch());
+  for (int i = 0; i < 60 && source->adu._internal.current_step == 0; ++i)
+  {
+    assert_int_equal(az_iot_adu_client_do_work(&source->adu), AZ_IOT_OK);
+  }
+  assert_int_equal(source->adu._internal.current_step, 1);
+
+  /* Distinct values, so a dropped or misordered field is caught. */
+  az_iot_adu_step_result* done = &source->adu._internal.step_results[0];
+  done->outcome = AZ_IOT_ADU_OUTCOME_SKIPPED;
+  done->failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_OTHER;
+  done->result_code = 12345;
+  done->extended_result_code = 0x0BADF00D;
+
+  source->log.install_result = AZ_IOT_ADU_RESULT_REBOOT_REQUIRED;
+  pump_to_checkpoint(source);
+
+  void* fresh_state = NULL;
+  assert_int_equal(setup(&fresh_state), 0);
+  fixture* fresh = (fixture*)fresh_state;
+  memcpy(fresh->log.persist_blob, source->log.persist_blob, source->log.persist_len);
+  fresh->log.persist_len = source->log.persist_len;
+  fresh->log.have_persist = true;
+  assert_int_equal(az_iot_adu_client_resume(&fresh->adu), AZ_IOT_OK);
+
+  assert_int_equal(fresh->adu._internal.current_step, 1);
+  const az_iot_adu_step_result* got = &fresh->adu._internal.step_results[0];
+  assert_int_equal(got->outcome, AZ_IOT_ADU_OUTCOME_SKIPPED);
+  assert_int_equal(got->failure_origin, AZ_IOT_ADU_FAILURE_ORIGIN_OTHER);
+  assert_int_equal(got->result_code, 12345);
+  assert_int_equal(got->extended_result_code, 0x0BADF00D);
+  assert_int_equal(teardown(&fresh_state), 0);
+}
+
+/* Checkpoint the distinct-files workflow at step 0 (install asks for a reboot),
+ * then resume it on a fresh client. */
+static fixture* resume_distinct_files_from_step_0(fixture* source, void** fresh_state)
+{
+  source->log.install_result = AZ_IOT_ADU_RESULT_REBOOT_REQUIRED;
+  inject_patch(source, distinct_files_patch());
+  for (int i = 0; i < 40 && !source->log.have_persist; ++i)
+  {
+    assert_int_equal(az_iot_adu_client_do_work(&source->adu), AZ_IOT_OK);
+  }
+  assert_true(source->log.have_persist);
+  assert_int_equal(source->adu._internal.current_step, 0);
+
+  assert_int_equal(setup(fresh_state), 0);
+  fixture* fresh = (fixture*)*fresh_state;
+  memcpy(fresh->log.persist_blob, source->log.persist_blob, source->log.persist_len);
+  fresh->log.persist_len = source->log.persist_len;
+  fresh->log.have_persist = true;
+  return fresh;
+}
+
+/* Resume before the last step must still be able to download the next step's
+ * own file: the snapshot carries the fileUrls map. */
+static void resume_before_last_step_downloads_the_next_step_file(void** state)
+{
+  fixture* source = (fixture*)*state;
+  void* fresh_state = NULL;
+  fixture* fresh = resume_distinct_files_from_step_0(source, &fresh_state);
+
+  assert_int_equal(az_iot_adu_client_resume(&fresh->adu), AZ_IOT_OK);
+  pump(fresh, 60);
+
+  assert_int_equal(az_iot_adu_client_get_state(&fresh->adu), AZ_IOT_ADU_STATE_IDLE);
+  assert_int_equal(fresh->log.download_calls, 1);
+  assert_string_equal(fresh->log.download_file_ids[0], "fa00000000000001");
+  assert_string_equal(fresh->log.download_urls[0], "http://example.com/payload-a.bin");
+  assert_int_equal(fresh->chan.last_report.outcome, AZ_IOT_ADU_OUTCOME_SUCCEEDED);
+  assert_int_equal(teardown(&fresh_state), 0);
+}
+
+/* A finished workflow retires its checkpoint, so a later reboot does not
+ * reload, re-apply and re-report it. */
+static void finished_workflow_is_not_replayed_after_reboot(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  fx->log.install_result = AZ_IOT_ADU_RESULT_REBOOT_REQUIRED;
+  inject_patch(fx, signed_patch());
+  pump_to_checkpoint(fx);
+
+  fx->log.install_result = AZ_IOT_ADU_RESULT_SUCCESS;
+  assert_int_equal(az_iot_adu_client_resume(&fx->adu), AZ_IOT_OK);
+  pump(fx, 40);
+  assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
+  assert_false(fx->log.have_persist);
+
+  /* The next boot finds nothing to resume. */
+  fx->log.op_count = 0;
+  assert_int_equal(az_iot_adu_client_resume(&fx->adu), AZ_IOT_OK);
+  pump(fx, 5);
+  assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
+  assert_int_equal(count_ops(&fx->log, OP_APPLY), 0);
+
+  /* With nothing stored, a later workflow costs no persist write. */
+  int writes = fx->log.persist_calls;
+  inject_patch(fx, build_patch("bbbbbbbb-0000-0000-0000-000000000002"));
+  pump(fx, 40);
+  assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
+  assert_int_equal(fx->log.persist_calls, writes);
+}
+
+/* A failed retire write is retried on the next terminal transition. */
+static void a_failed_checkpoint_retire_is_retried(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  fx->log.install_result = AZ_IOT_ADU_RESULT_REBOOT_REQUIRED;
+  inject_patch(fx, signed_patch());
+  pump_to_checkpoint(fx);
+
+  fx->log.install_result = AZ_IOT_ADU_RESULT_SUCCESS;
+  fx->log.persist_failures = 2;
+  pump(fx, 40);
+  assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
+  assert_true(fx->log.have_persist);
+
+  /* Idle retries are paced, then fail once more. */
+  int calls = fx->log.persist_calls;
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(fx->log.persist_calls, calls);
+  fx->adu._internal.checkpoint_clear_retry_ms = 0;
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(fx->log.persist_calls, calls + 1);
+  assert_true(fx->log.have_persist);
+
+  /* A superseding workflow also retries it. */
+  inject_patch(fx, build_patch("bbbbbbbb-0000-0000-0000-000000000002"));
+  assert_false(fx->log.have_persist);
+}
+
+/* A failed clear is retried while Idle, so a reboot before the next workflow
+ * does not resume the finished one. */
+static void a_failed_checkpoint_clear_is_retried_while_idle(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  fx->log.install_result = AZ_IOT_ADU_RESULT_REBOOT_REQUIRED;
+  inject_patch(fx, signed_patch());
+  pump_to_checkpoint(fx);
+
+  fx->log.install_result = AZ_IOT_ADU_RESULT_SUCCESS;
+  fx->log.persist_failures = 1;
+  pump(fx, 40);
+  assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
+  assert_true(fx->log.have_persist);
+
+  fx->adu._internal.checkpoint_clear_retry_ms = 0;
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  assert_false(fx->log.have_persist);
+  assert_false(fx->adu._internal.checkpoint_stored);
+
+  /* Nothing is left to resume; no further clears are written. */
+  int calls = fx->log.persist_calls;
+  pump(fx, 5);
+  assert_int_equal(fx->log.persist_calls, calls);
+  assert_int_equal(az_iot_adu_client_resume(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
+}
+
+/* A new workflow that fails to decode is ignored before it disturbs the active
+ * workflow or retires its checkpoint. */
+static void an_undecodable_replacement_keeps_the_active_checkpoint(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  fx->log.install_result = AZ_IOT_ADU_RESULT_REBOOT_REQUIRED;
+  inject_patch(fx, signed_patch());
+  pump_to_checkpoint(fx);
+  uint8_t blob[sizeof(fx->log.persist_blob)];
+  size_t blob_len = fx->log.persist_len;
+  memcpy(blob, fx->log.persist_blob, blob_len);
+
+  inject_patch(
+      fx, "{\"workflowId\":\"new\",\"updateManifest\":\"{}\",\"fileUrls\":{\"f\":\"a\\uD800\"}}");
+  assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_INSTALL_COMPLETE);
+  assert_true(fx->log.have_persist);
+  assert_int_equal(fx->log.persist_len, blob_len);
+  assert_memory_equal(fx->log.persist_blob, blob, blob_len);
+
+  /* The active workflow still finishes. */
+  fx->log.install_result = AZ_IOT_ADU_RESULT_SUCCESS;
+  pump(fx, 40);
+  assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_ADU_OUTCOME_SUCCEEDED);
+}
+
+/* A new workflow retires the checkpoint of the one it supersedes. */
+static void superseding_workflow_retires_the_stored_checkpoint(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  fx->log.install_result = AZ_IOT_ADU_RESULT_REBOOT_REQUIRED;
+  inject_patch(fx, signed_patch());
+  pump_to_checkpoint(fx);
+
+  fx->log.install_result = AZ_IOT_ADU_RESULT_SUCCESS;
+  inject_patch(fx, build_patch("bbbbbbbb-0000-0000-0000-000000000002"));
+  assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_MANIFEST_RECEIVED);
+  assert_false(fx->log.have_persist);
+}
+
+/* Without persist_state_fn a restored record could never be retired, so every
+ * boot would re-apply it; resume refuses it instead. */
+static void resume_without_a_persist_hook_is_not_supported(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  fx->log.install_result = AZ_IOT_ADU_RESULT_REBOOT_REQUIRED;
+  inject_patch(fx, signed_patch());
+  pump_to_checkpoint(fx);
+
+  fx->adu._internal.hooks.persist_state_fn = NULL;
+  assert_int_equal(az_iot_adu_client_resume(&fx->adu), AZ_IOT_ERR_NOT_SUPPORTED);
+}
+
+/* A v2 snapshot carries no URLs. It is refused when a later step still has
+ * files to download, instead of resuming into a download with no URL. */
+static void a_v2_snapshot_with_downloads_left_is_refused(void** state)
+{
+  fixture* source = (fixture*)*state;
+  void* fresh_state = NULL;
+  fixture* fresh = resume_distinct_files_from_step_0(source, &fresh_state);
+
+  /* Rewrite the v3 snapshot as the v2 layout: 8-byte step records and no URL
+   * table, then re-seal it. */
+  uint8_t* b = fresh->log.persist_blob;
+  uint32_t req_len = (uint32_t)b[36] | ((uint32_t)b[37] << 8) | ((uint32_t)b[38] << 16)
+      | ((uint32_t)b[39] << 24);
+  uint32_t t = 40u + req_len;
+  uint32_t steps = (uint32_t)b[t + 20];
+  uint8_t v2[sizeof(fresh->log.persist_blob)];
+  memcpy(v2, b, t + 24u);
+  v2[4] = 2;
+  v2[5] = 0;
+  uint32_t p = t + 24u;
+  for (uint32_t i = 0; i < steps; ++i)
+  {
+    memcpy(&v2[p], &b[t + 24u + i * 16u + 8u], 8u);
+    p += 8u;
+  }
+  uint32_t crc = 0xFFFFFFFFu;
+  for (uint32_t i = 0; i < p; ++i)
+  {
+    crc ^= v2[i];
+    for (int k = 0; k < 8; ++k)
+    {
+      crc = (crc >> 1) ^ (0xEDB88320u & (uint32_t)(-(int32_t)(crc & 1u)));
+    }
+  }
+  crc ^= 0xFFFFFFFFu;
+  v2[p + 0] = (uint8_t)crc;
+  v2[p + 1] = (uint8_t)(crc >> 8);
+  v2[p + 2] = (uint8_t)(crc >> 16);
+  v2[p + 3] = (uint8_t)(crc >> 24);
+  memcpy(fresh->log.persist_blob, v2, p + 4u);
+  fresh->log.persist_len = p + 4u;
+
+  assert_int_equal(az_iot_adu_client_resume(&fresh->adu), AZ_IOT_ERR_NOT_SUPPORTED);
+  assert_int_equal(az_iot_adu_client_get_state(&fresh->adu), AZ_IOT_ADU_STATE_IDLE);
+  assert_int_equal(fresh->log.download_calls, 0);
+  /* Retired, so it is not refused again on every boot. */
+  assert_false(fresh->log.have_persist);
+  assert_int_equal(teardown(&fresh_state), 0);
+}
+
+/* A failed checkpoint write must not let Apply run: the device would activate
+ * an update it could not resume after the reboot. It is retried, and Install
+ * is not re-run. */
+static void a_failed_checkpoint_blocks_apply_until_it_is_written(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  fx->log.install_result = AZ_IOT_ADU_RESULT_REBOOT_REQUIRED;
+  fx->log.persist_failures = 3;
+  inject_patch(fx, signed_patch());
+  for (int i = 0; i < 40 && fx->log.persist_calls == 0; ++i)
+  {
+    assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  }
+
+  /* Still failing: parked at INSTALL_COMPLETE, retrying, no Apply. */
+  while (fx->log.persist_failures > 0)
+  {
+    assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_INSTALL_COMPLETE);
+    assert_true(fx->adu._internal.checkpoint_pending);
+    assert_int_equal(count_ops(&fx->log, OP_APPLY), 0);
+    assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  }
+  assert_int_equal(count_ops(&fx->log, OP_APPLY), 0);
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK); /* this write succeeds */
+  assert_true(fx->log.have_persist);
+  assert_false(fx->adu._internal.checkpoint_pending);
+  assert_int_equal(fx->log.persist_calls, 4);
+
+  /* Written: Apply may now run, and Install is never re-run. */
+  pump(fx, 20);
+  assert_int_equal(count_ops(&fx->log, OP_APPLY), 1);
+  assert_int_equal(count_ops(&fx->log, OP_INSTALL), 1);
 }
 
 static void multi_step_update_runs_every_step_in_order(void** state)
@@ -3239,6 +3732,28 @@ int main(void)
     cmocka_unit_test_setup_teardown(same_id_changed_manifest_is_a_duplicate, setup, teardown),
     cmocka_unit_test(microsoft_root_keys_are_embedded),
     cmocka_unit_test_setup_teardown(multi_step_update_runs_every_step_in_order, setup, teardown),
+    cmocka_unit_test_setup_teardown(each_step_downloads_its_own_file, setup, teardown),
+    cmocka_unit_test_setup_teardown(an_unknown_step_file_id_fails_the_step, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        earlier_step_results_survive_a_later_checkpoint, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        resume_before_last_step_downloads_the_next_step_file, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        finished_workflow_is_not_replayed_after_reboot, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_failed_checkpoint_retire_is_retried, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_failed_checkpoint_clear_is_retried_while_idle, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        superseding_workflow_retires_the_stored_checkpoint, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_undecodable_replacement_keeps_the_active_checkpoint, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        resume_without_a_persist_hook_is_not_supported, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_v2_snapshot_with_downloads_left_is_refused, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_failed_checkpoint_blocks_apply_until_it_is_written, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        late_cancel_does_not_overwrite_a_reported_failure, setup, teardown),
     cmocka_unit_test_setup_teardown(
         multi_step_report_preserves_progress_and_failure, setup, teardown),
     cmocka_unit_test_setup_teardown(

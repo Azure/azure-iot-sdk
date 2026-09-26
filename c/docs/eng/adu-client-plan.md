@@ -154,7 +154,7 @@ velocity; three items cannot be dated, and row 59 holds its date only if its gat
 | 36 | ADUv2 transport | ❌ | — | — | — | — | done | **Twin (ADUv1) delivery + reporting** — the twin channel is removed, not kept behind a flag. [→](#what-aduv1-is-cut-means) |
 | 56 | Testing and conformance | 🟡 | P0 | S | — | 1 | 9/28 | **Crypto vector tests** — known-good/bad RS256 + SHA-256 vectors. [→](#k-testing-and-conformance) |
 | 29 | Install, apply, recovery | ✅→🔜 | P0 | M | — | 2 | 9/28 | **Reboot coordination + resume** — persist-before-reboot + `resume()`; blob must additionally carry the unsent ADUv2 report + ETags. [→](#e-install-apply-recovery) |
-| 38 | ADUv2 transport | 🟡 | P0 | S | 29 | 3 | 9/28 | **`reportUpdateStatus`** — `workflowId` + install result, idempotent, retried while the client lives. NOT durable across a reboot: the persistence blob is still v2 and does not carry an unsent report, so a device that reboots mid-install loses it. [→](#g-aduv2-transport-via-the-dps-gateway) |
+| 38 | ADUv2 transport | 🟡 | P0 | S | 29 | 3 | 9/28 | **`reportUpdateStatus`** — `workflowId` + install result, idempotent, retried while the client lives. NOT durable across a reboot: the persistence blob (v3) does not carry an unsent report, so a device that reboots mid-install loses it. [→](#g-aduv2-transport-via-the-dps-gateway) |
 | 54 | Library / agent-core mode | 🔜 | P0 | M | — | 4 | 9/28 | **Library mode** — hand back a verified+parsed manifest; consumer drives their own state machine. [→](#j-library-and-agent-core-mode) |
 | 59 | Testing and conformance | ✅→🔜 | P0 | M | — | 5 | 9/28† | **E2E vs real ADU service** — five twin-driven scenarios exist in a slow-lane workflow (off the PR path); they retire with the cut and need ADUv2 equivalents. [→](#k-testing-and-conformance) |
 | 49 | Delta and handlers | 🔜 | P1 | M | — | 6 | 9/30 | **Static step/download-handler registry** — name→fn "filter" (field-requested); static, in-process. [→](#i-delta-and-handlers) |
@@ -381,15 +381,17 @@ stateDiagram-v2
 ## E. Install, apply, recovery
 
 - **Install/Apply, Backup/Restore, partial rollback, reboot/resume (✅).** Persist-before-
-  reboot uses a versioned, CRC-checked, little-endian blob (`ADU1`, blob **v2**) carrying
-  `retryTimestamp` and a manifest CRC (kept for format compatibility, unused for
-  duplicate detection), and the accumulated `install_result` incl.
-  `step_results[]`; `resume()` re-enters at the persisted phase boundary
-  (`INSTALL_COMPLETE` → Apply). *Caveats:* the only persist point today is the
-  install-requested reboot; post-reboot rollback assumes the platform retained per-step
-  backups across the reboot.
+  reboot uses a versioned, CRC-checked, little-endian blob (`ADU1`, blob **v3**; v2 still
+  read) carrying `retryTimestamp` and a manifest CRC (kept for format compatibility, unused
+  for duplicate detection), the overall result, each step's result, and the download URLs
+  so a resume before the last step can fetch later steps' files; `resume()` re-enters at the
+  persisted phase boundary (`INSTALL_COMPLETE` → Apply). A failed checkpoint write holds
+  Apply and is retried; the blob is cleared (zero-length write) once the workflow returns to
+  Idle or is superseded. *Caveats:* the only persist point today is the install-requested
+  reboot; post-reboot rollback assumes the platform retained per-step backups across the
+  reboot.
 - **Persistence must grow for ADUv2 (🔜).** ADUv2 makes reporting a **durable write**, so the
-  blob gains a **blob v3**: the unsent `reportUpdateStatus` payload (keyed by
+  blob gains a **blob v4**: the unsent `reportUpdateStatus` payload (keyed by
   `workflowId`), `installedUpdateId`, and the `agentInfoEtag` / `serviceConfigEtag` pair, so a
   device that reboots mid-install still reports its result afterwards and does not resend a full
   `agentInfo` needlessly. `retryTimestamp` leaves the blob with the twin channel.
