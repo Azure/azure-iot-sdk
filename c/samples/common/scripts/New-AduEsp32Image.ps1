@@ -1,17 +1,30 @@
 #Requires -Version 7.0
 <#
 .SYNOPSIS
-    Builds an ESP32 firmware update image and deploys it as a real ADU update.
+    Builds an ESP32 firmware update image and deploys it through the
+    IoT-Hub-based Device Update model.
 
 .DESCRIPTION
+    IMPORTANT - which Device Update model this targets.
+
+    The import and deployment steps use 'az iot du ...', which is scoped to a
+    Device Update account + instance: the IoT-Hub-based model. The ADU samples in
+    this repository implement the DPS-fronted model, which has no accounts and
+    delivers updates as Azure Device Registry jobs and runs. An update deployed
+    by this script will not be offered to those samples. The image build steps
+    are unaffected. See samples/adu/pc/README.md.
+
     The ESP32 counterpart of New-AduSampleDeployment.ps1. Where that script ships
     a zero-filled simulated payload, this one BUILDS a genuine ESP32 app image
     (the sample firmware) with the new version baked in, then imports + deploys
-    it so the running device downloads and flashes it over the air.
+    it. An IoT-Hub-based Device Update consumer downloads and flashes that image
+    over the air; the ESP32 sample in this repository is not one, so it is never
+    offered the deployment.
 
     Run this AFTER Initialize-AduSampleEnvironment.ps1 (which creates the Azure
-    resources + device cert and sets the AZ_IOT_ADU_* environment variables) and
-    AFTER the ESP32 sample is running and connected to the hub.
+    resources + device cert and sets the AZ_IOT_ADU_* environment variables).
+    The deployment steps additionally need an IoT-Hub-based consumer already
+    connected to the hub, so its twin can be tagged.
 
     Steps:
       1. Resolve the next update version (auto-bump, or -UpdateVersion).
@@ -50,6 +63,16 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+Write-Warning @'
+The import and deployment steps of this script target the IoT-Hub-based Device
+Update model (account + instance). The ADU samples in this repository implement
+the DPS-fronted model, which delivers updates as Azure Device Registry jobs and
+runs. An update deployed by this script will not be offered to those samples.
+The firmware image build is unaffected.
+
+See samples/adu/pc/README.md.
+'@
 
 # Locate the ESP32 project (../../adu/esp32 relative to this script).
 $projectDir   = (Resolve-Path (Join-Path $PSScriptRoot "..\..\adu\esp32")).Path
