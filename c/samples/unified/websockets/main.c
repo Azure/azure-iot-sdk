@@ -143,13 +143,7 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
   if (event->state == AZ_IOT_CONN_STATE_FAULTED)
   {
     ctx->faulted = 1;
-    /* A generation newer than this SDK; the verbatim value is kept. */
-    if (event->reason == AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED && event->profile)
-    {
-      printf(
-          "Unsupported hub generation \"%s\". Upgrade the SDK.\n",
-          event->profile->connection_profile_raw);
-    }
+    sample_report_unsupported_profile(event);
   }
 
   /* The provisioning lifecycle reports on its own scope; only the hub one says

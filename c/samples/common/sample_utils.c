@@ -284,3 +284,16 @@ az_iot_connection_profile sample_initial_profile(const sample_config* config)
   return (config != NULL && config->mock_endpoint != NULL) ? AZ_IOT_CONNECTION_PROFILE_MQTT_V5
                                                            : AZ_IOT_CONNECTION_PROFILE_CLASSIC;
 }
+
+void sample_report_unsupported_profile(const az_iot_connection_state_event* event)
+{
+  if (event == NULL || event->reason != AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED
+      || event->profile == NULL)
+  {
+    return;
+  }
+  printf(
+      "Unsupported hub generation \"%s\"%s. Upgrade the SDK.\n",
+      event->profile->connection_profile_raw ? event->profile->connection_profile_raw : "(none)",
+      event->profile->connection_profile_raw_truncated ? " (truncated)" : "");
+}
