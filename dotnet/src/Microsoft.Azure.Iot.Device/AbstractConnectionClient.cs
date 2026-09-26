@@ -341,6 +341,8 @@ namespace Microsoft.Azure.Iot.Device
                     TcpPort = 8883,
                     WebsocketPort = 443,
                     ClientCertificate = CurrentConnectionContext.AuthenticationProvider.ClientCertificate,
+                    RemoteCertificateValidationCallback = CurrentConnectionContext.AuthenticationProvider.RemoteCertificateValidationCallback,
+                    LocalCertificateSelectionCallback = CurrentConnectionContext.AuthenticationProvider.LocalCertificateSelectionCallback,
                     ClientId = deviceId,
 
                     // It can save some SUBSCRIBE calls to attempt to resume sessions, but there is a race condition
@@ -897,6 +899,8 @@ namespace Microsoft.Azure.Iot.Device
                 WebsocketPort = 443,
                 WebsocketUri = $"wss://{hostName}:443",
                 ClientCertificate = authentication.ClientCertificate,
+                RemoteCertificateValidationCallback = authentication.RemoteCertificateValidationCallback,
+                LocalCertificateSelectionCallback = authentication.LocalCertificateSelectionCallback,
                 CleanSession = true, // The DPS MQTT broker does not support session persistence, so setting these clean start/clean session flags does nothing
                 CleanStart = true,
                 SessionExpiryInterval = 0,
