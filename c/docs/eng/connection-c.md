@@ -66,7 +66,9 @@ stateDiagram-v2
     CONNECTING --> CONNECTED: CONNACK ok, handshake done
     CONNECTING --> RECONNECTING: error, drop or timeout
     CONNECTING --> FAULTED: error, reconnect disabled
+    CONNECTING --> IDLE: drop, reconnect disabled
     CONNECTED --> RECONNECTING: unexpected drop
+    CONNECTED --> IDLE: drop, reconnect disabled
     CONNECTED --> DISCONNECTING: close()
     RECONNECTING --> CONNECTING: backoff elapsed
     RECONNECTING --> FAULTED: attempts exhausted
@@ -283,10 +285,8 @@ Four rules that hold everywhere:
   from a device-authored will message, and taking the slot would deny the application its own
   "device went away" signal. It is never put on a provisioning session, whatever that session's
   lifetime: nothing consumes a will published there.
-- **`Session Present` drives no application decision.** It is reported to the application and
-  carried on the birth message as a diagnostic. No feature client tears down state because of it.
-  It is reported on both MQTT versions — a Classic session connects with Clean Session 0, so this
-  is the only place the application learns whether the broker resumed it.
+- **`Session Present` drives no decision.** It is not exposed to the application; on `HUB_NEXT` it
+  is carried on the birth message as a diagnostic. No feature client tears down state because of it.
 - A Will Delay only means something while the session is alive, so on `HUB_NEXT` the session expiry
   is raised to cover a delay longer than it; MQTT 5 ends the delay at whichever comes first.
 
@@ -397,7 +397,7 @@ Reset points differ per ladder:
 | Event | Effect |
 | --- | --- |
 | DPS registration succeeds | both ladders reset |
-| Hub CONNACK succeeds (birth-ack on Hub-Next) | `HUB` resets; `DPS` untouched |
+| Hub CONNACK succeeds (before the Hub-Next birth handshake) | `HUB` resets; `DPS` untouched |
 | `dps.max_hub_connect_attempts_before_reprovision` crossed | `DPS` resets, so the first registration attempt waits `initial_delay_ms` |
 | `open()` / `close()` | both ladders reset |
 
@@ -460,8 +460,8 @@ On the retry path the flag is cleared before the attempt **only when a cached as
 a failing registration falls back to an ordinary hub retry rather than looping through provisioning;
 with no cached assignment the demand survives and the next retry provisions again.
 
-Every trigger above is conditional on `reconnect_enabled()`: with no retry policy the same conditions
-transition to `FAULTED`.
+Every trigger above is conditional on `reconnect_enabled()`. With no retry policy, CONNACK, presence
+and adapter failures transition to `FAULTED`; a transport disconnect transitions to `IDLE`.
 
 §9 classifies every failure this client can see, including the ones that are retried here but
 cannot succeed on retry.
@@ -734,7 +734,8 @@ flowchart TB
 
     CONNECTED -->|"close()"| DISC["DISCONNECTING"] --> IDLE
     CONNECTED --> DROP{"drop or error"}
-    DROP -->|"reconnect disabled<br/>or attempts exhausted"| FAULTED["FAULTED"]
+    DROP -->|"error, reconnect disabled<br/>or attempts exhausted"| FAULTED["FAULTED"]
+    DROP -->|"disconnect,<br/>reconnect disabled"| IDLE
     DROP -->|"reconnect enabled"| RECON["RECONNECTING<br/>exponential backoff + jitter"]
     RECON -->|"needs_reprovision"| REG
     RECON -->|"assignment still valid"| CRED
@@ -923,7 +924,7 @@ left as gaps rather than guesses.
 | Phase | Trigger | Surfaced as | Mapped by | SDK action | Notes / limits |
 | --- | --- | --- | --- | --- | --- |
 | CONNACK | Accepted | `AZ_IOT_OK` | adapter | gen2: start the presence handshake, then the subscription gate. Classic: straight to the subscription gate. `CONNECTED` once the gate settles. Attempt counter reset. | |
-| CONNACK | Identity refused — v3 `2`/`4`/`5`, v5 `0x85`/`0x86`/`0x87`/`0x8C` | `AZ_IOT_ERR_IDENTITY_REJECTED` | `az_iot_mqtt_connack_result()` | `needs_reprovision` is set whatever the policy; the next attempt runs `dps_start()` — as a retry when a policy is configured, otherwise on the application's next `open()`. | The retry is still scheduled through the reconnection policy, so backoff and `max_attempts` bound it — a device whose enrollment has been deleted must not hammer DPS either. **The flag is only set when a policy is configured**, so with retries disabled the intent to re-provision is dropped rather than carried to the next `open()`. |
+| CONNACK | Identity refused — v3 `2`/`4`/`5`, v5 `0x85`/`0x86`/`0x87`/`0x8C` | `AZ_IOT_ERR_IDENTITY_REJECTED` | `az_iot_mqtt_connack_result()` | `needs_reprovision` is set whatever the policy; the next attempt runs `dps_start()` — as a retry when a policy is configured, otherwise on the application's next `open()`. | The retry is still scheduled through the reconnection policy, so backoff and `max_attempts` bound it — a device whose enrollment has been deleted must not hammer DPS either. |
 | CONNACK | v3 `1 unacceptable protocol version` | `AZ_IOT_ERR_MQTT` | `az_iot_mqtt_connack_result()` | **retried** under policy | Excluded from the identity set: `1` says nothing about the identity. |
 | CONNACK | v3 `3 Server unavailable` | `AZ_IOT_ERR_MQTT` | `az_iot_mqtt_connack_result()` | retried | Correct: the canonical transient refusal. |
 | CONNACK | v5 deterministic refusals — `0x81`, `0x82`, `0x84`, `0x95`, `0x8A`, `0x90`, `0x99`, `0x9A`, `0x9B` | `AZ_IOT_ERR_MQTT` | `az_iot_mqtt_connack_result()` | **retried** | Same defect as v3 `1`. The four Will-related codes arise only when `opts.lwt` is set; the SDK sets no Will of its own. |

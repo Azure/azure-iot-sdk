@@ -43,11 +43,11 @@ Keep this file in step with the code. It is expected to change often; `connectio
 | Connection-state observers ([§2](../connection.md#2-top-level-state-machine)) | implemented — a registry, feature clients dispatched before the application | n/a — events are multicast by the language |
 | Failure diagnostics on the event | implemented — `error->source` / `error->code` / `message`, plus `is_retriable` | implemented — `DeviceException` carries `Retryability` and `IsContained` |
 | DPS provisioning inside connect ([§3](../connection.md#3-full-connect-sequence)) | implemented | implemented |
-| CSR carried in the registration ([§3](../connection.md#3-full-connect-sequence)) | implemented | implemented — `ProvisioningSettings.CertificateSigningRequest`, on its own api-version |
+| CSR carried in the registration ([§3](../connection.md#3-full-connect-sequence)) | implemented | implemented — `ProvisioningSettings.CertificateSigningRequest` |
 | Subscriptions established before `CONNECTED` ([§3](../connection.md#3-full-connect-sequence)) | implemented — the gate waits for every `FAILS_SESSION` SUBACK, with its own deadline | implemented — connect completes, and feature traffic is latched, on readiness |
 | gen2 birth handshake, 60 s timeout ([§3](../connection.md#3-full-connect-sequence)) | implemented | partial — on timeout it disconnects but still raises presence-completed with no error, so connect can report success for a handshake that timed out |
 | Session terms per role ([§3.2](../connection.md#32-session-terms-per-role)) | implemented | diverges — every hub CONNECT sets `CleanSession = true`, by design, citing a lost-CONNACK race on resume |
-| Connection profile from DPS ([§4](../connection.md#4-connection-profile-selection)) | implemented — requests DPS `2026-11-02-preview` on every DPS session; raw string kept up to 63 bytes, with `connection_profile_raw_truncated` | partial — requests `2021-10-01` (`2025-07-01-preview` with a CSR), neither of which carries `connectionProfile`, so it always resolves `classic`; and `ConnectionProfile` is a closed enum with no raw value, so an unrecognised profile cannot be preserved or reported through the unsupported-profile path |
+| Connection profile from DPS ([§4](../connection.md#4-connection-profile-selection)) | implemented — requests DPS `2026-11-02-preview` on every DPS session; raw string kept up to 63 bytes, with `connection_profile_raw_truncated` | partial — requests DPS `2026-11-02-preview` on every DPS session and defaults to `classic` when the property is absent; but `ConnectionProfile` is a closed enum with no raw value, so an unrecognised profile fails deserialization and cannot be preserved or reported through the unsupported-profile path |
 | Exponential backoff with jitter ([§5](../connection.md#5-reconnection)) | implemented, fixed policy; the cap bounds the backoff only, not the jittered delay | implemented, caller-replaceable policy |
 | Fatal-failure classification ([§5.3](../connection.md#53-what-triggers-a-reconnect)) | partial — the classification exists and is reported as `is_retriable`, but only the hub subscription gate acts on it; deterministic TLS failures, deterministic CONNACK refusals and refused presence or provisioning filters are all retried | partial — `ErrorRetryability` { `Terminal`, `IdentityTerminal`, `Retryable` } on every classified failure, but SUBACK `0x80` is retryable whatever the protocol version (it is 3.1.1's only failure code, which §9.3.2 classes terminal), and SUBACK containment is decided by reason code rather than by whether the filter is session-critical — refusals are contained except `0x91` and `0xA1` |
 | Failure taxonomy — MQTT reason-code fidelity ([§9](../connection.md#9-connection-failure-taxonomy)) | partial — CONNACK, SUBACK and DISCONNECT each have a mapper and the raw code reaches the application; PUBACK has none, and DISCONNECT names only `0x87`, so `0x8E Session taken over` is not distinguished | partial — known codes are typed and classified per §9.3.3, §9.3.7, §9.4.1, §9.4.2 and §9.4.8, which the source cites by section number. An **unrecognised** code is not preserved: each MQTTnet converter maps it to the last value it lists — an unknown CONNACK code to `ConnectionRateExceeded`, PUBACK to `PayloadFormatInvalid`, SUBACK to `WildcardSubscriptionsNotSupported`, DISCONNECT to `UnspecifiedError`. SUBACK `0x80` is retryable on every protocol version, and SUBACK containment is decided by reason code rather than by whether the filter is session-critical — refusals are contained except `0x91` and `0xA1` |
@@ -94,12 +94,14 @@ completes.
 
 `connectionProfile` is returned from DPS api-version `2026-11-02-preview`.
 
-C requests that version on every DPS session and implements
-[§4](../connection.md#4-connection-profile-selection) in full. A development override can replace
-the `classic` default when the property is absent; a wire value always wins.
+Both clients request that version on every DPS session and default to `classic` when the property is
+absent.
 
-.NET requests `2021-10-01` (`2025-07-01-preview` with a CSR), so the property never arrives and it
-always resolves `classic`. Its closed enum also cannot preserve or report an unrecognised profile.
+C implements [§4](../connection.md#4-connection-profile-selection) in full. A development override
+can replace the `classic` default; a wire value always wins.
+
+.NET maps the property to a closed enum with no raw value, so an unrecognised profile fails
+deserialization and cannot be preserved or reported.
 
 ### Fatal-failure classification (C)
 
@@ -118,16 +120,18 @@ version` and the deterministic v5 CONNACK codes — still retries until the poli
 [§9](../connection.md#9-connection-failure-taxonomy) classifies every failure as terminal, retryable,
 contained or benign.
 
-**.NET follows it.** `MqttConnectionManager` classifies CONNACK codes, server-DISCONNECT codes,
+**.NET is partial.** `MqttConnectionManager` classifies CONNACK codes, server-DISCONNECT codes,
 socket failures, TLS handshake failures and programming errors into `ErrorRetryability`, and the
 source cites the taxonomy by section number. The two divergences recorded in the previous revision
 of this file — socket failures treated as fatal, and `0x83 Implementation specific error` treated
-as fatal — have both been corrected to the contract.
+as fatal — have both been corrected to the contract. SUBACK retryability and containment still diverge (see
+the tables above).
 
 **C is partway.** CONNACK and SUBACK each have a mapper that preserves the wire code and classifies
-it. PUBACK failures and server-initiated DISCONNECTs still collapse to one generic transport
-result, so `0x8E Session taken over` is indistinguishable from a routine drop and a caller cannot
-separate a publish refusal it must not retry from a quota it should back off on.
+it. Server-initiated DISCONNECTs keep the wire code in `error->code`, and `0x87` maps to
+`AZ_IOT_ERR_AUTH`; other codes, including `0x8E Session taken over`, map to the generic transport
+result. PUBACK failures still collapse to one generic result, so a caller cannot separate a publish
+refusal it must not retry from a quota it should back off on.
 
 > **This document is a dependency of shipped .NET code.** `MqttConnectionManager.cs` cites
 > `connection.md` §9.3.3, §9.3.7, §9.4.1, §9.4.2 and §9.4.8 as the reason for each branch. Those
