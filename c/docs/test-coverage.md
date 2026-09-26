@@ -356,7 +356,7 @@ native content type and user properties. Both use QoS-1 send completion.
 | MQTTv5 wire | Flat service topic | `ih/{device}/srv/telemetry`. | unit | Done | [MQTT v5 wire shape](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/mqttv5_telemetry_client_test.c) |
 | | Message type and default content type | `type=telemetry:1`; content type defaults to `application/json`. | unit | Done | [MQTT v5 defaults](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/mqttv5_telemetry_client_test.c) |
 | | Native content type and user properties | `$.ct` maps to Content Type and is not repeated under its own name; application properties are forwarded without percent encoding. | unit | Done | [MQTT v5 metadata](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/mqttv5_telemetry_client_test.c) |
-| | Every other system property reaches the wire | `$.ce`, `$.mid`, `$.cid`, `$.uid`, `$.ctime` and `$.sub` travel verbatim as user properties, which is what the header promises and what MQTTv5 c2d hands back. Regression cover for D-11. | unit | Done | [MQTT v5 system properties](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/mqttv5_telemetry_client_test.c) |
+| | Every other system property reaches the wire | `$.ce`, `$.mid`, `$.cid`, `$.uid`, `$.ctime` and `$.sub` travel verbatim as user properties, which is what the header promises. Regression cover for D-11. | unit | Done | [MQTT v5 system properties](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/mqttv5_telemetry_client_test.c) |
 | | Properties past the cap are named in a warning | The array is fixed, so the overflow is dropped -- but it is logged once, naming the first property lost, rather than discarded in silence. The bound is `AZ_IOT_MQTTV5_TELEMETRY_MAX_USER_PROPERTIES`, a documented compile-time knob, and the tests derive from it rather than assuming 16. | unit | Done | [MQTT v5 property cap](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/mqttv5_telemetry_client_test.c) |
 | | Exactly filling the cap loses nothing and warns nothing | The boundary an off-by-one in the bound would move, and the only place a spurious warning would show. | unit | Done | [MQTT v5 cap boundary](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/mqttv5_telemetry_client_test.c) |
 | | An unrecognised `$.` name still travels | The D-11 fix narrowed a prefix test to an exact one; widening it back would silently eat a property the caller set. | unit | Done | [MQTT v5 unknown system property](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/mqttv5_telemetry_client_test.c) |
@@ -375,7 +375,8 @@ native content type and user properties. Both use QoS-1 send completion.
 ## Cloud-to-device messages
 
 Covers `az_iot_c2d_client`: the `devices/{device_id}/messages/devicebound/#` subscription
-and the dispatch of inbound messages to the application handler. Wire format per
+and the dispatch of inbound messages to the application handler. Classic only: C2D is not
+supported on AEG, so there is no MQTTv5 client. Wire format per
 [Receive cloud-to-device messages](https://learn.microsoft.com/azure/iot-hub/iot-mqtt-connect-to-iot-hub#receive-cloud-to-device-messages).
 
 C2D was the last feature client with **no unit coverage at all** — its only test was the e2e
@@ -417,14 +418,6 @@ round trip, so every argument-validation, topic-build and teardown path was unex
 | | A client for a different identity builds a different topic | Only an exact prefix duplicate is refused. That distinct prefixes coexist in one dispatch table — what multiplexing rests on — is proved by `dispatch_allows_distinct_identities_to_coexist`. | unit | Done | [a_client_for_a_different_identity_registers_alongside](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/c2d_client_test.c#L616) |
 | | A replacement client takes over delivery | Destroy then re-init re-points the stream. | unit | Done | [a_replacement_client_takes_over_delivery](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/c2d_client_test.c#L650) |
 | | The subscription is reissued after a reconnect | Losing it silently loses every message sent afterwards. | unit | Done | [the_subscription_is_reissued_after_a_reconnect](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/c2d_client_test.c#L673) |
-| Hub-Next (AEG) | Init adds no redundant C2D filter | The presence handshake's `ih/{device}/dev/#` wildcard supplies delivery; `ih/{device}/dev/c2d` is absent. | unit | Done | [next_init_does_not_subscribe_a_redundant_c2d_filter](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/c2d_client_test.c#L869) |
-|  | A message is delivered to the handler | — | unit | Done | [next_a_message_is_delivered_to_the_handler](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/c2d_client_test.c#L878) |
-|  | User properties arrive as plain text | Already decoded by the adapter, so the handler sees the same shape the Classic path produces after undoing its percent-encoding. | unit | Done | [next_user_properties_arrive_as_plain_text](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/c2d_client_test.c#L892) |
-|  | The content type comes from its own field | MQTT v5 carries it natively, so it does not ride the bag as `%24.ct`. | unit | Done | [next_the_content_type_comes_from_its_own_field](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/c2d_client_test.c#L917) |
-|  | A property with no key is skipped | A keyless pair cannot be looked up, so it is dropped rather than delivered with a NULL name. | unit | Done | [next_a_property_with_no_key_is_skipped](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/c2d_client_test.c#L933) |
-|  | Properties past the bound are dropped and the message survives | Same contract as the Classic path. | unit | Done | [next_properties_past_the_bound_are_dropped_and_the_message_survives](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/c2d_client_test.c#L954) |
-|  | A message before any handler is set is dropped | — | unit | Done | [next_a_message_before_any_handler_is_set_is_dropped](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/c2d_client_test.c#L979) |
-|  | A message after destroy reaches nobody | — | unit | Done | [next_a_message_after_destroy_reaches_nobody](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/c2d_client_test.c#L993) |
 | End-to-end | Cloud to device message received | Service sends over AMQP; the device matches the marker. | e2e | Done | [test_c2d](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/e2e/tests/e2e_scenarios_test.c#L256) |
 | | A message queued while offline arrives after reconnect | The Paho v3.1.1 path now honours CleanSession 0, so the hub holds what it could not deliver. | e2e | Pending | *e2e_scenarios_test.c* |
 | | Application properties are delivered | — | e2e | Pending | *e2e_scenarios_test.c* |
@@ -1153,8 +1146,9 @@ Not enumerated yet, by decision — this pass covers IoT Hub Classic. The Hub-Ne
 paths that already ship tests are listed in place: the presence handshake and the v5 CONNACK
 mapping under [Connection](#connection), and the generation-pinning contract under
 [File upload](#file-upload) — file upload is cut from AEG, so there is no MQTTv5 client and the
-MQTTv3 one refuses an MQTT v5 connection. Everything else on that surface —
-`ih/{device_id}/…` topics for telemetry, C2D, methods and twin, MQTT v5 user properties and
+MQTTv3 one refuses an MQTT v5 connection. C2D is not supported on AEG either, so it has no MQTTv5
+client or tests. Everything else on that surface —
+`ih/{device_id}/…` topics for telemetry, methods and twin, MQTT v5 user properties and
 correlation data — gets its own pass.
 
 ## Connection: not implemented, and why

@@ -3,8 +3,8 @@
 // information.
 
 /* SPDX-License-Identifier: MIT */
-/* Helpers over the shared message types. These belong to neither generation:
- * both hand the application the same az_iot_c2d_message. */
+/* Helpers over the shared message types. Only mqttv3 produces az_iot_c2d_message:
+ * C2D is not carried on the MQTT v5 hub. */
 #include <string.h>
 
 #include "azure/iot/az_iot_message.h"

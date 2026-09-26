@@ -9,7 +9,6 @@ foreach(sample
         twin_get_patch
         direct_method_responder
         direct_method_slow_responder
-        c2d_receiver
         # unified/telemetry over the two egress options, so the diff against it
         # is exactly the feature: MQTT over WebSockets, and an HTTP CONNECT proxy.
         websockets
@@ -17,7 +16,8 @@ foreach(sample
     az_iot_add_sample(unified ${sample} az_iot_mqttv3 az_iot_mqttv5)
 endforeach()
 
-# File upload exists on Classic only; on an AEG hub the sample says so.
+# C2D and file upload exist on Classic only; on an AEG hub each sample says so.
+az_iot_add_sample(unified c2d_receiver az_iot_mqttv3)
 az_iot_add_sample(unified file_upload az_iot_mqttv3)
 # File upload is HTTPS-only and the SDK ships no HTTP client, so the sample
 # uses libcurl (when available) to perform the SAS-URI request, the blob PUT

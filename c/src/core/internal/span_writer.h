@@ -135,7 +135,7 @@ extern "C"
    * shape that dominates this library, a fixed prefix around a device id, so
    * that those call sites stay one statement without giving up bounds checking:
    *
-   *     const char* parts[] = { "ih/", device_id, "/dev/c2d" };
+   *     const char* parts[] = { "ih/", device_id, "/dev/methods" };
    *     az_iot_result result = az_iot_span_writer_build_str(
    *         AZ_SPAN_FROM_BUFFER(topic), NULL, parts, 3);
    */

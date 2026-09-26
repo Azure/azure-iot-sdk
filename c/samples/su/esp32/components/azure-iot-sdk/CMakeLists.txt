@@ -41,7 +41,6 @@ idf_component_register(
         "${AZ_IOT_ROOT}/src/mqttv3/twin_client.c"
         "${AZ_IOT_ROOT}/src/mqttv3/file_upload_client.c"
         "${AZ_IOT_ROOT}/src/mqttv5/telemetry_client.c"
-        "${AZ_IOT_ROOT}/src/mqttv5/c2d_client.c"
         "${AZ_IOT_ROOT}/src/mqttv5/direct_method_client.c"
         "${AZ_IOT_ROOT}/src/mqttv5/direct_method_codec.c"
         "${AZ_IOT_ROOT}/src/mqttv5/twin_client.c"

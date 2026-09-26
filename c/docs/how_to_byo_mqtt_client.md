@@ -49,7 +49,7 @@ The contract is in [inc/azure/iot/az_iot_mqtt_iface.h](../inc/azure/iot/az_iot_m
 
 ### MQTT v5 property handling (critical for HUB_NEXT)
 
-The SDK's feature clients (direct methods, twin, C2D) use MQTT v5 properties extensively when connected to Hub-Next. Your v5 adapter **must**:
+The SDK's feature clients (direct methods, twin, telemetry) use MQTT v5 properties extensively when connected to Hub-Next. Your v5 adapter **must**:
 
 **On outbound PUBLISH** — propagate these `az_iot_mqtt_message` fields as MQTT v5 properties:
 - `correlation_data` / `correlation_data_len` → Correlation Data property
@@ -327,7 +327,6 @@ The following feature clients depend on v5 adapter properties being correctly pa
 |----------------|----------------------------|---------------------------------|
 | Direct Method  | `correlation_data`, `response_topic` | `correlation_data`, `response_topic` |
 | Twin           | `correlation_data` | `correlation_data` |
-| C2D            | (none — receive only) | `content_type` |
 | Telemetry      | `content_type`, `user_properties` | (none — send only) |
 
 If your v5 adapter does not propagate these properties, the feature clients will silently fail to correlate responses or deliver incomplete data to the application.

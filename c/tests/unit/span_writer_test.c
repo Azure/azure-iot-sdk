@@ -462,12 +462,12 @@ static void build_str_concatenates_parts(void** state)
   (void)state;
   char topic[32];
   size_t length = 0;
-  const char* parts[] = { "ih/", "dev-1", "/dev/c2d" };
+  const char* parts[] = { "ih/", "dev-1", "/dev/methods" };
 
   assert_int_equal(
       az_iot_span_writer_build_str(AZ_SPAN_FROM_BUFFER(topic), &length, parts, 3), AZ_IOT_OK);
-  assert_string_equal(topic, "ih/dev-1/dev/c2d");
-  assert_int_equal(length, strlen("ih/dev-1/dev/c2d"));
+  assert_string_equal(topic, "ih/dev-1/dev/methods");
+  assert_int_equal(length, strlen("ih/dev-1/dev/methods"));
 }
 
 static void build_str_reports_its_failures(void** state)
@@ -475,12 +475,12 @@ static void build_str_reports_its_failures(void** state)
   (void)state;
   char topic[8];
 
-  const char* too_long[] = { "ih/", "a-very-long-device-id", "/dev/c2d" };
+  const char* too_long[] = { "ih/", "a-very-long-device-id", "/dev/methods" };
   assert_int_equal(
       az_iot_span_writer_build_str(AZ_SPAN_FROM_BUFFER(topic), NULL, too_long, 3),
       AZ_IOT_ERR_NOT_ENOUGH_SPACE);
 
-  const char* with_null[] = { "ih/", NULL, "/dev/c2d" };
+  const char* with_null[] = { "ih/", NULL, "/dev/methods" };
   assert_int_equal(
       az_iot_span_writer_build_str(AZ_SPAN_FROM_BUFFER(topic), NULL, with_null, 3),
       AZ_IOT_ERR_INVALID_ARG);

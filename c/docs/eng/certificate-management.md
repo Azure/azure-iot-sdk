@@ -638,7 +638,7 @@ non-extractable-key custody, and CSR — the three axes this feature needs.
 
 All scenarios above get a dedicated, single-purpose sample under a new cross-cutting
 **`samples/authentication/`** group (auth is orthogonal to the feature clients like
-`unified/telemetry`, `mqttv5/c2d_receiver`, ...). Each sample reuses `samples/common/sample_utils` and
+`unified/telemetry`, `mqttv5/telemetry`, ...). Each sample reuses `samples/common/sample_utils` and
 differs only in the credential-setup block, so they stay small and diff-able.
 
 ```

@@ -13,8 +13,8 @@
 | [su/](su/) | Either generation | Software updates agent. See [su/pc](su/pc/README.md). |
 | [common/](common/) | — | Shared helpers (`sample_utils`, certificate provider, CSR backends) and setup scripts. |
 
-There is no Classic-only group: the unified samples cover Classic hubs. The one
-Classic-only feature, file upload, is in `unified/` and reports AEG hubs.
+There is no Classic-only group: the unified samples cover Classic hubs. The
+Classic-only features, C2D and file upload, are in `unified/` and report AEG hubs.
 
 ## How a unified sample works
 
@@ -25,7 +25,7 @@ its generation at `init()`; DPS assigning the other one stops the connection
 with `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH` before that hub is reached, and
 the state event carries the assigned profile.
 
-The unified samples, except `connect_first` and `file_upload` (below):
+The unified samples, except `connect_first`, `c2d_receiver` and `file_upload` (below):
 
 1. Registers **both** Paho adapters (`az_iot_paho_factory_create_v3_1_1()` and
    `az_iot_paho_factory_create_v5()`).
@@ -100,7 +100,7 @@ Authentication samples land in `<build>/samples/authentication/`.
 | [unified/twin_get_patch](unified/twin_get_patch/) | Twin GET and reported PATCH on every connect, desired updates. AEG returns sections separately and reports a patch verdict. |
 | [unified/direct_method_responder](unified/direct_method_responder/) | Inline direct-method answers. Classic routes every name to one handler; AEG declares methods and probes first. |
 | [unified/direct_method_slow_responder](unified/direct_method_slow_responder/) | Answering after the handler returned, against the device's timeout (Classic) or the caller's (AEG). |
-| [unified/c2d_receiver](unified/c2d_receiver/) | Cloud-to-device messages through one handler for both generations. |
+| [unified/c2d_receiver](unified/c2d_receiver/) | Cloud-to-device messages. Classic only; on AEG it says so and exits non-zero. |
 | [unified/file_upload](unified/file_upload/) | SAS-URI request, blob PUT via libcurl, completion notification. Classic only; on AEG it says so and exits non-zero. One-shot. |
 | [unified/websockets](unified/websockets/) | unified/telemetry over MQTT-over-WebSockets (443). |
 | [unified/proxy](unified/proxy/) | unified/telemetry through an HTTP CONNECT proxy. |
@@ -108,6 +108,5 @@ Authentication samples land in `<build>/samples/authentication/`.
 | [mqttv5/twin_get_patch](mqttv5/twin_get_patch/) | Twin on AEG. |
 | [mqttv5/direct_method_responder](mqttv5/direct_method_responder/) | Direct methods on AEG, with a probe handler. |
 | [mqttv5/direct_method_slow_responder](mqttv5/direct_method_slow_responder/) | Deferred direct-method answers on AEG. |
-| [mqttv5/c2d_receiver](mqttv5/c2d_receiver/) | Cloud-to-device messages on AEG. |
 | [authentication](authentication/) | Certificate providers, CSR enrollment, operational certificates, key custody. |
 | [su](su/) | Software updates agent: manifest verify, download, install, report. |
