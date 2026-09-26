@@ -807,17 +807,15 @@ extern "C"
    */
   typedef struct az_iot_adu_client_config_options
   {
-    /* Platform operations (download/install/apply/...). MUST be non-NULL. */
+    /** Required. Platform operations (download, install, apply, ...). */
     const az_iot_adu_platform_hooks* hooks;
-    /* Pure-primitive crypto hooks (RSA verify + SHA-256). MUST be non-NULL. */
+    /** Required. Crypto primitives (RSA verify, SHA-256). */
     const az_iot_adu_crypto_hooks* crypto;
-    /* Caller-owned RSA root public keys that anchor manifest trust. The core
-     * copies the small descriptor array into its fixed store (key BYTES are
-     * referenced, not copied, so they MUST outlive the client). Capped at
-     * AZ_IOT_ADU_MAX_ROOT_KEYS. For Microsoft-signed updates, pass
-     * az_iot_adu_microsoft_root_keys(). */
+    /** RSA root keys that anchor manifest trust. The descriptors are copied; the
+     * key bytes are referenced and must outlive the client. For Microsoft-signed
+     * updates pass az_iot_adu_microsoft_root_keys(). */
     const az_iot_adu_root_key* root_keys;
-    size_t root_key_count;
+    size_t root_key_count; /**< Entries in root_keys; at most AZ_IOT_ADU_MAX_ROOT_KEYS. */
     /** Required. Deep-copied; may be changed or freed after initialize. */
     const az_iot_adu_device_properties* device_properties;
     /** Required. Holds the copied strings; must outlive the client. */
@@ -1123,25 +1121,24 @@ extern "C"
       void* read_ctx);
 
   /**
-   * Build the agent-state report payload from a caller's own outcome data,
-   * WITHOUT the state machine or a channel. Emits the same reported-property JSON the
-   * managed client publishes, into the caller-provided @p out_json buffer.
+   * @brief Builds the agent-state report payload without the state machine or a channel.
    *
-   *   device_props: the device's identity/version (manufacturer, model, installed
-   *     update id, custom properties). Caller-owned; only read during the call.
-   *   result: the accumulated install result (overall + per-step), or NULL when
-   *     no result is available yet.
-   *   request: the in-progress deployment request (for the reported workflow id),
-   *     or NULL when idle.
-   *   state: the agent state to report (mapped to Idle / InProgress / Failed).
-   *   out_json / out_size: caller-owned destination buffer; out_len receives the
-   *     number of bytes written (MAY be NULL).
+   * Emits the same reported-property JSON the managed client publishes.
    *
-   * Returns AZ_IOT_OK on success, AZ_IOT_ERR_INVALID_ARG on bad arguments, or
-   * AZ_IOT_ERR_NOT_ENOUGH_SPACE if the payload does not fit @p out_json.
+   * @param[in] device_properties Manufacturer, model, installed update ID and custom
+   *   properties. Only read during the call.
+   * @param[in] result Accumulated install result (overall and per step); NULL if none yet.
+   * @param[in] request In-progress deployment request, for the workflow ID; NULL when idle.
+   * @param[in] state Agent state to report (mapped to Idle / InProgress / Failed).
+   * @param[out] out_json Destination buffer.
+   * @param[in] out_size Size of @p out_json.
+   * @param[out] out_len Bytes written. May be NULL.
+   * @return AZ_IOT_OK on success.
+   * @retval AZ_IOT_ERR_INVALID_ARG Bad arguments.
+   * @retval AZ_IOT_ERR_NOT_ENOUGH_SPACE The payload does not fit @p out_json.
    */
   AZ_NODISCARD az_iot_result az_iot_adu_build_report(
-      const az_iot_adu_device_properties* device_props,
+      const az_iot_adu_device_properties* device_properties,
       const az_iot_adu_client_install_result* result,
       const az_iot_adu_client_update_request* request,
       az_iot_adu_state state,

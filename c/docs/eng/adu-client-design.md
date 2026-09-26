@@ -997,7 +997,7 @@ az_iot_result az_iot_adu_verify_file_hash(
  * reportStatus body is built by the channel (see aduv2-spec.md).
  */
 az_iot_result az_iot_adu_build_report(
-    const az_iot_adu_device_properties* device_props,
+    const az_iot_adu_device_properties* device_properties,
     const az_iot_adu_client_install_result* result,
     const az_iot_adu_client_update_request* request,
     az_iot_adu_state state,

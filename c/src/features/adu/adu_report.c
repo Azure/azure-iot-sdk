@@ -215,7 +215,7 @@ az_iot_result az_iot_adu__report_state(az_iot_adu_client_t* client)
 /* ------------------------------------------------------------------------- */
 
 az_iot_result az_iot_adu_build_report(
-    const az_iot_adu_device_properties* device_props,
+    const az_iot_adu_device_properties* device_properties,
     const az_iot_adu_client_install_result* result,
     const az_iot_adu_client_update_request* request,
     az_iot_adu_state state,
@@ -223,7 +223,7 @@ az_iot_result az_iot_adu_build_report(
     size_t out_size,
     size_t* out_len)
 {
-  if (device_props == NULL || out_json == NULL || out_size == 0)
+  if (device_properties == NULL || out_json == NULL || out_size == 0)
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
@@ -238,13 +238,15 @@ az_iot_result az_iot_adu_build_report(
   /* Serialize the installed-update-id object the service expects. */
   char update_id_json[128];
   size_t update_id_json_len = 0;
-  const char* prov = device_props->installed_update_id.provider
-      ? device_props->installed_update_id.provider
+  const char* prov = device_properties->installed_update_id.provider
+      ? device_properties->installed_update_id.provider
       : "";
-  const char* name
-      = device_props->installed_update_id.name ? device_props->installed_update_id.name : "";
-  const char* ver
-      = device_props->installed_update_id.version ? device_props->installed_update_id.version : "";
+  const char* name = device_properties->installed_update_id.name
+      ? device_properties->installed_update_id.name
+      : "";
+  const char* ver = device_properties->installed_update_id.version
+      ? device_properties->installed_update_id.version
+      : "";
   az_iot_adu_report_update_id id = { prov, name, ver };
   az_json_writer id_writer;
   if (az_result_failed(az_json_writer_init(&id_writer, AZ_SPAN_FROM_BUFFER(update_id_json), NULL)))
@@ -258,44 +260,49 @@ az_iot_result az_iot_adu_build_report(
   update_id_json_len
       = (size_t)az_span_size(az_json_writer_get_bytes_used_in_destination(&id_writer));
 
-  az_iot_adu_client_device_properties props = az_iot_adu_client_device_properties_default();
-  if (device_props->manufacturer != NULL)
+  az_iot_adu_client_device_properties upstream_properties
+      = az_iot_adu_client_device_properties_default();
+  if (device_properties->manufacturer != NULL)
   {
-    props.manufacturer = az_span_create_from_str((char*)(uintptr_t)device_props->manufacturer);
+    upstream_properties.manufacturer
+        = az_span_create_from_str((char*)(uintptr_t)device_properties->manufacturer);
   }
-  if (device_props->model != NULL)
+  if (device_properties->model != NULL)
   {
-    props.model = az_span_create_from_str((char*)(uintptr_t)device_props->model);
+    upstream_properties.model = az_span_create_from_str((char*)(uintptr_t)device_properties->model);
   }
-  props.update_id = az_span_create((uint8_t*)update_id_json, (int32_t)update_id_json_len);
-  props.adu_version = AZ_SPAN_FROM_STR(AZ_IOT_ADU_CLIENT_AGENT_VERSION);
+  upstream_properties.update_id
+      = az_span_create((uint8_t*)update_id_json, (int32_t)update_id_json_len);
+  upstream_properties.adu_version = AZ_SPAN_FROM_STR(AZ_IOT_ADU_CLIENT_AGENT_VERSION);
 
   /* Custom properties (az_span views over the caller's strings; read-only for
    * the duration of this call). Clamped to the upstream array capacity. */
-  az_iot_adu_device_custom_properties cprops;
-  memset(&cprops, 0, sizeof(cprops));
-  if (device_props->custom_properties != NULL && device_props->custom_properties_count > 0)
+  az_iot_adu_device_custom_properties upstream_custom_properties;
+  memset(&upstream_custom_properties, 0, sizeof(upstream_custom_properties));
+  if (device_properties->custom_properties != NULL
+      && device_properties->custom_properties_count > 0)
   {
-    const size_t max_cp = sizeof(cprops.names) / sizeof(cprops.names[0]);
-    size_t count = device_props->custom_properties_count;
+    const size_t max_cp
+        = sizeof(upstream_custom_properties.names) / sizeof(upstream_custom_properties.names[0]);
+    size_t count = device_properties->custom_properties_count;
     if (count > max_cp)
     {
       return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
     }
     for (size_t i = 0; i < count; ++i)
     {
-      if (device_props->custom_properties[i].name == NULL
-          || device_props->custom_properties[i].value == NULL)
+      if (device_properties->custom_properties[i].name == NULL
+          || device_properties->custom_properties[i].value == NULL)
       {
         return AZ_IOT_ERR_INVALID_ARG;
       }
-      cprops.names[i]
-          = az_span_create_from_str((char*)(uintptr_t)device_props->custom_properties[i].name);
-      cprops.values[i]
-          = az_span_create_from_str((char*)(uintptr_t)device_props->custom_properties[i].value);
+      upstream_custom_properties.names[i]
+          = az_span_create_from_str((char*)(uintptr_t)device_properties->custom_properties[i].name);
+      upstream_custom_properties.values[i] = az_span_create_from_str(
+          (char*)(uintptr_t)device_properties->custom_properties[i].value);
     }
-    cprops.count = (int32_t)count;
-    props.custom_properties = &cprops;
+    upstream_custom_properties.count = (int32_t)count;
+    upstream_properties.custom_properties = &upstream_custom_properties;
   }
 
   /* Report the workflow id only when a deployment is in progress. */
@@ -313,7 +320,7 @@ az_iot_result az_iot_adu_build_report(
 
   az_result ar = az_iot_adu_client_get_agent_state_payload(
       &az,
-      &props,
+      &upstream_properties,
       az_iot_adu__agent_state(state),
       workflow,
       (az_iot_adu_client_install_result*)(uintptr_t)result,
