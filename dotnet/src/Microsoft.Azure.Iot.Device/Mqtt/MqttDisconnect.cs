@@ -9,7 +9,7 @@ namespace Microsoft.Azure.Iot.Device.Mqtt
         ///     Gets or sets the reason code.
         ///     <remarks>MQTT 5.0.0+ feature.</remarks>
         /// </summary>
-        public MqttClientDisconnectOptionsReason Reason { get; set; }
+        public MqttDisconnectReasonCode Reason { get; set; }
 
         /// <summary>
         ///     Gets or sets the reason string.

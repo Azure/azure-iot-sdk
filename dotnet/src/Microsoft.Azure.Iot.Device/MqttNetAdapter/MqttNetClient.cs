@@ -4,7 +4,9 @@
 using Microsoft.Azure.Iot.Device.Mqtt;
 using Microsoft.Azure.Iot.Device.MqttNetAdapter;
 using MQTTnet;
+using System.Diagnostics;
 using System.Net;
+using System.Net.Security;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 
@@ -55,7 +57,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTnetAdapter
 
             if (ConnectingAsync != null)
             {
-                connect = await ConnectingAsync.Invoke(connect); // Allow Gen2 connection client to inject a fresh connect nonce each time a connect happens
+                connect = await ConnectingAsync.Invoke(connect); // Allow MQTTv5 connection client to inject a fresh connect nonce each time a connect happens
             }
 
             MqttClientOptionsBuilder optionsBuilder;
@@ -125,6 +127,23 @@ namespace Microsoft.Azure.Iot.Device.MQTTnetAdapter
                     {
                         connect.ClientCertificate,
                     });
+
+                    // Custom validation of the server (remote) certificate, e.g. certificate pinning or a private root.
+                    if (connect.RemoteCertificateValidationCallback != null)
+                    {
+                        RemoteCertificateValidationCallback remoteValidation = connect.RemoteCertificateValidationCallback;
+                        tlsOptions.WithCertificateValidationHandler(args =>
+                            remoteValidation(_underlyingClient, args.Certificate, args.Chain, args.SslPolicyErrors));
+                    }
+
+                    // Custom selection of the client certificate to present, e.g. to support certificate rotation.
+                    // The selected certificate signs the handshake with its own (possibly HSM-backed) private key.
+                    if (connect.LocalCertificateSelectionCallback != null)
+                    {
+                        LocalCertificateSelectionCallback localSelection = connect.LocalCertificateSelectionCallback;
+                        tlsOptions.WithCertificateSelectionHandler(args =>
+                            localSelection(_underlyingClient, args.TargetHost, args.LocalCertificates, null, args.AcceptableIssuers));
+                    }
 
                     tlsOptions.UseTls(true);
                     tlsOptions.WithSslProtocols(System.Security.Authentication.SslProtocols.Tls12 | System.Security.Authentication.SslProtocols.Tls13);
@@ -284,7 +303,8 @@ namespace Microsoft.Azure.Iot.Device.MQTTnetAdapter
         {
             if (PublishReceivedAsync == null)
             {
-                return Task.CompletedTask; //TODO what to do with received MQTT message when user doesn't have callback set. Does this even happen?
+                Trace.TraceWarning("Could not delegate a received MQTT publish because no 'PublishReceivedAsync' callback handler was registered");
+                return Task.CompletedTask;
             }
 
             MqttPublishReceivedEventArgs genericArgs = new MqttPublishReceivedEventArgsImpl(args)
@@ -309,7 +329,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTnetAdapter
                 }
             }
 
-            args.AutoAcknowledge = false; // TODO do we want to do AutoAck things in generic interface as well? For now, assume always manual ack
+            args.AutoAcknowledge = false;
 
             if (PublishReceivedAsync != null)
             {

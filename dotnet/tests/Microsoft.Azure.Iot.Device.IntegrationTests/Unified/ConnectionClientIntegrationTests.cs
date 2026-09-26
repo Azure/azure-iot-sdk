@@ -5,6 +5,7 @@ using CaptureProxy;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.MqttNetAdapter;
 using Microsoft.Azure.Iot.Device.MQTTnetAdapter;
+using Microsoft.Azure.Iot.Device.Unified.Connection;
 using System;
 using System.Collections.Generic;
 using System.Net;

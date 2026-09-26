@@ -11,6 +11,7 @@
  * 2. Sends a CSR over the operational key in the register request.
  * 3. The managed provider persists the issued chain.
  * 4. Connects to the assigned Classic IoT Hub with the operational identity.
+ * 5. Sends telemetry over that connection and waits for send completion.
  *
  * AZ_IOT_DPS_REGISTRATION_PAYLOAD, if set, is sent alongside the CSR as the
  * custom registration payload. Requires OpenSSL 3.0+ and the Paho adapter.
@@ -31,6 +32,8 @@
 
 /** @brief Longest wait for provisioning plus the hub connection. */
 #define SAMPLE_CONNECT_TIMEOUT_MS 60000u
+/** @brief Longest wait for telemetry send completion. */
+#define SAMPLE_SEND_TIMEOUT_MS 30000u
 /** @brief Longest wait for a graceful disconnect. */
 #define SAMPLE_CLOSE_TIMEOUT_MS 5000u
 /** @brief Duration of one do_work() tick. */
@@ -49,6 +52,8 @@ typedef struct
   az_iot_result failed_reason; /**< Reason of that failure. */
   az_iot_result last_error[AZ_IOT_CONN_SCOPE_COUNT]; /**< Latest non-OK reason per scope. */
   bool issued; /**< An operational certificate was issued and persisted. */
+  bool send_done; /**< Telemetry send callback was invoked. */
+  az_iot_result send_status; /**< Telemetry send callback result. */
   const char* operational_cert_path; /**< Where the issued chain is persisted. */
 } sample_context;
 
@@ -132,6 +137,13 @@ static void on_operational_cert(const az_iot_issued_certificate* issued, void* u
       ctx->operational_cert_path);
 }
 
+static void on_send_done(az_iot_result status, void* user_ctx)
+{
+  sample_context* ctx = (sample_context*)user_ctx;
+  ctx->send_status = status;
+  ctx->send_done = true;
+}
+
 /** @brief Name of @p r, or "none" for AZ_IOT_OK. */
 static const char* error_name(az_iot_result r)
 {
@@ -172,6 +184,8 @@ int main(void)
   ctx.operational_cert_path = op_cert;
   az_iot_certificate_provider_managed provider = { 0 };
   az_iot_connection_client connection_client = { 0 };
+  az_iot_gen1_telemetry_client telemetry = { 0 };
+  bool telemetry_initialized = false;
 
   if (op_key == NULL || op_cert == NULL)
   {
@@ -231,6 +245,13 @@ int main(void)
     goto cleanup;
   }
 
+  if (az_iot_gen1_telemetry_client_init(&telemetry, &connection_client) != AZ_IOT_OK)
+  {
+    fprintf(stderr, "[dps_csr] Classic hub telemetry client setup failed\n");
+    goto cleanup;
+  }
+  telemetry_initialized = true;
+
   if (az_iot_connection_client_open(&connection_client) != AZ_IOT_OK)
   {
     fprintf(stderr, "[dps_csr] open failed; see the SDK log above\n");
@@ -249,7 +270,52 @@ int main(void)
         stderr,
         "[dps_csr] connected to %s with the operational certificate\n",
         az_iot_connection_client_get_iothub_address(&connection_client));
-    rc = 0;
+    static const uint8_t payload[] = "{\"source\":\"dps_csr_managed\"}";
+    az_iot_telemetry_property properties[] = {
+      { AZ_IOT_MSG_PROP_CONTENT_TYPE, "application/json" },
+    };
+    az_iot_telemetry_message message = { 0 };
+    message.payload = payload;
+    message.payload_len = sizeof(payload) - 1;
+    message.properties = properties;
+    message.properties_count = sizeof(properties) / sizeof(properties[0]);
+
+    az_iot_result send_result
+        = az_iot_gen1_telemetry_client_send(&telemetry, &message, on_send_done, &ctx);
+    if (send_result != AZ_IOT_OK)
+    {
+      fprintf(
+          stderr, "[dps_csr] telemetry send failed: %s\n", az_iot_result_to_string(send_result));
+    }
+    else
+    {
+      deadline = sample_now_ms() + SAMPLE_SEND_TIMEOUT_MS;
+      while (!ctx.send_done && !ctx.failed && ctx.hub_state == AZ_IOT_CONN_STATE_CONNECTED
+             && sample_now_ms() < deadline)
+      {
+        pump(&connection_client);
+      }
+      if (ctx.send_done && ctx.send_status == AZ_IOT_OK)
+      {
+        fprintf(stderr, "[dps_csr] telemetry sent with operational certificate\n");
+        rc = 0;
+      }
+      else if (ctx.send_done)
+      {
+        fprintf(
+            stderr,
+            "[dps_csr] telemetry send failed: %s\n",
+            az_iot_result_to_string(ctx.send_status));
+      }
+      else if (ctx.failed || ctx.hub_state != AZ_IOT_CONN_STATE_CONNECTED)
+      {
+        fprintf(stderr, "[dps_csr] hub disconnected before telemetry send completed\n");
+      }
+      else
+      {
+        fprintf(stderr, "[dps_csr] timed out waiting for telemetry send completion\n");
+      }
+    }
   }
   else if (ctx.hub_state == AZ_IOT_CONN_STATE_CONNECTED)
   {
@@ -282,6 +348,10 @@ int main(void)
   }
 
 cleanup:
+  if (telemetry_initialized)
+  {
+    az_iot_gen1_telemetry_client_destroy(&telemetry);
+  }
   az_iot_connection_client_destroy(&connection_client);
   az_iot_certificate_provider_managed_destroy(&provider);
   free(op_key);
