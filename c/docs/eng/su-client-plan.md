@@ -156,7 +156,7 @@ velocity; three items cannot be dated, and row 59 holds its date only if its gat
 | 29 | Install, apply, recovery | ✅→🔜 | P0 | M | — | 2 | 9/28 | **Reboot coordination + resume** — persist-before-reboot + `resume()`; blob must additionally carry the unsent software updates report + ETags. [→](#e-install-apply-recovery) |
 | 38 | Software updates transport | 🟡 | P0 | S | 29 | 3 | 9/28 | **`reportUpdateStatus`** — `workflowId` + install result, idempotent, retried while the client lives. NOT durable across a reboot: the persistence blob (v3) does not carry an unsent report, so a device that reboots mid-install loses it. [→](#g-software-updates-transport-via-the-dps-gateway) |
 | 54 | Library / agent-core mode | 🔜 | P0 | M | — | 4 | 9/28 | **Library mode** — hand back a verified+parsed manifest; consumer drives their own state machine. [→](#j-library-and-agent-core-mode) |
-| 59 | Testing and conformance | ✅→🔜 | P0 | M | — | 5 | 9/28† | **E2E vs real software updates service** — five twin-driven scenarios exist in a slow-lane workflow (off the PR path); they retire with the cut and need software updates equivalents. [→](#k-testing-and-conformance) |
+| 59 | Testing and conformance | ✅→🔜 | P0 | M | — | 5 | 9/28† | **E2E vs real software updates service** — `az_iot_tests_e2e_su` runs four DPS-channel scenarios (engine not exercised); the five twin-driven scenarios are retired and not built. An offered-update scenario is still needed. [→](#k-testing-and-conformance) |
 | 49 | Delta and handlers | 🔜 | P1 | M | — | 6 | 9/30 | **Static step/download-handler registry** — name→fn "filter" (field-requested); static, in-process. [→](#i-delta-and-handlers) |
 | 51 | Delta and handlers | 🔜 | P1 | M | 49 | 7 | 10/1 | **Per-handler-type built-in handlers** — reference `apt`/`script`/`swupdate` handlers over the registry. [→](#i-delta-and-handlers) |
 | 52 | Delta and handlers | 🔜 | P1 | M | 49 | 8 | 10/2 | **Dynamic `ContentHandler` plugin loading** — optional `dlopen`/`LoadLibrary` registrar over the static registry (non-embedded); static registry stays the portable default. [→](#i-delta-and-handlers) |
@@ -618,11 +618,11 @@ crypto vectors in Phase 2, adapter integration in Phases 3–4, persistence in P
 - **Adapter integration tests (🔜)** — mock HTTP server + test manifest per adapter.
 - **Conformance suite (🔜)** — reusable host-only `az_iot_su_conformance` over all
   protocol states + single/multi-step manifests, written against the **Software updates** contract.
-- **E2E (✅→🔜 re-target)** — `az_iot_tests_e2e_su` runs five real scenarios against a live
-  Hub + Device Update instance in a slow-lane workflow, off the fast PR path
-  ([end-to-end-tests.md](end-to-end-tests.md)). They are **twin-driven, so they retire with
-  the cut** and must be rewritten against the software updates operations; the device fixture and the
-  mocked crypto/payload hooks carry over.
+- **E2E (✅→🔜 re-target)** — `az_iot_tests_e2e_su` (`tests/e2e_su_test.c`) runs four
+  DPS-channel scenarios and does not exercise the workflow engine
+  ([end-to-end-tests.md](end-to-end-tests.md)). The five twin-driven scenarios
+  (`tests/e2e_su_twin_test.c`) are retired and not built; an offered-update scenario is still
+  needed. Its device fixture and mocked crypto/payload hooks carry over.
 
 ## L. Advanced update model
 
