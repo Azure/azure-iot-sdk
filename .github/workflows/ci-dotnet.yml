@@ -8,12 +8,16 @@ on:
   pull_request:
     paths:
       - 'dotnet/**'
+      - '!dotnet/**/*.md'
       - 'common/**'
+      - '!common/**/*.md'
   push:
     branches: [ main ]
     paths:
       - 'dotnet/**'
+      - '!dotnet/**/*.md'
       - 'common/**'
+      - '!common/**/*.md'
   schedule:
     - cron: '0 11 * * *'  # Nightly at 4am PST
 
