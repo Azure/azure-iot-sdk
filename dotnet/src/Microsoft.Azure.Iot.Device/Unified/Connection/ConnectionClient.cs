@@ -176,53 +176,57 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
 
         private async Task HandleReceivedCertificateSigningPublish(MqttPublishReceivedEventArgs args)
         {
-            if (args.Publish.Topic.StartsWith(CertificateSigningResponseTopic))
+            try
             {
-                string[] topicTokens = args.Publish.Topic.Split("/");
-                if (topicTokens.Length != 5)
+                if (args.Publish.Topic.StartsWith(CertificateSigningResponseTopic))
                 {
-                    return;
-                }
-
-                string status = topicTokens[3];
-                string requestId = topicTokens[4].Split(RequestId)[1];
-
-                if (!_pendingCertificateSigningOperations.TryGetValue(requestId, out var pendingCertificateSigningOperation))
-                {
-                    return;
-                }
-
-                if (status.Equals("202"))
-                {
-                    CertificateSigningRequestAccepted accepted = JsonSerializer.Deserialize<CertificateSigningRequestAccepted>(args.Publish.Payload)!;
-                    pendingCertificateSigningOperation.SetAccepted(accepted);
-                    await args.AcknowledgeAsync(CancellationToken.None);
-                    return;
-                }
-                else if (status.Equals("200"))
-                {
-                    CertificateSigningResponse response = JsonSerializer.Deserialize<CertificateSigningResponse>(args.Publish.Payload)!;
-                    if (HandleCertificateSigningCompleteAsync != null)
+                    string[] topicTokens = args.Publish.Topic.Split("/");
+                    if (topicTokens.Length != 5)
                     {
-                        //TODO need a fault-injection like unit test that ensures that the client uses this new authentication provider upon reconnect since our API won't allow users to disconnect then reconnect to hub at will
-                        Debug.Assert(CurrentConnectionContext != null);
-                        CurrentConnectionContext.AuthenticationProvider = await HandleCertificateSigningCompleteAsync(response.Certificates);
+                        return;
+                    }
+
+                    string status = topicTokens[3];
+                    string requestId = topicTokens[4].Split(RequestId)[1];
+
+                    if (!_pendingCertificateSigningOperations.TryGetValue(requestId, out var pendingCertificateSigningOperation))
+                    {
+                        return;
+                    }
+
+                    if (status.Equals("202"))
+                    {
+                        CertificateSigningRequestAccepted accepted = JsonSerializer.Deserialize<CertificateSigningRequestAccepted>(args.Publish.Payload)!;
+                        pendingCertificateSigningOperation.SetAccepted(accepted);
+                        return;
+                    }
+                    else if (status.Equals("200"))
+                    {
+                        CertificateSigningResponse response = JsonSerializer.Deserialize<CertificateSigningResponse>(args.Publish.Payload)!;
+                        if (HandleCertificateSigningCompleteAsync != null)
+                        {
+                            //TODO need a fault-injection like unit test that ensures that the client uses this new authentication provider upon reconnect since our API won't allow users to disconnect then reconnect to hub at will
+                            Debug.Assert(CurrentConnectionContext != null);
+                            CurrentConnectionContext.AuthenticationProvider = await HandleCertificateSigningCompleteAsync(response.Certificates);
+                        }
+                        else
+                        {
+                            Trace.TraceError("Certificate signing response could not update authentication provider because user never set \"HandleCertificateSigningCompleteAsync\" callback");
+                        }
+                        pendingCertificateSigningOperation.SetCompleted(response);
+                        return;
                     }
                     else
                     {
-                        Trace.TraceError("Certificate signing response could not update authentication provider because user never set \"HandleCertificateSigningCompleteAsync\" callback");
+                        CertificateSigningRequestErrorResponse error = JsonSerializer.Deserialize<CertificateSigningRequestErrorResponse>(args.Publish.Payload)!;
+                        pendingCertificateSigningOperation.SetFailed(new CertificateSigningRequestFailedException() { Error = error });
+                        return;
                     }
-                    pendingCertificateSigningOperation.SetCompleted(response);
-                    await args.AcknowledgeAsync(CancellationToken.None);
-                    return;
                 }
-                else
-                {
-                    CertificateSigningRequestErrorResponse error = JsonSerializer.Deserialize<CertificateSigningRequestErrorResponse>(args.Publish.Payload)!;
-                    pendingCertificateSigningOperation.SetFailed(new CertificateSigningRequestFailedException() { Error = error });
-                    await args.AcknowledgeAsync(CancellationToken.None);
-                    return;
-                }
+            }
+            finally
+            { 
+                await args.AcknowledgeAsync(CancellationToken.None);
             }
         }
 
