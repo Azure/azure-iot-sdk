@@ -11,7 +11,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
 {
     public class ConnectionClientUnitTests
     {
-        private static ConnectionContext GetMockConnectionContext(bool isGen2)
+        private static ConnectionContext GetMockConnectionContext(bool isMQTTv5)
         {
 #pragma warning disable SYSLIB0026 // Type or member is obsolete (Mock certificate, don't need to load a real one using typical X509 certificate loader
             return new ConnectionContext()
@@ -19,7 +19,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
                 AuthenticationProvider = new X509AuthenticationProvider(new System.Security.Cryptography.X509Certificates.X509Certificate2()),
                 DeviceId = "someDeviceId",
                 IotHubHostName = "someHostName",
-                ConnectionProfile = isGen2 ? Provisioning.Models.ConnectionProfile.MqttV5 : Provisioning.Models.ConnectionProfile.Classic,
+                ConnectionProfile = isMQTTv5 ? Provisioning.Models.ConnectionProfile.MqttV5 : Provisioning.Models.ConnectionProfile.Classic,
             };
 #pragma warning restore SYSLIB0026 // Type or member is obsolete
         }
@@ -29,7 +29,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         [InlineData(true, false)]
         [InlineData(false, true)]
         [InlineData(false, false)]
-        public async Task ConnectionClientReannouncesBirthBeforeContinuingPublish(bool isGen2, bool isSessionResumed)
+        public async Task ConnectionClientReannouncesBirthBeforeContinuingPublish(bool isMQTTv5, bool isSessionResumed)
         {
             MockMqttClient mockMqttClient = new(true);
             ConnectionClient connectionClient = new(new()
@@ -39,7 +39,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
 
             TelemetryClient telemetryClient = new(connectionClient);
 
-            await connectionClient.ConnectAsync(GetMockConnectionContext(isGen2), cancellationToken: TestContext.Current.CancellationToken);
+            await connectionClient.ConnectAsync(GetMockConnectionContext(isMQTTv5), cancellationToken: TestContext.Current.CancellationToken);
 
             // Setup mock MQTT layer to lose connection when telemetry client sends a publish for the first time (subsequent retries will work normally)
             int retryCount = 0;
@@ -61,7 +61,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
 
             await telemetryClient.SendTelemetryAsync(new Models.Telemetry.DeviceToCloudTelemetry(), TestContext.Current.CancellationToken);
 
-            if (isGen2)
+            if (isMQTTv5)
             {
                 if (isSessionResumed)
                 {
@@ -90,7 +90,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
 
             // Verify that the telemetry sent by the telemetry client is the last piece of traffic "sent" in this test. It must be preceded by the intial device presence flow traffic and by the reconnection device presence flow traffic
             Assert.NotNull(lastTraffic.Publish);
-            if (isGen2)
+            if (isMQTTv5)
             {
                 Assert.StartsWith("ih/", lastTraffic.Publish.Topic);
                 Assert.EndsWith("/srv/telemetry", lastTraffic.Publish.Topic);
@@ -107,7 +107,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         [InlineData(true, false)]
         [InlineData(false, true)]
         [InlineData(false, false)]
-        public async Task ConnectionClientReannouncesBirthBeforeContinuingSubscribe(bool isGen2, bool isSessionResumed)
+        public async Task ConnectionClientReannouncesBirthBeforeContinuingSubscribe(bool isMQTTv5, bool isSessionResumed)
         {
             MockMqttClient mockMqttClient = new(true);
             ConnectionClient connectionClient = new(new()
@@ -115,7 +115,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
                 MqttClient = mockMqttClient
             });
 
-            await connectionClient.ConnectAsync(GetMockConnectionContext(isGen2), cancellationToken: TestContext.Current.CancellationToken);
+            await connectionClient.ConnectAsync(GetMockConnectionContext(isMQTTv5), cancellationToken: TestContext.Current.CancellationToken);
 
             // Setup mock MQTT layer to lose connection when telemetry client sends a publish for the first time (subsequent retries will work normally)
             int retryCount = 0;
@@ -142,7 +142,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             await connectionClient.SubscribeAsync(featureClientLevelSubscribeRequest, TestContext.Current.CancellationToken);
 
 
-            if (isGen2)
+            if (isMQTTv5)
             {
                 if (isSessionResumed)
                 {
@@ -181,7 +181,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         [InlineData(true, false)]
         [InlineData(false, true)]
         [InlineData(false, false)]
-        public async Task ConnectionClientReannouncesBirthBeforeContinuingUnsubscribe(bool isGen2, bool isSessionResumed)
+        public async Task ConnectionClientReannouncesBirthBeforeContinuingUnsubscribe(bool isMQTTv5, bool isSessionResumed)
         {
             MockMqttClient mockMqttClient = new(true);
             ConnectionClient connectionClient = new(new()
@@ -189,7 +189,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
                 MqttClient = mockMqttClient
             });
 
-            await connectionClient.ConnectAsync(GetMockConnectionContext(isGen2), cancellationToken: TestContext.Current.CancellationToken);
+            await connectionClient.ConnectAsync(GetMockConnectionContext(isMQTTv5), cancellationToken: TestContext.Current.CancellationToken);
 
             // Setup mock MQTT layer to lose connection when telemetry client sends a publish for the first time (subsequent retries will work normally)
             int retryCount = 0;
@@ -216,7 +216,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             await connectionClient.UnsubscribeAsync(featureClientLevelUnsubscribeRequest, TestContext.Current.CancellationToken);
 
 
-            if (isGen2)
+            if (isMQTTv5)
             {
                 if (isSessionResumed)
                 {

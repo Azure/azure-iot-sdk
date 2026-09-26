@@ -10,7 +10,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
     /// </summary>
     /// <remarks>
     /// This exists alongside <see cref="MockMqttClient"/> because tests for the connection layer itself need to drive
-    /// failures that the gen2-flavoured mock deliberately smooths over: a refused CONNACK, a throwing connect, and a
+    /// failures that the MQTTv5-flavoured mock deliberately smooths over: a refused CONNACK, a throwing connect, and a
     /// connected/disconnected flag that tracks those outcomes accurately.
     /// </remarks>
     internal sealed class MockConnectionMqttClient : IMqttClient

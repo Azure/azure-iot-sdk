@@ -129,7 +129,7 @@ if(AZ_IOT_BUILD_E2E_CSR)
     endif()
     az_iot_add_cmocka_test(az_iot_tests_e2e_csr tests/e2e_csr_test.c)
     target_link_libraries(az_iot_tests_e2e_csr PRIVATE
-        az_iot_adapter_paho az_iot_certificate_provider_managed)
+        az_iot_gen1 az_iot_adapter_paho az_iot_certificate_provider_managed)
 endif()
 
 # ---------------------------------------------------------------------------

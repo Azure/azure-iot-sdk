@@ -226,3 +226,61 @@ const char* sample_connection_state_name(az_iot_connection_state state)
       return "?";
   }
 }
+
+const char* sample_connection_profile_name(az_iot_connection_profile profile)
+{
+  switch (profile)
+  {
+    case AZ_IOT_CONNECTION_PROFILE_CLASSIC:
+      return "Classic (gen1, MQTT v3.1.1)";
+    case AZ_IOT_CONNECTION_PROFILE_MQTT_V5:
+      return "AEG (gen2, MQTT v5)";
+    case AZ_IOT_CONNECTION_PROFILE_UNKNOWN:
+    default:
+      return "not known to this SDK";
+  }
+}
+
+az_iot_result sample_get_hub_profile(
+    const az_iot_connection_client* client,
+    az_iot_connection_profile* out_profile)
+{
+  /* Not `= {0}`: the SDK rejects a struct without the size stamp this sets. */
+  az_iot_hub_profile profile = AZ_IOT_HUB_PROFILE_INIT;
+
+  az_iot_result result = az_iot_connection_client_get_hub_profile(client, &profile);
+  if (result != AZ_IOT_OK)
+  {
+    printf("hub profile not available: %s\n", az_iot_result_to_string(result));
+    return result;
+  }
+
+  printf(
+      "hub profile: %s, service sent \"%s\"%s\n",
+      sample_connection_profile_name(profile.connection_profile),
+      profile.connection_profile_raw ? profile.connection_profile_raw : "(none)",
+      profile.connection_profile_raw_truncated ? " (truncated)" : "");
+
+  *out_profile = profile.connection_profile;
+  return AZ_IOT_OK;
+}
+
+bool sample_event_is_profile_mismatch(
+    const az_iot_connection_state_event* event,
+    az_iot_connection_profile* out_profile)
+{
+  if (event == NULL || event->state != AZ_IOT_CONN_STATE_FAULTED
+      || event->reason != AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH || event->profile == NULL)
+  {
+    return false;
+  }
+  *out_profile = event->profile->connection_profile;
+  return true;
+}
+
+az_iot_connection_profile sample_initial_profile(const sample_config* config)
+{
+  /* The mock bypass skips DPS, so no mismatch would ever correct a guess. */
+  return (config != NULL && config->mock_endpoint != NULL) ? AZ_IOT_CONNECTION_PROFILE_MQTT_V5
+                                                           : AZ_IOT_CONNECTION_PROFILE_CLASSIC;
+}

@@ -121,8 +121,15 @@ int main(void)
   az_iot_connection_client_set_operational_cert_callback(
       &connection_client, on_operational_cert, &user_ctx);
 
+  /* Both adapters: v3.1.1 serves DPS and a Classic hub, v5 serves an AEG hub. */
   if (az_iot_connection_client_register_mqtt_factory(
           &connection_client, az_iot_paho_factory_create_v3_1_1())
+      != AZ_IOT_OK)
+  {
+    goto cleanup;
+  }
+  if (az_iot_connection_client_register_mqtt_factory(
+          &connection_client, az_iot_paho_factory_create_v5())
       != AZ_IOT_OK)
   {
     goto cleanup;
@@ -144,6 +151,8 @@ int main(void)
 
   if (user_ctx.conn_state == AZ_IOT_CONN_STATE_CONNECTED)
   {
+    az_iot_connection_profile profile = AZ_IOT_CONNECTION_PROFILE_UNKNOWN;
+    (void)sample_get_hub_profile(&connection_client, &profile);
     fprintf(
         stderr,
         "[custom_cert] connected with %s identity\n",

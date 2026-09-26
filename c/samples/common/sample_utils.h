@@ -1,6 +1,7 @@
 #ifndef SAMPLE_UTILS_H
 #define SAMPLE_UTILS_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #include "azure/iot/az_iot_connection_client.h"
@@ -58,5 +59,49 @@ void sample_sleep_ms(long ms);
 
 // Human-readable name for a connection state, for logging. Never NULL.
 const char* sample_connection_state_name(az_iot_connection_state state);
+
+/** @brief Human-readable name for a connection profile, for logging. Never NULL. */
+const char* sample_connection_profile_name(az_iot_connection_profile profile);
+
+/**
+ * @brief Reads and prints the hub generation a CONNECTED client reached.
+ *
+ * @param[in] client Client whose hub lifecycle is CONNECTED.
+ * @param[out] out_profile Resolved profile; written only on AZ_IOT_OK.
+ * @return The az_iot_connection_client_get_hub_profile() result.
+ */
+az_iot_result sample_get_hub_profile(
+    const az_iot_connection_client* client,
+    az_iot_connection_profile* out_profile);
+
+/**
+ * @brief Whether @p event reports that DPS assigned the device to the other hub
+ * generation than the attached feature clients were built for.
+ *
+ * The connection is then stopped (AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH): the
+ * application destroys those clients, builds the ones for @p out_profile, and
+ * calls az_iot_connection_client_close() then az_iot_connection_client_open().
+ * This happens on the first connect and whenever a running device is moved to a
+ * hub of the other generation.
+ *
+ * @param[in] event Connection state event.
+ * @param[out] out_profile Assigned profile; written only when true is returned.
+ * @return true on a profile mismatch, false otherwise.
+ */
+bool sample_event_is_profile_mismatch(
+    const az_iot_connection_state_event* event,
+    az_iot_connection_profile* out_profile);
+
+/**
+ * @brief Generation to build feature clients for before open().
+ *
+ * MQTT v5 when AZ_IOT_HUB_NEXT_MOCK_ENDPOINT is set (that bypass skips DPS and
+ * always connects over MQTT v5); otherwise Classic, which DPS assigns when it
+ * names no connectionProfile.
+ *
+ * @param[in] config Loaded sample configuration.
+ * @return The profile to assume.
+ */
+az_iot_connection_profile sample_initial_profile(const sample_config* config);
 
 #endif // SAMPLE_UTILS_H

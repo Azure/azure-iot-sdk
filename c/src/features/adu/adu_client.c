@@ -239,6 +239,7 @@ static void result_init_steps(az_iot_adu_client_t* client, int32_t step_count)
 {
   az_iot_adu_client_install_result* r = &ADU_I(client).install_result;
   memset(r, 0, sizeof(*r));
+  memset(ADU_I(client).step_results, 0, sizeof(ADU_I(client).step_results));
   if (step_count < 0)
   {
     step_count = 0;
@@ -248,6 +249,12 @@ static void result_init_steps(az_iot_adu_client_t* client, int32_t step_count)
     step_count = _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS;
   }
   r->step_results_count = step_count;
+  ADU_I(client).step_results_count = step_count;
+  for (int32_t i = 0; i < step_count; ++i)
+  {
+    ADU_I(client).step_results[i].outcome = AZ_IOT_ADU_OUTCOME_SKIPPED;
+    ADU_I(client).step_results[i].failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_NOT_APPLICABLE;
+  }
 }
 
 static void result_step_success(az_iot_adu_client_t* client, uint32_t step)
@@ -257,6 +264,10 @@ static void result_step_success(az_iot_adu_client_t* client, uint32_t step)
   {
     r->step_results[step].result_code = AZ_IOT_ADU_AGENT_RESULT_CODE_SUCCESS;
     r->step_results[step].extended_result_code = 0;
+    ADU_I(client).step_results[step].outcome = AZ_IOT_ADU_OUTCOME_SUCCEEDED;
+    ADU_I(client).step_results[step].failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_NOT_APPLICABLE;
+    ADU_I(client).step_results[step].result_code = AZ_IOT_ADU_AGENT_RESULT_CODE_SUCCESS;
+    ADU_I(client).step_results[step].extended_result_code = 0;
   }
 }
 
@@ -277,11 +288,34 @@ static void result_step_failure(
   {
     r->step_results[step].result_code = code;
     r->step_results[step].extended_result_code = extended;
+    ADU_I(client).step_results[step].outcome = AZ_IOT_ADU_OUTCOME_FAILED;
+    ADU_I(client).step_results[step].failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_AGENT_CORE;
+    ADU_I(client).step_results[step].result_code = code;
+    ADU_I(client).step_results[step].extended_result_code = extended;
   }
   if (r->result_code == 0 || r->result_code == AZ_IOT_ADU_AGENT_RESULT_CODE_SUCCESS)
   {
     r->result_code = code;
     r->extended_result_code = extended;
+  }
+}
+
+static void result_step_canceled(az_iot_adu_client_t* client)
+{
+  int32_t step_count = ADU_I(client).step_results_count;
+  uint32_t step = ADU_I(client).current_step;
+  if ((int32_t)step >= step_count)
+  {
+    return;
+  }
+
+  az_iot_adu_step_result* result = &ADU_I(client).step_results[step];
+  if (result->outcome == AZ_IOT_ADU_OUTCOME_SKIPPED)
+  {
+    result->outcome = AZ_IOT_ADU_OUTCOME_CANCELED;
+    result->failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_NOT_APPLICABLE;
+    result->result_code = AZ_IOT_ADU_RESULT_FAILURE;
+    result->extended_result_code = 0;
   }
 }
 
@@ -905,6 +939,7 @@ static az_iot_result parse_manifest(az_iot_adu_client_t* client)
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
+  ADU_I(client).current_request.update_manifest = unescaped;
   ADU_I(client).manifest_text = unescaped;
   return AZ_IOT_OK;
 }
@@ -1207,6 +1242,7 @@ static void process_update_metadata(
   ADU_I(client).cancel_requested = false;
   ADU_I(client).current_step = 0;
   ADU_I(client).current_file = 0;
+  result_init_steps(client, 0);
   set_adu_state(client, AZ_IOT_ADU_STATE_MANIFEST_RECEIVED);
   set_active_workflow(
       client,
@@ -1988,16 +2024,28 @@ az_iot_result az_iot_adu_client_resume(az_iot_adu_client_t* client)
   /* Restore accumulated install_result so already-completed step results of a
    * multi-step deployment survive a mid-deployment reboot. */
   memset(&ADU_I(client).install_result, 0, sizeof(ADU_I(client).install_result));
+  memset(ADU_I(client).step_results, 0, sizeof(ADU_I(client).step_results));
   ADU_I(client).install_result.result_code = res_code;
   ADU_I(client).install_result.extended_result_code = res_ext;
   ADU_I(client).install_result.step_results_count = step_count;
+  ADU_I(client).step_results_count = step_count;
   {
     uint32_t sp = t + AZ_IOT_ADU_PERSIST_TRAILER_FIXED;
     for (int32_t i = 0; i < step_count; ++i)
     {
-      ADU_I(client).install_result.step_results[i].result_code = (int32_t)rd_u32le(&blob[sp]);
+      az_iot_adu_step_result* step_result = &ADU_I(client).step_results[i];
+      step_result->result_code = (int32_t)rd_u32le(&blob[sp]);
+      step_result->extended_result_code = (int32_t)rd_u32le(&blob[sp + 4]);
+      step_result->outcome = (step_result->result_code == AZ_IOT_ADU_AGENT_RESULT_CODE_SUCCESS)
+          ? AZ_IOT_ADU_OUTCOME_SUCCEEDED
+          : ((step_result->result_code == 0) ? AZ_IOT_ADU_OUTCOME_SKIPPED
+                                             : AZ_IOT_ADU_OUTCOME_FAILED);
+      step_result->failure_origin = (step_result->outcome == AZ_IOT_ADU_OUTCOME_FAILED)
+          ? AZ_IOT_ADU_FAILURE_ORIGIN_AGENT_CORE
+          : AZ_IOT_ADU_FAILURE_ORIGIN_NOT_APPLICABLE;
+      ADU_I(client).install_result.step_results[i].result_code = step_result->result_code;
       ADU_I(client).install_result.step_results[i].extended_result_code
-          = (int32_t)rd_u32le(&blob[sp + 4]);
+          = step_result->extended_result_code;
       sp += 8u;
     }
   }
@@ -2097,6 +2145,7 @@ az_iot_result az_iot_adu_client_do_work(az_iot_adu_client_t* client)
   /* Cancellation at a phase boundary returns immediately to Idle. */
   if (ADU_I(client).cancel_requested && ADU_I(client).state != AZ_IOT_ADU_STATE_IDLE)
   {
+    result_step_canceled(client);
     ADU_I(client).pending_outcome = AZ_IOT_ADU_OUTCOME_CANCELED;
     reset_to_idle(client);
     (void)az_iot_adu__report_state(client);
@@ -2317,8 +2366,8 @@ az_iot_result az_iot_adu_client_do_work(az_iot_adu_client_t* client)
       break;
 
     case AZ_IOT_ADU_STATE_FAILED:
-      /* Terminal failure already reported; return to Idle for the next
-       * deployment. */
+      /* Retain failure for later reports after returning to Idle. */
+      ADU_I(client).pending_outcome = AZ_IOT_ADU_OUTCOME_FAILED;
       reset_to_idle(client);
       break;
   }
@@ -2522,6 +2571,7 @@ az_iot_result az_iot_adu_parse_update_request(
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
+  req.update_manifest = manifest_text;
 
   /* Trust gate before the manifest is parsed. */
   if (verify_manifest_core(

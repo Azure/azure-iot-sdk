@@ -401,6 +401,31 @@ static int wait_until(
   return p(r);
 }
 
+/** @brief Poll the proxy for the client DISCONNECT reason.
+ *
+ * The adapter reports DISCONNECTED once the packet is written; the proxy relays
+ * it on its own thread, so it may not have parsed it yet.
+ *
+ * @return 1 once seen (@p out_code written), 0 on timeout.
+ */
+static int wait_client_disconnect_reason(
+    az_iot_test_proxy* proxy,
+    uint8_t* out_code,
+    unsigned timeout_ms)
+{
+  /* Elapsed-time subtraction stays correct if the clock wraps. */
+  unsigned long start = conf_now_ms();
+  while (az_iot_test_proxy_last_client_disconnect_reason(proxy, out_code) != 1)
+  {
+    if (conf_now_ms() - start >= timeout_ms)
+    {
+      return 0;
+    }
+    conf_sleep_ms(10);
+  }
+  return 1;
+}
+
 static int saw_connected_ok(const conf_recorder* r)
 {
   for (size_t i = 0; i < r->count; ++i)
@@ -1413,7 +1438,7 @@ static void disconnect_carries_the_reason_code_it_was_connected_with(void** stat
   assert_true(wait_until(c, &rec, saw_disconnected, k_step_timeout_ms));
 
   uint8_t reason = 0xFFu;
-  assert_int_equal(az_iot_test_proxy_last_client_disconnect_reason(proxy, &reason), 1);
+  assert_int_equal(wait_client_disconnect_reason(proxy, &reason, k_step_timeout_ms), 1);
   assert_int_equal(
       reason,
       conf_is_v5() ? (uint8_t)AZ_IOT_MQTT_DISCONNECT_WITH_WILL_MESSAGE
@@ -1445,7 +1470,7 @@ static void a_session_with_no_reason_code_closes_normally(void** state)
   assert_true(wait_until(c, &rec, saw_disconnected, k_step_timeout_ms));
 
   uint8_t reason = 0xFFu;
-  assert_int_equal(az_iot_test_proxy_last_client_disconnect_reason(proxy, &reason), 1);
+  assert_int_equal(wait_client_disconnect_reason(proxy, &reason, k_step_timeout_ms), 1);
   assert_int_equal(reason, (uint8_t)AZ_IOT_MQTT_DISCONNECT_NORMAL);
 
   destroy_client(c);

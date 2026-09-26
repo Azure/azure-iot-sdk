@@ -32,7 +32,10 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             {
                 if (ConnectionContext.DeviceId != null)
                 {
-                    await Setup.GetGen1IotHubRegistryManager().RemoveDeviceAsync(ConnectionContext.DeviceId);
+                    var registryManager = ConnectionContext.ConnectionProfile == Provisioning.Models.ConnectionProfile.MqttV5
+                        ? Setup.GetMQTTv5IotHubRegistryManager()
+                        : Setup.GetMQTTv3IotHubRegistryManager();
+                    await registryManager.RemoveDeviceAsync(ConnectionContext.DeviceId);
                 }
             }
         }

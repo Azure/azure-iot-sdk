@@ -18,10 +18,22 @@ sequenceDiagram
     DPS-->>D: assigned { hub, issued chain }
     Note over D: save chain to operational_cert.pem
     D->>Hub: TLS with operational certificate + key
+    D->>Hub: device-to-cloud telemetry
 ```
 
 The SDK's OpenSSL-backed managed certificate provider does the key, CSR and file
 handling; the sample only configures it. See [`main.c`](main.c).
+
+## End-to-end sample contract
+
+On `2026-11-02-preview` DPS MQTT sessions, the sample registers with its
+bootstrap identity, persists the issued operational chain, connects to the
+assigned **Classic** IoT Hub with that chain, and sends one telemetry message
+on the same connection. Exit code 0 requires the telemetry send callback to
+report success; connection alone is not sufficient. A send rejection or a
+missing callback within the bounded send window returns a nonzero exit code.
+This sample does not exercise device updates or MQTT v5 hubs; it does not
+confirm delivery to downstream telemetry consumers.
 
 > Certificate management in IoT Hub and DPS is in **preview**. Service setup
 > steps and CLI flags may change; the
@@ -107,7 +119,8 @@ export AZ_IOT_TRUSTED_CA=/etc/ssl/certs/ca-certificates.crt
 ./build/linux-gcc-debug/samples/authentication/az_iot_sample_auth_dps_csr_managed
 ```
 
-Exit code is 0 only when the hub connection succeeds with an issued certificate.
+Exit code is 0 only when the hub connection succeeds with an issued certificate
+and the telemetry send callback reports success.
 Expected output (SDK log lines omitted):
 
 ```
@@ -117,6 +130,7 @@ Expected output (SDK log lines omitted):
 ...
 [dps_csr] hub: Connected (AZ_IOT_OK)
 [dps_csr] connected to <hub>.azure-devices.net with the operational certificate
+[dps_csr] telemetry sent with operational certificate
 ```
 
 The chain length depends on the credential policy.
@@ -150,7 +164,7 @@ The chain length depends on the credential policy.
   process umask (world-readable under the common `022`). Run with `umask 077` or
   keep the files in a directory only the device user can read.
 - For keys that must not exist as files, see
-  [`hsm_pkcs11_gen1`](../README.md#hsm_pkcs11_gen1--hsm_pkcs11_gen2) and
+  [`hsm_pkcs11`](../README.md#hsm_pkcs11) and
   [`custom_certificate_provider`](../README.md#custom_certificate_provider).
 - The step 1 certificates are for testing only.
 
@@ -165,6 +179,7 @@ The chain length depends on the credential policy.
 | `hub connection failed: AZ_IOT_ERR_NOT_SUPPORTED` | DPS assigned an MQTT v5 hub. This sample connects to Classic hubs only (MQTT 3.1.1). |
 | `open failed` immediately, after an SDK error `registration_payload must be a single well-formed JSON object` | `AZ_IOT_DPS_REGISTRATION_PAYLOAD` is not a single JSON object. |
 | `timed out` (last dps error `AZ_IOT_ERR_MQTT` or `AZ_IOT_ERR_TLS`) | DPS unreachable (network, proxy, `AZ_IOT_DPS_GLOBAL_ENDPOINT`) or server TLS failing (`AZ_IOT_TRUSTED_CA`). |
+| `telemetry send failed` or `timed out waiting for telemetry send completion` | Hub rejected the publish, the connection dropped, or no send callback arrived within 30 s. |
 
 The sample stops at the first failure the SDK marks as not retriable, or when the SDK faults; anything else is retried until the 60 s timeout, which prints the last error per scope.
 
@@ -179,5 +194,6 @@ The SDK logs at `INFO` to stderr; change the level in `main()` for more detail.
 | Custom registration payload | `opts.dps.registration_payload`, `opts.dps.registration_body_buffer` |
 | Issuance notification | `az_iot_connection_client_set_operational_cert_callback()` |
 | Progress and failure reasons | `az_iot_connection_client_add_state_observer()` |
+| Send one telemetry message over the issued identity | `az_iot_gen1_telemetry_client_send()` and `on_send_done()` |
 
 Design background: [certificate-management.md](../../../docs/eng/certificate-management.md).

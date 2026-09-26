@@ -692,9 +692,9 @@ namespace Microsoft.Azure.Iot.Device
                 ThrowIfPubackHasErrorCode(puback);
                 return puback;
             }
-            catch (Exception e) when (e is not DeviceException and not MqttClientNotConnectedException)
+            catch (Exception e) when (e is not DeviceException and not MqttClientNotConnectedException and not OperationCanceledException)
             {
-                throw new DeviceException("TODO", e)
+                throw new DeviceException("Encountered an exception while publishing", e)
                 {
                     Retryability = ErrorRetryability.Retryable,
                     IsContained = true,
@@ -702,7 +702,15 @@ namespace Microsoft.Azure.Iot.Device
             }
         }
 
-        /// <inheritdoc cref="PublishAsync"/>
+        /// <summary>
+        /// Send a SUBSCRIBE and settle it.
+        /// </summary>
+        /// <remarks>
+        /// Failures here are contained to the one operation, so they are thrown to the caller rather than being
+        /// retried or reported as connection faults. Already-classified <see cref="DeviceException"/>s are rethrown
+        /// unchanged so their retryability survives, and <see cref="MqttClientNotConnectedException"/> is left alone
+        /// because it reports connection state rather than an operation failure, and the layer above acts on it.
+        /// </remarks>
         public async Task<MqttSubscribeAck> SubscribeAsync(MqttSubscribe subscribe, CancellationToken cancellationToken = default)
         {
             try
@@ -711,9 +719,9 @@ namespace Microsoft.Azure.Iot.Device
                 ThrowIfSubackHasErrorCode(suback);
                 return suback;
             }
-            catch (Exception e) when (e is not DeviceException and not MqttClientNotConnectedException)
+            catch (Exception e) when (e is not DeviceException and not MqttClientNotConnectedException and not OperationCanceledException)
             {
-                throw new DeviceException("TODO", e)
+                throw new DeviceException("Encountered an exception while subscribing", e)
                 {
                     Retryability = ErrorRetryability.Retryable,
                     IsContained = true,
@@ -721,7 +729,15 @@ namespace Microsoft.Azure.Iot.Device
             }
         }
 
-        /// <inheritdoc cref="PublishAsync"/>
+        /// <summary>
+        /// Send a UNSUBSCRIBE and settle it.
+        /// </summary>
+        /// <remarks>
+        /// Failures here are contained to the one operation, so they are thrown to the caller rather than being
+        /// retried or reported as connection faults. Already-classified <see cref="DeviceException"/>s are rethrown
+        /// unchanged so their retryability survives, and <see cref="MqttClientNotConnectedException"/> is left alone
+        /// because it reports connection state rather than an operation failure, and the layer above acts on it.
+        /// </remarks>
         public async Task<MqttUnsubscribeAck> UnsubscribeAsync(MqttUnsubscribe unsubscribe, CancellationToken cancellationToken = default)
         {
             try
@@ -730,9 +746,9 @@ namespace Microsoft.Azure.Iot.Device
                 ThrowIfUnsubackHasErrorCode(unsuback);
                 return unsuback;
             }
-            catch (Exception e) when (e is not DeviceException and not MqttClientNotConnectedException)
+            catch (Exception e) when (e is not DeviceException and not MqttClientNotConnectedException and not OperationCanceledException)
             {
-                throw new DeviceException("TODO", e)
+                throw new DeviceException("Encountered an exception while unsubscribing", e)
                 {
                     Retryability = ErrorRetryability.Retryable,
                     IsContained = true,

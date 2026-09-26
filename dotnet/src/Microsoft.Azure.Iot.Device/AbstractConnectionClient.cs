@@ -3,8 +3,8 @@
 
 using Google.Protobuf;
 using Microsoft.Azure.Iot.Device.Exceptions;
-using Microsoft.Azure.Iot.Device.Gen2.Connection;
-using Microsoft.Azure.Iot.Device.Gen2.Twin;
+using Microsoft.Azure.Iot.Device.MQTTv5.Connection;
+using Microsoft.Azure.Iot.Device.MQTTv5.Twin;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Models.CertificateManagement;
 using Microsoft.Azure.Iot.Device.Mqtt;
@@ -55,10 +55,10 @@ namespace Microsoft.Azure.Iot.Device
 
         private static readonly TimeSpan s_defaultOperationPollingInterval = TimeSpan.FromSeconds(2);
 
-        // The abstract methods cover all the differences between a gen2 client and a unified client.
+        // The abstract methods cover all the differences between an MQTTv5 client and a unified client.
         public abstract MqttConnect MqttConnectOverride(MqttConnect connect);
 
-        // In gen2 case, SUB to devicebound, send birth message, wait for birth ack. In gen1 case, send all DM/Twin/Telem SUBs.
+        // In MQTTv5 case, SUB to devicebound, send birth message, wait for birth ack. In MQTTv3 case, send all DM/Twin/Telem SUBs.
         // In both cases, this method should trigger the "OnDevicePresenceFlowCompleted" callback
         public abstract Task HandleConnectedToHubAsync(MqttClientConnectedEventArgs args);
 
@@ -264,7 +264,7 @@ namespace Microsoft.Azure.Iot.Device
             // started is no longer wanted.
             CancelCurrentReprovisioning();
 
-            await ManagedMqttConnection.DisconnectAsync(false, new MqttDisconnect() { Reason = MqttClientDisconnectOptionsReason.NormalDisconnection }, cancellationToken);
+            await ManagedMqttConnection.DisconnectAsync(false, new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection }, cancellationToken);
             CurrentConnectionContext = null;
 
             Trace.TraceInformation("ConnectionClient's current endpoint is now neither IoT Hub or DPS");
@@ -682,7 +682,7 @@ namespace Microsoft.Azure.Iot.Device
 
                 // Always close the MQTT connection once provisioning has finished so that the connection can be
                 // re-established against the assigned IoT hub.
-                var disconnect = new MqttDisconnect() { Reason = MqttClientDisconnectOptionsReason.NormalDisconnection };
+                var disconnect = new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection };
 
                 try
                 {
@@ -777,7 +777,7 @@ namespace Microsoft.Azure.Iot.Device
 
             if (subscribeResults.Items.FirstOrDefault()!.ReasonCode != MqttClientSubscribeReasonCode.GrantedQoS1)
             {
-                throw new Exception("todo");
+                throw new Exception($"DPS did not grant QoS 1 for the mandatory response-topic subscription; received SUBACK reason '{subscribeResults.Items.FirstOrDefault()!.ReasonCode}'.");
             }
         }
 

@@ -265,25 +265,27 @@ The update manifest v5 `instructions.steps[]` array MAY contain multiple steps, 
 1. For step N: the client MUST Download all files → Backup → Install → Apply.
 2. If Apply succeeds and more steps remain: the client MUST advance to step N+1 and loop back to Download.
 3. If any step fails: the client MUST Restore (rolling back from step N backward to step 0).
-4. Per-step results MUST be reported via `az_iot_adu_client_step_result` (from azure-sdk-for-c).
+4. Terminal per-step results MUST be reported via `az_iot_adu_step_result`.
 
 #### Per-Step Result Accumulation
 
-The client MUST maintain an `az_iot_adu_client_install_result` whose
-`step_results[]` array has **one entry per manifest step**, indexed by step
-number. As the machine progresses:
+The client MUST maintain an `az_iot_adu_step_result` for every manifest step,
+indexed by step number. As the machine progresses:
 
-- On entering a step, its `step_results[N]` MUST be initialized to a pending/zero
-  state.
-- On a step completing successfully (Apply done), `step_results[N].result_code`
-  MUST be set to `700`.
-- On a step failing, `step_results[N]` MUST be set to the failing phase's
+- Before execution, a step is `SKIPPED` / `NOT_APPLICABLE` with zero result
+  codes. This becomes the terminal state for steps not reached after a failure.
+- On successful Apply, the step becomes `SUCCEEDED` / `NOT_APPLICABLE`, result
+  code `700`, extended result code `0`.
+- On failure, the step becomes `FAILED` / `AGENT_CORE` with the failing phase's
   `result_code` + composed `extended_result_code` (see Result-Code Mapping), and
   no further steps MUST be started.
+- On cancellation, the active unfinished step becomes `CANCELED` /
+  `NOT_APPLICABLE`, result code `-1`, extended result code `0`; later steps stay
+  `SKIPPED`.
 - The **overall** `result_code`/`extended_result_code` MUST mirror the *first*
   failing step (the root cause), not a later rollback outcome.
-- `step_results_count` MUST equal the number of manifest steps so azure-sdk-for-c
-  can format a well-formed payload.
+- `step_results_count` MUST equal the number of manifest steps for terminal
+  reports.
 
 #### Partial-Failure Rollback
 
@@ -320,8 +322,11 @@ Workflow transitions produce a status report. The engine hands the channel a str
 }
 ```
 
-Per-step results go in `installResult.stepResults`, keyed `step_0`, `step_1`, …; field rules are
-in [aduv2-spec.md](aduv2-spec.md).
+In-progress reports omit `installResult.stepResults`, even after some steps
+have completed. Terminal reports include the map when the manifest has steps,
+keyed `step_0`, `step_1`, …; every entry carries `outcome`, `failureOrigin`,
+`resultCode`, and `extendedResultCodes` (plus optional `resultDetails`). Field
+rules are in [aduv2-spec.md](aduv2-spec.md).
 
 ### Cancellation
 
@@ -1695,7 +1700,7 @@ at `init` (compiled-in Microsoft defaults or caller-supplied keys).
 | Component name check (`az_iot_adu_client_is_component_device_update`) | Not used (device twin only) |
 | Workflow struct with `action`, `id`, `retry_timestamp` | Only `id` is used (from `workflowId`) |
 | File hash parsing (`hash_type` + `hash_value` as `az_span`) | ✅ Sufficient |
-| `az_json_string_unescape()` for manifest string unescaping | ✅ Sufficient |
+| `az_json_string_unescape()` for manifest string unescaping | Not used: it stops at `\u` escapes. The SDK decodes JSON strings with `az_iot_json_string_decode()` (`src/core/json_string.c`) |
 | `az_iot_hub_client_properties_writer_*` for PnP component wrapping | Not used (device twin only) |
 
 ### Configurable Limits (No Source Change Needed)

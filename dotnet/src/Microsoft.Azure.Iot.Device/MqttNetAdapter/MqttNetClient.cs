@@ -4,6 +4,7 @@
 using Microsoft.Azure.Iot.Device.Mqtt;
 using Microsoft.Azure.Iot.Device.MqttNetAdapter;
 using MQTTnet;
+using System.Diagnostics;
 using System.Net;
 using System.Net.Security;
 using System.Security.Cryptography.X509Certificates;
@@ -56,7 +57,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTnetAdapter
 
             if (ConnectingAsync != null)
             {
-                connect = await ConnectingAsync.Invoke(connect); // Allow Gen2 connection client to inject a fresh connect nonce each time a connect happens
+                connect = await ConnectingAsync.Invoke(connect); // Allow MQTTv5 connection client to inject a fresh connect nonce each time a connect happens
             }
 
             MqttClientOptionsBuilder optionsBuilder;
@@ -302,7 +303,8 @@ namespace Microsoft.Azure.Iot.Device.MQTTnetAdapter
         {
             if (PublishReceivedAsync == null)
             {
-                return Task.CompletedTask; //TODO what to do with received MQTT message when user doesn't have callback set. Does this even happen?
+                Trace.TraceWarning("Could not delegate a received MQTT publish because no 'PublishReceivedAsync' callback handler was registered");
+                return Task.CompletedTask;
             }
 
             MqttPublishReceivedEventArgs genericArgs = new MqttPublishReceivedEventArgsImpl(args)
@@ -327,7 +329,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTnetAdapter
                 }
             }
 
-            args.AutoAcknowledge = false; // TODO do we want to do AutoAck things in generic interface as well? For now, assume always manual ack
+            args.AutoAcknowledge = false;
 
             if (PublishReceivedAsync != null)
             {

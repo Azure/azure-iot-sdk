@@ -1462,6 +1462,10 @@ static void dps_csr_flow_sends_csr_and_stores_issued_chain(void** state)
   assert_int_equal(az_iot_connection_client_open(&client), AZ_IOT_OK);
   az_iot_mock_mqtt_client* dps = az_iot_mock_mqtt_factory_last_client(factory);
   assert_non_null(dps);
+  const az_iot_mock_call* connect = az_iot_mock_mqtt_client_last_of(dps, AZ_IOT_MOCK_CALL_CONNECT);
+  assert_non_null(connect);
+  assert_string_equal(
+      connect->username, "0ne00000000/registrations/ut-device/api-version=2026-11-02-preview");
 
   /* CONNECTED -> subscribe. */
   assert_true(az_iot_mock_mqtt_client_inject_connected(dps, AZ_IOT_OK));
