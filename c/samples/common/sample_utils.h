@@ -104,4 +104,14 @@ bool sample_event_is_profile_mismatch(
  */
 az_iot_connection_profile sample_initial_profile(const sample_config* config);
 
+/**
+ * @brief Prints the service's profile value when @p event failed with
+ * AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED (a generation newer than this SDK).
+ *
+ * The value is marked when truncated to AZ_IOT_CONNECTION_PROFILE_RAW_BUF.
+ *
+ * @param[in] event Connection state event; other events are ignored.
+ */
+void sample_report_unsupported_profile(const az_iot_connection_state_event* event);
+
 #endif // SAMPLE_UTILS_H
