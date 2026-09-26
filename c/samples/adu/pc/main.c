@@ -610,9 +610,10 @@ int main(void)
   {
     fprintf(
         stderr,
-        "Device properties are invalid or too long: at most %d nonempty, unique "
-        "compatibility properties, and an installed update id that is unset or "
-        "complete.\n",
+        "Device properties are invalid or too long. Need 1-%d compatibility "
+        "properties (nonempty, unique names; non-NULL values, empty allowed), and "
+        "an installed update id that is unset or has nonempty provider, name and "
+        "version.\n",
         AZ_IOT_ADU_MAX_COMPATIBILITY_PROPERTIES);
     sample_state_destroy(&st);
     return 1;

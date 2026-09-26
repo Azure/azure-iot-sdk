@@ -1032,7 +1032,8 @@ extern "C"
    * the next az_iot_adu_client_request_update() or
    * az_iot_adu_client_request_onboarding_update() sends them. Also marks a
    * workflow-status report due on do_work(), which does nothing without a
-   * recorded workflow and never carries these properties.
+   * recorded workflow. That report never carries the compatibility properties,
+   * but carries the new installed update ID unless an applied update succeeded.
    *
    * Call on the do_work() thread, or serialize with it.
    *
