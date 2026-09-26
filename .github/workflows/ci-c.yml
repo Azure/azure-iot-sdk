@@ -411,7 +411,7 @@ jobs:
       # actually had -- coverage computed over fewer tests than anyone thought.
       # Now that no suite decides at run time whether to participate, the count
       # is deterministic, so assert it exactly. Bump this when adding a suite.
-      EXPECTED_TESTS: '45'
+      EXPECTED_TESTS: '44'
     services:
       mosquitto:
         image: eclipse-mosquitto:2

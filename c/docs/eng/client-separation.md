@@ -955,7 +955,8 @@ Tracked as **[AB#39350066](https://dev.azure.com/msazure/One/_workitems/edit/393
 > subscriptions where one sufficed, re-issued all six on every reconnect, and
 > spent registry slots it never needed. All five are gone; the dispatch handlers
 > that route the messages stay, because it was never the filters that did the
-> routing.
+> routing. (The `dev/c2d` handler went later, with the MQTTv5 C2D client: AEG
+> does not support C2D yet, see [§4](#c2d-is-mqttv3-only).)
 >
 > **The wildcard genuinely covers everything, including features not yet
 > designed.** The AEG topic RFC (`gateway/rfcs/aeg/topics.md`) defines the
