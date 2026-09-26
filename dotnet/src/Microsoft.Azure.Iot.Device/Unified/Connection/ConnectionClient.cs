@@ -176,9 +176,9 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
 
         private async Task HandleReceivedCertificateSigningPublish(MqttPublishReceivedEventArgs args)
         {
-            try
+            if (args.Publish.Topic.StartsWith(CertificateSigningResponseTopic))
             {
-                if (args.Publish.Topic.StartsWith(CertificateSigningResponseTopic))
+                try
                 {
                     string[] topicTokens = args.Publish.Topic.Split("/");
                     if (topicTokens.Length != 5)
@@ -223,10 +223,10 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
                         return;
                     }
                 }
-            }
-            finally
-            { 
-                await args.AcknowledgeAsync(CancellationToken.None);
+                finally
+                {
+                    await args.AcknowledgeAsync(CancellationToken.None);
+                }
             }
         }
 
