@@ -389,7 +389,8 @@ The byte layout is documented next to the serializer in
 5. Core clears the stored blob (a zero-length `persist_state_fn` write) whenever
    the workflow returns to Idle and when a new workflow supersedes it, so a later
    boot does not replay a finished workflow. It writes only when it wrote or
-   resumed from a blob; a failed clear is retried at the next such transition.
+   resumed from a blob. A failed clear is retried from `do_work()` while Idle, at
+   most once a second, and at the next such transition.
    A failed checkpoint write before a requested reboot holds the workflow at
    `INSTALL_COMPLETE`, retrying the write, and Apply does not run until it lands.
 
