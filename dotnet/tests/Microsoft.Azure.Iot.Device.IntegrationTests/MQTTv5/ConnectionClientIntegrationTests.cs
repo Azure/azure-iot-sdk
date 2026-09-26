@@ -2,14 +2,10 @@
 // See LICENSE file in the project root for full license information.
 
 using CaptureProxy;
-using Microsoft.Azure.Iot.Device.Gen2.Connection;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.MqttNetAdapter;
 using Microsoft.Azure.Iot.Device.MQTTnetAdapter;
-using System;
-using System.Collections.Generic;
 using System.Net;
-using System.Text;
 using Xunit;
 
 namespace Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5
