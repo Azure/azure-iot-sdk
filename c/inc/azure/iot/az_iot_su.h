@@ -1062,7 +1062,7 @@ extern "C"
    * hidden allocation, and (where they verify) are fail-closed. The managed
    * az_iot_su_client is implemented in terms of the same internal cores, so both
    * modes share one copy of the security-critical path. See
-   * docs/eng/su-feature-support.md Part C and su-client-design.md §5.3.
+   * docs/eng/su-client-design.md §5.3.
    */
 
   /**
