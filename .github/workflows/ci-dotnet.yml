@@ -11,6 +11,7 @@ on:
       - '!dotnet/**/*.md'
       - 'common/**'
       - '!common/**/*.md'
+      - '.github/workflows/ci-dotnet.yml'
   push:
     branches: [ main ]
     paths:
@@ -18,6 +19,7 @@ on:
       - '!dotnet/**/*.md'
       - 'common/**'
       - '!common/**/*.md'
+      - '.github/workflows/ci-dotnet.yml'
   schedule:
     - cron: '0 11 * * *'  # Nightly at 4am PST
 
