@@ -16,8 +16,7 @@
  * a Paho path: Paho takes its client key as a file path and exposes neither the
  * SSL_CTX nor a key callback (upstream has none either), so the Paho adapter
  * refuses a sign()-only credential with AZ_IOT_ERR_NOT_SUPPORTED instead of
- * connecting without a client key. Use hsm_pkcs11_gen1 or hsm_pkcs11_gen2 with
- * Paho.
+ * connecting without a client key. Use hsm_pkcs11 with Paho.
  *
  * What the sample shows, and what it does not:
  *

@@ -185,7 +185,7 @@ jobs:
       - name: Build the file upload sample (Linux)
         if: runner.os == 'Linux'
         working-directory: c
-        run: cmake --build --preset ${{ matrix.preset }} --target az_iot_sample_file_upload
+        run: cmake --build --preset ${{ matrix.preset }} --target az_iot_sample_unified_file_upload
 
       - name: Download shared test config
         uses: actions/download-artifact@v4
@@ -382,7 +382,7 @@ jobs:
         # the real hub: it provisions, requests a SAS URI, PUTs the blob with
         # libcurl and reports completion, exiting non-zero if any step fails.
         run: |
-          $exe = "c/build/${{ matrix.preset }}/samples/az_iot_sample_file_upload"
+          $exe = "c/build/${{ matrix.preset }}/samples/unified/az_iot_sample_file_upload"
           if (-not (Test-Path $exe)) { throw "sample not built at $exe" }
           & $exe
           if ($LASTEXITCODE -ne 0) { throw "file upload sample failed ($LASTEXITCODE)" }

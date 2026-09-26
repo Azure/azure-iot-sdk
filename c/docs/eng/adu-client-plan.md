@@ -100,73 +100,88 @@ sample-only / not factored) · 🔜 Coming soon (planned / designed, not yet bui
 
 ## Status at a Glance
 
-| Category | Support | Details |
-|---|:--:|---|
-| Foundation | ✅ | **Connection state + error propagation** — observer registry, status/reason/source codes, lifecycle guards (Phase 0). [→](#a-foundation) |
-| Foundation | ❌ | **ADU as a twin desired-property subscriber** — ADUv1-only wiring; removed with the twin channel. The twin client's subscriber registry itself stays (it serves the twin feature). [→](#a-foundation) |
-| Foundation | ✅ | **`adu_core` extraction + `az_iot_adu_channel` vtable** — engine takes a manifest string, returns a structured report; delivery/reporting behind the vtable. Prerequisite for every ADUv2 row. [→](#g-aduv2-transport-via-the-dps-gateway) |
-| Core update workflow | ✅ | **Manifest v5 parsing** — delegated to `azure-sdk-for-c`; only v5 targeted. [→](#b-core-update-workflow) |
-| Core update workflow | ❌→✅ | **Agent state reporting** — twin `0/6/255` reported properties are cut; re-expressed as the structured `installResult` on `reportUpdateStatus`. [→](#b-core-update-workflow) |
-| Core update workflow | ❌→✅ | **Device properties reporting** — twin `deviceProperties` cut; re-expressed as `agentInfo` (`agentSdkVersion`, `agentProfile`, compat KVPs) on each fetch. [→](#b-core-update-workflow) |
-| Core update workflow | ❌ | **Startup + reconnect re-reporting / initial twin GET** — no subscription and no unsolicited offer in ADUv2; the device polls instead. [→](#b-core-update-workflow) |
-| Core update workflow | ❌→✅ | **Accept / reject acknowledgement** — twin 200/406 ack is cut; already-installed becomes a `SKIPPED` outcome in the report. [→](#b-core-update-workflow) |
-| Core update workflow | ✅ | **Multi-step (composite) updates** — per-step Download→Backup→Install→Apply loop. [→](#b-core-update-workflow) |
-| Core update workflow | ✅ | **Per-step result reporting** — `resultCode`/`extendedResultCode`/`stepResults`, each entry carrying its own `outcome` and `failureOrigin`. [→](#b-core-update-workflow) |
-| Core update workflow | ✅ | **Replacement / duplicate detection** — keyed on `workflowId` alone, the sole correlation key in ADUv2; `retryTimestamp` is gone. [→](#b-core-update-workflow) |
-| Core update workflow | ✅ | **Application event notification** — `az_iot_adu_client_add_observer()` / `remove_observer()`, dispatching `WORKFLOW_STATE_CHANGED` and `OPERATION_ABANDONED`. Replaced polling `get_state()` as the way an application follows a workflow, and is the only way it learns an operation was given up on. [→](#b-core-update-workflow) |
-| Core update workflow | ✅ | **Bounded requests** — `request_update()` / `request_onboarding_update()` take a `timeout_ms`; on expiry the request is abandoned and reported as `OPERATION_ABANDONED` with `AZ_IOT_ERR_TIMEOUT`. `AZ_IOT_ADU_REQUEST_NO_TIMEOUT` keeps the old unbounded behaviour. [→](#b-core-update-workflow) |
-| Core update workflow | 🟡 | **Cancellation** — cooperative flag still honored at phase boundaries, but ADUv2 has no input that sets it; a new `workflowId` replaces instead. [→](#b-core-update-workflow) |
-| Download and integrity | ✅ | **File download from manifest URLs** — resolves `fileUrls`, drives `download_fn`. [→](#c-download-and-integrity) |
-| Download and integrity | ✅ | **Chunked / streaming download** — `download_fn` may return `IN_PROGRESS`. [→](#c-download-and-integrity) |
-| Download and integrity | ✅ | **SHA-256 integrity (streaming, opt-in)** — runs when `read_file_fn` + incremental hooks supplied. [→](#c-download-and-integrity) |
-| Download and integrity | 🔜 | **Delivery Optimization / peer cache** — offload download to a peer/CDN-cache provider behind the download seam; optional, default-off, direct-HTTPS fallback on constrained targets. [→](#c-download-and-integrity) |
-| Security and trust | ✅ | **JWS manifest signature** verification (RFC 7515) — 6-stage `verify_manifest()` before any download. [→](#d-security-and-trust) |
-| Security and trust | ✅ | **Two-level trust chain + `kid` resolution** — root key → SJWK → manifest → SHA-256 binding. [→](#d-security-and-trust) |
-| Security and trust | ✅ | **RS256-only enforcement** — rejects any other `alg` from the wire. [→](#d-security-and-trust) |
-| Security and trust | ✅ | **Root key store** (compiled-in Microsoft + runtime-loadable). [→](#d-security-and-trust) |
-| Security and trust | ✅ | **Root key revocation** — `disabled` roots rejected by `kid`. [→](#d-security-and-trust) |
-| Security and trust | ⚙️ | **HSM / PKCS#11 backend** — possible via `verify_rs256_fn`; no adapter ships. [→](#d-security-and-trust) |
-| Security and trust | 🔜 | **Root Key Package runtime rotation** — fetch+verify+apply with threshold continuity; the package URL now arrives as `serviceConfiguration.rootKeyDownloadUrl` (not a twin property). [→](#d-security-and-trust) |
-| Install, apply, recovery | ✅ | **Install / Apply execution (core)** — chunkable `install_fn`/`apply_fn`, may request reboot. [→](#e-install-apply-recovery) |
-| Install, apply, recovery | ✅ | **Backup / Restore (rollback)** — optional `backup_fn`; reverse-order best-effort restore. [→](#e-install-apply-recovery) |
-| Install, apply, recovery | ✅ | **Partial-failure rollback (multi-step)** — mid-sequence failure rolls back applied steps. [→](#e-install-apply-recovery) |
-| Install, apply, recovery | ✅→🔜 | **Reboot coordination + resume** — persist-before-reboot + `resume()`; blob must additionally carry the unsent ADUv2 report + ETags. [→](#e-install-apply-recovery) |
-| Install, apply, recovery | 🟡 | **Health-check / auto-rollback after reboot (core)** — sample-only today; promote to core. [→](#e-install-apply-recovery) |
-| Platform and crypto adapters | ✅ | **`crypto_openssl` adapter** — RS256 + SHA-256, factored in `adapters/adu/`. [→](#f-platform-and-crypto-adapters) |
-| Platform and crypto adapters | ✅ | **`crypto_mbedtls` adapter** — factored into `adapters/adu/crypto_mbedtls/`. [→](#f-platform-and-crypto-adapters) |
-| Platform and crypto adapters | 🟡 | **ESP32 sample port** — `samples/adu/esp32` passes the connection client to `az_iot_adu_client_initialize()` and asks for an onboarding update; not built or run with ESP-IDF since the port, and outside the CMake build, so nothing catches a regression. [→](#f-platform-and-crypto-adapters) |
-| Platform and crypto adapters | 🔜 | **Linux platform adapter** — libcurl download / install cmd / file persist; factor from sample. [→](#f-platform-and-crypto-adapters) |
-| Platform and crypto adapters | ✅ | **ESP32 platform adapter** — factored into `adapters/adu/esp32/` (`esp_http_client` + `esp_ota` + NVS resume). [→](#f-platform-and-crypto-adapters) |
-| ADUv2 transport | ❌ | **Twin (ADUv1) delivery + reporting** — the twin channel is removed, not kept behind a flag. [→](#what-aduv1-is-cut-means) |
-| ADUv2 transport | ✅ | **DPS update-check binding** — `requestSoftwareUpdates` / `requestOnboardingUpdates` over the device's DPS transport; both send `agentInfo`, and only the regular route sends `installedUpdateId` (onboarding omits it by contract: a day-0 device has nothing installed); parse `serviceConfiguration` + `updateMetadata`. [→](#g-aduv2-transport-via-the-dps-gateway) |
-| ADUv2 transport | 🟡 | **`reportUpdateStatus`** — `workflowId` + install result, idempotent, retried while the client lives. NOT durable across a reboot: the persistence blob is still v2 and does not carry an unsent report, so a device that reboots mid-install loses it. [→](#g-aduv2-transport-via-the-dps-gateway) |
-| ADUv2 transport | ✅ | **Reuse DPS device auth** — X.509 (P1) over the existing DPS connection; no ADU endpoint/creds/mTLS; identity headers are gateway-populated. [→](#g-aduv2-transport-via-the-dps-gateway) |
-| ADUv2 transport | 🟡 | **Bootstrap orchestration** — the pre-registration hold, the onboarding fetch and the report are in place, the hold is advisory (registration proceeds when it expires), and a queued request is bounded by `timeout_ms` so one that can never be served is abandoned rather than retried forever. The re-check **loop** is still absent: the engine issues one fetch per request. [→](#g-aduv2-transport-via-the-dps-gateway) |
-| ADUv2 transport | 🟡 | **Operational polling loop** — an on-demand provisioning session after registration exists, and the application picks the route with `az_iot_adu_client_request_update()`. No cadence is owned by the SDK: the application decides when to poll. [→](#g-aduv2-transport-via-the-dps-gateway) |
-| ADUv2 transport | 🔜 | **Root key package download** — fetch/cache from `rootKeyDownloadUrl`, verify as usual. [→](#g-aduv2-transport-via-the-dps-gateway) |
-| ADUv2 transport | ✅ | **Channel observes connection state** — the DPS channel registers as a scoped state observer instead of polling the connection client, and stops asking for a session once EITHER scope has settled in FAULTED rather than retrying into it. [→](#g-aduv2-transport-via-the-dps-gateway) |
-| ADUv2 transport | ✅ | **ETag + api-version + agent-info resend** — `agentInfoEtag`/`serviceConfigEtag`; resend full `agentInfo` on `OUTDATED_`/`UNKNOWN_AGENT_INFO`; re-sync on `OUTDATED_SERVICE_CONFIG`. [→](#g-aduv2-transport-via-the-dps-gateway) |
-| ADUv2 transport | ✅ | **Advisory + load contracts** — the error classifier drives on the code, the device is the sole retrier, and `Retry-After` is honoured: it arrives as a response-topic query parameter, and the channel defers every publish until the delay elapses. [→](#g-aduv2-transport-via-the-dps-gateway) |
-| Day0 recovery | 🔜 | **Unauthenticated recovery transport** — plain-HTTP recovery endpoint (protocol not yet defined). [→](#h-day0-recovery) |
-| Day0 recovery | 🔜 | **Account-ID binding** — validate signed manifest's ADU account ID (replay protection). [→](#h-day0-recovery) |
-| Day0 recovery | 🔜 | **Compatibility-property validation** — device checks compat before applying a replayed response. [→](#h-day0-recovery) |
-| Delta and handlers | 🔜 | **Static step/download-handler registry** — name→fn "filter" (field-requested); static, in-process. [→](#i-delta-and-handlers) |
-| Delta and handlers | 🔜 | **Delta / differential updates** — `relatedFiles` + delta download handler; depends on registry. [→](#i-delta-and-handlers) |
-| Delta and handlers | 🔜 | **Per-handler-type built-in handlers** — reference `apt`/`script`/`swupdate` handlers over the registry. [→](#i-delta-and-handlers) |
-| Delta and handlers | 🔜 | **Dynamic `ContentHandler` plugin loading** — optional `dlopen`/`LoadLibrary` registrar over the static registry (non-embedded); static registry stays the portable default. [→](#i-delta-and-handlers) |
-| Library / agent-core mode | ✅ | **Turnkey client** — SDK drives verify→install→report (the shipping client). [→](#j-library-and-agent-core-mode) |
-| Library / agent-core mode | 🔜 | **Library mode** — hand back a verified+parsed manifest; consumer drives their own state machine. [→](#j-library-and-agent-core-mode) |
-| Testing and conformance | ✅ | **Phase-1 unit tests** — cmocka state-machine coverage. [→](#k-testing-and-conformance) |
-| Testing and conformance | 🟡 | **Crypto vector tests** — known-good/bad RS256 + SHA-256 vectors. [→](#k-testing-and-conformance) |
-| Testing and conformance | 🔜 | **Adapter integration tests** — mock HTTP server + test manifest per adapter. [→](#k-testing-and-conformance) |
-| Testing and conformance | 🔜 | **ADU conformance suite** — host-only `az_iot_adu_conformance`, all states + multi-step. [→](#k-testing-and-conformance) |
-| Testing and conformance | ✅→🔜 | **E2E vs real ADU service** — five twin-driven scenarios exist in a slow-lane workflow (off the PR path); they retire with the cut and need ADUv2 equivalents. [→](#k-testing-and-conformance) |
-| Advanced update model | 🔜 | **Reference steps** — `type: reference` + detached child manifest: fetch, verify, recurse. [→](#l-advanced-update-model) |
-| Advanced update model | 🔜 | **Proxy / nested updates** — parent agent orchestrates leaf/component updates (gateway→leaf). [→](#l-advanced-update-model) |
-| Advanced update model | 🔜 | **Component-level targeting** — component enumerator hook + `selectedComponents` matching. [→](#l-advanced-update-model) |
-| Advanced update model | 🔜 | **`mimeType` handling** — parse + surface file `mimeType` to handlers. [→](#l-advanced-update-model) |
-| Agent services | 🔜 | **Diagnostics / log-upload** — respond to a diagnostics request; collect + upload logs to the given SAS URL via an upload hook. [→](#m-agent-services) |
-| Agent services | 🔜 | **`adu-shell` / privilege separation** — reference POSIX setuid broker so root-needing steps run out-of-process; inert on single-privilege targets. [→](#m-agent-services) |
+**Columns.** `Pri` P0/P1/P2 · `Size` S (≤2d) / M (≤1w) / L (>1w) · `Depends` the row
+numbers that must land first · `Order` suggested sequence across remaining work · `ETA`
+target date (weekend dates moved to the next workday; `~` means not yet estimated), or
+`blocked` when something outside this repository gates it.
+
+`done` in the ETA column means the row is shipped or cut; those rows carry no priority,
+size or order.
+
+**Targets:** P0 by **9/28** (fixed), everything else by **10/9**. See
+[Feasibility](#feasibility-of-the-928--109-targets) — both targets are well above measured
+velocity; three items cannot be dated, and row 59 holds its date only if its gate clears.
+
+† Row 59 meets 9/28 only if the test-environment access grant lands by 9/28.
+
+
+| # | Category | Support | Pri | Size | Depends | Order | ETA | Details |
+|--:|---|:--:|:--:|:--:|:--:|:--:|:--:|---|
+| 1 | Foundation | ✅ | — | — | — | — | done | **Connection state + error propagation** — observer registry, status/reason/source codes, lifecycle guards (Phase 0). [→](#a-foundation) |
+| 3 | Foundation | ✅ | — | — | — | — | done | **`adu_core` extraction + `az_iot_adu_channel` vtable** — engine takes a manifest string, returns a structured report; delivery/reporting behind the vtable. Prerequisite for every ADUv2 row. [→](#g-aduv2-transport-via-the-dps-gateway) |
+| 4 | Core update workflow | ✅ | — | — | — | — | done | **Manifest v5 parsing** — delegated to `azure-sdk-for-c`; only v5 targeted. [→](#b-core-update-workflow) |
+| 5 | Core update workflow | ❌→✅ | — | — | — | — | done | **Agent state reporting** — twin `0/6/255` reported properties are cut; re-expressed as the structured `installResult` on `reportUpdateStatus`. [→](#b-core-update-workflow) |
+| 6 | Core update workflow | ❌→✅ | — | — | — | — | done | **Device properties reporting** — twin `deviceProperties` cut; re-expressed as `agentInfo` (`agentSdkVersion`, `agentProfile`, compat KVPs) on each fetch. [→](#b-core-update-workflow) |
+| 8 | Core update workflow | ❌→✅ | — | — | — | — | done | **Accept / reject acknowledgement** — twin 200/406 ack is cut; already-installed becomes a `SKIPPED` outcome in the report. [→](#b-core-update-workflow) |
+| 9 | Core update workflow | ✅ | — | — | — | — | done | **Multi-step (composite) updates** — per-step Download→Backup→Install→Apply loop. [→](#b-core-update-workflow) |
+| 10 | Core update workflow | ✅ | — | — | — | — | done | **Per-step result reporting** — `resultCode`/`extendedResultCode`/`stepResults`, each entry carrying its own `outcome` and `failureOrigin`. [→](#b-core-update-workflow) |
+| 11 | Core update workflow | ✅ | — | — | — | — | done | **Replacement / duplicate detection** — keyed on `workflowId` alone, the sole correlation key in ADUv2; `retryTimestamp` is gone. [→](#b-core-update-workflow) |
+| 12 | Core update workflow | ✅ | — | — | — | — | done | **Application event notification** — `az_iot_adu_client_add_observer()` / `remove_observer()`, dispatching `WORKFLOW_STATE_CHANGED` and `OPERATION_ABANDONED`. Replaced polling `get_state()` as the way an application follows a workflow, and is the only way it learns an operation was given up on. [→](#b-core-update-workflow) |
+| 13 | Core update workflow | ✅ | — | — | — | — | done | **Bounded requests** — `request_update()` / `request_onboarding_update()` take a `timeout_ms`; on expiry the request is abandoned and reported as `OPERATION_ABANDONED` with `AZ_IOT_ERR_TIMEOUT`. `AZ_IOT_ADU_REQUEST_NO_TIMEOUT` keeps the old unbounded behaviour. [→](#b-core-update-workflow) |
+| 15 | Download and integrity | ✅ | — | — | — | — | done | **File download from manifest URLs** — resolves `fileUrls`, drives `download_fn`. [→](#c-download-and-integrity) |
+| 16 | Download and integrity | ✅ | — | — | — | — | done | **Chunked / streaming download** — `download_fn` may return `IN_PROGRESS`. [→](#c-download-and-integrity) |
+| 17 | Download and integrity | ✅ | — | — | — | — | done | **SHA-256 integrity (streaming, opt-in)** — runs when `read_file_fn` + incremental hooks supplied. [→](#c-download-and-integrity) |
+| 19 | Security and trust | ✅ | — | — | — | — | done | **JWS manifest signature** verification (RFC 7515) — 6-stage `verify_manifest()` before any download. [→](#d-security-and-trust) |
+| 20 | Security and trust | ✅ | — | — | — | — | done | **Two-level trust chain + `kid` resolution** — root key → SJWK → manifest → SHA-256 binding. [→](#d-security-and-trust) |
+| 21 | Security and trust | ✅ | — | — | — | — | done | **RS256-only enforcement** — rejects any other `alg` from the wire. [→](#d-security-and-trust) |
+| 22 | Security and trust | ✅ | — | — | — | — | done | **Root key store** (compiled-in Microsoft + runtime-loadable). [→](#d-security-and-trust) |
+| 23 | Security and trust | ✅ | — | — | — | — | done | **Root key revocation** — `disabled` roots rejected by `kid`. [→](#d-security-and-trust) |
+| 26 | Install, apply, recovery | ✅ | — | — | — | — | done | **Install / Apply execution (core)** — chunkable `install_fn`/`apply_fn`, may request reboot. [→](#e-install-apply-recovery) |
+| 27 | Install, apply, recovery | ✅ | — | — | — | — | done | **Backup / Restore (rollback)** — optional `backup_fn`; reverse-order best-effort restore. [→](#e-install-apply-recovery) |
+| 28 | Install, apply, recovery | ✅ | — | — | — | — | done | **Partial-failure rollback (multi-step)** — mid-sequence failure rolls back applied steps. [→](#e-install-apply-recovery) |
+| 31 | Platform and crypto adapters | ✅ | — | — | — | — | done | **`crypto_openssl` adapter** — RS256 + SHA-256, factored in `adapters/adu/`. [→](#f-platform-and-crypto-adapters) |
+| 32 | Platform and crypto adapters | ✅ | — | — | — | — | done | **`crypto_mbedtls` adapter** — factored into `adapters/adu/crypto_mbedtls/`. [→](#f-platform-and-crypto-adapters) |
+| 35 | Platform and crypto adapters | ✅ | — | — | — | — | done | **ESP32 platform adapter** — factored into `adapters/adu/esp32/` (`esp_http_client` + `esp_ota` + NVS resume). [→](#f-platform-and-crypto-adapters) |
+| 37 | ADUv2 transport | ✅ | — | — | — | — | done | **DPS update-check binding** — `requestSoftwareUpdates` / `requestOnboardingUpdates` over the device's DPS transport; both send `agentInfo`, and only the regular route sends `installedUpdateId` (onboarding omits it by contract: a day-0 device has nothing installed); parse `serviceConfiguration` + `updateMetadata`. [→](#g-aduv2-transport-via-the-dps-gateway) |
+| 39 | ADUv2 transport | ✅ | — | — | — | — | done | **Reuse DPS device auth** — X.509 (P1) over the existing DPS connection; no ADU endpoint/creds/mTLS; identity headers are gateway-populated. [→](#g-aduv2-transport-via-the-dps-gateway) |
+| 43 | ADUv2 transport | ✅ | — | — | — | — | done | **Channel observes connection state** — the DPS channel registers as a scoped state observer instead of polling the connection client, and stops asking for a session once EITHER scope has settled in FAULTED rather than retrying into it. [→](#g-aduv2-transport-via-the-dps-gateway) |
+| 44 | ADUv2 transport | ✅ | — | — | — | — | done | **ETag + api-version + agent-info resend** — `agentInfoEtag`/`serviceConfigEtag`; resend full `agentInfo` on `OUTDATED_`/`UNKNOWN_AGENT_INFO`; re-sync on `OUTDATED_SERVICE_CONFIG`. [→](#g-aduv2-transport-via-the-dps-gateway) |
+| 45 | ADUv2 transport | ✅ | — | — | — | — | done | **Advisory + load contracts** — the error classifier drives on the code, the device is the sole retrier, and `Retry-After` is honoured: it arrives as a response-topic query parameter, and the channel defers every publish until the delay elapses. [→](#g-aduv2-transport-via-the-dps-gateway) |
+| 53 | Library / agent-core mode | ✅ | — | — | — | — | done | **Turnkey client** — SDK drives verify→install→report (the shipping client). [→](#j-library-and-agent-core-mode) |
+| 55 | Testing and conformance | ✅ | — | — | — | — | done | **Phase-1 unit tests** — cmocka state-machine coverage. [→](#k-testing-and-conformance) |
+| 2 | Foundation | ❌ | — | — | — | — | done | **ADU as a twin desired-property subscriber** — ADUv1-only wiring; removed with the twin channel. The twin client's subscriber registry itself stays (it serves the twin feature). [→](#a-foundation) |
+| 7 | Core update workflow | ❌ | — | — | — | — | done | **Startup + reconnect re-reporting / initial twin GET** — no subscription and no unsolicited offer in ADUv2; the device polls instead. [→](#b-core-update-workflow) |
+| 36 | ADUv2 transport | ❌ | — | — | — | — | done | **Twin (ADUv1) delivery + reporting** — the twin channel is removed, not kept behind a flag. [→](#what-aduv1-is-cut-means) |
+| 56 | Testing and conformance | 🟡 | P0 | S | — | 1 | 9/28 | **Crypto vector tests** — known-good/bad RS256 + SHA-256 vectors. [→](#k-testing-and-conformance) |
+| 29 | Install, apply, recovery | ✅→🔜 | P0 | M | — | 2 | 9/28 | **Reboot coordination + resume** — persist-before-reboot + `resume()`; blob must additionally carry the unsent ADUv2 report + ETags. [→](#e-install-apply-recovery) |
+| 38 | ADUv2 transport | 🟡 | P0 | S | 29 | 3 | 9/28 | **`reportUpdateStatus`** — `workflowId` + install result, idempotent, retried while the client lives. NOT durable across a reboot: the persistence blob is still v2 and does not carry an unsent report, so a device that reboots mid-install loses it. [→](#g-aduv2-transport-via-the-dps-gateway) |
+| 54 | Library / agent-core mode | 🔜 | P0 | M | — | 4 | 9/28 | **Library mode** — hand back a verified+parsed manifest; consumer drives their own state machine. [→](#j-library-and-agent-core-mode) |
+| 59 | Testing and conformance | ✅→🔜 | P0 | M | — | 5 | 9/28† | **E2E vs real ADU service** — five twin-driven scenarios exist in a slow-lane workflow (off the PR path); they retire with the cut and need ADUv2 equivalents. [→](#k-testing-and-conformance) |
+| 49 | Delta and handlers | 🔜 | P1 | M | — | 6 | 9/30 | **Static step/download-handler registry** — name→fn "filter" (field-requested); static, in-process. [→](#i-delta-and-handlers) |
+| 51 | Delta and handlers | 🔜 | P1 | M | 49 | 7 | 10/1 | **Per-handler-type built-in handlers** — reference `apt`/`script`/`swupdate` handlers over the registry. [→](#i-delta-and-handlers) |
+| 52 | Delta and handlers | 🔜 | P1 | M | 49 | 8 | 10/2 | **Dynamic `ContentHandler` plugin loading** — optional `dlopen`/`LoadLibrary` registrar over the static registry (non-embedded); static registry stays the portable default. [→](#i-delta-and-handlers) |
+| 42 | ADUv2 transport | 🔜 | P1 | M | — | 9 | 10/9 | **Root key package download** — fetch/cache from `rootKeyDownloadUrl`, verify as usual. [→](#g-aduv2-transport-via-the-dps-gateway) |
+| 25 | Security and trust | 🔜 | P1 | L | 42 | 10 | 10/9 | **Root Key Package runtime rotation** — fetch+verify+apply with threshold continuity; the package URL now arrives as `serviceConfiguration.rootKeyDownloadUrl` (not a twin property). [→](#d-security-and-trust) |
+| 30 | Install, apply, recovery | 🟡 | P1 | M | 29 | 11 | 10/9 | **Health-check / auto-rollback after reboot (core)** — sample-only today; promote to core. [→](#e-install-apply-recovery) |
+| 34 | Platform and crypto adapters | 🔜 | P1 | L | — | 12 | 10/9 | **Linux platform adapter** — libcurl download / install cmd / file persist; factor from sample. [→](#f-platform-and-crypto-adapters) |
+| 40 | ADUv2 transport | 🟡 | P1 | M | — | 13 | 10/9 | **Bootstrap orchestration** — the pre-registration hold, the onboarding fetch and the report are in place, the hold is advisory (registration proceeds when it expires), and a queued request is bounded by `timeout_ms` so one that can never be served is abandoned rather than retried forever. The re-check **loop** is still absent: the engine issues one fetch per request. [→](#g-aduv2-transport-via-the-dps-gateway) |
+| 41 | ADUv2 transport | 🟡 | P1 | M | — | 14 | 10/9 | **Operational polling loop** — an on-demand provisioning session after registration exists, and the application picks the route with `az_iot_adu_client_request_update()`. No cadence is owned by the SDK: the application decides when to poll. [→](#g-aduv2-transport-via-the-dps-gateway) |
+| 57 | Testing and conformance | 🔜 | P1 | M | — | 15 | 10/9 | **Adapter integration tests** — mock HTTP server + test manifest per adapter. [→](#k-testing-and-conformance) |
+| 33 | Platform and crypto adapters | 🟡 | P1 | S | — | — | blocked | **ESP32 sample port** — `samples/adu/esp32` passes the connection client to `az_iot_adu_client_initialize()` and asks for an onboarding update; not built or run with ESP-IDF since the port, and outside the CMake build, so nothing catches a regression. [→](#f-platform-and-crypto-adapters) |
+| 18 | Download and integrity | 🔜 | P2 | L | — | 16 | ~10/9 | **Delivery Optimization / peer cache** — offload download to a peer/CDN-cache provider behind the download seam; optional, default-off, direct-HTTPS fallback on constrained targets. [→](#c-download-and-integrity) |
+| 24 | Security and trust | ⚙️ | P2 | M | — | 17 | ~10/9 | **HSM / PKCS#11 backend** — possible via `verify_rs256_fn`; no adapter ships. [→](#d-security-and-trust) |
+| 46 | Day0 recovery | 🔜 | P2 | L | — | 18 | blocked | **Unauthenticated recovery transport** — plain-HTTP recovery endpoint (protocol not yet defined). [→](#h-day0-recovery) |
+| 47 | Day0 recovery | 🔜 | P2 | M | 46 | 19 | blocked | **Account-ID binding** — validate signed manifest's ADU account ID (replay protection). [→](#h-day0-recovery) |
+| 48 | Day0 recovery | 🔜 | P2 | S | 46 | 20 | blocked | **Compatibility-property validation** — device checks compat before applying a replayed response. [→](#h-day0-recovery) |
+| 50 | Delta and handlers | 🔜 | P2 | L | 49 | 21 | ~10/9 | **Delta / differential updates** — `relatedFiles` + delta download handler; depends on registry. [→](#i-delta-and-handlers) |
+| 58 | Testing and conformance | 🔜 | P2 | L | — | 22 | ~10/9 | **ADU conformance suite** — host-only `az_iot_adu_conformance`, all states + multi-step. [→](#k-testing-and-conformance) |
+| 60 | Advanced update model | 🔜 | P2 | M | — | 23 | ~10/9 | **Reference steps** — `type: reference` + detached child manifest: fetch, verify, recurse. [→](#l-advanced-update-model) |
+| 61 | Advanced update model | 🔜 | P2 | L | 60 | 24 | ~10/9 | **Proxy / nested updates** — parent agent orchestrates leaf/component updates (gateway→leaf). [→](#l-advanced-update-model) |
+| 62 | Advanced update model | 🔜 | P2 | L | — | 25 | ~10/9 | **Component-level targeting** — component enumerator hook + `selectedComponents` matching. [→](#l-advanced-update-model) |
+| 63 | Advanced update model | 🔜 | P2 | S | — | 26 | ~10/9 | **`mimeType` handling** — parse + surface file `mimeType` to handlers. [→](#l-advanced-update-model) |
+| 64 | Agent services | 🔜 | P2 | M | — | 27 | ~10/9 | **Diagnostics / log-upload** — respond to a diagnostics request; collect + upload logs to the given SAS URL via an upload hook. [→](#m-agent-services) |
+| 65 | Agent services | 🔜 | P2 | L | — | 28 | ~10/9 | **`adu-shell` / privilege separation** — reference POSIX setuid broker so root-needing steps run out-of-process; inert on single-privilege targets. [→](#m-agent-services) |
+| 14 | Core update workflow | 🟡 | P2 | S | — | — | blocked | **Cancellation** — cooperative flag still honored at phase boundaries, but ADUv2 has no input that sets it; a new `workflowId` replaces instead. [→](#b-core-update-workflow) |
 
 ### Priority & sequencing
 
@@ -175,8 +190,9 @@ Everything is committed (per [Scope and philosophy](#scope-and-philosophy-the-ad
 - **Tier 0 — the cut (blocks everything):** extract `adu_core` + the `az_iot_adu_channel` vtable and
   delete the twin channel, its public API and its wire-shape tests.
 - **Tier 1 — embedded-critical core (ship first):** ADUv2 transport (G), adapters (E/F), Day0 (H),
-  library mode (J), testing (K).
-- **Tier 2 — reference-completeness (coming soon):** delta + handler registry (I), per-handler-type handlers, dynamic loading, Delivery Optimization, reference steps, proxy/nested, component targeting, `mimeType`, diagnostics/log-upload, `adu-shell`, Root Key Package rotation (D).
+  library mode (J), the step-handler registry with built-in handlers and dynamic loading (I),
+  testing (K).
+- **Tier 2 — reference-completeness (coming soon):** delta (I), Delivery Optimization, reference steps, proxy/nested, component targeting, `mimeType`, diagnostics/log-upload, `adu-shell`, Root Key Package rotation (D).
 
 ```mermaid
 flowchart LR
@@ -197,6 +213,57 @@ flowchart LR
 ---
 
 # Feature Manual (design detail per category)
+
+## Feasibility of the 9/28 / 10/9 targets
+
+**Measured velocity.** Three matrix rows reached ✅ between the 9/17 and 9/23 refreshes.
+ADU-touching merges ran 2, 11, 9, 11 per week over the last four weeks, but most are
+fixes and review follow-ups rather than new rows. **Call it 3–4 rows per week.**
+
+**Thirty rows remain.** At that rate the backlog is roughly **nine weeks**, and that is
+optimistic: the rows completed so far were the small ones. The remaining tail holds Delta
+updates, proxy/nested updates, Library mode and the conformance suite, all sized L.
+
+**P0 by 9/28 (Sat 9/26 to Mon 9/28: one working day plus a weekend) — fixed, and not achievable at measured pace
+without changes to how the work is done.** P0 is five rows: 29, 38, 56, 59 and library mode
+(54). That is three M and two S rows, roughly 1.5–2 weeks of work at 3–4 rows per week. The
+dates hold only if:
+
+- **The work runs in parallel.** 56, 29→38 and 54 are independent chains; each needs its own
+  owner from 9/26.
+- **Each row ships its minimum.** 54: verify+parse API reusing the trust code. Hardening and
+  extras become follow-up rows.
+- **Review turnaround is same-day.** Each chain has one to two PRs; a day's review latency
+  moves the date.
+- **Row 59's gate clears by 9/28.** Otherwise it cannot finish by 9/28 whatever the effort.
+
+**Everything else by 10/9 (9/29–10/9, nine working days) — not feasible.** Twenty rows in
+nine working days needs roughly 11 rows per week, about three times the measured rate. Nothing in the recent record
+supports it.
+
+**These rows are gated outside this repository.** Rows 14, 33 and 46–48 stay `blocked`; row 59
+is dated 9/28 on the condition above:
+
+| # | Row | Gate |
+|--:|---|---|
+| 14 | Cancellation | No ADUv2 service input sets the flag. The local API is ours; the trigger is not. |
+| 33 | ESP32 sample port | Needs the ESP-IDF toolchain to build or run. |
+| 46–48 | Day0 recovery | The recovery protocol is not yet defined. |
+| 59 | E2E vs real service | The test environment rejects every device-update fetch; needs an access grant. |
+
+Marking these `blocked` rather than giving them a date is deliberate. A date on a row
+nobody here can start is a number, not a plan.
+
+**Custom step handling right after (P1, 9/29–10/2):** handler registry (49) by 9/30, then
+built-in handlers (51) by 10/1 and dynamic loading (52) by 10/2, both on 49. Each ships its
+minimum: 49 a static name→function registry, 51 thin reference handlers on it, 52 a
+build-gated loader over 49. Three M rows in four days is still above measured pace.
+
+**What a realistic 10/9 looks like:** the five P0 rows, 49, 51 and 52, plus root key package
+download (42). That is nine rows in two weeks, above the measured pace; the other rows dated
+10/9 or `~10/9` will slip.
+
+---
 
 ## A. Foundation
 
