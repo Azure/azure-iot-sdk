@@ -28,14 +28,17 @@ samples/su/esp32/
 └── main/
     ├── app_main.c              entry point: wifi → DPS → software updates pump
     ├── az_iot_mqtt_esp.[ch]    esp-mqtt az_iot_mqtt_iface adapter (v3.1.1 + v5)
-    ├── az_iot_su_crypto_mbedtls.[ch]   PSA-Crypto RS256 / SHA-256 hooks
-    ├── su_esp32_ota.[ch]      real OTA platform hooks (download/install/rollback)
     ├── az_iot_cert_embedded.[ch]  in-memory X.509 cert provider
     ├── wifi_connect.[ch]       station-mode Wi-Fi bring-up
     ├── su_version.h           compiled-in firmware version (rewritten by the script)
     ├── Kconfig.projbuild       Wi-Fi + DPS menuconfig options
     └── certs/                  device_cert.pem / device_key.pem / trusted_ca.pem
 ```
+
+`main/CMakeLists.txt` also compiles two adapters from outside the sample:
+
+- [`adapters/su/crypto_mbedtls/az_iot_su_crypto_mbedtls.[ch]`](../../../adapters/su/crypto_mbedtls/): PSA-Crypto RS256 / SHA-256 hooks.
+- [`adapters/su/esp32/su_esp32_ota.[ch]`](../../../adapters/su/esp32/): real OTA platform hooks (download/install/rollback).
 
 ## Prerequisites
 
@@ -178,7 +181,7 @@ cd samples/common/scripts
 Manifest signature verification (RS256 over the SHA-256 of the manifest, plus the
 SJWK chain to the compiled-in Microsoft root keys) and payload hashing are done by
 the SDK core using the PSA-Crypto hooks in
-[`main/az_iot_su_crypto_mbedtls.c`](main/az_iot_su_crypto_mbedtls.c).
+[`adapters/su/crypto_mbedtls/az_iot_su_crypto_mbedtls.c`](../../../adapters/su/crypto_mbedtls/az_iot_su_crypto_mbedtls.c).
 
 After a successful boot into the new image, `app_main` calls
 `su_esp32_ota_mark_valid()` which invokes `esp_ota_mark_app_valid_cancel_rollback`
